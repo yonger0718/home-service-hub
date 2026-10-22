@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.models import (
-    AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationAudit, ReconciliationOwnerRule,
+    AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationAudit, ReconciliationCase, ReconciliationOwnerRule,
 )
 from app.services import owner_rule_service as ors
 from app.services.reconciliation_actions import audit, engine
@@ -294,3 +294,79 @@ def test_rules_really_book_at_the_reconcile_route(client, seed, db_session, run,
     res = client.post(f"/accounts/{account.id}/statements/{stmt.id}/reconcile", headers={"Authorization": "Bearer spa-token"})
     assert res.status_code == 200, res.text
     assert _open_lines(db_session, stmt.id) == [] and len(_audits(db_session, "rule_applied")) == 1
+
+
+def _shop_statement(seed, db, run):
+    account = _bank(seed, db)
+    food = seed.category("飲食")
+    db.commit()
+    _rule(seed, db, account, line_kind="withdrawal", merchant_pattern="店", amount=None, params={"category_id": food.id})
+    stmt, _, _ = _submit(db, run, account, [_line(1, DAY, "店", -10, "withdrawal")], kind="bank")
+    return stmt
+
+
+def _rule_audits(db):
+    return _audits(db, "rule_applied") + _audits(db, "rule_skipped")
+
+
+def test_rules_respect_an_open_parse_review(seed, db_session, run):
+    """Review Important 1: the policy's statement exclusions (bar currency) hold for rules too."""
+    stmt = _shop_statement(seed, db_session, run)
+    review = ReconciliationCase(statement_id=stmt.id, revision_id=stmt.current_revision_id, kind="parse_review",
+                                context={})
+    db_session.add(review)
+    db_session.commit()
+    result = ors.run_rules_safe(db_session, stmt.id)
+    assert result.applied == [] and result.skipped == [] and _rule_audits(db_session) == []
+    review.status = "dismissed"  # the exclusion lifted, the same rule answers the line
+    db_session.commit()
+    assert len(ors.run_rules_safe(db_session, stmt.id).applied) == 1
+
+
+def test_rules_respect_needs_recheck(seed, db_session, run):
+    stmt = _shop_statement(seed, db_session, run)
+    db_session.get(AccountStatement, stmt.id).needs_recheck = True
+    db_session.commit()
+    result = ors.run_rules_safe(db_session, stmt.id)
+    assert result.applied == [] and result.skipped == [] and _rule_audits(db_session) == []
+    db_session.get(AccountStatement, stmt.id).needs_recheck = False
+    db_session.commit()
+    assert len(ors.run_rules_safe(db_session, stmt.id).applied) == 1
+
+
+def test_a_repeated_refusal_is_audited_once(seed, db_session, run):
+    """Review Minor 1: once per (case, version, rule, code), like policy_skipped."""
+    account = _bank(seed, db_session)
+    _rule(seed, db_session, account, line_kind="withdrawal", merchant_pattern="甲", amount=None, params={"category_id": 999999})
+    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "甲", -10, "withdrawal")], kind="bank")
+    first = ors.run_rules_safe(db_session, stmt.id)
+    second = ors.run_rules_safe(db_session, stmt.id)
+    assert len(first.skipped) == len(second.skipped) == 1  # the run still reports it each time
+    (ev,) = _audits(db_session, "rule_skipped")
+    (case,) = _open_lines(db_session, stmt.id)
+    assert ev.detail["case_version"] == case.version and ev.detail["case_id"] == case.id
+
+
+def test_an_open_case_with_a_pending_proposal_is_untouched(seed, db_session, run):
+    """Review Minor 2: the case stays `open` (not `proposed`), so only `pending_for_case` keeps the rule off."""
+    from app.models import ReconciliationProposal
+    stmt = _shop_statement(seed, db_session, run)
+    (shop,) = _open_lines(db_session, stmt.id)
+    db_session.add(ReconciliationProposal(case_id=shop.id, case_version=shop.version, event_id=shop.event_id,
+                                          action="dismiss", params={"note": "x"}, rationale="r", confidence=Decimal("0.5"),
+                                          author="hermes"))
+    db_session.commit()
+    assert db_session.get(ReconciliationCase, shop.id).status == "open"
+    result = ors.run_rules_safe(db_session, stmt.id)
+    assert result.applied == [] and result.skipped == [] and _rule_audits(db_session) == []
+    assert [c.id for c in _open_lines(db_session, stmt.id)] == [shop.id]
+
+
+def test_reverted_rule_id_ignores_a_malformed_context_value(seed, db_session, run):
+    """Review Minor 5: a malformed `reverted_action_id` returns None instead of aborting the run."""
+    stmt = _shop_statement(seed, db_session, run)
+    (shop,) = _open_lines(db_session, stmt.id)
+    shop.context = {**(shop.context or {}), "reverted_action_id": "not-a-number"}
+    db_session.commit()
+    assert ors.reverted_rule_id(db_session, shop) is None
+    assert len(ors.run_rules_safe(db_session, stmt.id).applied) == 1

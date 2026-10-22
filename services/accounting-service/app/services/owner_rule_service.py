@@ -122,11 +122,15 @@ class RuleRunResult:
 def reverted_rule_id(db: Session, case: ReconciliationCase) -> int | None:
     """The rule whose action 撤銷 undid on this case: the `rule:<id>` actor of the `action_applied` audit of
     `context.reverted_action_id`; None when nothing was reverted or the reverted action was not a rule's."""
-    action_id = (case.context or {}).get("reverted_action_id")
-    if action_id is None:
+    raw = (case.context or {}).get("reverted_action_id")
+    if raw is None:
+        return None
+    try:  # a malformed context value must not abort the statement's run
+        action_id = int(raw)
+    except (TypeError, ValueError):
         return None
     actor = db.execute(select(ReconciliationAudit.actor).where(
-        ReconciliationAudit.event == "action_applied", ReconciliationAudit.action_id == int(action_id))
+        ReconciliationAudit.event == "action_applied", ReconciliationAudit.action_id == action_id)
         .order_by(ReconciliationAudit.id).limit(1)).scalar_one_or_none()
     if actor is None or not actor.startswith("rule:"):
         return None
@@ -175,17 +179,28 @@ def _precheck(version: int, action: str):
 
 def _skip(db: Session, statement_id: int, case_id: int, rule_id: int | None, code: str, result: RuleRunResult, *,
           run_id: int | None) -> None:
-    """Audit `rule_skipped` in its own transaction, the statement locked first (the engine's order: the audit row's
-    FK takes FOR KEY SHARE on the statement and the case)."""
+    """Audit `rule_skipped` in its own transaction, once per (case, version, rule, code) — a deterministic refusal
+    repeats on every run (`policy_service._skip`'s dedup). Read-version -> check -> insert under the statement ->
+    case locks (the engine's order: the audit row's FK takes FOR KEY SHARE on the statement and the case)."""
     result.skipped.append((case_id, code))
     try:
         rec._lock_statement(db, statement_id)
     except NotFoundError:
         db.rollback()
         return
-    audit.record(db, event="rule_skipped", actor="owner" if rule_id is None else f"rule:{rule_id}",
-                 statement_id=statement_id, case_id=case_id, run_id=run_id,
-                 detail={"rule_id": rule_id, "case_id": case_id, "code": code})
+    version = db.execute(select(ReconciliationCase.version).where(ReconciliationCase.id == case_id)
+                         .with_for_update()).scalar_one_or_none()
+    stored_version = ReconciliationAudit.detail["case_version"].astext
+    stored_rule = ReconciliationAudit.detail["rule_id"].astext
+    already = db.execute(select(ReconciliationAudit.id).where(
+        ReconciliationAudit.event == "rule_skipped", ReconciliationAudit.case_id == case_id,
+        ReconciliationAudit.detail["code"].astext == code,
+        stored_rule.is_(None) if rule_id is None else stored_rule == str(rule_id),
+        stored_version.is_(None) if version is None else stored_version == str(version)).limit(1)).first()
+    if already is None:
+        audit.record(db, event="rule_skipped", actor="owner" if rule_id is None else f"rule:{rule_id}",
+                     statement_id=statement_id, case_id=case_id, run_id=run_id,
+                     detail={"rule_id": rule_id, "case_id": case_id, "code": code, "case_version": version})
     db.commit()
 
 
@@ -221,15 +236,16 @@ def _apply_case(db: Session, statement_id: int, case: ReconciliationCase, line: 
 
 
 def apply_rules(db: Session, statement_id: int, *, run_id: int | None = None) -> RuleRunResult:
-    """Apply the account's enabled rules to one LIVE statement (spec §6.3): each `open` case with a current line, in
-    id order, whose question is `bank_only` (→ `record` / `dismiss` rules) or `amount_differs` with an adjustable
-    candidate (→ `accept_bank_amount` rules), never a settlement line or a case with a pending proposal; the
-    matching rule (`match_rule`, the rule 撤銷 undid on the case excluded) is applied through the engine as the
-    owner. Commits per case; a refusal is audited `rule_skipped` and not retried in this run."""
+    """Apply the account's enabled rules to one statement that the policy's exclusions (bar the currency gate,
+    `policy_service.statement_excluded`) leave open to automatic answers (spec §6.3): each `open` case with a
+    current line, in id order, whose question is `bank_only` (→ `record` / `dismiss` rules) or `amount_differs` with
+    an adjustable candidate (→ `accept_bank_amount` rules), never a settlement line or a case with a pending
+    proposal; the matching rule (`match_rule`, the rule 撤銷 undid on the case excluded) is applied through the
+    engine as the owner. Commits per case; a refusal is audited `rule_skipped` and not retried in this run."""
     result = RuleRunResult()
     statement = db.get(AccountStatement, statement_id, populate_existing=True)
-    if statement is None or statement.mode != "live":
-        return result
+    if statement is None or policy_service.statement_excluded(db, statement) is not None:
+        return result  # not live, conflict_open, needs_recheck, open parse_review / statement_conflict
     account_id = statement.account_id
     rules = list(db.execute(select(ReconciliationOwnerRule).where(
         ReconciliationOwnerRule.account_id == account_id, ReconciliationOwnerRule.enabled.is_(True))
