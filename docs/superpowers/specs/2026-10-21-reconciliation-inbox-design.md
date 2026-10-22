@@ -236,10 +236,11 @@ accept_bank_amount): the first enabled rule of the statement's account whose `li
 owner-twin guard the policy's creations use, so a rule never double-books a line the owner already recorded — with an
 audit event `rule_applied {rule_id, case_id, action}`; a refusal is audited `rule_skipped {rule_id, case_id, code}` and
 never retried in the same run. Rules never touch cases on historical statements, settlement lines, cases with a pending
-proposal, or — for rule R only — a case whose `context.reverted_action_id` names an action R itself applied (audit label
-`rule:<R.id>`) *[call, narrowed after a reviewer note: without this the next sweep would redo what 撤銷 undid; a different
-rule, or R re-created under a new id after the owner fixed it, may still answer the case, and an owner's reverted manual
-action never blocks a rule]*. `actor="owner"`: a rule is the owner's standing instruction, so the
+proposal, or — per rule — a case on which that rule's own action was ever reverted (every `reverted` action of the case
+whose `action_applied` audit actor is `rule:<id>` excludes that rule; implemented as `reverted_rule_ids`) *[call, narrowed
+after a reviewer note and widened at the final review: without this the next sweep would redo what 撤銷 undid, and
+reading only the latest revert let rule A return after A→撤銷→B→撤銷; a different rule, or one re-created under a new id
+after the owner fixed it, may still answer the case, and an owner's reverted manual action never blocks a rule]*. `actor="owner"`: a rule is the owner's standing instruction, so the
 policy caps and budgets do not apply and `resolved_by` stays `owner`; the audit label distinguishes it. Rules run before
 the policy, so a line with a rule is booked with the owner's category rather than the policy's generic backfill.
 
