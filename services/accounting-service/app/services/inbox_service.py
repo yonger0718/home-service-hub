@@ -143,19 +143,21 @@ def _single_candidate(case: ReconciliationCase) -> int | None:
     return None
 
 
-def adjustable(db: Session, case: ReconciliationCase) -> bool:
+def adjustable(db: Session, case: ReconciliationCase, *, check_lock: bool = True) -> bool:
     """Whether `adjust_amount` would accept the case's single candidate: standalone (no parent, no group, no posted
-    schedule instance, the checks `ledger_actions` makes) and not protected."""
+    schedule instance, the checks `ledger_actions` makes) and not protected. `check_lock=False` leaves the cutover
+    lock to the engine (the rule runner audits it as `locked_until_cutover`)."""
     entry_id = _single_candidate(case)
     entry = None if entry_id is None else db.get(LedgerEntry, entry_id)
     if entry is None or entry.parent_entry_id is not None or entry.group_id is not None:
         return False
     if any(base.schedule_rows(db, [entry.id])):
         return False
-    try:
-        ews.assert_entry_editable(db, entry)
-    except EditLockedError:
-        return False
+    if check_lock:
+        try:
+            ews.assert_entry_editable(db, entry)
+        except EditLockedError:
+            return False
     return split_protection.protected_reason(db, entry) is None
 
 
@@ -441,14 +443,18 @@ def _refusal_code(exc: Exception) -> str:
 
 def _check_params(body: InboxApplyIn) -> None:
     """The params the button cannot do without (422, nothing applied): `record` needs `category_id`;
-    `match_candidate` needs `entry_id` for one member or `entry_ids` naming every member's case."""
+    `match_candidate` needs `entry_ids` naming every member's case when it sends `entry_ids` at all (`translate`
+    then reads only it), else `entry_id` for a single member."""
     params = body.params
     if body.action == "record" and params.get("category_id") is None:
         raise ValidationError("params", "category_id required")
     if body.action == "match_candidate":
-        per_case = params.get("entry_ids")
-        covered = isinstance(per_case, dict) and all(per_case.get(str(ref.case_id)) is not None for ref in body.cases)
-        if not covered and not (len(body.cases) == 1 and params.get("entry_id") is not None):
+        if "entry_ids" in params:
+            per_case = params["entry_ids"]
+            ok = isinstance(per_case, dict) and all(per_case.get(str(ref.case_id)) is not None for ref in body.cases)
+        else:
+            ok = len(body.cases) == 1 and params.get("entry_id") is not None
+        if not ok:
             raise ValidationError("params", "entry_id required" if len(body.cases) == 1
                                   else "entry_ids required for every case")
 
@@ -493,17 +499,26 @@ def _check_batch(db: Session, body: InboxApplyIn) -> tuple[list[ReconciliationCa
 
 def _rule_key(db: Session, body: InboxApplyIn, cases: list[ReconciliationCase],
               lines: list[StatementLine | None]):
-    """Step 2 (spec §6.2), before any member applies: the answer must be learnable for every member's question and
-    every member must give the same rule key (422 otherwise). Returns (question, key)."""
+    """Step 2 (spec §6.2), before any member applies, over the members the card judged — open at the card's version,
+    or closed (a replay; anything else is refused at step 3 and learning is skipped): the answer must be learnable
+    for every judged member's question and every one must give the same rule key (422 otherwise). Returns
+    (question, key, rule_error): no key when no member is judged; `rule_error` `no_line` (learning skipped, the
+    members still apply) when a judged member's line is no longer printed."""
     from app.services import owner_rule_service  # local: owner_rule_service imports this module
 
-    questions = [_asked_question(case, db.get(AccountStatement, case.statement_id), line)
-                 for case, line in zip(cases, lines)]
+    judged = [(case, line) for ref, case, line in zip(body.cases, cases, lines)
+              if case.status not in OPEN_STATUSES or case.version == ref.case_version]
+    if not judged:
+        return None, None, None
+    questions = [_asked_question(case, db.get(AccountStatement, case.statement_id), line) for case, line in judged]
     refused = next((q for q in questions if not learnable(q, body.action)), None)
     if refused is not None:
         raise CodedValidationError("learn", "not_learnable", f"{body.action} on {refused}")
-    key = owner_rule_service.rule_key_for(db, cases, lines, amount_exact=body.learn.amount_exact, button=body.action)
-    return questions[0], key
+    if any(line is None for _, line in judged):
+        return None, None, "no_line"
+    key = owner_rule_service.rule_key_for(db, [c for c, _ in judged], [line for _, line in judged],
+                                          amount_exact=body.learn.amount_exact, button=body.action)
+    return questions[0], key, None
 
 
 def _apply_member(db: Session, ref: InboxCaseRef, body: InboxApplyIn, *, label: str,
@@ -553,14 +568,18 @@ def apply_batch(db: Session, *, body: InboxApplyIn, label: str, request_id: str 
     """`POST /reconciliation/inbox/apply` (spec §5, §6.2): (1) the structural checks and (2) with `learn`, the rule
     key — a 422/404 there applies nothing; (3) every member in request order, each committed or refused on its own;
     (4) with `learn` and no member refused, the rule is learned and committed. A failure at step 4 leaves the
-    committed actions standing: `rule_id` None and `rule_error` the code (HTTP 200)."""
+    committed actions standing: `rule_id` None and `rule_error` the code (HTTP 200). A resend whose every member
+    replays learns nothing (a delayed retry must not re-enable or re-create a rule the owner since disabled or
+    deleted)."""
     from app.services import owner_rule_service  # local: owner_rule_service imports this module
 
     cases, lines = _check_batch(db, body)
-    question, key = _rule_key(db, body, cases, lines) if body.learn is not None else (None, None)
+    question, key, rule_error = (_rule_key(db, body, cases, lines) if body.learn is not None
+                                 else (None, None, None))
     results = [_apply_member(db, ref, body, label=label, request_id=request_id) for ref in body.cases]
-    rule_id = rule_error = None
-    if key is not None and all(r["status"] in ("applied", "replayed") for r in results):
+    rule_id = None
+    statuses = [r["status"] for r in results]
+    if key is not None and all(s in ("applied", "replayed") for s in statuses) and "applied" in statuses:
         try:
             rule_id = owner_rule_service.learn(db, question=question, button=body.action, key=key,
                                                params=body.params, created_from_case_id=cases[0].id).id

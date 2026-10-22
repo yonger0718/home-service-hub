@@ -274,7 +274,8 @@ def test_apply_resend_replays_every_member(client, seed, db_session, run):
     assert first.status_code == again.status_code == 200
     assert [r["status"] for r in again.json()["results"]] == ["replayed", "replayed"]
     assert [r["action_id"] for r in again.json()["results"]] == [r["action_id"] for r in first.json()["results"]]
-    assert again.json()["rule_id"] == first.json()["rule_id"] and again.json()["rule_error"] is None
+    assert first.json()["rule_id"] is not None
+    assert again.json()["rule_id"] is None and again.json()["rule_error"] is None  # an all-replayed resend learns nothing
     assert db_session.execute(select(func.count()).select_from(LedgerEntry).where(LedgerEntry.account_id == account.id)).scalar_one() == 2
     assert db_session.execute(select(func.count()).select_from(ReconciliationOwnerRule)).scalar_one() == 1
 
@@ -514,3 +515,24 @@ def test_learn_failure_after_the_members_applied_is_a_rule_error(client, seed, d
     assert [r["status"] for r in res.json()["results"]] == ["applied"]
     db_session.expire_all()
     assert db_session.get(ReconciliationCase, case.id).status == "dismissed"
+
+
+def test_resend_after_disabling_or_deleting_the_rule_learns_nothing(client, seed, db_session, run):
+    """Task 5 review carry-over: a delayed retry whose every member replays must not re-enable a rule the owner
+    disabled since, nor re-create one the owner deleted."""
+    from sqlalchemy import func, select
+    from app.models import ReconciliationOwnerRule
+    account = _bank(seed, db_session)
+    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "店", -10, "withdrawal")], kind="bank")
+    cases = _open_lines(db_session, stmt.id)
+    first = _apply(client, cases, "dismiss", answer="忽略", learn={"amount_exact": True})
+    rule_id = first.json()["rule_id"]
+    assert rule_id is not None
+    assert client.patch(f"/reconciliation/owner-rules/{rule_id}", headers=S, json={"enabled": False}).status_code == 200
+    again = _apply(client, cases, "dismiss", answer="忽略", learn={"amount_exact": True})
+    assert [r["status"] for r in again.json()["results"]] == ["replayed"] and again.json()["rule_id"] is None
+    db_session.expire_all()
+    assert db_session.get(ReconciliationOwnerRule, rule_id).enabled is False
+    assert client.delete(f"/reconciliation/owner-rules/{rule_id}", headers=S).status_code == 204
+    _apply(client, cases, "dismiss", answer="忽略", learn={"amount_exact": True})
+    assert db_session.execute(select(func.count()).select_from(ReconciliationOwnerRule)).scalar_one() == 0
