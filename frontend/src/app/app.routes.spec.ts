@@ -196,8 +196,8 @@ describe('accounting navigation', () => {
   });
 
   it('keeps the global settings page reachable as its own group', () => {
-    expect(NAV_GROUPS.map(group => group.id)).toEqual(['supplies', 'portfolio', 'accounting', 'settings']);
-    expect(navItemForUrl('/settings').group).toBe('settings');
+    expect(NAV_GROUPS.map(group => group.id)).toEqual(['supplies', 'portfolio', 'accounting', 'system']);
+    expect(navItemForUrl('/settings').group).toBe('system');
   });
 
   const HIGHLIGHT: [string, string][] = [
