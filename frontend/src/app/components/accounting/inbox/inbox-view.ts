@@ -48,7 +48,34 @@ export const INBOX_ERRORS: Record<string, string> = {
   rule_pattern_empty: '描述只有數字，不能學',
   not_learnable: '這種答案不能學',
   no_line: '這筆已不在對帳單上',
+  case_moved: '對象已變，重新整理',
+  entry_claimed: '這筆記錄已對到別行',
+  entry_in_group: '這筆是拆帳成員，不能直接對',
 };
+
+/** The fallback for a failure whose text is not a business code (a type name, a sentence). */
+export const INBOX_GENERIC_ERROR = '沒成功，請重新整理再試';
+
+/** A business code: lower-case words joined by `_`. */
+const CODE_PATTERN = /^[a-z_]+$/;
+
+/** Registry action names (the 已處理 list) in the owner's words; an unknown name is shown as is (`actionLabel`). */
+export const ACTION_LABELS: Record<string, string> = {
+  create_entry: '記為新記錄',
+  match: '對到記錄',
+  adjust_amount: '改成銀行的數',
+  defer_next_period: '等下期',
+  dismiss: '忽略',
+  anchor_opening: '對齊銀行期初',
+  create_system_entry: '系統記錄',
+  backfill_entry: '系統補記',
+  replace_stand_in: '取代系統記錄',
+  revert: '撤銷',
+};
+
+export function actionLabel(action: string): string {
+  return ACTION_LABELS[action] ?? action;
+}
 
 /**
  * Whether this answer to this question may become an owner rule — the server's `learnable()` pair rule
@@ -206,7 +233,7 @@ export function matchAnswer(title: string): string {
 /** A business code, or an `HttpErrorResponse` carrying one (409 text, 422 `detail[].msg`), in the owner's words. */
 export function inboxErrorMessage(codeOrErr: string | null | unknown): string {
   if (typeof codeOrErr === 'string') {
-    return INBOX_ERRORS[codeOrErr] ?? '沒成功：' + codeOrErr;
+    return INBOX_ERRORS[codeOrErr] ?? (CODE_PATTERN.test(codeOrErr) ? '沒成功：' + codeOrErr : INBOX_GENERIC_ERROR);
   }
   const text = apiErrorText(codeOrErr);
   if (text) {

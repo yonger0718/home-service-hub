@@ -32,7 +32,7 @@ export interface InboxMatchRow {
   label: string;
 }
 
-/** A search answered for one case: its rows not already listed, or the failure text. */
+/** A search answered for one case: its rows not already listed, or the failure text (the button stays to retry). */
 type SearchState = { rows: InboxCandidate[]; error: null } | { rows: []; error: string };
 
 /**

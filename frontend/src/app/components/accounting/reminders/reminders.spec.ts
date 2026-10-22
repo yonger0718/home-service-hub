@@ -1076,5 +1076,24 @@ describe('AccountingRemindersComponent', () => {
       expect(panel.querySelectorAll('.ask-cards .inbox-card').length).toBe(3);
       expect(panel.querySelector('a.more')).toBeNull();
     });
+
+    it('還有 N 張 → opens 待處理 even when the URL already says ?tab=todo', async () => {
+      await TestBed.inject(Router).navigateByUrl('/?tab=todo');
+      const { fixture, el } = render([], [], [], [], [], inboxOut([bankOnly(1), bankOnly(2), bankOnly(3), bankOnly(4)]));
+      http.expectOne(r => r.url === '/api/accounting/reconciliation/actions').flush([]);
+      Array.from(el.querySelectorAll<HTMLButtonElement>('.tabs [role="radio"]')).find(node => text(node) === '全部')!.click();
+      fixture.detectChanges();
+      expect(text(el.querySelector('.tabs [aria-checked="true"]'))).toBe('全部');
+      // The link keeps its href (middle-click / new tab); the router would see the same URL and do nothing.
+      const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+      const link = el.querySelector<HTMLAnchorElement>('app-inbox-panel a.more')!;
+      expect(link.getAttribute('href')).toBe('/accounting/reminders?tab=todo');
+      link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+      fixture.detectChanges();
+      expect(text(el.querySelector('.tabs [aria-checked="true"]'))).toBe('待處理');
+      expect(el.querySelectorAll('app-inbox-panel .ask-cards .inbox-card').length).toBe(4);
+      http.expectOne(r => r.url === '/api/accounting/reconciliation/actions').flush([]);
+      navigate.mockRestore();
+    });
   });
 });

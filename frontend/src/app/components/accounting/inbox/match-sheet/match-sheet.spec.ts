@@ -141,4 +141,31 @@ describe('AppInboxMatchSheetComponent', () => {
     button(el, '確定').click();
     expect(confirmed).toHaveBeenCalledWith({ entry_ids: { '8': 9 }, titles: { '8': '7-11 早餐' } });
   });
+
+  it('a failed search shows the error and keeps the search button for a retry', () => {
+    const item = makeItem({ case_id: 8, candidates: [] });
+    const { fixture, el } = render(makeCard([item], makeInboxAccount({ id: 2, currency: 'TWD' })));
+    const SEARCH_URL = '/api/accounting/reconciliation/inbox/cases/8/search';
+
+    button(el, '搜尋這個帳戶的記錄').click();
+    fixture.detectChanges();
+    http
+      .expectOne((r) => r.method === 'GET' && r.url === SEARCH_URL)
+      .flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    expect(el.querySelector('.search-error')).not.toBeNull();
+    const retry = button(el, '搜尋這個帳戶的記錄');
+    expect(retry).toBeDefined();
+    expect(retry.disabled).toBe(false);
+
+    retry.click();
+    fixture.detectChanges();
+    http
+      .expectOne((r) => r.method === 'GET' && r.url === SEARCH_URL)
+      .flush([candidate(9, '2026-09-10', '7-11 早餐', '-120.0000')]);
+    fixture.detectChanges();
+    expect(el.querySelector('.search-error')).toBeNull();
+    expect(rows(el, '.others').map(text)).toEqual(['2026/09/10 7-11 早餐 −$120']);
+    expect(button(el, '搜尋這個帳戶的記錄')).toBeUndefined();
+  });
 });

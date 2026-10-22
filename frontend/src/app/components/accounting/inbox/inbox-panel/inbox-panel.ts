@@ -20,6 +20,7 @@ import {
   buildCards,
   buttonLabel,
   cardTitle,
+  INBOX_GENERIC_ERROR,
   inboxErrorMessage,
   inboxLearn,
   learnLabel,
@@ -64,9 +65,18 @@ export { inboxLearn };
 
 const FAILED_PREFIX = '沒成功：';
 
-/** The mapped message without the `沒成功：` that `inboxErrorMessage` puts before an unknown code. */
+/** The plain-text fallback without its leading `沒成功，` (callers put their own prefix before it). */
+const GENERIC_PLAIN = INBOX_GENERIC_ERROR.replace(/^沒成功，/, '');
+
+/**
+ * The mapped message without the `沒成功：` that `inboxErrorMessage` puts before an unknown code, or the leading
+ * `沒成功，` of its non-code fallback.
+ */
 function plainError(codeOrErr: unknown): string {
   const message = inboxErrorMessage(codeOrErr);
+  if (message === INBOX_GENERIC_ERROR) {
+    return GENERIC_PLAIN;
+  }
   return message.startsWith(FAILED_PREFIX) ? message.slice(FAILED_PREFIX.length) : message;
 }
 
@@ -142,6 +152,11 @@ export class AppInboxPanelComponent {
   readonly mode = input<'full' | 'preview'>('full');
   /** After every write that changed something: the parent reloads `data`. */
   readonly changed = output<void>();
+  /**
+   * A plain click on 還有 N 張 →: the parent switches to its 待處理 tab itself, since the link's `?tab=todo` is a
+   * no-op when the URL already says so. Modified / middle clicks only follow the href.
+   */
+  readonly more = output<void>();
 
   /** The card whose 記為… / 對到… sheet is open. */
   readonly recordCard = signal<InboxCard | null>(null);
@@ -188,6 +203,12 @@ export class AppInboxPanelComponent {
   private readonly shownAsk = computed(() =>
     this.mode() === 'preview' ? this.cards().ask.slice(0, INBOX_PREVIEW_CARDS) : this.cards().ask,
   );
+  openMore(event: MouseEvent): void {
+    if (event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+      this.more.emit();
+    }
+  }
+
   readonly moreCount = computed(() =>
     this.mode() === 'preview' ? Math.max(0, this.cards().ask.length - INBOX_PREVIEW_CARDS) : 0,
   );

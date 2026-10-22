@@ -30,6 +30,7 @@ function makeAction(overrides: Partial<ReconciliationAction> = {}): Reconciliati
     answer: '忽略',
     created_at: '2026-10-20T08:00:00Z',
     reverted_by_action_id: null,
+    line: null,
     ...overrides,
   };
 }
@@ -44,7 +45,13 @@ const POLICY_ROW = makeAction({
   action: 'link_entry',
   created_at: '2026-10-19T08:00:00Z',
 });
-const OWNER_ROW = makeAction({ id: 3, answer: '記為 餐飲', action: 'record', created_at: '2026-10-18T08:00:00Z' });
+const OWNER_ROW = makeAction({
+  id: 3,
+  answer: '記為 餐飲',
+  action: 'create_entry',
+  created_at: '2026-10-18T08:00:00Z',
+  line: { date: '2026-10-03', merchant: '全聯', amount: '-1234.5000' },
+});
 const REVERTED_ROW = makeAction({ id: 4, reverted_by_action_id: 9, created_at: '2026-10-17T08:00:00Z' });
 /** Each of the two hide conditions on its own. */
 const UNAPPLIED_ROW = makeAction({ id: 5, status: 'reverted', answer: null, created_at: '2026-10-16T08:00:00Z' });
@@ -92,11 +99,11 @@ describe('AppInboxHandledListComponent', () => {
   it('labels rule, policy and owner rows', () => {
     const { el } = render([RULE_ROW, POLICY_ROW, OWNER_ROW, REVERTED_ROW, UNAPPLIED_ROW]);
     expect(Array.from(el.querySelectorAll('.handled-row .what')).map(text)).toEqual([
-      '規則 #7 · dismiss · 2026/10/20',
+      '規則 #7 · 忽略 · 2026/10/20',
       '系統 · link_entry · 2026/10/19',
-      '你 · 記為 餐飲 · 2026/10/18',
+      '你 · 記為 餐飲 · 2026/10/03 全聯 −1,234.5 · 2026/10/18',
       '你 · 忽略 · 2026/10/17',
-      '你 · dismiss · 2026/10/16',
+      '你 · 忽略 · 2026/10/16',
     ]);
     expect(button(row(el, 1), '撤銷')).toBeDefined();
     expect(button(row(el, 2), '撤銷')).toBeDefined();
@@ -104,6 +111,28 @@ describe('AppInboxHandledListComponent', () => {
     // Already reverted, or not an applied action: nothing to undo.
     expect(row(el, 4).querySelector('button')).toBeNull();
     expect(row(el, 5).querySelector('button')).toBeNull();
+  });
+
+  it('shows the line summary when the row has one, money in with +, and the action name in words', () => {
+    const { el } = render([
+      makeAction({
+        id: 6,
+        actor: 'policy',
+        label: 'policy',
+        answer: null,
+        action: 'create_system_entry',
+        line: { date: '2026-10-05', merchant: '利息', amount: '12.0000' },
+      }),
+      makeAction({ id: 7, answer: null, action: 'adjust_amount' }),
+    ]);
+    expect(text(row(el, 6).querySelector('.what'))).toBe('系統 · 系統記錄 · 2026/10/05 利息 +12 · 2026/10/20');
+    expect(text(row(el, 7).querySelector('.what'))).toBe('你 · 改成銀行的數 · 2026/10/20');
+  });
+
+  it('never offers 撤銷 on a revert row', () => {
+    const { el } = render([makeAction({ id: 8, action: 'revert', answer: null })]);
+    expect(text(row(el, 8).querySelector('.what'))).toBe('你 · 撤銷 · 2026/10/20');
+    expect(row(el, 8).querySelector('button')).toBeNull();
   });
 
   it('revert posts and emits changed', () => {

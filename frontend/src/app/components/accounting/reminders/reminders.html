@@ -30,7 +30,7 @@
       } @else if (inbox(); as data) {
         @if (data.counts.ask > 0) {
           <h3 class="section">待處理</h3>
-          <app-inbox-panel [data]="data" mode="preview" />
+          <app-inbox-panel [data]="data" mode="preview" (more)="setTab('todo')" />
         }
       }
     }

@@ -162,4 +162,13 @@ export interface ReconciliationAction {
   answer: string | null;
   created_at: string;
   reverted_by_action_id: number | null;
+  /** The case's current bank line; only `GET /reconciliation/actions` fills it (null without a line). */
+  line: ReconciliationActionLine | null;
+}
+
+export interface ReconciliationActionLine {
+  date: string;
+  merchant: string;
+  /** Flow amount as a decimal string (negative = money out). */
+  amount: string;
 }

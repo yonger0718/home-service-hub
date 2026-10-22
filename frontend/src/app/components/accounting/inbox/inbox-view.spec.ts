@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   AMOUNT_ANY_LABEL,
+  actionLabel,
   buildCards,
   buttonLabel,
   cardTitle,
@@ -163,11 +164,36 @@ describe('learnableAnswer', () => {
   });
 });
 
+describe('actionLabel', () => {
+  it('names registry actions in zh-TW, unknown names as is', () => {
+    expect(actionLabel('create_entry')).toBe('記為新記錄');
+    expect(actionLabel('match')).toBe('對到記錄');
+    expect(actionLabel('adjust_amount')).toBe('改成銀行的數');
+    expect(actionLabel('defer_next_period')).toBe('等下期');
+    expect(actionLabel('dismiss')).toBe('忽略');
+    expect(actionLabel('anchor_opening')).toBe('對齊銀行期初');
+    expect(actionLabel('create_system_entry')).toBe('系統記錄');
+    expect(actionLabel('backfill_entry')).toBe('系統補記');
+    expect(actionLabel('replace_stand_in')).toBe('取代系統記錄');
+    expect(actionLabel('revert')).toBe('撤銷');
+    expect(actionLabel('link_entry')).toBe('link_entry');
+  });
+});
+
 describe('inboxErrorMessage', () => {
   it('maps a string code, with a fallback for unknown codes', () => {
     expect(inboxErrorMessage('case_closed')).toBe('已經處理過了');
     expect(inboxErrorMessage('no_line')).toBe('這筆已不在對帳單上');
     expect(inboxErrorMessage('weird')).toBe('沒成功：weird');
+  });
+
+  it('maps the match refusals and falls back to plain words for a non-code', () => {
+    expect(inboxErrorMessage('case_moved')).toBe('對象已變，重新整理');
+    expect(inboxErrorMessage('entry_claimed')).toBe('這筆記錄已對到別行');
+    expect(inboxErrorMessage('entry_in_group')).toBe('這筆是拆帳成員，不能直接對');
+    expect(inboxErrorMessage('some_new_code')).toBe('沒成功：some_new_code');
+    expect(inboxErrorMessage('IntegrityError')).toBe('沒成功，請重新整理再試');
+    expect(inboxErrorMessage('entry 12 is gone')).toBe('沒成功，請重新整理再試');
   });
 
   it('maps a 409 business code', () => {

@@ -14,7 +14,11 @@
   </div>
 
   @if (moreCount() > 0) {
-    <a class="more" routerLink="/accounting/reminders" [queryParams]="{ tab: 'todo' }"
+    <a
+      class="more"
+      routerLink="/accounting/reminders"
+      [queryParams]="{ tab: 'todo' }"
+      (click)="openMore($event)"
       >還有 {{ moreCount() }} 張 →</a
     >
   }

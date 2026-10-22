@@ -36,7 +36,9 @@
           }
         }
       </div>
-    } @else {
+    }
+    @if (!search() || search()?.error) {
+      <!-- Also after a failed search, so it can be retried. -->
       <button type="button" class="search" [disabled]="searching()" (click)="runSearch()">
         搜尋這個帳戶的記錄
       </button>

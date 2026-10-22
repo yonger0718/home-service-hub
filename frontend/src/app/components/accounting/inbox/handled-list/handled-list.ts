@@ -12,9 +12,10 @@ import {
 
 import { AccountingService } from '../../../../services/accounting.service';
 import { slashDate } from '../../dates';
+import { formatNumber } from '../../format';
 import { apiErrorText, splitApiCode } from '../../statements/statement-view';
-import { inboxErrorMessage } from '../inbox-view';
-import { ReconciliationAction } from '../inbox.model';
+import { actionLabel, inboxErrorMessage } from '../inbox-view';
+import { ReconciliationAction, ReconciliationActionLine } from '../inbox.model';
 import { InboxService } from '../inbox.service';
 
 /** Rows the list shows (spec §7.3: the last 50 actions). */
@@ -25,7 +26,7 @@ const RULE_PREFIX = 'rule:';
 
 export interface HandledRow {
   action: ReconciliationAction;
-  /** `規則 #7 · 忽略 · 2026/10/20`. */
+  /** `規則 #7 · 忽略 · 2026/10/03 全聯 −120 · 2026/10/20` (the line part only when the case has one). */
   text: string;
   /** The owner rule that answered this case (`rule:<id>` label), else null. */
   ruleId: number | null;
@@ -41,6 +42,19 @@ function ruleIdOf(label: string | null): number | null {
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
+/**
+ * `2026/10/03 全聯 −120 · `: the case's bank line. The action rows carry no currency, so the amount is the grouped
+ * number without a symbol (`formatNumber` with no currency: up to 2 decimals), `+` on money in like `{ sign: true }`.
+ */
+function lineText(line: ReconciliationActionLine | null | undefined): string {
+  if (!line) {
+    return '';
+  }
+  const body = formatNumber(line.amount, '');
+  const amount = Number(line.amount) > 0 && body !== '0' ? `+${body}` : body;
+  return `${slashDate(line.date)} ${line.merchant} ${amount} · `;
+}
+
 export function handledRow(action: ReconciliationAction): HandledRow {
   const ruleId = ruleIdOf(action.label);
   const who = action.label?.startsWith(RULE_PREFIX)
@@ -48,11 +62,14 @@ export function handledRow(action: ReconciliationAction): HandledRow {
     : action.actor === 'policy'
       ? '系統'
       : '你';
+  const answer = action.answer ?? actionLabel(action.action);
   return {
     action,
-    text: `${who} · ${action.answer ?? action.action} · ${slashDate(action.created_at)}`,
+    text: `${who} · ${answer} · ${lineText(action.line)}${slashDate(action.created_at)}`,
     ruleId,
-    revertable: action.reverted_by_action_id === null && action.status === 'applied',
+    // A `revert` row is never revertable (the engine always refuses it).
+    revertable:
+      action.reverted_by_action_id === null && action.status === 'applied' && action.action !== 'revert',
   };
 }
 
