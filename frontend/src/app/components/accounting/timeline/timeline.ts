@@ -37,6 +37,7 @@ import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
 import { BillingEvent, billingEvents, reminderDues, upcomingDues } from '../billing/billing-math';
 import { BillState, BillingService, billKey } from '../billing/billing.service';
+import { countReminders } from '../billing/reminder-count';
 import { SkeletonComponent } from '../skeleton/skeleton';
 import { FolderIcon, SplitFolderComponent } from '../split-folder/split-folder';
 import { groupCommands, listOpenState } from '../split-group/group-nav';
@@ -508,15 +509,15 @@ export class LedgerTimelineComponent implements OnInit {
     }
     return lines;
   });
-  /**
-   * 🔔 count: cards with something left to pay, counterparties with open debt rows, and 待完成交易 items due today or
-   * earlier or partial (paused and ended definitions are not in the queue).
-   */
-  readonly reminderCount = computed(
-    () =>
-      this.reminderEvents().filter(event => this.openBill(event) !== null).length +
-      this.counterparties().filter(counterparty => (counterparty.open_count ?? 0) > 0).length +
-      this.queue().filter(item => item.is_partial || item.due_date <= this.today()).length,
+  /** 🔔 count (`countReminders`, shared with the nav badge). */
+  readonly reminderCount = computed(() =>
+    countReminders({
+      dues: this.reminderEvents(),
+      bill: event => this.bills.bill(event),
+      counterparties: this.counterparties(),
+      queue: this.queue(),
+      today: this.today(),
+    }),
   );
   /** The list view's 近 7 天 banner: upcoming due days with a remaining balance. */
   readonly upcomingBills = computed(() => this.upcomingEvents().filter(event => this.openBill(event) !== null));

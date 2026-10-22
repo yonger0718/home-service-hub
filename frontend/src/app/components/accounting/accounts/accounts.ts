@@ -14,6 +14,7 @@ import { BillState, BillingService } from '../billing/billing.service';
 import { dueDate, statementPeriod } from '../cycle';
 import { daysBetween, shortDate, todayIso } from '../dates';
 import { formatMoney } from '../format';
+import { importReviewCount } from '../import-review-count';
 
 /** A credit card row's third line: what is left on its current statement and when it is due. */
 export interface CardDue {
@@ -152,13 +153,7 @@ export class AccountingAccountsComponent {
   readonly excludedCount = computed(
     () => this.included().filter(account => account.balance_main === null || account.balance_main === undefined).length,
   );
-  readonly reviewCount = computed(() => {
-    const summary = this.latestImport()?.summary as unknown as
-      | { needs_review?: { count?: number }; unpaired_transfers?: unknown[] }
-      | null
-      | undefined;
-    return summary?.needs_review?.count ?? summary?.unpaired_transfers?.length ?? 0;
-  });
+  readonly reviewCount = computed(() => importReviewCount(this.latestImport()));
   readonly formatMoney = formatMoney;
   /** Each card's current statement (the same resolution as the calendar and the reminder centre). */
   private readonly dues = computed(() => currentDues(this.accounts(), this.today()));
