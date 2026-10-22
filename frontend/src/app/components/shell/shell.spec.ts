@@ -300,6 +300,24 @@ describe('ShellComponent', () => {
       }
     });
 
+    it('820 px: N inside a confirmation (alertdialog) in the sheet does nothing', async () => {
+      const { router, find } = await real(820, '/accounting/entries/9');
+      const sheet = await find('.detail-pane.open');
+      // As the inline 刪除記錄 / 刪除整組 confirmations render: role="alertdialog" without aria-modal.
+      const confirm = document.createElement('div');
+      confirm.setAttribute('role', 'alertdialog');
+      const button = document.createElement('button');
+      confirm.appendChild(button);
+      sheet.appendChild(confirm);
+      try {
+        button.focus();
+        expect(press('n', button).defaultPrevented).toBe(false);
+        expect(router.url).toBe('/accounting/entries/9');
+      } finally {
+        confirm.remove();
+      }
+    });
+
     it('N on a dirty entry form is ignored', async () => {
       const { router, find } = await real(1440, '/accounting/entries/9/edit');
       await find('.detail-pane app-entry-form');

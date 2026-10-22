@@ -808,9 +808,15 @@ body {
    ========================================================================== */
 
 /* 1. 指定具名轉換元素 */
-.hub-dock,
-.hub-mobile-nav-shell {
+/* The fixed chrome stays out of route transitions (withViewTransitions): the sidebar host is the fixed box (hidden on
+   phones), the tab bar is shown only on phones, so the two never share the name on screen. */
+app-sidebar,
+.mobile-nav-shell {
   view-transition-name: hub-sidebar;
+}
+
+.hub-fab {
+  view-transition-name: hub-fab;
 }
 
 .header-title {
@@ -821,11 +827,23 @@ body {
   view-transition-name: hub-main-content;
 }
 
-/* 2. 側邊欄：強制不動 */
+/* 2. 側邊欄、記一筆：強制不動 */
+/* The group too: a navigation that opens a pane collapses the sidebar, and its own width transition (live in the new
+   image) must not be doubled by a group morph. */
+::view-transition-group(hub-sidebar),
+::view-transition-group(hub-fab),
 ::view-transition-old(hub-sidebar),
-::view-transition-new(hub-sidebar) {
+::view-transition-new(hub-sidebar),
+::view-transition-old(hub-fab),
+::view-transition-new(hub-fab) {
   animation: none !important;
   mix-blend-mode: normal;
+}
+
+/* Only the live new image: the glass old snapshot would show through it while both sit still. */
+::view-transition-old(hub-sidebar),
+::view-transition-old(hub-fab) {
+  display: none;
 }
 
 /* 3. 標題：上浮淡入動畫 */

@@ -14,7 +14,11 @@ import { NavigationStateService } from './navigation-state.service';
 const EXPANDED_WIDTH = '248px';
 const RAIL_WIDTH = '72px';
 /** Dialogs whose keys are their own; the accounting detail sheet opts in to app-wide keys (`data-global-shortcuts`). */
-const BLOCKING_DIALOG = '[role="dialog"]:not([data-global-shortcuts]), [aria-modal="true"]:not([data-global-shortcuts])';
+const BLOCKING_DIALOG = [
+  '[role="dialog"]:not([data-global-shortcuts])',
+  '[role="alertdialog"]:not([data-global-shortcuts])',
+  '[aria-modal="true"]:not([data-global-shortcuts])',
+].join(', ');
 
 @Component({
   selector: 'app-shell',
