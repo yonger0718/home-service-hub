@@ -536,3 +536,25 @@ def test_resend_after_disabling_or_deleting_the_rule_learns_nothing(client, seed
     assert client.delete(f"/reconciliation/owner-rules/{rule_id}", headers=S).status_code == 204
     _apply(client, cases, "dismiss", answer="忽略", learn={"amount_exact": True})
     assert db_session.execute(select(func.count()).select_from(ReconciliationOwnerRule)).scalar_one() == 0
+
+
+def test_actions_list_carries_label_and_answer(client, seed, db_session, run):
+    from sqlalchemy import select
+    from app.models import ReconciliationOwnerRule
+    from app.services import owner_rule_service as ors
+    from tests.integration.statement_fixtures import OCT
+    account = _bank(seed, db_session)
+    food = seed.category("飲食")
+    db_session.commit()
+    s1, _, _ = _submit(db_session, run, account, [_line(1, DAY, "店", -10, "withdrawal")], kind="bank")
+    (c1,) = _open_lines(db_session, s1.id)
+    _apply(client, [c1], "record", {"category_id": food.id}, answer="記為支出 飲食", learn={"amount_exact": False})
+    s2, _, _ = _submit(db_session, run, account, [_line(1, date(2026, 10, 3), "店", -10, "withdrawal")], kind="bank", period=OCT)
+    ors.run_rules_safe(db_session, s2.id)
+    rows = client.get("/reconciliation/actions", headers=S).json()
+    by_case = {r["case_id"]: r for r in rows}
+    mine = by_case[c1.id]
+    assert mine["label"] == "spa" and mine["answer"] == "記為支出 飲食"
+    (c2,) = _cases(db_session, s2.id, "resolved")
+    rule_id = db_session.execute(select(ReconciliationOwnerRule.id)).scalar_one()
+    assert by_case[c2.id]["label"] == f"rule:{rule_id}" and by_case[c2.id]["answer"] is None

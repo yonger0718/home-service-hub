@@ -36,6 +36,8 @@ class ActionOut(BaseModel):
     reverted_by_action_id: int | None
     created_at: datetime
     replayed: bool = False
+    label: str | None = None
+    answer: str | None = None
 
 
 class AuditOut(BaseModel):

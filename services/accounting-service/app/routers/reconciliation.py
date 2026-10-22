@@ -29,9 +29,10 @@ INBOX_STATUSES = ("open", "proposed")
 router = APIRouter(tags=["Reconciliation"], dependencies=[Depends(require_feature())])
 
 
-def _action_out(row, *, replayed: bool = False) -> dict:
-    fields = {name: getattr(row, name) for name in ActionOut.model_fields if name != "replayed"}
-    return {**fields, "replayed": replayed}
+def _action_out(row, *, replayed: bool = False, label: str | None = None, answer: str | None = None) -> dict:
+    fields = {name: getattr(row, name) for name in ActionOut.model_fields
+              if name not in ("replayed", "label", "answer")}
+    return {**fields, "replayed": replayed, "label": label, "answer": answer}
 
 
 def _apply(db: Session, request: Request, response: Response, case_id: int, action: str, params: dict) -> dict:
@@ -127,7 +128,9 @@ def dismiss_case(case_id: int, body: DismissIn, request: Request, response: Resp
 def list_actions(statement_id: int | None = None, case_id: int | None = None,
                  limit: int = Query(200, ge=1, le=1000), db: Session = Depends(get_db)):
     rows = ingest.list_actions(db, statement_id=statement_id, case_id=case_id, limit=limit)
-    return [_action_out(row) for row in rows]
+    labels = inbox_service.action_labels(db, [row.id for row in rows])
+    return [_action_out(row, label=labels.get(row.id, (None, None))[0], answer=labels.get(row.id, (None, None))[1])
+            for row in rows]
 
 
 @router.post("/reconciliation/actions/{action_id}/revert", response_model=ActionOut, status_code=201,

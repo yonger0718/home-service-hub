@@ -6,14 +6,15 @@ The functions here are pure; the DB read model and the batch apply live further 
 import re
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Callable
+from typing import Callable, Iterable
 
 from sqlalchemy import and_, false, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
-    Account, AccountStatement, Category, LedgerEntry, ReconciliationCase, ReconciliationOwnerRule, StatementLine,
+    Account, AccountStatement, Category, LedgerEntry, ReconciliationAudit, ReconciliationCase,
+    ReconciliationOwnerRule, StatementLine,
 )
 from app.schemas.inbox import InboxApplyIn, InboxCaseRef
 from app.services import coverage_service, proposal_service, reconciliation_actions, split_protection
@@ -588,3 +589,27 @@ def apply_batch(db: Session, *, body: InboxApplyIn, label: str, request_id: str 
             db.rollback()
             rule_id, rule_error = None, getattr(exc, "code", None) or type(exc).__name__
     return {"results": results, "rule_id": rule_id, "rule_error": rule_error}
+
+
+def action_labels(db: Session, action_ids: Iterable[int]) -> dict[int, tuple[str | None, str | None]]:
+    """Per action: (engine label from the action_applied/action_replayed audit actor, inbox answer text)."""
+    ids = list(action_ids)
+    if not ids:
+        return {}
+    rows = db.execute(
+        select(ReconciliationAudit.action_id, ReconciliationAudit.event, ReconciliationAudit.actor,
+               ReconciliationAudit.detail)
+        .where(ReconciliationAudit.action_id.in_(ids),
+               ReconciliationAudit.event.in_(("action_applied", "action_replayed", "inbox_answer")))
+        .order_by(ReconciliationAudit.id)).all()
+    applied: dict[int, str] = {}
+    replayed: dict[int, str] = {}
+    answers: dict[int, str] = {}
+    for action_id, event, actor, detail in rows:
+        if event == "action_applied":
+            applied.setdefault(action_id, actor)
+        elif event == "action_replayed":
+            replayed.setdefault(action_id, actor)
+        elif isinstance(detail, dict) and detail.get("answer") is not None:
+            answers[action_id] = detail["answer"]
+    return {i: (applied.get(i, replayed.get(i)), answers.get(i)) for i in ids}
