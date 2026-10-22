@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>手機導覽 · 子頁切換</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; position: relative; overflow: hidden; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500">
+  <div style="padding: 20px 16px 110px; display: flex; flex-direction: column; gap: 14px">
+
+    <header style="display: flex; flex-direction: column; gap: 12px">
+      <div style="display: flex; align-items: center; justify-content: space-between">
+        <h1 style="margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.03em">財務</h1>
+        <a href="SettingsPhone.dc.html" aria-label="設定" style="width: 44px; height: 44px; border-radius: 22px; border: 1px solid {{t.border}}; box-sizing: border-box; background: {{t.surface}}; color: {{t.text}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M12 2v3 M12 19v3 M4.9 4.9l2.1 2.1 M17 17l2.1 2.1 M2 12h3 M19 12h3 M4.9 19.1L7 17 M17 7l2.1-2.1"></path></svg>
+        </a>
+      </div>
+      <div role="tablist" aria-label="財務頁面" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); background: {{t.soft}}; border-radius: 12px; padding: 3px; gap: 2px">
+        <sc-for list="{{subTabs}}" as="s" hint-placeholder-count="3">
+          <button type="button" role="tab" aria-selected="{{s.on}}" aria-label="{{s.aria}}" onClick="{{s.pick}}" style="border: 0; background: {{s.bg}}; color: {{s.fg}}; font: inherit; font-size: 14px; font-weight: {{s.weight}}; min-height: 40px; border-radius: 9px; box-shadow: {{s.shadow}}; display: flex; align-items: center; justify-content: center; gap: 6px">
+            {{s.label}}
+            <sc-if value="{{s.hasCount}}" hint-placeholder-val="{{false}}">
+              <span aria-hidden="true" style="min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: {{t.primary}}; color: #FFFFFF; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center">{{s.count}}</span>
+            </sc-if>
+          </button>
+        </sc-for>
+      </div>
+    </header>
+
+    <sc-if value="{{showLedger}}" hint-placeholder-val="{{true}}">
+      <div style="display: flex; flex-direction: column; gap: 12px">
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0 4px">
+          <b style="font-size: 17px; font-weight: 800">2026 年 10 月</b>
+          <span style="font-size: 13px; color: {{t.muted}}">支出 <b style="color: {{t.red}}; font-weight: 700">$38,460</b></span>
+        </div>
+        <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 16px; overflow: hidden">
+          <sc-for list="{{rows}}" as="r" hint-placeholder-count="5">
+            <div style="display: flex; align-items: center; gap: 12px; padding: 10px 14px; min-height: 56px; border-bottom: 1px solid {{t.line}}">
+              <span style="width: 38px; height: 38px; border-radius: 12px; background: {{r.color}}; flex: none; display: flex; align-items: center; justify-content: center">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{r.icon}}"></path></svg>
+              </span>
+              <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+                <b style="font-size: 15px; font-weight: 700">{{r.title}}</b>
+                <small style="font-size: 12px; color: {{t.muted}}">{{r.sub}}</small>
+              </span>
+              <b style="font-size: 15px; font-weight: 700; color: {{r.amtColor}}">{{r.amount}}</b>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{showAccounts}}" hint-placeholder-val="{{false}}">
+      <div style="display: flex; flex-direction: column; gap: 12px">
+        <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 16px; display: flex; flex-direction: column; gap: 4px">
+          <span style="font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">淨資產 · TWD</span>
+          <b style="font-size: 28px; font-weight: 800; letter-spacing: -0.03em">$1,116,420</b>
+        </div>
+        <div style="background: {{t.primarySoft}}; border-radius: 16px; padding: 12px 14px; font-size: 13px; font-weight: 600">1 筆匯入記錄待確認</div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{showSettings}}" hint-placeholder-val="{{false}}">
+      <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 16px; overflow: hidden">
+        <sc-for list="{{settings}}" as="s" hint-placeholder-count="4">
+          <div style="display: flex; align-items: center; justify-content: space-between; min-height: 50px; padding: 0 16px; border-bottom: 1px solid {{t.line}}; font-size: 15px">
+            <span>{{s.k}}</span>
+            <span style="color: {{t.muted}}">{{s.v}}</span>
+          </div>
+        </sc-for>
+      </div>
+    </sc-if>
+  </div>
+
+  <nav aria-label="主要導覽" style="position: absolute; left: 0; right: 0; bottom: 0; height: 84px; box-sizing: border-box; padding: 6px 8px 22px; background: {{t.glass}}; border-top: 1px solid {{t.border}}; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: center">
+    <sc-for list="{{tabs}}" as="tb" hint-placeholder-count="5">
+      <sc-if value="{{tb.isAdd}}" hint-placeholder-val="{{false}}">
+        <span aria-label="記一筆" role="img" style="justify-self: center; width: 52px; height: 52px; border-radius: 18px; background: {{t.primary}}; color: #FFFFFF; display: flex; align-items: center; justify-content: center; box-shadow: 0 6px 16px rgba(83,58,253,.28)">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14 M5 12h14"></path></svg>
+        </span>
+      </sc-if>
+      <sc-if value="{{tb.isTab}}" hint-placeholder-val="{{true}}">
+        <span aria-label="{{tb.aria}}" style="position: relative; display: flex; flex-direction: column; align-items: center; gap: 3px; min-height: 48px; justify-content: center; color: {{tb.fg}}; font-size: 11px; font-weight: {{tb.weight}}">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{tb.icon}}"></path></svg>
+          <span>{{tb.label}}</span>
+          <sc-if value="{{tb.dot}}" hint-placeholder-val="{{false}}">
+            <span aria-hidden="true" style="position: absolute; top: 4px; left: 50%; margin-left: 8px; width: 8px; height: 8px; border-radius: 4px; background: {{t.red}}; box-shadow: 0 0 0 2px {{t.surface}}"></span>
+          </sc-if>
+        </span>
+      </sc-if>
+    </sc-for>
+  </nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { sub: 'ledger' };
+  }
+  renderVals() {
+    const dark = !!(this.props.dark ?? false);
+    const t = dark ? {
+      bg: '#0f1218', surface: '#171c24', glass: 'rgba(23,28,36,0.92)', soft: '#202733', border: '#313a48', line: '#252c38',
+      text: '#f3f6fb', muted: '#99a3b3', primary: '#8b7dff', primarySoft: 'rgba(139,125,255,0.16)', red: '#ff6369', green: '#43c98a',
+      shadow: '0 12px 28px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)', pillOn: '#2a3241'
+    } : {
+      bg: '#f1f3f6', surface: '#fafcff', glass: 'rgba(250,252,255,0.92)', soft: '#edf1f6', border: '#d8dee7', line: '#e8ecf2',
+      text: '#151821', muted: '#6b7280', primary: '#533afd', primarySoft: 'rgba(83,58,253,0.10)', red: '#e5484d', green: '#1f9d6b',
+      shadow: '0 10px 30px rgba(18,26,40,0.045), inset 0 1px 0 rgba(255,255,255,0.62)', pillOn: '#fafcff'
+    };
+    const sub = this.state.sub;
+    const subTabs = [['ledger', '記錄', 2, '提醒 2 項'], ['accounts', '帳戶', 1, '待確認 1 筆'], ['settings', '記帳設定', 0, '']].map(([id, label, count, note]) => {
+      const on = id === sub;
+      return { label, on: on ? 'true' : 'false', aria: label + (note ? '，' + note : ''),
+        bg: on ? t.pillOn : 'transparent', fg: on ? t.text : t.muted, weight: on ? 700 : 500,
+        shadow: on ? '0 1px 2px rgba(0,0,0,.08)' : 'none', hasCount: count > 0, count,
+        pick: () => this.setState({ sub: id }) };
+    });
+    const I = {
+      food: 'M7 3v8 M4 3v5a3 3 0 0 0 6 0V3 M7 11v10 M17 3c-2 2-3 4-3 7h3v11',
+      bus: 'M5 16V6a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3v10 M5 11h14 M5 16h14v2H5z M8 21v-3 M16 21v-3',
+      bag: 'M6 7h12l1 14H5L6 7z M9 7a3 3 0 0 1 6 0',
+      bolt: 'M13 3L5 14h6l-1 7 8-11h-6l1-7z',
+      brief: 'M4 8h16v11H4z M9 8V5h6v3 M4 13h16'
+    };
+    const rows = [
+      { icon: I.food, color: '#d0864a', title: '午餐', sub: '餐飲 · 現金', amount: '−$120', amtColor: t.red },
+      { icon: I.bus, color: '#5f86c9', title: '捷運', sub: '交通 · 悠遊卡', amount: '−$45', amtColor: t.red },
+      { icon: I.bag, color: '#4f9a72', title: '全聯 採買', sub: '日用 · 玉山 Pi 卡', amount: '−$1,286', amtColor: t.red },
+      { icon: I.bolt, color: '#4f8f8a', title: '電費', sub: '居家 · 台新 Richart', amount: '−$1,420', amtColor: t.red },
+      { icon: I.brief, color: '#3f9d7a', title: '薪資', sub: '收入 · 台新 Richart', amount: '+$72,000', amtColor: t.green }
+    ];
+    const settings = [{ k: '主幣別', v: 'TWD' }, { k: '週起始日', v: '週一' }, { k: '支出收入顏色', v: '紅支出 / 綠收入' }, { k: '數字鍵盤', v: '計算機排列' }];
+    // 底部分頁只用紅點表示「裡面有事」，數字留在頁內的子頁切換
+    const tab = (label, icon, on, dot, note) => ({ isTab: true, isAdd: false, label, icon, dot,
+      aria: label + (dot ? '，' + note : ''), fg: on ? t.primary : t.muted, weight: on ? 700 : 500 });
+    const tabs = [
+      tab('投資', 'M3 17l6-6 4 4 8-8 M15 7h6v6', false, true, '有需要注意的項目'),
+      { isTab: false, isAdd: true },
+      tab('財務', 'M3 7v10a2 2 0 0 0 2 2h15V9H5a2 2 0 0 1-2-2zm0 0a2 2 0 0 1 2-2h13v4 M16 14h.01', true, false, ''),
+    ];
+    return { t, subTabs, rows, settings, tabs,
+      showLedger: sub === 'ledger', showAccounts: sub === 'accounts', showSettings: sub === 'settings' };
+  }
+}
+</script>
+</body>
+</html>
