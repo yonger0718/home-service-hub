@@ -21,9 +21,13 @@ import {
   buttonLabel,
   cardTitle,
   inboxErrorMessage,
+  inboxLearn,
   learnLabel,
   learnableAnswer,
+  lineKind,
+  matchAnswer,
   questionText,
+  recordAnswer,
 } from '../inbox-view';
 import {
   InboxAccount,
@@ -35,6 +39,8 @@ import {
   InboxOut,
 } from '../inbox.model';
 import { InboxService } from '../inbox.service';
+import { AppInboxMatchSheetComponent, InboxMatchResult } from '../match-sheet/match-sheet';
+import { AppInboxRecordSheetComponent, InboxRecordResult } from '../record-sheet/record-sheet';
 import { AccountingService } from '../../../../services/accounting.service';
 
 /** Ask cards shown on 全部 before the 還有 N 張 → link. */
@@ -53,13 +59,8 @@ const FOLD_BUTTONS: Record<FoldKey, readonly InboxButton[]> = {
   other: ['dismiss'],
 };
 
-/**
- * The `learn` of an apply request (spec §6.1 / §7.2): null when 以後都這樣 is unticked; else the line's amount is kept
- * unless 金額不同也算 is ticked — and never for 改成銀行的數, whose rule has no amount.
- */
-export function inboxLearn(ticked: boolean, amountAny: boolean, button: InboxButton): InboxLearn {
-  return ticked ? { amount_exact: button === 'accept_bank_amount' ? false : !amountAny } : null;
-}
+/** Kept here for callers of the Task 9 surface; the formula lives in `inbox-view` so the sheets share it. */
+export { inboxLearn };
 
 const FAILED_PREFIX = '沒成功：';
 
@@ -118,12 +119,17 @@ export interface InboxFoldView {
 
 /**
  * 待處理 (spec §7.2, option A): the cards that need the owner's answer per account, then the folded sections.
- * One-tap answers post `/inbox/apply` here; 記為… and 對到… are handed to the parent's sheets.
+ * One-tap answers post `/inbox/apply` here; 記為… and 對到… open the record / match sheet, whose answer posts the same way.
  */
 @Component({
   selector: 'app-inbox-panel',
   standalone: true,
-  imports: [NgTemplateOutlet, RouterLink],
+  imports: [
+    NgTemplateOutlet,
+    RouterLink,
+    AppInboxRecordSheetComponent,
+    AppInboxMatchSheetComponent,
+  ],
   templateUrl: './inbox-panel.html',
   styleUrls: ['./inbox-panel.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -136,8 +142,10 @@ export class AppInboxPanelComponent {
   readonly mode = input<'full' | 'preview'>('full');
   /** After every write that changed something: the parent reloads `data`. */
   readonly changed = output<void>();
-  readonly openRecord = output<InboxCard>();
-  readonly openMatch = output<InboxCard>();
+
+  /** The card whose 記為… / 對到… sheet is open. */
+  readonly recordCard = signal<InboxCard | null>(null);
+  readonly matchCard = signal<InboxCard | null>(null);
 
   readonly amountAnyLabel = AMOUNT_ANY_LABEL;
 
@@ -233,11 +241,11 @@ export class AppInboxPanelComponent {
     switch (button) {
       case 'record':
         this.confirming.set(null);
-        this.openRecord.emit(card);
+        this.recordCard.set(card);
         return;
       case 'match_candidate':
         this.confirming.set(null);
-        this.openMatch.emit(card);
+        this.matchCard.set(card);
         return;
       case 'apply_proposal':
       case 'reject_proposal':
@@ -277,17 +285,52 @@ export class AppInboxPanelComponent {
     );
   }
 
-  private learnTicked(card: InboxCard): boolean {
+  learnTicked(card: InboxCard): boolean {
     return this.learnTicks().get(card.key) ?? card.items.length > 1;
   }
 
-  private amountAnyTicked(card: InboxCard): boolean {
+  amountAnyTicked(card: InboxCard): boolean {
     return this.amountAnyTicks().get(card.key) ?? false;
+  }
+
+  /** 記為… 確定: `params` carries `name` / `project_id` only when given; `learn` is the sheet's own tick. */
+  record(card: InboxCard, result: InboxRecordResult): void {
+    this.recordCard.set(null);
+    const params: Record<string, unknown> = { category_id: result.category_id };
+    if (result.name !== null) {
+      params['name'] = result.name;
+    }
+    if (result.project_id !== null) {
+      params['project_id'] = result.project_id;
+    }
+    this.submit(card, {
+      cases: this.casesOf(card),
+      action: 'record',
+      params,
+      answer: recordAnswer(lineKind(card.items[0]), result.category_name),
+      learn: result.learn,
+    });
+  }
+
+  /** 對到… 確定: one entry per case; the answer names the first member's entry. A match is never learned. */
+  match(card: InboxCard, result: InboxMatchResult): void {
+    this.matchCard.set(null);
+    this.submit(card, {
+      cases: this.casesOf(card),
+      action: 'match_candidate',
+      params: { entry_ids: result.entry_ids },
+      answer: matchAnswer(result.titles[String(card.items[0].case_id)]),
+      learn: null,
+    });
+  }
+
+  private casesOf(card: InboxCard): InboxApplyBody['cases'] {
+    return card.items.map((item) => ({ case_id: item.case_id, case_version: item.case_version }));
   }
 
   private applyOneTap(card: InboxCard, action: OneTap): void {
     this.submit(card, {
-      cases: card.items.map((item) => ({ case_id: item.case_id, case_version: item.case_version })),
+      cases: this.casesOf(card),
       action,
       params: {},
       answer: buttonLabel(action, card.items[0], card.account.currency),

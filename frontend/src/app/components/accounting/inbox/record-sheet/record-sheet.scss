@@ -1,0 +1,42 @@
+.sub {
+  color: var(--app-text-muted);
+  font-size: 0.82rem;
+  margin: -4px 0 10px;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.kv {
+  margin-top: 8px;
+
+  .record-name {
+    max-width: 12rem;
+    text-align: left;
+    width: 100%;
+  }
+
+  .record-project {
+    max-width: 12rem;
+  }
+}
+
+.learn,
+.amount-any,
+.amount-locked {
+  align-items: center;
+  color: var(--app-text-muted);
+  display: flex;
+  font-size: 0.8rem;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.amount-any,
+.amount-locked {
+  margin: 4px 0 0 20px;
+}
+
+.btnrow button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}

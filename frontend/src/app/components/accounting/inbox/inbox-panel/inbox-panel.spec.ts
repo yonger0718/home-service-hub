@@ -8,70 +8,21 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { InboxApplyBody, InboxItem, InboxOut } from '../inbox.model';
 import {
-  InboxAccount,
-  InboxApplyBody,
-  InboxApplyOut,
-  InboxCounts,
-  InboxItem,
-  InboxOut,
-} from '../inbox.model';
+  applied,
+  button,
+  categoryTile,
+  makeInbox,
+  makeInboxAccount,
+  makeItem,
+  text,
+} from '../testing';
 import { AccountingService } from '../../../../services/accounting.service';
+import { makeCategory } from '../../testing/fixtures';
 import { AppInboxPanelComponent, inboxLearn } from './inbox-panel';
 
 const APPLY_URL = '/api/accounting/reconciliation/inbox/apply';
-
-function makeItem(overrides: Partial<InboxItem> = {}): InboxItem {
-  return {
-    case_id: 1,
-    case_version: 1,
-    kind: 'line_unmatched',
-    status: 'open',
-    question: 'bank_only',
-    folded: false,
-    group_key: null,
-    statement: { id: 10, period_end: '2026-09-30' },
-    line: {
-      id: 5,
-      date: '2026-09-03',
-      merchant: '全家便利商店',
-      amount: '-120.0000',
-      line_kind: 'purchase',
-    },
-    entry: null,
-    candidates: [],
-    proposal: null,
-    actions: ['record', 'match_candidate', 'dismiss'],
-    rule_hint: {
-      merchant_pattern: '全家便利商店',
-      line_kind: 'purchase',
-      flow_sign: '-',
-      amount: '120.0000',
-      default_category_id: null,
-    },
-    ...overrides,
-  };
-}
-
-function makeInboxAccount(overrides: Partial<InboxAccount> = {}): InboxAccount {
-  return { id: 1, name: '玉山', currency: 'TWD', is_credit: false, items: [], ...overrides };
-}
-
-function makeInbox(accounts: InboxAccount[], counts: Partial<InboxCounts> = {}): InboxOut {
-  return {
-    generated_at: '2026-10-22T00:00:00Z',
-    counts: {
-      ask: 0,
-      ask_items: 0,
-      proposed: 0,
-      balance_gap: 0,
-      settlement: 0,
-      other: 0,
-      ...counts,
-    },
-    accounts,
-  };
-}
 
 /** Two 全家 lines that share a group_key (one merged card) and a Uber line on its own. */
 function member(caseId: number, version: number, date: string): InboxItem {
@@ -107,29 +58,6 @@ const UBER = makeItem({
     default_category_id: null,
   },
 });
-
-function text(node: Element | null | undefined): string {
-  return node?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
-}
-
-function button(scope: Element, label: string): HTMLButtonElement {
-  return Array.from(scope.querySelectorAll<HTMLButtonElement>('button')).find(
-    (node) => text(node) === label,
-  )!;
-}
-
-function applied(...caseIds: number[]): InboxApplyOut {
-  return {
-    results: caseIds.map((case_id) => ({
-      case_id,
-      status: 'applied',
-      action_id: 900 + case_id,
-      code: null,
-    })),
-    rule_id: null,
-    rule_error: null,
-  };
-}
 
 describe('AppInboxPanelComponent', () => {
   let http: HttpTestingController;
@@ -644,5 +572,147 @@ describe('AppInboxPanelComponent', () => {
     expect(text(el.querySelector('details.fold summary'))).toBe('系統有提議 1（全部套用）');
     expect(changed).toHaveBeenCalledTimes(1);
     expect(marked).toHaveBeenCalledTimes(1);
+  });
+
+  it('record flow posts create params and 記為收入 for a positive line', () => {
+    const interest = makeItem({
+      case_id: 9,
+      case_version: 3,
+      line: {
+        id: 59,
+        date: '2026-09-20',
+        merchant: '利息',
+        amount: '35.0000',
+        line_kind: 'interest',
+      },
+      actions: ['record', 'dismiss'],
+      rule_hint: {
+        merchant_pattern: '利息',
+        line_kind: 'interest',
+        flow_sign: '+',
+        amount: '35.0000',
+        default_category_id: null,
+      },
+    });
+    const { fixture, el, changed, marked } = render(
+      makeInbox([makeInboxAccount({ items: [interest] })], { ask: 1 }),
+    );
+    expect(el.querySelector('app-inbox-record-sheet')).toBeNull();
+    // Ticked on the card before 記為…: the sheet starts ticked too.
+    askCards(el)[0].querySelector<HTMLInputElement>('.learn input')!.click();
+    fixture.detectChanges();
+    button(askCards(el)[0], '記為收入…').click();
+    fixture.detectChanges();
+    http
+      .expectOne((r) => r.url === '/api/accounting/categories' && r.params.get('kind') === 'income')
+      .flush([makeCategory({ id: 30, kind: 'income', name: '利息收入' })]);
+    http
+      .expectOne((r) => r.url === '/api/accounting/projects')
+      .flush([{ id: 4, name: '日本旅行', is_archived: false, sort_order: 0, moze_id: null }]);
+    fixture.detectChanges();
+
+    const sheet = el.querySelector<HTMLElement>('app-inbox-record-sheet')!;
+    expect(text(sheet.querySelector('h3'))).toBe('記為收入');
+    categoryTile(sheet, '利息收入').click();
+    fixture.detectChanges();
+    const project = sheet.querySelector<HTMLSelectElement>('select.record-project')!;
+    project.value = '4';
+    project.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    expect(sheet.querySelector<HTMLInputElement>('.learn input')!.checked).toBe(true);
+    button(sheet, '確定').click();
+    fixture.detectChanges();
+
+    // The sheet closes; the card waits for the answer.
+    expect(el.querySelector('app-inbox-record-sheet')).toBeNull();
+    const req = expectApply();
+    // No name typed: `name` is left out, not sent as null.
+    expect(req.request.body as InboxApplyBody).toEqual({
+      cases: [{ case_id: 9, case_version: 3 }],
+      action: 'record',
+      params: { category_id: 30, project_id: 4 },
+      answer: '記為收入 利息收入',
+      learn: { amount_exact: true },
+    });
+    req.flush(applied(9));
+    fixture.detectChanges();
+    expect(askCards(el).length).toBe(0);
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(marked).toHaveBeenCalledTimes(1);
+  });
+
+  it('match flow posts entry_ids and 對到 <title>', () => {
+    const power = (caseId: number, version: number, date: string, entryId: number, title: string) =>
+      makeItem({
+        case_id: caseId,
+        case_version: version,
+        group_key: 'g-power',
+        line: { id: caseId, date, merchant: '台電', amount: '-1300.0000', line_kind: 'purchase' },
+        candidates: [
+          {
+            entry_id: entryId,
+            date,
+            title,
+            amount: '-1300.0000',
+            reason: null,
+            residual: null,
+            date_distance: 0,
+          },
+        ],
+      });
+    const { fixture, el, changed } = render(
+      makeInbox(
+        [
+          makeInboxAccount({
+            items: [
+              power(70, 2, '2026-08-05', 3, '電費 8 月'),
+              power(71, 5, '2026-09-05', 4, '電費 9 月'),
+            ],
+          }),
+        ],
+        { ask: 1 },
+      ),
+    );
+    button(askCards(el)[0], '已記在別處，對到…').click();
+    fixture.detectChanges();
+    const sheet = el.querySelector<HTMLElement>('app-inbox-match-sheet')!;
+    expect(sheet).not.toBeNull();
+    const pickFirst = () => {
+      sheet.querySelector<HTMLInputElement>('.candidates input[type="radio"]')!.click();
+      fixture.detectChanges();
+    };
+    pickFirst();
+    button(sheet, '下一筆').click();
+    fixture.detectChanges();
+    pickFirst();
+    button(sheet, '確定').click();
+    fixture.detectChanges();
+
+    expect(el.querySelector('app-inbox-match-sheet')).toBeNull();
+    const req = expectApply();
+    expect(req.request.body as InboxApplyBody).toEqual({
+      cases: [
+        { case_id: 70, case_version: 2 },
+        { case_id: 71, case_version: 5 },
+      ],
+      action: 'match_candidate',
+      params: { entry_ids: { '70': 3, '71': 4 } },
+      answer: '對到 電費 8 月',
+      learn: null,
+    });
+    req.flush(applied(70, 71));
+    fixture.detectChanges();
+    expect(askCards(el).length).toBe(0);
+    expect(changed).toHaveBeenCalledTimes(1);
+  });
+
+  it('取消 closes a sheet without a request', () => {
+    const { fixture, el } = render(makeInbox([makeInboxAccount({ items: [UBER] })], { ask: 1 }));
+    button(askCards(el)[0], '已記在別處，對到…').click();
+    fixture.detectChanges();
+    button(el.querySelector('app-inbox-match-sheet')!, '取消').click();
+    fixture.detectChanges();
+    expect(el.querySelector('app-inbox-match-sheet')).toBeNull();
+    http.expectNone(APPLY_URL);
   });
 });

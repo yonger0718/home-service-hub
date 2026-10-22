@@ -46,6 +46,25 @@
   }
 </div>
 
+@if (recordCard(); as card) {
+  <app-inbox-record-sheet
+    [card]="card"
+    [currency]="card.account.currency"
+    [learnDefault]="learnTicked(card)"
+    [amountAnyDefault]="amountAnyTicked(card)"
+    (confirmed)="record(card, $event)"
+    (closed)="recordCard.set(null)"
+  />
+}
+@if (matchCard(); as card) {
+  <app-inbox-match-sheet
+    [card]="card"
+    [account]="card.account"
+    (confirmed)="match(card, $event)"
+    (closed)="matchCard.set(null)"
+  />
+}
+
 <ng-template #cardTpl let-view>
   <div class="inbox-card" [attr.data-card-key]="view.card.key" [attr.aria-busy]="view.busy">
     <p class="title">{{ view.title }}</p>

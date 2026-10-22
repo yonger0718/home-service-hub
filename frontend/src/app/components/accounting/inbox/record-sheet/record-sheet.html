@@ -1,0 +1,85 @@
+<div class="overlay" data-overlay (click)="cancel()">
+  <div
+    class="sheet record-sheet"
+    tabindex="-1"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="inbox-record-title"
+    (click)="$event.stopPropagation()"
+  >
+    <div class="grab"></div>
+    <h3 id="inbox-record-title">{{ title() }}</h3>
+    <p class="sub">{{ subtitle() }}</p>
+    <app-category-picker [kind]="kind()" [categories]="categories()" [(selected)]="category" />
+    <div class="kv">
+      <div>
+        <label class="k" for="inbox-record-name">名稱</label>
+        <span class="v">
+          <input
+            id="inbox-record-name"
+            #nameInput
+            class="record-name"
+            [placeholder]="merchant()"
+            [value]="name()"
+            (input)="name.set(nameInput.value)"
+          />
+        </span>
+      </div>
+      <div>
+        <label class="k" for="inbox-record-project">專案</label>
+        <span class="v">
+          <select
+            id="inbox-record-project"
+            #projectSelect
+            class="record-project"
+            (change)="setProject(projectSelect.value)"
+          >
+            <option value="" [selected]="projectId() === null"></option>
+            @for (project of projects(); track project.id) {
+              <option [value]="project.id" [selected]="projectId() === project.id">
+                {{ project.name }}
+              </option>
+            }
+          </select>
+        </span>
+      </div>
+    </div>
+    @if (learn(); as learn) {
+      <label class="learn">
+        <input
+          #learnBox
+          type="checkbox"
+          [checked]="learnTicked()"
+          (change)="setLearn(learnBox.checked)"
+        />
+        {{ learn.label }}
+      </label>
+      @if (learn.amountOption) {
+        <label class="amount-any">
+          <input
+            #amountBox
+            type="checkbox"
+            [checked]="amountAny()"
+            [disabled]="!learnTicked()"
+            (change)="amountAny.set(amountBox.checked)"
+          />
+          {{ amountAnyLabel }}
+        </label>
+      }
+      @if (learn.lockedCaption) {
+        <span class="amount-locked">{{ learn.lockedCaption }}</span>
+      }
+    }
+    <div class="btnrow">
+      <button type="button" class="sheet-cancel" (click)="cancel()">取消</button>
+      <button
+        type="button"
+        class="pri sheet-confirm"
+        [disabled]="category() === null"
+        (click)="confirm()"
+      >
+        確定
+      </button>
+    </div>
+  </div>
+</div>

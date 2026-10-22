@@ -3,7 +3,14 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { slashDate } from '../dates';
 import { formatMoney } from '../format';
 import { actionErrorMessage, apiErrorText, splitApiCode } from '../statements/statement-view';
-import { InboxAccount, InboxButton, InboxItem, InboxQuestion, InboxRuleHint } from './inbox.model';
+import {
+  InboxAccount,
+  InboxButton,
+  InboxItem,
+  InboxLearn,
+  InboxQuestion,
+  InboxRuleHint,
+} from './inbox.model';
 
 /** One row of the inbox: a single case, or the unfolded cases that share a `group_key`. */
 export interface InboxCard {
@@ -52,6 +59,14 @@ export function learnableAnswer(question: InboxQuestion, button: InboxButton): b
     (question === 'bank_only' && (button === 'record' || button === 'dismiss')) ||
     (question === 'amount_differs' && button === 'accept_bank_amount')
   );
+}
+
+/**
+ * The `learn` of an apply request (spec §6.1 / §7.2): null when 以後都這樣 is unticked; else the line's amount is kept
+ * unless 金額不同也算 is ticked — and never for 改成銀行的數, whose rule has no amount.
+ */
+export function inboxLearn(ticked: boolean, amountAny: boolean, button: InboxButton): InboxLearn {
+  return ticked ? { amount_exact: button === 'accept_bank_amount' ? false : !amountAny } : null;
 }
 
 function makeCard(account: InboxAccount, key: string, first: InboxItem): InboxCard {
