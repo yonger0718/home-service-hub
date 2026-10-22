@@ -11,6 +11,9 @@ describe('App', () => {
   afterEach(() => {
     if (originalMatchMedia) Object.defineProperty(window, 'matchMedia', originalMatchMedia);
     else delete (window as { matchMedia?: unknown }).matchMedia;
+    // Creating App constructs AppearanceService, whose apply() writes the root attribute.
+    document.documentElement.removeAttribute('data-gainloss');
+    document.documentElement.classList.remove('app-dark-mode');
   });
 
   beforeEach(async () => {

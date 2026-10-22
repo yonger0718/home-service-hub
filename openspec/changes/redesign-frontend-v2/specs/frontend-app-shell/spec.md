@@ -127,7 +127,7 @@ Every group except 系統 SHALL be hideable from Settings; a hidden group SHALL 
 - **GIVEN** 物資 is hidden and 投資 and 財務 are visible
 - **WHEN** the tab bar renders at 390px
 - **THEN** it SHALL show 投資, "+", 財務 in that order
-- **AND** every page header SHALL show a gear linking to `/settings`
+- **AND** every page header except `/settings` SHALL show a gear linking to `/settings`
 
 #### Scenario: All groups visible
 - **GIVEN** 物資, 投資 and 財務 are visible
