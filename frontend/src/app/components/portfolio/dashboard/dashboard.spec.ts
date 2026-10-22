@@ -532,7 +532,7 @@ describe('PortfolioDashboardComponent', () => {
       expect(kpi(root).map(label)).toEqual(['總市值', '預估含息損益', '年化報酬率 XIRR', '已記錄股利']);
       expect(footnote(root, 0)).toBe(`總成本 ${f.formatCurrency(900)}`);
       expect(footnote(root, 1)).toBe(`價差 ${f.formatNative(100, 'TWD')} · 股利 ${f.formatNative(20, 'TWD')} · 待收 —`);
-      expect(footnote(root, 2)).toBe('1Y');
+      expect(footnote(root, 2)).toBe('1Y · 全市場');
       expect(footnote(root, 3)).toBe('含舊資料 · 不代表已核實收款');
     });
 
@@ -554,10 +554,10 @@ describe('PortfolioDashboardComponent', () => {
     it('keeps XIRR portfolio-wide and updates its range footnote', () => {
       const fixture = createFixture();
       const root = fixture.nativeElement as HTMLElement;
-      expect(footnote(root, 2)).toBe('1Y');
+      expect(footnote(root, 2)).toBe('1Y · 全市場');
       fixture.componentInstance.selectRange('3M');
       fixture.detectChanges();
-      expect(footnote(root, 2)).toBe('3M');
+      expect(footnote(root, 2)).toBe('3M · 全市場');
     });
 
     it('suffixes market on scoped cards but not XIRR, which is marked 全市場', () => {
