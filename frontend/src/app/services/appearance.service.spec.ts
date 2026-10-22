@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AppearanceService } from './appearance.service';
 
@@ -29,6 +29,18 @@ describe('AppearanceService', () => {
   }
 
   const rootDark = () => document.documentElement.classList.contains('app-dark-mode');
+
+  const originalMatchMedia = Object.getOwnPropertyDescriptor(window, 'matchMedia');
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (originalMatchMedia) Object.defineProperty(window, 'matchMedia', originalMatchMedia);
+    else delete (window as { matchMedia?: unknown }).matchMedia;
+    TestBed.resetTestingModule();
+    localStorage.clear();
+    document.documentElement.classList.remove('app-dark-mode');
+    document.documentElement.removeAttribute('data-gainloss');
+  });
 
   beforeEach(() => {
     TestBed.resetTestingModule();
@@ -182,7 +194,6 @@ describe('AppearanceService', () => {
     service.setTheme('dark');
     expect(service.dark$.value).toBe(true);
     expect(rootDark()).toBe(true);
-    vi.restoreAllMocks();
   });
 
   it('setDark maps to setTheme', () => {

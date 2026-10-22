@@ -1,8 +1,10 @@
 import { TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
 import { BehaviorSubject } from 'rxjs';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 
 import { SettingsComponent } from './settings';
+import { MATCH_MEDIA } from '../../services/layout-mode.service';
 import { AppearanceService, GainLossConvention } from '../../services/appearance.service';
 
 describe('SettingsComponent', () => {
@@ -23,7 +25,12 @@ describe('SettingsComponent', () => {
 
     await TestBed.configureTestingModule({
       imports: [SettingsComponent],
-      providers: [{ provide: AppearanceService, useValue: appearance }],
+      providers: [
+        { provide: AppearanceService, useValue: appearance },
+        provideRouter([]),
+        { provide: MATCH_MEDIA, useValue: () =>
+            ({ matches: false, addEventListener: () => undefined, removeEventListener: () => undefined }) as unknown as MediaQueryList },
+      ],
     }).compileComponents();
   });
 

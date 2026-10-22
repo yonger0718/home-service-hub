@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { TestBed } from '@angular/core/testing';
 import { firstValueFrom } from 'rxjs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AppearanceService } from './appearance.service';
 
@@ -52,6 +52,18 @@ const reset = () => {
 };
 
 describe('pre-paint script in index.html', () => {
+  const originalMatchMedia = Object.getOwnPropertyDescriptor(window, 'matchMedia');
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (originalMatchMedia) Object.defineProperty(window, 'matchMedia', originalMatchMedia);
+    else delete (window as { matchMedia?: unknown }).matchMedia;
+    TestBed.resetTestingModule();
+    localStorage.clear();
+    document.documentElement.classList.remove('app-dark-mode');
+    document.documentElement.removeAttribute('data-gainloss');
+  });
+
   beforeEach(reset);
 
   const themes: Array<string | null> = [null, 'light', 'dark', 'system', 'blue'];
