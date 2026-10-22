@@ -1,7 +1,8 @@
-import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { RouterLink } from '@angular/router';
 
-import { NAV_GROUPS, NavGroupId } from '../shell/navigation';
+import { NavGroup, summarizeGroupBadges } from '../shell/navigation';
+import { NavigationStateService } from '../shell/navigation-state.service';
 
 @Component({
   selector: 'app-mobile-nav',
@@ -11,12 +12,14 @@ import { NAV_GROUPS, NavGroupId } from '../shell/navigation';
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class MobileNavComponent {
-  readonly activeId = input.required<string>();
-  readonly activeGroupId = input.required<NavGroupId>();
+  protected readonly nav = inject(NavigationStateService);
 
-  protected readonly groups = NAV_GROUPS;
-
-  protected readonly currentGroup = computed(() => (
-    this.groups.find(group => group.id === this.activeGroupId()) ?? this.groups[0]
-  ));
+  /** A badge dot on a tab other than the one being viewed. */
+  protected hasDot(group: NavGroup): boolean {
+    if (group.id === this.nav.activeGroup().id) {
+      return false;
+    }
+    const sum = summarizeGroupBadges(group, this.nav.badges());
+    return sum.count > 0 || sum.dot;
+  }
 }

@@ -1,5 +1,6 @@
 import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
+import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
@@ -8,8 +9,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { routes } from './app.routes';
 import { AccountingShortcutsService, EntryCommand } from './components/accounting/keyboard-shortcuts';
 import { DockComponent } from './components/dock/dock';
-import { MobileNavComponent } from './components/mobile-nav/mobile-nav';
 import { NAV_GROUPS, navItemForUrl } from './components/shell/navigation';
+import { SubNavComponent } from './components/shell/sub-nav/sub-nav';
+import { NavBadgeService } from './services/nav-badge.service';
 import { LayoutModeService, MATCH_MEDIA, PANES_QUERY, PHONE_QUERY } from './services/layout-mode.service';
 
 const PAGES: [string, string][] = [
@@ -214,23 +216,24 @@ describe('accounting navigation', () => {
   ];
 
   for (const [url, label] of HIGHLIGHT) {
-    it(`highlights ${label} in the dock and the mobile sub-nav on ${url}`, () => {
+    it(`highlights ${label} in the dock and the mobile sub-nav on ${url}`, async () => {
       const item = navItemForUrl(url);
       expect(item.group).toBe('accounting');
       expect(item.label).toBe(label);
 
-      TestBed.configureTestingModule({ imports: [DockComponent, MobileNavComponent], providers: [provideRouter([])] });
+      TestBed.configureTestingModule({ imports: [DockComponent, SubNavComponent],
+        providers: [provideRouter([{ path: '**', children: [] }]), { provide: NavBadgeService, useValue: { badges: signal({}) } }],
+      });
       const dock = TestBed.createComponent(DockComponent);
       dock.componentRef.setInput('activeId', item.id);
       dock.detectChanges();
       const active = (dock.nativeElement as HTMLElement).querySelector('.dock-item[aria-current="page"]');
       expect(active?.getAttribute('aria-label')).toBe(item.title);
 
-      const mobile = TestBed.createComponent(MobileNavComponent);
-      mobile.componentRef.setInput('activeId', item.id);
-      mobile.componentRef.setInput('activeGroupId', 'accounting');
-      mobile.detectChanges();
-      expect((mobile.nativeElement as HTMLElement).querySelector('.seg-control a.active')?.textContent?.trim()).toBe(label);
+      await TestBed.inject(Router).navigateByUrl(url);
+      const sub = TestBed.createComponent(SubNavComponent);
+      sub.detectChanges();
+      expect((sub.nativeElement as HTMLElement).querySelector('a.active')?.textContent?.trim()).toBe(label);
     });
   }
 });
