@@ -4,22 +4,31 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppearanceService } from './appearance.service';
 
 describe('AppearanceService', () => {
+  let osListeners: Array<(e: { matches: boolean }) => void>;
+  let mql: { matches: boolean; addEventListener: ReturnType<typeof vi.fn>; removeEventListener: ReturnType<typeof vi.fn> };
+
   function setMatchMedia(matches: boolean) {
+    osListeners = [];
+    mql = {
+      matches,
+      addEventListener: vi.fn((_t: string, fn: (e: { matches: boolean }) => void) => osListeners.push(fn)),
+      removeEventListener: vi.fn((_t: string, fn: (e: { matches: boolean }) => void) => {
+        osListeners = osListeners.filter(l => l !== fn);
+      }),
+    };
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
       writable: true,
-      value: vi.fn().mockReturnValue({
-        matches,
-        media: '(prefers-color-scheme: dark)',
-        onchange: null,
-        addListener: vi.fn(),
-        removeListener: vi.fn(),
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-        dispatchEvent: vi.fn(),
-      }),
+      value: vi.fn().mockReturnValue(mql),
     });
   }
+
+  function fireOs(matches: boolean) {
+    mql.matches = matches;
+    [...osListeners].forEach(l => l({ matches }));
+  }
+
+  const rootDark = () => document.documentElement.classList.contains('app-dark-mode');
 
   beforeEach(() => {
     TestBed.resetTestingModule();
@@ -35,19 +44,20 @@ describe('AppearanceService', () => {
     service.setDark(true);
     service.setGainLoss('western');
 
-    expect(localStorage.getItem('hh-dark')).toBe('1');
+    expect(localStorage.getItem('hh-theme')).toBe('dark');
     expect(localStorage.getItem('hh-gainloss')).toBe('western');
   });
 
   it('restores persisted selections on initialization', () => {
-    localStorage.setItem('hh-dark', '1');
+    localStorage.setItem('hh-theme', 'dark');
     localStorage.setItem('hh-gainloss', 'western');
 
     const service = TestBed.inject(AppearanceService);
 
+    expect(service.theme$.value).toBe('dark');
     expect(service.dark$.value).toBe(true);
     expect(service.gainLoss$.value).toBe('western');
-    expect(document.documentElement.classList.contains('app-dark-mode')).toBe(true);
+    expect(rootDark()).toBe(true);
     expect(document.documentElement.getAttribute('data-gainloss')).toBe('western');
   });
 
@@ -77,5 +87,110 @@ describe('AppearanceService', () => {
     expect(gainLossValues).toEqual(['asian', 'western']);
     expect(document.documentElement.classList.contains('app-dark-mode')).toBe(false);
     expect(document.documentElement.getAttribute('data-gainloss')).toBe('western');
+  });
+
+  it('setTheme(dark) updates state, root class and storage', () => {
+    const service = TestBed.inject(AppearanceService);
+    service.setTheme('dark');
+    expect(service.theme$.value).toBe('dark');
+    expect(service.dark$.value).toBe(true);
+    expect(rootDark()).toBe(true);
+    expect(localStorage.getItem('hh-theme')).toBe('dark');
+  });
+
+  it('system follows the OS live', () => {
+    const service = TestBed.inject(AppearanceService);
+    service.setTheme('system');
+    expect(service.dark$.value).toBe(false);
+    fireOs(true);
+    expect(service.dark$.value).toBe(true);
+    expect(rootDark()).toBe(true);
+  });
+
+  it('leaving system detaches the listener', () => {
+    const service = TestBed.inject(AppearanceService);
+    service.setTheme('system');
+    service.setTheme('light');
+    fireOs(true);
+    expect(service.dark$.value).toBe(false);
+    expect(rootDark()).toBe(false);
+  });
+
+  it('re-entering system follows the OS again', () => {
+    const service = TestBed.inject(AppearanceService);
+    service.setTheme('system');
+    service.setTheme('light');
+    service.setTheme('system');
+    fireOs(true);
+    expect(service.dark$.value).toBe(true);
+  });
+
+  it.each([
+    ['0', 'light'],
+    ['1', 'dark'],
+  ])('migrates hh-dark=%s once', (old, expected) => {
+    localStorage.setItem('hh-dark', old);
+    const service = TestBed.inject(AppearanceService);
+    expect(service.theme$.value).toBe(expected);
+    expect(localStorage.getItem('hh-theme')).toBe(expected);
+    expect(localStorage.getItem('hh-dark')).toBeNull();
+  });
+
+  it('hh-theme wins over hh-dark and leaves hh-dark as is', () => {
+    localStorage.setItem('hh-theme', 'light');
+    localStorage.setItem('hh-dark', '1');
+    const service = TestBed.inject(AppearanceService);
+    expect(service.theme$.value).toBe('light');
+    expect(localStorage.getItem('hh-dark')).toBe('1');
+  });
+
+  it('defaults to system', () => {
+    setMatchMedia(true);
+    const service = TestBed.inject(AppearanceService);
+    expect(service.theme$.value).toBe('system');
+    expect(service.dark$.value).toBe(true);
+  });
+
+  it('invalid hh-theme means system and never falls through to hh-dark', () => {
+    localStorage.setItem('hh-theme', 'blue');
+    localStorage.setItem('hh-dark', '1');
+    const service = TestBed.inject(AppearanceService);
+    expect(service.theme$.value).toBe('system');
+    expect(service.dark$.value).toBe(false);
+    expect(localStorage.getItem('hh-dark')).toBe('1');
+    expect(localStorage.getItem('hh-theme')).toBe('blue');
+  });
+
+  it('invalid hh-dark with no hh-theme means system and is not removed', () => {
+    localStorage.setItem('hh-dark', 'x');
+    const service = TestBed.inject(AppearanceService);
+    expect(service.theme$.value).toBe('system');
+    expect(localStorage.getItem('hh-dark')).toBe('x');
+    expect(localStorage.getItem('hh-theme')).toBeNull();
+  });
+
+  it('works with blocked storage', () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    const service = TestBed.inject(AppearanceService);
+    expect(service.theme$.value).toBe('system');
+    expect(service.gainLoss$.value).toBe('asian');
+    service.setTheme('dark');
+    expect(service.dark$.value).toBe(true);
+    expect(rootDark()).toBe(true);
+    vi.restoreAllMocks();
+  });
+
+  it('setDark maps to setTheme', () => {
+    const service = TestBed.inject(AppearanceService);
+    service.setDark(true);
+    expect(service.theme$.value).toBe('dark');
+    expect(localStorage.getItem('hh-theme')).toBe('dark');
+    service.setDark(false);
+    expect(service.theme$.value).toBe('light');
   });
 });
