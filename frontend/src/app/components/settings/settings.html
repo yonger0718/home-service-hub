@@ -1,0 +1,190 @@
+<section class="settings-page">
+  <app-page-header [back]="true"></app-page-header>
+
+  <section class="set-section" aria-labelledby="set-sec-look">
+    <h2 id="set-sec-look" class="set-section-title">外觀</h2>
+    <div class="set-card">
+      <div class="set-row" [class.stacked]="phone()">
+        <span class="set-icon" aria-hidden="true"><i class="pi pi-palette"></i></span>
+        <div class="set-text">
+          <div class="t">主題</div>
+          <div class="d">跟隨系統時，會依裝置的深淺色自動切換</div>
+        </div>
+        <app-seg-toggle
+          class="set-control"
+          ariaLabel="主題"
+          [options]="themeOptions"
+          [value]="theme()"
+          (change)="setTheme($event)"
+        ></app-seg-toggle>
+      </div>
+    </div>
+  </section>
+
+  <section class="set-section" aria-labelledby="set-sec-inv">
+    <h2 id="set-sec-inv" class="set-section-title">投資顯示</h2>
+    <div class="set-card">
+      <div class="set-row" [class.stacked]="phone()">
+        <span class="set-icon" aria-hidden="true"><i class="pi pi-chart-line"></i></span>
+        <div class="set-text">
+          <div class="t">漲跌顏色</div>
+          <div class="d">選擇符合你習慣的市場慣例</div>
+        </div>
+        <app-seg-toggle
+          class="set-control"
+          ariaLabel="漲跌顏色"
+          [options]="gainLossOptions"
+          [value]="gainLoss()"
+          (change)="setGainLoss($event)"
+        ></app-seg-toggle>
+      </div>
+
+      <div class="set-row preview">
+        <span class="set-sublabel">即時預覽</span>
+        <div class="prev-chips">
+          <span class="pill-preview pos"><i class="pi pi-arrow-up" aria-hidden="true"></i>上漲 +2.35%</span>
+          <span class="pill-preview neg"><i class="pi pi-arrow-down" aria-hidden="true"></i>下跌 -1.20%</span>
+        </div>
+      </div>
+    </div>
+    <p class="caption">台股以紅色代表上漲、綠色代表下跌；歐美市場則相反。預設為台股慣例。</p>
+  </section>
+
+  <section class="set-section" aria-labelledby="set-sec-nav">
+    <h2 id="set-sec-nav" class="set-section-title">導覽</h2>
+    <div class="set-card">
+      <div class="set-card-head">
+        <div class="t">顯示的分組</div>
+        <div class="d">關掉不用的分組，側欄和手機底部分頁都會一起隱藏</div>
+      </div>
+      @for (group of groupRows; track group.id) {
+        <div class="set-row group-row">
+          <span class="set-icon" aria-hidden="true"><i class="pi" [class]="group.icon"></i></span>
+          <div class="set-text">
+            <div class="t">{{ group.label }}</div>
+            <div class="d">{{ group.description }}</div>
+          </div>
+          @if (group.id === 'system') {
+            <span class="set-fixed">固定顯示</span>
+          } @else {
+            <app-switch
+              [checked]="isShown(group.id)"
+              [ariaLabel]="'顯示「' + group.label + '」分組'"
+              (checkedChange)="setShown(group.id, $event)"
+            ></app-switch>
+          }
+        </div>
+      }
+      @if (phone()) {
+        <div class="tab-preview-block">
+          <span class="set-sublabel">底部分頁預覽</span>
+          <div
+            class="tab-preview"
+            aria-hidden="true"
+            [style.grid-template-columns]="'repeat(' + previewSlots().length + ', minmax(0, 1fr))'"
+          >
+            @for (slot of previewSlots(); track $index) {
+              @if (slot.kind === 'plus') {
+                <span class="tab-slot plus">+</span>
+              } @else {
+                <span class="tab-slot"><i class="pi" [class]="slot.icon"></i>{{ slot.label }}</span>
+              }
+            }
+          </div>
+          @if (tabBar().settingsInHeader) {
+            <p class="tab-note">設定移到每頁右上角的齒輪，讓「＋」維持在中間。</p>
+          }
+        </div>
+      }
+    </div>
+
+    <div class="set-card">
+      <div class="set-row" [class.stacked]="phone()">
+        <span class="set-icon" aria-hidden="true"><i class="pi pi-objects-column"></i></span>
+        <div class="set-text">
+          <div class="t">桌面側欄預設</div>
+          <div class="d">寬度 1280px 以上時使用；較窄的螢幕一律使用圖示欄</div>
+        </div>
+        <app-seg-toggle
+          class="set-control"
+          ariaLabel="桌面側欄預設"
+          [options]="sidebarOptions"
+          [value]="prefs.sidebarDefault()"
+          (change)="setSidebarDefault($event)"
+        ></app-seg-toggle>
+      </div>
+      <div class="set-row">
+        <span class="set-icon" aria-hidden="true"><i class="pi pi-window-minimize"></i></span>
+        <div class="set-text">
+          <div class="t">開啟明細時自動收合側欄</div>
+          <div class="d">記帳等左右分欄的頁面，打開明細時讓出空間</div>
+        </div>
+        <app-switch
+          ariaLabel="開啟明細時自動收合側欄"
+          [checked]="prefs.autoCollapse()"
+          (checkedChange)="prefs.setAutoCollapse($event)"
+        ></app-switch>
+      </div>
+      <div class="set-row">
+        <span class="set-icon" aria-hidden="true"><i class="pi pi-bell"></i></span>
+        <div class="set-text">
+          <div class="t">顯示待處理數字與紅點</div>
+          <div class="d">側欄與底部分頁的提醒標記</div>
+        </div>
+        <app-switch
+          ariaLabel="顯示待處理數字與紅點"
+          [checked]="prefs.showBadges()"
+          (checkedChange)="prefs.setShowBadges($event)"
+        ></app-switch>
+      </div>
+    </div>
+  </section>
+
+  <section class="set-section" aria-labelledby="set-sec-ledger">
+    <h2 id="set-sec-ledger" class="set-section-title">記帳</h2>
+    <a class="set-card set-row link-row" routerLink="/accounting/settings">
+      <span class="set-icon" aria-hidden="true"><i class="pi pi-sliders-h"></i></span>
+      <div class="set-text">
+        <div class="t">記帳設定</div>
+        <div class="d">類別、帳戶分組、專案、對象、支出收入顏色、數字鍵盤、匯入 MOZE 備份</div>
+      </div>
+      <i class="pi pi-chevron-right link-chevron" aria-hidden="true"></i>
+    </a>
+  </section>
+
+  @if (!phone()) {
+    <section class="set-section" aria-labelledby="set-sec-keys">
+      <h2 id="set-sec-keys" class="set-section-title">鍵盤快捷鍵</h2>
+      <div class="set-card shortcut-grid">
+        @for (shortcut of shortcuts; track shortcut.label) {
+          <div class="shortcut">
+            <span class="shortcut-label">{{ shortcut.label }}</span>
+            <span class="shortcut-keys">
+              @for (key of shortcut.keys; track key) {
+                <kbd>{{ key }}</kbd>
+              }
+            </span>
+          </div>
+        }
+      </div>
+    </section>
+  }
+
+  <section class="set-section" aria-labelledby="set-sec-data">
+    <h2 id="set-sec-data" class="set-section-title">資料更新</h2>
+    <div class="set-card">
+      @for (job of jobs; track job.id) {
+        <div class="set-row job">
+          <span class="job-dot" [class]="'is-' + jobTone(job)" aria-hidden="true"></span>
+          <div class="set-text">
+            <div class="t">{{ job.label }}</div>
+            <div class="d">{{ job.schedule }}</div>
+          </div>
+          @if (job.id === 'quotes' && lastQuoteRefresh(); as last) {
+            <span class="job-last">{{ last.text }}</span>
+          }
+        </div>
+      }
+    </div>
+  </section>
+</section>

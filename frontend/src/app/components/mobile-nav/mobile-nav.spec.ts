@@ -1,7 +1,7 @@
 import { Component, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { MATCH_MEDIA } from '../../services/layout-mode.service';
 import { NavBadgeService } from '../../services/nav-badge.service';
@@ -43,7 +43,9 @@ function tab(el: HTMLElement, label: string): Element {
 }
 
 describe('MobileNavComponent', () => {
+  // Spec files share localStorage: `render({ hidden })` writes hh-nav-hidden, so clear it after each test too.
   beforeEach(() => localStorage.clear());
+  afterEach(() => localStorage.clear());
 
   it('shows 投資 + 財務 by default (物資 hidden, gear in the header)', async () => {
     expect(slots(await render('/portfolio'))).toEqual(['投資', '+', '財務']);
@@ -97,5 +99,13 @@ describe('MobileNavComponent', () => {
     expect(tab(el, '財務').querySelector('.visually-hidden')?.textContent).toBe('，有待處理項目');
     expect(tab(el, '財務').textContent?.replace(/\s+/g, '')).toBe('財務，有待處理項目');
     expect(tab(el, '投資').querySelector('.visually-hidden')).toBeNull();
+  });
+
+  it('highlights no tab on /settings (a pushed screen), not even 設定', async () => {
+    const el = await render('/settings', { hidden: [] });
+
+    expect(el.querySelector('.m-tab.active')).toBeNull();
+    expect(el.querySelector('.m-tab[aria-current]')).toBeNull();
+    expect(tab(el, '設定').classList.contains('active')).toBe(false);
   });
 });

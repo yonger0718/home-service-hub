@@ -5,8 +5,20 @@ import { App } from './app';
 import { provideRouter } from '@angular/router';
 
 describe('App', () => {
+  // Spec files share `window`: restore the original matchMedia afterwards.
+  const originalMatchMedia = Object.getOwnPropertyDescriptor(window, 'matchMedia');
+
+  afterEach(() => {
+    if (originalMatchMedia) Object.defineProperty(window, 'matchMedia', originalMatchMedia);
+    else delete (window as { matchMedia?: unknown }).matchMedia;
+    // Creating App constructs AppearanceService, whose apply() writes the root attribute.
+    document.documentElement.removeAttribute('data-gainloss');
+    document.documentElement.classList.remove('app-dark-mode');
+  });
+
   beforeEach(async () => {
     Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
       writable: true,
       value: () => ({
         matches: false,

@@ -32,6 +32,29 @@ h1 {
   justify-content: flex-end;
 }
 
+.page-back {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  color: var(--app-text);
+  cursor: pointer;
+  display: flex;
+  flex: 0 0 44px;
+  font: inherit;
+  font-size: 32px;
+  height: 44px;
+  justify-content: center;
+  line-height: 1;
+  padding: 0 0 4px;
+  width: 44px;
+
+  &:focus-visible {
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+    outline: none;
+  }
+}
+
 .header-gear {
   align-items: center;
   background: var(--app-surface);

@@ -1,4 +1,7 @@
 <div class="page-header-row">
+  @if (showBack()) {
+    <button class="page-back" type="button" aria-label="返回" (click)="goBack()">‹</button>
+  }
   <h1>{{ heading() }}</h1>
   <div class="page-actions"><ng-content></ng-content></div>
   @if (gear()) {

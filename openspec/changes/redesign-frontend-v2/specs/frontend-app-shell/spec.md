@@ -26,7 +26,7 @@ The application SHALL render a labelled left sidebar on viewports ≥ 760px and 
 
 ### Requirement: Active route highlighted in indigo
 
-The shell SHALL highlight the active sidebar item, rail item, phone tab and sub-nav entry using `var(--app-primary)` (indigo text on `--app-primary-soft`; the expanded item's icon square filled with `--app-primary`). Active state is driven by the current Angular route via `navItemForUrl`. Route ids MUST match `NAV_GROUPS` in `shell/navigation.ts`. The `accounts` id SHALL cover `/portfolio/accounts` and `/portfolio/accounts/:id`; the accounting `accounting` id SHALL cover `/accounting/accounts` and `/accounting/accounts/:id`.
+The shell SHALL highlight the active sidebar item, rail item, phone tab and sub-nav entry using `var(--app-primary)` (indigo text on `--app-primary-soft`; the expanded item's icon square filled with `--app-primary`). Active state is driven by the current Angular route via `navItemForUrl`. Route ids MUST match `NAV_GROUPS` in `shell/navigation.ts`. The `accounts` id SHALL cover `/portfolio/accounts` and `/portfolio/accounts/:id`; the accounting `accounting` id SHALL cover `/accounting/accounts` and `/accounting/accounts/:id`. On phones the pushed `/settings` screen SHALL highlight no tab.
 
 #### Scenario: Navigating updates active highlight
 - **WHEN** the user navigates from `/portfolio` to `/portfolio/transactions`
@@ -121,13 +121,13 @@ A `NavItem` MAY carry a badge (count or dot, plus an accessible label) fed only 
 
 ### Requirement: Hideable groups and tab bar parity
 
-Every group except 系統 SHALL be hideable from Settings; a hidden group SHALL disappear from the sidebar, the rail and the tab bar, and its routes SHALL stay reachable by URL. The tab bar SHALL be built as `[visible groups…, 設定]` with "+" inserted in the middle; when that list has an odd length, 設定 SHALL be removed from the tab bar and a gear button linking to `/settings` SHALL appear at the top-right of every page header, so "+" stays centred.
+Every group except 系統 SHALL be hideable from Settings; a hidden group SHALL disappear from the sidebar, the rail and the tab bar, and its routes SHALL stay reachable by URL. The tab bar SHALL be built as `[visible groups…, 設定]` with "+" inserted in the middle; when that list has an odd length, 設定 SHALL be removed from the tab bar and a gear button linking to `/settings` SHALL appear at the top-right of every page header, so "+" stays centred. The gear SHALL be omitted on `/settings` itself.
 
 #### Scenario: 物資 hidden
 - **GIVEN** 物資 is hidden and 投資 and 財務 are visible
 - **WHEN** the tab bar renders at 390px
 - **THEN** it SHALL show 投資, "+", 財務 in that order
-- **AND** every page header SHALL show a gear linking to `/settings`
+- **AND** every page header except `/settings` SHALL show a gear linking to `/settings`
 
 #### Scenario: All groups visible
 - **GIVEN** 物資, 投資 and 財務 are visible

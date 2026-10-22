@@ -5,7 +5,7 @@
         <a class="m-plus" routerLink="/accounting/entry" aria-label="新增記錄"><span aria-hidden="true">+</span></a>
       } @else {
         @let group = slot.group;
-        @let active = nav.activeGroup().id === group.id;
+        @let active = highlighted() === group.id;
         <a
           class="m-tab"
           [class.active]="active"

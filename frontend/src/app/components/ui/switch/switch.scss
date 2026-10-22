@@ -1,0 +1,54 @@
+:host {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.switch {
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  cursor: pointer;
+  height: 32px;
+  padding: 0;
+  position: relative;
+  transition: background var(--dur-fast) var(--ease-standard);
+  width: 52px;
+
+  &.on {
+    background: var(--app-primary);
+    border-color: var(--app-primary);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+  }
+}
+
+.thumb {
+  background: var(--app-on-primary);
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 25%);
+  height: 24px;
+  left: 3px;
+  position: absolute;
+  top: 3px;
+  transition: transform var(--dur-fast) var(--ease-standard);
+  width: 24px;
+}
+
+.on .thumb {
+  transform: translateX(20px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .switch,
+  .thumb {
+    transition: none;
+  }
+}

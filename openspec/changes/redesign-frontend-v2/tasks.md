@@ -19,10 +19,10 @@
 
 ## 2. Appearance and Settings
 
-- [ ] 2.1 `AppearanceService.theme$` (`light` | `dark` | `system`), `hh-theme` with one-time `hh-dark` migration, live `prefers-color-scheme` listener
-- [ ] 2.2 Update the pre-paint script in `index.html` to read `hh-theme` first
-- [ ] 2.3 Settings: three-way theme control, 漲跌顏色 with preview (kept), 導覽 section, 記帳設定 link, shortcut reference, scheduler times
-- [ ] 2.4 Specs for theme migration and the 導覽 switches
+- [x] 2.1 `AppearanceService.theme$` (`light` | `dark` | `system`), `hh-theme` with one-time `hh-dark` migration, live `prefers-color-scheme` listener
+- [x] 2.2 Update the pre-paint script in `index.html` to read `hh-theme` first
+- [x] 2.3 Settings: three-way theme control, 漲跌顏色 with preview (kept), 導覽 section, 記帳設定 link, shortcut reference, scheduler times
+- [x] 2.4 Specs for theme migration and the 導覽 switches
 
 ## 3. Portfolio dashboard
 
