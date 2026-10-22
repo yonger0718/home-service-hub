@@ -6,7 +6,7 @@ import { provideRouter, RouterLink } from '@angular/router';
 import { of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { PortfolioSummary, StockHolding } from '../../../models/portfolio.model';
+import { Dividend, PortfolioSummary, StockHolding } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { AppearanceService } from '../../../services/appearance.service';
 import { DASHBOARD_CLOCK, PortfolioDashboardComponent } from './dashboard';
@@ -100,6 +100,8 @@ describe('PortfolioDashboardComponent', () => {
     getSummary: ReturnType<typeof vi.fn>;
     getUpcomingExDividends: ReturnType<typeof vi.fn>;
     getNetworthHistory: ReturnType<typeof vi.fn>;
+    getDividends: ReturnType<typeof vi.fn>;
+    getSymbolNames: ReturnType<typeof vi.fn>;
     cashLedgerChanged$: import('rxjs').Observable<void>;
   };
   let appearance: AppearanceService;
@@ -116,6 +118,8 @@ describe('PortfolioDashboardComponent', () => {
         { date: '2026-01-01', total_market_value: '100', total_cash_twd: '40', total_assets_twd: '140', total_cost: '80', total_unrealized_pnl: '20', total_dividends: '0', total_realized_pnl: '0', portfolio_xirr: null },
         { date: '2026-05-01', total_market_value: '120', total_cash_twd: '60', total_assets_twd: '180', total_cost: '80', total_unrealized_pnl: '40', total_dividends: '0', total_realized_pnl: '0', portfolio_xirr: null },
       ])),
+      getDividends: vi.fn().mockReturnValue(of({ items: [], total: 0 })),
+      getSymbolNames: vi.fn().mockReturnValue(of({})),
       cashLedgerChanged$: NEVER,
     };
 
@@ -791,6 +795,152 @@ describe('PortfolioDashboardComponent', () => {
         ['持股淨值', '$1,000'],
       ]);
       expect(card.querySelector('.chart-caption')?.textContent?.trim()).toBe('兩線之間是交割戶現金 $250');
+    });
+  });
+
+  describe('持股配置 card', () => {
+    function pendingDividend(id: number, overrides: Partial<Dividend> = {}): Dividend {
+      return {
+        id,
+        symbol: '00878',
+        amount: 9600,
+        ex_dividend_date: '2026-10-17',
+        payment_date: '2026-11-18',
+        receipt_status: 'pending',
+        cash_dividend_per_share: 0.48,
+        quantity_at_record_date: 20000,
+        ...overrides,
+      };
+    }
+
+    function card(root: HTMLElement): HTMLElement | null {
+      return root.querySelector<HTMLElement>('.allocation-card');
+    }
+
+    function text(el: Element | null | undefined): string {
+      return el?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    }
+
+    function allocationRows(root: HTMLElement): string[] {
+      return Array.from(card(root)!.querySelectorAll('.allocation-row')).map(
+        row => `${text(row.querySelector('.allocation-name'))} ${text(row.querySelector('.allocation-pct'))}`,
+      );
+    }
+
+    function pendingBlock(root: HTMLElement): HTMLElement | null {
+      return card(root)?.querySelector<HTMLElement>('.pending-block') ?? null;
+    }
+
+    beforeEach(() => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({
+        holdings: [
+          { ...buildHolding(), symbol: '0050', name: '元大台灣50', market_value: 3500 },
+          buildHolding(),
+        ],
+      })));
+    });
+
+    it('sits beside the chart with a bar segment and a row per slice', () => {
+      const fixture = createFixture();
+      const root = fixture.nativeElement as HTMLElement;
+      const row = root.querySelector('.chart-row')!;
+
+      expect(row.querySelector('.chart-head')).not.toBeNull();
+      expect(row.contains(card(root))).toBe(true);
+      expect(text(card(root)!.querySelector('h2'))).toBe('持股配置');
+      expect(card(root)!.querySelectorAll('.allocation-bar > span').length).toBe(2);
+      expect(allocationRows(root)).toEqual([
+        '台積電 2330 65.0%',
+        '元大台灣50 0050 35.0%',
+      ]);
+      const [first] = Array.from(card(root)!.querySelectorAll<HTMLElement>('.allocation-bar > span'));
+      expect(first.style.background).toBe('var(--app-primary)');
+    });
+
+    it('lists at most three pending dividends with names from the symbol map and a link to all', () => {
+      portfolioService.getSymbolNames.mockReturnValue(of({ '00878': '國泰永續高股息', '2330': '台積電' }));
+      portfolioService.getDividends.mockReturnValue(of({
+        total: 5,
+        items: [
+          pendingDividend(1, { payment_date: '2027-01-08', symbol: '2330', amount: 5000, cash_dividend_per_share: 5, quantity_at_record_date: 1000 }),
+          pendingDividend(2),
+          pendingDividend(3, { payment_date: '2027-02-01', symbol: '9999' }),
+          pendingDividend(4, { payment_date: '2027-03-01' }),
+          pendingDividend(5, { receipt_status: 'confirmed', payment_date: '2026-10-01' }),
+        ],
+      }));
+      const fixture = createFixture();
+      const block = pendingBlock(fixture.nativeElement)!;
+      const rows = Array.from(block.querySelectorAll('.pending-row'));
+
+      expect(text(block.querySelector('h3'))).toBe('待收股利');
+      const link = block.querySelector<HTMLAnchorElement>('a')!;
+      expect(text(link)).toBe('全部');
+      expect(link.getAttribute('href')).toBe('/portfolio/dividends');
+      expect(rows.length).toBe(3);
+      expect(rows.map(r => [text(r.querySelector('.pending-tile span')), text(r.querySelector('.pending-tile b'))])).toEqual([
+        ['11月', '18'],
+        ['1月', '08'],
+        ['2月', '01'],
+      ]);
+      expect(rows.map(r => text(r.querySelector('.pending-name')))).toEqual(['國泰永續高股息', '台積電', '9999']);
+      expect(text(rows[1].querySelector('.pending-note'))).toBe('每股 5 · 1,000 股');
+      expect(rows[0].querySelector('.pending-amount')!.classList).toContain('dividend');
+      expect(text(rows[0].querySelector('.pending-amount'))).toBe('+9,600');
+    });
+
+    it('requests every page, newest ex date first, and lists a row found only on page 2', () => {
+      portfolioService.getDividends.mockImplementation(({ offset }: { offset: number }) => of({
+        total: 150,
+        items: offset === 0
+          ? Array.from({ length: 100 }, (_, i) => pendingDividend(i + 1, { receipt_status: 'confirmed' }))
+          : [pendingDividend(101, { symbol: '2330' })],
+      }));
+      const fixture = createFixture();
+
+      expect(portfolioService.getDividends.mock.calls[0][0]).toEqual({ limit: 100, offset: 0, sort: 'ex_dividend_date:desc' });
+      expect(portfolioService.getDividends.mock.calls[1][0]).toEqual({ limit: 100, offset: 100, sort: 'ex_dividend_date:desc' });
+      const rows = pendingBlock(fixture.nativeElement)!.querySelectorAll('.pending-row');
+      expect(rows.length).toBe(1);
+      expect(text(rows[0].querySelector('.pending-name'))).toBe('2330');
+    });
+
+    it('omits the 待收股利 block but keeps the card when a later dividend page fails', () => {
+      portfolioService.getDividends.mockImplementation(({ offset }: { offset: number }) => offset === 0
+        ? of({ total: 150, items: [pendingDividend(1)] })
+        : throwError(() => new Error('boom')));
+      const fixture = createFixture();
+
+      expect(card(fixture.nativeElement)).not.toBeNull();
+      expect(card(fixture.nativeElement)!.querySelectorAll('.allocation-row').length).toBe(2);
+      expect(pendingBlock(fixture.nativeElement)).toBeNull();
+    });
+
+    it('omits the 待收股利 block when the symbol names fail', () => {
+      portfolioService.getDividends.mockReturnValue(of({ total: 1, items: [pendingDividend(1)] }));
+      portfolioService.getSymbolNames.mockReturnValue(throwError(() => new Error('boom')));
+      const fixture = createFixture();
+
+      expect(card(fixture.nativeElement)).not.toBeNull();
+      expect(pendingBlock(fixture.nativeElement)).toBeNull();
+    });
+
+    it('allocates over the filtered holdings', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({
+        holdings: [
+          buildHolding(),
+          { ...buildHolding(), symbol: 'AAPL', name: 'Apple', market: 'US', native_currency: 'USD', market_value: 3000 },
+          { ...buildHolding(), symbol: 'MSFT', name: 'Microsoft', market: 'US', native_currency: 'USD', market_value: 1000 },
+        ],
+      })));
+      const fixture = createFixture();
+      fixture.componentInstance.selectMarketFilter('US');
+      fixture.detectChanges();
+
+      expect(allocationRows(fixture.nativeElement)).toEqual([
+        'Apple AAPL 75.0%',
+        'Microsoft MSFT 25.0%',
+      ]);
     });
   });
 

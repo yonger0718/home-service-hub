@@ -338,6 +338,167 @@ app-bento {
   }
 }
 
+.chart-row {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: minmax(0, 1fr);
+
+  > app-bento {
+    min-width: 0;
+  }
+}
+
+@media (min-width: 1024px) {
+  .chart-row {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  }
+}
+
+.allocation-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.allocation-title {
+  color: var(--app-text);
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.allocation-bar {
+  border-radius: 999px;
+  display: flex;
+  gap: 2px;
+  height: 14px;
+  overflow: hidden;
+
+  span {
+    flex-basis: 0;
+    flex-shrink: 1;
+  }
+}
+
+.allocation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.allocation-row {
+  align-items: center;
+  display: flex;
+  font-size: 14px;
+  gap: 10px;
+}
+
+.allocation-swatch {
+  border-radius: 3px;
+  flex: none;
+  height: 10px;
+  width: 10px;
+}
+
+.allocation-name {
+  color: var(--app-text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.allocation-pct,
+.pending-amount {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.pending-block {
+  border-top: 1px solid var(--app-border);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 14px;
+}
+
+.pending-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.pending-title {
+  color: var(--app-text);
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.pending-link {
+  color: var(--app-primary);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+
+  &:hover,
+  &:focus-visible {
+    text-decoration: underline;
+  }
+}
+
+.pending-row {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.pending-tile {
+  align-items: center;
+  background: color-mix(in srgb, var(--app-dividend) 12%, transparent);
+  border-radius: 12px;
+  color: var(--app-dividend);
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  height: 40px;
+  justify-content: center;
+  line-height: 1.15;
+  width: 40px;
+
+  b {
+    font-size: 15px;
+  }
+}
+
+.pending-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.pending-name {
+  color: var(--app-text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.pending-note {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pending-amount {
+  font-size: 14px;
+}
+
 .holdings {
   display: flex;
   flex-direction: column;

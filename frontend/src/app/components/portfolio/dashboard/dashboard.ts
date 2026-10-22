@@ -13,7 +13,7 @@ import {
 import { CommonModule } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { catchError, combineLatest, finalize, interval, of, switchMap, takeUntil, takeWhile, timer } from 'rxjs';
+import { Subscription, catchError, combineLatest, finalize, forkJoin, interval, of, switchMap, takeUntil, takeWhile, timer } from 'rxjs';
 
 import { ChartModule, UIChart } from 'primeng/chart';
 import { SkeletonModule } from 'primeng/skeleton';
@@ -37,7 +37,16 @@ import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-tog
 import { BentoComponent } from '../../ui/bento/bento';
 import { PctBadgeComponent } from '../../ui/pct-badge/pct-badge';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
-import { MARKET_LABELS, composition, quoteTimeLabel, todayChange } from './dashboard-math';
+import {
+  MARKET_LABELS,
+  PendingRow,
+  allDividendPages,
+  allocation,
+  composition,
+  pendingRows,
+  quoteTimeLabel,
+  todayChange,
+} from './dashboard-math';
 import { hoverGuidePlugin } from './chart-guide.plugin';
 
 /** Current time for the quote line's 盤中 / 台股收盤 tag; overridable in tests. */
@@ -95,6 +104,8 @@ export class PortfolioDashboardComponent implements OnInit {
   readonly marketFilter = signal<'ALL' | MarketCode>('ALL');
   /** `行情更新於 HH:mm · …` under the page title; null hides it. */
   readonly quoteLine = signal<string | null>(null);
+  /** 待收股利 rows; null when the dividends or names are unavailable, which omits the block. */
+  readonly pendingDividends = signal<PendingRow[] | null>(null);
 
   readonly rangeOptions: SegToggleOption[] = [
     { label: '1M', value: '1M' },
@@ -168,6 +179,8 @@ export class PortfolioDashboardComponent implements OnInit {
     const rows = this.flatHoldings();
     return filter === 'ALL' ? rows : rows.filter(h => h.market === filter);
   });
+
+  readonly allocationSlices = computed(() => allocation(this.filteredHoldings()));
 
   readonly showMarketGroups = computed(() =>
     this.filteredHoldings().some(holding => holding.market !== 'TW'),
@@ -481,6 +494,7 @@ export class PortfolioDashboardComponent implements OnInit {
         this.summary.set(data);
         this.loading.set(false);
         this.loadQuoteLine();
+        this.loadPendingDividends();
       },
       error: (err) => {
         console.error('Failed to load portfolio summary', err);
@@ -495,6 +509,21 @@ export class PortfolioDashboardComponent implements OnInit {
       .getRecalcStatus()
       .pipe(catchError(() => of(null)), takeUntilDestroyed(this.destroyRef))
       .subscribe(status => this.quoteLine.set(quoteTimeLabel(status?.quote_refresh?.finished_at, this.clock())));
+  }
+
+  private pendingDividendsLoad?: Subscription;
+
+  private loadPendingDividends(): void {
+    this.pendingDividendsLoad?.unsubscribe();
+    const dividends = allDividendPages(offset =>
+      this.portfolioService.getDividends({ limit: 100, offset, sort: 'ex_dividend_date:desc' }),
+    ).pipe(catchError(() => of(null)));
+    const names = this.portfolioService.getSymbolNames().pipe(catchError(() => of(null)));
+    this.pendingDividendsLoad = forkJoin([dividends, names])
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(([rows, map]) =>
+        this.pendingDividends.set(rows && map ? pendingRows(rows, d => map[d.symbol] ?? d.symbol) : null),
+      );
   }
 
   private loadExDividends(): void {
