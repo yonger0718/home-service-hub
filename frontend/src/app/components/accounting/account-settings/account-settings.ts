@@ -1,4 +1,15 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  ElementRef,
+  Injector,
+  OnInit,
+  afterNextRender,
+  computed,
+  inject,
+  signal,
+} from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { EMPTY, Observable, Subject, catchError, map, merge, of, switchMap, tap } from 'rxjs';
@@ -12,8 +23,9 @@ import {
   RoundingMode,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
-import { accountLabel } from '../accounting-ui';
+import { accountLabel, isHandledKey, restoreOverlayFocus } from '../accounting-ui';
 import { DueRule, dueDate, periodLabel, statementPeriod } from '../cycle';
+import { DirtyAware, DirtyFormRegistry } from '../dirty-form.service';
 import { shortDate, todayIso } from '../dates';
 import { formatMoney } from '../format';
 import { fieldErrors, writeErrorMessage } from '../http-errors';
@@ -173,6 +185,14 @@ function formToInput(form: AccountForm, members: number[]): AccountInput {
   };
 }
 
+function sameForm(a: AccountForm, b: AccountForm): boolean {
+  return (Object.keys(a) as (keyof AccountForm)[]).every(key => a[key] === b[key]);
+}
+
+function sameMembers(a: readonly number[], b: readonly number[]): boolean {
+  return a.length === b.length && a.every(id => b.includes(id));
+}
+
 interface LoadedAccount {
   loadId: number;
   id: number | null;
@@ -186,11 +206,18 @@ interface LoadedAccount {
   templateUrl: './account-settings.html',
   styleUrl: './account-settings.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { '(keydown)': 'onKeydown($event)' },
 })
-export class AccountSettingsComponent implements OnInit {
+export class AccountSettingsComponent implements OnInit, DirtyAware {
   private service = inject(AccountingService);
   private route = inject(ActivatedRoute);
   private router = inject(Router);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
+  /** N, 記一筆 and the layout's ✕ / Esc / backdrop ask before unsaved input is dropped (spec §4.3). */
+  readonly dirty = inject(DirtyFormRegistry);
+  /** Focused element when 放棄未儲存的內容？ opened; 留下 returns focus there. */
+  private discardOpener: HTMLElement | null = null;
 
   private destroyRef = inject(DestroyRef);
   private loadId = 0;
@@ -210,6 +237,9 @@ export class AccountSettingsComponent implements OnInit {
   readonly groups = signal<AccountGroup[]>([]);
   readonly form = signal<AccountForm>(EMPTY_FORM);
   readonly sharing = signal<number[]>([]);
+  /** The form and 額度共用 selection as loaded (or last saved): anything else is unsaved input. */
+  private readonly baseline = signal<AccountForm>(EMPTY_FORM);
+  private readonly sharingBaseline = signal<number[]>([]);
   readonly errors = signal<Record<string, string>>({});
   readonly message = signal<string | null>(null);
   readonly saving = signal(false);
@@ -301,6 +331,8 @@ export class AccountSettingsComponent implements OnInit {
   readonly rules = computed<RewardRule[]>(() => this.detail()?.reward_rules ?? []);
 
   ngOnInit(): void {
+    this.dirty.register(this);
+    this.destroyRef.onDestroy(() => this.dirty.unregister(this));
     const navigations = this.route.paramMap.pipe(
       map(params => {
         const idParam = params.get('id');
@@ -315,6 +347,8 @@ export class AccountSettingsComponent implements OnInit {
         this.detail.set(null);
         this.form.set(EMPTY_FORM);
         this.sharing.set([]);
+        this.baseline.set(EMPTY_FORM);
+        this.sharingBaseline.set([]);
         this.errors.set({});
         this.message.set(null);
         this.confirmDelete.set(false);
@@ -385,6 +419,36 @@ export class AccountSettingsComponent implements OnInit {
     this.detail.set(loaded.detail);
     this.form.set(loaded.detail ? formFrom(loaded.detail) : EMPTY_FORM);
     this.sharing.set((loaded.detail?.credit_sharing_members ?? []).filter(id => id !== loaded.id));
+    this.baseline.set(this.form());
+    this.sharingBaseline.set(this.sharing());
+  }
+
+  isDirty(): boolean {
+    return !sameForm(this.form(), this.baseline()) || !sameMembers(this.sharing(), this.sharingBaseline());
+  }
+
+  showDiscardPrompt(): void {
+    if (!this.discardOpener) {
+      this.discardOpener = this.host.nativeElement.ownerDocument.activeElement as HTMLElement | null;
+    }
+    afterNextRender(() => this.host.nativeElement.querySelector<HTMLElement>('.discard-stay')?.focus(), {
+      injector: this.injector,
+    });
+  }
+
+  restoreDiscardFocus(): void {
+    const opener = this.discardOpener;
+    this.discardOpener = null;
+    restoreOverlayFocus(opener, this.host.nativeElement);
+  }
+
+  /** Esc on an open 放棄 strip is 留下; marked handled so the layout does not ask again. */
+  onKeydown(event: KeyboardEvent): void {
+    if (event.key !== 'Escape' || isHandledKey(event) || !this.dirty.promptOpen()) {
+      return;
+    }
+    event.preventDefault();
+    this.dirty.cancelDiscard();
   }
 
   set<K extends keyof AccountForm>(key: K, value: AccountForm[K]): void {
@@ -448,6 +512,11 @@ export class AccountSettingsComponent implements OnInit {
             return;
           }
           this.saving.set(false);
+          // Saved: nothing is left to discard while the passbook opens.
+          this.baseline.set(form);
+          this.sharingBaseline.set(this.sharing());
+          this.dirty.clearPending();
+          this.discardOpener = null;
           this.router.navigate(['/accounting/accounts', id]);
         },
         error: err => {

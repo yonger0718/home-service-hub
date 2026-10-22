@@ -8,6 +8,35 @@
   h1 { font-size: 1.05rem; font-weight: 800; margin: 0; text-align: center; }
 }
 
+/* 放棄未儲存的內容？ (as the entry form's strip). */
+.discard-strip {
+  align-items: center;
+  background: var(--app-state-warning-bg);
+  border-radius: var(--radius-md);
+  color: var(--app-text);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  gap: 8px;
+  justify-content: space-between;
+  margin: 4px 0 8px;
+  padding: 8px 12px;
+
+  .discard-actions { display: flex; gap: 6px; }
+
+  button {
+    border: 1px solid var(--app-border);
+    border-radius: var(--radius-pill);
+    cursor: pointer;
+    font: inherit;
+    padding: 4px 12px;
+  }
+
+  .discard-stay { background: var(--app-primary); border-color: var(--app-primary); color: var(--app-on-primary, #fff); }
+  .discard-leave { background: var(--app-surface); color: var(--app-text); }
+}
+
 .ib { background: none; border: 0; color: var(--app-text-muted); cursor: pointer; font-size: 1.2rem; text-align: center; text-decoration: none; }
 .ib.ok { color: var(--app-primary); font-weight: 800; }
 

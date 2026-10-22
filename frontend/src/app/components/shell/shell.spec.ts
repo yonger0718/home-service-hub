@@ -412,6 +412,42 @@ describe('ShellComponent', () => {
       expect(router.url).toBe('/accounting/entries/9/edit');
     });
 
+    it('820 px: N over unsaved account input asks first and opens the form only after 放棄', async () => {
+      const { router, find, settle } = await real(820, '/accounting/accounts/new');
+      const name = (await find('.detail-pane app-account-settings .name-input')) as HTMLInputElement;
+      name.value = '悠遊卡';
+      name.dispatchEvent(new Event('input'));
+      const credit = await find('.detail-pane .credit-toggle');
+      credit.focus();
+
+      expect(press('n', credit).defaultPrevented).toBe(true);
+      const leave = await find('.detail-pane .discard-strip .discard-leave');
+      await settle();
+      expect(router.url).toBe('/accounting/accounts/new');
+      expect(name.value).toBe('悠遊卡');
+
+      leave.click();
+      await vi.waitFor(() => expect(router.url).toBe('/accounting/entry'));
+    });
+
+    it('1440 px: a 記一筆 click over unsaved account input asks first and opens the form only after 放棄', async () => {
+      const { router, find, fab, settle } = await real(1440, '/accounting/accounts/new');
+      const name = (await find('.detail-pane app-account-settings .name-input')) as HTMLInputElement;
+      name.value = '悠遊卡';
+      name.dispatchEvent(new Event('input'));
+      await settle();
+
+      const click = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+      fab()!.dispatchEvent(click);
+      expect(click.defaultPrevented).toBe(true);
+      const leave = await find('.detail-pane .discard-strip .discard-leave');
+      await settle();
+      expect(router.url).toBe('/accounting/accounts/new');
+
+      leave.click();
+      await vi.waitFor(() => expect(router.url).toBe('/accounting/entry'));
+    });
+
     it('E still edits the selected entry (the layout\'s key)', async () => {
       const { router, find } = await real(1440, '/accounting/entries/9');
       await find('.detail-pane app-entry-detail');

@@ -4,6 +4,15 @@
     <h1>{{ accountId() === null ? '新增帳戶' : '帳戶資訊' }}</h1>
     <button type="button" class="ib ok save" aria-label="儲存" [disabled]="saving() || loading() || loadFailed()" (click)="save()">✓</button>
   </header>
+  @if (dirty.promptOpen()) {
+    <div class="discard-strip" role="alertdialog" aria-label="放棄未儲存的內容？">
+      <span>放棄未儲存的內容？</span>
+      <span class="discard-actions">
+        <button type="button" class="discard-stay" (click)="dirty.cancelDiscard()">留下</button>
+        <button type="button" class="discard-leave" (click)="dirty.confirmDiscard()">放棄</button>
+      </span>
+    </div>
+  }
 
   <div class="bigicon">
     <span class="ico">{{ form().icon || '📁' }}</span>
