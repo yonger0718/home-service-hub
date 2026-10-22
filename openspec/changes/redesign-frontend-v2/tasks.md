@@ -26,11 +26,11 @@
 
 ## 3. Portfolio dashboard
 
-- [ ] 3.1 總資產 hero with 今日 change and 股票 / 現金 bar; 待收股利 shown separately
-- [ ] 3.2 KPI row labels and footnotes per spec
-- [ ] 3.3 Net-worth chart: series names, `--app-accent` total line, trend-coloured holdings line, shaded gap, legend with latest values, hover tooltip (date, 帳戶總值, 持股淨值, 現金)
-- [ ] 3.4 持股配置 bar and 待收股利 list beside the chart
-- [ ] 3.5 Holdings list restyle (data unchanged)
+- [x] 3.1 總資產 hero with 今日 change and 股票 / 現金 bar; 待收股利 shown separately
+- [x] 3.2 KPI row labels and footnotes per spec
+- [x] 3.3 Net-worth chart: series names, `--app-accent` total line, trend-coloured holdings line, shaded gap, legend with latest values, hover tooltip (date, 帳戶總值, 持股淨值, 現金)
+- [x] 3.4 持股配置 bar and 待收股利 list beside the chart
+- [x] 3.5 Holdings list restyle (data unchanged)
 
 ## 4. 交易紀錄 and 股利
 
