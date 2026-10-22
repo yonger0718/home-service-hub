@@ -22,6 +22,7 @@ import { AccountingToastService, scheduleActionError } from '../accounting-toast
 import { isHandledKey } from '../accounting-ui';
 import { BillingEvent, billingCards, dueCountdown, reminderDues } from '../billing/billing-math';
 import { BillState, BillingService } from '../billing/billing.service';
+import { AppInboxHandledListComponent } from '../inbox/handled-list/handled-list';
 import { AppInboxPanelComponent } from '../inbox/inbox-panel/inbox-panel';
 import { InboxOut } from '../inbox/inbox.model';
 import { InboxService } from '../inbox/inbox.service';
@@ -239,7 +240,7 @@ export function debtReminders(counterparties: Counterparty[], openEntries: Ledge
 @Component({
   selector: 'app-accounting-reminders',
   standalone: true,
-  imports: [RouterLink, NgTemplateOutlet, ScheduleSheetComponent, AppInboxPanelComponent],
+  imports: [RouterLink, NgTemplateOutlet, ScheduleSheetComponent, AppInboxPanelComponent, AppInboxHandledListComponent],
   templateUrl: './reminders.html',
   styleUrls: ['../filters.scss', '../entry-row.scss', './reminders.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,

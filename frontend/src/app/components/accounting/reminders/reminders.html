@@ -23,6 +23,10 @@
         } @else if (inboxFailed()) {
           <p class="load-error inbox-load-error">待處理讀取失敗，請稍後再試。</p>
         }
+        <details class="handled">
+          <summary>已處理</summary>
+          <app-inbox-handled-list />
+        </details>
       } @else if (inbox(); as data) {
         @if (data.counts.ask > 0) {
           <h3 class="section">待處理</h3>

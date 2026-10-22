@@ -9,6 +9,7 @@ import { Counterparty, DailySummary, LedgerAccount, LedgerEntry, MonthSummary, P
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
+import { makeInbox } from '../inbox/testing';
 import { makeAccount, makeEntry, makeInstance, makePreference } from '../testing/fixtures';
 import { LedgerTimelineComponent, buildDays, schedulePills } from './timeline';
 
@@ -38,6 +39,7 @@ describe('LedgerTimelineComponent', () => {
     accounts: LedgerAccount[] = ACCOUNTS,
     counterparties: Counterparty[] = [],
     queue: ScheduleInstance[] = [],
+    inboxAsk = 0,
   ) {
     TestBed.configureTestingModule({
       imports: [LedgerTimelineComponent],
@@ -49,17 +51,23 @@ describe('LedgerTimelineComponent', () => {
     fixture.detectChanges();
     httpMock.expectOne('/api/accounting/preference').flush(preference);
     httpMock.expectOne('/api/accounting/accounts').flush(accounts);
-    flushCounterparties(counterparties, queue);
+    flushCounterparties(counterparties, queue, inboxAsk);
     fixture.detectChanges();
     return { fixture, el: fixture.nativeElement as HTMLElement };
   }
 
-  /** The 🔔's counterparties and 待完成交易 queue: read on init and again after every entry or account write. */
-  function flushCounterparties(body: Counterparty[] = [], queue: ScheduleInstance[] = []): void {
+  /**
+   * The 🔔's counterparties, 待完成交易 queue and inbox ask count: read on init and again after every entry or account
+   * write.
+   */
+  function flushCounterparties(body: Counterparty[] = [], queue: ScheduleInstance[] = [], inboxAsk = 0): void {
     httpMock!.expectOne('/api/accounting/counterparties').flush(body);
     const req = httpMock!.expectOne(r => r.url === '/api/accounting/schedules/instances');
     expect(req.request.params.get('queue')).toBe('true');
     req.flush(queue);
+    const inbox = httpMock!.expectOne(r => r.url === '/api/accounting/reconciliation/inbox');
+    expect(inbox.request.params.get('limit')).toBe('1');
+    inbox.flush(makeInbox([], { ask: inboxAsk }));
   }
 
   function flushSummary(month: string, body?: Partial<MonthSummary>): void {
@@ -1647,6 +1655,16 @@ describe('LedgerTimelineComponent', () => {
       flushCounterparties([], []);
       rendered.fixture.detectChanges();
       expect(rendered.el.querySelector('.bell-count')).toBeNull();
+    });
+
+    it('bell adds the inbox ask count', () => {
+      // Spec §7.1: one `GET /reconciliation/inbox?limit=1`; its counts are server-side whatever the limit.
+      const rendered = render('phone', makePreference(), [], ACCOUNTS, [], [], 2);
+      flushSummary('2026-10');
+      flushEntries([]);
+      rendered.fixture.detectChanges();
+      expect(text(rendered.el.querySelector('.bell-count'))).toBe('2');
+      expect(bell(rendered.el).getAttribute('aria-label')).toBe('提醒中心，2 項');
     });
 
     it('re-reads the counterparties after an entry write', () => {

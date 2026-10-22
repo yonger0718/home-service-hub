@@ -1027,6 +1027,13 @@ describe('AccountingRemindersComponent', () => {
       expect(el.querySelector('app-inbox-panel a.more')).toBeNull();
       expect(sections(el)).toEqual([]);
       expect(el.querySelector('.empty')).toBeNull();
+      // 已處理 below the panel, collapsed; it reads the last 50 actions itself.
+      const handled = el.querySelector<HTMLDetailsElement>('details.handled')!;
+      expect(text(handled.querySelector('summary'))).toBe('已處理');
+      expect(handled.open).toBe(false);
+      expect(handled.querySelector('app-inbox-handled-list')).not.toBeNull();
+      expect(el.querySelector('app-inbox-panel ~ details.handled')).toBe(handled);
+      http.expectOne(r => r.url === '/api/accounting/reconciliation/actions' && r.params.get('limit') === '50').flush([]);
 
       // Nothing to decide: the page says so.
       TestBed.inject(AccountingService).markEntriesChanged();
@@ -1054,6 +1061,8 @@ describe('AccountingRemindersComponent', () => {
       const panel = el.querySelector('app-inbox-panel')!;
       expect(panel.querySelectorAll('.ask-cards .inbox-card').length).toBe(3);
       expect(text(panel.querySelector('a.more'))).toBe('還有 1 張 →');
+      // 已處理 is on the 待處理 tab only.
+      expect(el.querySelector('details.handled')).toBeNull();
 
       // An answer reloads the page (and with it the inbox) through entriesChanged.
       const first = panel.querySelector<HTMLElement>('.ask-cards .inbox-card')!;

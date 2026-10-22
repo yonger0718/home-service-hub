@@ -41,6 +41,7 @@ import { SkeletonComponent } from '../skeleton/skeleton';
 import { FolderIcon, SplitFolderComponent } from '../split-folder/split-folder';
 import { groupCommands, listOpenState } from '../split-group/group-nav';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
+import { InboxService } from '../inbox/inbox.service';
 import { parseTags } from '../entry-form/entry-draft';
 import { todayIso } from '../dates';
 import { schedulePill } from '../schedule-math';
@@ -375,6 +376,7 @@ export class LedgerTimelineComponent implements OnInit {
   private readonly queryInput = viewChild<ElementRef<HTMLInputElement>>('queryInput');
 
   private readonly bills = inject(BillingService);
+  private readonly inbox = inject(InboxService);
 
   readonly preference = signal<Preference | null>(null);
   readonly accounts = signal<LedgerAccount[]>([]);
@@ -384,6 +386,9 @@ export class LedgerTimelineComponent implements OnInit {
   /** For the 🔔 count only: the 待完成交易 queue (`queue=true`). */
   private readonly queue = signal<ScheduleInstance[]>([]);
   private queueRequestId = 0;
+  /** For the 🔔 count only: reconciliation inbox cards waiting for the owner's answer (`counts.ask`). */
+  private readonly inboxAsk = signal(0);
+  private inboxRequestId = 0;
   readonly month = signal(currentMonth());
   readonly summary = signal<MonthSummary | null>(null);
   readonly summaryLoading = signal(true);
@@ -509,14 +514,15 @@ export class LedgerTimelineComponent implements OnInit {
     return lines;
   });
   /**
-   * 🔔 count: cards with something left to pay, counterparties with open debt rows, and 待完成交易 items due today or
-   * earlier or partial (paused and ended definitions are not in the queue).
+   * 🔔 count: cards with something left to pay, counterparties with open debt rows, 待完成交易 items due today or
+   * earlier or partial (paused and ended definitions are not in the queue), and 待處理 inbox cards to decide.
    */
   readonly reminderCount = computed(
     () =>
       this.reminderEvents().filter(event => this.openBill(event) !== null).length +
       this.counterparties().filter(counterparty => (counterparty.open_count ?? 0) > 0).length +
-      this.queue().filter(item => item.is_partial || item.due_date <= this.today()).length,
+      this.queue().filter(item => item.is_partial || item.due_date <= this.today()).length +
+      this.inboxAsk(),
   );
   /** The list view's 近 7 天 banner: upcoming due days with a remaining balance. */
   readonly upcomingBills = computed(() => this.upcomingEvents().filter(event => this.openBill(event) !== null));
@@ -604,6 +610,7 @@ export class LedgerTimelineComponent implements OnInit {
       untracked(() => {
         this.loadCounterparties();
         this.loadQueue();
+        this.loadInboxCount();
       });
     });
 
@@ -876,6 +883,20 @@ export class LedgerTimelineComponent implements OnInit {
         }
       },
       // Swallowed like the counterparties: the 🔔 is a hint; the reminder centre reports its own load errors.
+      error: () => undefined,
+    });
+  }
+
+  /** `counts` are computed server-side whatever the limit, so one card is enough. */
+  private loadInboxCount(): void {
+    const id = ++this.inboxRequestId;
+    this.inbox.get({ limit: 1 }).subscribe({
+      next: data => {
+        if (id === this.inboxRequestId) {
+          this.inboxAsk.set(data.counts.ask);
+        }
+      },
+      // Swallowed like the queue: the reminder centre reports its own inbox load error.
       error: () => undefined,
     });
   }
