@@ -3,7 +3,7 @@ import { provideRouter } from '@angular/router';
 import { BehaviorSubject, Observable, of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { SettingsComponent } from './settings';
+import { SETTINGS_CLOCK, SettingsComponent } from './settings';
 import { LayoutMode, LayoutModeService, MATCH_MEDIA } from '../../services/layout-mode.service';
 import { AppearanceService, GainLossConvention, ThemeMode } from '../../services/appearance.service';
 import { NavigationPreferencesService } from '../../services/navigation-preferences.service';
@@ -23,6 +23,8 @@ describe('SettingsComponent', () => {
     setGainLoss: ReturnType<typeof vi.fn>;
   };
   let recalcStatus: () => Observable<RecalcStatus>;
+  /** Fixed clock: 2026-10-22 14:00 in Asia/Taipei. */
+  let now: Date;
 
   beforeEach(async () => {
     localStorage.clear();
@@ -35,12 +37,14 @@ describe('SettingsComponent', () => {
       setGainLoss: vi.fn(),
     };
     recalcStatus = () => of({ state: 'idle' });
+    now = new Date('2026-10-22T06:00:00Z');
 
     await TestBed.configureTestingModule({
       imports: [SettingsComponent],
       providers: [
         { provide: AppearanceService, useValue: appearance },
         { provide: PortfolioService, useValue: { getRecalcStatus: () => recalcStatus() } },
+        { provide: SETTINGS_CLOCK, useValue: () => now },
         provideRouter([]),
         { provide: MATCH_MEDIA, useValue: () =>
             ({ matches: false, addEventListener: () => undefined, removeEventListener: () => undefined }) as unknown as MediaQueryList },
@@ -264,22 +268,69 @@ describe('SettingsComponent', () => {
       }));
     }
 
-    it('lists the three jobs and the last quote refresh in Asia/Taipei', () => {
-      recalcStatus = () => of({
-        state: 'idle',
-        quote_refresh: { state: 'completed', finished_at: '2026-10-22T05:30:00Z' },
-      });
-      expect(jobs(el(render()))).toEqual([
-        { label: '盤中報價', when: '交易時段每 15 分鐘', last: '13:30' },
+    function dots(root: HTMLElement): string[] {
+      return Array.from(root.querySelectorAll('.job .job-dot')).map(dot =>
+        Array.from(dot.classList).filter(c => c.startsWith('is-')).join(' '),
+      );
+    }
+
+    function quoteRun(state: RecalcStatus['state'], finished_at?: string | null) {
+      recalcStatus = () => of({ state: 'idle', quote_refresh: { state, finished_at } });
+    }
+
+    it('lists the three jobs and today\'s last quote refresh in Asia/Taipei', () => {
+      quoteRun('completed', '2026-10-22T05:30:00Z');
+      const root = el(render());
+      expect(jobs(root)).toEqual([
+        { label: '盤中報價', when: '交易時段每 15 分鐘', last: '上次 13:30' },
         { label: '淨值快照', when: '每天 15:30', last: null },
         { label: '收盤價回補（TWSE / TPEx）', when: '每個交易日 17:00', last: null },
       ]);
+      expect(dots(root)).toEqual(['is-success', 'is-neutral', 'is-neutral']);
+    });
+
+    it('labels a run from yesterday (Taipei date, not UTC date)', () => {
+      // 00:30 on 10/22 in Taipei, but still 10/21 in UTC
+      now = new Date('2026-10-21T16:30:00Z');
+      quoteRun('completed', '2026-10-21T15:50:00Z');
+      expect(jobs(el(render()))[0].last).toBe('上次 昨天 23:50');
+    });
+
+    it('labels an older run with its M/D date', () => {
+      quoteRun('completed', '2026-10-19T01:05:00Z');
+      expect(jobs(el(render()))[0].last).toBe('上次 10/19 09:05');
+    });
+
+    it('marks a failed run with a danger dot and 失敗', () => {
+      quoteRun('failed', '2026-10-22T05:30:00Z');
+      const root = el(render());
+      expect(jobs(root)[0].last).toBe('上次 13:30 · 失敗');
+      expect(dots(root)[0]).toBe('is-danger');
+    });
+
+    it('marks a partial run with a warning dot and 部分失敗', () => {
+      quoteRun('partial', '2026-10-22T05:30:00Z');
+      const root = el(render());
+      expect(jobs(root)[0].last).toBe('上次 13:30 · 部分失敗');
+      expect(dots(root)[0]).toBe('is-warning');
+    });
+
+    it.each([
+      ['no quote run yet', () => of<RecalcStatus>({ state: 'idle', quote_refresh: { state: 'idle' } })],
+      ['a running quote run', () => of<RecalcStatus>({ state: 'idle', quote_refresh: { state: 'running', finished_at: null } })],
+      ['no quote_refresh at all', () => of<RecalcStatus>({ state: 'idle' })],
+    ])('shows only the schedule with a neutral dot for %s', (_name, status) => {
+      recalcStatus = status;
+      const root = el(render());
+      expect(jobs(root).map(j => j.last)).toEqual([null, null, null]);
+      expect(dots(root)).toEqual(['is-neutral', 'is-neutral', 'is-neutral']);
     });
 
     it('shows only the schedule when the status request fails', () => {
       recalcStatus = () => throwError(() => new Error('boom'));
       const root = el(render());
       expect(jobs(root).map(j => j.last)).toEqual([null, null, null]);
+      expect(dots(root)).toEqual(['is-neutral', 'is-neutral', 'is-neutral']);
       expect(root.querySelector('.error, [role="alert"]')).toBeNull();
       expect(root.textContent).not.toContain('boom');
     });

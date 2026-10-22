@@ -175,13 +175,13 @@
     <div class="set-card">
       @for (job of jobs; track job.id) {
         <div class="set-row job">
-          <span class="job-dot" aria-hidden="true"></span>
+          <span class="job-dot" [class]="'is-' + jobTone(job)" aria-hidden="true"></span>
           <div class="set-text">
             <div class="t">{{ job.label }}</div>
             <div class="d">{{ job.schedule }}</div>
           </div>
           @if (job.id === 'quotes' && lastQuoteRefresh(); as last) {
-            <span class="job-last">{{ last }}</span>
+            <span class="job-last">{{ last.text }}</span>
           }
         </div>
       }

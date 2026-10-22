@@ -259,6 +259,11 @@
   min-height: 48px;
 }
 
+/* Two-column grid, filled row by row: the last two items form each column's last row. */
+.shortcut:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
 .shortcut-label {
   color: var(--app-text);
   font-size: 0.875rem;
@@ -295,11 +300,15 @@ kbd {
 }
 
 .job-dot {
-  background: var(--app-success);
+  background: var(--app-text-muted);
   border-radius: 50%;
   flex: none;
   height: 8px;
   width: 8px;
+
+  &.is-success { background: var(--app-success); }
+  &.is-warning { background: var(--app-warning); }
+  &.is-danger { background: var(--app-danger); }
 }
 
 .job-last {

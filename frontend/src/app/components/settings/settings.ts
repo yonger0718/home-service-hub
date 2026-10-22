@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, InjectionToken, computed, inject } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { RouterLink } from '@angular/router';
 import { catchError, map, of } from 'rxjs';
@@ -6,6 +6,7 @@ import { catchError, map, of } from 'rxjs';
 import { AppearanceService, GainLossConvention, ThemeMode } from '../../services/appearance.service';
 import { LayoutModeService } from '../../services/layout-mode.service';
 import { NavigationPreferencesService } from '../../services/navigation-preferences.service';
+import { RecalcStatus } from '../../models/portfolio.model';
 import { PortfolioService } from '../../services/portfolio.service';
 import { NAV_GROUPS, NavGroupId, SidebarDefault, buildTabBar } from '../shell/navigation';
 import { PageHeaderComponent } from '../shell/page-header/page-header';
@@ -37,17 +38,76 @@ const GROUP_DESCRIPTIONS: Record<NavGroupId, string> = {
   system: '設定',
 };
 
-/** HH:mm in Asia/Taipei (UTC+8, no DST) for an ISO timestamp; null when absent or unparseable. */
-function taipeiTime(iso: string | null | undefined): string | null {
-  if (!iso) return null;
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return null;
-  return new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Asia/Taipei',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).format(date);
+/** Current time for the 資料更新 "上次" label; overridable in tests. */
+export const SETTINGS_CLOCK = new InjectionToken<() => Date>('SETTINGS_CLOCK', {
+  providedIn: 'root',
+  factory: () => () => new Date(),
+});
+
+type JobTone = 'success' | 'warning' | 'danger' | 'neutral';
+
+interface LastRun {
+  text: string;
+  tone: JobTone;
+}
+
+const TAIPEI_PARTS = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Taipei',
+  year: 'numeric',
+  month: 'numeric',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+interface TaipeiParts {
+  date: string;
+  month: string;
+  day: string;
+  time: string;
+}
+
+/** Calendar date and HH:mm in Asia/Taipei, whatever the machine time zone. */
+function taipeiParts(date: Date): TaipeiParts {
+  const parts: Record<string, string> = {};
+  for (const part of TAIPEI_PARTS.formatToParts(date)) parts[part.type] = part.value;
+  return {
+    date: `${parts['year']}-${parts['month']}-${parts['day']}`,
+    month: parts['month'],
+    day: parts['day'],
+    time: `${parts['hour']}:${parts['minute']}`,
+  };
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * `上次 HH:mm` (today), `上次 昨天 HH:mm` or `上次 M/D HH:mm`, all in Asia/Taipei
+ * (UTC+8, no DST, so "yesterday" is exactly now - 24 h); null when unparseable.
+ */
+function lastRunLabel(iso: string, now: Date): string | null {
+  const finished = new Date(iso);
+  if (Number.isNaN(finished.getTime())) return null;
+  const run = taipeiParts(finished);
+  if (run.date === taipeiParts(now).date) return `上次 ${run.time}`;
+  if (run.date === taipeiParts(new Date(now.getTime() - DAY_MS)).date) return `上次 昨天 ${run.time}`;
+  return `上次 ${run.month}/${run.day} ${run.time}`;
+}
+
+const STATE_DISPLAY: Partial<Record<RecalcStatus['state'], { tone: JobTone; suffix: string }>> = {
+  completed: { tone: 'success', suffix: '' },
+  partial: { tone: 'warning', suffix: ' · 部分失敗' },
+  failed: { tone: 'danger', suffix: ' · 失敗' },
+};
+
+/** Null when no finished run is known (idle, running, no timestamp). */
+function lastQuoteRun(run: RecalcStatus | undefined, now: Date): LastRun | null {
+  if (!run?.finished_at) return null;
+  const label = lastRunLabel(run.finished_at, now);
+  if (!label) return null;
+  const display = STATE_DISPLAY[run.state] ?? { tone: 'neutral' as const, suffix: '' };
+  return { text: label + display.suffix, tone: display.tone };
 }
 
 @Component({
@@ -62,6 +122,7 @@ export class SettingsComponent {
   private readonly layout = inject(LayoutModeService);
   protected readonly prefs = inject(NavigationPreferencesService);
   private readonly portfolio = inject(PortfolioService);
+  private readonly clock = inject(SETTINGS_CLOCK);
 
   protected readonly theme = toSignal(this.appearance.theme$, { initialValue: this.appearance.theme$.value });
   protected readonly gainLoss = toSignal(this.appearance.gainLoss$, { initialValue: this.appearance.gainLoss$.value });
@@ -116,14 +177,19 @@ export class SettingsComponent {
     { id: 'closing', label: '收盤價回補（TWSE / TPEx）', schedule: '每個交易日 17:00' },
   ];
 
-  /** Last quote refresh (HH:mm Asia/Taipei); null while loading, when absent, or when the request fails. */
+  /** Last finished quote refresh; null while loading, when none is known, or when the request fails. */
   protected readonly lastQuoteRefresh = toSignal(
     this.portfolio.getRecalcStatus().pipe(
-      map(status => taipeiTime(status?.quote_refresh?.finished_at)),
+      map(status => lastQuoteRun(status?.quote_refresh, this.clock())),
       catchError(() => of(null)),
     ),
     { initialValue: null },
   );
+
+  /** Only the quote row has a known outcome; the other jobs keep a neutral dot. */
+  protected jobTone(job: Job): JobTone {
+    return job.id === 'quotes' ? (this.lastQuoteRefresh()?.tone ?? 'neutral') : 'neutral';
+  }
 
   protected isShown(group: NavGroupId): boolean {
     return !this.prefs.hiddenGroups().includes(group);
