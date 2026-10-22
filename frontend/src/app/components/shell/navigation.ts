@@ -1,4 +1,5 @@
-export type NavGroupId = 'supplies' | 'portfolio' | 'accounting' | 'settings';
+export type NavGroupId = 'supplies' | 'portfolio' | 'accounting' | 'settings' | 'system';
+export type SidebarDefault = 'expanded' | 'rail';
 
 export interface NavItem {
   id: string;
