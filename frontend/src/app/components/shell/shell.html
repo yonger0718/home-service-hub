@@ -17,7 +17,8 @@
     <a
       class="hub-fab"
       [class.beside-pane]="paneState.paneOpen()"
-      routerLink="/accounting/entry"
+      [attr.href]="entryFormHref"
+      (click)="openEntryForm($event)"
       aria-label="記一筆（快捷鍵 N）"
     >
       <span class="fab-plus" aria-hidden="true">+</span>

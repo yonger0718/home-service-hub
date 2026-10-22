@@ -4,8 +4,9 @@ const TYPING_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
 
 /**
  * App-wide keys, handled by the shell on every page: N / ⇧N opens the entry form (記一筆). `targetTag` is the focused
- * element's tag name (`TEXTAREA` for contenteditable elements) or null; `inDialog` is true inside a dialog other than
- * the accounting detail sheet, whose own keys come first. On the entry form itself N is left to the form.
+ * element's tag name (`TEXTAREA` for contenteditable elements and combobox / listbox / spinbutton widgets) or null;
+ * `inDialog` is true inside a dialog, or while a modal is open, other than the accounting detail sheet (whose own keys
+ * come first). On the entry form itself N is left to the form.
  */
 export function resolveGlobalShortcut(
   event: ShortcutKey,

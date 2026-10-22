@@ -249,6 +249,88 @@ describe('ShellComponent', () => {
     }
   });
 
+  it('ignores N on a combobox, listbox or spinbutton (p-select focuses a span role="combobox")', async () => {
+    const { router } = await render(viewportOf(1440), { url: '/portfolio' });
+    const host = document.createElement('div');
+    host.innerHTML = `
+      <span role="combobox" tabindex="0"></span>
+      <ul role="listbox"><li role="option" tabindex="0">A</li></ul>
+      <div role="spinbutton" tabindex="0"></div>`;
+    document.body.appendChild(host);
+    const navigate = vi.spyOn(router, 'navigate');
+    try {
+      for (const target of Array.from(host.querySelectorAll<HTMLElement>('[role="combobox"], [role="option"], [role="spinbutton"]'))) {
+        target.focus();
+        expect(press('n', target).defaultPrevented, target.getAttribute('role')!).toBe(false);
+      }
+      expect(navigate).not.toHaveBeenCalled();
+      expect(router.url).toBe('/portfolio');
+    } finally {
+      host.remove();
+    }
+  });
+
+  it('ignores N from <body> while a modal dialog is open elsewhere in the page', async () => {
+    const { router } = await render(viewportOf(1440), { url: '/portfolio/dividends' });
+    const navigate = vi.spyOn(router, 'navigate');
+    for (const attrs of [{ role: 'dialog', 'aria-modal': 'true' }, { role: 'alertdialog' }]) {
+      const dialog = document.createElement('div');
+      for (const [name, value] of Object.entries(attrs)) dialog.setAttribute(name, value);
+      document.body.appendChild(dialog);
+      try {
+        (document.activeElement as HTMLElement | null)?.blur();
+        expect(press('n').defaultPrevented, attrs.role).toBe(false);
+      } finally {
+        dialog.remove();
+      }
+    }
+    expect(navigate).not.toHaveBeenCalled();
+    expect(router.url).toBe('/portfolio/dividends');
+  });
+
+  it('a 記一筆 click asks a dirty form first and navigates once 放棄 is confirmed', async () => {
+    const { fab, router } = await render(viewportOf(1440), { url: '/accounting/accounts/5/settings' });
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const dirty: DirtyAware = { isDirty: () => true, showDiscardPrompt: vi.fn() };
+    registry.register(dirty);
+
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+    fab()!.dispatchEvent(click);
+
+    expect(click.defaultPrevented).toBe(true);
+    expect(dirty.showDiscardPrompt).toHaveBeenCalledTimes(1);
+    expect(router.url).toBe('/accounting/accounts/5/settings');
+
+    registry.confirmDiscard();
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entry'));
+  });
+
+  it('a 記一筆 click without a dirty form opens the entry form', async () => {
+    const { fab, router } = await render(viewportOf(1440), { url: '/portfolio' });
+
+    fab()!.click();
+
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entry'));
+  });
+
+  it('a modified 記一筆 click (new tab) is left to the browser', async () => {
+    const { fab, router } = await render(viewportOf(1440), { url: '/portfolio' });
+    const navigate = vi.spyOn(router, 'navigate');
+    let preventedByShell: boolean | null = null;
+    // Records what the shell did, then stops jsdom from following the link.
+    const swallow = (event: Event) => {
+      preventedByShell = event.defaultPrevented;
+      event.preventDefault();
+    };
+    document.addEventListener('click', swallow, { once: true });
+
+    fab()!.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, ctrlKey: true }));
+
+    expect(preventedByShell).toBe(false);
+    expect(navigate).not.toHaveBeenCalled();
+    expect(router.url).toBe('/portfolio');
+  });
+
   it('offsets the main column by the sidebar: expanded when wide, the rail otherwise', async () => {
     const wide = await render(viewportOf(1440), { url: '/portfolio' });
     expect(wide.root().classList.contains('sidebar-expanded')).toBe(true);
