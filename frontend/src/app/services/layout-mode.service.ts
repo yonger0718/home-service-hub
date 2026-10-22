@@ -9,6 +9,8 @@ export const PHONE_QUERY = '(max-width: 759.98px)';
 export const PANES_QUERY = '(min-width: 1024px)';
 /** Short desktop screens (13-inch laptops, ≈800–900 px tall): the shell switches to its compact density. */
 export const COMPACT_QUERY = '(max-height: 820px)';
+/** From 1280 px the sidebar may be expanded (owner's choice); below it is always the 72 px rail. */
+export const SIDEBAR_WIDE_QUERY = '(min-width: 1280px)';
 
 export type MatchMediaFn = (query: string) => MediaQueryList;
 
@@ -28,20 +30,29 @@ export class LayoutModeService {
   private readonly measured = signal<LayoutMode>(this.measure());
   private readonly forced = signal<LayoutMode | null>(null);
   private readonly measuredCompact = signal(this.measureCompact());
+  private readonly measuredWideSidebar = signal(this.measureWideSidebar());
 
   readonly mode = computed(() => this.forced() ?? this.measured());
   /** True when the viewport is at most 820 px tall. */
   readonly compactHeight = this.measuredCompact.asReadonly();
+  /** True when the viewport is at least 1280 px wide. */
+  readonly wideSidebar = this.measuredWideSidebar.asReadonly();
 
   constructor() {
     const matchMedia = this.matchMedia;
     if (!matchMedia) {
       return;
     }
-    const queries = [matchMedia(PHONE_QUERY), matchMedia(PANES_QUERY), matchMedia(COMPACT_QUERY)];
+    const queries = [
+      matchMedia(PHONE_QUERY),
+      matchMedia(PANES_QUERY),
+      matchMedia(COMPACT_QUERY),
+      matchMedia(SIDEBAR_WIDE_QUERY),
+    ];
     const update = () => {
       this.measured.set(this.measure());
       this.measuredCompact.set(this.measureCompact());
+      this.measuredWideSidebar.set(this.measureWideSidebar());
     };
     queries.forEach(query => query.addEventListener('change', update));
     inject(DestroyRef).onDestroy(() => queries.forEach(query => query.removeEventListener('change', update)));
@@ -68,6 +79,13 @@ export class LayoutModeService {
       return this.matchMedia(COMPACT_QUERY).matches;
     }
     return (this.window?.innerHeight ?? 900) <= 820;
+  }
+
+  private measureWideSidebar(): boolean {
+    if (this.matchMedia) {
+      return this.matchMedia(SIDEBAR_WIDE_QUERY).matches;
+    }
+    return (this.window?.innerWidth ?? 1024) >= 1280;
   }
 }
 

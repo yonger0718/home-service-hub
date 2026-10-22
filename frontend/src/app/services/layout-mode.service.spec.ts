@@ -1,7 +1,14 @@
 import { TestBed } from '@angular/core/testing';
 import { describe, expect, it } from 'vitest';
 
-import { COMPACT_QUERY, LayoutMode, LayoutModeService, MATCH_MEDIA, PHONE_QUERY } from './layout-mode.service';
+import {
+  COMPACT_QUERY,
+  LayoutMode,
+  LayoutModeService,
+  MATCH_MEDIA,
+  PHONE_QUERY,
+  SIDEBAR_WIDE_QUERY,
+} from './layout-mode.service';
 
 function fakeMatchMedia(initialWidth: number, initialHeight = 900) {
   let width = initialWidth;
@@ -13,6 +20,9 @@ function fakeMatchMedia(initialWidth: number, initialHeight = 900) {
       get matches() {
         if (query === COMPACT_QUERY) {
           return height <= 820;
+        }
+        if (query === SIDEBAR_WIDE_QUERY) {
+          return width >= 1280;
         }
         return query === PHONE_QUERY ? width < 760 : width >= 1024;
       },
@@ -98,6 +108,33 @@ describe('LayoutModeService', () => {
       TestBed.configureTestingModule({ providers: [{ provide: MATCH_MEDIA, useValue: null }] });
 
       expect(TestBed.inject(LayoutModeService).compactHeight()).toBe(window.innerHeight <= 820);
+    });
+  });
+
+  describe('wideSidebar', () => {
+    it.each<[number, boolean]>([
+      [1023, false],
+      [1100, false],
+      [1279, false],
+      [1280, true],
+      [1440, true],
+    ])('is %i px wide → %s', (width, wide) => {
+      expect(create(width).service.wideSidebar()).toBe(wide);
+    });
+
+    it('follows the viewport width', () => {
+      const { service, media } = create(1100);
+
+      media.resize(1440);
+      expect(service.wideSidebar()).toBe(true);
+      media.resize(1279);
+      expect(service.wideSidebar()).toBe(false);
+    });
+
+    it('falls back to the window width without matchMedia', () => {
+      TestBed.configureTestingModule({ providers: [{ provide: MATCH_MEDIA, useValue: null }] });
+
+      expect(TestBed.inject(LayoutModeService).wideSidebar()).toBe(window.innerWidth >= 1280);
     });
   });
 });
