@@ -217,7 +217,8 @@ def _gate(statement_kind: str, line_kind: str, sign: str):
 
 def search_candidates(db: Session, case_id: int, *, days: int = 14, limit: int = 50) -> list[dict]:
     """Entries the owner may match the case's line to beyond its listed candidates (spec §4.3): the statement
-    account's top-level entries within ±`days`, same sign, gated like the matcher, unclaimed; newest first."""
+    account's top-level entries outside any group within ±`days`, same sign, gated like the matcher, unclaimed;
+    newest first."""
     case = db.get(ReconciliationCase, case_id)
     if case is None:
         raise NotFoundError(f"case {case_id} not found")
@@ -230,7 +231,7 @@ def search_candidates(db: Session, case_id: int, *, days: int = 14, limit: int =
     excluded = (listed - {None}) | coverage_service.claimed_entry_ids(db)
     q = (select(LedgerEntry)
          .where(LedgerEntry.account_id == statement.account_id, LedgerEntry.currency == statement.currency,
-                LedgerEntry.parent_entry_id.is_(None),
+                LedgerEntry.parent_entry_id.is_(None), LedgerEntry.group_id.is_(None),  # match refuses members
                 LedgerEntry.posted_date.between(line.posted_date - timedelta(days=days),
                                                 line.posted_date + timedelta(days=days)),
                 LedgerEntry.amount < 0 if sign == "-" else LedgerEntry.amount >= 0,
@@ -364,7 +365,7 @@ def build_inbox(db: Session, *, statuses: tuple[str, ...] = ("open", "proposed")
         item = _item(db, case, statement, line, entries, categories, hint_cache)
         entry = entries.get(case.entry_id)
         day = line.posted_date if line else (entry.posted_date if entry else date.max)
-        keyed.append(((account.name, -statement.period_end.toordinal(), day, case.id), account, item))
+        keyed.append(((account.name, account.id, -statement.period_end.toordinal(), day, case.id), account, item))
     keyed.sort(key=lambda row: row[0])
     counts = _counts([item for _, _, item in keyed])
     accounts: list[dict] = []
@@ -613,3 +614,38 @@ def action_labels(db: Session, action_ids: Iterable[int]) -> dict[int, tuple[str
         elif isinstance(detail, dict) and detail.get("answer") is not None:
             answers[action_id] = detail["answer"]
     return {i: (applied.get(i, replayed.get(i)), answers.get(i)) for i in ids}
+
+
+def case_lines(db: Session, case_ids: Iterable[int]) -> dict[int, dict | None]:
+    """Per case: `{date, merchant, amount}` of its current line (`base.current_line`'s rule — `case.line_id` when it
+    is on the statement's current revision, else the event's line there), None without one. Batched: one query for
+    the cases with their statements, one for the candidate lines."""
+    ids = {i for i in case_ids if i is not None}
+    if not ids:
+        return {}
+    pairs = db.execute(select(ReconciliationCase, AccountStatement.current_revision_id)
+                       .join(AccountStatement, AccountStatement.id == ReconciliationCase.statement_id)
+                       .where(ReconciliationCase.id.in_(ids))).all()
+    line_ids = {case.line_id for case, _ in pairs if case.line_id is not None}
+    revisions = {rev for case, rev in pairs if case.line_id is not None and case.event_id is not None}
+    events = {case.event_id for case, _ in pairs if case.line_id is not None and case.event_id is not None}
+    by_id: dict[int, StatementLine] = {}
+    by_event: dict[tuple[int, int], StatementLine] = {}
+    if line_ids:
+        cond = StatementLine.id.in_(line_ids)
+        if events:
+            cond = or_(cond, and_(StatementLine.revision_id.in_(revisions), StatementLine.event_id.in_(events)))
+        for line in db.execute(select(StatementLine).where(cond)).scalars():
+            if line.id in line_ids:
+                by_id[line.id] = line
+            by_event.setdefault((line.revision_id, line.event_id), line)
+    out: dict[int, dict | None] = {}
+    for case, revision in pairs:
+        line = None
+        if case.line_id is not None:
+            line = by_id.get(case.line_id)
+            if line is None or line.revision_id != revision:
+                line = by_event.get((revision, case.event_id)) if case.event_id is not None else None
+        out[case.id] = (None if line is None
+                        else {"date": line.posted_date, "merchant": line.merchant_norm, "amount": line.flow_amount})
+    return out

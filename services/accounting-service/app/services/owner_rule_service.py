@@ -15,7 +15,8 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
 from app.models import (
-    AccountStatement, ReconciliationAudit, ReconciliationCase, ReconciliationOwnerRule, StatementLine,
+    AccountStatement, ReconciliationAction, ReconciliationAudit, ReconciliationCase, ReconciliationOwnerRule,
+    StatementLine,
 )
 from app.services import inbox_service, policy_service, proposal_service, reconciliation_actions
 from app.services import reconciliation_service as rec
@@ -119,25 +120,23 @@ class RuleRunResult:
     skipped: list[tuple[int, str]] = field(default_factory=list)  # (case_id, code)
 
 
-def reverted_rule_id(db: Session, case: ReconciliationCase) -> int | None:
-    """The rule whose action 撤銷 undid on this case: the `rule:<id>` actor of the `action_applied` audit of
-    `context.reverted_action_id`; None when nothing was reverted or the reverted action was not a rule's."""
-    raw = (case.context or {}).get("reverted_action_id")
-    if raw is None:
-        return None
-    try:  # a malformed context value must not abort the statement's run
-        action_id = int(raw)
-    except (TypeError, ValueError):
-        return None
-    actor = db.execute(select(ReconciliationAudit.actor).where(
-        ReconciliationAudit.event == "action_applied", ReconciliationAudit.action_id == action_id)
-        .order_by(ReconciliationAudit.id).limit(1)).scalar_one_or_none()
-    if actor is None or not actor.startswith("rule:"):
-        return None
-    try:
-        return int(actor.removeprefix("rule:"))
-    except ValueError:
-        return None
+def reverted_rule_ids(db: Session, case: ReconciliationCase) -> set[int]:
+    """Every rule whose action 撤銷 undid on this case (spec §8: the same rule never re-answers a case it was reverted
+    on): the `rule:<id>` actor of the `action_applied` audit of each `reverted` action of the case. A malformed actor
+    is ignored instead of aborting the statement's run."""
+    actors = db.execute(select(ReconciliationAudit.actor).join(
+        ReconciliationAction, ReconciliationAction.id == ReconciliationAudit.action_id).where(
+        ReconciliationAction.case_id == case.id, ReconciliationAction.status == "reverted",
+        ReconciliationAudit.event == "action_applied")).scalars()
+    ids = set()
+    for actor in actors:
+        if not actor or not actor.startswith("rule:"):
+            continue
+        try:
+            ids.add(int(actor.removeprefix("rule:")))
+        except ValueError:
+            continue
+    return ids
 
 
 def match_rule(rules: Iterable[ReconciliationOwnerRule], *, line_kind: str, merchant_norm: str,
@@ -155,12 +154,12 @@ def match_rule(rules: Iterable[ReconciliationOwnerRule], *, line_kind: str, merc
 def _eligible(db: Session, case: ReconciliationCase, question: str,
               rules: list[ReconciliationOwnerRule]) -> list[ReconciliationOwnerRule]:
     """The rules whose answer the case's question can take (`amount_differs` only with a standalone, unprotected
-    candidate; the cutover lock is left to the engine), minus the rule whose action 撤銷 undid on this case."""
+    candidate; the cutover lock is left to the engine), minus every rule whose action 撤銷 undid on this case."""
     actions = QUESTION_ACTIONS.get(question, ())
     if question == "amount_differs" and not inbox_service.adjustable(db, case, check_lock=False):
         return []
-    reverted = reverted_rule_id(db, case)
-    return [r for r in rules if r.action in actions and r.id != reverted]
+    reverted = reverted_rule_ids(db, case)
+    return [r for r in rules if r.action in actions and r.id not in reverted]
 
 
 def _precheck(version: int, action: str):

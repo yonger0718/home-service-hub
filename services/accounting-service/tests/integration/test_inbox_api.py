@@ -159,7 +159,8 @@ def test_default_category_comes_from_a_rule_or_a_past_entry(client, seed, db_ses
 
 def test_search_candidates_excludes_claimed_and_listed_entries(client, seed, db_session, run):
     """Claimed = an active StatementCoverage row (written by hand, like test_reconciliation_actions_case does for
-    coverage fixtures); listed = the case's own near candidate; both must be absent from the search."""
+    coverage fixtures); listed = the case's own near candidate; a group member; all must be absent from the
+    search."""
     from app.models import StatementCoverage
     account = _bank(seed, db_session)
     near = seed.entry(account, "-3000", day=date(2026, 9, 10), merchant="近")
@@ -178,11 +179,16 @@ def test_search_candidates_excludes_claimed_and_listed_entries(client, seed, db_
                                      entry_id=claimed.id, role="principal", match_rule="owner", match_kind="manual",
                                      status="active", snapshot={"flow": "-3000.0000"}))
     db_session.commit()
+    # final review B4: a group member (match refuses `entry_in_group`) is never offered either
+    member = seed.entry(account, "-3000", day=date(2026, 9, 6), merchant="拆帳")
+    member.group_id = seed.group("split").id
+    db_session.commit()
     res = client.get(f"/reconciliation/inbox/cases/{case.id}/search", headers=S)
     assert res.status_code == 200, res.text
     ids = [c["entry_id"] for c in res.json()]
     assert near.id in ids
     assert far.id not in ids and plus.id not in ids and claimed.id not in ids and listed.id not in ids
+    assert member.id not in ids
     assert all(c["reason"] == "search" for c in res.json())
     assert client.get("/reconciliation/inbox/cases/999999/search", headers=S).status_code == 404
 
@@ -244,8 +250,14 @@ def test_apply_batch_two_statements(client, seed, db_session, run):
     s1, _, _ = _submit(db_session, run, account, [_line(1, DAY, "放款還款", -3865, "withdrawal")], kind="bank")
     s2, _, _ = _submit(db_session, run, account, [_line(1, date(2026, 10, 3), "放款還款", -3865, "withdrawal")], kind="bank", period=OCT)
     cases = _open_lines(db_session, s1.id) + _open_lines(db_session, s2.id)
-    res = _apply(client, cases, "dismiss", answer="忽略")
+    res = _apply(client, cases, "dismiss", answer="忽略", learn={"amount_exact": False})
     assert [r["status"] for r in res.json()["results"]] == ["applied", "applied"]
+    # final review B3: the same pattern/sign across both statements teaches exactly one rule
+    from sqlalchemy import select
+    from app.models import ReconciliationOwnerRule
+    assert res.json()["rule_id"] is not None
+    (rule,) = db_session.execute(select(ReconciliationOwnerRule)).scalars().all()
+    assert rule.id == res.json()["rule_id"] and rule.action == "dismiss"
 
 
 def test_apply_rejects_mixed_questions_and_unoffered_buttons(client, seed, db_session, run):
@@ -558,3 +570,7 @@ def test_actions_list_carries_label_and_answer(client, seed, db_session, run):
     (c2,) = _cases(db_session, s2.id, "resolved")
     rule_id = db_session.execute(select(ReconciliationOwnerRule.id)).scalar_one()
     assert by_case[c2.id]["label"] == f"rule:{rule_id}" and by_case[c2.id]["answer"] is None
+    # final review B2: each row carries its case's current line so a 已處理 row can be identified
+    assert mine["case_id"] == c1.id and by_case[c2.id]["case_id"] == c2.id
+    assert mine["line"] == {"date": "2026-09-03", "merchant": "店", "amount": "-10.0000"}
+    assert by_case[c2.id]["line"] == {"date": "2026-10-03", "merchant": "店", "amount": "-10.0000"}

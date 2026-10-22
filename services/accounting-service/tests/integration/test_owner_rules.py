@@ -362,11 +362,45 @@ def test_an_open_case_with_a_pending_proposal_is_untouched(seed, db_session, run
     assert [c.id for c in _open_lines(db_session, stmt.id)] == [shop.id]
 
 
-def test_reverted_rule_id_ignores_a_malformed_context_value(seed, db_session, run):
-    """Review Minor 5: a malformed `reverted_action_id` returns None instead of aborting the run."""
+def test_reverted_rule_ids_ignore_a_malformed_context_value_and_actor(seed, db_session, run):
+    """Review Minor 5: a malformed `reverted_action_id` context value or `rule:` actor never aborts the run."""
     stmt = _shop_statement(seed, db_session, run)
     (shop,) = _open_lines(db_session, stmt.id)
     shop.context = {**(shop.context or {}), "reverted_action_id": "not-a-number"}
     db_session.commit()
-    assert ors.reverted_rule_id(db_session, shop) is None
+    assert ors.reverted_rule_ids(db_session, shop) == set()
+    result = ors.run_rules_safe(db_session, stmt.id)
+    assert len(result.applied) == 1
+    engine.revert_action(db_session, action_id=result.applied[0], actor="owner", label="spa")
+    db_session.commit()
+    (applied,) = db_session.execute(select(ReconciliationAudit).where(
+        ReconciliationAudit.event == "action_applied", ReconciliationAudit.action_id == result.applied[0])).scalars()
+    applied.actor = "rule:not-a-number"
+    db_session.commit()
+    assert ors.reverted_rule_ids(db_session, db_session.get(ReconciliationCase, shop.id)) == set()
     assert len(ors.run_rules_safe(db_session, stmt.id).applied) == 1
+
+
+def test_no_rule_reverted_on_a_case_answers_it_again(seed, db_session, run):
+    """Final review B1 (spec §8): A books → 撤銷 → B books → 撤銷 → neither A nor B answers the case again."""
+    account = _bank(seed, db_session)
+    food = seed.category("飲食")
+    db_session.commit()
+    a = _rule(seed, db_session, account, line_kind="withdrawal", merchant_pattern="放款還款", amount=None,
+              params={"category_id": food.id})
+    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "放款還款", -3865, "withdrawal")], kind="bank")
+    first = ors.run_rules_safe(db_session, stmt.id)
+    assert len(first.applied) == 1
+    engine.revert_action(db_session, action_id=first.applied[0], actor="owner", label="spa")
+    db_session.commit()
+    b = _rule(seed, db_session, account, line_kind="withdrawal", merchant_pattern="款還款", amount=None,
+              params={"category_id": food.id})
+    second = ors.run_rules_safe(db_session, stmt.id)
+    assert len(second.applied) == 1
+    engine.revert_action(db_session, action_id=second.applied[0], actor="owner", label="spa")
+    db_session.commit()
+    (case,) = _open_lines(db_session, stmt.id)
+    assert ors.reverted_rule_ids(db_session, case) == {a.id, b.id}
+    third = ors.run_rules_safe(db_session, stmt.id)
+    assert third.applied == [] and third.skipped == []
+    assert [c.id for c in _open_lines(db_session, stmt.id)] == [case.id]
