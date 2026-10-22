@@ -12,11 +12,13 @@
       <div class="sheet-backdrop" aria-hidden="true" (click)="close()"></div>
     }
 
+    <!-- data-global-shortcuts: the shell's N (記一筆) still works inside this sheet dialog. -->
     <section
       #detailPane
       (keydown)="onPaneKeydown($event)"
       class="pane detail-pane"
       aria-label="明細"
+      data-global-shortcuts
       [attr.role]="sheetOpen() ? 'dialog' : null"
       [attr.aria-modal]="sheetOpen() ? 'true' : null"
       [attr.inert]="sheetClosed() ? '' : null"
@@ -48,7 +50,4 @@
   </div>
 }
 
-@if (showFab()) {
-  <a class="fab" routerLink="/accounting/entry" aria-label="新增記錄">+</a>
-}
 <app-accounting-toast />

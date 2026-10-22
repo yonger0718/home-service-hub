@@ -21,7 +21,7 @@
   flex-direction: column;
   gap: 14px;
   height: 100%;
-  /* Its own scroll container, like the dock: when the nav is taller than the viewport it scrolls here
+  /* Its own scroll container: when the nav is taller than the viewport it scrolls here
      (and the wheel stays here) instead of being clipped. sidebar.spec.ts checks the structure. */
   overflow-x: hidden;
   overflow-y: auto;

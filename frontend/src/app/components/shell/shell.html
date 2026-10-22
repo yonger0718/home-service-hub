@@ -1,16 +1,29 @@
-<div class="hub-layout" [class.compact-height]="layout.compactHeight()">
-  <app-dock [activeId]="activeItem().id"></app-dock>
+<div
+  class="hub-layout"
+  [class.compact-height]="layout.compactHeight()"
+  [class.sidebar-expanded]="sidebarExpanded()"
+  [class.sidebar-rail]="!sidebarExpanded()"
+  [style.--sidebar-w]="sidebarWidth()"
+>
+  <app-sidebar />
 
   <div class="hub-main">
-    <header class="hub-header">
-      <img class="hub-logo" src="assets/logo-lockup.svg" alt="Home Hub" />
-      <h1 class="title">{{ title() }}</h1>
-    </header>
-
     <main class="hub-page">
-      <router-outlet></router-outlet>
+      <router-outlet />
     </main>
   </div>
 
-  <app-mobile-nav></app-mobile-nav>
+  @if (showFab()) {
+    <a
+      class="hub-fab"
+      [class.beside-pane]="paneState.paneOpen()"
+      routerLink="/accounting/entry"
+      aria-label="記一筆（快捷鍵 N）"
+    >
+      <span class="fab-plus" aria-hidden="true">+</span>
+      <span class="fab-tip" aria-hidden="true">記一筆 <kbd>N</kbd></span>
+    </a>
+  }
+
+  <app-mobile-nav />
 </div>

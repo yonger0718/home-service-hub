@@ -8,10 +8,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { routes } from './app.routes';
 import { AccountingShortcutsService, EntryCommand } from './components/accounting/keyboard-shortcuts';
-import { DockComponent } from './components/dock/dock';
 import { DEFAULT_PREFERENCE } from './models/accounting.model';
 import { NAV_GROUPS, navItemForUrl } from './components/shell/navigation';
+import { ShellComponent } from './components/shell/shell';
 import { SubNavComponent } from './components/shell/sub-nav/sub-nav';
+import { SidebarComponent } from './components/sidebar/sidebar';
 import { NavBadgeService } from './services/nav-badge.service';
 import { LayoutModeService, MATCH_MEDIA, PANES_QUERY, PHONE_QUERY } from './services/layout-mode.service';
 
@@ -278,15 +279,17 @@ describe('accounting route redirects and shortcuts', () => {
   }
 
   it('opens the entry form with N from the timeline', async () => {
-    const harness = await RouterTestingHarness.create();
-    await harness.navigateByUrl('/accounting');
+    // N is the shell's app-wide shortcut: render the shell around the routes.
+    const shell = TestBed.createComponent(ShellComponent);
+    await TestBed.inject(Router).navigateByUrl('/accounting');
+    shell.detectChanges();
 
-    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', bubbles: true }));
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', bubbles: true, cancelable: true }));
     // The entry form is lazy (loadComponent + import()), which whenStable does not track: poll until the
     // navigation has settled and the form has rendered so the module is not torn down mid-navigation.
-    const root = harness.fixture.nativeElement as HTMLElement;
+    const root = shell.nativeElement as HTMLElement;
     await vi.waitFor(() => {
-      harness.fixture.detectChanges();
+      shell.detectChanges();
       expect(TestBed.inject(Router).url).toBe('/accounting/entry');
       expect(root.querySelector('app-entry-form')).not.toBeNull();
     });
@@ -339,21 +342,22 @@ describe('accounting navigation', () => {
   ];
 
   for (const [url, label] of HIGHLIGHT) {
-    it(`highlights ${label} in the dock and the mobile sub-nav on ${url}`, async () => {
+    it(`highlights ${label} in the sidebar and the mobile sub-nav on ${url}`, async () => {
       const item = navItemForUrl(url);
       expect(item.group).toBe('accounting');
       expect(item.label).toBe(label);
 
-      TestBed.configureTestingModule({ imports: [DockComponent, SubNavComponent],
+      TestBed.configureTestingModule({ imports: [SidebarComponent, SubNavComponent],
         providers: [provideRouter([{ path: '**', children: [] }]), { provide: NavBadgeService, useValue: { badges: signal({}) } }],
       });
-      const dock = TestBed.createComponent(DockComponent);
-      dock.componentRef.setInput('activeId', item.id);
-      dock.detectChanges();
-      const active = (dock.nativeElement as HTMLElement).querySelector('.dock-item[aria-current="page"]');
-      expect(active?.getAttribute('aria-label')).toBe(item.title);
-
       await TestBed.inject(Router).navigateByUrl(url);
+      const sidebar = TestBed.createComponent(SidebarComponent);
+      sidebar.detectChanges();
+      const active = (sidebar.nativeElement as HTMLElement).querySelectorAll('a.side-item[aria-current="page"]');
+      expect(active.length).toBe(1);
+      expect(active[0].getAttribute('aria-label')).toBe(item.sidebarLabel);
+      expect(active[0].getAttribute('href')).toBe(item.path);
+
       const sub = TestBed.createComponent(SubNavComponent);
       sub.detectChanges();
       expect((sub.nativeElement as HTMLElement).querySelector('a.active')?.textContent?.trim()).toBe(label);
