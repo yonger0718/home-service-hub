@@ -32,7 +32,7 @@
       <div class="data-row rule-row" [class.hidden-cat]="!rule.enabled">
         <span class="row-name rule-text">{{ ruleText(rule) }}</span>
         <button type="button" class="rule-toggle" [attr.aria-pressed]="rule.enabled" (click)="toggleRule(rule)">{{ rule.enabled ? '停用' : '啟用' }}</button>
-        <button type="button" class="row-delete" [class.danger]="confirming() === 'rule:' + rule.id" [attr.aria-label]="confirming() === 'rule:' + rule.id ? '確定刪除' : '刪除規則'" (blur)="confirming() === 'rule:' + rule.id && confirming.set(null)" (click)="confirmTap('rule:' + rule.id) && deleteRule(rule)">{{ confirming() === 'rule:' + rule.id ? '確定刪除' : '🗑' }}</button>
+        <button type="button" class="row-delete" [class.danger]="confirming() === 'rule:' + rule.id" [disabled]="deletingRules().has(rule.id)" [attr.aria-label]="confirming() === 'rule:' + rule.id ? '確定刪除' : '刪除規則'" (blur)="confirming() === 'rule:' + rule.id && confirming.set(null)" (click)="confirmTap('rule:' + rule.id) && deleteRule(rule)">{{ confirming() === 'rule:' + rule.id ? '確定刪除' : '🗑' }}</button>
         @if (confirming() === 'rule:' + rule.id) {
           <button type="button" class="row-cancel" (click)="confirming.set(null)">取消</button>
         }

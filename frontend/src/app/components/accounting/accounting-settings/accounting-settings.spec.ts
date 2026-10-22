@@ -24,6 +24,9 @@ const EXPENSE_TREE = [
   },
   { id: 2, kind: 'expense', parent_id: null, name: '交通', icon: '🚌', color: '#4a90e2', sort_order: 1, is_hidden: false, default_account_id: null, default_project_id: null, children: [] },
 ];
+const INCOME_TREE = [
+  { id: 20, kind: 'income', parent_id: null, name: '薪水', icon: null, color: null, sort_order: 0, is_hidden: false, default_account_id: null, default_project_id: null, children: [] },
+];
 const PROJECTS = [{ id: 4, name: '生活', is_archived: false, sort_order: 0 }, { id: 5, name: '2026 大阪', is_archived: false, sort_order: 1 }];
 const COUNTERPARTIES = [
   { id: 5, name: 'Alan', open_amounts: [{ currency: 'TWD', amount: '220.0000' }, { currency: 'JPY', amount: '-1000.0000' }] },
@@ -63,7 +66,11 @@ describe('AccountingSettingsComponent', () => {
     fixture.detectChanges();
     http.expectOne('/api/accounting/preference').flush(PREFERENCE);
     http.expectOne('/api/accounting/account-groups').flush(GROUPS);
-    http.expectOne(r => r.url.startsWith('/api/accounting/categories') && r.urlWithParams.includes('kind=expense')).flush(EXPENSE_TREE);
+    // The tab-driven tree and the rules' name map both ask for expense categories.
+    const expense = http.match(r => r.url.startsWith('/api/accounting/categories') && r.urlWithParams.includes('kind=expense'));
+    expect(expense.length).toBe(2);
+    expense.forEach(req => req.flush(EXPENSE_TREE));
+    http.expectOne(r => r.url.startsWith('/api/accounting/categories') && r.urlWithParams.includes('kind=income')).flush(INCOME_TREE);
     http.expectOne('/api/accounting/projects').flush(PROJECTS);
     http.expectOne('/api/accounting/counterparties').flush(COUNTERPARTIES);
     http.expectOne('/api/accounting/imports/latest').flush({ detail: 'none' }, { status: 404, statusText: 'Not Found' });
@@ -534,6 +541,17 @@ describe('AccountingSettingsComponent', () => {
         '國泰卡 · 「全家」 −$85 · 記為 交通 · 用過 3 次 · 2026/10/12',
         '日圓戶 · 「Uber」 任何金額 · 忽略 · 用過 0 次',
       ]);
+    });
+
+    it('names income record rules and keeps names after the category tab changes', () => {
+      const income: OwnerRule = { ...RULES[0], id: 23, amount: '5000.0000', params: { category_id: 20 } };
+      fixture.componentInstance.setCategoryKind('income');
+      http.expectOne(r => r.url.startsWith('/api/accounting/categories') && r.urlWithParams.includes('kind=income')).flush([]);
+      fixture.componentInstance.rules.set([RULES[0], income]);
+      fixture.detectChanges();
+      const rows = Array.from(el.querySelectorAll('.rule-text')).map(node => node.textContent?.trim());
+      expect(rows[0]).toContain('記為 交通');
+      expect(rows[1]).toBe('國泰卡 · 「全家」 +$5,000 · 記為 薪水 · 用過 3 次 · 2026/10/12');
     });
 
     it('two-tap delete removes the row', () => {

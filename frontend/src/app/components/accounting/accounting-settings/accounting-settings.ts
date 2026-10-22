@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { Router } from '@angular/router';
-import { Observable, Subject, catchError, concatMap, map, of, throwError } from 'rxjs';
+import { Observable, Subject, catchError, concatMap, finalize, forkJoin, map, of, throwError } from 'rxjs';
 
 import {
   AccountGroup,
@@ -68,6 +68,11 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
   readonly cpFilter = signal('');
   readonly rules = signal<OwnerRule[]>([]);
   private readonly accounts = signal<LedgerAccount[]>([]);
+  /** id → name of every expense and income category, for the rule rows; independent of the 類別 tab. */
+  private readonly ruleCategories = signal<Map<number, string>>(new Map());
+  /** Rule ids whose DELETE is in flight; their 🗑 is disabled. */
+  readonly deletingRules = signal<ReadonlySet<number>>(new Set());
+  private ruleRequest = 0;
   readonly latest = signal<ImportRun | null>(null);
   readonly dataMessage = signal<string | null>(null);
   /** Row whose 刪除 was tapped once (`group:1`, `cat:11`, `project:4`, `cp:5`); one row at a time. */
@@ -148,6 +153,18 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
     this.loadGroups();
     this.service.getAccounts(true).subscribe(accounts => this.accounts.set(accounts));
     this.loadCategories();
+    forkJoin([this.service.getCategories('expense'), this.service.getCategories('income')]).subscribe(([expense, income]) => {
+      const names = new Map<number, string>();
+      const add = (nodes: CategoryNode[]): void => {
+        for (const node of nodes) {
+          names.set(node.id, node.name);
+          add(node.children ?? []);
+        }
+      };
+      add(expense);
+      add(income);
+      this.ruleCategories.set(names);
+    });
     this.loadProjects();
     this.loadCounterparties();
     this.loadImportState();
@@ -224,23 +241,19 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
 
   // 對帳規則
   private loadRules(): void {
-    this.inbox.rules().subscribe(rules => this.rules.set(rules));
+    const request = ++this.ruleRequest;
+    this.inbox.rules().subscribe({
+      next: rules => {
+        if (request === this.ruleRequest) {
+          this.rules.set(rules);
+        }
+      },
+      error: () => undefined, // keep the list that is shown
+    });
   }
 
   private categoryName(id: number): string {
-    const find = (nodes: CategoryNode[]): string | null => {
-      for (const node of nodes) {
-        if (node.id === id) {
-          return node.name;
-        }
-        const inChildren = find(node.children ?? []);
-        if (inChildren !== null) {
-          return inChildren;
-        }
-      }
-      return null;
-    };
-    return find(this.categories()) ?? `#${id}`;
+    return this.ruleCategories().get(id) ?? `#${id}`;
   }
 
   ruleText(rule: OwnerRule): string {
@@ -265,7 +278,18 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
   }
 
   deleteRule(rule: OwnerRule): void {
-    this.write(this.inbox.deleteRule(rule.id), () => undefined, '無法刪除規則');
+    const mark = (on: boolean): void =>
+      this.deletingRules.update(current => {
+        const next = new Set(current);
+        if (on) {
+          next.add(rule.id);
+        } else {
+          next.delete(rule.id);
+        }
+        return next;
+      });
+    mark(true);
+    this.write(this.inbox.deleteRule(rule.id).pipe(finalize(() => mark(false))), () => undefined, '無法刪除規則');
   }
 
   // 帳戶分組
