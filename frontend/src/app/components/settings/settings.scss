@@ -95,6 +95,11 @@
   min-width: 0;
 }
 
+// In a stacked (column) row the 200px flex-basis above would become a 200px height: size to content instead.
+.set-row.stacked .set-text {
+  flex: none;
+}
+
 .t {
   color: var(--app-text);
   font-size: 0.95rem;

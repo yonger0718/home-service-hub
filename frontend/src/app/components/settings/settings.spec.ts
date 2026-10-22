@@ -109,6 +109,20 @@ describe('SettingsComponent', () => {
       expect(rowByTitle(root, '桌面側欄預設').classList).toContain('stacked');
     });
 
+    it('stacked rows give the text block no flex basis or growth (no gap above the control)', () => {
+      const root = el(render('phone'));
+      for (const title of ['主題', '漲跌顏色', '桌面側欄預設']) {
+        const row = rowByTitle(root, title);
+        expect(getComputedStyle(row).flexDirection, title).toBe('column');
+        const text = getComputedStyle(row.querySelector('.set-text')!);
+        expect(text.flexGrow, title).toBe('0');
+        expect(text.flexBasis, title).toBe('auto');
+        const control = getComputedStyle(row.querySelector('.set-control')!);
+        expect(control.flexGrow || '0', title).toBe('0');
+        expect(control.height || 'auto', title).toBe('auto');
+      }
+    });
+
     it('does not stack rows from 760 px', () => {
       const root = el(render('sheet'));
       expect(root.querySelectorAll('.set-row.stacked').length).toBe(0);
