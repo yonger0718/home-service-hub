@@ -1,0 +1,21 @@
+@if (show()) {
+  <nav class="sub-nav" [class.chips]="chips()" [class.seg-control]="!chips()" [attr.aria-label]="group().label + '子導覽'">
+    @for (item of group().items; track item.id) {
+      @let current = nav.activeItem().id === item.id;
+      @let itemBadge = badge(item);
+      <a
+        [routerLink]="item.path"
+        [class.active]="current"
+        [attr.aria-label]="itemLabel(item)"
+        [attr.aria-current]="current ? 'page' : null"
+      >
+        {{ item.label }}
+        @if (itemBadge?.count) {
+          <span class="sub-count" aria-hidden="true">{{ itemBadge?.count }}</span>
+        } @else if (itemBadge?.dot) {
+          <span class="sub-dot" aria-hidden="true"></span>
+        }
+      </a>
+    }
+  </nav>
+}

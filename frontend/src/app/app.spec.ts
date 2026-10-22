@@ -1,3 +1,5 @@
+import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { App } from './app';
 import { provideRouter } from '@angular/router';
@@ -20,7 +22,8 @@ describe('App', () => {
 
     await TestBed.configureTestingModule({
       imports: [App],
-      providers: [provideRouter([])],
+      // The shell starts the nav badge refresh: its reads go to the testing backend.
+      providers: [provideRouter([]), provideHttpClient(), provideHttpClientTesting()],
     }).compileComponents();
   });
 
@@ -30,11 +33,13 @@ describe('App', () => {
     expect(app).toBeTruthy();
   });
 
-  it('should render shell title area', async () => {
+  it('renders the shell: sidebar and page outlet, no header', async () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await fixture.whenStable();
     const compiled = fixture.nativeElement as HTMLElement;
-    expect(compiled.querySelector('.hub-header .title')?.textContent).toContain('庫存管理');
+    expect(compiled.querySelector('app-sidebar nav[aria-label="主要導覽"]')).not.toBeNull();
+    expect(compiled.querySelector('main.hub-page router-outlet')).not.toBeNull();
+    expect(compiled.querySelector('.hub-header')).toBeNull();
   });
 });

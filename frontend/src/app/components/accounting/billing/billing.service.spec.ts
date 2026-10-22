@@ -288,4 +288,48 @@ describe('BillingService', () => {
     answer(requests(moved), '-100.0000');
     expect(billing.bill(moved)?.due).toBe('2026-10-07');
   });
+  // ---- refresh: a re-read of already cached statements (nav badges on focus / visibility) ------------------------
+
+  it('refresh re-reads a cached statement in the same change round and replaces the figure once it lands', () => {
+    billing.ensure([SEPT], TODAY);
+    answer(requests(), '-100.0000');
+    expect(billing.bill(SEPT)?.remaining).toBe(100);
+
+    billing.refresh([SEPT], TODAY);
+    const reqs = requests();
+    // The previous figure stays until the new round has fully landed.
+    expect(billing.bill(SEPT)?.remaining).toBe(100);
+    answer(reqs, '-100.0000', ['60.0000']);
+    expect(billing.bill(SEPT)?.remaining).toBe(40);
+
+    // The refreshed round is the current one: a plain ensure does not ask again.
+    billing.ensure([SEPT], TODAY);
+    http.expectNone(r => r.url.startsWith('/api/accounting/accounts/'));
+  });
+
+  it('drops a refreshed round superseded by a newer one', () => {
+    billing.ensure([SEPT], TODAY);
+    answer(requests(), '-100.0000');
+    billing.refresh([SEPT], TODAY);
+    const first = requests();
+    billing.refresh([SEPT], TODAY);
+    const second = requests();
+
+    answer(second, '-222.0000');
+    answer(first, '-111.0000');
+    expect(billing.bill(SEPT)?.statement).toBe(222);
+  });
+
+  it('recovers a failed first round on the next refresh', () => {
+    billing.ensure([SEPT], TODAY);
+    const first = requests();
+    first.summary.flush('boom', { status: 500, statusText: 'Server Error' });
+    first.payments.flush({ items: [], total: 0, limit: 100, offset: 0 });
+    expect(billing.failed(SEPT)).toBe(true);
+
+    billing.refresh([SEPT], TODAY);
+    answer(requests(), '-100.0000');
+    expect(billing.failed(SEPT)).toBe(false);
+    expect(billing.bill(SEPT)?.remaining).toBe(100);
+  });
 });

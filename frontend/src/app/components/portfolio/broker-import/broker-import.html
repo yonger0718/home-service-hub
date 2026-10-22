@@ -1,9 +1,10 @@
 <p-toast></p-toast>
 
 <div class="broker-import-page">
+  <app-page-header title="匯入券商對帳單"></app-page-header>
+
   <header class="broker-import-head">
     <div>
-      <h2>匯入券商對帳單</h2>
       @if (result(); as r) {
         <div class="broker-line">
           <span class="broker-chip">{{ detectedBrokerLabel() }}</span>

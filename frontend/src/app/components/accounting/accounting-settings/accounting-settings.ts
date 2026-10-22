@@ -18,6 +18,7 @@ import { isHandledKey } from '../accounting-ui';
 import { formatMoney } from '../format';
 import { writeErrorMessage } from '../http-errors';
 import { ReportView, summarizeReport } from './import-report';
+import { PageHeaderComponent } from '../../shell/page-header/page-header';
 
 export type CategoryTab = 'expense' | 'income' | 'transfer_out' | 'receivable' | 'payable';
 
@@ -44,7 +45,7 @@ function swap<T>(list: T[], index: number, delta: number): T[] | null {
 @Component({
   selector: 'app-accounting-settings',
   standalone: true,
-  imports: [DatePipe, DecimalPipe],
+  imports: [PageHeaderComponent, DatePipe, DecimalPipe],
   templateUrl: './accounting-settings.html',
   styleUrl: './accounting-settings.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

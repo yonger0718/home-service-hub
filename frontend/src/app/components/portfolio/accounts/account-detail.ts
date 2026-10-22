@@ -48,6 +48,7 @@ import {
 import { PortfolioService } from '../../../services/portfolio.service';
 import { ListItemComponent } from '../../shared/list-item/list-item';
 import { BROKER_OPTIONS } from './accounts-list';
+import { PageHeaderComponent } from '../../shell/page-header/page-header';
 
 type BalanceWindow = '1M' | '3M' | '1Y' | 'All';
 
@@ -111,6 +112,7 @@ function isCashQueryEvent(event: CashQueryEvent | null): event is CashQueryEvent
   selector: 'app-portfolio-account-detail',
   standalone: true,
   imports: [
+    PageHeaderComponent,
     CommonModule,
     FormsModule,
     ReactiveFormsModule,

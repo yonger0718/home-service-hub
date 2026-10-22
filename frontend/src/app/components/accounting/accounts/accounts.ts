@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { Observable, catchError, forkJoin, map, of } from 'rxjs';
 import { SkeletonComponent } from '../skeleton/skeleton';
 
@@ -14,6 +14,9 @@ import { BillState, BillingService } from '../billing/billing.service';
 import { dueDate, statementPeriod } from '../cycle';
 import { daysBetween, shortDate, todayIso } from '../dates';
 import { formatMoney } from '../format';
+import { importReviewCount } from '../import-review-count';
+import { PageHeaderComponent } from '../../shell/page-header/page-header';
+import { BtnComponent } from '../../ui/btn/btn';
 
 /** A credit card row's third line: what is left on its current statement and when it is due. */
 export interface CardDue {
@@ -114,7 +117,7 @@ export function buildAccountGroups(accounts: LedgerAccount[], mainCurrency: stri
 @Component({
   selector: 'app-accounting-accounts',
   standalone: true,
-  imports: [DatePipe, NgTemplateOutlet, RouterLink, SkeletonComponent],
+  imports: [PageHeaderComponent, BtnComponent, DatePipe, NgTemplateOutlet, RouterLink, SkeletonComponent],
   templateUrl: './accounts.html',
   styleUrl: './accounts.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -122,6 +125,7 @@ export function buildAccountGroups(accounts: LedgerAccount[], mainCurrency: stri
 export class AccountingAccountsComponent {
   private accountingService = inject(AccountingService);
   private readonly bills = inject(BillingService);
+  private readonly router = inject(Router);
   /** Guards the page load (accounts + preference). */
   private accountsRequestId = 0;
   /** Guards the import lookup; an import 重試 bumps only this one (spec §1.3). */
@@ -152,13 +156,7 @@ export class AccountingAccountsComponent {
   readonly excludedCount = computed(
     () => this.included().filter(account => account.balance_main === null || account.balance_main === undefined).length,
   );
-  readonly reviewCount = computed(() => {
-    const summary = this.latestImport()?.summary as unknown as
-      | { needs_review?: { count?: number }; unpaired_transfers?: unknown[] }
-      | null
-      | undefined;
-    return summary?.needs_review?.count ?? summary?.unpaired_transfers?.length ?? 0;
-  });
+  readonly reviewCount = computed(() => importReviewCount(this.latestImport()));
   readonly formatMoney = formatMoney;
   /** Each card's current statement (the same resolution as the calendar and the reminder centre). */
   private readonly dues = computed(() => currentDues(this.accounts(), this.today()));
@@ -241,6 +239,11 @@ export class AccountingAccountsComponent {
   private applyImport(result: ImportLookup): void {
     this.latestImport.set(result.v);
     this.importError.set(!result.ok);
+  }
+
+  /** The header's 新增帳戶 (app-btn renders a button, not a link). */
+  protected addAccount(): void {
+    void this.router.navigateByUrl('/accounting/accounts/new');
   }
 
   /** The import panel's 重試: only the import lookup, so an accounts reload in flight stays valid. */

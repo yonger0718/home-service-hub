@@ -3,15 +3,14 @@ import { toSignal } from '@angular/core/rxjs-interop';
 
 import { AppearanceService, GainLossConvention } from '../../services/appearance.service';
 import { SegToggleComponent, SegToggleOption } from '../ui/seg-toggle/seg-toggle';
+import { PageHeaderComponent } from '../shell/page-header/page-header';
 
 @Component({
   selector: 'app-settings',
-  imports: [SegToggleComponent],
+  imports: [PageHeaderComponent, SegToggleComponent],
   template: `
     <section class="settings-page">
-      <div class="page-head">
-        <h2 class="section-title">設定</h2>
-      </div>
+      <app-page-header></app-page-header>
 
       <div class="set-section">
         <div class="set-section-title">外觀</div>

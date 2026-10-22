@@ -1,12 +1,10 @@
 <p-toast></p-toast>
 <p-confirmDialog styleClass="hub-dialog-md"></p-confirmDialog>
 
-<div class="page-head justify-content-end">
-  <div class="head-actions">
-    <app-btn variant="secondary" icon="pi-upload" (click)="clearFilters()">清除篩選</app-btn>
-    <app-btn icon="pi-plus" (click)="openNew()">新增交易</app-btn>
-  </div>
-</div>
+<app-page-header>
+  <app-btn variant="secondary" icon="pi-upload" (click)="clearFilters()">清除篩選</app-btn>
+  <app-btn variant="soft" icon="pi-plus" (click)="openNew()">新增交易</app-btn>
+</app-page-header>
 
 <div class="filter-bar">
   <div class="search-wrap">

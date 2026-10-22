@@ -1,7 +1,7 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
+import { Router, provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountInput, ImportRun, LedgerAccount } from '../../../models/accounting.model';
@@ -268,7 +268,20 @@ describe('AccountingAccountsComponent', () => {
     expect(el.querySelector('.nw small')?.textContent?.trim()).toBe('總額 TWD');
     expect(el.querySelector('.total-amount')?.textContent?.trim()).toBe('−$30,136');
     expect(el.querySelector('.totals-line')?.textContent?.trim()).toBe('總資產 $14,226 · 總負債 $44,362');
-    expect(el.querySelector('.add-account')?.getAttribute('href')).toBe('/accounting/accounts/new');
+  });
+
+  it('offers 新增帳戶 as a soft text button in the header that opens the new-account page', () => {
+    const el = render(ACCOUNTS, LATEST).nativeElement as HTMLElement;
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+
+    const add = el.querySelector('app-page-header .page-actions app-btn.add-account button')!;
+    expect(add.classList.contains('btn-soft')).toBe(true);
+    expect(add.querySelector('i.pi.pi-plus')).not.toBeNull();
+    expect(add.textContent?.trim()).toBe('新增帳戶');
+    expect(el.querySelector('app-page-header a[aria-label="新增帳戶"]')).toBeNull();
+
+    (add as HTMLButtonElement).click();
+    expect(navigate).toHaveBeenCalledWith('/accounting/accounts/new');
   });
 
   it('collapses a group from its header', () => {

@@ -385,7 +385,7 @@ describe('AccountingSettingsComponent', () => {
 
     deleteButton(0).click();
     fixture.detectChanges();
-    el.querySelector<HTMLElement>('h2')!.click();
+    el.querySelector<HTMLElement>('h1')!.click();
     fixture.detectChanges();
     expect(el.querySelectorAll('.row-delete.danger').length).toBe(0);
 

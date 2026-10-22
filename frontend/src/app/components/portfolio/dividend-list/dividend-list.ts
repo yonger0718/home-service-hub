@@ -20,6 +20,7 @@ import { Menu } from 'primeng/menu';
 import { BtnComponent } from '../../ui/btn/btn';
 import { BentoComponent } from '../../ui/bento/bento';
 import { TimelineComponent, TimelineRow } from '../../ui/timeline/timeline';
+import { PageHeaderComponent } from '../../shell/page-header/page-header';
 
 const SORT_OPTIONS = [
   { value: 'ex_dividend_date:desc', label: '除息日 新→舊' },
@@ -37,6 +38,7 @@ const SOURCE_OPTIONS = [
 @Component({
   selector: 'app-portfolio-dividends',
   imports: [
+    PageHeaderComponent,
     CommonModule, TableModule, ButtonModule, DialogModule, FormsModule,
     InputTextModule, InputNumberModule, DatePickerModule, SelectModule,
     PaginatorModule, ProgressSpinnerModule,

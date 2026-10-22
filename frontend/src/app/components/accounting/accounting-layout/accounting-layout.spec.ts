@@ -10,6 +10,7 @@ import { routes } from '../../../app.routes';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { makeEntryDetail, makePreference } from '../testing/fixtures';
+import { PaneStateService } from '../../../services/pane-state.service';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { AccountingLayoutComponent } from './accounting-layout';
 
@@ -41,10 +42,10 @@ function find(harness: RouterTestingHarness, selector: string): Promise<Element>
 const LIST = '.list-pane > *';
 const PANE_PAGE = '.detail-pane router-outlet + :not(.pane-empty)';
 /**
- * A page in the layout's primary outlet, never the FAB that follows it before the page loads
+ * A page in the layout's primary outlet, never the toast that follows it before the page loads
  * (`:scope >`: jsdom 27 mis-caches a bare `router-outlet + *`).
  */
-const SCREEN = ':scope > router-outlet + :not(.fab)';
+const SCREEN = ':scope > router-outlet + :not(app-accounting-toast)';
 
 describe('AccountingLayoutComponent', () => {
   it('sets a scoped .72rem minimum for captions inherited by calendar and keypad', async () => {
@@ -84,13 +85,12 @@ describe('AccountingLayoutComponent', () => {
     expect(harness.routeNativeElement!.querySelector('.dbody')).not.toBeNull();
   });
 
-  it('renders the detail as its own screen on a phone, without panes or FAB', async () => {
+  it('renders the detail as its own screen on a phone, without panes', async () => {
     const harness = await start('phone', '/accounting/entries/5');
     const el = harness.routeNativeElement!;
 
     await find(harness, SCREEN);
     expect(el.querySelector('.dbody')).toBeNull();
-    expect(el.querySelector('.fab')).toBeNull();
   });
 
   it('opens the detail as a sheet at 820px and closes it with ✕', async () => {
@@ -209,12 +209,44 @@ describe('AccountingLayoutComponent', () => {
     expect(TestBed.inject(Router).url).toBe('/accounting/entries/5');
   });
 
-  it('shows the floating plus from 760px, pointing at the entry form', async () => {
+  it('draws no floating plus of its own (the shell has the app-wide 記一筆 button)', async () => {
     const harness = await start('panes', '/accounting/accounts');
 
-    const fab = await find(harness, 'a.fab');
-    expect(fab.getAttribute('href')).toBe('/accounting/entry');
-    expect(fab.getAttribute('aria-label')).toBe('新增記錄');
+    await find(harness, LIST);
+    expect(harness.routeNativeElement!.querySelector('.fab, .hub-fab')).toBeNull();
+  });
+
+  it('publishes pane and form state for the shell', async () => {
+    const harness = await start('panes', '/accounting/entries/9');
+    const pane = TestBed.inject(PaneStateService);
+    await find(harness, PANE_PAGE);
+    harness.detectChanges();
+    expect(pane.paneOpen()).toBe(true);
+    expect(pane.formOpen()).toBe(false);
+    expect(pane.sheetOpen()).toBe(false);
+
+    await TestBed.inject(Router).navigateByUrl('/accounting/entry');
+    harness.detectChanges();
+    expect(pane.formOpen()).toBe(true);
+    expect(pane.paneOpen()).toBe(true);
+
+    harness.fixture.destroy();
+    expect(pane.paneOpen()).toBe(false);
+    expect(pane.formOpen()).toBe(false);
+    expect(pane.sheetOpen()).toBe(false);
+  });
+
+  it('publishes the 820px sheet as open, never as a pane', async () => {
+    const harness = await start('sheet', '/accounting/entries/9');
+    const pane = TestBed.inject(PaneStateService);
+    await find(harness, '.detail-pane.open');
+    harness.detectChanges();
+    expect(pane.sheetOpen()).toBe(true);
+    expect(pane.paneOpen()).toBe(false);
+
+    await TestBed.inject(Router).navigateByUrl('/accounting');
+    harness.detectChanges();
+    expect(pane.sheetOpen()).toBe(false);
   });
 
   it('re-resolves the routes when the viewport crosses the phone breakpoint', async () => {
@@ -359,14 +391,16 @@ describe('AccountingLayoutComponent', () => {
     const router = TestBed.inject(Router);
     const navigate = vi.spyOn(router, 'navigate');
 
-    const handled = new KeyboardEvent('keydown', { key: 'n', bubbles: true, cancelable: true });
-    handled.preventDefault();
-    document.body.dispatchEvent(handled);
-    expect(press('n', { isComposing: true }).defaultPrevented).toBe(false);
-    expect(press('n', { keyCode: 229 } as KeyboardEventInit).defaultPrevented).toBe(false);
     // No rows on screen: ↓ is not taken from the page (it may scroll).
     expect(harness.routeNativeElement!.querySelector('[data-entry-id]')).toBeNull();
     expect(press('ArrowDown').defaultPrevented).toBe(false);
+
+    addRows(harness, [7, 8]);
+    const handled = new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true });
+    handled.preventDefault();
+    document.body.dispatchEvent(handled);
+    expect(press('ArrowDown', { isComposing: true }).defaultPrevented).toBe(false);
+    expect(press('ArrowDown', { keyCode: 229 } as KeyboardEventInit).defaultPrevented).toBe(false);
 
     expect(navigate).not.toHaveBeenCalled();
     expect(router.url).toBe('/accounting');
@@ -547,9 +581,9 @@ describe('AccountingLayoutComponent', () => {
     expect(TestBed.inject(Router).url).toBe('/accounting/entries/5');
   });
 
-  it('makes the list and the dock inert while the sheet is open, and only then', async () => {
-    const dock = document.createElement('app-dock');
-    document.body.appendChild(dock);
+  it('makes the list and the sidebar inert while the sheet is open, and only then', async () => {
+    const sidebar = document.createElement('app-sidebar');
+    document.body.appendChild(sidebar);
     const harness = await start('sheet', '/accounting');
     const list = harness.routeNativeElement!.querySelector('.list-pane')!;
     await find(harness, LIST);
@@ -561,7 +595,7 @@ describe('AccountingLayoutComponent', () => {
     await vi.waitFor(() => {
       harness.detectChanges();
       expect(list.hasAttribute('inert')).toBe(true);
-      expect(dock.hasAttribute('inert')).toBe(true);
+      expect(sidebar.hasAttribute('inert')).toBe(true);
     });
     expect(harness.routeNativeElement!.querySelector('.sheet-backdrop')!.getAttribute('aria-hidden')).toBe('true');
 
@@ -569,9 +603,9 @@ describe('AccountingLayoutComponent', () => {
     await vi.waitFor(() => {
       harness.detectChanges();
       expect(list.hasAttribute('inert')).toBe(false);
-      expect(dock.hasAttribute('inert')).toBe(false);
+      expect(sidebar.hasAttribute('inert')).toBe(false);
     });
-    dock.remove();
+    sidebar.remove();
   });
 
   it('hides the closed 820px sheet from assistive tech and focus, but not the ≥ 1024px pane', async () => {
@@ -686,19 +720,19 @@ describe('AccountingLayoutComponent', () => {
   });
 
 
-  it('removes inert from the retained list and dock when destroyed with a sheet open', async () => {
-    const dock = document.createElement('app-dock'); document.body.appendChild(dock);
+  it('removes inert from the retained list and sidebar when destroyed with a sheet open', async () => {
+    const sidebar = document.createElement('app-sidebar'); document.body.appendChild(sidebar);
     try {
       const harness = await start('sheet', '/accounting/entries/5');
       const list = await find(harness, '.list-pane');
       await find(harness, '.detail-pane.open');
       harness.detectChanges();
       expect(list.hasAttribute('inert')).toBe(true);
-      expect(dock.hasAttribute('inert')).toBe(true);
+      expect(sidebar.hasAttribute('inert')).toBe(true);
       harness.fixture.destroy();
       expect(list.hasAttribute('inert')).toBe(false);
-      expect(dock.hasAttribute('inert')).toBe(false);
-    } finally { dock.remove(); }
+      expect(sidebar.hasAttribute('inert')).toBe(false);
+    } finally { sidebar.remove(); }
   });
 
   it('asks a dirty registered form before ✕, backdrop, Esc or swipe closes the sheet', async () => {

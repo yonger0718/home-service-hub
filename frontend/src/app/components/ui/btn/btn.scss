@@ -62,6 +62,17 @@
   }
 }
 
+.btn-soft {
+  background: var(--app-primary-soft);
+  box-shadow: none;
+  color: var(--app-primary);
+
+  &:hover:not(:disabled) {
+    background: var(--app-primary-soft);
+    filter: brightness(0.96);
+  }
+}
+
 .btn-icon {
   border-radius: var(--radius-pill);
   height: 38px;

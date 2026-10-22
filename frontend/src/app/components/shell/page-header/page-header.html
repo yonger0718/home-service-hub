@@ -1,0 +1,10 @@
+<div class="page-header-row">
+  <h1>{{ heading() }}</h1>
+  <div class="page-actions"><ng-content></ng-content></div>
+  @if (gear()) {
+    <a class="header-gear" routerLink="/settings" aria-label="設定"><i class="pi pi-cog" aria-hidden="true"></i></a>
+  }
+</div>
+@if (phone()) {
+  <app-sub-nav></app-sub-nav>
+}

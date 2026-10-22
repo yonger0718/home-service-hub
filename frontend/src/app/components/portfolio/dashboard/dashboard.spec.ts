@@ -11,6 +11,7 @@ import { PortfolioService } from '../../../services/portfolio.service';
 import { AppearanceService } from '../../../services/appearance.service';
 import { PortfolioDashboardComponent } from './dashboard';
 import { BtnComponent } from '../../ui/btn/btn';
+import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { SegToggleComponent } from '../../ui/seg-toggle/seg-toggle';
 import { BentoComponent } from '../../ui/bento/bento';
 import { PctBadgeComponent } from '../../ui/pct-badge/pct-badge';
@@ -122,6 +123,7 @@ describe('PortfolioDashboardComponent', () => {
             RouterLink,
             ChartStubComponent,
             BtnComponent,
+            PageHeaderComponent,
             SegToggleComponent,
             BentoComponent,
             PctBadgeComponent,

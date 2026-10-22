@@ -16,9 +16,16 @@
   display: grid;
   gap: 16px;
   grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
-  /* viewport minus the shell header and .hub-page's vertical padding (both compact on short screens) */
-  height: calc(100dvh - var(--chrome-header) - var(--page-pad-y) - var(--page-pad-b));
+  /* viewport minus .hub-page's vertical padding (compact on short screens) */
+  height: calc(100dvh - var(--page-pad-y) - var(--page-pad-b));
+  /* The panes fill the viewport and scroll on their own: give back the shell's 記一筆 clearance (--fab-clear)… */
+  margin-bottom: calc(-1 * var(--fab-clear, 0px));
   min-height: 360px;
+
+  /* …and let the list's last rows scroll clear of the button instead. */
+  .list-pane {
+    padding-bottom: calc(14px + var(--fab-clear, 0px));
+  }
 }
 
 .pane {
@@ -47,6 +54,8 @@
 .dbody--sheet {
   display: block;
   height: auto;
+  /* One page scroll: the shell's own bottom padding clears the 記一筆 button. */
+  margin-bottom: 0;
   min-height: 0;
 
   .list-pane {
@@ -125,30 +134,6 @@
   right: 12px;
   top: 12px;
   width: 32px;
-}
-
-
-.fab {
-  align-items: center;
-  background: var(--app-primary);
-  border-radius: 50%;
-  bottom: 30px;
-  box-shadow: 0 8px 20px rgba(83, 58, 253, 0.35);
-  color: #fff;
-  display: flex;
-  font-size: 1.7rem;
-  height: 52px;
-  justify-content: center;
-  position: fixed;
-  right: 30px;
-  text-decoration: none;
-  width: 52px;
-  z-index: 1000;
-
-  &:focus-visible {
-    box-shadow: 0 0 0 4px var(--app-focus-ring), 0 8px 20px rgba(83, 58, 253, 0.35);
-    outline: none;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

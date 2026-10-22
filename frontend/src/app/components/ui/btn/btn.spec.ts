@@ -37,4 +37,13 @@ describe('BtnComponent', () => {
     button.click();
     expect(fixture.componentInstance.count).toBe(1);
   });
+
+  it('renders the soft variant as .btn-soft', () => {
+    const fixture = TestBed.createComponent(BtnSoftHostComponent);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('button.btn-soft')).toBeTruthy();
+  });
 });
+
+@Component({ imports: [BtnComponent], template: `<app-btn variant="soft">新增</app-btn>` })
+class BtnSoftHostComponent {}

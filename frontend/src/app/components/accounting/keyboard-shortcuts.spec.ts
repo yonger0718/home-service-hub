@@ -7,11 +7,11 @@ function key(value: string, extra: Partial<ShortcutKey> = {}): ShortcutKey {
 }
 
 describe('resolveShortcut', () => {
-  it('opens the entry form with N on list pages', () => {
+  it("leaves N to the shell's app-wide shortcut (global-shortcuts.ts)", () => {
     for (const url of ['/accounting', '/accounting/entries/9', '/accounting/accounts/5', '/accounting?month=2026-09']) {
-      expect(resolveShortcut(key('n'), { url, targetTag: null })).toEqual({ type: 'navigate', commands: ['/accounting/entry'] });
+      expect(resolveShortcut(key('n'), { url, targetTag: null })).toBeNull();
     }
-    expect(resolveShortcut(key('N', { shiftKey: true }), { url: '/accounting', targetTag: null })?.type).toBe('navigate');
+    expect(resolveShortcut(key('N', { shiftKey: true }), { url: '/accounting', targetTag: null })).toBeNull();
   });
 
   it('edits the selected entry with E only when one is selected', () => {
@@ -35,8 +35,7 @@ describe('resolveShortcut', () => {
         commands: ['/accounting/entries', 9, 'edit'],
         queryParams: { select: 'parent' },
       });
-      // The group view is a list page: N and the arrows keep working there.
-      expect(resolveShortcut(key('n'), { url, targetTag: null })).toEqual({ type: 'navigate', commands: ['/accounting/entry'] });
+      // The group view is a list page: the arrows keep working there.
       expect(resolveShortcut(key('ArrowDown'), { url, targetTag: null })).toEqual({ type: 'move', delta: 1 });
     }
     expect(resolveShortcut(key('e'), { url: '/accounting/entries/9/group/x', targetTag: null })).toBeNull();
@@ -55,11 +54,11 @@ describe('resolveShortcut', () => {
   });
 
   it('ignores list keys while typing, with modifiers, and outside list pages', () => {
-    expect(resolveShortcut(key('n'), { url: '/accounting', targetTag: 'INPUT' })).toBeNull();
-    expect(resolveShortcut(key('n'), { url: '/accounting', targetTag: 'TEXTAREA' })).toBeNull();
-    expect(resolveShortcut(key('n', { metaKey: true }), { url: '/accounting', targetTag: null })).toBeNull();
-    expect(resolveShortcut(key('n'), { url: '/accounting/settings', targetTag: null })).toBeNull();
-    expect(resolveShortcut(key('n'), { url: '/accounting/accounts/5/settings', targetTag: null })).toBeNull();
+    expect(resolveShortcut(key('e'), { url: '/accounting/entries/9', targetTag: 'INPUT' })).toBeNull();
+    expect(resolveShortcut(key('ArrowDown'), { url: '/accounting', targetTag: 'TEXTAREA' })).toBeNull();
+    expect(resolveShortcut(key('e', { metaKey: true }), { url: '/accounting/entries/9', targetTag: null })).toBeNull();
+    expect(resolveShortcut(key('ArrowDown'), { url: '/accounting/settings', targetTag: null })).toBeNull();
+    expect(resolveShortcut(key('ArrowDown'), { url: '/accounting/accounts/5/settings', targetTag: null })).toBeNull();
   });
 
   it('saves, saves and continues, and cancels on the entry form', () => {
