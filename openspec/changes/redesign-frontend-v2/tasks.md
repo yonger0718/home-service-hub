@@ -6,16 +6,16 @@
 
 ## 1. Shell and navigation
 
-- [ ] 1.1 Add `NavigationPreferencesService` (`hiddenGroups`, `sidebarDefault`, `autoCollapse`, `showBadges`, `foldedGroups`; `hh-nav-*` keys) with Vitest specs
-- [ ] 1.2 Extend `NavItem` with optional `badge`; add a badge source that fetches reminder count, 待確認 count, pending dividends and import status once on start and on window focus
-- [ ] 1.3 Replace `components/dock` with the labelled sidebar (expanded ≥ 1280 px, rail 760–1279 px), foldable groups, collapse button, tooltips in rail mode
-- [ ] 1.4 Remove the frosted top header from `components/shell`; give every routed page its own `<h1>` and header actions
-- [ ] 1.5 Auto-collapse to the rail while the accounting right pane is open (≥ 1024 px), honouring a manual expand until the pane closes
-- [ ] 1.6 Move the floating 記一筆 button from `accounting-layout` to the shell (every route ≥ 760 px, tooltip `記一筆 N`, hidden while the entry form is open, anchored to the list column when a pane is open)
-- [ ] 1.7 Make `N` open the entry form from any route; keep `E`, arrows, ⏎, ⇧⏎, Esc as today
-- [ ] 1.8 Phone: hide groups per preferences; dots on group tabs; 設定 becomes a header gear when the tab count is odd; sub-nav chips for 投資 with counts
-- [ ] 1.9 Remove 記一筆 buttons from page headers
-- [ ] 1.10 Vitest specs: active highlight, folded group sum, rail tooltip, auto-collapse, tab bar parity rule
+- [x] 1.1 Add `NavigationPreferencesService` (`hiddenGroups`, `sidebarDefault`, `autoCollapse`, `showBadges`, `foldedGroups`; `hh-nav-*` keys) with Vitest specs
+- [x] 1.2 Extend `NavItem` with optional `badge`; add a badge source that fetches reminder count, 待確認 count, pending dividends and import status once on start and on window focus — PR 1: reminder, 待確認 and recalc-status sources; 股利 count and the device-local import flag are owner exceptions (plan Decisions 2, 5)
+- [x] 1.3 Replace `components/dock` with the labelled sidebar (expanded ≥ 1280 px, rail 760–1279 px), foldable groups, collapse button, tooltips in rail mode
+- [x] 1.4 Remove the frosted top header from `components/shell`; give every routed page its own `<h1>` and header actions
+- [x] 1.5 Auto-collapse to the rail while the accounting right pane is open (≥ 1024 px), honouring a manual expand until the pane closes
+- [x] 1.6 Move the floating 記一筆 button from `accounting-layout` to the shell (every route ≥ 760 px, tooltip `記一筆 N`, hidden while the entry form is open, anchored to the list column when a pane is open)
+- [x] 1.7 Make `N` open the entry form from any route; keep `E`, arrows, ⏎, ⇧⏎, Esc as today
+- [x] 1.8 Phone: hide groups per preferences; dots on group tabs; 設定 becomes a header gear when the tab count is odd; sub-nav chips for 投資 with counts
+- [x] 1.9 Remove 記一筆 buttons from page headers
+- [x] 1.10 Vitest specs: active highlight, folded group sum, rail tooltip, auto-collapse, tab bar parity rule
 
 ## 2. Appearance and Settings
 
