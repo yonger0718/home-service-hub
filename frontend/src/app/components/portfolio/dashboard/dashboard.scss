@@ -322,8 +322,14 @@ app-bento {
 }
 
 .networth-chart {
+  border-radius: 8px;
   height: 220px;
   position: relative;
+
+  &:focus-visible {
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+    outline: none;
+  }
 
   p-chart,
   canvas {

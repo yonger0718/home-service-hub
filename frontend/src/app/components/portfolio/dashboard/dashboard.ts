@@ -237,6 +237,42 @@ export class PortfolioDashboardComponent implements OnInit {
     return holding.market === 'TW' ? 'TWD' : holding.native_currency;
   }
 
+  /** Point shown while the chart has keyboard focus; -1 when none. */
+  private focusedPointIndex = -1;
+
+  onChartFocus(): void {
+    this.showChartPoint(this.chartPoints().length - 1);
+  }
+
+  onChartKeydown(event: KeyboardEvent): void {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    const last = this.chartPoints().length - 1;
+    const from = this.focusedPointIndex < 0 ? last : this.focusedPointIndex;
+    const step = event.key === 'ArrowLeft' ? -1 : 1;
+    this.showChartPoint(Math.min(last, Math.max(0, from + step)));
+  }
+
+  onChartBlur(): void {
+    this.focusedPointIndex = -1;
+    const chart = this.netWorthChart?.chart;
+    if (!chart) return;
+    chart.setActiveElements([]);
+    chart.tooltip?.setActiveElements([], { x: 0, y: 0 });
+    chart.update('none');
+  }
+
+  private showChartPoint(index: number): void {
+    const chart = this.netWorthChart?.chart;
+    if (!chart || index < 0) return;
+    this.focusedPointIndex = index;
+    const active = [{ datasetIndex: 0, index }, { datasetIndex: 1, index }];
+    const element = chart.getDatasetMeta?.(0)?.data?.[index];
+    chart.setActiveElements(active);
+    chart.tooltip?.setActiveElements(active, { x: element?.x ?? 0, y: element?.y ?? 0 });
+    chart.update('none');
+  }
+
   private readonly networthCache = new Map<PortfolioRange, NetworthPoint[]>();
   private readonly prefetchOrder: PortfolioRange[] = ['1M', '3M', 'YTD', '5Y'];
 

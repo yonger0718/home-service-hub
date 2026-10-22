@@ -1,6 +1,6 @@
 import { Component, Input } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { DeferBlockBehavior, TestBed } from '@angular/core/testing';
+import { DeferBlockBehavior, DeferBlockState, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { provideRouter, RouterLink } from '@angular/router';
 import { of, throwError } from 'rxjs';
@@ -31,7 +31,12 @@ class ChartStubComponent {
   @Input() data: unknown;
   @Input() options: unknown;
   @Input() plugins: unknown;
-  chart = { update: vi.fn() };
+  chart = {
+    update: vi.fn(),
+    setActiveElements: vi.fn(),
+    tooltip: { setActiveElements: vi.fn() },
+    getDatasetMeta: vi.fn(() => ({ data: [{ x: 10, y: 20 }, { x: 30, y: 40 }] })),
+  };
 }
 
 describe('PortfolioDashboardComponent', () => {
@@ -415,7 +420,7 @@ describe('PortfolioDashboardComponent', () => {
   it('sets chart animation false and updates the chart on convention changes', async () => {
     const fixture = createFixture();
     const [deferBlock] = await fixture.getDeferBlocks();
-    await deferBlock.render(2 /* DeferBlockState.Complete */);
+    await deferBlock.render(DeferBlockState.Complete);
     fixture.detectChanges();
     const chart = fixture.debugElement.query(By.directive(ChartStubComponent)).componentInstance as ChartStubComponent;
 
@@ -662,7 +667,7 @@ describe('PortfolioDashboardComponent', () => {
     it('passes the hover guide plugin to p-chart', async () => {
       const fixture = createFixture();
       const [deferBlock] = await fixture.getDeferBlocks();
-      await deferBlock.render(2 /* DeferBlockState.Complete */);
+      await deferBlock.render(DeferBlockState.Complete);
       fixture.detectChanges();
       const chart = fixture.debugElement.query(By.directive(ChartStubComponent)).componentInstance as ChartStubComponent;
 
@@ -714,6 +719,65 @@ describe('PortfolioDashboardComponent', () => {
       fixture.detectChanges();
 
       expect((fixture.nativeElement as HTMLElement).querySelector('.chart-head .card-title')?.textContent?.trim()).toBe('淨值走勢 · 全市場');
+    });
+
+    describe('keyboard focus', () => {
+      async function renderChart() {
+        const fixture = createFixture();
+        const [deferBlock] = await fixture.getDeferBlocks();
+        await deferBlock.render(DeferBlockState.Complete);
+        fixture.detectChanges();
+        const chart = (fixture.debugElement.query(By.directive(ChartStubComponent)).componentInstance as ChartStubComponent).chart;
+        const wrapper = (fixture.nativeElement as HTMLElement).querySelector<HTMLElement>('.networth-chart')!;
+        return { fixture, chart, wrapper };
+      }
+
+      const both = (index: number) => [{ datasetIndex: 0, index }, { datasetIndex: 1, index }];
+
+      it('makes the chart wrapper a focusable, labelled image', async () => {
+        const { wrapper } = await renderChart();
+
+        expect(wrapper.getAttribute('tabindex')).toBe('0');
+        expect(wrapper.getAttribute('role')).toBe('img');
+        expect(wrapper.getAttribute('aria-label')).toBe('淨值走勢圖，使用左右鍵檢視各日數值');
+      });
+
+      it('shows the last point on focus, moves with the arrow keys and clears on blur', async () => {
+        const { chart, wrapper } = await renderChart();
+
+        wrapper.dispatchEvent(new FocusEvent('focus'));
+        expect(chart.setActiveElements).toHaveBeenLastCalledWith(both(1));
+        expect(chart.tooltip.setActiveElements).toHaveBeenLastCalledWith(both(1), { x: 30, y: 40 });
+        expect(chart.update).toHaveBeenLastCalledWith('none');
+
+        wrapper.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' }));
+        expect(chart.setActiveElements).toHaveBeenLastCalledWith(both(0));
+        expect(chart.tooltip.setActiveElements).toHaveBeenLastCalledWith(both(0), { x: 10, y: 20 });
+
+        wrapper.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' }));
+        expect(chart.setActiveElements).toHaveBeenLastCalledWith(both(0));
+
+        wrapper.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
+        wrapper.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
+        expect(chart.setActiveElements).toHaveBeenLastCalledWith(both(1));
+
+        chart.update.mockClear();
+        wrapper.dispatchEvent(new FocusEvent('blur'));
+        expect(chart.setActiveElements).toHaveBeenLastCalledWith([]);
+        expect(chart.tooltip.setActiveElements).toHaveBeenLastCalledWith([], { x: 0, y: 0 });
+        expect(chart.update).toHaveBeenCalledWith('none');
+      });
+
+      it('does nothing before the chart has rendered', () => {
+        const fixture = createFixture();
+        const wrapper = (fixture.nativeElement as HTMLElement).querySelector<HTMLElement>('.networth-chart')!;
+
+        expect(() => {
+          wrapper.dispatchEvent(new FocusEvent('focus'));
+          wrapper.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' }));
+          wrapper.dispatchEvent(new FocusEvent('blur'));
+        }).not.toThrow();
+      });
     });
 
     it('uses a two-column legend and a cash caption on a phone', () => {

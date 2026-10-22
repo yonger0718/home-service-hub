@@ -2,11 +2,12 @@ import type { Plugin } from 'chart.js';
 
 /**
  * Dashed vertical guide at the hovered x. Registered per chart through `p-chart [plugins]`;
- * the colour is read at draw time so a theme switch needs no rebuild.
+ * the colour is read at draw time so a theme switch needs no rebuild. Drawn after the datasets
+ * because per-chart plugins run after the global Tooltip, whose box `afterDraw` would cross.
  */
 export const hoverGuidePlugin: Plugin<'line'> = {
   id: 'hoverGuide',
-  afterDraw(chart) {
+  afterDatasetsDraw(chart) {
     const active = chart.tooltip?.getActiveElements() ?? [];
     if (active.length === 0) return;
     const { x } = active[0].element;

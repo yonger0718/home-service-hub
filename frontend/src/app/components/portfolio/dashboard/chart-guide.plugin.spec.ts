@@ -29,8 +29,13 @@ describe('hoverGuidePlugin', () => {
   }
 
   function draw(chart: Chart<'line'>): void {
-    (hoverGuidePlugin.afterDraw as (c: Chart<'line'>, args: unknown, options: unknown) => void)(chart, {}, {});
+    (hoverGuidePlugin.afterDatasetsDraw as (c: Chart<'line'>, args: unknown, options: unknown) => void)(chart, {}, {});
   }
+
+  it('draws after the datasets, before the tooltip box', () => {
+    expect(hoverGuidePlugin.afterDatasetsDraw).toBeTypeOf('function');
+    expect(hoverGuidePlugin.afterDraw).toBeUndefined();
+  });
 
   it('draws one dashed vertical line at the active x from the chart top to bottom', () => {
     const { chart, ctx } = fakeChart([{ element: { x: 120 } }]);

@@ -153,7 +153,15 @@
             }
           </div>
         }
-        <div class="networth-chart">
+        <div
+          class="networth-chart"
+          tabindex="0"
+          role="img"
+          aria-label="淨值走勢圖，使用左右鍵檢視各日數值"
+          (focus)="onChartFocus()"
+          (blur)="onChartBlur()"
+          (keydown)="onChartKeydown($event)"
+        >
           @defer (when !!chartData) {
             <p-chart #netWorthChart type="line" [data]="chartData" [options]="chartOptions" [plugins]="chartPlugins"></p-chart>
           } @placeholder {
