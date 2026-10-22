@@ -1,6 +1,9 @@
+import { inject } from '@angular/core';
 import { Routes } from '@angular/router';
 import { ACCOUNTING_PAGES, AccountingPage } from './components/accounting/accounting-pages';
+import { landingPathFor } from './components/shell/navigation';
 import { phoneLayoutGuard, wideLayoutGuard } from './services/layout-mode.service';
+import { NavigationPreferencesService } from './services/navigation-preferences.service';
 
 /**
  * Every deep-linkable accounting path must also match Caddy's `@hub_spa` matcher (docs/deploy). PR-9 adds the 多類別
@@ -49,13 +52,18 @@ const ACCOUNTING_WIDE_ROUTES: Routes = [
   { path: 'settings', loadComponent: ACCOUNTING_PAGES.settings },
 ];
 
+/** The first visible group's page, as the sidebar logo; absolute, so `**` can use it too (redirects do not chain). */
+const landingPath = () => landingPathFor(inject(NavigationPreferencesService).hiddenGroups());
+
 const ACCOUNTING_ROUTES: Routes = [
   { path: '', canMatch: [phoneLayoutGuard], children: ACCOUNTING_PHONE_ROUTES },
   { path: '', canMatch: [wideLayoutGuard], children: ACCOUNTING_WIDE_ROUTES },
 ];
 
 export const routes: Routes = [
-  { path: '', loadComponent: () => import('./components/item-list/item-list').then(m => m.ItemListComponent) },
+  // The bare URL (the manifest's start_url) opens the first visible group, as the sidebar logo does.
+  { path: '', pathMatch: 'full', redirectTo: landingPath },
+  { path: 'inventory', loadComponent: () => import('./components/item-list/item-list').then(m => m.ItemListComponent) },
   { path: 'shopping-list', loadComponent: () => import('./components/shopping-list/shopping-list').then(m => m.ShoppingListComponent) },
   { path: 'settings', loadComponent: () => import('./components/settings/settings').then(m => m.SettingsComponent) },
   
@@ -81,5 +89,5 @@ export const routes: Routes = [
     children: ACCOUNTING_ROUTES,
   },
 
-  { path: '**', redirectTo: '' }
+  { path: '**', redirectTo: landingPath }
 ];

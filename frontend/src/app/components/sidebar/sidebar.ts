@@ -30,7 +30,7 @@ export class SidebarComponent {
   protected readonly expanded = computed(() => this.nav.sidebarMode() === 'expanded');
 
   /** The first visible group's landing page; only 系統 left means `/settings`. */
-  protected readonly logoPath = computed(() => this.nav.visibleGroups()[0]?.defaultPath ?? '/settings');
+  protected readonly logoPath = this.nav.landingPath;
 
   protected badge(item: NavItem): NavBadge | undefined {
     return this.nav.badges()[item.id];

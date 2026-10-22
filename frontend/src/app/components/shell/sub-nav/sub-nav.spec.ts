@@ -70,7 +70,7 @@ describe('SubNavComponent', () => {
   });
 
   it('still shows the sub-nav of a hidden group route', async () => {
-    const el = await render('/');
+    const el = await render('/inventory');
 
     expect(Array.from(el.querySelectorAll('a')).map(a => a.textContent?.trim())).toEqual(['庫存', '採買']);
   });

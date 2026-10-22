@@ -4,7 +4,7 @@ import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { routes } from './app.routes';
 import { AccountingShortcutsService, EntryCommand } from './components/accounting/keyboard-shortcuts';
@@ -158,7 +158,7 @@ function stubViewport(width: number): void {
 }
 
 const LIST_LEVEL: [string, string][] = [
-  ['/', '庫存管理'],
+  ['/inventory', '庫存管理'],
   ['/shopping-list', '採買清單'],
   ['/portfolio', '投資概覽'],
   ['/portfolio/transactions', '股票交易紀錄'],
@@ -192,6 +192,7 @@ const DRILL_DOWN: [string, string][] = [
 async function open(url: string): Promise<HTMLElement> {
   const harness = await RouterTestingHarness.create();
   await harness.navigateByUrl(url);
+  expect(TestBed.inject(Router).url).toBe(url);
   await harness.fixture.whenStable();
   const root = harness.fixture.nativeElement as HTMLElement;
   await vi.waitFor(() => {
@@ -258,6 +259,39 @@ describe('wide route matrix (1440 px)', () => {
       expect(headings(root)).toContain(title);
       expect(root.querySelector('a[aria-label="設定"]')).toBeNull();
       expect(root.querySelector('app-sub-nav')).toBeNull();
+    });
+  }
+});
+
+describe('landing route', () => {
+  afterEach(() => localStorage.clear());
+
+  // The manifest's start_url is "/": it opens the first visible group, as the sidebar logo does.
+  const CASES: [string, string[] | null, string][] = [
+    ['default preferences (物資 hidden)', null, '/portfolio'],
+    ['物資 visible', [], '/inventory'],
+    ['物資, 投資 and 財務 hidden', ['supplies', 'portfolio', 'accounting'], '/settings'],
+  ];
+
+  for (const [label, hidden, target] of CASES) {
+    describe(label, () => {
+      beforeEach(() => {
+        localStorage.clear();
+        if (hidden) localStorage.setItem('hh-nav-hidden', JSON.stringify(hidden));
+        stubViewport(1440);
+      });
+
+      it(`'' lands on ${target}`, async () => {
+        const harness = await RouterTestingHarness.create();
+        await harness.navigateByUrl('/');
+        expect(TestBed.inject(Router).url).toBe(target);
+      });
+
+      it(`an unknown URL ends on ${target}`, async () => {
+        const harness = await RouterTestingHarness.create();
+        await harness.navigateByUrl('/no-such-page');
+        expect(TestBed.inject(Router).url).toBe(target);
+      });
     });
   }
 });

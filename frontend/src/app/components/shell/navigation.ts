@@ -27,9 +27,9 @@ export const NAV_GROUPS: NavGroup[] = [
     id: 'supplies',
     label: '物資',
     icon: 'pi-box',
-    defaultPath: '/',
+    defaultPath: '/inventory',
     items: [
-      { id: 'inventory', path: '/', icon: 'pi-box', label: '庫存', sidebarLabel: '庫存', title: '庫存管理', group: 'supplies', exact: true },
+      { id: 'inventory', path: '/inventory', icon: 'pi-box', label: '庫存', sidebarLabel: '庫存', title: '庫存管理', group: 'supplies', exact: true },
       { id: 'shopping', path: '/shopping-list', icon: 'pi-shopping-cart', label: '採買', sidebarLabel: '採買清單', title: '採買清單', group: 'supplies', sub: true },
     ],
   },
@@ -71,6 +71,11 @@ export const NAV_GROUPS: NavGroup[] = [
 ];
 
 export const NAV_ITEMS = NAV_GROUPS.flatMap(group => group.items);
+
+/** Where the logo and the bare URL lead: the first visible group's page; `/settings` when only 系統 is left. */
+export function landingPathFor(hidden: readonly NavGroupId[]): string {
+  return NAV_GROUPS.find(group => group.id !== 'system' && !hidden.includes(group.id))?.defaultPath ?? '/settings';
+}
 
 export function navItemForUrl(url: string): NavItem {
   const cleanUrl = url.split('?')[0].split('#')[0];

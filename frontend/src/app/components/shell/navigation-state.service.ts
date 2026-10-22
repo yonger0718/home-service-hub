@@ -16,6 +16,7 @@ import {
   SidebarDefault,
   TabBarLayout,
   buildTabBar,
+  landingPathFor,
   navItemForUrl,
   resolveSidebarMode,
 } from './navigation';
@@ -43,6 +44,7 @@ export class NavigationStateService {
     const hidden = this.prefs.hiddenGroups();
     return NAV_GROUPS.filter(group => group.id === 'system' || !hidden.includes(group.id));
   });
+  readonly landingPath: Signal<string> = computed(() => landingPathFor(this.prefs.hiddenGroups()));
   readonly tabBar: Signal<TabBarLayout> = computed(() => buildTabBar(NAV_GROUPS, this.prefs.hiddenGroups()));
   readonly badges: Signal<Readonly<Record<string, NavBadge>>> = computed(() =>
     this.prefs.showBadges() ? this.navBadges.badges() : NO_BADGES,

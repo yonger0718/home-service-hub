@@ -148,8 +148,10 @@ The converter copies `moze.realm` into a scratch directory before opening it; it
 Exact new line (inside `handle /hub/*`, after `uri strip_prefix /hub`):
 
 ```caddyfile
-            @hub_spa path_regexp hub_spa "^(/|/shopping-list|/settings|/portfolio|/portfolio/(transactions|dividends|realized-pnl|accounts|import|import-broker)|/portfolio/accounts/[0-9]+|/accounting|/accounting/(accounts|dashboard|transactions|settings|cards|categories|recurring|entry)|/accounting/accounts/new|/accounting/accounts/[0-9]+|/accounting/accounts/[0-9]+/settings|/accounting/accounts/[0-9]+/entries/[0-9]+|/accounting/entries/[0-9]+|/accounting/entries/[0-9]+/edit)$"
+            @hub_spa path_regexp hub_spa "^(/|/inventory|/shopping-list|/settings|/portfolio|/portfolio/(transactions|dividends|realized-pnl|accounts|import|import-broker)|/portfolio/accounts/[0-9]+|/accounting|/accounting/(accounts|dashboard|transactions|settings|cards|categories|recurring|entry)|/accounting/accounts/new|/accounting/accounts/[0-9]+|/accounting/accounts/[0-9]+/settings|/accounting/accounts/[0-9]+/entries/[0-9]+|/accounting/entries/[0-9]+|/accounting/entries/[0-9]+/edit)$"
 ```
+
+`/inventory` (庫存, moved off `/`, which now redirects to the first visible nav group) ships with the frontend redesign v2 PR 1 (shell and navigation): add it after `^(/` in the live line before deploying that build.
 
 New SPA paths: `/accounting` (timeline), `/accounting/entry`, `/accounting/settings` (now a page), `/accounting/accounts/new`, `/accounting/accounts/<n>/settings`, `/accounting/accounts/<n>/entries/<m>` (an entry opened from a passbook; its edit form stays at `/accounting/entries/<m>/edit`), `/accounting/entries/<n>`, `/accounting/entries/<n>/edit`. The phase 1 paths (`dashboard`, `transactions`, `cards`, `categories`, `recurring`) stay so bookmarks reach the SPA, which redirects them to `/accounting`. Query strings (`?kind=`, `?copy=`) are not part of the path.
 
