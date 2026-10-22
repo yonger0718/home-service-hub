@@ -76,7 +76,7 @@
       </app-bento>
 
       <app-bento class="kpi-card">
-        <div class="kpi-card-body">
+        <div class="kpi-card-body" title="估算・非可用現金">
           <div class="label">預估含息損益{{ isMarketFiltered() ? ' · ' + marketFilter() : '' }}</div>
           <div class="value estimated-total" [class.up]="(totals.estimated_pnl_with_dividends ?? 0) > 0" [class.down]="(totals.estimated_pnl_with_dividends ?? 0) < 0">
             {{ formatNative(totals.estimated_pnl_with_dividends, totals.currency) }}
@@ -85,32 +85,14 @@
             <app-pct-badge [value]="totals.estimated_pnl_percent"></app-pct-badge>
           } @else { <span aria-label="預估含息損益率無法計算">—</span> }
           <div class="kpi-card-footer">
-            <div class="meta estimated-hint">估算・非可用現金</div>
-            <details class="estimated-details">
-              <summary>查看損益明細</summary>
-              <dl class="estimated-breakdown">
-                <div class="estimated-row">
-                  <dt>未實現價差</dt>
-                  <dd>{{ formatNative(totals.total_unrealized_pnl, totals.currency) }}</dd>
-                </div>
-                <div class="estimated-row">
-                  <dt>已記錄股利</dt>
-                  <dd>{{ formatNative(totals.total_dividends, totals.currency) }}</dd>
-                </div>
-                <div class="estimated-row">
-                  <dt>待收股利</dt>
-                  <dd>{{ formatNative(totals.pending_dividends_net, totals.currency) }}</dd>
-                </div>
-              </dl>
-              <p class="estimated-explanation">估計值，非可用現金；資料不足時顯示 —。</p>
-            </details>
+            <div class="meta">價差 {{ formatNative(totals.total_unrealized_pnl, totals.currency) }} · 股利 {{ formatNative(totals.total_dividends, totals.currency) }} · 待收 {{ formatNative(totals.pending_dividends_net, totals.currency) }}</div>
           </div>
         </div>
       </app-bento>
 
       <app-bento class="kpi-card">
         <div class="kpi-card-body">
-          <div class="label">年化報酬率</div>
+          <div class="label">年化報酬率 XIRR</div>
           @let portfolioXirr = selectedPortfolioXirr();
           <div class="value" [class.up]="(portfolioXirr ?? 0) > 0" [class.down]="(portfolioXirr ?? 0) < 0">
             @if (portfolioXirr == null) {
@@ -120,7 +102,7 @@
             }
           </div>
           <div class="kpi-card-footer">
-            <div class="meta">XIRR · {{ range() }}{{ isMarketFiltered() ? ' · 全市場' : '' }}</div>
+            <div class="meta">{{ range() }}{{ isMarketFiltered() ? ' · 全市場' : '' }}</div>
           </div>
         </div>
       </app-bento>
@@ -130,7 +112,7 @@
           <div class="label">已記錄股利{{ isMarketFiltered() ? ' · ' + marketFilter() : '' }}</div>
           <div class="value dividend">{{ formatNative(totals.total_dividends, totals.currency) }}</div>
           <div class="kpi-card-footer">
-            <div class="meta">保留舊帳務；不代表已核實收款</div>
+            <div class="meta">含舊資料 · 不代表已核實收款</div>
           </div>
         </div>
       </app-bento>

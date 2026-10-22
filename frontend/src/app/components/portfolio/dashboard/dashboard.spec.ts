@@ -148,6 +148,10 @@ describe('PortfolioDashboardComponent', () => {
     vi.restoreAllMocks();
   });
 
+  function footnote(root: HTMLElement, index: number): string {
+    return root.querySelectorAll('.kpi-card')[index].querySelector('.meta')?.textContent?.trim() ?? '';
+  }
+
   function createFixture() {
     const fixture = TestBed.createComponent(PortfolioDashboardComponent);
     fixture.detectChanges();
@@ -432,23 +436,9 @@ describe('PortfolioDashboardComponent', () => {
     expect(root.querySelector('.estimated-total')?.textContent).toContain('4,690');
     expect(root.querySelector('.stock-stats')?.textContent).toContain('4,690');
     expect(root.querySelector('.stock-stats')?.textContent).toContain('93.80%');
-    const details = root.querySelector<HTMLDetailsElement>('.estimated-details');
-    expect(details).not.toBeNull();
-    expect(details?.open).toBe(false);
-    expect(details?.querySelector('summary')?.textContent?.trim()).toBe('查看損益明細');
-    expect(root.querySelector('.estimated-hint')?.textContent?.trim()).toBe('估算・非可用現金');
-    expect(Array.from(root.querySelectorAll<HTMLElement>('.estimated-row')).map(row => [
-      row.querySelector('dt')?.textContent?.trim(),
-      row.querySelector('dd')?.textContent?.trim(),
-    ])).toEqual([
-      ['未實現價差', fixture.componentInstance.formatNative(1500, 'TWD')],
-      ['已記錄股利', fixture.componentInstance.formatNative(100, 'TWD')],
-      ['待收股利', fixture.componentInstance.formatNative(3090, 'TWD')],
-    ]);
-    expect(details?.textContent).toContain('估計值，非可用現金；資料不足時顯示 —。');
-    details?.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    fixture.detectChanges();
-    expect(details?.open).toBe(true);
+    expect(root.querySelector('details')).toBeNull();
+    const f = fixture.componentInstance;
+    expect(footnote(root, 1)).toBe(`價差 ${f.formatNative(1500, 'TWD')} · 股利 ${f.formatNative(100, 'TWD')} · 待收 ${f.formatNative(3090, 'TWD')}`);
     (root.querySelector('.stock-row') as HTMLElement).click();
     fixture.detectChanges();
     expect(root.querySelector('.detail-panel')?.textContent).toContain('待收股利');
@@ -476,7 +466,8 @@ describe('PortfolioDashboardComponent', () => {
       expect(root.querySelector('.estimated-total')?.textContent).toContain(amount);
       expect(root.querySelectorAll('.stock-row')).toHaveLength(market === 'TW' ? 0 : 1);
     }
-    expect(root.querySelector('.estimated-breakdown')?.textContent).not.toContain('3,090');
+    expect(footnote(root, 1)).not.toContain('3,090');
+    expect(footnote(root, 1)).toContain('待收 ' + fixture.componentInstance.formatNative(0, 'USD'));
   });
 
   it('shows unavailable estimated valuation/ratio instead of zero or pending-only profit', () => {
@@ -489,9 +480,7 @@ describe('PortfolioDashboardComponent', () => {
     const root = fixture.nativeElement as HTMLElement;
     expect(root.querySelector('.estimated-total')?.textContent?.trim()).toBe('—');
     expect(root.querySelector('.stock-stats')?.textContent).not.toContain('30.00%');
-    const pendingRow = Array.from(root.querySelectorAll<HTMLElement>('.estimated-row'))
-      .find(row => row.querySelector('dt')?.textContent?.trim() === '待收股利');
-    expect(pendingRow?.querySelector('dd')?.textContent).toContain('3,090');
+    expect(footnote(root, 1)).toContain('待收 ' + fixture.componentInstance.formatNative(3090, 'TWD'));
   });
 
   it('shows a dash when pending dividends are unavailable', () => {
@@ -500,11 +489,7 @@ describe('PortfolioDashboardComponent', () => {
     })));
     const fixture = createFixture();
     const root = fixture.nativeElement as HTMLElement;
-    const pendingRow = Array.from(root.querySelectorAll<HTMLElement>('.estimated-row'))
-      .find(row => row.querySelector('dt')?.textContent?.trim() === '待收股利');
-
-    expect(pendingRow?.querySelector('dd')?.textContent?.trim()).toBe('—');
-    expect(root.querySelector('.estimated-explanation')?.textContent).toContain('資料不足時顯示 —');
+    expect(footnote(root, 1)).toMatch(/待收 —$/);
   });
 
   it.each([
@@ -522,9 +507,7 @@ describe('PortfolioDashboardComponent', () => {
     const fixture = createFixture();
     const root = fixture.nativeElement as HTMLElement;
     const formatted = fixture.componentInstance.formatNative(Number(price), 'TWD');
-    const breakdownPrice = Array.from(root.querySelectorAll('.estimated-breakdown > div'))
-      .find(element => element.textContent?.includes('未實現價差'));
-    expect(breakdownPrice?.textContent).toContain(formatted);
+    expect(footnote(root, 1)).toContain('價差 ' + formatted);
     expect(root.querySelector('.estimated-total')?.textContent?.trim()).toBe('—');
     expect(root.querySelector('[aria-label="預估含息損益率無法計算"]')).not.toBeNull();
     (root.querySelector('.stock-row') as HTMLElement).click();
@@ -536,6 +519,67 @@ describe('PortfolioDashboardComponent', () => {
     expect(priceDetail?.querySelector('div')?.textContent?.trim()).toBe(formatted);
     expect(estimateDetail?.querySelector('div')?.textContent?.trim()).toBe('—');
     expect(root.querySelector('.stock-stats')?.textContent).not.toContain('30.00%');
+  });
+
+  describe('KPI row', () => {
+    const kpi = (root: HTMLElement) => Array.from(root.querySelectorAll<HTMLElement>('.kpi-card'));
+    const label = (card: HTMLElement) => card.querySelector('.label')?.textContent?.trim();
+
+    it('renders the four KPI labels in order with spec footnotes', () => {
+      const fixture = createFixture();
+      const root = fixture.nativeElement as HTMLElement;
+      const f = fixture.componentInstance;
+      expect(kpi(root).map(label)).toEqual(['總市值', '預估含息損益', '年化報酬率 XIRR', '已記錄股利']);
+      expect(footnote(root, 0)).toBe(`總成本 ${f.formatCurrency(900)}`);
+      expect(footnote(root, 1)).toBe(`價差 ${f.formatNative(100, 'TWD')} · 股利 ${f.formatNative(20, 'TWD')} · 待收 —`);
+      expect(footnote(root, 2)).toBe('1Y');
+      expect(footnote(root, 3)).toBe('含舊資料 · 不代表已核實收款');
+    });
+
+    it('marks the estimated card as an estimate and shows a pct badge', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({
+        estimated_pnl_with_dividends: 125, estimated_pnl_percent: 12.5, total_pending_dividends_net: 5,
+      })));
+      const fixture = createFixture();
+      const root = fixture.nativeElement as HTMLElement;
+      const f = fixture.componentInstance;
+      const card = kpi(root)[1];
+      expect(card.querySelector('[title="估算・非可用現金"]')).not.toBeNull();
+      expect(card.querySelector('.value')?.classList.contains('up')).toBe(true);
+      expect(card.querySelector('app-pct-badge')).not.toBeNull();
+      expect(footnote(root, 1)).toBe(`價差 ${f.formatNative(100, 'TWD')} · 股利 ${f.formatNative(20, 'TWD')} · 待收 ${f.formatNative(5, 'TWD')}`);
+      expect(kpi(root)[3].querySelector('.value')?.classList.contains('dividend')).toBe(true);
+    });
+
+    it('keeps XIRR portfolio-wide and updates its range footnote', () => {
+      const fixture = createFixture();
+      const root = fixture.nativeElement as HTMLElement;
+      expect(footnote(root, 2)).toBe('1Y');
+      fixture.componentInstance.selectRange('3M');
+      fixture.detectChanges();
+      expect(footnote(root, 2)).toBe('3M');
+    });
+
+    it('suffixes market on scoped cards but not XIRR, which is marked 全市場', () => {
+      const us = { ...buildHolding(), market: 'US' as const, native_currency: 'USD' };
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({ holdings: [us], market_totals: {
+        US: {currency: 'USD', cost: 500, market_value: 520, unrealized_pnl: 20, recorded_dividends: 5,
+          pending_dividends_net: 2, estimated_pnl_with_dividends: 27, estimated_pnl_percent: 5},
+      }})));
+      const fixture = createFixture();
+      const root = fixture.nativeElement as HTMLElement;
+      const f = fixture.componentInstance;
+      f.selectMarketFilter('US');
+      fixture.detectChanges();
+      expect(kpi(root).map(label)).toEqual(['總市值 · US', '預估含息損益 · US', '年化報酬率 XIRR', '已記錄股利 · US']);
+      expect(footnote(root, 0)).toBe(`總成本 ${f.formatNative(500, 'USD')}`);
+      expect(footnote(root, 1)).toBe(`價差 ${f.formatNative(20, 'USD')} · 股利 ${f.formatNative(5, 'USD')} · 待收 ${f.formatNative(2, 'USD')}`);
+      expect(footnote(root, 2)).toBe('1Y · 全市場');
+      f.selectRange('3M');
+      fixture.detectChanges();
+      expect(footnote(root, 2)).toBe('3M · 全市場');
+      expect(root.querySelector('.chart-head .card-title')?.textContent?.trim()).toBe('淨值走勢 · 全市場');
+    });
   });
 
 });
