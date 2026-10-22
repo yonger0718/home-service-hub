@@ -33,12 +33,131 @@ app-bento {
   }
 }
 
-.primary-tile {
-  min-height: 168px;
+.hero-body {
+  align-items: stretch;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px;
+}
 
-  .value {
-    font-size: 3rem;
-    line-height: 1;
+.hero-main {
+  display: flex;
+  flex: 1 1 320px;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.hero-label {
+  color: var(--app-text-muted);
+  font-size: var(--fs-label);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.hero-total {
+  color: var(--app-text);
+  font-size: 44px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.hero-today {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 14px;
+  gap: 8px;
+}
+
+.hero-today-label {
+  color: var(--app-text-muted);
+}
+
+.hero-today-amount {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.hero-composition {
+  display: flex;
+  flex: 1 1 360px;
+  flex-direction: column;
+  gap: 12px;
+  justify-content: center;
+  min-width: 0;
+}
+
+.composition-bar {
+  background: var(--app-surface-soft);
+  border-radius: 999px;
+  display: flex;
+  gap: 2px;
+  height: 12px;
+  overflow: hidden;
+
+  span {
+    flex-basis: 0;
+    flex-shrink: 1;
+  }
+
+  .seg-stocks {
+    background: var(--app-primary);
+  }
+
+  .seg-cash {
+    background: var(--app-success);
+  }
+}
+
+.legend {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.legend-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.legend-label {
+  align-items: center;
+  color: var(--app-text-muted);
+  display: flex;
+  font-size: var(--fs-label);
+  gap: 6px;
+}
+
+.legend-value {
+  color: var(--app-text);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.swatch {
+  border-radius: 3px;
+  box-sizing: border-box;
+  flex: 0 0 8px;
+  height: 8px;
+  width: 8px;
+
+  &.stocks {
+    background: var(--app-primary);
+  }
+
+  &.cash {
+    background: var(--app-success);
+  }
+
+  &.dashed {
+    border: 1.5px dashed var(--app-dividend);
   }
 }
 
@@ -174,11 +293,6 @@ app-bento {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-}
-
-.market-tabs {
-  margin-bottom: 0.25rem;
-  align-self: flex-start;
 }
 
 .market-group {
@@ -363,7 +477,7 @@ app-bento {
     grid-template-columns: 1fr;
   }
 
-  .primary-tile .value {
+  .hero-total {
     font-size: 2.35rem;
   }
 }

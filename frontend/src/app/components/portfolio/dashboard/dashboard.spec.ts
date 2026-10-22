@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PortfolioSummary, StockHolding } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { AppearanceService } from '../../../services/appearance.service';
-import { PortfolioDashboardComponent } from './dashboard';
+import { DASHBOARD_CLOCK, PortfolioDashboardComponent } from './dashboard';
 import { BtnComponent } from '../../ui/btn/btn';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { SegToggleComponent } from '../../ui/seg-toggle/seg-toggle';
@@ -101,7 +101,7 @@ describe('PortfolioDashboardComponent', () => {
     const { NEVER } = await import('rxjs');
     portfolioService = {
       refreshQuotes: vi.fn().mockReturnValue(of(null)),
-      getRecalcStatus: vi.fn(),
+      getRecalcStatus: vi.fn().mockReturnValue(of(null)),
       getSummary: vi.fn().mockReturnValue(of(buildSummary())),
       getUpcomingExDividends: vi.fn().mockReturnValue(of([])),
       getNetworthHistory: vi.fn().mockReturnValue(of([
@@ -113,7 +113,12 @@ describe('PortfolioDashboardComponent', () => {
 
     await TestBed.configureTestingModule({
       imports: [PortfolioDashboardComponent],
-      providers: [{ provide: PortfolioService, useValue: portfolioService }, provideRouter([])],
+      providers: [
+        { provide: PortfolioService, useValue: portfolioService },
+        provideRouter([]),
+        // Thu 13:00 Taipei: inside the TW session.
+        { provide: DASHBOARD_CLOCK, useValue: () => new Date('2026-10-22T05:00:00Z') },
+      ],
       deferBlockBehavior: DeferBlockBehavior.Manual,
     })
       .overrideComponent(PortfolioDashboardComponent, {
@@ -209,26 +214,136 @@ describe('PortfolioDashboardComponent', () => {
     expect(fixture.nativeElement.textContent).toContain('3.21%');
   });
 
-  it('renders the total assets tile above the market value tile', () => {
-    portfolioService.getSummary.mockReturnValue(of(buildSummary({
-      total_market_value: 500000,
-      total_cash_twd: '100000',
-      total_assets_twd: '600000',
-    })));
-    const fixture = createFixture();
-    const root = fixture.nativeElement as HTMLElement;
+  describe('page header', () => {
+    function header(fixture: ReturnType<typeof createFixture>): HTMLElement {
+      return (fixture.nativeElement as HTMLElement).querySelector('app-page-header')!;
+    }
 
-    const labels = Array.from(root.querySelectorAll<HTMLElement>('.label')).map(element =>
-      element.textContent?.trim(),
-    );
-    const totalAssetsIndex = labels.indexOf('總資產');
-    const marketValueIndex = labels.indexOf('總市值');
+    it('shows the quote time line from the quote refresh status', () => {
+      portfolioService.getRecalcStatus.mockReturnValue(of({
+        state: 'idle',
+        quote_refresh: { state: 'completed', finished_at: '2026-10-22T05:30:00Z' },
+      }));
+      const fixture = createFixture();
 
-    expect(totalAssetsIndex).toBeGreaterThanOrEqual(0);
-    expect(marketValueIndex).toBeGreaterThanOrEqual(0);
-    expect(totalAssetsIndex).toBeLessThan(marketValueIndex);
-    expect(fixture.nativeElement.textContent).toContain(fixture.componentInstance.formatCurrency(600000));
-    expect(fixture.nativeElement.textContent).toContain(fixture.componentInstance.formatCurrency(500000));
+      expect(header(fixture).querySelector('.page-subtitle')?.textContent?.trim()).toBe('行情更新於 13:30 · 盤中');
+    });
+
+    it('shows no quote time line when the status request fails', () => {
+      portfolioService.getRecalcStatus.mockReturnValue(throwError(() => ({ status: 500 })));
+      const fixture = createFixture();
+
+      expect(header(fixture).querySelector('.page-subtitle')).toBeNull();
+      expect(header(fixture).querySelector('h1')).not.toBeNull();
+    });
+
+    it('reads the status again after a later summary reload', () => {
+      const fixture = createFixture();
+      expect(header(fixture).querySelector('.page-subtitle')).toBeNull();
+
+      portfolioService.getRecalcStatus.mockReturnValue(of({
+        state: 'idle',
+        quote_refresh: { state: 'completed', finished_at: '2026-10-22T09:00:00Z' },
+      }));
+      fixture.componentInstance.loadSummary();
+      fixture.detectChanges();
+
+      expect(header(fixture).querySelector('.page-subtitle')?.textContent?.trim()).toBe('行情更新於 17:00 · 盤中');
+    });
+
+    it('puts the market toggle in the header with Chinese labels', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({
+        holdings: [buildHolding(), { ...buildHolding(), symbol: 'AAPL', market: 'US', native_currency: 'USD' }],
+      })));
+      const fixture = createFixture();
+      const toggle = header(fixture).querySelector('.market-toggle');
+
+      expect(toggle).not.toBeNull();
+      expect(toggle!.querySelector('[role="radiogroup"]')?.getAttribute('aria-label')).toBe('市場');
+      expect(Array.from(toggle!.querySelectorAll('button')).map(b => b.textContent?.trim())).toEqual(['全部', '台股', '美股']);
+      expect((fixture.nativeElement as HTMLElement).querySelector('.holdings .market-tabs, .holdings app-seg-toggle')).toBeNull();
+    });
+
+    it('hides the market toggle when holdings and market totals hold one market', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({
+        market_totals: {
+          TW: { currency: 'TWD', cost: 900, market_value: 1000, unrealized_pnl: 100, recorded_dividends: 20,
+            pending_dividends_net: 0, estimated_pnl_with_dividends: 120, estimated_pnl_percent: 13.33 },
+        },
+      })));
+      const fixture = createFixture();
+
+      expect(header(fixture).querySelector('.market-toggle')).toBeNull();
+    });
+  });
+
+  describe('總資產 hero', () => {
+    function hero(fixture: ReturnType<typeof createFixture>): HTMLElement | null {
+      return (fixture.nativeElement as HTMLElement).querySelector('.hero');
+    }
+
+    it('shows the total, today and the composition bar before the KPI cards', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({ total_pending_dividends_net: 14600 })));
+      const fixture = createFixture();
+      const root = fixture.nativeElement as HTMLElement;
+      const el = hero(fixture)!;
+
+      expect(el).not.toBeNull();
+      expect(el.compareDocumentPosition(root.querySelector('.kpi-card')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(el.querySelector('.hero-label')?.textContent?.trim()).toBe('總資產 · TWD');
+      expect(el.querySelector('.hero-total')?.textContent?.trim()).toBe(fixture.componentInstance.formatCurrency(1250));
+
+      const today = el.querySelector('.hero-today')!;
+      expect(today.querySelector('.hero-today-label')?.textContent?.trim()).toBe('今日');
+      expect(today.querySelector('.hero-today-amount')?.textContent?.trim()).toBe('+$10');
+      expect(today.querySelector('.hero-today-amount')?.classList).toContain('up');
+      expect(today.querySelector('app-pct-badge')?.textContent?.trim()).toBe('+0.81%');
+
+      const bar = el.querySelector('.composition-bar')!;
+      expect(bar.getAttribute('role')).toBe('img');
+      expect(bar.getAttribute('aria-label')).toBe('資產組成：股票 80.0%，現金 20.0%');
+      expect(Array.from(bar.querySelectorAll<HTMLElement>('span')).map(s => s.style.flexGrow)).toEqual(['80', '20']);
+
+      const legend = Array.from(el.querySelectorAll<HTMLElement>('.legend-item')).map(item => [
+        item.querySelector('.legend-label')?.textContent?.trim(),
+        item.querySelector('.legend-value')?.textContent?.trim(),
+      ]);
+      expect(legend).toEqual([['股票市值', '1,000'], ['交割戶現金', '250'], ['待收股利', '14,600']]);
+      expect(el.querySelectorAll('.legend-item')[2].querySelector('.swatch.dashed')).not.toBeNull();
+    });
+
+    it('shows a falling day in the down colour', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({ total_day_pnl: -10 })));
+      const fixture = createFixture();
+      const today = hero(fixture)!.querySelector('.hero-today')!;
+
+      expect(today.querySelector('.hero-today-amount')?.textContent?.trim()).toBe('-$10');
+      expect(today.querySelector('.hero-today-amount')?.classList).toContain('down');
+      expect(today.querySelector('app-pct-badge')?.textContent?.trim()).toBe('-0.79%');
+    });
+
+    it('shows a dash for the day percent when the assets before today are not positive', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({ total_day_pnl: 10, total_assets_twd: '10',
+        total_market_value: 10, total_cash_twd: '0' })));
+      const fixture = createFixture();
+      const today = hero(fixture)!.querySelector('.hero-today')!;
+
+      expect(today.querySelector('.hero-today-amount')?.textContent?.trim()).toBe('+$10');
+      expect(today.querySelector('app-pct-badge')?.textContent?.trim()).toBe('—');
+    });
+
+    it('is hidden while a market filter is active', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({
+        holdings: [buildHolding(), { ...buildHolding(), symbol: 'AAPL', market: 'US', native_currency: 'USD' }],
+      })));
+      const fixture = createFixture();
+      expect(hero(fixture)).not.toBeNull();
+
+      fixture.componentInstance.selectMarketFilter('US');
+      fixture.detectChanges();
+
+      expect(hero(fixture)).toBeNull();
+    });
   });
 
   it('renders total assets equal to market value when cash is zero', () => {
@@ -354,8 +469,9 @@ describe('PortfolioDashboardComponent', () => {
     const fixture = createFixture();
     const root = fixture.nativeElement as HTMLElement;
     for (const [market, amount] of [['TW', '3,190'], ['US', '25.00 USD']]) {
-      const button = Array.from(root.querySelectorAll<HTMLButtonElement>('.market-tabs button'))
-        .find(b => b.textContent?.trim() === market)!;
+      const label = market === 'TW' ? '台股' : '美股';
+      const button = Array.from(root.querySelectorAll<HTMLButtonElement>('app-page-header .market-toggle button'))
+        .find(b => b.textContent?.trim() === label)!;
       button.click(); fixture.detectChanges();
       expect(root.querySelector('.estimated-total')?.textContent).toContain(amount);
       expect(root.querySelectorAll('.stock-row')).toHaveLength(market === 'TW' ? 0 : 1);

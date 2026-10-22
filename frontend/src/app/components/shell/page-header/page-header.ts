@@ -7,7 +7,7 @@ import { NavigationStateService } from '../navigation-state.service';
 import { SubNavComponent } from '../sub-nav/sub-nav';
 
 /**
- * Page title row (`<h1>`, projected page actions, phone gear) with the phone sub-nav below. With `back`, phones get a
+ * Page title row (`<h1>` with an optional subtitle, projected page actions, phone gear) with the phone sub-nav below. With `back`, phones get a
  * ‹ button before the title (a pushed screen such as 設定).
  */
 @Component({
@@ -21,6 +21,8 @@ export class PageHeaderComponent {
   readonly title = input<string>();
   /** Phones only: a ‹ 返回 button before the title. */
   readonly back = input(false);
+  /** Muted line under the h1 on every width (e.g. the dashboard's quote time). */
+  readonly subtitle = input<string | null>(null);
 
   protected readonly nav = inject(NavigationStateService);
   private readonly layout = inject(LayoutModeService);

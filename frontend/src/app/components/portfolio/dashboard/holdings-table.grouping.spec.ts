@@ -37,7 +37,7 @@ describe('PortfolioDashboardComponent holding groups', () => {
     const { NEVER } = await import('rxjs');
     portfolioService = {
       refreshQuotes: vi.fn().mockReturnValue(of(null)),
-      getRecalcStatus: vi.fn(),
+      getRecalcStatus: vi.fn().mockReturnValue(of(null)),
       getSummary: vi.fn().mockReturnValue(of(buildSummary([buildHolding()]))),
       getBrokerCashFlows: vi.fn().mockReturnValue(of([])),
       getUpcomingExDividends: vi.fn().mockReturnValue(of([])),

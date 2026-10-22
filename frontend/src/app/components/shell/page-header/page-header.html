@@ -2,7 +2,12 @@
   @if (showBack()) {
     <button class="page-back" type="button" aria-label="返回" (click)="goBack()">‹</button>
   }
-  <h1>{{ heading() }}</h1>
+  <div class="page-title">
+    <h1>{{ heading() }}</h1>
+    @if (subtitle()) {
+      <span class="page-subtitle">{{ subtitle() }}</span>
+    }
+  </div>
   <div class="page-actions"><ng-content></ng-content></div>
   @if (gear()) {
     <a class="header-gear" routerLink="/settings" aria-label="設定"><i class="pi pi-cog" aria-hidden="true"></i></a>

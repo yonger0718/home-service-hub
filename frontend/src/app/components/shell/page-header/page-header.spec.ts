@@ -22,6 +22,14 @@ class Host {
 
 @Component({
   imports: [PageHeaderComponent],
+  template: `<app-page-header title="投資概覽" [subtitle]="subtitle"></app-page-header>`,
+})
+class SubtitleHost {
+  subtitle: string | null = '行情更新於 13:30 · 台股收盤';
+}
+
+@Component({
+  imports: [PageHeaderComponent],
   template: `<app-page-header [back]="true"></app-page-header>`,
 })
 class BackHost {}
@@ -87,6 +95,38 @@ describe('PageHeaderComponent', () => {
     expect(el.querySelector('.page-actions .act')).not.toBeNull();
   });
 
+  describe('subtitle', () => {
+    function renderSubtitle(subtitle: string | null) {
+      TestBed.configureTestingModule({
+        providers: [
+          provideRouter([{ path: '**', component: BlankPage }]),
+          { provide: MATCH_MEDIA, useValue: null },
+          { provide: NavBadgeService, useValue: { badges: signal({}) } },
+        ],
+      });
+      const fixture = TestBed.createComponent(SubtitleHost);
+      fixture.componentInstance.subtitle = subtitle;
+      fixture.detectChanges();
+      return fixture.nativeElement as HTMLElement;
+    }
+
+    it('renders a muted line under the h1', () => {
+      const el = renderSubtitle('行情更新於 13:30 · 台股收盤');
+      const subtitle = el.querySelector('.page-subtitle');
+
+      expect(subtitle?.textContent?.trim()).toBe('行情更新於 13:30 · 台股收盤');
+      expect(el.querySelector('h1')!.nextElementSibling).toBe(subtitle);
+      expect(subtitle!.parentElement!.classList).toContain('page-title');
+    });
+
+    it('is not rendered without a subtitle', () => {
+      const el = renderSubtitle(null);
+
+      expect(el.querySelector('.page-subtitle')).toBeNull();
+      expect(el.querySelector('h1')?.textContent?.trim()).toBe('投資概覽');
+    });
+  });
+
   it('falls back to the active item title', async () => {
     const el = await render(1440, '/portfolio/transactions');
 
@@ -122,7 +162,7 @@ describe('PageHeaderComponent', () => {
       expect(button!.getAttribute('aria-label')).toBe('返回');
       expect(button!.getAttribute('type')).toBe('button');
       expect(button!.textContent?.trim()).toBe('‹');
-      expect(el.querySelector('h1')!.previousElementSibling).toBe(button);
+      expect(el.querySelector('.page-title')!.previousElementSibling).toBe(button);
       expect(el.querySelector('h1')!.textContent?.trim()).toBe('設定');
     });
 

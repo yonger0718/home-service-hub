@@ -3,6 +3,7 @@ import {
   ChangeDetectorRef,
   Component,
   DestroyRef,
+  InjectionToken,
   OnInit,
   ViewChild,
   computed,
@@ -12,7 +13,7 @@ import {
 import { CommonModule } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { combineLatest, finalize, interval, switchMap, takeUntil, takeWhile, timer } from 'rxjs';
+import { catchError, combineLatest, finalize, interval, of, switchMap, takeUntil, takeWhile, timer } from 'rxjs';
 
 import { ChartModule, UIChart } from 'primeng/chart';
 import { SkeletonModule } from 'primeng/skeleton';
@@ -35,6 +36,13 @@ import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-tog
 import { BentoComponent } from '../../ui/bento/bento';
 import { PctBadgeComponent } from '../../ui/pct-badge/pct-badge';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
+import { MARKET_LABELS, composition, quoteTimeLabel, todayChange } from './dashboard-math';
+
+/** Current time for the quote line's 盤中 / 台股收盤 tag; overridable in tests. */
+export const DASHBOARD_CLOCK = new InjectionToken<() => Date>('DASHBOARD_CLOCK', {
+  providedIn: 'root',
+  factory: () => () => new Date(),
+});
 
 type PortfolioRange = '1M' | '3M' | 'YTD' | '1Y' | '5Y';
 
@@ -63,6 +71,7 @@ export class PortfolioDashboardComponent implements OnInit {
   private readonly messageService = inject(MessageService, { optional: true });
   private readonly destroyRef = inject(DestroyRef);
   private readonly cdr = inject(ChangeDetectorRef);
+  private readonly clock = inject(DASHBOARD_CLOCK);
 
   @ViewChild('netWorthChart') netWorthChart?: UIChart;
 
@@ -74,6 +83,8 @@ export class PortfolioDashboardComponent implements OnInit {
   readonly chartPoints = signal<NetworthPoint[]>([]);
   readonly expandedHoldingKey = signal<string | null>(null);
   readonly marketFilter = signal<'ALL' | MarketCode>('ALL');
+  /** `行情更新於 HH:mm · …` under the page title; null hides it. */
+  readonly quoteLine = signal<string | null>(null);
 
   readonly rangeOptions: SegToggleOption[] = [
     { label: '1M', value: '1M' },
@@ -114,9 +125,24 @@ export class PortfolioDashboardComponent implements OnInit {
   });
 
   readonly marketFilterOptions = computed<SegToggleOption[]>(() => [
-    { label: 'All', value: 'ALL' },
-    ...this.availableMarkets().map(m => ({ label: m, value: m })),
+    { label: '全部', value: 'ALL' },
+    ...this.availableMarkets().map(m => ({ label: MARKET_LABELS[m], value: m })),
   ]);
+
+  readonly hero = computed(() => {
+    const summary = this.summary();
+    if (!summary) return null;
+    const today = todayChange(summary);
+    const parts = composition(summary);
+    return {
+      total: this.formatCurrency(summary.total_assets_twd),
+      todayAmount: today.amount,
+      todayText: `${today.amount > 0 ? '+' : today.amount < 0 ? '-' : ''}${this.formatCurrency(Math.abs(today.amount))}`,
+      todayPercent: today.percent,
+      ...parts,
+      barLabel: `資產組成：股票 ${parts.stocksPct.toFixed(1)}%，現金 ${parts.cashPct.toFixed(1)}%`,
+    };
+  });
 
   readonly filteredHoldings = computed(() => {
     const filter = this.marketFilter();
@@ -318,6 +344,11 @@ export class PortfolioDashboardComponent implements OnInit {
     });
   }
 
+  /** Hero legend amounts: grouped TWD without the currency sign. */
+  formatAmount(value: number): string {
+    return new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 }).format(value);
+  }
+
   formatCurrency(value: number | string | null | undefined): string {
     return new Intl.NumberFormat('zh-TW', {
       style: 'currency',
@@ -394,12 +425,21 @@ export class PortfolioDashboardComponent implements OnInit {
       next: (data) => {
         this.summary.set(data);
         this.loading.set(false);
+        this.loadQuoteLine();
       },
       error: (err) => {
         console.error('Failed to load portfolio summary', err);
         this.loading.set(false);
       },
     });
+  }
+
+  // pollRecalcStatus() keeps no status body, so the quote time gets its own read after each summary.
+  private loadQuoteLine(): void {
+    this.portfolioService
+      .getRecalcStatus()
+      .pipe(catchError(() => of(null)), takeUntilDestroyed(this.destroyRef))
+      .subscribe(status => this.quoteLine.set(quoteTimeLabel(status?.quote_refresh?.finished_at, this.clock())));
   }
 
   private loadExDividends(): void {
