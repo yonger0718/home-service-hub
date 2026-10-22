@@ -394,7 +394,7 @@ describe('EntryFormComponent schedules', () => {
     respond('/api/accounting/categories', [STREAMING]);
     flushAll('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
     respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
-    expect(text(el.querySelector('.topbar h2'))).toBe('編輯排程');
+    expect(text(el.querySelector('.topbar h1'))).toBe('編輯排程');
     expect(text(el.querySelector('.schedule-tab.on'))).toBe('週期');
     expect((el.querySelector('.name-input') as HTMLInputElement).value).toBe('Netflix');
     set(el, '.name-input', 'Netflix 家庭');

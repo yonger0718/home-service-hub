@@ -47,6 +47,7 @@ import { todayIso } from '../dates';
 import { schedulePill } from '../schedule-math';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, isHandledKey, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
 import { displayTitle, formatMoney, formatSigned } from '../format';
+import { PageHeaderComponent } from '../../shell/page-header/page-header';
 
 export const TIMELINE_PAGE_SIZE = 50;
 /** One day's entries in the 日曆 view are read in a single request. */
@@ -353,7 +354,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
 @Component({
   selector: 'app-ledger-timeline',
   standalone: true,
-  imports: [CalendarMonthComponent, NgTemplateOutlet, SkeletonComponent, SplitFolderComponent],
+  imports: [PageHeaderComponent, CalendarMonthComponent, NgTemplateOutlet, SkeletonComponent, SplitFolderComponent],
   templateUrl: './timeline.html',
   styleUrls: ['../filters.scss', '../entry-row.scss', './timeline.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,

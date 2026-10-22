@@ -15,6 +15,7 @@ import { dueDate, statementPeriod } from '../cycle';
 import { daysBetween, shortDate, todayIso } from '../dates';
 import { formatMoney } from '../format';
 import { importReviewCount } from '../import-review-count';
+import { PageHeaderComponent } from '../../shell/page-header/page-header';
 
 /** A credit card row's third line: what is left on its current statement and when it is due. */
 export interface CardDue {
@@ -115,7 +116,7 @@ export function buildAccountGroups(accounts: LedgerAccount[], mainCurrency: stri
 @Component({
   selector: 'app-accounting-accounts',
   standalone: true,
-  imports: [DatePipe, NgTemplateOutlet, RouterLink, SkeletonComponent],
+  imports: [PageHeaderComponent, DatePipe, NgTemplateOutlet, RouterLink, SkeletonComponent],
   templateUrl: './accounts.html',
   styleUrl: './accounts.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

@@ -22,6 +22,8 @@ import {
 } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { CashFlowFormComponent } from '../cash-flow-form/cash-flow-form';
+import { PageHeaderComponent } from '../../shell/page-header/page-header';
+import { BtnComponent } from '../../ui/btn/btn';
 
 const EMPTY_ACCOUNTS_LIST: AccountsList = {
   items: [],
@@ -52,6 +54,8 @@ const BROKER_LABELS: Record<BrokerEnum, string> = {
   selector: 'app-portfolio-accounts-list',
   standalone: true,
   imports: [
+    PageHeaderComponent,
+    BtnComponent,
     CommonModule,
     ReactiveFormsModule,
     ButtonModule,

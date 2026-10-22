@@ -1,7 +1,7 @@
 <section class="account-settings">
   <header class="topbar">
     <a class="ib" [routerLink]="accountId() === null ? '/accounting/accounts' : ['/accounting/accounts', accountId()]" aria-label="取消">✕</a>
-    <h2>{{ accountId() === null ? '新增帳戶' : '帳戶資訊' }}</h2>
+    <h1>{{ accountId() === null ? '新增帳戶' : '帳戶資訊' }}</h1>
     <button type="button" class="ib ok save" aria-label="儲存" [disabled]="saving() || loading() || loadFailed()" (click)="save()">✓</button>
   </header>
 

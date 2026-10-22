@@ -1,18 +1,13 @@
 .ledger-accounts { display: flex; flex-direction: column; max-width: 100%; min-width: 0; }
 
-.accounts-header {
-  align-items: center;
-  display: flex;
-  justify-content: space-between;
-
-  h2 { font-size: 1.15rem; font-weight: 800; margin: 0; }
-}
-
 .add-account {
+  background: var(--app-primary-soft);
+  border-radius: 10px;
   color: var(--app-primary);
   font-size: 1.5rem;
   font-weight: 700;
-  padding: 0 0.5rem;
+  line-height: 1;
+  padding: 0.35rem 0.8rem;
   text-decoration: none;
 }
 

@@ -23,6 +23,7 @@ import { Menu } from 'primeng/menu';
 import { BtnComponent } from '../../ui/btn/btn';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { TimelineComponent, TimelineRow } from '../../ui/timeline/timeline';
+import { PageHeaderComponent } from '../../shell/page-header/page-header';
 
 const SORT_OPTIONS = [
   { value: 'trade_date:desc', label: '日期 新→舊' },
@@ -50,6 +51,7 @@ const DEFAULT_CURRENCY_BY_MARKET: Record<Exclude<MarketCode, 'TW'>, string> = {
 @Component({
   selector: 'app-portfolio-transactions',
   imports: [
+    PageHeaderComponent,
     CommonModule, TableModule, ButtonModule, DialogModule, FormsModule,
     InputTextModule, InputNumberModule, SelectButtonModule, SelectModule,
     DatePickerModule, PaginatorModule, ProgressSpinnerModule,

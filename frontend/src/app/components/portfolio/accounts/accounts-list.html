@@ -1,6 +1,10 @@
 <p-toast></p-toast>
 
 <div class="accounts-page">
+  <app-page-header>
+    <app-btn variant="soft" icon="pi-plus" (click)="openCreateDialog()">新增帳戶</app-btn>
+  </app-page-header>
+
   <div class="accounts-header">
     <p-card styleClass="accounts-summary-card">
       <div class="summary-label">現金帳戶總額</div>
@@ -21,12 +25,6 @@
         severity="secondary"
         styleClass="accounts-add-button"
         (onClick)="openCashForm()">
-      </p-button>
-      <p-button
-        icon="pi pi-plus"
-        label="新增帳戶"
-        styleClass="accounts-add-button"
-        (onClick)="openCreateDialog()">
       </p-button>
     </div>
   </div>

@@ -18,6 +18,7 @@ import { PortfolioService } from '../../../services/portfolio.service';
 import { NativeAmountPipe } from '../../../pipes/native-amount.pipe';
 import { ListItemComponent } from '../../shared/list-item/list-item';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
+import { PageHeaderComponent } from '../../shell/page-header/page-header';
 
 const PAGE_SIZE_KEY = 'portfolio.realizedPnl.pageSize';
 const DEFAULT_PAGE_SIZE = 25;
@@ -33,6 +34,7 @@ const SORT_OPTIONS = [
 @Component({
   selector: 'app-portfolio-realized-pnl',
   imports: [
+    PageHeaderComponent,
     CommonModule,
     FormsModule,
     ButtonModule,

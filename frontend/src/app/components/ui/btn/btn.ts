@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, input, output } from '@angular/core';
 
-export type BtnVariant = 'primary' | 'secondary' | 'ghost';
+export type BtnVariant = 'primary' | 'secondary' | 'ghost' | 'soft';
 
 @Component({
   selector: 'app-btn',
@@ -11,6 +11,7 @@ export type BtnVariant = 'primary' | 'secondary' | 'ghost';
       [class.btn-primary]="variant() === 'primary'"
       [class.btn-secondary]="variant() === 'secondary'"
       [class.btn-ghost]="variant() === 'ghost'"
+      [class.btn-soft]="variant() === 'soft'"
       [class.btn-icon]="iconOnly()"
       [disabled]="disabled() || loading()"
       [attr.aria-busy]="loading()"

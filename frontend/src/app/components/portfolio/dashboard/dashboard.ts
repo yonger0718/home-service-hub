@@ -34,12 +34,14 @@ import { BtnComponent } from '../../ui/btn/btn';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { BentoComponent } from '../../ui/bento/bento';
 import { PctBadgeComponent } from '../../ui/pct-badge/pct-badge';
+import { PageHeaderComponent } from '../../shell/page-header/page-header';
 
 type PortfolioRange = '1M' | '3M' | 'YTD' | '1Y' | '5Y';
 
 @Component({
   selector: 'app-portfolio-dashboard',
   imports: [
+    PageHeaderComponent,
     CommonModule,
     RouterLink,
     ChartModule,

@@ -1,5 +1,5 @@
 import { provideHttpClient } from '@angular/common/http';
-import { provideHttpClientTesting } from '@angular/common/http/testing';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { routes } from './app.routes';
 import { AccountingShortcutsService, EntryCommand } from './components/accounting/keyboard-shortcuts';
 import { DockComponent } from './components/dock/dock';
+import { DEFAULT_PREFERENCE } from './models/accounting.model';
 import { NAV_GROUPS, navItemForUrl } from './components/shell/navigation';
 import { SubNavComponent } from './components/shell/sub-nav/sub-nav';
 import { NavBadgeService } from './services/nav-badge.service';
@@ -134,6 +135,128 @@ describe('accounting routes per viewport', () => {
           }
         });
       }
+    });
+  }
+});
+
+function stubViewport(width: number): void {
+  const matches = (query: string) => (query === PHONE_QUERY ? width < 760 : query === PANES_QUERY ? width >= 1024 : false);
+  TestBed.configureTestingModule({
+    providers: [
+      provideRouter(routes),
+      provideHttpClient(),
+      provideHttpClientTesting(),
+      { provide: NavBadgeService, useValue: { badges: signal({}) } },
+      {
+        provide: MATCH_MEDIA,
+        useValue: (query: string) =>
+          ({ matches: matches(query), media: query, addEventListener: () => undefined, removeEventListener: () => undefined }) as unknown as MediaQueryList,
+      },
+    ],
+  });
+}
+
+const LIST_LEVEL: [string, string][] = [
+  ['/', '庫存管理'],
+  ['/shopping-list', '採買清單'],
+  ['/portfolio', '投資概覽'],
+  ['/portfolio/transactions', '股票交易紀錄'],
+  ['/portfolio/dividends', '股利領取紀錄'],
+  ['/portfolio/realized-pnl', '已實現損益'],
+  ['/portfolio/accounts', '現金帳戶'],
+  ['/portfolio/accounts/5', '現金帳戶'],
+  ['/portfolio/import', '匯入 CSV'],
+  ['/portfolio/import-broker', '匯入券商對帳單'],
+  ['/accounting', '記帳記錄'],
+  ['/accounting/accounts', '記帳帳戶'],
+  ['/accounting/settings', '記帳設定'],
+  ['/settings', '設定'],
+];
+
+const DRILL_DOWN: [string, string][] = [
+  ['/accounting/accounts/new', '新增帳戶'],
+  ['/accounting/accounts/5', '帳戶 #5'],
+  ['/accounting/accounts/5/settings', '帳戶資訊'],
+  ['/accounting/accounts/5/statements', '對帳帳單'],
+  ['/accounting/accounts/5/statements/2', '對帳明細'],
+  ['/accounting/accounts/5/entries/9', '記錄明細'],
+  ['/accounting/accounts/5/entries/9/group', '多類別'],
+  ['/accounting/entry', '新增記錄'],
+  ['/accounting/entries/9', '記錄明細'],
+  ['/accounting/entries/9/group', '多類別'],
+  ['/accounting/entries/9/edit', '編輯記錄'],
+  ['/accounting/reminders', '提醒中心'],
+];
+
+async function open(url: string): Promise<HTMLElement> {
+  const harness = await RouterTestingHarness.create();
+  await harness.navigateByUrl(url);
+  await harness.fixture.whenStable();
+  const root = harness.fixture.nativeElement as HTMLElement;
+  await vi.waitFor(() => {
+    harness.fixture.detectChanges();
+    expect(root.querySelector('h1')).not.toBeNull();
+  });
+  if (url.endsWith('/edit')) {
+    // The entry form only knows it is editing once its reference data has loaded: answer those four reads.
+    const http = TestBed.inject(HttpTestingController);
+    await vi.waitFor(() => {
+      for (const request of http.match(r => r.method === 'GET' && /\/(accounts|projects|counterparties|preference)$/.test(r.url))) {
+        request.flush(request.request.url.endsWith('/preference') ? DEFAULT_PREFERENCE : []);
+      }
+      harness.fixture.detectChanges();
+      expect(headings(root)).toContain('編輯記錄');
+    });
+  }
+  return root;
+}
+
+const headings = (root: HTMLElement) => Array.from(root.querySelectorAll('h1')).map(h => h.textContent?.trim());
+
+describe('phone route matrix (390 px)', () => {
+  beforeEach(() => stubViewport(390));
+
+  for (const [url, title] of LIST_LEVEL) {
+    it(`${url} has one h1 "${title}", the gear and the sub-nav`, async () => {
+      const root = await open(url);
+      expect(headings(root)).toEqual([title]);
+      expect(root.querySelector('a[aria-label="設定"][href="/settings"]')).not.toBeNull();
+      if (url === '/settings') {
+        expect(root.querySelector('app-sub-nav')?.querySelector('a.active') ?? null).toBeNull();
+      } else {
+        expect(root.querySelector('app-sub-nav a.active')).not.toBeNull();
+      }
+    });
+  }
+
+  for (const [url, title] of DRILL_DOWN) {
+    it(`${url} has one h1 "${title}" and no gear or sub-nav`, async () => {
+      const root = await open(url);
+      expect(headings(root)).toEqual([title]);
+      expect(root.querySelector('a[aria-label="設定"]')).toBeNull();
+      expect(root.querySelector('app-sub-nav')).toBeNull();
+    });
+  }
+});
+
+describe('wide route matrix (1440 px)', () => {
+  beforeEach(() => stubViewport(1440));
+
+  for (const [url, title] of LIST_LEVEL) {
+    it(`${url} shows the h1 "${title}" without gear or sub-nav`, async () => {
+      const root = await open(url);
+      expect(headings(root)).toContain(title);
+      expect(root.querySelector('a[aria-label="設定"]')).toBeNull();
+      expect(root.querySelector('app-sub-nav')).toBeNull();
+    });
+  }
+
+  for (const [url, title] of DRILL_DOWN) {
+    it(`${url} renders an h1 "${title}" without gear or sub-nav`, async () => {
+      const root = await open(url);
+      expect(headings(root)).toContain(title);
+      expect(root.querySelector('a[aria-label="設定"]')).toBeNull();
+      expect(root.querySelector('app-sub-nav')).toBeNull();
     });
   }
 });

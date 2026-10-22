@@ -269,6 +269,7 @@ describe('AccountingAccountsComponent', () => {
     expect(el.querySelector('.total-amount')?.textContent?.trim()).toBe('−$30,136');
     expect(el.querySelector('.totals-line')?.textContent?.trim()).toBe('總資產 $14,226 · 總負債 $44,362');
     expect(el.querySelector('.add-account')?.getAttribute('href')).toBe('/accounting/accounts/new');
+    expect(el.querySelector('app-page-header .page-actions .add-account')).not.toBeNull();
   });
 
   it('collapses a group from its header', () => {
