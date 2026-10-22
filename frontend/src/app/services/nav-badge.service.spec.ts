@@ -1,4 +1,4 @@
-import { signal } from '@angular/core';
+import { WritableSignal, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Observable, Subject, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -220,6 +220,82 @@ describe('NavBadgeService', () => {
     vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000);
     window.dispatchEvent(new Event('focus'));
     expect(getRecalcStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('an entry or account write reloads the reminders and the latest import at once, not the recalc status', () => {
+    const svc = service();
+    svc.start();
+    TestBed.tick();
+    answer(0);
+    expect(accountingStub['getCounterparties']).toHaveBeenCalledTimes(1);
+    expect(accountingStub['getLatestImport']).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(1_000);
+    (accountingStub['entriesChanged'] as WritableSignal<number>).set(1);
+    TestBed.tick();
+    expect(accountingStub['getCounterparties']).toHaveBeenCalledTimes(2);
+    expect(accountingStub['getScheduleInstances']).toHaveBeenCalledTimes(2);
+    expect(accountingStub['getLatestImport']).toHaveBeenCalledTimes(2);
+    expect(getRecalcStatus).toHaveBeenCalledTimes(1);
+
+    land(latest.subjects[1], importRun(3));
+    TestBed.tick();
+    expect(svc.badges()['accounting']).toEqual({ count: 3, label: '3 筆待確認' });
+
+    (accountingStub['accountsChanged'] as WritableSignal<number>).set(1);
+    TestBed.tick();
+    expect(accountingStub['getCounterparties']).toHaveBeenCalledTimes(3);
+    expect(accountingStub['getLatestImport']).toHaveBeenCalledTimes(3);
+  });
+
+  it('writes before start() load nothing', () => {
+    service();
+    TestBed.tick();
+    (accountingStub['entriesChanged'] as WritableSignal<number>).set(1);
+    TestBed.tick();
+    expect(accountingStub['getLatestImport']).not.toHaveBeenCalled();
+  });
+
+  describe('returning to a visible page (installed PWA from the background)', () => {
+    let visibility: DocumentVisibilityState;
+
+    beforeEach(() => {
+      visibility = 'visible';
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility });
+    });
+
+    afterEach(() => {
+      delete (document as unknown as Record<string, unknown>)['visibilityState'];
+    });
+
+    function becomes(state: DocumentVisibilityState): void {
+      visibility = state;
+      document.dispatchEvent(new Event('visibilitychange'));
+    }
+
+    it('refreshes on visibilitychange to visible, throttled like focus', () => {
+      service().start();
+      expect(getRecalcStatus).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000);
+      becomes('hidden');
+      expect(getRecalcStatus).toHaveBeenCalledTimes(1);
+      becomes('visible');
+      expect(getRecalcStatus).toHaveBeenCalledTimes(2);
+
+      vi.advanceTimersByTime(5_000);
+      becomes('hidden');
+      becomes('visible');
+      expect(getRecalcStatus).toHaveBeenCalledTimes(2);
+    });
+
+    it('removes the visibilitychange listener when the injector is destroyed', () => {
+      service().start();
+      TestBed.resetTestingModule();
+      vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000);
+      becomes('visible');
+      expect(getRecalcStatus).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('removes the focus listener when the injector is destroyed', () => {

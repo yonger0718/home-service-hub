@@ -13,7 +13,7 @@ import { RecalcStatus } from '../models/portfolio.model';
 import { AccountingService } from './accounting.service';
 import { PortfolioService } from './portfolio.service';
 
-/** A refresh (window focus, navigation) starting sooner than this after the previous one is skipped. */
+/** A refresh (start, window focus, page visible again) starting sooner than this after the previous one is skipped. */
 export const BADGE_REFRESH_MIN_MS = 30_000;
 
 interface ReminderInputs {
@@ -73,9 +73,24 @@ export class NavBadgeService {
         untracked(() => this.bills.ensure(reminders.dues, reminders.today));
       }
     });
+
+    // An in-app write (entry, schedule, account, backup import) moves the reminders and the review count: reload them
+    // at once, as the timeline's 🔔 does, so the bell and the sidebar agree. Not throttled; the generations keep it safe.
+    let firstRun = true;
+    effect(() => {
+      this.accounting.entriesChanged();
+      this.accounting.accountsChanged();
+      if (firstRun) {
+        firstRun = false;
+        return;
+      }
+      if (this.started) {
+        untracked(() => this.loadAccounting());
+      }
+    });
   }
 
-  /** First load and a refresh on every window focus. Idempotent. */
+  /** First load and a refresh on every window focus and whenever the page becomes visible again. Idempotent. */
   start(): void {
     if (this.started) {
       return;
@@ -87,6 +102,14 @@ export class NavBadgeService {
       view.addEventListener('focus', onFocus);
       this.destroyRef.onDestroy(() => view.removeEventListener('focus', onFocus));
     }
+    // An installed PWA brought back from the background is not always focused.
+    const onVisible = () => {
+      if (this.document.visibilityState === 'visible') {
+        this.refresh();
+      }
+    };
+    this.document.addEventListener('visibilitychange', onVisible);
+    this.destroyRef.onDestroy(() => this.document.removeEventListener('visibilitychange', onVisible));
     this.refresh();
   }
 
@@ -96,6 +119,12 @@ export class NavBadgeService {
       return;
     }
     this.lastRefreshAt = now;
+    this.loadAccounting();
+    this.load('recalc', this.portfolio.getRecalcStatus(), status => this.recalc.set(status));
+  }
+
+  /** The reminders and the latest import (the accounting badges). */
+  private loadAccounting(): void {
     const today = todayIso();
     this.load(
       'reminders',
@@ -116,7 +145,6 @@ export class NavBadgeService {
     );
     // `getLatestImport` already answers a 404 (no import yet) with null.
     this.load('import', this.accounting.getLatestImport(), run => this.latestImport.set(run));
-    this.load('recalc', this.portfolio.getRecalcStatus(), status => this.recalc.set(status));
   }
 
   /** Applies `source`'s answer (null on any error) unless a newer request of that source has started since. */
