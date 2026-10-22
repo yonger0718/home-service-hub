@@ -126,6 +126,7 @@ export class PortfolioDashboardComponent implements OnInit {
   ];
 
   readonly xirrGapTooltip = '缺少此期間的淨值或價格資料。請執行資料重算後再重新整理。';
+  readonly estimateHint = '估算・非可用現金';
 
   chartData: any = null;
   chartOptions: any = this.buildChartOptions();
@@ -266,6 +267,8 @@ export class PortfolioDashboardComponent implements OnInit {
 
   /** Point shown while the chart has keyboard focus; -1 when none. */
   private focusedPointIndex = -1;
+  /** Live-region text for the focused point; the chart itself is a canvas behind role="img". */
+  readonly focusedPointText = signal('');
 
   onChartFocus(): void {
     this.showChartPoint(this.chartPoints().length - 1);
@@ -275,13 +278,16 @@ export class PortfolioDashboardComponent implements OnInit {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
     const last = this.chartPoints().length - 1;
-    const from = this.focusedPointIndex < 0 ? last : this.focusedPointIndex;
+    // The pointer may have moved the tooltip since the last key press: continue from what is shown.
+    const hovered = this.netWorthChart?.chart?.tooltip?.getActiveElements?.()[0]?.index;
+    const from = hovered ?? (this.focusedPointIndex < 0 ? last : this.focusedPointIndex);
     const step = event.key === 'ArrowLeft' ? -1 : 1;
     this.showChartPoint(Math.min(last, Math.max(0, from + step)));
   }
 
   onChartBlur(): void {
     this.focusedPointIndex = -1;
+    this.focusedPointText.set('');
     const chart = this.netWorthChart?.chart;
     if (!chart) return;
     chart.setActiveElements([]);
@@ -298,6 +304,16 @@ export class PortfolioDashboardComponent implements OnInit {
     chart.setActiveElements(active);
     chart.tooltip?.setActiveElements(active, { x: element?.x ?? 0, y: element?.y ?? 0 });
     chart.update('none');
+    const point = this.chartPoints()[index];
+    if (!point) return;
+    const { total, holdings, cash } = this.seriesValues(point);
+    this.focusedPointText.set(
+      `${this.pointDate(point)} · 帳戶總值 ${this.formatCurrency(total)} · 持股淨值 ${this.formatCurrency(holdings)} · 現金 ${this.formatCurrency(cash)}`,
+    );
+  }
+
+  private pointDate(point: NetworthPoint): string {
+    return point.date.slice(0, 10).replaceAll('-', '/');
   }
 
   private readonly networthCache = new Map<PortfolioRange, NetworthPoint[]>();
@@ -651,6 +667,7 @@ export class PortfolioDashboardComponent implements OnInit {
   }
 
   private rebuildChart(): void {
+    this.focusedPointIndex = -1;
     const points = this.chartPoints();
     const up = this.periodReturn() >= 0;
     const stockLine = this.cssVar(up ? '--app-trend-positive' : '--app-trend-negative');
@@ -729,7 +746,7 @@ export class PortfolioDashboardComponent implements OnInit {
           callbacks: {
             title: (items: any[]) => {
               const point = this.chartPoints()[items[0]?.dataIndex];
-              return point ? point.date.slice(0, 10).replaceAll('-', '/') : '';
+              return point ? this.pointDate(point) : '';
             },
             label: (ctx: any) => `${ctx.dataset?.label ?? ''} ${this.formatCurrency(ctx.parsed?.y ?? 0)}`,
             afterBody: (items: any[]) => {

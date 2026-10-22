@@ -77,8 +77,11 @@
         </app-bento>
 
         <app-bento class="kpi-card">
-          <div class="kpi-card-body" title="估算・非可用現金">
-            <div class="label">預估含息損益{{ isMarketFiltered() ? ' · ' + marketFilter() : '' }}</div>
+          <div class="kpi-card-body">
+            <div class="label">
+              預估含息損益{{ isMarketFiltered() ? ' · ' + marketFilter() : '' }}
+              <i class="pi pi-info-circle fx-info" tabindex="0" role="img" [attr.aria-label]="estimateHint" [pTooltip]="estimateHint"></i>
+            </div>
             <div class="value-row">
               <div class="value estimated-total" [class.up]="(totals.estimated_pnl_with_dividends ?? 0) > 0" [class.down]="(totals.estimated_pnl_with_dividends ?? 0) < 0">
                 {{ formatNative(totals.estimated_pnl_with_dividends, totals.currency) }}
@@ -174,6 +177,7 @@
                 <p-skeleton width="100%" height="100%"></p-skeleton>
               }
             </div>
+            <span class="visually-hidden" aria-live="polite">{{ focusedPointText() }}</span>
             @if (legendData && isPhone()) {
               <p class="chart-caption">兩線之間是交割戶現金 {{ formatCurrency(legendData.cash) }}</p>
             }
@@ -199,6 +203,8 @@
                   </div>
                 }
               </div>
+            } @else {
+              <p class="empty-line">尚無持股</p>
             }
             @let pending = pendingDividends();
             @if (pending) {
@@ -216,6 +222,8 @@
                     </span>
                     <b class="pending-amount dividend">+{{ row.currency === 'TWD' ? formatAmount(row.amount) : formatNative(row.amount, row.currency) }}</b>
                   </div>
+                } @empty {
+                  <p class="empty-line">目前沒有待收股利</p>
                 }
               </div>
             }

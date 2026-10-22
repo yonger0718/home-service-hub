@@ -210,6 +210,19 @@ describe('dashboard math', () => {
       expect([row.month, row.day, row.note]).toEqual(['10月', '17', '每股 0.48 · 20,000 股 · 除息']);
     });
 
+    it('shows the per-share amount with two to four decimals', () => {
+      const notes = pendingRows(
+        [
+          dividend(1, { cash_dividend_per_share: 5, quantity_at_record_date: undefined, payment_date: '2026-11-01' }),
+          dividend(2, { cash_dividend_per_share: 0.4825, quantity_at_record_date: undefined, payment_date: '2026-11-02' }),
+          dividend(3, { cash_dividend_per_share: 1.123456, quantity_at_record_date: undefined, payment_date: '2026-11-03' }),
+        ],
+        nameFor,
+      ).map(r => r.note);
+
+      expect(notes).toEqual(['每股 5.00', '每股 0.4825', '每股 1.1235']);
+    });
+
     it('omits a missing half of the note', () => {
       const rows = pendingRows(
         [

@@ -34,7 +34,7 @@ class ChartStubComponent {
   chart = {
     update: vi.fn(),
     setActiveElements: vi.fn(),
-    tooltip: { setActiveElements: vi.fn() },
+    tooltip: { setActiveElements: vi.fn(), getActiveElements: vi.fn((): { index: number }[] => []) },
     getDatasetMeta: vi.fn(() => ({ data: [{ x: 10, y: 20 }, { x: 30, y: 40 }] })),
   };
 }
@@ -651,7 +651,10 @@ describe('PortfolioDashboardComponent', () => {
       const root = fixture.nativeElement as HTMLElement;
       const f = fixture.componentInstance;
       const card = kpi(root)[1];
-      expect(card.querySelector('[title="估算・非可用現金"]')).not.toBeNull();
+      const hint = card.querySelector<HTMLElement>('.label .pi-info-circle')!;
+      expect(hint.getAttribute('aria-label')).toBe('估算・非可用現金');
+      expect(hint.getAttribute('tabindex')).toBe('0');
+      expect(card.querySelector('[title]')).toBeNull();
       expect(card.querySelector('.value')?.classList.contains('up')).toBe(true);
       expect(card.querySelector('app-pct-badge')).not.toBeNull();
       expect(footnote(root, 1)).toBe(`價差 ${f.formatNative(100, 'TWD')} · 股利 ${f.formatNative(20, 'TWD')} · 待收 ${f.formatNative(5, 'TWD')}`);
@@ -883,6 +886,63 @@ describe('PortfolioDashboardComponent', () => {
         expect(chart.update).toHaveBeenCalledWith('none');
       });
 
+      describe('with three points', () => {
+        beforeEach(() => {
+          portfolioService.getNetworthHistory.mockReturnValue(of([
+            point('2026-08-01', '700', '100', '800'),
+            point('2026-09-01', '800', '200', '1000'),
+            point('2026-10-22', '1000', '250', '1250'),
+          ]));
+        });
+
+        const live = (fixture: { nativeElement: HTMLElement }) =>
+          fixture.nativeElement.querySelector('.chart-card [aria-live="polite"]');
+
+        it('continues from the point the pointer last activated', async () => {
+          const { chart, wrapper } = await renderChart();
+          wrapper.dispatchEvent(new FocusEvent('focus'));
+          expect(chart.setActiveElements).toHaveBeenLastCalledWith(both(2));
+
+          chart.tooltip.getActiveElements.mockReturnValue([{ index: 0 }]);
+          wrapper.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
+
+          expect(chart.setActiveElements).toHaveBeenLastCalledWith(both(1));
+        });
+
+        it('starts again from the last point after the chart is rebuilt', async () => {
+          const { fixture, chart, wrapper } = await renderChart();
+          wrapper.dispatchEvent(new FocusEvent('focus'));
+          wrapper.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' }));
+          wrapper.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' }));
+          expect(chart.setActiveElements).toHaveBeenLastCalledWith(both(0));
+
+          fixture.componentInstance.selectRange('1Y');
+          wrapper.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' }));
+
+          expect(chart.setActiveElements).toHaveBeenLastCalledWith(both(1));
+        });
+
+        it('announces the focused point in a polite live region outside the image', async () => {
+          const { fixture, wrapper } = await renderChart();
+          const region = live(fixture)!;
+          expect(region).not.toBeNull();
+          expect(wrapper.contains(region)).toBe(false);
+          expect(wrapper.getAttribute('role')).toBe('img');
+
+          wrapper.dispatchEvent(new FocusEvent('focus'));
+          fixture.detectChanges();
+          expect(region.textContent?.trim()).toBe('2026/10/22 · 帳戶總值 $1,250 · 持股淨值 $1,000 · 現金 $250');
+
+          wrapper.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' }));
+          fixture.detectChanges();
+          expect(region.textContent?.trim()).toBe('2026/09/01 · 帳戶總值 $1,000 · 持股淨值 $800 · 現金 $200');
+
+          wrapper.dispatchEvent(new FocusEvent('blur'));
+          fixture.detectChanges();
+          expect(region.textContent?.trim()).toBe('');
+        });
+      });
+
       it('does nothing before the chart has rendered', () => {
         const fixture = createFixture();
         const wrapper = (fixture.nativeElement as HTMLElement).querySelector<HTMLElement>('.networth-chart')!;
@@ -995,7 +1055,7 @@ describe('PortfolioDashboardComponent', () => {
         ['2月', '01'],
       ]);
       expect(rows.map(r => text(r.querySelector('.pending-name')))).toEqual(['國泰永續高股息', '台積電', '9999']);
-      expect(text(rows[1].querySelector('.pending-note'))).toBe('每股 5 · 1,000 股');
+      expect(text(rows[1].querySelector('.pending-note'))).toBe('每股 5.00 · 1,000 股');
       expect(rows[0].querySelector('.pending-amount')!.classList).toContain('dividend');
       expect(text(rows[0].querySelector('.pending-amount'))).toBe('+9,600');
     });
@@ -1058,6 +1118,27 @@ describe('PortfolioDashboardComponent', () => {
       expect(card(fixture.nativeElement)).not.toBeNull();
       expect(card(fixture.nativeElement)!.querySelectorAll('.allocation-row').length).toBe(2);
       expect(pendingBlock(fixture.nativeElement)).toBeNull();
+    });
+
+    it('says so under 待收股利 when nothing is pending, keeping the link', () => {
+      portfolioService.getDividends.mockReturnValue(of({ total: 1, items: [pendingDividend(1, { receipt_status: 'confirmed' })] }));
+      const fixture = createFixture();
+      const block = pendingBlock(fixture.nativeElement)!;
+
+      expect(block.querySelectorAll('.pending-row').length).toBe(0);
+      expect(text(block.querySelector('.empty-line'))).toBe('目前沒有待收股利');
+      expect(block.querySelector('.pending-head')!.nextElementSibling!.classList).toContain('empty-line');
+      expect(text(block.querySelector('.pending-head a'))).toBe('全部');
+    });
+
+    it('says 尚無持股 under 持股配置 without holdings', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({ holdings: [] })));
+      const fixture = createFixture();
+      const body = card(fixture.nativeElement)!;
+
+      expect(body.querySelector('.allocation-bar')).toBeNull();
+      expect(text(body.querySelector('h2')!.nextElementSibling)).toBe('尚無持股');
+      expect(body.querySelector('h2')!.nextElementSibling!.classList).toContain('empty-line');
     });
 
     it('omits the 待收股利 block when the symbol names fail', () => {

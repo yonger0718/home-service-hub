@@ -162,7 +162,8 @@ export function pendingRows(dividends: readonly Dividend[], nameFor: (d: Dividen
       const [, month, day] = (paid || ex).split('-');
       const parts: string[] = [];
       if (present(d.cash_dividend_per_share)) {
-        parts.push(`每股 ${Number(d.cash_dividend_per_share).toLocaleString('zh-TW', { maximumFractionDigits: 4 })}`);
+        const perShare = Number(d.cash_dividend_per_share).toLocaleString('zh-TW', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+        parts.push(`每股 ${perShare}`);
       }
       if (present(d.quantity_at_record_date)) {
         parts.push(`${Number(d.quantity_at_record_date).toLocaleString('zh-TW')} 股`);

@@ -504,6 +504,12 @@ app-bento {
   font-size: 14px;
 }
 
+.empty-line {
+  color: var(--app-text-muted);
+  font-size: 13px;
+  margin: 0;
+}
+
 .holdings-sub {
   color: var(--app-text-muted);
   font-size: 0.8125rem;
