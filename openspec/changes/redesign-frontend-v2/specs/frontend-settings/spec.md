@@ -25,7 +25,7 @@ The theme, the gain/loss convention and every 導覽 setting SHALL persist (thro
 
 ### Requirement: Settings layout
 
-The Settings screen SHALL render, in order, the sections 外觀, 投資顯示, 導覽, 記帳, 鍵盤快捷鍵 (≥ 760px only) and 資料更新, each as a small uppercase-tracked heading above a card of rows. Each row SHALL show an icon square, a title, a one-line description and its control on the right. At < 760px the page SHALL open as a pushed screen with a back button and no tab bar highlight, and controls SHALL stack under their titles at full width. The content column SHALL be at most 860px wide.
+The Settings screen SHALL render, in order, the sections 外觀, 投資顯示, 導覽, 記帳, 鍵盤快捷鍵 (≥ 760px only) and 資料更新, each as a small uppercase-tracked heading above a card of rows. Each row SHALL show an icon square, a title, a one-line description and its control on the right. At < 760px the page SHALL open as a pushed screen with a back button and no tab bar highlight, and segmented controls SHALL stack under their titles at full width (switch rows stay inline). Rows in 資料更新 SHALL show a status dot instead of an icon square, and stacked rows MAY omit the icon square. The back button SHALL return to the previous in-app page; when Settings is the router's first successful navigation (for example opened from a bookmark) it SHALL go to the first visible group's default page instead of leaving the app, and it SHALL be hidden when that fallback would be Settings itself. The content column SHALL be at most 860px wide.
 
 #### Scenario: Phone layout
 - **WHEN** Settings is opened at 390px
@@ -63,7 +63,7 @@ At ≥ 760px the 鍵盤快捷鍵 section SHALL list, two columns wide, the short
 
 ### Requirement: Data refresh schedule
 
-The 資料更新 section SHALL list the portfolio scheduler jobs with their schedule: 盤中報價 (交易時段每 15 分鐘), 淨值快照 (每個交易日 15:30), 收盤價回補（TWSE / TPEx）(每個交易日 17:00). Where an existing endpoint reports the last run (the quote refresh in `GET /api/portfolio/imports/recalc/status`), the row SHALL show it; otherwise only the schedule is shown.
+The 資料更新 section SHALL list the portfolio scheduler jobs with their schedule: 盤中報價 (交易時段每 15 分鐘), 淨值快照 (每天 15:30), 收盤價回補（TWSE / TPEx）(每個交易日 17:00). Where an existing endpoint reports the last run (the quote refresh in `GET /api/portfolio/imports/recalc/status`), the row SHALL show it; otherwise only the schedule is shown.
 
 #### Scenario: Last quote refresh shown
 - **GIVEN** the status endpoint reports a quote refresh finished at 13:30
