@@ -30,6 +30,12 @@ class SubtitleHost {
 
 @Component({
   imports: [PageHeaderComponent],
+  template: `<app-page-header title="投資概覽" [actionsBelowOnPhone]="true"><button class="act">新增</button></app-page-header>`,
+})
+class ActionsBelowHost {}
+
+@Component({
+  imports: [PageHeaderComponent],
   template: `<app-page-header [back]="true"></app-page-header>`,
 })
 class BackHost {}
@@ -59,7 +65,13 @@ async function renderBack(urls: string[], opts: { mode?: LayoutMode; hidden?: st
   return { el, back, navigate, button: el.querySelector<HTMLButtonElement>('button.page-back') };
 }
 
-async function render(width: number, url = '/accounting', hidden: string[] | null = null, title?: string) {
+async function render(
+  width: number,
+  url = '/accounting',
+  hidden: string[] | null = null,
+  title?: string,
+  host: typeof Host | typeof ActionsBelowHost = Host,
+) {
   if (hidden) localStorage.setItem('hh-nav-hidden', JSON.stringify(hidden));
   TestBed.configureTestingModule({
     providers: [
@@ -77,8 +89,8 @@ async function render(width: number, url = '/accounting', hidden: string[] | nul
     ],
   });
   await TestBed.inject(Router).navigateByUrl(url);
-  const fixture = TestBed.createComponent(Host);
-  fixture.componentInstance.title = title;
+  const fixture = TestBed.createComponent<Host | ActionsBelowHost>(host);
+  if (fixture.componentInstance instanceof Host) fixture.componentInstance.title = title;
   fixture.detectChanges();
   return fixture.nativeElement as HTMLElement;
 }
@@ -152,6 +164,35 @@ describe('PageHeaderComponent', () => {
 
     expect(el.querySelector('a[aria-label="設定"]')).toBeNull();
     expect(el.querySelector('app-sub-nav')).toBeNull();
+  });
+
+  describe('actionsBelowOnPhone', () => {
+    const header = (el: HTMLElement) => el.querySelector('app-page-header')!;
+
+    it('moves the actions to their own line on phones, after the title and gear', async () => {
+      const el = await render(375, '/portfolio', null, undefined, ActionsBelowHost);
+      const actions = el.querySelector('.page-actions')!;
+      const gear = el.querySelector('a[aria-label="設定"]')!;
+
+      expect(header(el).classList).toContain('actions-below');
+      expect(actions.querySelector('.act')).not.toBeNull();
+      expect(gear.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(el.querySelector('.page-title')!.nextElementSibling).toBe(gear);
+    });
+
+    it('keeps the one-line row at 760px and wider', async () => {
+      const el = await render(800, '/portfolio', null, undefined, ActionsBelowHost);
+
+      expect(header(el).classList).not.toContain('actions-below');
+    });
+
+    it('changes nothing without the input', async () => {
+      const el = await render(375);
+      const actions = el.querySelector('.page-actions')!;
+
+      expect(header(el).classList).not.toContain('actions-below');
+      expect(actions.nextElementSibling).toBe(el.querySelector('a[aria-label="設定"]'));
+    });
   });
 
   describe('back button (Settings as a pushed screen on phones)', () => {

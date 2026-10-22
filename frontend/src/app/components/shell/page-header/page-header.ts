@@ -1,4 +1,4 @@
-import { Location } from '@angular/common';
+import { Location, NgTemplateOutlet } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
 
@@ -12,10 +12,11 @@ import { SubNavComponent } from '../sub-nav/sub-nav';
  */
 @Component({
   selector: 'app-page-header',
-  imports: [RouterLink, SubNavComponent],
+  imports: [NgTemplateOutlet, RouterLink, SubNavComponent],
   templateUrl: './page-header.html',
   styleUrl: './page-header.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { '[class.actions-below]': 'actionsBelow()' },
 })
 export class PageHeaderComponent {
   readonly title = input<string>();
@@ -23,6 +24,8 @@ export class PageHeaderComponent {
   readonly back = input(false);
   /** Muted line under the h1 on every width (e.g. the dashboard's quote time). */
   readonly subtitle = input<string | null>(null);
+  /** Phones only: the actions take their own line under the title and gear instead of squeezing the title. */
+  readonly actionsBelowOnPhone = input(false);
 
   protected readonly nav = inject(NavigationStateService);
   private readonly layout = inject(LayoutModeService);
@@ -31,6 +34,7 @@ export class PageHeaderComponent {
 
   protected readonly heading = computed(() => this.title() ?? this.nav.activeItem().title);
   protected readonly phone = computed(() => this.layout.mode() === 'phone');
+  protected readonly actionsBelow = computed(() => this.actionsBelowOnPhone() && this.phone());
   /** No gear on 設定 itself: it would link to the page being viewed. */
   protected readonly gear = computed(
     () => this.phone() && this.nav.tabBar().settingsInHeader && this.nav.activeItem().id !== 'settings',

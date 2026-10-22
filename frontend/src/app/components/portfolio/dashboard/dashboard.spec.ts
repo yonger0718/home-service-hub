@@ -267,6 +267,17 @@ describe('PortfolioDashboardComponent', () => {
       expect(header(fixture).querySelector('.page-subtitle')?.textContent?.trim()).toBe('行情更新於 17:00 · 盤中');
     });
 
+    it('puts the header actions on their own line on a phone', () => {
+      TestBed.inject(LayoutModeService).set('phone');
+      try {
+        const fixture = createFixture();
+
+        expect(header(fixture).classList).toContain('actions-below');
+      } finally {
+        TestBed.inject(LayoutModeService).set(null);
+      }
+    });
+
     it('puts the market toggle in the header with Chinese labels', () => {
       portfolioService.getSummary.mockReturnValue(of(buildSummary({
         holdings: [buildHolding(), { ...buildHolding(), symbol: 'AAPL', market: 'US', native_currency: 'USD' }],
@@ -561,6 +572,22 @@ describe('PortfolioDashboardComponent', () => {
       expect(card.querySelector('app-pct-badge')).not.toBeNull();
       expect(footnote(root, 1)).toBe(`價差 ${f.formatNative(100, 'TWD')} · 股利 ${f.formatNative(20, 'TWD')} · 待收 ${f.formatNative(5, 'TWD')}`);
       expect(kpi(root)[3].querySelector('.value')?.classList.contains('dividend')).toBe(true);
+    });
+
+    it('groups the four cards in their own auto-fit row', () => {
+      const fixture = createFixture();
+      const row = (fixture.nativeElement as HTMLElement).querySelector('.kpi-row')!;
+
+      expect(Array.from(row.children).map(c => c.classList.contains('kpi-card'))).toEqual([true, true, true, true]);
+    });
+
+    it('puts the estimate badge on the value line', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({ estimated_pnl_with_dividends: 125, estimated_pnl_percent: 12.5 })));
+      const fixture = createFixture();
+      const valueRow = kpi(fixture.nativeElement)[1].querySelector('.value-row')!;
+
+      expect(valueRow.querySelector('.value.estimated-total')).not.toBeNull();
+      expect(valueRow.querySelector('app-pct-badge')).not.toBeNull();
     });
 
     it('keeps XIRR portfolio-wide and updates its range footnote', () => {

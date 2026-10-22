@@ -2,35 +2,24 @@
   padding-bottom: 2rem;
 }
 
-.bento-grid {
+.bento-grid,
+.kpi-row {
   display: grid;
   gap: 1.25rem;
+}
+
+/* Grid items stretch the bento section, so the cards of one row are equally tall. */
+.kpi-row {
   grid-auto-rows: minmax(140px, auto);
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+
+  > app-bento {
+    display: grid;
+  }
 }
 
 app-bento {
   display: block;
-}
-
-.b-full {
-  grid-column: 1 / -1;
-}
-
-@media (min-width: 761px) {
-  .bento-grid > app-bento:not(.b-full) {
-    display: grid;
-  }
-
-  .kpi-card-body {
-    display: flex;
-    flex-direction: column;
-    min-height: 100%;
-  }
-
-  .kpi-card-footer {
-    margin-top: auto;
-  }
 }
 
 .hero-body {
@@ -126,25 +115,38 @@ app-bento {
   min-width: 0;
 }
 
-.legend-label {
+/* Hero and chart legends share the label, value and swatch base. */
+.legend-label,
+.chart-legend-label {
   align-items: center;
   color: var(--app-text-muted);
   display: flex;
-  font-size: var(--fs-label);
   gap: 6px;
 }
 
-.legend-value {
+.legend-value,
+.chart-legend-value {
   color: var(--app-text);
-  font-size: 16px;
   font-variant-numeric: tabular-nums;
   font-weight: 700;
 }
 
+.swatch,
+.chart-swatch {
+  box-sizing: border-box;
+  flex: none;
+}
+
+.legend-label {
+  font-size: var(--fs-label);
+}
+
+.legend-value {
+  font-size: 16px;
+}
+
 .swatch {
   border-radius: 3px;
-  box-sizing: border-box;
-  flex: 0 0 8px;
   height: 8px;
   width: 8px;
 
@@ -170,24 +172,19 @@ app-bento {
   text-transform: uppercase;
 }
 
+.value-row {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
 .value {
   color: var(--app-text);
   font-size: 2rem;
   font-variant-numeric: tabular-nums;
   font-weight: 800;
   line-height: 1.1;
-
-  &.up {
-    color: var(--app-trend-positive);
-  }
-
-  &.down {
-    color: var(--app-trend-negative);
-  }
-
-  &.dividend {
-    color: var(--app-dividend);
-  }
 }
 
 .meta {
@@ -274,22 +271,11 @@ app-bento {
 }
 
 .chart-legend-label {
-  align-items: center;
-  color: var(--app-text-muted);
-  display: flex;
   gap: 8px;
-}
-
-.chart-legend-value {
-  color: var(--app-text);
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
 }
 
 .chart-swatch {
   border-radius: 2px;
-  box-sizing: border-box;
-  flex: none;
   height: 3px;
   width: 16px;
 
@@ -331,7 +317,12 @@ app-bento {
     outline: none;
   }
 
-  p-chart,
+  /* Out of flow, so the chart fills whatever height the wrapper gets (fixed, or grown at >= 1024px). */
+  p-chart {
+    inset: 0;
+    position: absolute !important;
+  }
+
   canvas {
     height: 100% !important;
     width: 100% !important;
@@ -352,6 +343,19 @@ app-bento {
 @media (min-width: 1024px) {
   .chart-row {
     grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  }
+
+  /* The chart takes the height the allocation card gives the row. */
+  .chart-card-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+  }
+
+  .networth-chart {
+    flex: 1 1 220px;
+    height: auto;
+    min-height: 220px;
   }
 }
 
@@ -584,6 +588,11 @@ $holdings-cols: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.2fr
   width: 40px;
 }
 
+/* Dark series tokens are light, so the initials take the page background for contrast. */
+:host-context(.app-dark-mode) .stock-abbr {
+  color: var(--app-bg);
+}
+
 .stock-sym {
   display: flex;
   flex-direction: column;
@@ -715,12 +724,6 @@ $holdings-cols: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.2fr
   }
 }
 
-@media (max-width: 1200px) {
-  .bento-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 760px) {
   .holdings-head {
     display: none;
@@ -736,20 +739,19 @@ $holdings-cols: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.2fr
     grid-template-columns: minmax(0, 1fr) auto;
     padding: 0.75rem 0.25rem;
 
-    > span:not(.stock-main) {
+    > span:not(.stock-main):not(.stock-value):not(.stock-pnl) {
       text-align: left;
     }
   }
 
   .stock-main { grid-area: main; }
-  .stock-value { font-size: 0.9375rem; font-weight: 700; grid-area: value; text-align: right !important; }
+  .stock-value { font-size: 0.9375rem; font-weight: 700; grid-area: value; }
   .stock-price { color: var(--app-text-muted); font-size: 0.75rem; font-weight: 600; grid-area: price; }
   .stock-day { grid-area: day; }
-  .stock-pnl { align-items: flex-end; grid-area: pnl; text-align: right !important; }
+  .stock-pnl { align-items: flex-end; grid-area: pnl; }
   .stock-qty { color: var(--app-text-muted); font-size: 0.75rem; grid-area: qty; }
   .stock-qty::before { content: '股數 '; }
 
-  .bento-grid,
   .detail-grid {
     grid-template-columns: 1fr;
   }
