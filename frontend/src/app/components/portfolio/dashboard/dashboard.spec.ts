@@ -889,6 +889,20 @@ describe('PortfolioDashboardComponent', () => {
       expect(text(rows[0].querySelector('.pending-amount'))).toBe('+9,600');
     });
 
+    it('shows a foreign-currency pending amount with its currency', () => {
+      portfolioService.getDividends.mockReturnValue(of({
+        total: 2,
+        items: [
+          pendingDividend(1),
+          pendingDividend(2, { symbol: 'AAPL', amount: 12.35, currency: 'USD', payment_date: '2026-11-20' }),
+        ],
+      }));
+      const fixture = createFixture();
+      const amounts = Array.from(pendingBlock(fixture.nativeElement)!.querySelectorAll('.pending-amount')).map(text);
+
+      expect(amounts).toEqual(['+9,600', '+12.35 USD']);
+    });
+
     it('requests every page, newest ex date first, and lists a row found only on page 2', () => {
       portfolioService.getDividends.mockImplementation(({ offset }: { offset: number }) => of({
         total: 150,

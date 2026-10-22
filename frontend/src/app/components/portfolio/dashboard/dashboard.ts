@@ -106,6 +106,7 @@ export class PortfolioDashboardComponent implements OnInit {
   readonly quoteLine = signal<string | null>(null);
   /** 待收股利 rows; null when the dividends or names are unavailable, which omits the block. */
   readonly pendingDividends = signal<PendingRow[] | null>(null);
+  private pendingDividendsLoad?: Subscription;
 
   readonly rangeOptions: SegToggleOption[] = [
     { label: '1M', value: '1M' },
@@ -510,8 +511,6 @@ export class PortfolioDashboardComponent implements OnInit {
       .pipe(catchError(() => of(null)), takeUntilDestroyed(this.destroyRef))
       .subscribe(status => this.quoteLine.set(quoteTimeLabel(status?.quote_refresh?.finished_at, this.clock())));
   }
-
-  private pendingDividendsLoad?: Subscription;
 
   private loadPendingDividends(): void {
     this.pendingDividendsLoad?.unsubscribe();

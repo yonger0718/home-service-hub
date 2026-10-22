@@ -114,6 +114,7 @@ export interface PendingRow {
   name: string;
   note: string;
   amount: number;
+  currency: string;
 }
 
 /** `YYYY-MM-DD` without going through `new Date(string)`, which would parse it as UTC. */
@@ -150,7 +151,7 @@ export function pendingRows(dividends: readonly Dividend[], nameFor: (d: Dividen
         parts.push(`${Number(d.quantity_at_record_date).toLocaleString('zh-TW')} 股`);
       }
       if (!paid) parts.push('除息');
-      return { id: d.id, month: `${Number(month)}月`, day: day ?? '', name: nameFor(d), note: parts.join(' · '), amount: num(d.amount) };
+      return { id: d.id, month: `${Number(month)}月`, day: day ?? '', name: nameFor(d), note: parts.join(' · '), amount: num(d.amount), currency: d.currency || 'TWD' };
     });
 }
 

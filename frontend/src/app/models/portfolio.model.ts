@@ -203,6 +203,7 @@ export interface Dividend {
   id: number;
   symbol: string;
   amount: number;
+  currency?: string;
   ex_dividend_date: string | Date;
   received_date?: string | Date;
   fee?: number;

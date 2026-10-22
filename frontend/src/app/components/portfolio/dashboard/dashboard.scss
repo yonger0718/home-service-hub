@@ -344,6 +344,7 @@ app-bento {
   grid-template-columns: minmax(0, 1fr);
 
   > app-bento {
+    display: grid;
     min-width: 0;
   }
 }

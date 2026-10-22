@@ -180,7 +180,7 @@ describe('dashboard math', () => {
     it('builds the tile from the date string parts, independent of the machine time zone', () => {
       const [row] = pendingRows([dividend(1)], nameFor);
 
-      expect(row).toEqual({ id: 1, month: '11月', day: '18', name: '國泰永續高股息', note: '每股 0.48 · 20,000 股', amount: 9600 });
+      expect(row).toEqual({ id: 1, month: '11月', day: '18', name: '國泰永續高股息', note: '每股 0.48 · 20,000 股', amount: 9600, currency: 'TWD' });
       const [january] = pendingRows([dividend(2, { payment_date: '2027-01-08T00:00:00' })], nameFor);
       expect([january.month, january.day]).toEqual(['1月', '08']);
     });
@@ -201,6 +201,12 @@ describe('dashboard math', () => {
       );
 
       expect(rows.map(r => r.note)).toEqual(['20,000 股', '每股 0.48']);
+    });
+
+    it('carries the dividend currency', () => {
+      const [row] = pendingRows([dividend(1, { symbol: 'AAPL', amount: 12.35, currency: 'USD' })], nameFor);
+
+      expect([row.amount, row.currency]).toEqual([12.35, 'USD']);
     });
 
     it('names rows through nameFor and honours the limit', () => {
