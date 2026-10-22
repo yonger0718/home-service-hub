@@ -1,0 +1,112 @@
+<div class="hub-sidebar">
+  <div class="side-head">
+    <a class="side-logo" [routerLink]="logoPath()">
+      @if (expanded()) {
+        <img src="assets/logo-lockup.svg" alt="Home Hub" />
+      } @else {
+        <img src="assets/app-icon.svg" alt="Home Hub" />
+      }
+    </a>
+    @if (nav.canToggleSidebar()) {
+      <button
+        type="button"
+        class="side-toggle"
+        [attr.aria-label]="expanded() ? '收合側欄' : '展開側欄'"
+        (click)="nav.toggleSidebar()"
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path [attr.d]="expanded() ? 'M4 4h16v16H4z M9 4v16 M15 10l-2 2 2 2' : 'M4 4h16v16H4z M9 4v16 M13 10l2 2-2 2'"></path>
+        </svg>
+      </button>
+    }
+  </div>
+
+  <nav class="side-nav" aria-label="主要導覽" (mouseover)="placeTip($event)" (focusin)="placeTip($event)">
+    @for (group of nav.visibleGroups(); track group.id) {
+      @let active = nav.activeGroup().id === group.id;
+      @let folded = expanded() && nav.isFolded(group.id);
+      <div class="side-group">
+        @if (expanded()) {
+          @let sum = summary(group);
+          <button
+            type="button"
+            class="group-head"
+            [class.current]="active"
+            [attr.aria-expanded]="!folded"
+            [attr.aria-controls]="'side-group-' + group.id"
+            (click)="nav.toggleGroup(group.id)"
+          >
+            <span class="group-label">{{ group.label }}</span>
+            <span class="group-meta">
+              @if (folded && sum.count > 0) {
+                <span class="group-count" aria-hidden="true">{{ sum.count }}</span>
+              }
+              @if (folded && sum.dot) {
+                <span class="group-dot" aria-hidden="true"></span>
+              }
+              @if (folded && (sum.count > 0 || sum.dot)) {
+                <span class="sr-only">
+                  @for (item of group.items; track item.id) {
+                    @if (badge(item); as itemBadge) {
+                      <span>，{{ itemBadge.label }}</span>
+                    }
+                  }
+                </span>
+              }
+              @if (active) {
+                <span class="group-hint">目前</span>
+              } @else {
+                <i class="pi pi-chevron-down group-chevron" [class.folded]="folded" aria-hidden="true"></i>
+              }
+            </span>
+          </button>
+        } @else {
+          <div class="side-divider" aria-hidden="true"></div>
+        }
+
+        <div class="group-items" [id]="'side-group-' + group.id">
+          @if (!folded) {
+            @for (item of group.items; track item.id) {
+              @let itemBadge = badge(item);
+              @let current = nav.activeItem().id === item.id;
+              <a
+                class="side-item"
+                [class.active]="current"
+                [routerLink]="item.path"
+                [attr.aria-label]="itemLabel(item)"
+                [attr.aria-current]="current ? 'page' : null"
+              >
+                <span class="item-icon">
+                  <i class="pi {{ item.icon }}" aria-hidden="true"></i>
+                  @if (!expanded()) {
+                    @if (itemBadge?.count) {
+                      <span class="item-count" aria-hidden="true">{{ itemBadge?.count }}</span>
+                    } @else if (itemBadge?.dot) {
+                      <span class="item-dot" aria-hidden="true"></span>
+                    }
+                  }
+                </span>
+                @if (expanded()) {
+                  <span class="item-label">{{ item.sidebarLabel }}</span>
+                  @if (itemBadge?.count) {
+                    <span class="item-count" aria-hidden="true">{{ itemBadge?.count }}</span>
+                  } @else if (itemBadge?.dot) {
+                    <span class="item-dot" aria-hidden="true"></span>
+                  }
+                } @else {
+                  <span class="side-tip" aria-hidden="true">
+                    {{ item.sidebarLabel }}
+                    @if (itemBadge) {
+                      <small>{{ itemBadge.label }}</small>
+                    }
+                  </span>
+                }
+              </a>
+            }
+          }
+        </div>
+      </div>
+    }
+  </nav>
+</div>
