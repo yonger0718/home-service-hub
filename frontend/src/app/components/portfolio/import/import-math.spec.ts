@@ -13,11 +13,12 @@ import {
   typeFromQuery,
 } from './import-math';
 
-type StatusRow = ImportRow & { status?: string };
+type StatusRow = ImportRow;
 
+/** Status is assigned loosely on purpose: the helpers must tolerate unknown wire values. */
 function row(index: number, payload: Record<string, string | null> = {}, status?: string): StatusRow {
   const r: StatusRow = { row_index: index, fingerprint: `fp-${index}`, payload };
-  if (status !== undefined) r.status = status;
+  if (status !== undefined) (r as { status?: unknown }).status = status;
   return r;
 }
 
