@@ -31,7 +31,7 @@ const genericPreview: ImportResult = {
     csvRow(4, { trade_date: '2026-10-08', name: '元大高股息', symbol: '0056', type: 'SELL', quantity: '2000', price: '' }),
   ],
 };
-/** Nested-payload broker response as the real API returns it (`broker-import.spec.ts` fixture). */
+/** Nested-payload broker response as the real API returns it (`/imports/csv` dry-run). */
 const brokerNested: BrokerCsvImportResult = {
   detected_broker: 'FIRSTRADE', dry_run: true,
   transactions: [
@@ -76,6 +76,9 @@ describe('Portfolio import controls', () => {
     Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('button')).find(b => b.textContent?.trim() === label);
   const activeStep = (fixture: { nativeElement: HTMLElement }) =>
     el(fixture).querySelector('ol[aria-label="匯入步驟"] li[aria-current="step"]')?.textContent ?? '';
+  /** The 匯入並重算 section (step 3) holding the recalc panel. */
+  const recalcCard = (fixture: { nativeElement: HTMLElement }) => el(fixture).querySelector<HTMLElement>('app-bento.recalc-card');
+  const recalcText = (fixture: { nativeElement: HTMLElement }) => recalcCard(fixture)?.textContent ?? '';
 
   beforeEach(() => {
     localStorage.clear();
@@ -135,7 +138,8 @@ describe('Portfolio import controls', () => {
       } }],
     }));
     const fixture = setup();
-    const content = text(fixture);
+    expect(recalcCard(fixture)?.querySelector('h2')?.textContent?.trim()).toBe('匯入並重算');
+    const content = recalcText(fixture);
     expect(content).toContain('匯入重算：partial');
     expect(content).toContain('報價更新（不含股利）：completed');
     expect(content).toContain('9802');
@@ -149,7 +153,7 @@ describe('Portfolio import controls', () => {
 
   it('does not label a quote-only run as completed import reconciliation', () => {
     service.getRecalcStatus.mockReturnValue(of({ state: 'completed', kind: 'quotes', quote_refresh: { state: 'completed' } }));
-    expect(text(setup())).toContain('匯入重算：idle');
+    expect(recalcText(setup())).toContain('匯入重算：idle');
   });
 
   it('updates running quote status without losing a partial import', () => {
@@ -159,9 +163,70 @@ describe('Portfolio import controls', () => {
     service.getRecalcStatus.mockReturnValue(of({ state: 'partial', kind: 'import', quote_refresh: { state: 'completed' } }));
     vi.advanceTimersByTime(5000);
     fixture.detectChanges();
-    expect(text(fixture)).toContain('匯入重算：partial');
-    expect(text(fixture)).toContain('報價更新（不含股利）：completed');
+    expect(recalcText(fixture)).toContain('匯入重算：partial');
+    expect(recalcText(fixture)).toContain('報價更新（不含股利）：completed');
     fixture.destroy();
+  });
+
+  describe('step 3: 匯入並重算', () => {
+    for (const state of ['running', 'failed', 'partial'] as const) {
+      it(`on load with a ${state} import recalc the panel shows without a file`, () => {
+        vi.useFakeTimers();
+        service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state }));
+        const fixture = setup();
+        expect(fixture.componentInstance.file()).toBeNull();
+        expect(fixture.componentInstance.step()).toBe(1);
+        expect(recalcText(fixture)).toContain(`匯入重算：${state}`);
+        fixture.destroy();
+      });
+    }
+
+    it('after a commit the panel renders in 匯入並重算 with steps, deferred dividends, quote status and the 重算資料 guard', () => {
+      vi.useFakeTimers();
+      const fixture = setup();
+      fixture.componentInstance.onSelect({ files: [new File(['x'], 'a.csv')] });
+      fixture.detectChanges();
+      expect(recalcCard(fixture)).toBeNull();
+      service.uploadCsv.mockReturnValue(of({ ...preview, dry_run: false, recalc_scheduled: true }));
+      service.getRecalcStatus.mockReturnValue(of({
+        kind: 'import', state: 'running', started_at: '2026-10-23T10:00:00Z', quote_refresh: { state: 'running', steps: [{ name: 'quotes', status: 'ok' }] },
+        steps: [
+          { name: 'recalc_holdings', status: 'ok' },
+          { name: 'dividend_auto_record', status: 'partial', detail: {
+            deferred_events: [{ symbol: '2330', ex_date: '2026-09-18', cash_dividend_per_share: '5.0', payment_date: '2026-10-09', reason: 'deferred' }],
+          } },
+        ],
+      }));
+      fixture.componentInstance.commit();
+      fixture.detectChanges();
+      expect(activeStep(fixture)).toContain('匯入並重算');
+      const card = recalcCard(fixture)!;
+      expect(card.querySelector('h2')?.textContent?.trim()).toBe('匯入並重算');
+      const content = recalcText(fixture);
+      expect(content).toContain('匯入重算：running');
+      expect(content).toContain('最近匯入重算：2026-10-23T10:00:00Z');
+      expect(content).toContain('recalc_holdings：ok');
+      expect(content).toContain('歷史股利核對：partial');
+      expect(card.querySelector('.deferred-dividend')?.textContent).toContain('2330');
+      expect(content).toContain('發放日：2026-10-09');
+      expect(content).toContain('報價更新（不含股利）：running');
+      const rerun = Array.from(card.querySelectorAll<HTMLButtonElement>('button')).find(b => b.textContent?.trim() === '重算資料')!;
+      expect(rerun.disabled).toBe(true);
+      // The side cards come after the 匯入並重算 section in sheet / phone.
+      const side = el(fixture).querySelector('aside[aria-label="匯入後會發生什麼"]')!;
+      expect(card.compareDocumentPosition(side) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      fixture.destroy();
+    });
+
+    it('重算資料 is enabled once the recalc settles and triggers one recalc', () => {
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed', steps: [{ name: 'dividends', status: 'failed', error: 'x' }] }));
+      service.triggerRecalc.mockReturnValue(new Subject());
+      const fixture = setup();
+      const rerun = Array.from(recalcCard(fixture)!.querySelectorAll<HTMLButtonElement>('button')).find(b => b.textContent?.trim() === '重算資料')!;
+      expect(rerun.disabled).toBe(false);
+      rerun.click(); rerun.click();
+      expect(service.triggerRecalc).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('type from the query', () => {
@@ -614,6 +679,23 @@ describe('Portfolio import controls', () => {
       expect(fixture.componentInstance.brokerResult()).not.toBeNull();
       expect(el(fixture).querySelector('app-file-chip')).toBeNull();
       expect(fixture.componentInstance.step()).toBe(3);
+      expect(fixture.componentInstance.committed()).toBe(true);
+      expect(activeStep(fixture)).toContain('匯入並重算');
+      expect(recalcCard(fixture)).not.toBeNull();
+    });
+
+    it('券商: a parser row error lists row index and reason under 需要修正的列 and keeps the file (broker spec)', () => {
+      service.uploadBrokerCsv.mockReturnValue(throwError(() => ({ status: 422, error: { errors: [{ row_index: 3, reason: 'missing FX rate for 2026-06-02 USD' }] } })));
+      const fixture = setup({ type: 'broker' });
+      const file = new File(['x'], 'ft.csv');
+      fixture.componentInstance.onSelect({ files: [file] });
+      fixture.detectChanges();
+      const fix = card(fixture, 'fix-card')!;
+      expect(norm(fix.querySelector('h2')?.textContent)).toBe('需要修正的列');
+      expect(Array.from(fix.querySelectorAll('.fix-line')).map(l => norm(l.textContent)))
+        .toEqual(['第 3 列 · missing FX rate for 2026-06-02 USD · 此列會被略過']);
+      expect(fixture.componentInstance.file()).toBe(file);
+      expect(el(fixture).querySelector('app-file-chip')).not.toBeNull();
     });
 
     it('a 券商 commit with row errors keeps the file', () => {

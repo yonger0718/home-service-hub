@@ -287,6 +287,13 @@ describe('portfolio import routes', () => {
       path: 'portfolio/import-broker', redirectTo: '/portfolio/import?type=broker', pathMatch: 'full',
     });
   });
+
+  it('opening /portfolio/import-broker lands on the unified page with 券商對帳單 selected', async () => {
+    stubViewport(1440);
+    const root = await open('/portfolio/import-broker', '/portfolio/import?type=broker');
+    expect(root.querySelector('app-portfolio-import')).not.toBeNull();
+    expect(root.querySelector('[role="radiogroup"][aria-label="匯入類型"] [aria-checked="true"]')?.textContent?.trim()).toBe('券商對帳單');
+  });
 });
 
 describe('landing route', () => {

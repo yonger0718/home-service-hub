@@ -100,18 +100,31 @@
   margin-top: 0.3rem;
 }
 
-.imp-card {
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
-  border-radius: 18px;
-  box-shadow: var(--app-card-shadow);
-  overflow: hidden;
+.recalc-panel {
+  display: grid;
+  gap: 0.375rem;
+  font-size: 0.875rem;
+
+  small { color: var(--app-text-muted); }
 }
 
-.imp-section {
-  border-bottom: 1px solid var(--app-border);
-  padding: 1.25rem 1.5rem;
+.recalc-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
 }
+
+.recalc-state { font-weight: 600; }
+
+.deferred-dividend {
+  border-left: 3px solid var(--app-border);
+  padding-left: 0.625rem;
+
+  small { display: block; }
+}
+
+.recalc-actions { padding-top: 0.25rem; }
 
 .imp-hint {
   color: var(--app-text-muted);

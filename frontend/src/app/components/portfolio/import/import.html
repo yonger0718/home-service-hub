@@ -199,17 +199,19 @@
       </footer>
 
       @if (recalcPanel()) {
-        <div class="imp-card">
-          <section class="imp-section recalc-panel" aria-live="polite">
-            <div>匯入重算：{{ recalcStatus().kind === 'quotes' ? 'idle' : recalcStatus().state }}</div>
-            @if (recalcStatus().kind !== 'quotes' && recalcStatus().started_at) {
-              <small>最近匯入重算：{{ recalcStatus().started_at }}</small>
-            }
+        <app-bento class="recalc-card" title="匯入並重算">
+          <section class="recalc-panel" aria-live="polite">
+            <div class="recalc-head">
+              <span class="recalc-state">匯入重算：{{ recalcStatus().kind === 'quotes' ? 'idle' : recalcStatus().state }}</span>
+              @if (recalcStatus().kind !== 'quotes' && recalcStatus().started_at) {
+                <small>最近匯入重算：{{ recalcStatus().started_at }}</small>
+              }
+            </div>
             @if (recalcStatus().kind !== 'quotes') {
               @for (step of recalcStatus().steps ?? []; track step.name) {
-                <div>{{ step.name === 'dividend_auto_record' ? '歷史股利核對' : step.name }}：{{ step.status }} {{ step.error || '' }}</div>
+                <div class="recalc-step">{{ step.name === 'dividend_auto_record' ? '歷史股利核對' : step.name }}：{{ step.status }} {{ step.error || '' }}</div>
                 @for (error of step.detail?.source_errors ?? []; track $index) {
-                  <div>{{ error.source }} {{ error.symbol }} {{ error.year }}：{{ error.reason }}</div>
+                  <small class="recalc-note">{{ error.source }} {{ error.symbol }} {{ error.year }}：{{ error.reason }}</small>
                 }
                 @for (event of step.detail?.deferred_events ?? []; track event.symbol + event.ex_date) {
                   <div class="deferred-dividend">
@@ -217,21 +219,23 @@
                     每股現金股利：{{ event.cash_dividend_per_share ?? '未知' }} TWD
                     每仟股配股：{{ event.stock_dividend_per_thousand ?? '未知' }}
                     發放日：{{ event.payment_date ?? '未知' }}
-                    <div>權益已記錄；請至股利頁核對並確認實際收款。{{ event.reason }}</div>
+                    <small>權益已記錄；請至股利頁核對並確認實際收款。{{ event.reason }}</small>
                   </div>
                 }
               }
             }
             @if (recalcStatus().quote_refresh; as quotes) {
-              <div>報價更新（不含股利）：{{ quotes.state }}</div>
+              <div class="recalc-step">報價更新（不含股利）：{{ quotes.state }}</div>
               @for (step of quotes.steps ?? []; track step.name) {
-                <div>{{ step.status }} {{ step.error || '' }}</div>
+                <small class="recalc-note">{{ step.status }} {{ step.error || '' }}</small>
               }
             }
-            <app-btn variant="secondary" [disabled]="recalcSubmitting() || recalcStatus().state === 'running'"
-              (click)="retryRecalc()">重算資料</app-btn>
+            <div class="recalc-actions">
+              <app-btn variant="secondary" [disabled]="recalcSubmitting() || recalcStatus().state === 'running'"
+                (click)="retryRecalc()">重算資料</app-btn>
+            </div>
           </section>
-        </div>
+        </app-bento>
       }
 
       @if (!panes()) {
