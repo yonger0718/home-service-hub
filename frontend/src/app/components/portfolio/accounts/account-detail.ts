@@ -78,7 +78,7 @@ export const TYPE_OPTIONS: { label: string; value: CashTransactionType }[] = [
   { label: '現金股利', value: 'dividend_cash' },
   { label: '利息收入', value: 'interest_in' },
   { label: '融資利息', value: 'margin_interest' },
-  { label: '匯款費', value: 'wire_fee' },
+  { label: '匯費', value: 'wire_fee' },
   { label: '換匯', value: 'fx_convert' },
 ];
 

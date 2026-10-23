@@ -214,14 +214,15 @@
         <app-bento class="recalc-card" title="匯入並重算">
           <section class="recalc-panel" aria-live="polite">
             <div class="recalc-head">
-              <span class="recalc-state">匯入重算：{{ recalcStatus().kind === 'quotes' ? 'idle' : recalcStatus().state }}</span>
+              @let rawState = recalcStatus().kind === 'quotes' ? 'idle' : recalcStatus().state;
+              <span class="recalc-state" [title]="rawState">匯入重算：{{ stateLabel(rawState) }}</span>
               @if (recalcStatus().kind !== 'quotes' && recalcStatus().started_at) {
                 <small>最近匯入重算：{{ recalcStatus().started_at }}</small>
               }
             </div>
             @if (recalcStatus().kind !== 'quotes') {
               @for (step of recalcStatus().steps ?? []; track step.name) {
-                <div class="recalc-step">{{ step.name === 'dividend_auto_record' ? '歷史股利核對' : step.name }}：{{ step.status }} {{ step.error || '' }}</div>
+                <div class="recalc-step"><span [title]="step.name">{{ stepLabel(step.name) }}</span>：<span [title]="step.status">{{ statusLabel(step.status) }}</span> {{ step.error || '' }}</div>
                 @for (error of step.detail?.source_errors ?? []; track $index) {
                   <small class="recalc-note">{{ error.source }} {{ error.symbol }} {{ error.year }}：{{ error.reason }}</small>
                 }
@@ -237,9 +238,9 @@
               }
             }
             @if (recalcStatus().quote_refresh; as quotes) {
-              <div class="recalc-step">報價更新（不含股利）：{{ quotes.state }}</div>
+              <div class="recalc-step">報價更新（不含股利）：<span [title]="quotes.state">{{ stateLabel(quotes.state) }}</span></div>
               @for (step of quotes.steps ?? []; track step.name) {
-                <small class="recalc-note">{{ step.status }} {{ step.error || '' }}</small>
+                <small class="recalc-note"><span [title]="step.name">{{ stepLabel(step.name) }}</span>：<span [title]="step.status">{{ statusLabel(step.status) }}</span> {{ step.error || '' }}</small>
               }
             }
             <div class="recalc-actions">

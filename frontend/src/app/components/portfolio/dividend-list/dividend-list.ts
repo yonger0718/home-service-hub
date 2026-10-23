@@ -377,7 +377,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     const fmt = (v: number) => `NT$${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
     if (tax > 0 || fee > 0) {
       const parts: string[] = [];
-      if (fee > 0) parts.push(`手續費 −${fmt(fee)}`);
+      if (fee > 0) parts.push(`匯費 −${fmt(fee)}`);
       if (tax > 0) parts.push(`補充保費 −${fmt(tax)}`);
       return `配息 ${fmt(gross)} (${parts.join(', ')})`;
     }

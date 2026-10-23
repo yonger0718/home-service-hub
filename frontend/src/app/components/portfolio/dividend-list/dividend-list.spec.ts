@@ -470,6 +470,21 @@ describe('Dividend filter-wide summary', () => {
     expect(summaryCalls[0].response.observed).toBe(false);
   });
 
+  it('labels the manual-add fee 匯費, in the field and the gross preview', () => {
+    const fixture = create();
+    const component = fixture.componentInstance;
+    component.openNew();
+    fixture.detectChanges();
+
+    const labels = Array.from(document.body.querySelectorAll('.portfolio-form-dialog label')).map(l => l.textContent?.trim());
+    expect(labels).toEqual(['股票代號', '股利金額', '除息日期', '匯費', '補充保費']);
+    component.newDividend = { ...component.newDividend, quantity_at_record_date: 1000, cash_dividend_per_share: 1, fee: 10 };
+    expect(component.grossHint()).toBe('配息 NT$1,000 (匯費 −NT$10)');
+    component.showDialog.set(false);
+    fixture.detectChanges();
+    fixture.destroy();
+  });
+
   const NOTE = '有效待收股利會納入「預估含息損益」，但不計入可用現金；待釐清的金額不納入預估。舊資料的收款未經核實。';
 
   describe('cards, note and header', () => {
@@ -815,7 +830,7 @@ describe('Dividend filter-wide summary', () => {
       expect(cell(fixture, 21, '.primary-name')).toBe('國泰永續高股息 00878');
       expect(cell(fixture, 21, '.c-ex')).toBe('2026/10/17');
       expect(cell(fixture, 21, '.c-pay')).toBe('預定 11/18 TWSE 公告');
-      expect(cell(fixture, 21, '.c-qty')).toBe('0.48 × 20,000 手續費 10 · 補充保費 202');
+      expect(cell(fixture, 21, '.c-qty')).toBe('0.48 × 20,000 匯費 10 · 補充保費 202');
       expect(cell(fixture, 21, '.c-net .net')).toBe('+9,600');
       expect(cell(fixture, 21, '.c-status')).toBe('待收');
       expect(el(fixture).querySelector('[data-row-id="21"] .c-status .tag')?.classList).toContain('tag-primary');
@@ -1739,6 +1754,24 @@ describe('Dividend filter-wide summary', () => {
       expect(row.querySelector('.c-ex')).toBeNull();
       expect(row.querySelector('.c-pay')).toBeNull();
       expect(row.querySelector('.c-status')).toBeNull();
+      fixture.destroy();
+    });
+
+    it('gives a long compact name the line: the status tag wraps beneath it, the amount takes at most 45 %', () => {
+      TestBed.inject(LayoutModeService).set('phone');
+      service['getSymbolNames'].mockReturnValue(of({ '00631L': '元大台灣50正2' }));
+      const fixture = create();
+      respond(listCalls[0], { items: [{ ...due, id: 31, symbol: '00631L' }], total: 1 });
+      fixture.detectChanges();
+      const row = el(fixture).querySelector('[data-row-id="31"]')!;
+
+      expect(lines(row.querySelector('.name-line'))).toBe('元大台灣50正2 00631L 待收');
+      const name = getComputedStyle(row.querySelector('.primary-name')!);
+      expect(name.flexBasis).toBe('100%'); // the component stylesheet is applied
+      expect(name.flexGrow).toBe('1');
+      expect(name.flexShrink).toBe('1');
+      expect(getComputedStyle(row.querySelector('.c-net')!).maxWidth).toBe('45%');
+      expect(getComputedStyle(row.querySelector('.name-line app-tag')!).flex).toMatch(/^0 0 auto|^none$/);
       fixture.destroy();
     });
 

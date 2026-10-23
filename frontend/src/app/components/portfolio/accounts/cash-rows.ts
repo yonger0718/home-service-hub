@@ -119,7 +119,7 @@ function tradeLine(t: CashTransaction): string | null {
   return parts.length ? parts.join(' · ') : null;
 }
 
-/** `0.48 × 20,000 · 扣匯費 10 · 補充保費 x` via the dividend list's helpers; null without a per-share figure. */
+/** `0.48 × 20,000 · 匯費 10 · 補充保費 x` via the dividend list's helpers; null without a per-share figure. */
 function dividendLine(t: CashTransaction): string | null {
   if (t.related_per_share == null) return null;
   const d = {
@@ -129,9 +129,7 @@ function dividendLine(t: CashTransaction): string | null {
     fee: Number(t.related_fee || 0),
     tax: Number(t.related_tax || 0),
   } as Dividend;
-  // The canvas labels a dividend's handling fee 扣匯費 (PfCash.dc.html); the list helper says 手續費.
-  const deductions = deductionLine(d)?.replace(/^手續費 /, '扣匯費 ') ?? null;
-  return [perShareLine(d), deductions].filter(Boolean).join(' · ');
+  return [perShareLine(d), deductionLine(d)].filter(Boolean).join(' · ');
 }
 
 function subtitle(t: CashTransaction): string | null {

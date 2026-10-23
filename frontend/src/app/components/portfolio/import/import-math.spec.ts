@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { BrokerCsvImportResult, ImportResult, ImportRow } from '../../../models/portfolio.model';
 import {
   ImportAttempt,
+  RECALC_STATE_LABEL,
+  RECALC_STEP_LABEL,
   REHASH_HINT,
   ROW_RESULT_LABEL,
+  STEP_STATUS_LABEL,
   attemptLine,
   brokerCountSummary,
   cashFlowRow,
@@ -15,6 +18,7 @@ import {
   failureBanner,
   fixLines,
   importCounts,
+  labelOf,
   importErrorDetail,
   importErrorText,
   rowErrorText,
@@ -593,17 +597,22 @@ describe('failureBanner', () => {
 
 describe('recalcBanner', () => {
   it('a failed import recalc names the first step error, without the nothing-written sentence', () => {
-    const text = recalcBanner({ kind: 'import', state: 'failed', current_step: 'positions', steps: [
-      { name: 'positions', status: 'ok' }, { name: 'dividends', status: 'failed', error: 'TWSE timeout' },
+    const text = recalcBanner({ kind: 'import', state: 'failed', current_step: 'networth_backfill', steps: [
+      { name: 'symbol_map_backfill', status: 'ok' }, { name: 'networth_backfill', status: 'failed', error: 'TWSE timeout' },
     ] });
     expect(text).toBe('最近一次匯入的重算失敗：TWSE timeout');
     expect(text).not.toContain('整批未寫入');
     expect(text).not.toContain('沒有寫入任何資料');
   });
 
-  it('falls back to current_step, then 未知錯誤', () => {
-    expect(recalcBanner({ state: 'failed', current_step: 'quotes' })).toBe('最近一次匯入的重算失敗：quotes');
+  it('falls back to the current_step label, then 未知錯誤', () => {
+    expect(recalcBanner({ state: 'failed', current_step: 'networth_backfill', steps: [] })).toBe('最近一次匯入的重算失敗：淨值回補');
+    expect(recalcBanner({ state: 'failed', current_step: 'awaiting_lock' })).toBe('最近一次匯入的重算失敗：等待鎖定');
     expect(recalcBanner({ state: 'failed' })).toBe('最近一次匯入的重算失敗：未知錯誤');
+  });
+
+  it('an unknown current_step falls back to its raw name', () => {
+    expect(recalcBanner({ state: 'failed', current_step: 'future_step' })).toBe('最近一次匯入的重算失敗：future_step');
   });
 
   it('none for a quote-only run or a non-failed state', () => {
@@ -622,5 +631,29 @@ describe('recalcPanelVisible', () => {
       expect(recalcPanelVisible({ state }, 1)).toBe(true);
     }
     expect(recalcPanelVisible({ state: 'completed', kind: 'quotes' }, 1)).toBe(true);
+  });
+});
+
+describe('recalc labels (#111)', () => {
+  it('labelOf maps a known raw value', () => {
+    expect(labelOf(RECALC_STATE_LABEL, 'running')).toBe('執行中');
+    expect(labelOf(RECALC_STEP_LABEL, 'symbol_map_backfill')).toBe('代號對照補齊');
+    expect(labelOf(STEP_STATUS_LABEL, 'skipped')).toBe('略過');
+  });
+
+  it('labelOf returns an unknown raw value unchanged', () => {
+    expect(labelOf(RECALC_STATE_LABEL, 'weird')).toBe('weird');
+    expect(labelOf(RECALC_STEP_LABEL, 'future_step')).toBe('future_step');
+  });
+
+  it('labelOf returns an empty string for null / undefined', () => {
+    expect(labelOf(RECALC_STATE_LABEL, null)).toBe('');
+    expect(labelOf(RECALC_STATE_LABEL, undefined)).toBe('');
+  });
+
+  it('the maps carry only the real orchestrator names', () => {
+    expect(Object.keys(RECALC_STATE_LABEL).sort()).toEqual(['completed', 'failed', 'idle', 'partial', 'running']);
+    expect(Object.keys(RECALC_STEP_LABEL).sort()).toEqual(['awaiting_lock', 'dividend_auto_record', 'networth_backfill', 'symbol_map_backfill']);
+    expect(Object.keys(STEP_STATUS_LABEL).sort()).toEqual(['failed', 'ok', 'partial', 'skipped']);
   });
 });

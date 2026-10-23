@@ -40,9 +40,9 @@ describe('dividend rows', () => {
 
   describe('deductionLine', () => {
     it('lists only the deductions above zero', () => {
-      expect(deductionLine(dv({ fee: 10, tax: 202 }))).toBe('手續費 10 · 補充保費 202');
+      expect(deductionLine(dv({ fee: 10, tax: 202 }))).toBe('匯費 10 · 補充保費 202');
       expect(deductionLine(dv({ fee: 0, tax: 1202 }))).toBe('補充保費 1,202');
-      expect(deductionLine(dv({ fee: 10 }))).toBe('手續費 10');
+      expect(deductionLine(dv({ fee: 10 }))).toBe('匯費 10');
       expect(deductionLine(dv({ fee: 0, tax: 0 }))).toBeNull();
       expect(deductionLine(dv({}))).toBeNull();
     });

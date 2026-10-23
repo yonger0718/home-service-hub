@@ -22,7 +22,7 @@ export interface DividendRowView {
   pay: { main: string; sub: string | null };
   /** 每股 × 股數 column: `0.48 × 20,000`, `0.0001`, or `現金股利`. */
   perShare: string;
-  /** `手續費 x · 補充保費 y` (parts above zero), else null. */
+  /** `匯費 x · 補充保費 y` (parts above zero), else null. */
   deductions: string | null;
   net: { main: string; sub: string | null };
   /** Pending rows in `--app-primary`, confirmed / legacy / unresolved in `--app-dividend`. */
@@ -63,13 +63,13 @@ export function perShareLine(d: Dividend): string {
   return qty > 0 ? `${price} × ${qty.toLocaleString('en-US')}` : price;
 }
 
-/** `手續費 {fee} · 補充保費 {tax}` with only the parts above zero, in the row's currency; null when neither is. */
+/** `匯費 {fee} · 補充保費 {tax}` with only the parts above zero, in the row's currency; null when neither is. */
 export function deductionLine(d: Dividend): string | null {
   const amount = (value: number) => (isTwdCurrency(d.currency) ? groupedInteger(value) : formatNativeAmount(value, d.currency));
   const fee = Number(d.fee || 0);
   const tax = Number(d.tax || 0);
   const parts: string[] = [];
-  if (fee > 0) parts.push(`手續費 ${amount(fee)}`);
+  if (fee > 0) parts.push(`匯費 ${amount(fee)}`);
   if (tax > 0) parts.push(`補充保費 ${amount(tax)}`);
   return parts.length ? parts.join(' · ') : null;
 }

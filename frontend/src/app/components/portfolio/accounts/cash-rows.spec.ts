@@ -112,7 +112,7 @@ describe('cashRow', () => {
     expect(row.subtitle).toBe('已合併買賣 3 筆');
   });
 
-  it('dividend_cash: 股利 · 2317 / 5.80 × 3,000 · 扣匯費 10 / 股利', () => {
+  it('dividend_cash: 股利 · 2317 / 5.80 × 3,000 · 匯費 10 / 股利', () => {
     const row = cashRow(
       txn({
         type: 'dividend_cash',
@@ -127,12 +127,12 @@ describe('cashRow', () => {
       }),
     );
     expect(row.title).toBe('股利 · 2317');
-    expect(row.subtitle).toBe('5.80 × 3,000 · 扣匯費 10');
+    expect(row.subtitle).toBe('5.80 × 3,000 · 匯費 10');
     expect(row.source).toBe('股利');
     expect(row.amount).toBe('+17,390');
   });
 
-  it('dividend_cash appends 補充保費 when the tax is above zero, and drops 扣匯費 at 0', () => {
+  it('dividend_cash appends 補充保費 when the tax is above zero, and drops 匯費 at 0', () => {
     const base = {
       type: 'dividend_cash' as const,
       source: 'auto_derive' as const,
@@ -142,7 +142,7 @@ describe('cashRow', () => {
       related_quantity: '20000.0000',
     };
     expect(cashRow(txn({ ...base, related_fee: '10.00', related_tax: '201.00' })).subtitle).toBe(
-      '0.48 × 20,000 · 扣匯費 10 · 補充保費 201',
+      '0.48 × 20,000 · 匯費 10 · 補充保費 201',
     );
     expect(cashRow(txn({ ...base, related_fee: '0.00', related_tax: '0.00' })).subtitle).toBe('0.48 × 20,000');
   });

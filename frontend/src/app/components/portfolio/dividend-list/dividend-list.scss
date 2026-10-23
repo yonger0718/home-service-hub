@@ -346,7 +346,7 @@
 }
 
 /* Phone and sheet widths: square · name + tag over the per-share line · amount with the ex-date beneath.
-   The name wraps to two lines (the tag follows it, wrapping too); the amount never wraps, its date line may. */
+   The name wraps to two lines with the tag beneath it; the amount never wraps, its date line may. */
 .compact {
   .div-grid {
     display: flex;
@@ -367,17 +367,20 @@
     }
   }
 
+  /* The name takes the whole line, so the status tag wraps beneath it; the floor (≈ 5 CJK) never exceeds the line. */
   .primary-name {
     -webkit-box-orient: vertical;
     display: -webkit-box;
+    flex: 1 1 100%;
     -webkit-line-clamp: 2;
+    min-width: min(9ch, 100%);
     overflow: hidden;
     overflow-wrap: anywhere;
   }
 
   .c-net {
     flex: none;
-    max-width: 60%;
+    max-width: 45%;
 
     .net {
       white-space: nowrap;

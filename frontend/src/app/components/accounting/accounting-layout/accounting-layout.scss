@@ -6,6 +6,9 @@
   /* …and small (≤ 13 px) text with these ink siblings (≥ 4.5:1); --tone-* stays bright for large figures. */
   --tone-neg-ink: var(--c-red-ink);
   --tone-pos-ink: var(--c-green-ink);
+  /* …and small text on a translucent tint (warning pills / badges) with the pill ink pair (≥ 4.5:1 on the tint). */
+  --tone-neg-pill-ink: var(--c-red-pill-ink);
+  --tone-pos-pill-ink: var(--c-green-pill-ink);
   display: block;
   position: relative;
 }
@@ -15,6 +18,8 @@
   --tone-pos: var(--c-red);
   --tone-neg-ink: var(--c-green-ink);
   --tone-pos-ink: var(--c-red-ink);
+  --tone-neg-pill-ink: var(--c-green-pill-ink);
+  --tone-pos-pill-ink: var(--c-red-pill-ink);
 }
 
 .dbody {

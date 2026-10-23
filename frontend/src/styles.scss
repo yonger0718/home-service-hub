@@ -56,6 +56,10 @@
   /* ink variants for small (≤ 13 px) trend-coloured TEXT: ≥ 4.5:1 on --app-surface / --app-surface-soft
      (#c53a3f 5.04 / 4.57, #177a55 5.17 / 4.69). Large figures keep the bright pair above. */
   --c-red-ink: #c53a3f;  --c-green-ink: #177a55;
+  /* pill ink for small text on a translucent tint (--c-*-soft, --app-state-warning-bg): ≥ 4.5:1 with the tint
+     composited over --app-surface / --app-surface-soft (#b5353a 4.94 / 4.53 on red-soft, 5.11 / 4.66 on the warning
+     tint; #146b4b 5.56 / 5.06 on green-soft). Only pills / badges use it; plain small text keeps the ink pair. */
+  --c-red-pill-ink: #b5353a;  --c-green-pill-ink: #146b4b;
   --app-category-other: #8a94a6;   /* 支出類別分佈 其他 swatch (canvas C.other; same in both themes) */
 
   --app-buy:  #533afd;  --app-buy-soft:  rgba(83, 58, 253, 0.10);   /* purchases = indigo */
@@ -65,6 +69,7 @@
   --app-trend-positive: var(--c-red);   --app-trend-negative: var(--c-green);
   --app-trend-positive-soft: var(--c-red-soft); --app-trend-negative-soft: var(--c-green-soft);
   --app-trend-positive-ink: var(--c-red-ink); --app-trend-negative-ink: var(--c-green-ink);
+  --app-trend-positive-pill-ink: var(--c-red-pill-ink); --app-trend-negative-pill-ink: var(--c-green-pill-ink);
 
   /* ---- Elevation --------------------------------------------------------- */
   --app-card-shadow:  0 10px 30px rgba(18, 26, 40, 0.045);
@@ -185,8 +190,13 @@
   --c-red-soft: rgba(255, 99, 105, 0.16);  --c-green-soft: rgba(67, 201, 138, 0.16);
   /* the dark hues already pass for small text (5.90 / 5.17 and 8.11 / 7.12 on surface / soft) */
   --c-red-ink: #ff6369;  --c-green-ink: #43c98a;
-  /* primary app-btn fill (rest + hover): white on #6c5ce7 = 4.86:1 (on --app-primary #8b7dff it is 3.24:1) */
+  /* pill ink on the tints over #171c24 / #202733: #ff8085 5.70 / 4.96 on red-soft, 5.41 / 4.72 on the warning tint
+     (#ff6369 was 4.75 / 4.14 and 4.52 / 3.94); #43c98a already passes (5.96 / 5.20 on green-soft). */
+  --c-red-pill-ink: #ff8085;  --c-green-pill-ink: #43c98a;
+  /* primary app-btn fill: white on #6c5ce7 = 4.86:1 at rest (on --app-primary #8b7dff it is 3.24:1);
+     hover goes darker, #5a4ad1 = 6.30:1, so the state change is visible. Light defines neither (brand primary). */
   --app-primary-ink-bg: #6c5ce7;
+  --app-primary-ink-bg-hover: #5a4ad1;
   --app-category-other: #8a94a6;   /* 支出類別分佈 其他 swatch (canvas C.other; same in both themes) */
   --app-buy: #8b7dff;  --app-buy-soft: rgba(139, 125, 255, 0.16);
   --app-sell: #9aa6bd; --app-sell-soft: rgba(154, 166, 189, 0.16);
@@ -316,11 +326,13 @@
   --app-trend-positive: var(--c-red);   --app-trend-negative: var(--c-green);
   --app-trend-positive-soft: var(--c-red-soft); --app-trend-negative-soft: var(--c-green-soft);
   --app-trend-positive-ink: var(--c-red-ink); --app-trend-negative-ink: var(--c-green-ink);
+  --app-trend-positive-pill-ink: var(--c-red-pill-ink); --app-trend-negative-pill-ink: var(--c-green-pill-ink);
 }
 [data-gainloss="western"] {      /* 綠漲紅跌 — Western markets */
   --app-trend-positive: var(--c-green); --app-trend-negative: var(--c-red);
   --app-trend-positive-soft: var(--c-green-soft); --app-trend-negative-soft: var(--c-red-soft);
   --app-trend-positive-ink: var(--c-green-ink); --app-trend-negative-ink: var(--c-red-ink);
+  --app-trend-positive-pill-ink: var(--c-green-pill-ink); --app-trend-negative-pill-ink: var(--c-red-pill-ink);
 }
 
 /* ==========================================================================
