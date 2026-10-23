@@ -17,7 +17,7 @@ import { PortfolioService } from '../../../services/portfolio.service';
 import { ALLOCATION_SERIES, abbrInk, holdingAbbr } from '../dashboard/dashboard-math';
 import { PortfolioTransactionListComponent } from './transaction-list';
 import { monthHeading } from './transaction-math';
-import { squareToken } from './transaction-rows';
+import { squareToken } from '../square';
 
 interface Call<Q, R> {
   query: Q;

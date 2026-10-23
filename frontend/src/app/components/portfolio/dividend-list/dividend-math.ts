@@ -21,8 +21,9 @@ export function dividendStatus(d: Dividend): DividendStatus {
 }
 
 /**
- * TWD sums per status over every given row. A row whose amount has no TWD value (a foreign row without a finite
- * positive fx) is left out of every bucket and counted once in `foreignWithoutFx`; `unresolved` rows count nowhere.
+ * TWD sums per status over every given row. A foreign row without a finite positive fx is left out of every bucket
+ * and counted once in `foreignWithoutFx`; a TWD row whose amount does not parse is skipped silently; `unresolved`
+ * rows count nowhere.
  * 已記錄股利 (`recorded`) is confirmed + legacy and never includes pending.
  */
 export function dividendTotals(rows: readonly Dividend[]): DividendTotals & { foreignWithoutFx: number } {
@@ -32,7 +33,7 @@ export function dividendTotals(rows: readonly Dividend[]): DividendTotals & { fo
     if (status === 'unresolved') continue;
     const twd = twdAmount(d.amount, d.fx_rate_to_twd, d.currency);
     if (twd == null) {
-      totals.foreignWithoutFx++;
+      if (!isTwdCurrency(d.currency)) totals.foreignWithoutFx++;
       continue;
     }
     totals[status] += twd;

@@ -1,24 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { Transaction, TransactionType } from '../../../models/portfolio.model';
-import { ALLOCATION_SERIES } from '../dashboard/dashboard-math';
-import { nativeTotal, quantityLine, rowAmount, squareToken, transactionRow } from './transaction-rows';
+import { nativeTotal, quantityLine, rowAmount, transactionRow } from './transaction-rows';
 
 function tx(overrides: Partial<Transaction>): Transaction {
   return { id: 1, symbol: '2330', type: TransactionType.BUY, quantity: 1, price: 100, fee: 0, tax: 0, trade_date: '2026-10-15', ...overrides };
 }
 
 describe('transaction rows', () => {
-  it('picks a series token by a deterministic hash of the symbol', () => {
-    const symbols = ['2330', '0050', '2317', '00878', 'AAPL', 'VWRA.L'];
-    for (const symbol of symbols) {
-      expect(ALLOCATION_SERIES).toContain(squareToken(symbol));
-      expect(squareToken(symbol)).toBe(squareToken(symbol));
-    }
-    expect(new Set(symbols.map(squareToken)).size).toBeGreaterThan(1);
-    expect(squareToken('')).toBe(ALLOCATION_SERIES[5381 % ALLOCATION_SERIES.length]);
-  });
-
   it('formats foreign sells without fx as + native main and — note, GBp with 4 decimals', () => {
     expect(rowAmount(tx({ type: TransactionType.SELL, currency: 'USD', price: 1000, quantity: 2, fee: 1 }))).toEqual({ amount: '+1,999.00 USD', amountNote: '—' });
     expect(nativeTotal(tx({ currency: 'GBp', price: 1234.5, quantity: 1 }))).toBe('1,234.5000 GBp');

@@ -1,6 +1,7 @@
 import { Component, OnDestroy, OnInit, computed, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Subscription, catchError, of } from 'rxjs';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { Dividend, DividendQuery, ExDividendRecord } from '../../../models/portfolio.model';
 import { TableModule } from 'primeng/table';
@@ -20,16 +21,26 @@ import { MenuModule } from 'primeng/menu';
 import { Menu } from 'primeng/menu';
 import { BtnComponent } from '../../ui/btn/btn';
 import { BentoComponent } from '../../ui/bento/bento';
-import { TimelineComponent, TimelineRow } from '../../ui/timeline/timeline';
+import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
+import { TagComponent } from '../../ui/tag/tag';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { allPages } from '../paging';
+import { periodLabel } from '../period';
 import { DividendTotals, dividendTotals } from './dividend-math';
+import { DividendStatusFilter, dividendRow, matchesStatus } from './dividend-rows';
 
 const SORT_OPTIONS = [
   { value: 'ex_dividend_date:desc', label: '除息日 新→舊' },
   { value: 'ex_dividend_date:asc', label: '除息日 舊→新' },
   { value: 'symbol:asc', label: '代碼 A→Z' },
   { value: 'symbol:desc', label: '代碼 Z→A' },
+];
+
+const STATUS_OPTIONS: SegToggleOption[] = [
+  { value: 'all', label: '全部' },
+  { value: 'pending', label: '待收' },
+  { value: 'confirmed', label: '已收款' },
+  { value: 'legacy', label: '舊資料' },
 ];
 
 const SOURCE_OPTIONS = [
@@ -46,7 +57,7 @@ const SOURCE_OPTIONS = [
     InputTextModule, InputNumberModule, DatePickerModule, SelectModule,
     PaginatorModule, ProgressSpinnerModule,
     ConfirmDialogModule, ToastModule, MenuModule,
-    BtnComponent, BentoComponent, TimelineComponent,
+    BtnComponent, BentoComponent, SegToggleComponent, TagComponent,
   ],
   providers: [ConfirmationService, MessageService],
   templateUrl: './dividend-list.html',
@@ -57,6 +68,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   private portfolioService = inject(PortfolioService);
   private confirmationService = inject(ConfirmationService);
   private messageService = inject(MessageService);
+  private layoutMode = inject(LayoutModeService);
 
   @ViewChild('menu') menu!: Menu;
   menuItems: MenuItem[] = [];
@@ -76,6 +88,10 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   readonly sortOptions = SORT_OPTIONS;
   readonly sourceOptions = SOURCE_OPTIONS;
   readonly rowsPerPageOptions = [25, 50, 100];
+  readonly statusOptions = STATUS_OPTIONS;
+  readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
+  /** Receiving-account names for the 收款 column (all accounts, loaded once). */
+  readonly accountNames = signal<ReadonlyMap<number, string>>(new Map());
 
   /** Filter-wide TWD totals (every row of the active filter, not the list page); null while loading or after a failure. */
   readonly summary = signal<(DividendTotals & { foreignWithoutFx: number }) | null>(null);
@@ -91,39 +107,46 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     if (this.summaryCapped()) parts.push('⋯ 僅載入前 5,000 筆');
     return parts.join(' · ');
   });
-  /** 已確認收款 and 舊資料帳面 from the filter-wide summary (null while it loads). */
-  readonly dividendTotal = computed(() => this.summary()?.confirmed ?? null);
-  readonly legacyTotal = computed(() => this.summary()?.legacy ?? null);
-  readonly dividendsById = computed(() => new Map(this.dividends().map(row => [row.id, row])));
-  readonly timelineRows = computed<TimelineRow[]>(() =>
-    this.dividends().map(dividend => {
-      const name = this.nameFor(dividend.symbol);
-      const perShare = Number(dividend.cash_dividend_per_share || 0);
-      const qty = Number(dividend.quantity_at_record_date || 0);
-      return {
-        id: dividend.id,
-        date: dividend.ex_dividend_date,
-        side: 'cash',
-        sideLabel: this.receiptLabel(dividend),
-        primary: name ? `${name} ${dividend.symbol}` : dividend.symbol,
-        meta: dividend.cash_dividend_per_share != null
-          ? `每股 ${perShare.toLocaleString('zh-TW', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}${qty > 0 ? ` × ${qty.toLocaleString('zh-TW')}` : ''}`
-          : '現金股利',
-        amount: `${dividend.receipt_status === 'confirmed' ? '+' : ''}${this.formatCurrency(dividend.amount)}`,
-        amountVariant: 'dividend',
-      };
-    }),
-  );
+
+  /** Status SegToggle; any value but 全部 lists the filter-wide set (Decision 7), paged client-side from `statusOffset`. */
+  readonly status = signal<DividendStatusFilter>('all');
+  private readonly statusOffset = signal(0);
+  /** The selected status's rows of the filter-wide set; null on 全部 or while the set is not loaded. */
+  readonly statusSet = computed(() => {
+    const status = this.status();
+    const rows = this.summaryRows();
+    return status === 'all' || !rows ? null : rows.filter(d => matchesStatus(d, status));
+  });
+  /** A status is selected and the set is still loading: the list waits rather than show the unfiltered page. */
+  private readonly statusWaiting = computed(() => this.status() !== 'all' && this.summaryRows() === null && !this.summaryFailed());
+  /** A status is selected but the set failed: the server page stays, with the list error. */
+  readonly statusFailed = computed(() => this.status() !== 'all' && this.summaryFailed());
+  /** Status-mode offset, pulled back to the last page when a reload (e.g. a receipt) shrank the set. */
+  private readonly statusStart = computed(() => {
+    const length = this.statusSet()?.length ?? 0;
+    const limit = this.query().limit ?? 25;
+    return this.statusOffset() < length ? this.statusOffset() : Math.max(0, Math.floor((length - 1) / limit) * limit);
+  });
+  readonly listRows = computed<Dividend[]>(() => {
+    const set = this.statusSet();
+    if (set) return set.slice(this.statusStart(), this.statusStart() + (this.query().limit ?? 25));
+    return this.statusWaiting() ? [] : this.dividends();
+  });
+  /** Status set length in status mode, server `total` otherwise; null while the status set loads. */
+  readonly listTotal = computed(() => this.statusSet()?.length ?? (this.statusWaiting() ? null : this.total()));
+  readonly listOffset = computed(() => (this.statusSet() ? this.statusStart() : this.query().offset ?? 0));
+  readonly listLoading = computed(() => this.loading() || this.statusWaiting());
+  readonly headerSubtitle = computed(() => `${periodLabel(this.query())} · 共 ${this.listTotal() ?? '—'} 筆`);
+  readonly rowViews = computed(() => {
+    const accounts = this.accountNames();
+    return this.listRows().map(d => ({ d, v: dividendRow(d, this.nameFor(d.symbol), id => accounts.get(id) ?? null) }));
+  });
 
   receiptTarget = signal<Dividend | null>(null);
   receiptBusy = signal(false);
   receiptDate = '';
   receiptAccountId: number | null = null;
   receiptAccounts = signal<{ id: number; nickname: string; currency: string }[]>([]);
-
-  receiptLabel(row: Dividend): string {
-    return ({ pending: '待確認收款', confirmed: '已確認收款', legacy_unknown: '舊資料：收款未核實', unresolved: '待人工釐清' })[row.receipt_status ?? 'legacy_unknown'];
-  }
 
   openReceipt(row: Dividend): void {
     if (row.receipt_status !== 'pending') return;
@@ -185,6 +208,10 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   ngOnInit() {
     this.portfolioService.getSymbolNames().subscribe(map => this.symbolNames.set(map));
     this.loadUpcomingExDividends();
+    this.portfolioService.getAccounts({ include_inactive: true }).subscribe({
+      next: result => this.accountNames.set(new Map(result.items.map(a => [a.id, a.nickname]))),
+      error: () => this.accountNames.set(new Map()),
+    });
     this.reload();
   }
 
@@ -246,6 +273,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
 
   private updateFilters(patch: Partial<DividendQuery>, debounce = false) {
     this.query.set({ ...this.query(), ...patch, offset: 0 });
+    this.statusOffset.set(0);
     if (this.filterDebounce) clearTimeout(this.filterDebounce);
     if (debounce) {
       this.filterDebounce = setTimeout(() => this.reload(), 300);
@@ -295,9 +323,25 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     this.updateFilters({ sort });
   }
 
+  /** 全部 returns to server paging at offset 0; a status lists its share of the loaded set from its start. */
+  onStatusChange(value: string) {
+    this.status.set(value as DividendStatusFilter);
+    this.statusOffset.set(0);
+    if (value === 'all') {
+      this.query.set({ ...this.query(), offset: 0 });
+      this.fetch();
+    }
+  }
+
+  /** Status mode pages the loaded set without a request; otherwise the server page is fetched. */
   onPageChange(event: PaginatorState) {
     const offset = event.first ?? 0;
     const limit = event.rows ?? 25;
+    if (this.statusSet()) {
+      this.statusOffset.set(offset);
+      this.query.set({ ...this.query(), limit });
+      return;
+    }
     this.query.set({ ...this.query(), offset, limit });
     this.fetch();
   }
@@ -305,13 +349,15 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   clearFilters() {
     this.searchInput.set('');
     this.dateRange = null;
+    this.status.set('all');
+    this.statusOffset.set(0);
     this.query.set({ offset: 0, limit: this.query().limit ?? 25, sort: 'ex_dividend_date:desc' });
     this.reload();
   }
 
   hasActiveFilters(): boolean {
     const q = this.query();
-    return !!(q.symbol || q.date_from || q.date_to || q.source);
+    return !!(q.symbol || q.date_from || q.date_to || q.source) || this.status() !== 'all';
   }
 
   private toIsoDate(d: Date): string {
@@ -319,6 +365,11 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     const m = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
     return `${y}-${m}-${day}`;
+  }
+
+  /** Card figures: whole TWD (no `-$0`), `—` while unknown. */
+  formatCardAmount(value: number | null | undefined): string {
+    return value == null ? '—' : this.formatCurrency(Math.round(value) || 0);
   }
 
   formatCurrency(value: number | string | null | undefined): string {
@@ -337,7 +388,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   }
 
   onRowAction(action: { id: string | number; event: MouseEvent }) {
-    const record = this.dividends().find(row => row.id === action.id);
+    const record = this.listRows().find(row => row.id === action.id);
     if (record) this.showMenu(action.event, record);
   }
 

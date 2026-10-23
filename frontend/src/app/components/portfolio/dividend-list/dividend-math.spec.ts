@@ -75,6 +75,15 @@ describe('dividend-math', () => {
         foreignWithoutFx: 0,
       });
     });
+
+    it('skips a TWD row whose amount does not parse without counting it as foreign', () => {
+      const totals = dividendTotals([
+        dv({ amount: 'n/a' as unknown as number, receipt_status: 'confirmed' }),
+        dv({ amount: 'n/a' as unknown as number, currency: 'TWD', receipt_status: 'pending' }),
+        dv({ amount: 300, receipt_status: 'confirmed' }),
+      ]);
+      expect(totals).toMatchObject({ confirmed: 300, confirmedCount: 1, pending: 0, pendingCount: 0, foreignWithoutFx: 0 });
+    });
   });
 
   describe('payLine', () => {

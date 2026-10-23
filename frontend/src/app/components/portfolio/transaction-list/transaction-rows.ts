@@ -1,22 +1,11 @@
 import { Transaction, TransactionType, brokerLabel } from '../../../models/portfolio.model';
 import { TimelineRow } from '../../ui/timeline/timeline';
-import { ALLOCATION_SERIES, abbrInk, holdingAbbr } from '../dashboard/dashboard-math';
-import { formatNativeAmount, isTwdCurrency, twdAmount } from '../money';
-import { allInTotal, feeLine, groupedInteger } from './transaction-math';
+import { formatNativeAmount, groupedInteger, isTwdCurrency, twdAmount } from '../money';
+import { stockSquare } from '../square';
+import { allInTotal, feeLine } from './transaction-math';
 
 /** Typographic minus (U+2212), as in the spec and the canvas (`−110,407`). */
 const MINUS = '−';
-
-/**
- * Square fill for a symbol: a djb2-style hash of the symbol's UTF-16 code units mod the series length.
- * Deterministic and page-independent (the same symbol always gets the same fill); unlike the dashboard,
- * which assigns the series by allocation rank, so a symbol's colour may differ between the two pages.
- */
-export function squareToken(symbol: string): string {
-  let hash = 5381;
-  for (let i = 0; i < symbol.length; i++) hash = (hash * 33 + symbol.charCodeAt(i)) >>> 0;
-  return ALLOCATION_SERIES[hash % ALLOCATION_SERIES.length];
-}
 
 /** A foreign trade's all-in total in its own currency via the shared formatter: `2,385.00 USD`, `1,234.5000 GBp`. */
 export function nativeTotal(t: Transaction): string {
@@ -51,7 +40,6 @@ export function rowAmount(t: Transaction): { amount: string; amountNote: string 
 /** One timeline row for a trade; `name` is the page's display name for the symbol. */
 export function transactionRow(t: Transaction, name: string): TimelineRow {
   const isBuy = t.type === TransactionType.BUY;
-  const token = squareToken(t.symbol);
   const broker = brokerLabel(t.broker);
   return {
     id: t.id,
@@ -59,7 +47,7 @@ export function transactionRow(t: Transaction, name: string): TimelineRow {
     side: isBuy ? 'buy' : 'sell',
     sideLabel: isBuy ? '買' : '賣',
     primary: `${name} ${t.symbol}`,
-    square: { text: holdingAbbr(t.symbol, name), token, ink: abbrInk(token) },
+    square: stockSquare(t.symbol, name),
     tags: t.is_day_trade === true ? ['當沖'] : undefined,
     meta: quantityLine(t),
     sub: feeLine(t),

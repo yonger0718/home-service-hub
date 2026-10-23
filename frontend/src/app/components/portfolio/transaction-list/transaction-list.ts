@@ -29,7 +29,8 @@ import { TimelineComponent, TimelineRow } from '../../ui/timeline/timeline';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { BentoComponent } from '../../ui/bento/bento';
 import { allPages } from '../paging';
-import { TradeTotals, allInTotal, feeShareLabel, monthHeading, periodLabel, tradeTotals } from './transaction-math';
+import { periodLabel } from '../period';
+import { TradeTotals, allInTotal, feeShareLabel, monthHeading, tradeTotals } from './transaction-math';
 import { transactionRow } from './transaction-rows';
 
 function wholeTwd(value: number): number {
