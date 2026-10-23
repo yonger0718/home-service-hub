@@ -20,7 +20,7 @@ The page SHALL render a 每月已實現 card with one column per month of the se
 
 ### Requirement: Expandable sell rows
 
-Each sell SHALL render as a row button (with `aria-expanded`) showing the stock square, name, code, a 當沖 tag when applicable, `date · qty 股 · 均價 avg → 賣出 price · broker`, the realized amount and a percentage pill in trend colour. Expanding a row SHALL show 成交總額, 手續費, 交易稅 (labelled 交易稅（當沖）for day trades), 淨收入, 賣出成本 and 已實現損益; foreign sells show native amounts and the FX rate. The percentage pill SHALL be `realized_pnl / cost_out` at 1 dp and SHALL be omitted when the cost is 0 or missing. For a foreign sell, 均價 SHALL be `native_cost / quantity` (`—` when either is missing or 0) and 匯率 SHALL be the rate implied by `proceeds_gross / native_proceeds_gross` at 4 significant digits, omitted when the native gross is not positive.
+Each sell SHALL render as a row button (with `aria-expanded`) showing the stock square, name, code, a 當沖 tag when applicable, `date · qty 股 · 均價 avg → 賣出 price · broker`, the realized amount and a percentage pill in trend colour. Expanding a row SHALL show 成交總額, 手續費, 交易稅 (labelled 交易稅（當沖）for day trades), 淨收入, 賣出成本 and 已實現損益; foreign sells show native amounts and the FX rate. The percentage pill SHALL be `realized_pnl / cost_out` at 1 dp and SHALL be omitted when the cost is 0 or missing. For a foreign sell, 均價 SHALL be `native_cost / quantity` (`—` when `native_cost` is missing or `quantity` is 0) and 匯率 SHALL be the rate implied by `proceeds_gross / native_proceeds_gross` at 4 significant digits, omitted when the native gross is not positive.
 
 #### Scenario: Expanding a row
 - **WHEN** the owner expands the 鴻海 sell
