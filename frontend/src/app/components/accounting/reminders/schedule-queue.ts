@@ -114,7 +114,7 @@ function definitionRow(definition: ScheduleDefinition): DefinitionRow {
     name: definition.name,
     nextText: definition.next_due_date ? `下期 ${shortDate(definition.next_due_date)}` : null,
     progress: scheduleProgress(definition),
-    remainingText: definition.remaining === null ? null : `剩餘 ${formatMoney(definition.remaining, currency)}`,
+    remainingText: definition.remaining === null ? null : `${definition.template.lines.some(line => line.kind === 'collection') ? '待收' : '欠'} ${formatMoney(definition.remaining, currency)}`,
     modeBadge: definition.posting_mode === 'auto' ? '自動' : '提醒',
     paused: definition.status === 'paused',
     needsCheck: definition.needs_check,

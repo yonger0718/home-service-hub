@@ -88,12 +88,12 @@ describe('EntryDetailComponent schedules', () => {
       settled_by: [makeEntry({ id: 50, kind: 'payable', amount: '-24999.0000', is_settlement: true })],
       loan_schedule: {
         definition_id: 12, name: '信貸 每月還款', status: 'active', posting_mode: 'auto', posted_count: 3, times: 36,
-        next_due_date: '2027-02-09', next_amount: [{ currency: 'TWD', amount: '-8953.0000' }], remaining: '-275001.0000',
+        next_due_date: '2027-02-09', next_amount: [{ currency: 'TWD', amount: '-8953.0000' }], remaining: '275001.0000',
         repaid: '24999.0000', needs_check: false,
       },
     });
     const { fixture, el } = render(loan);
-    expect(text(el.querySelector('.loan-line'))).toBe('剩餘 −$275,001 · 已還 $24,999 · 下期 02/09');
+    expect(text(el.querySelector('.loan-line'))).toBe('欠 $275,001 · 已還 $24,999 · 下期 02/09');
     expect(text(el.querySelector('.loan-link'))).toBe('信貸 每月還款 · 已入帳 3 / 36');
     expect(el.querySelector('.breakdown')).toBeNull();
     expect(el.querySelector('.open-amount')).toBeNull(); // 剩餘 once, signed, in the loan line
@@ -110,7 +110,7 @@ describe('EntryDetailComponent schedules', () => {
       },
     });
     const { el } = render(lent);
-    expect(text(el.querySelector('.loan-line'))).toBe('剩餘 $30,000 · 已收 $20,000');
+    expect(text(el.querySelector('.loan-line'))).toBe('待收 $30,000 · 已收 $20,000');
   });
 
   it('sends a member of a scheduled split group to the repost panel, never to the entry form', () => {

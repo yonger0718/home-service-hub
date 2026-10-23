@@ -14,6 +14,8 @@ function detail(overrides: Partial<ScheduleDefinitionDetail> = {}): ScheduleDefi
   const days = ['2026-11-09', '2026-12-09', '2027-01-09', '2027-02-09'];
   return {
     ...base,
+    pending_principal: null,
+    loan_remaining: null,
     instances: days.map((day, index) =>
       makeInstance({ id: 100 + index, definition_id: 5, seq: index + 1, due_date: day, totals: [{ currency: 'TWD', amount: '-8953.0000' }] }),
     ),

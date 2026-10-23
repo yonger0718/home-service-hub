@@ -44,6 +44,8 @@ import {
   SplitInput,
   SplitResult,
   TransferInput,
+  DebtsSummary,
+  ScheduleLoanInput,
 } from '../models/accounting.model';
 
 /** Query object → params; skips null / undefined / '' and repeats array values (`account_id=1&account_id=2`). */
@@ -215,6 +217,10 @@ export class AccountingService {
 
   // ---- settings ----------------------------------------------------------
 
+  getDebts(): Observable<DebtsSummary> {
+    return this.http.get<DebtsSummary>(`${this.apiUrl}/accounts/debts`);
+  }
+
   getAccountGroups(): Observable<AccountGroup[]> {
     return this.http.get<AccountGroup[]>(`${this.apiUrl}/account-groups`);
   }
@@ -331,6 +337,10 @@ export class AccountingService {
 
   updateScheduleDefinition(id: number, input: ScheduleDefinitionUpdate): Observable<ScheduleDefinition> {
     return this.bump(this.http.put<ScheduleDefinition>(`${this.apiUrl}/schedules/definitions/${id}`, input));
+  }
+
+  attachScheduleLoan(id: number, input: ScheduleLoanInput): Observable<ScheduleDefinitionDetail> {
+    return this.bump(this.http.post<ScheduleDefinitionDetail>(`${this.apiUrl}/schedules/definitions/${id}/loan`, input));
   }
 
   deleteScheduleDefinition(id: number): Observable<void> {

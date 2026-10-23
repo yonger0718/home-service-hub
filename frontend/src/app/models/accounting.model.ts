@@ -669,6 +669,8 @@ export interface ScheduleLineInput {
   amount: string;
   currency: string;
   loan_entry_id: number | null;
+  /** Set only by the attach-loan endpoint; the server copies it forward when a PUT omits it for the same loan. */
+  loan_from_seq?: number | null;
   name: string | null;
   merchant: string | null;
 }
@@ -787,6 +789,22 @@ export interface ScheduleInstance {
 
 export interface ScheduleDefinitionDetail extends ScheduleDefinition {
   instances: ScheduleInstance[];
+  /** Decimal strings (or null): the unposted principal and what is still owed on the attached loan. */
+  pending_principal: string | null;
+  loan_remaining: string | null;
+}
+
+/** `GET /accounts/debts` per side: positive magnitudes in the main currency. */
+export interface DebtTotal {
+  open_main: string;
+  count: number;
+  unconverted: CurrencyAmount[];
+}
+
+export interface DebtsSummary {
+  main_currency: string;
+  payables: DebtTotal;
+  receivables: DebtTotal;
 }
 
 export interface ScheduleLoanInput {
@@ -880,6 +898,7 @@ export interface LoanSchedule {
   times: number | null;
   next_due_date: string | null;
   next_amount: CurrencyAmount[];
+  /** Positive magnitudes: the entry's kind says whether it is owed (欠) or to collect (待收). */
   remaining: string | null;
   repaid: string | null;
   needs_check: boolean;
