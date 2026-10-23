@@ -134,9 +134,15 @@
 }
 
 .kpi-link {
+  border-radius: var(--radius-xl);
   color: inherit;
   display: block;
   text-decoration: none;
+
+  &:focus-visible {
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+    outline: none;
+  }
 }
 
 .label {

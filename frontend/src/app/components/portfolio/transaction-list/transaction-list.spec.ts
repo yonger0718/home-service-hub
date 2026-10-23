@@ -326,14 +326,15 @@ describe('PortfolioTransactionListComponent', () => {
       expect(all[3].card.querySelector('.value')?.classList).not.toContain('down');
     });
 
-    it('notes foreign rows without an fx rate on the trade cards', () => {
-      const fixture = create();
-      settle(fixture, [buy, sell, tx({ market: 'US', currency: 'USD', price: 10, quantity: 1 })]);
+    const usdWithoutFx = () => tx({ market: 'US', currency: 'USD', price: 10, quantity: 1 });
 
-      const all = cards(fixture);
-      expect(all[0].meta).toBe('1 筆 · 不含外幣 1 筆');
-      expect(all[1].meta).toBe('1 筆 · 不含外幣 1 筆');
-      expect(all[2].meta).toBe('佔成交額 0.27% · 不含外幣 1 筆');
+    it('notes foreign rows without an fx rate once under the cards, also on a phone', () => {
+      TestBed.inject(LayoutModeService).set('phone');
+      const fixture = create();
+      settle(fixture, [buy, sell, usdWithoutFx()]);
+
+      expect(cards(fixture).map(c => c.meta)).toEqual(['1 筆', '1 筆']);
+      expect(el(fixture).querySelector('.summary-note')?.textContent?.trim()).toBe('不含外幣 1 筆');
     });
 
     it('shows — as the fee share when there is no turnover', () => {
@@ -353,6 +354,49 @@ describe('PortfolioTransactionListComponent', () => {
       expect(summaryCalls).toHaveLength(50);
       expect(fixture.componentInstance.summaryCapped()).toBe(true);
       expect(el(fixture).querySelector('.summary-note')?.textContent?.trim()).toBe('⋯ 僅載入前 5,000 筆');
+    });
+
+    it('combines the fx note and the cap note on one line', () => {
+      const fixture = create();
+      for (let page = 0; page < 50; page++) {
+        const items = Array.from({ length: 100 }, () => buy);
+        if (page === 0) items[0] = usdWithoutFx();
+        respond(summaryCalls[page], { items, total: 6000 });
+      }
+      fixture.detectChanges();
+
+      expect(el(fixture).querySelectorAll('.summary-note')).toHaveLength(1);
+      expect(el(fixture).querySelector('.summary-note')?.textContent?.trim()).toBe('不含外幣 1 筆 · ⋯ 僅載入前 5,000 筆');
+    });
+
+    it('shows a realized value that rounds to zero as $0 without a trend colour', () => {
+      const fixture = create();
+      settle(fixture, [buy, sell], '-0.40');
+
+      const realized = cards(fixture)[3];
+      expect(realized.value).toBe('$0');
+      expect(realized.card.querySelector('.value')?.classList).not.toContain('up');
+      expect(realized.card.querySelector('.value')?.classList).not.toContain('down');
+    });
+
+    it('cancels a superseded summary load instead of paging on', () => {
+      const fixture = create();
+      const first = summaryCalls[0].response;
+      const firstRealized = realizedCalls[0].response;
+
+      fixture.componentInstance.onSideFilterChange('SELL');
+
+      expect(first.observed).toBe(false);
+      expect(firstRealized.observed).toBe(false);
+      expect(summaryCalls[1].response.observed).toBe(true);
+    });
+
+    it('cancels the summary load on destroy', () => {
+      const fixture = create();
+      fixture.destroy();
+
+      expect(summaryCalls[0].response.observed).toBe(false);
+      expect(realizedCalls[0].response.observed).toBe(false);
     });
 
     it('shows only the 買進金額 and 賣出金額 cards on a phone', () => {

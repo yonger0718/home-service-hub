@@ -11,14 +11,13 @@
 
 @if (!summaryFailed()) {
   @let totals = summary();
-  @let foreignNote = totals?.foreignWithoutFx ? ' · 不含外幣 ' + totals!.foreignWithoutFx + ' 筆' : '';
   <div class="kpi-row">
     <app-bento class="kpi-card">
       <div class="kpi-card-body">
         <div class="label">買進金額</div>
         <div class="value">{{ formatCardAmount(totals?.buyTotal ?? null) }}</div>
         <div class="kpi-card-footer">
-          <div class="meta">{{ totals ? totals.buyCount + ' 筆' + foreignNote : '—' }}</div>
+          <div class="meta">{{ totals ? totals.buyCount + ' 筆' : '—' }}</div>
         </div>
       </div>
     </app-bento>
@@ -27,7 +26,7 @@
         <div class="label">賣出金額</div>
         <div class="value">{{ formatCardAmount(totals?.sellTotal ?? null) }}</div>
         <div class="kpi-card-footer">
-          <div class="meta">{{ totals ? totals.sellCount + ' 筆' + foreignNote : '—' }}</div>
+          <div class="meta">{{ totals ? totals.sellCount + ' 筆' : '—' }}</div>
         </div>
       </div>
     </app-bento>
@@ -37,7 +36,7 @@
           <div class="label">手續費＋交易稅</div>
           <div class="value">{{ formatCardAmount(totals?.fees ?? null) }}</div>
           <div class="kpi-card-footer">
-            <div class="meta">{{ totals ? feeShareLabel(totals.feeShare) + foreignNote : '—' }}</div>
+            <div class="meta">{{ totals ? feeShareLabel(totals.feeShare) : '—' }}</div>
           </div>
         </div>
       </app-bento>
@@ -46,7 +45,7 @@
         <app-bento class="kpi-card">
           <div class="kpi-card-body">
             <div class="label">已實現損益</div>
-            <div class="value" [class.up]="(realizedValue ?? 0) > 0" [class.down]="(realizedValue ?? 0) < 0">{{ formatCardAmount(realizedValue) }}</div>
+            <div class="value" [class.up]="cardSign(realizedValue) > 0" [class.down]="cardSign(realizedValue) < 0">{{ formatCardAmount(realizedValue) }}</div>
             <div class="kpi-card-footer">
               <div class="meta">查看明細 →</div>
             </div>
@@ -55,8 +54,8 @@
       </a>
     }
   </div>
-  @if (summaryCapped()) {
-    <p class="summary-note">⋯ 僅載入前 5,000 筆</p>
+  @if (summaryNote()) {
+    <p class="summary-note">{{ summaryNote() }}</p>
   }
 }
 

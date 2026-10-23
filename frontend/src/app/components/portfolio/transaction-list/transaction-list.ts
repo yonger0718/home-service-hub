@@ -1,7 +1,7 @@
 import { Component, OnDestroy, OnInit, computed, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterLink } from '@angular/router';
-import { catchError, map, of } from 'rxjs';
+import { Subscription, catchError, map, of } from 'rxjs';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { BROKER_LABELS, Broker, MarketCode, Transaction, TransactionType, TransactionQuery, brokerLabel } from '../../../models/portfolio.model';
@@ -30,6 +30,10 @@ import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { BentoComponent } from '../../ui/bento/bento';
 import { allPages } from '../paging';
 import { TradeTotals, allInTotal, feeShareLabel, periodLabel, tradeTotals } from './transaction-math';
+
+function wholeTwd(value: number): number {
+  return Math.round(value) || 0;
+}
 
 const SORT_OPTIONS = [
   { value: 'trade_date:desc', label: '日期 新→舊' },
@@ -97,6 +101,14 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   readonly summaryCapped = signal(false);
   /** Server-side realized P&L for the filter minus `side`; null while loading or when the call failed. */
   readonly realized = signal<number | null>(null);
+  /** One line under the cards: rows the TWD sums leave out, and the 5 000-row cap. */
+  readonly summaryNote = computed(() => {
+    const parts: string[] = [];
+    const withoutFx = this.summary()?.foreignWithoutFx ?? 0;
+    if (withoutFx > 0) parts.push(`不含外幣 ${withoutFx} 筆`);
+    if (this.summaryCapped()) parts.push('⋯ 僅載入前 5,000 筆');
+    return parts.join(' · ');
+  });
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
   protected readonly feeShareLabel = feeShareLabel;
   readonly sortOptions = SORT_OPTIONS;
@@ -144,6 +156,8 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   private filterDebounce: ReturnType<typeof setTimeout> | null = null;
   private fetchSeq = 0;
   private summarySeq = 0;
+  private summarySub?: Subscription;
+  private realizedSub?: Subscription;
 
   newTransaction: Partial<Transaction> = {
     type: TransactionType.BUY,
@@ -167,6 +181,8 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
 
   ngOnDestroy() {
     if (this.filterDebounce) clearTimeout(this.filterDebounce);
+    this.summarySub?.unsubscribe();
+    this.realizedSub?.unsubscribe();
   }
 
   fetch() {
@@ -189,16 +205,19 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
 
   /**
    * Cards for every row of the active filter. Each stream fails on its own: a summary failure hides the cards,
-   * a realized failure (e.g. 422 for a row without fx) only blanks 已實現損益. A response from an older filter is dropped.
+   * a realized failure (e.g. 422 for a row without fx) only blanks 已實現損益. An older load is cancelled (no further
+   * pages) and any response from it is dropped.
    */
   loadSummary() {
+    this.summarySub?.unsubscribe();
+    this.realizedSub?.unsubscribe();
     const seq = ++this.summarySeq;
     const { symbol, date_from, date_to, side, broker, sort } = this.query();
     this.summary.set(null);
     this.summaryFailed.set(false);
     this.summaryCapped.set(false);
     this.realized.set(null);
-    allPages(offset => this.portfolioService.getTransactions({ symbol, date_from, date_to, side, broker, sort, limit: 100, offset }))
+    this.summarySub = allPages(offset => this.portfolioService.getTransactions({ symbol, date_from, date_to, side, broker, sort, limit: 100, offset }))
       .pipe(catchError(() => of(null)))
       .subscribe(result => {
         if (seq !== this.summarySeq) return;
@@ -209,7 +228,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
         this.summary.set(tradeTotals(result.items));
         this.summaryCapped.set(result.capped);
       });
-    this.portfolioService.getRealizedPnl({ symbol, date_from, date_to, broker, limit: 1 })
+    this.realizedSub = this.portfolioService.getRealizedPnl({ symbol, date_from, date_to, broker, limit: 1 })
       .pipe(
         map(paged => Number(paged.summary.filter_scope_total)),
         map(value => (Number.isFinite(value) ? value : null)),
@@ -404,9 +423,14 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     }).format(Number(value ?? 0));
   }
 
-  /** Card figures: whole TWD, `—` while unknown. */
+  /** Card figures: whole TWD (no `-$0`), `—` while unknown. */
   formatCardAmount(value: number | null): string {
-    return value == null ? '—' : this.formatCurrency(Math.round(value));
+    return value == null ? '—' : this.formatCurrency(wholeTwd(value));
+  }
+
+  /** Sign of the card figure as shown: −0.4 rounds to $0 and gets no trend colour. */
+  cardSign(value: number | null): number {
+    return value == null ? 0 : Math.sign(wholeTwd(value));
   }
 
   formatTransactionAmount(t: Transaction): string {
