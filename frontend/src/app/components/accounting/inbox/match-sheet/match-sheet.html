@@ -1,0 +1,86 @@
+<div class="overlay" data-overlay (click)="cancel()">
+  <div
+    class="sheet match-sheet"
+    tabindex="-1"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="inbox-match-title"
+    (click)="$event.stopPropagation()"
+  >
+    <div class="grab"></div>
+    <h3 id="inbox-match-title">對到已記的哪一筆</h3>
+    @if (stepText(); as text) {
+      <p class="step">{{ text }}</p>
+    }
+    <p class="match-line">{{ lineText() }}</p>
+
+    <div class="candidates" role="radiogroup" aria-labelledby="inbox-match-title">
+      @for (row of candidates(); track row.candidate.entry_id) {
+        <ng-container *ngTemplateOutlet="rowTpl; context: { $implicit: row }" />
+      } @empty {
+        <p class="muted">沒有可能的記錄</p>
+      }
+    </div>
+
+    @if (search(); as found) {
+      <div class="others" role="radiogroup" aria-labelledby="inbox-match-others">
+        <h4 id="inbox-match-others">其他記錄</h4>
+        @if (found.error) {
+          <p class="search-error" role="alert">{{ found.error }}</p>
+        }
+        @for (row of others(); track row.candidate.entry_id) {
+          <ng-container *ngTemplateOutlet="rowTpl; context: { $implicit: row }" />
+        } @empty {
+          @if (!found.error) {
+            <p class="muted">沒有其他記錄</p>
+          }
+        }
+      </div>
+    }
+    @if (!search() || search()?.error) {
+      <!-- Also after a failed search, so it can be retried. -->
+      <button type="button" class="search" [disabled]="searching()" (click)="runSearch()">
+        搜尋這個帳戶的記錄
+      </button>
+    }
+
+    <div class="btnrow">
+      <button type="button" class="sheet-cancel" (click)="cancel()">取消</button>
+      @if (step() > 0) {
+        <button type="button" class="sheet-back" (click)="back()">上一筆</button>
+      }
+      @if (isLast()) {
+        <button
+          type="button"
+          class="pri sheet-confirm"
+          [disabled]="picked() === null"
+          (click)="confirm()"
+        >
+          確定
+        </button>
+      } @else {
+        <button
+          type="button"
+          class="pri sheet-next"
+          [disabled]="picked() === null"
+          (click)="next()"
+        >
+          下一筆
+        </button>
+      }
+    </div>
+  </div>
+</div>
+
+<ng-template #rowTpl let-row>
+  <label class="match-row">
+    <input
+      type="radio"
+      [name]="radioName()"
+      [value]="row.candidate.entry_id"
+      [checked]="picked() === row.candidate.entry_id"
+      (change)="pick(row.candidate)"
+    />
+    <span>{{ row.label }}</span>
+  </label>
+</ng-template>

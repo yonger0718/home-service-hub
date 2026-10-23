@@ -84,6 +84,11 @@ export class AccountingService {
   /** Bumped after every successful preference save; mounted pages re-read `getPreference()` on it. */
   readonly preferenceChanged = this.preferenceChangeCount.asReadonly();
 
+  /** Bumps `entriesChanged` after a write made through another service (the reconciliation inbox), so list pages reload. */
+  markEntriesChanged(): void {
+    this.changeCount.update(count => count + 1);
+  }
+
   private bump<T>(source: Observable<T>): Observable<T> {
     return source.pipe(tap(() => this.changeCount.update(count => count + 1)));
   }

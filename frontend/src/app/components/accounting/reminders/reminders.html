@@ -15,6 +15,26 @@
   @if (loadError()) {
     <p class="load-error">提醒讀取失敗，請稍後再試。</p>
   } @else {
+    <!-- The panel bumps entriesChanged after each answer; the load() effect then re-reads the inbox. -->
+    @if (showInbox()) {
+      @if (tab() === 'todo') {
+        @if (inbox(); as data) {
+          <app-inbox-panel [data]="data" mode="full" />
+        } @else if (inboxFailed()) {
+          <p class="load-error inbox-load-error">待處理讀取失敗，請稍後再試。</p>
+        }
+        <details class="handled">
+          <summary>已處理</summary>
+          <app-inbox-handled-list />
+        </details>
+      } @else if (inbox(); as data) {
+        @if (data.counts.ask > 0) {
+          <h3 class="section">待處理</h3>
+          <app-inbox-panel [data]="data" mode="preview" (more)="setTab('todo')" />
+        }
+      }
+    }
+
     @if (showCards() && cardRows().length > 0) {
       @if (tab() === 'all') {
         <h3 class="section">信用卡帳單</h3>

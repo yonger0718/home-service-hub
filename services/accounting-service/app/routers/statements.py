@@ -6,9 +6,9 @@ lease, checked against the caller's label), `read` for statement reads and cases
 `admin` to change the settings and to retire a duplicate statement. `write` also covers the owner's manual statement
 and the statement confirm (R1c Task 11).
 
-The reconcile, revision and manual-statement (live statements) and sweep routes run the policy
-(`policy_service.run_policy_safe`, R1c Task 10) after their own commit; it commits per candidate and a policy error
-never fails the route.
+The reconcile, revision and manual-statement (live statements) and sweep routes run the owner's rules
+(`owner_rule_service.run_rules_safe`, inbox spec §6.3) and then the policy (`policy_service.run_policy_safe`, R1c
+Task 10) after their own commit; both commit per case/candidate and neither error ever fails the route.
 """
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -54,7 +54,7 @@ from ..schemas.statements import (
     StatementOut,
     SweepOut,
 )
-from ..services import confirm_service, policy_service, statement_retire_service
+from ..services import confirm_service, owner_rule_service, policy_service, statement_retire_service
 from ..services import reconciliation_service as recon
 from ..services import settings_service
 from ..services import statement_ingest_service as ingest
@@ -202,6 +202,7 @@ def submit_revision(body: RevisionIn, request: Request, db: Session = Depends(ge
         out = _revision_out(result)
     db.commit()
     if out["mode"] == "live" and not out["replayed"]:
+        owner_rule_service.run_rules_safe(db, out["statement_id"], run_id=body.run_id)
         policy_service.run_policy_safe(db, out["statement_id"], run_id=body.run_id)
     return out
 
@@ -217,6 +218,7 @@ def create_manual_statement(account_id: int, body: ManualStatementIn, request: R
         run_id = result.revision.run_id
     db.commit()
     if out["mode"] == "live" and not out["replayed"]:
+        owner_rule_service.run_rules_safe(db, out["statement_id"], run_id=run_id)
         policy_service.run_policy_safe(db, out["statement_id"], run_id=run_id)
     return out
 
@@ -283,6 +285,7 @@ def reconcile_statement(account_id: int, statement_id: int, db: Session = Depend
         out = {"claims": result.claims, "cases_opened": result.cases_opened, "explained": result.explained,
                "unmatched_entries": result.unmatched_entries, "skipped": result.skipped}
     db.commit()
+    owner_rule_service.run_rules_safe(db, statement_id)
     policy = policy_service.run_policy_safe(db, statement_id)
     return {**out, "policy": {"applied": len(policy.applied), "proposed": len(policy.proposed)}}
 
@@ -307,6 +310,7 @@ def sweep(body: Lease, request: Request, db: Session = Depends(get_db)):
                 totals["cases_opened"] += len(item["result"].cases_opened)
             db.commit()  # the items done so far stay committed
             if "error" not in item:
+                owner_rule_service.run_rules_safe(db, item["statement_id"], run_id=body.run_id)
                 policy_service.run_policy_safe(db, item["statement_id"], run_id=body.run_id)
             if index < len(pending) - 1 and not ingest.lease_is_live(db, body.run_id, body.lease_token, label):
                 db.rollback()  # release the read transaction before refusing

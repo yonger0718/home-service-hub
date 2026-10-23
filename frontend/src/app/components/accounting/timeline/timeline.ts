@@ -42,6 +42,7 @@ import { SkeletonComponent } from '../skeleton/skeleton';
 import { FolderIcon, SplitFolderComponent } from '../split-folder/split-folder';
 import { groupCommands, listOpenState } from '../split-group/group-nav';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
+import { InboxService } from '../inbox/inbox.service';
 import { parseTags } from '../entry-form/entry-draft';
 import { todayIso } from '../dates';
 import { schedulePill } from '../schedule-math';
@@ -377,6 +378,7 @@ export class LedgerTimelineComponent implements OnInit {
   private readonly queryInput = viewChild<ElementRef<HTMLInputElement>>('queryInput');
 
   private readonly bills = inject(BillingService);
+  private readonly inbox = inject(InboxService);
 
   readonly preference = signal<Preference | null>(null);
   readonly accounts = signal<LedgerAccount[]>([]);
@@ -386,6 +388,9 @@ export class LedgerTimelineComponent implements OnInit {
   /** For the 🔔 count only: the 待完成交易 queue (`queue=true`). */
   private readonly queue = signal<ScheduleInstance[]>([]);
   private queueRequestId = 0;
+  /** For the 🔔 count only: reconciliation inbox cards waiting for the owner's answer (`counts.ask`). */
+  private readonly inboxAsk = signal(0);
+  private inboxRequestId = 0;
   readonly month = signal(currentMonth());
   readonly summary = signal<MonthSummary | null>(null);
   readonly summaryLoading = signal(true);
@@ -510,7 +515,7 @@ export class LedgerTimelineComponent implements OnInit {
     }
     return lines;
   });
-  /** 🔔 count (`countReminders`, shared with the nav badge). */
+  /** 🔔 count (`countReminders`, shared with the nav badge), including 待處理 inbox cards to decide. */
   readonly reminderCount = computed(() =>
     countReminders({
       dues: this.reminderEvents(),
@@ -518,6 +523,7 @@ export class LedgerTimelineComponent implements OnInit {
       counterparties: this.counterparties(),
       queue: this.queue(),
       today: this.today(),
+      inboxAsk: this.inboxAsk(),
     }),
   );
   /** The list view's 近 7 天 banner: upcoming due days with a remaining balance. */
@@ -606,6 +612,7 @@ export class LedgerTimelineComponent implements OnInit {
       untracked(() => {
         this.loadCounterparties();
         this.loadQueue();
+        this.loadInboxCount();
       });
     });
 
@@ -878,6 +885,20 @@ export class LedgerTimelineComponent implements OnInit {
         }
       },
       // Swallowed like the counterparties: the 🔔 is a hint; the reminder centre reports its own load errors.
+      error: () => undefined,
+    });
+  }
+
+  /** `counts` are computed server-side whatever the limit, so one card is enough. */
+  private loadInboxCount(): void {
+    const id = ++this.inboxRequestId;
+    this.inbox.get({ limit: 1 }).subscribe({
+      next: data => {
+        if (id === this.inboxRequestId) {
+          this.inboxAsk.set(data.counts.ask);
+        }
+      },
+      // Swallowed like the queue: the reminder centre reports its own inbox load error.
       error: () => undefined,
     });
   }

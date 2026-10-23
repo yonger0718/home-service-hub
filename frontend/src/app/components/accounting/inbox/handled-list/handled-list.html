@@ -1,0 +1,19 @@
+@if (loadFailed()) {
+  <p class="load-error">已處理讀取失敗，請稍後再試。</p>
+}
+<ul class="handled-rows">
+  @for (row of rows(); track row.action.id) {
+    <li class="handled-row" [attr.data-action-id]="row.action.id" [attr.aria-busy]="isBusy(row.action.id)">
+      <span class="what">{{ row.text }}</span>
+      @if (row.revertable) {
+        <button type="button" class="revert" [disabled]="isBusy(row.action.id)" (click)="revert(row)">撤銷</button>
+      }
+      @if (offerDisable().has(row.action.id)) {
+        <button type="button" class="disable-rule" [disabled]="isBusy(row.action.id)" (click)="disableRule(row)">同時停用這條規則</button>
+      }
+      @if (errors().get(row.action.id); as message) {
+        <span class="handled-error" role="alert">{{ message }}</span>
+      }
+    </li>
+  }
+</ul>

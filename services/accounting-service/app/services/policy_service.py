@@ -347,7 +347,9 @@ def _rule(policy: dict, action: str) -> dict:
     return (policy.get("actions") or {}).get(action) or {}
 
 
-def _statement_excluded(db: Session, statement: AccountStatement, policy: dict) -> str | None:
+def statement_excluded(db: Session, statement: AccountStatement) -> str | None:
+    """Why no automatic answer (the policy, an owner rule) may touch the statement now, the currency gate aside:
+    `not_live`, `conflict_open`, `needs_recheck` or the kind of an open `EXCLUDING_CASES` case; None otherwise."""
     if statement.mode != "live":
         return "not_live"
     if statement.conflict_open:
@@ -357,8 +359,13 @@ def _statement_excluded(db: Session, statement: AccountStatement, policy: dict) 
     blocking = db.execute(select(ReconciliationCase.kind).where(
         ReconciliationCase.statement_id == statement.id, ReconciliationCase.kind.in_(EXCLUDING_CASES),
         ReconciliationCase.status.in_(OPEN_STATUSES)).limit(1)).scalar_one_or_none()
-    if blocking is not None:
-        return blocking
+    return blocking
+
+
+def _statement_excluded(db: Session, statement: AccountStatement, policy: dict) -> str | None:
+    excluded = statement_excluded(db, statement)
+    if excluded is not None:
+        return excluded
     if statement.currency not in (policy.get("per_currency_enabled") or ()):
         return CURRENCY
     return None

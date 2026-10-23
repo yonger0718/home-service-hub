@@ -1,0 +1,74 @@
+.step,
+.match-line {
+  margin: 0 0 6px;
+  text-align: center;
+}
+
+.step {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+}
+
+.match-line {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.candidates,
+.others {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+}
+
+h4 {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  margin: 8px 0 2px;
+}
+
+.match-row {
+  align-items: center;
+  border-bottom: 1px solid var(--app-border);
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  min-height: 46px;
+  padding: 6px 0;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+
+  input {
+    flex: 0 0 auto;
+  }
+}
+
+.muted,
+.search-error {
+  color: var(--app-text-muted);
+  font-size: 0.85rem;
+  margin: 8px 0;
+}
+
+.search-error {
+  color: var(--tone-neg, var(--c-red));
+}
+
+.search {
+  background: none;
+  border: 1px dashed var(--app-border);
+  border-radius: var(--radius-md);
+  color: var(--app-primary);
+  cursor: pointer;
+  font: inherit;
+  margin-top: 10px;
+  min-height: 44px;
+  width: 100%;
+}
+
+.btnrow button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
