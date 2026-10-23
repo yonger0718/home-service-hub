@@ -393,6 +393,29 @@ def test_cathay_commit_new_rows_have_created_ids(db_session, cathay_names):
     assert result.skipped_duplicates == 1
 
 
+def test_cathay_commit_rejected_by_parse_error_clears_every_status(db_session, cathay_names):
+    """A parse error rejects the whole Cathay batch: nothing is written and no row
+    was judged individually, so every row (the override-unverified one too) carries
+    ``status is None`` instead of a stale ``unresolved``."""
+    raw = _cathay_csv(
+        _cathay_row(price="57", order_id="aT700"),
+        _cathay_row(name="新光金", order_id="aT800"),  # override not verified → filtered out
+        _cathay_row(price="abc", order_id="aT900"),  # 成交價 not a decimal → parse error
+    )
+    overrides = {"新光金": "2887"}
+    parsed = broker_cathay_service.parse_cathay_rows(raw, name_overrides=overrides)
+    assert parsed.errors and len(parsed.rows) == 2
+
+    result = broker_cathay_service.parse_cathay_transactions_csv(
+        raw, dry_run=False, db=db_session, name_overrides=overrides, parsed=parsed
+    )
+
+    assert result.created == 0 and result.created_ids == []
+    assert result.skipped_unverified == 1
+    assert _statuses(parsed.rows) == [None, None]
+    assert db_session.query(models.Transaction).count() == 0
+
+
 # ---------- router / serializer ----------
 
 

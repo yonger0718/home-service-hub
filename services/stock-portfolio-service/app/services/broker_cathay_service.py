@@ -499,10 +499,15 @@ def _clear_statuses(rows: list[ParsedRow]) -> None:
         row.status = None
 
 
-def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
+def _commit_rehash(
+    db: Session, parsed: ParseResult, *, batch_rows: list[ParsedRow] | None = None
+) -> ImportResult:
+    # ``batch_rows``: every row of the upload, including the ones filtered out of
+    # ``parsed`` (unverified overrides) — a whole-batch rejection clears them all.
+    batch = parsed.rows if batch_rows is None else batch_rows
     if parsed.errors:
         db.rollback()
-        _clear_statuses(parsed.rows)
+        _clear_statuses(batch)
         return ImportResult(
             parsed=len(parsed.rows),
             created=0,
@@ -616,14 +621,14 @@ def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
         created_ids.clear()
         created = 0
         rehashed = 0
-        _clear_statuses(parsed.rows)
+        _clear_statuses(batch)
     except IntegrityError as exc:
         db.rollback()
         errors.append(ParseError(row_index=0, message=str(exc)))
         created_ids.clear()
         created = 0
         rehashed = 0
-        _clear_statuses(parsed.rows)
+        _clear_statuses(batch)
     return ImportResult(
         parsed=len(parsed.rows),
         created=created,
@@ -698,7 +703,7 @@ def parse_cathay_transactions_csv(
     if dry_run:
         result = _dry_run_rehash(db, filtered)
     else:
-        result = _commit_rehash(db, filtered)
+        result = _commit_rehash(db, filtered, batch_rows=parsed.rows)
     result.override_validations = validations
     result.skipped_unverified = skipped_unverified
     return result
