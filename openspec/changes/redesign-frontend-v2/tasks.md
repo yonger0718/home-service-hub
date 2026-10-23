@@ -52,10 +52,10 @@
 
 ## 7. Accounting
 
-- [ ] 7.1 Timeline summary category distribution bar (top five categories + 其他, colours from category settings)
+- [x] 7.1 Timeline summary category distribution bar (top five categories + 其他, colours from category settings)
 
 ## 8. Verification
 
-- [ ] 8.1 `npm test` and `npm run build` pass
-- [ ] 8.2 Every route checked at 390, 820, 1280 and 1440 px in light and dark
-- [ ] 8.3 Contrast check of small trend-coloured text (see design notes in `design_handoff_v2/README.md`)
+- [x] 8.1 `npm test` and `npm run build` pass
+- [x] 8.2 Every route checked at 390, 820, 1280 and 1440 px in light and dark
+- [x] 8.3 Contrast check of small trend-coloured text (see design notes in `design_handoff_v2/README.md`)
