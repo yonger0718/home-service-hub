@@ -1,4 +1,5 @@
 import { CashTransaction, CashTransactionQuery, CashTransactionType, Dividend } from '../../../models/portfolio.model';
+import { TagVariant } from '../../ui/tag/tag';
 import { deductionLine, perShareLine } from '../dividend-list/dividend-rows';
 
 /** One row of the 現金交易 table (Decision 11). */
@@ -30,6 +31,14 @@ export const CASH_TYPE_ICONS: Record<CashTransactionType, string> = {
   margin_interest: 'pi-percentage',
   wire_fee: 'pi-send',
   fx_convert: 'pi-sync',
+};
+
+/** 來源 tag variant per source label (canvas: 交易 primary-soft, 股利 dividend, 手動 / 匯入 neutral). */
+export const CASH_SOURCE_VARIANTS: Record<CashRow['source'], TagVariant> = {
+  手動: 'neutral',
+  交易: 'primary',
+  股利: 'dividend',
+  匯入: 'neutral',
 };
 
 const TITLES: Record<CashTransactionType, string> = {
@@ -110,12 +119,12 @@ function tradeLine(t: CashTransaction): string | null {
   return parts.length ? parts.join(' · ') : null;
 }
 
-/** `0.48 × 20,000 · 扣匯費 10 · 補充保費 x` via the dividend list's helpers; null without dividend data. */
+/** `0.48 × 20,000 · 扣匯費 10 · 補充保費 x` via the dividend list's helpers; null without a per-share figure. */
 function dividendLine(t: CashTransaction): string | null {
-  if (t.related_per_share == null && t.related_quantity == null) return null;
+  if (t.related_per_share == null) return null;
   const d = {
     currency: t.currency,
-    cash_dividend_per_share: t.related_per_share == null ? undefined : Number(t.related_per_share),
+    cash_dividend_per_share: Number(t.related_per_share),
     quantity_at_record_date: t.related_quantity == null ? undefined : Number(t.related_quantity),
     fee: Number(t.related_fee || 0),
     tax: Number(t.related_tax || 0),

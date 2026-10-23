@@ -80,13 +80,9 @@
   <div class="section-header transactions-header">
     <h3>現金交易</h3>
     <div class="transactions-actions">
-      <label class="merge-toggle" for="mergeRelatedCashTransactions">
+      <label class="merge-toggle">
         <span>合併同筆交易</span>
-        <p-toggleswitch
-          inputId="mergeRelatedCashTransactions"
-          [ngModel]="mergeRelated()"
-          (ngModelChange)="onMergeRelatedChange($event)">
-        </p-toggleswitch>
+        <app-switch ariaLabel="合併同筆交易" [checked]="mergeRelated()" (checkedChange)="onMergeRelatedChange($event)" />
       </label>
       <p-button icon="pi pi-plus" label="新增交易" (onClick)="openTransactionDialog()"></p-button>
     </div>
@@ -141,87 +137,71 @@
     }
   </div>
 
-  <div class="hub-modern-list" [class.is-loading]="loadingTransactions()">
-    @for (txn of transactions(); track transactionKey(txn)) {
-      <div class="transaction-group" [class.is-expanded]="isTransactionExpanded(txn.id)">
-        <app-list-item [clickable]="false">
-          <ng-container left>
-            <div class="main-text transaction-main-line">
-              @if (hasChildLegs(txn)) {
-                <button
-                  type="button"
-                  class="leg-chevron"
-                  [class.is-expanded]="isTransactionExpanded(txn.id)"
-                  [attr.aria-expanded]="isTransactionExpanded(txn.id)"
-                  [attr.aria-label]="isTransactionExpanded(txn.id) ? '收合同筆交易明細' : '展開同筆交易明細'"
-                  (click)="$event.stopPropagation(); toggleTransactionLegs(txn.id)"
-                  pTooltip="交易明細"
-                  tooltipPosition="top">
-                  <i class="pi pi-chevron-right"></i>
-                </button>
-              }
-              <span>{{ txn.txn_date }}</span>
-              <span class="type-badge">{{ typeLabel(txn.type) }}</span>
-              @if (hasChildLegs(txn)) {
-                <span class="leg-count-badge">{{ txn.child_legs?.length }} 筆</span>
-              }
-              <p-tag [value]="sourceLabel(txn.source)" [severity]="sourceSeverity(txn.source)"></p-tag>
-              @if (txn.note) {
-                <i
-                  class="pi pi-info-circle note-icon"
-                  role="img"
-                  tabindex="0"
-                  aria-label="交易備註"
-                  [pTooltip]="txn.note"
-                  tooltipPosition="top">
-                </i>
-              }
-            </div>
-            <div class="sub-text">{{ txn.currency }} · {{ txn.created_at }}</div>
-          </ng-container>
-          <ng-container right>
-            <div class="transaction-right-actions">
-              <div class="text-end">
-                <div class="amount-text transaction-amount" [ngClass]="amountClass(txn.amount)">
-                  {{ formatCurrency(txn.amount, txn.currency) }}
-                </div>
+  @let balances = balanceTexts();
+  <div class="cash-list" [class.compact]="compact()" [class.with-balance]="balances !== null" [class.is-loading]="loadingTransactions()">
+    @if (!compact() && rows().length > 0) {
+      <p class="visually-hidden">現金交易，欄位：日期、項目、來源、金額{{ balances !== null ? '、餘額' : '' }}</p>
+      <div class="cash-head cash-grid" aria-hidden="true">
+        <span>日期</span><span>項目</span><span>來源</span><span class="num">金額</span>
+        @if (balances !== null) { <span class="num">餘額</span> }
+      </div>
+    }
+    @for (txn of transactions(); track transactionKey(txn); let i = $index) {
+      @let row = rows()[i];
+      @let expanded = isTransactionExpanded(txn.id);
+      <article class="cash-row" [class.is-expanded]="expanded">
+        <div class="cash-grid">
+          @if (!compact()) { <span class="c-date">{{ row.date }}</span> }
+          <div class="c-item">
+            <span class="cash-icon" [class]="'tone-' + sourceVariants[row.source]" aria-hidden="true"><i class="pi {{ row.icon }}"></i></span>
+            <div class="c-text">
+              <div class="title-line">
+                <span class="title">{{ row.title }}</span>
+                @if (compact()) { <app-tag [variant]="sourceVariants[row.source]">{{ row.source }}</app-tag> }
               </div>
-              @if (txn.source === 'manual') {
-                <p-button
-                  icon="pi pi-trash"
-                  severity="danger"
-                  [text]="true"
-                  [rounded]="true"
-                  size="small"
-                  styleClass="cash-delete-button"
-                  ariaLabel="刪除交易"
-                  pTooltip="刪除交易"
-                  tooltipPosition="top"
-                  (onClick)="confirmDelete(txn)">
-                </p-button>
-              }
+              @if (row.subtitle) { <div class="sub">{{ row.subtitle }}</div> }
             </div>
-          </ng-container>
-        </app-list-item>
-        @if (isTransactionExpanded(txn.id)) {
-          <div class="transaction-sub-legs">
-            @for (leg of txn.child_legs ?? []; track transactionKey(leg)) {
-              <div class="transaction-sub-leg">
-                <div class="sub-leg-left">
-                  <div class="sub-leg-main">
-                    <span>{{ leg.txn_date }}</span>
-                    <span class="type-badge">{{ typeLabel(leg.type) }}</span>
-                  </div>
-                  <div class="sub-text">{{ leg.currency }} · {{ leg.created_at }}</div>
-                </div>
-                <div class="amount-text transaction-amount" [ngClass]="amountClass(leg.amount)">
-                  {{ formatCurrency(leg.amount, leg.currency) }}
-                </div>
+          </div>
+          @if (!compact()) { <div class="c-src"><app-tag [variant]="sourceVariants[row.source]">{{ row.source }}</app-tag></div> }
+          <div class="c-amt num">
+            <div class="amt" [class.up]="row.amountClass === 'up'" [class.down]="row.amountClass === 'down'">{{ row.amount }}</div>
+            @if (compact()) {
+              @if (balances !== null) { <div class="sub c-bal">餘額 {{ balances[i] }}</div> }
+              <div class="sub c-date">{{ row.date }}</div>
+            }
+          </div>
+          @if (!compact() && balances !== null) { <div class="c-bal num">{{ balances[i] }}</div> }
+          <div class="c-actions">
+            @if (row.hasLegs) {
+              <button
+                type="button"
+                class="row-action leg-toggle"
+                [class.is-expanded]="expanded"
+                [attr.aria-expanded]="expanded"
+                [attr.aria-label]="(expanded ? '收合同筆交易明細 ' : '展開同筆交易明細 ') + row.title"
+                (click)="toggleTransactionLegs(txn.id)">
+                <i class="pi pi-chevron-right" aria-hidden="true"></i>
+              </button>
+            }
+            @if (txn.source === 'manual') {
+              <button type="button" class="row-action delete-transaction" [attr.aria-label]="'刪除交易 ' + row.title" (click)="confirmDelete(txn)">
+                <i class="pi pi-trash" aria-hidden="true"></i>
+              </button>
+            }
+          </div>
+        </div>
+        @if (expanded) {
+          <div class="cash-legs">
+            @for (leg of legRows()[i]; track leg.id) {
+              <div class="cash-leg">
+                <span class="title">{{ leg.title }}</span>
+                @if (leg.subtitle) { <span class="sub">{{ leg.subtitle }}</span> }
+                <span class="amt num" [class.up]="leg.amountClass === 'up'" [class.down]="leg.amountClass === 'down'">{{ leg.amount }}</span>
               </div>
             }
           </div>
         }
-      </div>
+      </article>
     } @empty {
       <div class="empty-state">
         <i class="pi pi-wallet"></i>

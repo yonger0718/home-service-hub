@@ -13,6 +13,18 @@ import { ConfirmationService, MessageService } from 'primeng/api';
 
 import { PortfolioAccountDetailComponent } from './account-detail';
 import { CashTransaction } from '../../../models/portfolio.model';
+import { LayoutModeService } from '../../../services/layout-mode.service';
+
+@Component({ selector: 'p-chart', template: '' })
+class ChartStubComponent {
+  @Input() type = '';
+  @Input() data: unknown;
+  @Input() options: unknown;
+}
+
+function mergeSwitch(root: HTMLElement): HTMLButtonElement {
+  return root.querySelector<HTMLButtonElement>('button[role="switch"][aria-label="合併同筆交易"]')!;
+}
 
 describe('PortfolioAccountDetailComponent', () => {
   let httpMock: HttpTestingController;
@@ -32,69 +44,18 @@ describe('PortfolioAccountDetailComponent', () => {
       ],
     })
       .overrideComponent(PortfolioAccountDetailComponent, {
-        set: {
-          template: `
-            <p class="account-name">{{ account()?.nickname }}</p>
-            <button type="button" class="window-1y" (click)="onWindowChange('1Y')">1Y</button>
-            <button type="button" class="manual-open" (click)="openTransactionDialog()">新增交易</button>
-            <label>
-              合併同筆交易
-              <input
-                class="merge-toggle"
-                type="checkbox"
-                [checked]="mergeRelated()"
-                (change)="onMergeRelatedChange($any($event.target).checked)"
-              />
-            </label>
-            <section class="transaction-list">
-              @for (txn of transactions(); track transactionKey(txn)) {
-                <article class="txn-row">
-                  @if (hasChildLegs(txn)) {
-                    <button type="button" class="leg-toggle" (click)="toggleTransactionLegs(txn.id)">
-                      {{ isTransactionExpanded(txn.id) ? '收合' : '展開' }}
-                    </button>
-                    <span class="leg-count">{{ txn.child_legs?.length }} 筆</span>
-                  }
-                  <span class="type">{{ typeLabel(txn.type) }}</span>
-                  <span class="amount">{{ formatCurrency(txn.amount, txn.currency) }}</span>
-                  @if (txn.source === 'manual') {
-                    <button type="button" class="delete-transaction" (click)="confirmDelete(txn)">
-                      delete
-                    </button>
-                  }
-                  @if (isTransactionExpanded(txn.id)) {
-                    <div class="child-legs">
-                      @for (leg of txn.child_legs ?? []; track transactionKey(leg)) {
-                        <div class="child-leg">
-                          <span>{{ typeLabel(leg.type) }}</span>
-                          <span>{{ formatCurrency(leg.amount, leg.currency) }}</span>
-                        </div>
-                      }
-                    </div>
-                  }
-                </article>
-              }
-            </section>
-            @if (transactionDialogVisible()) {
-              <form [formGroup]="transactionForm" (ngSubmit)="submitTransaction()" class="transaction-form">
-                <input formControlName="txn_date" />
-                <input formControlName="type" />
-                <input formControlName="amount" />
-                <input formControlName="note" />
-                <button type="submit">submit</button>
-              </form>
-            }
-          `,
-          imports: [ReactiveFormsModule],
-        },
+        remove: { imports: [ChartModule] },
+        add: { imports: [ChartStubComponent] },
       })
       .compileComponents();
 
     httpMock = TestBed.inject(HttpTestingController);
+    TestBed.inject(LayoutModeService).set('panes');
   });
 
   afterEach(() => {
     httpMock.verify();
+    TestBed.inject(LayoutModeService).set(null);
     vi.useRealTimers();
     localStorage.clear();
   });
@@ -189,8 +150,8 @@ describe('PortfolioAccountDetailComponent', () => {
 
     expect(fixture.componentInstance.mergeRelated()).toBe(false);
     expect(localStorage.getItem('accounts.merge.1')).toBeNull();
-    const toggle = fixture.debugElement.query(By.css('.merge-toggle')).nativeElement as HTMLInputElement;
-    expect(toggle.checked).toBe(false);
+    fixture.detectChanges();
+    expect(mergeSwitch(fixture.nativeElement).getAttribute('aria-checked')).toBe('false');
   });
 
   it('initializes merge related from account-specific localStorage and sends the first merged query', () => {
@@ -201,8 +162,8 @@ describe('PortfolioAccountDetailComponent', () => {
     flushInitial('true');
 
     expect(fixture.componentInstance.mergeRelated()).toBe(true);
-    const toggle = fixture.debugElement.query(By.css('.merge-toggle')).nativeElement as HTMLInputElement;
-    expect(toggle.checked).toBe(true);
+    fixture.detectChanges();
+    expect(mergeSwitch(fixture.nativeElement).getAttribute('aria-checked')).toBe('true');
   });
 
   it('refetches balance history when the selected window changes', () => {
@@ -299,7 +260,8 @@ describe('PortfolioAccountDetailComponent', () => {
       && request.params.get('limit') === '50',
     ).flush({ items: [], total: 0, offset: 50, limit: 50 });
 
-    fixture.componentInstance.onMergeRelatedChange(true);
+    fixture.detectChanges();
+    mergeSwitch(fixture.nativeElement).click();
 
     expect(localStorage.getItem('accounts.merge.1')).toBe('1');
     expect(fixture.componentInstance.query().offset).toBe(0);
@@ -333,17 +295,21 @@ describe('PortfolioAccountDetailComponent', () => {
     ]);
     fixture.detectChanges();
 
-    expect(fixture.nativeElement.textContent).toContain('交易');
-    expect(fixture.nativeElement.textContent).toContain('3 筆');
-    expect(fixture.nativeElement.textContent).not.toContain('買進交割');
+    const row = fixture.nativeElement.querySelector('.cash-row') as HTMLElement;
+    expect(row.querySelector('.title')?.textContent).toContain('交割');
+    expect(row.querySelector('.sub')?.textContent).toContain('已合併買賣 3 筆');
+    expect(row.querySelectorAll('.cash-leg').length).toBe(0);
+    const toggle = row.querySelector('.leg-toggle') as HTMLButtonElement;
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
 
-    fixture.debugElement.query(By.css('.leg-toggle')).nativeElement.click();
+    toggle.click();
     fixture.detectChanges();
 
-    expect(fixture.nativeElement.textContent).toContain('買進交割');
-    expect(fixture.nativeElement.textContent).toContain('手續費');
-    expect(fixture.nativeElement.textContent).toContain('交易稅');
-    expect(fixture.nativeElement.textContent).toContain('-NT$100,000');
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    const legs = Array.from(row.querySelectorAll('.cash-leg')).map(leg =>
+      [leg.querySelector('.title')?.textContent?.trim(), leg.querySelector('.amt')?.textContent?.trim()]);
+    expect(legs).toEqual([['交割 · 買進', '−100,000'], ['手續費', '−285'], ['交易稅', '−300']]);
+    expect(row.textContent).not.toContain('NT$');
   });
 
   it('debounces cash transaction filters before refetching', () => {
@@ -494,13 +460,6 @@ describe('PortfolioAccountDetailComponent', () => {
   });
 });
 
-@Component({ selector: 'p-chart', template: '' })
-class ChartStubComponent {
-  @Input() type = '';
-  @Input() data: unknown;
-  @Input() options: unknown;
-}
-
 describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
   let httpMock: HttpTestingController;
   let params: BehaviorSubject<Map<string, string>>;
@@ -607,5 +566,225 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
     flushLoads(7);
     routed.detectChanges();
     expect((routed.nativeElement as HTMLElement).querySelector('app-page-header')).not.toBeNull();
+  });
+});
+
+describe('PortfolioAccountDetailComponent cash rows and 餘額', () => {
+  let httpMock: HttpTestingController;
+  let layout: LayoutModeService;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-22T04:00:00Z'));
+    localStorage.clear();
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        { provide: ActivatedRoute, useValue: { paramMap: of(new Map([['id', '7']])) } },
+      ],
+    }).overrideComponent(PortfolioAccountDetailComponent, {
+      remove: { imports: [ChartModule] },
+      add: { imports: [ChartStubComponent] },
+    });
+    httpMock = TestBed.inject(HttpTestingController);
+    layout = TestBed.inject(LayoutModeService);
+    layout.set('panes');
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+    layout.set(null);
+    vi.useRealTimers();
+    localStorage.clear();
+  });
+
+  function txn(patch: Partial<CashTransaction>): CashTransaction {
+    return {
+      id: 1, account_id: 7, txn_date: '2026-10-20', type: 'deposit', amount: '0', currency: 'TWD', note: null,
+      related_transaction_id: null, related_dividend_id: null, child_legs: null, source: 'auto_derive',
+      import_fingerprint: `fp-${patch.id ?? 1}`, created_at: '2026-10-20T00:00:00Z',
+      ...patch,
+    };
+  }
+
+  /** The spec scenario: current 438,360, newest row a +20,000 deposit. */
+  const SCENARIO: CashTransaction[] = [
+    txn({ id: 1, txn_date: '2026-10-20', type: 'deposit', amount: '20000.00', source: 'manual', note: '從台新 Richart 轉入' }),
+    txn({
+      id: 2, txn_date: '2026-10-16', type: 'buy_settle', amount: '-110407.00', related_transaction_id: 55,
+      related_symbol: '00878', related_quantity: '5000.0000', related_trade_date: '2026-10-15',
+    }),
+    txn({
+      id: 3, txn_date: '2026-10-08', type: 'dividend_cash', amount: '17390.00', related_dividend_id: 9,
+      related_symbol: '2317', related_per_share: '5.8000', related_quantity: '3000.0000', related_fee: '10.00', related_tax: '0.00',
+    }),
+  ];
+
+  function render() {
+    const fixture = TestBed.createComponent(PortfolioAccountDetailComponent);
+    fixture.detectChanges();
+    return fixture;
+  }
+
+  function flushAccount() {
+    httpMock.expectOne(req => req.url === '/api/portfolio/accounts/' && req.params.get('include_inactive') === 'true').flush({
+      items: [{
+        id: 7, broker: 'cathay', nickname: '元大交割戶', currency: 'TWD', opening_balance: '0', opening_date: '2026-01-01',
+        is_active: true, created_at: '2026-01-01T00:00:00Z', native_balance: '438360', target_balance: '438360', target_currency: 'TWD',
+      }],
+      target_currency: null, total_target_balance: null, skipped_currencies: [],
+    });
+    httpMock.expectOne(req => req.url === '/api/portfolio/accounts/7/balance-history').flush({ account_id: 7, currency: 'TWD', points: [] });
+  }
+
+  function flushTxns(items: CashTransaction[], check: (params: URLSearchParams) => boolean = () => true) {
+    const req = httpMock.expectOne(r => r.url === '/api/portfolio/accounts/7/cash-transactions'
+      && check(new URLSearchParams(r.params.toString())));
+    req.flush({ items, total: 60, offset: Number(req.request.params.get('offset') ?? 0), limit: 25 });
+  }
+
+  function load(items: CashTransaction[] = SCENARIO) {
+    const fixture = render();
+    flushAccount();
+    flushTxns(items);
+    fixture.detectChanges();
+    return fixture;
+  }
+
+  const el = (fixture: { nativeElement: unknown }) => fixture.nativeElement as HTMLElement;
+  const text = (node: Element | null | undefined) => node?.textContent?.trim() ?? null;
+  const heads = (fixture: { nativeElement: unknown }) =>
+    Array.from(el(fixture).querySelectorAll('.cash-head span')).map(span => text(span));
+  const balanceCells = (fixture: { nativeElement: unknown }) =>
+    Array.from(el(fixture).querySelectorAll('.cash-row .c-bal')).map(cell => text(cell));
+
+  it('renders the heads and one row per transaction with date, icon, title / subtitle, source, amount and 餘額', () => {
+    const fixture = load();
+    const root = el(fixture);
+
+    expect(heads(fixture)).toEqual(['日期', '項目', '來源', '金額', '餘額']);
+    expect(root.querySelector('.cash-head')?.getAttribute('aria-hidden')).toBe('true');
+    expect(text(root.querySelector('.cash-list .visually-hidden'))).toBe('現金交易，欄位：日期、項目、來源、金額、餘額');
+    const rows = Array.from(root.querySelectorAll<HTMLElement>('.cash-row'));
+    expect(rows.length).toBe(3);
+
+    const [deposit, settle, dividend] = rows;
+    expect(text(deposit.querySelector('.c-date'))).toBe('2026/10/20');
+    expect(deposit.querySelector('.cash-icon i')?.classList).toContain('pi-arrow-down');
+    expect(text(deposit.querySelector('.title'))).toBe('入金');
+    expect(text(deposit.querySelector('.sub'))).toBe('從台新 Richart 轉入');
+    expect(text(deposit.querySelector('.c-src app-tag'))).toBe('手動');
+    expect(deposit.querySelector('.c-src .tag')?.classList).toContain('tag-neutral');
+    expect(text(deposit.querySelector('.amt'))).toBe('+20,000');
+    expect(deposit.querySelector('.amt')?.classList).toContain('up');
+
+    expect(text(settle.querySelector('.c-date'))).toBe('2026/10/16');
+    expect(settle.querySelector('.cash-icon i')?.classList).toContain('pi-shopping-cart');
+    expect(text(settle.querySelector('.title'))).toBe('交割 · 買進 00878');
+    expect(text(settle.querySelector('.sub'))).toBe('5,000 股 · 10/15 成交');
+    expect(text(settle.querySelector('.c-src app-tag'))).toBe('交易');
+    expect(settle.querySelector('.c-src .tag')?.classList).toContain('tag-primary');
+    expect(text(settle.querySelector('.amt'))).toBe('−110,407');
+    expect(settle.querySelector('.amt')?.classList).toContain('down');
+
+    expect(text(dividend.querySelector('.title'))).toBe('股利 · 2317');
+    expect(text(dividend.querySelector('.sub'))).toBe('5.80 × 3,000 · 扣匯費 10');
+    expect(text(dividend.querySelector('.c-src app-tag'))).toBe('股利');
+    expect(dividend.querySelector('.c-src .tag')?.classList).toContain('tag-dividend');
+
+    expect(balanceCells(fixture)).toEqual(['438,360', '418,360', '528,767']);
+    expect(text(root.querySelector('.cash-list'))).not.toContain('NT$');
+    // Manual rows keep delete; derived rows do not.
+    expect(deposit.querySelector('.delete-transaction')?.getAttribute('aria-label')).toBe('刪除交易 入金');
+    expect(settle.querySelector('.delete-transaction')).toBeNull();
+    expect(dividend.querySelector('.delete-transaction')).toBeNull();
+  });
+
+  it('keeps 合併同筆交易 (switch), the filters and 新增交易 in the header row', () => {
+    const root = el(load());
+    const header = root.querySelector('.transactions-header')!;
+    const toggle = header.querySelector('button[role="switch"]');
+    expect(toggle?.getAttribute('aria-label')).toBe('合併同筆交易');
+    expect(header.textContent).toContain('合併同筆交易');
+    expect(header.textContent).toContain('新增交易');
+    expect(root.querySelector('.hub-filter-bar p-datepicker')).not.toBeNull();
+    expect(root.querySelector('.hub-filter-bar p-multiselect')).not.toBeNull();
+    expect(root.querySelector('.hub-filter-bar p-select')).not.toBeNull();
+    expect(root.querySelector('p-toggleswitch')).toBeNull();
+  });
+
+  it('a merged parent moves the balance by its net, not its legs', () => {
+    const fixture = load([
+      txn({
+        id: -42, txn_date: '2026-10-17', type: 'trade', amount: '-100585', related_transaction_id: 42, related_symbol: '2330',
+        child_legs: [txn({ id: 101, type: 'buy_settle', amount: '-100000' }), txn({ id: 102, type: 'fee', amount: '-585' })],
+      }),
+      txn({ id: 5, txn_date: '2026-10-10', amount: '5000', source: 'manual' }),
+    ]);
+    expect(balanceCells(fixture)).toEqual(['438,360', '538,945']);
+    const merged = el(fixture).querySelector('.cash-row')!;
+    expect(text(merged.querySelector('.title'))).toBe('交割 · 2330');
+    expect(merged.querySelector('.delete-transaction')).toBeNull();
+    expect(merged.querySelector('.leg-toggle')).not.toBeNull();
+  });
+
+  it('page 2 (offset 25) has no 餘額 head or cells, and page 1 brings them back only when its rows arrive', () => {
+    const fixture = load();
+    fixture.componentInstance.onPageChange({ first: 25, rows: 25 });
+    flushTxns(SCENARIO, params => params.get('offset') === '25');
+    fixture.detectChanges();
+    expect(heads(fixture)).toEqual(['日期', '項目', '來源', '金額']);
+    expect(balanceCells(fixture)).toEqual([]);
+    expect(el(fixture).querySelectorAll('.cash-row').length).toBe(3);
+
+    fixture.componentInstance.onPageChange({ first: 0, rows: 25 });
+    fixture.detectChanges();
+    expect(balanceCells(fixture)).toEqual([]);
+    flushTxns(SCENARIO, params => params.get('offset') === '0');
+    fixture.detectChanges();
+    expect(balanceCells(fixture)).toEqual(['438,360', '418,360', '528,767']);
+  });
+
+  it('a type filter hides the 餘額 column', () => {
+    const fixture = load();
+    fixture.componentInstance.onTypeFilterChange(['deposit']);
+    vi.advanceTimersByTime(300);
+    flushTxns([SCENARIO[0]], params => params.get('type') === 'deposit');
+    fixture.detectChanges();
+    expect(heads(fixture)).not.toContain('餘額');
+    expect(balanceCells(fixture)).toEqual([]);
+  });
+
+  it('a date_to filter hides the 餘額 column', () => {
+    const fixture = load();
+    fixture.componentInstance.onDateRangeChange([new Date(2026, 9, 1), new Date(2026, 9, 20)]);
+    vi.advanceTimersByTime(300);
+    flushTxns(SCENARIO, params => params.get('date_to') === '2026-10-20');
+    fixture.detectChanges();
+    expect(heads(fixture)).not.toContain('餘額');
+    expect(balanceCells(fixture)).toEqual([]);
+  });
+
+  it('a row dated after today hides the 餘額 column', () => {
+    const fixture = load([txn({ id: 9, txn_date: '2026-10-23', amount: '100', source: 'manual' }), ...SCENARIO]);
+    expect(heads(fixture)).toEqual(['日期', '項目', '來源', '金額']);
+    expect(balanceCells(fixture)).toEqual([]);
+  });
+
+  it('phone: compact rows with the source tag after the title and 餘額 and the date beneath the amount', () => {
+    layout.set('phone');
+    const fixture = load();
+    const root = el(fixture);
+    expect(root.querySelector('.cash-list.compact')).not.toBeNull();
+    expect(root.querySelector('.cash-head')).toBeNull();
+    expect(root.querySelector('.c-src')).toBeNull();
+    const first = root.querySelector('.cash-row')!;
+    expect(text(first.querySelector('.title-line app-tag'))).toBe('手動');
+    expect(text(first.querySelector('.c-amt .amt'))).toBe('+20,000');
+    expect(text(first.querySelector('.c-amt .c-bal'))).toBe('餘額 438,360');
+    expect(text(first.querySelector('.c-amt .c-date'))).toBe('2026/10/20');
+    expect(first.querySelector('.delete-transaction')).not.toBeNull();
   });
 });

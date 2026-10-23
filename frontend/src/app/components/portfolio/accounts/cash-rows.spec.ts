@@ -147,6 +147,39 @@ describe('cashRow', () => {
     expect(cashRow(txn({ ...base, related_fee: '0.00', related_tax: '0.00' })).subtitle).toBe('0.48 × 20,000');
   });
 
+  it('dividend_cash with only 補充保費: 0.48 × 20,000 · 補充保費 201', () => {
+    const row = cashRow(
+      txn({
+        type: 'dividend_cash',
+        source: 'auto_derive',
+        related_dividend_id: 9,
+        related_symbol: '00878',
+        related_per_share: '0.4800',
+        related_quantity: '20000.0000',
+        related_fee: '0.00',
+        related_tax: '201.00',
+      }),
+    );
+    expect(row.subtitle).toBe('0.48 × 20,000 · 補充保費 201');
+  });
+
+  it('dividend_cash without a per-share figure falls back to the note', () => {
+    const row = cashRow(
+      txn({
+        type: 'dividend_cash',
+        source: 'auto_derive',
+        related_dividend_id: 9,
+        related_symbol: '00878',
+        related_per_share: null,
+        related_quantity: '20000.0000',
+        related_fee: '10.00',
+        note: '股利入帳',
+      }),
+    );
+    expect(row.title).toBe('股利 · 00878');
+    expect(row.subtitle).toBe('股利入帳');
+  });
+
   it('csv_import → 匯入', () => {
     expect(cashRow(txn({ source: 'csv_import', type: 'withdraw', amount: '-5000' })).source).toBe('匯入');
   });

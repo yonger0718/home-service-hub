@@ -14,7 +14,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CommonModule } from '@angular/common';
 import { FormBuilder, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute } from '@angular/router';
-import { BehaviorSubject, Observable, catchError, debounceTime, distinctUntilChanged, filter, merge, of, switchMap } from 'rxjs';
+import { BehaviorSubject, Observable, catchError, debounceTime, distinctUntilChanged, filter, map, merge, of, switchMap } from 'rxjs';
 
 import { ConfirmationService, MessageService } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
@@ -33,7 +33,6 @@ import { SelectModule } from 'primeng/select';
 import { TagModule } from 'primeng/tag';
 import { ToastModule } from 'primeng/toast';
 import { TooltipModule } from 'primeng/tooltip';
-import { ToggleSwitchModule } from 'primeng/toggleswitch';
 
 import {
   BalanceHistory,
@@ -42,16 +41,18 @@ import {
   CashTransaction,
   CashTransactionPaged,
   CashTransactionQuery,
-  CashTransactionSource,
   CashTransactionType,
   CreateCashTransaction,
   CreateCashTransactionType,
   PatchBrokerAccount,
 } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
-import { ListItemComponent } from '../../shared/list-item/list-item';
+import { LayoutModeService } from '../../../services/layout-mode.service';
+import { SwitchComponent } from '../../ui/switch/switch';
+import { TagComponent } from '../../ui/tag/tag';
 import { BROKER_OPTIONS } from './accounts-list';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
+import { CASH_SOURCE_VARIANTS, cashRow, formatCash, runningBalances } from './cash-rows';
 
 type BalanceWindow = '1M' | '3M' | '1Y' | 'All';
 
@@ -92,12 +93,6 @@ const SORT_OPTIONS = [
   { value: 'amount:asc', label: '金額 低→高' },
 ];
 
-const SOURCE_LABELS: Record<CashTransactionSource, string> = {
-  manual: '手動',
-  csv_import: '匯入',
-  auto_derive: '自動',
-};
-
 const BROKER_LABELS: Record<BrokerEnum, string> = Object.fromEntries(
   BROKER_OPTIONS.map(option => [option.value, option.label]),
 ) as Record<BrokerEnum, string>;
@@ -135,8 +130,8 @@ function isCashQueryEvent(event: CashQueryEvent | null): event is CashQueryEvent
     TagModule,
     ToastModule,
     TooltipModule,
-    ToggleSwitchModule,
-    ListItemComponent,
+    SwitchComponent,
+    TagComponent,
   ],
   providers: [ConfirmationService, MessageService],
   templateUrl: './account-detail.html',
@@ -150,6 +145,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
   private route = inject(ActivatedRoute);
   private fb = inject(FormBuilder);
   private destroyRef = inject(DestroyRef);
+  private layout = inject(LayoutModeService);
   private filterQuery$ = new BehaviorSubject<CashQueryEvent | null>(null);
 
   readonly Number = Number;
@@ -157,6 +153,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
   readonly typeOptions = TYPE_OPTIONS;
   readonly manualTypeOptions = MANUAL_TYPE_OPTIONS;
   readonly sortOptions = SORT_OPTIONS;
+  readonly sourceVariants = CASH_SOURCE_VARIANTS;
   readonly defaultPageSize = DEFAULT_PAGE_SIZE;
   readonly rowsPerPageOptions = [25, 50, 100];
   readonly selectedWindow = signal<BalanceWindow>('3M');
@@ -187,6 +184,21 @@ export class PortfolioAccountDetailComponent implements OnInit {
     limit: this.readPageSize(),
     sort: 'txn_date:desc',
   });
+
+  /** The query of the page now shown (the running balance must match the rows, not a pending query). */
+  private readonly shownQuery = signal<CashTransactionQuery>(this.query());
+  /** Phone: icon + title · amount, the date beneath the amount (Decision 13). */
+  readonly compact = computed(() => this.layout.mode() === 'phone');
+  readonly rows = computed(() => this.transactions().map(cashRow));
+  readonly legRows = computed(() => this.transactions().map(txn => (txn.child_legs ?? []).map(cashRow)));
+  /** 餘額 per row (Decision 12), anchored at the account's balance; null hides the column. */
+  readonly balanceTexts = computed(() => {
+    const account = this.account();
+    if (!account) return null;
+    const balances = runningBalances(this.transactions(), account.native_balance, this.shownQuery(), this.todayIso());
+    return balances?.map(value => formatCash(value, account.currency)) ?? null;
+  });
+  readonly showBalance = computed(() => this.balanceTexts() !== null);
 
   editForm = this.fb.group({
     nickname: this.fb.nonNullable.control('', Validators.required),
@@ -267,10 +279,10 @@ export class PortfolioAccountDetailComponent implements OnInit {
       ),
     )
       .pipe(
-        switchMap(event => this.requestTransactions(event.query)),
+        switchMap(event => this.requestTransactions(event.query).pipe(map(paged => ({ paged, query: event.query })))),
         takeUntilDestroyed(this.destroyRef),
       )
-      .subscribe(paged => this.applyTransactions(paged));
+      .subscribe(({ paged, query }) => this.applyTransactions(paged, query));
 
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(params => {
       const id = Number(params.get('id'));
@@ -473,7 +485,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
 
     this.confirmationService.confirm({
       header: '刪除交易',
-      message: `${this.typeLabel(txn.type)} ${signedAmount} ${txn.currency} on ${txn.txn_date}${note}`,
+      message: `${cashRow(txn).title} ${signedAmount} ${txn.currency} on ${txn.txn_date}${note}`,
       icon: 'pi pi-exclamation-triangle',
       acceptLabel: '刪除',
       rejectLabel: '取消',
@@ -524,10 +536,6 @@ export class PortfolioAccountDetailComponent implements OnInit {
     return `${txn.id}:${txn.import_fingerprint}`;
   }
 
-  hasChildLegs(txn: CashTransaction): boolean {
-    return Array.isArray(txn.child_legs) && txn.child_legs.length > 0;
-  }
-
   isTransactionExpanded(id: number): boolean {
     return this.expandedTransactionIds().has(id);
   }
@@ -544,27 +552,6 @@ export class PortfolioAccountDetailComponent implements OnInit {
 
   brokerLabel(broker: BrokerEnum): string {
     return BROKER_LABELS[broker] ?? broker;
-  }
-
-  typeLabel(type: CashTransactionType): string {
-    if (type === 'trade') return '交易';
-    return TYPE_OPTIONS.find(option => option.value === type)?.label ?? type;
-  }
-
-  sourceLabel(source: CashTransactionSource): string {
-    return SOURCE_LABELS[source] ?? source;
-  }
-
-  sourceSeverity(source: CashTransactionSource): 'info' | 'secondary' {
-    return source === 'manual' ? 'info' : 'secondary';
-  }
-
-  amountClass(value: string | number): Record<string, boolean> {
-    const amount = Number(value);
-    return {
-      'is-positive': amount > 0,
-      'is-negative': amount < 0,
-    };
   }
 
   formatCurrency(value: string | number | null | undefined, currency: string): string {
@@ -621,7 +608,8 @@ export class PortfolioAccountDetailComponent implements OnInit {
     );
   }
 
-  private applyTransactions(paged: CashTransactionPaged): void {
+  private applyTransactions(paged: CashTransactionPaged, query: CashTransactionQuery): void {
+    this.shownQuery.set(query);
     this.transactions.set(paged.items);
     this.total.set(paged.total);
     this.loadingTransactions.set(false);
