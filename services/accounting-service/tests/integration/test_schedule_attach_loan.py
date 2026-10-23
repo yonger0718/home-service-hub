@@ -244,20 +244,113 @@ def test_update_refuses_a_changed_loan_from_seq(client, db_session, plain, seed)
     assert db_session.get(ScheduleDefinition, linked.id).template["lines"][0]["loan_from_seq"] is None
 
 
+def _iid(db_session, definition_id, seq):
+    return db_session.scalar(select(ScheduleInstance.id).where(ScheduleInstance.definition_id == definition_id, ScheduleInstance.seq == seq))
+
+
 def test_series_excludes_posted_and_skipped_later_periods(client, db_session, plain):
-    """Ruling: only periods that will still settle the loan count — a pending instance or a seq not generated yet."""
-    def iid(seq):
-        return db_session.scalar(select(ScheduleInstance.id).where(ScheduleInstance.definition_id == plain.definition.id, ScheduleInstance.seq == seq))
-    assert client.post(f"/schedules/instances/{iid(20)}/skip").status_code == 200
-    early = client.post(f"/schedules/instances/{iid(18)}/post")   # posted early, a plain expense (no loan yet)
+    """Ruling: only periods that will still settle the loan count — a pending instance or a seq not generated yet.
+    The series is read through pending_principal on GET detail (read-only, not gated); attach itself refuses while
+    such a later period exists (later_periods_settled)."""
+    d_id = plain.definition.id
+    assert client.post(f"/schedules/instances/{_iid(db_session, d_id, 20)}/skip").status_code == 200
+    early = client.post(f"/schedules/instances/{_iid(db_session, d_id, 18)}/post")   # posted early, a plain expense
     assert early.status_code in (200, 201), early.text
     db_session.expire_all()
     expense = db_session.get(LedgerEntry, early.json()["posted_entry_ids"][0])
     assert (expense.kind, expense.amount) == ("expense", Decimal(-8018))
     expected = plain.due_total - Decimal(8018) - Decimal(8020)
-    assert Decimal(client.get(f"/schedules/definitions/{plain.definition.id}").json()["pending_principal"]) == expected
-    too_much = _attach(client, plain.definition.id, plain.bank, plain.lender, plain.due_total)
-    assert too_much.status_code == 422 and "超過之後各期本金合計" in too_much.text
-    ok = _attach(client, plain.definition.id, plain.bank, plain.lender, expected)
-    assert ok.status_code == 201, ok.text
-    assert ok.json()["template"]["lines"][0]["loan_from_seq"] == 15
+    assert Decimal(client.get(f"/schedules/definitions/{d_id}").json()["pending_principal"]) == expected
+    refused = _attach(client, d_id, plain.bank, plain.lender, expected)
+    assert refused.status_code == 409 and "later_periods_settled" in refused.text, refused.text
+    assert db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable")) is None
+
+
+def test_attach_refuses_later_period_posted_early_until_reopened(client, db_session, plain):
+    """Spec §4.1 guard: a period after from_seq that was posted early (a plain entry) would sit inside the loan's
+    range without settling it, so 掛上貸款 refuses until the owner reopens (還原) it."""
+    d_id = plain.definition.id
+    early = client.post(f"/schedules/instances/{_iid(db_session, d_id, 18)}/post")
+    assert early.status_code in (200, 201), early.text
+    r = _attach(client, d_id, plain.bank, plain.lender, plain.due_total - Decimal(8018))
+    assert r.status_code == 409 and "later_periods_settled" in r.text and "之後已有入帳或略過的期數，請先還原" in r.text
+    assert client.post(f"/schedules/instances/{_iid(db_session, d_id, 18)}/reopen").status_code == 200
+    r = _attach(client, d_id, plain.bank, plain.lender, plain.due_total)
+    assert r.status_code == 201, r.text
+    assert r.json()["template"]["lines"][0]["loan_from_seq"] == 15
+
+
+def test_period_due_on_entry_date_is_not_overdue(client, db_session, plain, today):
+    """catch_up_first counts periods due strictly before entry_date: one due on entry_date itself is the first period
+    the new loan settles (attach, then post it)."""
+    today(DUE[14])                                              # seq 15 is due today
+    r = _attach(client, plain.definition.id, plain.bank, plain.lender, plain.due_total, entry_date=DUE[14].isoformat())
+    assert r.status_code == 201, r.text
+    assert r.json()["template"]["lines"][0]["loan_from_seq"] == 15
+    assert client.post(f"/schedules/instances/{_iid(db_session, plain.definition.id, 15)}/post").status_code in (200, 201)
+    payable = db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable"))
+    assert open_amount(db_session, payable) == plain.due_total - Decimal(8015)
+
+
+def _detail(client, definition_id):
+    return client.get(f"/schedules/definitions/{definition_id}").json()
+
+
+def test_attach_then_post_every_period_settles_exactly_at_the_last(client, db_session, plain, today):
+    """Attach the full remaining principal, post seq 15 … 36: the payable is open until the last period and is
+    settled exactly by it and the detail has nothing to check. (The definition itself ends on the next generate() run
+    — end_if_complete — not on a manual post.)"""
+    d_id = plain.definition.id
+    assert _attach(client, d_id, plain.bank, plain.lender, plain.due_total).status_code == 201
+    today(DUE[35])
+    payable = db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable"))
+    for seq in range(15, 37):
+        r = client.post(f"/schedules/instances/{_iid(db_session, d_id, seq)}/post")
+        assert r.status_code in (200, 201) and r.json()["status"] == "posted", (seq, r.text)
+        db_session.expire_all()
+        assert (open_amount(db_session, payable) == 0) == (seq == 36), seq
+    body = _detail(client, d_id)
+    assert Decimal(body["loan_remaining"]) == 0 and body["needs_check"] is False
+
+
+def test_pending_principal_and_loan_remaining_move_together(client, db_session, plain):
+    """After attach, one post lowers pending_principal and loan_remaining by that period's principal."""
+    d_id = plain.definition.id
+    assert _attach(client, d_id, plain.bank, plain.lender, plain.due_total).status_code == 201
+    before = _detail(client, d_id)
+    assert client.post(f"/schedules/instances/{_iid(db_session, d_id, 15)}/post").status_code in (200, 201)
+    after = _detail(client, d_id)
+    principal = Decimal(8015)
+    assert Decimal(before["pending_principal"]) - Decimal(after["pending_principal"]) == principal
+    assert Decimal(before["loan_remaining"]) - Decimal(after["loan_remaining"]) == principal
+    assert Decimal(after["pending_principal"]) == Decimal(after["loan_remaining"])
+
+
+def test_early_repayment_amount_caps_the_final_period(client, db_session, plain, today):
+    """Attach the smallest accepted amount (all but the last period + 1). loan_closed does NOT fire: the amount rule
+    (amount > Σ all but the last period) keeps the loan open entering seq 36, so _close_out is never reached through
+    posting alone. Seq 36 posts; its repayment line settles min(amount, open) = 1 (D35/D38 cap), the interest line
+    posts in full, and the payable is fully settled with nothing to check."""
+    d_id = plain.definition.id
+    amount = plain.due_total - Decimal(8036) + 1
+    assert _attach(client, d_id, plain.bank, plain.lender, amount).status_code == 201
+    today(DUE[35])
+    payable = db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable"))
+    for seq in range(15, 36):
+        r = client.post(f"/schedules/instances/{_iid(db_session, d_id, seq)}/post")
+        assert r.status_code in (200, 201) and r.json()["status"] == "posted", (seq, r.text)
+    db_session.expire_all()
+    assert open_amount(db_session, payable) == 1
+    last = client.post(f"/schedules/instances/{_iid(db_session, d_id, 36)}/post")
+    assert last.status_code in (200, 201) and last.json()["status"] == "posted", last.text
+    db_session.expire_all()
+    entries = [db_session.get(LedgerEntry, i) for i in last.json()["posted_entry_ids"]]
+    settle = [e for e in entries if e.settles_entry_id == payable.id]
+    interest = [e for e in entries if e.kind == "interest"]
+    assert len(settle) == 1 and abs(settle[0].amount) == 1
+    assert len(interest) == 1 and interest[0].amount == Decimal(-964)
+    assert open_amount(db_session, payable) == 0
+    body = _detail(client, d_id)
+    assert Decimal(body["loan_remaining"]) == 0 and body["needs_check"] is False
+    assert all(row.status == "posted" for row in db_session.scalars(
+        select(ScheduleInstance).where(ScheduleInstance.definition_id == d_id, ScheduleInstance.seq >= 15)))

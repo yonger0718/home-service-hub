@@ -252,12 +252,19 @@ def attach_loan(db: Session, definition_id: int, loan: LoanIn) -> int:
         raise ConflictError("loan_already_attached")
     if loan.account_id != line["account_id"]:
         raise ValidationError("account", "貸款要掛在還款帳戶")  # the payable takes the line's account and currency
-    pending = [row for row in lock_instances(db, definition_id) if row.status == "pending"]
+    instances = lock_instances(db, definition_id)
+    pending = [row for row in instances if row.status == "pending"]
     if not pending:
         raise ConflictError("nothing_pending")
-    if any(row.due_date <= loan.entry_date for row in pending):
-        raise ConflictError("catch_up_first")  # post (補記) those periods first: they post as plain expenses (§4.0)
+    if any(row.due_date < loan.entry_date for row in pending):
+        # post (補記) those periods first: they post as plain expenses (§4.0). A period due on entry_date itself is
+        # not overdue — it is the first one the new loan settles.
+        raise ConflictError("catch_up_first")
     from_seq = min(row.seq for row in pending)
+    if any(row.seq > from_seq and row.status in ("posted", "skipped") for row in instances):
+        # a later period posted early (a plain entry) or skipped would sit inside the loan's range but never settle
+        # it; the owner reopens it first (spec §4.1). remaining_principal_series still leaves such rows out.
+        raise ConflictError("later_periods_settled: 之後已有入帳或略過的期數，請先還原")
     series = remaining_principal_series(db, definition)
     if loan.amount > sum(series, Decimal(0)):
         raise ValidationError("amount", "超過之後各期本金合計")
