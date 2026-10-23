@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { Dividend } from '../../../models/portfolio.model';
-import { dividendStatus, dividendTotals, netAmountLines, payLine, statusTag } from './dividend-math';
+import { dividendStatus, dividendTotals, dividendTwdAmount, netAmountLines, payLine, statusTag } from './dividend-math';
 
 let nextId = 1;
 function dv(overrides: Partial<Dividend>): Dividend {
@@ -31,7 +31,46 @@ describe('dividend-math', () => {
     });
   });
 
+  describe('dividendTwdAmount', () => {
+    it('values a GBp (pence) amount in pounds: value / 100 × the per-pound fx', () => {
+      expect(dividendTwdAmount('1234.5000', '40.5', 'GBp')).toBeCloseTo(499.9725, 10);
+      expect(dividendTwdAmount(1234.5, 40.5, 'GBp')).toBeCloseTo(499.9725, 10);
+    });
+
+    it('does not divide GBP pounds or any other foreign currency (exact GBp match only)', () => {
+      expect(dividendTwdAmount('1234.5', '40.5', 'GBP')).toBeCloseTo(49997.25, 8);
+      expect(dividendTwdAmount('1234.5', '40.5', 'gbp')).toBeCloseTo(49997.25, 8);
+      expect(dividendTwdAmount(7.8, 30.8, 'USD')).toBeCloseTo(240.24, 10);
+    });
+
+    it('returns a TWD or currency-less amount as is', () => {
+      expect(dividendTwdAmount(9600, null, 'TWD')).toBe(9600);
+      expect(dividendTwdAmount('9600', undefined, null)).toBe(9600);
+    });
+
+    it('returns null for a non-numeric amount or a GBp amount without a usable fx', () => {
+      expect(dividendTwdAmount(null, '40.5', 'GBp')).toBeNull();
+      expect(dividendTwdAmount('', '40.5', 'GBp')).toBeNull();
+      expect(dividendTwdAmount('abc', '40.5', 'GBp')).toBeNull();
+      expect(dividendTwdAmount('1234.5', null, 'GBp')).toBeNull();
+      expect(dividendTwdAmount('1234.5', 0, 'GBp')).toBeNull();
+      expect(dividendTwdAmount('1234.5', -1, 'GBp')).toBeNull();
+    });
+  });
+
   describe('dividendTotals', () => {
+    it('values a GBp row in pounds and a GBP row as is', () => {
+      const totals = dividendTotals([
+        dv({ symbol: 'VOD', market: 'LSE', amount: '1234.5000' as unknown as number, currency: 'GBp', fx_rate_to_twd: '40.5', receipt_status: 'confirmed' }),
+        dv({ symbol: 'VOD', market: 'LSE', amount: 12.34, currency: 'GBP', fx_rate_to_twd: '40.5', receipt_status: 'pending' }),
+      ]);
+      expect(totals.confirmed).toBeCloseTo(499.9725, 10);
+      expect(totals.confirmedCount).toBe(1);
+      expect(totals.pending).toBeCloseTo(499.77, 10);
+      expect(totals.recorded).toBeCloseTo(499.9725, 10);
+      expect(totals.foreignWithoutFx).toBe(0);
+    });
+
     it('records confirmed + legacy and leaves pending out (spec scenario)', () => {
       const totals = dividendTotals([
         dv({ amount: 37578, receipt_status: 'confirmed' }),
@@ -131,6 +170,20 @@ describe('dividend-math', () => {
       expect(lines.main).toBe('+240');
       expect(lines.sub).toBe('7.80 USD · 匯率 30.80');
       expect(lines.twd).toBeCloseTo(240.24, 10);
+    });
+
+    it('renders a GBp row from its pound value, the native amount in pence and the stored per-pound rate', () => {
+      const lines = netAmountLines(dv({ symbol: 'VOD', market: 'LSE', amount: '1234.5000' as unknown as number, currency: 'GBp', fx_rate_to_twd: '40.5' }));
+      expect(lines.main).toBe('+500');
+      expect(lines.sub).toBe('1,234.5000 GBp · 匯率 40.50');
+      expect(lines.twd).toBeCloseTo(499.9725, 10);
+    });
+
+    it('renders a GBP row without dividing', () => {
+      const lines = netAmountLines(dv({ symbol: 'VOD', market: 'LSE', amount: 12.34, currency: 'GBP', fx_rate_to_twd: '40.5' }));
+      expect(lines.main).toBe('+500');
+      expect(lines.sub).toBe('12.34 GBP · 匯率 40.50');
+      expect(lines.twd).toBeCloseTo(499.77, 10);
     });
 
     it('renders a foreign row without fx as the native amount over —', () => {

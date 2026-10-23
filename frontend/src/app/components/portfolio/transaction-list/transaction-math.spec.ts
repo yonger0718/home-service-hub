@@ -73,6 +73,20 @@ describe('transaction math', () => {
       expect(totals.foreignWithoutFx).toBe(1);
     });
 
+    it('does not divide a GBp trade: its fx is stored per penny (#115 regression)', () => {
+      const lse = tx({ symbol: 'VOD', market: 'LSE', currency: 'GBp', quantity: 10, price: 1234.5, fee: 150, fx_rate_to_twd: 0.41 });
+      const totals = tradeTotals([lse]);
+      expect(totals.buyTotal).toBeCloseTo((12345 + 150) * 0.41, 6);
+      expect(totals.turnover).toBeCloseTo(12345 * 0.41, 6);
+      expect(totals.fees).toBeCloseTo(150 * 0.41, 6);
+      expect(totals.foreignWithoutFx).toBe(0);
+    });
+
+    it('does not divide a GBP trade', () => {
+      const lse = tx({ symbol: 'VOD', market: 'LSE', currency: 'GBP', quantity: 10, price: 12.345, fee: 1.5, fx_rate_to_twd: 41 });
+      expect(tradeTotals([lse]).buyTotal).toBeCloseTo((123.45 + 1.5) * 41, 6);
+    });
+
     it('treats a row without a currency as TWD', () => {
       const totals = tradeTotals([{ ...twBuy, currency: undefined, fx_rate_to_twd: undefined }]);
       expect(totals.buyTotal).toBeCloseTo(110407, 6);
