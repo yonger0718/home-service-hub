@@ -91,10 +91,6 @@ function pct(e: RealizedPnlEvent): string | null {
 }
 
 /**
- * Stable row identity; several rows of the same sell stay apart in `realizedRows`. Fields that tell sells apart
- * without being unique (no id is sent).
- */
-/**
  * The TWD-per-unit rate implied by a sell's two gross amounts. Local because it is derived per sell, not a stored
  * rate: TWD gross is whole dollars, so it is only good to about 4 significant digits (32,800 / 1,061.50 → 30.90).
  */
@@ -102,6 +98,10 @@ function impliedFxRate(twdGross: number, nativeGross: number): number {
   return Number((twdGross / nativeGross).toPrecision(4));
 }
 
+/**
+ * Stable row identity; several rows of the same sell stay apart in `realizedRows`. Fields that tell sells apart
+ * without being unique (no id is sent).
+ */
 function rowKey(e: RealizedPnlEvent): string {
   return [e.trade_date, e.symbol, e.market, e.quantity, e.sell_price, e.realized_pnl].join('|');
 }

@@ -1,8 +1,8 @@
-import { ChangeDetectionStrategy, Component, OnInit, computed, inject, input, output, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, inject, input, output, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { CommonModule } from '@angular/common';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router } from '@angular/router';
+import { Subscription } from 'rxjs';
 
 import { MessageService } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
@@ -84,7 +84,6 @@ const BROKER_LABELS: Record<BrokerEnum, string> = {
     PageHeaderComponent,
     BtnComponent,
     TagComponent,
-    CommonModule,
     ReactiveFormsModule,
     ButtonModule,
     CardModule,
@@ -102,11 +101,13 @@ const BROKER_LABELS: Record<BrokerEnum, string> = {
   styleUrl: './accounts-list.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class PortfolioAccountsListComponent implements OnInit {
+export class PortfolioAccountsListComponent implements OnInit, OnDestroy {
   private portfolioService = inject(PortfolioService);
   private messageService = inject(MessageService);
   private router = inject(Router);
   private fb = inject(FormBuilder);
+  /** The in-flight accounts fetch: a restart cancels it (so two quick ledger changes land in order) and so does destroy. */
+  private fetchSub: Subscription | null = null;
 
   readonly brokerOptions = BROKER_OPTIONS;
   readonly currencyOptions = ['TWD', 'USD', 'GBP', 'JPY'].map(value => ({ label: value, value }));
@@ -159,9 +160,15 @@ export class PortfolioAccountsListComponent implements OnInit {
     this.fetchAccounts();
   }
 
+  ngOnDestroy(): void {
+    this.fetchSub?.unsubscribe();
+    this.fetchSub = null;
+  }
+
   fetchAccounts(): void {
+    this.fetchSub?.unsubscribe();
     this.loading.set(true);
-    this.portfolioService.getAccounts({ in_currency: 'TWD' }).subscribe({
+    this.fetchSub = this.portfolioService.getAccounts({ in_currency: 'TWD' }).subscribe({
       next: list => {
         this.accountsList.set(list);
         this.accounts.set(list.items);

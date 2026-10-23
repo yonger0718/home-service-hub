@@ -16,7 +16,7 @@
             <span>期初 {{ formatCurrency(current.opening_balance, current.currency) }}</span>
             <span>{{ current.opening_date }}</span>
             <p-tag
-              [value]="current.is_active ? '啟用' : '停用'"
+              [value]="current.is_active ? '啟用中' : '已停用'"
               [severity]="current.is_active ? 'success' : 'secondary'">
             </p-tag>
           </div>
@@ -66,7 +66,7 @@
     <div class="overdraft-banner" role="alert">
       <i class="pi pi-exclamation-triangle"></i>
       <span class="overdraft-text">
-        帳戶餘額為負（-{{ formatCurrency(overdraftAmount(), account()?.currency || 'TWD') }}），可能漏記入金。
+        帳戶餘額為負（{{ formatCurrency(account()?.native_balance, account()?.currency || 'TWD') }}），可能漏記入金。
       </span>
       <p-button
         icon="pi pi-plus"

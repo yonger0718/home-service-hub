@@ -11,7 +11,6 @@ import {
   untracked,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { CommonModule } from '@angular/common';
 import { FormBuilder, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute } from '@angular/router';
 import { BehaviorSubject, Observable, catchError, debounceTime, distinctUntilChanged, filter, map, merge, of, switchMap } from 'rxjs';
@@ -111,7 +110,6 @@ function isCashQueryEvent(event: CashQueryEvent | null): event is CashQueryEvent
   standalone: true,
   imports: [
     PageHeaderComponent,
-    CommonModule,
     FormsModule,
     ReactiveFormsModule,
     ButtonModule,
@@ -148,7 +146,6 @@ export class PortfolioAccountDetailComponent implements OnInit {
   private layout = inject(LayoutModeService);
   private filterQuery$ = new BehaviorSubject<CashQueryEvent | null>(null);
 
-  readonly Number = Number;
   readonly windowOptions = WINDOW_OPTIONS;
   readonly typeOptions = TYPE_OPTIONS;
   readonly manualTypeOptions = MANUAL_TYPE_OPTIONS;
@@ -558,11 +555,13 @@ export class PortfolioAccountDetailComponent implements OnInit {
   formatCurrency(value: string | number | null | undefined, currency: string): string {
     const amount = Number(value ?? 0);
     const maximumFractionDigits = currency === 'JPY' || currency === 'TWD' ? 0 : 2;
+    // A true minus (U+2212), like every other amount in the redesign.
+    const sign = amount < 0 ? '\u2212' : '';
+    const magnitude = Math.abs(amount);
     if (currency === 'TWD') {
-      const sign = amount < 0 ? '-' : '';
-      return `${sign}NT$${Math.abs(amount).toLocaleString('zh-TW', { maximumFractionDigits })}`;
+      return `${sign}NT$${magnitude.toLocaleString('zh-TW', { maximumFractionDigits })}`;
     }
-    return amount.toLocaleString('zh-TW', { style: 'currency', currency, maximumFractionDigits });
+    return sign + magnitude.toLocaleString('zh-TW', { style: 'currency', currency, maximumFractionDigits });
   }
 
   /** After this account's ledger changed here: reload (embedded, through the notification) and tell the others. */

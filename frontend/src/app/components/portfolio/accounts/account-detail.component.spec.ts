@@ -921,4 +921,36 @@ describe('PortfolioAccountDetailComponent cash rows and 餘額', () => {
     expect(text(first.querySelector('.c-amt .c-date'))).toBe('2026/10/20');
     expect(first.querySelector('.delete-transaction')).not.toBeNull();
   });
+
+  it('header card: a negative balance reads −NT$…, the status tag 啟用中 / 已停用, and the overdraft banner the same −NT$ amount', () => {
+    const fixture = render();
+    httpMock.expectOne(req => req.url === '/api/portfolio/accounts/' && req.params.get('include_inactive') === 'true').flush({
+      items: [{
+        id: 7, broker: 'cathay', nickname: '元大交割戶', currency: 'TWD', opening_balance: '-5000', opening_date: '2026-01-01',
+        is_active: false, created_at: '2026-01-01T00:00:00Z', native_balance: '-12345', target_balance: '-12345', target_currency: 'TWD',
+      }],
+      target_currency: null, total_target_balance: null, skipped_currencies: [],
+    });
+    httpMock.expectOne(req => req.url === '/api/portfolio/accounts/7/balance-history').flush({ account_id: 7, currency: 'TWD', points: [] });
+    flushTxns([]);
+    fixture.detectChanges();
+    const root = el(fixture);
+
+    expect(text(root.querySelector('.balance-value'))).toBe('−NT$12,345');
+    expect(root.querySelector('.account-meta')?.textContent).toContain('期初 −NT$5,000');
+    expect(text(root.querySelector('.account-meta p-tag'))).toBe('已停用');
+    expect(text(root.querySelector('.overdraft-text'))).toBe('帳戶餘額為負（−NT$12,345），可能漏記入金。');
+    expect(root.querySelector('.account-header-card')?.textContent).not.toContain('-NT$');
+  });
+
+  it('formatCurrency: U+2212 before negatives in every currency, none for zero or positives', () => {
+    const fixture = load();
+    const component = fixture.componentInstance;
+
+    expect(component.formatCurrency('-1500.5', 'TWD')).toBe('−NT$1,501');
+    expect(component.formatCurrency(438360, 'TWD')).toBe('NT$438,360');
+    expect(component.formatCurrency('-1500.5', 'USD')).toBe(`−${(1500.5).toLocaleString('zh-TW', { style: 'currency', currency: 'USD' })}`);
+    expect(component.formatCurrency('-0', 'TWD')).toBe('NT$0');
+    expect(text(el(fixture).querySelector('.account-meta p-tag'))).toBe('啟用中');
+  });
 });

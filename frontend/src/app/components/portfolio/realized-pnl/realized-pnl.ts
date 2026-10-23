@@ -1,7 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatePickerModule } from 'primeng/datepicker';
-import { InputTextModule } from 'primeng/inputtext';
 import { PaginatorModule, PaginatorState } from 'primeng/paginator';
 import { ProgressSpinnerModule } from 'primeng/progressspinner';
 import { SelectButtonModule } from 'primeng/selectbutton';
@@ -53,7 +52,6 @@ const SORT_OPTIONS = [
     PageHeaderComponent,
     FormsModule,
     DatePickerModule,
-    InputTextModule,
     PaginatorModule,
     ProgressSpinnerModule,
     SelectButtonModule,

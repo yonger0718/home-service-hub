@@ -310,6 +310,34 @@ describe('PortfolioAccountsListComponent master mode', () => {
     httpMock.expectNone('/api/portfolio/accounts/?in_currency=TWD');
   });
 
+  it('destroy mid-fetch cancels the fetch: no loaded emit, no state change', () => {
+    const { fixture, emitted } = render(true);
+    const component = fixture.componentInstance;
+
+    component.fetchAccounts();
+    const req = httpMock.expectOne('/api/portfolio/accounts/?in_currency=TWD');
+    fixture.destroy();
+
+    expect(req.cancelled).toBe(true);
+    expect(emitted).toEqual([accounts]);
+    expect(component.accounts()).toEqual(accounts);
+  });
+
+  it('a second fetch cancels the first, so an older response cannot land last', () => {
+    const { fixture, emitted } = render(true);
+    const component = fixture.componentInstance;
+
+    component.fetchAccounts();
+    component.fetchAccounts();
+    const [first, second] = httpMock.match('/api/portfolio/accounts/?in_currency=TWD');
+
+    expect(first.cancelled).toBe(true);
+    expect(second.cancelled).toBe(false);
+    second.flush({ items: accounts.slice(0, 1), target_currency: 'TWD', total_target_balance: '100000', skipped_currencies: [] });
+    expect(emitted).toEqual([accounts, accounts.slice(0, 1)]);
+    expect(component.accounts()).toEqual(accounts.slice(0, 1));
+  });
+
   it('a cash flow recorded in the form notifies the ledger change, which refetches once', () => {
     const { fixture } = render(true);
     const service = TestBed.inject(PortfolioService);
