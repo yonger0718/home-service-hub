@@ -202,7 +202,8 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     if (!receiptDate || accountId === null || this.receiptBusy()) return;
     this.receiptBusy.set(true);
     const settle = () => { this.receiptBusy.set(false); this.closeReceipt(); this.focusRowButton(row.id); this.reload(); };
-    this.portfolioService.confirmDividendReceipt(row.id, { receipt_date: receiptDate,
+    this.receiptSub?.unsubscribe();
+    this.receiptSub = this.portfolioService.confirmDividendReceipt(row.id, { receipt_date: receiptDate,
       account_id: accountId, revision: row.revision ?? 1 }).subscribe({
       next: () => settle(),
       error: err => {
@@ -216,7 +217,9 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     this.focusAfterRender(`[data-row-id="${id}"] .c-actions app-btn button`);
   }
 
+  /** A no-op once the page is destroyed (the render hook would throw NG0911). */
   private focusAfterRender(selector: string): void {
+    if (this.destroyed) return;
     afterNextRender(() => this.host.nativeElement.querySelector<HTMLElement>(selector)?.focus(), { injector: this.injector });
   }
 
@@ -236,6 +239,9 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   private fetchSeq = 0;
   private summarySeq = 0;
   private summarySub?: Subscription;
+  /** The in-flight receipt confirmation; cancelled on destroy, so a late response neither reloads nor toasts. */
+  private receiptSub?: Subscription;
+  private destroyed = false;
 
   nameFor(symbol: string): string | null {
     return this.symbolNames()[symbol] ?? null;
@@ -274,8 +280,10 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy() {
+    this.destroyed = true;
     if (this.filterDebounce) clearTimeout(this.filterDebounce);
     this.summarySub?.unsubscribe();
+    this.receiptSub?.unsubscribe();
   }
 
   fetch() {

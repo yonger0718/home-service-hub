@@ -1171,6 +1171,39 @@ describe('Dividend filter-wide summary', () => {
       fixture.destroy();
     });
 
+    it('cancels the receipt request on destroy: a late response neither throws nor reloads nor toasts', () => {
+      const toast = vi.spyOn(MessageService.prototype, 'add');
+      try {
+        const response = new Subject<Dividend>();
+        service['confirmDividendReceipt'].mockReturnValue(response);
+        const fixture = rendered([tw]);
+        open(fixture, 21);
+        fill(fixture, '2026-11-18', '7');
+        formButton(fixture, '確認已收到並入帳').click();
+        expect(response.observed).toBe(true);
+        const calls = service['getDividends'].mock.calls.length;
+        toast.mockClear();
+
+        fixture.destroy();
+        expect(response.observed).toBe(false);
+        expect(() => response.next(twPaid)).not.toThrow();
+        expect(() => response.error({ error: { detail: 'Synthetic late failure' } })).not.toThrow();
+        expect(service['getDividends'].mock.calls.length).toBe(calls);
+        expect(toast).not.toHaveBeenCalled();
+      } finally {
+        toast.mockRestore();
+      }
+    });
+
+    it('moves no focus once destroyed (取消 after destroy does not throw NG0911)', () => {
+      const fixture = rendered([tw]);
+      open(fixture, 21);
+      const component = fixture.componentInstance;
+      fixture.destroy();
+      expect(() => component.cancelReceipt()).not.toThrow();
+      expect(() => component.openReceipt(tw)).not.toThrow();
+    });
+
     it('toasts 無法取得收款帳戶 when the accounts cannot be loaded, retrying the init load when the form opens', () => {
       const toast = vi.spyOn(MessageService.prototype, 'add');
       try {
