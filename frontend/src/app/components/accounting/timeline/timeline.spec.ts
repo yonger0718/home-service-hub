@@ -1753,6 +1753,211 @@ describe('LedgerTimelineComponent', () => {
       expect(el.querySelector('.bill')).toBeNull();
     });
   });
+
+  describe('支出類別分佈 bar', () => {
+    /** Canvas AccountingDesktop `:93-107`: five roots + the tail folded into 其他 7,460 (Σ = 38,460). */
+    const CANVAS_SUMMARY: Partial<MonthSummary> = {
+      expense: '-38460.0000',
+      income: '62000.0000',
+      net: '23540.0000',
+      by_category: [
+        { category_id: 1, name: '餐飲', color: '#d0864a', expense: '-9820.0000' },
+        { category_id: 2, name: '居家', color: '#4f8f8a', expense: '-8150.0000' },
+        { category_id: 3, name: '日用', color: '#4f9a72', expense: '-6930.0000' },
+        { category_id: 4, name: '交通', color: '#5f86c9', expense: '-3240.0000' },
+        { category_id: 5, name: '娛樂', color: '#8a7cc4', expense: '-2860.0000' },
+        { category_id: 6, name: '飲料', color: '#a88a5c', expense: '-2460.0000' },
+        { category_id: 7, name: '搬家', color: '#7d889c', expense: '-2800.0000' },
+        { category_id: null, name: '未分類', color: null, expense: '-2200.0000' },
+      ],
+    };
+    const CANVAS_ARIA = '支出類別分佈：餐飲 9,820、居家 8,150、日用 6,930、交通 3,240、娛樂 2,860、其他 7,460';
+
+    afterEach(() => {
+      TestBed.inject(LayoutModeService).set(null);
+    });
+
+    function renderWith(mode: LayoutMode, body?: Partial<MonthSummary>) {
+      const rendered = render(mode);
+      flushSummary('2026-10', body);
+      flushEntries([]);
+      rendered.fixture.detectChanges();
+      return rendered;
+    }
+
+    /** `name label` of each legend row (the two spans sit side by side, spaced by the row gap). */
+    function legend(el: HTMLElement): string[] {
+      return Array.from(el.querySelectorAll('.dist-list .dist-row')).map(row => `${text(row.querySelector('.dist-name'))} ${text(row.querySelector('b'))}`);
+    }
+
+    function segments(el: HTMLElement): HTMLElement[] {
+      return Array.from(el.querySelectorAll<HTMLElement>('.dist-bar > span'));
+    }
+
+    it('renders six segments weighted by the raw amounts, the aria text and the wrapping legend at the sheet layout', () => {
+      const { el } = renderWith('sheet', CANVAS_SUMMARY);
+      const bar = el.querySelector('.sum .dist .dist-bar')!;
+      expect(bar.getAttribute('role')).toBe('img');
+      expect(bar.getAttribute('aria-label')).toBe(CANVAS_ARIA);
+
+      const spans = segments(el);
+      expect(spans.map(s => s.style.flexGrow)).toEqual(['9820', '8150', '6930', '3240', '2860', '7460']);
+      expect(spans.map(s => s.style.background)).toEqual([
+        'rgb(208, 134, 74)',
+        'rgb(79, 143, 138)',
+        'rgb(79, 154, 114)',
+        'rgb(95, 134, 201)',
+        'rgb(138, 124, 196)',
+        'var(--app-category-other)',
+      ]);
+
+      const rows = Array.from(el.querySelectorAll('.dist-list .dist-row'));
+      expect(legend(el)).toEqual(['餐飲 9,820', '居家 8,150', '日用 6,930', '交通 3,240', '娛樂 2,860', '其他 7,460']);
+      expect(rows.map(row => text(row.querySelector('.dist-name')))).toEqual(['餐飲', '居家', '日用', '交通', '娛樂', '其他']);
+      expect(rows.map(row => text(row.querySelector('b')))).toEqual(['9,820', '8,150', '6,930', '3,240', '2,860', '7,460']);
+      expect(rows.every(row => row.querySelector('.dist-swatch')!.getAttribute('aria-hidden') === 'true')).toBe(true);
+      expect((rows[5].querySelector('.dist-swatch') as HTMLElement).style.background).toBe('var(--app-category-other)');
+    });
+
+    it('keeps the three figures and puts the bar after them inside .sum', () => {
+      const { el } = renderWith('sheet', CANVAS_SUMMARY);
+      expect(text(el.querySelector('.sum-expense'))).toBe('−$38,460');
+      expect(text(el.querySelector('.sum-income'))).toBe('+$62,000');
+      expect(text(el.querySelector('.sum-net'))).toBe('+$23,540');
+      const children = Array.from(el.querySelector('.sum')!.children);
+      expect(children.at(-1)!.classList).toContain('dist');
+      expect(children.findIndex(c => c.querySelector('.sum-net'))).toBeLessThan(children.length - 1);
+    });
+
+    it('applies the canvas sizes: 10 px bar with 2 px gaps, 13 px legend and 8 px swatches', () => {
+      const { el } = renderWith('sheet', CANVAS_SUMMARY);
+      const bar = getComputedStyle(el.querySelector('.dist-bar')!);
+      expect(bar.height).toBe('10px');
+      expect(bar.gap).toBe('2px');
+      expect(bar.overflow).toBe('hidden');
+      expect(getComputedStyle(el.querySelector('.dist-list')!).flexWrap).toBe('wrap');
+      expect(getComputedStyle(el.querySelector('.dist-row')!).fontSize).toBe('13px');
+      expect(getComputedStyle(el.querySelector('.dist-row b')!).fontSize).toBe('13px'); // not the 0.95rem figure size
+      expect(getComputedStyle(el.querySelector('.sum .dist')!).flexBasis).toBe('100%');
+      const swatch = getComputedStyle(el.querySelector('.dist-swatch')!);
+      expect([swatch.width, swatch.height, swatch.borderRadius]).toEqual(['8px', '8px', '3px']);
+    });
+
+    it('shows the bar without the legend on phone (the aria text is its legend)', () => {
+      const { el } = renderWith('phone', CANVAS_SUMMARY);
+      expect(el.querySelector('.dist-bar')!.getAttribute('aria-label')).toBe(CANVAS_ARIA);
+      expect(segments(el)).toHaveLength(6);
+      expect(el.querySelector('.dist-list')).toBeNull();
+      expect(getComputedStyle(el.querySelector('.dist-bar')!).height).toBe('8px');
+    });
+
+    it('shows the legend at the panes layout (calendar view by default there)', () => {
+      const { fixture, el } = render('panes');
+      flushSummary('2026-10', CANVAS_SUMMARY);
+      flushDaily('2026-10');
+      fixture.detectChanges();
+      expect(segments(el)).toHaveLength(6);
+      expect(el.querySelectorAll('.dist-list .dist-row')).toHaveLength(6);
+    });
+
+    it('follows a layout change between phone and sheet', () => {
+      const { fixture, el } = renderWith('phone', CANVAS_SUMMARY);
+      expect(el.querySelector('.dist-list')).toBeNull();
+      TestBed.inject(LayoutModeService).set('sheet');
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.dist-list .dist-row')).toHaveLength(6);
+    });
+
+    it('keeps a user root named 其他 apart from the 其他 tail segment', () => {
+      const { el } = renderWith('sheet', {
+        expense: '-1000.0000',
+        net: '-1000.0000',
+        by_category: [
+          { category_id: 1, name: '餐飲', color: '#d0864a', expense: '-400.0000' },
+          { category_id: 9, name: '其他', color: '#4f8f8a', expense: '-300.0000' },
+          { category_id: 2, name: '居家', color: '#4f9a72', expense: '-100.0000' },
+          { category_id: 3, name: '日用', color: '#5f86c9', expense: '-80.0000' },
+          { category_id: 4, name: '交通', color: '#8a7cc4', expense: '-70.0000' },
+          { category_id: 5, name: '娛樂', color: '#a88a5c', expense: '-50.0000' },
+        ],
+      });
+      expect(legend(el)).toEqual(['餐飲 400', '其他 300', '居家 100', '日用 80', '交通 70', '其他 50']);
+      expect(segments(el)).toHaveLength(6);
+    });
+
+    it('renders the scaled labels when refunds outweigh the tail', () => {
+      const { el } = renderWith('sheet', {
+        expense: '-700.0000',
+        net: '-700.0000',
+        by_category: [
+          { category_id: 1, name: '餐飲', color: '#d0864a', expense: '-800.0000' },
+          { category_id: 2, name: '居家', color: '#4f8f8a', expense: '-200.0000' },
+          { category_id: 4, name: '交通', color: '#5f86c9', expense: '300.0000' },
+        ],
+      });
+      expect(legend(el)).toEqual(['餐飲 560', '居家 140']);
+      expect(el.querySelector('.dist-bar')!.getAttribute('aria-label')).toBe('支出類別分佈：餐飲 560、居家 140');
+      expect(segments(el).map(s => Number(s.style.flexGrow))).toEqual([560, 140]);
+    });
+
+    it('renders no bar for a month without spending', () => {
+      const { el } = renderWith('sheet', { expense: '0', by_category: [] });
+      expect(el.querySelector('.dist')).toBeNull();
+      expect(el.querySelector('.sum-expense')).not.toBeNull();
+    });
+
+    it('renders no bar when the API sends no by_category (older API)', () => {
+      const { el } = renderWith('sheet', { expense: '-500', net: '-500' });
+      expect(el.querySelector('.dist')).toBeNull();
+      expect(text(el.querySelector('.sum-expense'))).toBe('−$500');
+    });
+
+    it('renders no bar while the summary loads or after it fails, and shows it after 重試', () => {
+      const { fixture, el } = render('sheet');
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(el.querySelector('.sum')!.getAttribute('aria-busy')).toBe('true');
+      expect(el.querySelector('.dist-bar')).toBeNull();
+
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries/summary').flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(el.querySelector('.sum-error')).not.toBeNull();
+      expect(el.querySelector('.dist-bar')).toBeNull();
+
+      (el.querySelector('.sum-retry') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      flushSummary('2026-10', CANVAS_SUMMARY);
+      fixture.detectChanges();
+      expect(segments(el)).toHaveLength(6);
+    });
+
+    it('drops the previous month bar while the next month loads', () => {
+      const { fixture, el } = renderWith('sheet', CANVAS_SUMMARY);
+      expect(segments(el)).toHaveLength(6);
+      fixture.componentInstance.moveMonth(1);
+      fixture.detectChanges();
+      expect(el.querySelector('.dist-bar')).toBeNull();
+      flushSummary('2026-11');
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(el.querySelector('.dist-bar')).toBeNull();
+    });
+
+    it('keeps the full-month bar under 全月 · 未套篩選 while a filter is active', () => {
+      const { fixture, el } = renderWith('sheet', CANVAS_SUMMARY);
+      fixture.componentInstance.setKind('income');
+      fixture.detectChanges();
+      flushEntries([]);
+      fixture.detectChanges();
+      httpMock!.expectNone(r => r.url === '/api/accounting/entries/summary');
+
+      const sum = el.querySelector('.sum')!;
+      expect(sum.firstElementChild!.classList).toContain('sum-scope');
+      expect(text(sum.firstElementChild)).toBe('全月 · 未套篩選');
+      expect(el.querySelector('.dist-bar')!.getAttribute('aria-label')).toBe(CANVAS_ARIA);
+      expect(segments(el)).toHaveLength(6);
+    });
+  });
 });
 
 describe('buildDays', () => {

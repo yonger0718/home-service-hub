@@ -49,6 +49,7 @@ import { schedulePill } from '../schedule-math';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, isHandledKey, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
 import { displayTitle, formatMoney, formatSigned } from '../format';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
+import { categoryDistribution, distributionAriaText } from './category-distribution';
 
 export const TIMELINE_PAGE_SIZE = 50;
 /** One day's entries in the 日曆 view are read in a single request. */
@@ -395,6 +396,9 @@ export class LedgerTimelineComponent implements OnInit {
   readonly summary = signal<MonthSummary | null>(null);
   readonly summaryLoading = signal(true);
   readonly summaryError = signal(false);
+  /** 支出類別分佈: top five roots + 其他 of the full month (filters ignored, like the totals); [] → no bar. */
+  readonly distribution = computed(() => categoryDistribution(this.summary()));
+  readonly distributionAria = computed(() => distributionAriaText(this.distribution()));
 
   readonly entries = signal<LedgerEntry[]>([]);
   /** `total` of the current filters' `/entries` page; null while that page is in flight or after it failed. */
