@@ -24,18 +24,19 @@ import { allPages } from '../paging';
 import { periodLabel } from '../period';
 import { DividendTotals, dividendTotals } from './dividend-math';
 import { DividendStatusFilter, dividendRow, matchesStatus } from './dividend-rows';
-import { isTwdCurrency } from '../money';
 
-/** 修改扣款 is offered on pending and confirmed TW/TWD rows (the server's own guard). */
+/** 修改扣款 is offered on pending and confirmed TW/TWD rows: exactly the server's guard (market 'TW' and currency 'TWD'). */
 function deductionsEditable(d: Dividend): boolean {
-  return (d.receipt_status === 'pending' || d.receipt_status === 'confirmed') && (d.market ?? 'TW') === 'TW' && isTwdCurrency(d.currency);
+  return (d.receipt_status === 'pending' || d.receipt_status === 'confirmed') && d.market === 'TW' && d.currency === 'TWD';
 }
 
-/** A form field as a non-negative amount; null when empty, not a number or negative. */
+/** A non-negative amount with at most 2 decimal places (the server's rule). */
+const AMOUNT_INPUT = /^(\d+(\.\d{0,2})?|\.\d{1,2})$/;
+
+/** A form field as an amount; null when empty, negative, not a plain number or with more than 2 decimal places. */
 function amountInput(value: string): number | null {
-  if (value.trim() === '') return null;
-  const amount = Number(value);
-  return Number.isFinite(amount) && amount >= 0 ? amount : null;
+  const text = value.trim();
+  return AMOUNT_INPUT.test(text) ? Number(text) : null;
 }
 
 /**

@@ -1271,14 +1271,14 @@ describe('Dividend filter-wide summary', () => {
   describe('修改扣款 inline form', () => {
     const NOTE = '淨額會重新計算';
     const CASH_NOTE = '淨額會重新計算，現金帳的股利入帳也會一併更新';
-    const tw: Dividend = { id: 21, symbol: '00878', amount: 9590, fee: 10, tax: 0, ex_dividend_date: '2026-10-17', receipt_status: 'pending',
+    const tw: Dividend = { market: 'TW', currency: 'TWD', id: 21, symbol: '00878', amount: 9590, fee: 10, tax: 0, ex_dividend_date: '2026-10-17', receipt_status: 'pending',
       revision: 2, cash_dividend_per_share: 0.48, quantity_at_record_date: 20000 };
-    const twPaid: Dividend = { id: 22, symbol: '0056', amount: 14590, fee: 10, tax: 0, ex_dividend_date: '2026-07-16', receipt_status: 'confirmed',
+    const twPaid: Dividend = { market: 'TW', currency: 'TWD', id: 22, symbol: '0056', amount: 14590, fee: 10, tax: 0, ex_dividend_date: '2026-07-16', receipt_status: 'confirmed',
       receipt_date: '2026-08-12', receipt_account_id: 7, revision: 5 };
     const usd: Dividend = { id: 23, symbol: 'AAPL', amount: 7.8, fee: 0, tax: 0, currency: 'USD', market: 'US', fx_rate_to_twd: '30.80',
       ex_dividend_date: '2026-08-11', receipt_status: 'pending', revision: 1 };
     const unresolved: Dividend = { id: 24, symbol: '2330', amount: 4000, ex_dividend_date: '2026-06-12', receipt_status: 'unresolved' };
-    const noRevision: Dividend = { id: 31, symbol: '0050', amount: 500, fee: 10, tax: 0, ex_dividend_date: '2026-07-16', receipt_status: 'pending' };
+    const noRevision: Dividend = { market: 'TW', currency: 'TWD', id: 31, symbol: '0050', amount: 500, fee: 10, tax: 0, ex_dividend_date: '2026-07-16', receipt_status: 'pending' };
 
     function rendered(rows: Dividend[]): ComponentFixture<PortfolioDividendListComponent> {
       const fixture = create();
@@ -1346,6 +1346,23 @@ describe('Dividend filter-wide summary', () => {
       fixture.destroy();
     });
 
+    it('requires an exact TW market and TWD currency: a row missing either gets no 修改扣款', () => {
+      const pendingNoMarket: Dividend = { ...tw, id: 41, market: undefined };
+      const pendingNoCurrency: Dividend = { ...tw, id: 42, currency: undefined };
+      const confirmedNoMarket: Dividend = { ...twPaid, id: 43, market: undefined };
+      const fixture = rendered([pendingNoMarket, pendingNoCurrency, confirmedNoMarket]);
+      const toast = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
+
+      expect(menuFor(fixture, pendingNoMarket)).toEqual(['編輯', '—', '刪除']);
+      expect(menuFor(fixture, pendingNoCurrency)).toEqual(['編輯', '—', '刪除']);
+      expect(toast).not.toHaveBeenCalled();
+      expect(menuFor(fixture, confirmedNoMarket)).toEqual([]);
+      expect(toast).toHaveBeenCalledWith({ severity: 'info', summary: '需人工釐清，不可直接改寫已收款或舊資料' });
+      fixture.componentInstance.openDeductions(pendingNoMarket);
+      expect(fixture.componentInstance.openDeductionsId()).toBeNull();
+      fixture.destroy();
+    });
+
     it('renders one form under the pending row: title, prefilled 匯費 / 補充保費, step 0.01, the note, 取消 / 儲存', () => {
       const fixture = rendered([tw, twPaid]);
       openDeductions(fixture, tw);
@@ -1383,7 +1400,7 @@ describe('Dividend filter-wide summary', () => {
       fixture.destroy();
     });
 
-    it('disables 儲存 when a field is empty or negative, and while busy', () => {
+    it('disables 儲存 when a field is empty, negative or has more than 2 decimal places, and while busy', () => {
       service['updateDividendDeductions'] = vi.fn(() => new Subject<Dividend>());
       const fixture = rendered([tw]);
       openDeductions(fixture, tw);
@@ -1399,11 +1416,18 @@ describe('Dividend filter-wide summary', () => {
       expect(button(fixture, '儲存').disabled).toBe(true);
       type(fixture, '補充保費', '0');
       expect(button(fixture, '儲存').disabled).toBe(false);
+      type(fixture, '匯費', '0.005');
+      expect(button(fixture, '儲存').disabled).toBe(true);
+      type(fixture, '匯費', '1e1');
+      expect(button(fixture, '儲存').disabled).toBe(true);
+      type(fixture, '匯費', '0.01');
+      expect(button(fixture, '儲存').disabled).toBe(false);
 
       button(fixture, '儲存').click();
       button(fixture, '儲存').click();
       fixture.detectChanges();
       expect(service['updateDividendDeductions']).toHaveBeenCalledTimes(1);
+      expect(service['updateDividendDeductions']).toHaveBeenCalledWith(21, { fee: 0.01, tax: 0, revision: 2 });
       expect(fixture.componentInstance.deductionsBusy()).toBe(true);
       expect(button(fixture, '儲存').disabled).toBe(true);
       fixture.destroy();
