@@ -371,4 +371,197 @@ describe('ScheduleSheetComponent', () => {
       http.expectNone(r => r.method === 'PUT');
     });
   });
+  describe('掛上貸款 (spec §4.4)', () => {
+    const lines = makeDefinition().template.lines;
+    const interest = { ...lines[0], kind: 'interest' as const, account_id: 2, category_id: 41 };
+    const repayment = { ...lines[0], kind: 'repayment' as const, account_id: 7, category_id: null, account_name: '薪轉戶' };
+    const collection = { ...lines[0], kind: 'collection' as const, account_id: 7, category_id: null };
+
+    function loanDetail(overrides: Partial<ScheduleDefinitionDetail> = {}): ScheduleDefinitionDetail {
+      const base = detail({ pending_principal: '286000.0000', ...overrides });
+      return overrides.template ? base : { ...base, template: { ...base.template, lines: [interest, repayment] } };
+    }
+
+    function openForm(el: HTMLElement): void {
+      click(el, '.sheet-attach-loan');
+      http.expectOne(r => r.method === 'GET' && r.url === '/api/accounting/counterparties').flush([
+        { id: 3, name: '範例銀行', open_amounts: [] },
+        { id: 4, name: '另一家銀行', open_amounts: [] },
+      ]);
+      fixture.detectChanges();
+    }
+
+    function pick(el: HTMLElement, id: string): void {
+      const select = el.querySelector('.loan-counterparty') as HTMLSelectElement;
+      select.value = id;
+      select.dispatchEvent(new Event('change'));
+      fixture.detectChanges();
+    }
+
+    function typeAmount(el: HTMLElement, value: string): void {
+      const input = el.querySelector('.loan-amount') as HTMLInputElement;
+      input.value = value;
+      input.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+    }
+
+    function confirmButton(el: HTMLElement): HTMLButtonElement {
+      return el.querySelector('.loan-confirm') as HTMLButtonElement;
+    }
+
+    it('shows 掛上貸款 only for an installment with a repayment line, no loan, not ended', () => {
+      const cases: [ScheduleDefinitionDetail, boolean][] = [
+        [loanDetail(), true],
+        [loanDetail({ template: { ...detail().template, lines: [collection] } }), false],
+        [loanDetail({ loan_entry_id: 900, loan_remaining: '286000.0000' }), false],
+        [loanDetail({ status: 'ended', instances: [] }), false],
+        [loanDetail({ kind: 'recurring' }), false],
+      ];
+      for (const [body, shown] of cases) {
+        const el = render(body);
+        expect(el.querySelector('.sheet-attach-loan') !== null).toBe(shown);
+        fixture.destroy();
+      }
+      // Lazily: the counterparties are read when the form opens, not with the sheet.
+      http.expectNone('/api/accounting/counterparties');
+    });
+
+    it('prefills 剩餘本金 from pending_principal', () => {
+      const el = render(loanDetail());
+      expect(text(el.querySelector('.sheet-attach-loan'))).toBe('掛上貸款');
+      openForm(el);
+      expect(text(el.querySelector('.loan-form .loan-hint'))).toBe('輸入到上一期為止還欠多少；若有逾期未補的期數先補記');
+      expect((el.querySelector('.loan-amount') as HTMLInputElement).value).toBe('286000');
+      expect((el.querySelector('.loan-amount') as HTMLInputElement).getAttribute('inputmode')).toBe('decimal');
+      expect((el.querySelector('.loan-date') as HTMLInputElement).value).toBe('2026-10-03');
+      expect((el.querySelector('.loan-name') as HTMLInputElement).value).toBe('信貸 每月還款');
+      expect(Array.from(el.querySelectorAll('.loan-counterparty option')).map(text)).toEqual(['選擇對象', '範例銀行', '另一家銀行']);
+      fixture.destroy();
+      const empty = render(loanDetail({ pending_principal: null }));
+      openForm(empty);
+      expect((empty.querySelector('.loan-amount') as HTMLInputElement).value).toBe('');
+    });
+
+    it('確定 disabled without a counterparty or amount', () => {
+      const el = render(loanDetail());
+      openForm(el);
+      expect(confirmButton(el).disabled).toBe(true);
+      pick(el, '3');
+      expect(confirmButton(el).disabled).toBe(false);
+      typeAmount(el, '');
+      expect(confirmButton(el).disabled).toBe(true);
+      typeAmount(el, '0');
+      expect(confirmButton(el).disabled).toBe(true);
+      typeAmount(el, '12.3.4');
+      expect(confirmButton(el).disabled).toBe(true);
+      typeAmount(el, '250000');
+      expect(confirmButton(el).disabled).toBe(false);
+      pick(el, '');
+      expect(confirmButton(el).disabled).toBe(true);
+      http.expectNone(r => r.url.endsWith('/loan'));
+    });
+
+    it("posts the loan with the repayment line's account and hides the button after success", () => {
+      const el = render(loanDetail());
+      openForm(el);
+      pick(el, '3');
+      click(el, '.loan-confirm');
+      const req = http.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/schedules/definitions/5/loan');
+      expect(req.request.body).toEqual({
+        account_id: 7,
+        counterparty_id: 3,
+        category_id: null,
+        amount: '286000',
+        entry_date: '2026-10-03',
+        name: '信貸 每月還款',
+      });
+      req.flush(loanDetail({ loan_entry_id: 900, loan_remaining: '286000.0000', pending_principal: null }), {
+        status: 201,
+        statusText: 'Created',
+      });
+      fixture.detectChanges();
+      expect(el.querySelector('.sheet-attach-loan')).toBeNull();
+      expect(el.querySelector('.loan-form')).toBeNull();
+      expect(el.querySelector('.form-error')).toBeNull();
+    });
+
+    it('shows 已掛上貸款：剩餘 after success', () => {
+      const el = render(loanDetail());
+      expect(el.querySelector('.loan-summary')).toBeNull();
+      openForm(el);
+      pick(el, '4');
+      typeAmount(el, '250000');
+      click(el, '.loan-confirm');
+      http
+        .expectOne('/api/accounting/schedules/definitions/5/loan')
+        .flush(loanDetail({ loan_entry_id: 900, loan_remaining: '250000.0000', pending_principal: null }));
+      fixture.detectChanges();
+      expect(text(el.querySelector('.loan-summary'))).toBe('已掛上貸款：剩餘 $250,000');
+    });
+
+    it('maps catch_up_first to 先補記逾期的期數', () => {
+      const el = render(loanDetail());
+      openForm(el);
+      pick(el, '3');
+      click(el, '.loan-confirm');
+      http
+        .expectOne('/api/accounting/schedules/definitions/5/loan')
+        .flush({ code: 'conflict', message: 'catch_up_first', trace_id: 't' }, { status: 409, statusText: 'Conflict' });
+      fixture.detectChanges();
+      expect(text(el.querySelector('.form-error'))).toBe('先補記逾期的期數');
+      // The form stays open with the draft, so the owner can 補記 and retry.
+      expect(el.querySelector('.loan-form')).not.toBeNull();
+      expect((el.querySelector('.loan-amount') as HTMLInputElement).value).toBe('286000');
+      expect(confirmButton(el).disabled).toBe(false);
+    });
+
+    for (const [body, status, message] of [
+      [{ detail: 'definition_ended' }, 409, '排程已結束'],
+      [{ code: 'conflict', message: 'loan_already_attached' }, 409, '已經有貸款了'],
+      [{ code: 'conflict', message: 'nothing_pending' }, 409, '沒有待入帳的期數'],
+      [{ detail: [{ loc: ['amount'], msg: '超過之後各期本金合計', type: 'value_error' }] }, 422, '超過之後各期本金合計'],
+      [{ detail: [{ loc: ['amount'], msg: '剩餘期數乘以每期金額已達剩餘本金', type: 'value_error' }] }, 422, '剩餘期數乘以每期金額已達剩餘本金'],
+    ] as const) {
+      it(`maps the attach refusal to ${message}`, () => {
+        const el = render(loanDetail());
+        openForm(el);
+        pick(el, '3');
+        click(el, '.loan-confirm');
+        http.expectOne('/api/accounting/schedules/definitions/5/loan').flush(body, { status, statusText: 'Refused' });
+        fixture.detectChanges();
+        expect(text(el.querySelector('.form-error'))).toBe(message);
+      });
+    }
+
+    it('shows the toast on import_running and keeps the form', () => {
+      const el = render(loanDetail());
+      openForm(el);
+      pick(el, '3');
+      click(el, '.loan-confirm');
+      http
+        .expectOne('/api/accounting/schedules/definitions/5/loan')
+        .flush({ detail: 'import_running' }, { status: 409, statusText: 'Conflict' });
+      fixture.detectChanges();
+      expect(TestBed.inject(AccountingToastService).message()).toBe('匯入進行中，請稍後再試');
+      expect(el.querySelector('.form-error')).toBeNull();
+      expect(el.querySelector('.loan-form')).not.toBeNull();
+    });
+
+    it('取消 and Esc close the form before the sheet', () => {
+      const el = render(loanDetail());
+      const closed = vi.fn();
+      fixture.componentInstance.closed.subscribe(closed);
+      openForm(el);
+      click(el, '.loan-cancel');
+      expect(el.querySelector('.loan-form')).toBeNull();
+      click(el, '.sheet-attach-loan');
+      // The counterparties are read once per sheet.
+      http.expectNone('/api/accounting/counterparties');
+      expect(el.querySelector('.loan-form')).not.toBeNull();
+      el.querySelector('.loan-amount')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      fixture.detectChanges();
+      expect(el.querySelector('.loan-form')).toBeNull();
+      expect(closed).not.toHaveBeenCalled();
+    });
+  });
 });

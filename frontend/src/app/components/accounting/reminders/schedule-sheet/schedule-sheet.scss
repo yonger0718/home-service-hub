@@ -119,3 +119,60 @@
   font-size: var(--fs-sm, 0.85rem);
   text-align: center;
 }
+
+/* 掛上貸款 (spec §4.4): the summary line in the header area, and the inline form — fields stacked, mobile-first. */
+.loan-summary {
+  color: var(--app-text);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  margin: 0 0 6px;
+  text-align: center;
+}
+
+.loan-form {
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 0;
+  padding: 8px;
+
+  h4 {
+    font-size: 0.85rem;
+    margin: 0;
+    text-align: center;
+  }
+}
+
+.loan-hint {
+  color: var(--app-text-muted);
+  font-size: 0.75rem;
+  margin: 0;
+}
+
+.loan-field {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.85rem;
+  gap: 2px;
+
+  select,
+  input {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .loan-amount {
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+}
+
+.loan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}

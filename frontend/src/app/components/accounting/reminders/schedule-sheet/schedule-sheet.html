@@ -4,6 +4,9 @@
     @if (definition(); as d) {
       <h3 id="schedule-sheet-title">{{ d.name }}</h3>
       <p class="rule-summary">{{ summary() }}</p>
+      @if (loanSummary(); as line) {
+        <p class="loan-summary">{{ line }}</p>
+      }
       @if (d.status === 'paused') {
         <p class="badge paused">已暫停</p>
       }
@@ -70,6 +73,40 @@
           </span>
         </div>
       </div>
+      @if (attachOpen()) {
+        <div class="loan-form" role="group" aria-labelledby="loan-form-title">
+          <h4 id="loan-form-title">掛上貸款</h4>
+          <p class="loan-hint">輸入到上一期為止還欠多少；若有逾期未補的期數先補記</p>
+          <label class="loan-field">
+            <span>對象</span>
+            <select class="loan-counterparty" required [disabled]="counterparties() === null" (change)="setLoanCounterparty($any($event.target).value)">
+              <option value="" [selected]="loanCounterpartyId() === null">選擇對象</option>
+              @for (counterparty of counterparties() ?? []; track counterparty.id) {
+                <option [value]="counterparty.id" [selected]="loanCounterpartyId() === counterparty.id">{{ counterparty.name }}</option>
+              }
+            </select>
+          </label>
+          @if (counterparties()?.length === 0) {
+            <p class="loan-hint">先到記帳設定新增對象（銀行）</p>
+          }
+          <label class="loan-field">
+            <span>剩餘本金</span>
+            <input type="text" class="loan-amount" inputmode="decimal" required [value]="loanAmount()" (input)="loanAmount.set($any($event.target).value)" />
+          </label>
+          <label class="loan-field">
+            <span>起算日</span>
+            <input type="date" class="loan-date" required [value]="loanDate()" (input)="loanDate.set($any($event.target).value)" />
+          </label>
+          <label class="loan-field">
+            <span>名稱</span>
+            <input type="text" class="loan-name" maxlength="128" [value]="loanName()" (input)="loanName.set($any($event.target).value)" />
+          </label>
+          <div class="btnrow loan-actions">
+            <button type="button" class="loan-cancel" (click)="closeAttach()">取消</button>
+            <button type="button" class="loan-confirm" [disabled]="busy() || !canConfirmLoan()" (click)="attach()">確定</button>
+          </div>
+        </div>
+      }
       @if (error(); as message) {
         <p class="form-error" role="alert">{{ message }}</p>
       }
@@ -86,6 +123,9 @@
         @if (d.status !== 'ended') {
           <button type="button" class="sheet-edit" (click)="edit()">編輯</button>
           <button type="button" class="danger sheet-end" [disabled]="busy()" (click)="end()">{{ confirm() === 'end' ? '確定結束' : '結束' }}</button>
+        }
+        @if (canAttachLoan() && !attachOpen()) {
+          <button type="button" class="sheet-attach-loan" [disabled]="busy()" (click)="openAttach()">掛上貸款</button>
         }
         @if (canDelete()) {
           <button type="button" class="danger sheet-delete" [disabled]="busy()" (click)="remove()">{{ confirm() === 'delete' ? '確定刪除' : '刪除' }}</button>

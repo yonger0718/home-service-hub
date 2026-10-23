@@ -13,19 +13,43 @@ import {
   signal,
   untracked,
 } from '@angular/core';
+import { HttpErrorResponse } from '@angular/common/http';
 import { Router } from '@angular/router';
 import { Observable } from 'rxjs';
 
-import { ScheduleAmountScope, ScheduleDefinitionDetail, SchedulePostingMode } from '../../../../models/accounting.model';
+import {
+  Counterparty,
+  ScheduleAmountScope,
+  ScheduleDefinitionDetail,
+  SchedulePostingMode,
+} from '../../../../models/accounting.model';
 import { AccountingService } from '../../../../services/accounting.service';
 import { AccountingToastService, scheduleActionError } from '../../accounting-toast';
 import { focusSheetField, sheetKeyAction } from '../../accounting-ui';
-import { parseAmountFields } from '../../amount-text';
+import { amountString, parseAmountFields, parseAmountText } from '../../amount-text';
 import { shortDate, todayIso } from '../../dates';
-import { formatSigned } from '../../format';
+import { formatMoney, formatSigned } from '../../format';
 import { ruleSummary } from '../../schedule-math';
 
 type SheetConfirm = 'resume' | 'end' | 'delete' | null;
+
+/** 掛上貸款 refusals (spec §4.4) in the owner's words; 409 `{"detail": code}` or shared_lib `message` = code. */
+const LOAN_CONFLICTS: Record<string, string> = {
+  definition_ended: '排程已結束',
+  loan_already_attached: '已經有貸款了',
+  catch_up_first: '先補記逾期的期數',
+  nothing_pending: '沒有待入帳的期數',
+};
+
+function loanConflictMessage(error: unknown): string | null {
+  if (!(error instanceof HttpErrorResponse) || error.status !== 409) {
+    return null;
+  }
+  const body = error.error as { detail?: unknown; message?: unknown } | null;
+  const message = typeof body?.message === 'string' ? body.message : typeof body?.detail === 'string' ? body.detail : '';
+  const code = message.split(':', 1)[0].trim();
+  return Object.hasOwn(LOAN_CONFLICTS, code) ? LOAN_CONFLICTS[code] : null;
+}
 
 /** The manage sheet of one definition (spec "週期／分期 section"). */
 @Component({
@@ -80,6 +104,37 @@ export class ScheduleSheetComponent {
   readonly overdue = computed(() => this.pending().filter(item => item.due_date <= this.today()).length);
   readonly pendingCount = computed(() => this.pending().length);
   readonly canDelete = computed(() => this.definition()?.posted_count === 0);
+
+  /** 掛上貸款 (spec §4.4): the template's repayment line (−1 when none; collection lines do not qualify). */
+  readonly repaymentLine = computed(() => (this.definition()?.template.lines ?? []).findIndex(line => line.kind === 'repayment'));
+  readonly canAttachLoan = computed(() => {
+    const d = this.definition();
+    return d !== null && d.kind === 'installment' && d.loan_entry_id === null && d.status !== 'ended' && this.repaymentLine() >= 0;
+  });
+  /** The loan's currency: the repayment line's (the payable takes that account). */
+  readonly loanCurrency = computed(() => {
+    const lines = this.definition()?.template.lines ?? [];
+    return lines[this.repaymentLine()]?.currency ?? lines[0]?.currency ?? 'TWD';
+  });
+  readonly loanSummary = computed(() => {
+    const d = this.definition();
+    return d && d.loan_entry_id !== null ? `已掛上貸款：剩餘 ${formatMoney(d.loan_remaining, this.loanCurrency())}` : null;
+  });
+  readonly attachOpen = signal(false);
+  /** null until the first open reads them (lazily, once per sheet). */
+  readonly counterparties = signal<Counterparty[] | null>(null);
+  readonly loanCounterpartyId = signal<number | null>(null);
+  readonly loanAmount = signal('');
+  readonly loanDate = signal('');
+  readonly loanName = signal('');
+  /** The amount as an API string when it is a valid number > 0; else null. */
+  private readonly loanAmountValue = computed(() => {
+    const value = parseAmountText(this.loanAmount(), this.loanCurrency());
+    return value === null ? null : amountString(value, this.loanCurrency());
+  });
+  readonly canConfirmLoan = computed(
+    () => this.loanCounterpartyId() !== null && this.loanAmountValue() !== null && this.loanDate() !== '',
+  );
 
   constructor() {
     inject(DestroyRef).onDestroy(() => this.destroyed.set(true));
@@ -219,6 +274,7 @@ export class ScheduleSheetComponent {
     }
     this.confirm.set(null);
     this.error.set(null);
+    this.attachOpen.set(false);
     this.askScope.set(false);
     this.editingId.set(id);
     this.editAmounts.set([...period.amounts]);
@@ -287,19 +343,111 @@ export class ScheduleSheetComponent {
     });
   }
 
+  /** 掛上貸款: the inline form, 剩餘本金 prefilled with 之後各期本金合計, 起算日 today, 名稱 the definition's. */
+  openAttach(): void {
+    const d = this.definition();
+    if (!d || !this.canAttachLoan()) {
+      return;
+    }
+    this.confirm.set(null);
+    this.error.set(null);
+    this.askScope.set(false);
+    this.editingId.set(null);
+    this.today.set(todayIso());
+    this.loanCounterpartyId.set(null);
+    this.loanAmount.set(d.pending_principal === null ? '' : String(Number(d.pending_principal)));
+    this.loanDate.set(this.today());
+    this.loanName.set(d.name);
+    this.attachOpen.set(true);
+    if (this.counterparties() === null) {
+      this.accounting.getCounterparties().subscribe({
+        next: rows => {
+          if (!this.destroyed()) {
+            this.counterparties.set(rows);
+          }
+        },
+        error: () => {
+          if (!this.destroyed()) {
+            this.error.set('對象讀取失敗，請稍後再試');
+          }
+        },
+      });
+    }
+    focusSheetField(this.host.nativeElement, '.loan-form .loan-counterparty', this.injector);
+  }
+
+  closeAttach(): void {
+    this.attachOpen.set(false);
+    this.error.set(null);
+    focusSheetField(this.host.nativeElement, '.sheet-attach-loan', this.injector);
+  }
+
+  setLoanCounterparty(value: string): void {
+    this.loanCounterpartyId.set(value === '' ? null : Number(value));
+  }
+
+  /**
+   * 確定 → `POST …/definitions/{id}/loan` with the repayment line's account; the answer is the refreshed detail
+   * (loan_entry_id, loan_remaining, pending_principal), so the sheet takes it as is and the form closes.
+   */
+  attach(): void {
+    const d = this.definition();
+    const amount = this.loanAmountValue();
+    const counterpartyId = this.loanCounterpartyId();
+    const line = d?.template.lines[this.repaymentLine()];
+    if (!d || !line || amount === null || counterpartyId === null || !this.canConfirmLoan() || this.busy()) {
+      return;
+    }
+    this.busy.set(true);
+    this.error.set(null);
+    this.accounting
+      .attachScheduleLoan(d.id, {
+        account_id: line.account_id,
+        counterparty_id: counterpartyId,
+        category_id: null,
+        amount,
+        entry_date: this.loanDate(),
+        name: this.loanName().trim() || null,
+      })
+      .subscribe({
+        next: refreshed => {
+          if (this.destroyed()) {
+            return;
+          }
+          this.requestId++; // a load still in flight is older than this answer
+          this.busy.set(false);
+          this.definition.set(refreshed);
+          this.attachOpen.set(false);
+          this.keepFocusInside();
+        },
+        error: (error: unknown) => {
+          if (this.destroyed()) {
+            scheduleActionError(error, this.toast);
+            return;
+          }
+          this.busy.set(false);
+          this.error.set(loanConflictMessage(error) ?? scheduleActionError(error, this.toast));
+          this.keepFocusInside();
+        },
+      });
+  }
+
   close(): void {
     this.closed.emit();
   }
 
   /**
    * Handled at the host so the page never sees the key. Esc closes, in order: the 套用範圍 question (nothing is saved),
-   * the period editor, an open confirmation, the sheet. ⏎ in an amount field saves the period.
+   * the period editor, the 掛上貸款 form, an open confirmation, the sheet. ⏎ in an amount field saves the period; ⏎ in
+   * a 掛上貸款 field confirms it.
    */
   onKeydown(event: KeyboardEvent): void {
     const action = sheetKeyAction(event, this.host.nativeElement.querySelector('.sheet'));
     if (action === 'confirm') {
       if (this.editingId() !== null && !this.askScope()) {
         this.saveEdit();
+      } else if (this.attachOpen()) {
+        this.attach();
       }
       return;
     }
@@ -311,6 +459,8 @@ export class ScheduleSheetComponent {
       focusSheetField(this.host.nativeElement, '.period-save', this.injector);
     } else if (this.editingId() !== null) {
       this.cancelEdit();
+    } else if (this.attachOpen()) {
+      this.closeAttach();
     } else if (this.confirm() !== null) {
       const open = this.confirm();
       this.confirm.set(null);
