@@ -351,6 +351,13 @@ describe('PortfolioDashboardComponent', () => {
       }
     });
 
+    it('links 匯入券商 to the unified import page with the broker type', () => {
+      const fixture = createFixture();
+      const link = Array.from(header(fixture).querySelectorAll('a')).find(a => a.textContent?.includes('匯入券商'));
+
+      expect(link?.getAttribute('href')).toBe('/portfolio/import?type=broker');
+    });
+
     it('puts the market toggle in the header with Chinese labels', () => {
       portfolioService.getSummary.mockReturnValue(of(buildSummary({
         holdings: [buildHolding(), { ...buildHolding(), symbol: 'AAPL', market: 'US', native_currency: 'USD' }],

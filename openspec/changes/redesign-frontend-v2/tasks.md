@@ -46,9 +46,9 @@
 
 ## 6. 匯入
 
-- [ ] 6.1 Unified page with 交易 / 股利 / 券商對帳單 switch mapped to the three existing endpoints
-- [ ] 6.2 Last-failure banner, error list, symbol confirmation block, post-import panel, recent imports (device-local)
-- [ ] 6.3 Redirect `/portfolio/import-broker` → `/portfolio/import?type=broker`
+- [x] 6.1 Unified page with 交易 / 股利 / 券商對帳單 switch mapped to the three existing endpoints
+- [x] 6.2 Last-failure banner, error list, symbol confirmation block, post-import panel, recent imports (device-local)
+- [x] 6.3 Redirect `/portfolio/import-broker` → `/portfolio/import?type=broker`
 
 ## 7. Accounting
 

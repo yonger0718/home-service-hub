@@ -1,161 +1,288 @@
 <p-toast></p-toast>
 <p-confirmDialog></p-confirmDialog>
 
-<div class="import-page">
+<div class="import-page" [class.panes]="panes()">
   <app-page-header></app-page-header>
 
-  <div class="imp-card">
-    <section class="imp-section">
-      <div class="imp-step-label"><span class="imp-step-num">1</span>上傳 CSV 檔案</div>
-      <small class="imp-hint">支援自動偵測：國泰證券（含「根據您篩選的結果」前置列）與通用欄位格式。</small>
-      <div class="import-options">
-        <label>匯入類型
-          <select aria-label="匯入類型" [ngModel]="kind()" [disabled]="busy()"
-            (ngModelChange)="onImportOptionsChange($event, hasHeader())">
-            @for (option of kindOptions; track option.value) {
-              <option [value]="option.value">{{ option.label }}</option>
-            }
-          </select>
-        </label>
-        <label><input type="checkbox" [ngModel]="hasHeader()" [disabled]="busy()"
-          (ngModelChange)="onImportOptionsChange(kind(), $event)" />首列為欄位名稱</label>
-      </div>
-      <small class="imp-hint">{{ headerHint }}</small>
-      @if (!file()) {
-        <label class="dropzone" (drop)="onDrop($event)" (dragover)="onDragOver($event)">
-          <i class="pi pi-cloud-upload" aria-hidden="true"></i>
-          <span>將 CSV 拖曳至此，或選擇檔案</span>
-          <small>支援 .csv · UTF-8 編碼</small>
-          <input type="file" accept=".csv,text/csv" (change)="onNativeFileChange($event)" />
-        </label>
-      } @else {
-        <app-file-chip [filename]="file()!.name" [parsedCount]="parsedCount()" (remove)="onClear()"></app-file-chip>
-        @if (detectedFormatLabel(); as label) {
-          <div class="imp-detected">偵測格式：<strong>{{ label }}</strong></div>
-        }
-      }
-    </section>
+  @if (failure(); as banner) {
+    <div class="import-banner" role="alert">
+      <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
+      <span><b>{{ banner.lead }}</b>{{ banner.body }}</span>
+    </div>
+  }
+  @if (recalcFailure(); as banner) {
+    <div class="import-banner" role="alert">
+      <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
+      <span>{{ banner }}</span>
+    </div>
+  }
 
-    @if (result(); as r) {
-      <section class="imp-section">
-        <div class="imp-step-label"><span class="imp-step-num">2</span>確認{{ kind() === 'dividends' ? '股利' : '交易' }}預覽</div>
-        <div class="summary">
-          <span class="badge">解析 {{ r.parsed }}</span>
-          <span class="badge ok">{{ r.dry_run ? '可新增' : '已新增' }} {{ r.created }}</span>
-          <span class="badge skip">重複 {{ r.skipped_duplicates }}</span>
-          @if (r.errors.length > 0) {
-            <span class="badge err">錯誤 {{ r.errors.length }}</span>
+  <ol class="steps" aria-label="匯入步驟">
+    @for (s of steps; track s.num) {
+      <li [class.current]="step() === s.num" [class.done]="step() > s.num" [attr.aria-current]="step() === s.num ? 'step' : null">
+        <span class="step-num" aria-hidden="true">{{ step() > s.num ? '✓' : s.num }}</span>
+        <span class="step-text">
+          <b>{{ s.label }}</b>
+          @if (s.sub) {
+            <small>{{ s.sub }}</small>
+          }
+        </span>
+      </li>
+    }
+  </ol>
+
+  <div class="imp-layout">
+    <div class="imp-main">
+      <app-bento class="file-card" title="檔案">
+        <div class="import-options">
+          <fieldset class="type-field" [disabled]="busy()">
+            <app-seg-toggle ariaLabel="匯入類型" [options]="typeOptions" [value]="type()" (change)="onTypeSelect($event)"></app-seg-toggle>
+          </fieldset>
+          @if (type() !== 'broker') {
+            <label class="header-check"><input type="checkbox" [ngModel]="hasHeader()" [disabled]="busy()"
+              (ngModelChange)="onHeaderChange($event)" />首列為欄位名稱</label>
           }
         </div>
-
-        @if (r.rows.length > 0) {
-          <div class="preview-scroll">
-            <table class="preview-table">
-              <thead>
-                <tr>
-                  <th>日期</th>
-                  <th>股票</th>
-                  @if (kind() === 'transactions') {
-                    <th>買賣</th><th class="num">股數</th><th class="num">價格</th>
-                  } @else {
-                    <th class="num">股利金額</th><th>入帳日</th>
-                  }
-                </tr>
-              </thead>
-              <tbody>
-                @for (row of r.rows; track row.row_index) {
-                  <tr>
-                    <td>{{ rowValue(row, ['trade_date', 'ex_dividend_date', 'date', '日期']) || '-' }}</td>
-                    <td>
-                      {{ rowValue(row, ['name', '名稱', '股票']) || rowValue(row, ['symbol', '代號']) || '-' }}
-                      <span>{{ rowValue(row, ['symbol', '代號']) || '' }}</span>
-                    </td>
-                    @if (kind() === 'transactions') {
-                    <td><app-side-tag [variant]="rowSide(row)" [label]="rowSide(row) === 'buy' ? '買進' : '賣出'"></app-side-tag></td>
-                    <td class="num">{{ rowValue(row, ['quantity', 'qty', '股數']) || '-' }}</td>
-                    <td class="num">{{ rowValue(row, ['price', '價格']) || '-' }}</td>
-                    } @else {
-                      <td class="num">{{ rowValue(row, ['amount', '金額']) || '-' }}</td>
-                      <td>{{ rowValue(row, ['received_date', '入帳日']) || '-' }}</td>
-                    }
-                  </tr>
-                }
-              </tbody>
-            </table>
-          </div>
+        @if (type() === 'broker') {
+          <small class="imp-hint">券商對帳單（交易＋現金流）</small>
+        } @else {
+          <small class="imp-hint">通用欄位格式（日期、名稱、買賣、股數、價格） · 支援自動偵測：國泰證券</small>
         }
-
-        @if (r.errors.length > 0) {
-          <div class="error-list">
-            @for (error of r.errors; track error.row_index) {
-              <div>第 {{ error.row_index }} 列：{{ error.message }}</div>
+        <input #fileInput id="import-file-input" class="file-input" type="file" accept=".csv,text/csv"
+          aria-label="選擇 CSV 檔案" (change)="onNativeFileChange($event)" />
+        @if (!file()) {
+          <label class="dropzone" for="import-file-input" (drop)="onDrop($event)" (dragover)="onDragOver($event)">
+            <i class="pi pi-cloud-upload" aria-hidden="true"></i>
+            <span>將 CSV 拖曳至此，或選擇檔案</span>
+            <small>支援 .csv · UTF-8 編碼</small>
+          </label>
+        } @else {
+          <div class="file-row">
+            <app-file-chip [filename]="file()!.name" [parsedCount]="parsedCount()" (remove)="onClear()"></app-file-chip>
+            <app-btn variant="secondary" [disabled]="busy()" (click)="replaceFile()">更換檔案</app-btn>
+          </div>
+          @if (activeResult()) {
+            <div class="imp-detected">{{ parsedCount() }} 列 · 偵測格式：<strong>{{ format().label }}</strong></div>
+            @if (format().warning; as warning) {
+              <div class="imp-warning">{{ warning }}</div>
             }
-          </div>
-        }
-      </section>
-    }
-
-    @if (hasOverrideRows()) {
-      <section class="imp-section override-panel">
-        <h3>確認股票代號</h3>
-        @for (row of unresolvedRows(); track row.name) {
-          <div class="override-row">
-            <label>{{ row.name }}（{{ row.occurrences }} 筆）
-              <input [attr.aria-label]="row.name + ' 代號'" [ngModel]="nameOverrides()[row.name] || ''"
-                [disabled]="busy() || isVerifying(row.name)" (ngModelChange)="setOverride(row.name, $event)" />
-            </label>
-            <app-btn variant="secondary" [disabled]="busy() || isVerifying(row.name) || !nameOverrides()[row.name]"
-              (click)="verifyName(row.name, row.sample_dates)">驗證代號</app-btn>
-            @if (validationFor(row.name); as validation) {
-              <span>{{ validationIcon(validation.status).label }} {{ validation.fetched_name || '' }}</span>
-              @if (needsConfirm(validation.status)) {
-                <label><input type="checkbox" [ngModel]="confirmedOverrides().has(row.name)" [disabled]="busy()"
-                  (ngModelChange)="toggleConfirm(row.name, $event)" />確認使用此代號</label>
-              }
-            }
-          </div>
-        }
-      </section>
-    }
-
-    <section class="imp-section recalc-panel" aria-live="polite">
-      <div>匯入重算：{{ recalcStatus().kind === 'quotes' ? 'idle' : recalcStatus().state }}</div>
-      @if (recalcStatus().kind !== 'quotes' && recalcStatus().started_at) {
-        <small>最近匯入重算：{{ recalcStatus().started_at }}</small>
-      }
-      @if (recalcStatus().kind !== 'quotes') {
-        @for (step of recalcStatus().steps ?? []; track step.name) {
-          <div>{{ step.name === 'dividend_auto_record' ? '歷史股利核對' : step.name }}：{{ step.status }} {{ step.error || '' }}</div>
-          @for (error of step.detail?.source_errors ?? []; track $index) {
-            <div>{{ error.source }} {{ error.symbol }} {{ error.year }}：{{ error.reason }}</div>
           }
-          @for (event of step.detail?.deferred_events ?? []; track event.symbol + event.ex_date) {
-            <div class="deferred-dividend">
-              <strong>{{ event.symbol }}</strong> 除息日：{{ event.ex_date }}
-              每股現金股利：{{ event.cash_dividend_per_share ?? '未知' }} TWD
-              每仟股配股：{{ event.stock_dividend_per_thousand ?? '未知' }}
-              發放日：{{ event.payment_date ?? '未知' }}
-              <div>權益已記錄；請至股利頁核對並確認實際收款。{{ event.reason }}</div>
+        }
+      </app-bento>
+
+      @if (activeResult()) {
+        <app-bento class="preview-card" title="預覽">
+          <div class="count-tags">
+            <app-tag variant="primary">解析 {{ counts().parsed }}</app-tag>
+            <app-tag variant="warning">重複 {{ counts().duplicates }}</app-tag>
+            @if (counts().updated > 0) {
+              <app-tag variant="neutral">更新 {{ counts().updated }}</app-tag>
+            }
+            <app-tag variant="danger">錯誤 {{ counts().errors }}</app-tag>
+          </div>
+          @if (brokerCommitSummary(); as summary) {
+            <div class="commit-counts" role="status">{{ summary }}</div>
+          }
+          @if (previewRows().length > 0) {
+            @if (type() === 'broker') {
+              <h3 class="table-title">交易</h3>
+            }
+            <div class="preview-scroll">
+              <table class="preview-table">
+                <thead>
+                  <tr>
+                    <th>日期</th>
+                    <th>股票</th>
+                    @if (type() === 'dividends') {
+                      <th class="num">股利金額</th><th>入帳日</th>
+                    } @else {
+                      <th>買賣</th><th class="num">股數</th><th class="num">價格</th>
+                    }
+                    <th class="num">結果</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (row of previewRows(); track $index) {
+                    <tr [class.dimmed]="row.dimmed">
+                      <td>{{ row.date }}</td>
+                      <td>
+                        <span class="c-stock">
+                          <b>{{ row.name }}</b>
+                          @if (row.symbol) {
+                            <small>{{ row.symbol }}</small>
+                          }
+                        </span>
+                      </td>
+                      @if (type() === 'dividends') {
+                        <td class="num">{{ row.amount }}</td>
+                        <td>{{ row.received }}</td>
+                      } @else {
+                        <td><app-side-tag [variant]="row.side" [label]="row.sideLabel"></app-side-tag></td>
+                        <td class="num">{{ row.quantity }}</td>
+                        <td class="num">{{ row.price }}</td>
+                      }
+                      <td class="num">
+                        <app-tag [variant]="row.variant" [attr.title]="row.hint">{{ row.label }}</app-tag>
+                        @if (row.hint) {
+                          <span class="sr-only">（{{ row.hint }}）</span>
+                        }
+                      </td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
             </div>
           }
-        }
+          @if (cashFlowRows().length > 0) {
+            <h3 class="table-title">現金流</h3>
+            <div class="preview-scroll">
+              <table class="preview-table">
+                <thead>
+                  <tr><th>日期</th><th>類型</th><th class="num">金額</th><th>幣別</th></tr>
+                </thead>
+                <tbody>
+                  @for (row of cashFlowRows(); track $index) {
+                    <tr [class.dimmed]="row.dimmed">
+                      <td>{{ row.date }}</td>
+                      <td>{{ row.kind }}</td>
+                      <td class="num">{{ row.amount }}</td>
+                      <td>{{ row.currency }}</td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          }
+        </app-bento>
       }
-      @if (recalcStatus().quote_refresh; as quotes) {
-        <div>報價更新（不含股利）：{{ quotes.state }}</div>
-        @for (step of quotes.steps ?? []; track step.name) {
-          <div>{{ step.status }} {{ step.error || '' }}</div>
-        }
-      }
-      <app-btn variant="secondary" [disabled]="recalcSubmitting() || recalcStatus().state === 'running'"
-        (click)="retryRecalc()">重算資料</app-btn>
-    </section>
 
-    <footer class="imp-footer">
-      <app-btn variant="secondary" [disabled]="!file() || busy()" (click)="preview()">重新預覽</app-btn>
-      <app-btn variant="ghost" icon="pi-times" [disabled]="busy()" (click)="onClear()">取消</app-btn>
-      <app-btn icon="pi-check" [disabled]="!file() || busy() || !result()" [loading]="busy()" (click)="commit()">
-        確認匯入 {{ parsedCount() }} 筆
-      </app-btn>
-    </footer>
+      @if (fixLines().length > 0 || uploadDetail()) {
+        <app-bento class="fix-card" title="需要修正的列">
+          <div class="fix-list" role="alert">
+            @for (error of fixLines(); track $index) {
+              @if (error.row_index > 0) {
+                <div class="fix-line"><b>第 {{ error.row_index }} 列</b> · <span>{{ error.reason }}</span> · <small>此列會被略過</small></div>
+              } @else {
+                <div class="fix-line"><span>{{ error.reason }}</span></div>
+              }
+            }
+            @if (uploadDetail(); as detail) {
+              <div class="fix-line"><span>{{ detail }}</span></div>
+            }
+          </div>
+        </app-bento>
+      }
+
+      @if (type() !== 'broker' && file() && hasOverrideRows()) {
+        <app-bento class="override-card" title="確認股票代號">
+          @for (row of unresolvedRows(); track row.name) {
+            <div class="override-block">
+              <span class="ov-name">
+                <b>{{ row.name }} 的股票代號</b>
+                <small>{{ overrideMeta(row) }}</small>
+              </span>
+              <label class="ov-code">代號
+                <input type="text" [attr.aria-label]="row.name + ' 的股票代號'" [ngModel]="nameOverrides()[row.name] || ''"
+                  [disabled]="busy() || isVerifying(row.name)" (ngModelChange)="setOverride(row.name, $event)" />
+              </label>
+              <app-btn variant="secondary" [disabled]="busy() || isVerifying(row.name) || !nameOverrides()[row.name]"
+                [loading]="isVerifying(row.name)" (click)="verifyName(row.name, row.sample_dates)">驗證代號</app-btn>
+              @if (validationFor(row.name); as validation) {
+                <span class="ov-status" [class.ok]="!needsConfirm(validation.status)">
+                  <i [class]="validationIcon(validation.status).icon" aria-hidden="true"></i>
+                  {{ validationIcon(validation.status).label }}{{ validation.fetched_name ? '：' + validation.fetched_name : '' }}
+                </span>
+                @if (needsConfirm(validation.status)) {
+                  <label class="ov-confirm"><input type="checkbox" [ngModel]="confirmedOverrides().has(row.name)" [disabled]="busy()"
+                    (ngModelChange)="toggleConfirm(row.name, $event)" />確認使用此代號</label>
+                }
+              }
+            </div>
+          }
+        </app-bento>
+      }
+
+      <footer class="imp-footer">
+        <app-btn variant="ghost" [disabled]="busy()" (click)="onClear()">取消</app-btn>
+        <app-btn variant="secondary" [disabled]="!file() || busy()" (click)="preview()">重新預覽</app-btn>
+        <app-btn icon="pi-check" [disabled]="!file() || !activeResult() || committed()" [loading]="busy()" (click)="commit()">
+          確認匯入 {{ confirmN() }} 筆
+        </app-btn>
+      </footer>
+
+      @if (recalcPanel()) {
+        <app-bento class="recalc-card" title="匯入並重算">
+          <section class="recalc-panel" aria-live="polite">
+            <div class="recalc-head">
+              <span class="recalc-state">匯入重算：{{ recalcStatus().kind === 'quotes' ? 'idle' : recalcStatus().state }}</span>
+              @if (recalcStatus().kind !== 'quotes' && recalcStatus().started_at) {
+                <small>最近匯入重算：{{ recalcStatus().started_at }}</small>
+              }
+            </div>
+            @if (recalcStatus().kind !== 'quotes') {
+              @for (step of recalcStatus().steps ?? []; track step.name) {
+                <div class="recalc-step">{{ step.name === 'dividend_auto_record' ? '歷史股利核對' : step.name }}：{{ step.status }} {{ step.error || '' }}</div>
+                @for (error of step.detail?.source_errors ?? []; track $index) {
+                  <small class="recalc-note">{{ error.source }} {{ error.symbol }} {{ error.year }}：{{ error.reason }}</small>
+                }
+                @for (event of step.detail?.deferred_events ?? []; track event.symbol + event.ex_date) {
+                  <div class="deferred-dividend">
+                    <strong>{{ event.symbol }}</strong> 除息日：{{ event.ex_date }}
+                    每股現金股利：{{ event.cash_dividend_per_share ?? '未知' }} TWD
+                    每仟股配股：{{ event.stock_dividend_per_thousand ?? '未知' }}
+                    發放日：{{ event.payment_date ?? '未知' }}
+                    <small>權益已記錄；請至股利頁核對並確認實際收款。{{ event.reason }}</small>
+                  </div>
+                }
+              }
+            }
+            @if (recalcStatus().quote_refresh; as quotes) {
+              <div class="recalc-step">報價更新（不含股利）：{{ quotes.state }}</div>
+              @for (step of quotes.steps ?? []; track step.name) {
+                <small class="recalc-note">{{ step.status }} {{ step.error || '' }}</small>
+              }
+            }
+            <div class="recalc-actions">
+              <app-btn variant="secondary" [disabled]="recalcSubmitting() || recalcStatus().state === 'running'"
+                (click)="retryRecalc()">重算資料</app-btn>
+            </div>
+          </section>
+        </app-bento>
+      }
+
+      @if (!panes()) {
+        <ng-container *ngTemplateOutlet="sideColumn"></ng-container>
+      }
+    </div>
+
+    @if (panes()) {
+      <ng-container *ngTemplateOutlet="sideColumn"></ng-container>
+    }
   </div>
 </div>
+
+<ng-template #sideColumn>
+  <aside class="imp-side" aria-label="匯入後會發生什麼">
+    <app-bento class="after-card" title="匯入後自動執行">
+      @for (row of afterImport; track row.title) {
+        <div class="after-row">
+          <b>{{ row.title }}</b>
+          <small>{{ row.note }}</small>
+        </div>
+      }
+    </app-bento>
+    <app-bento class="recent-card" title="最近匯入">
+      @for (attempt of recentImports(); track $index) {
+        <div class="recent-row">
+          <span class="dot" [class.ok]="attempt.ok" [class.failed]="!attempt.ok" aria-hidden="true"></span>
+          <span class="recent-text">
+            <b>{{ attempt.file }}</b>
+            <small>{{ attempt.line }}</small>
+          </span>
+        </div>
+      } @empty {
+        <small class="recent-empty">尚無匯入紀錄</small>
+      }
+    </app-bento>
+  </aside>
+</ng-template>

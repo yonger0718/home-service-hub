@@ -1,7 +1,7 @@
 :host {
   display: block;
   margin-bottom: 1rem;
-  /* As a grid item (e.g. /portfolio/import-broker) the automatic min-width would take the sub-nav's nowrap chips and
+  /* As a grid item the automatic min-width would take the sub-nav's nowrap chips and
      widen the page past a 390 px viewport; the sub-nav scrolls inside the header instead. */
   min-width: 0;
 }

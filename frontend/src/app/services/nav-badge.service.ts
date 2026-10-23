@@ -12,6 +12,7 @@ import { NavBadge } from '../components/shell/navigation';
 import { Counterparty, ImportRun, ScheduleInstance } from '../models/accounting.model';
 import { RecalcStatus } from '../models/portfolio.model';
 import { AccountingService } from './accounting.service';
+import { ImportHistoryService } from './import-history.service';
 import { PortfolioService } from './portfolio.service';
 
 /** A refresh (start, window focus, page visible again) starting sooner than this after the previous one is skipped. */
@@ -38,6 +39,7 @@ export class NavBadgeService {
   private readonly portfolio = inject(PortfolioService);
   private readonly bills = inject(BillingService);
   private readonly inbox = inject(InboxService);
+  private readonly importHistory = inject(ImportHistoryService);
   private readonly document = inject(DOCUMENT);
   private readonly destroyRef = inject(DestroyRef);
 
@@ -67,7 +69,9 @@ export class NavBadgeService {
       badges['accounting'] = { count: review, label: `${review} 筆待確認` };
     }
     const recalc = this.recalc();
-    if (recalc && recalc.kind !== 'quotes' && recalc.state === 'failed') {
+    const recalcFailed = !!recalc && recalc.kind !== 'quotes' && recalc.state === 'failed';
+    // The device's last commit failing raises the dot too; it clears on the next successful commit here.
+    if (recalcFailed || this.importHistory.lastFailed()) {
       badges['import'] = { dot: true, label: '最近一次匯入失敗' };
     }
     return badges;

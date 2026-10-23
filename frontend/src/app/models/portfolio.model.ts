@@ -61,10 +61,15 @@ export interface Transaction {
 
 export type ImportKind = 'transactions' | 'dividends';
 
+/** `rehash` (Cathay only): an existing trade re-fingerprinted in place, nothing inserted. */
+export type ImportRowStatus = 'new' | 'duplicate' | 'rehash' | 'unresolved' | 'error';
+
 export interface ImportRow {
   row_index: number;
   fingerprint: string;
   payload: Record<string, string | null>;
+  /** Per-row fate from the import response; absent on older APIs. */
+  status?: ImportRowStatus | null;
 }
 
 export interface ImportError {

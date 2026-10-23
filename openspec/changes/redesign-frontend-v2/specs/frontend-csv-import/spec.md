@@ -23,7 +23,7 @@ The import screen at `/portfolio/import` SHALL render a three-step indicator (�
 
 ### Requirement: Last failed import banner
 
-When the latest import chain reported by `GET /api/portfolio/imports/recalc/status` failed, or the last import attempt made on this device failed, the import screen SHALL show an alert banner at the top: 最近一次匯入失敗 with time, file name and the reason, and state that nothing was written. The banner SHALL disappear after the next successful import. The same condition drives the 匯入 navigation dot.
+When the latest import chain reported by `GET /api/portfolio/imports/recalc/status` failed, or the last import attempt made on this device failed, the import screen SHALL show an alert banner at the top: 最近一次匯入失敗 with time, file name and the reason, and, for a failed attempt, state that the whole batch was not written. A failed recalculation after a commit SHALL show its own banner (最近一次匯入的重算失敗) without the nothing-written statement, because rows may have been written. The banner SHALL disappear after the next successful import. The same condition drives the 匯入 navigation dot.
 
 #### Scenario: Banner after a failed attempt
 - **GIVEN** the last attempt on this device failed with one row error
@@ -39,3 +39,16 @@ At ≥ 1024px a side column SHALL explain what runs after an import (重算持�
 - **GIVEN** three import attempts were made on this device
 - **WHEN** the side column renders
 - **THEN** the three attempts SHALL be listed newest first with their result
+
+## Implementation notes
+
+- One page serves `/portfolio/import?type=transactions|dividends|broker`; the old `/portfolio/import-broker` redirects to `type=broker`.
+- The preview rows carry a per-row `status` from the API (`new | duplicate | rehash | unresolved | error`) on both dry-run and commit responses. 新增 / 重複 · 略過 / 更新 / 代號待確認 / 錯誤 render from it; `重複 · 略過` rows are dimmed and excluded from `確認匯入 N`. When `status` is absent (older response) the UI falls back to 新增 / 代號待確認 / 錯誤 and never invents 重複 or 更新.
+- `rehash` is Cathay-only: an existing trade re-fingerprinted in place (fingerprint, side, day-trade marker and cash legs refreshed, no insert). Such rows show a neutral 更新 tag with the hint 既有交易原地更新：指紋、多空、當沖標記與現金腳, are not dimmed, are excluded from `確認匯入 N`, and are counted in an extra 更新 count tag shown only when it is above 0.
+- Count tags follow the statuses: 解析 − 重複 − 更新 = N. On a Cathay statement #duplicate equals `would_skip_duplicate` (dry run) / `skipped_duplicates` (commit) and #rehash equals `would_rehash` / `rehashed`; without statuses 更新 reads those counters.
+- Dry-run statuses inherit three gaps: the generic dry run skips the ledger guard, the broker dry run does not catch an in-file repeated cash flow, and the Cathay dry run marks rows even when parser errors will reject the batch. The 需要修正的列 list is shown alongside.
+- Banner split: the failed-attempt banner says the batch was not written; the recalc-failed banner does not. A partial commit (`created > 0` with row errors) counts as a success.
+- Recent imports are device-local (`localStorage` key `hh-import-history`, 10 entries) and drive the 匯入 navigation dot together with the recalc state; dry-runs are not recorded.
+- The side column renders only at ≥ 1024 px (`panes`); otherwise both cards sit under the footer.
+- After a clean commit the file is cleared but the result and step 3 stay visible. The recalc panel is the step-3 card.
+- 確認匯入 stays enabled with pending symbol overrides; the `尚有代號未驗證` dialog still submits.

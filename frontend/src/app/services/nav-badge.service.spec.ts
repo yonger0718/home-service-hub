@@ -12,6 +12,7 @@ import { makeAccount, makeEntry, makeInstance } from '../components/accounting/t
 import { Counterparty, ImportRun, LedgerAccount, ScheduleInstance } from '../models/accounting.model';
 import { RecalcStatus } from '../models/portfolio.model';
 import { AccountingService } from './accounting.service';
+import { ImportHistoryService } from './import-history.service';
 import { BADGE_REFRESH_MIN_MS, NavBadgeService } from './nav-badge.service';
 import { PortfolioService } from './portfolio.service';
 
@@ -72,6 +73,7 @@ describe('NavBadgeService', () => {
   let getInbox: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    localStorage.clear();
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 9, 22, 10, 0, 0));
     accounts = calls();
@@ -108,6 +110,7 @@ describe('NavBadgeService', () => {
 
   afterEach(() => {
     TestBed.resetTestingModule();
+    localStorage.clear();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -149,6 +152,33 @@ describe('NavBadgeService', () => {
     svc.refresh();
     answer(0, { recalc: { kind: 'import', state: 'completed' } });
     expect('import' in svc.badges()).toBe(false);
+  });
+
+  it('the device\'s last failed commit → import dot even with a healthy recalc chain', () => {
+    TestBed.inject(ImportHistoryService).record({ at: '2026-10-22T01:00:00Z', file: 'a.csv', type: 'transactions', ok: false, created: 0, errors: 1 });
+    const svc = service();
+    svc.refresh();
+    answer(0, { recalc: { kind: 'import', state: 'completed' } });
+    expect(svc.badges()['import']).toEqual({ dot: true, label: '最近一次匯入失敗' });
+  });
+
+  it('a successful commit after the failure clears the dot while the recalc chain is not failed', () => {
+    const history = TestBed.inject(ImportHistoryService);
+    history.record({ at: '2026-10-22T01:00:00Z', file: 'a.csv', type: 'transactions', ok: false, created: 0, errors: 1 });
+    const svc = service();
+    svc.refresh();
+    answer(0, { recalc: { kind: 'import', state: 'completed' } });
+    expect(svc.badges()['import']).toBeDefined();
+    history.record({ at: '2026-10-22T02:00:00Z', file: 'a.csv', type: 'transactions', ok: true, created: 3 });
+    expect('import' in svc.badges()).toBe(false);
+  });
+
+  it('a successful head attempt keeps the dot while the recalc chain failed', () => {
+    TestBed.inject(ImportHistoryService).record({ at: '2026-10-22T02:00:00Z', file: 'a.csv', type: 'transactions', ok: true, created: 3 });
+    const svc = service();
+    svc.refresh();
+    answer(0, { recalc: { kind: 'import', state: 'failed' } });
+    expect(svc.badges()['import']).toEqual({ dot: true, label: '最近一次匯入失敗' });
   });
 
   it('a failed quote refresh shows no import dot', () => {

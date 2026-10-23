@@ -447,12 +447,15 @@ def _dry_run_rehash(db: Session, parsed: ParseResult) -> ImportResult:
                     claimed_business_ids.add(cand_id)
                     break
             would_rehash += 1
+            # A rehash re-stamps an already-stored row in place: nothing is inserted.
+            row.status = "rehash"
             available_legacy.remove(legacy_fp)
             simulated_fingerprints.discard(legacy_fp)
             simulated_fingerprints.add(new_fp)
             continue
         if new_fp in simulated_fingerprints:
             would_skip_duplicate += 1
+            row.status = "duplicate"
             continue
         # Mirror commit-path business-key fallback. Skip candidates whose
         # fingerprint is one this batch already produces (twin-protection) or
@@ -467,9 +470,11 @@ def _dry_run_rehash(db: Session, parsed: ParseResult) -> ImportResult:
         if match_id is not None:
             claimed_business_ids.add(match_id)
             would_rehash += 1
+            row.status = "rehash"
             simulated_fingerprints.add(new_fp)
             continue
         would_insert += 1
+        row.status = "new"
         simulated_fingerprints.add(new_fp)
     return ImportResult(
         parsed=len(parsed.rows),
@@ -488,9 +493,21 @@ def _dry_run_rehash(db: Session, parsed: ParseResult) -> ImportResult:
     )
 
 
-def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
+def _clear_statuses(rows: list[ParsedRow]) -> None:
+    # Whole-batch rejection: no row was judged individually, nothing was written.
+    for row in rows:
+        row.status = None
+
+
+def _commit_rehash(
+    db: Session, parsed: ParseResult, *, batch_rows: list[ParsedRow] | None = None
+) -> ImportResult:
+    # ``batch_rows``: every row of the upload, including the ones filtered out of
+    # ``parsed`` (unverified overrides) — a whole-batch rejection clears them all.
+    batch = parsed.rows if batch_rows is None else batch_rows
     if parsed.errors:
         db.rollback()
+        _clear_statuses(batch)
         return ImportResult(
             parsed=len(parsed.rows),
             created=0,
@@ -547,6 +564,7 @@ def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
                             CashTxnSource.CSV_IMPORT,
                         )
                     rehashed += 1
+                    row.status = "rehash"
                     continue
                 duplicate = (
                     db.query(models.Transaction)
@@ -555,6 +573,7 @@ def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
                 )
                 if duplicate is not None:
                     skipped_duplicates += 1
+                    row.status = "duplicate"
                     continue
                 business_match = _business_key_match(db, row, claimed_ids, batch_fingerprints)
                 if business_match is not None:
@@ -584,10 +603,12 @@ def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
                             CashTxnSource.CSV_IMPORT,
                         )
                     rehashed += 1
+                    row.status = "rehash"
                     continue
                 tx = _insert_transaction(db, row, cash_account_id)
                 created += 1
                 created_ids.append(tx.id)
+                row.status = "new"
     except (
         cash_account_service.CashAccountNotFound,
         cash_account_service.CashAccountAmbiguous,
@@ -600,12 +621,16 @@ def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
         created_ids.clear()
         created = 0
         rehashed = 0
+        skipped_duplicates = 0
+        _clear_statuses(batch)
     except IntegrityError as exc:
         db.rollback()
         errors.append(ParseError(row_index=0, message=str(exc)))
         created_ids.clear()
         created = 0
         rehashed = 0
+        skipped_duplicates = 0
+        _clear_statuses(batch)
     return ImportResult(
         parsed=len(parsed.rows),
         created=created,
@@ -628,8 +653,16 @@ def parse_cathay_transactions_csv(
     db: Session,
     name_overrides: dict[str, str] | None = None,
     confirmed_overrides: set[str] | None = None,
+    parsed: ParseResult | None = None,
 ) -> ImportResult:
-    parsed = parse_cathay_rows(raw_bytes, name_overrides=name_overrides)
+    """Dry-run or commit a Cathay CSV.
+
+    ``parsed`` — the router's own ``parse_cathay_rows`` result for the same
+    bytes and overrides — is reused so the per-row ``status`` stamped here
+    lands on the rows the response serialises.
+    """
+    if parsed is None:
+        parsed = parse_cathay_rows(raw_bytes, name_overrides=name_overrides)
     name_to_earliest_date: dict[str, date] = {}
     for row in parsed.rows:
         name = row.payload["name"]
@@ -660,6 +693,9 @@ def parse_cathay_transactions_csv(
     filtered_rows = [
         row for row in parsed.rows if row.payload["name"] not in unverified_names
     ]
+    for row in parsed.rows:
+        if row.payload["name"] in unverified_names:
+            row.status = "unresolved"
     skipped_unverified = len(parsed.rows) - len(filtered_rows)
     filtered = ParseResult(
         rows=filtered_rows,
@@ -669,7 +705,7 @@ def parse_cathay_transactions_csv(
     if dry_run:
         result = _dry_run_rehash(db, filtered)
     else:
-        result = _commit_rehash(db, filtered)
+        result = _commit_rehash(db, filtered, batch_rows=parsed.rows)
     result.override_validations = validations
     result.skipped_unverified = skipped_unverified
     return result
