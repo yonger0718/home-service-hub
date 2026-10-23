@@ -66,6 +66,10 @@ describe('definitionRows', () => {
     const loan = makeDefinition({
       id: 12, kind: 'installment', name: '信貸 每月還款', times: 36, posted_count: 3, next_due_date: '2027-02-09',
       remaining: '275001.0000', repaid: '24999.0000', category_icon: '🏦',
+      template: {
+        ...makeDefinition().template,
+        lines: [{ ...makeDefinition().template.lines[0], kind: 'repayment', category_id: null, loan_entry_id: 7 }],
+      },
     });
     const ended = makeDefinition({ id: 13, name: '舊貸款', status: 'ended', needs_check: true, next_due_date: null });
     const paused = makeDefinition({
@@ -102,5 +106,11 @@ describe('definitionRows', () => {
     expect(definitionRows([lent, owed, unlinked]).active.map(row => row.remainingText)).toEqual([
       '待收 $50,000', '欠 $80,000', '待收 $30,000',
     ]);
+  });
+
+  it('keeps 剩餘 for a template without a loan-kind line (card installment)', () => {
+    const card = makeDefinition({ id: 23, kind: 'installment', remaining: '6667.0000', repaid: null });
+    expect(card.template.lines[0].kind).toBe('expense');
+    expect(definitionRows([card]).active.map(row => row.remainingText)).toEqual(['剩餘 $6,667']);
   });
 });

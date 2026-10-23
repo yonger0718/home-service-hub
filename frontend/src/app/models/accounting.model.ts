@@ -736,8 +736,9 @@ export interface ScheduleDefinition {
   next_due_date: string | null;
   next_amount: CurrencyAmount[];
   /**
-   * Positive magnitudes (spec §4.1b). Loans: what is still open on the linked loan (the row words it 欠 / 待收) and
-   * what was repaid; card installments: what is left of the total (`repaid` null).
+   * Positive magnitudes (spec §4.1b). Loans: what is still open on the linked loan and what was repaid; card
+   * installments: what is left of the total (`repaid` null). The row words it 欠 / 待收 for a loan-kind template
+   * (a repayment / collection line, linked or not) and 剩餘 otherwise.
    */
   remaining: string | null;
   repaid: string | null;

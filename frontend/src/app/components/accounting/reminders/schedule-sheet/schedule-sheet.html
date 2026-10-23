@@ -76,7 +76,7 @@
       @if (attachOpen()) {
         <div class="loan-form" role="group" aria-labelledby="loan-form-title">
           <h4 id="loan-form-title">掛上貸款</h4>
-          <p class="loan-hint">輸入到上一期為止還欠多少；若有逾期未補的期數先補記</p>
+          <p class="loan-hint">輸入到上一期為止還欠多少；若有逾期未補的期數先補記。起算日＝掛帳日，不是當初借款日</p>
           <label class="loan-field">
             <span>對象</span>
             <select class="loan-counterparty" required [disabled]="counterparties() === null" (change)="setLoanCounterparty($any($event.target).value)">
@@ -95,7 +95,7 @@
           </label>
           <label class="loan-field">
             <span>起算日</span>
-            <input type="date" class="loan-date" required [value]="loanDate()" (input)="loanDate.set($any($event.target).value)" />
+            <input type="date" class="loan-date" required [attr.min]="loanDateMin()" [value]="loanDate()" (input)="loanDate.set($any($event.target).value)" />
           </label>
           <label class="loan-field">
             <span>名稱</span>

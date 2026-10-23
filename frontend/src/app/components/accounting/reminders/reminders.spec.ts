@@ -914,7 +914,11 @@ describe('AccountingRemindersComponent', () => {
   describe('週期／分期', () => {
     const LOAN = makeDefinition({
       id: 12, kind: 'installment', name: '信貸 每月還款', times: 36, posted_count: 3, next_due_date: '2027-02-09',
-      remaining: '275001.0000', repaid: '24999.0000',
+      remaining: '275001.0000', repaid: '24999.0000', loan_entry_id: 7,
+      template: {
+        ...makeDefinition().template,
+        lines: [{ ...makeDefinition().template.lines[0], kind: 'repayment', category_id: null, loan_entry_id: 7 }],
+      },
     });
 
     function row(el: HTMLElement, id: number): HTMLElement {

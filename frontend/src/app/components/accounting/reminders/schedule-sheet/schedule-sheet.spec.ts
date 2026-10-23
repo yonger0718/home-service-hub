@@ -430,7 +430,7 @@ describe('ScheduleSheetComponent', () => {
       const el = render(loanDetail());
       expect(text(el.querySelector('.sheet-attach-loan'))).toBe('掛上貸款');
       openForm(el);
-      expect(text(el.querySelector('.loan-form .loan-hint'))).toBe('輸入到上一期為止還欠多少；若有逾期未補的期數先補記');
+      expect(text(el.querySelector('.loan-form .loan-hint'))).toBe('輸入到上一期為止還欠多少；若有逾期未補的期數先補記。起算日＝掛帳日，不是當初借款日');
       expect((el.querySelector('.loan-amount') as HTMLInputElement).value).toBe('286000');
       expect((el.querySelector('.loan-amount') as HTMLInputElement).getAttribute('inputmode')).toBe('decimal');
       expect((el.querySelector('.loan-date') as HTMLInputElement).value).toBe('2026-10-03');
@@ -546,6 +546,21 @@ describe('ScheduleSheetComponent', () => {
       expect(text(el.querySelector('.loan-summary'))).toBe('已掛上貸款：剩餘 $250,000');
     });
 
+    it('bounds 起算日 below by the latest posted period', () => {
+      const instances = [
+        makeInstance({ id: 90, definition_id: 5, seq: 1, status: 'posted', due_date: '2026-09-09' }),
+        makeInstance({ id: 91, definition_id: 5, seq: 2, status: 'posted', due_date: '2026-10-09' }),
+        makeInstance({ id: 92, definition_id: 5, seq: 3, due_date: '2026-11-09' }),
+      ];
+      const el = render(loanDetail({ instances }));
+      openForm(el);
+      expect((el.querySelector('.loan-date') as HTMLInputElement).getAttribute('min')).toBe('2026-10-09');
+      fixture.destroy();
+      const none = render(loanDetail());
+      openForm(none);
+      expect((none.querySelector('.loan-date') as HTMLInputElement).hasAttribute('min')).toBe(false);
+    });
+
     it('maps catch_up_first to 先補記逾期的期數', () => {
       const el = render(loanDetail());
       openForm(el);
@@ -566,6 +581,7 @@ describe('ScheduleSheetComponent', () => {
       [{ detail: 'definition_ended' }, 409, '排程已結束'],
       [{ code: 'conflict', message: 'loan_already_attached' }, 409, '已經有貸款了'],
       [{ code: 'conflict', message: 'nothing_pending' }, 409, '沒有待入帳的期數'],
+      [{ code: 'conflict', message: 'later_periods_settled: 之後已有入帳或略過的期數，請先還原' }, 409, '之後已有入帳或略過的期數，請先還原'],
       [{ detail: [{ loc: ['amount'], msg: '超過之後各期本金合計', type: 'value_error' }] }, 422, '超過之後各期本金合計'],
       [{ detail: [{ loc: ['amount'], msg: '剩餘期數乘以每期金額已達剩餘本金', type: 'value_error' }] }, 422, '剩餘期數乘以每期金額已達剩餘本金'],
     ] as const) {

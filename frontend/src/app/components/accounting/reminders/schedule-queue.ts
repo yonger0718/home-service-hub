@@ -97,7 +97,7 @@ export interface DefinitionRow {
   nextText: string | null;
   /** `已入帳 3 / 36`, or `每月` / `每 2 週` for an unlimited schedule. */
   progress: string;
-  /** `剩餘 −$275,001` (loan) / `剩餘 $6,667` (card installment); null otherwise. */
+  /** `欠 $275,001` / `待收 $50,000` (loan-kind template) / `剩餘 $6,667` (card installment); null otherwise. */
   remainingText: string | null;
   modeBadge: '自動' | '提醒';
   paused: boolean;
@@ -106,15 +106,19 @@ export interface DefinitionRow {
 }
 
 /**
- * 欠 (we owe) or 待收 (owed to us) for the row's remaining magnitude: the side of the line that carries the loan
- * (`collection` → 待收, else 欠); with no linked line, 待收 when any line is a collection.
+ * The word before the row's remaining magnitude. Loan-kind templates (a `repayment` / `collection` line): 欠 (we
+ * owe) or 待收 (owed to us), from the line that carries the loan, else from the loan-kind line's own kind
+ * (`collection` → 待收, `repayment` → 欠). Any other template (a card installment …) keeps 剩餘.
  */
-function remainingLabel(definition: ScheduleDefinition): '欠' | '待收' {
-  const linked = definition.template.lines.find(line => line.loan_entry_id !== null);
-  if (linked) {
-    return linked.kind === 'collection' ? '待收' : '欠';
+function remainingLabel(definition: ScheduleDefinition): '欠' | '待收' | '剩餘' {
+  const lines = definition.template.lines;
+  const line =
+    lines.find(item => item.loan_entry_id !== null) ??
+    lines.find(item => item.kind === 'repayment' || item.kind === 'collection');
+  if (!line || (line.kind !== 'repayment' && line.kind !== 'collection')) {
+    return '剩餘';
   }
-  return definition.template.lines.some(line => line.kind === 'collection') ? '待收' : '欠';
+  return line.kind === 'collection' ? '待收' : '欠';
 }
 
 function definitionRow(definition: ScheduleDefinition): DefinitionRow {

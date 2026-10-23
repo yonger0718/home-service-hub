@@ -39,6 +39,7 @@ const LOAN_CONFLICTS: Record<string, string> = {
   loan_already_attached: '已經有貸款了',
   catch_up_first: '先補記逾期的期數',
   nothing_pending: '沒有待入帳的期數',
+  later_periods_settled: '之後已有入帳或略過的期數，請先還原',
 };
 
 function loanConflictMessage(error: unknown): string | null {
@@ -120,6 +121,12 @@ export class ScheduleSheetComponent {
     const d = this.definition();
     return d && d.loan_entry_id !== null ? `已掛上貸款：剩餘 ${formatMoney(d.loan_remaining, this.loanCurrency())}` : null;
   });
+  /** 起算日's `min`: the latest posted period's due date (the loan cannot start before it); null when none is posted. */
+  readonly loanDateMin = computed(() =>
+    (this.definition()?.instances ?? [])
+      .filter(item => item.status === 'posted')
+      .reduce<string | null>((latest, item) => (latest === null || item.due_date > latest ? item.due_date : latest), null),
+  );
   readonly attachOpen = signal(false);
   /** null until the first open reads them (lazily, once per sheet). */
   readonly counterparties = signal<Counterparty[] | null>(null);
