@@ -161,8 +161,9 @@ describe('PortfolioRealizedPnlComponent', () => {
         offset: 0,
       }),
     );
+    expect(listQueries()).toEqual([expect.objectContaining({ year: 2025, date_from: null, date_to: null, offset: 0 })]);
     expect(portfolioService.getRealizedPnl).toHaveBeenCalledWith(
-      expect.objectContaining({ year: 2025, date_from: null, date_to: null }),
+      expect.objectContaining({ year: 2025, date_from: null, date_to: null, limit: 200, offset: 0 }),
     );
   });
 
@@ -325,6 +326,43 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     expect(portfolioService['getRealizedPnl']).not.toHaveBeenCalled();
     expect(component.clientOffset()).toBe(25);
     expect(component.query().offset).toBe(0);
+  });
+
+  it('keeps a page-size change under 台股 client-side and fetches the new size once back on 全部', () => {
+    const fixture = create();
+    settle(fixture);
+    const component = fixture.componentInstance;
+    component.onPageChange({ first: 25, rows: 25 });
+    respond(listCalls[1], paged(REALIZED_FIXTURE.slice(2), 5));
+    component.onMarketChange('TW');
+
+    component.onPageChange({ first: 0, rows: 50 });
+
+    expect(listCalls).toHaveLength(2);
+    expect(localStorage.getItem('portfolio.realizedPnl.pageSize')).toBe('50');
+    expect(component.query()).toEqual(expect.objectContaining({ offset: 0, limit: 50 }));
+    expect(component.clientOffset()).toBe(0);
+
+    component.onMarketChange('ALL');
+    expect(listCalls).toHaveLength(3);
+    expect(listCalls[2].query).toEqual(expect.objectContaining({ offset: 0, limit: 50 }));
+    expect(allCalls).toHaveLength(1);
+  });
+
+  it('cancels an in-flight list page when a filter change under 台股 skips the fetch', () => {
+    const fixture = create();
+    respond(allCalls[0], paged(REALIZED_FIXTURE));
+    const component = fixture.componentInstance;
+    const pending = listCalls[0].response;
+    component.onMarketChange('TW');
+
+    component.onDayTradeOnlyChange(true);
+
+    expect(pending.observed).toBe(false);
+    expect(component.loading()).toBe(false);
+    pending.next(paged(REALIZED_FIXTURE, 5));
+    expect(component.events()).toEqual([]);
+    expect(component.total()).toBe(0);
   });
 
   it('resets the client offset on a market or filter change', () => {

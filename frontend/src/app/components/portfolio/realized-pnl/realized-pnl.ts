@@ -158,6 +158,10 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   /** The server list page; only under 全部 (台股/美股 page `marketEvents()` client-side). */
   fetch() {
     if (this.market() !== 'ALL') {
+      // Drop any in-flight page of the old filter so it cannot land later.
+      this.listSub?.unsubscribe();
+      this.fetchSeq++;
+      this.loading.set(false);
       this.listStale = true;
       return;
     }

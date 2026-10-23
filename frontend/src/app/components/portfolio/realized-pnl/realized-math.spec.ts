@@ -14,6 +14,14 @@ import {
 
 const row = (overrides: Partial<RealizedPnlEvent>): RealizedPnlEvent => ({ ...REALIZED_FIXTURE[0], ...overrides });
 
+describe('REALIZED_FIXTURE', () => {
+  it.each(REALIZED_FIXTURE.map(e => [e.symbol, e] as const))('%s satisfies gross − fee − tax = net and net − cost_out = realized', (_symbol, e) => {
+    expect(Number(e.proceeds_gross) - Number(e.fee) - Number(e.tax)).toBe(Number(e.proceeds_net));
+    expect(Number(e.proceeds_net) - Number(e.cost_out)).toBe(Number(e.realized_pnl));
+    expect(Number(e.avg_cost_at_sale) * e.quantity).toBeCloseTo(Number(e.cost_out), 6);
+  });
+});
+
 describe('realizedTotals', () => {
   it('sums the fixture into total, gains/losses, this month, 當沖 and fees + tax', () => {
     expect(realizedTotals(REALIZED_FIXTURE, TODAY)).toEqual({

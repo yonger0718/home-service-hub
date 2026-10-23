@@ -105,7 +105,10 @@ export function rangeLabel(q: RealizedPnlQuery): string {
   return q.year != null ? `${q.year} 年` : periodLabel(q);
 }
 
-/** A client page offset past the set's end moves to the last page's start (0 for an empty set). */
+/**
+ * A client page offset past the set's end moves to the last page's start (0 for an empty set).
+ * `limit` is always > 0 (the rows-per-page options are 25 / 50 / 100).
+ */
 export function clampOffset(offset: number, total: number, limit: number): number {
   if (offset < total) return offset;
   return Math.max(0, Math.floor((total - 1) / limit) * limit);
