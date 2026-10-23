@@ -30,6 +30,14 @@ function deductionsEditable(d: Dividend): boolean {
   return (d.receipt_status === 'pending' || d.receipt_status === 'confirmed') && d.market === 'TW' && d.currency === 'TWD';
 }
 
+/**
+ * 修改扣款 is offered on editable rows, except a confirmed row whose net is 0: it never got a cash leg, so the server
+ * always answers 409. Zero net is one-way for a confirmed row (its leg is deleted and not recreated).
+ */
+function deductionsOffered(d: Dividend): boolean {
+  return deductionsEditable(d) && (d.receipt_status !== 'confirmed' || Number(d.amount) > 0);
+}
+
 /** A non-negative amount with at most 2 decimal places (the server's rule). */
 const AMOUNT_INPUT = /^(\d+(\.\d{0,2})?|\.\d{1,2})$/;
 
@@ -240,23 +248,26 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
 
   /** The row whose inline 修改扣款 form is open; never set together with `openReceiptId`. */
   readonly openDeductionsId = signal<number | null>(null);
-  /** The open row as listed now (its latest revision), pending or confirmed (unlike `receiptRow`); null once it is no longer editable. */
+  /** The open row as listed now, pending or confirmed (unlike `receiptRow`); null once it no longer offers 修改扣款. */
   readonly deductionsRow = computed(() => {
     const id = this.openDeductionsId();
-    return id === null ? null : this.listRows().find(d => d.id === id && deductionsEditable(d)) ?? null;
+    return id === null ? null : this.listRows().find(d => d.id === id && deductionsOffered(d)) ?? null;
   });
+  /** The revision the form was opened on: a reload under the open form makes the server answer 409 rather than apply these values to a newer row. */
+  private deductionsRevision = 1;
   readonly deductionsBusy = signal(false);
   readonly deductionsFee = signal('');
   readonly deductionsTax = signal('');
-  /** 儲存 needs both fields set and non-negative. */
+  /** 儲存 needs both fields set, non-negative and with at most 2 decimal places. */
   readonly deductionsValid = computed(() => amountInput(this.deductionsFee()) !== null && amountInput(this.deductionsTax()) !== null);
 
   /** Opens 修改扣款 under the row, prefilled, closing any other form, and focuses 匯費; ignored while either submit is in flight. */
   openDeductions(row: Dividend): void {
-    if (!deductionsEditable(row) || this.receiptBusy() || this.deductionsBusy()) return;
+    if (!deductionsOffered(row) || this.receiptBusy() || this.deductionsBusy()) return;
     this.closeReceipt();
     this.deductionsFee.set(String(Number(row.fee ?? 0)));
     this.deductionsTax.set(String(Number(row.tax ?? 0)));
+    this.deductionsRevision = row.revision ?? 1;
     this.openDeductionsId.set(row.id);
     this.focusAfterRender('.deductions-form input[aria-label="匯費"]');
   }
@@ -275,7 +286,8 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * Submits the open row as listed now. On success and on error the form closes, focus returns to the row's ⋯ button
+   * Submits the open row (while it is still listed) at the revision captured on open. On success and on error the
+   * form closes, focus returns to the row's ⋯ button
    * and both the page and the filter-wide set reload; an error also toasts the server's reason.
    */
   submitDeductions(): void {
@@ -290,7 +302,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     this.deductionsBusy.set(true);
     const settle = () => { this.deductionsBusy.set(false); this.closeDeductions(); this.focusRowAction(row.id); this.reload(); };
     this.deductionsSub?.unsubscribe();
-    this.deductionsSub = this.portfolioService.updateDividendDeductions(row.id, { fee, tax, revision: row.revision ?? 1 }).subscribe({
+    this.deductionsSub = this.portfolioService.updateDividendDeductions(row.id, { fee, tax, revision: this.deductionsRevision }).subscribe({
       next: () => settle(),
       error: err => {
         settle();
@@ -580,10 +592,13 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     if (record) this.showMenu(action.event, record);
   }
 
-  /** Pending rows: 編輯 / 刪除, plus 修改扣款 when TW/TWD; a confirmed TW/TWD row: 修改扣款 only; any other row: the info toast. */
+  /**
+   * Pending rows: 編輯 / 刪除, plus 修改扣款 when TW/TWD; a confirmed TW/TWD row with a positive net: 修改扣款 only;
+   * any other row (a zero-net confirmed row too): the info toast. 編輯 and 刪除 close any open inline form.
+   */
   showMenu(event: MouseEvent, dividend: Dividend) {
     const deductions: MenuItem = { label: '修改扣款', icon: 'pi pi-calculator', command: () => this.openDeductions(dividend) };
-    if (dividend.receipt_status === 'confirmed' && deductionsEditable(dividend)) {
+    if (dividend.receipt_status === 'confirmed' && deductionsOffered(dividend)) {
       this.menuItems = [deductions];
       this.menu.toggle(event);
       return;
@@ -593,10 +608,10 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
       return;
     }
     this.menuItems = [
-      { label: '編輯', icon: 'pi pi-pencil', command: () => this.editDividend(dividend) },
-      ...(deductionsEditable(dividend) ? [deductions] : []),
+      { label: '編輯', icon: 'pi pi-pencil', command: () => { this.closeForms(); this.editDividend(dividend); } },
+      ...(deductionsOffered(dividend) ? [deductions] : []),
       { separator: true },
-      { label: '刪除', icon: 'pi pi-trash', styleClass: 'text-danger', command: () => this.deleteDividend(dividend) },
+      { label: '刪除', icon: 'pi pi-trash', styleClass: 'text-danger', command: () => { this.closeForms(); this.deleteDividend(dividend); } },
     ];
     this.menu.toggle(event);
   }

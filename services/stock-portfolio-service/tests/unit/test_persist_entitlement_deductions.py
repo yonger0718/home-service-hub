@@ -318,3 +318,27 @@ def test_row_whose_cash_disappears_drops_default_deductions(db_session):
     assert (row.fee, row.tax, row.amount) == (Decimal("0"), Decimal("0"), Decimal("0"))
     assert row.stock_dividend_shares == 1000
     assert row.revision == 2
+
+
+# --- an edit before confirmation is what gets posted ---------------------------
+
+def test_pending_edit_is_the_amount_posted_on_confirmation(db_session):
+    from sqlalchemy import select
+    from app.models.cash_transaction import CashTransaction, CashTxnSource
+
+    _holding(db_session)
+    account = BrokerAccount(broker=BrokerEnum.CATHAY, nickname="Cathay TWD", currency="TWD",
+                            opening_balance=Decimal("0"), opening_date=date(2026, 1, 1), is_active=True)
+    db_session.add(account)
+    db_session.commit()
+    row, _ = _persist(db_session, _event())
+    edited = update_deductions(db_session, row.id, Decimal("0"), Decimal("0"), row.revision)
+    assert edited.amount == Decimal("9600")
+
+    confirmed = confirm_receipt(db_session, row.id, date(2026, 7, 10), account.id, edited.revision)
+
+    legs = list(db_session.scalars(select(CashTransaction).where(CashTransaction.related_dividend_id == row.id)))
+    assert len(legs) == 1
+    assert legs[0].amount == Decimal("9600") == confirmed.amount
+    assert legs[0].source == CashTxnSource.AUTO_DERIVE
+    assert (confirmed.fee, confirmed.tax) == (Decimal("0"), Decimal("0"))

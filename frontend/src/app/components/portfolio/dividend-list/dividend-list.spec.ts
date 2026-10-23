@@ -1363,6 +1363,61 @@ describe('Dividend filter-wide summary', () => {
       fixture.destroy();
     });
 
+    it('a confirmed row with zero net gets the info toast, not 修改扣款 (it has no cash leg to update)', () => {
+      const zeroNet: Dividend = { ...twPaid, id: 44, amount: '0.0000' as never, stock_dividend_shares: 100 };
+      const fixture = rendered([zeroNet]);
+      const toast = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
+
+      expect(menuFor(fixture, zeroNet)).toEqual([]);
+      expect(toast).toHaveBeenCalledWith({ severity: 'info', summary: '需人工釐清，不可直接改寫已收款或舊資料' });
+      fixture.componentInstance.openDeductions(zeroNet);
+      expect(fixture.componentInstance.openDeductionsId()).toBeNull();
+      fixture.destroy();
+    });
+
+    it('sends the revision captured when the form opened, even after a reload bumped it', () => {
+      service['updateDividendDeductions'] = vi.fn(() => new Subject<Dividend>());
+      const fixture = rendered([tw]);
+      const component = fixture.componentInstance;
+      openDeductions(fixture, tw);
+      type(fixture, '匯費', '0');
+
+      component.openNew();
+      component.saveDividend();
+      respond(listCalls[1], { items: [{ ...tw, revision: 3 }], total: 1 });
+      respond(summaryCalls[1], { items: [{ ...tw, revision: 3 }], total: 1 });
+      fixture.detectChanges();
+      expect(forms(fixture)).toHaveLength(1);
+
+      button(fixture, '儲存').click();
+      expect(service['updateDividendDeductions']).toHaveBeenCalledWith(21, { fee: 0, tax: 0, revision: 2 });
+      fixture.destroy();
+    });
+
+    it('編輯 and 刪除 from the menu close an open inline form', () => {
+      const fixture = rendered([tw, twPaid]);
+      const component = fixture.componentInstance;
+      for (const label of ['編輯', '刪除']) {
+        openDeductions(fixture, tw);
+        expect(forms(fixture), label).toHaveLength(1);
+        menuFor(fixture, tw);
+        component.menuItems.find(item => item.label === label)!.command!({} as never);
+        fixture.detectChanges();
+        expect(forms(fixture), label).toHaveLength(0);
+        expect(component.openDeductionsId(), label).toBeNull();
+
+        component.openReceipt(tw);
+        fixture.detectChanges();
+        expect(receiptForms(fixture), label).toHaveLength(1);
+        menuFor(fixture, tw);
+        component.menuItems.find(item => item.label === label)!.command!({} as never);
+        fixture.detectChanges();
+        expect(receiptForms(fixture), label).toHaveLength(0);
+        component.showDialog.set(false);
+      }
+      fixture.destroy();
+    });
+
     it('renders one form under the pending row: title, prefilled 匯費 / 補充保費, step 0.01, the note, 取消 / 儲存', () => {
       const fixture = rendered([tw, twPaid]);
       openDeductions(fixture, tw);
