@@ -1,5 +1,5 @@
 import { Transaction, TransactionType } from '../../../models/portfolio.model';
-import { formatNativeAmount, twdAmount } from '../money';
+import { formatNativeAmount, isTwdCurrency, twdAmount } from '../money';
 
 export interface TradeTotals {
   buyTotal: number;
@@ -13,7 +13,7 @@ export interface TradeTotals {
 }
 
 function isTwd(t: Transaction): boolean {
-  return !t.currency || t.currency === 'TWD';
+  return isTwdCurrency(t.currency);
 }
 
 /** TWD per unit of the trade's currency: 1 for TWD (or no currency), `null` when a foreign row has no finite positive fx. */

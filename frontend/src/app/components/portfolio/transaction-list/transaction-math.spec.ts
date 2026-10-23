@@ -45,6 +45,13 @@ describe('transaction math', () => {
       expect(totals.foreignWithoutFx).toBe(0);
     });
 
+    it('treats a lower-case twd currency as TWD', () => {
+      const totals = tradeTotals([{ ...twBuy, currency: 'twd', fx_rate_to_twd: undefined }]);
+      expect(totals.buyTotal).toBeCloseTo(110407, 6);
+      expect(totals.foreignWithoutFx).toBe(0);
+      expect(feeLine({ ...twSell, currency: 'twd' })).toBe('手續費 249 · 交易稅 525');
+    });
+
     it('accepts fx as a decimal string', () => {
       const totals = tradeTotals([{ ...usBuy, fx_rate_to_twd: '30.70' }]);
       expect(totals.buyTotal).toBeCloseTo(73219.5, 6);

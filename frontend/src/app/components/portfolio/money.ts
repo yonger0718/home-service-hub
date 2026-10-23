@@ -25,15 +25,20 @@ export function formatNativeAmount(
   return `${numeric.toFixed(decimals)} ${currency}`;
 }
 
+/** TWD when the currency is missing or any case of 'TWD'. */
+export function isTwdCurrency(currency: string | null | undefined): boolean {
+  return !currency || currency.toUpperCase() === 'TWD';
+}
+
 /**
- * The TWD value of an amount: itself when the currency is TWD or missing, else `value × fx`.
+ * The TWD value of an amount: itself when the currency is TWD (any case) or missing, else `value × fx`.
  * `null` when the value is not numeric or a foreign amount has no finite positive fx.
  */
-export function twdAmount(value: Amount, fx: Amount, currency?: string | null): number | null {
+export function twdAmount(value: Amount, fx: Amount, currency: string | null | undefined): number | null {
   if (value == null || value === '') return null;
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return null;
-  if (!currency || currency === 'TWD') return numeric;
+  if (isTwdCurrency(currency)) return numeric;
   if (fx == null || fx === '') return null;
   const rate = Number(fx);
   return Number.isFinite(rate) && rate > 0 ? numeric * rate : null;

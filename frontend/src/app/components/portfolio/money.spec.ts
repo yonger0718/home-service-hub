@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatNativeAmount, twdAmount } from './money';
+import { formatNativeAmount, isTwdCurrency, twdAmount } from './money';
 
 describe('money', () => {
   describe('formatNativeAmount', () => {
@@ -34,10 +34,23 @@ describe('money', () => {
     });
   });
 
+  describe('isTwdCurrency', () => {
+    it('is true for a missing currency and any case of TWD', () => {
+      expect(isTwdCurrency(undefined)).toBe(true);
+      expect(isTwdCurrency(null)).toBe(true);
+      expect(isTwdCurrency('')).toBe(true);
+      expect(isTwdCurrency('TWD')).toBe(true);
+      expect(isTwdCurrency('twd')).toBe(true);
+      expect(isTwdCurrency('USD')).toBe(false);
+      expect(isTwdCurrency('GBp')).toBe(false);
+    });
+  });
+
   describe('twdAmount', () => {
-    it('returns the value itself for TWD or a missing currency, ignoring fx', () => {
+    it('returns the value itself for TWD (any case) or a missing currency, ignoring fx', () => {
       expect(twdAmount(1500, undefined, 'TWD')).toBe(1500);
-      expect(twdAmount('1500', null)).toBe(1500);
+      expect(twdAmount(1500, 30.7, 'twd')).toBe(1500);
+      expect(twdAmount('1500', null, undefined)).toBe(1500);
       expect(twdAmount(1500, 30.7, null)).toBe(1500);
     });
 
