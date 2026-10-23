@@ -675,7 +675,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
         } else if (status.state === 'partial' && justFinished) {
           const failed = (status.steps ?? [])
             .filter(s => s.status === 'failed' || s.status === 'partial')
-            .map(s => s.name)
+            .map(s => labelOf(RECALC_STEP_LABEL, s.name))
             .join(', ');
           this.messageService.add({
             severity: 'warn',

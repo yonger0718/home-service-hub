@@ -262,6 +262,25 @@ describe('Portfolio import controls', () => {
       expect(TestBed.inject(ImportHistoryService).attempts()[0]?.file).toBe('late.csv');
     });
 
+    it('a partial recalc toast lists the failed steps by label', () => {
+      vi.useFakeTimers();
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
+      const fixture = setup();
+      const add = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
+      service.getRecalcStatus.mockReturnValue(of({
+        kind: 'import', state: 'partial', steps: [
+          { name: 'symbol_map_backfill', status: 'failed' },
+          { name: 'dividend_auto_record', status: 'ok' },
+          { name: 'networth_backfill', status: 'partial' },
+        ],
+      }));
+      vi.advanceTimersByTime(5000);
+      expect(add).toHaveBeenCalledWith(expect.objectContaining({
+        severity: 'warn', summary: '資料重算尚未完成', detail: '失敗步驟：代號對照補齊, 淨值回補。可點擊「重試」',
+      }));
+      fixture.destroy();
+    });
+
     it('a failed 重算資料 toast reads the shared body message', () => {
       service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed', steps: [{ name: 'dividends', status: 'failed', error: 'x' }] }));
       service.triggerRecalc.mockReturnValue(throwError(() => ({ status: 409, message: 'Http failure', error: { code: 409, message: 'recalc in progress', trace_id: null } })));
