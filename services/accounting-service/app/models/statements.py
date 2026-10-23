@@ -407,6 +407,30 @@ class InstallmentPlanMap(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=NOW)
 
 
+class ReconciliationOwnerRule(Base):
+    """Owner-taught rule (inbox spec §6): a recurring line shape plus the action to take on it."""
+    __tablename__ = "reconciliation_owner_rule"
+    __table_args__ = (
+        Index("uq_reconciliation_owner_rule_key", "account_id", "line_kind", "merchant_pattern", "flow_sign", "amount",
+              unique=True, postgresql_nulls_not_distinct=True),
+        Index("ix_reconciliation_owner_rule_account", "account_id"),
+    )
+    id = Column(Integer, primary_key=True)
+    account_id = Column(Integer, ForeignKey("account.id", ondelete="RESTRICT"), nullable=False)
+    enabled = Column(Boolean, nullable=False, server_default=text("true"))
+    line_kind = Column(String(32), nullable=False)
+    merchant_pattern = Column(String(256), nullable=False)
+    flow_sign = Column(String(1), nullable=False)
+    amount = Column(MONEY, nullable=True)
+    action = Column(String(32), nullable=False)
+    params = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_from_case_id = Column(Integer, ForeignKey("reconciliation_case.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=NOW)
+    last_applied_at = Column(DateTime(timezone=True), nullable=True)
+    applied_count = Column(Integer, nullable=False, server_default=text("0"))
+    note = Column(Text, nullable=True)
+
+
 class ReconciliationSettings(Base):
     __tablename__ = "reconciliation_settings"
     __table_args__ = (CheckConstraint("id = 1", name="ck_reconciliation_settings_single_row"),)

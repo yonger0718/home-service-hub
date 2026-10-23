@@ -1,6 +1,6 @@
 """Request/response schemas for reconciliation actions and their audit trail (R1c)."""
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,6 +17,13 @@ class ActionIn(BaseModel):
 class DismissIn(BaseModel):
     model_config = Strict
     note: str = Field(min_length=1, max_length=1000)
+
+
+class ActionLine(BaseModel):
+    """The case's current bank line (`base.current_line`), so a 已處理 row can be identified (inbox final review)."""
+    date: date
+    merchant: str
+    amount: Decimal
 
 
 class ActionOut(BaseModel):
@@ -36,6 +43,9 @@ class ActionOut(BaseModel):
     reverted_by_action_id: int | None
     created_at: datetime
     replayed: bool = False
+    label: str | None = None
+    answer: str | None = None
+    line: ActionLine | None = None  # filled by GET /reconciliation/actions only
 
 
 class AuditOut(BaseModel):

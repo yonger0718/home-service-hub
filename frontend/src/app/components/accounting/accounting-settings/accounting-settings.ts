@@ -1,7 +1,7 @@
-import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { Router } from '@angular/router';
-import { Observable, Subject, catchError, concatMap, map, of, throwError } from 'rxjs';
+import { Observable, Subject, catchError, concatMap, finalize, forkJoin, map, of, throwError } from 'rxjs';
 
 import {
   AccountGroup,
@@ -10,11 +10,15 @@ import {
   ENTRY_KIND_LABELS,
   EntryKind,
   ImportRun,
+  LedgerAccount,
   Preference,
   Project,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { InboxService } from '../inbox/inbox.service';
+import { OwnerRule } from '../inbox/inbox.model';
 import { isHandledKey } from '../accounting-ui';
+import { slashDate } from '../dates';
 import { formatMoney } from '../format';
 import { writeErrorMessage } from '../http-errors';
 import { ReportView, summarizeReport } from './import-report';
@@ -54,6 +58,7 @@ function swap<T>(list: T[], index: number, delta: number): T[] | null {
 export class AccountingSettingsComponent implements OnInit, OnDestroy {
   private service = inject(AccountingService);
   private readonly router = inject(Router);
+  private readonly inbox = inject(InboxService);
 
   readonly preference = signal<Preference | null>(null);
   readonly groups = signal<AccountGroup[]>([]);
@@ -62,6 +67,13 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
   readonly projects = signal<Project[]>([]);
   readonly counterparties = signal<Counterparty[]>([]);
   readonly cpFilter = signal('');
+  readonly rules = signal<OwnerRule[]>([]);
+  private readonly accounts = signal<LedgerAccount[]>([]);
+  /** id → name of every expense and income category, for the rule rows; independent of the 類別 tab. */
+  private readonly ruleCategories = signal<Map<number, string>>(new Map());
+  /** Rule ids whose DELETE is in flight; their 🗑 is disabled. */
+  readonly deletingRules = signal<ReadonlySet<number>>(new Set());
+  private ruleRequest = 0;
   readonly latest = signal<ImportRun | null>(null);
   readonly dataMessage = signal<string | null>(null);
   /** Row whose 刪除 was tapped once (`group:1`, `cat:11`, `project:4`, `cp:5`); one row at a time. */
@@ -99,6 +111,11 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
   private readonly preferenceSaves = new Subject<Preference>();
 
   constructor() {
+    // Reads `changed` so every inbox write (including this block's own toggle and delete) re-reads the rules.
+    effect(() => {
+      this.inbox.changed();
+      untracked(() => this.loadRules());
+    });
     // One PUT at a time, in order: each body is the optimistic state at its toggle, so quick toggles all persist.
     // Not tied to the page's lifetime: leaving the page completes the subject (ngOnDestroy), so the PUT in flight
     // and the queued ones still run, and the subscription ends after the last one.
@@ -135,7 +152,20 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
       this.preference.set(preference);
     });
     this.loadGroups();
+    this.service.getAccounts(true).subscribe(accounts => this.accounts.set(accounts));
     this.loadCategories();
+    forkJoin([this.service.getCategories('expense'), this.service.getCategories('income')]).subscribe(([expense, income]) => {
+      const names = new Map<number, string>();
+      const add = (nodes: CategoryNode[]): void => {
+        for (const node of nodes) {
+          names.set(node.id, node.name);
+          add(node.children ?? []);
+        }
+      };
+      add(expense);
+      add(income);
+      this.ruleCategories.set(names);
+    });
     this.loadProjects();
     this.loadCounterparties();
     this.loadImportState();
@@ -208,6 +238,59 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
     if (this.confirming() !== null && !target?.closest?.('.row-delete')) {
       this.confirming.set(null);
     }
+  }
+
+  // 對帳規則
+  private loadRules(): void {
+    const request = ++this.ruleRequest;
+    this.inbox.rules().subscribe({
+      next: rules => {
+        if (request === this.ruleRequest) {
+          this.rules.set(rules);
+        }
+      },
+      error: () => undefined, // keep the list that is shown
+    });
+  }
+
+  private categoryName(id: number): string {
+    return this.ruleCategories().get(id) ?? `#${id}`;
+  }
+
+  ruleText(rule: OwnerRule): string {
+    const account = this.accounts().find(item => item.id === rule.account_id);
+    const amount = rule.amount === null ? '任何金額' : formatMoney(rule.amount, account?.currency ?? 'TWD', { sign: true });
+    const categoryId = rule.params['category_id'];
+    const answer =
+      rule.action === 'record'
+        ? `記為 ${typeof categoryId === 'number' ? this.categoryName(categoryId) : '#' + String(categoryId)}`
+        : rule.action === 'dismiss'
+          ? '忽略'
+          : rule.action === 'accept_bank_amount'
+            ? '用銀行的數'
+            : rule.action;
+    const used = rule.last_applied_at ? ` · ${slashDate(rule.last_applied_at)}` : '';
+    return `${account?.name ?? '#' + rule.account_id} · 「${rule.merchant_pattern}」 ${amount} · ${answer} · 用過 ${rule.applied_count} 次${used}`;
+  }
+
+  // Both writes bump `InboxService.changed`, which the constructor's effect answers with a re-read.
+  toggleRule(rule: OwnerRule): void {
+    this.write(this.inbox.patchRule(rule.id, !rule.enabled), () => undefined, '無法更新規則');
+  }
+
+  deleteRule(rule: OwnerRule): void {
+    const mark = (on: boolean): void =>
+      this.deletingRules.update(current => {
+        const next = new Set(current);
+        if (on) {
+          next.add(rule.id);
+        } else {
+          next.delete(rule.id);
+        }
+        return next;
+      });
+    mark(true);
+    this.write(this.inbox.deleteRule(rule.id).pipe(finalize(() => mark(false))), () => undefined, '無法刪除規則');
   }
 
   // 帳戶分組

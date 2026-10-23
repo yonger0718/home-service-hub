@@ -4,6 +4,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { OwnerRule } from '../inbox/inbox.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { AccountingSettingsComponent } from './accounting-settings';
 
@@ -23,10 +24,31 @@ const EXPENSE_TREE = [
   },
   { id: 2, kind: 'expense', parent_id: null, name: '交通', icon: '🚌', color: '#4a90e2', sort_order: 1, is_hidden: false, default_account_id: null, default_project_id: null, children: [] },
 ];
+const INCOME_TREE = [
+  { id: 20, kind: 'income', parent_id: null, name: '薪水', icon: null, color: null, sort_order: 0, is_hidden: false, default_account_id: null, default_project_id: null, children: [] },
+];
 const PROJECTS = [{ id: 4, name: '生活', is_archived: false, sort_order: 0 }, { id: 5, name: '2026 大阪', is_archived: false, sort_order: 1 }];
 const COUNTERPARTIES = [
   { id: 5, name: 'Alan', open_amounts: [{ currency: 'TWD', amount: '220.0000' }, { currency: 'JPY', amount: '-1000.0000' }] },
   { id: 6, name: 'Bob', open_amounts: [] },
+];
+
+const RULES_URL = '/api/accounting/reconciliation/owner-rules';
+const ACCOUNTS = [
+  { id: 7, name: '國泰卡', currency: 'TWD' },
+  { id: 8, name: '日圓戶', currency: 'JPY' },
+];
+const RULES: OwnerRule[] = [
+  {
+    id: 21, account_id: 7, enabled: true, line_kind: 'card', merchant_pattern: '全家', flow_sign: '-', amount: '-85.0000',
+    action: 'record', params: { category_id: 2 }, created_from_case_id: 5, created_at: '2026-10-01T00:00:00Z',
+    last_applied_at: '2026-10-12T03:00:00Z', applied_count: 3, note: null,
+  },
+  {
+    id: 22, account_id: 8, enabled: false, line_kind: 'card', merchant_pattern: 'Uber', flow_sign: '-', amount: null,
+    action: 'dismiss', params: {}, created_from_case_id: null, created_at: '2026-10-01T00:00:00Z',
+    last_applied_at: null, applied_count: 0, note: null,
+  },
 ];
 
 describe('AccountingSettingsComponent', () => {
@@ -44,15 +66,25 @@ describe('AccountingSettingsComponent', () => {
     fixture.detectChanges();
     http.expectOne('/api/accounting/preference').flush(PREFERENCE);
     http.expectOne('/api/accounting/account-groups').flush(GROUPS);
-    http.expectOne(r => r.url.startsWith('/api/accounting/categories') && r.urlWithParams.includes('kind=expense')).flush(EXPENSE_TREE);
+    // The tab-driven tree and the rules' name map both ask for expense categories.
+    const expense = http.match(r => r.url.startsWith('/api/accounting/categories') && r.urlWithParams.includes('kind=expense'));
+    expect(expense.length).toBe(2);
+    expense.forEach(req => req.flush(EXPENSE_TREE));
+    http.expectOne(r => r.url.startsWith('/api/accounting/categories') && r.urlWithParams.includes('kind=income')).flush(INCOME_TREE);
     http.expectOne('/api/accounting/projects').flush(PROJECTS);
     http.expectOne('/api/accounting/counterparties').flush(COUNTERPARTIES);
     http.expectOne('/api/accounting/imports/latest').flush({ detail: 'none' }, { status: 404, statusText: 'Not Found' });
+    flushAccountsAndRules();
     fixture.detectChanges();
     el = fixture.nativeElement as HTMLElement;
   });
 
   afterEach(() => http.verify());
+
+  function flushAccountsAndRules(rules: OwnerRule[] = RULES): void {
+    http.expectOne(r => r.method === 'GET' && r.url === '/api/accounting/accounts').flush(ACCOUNTS);
+    http.expectOne(RULES_URL).flush(rules);
+  }
 
   function change(selector: string, value: string, root: ParentNode = el): void {
     const field = root.querySelector<HTMLInputElement | HTMLSelectElement>(selector)!;
@@ -498,5 +530,57 @@ describe('AccountingSettingsComponent', () => {
       input => !input.getAttribute('aria-label'),
     );
     expect(unlabelled.map(input => input.className)).toEqual([]);
+  });
+
+  describe('對帳規則', () => {
+    it('lists rules with the answer text and applied count', () => {
+      const section = el.querySelector('details.rules-section')!;
+      expect(section.querySelector('summary')?.textContent).toContain('對帳規則 (2)');
+      const rows = Array.from(section.querySelectorAll('.rule-text')).map(node => node.textContent?.trim());
+      expect(rows).toEqual([
+        '國泰卡 · 「全家」 −$85 · 記為 交通 · 用過 3 次 · 2026/10/12',
+        '日圓戶 · 「Uber」 任何金額 · 忽略 · 用過 0 次',
+      ]);
+    });
+
+    it('names income record rules and keeps names after the category tab changes', () => {
+      const income: OwnerRule = { ...RULES[0], id: 23, amount: '5000.0000', params: { category_id: 20 } };
+      fixture.componentInstance.setCategoryKind('income');
+      http.expectOne(r => r.url.startsWith('/api/accounting/categories') && r.urlWithParams.includes('kind=income')).flush([]);
+      fixture.componentInstance.rules.set([RULES[0], income]);
+      fixture.detectChanges();
+      const rows = Array.from(el.querySelectorAll('.rule-text')).map(node => node.textContent?.trim());
+      expect(rows[0]).toContain('記為 交通');
+      expect(rows[1]).toBe('國泰卡 · 「全家」 +$5,000 · 記為 薪水 · 用過 3 次 · 2026/10/12');
+    });
+
+    it('two-tap delete removes the row', () => {
+      const button = () => el.querySelector<HTMLButtonElement>('.rule-row .row-delete')!;
+      button().click();
+      fixture.detectChanges();
+      http.expectNone(r => r.method === 'DELETE');
+      expect(button().textContent?.trim()).toBe('確定刪除');
+      button().click();
+      const req = http.expectOne(r => r.method === 'DELETE' && r.url === `${RULES_URL}/21`);
+      req.flush(null);
+      fixture.detectChanges();
+      http.expectOne(RULES_URL).flush([RULES[1]]);
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.rule-row').length).toBe(1);
+      expect(el.querySelector('details.rules-section summary')?.textContent).toContain('對帳規則 (1)');
+    });
+
+    it('toggle patches enabled', () => {
+      const toggles = Array.from(el.querySelectorAll<HTMLButtonElement>('.rule-toggle'));
+      expect(toggles.map(button => button.textContent?.trim())).toEqual(['停用', '啟用']);
+      toggles[1].click();
+      const req = http.expectOne(r => r.method === 'PATCH' && r.url === `${RULES_URL}/22`);
+      expect(req.request.body).toEqual({ enabled: true });
+      req.flush({ ...RULES[1], enabled: true });
+      fixture.detectChanges();
+      http.expectOne(RULES_URL).flush([RULES[0], { ...RULES[1], enabled: true }]);
+      fixture.detectChanges();
+      expect(Array.from(el.querySelectorAll('.rule-toggle')).map(button => button.textContent?.trim())).toEqual(['停用', '停用']);
+    });
   });
 });

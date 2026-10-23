@@ -1,0 +1,128 @@
+<div class="inbox">
+  <p class="inbox-head">{{ headText() }}</p>
+  @if (ruleError(); as message) {
+    <p class="rule-error" role="alert">{{ message }}</p>
+  }
+
+  <div class="ask-cards">
+    @for (group of askGroups(); track group.account.id) {
+      <p class="acct">{{ group.icon }} {{ group.account.name }}</p>
+      @for (view of group.views; track view.card.key) {
+        <ng-container *ngTemplateOutlet="cardTpl; context: { $implicit: view }" />
+      }
+    }
+  </div>
+
+  @if (moreCount() > 0) {
+    <a
+      class="more"
+      routerLink="/accounting/reminders"
+      [queryParams]="{ tab: 'todo' }"
+      (click)="openMore($event)"
+      >還有 {{ moreCount() }} 張 →</a
+    >
+  }
+
+  @if (mode() === 'full') {
+    @for (fold of folds(); track fold.key) {
+      <details class="fold" [attr.data-fold]="fold.key">
+        <summary>{{ fold.title }}</summary>
+        @if (fold.key === 'proposed') {
+          <div class="fold-actions">
+            <button
+              type="button"
+              class="apply-all"
+              [disabled]="progress() !== null"
+              (click)="applyAll()"
+            >
+              全部套用
+            </button>
+            @if (progress(); as text) {
+              <span class="progress" role="status">{{ text }}</span>
+            }
+          </div>
+        }
+        @for (view of fold.views; track view.card.key) {
+          <ng-container *ngTemplateOutlet="cardTpl; context: { $implicit: view }" />
+        }
+      </details>
+    }
+  }
+</div>
+
+@if (recordCard(); as card) {
+  <app-inbox-record-sheet
+    [card]="card"
+    [currency]="card.account.currency"
+    [learnDefault]="learnTicked(card)"
+    [amountAnyDefault]="amountAnyTicked(card)"
+    (confirmed)="record(card, $event)"
+    (closed)="recordCard.set(null)"
+  />
+}
+@if (matchCard(); as card) {
+  <app-inbox-match-sheet
+    [card]="card"
+    [account]="card.account"
+    (confirmed)="match(card, $event)"
+    (closed)="matchCard.set(null)"
+  />
+}
+
+<ng-template #cardTpl let-view>
+  <div class="inbox-card" [attr.data-card-key]="view.card.key" [attr.aria-busy]="view.busy">
+    <p class="title">{{ view.title }}</p>
+    <p class="q">{{ view.question }}</p>
+    @if (view.members.length > 0) {
+      <p class="members">
+        @for (member of view.members; track $index) {
+          <span>{{ member }}</span>
+        }
+      </p>
+    }
+    @if (view.buttons.length > 0) {
+      <div class="btns">
+        @for (button of view.buttons; track button.action) {
+          <button
+            type="button"
+            [class.primary]="$first"
+            [disabled]="view.busy"
+            (click)="tap(view.card, button.action)"
+          >
+            {{ button.label }}
+          </button>
+        }
+      </div>
+    }
+    @if (view.learn; as learn) {
+      <label class="learn">
+        <input
+          #learnBox
+          type="checkbox"
+          [checked]="learn.ticked"
+          [disabled]="view.busy"
+          (change)="setLearn(view.card, learnBox.checked)"
+        />
+        {{ learn.label }}
+      </label>
+      @if (learn.amountOption) {
+        <label class="amount-any">
+          <input
+            #amountBox
+            type="checkbox"
+            [checked]="learn.amountAny"
+            [disabled]="view.busy || !learn.ticked"
+            (change)="setAmountAny(view.card, amountBox.checked)"
+          />
+          {{ amountAnyLabel }}
+        </label>
+      }
+      @if (learn.lockedCaption) {
+        <span class="amount-locked">{{ learn.lockedCaption }}</span>
+      }
+    }
+    @for (message of view.refused; track message) {
+      <p class="refused" role="alert">{{ message }}</p>
+    }
+  </div>
+</ng-template>

@@ -1,12 +1,13 @@
 import { DestroyRef, Injectable, Signal, computed, effect, inject, signal, untracked } from '@angular/core';
 import { DOCUMENT } from '@angular/common';
-import { Observable, catchError, forkJoin, of } from 'rxjs';
+import { Observable, catchError, forkJoin, map, of } from 'rxjs';
 
 import { BillingEvent, reminderDues } from '../components/accounting/billing/billing-math';
 import { BillingService } from '../components/accounting/billing/billing.service';
 import { countReminders } from '../components/accounting/billing/reminder-count';
 import { todayIso } from '../components/accounting/dates';
 import { importReviewCount } from '../components/accounting/import-review-count';
+import { InboxService } from '../components/accounting/inbox/inbox.service';
 import { NavBadge } from '../components/shell/navigation';
 import { Counterparty, ImportRun, ScheduleInstance } from '../models/accounting.model';
 import { RecalcStatus } from '../models/portfolio.model';
@@ -22,6 +23,8 @@ interface ReminderInputs {
   counterparties: Counterparty[];
   queue: ScheduleInstance[];
   today: string;
+  /** 待處理 reconciliation inbox cards (`counts.ask`), as the timeline's 🔔 counts them. */
+  inboxAsk: number;
 }
 
 type Source = 'reminders' | 'import' | 'recalc';
@@ -35,6 +38,7 @@ export class NavBadgeService {
   private readonly accounting = inject(AccountingService);
   private readonly portfolio = inject(PortfolioService);
   private readonly bills = inject(BillingService);
+  private readonly inbox = inject(InboxService);
   private readonly importHistory = inject(ImportHistoryService);
   private readonly document = inject(DOCUMENT);
   private readonly destroyRef = inject(DestroyRef);
@@ -149,6 +153,11 @@ export class NavBadgeService {
         accounts: this.accounting.getAccounts(),
         counterparties: this.accounting.getCounterparties(),
         queue: this.accounting.getScheduleInstances({ queue: true }),
+        // A failed inbox read counts 0 rather than hiding the other reminders (the 🔔 swallows it the same way).
+        inboxAsk: this.inbox.get({ limit: 1 }).pipe(
+          map(data => data.counts.ask),
+          catchError(() => of(0)),
+        ),
       }),
       inputs => {
         if (inputs && rereadBills) {
@@ -160,6 +169,7 @@ export class NavBadgeService {
             counterparties: inputs.counterparties,
             queue: inputs.queue,
             today,
+            inboxAsk: inputs.inboxAsk,
           },
         );
       },

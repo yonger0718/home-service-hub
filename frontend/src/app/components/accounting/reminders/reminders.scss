@@ -557,7 +557,8 @@
   }
 }
 
-.ended-schedules summary {
+.ended-schedules summary,
+.handled summary {
   color: var(--app-text-muted);
   cursor: pointer;
   font-size: 0.8rem;
