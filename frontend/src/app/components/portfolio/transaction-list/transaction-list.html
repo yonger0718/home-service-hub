@@ -111,7 +111,8 @@
   }
 </div>
 
-<app-timeline [rows]="timelineRows()" [rowActions]="true" (rowAction)="onRowAction($event)"></app-timeline>
+<app-timeline groupBy="month" [groupHeading]="monthHeadingFor" [compact]="isPhone()"
+  [rows]="timelineRows()" [rowActions]="true" (rowAction)="onRowAction($event)"></app-timeline>
 
 @if (!loading() && timelineRows().length === 0) {
   <div class="empty">

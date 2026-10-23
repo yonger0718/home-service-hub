@@ -127,34 +127,34 @@ describe('PortfolioTransactionListComponent market picker', () => {
     expect(fixture.nativeElement.querySelector('.fx-error')).not.toBeNull();
   });
 
-  it('adds timeline market badges only for non-TW rows', () => {
+  it('shows foreign rows in their own currency in the quantity line', () => {
     const fixture = TestBed.createComponent(PortfolioTransactionListComponent);
     fixture.detectChanges();
     fixture.componentInstance.transactions.set([
       transaction({ symbol: '2330', market: 'TW' }),
-      transaction({ symbol: 'AAPL', market: 'US' }),
+      transaction({ symbol: 'AAPL', market: 'US', currency: 'USD', fx_rate_to_twd: 30 }),
     ]);
 
     const rows = fixture.componentInstance.timelineRows();
 
-    expect(rows[0].metaBadge).toBe('國泰');
-    expect(rows[1].metaBadge).toBe('US · 國泰');
+    expect(rows[0].meta).toBe('1 股 @ 100.00');
+    expect(rows[1].meta).toBe('1 股 @ 100.00 USD');
+    expect(rows.every(row => row.metaBadge === undefined)).toBe(true);
   });
 
-  it('adds broker badges for non-default broker rows', () => {
+  it('carries the broker label on every row', () => {
     const fixture = TestBed.createComponent(PortfolioTransactionListComponent);
     fixture.detectChanges();
     fixture.componentInstance.transactions.set([
       transaction({ symbol: 'TW1', market: 'TW', broker: 'TW_MANUAL' }),
       transaction({ symbol: 'TW2', market: 'TW', broker: 'TW_CATHAY' }),
       transaction({ symbol: 'IB1', market: 'US', broker: 'IB' }),
+      transaction({ symbol: 'TW3', market: 'TW', broker: null }),
     ]);
 
     const rows = fixture.componentInstance.timelineRows();
 
-    expect(rows[0].metaBadge).toBe('國泰');
-    expect(rows[1].metaBadge).toBe('國泰');
-    expect(rows[2].metaBadge).toBe('US · IB');
+    expect(rows.map(row => row.broker)).toEqual(['國泰', '國泰', 'IB', undefined]);
   });
 });
 

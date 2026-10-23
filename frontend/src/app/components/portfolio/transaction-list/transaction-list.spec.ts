@@ -14,7 +14,10 @@ import {
 } from '../../../models/portfolio.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { ALLOCATION_SERIES, abbrInk, holdingAbbr } from '../dashboard/dashboard-math';
 import { PortfolioTransactionListComponent } from './transaction-list';
+import { monthHeading } from './transaction-math';
+import { squareToken } from './transaction-rows';
 
 interface Call<Q, R> {
   query: Q;
@@ -405,6 +408,138 @@ describe('PortfolioTransactionListComponent', () => {
       settle(fixture);
 
       expect(cards(fixture).map(c => c.label)).toEqual(['買進金額', '賣出金額']);
+    });
+  });
+
+  describe('rows', () => {
+    const twBuy = tx({ symbol: '00878', name: '國泰永續高股息', quantity: 5000, price: 22.05, fee: 157, broker: 'TW_CATHAY', trade_date: '2026-10-15' });
+    const twSell = tx({ symbol: '2317', name: '鴻海', type: TransactionType.SELL, quantity: 1000, price: 175, fee: 249, tax: 525, broker: 'TW_SINOPAC', trade_date: '2026-10-02' });
+    const usBuy = tx({ symbol: 'AAPL', name: 'Apple', market: 'US', currency: 'USD', fx_rate_to_twd: 30.7, quantity: 10, price: 238.4, fee: 1, broker: 'IB', trade_date: '2026-09-18' });
+    const usNoFx = tx({ symbol: 'MSFT', name: 'Microsoft', market: 'US', currency: 'USD', quantity: 2, price: 400, fee: 1, broker: 'IB', trade_date: '2026-09-10' });
+    const dayBuy = tx({ symbol: '2330', name: '台積電', quantity: 200, price: 1105, fee: 315, is_day_trade: true, trade_date: '2026-08-21' });
+    const daySell = tx({ symbol: '2330', name: '台積電', type: TransactionType.SELL, quantity: 200, price: 1120, fee: 319, tax: 336, is_day_trade: true, trade_date: '2026-08-21' });
+    const all = [twBuy, twSell, usBuy, usNoFx, dayBuy, daySell];
+
+    function card(fixture: ComponentFixture<PortfolioTransactionListComponent>, t: Transaction): HTMLElement {
+      return el(fixture).querySelector(`[data-row-id="${t.id}"]`) as HTMLElement;
+    }
+
+    function text(root: Element | null, selector: string): string | undefined {
+      return root?.querySelector(selector)?.textContent?.trim();
+    }
+
+    it('groups rows by month with the month label and the page rows’ 買 / 賣 totals', () => {
+      const fixture = create();
+      settle(fixture, all);
+
+      const headings = Array.from(el(fixture).querySelectorAll('.tl-month'));
+      expect(headings.map(h => text(h, '.tl-month-label'))).toEqual(['2026 年 10 月', '2026 年 9 月', '2026 年 8 月']);
+      expect(headings.map(h => text(h, '.tl-month-sum'))).toEqual([
+        monthHeading('2026-10', all),
+        monthHeading('2026-09', all),
+        monthHeading('2026-08', all),
+      ]);
+      expect(text(headings[0], '.tl-month-sum')).toBe('買 110,407 · 賣 174,226');
+    });
+
+    it('shows the day and weekday on every row', () => {
+      const fixture = create();
+      settle(fixture, all);
+
+      const days = Array.from(el(fixture).querySelectorAll('.tl-item')).map(item => `${text(item, '.tl-date .d')} ${text(item, '.tl-date .m')}`);
+      expect(days).toEqual(['10/15 週四', '10/02 週五', '09/18 週五', '09/10 週四', '08/21 週五', '08/21 週五']);
+    });
+
+    it('renders the square from holdingAbbr with a token stable per symbol and its ink', () => {
+      const fixture = create();
+      settle(fixture, all);
+
+      const square = (t: Transaction) => card(fixture, t).querySelector('.tl-square') as HTMLElement;
+      expect(square(twBuy).textContent?.trim()).toBe(holdingAbbr('00878', '國泰永續高股息'));
+      expect(square(twSell).textContent?.trim()).toBe('17');
+      expect(square(usBuy).textContent?.trim()).toBe('A');
+      for (const t of all) {
+        const token = squareToken(t.symbol);
+        expect(ALLOCATION_SERIES).toContain(token);
+        expect(square(t).style.background).toBe(`var(${token})`);
+        expect(square(t).classList).toContain(abbrInk(token) === 'dark' ? 'ink-dark' : 'ink-light');
+      }
+      expect(square(dayBuy).style.background).toBe(square(daySell).style.background);
+      expect(squareToken('2330')).toBe(squareToken('2330'));
+    });
+
+    it('shows name + symbol, the 買 / 賣 SideTag and 當沖 only on day trades', () => {
+      const fixture = create();
+      settle(fixture, all);
+
+      expect(text(card(fixture, twBuy), '.tl-primary')).toBe('國泰永續高股息 00878');
+      const side = (t: Transaction) => card(fixture, t).querySelector('.tl-name app-side-tag .side-tag') as HTMLElement;
+      expect(side(twBuy).textContent?.trim()).toBe('買');
+      expect(side(twBuy).classList).toContain('buy');
+      expect(side(twSell).textContent?.trim()).toBe('賣');
+      expect(side(twSell).classList).toContain('sell');
+      const tags = (t: Transaction) => Array.from(card(fixture, t).querySelectorAll('app-tag')).map(tag => tag.textContent?.trim());
+      expect(tags(dayBuy)).toEqual(['當沖']);
+      expect(tags(daySell)).toEqual(['當沖']);
+      expect(tags(twBuy)).toEqual([]);
+      expect(tags(usBuy)).toEqual([]);
+    });
+
+    it('shows quantity @ price with the fee line beneath and the broker', () => {
+      const fixture = create();
+      settle(fixture, all);
+
+      expect(text(card(fixture, twBuy), '.tl-qty-main')).toBe('5,000 股 @ 22.05');
+      expect(text(card(fixture, twBuy), '.tl-sub')).toBe('手續費 157');
+      expect(text(card(fixture, twSell), '.tl-sub')).toBe('手續費 249 · 交易稅 525');
+      expect(text(card(fixture, usBuy), '.tl-qty-main')).toBe('10 股 @ 238.40 USD');
+      expect(text(card(fixture, usBuy), '.tl-sub')).toBe('手續費 1.00 USD · 匯率 30.70');
+      expect(text(card(fixture, dayBuy), '.tl-qty-main')).toBe('200 股 @ 1,105.00');
+      expect(text(card(fixture, twBuy), '.tl-broker')).toBe('國泰');
+      expect(text(card(fixture, twSell), '.tl-broker')).toBe('永豐');
+      expect(text(card(fixture, usBuy), '.tl-broker')).toBe('IB');
+    });
+
+    it('shows TWD all-in amounts with − / + and the 總付出 / 淨收入 or native note', () => {
+      const fixture = create();
+      settle(fixture, all);
+
+      const amount = (t: Transaction) => [text(card(fixture, t), '.tl-amt'), text(card(fixture, t), '.tl-amt-note')];
+      expect(amount(twBuy)).toEqual(['−110,407', '總付出']);
+      expect(amount(twSell)).toEqual(['+174,226', '淨收入']);
+      expect(amount(usBuy)).toEqual(['−73,220', '2,385.00 USD']);
+      expect(amount(usNoFx)).toEqual(['−801.00 USD', '—']);
+    });
+
+    it('collapses rows on a phone: square, name + SideTag, quantity · broker, the date beneath the amount', () => {
+      TestBed.inject(LayoutModeService).set('phone');
+      const fixture = create();
+      settle(fixture, all);
+
+      expect(el(fixture).querySelector('.timeline')?.classList).toContain('tl-compact');
+      const row = card(fixture, twBuy);
+      expect(text(row, '.tl-square')).toBe('78');
+      expect(text(row, '.tl-name app-side-tag')).toBe('買');
+      expect(text(row, '.tl-meta')).toBe('5,000 股 @ 22.05 · 國泰');
+      expect(text(row, '.tl-amt')).toBe('−110,407');
+      expect(text(row, '.tl-amt-date')).toBe('10/15');
+      expect(row.querySelector('.tl-sub')).toBeNull();
+      expect(row.querySelector('.tl-broker')).toBeNull();
+      expect(el(fixture).querySelector('.tl-date')).toBeNull();
+    });
+
+    it('opens the row menu from the row action button', () => {
+      const fixture = create();
+      settle(fixture, all);
+      const toggle = vi.spyOn(fixture.componentInstance.menu, 'toggle').mockImplementation(() => undefined);
+
+      (card(fixture, twSell).querySelector('.tl-action') as HTMLButtonElement).click();
+
+      expect(toggle).toHaveBeenCalledTimes(1);
+      expect(fixture.componentInstance.menuItems.map(item => item.label)).toEqual(['編輯', undefined, '刪除']);
+      fixture.componentInstance.menuItems[0].command?.({});
+      expect(fixture.componentInstance.isEdit()).toBe(true);
+      expect(fixture.componentInstance.newTransaction.id).toBe(twSell.id);
     });
   });
 });

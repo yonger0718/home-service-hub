@@ -29,7 +29,8 @@ import { TimelineComponent, TimelineRow } from '../../ui/timeline/timeline';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { BentoComponent } from '../../ui/bento/bento';
 import { allPages } from '../paging';
-import { TradeTotals, allInTotal, feeShareLabel, periodLabel, tradeTotals } from './transaction-math';
+import { TradeTotals, allInTotal, feeShareLabel, monthHeading, periodLabel, tradeTotals } from './transaction-math';
+import { nativeTotal, transactionRow } from './transaction-rows';
 
 function wholeTwd(value: number): number {
   return Math.round(value) || 0;
@@ -136,22 +137,9 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   readonly marketOptions = MARKET_OPTIONS;
   readonly fxSubmitAttempted = signal(false);
 
-  readonly timelineRows = computed<TimelineRow[]>(() =>
-    this.transactions().map(t => {
-      const isBuy = t.type === TransactionType.BUY;
-      return {
-        id: t.id,
-        date: t.trade_date ?? '',
-        side: isBuy ? 'buy' : 'sell',
-        sideLabel: isBuy ? '買進' : '賣出',
-        primary: `${this.symbolDisplay(t)} ${t.symbol}`,
-        metaBadge: this.timelineBadge(t),
-        meta: `${Number(t.quantity).toLocaleString('zh-TW')} × ${Number(t.price).toFixed(2)}`,
-        amount: `${isBuy ? '-' : '+'}${this.formatTransactionAmount(t)}`,
-        amountVariant: isBuy ? 'buy' : 'sell',
-      };
-    }),
-  );
+  readonly timelineRows = computed<TimelineRow[]>(() => this.transactions().map(t => transactionRow(t, this.symbolDisplay(t))));
+  /** Month heading text over the rows of the current page (the timeline never sums formatted strings). */
+  readonly monthHeadingFor = (key: string): string => monthHeading(key, this.transactions());
 
   private filterDebounce: ReturnType<typeof setTimeout> | null = null;
   private fetchSeq = 0;
@@ -434,26 +422,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   }
 
   formatTransactionAmount(t: Transaction): string {
-    const value = allInTotal(t);
-    const currency = (t.currency ?? 'TWD').toUpperCase();
-    // GBp = pence; render verbatim 4dp with GBp suffix (per Phase 3 native-display rule).
-    if (t.currency === 'GBp') {
-      return `${value.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })} GBp`;
-    }
-    const decimals = currency === 'TWD' ? 0 : 2;
-    const formatted = value.toLocaleString('en-US', {
-      minimumFractionDigits: decimals,
-      maximumFractionDigits: decimals,
-    });
-    return `${formatted} ${currency}`;
-  }
-
-  timelineBadge(t: Transaction): string | undefined {
-    const badges = [
-      t.market && t.market !== 'TW' ? t.market : null,
-      t.broker ? this.brokerLabel(t.broker) : null,
-    ].filter(Boolean) as string[];
-    return badges.length > 0 ? badges.join(' · ') : undefined;
+    return nativeTotal(t);
   }
 
   selectedMarket(): MarketCode {
