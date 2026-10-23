@@ -227,6 +227,12 @@ export function extractImportErrors(err: unknown): ImportRowError[] {
   return list.map(normalizeRowError);
 }
 
+/** The string `detail` of an HTTP error body that carries no row errors (shown under 需要修正的列); null otherwise. */
+export function importErrorText(err: unknown): string | null {
+  if (extractImportErrors(err).length > 0) return null;
+  return nonEmptyString((err as { error?: { detail?: unknown } | null } | null)?.error?.detail);
+}
+
 /** Toast detail for a failed upload: the row errors when present, else the body's string detail/message. */
 export function importErrorDetail(err: unknown): string {
   const rows = extractImportErrors(err);

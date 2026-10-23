@@ -37,6 +37,7 @@ import {
   fixLines as fixLinesFor,
   importCounts,
   importErrorDetail,
+  importErrorText,
   overrideMeta,
   previewRow,
   stepFor,
@@ -517,10 +518,8 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
 
   private onUploadError(err: unknown): void {
     this.busy.set(false);
-    const rows = extractImportErrors(err);
-    this.uploadErrors.set(rows);
-    const detail = (err as { error?: { detail?: unknown } | null } | null)?.error?.detail;
-    this.uploadDetail.set(rows.length === 0 && typeof detail === 'string' && detail.trim() ? detail : null);
+    this.uploadErrors.set(extractImportErrors(err));
+    this.uploadDetail.set(importErrorText(err));
     this.messageService.add({ severity: 'error', summary: '匯入失敗', detail: importErrorDetail(err), life: 6000 });
   }
 

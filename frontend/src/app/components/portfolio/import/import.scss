@@ -293,6 +293,14 @@
   }
 }
 
+.imp-footer {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: flex-end;
+}
+
 @media (max-width: 760px) {
   .imp-footer {
     align-items: stretch;

@@ -14,6 +14,7 @@ import {
   fixLines,
   importCounts,
   importErrorDetail,
+  importErrorText,
   overrideMeta,
   previewRow,
   rowResult,
@@ -436,5 +437,16 @@ describe('overrideMeta', () => {
   it('joins occurrences and sample dates', () => {
     expect(overrideMeta({ name: 'x', occurrences: 3, sample_dates: ['10/21', '10/14', '09/30'] })).toBe('3 筆 · 10/21、10/14、09/30');
     expect(overrideMeta({ name: 'x', occurrences: 2, sample_dates: [] })).toBe('2 筆');
+  });
+});
+
+describe('importErrorText', () => {
+  it('returns the string detail only when the body has no row errors', () => {
+    expect(importErrorText({ status: 400, error: { detail: 'CSV 編碼不是 UTF-8' } })).toBe('CSV 編碼不是 UTF-8');
+    expect(importErrorText({ status: 422, error: { errors: [{ row_index: 3, reason: 'bad' }], detail: 'x' } })).toBeNull();
+    expect(importErrorText({ status: 422, error: { detail: [{ loc: ['body', 2], msg: 'bad' }] } })).toBeNull();
+    expect(importErrorText({ status: 500, error: { detail: '  ' } })).toBeNull();
+    expect(importErrorText({ status: 0, message: 'offline' })).toBeNull();
+    expect(importErrorText(null)).toBeNull();
   });
 });

@@ -620,5 +620,56 @@ describe('Portfolio import controls', () => {
       expect(norm(card(fixture, 'preview-card')?.querySelector('.commit-counts')?.textContent)).toBe('已新增 1；重複 1；錯誤 1');
       expect(Array.from(card(fixture, 'fix-card')!.querySelectorAll('.fix-line')).map(l => norm(l.textContent))).toEqual(['第 3 列 · bad · 此列會被略過']);
     });
+
+    it('a commit response with row statuses keeps 重複 · 略過 and .dimmed in the kept grid', () => {
+      const fixture = withFile({ ...preview, rows: [csvRow(2, { name: 'A', type: 'BUY' }, 'new'), csvRow(3, { name: 'B', type: 'BUY' }, 'duplicate')] });
+      service.uploadCsv.mockReturnValue(of({
+        ...preview, dry_run: false, created: 1, skipped_duplicates: 1,
+        rows: [csvRow(2, { name: 'A', type: 'BUY' }, 'new'), csvRow(3, { name: 'B', type: 'BUY' }, 'duplicate')],
+      }));
+      commitButton(fixture).click();
+      fixture.detectChanges();
+      const rows = Array.from(card(fixture, 'preview-card')!.querySelectorAll('tbody tr'));
+      expect(rows.map(r => norm(r.querySelector('td:last-child')?.textContent))).toEqual(['新增', '重複 · 略過']);
+      expect(rows.map(r => r.classList.contains('dimmed'))).toEqual([false, true]);
+      expect(fixture.componentInstance.committed()).toBe(true);
+    });
+
+    it('a clean 交易 commit clears the file and hides 確認股票代號', () => {
+      const fixture = withFile({ ...genericPreview, errors: [] });
+      fixture.componentInstance.setOverride('台灣50正2', '00631L');
+      fixture.componentInstance.localValidations.set(new Map([['台灣50正2', { status: 'verified' as const }]]));
+      fixture.detectChanges();
+      expect(card(fixture, 'override-card')).not.toBeNull();
+      service.uploadCsv.mockReturnValue(of({ ...genericPreview, dry_run: false, created: 38, errors: [], unresolved_names: [] }));
+      commitButton(fixture).click();
+      fixture.detectChanges();
+      expect(fixture.componentInstance.file()).toBeNull();
+      expect(card(fixture, 'override-card')).toBeNull();
+      expect(card(fixture, 'preview-card')).not.toBeNull();
+    });
+
+    it('a CSV commit with skipped_unresolved keeps the file and the 確認股票代號 card', () => {
+      const fixture = withFile({ ...genericPreview, errors: [] });
+      service.uploadCsv.mockReturnValue(of({ ...genericPreview, dry_run: false, created: 37, errors: [], skipped_unresolved: 3 }));
+      commitButton(fixture).click();
+      fixture.detectChanges();
+      expect(fixture.componentInstance.file()).not.toBeNull();
+      expect(card(fixture, 'override-card')).not.toBeNull();
+    });
+
+    it('確認匯入 is disabled while a re-preview is in flight with a result shown', () => {
+      const fixture = withFile(genericPreview);
+      expect(commitButton(fixture).disabled).toBe(false);
+      const again$ = new Subject<ImportResult>();
+      service.uploadCsv.mockReturnValue(again$);
+      button(fixture, '重新預覽')!.click();
+      fixture.detectChanges();
+      expect(fixture.componentInstance.activeResult()).not.toBeNull();
+      expect(commitButton(fixture).disabled).toBe(true);
+      again$.next(genericPreview); again$.complete();
+      fixture.detectChanges();
+      expect(commitButton(fixture).disabled).toBe(false);
+    });
   });
 });
