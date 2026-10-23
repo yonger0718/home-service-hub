@@ -6,20 +6,25 @@
   <app-btn variant="soft" icon="pi-plus" (click)="openNew()">新增股利</app-btn>
 </app-page-header>
 
-<div class="summary-row">
-  <div class="summary-item">
-    <div class="l">本頁已確認收款合計</div>
-    <div class="v dividend">{{ formatCurrency(dividendTotal()) }}</div>
+@if (!summaryFailed()) {
+  <div class="summary-row">
+    <div class="summary-item">
+      <div class="l">已確認收款合計</div>
+      <div class="v dividend">{{ dividendTotal() === null ? '—' : formatCurrency(dividendTotal()) }}</div>
+    </div>
+    <div class="summary-item">
+      <div class="l">舊資料帳面合計</div>
+      <div class="v">{{ legacyTotal() === null ? '—' : formatCurrency(legacyTotal()) }}</div>
+    </div>
+    <div class="summary-item">
+      <div class="l">符合篩選紀錄筆數</div>
+      <div class="v">{{ total() }} 筆</div>
+    </div>
   </div>
-  <div class="summary-item">
-    <div class="l">本頁舊資料帳面合計</div>
-    <div class="v">{{ formatCurrency(legacyTotal()) }}</div>
-  </div>
-  <div class="summary-item">
-    <div class="l">符合篩選紀錄筆數</div>
-    <div class="v">{{ total() }} 筆</div>
-  </div>
-</div>
+  @if (summaryNote()) {
+    <p class="summary-note">{{ summaryNote() }}</p>
+  }
+}
 
 <app-bento class="upcoming-card" title="即將除權息提醒">
   <div class="upcoming-grid">
@@ -73,7 +78,7 @@
   }
 </div>
 
-<p class="receipt-note">有效待收股利納入預估含息損益，但不計入可用現金或現金流報酬；待釐清金額不納入預估。舊資料收款未核實，保留原帳務，不能再次入帳；金額合計僅涵蓋本頁。</p>
+<p class="receipt-note">有效待收股利納入預估含息損益，但不計入可用現金或現金流報酬；待釐清金額不納入預估。舊資料收款未核實，保留原帳務，不能再次入帳。</p>
 
 <ng-template #receiptDetails let-item>
   @if (dividendsById().get(item.id); as row) {

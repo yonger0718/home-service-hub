@@ -43,3 +43,13 @@ export function twdAmount(value: Amount, fx: Amount, currency: string | null | u
   const rate = Number(fx);
   return Number.isFinite(rate) && rate > 0 ? numeric * rate : null;
 }
+
+/** Whole number with thousands separators; a value that rounds to zero is `0`, never `-0`. */
+export function groupedInteger(value: number): string {
+  return (Math.round(value) || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+}
+
+/** 匯率 text: 2–4 fraction digits (`30.80`, `31.2345`). */
+export function formatFxRate(rate: number): string {
+  return rate.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+}

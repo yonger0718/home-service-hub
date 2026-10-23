@@ -1,5 +1,7 @@
 import { Transaction, TransactionType } from '../../../models/portfolio.model';
-import { formatNativeAmount, isTwdCurrency, twdAmount } from '../money';
+import { formatFxRate, formatNativeAmount, groupedInteger, isTwdCurrency, twdAmount } from '../money';
+
+export { groupedInteger };
 
 export interface TradeTotals {
   buyTotal: number;
@@ -19,11 +21,6 @@ function isTwd(t: Transaction): boolean {
 /** TWD per unit of the trade's currency: 1 for TWD (or no currency), `null` when a foreign row has no finite positive fx. */
 function rateToTwd(t: Transaction): number | null {
   return twdAmount(1, t.fx_rate_to_twd, t.currency);
-}
-
-/** Whole number with thousands separators; a value that rounds to zero is `0`, never `-0`. */
-export function groupedInteger(value: number): string {
-  return (Math.round(value) || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
 }
 
 /** Buys: price × quantity + fee + tax (total paid). Sells: price × quantity − fee − tax (net received). In the trade's currency. */
@@ -96,7 +93,7 @@ export function feeLine(t: Transaction): string {
   if (tax > 0) parts.push(`交易稅 ${amount(tax)}`);
   if (!isTwd(t)) {
     const fx = rateToTwd(t);
-    if (fx != null) parts.push(`匯率 ${fx.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`);
+    if (fx != null) parts.push(`匯率 ${formatFxRate(fx)}`);
   }
   return parts.join(' · ');
 }

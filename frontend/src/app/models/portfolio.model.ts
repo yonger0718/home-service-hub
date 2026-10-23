@@ -204,6 +204,9 @@ export interface Dividend {
   symbol: string;
   amount: number;
   currency?: string;
+  /** TWD per unit of `currency` (a Decimal string from the API); missing for some foreign rows. */
+  fx_rate_to_twd?: number | string | null;
+  market?: MarketCode;
   ex_dividend_date: string | Date;
   received_date?: string | Date;
   fee?: number;

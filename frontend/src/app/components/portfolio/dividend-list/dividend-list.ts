@@ -1,5 +1,6 @@
 import { Component, OnDestroy, OnInit, computed, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { Subscription, catchError, of } from 'rxjs';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { Dividend, DividendQuery, ExDividendRecord } from '../../../models/portfolio.model';
 import { TableModule } from 'primeng/table';
@@ -21,6 +22,8 @@ import { BtnComponent } from '../../ui/btn/btn';
 import { BentoComponent } from '../../ui/bento/bento';
 import { TimelineComponent, TimelineRow } from '../../ui/timeline/timeline';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
+import { allPages } from '../paging';
+import { DividendTotals, dividendTotals } from './dividend-math';
 
 const SORT_OPTIONS = [
   { value: 'ex_dividend_date:desc', label: '除息日 新→舊' },
@@ -74,10 +77,23 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   readonly sourceOptions = SOURCE_OPTIONS;
   readonly rowsPerPageOptions = [25, 50, 100];
 
-  readonly dividendTotal = computed(() => this.dividends().filter(d => d.receipt_status === 'confirmed').reduce((sum, dividend) => sum + Number(dividend.amount || 0), 0));
-  readonly legacyTotal = computed(() => this.dividends()
-    .filter(d => !d.receipt_status || d.receipt_status === 'legacy_unknown')
-    .reduce((sum, d) => sum + Number(d.amount || 0), 0));
+  /** Filter-wide TWD totals (every row of the active filter, not the list page); null while loading or after a failure. */
+  readonly summary = signal<(DividendTotals & { foreignWithoutFx: number }) | null>(null);
+  /** Every row of the active filter in the current sort; null while it loads or after it failed. */
+  readonly summaryRows = signal<Dividend[] | null>(null);
+  readonly summaryCapped = signal(false);
+  readonly summaryFailed = signal(false);
+  /** One line under the summary: rows the TWD sums leave out, and the 5 000-row cap. */
+  readonly summaryNote = computed(() => {
+    const parts: string[] = [];
+    const withoutFx = this.summary()?.foreignWithoutFx ?? 0;
+    if (withoutFx > 0) parts.push(`不含外幣 ${withoutFx} 筆`);
+    if (this.summaryCapped()) parts.push('⋯ 僅載入前 5,000 筆');
+    return parts.join(' · ');
+  });
+  /** 已確認收款 and 舊資料帳面 from the filter-wide summary (null while it loads). */
+  readonly dividendTotal = computed(() => this.summary()?.confirmed ?? null);
+  readonly legacyTotal = computed(() => this.summary()?.legacy ?? null);
   readonly dividendsById = computed(() => new Map(this.dividends().map(row => [row.id, row])));
   readonly timelineRows = computed<TimelineRow[]>(() =>
     this.dividends().map(dividend => {
@@ -126,14 +142,16 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     this.receiptBusy.set(true);
     this.portfolioService.confirmDividendReceipt(row.id, { receipt_date: this.receiptDate,
       account_id: this.receiptAccountId, revision: row.revision ?? 1 }).subscribe({
-      next: () => { this.receiptBusy.set(false); this.receiptTarget.set(null); this.fetch(); },
-      error: err => { this.receiptBusy.set(false); this.receiptTarget.set(null); this.fetch();
+      next: () => { this.receiptBusy.set(false); this.receiptTarget.set(null); this.reload(); },
+      error: err => { this.receiptBusy.set(false); this.receiptTarget.set(null); this.reload();
         this.messageService.add({ severity: 'error', summary: '收款確認未完成', detail: err.error?.detail ?? '請重新載入後核對' }); },
     });
   }
 
   private filterDebounce: ReturnType<typeof setTimeout> | null = null;
   private fetchSeq = 0;
+  private summarySeq = 0;
+  private summarySub?: Subscription;
 
   nameFor(symbol: string): string | null {
     return this.symbolNames()[symbol] ?? null;
@@ -167,11 +185,12 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   ngOnInit() {
     this.portfolioService.getSymbolNames().subscribe(map => this.symbolNames.set(map));
     this.loadUpcomingExDividends();
-    this.fetch();
+    this.reload();
   }
 
   ngOnDestroy() {
     if (this.filterDebounce) clearTimeout(this.filterDebounce);
+    this.summarySub?.unsubscribe();
   }
 
   fetch() {
@@ -192,13 +211,46 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     });
   }
 
+  /**
+   * Every row of the active filter (symbol, dates, source) in the current sort, for the totals and the status
+   * filter. A failure hides the summary silently (the list keeps its page); an older load is cancelled and any
+   * response from it is dropped.
+   */
+  loadAll() {
+    this.summarySub?.unsubscribe();
+    const seq = ++this.summarySeq;
+    const { symbol, date_from, date_to, source, sort } = this.query();
+    this.summary.set(null);
+    this.summaryRows.set(null);
+    this.summaryFailed.set(false);
+    this.summaryCapped.set(false);
+    this.summarySub = allPages(offset => this.portfolioService.getDividends({ symbol, date_from, date_to, source, sort, limit: 100, offset }))
+      .pipe(catchError(() => of(null)))
+      .subscribe(result => {
+        if (seq !== this.summarySeq) return;
+        if (!result) {
+          this.summaryFailed.set(true);
+          return;
+        }
+        this.summary.set(dividendTotals(result.items));
+        this.summaryRows.set(result.items);
+        this.summaryCapped.set(result.capped);
+      });
+  }
+
+  /** The filter-wide set and the list page; on every filter, sort or data change (a page change only fetches). */
+  private reload() {
+    this.loadAll();
+    this.fetch();
+  }
+
   private updateFilters(patch: Partial<DividendQuery>, debounce = false) {
     this.query.set({ ...this.query(), ...patch, offset: 0 });
     if (this.filterDebounce) clearTimeout(this.filterDebounce);
     if (debounce) {
-      this.filterDebounce = setTimeout(() => this.fetch(), 300);
+      this.filterDebounce = setTimeout(() => this.reload(), 300);
     } else {
-      this.fetch();
+      this.reload();
     }
   }
 
@@ -254,7 +306,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     this.searchInput.set('');
     this.dateRange = null;
     this.query.set({ offset: 0, limit: this.query().limit ?? 25, sort: 'ex_dividend_date:desc' });
-    this.fetch();
+    this.reload();
   }
 
   hasActiveFilters(): boolean {
@@ -323,7 +375,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
         this.portfolioService.deleteDividend(dividend.id).subscribe({
           next: () => {
             this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已刪除' });
-            this.fetch();
+            this.reload();
           },
           error: () => {
             this.messageService.add({ severity: 'error', summary: '錯誤', detail: '刪除失敗，請稍後再試' });
@@ -338,7 +390,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
       this.portfolioService.updateDividend(this.newDividend.id, this.newDividend).subscribe({
         next: () => {
           this.showDialog.set(false);
-          this.fetch();
+          this.reload();
           this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已更新' });
         },
         error: () => {
@@ -349,7 +401,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
       this.portfolioService.createDividend(this.newDividend).subscribe({
         next: () => {
           this.showDialog.set(false);
-          this.fetch();
+          this.reload();
           this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已新增' });
         },
         error: () => {

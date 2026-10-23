@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatNativeAmount, isTwdCurrency, twdAmount } from './money';
+import { formatFxRate, formatNativeAmount, groupedInteger, isTwdCurrency, twdAmount } from './money';
 
 describe('money', () => {
   describe('formatNativeAmount', () => {
@@ -72,6 +72,22 @@ describe('money', () => {
     it('returns null for a non-numeric value', () => {
       expect(twdAmount('abc', 30.7, 'USD')).toBeNull();
       expect(twdAmount('abc', null, 'TWD')).toBeNull();
+    });
+  });
+
+  describe('groupedInteger', () => {
+    it('rounds to a whole number with thousands separators and never renders -0', () => {
+      expect(groupedInteger(9840.24)).toBe('9,840');
+      expect(groupedInteger(58920)).toBe('58,920');
+      expect(groupedInteger(-0.2)).toBe('0');
+    });
+  });
+
+  describe('formatFxRate', () => {
+    it('renders 2 to 4 fraction digits', () => {
+      expect(formatFxRate(30.8)).toBe('30.80');
+      expect(formatFxRate(31.2345)).toBe('31.2345');
+      expect(formatFxRate(31.23456)).toBe('31.2346');
     });
   });
 });
