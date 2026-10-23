@@ -294,11 +294,13 @@ describe('AccountingAccountsComponent', () => {
     expect(el.querySelector('.totals-line')?.textContent?.trim()).toBe('總資產 $14,226 · 總負債 $44,362');
   });
 
-  it('liabilities include open payables and the 淨值 line', () => {
+  it('liabilities include open payables and the hero becomes 淨值', () => {
     const el = render(ACCOUNTS, LATEST, {}, debtsBody('20000.0000', 2)).nativeElement as HTMLElement;
 
+    expect(el.querySelector('.nw small')?.textContent?.trim()).toBe('淨值 TWD');
+    expect(el.querySelector('.total-amount.net-worth')?.textContent?.trim()).toBe('−$50,136');
+    expect(el.querySelector('.total-amount')?.classList.contains('neg')).toBe(true);
     expect(el.querySelector('.totals-line')?.textContent?.trim()).toBe('總資產 $14,226 · 總負債 $64,362（含借貸 2 筆）');
-    expect(el.querySelector('.net-worth')?.textContent?.trim()).toBe('淨值 −$50,136');
     expect(el.querySelector('.unconverted-hint')).toBeNull();
   });
 
@@ -308,8 +310,9 @@ describe('AccountingAccountsComponent', () => {
 
     expect(el.querySelector('.unconverted-hint')?.textContent?.trim()).toBe('另有 2 種幣別未換算');
     expect(el.querySelector('.totals-line')?.textContent?.trim()).toBe('總資產 $14,226 · 總負債 $44,362');
-    // The read answered, so 淨值 shows; no payable is counted, so no （含借貸 N 筆）.
-    expect(el.querySelector('.net-worth')).not.toBeNull();
+    // The read answered, so the hero is 淨值; no payable is counted, so no （含借貸 N 筆）.
+    expect(el.querySelector('.nw small')?.textContent?.trim()).toBe('淨值 TWD');
+    expect(el.querySelector('.total-amount.net-worth')?.textContent?.trim()).toBe('−$30,136');
     expect(el.querySelector('.totals-line')?.textContent).not.toContain('（含借貸');
   });
 
@@ -343,7 +346,7 @@ describe('AccountingAccountsComponent', () => {
 
     const el = fixture.nativeElement as HTMLElement;
     expect(el.querySelector('.totals-line')?.textContent?.trim()).toBe('總資產 $14,226 · 總負債 $64,362（含借貸 2 筆）');
-    expect(el.querySelector('.net-worth')?.textContent?.trim()).toBe('淨值 −$50,136');
+    expect(el.querySelector('.total-amount.net-worth')?.textContent?.trim()).toBe('−$50,136');
   });
 
   it('falls back to the old line when the debts read fails', () => {
