@@ -308,6 +308,42 @@ describe('AccountingAccountsComponent', () => {
 
     expect(el.querySelector('.unconverted-hint')?.textContent?.trim()).toBe('另有 2 種幣別未換算');
     expect(el.querySelector('.totals-line')?.textContent?.trim()).toBe('總資產 $14,226 · 總負債 $44,362');
+    // The read answered, so 淨值 shows; no payable is counted, so no （含借貸 N 筆）.
+    expect(el.querySelector('.net-worth')).not.toBeNull();
+    expect(el.querySelector('.totals-line')?.textContent).not.toContain('（含借貸');
+  });
+
+  it('applies only the latest debts answer', () => {
+    const fixture = TestBed.createComponent(AccountingAccountsComponent);
+    fixture.detectChanges();
+    const listed = (r: { url: string; urlWithParams: string; method: string }) =>
+      r.method === 'GET' && r.url === '/api/accounting/accounts' && !r.urlWithParams.includes('include_archived=true');
+    const firstDebts = http.expectOne('/api/accounting/accounts/debts');
+    http.expectOne(listed).flush(ACCOUNTS);
+    http.expectOne('/api/accounting/imports/latest').flush(LATEST);
+    http.expectOne('/api/accounting/preference').flush({
+      expense_income_colors: 'red_green', keypad_layout: 'calculator', week_start: 0, main_currency: 'TWD',
+      hide_rewards_on_timeline: false, abbreviate_totals: true,
+    });
+    fixture.detectChanges();
+
+    // A second load (accountsChanged) starts before the first debts read answers.
+    const service = TestBed.inject(AccountingService);
+    service.updateAccount(1, { name: '零錢包' } as AccountInput).subscribe();
+    http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/accounts/1').flush({});
+    fixture.detectChanges();
+    const secondDebts = http.expectOne('/api/accounting/accounts/debts');
+    http.expectOne(listed).flush(ACCOUNTS);
+    http.expectOne('/api/accounting/imports/latest').flush(LATEST);
+    secondDebts.flush(debtsBody('20000.0000', 2));
+    firstDebts.flush(debtsBody('5000.0000', 1));
+    fixture.detectChanges();
+    flushBills();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.totals-line')?.textContent?.trim()).toBe('總資產 $14,226 · 總負債 $64,362（含借貸 2 筆）');
+    expect(el.querySelector('.net-worth')?.textContent?.trim()).toBe('淨值 −$50,136');
   });
 
   it('falls back to the old line when the debts read fails', () => {

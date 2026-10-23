@@ -82,4 +82,25 @@ describe('definitionRows', () => {
     expect([second.progress, second.modeBadge, second.paused, second.remainingText]).toEqual(['每月', '提醒', true, null]);
     expect(second.failing).toEqual({ instanceId: 5, text: 'lines[0].account_id: 帳戶已封存' });
   });
+
+  it('words 待收 from the line that carries the loan, 欠 for a linked repayment beside a collection line', () => {
+    const base = makeDefinition().template.lines[0];
+    const collection = { ...base, kind: 'collection' as const, category_id: null };
+    const repayment = { ...base, kind: 'repayment' as const, category_id: null };
+    const lent = makeDefinition({
+      id: 20, kind: 'installment', remaining: '50000.0000',
+      template: { ...makeDefinition().template, lines: [{ ...collection, loan_entry_id: 9 }] },
+    });
+    const owed = makeDefinition({
+      id: 21, kind: 'installment', remaining: '80000.0000',
+      template: { ...makeDefinition().template, lines: [collection, { ...repayment, loan_entry_id: 10 }] },
+    });
+    const unlinked = makeDefinition({
+      id: 22, kind: 'installment', remaining: '30000.0000',
+      template: { ...makeDefinition().template, lines: [collection] },
+    });
+    expect(definitionRows([lent, owed, unlinked]).active.map(row => row.remainingText)).toEqual([
+      '待收 $50,000', '欠 $80,000', '待收 $30,000',
+    ]);
+  });
 });

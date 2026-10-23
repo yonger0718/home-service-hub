@@ -735,7 +735,10 @@ export interface ScheduleDefinition {
   pending_count: number;
   next_due_date: string | null;
   next_amount: CurrencyAmount[];
-  /** Loans: open amount signed like the loan (payable negative); card installments: what is left of the total. */
+  /**
+   * Positive magnitudes (spec §4.1b). Loans: what is still open on the linked loan (the row words it 欠 / 待收) and
+   * what was repaid; card installments: what is left of the total (`repaid` null).
+   */
   remaining: string | null;
   repaid: string | null;
   loan_entry_id: number | null;

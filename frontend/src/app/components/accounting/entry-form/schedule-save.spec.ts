@@ -266,5 +266,22 @@ describe('schedule-save', () => {
       expect(input.template.lines[0].loan_entry_id).toBeNull();
       expect(input.template.lines[0]).not.toHaveProperty('loan_from_seq');
     });
+
+    it('omits loan_from_seq when the loan is swapped for another', () => {
+      const loan = makeDefinition({
+        kind: 'installment', name: '信貸', anchor_date: '2026-11-09', times: 36, total_amount: '300000',
+        template: { lines: [{ ...lineOf, kind: 'repayment', account_id: 1, amount: '8333', loan_entry_id: 9, loan_from_seq: 15, name: '信貸' }], description: null, tags: [] },
+      });
+      const state = draftFromDefinition(loan);
+      const input = buildDefinitionInput(
+        {
+          ...values({ kind: state.kind, draft: state.draft, name: '信貸', categoryId: state.categoryId, categoryName: null, account: PAY, amount: 300000, loanEntryId: 10 }),
+          repayAccount: PAY,
+        },
+        { original: loan },
+      );
+      expect(input.template.lines[0].loan_entry_id).toBe(10);
+      expect(input.template.lines[0]).not.toHaveProperty('loan_from_seq');
+    });
   });
 });

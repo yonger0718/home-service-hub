@@ -105,6 +105,18 @@ export interface DefinitionRow {
   failing: { instanceId: number; text: string } | null;
 }
 
+/**
+ * 欠 (we owe) or 待收 (owed to us) for the row's remaining magnitude: the side of the line that carries the loan
+ * (`collection` → 待收, else 欠); with no linked line, 待收 when any line is a collection.
+ */
+function remainingLabel(definition: ScheduleDefinition): '欠' | '待收' {
+  const linked = definition.template.lines.find(line => line.loan_entry_id !== null);
+  if (linked) {
+    return linked.kind === 'collection' ? '待收' : '欠';
+  }
+  return definition.template.lines.some(line => line.kind === 'collection') ? '待收' : '欠';
+}
+
 function definitionRow(definition: ScheduleDefinition): DefinitionRow {
   const currency = definition.template.lines[0]?.currency ?? 'TWD';
   return {
@@ -114,7 +126,7 @@ function definitionRow(definition: ScheduleDefinition): DefinitionRow {
     name: definition.name,
     nextText: definition.next_due_date ? `下期 ${shortDate(definition.next_due_date)}` : null,
     progress: scheduleProgress(definition),
-    remainingText: definition.remaining === null ? null : `${definition.template.lines.some(line => line.kind === 'collection') ? '待收' : '欠'} ${formatMoney(definition.remaining, currency)}`,
+    remainingText: definition.remaining === null ? null : `${remainingLabel(definition)} ${formatMoney(definition.remaining, currency)}`,
     modeBadge: definition.posting_mode === 'auto' ? '自動' : '提醒',
     paused: definition.status === 'paused',
     needsCheck: definition.needs_check,

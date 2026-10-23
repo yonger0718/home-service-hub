@@ -96,7 +96,7 @@ describe('EntryDetailComponent schedules', () => {
     expect(text(el.querySelector('.loan-line'))).toBe('欠 $275,001 · 已還 $24,999 · 下期 02/09');
     expect(text(el.querySelector('.loan-link'))).toBe('信貸 每月還款 · 已入帳 3 / 36');
     expect(el.querySelector('.breakdown')).toBeNull();
-    expect(el.querySelector('.open-amount')).toBeNull(); // 剩餘 once, signed, in the loan line
+    expect(el.querySelector('.open-amount')).toBeNull(); // 欠/待收 appears once, as a magnitude, in the loan line
     click(fixture, '.loan-link');
     expect(navigate).toHaveBeenCalledWith(['/accounting/reminders'], { queryParams: { tab: 'debts', schedule: 12 } });
   });

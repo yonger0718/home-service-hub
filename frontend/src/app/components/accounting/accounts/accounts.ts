@@ -155,7 +155,7 @@ export class AccountingAccountsComponent {
   readonly liabilities = computed(
     () =>
       this.included().reduce((sum, account) => sum + Math.max(0, -value(account.balance_main)), 0) +
-      Number(this.debts()?.payables.open_main ?? 0),
+      value(this.debts()?.payables.open_main),
   );
   readonly netWorth = computed(() => this.assets() - this.liabilities());
   /** Accounts counted in 總額 that have no main-currency rate: left out of 總額 / 總資產 / 總負債, and said so. */
