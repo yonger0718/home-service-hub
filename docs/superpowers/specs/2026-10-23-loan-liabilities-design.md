@@ -1,6 +1,6 @@
 # Loan liabilities: attach a loan to an existing installment schedule, count open payables as 負債 — design
 
-Status: rev 2 (2026-10-23, after the builder check). Owner's problem (after the MOZE cutover): "帳務沒算到我有負債". Decisions below marked
+Status: rev 3 (2026-10-23, after the builder check and the AGENT-227 review). Owner's problem (after the MOZE cutover): "帳務沒算到我有負債". Decisions below marked
 *[call]* are mine; the owner opted out of the question round ("ok go").
 
 ## 1. Intent
@@ -18,7 +18,11 @@ every month, and the 帳戶 page shows 總負債 including them and a 淨值 lin
 ## 2. Goals, non-goals, anti-goals
 
 Goals
-- `POST /schedules/definitions/{id}/loan`: create the payable and link it to an existing installment schedule.
+- A `repayment` line WITHOUT a loan posts as a plain expense (today it fails validation at posting time — the three
+  imported 信貸 would stop posting on 2026-10-25 / 10-26 / 11-08). The same rule covers periods before the attach
+  boundary, so history can be reposted or caught up safely.
+- `POST /schedules/definitions/{id}/loan`: create the payable and link it to an existing installment schedule from a
+  period boundary (`loan_from_seq`) onwards.
 - 掛上貸款 in the schedule sheet (排程 sheet in 🔔) for installments without a loan.
 - `GET /accounts/debts`: open payable / receivable totals in the main currency.
 - 帳戶 page: 總負債 = negative account balances + open payables; a 淨值 line; a one-line note when rates are missing.
@@ -73,48 +77,58 @@ Anti-goals
 
 ## 4. The design
 
+### 4.0 Backend — a loan line without a loan (prerequisite, also the fix for the imminent posting failure)
+`schedule_templates._check_loan` runs only when `loan_entry_id` is set; a `repayment`/`collection` line with
+`loan_entry_id = None` is valid ("no loan yet"). At posting time (`schedule_posting`, the `kind in LOAN_LINE_KINDS`
+branch) a loan line that has NO applicable loan — `loan_entry_id` None, or the instance's `seq < line["loan_from_seq"]`
+(§4.1) — writes a plain `expense` entry (`income` for `collection`) with the line's account, amount, category (fallback
+`system_category_id(db, "expense")`), project, name, merchant, tags and the line's `counterparty_id`, exactly like the
+`interest` branch writes its entry; no settlement, no loan lock. Repost (`repost_instance`) and reopen→post go through
+the same branch, so periods before the boundary never touch the loan. `PostResult` outcome stays `posted`.
+Template line key `loan_from_seq: int | None` (≥ 1; only on loan-kind lines; carried through `LINE_KEYS`,
+`normalize_template`, `validate_template`, `TemplateLineIn`/`TemplateLineOut`, additive).
+
 ### 4.1 Backend — `POST /schedules/definitions/{definition_id}/loan` (WRITE)
 Body = `LoanIn` (reuse: `account_id`, `counterparty_id`, `category_id?`, `amount` (> 0, the REMAINING principal),
-`entry_date` (default today), `name?`). Response: `DefinitionDetailOut` (as `GET /definitions/{id}`), status 201.
+`entry_date` (required by the API; the SPA defaults it to today), `name?`). Response: `DefinitionDetailOut`
+(the same serializer as `GET /schedules/definitions/{id}`, which gains `pending_principal` and `loan_remaining`, §4.1b),
+status 201.
 
-`schedule_service.attach_loan(db, definition_id: int, loan: LoanIn) -> None`:
+`schedule_service.attach_loan(db, definition_id: int, loan: LoanIn) -> int` (returns the payable id):
 1. `take_import_key_shared`, `lock_definition`; the `moze_id`/`import_locked()` guard exactly as `update_definition`.
 2. Refuse: `kind != "installment"` → `ValidationError("loan", "只有分期可以掛貸款")`; `status == "ended"` →
-   `ConflictError("definition_ended")`; `loan_line(template)` is None → `ValidationError("loan", "排程沒有還款那一行")`;
-   the loan line already has `loan_entry_id` → `ConflictError("loan_already_attached")`; `loan.amount` currency must
-   equal the loan line's currency (the payable is created in the line's currency: `EntryIn` takes the account's
-   currency — the builder checks how `prepare_entry` derives currency and refuses a mismatch with the same message
-   `_check_loan` uses).
-3. Refuse while any `pending` instance has `due_date <= loan.entry_date` → `ConflictError("catch_up_first")`
-   *[call, builder check: an overdue period would post against the new payable and subtract itself twice; the owner
-   catches up (補記) first, then attaches with the principal remaining AFTER those periods]*. The remaining principal is
-   therefore defined as "owed after the last posted period, before the next pending one".
-4. Principal amounts per pending period = the repayment line's amount for that instance (`amount_override` when set,
-   else the template amount — the three 信貸 carry a per-period override on every instance: MOZE's amortisation, so the
-   repayment line is the PRINCIPAL share and the `interest` line is booked separately). Let `due_principal` = Σ of all
-   pending repayment amounts and `all_but_last` = that sum minus the last pending period's. Refuse when
-   `all_but_last >= loan.amount` → `ValidationError("amount", "剩餘期數乘以每期金額已達剩餘本金")` *[call: the mirror of
-   `_check_total` for a mid-way attach — the debt must outlast all but the last period, so the schedule ends by
-   `loan_closed` rather than leaving debt behind]*. `DefinitionDetailOut` gains `pending_principal: Decimal | None`
-   (= `due_principal` for installments with a repayment line, else None) so the sheet can prefill the amount.
+   `ConflictError("definition_ended")`; no line with `kind == "repayment"` (collection lines do not qualify) →
+   `ValidationError("loan", "排程沒有還款那一行")`; that line already has `loan_entry_id` →
+   `ConflictError("loan_already_attached")`; `loan.account_id != line["account_id"]` → `ValidationError("account",
+   "貸款要掛在還款帳戶")` (the payable is created in that account's currency, which is the line's currency).
+3. Boundary: `loan_from_seq` = the lowest `pending` instance's `seq`; none pending → `ConflictError("nothing_pending")`.
+   Refuse while any pending instance has `due_date <= loan.entry_date` → `ConflictError("catch_up_first")` *[call: the
+   owner posts (補記) those periods first — they post as plain expenses under §4.0 — then attaches with the principal
+   remaining after them]*.
+4. Remaining principal series = for every `seq` from `loan_from_seq` to `times` (inclusive): the repayment line's
+   amount for that period — the instance's `amount_override[line index]` when the instance exists and has one, else
+   the template amount (periods beyond the generation horizon count too). `due_total` = Σ series; `all_but_last` =
+   `due_total` minus the last period's amount. Refuse `loan.amount > due_total` → `ValidationError("amount",
+   "超過之後各期本金合計")` and `loan.amount <= all_but_last` → `ValidationError("amount", "剩餘期數乘以每期金額已達剩餘本金")`
+   *[call: the debt must be cleared by the last period and not before the last one; a smaller remaining than the
+   series (an early repayment) is allowed and ends the schedule early through `loan_closed`]*. `pending_principal`
+   (§4.1b) is this `due_total`, so the prefilled value always passes.
 5. Create the payable exactly as `create_definition` does (kind `payable`, source `manual`, account = the repayment
-   line's account, currency = that account's; `LoanIn.account_id` must equal it, else 422 `account` 「貸款要掛在還款帳戶」)
-   AND, in the same transaction, a `balance_adjustment` entry on the same account, same `entry_date`, amount
-   `-payable.amount` (equal and opposite), name 「掛帳調整：<loan name>」 *[call, builder check: a payable carries an
-   amount on its account (`_account_rows` sums every entry), but the cash was already received months ago and sits in
-   the balance — without the offset the attach would move the bank balance by the whole principal. The pair nets to
-   zero; the payable's `open_amount` still tracks the debt; the timeline shows the two lines once]*. Then set
-   `loan_entry_id` on the repayment line (and ONLY there), `template_owner_edited = True`. Do NOT change `times`,
-   `total_amount`, `first_seq`, `end_date`, instances or `generated_until` *[call: `total_amount` keeps its MOZE
-   meaning (the original principal) so later `update_definition` calls still pass `_check_total`; the payable's
-   `open_amount` is the live debt]*.
+   line's account) AND, in the same transaction, a `balance_adjustment` entry on the same account with the same
+   `entry_date` AND `posted_date`, amount `-payable.amount`, name 「掛帳調整：<loan.name or definition.name>」 *[call,
+   builder check: the cash was received months ago and sits in the balance; the pair nets to zero on every date]*.
+   Set `line["loan_entry_id"]` and `line["loan_from_seq"]` on the repayment line only, `definition.template_owner_edited
+   = True`; `validate_template`. Do NOT change `times`, `total_amount`, `first_seq`, `end_date`, instances (their
+   `amount_override` per-period principal/interest split stays intact) or `generated_until`.
 6. `db.flush()`; the route commits and returns the detail.
 
-`loan_schedule_for` / `LoanScheduleOut` (`schedule_read.py:107 loan_summary` already derives `remaining`/`repaid` from
-settlements): `remaining` = `abs(open_amount)` and `repaid` = Σ |settlements| — both POSITIVE magnitudes for payables and
-receivables alike *[call: the builder found `remaining` negative for a payable today; the SPA shows magnitudes]*.
-`posted_count` and `times` stay as they are (they describe the schedule, not the debt). The entry detail of the payable
-already shows `loan_schedule`.
+### 4.1b Read model
+- `DefinitionDetailOut.pending_principal: Decimal | None` = `due_total` of §4.1 step 4 for an installment with a
+  repayment line (None otherwise); `DefinitionDetailOut.loan_remaining: Decimal | None` = `open_amount` of the linked
+  loan (None when unlinked). Both additive.
+- `loan_summary` (`schedule_read.py:100-112`): `remaining` and `repaid` become POSITIVE magnitudes for payables and
+  receivables alike; the SPA consumers that showed the signed value (`entry-detail.ts:129`, `schedule-queue.ts:117`,
+  `entry-detail-schedule.spec.ts:96`) switch to the magnitude with the kind's own wording (欠 / 待收) — same PR.
 
 ### 4.2 Backend — `GET /accounts/debts` (READ)
 ```
@@ -139,7 +153,8 @@ currency; a currency without a rate is listed under `unconverted` (and not added
   unchanged (no 淨值).
 
 ### 4.4 SPA — 掛上貸款 in the schedule sheet
-- Condition: `detail.kind === 'installment' && detail.loan_entry_id === null && detail.status !== 'ended'`.
+- Condition: `detail.kind === 'installment' && detail.loan_entry_id === null && detail.status !== 'ended'` AND the
+  template has a `repayment` line (no form without one).
 - A button `掛上貸款` in the actions row opens an inline form inside the sheet (no new overlay): 對象 (counterparty
   select from `getCounterparties()`, with the existing "新增對象" path if the sheet already has one; otherwise a text
   hint to create the bank under 記帳設定 first — the builder picks whichever exists), 剩餘本金 (decimal input, required,
@@ -150,9 +165,9 @@ currency; a currency without a rate is listed under `unconverted` (and not added
   adjustment, §4.1 step 5). The form explains in one line: 「輸入到上一期為止還欠多少；若有逾期未補的期數先補記」.
 - 確定 → `AccountingService.attachScheduleLoan(id, input: ScheduleLoanInput): Observable<ScheduleDefinitionDetail>`
   (`POST …/schedules/definitions/{id}/loan`, through `bump()` so pages reload) → the sheet re-reads the definition,
-  shows `已掛上貸款：剩餘 <formatMoney(open)>` in its header area, and the button disappears. Errors through the
+  shows `已掛上貸款：剩餘 <formatMoney(detail.loan_remaining)>` in its header area, and the button disappears. Errors through the
   sheet's existing error line with codes: `definition_ended` 「排程已結束」, `loan_already_attached` 「已經有貸款了」,
-  the two 422 messages verbatim.
+  `catch_up_first` 「先補記逾期的期數」, `nothing_pending` 「沒有待入帳的期數」 and the 422 messages verbatim.
 - The 借還款追蹤 tab needs no change: the bank counterparty appears there with its open amount once the payable exists.
 
 ### 4.5 Data step (owner, after deploy)
@@ -161,7 +176,14 @@ today). Nothing is migrated automatically *[call: the remaining principal is not
 
 ## 5. Failure modes
 - Attach twice → 409 `loan_already_attached`; the button is gone after the first success anyway.
-- Overdue pending periods → 409 `catch_up_first` 「先補記逾期的期數」; the sheet's 補記 action already exists.
+- Overdue pending periods → 409 `catch_up_first` 「先補記逾期的期數」; 補記 works because an unlinked repayment line posts
+  as a plain expense (§4.0).
+- Reposting / reopening a period before `loan_from_seq` → plain expense again, the loan untouched (§4.0); a period at
+  or after the boundary settles the loan as usual.
+- Editing the definition later (`update_definition`) deletes and regenerates future pending instances and keeps only
+  the last period's override — the imported per-period principal/interest split would be flattened. This is existing
+  behaviour and OUT of this change's scope; recorded as a follow-up (backlog: preserve overrides on edit). The attach
+  itself never goes through `update_definition`.
 - The attach-day pair (payable + adjustment) nets to zero on the bank account; deleting one of them later is the
   owner's own edit (the payable is protected by `assert_not_referenced`; the adjustment is an ordinary entry).
 - Remaining principal too small for the remaining periods → 422 with the message above; the owner fixes the number.
@@ -173,14 +195,19 @@ today). Nothing is migrated automatically *[call: the remaining principal is not
 - Missing FX rate for a foreign loan → listed as unconverted, 總負債 says so, nothing silently dropped.
 
 ## 6. Testing (names for the plan)
-- Backend: `test_attach_loan_links_and_settles` (attach to an installment with posted periods → payable created,
+- Backend: `test_unlinked_repayment_posts_as_expense` (a repayment line with no loan posts a plain expense; repost and
+  reopen→post of a period before `loan_from_seq` do the same after an attach; the payable untouched);
+  `test_attach_loan_links_and_settles` (attach to an installment with posted periods → payable created,
   `loan_entry_id` on the repayment line only, `total_amount`/`times` unchanged, the account balance unchanged by the
   attach (payable + adjustment), posting the next instance settles the payable; `loan_schedule.remaining` = |open
   amount|, `repaid` = settlements only, both positive); refusals (recurring kind, ended, already attached,
-  remaining-period rule, account/currency mismatch, overdue pending → `catch_up_first`, imported definition with the
-  lock OFF → 409 lock);
+  remaining-period rules incl. `amount > due_total`, periods beyond the horizon counted, zero pending →
+  `nothing_pending`, account/currency mismatch, collection-only/expense-only templates, overdue pending →
+  `catch_up_first` then a real 補記 + attach end to end, imported definition with the lock OFF → 409 lock; attach
+  keeps every instance's `amount_override`);
   `test_accounts_debts_summary` (two payables in TWD + one JPY without a rate → `open_main` sums the TWD ones,
-  `unconverted` lists JPY, receivables separate, closed/settled ones excluded).
+  `unconverted` lists JPY, `count` = 3 (every open original, converted or not), receivables separate; a fully settled
+  original and a closed one excluded, a partly settled one counts its open part, a JPY one WITH a cached rate converts).
 - SPA: accounts page totals with debts (liabilities include payables, 淨值 line, unconverted note, fallback when
   `getDebts` fails); schedule sheet shows 掛上貸款 only under the condition, posts the body with the repayment line's
   account, hides the button after success, maps the error codes.
