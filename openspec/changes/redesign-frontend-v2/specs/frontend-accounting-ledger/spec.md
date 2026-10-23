@@ -16,7 +16,12 @@ The SPA SHALL provide `/accounting` as the accounting home, replacing the redire
 #### Scenario: Category distribution bar
 - **GIVEN** the month's expenses span eight top-level categories
 - **WHEN** the summary renders
-- **THEN** the bar SHALL show the five largest categories plus 其他, and the segments SHALL sum to the month's expense
+- **THEN** the bar SHALL show the five largest categories plus 其他 at their real spending amounts, and the legend SHALL reconcile to the month's expense: Σ segments − 退款 = |expense| (up to FX rounding), where 退款 is a legend-only line for categories whose refunds exceeded their spending this month (absent when there are none)
+
+#### Scenario: Net-refund month
+- **GIVEN** the month's refunds exceed its spending (the summary expense is ≥ 0)
+- **WHEN** the summary renders
+- **THEN** no distribution bar SHALL be shown
 
 ### Requirement: Entry shortcuts
 
