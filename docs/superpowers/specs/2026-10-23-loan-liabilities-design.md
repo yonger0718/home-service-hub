@@ -129,7 +129,9 @@ status 201.
    `due_total` minus the last period's amount. Refuse `loan.amount > due_total` → `ValidationError("amount",
    "超過之後各期本金合計")` and `loan.amount <= all_but_last` → `ValidationError("amount", "剩餘期數乘以每期金額已達剩餘本金")`
    *[call: the debt must be cleared by the last period and not before the last one; a smaller remaining than the
-   series (an early repayment) is allowed and ends the schedule early through `loan_closed`]*. `pending_principal`
+   series (an early repayment) is allowed — the last period's repayment line is then capped at what is still open
+   (`min(amount, open_amount)`), interest posts in full and the payable settles exactly there; `loan_closed` only
+   fires when a period posts after the debt was already cleared by hand]*. `pending_principal`
    (§4.1b) is this `due_total`, so the prefilled value always passes.
 5. Create the payable exactly as `create_definition` does (kind `payable`, source `manual`, account = the repayment
    line's account) AND, in the same transaction, a `balance_adjustment` entry on the same account with the same
