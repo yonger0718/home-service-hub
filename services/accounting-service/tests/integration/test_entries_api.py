@@ -428,6 +428,33 @@ def test_month_summary_by_category_rolls_up_to_root(client, db_session):
     assert sum(Decimal(item["expense"]) for item in body["by_category"]) == Decimal(body["expense"])
 
 
+def test_month_summary_by_category_converts_each_root_separately_at_a_non_unit_rate(client, db_session):
+    db_session.add_all([
+        Preference(main_currency="TWD"),
+        FxRate(date=date(2026, 9, 30), base="JPY", quote="TWD", rate=Decimal("0.3333"), source="test"),
+    ])
+    jpy = make_account(db_session, "去日本的錢", currency="JPY")
+    food = Category(kind="expense", name="餐飲")
+    home = Category(kind="expense", name="居家")
+    db_session.add_all([food, home])
+    db_session.flush()
+    day = date(2026, 9, 10)
+    make_entry(db_session, jpy, "-1000.5", category_id=food.id, entry_date=day)
+    make_entry(db_session, jpy, "-1000.5", category_id=home.id, entry_date=day)
+    db_session.commit()
+
+    body = client.get("/entries/summary", params={"month": "2026-09"}).json()
+
+    # The month figure converts the one JPY sum (-2001 × 0.3333 = -666.9333), untouched by the category query;
+    # each root converts its own sum (-1000.5 × 0.3333 = -333.46665 → -333.4667), so Σ by_category drifts by
+    # rounding, within 0.0001 per extra bucket.
+    assert body["expense"] == "-666.9333"
+    assert body["missing_rates"] == []
+    assert [item["expense"] for item in body["by_category"]] == ["-333.4667", "-333.4667"]
+    drift = abs(sum(Decimal(item["expense"]) for item in body["by_category"]) - Decimal(body["expense"]))
+    assert drift <= Decimal("0.0001") * (len(body["by_category"]) - 1)
+
+
 def test_month_summary_by_category_colourless_parent_is_one_root_ties_by_name(client, db_session):
     wallet = make_account(db_session, "錢包")
     transport = Category(kind="expense", name="交通")  # colourless parent, coloured child

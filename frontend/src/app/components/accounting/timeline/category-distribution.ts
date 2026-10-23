@@ -6,6 +6,8 @@ export const OTHER_COLOR = 'var(--app-category-other)';
 export const FALLBACK_COLOR = 'var(--app-text-muted)';
 
 const TOP_COUNT = 5;
+/** A positive remainder below one cent is FX quantize residue (per-bucket rounding), not a 其他 slice. */
+const SUB_CENT = 0.01;
 const OTHER_NAME = '其他';
 const ARIA_PREFIX = '支出類別分佈';
 
@@ -30,9 +32,12 @@ function segment(name: string, amount: number, color: string, other: boolean): D
 
 /**
  * 支出類別分佈 for the month: the five largest spending roots plus 其他, summing to |expense| by construction.
- * - remainder = |expense| − Σ top five ≥ 0 → raw top five, plus 其他 = remainder when > 0 (tail, 未分類,
- *   refund-only roots; a refund-only month has no top and becomes a single 其他 = |expense|);
- * - remainder < 0 (refunds outweigh the tail, or FX quantize residue) → top five scaled to |expense|, no 其他.
+ * - remainder = |expense| − Σ top five, quantized to 4 dp;
+ * - remainder == 0 → raw top five, no 其他;
+ * - remainder ≥ 0.01 → raw top five plus 其他 = remainder (tail, 未分類, refund-only roots; a refund-only month
+ *   has no top and becomes a single 其他 = |expense|, whatever its size);
+ * - remainder < 0 (refunds outweigh the tail, or FX quantize residue) or 0 < remainder < 0.01 (FX quantize
+ *   residue: each root is converted and rounded on its own) → top five scaled to |expense|, no 其他.
  * Equal magnitudes rank by name (`zh-Hant` collation) so the top five never depend on the API row order.
  */
 export function categoryDistribution(summary: MonthSummary | null): DistributionSegment[] {
@@ -49,7 +54,7 @@ export function categoryDistribution(summary: MonthSummary | null): Distribution
   const topSum = top.reduce((sum, t) => sum + t.amount, 0);
   const remainder = quantize(target - topSum);
 
-  if (remainder < 0) {
+  if (top.length > 0 && remainder !== 0 && remainder < SUB_CENT) {
     const factor = target / topSum;
     return top.map(t => segment(t.name, t.amount * factor, t.color, false));
   }

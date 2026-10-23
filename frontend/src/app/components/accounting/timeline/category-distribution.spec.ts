@@ -169,6 +169,33 @@ describe('categoryDistribution', () => {
     expect(segments.every(s => s.amount > 0)).toBe(true);
   });
 
+  it('positive sub-cent FX residue (target 1000.0001 vs Σ top 1000.0000) → scale branch, no 其他 "0"', () => {
+    const items = [cat('A', '-600.0000'), cat('B', '-400.0000')];
+    const segments = categoryDistribution(summary('-1000.0001', items));
+
+    expect(segments.map(s => s.name)).toEqual(['A', 'B']);
+    expect(segments.some(s => s.other)).toBe(false);
+    expect(total(segments)).toBeCloseTo(1000.0001, 6);
+    expect(segments[0].amount).toBeCloseTo(600.00006, 6);
+    expect(segments[1].amount).toBeCloseTo(400.00004, 6);
+  });
+
+  it('a remainder of exactly one cent is a genuine 其他, not residue', () => {
+    const segments = categoryDistribution(summary('-1000.0100', [cat('A', '-600.0000'), cat('B', '-400.0000')]));
+
+    expect(segments.map(s => [s.name, s.amount])).toEqual([['A', 600], ['B', 400], ['其他', expect.closeTo(0.01, 6)]]);
+    expect(segments[2]).toMatchObject({ other: true, label: '0', color: OTHER_COLOR });
+    expect(total(segments)).toBeCloseTo(1000.01, 6);
+  });
+
+  it('a refund-only month below one cent still becomes a single 其他 (no top to scale)', () => {
+    const segments = categoryDistribution(summary('-0.0050', [cat('A', '30')]));
+
+    expect(segments).toHaveLength(1);
+    expect(segments[0]).toMatchObject({ name: '其他', other: true });
+    expect(segments[0].amount).toBeCloseTo(0.005, 6);
+  });
+
   it('Σ amounts == |expense| in every branch, no zero or negative segment', () => {
     const cases: MonthSummary[] = [
       summary('-38460.0000', CANVAS),
@@ -176,6 +203,7 @@ describe('categoryDistribution', () => {
       summary('-700.0000', [cat('餐飲', '-800'), cat('居家', '-200'), cat('交通', '300')]),
       summary('-150.0000', [cat('A', '100'), cat('B', '50')]),
       summary('-999.9999', [cat('A', '-600.0000'), cat('B', '-400.0000')]),
+      summary('-1000.0001', [cat('A', '-600.0000'), cat('B', '-400.0000')]),
       summary('-1000', [cat('A', '-400'), cat('B', '-300'), cat('C', '-200'), cat('D', '-50')]),
     ];
     for (const s of cases) {
