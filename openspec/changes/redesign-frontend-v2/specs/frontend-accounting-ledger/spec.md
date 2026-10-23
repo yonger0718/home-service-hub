@@ -33,9 +33,9 @@ The web manifest SHALL declare a shortcut `記一筆` to `/accounting/entry`. Th
 ## Implementation notes
 
 - `GET /entries/summary` gains `by_category`: top-level root category id, name, colour and expense in the main currency, built from the same spend rows and rate conversion as the totals. Currencies with a missing rate are excluded, uncategorised rows group as 未分類, and the list is sorted largest spend first. Additive, no migration.
-- Client rule: target = |expense|. A refund-only month renders one 其他 segment equal to the target. Otherwise remainder = target − top five; remainder ≥ 0 gives the raw top five plus 其他 when it is above 0; remainder < 0 scales the top five to the target and shows no 其他. The invariant is the raw flex amounts; legend labels are rounded display values.
+- Client rule (rev 3): no bar when the month's expense is ≥ 0 (no spending, a refund-only or net-refund month) or `by_category` is absent. Otherwise the bar shows the five largest spending roots plus 其他 (the rest of the spending roots, when ≥ 0.01) at their real amounts, nothing scaled; net-refund roots sum into a legend-only 退款 line (no bar segment, no swatch, when ≥ 0.01). The legend reconciles to the header as Σ top + 其他 − 退款 = |expense|, up to per-bucket FX rounding; legend labels are rounded display values.
 - Colours are the root category's own colour, with fallbacks `--app-text-muted` and `--app-category-other` (#8a94a6).
-- The bar sits inside the summary card after the three figures: 10 px with a wrapping legend at ≥ 760 px, 8 px without legend on phone. It has `role="img"` with aria text listing every segment.
+- The bar sits inside the summary card after the three figures: 10 px with a wrapping legend at ≥ 760 px, 8 px without legend on phone. It has `role="img"` with aria text listing every legend line, 退款 included (phone has no legend, so 退款 is only in the aria text there).
 - The bar follows the summary's 全月 · 未套篩選 rule and is hidden while loading, on error, and when the month has no spending.
 - Contrast (8.3): `--c-red-ink` / `--c-green-ink`, the convention ink pair and `--tone-*-ink` are used for trend text ≤ 13 px; the dark primary button fill is `#6c5ce7` (rest and hover).
 - Known limit: small text on tinted pills in light mode sits at 4.1–4.5:1.

@@ -37,14 +37,14 @@
       @if (distribution().length) {
         <div class="dist">
           <div class="dist-bar" role="img" [class.dist-bar--phone]="isPhone()" [attr.aria-label]="distributionAria()">
-            @for (seg of distribution(); track $index) {
+            @for (seg of distributionBar(); track $index) {
               <span [style.flex-grow]="seg.amount" [style.background]="seg.color"></span>
             }
           </div>
           @if (!isPhone()) {
             <div class="dist-list">
               @for (seg of distribution(); track $index) {
-                <span class="dist-row"><span class="dist-swatch" aria-hidden="true" [style.background]="seg.color"></span><span class="dist-name">{{ seg.name }}</span>&ngsp;<b>{{ seg.label }}</b></span>
+                <span class="dist-row" [class.dist-row--refund]="seg.kind === 'refund'">@if (seg.kind !== 'refund') {<span class="dist-swatch" aria-hidden="true" [style.background]="seg.color"></span>}<span class="dist-name">{{ seg.name }}</span>&ngsp;<b>{{ seg.label }}</b></span>
               }
             </div>
           }

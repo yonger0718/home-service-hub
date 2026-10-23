@@ -1886,7 +1886,7 @@ describe('LedgerTimelineComponent', () => {
       expect(segments(el)).toHaveLength(6);
     });
 
-    it('renders the scaled labels when refunds outweigh the tail', () => {
+    it('draws real amounts in the bar and adds a legend-only 退款 line without a swatch', () => {
       const { el } = renderWith('sheet', {
         expense: '-700.0000',
         net: '-700.0000',
@@ -1896,9 +1896,28 @@ describe('LedgerTimelineComponent', () => {
           { category_id: 4, name: '交通', color: '#5f86c9', expense: '300.0000' },
         ],
       });
-      expect(legend(el)).toEqual(['餐飲 560', '居家 140']);
-      expect(el.querySelector('.dist-bar')!.getAttribute('aria-label')).toBe('支出類別分佈：餐飲 560、居家 140');
-      expect(segments(el).map(s => Number(s.style.flexGrow))).toEqual([560, 140]);
+      expect(segments(el).map(s => Number(s.style.flexGrow))).toEqual([800, 200]);
+      expect(legend(el)).toEqual(['餐飲 800', '居家 200', '退款 300']);
+      expect(el.querySelector('.dist-bar')!.getAttribute('aria-label')).toBe('支出類別分佈：餐飲 800、居家 200、退款 300');
+
+      const rows = Array.from(el.querySelectorAll('.dist-list .dist-row'));
+      expect(rows.map(row => row.classList.contains('dist-row--refund'))).toEqual([false, false, true]);
+      expect(rows.map(row => row.querySelectorAll('.dist-swatch').length)).toEqual([1, 1, 0]);
+      expect(text(rows[2].querySelector('.dist-name'))).toBe('退款');
+      expect(text(rows[2].querySelector('b'))).toBe('300');
+    });
+
+    it('renders no bar in a net-refund month (expense ≥ 0)', () => {
+      const { el } = renderWith('sheet', {
+        expense: '200.0000',
+        net: '200.0000',
+        by_category: [
+          { category_id: 1, name: '餐飲', color: '#d0864a', expense: '-100.0000' },
+          { category_id: 4, name: '交通', color: '#5f86c9', expense: '300.0000' },
+        ],
+      });
+      expect(el.querySelector('.dist')).toBeNull();
+      expect(el.querySelector('.sum-expense')).not.toBeNull();
     });
 
     it('paints a root without a colour with the muted-text fallback in the bar and the legend', () => {

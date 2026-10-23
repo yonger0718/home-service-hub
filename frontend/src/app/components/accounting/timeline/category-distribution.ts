@@ -6,64 +6,67 @@ export const OTHER_COLOR = 'var(--app-category-other)';
 export const FALLBACK_COLOR = 'var(--app-text-muted)';
 
 const TOP_COUNT = 5;
-/** A positive remainder below one cent is FX quantize residue (per-bucket rounding), not a 其他 slice. */
-const SUB_CENT = 0.01;
+/** Smallest 其他 / 退款 worth a legend line (amounts are 4 dp; anything below is FX quantize residue). */
+const MIN_LINE = 0.01;
 const OTHER_NAME = '其他';
+const REFUND_NAME = '退款';
 const ARIA_PREFIX = '支出類別分佈';
+
+/** `category` = one of the top five roots; `other` = the tail; `refund` = Σ net-refund roots (legend only). */
+export type DistributionKind = 'category' | 'other' | 'refund';
 
 export interface DistributionSegment {
   name: string;
-  /** Positive magnitude used as the flex weight; the segments sum to |summary.expense|. */
+  /** Real magnitude in the main currency (positive); the bar's flex weight for `category` / `other`. */
   amount: number;
   /** Thousands-grouped integer, no sign or currency (display only; may differ from the header by rounding). */
   label: string;
-  color: string;
-  other: boolean;
+  /** Swatch / bar colour; `null` for the legend-only 退款 line. */
+  color: string | null;
+  kind: DistributionKind;
 }
 
-/** Amounts are 4 dp decimals; drop float noise from the subtraction before comparing with zero. */
-function quantize(value: number): number {
-  return Math.round(value * 1e4) / 1e4;
-}
-
-function segment(name: string, amount: number, color: string, other: boolean): DistributionSegment {
-  return { name, amount, label: Math.round(amount).toLocaleString('en-US'), color, other };
+function segment(name: string, amount: number, color: string | null, kind: DistributionKind): DistributionSegment {
+  return { name, amount, label: Math.round(amount).toLocaleString('en-US'), color, kind };
 }
 
 /**
- * 支出類別分佈 for the month: the five largest spending roots plus 其他, summing to |expense| by construction.
- * - remainder = |expense| − Σ top five, quantized to 4 dp;
- * - remainder == 0 → raw top five, no 其他;
- * - remainder ≥ 0.01 → raw top five plus 其他 = remainder (tail, 未分類, refund-only roots; a refund-only month
- *   has no top and becomes a single 其他 = |expense|, whatever its size);
- * - remainder < 0 (refunds outweigh the tail, or FX quantize residue) or 0 < remainder < 0.01 (FX quantize
- *   residue: each root is converted and rounded on its own) → top five scaled to |expense|, no 其他.
- * Equal magnitudes rank by name (`zh-Hant` collation) so the top five never depend on the API row order.
+ * 支出類別分佈 for the month (Decision 3 rev 3), real amounts, nothing scaled:
+ * - `expense ≥ 0` (no spending, or a net-refund month) or no `by_category` → `[]` (no bar);
+ * - the five largest spending roots (`expense < 0`), equal magnitudes ranked by name (`zh-Hant` collation)
+ *   so the top five never depend on the API row order;
+ * - 其他 = Σ spending roots − Σ top five (the tail incl. 未分類), when ≥ 0.01;
+ * - 退款 = Σ net-refund roots (`expense > 0`), last, when ≥ 0.01 — a legend line only, no bar segment.
+ * Σ top + 其他 − 退款 = |expense| up to the per-bucket FX quantising (each (root, currency) bucket is converted
+ * and rounded to 4 dp on its own); that residue is not a client concern and never becomes a segment.
  */
 export function categoryDistribution(summary: MonthSummary | null): DistributionSegment[] {
-  const target = Math.abs(Number(summary?.expense ?? 0));
+  const expense = Number(summary?.expense ?? 0);
   const items = summary?.by_category ?? [];
-  if (!(target > 0) || items.length === 0) return [];
+  if (!(expense < 0) || items.length === 0) return [];
 
-  const top = items
-    .map((c: CategoryExpense) => ({ c, spend: Number(c.expense) }))
-    .filter(x => x.spend < 0)
-    .map(x => ({ name: x.c.name, color: x.c.color ?? FALLBACK_COLOR, amount: -x.spend }))
-    .sort((a, b) => b.amount - a.amount || a.name.localeCompare(b.name, 'zh-Hant'))
-    .slice(0, TOP_COUNT);
-  const topSum = top.reduce((sum, t) => sum + t.amount, 0);
-  const remainder = quantize(target - topSum);
+  const values = items.map((c: CategoryExpense) => ({ c, value: Number(c.expense) }));
+  const negatives = values
+    .filter(x => x.value < 0)
+    .map(x => ({ name: x.c.name, color: x.c.color ?? FALLBACK_COLOR, amount: -x.value }))
+    .sort((a, b) => b.amount - a.amount || a.name.localeCompare(b.name, 'zh-Hant'));
+  if (negatives.length === 0) return []; // inconsistent payload (expense < 0 without a spending root): no bar
+  const top = negatives.slice(0, TOP_COUNT);
+  const tail = negatives.slice(TOP_COUNT).reduce((sum, n) => sum + n.amount, 0);
+  const refund = values.filter(x => x.value > 0).reduce((sum, x) => sum + x.value, 0);
 
-  if (top.length > 0 && remainder !== 0 && remainder < SUB_CENT) {
-    const factor = target / topSum;
-    return top.map(t => segment(t.name, t.amount * factor, t.color, false));
-  }
-  const segments = top.map(t => segment(t.name, t.amount, t.color, false));
-  if (remainder > 0) segments.push(segment(OTHER_NAME, target - topSum, OTHER_COLOR, true));
+  const segments = top.map(t => segment(t.name, t.amount, t.color, 'category'));
+  if (tail >= MIN_LINE) segments.push(segment(OTHER_NAME, tail, OTHER_COLOR, 'other'));
+  if (refund >= MIN_LINE) segments.push(segment(REFUND_NAME, refund, null, 'refund'));
   return segments;
 }
 
-/** `role="img"` label for the bar (phone has no legend, so this is its only legend). */
+/** The segments drawn in the bar: everything but the legend-only 退款 line. */
+export function barSegments(segments: readonly DistributionSegment[]): DistributionSegment[] {
+  return segments.filter(s => s.kind !== 'refund');
+}
+
+/** `role="img"` label for the bar: every legend line in order, 退款 included (phone has no legend, so this is its only legend). */
 export function distributionAriaText(segments: readonly DistributionSegment[]): string {
   if (segments.length === 0) return ARIA_PREFIX;
   return `${ARIA_PREFIX}：${segments.map(s => `${s.name} ${s.label}`).join('、')}`;
