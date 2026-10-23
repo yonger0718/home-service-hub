@@ -7,8 +7,6 @@ import { LayoutModeService } from '../../../services/layout-mode.service';
 import { BROKER_LABELS, Broker, MarketCode, Transaction, TransactionType, TransactionQuery, brokerLabel } from '../../../models/portfolio.model';
 
 const BROKER_LABELS_MAP = BROKER_LABELS;
-import { TableModule } from 'primeng/table';
-import { ButtonModule } from 'primeng/button';
 import { DialogModule } from 'primeng/dialog';
 import { FormsModule } from '@angular/forms';
 import { InputTextModule } from 'primeng/inputtext';
@@ -17,7 +15,6 @@ import { SelectButtonModule } from 'primeng/selectbutton';
 import { SelectModule } from 'primeng/select';
 import { DatePickerModule } from 'primeng/datepicker';
 import { PaginatorModule, PaginatorState } from 'primeng/paginator';
-import { ProgressSpinnerModule } from 'primeng/progressspinner';
 import { ConfirmationService, MessageService, MenuItem } from 'primeng/api';
 import { ConfirmDialogModule } from 'primeng/confirmdialog';
 import { ToastModule } from 'primeng/toast';
@@ -30,7 +27,7 @@ import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { BentoComponent } from '../../ui/bento/bento';
 import { allPages } from '../paging';
 import { periodLabel } from '../period';
-import { TradeTotals, allInTotal, feeShareLabel, monthHeading, tradeTotals } from './transaction-math';
+import { TradeTotals, feeShareLabel, monthHeading, tradeTotals } from './transaction-math';
 import { transactionRow } from './transaction-rows';
 
 function wholeTwd(value: number): number {
@@ -42,11 +39,6 @@ const SORT_OPTIONS = [
   { value: 'trade_date:asc', label: '日期 舊→新' },
   { value: 'symbol:asc', label: '代碼 A→Z' },
   { value: 'symbol:desc', label: '代碼 Z→A' },
-];
-
-const SIDE_OPTIONS = [
-  { value: 'BUY', label: '買進' },
-  { value: 'SELL', label: '賣出' },
 ];
 
 const MARKET_OPTIONS: { label: MarketCode; value: MarketCode }[] = [
@@ -64,9 +56,9 @@ const DEFAULT_CURRENCY_BY_MARKET: Record<Exclude<MarketCode, 'TW'>, string> = {
   selector: 'app-portfolio-transactions',
   imports: [
     PageHeaderComponent, RouterLink, BentoComponent,
-    CommonModule, TableModule, ButtonModule, DialogModule, FormsModule,
+    CommonModule, DialogModule, FormsModule,
     InputTextModule, InputNumberModule, SelectButtonModule, SelectModule,
-    DatePickerModule, PaginatorModule, ProgressSpinnerModule,
+    DatePickerModule, PaginatorModule,
     ConfirmDialogModule, ToastModule, MenuModule,
     BtnComponent, SegToggleComponent, TimelineComponent,
   ],
@@ -116,7 +108,6 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
   protected readonly feeShareLabel = feeShareLabel;
   readonly sortOptions = SORT_OPTIONS;
-  readonly sideOptions = SIDE_OPTIONS;
   readonly sideFilterOptions: SegToggleOption[] = [
     { label: '全部', value: 'ALL' },
     { label: '買進', value: 'BUY' },
@@ -404,11 +395,6 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
         });
       },
     });
-  }
-
-  allInUnitPrice(t: Transaction): number {
-    const qty = Number(t.quantity);
-    return qty > 0 ? allInTotal(t) / qty : Number(t.price);
   }
 
   formatCurrency(value: number | string | null | undefined): string {

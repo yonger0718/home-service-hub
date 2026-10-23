@@ -31,6 +31,14 @@ describe('transaction rows', () => {
     expect(rowAmount(tx({ type: TransactionType.SELL, price: 0, quantity: 1, currency: 'USD' }))).toEqual({ amount: '0.00 USD', amountNote: '—' });
   });
 
+  it('signs a sell whose fees exceed the gross with − (U+2212), never +-', () => {
+    expect(rowAmount(tx({ type: TransactionType.SELL, price: 1, quantity: 1, fee: 2 })).amount).toBe('−1');
+    expect(rowAmount(tx({ type: TransactionType.SELL, price: 1, quantity: 1, fee: 2, currency: 'USD' })).amount).toBe('−1.00 USD');
+    expect(rowAmount(tx({ type: TransactionType.SELL, price: 1, quantity: 1, fee: 2, currency: 'USD', fx_rate_to_twd: 30 })).amount).toBe('−30');
+    expect(rowAmount(tx({ type: TransactionType.SELL, price: 1, quantity: 1, fee: 1.4 })).amount).toBe('0');
+    expect(rowAmount(tx({ type: TransactionType.SELL, price: 1, quantity: 1, fee: 1.001, currency: 'USD' })).amount).toBe('0.00 USD');
+  });
+
   it('leaves out tags and broker when there are none', () => {
     const row = transactionRow(tx({ is_day_trade: false, broker: null }), '台積電');
     expect(row.tags).toBeUndefined();

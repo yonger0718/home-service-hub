@@ -20,7 +20,7 @@ export function formatNativeAmount(
   if (value == null || value === '') return '—';
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return '—';
-  if (!currency || currency === 'TWD') return formatTwd(numeric);
+  if (isTwdCurrency(currency)) return formatTwd(numeric);
   const decimals = currency === 'GBp' ? 4 : 2;
   return `${numeric.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })} ${currency}`;
 }

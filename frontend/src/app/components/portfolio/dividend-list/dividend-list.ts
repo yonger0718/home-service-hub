@@ -4,16 +4,12 @@ import { Subscription, catchError, of } from 'rxjs';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { BrokerAccount, Dividend, DividendQuery, ExDividendRecord } from '../../../models/portfolio.model';
-import { TableModule } from 'primeng/table';
-import { ButtonModule } from 'primeng/button';
 import { DialogModule } from 'primeng/dialog';
 import { FormsModule } from '@angular/forms';
 import { InputTextModule } from 'primeng/inputtext';
 import { InputNumberModule } from 'primeng/inputnumber';
 import { DatePickerModule } from 'primeng/datepicker';
-import { SelectModule } from 'primeng/select';
 import { PaginatorModule, PaginatorState } from 'primeng/paginator';
-import { ProgressSpinnerModule } from 'primeng/progressspinner';
 import { ConfirmationService, MessageService, MenuItem } from 'primeng/api';
 import { ConfirmDialogModule } from 'primeng/confirmdialog';
 import { ToastModule } from 'primeng/toast';
@@ -53,9 +49,9 @@ const SOURCE_OPTIONS = [
   selector: 'app-portfolio-dividends',
   imports: [
     PageHeaderComponent,
-    CommonModule, TableModule, ButtonModule, DialogModule, FormsModule,
-    InputTextModule, InputNumberModule, DatePickerModule, SelectModule,
-    PaginatorModule, ProgressSpinnerModule,
+    CommonModule, DialogModule, FormsModule,
+    InputTextModule, InputNumberModule, DatePickerModule,
+    PaginatorModule,
     ConfirmDialogModule, ToastModule, MenuModule,
     BtnComponent, BentoComponent, SegToggleComponent, TagComponent,
   ],
@@ -211,7 +207,9 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
       next: () => settle(),
       error: err => {
         settle();
-        this.messageService.add({ severity: 'error', summary: '收款確認未完成', detail: err.error?.detail ?? '請重新載入後核對' });
+        // A 422 carries FastAPI's validation array in `detail`; only a string reason is shown.
+        const detail = err.error?.detail;
+        this.messageService.add({ severity: 'error', summary: '收款確認未完成', detail: typeof detail === 'string' ? detail : '請重新載入後核對' });
       },
     });
   }

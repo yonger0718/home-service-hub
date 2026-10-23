@@ -19,6 +19,7 @@ describe('money', () => {
       expect(formatNativeAmount(1500, 'TWD')).toBe(twd);
       expect(formatNativeAmount(1500, null)).toBe(twd);
       expect(formatNativeAmount(1500, undefined)).toBe(twd);
+      expect(formatNativeAmount(1500, 'twd')).toBe(twd);
     });
 
     it('uses a supplied TWD formatter', () => {

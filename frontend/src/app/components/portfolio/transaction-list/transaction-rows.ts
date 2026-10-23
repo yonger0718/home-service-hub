@@ -22,13 +22,19 @@ export function quantityLine(t: Transaction): string {
 }
 
 /**
- * Amount main line and note. Buys carry `−` (total paid), sells `+` (net received); an amount that shows as
- * zero has no sign. TWD: whole TWD + 總付出 / 淨收入. Foreign with a usable fx: whole TWD + the native total.
+ * Amount main line and note. Buys carry `−` (total paid), sells `+` (net received); a sell whose fees exceed the
+ * gross nets a payment and carries `−` too (`−1.00 USD`, never `+-1.00 USD`); an amount that shows as zero has no sign. TWD: whole TWD + 總付出 / 淨收入. Foreign with a usable fx: whole TWD + the native total.
  * Foreign without one: the native total as the main line and `—` as the note.
  */
 export function rowAmount(t: Transaction): { amount: string; amountNote: string } {
-  // Every shown figure is digits, separators and an optional currency suffix (letters only), so "no 1–9" means zero.
-  const signed = (text: string) => (/[1-9]/.test(text) ? `${t.type === TransactionType.BUY ? MINUS : '+'}${text}` : text);
+  // Every shown figure is an optional leading '-', digits, separators and an optional currency suffix (letters
+  // only), so "no 1–9" means zero. The formatted '-' of a negative total flips the side's sign.
+  const signed = (text: string) => {
+    const negative = text.startsWith('-');
+    const magnitude = negative ? text.slice(1) : text;
+    if (!/[1-9]/.test(magnitude)) return magnitude;
+    return `${(t.type === TransactionType.BUY) !== negative ? MINUS : '+'}${magnitude}`;
+  };
   if (isTwdCurrency(t.currency)) {
     return { amount: signed(groupedInteger(allInTotal(t))), amountNote: t.type === TransactionType.BUY ? '總付出' : '淨收入' };
   }

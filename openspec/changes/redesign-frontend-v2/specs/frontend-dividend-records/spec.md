@@ -15,7 +15,7 @@ The dividends screen SHALL render four summary cards using the `CONTEXT.md` voca
 
 ### Requirement: Violet dividend timeline
 
-Dividend records SHALL render as a list (a table-like grid at ≥ 760px) with: stock square, name + code (and period), 除息日, 發放 / 收款 (預定 date with its source, or 收款 date with the receiving account), `per-share × qty` with deductions beneath, net amount, and a status tag. Net amounts SHALL use `var(--app-dividend)` for received and legacy rows and `--app-primary` for pending rows. Status tags SHALL read 待收, 已收款 or 舊資料 · 未核實. A status `SegToggle` (全部 / 待收 / 已收款 / 舊資料) SHALL filter the list. The status filter SHALL page the loaded filter-wide set client-side (the API has no status filter). Rows with `receipt_status = unresolved` SHALL carry a fourth tag 待人工釐清, count in none of the four figures and be listed only under 全部. No period is shown beside the name, since the dividend model has no such field.
+Dividend records SHALL render as a list (a table-like grid at ≥ 760px) with: stock square, name + code, 除息日, 發放 / 收款 (預定 date with its source, or 收款 date with the receiving account), `per-share × qty` with deductions beneath, net amount, and a status tag. Net amounts SHALL use `var(--app-dividend)` for received and legacy rows and `--app-primary` for pending rows. Status tags SHALL read 待收, 已收款 or 舊資料 · 未核實. A status `SegToggle` (全部 / 待收 / 已收款 / 舊資料) SHALL filter the list. The status filter SHALL page the loaded filter-wide set client-side (the API has no status filter). Rows with `receipt_status = unresolved` SHALL carry a fourth tag 待人工釐清, count in none of the four figures and be listed only under 全部. No period is shown beside the name, since the dividend model has no such field.
 
 #### Scenario: Dividend row uses violet
 - **WHEN** a received dividend row renders
@@ -29,7 +29,7 @@ Dividend records SHALL render as a list (a table-like grid at ≥ 760px) with: s
 
 ### Requirement: Inline receipt confirmation
 
-Each pending row SHALL show a 確認收款 button. Pressing it SHALL expand the row (only one at a time) into a form titled 確認實際收款 · <name> <amount> with the existing warning (只在核對過實際入帳後確認。預定發放日不是收款證明；確認後會寫入現金帳，無法直接編輯撤銷。), a 實際收款日 date input, a 收款帳戶 select of active cash accounts, and the buttons 取消 and 確認已收到並入帳. Submitting SHALL call the existing `POST /api/portfolio/dividends/{id}/confirm-receipt`; on success the row becomes 已收款 and the summary recomputes. This replaces the receipt dialog. The request SHALL send the row's current `revision` (1 when absent). The form SHALL close on success and on error, and the list and the summary SHALL reload in both cases; on error a toast 收款確認未完成 SHALL show the server's `detail` (else 請重新載入後核對).
+Each pending row SHALL show a 確認收款 button. Pressing it SHALL expand the row (only one at a time) into a form titled 確認實際收款 · <name> <amount> with the existing warning (只在核對過實際入帳後確認。預定發放日不是收款證明；確認後會寫入現金帳，無法直接編輯撤銷。), a 實際收款日 date input, a 收款帳戶 select of active TWD cash accounts, and the buttons 取消 and 確認已收到並入帳. Submitting SHALL call the existing `POST /api/portfolio/dividends/{id}/confirm-receipt`; on success the row becomes 已收款 and the summary recomputes. This replaces the receipt dialog. The request SHALL send the row's current `revision` (1 when absent). The form SHALL close on success and on error, and the list and the summary SHALL reload in both cases; on error a toast 收款確認未完成 SHALL show the server's `detail` (else 請重新載入後核對).
 
 #### Scenario: Confirming a receipt
 - **GIVEN** a pending 00878 dividend of 9,600

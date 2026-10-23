@@ -1018,7 +1018,8 @@ describe('Dividend filter-wide summary', () => {
     it('on error closes the form, toasts the server detail (or the fallback), reloads both sets and keeps the row pending', () => {
       service['confirmDividendReceipt']
         .mockReturnValueOnce(throwError(() => ({ status: 409, error: { detail: 'Synthetic stale revision' } })))
-        .mockReturnValueOnce(throwError(() => ({ status: 500 })));
+        .mockReturnValueOnce(throwError(() => ({ status: 500 })))
+        .mockReturnValueOnce(throwError(() => ({ status: 422, error: { detail: [{ loc: ['body', 'receipt_date'], msg: 'Synthetic invalid date' }] } })));
       const fixture = rendered([tw]);
       const toast = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
       open(fixture, 21);
@@ -1043,6 +1044,15 @@ describe('Dividend filter-wide summary', () => {
       expect(toast).toHaveBeenLastCalledWith({ severity: 'error', summary: '收款確認未完成', detail: '請重新載入後核對' });
       expect(listCalls).toHaveLength(3);
       expect(summaryCalls).toHaveLength(3);
+
+      // A 422 validation array is not a reason to show: the fallback, never [object Object].
+      respond(listCalls[2], { items: [tw], total: 1 });
+      respond(summaryCalls[2], { items: [tw], total: 1 });
+      fixture.detectChanges();
+      open(fixture, 21);
+      fill(fixture, '2026-11-18', '7');
+      formButton(fixture, '確認已收到並入帳').click();
+      expect(toast).toHaveBeenLastCalledWith({ severity: 'error', summary: '收款確認未完成', detail: '請重新載入後核對' });
       fixture.destroy();
     });
 
