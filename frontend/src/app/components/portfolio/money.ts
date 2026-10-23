@@ -10,7 +10,7 @@ function formatTwdCurrency(value: number): string {
 
 /**
  * An amount in its own currency: TWD (or no currency) via `formatTwd`, GBp with 4 decimals,
- * anything else with 2 decimals; the currency is a suffix (`7.80 USD`, `1.2345 GBp`). `—` when not numeric.
+ * anything else with 2 decimals, thousands grouped; the currency is a suffix (`2,385.00 USD`, `1,234.5000 GBp`). `—` when not numeric.
  */
 export function formatNativeAmount(
   value: Amount,
@@ -22,7 +22,7 @@ export function formatNativeAmount(
   if (!Number.isFinite(numeric)) return '—';
   if (!currency || currency === 'TWD') return formatTwd(numeric);
   const decimals = currency === 'GBp' ? 4 : 2;
-  return `${numeric.toFixed(decimals)} ${currency}`;
+  return `${numeric.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })} ${currency}`;
 }
 
 /** TWD when the currency is missing or any case of 'TWD'. */

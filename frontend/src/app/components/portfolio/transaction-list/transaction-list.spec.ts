@@ -442,6 +442,33 @@ describe('PortfolioTransactionListComponent', () => {
       expect(text(headings[0], '.tl-month-sum')).toBe('買 110,407 · 賣 174,226');
     });
 
+    it('totals each month over the whole filter once the summary has loaded, the page before that', () => {
+      const otherPageBuy = tx({ symbol: '0050', name: '元大台灣50', quantity: 2000, price: 68.9, fee: 196, trade_date: '2026-10-01' });
+      const fixture = create();
+      respond(listCalls[0], { items: [twBuy, twSell], total: 3 });
+      fixture.detectChanges();
+
+      const sum = () => text(el(fixture), '.tl-month-sum');
+      expect(sum()).toBe('買 110,407 · 賣 174,226');
+
+      respond(summaryCalls[0], { items: [twBuy, twSell, otherPageBuy], total: 3 });
+      respond(realizedCalls[0], realizedPage('0'));
+      fixture.detectChanges();
+
+      expect(el(fixture).querySelectorAll('.tl-card').length).toBe(2);
+      expect(sum()).toBe('買 248,403 · 賣 174,226');
+    });
+
+    it('falls back to the page rows when the summary load fails', () => {
+      const fixture = create();
+      respond(listCalls[0], { items: [twBuy], total: 2 });
+      summaryCalls[0].response.error(new Error('boom'));
+      respond(realizedCalls[0], realizedPage('0'));
+      fixture.detectChanges();
+
+      expect(text(el(fixture), '.tl-month-sum')).toBe('買 110,407');
+    });
+
     it('shows the day and weekday on every row', () => {
       const fixture = create();
       settle(fixture, all);

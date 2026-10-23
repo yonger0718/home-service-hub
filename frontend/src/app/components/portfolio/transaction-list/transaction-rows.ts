@@ -2,7 +2,7 @@ import { Transaction, TransactionType, brokerLabel } from '../../../models/portf
 import { TimelineRow } from '../../ui/timeline/timeline';
 import { ALLOCATION_SERIES, abbrInk, holdingAbbr } from '../dashboard/dashboard-math';
 import { formatNativeAmount, isTwdCurrency, twdAmount } from '../money';
-import { allInTotal, feeLine } from './transaction-math';
+import { allInTotal, feeLine, groupedInteger } from './transaction-math';
 
 /** Typographic minus (U+2212), as in the spec and the canvas (`−110,407`). */
 const MINUS = '−';
@@ -18,19 +18,9 @@ export function squareToken(symbol: string): string {
   return ALLOCATION_SERIES[hash % ALLOCATION_SERIES.length];
 }
 
-function groupedInteger(value: number): string {
-  return (Math.round(value) || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
-}
-
-/** The trade's all-in total in its own currency, thousands grouped: `2,385.00 USD`, `1,234.5000 GBp`. */
+/** A foreign trade's all-in total in its own currency via the shared formatter: `2,385.00 USD`, `1,234.5000 GBp`. */
 export function nativeTotal(t: Transaction): string {
-  const value = allInTotal(t);
-  const currency = (t.currency ?? 'TWD').toUpperCase();
-  if (t.currency === 'GBp') {
-    return `${value.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })} GBp`;
-  }
-  const decimals = currency === 'TWD' ? 0 : 2;
-  return `${value.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })} ${currency}`;
+  return formatNativeAmount(allInTotal(t), t.currency);
 }
 
 /** `5,000 股 @ 22.05` (TWD price 2–4 decimals, grouped); foreign `10 股 @ 238.40 USD`. */
@@ -43,18 +33,19 @@ export function quantityLine(t: Transaction): string {
 }
 
 /**
- * Amount main line and note. Buys carry `−` (total paid), sells `+` (net received).
- * TWD: whole TWD + 總付出 / 淨收入. Foreign with a usable fx: whole TWD + the native total.
+ * Amount main line and note. Buys carry `−` (total paid), sells `+` (net received); an amount that shows as
+ * zero has no sign. TWD: whole TWD + 總付出 / 淨收入. Foreign with a usable fx: whole TWD + the native total.
  * Foreign without one: the native total as the main line and `—` as the note.
  */
 export function rowAmount(t: Transaction): { amount: string; amountNote: string } {
-  const sign = t.type === TransactionType.BUY ? MINUS : '+';
+  // Every shown figure is digits, separators and an optional currency suffix (letters only), so "no 1–9" means zero.
+  const signed = (text: string) => (/[1-9]/.test(text) ? `${t.type === TransactionType.BUY ? MINUS : '+'}${text}` : text);
   if (isTwdCurrency(t.currency)) {
-    return { amount: `${sign}${groupedInteger(allInTotal(t))}`, amountNote: t.type === TransactionType.BUY ? '總付出' : '淨收入' };
+    return { amount: signed(groupedInteger(allInTotal(t))), amountNote: t.type === TransactionType.BUY ? '總付出' : '淨收入' };
   }
   const twd = twdAmount(allInTotal(t), t.fx_rate_to_twd, t.currency);
-  if (twd == null) return { amount: `${sign}${nativeTotal(t)}`, amountNote: '—' };
-  return { amount: `${sign}${groupedInteger(twd)}`, amountNote: nativeTotal(t) };
+  if (twd == null) return { amount: signed(nativeTotal(t)), amountNote: '—' };
+  return { amount: signed(groupedInteger(twd)), amountNote: nativeTotal(t) };
 }
 
 /** One timeline row for a trade; `name` is the page's display name for the symbol. */

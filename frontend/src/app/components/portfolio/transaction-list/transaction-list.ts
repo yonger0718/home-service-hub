@@ -30,7 +30,7 @@ import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { BentoComponent } from '../../ui/bento/bento';
 import { allPages } from '../paging';
 import { TradeTotals, allInTotal, feeShareLabel, monthHeading, periodLabel, tradeTotals } from './transaction-math';
-import { nativeTotal, transactionRow } from './transaction-rows';
+import { transactionRow } from './transaction-rows';
 
 function wholeTwd(value: number): number {
   return Math.round(value) || 0;
@@ -100,6 +100,8 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   readonly summary = signal<TradeTotals | null>(null);
   readonly summaryFailed = signal(false);
   readonly summaryCapped = signal(false);
+  /** Every row of the active filter from the summary load; null while it runs or after it failed. */
+  readonly summaryRows = signal<Transaction[] | null>(null);
   /** Server-side realized P&L for the filter minus `side`; null while loading or when the call failed. */
   readonly realized = signal<number | null>(null);
   /** One line under the cards: rows the TWD sums leave out, and the 5 000-row cap. */
@@ -138,8 +140,11 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   readonly fxSubmitAttempted = signal(false);
 
   readonly timelineRows = computed<TimelineRow[]>(() => this.transactions().map(t => transactionRow(t, this.symbolDisplay(t))));
-  /** Month heading text over the rows of the current page (the timeline never sums formatted strings). */
-  readonly monthHeadingFor = (key: string): string => monthHeading(key, this.transactions());
+  /**
+   * Month heading text: the month's totals within the active filter (every row the summary loaded), falling back
+   * to the list page while that load runs or after it failed. The timeline never sums formatted strings.
+   */
+  readonly monthHeadingFor = (key: string): string => monthHeading(key, this.summaryRows() ?? this.transactions());
 
   private filterDebounce: ReturnType<typeof setTimeout> | null = null;
   private fetchSeq = 0;
@@ -202,6 +207,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     const seq = ++this.summarySeq;
     const { symbol, date_from, date_to, side, broker, sort } = this.query();
     this.summary.set(null);
+    this.summaryRows.set(null);
     this.summaryFailed.set(false);
     this.summaryCapped.set(false);
     this.realized.set(null);
@@ -214,6 +220,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
           return;
         }
         this.summary.set(tradeTotals(result.items));
+        this.summaryRows.set(result.items);
         this.summaryCapped.set(result.capped);
       });
     this.realizedSub = this.portfolioService.getRealizedPnl({ symbol, date_from, date_to, broker, limit: 1 })
@@ -419,10 +426,6 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   /** Sign of the card figure as shown: −0.4 rounds to $0 and gets no trend colour. */
   cardSign(value: number | null): number {
     return value == null ? 0 : Math.sign(wholeTwd(value));
-  }
-
-  formatTransactionAmount(t: Transaction): string {
-    return nativeTotal(t);
   }
 
   selectedMarket(): MarketCode {

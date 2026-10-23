@@ -21,8 +21,9 @@ function rateToTwd(t: Transaction): number | null {
   return twdAmount(1, t.fx_rate_to_twd, t.currency);
 }
 
-function groupedInteger(value: number): string {
-  return value.toLocaleString('en-US', { maximumFractionDigits: 0 });
+/** Whole number with thousands separators; a value that rounds to zero is `0`, never `-0`. */
+export function groupedInteger(value: number): string {
+  return (Math.round(value) || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
 }
 
 /** Buys: price × quantity + fee + tax (total paid). Sells: price × quantity − fee − tax (net received). In the trade's currency. */

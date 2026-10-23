@@ -23,7 +23,7 @@ describe('money', () => {
 
     it('uses a supplied TWD formatter', () => {
       expect(formatNativeAmount('1500', 'TWD', v => `NT ${v}`)).toBe('NT 1500');
-      expect(formatNativeAmount(1500, 'USD', v => `NT ${v}`)).toBe('1500.00 USD');
+      expect(formatNativeAmount(1500, 'USD', v => `NT ${v}`)).toBe('1,500.00 USD');
     });
 
     it('renders an em dash for missing or non-numeric values', () => {

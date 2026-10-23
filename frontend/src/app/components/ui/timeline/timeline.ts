@@ -76,7 +76,7 @@ function monthLabelOf(key: string): string {
   selector: 'app-timeline',
   imports: [SideTagComponent, TagComponent, NgTemplateOutlet],
   template: `
-    <div class="timeline" [class.tl-compact]="compact()" [class.tl-by-month]="groupBy() === 'month'">
+    <div class="timeline" [class.tl-compact]="compact()">
       @if (groupBy() === 'month') {
         @for (month of months(); track month.key) {
           <section class="tl-month-group">
@@ -213,6 +213,7 @@ export class TimelineComponent {
   readonly rowDetails = input<TemplateRef<{ $implicit: TimelineRow }> | null>(null);
   readonly rowActions = input(false);
   readonly groupBy = input<'day' | 'month'>('day');
+  /** Month mode: right-hand heading text for a month; `key` is `YYYY-MM` (e.g. `2026-10`), or the raw value of an unparseable date. */
   readonly groupHeading = input<((key: string) => string) | null>(null);
   readonly compact = input(false);
   readonly rowAction = output<{ id: string | number; event: MouseEvent }>();
