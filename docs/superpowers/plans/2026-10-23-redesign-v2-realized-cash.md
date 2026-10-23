@@ -19,12 +19,12 @@ Five 2026 sells, TWD unless noted, `avg_cost_at_sale` / `sell_price` / `fee` / `
 | # | symbol | name | trade_date | qty | 均價 → 賣出 | fee | tax | cost_out | gross | net | realized | flags |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 1 | 2317 | 鴻海 | 2026-10-02 | 1,000 | 160.73 → 175.00 | 249 | 525 | 160,728 | 175,000 | 174,226 | +13,498 | broker TW_CATHAY (元大 label is the canvas'; use `brokerLabel`) |
-| 2 | 2330 | 台積電 | 2026-08-21 | 200 | 1,106.58 → 1,120.00 | 319 | 336 | 221,316 | 224,000 | 223,345 | +2,030 | `is_day_trade: true` |
-| 3 | AAPL | Apple | 2026-06-12 | 5 | native 175.20 → 212.30 USD | 31 (= US$1.00 × 30.90) | 0 | 27,069 | 32,800 | 32,769 | +5,701 | market US, `native_cost 876.00`, `native_sell_price 212.30`, `native_proceeds_gross 1061.50`, `native_proceeds 1060.50`, `native_fee 1.00`, `native_tax 0`, `native_currency 'USD'`; 匯率 = 32,800 / 1,061.50 = 30.90 |
-| 4 | 00878 | 國泰永續高股息 | 2026-04-08 | 3,000 | 22.43 → 20.85 | 89 | 62 | 67,290 | 62,550 | 62,399 | −4,897 | |
-| 5 | 0050 | 元大台灣50 | 2026-03-03 | 1,000 | 58.28 → 63.15 | 90 | 63 | 58,280 | 63,150 | 62,997 | +4,714 | |
+| 2 | 2330 | 台積電 | 2026-08-21 | 200 | 1,106.58 → 1,120.00 | 319 | 336 | 221,315 | 224,000 | 223,345 | +2,030 | `is_day_trade: true` |
+| 3 | AAPL | Apple | 2026-06-12 | 5 | native 175.20 → 212.30 USD | 31 (= US$1.00 × 30.90) | 0 | 27,068 | 32,800 | 32,769 | +5,701 | market US, `native_cost 876.00`, `native_sell_price 212.30`, `native_proceeds_gross 1061.50`, `native_proceeds 1060.50`, `native_fee 1.00`, `native_tax 0`, `native_currency 'USD'`; 匯率 = 32,800 / 1,061.50 = 30.90 |
+| 4 | 00878 | 國泰永續高股息 | 2026-04-08 | 3,000 | 22.43 → 20.85 | 89 | 62 | 67,296 | 62,550 | 62,399 | −4,897 | |
+| 5 | 0050 | 元大台灣50 | 2026-03-03 | 1,000 | 58.28 → 63.15 | 90 | 63 | 58,283 | 63,150 | 62,997 | +4,714 | |
 
-Derived: total +21,046 (4 gains, 1 loss), 本月（10 月）+13,498 (1 筆), 當沖 +2,030 (1 筆), 賣出成本費用 1,764 (= 774 + 655 + 31 + 151 + 153), bars: 3 月 +4,714 · 4 月 −4,897 · 6 月 +5,701 · 8 月 +2,030 · 10 月 +13,498, max |total| 13,498. "Today" in tests = 2026-10-22. (The `cost_out` / gross figures are derived from the canvas' per-row numbers; the implementer keeps them as given so every expectation in Tasks 1–3 reconciles.)
+Derived: total +21,046 (4 gains, 1 loss), 本月（10 月）+13,498 (1 筆), 當沖 +2,030 (1 筆), 賣出成本費用 1,764 (= 774 + 655 + 31 + 151 + 153), bars: 3 月 +4,714 · 4 月 −4,897 · 6 月 +5,701 · 8 月 +2,030 · 10 月 +13,498, max |total| 13,498. "Today" in tests = 2026-10-22. Invariant for every row: `proceeds_gross − fee − tax = proceeds_net` and `proceeds_net − cost_out = realized_pnl` (so `cost_out` = net − realized; `avg_cost_at_sale` = cost_out / qty as a string, e.g. `'1106.575'`, displayed 2 dp). Brokers: TW rows `TW_CATHAY`, AAPL `FIRSTRADE`; row meta asserts through `brokerLabel`. (Rev 2.1: cost_out corrected to satisfy the invariant.)
 
 ## Decisions this plan makes
 
