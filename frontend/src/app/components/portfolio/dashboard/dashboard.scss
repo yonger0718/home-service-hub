@@ -594,8 +594,14 @@ $holdings-cols: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.2fr
   width: 40px;
 }
 
+/* Warm/green fills are too light for white initials (WCAG AA) in light mode. */
+.stock-abbr.ink-dark {
+  color: var(--app-text);
+}
+
 /* Dark series tokens are light, so the initials take the page background for contrast. */
-:host-context(.app-dark-mode) .stock-abbr {
+:host-context(.app-dark-mode) .stock-abbr,
+:host-context(.app-dark-mode) .stock-abbr.ink-dark {
   color: var(--app-bg);
 }
 

@@ -264,7 +264,7 @@
             (keydown.space)="toggleHoldingExpand(stock); $event.preventDefault()"
           >
             <div class="stock-main">
-              <span class="stock-abbr" aria-hidden="true" [style.background]="'var(' + holdingToken(stock) + ')'">{{ holdingAbbr(stock) }}</span>
+              <span class="stock-abbr" [class.ink-dark]="holdingInkDark(stock)" aria-hidden="true" [style.background]="'var(' + holdingToken(stock) + ')'">{{ holdingAbbr(stock) }}</span>
               <div class="stock-sym">
                 <span class="s">
                   {{ stock.name || stock.symbol }}

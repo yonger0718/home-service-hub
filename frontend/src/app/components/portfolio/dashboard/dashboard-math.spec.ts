@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { Dividend, Paged, StockHolding } from '../../../models/portfolio.model';
 import {
   ALLOCATION_SERIES,
+  abbrInk,
   MARKET_LABELS,
   allDividendPages,
   allocation,
@@ -314,5 +315,18 @@ describe('dashboard math', () => {
       expect(holdingAbbr('AAPL', 'Apple')).toBe('A');
       expect(holdingAbbr('VOD', '')).toBe('V');
     });
+  });
+});
+
+describe('abbrInk', () => {
+  it.each([
+    ['--app-primary', 'light'],
+    ['--app-accent', 'light'],
+    ['--app-dividend', 'dark'],
+    ['--app-success', 'dark'],
+    ['--app-warning', 'dark'],
+    ['--app-text-muted', 'light'],
+  ])('%s -> %s', (token, ink) => {
+    expect(abbrInk(token)).toBe(ink);
   });
 });

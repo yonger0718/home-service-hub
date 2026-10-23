@@ -41,6 +41,7 @@ import {
   MARKET_LABELS,
   PendingRow,
   allDividendPages,
+  abbrInk,
   allocation,
   holdingAbbr,
   composition,
@@ -415,6 +416,11 @@ export class PortfolioDashboardComponent implements OnInit {
   /** Allocation colour of the holding, or the muted token when it falls into 其他. */
   holdingToken(holding: StockHolding): string {
     return this.allocationTokens().get(`${holding.market}:${holding.symbol}`) ?? '--app-text-muted';
+  }
+
+  /** True when the holding's fill needs dark initials in light mode. */
+  holdingInkDark(holding: StockHolding): boolean {
+    return abbrInk(this.holdingToken(holding)) === 'dark';
   }
 
   /** `台股 · 4 檔 · $2,612,900` */

@@ -1207,6 +1207,14 @@ describe('PortfolioDashboardComponent', () => {
       expect(cols).toEqual(['名稱', '股數', '現價', '今日', '市值 (TWD)', '預估含息損益']);
     });
 
+    it('uses dark initials on the dividend-token slice and light on the primary slice', () => {
+      const { root } = render(four);
+      const abbr = (sym: string) => Array.from(root.querySelectorAll('.stock-row'))
+        .find(r => text(r.querySelector('.n')) === sym)!.querySelector('.stock-abbr')!;
+      expect(abbr('0050').classList.contains('ink-dark')).toBe(false);
+      expect(abbr('00878').classList.contains('ink-dark')).toBe(true);
+    });
+
     it('orders rows by market value descending', () => {
       const { root } = render(four);
       const symbols = Array.from(root.querySelectorAll('.stock-row .n')).map(text);

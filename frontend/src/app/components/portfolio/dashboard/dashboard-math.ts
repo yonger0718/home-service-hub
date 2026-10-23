@@ -85,6 +85,14 @@ export function quoteTimeLabel(finishedAtIso: string | null | undefined, now: Da
 
 /** 持股配置 colours for the five largest holdings, resolved by CSS at render time. */
 export const ALLOCATION_SERIES: readonly string[] = ['--app-primary', '--app-accent', '--app-dividend', '--app-success', '--app-warning'];
+
+/** Fills that fail WCAG AA with white initials in light mode (4.09, 4.22, 3.58:1). */
+const DARK_INK_TOKENS: ReadonlySet<string> = new Set(['--app-dividend', '--app-success', '--app-warning']);
+
+/** Initials ink for an allocation fill. 其他 (`--app-text-muted`) keeps light ink: white is 4.8:1 there, `--app-text` only 3.7:1. */
+export function abbrInk(token: string): 'light' | 'dark' {
+  return DARK_INK_TOKENS.has(token) ? 'dark' : 'light';
+}
 const OTHER_TOKEN = '--app-text-muted';
 
 export interface AllocationSlice {

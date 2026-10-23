@@ -96,9 +96,9 @@ async function render(
 }
 
 describe('PageHeaderComponent', () => {
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => localStorage.removeItem('hh-nav-hidden'));
   // Later spec files share this localStorage: never leave hh-nav-hidden behind.
-  afterEach(() => localStorage.clear());
+  afterEach(() => localStorage.removeItem('hh-nav-hidden'));
 
   it('renders the given title as h1 and projects actions', async () => {
     const el = await render(1440, '/accounting', null, '我的標題');
