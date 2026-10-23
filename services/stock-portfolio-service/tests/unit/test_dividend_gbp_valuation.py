@@ -192,6 +192,10 @@ def test_summary_gbp_pence_dividend_valued_in_pounds_and_native_bucket_found(
     assert holding.total_dividends == Decimal("499.97")
     assert summary.total_dividends == Decimal("499.97")
     assert holding.total_dividends_native == Decimal("1234.5000")
+    # Market bucket keeps the GBp token, so the native total is no longer None.
+    lse = summary.market_totals["LSE"]
+    assert lse.currency == "GBp"
+    assert lse.recorded_dividends == Decimal("1234.5000")
 
 
 def test_summary_xirr_inflow_uses_divided_value(db_session, monkeypatch) -> None:

@@ -682,6 +682,7 @@ def _dividend_amount_twd(row: models.Dividend) -> Decimal:
 
 
 def _row_price_twd(row: object) -> Decimal:
+    # GBp transactions store fx_rate_to_twd per penny; never apply _pence_divisor here.
     price = Decimal(getattr(row, "price"))
     fx_rate = getattr(row, "fx_rate_to_twd", None)
     if fx_rate is None:
