@@ -34,11 +34,12 @@
 }
 
 .btn-primary {
-  background: var(--app-primary);
+  /* --app-primary-ink-bg is set in dark mode only (white on it ≥ 4.5:1); light keeps the brand primary + hover. */
+  background: var(--app-primary-ink-bg, var(--app-primary));
   color: #fff;
 
   &:hover:not(:disabled) {
-    background: var(--app-primary-hover);
+    background: var(--app-primary-ink-bg, var(--app-primary-hover));
   }
 }
 

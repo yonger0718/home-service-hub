@@ -227,11 +227,11 @@
   }
 
   .amt.neg {
-    color: var(--tone-neg, var(--c-red));
+    color: var(--tone-neg-ink, var(--c-red-ink));
   }
 
   .amt.pos {
-    color: var(--tone-pos, var(--c-green));
+    color: var(--tone-pos-ink, var(--c-green-ink));
   }
 
   .add:disabled {
