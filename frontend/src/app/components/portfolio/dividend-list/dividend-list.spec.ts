@@ -410,6 +410,7 @@ describe('Dividend filter-wide summary', () => {
   it('reloads the filter-wide set after a receipt confirmation, on success and on error', () => {
     const fixture = create();
     const component = fixture.componentInstance;
+    respond(listCalls[0], { items: [due], total: 1 });
     service['confirmDividendReceipt'].mockReturnValueOnce(of({ ...due, receipt_status: 'confirmed' }))
       .mockReturnValueOnce(throwError(() => ({ error: { detail: 'Synthetic stale revision' } })));
 
@@ -696,6 +697,33 @@ describe('Dividend filter-wide summary', () => {
       expect(fixture.componentInstance.summaryRows()).toBeNull();
       expect(rowIds(fixture)).toEqual([11]);
       expect(el(fixture).querySelector('.list-error')).not.toBeNull();
+      fixture.destroy();
+    });
+
+    it('clamps the status page to the last page when a reloaded set is shorter', () => {
+      const fixture = create();
+      const component = fixture.componentInstance;
+      respond(summaryCalls[0], { items: pendingRows(26), total: 26 });
+      fixture.detectChanges();
+      selectStatus(fixture, '待收');
+      component.openNew();
+      component.saveDividend();
+      component.onPageChange({ first: 25, rows: 25 });
+      fixture.detectChanges();
+      expect(rowIds(fixture)).toEqual([525]);
+
+      respond(summaryCalls[1], { items: pendingRows(25), total: 25 });
+      fixture.detectChanges();
+      expect(rowIds(fixture)).toEqual(pendingRows(25).map(d => d.id));
+      expect(el(fixture).textContent).not.toContain('無股利紀錄');
+
+      component.onPageChange({ first: 0, rows: 10 });
+      component.saveDividend();
+      component.onPageChange({ first: 20, rows: 10 });
+      respond(summaryCalls[2], { items: pendingRows(15), total: 15 });
+      fixture.detectChanges();
+      expect(rowIds(fixture)).toEqual([510, 511, 512, 513, 514]);
+      expect(paginator(fixture)).toMatchObject({ first: 10, totalRecords: 15 });
       fixture.destroy();
     });
 
@@ -1040,6 +1068,106 @@ describe('Dividend filter-wide summary', () => {
       expect(el(fixture).textContent).not.toContain('查詢中...');
       expect(el(fixture).querySelector('.page-subtitle')?.textContent?.trim()).toBe('全部期間 · 共 1 筆');
       expect(pendingCard(fixture)).toBe('$14,600');
+      fixture.destroy();
+    });
+
+    it('closes the form, clearing its fields, on a filter, sort, status, page or clear change', () => {
+      const fixture = rendered([tw, due]);
+      const component = fixture.componentInstance;
+      const changes: [string, () => void][] = [
+        ['source', () => component.onSourceChange('csv')],
+        ['sort', () => component.onSortChange('symbol:asc')],
+        ['status', () => selectStatus(fixture, '待收')],
+        ['page', () => component.onPageChange({ first: 0, rows: 50 })],
+        ['clear', () => component.clearFilters()],
+      ];
+      for (const [name, change] of changes) {
+        open(fixture, 21);
+        fill(fixture, '2026-11-18', '7');
+        expect(forms(fixture), name).toHaveLength(1);
+        change();
+        fixture.detectChanges();
+        expect(forms(fixture), name).toHaveLength(0);
+        expect(component.openReceiptId(), name).toBeNull();
+        expect(component.receiptDate(), name).toBe('');
+        expect(component.receiptAccountId(), name).toBeNull();
+        expect(rowIds(fixture), name).toContain(21);
+      }
+      fixture.destroy();
+    });
+
+    it('submits the live row with its reloaded revision', () => {
+      service['confirmDividendReceipt'].mockReturnValue(new Subject<Dividend>());
+      const fixture = rendered([tw, due]);
+      const component = fixture.componentInstance;
+      open(fixture, 21);
+      fill(fixture, '2026-11-18', '7');
+      component.openNew();
+      component.saveDividend();
+      respond(listCalls[1], { items: [{ ...tw, revision: 6 }, due], total: 2 });
+      respond(summaryCalls[1], { items: [{ ...tw, revision: 6 }, due], total: 2 });
+      fixture.detectChanges();
+      expect(forms(fixture)).toHaveLength(1);
+      formButton(fixture, '確認已收到並入帳').click();
+      expect(service['confirmDividendReceipt']).toHaveBeenCalledWith(21, { receipt_date: '2026-11-18', account_id: 7, revision: 6 });
+      fixture.destroy();
+    });
+
+    it('submits nothing and closes the form once its row is no longer pending', () => {
+      const gone = rendered([tw, due]);
+      open(gone, 13);
+      fill(gone, '2026-11-18', '7');
+      gone.componentInstance.saveDividend();
+      respond(listCalls[1], { items: [tw, { ...due, receipt_status: 'confirmed', receipt_date: '2026-10-20' }], total: 2 });
+      gone.detectChanges();
+      expect(forms(gone)).toHaveLength(0);
+      gone.componentInstance.confirmReceipt();
+      expect(service['confirmDividendReceipt']).not.toHaveBeenCalled();
+      expect(gone.componentInstance.openReceiptId()).toBeNull();
+      gone.destroy();
+    });
+
+    it('raises a late accounts failure only while the form is rendered', () => {
+      const accountsResponse = new Subject<{ items: typeof accounts }>();
+      service['getAccounts'].mockImplementation(() => accountsResponse);
+      const fixture = rendered([tw, due]);
+      const toast = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
+      open(fixture, 21);
+      fixture.componentInstance.saveDividend();
+      respond(listCalls[1], { items: [due], total: 1 });
+      fixture.detectChanges();
+      expect(forms(fixture)).toHaveLength(0);
+      accountsResponse.error(new Error('Synthetic failure'));
+      expect(toast).not.toHaveBeenCalledWith({ severity: 'error', summary: '無法取得收款帳戶' });
+
+      service['getAccounts'].mockImplementation(() => throwError(() => new Error('Synthetic failure')));
+      open(fixture, 13);
+      expect(toast).toHaveBeenCalledWith({ severity: 'error', summary: '無法取得收款帳戶' });
+      fixture.destroy();
+    });
+
+    it('focuses 實際收款日 on open and returns focus to the row button on 取消 and after a submit settles, with aria-expanded', () => {
+      service['confirmDividendReceipt'].mockReturnValue(throwError(() => ({ error: { detail: 'Synthetic stale revision' } })));
+      const fixture = rendered([tw, due]);
+      const button = (id: number) => el(fixture).querySelector<HTMLButtonElement>(`[data-row-id="${id}"] .c-actions app-btn button`);
+      expect(button(21)?.getAttribute('aria-expanded')).toBe('false');
+
+      open(fixture, 21);
+      expect(document.activeElement).toBe(el(fixture).querySelector('.receipt-form input[aria-label="實際收款日"]'));
+      expect(button(21)?.getAttribute('aria-expanded')).toBe('true');
+      expect(button(13)?.getAttribute('aria-expanded')).toBe('false');
+
+      formButton(fixture, '取消').click();
+      fixture.detectChanges();
+      expect(document.activeElement).toBe(button(21));
+      expect(button(21)?.getAttribute('aria-expanded')).toBe('false');
+
+      open(fixture, 13);
+      fill(fixture, '2026-11-18', '7');
+      formButton(fixture, '確認已收到並入帳').click();
+      fixture.detectChanges();
+      expect(forms(fixture)).toHaveLength(0);
+      expect(document.activeElement).toBe(button(13));
       fixture.destroy();
     });
 

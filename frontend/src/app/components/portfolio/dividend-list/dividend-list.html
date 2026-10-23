@@ -139,7 +139,8 @@
         }
         <div class="c-actions">
           @if (row.status === 'pending') {
-            <app-btn variant="secondary" [ariaLabel]="'確認收款 ' + row.primary" (click)="openReceipt(item.d)">確認收款</app-btn>
+            <app-btn variant="secondary" [ariaLabel]="'確認收款 ' + row.primary" [ariaExpanded]="receiptRow()?.id === row.id"
+              (click)="openReceipt(item.d)">確認收款</app-btn>
           }
           <button type="button" class="row-action" [attr.aria-label]="'操作 ' + row.primary" aria-haspopup="menu"
             (click)="onRowAction({ id: row.id, event: $event })">⋯</button>
@@ -152,7 +153,7 @@
         </div>
       }
     </article>
-    @if (openReceiptId() === row.id) {
+    @if (receiptRow()?.id === row.id) {
       @let receiptTitle = '確認實際收款 · ' + (nameFor(item.d.symbol) ?? item.d.symbol) + ' ' + row.net.main;
       <div class="receipt-form" role="group" [attr.aria-label]="receiptTitle">
         <p class="receipt-title">{{ receiptTitle }}</p>
@@ -171,7 +172,7 @@
           </label>
         </div>
         <div class="receipt-actions">
-          <app-btn variant="ghost" (click)="closeReceipt()">取消</app-btn>
+          <app-btn variant="ghost" (click)="cancelReceipt()">取消</app-btn>
           <app-btn [disabled]="receiptBusy() || !receiptDate() || receiptAccountId() === null" [loading]="receiptBusy()" (click)="confirmReceipt()">確認已收到並入帳</app-btn>
         </div>
       </div>

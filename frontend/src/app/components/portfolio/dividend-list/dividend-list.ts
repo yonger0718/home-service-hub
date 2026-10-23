@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit, computed, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
+import { Component, ElementRef, Injector, OnDestroy, OnInit, afterNextRender, computed, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Subscription, catchError, of } from 'rxjs';
 import { LayoutModeService } from '../../../services/layout-mode.service';
@@ -69,6 +69,8 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   private confirmationService = inject(ConfirmationService);
   private messageService = inject(MessageService);
   private layoutMode = inject(LayoutModeService);
+  private host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private injector = inject(Injector);
 
   @ViewChild('menu') menu!: Menu;
   menuItems: MenuItem[] = [];
@@ -148,38 +150,58 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
 
   /** The row whose inline receipt form is open; one at a time. */
   readonly openReceiptId = signal<number | null>(null);
-  private receiptRow: Dividend | null = null;
+  /** The open row as listed now (its latest revision); null when it left the list or is no longer pending, so no form renders. */
+  readonly receiptRow = computed(() => {
+    const id = this.openReceiptId();
+    return id === null ? null : this.listRows().find(d => d.id === id && d.receipt_status === 'pending') ?? null;
+  });
   readonly receiptBusy = signal(false);
   readonly receiptDate = signal('');
   readonly receiptAccountId = signal<number | null>(null);
 
-  /** Opens the form under a pending row, closing any other; ignored while a confirmation is in flight. */
+  /** Opens the form under a pending row, closing any other, and focuses 實際收款日; ignored while a confirmation is in flight. */
   openReceipt(row: Dividend): void {
     if (row.receipt_status !== 'pending' || this.receiptBusy()) return;
-    this.receiptRow = row;
     this.receiptDate.set('');
     this.receiptAccountId.set(null);
     this.openReceiptId.set(row.id);
     if (this.accountsFailed) this.loadAccounts();
+    this.focusAfterRender('.receipt-form input[type="date"]');
   }
 
+  /** Closes the form and clears its fields (also on every filter, sort, status or page change). */
   closeReceipt(): void {
     this.openReceiptId.set(null);
-    this.receiptRow = null;
+    this.receiptDate.set('');
+    this.receiptAccountId.set(null);
+  }
+
+  /** 取消: closes the form and returns focus to the row's 確認收款. */
+  cancelReceipt(): void {
+    const id = this.openReceiptId();
+    this.closeReceipt();
+    if (id !== null) this.focusRowButton(id);
   }
 
   onReceiptAccount(value: string): void {
     this.receiptAccountId.set(value ? Number(value) : null);
   }
 
-  /** On success and on error the form closes and both the page and the filter-wide set reload. */
+  /**
+   * Submits the open row as listed now. On success and on error the form closes, focus returns to the row's
+   * 確認收款 while it is still listed, and both the page and the filter-wide set reload.
+   */
   confirmReceipt(): void {
-    const row = this.receiptRow;
+    const row = this.receiptRow();
     const receiptDate = this.receiptDate();
     const accountId = this.receiptAccountId();
-    if (!row || !receiptDate || accountId === null || this.receiptBusy()) return;
+    if (!row) {
+      this.closeReceipt();
+      return;
+    }
+    if (!receiptDate || accountId === null || this.receiptBusy()) return;
     this.receiptBusy.set(true);
-    const settle = () => { this.receiptBusy.set(false); this.closeReceipt(); this.reload(); };
+    const settle = () => { this.receiptBusy.set(false); this.closeReceipt(); this.focusRowButton(row.id); this.reload(); };
     this.portfolioService.confirmDividendReceipt(row.id, { receipt_date: receiptDate,
       account_id: accountId, revision: row.revision ?? 1 }).subscribe({
       next: () => settle(),
@@ -190,14 +212,22 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     });
   }
 
-  /** A failure is silent for the 收款 names; with the receipt form open it raises the toast. */
+  private focusRowButton(id: number): void {
+    this.focusAfterRender(`[data-row-id="${id}"] .c-actions app-btn button`);
+  }
+
+  private focusAfterRender(selector: string): void {
+    afterNextRender(() => this.host.nativeElement.querySelector<HTMLElement>(selector)?.focus(), { injector: this.injector });
+  }
+
+  /** A failure is silent for the 收款 names; while the receipt form is rendered it raises the toast. */
   private loadAccounts(): void {
     this.accountsFailed = false;
     this.portfolioService.getAccounts({ include_inactive: true }).subscribe({
       next: result => this.accounts.set(result.items),
       error: () => {
         this.accountsFailed = true;
-        if (this.openReceiptId() !== null) this.messageService.add({ severity: 'error', summary: '無法取得收款帳戶' });
+        if (this.receiptRow()) this.messageService.add({ severity: 'error', summary: '無法取得收款帳戶' });
       },
     });
   }
@@ -295,7 +325,17 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
         this.summary.set(dividendTotals(result.items));
         this.summaryRows.set(result.items);
         this.summaryCapped.set(result.capped);
+        this.clampStatusOffset();
       });
+  }
+
+  /** A page picked on the previous set during a reload may lie past the new set's end: move to its last page. */
+  private clampStatusOffset(): void {
+    const set = this.statusSet();
+    if (!set) return;
+    const length = set.length;
+    const limit = this.query().limit ?? 25;
+    if (this.statusOffset() >= length) this.statusOffset.set(Math.max(0, Math.floor((length - 1) / limit) * limit));
   }
 
   /** The filter-wide set and the list page; on every filter, sort or data change (a page change only fetches). */
@@ -307,6 +347,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   private updateFilters(patch: Partial<DividendQuery>, debounce = false) {
     this.query.set({ ...this.query(), ...patch, offset: 0 });
     this.statusOffset.set(0);
+    this.closeReceipt();
     if (this.filterDebounce) clearTimeout(this.filterDebounce);
     if (debounce) {
       this.filterDebounce = setTimeout(() => this.reload(), 300);
@@ -360,6 +401,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   onStatusChange(value: string) {
     this.status.set(value as DividendStatusFilter);
     this.statusOffset.set(0);
+    this.closeReceipt();
     if (value === 'all') {
       this.query.set({ ...this.query(), offset: 0 });
       this.fetch();
@@ -370,6 +412,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   onPageChange(event: PaginatorState) {
     const offset = event.first ?? 0;
     const limit = event.rows ?? 25;
+    this.closeReceipt();
     if (this.statusSet()) {
       this.statusOffset.set(offset);
       this.query.set({ ...this.query(), limit });
@@ -384,6 +427,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     this.dateRange = null;
     this.status.set('all');
     this.statusOffset.set(0);
+    this.closeReceipt();
     this.query.set({ offset: 0, limit: this.query().limit ?? 25, sort: 'ex_dividend_date:desc' });
     this.reload();
   }

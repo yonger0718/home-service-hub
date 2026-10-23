@@ -38,6 +38,18 @@ describe('BtnComponent', () => {
     expect(fixture.componentInstance.count).toBe(1);
   });
 
+  it('sets aria-expanded on the button only when given', () => {
+    const fixture = TestBed.createComponent(BtnExpandedHostComponent);
+    fixture.detectChanges();
+    const [plain, toggle] = Array.from(fixture.nativeElement.querySelectorAll('button')) as HTMLButtonElement[];
+    expect(plain.hasAttribute('aria-expanded')).toBe(false);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    fixture.componentInstance.expanded = true;
+    fixture.changeDetectorRef.markForCheck();
+    fixture.detectChanges();
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  });
+
   it('renders the soft variant as .btn-soft', () => {
     const fixture = TestBed.createComponent(BtnSoftHostComponent);
     fixture.detectChanges();
@@ -47,3 +59,8 @@ describe('BtnComponent', () => {
 
 @Component({ imports: [BtnComponent], template: `<app-btn variant="soft">新增</app-btn>` })
 class BtnSoftHostComponent {}
+
+@Component({ imports: [BtnComponent], template: `<app-btn>新增</app-btn><app-btn [ariaExpanded]="expanded">展開</app-btn>` })
+class BtnExpandedHostComponent {
+  expanded = false;
+}
