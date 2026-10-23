@@ -648,16 +648,34 @@ def _estimate_sell_costs(gross_market_value: Decimal) -> Decimal:
     return fee + tax
 
 
+def _pence_divisor(currency: Optional[str]) -> Decimal:
+    """Minor-unit divisor for a stored amount: 100 for LSE pence, else 1.
+
+    Only the exact (stripped) token ``'GBp'`` means pence — ``'GBP'`` is
+    pounds and must never be divided. Canonical helper for every TWD
+    valuation of a dividend (#115).
+
+    Unit asymmetry — dividends ONLY: GBp dividend rows store
+    ``fx_rate_to_twd`` per POUND (``foreign_dividend_service._exact_fx_rate``
+    looks up the GBP rate), so their pence amount must be ÷100 first. GBp
+    transactions instead store ``fx_rate_to_twd`` per PENNY (the fx lookup
+    router divides the GBP rate by 100), so ``_row_price_twd``, transaction
+    cost basis and market-value paths must never use this divisor.
+    """
+    return Decimal("100") if (currency or "").strip() == "GBp" else Decimal("1")
+
+
 def _dividend_amount_twd(row: models.Dividend) -> Decimal:
-    currency = (getattr(row, "currency", "TWD") or "TWD").strip().upper()
+    raw_currency = (getattr(row, "currency", "TWD") or "TWD").strip()
     fx_rate = getattr(row, "fx_rate_to_twd", None)
-    if currency != "TWD" and fx_rate is None:
+    if raw_currency.upper() != "TWD" and fx_rate is None:
         raise ValueError(
             f"missing fx_rate_to_twd for dividend "
             f"(id={getattr(row, 'id', None)!r}, symbol={row.symbol!r}, "
             f"ex_dividend_date={row.ex_dividend_date!r})"
         )
-    amount = Decimal(row.amount)
+    # Stored GBp rows stay in pence; value them in pounds before the GBP rate.
+    amount = Decimal(row.amount) / _pence_divisor(raw_currency)
     if fx_rate is None:
         return amount
     return amount * Decimal(fx_rate)
@@ -957,7 +975,9 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
             amount_twd = _dividend_amount_twd(d)
             dividend_map[key] = dividend_map.get(key, Decimal("0.0")) + amount_twd
             if key[1] != "TW":
-                native_cur = (getattr(d, "currency", None) or "").strip().upper()
+                # Exact token (no upper()): keeps GBp distinct from GBP so the
+                # lookup by revalue.native_currency finds pence rows (#115).
+                native_cur = (getattr(d, "currency", None) or "").strip()
                 if not native_cur:
                     continue
                 by_cur = dividend_native_by_cur.setdefault(key, {})

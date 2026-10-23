@@ -42,7 +42,7 @@ from ..models.portfolio_snapshot import PortfolioSnapshot
 from ..models.price_history import PriceHistory
 from . import cash_account_service
 from . import market_data_service
-from .portfolio_service import _load_adjusted_transactions
+from .portfolio_service import _load_adjusted_transactions, _pence_divisor
 from .quotes import fx_rate_service
 from .realized_pnl_service import iter_realized_events
 
@@ -738,9 +738,11 @@ def replay_snapshots_range(
         # Advance dividends up to and including ``cur``.
         while div_i < len(dividends) and _ex_date_of(dividends[div_i]) <= cur:
             dividend = dividends[div_i]
-            cumulative_dividends += Decimal(dividend.amount) * Decimal(
-                dividend.fx_rate_to_twd or 1
-            )
+            # GBp (pence) rows are valued in pounds — same rule as
+            # portfolio_service._dividend_amount_twd (#115).
+            cumulative_dividends += (
+                Decimal(dividend.amount) / _pence_divisor(dividend.currency)
+            ) * Decimal(dividend.fx_rate_to_twd or 1)
             div_i += 1
 
         is_weekend = cur.weekday() >= 5
