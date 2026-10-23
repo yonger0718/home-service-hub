@@ -24,6 +24,30 @@ import { allPages } from '../paging';
 import { periodLabel } from '../period';
 import { DividendTotals, dividendTotals } from './dividend-math';
 import { DividendStatusFilter, dividendRow, matchesStatus } from './dividend-rows';
+import { isTwdCurrency } from '../money';
+
+/** 修改扣款 is offered on pending and confirmed TW/TWD rows (the server's own guard). */
+function deductionsEditable(d: Dividend): boolean {
+  return (d.receipt_status === 'pending' || d.receipt_status === 'confirmed') && (d.market ?? 'TW') === 'TW' && isTwdCurrency(d.currency);
+}
+
+/** A form field as a non-negative amount; null when empty, not a number or negative. */
+function amountInput(value: string): number | null {
+  if (value.trim() === '') return null;
+  const amount = Number(value);
+  return Number.isFinite(amount) && amount >= 0 ? amount : null;
+}
+
+/**
+ * The server's reason for a toast: `message` as served by the shared error handler ({code, message, trace_id}),
+ * else a string FastAPI `detail`; a 422 validation array (or no body) gives the fallback.
+ */
+function serverReason(err: { error?: { message?: unknown; detail?: unknown } } | null | undefined): string {
+  const body = err?.error;
+  if (typeof body?.message === 'string') return body.message;
+  if (typeof body?.detail === 'string') return body.detail;
+  return '請重新載入後核對';
+}
 
 const SORT_OPTIONS = [
   { value: 'ex_dividend_date:desc', label: '除息日 新→舊' },
@@ -160,7 +184,8 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
 
   /** Opens the form under a pending row, closing any other, and focuses 實際收款日; ignored while a confirmation is in flight. */
   openReceipt(row: Dividend): void {
-    if (row.receipt_status !== 'pending' || this.receiptBusy()) return;
+    if (row.receipt_status !== 'pending' || this.receiptBusy() || this.deductionsBusy()) return;
+    this.closeDeductions();
     this.receiptDate.set('');
     this.receiptAccountId.set(null);
     this.openReceiptId.set(row.id);
@@ -207,11 +232,81 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
       next: () => settle(),
       error: err => {
         settle();
-        // A 422 carries FastAPI's validation array in `detail`; only a string reason is shown.
-        const detail = err.error?.detail;
-        this.messageService.add({ severity: 'error', summary: '收款確認未完成', detail: typeof detail === 'string' ? detail : '請重新載入後核對' });
+        this.messageService.add({ severity: 'error', summary: '收款確認未完成', detail: serverReason(err) });
       },
     });
+  }
+
+  /** The row whose inline 修改扣款 form is open; never set together with `openReceiptId`. */
+  readonly openDeductionsId = signal<number | null>(null);
+  /** The open row as listed now (its latest revision), pending or confirmed (unlike `receiptRow`); null once it is no longer editable. */
+  readonly deductionsRow = computed(() => {
+    const id = this.openDeductionsId();
+    return id === null ? null : this.listRows().find(d => d.id === id && deductionsEditable(d)) ?? null;
+  });
+  readonly deductionsBusy = signal(false);
+  readonly deductionsFee = signal('');
+  readonly deductionsTax = signal('');
+  /** 儲存 needs both fields set and non-negative. */
+  readonly deductionsValid = computed(() => amountInput(this.deductionsFee()) !== null && amountInput(this.deductionsTax()) !== null);
+
+  /** Opens 修改扣款 under the row, prefilled, closing any other form, and focuses 匯費; ignored while either submit is in flight. */
+  openDeductions(row: Dividend): void {
+    if (!deductionsEditable(row) || this.receiptBusy() || this.deductionsBusy()) return;
+    this.closeReceipt();
+    this.deductionsFee.set(String(Number(row.fee ?? 0)));
+    this.deductionsTax.set(String(Number(row.tax ?? 0)));
+    this.openDeductionsId.set(row.id);
+    this.focusAfterRender('.deductions-form input[aria-label="匯費"]');
+  }
+
+  closeDeductions(): void {
+    this.openDeductionsId.set(null);
+    this.deductionsFee.set('');
+    this.deductionsTax.set('');
+  }
+
+  /** 取消: closes the form and returns focus to the row's ⋯ button. */
+  cancelDeductions(): void {
+    const id = this.openDeductionsId();
+    this.closeDeductions();
+    if (id !== null) this.focusRowAction(id);
+  }
+
+  /**
+   * Submits the open row as listed now. On success and on error the form closes, focus returns to the row's ⋯ button
+   * and both the page and the filter-wide set reload; an error also toasts the server's reason.
+   */
+  submitDeductions(): void {
+    const row = this.deductionsRow();
+    if (!row) {
+      this.closeDeductions();
+      return;
+    }
+    const fee = amountInput(this.deductionsFee());
+    const tax = amountInput(this.deductionsTax());
+    if (fee === null || tax === null || this.deductionsBusy()) return;
+    this.deductionsBusy.set(true);
+    const settle = () => { this.deductionsBusy.set(false); this.closeDeductions(); this.focusRowAction(row.id); this.reload(); };
+    this.deductionsSub?.unsubscribe();
+    this.deductionsSub = this.portfolioService.updateDividendDeductions(row.id, { fee, tax, revision: row.revision ?? 1 }).subscribe({
+      next: () => settle(),
+      error: err => {
+        settle();
+        this.messageService.add({ severity: 'error', summary: '扣款更新未完成', detail: serverReason(err) });
+      },
+    });
+  }
+
+  /** Both inline forms close on every filter, sort, status or page change. */
+  private closeForms(): void {
+    this.closeReceipt();
+    this.closeDeductions();
+  }
+
+  /** The row's ⋯ button (the row element carries `data-row-id`). */
+  private focusRowAction(id: number): void {
+    this.focusAfterRender(`[data-row-id="${id}"] button.row-action`);
   }
 
   private focusRowButton(id: number): void {
@@ -243,6 +338,8 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   private summarySub?: Subscription;
   /** The in-flight receipt confirmation; cancelled on destroy, so a late response neither reloads nor toasts. */
   private receiptSub?: Subscription;
+  /** The in-flight 修改扣款 request; cancelled on destroy like `receiptSub`. */
+  private deductionsSub?: Subscription;
   private destroyed = false;
 
   nameFor(symbol: string): string | null {
@@ -287,6 +384,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     this.listSub?.unsubscribe();
     this.summarySub?.unsubscribe();
     this.receiptSub?.unsubscribe();
+    this.deductionsSub?.unsubscribe();
   }
 
   fetch() {
@@ -359,7 +457,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   private updateFilters(patch: Partial<DividendQuery>, debounce = false) {
     this.query.set({ ...this.query(), ...patch, offset: 0 });
     this.statusOffset.set(0);
-    this.closeReceipt();
+    this.closeForms();
     if (this.filterDebounce) clearTimeout(this.filterDebounce);
     if (debounce) {
       this.filterDebounce = setTimeout(() => this.reload(), 300);
@@ -413,7 +511,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   onStatusChange(value: string) {
     this.status.set(value as DividendStatusFilter);
     this.statusOffset.set(0);
-    this.closeReceipt();
+    this.closeForms();
     if (value === 'all') {
       this.query.set({ ...this.query(), offset: 0 });
       this.fetch();
@@ -424,7 +522,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   onPageChange(event: PaginatorState) {
     const offset = event.first ?? 0;
     const limit = event.rows ?? 25;
-    this.closeReceipt();
+    this.closeForms();
     if (this.statusSet()) {
       this.statusOffset.set(offset);
       this.query.set({ ...this.query(), limit });
@@ -439,7 +537,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     this.dateRange = null;
     this.status.set('all');
     this.statusOffset.set(0);
-    this.closeReceipt();
+    this.closeForms();
     this.query.set({ offset: 0, limit: this.query().limit ?? 25, sort: 'ex_dividend_date:desc' });
     this.reload();
   }
@@ -481,13 +579,21 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     if (record) this.showMenu(action.event, record);
   }
 
+  /** Pending rows: 編輯 / 刪除, plus 修改扣款 when TW/TWD; a confirmed TW/TWD row: 修改扣款 only; any other row: the info toast. */
   showMenu(event: MouseEvent, dividend: Dividend) {
+    const deductions: MenuItem = { label: '修改扣款', icon: 'pi pi-calculator', command: () => this.openDeductions(dividend) };
+    if (dividend.receipt_status === 'confirmed' && deductionsEditable(dividend)) {
+      this.menuItems = [deductions];
+      this.menu.toggle(event);
+      return;
+    }
     if (dividend.receipt_status && dividend.receipt_status !== 'pending') {
       this.messageService.add({ severity: 'info', summary: '需人工釐清，不可直接改寫已收款或舊資料' });
       return;
     }
     this.menuItems = [
       { label: '編輯', icon: 'pi pi-pencil', command: () => this.editDividend(dividend) },
+      ...(deductionsEditable(dividend) ? [deductions] : []),
       { separator: true },
       { label: '刪除', icon: 'pi pi-trash', styleClass: 'text-danger', command: () => this.deleteDividend(dividend) },
     ];

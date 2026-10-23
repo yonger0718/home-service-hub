@@ -1,5 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { provideRouter } from '@angular/router';
 import { MessageService } from 'primeng/api';
 import { Paginator } from 'primeng/paginator';
@@ -1266,6 +1268,368 @@ describe('Dividend filter-wide summary', () => {
     });
   });
 
+  describe('修改扣款 inline form', () => {
+    const NOTE = '淨額會重新計算';
+    const CASH_NOTE = '淨額會重新計算，現金帳的股利入帳也會一併更新';
+    const tw: Dividend = { id: 21, symbol: '00878', amount: 9590, fee: 10, tax: 0, ex_dividend_date: '2026-10-17', receipt_status: 'pending',
+      revision: 2, cash_dividend_per_share: 0.48, quantity_at_record_date: 20000 };
+    const twPaid: Dividend = { id: 22, symbol: '0056', amount: 14590, fee: 10, tax: 0, ex_dividend_date: '2026-07-16', receipt_status: 'confirmed',
+      receipt_date: '2026-08-12', receipt_account_id: 7, revision: 5 };
+    const usd: Dividend = { id: 23, symbol: 'AAPL', amount: 7.8, fee: 0, tax: 0, currency: 'USD', market: 'US', fx_rate_to_twd: '30.80',
+      ex_dividend_date: '2026-08-11', receipt_status: 'pending', revision: 1 };
+    const unresolved: Dividend = { id: 24, symbol: '2330', amount: 4000, ex_dividend_date: '2026-06-12', receipt_status: 'unresolved' };
+    const noRevision: Dividend = { id: 31, symbol: '0050', amount: 500, fee: 10, tax: 0, ex_dividend_date: '2026-07-16', receipt_status: 'pending' };
+
+    function rendered(rows: Dividend[]): ComponentFixture<PortfolioDividendListComponent> {
+      const fixture = create();
+      respond(listCalls[0], { items: rows, total: rows.length });
+      respond(summaryCalls[0], { items: rows, total: rows.length });
+      fixture.detectChanges();
+      return fixture;
+    }
+
+    function menuFor(fixture: ComponentFixture<PortfolioDividendListComponent>, row: Dividend): string[] {
+      const component = fixture.componentInstance;
+      vi.spyOn(component.menu, 'toggle').mockImplementation(() => undefined);
+      component.menuItems = [];
+      component.showMenu(new MouseEvent('click'), row);
+      return component.menuItems.map(item => (item.separator ? '—' : item.label ?? ''));
+    }
+
+    function openDeductions(fixture: ComponentFixture<PortfolioDividendListComponent>, row: Dividend): void {
+      menuFor(fixture, row);
+      fixture.componentInstance.menuItems.find(item => item.label === '修改扣款')!.command!({} as never);
+      fixture.detectChanges();
+    }
+
+    function forms(fixture: ComponentFixture<PortfolioDividendListComponent>): HTMLElement[] {
+      return Array.from(el(fixture).querySelectorAll<HTMLElement>('.deductions-form'));
+    }
+
+    function receiptForms(fixture: ComponentFixture<PortfolioDividendListComponent>): HTMLElement[] {
+      return Array.from(el(fixture).querySelectorAll<HTMLElement>('.receipt-form:not(.deductions-form)'));
+    }
+
+    function input(fixture: ComponentFixture<PortfolioDividendListComponent>, label: '匯費' | '補充保費'): HTMLInputElement {
+      return el(fixture).querySelector<HTMLInputElement>(`.deductions-form input[aria-label="${label}"]`)!;
+    }
+
+    function type(fixture: ComponentFixture<PortfolioDividendListComponent>, label: '匯費' | '補充保費', value: string): void {
+      const field = input(fixture, label);
+      field.value = value;
+      field.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+    }
+
+    function button(fixture: ComponentFixture<PortfolioDividendListComponent>, label: string): HTMLButtonElement {
+      return Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('.deductions-form button')).find(b => b.textContent?.trim() === label)!;
+    }
+
+    function rowAction(fixture: ComponentFixture<PortfolioDividendListComponent>, id: number): HTMLButtonElement | null {
+      return el(fixture).querySelector<HTMLButtonElement>(`[data-row-id="${id}"] button.row-action`);
+    }
+
+    it('menus: pending TW 編輯 / 修改扣款 / 刪除; confirmed TW 修改扣款 only; pending foreign 編輯 / 刪除; legacy and unresolved the info toast', () => {
+      const fixture = rendered([tw, twPaid, usd, legacy, unresolved]);
+      const toast = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
+
+      expect(menuFor(fixture, tw)).toEqual(['編輯', '修改扣款', '—', '刪除']);
+      expect(menuFor(fixture, twPaid)).toEqual(['修改扣款']);
+      expect(menuFor(fixture, usd)).toEqual(['編輯', '—', '刪除']);
+      expect(toast).not.toHaveBeenCalled();
+
+      for (const row of [legacy, unresolved]) {
+        toast.mockClear();
+        expect(menuFor(fixture, row)).toEqual([]);
+        expect(toast).toHaveBeenCalledWith({ severity: 'info', summary: '需人工釐清，不可直接改寫已收款或舊資料' });
+      }
+      fixture.destroy();
+    });
+
+    it('renders one form under the pending row: title, prefilled 匯費 / 補充保費, step 0.01, the note, 取消 / 儲存', () => {
+      const fixture = rendered([tw, twPaid]);
+      openDeductions(fixture, tw);
+
+      const [form] = forms(fixture);
+      expect(forms(fixture)).toHaveLength(1);
+      expect(form.classList).toContain('receipt-form');
+      expect(form.previousElementSibling?.getAttribute('data-row-id')).toBe('21');
+      expect(form.querySelector('.receipt-title')?.textContent?.trim()).toBe('修改扣款 · 國泰永續高股息 +9,590');
+      expect(form.getAttribute('aria-label')).toBe('修改扣款 · 國泰永續高股息 +9,590');
+      const labels = Array.from(form.querySelectorAll('.receipt-fields label')).map(label => label.firstChild?.textContent?.trim());
+      expect(labels).toEqual(['匯費', '補充保費']);
+      for (const label of ['匯費', '補充保費'] as const) {
+        const field = input(fixture, label);
+        expect(field.getAttribute('type')).toBe('number');
+        expect(field.getAttribute('min')).toBe('0');
+        expect(field.getAttribute('step')).toBe('0.01');
+      }
+      expect(input(fixture, '匯費').value).toBe('10');
+      expect(input(fixture, '補充保費').value).toBe('0');
+      expect(form.querySelector('.deductions-note')?.textContent?.trim()).toBe(NOTE);
+      expect(Array.from(form.querySelectorAll('app-btn button')).map(b => b.textContent?.trim())).toEqual(['取消', '儲存']);
+      expect(button(fixture, '儲存').disabled).toBe(false);
+      fixture.destroy();
+    });
+
+    it('a confirmed row adds the cash sentence to the note and prefills from the row (string decimals too)', () => {
+      const served: Dividend = { ...twPaid, fee: '10.00' as never, tax: '202.50' as never };
+      const fixture = rendered([served]);
+      openDeductions(fixture, served);
+
+      expect(forms(fixture)[0].querySelector('.deductions-note')?.textContent?.trim()).toBe(CASH_NOTE);
+      expect(input(fixture, '匯費').value).toBe('10');
+      expect(input(fixture, '補充保費').value).toBe('202.5');
+      fixture.destroy();
+    });
+
+    it('disables 儲存 when a field is empty or negative, and while busy', () => {
+      service['updateDividendDeductions'] = vi.fn(() => new Subject<Dividend>());
+      const fixture = rendered([tw]);
+      openDeductions(fixture, tw);
+
+      type(fixture, '匯費', '');
+      expect(button(fixture, '儲存').disabled).toBe(true);
+      type(fixture, '匯費', '-1');
+      expect(button(fixture, '儲存').disabled).toBe(true);
+      type(fixture, '匯費', '0');
+      type(fixture, '補充保費', '');
+      expect(button(fixture, '儲存').disabled).toBe(true);
+      type(fixture, '補充保費', '-0.01');
+      expect(button(fixture, '儲存').disabled).toBe(true);
+      type(fixture, '補充保費', '0');
+      expect(button(fixture, '儲存').disabled).toBe(false);
+
+      button(fixture, '儲存').click();
+      button(fixture, '儲存').click();
+      fixture.detectChanges();
+      expect(service['updateDividendDeductions']).toHaveBeenCalledTimes(1);
+      expect(fixture.componentInstance.deductionsBusy()).toBe(true);
+      expect(button(fixture, '儲存').disabled).toBe(true);
+      fixture.destroy();
+    });
+
+    it('submits { fee, tax, revision } and on success closes the form and reloads both sets', () => {
+      service['updateDividendDeductions'] = vi.fn(() => of({ ...tw, fee: 0, amount: 9600, revision: 3 }));
+      const fixture = rendered([tw]);
+      openDeductions(fixture, tw);
+      type(fixture, '匯費', '0');
+
+      button(fixture, '儲存').click();
+      fixture.detectChanges();
+      expect(service['updateDividendDeductions']).toHaveBeenCalledWith(21, { fee: 0, tax: 0, revision: 2 });
+      expect(forms(fixture)).toHaveLength(0);
+      expect(fixture.componentInstance.openDeductionsId()).toBeNull();
+      expect(fixture.componentInstance.deductionsBusy()).toBe(false);
+      expect(listCalls).toHaveLength(2);
+      expect(summaryCalls).toHaveLength(2);
+      fixture.destroy();
+    });
+
+    it('sends revision 1 for a row without one', () => {
+      service['updateDividendDeductions'] = vi.fn(() => of(noRevision));
+      const fixture = rendered([noRevision]);
+      openDeductions(fixture, noRevision);
+      type(fixture, '補充保費', '12.5');
+
+      button(fixture, '儲存').click();
+      expect(service['updateDividendDeductions']).toHaveBeenCalledWith(31, { fee: 10, tax: 12.5, revision: 1 });
+      fixture.destroy();
+    });
+
+    it('on error closes the form, reloads both sets and toasts 扣款更新未完成 with the server message, a string detail, or the fallback', () => {
+      service['updateDividendDeductions'] = vi.fn()
+        .mockReturnValueOnce(throwError(() => ({ status: 409, error: { code: 409, message: 'entitlement changed; reload before editing', trace_id: null } })))
+        .mockReturnValueOnce(throwError(() => ({ status: 409, error: { detail: 'Synthetic string detail' } })))
+        .mockReturnValueOnce(throwError(() => ({ status: 422, error: { detail: [{ loc: ['body', 'fee'], msg: 'Synthetic invalid fee' }] } })));
+      const fixture = rendered([tw]);
+      const toast = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
+      const attempt = (call: number) => {
+        respond(listCalls[call], { items: [tw], total: 1 });
+        respond(summaryCalls[call], { items: [tw], total: 1 });
+        fixture.detectChanges();
+        openDeductions(fixture, tw);
+        button(fixture, '儲存').click();
+        fixture.detectChanges();
+      };
+
+      openDeductions(fixture, tw);
+      button(fixture, '儲存').click();
+      fixture.detectChanges();
+      expect(toast).toHaveBeenLastCalledWith({ severity: 'error', summary: '扣款更新未完成', detail: 'entitlement changed; reload before editing' });
+      expect(forms(fixture)).toHaveLength(0);
+      expect(fixture.componentInstance.deductionsBusy()).toBe(false);
+      expect(listCalls).toHaveLength(2);
+      expect(summaryCalls).toHaveLength(2);
+
+      attempt(1);
+      expect(toast).toHaveBeenLastCalledWith({ severity: 'error', summary: '扣款更新未完成', detail: 'Synthetic string detail' });
+      attempt(2);
+      expect(toast).toHaveBeenLastCalledWith({ severity: 'error', summary: '扣款更新未完成', detail: '請重新載入後核對' });
+      fixture.destroy();
+    });
+
+    it('the 收款確認 toast shows the served `message` and falls back on a pydantic detail array', () => {
+      service['confirmDividendReceipt']
+        .mockReturnValueOnce(throwError(() => ({ status: 409, error: { code: 409, message: 'Synthetic served message', trace_id: null } })))
+        .mockReturnValueOnce(throwError(() => ({ status: 422, error: { detail: [{ loc: ['body', 'receipt_date'], msg: 'Synthetic invalid date' }] } })));
+      const fixture = rendered([tw]);
+      const toast = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
+      const confirmOnce = () => {
+        el(fixture).querySelector<HTMLButtonElement>('[data-row-id="21"] .c-actions app-btn button')!.click();
+        fixture.detectChanges();
+        const date = el(fixture).querySelector<HTMLInputElement>('.receipt-form input[aria-label="實際收款日"]')!;
+        date.value = '2026-10-20';
+        date.dispatchEvent(new Event('input'));
+        const select = el(fixture).querySelector<HTMLSelectElement>('.receipt-form select[aria-label="收款帳戶"]')!;
+        select.value = '7';
+        select.dispatchEvent(new Event('change'));
+        fixture.detectChanges();
+        Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('.receipt-form button')).find(b => b.textContent?.trim() === '確認已收到並入帳')!.click();
+        fixture.detectChanges();
+      };
+
+      confirmOnce();
+      expect(toast).toHaveBeenLastCalledWith({ severity: 'error', summary: '收款確認未完成', detail: 'Synthetic served message' });
+      respond(listCalls[1], { items: [tw], total: 1 });
+      respond(summaryCalls[1], { items: [tw], total: 1 });
+      fixture.detectChanges();
+      confirmOnce();
+      expect(toast).toHaveBeenLastCalledWith({ severity: 'error', summary: '收款確認未完成', detail: '請重新載入後核對' });
+      fixture.destroy();
+    });
+
+    it('opening 修改扣款 closes an open 確認收款 form and vice versa', () => {
+      const fixture = rendered([tw, twPaid]);
+      el(fixture).querySelector<HTMLButtonElement>('[data-row-id="21"] .c-actions app-btn button')!.click();
+      fixture.detectChanges();
+      expect(receiptForms(fixture)).toHaveLength(1);
+
+      openDeductions(fixture, twPaid);
+      expect(receiptForms(fixture)).toHaveLength(0);
+      expect(fixture.componentInstance.openReceiptId()).toBeNull();
+      expect(forms(fixture)).toHaveLength(1);
+      expect(forms(fixture)[0].previousElementSibling?.getAttribute('data-row-id')).toBe('22');
+
+      el(fixture).querySelector<HTMLButtonElement>('[data-row-id="21"] .c-actions app-btn button')!.click();
+      fixture.detectChanges();
+      expect(forms(fixture)).toHaveLength(0);
+      expect(fixture.componentInstance.openDeductionsId()).toBeNull();
+      expect(receiptForms(fixture)).toHaveLength(1);
+      fixture.destroy();
+    });
+
+    it('ignores opens while the 修改扣款 submit is busy', () => {
+      service['updateDividendDeductions'] = vi.fn(() => new Subject<Dividend>());
+      service['confirmDividendReceipt'].mockReturnValue(new Subject<Dividend>());
+      const fixture = rendered([tw, twPaid]);
+      const component = fixture.componentInstance;
+
+      openDeductions(fixture, tw);
+      button(fixture, '儲存').click();
+      fixture.detectChanges();
+      expect(component.deductionsBusy()).toBe(true);
+      component.openDeductions(twPaid);
+      component.openReceipt(tw);
+      expect(component.openDeductionsId()).toBe(21);
+      expect(component.openReceiptId()).toBeNull();
+      fixture.destroy();
+    });
+
+    it('ignores 修改扣款 opens while a receipt confirmation is busy', () => {
+      service['confirmDividendReceipt'].mockReturnValue(new Subject<Dividend>());
+      const fixture = rendered([tw, twPaid]);
+      const component = fixture.componentInstance;
+      component.openReceipt(tw);
+      component.receiptDate.set('2026-10-20');
+      component.receiptAccountId.set(7);
+      component.confirmReceipt();
+      expect(component.receiptBusy()).toBe(true);
+
+      component.openDeductions(twPaid);
+      expect(component.openDeductionsId()).toBeNull();
+      expect(component.openReceiptId()).toBe(21);
+      fixture.destroy();
+    });
+
+    it('closes on a filter, sort, status, page or clear change', () => {
+      const fixture = rendered([tw, twPaid]);
+      const component = fixture.componentInstance;
+      const changes: [string, () => void][] = [
+        ['source', () => component.onSourceChange('csv')],
+        ['sort', () => component.onSortChange('symbol:asc')],
+        ['status', () => selectStatus(fixture, '待收')],
+        ['page', () => component.onPageChange({ first: 0, rows: 50 })],
+        ['clear', () => component.clearFilters()],
+      ];
+      for (const [name, change] of changes) {
+        openDeductions(fixture, tw);
+        expect(forms(fixture), name).toHaveLength(1);
+        change();
+        fixture.detectChanges();
+        expect(forms(fixture), name).toHaveLength(0);
+        expect(component.openDeductionsId(), name).toBeNull();
+      }
+      fixture.destroy();
+    });
+
+    it('focuses 匯費 on open and the row ⋯ button on 取消 and after a settled submit', () => {
+      service['updateDividendDeductions'] = vi.fn(() => throwError(() => ({ status: 409, error: { message: 'Synthetic conflict' } })));
+      const fixture = rendered([tw, twPaid]);
+
+      openDeductions(fixture, tw);
+      expect(document.activeElement).toBe(input(fixture, '匯費'));
+      button(fixture, '取消').click();
+      fixture.detectChanges();
+      expect(forms(fixture)).toHaveLength(0);
+      expect(document.activeElement).toBe(rowAction(fixture, 21));
+
+      openDeductions(fixture, twPaid);
+      expect(document.activeElement).toBe(input(fixture, '匯費'));
+      button(fixture, '儲存').click();
+      fixture.detectChanges();
+      expect(forms(fixture)).toHaveLength(0);
+      expect(document.activeElement).toBe(rowAction(fixture, 22));
+      fixture.destroy();
+    });
+
+    it('cancels the request on destroy: a late response neither throws nor reloads nor toasts', () => {
+      const toast = vi.spyOn(MessageService.prototype, 'add');
+      try {
+        const response = new Subject<Dividend>();
+        service['updateDividendDeductions'] = vi.fn(() => response);
+        const fixture = rendered([tw]);
+        const component = fixture.componentInstance;
+        openDeductions(fixture, tw);
+        button(fixture, '儲存').click();
+        expect(response.observed).toBe(true);
+        const calls = service['getDividends'].mock.calls.length;
+        toast.mockClear();
+
+        fixture.destroy();
+        expect(response.observed).toBe(false);
+        expect(() => response.error({ error: { message: 'Synthetic late failure' } })).not.toThrow();
+        expect(service['getDividends'].mock.calls.length).toBe(calls);
+        expect(toast).not.toHaveBeenCalled();
+        expect(() => component.cancelDeductions()).not.toThrow();
+      } finally {
+        toast.mockRestore();
+      }
+    });
+
+    it('stacks the fields under the row in the compact phone list via .receipt-fields', () => {
+      TestBed.inject(LayoutModeService).set('phone');
+      const fixture = rendered([twPaid]);
+      openDeductions(fixture, twPaid);
+
+      const form = el(fixture).querySelector('.div-list.compact .deductions-form');
+      expect(form?.previousElementSibling?.getAttribute('data-row-id')).toBe('22');
+      expect(form?.querySelector('.receipt-fields input[aria-label="匯費"]')).not.toBeNull();
+      expect(form?.querySelector('.receipt-fields input[aria-label="補充保費"]')).not.toBeNull();
+      fixture.destroy();
+    });
+  });
+
   describe('phone and sheet widths', () => {
     it('shows only the 已確認收款 and 有效待收 cards', () => {
       TestBed.inject(LayoutModeService).set('phone');
@@ -1348,5 +1712,21 @@ describe('Dividend filter-wide summary', () => {
       expect(Array.from(form!.querySelectorAll('app-btn button')).map(b => b.textContent?.trim())).toEqual(['取消', '確認已收到並入帳']);
       fixture.destroy();
     });
+  });
+});
+
+describe('PortfolioService.updateDividendDeductions', () => {
+  it('PATCHes /api/portfolio/dividends/{id}/deductions with { fee, tax, revision }', () => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting(), PortfolioService] });
+    const http = TestBed.inject(HttpTestingController);
+    let result: Dividend | undefined;
+    TestBed.inject(PortfolioService).updateDividendDeductions(21, { fee: 0, tax: 12.5, revision: 2 }).subscribe(d => (result = d));
+
+    const req = http.expectOne('/api/portfolio/dividends/21/deductions');
+    expect(req.request.method).toBe('PATCH');
+    expect(req.request.body).toEqual({ fee: 0, tax: 12.5, revision: 2 });
+    req.flush({ id: 21 });
+    expect(result?.id).toBe(21);
+    http.verify();
   });
 });
