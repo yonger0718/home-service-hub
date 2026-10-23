@@ -11,7 +11,7 @@ import { Component, Input } from '@angular/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfirmationService, MessageService } from 'primeng/api';
 
-import { PortfolioAccountDetailComponent } from './account-detail';
+import { PortfolioAccountDetailComponent, TYPE_OPTIONS } from './account-detail';
 import { CashTransaction } from '../../../models/portfolio.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
@@ -991,7 +991,7 @@ describe('PortfolioAccountDetailComponent cash rows and 餘額', () => {
     expect(settle.querySelector('.amt')?.classList).toContain('down');
 
     expect(text(dividend.querySelector('.title'))).toBe('股利 · 2317');
-    expect(text(dividend.querySelector('.sub'))).toBe('5.80 × 3,000 · 扣匯費 10');
+    expect(text(dividend.querySelector('.sub'))).toBe('5.80 × 3,000 · 匯費 10');
     expect(text(dividend.querySelector('.c-src app-tag'))).toBe('股利');
     expect(dividend.querySelector('.c-src .tag')?.classList).toContain('tag-dividend');
 
@@ -1046,6 +1046,13 @@ describe('PortfolioAccountDetailComponent cash rows and 餘額', () => {
     flushTxns(SCENARIO, params => params.get('offset') === '0');
     fixture.detectChanges();
     expect(balanceCells(fixture)).toEqual(['438,360', '418,360', '528,767']);
+  });
+
+  it('labels the wire_fee type 匯費 in the type filter, once', () => {
+    const fixture = load();
+    const label = (value: string) => fixture.componentInstance.typeOptions.find(o => o.value === value)?.label;
+    expect(label('wire_fee')).toBe('匯費');
+    expect(TYPE_OPTIONS.filter(o => o.label === '匯費')).toHaveLength(1);
   });
 
   it('a type filter hides the 餘額 column', () => {
