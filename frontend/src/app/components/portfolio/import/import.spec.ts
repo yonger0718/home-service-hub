@@ -1,8 +1,10 @@
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, ParamMap, Router, convertToParamMap, provideRouter } from '@angular/router';
 import { Confirmation, ConfirmationService } from 'primeng/api';
-import { BehaviorSubject, of, Subject, throwError } from 'rxjs';
+import { BehaviorSubject, Observable, of, Subject, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ImportHistoryService } from '../../../services/import-history.service';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { BrokerCsvImportResult, ImportResult, ImportRow } from '../../../models/portfolio.model';
 import { PortfolioImportComponent } from './import';
@@ -76,12 +78,15 @@ describe('Portfolio import controls', () => {
     el(fixture).querySelector('ol[aria-label="匯入步驟"] li[aria-current="step"]')?.textContent ?? '';
 
   beforeEach(() => {
+    localStorage.clear();
     vi.clearAllMocks();
     service.uploadCsv.mockReturnValue(of(preview));
     service.uploadBrokerCsv.mockReturnValue(of(brokerPreview));
     service.getRecalcStatus.mockReturnValue(of({ state: 'idle' }));
   });
   afterEach(() => {
+    TestBed.inject(LayoutModeService).set(null);
+    localStorage.clear();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -670,6 +675,169 @@ describe('Portfolio import controls', () => {
       again$.next(genericPreview); again$.complete();
       fixture.detectChanges();
       expect(commitButton(fixture).disabled).toBe(false);
+    });
+  });
+  describe('banner, recent imports, side column', () => {
+    const norm = (t: string | null | undefined) => (t ?? '').replace(/\s+/g, ' ').trim();
+    const banner = (fixture: { nativeElement: HTMLElement }) => norm(el(fixture).querySelector('.import-banner')?.textContent);
+    const history = () => TestBed.inject(ImportHistoryService);
+    const NOW = new Date(2026, 9, 21, 22, 10);
+
+    function commitWith(response: Observable<ImportResult>, name = 'a.csv') {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(NOW);
+      const fixture = setup();
+      const component = fixture.componentInstance;
+      component.onSelect({ files: [new File(['x'], name)] });
+      service.uploadCsv.mockReturnValue(response);
+      component.commit();
+      fixture.detectChanges();
+      return fixture;
+    }
+
+    it('a commit HTTP 500 records a failed attempt with the reason and shows banner (a)', () => {
+      const fixture = commitWith(throwError(() => ({ status: 500, error: { detail: '伺服器錯誤' } })));
+      expect(history().attempts()[0]).toMatchObject({ ok: false, file: 'a.csv', type: 'transactions', reason: '伺服器錯誤' });
+      expect(banner(fixture)).toBe('最近一次匯入失敗（10/21 22:10）：a.csv，伺服器錯誤，整批未寫入。修正後重新上傳即可。');
+    });
+
+    it('a 200 commit with created 0 and one row error shows banner (a) with 有 1 列錯誤', () => {
+      const fixture = commitWith(of({ ...preview, dry_run: false, created: 0, errors: [{ row_index: 4, message: '價格欄位為空' }] }));
+      expect(history().attempts()[0]).toMatchObject({ ok: false, created: 0, errors: 1 });
+      expect(banner(fixture)).toBe('最近一次匯入失敗（10/21 22:10）：a.csv 有 1 列錯誤，整批未寫入。修正後重新上傳即可。');
+    });
+
+    it('a partial commit (created 18 with 2 row errors) is a success: no banner, head ok', () => {
+      const fixture = commitWith(of({
+        ...preview, dry_run: false, created: 18,
+        errors: [{ row_index: 4, message: 'x' }, { row_index: 5, message: 'y' }],
+      }));
+      expect(history().attempts()[0]).toMatchObject({ ok: true, created: 18, errors: 2 });
+      expect(el(fixture).querySelector('.import-banner')).toBeNull();
+      expect(text(fixture)).not.toContain('整批未寫入');
+    });
+
+    it('the next successful commit clears banner (a)', () => {
+      const fixture = commitWith(throwError(() => ({ status: 500, error: { detail: 'boom' } })));
+      expect(banner(fixture)).toContain('最近一次匯入失敗');
+      service.uploadCsv.mockReturnValue(of({ ...preview, dry_run: false, created: 3 }));
+      fixture.componentInstance.commit();
+      fixture.detectChanges();
+      expect(history().attempts().map(a => a.ok)).toEqual([true, false]);
+      expect(el(fixture).querySelector('.import-banner')).toBeNull();
+    });
+
+    it('created 0 with no errors (all duplicates) records a success without a banner', () => {
+      const fixture = commitWith(of({ ...preview, dry_run: false, created: 0, skipped_duplicates: 5, errors: [] }));
+      expect(history().attempts()[0]).toMatchObject({ ok: true, created: 0 });
+      expect(el(fixture).querySelector('.import-banner')).toBeNull();
+    });
+
+    it('a dry-run is not recorded', () => {
+      const fixture = setup();
+      fixture.componentInstance.onSelect({ files: [new File(['x'], 'a.csv')] });
+      expect(history().attempts()).toEqual([]);
+    });
+
+    it('a 券商 commit failure is recorded with the broker type', () => {
+      const fixture = setup({ type: 'broker' });
+      fixture.componentInstance.onSelect({ files: [new File(['x'], 'ft.csv')] });
+      service.uploadBrokerCsv.mockReturnValue(throwError(() => ({ status: 502 })));
+      fixture.componentInstance.commit();
+      expect(history().attempts()[0]).toMatchObject({ ok: false, file: 'ft.csv', type: 'broker', reason: 'HTTP 502' });
+    });
+
+    it('a failed recalc alone shows banner (b) with the reason and no nothing-written sentence', () => {
+      service.getRecalcStatus.mockReturnValue(of({
+        kind: 'import', state: 'failed', current_step: 'dividends',
+        steps: [{ name: 'dividends', status: 'failed', error: 'TWSE timeout' }],
+      }));
+      const fixture = setup();
+      const banners = el(fixture).querySelectorAll('.import-banner');
+      expect(banners.length).toBe(1);
+      expect(norm(banners[0].textContent)).toBe('最近一次匯入的重算失敗：TWSE timeout');
+      expect(text(fixture)).not.toContain('整批未寫入');
+      expect(text(fixture)).not.toContain('沒有寫入任何資料');
+      expect(text(fixture)).toContain('匯入重算：failed');
+    });
+
+    it('a failed quote-only refresh shows no banner', () => {
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'quotes', state: 'failed' }));
+      expect(el(setup()).querySelector('.import-banner')).toBeNull();
+    });
+
+    it('the recalc panel is hidden on load with an idle status and no file, shown while running', () => {
+      expect(text(setup())).not.toContain('匯入重算：');
+      TestBed.resetTestingModule();
+      vi.useFakeTimers();
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
+      const fixture = setup();
+      expect(text(fixture)).toContain('匯入重算：running');
+      fixture.destroy();
+    });
+
+    describe('side column', () => {
+      const aside = (fixture: { nativeElement: HTMLElement }) =>
+        el(fixture).querySelector<HTMLElement>('aside[aria-label="匯入後會發生什麼"]');
+      const at = (d: number, h: number, mi: number) => new Date(2026, 9, d, h, mi).toISOString();
+      const pair = (r: Element) => [norm(r.querySelector('b')?.textContent), norm(r.querySelector('small')?.textContent)];
+
+      function inMode(mode: 'panes' | 'sheet' | 'phone') {
+        const fixture = setup();
+        TestBed.inject(LayoutModeService).set(mode);
+        fixture.detectChanges();
+        return fixture;
+      }
+
+      it('panes: 匯入後自動執行 with the three rows verbatim beside the main column', () => {
+        const fixture = inMode('panes');
+        const side = aside(fixture)!;
+        expect(side.parentElement?.classList).toContain('imp-layout');
+        const after = side.querySelector('app-bento.after-card')!;
+        expect(norm(after.querySelector('h2')?.textContent)).toBe('匯入後自動執行');
+        expect(Array.from(after.querySelectorAll('.after-row')).map(pair)).toEqual([
+          ['重算持股與損益', '依新交易重建成本、已實現損益與當沖標記'],
+          ['抓取除權息事件', '新股票的除權息會記為待收股利，需到股利頁確認收款'],
+          ['更新報價', '回補收盤價，不含股利'],
+        ]);
+      });
+
+      it('panes: 最近匯入 lists the attempts newest first with ok / failed dots', () => {
+        const fixture = setup();
+        history().record({ at: at(12, 20, 5), file: '國泰證券_股利_2026Q3.csv', type: 'dividends', ok: true, created: 4 });
+        history().record({ at: at(1, 21, 42), file: '元大_對帳單_202609.csv', type: 'broker', ok: true, created: 18 });
+        history().record({ at: at(21, 22, 10), file: '元大證券_成交明細_202610.csv', type: 'transactions', ok: false, created: 0, errors: 1 });
+        TestBed.inject(LayoutModeService).set('panes');
+        fixture.detectChanges();
+        const recent = aside(fixture)!.querySelector('app-bento.recent-card')!;
+        expect(norm(recent.querySelector('h2')?.textContent)).toBe('最近匯入');
+        const rows = Array.from(recent.querySelectorAll('.recent-row'));
+        expect(rows.map(pair)).toEqual([
+          ['元大證券_成交明細_202610.csv', '10/21 22:10 · 失敗 · 1 列錯誤'],
+          ['元大_對帳單_202609.csv', '10/01 21:42 · 成功 · 新增 18 筆'],
+          ['國泰證券_股利_2026Q3.csv', '10/12 20:05 · 成功 · 新增 4 筆'],
+        ]);
+        expect(rows.map(r => r.querySelector('.dot')?.classList.contains('failed'))).toEqual([true, false, false]);
+        expect(rows.map(r => r.querySelector('.dot')?.classList.contains('ok'))).toEqual([false, true, true]);
+      });
+
+      it('尚無匯入紀錄 when the device has no attempts', () => {
+        const recent = aside(inMode('panes'))!.querySelector('app-bento.recent-card')!;
+        expect(recent.querySelectorAll('.recent-row').length).toBe(0);
+        expect(norm(recent.textContent)).toContain('尚無匯入紀錄');
+      });
+
+      for (const mode of ['sheet', 'phone'] as const) {
+        it(`${mode}: the two cards render under the footer in the main column`, () => {
+          const fixture = inMode(mode);
+          const side = aside(fixture)!;
+          const footer = el(fixture).querySelector('.imp-footer')!;
+          expect(side.parentElement).toBe(footer.parentElement);
+          expect(footer.compareDocumentPosition(side) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+          expect(el(fixture).querySelector('.imp-layout > aside')).toBeNull();
+          expect(side.querySelectorAll('app-bento').length).toBe(2);
+        });
+      }
     });
   });
 });

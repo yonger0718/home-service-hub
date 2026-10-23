@@ -11,12 +11,15 @@ import {
   confirmCount,
   detectedFormat,
   extractImportErrors,
+  failureBanner,
   fixLines,
   importCounts,
   importErrorDetail,
   importErrorText,
   overrideMeta,
   previewRow,
+  recalcBanner,
+  recalcPanelVisible,
   rowResult,
   stepFor,
   typeFromQuery,
@@ -448,5 +451,63 @@ describe('importErrorText', () => {
     expect(importErrorText({ status: 500, error: { detail: '  ' } })).toBeNull();
     expect(importErrorText({ status: 0, message: 'offline' })).toBeNull();
     expect(importErrorText(null)).toBeNull();
+  });
+});
+
+describe('failureBanner', () => {
+  const at = new Date(2026, 9, 21, 22, 10).toISOString();
+
+  it('row errors: {file} 有 {n} 列錯誤 with the nothing-written sentence', () => {
+    const a: ImportAttempt = { at, file: 'a.csv', type: 'transactions', ok: false, created: 0, errors: 1 };
+    expect(failureBanner(a)).toEqual({
+      lead: '最近一次匯入失敗',
+      body: '（10/21 22:10）：a.csv 有 1 列錯誤，整批未寫入。修正後重新上傳即可。',
+    });
+  });
+
+  it('HTTP failure: {file}，{reason}', () => {
+    const a: ImportAttempt = { at, file: 'a.csv', type: 'broker', ok: false, created: 0, reason: 'HTTP 500' };
+    expect(failureBanner(a)?.body).toBe('（10/21 22:10）：a.csv，HTTP 500，整批未寫入。修正後重新上傳即可。');
+  });
+
+  it('no banner for a success, a partial write or no attempt', () => {
+    expect(failureBanner(undefined)).toBeNull();
+    expect(failureBanner({ at, file: 'a.csv', type: 'transactions', ok: true, created: 0, errors: 0 })).toBeNull();
+    expect(failureBanner({ at, file: 'a.csv', type: 'transactions', ok: true, created: 18, errors: 2 })).toBeNull();
+    expect(failureBanner({ at, file: 'a.csv', type: 'transactions', ok: false, created: 3, errors: 2 })).toBeNull();
+  });
+});
+
+describe('recalcBanner', () => {
+  it('a failed import recalc names the first step error, without the nothing-written sentence', () => {
+    const text = recalcBanner({ kind: 'import', state: 'failed', current_step: 'positions', steps: [
+      { name: 'positions', status: 'ok' }, { name: 'dividends', status: 'failed', error: 'TWSE timeout' },
+    ] });
+    expect(text).toBe('最近一次匯入的重算失敗：TWSE timeout');
+    expect(text).not.toContain('整批未寫入');
+    expect(text).not.toContain('沒有寫入任何資料');
+  });
+
+  it('falls back to current_step, then 未知錯誤', () => {
+    expect(recalcBanner({ state: 'failed', current_step: 'quotes' })).toBe('最近一次匯入的重算失敗：quotes');
+    expect(recalcBanner({ state: 'failed' })).toBe('最近一次匯入的重算失敗：未知錯誤');
+  });
+
+  it('none for a quote-only run or a non-failed state', () => {
+    expect(recalcBanner({ kind: 'quotes', state: 'failed' })).toBeNull();
+    expect(recalcBanner({ kind: 'import', state: 'partial' })).toBeNull();
+    expect(recalcBanner({ state: 'idle' })).toBeNull();
+  });
+});
+
+describe('recalcPanelVisible', () => {
+  it('step 3, or a running / failed / partial status, or a quote run', () => {
+    expect(recalcPanelVisible({ state: 'idle' }, 3)).toBe(true);
+    expect(recalcPanelVisible({ state: 'idle' }, 1)).toBe(false);
+    expect(recalcPanelVisible({ state: 'completed', kind: 'import' }, 2)).toBe(false);
+    for (const state of ['running', 'failed', 'partial'] as const) {
+      expect(recalcPanelVisible({ state }, 1)).toBe(true);
+    }
+    expect(recalcPanelVisible({ state: 'completed', kind: 'quotes' }, 1)).toBe(true);
   });
 });

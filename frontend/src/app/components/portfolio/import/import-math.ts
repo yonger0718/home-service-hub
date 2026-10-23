@@ -1,4 +1,4 @@
-import { BrokerCsvImportResult, ImportResult, ImportRow, UnresolvedName } from '../../../models/portfolio.model';
+import { BrokerCsvImportResult, ImportResult, ImportRow, RecalcStatus, UnresolvedName } from '../../../models/portfolio.model';
 import type { TagVariant } from '../../ui/tag/tag';
 
 export type ImportType = 'transactions' | 'dividends' | 'broker';
@@ -157,6 +157,28 @@ export function attemptLine(a: ImportAttempt): string {
   if (a.ok) return `${head} · 新增 ${a.created ?? 0} 筆`;
   if ((a.errors ?? 0) > 0) return `${head} · ${a.errors} 列錯誤`;
   return `${head} · ${a.reason || '未知錯誤'}`;
+}
+
+/**
+ * Banner (a) (Decision 9): only for a failed attempt that wrote nothing (`created 0`), so the
+ * 整批未寫入 sentence is always true. Row errors → `{file} 有 {n} 列錯誤`; else `{file}，{reason}`.
+ */
+export function failureBanner(a: ImportAttempt | undefined): { lead: string; body: string } | null {
+  if (!a || a.ok || (a.created ?? 0) > 0) return null;
+  const what = (a.errors ?? 0) > 0 ? `${a.file} 有 ${a.errors} 列錯誤` : `${a.file}，${a.reason || '未知錯誤'}`;
+  return { lead: '最近一次匯入失敗', body: `（${stamp(a.at)}）：${what}，整批未寫入。修正後重新上傳即可。` };
+}
+
+/** Banner (b): a failed import recalc (rows may have been written, so no nothing-written sentence). */
+export function recalcBanner(status: RecalcStatus): string | null {
+  if (status.kind === 'quotes' || status.state !== 'failed') return null;
+  const reason = (status.steps ?? []).find(s => s.error)?.error || status.current_step || '未知錯誤';
+  return `最近一次匯入的重算失敗：${reason}`;
+}
+
+/** The recalc panel (Decision 12): step 3, a running / failed / partial status, or a quote run. */
+export function recalcPanelVisible(status: RecalcStatus, step: 1 | 2 | 3): boolean {
+  return step === 3 || status.kind === 'quotes' || status.state === 'running' || status.state === 'failed' || status.state === 'partial';
 }
 
 function nonEmptyString(value: unknown): string | null {

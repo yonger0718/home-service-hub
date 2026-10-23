@@ -18,6 +18,8 @@ import { ToastModule } from 'primeng/toast';
 import { TooltipModule } from 'primeng/tooltip';
 
 import { BrokerCsvImportResult, ImportResult, OverrideStatus, RecalcStatus, UnresolvedName } from '../../../models/portfolio.model';
+import { ImportHistoryService } from '../../../services/import-history.service';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { BentoComponent } from '../../ui/bento/bento';
 import { BtnComponent } from '../../ui/btn/btn';
@@ -29,17 +31,22 @@ import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import {
   ImportRowError,
   ImportType,
+  attemptLine,
   brokerCountSummary,
   cashFlowRow,
+  classifyCommit,
   confirmCount,
   detectedFormat,
   extractImportErrors,
+  failureBanner,
   fixLines as fixLinesFor,
   importCounts,
   importErrorDetail,
   importErrorText,
   overrideMeta,
   previewRow,
+  recalcBanner,
+  recalcPanelVisible,
   stepFor,
   typeFromQuery,
 } from './import-math';
@@ -81,6 +88,8 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   private confirmationService = inject(ConfirmationService);
   private route = inject(ActivatedRoute);
   private router = inject(Router);
+  private history = inject(ImportHistoryService);
+  private layout = inject(LayoutModeService);
 
   readonly typeOptions: SegToggleOption[] = [
     { value: 'transactions', label: '交易' },
@@ -91,6 +100,13 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     { num: 1, label: '選擇檔案', sub: '' },
     { num: 2, label: '預覽與確認', sub: '' },
     { num: 3, label: '匯入並重算', sub: '寫入後自動重算' },
+  ] as const;
+
+  /** Decision 11: what runs after an import (canvas copy, verbatim). */
+  readonly afterImport = [
+    { title: '重算持股與損益', note: '依新交易重建成本、已實現損益與當沖標記' },
+    { title: '抓取除權息事件', note: '新股票的除權息會記為待收股利，需到股利頁確認收款' },
+    { title: '更新報價', note: '回補收盤價，不含股利' },
   ] as const;
 
   readonly type = signal<ImportType>('transactions');
@@ -135,6 +151,17 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   });
   readonly overrideMeta = overrideMeta;
   readonly recalcStatus = signal<RecalcStatus>({ state: 'idle' });
+  /** Banner (a): the device's last commit failed and wrote nothing. */
+  readonly failure = computed(() => failureBanner(this.history.attempts()[0]));
+  /** Banner (b): the import recalc chain failed. */
+  readonly recalcFailure = computed(() => recalcBanner(this.recalcStatus()));
+  readonly recalcPanel = computed(() => recalcPanelVisible(this.recalcStatus(), this.step()));
+  /** 最近匯入, newest first. */
+  readonly recentImports = computed(() =>
+    this.history.attempts().map(a => ({ file: a.file, ok: a.ok, line: attemptLine(a) })),
+  );
+  /** The side column sits beside the cards in `panes`, under the footer below it. */
+  readonly panes = computed(() => this.layout.mode() === 'panes');
   readonly hasHeader = signal<boolean>(true);
   readonly recalcSubmitting = signal(false);
   readonly nameOverrides = signal<Record<string, string>>({});
@@ -464,7 +491,12 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     this.uploadErrors.set([]);
     this.uploadDetail.set(null);
     if (!dryRun) this.committing.set(true);
+    // Every commit outcome lands in the device-local history (Decision 8); dry-runs do not.
+    const record = (res: ImportResult | BrokerCsvImportResult | null, err: unknown) => {
+      if (!dryRun) this.history.record(classifyCommit(res, err, file.name, type, new Date()));
+    };
     const error = (err: unknown) => {
+      record(null, err);
       this.onUploadError(err);
       this.settle(dryRun);
     };
@@ -472,6 +504,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     this.upload$ = type === 'broker'
       ? this.portfolioService.uploadBrokerCsv(file, dryRun).subscribe({
         next: r => {
+          record(r, null);
           this.onBrokerResult(r, dryRun);
           this.settle(dryRun);
         },
@@ -486,6 +519,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
         Array.from(this.confirmedOverrides()),
       ).subscribe({
         next: r => {
+          record(r, null);
           this.onCsvResult(r, dryRun);
           this.settle(dryRun);
         },
