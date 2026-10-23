@@ -26,6 +26,19 @@ Independent review and lead validation of this expanded candidate remain pending
   and not in the future; account must be active TWD. The UI starts with blank
   date/account, asks the user to verify actual receipt, and prevents duplicate
   submits. This is an explicit user action, not a scheduled job or flag change.
+- Deductions: `PATCH /api/portfolio/dividends/{id}/deductions` takes `{fee, tax,
+  revision}` (non-negative, 2 dp) for pending and confirmed TW/TWD rows only. The
+  net is re-derived as quantity × per-share − fee − tax (stored amount + fee + tax
+  without per-share data), with no 0.01 floor. 422: a negative net, or zero without
+  stock shares. 409: stale revision, legacy/unresolved row, or a confirmed row whose
+  cash legs are missing, duplicated or not auto-derived. On a confirmed row the one
+  auto-derived cash leg takes the new amount (date, account, source and fingerprint
+  unchanged), or is deleted at zero net; snapshot cash is refreshed after commit.
+  This owner edit is the only path that changes a confirmed row's fee/tax/amount.
+  Re-persisting an existing entitlement (auto-record, reconciliation) keeps
+  owner-set fee/tax; fee/tax still equal to the defaults for the stored gross follow
+  a new gross like a new row. Only per-share, quantity, stock shares and payment
+  date/source count as a source change.
 - Confirmation locks the row on PostgreSQL and conditionally changes pending
   state at the expected revision. Receipt metadata, the cash leg and any
   zero-cost stock BUY commit atomically. Any posting failure rolls them all back.
