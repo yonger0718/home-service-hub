@@ -317,7 +317,7 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
 
     component.onMarketChange('TW');
     expect(component.marketEvents()?.map(e => e.symbol)).toEqual(['2317', '2330', '00878', '0050']);
-    component.onMarketChange('US');
+    component.onMarketChange('FOREIGN');
     expect(component.marketEvents()?.map(e => e.symbol)).toEqual(['AAPL']);
 
     expect(portfolioService['getRealizedPnl']).not.toHaveBeenCalled();
@@ -385,7 +385,7 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     component.onMarketChange('TW');
     component.onPageChange({ first: 25, rows: 25 });
 
-    component.onMarketChange('US');
+    component.onMarketChange('FOREIGN');
     expect(component.clientOffset()).toBe(0);
 
     component.onPageChange({ first: 25, rows: 25 });
@@ -715,7 +715,7 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
 
     expect(card!.querySelector('.search-wrap input[type="text"]')).not.toBeNull();
     const market = card!.querySelector('[role="radiogroup"][aria-label="市場"]');
-    expect(Array.from(market?.querySelectorAll('button') ?? []).map(b => b.textContent?.trim())).toEqual(['全部', '台股', '美股']);
+    expect(Array.from(market?.querySelectorAll('button') ?? []).map(b => b.textContent?.trim())).toEqual(['全部', '台股', '海外']);
     const dayTrade = card!.querySelector<HTMLButtonElement>('button[role="switch"][aria-label="僅當沖"]');
     expect(dayTrade?.getAttribute('aria-checked')).toBe('false');
     expect(card!.querySelector('p-datepicker')).not.toBeNull();
@@ -730,8 +730,8 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     const fixture = create2026();
     const component = fixture.componentInstance;
 
-    el(fixture).querySelector<HTMLButtonElement>('[aria-label="市場"] button[aria-label="美股"]')!.click();
-    expect(component.market()).toBe('US');
+    el(fixture).querySelector<HTMLButtonElement>('[aria-label="市場"] button[aria-label="海外"]')!.click();
+    expect(component.market()).toBe('FOREIGN');
 
     el(fixture).querySelector<HTMLButtonElement>('button[role="switch"][aria-label="僅當沖"]')!.click();
     fixture.detectChanges();
@@ -978,7 +978,7 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
       expect(rowButtons(fixture)).toHaveLength(0);
       expect(text(el(fixture), '.empty-state h4')).toBe('無已實現損益');
 
-      fixture.componentInstance.onMarketChange('US');
+      fixture.componentInstance.onMarketChange('FOREIGN');
       fixture.detectChanges();
       expect(text(el(fixture), '.empty-state h4')).toBe('無已實現損益');
     });

@@ -77,6 +77,31 @@ describe('PortfolioRealizedPnlComponent foreign sells', () => {
     expect(tw.querySelector('.rz-meta')?.textContent).toContain('均價 700.00 → 賣出 800.00');
   });
 
+  it('notes an LSE sell 英股 and keeps US and LSE sells under 海外', () => {
+    portfolioService.getRealizedPnl.mockReturnValue(of(paged([
+      event(),
+      event({ symbol: 'AAPL', name: 'Apple', market: 'US', native_currency: 'USD' }),
+      event({ symbol: 'VOD', name: 'Vodafone', market: 'LSE', native_currency: 'GBp' }),
+    ])));
+    const fixture = render();
+    const root = fixture.nativeElement as HTMLElement;
+
+    const toggle = root.querySelector('[role="radiogroup"][aria-label="市場"]')!;
+    expect(Array.from(toggle.querySelectorAll('button')).map(b => b.textContent?.trim())).toEqual(['全部', '台股', '海外']);
+    expect(row(root, 'VOD').querySelector('.rz-symbol')?.textContent).toContain('英股');
+    expect(row(root, 'VOD').querySelector('.rz-symbol')?.textContent).not.toContain('美股');
+    expect(row(root, 'AAPL').querySelector('.rz-symbol')?.textContent).toContain('美股');
+
+    toggle.querySelector<HTMLButtonElement>('button[aria-label="海外"]')!.click();
+    fixture.detectChanges();
+
+    const symbols = Array.from(root.querySelectorAll('button.rz-row .rz-symbol')).map(s => s.textContent?.trim());
+    expect(symbols).toHaveLength(2);
+    expect(symbols.some(s => s?.includes('AAPL'))).toBe(true);
+    expect(symbols.some(s => s?.includes('VOD'))).toBe(true);
+    expect(symbols.some(s => s?.includes('2330'))).toBe(false);
+  });
+
   it('shows no native figures for TW-only datasets', () => {
     const fixture = render();
     const root = fixture.nativeElement as HTMLElement;

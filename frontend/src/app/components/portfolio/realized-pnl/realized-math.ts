@@ -1,14 +1,15 @@
 import { RealizedPnlEvent, RealizedPnlQuery } from '../../../models/portfolio.model';
+import { isForeign } from '../market';
 import { groupedInteger } from '../money';
 import { periodLabel } from '../period';
 
-/** The market toggle: 全部 / 台股 / 美股, where 美股 is every market but TW (LSE included). */
-export const MARKET_FILTERS = ['ALL', 'TW', 'US'] as const;
+/** The market toggle: 全部 / 台股 / 海外, where 海外 is every market but TW (US and LSE). */
+export const MARKET_FILTERS = ['ALL', 'TW', 'FOREIGN'] as const;
 export type MarketFilter = (typeof MARKET_FILTERS)[number];
 
 export function matchesMarket(e: RealizedPnlEvent, m: MarketFilter): boolean {
   if (m === 'ALL') return true;
-  return m === 'TW' ? e.market === 'TW' : e.market !== 'TW';
+  return m === 'TW' ? e.market === 'TW' : isForeign(e.market);
 }
 
 /** Card figures of a set of sells, whole TWD. A sell of exactly 0 counts in `count` but in neither gains nor losses. */

@@ -1,9 +1,10 @@
 import { Observable, map } from 'rxjs';
 
 import { Dividend, MarketCode, Paged, PortfolioSummary, StockHolding } from '../../../models/portfolio.model';
+import { MARKET_LABELS } from '../market';
 import { allPages } from '../paging';
 
-export const MARKET_LABELS: Record<MarketCode, string> = { TW: '台股', US: '美股', LSE: '英股' };
+export { MARKET_LABELS };
 
 function num(value: number | string | null | undefined): number {
   const n = Number(value ?? 0);

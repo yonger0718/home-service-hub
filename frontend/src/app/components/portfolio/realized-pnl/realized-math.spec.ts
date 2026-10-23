@@ -143,8 +143,10 @@ describe('matchesMarket', () => {
     expect([tw, us, lse].map(e => matchesMarket(e, 'TW'))).toEqual([true, false, false]);
   });
 
-  it('keeps every non-TW market (LSE included) under US', () => {
-    expect([tw, us, lse].map(e => matchesMarket(e, 'US'))).toEqual([false, true, true]);
+  it('keeps every non-TW market (US and LSE) under FOREIGN', () => {
+    expect(matchesMarket(us, 'FOREIGN')).toBe(true);
+    expect(matchesMarket(lse, 'FOREIGN')).toBe(true);
+    expect(matchesMarket(tw, 'FOREIGN')).toBe(false);
   });
 });
 
