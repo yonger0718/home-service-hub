@@ -1,5 +1,6 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
+import { MessageService } from 'primeng/api';
 import { Subject, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -422,6 +423,30 @@ describe('PortfolioTransactionListComponent', () => {
       expect(first.observed).toBe(false);
       expect(firstRealized.observed).toBe(false);
       expect(summaryCalls[1].response.observed).toBe(true);
+    });
+
+    it('cancels the list request on destroy and ignores a late response', () => {
+      const fixture = create();
+      const messages = fixture.debugElement.injector.get(MessageService);
+      const add = vi.spyOn(messages, 'add');
+      const list = listCalls[0].response;
+      expect(list.observed).toBe(true);
+      fixture.destroy();
+
+      expect(list.observed).toBe(false);
+      list.next({ items: [buy], total: 1 });
+      list.error(new Error('late'));
+      expect(fixture.componentInstance.transactions()).toEqual([]);
+      expect(add).not.toHaveBeenCalled();
+    });
+
+    it('cancels the previous list request when fetching again', () => {
+      const fixture = create();
+      const first = listCalls[0].response;
+      fixture.componentInstance.fetch();
+
+      expect(first.observed).toBe(false);
+      expect(listCalls[1].response.observed).toBe(true);
     });
 
     it('cancels the summary load on destroy', () => {

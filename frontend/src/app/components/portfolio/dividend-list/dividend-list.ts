@@ -239,6 +239,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   private filterDebounce: ReturnType<typeof setTimeout> | null = null;
   private fetchSeq = 0;
   private summarySeq = 0;
+  private listSub?: Subscription;
   private summarySub?: Subscription;
   /** The in-flight receipt confirmation; cancelled on destroy, so a late response neither reloads nor toasts. */
   private receiptSub?: Subscription;
@@ -283,6 +284,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   ngOnDestroy() {
     this.destroyed = true;
     if (this.filterDebounce) clearTimeout(this.filterDebounce);
+    this.listSub?.unsubscribe();
     this.summarySub?.unsubscribe();
     this.receiptSub?.unsubscribe();
   }
@@ -290,7 +292,8 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   fetch() {
     const seq = ++this.fetchSeq;
     this.loading.set(true);
-    this.portfolioService.getDividends(this.query()).subscribe({
+    this.listSub?.unsubscribe();
+    this.listSub = this.portfolioService.getDividends(this.query()).subscribe({
       next: paged => {
         if (seq !== this.fetchSeq) return;
         this.dividends.set(paged.items);

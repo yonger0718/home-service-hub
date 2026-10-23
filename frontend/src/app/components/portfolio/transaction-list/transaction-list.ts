@@ -141,6 +141,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   private filterDebounce: ReturnType<typeof setTimeout> | null = null;
   private fetchSeq = 0;
   private summarySeq = 0;
+  private listSub?: Subscription;
   private summarySub?: Subscription;
   private realizedSub?: Subscription;
 
@@ -166,6 +167,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
 
   ngOnDestroy() {
     if (this.filterDebounce) clearTimeout(this.filterDebounce);
+    this.listSub?.unsubscribe();
     this.summarySub?.unsubscribe();
     this.realizedSub?.unsubscribe();
   }
@@ -173,7 +175,8 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   fetch() {
     const seq = ++this.fetchSeq;
     this.loading.set(true);
-    this.portfolioService.getTransactions(this.query()).subscribe({
+    this.listSub?.unsubscribe();
+    this.listSub = this.portfolioService.getTransactions(this.query()).subscribe({
       next: paged => {
         if (seq !== this.fetchSeq) return;
         this.transactions.set(paged.items);

@@ -307,6 +307,30 @@ describe('Dividend filter-wide summary', () => {
     fixture.destroy();
   });
 
+  it('cancels the list request on destroy and ignores a late response', () => {
+    const fixture = create();
+    const add = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
+    const list = listCalls[0].response;
+    expect(list.observed).toBe(true);
+    fixture.destroy();
+
+    expect(list.observed).toBe(false);
+    list.next({ items: [confirmed], total: 1 });
+    list.error(new Error('late'));
+    expect(fixture.componentInstance.dividends()).toEqual([]);
+    expect(add).not.toHaveBeenCalled();
+  });
+
+  it('cancels the previous list request when fetching again', () => {
+    const fixture = create();
+    const first = listCalls[0].response;
+    fixture.componentInstance.fetch();
+
+    expect(first.observed).toBe(false);
+    expect(listCalls[1].response.observed).toBe(true);
+    fixture.destroy();
+  });
+
   it('reloads the filter-wide set once per filter change, with the filter', () => {
     const fixture = create();
     const component = fixture.componentInstance;
