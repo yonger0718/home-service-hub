@@ -292,6 +292,7 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
                                                         "amount": str(amount)}}
         _resolve(case, effect, actor, row)
         _supersede_proposals(db, case, proposal_id, row, label=label, run_id=run_id, request_id=request_id)
+        superseded = _supersede_siblings(db, case, effect, row, label=label, run_id=run_id, request_id=request_id)
         if proposal is not None:
             proposal.status, proposal.applied_action_id, proposal.decided_at = "applied", row.id, func.now()
             audit.record(db, event="proposal_applied", actor=label, statement_id=case.statement_id, case_id=case.id,
@@ -301,7 +302,8 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
                      detail={"action": action, "actor": actor, "params": row.params, "effect_slot": slot,
                              "created_entry_ids": row.created_entry_ids, "deleted_entry_ids": row.deleted_entry_ids,
                              "touched_entry_ids": row.touched_entry_ids,
-                             "touched_group_ids": row.touched_group_ids, "coverage_ids": row.after["coverage_ids"]})
+                             "touched_group_ids": row.touched_group_ids, "coverage_ids": row.after["coverage_ids"],
+                             "superseded_case_ids": superseded})
         _recount(db, statements)
         db.flush()
         return row, False
@@ -358,6 +360,38 @@ def _lock_proposal(db: Session, proposal_id: int, case: ReconciliationCase, acti
     if proposal.action != action or stored is None or canonical_params(stored) != canonical:
         raise CodedConflictError("proposal_mismatch", f"proposal {proposal.id} proposes {proposal.action}")
     return proposal
+
+
+SIBLING_KINDS = ("line_unmatched", "ambiguous", "amount_delta", "entry_unmatched")
+
+
+def _supersede_siblings(db: Session, case: ReconciliationCase, effect: Effect, row: ReconciliationAction,
+                        *, label: str, run_id, request_id) -> list[int]:
+    """A coverage write settles more than the acted case: the other open matcher cases of the same statement that
+    name one of the touched entries or one of the claimed lines (the entry's own `entry_unmatched` card when the
+    owner answered on the bank line's card, the line's `line_unmatched` when the answer came from the entry's side)
+    describe a state that no longer exists. They are superseded here, as the next `reconcile` would do, so the
+    inbox does not keep asking about an entry that is already matched (owner report 2026-10-23). Their pending
+    proposals go with them. A revert releases the coverage only; the next reconcile re-derives whatever is open.
+    The statement lock held by the caller serialises case writers (no row lock, as in `_write_cases`)."""
+    if not effect.coverage_ids:
+        return []
+    entries = set(row.touched_entry_ids or ())
+    lines = set(db.execute(select(StatementCoverage.line_id)
+                           .where(StatementCoverage.id.in_(effect.coverage_ids))).scalars())
+    siblings = db.execute(
+        select(ReconciliationCase)
+        .where(ReconciliationCase.statement_id == case.statement_id, ReconciliationCase.id != case.id,
+               ReconciliationCase.kind.in_(SIBLING_KINDS), ReconciliationCase.status.in_(OPEN_STATUSES),
+               or_(ReconciliationCase.entry_id.in_(entries) if entries else False,
+                   ReconciliationCase.line_id.in_(lines) if lines else False))
+        .order_by(ReconciliationCase.id)).scalars().all()
+    for sibling in siblings:
+        sibling.status, sibling.version = "superseded", sibling.version + 1
+        sibling.context = {**(sibling.context or {}), "superseded_by_action_id": row.id}
+        _supersede_proposals(db, sibling, None, row, label=label, run_id=run_id, request_id=request_id)
+    db.flush()
+    return [sibling.id for sibling in siblings]
 
 
 def _supersede_proposals(db: Session, case: ReconciliationCase, proposal_id: int | None, row: ReconciliationAction,

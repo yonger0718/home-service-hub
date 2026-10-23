@@ -330,3 +330,12 @@ cards after cutover.
 Focus mode; the statement-page action sheet; booking transfers / payments from a card (R6c); surfacing
 split/move/refund/installment/backfill actions; editing a rule's pattern; rules learned from ledger-only cases; rules
 shared across accounts; portfolio Phase 1 case kinds (follow-up mapping into `settlement`); notifications.
+
+## 12. Errata
+- 2026-10-23 (owner report: 對到 on the bank line's card left the entry's own 漏記 card open): an answer that writes
+  coverage (`match`, `create_entry`, `record`, `accept_bank_amount`, …) now supersedes the statement's other open
+  `line_unmatched` / `ambiguous` / `amount_delta` / `entry_unmatched` cases that name a touched entry or a claimed line
+  (engine `_supersede_siblings`; `action_applied` audit carries `superseded_case_ids`; their pending proposals are
+  superseded too), instead of leaving them until the next reconcile. A revert releases the coverage only; the next
+  reconcile re-derives whatever is open. Cases that predate the fix are cleared by the next reconcile of their
+  statement.
