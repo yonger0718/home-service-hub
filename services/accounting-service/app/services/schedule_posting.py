@@ -123,6 +123,15 @@ def _close_out(
     db.flush()
 
 
+def _interest_counterparty(template: dict, loan: LedgerEntry | None) -> int | None:
+    """Interest names the lender (D29): the loan's counterparty when the loan applies to the period, else the loan
+    line's own counterparty_id (an unlinked or pre-boundary period, spec §4.0)."""
+    if loan is not None:
+        return loan.counterparty_id
+    reference = loan_line(template)
+    return reference[1].get("counterparty_id") if reference is not None else None
+
+
 def _write_line(
     db: Session,
     definition: ScheduleDefinition,
@@ -187,7 +196,7 @@ def _write_line(
         entry_time=None, posted_date=due,
         category_id=line["category_id"] or entry_write_service.system_category_id(db, "interest"),
         project_id=line["project_id"], name=name, merchant=line["merchant"],
-        counterparty_id=loan.counterparty_id if loan is not None else None,  # interest names the lender (D29)
+        counterparty_id=_interest_counterparty(template, loan),
         description=description, tags=tags, source=SOURCE,
     )
     db.add(entry)

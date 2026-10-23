@@ -42,11 +42,23 @@ def test_unlinked_repayment_posts_as_expense(client, db_session, seed, today):
     kinds = sorted(e.kind for e in rows)
     assert kinds == ["expense", "interest"]
     exp = next(e for e in rows if e.kind == "expense")
+    interest = next(e for e in rows if e.kind == "interest")
+    assert interest.counterparty_id == lender.id  # no loan: the interest names the loan line's counterparty
     assert (exp.amount, exp.counterparty_id, exp.is_settlement, exp.settles_entry_id, exp.category_id, exp.source) == (
         Decimal("-8333"), lender.id, False, None, None, "schedule",
     )
     assert exp.group_id is not None and exp.group_id == next(e for e in rows if e.kind == "interest").group_id
     assert ledger_service.account_balance(db_session, bank.id) == before - Decimal("8333") - Decimal("620")
+
+
+def _period_entries(db, definition_id, seq):
+    db.expire_all()
+    ids = db.scalar(
+        select(ScheduleInstance.posted_entry_ids).where(
+            ScheduleInstance.definition_id == definition_id, ScheduleInstance.seq == seq
+        )
+    )
+    return sorted(db.scalars(select(LedgerEntry).where(LedgerEntry.id.in_(ids))).all(), key=lambda e: e.kind)
 
 
 def test_loan_from_seq_boundary_repost_and_reopen(client, db_session, seed, today):
@@ -73,12 +85,21 @@ def test_loan_from_seq_boundary_repost_and_reopen(client, db_session, seed, toda
     r = client.post(f"/schedules/instances/{_instance_id(db_session, d.id, 14)}/repost", json={"amounts": ["8000", "620"]})
     assert r.status_code in (200, 201), r.text
     assert open_amount(db_session, payable) == Decimal("183000")
+    expense, interest = _period_entries(db_session, d.id, 14)
+    assert [(e.kind, e.amount, e.is_settlement) for e in (expense, interest)] == [
+        ("expense", Decimal("-8000"), False), ("interest", Decimal("-620"), False),
+    ]
     # reopen 14 then post again → still a plain expense, loan untouched
     r = client.post(f"/schedules/instances/{_instance_id(db_session, d.id, 14)}/reopen")
     assert r.status_code in (200, 201), r.text
     r = client.post(f"/schedules/instances/{_instance_id(db_session, d.id, 14)}/post")
     assert r.status_code in (200, 201), r.text
     assert open_amount(db_session, payable) == Decimal("183000")
+    expense, interest = _period_entries(db_session, d.id, 14)
+    # reopen keeps the repost's override (schedule_templates.aligned_override), so the re-post writes 8000 again
+    assert [(e.kind, e.amount, e.is_settlement) for e in (expense, interest)] == [
+        ("expense", Decimal("-8000"), False), ("interest", Decimal("-620"), False),
+    ]
     # seq 15 → settles
     today(date(2026, 11, 8))
     r = client.post(f"/schedules/instances/{_instance_id(db_session, d.id, 15)}/post")

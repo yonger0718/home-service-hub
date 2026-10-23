@@ -116,6 +116,9 @@ def validate_template(db: Session, template: dict) -> None:
         elif kind in NO_COUNTERPARTY_LINE_KINDS and line.get("counterparty_id") is not None:
             raise ValidationError(field("counterparty_id"), "這個類型不設對象")
         if kind in LOAN_LINE_KINDS:
+            counterparty_id = line.get("counterparty_id")
+            if counterparty_id is not None and db.get(Counterparty, counterparty_id) is None:
+                raise ValidationError(field("counterparty_id"), "找不到對象")  # an unlinked line posts it (§4.0)
             loan_lines += 1
             if loan_lines > 1:
                 raise ValidationError(field("kind"), "一個排程只能有一行還款或收款")

@@ -120,6 +120,16 @@ def test_loan_kind_line_without_a_loan_is_valid(db_session, seed, loan):
         templates.validate_template(db_session, _template(seed.line(kind, bank, "8333", counterparty_id=lender.id)))
 
 
+def test_loan_kind_line_counterparty_must_exist(db_session, seed, loan):
+    # Task 1 review carry-over: an unlinked loan line posts its counterparty_id on the plain entry, so it must exist.
+    bank, lender, _ = loan
+    for kind in ("repayment", "collection"):
+        with pytest.raises(ValidationError) as exc:
+            templates.validate_template(db_session, _template(seed.line(kind, bank, "8333", counterparty_id=lender.id + 1000)))
+        assert (_field(exc), exc.value.message) == ("lines[0].counterparty_id", "找不到對象")
+        templates.validate_template(db_session, _template(seed.line(kind, bank, "8333")))  # none is still valid
+
+
 def test_loan_from_seq_only_on_a_loan_kind_line_and_at_least_one(db_session, seed, loan):
     bank, _, payable = loan
     templates.validate_template(
