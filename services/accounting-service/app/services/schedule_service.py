@@ -266,9 +266,14 @@ def attach_loan(db: Session, definition_id: int, loan: LoanIn) -> int:
         # it; the owner reopens it first (spec §4.1). remaining_principal_series still leaves such rows out.
         raise ConflictError("later_periods_settled: 之後已有入帳或略過的期數，請先還原")
     series = remaining_principal_series(db, definition)
-    if loan.amount > sum(series, Decimal(0)):
+    last_positive = next((value for value in reversed(series) if value > 0), None)
+    if last_positive is None:
+        raise ConflictError("nothing_pending")  # no period left that repays any principal
+    due_total = sum(series, Decimal(0))
+    if loan.amount > due_total:
         raise ValidationError("amount", "超過之後各期本金合計")
-    if loan.amount <= sum(series[:-1], Decimal(0)):
+    if loan.amount <= due_total - last_positive:
+        # trailing zero-principal periods (interest only) are not "the last period" of the floor rule
         raise ValidationError("amount", "剩餘期數乘以每期金額已達剩餘本金")
 
     payable = db.get(LedgerEntry, _insert_payable(db, loan))

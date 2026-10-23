@@ -12,6 +12,7 @@ from ..models import Account, Category, Counterparty, LedgerEntry, ScheduleDefin
 from . import ledger_service, settlement_service
 from .edit_lock import import_locked
 from .errors import NotFoundError
+from .schedule_generation import residual_last_override
 from .schedule_rules import plain
 from .schedule_templates import LEDGER_KINDS, loan_line, resolved_amounts
 
@@ -110,8 +111,11 @@ def loan_open_amount(db: Session, loan: LedgerEntry) -> Decimal:
 def remaining_principal_series(db: Session, definition: ScheduleDefinition) -> list[Decimal]:
     """Spec §4.1 step 4: the repayment line's amount for every period from the lowest pending seq (max seq + 1 when
     none is pending) to `times` that will still settle the loan — a pending instance (its override when it has one,
-    else the template amount) or a seq with no instance yet (beyond the generation horizon: the template amount).
-    Instances in that range already posted or skipped are left out. [] without `times` or a repayment line."""
+    else the template amount) or a seq with no instance yet (beyond the generation horizon: the template amount,
+    except the last period, seq == times, which takes what generation will give it once 掛上貸款 has set
+    template_owner_edited — residual_last_override, falling back to the template amount when there is no total or
+    the residual is refused). Instances in that range already posted or skipped are left out. [] without `times` or
+    a repayment line."""
     if definition.kind != "installment" or definition.times is None:
         return []
     index = next((i for i, line in enumerate(definition.template["lines"]) if line.get("kind") == "repayment"), None)
@@ -129,7 +133,10 @@ def remaining_principal_series(db: Session, definition: ScheduleDefinition) -> l
         row = rows.get(seq)
         if row is not None and row.status != "pending":
             continue  # posted early (a plain entry) or skipped: it never settles the loan
-        override = row.amount_override if row is not None else None
+        if row is None and seq == definition.times:
+            override = residual_last_override(definition, list(rows.values()))  # computed as after the attach
+        else:
+            override = row.amount_override if row is not None else None
         series.append(Decimal(str(override[index])) if override is not None and index < len(override) else template_amount)
     return series
 

@@ -125,9 +125,13 @@ status 201.
    amount for that period — the instance's `amount_override[line index]` when the instance exists and has one, else
    the template amount (periods beyond the generation horizon count too); only periods that will still settle the
    loan count — an existing `pending` instance or a seq with no instance yet — so instances in that range already
-   `posted` (early, as a plain entry) or `skipped` are left out. `due_total` = Σ series; `all_but_last` =
-   `due_total` minus the last period's amount. Refuse `loan.amount > due_total` → `ValidationError("amount",
-   "超過之後各期本金合計")` and `loan.amount <= all_but_last` → `ValidationError("amount", "剩餘期數乘以每期金額已達剩餘本金")`
+   `posted` (early, as a plain entry) or `skipped` are left out. The last period (`seq == times`) with no instance yet
+   counts at the amount generation will give it after this attach (`template_owner_edited` is then true, so the
+   residual `total_amount − Σ` the other periods' allocations, `residual_last_override`), falling back to the template
+   amount when there is no `total_amount` or the residual is refused. `due_total` = Σ series; `all_but_last` =
+   `due_total` minus the last POSITIVE element (trailing zero-principal, interest-only periods are skipped; a series
+   with no positive element, or none at all, → `ConflictError("nothing_pending")`). Refuse `loan.amount > due_total`
+   → `ValidationError("amount", "超過之後各期本金合計")` and `loan.amount <= all_but_last` → `ValidationError("amount", "剩餘期數乘以每期金額已達剩餘本金")`
    *[call: the debt must be cleared by the last period and not before the last one; a smaller remaining than the
    series (an early repayment) is allowed — the last period's repayment line is then capped at what is still open
    (`min(amount, open_amount)`), interest posts in full and the payable settles exactly there; `loan_closed` only

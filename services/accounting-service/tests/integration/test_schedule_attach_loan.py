@@ -7,7 +7,11 @@ import pytest
 from sqlalchemy import select
 
 from app.models import LedgerEntry, ScheduleDefinition, ScheduleInstance
-from app.services import entry_write_service, ledger_service
+from app.schemas.schedules import LoanIn
+from app.services import entry_write_service, ledger_service, schedule_service
+from app.services import schedule_generation as generation
+from app.services.errors import ValidationError
+from app.services.schedule_read import remaining_principal_series
 from app.services.settlement_service import open_amount
 
 # 36 monthly periods on the 8th from 2025-09-08: seq 1 = 2025-09-08 … seq 14 = 2026-10-08, seq 15 = 2026-11-08 …
@@ -354,3 +358,70 @@ def test_early_repayment_amount_caps_the_final_period(client, db_session, plain,
     assert Decimal(body["loan_remaining"]) == 0 and body["needs_check"] is False
     assert all(row.status == "posted" for row in db_session.scalars(
         select(ScheduleInstance).where(ScheduleInstance.definition_id == d_id, ScheduleInstance.seq >= 15)))
+
+
+def test_series_last_ungenerated_period_takes_the_residual(client, db_session, seed, today):
+    """Multica M1: 24 × 1000 with total_amount 23,500 and only seq 1–3 generated. The last period (seq 24) has no
+    instance, so the series takes what generation will give it after the attach (template_owner_edited → the
+    residual 23,500 − 23 × 1,000 = 500), not the template's 1,000. The prefill is accepted, the generated last period
+    carries 500, and posting every period settles the payable exactly at seq 24."""
+    today(date(2026, 10, 9))
+    bank = seed.account("薪轉")
+    lender = seed.counterparty("範例銀行")
+    d = seed.definition([seed.line("repayment", bank, "1000")], kind="installment", name="短", anchor=date(2026, 11, 8),
+                        times=24, total_amount=Decimal("23500"))
+    for seq in range(1, 4):
+        seed.instance(d, seq, date(2026, 10 + seq, 8) if seq <= 2 else date(2027, 1, 8), status="pending")
+    db_session.commit()
+    prefill = Decimal(_detail(client, d.id)["pending_principal"])
+    assert prefill == Decimal(23500)
+    assert _attach(client, d.id, bank, lender, prefill).status_code == 201
+    today(date(2028, 10, 8))                                    # seq 24 = 2028-10-08, inside the horizon
+    generation.generate(db_session, db_session.get(ScheduleDefinition, d.id), date(2028, 10, 8))
+    db_session.commit()
+    last = db_session.scalar(select(ScheduleInstance).where(ScheduleInstance.definition_id == d.id, ScheduleInstance.seq == 24))
+    assert last is not None and Decimal(last.amount_override[0]) == Decimal(500)
+    payable = db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable"))
+    for seq in range(1, 25):
+        r = client.post(f"/schedules/instances/{_iid(db_session, d.id, seq)}/post")
+        assert r.status_code in (200, 201) and r.json()["status"] == "posted", (seq, r.text)
+        db_session.expire_all()
+        assert (open_amount(db_session, payable) == 0) == (seq == 24), seq
+    body = _detail(client, d.id)
+    assert Decimal(body["loan_remaining"]) == 0 and body["needs_check"] is False
+
+
+def test_floor_ignores_trailing_zero_principal_periods(client, db_session, seed):
+    """Multica S1: series [1000, 0] (the last period repays no principal, interest only). The floor is Σ − the last
+    POSITIVE element = 0, so the prefill 1000 is accepted; 1000 is also the ceiling; 0 is refused by the floor."""
+    bank = seed.account("薪轉")
+    lender = seed.counterparty("範例銀行")
+    d = seed.definition([seed.line("repayment", bank, "1000"), seed.line("interest", bank, "50")], kind="installment",
+                        name="尾期只付息", anchor=date(2026, 11, 8), times=2)
+    seed.instance(d, 1, date(2026, 11, 8))
+    seed.instance(d, 2, date(2026, 12, 8), amount_override=["0", "50"])
+    db_session.commit()
+    assert remaining_principal_series(db_session, db_session.get(ScheduleDefinition, d.id)) == [Decimal(1000), Decimal(0)]
+    assert Decimal(_detail(client, d.id)["pending_principal"]) == Decimal(1000)
+    over = _attach(client, d.id, bank, lender, 1001)
+    assert over.status_code == 422 and "超過之後各期本金合計" in over.text
+    loan = LoanIn.model_construct(account_id=bank.id, counterparty_id=lender.id, category_id=None, amount=Decimal(0),
+                                  entry_date=date(2026, 10, 9), name=None)   # 0 bypasses the schema's gt=0
+    with pytest.raises(ValidationError, match="剩餘期數乘以每期金額已達剩餘本金"):
+        schedule_service.attach_loan(db_session, d.id, loan)
+    db_session.rollback()
+    assert _attach(client, d.id, bank, lender, 1000).status_code == 201
+
+
+def test_all_zero_principal_series_is_nothing_pending(client, db_session, seed):
+    """Multica S1: pending periods that repay no principal leave nothing for a loan to settle → 409 nothing_pending."""
+    bank = seed.account("薪轉")
+    lender = seed.counterparty("範例銀行")
+    d = seed.definition([seed.line("repayment", bank, "1000"), seed.line("interest", bank, "50")], kind="installment",
+                        name="只付息", anchor=date(2026, 11, 8), times=2)
+    seed.instance(d, 1, date(2026, 11, 8), amount_override=["0", "50"])
+    seed.instance(d, 2, date(2026, 12, 8), amount_override=["0", "50"])
+    db_session.commit()
+    r = _attach(client, d.id, bank, lender, 1)
+    assert r.status_code == 409 and "nothing_pending" in r.text
+    assert db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable")) is None
