@@ -159,6 +159,28 @@ def test_fee_is_quantized_half_up(db_session, refresh_calls):
     assert row.amount == Decimal("9598.99")
 
 
+def test_gross_comes_from_quantity_times_per_share_not_stored_amount(db_session, refresh_calls):
+    # stored amount is inconsistent with 20,000 x 0.48 - 10 = 9,590 on purpose
+    div = _dividend(db_session, amount="9000", fee="10", tax="0")
+
+    result = update_deductions(db_session, div.id, Decimal("0"), Decimal("0"), 1)
+
+    assert result.amount == Decimal("9600.00")
+    row, _ = _reload(db_session, div.id)
+    assert row.amount == Decimal("9600")
+
+
+def test_half_cent_gross_rounds_half_up(db_session, refresh_calls):
+    # 333 x 0.4815 = 160.3395 -> gross 160.34 (ROUND_DOWN would give 160.33)
+    div = _dividend(db_session, amount="150.34", fee="10", tax="0", qty="333", per_share="0.4815")
+
+    result = update_deductions(db_session, div.id, Decimal("0"), Decimal("0"), 1)
+
+    assert result.amount == Decimal("160.34")
+    row, _ = _reload(db_session, div.id)
+    assert row.amount == Decimal("160.34")
+
+
 def test_row_without_per_share_data_uses_stored_gross(db_session, refresh_calls):
     div = _dividend(db_session, amount="4485", fee="10", tax="5", qty=None, per_share=None)
 
@@ -230,10 +252,25 @@ def test_repeat_call_with_same_values_is_noop_on_amount_and_leg(db_session, refr
     second = update_deductions(db_session, div.id, Decimal("0"), Decimal("0"), first.revision)
 
     assert second.amount == Decimal("9600.00")
+    assert second.revision == 3
     row, legs = _reload(db_session, div.id)
-    assert row.amount == Decimal("9600")
+    assert row.amount == Decimal("9600") and row.revision == 3
     assert len(legs) == 1 and legs[0].amount == Decimal("9600")
     assert legs[0].txn_date == LEG_DATE
+    assert refresh_calls == [(LEG_DATE, TODAY, False), (LEG_DATE, TODAY, False)]
+
+
+def test_leg_dated_after_today_refreshes_today_only(db_session, refresh_calls):
+    account = _account(db_session)
+    div = _dividend(db_session, status="confirmed", account=account)
+    future = TODAY + timedelta(days=2)
+    _leg(db_session, div, account, txn_date=future)
+
+    update_deductions(db_session, div.id, Decimal("0"), Decimal("0"), 1)
+
+    _, legs = _reload(db_session, div.id)
+    assert legs[0].txn_date == future and legs[0].amount == Decimal("9600")
+    assert refresh_calls == [(TODAY, TODAY, False)]
 
 
 def test_leg_with_different_fingerprint_is_updated_in_place(db_session, refresh_calls):
@@ -303,6 +340,62 @@ def test_stale_revision_is_rejected(db_session, refresh_calls, writes):
     row, legs = _reload(db_session, div.id)
     assert _snapshot(row, legs) == before
     assert refresh_calls == []
+
+
+def test_stale_revision_on_pending_row_is_rejected(db_session, refresh_calls, writes):
+    div = _dividend(db_session, revision=3)
+    before = _arm(db_session, writes, div.id)
+
+    with pytest.raises(ReceiptConflict, match="^entitlement changed; reload before editing$"):
+        update_deductions(db_session, div.id, Decimal("0"), Decimal("0"), 2)
+
+    row, legs = _reload(db_session, div.id)
+    assert _snapshot(row, legs) == before
+    assert refresh_calls == []
+
+
+def test_status_flip_between_read_and_cas_is_rejected(db_session, refresh_calls):
+    """Same revision, different status: only the receipt_status predicate on the CAS catches it."""
+    div = _dividend(db_session)
+    flipped = []
+
+    def flip_before_cas(state):
+        if state.is_update and not flipped:
+            flipped.append(True)
+            state.session.connection().exec_driver_sql(
+                "UPDATE dividends SET receipt_status = 'unresolved' WHERE id = ?", (div.id,))
+
+    event.listen(db_session, "do_orm_execute", flip_before_cas)
+    try:
+        with pytest.raises(ReceiptConflict, match="^entitlement changed; reload before editing$"):
+            update_deductions(db_session, div.id, Decimal("0"), Decimal("0"), 1)
+    finally:
+        event.remove(db_session, "do_orm_execute", flip_before_cas)
+
+    assert flipped
+    row, _ = _reload(db_session, div.id)
+    assert (row.amount, row.fee, row.revision) == (Decimal("9590"), Decimal("10"), 1)
+
+
+@pytest.mark.parametrize("fee,tax", [(Decimal("-0.01"), Decimal("0")), (Decimal("0"), Decimal("-1"))])
+def test_negative_fee_or_tax_is_rejected(db_session, refresh_calls, writes, fee, tax):
+    div = _dividend(db_session)
+    before = _arm(db_session, writes, div.id)
+
+    with pytest.raises(DeductionError, match="^fee and tax must be non-negative$"):
+        update_deductions(db_session, div.id, fee, tax, 1)
+
+    _assert_nothing_written(db_session, writes, div.id, before)
+
+
+def test_float_money_is_rejected(db_session, refresh_calls, writes):
+    div = _dividend(db_session)
+    before = _arm(db_session, writes, div.id)
+
+    with pytest.raises(TypeError):
+        update_deductions(db_session, div.id, 1.005, Decimal("0"), 1)
+
+    _assert_nothing_written(db_session, writes, div.id, before)
 
 
 @pytest.mark.parametrize("status", ["legacy_unknown", "unresolved"])

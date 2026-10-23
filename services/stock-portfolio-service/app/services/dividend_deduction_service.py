@@ -27,6 +27,8 @@ class DeductionError(ValueError):
 
 
 def _cents(value) -> Decimal:
+    if isinstance(value, float):
+        raise TypeError('money must be Decimal, not float')
     return Decimal(value).quantize(_CENT, rounding=ROUND_HALF_UP)
 
 
@@ -44,6 +46,8 @@ def update_deductions(db: Session, dividend_id: int, fee: Decimal, tax: Decimal,
         confirmed = row.receipt_status == 'confirmed'
 
         # (b) recompute the net from the gross; no minimum floor
+        if fee < 0 or tax < 0:
+            raise DeductionError('fee and tax must be non-negative')
         fee, tax = _cents(fee), _cents(tax)
         per_share = row.cash_dividend_per_share
         if row.quantity_at_record_date is not None and per_share is not None and per_share > 0:
@@ -72,7 +76,8 @@ def update_deductions(db: Session, dividend_id: int, fee: Decimal, tax: Decimal,
 
         # (d) compare-and-set on the client's revision
         claimed = db.execute(update(Dividend)
-                             .where(Dividend.id == row.id, Dividend.revision == revision)
+                             .where(Dividend.id == row.id, Dividend.revision == revision,
+                                    Dividend.receipt_status == row.receipt_status)
                              .values(fee=fee, tax=tax, amount=new_amount, revision=Dividend.revision + 1)
                              .execution_options(synchronize_session=False))
         if claimed.rowcount != 1:
