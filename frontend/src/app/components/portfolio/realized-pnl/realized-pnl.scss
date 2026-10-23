@@ -77,7 +77,13 @@
   overflow-x: auto;
 }
 
-/* `--pos` / `--neg`: the largest gain / loss ratio, so each half is as tall as its longest bar (`--len` at ratio 1). */
+.bars-loading {
+  color: var(--app-text-muted);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+/* `--pos` / `--neg`: the largest gain / loss ratio, so each half is exactly as tall as its longest bar (`--len` at ratio 1). */
 .bars {
   --len: 7.5rem;
   display: grid;
@@ -113,10 +119,10 @@
   border-top: 1px solid var(--app-border);
 }
 
-/* The bar is a full-length track anchored at the zero line; its fill (`::before`) and amount sit at `--h` of it. */
+/* The bar is `--r` × `--len` long from the zero line; its amount sits just past its end. */
 .bar {
   color: var(--app-text-muted);
-  height: var(--len);
+  height: calc(var(--r) * var(--len));
   inset-inline: 0;
   pointer-events: none;
   position: absolute;
@@ -133,32 +139,23 @@
     background: currentColor;
     border-radius: 4px;
     content: "";
-    height: var(--h);
-    inset-inline: 22%;
+    inset: 0 22%;
     position: absolute;
   }
 
   .pos & {
     bottom: 0;
 
-    &::before {
-      bottom: 0;
-    }
-
     .bar-amount {
-      bottom: calc(var(--h) + 0.15rem);
+      bottom: calc(100% + 0.15rem);
     }
   }
 
   .neg & {
     top: 0;
 
-    &::before {
-      top: 0;
-    }
-
     .bar-amount {
-      top: calc(var(--h) + 0.15rem);
+      top: calc(100% + 0.15rem);
     }
   }
 }
@@ -220,7 +217,8 @@
   margin-top: 1rem;
 }
 
-.switch-field {
+.switch-field,
+.filter-field {
   align-items: center;
   color: var(--app-text);
   display: inline-flex;
@@ -228,6 +226,15 @@
   font-weight: 700;
   gap: 0.5rem;
   white-space: nowrap;
+}
+
+.switch-field {
+  cursor: pointer;
+}
+
+.field-label {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
 }
 
 .clear-filters {

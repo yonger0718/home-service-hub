@@ -604,7 +604,7 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     expect(bar?.classList.contains('down')).toBe(true);
     expect(bar?.classList.contains('up')).toBe(false);
     expect(Number(bar?.dataset['ratio'])).toBeCloseTo(4897 / 13498, 4);
-    expect(parseFloat(bar!.style.getPropertyValue('--h'))).toBeCloseTo(36.28, 1);
+    expect(parseFloat(bar!.style.getPropertyValue('--r'))).toBeCloseTo(0.3628, 4);
     expect(april.querySelector('.bar-amount')?.textContent?.trim()).toBe('−4,897');
     expect(april.querySelector('.bar-label')?.textContent?.trim()).toBe('4月');
     expect(cols[9].querySelector('.bar')?.classList.contains('up')).toBe(true);
@@ -614,6 +614,90 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
 
     const hidden = card?.querySelector('.visually-hidden')?.textContent?.trim();
     expect(hidden).toBe(barsAriaText(monthlyBars(REALIZED_FIXTURE, 2026, TODAY), 2026));
+  });
+
+  it('sizes every bar track to its own ratio (no full-length track hanging out of its half)', () => {
+    const fixture = create2026();
+    const bars = Array.from(el(fixture).querySelectorAll<HTMLElement>('.bar'));
+    expect(bars).toHaveLength(5);
+    for (const bar of bars) {
+      const ratio = Number(bar.dataset['ratio']);
+      expect(ratio).toBeGreaterThan(0);
+      expect(ratio).toBeLessThanOrEqual(1);
+      expect(Number(bar.style.getPropertyValue('--r'))).toBeCloseTo(ratio, 6);
+      expect(bar.style.getPropertyValue('--h')).toBe('');
+      expect(bar.style.height).toBe('');
+    }
+    const plot = el(fixture).querySelector<HTMLElement>('.bars')!;
+    expect(Number(plot.style.getPropertyValue('--pos'))).toBe(1);
+    expect(Number(plot.style.getPropertyValue('--neg'))).toBeCloseTo(4897 / 13498, 6);
+  });
+
+  it('shows the loading line in the bars card until the set lands', () => {
+    const fixture = create();
+    fixture.componentInstance.onYearPresetChange(2026);
+    respond(listCalls.at(-1)!, paged(REALIZED_FIXTURE.slice(0, 2), 5));
+    fixture.detectChanges();
+    const card = () => el(fixture).querySelector('app-bento.bars-card');
+
+    expect(card()).not.toBeNull();
+    expect(card()!.querySelector('.bars-loading')?.textContent).toContain('查詢中');
+    expect(card()!.querySelector('.bar-col')).toBeNull();
+    expect(card()!.querySelector('.visually-hidden')).toBeNull();
+
+    respond(allCalls.at(-1)!, paged(REALIZED_FIXTURE));
+    fixture.detectChanges();
+    expect(card()!.querySelector('.bars-loading')).toBeNull();
+    expect(card()!.querySelectorAll('.bar-col')).toHaveLength(12);
+  });
+
+  it('shows — as the headline while a reload under 全部 waits for the server total', () => {
+    const fixture = create2026();
+    fixture.componentInstance.onDayTradeOnlyChange(true);
+    respond(allCalls.at(-1)!, paged([REALIZED_FIXTURE[1]]));
+    fixture.detectChanges();
+    expect(cards(fixture)[0]).toEqual(expect.objectContaining({ value: '—', up: false, down: false, meta: '1 筆 · 1 筆獲利、0 筆虧損' }));
+
+    respond(listCalls.at(-1)!, { ...paged([REALIZED_FIXTURE[1]]), summary: { filter_scope_total: '2030', filter_scope_count: 1, ytd_total: '2030', ytd_count: 1 } });
+    fixture.detectChanges();
+    expect(cards(fixture)[0].value).toBe('+2,030');
+  });
+
+  it('shows — after 台股 → filter change → 全部 until the refetched list lands', () => {
+    const fixture = create2026();
+    const component = fixture.componentInstance;
+    component.onMarketChange('TW');
+    component.onDayTradeOnlyChange(true);
+    respond(allCalls.at(-1)!, paged([REALIZED_FIXTURE[1]]));
+    fixture.detectChanges();
+    expect(cards(fixture)[0].value).toBe('+2,030');
+
+    component.onMarketChange('ALL');
+    fixture.detectChanges();
+    expect(cards(fixture)[0].value).toBe('—');
+
+    respond(listCalls.at(-1)!, { ...paged([REALIZED_FIXTURE[1]]), summary: { filter_scope_total: '2030', filter_scope_count: 1, ytd_total: '2030', ytd_count: 1 } });
+    fixture.detectChanges();
+    expect(cards(fixture)[0].value).toBe('+2,030');
+  });
+
+  it('falls back to the set total after a list failure under 全部, and to — when the set is capped', () => {
+    const fixture = create();
+    listCalls[0].response.error(new Error('boom'));
+    respond(allCalls[0], paged(REALIZED_FIXTURE));
+    fixture.detectChanges();
+    expect(cards(fixture)[0].value).toBe('+21,046');
+
+    const capped = TestBed.createComponent(PortfolioRealizedPnlComponent);
+    capped.detectChanges();
+    listCalls.at(-1)!.response.error(new Error('boom'));
+    const first = allCalls.length - 1;
+    for (let page = 0; page < 50; page++) {
+      respond(allCalls[first + page], paged(Array.from({ length: 200 }, () => REALIZED_FIXTURE[0]), 10_001));
+    }
+    capped.detectChanges();
+    expect(capped.componentInstance.allCapped()).toBe(true);
+    expect(cards(capped)[0].value).toBe('—');
   });
 
   it('renders the filter card controls', () => {
@@ -629,7 +713,9 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     const dayTrade = card!.querySelector<HTMLButtonElement>('button[role="switch"][aria-label="僅當沖"]');
     expect(dayTrade?.getAttribute('aria-checked')).toBe('false');
     expect(card!.querySelector('p-datepicker')).not.toBeNull();
-    expect(card!.querySelector('[role="radiogroup"][aria-label="券商篩選"]')).not.toBeNull();
+    const broker = card!.querySelector('[role="radiogroup"][aria-label="券商篩選"]');
+    expect(broker).not.toBeNull();
+    expect(broker!.closest('.filter-field')?.querySelector('.field-label')?.textContent?.trim()).toBe('券商');
     expect(el(fixture).querySelector('.hub-filter-bar')).toBeNull();
     expect(el(fixture).querySelector('.realized-summary-row')).toBeNull();
   });
@@ -645,6 +731,18 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     fixture.detectChanges();
     expect(component.query().day_trade_only).toBe(true);
     expect(el(fixture).querySelector('button[role="switch"][aria-label="僅當沖"]')?.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('toggles 僅當沖 from its visible label text', () => {
+    const fixture = create2026();
+    const label = el(fixture).querySelector<HTMLLabelElement>('label.switch-field');
+    expect(label?.querySelector('button[role="switch"]')).not.toBeNull();
+    const text = Array.from(label!.querySelectorAll('span')).find(span => span.textContent?.trim() === '僅當沖')!;
+
+    text.click();
+    fixture.detectChanges();
+
+    expect(fixture.componentInstance.query().day_trade_only).toBe(true);
   });
 
   it('offers 清除篩選 with only 僅當沖 on and resets it', () => {

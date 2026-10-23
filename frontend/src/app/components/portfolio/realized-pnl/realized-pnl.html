@@ -18,31 +18,35 @@
 
   <app-bento class="bars-card" [title]="'每月已實現 · ' + barsYear()">
     <p class="bars-caption">柱上數字為當月合計</p>
-    <p class="visually-hidden">{{ barsAriaText() }}</p>
-    <div class="bars-scroll" aria-hidden="true">
-      <div class="bars" [style.--pos]="barExtents().pos" [style.--neg]="barExtents().neg">
-        @for (bar of bars(); track bar.month) {
-          <div class="bar-col" [class.future]="bar.future">
-            <div class="half pos">
-              @if (bar.count && bar.total >= 0) {
-                <span class="bar" [class.up]="bar.sign > 0" [style.--h]="bar.height" [attr.data-ratio]="bar.ratio">
-                  <span class="bar-amount">{{ bar.amount }}</span>
-                </span>
-              }
+    @if (allLoading()) {
+      <p class="bars-loading">查詢中…</p>
+    } @else {
+      <p class="visually-hidden">{{ barsAriaText() }}</p>
+      <div class="bars-scroll" aria-hidden="true">
+        <div class="bars" [style.--pos]="barExtents().pos" [style.--neg]="barExtents().neg">
+          @for (bar of bars(); track bar.month) {
+            <div class="bar-col" [class.future]="bar.future">
+              <div class="half pos">
+                @if (bar.count && bar.total >= 0) {
+                  <span class="bar" [class.up]="bar.sign > 0" [style.--r]="bar.ratio" [attr.data-ratio]="bar.ratio">
+                    <span class="bar-amount">{{ bar.amount }}</span>
+                  </span>
+                }
+              </div>
+              <div class="zero"></div>
+              <div class="half neg">
+                @if (bar.count && bar.total < 0) {
+                  <span class="bar down" [style.--r]="bar.ratio" [attr.data-ratio]="bar.ratio">
+                    <span class="bar-amount">{{ bar.amount }}</span>
+                  </span>
+                }
+              </div>
+              <span class="bar-label">{{ bar.label }}</span>
             </div>
-            <div class="zero"></div>
-            <div class="half neg">
-              @if (bar.count && bar.total < 0) {
-                <span class="bar down" [style.--h]="bar.height" [attr.data-ratio]="bar.ratio">
-                  <span class="bar-amount">{{ bar.amount }}</span>
-                </span>
-              }
-            </div>
-            <span class="bar-label">{{ bar.label }}</span>
-          </div>
-        }
+          }
+        </div>
       </div>
-    </div>
+    }
   </app-bento>
 }
 
@@ -61,12 +65,12 @@
       ariaLabel="市場"
       [options]="marketOptions"
       [value]="market()"
-      (change)="onMarketChange($any($event))"
+      (change)="onMarketSelect($event)"
     ></app-seg-toggle>
-    <span class="switch-field">
+    <label class="switch-field">
       <app-switch ariaLabel="僅當沖" [checked]="query().day_trade_only ?? false" (checkedChange)="onDayTradeOnlyChange($event)"></app-switch>
       <span aria-hidden="true">僅當沖</span>
-    </span>
+    </label>
     <p-datepicker
       ariaLabel="日期範圍"
       [(ngModel)]="dateRange"
@@ -90,12 +94,15 @@
       styleClass="year-preset-control">
     </p-selectButton>
     @if (showBrokerFilter()) {
-      <app-seg-toggle
-        ariaLabel="券商篩選"
-        [options]="brokerFilterOptions()"
-        [value]="selectedBroker()"
-        (change)="selectBrokerFilter($event)"
-      ></app-seg-toggle>
+      <span class="filter-field">
+        <span class="field-label" aria-hidden="true">券商</span>
+        <app-seg-toggle
+          ariaLabel="券商篩選"
+          [options]="brokerFilterOptions()"
+          [value]="selectedBroker()"
+          (change)="selectBrokerFilter($event)"
+        ></app-seg-toggle>
+      </span>
     }
     <p-select
       ariaLabel="排序"

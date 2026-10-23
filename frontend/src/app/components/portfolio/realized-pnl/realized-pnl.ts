@@ -23,6 +23,7 @@ import { SwitchComponent } from '../../ui/switch/switch';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { allPages } from '../paging';
 import {
+  MARKET_FILTERS,
   MarketFilter,
   barExtents,
   barViews,
@@ -134,8 +135,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   readonly cards = computed(() => {
     const set = this.marketEvents();
     const totals = set ? realizedTotals(set, this.today) : null;
-    const serverTotal = this.summaryFresh() ? Number(this.summary().filter_scope_total) : null;
-    const headline = this.market() === 'ALL' ? serverTotal : (totals?.total ?? null);
+    const headline = this.market() === 'ALL' ? this.serverHeadline(totals) : (totals?.total ?? null);
     const cards = realizedCards(totals, headline, rangeLabel(this.query()), this.today);
     return this.isPhone() ? cards.slice(0, 2) : cards;
   });
@@ -256,6 +256,12 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
       });
   }
 
+  /** The market toggle's value; anything that is not a market filter is ignored. */
+  onMarketSelect(value: string) {
+    const market = MARKET_FILTERS.find(m => m === value);
+    if (market) this.onMarketChange(market);
+  }
+
   onMarketChange(value: MarketFilter) {
     this.market.set(value);
     this.clientOffset.set(0);
@@ -332,7 +338,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
     this.reload();
   }
 
-  hasActiveFilters(): boolean {
+  readonly hasActiveFilters = computed(() => {
     const q = this.query();
     return !!(
       q.symbol ||
@@ -343,7 +349,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
       this.selectedBroker() !== 'ALL' ||
       this.market() !== 'ALL'
     );
-  }
+  });
 
   selectBrokerFilter(value: string): void {
     const next = value as 'ALL' | Broker;
@@ -438,6 +444,16 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
       'is-positive': amount > 0,
       'is-negative': amount < 0,
     };
+  }
+
+  /**
+   * The 全部 headline: the server total of the current filter; while that page is on its way `null` (`—`); after it
+   * failed the set's own Σ (the same figure) unless the set is capped.
+   */
+  private serverHeadline(totals: { total: number } | null): number | null {
+    if (this.summaryFresh()) return Number(this.summary().filter_scope_total);
+    if (this.loading() || this.allCapped()) return null;
+    return totals?.total ?? null;
   }
 
   /** The filter-wide set and the list page; on every filter or sort change (a page or market change never reloads the set). */

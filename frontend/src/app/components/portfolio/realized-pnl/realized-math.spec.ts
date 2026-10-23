@@ -201,9 +201,10 @@ describe('barViews / barExtents', () => {
     const views = barViews(bars);
     expect(views.map(view => view.label)).toEqual(['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月']);
     expect(views[3]).toEqual(expect.objectContaining({ amount: '−4,897', sign: -1 }));
-    expect(parseFloat(views[3].height)).toBeCloseTo(36.28, 2);
-    expect(views[9]).toEqual(expect.objectContaining({ amount: '+13,498', sign: 1, height: '100%' }));
-    expect(views[0]).toEqual(expect.objectContaining({ amount: '', sign: 0, height: '0%' }));
+    expect(views[3].ratio).toBeCloseTo(0.3628, 4);
+    expect(views[9]).toEqual(expect.objectContaining({ amount: '+13,498', sign: 1, ratio: 1 }));
+    expect(views[0]).toEqual(expect.objectContaining({ amount: '', sign: 0, ratio: 0 }));
+    expect(views.some(view => 'height' in view)).toBe(false);
   });
 
   it('spans the largest gain above and the largest loss below the zero line', () => {

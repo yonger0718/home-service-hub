@@ -3,7 +3,8 @@ import { groupedInteger } from '../money';
 import { periodLabel } from '../period';
 
 /** The market toggle: 全部 / 台股 / 美股, where 美股 is every market but TW (LSE included). */
-export type MarketFilter = 'ALL' | 'TW' | 'US';
+export const MARKET_FILTERS = ['ALL', 'TW', 'US'] as const;
+export type MarketFilter = (typeof MARKET_FILTERS)[number];
 
 export function matchesMarket(e: RealizedPnlEvent, m: MarketFilter): boolean {
   if (m === 'ALL') return true;
@@ -146,12 +147,11 @@ export function realizedCards(totals: RealizedTotals | null, headline: number | 
   ];
 }
 
-/** A month column as drawn: `height` = ratio × 100 as a CSS percentage; `amount` empty and no bar when the month has no sells. */
+/** A month column as drawn (its bar length is `ratio` × the full length); `amount` empty and no bar when the month has no sells. */
 export interface BarView extends MonthBar {
   label: string;
   amount: string;
   sign: number;
-  height: string;
 }
 
 export function barViews(bars: readonly MonthBar[]): BarView[] {
@@ -160,7 +160,6 @@ export function barViews(bars: readonly MonthBar[]): BarView[] {
     label: `${bar.month}月`,
     amount: bar.count ? signedInteger(bar.total) : '',
     sign: Math.sign(Math.round(bar.total) || 0),
-    height: `${bar.ratio * 100}%`,
   }));
 }
 
