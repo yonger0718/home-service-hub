@@ -163,6 +163,12 @@ class ReceiptConfirmation(BaseModel):
     revision: int = Field(ge=1)
 
 
+class DeductionsUpdate(BaseModel):
+    fee: Decimal = Field(ge=Decimal("0"), decimal_places=2)
+    tax: Decimal = Field(ge=Decimal("0"), decimal_places=2)
+    revision: int = Field(ge=1)
+
+
 class Dividend(DividendBase):
     receipt_status: str = "legacy_unknown"
     payment_date: Optional[date] = None
