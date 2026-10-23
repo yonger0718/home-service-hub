@@ -53,6 +53,7 @@
      green down). Switch to [data-gainloss="western"] for green-up. ---------- */
   --c-red: #e5484d;    --c-green: #1f9d6b;
   --c-red-soft: rgba(229, 72, 77, 0.12);   --c-green-soft: rgba(31, 157, 107, 0.12);
+  --app-category-other: #8a94a6;   /* 支出類別分佈 其他 swatch (canvas C.other; same in both themes) */
 
   --app-buy:  #533afd;  --app-buy-soft:  rgba(83, 58, 253, 0.10);   /* purchases = indigo */
   --app-sell: #51607a;  --app-sell-soft: rgba(81, 96, 121, 0.12);   /* proceeds = neutral slate */
@@ -178,6 +179,7 @@
   /* dark-tuned red/green + buy/sell — trend still derives via the convention */
   --c-red: #ff6369;    --c-green: #43c98a;
   --c-red-soft: rgba(255, 99, 105, 0.16);  --c-green-soft: rgba(67, 201, 138, 0.16);
+  --app-category-other: #8a94a6;   /* 支出類別分佈 其他 swatch (canvas C.other; same in both themes) */
   --app-buy: #8b7dff;  --app-buy-soft: rgba(139, 125, 255, 0.16);
   --app-sell: #9aa6bd; --app-sell-soft: rgba(154, 166, 189, 0.16);
   --app-card-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
