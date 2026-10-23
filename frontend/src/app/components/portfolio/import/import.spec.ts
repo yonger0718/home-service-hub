@@ -557,6 +557,26 @@ describe('Portfolio import controls', () => {
       expect(norm(commitButton(fixture).textContent)).toBe('確認匯入 38 筆');
     });
 
+    function dryRunToast(query: Record<string, string>): string {
+      const fixture = setup(query);
+      const add = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
+      fixture.componentInstance.onSelect({ files: [new File(['x'], 'a.csv')] });
+      fixture.detectChanges();
+      return String(add.mock.calls.find(([m]) => m.summary === '預覽完成')?.[0].detail);
+    }
+
+    it('a Cathay dry-run toast reads the preview counts, not created / skipped_duplicates', () => {
+      service.uploadCsv.mockReturnValue(of({ ...genericPreview, csv_format: 'cathay', created: 0, skipped_duplicates: 0, would_insert: 38, would_skip_duplicate: 3 }));
+      const detail = dryRunToast({});
+      expect(detail).toContain('可新增 38；重複 3；錯誤 1');
+      expect(detail).not.toContain('可新增 0');
+    });
+
+    it('a broker dry-run toast counts the row statuses, not the wire counts', () => {
+      service.uploadBrokerCsv.mockReturnValue(of({ ...brokerNested, counts: { created: 0, skipped: 0, rejected: 0 } }));
+      expect(dryRunToast({ type: 'broker' })).toBe('可新增 2；重複 1；錯誤 0');
+    });
+
     it('rows with status: duplicates are dimmed and counted, N is the number of new rows', () => {
       const fixture = withFile({
         ...genericPreview, skipped_duplicates: 9, unresolved_names: [],

@@ -15,6 +15,7 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.models import portfolio as models
 from app.models.fx_rate import FXRate
@@ -414,6 +415,36 @@ def test_cathay_commit_rejected_by_parse_error_clears_every_status(db_session, c
     assert result.skipped_unverified == 1
     assert _statuses(parsed.rows) == [None, None]
     assert db_session.query(models.Transaction).count() == 0
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [ValueError("bad payload"), IntegrityError("INSERT", {}, Exception("unique violation"))],
+    ids=["ValueError", "IntegrityError"],
+)
+def test_cathay_commit_rejected_by_write_error_zeroes_every_counter(
+    db_session, cathay_names, monkeypatch, exc
+):
+    """A write-time ``ValueError`` / ``IntegrityError`` rolls the whole Cathay batch
+    back: every status is ``None`` and every counter is 0, including the
+    ``skipped_duplicates`` counted before the failing row (as the parse-error path)."""
+    _seed_cathay_stored(db_session)
+    raw = _cathay_csv(_cathay_row(order_id="aT532"), _cathay_row(price="57", order_id="aT700"))
+    parsed = broker_cathay_service.parse_cathay_rows(raw)
+
+    def _raise(*_args, **_kwargs):
+        raise exc
+
+    monkeypatch.setattr(broker_cathay_service, "_insert_transaction", _raise)
+    result = broker_cathay_service.parse_cathay_transactions_csv(
+        raw, dry_run=False, db=db_session, parsed=parsed
+    )
+
+    assert _statuses(parsed.rows) == [None, None]
+    assert result.created == 0 and result.created_ids == []
+    assert result.rehashed == 0
+    assert result.skipped_duplicates == 0
+    assert len(result.errors) == 1 and result.errors[0].row_index == 0
 
 
 # ---------- router / serializer ----------

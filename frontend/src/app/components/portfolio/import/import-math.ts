@@ -206,10 +206,9 @@ function httpErrorRows(body: unknown): number {
 }
 
 function httpReason(err: unknown): string {
-  const e = err as { status?: unknown; message?: unknown; error?: { detail?: unknown; message?: unknown } | null } | null;
+  const e = err as { status?: unknown; message?: unknown } | null;
   return (
-    nonEmptyString(e?.error?.message) ??
-    nonEmptyString(e?.error?.detail) ??
+    bodyReason(err) ??
     (typeof e?.status === 'number' && e.status > 0 ? `HTTP ${e.status}` : null) ??
     nonEmptyString(e?.message) ??
     '未知錯誤'
@@ -294,8 +293,19 @@ export function importErrorDetail(err: unknown): string {
   return bodyReason(err) ?? nonEmptyString((err as { message?: unknown } | null)?.message) ?? '未知錯誤';
 }
 
+/** Dry-run toast counts (`可新增 N；重複 d；[更新 u；]錯誤 e`) from the preview's `importCounts` / `confirmCount`. */
+export function previewCountSummary(type: ImportType, r: AnyResult, csvFormat: string | null): string {
+  const counts = importCounts(type, r, csvFormat);
+  const parts = [`可新增 ${confirmCount(type, r, csvFormat)}`, `重複 ${counts.duplicates}`];
+  if (counts.updated > 0) parts.push(`更新 ${counts.updated}`);
+  parts.push(`錯誤 ${counts.errors}`);
+  return parts.join('；');
+}
+
+/** Broker toast: a dry run reads the preview counts; a commit reads the wire `counts`. */
 export function brokerCountSummary(r: BrokerCsvImportResult): string {
-  return `${r.dry_run ? '可新增' : '已新增'} ${r.counts.created}；重複 ${r.counts.skipped}；錯誤 ${r.counts.rejected}`;
+  if (r.dry_run) return previewCountSummary('broker', r, null);
+  return `已新增 ${r.counts.created}；重複 ${r.counts.skipped}；錯誤 ${r.counts.rejected}`;
 }
 
 /** A cell from a preview row: the nested `payload` first (real API), then the flat row (legacy fixtures); empty → null. */

@@ -44,6 +44,7 @@ import {
   importErrorDetail,
   importErrorText,
   overrideMeta,
+  previewCountSummary,
   previewRow,
   recalcBanner,
   recalcPanelVisible,
@@ -583,13 +584,11 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
       this.unresolvedNameMeta.set(merged);
     }
     const summary = dryRun ? '預覽完成' : '匯入完成';
-    const parts = [
-      `已解析 ${result.parsed} 筆`,
-      `${dryRun ? '可新增' : '已新增'} ${result.created} 筆`,
-      `重複略過 ${result.skipped_duplicates} 筆`,
-      `錯誤 ${result.errors.length} 筆`,
-    ];
-    if (result.rehashed && result.rehashed > 0) {
+    // A dry run reads the preview counts (Cathay dry runs leave created / skipped_duplicates at 0); a commit the wire counters.
+    const parts = dryRun
+      ? [`已解析 ${result.parsed} 筆`, previewCountSummary(this.type(), result, result.csv_format ?? null)]
+      : [`已解析 ${result.parsed} 筆`, `已新增 ${result.created} 筆`, `重複略過 ${result.skipped_duplicates} 筆`, `錯誤 ${result.errors.length} 筆`];
+    if (!dryRun && result.rehashed && result.rehashed > 0) {
       parts.push(`更新 ${result.rehashed} 筆`);
     }
     if (result.skipped_unresolved && result.skipped_unresolved > 0) {

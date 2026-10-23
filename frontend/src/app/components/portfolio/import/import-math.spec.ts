@@ -19,6 +19,7 @@ import {
   importErrorText,
   rowErrorText,
   overrideMeta,
+  previewCountSummary,
   previewRow,
   recalcBanner,
   recalcPanelVisible,
@@ -356,11 +357,11 @@ describe('classifyCommit', () => {
     expect(attemptLine(a)).toBe('10/21 22:10 · 失敗 · 2 列錯誤');
   });
 
-  it('a FastAPI 422 detail array is request validation, not rows: no errors count, the line shows the reason', () => {
+  it('a FastAPI 422 detail array is request validation, not rows: no errors count, the line shows the joined msgs', () => {
     const err = { status: 422, error: { detail: [{ loc: ['body', 'file'], msg: 'field required', type: 'missing' }] } };
     const a = classifyCommit(null, err, 'c.csv', 'transactions', now);
-    expect(a).toEqual({ at: iso, file: 'c.csv', type: 'transactions', ok: false, created: 0, reason: 'HTTP 422' });
-    expect(attemptLine(a)).toBe('10/21 22:10 · 失敗 · HTTP 422');
+    expect(a).toEqual({ at: iso, file: 'c.csv', type: 'transactions', ok: false, created: 0, reason: 'field required' });
+    expect(attemptLine(a)).toBe('10/21 22:10 · 失敗 · field required');
     expect(attemptLine(a)).not.toContain('列錯誤');
   });
 
@@ -437,8 +438,29 @@ describe('extractImportErrors / importErrorDetail', () => {
 describe('brokerCountSummary', () => {
   it('labels dry-run and commit counts', () => {
     const counts = { created: 3, skipped: 1, rejected: 2 };
-    expect(brokerCountSummary(brokerResult({ dry_run: true, counts }))).toBe('可新增 3；重複 1；錯誤 2');
     expect(brokerCountSummary(brokerResult({ dry_run: false, counts }))).toBe('已新增 3；重複 1；錯誤 2');
+  });
+
+  it('a dry run reads the row statuses, not the wire counts', () => {
+    const r = brokerResult({
+      dry_run: true,
+      counts: { created: 0, skipped: 0, rejected: 0 },
+      transactions: [row(2, {}, 'new'), row(3, {}, 'new'), row(4, {}, 'duplicate'), row(5, {}, 'rehash')],
+      cash_flows: [row(6, {}, 'new'), row(7, {}, 'error')],
+      errors: [{ row_index: 7, reason: 'bad' }],
+    });
+    expect(brokerCountSummary(r)).toBe('可新增 3；重複 1；更新 1；錯誤 1');
+  });
+});
+
+describe('previewCountSummary', () => {
+  it('a Cathay dry run reads would_insert / would_skip_duplicate, not created / skipped_duplicates', () => {
+    expect(previewCountSummary('transactions', CATHAY_DRY_RUN, 'cathay')).toBe('可新增 38；重複 3；錯誤 1');
+  });
+
+  it('shows 更新 only when > 0', () => {
+    const r = importResult({ parsed: 6, csv_format: 'cathay', would_insert: 3, would_skip_duplicate: 1, would_rehash: 2 });
+    expect(previewCountSummary('transactions', r, 'cathay')).toBe('可新增 3；重複 1；更新 2；錯誤 0');
   });
 });
 

@@ -621,6 +621,7 @@ def _commit_rehash(
         created_ids.clear()
         created = 0
         rehashed = 0
+        skipped_duplicates = 0
         _clear_statuses(batch)
     except IntegrityError as exc:
         db.rollback()
@@ -628,6 +629,7 @@ def _commit_rehash(
         created_ids.clear()
         created = 0
         rehashed = 0
+        skipped_duplicates = 0
         _clear_statuses(batch)
     return ImportResult(
         parsed=len(parsed.rows),
