@@ -548,6 +548,36 @@ describe('Portfolio import controls', () => {
       expect(norm(commitButton(fixture).textContent)).toBe('確認匯入 2 筆');
     });
 
+    it('a Cathay preview with rehash rows shows 更新 (not dimmed, with the hint), an 更新 tag, and N excludes them', () => {
+      const fixture = withFile({
+        ...genericPreview, csv_format: 'cathay', parsed: 4, skipped_duplicates: 0, would_insert: 1, would_skip_duplicate: 1, would_rehash: 2,
+        errors: [], unresolved_names: [],
+        rows: [
+          csvRow(2, { name: 'A', type: 'BUY' }, 'new'), csvRow(3, { name: 'B', type: 'BUY' }, 'duplicate'),
+          csvRow(4, { name: 'C', type: 'BUY' }, 'rehash'), csvRow(5, { name: 'D', type: 'SELL' }, 'rehash'),
+        ],
+      });
+      const preview = card(fixture, 'preview-card')!;
+      expect(Array.from(preview.querySelectorAll('.count-tags app-tag')).map(t => norm(t.textContent)))
+        .toEqual(['解析 4', '重複 1', '更新 2', '錯誤 0']);
+      const rows = Array.from(preview.querySelectorAll('tbody tr'));
+      expect(rows.map(r => norm(r.querySelector('td:last-child app-tag')?.textContent))).toEqual(['新增', '重複 · 略過', '更新', '更新']);
+      expect(rows.map(r => r.classList.contains('dimmed'))).toEqual([false, true, false, false]);
+      const hint = '既有交易原地更新：指紋、多空、當沖標記與現金腳';
+      expect(rows[2].querySelector('td:last-child app-tag')?.getAttribute('title')).toBe(hint);
+      expect(norm(rows[2].querySelector('td:last-child .sr-only')?.textContent)).toContain(hint);
+      expect(rows[0].querySelector('td:last-child app-tag')?.hasAttribute('title')).toBe(false);
+      expect(rows[0].querySelector('td:last-child .sr-only')).toBeNull();
+      expect(norm(commitButton(fixture).textContent)).toBe('確認匯入 1 筆');
+    });
+
+    it('a preview without rehash rows shows no 更新 tag', () => {
+      const fixture = withFile({ ...genericPreview, csv_format: 'cathay', skipped_duplicates: 0, would_insert: 38, would_skip_duplicate: 3, would_rehash: 0 });
+      const tags = Array.from(card(fixture, 'preview-card')!.querySelectorAll('.count-tags app-tag')).map(t => norm(t.textContent));
+      expect(tags).toEqual(['解析 41', '重複 3', '錯誤 1']);
+      expect(tags.some(t => t.startsWith('更新'))).toBe(false);
+    });
+
     it('券商 dry-run renders the transactions and 現金流 tables from the nested payload without a created count', () => {
       const fixture = withBrokerFile(brokerNested);
       const preview = card(fixture, 'preview-card')!;

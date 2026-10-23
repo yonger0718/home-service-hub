@@ -75,6 +75,9 @@
           <div class="count-tags">
             <app-tag variant="primary">解析 {{ counts().parsed }}</app-tag>
             <app-tag variant="warning">重複 {{ counts().duplicates }}</app-tag>
+            @if (counts().updated > 0) {
+              <app-tag variant="neutral">更新 {{ counts().updated }}</app-tag>
+            }
             <app-tag variant="danger">錯誤 {{ counts().errors }}</app-tag>
           </div>
           @if (brokerCommitSummary(); as summary) {
@@ -118,7 +121,12 @@
                         <td class="num">{{ row.quantity }}</td>
                         <td class="num">{{ row.price }}</td>
                       }
-                      <td class="num"><app-tag [variant]="row.variant">{{ row.label }}</app-tag></td>
+                      <td class="num">
+                        <app-tag [variant]="row.variant" [attr.title]="row.hint">{{ row.label }}</app-tag>
+                        @if (row.hint) {
+                          <span class="sr-only">（{{ row.hint }}）</span>
+                        }
+                      </td>
                     </tr>
                   }
                 </tbody>

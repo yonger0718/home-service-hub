@@ -61,7 +61,8 @@ export interface Transaction {
 
 export type ImportKind = 'transactions' | 'dividends';
 
-export type ImportRowStatus = 'new' | 'duplicate' | 'unresolved' | 'error';
+/** `rehash` (Cathay only): an existing trade re-fingerprinted in place, nothing inserted. */
+export type ImportRowStatus = 'new' | 'duplicate' | 'rehash' | 'unresolved' | 'error';
 
 export interface ImportRow {
   row_index: number;

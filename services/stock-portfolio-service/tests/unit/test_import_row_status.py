@@ -1,14 +1,15 @@
 """Per-row ``status`` on import rows (redesign v2 PR 6, Task 1b, Option B).
 
 Every dry-run and commit path stamps each ``ParsedRow`` with ``new`` /
-``duplicate`` / ``unresolved`` / ``error`` so the preview table can render
-the row's fate directly; the counters stay consistent with the statuses.
+``duplicate`` / ``unresolved`` / ``error`` (plus ``rehash`` on Cathay, Task 7)
+so the preview table can render the row's fate directly; the counters stay
+consistent with the statuses.
 """
 
 from __future__ import annotations
 
 from collections import Counter
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
@@ -257,7 +258,8 @@ def test_cathay_dry_run_statuses_match_would_counts(db_session, cathay_names):
     assert _statuses(parsed.rows) == ["duplicate", "new", "unresolved"]
     counts = Counter(_statuses(parsed.rows))
     assert result.would_insert == counts["new"] == 1
-    assert result.would_skip_duplicate + result.would_rehash == counts["duplicate"] == 1
+    assert result.would_skip_duplicate == counts["duplicate"] == 1
+    assert result.would_rehash == counts["rehash"] == 0
     assert result.skipped_unverified == counts["unresolved"] == 1
     # The unresolvable name never becomes a row; it is counted, not stamped.
     assert result.skipped_unresolved == 1
@@ -284,22 +286,43 @@ def test_cathay_dry_run_stored_and_in_batch_twin_are_duplicate(db_session, catha
     assert db_session.query(models.Transaction).count() == 1
 
 
-def test_cathay_dry_run_rehash_row_is_duplicate(db_session, cathay_names):
-    legacy = models.Transaction(
-        symbol="3141",
-        name="晶宏",
-        type=models.TransactionType.BUY,
-        quantity=1000,
-        price=Decimal("56.3"),
-        trade_date=broker_cathay_service._parse_trade_date("2026/05/08", 1),
-        fee=Decimal("22"),
-        tax=Decimal("0"),
-        import_fingerprint=broker_cathay_service._legacy_fingerprint(
-            broker_cathay_service.parse_cathay_rows(_cathay_csv(_cathay_row())).rows[0]
-        ),
+def _seed_cathay_legacy(db_session, line: str, *, business_key_only: bool = False) -> None:
+    """Store a pre-scheme trade the Cathay rehash will re-fingerprint in place.
+
+    Default: stored under the row's legacy fingerprint (primary rehash path).
+    ``business_key_only``: stored at 13:30 TPE with no fingerprint, so only the
+    same-day business-key fallback (``_business_key_match``) can pair it.
+    """
+    row = broker_cathay_service.parse_cathay_rows(_cathay_csv(line)).rows[0]
+    payload = row.payload
+    trade_date = payload["trade_date"]
+    fingerprint: str | None = broker_cathay_service._legacy_fingerprint(row)
+    if business_key_only:
+        trade_date = datetime.combine(trade_date.date(), datetime.min.time()).replace(
+            hour=5, minute=30, tzinfo=timezone.utc
+        )
+        fingerprint = None
+    db_session.add(
+        models.Transaction(
+            symbol=payload["symbol"],
+            name=payload["name"],
+            type=models.TransactionType(payload["type"]),
+            quantity=payload["quantity"],
+            price=payload["price"],
+            trade_date=trade_date,
+            fee=payload["fee"],
+            tax=payload["tax"],
+            import_fingerprint=fingerprint,
+        )
     )
-    db_session.add(legacy)
     db_session.commit()
+
+
+REHASH_LINE = _cathay_row(price="57", order_id="aT700")
+
+
+def test_cathay_dry_run_rehash_row_is_rehash(db_session, cathay_names):
+    _seed_cathay_legacy(db_session, _cathay_row())
 
     raw = _cathay_csv(_cathay_row())
     parsed = broker_cathay_service.parse_cathay_rows(raw)
@@ -308,7 +331,52 @@ def test_cathay_dry_run_rehash_row_is_duplicate(db_session, cathay_names):
     )
 
     assert result.would_rehash == 1
-    assert _statuses(parsed.rows) == ["duplicate"]
+    assert result.would_skip_duplicate == 0
+    assert _statuses(parsed.rows) == ["rehash"]
+
+
+@pytest.mark.parametrize("business_key_only", [False, True])
+def test_cathay_dry_run_duplicate_and_rehash_are_distinct(
+    db_session, cathay_names, business_key_only
+):
+    """A stored new-scheme row is a would-skip ``duplicate``; a legacy row the
+    batch re-fingerprints is ``rehash``. #duplicate == would_skip_duplicate and
+    #rehash == would_rehash (both rehash sites: legacy fingerprint, business key)."""
+    _seed_cathay_stored(db_session)
+    _seed_cathay_legacy(db_session, REHASH_LINE, business_key_only=business_key_only)
+
+    raw = _cathay_csv(_cathay_row(order_id="aT532"), REHASH_LINE)
+    parsed = broker_cathay_service.parse_cathay_rows(raw)
+    result = broker_cathay_service.parse_cathay_transactions_csv(
+        raw, dry_run=True, db=db_session, parsed=parsed
+    )
+
+    assert _statuses(parsed.rows) == ["duplicate", "rehash"]
+    counts = Counter(_statuses(parsed.rows))
+    assert result.would_skip_duplicate == counts["duplicate"] == 1
+    assert result.would_rehash == counts["rehash"] == 1
+    assert result.would_insert == counts["new"] == 0
+    assert result.skipped_duplicates == 0
+
+
+@pytest.mark.parametrize("business_key_only", [False, True])
+def test_cathay_commit_rehashed_row_is_rehash(db_session, cathay_names, business_key_only):
+    _seed_cathay_stored(db_session)
+    _seed_cathay_legacy(db_session, REHASH_LINE, business_key_only=business_key_only)
+
+    raw = _cathay_csv(_cathay_row(order_id="aT532"), REHASH_LINE)
+    parsed = broker_cathay_service.parse_cathay_rows(raw)
+    result = broker_cathay_service.parse_cathay_transactions_csv(
+        raw, dry_run=False, db=db_session, parsed=parsed
+    )
+
+    assert _statuses(parsed.rows) == ["duplicate", "rehash"]
+    counts = Counter(_statuses(parsed.rows))
+    assert result.skipped_duplicates == counts["duplicate"] == 1
+    assert result.rehashed == counts["rehash"] == 1
+    assert result.created == len(result.created_ids) == counts["new"] == 0
+    # Re-fingerprinted in place: no row was inserted.
+    assert db_session.query(models.Transaction).count() == 2
 
 
 def test_cathay_commit_new_rows_have_created_ids(db_session, cathay_names):

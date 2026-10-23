@@ -332,6 +332,24 @@
     align-items: stretch;
     flex-direction: column-reverse;
   }
+
+  // The kit's app-btn host stretches; its inner <button> must fill it too.
+  .imp-footer app-btn,
+  .imp-footer app-btn ::ng-deep button {
+    width: 100%;
+  }
+}
+
+.sr-only {
+  border: 0;
+  clip: rect(0 0 0 0);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
 }
 
 .import-options { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin: 0.75rem 0; }

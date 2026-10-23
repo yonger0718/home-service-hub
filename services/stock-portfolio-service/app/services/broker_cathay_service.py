@@ -447,8 +447,8 @@ def _dry_run_rehash(db: Session, parsed: ParseResult) -> ImportResult:
                     claimed_business_ids.add(cand_id)
                     break
             would_rehash += 1
-            # A rehash re-stamps an already-stored row: nothing new is written.
-            row.status = "duplicate"
+            # A rehash re-stamps an already-stored row in place: nothing is inserted.
+            row.status = "rehash"
             available_legacy.remove(legacy_fp)
             simulated_fingerprints.discard(legacy_fp)
             simulated_fingerprints.add(new_fp)
@@ -470,7 +470,7 @@ def _dry_run_rehash(db: Session, parsed: ParseResult) -> ImportResult:
         if match_id is not None:
             claimed_business_ids.add(match_id)
             would_rehash += 1
-            row.status = "duplicate"
+            row.status = "rehash"
             simulated_fingerprints.add(new_fp)
             continue
         would_insert += 1
@@ -559,7 +559,7 @@ def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
                             CashTxnSource.CSV_IMPORT,
                         )
                     rehashed += 1
-                    row.status = "duplicate"
+                    row.status = "rehash"
                     continue
                 duplicate = (
                     db.query(models.Transaction)
@@ -598,7 +598,7 @@ def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
                             CashTxnSource.CSV_IMPORT,
                         )
                     rehashed += 1
-                    row.status = "duplicate"
+                    row.status = "rehash"
                     continue
                 tx = _insert_transaction(db, row, cash_account_id)
                 created += 1

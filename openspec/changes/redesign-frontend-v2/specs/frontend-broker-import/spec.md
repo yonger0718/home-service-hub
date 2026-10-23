@@ -28,5 +28,5 @@ The broker statement import SHALL live on the unified import screen (`/portfolio
 
 - The separate broker page is removed; 券商對帳單 is a type on the unified import page and hides the header checkbox and the symbol-confirmation card.
 - The preview shows a transactions table and a 現金流 table, each row with its `status` (新增 / 重複 · 略過 / 錯誤).
-- On non-Cathay brokers `counts.skipped` equals the number of `duplicate` rows. On Cathay, `skipped_duplicates` is 0 in a dry run and rehash rows (existing trade re-fingerprinted in place, no insert) count in `rehashed` but carry `duplicate`, so #duplicate = skipped + rehashed there.
+- On non-Cathay brokers `counts.skipped` equals the number of `duplicate` rows. On Cathay, rehash rows (existing trade re-fingerprinted in place, no insert) carry their own `rehash` status: they are labelled 更新, not dimmed, excluded from `確認匯入 N` and counted in a 更新 tag, so #duplicate again equals `would_skip_duplicate` (dry run) / `skipped_duplicates` (commit) and #rehash equals `would_rehash` / `rehashed`.
 - A row-level FX error (for example a missing FX rate) is listed under 需要修正的列 and the file is kept.

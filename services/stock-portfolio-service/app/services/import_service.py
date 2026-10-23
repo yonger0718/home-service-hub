@@ -88,7 +88,7 @@ TYPE_VALUE_SYNONYMS = {
 }
 
 
-RowStatus = Literal["new", "duplicate", "unresolved", "error"]
+RowStatus = Literal["new", "duplicate", "rehash", "unresolved", "error"]
 
 
 @dataclass
@@ -98,8 +98,10 @@ class ParsedRow:
     payload: dict
     # Set by the dry-run / commit paths (response-only, never persisted):
     # ``new`` = inserted (or would be), ``duplicate`` = fingerprint already
-    # stored or seen earlier in the batch (Cathay rehash included),
-    # ``unresolved`` = skipped for an unverified name override, ``error`` =
+    # stored or seen earlier in the batch, ``rehash`` = Cathay only: an
+    # existing trade re-fingerprinted in place (fingerprint, side, day-trade
+    # marker, cash legs refreshed; nothing inserted), ``unresolved`` =
+    # skipped for an unverified name override, ``error`` =
     # parsed but rejected at write time (FX missing, ledger guard). Rows that
     # fail to parse never become a ParsedRow — they live in ``errors``.
     status: RowStatus | None = None

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { BrokerCsvImportResult, ImportResult, ImportRow } from '../../../models/portfolio.model';
 import {
   ImportAttempt,
+  REHASH_HINT,
   ROW_RESULT_LABEL,
   attemptLine,
   brokerCountSummary,
@@ -99,11 +100,25 @@ const STATUS_DRY_RUN = importResult({
   dry_run: true,
 });
 
+/** Cathay rows with statuses (Task 7): 36 new, 2 duplicate, 3 rehash; counters agree per the invariant. */
+const CATHAY_STATUS_DRY_RUN = importResult({
+  parsed: 41,
+  would_insert: 36,
+  would_skip_duplicate: 2,
+  would_rehash: 3,
+  skipped_duplicates: 0,
+  errors: [],
+  rows: [...rows(36, 1, 'new'), ...rows(2, 37, 'duplicate'), ...rows(3, 39, 'rehash')],
+  csv_format: 'cathay',
+  dry_run: true,
+});
+
 describe('ROW_RESULT_LABEL', () => {
   it('maps every row result to its verbatim copy', () => {
     expect(ROW_RESULT_LABEL).toEqual({
       new: '新增',
       duplicate: '重複 · 略過',
+      rehash: '更新',
       unresolved: '代號待確認',
       error: '錯誤',
     });
@@ -112,12 +127,12 @@ describe('ROW_RESULT_LABEL', () => {
 
 describe('importCounts / confirmCount — 交易 / 股利', () => {
   it('generic fixture reads skipped_duplicates and never subtracts errors', () => {
-    expect(importCounts('transactions', GENERIC_DRY_RUN, 'generic')).toEqual({ parsed: 41, duplicates: 3, errors: 1 });
+    expect(importCounts('transactions', GENERIC_DRY_RUN, 'generic')).toEqual({ parsed: 41, duplicates: 3, errors: 1, updated: 0 });
     expect(confirmCount('transactions', GENERIC_DRY_RUN, 'generic')).toBe(38);
   });
 
   it('Cathay dry-run reads would_skip_duplicate and would_insert', () => {
-    expect(importCounts('transactions', CATHAY_DRY_RUN, 'cathay')).toEqual({ parsed: 41, duplicates: 3, errors: 1 });
+    expect(importCounts('transactions', CATHAY_DRY_RUN, 'cathay')).toEqual({ parsed: 41, duplicates: 3, errors: 1, updated: 0 });
     expect(confirmCount('transactions', CATHAY_DRY_RUN, 'cathay')).toBe(38);
   });
 
@@ -128,13 +143,33 @@ describe('importCounts / confirmCount — 交易 / 股利', () => {
   });
 
   it('works the same for dividends', () => {
-    expect(importCounts('dividends', GENERIC_DRY_RUN, 'generic')).toEqual({ parsed: 41, duplicates: 3, errors: 1 });
+    expect(importCounts('dividends', GENERIC_DRY_RUN, 'generic')).toEqual({ parsed: 41, duplicates: 3, errors: 1, updated: 0 });
     expect(confirmCount('dividends', GENERIC_DRY_RUN, 'generic')).toBe(38);
   });
 
   it('status-bearing rows win over the wire counters', () => {
-    expect(importCounts('transactions', STATUS_DRY_RUN, 'generic')).toEqual({ parsed: 41, duplicates: 2, errors: 1 });
+    expect(importCounts('transactions', STATUS_DRY_RUN, 'generic')).toEqual({ parsed: 41, duplicates: 2, errors: 1, updated: 0 });
     expect(confirmCount('transactions', STATUS_DRY_RUN, 'generic')).toBe(38);
+  });
+
+  it('Cathay rehash rows count as 更新, not 重複, and are excluded from 確認匯入 N', () => {
+    expect(importCounts('transactions', CATHAY_STATUS_DRY_RUN, 'cathay')).toEqual({ parsed: 41, duplicates: 2, errors: 0, updated: 3 });
+    expect(confirmCount('transactions', CATHAY_STATUS_DRY_RUN, 'cathay')).toBe(36);
+    // Statuses win even when the counters disagree.
+    const disagree = importResult({ ...CATHAY_STATUS_DRY_RUN, would_rehash: 9, would_insert: 0 });
+    expect(importCounts('transactions', disagree, 'cathay').updated).toBe(3);
+    expect(confirmCount('transactions', disagree, 'cathay')).toBe(36);
+  });
+
+  it('without statuses 更新 reads would_rehash on a Cathay dry run and rehashed on a commit', () => {
+    const wire = importResult({ ...CATHAY_DRY_RUN, would_insert: 36, would_rehash: 2 });
+    expect(importCounts('transactions', wire, 'cathay')).toEqual({ parsed: 41, duplicates: 3, errors: 1, updated: 2 });
+    expect(confirmCount('transactions', wire, 'cathay')).toBe(36);
+    const committed = importResult({ ...wire, dry_run: false, skipped_duplicates: 3, rehashed: 2 });
+    expect(importCounts('transactions', committed, 'cathay').updated).toBe(2);
+    expect(confirmCount('transactions', committed, 'cathay')).toBe(36);
+    // A generic dry run never reports 更新.
+    expect(importCounts('transactions', importResult({ ...GENERIC_DRY_RUN, would_rehash: 4 }), 'generic').updated).toBe(0);
   });
 
   it('clamps the confirm count at 0', () => {
@@ -143,9 +178,9 @@ describe('importCounts / confirmCount — 交易 / 股利', () => {
   });
 
   it('null result is all zeros', () => {
-    expect(importCounts('transactions', null, null)).toEqual({ parsed: 0, duplicates: 0, errors: 0 });
+    expect(importCounts('transactions', null, null)).toEqual({ parsed: 0, duplicates: 0, errors: 0, updated: 0 });
     expect(confirmCount('transactions', null, null)).toBe(0);
-    expect(importCounts('broker', null, null)).toEqual({ parsed: 0, duplicates: 0, errors: 0 });
+    expect(importCounts('broker', null, null)).toEqual({ parsed: 0, duplicates: 0, errors: 0, updated: 0 });
     expect(confirmCount('broker', null, null)).toBe(0);
   });
 });
@@ -162,7 +197,7 @@ describe('importCounts / confirmCount — 券商對帳單', () => {
   });
 
   it('counts both tables, counts.skipped and all errors', () => {
-    expect(importCounts('broker', broker, null)).toEqual({ parsed: 7, duplicates: 1, errors: 2 });
+    expect(importCounts('broker', broker, null)).toEqual({ parsed: 7, duplicates: 1, errors: 2, updated: 0 });
   });
 
   it('confirm subtracts skipped and only the errors that hit a rendered row', () => {
@@ -175,7 +210,7 @@ describe('importCounts / confirmCount — 券商對帳單', () => {
       cash_flows: [...rows(1, 5, 'new'), ...rows(1, 6, 'duplicate')],
       counts: { created: 0, skipped: 9, rejected: 0 },
     });
-    expect(importCounts('broker', withStatus, null)).toEqual({ parsed: 6, duplicates: 2, errors: 0 });
+    expect(importCounts('broker', withStatus, null)).toEqual({ parsed: 6, duplicates: 2, errors: 0, updated: 0 });
     expect(confirmCount('broker', withStatus, null)).toBe(4);
   });
 
@@ -195,6 +230,7 @@ describe('rowResult', () => {
     expect(rowResult(row(2, { name: '台積電' }, 'duplicate'), r)).toBe('duplicate');
     expect(rowResult(row(5, {}, 'error'), r)).toBe('error');
     expect(rowResult(row(2, {}, 'new'), r)).toBe('new');
+    expect(rowResult(row(2, { name: '台積電' }, 'rehash'), r)).toBe('rehash');
   });
 
   it('error row without status → error', () => {
@@ -210,6 +246,8 @@ describe('rowResult', () => {
   it('otherwise new — never duplicate without a status', () => {
     expect(rowResult(row(4, { name: '聯發科' }), r)).toBe('new');
     expect(rowResult(row(4, { name: '聯發科' }), importResult({ skipped_duplicates: 10 }))).toBe('new');
+    // The fallback never invents `rehash` either, whatever the counters say.
+    expect(rowResult(row(4, { name: '聯發科' }), importResult({ csv_format: 'cathay', would_rehash: 10, rehashed: 10 }))).toBe('new');
   });
 
   it('ignores an unknown status value and falls back', () => {
@@ -422,7 +460,15 @@ describe('previewRow', () => {
     const r = importResult({ errors: [{ row_index: 5, message: 'x' }] });
     expect(previewRow(row(5), r)).toMatchObject({ result: 'error', variant: 'danger', dimmed: false });
     expect(previewRow(row(6), r)).toMatchObject({ result: 'new', label: '新增', variant: 'neutral', dimmed: false });
-    expect(previewRow(row(7, {}, 'duplicate'), r)).toMatchObject({ label: '重複 · 略過', variant: 'neutral', dimmed: true });
+    expect(previewRow(row(7, {}, 'duplicate'), r)).toMatchObject({ label: '重複 · 略過', variant: 'neutral', dimmed: true, hint: null });
+  });
+
+  it('a rehash row is a neutral 更新 tag with the in-place hint and is not dimmed', () => {
+    expect(previewRow(row(8, {}, 'rehash'), importResult())).toMatchObject({
+      result: 'rehash', label: '更新', variant: 'neutral', dimmed: false, hint: REHASH_HINT,
+    });
+    expect(REHASH_HINT).toBe('既有交易原地更新：指紋、多空、當沖標記與現金腳');
+    expect(previewRow(row(9, {}, 'new'), importResult()).hint).toBeNull();
   });
 
   it('carries the 股利 amount and 入帳日', () => {
