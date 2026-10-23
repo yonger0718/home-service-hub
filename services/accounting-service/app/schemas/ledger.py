@@ -200,6 +200,14 @@ class EntryDetailOut(EntryOut):
     loan_schedule: LoanScheduleOut | None = None
 
 
+class CategoryExpenseOut(BaseModel):
+    """One top-level category's share of the month expense (negative, main currency); category_id None = 未分類."""
+    category_id: int | None
+    name: str
+    color: str | None
+    expense: Decimal
+
+
 class MonthSummaryOut(BaseModel):
     month: str
     currency: str
@@ -207,6 +215,7 @@ class MonthSummaryOut(BaseModel):
     income: Decimal
     net: Decimal
     missing_rates: list[str]
+    by_category: list[CategoryExpenseOut] = []
 
 
 class DaySummaryOut(BaseModel):

@@ -395,6 +395,84 @@ def test_month_summary_totals_in_main_currency(client, db_session):
     assert response.json() == {
         "month": "2026-09", "currency": "TWD", "expense": "-1445.0000", "income": "50050.0000", "net": "48605.0000",
         "missing_rates": [],
+        "by_category": [{"category_id": None, "name": "未分類", "color": None, "expense": "-1445.0000"}],
+    }
+
+
+def test_month_summary_by_category_rolls_up_to_root(client, db_session):
+    wallet = make_account(db_session, "錢包")
+    food = Category(kind="expense", name="餐飲", color="#ff8800")
+    home = Category(kind="expense", name="居家")
+    db_session.add_all([food, home])
+    db_session.flush()
+    lunch = Category(kind="expense", parent_id=food.id, name="午餐", color="#00ccff")  # its own colour
+    db_session.add(lunch)
+    db_session.flush()
+    day = date(2026, 9, 10)
+    make_entry(db_session, wallet, "-300", category_id=lunch.id, entry_date=day)
+    make_entry(db_session, wallet, "-200", category_id=food.id, entry_date=day)
+    make_entry(db_session, wallet, "-500", category_id=home.id, entry_date=day)
+    make_entry(db_session, wallet, "-50", entry_date=day)
+    make_entry(db_session, wallet, "100", kind="refund", category_id=lunch.id, entry_date=day)
+    make_entry(db_session, wallet, "1000", kind="income", entry_date=day)
+    db_session.commit()
+
+    body = client.get("/entries/summary", params={"month": "2026-09"}).json()
+
+    assert body["by_category"] == [
+        {"category_id": home.id, "name": "居家", "color": None, "expense": "-500.0000"},
+        {"category_id": food.id, "name": "餐飲", "color": "#ff8800", "expense": "-400.0000"},
+        {"category_id": None, "name": "未分類", "color": None, "expense": "-50.0000"},
+    ]
+    assert body["expense"] == "-950.0000"
+    assert sum(Decimal(item["expense"]) for item in body["by_category"]) == Decimal(body["expense"])
+
+
+def test_month_summary_by_category_colourless_parent_is_one_root_ties_by_name(client, db_session):
+    wallet = make_account(db_session, "錢包")
+    transport = Category(kind="expense", name="交通")  # colourless parent, coloured child
+    books = Category(kind="expense", name="書籍", color="#abcdef")
+    db_session.add_all([transport, books])
+    db_session.flush()
+    bus = Category(kind="expense", parent_id=transport.id, name="公車", color="#123456")
+    db_session.add(bus)
+    db_session.flush()
+    day = date(2026, 9, 10)
+    make_entry(db_session, wallet, "-30", category_id=bus.id, entry_date=day)
+    make_entry(db_session, wallet, "-20", category_id=transport.id, entry_date=day)
+    make_entry(db_session, wallet, "-50", category_id=books.id, entry_date=day)
+    make_entry(db_session, wallet, "-40", category_id=books.id, entry_date=day)
+    make_entry(db_session, wallet, "40", kind="refund", category_id=books.id, entry_date=day)
+    db_session.commit()
+
+    body = client.get("/entries/summary", params={"month": "2026-09"}).json()
+
+    assert body["by_category"] == [
+        {"category_id": transport.id, "name": "交通", "color": None, "expense": "-50.0000"},
+        {"category_id": books.id, "name": "書籍", "color": "#abcdef", "expense": "-50.0000"},
+    ]
+    assert body["expense"] == "-100.0000"
+
+
+def test_month_summary_by_category_skips_unrated_currency(client, db_session):
+    db_session.add(Preference(main_currency="TWD"))
+    wallet = make_account(db_session, "錢包")
+    jpy = make_account(db_session, "去日本的錢", currency="JPY")
+    food = Category(kind="expense", name="餐飲", color="#ff8800")
+    db_session.add(food)
+    db_session.flush()
+    day = date(2026, 9, 10)
+    make_entry(db_session, wallet, "-200", category_id=food.id, entry_date=day)
+    make_entry(db_session, jpy, "-5000", category_id=food.id, entry_date=day)
+    make_entry(db_session, jpy, "-800", entry_date=day)
+    db_session.commit()
+
+    body = client.get("/entries/summary", params={"month": "2026-09"}).json()
+
+    assert body == {
+        "month": "2026-09", "currency": "TWD", "expense": "-200.0000", "income": "0.0000", "net": "-200.0000",
+        "missing_rates": ["JPY"],
+        "by_category": [{"category_id": food.id, "name": "餐飲", "color": "#ff8800", "expense": "-200.0000"}],
     }
 
 

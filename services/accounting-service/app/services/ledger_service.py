@@ -619,9 +619,56 @@ def _converted_totals(db: Session, month: str, *, by_day: bool, hide_rewards: bo
     return main, totals, sorted(missing)
 
 
+UNCATEGORISED_NAME = "未分類"
+
+
+def _category_expense(db: Session, month: str, main: str) -> list[dict]:
+    """The month expense split by top-level category: the `_spend_filter()` rows dated in `month`, each rolled up
+    to its root category (categories nest one level, so the root is the parent when there is one, else the
+    category itself; uncategorised rows form one 未分類 item), converted per (root, currency) with the latest
+    cached rate. Currencies without a rate are left out, as in `_converted_totals` (which reports them). Roots
+    whose converted sum is 0 are dropped; sorted by expense ascending (largest spend first), then name. At a
+    non-unit rate the Σ can differ from the month expense by rounding (at most 0.00005 per extra bucket)."""
+    start, end = _month_bounds(month)
+    parent = aliased(Category)
+    root_id = func.coalesce(parent.id, Category.id)
+    rows = db.execute(
+        select(
+            root_id,
+            # The root's own name / colour, never the row chip's child-first colour; not grouping keys.
+            func.max(func.coalesce(parent.name, Category.name)),
+            func.max(case((parent.id.is_not(None), parent.color), else_=Category.color)),
+            LedgerEntry.currency,
+            func.sum(LedgerEntry.amount),
+        )
+        .select_from(LedgerEntry)
+        .outerjoin(Category, Category.id == LedgerEntry.category_id)
+        .outerjoin(parent, parent.id == Category.parent_id)
+        .where(LedgerEntry.entry_date >= start, LedgerEntry.entry_date < end, _spend_filter())
+        .group_by(root_id, LedgerEntry.currency)
+    ).all()
+
+    rates = latest_rates(db, {row[3] for row in rows}, main)
+    roots: dict = {}
+    for root, name, color, currency, amount in rows:
+        rate = rates.get(currency)
+        if rate is None:
+            continue
+        item = roots.setdefault(root, {
+            "category_id": root,
+            "name": UNCATEGORISED_NAME if root is None else name,
+            "color": None if root is None else color,
+            "expense": Decimal(0),
+        })
+        item["expense"] += _convert(amount, rate)
+    return sorted((item for item in roots.values() if item["expense"] != 0),
+                  key=lambda item: (item["expense"], item["name"]))
+
+
 def month_summary(db: Session, month: str) -> dict:
     """Expense (refunds reduce it, as in MOZE's statistics), income and net (income + expense) for entries dated
-    in `month` (YYYY-MM) in the main currency; see `_converted_totals` for the inclusion rules."""
+    in `month` (YYYY-MM) in the main currency, plus the expense by top-level category (`_category_expense`); see
+    `_converted_totals` for the inclusion rules."""
     main, totals, missing = _converted_totals(db, month, by_day=False, hide_rewards=False)
     month_totals = totals.get(None, {"expense": Decimal(0), "income": Decimal(0)})
     return {
@@ -631,6 +678,7 @@ def month_summary(db: Session, month: str) -> dict:
         "income": month_totals["income"],
         "net": month_totals["income"] + month_totals["expense"],
         "missing_rates": missing,
+        "by_category": _category_expense(db, month, main),
     }
 
 
