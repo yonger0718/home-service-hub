@@ -95,6 +95,11 @@ Template line key `loan_from_seq: int | None` (≥ 1; only on loan-kind lines; c
 `loan_from_seq`, the stored boundary is copied forward (a client that does not know the key cannot erase it); the SPA's
 `schedule-save.ts` line whitelist (`LINE_INPUT_KEYS`) and `ScheduleLineInput` gain `loan_from_seq` so a load → edit →
 PUT round trip preserves it.
+Any other `loan_from_seq` in a PUT — a moved boundary, one introduced (None → N), or one sent with a new or different
+loan — is refused with 422 `template.lines[i].loan_from_seq` 「起算期只能由掛上貸款設定」 (only §4.1 sets it).
+A loan-kind line's `counterparty_id`, when set, must name an existing counterparty (422 「找不到對象」); the interest
+line names the loan's counterparty when the loan applies to the period, else falls back to the loan line's own
+`counterparty_id`.
 
 ### 4.1 Backend — `POST /schedules/definitions/{definition_id}/loan` (WRITE)
 Body = `LoanIn` (reuse: `account_id`, `counterparty_id`, `category_id?`, `amount` (> 0, the REMAINING principal),
@@ -110,9 +115,12 @@ status 201.
    `ConflictError("loan_already_attached")`; `loan.account_id != line["account_id"]` → `ValidationError("account",
    "貸款要掛在還款帳戶")` (the payable is created in that account's currency, which is the line's currency).
 3. Boundary: `loan_from_seq` = the lowest `pending` instance's `seq`; none pending → `ConflictError("nothing_pending")`.
-   Refuse while any pending instance has `due_date <= loan.entry_date` → `ConflictError("catch_up_first")` *[call: the
-   owner posts (補記) those periods first — they post as plain expenses under §4.0 — then attaches with the principal
-   remaining after them]*.
+   Refuse while any pending instance's 到期日早於起算日 (`due_date < loan.entry_date`) → `ConflictError("catch_up_first")`
+   *[call: the owner posts (補記) those periods first — they post as plain expenses under §4.0 — then attaches with the
+   principal remaining after them; a period due ON `entry_date` is not overdue — attach, then post it, settles it]*.
+   Then refuse while any instance with `seq > loan_from_seq` is `posted` or `skipped` →
+   `ConflictError("later_periods_settled: 之後已有入帳或略過的期數，請先還原")` *[call: such a period sits inside the
+   loan's range but never settles it; the owner reopens (還原) it first. Step 4's status filter stays as defence]*.
 4. Remaining principal series = for every `seq` from `loan_from_seq` to `times` (inclusive): the repayment line's
    amount for that period — the instance's `amount_override[line index]` when the instance exists and has one, else
    the template amount (periods beyond the generation horizon count too); only periods that will still settle the
@@ -139,6 +147,8 @@ status 201.
 - `loan_summary` (`schedule_read.py:100-112`): `remaining` and `repaid` become POSITIVE magnitudes for payables and
   receivables alike; the SPA consumers that showed the signed value (`entry-detail.ts:129`, `schedule-queue.ts:117`,
   `entry-detail-schedule.spec.ts:96`) switch to the magnitude with the kind's own wording (欠 / 待收) — same PR.
+  In the schedule list row, 欠 / 待收 apply only to loan-kind templates (from the line carrying `loan_entry_id`, else
+  the repayment / collection line's own kind); a template without such a line (card installment) keeps 「剩餘」.
 
 ### 4.2 Backend — `GET /accounts/debts` (READ)
 ```
@@ -161,6 +171,8 @@ currency; a currency without a rate is listed under `unconverted` (and not added
 - `accounts.html` totals line becomes two lines: `總資產 X · 總負債 Y（含借貸 Z 筆）` and `淨值 X−Y`; when
   `payables.unconverted` is non-empty append `· 另有 N 種幣別未換算`; when `debts` failed to load, render the old line
   unchanged (no 淨值).
+- As built, the unconverted note is its own `.unconverted-hint` line under the totals (「另有 N 種幣別未換算」), not
+  appended to the totals line.
 
 ### 4.4 SPA — 掛上貸款 in the schedule sheet
 - Condition: `detail.kind === 'installment' && detail.loan_entry_id === null && detail.status !== 'ended'` AND the
@@ -172,12 +184,14 @@ currency; a currency without a rate is listed under `unconverted` (and not added
   repayment), 起算日 (date, default today in the SPA — `LoanIn.entry_date` is required), 名稱 (default = definition name), 分類 (optional category select for kind
   `payable` if the picker is cheap to embed; otherwise omitted and the backend's default applies). 帳戶 is not asked:
   the request sends the repayment line's `account_id` (the backend requires it; the balance is neutralised by the
-  adjustment, §4.1 step 5). The form explains in one line: 「輸入到上一期為止還欠多少；若有逾期未補的期數先補記」.
+  adjustment, §4.1 step 5). The form explains in one line: 「輸入到上一期為止還欠多少；若有逾期未補的期數先補記。起算日＝掛帳日，不是當初借款日」.
+  起算日's `min` is the latest posted instance's `due_date` when the definition has posted instances (else no min).
 - 確定 → `AccountingService.attachScheduleLoan(id, input: ScheduleLoanInput): Observable<ScheduleDefinitionDetail>`
   (`POST …/schedules/definitions/{id}/loan`, through `bump()` so pages reload) → the sheet re-reads the definition,
   shows `已掛上貸款：剩餘 <formatMoney(detail.loan_remaining)>` in its header area, and the button disappears. Errors through the
   sheet's existing error line with codes: `definition_ended` 「排程已結束」, `loan_already_attached` 「已經有貸款了」,
-  `catch_up_first` 「先補記逾期的期數」, `nothing_pending` 「沒有待入帳的期數」 and the 422 messages verbatim.
+  `catch_up_first` 「先補記逾期的期數」, `nothing_pending` 「沒有待入帳的期數」, `later_periods_settled`
+  「之後已有入帳或略過的期數，請先還原」 and the 422 messages verbatim.
 - The 借還款追蹤 tab needs no change: the bank counterparty appears there with its open amount once the payable exists.
 
 ### 4.5 Data step (owner, after deploy)
@@ -188,6 +202,8 @@ today). Nothing is migrated automatically *[call: the remaining principal is not
 - Attach twice → 409 `loan_already_attached`; the button is gone after the first success anyway.
 - Overdue pending periods → 409 `catch_up_first` 「先補記逾期的期數」; 補記 works because an unlinked repayment line posts
   as a plain expense (§4.0).
+- A period after the boundary already posted early or skipped → 409 `later_periods_settled`
+  「之後已有入帳或略過的期數，請先還原」; the owner reopens it, then attaches.
 - Reposting / reopening a period before `loan_from_seq` → plain expense again, the loan untouched (§4.0); a period at
   or after the boundary settles the loan as usual.
 - Editing the definition later (`update_definition`) deletes and regenerates future pending instances and keeps only
