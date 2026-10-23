@@ -17,6 +17,7 @@ import {
   importCounts,
   importErrorDetail,
   importErrorText,
+  rowErrorText,
   overrideMeta,
   previewRow,
   recalcBanner,
@@ -408,16 +409,27 @@ describe('extractImportErrors / importErrorDetail', () => {
     expect(importErrorDetail(err)).toBe('第 4 列：bad date');
   });
 
-  it('reads validation detail arrays (msg, loc tail) and never yields NaN', () => {
-    const err = { error: { detail: [{ loc: ['body', 7], msg: 'required' }, { loc: ['body', 'file'], msg: 'missing' }] } };
-    expect(extractImportErrors(err)).toEqual([{ row_index: 7, reason: 'required' }, { row_index: 0, reason: 'missing' }]);
+  it('a pydantic 422 detail array is not rows: no row errors, its msgs are the reason without a row prefix', () => {
+    const err = { status: 422, error: { detail: [{ loc: ['body', 7], msg: 'Field required' }, { loc: ['body', 'file'], msg: 'missing' }] } };
+    expect(extractImportErrors(err)).toEqual([]);
+    expect(importErrorDetail(err)).toBe('Field required；missing');
   });
 
-  it('falls back to the string detail, message, then 未知錯誤', () => {
+  it('a whole-batch error (row_index 0 / null) renders the reason alone; NaN never leaks', () => {
+    const err = { status: 422, error: { errors: [{ row_index: 0, reason: 'IntegrityError' }, { row_index: null, message: 'x' }, { row_index: 'n', reason: 'y' }] } };
+    expect(extractImportErrors(err)).toEqual([{ row_index: 0, reason: 'IntegrityError' }, { row_index: 0, reason: 'x' }, { row_index: 0, reason: 'y' }]);
+    expect(importErrorDetail(err)).toBe('IntegrityError；x；y');
+    expect(rowErrorText({ row_index: 5, reason: 'bad' })).toBe('第 5 列：bad');
+    expect(rowErrorText({ row_index: 0, reason: 'bad' })).toBe('bad');
+  });
+
+  it('falls back to the body message, string detail, the request message, then 未知錯誤', () => {
     expect(extractImportErrors({ error: { detail: 'boom' } })).toEqual([]);
     expect(importErrorDetail({ error: { detail: 'boom' } })).toBe('boom');
     expect(importErrorDetail({ message: 'Http failure' })).toBe('Http failure');
     expect(importErrorDetail({ error: { code: 'x', message: 'm' } })).toBe('m');
+    expect(importErrorDetail({ message: 'Http failure', error: { code: 409, message: 'recalc in progress', trace_id: null, detail: 'd' } }))
+      .toBe('recalc in progress');
     expect(importErrorDetail(null)).toBe('未知錯誤');
   });
 });
@@ -501,6 +513,11 @@ describe('fixLines', () => {
     expect(fixLines(brokerResult({ errors: [{ row_index: 3, reason: 'missing FX rate' }] }), [])).toEqual([{ row_index: 3, reason: 'missing FX rate' }]);
     expect(fixLines(null, [])).toEqual([]);
   });
+
+  it('a whole-batch 200-body error (Cathay IntegrityError, row_index 0 or null) keeps row_index 0', () => {
+    const r = importResult({ errors: [{ row_index: 0, message: 'IntegrityError: duplicate key' }, { row_index: null as unknown as number, message: 'ValueError' }] });
+    expect(fixLines(r, [])).toEqual([{ row_index: 0, reason: 'IntegrityError: duplicate key' }, { row_index: 0, reason: 'ValueError' }]);
+  });
 });
 
 describe('overrideMeta', () => {
@@ -514,10 +531,17 @@ describe('importErrorText', () => {
   it('returns the string detail only when the body has no row errors', () => {
     expect(importErrorText({ status: 400, error: { detail: 'CSV 編碼不是 UTF-8' } })).toBe('CSV 編碼不是 UTF-8');
     expect(importErrorText({ status: 422, error: { errors: [{ row_index: 3, reason: 'bad' }], detail: 'x' } })).toBeNull();
-    expect(importErrorText({ status: 422, error: { detail: [{ loc: ['body', 2], msg: 'bad' }] } })).toBeNull();
+    expect(importErrorText({ status: 422, error: { detail: [{ loc: ['body', 2], msg: 'bad' }] } })).toBe('bad');
     expect(importErrorText({ status: 500, error: { detail: '  ' } })).toBeNull();
     expect(importErrorText({ status: 0, message: 'offline' })).toBeNull();
     expect(importErrorText(null)).toBeNull();
+  });
+
+  it('reads the shared {code, message, trace_id} body: message first, then detail', () => {
+    expect(importErrorText({ status: 400, error: { code: 400, message: 'missing column trade_date', trace_id: null } })).toBe('missing column trade_date');
+    expect(importErrorText({ status: 400, error: { code: 400, message: 'm', detail: 'd', trace_id: 't' } })).toBe('m');
+    expect(importErrorText({ status: 400, error: { code: 400, message: '', detail: 'd' } })).toBe('d');
+    expect(importErrorText({ status: 422, error: { code: 422, message: 'm', errors: [{ row_index: 3, reason: 'bad' }] } })).toBeNull();
   });
 });
 

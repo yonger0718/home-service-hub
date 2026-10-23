@@ -160,7 +160,11 @@
         <app-bento class="fix-card" title="需要修正的列">
           <div class="fix-list" role="alert">
             @for (error of fixLines(); track $index) {
-              <div class="fix-line"><b>第 {{ error.row_index }} 列</b> · <span>{{ error.reason }}</span> · <small>此列會被略過</small></div>
+              @if (error.row_index > 0) {
+                <div class="fix-line"><b>第 {{ error.row_index }} 列</b> · <span>{{ error.reason }}</span> · <small>此列會被略過</small></div>
+              } @else {
+                <div class="fix-line"><span>{{ error.reason }}</span></div>
+              }
             }
             @if (uploadDetail(); as detail) {
               <div class="fix-line"><span>{{ detail }}</span></div>
@@ -201,7 +205,7 @@
       <footer class="imp-footer">
         <app-btn variant="ghost" [disabled]="busy()" (click)="onClear()">取消</app-btn>
         <app-btn variant="secondary" [disabled]="!file() || busy()" (click)="preview()">重新預覽</app-btn>
-        <app-btn icon="pi-check" [disabled]="!file() || !activeResult()" [loading]="busy()" (click)="commit()">
+        <app-btn icon="pi-check" [disabled]="!file() || !activeResult() || committed()" [loading]="busy()" (click)="commit()">
           確認匯入 {{ confirmN() }} 筆
         </app-btn>
       </footer>

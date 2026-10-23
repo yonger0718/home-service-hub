@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, ParamMap, Router, convertToParamMap, provideRouter } from '@angular/router';
-import { Confirmation, ConfirmationService } from 'primeng/api';
+import { Confirmation, ConfirmationService, MessageService } from 'primeng/api';
 import { BehaviorSubject, Observable, of, Subject, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ImportHistoryService } from '../../../services/import-history.service';
@@ -216,6 +216,31 @@ describe('Portfolio import controls', () => {
       const side = el(fixture).querySelector('aside[aria-label="匯入後會發生什麼"]')!;
       expect(card.compareDocumentPosition(side) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       fixture.destroy();
+    });
+
+    it('a commit landing after destroy records history but never starts polling', () => {
+      vi.useFakeTimers();
+      const commit$ = new Subject<ImportResult>();
+      const fixture = setup();
+      fixture.componentInstance.onSelect({ files: [new File(['x'], 'late.csv')] });
+      service.uploadCsv.mockReturnValue(commit$);
+      fixture.componentInstance.commit();
+      fixture.destroy();
+      service.getRecalcStatus.mockClear();
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
+      commit$.next({ ...preview, dry_run: false, recalc_scheduled: true }); commit$.complete();
+      vi.advanceTimersByTime(60_000);
+      expect(service.getRecalcStatus).not.toHaveBeenCalled();
+      expect(TestBed.inject(ImportHistoryService).attempts()[0]?.file).toBe('late.csv');
+    });
+
+    it('a failed 重算資料 toast reads the shared body message', () => {
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed', steps: [{ name: 'dividends', status: 'failed', error: 'x' }] }));
+      service.triggerRecalc.mockReturnValue(throwError(() => ({ status: 409, message: 'Http failure', error: { code: 409, message: 'recalc in progress', trace_id: null } })));
+      const fixture = setup();
+      const add = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
+      fixture.componentInstance.retryRecalc();
+      expect(add).toHaveBeenCalledWith(expect.objectContaining({ summary: '重算觸發失敗', detail: 'recalc in progress' }));
     });
 
     it('重算資料 is enabled once the recalc settles and triggers one recalc', () => {
@@ -623,6 +648,72 @@ describe('Portfolio import controls', () => {
       fixture.detectChanges();
       expect(norm(card(fixture, 'fix-card')?.textContent)).toContain('CSV 編碼不是 UTF-8');
       expect(fixture.componentInstance.file()).not.toBeNull();
+    });
+
+    it('a shared {code, message, trace_id} body from 預覽 is shown under 需要修正的列 without a row prefix; file and chip stay', () => {
+      service.uploadCsv.mockReturnValue(throwError(() => ({ status: 400, error: { code: 400, message: 'missing column trade_date', trace_id: null } })));
+      const fixture = setup();
+      const file = new File(['x'], 'a.csv');
+      fixture.componentInstance.onSelect({ files: [file] });
+      fixture.detectChanges();
+      expect(Array.from(card(fixture, 'fix-card')!.querySelectorAll('.fix-line')).map(l => norm(l.textContent)))
+        .toEqual(['missing column trade_date']);
+      expect(fixture.componentInstance.file()).toBe(file);
+      expect(el(fixture).querySelector('app-file-chip')).not.toBeNull();
+    });
+
+    it('a pydantic 422 detail array is one reason line, never 第 0 列 rows', () => {
+      service.uploadCsv.mockReturnValue(throwError(() => ({ status: 422, error: { detail: [{ loc: ['body', 'file'], msg: 'Field required', type: 'missing' }] } })));
+      const fixture = setup();
+      fixture.componentInstance.onSelect({ files: [new File(['x'], 'a.csv')] });
+      fixture.detectChanges();
+      expect(fixture.componentInstance.uploadErrors()).toEqual([]);
+      expect(Array.from(card(fixture, 'fix-card')!.querySelectorAll('.fix-line')).map(l => norm(l.textContent)))
+        .toEqual(['Field required']);
+    });
+
+    it('a whole-batch Cathay commit error (row_index 0) renders the reason alone', () => {
+      const fixture = withFile(genericPreview);
+      service.uploadCsv.mockReturnValue(of({ ...genericPreview, dry_run: false, created: 0, errors: [{ row_index: 0, message: 'IntegrityError: duplicate key' }] }));
+      commitButton(fixture).click();
+      fixture.detectChanges();
+      expect(Array.from(card(fixture, 'fix-card')!.querySelectorAll('.fix-line')).map(l => norm(l.textContent)))
+        .toEqual(['IntegrityError: duplicate key']);
+    });
+
+    it('確認匯入 is disabled right after a commit that keeps the file; 重新預覽 returns to step 2 and re-arms it with the new N', () => {
+      const rows = (a: ImportRow['status'], b: ImportRow['status']) => [csvRow(2, { name: 'A', type: 'BUY' }, a), csvRow(3, { name: 'B', type: 'BUY' }, b)];
+      const fixture = withFile({ ...preview, rows: rows('new', 'new') });
+      expect(norm(commitButton(fixture).textContent)).toBe('確認匯入 2 筆');
+      service.uploadCsv.mockReturnValue(of({
+        ...preview, dry_run: false, created: 1, errors: [{ row_index: 3, message: 'bad' }], rows: rows('new', 'error'),
+      }));
+      commitButton(fixture).click();
+      fixture.detectChanges();
+      const component = fixture.componentInstance;
+      expect(component.file()).not.toBeNull();
+      expect(component.committed()).toBe(true);
+      expect(activeStep(fixture)).toContain('匯入並重算');
+      expect(commitButton(fixture).disabled).toBe(true);
+      service.uploadCsv.mockReturnValue(of({ ...preview, rows: rows('duplicate', 'new') }));
+      button(fixture, '重新預覽')!.click();
+      fixture.detectChanges();
+      expect(component.committed()).toBe(false);
+      expect(component.step()).toBe(2);
+      expect(activeStep(fixture)).toContain('預覽與確認');
+      expect(el(fixture).querySelectorAll('ol[aria-label="匯入步驟"] li.done').length).toBe(1);
+      expect(commitButton(fixture).disabled).toBe(false);
+      expect(norm(commitButton(fixture).textContent)).toBe('確認匯入 1 筆');
+    });
+
+    it('the commit toast says 更新 {rehashed} 筆', () => {
+      const fixture = withFile(genericPreview);
+      const add = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
+      service.uploadCsv.mockReturnValue(of({ ...genericPreview, dry_run: false, created: 1, errors: [], rehashed: 2 }));
+      commitButton(fixture).click();
+      const detail = String(add.mock.calls.find(([m]) => m.summary === '匯入完成')?.[0].detail);
+      expect(detail).toContain('更新 2 筆');
+      expect(detail).not.toContain('重算指紋');
     });
 
     it('確認股票代號 renders one block per name with meta, 驗證代號 and the confirmation checkbox', async () => {

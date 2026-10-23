@@ -120,7 +120,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   readonly uploadErrors = signal<ImportRowError[]>([]);
   /** True while the commit request is in flight. */
   readonly committing = signal(false);
-  /** Set on a commit response; cleared by 取消 or a new file. */
+  /** Set on a commit response; cleared by 取消, a new file or the next 重新預覽 (確認匯入 stays disabled until then). */
   readonly committed = signal(false);
   readonly step = computed(() => stepFor(!!this.result() || !!this.brokerResult(), this.committing(), this.committed()));
   readonly activeResult = computed(() => (this.type() === 'broker' ? this.brokerResult() : this.result()));
@@ -174,6 +174,8 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
 
   private readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
   private pollHandle: ReturnType<typeof setTimeout> | null = null;
+  /** Set in ngOnDestroy: a late response (e.g. a commit landing after navigation) must not start polling. */
+  private destroyed = false;
   private statusRequestInFlight = false;
   private upload$: Subscription | null = null;
   /** A ?type= change arrived while a commit was in flight and was not applied. */
@@ -200,6 +202,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.destroyed = true;
     this.stopPolling();
   }
 
@@ -367,7 +370,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
         const next = new Set(this.verifyingNames());
         next.delete(name);
         this.verifyingNames.set(next);
-        const detail = err?.error?.detail || err?.message || '未知錯誤';
+        const detail = importErrorDetail(err);
         this.messageService.add({ severity: 'error', summary: '驗證失敗', detail, life: 5000 });
       },
     });
@@ -472,7 +475,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
         this.startPolling();
       },
       error: err => {
-        const detail = err?.error?.detail || err?.message || '未知錯誤';
+        const detail = importErrorDetail(err);
         this.messageService.add({
           severity: 'error', summary: '重算觸發失敗', detail, life: 6000,
         });
@@ -490,7 +493,9 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     this.busy.set(true);
     this.uploadErrors.set([]);
     this.uploadDetail.set(null);
-    if (!dryRun) this.committing.set(true);
+    // 重新預覽 after a commit returns to step 2 and re-arms 確認匯入 with the new count.
+    if (dryRun) this.committed.set(false);
+    else this.committing.set(true);
     // Every commit outcome lands in the device-local history (Decision 8); dry-runs do not.
     const record = (res: ImportResult | BrokerCsvImportResult | null, err: unknown) => {
       if (!dryRun) this.history.record(classifyCommit(res, err, file.name, type, new Date()));
@@ -585,7 +590,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
       `錯誤 ${result.errors.length} 筆`,
     ];
     if (result.rehashed && result.rehashed > 0) {
-      parts.push(`重算指紋 ${result.rehashed} 筆`);
+      parts.push(`更新 ${result.rehashed} 筆`);
     }
     if (result.skipped_unresolved && result.skipped_unresolved > 0) {
       parts.push(`未識別股名 ${result.skipped_unresolved} 筆（請於下方填代號）`);
@@ -612,11 +617,13 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   }
 
   private startPolling(): void {
+    if (this.destroyed) return;
     this.stopPolling();
     this.fetchRecalcStatus(true);
   }
 
   private scheduleNextPoll(): void {
+    if (this.destroyed) return;
     this.stopPolling();
     this.pollHandle = setTimeout(() => this.fetchRecalcStatus(false), POLL_INTERVAL_MS);
   }

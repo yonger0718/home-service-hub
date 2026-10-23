@@ -241,39 +241,57 @@ export function classifyCommit(
 }
 
 export interface ImportRowError {
+  /** 0 = not tied to a row (a whole-batch error): the reason renders alone. */
   row_index: number;
   reason: string;
 }
 
 function normalizeRowError(error: unknown): ImportRowError {
-  const e = error as { row_index?: unknown; loc?: unknown; reason?: unknown; message?: unknown; msg?: unknown } | null;
-  const loc = Array.isArray(e?.loc) ? e.loc[e.loc.length - 1] : undefined;
-  const index = Number(e?.row_index ?? loc ?? 0);
+  const e = error as { row_index?: unknown; reason?: unknown; message?: unknown } | null;
+  const index = Number(e?.row_index ?? 0);
   return {
-    row_index: Number.isFinite(index) ? index : 0,
-    reason: String(e?.reason ?? e?.message ?? e?.msg ?? '未知錯誤'),
+    row_index: Number.isFinite(index) && index > 0 ? index : 0,
+    reason: String(e?.reason ?? e?.message ?? '未知錯誤'),
   };
 }
 
-/** Row errors from an HTTP error body: `{errors:[{row_index, reason}]}` or a validation `detail` array; `[]` otherwise. */
-export function extractImportErrors(err: unknown): ImportRowError[] {
-  const body = (err as { error?: { errors?: unknown; detail?: unknown } | null } | null)?.error;
-  const list = Array.isArray(body?.errors) ? body.errors : Array.isArray(body?.detail) ? body.detail : [];
-  return list.map(normalizeRowError);
+/** `第 n 列：reason` for a row error, the reason alone for a whole-batch one (row_index 0/null). */
+export function rowErrorText(e: ImportRowError): string {
+  return e.row_index > 0 ? `第 ${e.row_index} 列：${e.reason}` : e.reason;
 }
 
-/** The string `detail` of an HTTP error body that carries no row errors (shown under 需要修正的列); null otherwise. */
+/** Row errors from an HTTP error body: `{errors:[{row_index, reason}]}`; `[]` otherwise (a 422 `detail` array is not rows). */
+export function extractImportErrors(err: unknown): ImportRowError[] {
+  const body = (err as { error?: { errors?: unknown } | null } | null)?.error;
+  return Array.isArray(body?.errors) ? body.errors.map(normalizeRowError) : [];
+}
+
+/**
+ * The human-readable reason of an HTTP error body: the shared `{code, message, trace_id}` body's `message`, then a
+ * string `detail`, then a pydantic 422 `detail` array's `msg`s; null otherwise.
+ */
+function bodyReason(err: unknown): string | null {
+  const body = (err as { error?: { message?: unknown; detail?: unknown } | null } | null)?.error;
+  const fromArray = Array.isArray(body?.detail)
+    ? body.detail
+        .map(d => nonEmptyString((d as { msg?: unknown } | null)?.msg))
+        .filter((m): m is string => m !== null)
+        .join('；')
+    : '';
+  return nonEmptyString(body?.message) ?? nonEmptyString(body?.detail) ?? nonEmptyString(fromArray);
+}
+
+/** The body's reason when it carries no row errors (shown under 需要修正的列 without a row prefix); null otherwise. */
 export function importErrorText(err: unknown): string | null {
   if (extractImportErrors(err).length > 0) return null;
-  return nonEmptyString((err as { error?: { detail?: unknown } | null } | null)?.error?.detail);
+  return bodyReason(err);
 }
 
-/** Toast detail for a failed upload: the row errors when present, else the body's string detail/message. */
+/** Toast detail for a failed request: the row errors when present, else the body's message → detail → generic. */
 export function importErrorDetail(err: unknown): string {
   const rows = extractImportErrors(err);
-  if (rows.length > 0) return rows.map(e => `第 ${e.row_index} 列：${e.reason}`).join('；');
-  const e = err as { message?: unknown; error?: { detail?: unknown; message?: unknown } | null } | null;
-  return nonEmptyString(e?.error?.detail) ?? nonEmptyString(e?.error?.message) ?? nonEmptyString(e?.message) ?? '未知錯誤';
+  if (rows.length > 0) return rows.map(rowErrorText).join('；');
+  return bodyReason(err) ?? nonEmptyString((err as { message?: unknown } | null)?.message) ?? '未知錯誤';
 }
 
 export function brokerCountSummary(r: BrokerCsvImportResult): string {
@@ -368,10 +386,7 @@ export function cashFlowRow(row: Record<string, unknown>, r: BrokerCsvImportResu
 /** 需要修正的列: row errors from an HTTP error body win, else the 200 body's `errors` (`message` or `reason`). */
 export function fixLines(r: AnyResult | null, uploadErrors: ImportRowError[]): ImportRowError[] {
   if (uploadErrors.length > 0) return uploadErrors;
-  return (r?.errors ?? []).map(e => {
-    const err = e as { row_index: number; message?: string; reason?: string };
-    return { row_index: err.row_index, reason: err.reason ?? err.message ?? '未知錯誤' };
-  });
+  return (r?.errors ?? []).map(normalizeRowError);
 }
 
 /** `{occurrences} 筆 · {dates joined by 、}`. */
