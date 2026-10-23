@@ -85,7 +85,8 @@ export const routes: Routes = [
   { path: 'portfolio/realized-pnl', loadComponent: () => import('./components/portfolio/realized-pnl/realized-pnl').then(m => m.PortfolioRealizedPnlComponent) },
   { matcher: portfolioAccountsMatcher, loadComponent: () => import('./components/portfolio/accounts/accounts-page').then(m => m.PortfolioAccountsPageComponent) },
   { path: 'portfolio/import', loadComponent: () => import('./components/portfolio/import/import').then(m => m.PortfolioImportComponent) },
-  { path: 'portfolio/import-broker', loadComponent: () => import('./components/portfolio/broker-import/broker-import').then(m => m.PortfolioBrokerImportComponent) },
+  // 券商對帳單 is a type of the unified import page; old links land on it.
+  { path: 'portfolio/import-broker', redirectTo: '/portfolio/import?type=broker', pathMatch: 'full' },
 
   // Accounting routes: phase 1 bookmarks land on the timeline; every page lives under the accounting layout.
   { path: 'accounting/dashboard', redirectTo: 'accounting' },

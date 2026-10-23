@@ -4,41 +4,68 @@
 <div class="import-page">
   <app-page-header></app-page-header>
 
-  <div class="imp-card">
-    <section class="imp-section">
-      <div class="imp-step-label"><span class="imp-step-num">1</span>上傳 CSV 檔案</div>
-      <small class="imp-hint">支援自動偵測：國泰證券（含「根據您篩選的結果」前置列）與通用欄位格式。</small>
-      <div class="import-options">
-        <label>匯入類型
-          <select aria-label="匯入類型" [ngModel]="kind()" [disabled]="busy()"
-            (ngModelChange)="onImportOptionsChange($event, hasHeader())">
-            @for (option of kindOptions; track option.value) {
-              <option [value]="option.value">{{ option.label }}</option>
-            }
-          </select>
-        </label>
-        <label><input type="checkbox" [ngModel]="hasHeader()" [disabled]="busy()"
-          (ngModelChange)="onImportOptionsChange(kind(), $event)" />首列為欄位名稱</label>
-      </div>
-      <small class="imp-hint">{{ headerHint }}</small>
-      @if (!file()) {
-        <label class="dropzone" (drop)="onDrop($event)" (dragover)="onDragOver($event)">
-          <i class="pi pi-cloud-upload" aria-hidden="true"></i>
-          <span>將 CSV 拖曳至此，或選擇檔案</span>
-          <small>支援 .csv · UTF-8 編碼</small>
-          <input type="file" accept=".csv,text/csv" (change)="onNativeFileChange($event)" />
-        </label>
-      } @else {
+  <ol class="steps" aria-label="匯入步驟">
+    @for (s of steps; track s.num) {
+      <li [class.current]="step() === s.num" [class.done]="step() > s.num" [attr.aria-current]="step() === s.num ? 'step' : null">
+        <span class="step-num" aria-hidden="true">{{ step() > s.num ? '✓' : s.num }}</span>
+        <span class="step-text">
+          <b>{{ s.label }}</b>
+          @if (s.sub) {
+            <small>{{ s.sub }}</small>
+          }
+        </span>
+      </li>
+    }
+  </ol>
+
+  <app-bento class="file-card" title="檔案">
+    <div class="import-options">
+      <fieldset class="type-field" [disabled]="busy()">
+        <app-seg-toggle ariaLabel="匯入類型" [options]="typeOptions" [value]="type()" (change)="onTypeSelect($event)"></app-seg-toggle>
+      </fieldset>
+      @if (type() !== 'broker') {
+        <label class="header-check"><input type="checkbox" [ngModel]="hasHeader()" [disabled]="busy()"
+          (ngModelChange)="onHeaderChange($event)" />首列為欄位名稱</label>
+      }
+    </div>
+    @if (type() === 'broker') {
+      <small class="imp-hint">券商對帳單（交易＋現金流）</small>
+    } @else {
+      <small class="imp-hint">通用欄位格式（日期、名稱、買賣、股數、價格） · 支援自動偵測：國泰證券</small>
+    }
+    <input #fileInput id="import-file-input" class="file-input" type="file" accept=".csv,text/csv"
+      aria-label="選擇 CSV 檔案" (change)="onNativeFileChange($event)" />
+    @if (!file()) {
+      <label class="dropzone" for="import-file-input" (drop)="onDrop($event)" (dragover)="onDragOver($event)">
+        <i class="pi pi-cloud-upload" aria-hidden="true"></i>
+        <span>將 CSV 拖曳至此，或選擇檔案</span>
+        <small>支援 .csv · UTF-8 編碼</small>
+      </label>
+    } @else {
+      <div class="file-row">
         <app-file-chip [filename]="file()!.name" [parsedCount]="parsedCount()" (remove)="onClear()"></app-file-chip>
-        @if (detectedFormatLabel(); as label) {
-          <div class="imp-detected">偵測格式：<strong>{{ label }}</strong></div>
+        <app-btn variant="secondary" [disabled]="busy()" (click)="replaceFile()">更換檔案</app-btn>
+      </div>
+      @if (activeResult()) {
+        <div class="imp-detected">{{ parsedCount() }} 列 · 偵測格式：<strong>{{ format().label }}</strong></div>
+        @if (format().warning; as warning) {
+          <div class="imp-warning">{{ warning }}</div>
         }
       }
-    </section>
+    }
+    @if (uploadErrors().length > 0) {
+      <div class="error-list" role="alert">
+        @for (error of uploadErrors(); track $index) {
+          <div>第 {{ error.row_index }} 列：{{ error.reason }}</div>
+        }
+      </div>
+    }
+  </app-bento>
 
+  <div class="imp-card">
     @if (result(); as r) {
       <section class="imp-section">
-        <div class="imp-step-label"><span class="imp-step-num">2</span>確認{{ kind() === 'dividends' ? '股利' : '交易' }}預覽</div>
+        <div class="imp-step-label"><span class="imp-step-num">2</span>確認{{ type() === 'dividends' ? '股利' : '交易' }}預覽</div>
         <div class="summary">
           <span class="badge">解析 {{ r.parsed }}</span>
           <span class="badge ok">{{ r.dry_run ? '可新增' : '已新增' }} {{ r.created }}</span>
@@ -55,7 +82,7 @@
                 <tr>
                   <th>日期</th>
                   <th>股票</th>
-                  @if (kind() === 'transactions') {
+                  @if (type() === 'transactions') {
                     <th>買賣</th><th class="num">股數</th><th class="num">價格</th>
                   } @else {
                     <th class="num">股利金額</th><th>入帳日</th>
@@ -70,7 +97,7 @@
                       {{ rowValue(row, ['name', '名稱', '股票']) || rowValue(row, ['symbol', '代號']) || '-' }}
                       <span>{{ rowValue(row, ['symbol', '代號']) || '' }}</span>
                     </td>
-                    @if (kind() === 'transactions') {
+                    @if (type() === 'transactions') {
                     <td><app-side-tag [variant]="rowSide(row)" [label]="rowSide(row) === 'buy' ? '買進' : '賣出'"></app-side-tag></td>
                     <td class="num">{{ rowValue(row, ['quantity', 'qty', '股數']) || '-' }}</td>
                     <td class="num">{{ rowValue(row, ['price', '價格']) || '-' }}</td>
@@ -95,7 +122,7 @@
       </section>
     }
 
-    @if (hasOverrideRows()) {
+    @if (type() !== 'broker' && hasOverrideRows()) {
       <section class="imp-section override-panel">
         <h3>確認股票代號</h3>
         @for (row of unresolvedRows(); track row.name) {
@@ -153,7 +180,7 @@
     <footer class="imp-footer">
       <app-btn variant="secondary" [disabled]="!file() || busy()" (click)="preview()">重新預覽</app-btn>
       <app-btn variant="ghost" icon="pi-times" [disabled]="busy()" (click)="onClear()">取消</app-btn>
-      <app-btn icon="pi-check" [disabled]="!file() || busy() || !result()" [loading]="busy()" (click)="commit()">
+      <app-btn icon="pi-check" [disabled]="!file() || busy() || !activeResult()" [loading]="busy()" (click)="commit()">
         確認匯入 {{ parsedCount() }} 筆
       </app-btn>
     </footer>

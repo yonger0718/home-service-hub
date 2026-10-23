@@ -4,10 +4,13 @@ import {
   ImportAttempt,
   ROW_RESULT_LABEL,
   attemptLine,
+  brokerCountSummary,
   classifyCommit,
   confirmCount,
   detectedFormat,
+  extractImportErrors,
   importCounts,
+  importErrorDetail,
   rowResult,
   stepFor,
   typeFromQuery,
@@ -327,5 +330,33 @@ describe('classifyCommit', () => {
     });
     const failed = brokerResult({ dry_run: false, counts: { created: 0, skipped: 0, rejected: 1 }, errors: [{ row_index: 2, reason: 'x' }] });
     expect(classifyCommit(failed, null, 'f.csv', 'broker', now).ok).toBe(false);
+  });
+});
+
+describe('extractImportErrors / importErrorDetail', () => {
+  it('reads {errors:[{row_index, reason}]} bodies', () => {
+    const err = { status: 422, error: { errors: [{ row_index: 4, reason: 'bad date' }] } };
+    expect(extractImportErrors(err)).toEqual([{ row_index: 4, reason: 'bad date' }]);
+    expect(importErrorDetail(err)).toBe('第 4 列：bad date');
+  });
+
+  it('reads validation detail arrays (msg, loc tail) and never yields NaN', () => {
+    const err = { error: { detail: [{ loc: ['body', 7], msg: 'required' }, { loc: ['body', 'file'], msg: 'missing' }] } };
+    expect(extractImportErrors(err)).toEqual([{ row_index: 7, reason: 'required' }, { row_index: 0, reason: 'missing' }]);
+  });
+
+  it('falls back to the string detail, message, then 未知錯誤', () => {
+    expect(extractImportErrors({ error: { detail: 'boom' } })).toEqual([]);
+    expect(importErrorDetail({ error: { detail: 'boom' } })).toBe('boom');
+    expect(importErrorDetail({ message: 'Http failure' })).toBe('Http failure');
+    expect(importErrorDetail(null)).toBe('未知錯誤');
+  });
+});
+
+describe('brokerCountSummary', () => {
+  it('labels dry-run and commit counts', () => {
+    const counts = { created: 3, skipped: 1, rejected: 2 };
+    expect(brokerCountSummary(brokerResult({ dry_run: true, counts }))).toBe('可新增 3；重複 1；錯誤 2');
+    expect(brokerCountSummary(brokerResult({ dry_run: false, counts }))).toBe('已新增 3；重複 1；錯誤 2');
   });
 });

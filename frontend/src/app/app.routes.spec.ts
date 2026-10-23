@@ -167,7 +167,8 @@ function stubViewport(width: number): void {
   });
 }
 
-const LIST_LEVEL: [string, string][] = [
+/** `[url, h1, url after redirects]`; the third entry defaults to the url. */
+const LIST_LEVEL: [string, string, string?][] = [
   ['/inventory', '庫存管理'],
   ['/shopping-list', '採買清單'],
   ['/portfolio', '投資概覽'],
@@ -177,7 +178,7 @@ const LIST_LEVEL: [string, string][] = [
   ['/portfolio/accounts', '現金帳戶'],
   ['/portfolio/accounts/5', '現金帳戶'],
   ['/portfolio/import', '匯入 CSV'],
-  ['/portfolio/import-broker', '匯入券商對帳單'],
+  ['/portfolio/import-broker', '匯入 CSV', '/portfolio/import?type=broker'],
   ['/accounting', '記帳記錄'],
   ['/accounting/accounts', '記帳帳戶'],
   ['/accounting/settings', '記帳設定'],
@@ -199,10 +200,10 @@ const DRILL_DOWN: [string, string][] = [
   ['/accounting/reminders', '提醒中心'],
 ];
 
-async function open(url: string): Promise<HTMLElement> {
+async function open(url: string, finalUrl = url): Promise<HTMLElement> {
   const harness = await RouterTestingHarness.create();
   await harness.navigateByUrl(url);
-  expect(TestBed.inject(Router).url).toBe(url);
+  expect(TestBed.inject(Router).url).toBe(finalUrl);
   await harness.fixture.whenStable();
   const root = harness.fixture.nativeElement as HTMLElement;
   await vi.waitFor(() => {
@@ -228,11 +229,11 @@ const headings = (root: HTMLElement) => Array.from(root.querySelectorAll('h1')).
 describe('phone route matrix (390 px)', () => {
   beforeEach(() => stubViewport(390));
 
-  for (const [url, title] of LIST_LEVEL) {
+  for (const [url, title, finalUrl] of LIST_LEVEL) {
     // 設定 is a pushed screen: a ‹ back button and no gear (it would link to itself).
     const gear = url === '/settings' ? 'a ‹ back button, no gear' : 'the gear';
     it(`${url} has one h1 "${title}", ${gear} and the sub-nav`, async () => {
-      const root = await open(url);
+      const root = await open(url, finalUrl);
       expect(headings(root)).toEqual([title]);
       if (url === '/settings') {
         expect(root.querySelector('a[aria-label="設定"]')).toBeNull();
@@ -260,9 +261,9 @@ describe('phone route matrix (390 px)', () => {
 describe('wide route matrix (1440 px)', () => {
   beforeEach(() => stubViewport(1440));
 
-  for (const [url, title] of LIST_LEVEL) {
+  for (const [url, title, finalUrl] of LIST_LEVEL) {
     it(`${url} shows the h1 "${title}" without gear or sub-nav`, async () => {
-      const root = await open(url);
+      const root = await open(url, finalUrl);
       expect(headings(root)).toContain(title);
       expect(root.querySelector('a[aria-label="設定"]')).toBeNull();
       expect(root.querySelector('button.page-back')).toBeNull();
@@ -278,6 +279,14 @@ describe('wide route matrix (1440 px)', () => {
       expect(root.querySelector('app-sub-nav')).toBeNull();
     });
   }
+});
+
+describe('portfolio import routes', () => {
+  it('/portfolio/import-broker redirects to the unified page with ?type=broker', () => {
+    expect(routes.find(r => r.path === 'portfolio/import-broker')).toEqual({
+      path: 'portfolio/import-broker', redirectTo: '/portfolio/import?type=broker', pathMatch: 'full',
+    });
+  });
 });
 
 describe('landing route', () => {

@@ -1,7 +1,9 @@
-import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, OnDestroy, OnInit, computed, inject, signal, viewChild } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { finalize } from 'rxjs';
+import { ActivatedRoute, Router } from '@angular/router';
+import { Subscription, finalize } from 'rxjs';
 
 import { ButtonModule } from 'primeng/button';
 import { CardModule } from 'primeng/card';
@@ -15,18 +17,25 @@ import { TableModule } from 'primeng/table';
 import { ToastModule } from 'primeng/toast';
 import { TooltipModule } from 'primeng/tooltip';
 
-import { ImportKind, ImportResult, OverrideStatus, RecalcStatus, UnresolvedName } from '../../../models/portfolio.model';
+import { BrokerCsvImportResult, ImportResult, OverrideStatus, RecalcStatus, UnresolvedName } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { BentoComponent } from '../../ui/bento/bento';
 import { BtnComponent } from '../../ui/btn/btn';
 import { FileChipComponent } from '../../ui/file-chip/file-chip';
+import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { SideTagComponent } from '../../ui/side-tag/side-tag';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
-
-interface ImportOption {
-  label: string;
-  value: ImportKind;
-  hint: string;
-}
+import {
+  ImportRowError,
+  ImportType,
+  brokerCountSummary,
+  detectedFormat,
+  extractImportErrors,
+  importCounts,
+  importErrorDetail,
+  stepFor,
+  typeFromQuery,
+} from './import-math';
 
 const POLL_INTERVAL_MS = 5_000;
 
@@ -47,8 +56,10 @@ const POLL_INTERVAL_MS = 5_000;
     TableModule,
     ToastModule,
     TooltipModule,
+    BentoComponent,
     BtnComponent,
     FileChipComponent,
+    SegToggleComponent,
     SideTagComponent,
   ],
   providers: [ConfirmationService, MessageService],
@@ -60,26 +71,37 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   private portfolioService = inject(PortfolioService);
   private messageService = inject(MessageService);
   private confirmationService = inject(ConfirmationService);
+  private route = inject(ActivatedRoute);
+  private router = inject(Router);
 
-  readonly kindOptions: ImportOption[] = [
-    {
-      label: '交易',
-      value: 'transactions',
-      hint:
-        '代號(symbol), 類別(type), 股數(quantity), 價格(price), 交易日期(trade_date), 手續費(fee), 稅金(tax), 名稱(name) — 任一語言皆可；' +
-        '另可附加 order_id(委託書號/訂單編號/委託編號) 區分同日同價同量交易',
-    },
-    {
-      label: '股利',
-      value: 'dividends',
-      hint: '代號(symbol), 金額(amount), 除息日(ex_dividend_date), 入帳日(received_date) — 任一語言皆可',
-    },
+  readonly typeOptions: SegToggleOption[] = [
+    { value: 'transactions', label: '交易' },
+    { value: 'dividends', label: '股利' },
+    { value: 'broker', label: '券商對帳單' },
   ];
+  readonly steps = [
+    { num: 1, label: '選擇檔案', sub: '' },
+    { num: 2, label: '預覽與確認', sub: '' },
+    { num: 3, label: '匯入並重算', sub: '寫入後自動重算' },
+  ] as const;
 
-  readonly kind = signal<ImportKind>('transactions');
+  readonly type = signal<ImportType>('transactions');
   readonly file = signal<File | null>(null);
   readonly busy = signal<boolean>(false);
+  /** 交易 / 股利 response. */
   readonly result = signal<ImportResult | null>(null);
+  /** 券商對帳單 response. */
+  readonly brokerResult = signal<BrokerCsvImportResult | null>(null);
+  /** Row errors from an HTTP error body (the file stays selected). */
+  readonly uploadErrors = signal<ImportRowError[]>([]);
+  /** Set around the commit request; the commit flow lives in Task 3. */
+  readonly committing = signal(false);
+  /** Set on a commit response; cleared by 取消 or a new file. */
+  readonly committed = signal(false);
+  readonly step = computed(() => stepFor(!!this.result() || !!this.brokerResult(), this.committing(), this.committed()));
+  readonly activeResult = computed(() => (this.type() === 'broker' ? this.brokerResult() : this.result()));
+  readonly counts = computed(() => importCounts(this.type(), this.activeResult(), this.result()?.csv_format ?? null));
+  readonly format = computed(() => detectedFormat(this.type(), this.activeResult(), this.detectedFormatLabel()));
   readonly recalcStatus = signal<RecalcStatus>({ state: 'idle' });
   readonly hasHeader = signal<boolean>(true);
   readonly recalcSubmitting = signal(false);
@@ -91,8 +113,19 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   // "unresolved" → "has override" (otherwise the row would vanish and user couldn't fix a bad code).
   readonly unresolvedNameMeta = signal<Map<string, { occurrences: number; sample_dates: string[] }>>(new Map());
 
+  private readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
   private pollHandle: ReturnType<typeof setTimeout> | null = null;
   private statusRequestInFlight = false;
+  private upload$: Subscription | null = null;
+  private uploadIsDryRun = false;
+
+  constructor() {
+    // The instance is reused when the sidebar links to /portfolio/import without a query: follow ?type= for its whole life.
+    this.route.queryParamMap.pipe(takeUntilDestroyed()).subscribe(params => {
+      const next = typeFromQuery(params.get('type'));
+      if (next !== this.type()) this.applyType(next);
+    });
+  }
 
   detectedFormatLabel(): string | null {
     const fmt = this.result()?.csv_format;
@@ -110,16 +143,38 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     this.stopPolling();
   }
 
-  get headerHint(): string {
-    return this.kindOptions.find(option => option.value === this.kind())?.hint ?? '';
+  /** From the 匯入類型 toggle: switch, then mirror the choice into ?type=. */
+  onTypeSelect(value: string): void {
+    const next = typeFromQuery(value);
+    if (next === this.type() || !this.applyType(next)) return;
+    this.router.navigate([], { queryParams: { type: next }, replaceUrl: true });
   }
 
-  onImportOptionsChange(kind: ImportKind, hasHeader: boolean): void {
+  onHeaderChange(hasHeader: boolean): void {
     if (this.busy()) return;
+    this.reparse(() => this.hasHeader.set(hasHeader));
+  }
+
+  replaceFile(): void {
+    this.fileInput()?.nativeElement.click();
+  }
+
+  /** Clears result/overrides and re-previews the selected file with the new type; false while a commit is in flight. */
+  private applyType(next: ImportType): boolean {
+    if (this.busy()) {
+      if (!this.uploadIsDryRun) return false;
+      // A stale preview must not land in the new type's result.
+      this.upload$?.unsubscribe();
+      this.busy.set(false);
+    }
+    this.reparse(() => this.type.set(next));
+    return true;
+  }
+
+  private reparse(change: () => void): void {
     const file = this.file();
     this.onClear();
-    this.kind.set(kind);
-    this.hasHeader.set(hasHeader);
+    change();
     if (file) this.onSelect({ files: [file] });
   }
 
@@ -128,7 +183,6 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     this.onClear();
     const next = event.files?.[0] ?? null;
     this.file.set(next);
-    this.result.set(null);
     if (next) {
       this.preview();
     }
@@ -158,6 +212,11 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     if (this.busy()) return;
     this.file.set(null);
     this.result.set(null);
+    this.brokerResult.set(null);
+    this.uploadErrors.set([]);
+    this.committed.set(false);
+    const input = this.fileInput()?.nativeElement;
+    if (input) input.value = '';
     this.nameOverrides.set({});
     this.confirmedOverrides.set(new Set());
     this.verifyingNames.set(new Set());
@@ -356,72 +415,87 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
       this.messageService.add({ severity: 'warn', summary: '請先選擇 CSV', life: 3000 });
       return;
     }
+    const type = this.type();
     this.busy.set(true);
-    this.portfolioService.uploadCsv(
-      this.kind(),
-      file,
-      dryRun,
-      this.hasHeader(),
-      this.nameOverrides(),
-      Array.from(this.confirmedOverrides()),
-    ).subscribe({
-      next: result => {
-        this.result.set(result);
-        this.busy.set(false);
-        // Accumulate unresolved-name metadata so the override panel persists even after
-        // the user types an override (which removes the name from result.unresolved_names).
-        if (result.unresolved_names && result.unresolved_names.length > 0) {
-          const merged = new Map(this.unresolvedNameMeta());
-          for (const u of result.unresolved_names) {
-            const prior = merged.get(u.name);
-            const sampleDates = (prior?.sample_dates?.length ?? 0) >= (u.sample_dates?.length ?? 0)
-              ? prior!.sample_dates
-              : u.sample_dates;
-            merged.set(u.name, {
-              occurrences: Math.max(prior?.occurrences ?? 0, u.occurrences ?? 0),
-              sample_dates: sampleDates,
-            });
-          }
-          this.unresolvedNameMeta.set(merged);
-        }
-        const summary = dryRun ? '預覽完成' : '匯入完成';
-        const parts = [
-          `已解析 ${result.parsed} 筆`,
-          `${dryRun ? '可新增' : '已新增'} ${result.created} 筆`,
-          `重複略過 ${result.skipped_duplicates} 筆`,
-          `錯誤 ${result.errors.length} 筆`,
-        ];
-        if (result.rehashed && result.rehashed > 0) {
-          parts.push(`重算指紋 ${result.rehashed} 筆`);
-        }
-        if (result.skipped_unresolved && result.skipped_unresolved > 0) {
-          parts.push(`未識別股名 ${result.skipped_unresolved} 筆（請於下方填代號）`);
-        }
-        if (result.skipped_unverified && result.skipped_unverified > 0) {
-          parts.push(`代號未驗證 ${result.skipped_unverified} 筆（請於下方確認）`);
-        }
-        const detail = parts.join('；');
-        const severity =
-          result.errors.length > 0 ||
-          (result.skipped_unresolved ?? 0) > 0 ||
-          (result.skipped_unverified ?? 0) > 0
-            ? 'warn'
-            : 'success';
-        this.messageService.add({ severity, summary, detail, life: 5000 });
-        if (!dryRun && result.recalc_scheduled) {
-          this.messageService.add({
-            severity: 'info', summary: '資料重算執行中…',
-            detail: '稍後將自動更新淨值圖與股利紀錄', life: 4000,
-          });
-          this.startPolling();
-        }
-      },
-      error: err => {
-        this.busy.set(false);
-        const detail = err?.error?.detail || err?.error?.message || err?.message || '未知錯誤';
-        this.messageService.add({ severity: 'error', summary: '匯入失敗', detail, life: 6000 });
-      },
-    });
+    this.uploadErrors.set([]);
+    this.uploadIsDryRun = dryRun;
+    const error = (err: unknown) => this.onUploadError(err);
+    // 券商對帳單 detects its own header and never takes name overrides.
+    this.upload$ = type === 'broker'
+      ? this.portfolioService.uploadBrokerCsv(file, dryRun).subscribe({ next: r => this.onBrokerResult(r, dryRun), error })
+      : this.portfolioService.uploadCsv(
+        type,
+        file,
+        dryRun,
+        this.hasHeader(),
+        this.nameOverrides(),
+        Array.from(this.confirmedOverrides()),
+      ).subscribe({ next: r => this.onCsvResult(r, dryRun), error });
+  }
+
+  private onBrokerResult(result: BrokerCsvImportResult, dryRun: boolean): void {
+    this.brokerResult.set(result);
+    this.busy.set(false);
+    const severity = result.errors.length > 0 || result.counts.rejected > 0 ? 'warn' : 'success';
+    this.messageService.add({ severity, summary: dryRun ? '預覽完成' : '匯入完成', detail: brokerCountSummary(result), life: 5000 });
+  }
+
+  private onUploadError(err: unknown): void {
+    this.busy.set(false);
+    this.uploadErrors.set(extractImportErrors(err));
+    this.messageService.add({ severity: 'error', summary: '匯入失敗', detail: importErrorDetail(err), life: 6000 });
+  }
+
+  private onCsvResult(result: ImportResult, dryRun: boolean): void {
+    this.result.set(result);
+    this.busy.set(false);
+    // Accumulate unresolved-name metadata so the override panel persists even after
+    // the user types an override (which removes the name from result.unresolved_names).
+    if (result.unresolved_names && result.unresolved_names.length > 0) {
+      const merged = new Map(this.unresolvedNameMeta());
+      for (const u of result.unresolved_names) {
+        const prior = merged.get(u.name);
+        const sampleDates = (prior?.sample_dates?.length ?? 0) >= (u.sample_dates?.length ?? 0)
+          ? prior!.sample_dates
+          : u.sample_dates;
+        merged.set(u.name, {
+          occurrences: Math.max(prior?.occurrences ?? 0, u.occurrences ?? 0),
+          sample_dates: sampleDates,
+        });
+      }
+      this.unresolvedNameMeta.set(merged);
+    }
+    const summary = dryRun ? '預覽完成' : '匯入完成';
+    const parts = [
+      `已解析 ${result.parsed} 筆`,
+      `${dryRun ? '可新增' : '已新增'} ${result.created} 筆`,
+      `重複略過 ${result.skipped_duplicates} 筆`,
+      `錯誤 ${result.errors.length} 筆`,
+    ];
+    if (result.rehashed && result.rehashed > 0) {
+      parts.push(`重算指紋 ${result.rehashed} 筆`);
+    }
+    if (result.skipped_unresolved && result.skipped_unresolved > 0) {
+      parts.push(`未識別股名 ${result.skipped_unresolved} 筆（請於下方填代號）`);
+    }
+    if (result.skipped_unverified && result.skipped_unverified > 0) {
+      parts.push(`代號未驗證 ${result.skipped_unverified} 筆（請於下方確認）`);
+    }
+    const detail = parts.join('；');
+    const severity =
+      result.errors.length > 0 ||
+      (result.skipped_unresolved ?? 0) > 0 ||
+      (result.skipped_unverified ?? 0) > 0
+        ? 'warn'
+        : 'success';
+    this.messageService.add({ severity, summary, detail, life: 5000 });
+    if (!dryRun && result.recalc_scheduled) {
+      this.messageService.add({
+        severity: 'info', summary: '資料重算執行中…',
+        detail: '稍後將自動更新淨值圖與股利紀錄', life: 4000,
+      });
+      this.startPolling();
+    }
   }
 
   private startPolling(): void {
@@ -535,6 +609,6 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   }
 
   parsedCount(): number {
-    return this.result()?.parsed ?? 0;
+    return this.counts().parsed;
   }
 }

@@ -203,3 +203,37 @@ export function classifyCommit(
   const errors = res.errors?.length ?? 0;
   return { at, file, type, ok: created > 0 || errors === 0, created, errors, reason: null };
 }
+
+export interface ImportRowError {
+  row_index: number;
+  reason: string;
+}
+
+function normalizeRowError(error: unknown): ImportRowError {
+  const e = error as { row_index?: unknown; loc?: unknown; reason?: unknown; message?: unknown; msg?: unknown } | null;
+  const loc = Array.isArray(e?.loc) ? e.loc[e.loc.length - 1] : undefined;
+  const index = Number(e?.row_index ?? loc ?? 0);
+  return {
+    row_index: Number.isFinite(index) ? index : 0,
+    reason: String(e?.reason ?? e?.message ?? e?.msg ?? '未知錯誤'),
+  };
+}
+
+/** Row errors from an HTTP error body: `{errors:[{row_index, reason}]}` or a validation `detail` array; `[]` otherwise. */
+export function extractImportErrors(err: unknown): ImportRowError[] {
+  const body = (err as { error?: { errors?: unknown; detail?: unknown } | null } | null)?.error;
+  const list = Array.isArray(body?.errors) ? body.errors : Array.isArray(body?.detail) ? body.detail : [];
+  return list.map(normalizeRowError);
+}
+
+/** Toast detail for a failed upload: the row errors when present, else the body's string detail/message. */
+export function importErrorDetail(err: unknown): string {
+  const rows = extractImportErrors(err);
+  if (rows.length > 0) return rows.map(e => `第 ${e.row_index} 列：${e.reason}`).join('；');
+  const e = err as { message?: unknown; error?: { detail?: unknown; message?: unknown } | null } | null;
+  return nonEmptyString(e?.error?.detail) ?? nonEmptyString(e?.error?.message) ?? nonEmptyString(e?.message) ?? '未知錯誤';
+}
+
+export function brokerCountSummary(r: BrokerCsvImportResult): string {
+  return `${r.dry_run ? '可新增' : '已新增'} ${r.counts.created}；重複 ${r.counts.skipped}；錯誤 ${r.counts.rejected}`;
+}
