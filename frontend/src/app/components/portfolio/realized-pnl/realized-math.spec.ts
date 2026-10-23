@@ -3,13 +3,17 @@ import { describe, expect, it } from 'vitest';
 import { RealizedPnlEvent } from '../../../models/portfolio.model';
 import { REALIZED_FIXTURE, TODAY } from './realized-fixture.spec-data';
 import {
+  barExtents,
+  barViews,
   barsAriaText,
   barsYear,
   clampOffset,
   matchesMarket,
   monthlyBars,
   rangeLabel,
+  realizedCards,
   realizedTotals,
+  signedInteger,
 } from './realized-math';
 
 const row = (overrides: Partial<RealizedPnlEvent>): RealizedPnlEvent => ({ ...REALIZED_FIXTURE[0], ...overrides });
@@ -156,5 +160,56 @@ describe('clampOffset', () => {
 
   it('is 0 for an empty set', () => {
     expect(clampOffset(25, 0, 25)).toBe(0);
+  });
+});
+
+describe('signedInteger', () => {
+  it('signs whole TWD with + and U+2212, and never prints -0', () => {
+    expect(signedInteger(21046)).toBe('+21,046');
+    expect(signedInteger(-4897.4)).toBe('−4,897');
+    expect(signedInteger(-0.4)).toBe('0');
+  });
+});
+
+describe('realizedCards', () => {
+  const totals = realizedTotals(REALIZED_FIXTURE, TODAY);
+
+  it('fills the four cards from the totals and the headline', () => {
+    expect(realizedCards(totals, 21046, '2026 年', TODAY)).toEqual([
+      { label: '2026 年已實現', value: '+21,046', sign: 1, meta: '5 筆 · 4 筆獲利、1 筆虧損' },
+      { label: '本月（10 月）', value: '+13,498', sign: 1, meta: '1 筆' },
+      { label: '當沖', value: '+2,030', sign: 1, meta: '1 筆 · 交易稅減半' },
+      { label: '賣出成本費用', value: '$1,764', sign: 1, meta: '賣出手續費＋交易稅' },
+    ]);
+  });
+
+  it('shows no values while the set loads and — for an unknown headline', () => {
+    expect(realizedCards(null, 21046, '全部期間', TODAY).map(card => [card.label, card.value, card.sign])).toEqual([
+      ['全部期間已實現', '', 0],
+      ['本月（10 月）', '', 0],
+      ['當沖', '', 0],
+      ['賣出成本費用', '', 0],
+    ]);
+    expect(realizedCards(totals, null, '2026 年', TODAY)[0]).toEqual(expect.objectContaining({ value: '—', sign: 0 }));
+  });
+});
+
+describe('barViews / barExtents', () => {
+  const bars = monthlyBars(REALIZED_FIXTURE, 2026, TODAY);
+
+  it('labels every month and prints the signed total only for months with sells', () => {
+    const views = barViews(bars);
+    expect(views.map(view => view.label)).toEqual(['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月']);
+    expect(views[3]).toEqual(expect.objectContaining({ amount: '−4,897', sign: -1 }));
+    expect(parseFloat(views[3].height)).toBeCloseTo(36.28, 2);
+    expect(views[9]).toEqual(expect.objectContaining({ amount: '+13,498', sign: 1, height: '100%' }));
+    expect(views[0]).toEqual(expect.objectContaining({ amount: '', sign: 0, height: '0%' }));
+  });
+
+  it('spans the largest gain above and the largest loss below the zero line', () => {
+    const { pos, neg } = barExtents(bars);
+    expect(pos).toBe(1);
+    expect(neg).toBeCloseTo(4897 / 13498, 6);
+    expect(barExtents(monthlyBars([], 2026, TODAY))).toEqual({ pos: 0, neg: 0 });
   });
 });

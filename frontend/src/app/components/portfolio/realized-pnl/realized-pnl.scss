@@ -1,52 +1,226 @@
-.realized-summary-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
+/* Summary cards: the transactions page's KPI rules (transaction-list.scss .kpi-row/.label/.value/.meta). */
+.kpi-row {
+  display: grid;
+  gap: 1.25rem;
+  grid-auto-rows: minmax(140px, auto);
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  margin-bottom: 1.25rem;
 
-.realized-summary-card {
-  background: linear-gradient(145deg, var(--app-surface) 0%, var(--app-trend-positive-soft) 100%);
-  border: 1px solid var(--app-border);
-  border-left: 6px solid var(--app-trend-positive);
-  border-radius: 16px;
-  box-shadow: var(--app-card-shadow);
-  flex: 1 1 260px;
-  min-width: 0;
-  padding: 1.1rem 1.25rem;
+  app-bento {
+    display: grid;
+    height: 100%;
+  }
 
   .label {
     color: var(--app-text-muted);
-    font-size: 0.82rem;
+    font-size: 0.75rem;
     font-weight: 700;
-    margin-bottom: 0.45rem;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.5rem;
   }
 
   .value {
-    color: var(--app-trend-positive);
-    font-size: clamp(1.35rem, 2vw, 1.9rem);
+    color: var(--app-text);
+    font-size: 2rem;
+    font-variant-numeric: tabular-nums;
     font-weight: 800;
-    line-height: 1.15;
+    line-height: 1.1;
+    min-height: 1.1em;
+    overflow-wrap: anywhere;
+
+    &.up {
+      color: var(--app-trend-positive);
+    }
+
+    &.down {
+      color: var(--app-trend-negative);
+    }
   }
 
   .meta {
     color: var(--app-text-muted);
-    font-size: 0.85rem;
-    font-weight: 600;
-    margin-top: 0.45rem;
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    margin-top: 0.75rem;
   }
 
-  &.is-loss {
-    background: linear-gradient(145deg, var(--app-surface) 0%, var(--app-trend-negative-soft) 100%);
-    border-left-color: var(--app-trend-negative);
+  @media (max-width: 759.98px) {
+    gap: 0.75rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
 
     .value {
-      color: var(--app-trend-negative);
+      font-size: 1.35rem;
     }
   }
 }
 
-.day-trade-toggle {
+.summary-note {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+  margin: -0.5rem 0 1.25rem;
+}
+
+.bars-card,
+.filter-card {
+  display: block;
+  margin-bottom: 1.25rem;
+}
+
+.bars-caption {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+  margin: -0.75rem 0 0.5rem;
+}
+
+.bars-scroll {
+  overflow-x: auto;
+}
+
+/* `--pos` / `--neg`: the largest gain / loss ratio, so each half is as tall as its longest bar (`--len` at ratio 1). */
+.bars {
+  --len: 7.5rem;
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  padding-top: 1.25rem;
+
+  @media (max-width: 759.98px) {
+    min-width: 36rem;
+  }
+}
+
+.bar-col {
+  display: flex;
+  flex-direction: column;
+  text-align: center;
+}
+
+.half {
+  position: relative;
+
+  &.pos {
+    height: calc(var(--pos) * var(--len));
+  }
+
+  &.neg {
+    height: calc(var(--neg) * var(--len));
+    margin-bottom: 1.25rem;
+  }
+}
+
+.zero {
+  border-top: 1px solid var(--app-border);
+}
+
+/* The bar is a full-length track anchored at the zero line; its fill (`::before`) and amount sit at `--h` of it. */
+.bar {
+  color: var(--app-text-muted);
+  height: var(--len);
+  inset-inline: 0;
+  pointer-events: none;
+  position: absolute;
+
+  &.up {
+    color: var(--app-trend-positive);
+  }
+
+  &.down {
+    color: var(--app-trend-negative);
+  }
+
+  &::before {
+    background: currentColor;
+    border-radius: 4px;
+    content: "";
+    height: var(--h);
+    inset-inline: 22%;
+    position: absolute;
+  }
+
+  .pos & {
+    bottom: 0;
+
+    &::before {
+      bottom: 0;
+    }
+
+    .bar-amount {
+      bottom: calc(var(--h) + 0.15rem);
+    }
+  }
+
+  .neg & {
+    top: 0;
+
+    &::before {
+      top: 0;
+    }
+
+    .bar-amount {
+      top: calc(var(--h) + 0.15rem);
+    }
+  }
+}
+
+.bar-amount {
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  inset-inline: -0.25rem;
+  position: absolute;
+  white-space: nowrap;
+}
+
+.bar-label {
+  color: var(--app-text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  margin-top: 0.35rem;
+
+  .future & {
+    opacity: 0.45;
+  }
+}
+
+.search-wrap {
+  position: relative;
+
+  i {
+    color: var(--app-text-muted);
+    left: 1rem;
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+
+  input {
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 16px;
+    color: var(--app-text);
+    font: inherit;
+    font-weight: 500;
+    padding: 0.75rem 1rem 0.75rem 2.75rem;
+    width: 100%;
+
+    &:focus {
+      border-color: var(--app-primary);
+      box-shadow: 0 0 0 4px var(--app-focus-ring);
+      outline: none;
+    }
+  }
+}
+
+.filter-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.switch-field {
   align-items: center;
   color: var(--app-text);
   display: inline-flex;
@@ -54,6 +228,21 @@
   font-weight: 700;
   gap: 0.5rem;
   white-space: nowrap;
+}
+
+.clear-filters {
+  background: none;
+  border: 0;
+  color: var(--app-primary);
+  font: inherit;
+  font-weight: 700;
+  padding: 0.25rem 0.5rem;
+
+  &:focus-visible {
+    border-radius: 6px;
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+    outline: none;
+  }
 }
 
 .realized-row-shell {

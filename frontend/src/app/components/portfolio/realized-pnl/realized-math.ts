@@ -113,3 +113,64 @@ export function clampOffset(offset: number, total: number, limit: number): numbe
   if (offset < total) return offset;
   return Math.max(0, Math.floor((total - 1) / limit) * limit);
 }
+
+/** Whole TWD with its sign: `+21,046`, `−4,897` (U+2212), `0`. */
+export function signedInteger(value: number): string {
+  const whole = Math.round(value) || 0;
+  return `${whole > 0 ? '+' : whole < 0 ? '−' : ''}${groupedInteger(Math.abs(whole))}`;
+}
+
+/** One summary card; `sign` is the sign of the shown whole figure (0 → no trend colour). Empty `value` while loading. */
+export interface RealizedCard {
+  label: string;
+  value: string;
+  sign: number;
+  meta: string;
+}
+
+/**
+ * The four cards (Decision 2): range total (`headline`, the server total under 全部; `—` when unknown), this month,
+ * 當沖 and sell-side fees + tax. `totals` null while the set loads: no values, no footnotes.
+ */
+export function realizedCards(totals: RealizedTotals | null, headline: number | null, range: string, today: Date): RealizedCard[] {
+  const card = (label: string, value: number | null, meta: string, format = signedInteger): RealizedCard => {
+    if (!totals) return { label, value: '', sign: 0, meta: '' };
+    return value == null ? { label, value: '—', sign: 0, meta } : { label, value: format(value), sign: Math.sign(Math.round(value) || 0), meta };
+  };
+  const costs = (value: number) => `${Math.round(value) < 0 ? '−' : ''}$${groupedInteger(Math.abs(value))}`;
+  return [
+    card(`${range}已實現`, headline, totals ? `${totals.count} 筆 · ${totals.gains} 筆獲利、${totals.losses} 筆虧損` : ''),
+    card(`本月（${today.getMonth() + 1} 月）`, totals?.month ?? null, totals ? `${totals.monthCount} 筆` : ''),
+    card('當沖', totals?.dayTrade ?? null, totals ? `${totals.dayTradeCount} 筆 · 交易稅減半` : ''),
+    card('賣出成本費用', totals?.costs ?? null, '賣出手續費＋交易稅', costs),
+  ];
+}
+
+/** A month column as drawn: `height` = ratio × 100 as a CSS percentage; `amount` empty and no bar when the month has no sells. */
+export interface BarView extends MonthBar {
+  label: string;
+  amount: string;
+  sign: number;
+  height: string;
+}
+
+export function barViews(bars: readonly MonthBar[]): BarView[] {
+  return bars.map(bar => ({
+    ...bar,
+    label: `${bar.month}月`,
+    amount: bar.count ? signedInteger(bar.total) : '',
+    sign: Math.sign(Math.round(bar.total) || 0),
+    height: `${bar.ratio * 100}%`,
+  }));
+}
+
+/** The plot's two halves as a share of the bar length: the largest gain ratio above the zero line, the largest loss below. */
+export function barExtents(bars: readonly MonthBar[]): { pos: number; neg: number } {
+  let pos = 0;
+  let neg = 0;
+  for (const bar of bars) {
+    if (bar.total > 0) pos = Math.max(pos, bar.ratio);
+    else if (bar.total < 0) neg = Math.max(neg, bar.ratio);
+  }
+  return { pos, neg };
+}

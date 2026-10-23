@@ -1,43 +1,74 @@
 <p-toast></p-toast>
 
-<app-page-header></app-page-header>
+<app-page-header [subtitle]="headerSubtitle()"></app-page-header>
 
-<div class="realized-summary-row">
-  <div class="bento-item realized-summary-card" [class.is-loss]="Number(summary().filter_scope_total) < 0">
-    <div class="bento-content">
-      <div class="label">已實現損益 (篩選範圍)</div>
-      <div class="value">
-        @if (!allLoading()) {
-          {{ formatCurrency(summary().filter_scope_total) }}
+@if (!allFailed()) {
+  <div class="kpi-row">
+    @for (card of cards(); track card.label) {
+      <app-bento class="kpi-card">
+        <div class="label">{{ card.label }}</div>
+        <div class="value" [class.up]="card.sign > 0" [class.down]="card.sign < 0">{{ card.value }}</div>
+        <div class="meta">{{ card.meta }}</div>
+      </app-bento>
+    }
+  </div>
+  @if (allCapped()) {
+    <p class="summary-note">⋯ 僅載入前 10,000 筆；筆數與本月／當沖／費用為已載入部分</p>
+  }
+
+  <app-bento class="bars-card" [title]="'每月已實現 · ' + barsYear()">
+    <p class="bars-caption">柱上數字為當月合計</p>
+    <p class="visually-hidden">{{ barsAriaText() }}</p>
+    <div class="bars-scroll" aria-hidden="true">
+      <div class="bars" [style.--pos]="barExtents().pos" [style.--neg]="barExtents().neg">
+        @for (bar of bars(); track bar.month) {
+          <div class="bar-col" [class.future]="bar.future">
+            <div class="half pos">
+              @if (bar.count && bar.total >= 0) {
+                <span class="bar" [class.up]="bar.sign > 0" [style.--h]="bar.height" [attr.data-ratio]="bar.ratio">
+                  <span class="bar-amount">{{ bar.amount }}</span>
+                </span>
+              }
+            </div>
+            <div class="zero"></div>
+            <div class="half neg">
+              @if (bar.count && bar.total < 0) {
+                <span class="bar down" [style.--h]="bar.height" [attr.data-ratio]="bar.ratio">
+                  <span class="bar-amount">{{ bar.amount }}</span>
+                </span>
+              }
+            </div>
+            <span class="bar-label">{{ bar.label }}</span>
+          </div>
         }
       </div>
-      <div class="meta">{{ total() }} 筆交易</div>
     </div>
-  </div>
-  <div class="bento-item realized-summary-card" [class.is-loss]="Number(summary().ytd_total) < 0">
-    <div class="bento-content">
-      <div class="label">今年累計 (YTD)</div>
-      <div class="value">
-        @if (!allLoading()) {
-          {{ formatCurrency(summary().ytd_total) }}
-        }
-      </div>
-      <div class="meta">{{ ytdTradeCount() }} 筆交易</div>
-    </div>
-  </div>
-</div>
+  </app-bento>
+}
 
-<div class="hub-filter-bar">
+<app-bento class="filter-card" title="篩選">
   <div class="search-wrap">
-    <i class="pi pi-search"></i>
+    <i class="pi pi-search" aria-hidden="true"></i>
     <input
       type="text"
+      aria-label="搜尋代碼或名稱"
       [ngModel]="searchInput()"
       (ngModelChange)="onSearchInput($event)"
       placeholder="搜尋代碼或名稱（例如 2330 或 台積電）" />
   </div>
   <div class="filter-controls">
+    <app-seg-toggle
+      ariaLabel="市場"
+      [options]="marketOptions"
+      [value]="market()"
+      (change)="onMarketChange($any($event))"
+    ></app-seg-toggle>
+    <span class="switch-field">
+      <app-switch ariaLabel="僅當沖" [checked]="query().day_trade_only ?? false" (checkedChange)="onDayTradeOnlyChange($event)"></app-switch>
+      <span aria-hidden="true">僅當沖</span>
+    </span>
     <p-datepicker
+      ariaLabel="日期範圍"
       [(ngModel)]="dateRange"
       selectionMode="range"
       [readonlyInput]="true"
@@ -58,14 +89,16 @@
       (ngModelChange)="onYearPresetChange($event)"
       styleClass="year-preset-control">
     </p-selectButton>
-    <label class="day-trade-toggle">
-      <span>僅當沖</span>
-      <p-toggleSwitch
-        [ngModel]="query().day_trade_only ?? false"
-        (ngModelChange)="onDayTradeOnlyChange($event)">
-      </p-toggleSwitch>
-    </label>
+    @if (showBrokerFilter()) {
+      <app-seg-toggle
+        ariaLabel="券商篩選"
+        [options]="brokerFilterOptions()"
+        [value]="selectedBroker()"
+        (change)="selectBrokerFilter($event)"
+      ></app-seg-toggle>
+    }
     <p-select
+      ariaLabel="排序"
       [options]="sortOptions"
       optionLabel="label"
       optionValue="value"
@@ -74,21 +107,10 @@
       styleClass="hub-mini-select">
     </p-select>
     @if (hasActiveFilters()) {
-      <p-button icon="pi pi-filter-slash" severity="secondary" [text]="true" (onClick)="clearFilters()" pTooltip="清除篩選"></p-button>
+      <button type="button" class="clear-filters" (click)="clearFilters()">清除篩選</button>
     }
   </div>
-</div>
-
-@if (showBrokerFilter()) {
-  <div class="broker-filter-row">
-    <app-seg-toggle
-      ariaLabel="券商篩選"
-      [options]="brokerFilterOptions()"
-      [value]="selectedBroker()"
-      (change)="selectBrokerFilter($event)"
-    ></app-seg-toggle>
-  </div>
-}
+</app-bento>
 
 <div class="hub-result-meta">
   <span class="meta-count">{{ total() }} 筆</span>

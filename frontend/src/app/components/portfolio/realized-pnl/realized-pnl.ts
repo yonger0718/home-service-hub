@@ -1,7 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { ButtonModule } from 'primeng/button';
 import { DatePickerModule } from 'primeng/datepicker';
 import { InputTextModule } from 'primeng/inputtext';
 import { PaginatorModule, PaginatorState } from 'primeng/paginator';
@@ -9,19 +8,33 @@ import { ProgressSpinnerModule } from 'primeng/progressspinner';
 import { SelectButtonModule } from 'primeng/selectbutton';
 import { SelectModule } from 'primeng/select';
 import { ToastModule } from 'primeng/toast';
-import { ToggleSwitchModule } from 'primeng/toggleswitch';
 import { TooltipModule } from 'primeng/tooltip';
 import { MessageService } from 'primeng/api';
 import { Subscription, catchError, of } from 'rxjs';
 
 import { Broker, RealizedPnlEvent, RealizedPnlQuery, RealizedPnlSummary, brokerLabel } from '../../../models/portfolio.model';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { NativeAmountPipe } from '../../../pipes/native-amount.pipe';
 import { ListItemComponent } from '../../shared/list-item/list-item';
+import { BentoComponent } from '../../ui/bento/bento';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
+import { SwitchComponent } from '../../ui/switch/switch';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { allPages } from '../paging';
-import { MarketFilter, clampOffset, matchesMarket } from './realized-math';
+import {
+  MarketFilter,
+  barExtents,
+  barViews,
+  barsAriaText,
+  barsYear,
+  clampOffset,
+  matchesMarket,
+  monthlyBars,
+  rangeLabel,
+  realizedCards,
+  realizedTotals,
+} from './realized-math';
 
 const PAGE_SIZE_KEY = 'portfolio.realizedPnl.pageSize';
 const DEFAULT_PAGE_SIZE = 25;
@@ -40,7 +53,6 @@ const SORT_OPTIONS = [
     PageHeaderComponent,
     CommonModule,
     FormsModule,
-    ButtonModule,
     DatePickerModule,
     InputTextModule,
     PaginatorModule,
@@ -48,10 +60,11 @@ const SORT_OPTIONS = [
     SelectButtonModule,
     SelectModule,
     ToastModule,
-    ToggleSwitchModule,
     TooltipModule,
+    BentoComponent,
     ListItemComponent,
     SegToggleComponent,
+    SwitchComponent,
   ],
   providers: [MessageService],
   templateUrl: './realized-pnl.html',
@@ -61,10 +74,11 @@ const SORT_OPTIONS = [
 export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   private portfolioService = inject(PortfolioService);
   private messageService = inject(MessageService);
+  private layoutMode = inject(LayoutModeService);
   private nativeAmountPipe = new NativeAmountPipe();
-  private currentYear = new Date().getFullYear();
+  private readonly today = new Date();
+  private currentYear = this.today.getFullYear();
 
-  readonly Number = Number;
   readonly pageSizeStorageKey = PAGE_SIZE_KEY;
   readonly sortOptions = SORT_OPTIONS;
   readonly rowsPerPageOptions = [25, 50, 100];
@@ -106,6 +120,30 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   /** Page start of the client-paged list under 台股/美股 (the server page serves 全部). */
   readonly clientOffset = signal(0);
   readonly marketEvents = computed(() => this.allEvents()?.filter(e => matchesMarket(e, this.market())) ?? null);
+  readonly marketOptions: SegToggleOption[] = [
+    { label: '全部', value: 'ALL' },
+    { label: '台股', value: 'TW' },
+    { label: '美股', value: 'US' },
+  ];
+  /** The list page's summary belongs to the active filter (false from a reload until its page lands). */
+  private readonly summaryFresh = signal(false);
+
+  readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
+  readonly headerSubtitle = computed(() => `${rangeLabel(this.query())} · ${this.marketEvents()?.length ?? this.total()} 筆賣出`);
+  /** Decision 2: the range card is the server total under 全部 (it stays right when the set is capped), else Σ of the set. */
+  readonly cards = computed(() => {
+    const set = this.marketEvents();
+    const totals = set ? realizedTotals(set, this.today) : null;
+    const serverTotal = this.summaryFresh() ? Number(this.summary().filter_scope_total) : null;
+    const headline = this.market() === 'ALL' ? serverTotal : (totals?.total ?? null);
+    const cards = realizedCards(totals, headline, rangeLabel(this.query()), this.today);
+    return this.isPhone() ? cards.slice(0, 2) : cards;
+  });
+  readonly barsYear = computed(() => barsYear(this.query(), this.today));
+  private readonly monthBars = computed(() => monthlyBars(this.marketEvents() ?? [], this.barsYear(), this.today));
+  readonly bars = computed(() => barViews(this.monthBars()));
+  readonly barExtents = computed(() => barExtents(this.monthBars()));
+  readonly barsAriaText = computed(() => barsAriaText(this.monthBars(), this.barsYear()));
 
   readonly showForeignColumns = computed(() =>
     this.events().some(event => (event.market ?? 'TW') !== 'TW'),
@@ -176,6 +214,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
         this.ensureSelectedBroker();
         this.total.set(paged.total);
         this.summary.set(paged.summary);
+        this.summaryFresh.set(true);
         this.expandedKey.set(null);
         this.loading.set(false);
       },
@@ -279,6 +318,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   }
 
   clearFilters() {
+    this.market.set('ALL');
     this.searchInput.set('');
     this.dateRange = null;
     this.selectedYear.set(null);
@@ -294,7 +334,15 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
 
   hasActiveFilters(): boolean {
     const q = this.query();
-    return !!(q.symbol || q.date_from || q.date_to || q.year || q.day_trade_only || this.selectedBroker() !== 'ALL');
+    return !!(
+      q.symbol ||
+      q.date_from ||
+      q.date_to ||
+      q.year ||
+      q.day_trade_only ||
+      this.selectedBroker() !== 'ALL' ||
+      this.market() !== 'ALL'
+    );
   }
 
   selectBrokerFilter(value: string): void {
@@ -332,10 +380,6 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   symbolDisplay(event: RealizedPnlEvent): string {
     const stored = event.name && event.name !== event.symbol ? event.name : null;
     return stored || this.symbolNames()[event.symbol] || event.symbol;
-  }
-
-  ytdTradeCount(): number {
-    return this.summary().ytd_count ?? 0;
   }
 
   formatCurrency(value: string | number): string {
@@ -398,6 +442,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
 
   /** The filter-wide set and the list page; on every filter or sort change (a page or market change never reloads the set). */
   private reload() {
+    this.summaryFresh.set(false);
     this.loadAll();
     this.fetch();
   }

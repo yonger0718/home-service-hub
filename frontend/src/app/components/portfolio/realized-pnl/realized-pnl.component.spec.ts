@@ -5,8 +5,10 @@ import { Subject, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RealizedPnlEvent, RealizedPnlPaged, RealizedPnlQuery } from '../../../models/portfolio.model';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
-import { REALIZED_FIXTURE } from './realized-fixture.spec-data';
+import { REALIZED_FIXTURE, TODAY } from './realized-fixture.spec-data';
+import { barsAriaText, monthlyBars } from './realized-math';
 import { PortfolioRealizedPnlComponent } from './realized-pnl';
 
 describe('PortfolioRealizedPnlComponent', () => {
@@ -215,6 +217,9 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
   let portfolioService: Record<string, ReturnType<typeof vi.fn>>;
 
   beforeEach(() => {
+    // Only the clock is faked (today = 2026-10-22): the Subjects answer synchronously, the debounce keeps real timers.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(TODAY);
     localStorage.clear();
     listCalls = [];
     allCalls = [];
@@ -234,6 +239,8 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
   });
 
   afterEach(() => {
+    TestBed.inject(LayoutModeService).set(null);
+    vi.useRealTimers();
     vi.restoreAllMocks();
     localStorage.clear();
   });
@@ -462,8 +469,8 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     respond(listCalls[0], paged(REALIZED_FIXTURE.slice(0, 2), 5));
     fixture.detectChanges();
 
-    const values = () => Array.from(el(fixture).querySelectorAll('.realized-summary-card .value')).map(v => v.textContent?.trim());
-    expect(values()).toEqual(['', '']);
+    const values = () => Array.from(el(fixture).querySelectorAll('app-bento.kpi-card .value')).map(v => v.textContent?.trim());
+    expect(values()).toEqual(['', '', '', '']);
     expect(el(fixture).querySelector('.meta-loading')?.textContent).toContain('查詢中');
 
     respond(allCalls[0], paged(REALIZED_FIXTURE));
@@ -471,5 +478,214 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
 
     expect(values().every(value => !!value)).toBe(true);
     expect(el(fixture).querySelector('.meta-loading')).toBeNull();
+  });
+
+  /** The page under the 2026 year filter with the fixture: the list page holds the first two sells of 5. */
+  function create2026(): ComponentFixture<PortfolioRealizedPnlComponent> {
+    const fixture = create();
+    fixture.componentInstance.onYearPresetChange(2026);
+    settle(fixture);
+    return fixture;
+  }
+
+  function subtitle(fixture: ComponentFixture<PortfolioRealizedPnlComponent>): string | undefined {
+    return el(fixture).querySelector('app-page-header .page-subtitle')?.textContent?.trim();
+  }
+
+  function cards(fixture: ComponentFixture<PortfolioRealizedPnlComponent>) {
+    return Array.from(el(fixture).querySelectorAll('app-bento.kpi-card')).map(card => ({
+      label: card.querySelector('.label')?.textContent?.trim(),
+      value: card.querySelector('.value')?.textContent?.trim(),
+      up: card.querySelector('.value')?.classList.contains('up'),
+      down: card.querySelector('.value')?.classList.contains('down'),
+      meta: card.querySelector('.meta')?.textContent?.trim(),
+    }));
+  }
+
+  function barCols(fixture: ComponentFixture<PortfolioRealizedPnlComponent>): HTMLElement[] {
+    return Array.from(el(fixture).querySelectorAll<HTMLElement>('.bar-col'));
+  }
+
+  function clearButton(fixture: ComponentFixture<PortfolioRealizedPnlComponent>): HTMLButtonElement | null {
+    return Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('button.clear-filters')).find(b => b.textContent?.trim() === '清除篩選') ?? null;
+  }
+
+  it('shows the range and the server count in the header before the set lands, then the set count', () => {
+    const fixture = create();
+    fixture.componentInstance.onYearPresetChange(2026);
+    respond(listCalls.at(-1)!, paged(REALIZED_FIXTURE.slice(0, 2), 7));
+    fixture.detectChanges();
+    expect(subtitle(fixture)).toBe('2026 年 · 7 筆賣出');
+
+    respond(allCalls.at(-1)!, paged(REALIZED_FIXTURE));
+    fixture.detectChanges();
+    expect(subtitle(fixture)).toBe('2026 年 · 5 筆賣出');
+  });
+
+  it('renders the header without actions', () => {
+    const fixture = create2026();
+    const actions = el(fixture).querySelector('app-page-header .page-actions');
+    expect(actions).not.toBeNull();
+    expect(actions!.children).toHaveLength(0);
+    expect(actions!.textContent?.trim()).toBe('');
+  });
+
+  it('renders the four summary cards in order', () => {
+    const fixture = create2026();
+
+    expect(cards(fixture)).toEqual([
+      { label: '2026 年已實現', value: '+21,046', up: true, down: false, meta: '5 筆 · 4 筆獲利、1 筆虧損' },
+      { label: '本月（10 月）', value: '+13,498', up: true, down: false, meta: '1 筆' },
+      { label: '當沖', value: '+2,030', up: true, down: false, meta: '1 筆 · 交易稅減半' },
+      { label: '賣出成本費用', value: '$1,764', up: true, down: false, meta: '賣出手續費＋交易稅' },
+    ]);
+    expect(el(fixture).querySelector('.summary-note')).toBeNull();
+  });
+
+  it('colours a negative card with .down and a U+2212 minus', () => {
+    const fixture = create();
+    fixture.componentInstance.onYearPresetChange(2026);
+    respond(listCalls.at(-1)!, { ...paged([REALIZED_FIXTURE[3]]), summary: { filter_scope_total: '-4897', filter_scope_count: 1, ytd_total: '-4897', ytd_count: 1 } });
+    respond(allCalls.at(-1)!, paged([REALIZED_FIXTURE[3]]));
+    fixture.detectChanges();
+
+    expect(cards(fixture)[0]).toEqual(expect.objectContaining({ value: '−4,897', up: false, down: true, meta: '1 筆 · 0 筆獲利、1 筆虧損' }));
+  });
+
+  it('recomputes the cards, the header count and the bars from the 台股 set', () => {
+    const fixture = create2026();
+
+    fixture.componentInstance.onMarketChange('TW');
+    fixture.detectChanges();
+
+    expect(cards(fixture)[0]).toEqual(expect.objectContaining({ value: '+15,345', up: true, meta: '4 筆 · 3 筆獲利、1 筆虧損' }));
+    expect(subtitle(fixture)).toBe('2026 年 · 4 筆賣出');
+    expect(barCols(fixture)[5].querySelector('.bar')).toBeNull();
+    expect(barCols(fixture)[3].querySelector('.bar')).not.toBeNull();
+  });
+
+  it('hides the cards and the bars after a set failure and keeps the list', () => {
+    const fixture = create();
+    fixture.componentInstance.onYearPresetChange(2026);
+    respond(listCalls.at(-1)!, paged(REALIZED_FIXTURE.slice(0, 2), 5));
+    allCalls.at(-1)!.response.error(new Error('boom'));
+    fixture.detectChanges();
+
+    expect(el(fixture).querySelector('app-bento.kpi-card')).toBeNull();
+    expect(el(fixture).querySelector('.bar-col')).toBeNull();
+    expect(el(fixture).querySelector('.bars-card')).toBeNull();
+    expect(fixture.componentInstance.filteredEvents()).toEqual(REALIZED_FIXTURE.slice(0, 2));
+    expect(el(fixture).textContent).toContain('鴻海');
+    expect(subtitle(fixture)).toBe('2026 年 · 5 筆賣出');
+  });
+
+  it('notes the 10,000-row cap and keeps the server total as the headline', () => {
+    const fixture = create();
+    respond(listCalls[0], paged(REALIZED_FIXTURE.slice(0, 2), 10_001));
+    for (let page = 0; page < 50; page++) {
+      respond(allCalls[page], paged(Array.from({ length: 200 }, () => REALIZED_FIXTURE[0]), 10_001));
+    }
+    fixture.detectChanges();
+
+    expect(el(fixture).querySelector('.summary-note')?.textContent?.trim()).toBe('⋯ 僅載入前 10,000 筆；筆數與本月／當沖／費用為已載入部分');
+    expect(cards(fixture)[0].value).toBe('+21,046');
+  });
+
+  it('draws twelve monthly columns for the year', () => {
+    const fixture = create2026();
+    const card = el(fixture).querySelector('app-bento.bars-card');
+    expect(card?.querySelector('.card-title')?.textContent?.trim()).toBe('每月已實現 · 2026');
+    expect(card?.textContent).toContain('柱上數字為當月合計');
+
+    const cols = barCols(fixture);
+    expect(cols).toHaveLength(12);
+    const april = cols[3];
+    const bar = april.querySelector<HTMLElement>('.bar');
+    expect(bar?.classList.contains('down')).toBe(true);
+    expect(bar?.classList.contains('up')).toBe(false);
+    expect(Number(bar?.dataset['ratio'])).toBeCloseTo(4897 / 13498, 4);
+    expect(parseFloat(bar!.style.getPropertyValue('--h'))).toBeCloseTo(36.28, 1);
+    expect(april.querySelector('.bar-amount')?.textContent?.trim()).toBe('−4,897');
+    expect(april.querySelector('.bar-label')?.textContent?.trim()).toBe('4月');
+    expect(cols[9].querySelector('.bar')?.classList.contains('up')).toBe(true);
+    expect(cols[9].querySelector('.bar-amount')?.textContent?.trim()).toBe('+13,498');
+    expect(cols[0].querySelector('.bar')).toBeNull();
+    expect(cols.map((col, i) => (col.classList.contains('future') ? i + 1 : null)).filter(Boolean)).toEqual([11, 12]);
+
+    const hidden = card?.querySelector('.visually-hidden')?.textContent?.trim();
+    expect(hidden).toBe(barsAriaText(monthlyBars(REALIZED_FIXTURE, 2026, TODAY), 2026));
+  });
+
+  it('renders the filter card controls', () => {
+    const fixture = create2026();
+    fixture.componentInstance.brokerCatalog.set(['TW_CATHAY', 'FIRSTRADE']);
+    fixture.detectChanges();
+    const card = Array.from(el(fixture).querySelectorAll('app-bento')).find(b => b.querySelector('.card-title')?.textContent?.trim() === '篩選');
+    expect(card).toBeDefined();
+
+    expect(card!.querySelector('.search-wrap input[type="text"]')).not.toBeNull();
+    const market = card!.querySelector('[role="radiogroup"][aria-label="市場"]');
+    expect(Array.from(market?.querySelectorAll('button') ?? []).map(b => b.textContent?.trim())).toEqual(['全部', '台股', '美股']);
+    const dayTrade = card!.querySelector<HTMLButtonElement>('button[role="switch"][aria-label="僅當沖"]');
+    expect(dayTrade?.getAttribute('aria-checked')).toBe('false');
+    expect(card!.querySelector('p-datepicker')).not.toBeNull();
+    expect(card!.querySelector('[role="radiogroup"][aria-label="券商篩選"]')).not.toBeNull();
+    expect(el(fixture).querySelector('.hub-filter-bar')).toBeNull();
+    expect(el(fixture).querySelector('.realized-summary-row')).toBeNull();
+  });
+
+  it('wires the market toggle and the 僅當沖 switch', () => {
+    const fixture = create2026();
+    const component = fixture.componentInstance;
+
+    el(fixture).querySelector<HTMLButtonElement>('[aria-label="市場"] button[aria-label="美股"]')!.click();
+    expect(component.market()).toBe('US');
+
+    el(fixture).querySelector<HTMLButtonElement>('button[role="switch"][aria-label="僅當沖"]')!.click();
+    fixture.detectChanges();
+    expect(component.query().day_trade_only).toBe(true);
+    expect(el(fixture).querySelector('button[role="switch"][aria-label="僅當沖"]')?.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('offers 清除篩選 with only 僅當沖 on and resets it', () => {
+    const fixture = create();
+    settle(fixture);
+    expect(clearButton(fixture)).toBeNull();
+
+    fixture.componentInstance.onDayTradeOnlyChange(true);
+    settle(fixture);
+    expect(clearButton(fixture)).not.toBeNull();
+
+    clearButton(fixture)!.click();
+    settle(fixture);
+    expect(fixture.componentInstance.query().day_trade_only).toBeFalsy();
+    expect(clearButton(fixture)).toBeNull();
+  });
+
+  it('offers 清除篩選 with only 台股 selected and resets the market with a 全部 fetch', () => {
+    const fixture = create();
+    settle(fixture);
+    const component = fixture.componentInstance;
+
+    component.onMarketChange('TW');
+    fixture.detectChanges();
+    expect(clearButton(fixture)).not.toBeNull();
+    const lists = listCalls.length;
+    const sets = allCalls.length;
+
+    clearButton(fixture)!.click();
+    expect(component.market()).toBe('ALL');
+    expect(listCalls).toHaveLength(lists + 1);
+    expect(allCalls).toHaveLength(sets + 1);
+    settle(fixture);
+    expect(clearButton(fixture)).toBeNull();
+    expect(el(fixture).querySelector('[aria-label="市場"] button[aria-checked="true"]')?.textContent?.trim()).toBe('全部');
+  });
+
+  it('shows only the first two cards on a phone', () => {
+    TestBed.inject(LayoutModeService).set('phone');
+    const fixture = create2026();
+
+    expect(cards(fixture).map(card => card.label)).toEqual(['2026 年已實現', '本月（10 月）']);
   });
 });
