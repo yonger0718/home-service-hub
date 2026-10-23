@@ -10,6 +10,7 @@ from app.models import LedgerEntry, ScheduleDefinition, ScheduleInstance
 from app.schemas.schedules import LoanIn
 from app.services import entry_write_service, ledger_service, schedule_service
 from app.services import schedule_generation as generation
+from app.services import schedule_posting as posting
 from app.services.errors import ValidationError
 from app.services.schedule_read import remaining_principal_series
 from app.services.settlement_service import open_amount
@@ -412,6 +413,73 @@ def test_floor_ignores_trailing_zero_principal_periods(client, db_session, seed)
     db_session.rollback()
     assert _attach(client, d.id, bank, lender, 1000).status_code == 201
 
+
+
+def _interest_only_tail(seed, db_session):
+    """Series [1000, 0] with interest 50 on both periods (the S1 fixture's shape)."""
+    bank = seed.account("薪轉", opening="5000")
+    lender = seed.counterparty("範例銀行")
+    d = seed.definition([seed.line("repayment", bank, "1000"), seed.line("interest", bank, "50")], kind="installment",
+                        name="尾期只付息", anchor=date(2026, 11, 8), times=2)
+    seed.instance(d, 1, date(2026, 11, 8))
+    seed.instance(d, 2, date(2026, 12, 8), amount_override=["0", "50"])
+    db_session.commit()
+    return SimpleNamespace(bank=bank, lender=lender, definition=d)
+
+
+def test_zero_principal_period_posts_its_interest_after_the_debt_is_cleared(client, db_session, seed, today):
+    """External review R1: period 1 clears the debt; period 2 repays no principal (interest only). It posts its
+    interest 50 like a normal period: no principal entry, status posted, not loan_closed, definition not ended."""
+    today(date(2026, 10, 9))
+    f = _interest_only_tail(seed, db_session)
+    d = f.definition
+    assert _attach(client, d.id, f.bank, f.lender, 1000).status_code == 201
+    today(date(2026, 12, 8))
+    first = client.post(f"/schedules/instances/{_iid(db_session, d.id, 1)}/post")
+    assert first.status_code in (200, 201) and first.json()["status"] == "posted", first.text
+    payable = db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable"))
+    db_session.expire_all()
+    assert open_amount(db_session, payable) == 0
+    settlements_before = len(db_session.scalars(select(LedgerEntry).where(LedgerEntry.is_settlement.is_(True))).all())
+
+    second_id = _iid(db_session, d.id, 2)
+    r = client.post(f"/schedules/instances/{second_id}/post")
+    assert r.status_code in (200, 201) and r.json()["status"] == "posted", r.text
+    db_session.expire_all()
+    row = db_session.get(ScheduleInstance, second_id)
+    assert row.status == "posted" and row.note is None
+    written = db_session.scalars(select(LedgerEntry).where(LedgerEntry.id.in_(row.posted_entry_ids))).all()
+    assert [(e.kind, e.amount) for e in written] == [("interest", Decimal("-50"))]
+    assert written[0].counterparty_id == f.lender.id
+    assert len(db_session.scalars(select(LedgerEntry).where(LedgerEntry.is_settlement.is_(True))).all()) == settlements_before
+    assert db_session.get(ScheduleDefinition, d.id).status != "ended"
+
+
+def test_period_expecting_principal_after_hand_settlement_is_loan_closed(client, db_session, seed, today):
+    """R1 preserved semantics: the owner settled the whole debt by hand; period 1 still expects principal 1000, so
+    it finds the debt cleared → loan_closed: this and every later pending period skipped, the definition ended,
+    nothing written (not even period 2's interest)."""
+    today(date(2026, 10, 9))
+    f = _interest_only_tail(seed, db_session)
+    d = f.definition
+    assert _attach(client, d.id, f.bank, f.lender, 1000).status_code == 201
+    payable = db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable"))
+    hand = client.post(f"/entries/{payable.id}/settle",
+                       json={"account_id": f.bank.id, "amount": "1000", "entry_date": "2026-10-20"})
+    assert hand.status_code == 201, hand.text
+    db_session.expire_all()
+    assert open_amount(db_session, payable) == 0
+
+    today(date(2026, 11, 8))
+    result = posting.post_instance(db_session, _iid(db_session, d.id, 1), actor="owner")
+    db_session.commit()
+    assert result.outcome == "loan_closed" and result.entry_ids == ()
+    db_session.expire_all()
+    rows = db_session.scalars(select(ScheduleInstance).where(ScheduleInstance.definition_id == d.id)
+                              .order_by(ScheduleInstance.seq)).all()
+    assert [(row.status, row.note, row.posted_entry_ids) for row in rows] == [("skipped", "貸款已結清", [])] * 2
+    assert db_session.get(ScheduleDefinition, d.id).status == "ended"
+    assert db_session.scalars(select(LedgerEntry).where(LedgerEntry.source == "schedule")).all() == []
 
 def test_all_zero_principal_series_is_nothing_pending(client, db_session, seed):
     """Multica S1: pending periods that repay no principal leave nothing for a loan to settle → 409 nothing_pending."""

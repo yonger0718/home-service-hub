@@ -134,8 +134,11 @@ status 201.
    → `ValidationError("amount", "超過之後各期本金合計")` and `loan.amount <= all_but_last` → `ValidationError("amount", "剩餘期數乘以每期金額已達剩餘本金")`
    *[call: the debt must be cleared by the last period and not before the last one; a smaller remaining than the
    series (an early repayment) is allowed — the last period's repayment line is then capped at what is still open
-   (`min(amount, open_amount)`), interest posts in full and the payable settles exactly there; `loan_closed` only
-   fires when a period posts after the debt was already cleared by hand]*. `pending_principal`
+   (`min(amount, open_amount)`), interest posts in full and the payable settles exactly there; a zero-principal
+   period (its repayment amount is 0, override or template — e.g. an interest-only last period) posts its interest
+   even when the debt is already cleared: status `posted`, no principal entry, no `loan_closed`; `loan_closed` fires
+   only when a period that expects principal (repayment amount > 0) finds the debt already cleared (hand repayment /
+   early settlement)]*. `pending_principal`
    (§4.1b) is this `due_total`, so the prefilled value always passes.
 5. Create the payable exactly as `create_definition` does (kind `payable`, source `manual`, account = the repayment
    line's account) AND, in the same transaction, a `balance_adjustment` entry on the same account with the same
@@ -220,6 +223,9 @@ today). Nothing is migrated automatically *[call: the remaining principal is not
 - The attach-day pair (payable + adjustment) nets to zero on the bank account; deleting one of them later is the
   owner's own edit (the payable is protected by `assert_not_referenced`; the adjustment is an ordinary entry).
 - Remaining principal too small for the remaining periods → 422 with the message above; the owner fixes the number.
+- A period posts after the debt is already cleared → with repayment amount 0 (an interest-only period) it posts its
+  interest as usual (`posted`, no principal entry); with repayment amount > 0 → `loan_closed`: it and every later
+  pending period are skipped 「貸款已結清」 and the definition ends (§4.1 step 4).
 - Editing the schedule later (`update_definition`): `_check_total` unchanged (we never touched `total_amount`);
   `validate_template` keeps the `loan_entry_id` because the SPA's update strips only `kind`/`loan`, not the template
   line field — the builder verifies `definitionUpdateFrom` preserves `loan_entry_id` on the line.

@@ -259,7 +259,10 @@ def post_locked(
             except NotFoundError as exc:
                 raise ValidationError(f"lines[{index}].loan_entry_id", "貸款記錄不存在") from exc
         open_amount = Decimal(0) if loan.is_closed else settlement_service.open_amount(db, loan)
-        if open_amount == 0:
+        # Only a period that expects principal ends the schedule on a cleared debt (hand repayment / early
+        # settlement). A zero-principal period (override or template) is a normal period: its other lines (interest)
+        # post and the zero repayment line is skipped below (spec §4.1 step 4).
+        if open_amount == 0 and amounts[index] != 0:
             _close_out(db, definition, instance, later, actor)
             return PostResult(instance.id, "loan_closed")
 
