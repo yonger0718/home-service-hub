@@ -50,6 +50,7 @@ import {
   todayChange,
 } from './dashboard-math';
 import { hoverGuidePlugin } from './chart-guide.plugin';
+import { formatNativeAmount } from '../money';
 
 /** Current time for the quote line's 盤中 / 台股收盤 tag; overridable in tests. */
 export const DASHBOARD_CLOCK = new InjectionToken<() => Date>('DASHBOARD_CLOCK', {
@@ -497,12 +498,7 @@ export class PortfolioDashboardComponent implements OnInit {
   }
 
   formatNative(value: number | string | null | undefined, currency: string | null | undefined): string {
-    if (value == null || value === '') return '—';
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric)) return '—';
-    if (!currency || currency === 'TWD') return this.formatCurrency(numeric);
-    const decimals = currency === 'GBp' ? 4 : 2;
-    return `${numeric.toFixed(decimals)} ${currency}`;
+    return formatNativeAmount(value, currency, v => this.formatCurrency(v));
   }
 
   formatXirr(value: number | null | undefined): string {
