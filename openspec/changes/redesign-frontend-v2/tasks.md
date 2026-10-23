@@ -34,10 +34,10 @@
 
 ## 4. 交易紀錄 and 股利
 
-- [ ] 4.1 Transactions: period summary cards for the active filter, month grouping with 買 / 賣 totals
-- [ ] 4.2 Dividends: four-figure summary (已確認收款, 有效待收, 舊資料帳面, 已記錄股利), status filter
-- [ ] 4.3 Dividends: inline 確認收款 form replacing the dialog; same endpoint and warning text
-- [ ] 4.4 Phone layouts for both pages (sub-nav chips, compact rows)
+- [x] 4.1 Transactions: period summary cards for the active filter, month grouping with 買 / 賣 totals
+- [x] 4.2 Dividends: four-figure summary (已確認收款, 有效待收, 舊資料帳面, 已記錄股利), status filter
+- [x] 4.3 Dividends: inline 確認收款 form replacing the dialog; same endpoint and warning text
+- [x] 4.4 Phone layouts for both pages (sub-nav chips, compact rows)
 
 ## 5. 已實現損益 and 現金帳戶
 
