@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { Subscription, catchError, of } from 'rxjs';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
-import { Dividend, DividendQuery, ExDividendRecord } from '../../../models/portfolio.model';
+import { BrokerAccount, Dividend, DividendQuery, ExDividendRecord } from '../../../models/portfolio.model';
 import { TableModule } from 'primeng/table';
 import { ButtonModule } from 'primeng/button';
 import { DialogModule } from 'primeng/dialog';
@@ -90,17 +90,26 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   readonly rowsPerPageOptions = [25, 50, 100];
   readonly statusOptions = STATUS_OPTIONS;
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
-  /** Receiving-account names for the 收款 column (all accounts, loaded once). */
-  readonly accountNames = signal<ReadonlyMap<number, string>>(new Map());
+  /** Every account, inactive ones too, loaded once on init (retried when the receipt form opens after a failure). */
+  private readonly accounts = signal<BrokerAccount[]>([]);
+  private accountsFailed = false;
+  /** Receiving-account names for the 收款 column. */
+  readonly accountNames = computed<ReadonlyMap<number, string>>(() => new Map(this.accounts().map(a => [a.id, a.nickname])));
+  /** The receipt form's 收款帳戶 choices: active TWD accounts. */
+  readonly receiptAccounts = computed(() => this.accounts().filter(a => a.is_active && a.currency === 'TWD'));
 
   /** Filter-wide TWD totals (every row of the active filter, not the list page); null while loading or after a failure. */
   readonly summary = signal<(DividendTotals & { foreignWithoutFx: number }) | null>(null);
-  /** Every row of the active filter in the current sort; null while it loads or after it failed. */
+  /** Every row of the active filter in the current sort; null until the first load lands or after a failure (a reload keeps the previous set). */
   readonly summaryRows = signal<Dividend[] | null>(null);
+  /** The 5 000-row cap tripped for `summaryRows` (kept, like the rows, while a reload runs). */
   readonly summaryCapped = signal(false);
   readonly summaryFailed = signal(false);
+  /** A filter-wide load is running; `summaryRows` may still hold the previous set meanwhile. */
+  private readonly summaryLoading = signal(false);
   /** One line under the summary: rows the TWD sums leave out, and the 5 000-row cap. */
   readonly summaryNote = computed(() => {
+    if (!this.summary()) return '';
     const parts: string[] = [];
     const withoutFx = this.summary()?.foreignWithoutFx ?? 0;
     if (withoutFx > 0) parts.push(`不含外幣 ${withoutFx} 筆`);
@@ -117,7 +126,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     const rows = this.summaryRows();
     return status === 'all' || !rows ? null : rows.filter(d => matchesStatus(d, status));
   });
-  /** A status is selected and the set is still loading: the list waits rather than show the unfiltered page. */
+  /** A status is selected and no set has landed yet: the list waits rather than show the unfiltered page. */
   private readonly statusWaiting = computed(() => this.status() !== 'all' && this.summaryRows() === null && !this.summaryFailed());
   /** A status is selected but the set failed: the server page stays, with the list error. */
   readonly statusFailed = computed(() => this.status() !== 'all' && this.summaryFailed());
@@ -126,42 +135,70 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     if (set) return set.slice(this.statusOffset(), this.statusOffset() + (this.query().limit ?? 25));
     return this.statusWaiting() ? [] : this.dividends();
   });
-  /** Status set length in status mode, server `total` otherwise; null while the status set loads. */
+  /** Status set length in status mode (the previous set's while a reload runs), server `total` otherwise; null until a status set lands. */
   readonly listTotal = computed(() => this.statusSet()?.length ?? (this.statusWaiting() ? null : this.total()));
   readonly listOffset = computed(() => (this.statusSet() ? this.statusOffset() : this.query().offset ?? 0));
-  readonly listLoading = computed(() => this.loading() || this.statusWaiting());
+  /** In status mode a reload keeps the previous set listed (stale-while-revalidate) with 查詢中 beside it. */
+  readonly listLoading = computed(() => this.loading() || this.statusWaiting() || (this.statusSet() !== null && this.summaryLoading()));
   readonly headerSubtitle = computed(() => `${periodLabel(this.query())} · 共 ${this.listTotal() ?? '—'} 筆`);
   readonly rowViews = computed(() => {
     const accounts = this.accountNames();
     return this.listRows().map(d => ({ d, v: dividendRow(d, this.nameFor(d.symbol), id => accounts.get(id) ?? null) }));
   });
 
-  receiptTarget = signal<Dividend | null>(null);
-  receiptBusy = signal(false);
-  receiptDate = '';
-  receiptAccountId: number | null = null;
-  receiptAccounts = signal<{ id: number; nickname: string; currency: string }[]>([]);
+  /** The row whose inline receipt form is open; one at a time. */
+  readonly openReceiptId = signal<number | null>(null);
+  private receiptRow: Dividend | null = null;
+  readonly receiptBusy = signal(false);
+  readonly receiptDate = signal('');
+  readonly receiptAccountId = signal<number | null>(null);
 
+  /** Opens the form under a pending row, closing any other; ignored while a confirmation is in flight. */
   openReceipt(row: Dividend): void {
-    if (row.receipt_status !== 'pending') return;
-    this.receiptTarget.set(row);
-    this.receiptDate = '';
-    this.receiptAccountId = null;
-    this.portfolioService.getAccounts().subscribe({
-      next: result => this.receiptAccounts.set(result.items.filter(a => a.is_active && a.currency === 'TWD')),
-      error: () => this.messageService.add({ severity: 'error', summary: '無法取得收款帳戶' }),
+    if (row.receipt_status !== 'pending' || this.receiptBusy()) return;
+    this.receiptRow = row;
+    this.receiptDate.set('');
+    this.receiptAccountId.set(null);
+    this.openReceiptId.set(row.id);
+    if (this.accountsFailed) this.loadAccounts();
+  }
+
+  closeReceipt(): void {
+    this.openReceiptId.set(null);
+    this.receiptRow = null;
+  }
+
+  onReceiptAccount(value: string): void {
+    this.receiptAccountId.set(value ? Number(value) : null);
+  }
+
+  /** On success and on error the form closes and both the page and the filter-wide set reload. */
+  confirmReceipt(): void {
+    const row = this.receiptRow;
+    const receiptDate = this.receiptDate();
+    const accountId = this.receiptAccountId();
+    if (!row || !receiptDate || accountId === null || this.receiptBusy()) return;
+    this.receiptBusy.set(true);
+    const settle = () => { this.receiptBusy.set(false); this.closeReceipt(); this.reload(); };
+    this.portfolioService.confirmDividendReceipt(row.id, { receipt_date: receiptDate,
+      account_id: accountId, revision: row.revision ?? 1 }).subscribe({
+      next: () => settle(),
+      error: err => {
+        settle();
+        this.messageService.add({ severity: 'error', summary: '收款確認未完成', detail: err.error?.detail ?? '請重新載入後核對' });
+      },
     });
   }
 
-  confirmReceipt(): void {
-    const row = this.receiptTarget();
-    if (!row || !this.receiptDate || !this.receiptAccountId || this.receiptBusy()) return;
-    this.receiptBusy.set(true);
-    this.portfolioService.confirmDividendReceipt(row.id, { receipt_date: this.receiptDate,
-      account_id: this.receiptAccountId, revision: row.revision ?? 1 }).subscribe({
-      next: () => { this.receiptBusy.set(false); this.receiptTarget.set(null); this.reload(); },
-      error: err => { this.receiptBusy.set(false); this.receiptTarget.set(null); this.reload();
-        this.messageService.add({ severity: 'error', summary: '收款確認未完成', detail: err.error?.detail ?? '請重新載入後核對' }); },
+  /** A failure is silent for the 收款 names; with the receipt form open it raises the toast. */
+  private loadAccounts(): void {
+    this.accountsFailed = false;
+    this.portfolioService.getAccounts({ include_inactive: true }).subscribe({
+      next: result => this.accounts.set(result.items),
+      error: () => {
+        this.accountsFailed = true;
+        if (this.openReceiptId() !== null) this.messageService.add({ severity: 'error', summary: '無法取得收款帳戶' });
+      },
     });
   }
 
@@ -202,10 +239,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   ngOnInit() {
     this.portfolioService.getSymbolNames().subscribe(map => this.symbolNames.set(map));
     this.loadUpcomingExDividends();
-    this.portfolioService.getAccounts({ include_inactive: true }).subscribe({
-      next: result => this.accountNames.set(new Map(result.items.map(a => [a.id, a.nickname]))),
-      error: () => this.accountNames.set(new Map()),
-    });
+    this.loadAccounts();
     this.reload();
   }
 
@@ -235,7 +269,8 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   /**
    * Every row of the active filter (symbol, dates, source) in the current sort, for the totals and the status
    * filter. A failure hides the summary silently (the list keeps its page); an older load is cancelled and any
-   * response from it is dropped.
+   * response from it is dropped. The cards blank while it runs, but `summaryRows` keeps the previous set until
+   * the new one lands, so a status list does not flash empty (a failure drops it).
    */
   loadAll() {
     this.summarySub?.unsubscribe();
@@ -244,14 +279,16 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     this.statusOffset.set(0);
     const { symbol, date_from, date_to, source, sort } = this.query();
     this.summary.set(null);
-    this.summaryRows.set(null);
     this.summaryFailed.set(false);
-    this.summaryCapped.set(false);
+    this.summaryLoading.set(true);
     this.summarySub = allPages(offset => this.portfolioService.getDividends({ symbol, date_from, date_to, source, sort, limit: 100, offset }))
       .pipe(catchError(() => of(null)))
       .subscribe(result => {
         if (seq !== this.summarySeq) return;
+        this.summaryLoading.set(false);
         if (!result) {
+          this.summaryRows.set(null);
+          this.summaryCapped.set(false);
           this.summaryFailed.set(true);
           return;
         }

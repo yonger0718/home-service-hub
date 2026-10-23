@@ -62,7 +62,7 @@ describe('Dividend receipt confirmation', () => {
     expect(buttons).toHaveLength(1);
     expect(buttons[0].closest('[data-row-id]')?.getAttribute('data-row-id')).toBe('102');
     buttons[0].click();
-    expect(fixture.componentInstance.receiptTarget()?.id).toBe(102);
+    expect(fixture.componentInstance.openReceiptId()).toBe(102);
     fixture.destroy();
   });
   it('preserves the full ex-date and a payment date in another year for rows with the same day in different years', () => {
@@ -132,24 +132,52 @@ describe('Dividend receipt confirmation', () => {
     const response = new Subject<Dividend>();
     service.confirmDividendReceipt.mockReturnValue(response);
     const fixture = TestBed.createComponent(PortfolioDividendListComponent);
-    const component = fixture.componentInstance;
-    component.openReceipt(pending);
-    component.confirmReceipt();
+    fixture.detectChanges();
+    const root: HTMLElement = fixture.nativeElement;
+    root.querySelector<HTMLButtonElement>('[data-row-id="1"] .c-actions app-btn button')!.click();
+    fixture.detectChanges();
+    const submit = () => Array.from(root.querySelectorAll<HTMLButtonElement>('.receipt-form button')).find(b => b.textContent?.trim() === '確認已收到並入帳')!;
+    expect(submit().disabled).toBe(true);
+    fixture.componentInstance.confirmReceipt();
     expect(service.confirmDividendReceipt).not.toHaveBeenCalled();
-    component.receiptDate = '2026-09-11'; component.receiptAccountId = 7;
-    component.confirmReceipt(); component.confirmReceipt();
+
+    const date = root.querySelector<HTMLInputElement>('.receipt-form input[aria-label="實際收款日"]')!;
+    date.value = '2026-09-11';
+    date.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    expect(submit().disabled).toBe(true);
+    const account = root.querySelector<HTMLSelectElement>('.receipt-form select[aria-label="收款帳戶"]')!;
+    account.value = '7';
+    account.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    expect(submit().disabled).toBe(false);
+
+    submit().click(); submit().click();
     expect(service.confirmDividendReceipt).toHaveBeenCalledTimes(1);
     expect(service.confirmDividendReceipt).toHaveBeenCalledWith(1, { receipt_date: '2026-09-11', account_id: 7, revision: 3 });
+    fixture.detectChanges();
+    expect(submit().disabled).toBe(true);
     response.next({ ...pending, receipt_status: 'confirmed' }); response.complete();
-    expect(component.receiptBusy()).toBe(false);
-    expect(component.receiptTarget()).toBeNull();
+    expect(fixture.componentInstance.receiptBusy()).toBe(false);
+    expect(fixture.componentInstance.openReceiptId()).toBeNull();
     fixture.destroy();
   });
   it('does not offer confirmation for legacy or confirmed rows', () => {
+    service.getDividends.mockReturnValue(of({ items: [
+      { ...pending, id: 2, receipt_status: 'legacy_unknown' },
+      { ...pending, id: 3, receipt_status: 'confirmed', receipt_date: '2026-09-12' },
+    ], total: 2 }));
     const fixture = TestBed.createComponent(PortfolioDividendListComponent);
+    fixture.detectChanges();
+    const root: HTMLElement = fixture.nativeElement;
+    expect(Array.from(root.querySelectorAll('button')).filter(b => b.textContent?.trim() === '確認收款')).toHaveLength(0);
     fixture.componentInstance.openReceipt({ ...pending, receipt_status: 'legacy_unknown' });
-    expect(fixture.componentInstance.receiptTarget()).toBeNull();
-    expect(service.getAccounts).not.toHaveBeenCalled();
+    fixture.componentInstance.openReceipt({ ...pending, receipt_status: 'confirmed' });
+    fixture.detectChanges();
+    expect(fixture.componentInstance.openReceiptId()).toBeNull();
+    expect(root.querySelector('.receipt-form')).toBeNull();
+    // Only the one load on init.
+    expect(service.getAccounts).toHaveBeenCalledTimes(1);
     fixture.destroy();
   });
 });
@@ -382,17 +410,16 @@ describe('Dividend filter-wide summary', () => {
   it('reloads the filter-wide set after a receipt confirmation, on success and on error', () => {
     const fixture = create();
     const component = fixture.componentInstance;
-    service['getAccounts'] = vi.fn(() => of({ items: [] }));
     service['confirmDividendReceipt'].mockReturnValueOnce(of({ ...due, receipt_status: 'confirmed' }))
       .mockReturnValueOnce(throwError(() => ({ error: { detail: 'Synthetic stale revision' } })));
 
     component.openReceipt(due);
-    component.receiptDate = '2026-11-18'; component.receiptAccountId = 7;
+    component.receiptDate.set('2026-11-18'); component.receiptAccountId.set(7);
     component.confirmReceipt();
     expect(summaryCalls).toHaveLength(2);
 
     component.openReceipt(due);
-    component.receiptDate = '2026-11-18'; component.receiptAccountId = 7;
+    component.receiptDate.set('2026-11-18'); component.receiptAccountId.set(7);
     component.confirmReceipt();
     expect(summaryCalls).toHaveLength(3);
     fixture.destroy();
@@ -651,6 +678,27 @@ describe('Dividend filter-wide summary', () => {
       fixture.destroy();
     });
 
+    it('keeps the previous status list while the set reloads and drops it when the reload fails', () => {
+      const fixture = create();
+      respond(listCalls[0], { items: [confirmed], total: 30 });
+      respond(summaryCalls[0], { items: set, total: 7 });
+      fixture.detectChanges();
+      selectStatus(fixture, '待收');
+      fixture.componentInstance.openNew();
+      fixture.componentInstance.saveDividend();
+      fixture.detectChanges();
+      expect(rowIds(fixture)).toEqual([13, 14, 15]);
+      expect(el(fixture).querySelector('.page-subtitle')?.textContent?.trim()).toBe('全部期間 · 共 3 筆');
+
+      summaryCalls[1].response.error(new Error('Synthetic failure'));
+      respond(listCalls[1], { items: [confirmed], total: 30 });
+      fixture.detectChanges();
+      expect(fixture.componentInstance.summaryRows()).toBeNull();
+      expect(rowIds(fixture)).toEqual([11]);
+      expect(el(fixture).querySelector('.list-error')).not.toBeNull();
+      fixture.destroy();
+    });
+
     it('returns to server paging at offset 0 with the server total on 全部', () => {
       const fixture = create();
       const component = fixture.componentInstance;
@@ -763,7 +811,7 @@ describe('Dividend filter-wide summary', () => {
       expect(confirm.map(b => b.closest('[data-row-id]')?.getAttribute('data-row-id'))).toEqual(['21']);
       expect(confirm[0].getAttribute('aria-label')).toBe('確認收款 國泰永續高股息 00878');
       confirm[0].click();
-      expect(component.receiptTarget()?.id).toBe(21);
+      expect(component.openReceiptId()).toBe(21);
 
       el(fixture).querySelector<HTMLButtonElement>('[data-row-id="21"] .row-action')!.click();
       expect(menu).toHaveBeenCalledWith(expect.any(MouseEvent), tw);
@@ -778,6 +826,248 @@ describe('Dividend filter-wide summary', () => {
       expect(strip?.textContent).toContain('元大高股息');
       expect(strip!.compareDocumentPosition(el(fixture).querySelector('.div-list')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       fixture.destroy();
+    });
+  });
+
+  describe('inline receipt form', () => {
+    const WARNING = '只在核對過實際入帳後確認。預定發放日不是收款證明；確認後會寫入現金帳，無法直接編輯撤銷。';
+    const tw: Dividend = { id: 21, symbol: '00878', amount: 9600, ex_dividend_date: '2026-10-17', receipt_status: 'pending', revision: 4,
+      cash_dividend_per_share: 0.48, quantity_at_record_date: 20000, payment_date: '2026-11-18' };
+    const twPaid: Dividend = { ...tw, receipt_status: 'confirmed', receipt_date: '2026-11-18', receipt_account_id: 7, revision: 5 };
+    const noRevision: Dividend = { id: 31, symbol: '0050', amount: 500, ex_dividend_date: '2026-07-16', receipt_status: 'pending' };
+    const accounts = [
+      { id: 7, nickname: '元大交割戶', currency: 'TWD', is_active: true },
+      { id: 8, nickname: 'Synthetic closed TWD', currency: 'TWD', is_active: false },
+      { id: 9, nickname: 'Synthetic USD', currency: 'USD', is_active: true },
+    ];
+
+    beforeEach(() => {
+      service['getAccounts'].mockImplementation(() => of({ items: accounts }));
+    });
+
+    function rendered(rows: Dividend[]): ComponentFixture<PortfolioDividendListComponent> {
+      const fixture = create();
+      respond(listCalls[0], { items: rows, total: rows.length });
+      respond(summaryCalls[0], { items: rows, total: rows.length });
+      fixture.detectChanges();
+      return fixture;
+    }
+
+    function forms(fixture: ComponentFixture<PortfolioDividendListComponent>): HTMLElement[] {
+      return Array.from(el(fixture).querySelectorAll<HTMLElement>('.receipt-form'));
+    }
+
+    function open(fixture: ComponentFixture<PortfolioDividendListComponent>, id: number): void {
+      el(fixture).querySelector<HTMLButtonElement>(`[data-row-id="${id}"] .c-actions app-btn button`)!.click();
+      fixture.detectChanges();
+    }
+
+    function formButton(fixture: ComponentFixture<PortfolioDividendListComponent>, label: string): HTMLButtonElement {
+      return Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('.receipt-form button')).find(b => b.textContent?.trim() === label)!;
+    }
+
+    function fill(fixture: ComponentFixture<PortfolioDividendListComponent>, date: string | null, accountId: string | null): void {
+      if (date !== null) {
+        const input = el(fixture).querySelector<HTMLInputElement>('.receipt-form input[aria-label="實際收款日"]')!;
+        input.value = date;
+        input.dispatchEvent(new Event('input'));
+      }
+      if (accountId !== null) {
+        const select = el(fixture).querySelector<HTMLSelectElement>('.receipt-form select[aria-label="收款帳戶"]')!;
+        select.value = accountId;
+        select.dispatchEvent(new Event('change'));
+      }
+      fixture.detectChanges();
+    }
+
+    function pendingCard(fixture: ComponentFixture<PortfolioDividendListComponent>): string | undefined {
+      return cards(fixture)[1].querySelector('.value')?.textContent?.trim();
+    }
+
+    it('opens a form under the pending row: title, verbatim warning, date input, active TWD accounts, 取消 and a disabled 確認已收到並入帳', () => {
+      const fixture = rendered([tw, legacy]);
+      expect(forms(fixture)).toHaveLength(0);
+      expect(el(fixture).querySelector('[data-row-id="12"] .c-actions app-btn')).toBeNull();
+
+      open(fixture, 21);
+      const [form] = forms(fixture);
+      expect(forms(fixture)).toHaveLength(1);
+      expect(form.previousElementSibling?.getAttribute('data-row-id')).toBe('21');
+      expect(form.querySelector('.receipt-title')?.textContent?.trim()).toBe('確認實際收款 · 國泰永續高股息 +9,600');
+      expect(form.getAttribute('aria-label')).toBe('確認實際收款 · 國泰永續高股息 +9,600');
+      expect(form.querySelector('.receipt-warning')?.textContent?.trim()).toBe(WARNING);
+      const labels = Array.from(form.querySelectorAll('label')).map(label => label.firstChild?.textContent?.trim());
+      expect(labels).toEqual(['實際收款日', '收款帳戶']);
+      expect(form.querySelector('input[aria-label="實際收款日"]')?.getAttribute('type')).toBe('date');
+      const options = Array.from(form.querySelectorAll<HTMLOptionElement>('select[aria-label="收款帳戶"] option'));
+      expect(options.map(o => [o.value, o.textContent?.trim()])).toEqual([['', '請選擇帳戶'], ['7', '元大交割戶']]);
+      expect(Array.from(form.querySelectorAll('app-btn button')).map(b => b.textContent?.trim())).toEqual(['取消', '確認已收到並入帳']);
+      expect(formButton(fixture, '確認已收到並入帳').disabled).toBe(true);
+      // The one load made on init serves both the 收款 names and the form.
+      expect(service['getAccounts']).toHaveBeenCalledTimes(1);
+      expect(service['getAccounts']).toHaveBeenCalledWith({ include_inactive: true });
+      fixture.destroy();
+    });
+
+    it('enables 確認已收到並入帳 only once both fields are set; 取消 closes and a reopened form starts empty', () => {
+      const fixture = rendered([tw]);
+      open(fixture, 21);
+      fill(fixture, '2026-11-18', null);
+      expect(formButton(fixture, '確認已收到並入帳').disabled).toBe(true);
+      fill(fixture, '', '7');
+      expect(formButton(fixture, '確認已收到並入帳').disabled).toBe(true);
+      fill(fixture, '2026-11-18', null);
+      expect(formButton(fixture, '確認已收到並入帳').disabled).toBe(false);
+
+      formButton(fixture, '取消').click();
+      fixture.detectChanges();
+      expect(forms(fixture)).toHaveLength(0);
+      expect(fixture.componentInstance.openReceiptId()).toBeNull();
+
+      open(fixture, 21);
+      expect(el(fixture).querySelector<HTMLInputElement>('.receipt-form input[aria-label="實際收款日"]')!.value).toBe('');
+      expect(formButton(fixture, '確認已收到並入帳').disabled).toBe(true);
+      expect(service['confirmDividendReceipt']).not.toHaveBeenCalled();
+      fixture.destroy();
+    });
+
+    it('keeps one form open: 確認收款 on another row closes the first', () => {
+      const fixture = rendered([tw, due]);
+      open(fixture, 21);
+      fill(fixture, '2026-11-18', '7');
+      open(fixture, 13);
+
+      expect(forms(fixture)).toHaveLength(1);
+      expect(forms(fixture)[0].previousElementSibling?.getAttribute('data-row-id')).toBe('13');
+      expect(forms(fixture)[0].querySelector('.receipt-title')?.textContent?.trim()).toBe('確認實際收款 · 0056 +14,600');
+      expect(formButton(fixture, '確認已收到並入帳').disabled).toBe(true);
+      fixture.destroy();
+    });
+
+    it('submits the date, account and revision (1 for a row without one) once, ignoring a second press and another row while busy', () => {
+      const response = new Subject<Dividend>();
+      service['confirmDividendReceipt'].mockReturnValue(response);
+      const fixture = rendered([tw, noRevision]);
+      open(fixture, 31);
+      fill(fixture, '2026-11-18', '7');
+
+      formButton(fixture, '確認已收到並入帳').click();
+      formButton(fixture, '確認已收到並入帳').click();
+      expect(service['confirmDividendReceipt']).toHaveBeenCalledTimes(1);
+      expect(service['confirmDividendReceipt']).toHaveBeenCalledWith(31, { receipt_date: '2026-11-18', account_id: 7, revision: 1 });
+      fixture.detectChanges();
+      expect(fixture.componentInstance.receiptBusy()).toBe(true);
+      expect(formButton(fixture, '確認已收到並入帳').disabled).toBe(true);
+      open(fixture, 21);
+      expect(fixture.componentInstance.openReceiptId()).toBe(31);
+      fixture.destroy();
+    });
+
+    it('on success closes the form, reloads the page and the filter-wide set, shows 已收款 and drops 有效待收 by 9,600', () => {
+      service['confirmDividendReceipt'].mockReturnValue(of(twPaid));
+      const fixture = rendered([tw, due]);
+      expect(pendingCard(fixture)).toBe('$24,200');
+      open(fixture, 21);
+      fill(fixture, '2026-11-18', '7');
+
+      formButton(fixture, '確認已收到並入帳').click();
+      fixture.detectChanges();
+      expect(service['confirmDividendReceipt']).toHaveBeenCalledWith(21, { receipt_date: '2026-11-18', account_id: 7, revision: 4 });
+      expect(forms(fixture)).toHaveLength(0);
+      expect(fixture.componentInstance.receiptBusy()).toBe(false);
+      expect(listCalls).toHaveLength(2);
+      expect(summaryCalls).toHaveLength(2);
+
+      respond(listCalls[1], { items: [twPaid, due], total: 2 });
+      respond(summaryCalls[1], { items: [twPaid, due], total: 2 });
+      fixture.detectChanges();
+      expect(lines(el(fixture).querySelector('[data-row-id="21"] .c-status'))).toBe('已收款');
+      expect(el(fixture).querySelector('[data-row-id="21"] .c-actions app-btn')).toBeNull();
+      expect(pendingCard(fixture)).toBe('$14,600');
+      fixture.destroy();
+    });
+
+    it('on error closes the form, toasts the server detail (or the fallback), reloads both sets and keeps the row pending', () => {
+      service['confirmDividendReceipt']
+        .mockReturnValueOnce(throwError(() => ({ status: 409, error: { detail: 'Synthetic stale revision' } })))
+        .mockReturnValueOnce(throwError(() => ({ status: 500 })));
+      const fixture = rendered([tw]);
+      const toast = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
+      open(fixture, 21);
+      fill(fixture, '2026-11-18', '7');
+
+      formButton(fixture, '確認已收到並入帳').click();
+      fixture.detectChanges();
+      expect(toast).toHaveBeenCalledWith({ severity: 'error', summary: '收款確認未完成', detail: 'Synthetic stale revision' });
+      expect(forms(fixture)).toHaveLength(0);
+      expect(fixture.componentInstance.receiptBusy()).toBe(false);
+      expect(listCalls).toHaveLength(2);
+      expect(summaryCalls).toHaveLength(2);
+      respond(listCalls[1], { items: [tw], total: 1 });
+      respond(summaryCalls[1], { items: [tw], total: 1 });
+      fixture.detectChanges();
+      expect(lines(el(fixture).querySelector('[data-row-id="21"] .c-status'))).toBe('待收');
+      expect(el(fixture).querySelector('[data-row-id="21"] .c-actions app-btn')).not.toBeNull();
+
+      open(fixture, 21);
+      fill(fixture, '2026-11-18', '7');
+      formButton(fixture, '確認已收到並入帳').click();
+      expect(toast).toHaveBeenLastCalledWith({ severity: 'error', summary: '收款確認未完成', detail: '請重新載入後核對' });
+      expect(listCalls).toHaveLength(3);
+      expect(summaryCalls).toHaveLength(3);
+      fixture.destroy();
+    });
+
+    it('with 待收 selected keeps the previous list while the set reloads, then drops the row that came back confirmed', () => {
+      service['confirmDividendReceipt'].mockReturnValue(of(twPaid));
+      const fixture = rendered([tw, due]);
+      selectStatus(fixture, '待收');
+      expect(rowIds(fixture)).toEqual([21, 13]);
+      open(fixture, 21);
+      fill(fixture, '2026-11-18', '7');
+      formButton(fixture, '確認已收到並入帳').click();
+      fixture.detectChanges();
+
+      expect(rowIds(fixture)).toEqual([21, 13]);
+      expect(forms(fixture)).toHaveLength(0);
+      expect(el(fixture).textContent).toContain('查詢中...');
+      expect(el(fixture).querySelector('.page-subtitle')?.textContent?.trim()).toBe('全部期間 · 共 2 筆');
+
+      respond(listCalls[1], { items: [twPaid, due], total: 2 });
+      respond(summaryCalls[1], { items: [twPaid, due], total: 2 });
+      fixture.detectChanges();
+      expect(rowIds(fixture)).toEqual([13]);
+      expect(el(fixture).textContent).not.toContain('查詢中...');
+      expect(el(fixture).querySelector('.page-subtitle')?.textContent?.trim()).toBe('全部期間 · 共 1 筆');
+      expect(pendingCard(fixture)).toBe('$14,600');
+      fixture.destroy();
+    });
+
+    it('toasts 無法取得收款帳戶 when the accounts cannot be loaded, retrying the init load when the form opens', () => {
+      const toast = vi.spyOn(MessageService.prototype, 'add');
+      try {
+        service['getAccounts'].mockImplementation(() => throwError(() => new Error('Synthetic failure')));
+        const fixture = rendered([tw]);
+        expect(toast).not.toHaveBeenCalled();
+
+        open(fixture, 21);
+        expect(service['getAccounts']).toHaveBeenCalledTimes(2);
+        expect(toast).toHaveBeenCalledWith({ severity: 'error', summary: '無法取得收款帳戶' });
+        expect(Array.from(el(fixture).querySelectorAll('.receipt-form option')).map(o => o.textContent?.trim())).toEqual(['請選擇帳戶']);
+
+        toast.mockClear();
+        service['getAccounts'].mockImplementation(() => of({ items: accounts }));
+        formButton(fixture, '取消').click();
+        open(fixture, 21);
+        expect(service['getAccounts']).toHaveBeenCalledTimes(3);
+        expect(toast).not.toHaveBeenCalled();
+        expect(Array.from(el(fixture).querySelectorAll('.receipt-form option')).map(o => o.textContent?.trim())).toEqual(['請選擇帳戶', '元大交割戶']);
+        open(fixture, 21);
+        expect(service['getAccounts']).toHaveBeenCalledTimes(3);
+        fixture.destroy();
+      } finally {
+        toast.mockRestore();
+      }
     });
   });
 
@@ -811,6 +1101,22 @@ describe('Dividend filter-wide summary', () => {
       expect(row.querySelector('.c-ex')).toBeNull();
       expect(row.querySelector('.c-pay')).toBeNull();
       expect(row.querySelector('.c-status')).toBeNull();
+      fixture.destroy();
+    });
+
+    it('keeps the receipt form fields under the row in the compact list', () => {
+      TestBed.inject(LayoutModeService).set('phone');
+      const fixture = create();
+      respond(listCalls[0], { items: [due], total: 1 });
+      fixture.detectChanges();
+      el(fixture).querySelector<HTMLButtonElement>('[data-row-id="13"] .c-actions app-btn button')!.click();
+      fixture.detectChanges();
+
+      const form = el(fixture).querySelector('.div-list.compact .receipt-form');
+      expect(form?.previousElementSibling?.getAttribute('data-row-id')).toBe('13');
+      expect(form?.querySelector('input[type="date"][aria-label="實際收款日"]')).not.toBeNull();
+      expect(form?.querySelector('select[aria-label="收款帳戶"]')).not.toBeNull();
+      expect(Array.from(form!.querySelectorAll('app-btn button')).map(b => b.textContent?.trim())).toEqual(['取消', '確認已收到並入帳']);
       fixture.destroy();
     });
   });

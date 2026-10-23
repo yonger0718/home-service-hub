@@ -289,6 +289,62 @@
   padding: 0 1rem 0.75rem calc(1rem + 52px);
 }
 
+/* Inline receipt form under its row (Decision 9). */
+.receipt-form {
+  background: var(--app-surface-soft);
+  border-top: 1px dashed var(--app-border);
+  display: grid;
+  font-size: 0.875rem;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem 1rem calc(1rem + 52px);
+
+  p {
+    margin: 0;
+  }
+}
+
+.receipt-title {
+  font-weight: 700;
+}
+
+.receipt-warning {
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+.receipt-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
+
+  label {
+    color: var(--app-text-muted);
+    display: grid;
+    font-size: 0.75rem;
+    font-weight: 700;
+    gap: 0.25rem;
+  }
+
+  input,
+  select {
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    color: var(--app-text);
+    font: inherit;
+    font-size: 0.875rem;
+    min-height: 44px;
+    min-width: 12rem;
+    padding: 0.5rem;
+  }
+}
+
+.receipt-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
 /* Phone: square · name + tag over the per-share line · amount with the ex-date beneath. */
 .compact {
   .div-grid {
@@ -313,6 +369,21 @@
 
   .div-notes {
     padding: 0 14px 10px;
+  }
+
+  /* The same fields, stacked full width. */
+  .receipt-form {
+    padding: 10px 14px 14px;
+  }
+
+  .receipt-fields {
+    flex-direction: column;
+
+    input,
+    select {
+      min-width: 0;
+      width: 100%;
+    }
   }
 }
 
