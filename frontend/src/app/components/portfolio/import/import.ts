@@ -46,6 +46,10 @@ import {
   overrideMeta,
   previewCountSummary,
   previewRow,
+  RECALC_STATE_LABEL,
+  RECALC_STEP_LABEL,
+  STEP_STATUS_LABEL,
+  labelOf,
   recalcBanner,
   recalcPanelVisible,
   stepFor,
@@ -156,6 +160,10 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   readonly failure = computed(() => failureBanner(this.history.attempts()[0]));
   /** Banner (b): the import recalc chain failed. */
   readonly recalcFailure = computed(() => recalcBanner(this.recalcStatus()));
+  /** #111 labels: unknown raw values render as-is; the template keeps the raw value in `title`. */
+  readonly stateLabel = (raw: string | null | undefined): string => labelOf(RECALC_STATE_LABEL, raw);
+  readonly stepLabel = (raw: string | null | undefined): string => labelOf(RECALC_STEP_LABEL, raw);
+  readonly statusLabel = (raw: string | null | undefined): string => labelOf(STEP_STATUS_LABEL, raw);
   readonly recalcPanel = computed(() => recalcPanelVisible(this.recalcStatus(), this.step()));
   /** 最近匯入, newest first. */
   readonly recentImports = computed(() =>

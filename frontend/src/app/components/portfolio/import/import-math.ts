@@ -183,10 +183,31 @@ export function failureBanner(a: ImportAttempt | undefined): { lead: string; bod
   return { lead: '最近一次匯入失敗', body: `（${stamp(a.at)}）：${what}，整批未寫入。修正後重新上傳即可。` };
 }
 
+/** Recalc state labels (#111); keys are `RecalcStatus.state`. */
+export const RECALC_STATE_LABEL: Record<string, string> = {
+  idle: '閒置', running: '執行中', completed: '完成', partial: '部分完成', failed: '失敗',
+};
+
+/** Recalc step labels (#111): the post-import orchestrator's real step names plus its `awaiting_lock` current_step. */
+export const RECALC_STEP_LABEL: Record<string, string> = {
+  symbol_map_backfill: '代號對照補齊', dividend_auto_record: '歷史股利核對', networth_backfill: '淨值回補', awaiting_lock: '等待鎖定',
+};
+
+/** Recalc step status labels (#111); keys are `RecalcStepStatus.status`. */
+export const STEP_STATUS_LABEL: Record<string, string> = {
+  ok: '完成', failed: '失敗', skipped: '略過', partial: '部分完成',
+};
+
+/** The label for a raw value; an unknown value renders raw, null / undefined renders nothing. */
+export function labelOf(map: Record<string, string>, raw: string | null | undefined): string {
+  if (raw == null) return '';
+  return Object.prototype.hasOwnProperty.call(map, raw) ? map[raw] : raw;
+}
+
 /** Banner (b): a failed import recalc (rows may have been written, so no nothing-written sentence). */
 export function recalcBanner(status: RecalcStatus): string | null {
   if (status.kind === 'quotes' || status.state !== 'failed') return null;
-  const reason = (status.steps ?? []).find(s => s.error)?.error || status.current_step || '未知錯誤';
+  const reason = (status.steps ?? []).find(s => s.error)?.error || labelOf(RECALC_STEP_LABEL, status.current_step) || '未知錯誤';
   return `最近一次匯入的重算失敗：${reason}`;
 }
 

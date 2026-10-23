@@ -140,8 +140,9 @@ describe('Portfolio import controls', () => {
     const fixture = setup();
     expect(recalcCard(fixture)?.querySelector('h2')?.textContent?.trim()).toBe('匯入並重算');
     const content = recalcText(fixture);
-    expect(content).toContain('匯入重算：partial');
-    expect(content).toContain('報價更新（不含股利）：completed');
+    expect(content).toContain('匯入重算：部分完成');
+    expect(content).toContain('報價更新（不含股利）：完成');
+    expect(content).toContain('歷史股利核對：部分完成');
     expect(content).toContain('9802');
     expect(content).toContain('2026-09-10');
     expect(content).toContain('3.100000');
@@ -153,7 +154,33 @@ describe('Portfolio import controls', () => {
 
   it('does not label a quote-only run as completed import reconciliation', () => {
     service.getRecalcStatus.mockReturnValue(of({ state: 'completed', kind: 'quotes', quote_refresh: { state: 'completed' } }));
-    expect(recalcText(setup())).toContain('匯入重算：idle');
+    expect(recalcText(setup())).toContain('匯入重算：閒置');
+  });
+
+  it('an unknown future step renders its raw name with the status label, raw values in title', () => {
+    service.getRecalcStatus.mockReturnValue(of({
+      kind: 'import', state: 'partial', quote_refresh: { state: 'completed', steps: [{ name: 'future_quote_step', status: 'skipped' }] },
+      steps: [{ name: 'future_step', status: 'ok' }, { name: 'networth_backfill', status: 'failed', error: 'boom' }],
+    }));
+    const fixture = setup();
+    const content = recalcText(fixture);
+    expect(content).toContain('future_step：完成');
+    expect(content).toContain('淨值回補：失敗 boom');
+    expect(content).toContain('future_quote_step：略過');
+    const card = recalcCard(fixture)!;
+    expect(card.querySelector('.recalc-state')?.getAttribute('title')).toBe('partial');
+    expect(card.querySelector('.recalc-step span[title="networth_backfill"]')?.textContent?.trim()).toBe('淨值回補');
+  });
+
+  it('an unknown recalc state renders raw without throwing', () => {
+    const fixture = setup();
+    const component = fixture.componentInstance;
+    component.committed.set(true);
+    component.recalcStatus.set({ kind: 'import', state: 'weird' as never, steps: [{ name: 'future_step', status: 'odd' as never }] });
+    fixture.detectChanges();
+    expect(recalcText(fixture)).toContain('匯入重算：weird');
+    expect(recalcText(fixture)).toContain('future_step：odd');
+    expect(recalcCard(fixture)?.querySelector('.recalc-state')?.getAttribute('title')).toBe('weird');
   });
 
   it('updates running quote status without losing a partial import', () => {
@@ -163,8 +190,8 @@ describe('Portfolio import controls', () => {
     service.getRecalcStatus.mockReturnValue(of({ state: 'partial', kind: 'import', quote_refresh: { state: 'completed' } }));
     vi.advanceTimersByTime(5000);
     fixture.detectChanges();
-    expect(recalcText(fixture)).toContain('匯入重算：partial');
-    expect(recalcText(fixture)).toContain('報價更新（不含股利）：completed');
+    expect(recalcText(fixture)).toContain('匯入重算：部分完成');
+    expect(recalcText(fixture)).toContain('報價更新（不含股利）：完成');
     fixture.destroy();
   });
 
@@ -176,7 +203,7 @@ describe('Portfolio import controls', () => {
         const fixture = setup();
         expect(fixture.componentInstance.file()).toBeNull();
         expect(fixture.componentInstance.step()).toBe(1);
-        expect(recalcText(fixture)).toContain(`匯入重算：${state}`);
+        expect(recalcText(fixture)).toContain(`匯入重算：${({ running: '執行中', failed: '失敗', partial: '部分完成' })[state]}`);
         fixture.destroy();
       });
     }
@@ -189,9 +216,9 @@ describe('Portfolio import controls', () => {
       expect(recalcCard(fixture)).toBeNull();
       service.uploadCsv.mockReturnValue(of({ ...preview, dry_run: false, recalc_scheduled: true }));
       service.getRecalcStatus.mockReturnValue(of({
-        kind: 'import', state: 'running', started_at: '2026-10-23T10:00:00Z', quote_refresh: { state: 'running', steps: [{ name: 'quotes', status: 'ok' }] },
+        kind: 'import', state: 'running', started_at: '2026-10-23T10:00:00Z', quote_refresh: { state: 'running', steps: [{ name: 'networth_backfill', status: 'ok' }] },
         steps: [
-          { name: 'recalc_holdings', status: 'ok' },
+          { name: 'symbol_map_backfill', status: 'ok' },
           { name: 'dividend_auto_record', status: 'partial', detail: {
             deferred_events: [{ symbol: '2330', ex_date: '2026-09-18', cash_dividend_per_share: '5.0', payment_date: '2026-10-09', reason: 'deferred' }],
           } },
@@ -203,13 +230,14 @@ describe('Portfolio import controls', () => {
       const card = recalcCard(fixture)!;
       expect(card.querySelector('h2')?.textContent?.trim()).toBe('匯入並重算');
       const content = recalcText(fixture);
-      expect(content).toContain('匯入重算：running');
+      expect(content).toContain('匯入重算：執行中');
       expect(content).toContain('最近匯入重算：2026-10-23T10:00:00Z');
-      expect(content).toContain('recalc_holdings：ok');
-      expect(content).toContain('歷史股利核對：partial');
+      expect(content).toContain('代號對照補齊：完成');
+      expect(content).toContain('歷史股利核對：部分完成');
       expect(card.querySelector('.deferred-dividend')?.textContent).toContain('2330');
       expect(content).toContain('發放日：2026-10-09');
-      expect(content).toContain('報價更新（不含股利）：running');
+      expect(content).toContain('報價更新（不含股利）：執行中');
+      expect(content).toContain('淨值回補：完成');
       const rerun = Array.from(card.querySelectorAll<HTMLButtonElement>('button')).find(b => b.textContent?.trim() === '重算資料')!;
       expect(rerun.disabled).toBe(true);
       // The side cards come after the 匯入並重算 section in sheet / phone.
@@ -1007,7 +1035,7 @@ describe('Portfolio import controls', () => {
     it('a failed head attempt and a failed recalc show two banners, (a) first', () => {
       localStorage.setItem('hh-import-history', JSON.stringify([FAILED_HEAD]));
       service.getRecalcStatus.mockReturnValue(of({
-        kind: 'import', state: 'failed', steps: [{ name: 'dividends', status: 'failed', error: 'TWSE timeout' }],
+        kind: 'import', state: 'failed', steps: [{ name: 'dividend_auto_record', status: 'failed', error: 'TWSE timeout' }],
       }));
       const banners = Array.from(el(setup()).querySelectorAll('.import-banner')).map(b => norm(b.textContent));
       expect(banners).toEqual([
@@ -1018,8 +1046,8 @@ describe('Portfolio import controls', () => {
 
     it('a failed recalc alone shows banner (b) with the reason and no nothing-written sentence', () => {
       service.getRecalcStatus.mockReturnValue(of({
-        kind: 'import', state: 'failed', current_step: 'dividends',
-        steps: [{ name: 'dividends', status: 'failed', error: 'TWSE timeout' }],
+        kind: 'import', state: 'failed', current_step: 'dividend_auto_record',
+        steps: [{ name: 'dividend_auto_record', status: 'failed', error: 'TWSE timeout' }],
       }));
       const fixture = setup();
       const banners = el(fixture).querySelectorAll('.import-banner');
@@ -1027,7 +1055,13 @@ describe('Portfolio import controls', () => {
       expect(norm(banners[0].textContent)).toBe('最近一次匯入的重算失敗：TWSE timeout');
       expect(text(fixture)).not.toContain('整批未寫入');
       expect(text(fixture)).not.toContain('沒有寫入任何資料');
-      expect(text(fixture)).toContain('匯入重算：failed');
+      expect(text(fixture)).toContain('匯入重算：失敗');
+    });
+
+    it('a failed recalc without a step error names the current step label', () => {
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed', current_step: 'networth_backfill', steps: [] }));
+      const banners = Array.from(el(setup()).querySelectorAll('.import-banner')).map(b => norm(b.textContent));
+      expect(banners).toEqual(['最近一次匯入的重算失敗：淨值回補']);
     });
 
     it('a failed quote-only refresh shows no banner', () => {
@@ -1041,7 +1075,7 @@ describe('Portfolio import controls', () => {
       vi.useFakeTimers();
       service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'running' }));
       const fixture = setup();
-      expect(text(fixture)).toContain('匯入重算：running');
+      expect(text(fixture)).toContain('匯入重算：執行中');
       fixture.destroy();
     });
 
