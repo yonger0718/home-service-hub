@@ -24,9 +24,10 @@ Goals
 - 帳戶 page: 總負債 = negative account balances + open payables; a 淨值 line; a one-line note when rates are missing.
 
 Non-goals
-- No principal/interest split: a repayment reduces the loan by its full amount (HomeHub's existing loan semantics).
-  *[call: banks' amortisation tables are not modelled; the owner enters the remaining principal and the app tracks
-  it from there.]*
+- No new amortisation model: the schedule's own per-period `repayment` (principal) amounts settle the debt and its
+  `interest` line stays an expense — exactly HomeHub's existing loan semantics. The three 信貸 definitions already carry
+  MOZE's per-period principal/interest split (84 / 36 / 120 distinct overrides), so the tracked debt follows the bank's
+  table; the owner only confirms the starting figure.
 - Receivables (people owe the owner) are NOT added to 總資產 *[call]*; they stay in 借還款追蹤 only.
 - No new account kind, no "loan account" with a negative balance, no change to the loan creation path in the entry form.
 - No back-dating of already-posted periods: the payable starts at the entered remaining amount as of the entry date.
@@ -88,10 +89,14 @@ Body = `LoanIn` (reuse: `account_id`, `counterparty_id`, `category_id?`, `amount
    *[call, builder check: an overdue period would post against the new payable and subtract itself twice; the owner
    catches up (補記) first, then attaches with the principal remaining AFTER those periods]*. The remaining principal is
    therefore defined as "owed after the last posted period, before the next pending one".
-4. Remaining periods = `times - posted_count` (posted instances); refuse when
-   `line_amount * (remaining_periods - 1) >= loan.amount` → `ValidationError("amount", "剩餘期數乘以每期金額已達剩餘本金")`
-   *[call: the mirror of `_check_total` for a mid-way attach — the debt must outlast all but the last period, so the
-   schedule ends by `loan_closed` rather than leaving debt behind]*.
+4. Principal amounts per pending period = the repayment line's amount for that instance (`amount_override` when set,
+   else the template amount — the three 信貸 carry a per-period override on every instance: MOZE's amortisation, so the
+   repayment line is the PRINCIPAL share and the `interest` line is booked separately). Let `due_principal` = Σ of all
+   pending repayment amounts and `all_but_last` = that sum minus the last pending period's. Refuse when
+   `all_but_last >= loan.amount` → `ValidationError("amount", "剩餘期數乘以每期金額已達剩餘本金")` *[call: the mirror of
+   `_check_total` for a mid-way attach — the debt must outlast all but the last period, so the schedule ends by
+   `loan_closed` rather than leaving debt behind]*. `DefinitionDetailOut` gains `pending_principal: Decimal | None`
+   (= `due_principal` for installments with a repayment line, else None) so the sheet can prefill the amount.
 5. Create the payable exactly as `create_definition` does (kind `payable`, source `manual`, account = the repayment
    line's account, currency = that account's; `LoanIn.account_id` must equal it, else 422 `account` 「貸款要掛在還款帳戶」)
    AND, in the same transaction, a `balance_adjustment` entry on the same account, same `entry_date`, amount
@@ -138,7 +143,8 @@ currency; a currency without a rate is listed under `unconverted` (and not added
 - A button `掛上貸款` in the actions row opens an inline form inside the sheet (no new overlay): 對象 (counterparty
   select from `getCounterparties()`, with the existing "新增對象" path if the sheet already has one; otherwise a text
   hint to create the bank under 記帳設定 first — the builder picks whichever exists), 剩餘本金 (decimal input, required,
-  > 0), 起算日 (date, default today in the SPA — `LoanIn.entry_date` is required), 名稱 (default = definition name), 分類 (optional category select for kind
+  > 0, PREFILLED with `detail.pending_principal` = 之後各期本金合計 — the owner may override it, e.g. after an early
+  repayment), 起算日 (date, default today in the SPA — `LoanIn.entry_date` is required), 名稱 (default = definition name), 分類 (optional category select for kind
   `payable` if the picker is cheap to embed; otherwise omitted and the backend's default applies). 帳戶 is not asked:
   the request sends the repayment line's `account_id` (the backend requires it; the balance is neutralised by the
   adjustment, §4.1 step 5). The form explains in one line: 「輸入到上一期為止還欠多少；若有逾期未補的期數先補記」.
