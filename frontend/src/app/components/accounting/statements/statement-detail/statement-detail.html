@@ -171,7 +171,7 @@
                 </p>
               }
               @if (row.caseId !== null) {
-                <p class="muted">待處理，操作在下一步。</p>
+                <p class="muted">待處理：到 <a routerLink="/accounting/reminders" [queryParams]="{ tab: 'todo' }">提醒中心 › 待處理</a> 操作。</p>
               }
             </div>
           }

@@ -372,8 +372,10 @@ describe('StatementDetailComponent', () => {
     expect(ledgerRows.map((row) => text(row.querySelector('.name')))).toEqual(['午餐', '餘額差異']);
     ledgerRows[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
     fixture.detectChanges();
-    expect(text(el.querySelector('.match-panel'))).toContain('待處理，操作在下一步。');
+    expect(text(el.querySelector('.match-panel'))).toContain('待處理：到 提醒中心 › 待處理 操作。');
     expect(el.querySelector('.match-panel button')).toBeNull();
+    const link = el.querySelector('.match-panel a') as HTMLAnchorElement | null;
+    expect(link?.getAttribute('href')).toBe('/accounting/reminders?tab=todo');
   });
 
   it('ignores a stale detail when the statement id changes', () => {
