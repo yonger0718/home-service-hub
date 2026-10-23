@@ -52,8 +52,14 @@ def legacy_stock_exists(db, symbol, on_date):
         Transaction.trade_date < start + timedelta(days=1)).limit(1)) is not None
 
 
+# Upstream facts only. Once a row exists its fee and tax belong to the owner
+# (Decision 8), so a deduction edit alone never counts as a source change.
+_SOURCE_FIELDS = ('cash_dividend_per_share', 'quantity_at_record_date', 'stock_dividend_shares',
+                  'payment_date', 'payment_date_source')
+
+
 def _changed(row, values):
-    return any(getattr(row, k) != v for k, v in values.items())
+    return any(getattr(row, k) != values[k] for k in _SOURCE_FIELDS)
 
 
 def persist_entitlement(db: Session, event, qty: Decimal, payment_date=None, *, default_fee=None):
@@ -77,12 +83,20 @@ def persist_entitlement(db: Session, event, qty: Decimal, payment_date=None, *, 
     if any(row.entitlement_key != key or row.receipt_status == 'legacy_unknown' for row in matches):
         return None, 'legacy or duplicate dividend requires explicit resolution; receipt not inferred'
     insert = sqlite_insert if db.get_bind().dialect.name == 'sqlite' else pg_insert
-    db.execute(insert(Dividend).values(
+    inserted = db.execute(insert(Dividend).values(
         symbol=event.symbol, market='TW', currency='TWD', ex_dividend_date=datetime.combine(event.ex_date, time.min, TW),
         received_date=None, receipt_status='pending', entitlement_key=key,
         source=f'auto:{event.source}', revision=1, **values,
-    ).on_conflict_do_nothing(index_elements=['entitlement_key']))
+    ).on_conflict_do_nothing(index_elements=['entitlement_key'])).rowcount == 1
     row = db.scalar(select(Dividend).where(Dividend.entitlement_key == key).with_for_update().execution_options(populate_existing=True))
+    if not inserted:
+        # Existing row: keep the owner's deductions; only the gross follows upstream.
+        net = (gross - row.fee - row.tax).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+        if shares > 0:
+            amount = max(Decimal(0), net)
+        else:
+            amount = max(MIN_DIVIDEND_AMOUNT, net) if gross > 0 else Decimal(0)
+        values.update(fee=row.fee, tax=row.tax, amount=amount)
     if payment_date is None and row.payment_date is not None:
         values.update(payment_date=row.payment_date, payment_date_source=row.payment_date_source)
     if row.receipt_status == 'confirmed':
