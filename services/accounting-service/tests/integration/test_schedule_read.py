@@ -104,13 +104,14 @@ def test_loan_detail_after_three_periods(db_session, seed, today):
     out = read.definition_out(db_session, loan)
     summary = read.loan_schedule_for(db_session, payable.id)
 
+    # spec §4.1b: remaining is the positive magnitude still owed (was the signed −275001)
     assert (out["remaining"], out["repaid"], out["posted_count"], out["times"]) == (
-        Decimal("-275001"), Decimal("24999"), 3, 36,
+        Decimal("275001"), Decimal("24999"), 3, 36,
     )
     assert (out["next_due_date"], out["loan_entry_id"], out["needs_check"]) == (date(2027, 2, 9), payable.id, False)
     assert out["next_amount"] == [{"currency": "TWD", "amount": Decimal("-8953")}]
     assert (summary["remaining"], summary["repaid"], summary["posted_count"], summary["next_due_date"]) == (
-        Decimal("-275001"), Decimal("24999"), 3, date(2027, 2, 9),
+        Decimal("275001"), Decimal("24999"), 3, date(2027, 2, 9),
     )
     assert read.loan_schedule_for(db_session, payable.id + 1000) is None
 
@@ -127,6 +128,22 @@ def test_card_installment_remaining_from_posted_entries(db_session, seed, card, 
     seed.instance(phone, 2, date(2026, 11, 15))
     assert read.loan_summary(db_session, phone) == (Decimal("6700"), None)
     assert read.definition_out(db_session, phone)["remaining"] == Decimal("6700")
+
+
+def test_unlinked_installment_remaining_from_posted_plain_entries(db_session, seed, today):
+    # Task 1 review carry-over: a repayment line without a loan falls through to the total_amount progress.
+    today(date(2026, 10, 20))
+    bank = seed.account("薪轉")
+    loan = seed.definition(
+        [seed.line("repayment", bank, "8333")], kind="installment", name="信貸", anchor=date(2026, 9, 8), times=36,
+        total_amount=Decimal("300000"),
+    )
+    plain = seed.entry(bank, "-8333", day=date(2026, 9, 8), source="schedule")
+    seed.instance(loan, 1, date(2026, 9, 8), status="posted", entries=[plain])
+    seed.instance(loan, 2, date(2026, 10, 8))
+    assert read.loan_summary(db_session, loan) == (Decimal("291667"), None)
+    out = read.definition_out(db_session, loan)
+    assert (out["remaining"], out["loan_remaining"], out["needs_check"]) == (Decimal("291667"), None, False)
 
 
 def test_needs_check_and_failing(db_session, seed, today):

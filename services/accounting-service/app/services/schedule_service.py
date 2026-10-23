@@ -12,13 +12,14 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import ScheduleDefinition, ScheduleInstance
-from ..schemas.schedules import DefinitionIn, DefinitionUpdateIn, InstanceUpdateIn
+from ..models import Account, LedgerEntry, ScheduleDefinition, ScheduleInstance
+from ..schemas.schedules import DefinitionIn, DefinitionUpdateIn, InstanceUpdateIn, LoanIn
 from ..schemas.writes import EntryIn
 from . import entry_write_service, ledger_service
 from . import schedule_generation as generation
 from . import schedule_posting as posting
 from . import schedule_rules as rules
+from .schedule_read import remaining_principal_series
 from .edit_lock import EditLockedError, import_locked
 from .errors import ConflictError, NotFoundError, ValidationError
 from .schedule_locks import (
@@ -77,6 +78,21 @@ def _set_mode(definition: ScheduleDefinition, mode: str, today: date) -> None:
     definition.posting_mode = mode
 
 
+def _insert_payable(db: Session, loan: LoanIn) -> int:
+    """The loan's payable original (kind payable, source manual), errors named under `loan.`."""
+    try:
+        prepared = entry_write_service.prepare_entry(
+            db,
+            EntryIn(
+                account_id=loan.account_id, kind="payable", amount=loan.amount, entry_date=loan.entry_date,
+                category_id=loan.category_id, counterparty_id=loan.counterparty_id, name=loan.name,
+            ),
+        )
+    except ValidationError as exc:
+        raise ValidationError(f"loan.{exc.field}", exc.message) from exc
+    return entry_write_service.insert_prepared(db, prepared, remember=False)
+
+
 def create_definition(db: Session, payload: DefinitionIn) -> int:
     take_import_key_shared(db)
     today = _today()
@@ -87,17 +103,7 @@ def create_definition(db: Session, payload: DefinitionIn) -> int:
         if payload.kind != "installment":
             raise ValidationError("loan", "只有分期可以同時建立貸款")
         loan = payload.loan
-        try:
-            prepared = entry_write_service.prepare_entry(
-                db,
-                EntryIn(
-                    account_id=loan.account_id, kind="payable", amount=loan.amount, entry_date=loan.entry_date,
-                    category_id=loan.category_id, counterparty_id=loan.counterparty_id, name=loan.name,
-                ),
-            )
-        except ValidationError as exc:
-            raise ValidationError(f"loan.{exc.field}", exc.message) from exc
-        loan_id = entry_write_service.insert_prepared(db, prepared, remember=False)
+        loan_id = _insert_payable(db, loan)
         for line in template["lines"]:
             if line["kind"] == "repayment" and line["loan_entry_id"] is None:
                 line["loan_entry_id"] = loan_id
@@ -133,6 +139,7 @@ def update_definition(db: Session, definition_id: int, payload: DefinitionUpdate
     tomorrow = today + timedelta(days=1)
     _check_rule(definition.kind, payload)
     template = normalize_template(payload.template.model_dump())
+    _keep_loan_boundary(definition.template, template)
     validate_template(db, template)
     total = payload.total_amount if payload.total_amount is not None else definition.total_amount
     if definition.kind != "installment":
@@ -202,6 +209,78 @@ def update_definition(db: Session, definition_id: int, payload: DefinitionUpdate
         db.flush()
         generation.generate(db, definition, today)
     generation.end_if_complete(db, definition)
+
+
+def _keep_loan_boundary(old: dict, new: dict) -> None:
+    """Spec §4.0 lifecycle guard: a PUT that keeps the loan keeps its boundary. A client that does not know
+    loan_from_seq (sends none) gets the stored one copied forward; a different one is refused — only 掛上貸款 sets it."""
+    old_ref, new_ref = loan_line(old), loan_line(new)
+    if old_ref is None or new_ref is None:
+        return
+    old_line, (index, new_line) = old_ref[1], new_ref
+    if old_line.get("loan_entry_id") is None or new_line.get("loan_entry_id") != old_line.get("loan_entry_id"):
+        return
+    stored = old_line.get("loan_from_seq")
+    if new_line.get("loan_from_seq") is None:
+        new_line["loan_from_seq"] = stored
+    elif stored is not None and new_line["loan_from_seq"] != stored:
+        raise ValidationError(f"template.lines[{index}].loan_from_seq", "起算期只能由掛上貸款設定")
+
+
+def attach_loan(db: Session, definition_id: int, loan: LoanIn) -> int:
+    """Spec §4.1: link a new payable to an existing installment's repayment line from the lowest pending period on,
+    with a balance_adjustment of −amount on the same account and dates (the cash came in long ago and already sits
+    in the balance, so the pair nets to zero on every date). Returns the payable id. Nothing else of the definition
+    changes: times, total_amount, first_seq, end_date, instances and their overrides, generated_until."""
+    take_import_key_shared(db)
+    definition = lock_definition(db, definition_id)
+    if definition.moze_id is not None and not import_locked():
+        raise EditLockedError()  # D36: the next import would overwrite a template edit
+    if definition.kind != "installment":
+        raise ValidationError("loan", "只有分期可以掛貸款")
+    if definition.status == "ended":
+        raise ConflictError("definition_ended")
+    template = copy.deepcopy(definition.template)
+    index = next((i for i, line in enumerate(template["lines"]) if line.get("kind") == "repayment"), None)
+    if index is None:
+        raise ValidationError("loan", "排程沒有還款那一行")  # collection lines do not qualify
+    line = template["lines"][index]
+    if line.get("loan_entry_id") is not None:
+        raise ConflictError("loan_already_attached")
+    if loan.account_id != line["account_id"]:
+        raise ValidationError("account", "貸款要掛在還款帳戶")  # the payable takes the line's account and currency
+    pending = [row for row in lock_instances(db, definition_id) if row.status == "pending"]
+    if not pending:
+        raise ConflictError("nothing_pending")
+    if any(row.due_date <= loan.entry_date for row in pending):
+        raise ConflictError("catch_up_first")  # post (補記) those periods first: they post as plain expenses (§4.0)
+    from_seq = min(row.seq for row in pending)
+    series = remaining_principal_series(db, definition)
+    if loan.amount > sum(series, Decimal(0)):
+        raise ValidationError("amount", "超過之後各期本金合計")
+    if loan.amount <= sum(series[:-1], Decimal(0)):
+        raise ValidationError("amount", "剩餘期數乘以每期金額已達剩餘本金")
+
+    payable = db.get(LedgerEntry, _insert_payable(db, loan))
+    account = db.get(Account, payable.account_id)
+    db.add(LedgerEntry(  # create_balance_adjustment's row with an explicit amount (not its checkpoint delta)
+        account_id=account.id,
+        currency=account.currency,
+        kind="balance_adjustment",
+        amount=-payable.amount,
+        entry_date=payable.entry_date,
+        entry_time=None,
+        posted_date=payable.posted_date,
+        category_id=entry_write_service.system_category_id(db, "balance_adjustment"),
+        name=f"掛帳調整：{loan.name or definition.name}",
+        source="manual",
+    ))
+    line["loan_entry_id"], line["loan_from_seq"] = payable.id, from_seq
+    definition.template = template
+    definition.template_owner_edited = True
+    validate_template(db, template)
+    db.flush()
+    return payable.id
 
 
 def delete_definition(db: Session, definition_id: int) -> None:

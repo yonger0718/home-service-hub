@@ -24,6 +24,7 @@ from ..schemas.schedules import (
     DefinitionUpdateIn,
     InstanceOut,
     InstanceUpdateIn,
+    LoanIn,
     ModeIn,
     RepostIn,
     ResumeIn,
@@ -78,6 +79,17 @@ def put_definition(definition_id: int, payload: DefinitionUpdateIn, db: Session 
         schedule_service.update_definition(db, definition_id, payload)
     db.commit()
     return _definition_out(db, definition_id)
+
+
+@router.post("/definitions/{definition_id}/loan", response_model=DefinitionDetailOut, status_code=201)
+def attach_loan(definition_id: int, payload: LoanIn, db: Session = Depends(get_db)):
+    """掛上貸款 (spec §4.1): a payable for the remaining principal on the repayment line, from the lowest pending period."""
+    with service_errors():
+        schedule_service.attach_loan(db, definition_id, payload)
+    db.commit()
+    db.expire_all()
+    with service_errors():
+        return schedule_read.get_definition(db, definition_id)
 
 
 @router.delete("/definitions/{definition_id}", status_code=204)

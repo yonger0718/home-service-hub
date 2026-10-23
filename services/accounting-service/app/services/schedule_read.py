@@ -95,20 +95,64 @@ def instance_out(
     }
 
 
-def loan_summary(db: Session, definition: ScheduleDefinition) -> tuple[Decimal | None, Decimal | None]:
-    """(remaining, repaid) per spec "Loan summary"."""
+def linked_loan(db: Session, definition: ScheduleDefinition) -> LedgerEntry | None:
+    """The payable / receivable original the definition's loan line references (None when unlinked)."""
     reference = loan_line(definition.template)
-    if reference is not None:
-        loan_id = reference[1].get("loan_entry_id")
-        loan = db.get(LedgerEntry, loan_id) if loan_id is not None else None
-        if loan is None:
-            return None, None
-        open_amount = Decimal(0) if loan.is_closed else settlement_service.open_amount(db, loan)
-        remaining = -open_amount if loan.kind == "payable" and open_amount != 0 else open_amount
+    loan_id = reference[1].get("loan_entry_id") if reference is not None else None
+    return db.get(LedgerEntry, loan_id) if loan_id is not None else None
+
+
+def loan_open_amount(db: Session, loan: LedgerEntry) -> Decimal:
+    """What is still owed / to be collected, a positive magnitude (spec §4.1b)."""
+    return Decimal(0) if loan.is_closed else settlement_service.open_amount(db, loan)
+
+
+def remaining_principal_series(db: Session, definition: ScheduleDefinition) -> list[Decimal]:
+    """Spec §4.1 step 4: the repayment line's amount for every seq from the lowest pending one (max seq + 1 when
+    none is pending) to `times` — the instance's override when it exists and has one, else the template amount, so
+    periods beyond the generation horizon count too. [] without `times` or a repayment line."""
+    if definition.kind != "installment" or definition.times is None:
+        return []
+    index = next((i for i, line in enumerate(definition.template["lines"]) if line.get("kind") == "repayment"), None)
+    if index is None:
+        return []
+    rows = {
+        row.seq: row
+        for row in db.scalars(select(ScheduleInstance).where(ScheduleInstance.definition_id == definition.id))
+    }
+    pending = [seq for seq, row in rows.items() if row.status == "pending"]
+    start = min(pending) if pending else max(rows, default=definition.first_seq - 1) + 1
+    template_amount = Decimal(str(definition.template["lines"][index]["amount"]))
+    series = []
+    for seq in range(start, definition.times + 1):
+        row = rows.get(seq)
+        override = row.amount_override if row is not None else None
+        series.append(Decimal(str(override[index])) if override is not None and index < len(override) else template_amount)
+    return series
+
+
+def pending_principal(db: Session, definition: ScheduleDefinition) -> Decimal | None:
+    """Σ remaining_principal_series — the remaining principal 掛上貸款 prefills (None when there is no series)."""
+    series = remaining_principal_series(db, definition)
+    return sum(series, Decimal(0)) if series else None
+
+
+def _progress_kinds(line_kind: str) -> tuple[str, ...]:
+    """Ledger kinds a posted first line may have written: a loan-kind line without a loan posts a plain expense /
+    income (spec §4.0), with one a settlement of the loan's kind."""
+    plain_kind = {"repayment": "expense", "collection": "income"}.get(line_kind)
+    return (LEDGER_KINDS[line_kind], plain_kind) if plain_kind else (LEDGER_KINDS[line_kind],)
+
+
+def loan_summary(db: Session, definition: ScheduleDefinition) -> tuple[Decimal | None, Decimal | None]:
+    """(remaining, repaid) per spec "Loan summary", both positive magnitudes (spec §4.1b). A loan-kind line without
+    a loan falls through to the installment's total_amount progress."""
+    loan = linked_loan(db, definition)
+    if loan is not None:
         repaid = db.scalar(
             select(func.coalesce(func.sum(func.abs(LedgerEntry.amount)), 0)).where(LedgerEntry.settles_entry_id == loan.id)
         )
-        return remaining, Decimal(repaid)
+        return loan_open_amount(db, loan), Decimal(repaid)
     if definition.kind == "installment" and definition.total_amount is not None:
         first = definition.template["lines"][0]
         posted = db.scalars(
@@ -123,7 +167,7 @@ def loan_summary(db: Session, definition: ScheduleDefinition) -> tuple[Decimal |
                 select(LedgerEntry).where(
                     LedgerEntry.id.in_(ids) if ids else false(),
                     LedgerEntry.account_id == first["account_id"],
-                    LedgerEntry.kind == LEDGER_KINDS[first["kind"]],
+                    LedgerEntry.kind.in_(_progress_kinds(first["kind"])),
                 )
             )
         }
@@ -169,7 +213,8 @@ def definition_out(
     )
     remaining, repaid = loan_summary(db, definition)
     reference = loan_line(definition.template)
-    loan_open = reference is not None and remaining is not None and remaining != 0
+    loan_remaining = remaining if linked_loan(db, definition) is not None else None
+    loan_open = loan_remaining is not None and loan_remaining != 0
     _, icon, color = names.category(definition.template["lines"][0].get("category_id"))
     next_amount = (
         instance_out(db, next_instance, today=today, definition=definition, names=names)["totals"] if next_instance else []
@@ -193,7 +238,7 @@ def definition_out(
         "posted_count": counts.get("posted", 0), "skipped_count": counts.get("skipped", 0),
         "pending_count": counts.get("pending", 0),
         "next_due_date": next_instance.due_date if next_instance else None, "next_amount": next_amount,
-        "remaining": remaining, "repaid": repaid,
+        "remaining": remaining, "repaid": repaid, "loan_remaining": loan_remaining,
         "loan_entry_id": reference[1].get("loan_entry_id") if reference else None,
         "needs_check": definition.review_reason is not None or (definition.status == "ended" and loan_open),
         "failing": (
@@ -221,6 +266,7 @@ def get_definition(db: Session, definition_id: int) -> dict:
         raise NotFoundError(f"schedule definition {definition_id} not found")
     names, today = _Names(db), ledger_service._today()
     out = definition_out(db, definition, today=today, names=names)
+    out["pending_principal"] = pending_principal(db, definition)
     rows = db.scalars(
         select(ScheduleInstance).where(ScheduleInstance.definition_id == definition_id).order_by(ScheduleInstance.seq)
     )

@@ -205,6 +205,8 @@ class InstanceOut(BaseModel):
 
 class DefinitionDetailOut(DefinitionOut):
     instances: list[InstanceOut]
+    pending_principal: Decimal | None = None  # Σ of the repayment line from the lowest pending period (spec §4.1b)
+    loan_remaining: Decimal | None = None  # open amount of the linked loan, None when unlinked
 
 
 class FailedOut(BaseModel):

@@ -63,7 +63,8 @@ def test_loan_detail_after_three_periods(client, db_session, seed, today):
 
     body = client.get(f"/entries/{payable.id}").json()["loan_schedule"]
 
-    assert Decimal(body["remaining"]) == Decimal("-275001") and Decimal(body["repaid"]) == Decimal("24999")
+    # spec §4.1b: remaining is the positive magnitude still owed (was the signed −275001)
+    assert Decimal(body["remaining"]) == Decimal("275001") and Decimal(body["repaid"]) == Decimal("24999")
     assert (body["posted_count"], body["times"], body["next_due_date"], body["definition_id"]) == (3, 36, "2027-02-09", loan.id)
     assert (body["name"], body["status"], body["posting_mode"], body["needs_check"]) == ("信貸 每月還款", "active", "auto", False)
 
