@@ -3,15 +3,16 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import Select, delete, func, select
 from sqlalchemy.orm import Session
 
 from ..models.broker_account import BrokerAccount, BrokerEnum
 from ..models.cash_transaction import CashTransaction, CashTxnSource, CashTxnType
-from ..models.portfolio import Transaction, TransactionType
+from ..models.portfolio import Dividend, Transaction, TransactionType
 from ..schemas.cash_account import (
     AccountsListOut,
     BalancePoint,
@@ -709,6 +710,81 @@ def _merge_legs_into_groups(rows: list[CashTransaction]) -> list[CashTransaction
     return groups + standalone
 
 
+_TAIPEI = ZoneInfo("Asia/Taipei")
+
+
+def _tpe_calendar_date(value: datetime) -> date:
+    """Asia/Taipei calendar date of a ``transactions.trade_date`` instant.
+
+    The column is ``timestamptz``, so Postgres returns aware datetimes. A naive
+    value is read as UTC, as ``portfolio_service._resolve_sort_trade_date`` does.
+    """
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(_TAIPEI).date()
+
+
+def _iter_with_legs(rows: list[CashTransactionOut]):
+    for row in rows:
+        yield row
+        if row.child_legs:
+            yield from row.child_legs
+
+
+def annotate_related(
+    session: Session, rows: list[CashTransactionOut]
+) -> list[CashTransactionOut]:
+    """Fill the response-only ``related_*`` fields on rows and their child legs.
+
+    Issues at most two statements (one per table, skipped when unused). The
+    synthetic merged parent carries the real id in ``related_transaction_id``;
+    its negative ``id`` is never looked up. Missing parents leave all fields None.
+    """
+    all_rows = list(_iter_with_legs(rows))
+    transaction_ids = {
+        row.related_transaction_id
+        for row in all_rows
+        if row.related_transaction_id is not None
+    }
+    dividend_ids = {
+        row.related_dividend_id
+        for row in all_rows
+        if row.related_dividend_id is not None and row.type == CashTxnType.DIVIDEND_CASH
+    }
+    transactions: dict[int, Transaction] = {}
+    dividends: dict[int, Dividend] = {}
+    if transaction_ids:
+        transactions = {
+            txn.id: txn
+            for txn in session.execute(
+                select(Transaction).where(Transaction.id.in_(transaction_ids))
+            ).scalars()
+        }
+    if dividend_ids:
+        dividends = {
+            div.id: div
+            for div in session.execute(
+                select(Dividend).where(Dividend.id.in_(dividend_ids))
+            ).scalars()
+        }
+
+    for row in all_rows:
+        txn = transactions.get(row.related_transaction_id)
+        if txn is not None:
+            row.related_symbol = txn.symbol
+            row.related_quantity = txn.quantity
+            row.related_trade_date = _tpe_calendar_date(txn.trade_date)
+        if row.type == CashTxnType.DIVIDEND_CASH:
+            div = dividends.get(row.related_dividend_id)
+            if div is not None:
+                row.related_symbol = div.symbol
+                row.related_per_share = div.cash_dividend_per_share
+                row.related_quantity = div.quantity_at_record_date
+                row.related_fee = div.fee
+                row.related_tax = div.tax
+    return rows
+
+
 def _cash_virtual_sort_value(row: CashTransactionOut, field: str) -> object:
     if field == "type":
         return row.type.value if isinstance(row.type, CashTxnType) else row.type
@@ -725,7 +801,7 @@ def list_cash_transactions(
     offset: int = 0,
     limit: int = 25,
     merge_related: bool = False,
-) -> tuple[list[CashTransaction | CashTransactionOut], int]:
+) -> tuple[list[CashTransactionOut], int]:
     if date_from is not None and date_to is not None and date_from > date_to:
         raise ValueError("date_from must be <= date_to")
 
@@ -743,7 +819,7 @@ def list_cash_transactions(
             reverse=reverse,
         )
         total = len(virtual_rows)
-        return virtual_rows[offset : offset + limit], total
+        return annotate_related(session, virtual_rows[offset : offset + limit]), total
 
     total = session.execute(
         select(func.count()).select_from(CashTransaction).where(*filters)
@@ -758,7 +834,7 @@ def list_cash_transactions(
         .offset(offset)
         .limit(limit)
     ).scalars().all()
-    return rows, total
+    return annotate_related(session, [_cash_transaction_out(row) for row in rows]), total
 
 
 def list_accounts(

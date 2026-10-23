@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>帳戶 · 手機</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 390px; height: 1100px; position: relative; overflow: hidden; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500">
+  <div style="padding: 20px 16px 110px; display: flex; flex-direction: column; gap: 14px">
+
+    <header style="display: flex; align-items: center; justify-content: space-between">
+      <h1 style="margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.03em">財務</h1>
+      <div style="display: flex; gap: 8px">
+      <a href="#" aria-label="新增帳戶" style="width: 44px; height: 44px; border-radius: 22px; background: {{t.primary}}; color: #FFFFFF; display: flex; align-items: center; justify-content: center; text-decoration: none">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14 M5 12h14"></path></svg>
+      </a>
+      <a href="SettingsPhone.dc.html" aria-label="設定" style="width: 44px; height: 44px; border-radius: 22px; border: 1px solid {{t.border}}; box-sizing: border-box; background: {{t.surface}}; color: {{t.text}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M12 2v3 M12 19v3 M4.9 4.9l2.1 2.1 M17 17l2.1 2.1 M2 12h3 M19 12h3 M4.9 19.1L7 17 M17 7l2.1-2.1"></path></svg>
+      </a>
+      </div>
+    </header>
+
+    <nav aria-label="財務頁面" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); background: {{t.soft}}; border-radius: 12px; padding: 3px; gap: 2px">
+      <sc-for list="{{subTabs}}" as="s" hint-placeholder-count="3">
+        <a href="{{s.href}}" aria-current="{{s.current}}" aria-label="{{s.aria}}" style="background: {{s.bg}}; color: {{s.fg}}; font-size: 14px; font-weight: {{s.weight}}; min-height: 40px; border-radius: 9px; box-shadow: {{s.shadow}}; display: flex; align-items: center; justify-content: center; gap: 6px; text-decoration: none">
+          {{s.label}}
+          <sc-if value="{{s.hasCount}}" hint-placeholder-val="{{false}}">
+            <span aria-hidden="true" style="min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: {{t.primary}}; color: #FFFFFF; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center">{{s.count}}</span>
+          </sc-if>
+        </a>
+      </sc-for>
+    </nav>
+
+    <section aria-label="淨資產" style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 18px; display: flex; flex-direction: column; gap: 12px">
+      <div style="display: flex; flex-direction: column; gap: 2px">
+        <span style="font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">淨資產 · TWD</span>
+        <b style="font-size: 32px; font-weight: 800; letter-spacing: -0.03em">$1,116,420</b>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px">
+        <div style="background: {{t.soft}}; border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 2px">
+          <span style="font-size: 12px; color: {{t.muted}}">總資產</span>
+          <b style="font-size: 16px; font-weight: 700">1,140,180</b>
+        </div>
+        <div style="background: {{t.soft}}; border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 2px">
+          <span style="font-size: 12px; color: {{t.muted}}">總負債</span>
+          <b style="font-size: 16px; font-weight: 700; color: {{t.out}}">23,760</b>
+        </div>
+      </div>
+      <small style="font-size: 12px; color: {{t.muted}}">最近匯入 10/21 22:10 · 成功 · 待確認 1 筆</small>
+    </section>
+
+    <sc-for list="{{groups}}" as="g" hint-placeholder-count="4">
+      <section aria-label="{{g.name}}" style="display: flex; flex-direction: column; gap: 6px">
+        <button type="button" aria-expanded="true" style="border: 0; background: transparent; font: inherit; display: flex; justify-content: space-between; align-items: center; min-height: 32px; padding: 0 6px; color: {{t.muted}}">
+          <span style="display: flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 700">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+            {{g.name}}
+          </span>
+          <b style="font-size: 13px; font-weight: 700; color: {{g.totalColor}}">{{g.total}}</b>
+        </button>
+        <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 16px; overflow: hidden">
+          <sc-for list="{{g.rows}}" as="a" hint-placeholder-count="2">
+            <a href="#" style="display: flex; align-items: center; gap: 12px; padding: 10px 14px; min-height: 60px; color: {{t.text}}; border-bottom: 1px solid {{t.line}}; text-decoration: none">
+              <span style="width: 40px; height: 40px; border-radius: 13px; background: {{a.color}}; display: flex; align-items: center; justify-content: center; flex: none">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{a.icon}}"></path></svg>
+              </span>
+              <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px">
+                <b style="font-size: 15px; font-weight: 700">{{a.name}}</b>
+                <small style="font-size: 12px; color: {{t.muted}}">{{a.meta}}</small>
+              </span>
+              <span style="display: flex; flex-direction: column; align-items: flex-end; gap: 4px">
+                <b style="font-size: 15px; font-weight: 700; color: {{a.balColor}}">{{a.bal}}</b>
+                <sc-if value="{{a.hasDue}}" hint-placeholder-val="{{false}}">
+                  <span style="font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 8px; background: {{a.dueBg}}; color: {{a.dueFg}}">{{a.due}}</span>
+                </sc-if>
+              </span>
+            </a>
+          </sc-for>
+        </div>
+      </section>
+    </sc-for>
+  </div>
+
+  <nav aria-label="主要導覽" style="position: absolute; left: 0; right: 0; bottom: 0; height: 84px; box-sizing: border-box; padding: 6px 8px 22px; background: {{t.glass}}; border-top: 1px solid {{t.border}}; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: center">
+    <sc-for list="{{tabs}}" as="tb" hint-placeholder-count="5">
+      <sc-if value="{{tb.isAdd}}" hint-placeholder-val="{{false}}">
+        <a href="EntryPhone.dc.html" aria-label="記一筆" style="justify-self: center; width: 52px; height: 52px; border-radius: 18px; background: {{t.primary}}; color: #FFFFFF; display: flex; align-items: center; justify-content: center; box-shadow: 0 6px 16px rgba(83,58,253,.28); text-decoration: none">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14 M5 12h14"></path></svg>
+        </a>
+      </sc-if>
+      <sc-if value="{{tb.isTab}}" hint-placeholder-val="{{true}}">
+        <a href="{{tb.href}}" aria-label="{{tb.aria}}" aria-current="{{tb.current}}" style="position: relative; display: flex; flex-direction: column; align-items: center; gap: 3px; min-height: 48px; justify-content: center; color: {{tb.fg}}; font-size: 11px; font-weight: {{tb.weight}}; text-decoration: none">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{tb.icon}}"></path></svg>
+          <span>{{tb.label}}</span>
+          <sc-if value="{{tb.dot}}" hint-placeholder-val="{{false}}">
+            <span aria-hidden="true" style="position: absolute; top: 4px; left: 50%; margin-left: 8px; width: 8px; height: 8px; border-radius: 4px; background: {{tb.dotColor}}; box-shadow: 0 0 0 2px {{t.surface}}"></span>
+          </sc-if>
+        </a>
+      </sc-if>
+    </sc-for>
+  </nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":390,"height":1100}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const dark = !!(this.props.dark ?? false);
+    const t = dark ? {
+      bg: '#0f1218', surface: '#171c24', glass: 'rgba(23,28,36,0.92)', soft: '#202733', border: '#313a48', line: '#252c38',
+      text: '#f3f6fb', muted: '#99a3b3', primary: '#8b7dff', primarySoft: 'rgba(139,125,255,0.16)',
+      successSoft: 'rgba(141,174,199,0.15)', warnSoft: 'rgba(150,165,197,0.15)', out: '#ff6369',
+      shadow: '0 12px 28px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)'
+    } : {
+      bg: '#f1f3f6', surface: '#fafcff', glass: 'rgba(250,252,255,0.92)', soft: '#edf1f6', border: '#d8dee7', line: '#e8ecf2',
+      text: '#151821', muted: '#6b7280', primary: '#533afd', primarySoft: 'rgba(83,58,253,0.10)',
+      successSoft: 'rgba(95,127,152,0.12)', warnSoft: 'rgba(123,135,168,0.12)', out: '#e5484d',
+      shadow: '0 10px 30px rgba(18,26,40,0.045), inset 0 1px 0 rgba(255,255,255,0.62)'
+    };
+    const I = {
+      wallet: 'M3 7v10a2 2 0 0 0 2 2h15V9H5a2 2 0 0 1-2-2zm0 0a2 2 0 0 1 2-2h13v4 M16 14h.01',
+      bank: 'M3 10l9-6 9 6 M5 10v8 M10 10v8 M14 10v8 M19 10v8 M3 20h18',
+      card: 'M3 6h18v12H3z M3 10h18 M7 15h3',
+      chart: 'M3 17l6-6 4 4 8-8 M15 7h6v6'
+    };
+    const A = (o) => ({ ...o, hasDue: !!o.due, balColor: o.neg ? t.out : t.text });
+    const groups = [
+      { name: '現金', total: '$3,280', totalColor: t.text, rows: [
+        A({ name: '錢包', meta: '現金', icon: I.wallet, color: '#b7843f', bal: '$3,280' })
+      ] },
+      { name: '銀行', total: '$698,540', totalColor: t.text, rows: [
+        A({ name: '台新 Richart', meta: '活存 · 薪轉', icon: I.bank, color: '#b9687e', bal: '$286,540' }),
+        A({ name: '中華郵政', meta: '活儲', icon: I.bank, color: '#4f9a72', bal: '$412,000' })
+      ] },
+      { name: '信用卡', total: '−$23,760', totalColor: t.out, rows: [
+        A({ name: '玉山 Pi 卡', meta: '本期應繳 $12,860 · 結帳日 10/20', icon: I.card, color: '#5f86c9', bal: '−$18,240', neg: true, due: '11/05 到期', dueBg: t.warnSoft, dueFg: t.text }),
+        A({ name: '國泰 CUBE 卡', meta: '本期應繳 $0 · 結帳日 11/02', icon: I.card, color: '#4f8f8a', bal: '−$5,520', neg: true, due: '尚未出帳', dueBg: t.successSoft, dueFg: t.text })
+      ] },
+      { name: '投資', total: '$438,360', totalColor: t.text, rows: [
+        A({ name: '元大交割戶', meta: '連動投資組合現金', icon: I.chart, color: dark ? '#8b7dff' : '#533afd', bal: '$438,360' })
+      ] }
+    ];
+    // 財務子頁：數字留在這裡
+    const subTabs = [['記錄', 2, '提醒 2 項', 'TimelinePhone.dc.html'], ['帳戶', 1, '待確認 1 筆', 'AccountsPhone.dc.html'], ['記帳設定', 0, '', 'MobileNavPhone.dc.html']].map(([label, count, note, href]) => {
+      const on = label === '帳戶';
+      return { label, href, current: on ? 'page' : 'false', aria: label + (note ? '，' + note : ''),
+        bg: on ? (dark ? '#2a3241' : t.surface) : 'transparent', fg: on ? t.text : t.muted, weight: on ? 700 : 500,
+        shadow: on ? '0 1px 2px rgba(0,0,0,.08)' : 'none', hasCount: count > 0, count };
+    });
+    // 底部分頁只用紅點表示「裡面有事」，所在分頁不顯示
+    const DOT = { '物資': '有待買項目', '投資': '有需要注意的項目', '財務': '有待處理項目' };
+    const tab = (label, icon, on, href) => ({ isTab: true, isAdd: false, label, icon, href: href || '#', current: on ? 'page' : 'false', fg: on ? t.primary : t.muted, weight: on ? 700 : 500,
+      dot: !on && !!DOT[label], dotColor: t.out, aria: label + (!on && DOT[label] ? '，' + DOT[label] : '') });
+    const tabs = [
+      tab('投資', 'M3 17l6-6 4 4 8-8 M15 7h6v6', false, 'PortfolioPhone.dc.html'),
+      { isTab: false, isAdd: true },
+      tab('財務', I.wallet, true, 'TimelinePhone.dc.html'),
+    ];
+    return { t, groups, tabs, subTabs };
+  }
+}
+</script>
+</body>
+</html>

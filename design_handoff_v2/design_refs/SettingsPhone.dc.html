@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>設定 · 手機</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 390px; height: 1420px; overflow: hidden; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500">
+  <div style="padding: 12px 16px 40px; display: flex; flex-direction: column; gap: 18px">
+
+    <header style="display: flex; align-items: center; gap: 4px; margin-left: -8px">
+      <a href="PortfolioPhone.dc.html" aria-label="返回" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: {{t.primary}}; text-decoration: none">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"></path></svg>
+      </a>
+      <h1 style="margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.03em">設定</h1>
+    </header>
+
+    <section aria-labelledby="p-look" style="display: flex; flex-direction: column; gap: 8px">
+      <h2 id="p-look" style="margin: 0; padding: 0 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">外觀</h2>
+      <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 18px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+        <b style="font-size: 15px; font-weight: 700">主題</b>
+        <div role="radiogroup" aria-label="主題" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); background: {{t.soft}}; border-radius: 12px; padding: 3px; gap: 2px">
+          <sc-for list="{{themeSeg}}" as="o" hint-placeholder-count="3">
+            <button type="button" role="radio" aria-checked="{{o.on}}" onClick="{{o.pick}}" style="border: 0; background: {{o.bg}}; color: {{o.fg}}; font: inherit; font-size: 14px; font-weight: {{o.weight}}; min-height: 38px; border-radius: 9px; box-shadow: {{o.shadow}}">{{o.label}}</button>
+          </sc-for>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="p-inv" style="display: flex; flex-direction: column; gap: 8px">
+      <h2 id="p-inv" style="margin: 0; padding: 0 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">投資顯示</h2>
+      <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 18px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+        <b style="font-size: 15px; font-weight: 700">漲跌顏色</b>
+        <div role="radiogroup" aria-label="漲跌顏色" style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); background: {{t.soft}}; border-radius: 12px; padding: 3px; gap: 2px">
+          <sc-for list="{{gainSeg}}" as="o" hint-placeholder-count="2">
+            <button type="button" role="radio" aria-checked="{{o.on}}" onClick="{{o.pick}}" style="border: 0; background: {{o.bg}}; color: {{o.fg}}; font: inherit; font-size: 14px; font-weight: {{o.weight}}; min-height: 38px; border-radius: 9px; box-shadow: {{o.shadow}}">{{o.label}}</button>
+          </sc-for>
+        </div>
+        <div style="display: flex; gap: 8px">
+          <span style="font-size: 13px; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: {{upSoft}}; color: {{up}}">▲ 上漲 +2.35%</span>
+          <span style="font-size: 13px; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: {{downSoft}}; color: {{down}}">▼ 下跌 −1.20%</span>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="p-nav" style="display: flex; flex-direction: column; gap: 8px">
+      <h2 id="p-nav" style="margin: 0; padding: 0 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">導覽</h2>
+      <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 18px; overflow: hidden">
+        <sc-for list="{{groupToggles}}" as="gt" hint-placeholder-count="3">
+          <div style="display: flex; align-items: center; gap: 12px; padding: 10px 16px; min-height: 56px; border-bottom: 1px solid {{t.line}}">
+            <span style="flex: 1; display: flex; flex-direction: column; gap: 2px">
+              <b style="font-size: 15px; font-weight: 700">顯示「{{gt.label}}」</b>
+              <small style="font-size: 12px; color: {{t.muted}}">{{gt.desc}}</small>
+            </span>
+            <button type="button" role="switch" aria-checked="{{gt.aria}}" aria-label="顯示「{{gt.label}}」分組" onClick="{{gt.toggle}}" style="width: 52px; height: 32px; border-radius: 16px; border: 0; padding: 0; background: {{gt.bg}}; position: relative; flex: none">
+              <span style="position: absolute; top: 3px; left: {{gt.knob}}; width: 26px; height: 26px; border-radius: 13px; background: #FFFFFF; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: left .2s cubic-bezier(.2,.8,.2,1)"></span>
+            </button>
+          </div>
+        </sc-for>
+        <div style="display: flex; align-items: center; gap: 12px; padding: 10px 16px; min-height: 56px; border-bottom: 1px solid {{t.line}}">
+          <span style="flex: 1; display: flex; flex-direction: column; gap: 2px">
+            <b style="font-size: 15px; font-weight: 700">顯示待處理數字與紅點</b>
+            <small style="font-size: 12px; color: {{t.muted}}">底部分頁的紅點、頁內切換鈕的數字</small>
+          </span>
+          <button type="button" role="switch" aria-checked="{{badgeSw.aria}}" aria-label="顯示待處理數字與紅點" onClick="{{toggleBadges}}" style="width: 52px; height: 32px; border-radius: 16px; border: 0; padding: 0; background: {{badgeSw.bg}}; position: relative; flex: none">
+            <span style="position: absolute; top: 3px; left: {{badgeSw.knob}}; width: 26px; height: 26px; border-radius: 13px; background: #FFFFFF; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: left .2s cubic-bezier(.2,.8,.2,1)"></span>
+          </button>
+        </div>
+        <div style="padding: 12px 16px 14px; display: flex; flex-direction: column; gap: 8px">
+          <small style="font-size: 12px; font-weight: 700; color: {{t.muted}}">底部分頁預覽</small>
+          <div aria-hidden="true" style="display: grid; grid-template-columns: {{tabCols}}; align-items: center; padding: 6px 4px; border-radius: 14px; background: {{t.soft}}">
+            <sc-for list="{{tabs}}" as="tb" hint-placeholder-count="5">
+              <sc-if value="{{tb.isAdd}}" hint-placeholder-val="{{false}}">
+                <span style="justify-self: center; width: 40px; height: 40px; border-radius: 14px; background: {{t.primary}}; color: #FFFFFF; display: flex; align-items: center; justify-content: center">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14 M5 12h14"></path></svg>
+                </span>
+              </sc-if>
+              <sc-if value="{{tb.isTab}}" hint-placeholder-val="{{true}}">
+                <span style="position: relative; display: flex; flex-direction: column; align-items: center; gap: 2px; color: {{t.muted}}; font-size: 10px; font-weight: 600">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="{{tb.icon}}"></path></svg>
+                  {{tb.label}}
+                  <sc-if value="{{tb.dot}}" hint-placeholder-val="{{false}}">
+                    <span style="position: absolute; top: 0; left: 50%; margin-left: 6px; width: 7px; height: 7px; border-radius: 4px; background: {{t.red}}"></span>
+                  </sc-if>
+                </span>
+              </sc-if>
+            </sc-for>
+          </div>
+          <small style="font-size: 12px; color: {{t.muted}}; line-height: 1.5">{{tabNote}}</small>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="p-ledger" style="display: flex; flex-direction: column; gap: 8px">
+      <h2 id="p-ledger" style="margin: 0; padding: 0 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">記帳</h2>
+      <a href="MobileNavPhone.dc.html" style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 18px; display: flex; align-items: center; gap: 12px; padding: 12px 16px; min-height: 60px; color: {{t.text}}; text-decoration: none">
+        <span style="flex: 1; display: flex; flex-direction: column; gap: 2px">
+          <b style="font-size: 15px; font-weight: 700">記帳設定</b>
+          <small style="font-size: 12px; color: {{t.muted}}">類別、帳戶分組、支出收入顏色、匯入 MOZE 備份…</small>
+        </span>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M9 18l6-6-6-6"></path></svg>
+      </a>
+    </section>
+
+    <section aria-labelledby="p-data" style="display: flex; flex-direction: column; gap: 8px">
+      <h2 id="p-data" style="margin: 0; padding: 0 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">資料更新</h2>
+      <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 18px; overflow: hidden">
+        <sc-for list="{{jobs}}" as="j" hint-placeholder-count="3">
+          <div style="display: flex; align-items: center; gap: 12px; padding: 10px 16px; min-height: 54px; border-bottom: 1px solid {{t.line}}">
+            <span style="width: 8px; height: 8px; border-radius: 4px; background: {{t.success}}; flex: none"></span>
+            <span style="flex: 1; display: flex; flex-direction: column; gap: 2px">
+              <b style="font-size: 14px; font-weight: 700">{{j.label}}</b>
+              <small style="font-size: 12px; color: {{t.muted}}">{{j.when}}</small>
+            </span>
+            <span style="font-size: 12px; color: {{t.muted}}">{{j.last}}</span>
+          </div>
+        </sc-for>
+      </div>
+    </section>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":390,"height":1420}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const st = this.state || {};
+    const theme = st.theme || 'system';
+    const dark = theme === 'dark' || (theme === 'system' && !!(this.props.dark ?? false));
+    const t = dark ? {
+      bg: '#0f1218', surface: '#171c24', soft: '#202733', border: '#313a48', line: '#252c38',
+      text: '#f3f6fb', muted: '#99a3b3', primary: '#8b7dff', success: '#8daec7',
+      red: '#ff6369', green: '#43c98a', redSoft: 'rgba(255,99,105,0.16)', greenSoft: 'rgba(67,201,138,0.16)',
+      shadow: '0 12px 28px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)', pillOn: '#2a3241', switchOff: '#3a4352'
+    } : {
+      bg: '#f1f3f6', surface: '#fafcff', soft: '#edf1f6', border: '#d8dee7', line: '#e8ecf2',
+      text: '#151821', muted: '#6b7280', primary: '#533afd', success: '#5f7f98',
+      red: '#e5484d', green: '#1f9d6b', redSoft: 'rgba(229,72,77,0.12)', greenSoft: 'rgba(31,157,107,0.12)',
+      shadow: '0 10px 30px rgba(18,26,40,0.045), inset 0 1px 0 rgba(255,255,255,0.62)', pillOn: '#fafcff', switchOff: '#c9d0da'
+    };
+    const gain = st.gain || 'asian';
+    const asian = gain === 'asian';
+    const up = asian ? t.red : t.green, down = asian ? t.green : t.red;
+    const upSoft = asian ? t.redSoft : t.greenSoft, downSoft = asian ? t.greenSoft : t.redSoft;
+    const shown = st.shown || { supplies: false, portfolio: true, ledger: true };
+    const badges = st.badges === undefined ? true : st.badges;
+
+    const seg = (opts, cur, key) => opts.map(([v, label]) => {
+      const on = v === cur;
+      return { label, on: on ? 'true' : 'false', bg: on ? t.pillOn : 'transparent', fg: on ? t.text : t.muted, weight: on ? 700 : 500,
+        shadow: on ? '0 1px 2px rgba(0,0,0,.08)' : 'none', pick: () => this.setState({ [key]: v }) };
+    });
+    const sw = (on) => ({ aria: on ? 'true' : 'false', bg: on ? t.primary : t.switchOff, knob: on ? '23px' : '3px' });
+
+    const G = [
+      { id: 'supplies', label: '物資', desc: '庫存、採買清單', icon: 'M21 8l-9-5-9 5v8l9 5 9-5V8z M3 8l9 5 9-5 M12 13v8', dot: true },
+      { id: 'portfolio', label: '投資', desc: '概覽、交易、股利、已實現、現金、匯入', icon: 'M3 17l6-6 4 4 8-8 M15 7h6v6', dot: true },
+      { id: 'ledger', label: '財務', desc: '記帳記錄、帳戶、記帳設定', icon: 'M3 7v10a2 2 0 0 0 2 2h15V9H5a2 2 0 0 1-2-2zm0 0a2 2 0 0 1 2-2h13v4 M16 14h.01', dot: true }
+    ];
+    const groupToggles = G.map((g) => ({ ...g, ...sw(!!shown[g.id]), toggle: () => this.setState({ shown: { ...shown, [g.id]: !shown[g.id] } }) }));
+
+    // 底部分頁：顯示中的分組＋設定，「記一筆」固定在正中間
+    const cog = 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M12 2v3 M12 19v3 M4.9 4.9l2.1 2.1 M17 17l2.1 2.1 M2 12h3 M19 12h3 M4.9 19.1L7 17 M17 7l2.1-2.1';
+    const visible = G.filter((g) => shown[g.id]).map((g) => ({ isTab: true, isAdd: false, label: g.label, icon: g.icon, dot: badges && g.dot }));
+    // 分頁數（含設定）是偶數就左右各半；是奇數時把「設定」移到各頁右上角齒輪，讓「記一筆」保持置中
+    const settingsTab = { isTab: true, isAdd: false, label: '設定', icon: cog, dot: false };
+    const keepSettings = (visible.length + 1) % 2 === 0;
+    const row = keepSettings ? [...visible, settingsTab] : visible;
+    const half = row.length / 2;
+    const tabs = [...row.slice(0, half), { isTab: false, isAdd: true }, ...row.slice(half)];
+    const tabNote = keepSettings
+      ? '「記一筆」固定在正中間。'
+      : '「設定」改放在各頁右上角的齒輪，讓「記一筆」維持在正中間。';
+    const tabCols = 'repeat(' + tabs.length + ', minmax(0, 1fr))';
+
+    const jobs = [
+      { label: '盤中報價', when: '交易時段每 15 分鐘', last: '13:30' },
+      { label: '淨值快照', when: '每個交易日 15:30', last: '昨天' },
+      { label: '收盤價回補', when: '每個交易日 17:00', last: '昨天' }
+    ];
+
+    return { t, up, down, upSoft, downSoft,
+      themeSeg: seg([['light', '淺色'], ['dark', '深色'], ['system', '跟隨系統']], theme, 'theme'),
+      gainSeg: seg([['asian', '紅漲綠跌'], ['western', '綠漲紅跌']], gain, 'gain'),
+      groupToggles, badgeSw: sw(badges), toggleBadges: () => this.setState({ badges: !badges }),
+      tabs, tabCols, tabNote, jobs };
+  }
+}
+</script>
+</body>
+</html>

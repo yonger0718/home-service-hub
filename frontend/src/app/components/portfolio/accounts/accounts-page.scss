@@ -1,0 +1,21 @@
+:host {
+  display: block;
+}
+
+.accounts-md {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.accounts-md-body {
+  align-items: start;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+}
+
+.accounts-md-master,
+.accounts-md-detail {
+  min-width: 0;
+}

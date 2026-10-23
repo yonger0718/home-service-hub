@@ -8,13 +8,14 @@ import { MessageService } from 'primeng/api';
 
 import { BrokerCsvImportResult } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { PageHeaderComponent } from '../../shell/page-header/page-header';
 
 type ImportError = BrokerCsvImportResult['errors'][number];
 
 @Component({
   selector: 'app-portfolio-broker-import',
   standalone: true,
-  imports: [CommonModule, ButtonModule, ProgressSpinnerModule, TableModule, ToastModule],
+  imports: [PageHeaderComponent, CommonModule, ButtonModule, ProgressSpinnerModule, TableModule, ToastModule],
   providers: [MessageService],
   templateUrl: './broker-import.html',
   styleUrl: './broker-import.scss',

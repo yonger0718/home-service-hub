@@ -1,8 +1,7 @@
 <section class="ledger-accounts">
-  <header class="accounts-header">
-    <h2>帳戶</h2>
-    <a class="add-account" routerLink="/accounting/accounts/new" aria-label="新增帳戶">+</a>
-  </header>
+  <app-page-header>
+    <app-btn class="add-account" variant="soft" icon="pi-plus" (click)="addAccount()">新增帳戶</app-btn>
+  </app-page-header>
 
   @if (importError()) {
     <p class="import-status import-status--failed import-error">

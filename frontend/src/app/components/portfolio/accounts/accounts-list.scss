@@ -160,3 +160,141 @@
 .account-balance--overdraft {
   color: var(--app-trend-negative, #f59e0b);
 }
+
+/* Master column of the master-detail page (Decision 9). */
+.acct-master {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+
+  &.is-loading {
+    opacity: 0.55;
+    transition: opacity 0.15s;
+  }
+}
+
+.acct-total {
+  background: var(--app-accent);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--app-card-shadow);
+  color: var(--app-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px 20px;
+}
+
+.acct-total-label {
+  font-size: var(--fs-label);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  opacity: 0.8;
+}
+
+.acct-total-value {
+  font-size: 30px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+
+.acct-total-note {
+  font-size: var(--fs-micro);
+  opacity: 0.8;
+}
+
+.acct-card {
+  background: var(--app-surface);
+  border: 2px solid transparent;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--app-card-shadow);
+  color: var(--app-text);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  font: inherit;
+  gap: 10px;
+  padding: 14px 16px;
+  text-align: left;
+  width: 100%;
+
+  &:hover {
+    box-shadow: var(--app-raised-shadow);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--app-focus-ring);
+    outline-offset: 2px;
+  }
+
+  &.selected {
+    border-color: var(--app-primary);
+  }
+}
+
+.acct-card-top,
+.acct-card-bottom {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  width: 100%;
+}
+
+.acct-card-bottom {
+  justify-content: space-between;
+}
+
+.acct-square {
+  align-items: center;
+  border-radius: 12px;
+  color: var(--app-on-primary);
+  display: flex;
+  flex: none;
+  height: 40px;
+  justify-content: center;
+  width: 40px;
+
+  &.ink-dark {
+    color: var(--app-text);
+  }
+}
+
+:host-context(.app-dark-mode) .acct-square {
+  color: var(--app-bg);
+}
+
+.acct-card-name {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+
+  b {
+    font-size: 15px;
+    font-weight: 700;
+  }
+}
+
+.acct-card-meta {
+  color: var(--app-text-muted);
+  font-size: var(--fs-micro);
+}
+
+.acct-card-balance {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+
+  &.negative {
+    color: var(--app-trend-negative);
+  }
+}
+
+.acct-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
+}

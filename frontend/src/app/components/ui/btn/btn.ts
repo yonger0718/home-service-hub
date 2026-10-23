@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, input, output } from '@angular/core';
 
-export type BtnVariant = 'primary' | 'secondary' | 'ghost';
+export type BtnVariant = 'primary' | 'secondary' | 'ghost' | 'soft';
 
 @Component({
   selector: 'app-btn',
@@ -11,10 +11,12 @@ export type BtnVariant = 'primary' | 'secondary' | 'ghost';
       [class.btn-primary]="variant() === 'primary'"
       [class.btn-secondary]="variant() === 'secondary'"
       [class.btn-ghost]="variant() === 'ghost'"
+      [class.btn-soft]="variant() === 'soft'"
       [class.btn-icon]="iconOnly()"
       [disabled]="disabled() || loading()"
       [attr.aria-busy]="loading()"
       [attr.aria-label]="ariaLabel() || null"
+      [attr.aria-expanded]="ariaExpanded()"
       (click)="onClick($event)"
     >
       @if (loading()) {
@@ -35,6 +37,8 @@ export class BtnComponent {
   readonly icon = input('');
   readonly iconOnly = input(false);
   readonly ariaLabel = input('');
+  /** For a button that opens or closes a region; null (the default) leaves the attribute off. */
+  readonly ariaExpanded = input<boolean | null>(null);
   readonly click = output<MouseEvent>();
 
   protected readonly normalizedIcon = computed(() => this.icon().replace(/^pi\s+/, ''));

@@ -1,32 +1,25 @@
-<div class="mobile-nav-shell" aria-label="Mobile navigation">
-  <div class="m-subnav">
-    <nav class="seg-control" [attr.aria-label]="currentGroup().label + ' sub navigation'">
-      @for (item of currentGroup().items; track item.id) {
+<div class="mobile-nav-shell">
+  <nav class="m-tabbar" aria-label="分頁導覽">
+    @for (slot of nav.tabBar().slots; track $index) {
+      @if (slot.kind === 'plus') {
+        <a class="m-plus" routerLink="/accounting/entry" aria-label="新增記錄"><span aria-hidden="true">+</span></a>
+      } @else {
+        @let group = slot.group;
+        @let active = highlighted() === group.id;
         <a
-          [routerLink]="item.path"
-          [class.active]="activeId() === item.id"
-          [attr.aria-current]="activeId() === item.id ? 'page' : null"
+          class="m-tab"
+          [class.active]="active"
+          [routerLink]="group.defaultPath"
+          [attr.aria-current]="active ? 'page' : null"
         >
-          {{ item.label }}
+          <i class="pi {{ group.icon }}" aria-hidden="true"></i>
+          <span class="tab-label">{{ group.tabLabel ?? group.label }}</span>
+          @if (hasDot(group)) {
+            <span class="tab-dot" aria-hidden="true"></span>
+            <span class="visually-hidden">，有待處理項目</span>
+          }
         </a>
       }
-    </nav>
-  </div>
-
-  <nav class="m-tabbar" aria-label="Primary mobile tabs">
-    @for (group of groups; track group.id) {
-      @if ($index === 2) {
-        <a class="m-plus" routerLink="/accounting/entry" aria-label="新增記錄"><span aria-hidden="true">+</span></a>
-      }
-      <a
-        class="m-tab"
-        [class.active]="activeGroupId() === group.id"
-        [routerLink]="group.defaultPath"
-        [attr.aria-current]="activeGroupId() === group.id ? 'page' : null"
-      >
-        <i class="pi {{ group.icon }}" aria-hidden="true"></i>
-        <span>{{ group.label }}</span>
-      </a>
     }
   </nav>
 </div>

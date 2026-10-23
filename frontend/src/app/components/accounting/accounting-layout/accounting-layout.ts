@@ -15,11 +15,12 @@ import {
   viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { ActivatedRouteSnapshot, NavigationEnd, Router, RouterLink, RouterOutlet } from '@angular/router';
+import { ActivatedRouteSnapshot, NavigationEnd, Router, RouterOutlet } from '@angular/router';
 import { filter } from 'rxjs';
 
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { PaneStateService } from '../../../services/pane-state.service';
 import { ACCOUNTING_PAGES, AccountingListKey } from '../accounting-pages';
 import { AccountingToastComponent } from '../accounting-toast';
 import { DirtyFormRegistry } from '../dirty-form.service';
@@ -67,12 +68,13 @@ const SWIPE_IGNORE = 'input, textarea, select, button:not(.sheet-close), [conten
 /**
  * Host of every `/accounting` route (design D22): one screen per route on phones; on wider screens the list
  * on the left (rendered here, so it survives row selection) and the `pane` outlet on the right — a sheet
- * sliding in from the right at 760–1023 px, a persistent pane at ≥ 1024 px. Shows the floating "+" from 760 px.
+ * sliding in from the right at 760–1023 px, a persistent pane at ≥ 1024 px. Publishes its pane state to
+ * `PaneStateService` for the shell (sidebar auto-collapse, the 記一筆 button).
  */
 @Component({
   selector: 'app-accounting-layout',
   standalone: true,
-  imports: [RouterOutlet, RouterLink, NgComponentOutlet, AccountingToastComponent],
+  imports: [RouterOutlet, NgComponentOutlet, AccountingToastComponent],
   templateUrl: './accounting-layout.html',
   styleUrl: './accounting-layout.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -96,6 +98,7 @@ export class AccountingLayoutComponent {
 
   private readonly closeButton = viewChild<ElementRef<HTMLButtonElement>>('closeButton');
   private readonly accounting = inject(AccountingService);
+  private readonly paneState = inject(PaneStateService);
 
   /** `Preference.expense_income_colors`, read once and again after every preference save. */
   readonly colors = signal<'red_green' | 'green_red'>('red_green');
@@ -127,8 +130,6 @@ export class AccountingLayoutComponent {
 
   /** The entry form (new / edit) is on screen; it carries its own ✕. */
   readonly formOpen = computed(() => FORM_URL.test(this.url()));
-
-  readonly showFab = computed(() => this.mode() !== 'phone' && !this.formOpen());
 
   private wasPhone: boolean | null = null;
   /** `selection`: the document's selected text at pointerdown, so only a selection made by this gesture blocks it. */
@@ -189,7 +190,7 @@ export class AccountingLayoutComponent {
       const open = this.sheetOpen();
       const list = this.listPane()?.nativeElement;
       untracked(() => {
-        // Remove inert before returning focus to a list/dock opener.
+        // Remove inert before returning focus to a list/sidebar opener.
         this.setOutsideInert(open, list);
         open ? this.focusSheet() : this.restoreFocus();
       });
@@ -211,26 +212,36 @@ export class AccountingLayoutComponent {
         );
       }
     });
-    inject(DestroyRef).onDestroy(() => this.setOutsideInert(false));
+    effect(() => {
+      this.paneState.paneOpen.set(this.mode() === 'panes' && this.paneOpen());
+      this.paneState.formOpen.set(this.formOpen());
+      this.paneState.sheetOpen.set(this.sheetOpen());
+    });
+    inject(DestroyRef).onDestroy(() => {
+      this.setOutsideInert(false);
+      this.paneState.paneOpen.set(false);
+      this.paneState.formOpen.set(false);
+      this.paneState.sheetOpen.set(false);
+    });
   }
 
   private inertList: HTMLElement | null = null;
-  private inertDock: HTMLElement | null = null;
+  private inertSidebar: HTMLElement | null = null;
 
   /** Remember the actual nodes: view queries may be gone by destruction or a layout mode switch. */
   private setOutsideInert(inert: boolean, list?: HTMLElement): void {
-    const dock = inert ? this.document.querySelector<HTMLElement>('app-dock') : null;
+    const sidebar = inert ? this.document.querySelector<HTMLElement>('app-sidebar') : null;
     if (!inert || this.inertList !== list) this.inertList?.removeAttribute('inert');
-    if (!inert || this.inertDock !== dock) this.inertDock?.removeAttribute('inert');
+    if (!inert || this.inertSidebar !== sidebar) this.inertSidebar?.removeAttribute('inert');
     if (inert) {
       list?.setAttribute('inert', '');
-      dock?.setAttribute('inert', '');
+      sidebar?.setAttribute('inert', '');
       this.inertList = list ?? null;
-      this.inertDock = dock;
+      this.inertSidebar = sidebar;
     } else {
       list?.removeAttribute('inert');
       this.inertList = null;
-      this.inertDock = null;
+      this.inertSidebar = null;
     }
   }
 

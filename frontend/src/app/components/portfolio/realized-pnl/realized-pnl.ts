@@ -1,23 +1,39 @@
 import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
-import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { ButtonModule } from 'primeng/button';
 import { DatePickerModule } from 'primeng/datepicker';
-import { InputTextModule } from 'primeng/inputtext';
 import { PaginatorModule, PaginatorState } from 'primeng/paginator';
 import { ProgressSpinnerModule } from 'primeng/progressspinner';
 import { SelectButtonModule } from 'primeng/selectbutton';
 import { SelectModule } from 'primeng/select';
 import { ToastModule } from 'primeng/toast';
-import { ToggleSwitchModule } from 'primeng/toggleswitch';
 import { TooltipModule } from 'primeng/tooltip';
 import { MessageService } from 'primeng/api';
+import { Subscription, catchError, of } from 'rxjs';
 
 import { Broker, RealizedPnlEvent, RealizedPnlQuery, RealizedPnlSummary, brokerLabel } from '../../../models/portfolio.model';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
-import { NativeAmountPipe } from '../../../pipes/native-amount.pipe';
-import { ListItemComponent } from '../../shared/list-item/list-item';
+import { BentoComponent } from '../../ui/bento/bento';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
+import { SwitchComponent } from '../../ui/switch/switch';
+import { TagComponent } from '../../ui/tag/tag';
+import { PageHeaderComponent } from '../../shell/page-header/page-header';
+import { allPages } from '../paging';
+import {
+  MARKET_FILTERS,
+  MarketFilter,
+  barExtents,
+  barViews,
+  barsAriaText,
+  barsYear,
+  clampOffset,
+  matchesMarket,
+  monthlyBars,
+  rangeLabel,
+  realizedCards,
+  realizedTotals,
+} from './realized-math';
+import { SHORT_WARNING, realizedRows } from './realized-rows';
 
 const PAGE_SIZE_KEY = 'portfolio.realizedPnl.pageSize';
 const DEFAULT_PAGE_SIZE = 25;
@@ -33,20 +49,19 @@ const SORT_OPTIONS = [
 @Component({
   selector: 'app-portfolio-realized-pnl',
   imports: [
-    CommonModule,
+    PageHeaderComponent,
     FormsModule,
-    ButtonModule,
     DatePickerModule,
-    InputTextModule,
     PaginatorModule,
     ProgressSpinnerModule,
     SelectButtonModule,
     SelectModule,
     ToastModule,
-    ToggleSwitchModule,
     TooltipModule,
-    ListItemComponent,
+    BentoComponent,
     SegToggleComponent,
+    SwitchComponent,
+    TagComponent,
   ],
   providers: [MessageService],
   templateUrl: './realized-pnl.html',
@@ -56,10 +71,10 @@ const SORT_OPTIONS = [
 export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   private portfolioService = inject(PortfolioService);
   private messageService = inject(MessageService);
-  private nativeAmountPipe = new NativeAmountPipe();
-  private currentYear = new Date().getFullYear();
+  private layoutMode = inject(LayoutModeService);
+  private readonly today = new Date();
+  private currentYear = this.today.getFullYear();
 
-  readonly Number = Number;
   readonly pageSizeStorageKey = PAGE_SIZE_KEY;
   readonly sortOptions = SORT_OPTIONS;
   readonly rowsPerPageOptions = [25, 50, 100];
@@ -89,26 +104,78 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
     ytd_count: 0,
   });
 
-  readonly showForeignColumns = computed(() =>
-    this.events().some(event => (event.market ?? 'TW') !== 'TW'),
-  );
+  /**
+   * Every sell of the active filter (Decision 1), for the cards, the bars and the 台股/美股 list; null while it
+   * loads or after a failure. Every derived view reads `marketEvents()`, never this set directly.
+   */
+  readonly allEvents = signal<RealizedPnlEvent[] | null>(null);
+  readonly allCapped = signal(false);
+  readonly allFailed = signal(false);
+  readonly allLoading = computed(() => this.allEvents() === null && !this.allFailed());
+  readonly market = signal<MarketFilter>('ALL');
+  /** Page start of the client-paged list under 台股/美股 (the server page serves 全部). */
+  readonly clientOffset = signal(0);
+  readonly marketEvents = computed(() => this.allEvents()?.filter(e => matchesMarket(e, this.market())) ?? null);
+  readonly marketOptions: SegToggleOption[] = [
+    { label: '全部', value: 'ALL' },
+    { label: '台股', value: 'TW' },
+    { label: '美股', value: 'US' },
+  ];
+  /** The list page's summary belongs to the active filter (false from a reload until its page lands). */
+  private readonly summaryFresh = signal(false);
+
+  readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
+  readonly headerSubtitle = computed(() => `${rangeLabel(this.query())} · ${this.marketEvents()?.length ?? this.total()} 筆賣出`);
+  /** Decision 2: the range card is the server total under 全部 (it stays right when the set is capped), else Σ of the set. */
+  readonly cards = computed(() => {
+    const set = this.marketEvents();
+    const totals = set ? realizedTotals(set, this.today) : null;
+    const headline = this.market() === 'ALL' ? this.serverHeadline(totals) : (totals?.total ?? null);
+    const cards = realizedCards(totals, headline, rangeLabel(this.query()), this.today);
+    return this.isPhone() ? cards.slice(0, 2) : cards;
+  });
+  readonly barsYear = computed(() => barsYear(this.query(), this.today));
+  private readonly monthBars = computed(() => monthlyBars(this.marketEvents() ?? [], this.barsYear(), this.today));
+  readonly bars = computed(() => barViews(this.monthBars()));
+  readonly barExtents = computed(() => barExtents(this.monthBars()));
+  readonly barsAriaText = computed(() => barsAriaText(this.monthBars(), this.barsYear()));
 
   readonly brokerFilterOptions = computed<SegToggleOption[]>(() => [
     { label: '全部', value: 'ALL' },
     ...this.availableBrokers().map(broker => ({ label: brokerLabel(broker), value: broker })),
   ]);
 
-  brokerLabel(broker: Broker | null | undefined): string {
-    return brokerLabel(broker);
-  }
-
-  readonly showBrokerColumn = computed(() => this.availableBrokers().length > 0);
   readonly showBrokerFilter = computed(() => this.availableBrokers().length > 0);
 
-  /** Server applies the broker filter via query param so pagination total +
-   * summary stay accurate. Kept as a passthrough so existing template
-   * bindings to filteredEvents() don't need to change. */
-  readonly filteredEvents = computed(() => this.events());
+  readonly pageSize = computed(() => this.query().limit ?? DEFAULT_PAGE_SIZE);
+
+  /**
+   * The listed sells: the server page under 全部; under 台股/美股 one client page of `marketEvents()` (its offset
+   * clamped to the last page), or — while the set loads or after it failed — the server page's sells of that market.
+   */
+  readonly filteredEvents = computed(() => {
+    const market = this.market();
+    if (market === 'ALL') return this.events();
+    const set = this.marketEvents();
+    if (!set) return this.events().filter(e => matchesMarket(e, market));
+    const limit = this.pageSize();
+    const offset = clampOffset(this.clientOffset(), set.length, limit);
+    return set.slice(offset, offset + limit);
+  });
+  readonly rows = computed(() => {
+    const names = this.symbolNames();
+    return realizedRows(
+      this.filteredEvents(),
+      e => (e.name && e.name !== e.symbol ? e.name : null) || names[e.symbol] || null,
+      e => brokerLabel(e.broker),
+    );
+  });
+  readonly shortWarning = SHORT_WARNING;
+  /** Paginator and count: the server total and offset under 全部, the market set's under 台股/美股. */
+  readonly listTotal = computed(() =>
+    this.market() === 'ALL' ? this.total() : (this.marketEvents()?.length ?? this.filteredEvents().length),
+  );
+  readonly listFirst = computed(() => (this.market() === 'ALL' ? (this.query().offset ?? 0) : this.clientOffset()));
 
   dateRange: Date[] | null = null;
   query = signal<RealizedPnlQuery>({
@@ -119,27 +186,46 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
 
   private filterDebounce: ReturnType<typeof setTimeout> | null = null;
   private fetchSeq = 0;
+  private allSeq = 0;
+  private listSub?: Subscription;
+  private allSub?: Subscription;
+  /** A fetch skipped under 台股/美股 left the server page behind the filter; 全部 fetches it again. */
+  private listStale = false;
 
   ngOnInit() {
     this.portfolioService.getSymbolNames().subscribe(map => this.symbolNames.set(map));
     this.portfolioService.getTransactionBrokers().subscribe(brokers => this.brokerCatalog.set(brokers));
-    this.fetch();
+    this.reload();
   }
 
   ngOnDestroy() {
     if (this.filterDebounce) clearTimeout(this.filterDebounce);
+    this.listSub?.unsubscribe();
+    this.allSub?.unsubscribe();
   }
 
+  /** The server list page; only under 全部 (台股/美股 page `marketEvents()` client-side). */
   fetch() {
+    if (this.market() !== 'ALL') {
+      // Drop any in-flight page of the old filter so it cannot land later.
+      this.listSub?.unsubscribe();
+      this.fetchSeq++;
+      this.loading.set(false);
+      this.listStale = true;
+      return;
+    }
+    this.listStale = false;
     const seq = ++this.fetchSeq;
     this.loading.set(true);
-    this.portfolioService.getRealizedPnl(this.query()).subscribe({
+    this.listSub?.unsubscribe();
+    this.listSub = this.portfolioService.getRealizedPnl(this.query()).subscribe({
       next: paged => {
         if (seq !== this.fetchSeq) return;
         this.events.set(paged.items);
         this.ensureSelectedBroker();
         this.total.set(paged.total);
         this.summary.set(paged.summary);
+        this.summaryFresh.set(true);
         this.expandedKey.set(null);
         this.loading.set(false);
       },
@@ -149,6 +235,49 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
         this.messageService.add({ severity: 'error', summary: '錯誤', detail: '查詢失敗，請檢查篩選條件' });
       },
     });
+  }
+
+  /**
+   * Every sell of the active filter in the current sort. A failure hides the set silently (the list keeps its page);
+   * an older load is cancelled and any response from it is dropped.
+   */
+  loadAll() {
+    this.allSub?.unsubscribe();
+    const seq = ++this.allSeq;
+    this.clientOffset.set(0);
+    this.allEvents.set(null);
+    this.allCapped.set(false);
+    this.allFailed.set(false);
+    const { symbol, date_from, date_to, year, day_trade_only, broker, sort } = this.query();
+    this.allSub = allPages(
+      offset => this.portfolioService.getRealizedPnl({ symbol, date_from, date_to, year, day_trade_only, broker, sort, limit: 200, offset }),
+      200,
+      50,
+    )
+      .pipe(catchError(() => of(null)))
+      .subscribe(result => {
+        if (seq !== this.allSeq) return;
+        if (!result) {
+          this.allFailed.set(true);
+          return;
+        }
+        this.allEvents.set(result.items);
+        this.allCapped.set(result.capped);
+        this.clampClientOffset();
+      });
+  }
+
+  /** The market toggle's value; anything that is not a market filter is ignored. */
+  onMarketSelect(value: string) {
+    const market = MARKET_FILTERS.find(m => m === value);
+    if (market) this.onMarketChange(market);
+  }
+
+  onMarketChange(value: MarketFilter) {
+    this.market.set(value);
+    this.clientOffset.set(0);
+    this.expandedKey.set(null);
+    if (value === 'ALL' && this.listStale) this.fetch();
   }
 
   onSearchInput(value: string) {
@@ -192,11 +321,23 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
     const offset = event.first ?? 0;
     const limit = event.rows ?? DEFAULT_PAGE_SIZE;
     this.persistPageSize(limit);
+    if (this.market() !== 'ALL') {
+      // The server page keeps its offset; a new page size leaves it stale for 全部.
+      if (limit !== this.query().limit) {
+        this.query.set({ ...this.query(), offset: 0, limit });
+        this.listStale = true;
+      }
+      this.clientOffset.set(offset);
+      this.clampClientOffset();
+      this.expandedKey.set(null);
+      return;
+    }
     this.query.set({ ...this.query(), offset, limit });
     this.fetch();
   }
 
   clearFilters() {
+    this.market.set('ALL');
     this.searchInput.set('');
     this.dateRange = null;
     this.selectedYear.set(null);
@@ -207,13 +348,21 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
       limit: this.query().limit ?? DEFAULT_PAGE_SIZE,
       sort: 'trade_date:desc',
     });
-    this.fetch();
+    this.reload();
   }
 
-  hasActiveFilters(): boolean {
+  readonly hasActiveFilters = computed(() => {
     const q = this.query();
-    return !!(q.symbol || q.date_from || q.date_to || q.year || q.day_trade_only || this.selectedBroker() !== 'ALL');
-  }
+    return !!(
+      q.symbol ||
+      q.date_from ||
+      q.date_to ||
+      q.year ||
+      q.day_trade_only ||
+      this.selectedBroker() !== 'ALL' ||
+      this.market() !== 'ALL'
+    );
+  });
 
   selectBrokerFilter(value: string): void {
     const next = value as 'ALL' | Broker;
@@ -224,104 +373,44 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
       broker: next === 'ALL' ? null : next,
       offset: 0,
     });
-    this.fetch();
+    this.reload();
   }
 
-  showBrokerBadge(event: RealizedPnlEvent): boolean {
-    return !!event.broker;
-  }
-
-  toggleExpanded(event: RealizedPnlEvent) {
-    const key = this.eventKey(event);
+  toggleExpanded(key: string) {
     this.expandedKey.set(this.expandedKey() === key ? null : key);
   }
 
-  eventKey(event: RealizedPnlEvent): string {
-    return [
-      event.trade_date,
-      event.symbol,
-      event.market,
-      event.quantity,
-      event.sell_price,
-      event.realized_pnl,
-    ].join('|');
+  /**
+   * The 全部 headline: the server total of the current filter; while that page is on its way `null` (`—`); after it
+   * failed the set's own Σ (the same figure) unless the set is capped.
+   */
+  private serverHeadline(totals: { total: number } | null): number | null {
+    if (this.summaryFresh()) return Number(this.summary().filter_scope_total);
+    if (this.loading() || this.allCapped()) return null;
+    return totals?.total ?? null;
   }
 
-  symbolDisplay(event: RealizedPnlEvent): string {
-    const stored = event.name && event.name !== event.symbol ? event.name : null;
-    return stored || this.symbolNames()[event.symbol] || event.symbol;
-  }
-
-  ytdTradeCount(): number {
-    return this.summary().ytd_count ?? 0;
-  }
-
-  formatCurrency(value: string | number): string {
-    return Number(value).toLocaleString('zh-TW', {
-      style: 'currency',
-      currency: 'TWD',
-      maximumFractionDigits: 0,
-    });
-  }
-
-  private isForeign(event: RealizedPnlEvent): boolean {
-    return event.market !== 'TW' && !!event.native_currency;
-  }
-
-  displayAmount(
-    event: RealizedPnlEvent,
-    twdValue: string | number,
-    nativeValue: string | number | null | undefined,
-  ): string {
-    if (!this.isForeign(event)) return this.formatCurrency(twdValue);
-    return this.nativeAmountPipe.transform(nativeValue ?? null, event.native_currency);
-  }
-
-  displayPnl(event: RealizedPnlEvent): string {
-    if (!this.isForeign(event)) return this.formatCurrency(event.realized_pnl);
-    const proceeds = Number(event.native_proceeds ?? 0);
-    const cost = Number(event.native_cost ?? 0);
-    return this.nativeAmountPipe.transform(proceeds - cost, event.native_currency);
-  }
-
-  pnlValueForClass(event: RealizedPnlEvent): number {
-    if (!this.isForeign(event)) return Number(event.realized_pnl);
-    return Number(event.native_proceeds ?? 0) - Number(event.native_cost ?? 0);
-  }
-
-  displaySellPrice(event: RealizedPnlEvent): string {
-    if (!this.isForeign(event)) {
-      return Number(event.sell_price).toLocaleString('zh-TW', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    }
-    return this.nativeAmountPipe.transform(event.native_sell_price ?? null, event.native_currency);
-  }
-
-  displayAvgCost(event: RealizedPnlEvent): string {
-    if (!this.isForeign(event)) {
-      return Number(event.avg_cost_at_sale).toLocaleString('zh-TW', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    }
-    const qty = Number(event.quantity);
-    if (!qty) return this.nativeAmountPipe.transform(null, event.native_currency);
-    const avg = Number(event.native_cost ?? 0) / qty;
-    return this.nativeAmountPipe.transform(avg, event.native_currency);
-  }
-
-  pnlClass(value: string | number): Record<string, boolean> {
-    const amount = Number(value);
-    return {
-      'is-positive': amount > 0,
-      'is-negative': amount < 0,
-    };
+  /** The filter-wide set and the list page; on every filter or sort change (a page or market change never reloads the set). */
+  private reload() {
+    this.summaryFresh.set(false);
+    this.loadAll();
+    this.fetch();
   }
 
   private updateFilters(patch: Partial<RealizedPnlQuery>, debounce = false) {
     this.query.set({ ...this.query(), ...patch, offset: 0 });
     if (this.filterDebounce) clearTimeout(this.filterDebounce);
     if (debounce) {
-      this.filterDebounce = setTimeout(() => this.fetch(), 300);
+      this.filterDebounce = setTimeout(() => this.reload(), 300);
     } else {
-      this.fetch();
+      this.reload();
     }
+  }
+
+  /** A page picked during a reload may lie past the new set's end: move to its last page. */
+  private clampClientOffset(): void {
+    const set = this.marketEvents();
+    if (set) this.clientOffset.set(clampOffset(this.clientOffset(), set.length, this.pageSize()));
   }
 
   private availableBrokers(): Broker[] {

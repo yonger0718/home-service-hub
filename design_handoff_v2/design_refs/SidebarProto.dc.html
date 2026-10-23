@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>側欄原型</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 1280px; height: 860px; overflow: hidden; display: flex; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500">
+
+  <!-- ===== 側欄：展開 ===== -->
+  <sc-if value="{{expanded}}" hint-placeholder-val="{{true}}">
+    <aside aria-label="主要導覽" style="width: 248px; flex: none; box-sizing: border-box; background: {{t.glass}}; border-right: 1px solid {{t.border}}; padding: 18px 14px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto">
+      <div style="display: flex; align-items: center; gap: 10px; padding: 0 4px 0 8px">
+        <span style="width: 36px; height: 36px; border-radius: 12px; background: {{t.accent}}; display: flex; align-items: center; justify-content: center; flex: none">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{t.onAccent}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7 M5 10v10h14V10"></path></svg>
+        </span>
+        <b style="flex: 1; font-size: 16px; font-weight: 800">Home Hub</b>
+        <button type="button" aria-label="收合側欄" onClick="{{toggleCollapse}}" style="width: 36px; height: 36px; border-radius: 10px; border: 0; background: transparent; color: {{t.muted}}; display: flex; align-items: center; justify-content: center">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v16H4z M9 4v16 M15 10l-2 2 2 2"></path></svg>
+        </button>
+      </div>
+
+      <nav style="display: flex; flex-direction: column; gap: 8px">
+        <sc-for list="{{groups}}" as="g" hint-placeholder-count="4">
+          <div style="display: flex; flex-direction: column; gap: 2px">
+            <button type="button" aria-expanded="{{g.ariaOpen}}" onClick="{{g.toggle}}" style="border: 0; background: transparent; font: inherit; display: flex; align-items: center; justify-content: space-between; min-height: 30px; padding: 0 10px; color: {{t.muted}}">
+              <span style="font-size: 12px; font-weight: 700; letter-spacing: 0.08em">{{g.label}}</span>
+              <span style="display: flex; align-items: center; gap: 6px">
+                <sc-if value="{{g.showSum}}" hint-placeholder-val="{{false}}">
+                  <span style="min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: {{t.primarySoft}}; color: {{t.primary}}; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center">{{g.sum}}</span>
+                </sc-if>
+                <span style="font-size: 11px; font-weight: 600">{{g.hint}}</span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true" style="transform: rotate({{g.rot}}); opacity: {{g.chevOpacity}}"><path d="M6 9l6 6 6-6"></path></svg>
+              </span>
+            </button>
+            <sc-if value="{{g.open}}" hint-placeholder-val="{{true}}">
+              <sc-for list="{{g.items}}" as="item" hint-placeholder-count="3">
+                <a href="#" aria-current="{{item.current}}" style="display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 10px; border-radius: 12px; background: {{item.bg}}; color: {{item.fg}}; font-weight: {{item.weight}}; font-size: 14px; text-decoration: none">
+                  <span style="width: 26px; height: 26px; border-radius: 8px; background: {{item.iconBg}}; display: flex; align-items: center; justify-content: center; flex: none">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="{{item.iconFg}}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{item.icon}}"></path></svg>
+                  </span>
+                  <span style="flex: 1">{{item.label}}</span>
+                  <sc-if value="{{item.hasCount}}" hint-placeholder-val="{{false}}">
+                    <span aria-label="{{item.badgeAria}}" style="min-width: 20px; height: 20px; padding: 0 6px; box-sizing: border-box; border-radius: 10px; background: {{t.primary}}; color: #FFFFFF; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center">{{item.count}}</span>
+                  </sc-if>
+                  <sc-if value="{{item.hasDot}}" hint-placeholder-val="{{false}}">
+                    <span aria-label="{{item.badgeAria}}" style="width: 8px; height: 8px; border-radius: 4px; background: {{t.red}}"></span>
+                  </sc-if>
+                </a>
+              </sc-for>
+            </sc-if>
+          </div>
+        </sc-for>
+      </nav>
+    </aside>
+  </sc-if>
+
+  <!-- ===== 側欄：圖示欄 ===== -->
+  <sc-if value="{{rail}}" hint-placeholder-val="{{false}}">
+    <aside aria-label="主要導覽" style="width: 72px; flex: none; box-sizing: border-box; background: {{t.glass}}; border-right: 1px solid {{t.border}}; padding: 18px 0; display: flex; flex-direction: column; align-items: center; gap: 10px; position: relative; z-index: 2">
+      <span style="width: 36px; height: 36px; border-radius: 12px; background: {{t.accent}}; display: flex; align-items: center; justify-content: center">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{t.onAccent}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7 M5 10v10h14V10"></path></svg>
+      </span>
+      <button type="button" aria-label="展開側欄" onClick="{{toggleCollapse}}" style="width: 40px; height: 32px; border-radius: 10px; border: 0; background: transparent; color: {{t.muted}}; display: flex; align-items: center; justify-content: center">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v16H4z M9 4v16 M13 10l2 2-2 2"></path></svg>
+      </button>
+      <sc-for list="{{railGroups}}" as="g" hint-placeholder-count="4">
+        <div style="width: 32px; height: 1px; background: {{t.border}}; margin: 4px 0"></div>
+        <sc-for list="{{g.items}}" as="item" hint-placeholder-count="3">
+          <a href="#" aria-label="{{item.aria}}" aria-current="{{item.current}}" onMouseEnter="{{item.enter}}" onMouseLeave="{{leave}}" onFocus="{{item.enter}}" onBlur="{{leave}}" style="position: relative; width: 44px; height: 40px; border-radius: 12px; background: {{item.bg}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{item.fg}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{item.icon}}"></path></svg>
+            <sc-if value="{{item.hasCount}}" hint-placeholder-val="{{false}}">
+              <span aria-hidden="true" style="position: absolute; top: 1px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 8px; background: {{t.primary}}; color: #FFFFFF; font-size: 10px; font-weight: 800; display: flex; align-items: center; justify-content: center">{{item.count}}</span>
+            </sc-if>
+            <sc-if value="{{item.hasDot}}" hint-placeholder-val="{{false}}">
+              <span aria-hidden="true" style="position: absolute; top: 6px; right: 8px; width: 8px; height: 8px; border-radius: 4px; background: {{t.red}}; box-shadow: 0 0 0 2px {{t.surface}}"></span>
+            </sc-if>
+            <sc-if value="{{item.tip}}" hint-placeholder-val="{{false}}">
+              <span role="tooltip" style="position: absolute; left: 54px; top: 50%; transform: translateY(-50%); white-space: nowrap; padding: 6px 10px; border-radius: 8px; background: {{t.tipBg}}; color: {{t.tipFg}}; font-size: 13px; font-weight: 600; box-shadow: {{t.raised}}">{{item.tipText}}</span>
+            </sc-if>
+          </a>
+        </sc-for>
+      </sc-for>
+    </aside>
+  </sc-if>
+
+  <!-- ===== 內容：記帳頁 ===== -->
+  <main style="position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 14px; padding: 22px 24px; box-sizing: border-box">
+    <header style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
+      <div style="display: flex; align-items: center; gap: 10px">
+        <h1 style="margin: 0; font-size: 26px; font-weight: 800; letter-spacing: -0.03em">2026 年 10 月</h1>
+        <sc-if value="{{autoRail}}" hint-placeholder-val="{{false}}">
+          <span role="status" style="font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: {{t.primarySoft}}; color: {{t.primary}}">側欄已自動收合（明細開啟中）</span>
+        </sc-if>
+      </div>
+      <button type="button" onClick="{{togglePane}}" style="min-height: 40px; padding: 0 14px; border-radius: 12px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; font: inherit; font-size: 14px; font-weight: 700">{{paneBtn}}</button>
+    </header>
+
+    <div style="flex: 1; min-height: 0; display: flex; gap: 16px">
+      <section aria-label="列表" style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px">
+        <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 16px 20px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px">
+          <div style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 12px; font-weight: 700; color: {{t.muted}}">支出</span><b style="font-size: 22px; font-weight: 800; color: {{t.red}}">$38,460</b></div>
+          <div style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 12px; font-weight: 700; color: {{t.muted}}">收入</span><b style="font-size: 22px; font-weight: 800; color: {{t.green}}">$72,000</b></div>
+          <div style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 12px; font-weight: 700; color: {{t.muted}}">結餘</span><b style="font-size: 22px; font-weight: 800">+$33,540</b></div>
+        </div>
+        <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 16px; overflow: hidden">
+          <sc-for list="{{rows}}" as="r" hint-placeholder-count="6">
+            <button type="button" onClick="{{openPane}}" style="width: 100%; border: 0; border-bottom: 1px solid {{t.line}}; font: inherit; text-align: left; display: flex; align-items: center; gap: 12px; padding: 10px 16px; min-height: 56px; background: {{r.bg}}; color: {{t.text}}">
+              <span style="width: 38px; height: 38px; border-radius: 12px; background: {{r.color}}; flex: none; display: flex; align-items: center; justify-content: center">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{r.icon}}"></path></svg>
+              </span>
+              <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+                <b style="font-size: 15px; font-weight: 700">{{r.title}}</b>
+                <small style="font-size: 12px; color: {{t.muted}}">{{r.sub}}</small>
+              </span>
+              <b style="font-size: 15px; font-weight: 700; color: {{r.amtColor}}">{{r.amount}}</b>
+            </button>
+          </sc-for>
+        </div>
+      </section>
+
+      <sc-if value="{{paneOpen}}" hint-placeholder-val="{{false}}">
+        <aside aria-label="明細" style="width: 340px; flex: none; background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 18px 20px; box-sizing: border-box; display: flex; flex-direction: column; gap: 14px">
+          <div style="display: flex; justify-content: flex-end">
+            <button type="button" aria-label="關閉明細" onClick="{{togglePane}}" style="width: 40px; height: 40px; border-radius: 12px; border: 0; background: {{t.soft}}; color: {{t.text}}; display: flex; align-items: center; justify-content: center">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18 M6 6l12 12"></path></svg>
+            </button>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 6px">
+            <span style="width: 60px; height: 60px; border-radius: 18px; background: #4f9a72; display: flex; align-items: center; justify-content: center">
+              <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 7h12l1 14H5L6 7z M9 7a3 3 0 0 1 6 0"></path></svg>
+            </span>
+            <h2 style="margin: 0; font-size: 18px; font-weight: 800">全聯 採買</h2>
+            <b style="font-size: 30px; font-weight: 800; letter-spacing: -0.03em; color: {{t.red}}">−$1,286</b>
+            <span style="font-size: 13px; color: {{t.muted}}">玉山 Pi 卡 · 2026/10/21</span>
+          </div>
+        </aside>
+      </sc-if>
+    </div>
+
+    <!-- 記一筆：右下角懸浮；明細開啟時移到列表欄右下角 -->
+    <div style="position: absolute; right: {{fabRight}}; bottom: 24px; z-index: 20; display: flex; align-items: center; gap: 10px; transition: right .2s cubic-bezier(.2,.8,.2,1)">
+      <sc-if value="{{fabTip}}" hint-placeholder-val="{{false}}">
+        <span role="tooltip" style="padding: 6px 10px; border-radius: 8px; background: {{t.tipBg}}; color: {{t.tipFg}}; font-size: 13px; font-weight: 700; white-space: nowrap; box-shadow: {{t.raised}}">記一筆 <span style="margin-left: 4px; padding: 0 5px; border: 1px solid currentColor; border-radius: 5px; font-size: 11px; opacity: .75">N</span></span>
+      </sc-if>
+      <a href="#" aria-label="記一筆（快捷鍵 N）" onMouseEnter="{{fabEnter}}" onMouseLeave="{{fabLeave}}" onFocus="{{fabEnter}}" onBlur="{{fabLeave}}" style="width: 56px; height: 56px; border-radius: 28px; background: {{t.primary}}; color: #FFFFFF; display: flex; align-items: center; justify-content: center; box-shadow: 0 8px 20px rgba(83,58,253,.35); text-decoration: none">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14 M5 12h14"></path></svg>
+      </a>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":1280,"height":860}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { collapsed: false, paneOpen: false, closed: { supplies: true }, hover: null, userExpanded: false };
+  }
+
+  renderVals() {
+    const dark = !!(this.props.dark ?? false);
+    const t = dark ? {
+      bg: '#0f1218', surface: '#171c24', glass: 'rgba(23,28,36,0.75)', soft: '#202733', border: '#313a48', line: '#252c38',
+      text: '#f3f6fb', muted: '#99a3b3', accent: '#e6ebf5', onAccent: '#171c24',
+      primary: '#8b7dff', primarySoft: 'rgba(139,125,255,0.16)', red: '#ff6369', green: '#43c98a',
+      shadow: '0 12px 28px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)', raised: '0 20px 40px rgba(0,0,0,0.5)',
+      tipBg: '#e6ebf5', tipFg: '#151821'
+    } : {
+      bg: '#f1f3f6', surface: '#fafcff', glass: 'rgba(250,252,255,0.8)', soft: '#edf1f6', border: '#d8dee7', line: '#e8ecf2',
+      text: '#151821', muted: '#6b7280', accent: '#1d2433', onAccent: '#ffffff',
+      primary: '#533afd', primarySoft: 'rgba(83,58,253,0.10)', red: '#e5484d', green: '#1f9d6b',
+      shadow: '0 10px 30px rgba(18,26,40,0.045), inset 0 1px 0 rgba(255,255,255,0.62)', raised: '0 16px 36px rgba(18,26,40,0.09)',
+      tipBg: '#1d2433', tipFg: '#ffffff'
+    };
+    const { collapsed, paneOpen, closed, hover, userExpanded } = this.state;
+    // 手動收合優先；明細開啟時自動收合，除非使用者在這次明細開啟後手動展開
+    const rail = collapsed || (paneOpen && !userExpanded);
+    const I = {
+      box: 'M21 8l-9-5-9 5v8l9 5 9-5V8z M3 8l9 5 9-5 M12 13v8',
+      cart: 'M3 4h2l2.4 11h11.2L21 7H6.2 M9 20h.01 M18 20h.01',
+      chart: 'M3 17l6-6 4 4 8-8 M15 7h6v6',
+      list: 'M8 6h13 M8 12h13 M8 18h13 M3.5 6h.01 M3.5 12h.01 M3.5 18h.01',
+      percent: 'M19 5L5 19 M6.5 6.5h.01 M17.5 17.5h.01',
+      dollar: 'M12 3v18 M16.5 7.5c0-1.9-2-3-4.5-3s-4.5 1.1-4.5 3 2 2.7 4.5 3.2 4.5 1.3 4.5 3.3-2 3.5-4.5 3.5-4.5-1.3-4.5-3.3',
+      wallet: 'M3 7v10a2 2 0 0 0 2 2h15V9H5a2 2 0 0 1-2-2zm0 0a2 2 0 0 1 2-2h13v4 M16 14h.01',
+      upload: 'M12 16V4 M7 9l5-5 5 5 M4 20h16',
+      sliders: 'M4 6h10 M18 6h2 M4 12h4 M12 12h8 M4 18h12 M16 4v4 M10 10v4 M18 16v4',
+      cog: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M12 2v3 M12 19v3 M4.9 4.9l2.1 2.1 M17 17l2.1 2.1 M2 12h3 M19 12h3 M4.9 19.1L7 17 M17 7l2.1-2.1',
+      food: 'M7 3v8 M4 3v5a3 3 0 0 0 6 0V3 M7 11v10 M17 3c-2 2-3 4-3 7h3v11',
+      bag: 'M6 7h12l1 14H5L6 7z M9 7a3 3 0 0 1 6 0',
+      bolt: 'M13 3L5 14h6l-1 7 8-11h-6l1-7z',
+      brief: 'M4 8h16v11H4z M9 8V5h6v3 M4 13h16',
+      bus: 'M5 16V6a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3v10 M5 11h14 M5 16h14v2H5z M8 21v-3 M16 21v-3',
+      film: 'M4 5h16v14H4z M4 9h16 M4 15h16 M8 5v4 M16 5v4 M8 15v4 M16 15v4'
+    };
+    const activeId = 'ledger';
+    // badge：數字 = 待處理件數；dot = 需要注意（例如匯入失敗）
+    const NAV = [
+      { id: 'portfolio', label: '投資', items: [
+        ['portfolio', '投資概覽', I.chart], ['transactions', '交易紀錄', I.list], ['dividends', '股利', I.percent, { count: 2, aria: '2 筆待收股利' }],
+        ['realized', '已實現損益', I.dollar], ['cash', '現金帳戶', I.wallet], ['import', '匯入', I.upload, { dot: true, aria: '最近一次匯入失敗' }]
+      ] },
+      { id: 'ledger', label: '財務', items: [['ledger', '記帳記錄', I.list, { count: 2, aria: '提醒中心 2 項' }], ['accounts', '帳戶', I.wallet, { count: 1, aria: '1 筆待確認' }], ['ledger-settings', '記帳設定', I.sliders]] },
+      { id: 'system', label: '系統', items: [['settings', '設定', I.cog]] }
+    ];
+    const mkItem = ([id, label, icon, b]) => {
+      const on = id === activeId;
+      const badge = b || {};
+      return {
+        id, label, icon, current: on ? 'page' : 'false',
+        bg: on ? t.primarySoft : 'transparent', fg: on ? t.primary : t.text, weight: on ? 700 : 500,
+        iconBg: on ? t.primary : t.soft, iconFg: on ? '#FFFFFF' : t.muted,
+        hasCount: !!badge.count, count: badge.count || '', hasDot: !!badge.dot,
+        badgeAria: badge.aria || '', aria: label + (badge.aria ? '，' + badge.aria : '')
+      };
+    };
+    const groups = NAV.map((g) => {
+      const items = g.items.map(mkItem);
+      const isActive = items.some((it) => it.id === activeId);
+      const open = isActive || !closed[g.id];
+      const sum = items.reduce((s, it) => s + (Number(it.count) || 0), 0);
+      return {
+        label: g.label, items, open, ariaOpen: open ? 'true' : 'false',
+        rot: open ? '0deg' : '-90deg', chevOpacity: isActive ? 0 : 1, hint: isActive ? '目前' : '',
+        showSum: !open && sum > 0, sum,
+        toggle: () => { if (isActive) return; this.setState({ closed: { ...closed, [g.id]: !closed[g.id] } }); }
+      };
+    });
+    const leave = () => this.setState({ hover: null });
+    const railGroups = NAV.map((g) => ({
+      items: g.items.map(mkItem).map((it) => ({
+        ...it,
+        bg: it.current === 'page' ? t.primarySoft : 'transparent',
+        fg: it.current === 'page' ? t.primary : t.muted,
+        tip: hover === it.id,
+        tipText: it.label + (it.hasCount ? ' · ' + it.count : ''),
+        enter: () => this.setState({ hover: it.id })
+      }))
+    }));
+
+    const C = { food: '#d0864a', daily: '#4f9a72', house: '#4f8f8a', salary: '#3f9d7a', traffic: '#5f86c9', fun: '#8a7cc4' };
+    const rows = [
+      { icon: I.food, color: C.food, title: '午餐', sub: '餐飲 · 現金', amount: '−$120', amtColor: t.red },
+      { icon: I.bus, color: C.traffic, title: '捷運', sub: '交通 · 悠遊卡', amount: '−$45', amtColor: t.red },
+      { icon: I.bag, color: C.daily, title: '全聯 採買', sub: '日用 · 食材 · 清潔 · 玉山 Pi 卡', amount: '−$1,286', amtColor: t.red, sel: true },
+      { icon: I.bolt, color: C.house, title: '電費', sub: '居家 · 台新 Richart', amount: '−$1,420', amtColor: t.red },
+      { icon: I.film, color: C.fun, title: 'Netflix', sub: '娛樂 · 玉山 Pi 卡', amount: '−$390', amtColor: t.red },
+      { icon: I.brief, color: C.salary, title: '薪資', sub: '收入 · 台新 Richart', amount: '+$72,000', amtColor: t.green }
+    ].map((r) => ({ ...r, bg: paneOpen && r.sel ? t.primarySoft : 'transparent' }));
+
+    return {
+      t, groups, railGroups, rows, leave,
+      expanded: !rail, rail, paneOpen, autoRail: rail && paneOpen && !collapsed,
+      paneBtn: paneOpen ? '關閉明細' : '開啟明細',
+      fabRight: paneOpen ? '380px' : '24px',
+      fabTip: !!this.state.fabTip,
+      fabEnter: () => this.setState({ fabTip: true }),
+      fabLeave: () => this.setState({ fabTip: false }),
+      toggleCollapse: () => this.setState(rail ? { collapsed: false, userExpanded: true, hover: null } : { collapsed: true, userExpanded: false }),
+      togglePane: () => this.setState({ paneOpen: !paneOpen, userExpanded: false }),
+      openPane: () => this.setState({ paneOpen: true, userExpanded: false })
+    };
+  }
+}
+</script>
+</body>
+</html>

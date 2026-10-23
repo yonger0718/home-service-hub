@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>股利 · 手機</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 390px; height: 1180px; position: relative; overflow: hidden; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500">
+  <div style="padding: 20px 16px 110px; display: flex; flex-direction: column; gap: 14px">
+
+    <header style="display: flex; align-items: center; justify-content: space-between">
+      <h1 style="margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.03em">投資</h1>
+      <div style="display: flex; gap: 8px">
+      <button type="button" aria-label="新增股利" style="width: 44px; height: 44px; border-radius: 22px; border: 0; background: {{t.primarySoft}}; color: {{t.primary}}; display: flex; align-items: center; justify-content: center">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14 M5 12h14"></path></svg>
+      </button>
+      <a href="SettingsPhone.dc.html" aria-label="設定" style="width: 44px; height: 44px; border-radius: 22px; border: 1px solid {{t.border}}; box-sizing: border-box; background: {{t.surface}}; color: {{t.text}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M12 2v3 M12 19v3 M4.9 4.9l2.1 2.1 M17 17l2.1 2.1 M2 12h3 M19 12h3 M4.9 19.1L7 17 M17 7l2.1-2.1"></path></svg>
+      </a>
+      </div>
+    </header>
+
+    <nav aria-label="投資頁面" style="display: flex; gap: 8px; overflow-x: auto; margin: 0 -16px; padding: 0 16px 2px">
+      <sc-for list="{{subTabs}}" as="s" hint-placeholder-count="6">
+        <a href="{{s.href}}" aria-current="{{s.current}}" aria-label="{{s.aria}}" style="flex: none; display: flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 14px; box-sizing: border-box; border-radius: 999px; background: {{s.bg}}; color: {{s.fg}}; border: 1px solid {{s.border}}; font-size: 14px; font-weight: {{s.weight}}; text-decoration: none">
+          {{s.label}}
+          <sc-if value="{{s.hasCount}}" hint-placeholder-val="{{false}}">
+            <span aria-hidden="true" style="min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: {{s.badgeBg}}; color: {{s.badgeFg}}; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center">{{s.count}}</span>
+          </sc-if>
+          <sc-if value="{{s.dot}}" hint-placeholder-val="{{false}}">
+            <span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 4px; background: {{t.red}}"></span>
+          </sc-if>
+        </a>
+      </sc-for>
+    </nav>
+
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px">
+      <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 18px; padding: 12px 14px; display: flex; flex-direction: column; gap: 3px">
+        <span style="font-size: 12px; font-weight: 700; color: {{t.muted}}">已確認收款 · 5 筆</span>
+        <b style="font-size: 18px; font-weight: 800; color: {{t.dividend}}">37,578</b>
+      </div>
+      <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 18px; padding: 12px 14px; display: flex; flex-direction: column; gap: 3px">
+        <span style="font-size: 12px; font-weight: 700; color: {{t.muted}}">有效待收 · 2 筆</span>
+        <b style="font-size: 18px; font-weight: 800; color: {{t.primary}}">14,600</b>
+      </div>
+    </div>
+
+    <section aria-label="即將除權息" style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 18px; padding: 12px 14px; display: flex; align-items: center; gap: 12px">
+      <span style="width: 44px; height: 44px; border-radius: 12px; background: {{t.dividendSoft}}; color: {{t.dividend}}; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; line-height: 1.15; flex: none"><span>12月</span><b style="font-size: 15px">11</b></span>
+      <span style="flex: 1; display: flex; flex-direction: column; gap: 2px">
+        <small style="font-size: 11px; font-weight: 700; color: {{t.muted}}">即將除息</small>
+        <b style="font-size: 14px; font-weight: 700">台積電 · 每股 6.00</b>
+      </span>
+      <b style="font-size: 14px; font-weight: 700; color: {{t.dividend}}">+6,000</b>
+    </section>
+
+    <div role="radiogroup" aria-label="狀態" style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: {{t.soft}}; border-radius: 12px; padding: 3px; gap: 2px">
+      <sc-for list="{{statusSeg}}" as="o" hint-placeholder-count="4">
+        <button type="button" role="radio" aria-checked="{{o.on}}" style="border: 0; background: {{o.bg}}; color: {{o.fg}}; font: inherit; font-size: 13px; font-weight: {{o.weight}}; min-height: 36px; border-radius: 9px; box-shadow: {{o.shadow}}">{{o.label}}</button>
+      </sc-for>
+    </div>
+
+    <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 16px; overflow: hidden">
+      <sc-for list="{{rows}}" as="r" hint-placeholder-count="6">
+        <div style="display: flex; align-items: center; gap: 12px; padding: 10px 14px; min-height: 64px; border-bottom: 1px solid {{t.line}}">
+          <span style="width: 40px; height: 40px; border-radius: 12px; background: {{r.color}}; color: #FFFFFF; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800; flex: none">{{r.abbr}}</span>
+          <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px">
+            <span style="display: flex; align-items: center; gap: 6px">
+              <b style="font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{r.name}}</b>
+              <span style="flex: none; font-size: 11px; font-weight: 800; padding: 2px 6px; border-radius: 8px; background: {{r.pillBg}}; color: {{r.pillFg}}">{{r.status}}</span>
+            </span>
+            <small style="font-size: 12px; color: {{t.muted}}">{{r.sub}}</small>
+          </span>
+          <span style="display: flex; flex-direction: column; align-items: flex-end; gap: 4px">
+            <b style="font-size: 15px; font-weight: 700; color: {{r.amtColor}}">{{r.net}}</b>
+            <sc-if value="{{r.canConfirm}}" hint-placeholder-val="{{false}}">
+              <button type="button" style="min-height: 30px; padding: 0 10px; border-radius: 9px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.primary}}; font: inherit; font-size: 12px; font-weight: 700">確認收款</button>
+            </sc-if>
+          </span>
+        </div>
+      </sc-for>
+    </div>
+    <p style="margin: 0; padding: 0 4px; font-size: 12px; line-height: 1.6; color: {{t.muted}}">待收股利納入預估含息損益，不計入可用現金。</p>
+  </div>
+
+  <nav aria-label="主要導覽" style="position: absolute; left: 0; right: 0; bottom: 0; height: 84px; box-sizing: border-box; padding: 6px 8px 22px; background: {{t.glass}}; border-top: 1px solid {{t.border}}; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: center">
+    <sc-for list="{{tabs}}" as="tb" hint-placeholder-count="5">
+      <sc-if value="{{tb.isAdd}}" hint-placeholder-val="{{false}}">
+        <a href="EntryPhone.dc.html" aria-label="記一筆" style="justify-self: center; width: 52px; height: 52px; border-radius: 18px; background: {{t.primary}}; color: #FFFFFF; display: flex; align-items: center; justify-content: center; box-shadow: 0 6px 16px rgba(83,58,253,.28); text-decoration: none">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14 M5 12h14"></path></svg>
+        </a>
+      </sc-if>
+      <sc-if value="{{tb.isTab}}" hint-placeholder-val="{{true}}">
+        <a href="{{tb.href}}" aria-label="{{tb.aria}}" aria-current="{{tb.current}}" style="position: relative; display: flex; flex-direction: column; align-items: center; gap: 3px; min-height: 48px; justify-content: center; color: {{tb.fg}}; font-size: 11px; font-weight: {{tb.weight}}; text-decoration: none">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{tb.icon}}"></path></svg>
+          <span>{{tb.label}}</span>
+          <sc-if value="{{tb.dot}}" hint-placeholder-val="{{false}}">
+            <span aria-hidden="true" style="position: absolute; top: 4px; left: 50%; margin-left: 8px; width: 8px; height: 8px; border-radius: 4px; background: {{t.red}}; box-shadow: 0 0 0 2px {{t.surface}}"></span>
+          </sc-if>
+        </a>
+      </sc-if>
+    </sc-for>
+  </nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":390,"height":1180}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const dark = !!(this.props.dark ?? false);
+    const t = dark ? {
+      bg: '#0f1218', surface: '#171c24', glass: 'rgba(23,28,36,0.92)', soft: '#202733', border: '#313a48', line: '#252c38',
+      text: '#f3f6fb', muted: '#99a3b3', primary: '#8b7dff', primarySoft: 'rgba(139,125,255,0.16)', red: '#ff6369',
+      successSoft: 'rgba(141,174,199,0.15)', warnSoft: 'rgba(150,165,197,0.15)', dividend: '#aba6d0', dividendSoft: 'rgba(171,166,208,0.12)',
+      shadow: '0 12px 28px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)', pillOn: '#2a3241'
+    } : {
+      bg: '#f1f3f6', surface: '#fafcff', glass: 'rgba(250,252,255,0.92)', soft: '#edf1f6', border: '#d8dee7', line: '#e8ecf2',
+      text: '#151821', muted: '#6b7280', primary: '#533afd', primarySoft: 'rgba(83,58,253,0.10)', red: '#e5484d',
+      successSoft: 'rgba(95,127,152,0.12)', warnSoft: 'rgba(123,135,168,0.12)', dividend: '#7e78a8', dividendSoft: 'rgba(126,120,168,0.12)',
+      shadow: '0 10px 30px rgba(18,26,40,0.045), inset 0 1px 0 rgba(255,255,255,0.62)', pillOn: '#fafcff'
+    };
+    const CUR = '股利';
+    const subTabs = [['概覽', 0, false, '', 'PortfolioPhone.dc.html'], ['交易', 0, false, '', 'PfTransactionsPhone.dc.html'], ['股利', 2, false, '2 筆待收股利', 'PfDividendsPhone.dc.html'], ['已實現', 0, false, '', '#'], ['現金', 0, false, '', '#'], ['匯入', 0, true, '最近一次匯入失敗', '#']].map(([label, count, dot, note, href]) => {
+      const on = label === CUR;
+      return { label, href, current: on ? 'page' : 'false', aria: label + (note ? '，' + note : ''),
+        bg: on ? t.primary : t.surface, fg: on ? '#FFFFFF' : t.text, border: on ? t.primary : t.border, weight: on ? 700 : 500,
+        hasCount: count > 0, count, dot, badgeBg: on ? '#FFFFFF' : t.primary, badgeFg: on ? t.primary : '#FFFFFF' };
+    });
+    const statusSeg = ['全部', '待收', '已收款', '舊資料'].map((label) => {
+      const on = label === '全部';
+      return { label, on: on ? 'true' : 'false', bg: on ? t.pillOn : 'transparent', fg: on ? t.text : t.muted, weight: on ? 700 : 500, shadow: on ? '0 1px 2px rgba(0,0,0,.08)' : 'none' };
+    });
+    const S = dark ? { '2330': '#8b7dff', '0050': '#6fb3ae', '2317': '#d0a06a', '00878': '#d38a9c', 'AAPL': '#aba6d0' }
+                   : { '2330': '#533afd', '0050': '#4f8f8a', '2317': '#b7843f', '00878': '#b9687e', 'AAPL': '#7e78a8' };
+    const STATUS = {
+      pending: { label: '待收', bg: t.primarySoft, fg: t.primary },
+      received: { label: '已收款', bg: t.successSoft, fg: t.text },
+      legacy: { label: '舊資料', bg: t.warnSoft, fg: t.text }
+    };
+    const rows = [
+      { sym: '00878', abbr: '878', name: '國泰永續高股息', sub: '除息 10/17 · 預定 11/18 發放', net: '+9,600', s: 'pending' },
+      { sym: '2330', abbr: '積', name: '台積電', sub: '除息 09/16 · 預定 2027/01/08', net: '+5,000', s: 'pending' },
+      { sym: 'AAPL', abbr: 'A', name: 'Apple', sub: '08/14 收款 · 預扣 30%', net: '+168', s: 'received' },
+      { sym: '2317', abbr: '鴻', name: '鴻海', sub: '08/20 收款 · 元大交割戶', net: '+17,390', s: 'received' },
+      { sym: '0050', abbr: '50', name: '元大台灣50', sub: '08/14 收款 · 元大交割戶', net: '+7,990', s: 'received' },
+      { sym: '00878', abbr: '878', name: '國泰永續高股息', sub: '08/13 收款 · 元大交割戶', net: '+7,040', s: 'received' }
+    ].map((r) => ({ ...r, color: S[r.sym], status: STATUS[r.s].label, pillBg: STATUS[r.s].bg, pillFg: STATUS[r.s].fg,
+      amtColor: r.s === 'pending' ? t.primary : t.dividend, canConfirm: r.s === 'pending' }));
+    const DOT = { '物資': '有待買項目', '投資': '有需要注意的項目', '財務': '有待處理項目' };
+    const tab = (label, icon, on, href) => ({ isTab: true, isAdd: false, label, icon, href: href || '#', current: on ? 'page' : 'false',
+      fg: on ? t.primary : t.muted, weight: on ? 700 : 500, dot: !on && !!DOT[label], aria: label + (!on && DOT[label] ? '，' + DOT[label] : '') });
+    const tabs = [
+      tab('投資', 'M3 17l6-6 4 4 8-8 M15 7h6v6', true, 'PortfolioPhone.dc.html'),
+      { isTab: false, isAdd: true },
+      tab('財務', 'M3 7v10a2 2 0 0 0 2 2h15V9H5a2 2 0 0 1-2-2zm0 0a2 2 0 0 1 2-2h13v4 M16 14h.01', false, 'TimelinePhone.dc.html'),
+    ];
+    return { t, subTabs, statusSeg, rows, tabs };
+  }
+}
+</script>
+</body>
+</html>

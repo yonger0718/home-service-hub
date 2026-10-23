@@ -1,12 +1,63 @@
 <p-toast></p-toast>
 <p-confirmDialog styleClass="hub-dialog-md"></p-confirmDialog>
 
-<div class="page-head justify-content-end">
-  <div class="head-actions">
-    <app-btn variant="secondary" icon="pi-upload" (click)="clearFilters()">清除篩選</app-btn>
-    <app-btn icon="pi-plus" (click)="openNew()">新增交易</app-btn>
+<app-page-header [subtitle]="headerSubtitle()" [actionsBelowOnPhone]="true">
+  <a routerLink="/portfolio/import" class="btn btn-outline-secondary btn-sm">
+    <i class="pi pi-upload" aria-hidden="true"></i>
+    匯入 CSV
+  </a>
+  <app-btn variant="soft" icon="pi-plus" (click)="openNew()">新增交易</app-btn>
+</app-page-header>
+
+@if (!summaryFailed()) {
+  @let totals = summary();
+  <div class="kpi-row">
+    <app-bento class="kpi-card">
+      <div class="kpi-card-body">
+        <div class="label">買進金額</div>
+        <div class="value">{{ formatCardAmount(totals?.buyTotal ?? null) }}</div>
+        <div class="kpi-card-footer">
+          <div class="meta">{{ totals ? totals.buyCount + ' 筆' : '—' }}</div>
+        </div>
+      </div>
+    </app-bento>
+    <app-bento class="kpi-card">
+      <div class="kpi-card-body">
+        <div class="label">賣出金額</div>
+        <div class="value">{{ formatCardAmount(totals?.sellTotal ?? null) }}</div>
+        <div class="kpi-card-footer">
+          <div class="meta">{{ totals ? totals.sellCount + ' 筆' : '—' }}</div>
+        </div>
+      </div>
+    </app-bento>
+    @if (!isPhone()) {
+      <app-bento class="kpi-card">
+        <div class="kpi-card-body">
+          <div class="label">手續費＋交易稅</div>
+          <div class="value">{{ formatCardAmount(totals?.fees ?? null) }}</div>
+          <div class="kpi-card-footer">
+            <div class="meta">{{ totals ? feeShareLabel(totals.feeShare) : '—' }}</div>
+          </div>
+        </div>
+      </app-bento>
+      @let realizedValue = realized();
+      <a class="kpi-link" routerLink="/portfolio/realized-pnl">
+        <app-bento class="kpi-card">
+          <div class="kpi-card-body">
+            <div class="label">已實現損益</div>
+            <div class="value" [class.up]="cardSign(realizedValue) > 0" [class.down]="cardSign(realizedValue) < 0">{{ formatCardAmount(realizedValue) }}</div>
+            <div class="kpi-card-footer">
+              <div class="meta">查看明細 →</div>
+            </div>
+          </div>
+        </app-bento>
+      </a>
+    }
   </div>
-</div>
+  @if (summaryNote()) {
+    <p class="summary-note">{{ summaryNote() }}</p>
+  }
+}
 
 <div class="filter-bar">
   <div class="search-wrap">
@@ -24,6 +75,17 @@
       [value]="query().side ?? 'ALL'"
       (change)="onSideFilterChange($event)"
     ></app-seg-toggle>
+    <p-datepicker ariaLabel="日期範圍" [(ngModel)]="dateRange" selectionMode="range"
+      [readonlyInput]="true" [showClear]="true" placeholder="日期範圍" appendTo="body"
+      dateFormat="yy-mm-dd" (ngModelChange)="onDateRangeChange($event)"></p-datepicker>
+    <select aria-label="排序" [ngModel]="query().sort" (ngModelChange)="onSortChange($event)">
+      @for (option of sortOptions; track option.value) {
+        <option [value]="option.value">{{ option.label }}</option>
+      }
+    </select>
+    @if (hasActiveFilters()) {
+      <button type="button" class="clear-filters" (click)="clearFilters()">清除篩選</button>
+    }
   </div>
 </div>
 
@@ -38,26 +100,14 @@
   </div>
 }
 
-
-  <div class="filter-controls">
-    <p-datepicker ariaLabel="日期範圍" [(ngModel)]="dateRange" selectionMode="range"
-      [readonlyInput]="true" [showClear]="true" placeholder="日期範圍" appendTo="body"
-      dateFormat="yy-mm-dd" (ngModelChange)="onDateRangeChange($event)"></p-datepicker>
-    <select aria-label="排序" [ngModel]="query().sort" (ngModelChange)="onSortChange($event)">
-      @for (option of sortOptions; track option.value) {
-        <option [value]="option.value">{{ option.label }}</option>
-      }
-    </select>
-  </div>
-
-<div class="result-meta">
-  <span>{{ total() }} 筆</span>
-  @if (loading()) {
+@if (loading()) {
+  <div class="result-meta">
     <span>查詢中...</span>
-  }
-</div>
+  </div>
+}
 
-<app-timeline [rows]="timelineRows()" [rowActions]="true" (rowAction)="onRowAction($event)"></app-timeline>
+<app-timeline groupBy="month" [groupHeading]="monthHeadingFor" [compact]="isPhone()"
+  [rows]="timelineRows()" [rowActions]="true" (rowAction)="onRowAction($event)"></app-timeline>
 
 @if (!loading() && timelineRows().length === 0) {
   <div class="empty">

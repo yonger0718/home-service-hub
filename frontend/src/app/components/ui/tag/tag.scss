@@ -20,6 +20,11 @@
   color: var(--app-text-muted);
 }
 
+.tag-primary {
+  background: var(--app-primary-soft);
+  color: var(--app-primary);
+}
+
 .tag-accent {
   background: var(--app-accent-soft);
   color: var(--app-accent);

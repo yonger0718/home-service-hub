@@ -18,7 +18,8 @@ export interface ShortcutKey {
   altKey: boolean;
 }
 
-const ENTRY_FORM = /^\/accounting\/(entry|entries\/\d+\/edit)$/;
+/** The entry form, new or edit (path without query or fragment). */
+export const ENTRY_FORM_PATH = /^\/accounting\/(entry|entries\/\d+\/edit)$/;
 /** Pages listing entry rows (`[data-entry-id]`); the reminder centre has them under an expanded counterparty. */
 const LIST_PAGE = /^\/accounting(\/entries\/\d+(\/group)?|\/accounts\/\d+(\/entries\/\d+(\/group)?)?|\/reminders)?$/;
 /** The selected entry: `/accounting/entries/:id` or, opened from a passbook, `/accounting/accounts/:id/entries/:eid`. */
@@ -28,15 +29,15 @@ const SELECTED_GROUP = /^\/accounting(?:\/accounts\/\d+)?\/entries\/(\d+)\/group
 const TYPING_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
 
 /**
- * Maps a key press to an accounting action. `targetTag` is the focused element's tag name
- * (`TEXTAREA` for contenteditable elements) or null.
+ * Maps a key press to an accounting action (E, ↑ / ↓; ⏎ / ⇧⏎ / Esc on the entry form). `targetTag` is the focused
+ * element's tag name (`TEXTAREA` for contenteditable elements) or null.
  */
 export function resolveShortcut(event: ShortcutKey, context: { url: string; targetTag: string | null }): ShortcutAction | null {
   if (event.ctrlKey || event.metaKey || event.altKey) {
     return null;
   }
   const path = context.url.split(/[?#]/)[0];
-  if (ENTRY_FORM.test(path)) {
+  if (ENTRY_FORM_PATH.test(path)) {
     if (event.key === 'Escape') {
       return { type: 'entry', command: 'cancel' };
     }
@@ -48,10 +49,8 @@ export function resolveShortcut(event: ShortcutKey, context: { url: string; targ
   if (!LIST_PAGE.test(path) || TYPING_TAGS.has(context.targetTag ?? '')) {
     return null;
   }
+  // N (記一筆) is app-wide: the shell's resolveGlobalShortcut.
   switch (event.key) {
-    case 'n':
-    case 'N':
-      return { type: 'navigate', commands: ['/accounting/entry'] };
     case 'e':
     case 'E': {
       const group = SELECTED_GROUP.exec(path);

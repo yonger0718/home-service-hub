@@ -6,6 +6,7 @@ import { BehaviorSubject } from 'rxjs';
 import { MockInstance, afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountDetail, LedgerAccount } from '../../../models/accounting.model';
+import { DirtyFormRegistry } from '../dirty-form.service';
 import { AccountSettingsComponent, accountToInput, decimalText } from './account-settings';
 
 function account(fields: Record<string, unknown>): LedgerAccount {
@@ -490,5 +491,124 @@ describe('AccountSettingsComponent', () => {
 
     put.flush(DETAIL);
     expect(navigate).not.toHaveBeenCalled();
+  });
+  // ---- unsaved input (DirtyAware): N, 記一筆 and the layout close ask first --------------------------------------
+
+  function typeInto(fixture: ComponentFixture<AccountSettingsComponent>, selector: string, value: string): void {
+    const input = el(fixture).querySelector<HTMLInputElement>(selector)!;
+    input.value = value;
+    input.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+  }
+
+  it('a clean form is not dirty: a close requested over it runs at once', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    expect(fixture.componentInstance.isDirty()).toBe(false);
+
+    const run = vi.fn();
+    TestBed.inject(DirtyFormRegistry).requestClose(run);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('a new account form is clean until something is typed', async () => {
+    await setup(null);
+    const fixture = render(null);
+    expect(fixture.componentInstance.isDirty()).toBe(false);
+
+    typeInto(fixture, '.name-input', '悠遊卡');
+    expect(fixture.componentInstance.isDirty()).toBe(true);
+    typeInto(fixture, '.name-input', '');
+    expect(fixture.componentInstance.isDirty()).toBe(false);
+  });
+
+  it('an edited name, switch or shared-limit choice makes the form dirty', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    typeInto(fixture, '.name-input', '玉山 Only 2');
+    expect(fixture.componentInstance.isDirty()).toBe(true);
+    typeInto(fixture, '.name-input', '玉山 Only');
+    expect(fixture.componentInstance.isDirty()).toBe(false);
+
+    el(fixture).querySelector<HTMLButtonElement>('.include-toggle')!.click();
+    expect(fixture.componentInstance.isDirty()).toBe(true);
+    el(fixture).querySelector<HTMLButtonElement>('.include-toggle')!.click();
+    expect(fixture.componentInstance.isDirty()).toBe(false);
+
+    fixture.componentInstance.toggleSharing(12, true);
+    expect(fixture.componentInstance.isDirty()).toBe(true);
+  });
+
+  it('a dirty form shows 放棄未儲存的內容？: 留下 keeps it, 放棄 runs the close', async () => {
+    await setup(null);
+    const fixture = render(null);
+    typeInto(fixture, '.name-input', '悠遊卡');
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const run = vi.fn();
+
+    registry.requestClose(run);
+    fixture.detectChanges();
+    const strip = el(fixture).querySelector<HTMLElement>('.discard-strip');
+    expect(strip?.textContent).toContain('放棄未儲存的內容？');
+    expect(run).not.toHaveBeenCalled();
+
+    el(fixture).querySelector<HTMLButtonElement>('.discard-stay')!.click();
+    fixture.detectChanges();
+    expect(el(fixture).querySelector('.discard-strip')).toBeNull();
+    expect(run).not.toHaveBeenCalled();
+    expect(el(fixture).querySelector<HTMLInputElement>('.name-input')!.value).toBe('悠遊卡');
+
+    registry.requestClose(run);
+    fixture.detectChanges();
+    el(fixture).querySelector<HTMLButtonElement>('.discard-leave')!.click();
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('Esc on the 放棄 strip means 留下 (and is marked handled for the layout)', async () => {
+    await setup(null);
+    const fixture = render(null);
+    typeInto(fixture, '.name-input', '悠遊卡');
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const run = vi.fn();
+    registry.requestClose(run);
+    fixture.detectChanges();
+
+    const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    el(fixture).querySelector<HTMLElement>('.discard-stay')!.dispatchEvent(esc);
+    fixture.detectChanges();
+
+    expect(esc.defaultPrevented).toBe(true);
+    expect(registry.promptOpen()).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('a saved form is no longer dirty, and leaving the page forgets it', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    typeInto(fixture, '.credit-limit', '350000');
+    expect(fixture.componentInstance.isDirty()).toBe(true);
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    http.expectOne('/api/accounting/accounts/11').flush(DETAIL);
+
+    expect(fixture.componentInstance.isDirty()).toBe(false);
+    const run = vi.fn();
+    const registry = TestBed.inject(DirtyFormRegistry);
+    registry.requestClose(run);
+    expect(run).toHaveBeenCalledTimes(1);
+
+    typeInto(fixture, '.name-input', '改名');
+    fixture.destroy();
+    registry.requestClose(run);
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failed save keeps the form dirty', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    typeInto(fixture, '.credit-limit', '350000');
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    http.expectOne('/api/accounting/accounts/11').flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+
+    expect(fixture.componentInstance.isDirty()).toBe(true);
   });
 });

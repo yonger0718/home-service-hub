@@ -1,0 +1,109 @@
+:host {
+  display: block;
+  margin-bottom: 1rem;
+  /* As a grid item (e.g. /portfolio/import-broker) the automatic min-width would take the sub-nav's nowrap chips and
+     widen the page past a 390 px viewport; the sub-nav scrolls inside the header instead. */
+  min-width: 0;
+}
+
+.page-header-row {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+}
+
+.page-title {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+h1 {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: var(--tracking-tighter);
+  margin: 0;
+  min-width: 0;
+  /* A long title wraps inside the row and never pushes the gear off-screen. */
+  overflow-wrap: anywhere;
+}
+
+.page-subtitle {
+  color: var(--app-text-muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.page-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  gap: 0.75rem;
+  justify-content: flex-end;
+}
+
+.page-back {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  color: var(--app-text);
+  cursor: pointer;
+  display: flex;
+  flex: 0 0 44px;
+  font: inherit;
+  font-size: 32px;
+  height: 44px;
+  justify-content: center;
+  line-height: 1;
+  padding: 0 0 4px;
+  width: 44px;
+
+  &:focus-visible {
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+    outline: none;
+  }
+}
+
+.header-gear {
+  align-items: center;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 50%;
+  color: var(--app-text);
+  display: flex;
+  flex: 0 0 44px;
+  height: 44px;
+  justify-content: center;
+  text-decoration: none;
+  width: 44px;
+
+  &:focus-visible {
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+    outline: none;
+  }
+}
+
+/* Gear sits beside the title in the DOM (focus order matches what is seen); the actions wrap to a full-width line. */
+:host(.actions-below) {
+  .page-header-row {
+    flex-wrap: wrap;
+  }
+
+  .page-title {
+    flex-basis: 0;
+  }
+
+  .page-actions {
+    flex: 1 0 100%;
+    gap: 0.5rem;
+    justify-content: flex-start;
+  }
+}
+
+app-sub-nav {
+  margin-top: 0.75rem;
+}

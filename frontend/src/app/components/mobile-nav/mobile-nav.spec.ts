@@ -1,44 +1,111 @@
+import { Component, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
-import { describe, expect, it } from 'vitest';
+import { Router, provideRouter } from '@angular/router';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { NavGroupId } from '../shell/navigation';
+import { MATCH_MEDIA } from '../../services/layout-mode.service';
+import { NavBadgeService } from '../../services/nav-badge.service';
+import { NavBadge } from '../shell/navigation';
 import { MobileNavComponent } from './mobile-nav';
 
-function render(activeId: string, groupId: NavGroupId): HTMLElement {
-  TestBed.configureTestingModule({ imports: [MobileNavComponent], providers: [provideRouter([])] });
+@Component({ template: '' })
+class BlankPage {}
+
+const BADGES: Record<string, NavBadge> = {
+  accounting: { count: 1, label: '1 筆待確認' },
+  import: { dot: true, label: '最近一次匯入失敗' },
+};
+
+async function render(url: string, opts: { hidden?: string[]; badges?: boolean } = {}): Promise<HTMLElement> {
+  if (opts.hidden) localStorage.setItem('hh-nav-hidden', JSON.stringify(opts.hidden));
+  if (opts.badges === false) localStorage.setItem('hh-nav-badges', '0');
+  TestBed.configureTestingModule({
+    providers: [
+      provideRouter([{ path: '**', component: BlankPage }]),
+      { provide: MATCH_MEDIA, useValue: () => ({ matches: true, addEventListener: () => {}, removeEventListener: () => {} }) },
+      { provide: NavBadgeService, useValue: { badges: signal(BADGES) } },
+    ],
+  });
+  await TestBed.inject(Router).navigateByUrl(url);
   const fixture = TestBed.createComponent(MobileNavComponent);
-  fixture.componentRef.setInput('activeId', activeId);
-  fixture.componentRef.setInput('activeGroupId', groupId);
   fixture.detectChanges();
   return fixture.nativeElement as HTMLElement;
 }
 
-describe('MobileNavComponent', () => {
-  it('renders four group tabs with the centre plus between the second and third', () => {
-    const el = render('inventory', 'supplies');
+function slots(el: HTMLElement): (string | undefined)[] {
+  return Array.from(el.querySelector('.m-tabbar')!.children).map(child =>
+    child.classList.contains('m-plus') ? '+' : child.querySelector('.tab-label')?.textContent?.trim(),
+  );
+}
 
-    const slots = Array.from(el.querySelector('.m-tabbar')!.children).map(child =>
-      child.classList.contains('m-plus') ? '+' : child.textContent?.trim(),
-    );
-    expect(slots).toEqual(['物資', '投資', '+', '財務', '設定']);
-    expect(el.querySelectorAll('.m-tab').length).toBe(4);
+function tab(el: HTMLElement, label: string): Element {
+  return Array.from(el.querySelectorAll('.m-tab')).find(t => t.textContent?.includes(label))!;
+}
+
+describe('MobileNavComponent', () => {
+  // Spec files share localStorage: `render({ hidden })` writes hh-nav-hidden, so clear it after each test too.
+  beforeEach(() => localStorage.clear());
+  afterEach(() => localStorage.clear());
+
+  it('shows 投資 + 財務 by default (物資 hidden, gear in the header)', async () => {
+    expect(slots(await render('/portfolio'))).toEqual(['投資', '+', '財務']);
   });
 
-  it('links the plus to the entry page from any group', () => {
-    const el = render('portfolio', 'portfolio');
+  it('shows every tab with the plus in the middle when all groups are visible', async () => {
+    expect(slots(await render('/portfolio', { hidden: [] }))).toEqual(['物資', '投資', '+', '財務', '設定']);
+  });
 
-    const plus = el.querySelector('a.m-plus')!;
+  it('links the plus to the entry page', async () => {
+    const plus = (await render('/portfolio')).querySelector('a.m-plus')!;
+
     expect(plus.getAttribute('href')).toBe('/accounting/entry');
     expect(plus.getAttribute('aria-label')).toBe('新增記錄');
   });
 
-  it('shows the accounting sub-nav 記錄 / 帳戶 / 記帳設定', () => {
-    const el = render('accounting-timeline', 'accounting');
+  it('marks the active group tab', async () => {
+    const el = await render('/accounting/accounts');
 
-    const links = Array.from(el.querySelectorAll('.m-subnav a'));
-    expect(links.map(a => a.textContent?.trim())).toEqual(['記錄', '帳戶', '記帳設定']);
-    expect(links.map(a => a.getAttribute('href'))).toEqual(['/accounting', '/accounting/accounts', '/accounting/settings']);
-    expect(links[0].getAttribute('aria-current')).toBe('page');
+    expect(tab(el, '財務').getAttribute('aria-current')).toBe('page');
+    expect(tab(el, '投資').getAttribute('aria-current')).toBeNull();
+  });
+
+  it('puts a dot on a non-active tab only', async () => {
+    const onAccounting = await render('/accounting');
+    expect(tab(onAccounting, '投資').querySelector('.tab-dot')).not.toBeNull();
+    expect(tab(onAccounting, '財務').querySelector('.tab-dot')).toBeNull();
+  });
+
+  it('dots 財務 but not 投資 while on portfolio', async () => {
+    const el = await render('/portfolio');
+
+    expect(tab(el, '財務').querySelector('.tab-dot')).not.toBeNull();
+    expect(tab(el, '投資').querySelector('.tab-dot')).toBeNull();
+  });
+
+  it('shows no dots when badges are off', async () => {
+    const el = await render('/accounting', { badges: false });
+
+    expect(el.querySelector('.tab-dot')).toBeNull();
+    expect(el.querySelector('.m-tab .visually-hidden')).toBeNull();
+  });
+
+  it('names the tab bar 分頁導覽', async () => {
+    expect((await render('/portfolio')).querySelector('nav.m-tabbar')!.getAttribute('aria-label')).toBe('分頁導覽');
+  });
+
+  it('a dotted tab tells screen readers it has pending items', async () => {
+    const el = await render('/portfolio');
+
+    expect(tab(el, '財務').querySelector('.visually-hidden')?.textContent).toBe('，有待處理項目');
+    expect(tab(el, '財務').textContent?.replace(/\s+/g, '')).toBe('財務，有待處理項目');
+    expect(tab(el, '投資').querySelector('.visually-hidden')).toBeNull();
+  });
+
+  it('highlights no tab on /settings (a pushed screen), not even 設定', async () => {
+    const el = await render('/settings', { hidden: [] });
+
+    expect(el.querySelector('.m-tab.active')).toBeNull();
+    expect(el.querySelector('.m-tab[aria-current]')).toBeNull();
+    expect(tab(el, '設定').classList.contains('active')).toBe(false);
   });
 });

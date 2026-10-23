@@ -1,43 +1,54 @@
 <p-toast></p-toast>
 <p-confirmDialog styleClass="hub-dialog-md"></p-confirmDialog>
 
-<div class="page-head justify-content-end">
-  <div class="head-actions">
-    <app-btn variant="secondary" (click)="clearFilters()">清除篩選</app-btn>
-    <app-btn icon="pi-plus" (click)="openNew()">新增股利</app-btn>
-  </div>
-</div>
+<app-page-header [subtitle]="headerSubtitle()">
+  <app-btn variant="soft" icon="pi-plus" (click)="openNew()">新增股利</app-btn>
+</app-page-header>
 
-<div class="summary-row">
-  <div class="summary-item">
-    <div class="l">本頁已確認收款合計</div>
-    <div class="v dividend">{{ formatCurrency(dividendTotal()) }}</div>
-  </div>
-  <div class="summary-item">
-    <div class="l">本頁舊資料帳面合計</div>
-    <div class="v">{{ formatCurrency(legacyTotal()) }}</div>
-  </div>
-  <div class="summary-item">
-    <div class="l">符合篩選紀錄筆數</div>
-    <div class="v">{{ total() }} 筆</div>
-  </div>
-</div>
-
-<app-bento class="upcoming-card" title="即將除權息提醒">
-  <div class="upcoming-grid">
-    @for (row of upcomingExDividends(); track row.symbol + row.ex_dividend_date) {
-      <div class="upcoming-item">
-        <div>
-          <div class="upcoming-name">{{ row.name || row.symbol }} <span>{{ row.symbol }}</span></div>
-          <div class="upcoming-date">除息日 {{ row.ex_dividend_date || '-' }}</div>
-        </div>
-        <div class="upcoming-amount">{{ row.cash_dividend || '-' }}</div>
-      </div>
-    } @empty {
-      <div class="upcoming-empty">目前沒有即將除權息提醒</div>
+@if (!summaryFailed()) {
+  @let totals = summary();
+  <div class="kpi-row">
+    <app-bento class="kpi-card">
+      <div class="label">已確認收款</div>
+      <div class="value">{{ formatCardAmount(totals?.confirmed) }}</div>
+      <div class="meta">{{ totals ? totals.confirmedCount + ' 筆 · 已寫入現金帳' : '—' }}</div>
+    </app-bento>
+    <app-bento class="kpi-card">
+      <div class="label">有效待收</div>
+      <div class="value primary">{{ formatCardAmount(totals?.pending) }}</div>
+      <div class="meta">{{ totals ? totals.pendingCount + ' 筆 · 納入預估含息損益' : '—' }}</div>
+    </app-bento>
+    @if (!isPhone()) {
+      <app-bento class="kpi-card">
+        <div class="label"><span class="swatch dashed" aria-hidden="true"></span>舊資料帳面</div>
+        <div class="value">{{ formatCardAmount(totals?.legacy) }}</div>
+        <div class="meta">{{ totals ? totals.legacyCount + ' 筆 · 收款未核實' : '—' }}</div>
+      </app-bento>
+      <app-bento class="kpi-card">
+        <div class="label">已記錄股利</div>
+        <div class="value dividend">{{ formatCardAmount(totals?.recorded) }}</div>
+        <div class="meta">{{ totals ? '已確認 ＋ 舊資料' : '—' }}</div>
+      </app-bento>
     }
   </div>
-</app-bento>
+  @if (summaryNote()) {
+    <p class="summary-note">{{ summaryNote() }}</p>
+  }
+}
+
+<p class="div-note">有效待收股利會納入「預估含息損益」，但不計入可用現金；待釐清的金額不納入預估。舊資料的收款未經核實。</p>
+
+<section class="upcoming-strip" aria-label="即將除權息提醒">
+  <span class="upcoming-title">即將除權息提醒</span>
+  @for (row of upcomingExDividends(); track row.symbol + row.ex_dividend_date) {
+    <span class="upcoming-item">
+      <b>{{ row.name || row.symbol }}</b> {{ row.symbol }} · 除息日 {{ row.ex_dividend_date || '-' }}
+      <span class="dividend">{{ row.cash_dividend || '-' }}</span>
+    </span>
+  } @empty {
+    <span class="upcoming-item">目前沒有即將除權息提醒</span>
+  }
+</section>
 
 <div class="filter-bar">
   <div class="search-wrap">
@@ -48,10 +59,8 @@
       (ngModelChange)="onSearchInput($event)"
       placeholder="搜尋代碼或名稱" />
   </div>
-</div>
-
-
   <div class="filter-controls">
+    <app-seg-toggle ariaLabel="收款狀態" [options]="statusOptions" [value]="status()" (change)="onStatusChange($event)"></app-seg-toggle>
     <p-datepicker ariaLabel="日期範圍" [(ngModel)]="dateRange" selectionMode="range"
       [readonlyInput]="true" [showClear]="true" placeholder="日期範圍" appendTo="body"
       dateFormat="yy-mm-dd" (ngModelChange)="onDateRangeChange($event)"></p-datepicker>
@@ -66,45 +75,133 @@
         <option [value]="option.value">{{ option.label }}</option>
       }
     </select>
+    @if (hasActiveFilters()) {
+      <button type="button" class="clear-filters" (click)="clearFilters()">清除篩選</button>
+    }
   </div>
+</div>
 
 <div class="result-meta">
-  <span>{{ total() }} 筆</span>
-  @if (loading()) {
+  @if (listLoading()) {
     <span>查詢中...</span>
+  }
+  @if (statusSet() && summaryCapped()) {
+    <span class="list-note">⋯ 僅載入前 5,000 筆</span>
+  }
+  @if (statusFailed()) {
+    <span class="list-error" role="alert">查詢失敗，請檢查篩選條件</span>
   }
 </div>
 
-<p class="receipt-note">有效待收股利納入預估含息損益，但不計入可用現金或現金流報酬；待釐清金額不納入預估。舊資料收款未核實，保留原帳務，不能再次入帳；金額合計僅涵蓋本頁。</p>
-
-<ng-template #receiptDetails let-item>
-  @if (dividendsById().get(item.id); as row) {
-    <div class="receipt-details">
-      <span>除息日 {{ row.ex_dividend_date | date:'yyyy-MM-dd' }}</span>
-      @if (row.payment_date) { <span>預定發放日 {{ row.payment_date }} {{ row.payment_date_source ?? '' }}</span> }
-      @if (row.receipt_date) { <span>實際收款日 {{ row.receipt_date }}</span> }
-      @if (row.review_reason) { <span>{{ row.review_reason }}</span> }
-      @if (row.source_correction) { <span>來源資料已變更；已確認金額及現金帳不變，需人工釐清。</span> }
-      @if (row.receipt_status === 'pending') {
-        <app-btn variant="secondary" (click)="openReceipt(row)">確認實際收款</app-btn>
-      }
+<div class="div-list" [class.compact]="compactRows()">
+  @if (!compactRows() && rowViews().length > 0) {
+    <p class="visually-hidden">股利紀錄，欄位：股票、除息日、發放 / 收款、每股 × 股數、淨額、狀態</p>
+    <div class="div-head div-grid" aria-hidden="true">
+      <span>股票</span><span>除息日</span><span>發放 / 收款</span><span>每股 × 股數</span><span class="num">淨額</span><span>狀態</span>
     </div>
   }
-</ng-template>
+  @for (item of rowViews(); track item.d.id) {
+    @let row = item.v;
+    <article class="div-row" [attr.data-row-id]="row.id">
+      <div class="div-grid">
+        <div class="c-stock">
+          <span class="div-square" [class.ink-dark]="row.square.ink === 'dark'" [class.ink-light]="row.square.ink === 'light'"
+            [style.background]="'var(' + row.square.token + ')'" aria-hidden="true">{{ row.square.text }}</span>
+          <div class="c-text">
+            <div class="name-line">
+              <span class="primary-name">{{ row.primary }}</span>
+              @if (compactRows()) { <app-tag [variant]="row.tag.variant">{{ row.tag.text }}</app-tag> }
+            </div>
+            @if (compactRows()) { <div class="sub">{{ row.perShare }}</div> }
+          </div>
+        </div>
+        @if (!compactRows()) {
+          <div class="c-ex">{{ row.exDate }}</div>
+          <div class="c-pay">
+            <div>{{ row.pay.main }}</div>
+            @if (row.pay.sub) { <div class="sub">{{ row.pay.sub }}</div> }
+          </div>
+          <div class="c-qty">
+            <div>{{ row.perShare }}</div>
+            @if (row.deductions) { <div class="sub">{{ row.deductions }}</div> }
+          </div>
+        }
+        <div class="c-net num">
+          <div class="net" [class.primary]="row.netClass === 'primary'" [class.dividend]="row.netClass === 'dividend'">{{ row.net.main }}</div>
+          @if (compactRows()) {
+            <div class="sub">{{ row.dateLine }}</div>
+          } @else if (row.net.sub) {
+            <div class="sub">{{ row.net.sub }}</div>
+          }
+        </div>
+        @if (!compactRows()) {
+          <div class="c-status"><app-tag [variant]="row.tag.variant">{{ row.tag.text }}</app-tag></div>
+        }
+        <div class="c-actions">
+          @if (row.status === 'pending') {
+            <app-btn variant="secondary" [ariaLabel]="'確認收款 ' + row.primary" [ariaExpanded]="receiptRow()?.id === row.id"
+              (click)="openReceipt(item.d)">確認收款</app-btn>
+          }
+          <button type="button" class="row-action" [attr.aria-label]="'操作 ' + row.primary" aria-haspopup="menu"
+            (click)="onRowAction({ id: row.id, event: $event })">⋯</button>
+        </div>
+      </div>
+      @if (row.reviewReason || row.sourceCorrected) {
+        <div class="div-notes">
+          @if (row.reviewReason) { <span>{{ row.reviewReason }}</span> }
+          @if (row.sourceCorrected) { <span>來源資料已變更；已確認金額及現金帳不變，需人工釐清。</span> }
+        </div>
+      }
+    </article>
+    @if (receiptRow()?.id === row.id) {
+      @let receiptTitle = '確認實際收款 · ' + (nameFor(item.d.symbol) ?? item.d.symbol) + ' ' + row.net.main;
+      <div class="receipt-form" role="group" [attr.aria-label]="receiptTitle">
+        <p class="receipt-title">{{ receiptTitle }}</p>
+        <p class="receipt-warning">只在核對過實際入帳後確認。預定發放日不是收款證明；確認後會寫入現金帳，無法直接編輯撤銷。</p>
+        <div class="receipt-fields">
+          <label>實際收款日
+            <input type="date" aria-label="實際收款日" [value]="receiptDate()" (input)="receiptDate.set($any($event.target).value)" />
+          </label>
+          <label>收款帳戶
+            <select aria-label="收款帳戶" (change)="onReceiptAccount($any($event.target).value)">
+              <option value="" [selected]="receiptAccountId() === null">請選擇帳戶</option>
+              @for (account of receiptAccounts(); track account.id) {
+                <option [value]="account.id" [selected]="account.id === receiptAccountId()">{{ account.nickname }}</option>
+              }
+            </select>
+          </label>
+        </div>
+        <div class="receipt-actions">
+          <app-btn variant="ghost" (click)="cancelReceipt()">取消</app-btn>
+          <app-btn [disabled]="receiptBusy() || !receiptDate() || receiptAccountId() === null" [loading]="receiptBusy()" (click)="confirmReceipt()">確認已收到並入帳</app-btn>
+        </div>
+      </div>
+    }
+    @if (deductionsRow()?.id === row.id) {
+      @let deductionsTitle = '修改扣款 · ' + (nameFor(item.d.symbol) ?? item.d.symbol) + ' ' + row.net.main;
+      <div class="receipt-form deductions-form" role="group" [attr.aria-label]="deductionsTitle">
+        <p class="receipt-title">{{ deductionsTitle }}</p>
+        <div class="receipt-fields">
+          <label>匯費
+            <input type="number" min="0" step="0.01" inputmode="decimal" aria-label="匯費" [value]="deductionsFee()"
+              (input)="deductionsFee.set($any($event.target).value)" />
+          </label>
+          <label>補充保費
+            <input type="number" min="0" step="0.01" inputmode="decimal" aria-label="補充保費" [value]="deductionsTax()"
+              (input)="deductionsTax.set($any($event.target).value)" />
+          </label>
+        </div>
+        <p class="receipt-warning deductions-note">淨額會重新計算{{ item.d.receipt_status === 'confirmed' ? '，現金帳的股利入帳也會一併更新' : '' }}</p>
+        <div class="receipt-actions">
+          <app-btn variant="ghost" (click)="cancelDeductions()">取消</app-btn>
+          <app-btn [disabled]="deductionsBusy() || !deductionsValid()" [loading]="deductionsBusy()" (click)="submitDeductions()">儲存</app-btn>
+        </div>
+      </div>
+    }
+  }
+</div>
 
-<p-dialog header="確認實際收款" [visible]="receiptTarget() !== null" (visibleChange)="!$event && receiptTarget.set(null)" [modal]="true">
-  <p>僅在核對實際入帳後確認。預定發放日期不是收款證明；確認將更新現金帳，不能直接編輯撤銷。</p>
-  <label>實際收款日 <input aria-label="實際收款日" type="date" [(ngModel)]="receiptDate" /></label>
-  <label>收款帳戶 <select aria-label="收款帳戶" [(ngModel)]="receiptAccountId">
-    <option [ngValue]="null">請選擇帳戶</option>
-    @for (account of receiptAccounts(); track account.id) { <option [ngValue]="account.id">{{ account.nickname }} {{ account.currency }}</option> }
-  </select></label>
-  <app-btn [disabled]="receiptBusy() || !receiptDate || !receiptAccountId" (click)="confirmReceipt()">確認已收到並入帳</app-btn>
-</p-dialog>
-
-<app-timeline [rows]="timelineRows()" [rowDetails]="receiptDetails" [rowActions]="true" (rowAction)="onRowAction($event)"></app-timeline>
-
-@if (!loading() && timelineRows().length === 0) {
+@if (!listLoading() && rowViews().length === 0) {
   <div class="empty">
     <i class="pi pi-percentage" aria-hidden="true"></i>
     <h4>無股利紀錄</h4>
@@ -112,11 +209,11 @@
   </div>
 }
 
-@if (total() > (query().limit ?? 25)) {
+@if ((listTotal() ?? 0) > (query().limit ?? 25)) {
   <p-paginator
-    [first]="query().offset ?? 0"
+    [first]="listOffset()"
     [rows]="query().limit ?? 25"
-    [totalRecords]="total()"
+    [totalRecords]="listTotal() ?? 0"
     [rowsPerPageOptions]="rowsPerPageOptions"
     (onPageChange)="onPageChange($event)"
     styleClass="hub-paginator">

@@ -1,0 +1,462 @@
+/* The host is the fixed frame (glass, border, width); `.hub-sidebar` inside it is the scroll container. */
+:host {
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  background: var(--app-surface-glass);
+  border-right: 1px solid var(--app-border);
+  box-sizing: border-box;
+  display: block;
+  height: 100vh;
+  left: 0;
+  position: fixed;
+  top: 0;
+  transition: width var(--dur-base) var(--ease-standard);
+  width: var(--sidebar-w);
+  z-index: 1000;
+}
+
+.hub-sidebar {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  height: 100%;
+  /* Its own scroll container: when the nav is taller than the viewport it scrolls here
+     (and the wheel stays here) instead of being clipped. sidebar.spec.ts checks the structure. */
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 18px 14px;
+  scrollbar-width: thin;
+
+  /* Rows keep their size; overflow scrolls instead of squashing them. */
+  > * {
+    flex-shrink: 0;
+  }
+}
+
+/* ── Head: logo + collapse / expand ─────────────────────────────── */
+
+.side-head {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  padding: 0 4px 0 8px;
+}
+
+.side-logo {
+  align-items: center;
+  border-radius: var(--radius-md);
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+
+  img {
+    display: block;
+    height: 36px;
+    max-width: 100%;
+  }
+
+  &:focus-visible {
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+    outline: none;
+  }
+}
+
+.side-toggle {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  display: flex;
+  flex: none;
+  height: 36px;
+  justify-content: center;
+  padding: 0;
+  transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
+  width: 36px;
+
+  &:hover {
+    background: var(--app-accent-soft);
+    color: var(--app-text);
+  }
+
+  &:focus-visible {
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+    outline: none;
+  }
+}
+
+/* ── Groups ─────────────────────────────────────────────────────── */
+
+.side-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.side-group,
+.group-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.group-head {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--app-text-muted);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  justify-content: space-between;
+  min-height: 30px;
+  padding: 0 10px;
+  text-align: left;
+
+  &.current {
+    cursor: default;
+  }
+
+  &:hover:not(.current) {
+    color: var(--app-text);
+  }
+
+  &:focus-visible {
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+    outline: none;
+  }
+}
+
+.group-label {
+  font-size: var(--fs-label);
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--tracking-label);
+}
+
+.group-meta {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.group-count {
+  align-items: center;
+  background: var(--app-primary-soft);
+  border-radius: 9px;
+  box-sizing: border-box;
+  color: var(--app-primary);
+  display: flex;
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-heavy);
+  height: 18px;
+  justify-content: center;
+  min-width: 18px;
+  padding: 0 5px;
+}
+
+.group-dot,
+.item-dot {
+  background: var(--c-red);
+  border-radius: 50%;
+  flex: none;
+  height: 8px;
+  width: 8px;
+}
+
+.group-hint {
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold);
+}
+
+.group-chevron {
+  font-size: 0.7rem;
+  transition: transform var(--dur-fast) var(--ease-standard);
+
+  &.folded {
+    transform: rotate(-90deg);
+  }
+}
+
+/* ── Items (expanded) ───────────────────────────────────────────── */
+
+.side-item {
+  align-items: center;
+  border-radius: var(--radius-md);
+  color: var(--app-text);
+  display: flex;
+  font-size: 14px;
+  font-weight: var(--fw-regular);
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 10px;
+  text-decoration: none;
+  transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
+
+  &:hover {
+    background: var(--app-accent-soft);
+  }
+
+  &:focus-visible {
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+    outline: none;
+  }
+
+  &.active {
+    background: var(--app-primary-soft);
+    color: var(--app-primary);
+    font-weight: var(--fw-bold);
+
+    .item-icon {
+      background: var(--app-primary);
+      color: var(--app-on-primary);
+    }
+  }
+}
+
+/* Positioned only for the rail's overlaid count / dot; the item itself stays unpositioned (see `.side-tip`). */
+.item-icon {
+  align-items: center;
+  background: var(--app-surface-soft);
+  border-radius: var(--radius-sm);
+  color: var(--app-text-muted);
+  display: flex;
+  flex: none;
+  height: 32px;
+  justify-content: center;
+  position: relative;
+  width: 32px;
+
+  i {
+    font-size: 0.95rem;
+  }
+}
+
+.item-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-count {
+  align-items: center;
+  background: var(--app-primary);
+  border-radius: 10px;
+  box-sizing: border-box;
+  color: #fff;
+  display: flex;
+  flex: none;
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-heavy);
+  height: 20px;
+  justify-content: center;
+  min-width: 20px;
+  padding: 0 6px;
+}
+
+/* ── Rail (72 px) ───────────────────────────────────────────────── */
+
+:host(.rail) {
+  .hub-sidebar {
+    align-items: center;
+    gap: 4px;
+    padding: 18px 0;
+  }
+
+  .side-head {
+    flex-direction: column;
+    gap: 6px;
+    padding: 0;
+  }
+
+  .side-logo {
+    flex: none;
+    height: 36px;
+    overflow: hidden;
+    width: 36px;
+
+    img {
+      height: 100%;
+      width: 100%;
+    }
+  }
+
+  .side-nav,
+  .side-group,
+  .group-items {
+    align-items: center;
+    gap: 4px;
+  }
+
+  .side-divider {
+    background: var(--app-border);
+    height: 1px;
+    margin: 4px 0;
+    width: 32px;
+  }
+
+  .side-item {
+    color: var(--app-text-muted);
+    height: 44px;
+    justify-content: center;
+    min-height: 0;
+    padding: 0;
+    width: 44px;
+
+    &.active {
+      background: var(--app-primary-soft);
+      color: var(--app-primary);
+
+      .item-icon {
+        background: transparent;
+        color: inherit;
+      }
+    }
+
+    &:hover {
+      color: var(--app-text);
+    }
+
+    &:hover .side-tip,
+    &:focus-visible .side-tip {
+      display: flex;
+    }
+  }
+
+  .item-icon {
+    background: transparent;
+    color: inherit;
+    height: 100%;
+    width: 100%;
+
+    i {
+      font-size: 1.2rem;
+    }
+  }
+
+  .item-count {
+    border-radius: 8px;
+    font-size: 10px;
+    height: 16px;
+    min-width: 16px;
+    padding: 0 4px;
+    position: absolute;
+    right: 1px;
+    top: 2px;
+  }
+
+  .item-dot {
+    box-shadow: 0 0 0 2px var(--app-surface);
+    position: absolute;
+    right: 8px;
+    top: 8px;
+  }
+}
+
+/* Fixed, so the scroll container cannot clip it; `--tip-y` is the item's centre (sidebar.ts `placeTip`). The host's
+   backdrop-filter makes it the containing block, and the host sits at the viewport's top-left, so the numbers match. */
+.side-tip {
+  background: var(--app-accent);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--app-raised-shadow);
+  color: var(--app-surface);
+  display: none;
+  flex-direction: column;
+  font-size: 13px;
+  font-weight: var(--fw-semibold);
+  gap: 2px;
+  left: calc(var(--sidebar-w) + 6px);
+  padding: 6px 10px;
+  pointer-events: none;
+  position: fixed;
+  top: var(--tip-y, 50%);
+  transform: translateY(-50%);
+  white-space: nowrap;
+  z-index: 1;
+
+  small {
+    font-size: var(--fs-micro);
+    font-weight: var(--fw-regular);
+    opacity: 0.8;
+  }
+}
+
+.sr-only {
+  border: 0;
+  clip: rect(0 0 0 0);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+/* ── Compact height (13-inch laptops): denser rows so the whole nav usually fits ── */
+
+:host(.compact) {
+  .hub-sidebar {
+    gap: 10px;
+    padding: 10px 12px;
+  }
+
+  .side-nav {
+    gap: 4px;
+  }
+
+  .group-head {
+    min-height: 26px;
+  }
+
+  .side-item {
+    min-height: 34px;
+  }
+
+  .item-icon {
+    height: 28px;
+    width: 28px;
+  }
+}
+
+:host(.compact.rail) {
+  .hub-sidebar {
+    gap: 3px;
+    padding: 10px 0;
+  }
+
+  .side-nav,
+  .side-group,
+  .group-items {
+    gap: 3px;
+  }
+
+  .side-item {
+    height: 38px;
+    width: 38px;
+  }
+
+  .item-icon {
+    height: 100%;
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :host,
+  .group-chevron {
+    transition: none;
+  }
+}
+
+@media (max-width: 759.98px) {
+  :host {
+    display: none;
+  }
+}

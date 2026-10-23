@@ -24,10 +24,12 @@ import { TooltipModule } from 'primeng/tooltip';
 import { MessageService } from 'primeng/api';
 import { BtnComponent } from '../ui/btn/btn';
 import { TagComponent } from '../ui/tag/tag';
+import { PageHeaderComponent } from '../shell/page-header/page-header';
 
 @Component({
   selector: 'app-item-list',
   imports: [
+    PageHeaderComponent,
     CommonModule,
     FormsModule,
     TableModule,

@@ -3,6 +3,7 @@
   min-height: 100vh;
 }
 
+/* `--sidebar-w` (shell.ts) is set here, the common ancestor of the main column and the 記一筆 button. */
 .hub-layout {
   background: var(--app-bg);
   display: flex;
@@ -13,49 +14,92 @@
   display: flex;
   flex: 1;
   flex-direction: column;
-  margin-left: 72px;
+  margin-left: var(--sidebar-w);
   min-width: 0;
-}
-
-.hub-header {
-  align-items: center;
-  background: var(--app-surface-glass);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border-bottom: 1px solid var(--app-border);
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  height: var(--chrome-header);
-  padding: 0 1.5rem;
-  position: sticky;
-  top: 0;
-  z-index: 990;
-}
-
-.hub-logo {
-  display: block;
-  height: 32px;
-  justify-self: start;
-  max-width: 132px;
-}
-
-.title {
-  color: var(--app-text);
-  font-size: var(--fs-h3);
-  font-weight: var(--fw-bold);
-  grid-column: 2;
-  letter-spacing: var(--tracking-tight);
-  margin: 0;
-  min-width: 0;
-  overflow: hidden;
-  text-align: center;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  transition: margin-left var(--dur-base) var(--ease-standard);
 }
 
 .hub-page {
   flex: 1;
   padding: var(--page-pad-y) 1.75rem var(--page-pad-b);
+}
+
+/* ── 記一筆 (app-wide, from 760 px) ─────────────────────────────── */
+
+.hub-fab {
+  align-items: center;
+  background: var(--app-primary);
+  border-radius: 50%;
+  bottom: 30px;
+  box-shadow: 0 8px 20px rgba(83, 58, 253, 0.35);
+  color: #fff;
+  display: flex;
+  height: 56px;
+  justify-content: center;
+  position: fixed;
+  right: 30px;
+  text-decoration: none;
+  width: 56px;
+  z-index: 1000;
+
+  &:hover .fab-tip,
+  &:focus-visible .fab-tip {
+    display: flex;
+  }
+
+  &:focus-visible {
+    box-shadow: 0 0 0 4px var(--app-focus-ring), 0 8px 20px rgba(83, 58, 253, 0.35);
+    outline: none;
+  }
+
+  /* Panes mode with a pane open: the list column's bottom-right corner (.hub-page side padding 1.75rem, .dbody gap
+     16px, columns 5fr / 6fr), so the button never covers the pane. */
+  &.beside-pane {
+    right: calc(1.75rem + (100vw - var(--sidebar-w) - 3.5rem - 16px) * 6 / 11 + 32px);
+  }
+}
+
+.fab-plus {
+  font-size: 1.7rem;
+  line-height: 1;
+}
+
+.fab-tip {
+  align-items: center;
+  background: var(--app-accent);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--app-raised-shadow);
+  color: var(--app-surface);
+  display: none;
+  font-size: 13px;
+  font-weight: var(--fw-semibold);
+  gap: 6px;
+  padding: 6px 10px;
+  pointer-events: none;
+  position: absolute;
+  right: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  white-space: nowrap;
+
+  kbd {
+    border: 1px solid currentColor;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: var(--fs-micro);
+    line-height: 1;
+    opacity: 0.8;
+    padding: 2px 5px;
+  }
+}
+
+/* From 760 px the 56 px 記一筆 button floats 30 px above the bottom edge: the page ends --fab-clear further down so
+   its last rows scroll clear of it. The accounting panes take that space back and pad their list pane instead. */
+@media (min-width: 760px) {
+  .hub-page {
+    --fab-clear: 88px;
+    padding-bottom: calc(var(--page-pad-b) + var(--fab-clear));
+  }
 }
 
 /* Compact height, panes mode (≥1024px): the layout is exactly one viewport tall, so the
@@ -76,28 +120,17 @@
 @media (max-width: 759.98px) {
   .hub-main {
     margin-left: 0;
-    padding-bottom: calc(112px + env(safe-area-inset-bottom));
-  }
-
-  .hub-header {
-    grid-template-columns: auto 1fr;
-    height: 52px;
-    padding: 0 1rem;
-  }
-
-  .hub-logo {
-    height: 28px;
-    max-width: 112px;
-  }
-
-  .title {
-    font-size: 1rem;
-    grid-column: 2;
-    justify-self: center;
-    max-width: 48vw;
+    /* The tab bar only (the sub-nav moved into each page's header). */
+    padding-bottom: calc(80px + env(safe-area-inset-bottom));
   }
 
   .hub-page {
     padding: 1rem 1rem 2rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hub-main {
+    transition: none;
   }
 }

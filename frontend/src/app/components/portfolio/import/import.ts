@@ -20,6 +20,7 @@ import { PortfolioService } from '../../../services/portfolio.service';
 import { BtnComponent } from '../../ui/btn/btn';
 import { FileChipComponent } from '../../ui/file-chip/file-chip';
 import { SideTagComponent } from '../../ui/side-tag/side-tag';
+import { PageHeaderComponent } from '../../shell/page-header/page-header';
 
 interface ImportOption {
   label: string;
@@ -33,6 +34,7 @@ const POLL_INTERVAL_MS = 5_000;
   selector: 'app-portfolio-import',
   standalone: true,
   imports: [
+    PageHeaderComponent,
     CommonModule,
     FormsModule,
     ButtonModule,

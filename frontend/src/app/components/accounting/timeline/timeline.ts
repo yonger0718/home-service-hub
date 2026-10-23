@@ -37,6 +37,7 @@ import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
 import { BillingEvent, billingEvents, reminderDues, upcomingDues } from '../billing/billing-math';
 import { BillState, BillingService, billKey } from '../billing/billing.service';
+import { countReminders } from '../billing/reminder-count';
 import { SkeletonComponent } from '../skeleton/skeleton';
 import { FolderIcon, SplitFolderComponent } from '../split-folder/split-folder';
 import { groupCommands, listOpenState } from '../split-group/group-nav';
@@ -47,6 +48,7 @@ import { todayIso } from '../dates';
 import { schedulePill } from '../schedule-math';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, isHandledKey, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
 import { displayTitle, formatMoney, formatSigned } from '../format';
+import { PageHeaderComponent } from '../../shell/page-header/page-header';
 
 export const TIMELINE_PAGE_SIZE = 50;
 /** One day's entries in the 日曆 view are read in a single request. */
@@ -353,7 +355,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
 @Component({
   selector: 'app-ledger-timeline',
   standalone: true,
-  imports: [CalendarMonthComponent, NgTemplateOutlet, SkeletonComponent, SplitFolderComponent],
+  imports: [PageHeaderComponent, CalendarMonthComponent, NgTemplateOutlet, SkeletonComponent, SplitFolderComponent],
   templateUrl: './timeline.html',
   styleUrls: ['../filters.scss', '../entry-row.scss', './timeline.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -513,16 +515,16 @@ export class LedgerTimelineComponent implements OnInit {
     }
     return lines;
   });
-  /**
-   * 🔔 count: cards with something left to pay, counterparties with open debt rows, 待完成交易 items due today or
-   * earlier or partial (paused and ended definitions are not in the queue), and 待處理 inbox cards to decide.
-   */
-  readonly reminderCount = computed(
-    () =>
-      this.reminderEvents().filter(event => this.openBill(event) !== null).length +
-      this.counterparties().filter(counterparty => (counterparty.open_count ?? 0) > 0).length +
-      this.queue().filter(item => item.is_partial || item.due_date <= this.today()).length +
-      this.inboxAsk(),
+  /** 🔔 count (`countReminders`, shared with the nav badge), including 待處理 inbox cards to decide. */
+  readonly reminderCount = computed(() =>
+    countReminders({
+      dues: this.reminderEvents(),
+      bill: event => this.bills.bill(event),
+      counterparties: this.counterparties(),
+      queue: this.queue(),
+      today: this.today(),
+      inboxAsk: this.inboxAsk(),
+    }),
   );
   /** The list view's 近 7 天 banner: upcoming due days with a remaining balance. */
   readonly upcomingBills = computed(() => this.upcomingEvents().filter(event => this.openBill(event) !== null));

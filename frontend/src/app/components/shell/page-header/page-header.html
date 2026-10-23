@@ -1,0 +1,24 @@
+<div class="page-header-row">
+  @if (showBack()) {
+    <button class="page-back" type="button" aria-label="返回" (click)="goBack()">‹</button>
+  }
+  <div class="page-title">
+    <h1>{{ heading() }}</h1>
+    @if (subtitle()) {
+      <span class="page-subtitle">{{ subtitle() }}</span>
+    }
+  </div>
+  @if (gear() && actionsBelow()) {
+    <ng-container *ngTemplateOutlet="gearLink" />
+  }
+  <div class="page-actions"><ng-content></ng-content></div>
+  @if (gear() && !actionsBelow()) {
+    <ng-container *ngTemplateOutlet="gearLink" />
+  }
+</div>
+@if (phone()) {
+  <app-sub-nav></app-sub-nav>
+}
+<ng-template #gearLink>
+  <a class="header-gear" routerLink="/settings" aria-label="設定"><i class="pi pi-cog" aria-hidden="true"></i></a>
+</ng-template>

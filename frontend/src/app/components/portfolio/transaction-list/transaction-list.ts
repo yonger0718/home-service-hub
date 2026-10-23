@@ -1,11 +1,12 @@
 import { Component, OnDestroy, OnInit, computed, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { RouterLink } from '@angular/router';
+import { Subscription, catchError, map, of } from 'rxjs';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import { BROKER_LABELS, Broker, MarketCode, Transaction, TransactionType, TransactionQuery, brokerLabel } from '../../../models/portfolio.model';
 
 const BROKER_LABELS_MAP = BROKER_LABELS;
-import { TableModule } from 'primeng/table';
-import { ButtonModule } from 'primeng/button';
 import { DialogModule } from 'primeng/dialog';
 import { FormsModule } from '@angular/forms';
 import { InputTextModule } from 'primeng/inputtext';
@@ -14,7 +15,6 @@ import { SelectButtonModule } from 'primeng/selectbutton';
 import { SelectModule } from 'primeng/select';
 import { DatePickerModule } from 'primeng/datepicker';
 import { PaginatorModule, PaginatorState } from 'primeng/paginator';
-import { ProgressSpinnerModule } from 'primeng/progressspinner';
 import { ConfirmationService, MessageService, MenuItem } from 'primeng/api';
 import { ConfirmDialogModule } from 'primeng/confirmdialog';
 import { ToastModule } from 'primeng/toast';
@@ -23,17 +23,22 @@ import { Menu } from 'primeng/menu';
 import { BtnComponent } from '../../ui/btn/btn';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { TimelineComponent, TimelineRow } from '../../ui/timeline/timeline';
+import { PageHeaderComponent } from '../../shell/page-header/page-header';
+import { BentoComponent } from '../../ui/bento/bento';
+import { allPages } from '../paging';
+import { periodLabel } from '../period';
+import { TradeTotals, feeShareLabel, monthHeading, tradeTotals } from './transaction-math';
+import { transactionRow } from './transaction-rows';
+
+function wholeTwd(value: number): number {
+  return Math.round(value) || 0;
+}
 
 const SORT_OPTIONS = [
   { value: 'trade_date:desc', label: '日期 新→舊' },
   { value: 'trade_date:asc', label: '日期 舊→新' },
   { value: 'symbol:asc', label: '代碼 A→Z' },
   { value: 'symbol:desc', label: '代碼 Z→A' },
-];
-
-const SIDE_OPTIONS = [
-  { value: 'BUY', label: '買進' },
-  { value: 'SELL', label: '賣出' },
 ];
 
 const MARKET_OPTIONS: { label: MarketCode; value: MarketCode }[] = [
@@ -50,9 +55,10 @@ const DEFAULT_CURRENCY_BY_MARKET: Record<Exclude<MarketCode, 'TW'>, string> = {
 @Component({
   selector: 'app-portfolio-transactions',
   imports: [
-    CommonModule, TableModule, ButtonModule, DialogModule, FormsModule,
+    PageHeaderComponent, RouterLink, BentoComponent,
+    CommonModule, DialogModule, FormsModule,
     InputTextModule, InputNumberModule, SelectButtonModule, SelectModule,
-    DatePickerModule, PaginatorModule, ProgressSpinnerModule,
+    DatePickerModule, PaginatorModule,
     ConfirmDialogModule, ToastModule, MenuModule,
     BtnComponent, SegToggleComponent, TimelineComponent,
   ],
@@ -65,6 +71,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   private portfolioService = inject(PortfolioService);
   private confirmationService = inject(ConfirmationService);
   private messageService = inject(MessageService);
+  private layoutMode = inject(LayoutModeService);
 
   @ViewChild('menu') menu!: Menu;
   menuItems: MenuItem[] = [];
@@ -80,8 +87,27 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   dateRange: Date[] | null = null;
 
   query = signal<TransactionQuery>({ offset: 0, limit: 25, sort: 'trade_date:desc' });
+  readonly headerSubtitle = computed(() => `${periodLabel(this.query())} · 共 ${this.total()} 筆`);
+
+  /** Filter-wide card figures (all rows of the active filter, not the list page); null while loading or after a failure. */
+  readonly summary = signal<TradeTotals | null>(null);
+  readonly summaryFailed = signal(false);
+  readonly summaryCapped = signal(false);
+  /** Every row of the active filter from the summary load; null while it runs or after it failed. */
+  readonly summaryRows = signal<Transaction[] | null>(null);
+  /** Server-side realized P&L for the filter minus `side`; null while loading or when the call failed. */
+  readonly realized = signal<number | null>(null);
+  /** One line under the cards: rows the TWD sums leave out, and the 5 000-row cap. */
+  readonly summaryNote = computed(() => {
+    const parts: string[] = [];
+    const withoutFx = this.summary()?.foreignWithoutFx ?? 0;
+    if (withoutFx > 0) parts.push(`不含外幣 ${withoutFx} 筆`);
+    if (this.summaryCapped()) parts.push('⋯ 僅載入前 5,000 筆');
+    return parts.join(' · ');
+  });
+  readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
+  protected readonly feeShareLabel = feeShareLabel;
   readonly sortOptions = SORT_OPTIONS;
-  readonly sideOptions = SIDE_OPTIONS;
   readonly sideFilterOptions: SegToggleOption[] = [
     { label: '全部', value: 'ALL' },
     { label: '買進', value: 'BUY' },
@@ -105,25 +131,19 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   readonly marketOptions = MARKET_OPTIONS;
   readonly fxSubmitAttempted = signal(false);
 
-  readonly timelineRows = computed<TimelineRow[]>(() =>
-    this.transactions().map(t => {
-      const isBuy = t.type === TransactionType.BUY;
-      return {
-        id: t.id,
-        date: t.trade_date ?? '',
-        side: isBuy ? 'buy' : 'sell',
-        sideLabel: isBuy ? '買進' : '賣出',
-        primary: `${this.symbolDisplay(t)} ${t.symbol}`,
-        metaBadge: this.timelineBadge(t),
-        meta: `${Number(t.quantity).toLocaleString('zh-TW')} × ${Number(t.price).toFixed(2)}`,
-        amount: `${isBuy ? '-' : '+'}${this.formatTransactionAmount(t)}`,
-        amountVariant: isBuy ? 'buy' : 'sell',
-      };
-    }),
-  );
+  readonly timelineRows = computed<TimelineRow[]>(() => this.transactions().map(t => transactionRow(t, this.symbolDisplay(t))));
+  /**
+   * Month heading text: the month's totals within the active filter (every row the summary loaded), falling back
+   * to the list page while that load runs or after it failed. The timeline never sums formatted strings.
+   */
+  readonly monthHeadingFor = (key: string): string => monthHeading(key, this.summaryRows() ?? this.transactions());
 
   private filterDebounce: ReturnType<typeof setTimeout> | null = null;
   private fetchSeq = 0;
+  private summarySeq = 0;
+  private listSub?: Subscription;
+  private summarySub?: Subscription;
+  private realizedSub?: Subscription;
 
   newTransaction: Partial<Transaction> = {
     type: TransactionType.BUY,
@@ -142,17 +162,21 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   ngOnInit() {
     this.portfolioService.getSymbolNames().subscribe(map => this.symbolNames.set(map));
     this.portfolioService.getTransactionBrokers().subscribe(brokers => this.availableBrokers.set(brokers));
-    this.fetch();
+    this.reload();
   }
 
   ngOnDestroy() {
     if (this.filterDebounce) clearTimeout(this.filterDebounce);
+    this.listSub?.unsubscribe();
+    this.summarySub?.unsubscribe();
+    this.realizedSub?.unsubscribe();
   }
 
   fetch() {
     const seq = ++this.fetchSeq;
     this.loading.set(true);
-    this.portfolioService.getTransactions(this.query()).subscribe({
+    this.listSub?.unsubscribe();
+    this.listSub = this.portfolioService.getTransactions(this.query()).subscribe({
       next: paged => {
         if (seq !== this.fetchSeq) return;
         this.transactions.set(paged.items);
@@ -167,13 +191,57 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     });
   }
 
+  /**
+   * Cards for every row of the active filter. Each stream fails on its own: a summary failure hides the cards,
+   * a realized failure (e.g. 422 for a row without fx) only blanks 已實現損益. An older load is cancelled (no further
+   * pages) and any response from it is dropped.
+   */
+  loadSummary() {
+    this.summarySub?.unsubscribe();
+    this.realizedSub?.unsubscribe();
+    const seq = ++this.summarySeq;
+    const { symbol, date_from, date_to, side, broker, sort } = this.query();
+    this.summary.set(null);
+    this.summaryRows.set(null);
+    this.summaryFailed.set(false);
+    this.summaryCapped.set(false);
+    this.realized.set(null);
+    this.summarySub = allPages(offset => this.portfolioService.getTransactions({ symbol, date_from, date_to, side, broker, sort, limit: 100, offset }))
+      .pipe(catchError(() => of(null)))
+      .subscribe(result => {
+        if (seq !== this.summarySeq) return;
+        if (!result) {
+          this.summaryFailed.set(true);
+          return;
+        }
+        this.summary.set(tradeTotals(result.items));
+        this.summaryRows.set(result.items);
+        this.summaryCapped.set(result.capped);
+      });
+    this.realizedSub = this.portfolioService.getRealizedPnl({ symbol, date_from, date_to, broker, limit: 1 })
+      .pipe(
+        map(paged => Number(paged.summary.filter_scope_total)),
+        map(value => (Number.isFinite(value) ? value : null)),
+        catchError(() => of(null)),
+      )
+      .subscribe(value => {
+        if (seq === this.summarySeq) this.realized.set(value);
+      });
+  }
+
+  /** The list page and the cards; used whenever the filter or the data changes (a page or sort change only fetches). */
+  private reload() {
+    this.fetch();
+    this.loadSummary();
+  }
+
   private updateFilters(patch: Partial<TransactionQuery>, debounce = false) {
     this.query.set({ ...this.query(), ...patch, offset: 0 });
     if (this.filterDebounce) clearTimeout(this.filterDebounce);
     if (debounce) {
-      this.filterDebounce = setTimeout(() => this.fetch(), 300);
+      this.filterDebounce = setTimeout(() => this.reload(), 300);
     } else {
-      this.fetch();
+      this.reload();
     }
   }
 
@@ -222,8 +290,10 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     this.updateFilters({ broker });
   }
 
+  /** Sorting does not change the totals, so the cards stay; a pending search debounce still reloads them. */
   onSortChange(sort: string) {
-    this.updateFilters({ sort });
+    this.query.set({ ...this.query(), sort, offset: 0 });
+    this.fetch();
   }
 
   onPageChange(event: PaginatorState) {
@@ -238,12 +308,12 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     this.dateRange = null;
     this.selectedBroker.set('ALL');
     this.query.set({ offset: 0, limit: this.query().limit ?? 25, sort: 'trade_date:desc' });
-    this.fetch();
+    this.updateFilters({});
   }
 
   hasActiveFilters(): boolean {
     const q = this.query();
-    return !!(q.symbol || q.date_from || q.date_to || q.side);
+    return !!(q.symbol || q.date_from || q.date_to || q.side || q.broker);
   }
 
   private toIsoDate(d: Date | string): string {
@@ -320,7 +390,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
               offset: Math.min(this.query().offset ?? 0, maxOffset),
             });
             this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已刪除' });
-            this.fetch();
+            this.reload();
           },
           error: () => {
             this.messageService.add({ severity: 'error', summary: '錯誤', detail: '刪除失敗，請稍後再試' });
@@ -328,18 +398,6 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
         });
       },
     });
-  }
-
-  allInTotal(t: Transaction): number {
-    const gross = Number(t.price) * Number(t.quantity);
-    const fee = Number(t.fee || 0);
-    const tax = Number(t.tax || 0);
-    return t.type === TransactionType.BUY ? gross + fee + tax : gross - fee - tax;
-  }
-
-  allInUnitPrice(t: Transaction): number {
-    const qty = Number(t.quantity);
-    return qty > 0 ? this.allInTotal(t) / qty : Number(t.price);
   }
 
   formatCurrency(value: number | string | null | undefined): string {
@@ -350,27 +408,14 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     }).format(Number(value ?? 0));
   }
 
-  formatTransactionAmount(t: Transaction): string {
-    const value = this.allInTotal(t);
-    const currency = (t.currency ?? 'TWD').toUpperCase();
-    // GBp = pence; render verbatim 4dp with GBp suffix (per Phase 3 native-display rule).
-    if (t.currency === 'GBp') {
-      return `${value.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })} GBp`;
-    }
-    const decimals = currency === 'TWD' ? 0 : 2;
-    const formatted = value.toLocaleString('en-US', {
-      minimumFractionDigits: decimals,
-      maximumFractionDigits: decimals,
-    });
-    return `${formatted} ${currency}`;
+  /** Card figures: whole TWD (no `-$0`), `—` while unknown. */
+  formatCardAmount(value: number | null): string {
+    return value == null ? '—' : this.formatCurrency(wholeTwd(value));
   }
 
-  timelineBadge(t: Transaction): string | undefined {
-    const badges = [
-      t.market && t.market !== 'TW' ? t.market : null,
-      t.broker ? this.brokerLabel(t.broker) : null,
-    ].filter(Boolean) as string[];
-    return badges.length > 0 ? badges.join(' · ') : undefined;
+  /** Sign of the card figure as shown: −0.4 rounds to $0 and gets no trend colour. */
+  cardSign(value: number | null): number {
+    return value == null ? 0 : Math.sign(wholeTwd(value));
   }
 
   selectedMarket(): MarketCode {
@@ -493,7 +538,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
       this.portfolioService.updateTransaction(this.newTransaction.id, payload).subscribe({
         next: () => {
           this.showDialog.set(false);
-          this.fetch();
+          this.reload();
           this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已更新' });
         },
         error: () => {
@@ -504,7 +549,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
       this.portfolioService.createTransaction(payload).subscribe({
         next: () => {
           this.showDialog.set(false);
-          this.fetch();
+          this.reload();
           this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已新增' });
         },
         error: () => {
