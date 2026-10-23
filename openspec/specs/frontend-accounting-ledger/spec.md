@@ -69,7 +69,7 @@ Every accounting page SHALL be usable at a 390 px viewport width without horizon
 
 ### Requirement: Timeline home page
 
-The SPA SHALL provide `/accounting` as the accounting home, replacing the redirect to the accounts list. It SHALL show a month navigator with the month's expense, income and net totals from the summary endpoint, a filter row (accounts, kinds, text search; behind a ⌕ button below 760 px), and entries from `GET /api/accounting/entries` grouped by day with a per-day net. Each row SHALL show category icon and colour, name or category, merchant and tags, amount (red for outflow, green for inflow per the preference), the original-currency amount inline when converted, and project and account pills. Reward entries SHALL be hidden when the preference `hide_rewards_on_timeline` is true. A split group SHALL render as one row with the group's name, the sum and a count badge. Tapping a row opens the entry detail. The page SHALL load more on scroll.
+The SPA SHALL provide `/accounting` as the accounting home, replacing the redirect to the accounts list. It SHALL show a month navigator with the month's expense, income and net totals from the summary endpoint, a category distribution bar under the totals (the month's expense split by top-level category: the five largest plus 其他, each segment in the category's colour, with a legend of name and amount), a filter row (accounts, kinds, text search; behind a ⌕ button below 760 px), and entries from `GET /api/accounting/entries` grouped by day with a per-day net. Each row SHALL show category icon and colour, name or category, merchant and tags, amount (red for outflow, green for inflow per the preference), the original-currency amount inline when converted, and project and account pills. Reward entries SHALL be hidden when the preference `hide_rewards_on_timeline` is true. A split group SHALL render as one row with the group's name, the sum and a count badge. Tapping a row opens the entry detail. The page SHALL load more on scroll.
 
 #### Scenario: Foreign-currency amount visible without hover
 - **GIVEN** an expense converted from `¥5,390` at `0.2163`
@@ -79,6 +79,16 @@ The SPA SHALL provide `/accounting` as the accounting home, replacing the redire
 #### Scenario: Month totals
 - **WHEN** the owner moves the navigator to 2026-09
 - **THEN** the header SHALL show September's expense, income and net from the summary endpoint and the list SHALL show September's entries
+
+#### Scenario: Category distribution bar
+- **GIVEN** the month's expenses span eight top-level categories
+- **WHEN** the summary renders
+- **THEN** the bar SHALL show the five largest categories plus 其他 at their real spending amounts, and the legend SHALL reconcile to the month's expense: Σ segments − 退款 = |expense| (up to FX rounding), where 退款 is a legend-only line for categories whose refunds exceeded their spending this month (absent when there are none)
+
+#### Scenario: Net-refund month
+- **GIVEN** the month's refunds exceed its spending (the summary expense is ≥ 0)
+- **WHEN** the summary renders
+- **THEN** no distribution bar SHALL be shown
 
 ### Requirement: Entry page
 
@@ -170,11 +180,15 @@ Category bubbles, timeline rows, detail headers and the category picker SHALL us
 
 ### Requirement: Entry shortcuts
 
-The web manifest SHALL declare a shortcut `記一筆` to `/accounting/entry`. On viewports of 760 px and above every accounting page SHALL show a floating "+" bottom-right that opens the entry form (in the right pane at ≥ 1024 px). On the entry page ⏎ saves, ⇧⏎ saves and continues, Esc cancels; on list pages N opens the entry form and E edits the selected entry.
+The web manifest SHALL declare a shortcut `記一筆` to `/accounting/entry`. The floating "+" and the `N` shortcut SHALL be provided app-wide by the shell (`frontend-app-shell`, App-wide 記一筆 floating button); on accounting pages at ≥ 1024 px the entry form opens in the right pane. On the entry page ⏎ saves, ⇧⏎ saves and continues, Esc cancels; on list pages E edits the selected entry.
 
 #### Scenario: Home-screen shortcut
 - **WHEN** the installed app's shortcut `記一筆` is launched
 - **THEN** the app SHALL open directly on `/accounting/entry`
+
+#### Scenario: Floating button opens the form in the pane
+- **WHEN** the owner presses the floating "+" on `/accounting` at 1280 px
+- **THEN** the entry form SHALL open in the right pane
 
 ### Requirement: Entry form schedule tabs
 

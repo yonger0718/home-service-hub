@@ -2,17 +2,21 @@
 
 ## Purpose
 TBD - created by archiving change redesign-dashboard-handoff. Update Purpose after archive.
-
 ## Requirements
 ### Requirement: AppearanceService manages dark mode and gain/loss convention
 
-The frontend SHALL provide an injectable `AppearanceService` (`providedIn: 'root'`) exposing two `BehaviorSubject` streams: `dark$: BehaviorSubject<boolean>` and `gainLoss$: BehaviorSubject<'asian'|'western'>`, plus setter methods `setDark(value: boolean)` and `setGainLoss(value: 'asian'|'western')`.
+The frontend SHALL provide an injectable `AppearanceService` (`providedIn: 'root'`) exposing `theme$: BehaviorSubject<'light'|'dark'|'system'>`, `dark$: BehaviorSubject<boolean>` (the effective dark state, derived from `theme$` and the OS preference) and `gainLoss$: BehaviorSubject<'asian'|'western'>`, plus setters `setTheme(value: 'light'|'dark'|'system')`, `setDark(value: boolean)` (equivalent to `setTheme(value ? 'dark' : 'light')`) and `setGainLoss(value: 'asian'|'western')`. While `theme$` is `system`, the service SHALL listen to `prefers-color-scheme` changes and update `dark$` and the root class live.
 
 #### Scenario: Setters update observables and root element
-- **WHEN** `appearanceService.setDark(true)` is called
-- **THEN** `dark$` emits `true`
+- **WHEN** `appearanceService.setTheme('dark')` is called
+- **THEN** `theme$` emits `'dark'` and `dark$` emits `true`
 - **AND** `document.documentElement.classList.contains('app-dark-mode')` is `true`
-- **AND** `localStorage.getItem('hh-dark')` is `'1'`
+- **AND** `localStorage.getItem('hh-theme')` is `'dark'`
+
+#### Scenario: System theme follows the OS live
+- **GIVEN** `theme$` is `'system'` and the OS is light
+- **WHEN** the OS switches to dark
+- **THEN** `dark$` emits `true` and the root gains `app-dark-mode` without a reload
 
 #### Scenario: Gain/loss setter swaps attribute
 - **WHEN** `appearanceService.setGainLoss('western')` is called
@@ -22,19 +26,24 @@ The frontend SHALL provide an injectable `AppearanceService` (`providedIn: 'root
 
 ### Requirement: Persisted state survives reload
 
-Choices SHALL be persisted in `localStorage` under keys `hh-dark` (values `'1'`/`'0'`) and `hh-gainloss` (values `'asian'`/`'western'`).
+Choices SHALL be persisted in `localStorage` under `hh-theme` (`'light'`/`'dark'`/`'system'`) and `hh-gainloss` (`'asian'`/`'western'`). When `hh-theme` is absent and the legacy key `hh-dark` is present, the service SHALL migrate it once (`'1'` → `'dark'`, `'0'` → `'light'`), write `hh-theme` and remove `hh-dark`.
 
 #### Scenario: Reload restores persisted state
-- **WHEN** the user has previously set dark to `true` and gain/loss to `western`, then reloads
+- **WHEN** the user has previously set the theme to `dark` and gain/loss to `western`, then reloads
 - **THEN** the application initialises with `app-dark-mode` class present and `data-gainloss="western"` on the root
+
+#### Scenario: Legacy key is migrated
+- **GIVEN** `hh-dark` is `'0'` and `hh-theme` is absent
+- **WHEN** the application starts
+- **THEN** `hh-theme` SHALL be `'light'` and `hh-dark` SHALL be removed
 
 ### Requirement: Default theme follows OS, default convention is asian
 
-If no `hh-dark` value is stored, the initial dark mode SHALL match `window.matchMedia('(prefers-color-scheme: dark)').matches`. If no `hh-gainloss` value is stored, the initial convention SHALL be `'asian'`.
+If neither `hh-theme` nor `hh-dark` is stored, the initial theme SHALL be `system`, so dark mode matches `window.matchMedia('(prefers-color-scheme: dark)').matches`. If no `hh-gainloss` value is stored, the initial convention SHALL be `'asian'`.
 
 #### Scenario: First load on OS-dark system
-- **WHEN** `localStorage.getItem('hh-dark')` returns `null` AND the OS reports dark preference
-- **THEN** the application initialises in dark mode
+- **WHEN** no theme key is stored AND the OS reports dark preference
+- **THEN** `theme$` is `'system'` and the application initialises in dark mode
 
 #### Scenario: First load uses asian convention
 - **WHEN** `localStorage.getItem('hh-gainloss')` returns `null`
@@ -42,10 +51,10 @@ If no `hh-dark` value is stored, the initial dark mode SHALL match `window.match
 
 ### Requirement: Pre-paint inline script eliminates flash
 
-The frontend SHALL include an inline script in `frontend/src/index.html` that runs BEFORE Angular bootstraps, reads the same `localStorage` keys (or OS preference fallback), and applies the `app-dark-mode` class plus `data-gainloss` attribute to `document.documentElement`. This script MUST be idempotent with the `AppearanceService` initialization.
+The frontend SHALL include an inline script in `frontend/src/index.html` that runs BEFORE Angular bootstraps, reads `hh-theme` (falling back to `hh-dark`, then to the OS preference) and `hh-gainloss`, and applies the `app-dark-mode` class plus `data-gainloss` attribute to `document.documentElement`. This script MUST be idempotent with the `AppearanceService` initialization.
 
 #### Scenario: No light-mode flash for dark user
-- **WHEN** a user with `hh-dark=1` loads the application
+- **WHEN** a user with `hh-theme=dark` loads the application
 - **THEN** the very first paint already shows dark theme — no observable flash from light to dark
 
 ### Requirement: Observable streams drive component reactivity
@@ -55,3 +64,25 @@ Components and charts SHALL subscribe to `dark$` and `gainLoss$` to react to cha
 #### Scenario: Chart updates on convention flip
 - **WHEN** a chart component is subscribed to `gainLoss$` and the user toggles the convention in Settings
 - **THEN** the chart re-reads its dataset colours from CSS vars and calls `chart.update('none')` to repaint
+
+### Requirement: Navigation preferences persist alongside appearance
+
+The frontend SHALL provide `NavigationPreferencesService` (`providedIn: 'root'`) holding the navigation preferences `hiddenGroups`, `sidebarDefault`, `autoCollapse`, `showBadges` and `foldedGroups`, each persisted in its own `localStorage` key with the `hh-nav-` prefix. The group `system` SHALL never be accepted into `hiddenGroups`.
+
+#### Scenario: Defaults on first load
+- **GIVEN** no `hh-nav-*` key is stored
+- **WHEN** the service initialises
+- **THEN** `hiddenGroups` SHALL be `['supplies']`, `sidebarDefault` `'expanded'`, `autoCollapse` `true`, `showBadges` `true` and `foldedGroups` `[]`
+
+#### Scenario: Storage keys
+- **WHEN** each preference is changed
+- **THEN** it SHALL be written to `hh-nav-hidden`, `hh-nav-sidebar`, `hh-nav-autocollapse`, `hh-nav-badges` or `hh-nav-folded` respectively
+
+#### Scenario: Hiding a group persists
+- **WHEN** the owner hides 投資 in Settings and reloads
+- **THEN** `hiddenGroups` SHALL contain `'portfolio'` and the 投資 group SHALL not render
+
+#### Scenario: System cannot be hidden
+- **WHEN** code calls `setHidden('system', true)`
+- **THEN** `hiddenGroups` SHALL be unchanged
+
