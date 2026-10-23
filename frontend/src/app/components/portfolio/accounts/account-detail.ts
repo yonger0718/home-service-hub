@@ -58,6 +58,8 @@ type BalanceWindow = '1M' | '3M' | '1Y' | 'All';
 const PAGE_SIZE_KEY = 'portfolio.cashTxns.pageSize';
 const MERGE_RELATED_KEY_PREFIX = 'accounts.merge.';
 const DEFAULT_PAGE_SIZE = 25;
+/** A write whose dialog was opened for an account that is no longer the one shown. */
+const ACCOUNT_SWITCHED_DETAIL = '帳戶已切換，請重新操作';
 
 const WINDOW_OPTIONS: { label: BalanceWindow; value: BalanceWindow }[] = [
   { label: '1M', value: '1M' },
@@ -174,6 +176,14 @@ export class PortfolioAccountDetailComponent implements OnInit {
   readonly transactionDialogVisible = signal<boolean>(false);
   readonly savingAccount = signal<boolean>(false);
   readonly savingTransaction = signal<boolean>(false);
+  /** The account is loaded and is the one selected: only then may a dialog open (AGENT-223). */
+  readonly accountReady = computed(() => {
+    const account = this.account();
+    return account !== null && account.id === this.effectiveId();
+  });
+  /** The account each dialog was opened for; its write goes there or nowhere. */
+  private editAccountId: number | null = null;
+  private transactionAccountId: number | null = null;
 
   dateRange: Date[] | null = null;
   query = signal<CashTransactionQuery>({
@@ -191,7 +201,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
   /** 餘額 per row (Decision 12), anchored at the account's balance; null hides the column. */
   readonly balanceTexts = computed(() => {
     const account = this.account();
-    // No anchor yet, or rows still from the previous account (an embedded 9 → 7 switch): no column. After a
+    // No anchor yet, or rows of another account (a switch clears them, so a guard only): no column. After a
     // reload() the new balance may briefly meet the old rows of the same account; that short race is accepted.
     if (!account || this.transactions().some(txn => txn.account_id !== account.id)) return null;
     const balances = runningBalances(this.transactions(), account.native_balance, this.shownQuery(), this.todayIso());
@@ -277,10 +287,13 @@ export class PortfolioAccountDetailComponent implements OnInit {
       ),
     )
       .pipe(
-        switchMap(event => this.requestTransactions(event.query).pipe(map(paged => ({ paged, query: event.query })))),
+        switchMap(event => {
+          const accountId = this.effectiveId();
+          return this.requestTransactions(accountId, event.query).pipe(map(paged => ({ paged, query: event.query, accountId })));
+        }),
         takeUntilDestroyed(this.destroyRef),
       )
-      .subscribe(({ paged, query }) => this.applyTransactions(paged, query));
+      .subscribe(({ paged, query, accountId }) => this.applyTransactions(paged, query, accountId));
 
     // Embedded beside the list: follow cash writes made anywhere (the route-driven page refetches on each visit).
     this.portfolioService.cashLedgerChanged$
@@ -301,14 +314,33 @@ export class PortfolioAccountDetailComponent implements OnInit {
   });
 
   private selectAccount(id: number): void {
+    this.clearAccountState();
     if (!id) return;
     const mergeRelated = this.readMergeRelated(id);
     this.mergeRelated.set(mergeRelated);
-    this.expandedTransactionIds.set(new Set<number>());
     this.query.set(this.withMergeRelated({ ...this.query(), offset: 0 }, mergeRelated));
     this.loadAccount();
     this.loadBalanceHistory();
     this.fetchTransactions();
+  }
+
+  /**
+   * The detail instance is reused across accounts (master-detail): drop everything of the previous one, so its header,
+   * rows and dialogs never stand for the next account while that one loads (AGENT-223).
+   */
+  private clearAccountState(): void {
+    this.account.set(null);
+    this.transactions.set([]);
+    this.total.set(0);
+    this.loadingTransactions.set(false);
+    this.loadingHistory.set(false);
+    this.balanceHistory.set({ account_id: 0, currency: 'TWD', points: [] });
+    this.expandedTransactionIds.set(new Set<number>());
+    this.closeEditDialog();
+    this.closeTransactionDialog();
+    this.resetEditForm();
+    this.resetTransactionForm();
+    this.confirmationService.close();
   }
 
   onWindowChange(window: BalanceWindow | null): void {
@@ -362,21 +394,28 @@ export class PortfolioAccountDetailComponent implements OnInit {
 
   openEditDialog(): void {
     const account = this.account();
-    if (!account) return;
+    if (!account || !this.accountReady()) return;
     this.editForm.reset({
       nickname: account.nickname,
       opening_balance: account.opening_balance,
       opening_date: account.opening_date,
       is_active: account.is_active,
     });
+    this.editAccountId = account.id;
     this.editDialogVisible.set(true);
   }
 
   closeEditDialog(): void {
     this.editDialogVisible.set(false);
+    this.editAccountId = null;
   }
 
   submitEdit(): void {
+    const accountId = this.editAccountId;
+    if (!this.isWriteTarget(accountId)) {
+      this.abortSwitchedWrite(() => this.closeEditDialog());
+      return;
+    }
     if (this.editForm.invalid || this.savingAccount()) {
       this.editForm.markAllAsTouched();
       return;
@@ -391,11 +430,14 @@ export class PortfolioAccountDetailComponent implements OnInit {
     };
 
     this.savingAccount.set(true);
-    this.portfolioService.patchAccount(this.effectiveId(), patch).subscribe({
+    this.portfolioService.patchAccount(accountId, patch).subscribe({
       next: account => {
-        this.account.set(account);
         this.savingAccount.set(false);
-        this.editDialogVisible.set(false);
+        // Switched away while saving: the write landed on its own account; leave the one now shown alone.
+        if (account.id === this.effectiveId()) {
+          this.account.set(account);
+          this.closeEditDialog();
+        }
         this.messageService.add({ severity: 'success', summary: '已更新', detail: '帳戶資料已更新' });
         if (!this.embedded()) this.loadBalanceHistory();
         this.portfolioService.notifyCashLedgerChanged();
@@ -408,12 +450,9 @@ export class PortfolioAccountDetailComponent implements OnInit {
   }
 
   openTransactionDialog(): void {
-    this.transactionForm.reset({
-      txn_date: this.todayIso(),
-      type: 'deposit',
-      amount: '',
-      note: '',
-    });
+    if (!this.accountReady()) return;
+    this.resetTransactionForm();
+    this.transactionAccountId = this.effectiveId();
     this.transactionDialogVisible.set(true);
   }
 
@@ -430,21 +469,28 @@ export class PortfolioAccountDetailComponent implements OnInit {
   }
 
   openTopupQuickFix(): void {
-    if (!this.account()) return;
+    if (!this.accountReady()) return;
     this.transactionForm.reset({
       txn_date: this.todayIso(),
       type: 'deposit',
       amount: this.overdraftAmount(),
       note: '補登未記錄入金',
     });
+    this.transactionAccountId = this.effectiveId();
     this.transactionDialogVisible.set(true);
   }
 
   closeTransactionDialog(): void {
     this.transactionDialogVisible.set(false);
+    this.transactionAccountId = null;
   }
 
   submitTransaction(): void {
+    const accountId = this.transactionAccountId;
+    if (!this.isWriteTarget(accountId)) {
+      this.abortSwitchedWrite(() => this.closeTransactionDialog());
+      return;
+    }
     if (this.transactionForm.invalid || this.savingTransaction()) {
       this.transactionForm.markAllAsTouched();
       return;
@@ -462,10 +508,10 @@ export class PortfolioAccountDetailComponent implements OnInit {
     };
 
     this.savingTransaction.set(true);
-    this.portfolioService.createCashTransaction(this.effectiveId(), body).subscribe({
+    this.portfolioService.createCashTransaction(accountId, body).subscribe({
       next: () => {
         this.savingTransaction.set(false);
-        this.transactionDialogVisible.set(false);
+        if (accountId === this.effectiveId()) this.closeTransactionDialog();
         this.messageService.add({ severity: 'success', summary: '已新增', detail: '交易已建立' });
         this.ledgerWritten();
       },
@@ -483,6 +529,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
       signDisplay: 'always',
     });
     const note = txn.note ? ` — ${txn.note}` : '';
+    const accountId = this.effectiveId();
 
     this.confirmationService.confirm({
       header: '刪除交易',
@@ -491,13 +538,17 @@ export class PortfolioAccountDetailComponent implements OnInit {
       acceptLabel: '刪除',
       rejectLabel: '取消',
       acceptButtonStyleClass: 'p-button-danger',
-      accept: () => this.executeDelete(txn),
+      accept: () => this.executeDelete(txn, accountId),
     });
   }
 
-  executeDelete(txn: CashTransaction): void {
-    const accountId = this.effectiveId();
+  /** `accountId`: the account the delete was confirmed for (the one shown when the row was clicked). */
+  executeDelete(txn: CashTransaction, accountId: number = this.effectiveId()): void {
     if (!accountId) return;
+    if (!this.isWriteTarget(accountId)) {
+      this.abortSwitchedWrite(() => undefined);
+      return;
+    }
 
     this.portfolioService.deleteCashTransaction(accountId, txn.id).subscribe({
       next: () => {
@@ -564,6 +615,24 @@ export class PortfolioAccountDetailComponent implements OnInit {
     return sign + magnitude.toLocaleString('zh-TW', { style: 'currency', currency, maximumFractionDigits });
   }
 
+  /** A write may go out only to the account its dialog was opened for, while that account is still the one shown. */
+  private isWriteTarget(accountId: number | null): accountId is number {
+    return accountId !== null && accountId === this.effectiveId() && this.account()?.id === accountId;
+  }
+
+  private abortSwitchedWrite(close: () => void): void {
+    close();
+    this.messageService.add({ severity: 'warn', summary: '已取消', detail: ACCOUNT_SWITCHED_DETAIL });
+  }
+
+  private resetEditForm(): void {
+    this.editForm.reset({ nickname: '', opening_balance: '0', opening_date: this.todayIso(), is_active: true });
+  }
+
+  private resetTransactionForm(): void {
+    this.transactionForm.reset({ txn_date: this.todayIso(), type: 'deposit', amount: '', note: '' });
+  }
+
   /** After this account's ledger changed here: reload (embedded, through the notification) and tell the others. */
   private ledgerWritten(): void {
     if (!this.embedded()) this.reload();
@@ -612,10 +681,10 @@ export class PortfolioAccountDetailComponent implements OnInit {
     this.filterQuery$.next({ query: this.query(), immediate: true });
   }
 
-  private requestTransactions(query: CashTransactionQuery): Observable<CashTransactionPaged> {
+  private requestTransactions(accountId: number, query: CashTransactionQuery): Observable<CashTransactionPaged> {
     this.loadingTransactions.set(true);
     const requestQuery = this.withMergeRelated(query);
-    return this.portfolioService.getCashTransactions(this.effectiveId(), requestQuery).pipe(
+    return this.portfolioService.getCashTransactions(accountId, requestQuery).pipe(
       catchError(() => {
         this.messageService.add({ severity: 'error', summary: '錯誤', detail: '現金交易讀取失敗' });
         return of({ items: [], total: 0, offset: requestQuery.offset ?? 0, limit: requestQuery.limit ?? DEFAULT_PAGE_SIZE });
@@ -623,7 +692,9 @@ export class PortfolioAccountDetailComponent implements OnInit {
     );
   }
 
-  private applyTransactions(paged: CashTransactionPaged, query: CashTransactionQuery): void {
+  private applyTransactions(paged: CashTransactionPaged, query: CashTransactionQuery, accountId: number): void {
+    // A late page for an account no longer shown (nothing newer cancelled it, e.g. the selection cleared) is dropped.
+    if (accountId !== this.effectiveId()) return;
     this.shownQuery.set(query);
     this.transactions.set(paged.items);
     this.total.set(paged.total);

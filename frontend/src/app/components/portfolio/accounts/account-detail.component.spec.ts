@@ -624,7 +624,7 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
     });
   }
 
-  it('embedded 9 → 7: no 餘額 while 9\'s rows meet 7\'s balance, until 7\'s rows land', () => {
+  it('embedded 9 → 7: 9\'s rows clear at the switch (never shown against 7\'s balance); 餘額 returns with 7\'s rows', () => {
     const summary = (id: number) => ({
       items: [{
         id, broker: 'cathay', nickname: `帳戶 ${id}`, currency: 'TWD', opening_balance: '0', opening_date: '2026-01-01',
@@ -655,7 +655,7 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
     summaryReq().flush(summary(7));
     historyReq(7).flush({ account_id: 7, currency: 'TWD', points: [] });
     fixture.detectChanges();
-    expect(fixture.nativeElement.querySelectorAll('.cash-row').length).toBe(1);
+    expect(fixture.nativeElement.querySelectorAll('.cash-row').length).toBe(0);
     expect(bal(fixture)).toEqual([]);
 
     txnsReq(7).flush({ items: [row(71, 7)], total: 1, offset: 0, limit: 25 });
@@ -680,6 +680,193 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
       req.flush({ items: [], target_currency: null, total_target_balance: null, skipped_currencies: [] }));
     httpMock.match(req => req.url.endsWith('/cash-transactions')).filter(req => !req.cancelled)
       .forEach(req => req.flush({ items: [], total: 0, offset: 0, limit: 25 }));
+  });
+  describe('switching accounts (AGENT-223)', () => {
+    const summaryFor = (id: number, balance = '100') => ({
+      items: [{
+        id, broker: 'cathay', nickname: `帳戶 ${id}`, currency: 'TWD', opening_balance: `${id}0`, opening_date: '2026-01-01',
+        is_active: true, created_at: '2026-01-01T00:00:00Z', native_balance: balance, target_balance: null, target_currency: null,
+      }],
+      target_currency: null, total_target_balance: null, skipped_currencies: [],
+    });
+    const rowFor = (id: number, accountId: number) => ({
+      id, account_id: accountId, txn_date: '2026-01-02', type: 'deposit', amount: '100', currency: 'TWD', note: null,
+      related_transaction_id: null, related_dividend_id: null, child_legs: null, source: 'manual',
+      import_fingerprint: `fp-${id}`, created_at: '2026-01-02T00:00:00Z',
+    });
+    const summaryReq = () => httpMock.expectOne(req => req.url === '/api/portfolio/accounts/' && req.params.get('include_inactive') === 'true');
+    const historyReq = (id: number) => httpMock.expectOne(req => req.url === `/api/portfolio/accounts/${id}/balance-history`);
+    const txnsReq = (id: number) => httpMock.expectOne(req => req.url === `/api/portfolio/accounts/${id}/cash-transactions`);
+    const noWrites = () => httpMock.expectNone(req => req.method !== 'GET');
+    const toasts = (fixture: { debugElement: { injector: { get: (token: typeof MessageService) => MessageService } } }) =>
+      vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
+    const button = (fixture: { nativeElement: HTMLElement }, label: string) =>
+      fixture.nativeElement.querySelector<HTMLButtonElement>(`p-button[label="${label}"] button`);
+
+    /** Account `id` fully loaded, with one row of its own. */
+    function loaded(id: number, balance = '100') {
+      const fixture = render({ accountId: id, embedded: true });
+      summaryReq().flush(summaryFor(id, balance));
+      historyReq(id).flush({ account_id: id, currency: 'TWD', points: [{ date: '2026-06-01', balance }] });
+      txnsReq(id).flush({ items: [rowFor(id * 10 + 1, id)], total: 1, offset: 0, limit: 25 });
+      fixture.detectChanges();
+      return fixture;
+    }
+
+    it('Regression A: 7 → 9 with 9\'s summary pending clears 7 at once — placeholder header, no 編輯, no write — until 9 lands', () => {
+      const fixture = loaded(7);
+      const component = fixture.componentInstance;
+      component.toggleTransactionLegs(71);
+      expect(fixture.nativeElement.querySelector('h2')?.textContent).toContain('帳戶 7');
+
+      fixture.componentRef.setInput('accountId', 9);
+      fixture.detectChanges();
+      const pending = summaryReq();
+
+      expect(component.account()).toBeNull();
+      expect(component.transactions()).toEqual([]);
+      expect(component.total()).toBe(0);
+      expect(component.balanceHistory().points).toEqual([]);
+      expect(component.expandedTransactionIds().size).toBe(0);
+      expect(fixture.nativeElement.querySelector('.broker-label')?.textContent).toContain('讀取中');
+      expect(fixture.nativeElement.querySelector('h2')?.textContent).toContain('現金帳戶');
+      expect(fixture.nativeElement.querySelector('.cash-row')).toBeNull();
+      expect(button(fixture, '編輯')).toBeNull();
+      expect(button(fixture, '新增交易')?.disabled).toBe(true);
+
+      component.openEditDialog();
+      component.openTransactionDialog();
+      component.openTopupQuickFix();
+      expect(component.editDialogVisible()).toBe(false);
+      expect(component.transactionDialogVisible()).toBe(false);
+      component.editForm.patchValue({ nickname: '帳戶 7' });
+      component.submitEdit();
+      component.transactionForm.patchValue({ amount: '5000' });
+      component.submitTransaction();
+      noWrites();
+
+      historyReq(9).flush({ account_id: 9, currency: 'TWD', points: [] });
+      txnsReq(9).flush({ items: [rowFor(91, 9)], total: 1, offset: 0, limit: 25 });
+      pending.flush(summaryFor(9));
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelector('h2')?.textContent).toContain('帳戶 9');
+      expect(button(fixture, '編輯')).not.toBeNull();
+      expect(button(fixture, '新增交易')?.disabled).toBe(false);
+    });
+
+    it('Regression B: 編輯 opened on 7, then 9 selected — the dialog closes, its form resets, and a save sends nothing', () => {
+      const fixture = loaded(7);
+      const component = fixture.componentInstance;
+      component.openEditDialog();
+      expect(component.editDialogVisible()).toBe(true);
+      expect(component.editForm.getRawValue().nickname).toBe('帳戶 7');
+
+      fixture.componentRef.setInput('accountId', 9);
+      fixture.detectChanges();
+      expect(component.editDialogVisible()).toBe(false);
+      expect(component.editForm.getRawValue().nickname).toBe('');
+
+      // A save that still fires (a submit already queued), before and after 9 lands: no PATCH, the switch toast.
+      const toast = toasts(fixture);
+      component.editForm.patchValue({ nickname: '帳戶 7', opening_balance: '70' });
+      component.submitEdit();
+      noWrites();
+      expect(toast).toHaveBeenCalledWith(expect.objectContaining({ detail: '帳戶已切換，請重新操作' }));
+
+      summaryReq().flush(summaryFor(9));
+      historyReq(9).flush({ account_id: 9, currency: 'TWD', points: [] });
+      txnsReq(9).flush({ items: [], total: 0, offset: 0, limit: 25 });
+      component.editForm.patchValue({ nickname: '帳戶 7', opening_balance: '70' });
+      component.submitEdit();
+      noWrites();
+      expect(toast).toHaveBeenCalledTimes(2);
+      expect(component.editDialogVisible()).toBe(false);
+
+      // Reopened on 9, it edits 9 with 9's values.
+      component.openEditDialog();
+      expect(component.editForm.getRawValue().nickname).toBe('帳戶 9');
+      component.submitEdit();
+      const patch = httpMock.expectOne(req => req.method === 'PATCH');
+      expect(patch.request.url).toBe('/api/portfolio/accounts/9');
+      expect(patch.request.body).toEqual(expect.objectContaining({ nickname: '帳戶 9', opening_balance: '90' }));
+      patch.flush(summaryFor(9).items[0]);
+      flushLoads(9);
+    });
+
+    for (const opener of ['openTransactionDialog', 'openTopupQuickFix'] as const) {
+      it(`Regression C: ${opener} on 7, then 9 selected — the dialog closes and a submit posts nothing`, () => {
+        const fixture = loaded(7, '-500');
+        const component = fixture.componentInstance;
+        component[opener]();
+        expect(component.transactionDialogVisible()).toBe(true);
+        component.transactionForm.patchValue({ amount: '500' });
+
+        fixture.componentRef.setInput('accountId', 9);
+        fixture.detectChanges();
+        expect(component.transactionDialogVisible()).toBe(false);
+        expect(component.transactionForm.getRawValue().amount).toBe('');
+
+        const toast = toasts(fixture);
+        component.transactionForm.patchValue({ amount: '500' });
+        component.submitTransaction();
+        noWrites();
+
+        summaryReq().flush(summaryFor(9, '-900'));
+        historyReq(9).flush({ account_id: 9, currency: 'TWD', points: [] });
+        txnsReq(9).flush({ items: [], total: 0, offset: 0, limit: 25 });
+        component.transactionForm.patchValue({ amount: '500' });
+        component.submitTransaction();
+        noWrites();
+        expect(toast).toHaveBeenCalledTimes(2);
+        expect(toast).toHaveBeenCalledWith(expect.objectContaining({ detail: '帳戶已切換，請重新操作' }));
+        expect(component.transactionDialogVisible()).toBe(false);
+      });
+    }
+
+    it('a delete confirmed after the account switched sends nothing', () => {
+      const fixture = loaded(7);
+      const component = fixture.componentInstance;
+      let accept: (() => void) | undefined;
+      vi.spyOn(fixture.debugElement.injector.get(ConfirmationService), 'confirm')
+        .mockImplementation(options => { accept = options.accept as () => void; return fixture.debugElement.injector.get(ConfirmationService); });
+      component.confirmDelete(component.transactions()[0]);
+
+      fixture.componentRef.setInput('accountId', 9);
+      fixture.detectChanges();
+      const toast = toasts(fixture);
+      accept?.();
+      noWrites();
+      expect(toast).toHaveBeenCalledWith(expect.objectContaining({ detail: '帳戶已切換，請重新操作' }));
+      flushLoads(9);
+    });
+
+    it('Regression D: a transactions response for an account no longer shown is never applied', () => {
+      // 7 → 9: 7's pending page is cancelled; only 9's rows land.
+      const fixture = render({ accountId: 7, embedded: true });
+      summaryReq().flush(summaryFor(7));
+      historyReq(7).flush({ account_id: 7, currency: 'TWD', points: [] });
+      const seven = txnsReq(7);
+      fixture.componentRef.setInput('accountId', 9);
+      fixture.detectChanges();
+      expect(seven.cancelled).toBe(true);
+      summaryReq().flush(summaryFor(9));
+      historyReq(9).flush({ account_id: 9, currency: 'TWD', points: [] });
+      txnsReq(9).flush({ items: [rowFor(91, 9)], total: 1, offset: 0, limit: 25 });
+      expect(fixture.componentInstance.transactions().map(txn => txn.id)).toEqual([91]);
+
+      // 9 → no account: nothing cancels 9's next page, so its late answer must be dropped by the account tag.
+      TestBed.inject(PortfolioService).notifyCashLedgerChanged();
+      summaryReq().flush(summaryFor(9));
+      historyReq(9).flush({ account_id: 9, currency: 'TWD', points: [] });
+      const late = txnsReq(9);
+      fixture.componentRef.setInput('accountId', null);
+      fixture.detectChanges();
+      late.flush({ items: [rowFor(92, 9)], total: 1, offset: 0, limit: 25 });
+      const component = fixture.componentInstance;
+      expect(component.transactions()).toEqual([]);
+      expect(component.total()).toBe(0);
+      expect(component.loadingTransactions()).toBe(false);
+    });
   });
 });
 

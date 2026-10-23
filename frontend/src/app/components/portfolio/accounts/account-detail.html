@@ -24,7 +24,7 @@
         <div class="header-balance">
           <div class="balance-label">目前餘額</div>
           <div class="balance-value">{{ formatCurrency(current.native_balance, current.currency) }}</div>
-          <p-button icon="pi pi-pencil" label="編輯" severity="secondary" (onClick)="openEditDialog()"></p-button>
+          <p-button icon="pi pi-pencil" label="編輯" severity="secondary" [disabled]="!accountReady()" (onClick)="openEditDialog()"></p-button>
         </div>
       </div>
     } @else {
@@ -72,6 +72,7 @@
         icon="pi pi-plus"
         label="新增入金歸零"
         severity="warn"
+        [disabled]="!accountReady()"
         (onClick)="openTopupQuickFix()">
       </p-button>
     </div>
@@ -84,7 +85,7 @@
         <span>合併同筆交易</span>
         <app-switch ariaLabel="合併同筆交易" [checked]="mergeRelated()" (checkedChange)="onMergeRelatedChange($event)" />
       </label>
-      <p-button icon="pi pi-plus" label="新增交易" (onClick)="openTransactionDialog()"></p-button>
+      <p-button icon="pi pi-plus" label="新增交易" [disabled]="!accountReady()" (onClick)="openTransactionDialog()"></p-button>
     </div>
   </div>
 
