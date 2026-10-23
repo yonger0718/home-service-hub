@@ -376,15 +376,15 @@
   font-weight: 700;
   padding: 1px 7px;
 
-  /* 0.75rem text → the ink pair (≥ 4.5:1); the larger .rz-amount / .main below keep the bright pair. */
+  /* 0.75rem text on a tint → the pill ink pair (≥ 4.5:1 on the tint); the larger .rz-amount / .main below keep the bright pair. */
   &.up {
     background: var(--app-trend-positive-soft);
-    color: var(--app-trend-positive-ink);
+    color: var(--app-trend-positive-pill-ink);
   }
 
   &.down {
     background: var(--app-trend-negative-soft);
-    color: var(--app-trend-negative-ink);
+    color: var(--app-trend-negative-pill-ink);
   }
 }
 
