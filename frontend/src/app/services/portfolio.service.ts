@@ -131,6 +131,11 @@ export class PortfolioService extends BaseApiService<Transaction> {
     return this.http.post<Dividend>(`/api/portfolio/dividends/${id}/confirm-receipt`, body);
   }
 
+  /** 匯費 / 補充保費 of a TW/TWD dividend; the server recomputes the net (and a confirmed row's cash leg). */
+  updateDividendDeductions(id: number, body: { fee: number; tax: number; revision: number }): Observable<Dividend> {
+    return this.http.patch<Dividend>(`/api/portfolio/dividends/${id}/deductions`, body);
+  }
+
   updateDividend(id: number, dividend: Partial<Dividend>): Observable<Dividend> {
     return this.http.put<Dividend>(`/api/portfolio/dividends/${id}`, dividend);
   }

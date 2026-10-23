@@ -6,6 +6,7 @@ from ..database import get_db
 from ..schemas import portfolio as schemas
 from ..services import portfolio_service
 from ..services.dividend_receipt_service import confirm_receipt, ReceiptConflict
+from ..services.dividend_deduction_service import DeductionError, DividendNotFound, update_deductions
 from sqlalchemy.exc import IntegrityError, OperationalError
 from ..models import portfolio as models
 
@@ -164,3 +165,22 @@ def confirm_dividend_receipt(dividend_id: int, confirmation: schemas.ReceiptConf
     except OperationalError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="Concurrent receipt or database contention; reload before retry") from exc
+
+
+@router.patch("/dividends/{dividend_id}/deductions", response_model=schemas.Dividend)
+def update_dividend_deductions(dividend_id: int, body: schemas.DeductionsUpdate, db: Session = Depends(get_db)):
+    try:
+        return update_deductions(db, dividend_id, body.fee, body.tax, body.revision)
+    except DividendNotFound as exc:
+        raise HTTPException(status_code=404, detail="dividend not found") from exc
+    except DeductionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ReceiptConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OperationalError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Concurrent edit or database contention; reload before retry") from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="deductions conflict with the ledger; reload") from exc

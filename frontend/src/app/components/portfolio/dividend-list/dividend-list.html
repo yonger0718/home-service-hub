@@ -177,6 +177,27 @@
         </div>
       </div>
     }
+    @if (deductionsRow()?.id === row.id) {
+      @let deductionsTitle = '修改扣款 · ' + (nameFor(item.d.symbol) ?? item.d.symbol) + ' ' + row.net.main;
+      <div class="receipt-form deductions-form" role="group" [attr.aria-label]="deductionsTitle">
+        <p class="receipt-title">{{ deductionsTitle }}</p>
+        <div class="receipt-fields">
+          <label>匯費
+            <input type="number" min="0" step="0.01" inputmode="decimal" aria-label="匯費" [value]="deductionsFee()"
+              (input)="deductionsFee.set($any($event.target).value)" />
+          </label>
+          <label>補充保費
+            <input type="number" min="0" step="0.01" inputmode="decimal" aria-label="補充保費" [value]="deductionsTax()"
+              (input)="deductionsTax.set($any($event.target).value)" />
+          </label>
+        </div>
+        <p class="receipt-warning deductions-note">淨額會重新計算{{ item.d.receipt_status === 'confirmed' ? '，現金帳的股利入帳也會一併更新' : '' }}</p>
+        <div class="receipt-actions">
+          <app-btn variant="ghost" (click)="cancelDeductions()">取消</app-btn>
+          <app-btn [disabled]="deductionsBusy() || !deductionsValid()" [loading]="deductionsBusy()" (click)="submitDeductions()">儲存</app-btn>
+        </div>
+      </div>
+    }
   }
 </div>
 
