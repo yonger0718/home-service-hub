@@ -54,6 +54,7 @@ def _serialize_parse(parsed: import_service.ParseResult) -> list[dict]:
                 else None
                 for key, value in row.payload.items()
             },
+            "status": row.status,
         }
         for row in parsed.rows
     ]
@@ -223,6 +224,7 @@ def import_transactions(
                 db=db,
                 name_overrides=overrides_dict,
                 confirmed_overrides=confirmed_set,
+                parsed=parsed,
             )
         else:
             parsed = import_service.parse_transactions_csv(raw, has_header=has_header)

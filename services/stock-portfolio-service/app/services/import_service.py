@@ -88,11 +88,21 @@ TYPE_VALUE_SYNONYMS = {
 }
 
 
+RowStatus = Literal["new", "duplicate", "unresolved", "error"]
+
+
 @dataclass
 class ParsedRow:
     row_index: int  # 1-based, for human-readable error messages
     fingerprint: str
     payload: dict
+    # Set by the dry-run / commit paths (response-only, never persisted):
+    # ``new`` = inserted (or would be), ``duplicate`` = fingerprint already
+    # stored or seen earlier in the batch (Cathay rehash included),
+    # ``unresolved`` = skipped for an unverified name override, ``error`` =
+    # parsed but rejected at write time (FX missing, ledger guard). Rows that
+    # fail to parse never become a ParsedRow — they live in ``errors``.
+    status: RowStatus | None = None
 
 
 @dataclass
@@ -625,6 +635,7 @@ def _commit_broker_rows(
             fx_rate = _exact_fx_rate(db, currency, flow_date)
             if currency != "TWD" and fx_rate is None:
                 errors.append(_missing_fx_error(row, flow_date, currency))
+                row.status = "error"
                 continue
             flow_row = CashFlowRow(
                 broker=payload["broker"],
@@ -639,10 +650,12 @@ def _commit_broker_rows(
             result = write_cash_flows(db, [flow_row], dry_run=dry_run)
             skipped += result.skipped_duplicates
             created += result.created
+            row.status = "duplicate" if result.skipped_duplicates else "new"
             continue
 
         if row.fingerprint in existing_transactions or row.fingerprint in seen_transactions:
             skipped += 1
+            row.status = "duplicate"
             continue
         seen_transactions.add(row.fingerprint)
         trade_date = _row_date(payload["trade_date"])
@@ -650,8 +663,10 @@ def _commit_broker_rows(
         fx_rate = _exact_fx_rate(db, currency, trade_date)
         if currency != "TWD" and fx_rate is None:
             errors.append(_missing_fx_error(row, trade_date, currency))
+            row.status = "error"
             continue
         if dry_run:
+            row.status = "new"
             continue
         tx = models.Transaction(
             symbol=payload["symbol"],
@@ -677,12 +692,14 @@ def _commit_broker_rows(
         except IntegrityError:
             db.rollback()
             skipped += 1
+            row.status = "duplicate"
             continue
         svc._recompute_day_trade_flags(db, tx.symbol, svc._trade_calendar_date(tx.trade_date))
         db.commit()
         db.refresh(tx)
         created_ids.append(tx.id)
         created += 1
+        row.status = "new"
     return ImportResult(
         parsed=len(parsed.rows),
         created=created,
@@ -730,9 +747,11 @@ def commit_transactions(
     for row in parsed.rows:
         if row.fingerprint in existing or row.fingerprint in seen_in_batch:
             skipped += 1
+            row.status = "duplicate"
             continue
         seen_in_batch.add(row.fingerprint)
         if dry_run:
+            row.status = "new"
             continue
         try:
             db_tx = _persist_transaction(db, row)
@@ -741,10 +760,13 @@ def commit_transactions(
             # and our flush — treat as duplicate, keep session usable.
             db.rollback()
             skipped += 1
+            row.status = "duplicate"
             continue
         except ValueError as exc:
             errors.append(ParseError(row_index=row.row_index, message=str(exc)))
+            row.status = "error"
             continue
+        row.status = "new"
         created_ids.append(db_tx.id)
     return ImportResult(
         parsed=len(parsed.rows),
@@ -776,20 +798,25 @@ def commit_dividends(
     for row in parsed.rows:
         if row.fingerprint in existing or row.fingerprint in seen_in_batch:
             skipped += 1
+            row.status = "duplicate"
             continue
         seen_in_batch.add(row.fingerprint)
         if dry_run:
+            row.status = "new"
             continue
         try:
             db_div = _persist_dividend(db, row)
         except IntegrityError:
             db.rollback()
             skipped += 1
+            row.status = "duplicate"
             continue
         except ValueError as exc:
             db.rollback()
             errors.append(ParseError(row_index=row.row_index, message=str(exc)))
+            row.status = "error"
             continue
+        row.status = "new"
         created_ids.append(db_div.id)
     return ImportResult(
         parsed=len(parsed.rows),
