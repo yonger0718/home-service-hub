@@ -264,6 +264,26 @@ def test_cathay_dry_run_statuses_match_would_counts(db_session, cathay_names):
     assert "不存在" not in {row.payload["name"] for row in parsed.rows}
 
 
+def test_cathay_dry_run_stored_and_in_batch_twin_are_duplicate(db_session, cathay_names):
+    """An exact repeated line (same 委託書號) shares the new-scheme fingerprint, so the
+    second copy is an in-batch would-skip (not a rehash), like the stored duplicate."""
+    _seed_cathay_stored(db_session)
+    twin = _cathay_row(price="57", order_id="aT700")
+    raw = _cathay_csv(_cathay_row(order_id="aT532"), twin, twin)
+    parsed = broker_cathay_service.parse_cathay_rows(raw)
+
+    result = broker_cathay_service.parse_cathay_transactions_csv(
+        raw, dry_run=True, db=db_session, parsed=parsed
+    )
+
+    assert _statuses(parsed.rows) == ["duplicate", "new", "duplicate"]
+    counts = Counter(_statuses(parsed.rows))
+    assert result.would_skip_duplicate == 2 == counts["duplicate"]
+    assert result.would_rehash == 0
+    assert result.would_insert == counts["new"] == 1
+    assert db_session.query(models.Transaction).count() == 1
+
+
 def test_cathay_dry_run_rehash_row_is_duplicate(db_session, cathay_names):
     legacy = models.Transaction(
         symbol="3141",
