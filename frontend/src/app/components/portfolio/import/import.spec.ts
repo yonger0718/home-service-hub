@@ -26,7 +26,7 @@ describe('Portfolio import controls', () => {
       providers: [
         provideRouter([]),
         { provide: PortfolioService, useValue: service },
-        { provide: ActivatedRoute, useValue: { queryParamMap: query$, snapshot: {} } },
+        { provide: ActivatedRoute, useValue: { queryParamMap: query$, get snapshot() { return { queryParamMap: query$.value }; } } },
       ],
     });
     navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
@@ -179,6 +179,71 @@ describe('Portfolio import controls', () => {
       query$.next(convertToParamMap({ type: 'broker' }));
       expect(service.uploadBrokerCsv).toHaveBeenLastCalledWith(file, true);
       expect(fixture.componentInstance.file()).toBe(file);
+    });
+  });
+
+  describe('commit and type changes', () => {
+    it('commit() holds step 3 while the request is pending and after it lands', () => {
+      const commit$ = new Subject<ImportResult>();
+      const fixture = setup();
+      const component = fixture.componentInstance;
+      component.onSelect({ files: [new File(['x'], 'a.csv')] });
+      service.uploadCsv.mockReturnValue(commit$);
+      component.commit();
+      fixture.detectChanges();
+      expect(service.uploadCsv).toHaveBeenLastCalledWith('transactions', expect.any(File), false, true, {}, []);
+      expect(component.committing()).toBe(true);
+      expect(component.step()).toBe(3);
+      expect(activeStep(fixture)).toContain('匯入並重算');
+      commit$.next({ ...preview, dry_run: false }); commit$.complete();
+      fixture.detectChanges();
+      expect(component.committing()).toBe(false);
+      expect(component.committed()).toBe(true);
+      expect(component.step()).toBe(3);
+    });
+
+    it('a failed commit leaves committing without marking it committed', () => {
+      const fixture = setup({ type: 'broker' });
+      const component = fixture.componentInstance;
+      component.onSelect({ files: [new File(['x'], 'a.csv')] });
+      service.uploadBrokerCsv.mockReturnValue(throwError(() => ({ status: 500, error: { detail: 'boom' } })));
+      component.commit();
+      expect(service.uploadBrokerCsv).toHaveBeenLastCalledWith(expect.any(File), false);
+      expect(component.committing()).toBe(false);
+      expect(component.committed()).toBe(false);
+      expect(component.step()).toBe(2);
+    });
+
+    it('a ?type= change during a dry-run cancels the stale preview and re-previews on the new endpoint', () => {
+      const stale$ = new Subject<ImportResult>();
+      service.uploadCsv.mockReturnValue(stale$);
+      const fixture = setup();
+      const component = fixture.componentInstance;
+      const file = new File(['x'], 'a.csv');
+      component.onSelect({ files: [file] });
+      expect(component.busy()).toBe(true);
+      query$.next(convertToParamMap({ type: 'broker' }));
+      stale$.next(preview);
+      expect(component.result()).toBeNull();
+      expect(service.uploadBrokerCsv).toHaveBeenCalledWith(file, true);
+      expect(component.brokerResult()).toEqual(brokerPreview);
+      expect(component.type()).toBe('broker');
+    });
+
+    it('a ?type= change ignored during a commit writes the current type back once the commit settles', () => {
+      const commit$ = new Subject<ImportResult>();
+      const fixture = setup();
+      const component = fixture.componentInstance;
+      component.onSelect({ files: [new File(['x'], 'a.csv')] });
+      service.uploadCsv.mockReturnValue(commit$);
+      component.commit();
+      query$.next(convertToParamMap({ type: 'dividends' }));
+      expect(component.type()).toBe('transactions');
+      expect(navigate).not.toHaveBeenCalled();
+      commit$.next({ ...preview, dry_run: false }); commit$.complete();
+      expect(component.type()).toBe('transactions');
+      expect(component.committed()).toBe(true);
+      expect(navigate).toHaveBeenCalledWith([], { queryParams: { type: 'transactions' }, replaceUrl: true });
     });
   });
 

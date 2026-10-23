@@ -94,7 +94,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   readonly brokerResult = signal<BrokerCsvImportResult | null>(null);
   /** Row errors from an HTTP error body (the file stays selected). */
   readonly uploadErrors = signal<ImportRowError[]>([]);
-  /** Set around the commit request; the commit flow lives in Task 3. */
+  /** True while the commit request is in flight. */
   readonly committing = signal(false);
   /** Set on a commit response; cleared by 取消 or a new file. */
   readonly committed = signal(false);
@@ -117,13 +117,14 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   private pollHandle: ReturnType<typeof setTimeout> | null = null;
   private statusRequestInFlight = false;
   private upload$: Subscription | null = null;
-  private uploadIsDryRun = false;
+  /** A ?type= change arrived while a commit was in flight and was not applied. */
+  private urlTypeIgnored = false;
 
   constructor() {
     // The instance is reused when the sidebar links to /portfolio/import without a query: follow ?type= for its whole life.
     this.route.queryParamMap.pipe(takeUntilDestroyed()).subscribe(params => {
       const next = typeFromQuery(params.get('type'));
-      if (next !== this.type()) this.applyType(next);
+      if (next !== this.type() && !this.applyType(next)) this.urlTypeIgnored = true;
     });
   }
 
@@ -161,8 +162,8 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
 
   /** Clears result/overrides and re-previews the selected file with the new type; false while a commit is in flight. */
   private applyType(next: ImportType): boolean {
+    if (this.committing()) return false;
     if (this.busy()) {
-      if (!this.uploadIsDryRun) return false;
       // A stale preview must not land in the new type's result.
       this.upload$?.unsubscribe();
       this.busy.set(false);
@@ -418,11 +419,20 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     const type = this.type();
     this.busy.set(true);
     this.uploadErrors.set([]);
-    this.uploadIsDryRun = dryRun;
-    const error = (err: unknown) => this.onUploadError(err);
+    if (!dryRun) this.committing.set(true);
+    const error = (err: unknown) => {
+      this.onUploadError(err);
+      this.settle(dryRun);
+    };
     // 券商對帳單 detects its own header and never takes name overrides.
     this.upload$ = type === 'broker'
-      ? this.portfolioService.uploadBrokerCsv(file, dryRun).subscribe({ next: r => this.onBrokerResult(r, dryRun), error })
+      ? this.portfolioService.uploadBrokerCsv(file, dryRun).subscribe({
+        next: r => {
+          this.onBrokerResult(r, dryRun);
+          this.settle(dryRun);
+        },
+        error,
+      })
       : this.portfolioService.uploadCsv(
         type,
         file,
@@ -430,12 +440,33 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
         this.hasHeader(),
         this.nameOverrides(),
         Array.from(this.confirmedOverrides()),
-      ).subscribe({ next: r => this.onCsvResult(r, dryRun), error });
+      ).subscribe({
+        next: r => {
+          this.onCsvResult(r, dryRun);
+          this.settle(dryRun);
+        },
+        error,
+      });
+  }
+
+  /**
+   * After a response: a commit leaves 匯入中 (step 3 stays via `committed` on success). A ?type= change ignored during the
+   * commit is answered by writing the current type back, so the URL and the toggle agree and the commit result stays.
+   */
+  private settle(dryRun: boolean): void {
+    if (dryRun) return;
+    this.committing.set(false);
+    if (!this.urlTypeIgnored) return;
+    this.urlTypeIgnored = false;
+    if (typeFromQuery(this.route.snapshot.queryParamMap.get('type')) !== this.type()) {
+      this.router.navigate([], { queryParams: { type: this.type() }, replaceUrl: true });
+    }
   }
 
   private onBrokerResult(result: BrokerCsvImportResult, dryRun: boolean): void {
     this.brokerResult.set(result);
     this.busy.set(false);
+    if (!dryRun) this.committed.set(true);
     const severity = result.errors.length > 0 || result.counts.rejected > 0 ? 'warn' : 'success';
     this.messageService.add({ severity, summary: dryRun ? '預覽完成' : '匯入完成', detail: brokerCountSummary(result), life: 5000 });
   }
@@ -449,6 +480,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   private onCsvResult(result: ImportResult, dryRun: boolean): void {
     this.result.set(result);
     this.busy.set(false);
+    if (!dryRun) this.committed.set(true);
     // Accumulate unresolved-name metadata so the override panel persists even after
     // the user types an override (which removes the name from result.unresolved_names).
     if (result.unresolved_names && result.unresolved_names.length > 0) {

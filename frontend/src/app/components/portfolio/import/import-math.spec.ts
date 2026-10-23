@@ -349,6 +349,7 @@ describe('extractImportErrors / importErrorDetail', () => {
     expect(extractImportErrors({ error: { detail: 'boom' } })).toEqual([]);
     expect(importErrorDetail({ error: { detail: 'boom' } })).toBe('boom');
     expect(importErrorDetail({ message: 'Http failure' })).toBe('Http failure');
+    expect(importErrorDetail({ error: { code: 'x', message: 'm' } })).toBe('m');
     expect(importErrorDetail(null)).toBe('未知錯誤');
   });
 });

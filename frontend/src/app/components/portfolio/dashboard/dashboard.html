@@ -9,7 +9,7 @@
         (change)="selectMarketFilter($event)"
       ></app-seg-toggle>
     }
-    <a routerLink="/portfolio/import-broker" class="btn btn-outline-secondary btn-sm">
+    <a routerLink="/portfolio/import" [queryParams]="{ type: 'broker' }" class="btn btn-outline-secondary btn-sm">
       <i class="pi pi-upload" aria-hidden="true"></i>
       匯入券商
     </a>
