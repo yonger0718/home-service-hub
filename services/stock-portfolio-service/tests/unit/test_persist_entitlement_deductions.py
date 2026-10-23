@@ -196,7 +196,7 @@ def test_stock_share_row_with_deductions_equal_to_gross_has_no_floor(db_session)
     assert row.stock_dividend_shares == 1000
     update_deductions(db_session, row.id, Decimal("9600"), Decimal("0"), row.revision)
 
-    # a payment date is an identity change, so the row is rewritten from the owner's deductions
+    # a payment date is a source field change, so the row is rewritten from the owner's deductions
     _persist(db_session, _event(stock="50"), payment_date=date(2026, 7, 10))
 
     row = _fresh(db_session, row.id)
@@ -246,3 +246,75 @@ def test_stored_amount_alone_is_not_a_source_change_for_confirmed_row(db_session
     row = _fresh(db_session, row_id)
     assert row.source_correction is None and row.review_reason is None
     assert (row.amount, row.revision) == (Decimal("9500"), revision)
+
+
+# --- Decision 8 amendment: untouched default deductions follow the gross -----
+
+NHI = dividend_auto_record_service.compute_nhi_surtax
+
+
+def test_untouched_defaults_recomputed_when_gross_crosses_nhi_threshold(db_session):
+    # 20,000 x 0.98 = 19,600 (no NHI) -> 20,000 x 1.02 = 20,400 (NHI 430.44)
+    row, _ = _persist(db_session, _event(cash="0.98"))
+    assert (row.fee, row.tax, row.amount, row.revision) == (Decimal("10"), Decimal("0"), Decimal("19590"), 1)
+
+    _persist(db_session, _event(cash="1.02"))
+
+    row = _fresh(db_session, row.id)
+    assert NHI(Decimal("20400")) == Decimal("430.44")
+    assert (row.fee, row.tax) == (Decimal("10"), Decimal("430.44"))
+    assert row.amount == Decimal("19959.56")
+    assert row.revision == 2
+    assert row.receipt_status == "pending" and row.review_reason is None
+
+
+def test_owner_edited_fee_kept_when_gross_crosses_nhi_threshold(db_session):
+    row, _ = _persist(db_session, _event(cash="0.98"))
+    stored_tax = row.tax
+    update_deductions(db_session, row.id, Decimal("0"), stored_tax, row.revision)
+
+    _persist(db_session, _event(cash="1.02"))
+
+    row = _fresh(db_session, row.id)
+    assert (row.fee, row.tax) == (Decimal("0"), stored_tax)
+    assert row.amount == Decimal("20400") - Decimal("0") - stored_tax
+    assert row.cash_dividend_per_share == Decimal("1.02")
+
+
+def test_owner_edit_equal_to_defaults_is_treated_as_untouched(db_session):
+    row, _ = _persist(db_session, _event(cash="0.98"))
+    update_deductions(db_session, row.id, Decimal("10"), Decimal("0"), row.revision)
+    revision = _fresh(db_session, row.id).revision
+
+    _persist(db_session, _event(cash="1.02"))
+
+    row = _fresh(db_session, row.id)
+    assert (row.fee, row.tax, row.amount) == (Decimal("10"), Decimal("430.44"), Decimal("19959.56"))
+    assert row.revision == revision + 1
+
+
+def test_stock_only_row_that_gains_cash_gets_default_deductions(db_session):
+    # stock only: 50 per thousand -> 1,000 shares, no cash
+    row, _ = _persist(db_session, _event(cash=None, stock="50"))
+    assert (row.fee, row.tax, row.amount, row.stock_dividend_shares) == (Decimal("0"), Decimal("0"), Decimal("0"), 1000)
+
+    # 20,000 x 1.5 = 30,000 -> fee 10, NHI 633.00
+    _persist(db_session, _event(cash="1.5", stock="50"))
+
+    row = _fresh(db_session, row.id)
+    assert row.fee == Decimal("10")
+    assert row.tax == NHI(Decimal("30000")) == Decimal("633.00")
+    assert row.amount == Decimal("29357.00")
+    assert row.revision == 2
+
+
+def test_row_whose_cash_disappears_drops_default_deductions(db_session):
+    row, _ = _persist(db_session, _event(cash="0.48", stock="50"))
+    assert (row.fee, row.tax, row.amount) == (Decimal("10"), Decimal("0"), Decimal("9590"))
+
+    _persist(db_session, _event(cash=None, stock="50"))
+
+    row = _fresh(db_session, row.id)
+    assert (row.fee, row.tax, row.amount) == (Decimal("0"), Decimal("0"), Decimal("0"))
+    assert row.stock_dividend_shares == 1000
+    assert row.revision == 2

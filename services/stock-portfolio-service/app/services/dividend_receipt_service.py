@@ -73,9 +73,9 @@ def persist_entitlement(db: Session, event, qty: Decimal, payment_date=None, *, 
     if amount <= 0 and shares <= 0:
         return None, 'no payable amount or whole stock share'
     key = entitlement_key(event.symbol, event.ex_date)
-    values = dict(amount=amount, fee=fee, tax=tax, cash_dividend_per_share=cash,
-                  stock_dividend_shares=shares, quantity_at_record_date=qty,
-                  payment_date=payment_date, payment_date_source=event.source if payment_date else None)
+    source_values = dict(cash_dividend_per_share=cash, stock_dividend_shares=shares, quantity_at_record_date=qty,
+                         payment_date=payment_date, payment_date_source=event.source if payment_date else None)
+    values = dict(amount=amount, fee=fee, tax=tax, **source_values)
     existing_receipt = db.scalar(select(Dividend).where(Dividend.entitlement_key == key))
     if shares > 0 and (existing_receipt is None or existing_receipt.receipt_status != 'confirmed') and legacy_stock_exists(db, event.symbol, event.ex_date):
         return None, 'pre-existing stock transaction requires explicit resolution'
@@ -90,13 +90,23 @@ def persist_entitlement(db: Session, event, qty: Decimal, payment_date=None, *, 
     ).on_conflict_do_nothing(index_elements=['entitlement_key'])).rowcount == 1
     row = db.scalar(select(Dividend).where(Dividend.entitlement_key == key).with_for_update().execution_options(populate_existing=True))
     if not inserted:
-        # Existing row: keep the owner's deductions; only the gross follows upstream.
-        net = (gross - row.fee - row.tax).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+        # Existing row (Decision 8 amendment): deductions still equal to the defaults
+        # for the stored gross were never touched, so they follow the new gross like
+        # a new row; anything else is owner-set and kept. Only the amount is re-derived.
+        old_qty, old_cash = row.quantity_at_record_date, row.cash_dividend_per_share
+        old_gross = ((old_qty * old_cash).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+                     if old_qty and old_cash and old_qty > 0 and old_cash > 0 else Decimal(0))
+        untouched = (row.fee == (DEFAULT_HANDLING_FEE if old_gross > 0 else Decimal(0))
+                     and row.tax == compute_nhi_surtax(old_gross))
+        if not untouched:
+            fee, tax = row.fee, row.tax
+        net = (gross - fee - tax).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
         if shares > 0:
             amount = max(Decimal(0), net)
         else:
-            amount = max(MIN_DIVIDEND_AMOUNT, net) if gross > 0 else Decimal(0)
-        values.update(fee=row.fee, tax=row.tax, amount=amount)
+            # cash-only here implies gross > 0: the early return above rejects amount <= 0 with no shares
+            amount = max(MIN_DIVIDEND_AMOUNT, net)
+        values = dict(amount=amount, fee=fee, tax=tax, **source_values)
     if payment_date is None and row.payment_date is not None:
         values.update(payment_date=row.payment_date, payment_date_source=row.payment_date_source)
     if row.receipt_status == 'confirmed':
