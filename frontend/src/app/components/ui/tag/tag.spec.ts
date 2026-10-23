@@ -19,4 +19,11 @@ describe('TagComponent', () => {
     expect(tag.querySelector('.pi-percentage')).toBeTruthy();
     expect(tag.textContent).toContain('股利');
   });
+
+  it('offers a primary variant', () => {
+    TestBed.overrideComponent(TagHostComponent, { set: { template: `<app-tag variant="primary">待收</app-tag>` } });
+    const fixture = TestBed.createComponent(TagHostComponent);
+    fixture.detectChanges();
+    expect((fixture.nativeElement.querySelector('.tag') as HTMLElement).classList).toContain('tag-primary');
+  });
 });

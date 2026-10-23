@@ -1,91 +1,122 @@
-.result-meta {
-  align-items: center;
-  display: flex;
-  gap: 0.75rem;
-}
-
-.summary-row {
+/* Summary cards: the transactions page's KPI card rules (transaction-list.scss .kpi-row/.label/.value/.meta). */
+.kpi-row {
   display: grid;
-  gap: 1rem;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.25rem;
+  grid-auto-rows: minmax(140px, auto);
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
   margin-bottom: 1.25rem;
-}
 
-.summary-item {
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
-  border-radius: 16px;
-  box-shadow: var(--app-card-shadow);
-  padding: 1rem 1.25rem;
-}
+  app-bento {
+    display: grid;
+    height: 100%;
+  }
 
-.l {
-  color: var(--app-text-muted);
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.v {
-  color: var(--app-text);
-  font-size: 1.35rem;
-  font-variant-numeric: tabular-nums;
-  font-weight: 800;
-  margin-top: 0.35rem;
-}
-
-.dividend,
-.upcoming-amount {
-  color: var(--app-dividend);
-}
-
-.upcoming-card {
-  display: block;
-  margin-bottom: 1.5rem;
-}
-
-.upcoming-grid {
-  display: grid;
-  gap: 1rem;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-}
-
-.upcoming-item {
-  align-items: center;
-  background: var(--app-surface-soft);
-  border: 1px solid var(--app-border);
-  border-radius: 12px;
-  display: flex;
-  justify-content: space-between;
-  padding: 0.85rem 1rem;
-}
-
-.upcoming-name {
-  color: var(--app-text);
-  font-size: 0.92rem;
-  font-weight: 700;
-
-  span {
-    color: var(--app-text-muted);
-    font-size: 0.76rem;
-    font-weight: 600;
+  @media (max-width: 759.98px) {
+    gap: 0.75rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
-.upcoming-date,
-.upcoming-empty {
+.label {
+  align-items: center;
   color: var(--app-text-muted);
-  font-size: 0.74rem;
-  margin-top: 2px;
+  display: flex;
+  font-size: 0.75rem;
+  font-weight: 700;
+  gap: 0.4rem;
+  letter-spacing: 0.08em;
+  margin-bottom: 0.5rem;
 }
 
-.upcoming-amount {
-  font-size: 0.9rem;
+.swatch {
+  border-radius: 3px;
+  height: 10px;
+  width: 10px;
+
+  &.dashed {
+    border: 1.5px dashed var(--app-text-muted);
+  }
+}
+
+.value {
+  color: var(--app-text);
+  font-size: 2rem;
+  font-variant-numeric: tabular-nums;
   font-weight: 800;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+
+  @media (max-width: 759.98px) {
+    font-size: 1.35rem;
+  }
+}
+
+.meta {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  margin-top: 0.75rem;
+}
+
+.primary {
+  color: var(--app-primary);
+}
+
+.dividend {
+  color: var(--app-dividend);
+}
+
+.summary-note,
+.div-note,
+.result-meta,
+.sub,
+.div-notes {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+}
+
+.summary-note {
+  margin: -0.5rem 0 1.25rem;
+}
+
+.div-note {
+  line-height: 1.6;
+  margin: 0 0 1rem;
+}
+
+.upcoming-strip {
+  align-items: center;
+  display: flex;
+  font-size: 0.8rem;
+  gap: 0.5rem 1rem;
+  margin-bottom: 1rem;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.upcoming-title {
+  color: var(--app-text-muted);
+  font-weight: 700;
+}
+
+.upcoming-item {
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  color: var(--app-text);
+  padding: 0.3rem 0.75rem;
+
+  .dividend {
+    font-weight: 800;
+    margin-left: 0.35rem;
+  }
 }
 
 .filter-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
   margin-bottom: 1rem;
 }
 
@@ -111,10 +142,270 @@
   }
 }
 
+.filter-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+
+  select {
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    color: var(--app-text);
+    max-width: 100%;
+    padding: 0.5rem;
+  }
+}
+
+.clear-filters {
+  background: none;
+  border: 0;
+  color: var(--app-primary);
+  font: inherit;
+  font-weight: 700;
+  padding: 0.25rem 0.5rem;
+
+  &:focus-visible {
+    border-radius: 6px;
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+    outline: none;
+  }
+}
+
 .result-meta {
-  color: var(--app-text-muted);
-  font-size: 0.85rem;
+  display: flex;
+  gap: 0.75rem;
   margin-bottom: 0.5rem;
+}
+
+.list-error {
+  color: var(--app-danger);
+  font-weight: 700;
+}
+
+/* Rows: one grid per row, the column heads on the same template. */
+.div-list {
+  background: var(--app-surface);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--app-card-shadow);
+  margin-bottom: 1rem;
+
+  &:empty {
+    display: none;
+  }
+}
+
+.div-grid {
+  align-items: center;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 2fr) 6.5rem minmax(0, 1.2fr) minmax(0, 1.3fr) minmax(0, 1.1fr) 7.5rem 9rem;
+  padding: 0.75rem 1rem;
+}
+
+.div-head {
+  color: var(--app-text-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.div-row {
+  border-top: 1px solid var(--app-border);
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.num {
+  text-align: right;
+}
+
+.c-stock {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+
+.c-text {
+  min-width: 0;
+}
+
+.div-square {
+  align-items: center;
+  border-radius: 12px;
+  color: var(--app-on-primary);
+  display: flex;
+  flex: none;
+  font-size: 0.8125rem;
+  font-weight: 800;
+  height: 40px;
+  justify-content: center;
+  width: 40px;
+
+  &.ink-dark {
+    color: var(--app-text);
+  }
+}
+
+:host-context(.app-dark-mode) .div-square {
+  color: var(--app-bg);
+}
+
+.name-line {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.primary-name,
+.net {
+  font-weight: 700;
+}
+
+.c-actions {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.row-action {
+  background: transparent;
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-lg);
+  color: var(--app-text);
+  cursor: pointer;
+  font-size: 1.25rem;
+  min-height: 44px;
+  min-width: 44px;
+}
+
+.div-notes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  padding: 0 1rem 0.75rem calc(1rem + 52px);
+}
+
+/* Inline receipt form under its row (Decision 9). */
+.receipt-form {
+  background: var(--app-surface-soft);
+  border-top: 1px dashed var(--app-border);
+  display: grid;
+  font-size: 0.875rem;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem 1rem calc(1rem + 52px);
+
+  p {
+    margin: 0;
+  }
+}
+
+.receipt-title {
+  font-weight: 700;
+}
+
+.receipt-warning {
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+.receipt-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
+
+  label {
+    color: var(--app-text-muted);
+    display: grid;
+    font-size: 0.75rem;
+    font-weight: 700;
+    gap: 0.25rem;
+  }
+
+  input,
+  select {
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    color: var(--app-text);
+    font: inherit;
+    font-size: 0.875rem;
+    min-height: 44px;
+    min-width: 12rem;
+    padding: 0.5rem;
+  }
+}
+
+.receipt-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+/* Phone and sheet widths: square · name + tag over the per-share line · amount with the ex-date beneath.
+   The name wraps to two lines (the tag follows it, wrapping too); the amount never wraps, its date line may. */
+.compact {
+  .div-grid {
+    display: flex;
+    flex-wrap: wrap;
+    padding: 10px 14px;
+  }
+
+  .c-stock {
+    flex: 1 1 0;
+  }
+
+  .name-line {
+    flex-wrap: wrap;
+    min-width: 0;
+
+    > :not(.primary-name) {
+      flex: none;
+    }
+  }
+
+  .primary-name {
+    -webkit-box-orient: vertical;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+
+  .c-net {
+    flex: none;
+    max-width: 60%;
+
+    .net {
+      white-space: nowrap;
+    }
+  }
+
+  .c-actions:has(app-btn) {
+    flex-basis: 100%;
+  }
+
+  .div-notes {
+    padding: 0 14px 10px;
+  }
+
+  /* The same fields, stacked full width. */
+  .receipt-form {
+    padding: 10px 14px 14px;
+  }
+
+  .receipt-fields {
+    flex-direction: column;
+
+    input,
+    select {
+      min-width: 0;
+      width: 100%;
+    }
+  }
 }
 
 .empty {
@@ -122,7 +413,6 @@
   color: var(--app-text-muted);
   display: flex;
   flex-direction: column;
-  justify-content: center;
   padding: 4rem 2rem;
   text-align: center;
 
@@ -141,34 +431,8 @@
 :host ::ng-deep {
   .portfolio-form-content .p-inputtext,
   .portfolio-form-content .p-inputnumber,
-  .portfolio-form-content .p-datepicker {
-    width: 100%;
-  }
-
+  .portfolio-form-content .p-datepicker,
   .portfolio-form-content .p-inputnumber-input {
     width: 100%;
   }
 }
-
-@media (max-width: 760px) {
-  .summary-row {
-    grid-template-columns: 1fr;
-  }
-}
-
-.filter-controls { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem; }
-.filter-controls select { background: var(--app-surface); color: var(--app-text); border: 1px solid var(--app-border); border-radius: 8px; padding: 0.5rem; max-width: 100%; }
-
-.receipt-note, .receipt-details {
-  color: var(--app-text-muted);
-  font-size: 0.8rem;
-  line-height: 1.6;
-}
-.receipt-details {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.35rem 1rem;
-  overflow-wrap: anywhere;
-}
-.receipt-details:empty { display: none; }

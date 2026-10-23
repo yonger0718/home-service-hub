@@ -16,6 +16,7 @@ export type BtnVariant = 'primary' | 'secondary' | 'ghost' | 'soft';
       [disabled]="disabled() || loading()"
       [attr.aria-busy]="loading()"
       [attr.aria-label]="ariaLabel() || null"
+      [attr.aria-expanded]="ariaExpanded()"
       (click)="onClick($event)"
     >
       @if (loading()) {
@@ -36,6 +37,8 @@ export class BtnComponent {
   readonly icon = input('');
   readonly iconOnly = input(false);
   readonly ariaLabel = input('');
+  /** For a button that opens or closes a region; null (the default) leaves the attribute off. */
+  readonly ariaExpanded = input<boolean | null>(null);
   readonly click = output<MouseEvent>();
 
   protected readonly normalizedIcon = computed(() => this.icon().replace(/^pi\s+/, ''));

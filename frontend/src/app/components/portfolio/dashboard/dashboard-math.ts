@@ -1,6 +1,7 @@
-import { EMPTY, Observable, defer, expand, reduce } from 'rxjs';
+import { Observable, map } from 'rxjs';
 
 import { Dividend, MarketCode, Paged, PortfolioSummary, StockHolding } from '../../../models/portfolio.model';
+import { allPages } from '../paging';
 
 export const MARKET_LABELS: Record<MarketCode, string> = { TW: '台股', US: '美股', LSE: '英股' };
 
@@ -181,24 +182,10 @@ export function pendingRows(dividends: readonly Dividend[], nameFor: (d: Dividen
     });
 }
 
-const MAX_DIVIDEND_PAGES = 50;
-
 /** Every dividend: pages at offset 0, pageSize, … until `Paged.total` is covered (at most 50 pages). */
 export function allDividendPages(
   fetch: (offset: number) => Observable<Paged<Dividend>>,
   pageSize = 100,
 ): Observable<Dividend[]> {
-  return defer(() => {
-    let pages = 0;
-    let offset = 0;
-    return fetch(0).pipe(
-      expand(page => {
-        pages++;
-        offset += pageSize;
-        const more = page.items.length > 0 && offset < page.total && pages < MAX_DIVIDEND_PAGES;
-        return more ? fetch(offset) : EMPTY;
-      }, 1),
-      reduce((all, page) => all.concat(page.items), [] as Dividend[]),
-    );
-  });
+  return allPages(fetch, pageSize).pipe(map(result => result.items));
 }

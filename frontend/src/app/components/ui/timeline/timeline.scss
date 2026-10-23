@@ -156,3 +156,131 @@
   .tl-card-expanded .tl-lhs { flex-basis: 100%; }
   .tl-card-expanded .tl-amt { margin-left: 0; }
 }
+
+/* Month mode: a heading per month, the month's rows on one surface, every row with its own day. */
+.tl-month-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tl-month {
+  align-items: baseline;
+  color: var(--app-text-muted);
+  display: flex;
+  justify-content: space-between;
+  padding: 0 6px;
+}
+
+.tl-month-label { font-size: 0.8125rem; font-weight: var(--fw-bold); }
+.tl-month-sum { font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+
+.tl-month-rows {
+  background: var(--app-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--app-card-shadow);
+  overflow: hidden;
+
+  .tl-item {
+    border-bottom: 1px solid var(--app-border);
+    gap: 0;
+    padding-left: 16px;
+  }
+
+  .tl-item:last-child { border-bottom: 0; }
+
+  .tl-card {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    &:hover { box-shadow: none; transform: none; }
+  }
+}
+
+.tl-day {
+  padding-top: 0;
+  text-align: left;
+  width: 52px;
+  align-self: center;
+  .d { font-size: 0.9375rem; font-weight: var(--fw-bold); }
+  .m { font-size: 0.6875rem; font-weight: var(--fw-regular); }
+}
+
+/* Square initials, as on the dashboard holdings list. */
+.tl-square {
+  align-items: center;
+  border-radius: 12px;
+  color: var(--app-on-primary);
+  display: flex;
+  flex: none;
+  font-size: 0.8125rem;
+  font-weight: 800;
+  height: 40px;
+  justify-content: center;
+  width: 40px;
+}
+
+/* Warm/green fills are too light for white initials (WCAG AA) in light mode. */
+.tl-square.ink-dark { color: var(--app-text); }
+
+/* Dark series tokens are light, so the initials take the page background for contrast. */
+:host-context(.app-dark-mode) .tl-square,
+:host-context(.app-dark-mode) .tl-square.ink-dark { color: var(--app-bg); }
+
+.tl-name-line {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tl-sub,
+.tl-amt-note,
+.tl-broker {
+  color: var(--app-text-muted);
+  font-size: 0.75rem;
+}
+
+.tl-sub { margin-top: 2px; }
+.tl-broker { font-size: 0.8125rem; }
+.tl-qty-main { font-size: 0.875rem; font-weight: var(--fw-semibold); }
+.tl-qty,
+.tl-amt-col { font-variant-numeric: tabular-nums; min-width: 0; }
+
+.tl-amt-col {
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 3px;
+  margin-left: 1rem;
+  .tl-amt { margin-left: 0; }
+}
+
+.tl-card-rich {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.3fr) minmax(0, 0.8fr) minmax(0, 1.2fr) auto;
+  .tl-amt-col { margin-left: 0; }
+  .tl-action { margin-left: 0; }
+  .tl-details { grid-column: 1 / -1; }
+}
+
+/* Compact (phone): square · name + SideTag · `qty @ price · broker`, the amount with the date beneath.
+   The name wraps to two lines (tags follow it, wrapping too); the amount never wraps. */
+.tl-compact {
+  .tl-month-rows .tl-item { padding-left: 0; }
+  .tl-card-rich { display: flex; flex-wrap: nowrap; gap: 12px; padding: 10px 14px; }
+  .tl-card-rich .tl-lhs { flex: 1; gap: 12px; width: auto; }
+  .tl-card-rich .tl-lhs > div { min-width: 0; }
+  .tl-primary {
+    -webkit-box-orient: vertical;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+  .tl-name-line { flex-wrap: wrap; min-width: 0; }
+  .tl-name-line > :not(.tl-primary) { flex: none; }
+  .tl-amt-col { flex: none; margin-left: 0.5rem; white-space: nowrap; }
+}
