@@ -60,7 +60,13 @@
     <div class="nw">
       <small>總額 {{ mainCurrency() }}</small>
       <b class="total-amount" [class.neg]="total() < 0">{{ formatMoney(total(), mainCurrency()) }}</b>
-      <span class="totals-line">總資產 {{ formatMoney(assets(), mainCurrency()) }} · 總負債 {{ formatMoney(liabilities(), mainCurrency()) }}</span>
+      <span class="totals-line">總資產 {{ formatMoney(assets(), mainCurrency()) }} · 總負債 {{ formatMoney(liabilities(), mainCurrency()) }}@if (loanCount() > 0) {（含借貸 {{ loanCount() }} 筆）}</span>
+      @if (debts(); as d) {
+        <span class="net-worth">淨值 {{ formatMoney(netWorth(), mainCurrency()) }}</span>
+        @if (d.payables.unconverted.length > 0) {
+          <small class="unconverted-hint">另有 {{ d.payables.unconverted.length }} 種幣別未換算</small>
+        }
+      }
       @if (excludedCount() > 0) {
         <small class="excluded-hint">另有 {{ excludedCount() }} 個帳戶未換算，未計入</small>
       }
