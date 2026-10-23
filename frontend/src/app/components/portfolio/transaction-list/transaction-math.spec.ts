@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { Transaction, TransactionType } from '../../../models/portfolio.model';
-import { allInTotal, feeLine, monthHeading, monthKey, monthLabel, periodLabel, tradeTotals } from './transaction-math';
+import { allInTotal, feeLine, feeShareLabel, monthHeading, monthKey, monthLabel, periodLabel, tradeTotals } from './transaction-math';
 
 let nextId = 1;
 function tx(overrides: Partial<Transaction>): Transaction {
@@ -162,6 +162,13 @@ describe('transaction math', () => {
     it('omits the fx part on a foreign row without a usable fx', () => {
       expect(feeLine({ ...usBuy, fx_rate_to_twd: undefined })).toBe('手續費 1.00 USD');
       expect(feeLine({ ...usBuy, fx_rate_to_twd: 'abc' })).toBe('手續費 1.00 USD');
+    });
+  });
+
+  describe('feeShareLabel', () => {
+    it('renders the share with two decimals, or — without turnover', () => {
+      expect(feeShareLabel(540 / 200000)).toBe('佔成交額 0.27%');
+      expect(feeShareLabel(null)).toBe('佔成交額 —');
     });
   });
 

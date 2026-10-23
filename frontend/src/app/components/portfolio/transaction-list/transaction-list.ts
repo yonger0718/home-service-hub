@@ -1,6 +1,9 @@
 import { Component, OnDestroy, OnInit, computed, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { RouterLink } from '@angular/router';
+import { catchError, map, of } from 'rxjs';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import { BROKER_LABELS, Broker, MarketCode, Transaction, TransactionType, TransactionQuery, brokerLabel } from '../../../models/portfolio.model';
 
 const BROKER_LABELS_MAP = BROKER_LABELS;
@@ -24,6 +27,9 @@ import { BtnComponent } from '../../ui/btn/btn';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { TimelineComponent, TimelineRow } from '../../ui/timeline/timeline';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
+import { BentoComponent } from '../../ui/bento/bento';
+import { allPages } from '../paging';
+import { TradeTotals, allInTotal, feeShareLabel, periodLabel, tradeTotals } from './transaction-math';
 
 const SORT_OPTIONS = [
   { value: 'trade_date:desc', label: '日期 新→舊' },
@@ -51,7 +57,7 @@ const DEFAULT_CURRENCY_BY_MARKET: Record<Exclude<MarketCode, 'TW'>, string> = {
 @Component({
   selector: 'app-portfolio-transactions',
   imports: [
-    PageHeaderComponent,
+    PageHeaderComponent, RouterLink, BentoComponent,
     CommonModule, TableModule, ButtonModule, DialogModule, FormsModule,
     InputTextModule, InputNumberModule, SelectButtonModule, SelectModule,
     DatePickerModule, PaginatorModule, ProgressSpinnerModule,
@@ -67,6 +73,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   private portfolioService = inject(PortfolioService);
   private confirmationService = inject(ConfirmationService);
   private messageService = inject(MessageService);
+  private layoutMode = inject(LayoutModeService);
 
   @ViewChild('menu') menu!: Menu;
   menuItems: MenuItem[] = [];
@@ -82,6 +89,16 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   dateRange: Date[] | null = null;
 
   query = signal<TransactionQuery>({ offset: 0, limit: 25, sort: 'trade_date:desc' });
+  readonly headerSubtitle = computed(() => `${periodLabel(this.query())} · 共 ${this.total()} 筆`);
+
+  /** Filter-wide card figures (all rows of the active filter, not the list page); null while loading or after a failure. */
+  readonly summary = signal<TradeTotals | null>(null);
+  readonly summaryFailed = signal(false);
+  readonly summaryCapped = signal(false);
+  /** Server-side realized P&L for the filter minus `side`; null while loading or when the call failed. */
+  readonly realized = signal<number | null>(null);
+  readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
+  protected readonly feeShareLabel = feeShareLabel;
   readonly sortOptions = SORT_OPTIONS;
   readonly sideOptions = SIDE_OPTIONS;
   readonly sideFilterOptions: SegToggleOption[] = [
@@ -126,6 +143,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
 
   private filterDebounce: ReturnType<typeof setTimeout> | null = null;
   private fetchSeq = 0;
+  private summarySeq = 0;
 
   newTransaction: Partial<Transaction> = {
     type: TransactionType.BUY,
@@ -144,7 +162,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   ngOnInit() {
     this.portfolioService.getSymbolNames().subscribe(map => this.symbolNames.set(map));
     this.portfolioService.getTransactionBrokers().subscribe(brokers => this.availableBrokers.set(brokers));
-    this.fetch();
+    this.reload();
   }
 
   ngOnDestroy() {
@@ -169,13 +187,52 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     });
   }
 
+  /**
+   * Cards for every row of the active filter. Each stream fails on its own: a summary failure hides the cards,
+   * a realized failure (e.g. 422 for a row without fx) only blanks 已實現損益. A response from an older filter is dropped.
+   */
+  loadSummary() {
+    const seq = ++this.summarySeq;
+    const { symbol, date_from, date_to, side, broker, sort } = this.query();
+    this.summary.set(null);
+    this.summaryFailed.set(false);
+    this.summaryCapped.set(false);
+    this.realized.set(null);
+    allPages(offset => this.portfolioService.getTransactions({ symbol, date_from, date_to, side, broker, sort, limit: 100, offset }))
+      .pipe(catchError(() => of(null)))
+      .subscribe(result => {
+        if (seq !== this.summarySeq) return;
+        if (!result) {
+          this.summaryFailed.set(true);
+          return;
+        }
+        this.summary.set(tradeTotals(result.items));
+        this.summaryCapped.set(result.capped);
+      });
+    this.portfolioService.getRealizedPnl({ symbol, date_from, date_to, broker, limit: 1 })
+      .pipe(
+        map(paged => Number(paged.summary.filter_scope_total)),
+        map(value => (Number.isFinite(value) ? value : null)),
+        catchError(() => of(null)),
+      )
+      .subscribe(value => {
+        if (seq === this.summarySeq) this.realized.set(value);
+      });
+  }
+
+  /** The list page and the cards; used whenever the filter or the data changes (a page or sort change only fetches). */
+  private reload() {
+    this.fetch();
+    this.loadSummary();
+  }
+
   private updateFilters(patch: Partial<TransactionQuery>, debounce = false) {
     this.query.set({ ...this.query(), ...patch, offset: 0 });
     if (this.filterDebounce) clearTimeout(this.filterDebounce);
     if (debounce) {
-      this.filterDebounce = setTimeout(() => this.fetch(), 300);
+      this.filterDebounce = setTimeout(() => this.reload(), 300);
     } else {
-      this.fetch();
+      this.reload();
     }
   }
 
@@ -224,8 +281,10 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     this.updateFilters({ broker });
   }
 
+  /** Sorting does not change the totals, so the cards stay; a pending search debounce still reloads them. */
   onSortChange(sort: string) {
-    this.updateFilters({ sort });
+    this.query.set({ ...this.query(), sort, offset: 0 });
+    this.fetch();
   }
 
   onPageChange(event: PaginatorState) {
@@ -240,12 +299,12 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     this.dateRange = null;
     this.selectedBroker.set('ALL');
     this.query.set({ offset: 0, limit: this.query().limit ?? 25, sort: 'trade_date:desc' });
-    this.fetch();
+    this.updateFilters({});
   }
 
   hasActiveFilters(): boolean {
     const q = this.query();
-    return !!(q.symbol || q.date_from || q.date_to || q.side);
+    return !!(q.symbol || q.date_from || q.date_to || q.side || q.broker);
   }
 
   private toIsoDate(d: Date | string): string {
@@ -322,7 +381,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
               offset: Math.min(this.query().offset ?? 0, maxOffset),
             });
             this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已刪除' });
-            this.fetch();
+            this.reload();
           },
           error: () => {
             this.messageService.add({ severity: 'error', summary: '錯誤', detail: '刪除失敗，請稍後再試' });
@@ -332,16 +391,9 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     });
   }
 
-  allInTotal(t: Transaction): number {
-    const gross = Number(t.price) * Number(t.quantity);
-    const fee = Number(t.fee || 0);
-    const tax = Number(t.tax || 0);
-    return t.type === TransactionType.BUY ? gross + fee + tax : gross - fee - tax;
-  }
-
   allInUnitPrice(t: Transaction): number {
     const qty = Number(t.quantity);
-    return qty > 0 ? this.allInTotal(t) / qty : Number(t.price);
+    return qty > 0 ? allInTotal(t) / qty : Number(t.price);
   }
 
   formatCurrency(value: number | string | null | undefined): string {
@@ -352,8 +404,13 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     }).format(Number(value ?? 0));
   }
 
+  /** Card figures: whole TWD, `—` while unknown. */
+  formatCardAmount(value: number | null): string {
+    return value == null ? '—' : this.formatCurrency(Math.round(value));
+  }
+
   formatTransactionAmount(t: Transaction): string {
-    const value = this.allInTotal(t);
+    const value = allInTotal(t);
     const currency = (t.currency ?? 'TWD').toUpperCase();
     // GBp = pence; render verbatim 4dp with GBp suffix (per Phase 3 native-display rule).
     if (t.currency === 'GBp') {
@@ -495,7 +552,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
       this.portfolioService.updateTransaction(this.newTransaction.id, payload).subscribe({
         next: () => {
           this.showDialog.set(false);
-          this.fetch();
+          this.reload();
           this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已更新' });
         },
         error: () => {
@@ -506,7 +563,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
       this.portfolioService.createTransaction(payload).subscribe({
         next: () => {
           this.showDialog.set(false);
-          this.fetch();
+          this.reload();
           this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已新增' });
         },
         error: () => {

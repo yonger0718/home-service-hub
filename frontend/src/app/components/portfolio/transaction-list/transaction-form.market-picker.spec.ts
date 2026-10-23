@@ -16,6 +16,7 @@ describe('PortfolioTransactionListComponent market picker', () => {
     createTransaction: ReturnType<typeof vi.fn>;
     updateTransaction: ReturnType<typeof vi.fn>;
     deleteTransaction: ReturnType<typeof vi.fn>;
+    getRealizedPnl: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(async () => {
@@ -26,6 +27,7 @@ describe('PortfolioTransactionListComponent market picker', () => {
       createTransaction: vi.fn().mockReturnValue(of({})),
       updateTransaction: vi.fn().mockReturnValue(of({})),
       deleteTransaction: vi.fn().mockReturnValue(of(undefined)),
+      getRealizedPnl: vi.fn().mockReturnValue(of({ items: [], total: 0, summary: { filter_scope_total: '0', filter_scope_count: 0, ytd_total: '0', ytd_count: 0 } })),
     };
 
     await TestBed.configureTestingModule({
