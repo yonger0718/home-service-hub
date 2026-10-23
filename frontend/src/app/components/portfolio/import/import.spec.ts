@@ -282,7 +282,7 @@ describe('Portfolio import controls', () => {
     });
 
     it('a failed 重算資料 toast reads the shared body message', () => {
-      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed', steps: [{ name: 'dividends', status: 'failed', error: 'x' }] }));
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed', steps: [{ name: 'dividend_auto_record', status: 'failed', error: 'x' }] }));
       service.triggerRecalc.mockReturnValue(throwError(() => ({ status: 409, message: 'Http failure', error: { code: 409, message: 'recalc in progress', trace_id: null } })));
       const fixture = setup();
       const add = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
@@ -291,7 +291,7 @@ describe('Portfolio import controls', () => {
     });
 
     it('重算資料 is enabled once the recalc settles and triggers one recalc', () => {
-      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed', steps: [{ name: 'dividends', status: 'failed', error: 'x' }] }));
+      service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed', steps: [{ name: 'dividend_auto_record', status: 'failed', error: 'x' }] }));
       service.triggerRecalc.mockReturnValue(new Subject());
       const fixture = setup();
       const rerun = Array.from(recalcCard(fixture)!.querySelectorAll<HTMLButtonElement>('button')).find(b => b.textContent?.trim() === '重算資料')!;
