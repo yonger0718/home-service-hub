@@ -460,6 +460,14 @@ export interface CashTransaction {
   note?: string | null;
   related_transaction_id?: number | null;
   related_dividend_id?: number | null;
+  /** Response-only context from the linked transaction / dividend (decimals as strings). */
+  related_symbol?: string | null;
+  related_quantity?: string | null;
+  /** Asia/Taipei calendar date of the trade, `YYYY-MM-DD`. */
+  related_trade_date?: string | null;
+  related_per_share?: string | null;
+  related_fee?: string | null;
+  related_tax?: string | null;
   child_legs?: CashTransaction[] | null;
   source: CashTransactionSource;
   import_fingerprint: string;
