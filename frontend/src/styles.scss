@@ -53,6 +53,10 @@
      green down). Switch to [data-gainloss="western"] for green-up. ---------- */
   --c-red: #e5484d;    --c-green: #1f9d6b;
   --c-red-soft: rgba(229, 72, 77, 0.12);   --c-green-soft: rgba(31, 157, 107, 0.12);
+  /* ink variants for small (≤ 13 px) trend-coloured TEXT: ≥ 4.5:1 on --app-surface / --app-surface-soft
+     (#c53a3f 5.04 / 4.57, #177a55 5.17 / 4.69). Large figures keep the bright pair above. */
+  --c-red-ink: #c53a3f;  --c-green-ink: #177a55;
+  --app-category-other: #8a94a6;   /* 支出類別分佈 其他 swatch (canvas C.other; same in both themes) */
 
   --app-buy:  #533afd;  --app-buy-soft:  rgba(83, 58, 253, 0.10);   /* purchases = indigo */
   --app-sell: #51607a;  --app-sell-soft: rgba(81, 96, 121, 0.12);   /* proceeds = neutral slate */
@@ -60,6 +64,7 @@
   /* default convention: 紅漲綠跌 */
   --app-trend-positive: var(--c-red);   --app-trend-negative: var(--c-green);
   --app-trend-positive-soft: var(--c-red-soft); --app-trend-negative-soft: var(--c-green-soft);
+  --app-trend-positive-ink: var(--c-red-ink); --app-trend-negative-ink: var(--c-green-ink);
 
   /* ---- Elevation --------------------------------------------------------- */
   --app-card-shadow:  0 10px 30px rgba(18, 26, 40, 0.045);
@@ -178,6 +183,11 @@
   /* dark-tuned red/green + buy/sell — trend still derives via the convention */
   --c-red: #ff6369;    --c-green: #43c98a;
   --c-red-soft: rgba(255, 99, 105, 0.16);  --c-green-soft: rgba(67, 201, 138, 0.16);
+  /* the dark hues already pass for small text (5.90 / 5.17 and 8.11 / 7.12 on surface / soft) */
+  --c-red-ink: #ff6369;  --c-green-ink: #43c98a;
+  /* primary app-btn fill (rest + hover): white on #6c5ce7 = 4.86:1 (on --app-primary #8b7dff it is 3.24:1) */
+  --app-primary-ink-bg: #6c5ce7;
+  --app-category-other: #8a94a6;   /* 支出類別分佈 其他 swatch (canvas C.other; same in both themes) */
   --app-buy: #8b7dff;  --app-buy-soft: rgba(139, 125, 255, 0.16);
   --app-sell: #9aa6bd; --app-sell-soft: rgba(154, 166, 189, 0.16);
   --app-card-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
@@ -305,10 +315,12 @@
 [data-gainloss="asian"] {        /* 紅漲綠跌 — Taiwan / Asian markets */
   --app-trend-positive: var(--c-red);   --app-trend-negative: var(--c-green);
   --app-trend-positive-soft: var(--c-red-soft); --app-trend-negative-soft: var(--c-green-soft);
+  --app-trend-positive-ink: var(--c-red-ink); --app-trend-negative-ink: var(--c-green-ink);
 }
 [data-gainloss="western"] {      /* 綠漲紅跌 — Western markets */
   --app-trend-positive: var(--c-green); --app-trend-negative: var(--c-red);
   --app-trend-positive-soft: var(--c-green-soft); --app-trend-negative-soft: var(--c-red-soft);
+  --app-trend-positive-ink: var(--c-green-ink); --app-trend-negative-ink: var(--c-red-ink);
 }
 
 /* ==========================================================================

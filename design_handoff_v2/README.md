@@ -51,3 +51,6 @@ All numbers, names and dates are sample data chosen to be internally consistent.
 ## Contrast
 
 On the light surface `#fafcff`: `--c-red` 3.8:1, `--c-green` 3.4:1, `--app-dividend` 4.0:1 — fine for large numbers, below 4.5:1 for 12–13 px text. In dark mode white on `--app-primary` (`#8b7dff`) is 3.2:1. The canvas keeps the existing tokens; the implementation should consider darker text variants for small trend-coloured text and dark text (or a darker fill) on dark-mode primary buttons. Tracked as task 8.3 of the change.
+
+Measured (PR 7, WCAG 2.x, gated by `frontend/src/app/theme/contrast.spec.ts`): small (≤ 13 px) trend-coloured text now uses ink tokens — light `--c-red-ink` `#c53a3f` 5.04 / 4.57:1 and `--c-green-ink` `#177a55` 5.17 / 4.69:1 on `#fafcff` / `#edf1f6`; dark keeps `#ff6369` 5.90 / 5.17:1 and `#43c98a` 8.11 / 7.12:1 on `#171c24` / `#202733`; large figures keep `--c-red` / `--c-green`.
+Dark-mode primary `app-btn` fills with `--app-primary-ink-bg` `#6c5ce7` at rest and on hover: white on it is 4.86:1 (was 3.24:1 on `#8b7dff`, 2.72:1 on the `#9a8ffd` hover).

@@ -3,6 +3,9 @@
   /* 支出收入顏色 (preference): every accounting page colours negative / positive amounts with these. */
   --tone-neg: var(--c-red);
   --tone-pos: var(--c-green);
+  /* …and small (≤ 13 px) text with these ink siblings (≥ 4.5:1); --tone-* stays bright for large figures. */
+  --tone-neg-ink: var(--c-red-ink);
+  --tone-pos-ink: var(--c-green-ink);
   display: block;
   position: relative;
 }
@@ -10,6 +13,8 @@
 :host(.green-red) {
   --tone-neg: var(--c-green);
   --tone-pos: var(--c-red);
+  --tone-neg-ink: var(--c-green-ink);
+  --tone-pos-ink: var(--c-red-ink);
 }
 
 .dbody {

@@ -180,7 +180,7 @@
 
   &.overdue {
     background: var(--app-state-warning-bg);
-    color: var(--tone-neg, var(--c-red));
+    color: var(--tone-neg-ink, var(--c-red-ink));
   }
 }
 
@@ -362,7 +362,7 @@
 
   &.overdue {
     background: var(--app-state-warning-bg);
-    color: var(--tone-neg, var(--c-red));
+    color: var(--tone-neg-ink, var(--c-red-ink));
   }
 }
 
@@ -524,7 +524,7 @@
 
   .badge.check {
     background: var(--app-state-warning-bg);
-    color: var(--tone-neg, var(--c-red));
+    color: var(--tone-neg-ink, var(--c-red-ink));
   }
 }
 

@@ -250,6 +250,17 @@ export interface MonthSummary {
   net: string;
   /** Currencies without a cached rate to the main currency (left out of the totals). */
   missing_rates: string[];
+  /** Spend per top-level category, largest first; absent from an older API (→ no distribution bar). */
+  by_category?: CategoryExpense[];
+}
+
+/** One top-level category's spend in `MonthSummary.by_category`; `category_id: null` is 未分類. */
+export interface CategoryExpense {
+  category_id: number | null;
+  name: string;
+  color: string | null;
+  /** Negative like `MonthSummary.expense` (net of refunds, so a refund-heavy root may be ≥ 0), 4 dp, main currency. */
+  expense: string;
 }
 
 /** One entry_date of `GET /entries/summary/daily`; same rules and currency as `MonthSummary`. */

@@ -34,6 +34,22 @@
       <div><small>支出</small><b class="neg sum-expense">{{ summary() ? expenseText(summary()!) : '—' }}</b></div>
       <div><small>收入</small><b class="pos sum-income">{{ summary() ? incomeText(summary()!) : '—' }}</b></div>
       <div><small>結餘</small><b class="sum-net">{{ summary() ? formatSigned(summary()!.net, summary()!.currency) : '—' }}</b></div>
+      @if (distribution().length) {
+        <div class="dist">
+          <div class="dist-bar" role="img" [class.dist-bar--phone]="isPhone()" [attr.aria-label]="distributionAria()">
+            @for (seg of distributionBar(); track $index) {
+              <span [style.flex-grow]="seg.amount" [style.background]="seg.color"></span>
+            }
+          </div>
+          @if (!isPhone()) {
+            <div class="dist-list">
+              @for (seg of distribution(); track $index) {
+                <span class="dist-row" [class.dist-row--refund]="seg.kind === 'refund'">@if (seg.kind !== 'refund') {<span class="dist-swatch" aria-hidden="true" [style.background]="seg.color"></span>}<span class="dist-name">{{ seg.name }}</span>&ngsp;<b>{{ seg.label }}</b></span>
+              }
+            </div>
+          }
+        </div>
+      }
     }
   </div>
   @if (filtersActive()) {

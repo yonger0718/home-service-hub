@@ -2,7 +2,7 @@
   align-items: center;
   background: var(--app-trend-positive-soft);
   border-radius: var(--radius-pill);
-  color: var(--app-trend-positive);
+  color: var(--app-trend-positive-ink);
   display: inline-flex;
   font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
@@ -13,7 +13,7 @@
 
 .pct-badge.down {
   background: var(--app-trend-negative-soft);
-  color: var(--app-trend-negative);
+  color: var(--app-trend-negative-ink);
 }
 
 .pct-badge.neutral {

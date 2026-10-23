@@ -90,7 +90,7 @@
 .orig { color: var(--app-text-muted); display: block; font-size: 0.72rem; font-weight: 600; }
 .pills { display: flex; gap: 4px; grid-area: pills; justify-content: flex-end; }
 .pill { border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-text-muted); font-size: 0.72rem; font-weight: 700; padding: 0 6px; white-space: nowrap; }
-.pill.rw { background: var(--c-green-soft, rgba(31, 157, 107, 0.12)); border-color: transparent; color: var(--c-green, #1f9d6b); }
+.pill.rw { background: var(--c-green-soft, rgba(31, 157, 107, 0.12)); border-color: transparent; color: var(--c-green-ink, #177a55); }
 .pill.rv { background: var(--app-primary-soft); border-color: transparent; color: var(--app-primary); }
 .review-marker { border-color: var(--app-danger); color: var(--app-danger); }
 .entry--review { background: color-mix(in srgb, var(--app-danger) 8%, transparent); }
