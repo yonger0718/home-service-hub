@@ -23,3 +23,10 @@ The broker statement import SHALL live on the unified import screen (`/portfolio
 #### Scenario: Unknown header falls through to manual path with warning
 - **WHEN** the upload's first row does not match any broker signature
 - **THEN** the detected format SHALL read `manual` (or none) and the page SHALL warn that the file will be parsed as a generic manual CSV
+
+## Implementation notes
+
+- The separate broker page is removed; 券商對帳單 is a type on the unified import page and hides the header checkbox and the symbol-confirmation card.
+- The preview shows a transactions table and a 現金流 table, each row with its `status` (新增 / 重複 · 略過 / 錯誤).
+- On non-Cathay brokers `counts.skipped` equals the number of `duplicate` rows. On Cathay, `skipped_duplicates` is 0 in a dry run and rehash rows (existing trade re-fingerprinted in place, no insert) count in `rehashed` but carry `duplicate`, so #duplicate = skipped + rehashed there.
+- A row-level FX error (for example a missing FX rate) is listed under 需要修正的列 and the file is kept.
