@@ -252,62 +252,100 @@
   }
 }
 
-.realized-row-shell {
+/* Sell rows (Decision 4): the transactions square, name line, meta, amount with the pct pill beneath. */
+.rz-list {
   background: var(--app-surface);
-  border-radius: 16px;
-}
+  border-radius: 20px;
+  box-shadow: var(--app-card-shadow);
+  overflow: hidden;
 
-.realized-main-line {
-  align-items: center;
-  display: flex;
-  gap: 0.45rem;
-  min-width: 0;
-
-  .text-truncate {
-    max-width: 16rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  &.is-loading {
+    opacity: 0.55;
+    pointer-events: none;
+    transition: opacity 0.15s;
   }
 }
 
-.day-trade-badge {
-  background: var(--app-accent-soft);
-  border: 1px solid var(--app-accent-soft-strong);
-  border-radius: 999px;
-  color: var(--app-accent);
-  font-size: 0.72rem;
-  font-weight: 800;
-  line-height: 1;
-  padding: 0.2rem 0.45rem;
+.rz-item + .rz-item {
+  border-top: 1px solid var(--app-border);
 }
 
-.market-badge {
-  background: var(--app-accent-soft);
-  border: 1px solid var(--app-accent-soft-strong);
-  border-radius: 999px;
-  color: var(--app-accent);
-  font-size: 0.72rem;
-  font-weight: 800;
-  line-height: 1;
-  padding: 0.2rem 0.45rem;
+.rz-row {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--app-text);
+  display: flex;
+  font: inherit;
+  gap: 14px;
+  min-height: 66px;
+  padding: 12px 20px;
+  text-align: left;
+  width: 100%;
+
+  &.open {
+    background: var(--app-primary-soft);
+  }
+
+  &:focus-visible {
+    box-shadow: inset 0 0 0 3px var(--app-focus-ring);
+    outline: none;
+  }
 }
 
-.native-amount {
-  color: var(--app-text-muted);
-  font-variant-numeric: tabular-nums;
+/* The transactions row square (timeline.scss .tl-square). */
+.rz-square {
+  align-items: center;
+  border-radius: 12px;
+  color: var(--app-on-primary);
+  display: flex;
+  flex: none;
+  font-size: 0.8125rem;
+  font-weight: 800;
+  height: 40px;
+  justify-content: center;
+  width: 40px;
+
+  &.ink-dark {
+    color: var(--app-text);
+  }
+}
+
+:host-context(.app-dark-mode) .rz-square {
+  color: var(--app-bg);
+}
+
+.rz-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.rz-name-line {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.rz-name {
+  font-size: 0.9375rem;
   font-weight: 700;
 }
 
-.short-badge {
-  background: var(--app-warning-soft, rgba(220, 38, 38, 0.12));
-  border: 1px solid var(--app-warning, #dc2626);
-  border-radius: 999px;
-  color: var(--app-warning, #dc2626);
-  font-size: 0.72rem;
-  font-weight: 800;
-  line-height: 1;
-  padding: 0.2rem 0.45rem;
+.rz-symbol,
+.rz-meta {
+  color: var(--app-text-muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.rz-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .warning-icon {
@@ -315,42 +353,120 @@
   font-size: 0.9rem;
 }
 
-.realized-pnl {
-  color: var(--app-text);
+.rz-amount-col {
+  align-items: flex-end;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 3px;
+}
 
-  &.is-positive {
+.rz-amount {
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+.pct-pill {
+  background: var(--app-surface-soft);
+  border-radius: 999px;
+  color: var(--app-text-muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  padding: 1px 7px;
+
+  &.up {
+    background: var(--app-trend-positive-soft);
+  }
+
+  &.down {
+    background: var(--app-trend-negative-soft);
+  }
+}
+
+.rz-amount,
+.pct-pill,
+.rz-detail .main {
+  &.up {
     color: var(--app-trend-positive);
   }
 
-  &.is-negative {
+  &.down {
     color: var(--app-trend-negative);
   }
 }
 
-.realized-detail-panel {
-  animation: slideDown 0.16s ease-out;
-  border-top: 1px solid var(--app-border);
-  display: grid;
-  gap: 0.75rem;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  margin: 0 1rem 0.85rem;
-  padding-top: 0.85rem;
+.rz-chevron {
+  color: var(--app-text-muted);
+  flex: none;
+  font-size: 0.8rem;
+  transition: transform 0.15s;
+
+  .open & {
+    transform: rotate(180deg);
+  }
 }
 
-.detail-item {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
+.rz-detail {
+  animation: slideDown 0.16s ease-out;
+  background: var(--app-surface-soft);
+  border-radius: 14px;
+  display: grid;
+  gap: 0 20px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  margin: 0 20px 16px 74px;
+  padding: 4px 16px;
 
-  span {
-    color: var(--app-text-muted);
-    font-size: 0.72rem;
+  dd {
+    margin: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .main {
+    font-size: 0.9375rem;
     font-weight: 700;
   }
 
-  strong {
-    color: var(--app-text);
-    font-size: 0.9rem;
+  .sub {
+    color: var(--app-text-muted);
+    font-size: 0.75rem;
+  }
+}
+
+.rz-detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 0;
+
+  dt {
+    color: var(--app-text-muted);
+    font-size: 0.75rem;
+  }
+}
+
+/* Phone (Decision 13): square · name + tag · meta on two lines · amount with the pill beneath. */
+.rz-list.compact {
+  .rz-row {
+    gap: 10px;
+    padding: 10px 14px;
+  }
+
+  .rz-meta {
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    display: -webkit-box;
+    white-space: normal;
+  }
+
+  .rz-chevron {
+    display: none;
+  }
+
+  .rz-detail {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: 0 14px 14px;
   }
 }
 
@@ -369,12 +485,6 @@
   }
 }
 
-.hub-modern-list.is-loading {
-  opacity: 0.55;
-  pointer-events: none;
-  transition: opacity 0.15s;
-}
-
 @keyframes slideDown {
   from {
     opacity: 0;
@@ -390,15 +500,5 @@
 :host ::ng-deep {
   .year-preset-control .p-togglebutton {
     min-width: 3.25rem;
-  }
-
-  @media (max-width: 767.98px) {
-    .realized-detail-panel {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .realized-main-line .text-truncate {
-      max-width: 9rem;
-    }
   }
 }

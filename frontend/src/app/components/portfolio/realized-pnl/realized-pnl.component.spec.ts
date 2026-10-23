@@ -1,12 +1,15 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { By } from '@angular/platform-browser';
 import { provideRouter } from '@angular/router';
+import { Paginator } from 'primeng/paginator';
 import { MessageService } from 'primeng/api';
 import { Subject, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { RealizedPnlEvent, RealizedPnlPaged, RealizedPnlQuery } from '../../../models/portfolio.model';
+import { RealizedPnlEvent, RealizedPnlPaged, RealizedPnlQuery, brokerLabel } from '../../../models/portfolio.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { stockSquare } from '../square';
 import { REALIZED_FIXTURE, TODAY } from './realized-fixture.spec-data';
 import { barsAriaText, monthlyBars } from './realized-math';
 import { PortfolioRealizedPnlComponent } from './realized-pnl';
@@ -92,14 +95,13 @@ describe('PortfolioRealizedPnlComponent', () => {
       .overrideComponent(PortfolioRealizedPnlComponent, {
         set: {
           template: `
-            @for (event of events(); track eventKey(event)) {
-              <button class="event-row" type="button" (click)="toggleExpanded(event)">
-                {{ event.symbol }}
+            @for (row of rows(); track row.key) {
+              <button class="event-row" type="button" (click)="toggleExpanded(row.key)">
+                {{ row.symbol }}
               </button>
-              @if (expandedKey() === eventKey(event)) {
+              @if (expandedKey() === row.key) {
                 <div class="expanded-panel">
-                  <span class="expanded-symbol">{{ event.symbol }}</span>
-                  <span class="expanded-net">{{ event.proceeds_net }}</span>
+                  <span class="expanded-symbol">{{ row.symbol }}</span>
                 </div>
               }
             }
@@ -323,7 +325,11 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
 
   it('pages the market set client-side under 台股 without an API call', () => {
     const fixture = create();
-    settle(fixture);
+    // 30 台股 sells, so a second 25-row page exists (an offset past the set's end is clamped).
+    const set = Array.from({ length: 30 }, (_, i) => ({ ...REALIZED_FIXTURE[0], quantity: 1000 + i }));
+    respond(listCalls.at(-1)!, paged(set.slice(0, 25), 30));
+    respond(allCalls.at(-1)!, paged(set));
+    fixture.detectChanges();
     const component = fixture.componentInstance;
     component.onMarketChange('TW');
     portfolioService['getRealizedPnl'].mockClear();
@@ -785,5 +791,174 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     const fixture = create2026();
 
     expect(cards(fixture).map(card => card.label)).toEqual(['2026 年已實現', '本月（10 月）']);
+  });
+
+  describe('sell rows', () => {
+    const [HONHAI, TSMC, , ETF] = REALIZED_FIXTURE;
+    /** 30 distinct 台股 sells: more than one 25-row page. */
+    const MANY_TW = Array.from({ length: 30 }, (_, i) => ({ ...HONHAI, quantity: 1000 + i }));
+
+    function rowButtons(fixture: ComponentFixture<PortfolioRealizedPnlComponent>): HTMLButtonElement[] {
+      return Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('button.rz-row'));
+    }
+
+    function text(root: Element | null | undefined, selector: string): string | undefined {
+      return root?.querySelector(selector)?.textContent?.trim();
+    }
+
+    function paginator(fixture: ComponentFixture<PortfolioRealizedPnlComponent>): Paginator | null {
+      return fixture.debugElement.query(By.directive(Paginator))?.componentInstance ?? null;
+    }
+
+    /** A list page of `page` (server total `total`) and the filter-wide `set`. */
+    function load(page: RealizedPnlEvent[], total: number, set: RealizedPnlEvent[]): ComponentFixture<PortfolioRealizedPnlComponent> {
+      const fixture = create();
+      respond(listCalls.at(-1)!, paged(page, total));
+      respond(allCalls.at(-1)!, paged(set));
+      fixture.detectChanges();
+      return fixture;
+    }
+
+    it('renders each sell as a collapsed row button: square, name, symbol, meta, amount and pill', () => {
+      const fixture = create2026();
+      const rows = rowButtons(fixture);
+      expect(rows).toHaveLength(2);
+      const honhai = rows[0];
+
+      expect(honhai.type).toBe('button');
+      expect(honhai.getAttribute('aria-expanded')).toBe('false');
+      expect(honhai.hasAttribute('aria-controls')).toBe(false);
+      expect(text(honhai, '.rz-square')).toBe(stockSquare('2317', '鴻海').text);
+      expect(text(honhai, '.rz-name')).toBe('鴻海');
+      expect(text(honhai, '.rz-symbol')).toBe('2317');
+      expect(text(honhai, '.rz-meta')).toBe(`10/02 · 1,000 股 · 均價 160.73 → 賣出 175.00 · ${brokerLabel('TW_CATHAY')}`);
+      expect(text(honhai, '.rz-amount')).toBe('+13,498');
+      expect(honhai.querySelector('.rz-amount')?.classList.contains('up')).toBe(true);
+      expect(text(honhai, '.pct-pill')).toBe('+8.4%');
+      expect(honhai.querySelector('.pct-pill')?.classList.contains('up')).toBe(true);
+      expect(honhai.querySelector('app-tag')).toBeNull();
+      expect(el(fixture).querySelector('app-list-item')).toBeNull();
+    });
+
+    it('tags a day trade 當沖 with the warning tag', () => {
+      const fixture = create2026();
+      const tag = rowButtons(fixture)[1].querySelector('app-tag');
+      expect(tag?.textContent?.trim()).toBe('當沖');
+      expect(tag?.querySelector('.tag-warning')).not.toBeNull();
+    });
+
+    it('expands one row at a time with its detail grid', () => {
+      const fixture = create2026();
+      const [honhai, tsmc] = rowButtons(fixture);
+
+      honhai.click();
+      fixture.detectChanges();
+      expect(honhai.getAttribute('aria-expanded')).toBe('true');
+      const panel = el(fixture).querySelector(`#${honhai.getAttribute('aria-controls')}`);
+      expect(panel?.classList.contains('rz-detail')).toBe(true);
+      const items = Array.from(panel!.querySelectorAll('.rz-detail-item')).map(item => [text(item, 'dt'), text(item, '.main')]);
+      expect(items).toEqual([
+        ['成交總額', '175,000'],
+        ['手續費', '249'],
+        ['交易稅', '525'],
+        ['淨收入', '174,226'],
+        ['賣出成本', '160,728'],
+        ['已實現損益', '+13,498'],
+      ]);
+      expect(panel!.querySelectorAll('.rz-detail-item')[5].querySelector('.main')?.classList.contains('up')).toBe(true);
+
+      tsmc.click();
+      fixture.detectChanges();
+      expect(honhai.getAttribute('aria-expanded')).toBe('false');
+      expect(tsmc.getAttribute('aria-expanded')).toBe('true');
+      expect(el(fixture).querySelectorAll('.rz-detail')).toHaveLength(1);
+      expect(text(el(fixture).querySelector('.rz-detail'), '.rz-detail-item:nth-child(3) dt')).toBe('交易稅（當沖）');
+
+      tsmc.click();
+      fixture.detectChanges();
+      expect(el(fixture).querySelector('.rz-detail')).toBeNull();
+    });
+
+    it('renders the 融券 tag and the inventory warnings inside the row', () => {
+      const short = { ...HONHAI, position_side: 'SHORT' as const, note: 'no_short_inventory' };
+      const noLong = { ...ETF, note: 'no_long_inventory' };
+      const fixture = load([short, noLong], 2, [short, noLong]);
+      const [first, second] = rowButtons(fixture);
+
+      expect(Array.from(first.querySelectorAll('app-tag')).map(tag => tag.textContent?.trim())).toEqual(['融券']);
+      expect(first.querySelector('.warning-icon')?.getAttribute('aria-label')).toBe('SHORT 回補無未平倉空單，視為純成本');
+      expect(first.querySelector('.warning-icon')?.getAttribute('role')).toBe('img');
+      expect(second.querySelector('.warning-icon')?.getAttribute('aria-label')).toBe('LONG 賣出無現股庫存，成本以 0 計算');
+    });
+
+    it('collapses the rows on a phone: name + tag, meta, amount with the pill beneath', () => {
+      TestBed.inject(LayoutModeService).set('phone');
+      const fixture = create2026();
+
+      expect(el(fixture).querySelector('.rz-list')?.classList.contains('compact')).toBe(true);
+      const tsmc = rowButtons(fixture)[1];
+      expect(tsmc.querySelector('.rz-symbol')).toBeNull();
+      expect(text(tsmc, '.rz-name-line app-tag')).toBe('當沖');
+      expect(tsmc.querySelector('.rz-meta')).not.toBeNull();
+      const right = Array.from(tsmc.querySelector('.rz-amount-col')!.children).map(child => child.className.split(' ')[0]);
+      expect(right).toEqual(['rz-amount', 'pct-pill']);
+    });
+
+    it('lists the whole 台股 set client-side, not the server page', () => {
+      const tw3 = [HONHAI, TSMC, ETF];
+      const fixture = load([HONHAI], 3, tw3);
+      expect(rowButtons(fixture)).toHaveLength(1);
+      portfolioService['getRealizedPnl'].mockClear();
+
+      fixture.componentInstance.onMarketChange('TW');
+      fixture.detectChanges();
+
+      expect(rowButtons(fixture).map(row => text(row, '.rz-name'))).toEqual(['鴻海', '台積電', '國泰永續高股息']);
+      expect(portfolioService['getRealizedPnl']).not.toHaveBeenCalled();
+    });
+
+    it('pages the 台股 set with a paginator from the set and no API call', () => {
+      const fixture = load(MANY_TW.slice(0, 25), 30, MANY_TW);
+      fixture.componentInstance.onMarketChange('TW');
+      fixture.detectChanges();
+      portfolioService['getRealizedPnl'].mockClear();
+
+      expect(rowButtons(fixture)).toHaveLength(25);
+      expect(paginator(fixture)?.totalRecords).toBe(30);
+      expect(paginator(fixture)?.first).toBe(0);
+      expect(text(el(fixture), '.meta-count')).toBe('30 筆');
+
+      fixture.componentInstance.onPageChange({ first: 25, rows: 25 });
+      fixture.detectChanges();
+
+      expect(rowButtons(fixture)).toHaveLength(5);
+      expect(paginator(fixture)?.first).toBe(25);
+      expect(portfolioService['getRealizedPnl']).not.toHaveBeenCalled();
+    });
+
+    it('clamps a page offset past a 3-row 台股 set instead of showing nothing', () => {
+      const fixture = load([HONHAI], 3, [HONHAI, TSMC, ETF]);
+      const component = fixture.componentInstance;
+      component.onMarketChange('TW');
+      portfolioService['getRealizedPnl'].mockClear();
+
+      component.onPageChange({ first: 50, rows: 25 });
+      fixture.detectChanges();
+
+      expect(component.clientOffset()).toBe(0);
+      expect(rowButtons(fixture)).toHaveLength(3);
+      expect(portfolioService['getRealizedPnl']).not.toHaveBeenCalled();
+    });
+
+    it('shows the empty state without sells', () => {
+      const fixture = load([], 0, []);
+
+      expect(rowButtons(fixture)).toHaveLength(0);
+      expect(text(el(fixture), '.empty-state h4')).toBe('無已實現損益');
+
+      fixture.componentInstance.onMarketChange('US');
+      fixture.detectChanges();
+      expect(text(el(fixture), '.empty-state h4')).toBe('無已實現損益');
+    });
   });
 });

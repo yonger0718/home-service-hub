@@ -39,12 +39,10 @@ describe('PortfolioRealizedPnlComponent broker filter', () => {
                 (change)="selectBrokerFilter($event)"
               ></app-seg-toggle>
             }
-            @for (event of filteredEvents(); track eventKey(event)) {
+            @for (row of rows(); track row.key) {
               <article class="event-row">
-                <span class="symbol">{{ event.symbol }}</span>
-                @if (showBrokerColumn() && showBrokerBadge(event)) {
-                  <span class="broker-badge">{{ brokerLabel(event.broker) }}</span>
-                }
+                <span class="symbol">{{ row.symbol }}</span>
+                <span class="meta">{{ row.meta }}</span>
               </article>
             }
           `,
@@ -108,7 +106,10 @@ describe('PortfolioRealizedPnlComponent broker filter', () => {
 
     const buttons = Array.from(fixture.nativeElement.querySelectorAll('.broker-filter button')) as HTMLButtonElement[];
     expect(buttons.map(button => button.textContent?.trim())).toEqual(['全部', '國泰']);
-    expect(fixture.nativeElement.querySelector('.broker-badge')?.textContent?.trim()).toBe('國泰');
+    const metas = Array.from(fixture.nativeElement.querySelectorAll('.meta') as NodeListOf<HTMLElement>).map(meta => meta.textContent?.trim());
+    expect(metas[0]).toMatch(/ · 國泰$/);
+    // A sell without a broker drops the broker part of the meta line.
+    expect(metas[1]).not.toContain('國泰');
   });
 });
 
