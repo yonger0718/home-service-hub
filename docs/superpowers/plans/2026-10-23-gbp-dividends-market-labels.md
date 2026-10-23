@@ -4,7 +4,7 @@
 
 **Goal:** Stop LSE (GBp) dividends from being valued 100× in TWD on the backend totals/XIRR and on the 股利 page, and label non-TW markets by market code instead of calling everything 美股.
 
-**Architecture:** Read-path normalisation, the same convention the price path already uses (`CLAUDE.md`: "LSE GBp prices are stored as pence and divided by 100 on the read path"): the stored dividend row keeps `amount` / `cash_dividend_per_share` in pence with `currency = 'GBp'` and `fx_rate_to_twd` in TWD per pound; every TWD valuation divides GBp by 100. No migration, no write-path change. Market labels become a shared `marketLabel(code)` map in the frontend.
+**Architecture:** Read-path normalisation, the same convention the price path already uses (`CLAUDE.md`: "LSE GBp prices are stored as pence and divided by 100 on the read path"): the stored dividend row keeps `amount` / `cash_dividend_per_share` in pence with `currency = 'GBp'` and `fx_rate_to_twd` in TWD per pound; every TWD valuation of a dividend divides GBp by 100 (transactions are untouched — their fx is per penny). No migration, no write-path change. Market labels become a shared `marketLabel(code)` map in the frontend.
 
 **Tech Stack:** FastAPI (stock-portfolio-service; SQLite unit tests with dummy `POSTGRES_*` env + the pinned `.venv`), Angular 21 + Vitest.
 
@@ -56,10 +56,10 @@
 - [ ] **Step 4: Run** the new file + `tests/unit -q` → green.
 - [ ] **Step 5: Commit** `fix(api,dividends): value GBp dividends in pounds (÷100) on the read path (#115)`.
 
-### Task 2: Frontend — `twdAmount` GBp divisor
+### Task 2: Frontend — dividend-only GBp divisor (`dividendTwdAmount` in `dividend-math.ts`)
 
 **Files:**
-- Modify: `frontend/src/app/components/portfolio/money.ts:37-45`
+- Modify: `frontend/src/app/components/portfolio/dividend-list/dividend-math.ts` (`dividendTwdAmount`, used at `:34` and `:86`); `money.ts` untouched
 - Test: `money.spec.ts` (create next to it if absent), `dividend-list/dividend-math.spec.ts` (one GBp row through the page math)
 
 - [ ] **Step 1: Failing tests** — Review Focus 4 cases; `dividend-math`: a GBp dividend row (as the corrected API emits it, `currency: 'GBp'`) renders its TWD figure /100 at `:34, :86-90`; a `GBP` transaction through `transaction-math`/`transaction-rows` is NOT divided (regression).
