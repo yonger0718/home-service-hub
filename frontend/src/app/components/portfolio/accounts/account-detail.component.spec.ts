@@ -624,6 +624,45 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
     });
   }
 
+  it('embedded 9 → 7: no 餘額 while 9\'s rows meet 7\'s balance, until 7\'s rows land', () => {
+    const summary = (id: number) => ({
+      items: [{
+        id, broker: 'cathay', nickname: `帳戶 ${id}`, currency: 'TWD', opening_balance: '0', opening_date: '2026-01-01',
+        is_active: true, created_at: '2026-01-01T00:00:00Z', native_balance: `${id}000`, target_balance: null, target_currency: null,
+      }],
+      target_currency: null, total_target_balance: null, skipped_currencies: [],
+    });
+    const row = (id: number, accountId: number) => ({
+      id, account_id: accountId, txn_date: '2026-01-02', type: 'deposit', amount: '100', currency: 'TWD', note: null,
+      related_transaction_id: null, related_dividend_id: null, child_legs: null, source: 'manual',
+      import_fingerprint: `fp-${id}`, created_at: '2026-01-02T00:00:00Z',
+    });
+    const bal = (fixture: { nativeElement: HTMLElement }) =>
+      Array.from(fixture.nativeElement.querySelectorAll('.cash-row .c-bal')).map(cell => cell.textContent?.replace('餘額', '').trim());
+    const summaryReq = () => httpMock.expectOne(req => req.url === '/api/portfolio/accounts/' && req.params.get('include_inactive') === 'true');
+    const historyReq = (id: number) => httpMock.expectOne(req => req.url === `/api/portfolio/accounts/${id}/balance-history`);
+    const txnsReq = (id: number) => httpMock.expectOne(req => req.url === `/api/portfolio/accounts/${id}/cash-transactions`);
+
+    const fixture = render({ accountId: 9, embedded: true });
+    summaryReq().flush(summary(9));
+    historyReq(9).flush({ account_id: 9, currency: 'TWD', points: [] });
+    txnsReq(9).flush({ items: [row(91, 9)], total: 1, offset: 0, limit: 25 });
+    fixture.detectChanges();
+    expect(bal(fixture)).toEqual(['9,000']);
+
+    fixture.componentRef.setInput('accountId', 7);
+    fixture.detectChanges();
+    summaryReq().flush(summary(7));
+    historyReq(7).flush({ account_id: 7, currency: 'TWD', points: [] });
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelectorAll('.cash-row').length).toBe(1);
+    expect(bal(fixture)).toEqual([]);
+
+    txnsReq(7).flush({ items: [row(71, 7)], total: 1, offset: 0, limit: 25 });
+    fixture.detectChanges();
+    expect(bal(fixture)).toEqual(['7,000']);
+  });
+
   it('drops a balance history that arrives for an account no longer shown', () => {
     const fixture = render({ accountId: 9 });
     fixture.componentRef.setInput('accountId', 7);
@@ -838,6 +877,26 @@ describe('PortfolioAccountDetailComponent cash rows and 餘額', () => {
     vi.advanceTimersByTime(300);
     flushTxns(SCENARIO, params => params.get('date_to') === '2026-10-20');
     fixture.detectChanges();
+    expect(heads(fixture)).not.toContain('餘額');
+    expect(balanceCells(fixture)).toEqual([]);
+  });
+
+  it('hides 餘額 until the account (the anchor) has loaded', () => {
+    const fixture = render();
+    flushTxns(SCENARIO);
+    fixture.detectChanges();
+    expect(el(fixture).querySelectorAll('.cash-row').length).toBe(3);
+    expect(heads(fixture)).toEqual(['日期', '項目', '來源', '金額']);
+    expect(balanceCells(fixture)).toEqual([]);
+
+    flushAccount();
+    fixture.detectChanges();
+    expect(balanceCells(fixture)).toEqual(['438,360', '418,360', '528,767']);
+  });
+
+  it('hides 餘額 while the rows on screen belong to another account', () => {
+    const fixture = load(SCENARIO.map(row => ({ ...row, account_id: 9 })));
+    expect(el(fixture).querySelectorAll('.cash-row').length).toBe(3);
     expect(heads(fixture)).not.toContain('餘額');
     expect(balanceCells(fixture)).toEqual([]);
   });

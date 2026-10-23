@@ -229,6 +229,11 @@
   font-size: var(--fs-label);
 }
 
+.amt,
+.c-bal {
+  white-space: nowrap;
+}
+
 .amt {
   font-size: 0.95rem;
   font-weight: 700;

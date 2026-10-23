@@ -194,11 +194,12 @@ export class PortfolioAccountDetailComponent implements OnInit {
   /** 餘額 per row (Decision 12), anchored at the account's balance; null hides the column. */
   readonly balanceTexts = computed(() => {
     const account = this.account();
-    if (!account) return null;
+    // No anchor yet, or rows still from the previous account (an embedded 9 → 7 switch): no column. After a
+    // reload() the new balance may briefly meet the old rows of the same account; that short race is accepted.
+    if (!account || this.transactions().some(txn => txn.account_id !== account.id)) return null;
     const balances = runningBalances(this.transactions(), account.native_balance, this.shownQuery(), this.todayIso());
     return balances?.map(value => formatCash(value, account.currency)) ?? null;
   });
-  readonly showBalance = computed(() => this.balanceTexts() !== null);
 
   editForm = this.fb.group({
     nickname: this.fb.nonNullable.control('', Validators.required),
