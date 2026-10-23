@@ -212,18 +212,21 @@ def update_definition(db: Session, definition_id: int, payload: DefinitionUpdate
 
 
 def _keep_loan_boundary(old: dict, new: dict) -> None:
-    """Spec §4.0 lifecycle guard: a PUT that keeps the loan keeps its boundary. A client that does not know
-    loan_from_seq (sends none) gets the stored one copied forward; a different one is refused — only 掛上貸款 sets it."""
-    old_ref, new_ref = loan_line(old), loan_line(new)
-    if old_ref is None or new_ref is None:
+    """Spec §4.0 lifecycle guard: loan_from_seq is set only by 掛上貸款 (attach_loan). A PUT that keeps the same loan
+    and omits the key (a client that does not know it) gets the stored boundary copied forward; any boundary it does
+    send must equal the stored one for that same loan — a moved one, a new one (None → N) and one sent with a new or
+    different loan are refused."""
+    new_ref = loan_line(new)
+    if new_ref is None:
         return
-    old_line, (index, new_line) = old_ref[1], new_ref
-    if old_line.get("loan_entry_id") is None or new_line.get("loan_entry_id") != old_line.get("loan_entry_id"):
-        return
-    stored = old_line.get("loan_from_seq")
+    index, new_line = new_ref
+    old_ref = loan_line(old)
+    old_line = old_ref[1] if old_ref is not None else {}
+    same_loan = old_line.get("loan_entry_id") is not None and new_line.get("loan_entry_id") == old_line["loan_entry_id"]
+    stored = old_line.get("loan_from_seq") if same_loan else None
     if new_line.get("loan_from_seq") is None:
         new_line["loan_from_seq"] = stored
-    elif stored is not None and new_line["loan_from_seq"] != stored:
+    elif new_line["loan_from_seq"] != stored:
         raise ValidationError(f"template.lines[{index}].loan_from_seq", "起算期只能由掛上貸款設定")
 
 

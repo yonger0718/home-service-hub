@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import select
 
 from app.models import LedgerEntry, ScheduleDefinition, ScheduleInstance
-from app.services import ledger_service
+from app.services import entry_write_service, ledger_service
 from app.services.settlement_service import open_amount
 
 # 36 monthly periods on the 8th from 2025-09-08: seq 1 = 2025-09-08 … seq 14 = 2026-10-08, seq 15 = 2026-11-08 …
@@ -59,6 +59,8 @@ def test_attach_loan_links_and_is_balance_neutral(client, db_session, plain):
     assert payable.amount == plain.due_total and adjust.amount == -plain.due_total and adjust.account_id == plain.bank.id
     assert adjust.entry_date == adjust.posted_date == payable.entry_date == payable.posted_date == date(2026, 10, 9)
     assert adjust.name == "掛帳調整：信貸"
+    assert (payable.source, payable.counterparty_id, adjust.source) == ("manual", plain.lender.id, "manual")
+    assert adjust.category_id == entry_write_service.system_category_id(db_session, "balance_adjustment")
     line0, line1 = body["template"]["lines"]
     assert line0["loan_entry_id"] == payable.id == body["loan_entry_id"] and line0["loan_from_seq"] == 15
     assert line1["loan_entry_id"] is None and line1.get("loan_from_seq") is None
@@ -185,23 +187,77 @@ def test_update_after_attach_keeps_loan_link(client, db_session, plain):
     r = client.put(f"/schedules/definitions/{plain.definition.id}", json=naked)
     assert r.status_code == 200, r.text
     assert r.json()["template"]["lines"][0]["loan_from_seq"] == 15
-    # existing behaviour, recorded not fixed here: the rename regenerates future pending instances and flattens their
-    # per-period overrides (see spec §5) — assert what happens so the follow-up has a baseline:
+    # KNOWN FOLLOW-UP (spec §5 override flattening), recorded not fixed here: the rename regenerates the future pending
+    # instances and drops their per-period overrides — this baseline flips when the follow-up lands.
     overrides = db_session.scalars(select(ScheduleInstance.amount_override).where(ScheduleInstance.definition_id == plain.definition.id, ScheduleInstance.status == "pending")).all()
-    print("pending overrides after rename:", sum(o is not None for o in overrides), "of", len(overrides))
+    assert (sum(o is not None for o in overrides), len(overrides)) == (0, 13)
 
 
-def test_update_refuses_a_changed_loan_from_seq(client, db_session, plain):
-    """Ruling: the boundary is set by 掛上貸款 only; a PUT may keep it, never move it."""
-    _attach(client, plain.definition.id, plain.bank, plain.lender, plain.due_total)
-    body = client.get(f"/schedules/definitions/{plain.definition.id}").json()
-    keep = ("kind", "account_id", "to_account_id", "to_amount", "counterparty_id", "category_id", "project_id", "amount", "currency", "loan_entry_id", "loan_from_seq", "name", "merchant")
+KEEP = ("kind", "account_id", "to_account_id", "to_amount", "counterparty_id", "category_id", "project_id", "amount", "currency", "loan_entry_id", "loan_from_seq", "name", "merchant")
+
+
+def _put_body(client, definition_id, **line0):
+    """The PUT body a client builds from the detail, with line 0's keys overridden by `line0`."""
+    body = client.get(f"/schedules/definitions/{definition_id}").json()
     update = {k: body[k] for k in ("name", "interval_unit", "interval_n", "anchor_date", "day_of_month", "times", "end_date", "total_amount")}
-    lines = [{k: v for k, v in line.items() if k in keep} for line in body["template"]["lines"]]
-    lines[0]["loan_from_seq"] = 16
+    lines = [{k: v for k, v in line.items() if k in KEEP} for line in body["template"]["lines"]]
+    lines[0].update(line0)
     update["template"] = {"lines": lines, "description": body["template"].get("description"), "tags": body["template"].get("tags", [])}
-    r = client.put(f"/schedules/definitions/{plain.definition.id}", json=update)
-    assert r.status_code == 422 and "起算期只能由掛上貸款設定" in r.text
-    assert "template.lines[0].loan_from_seq" in r.text
+    return update
+
+
+def _refused_boundary(response):
+    return (
+        response.status_code == 422 and "起算期只能由掛上貸款設定" in response.text
+        and "template.lines[0].loan_from_seq" in response.text
+    )
+
+
+def test_update_refuses_a_changed_loan_from_seq(client, db_session, plain, seed):
+    """Ruling: the boundary is set by 掛上貸款 only; a PUT may keep it (or omit it), never move or introduce it."""
+    _attach(client, plain.definition.id, plain.bank, plain.lender, plain.due_total)
+    d_id = plain.definition.id
+    # moved: 15 → 16
+    assert _refused_boundary(client.put(f"/schedules/definitions/{d_id}", json=_put_body(client, d_id, loan_from_seq=16)))
+    # a new / different loan carrying a boundary
+    other = seed.entry(plain.bank, "1000", kind="payable", counterparty_id=plain.lender.id, name="另一筆", day=date(2026, 10, 9))
+    db_session.commit()
+    r = client.put(f"/schedules/definitions/{d_id}", json=_put_body(client, d_id, loan_entry_id=other.id, loan_from_seq=15))
+    assert _refused_boundary(r)
     db_session.expire_all()
-    assert db_session.get(ScheduleDefinition, plain.definition.id).template["lines"][0]["loan_from_seq"] == 15
+    line = db_session.get(ScheduleDefinition, d_id).template["lines"][0]
+    assert (line["loan_from_seq"], line["loan_entry_id"]) != (None, other.id) and line["loan_from_seq"] == 15
+    # None → N: a linked line without a boundary (a create-time loan) cannot gain one through a PUT
+    payable = seed.entry(plain.bank, "2000", kind="payable", counterparty_id=plain.lender.id, name="舊貸款", day=date(2026, 10, 9))
+    linked = seed.definition([seed.line("repayment", plain.bank, "1000", loan_entry_id=payable.id)], kind="installment",
+                             name="舊貸款", anchor=date(2026, 11, 8), times=2)
+    seed.instance(linked, 1, date(2026, 11, 8)); seed.instance(linked, 2, date(2026, 12, 8))
+    db_session.commit()
+    assert _refused_boundary(client.put(f"/schedules/definitions/{linked.id}", json=_put_body(client, linked.id, loan_from_seq=1)))
+    # an unlinked line (no loan at all) cannot get a boundary either
+    unlinked = seed.definition([seed.line("repayment", plain.bank, "1000")], kind="installment", name="未掛", anchor=date(2026, 11, 8), times=2)
+    seed.instance(unlinked, 1, date(2026, 11, 8))
+    db_session.commit()
+    assert _refused_boundary(client.put(f"/schedules/definitions/{unlinked.id}", json=_put_body(client, unlinked.id, loan_from_seq=1)))
+    db_session.expire_all()
+    assert db_session.get(ScheduleDefinition, d_id).template["lines"][0]["loan_from_seq"] == 15
+    assert db_session.get(ScheduleDefinition, linked.id).template["lines"][0]["loan_from_seq"] is None
+
+
+def test_series_excludes_posted_and_skipped_later_periods(client, db_session, plain):
+    """Ruling: only periods that will still settle the loan count — a pending instance or a seq not generated yet."""
+    def iid(seq):
+        return db_session.scalar(select(ScheduleInstance.id).where(ScheduleInstance.definition_id == plain.definition.id, ScheduleInstance.seq == seq))
+    assert client.post(f"/schedules/instances/{iid(20)}/skip").status_code == 200
+    early = client.post(f"/schedules/instances/{iid(18)}/post")   # posted early, a plain expense (no loan yet)
+    assert early.status_code in (200, 201), early.text
+    db_session.expire_all()
+    expense = db_session.get(LedgerEntry, early.json()["posted_entry_ids"][0])
+    assert (expense.kind, expense.amount) == ("expense", Decimal(-8018))
+    expected = plain.due_total - Decimal(8018) - Decimal(8020)
+    assert Decimal(client.get(f"/schedules/definitions/{plain.definition.id}").json()["pending_principal"]) == expected
+    too_much = _attach(client, plain.definition.id, plain.bank, plain.lender, plain.due_total)
+    assert too_much.status_code == 422 and "超過之後各期本金合計" in too_much.text
+    ok = _attach(client, plain.definition.id, plain.bank, plain.lender, expected)
+    assert ok.status_code == 201, ok.text
+    assert ok.json()["template"]["lines"][0]["loan_from_seq"] == 15

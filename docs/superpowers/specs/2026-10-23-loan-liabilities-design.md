@@ -115,7 +115,9 @@ status 201.
    remaining after them]*.
 4. Remaining principal series = for every `seq` from `loan_from_seq` to `times` (inclusive): the repayment line's
    amount for that period — the instance's `amount_override[line index]` when the instance exists and has one, else
-   the template amount (periods beyond the generation horizon count too). `due_total` = Σ series; `all_but_last` =
+   the template amount (periods beyond the generation horizon count too); only periods that will still settle the
+   loan count — an existing `pending` instance or a seq with no instance yet — so instances in that range already
+   `posted` (early, as a plain entry) or `skipped` are left out. `due_total` = Σ series; `all_but_last` =
    `due_total` minus the last period's amount. Refuse `loan.amount > due_total` → `ValidationError("amount",
    "超過之後各期本金合計")` and `loan.amount <= all_but_last` → `ValidationError("amount", "剩餘期數乘以每期金額已達剩餘本金")`
    *[call: the debt must be cleared by the last period and not before the last one; a smaller remaining than the
@@ -201,6 +203,10 @@ today). Nothing is migrated automatically *[call: the remaining principal is not
 - Deleting the payable → refused by `assert_not_referenced` (existing). Deleting the schedule → the payable stays as an
   open debt (existing behaviour for created-with-loan schedules).
 - Missing FX rate for a foreign loan → listed as unconverted, 總負債 says so, nothing silently dropped.
+- Statement matching after the attach: the payable (+X) is a `payable` entry and so a statement-matching candidate;
+  the next bank statement on that account shows one `ledger_only` case for it, which the owner dismisses in 待處理
+  (the −X adjustment is excluded from matching and `balance_gap` nets to zero; `anchor_opening` is blocked only for
+  statements whose as_of is on/before the attach date). Accepted, not special-cased.
 
 ## 6. Testing (names for the plan)
 - Backend: `test_unlinked_repayment_posts_as_expense` (a repayment line with no loan posts a plain expense; repost and
