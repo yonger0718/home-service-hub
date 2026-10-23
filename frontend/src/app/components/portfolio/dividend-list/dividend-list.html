@@ -93,8 +93,8 @@
   }
 </div>
 
-<div class="div-list" [class.compact]="isPhone()">
-  @if (!isPhone() && rowViews().length > 0) {
+<div class="div-list" [class.compact]="compactRows()">
+  @if (!compactRows() && rowViews().length > 0) {
     <p class="visually-hidden">股利紀錄，欄位：股票、除息日、發放 / 收款、每股 × 股數、淨額、狀態</p>
     <div class="div-head div-grid" aria-hidden="true">
       <span>股票</span><span>除息日</span><span>發放 / 收款</span><span>每股 × 股數</span><span class="num">淨額</span><span>狀態</span>
@@ -110,12 +110,12 @@
           <div class="c-text">
             <div class="name-line">
               <span class="primary-name">{{ row.primary }}</span>
-              @if (isPhone()) { <app-tag [variant]="row.tag.variant">{{ row.tag.text }}</app-tag> }
+              @if (compactRows()) { <app-tag [variant]="row.tag.variant">{{ row.tag.text }}</app-tag> }
             </div>
-            @if (isPhone()) { <div class="sub">{{ row.perShare }}</div> }
+            @if (compactRows()) { <div class="sub">{{ row.perShare }}</div> }
           </div>
         </div>
-        @if (!isPhone()) {
+        @if (!compactRows()) {
           <div class="c-ex">{{ row.exDate }}</div>
           <div class="c-pay">
             <div>{{ row.pay.main }}</div>
@@ -128,13 +128,13 @@
         }
         <div class="c-net num">
           <div class="net" [class.primary]="row.netClass === 'primary'" [class.dividend]="row.netClass === 'dividend'">{{ row.net.main }}</div>
-          @if (isPhone()) {
+          @if (compactRows()) {
             <div class="sub">{{ row.dateLine }}</div>
           } @else if (row.net.sub) {
             <div class="sub">{{ row.net.sub }}</div>
           }
         </div>
-        @if (!isPhone()) {
+        @if (!compactRows()) {
           <div class="c-status"><app-tag [variant]="row.tag.variant">{{ row.tag.text }}</app-tag></div>
         }
         <div class="c-actions">

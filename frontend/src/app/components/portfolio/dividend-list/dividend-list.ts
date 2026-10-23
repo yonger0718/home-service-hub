@@ -91,7 +91,10 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   readonly sourceOptions = SOURCE_OPTIONS;
   readonly rowsPerPageOptions = [25, 50, 100];
   readonly statusOptions = STATUS_OPTIONS;
+  /** Two cards only on phone. */
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
+  /** Rows collapse below desktop width (phone and sheet): the seven-column grid needs the panes width. */
+  readonly compactRows = computed(() => this.layoutMode.mode() !== 'panes');
   /** Every account, inactive ones too, loaded once on init (retried when the receipt form opens after a failure). */
   private readonly accounts = signal<BrokerAccount[]>([]);
   private accountsFailed = false;

@@ -345,7 +345,8 @@
   justify-content: flex-end;
 }
 
-/* Phone: square · name + tag over the per-share line · amount with the ex-date beneath. */
+/* Phone and sheet widths: square · name + tag over the per-share line · amount with the ex-date beneath.
+   The name wraps to two lines (the tag follows it, wrapping too); the amount column never wraps. */
 .compact {
   .div-grid {
     display: flex;
@@ -357,9 +358,25 @@
     flex: 1 1 0;
   }
 
+  .name-line {
+    flex-wrap: wrap;
+    min-width: 0;
+
+    > :not(.primary-name) {
+      flex: none;
+    }
+  }
+
   .primary-name {
+    -webkit-box-orient: vertical;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
     overflow: hidden;
-    text-overflow: ellipsis;
+    overflow-wrap: anywhere;
+  }
+
+  .c-net {
+    flex: none;
     white-space: nowrap;
   }
 

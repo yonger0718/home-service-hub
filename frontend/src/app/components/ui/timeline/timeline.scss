@@ -266,14 +266,21 @@
   .tl-details { grid-column: 1 / -1; }
 }
 
-/* Compact (phone): square · name + SideTag · `qty @ price · broker`, the amount with the date beneath. */
+/* Compact (phone): square · name + SideTag · `qty @ price · broker`, the amount with the date beneath.
+   The name wraps to two lines (tags follow it, wrapping too); the amount never wraps. */
 .tl-compact {
   .tl-month-rows .tl-item { padding-left: 0; }
   .tl-card-rich { display: flex; flex-wrap: nowrap; gap: 12px; padding: 10px 14px; }
   .tl-card-rich .tl-lhs { flex: 1; gap: 12px; width: auto; }
   .tl-card-rich .tl-lhs > div { min-width: 0; }
-  .tl-primary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tl-name-line { flex-wrap: nowrap; min-width: 0; }
+  .tl-primary {
+    -webkit-box-orient: vertical;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+  .tl-name-line { flex-wrap: wrap; min-width: 0; }
   .tl-name-line > :not(.tl-primary) { flex: none; }
-  .tl-amt-col { margin-left: 0.5rem; }
+  .tl-amt-col { flex: none; margin-left: 0.5rem; white-space: nowrap; }
 }

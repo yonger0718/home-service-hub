@@ -150,6 +150,36 @@ describe('PortfolioTransactionListComponent', () => {
       expect(el(fixture).querySelector('app-page-header .page-subtitle')?.textContent?.trim()).toBe('2026/01/01 – 2026/10/22 · 共 7 筆');
     });
 
+    it('puts the header actions on their own line on phone only', () => {
+      TestBed.inject(LayoutModeService).set('phone');
+      const fixture = create();
+      expect(el(fixture).querySelector('app-page-header')?.classList).toContain('actions-below');
+
+      TestBed.inject(LayoutModeService).set('panes');
+      fixture.detectChanges();
+      expect(el(fixture).querySelector('app-page-header')?.classList).not.toContain('actions-below');
+    });
+
+    it('shows the count only in the subtitle, with 查詢中... in the result line while loading', () => {
+      const fixture = create();
+      expect(el(fixture).querySelector('.result-meta')?.textContent?.trim()).toBe('查詢中...');
+
+      settle(fixture, [buy, sell], '8800.00', 24);
+      expect(el(fixture).querySelector('.result-meta')).toBeNull();
+      expect((el(fixture).textContent ?? '').split('24 筆')).toHaveLength(2);
+      expect(el(fixture).querySelector('app-page-header .page-subtitle')?.textContent?.trim()).toBe('全部期間 · 共 24 筆');
+    });
+
+    it('keeps the date range and sort controls inside the filter bar', () => {
+      const fixture = create();
+      const controls = el(fixture).querySelectorAll('.filter-controls');
+      expect(controls).toHaveLength(1);
+      expect(controls[0].closest('.filter-bar')).not.toBeNull();
+      expect(controls[0].querySelector('app-seg-toggle')).not.toBeNull();
+      expect(controls[0].querySelector('p-datepicker')).not.toBeNull();
+      expect(controls[0].querySelector('select[aria-label="排序"]')).not.toBeNull();
+    });
+
     it('no longer carries 清除篩選 among the header actions', () => {
       const fixture = create();
       fixture.componentInstance.onSideFilterChange('SELL');

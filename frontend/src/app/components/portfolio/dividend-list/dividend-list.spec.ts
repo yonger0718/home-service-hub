@@ -1232,7 +1232,7 @@ describe('Dividend filter-wide summary', () => {
     });
   });
 
-  describe('phone', () => {
+  describe('phone and sheet widths', () => {
     it('shows only the 已確認收款 and 有效待收 cards', () => {
       TestBed.inject(LayoutModeService).set('phone');
       const fixture = create();
@@ -1262,6 +1262,40 @@ describe('Dividend filter-wide summary', () => {
       expect(row.querySelector('.c-ex')).toBeNull();
       expect(row.querySelector('.c-pay')).toBeNull();
       expect(row.querySelector('.c-status')).toBeNull();
+      fixture.destroy();
+    });
+
+    it('collapses rows at sheet width too, keeping all four cards', () => {
+      TestBed.inject(LayoutModeService).set('sheet');
+      const fixture = create();
+      respond(listCalls[0], { items: [due], total: 1 });
+      respond(summaryCalls[0], { items: [confirmed, legacy, due], total: 3 });
+      fixture.detectChanges();
+      const row = el(fixture).querySelector('[data-row-id="13"]')!;
+
+      expect(el(fixture).querySelector('.div-list.compact')).not.toBeNull();
+      expect(el(fixture).querySelector('.div-head')).toBeNull();
+      expect(row.querySelector('.name-line app-tag')?.textContent?.trim()).toBe('待收');
+      expect(row.querySelector('.c-ex')).toBeNull();
+      expect(row.querySelector('.c-status')).toBeNull();
+      expect(cards(fixture).map(card => card.querySelector('.label')?.textContent?.trim())).toEqual(['已確認收款', '有效待收', '舊資料帳面', '已記錄股利']);
+      fixture.destroy();
+    });
+
+    it('keeps the column grid at panes width', () => {
+      TestBed.inject(LayoutModeService).set('panes');
+      const fixture = create();
+      respond(listCalls[0], { items: [due], total: 1 });
+      respond(summaryCalls[0], { items: [confirmed, legacy, due], total: 3 });
+      fixture.detectChanges();
+      const row = el(fixture).querySelector('[data-row-id="13"]')!;
+
+      expect(el(fixture).querySelector('.div-list.compact')).toBeNull();
+      expect(el(fixture).querySelector('.div-head')).not.toBeNull();
+      expect(row.querySelector('.name-line app-tag')).toBeNull();
+      expect(row.querySelector('.c-ex')).not.toBeNull();
+      expect(row.querySelector('.c-status app-tag')?.textContent?.trim()).toBe('待收');
+      expect(cards(fixture)).toHaveLength(4);
       fixture.destroy();
     });
 

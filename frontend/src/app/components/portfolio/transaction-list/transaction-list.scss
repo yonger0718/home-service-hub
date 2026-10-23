@@ -1,4 +1,3 @@
-.filter-controls,
 .result-meta {
   align-items: center;
   display: flex;
@@ -42,9 +41,21 @@
   }
 }
 
+/* The dividends page's filter controls: one wrapping row inside the filter bar. */
 .filter-controls {
+  align-items: center;
+  display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  gap: 0.5rem;
+
+  select {
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 8px;
+    color: var(--app-text);
+    max-width: 100%;
+    padding: 0.5rem;
+  }
 }
 
 .result-meta {
@@ -110,9 +121,6 @@
   padding: 0.18rem 0.4rem;
   vertical-align: middle;
 }
-
-.filter-controls { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem; }
-.filter-controls select { background: var(--app-surface); color: var(--app-text); border: 1px solid var(--app-border); border-radius: 8px; padding: 0.5rem; max-width: 100%; }
 
 /* Summary cards: the dashboard's KPI card rules (dashboard.scss .kpi-row/.label/.value/.meta/.up/.down). */
 .kpi-row {

@@ -1,7 +1,7 @@
 <p-toast></p-toast>
 <p-confirmDialog styleClass="hub-dialog-md"></p-confirmDialog>
 
-<app-page-header [subtitle]="headerSubtitle()">
+<app-page-header [subtitle]="headerSubtitle()" [actionsBelowOnPhone]="true">
   <a routerLink="/portfolio/import" class="btn btn-outline-secondary btn-sm">
     <i class="pi pi-upload" aria-hidden="true"></i>
     匯入 CSV
@@ -75,6 +75,14 @@
       [value]="query().side ?? 'ALL'"
       (change)="onSideFilterChange($event)"
     ></app-seg-toggle>
+    <p-datepicker ariaLabel="日期範圍" [(ngModel)]="dateRange" selectionMode="range"
+      [readonlyInput]="true" [showClear]="true" placeholder="日期範圍" appendTo="body"
+      dateFormat="yy-mm-dd" (ngModelChange)="onDateRangeChange($event)"></p-datepicker>
+    <select aria-label="排序" [ngModel]="query().sort" (ngModelChange)="onSortChange($event)">
+      @for (option of sortOptions; track option.value) {
+        <option [value]="option.value">{{ option.label }}</option>
+      }
+    </select>
     @if (hasActiveFilters()) {
       <button type="button" class="clear-filters" (click)="clearFilters()">清除篩選</button>
     }
@@ -92,24 +100,11 @@
   </div>
 }
 
-
-  <div class="filter-controls">
-    <p-datepicker ariaLabel="日期範圍" [(ngModel)]="dateRange" selectionMode="range"
-      [readonlyInput]="true" [showClear]="true" placeholder="日期範圍" appendTo="body"
-      dateFormat="yy-mm-dd" (ngModelChange)="onDateRangeChange($event)"></p-datepicker>
-    <select aria-label="排序" [ngModel]="query().sort" (ngModelChange)="onSortChange($event)">
-      @for (option of sortOptions; track option.value) {
-        <option [value]="option.value">{{ option.label }}</option>
-      }
-    </select>
-  </div>
-
-<div class="result-meta">
-  <span>{{ total() }} 筆</span>
-  @if (loading()) {
+@if (loading()) {
+  <div class="result-meta">
     <span>查詢中...</span>
-  }
-</div>
+  </div>
+}
 
 <app-timeline groupBy="month" [groupHeading]="monthHeadingFor" [compact]="isPhone()"
   [rows]="timelineRows()" [rowActions]="true" (rowAction)="onRowAction($event)"></app-timeline>
