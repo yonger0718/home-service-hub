@@ -143,7 +143,10 @@ class DividendBase(BaseModel):
     def normalize_symbol(self) -> Self:
         self.symbol = _normalize_symbol(self.symbol, self.market)
         self.market = (self.market or "TW").strip().upper()
-        self.currency = (self.currency or "TWD").strip().upper()
+        # LSE pence keep the exact ``GBp`` token (``GBP`` = pounds); every
+        # other code is upper-cased (#115).
+        currency = (self.currency or "TWD").strip()
+        self.currency = currency if currency == "GBp" else currency.upper()
         return self
 
 class DividendCreate(DividendBase):

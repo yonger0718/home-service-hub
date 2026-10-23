@@ -105,7 +105,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   });
 
   /**
-   * Every sell of the active filter (Decision 1), for the cards, the bars and the 台股/美股 list; null while it
+   * Every sell of the active filter (Decision 1), for the cards, the bars and the 台股/海外 list; null while it
    * loads or after a failure. Every derived view reads `marketEvents()`, never this set directly.
    */
   readonly allEvents = signal<RealizedPnlEvent[] | null>(null);
@@ -113,13 +113,13 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   readonly allFailed = signal(false);
   readonly allLoading = computed(() => this.allEvents() === null && !this.allFailed());
   readonly market = signal<MarketFilter>('ALL');
-  /** Page start of the client-paged list under 台股/美股 (the server page serves 全部). */
+  /** Page start of the client-paged list under 台股/海外 (the server page serves 全部). */
   readonly clientOffset = signal(0);
   readonly marketEvents = computed(() => this.allEvents()?.filter(e => matchesMarket(e, this.market())) ?? null);
   readonly marketOptions: SegToggleOption[] = [
     { label: '全部', value: 'ALL' },
     { label: '台股', value: 'TW' },
-    { label: '美股', value: 'US' },
+    { label: '海外', value: 'FOREIGN' },
   ];
   /** The list page's summary belongs to the active filter (false from a reload until its page lands). */
   private readonly summaryFresh = signal(false);
@@ -150,7 +150,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   readonly pageSize = computed(() => this.query().limit ?? DEFAULT_PAGE_SIZE);
 
   /**
-   * The listed sells: the server page under 全部; under 台股/美股 one client page of `marketEvents()` (its offset
+   * The listed sells: the server page under 全部; under 台股/海外 one client page of `marketEvents()` (its offset
    * clamped to the last page), or — while the set loads or after it failed — the server page's sells of that market.
    */
   readonly filteredEvents = computed(() => {
@@ -171,7 +171,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
     );
   });
   readonly shortWarning = SHORT_WARNING;
-  /** Paginator and count: the server total and offset under 全部, the market set's under 台股/美股. */
+  /** Paginator and count: the server total and offset under 全部, the market set's under 台股/海外. */
   readonly listTotal = computed(() =>
     this.market() === 'ALL' ? this.total() : (this.marketEvents()?.length ?? this.filteredEvents().length),
   );
@@ -189,7 +189,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   private allSeq = 0;
   private listSub?: Subscription;
   private allSub?: Subscription;
-  /** A fetch skipped under 台股/美股 left the server page behind the filter; 全部 fetches it again. */
+  /** A fetch skipped under 台股/海外 left the server page behind the filter; 全部 fetches it again. */
   private listStale = false;
 
   ngOnInit() {
@@ -204,7 +204,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
     this.allSub?.unsubscribe();
   }
 
-  /** The server list page; only under 全部 (台股/美股 page `marketEvents()` client-side). */
+  /** The server list page; only under 全部 (台股/海外 page `marketEvents()` client-side). */
   fetch() {
     if (this.market() !== 'ALL') {
       // Drop any in-flight page of the old filter so it cannot land later.

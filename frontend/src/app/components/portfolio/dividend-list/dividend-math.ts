@@ -14,6 +14,22 @@ export interface DividendTotals {
   recorded: number;
 }
 
+/**
+ * The TWD value of a dividend amount. A `GBp` row (exact token) stores its amount in pence while its
+ * `fx_rate_to_twd` is per pound (the GBP rate on the ex-date), so the amount is divided by 100 before
+ * `twdAmount`: pence stored, pounds valued, the same as the API's `_dividend_amount_twd`. `GBP` and every
+ * other currency are not divided. Transactions are different: a `GBp` trade stores a per-penny fx, so the
+ * shared `twdAmount` itself never divides.
+ */
+export function dividendTwdAmount(
+  value: number | string | null | undefined,
+  fx: number | string | null | undefined,
+  currency: string | null | undefined,
+): number | null {
+  if (currency !== 'GBp' || value == null || value === '') return twdAmount(value, fx, currency);
+  return twdAmount(Number(value) / 100, fx, currency);
+}
+
 /** `legacy_unknown` and a missing status are both 舊資料. */
 export function dividendStatus(d: Dividend): DividendStatus {
   const status = d.receipt_status;
@@ -31,7 +47,7 @@ export function dividendTotals(rows: readonly Dividend[]): DividendTotals & { fo
   for (const d of rows) {
     const status = dividendStatus(d);
     if (status === 'unresolved') continue;
-    const twd = twdAmount(d.amount, d.fx_rate_to_twd, d.currency);
+    const twd = dividendTwdAmount(d.amount, d.fx_rate_to_twd, d.currency);
     if (twd == null) {
       if (!isTwdCurrency(d.currency)) totals.foreignWithoutFx++;
       continue;
@@ -83,10 +99,11 @@ export function payLine(d: Dividend, accountName: (id: number) => string | null)
  * foreign rows without fx → '+{native}' over '—' (`twd` null).
  */
 export function netAmountLines(d: Dividend): { main: string; sub: string | null; twd: number | null } {
-  const twd = twdAmount(d.amount, d.fx_rate_to_twd, d.currency);
+  const twd = dividendTwdAmount(d.amount, d.fx_rate_to_twd, d.currency);
   if (isTwdCurrency(d.currency)) return { main: twd == null ? '—' : `+${groupedInteger(twd)}`, sub: null, twd };
   const native = formatNativeAmount(d.amount, d.currency);
   if (twd == null) return { main: `+${native}`, sub: '—', twd: null };
+  // The stored per-pound fx for a GBp row (40.50), never divided.
   const rate = twdAmount(1, d.fx_rate_to_twd, d.currency)!;
   return { main: `+${groupedInteger(twd)}`, sub: `${native} · 匯率 ${formatFxRate(rate)}`, twd };
 }

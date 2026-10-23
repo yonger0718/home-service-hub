@@ -1,4 +1,5 @@
 import { RealizedPnlEvent } from '../../../models/portfolio.model';
+import { isForeign, marketLabel } from '../market';
 import { formatFxRate, formatNativeAmount, groupedInteger, isTwdCurrency } from '../money';
 import { StockSquare, stockSquare } from '../square';
 import { signedInteger } from './realized-math';
@@ -153,7 +154,7 @@ export function realizedRow(e: RealizedPnlEvent, name: string | null, brokerLabe
     square: stockSquare(e.symbol, name),
     name: name || e.symbol,
     symbol: e.symbol,
-    marketNote: e.market !== 'TW' ? '美股' : null,
+    marketNote: isForeign(e.market) ? marketLabel(e.market) : null,
     dayTrade: e.is_day_trade,
     meta: meta.join(' · '),
     amount: signedTwd(e.realized_pnl),

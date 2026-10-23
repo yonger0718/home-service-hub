@@ -70,6 +70,11 @@ describe('money', () => {
       expect(twdAmount(7.8, Infinity, 'USD')).toBeNull();
     });
 
+    it('never divides GBp or GBP: the caller owns the pence divisor (transaction fx is per penny)', () => {
+      expect(twdAmount(1234.5, 0.41, 'GBp')).toBeCloseTo(506.145, 10);
+      expect(twdAmount(12.345, 41, 'GBP')).toBeCloseTo(506.145, 10);
+    });
+
     it('returns null for a non-numeric value', () => {
       expect(twdAmount('abc', 30.7, 'USD')).toBeNull();
       expect(twdAmount('abc', null, 'TWD')).toBeNull();

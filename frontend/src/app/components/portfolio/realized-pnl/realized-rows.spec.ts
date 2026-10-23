@@ -45,8 +45,15 @@ describe('realizedRow', () => {
     const r = row(TSMC);
     expect(r.dayTrade).toBe(true);
     expect(r.detail.map(d => d.label)).toEqual(['成交總額', '手續費', '交易稅（當沖）', '淨收入', '賣出成本', '已實現損益']);
+    expect(r.marketNote).toBeNull();
     expect(r.meta).toBe(`08/21 · 200 股 · 均價 1,106.58 → 賣出 1,120.00 · ${brokerLabel('TW_CATHAY')}`);
     expect(r.pct).toBe('+0.9%');
+  });
+
+  it('notes the market by code: 英股 for LSE, 美股 for US, none for TW', () => {
+    expect(row({ ...AAPL, market: 'LSE' }).marketNote).toBe('英股');
+    expect(row(AAPL).marketNote).toBe('美股');
+    expect(row({ ...AAPL, market: 'TW' }).marketNote).toBeNull();
   });
 
   it('shows a foreign sell in native figures with TWD subs and the 匯率', () => {
