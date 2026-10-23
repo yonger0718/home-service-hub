@@ -17,7 +17,13 @@
     </div>
   </div>
 } @else if (routeId() === null) {
-  <app-portfolio-accounts-list />
+  <div class="accounts-compact">
+    <app-page-header title="現金帳戶" subtitle="券商交割戶與複委託帳戶的現金" [actionsBelowOnPhone]="true">
+      <app-btn variant="soft" icon="pi-money-bill" (click)="openCashForm()">記錄入出金</app-btn>
+      <app-btn variant="soft" icon="pi-plus" (click)="openCreateDialog()">新增帳戶</app-btn>
+    </app-page-header>
+    <app-portfolio-accounts-list [master]="true" (loaded)="onLoaded($event)" />
+  </div>
 } @else {
   <app-portfolio-account-detail />
 }

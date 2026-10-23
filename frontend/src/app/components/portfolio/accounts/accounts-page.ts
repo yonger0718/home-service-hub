@@ -13,8 +13,9 @@ import { PortfolioAccountsListComponent } from './accounts-list';
 
 /**
  * 現金帳戶 for `portfolio/accounts` and `portfolio/accounts/:id` (Decision 8). In 'panes' mode: one page header,
- * the list as a master column and the selected account's detail beside it. Below 'panes': the list or the detail,
- * whichever the route names, exactly as before.
+ * the list as a master column and the selected account's detail beside it. Below 'panes' (#116): the bare URL shows the
+ * same header over the master card list in one column (no selection, no auto-navigation; a tap opens the detail), and
+ * `/portfolio/accounts/:id` shows the detail with its own header.
  */
 @Component({
   selector: 'app-portfolio-accounts-page',

@@ -6,13 +6,10 @@ import { Subscription } from 'rxjs';
 
 import { MessageService } from 'primeng/api';
 import { ButtonModule } from 'primeng/button';
-import { CardModule } from 'primeng/card';
 import { DatePickerModule } from 'primeng/datepicker';
 import { DialogModule } from 'primeng/dialog';
 import { InputTextModule } from 'primeng/inputtext';
-import { ProgressSpinnerModule } from 'primeng/progressspinner';
 import { SelectModule } from 'primeng/select';
-import { TagModule } from 'primeng/tag';
 import { ToastModule } from 'primeng/toast';
 
 import {
@@ -23,8 +20,6 @@ import {
 } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { CashFlowFormComponent } from '../cash-flow-form/cash-flow-form';
-import { PageHeaderComponent } from '../../shell/page-header/page-header';
-import { BtnComponent } from '../../ui/btn/btn';
 import { TagComponent } from '../../ui/tag/tag';
 import { abbrInk } from '../dashboard/dashboard-math';
 import { groupedInteger } from '../money';
@@ -81,18 +76,13 @@ const BROKER_LABELS: Record<BrokerEnum, string> = {
   selector: 'app-portfolio-accounts-list',
   standalone: true,
   imports: [
-    PageHeaderComponent,
-    BtnComponent,
     TagComponent,
     ReactiveFormsModule,
     ButtonModule,
-    CardModule,
     DatePickerModule,
     DialogModule,
     InputTextModule,
-    ProgressSpinnerModule,
     SelectModule,
-    TagModule,
     ToastModule,
     CashFlowFormComponent,
   ],
@@ -118,9 +108,12 @@ export class PortfolioAccountsListComponent implements OnInit, OnDestroy {
   readonly creating = signal<boolean>(false);
   readonly cashFormVisible = signal<boolean>(false);
 
-  /** Master-detail page (Decision 9): button cards, no page header (the page owns it). */
-  readonly master = input(false);
-  /** The card shown as selected in master mode. */
+  /**
+   * Always the master markup (button cards, no page header: the page owns it). The pre-redesign list is gone (#116);
+   * the input stays for the page's `[master]="true"` binding and has no effect.
+   */
+  readonly master = input(true);
+  /** The card shown as selected (panes). Without one the cards are plain navigation buttons: no `aria-pressed`. */
   readonly selectedId = input<number | null>(null);
   /** The accounts after every successful fetch. */
   readonly loaded = output<BrokerAccount[]>();
@@ -259,16 +252,6 @@ export class PortfolioAccountsListComponent implements OnInit, OnDestroy {
 
   brokerInk(account: BrokerAccount): 'light' | 'dark' {
     return abbrInk(squareToken(account.broker));
-  }
-
-  formatCurrency(value: string | number | null | undefined, currency: string): string {
-    const amount = Number(value ?? 0);
-    const maximumFractionDigits = currency === 'JPY' || currency === 'TWD' ? 0 : 2;
-    if (currency === 'TWD') {
-      const sign = amount < 0 ? '-' : '';
-      return `${sign}NT$${Math.abs(amount).toLocaleString('zh-TW', { maximumFractionDigits })}`;
-    }
-    return amount.toLocaleString('zh-TW', { style: 'currency', currency, maximumFractionDigits });
   }
 
   private todayIso(): string {
