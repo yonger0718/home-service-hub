@@ -745,6 +745,20 @@ describe('Portfolio import controls', () => {
       expect(card(fixture, 'override-card')).not.toBeNull();
     });
 
+    it('empty page: 重新預覽 is disabled without a file and 確認匯入 without a result', () => {
+      const fixture = setup();
+      expect(fixture.componentInstance.file()).toBeNull();
+      expect(button(fixture, '重新預覽')!.disabled).toBe(true);
+      expect(commitButton(fixture).disabled).toBe(true);
+      service.uploadCsv.mockReturnValue(throwError(() => ({ status: 400, error: { detail: 'CSV 編碼不是 UTF-8' } })));
+      fixture.componentInstance.onSelect({ files: [new File(['x'], 'a.csv')] });
+      fixture.detectChanges();
+      expect(fixture.componentInstance.file()).not.toBeNull();
+      expect(fixture.componentInstance.activeResult()).toBeNull();
+      expect(button(fixture, '重新預覽')!.disabled).toBe(false);
+      expect(commitButton(fixture).disabled).toBe(true);
+    });
+
     it('確認匯入 is disabled while a re-preview is in flight with a result shown', () => {
       const fixture = withFile(genericPreview);
       expect(commitButton(fixture).disabled).toBe(false);
@@ -827,6 +841,38 @@ describe('Portfolio import controls', () => {
       service.uploadBrokerCsv.mockReturnValue(throwError(() => ({ status: 502 })));
       fixture.componentInstance.commit();
       expect(history().attempts()[0]).toMatchObject({ ok: false, file: 'ft.csv', type: 'broker', reason: 'HTTP 502' });
+    });
+
+    it('a 券商 200 commit records {ok: true, type: broker, created: counts.created} as the head attempt', () => {
+      const fixture = setup({ type: 'broker' });
+      fixture.componentInstance.onSelect({ files: [new File(['x'], 'ft.csv')] });
+      service.uploadBrokerCsv.mockReturnValue(of({ ...brokerPreview, dry_run: false, counts: { created: 6, skipped: 1, rejected: 0 } }));
+      fixture.componentInstance.commit();
+      fixture.detectChanges();
+      expect(history().attempts()[0]).toMatchObject({ ok: true, file: 'ft.csv', type: 'broker', created: 6, errors: 0 });
+      expect(el(fixture).querySelector('.import-banner')).toBeNull();
+    });
+
+    const FAILED_HEAD = { at: NOW.toISOString(), file: 'a.csv', type: 'transactions', ok: false, created: 0, errors: 1, reason: null };
+
+    it('a failed head attempt seeded in localStorage shows banner (a) on first load', () => {
+      localStorage.setItem('hh-import-history', JSON.stringify([FAILED_HEAD]));
+      const fixture = setup();
+      expect(history().attempts()[0]).toMatchObject({ ok: false, file: 'a.csv' });
+      expect(el(fixture).querySelectorAll('.import-banner').length).toBe(1);
+      expect(banner(fixture)).toBe('最近一次匯入失敗（10/21 22:10）：a.csv 有 1 列錯誤，整批未寫入。修正後重新上傳即可。');
+    });
+
+    it('a failed head attempt and a failed recalc show two banners, (a) first', () => {
+      localStorage.setItem('hh-import-history', JSON.stringify([FAILED_HEAD]));
+      service.getRecalcStatus.mockReturnValue(of({
+        kind: 'import', state: 'failed', steps: [{ name: 'dividends', status: 'failed', error: 'TWSE timeout' }],
+      }));
+      const banners = Array.from(el(setup()).querySelectorAll('.import-banner')).map(b => norm(b.textContent));
+      expect(banners).toEqual([
+        '最近一次匯入失敗（10/21 22:10）：a.csv 有 1 列錯誤，整批未寫入。修正後重新上傳即可。',
+        '最近一次匯入的重算失敗：TWSE timeout',
+      ]);
     });
 
     it('a failed recalc alone shows banner (b) with the reason and no nothing-written sentence', () => {
@@ -919,7 +965,29 @@ describe('Portfolio import controls', () => {
           expect(el(fixture).querySelector('.imp-layout > aside')).toBeNull();
           expect(side.querySelectorAll('app-bento').length).toBe(2);
         });
+
+        it(`${mode}: with the recalc card visible the order is footer → 匯入並重算 → side cards`, () => {
+          service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed' }));
+          const fixture = inMode(mode);
+          const footer = el(fixture).querySelector('.imp-footer')!;
+          const card = recalcCard(fixture)!;
+          const side = aside(fixture)!;
+          expect(card).not.toBeNull();
+          expect(footer.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+          expect(card.compareDocumentPosition(side) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+          expect(side.contains(card)).toBe(false);
+        });
       }
+
+      it('panes: the recalc card stays in the main column, not in the side column', () => {
+        service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed' }));
+        const fixture = inMode('panes');
+        const card = recalcCard(fixture)!;
+        expect(card).not.toBeNull();
+        expect(card.closest('.imp-main')).not.toBeNull();
+        expect(aside(fixture)!.contains(card)).toBe(false);
+        expect(aside(fixture)!.parentElement?.classList).toContain('imp-layout');
+      });
     });
   });
 });

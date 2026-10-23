@@ -216,6 +216,12 @@ describe('rowResult', () => {
     expect(rowResult(row(2, {}, 'weird'), r)).toBe('error');
   });
 
+  it('applies unresolved_names on a broker result too', () => {
+    const b = { ...brokerResult(), unresolved_names: [{ name: 'Apple Inc', occurrences: 1, sample_dates: [] }] } as BrokerCsvImportResult;
+    expect(rowResult(row(2, { name: 'Apple Inc' }), b)).toBe('unresolved');
+    expect(rowResult(row(3, { name: 'Microsoft' }), b)).toBe('new');
+  });
+
   it('works on broker results (errors carry reason)', () => {
     const b = brokerResult({ errors: [{ row_index: 7, reason: 'x' }] });
     expect(rowResult(row(7), b)).toBe('error');
@@ -309,6 +315,21 @@ describe('classifyCommit', () => {
     expect(a.ok).toBe(false);
     expect(a.errors).toBe(2);
     expect(attemptLine(a)).toBe('10/21 22:10 · 失敗 · 2 列錯誤');
+  });
+
+  it('a FastAPI 422 detail array is request validation, not rows: no errors count, the line shows the reason', () => {
+    const err = { status: 422, error: { detail: [{ loc: ['body', 'file'], msg: 'field required', type: 'missing' }] } };
+    const a = classifyCommit(null, err, 'c.csv', 'transactions', now);
+    expect(a).toEqual({ at: iso, file: 'c.csv', type: 'transactions', ok: false, created: 0, reason: 'HTTP 422' });
+    expect(attemptLine(a)).toBe('10/21 22:10 · 失敗 · HTTP 422');
+    expect(attemptLine(a)).not.toContain('列錯誤');
+  });
+
+  it('a {code,message} body: error.message is the reason, and wins over detail', () => {
+    expect(classifyCommit(null, { status: 400, error: { code: 'csv_encoding', message: 'CSV 編碼不是 UTF-8' } }, 'a.csv', 'transactions', now).reason)
+      .toBe('CSV 編碼不是 UTF-8');
+    expect(classifyCommit(null, { status: 400, error: { code: 'x', message: '訊息', detail: '細節' } }, 'a.csv', 'transactions', now).reason)
+      .toBe('訊息');
   });
 
   it('200 with created 0 and errors → ok false, errors n', () => {

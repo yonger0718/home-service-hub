@@ -185,18 +185,17 @@ function nonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
 }
 
+/** CSV rows in error: only an `errors[]` body counts; a FastAPI 422 `detail` array is request validation, not rows. */
 function httpErrorRows(body: unknown): number {
-  const b = body as { errors?: unknown; detail?: unknown } | null | undefined;
-  if (Array.isArray(b?.errors)) return b.errors.length;
-  if (Array.isArray(b?.detail)) return b.detail.length;
-  return 0;
+  const b = body as { errors?: unknown } | null | undefined;
+  return Array.isArray(b?.errors) ? b.errors.length : 0;
 }
 
 function httpReason(err: unknown): string {
   const e = err as { status?: unknown; message?: unknown; error?: { detail?: unknown; message?: unknown } | null } | null;
   return (
-    nonEmptyString(e?.error?.detail) ??
     nonEmptyString(e?.error?.message) ??
+    nonEmptyString(e?.error?.detail) ??
     (typeof e?.status === 'number' && e.status > 0 ? `HTTP ${e.status}` : null) ??
     nonEmptyString(e?.message) ??
     '未知錯誤'
