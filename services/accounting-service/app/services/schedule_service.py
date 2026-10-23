@@ -505,7 +505,7 @@ def repost_instance(db: Session, instance_id: int, amounts: list) -> None:
     override = check_amounts(definition.template, amounts)
     reference = loan_line(definition.template)
     loan_id = None
-    if reference is not None:
+    if reference is not None and posting.loan_applies(reference[1], instance.seq):
         posting.lock_later_pending(db, definition, instance)  # schedule rows before any entry lock
         loan_id = reference[1]["loan_entry_id"]
     loan = posting.delete_period_entries(db, list(instance.posted_entry_ids), also_lock=loan_id)

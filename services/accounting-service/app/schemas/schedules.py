@@ -32,6 +32,7 @@ class TemplateLineIn(BaseModel):
     loan_entry_id: Int32 | None = None
     name: ShortText | None = None
     merchant: ShortText | None = None
+    loan_from_seq: Int32 | None = None  # periods before it post a plain entry (spec §4.0)
 
 
 class TemplateIn(BaseModel):
@@ -108,6 +109,7 @@ class TemplateLineOut(BaseModel):
     loan_entry_id: int | None
     name: str | None
     merchant: str | None
+    loan_from_seq: int | None = None
     account_name: str | None
     to_account_name: str | None
     category: str | None

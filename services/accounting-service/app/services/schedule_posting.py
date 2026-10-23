@@ -62,6 +62,12 @@ def lock_definition_for_post(db: Session, definition_id: int) -> ScheduleDefinit
     return definition
 
 
+def loan_applies(line: dict, seq: int) -> bool:
+    """Whether a repayment / collection line settles its loan in period `seq` (spec §4.0): it has a loan and the
+    period is at or after the line's boundary (loan_from_seq, default 1). Otherwise the line posts a plain entry."""
+    return line["loan_entry_id"] is not None and seq >= (line.get("loan_from_seq") or 1)
+
+
 def lock_later_pending(
     db: Session, definition: ScheduleDefinition, instance: ScheduleInstance
 ) -> list[ScheduleInstance]:
@@ -151,6 +157,19 @@ def _write_line(
         group = transfer_service.create_transfer(db, payload, source=SOURCE, remember=False)
         out_leg, in_leg = transfer_service.transfer_legs(db, group)
         return [out_leg.id, in_leg.id], False
+    if kind in LOAN_LINE_KINDS and not loan_applies(line, instance.seq):
+        # No applicable loan (spec §4.0): a plain expense / income like the interest line below. Not prepare_entry
+        # (it refuses a counterparty on expense / income); the line's payable / receivable category is not copied.
+        account = db.get(Account, line["account_id"])
+        entry = LedgerEntry(
+            account_id=account.id, currency=account.currency, kind="expense" if kind == "repayment" else "income",
+            amount=-amount if kind == "repayment" else amount, entry_date=due, entry_time=None, posted_date=due,
+            category_id=None, project_id=line["project_id"], name=name, merchant=line["merchant"],
+            counterparty_id=line["counterparty_id"], description=description, tags=tags, source=SOURCE,
+        )
+        db.add(entry)
+        db.flush()
+        return [entry.id], True
     if kind in LOAN_LINE_KINDS:
         value = min(amount, open_amount)  # the last period absorbs rounding and hand repayments (D35, D38)
         entry_id = settlement_service.settle(
@@ -209,7 +228,7 @@ def post_locked(
     amounts = resolved_amounts(definition, instance)
     loan, open_amount = None, Decimal(0)
     reference = loan_line(template)
-    if reference is not None:
+    if reference is not None and loan_applies(reference[1], instance.seq):
         index, line = reference
         if locked_loan is not None and locked_loan.id == line["loan_entry_id"]:
             later = list(
