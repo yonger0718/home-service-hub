@@ -239,6 +239,35 @@ def test_match_claims_resolves_recounts_and_audits(unmatched, db_session):
     assert db_session.execute(select(func.count()).select_from(CoverageDirty)).scalar_one() == 0
 
 
+def test_match_supersedes_the_siblings_naming_the_entry_or_the_line(unmatched, seed, db_session):
+    """Owner report 2026-10-23: answering 對到 on the bank line's card left the entry's own 漏記 card open until the
+    next reconcile. A coverage write supersedes the statement's other open matcher cases that name a touched entry or
+    a claimed line; a case on an unrelated entry stays, and a revert leaves the superseded ones alone (the next
+    reconcile re-derives whatever is open)."""
+    s = unmatched()
+    sibling = _case(db_session, s.stmt, None, "entry_unmatched", entry_id=s.entry.id)
+    other = seed.entry(s.card, "-120", day=DAY, merchant="路邊攤")
+    db_session.commit()
+    unrelated = _case(db_session, s.stmt, None, "entry_unmatched", entry_id=other.id)
+    sibling_version = sibling.version
+
+    row, _ = _apply(db_session, s.case, params=_match(s))
+
+    db_session.expire_all()
+    sib = db_session.get(ReconciliationCase, sibling.id)
+    assert (sib.status, sib.version, sib.context["superseded_by_action_id"]) == (
+        "superseded", sibling_version + 1, row.id)
+    assert db_session.get(ReconciliationCase, unrelated.id).status == "open"
+    assert db_session.get(ReconciliationCase, s.case.id).status == "resolved"
+    (audit,) = _audit(db_session)
+    assert audit.detail["superseded_case_ids"] == [sibling.id]
+
+    _revert(db_session, row.id)
+    db_session.expire_all()
+    assert db_session.get(ReconciliationCase, sibling.id).status == "superseded"
+    assert _active(db_session, s.stmt.id) == []
+
+
 def test_match_with_children_and_a_group(unmatched, seed, db_session):
     s = unmatched(amount="-560")
     child = seed.entry(s.card, "-20", kind="fee", day=DAY, parent_entry_id=s.entry.id)
