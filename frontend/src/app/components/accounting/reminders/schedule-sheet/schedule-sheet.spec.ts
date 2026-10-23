@@ -441,14 +441,27 @@ describe('ScheduleSheetComponent', () => {
       openForm(empty);
       expect((empty.querySelector('.loan-amount') as HTMLInputElement).value).toBe('');
       fixture.destroy();
-      // Shown in the payload's form (TWD whole units), so what is shown is what is sent.
-      const rounded = render(loanDetail({ pending_principal: '286000.6000' }));
-      openForm(rounded);
-      expect((rounded.querySelector('.loan-amount') as HTMLInputElement).value).toBe('286001');
-      pick(rounded, '3');
-      click(rounded, '.loan-confirm');
+      // At API precision, NOT rounded to TWD's whole units (the backend would refuse 1001 above the series), so what
+      // is shown is what is sent.
+      const fractional = render(loanDetail({ pending_principal: '1000.6000' }));
+      openForm(fractional);
+      expect((fractional.querySelector('.loan-amount') as HTMLInputElement).value).toBe('1000.6');
+      pick(fractional, '3');
+      click(fractional, '.loan-confirm');
       const req = http.expectOne('/api/accounting/schedules/definitions/5/loan');
-      expect(req.request.body.amount).toBe('286001');
+      expect(req.request.body.amount).toBe('1000.6');
+      req.flush({ detail: 'nothing_pending' }, { status: 409, statusText: 'Conflict' });
+    });
+
+    it('sends a typed 剩餘本金 at most 4 decimal places, trailing zeros stripped, never rounded to TWD', () => {
+      const el = render(loanDetail());
+      openForm(el);
+      pick(el, '3');
+      typeAmount(el, '250000.50');
+      expect(confirmButton(el).disabled).toBe(false);
+      click(el, '.loan-confirm');
+      const req = http.expectOne('/api/accounting/schedules/definitions/5/loan');
+      expect(req.request.body.amount).toBe('250000.5');
       req.flush({ detail: 'nothing_pending' }, { status: 409, statusText: 'Conflict' });
     });
 

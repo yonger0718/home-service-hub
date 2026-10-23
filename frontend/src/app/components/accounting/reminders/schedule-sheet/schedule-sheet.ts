@@ -26,7 +26,8 @@ import {
 import { AccountingService } from '../../../../services/accounting.service';
 import { AccountingToastService, scheduleActionError } from '../../accounting-toast';
 import { focusSheetField, sheetKeyAction } from '../../accounting-ui';
-import { amountString, parseAmountFields, parseAmountText } from '../../amount-text';
+import { evaluateAmount } from '../../amount-math';
+import { parseAmountFields } from '../../amount-text';
 import { shortDate, todayIso } from '../../dates';
 import { formatMoney, formatSigned } from '../../format';
 import { ruleSummary } from '../../schedule-math';
@@ -41,6 +42,14 @@ const LOAN_CONFLICTS: Record<string, string> = {
   nothing_pending: '沒有待入帳的期數',
   later_periods_settled: '之後已有入帳或略過的期數，請先還原',
 };
+
+/** The API's amount precision (Money: at most 4 decimal places); 剩餘本金 keeps it, whatever the currency. */
+const LOAN_API_DECIMALS = 4;
+
+/** A decimal string without trailing fractional zeros: 1000.6000 → 1000.6, 286000.0000 → 286000, 286000 → 286000. */
+function stripZeros(value: string): string {
+  return value.includes('.') ? value.replace(/\.?0+$/, '') : value;
+}
 
 function loanConflictMessage(error: unknown): string | null {
   if (!(error instanceof HttpErrorResponse) || error.status !== 409) {
@@ -134,10 +143,15 @@ export class ScheduleSheetComponent {
   readonly loanAmount = signal('');
   readonly loanDate = signal('');
   readonly loanName = signal('');
-  /** The amount as an API string when it is a valid number > 0; else null. */
+  /**
+   * The amount as an API string when it is a valid number > 0; else null. At API precision (at most 4 decimal places,
+   * no trailing zeros), NEVER rounded to the currency's display decimals: the backend compares it with the
+   * remaining-principal series, so a rounded 1000.6 → 1001 would be refused.
+   */
   private readonly loanAmountValue = computed(() => {
-    const value = parseAmountText(this.loanAmount(), this.loanCurrency());
-    return value === null ? null : amountString(value, this.loanCurrency());
+    const text = this.loanAmount().trim();
+    const result = text ? evaluateAmount(text, LOAN_API_DECIMALS) : null;
+    return result?.ok && result.value > 0 ? stripZeros(result.value.toFixed(LOAN_API_DECIMALS)) : null;
   });
   readonly canConfirmLoan = computed(
     () => this.loanCounterpartyId() !== null && this.loanAmountValue() !== null && this.loanDate() !== '',
@@ -362,8 +376,8 @@ export class ScheduleSheetComponent {
     this.editingId.set(null);
     this.today.set(todayIso());
     this.loanCounterpartyId.set(null);
-    // In the payload's form (the currency's decimals, no trailing zeros), so what is shown is what is sent.
-    this.loanAmount.set(d.pending_principal === null ? '' : amountString(Number(d.pending_principal), this.loanCurrency()));
+    // At API precision with trailing zeros stripped (1000.6000 → 1000.6), so what is shown is what is sent.
+    this.loanAmount.set(d.pending_principal === null ? '' : stripZeros(d.pending_principal));
     this.loanDate.set(this.today());
     this.loanName.set(d.name);
     this.attachOpen.set(true);

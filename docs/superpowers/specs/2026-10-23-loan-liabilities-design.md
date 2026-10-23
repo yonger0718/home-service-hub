@@ -187,7 +187,8 @@ currency; a currency without a rate is listed under `unconverted` (and not added
   select from `getCounterparties()`, with the existing "新增對象" path if the sheet already has one; otherwise a text
   hint to create the bank under 記帳設定 first — the builder picks whichever exists), 剩餘本金 (decimal input, required,
   > 0, PREFILLED with `detail.pending_principal` = 之後各期本金合計 — the owner may override it, e.g. after an early
-  repayment), 起算日 (date, default today in the SPA — `LoanIn.entry_date` is required), 名稱 (default = definition name), 分類 (optional category select for kind
+  repayment; 預填與送出保留 API 精度，不以幣別小數位取整: the prefill is `pending_principal` with trailing zeros stripped
+  (`1000.6000` → `1000.6`) and the payload the typed value at most 4 decimal places), 起算日 (date, default today in the SPA — `LoanIn.entry_date` is required), 名稱 (default = definition name), 分類 (optional category select for kind
   `payable` if the picker is cheap to embed; otherwise omitted and the backend's default applies). 帳戶 is not asked:
   the request sends the repayment line's `account_id` (the backend requires it; the balance is neutralised by the
   adjustment, §4.1 step 5). The form explains in one line: 「輸入到上一期為止還欠多少；若有逾期未補的期數先補記。起算日＝掛帳日，不是當初借款日」.
