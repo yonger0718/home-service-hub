@@ -32,6 +32,7 @@ class TemplateLineIn(BaseModel):
     loan_entry_id: Int32 | None = None
     name: ShortText | None = None
     merchant: ShortText | None = None
+    loan_from_seq: Int32 | None = None  # periods before it post a plain entry (spec §4.0)
 
 
 class TemplateIn(BaseModel):
@@ -108,6 +109,7 @@ class TemplateLineOut(BaseModel):
     loan_entry_id: int | None
     name: str | None
     merchant: str | None
+    loan_from_seq: int | None = None
     account_name: str | None
     to_account_name: str | None
     category: str | None
@@ -203,6 +205,8 @@ class InstanceOut(BaseModel):
 
 class DefinitionDetailOut(DefinitionOut):
     instances: list[InstanceOut]
+    pending_principal: Decimal | None = None  # Σ of the repayment line from the lowest pending period (spec §4.1b)
+    loan_remaining: Decimal | None = None  # open amount of the linked loan, None when unlinked
 
 
 class FailedOut(BaseModel):

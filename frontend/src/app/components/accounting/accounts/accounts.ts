@@ -7,7 +7,7 @@ import { SkeletonComponent } from '../skeleton/skeleton';
 interface ImportLookup { ok: boolean; v: ImportRun | null; }
 
 
-import { ImportRun, LedgerAccount } from '../../../models/accounting.model';
+import { DebtsSummary, ImportRun, LedgerAccount } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { currentDues, duePillText } from '../billing/billing-math';
 import { BillState, BillingService } from '../billing/billing.service';
@@ -149,9 +149,15 @@ export class AccountingAccountsComponent {
   readonly assets = computed(() =>
     this.included().reduce((sum, account) => sum + Math.max(0, value(account.balance_main)), 0),
   );
-  readonly liabilities = computed(() =>
-    this.included().reduce((sum, account) => sum + Math.max(0, -value(account.balance_main)), 0),
+  /** Open payables (loans) in the main currency; null until read, or when the read fails (the page never waits for it). */
+  readonly debts = signal<DebtsSummary | null>(null);
+  readonly loanCount = computed(() => this.debts()?.payables.count ?? 0);
+  readonly liabilities = computed(
+    () =>
+      this.included().reduce((sum, account) => sum + Math.max(0, -value(account.balance_main)), 0) +
+      value(this.debts()?.payables.open_main),
   );
+  readonly netWorth = computed(() => this.assets() - this.liabilities());
   /** Accounts counted in 總額 that have no main-currency rate: left out of 總額 / 總資產 / 總負債, and said so. */
   readonly excludedCount = computed(
     () => this.included().filter(account => account.balance_main === null || account.balance_main === undefined).length,
@@ -195,6 +201,11 @@ export class AccountingAccountsComponent {
     const id = ++this.accountsRequestId;
     const importId = ++this.importRequestId;
     this.today.set(todayIso());
+    this.accountingService.getDebts().pipe(catchError(() => of(null))).subscribe(debts => {
+      if (id === this.accountsRequestId) {
+        this.debts.set(debts);
+      }
+    });
     forkJoin({
       accounts: this.accountingService.getAccounts(),
       latest: this.importLookup(),

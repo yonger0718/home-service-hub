@@ -94,7 +94,6 @@ def test_repayment_needs_a_payable_original_in_its_currency(db_session, seed, lo
     repayment = seed.entry(bank, "-100", kind="payable", counterparty_id=lender.id, settles_entry_id=payable.id, is_settlement=True)
     yen = seed.account("日幣", currency="JPY")
     for line in (
-        seed.line("repayment", bank, "8333"),
         seed.line("repayment", bank, "8333", loan_entry_id=receivable.id),
         seed.line("repayment", bank, "8333", loan_entry_id=repayment.id),
         seed.line("repayment", yen, "8333", loan_entry_id=payable.id),
@@ -112,6 +111,41 @@ def test_repayment_needs_a_payable_original_in_its_currency(db_session, seed, lo
             ),
         )
     assert _field(exc) == "lines[1].kind"
+
+
+def test_loan_kind_line_without_a_loan_is_valid(db_session, seed, loan):
+    # Spec §4.0: a repayment / collection line with no loan yet is valid (it posts a plain entry).
+    bank, lender, _ = loan
+    for kind in ("repayment", "collection"):
+        templates.validate_template(db_session, _template(seed.line(kind, bank, "8333", counterparty_id=lender.id)))
+
+
+def test_loan_kind_line_counterparty_must_exist(db_session, seed, loan):
+    # Task 1 review carry-over: an unlinked loan line posts its counterparty_id on the plain entry, so it must exist.
+    bank, lender, _ = loan
+    for kind in ("repayment", "collection"):
+        with pytest.raises(ValidationError) as exc:
+            templates.validate_template(db_session, _template(seed.line(kind, bank, "8333", counterparty_id=lender.id + 1000)))
+        assert (_field(exc), exc.value.message) == ("lines[0].counterparty_id", "找不到對象")
+        templates.validate_template(db_session, _template(seed.line(kind, bank, "8333")))  # none is still valid
+
+
+def test_loan_from_seq_only_on_a_loan_kind_line_and_at_least_one(db_session, seed, loan):
+    bank, _, payable = loan
+    templates.validate_template(
+        db_session, _template(seed.line("repayment", bank, "8333", loan_entry_id=payable.id, loan_from_seq=15))
+    )
+    with pytest.raises(ValidationError) as exc:
+        templates.validate_template(db_session, _template(seed.line("expense", bank, "100", loan_from_seq=3)))
+    assert (_field(exc), exc.value.message) == ("lines[0].loan_from_seq", "只有還款／收款那一行可以有起算期")
+    for bad in (0, -1):
+        with pytest.raises(ValidationError) as exc:
+            templates.validate_template(
+                db_session, _template(seed.line("repayment", bank, "8333", loan_entry_id=payable.id, loan_from_seq=bad))
+            )
+        assert _field(exc) == "lines[0].loan_from_seq"
+    normalized = templates.normalize_template({"lines": [{"kind": "repayment", "loan_from_seq": 15}, {"kind": "interest"}]})
+    assert [line["loan_from_seq"] for line in normalized["lines"]] == [15, None]
 
 
 def test_category_must_belong_to_the_line_kind(db_session, seed, loan):

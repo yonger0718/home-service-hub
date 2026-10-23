@@ -174,6 +174,8 @@ EXPECTED_WRITES = {
     ("/schedules/definitions/{definition_id}/pause", "POST"), ("/schedules/definitions/{definition_id}/resume", "POST"),
     ("/schedules/definitions/{definition_id}/end", "POST"), ("/schedules/definitions/{definition_id}/mode", "PUT"),
     ("/schedules/definitions/{definition_id}/catch-up", "POST"),
+    # Attach a loan to an installment (spec 2026-10-23 §4.1): payable + balance adjustment under the definition lock.
+    ("/schedules/definitions/{definition_id}/loan", "POST"),
     # Instance actions; repost / reopen of a MOZE-booked period answer locked_until_cutover (spec "Instance endpoints").
     ("/schedules/instances/{instance_id}", "PUT"), ("/schedules/instances/{instance_id}/post", "POST"),
     ("/schedules/instances/{instance_id}/skip", "POST"), ("/schedules/instances/{instance_id}/reopen", "POST"),

@@ -50,6 +50,10 @@ describe('AccountingAccountsComponent', () => {
   });
 
   afterEach(() => {
+    // Tests that do not care about the open-payables read leave it unanswered (it never gates the page).
+    for (const req of http.match('/api/accounting/accounts/debts')) {
+      req.flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    }
     http.verify();
     vi.useRealTimers();
   });
@@ -78,10 +82,29 @@ describe('AccountingAccountsComponent', () => {
     }
   }
 
+  /** Answers the open-payables read: a summary body, or null for a failed read (the page falls back to today's totals). */
+  function flushDebts(body: object | null = null): void {
+    const req = http.expectOne('/api/accounting/accounts/debts');
+    if (body === null) {
+      req.flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    } else {
+      req.flush(body);
+    }
+  }
+
+  function debtsBody(open: string, count: number, unconverted: { currency: string; amount: string }[] = []) {
+    return {
+      main_currency: 'TWD',
+      payables: { open_main: open, count, unconverted },
+      receivables: { open_main: '0', count: 0, unconverted: [] },
+    };
+  }
+
   function render(
     accounts: LedgerAccount[],
     latest: ImportRun | null,
     bills: Record<number, { spend: string; payments?: string[] }> = {},
+    debts: object | null = null,
   ): ComponentFixture<AccountingAccountsComponent> {
     const fixture = TestBed.createComponent(AccountingAccountsComponent);
     fixture.detectChanges();
@@ -96,6 +119,7 @@ describe('AccountingAccountsComponent', () => {
       expense_income_colors: 'red_green', keypad_layout: 'calculator', week_start: 0, main_currency: 'TWD',
       hide_rewards_on_timeline: false, abbreviate_totals: true,
     });
+    flushDebts(debts);
     fixture.detectChanges();
     flushBills(bills);
     fixture.detectChanges();
@@ -268,6 +292,66 @@ describe('AccountingAccountsComponent', () => {
     expect(el.querySelector('.nw small')?.textContent?.trim()).toBe('總額 TWD');
     expect(el.querySelector('.total-amount')?.textContent?.trim()).toBe('−$30,136');
     expect(el.querySelector('.totals-line')?.textContent?.trim()).toBe('總資產 $14,226 · 總負債 $44,362');
+  });
+
+  it('liabilities include open payables and the 淨值 line', () => {
+    const el = render(ACCOUNTS, LATEST, {}, debtsBody('20000.0000', 2)).nativeElement as HTMLElement;
+
+    expect(el.querySelector('.totals-line')?.textContent?.trim()).toBe('總資產 $14,226 · 總負債 $64,362（含借貸 2 筆）');
+    expect(el.querySelector('.net-worth')?.textContent?.trim()).toBe('淨值 −$50,136');
+    expect(el.querySelector('.unconverted-hint')).toBeNull();
+  });
+
+  it('shows the unconverted note', () => {
+    const el = render(ACCOUNTS, LATEST, {}, debtsBody('0', 0, [{ currency: 'JPY', amount: '1000' }, { currency: 'USD', amount: '5' }]))
+      .nativeElement as HTMLElement;
+
+    expect(el.querySelector('.unconverted-hint')?.textContent?.trim()).toBe('另有 2 種幣別未換算');
+    expect(el.querySelector('.totals-line')?.textContent?.trim()).toBe('總資產 $14,226 · 總負債 $44,362');
+    // The read answered, so 淨值 shows; no payable is counted, so no （含借貸 N 筆）.
+    expect(el.querySelector('.net-worth')).not.toBeNull();
+    expect(el.querySelector('.totals-line')?.textContent).not.toContain('（含借貸');
+  });
+
+  it('applies only the latest debts answer', () => {
+    const fixture = TestBed.createComponent(AccountingAccountsComponent);
+    fixture.detectChanges();
+    const listed = (r: { url: string; urlWithParams: string; method: string }) =>
+      r.method === 'GET' && r.url === '/api/accounting/accounts' && !r.urlWithParams.includes('include_archived=true');
+    const firstDebts = http.expectOne('/api/accounting/accounts/debts');
+    http.expectOne(listed).flush(ACCOUNTS);
+    http.expectOne('/api/accounting/imports/latest').flush(LATEST);
+    http.expectOne('/api/accounting/preference').flush({
+      expense_income_colors: 'red_green', keypad_layout: 'calculator', week_start: 0, main_currency: 'TWD',
+      hide_rewards_on_timeline: false, abbreviate_totals: true,
+    });
+    fixture.detectChanges();
+
+    // A second load (accountsChanged) starts before the first debts read answers.
+    const service = TestBed.inject(AccountingService);
+    service.updateAccount(1, { name: '零錢包' } as AccountInput).subscribe();
+    http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/accounts/1').flush({});
+    fixture.detectChanges();
+    const secondDebts = http.expectOne('/api/accounting/accounts/debts');
+    http.expectOne(listed).flush(ACCOUNTS);
+    http.expectOne('/api/accounting/imports/latest').flush(LATEST);
+    secondDebts.flush(debtsBody('20000.0000', 2));
+    firstDebts.flush(debtsBody('5000.0000', 1));
+    fixture.detectChanges();
+    flushBills();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.totals-line')?.textContent?.trim()).toBe('總資產 $14,226 · 總負債 $64,362（含借貸 2 筆）');
+    expect(el.querySelector('.net-worth')?.textContent?.trim()).toBe('淨值 −$50,136');
+  });
+
+  it('falls back to the old line when the debts read fails', () => {
+    const el = render(ACCOUNTS, LATEST).nativeElement as HTMLElement;
+
+    expect(el.querySelector('.totals-line')?.textContent?.trim()).toBe('總資產 $14,226 · 總負債 $44,362');
+    expect(el.querySelector('.net-worth')).toBeNull();
+    expect(el.querySelector('.unconverted-hint')).toBeNull();
   });
 
   it('offers 新增帳戶 as a soft text button in the header that opens the new-account page', () => {

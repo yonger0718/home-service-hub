@@ -14,7 +14,7 @@ from .schedule_rules import plain
 LINE_KINDS = ("expense", "income", "receivable", "payable", "transfer", "repayment", "collection", "interest")
 LINE_KEYS = (
     "kind", "account_id", "to_account_id", "to_amount", "counterparty_id", "category_id", "project_id", "amount",
-    "currency", "loan_entry_id", "name", "merchant",
+    "currency", "loan_entry_id", "name", "merchant", "loan_from_seq",
 )
 # Line kind → the ledger kind of the entry it writes (the category must be of this kind).
 LEDGER_KINDS = {
@@ -61,6 +61,7 @@ def _open_account(db: Session, account_id, field: str) -> Account:
 
 
 def _check_loan(db: Session, line: dict, kind: str, field: str) -> None:
+    """The set loan of a repayment / collection line (a line without one is valid: no loan yet, spec §4.0)."""
     loan_id = line["loan_entry_id"]
     loan = db.get(LedgerEntry, loan_id) if loan_id is not None else None
     if (
@@ -115,12 +116,22 @@ def validate_template(db: Session, template: dict) -> None:
         elif kind in NO_COUNTERPARTY_LINE_KINDS and line.get("counterparty_id") is not None:
             raise ValidationError(field("counterparty_id"), "這個類型不設對象")
         if kind in LOAN_LINE_KINDS:
+            counterparty_id = line.get("counterparty_id")
+            if counterparty_id is not None and db.get(Counterparty, counterparty_id) is None:
+                raise ValidationError(field("counterparty_id"), "找不到對象")  # an unlinked line posts it (§4.0)
             loan_lines += 1
             if loan_lines > 1:
                 raise ValidationError(field("kind"), "一個排程只能有一行還款或收款")
-            _check_loan(db, line, kind, field("loan_entry_id"))
+            if line.get("loan_entry_id") is not None:
+                _check_loan(db, line, kind, field("loan_entry_id"))
         elif line.get("loan_entry_id") is not None:
             raise ValidationError(field("loan_entry_id"), "只有還款或收款使用")
+        loan_from_seq = line.get("loan_from_seq")
+        if loan_from_seq is not None:
+            if kind not in LOAN_LINE_KINDS:
+                raise ValidationError(field("loan_from_seq"), "只有還款／收款那一行可以有起算期")
+            if isinstance(loan_from_seq, bool) or not isinstance(loan_from_seq, int) or loan_from_seq < 1:
+                raise ValidationError(field("loan_from_seq"), "起算期須為 1 以上的整數")
         if line.get("category_id") is not None:
             category = db.get(Category, line["category_id"])
             if category is None or category.kind != LEDGER_KINDS[kind]:

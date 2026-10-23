@@ -1,0 +1,495 @@
+"""Attach a loan to an existing installment schedule (spec §4.1). Synthetic data only."""
+from datetime import date
+from decimal import Decimal
+from types import SimpleNamespace
+
+import pytest
+from sqlalchemy import select
+
+from app.models import LedgerEntry, ScheduleDefinition, ScheduleInstance
+from app.schemas.schedules import LoanIn
+from app.services import entry_write_service, ledger_service, schedule_service
+from app.services import schedule_generation as generation
+from app.services import schedule_posting as posting
+from app.services.errors import ValidationError
+from app.services.schedule_read import remaining_principal_series
+from app.services.settlement_service import open_amount
+
+# 36 monthly periods on the 8th from 2025-09-08: seq 1 = 2025-09-08 … seq 14 = 2026-10-08, seq 15 = 2026-11-08 …
+DUE = [date(2025 + (8 + i) // 12, (8 + i) % 12 + 1, 8) for i in range(36)]
+assert DUE[0] == date(2025, 9, 8) and DUE[13] == date(2026, 10, 8) and DUE[14] == date(2026, 11, 8) and DUE[35] == date(2028, 8, 8)
+
+
+@pytest.fixture()
+def plain(seed, db_session, today):
+    """A 36-period installment with 14 posted periods and NO loan, like the imported 信貸 definitions; per-period
+    overrides like MOZE's amortisation (principal 8000+seq, interest 1000-seq)."""
+    today(date(2026, 10, 9))
+    bank = seed.account("薪轉", opening="50000")
+    lender = seed.counterparty("範例銀行")
+    definition = seed.definition(
+        [seed.line("repayment", bank, "8333"), seed.line("interest", bank, "620")],
+        kind="installment", name="信貸", anchor=date(2025, 9, 8), times=36, total_amount=Decimal("300000"),
+    )
+    for seq in range(1, 37):
+        posted = seq <= 14  # a posted period carries its entries (ck_schedule_instance_posted_entries)
+        entries = [seed.entry(bank, f"-{8000 + seq}", day=DUE[seq - 1], source="schedule")] if posted else []
+        seed.instance(definition, seq, DUE[seq - 1], status="posted" if posted else "pending", entries=entries,
+                      amount_override=[str(8000 + seq), str(1000 - seq)])
+    db_session.commit()
+    pending_principal = sum(Decimal(8000 + seq) for seq in range(15, 37))  # 22 periods
+    return SimpleNamespace(bank=bank, lender=lender, definition=definition, due_total=pending_principal)
+
+
+def _attach(client, definition_id, bank, lender, amount, entry_date="2026-10-09", **extra):
+    body = {"account_id": bank.id, "counterparty_id": lender.id, "amount": str(amount), "entry_date": entry_date, "name": "信貸"}
+    body.update(extra)
+    return client.post(f"/schedules/definitions/{definition_id}/loan", json=body)
+
+
+def test_detail_exposes_pending_principal(client, plain):
+    body = client.get(f"/schedules/definitions/{plain.definition.id}").json()
+    assert Decimal(body["pending_principal"]) == plain.due_total and body["loan_remaining"] is None
+
+
+def test_attach_loan_links_and_is_balance_neutral(client, db_session, plain):
+    before = ledger_service.account_balance(db_session, plain.bank.id)
+    res = _attach(client, plain.definition.id, plain.bank, plain.lender, plain.due_total)
+    assert res.status_code == 201, res.text
+    body = res.json()
+    db_session.expire_all()
+    assert ledger_service.account_balance(db_session, plain.bank.id) == before
+    payable = db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable"))
+    adjust = db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "balance_adjustment"))
+    assert payable.amount == plain.due_total and adjust.amount == -plain.due_total and adjust.account_id == plain.bank.id
+    assert adjust.entry_date == adjust.posted_date == payable.entry_date == payable.posted_date == date(2026, 10, 9)
+    assert adjust.name == "掛帳調整：信貸"
+    assert (payable.source, payable.counterparty_id, adjust.source) == ("manual", plain.lender.id, "manual")
+    assert adjust.category_id == entry_write_service.system_category_id(db_session, "balance_adjustment")
+    line0, line1 = body["template"]["lines"]
+    assert line0["loan_entry_id"] == payable.id == body["loan_entry_id"] and line0["loan_from_seq"] == 15
+    assert line1["loan_entry_id"] is None and line1.get("loan_from_seq") is None
+    assert Decimal(body["loan_remaining"]) == plain.due_total
+    d = db_session.get(ScheduleDefinition, plain.definition.id)
+    assert (d.times, d.total_amount, d.first_seq, d.template_owner_edited) == (36, Decimal("300000"), 1, True)
+    overrides = db_session.scalars(select(ScheduleInstance.amount_override).where(ScheduleInstance.definition_id == d.id)).all()
+    assert all(o is not None for o in overrides) and len(overrides) == 36   # the per-period split survived
+    detail = client.get(f"/entries/{payable.id}").json()
+    assert Decimal(detail["loan_schedule"]["remaining"]) == plain.due_total and Decimal(detail["loan_schedule"]["repaid"]) == 0
+
+
+def test_attach_then_posting_settles_with_the_period_principal(client, db_session, plain, today):
+    _attach(client, plain.definition.id, plain.bank, plain.lender, plain.due_total)
+    today(date(2026, 11, 8))
+    nxt = db_session.scalar(select(ScheduleInstance.id).where(ScheduleInstance.definition_id == plain.definition.id, ScheduleInstance.seq == 15))
+    r = client.post(f"/schedules/instances/{nxt}/post")
+    assert r.status_code in (200, 201), r.text
+    payable = db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable"))
+    assert open_amount(db_session, payable) == plain.due_total - Decimal(8015)
+    assert Decimal(client.get(f"/entries/{payable.id}").json()["loan_schedule"]["repaid"]) == Decimal(8015)
+
+
+def test_attach_amount_rules(client, db_session, plain):
+    d, bank, lender = plain.definition, plain.bank, plain.lender
+    last = Decimal(8036)
+    too_much = _attach(client, d.id, bank, lender, plain.due_total + 1)
+    assert too_much.status_code == 422 and "超過之後各期本金合計" in too_much.text
+    too_little = _attach(client, d.id, bank, lender, plain.due_total - last)
+    assert too_little.status_code == 422 and "剩餘期數乘以每期金額已達剩餘本金" in too_little.text
+    early = _attach(client, d.id, bank, lender, plain.due_total - last + 1)   # ends in the last period with a smaller final payment
+    assert early.status_code == 201, early.text
+
+
+def test_series_counts_periods_beyond_the_horizon(client, db_session, seed, today):
+    """Only 3 of 24 periods are generated; the rule still counts all 24."""
+    today(date(2026, 10, 9))
+    bank = seed.account("薪轉")
+    lender = seed.counterparty("範例銀行")
+    d = seed.definition([seed.line("repayment", bank, "1000")], kind="installment", name="短", anchor=date(2026, 11, 8), times=24, total_amount=Decimal("24000"))
+    for seq in range(1, 4):
+        seed.instance(d, seq, date(2026, 10 + seq, 8) if seq <= 2 else date(2027, 1, 8), status="pending")
+    db_session.commit()
+    assert Decimal(client.get(f"/schedules/definitions/{d.id}").json()["pending_principal"]) == Decimal(24000)
+    assert _attach(client, d.id, bank, lender, 24000).status_code == 201
+
+
+def test_attach_refusals(client, db_session, plain, seed):
+    bank, lender, d = plain.bank, plain.lender, plain.definition
+    other = seed.account("別戶")
+    coll = seed.definition([seed.line("collection", bank, "100")], kind="installment", name="收", anchor=date(2026, 11, 8), times=3)
+    rec = seed.definition([seed.line("expense", bank, "100")], kind="recurring", name="月費", anchor=date(2026, 11, 1))
+    db_session.commit()
+    assert _attach(client, d.id, other, lender, plain.due_total).status_code == 422                 # 貸款要掛在還款帳戶
+    r = _attach(client, coll.id, bank, lender, 300); assert r.status_code == 422 and "排程沒有還款那一行" in r.text
+    r = _attach(client, rec.id, bank, lender, 100); assert r.status_code == 422 and "只有分期可以掛貸款" in r.text
+    assert _attach(client, d.id, bank, lender, plain.due_total).status_code == 201
+    again = _attach(client, d.id, bank, lender, plain.due_total)
+    assert again.status_code == 409 and "loan_already_attached" in again.text
+
+
+def test_catch_up_then_attach_end_to_end(client, db_session, plain, today):
+    today(date(2026, 12, 20))                                   # seq 15 (11-08) and 16 (12-08) are overdue
+    r = _attach(client, plain.definition.id, plain.bank, plain.lender, plain.due_total, entry_date="2026-12-20")
+    assert r.status_code == 409 and "catch_up_first" in r.text
+    for seq in (15, 16):                                        # 補記: plain expenses (Task 1)
+        iid = db_session.scalar(select(ScheduleInstance.id).where(ScheduleInstance.definition_id == plain.definition.id, ScheduleInstance.seq == seq))
+        assert client.post(f"/schedules/instances/{iid}/post").status_code in (200, 201)
+    remaining = plain.due_total - Decimal(8015) - Decimal(8016)
+    assert Decimal(client.get(f"/schedules/definitions/{plain.definition.id}").json()["pending_principal"]) == remaining
+    r = _attach(client, plain.definition.id, plain.bank, plain.lender, remaining, entry_date="2026-12-20")
+    assert r.status_code == 201, r.text
+    assert r.json()["template"]["lines"][0]["loan_from_seq"] == 17
+    assert db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable")) is not None
+    assert db_session.scalars(select(LedgerEntry).where(LedgerEntry.is_settlement.is_(True))).all() == []
+
+
+def test_attach_refuses_ended_and_nothing_pending(client, db_session, plain, seed, today):
+    client.post(f"/schedules/definitions/{plain.definition.id}/end")
+    r = _attach(client, plain.definition.id, plain.bank, plain.lender, plain.due_total)
+    assert r.status_code == 409 and "definition_ended" in r.text
+    bank, lender = plain.bank, plain.lender
+    d = seed.definition([seed.line("repayment", bank, "100")], kind="installment", name="無待入帳", anchor=date(2026, 1, 8), times=2)
+    for seq, day in ((1, date(2026, 1, 8)), (2, date(2026, 2, 8))):
+        seed.instance(d, seq, day, status="posted", entries=[seed.entry(bank, "-100", day=day, source="schedule")])
+    db_session.commit()
+    r = _attach(client, d.id, bank, lender, 100)
+    assert r.status_code == 409 and "nothing_pending" in r.text
+
+
+def test_attach_loan_on_paused_schedule_then_resume_settles(client, db_session, plain, today):
+    client.post(f"/schedules/definitions/{plain.definition.id}/pause")
+    assert _attach(client, plain.definition.id, plain.bank, plain.lender, plain.due_total).status_code == 201
+    today(date(2026, 11, 9))
+    r = client.post(f"/schedules/definitions/{plain.definition.id}/resume", json={"backlog": "post"})
+    assert r.status_code == 200, r.text
+    payable = db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable"))
+    assert open_amount(db_session, payable) == plain.due_total - Decimal(8015)
+
+
+def test_attach_refuses_imported_definition_while_unlocked(client, db_session, plain, monkeypatch):
+    d = db_session.get(ScheduleDefinition, plain.definition.id)
+    d.moze_id = "moze-1"
+    db_session.commit()
+    monkeypatch.delenv("ACCOUNTING_IMPORT_LOCKED", raising=False)
+    assert _attach(client, d.id, plain.bank, plain.lender, plain.due_total).status_code == 409
+    monkeypatch.setenv("ACCOUNTING_IMPORT_LOCKED", "true")
+    assert _attach(client, d.id, plain.bank, plain.lender, plain.due_total).status_code == 201
+
+
+def test_update_after_attach_keeps_loan_link(client, db_session, plain):
+    _attach(client, plain.definition.id, plain.bank, plain.lender, plain.due_total)
+    body = client.get(f"/schedules/definitions/{plain.definition.id}").json()
+    keep = ("kind", "account_id", "to_account_id", "to_amount", "counterparty_id", "category_id", "project_id", "amount", "currency", "loan_entry_id", "loan_from_seq", "name", "merchant")
+    update = {k: body[k] for k in ("name", "template", "interval_unit", "interval_n", "anchor_date", "day_of_month", "times", "end_date", "total_amount")}
+    update["template"] = {"lines": [{k: v for k, v in line.items() if k in keep} for line in body["template"]["lines"]], "description": body["template"].get("description"), "tags": body["template"].get("tags", [])}
+    update["name"] = "信貸（改名）"
+    r = client.put(f"/schedules/definitions/{plain.definition.id}", json=update)
+    assert r.status_code == 200, r.text
+    assert r.json()["loan_entry_id"] == body["loan_entry_id"] and r.json()["template"]["lines"][0]["loan_from_seq"] == 15
+    # a client that does not know the key (sends the same loan without loan_from_seq) must not erase the boundary
+    naked = {**update, "name": "信貸（再改）"}
+    naked["template"] = {**update["template"], "lines": [{k: v for k, v in line.items() if k != "loan_from_seq"} for line in update["template"]["lines"]]}
+    r = client.put(f"/schedules/definitions/{plain.definition.id}", json=naked)
+    assert r.status_code == 200, r.text
+    assert r.json()["template"]["lines"][0]["loan_from_seq"] == 15
+    # KNOWN FOLLOW-UP (spec §5 override flattening), recorded not fixed here: the rename regenerates the future pending
+    # instances and drops their per-period overrides — this baseline flips when the follow-up lands.
+    overrides = db_session.scalars(select(ScheduleInstance.amount_override).where(ScheduleInstance.definition_id == plain.definition.id, ScheduleInstance.status == "pending")).all()
+    assert (sum(o is not None for o in overrides), len(overrides)) == (0, 13)
+
+
+KEEP = ("kind", "account_id", "to_account_id", "to_amount", "counterparty_id", "category_id", "project_id", "amount", "currency", "loan_entry_id", "loan_from_seq", "name", "merchant")
+
+
+def _put_body(client, definition_id, **line0):
+    """The PUT body a client builds from the detail, with line 0's keys overridden by `line0`."""
+    body = client.get(f"/schedules/definitions/{definition_id}").json()
+    update = {k: body[k] for k in ("name", "interval_unit", "interval_n", "anchor_date", "day_of_month", "times", "end_date", "total_amount")}
+    lines = [{k: v for k, v in line.items() if k in KEEP} for line in body["template"]["lines"]]
+    lines[0].update(line0)
+    update["template"] = {"lines": lines, "description": body["template"].get("description"), "tags": body["template"].get("tags", [])}
+    return update
+
+
+def _refused_boundary(response):
+    return (
+        response.status_code == 422 and "起算期只能由掛上貸款設定" in response.text
+        and "template.lines[0].loan_from_seq" in response.text
+    )
+
+
+def test_update_refuses_a_changed_loan_from_seq(client, db_session, plain, seed):
+    """Ruling: the boundary is set by 掛上貸款 only; a PUT may keep it (or omit it), never move or introduce it."""
+    _attach(client, plain.definition.id, plain.bank, plain.lender, plain.due_total)
+    d_id = plain.definition.id
+    # moved: 15 → 16
+    assert _refused_boundary(client.put(f"/schedules/definitions/{d_id}", json=_put_body(client, d_id, loan_from_seq=16)))
+    # a new / different loan carrying a boundary
+    other = seed.entry(plain.bank, "1000", kind="payable", counterparty_id=plain.lender.id, name="另一筆", day=date(2026, 10, 9))
+    db_session.commit()
+    r = client.put(f"/schedules/definitions/{d_id}", json=_put_body(client, d_id, loan_entry_id=other.id, loan_from_seq=15))
+    assert _refused_boundary(r)
+    db_session.expire_all()
+    line = db_session.get(ScheduleDefinition, d_id).template["lines"][0]
+    assert (line["loan_from_seq"], line["loan_entry_id"]) != (None, other.id) and line["loan_from_seq"] == 15
+    # None → N: a linked line without a boundary (a create-time loan) cannot gain one through a PUT
+    payable = seed.entry(plain.bank, "2000", kind="payable", counterparty_id=plain.lender.id, name="舊貸款", day=date(2026, 10, 9))
+    linked = seed.definition([seed.line("repayment", plain.bank, "1000", loan_entry_id=payable.id)], kind="installment",
+                             name="舊貸款", anchor=date(2026, 11, 8), times=2)
+    seed.instance(linked, 1, date(2026, 11, 8)); seed.instance(linked, 2, date(2026, 12, 8))
+    db_session.commit()
+    assert _refused_boundary(client.put(f"/schedules/definitions/{linked.id}", json=_put_body(client, linked.id, loan_from_seq=1)))
+    # an unlinked line (no loan at all) cannot get a boundary either
+    unlinked = seed.definition([seed.line("repayment", plain.bank, "1000")], kind="installment", name="未掛", anchor=date(2026, 11, 8), times=2)
+    seed.instance(unlinked, 1, date(2026, 11, 8))
+    db_session.commit()
+    assert _refused_boundary(client.put(f"/schedules/definitions/{unlinked.id}", json=_put_body(client, unlinked.id, loan_from_seq=1)))
+    db_session.expire_all()
+    assert db_session.get(ScheduleDefinition, d_id).template["lines"][0]["loan_from_seq"] == 15
+    assert db_session.get(ScheduleDefinition, linked.id).template["lines"][0]["loan_from_seq"] is None
+
+
+def _iid(db_session, definition_id, seq):
+    return db_session.scalar(select(ScheduleInstance.id).where(ScheduleInstance.definition_id == definition_id, ScheduleInstance.seq == seq))
+
+
+def test_series_excludes_posted_and_skipped_later_periods(client, db_session, plain):
+    """Ruling: only periods that will still settle the loan count — a pending instance or a seq not generated yet.
+    The series is read through pending_principal on GET detail (read-only, not gated); attach itself refuses while
+    such a later period exists (later_periods_settled)."""
+    d_id = plain.definition.id
+    assert client.post(f"/schedules/instances/{_iid(db_session, d_id, 20)}/skip").status_code == 200
+    early = client.post(f"/schedules/instances/{_iid(db_session, d_id, 18)}/post")   # posted early, a plain expense
+    assert early.status_code in (200, 201), early.text
+    db_session.expire_all()
+    expense = db_session.get(LedgerEntry, early.json()["posted_entry_ids"][0])
+    assert (expense.kind, expense.amount) == ("expense", Decimal(-8018))
+    expected = plain.due_total - Decimal(8018) - Decimal(8020)
+    assert Decimal(client.get(f"/schedules/definitions/{d_id}").json()["pending_principal"]) == expected
+    refused = _attach(client, d_id, plain.bank, plain.lender, expected)
+    assert refused.status_code == 409 and "later_periods_settled" in refused.text, refused.text
+    assert db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable")) is None
+
+
+def test_attach_refuses_later_period_posted_early_until_reopened(client, db_session, plain):
+    """Spec §4.1 guard: a period after from_seq that was posted early (a plain entry) would sit inside the loan's
+    range without settling it, so 掛上貸款 refuses until the owner reopens (還原) it."""
+    d_id = plain.definition.id
+    early = client.post(f"/schedules/instances/{_iid(db_session, d_id, 18)}/post")
+    assert early.status_code in (200, 201), early.text
+    r = _attach(client, d_id, plain.bank, plain.lender, plain.due_total - Decimal(8018))
+    assert r.status_code == 409 and "later_periods_settled" in r.text and "之後已有入帳或略過的期數，請先還原" in r.text
+    assert client.post(f"/schedules/instances/{_iid(db_session, d_id, 18)}/reopen").status_code == 200
+    r = _attach(client, d_id, plain.bank, plain.lender, plain.due_total)
+    assert r.status_code == 201, r.text
+    assert r.json()["template"]["lines"][0]["loan_from_seq"] == 15
+
+
+def test_period_due_on_entry_date_is_not_overdue(client, db_session, plain, today):
+    """catch_up_first counts periods due strictly before entry_date: one due on entry_date itself is the first period
+    the new loan settles (attach, then post it)."""
+    today(DUE[14])                                              # seq 15 is due today
+    r = _attach(client, plain.definition.id, plain.bank, plain.lender, plain.due_total, entry_date=DUE[14].isoformat())
+    assert r.status_code == 201, r.text
+    assert r.json()["template"]["lines"][0]["loan_from_seq"] == 15
+    assert client.post(f"/schedules/instances/{_iid(db_session, plain.definition.id, 15)}/post").status_code in (200, 201)
+    payable = db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable"))
+    assert open_amount(db_session, payable) == plain.due_total - Decimal(8015)
+
+
+def _detail(client, definition_id):
+    return client.get(f"/schedules/definitions/{definition_id}").json()
+
+
+def test_attach_then_post_every_period_settles_exactly_at_the_last(client, db_session, plain, today):
+    """Attach the full remaining principal, post seq 15 … 36: the payable is open until the last period and is
+    settled exactly by it and the detail has nothing to check. (The definition itself ends on the next generate() run
+    — end_if_complete — not on a manual post.)"""
+    d_id = plain.definition.id
+    assert _attach(client, d_id, plain.bank, plain.lender, plain.due_total).status_code == 201
+    today(DUE[35])
+    payable = db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable"))
+    for seq in range(15, 37):
+        r = client.post(f"/schedules/instances/{_iid(db_session, d_id, seq)}/post")
+        assert r.status_code in (200, 201) and r.json()["status"] == "posted", (seq, r.text)
+        db_session.expire_all()
+        assert (open_amount(db_session, payable) == 0) == (seq == 36), seq
+    body = _detail(client, d_id)
+    assert Decimal(body["loan_remaining"]) == 0 and body["needs_check"] is False
+
+
+def test_pending_principal_and_loan_remaining_move_together(client, db_session, plain):
+    """After attach, one post lowers pending_principal and loan_remaining by that period's principal."""
+    d_id = plain.definition.id
+    assert _attach(client, d_id, plain.bank, plain.lender, plain.due_total).status_code == 201
+    before = _detail(client, d_id)
+    assert client.post(f"/schedules/instances/{_iid(db_session, d_id, 15)}/post").status_code in (200, 201)
+    after = _detail(client, d_id)
+    principal = Decimal(8015)
+    assert Decimal(before["pending_principal"]) - Decimal(after["pending_principal"]) == principal
+    assert Decimal(before["loan_remaining"]) - Decimal(after["loan_remaining"]) == principal
+    assert Decimal(after["pending_principal"]) == Decimal(after["loan_remaining"])
+
+
+def test_early_repayment_amount_caps_the_final_period(client, db_session, plain, today):
+    """Attach the smallest accepted amount (all but the last period + 1). loan_closed does NOT fire: the amount rule
+    (amount > Σ all but the last period) keeps the loan open entering seq 36, so _close_out is never reached through
+    posting alone. Seq 36 posts; its repayment line settles min(amount, open) = 1 (D35/D38 cap), the interest line
+    posts in full, and the payable is fully settled with nothing to check."""
+    d_id = plain.definition.id
+    amount = plain.due_total - Decimal(8036) + 1
+    assert _attach(client, d_id, plain.bank, plain.lender, amount).status_code == 201
+    today(DUE[35])
+    payable = db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable"))
+    for seq in range(15, 36):
+        r = client.post(f"/schedules/instances/{_iid(db_session, d_id, seq)}/post")
+        assert r.status_code in (200, 201) and r.json()["status"] == "posted", (seq, r.text)
+    db_session.expire_all()
+    assert open_amount(db_session, payable) == 1
+    last = client.post(f"/schedules/instances/{_iid(db_session, d_id, 36)}/post")
+    assert last.status_code in (200, 201) and last.json()["status"] == "posted", last.text
+    db_session.expire_all()
+    entries = [db_session.get(LedgerEntry, i) for i in last.json()["posted_entry_ids"]]
+    settle = [e for e in entries if e.settles_entry_id == payable.id]
+    interest = [e for e in entries if e.kind == "interest"]
+    assert len(settle) == 1 and abs(settle[0].amount) == 1
+    assert len(interest) == 1 and interest[0].amount == Decimal(-964)
+    assert open_amount(db_session, payable) == 0
+    body = _detail(client, d_id)
+    assert Decimal(body["loan_remaining"]) == 0 and body["needs_check"] is False
+    assert all(row.status == "posted" for row in db_session.scalars(
+        select(ScheduleInstance).where(ScheduleInstance.definition_id == d_id, ScheduleInstance.seq >= 15)))
+
+
+def test_series_last_ungenerated_period_takes_the_residual(client, db_session, seed, today):
+    """Multica M1: 24 × 1000 with total_amount 23,500 and only seq 1–3 generated. The last period (seq 24) has no
+    instance, so the series takes what generation will give it after the attach (template_owner_edited → the
+    residual 23,500 − 23 × 1,000 = 500), not the template's 1,000. The prefill is accepted, the generated last period
+    carries 500, and posting every period settles the payable exactly at seq 24."""
+    today(date(2026, 10, 9))
+    bank = seed.account("薪轉")
+    lender = seed.counterparty("範例銀行")
+    d = seed.definition([seed.line("repayment", bank, "1000")], kind="installment", name="短", anchor=date(2026, 11, 8),
+                        times=24, total_amount=Decimal("23500"))
+    for seq in range(1, 4):
+        seed.instance(d, seq, date(2026, 10 + seq, 8) if seq <= 2 else date(2027, 1, 8), status="pending")
+    db_session.commit()
+    prefill = Decimal(_detail(client, d.id)["pending_principal"])
+    assert prefill == Decimal(23500)
+    assert _attach(client, d.id, bank, lender, prefill).status_code == 201
+    today(date(2028, 10, 8))                                    # seq 24 = 2028-10-08, inside the horizon
+    generation.generate(db_session, db_session.get(ScheduleDefinition, d.id), date(2028, 10, 8))
+    db_session.commit()
+    last = db_session.scalar(select(ScheduleInstance).where(ScheduleInstance.definition_id == d.id, ScheduleInstance.seq == 24))
+    assert last is not None and Decimal(last.amount_override[0]) == Decimal(500)
+    payable = db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable"))
+    for seq in range(1, 25):
+        r = client.post(f"/schedules/instances/{_iid(db_session, d.id, seq)}/post")
+        assert r.status_code in (200, 201) and r.json()["status"] == "posted", (seq, r.text)
+        db_session.expire_all()
+        assert (open_amount(db_session, payable) == 0) == (seq == 24), seq
+    body = _detail(client, d.id)
+    assert Decimal(body["loan_remaining"]) == 0 and body["needs_check"] is False
+
+
+def test_floor_ignores_trailing_zero_principal_periods(client, db_session, seed):
+    """Multica S1: series [1000, 0] (the last period repays no principal, interest only). The floor is Σ − the last
+    POSITIVE element = 0, so the prefill 1000 is accepted; 1000 is also the ceiling; 0 is refused by the floor."""
+    bank = seed.account("薪轉")
+    lender = seed.counterparty("範例銀行")
+    d = seed.definition([seed.line("repayment", bank, "1000"), seed.line("interest", bank, "50")], kind="installment",
+                        name="尾期只付息", anchor=date(2026, 11, 8), times=2)
+    seed.instance(d, 1, date(2026, 11, 8))
+    seed.instance(d, 2, date(2026, 12, 8), amount_override=["0", "50"])
+    db_session.commit()
+    assert remaining_principal_series(db_session, db_session.get(ScheduleDefinition, d.id)) == [Decimal(1000), Decimal(0)]
+    assert Decimal(_detail(client, d.id)["pending_principal"]) == Decimal(1000)
+    over = _attach(client, d.id, bank, lender, 1001)
+    assert over.status_code == 422 and "超過之後各期本金合計" in over.text
+    loan = LoanIn.model_construct(account_id=bank.id, counterparty_id=lender.id, category_id=None, amount=Decimal(0),
+                                  entry_date=date(2026, 10, 9), name=None)   # 0 bypasses the schema's gt=0
+    with pytest.raises(ValidationError, match="剩餘期數乘以每期金額已達剩餘本金"):
+        schedule_service.attach_loan(db_session, d.id, loan)
+    db_session.rollback()
+    assert _attach(client, d.id, bank, lender, 1000).status_code == 201
+
+
+def _interest_only_tail(seed, db_session):
+    """Series [1000, 0] with interest 50 on both periods (the S1 fixture's shape)."""
+    bank = seed.account("薪轉", opening="5000")
+    lender = seed.counterparty("範例銀行")
+    d = seed.definition([seed.line("repayment", bank, "1000"), seed.line("interest", bank, "50")], kind="installment",
+                        name="尾期只付息", anchor=date(2026, 11, 8), times=2)
+    seed.instance(d, 1, date(2026, 11, 8))
+    seed.instance(d, 2, date(2026, 12, 8), amount_override=["0", "50"])
+    db_session.commit()
+    return SimpleNamespace(bank=bank, lender=lender, definition=d)
+
+
+def test_zero_principal_period_posts_its_interest_after_the_debt_is_cleared(client, db_session, seed, today):
+    """External review R1: period 1 clears the debt; period 2 repays no principal (interest only). It posts its
+    interest 50 like a normal period: no principal entry, status posted, not loan_closed, definition not ended."""
+    today(date(2026, 10, 9))
+    f = _interest_only_tail(seed, db_session)
+    d = f.definition
+    assert _attach(client, d.id, f.bank, f.lender, 1000).status_code == 201
+    today(date(2026, 12, 8))
+    first = client.post(f"/schedules/instances/{_iid(db_session, d.id, 1)}/post")
+    assert first.status_code in (200, 201) and first.json()["status"] == "posted", first.text
+    payable = db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable"))
+    db_session.expire_all()
+    assert open_amount(db_session, payable) == 0
+    settlements_before = len(db_session.scalars(select(LedgerEntry).where(LedgerEntry.is_settlement.is_(True))).all())
+
+    second_id = _iid(db_session, d.id, 2)
+    r = client.post(f"/schedules/instances/{second_id}/post")
+    assert r.status_code in (200, 201) and r.json()["status"] == "posted", r.text
+    db_session.expire_all()
+    row = db_session.get(ScheduleInstance, second_id)
+    assert row.status == "posted" and row.note is None
+    written = db_session.scalars(select(LedgerEntry).where(LedgerEntry.id.in_(row.posted_entry_ids))).all()
+    assert [(e.kind, e.amount) for e in written] == [("interest", Decimal("-50"))]
+    assert written[0].counterparty_id == f.lender.id
+    assert len(db_session.scalars(select(LedgerEntry).where(LedgerEntry.is_settlement.is_(True))).all()) == settlements_before
+    assert db_session.get(ScheduleDefinition, d.id).status != "ended"
+
+
+def test_period_expecting_principal_after_hand_settlement_is_loan_closed(client, db_session, seed, today):
+    """R1 preserved semantics: the owner settled the whole debt by hand; period 1 still expects principal 1000, so
+    it finds the debt cleared → loan_closed: this and every later pending period skipped, the definition ended,
+    nothing written (not even period 2's interest)."""
+    today(date(2026, 10, 9))
+    f = _interest_only_tail(seed, db_session)
+    d = f.definition
+    assert _attach(client, d.id, f.bank, f.lender, 1000).status_code == 201
+    payable = db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable"))
+    hand = client.post(f"/entries/{payable.id}/settle",
+                       json={"account_id": f.bank.id, "amount": "1000", "entry_date": "2026-10-20"})
+    assert hand.status_code == 201, hand.text
+    db_session.expire_all()
+    assert open_amount(db_session, payable) == 0
+
+    today(date(2026, 11, 8))
+    result = posting.post_instance(db_session, _iid(db_session, d.id, 1), actor="owner")
+    db_session.commit()
+    assert result.outcome == "loan_closed" and result.entry_ids == ()
+    db_session.expire_all()
+    rows = db_session.scalars(select(ScheduleInstance).where(ScheduleInstance.definition_id == d.id)
+                              .order_by(ScheduleInstance.seq)).all()
+    assert [(row.status, row.note, row.posted_entry_ids) for row in rows] == [("skipped", "貸款已結清", [])] * 2
+    assert db_session.get(ScheduleDefinition, d.id).status == "ended"
+    assert db_session.scalars(select(LedgerEntry).where(LedgerEntry.source == "schedule")).all() == []
+
+
+def test_all_zero_principal_series_is_nothing_pending(client, db_session, seed):
+    """Multica S1: pending periods that repay no principal leave nothing for a loan to settle → 409 nothing_pending."""
+    bank = seed.account("薪轉")
+    lender = seed.counterparty("範例銀行")
+    d = seed.definition([seed.line("repayment", bank, "1000"), seed.line("interest", bank, "50")], kind="installment",
+                        name="只付息", anchor=date(2026, 11, 8), times=2)
+    seed.instance(d, 1, date(2026, 11, 8), amount_override=["0", "50"])
+    seed.instance(d, 2, date(2026, 12, 8), amount_override=["0", "50"])
+    db_session.commit()
+    r = _attach(client, d.id, bank, lender, 1)
+    assert r.status_code == 409 and "nothing_pending" in r.text
+    assert db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable")) is None

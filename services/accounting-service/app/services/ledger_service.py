@@ -306,6 +306,36 @@ def open_debt_filter():
     )
 
 
+def debts_summary(db: Session) -> dict:
+    """Open receivable/payable originals totalled in the main currency (per-entry open amount, latest cached
+    rate). A currency without a rate is summed per currency in `unconverted` and left out of `open_main`;
+    `count` includes every open original."""
+    from .settlement_service import open_amount
+
+    main = main_currency(db)
+    originals = db.scalars(select(LedgerEntry).where(open_debt_filter())).all()
+    rates = latest_rates(db, {e.currency for e in originals}, main)
+    result: dict = {"main_currency": main}
+    for kind, key in (("payable", "payables"), ("receivable", "receivables")):
+        total, count, unconverted = Decimal(0), 0, defaultdict(Decimal)
+        for entry in (e for e in originals if e.kind == kind):
+            count += 1
+            amount = open_amount(db, entry)
+            converted = _convert(amount, rates.get(entry.currency))
+            if converted is None:
+                unconverted[entry.currency] += amount
+            else:
+                total += converted
+        result[key] = {
+            "open_main": total.quantize(AMOUNT_QUANTUM),
+            "count": count,
+            "unconverted": [
+                {"currency": c, "amount": a.quantize(AMOUNT_QUANTUM)} for c, a in sorted(unconverted.items())
+            ],
+        }
+    return result
+
+
 def _filters(kind, date_from, date_to, q, account_ids, hide_rewards, counterparty_id=None, open_only=False) -> list:
     filters = []
     if counterparty_id is not None:

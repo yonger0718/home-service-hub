@@ -130,7 +130,7 @@ export interface DefinitionBuildOptions {
 
 const LINE_INPUT_KEYS: readonly (keyof ScheduleLineInput)[] = [
   'kind', 'account_id', 'to_account_id', 'to_amount', 'counterparty_id', 'category_id', 'project_id', 'amount', 'currency',
-  'loan_entry_id', 'name', 'merchant',
+  'loan_entry_id', 'loan_from_seq', 'name', 'merchant',
 ];
 
 /** The keys of a built line the form actually edits; every other key comes from the loaded line. */
@@ -139,9 +139,9 @@ function formOwnedKeys(built: ScheduleLineInput, index: number, values: Schedule
     return ['kind', 'account_id', 'amount', 'currency']; // 分期's 利息 field: only its amount (on the main line's account)
   }
   if (built.kind === 'repayment' && values.loanEntryId !== null) {
-    return LINE_INPUT_KEYS.filter(key => key !== 'counterparty_id'); // a loan's payable is fixed: no 對象 is resolved
+    return LINE_INPUT_KEYS.filter(key => key !== 'counterparty_id' && key !== 'loan_from_seq'); // a loan's payable is fixed: no 對象 is resolved
   }
-  return LINE_INPUT_KEYS;
+  return LINE_INPUT_KEYS.filter(key => key !== 'loan_from_seq'); // only the attach-loan endpoint sets it
 }
 
 /** Each built line over the loaded line of the same index and kind, so unexposed fields survive an edit (R1). */
@@ -160,6 +160,9 @@ function mergeLines(lines: ScheduleLineInput[], values: ScheduleFormValues, orig
     }
     for (const key of formOwnedKeys(built, index, values)) {
       merged[key] = built[key];
+    }
+    if (merged.loan_entry_id !== loaded.loan_entry_id) {
+      delete merged.loan_from_seq; // unlinked / swapped: the server rejects any carried 起算期 (422)
     }
     return merged as unknown as ScheduleLineInput;
   });

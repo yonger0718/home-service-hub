@@ -6,7 +6,15 @@ from sqlalchemy.orm import Session
 from ..auth import method_scope
 from ..database import get_db
 from ..models import Account
-from ..schemas.ledger import AccountDetailOut, AccountOut, AccountPeriodSummaryOut, EntryKind, EntryPage, RewardRuleOut
+from ..schemas.ledger import (
+    AccountDetailOut,
+    AccountOut,
+    AccountPeriodSummaryOut,
+    DebtsSummaryOut,
+    EntryKind,
+    EntryPage,
+    RewardRuleOut,
+)
 from ..schemas.writes import AccountIn
 from ..services import ledger_service, settings_service
 from .errors import service_errors
@@ -23,6 +31,12 @@ def _require_account(db: Session, account_id: int) -> None:
 def list_accounts(include_archived: bool = False, as_of: date | None = None, db: Session = Depends(get_db)):
     """`as_of` (YYYY-MM-DD, default today): balances count entries posted on or before it."""
     return ledger_service.list_accounts(db, include_archived=include_archived, as_of=as_of)
+
+
+@router.get("/debts", response_model=DebtsSummaryOut)
+def debts_summary(db: Session = Depends(get_db)):
+    """Open payables/receivables summed in the main currency; unrated currencies are listed as `unconverted`."""
+    return ledger_service.debts_summary(db)
 
 
 @router.get("/{account_id}", response_model=AccountDetailOut)

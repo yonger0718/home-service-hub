@@ -118,7 +118,7 @@ export class EntryDetailComponent implements OnInit {
     const link = this.scheduleLink();
     return link ? schedulePill(link) : null;
   });
-  /** `剩餘 −$275,001 · 已還 $24,999 · 下期 02/09` for a loan a schedule repays. */
+  /** `欠 $275,001 · 已還 $24,999 · 下期 02/09` (待收 for money lent; magnitudes) for a loan a schedule repays. */
   readonly loanLine = computed(() => {
     const detail = this.detail();
     const loan = detail?.loan_schedule;
@@ -126,7 +126,7 @@ export class EntryDetailComponent implements OnInit {
       return null;
     }
     const back = detail.kind === 'receivable' ? '已收' : '已還'; // a collection loan (money lent) comes back
-    const parts = [`剩餘 ${formatMoney(loan.remaining, detail.currency)}`, `${back} ${formatMoney(loan.repaid ?? 0, detail.currency)}`];
+    const parts = [`${detail.kind === 'receivable' ? '待收' : '欠'} ${formatMoney(loan.remaining, detail.currency)}`, `${back} ${formatMoney(loan.repaid ?? 0, detail.currency)}`];
     if (loan.next_due_date) {
       parts.push(`下期 ${shortDate(loan.next_due_date)}`);
     }

@@ -427,3 +427,42 @@ def test_account_summary_unknown_account_is_404_and_bad_range_is_422(client, db_
     empty = client.get(f"/accounts/{wallet.id}/summary", params={"date_from": "2026-09-30", "date_to": "2026-09-30"}).json()
     assert (empty["count"], empty["net"], empty["end_balance"]) == (0, "0", "2000.0000")
 
+
+
+def test_accounts_debts_summary(client, db_session, seed):
+    bank = seed.account("薪轉")
+    jp = seed.account("日幣", currency="JPY")
+    lender = seed.counterparty("範例銀行")
+    friend = seed.counterparty("朋友")
+    seed.entry(bank, "183000", kind="payable", counterparty_id=lender.id, name="信貸")
+    seed.entry(bank, "5000", kind="payable", counterparty_id=friend.id, name="借")
+    seed.entry(jp, "100000", kind="payable", counterparty_id=lender.id, name="日圓貸")  # no JPY rate cached
+    seed.entry(bank, "-1200", kind="receivable", counterparty_id=friend.id, name="代墊")
+    seed.entry(bank, "9000", kind="payable", counterparty_id=friend.id, name="已還", is_closed=True)
+    db_session.commit()
+    settled = seed.entry(bank, "3000", kind="payable", counterparty_id=friend.id, name="全還")  # fully settled
+    seed.entry(bank, "-3000", kind="payable", settles_entry_id=settled.id, is_settlement=True, name="還款")
+    partial = seed.entry(bank, "10000", kind="payable", counterparty_id=friend.id, name="還一半")  # open part 6000
+    seed.entry(bank, "-4000", kind="payable", settles_entry_id=partial.id, is_settlement=True, name="還款")
+    db_session.commit()
+    body = client.get("/accounts/debts").json()
+    assert body["main_currency"] == "TWD"
+    assert body["payables"] == {"open_main": "194000.0000", "count": 4, "unconverted": [{"currency": "JPY", "amount": "100000.0000"}]}
+    assert body["receivables"] == {"open_main": "1200.0000", "count": 1, "unconverted": []}
+
+
+def test_debts_summary_lists_unconverted(client, db_session, seed):
+    jp = seed.account("日幣", currency="JPY")
+    seed.entry(jp, "100000", kind="payable", counterparty_id=seed.counterparty("x").id, name="日圓貸")
+    db_session.commit()
+    body = client.get("/accounts/debts").json()
+    assert body["payables"]["open_main"] == "0.0000" and body["payables"]["count"] == 1 and body["payables"]["unconverted"][0]["currency"] == "JPY"
+
+
+def test_debts_summary_converts_with_a_cached_rate(client, db_session, seed):
+    jp = seed.account("日幣", currency="JPY")
+    seed.entry(jp, "100000", kind="payable", counterparty_id=seed.counterparty("x").id, name="日圓貸")
+    seed.fx(date(2026, 9, 30), "JPY", "TWD", "0.2")
+    db_session.commit()
+    body = client.get("/accounts/debts").json()
+    assert body["payables"]["open_main"] == "20000.0000" and body["payables"]["unconverted"] == [] and body["payables"]["count"] == 1

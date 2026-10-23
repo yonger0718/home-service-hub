@@ -139,12 +139,21 @@ def generated_last_override(db: Session, definition: ScheduleDefinition) -> list
     )
     if not owner_edited:
         return last_period_override(definition)
+    return residual_last_override(definition, rows)
+
+
+def residual_last_override(definition: ScheduleDefinition, rows: list[ScheduleInstance]) -> list[str] | None:
+    """generated_last_override's owner-edited branch: installment_residual against the actual allocations of `rows`
+    on the first line, the template amounts on the others. None when the definition has no total / times or the
+    residual is refused (the others already reach the total): the period then follows the template. Also read by
+    remaining_principal_series (spec §4.1 step 4) for a last period not generated yet, since 掛上貸款 sets
+    template_owner_edited."""
     amounts = template_amounts(definition.template)
     try:
         residual = installment_residual(definition, rows, old_amounts=amounts, new_amounts=amounts, overrides={})
     except ValidationError:
         return None
-    return [rules.plain(residual), *amounts[1:]]
+    return None if residual is None else [rules.plain(residual), *amounts[1:]]
 
 
 def _latest(db: Session, definition_id: int) -> ScheduleInstance | None:

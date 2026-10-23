@@ -62,6 +62,12 @@ def lock_definition_for_post(db: Session, definition_id: int) -> ScheduleDefinit
     return definition
 
 
+def loan_applies(line: dict, seq: int) -> bool:
+    """Whether a repayment / collection line settles its loan in period `seq` (spec §4.0): it has a loan and the
+    period is at or after the line's boundary (loan_from_seq, default 1). Otherwise the line posts a plain entry."""
+    return line["loan_entry_id"] is not None and seq >= (line.get("loan_from_seq") or 1)
+
+
 def lock_later_pending(
     db: Session, definition: ScheduleDefinition, instance: ScheduleInstance
 ) -> list[ScheduleInstance]:
@@ -117,6 +123,15 @@ def _close_out(
     db.flush()
 
 
+def _interest_counterparty(template: dict, loan: LedgerEntry | None) -> int | None:
+    """Interest names the lender (D29): the loan's counterparty when the loan applies to the period, else the loan
+    line's own counterparty_id (an unlinked or pre-boundary period, spec §4.0)."""
+    if loan is not None:
+        return loan.counterparty_id
+    reference = loan_line(template)
+    return reference[1].get("counterparty_id") if reference is not None else None
+
+
 def _write_line(
     db: Session,
     definition: ScheduleDefinition,
@@ -151,6 +166,19 @@ def _write_line(
         group = transfer_service.create_transfer(db, payload, source=SOURCE, remember=False)
         out_leg, in_leg = transfer_service.transfer_legs(db, group)
         return [out_leg.id, in_leg.id], False
+    if kind in LOAN_LINE_KINDS and not loan_applies(line, instance.seq):
+        # No applicable loan (spec §4.0): a plain expense / income like the interest line below. Not prepare_entry
+        # (it refuses a counterparty on expense / income); the line's payable / receivable category is not copied.
+        account = db.get(Account, line["account_id"])
+        entry = LedgerEntry(
+            account_id=account.id, currency=account.currency, kind="expense" if kind == "repayment" else "income",
+            amount=-amount if kind == "repayment" else amount, entry_date=due, entry_time=None, posted_date=due,
+            category_id=None, project_id=line["project_id"], name=name, merchant=line["merchant"],
+            counterparty_id=line["counterparty_id"], description=description, tags=tags, source=SOURCE,
+        )
+        db.add(entry)
+        db.flush()
+        return [entry.id], True
     if kind in LOAN_LINE_KINDS:
         value = min(amount, open_amount)  # the last period absorbs rounding and hand repayments (D35, D38)
         entry_id = settlement_service.settle(
@@ -168,7 +196,7 @@ def _write_line(
         entry_time=None, posted_date=due,
         category_id=line["category_id"] or entry_write_service.system_category_id(db, "interest"),
         project_id=line["project_id"], name=name, merchant=line["merchant"],
-        counterparty_id=loan.counterparty_id if loan is not None else None,  # interest names the lender (D29)
+        counterparty_id=_interest_counterparty(template, loan),
         description=description, tags=tags, source=SOURCE,
     )
     db.add(entry)
@@ -209,7 +237,7 @@ def post_locked(
     amounts = resolved_amounts(definition, instance)
     loan, open_amount = None, Decimal(0)
     reference = loan_line(template)
-    if reference is not None:
+    if reference is not None and loan_applies(reference[1], instance.seq):
         index, line = reference
         if locked_loan is not None and locked_loan.id == line["loan_entry_id"]:
             later = list(
@@ -231,7 +259,10 @@ def post_locked(
             except NotFoundError as exc:
                 raise ValidationError(f"lines[{index}].loan_entry_id", "貸款記錄不存在") from exc
         open_amount = Decimal(0) if loan.is_closed else settlement_service.open_amount(db, loan)
-        if open_amount == 0:
+        # Only a period that expects principal ends the schedule on a cleared debt (hand repayment / early
+        # settlement). A zero-principal period (override or template) is a normal period: its other lines (interest)
+        # post and the zero repayment line is skipped below (spec §4.1 step 4).
+        if open_amount == 0 and amounts[index] != 0:
             _close_out(db, definition, instance, later, actor)
             return PostResult(instance.id, "loan_closed")
 

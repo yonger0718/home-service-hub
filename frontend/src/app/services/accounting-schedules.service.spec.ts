@@ -117,4 +117,23 @@ describe('AccountingService schedules', () => {
       .expectOne(r => r.method === 'POST' && r.url === '/api/accounting/schedules/run-now')
       .flush({ trigger: 'manual', today: '2026-10-03', status: 'completed', generated: 0, posted: [], failed: [], stopped_definitions: [] });
   });
+
+  it('getDebts hits /accounts/debts', () => {
+    service.getDebts().subscribe();
+    http.expectOne(r => r.method === 'GET' && r.url === '/api/accounting/accounts/debts').flush({
+      main_currency: 'TWD',
+      payables: { open_main: '0', count: 0, unconverted: [] },
+      receivables: { open_main: '0', count: 0, unconverted: [] },
+    });
+  });
+
+  it('attachScheduleLoan posts the loan body and bumps entriesChanged', () => {
+    const before = service.entriesChanged();
+    const body = { account_id: 1, counterparty_id: 2, category_id: null, amount: '300000', entry_date: '2026-10-01', name: '信貸' };
+    service.attachScheduleLoan(9, body).subscribe();
+    const post = http.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/schedules/definitions/9/loan');
+    expect(post.request.body).toEqual(body);
+    post.flush({ ...makeDefinition({ id: 9 }), instances: [] });
+    expect(service.entriesChanged()).toBe(before + 1);
+  });
 });
