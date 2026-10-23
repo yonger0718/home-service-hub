@@ -59,4 +59,9 @@ describe('countReminders', () => {
     const count = countReminders({ dues: [due(1)], bill: () => null, counterparties: [], queue: [], today: TODAY });
     expect(count).toBe(0);
   });
+
+  it('adds the inbox ask count', () => {
+    const count = countReminders({ dues: [], bill: () => null, counterparties: [counterparty(1, 1)], queue: [], today: TODAY, inboxAsk: 3 });
+    expect(count).toBe(4);
+  });
 });

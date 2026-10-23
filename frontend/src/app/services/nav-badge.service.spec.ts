@@ -1,11 +1,13 @@
 import { WritableSignal, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { Observable, Subject, of } from 'rxjs';
+import { Observable, Subject, of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { reminderDues } from '../components/accounting/billing/billing-math';
 import { BillingService } from '../components/accounting/billing/billing.service';
 import { countReminders } from '../components/accounting/billing/reminder-count';
+import { InboxService } from '../components/accounting/inbox/inbox.service';
+import { makeInbox } from '../components/accounting/inbox/testing';
 import { makeAccount, makeEntry, makeInstance } from '../components/accounting/testing/fixtures';
 import { Counterparty, ImportRun, LedgerAccount, ScheduleInstance } from '../models/accounting.model';
 import { RecalcStatus } from '../models/portfolio.model';
@@ -67,6 +69,7 @@ describe('NavBadgeService', () => {
   let recalc: ReturnType<typeof calls<RecalcStatus>>;
   let accountingStub: Record<string, unknown>;
   let getRecalcStatus: ReturnType<typeof vi.fn>;
+  let getInbox: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -77,6 +80,7 @@ describe('NavBadgeService', () => {
     latest = calls();
     recalc = calls();
     getRecalcStatus = vi.fn(recalc.fn);
+    getInbox = vi.fn((): Observable<unknown> => of(makeInbox([])));
     accountingStub = {
       entriesChanged: signal(0),
       accountsChanged: signal(0),
@@ -97,6 +101,7 @@ describe('NavBadgeService', () => {
       providers: [
         { provide: AccountingService, useValue: accountingStub },
         { provide: PortfolioService, useValue: { getRecalcStatus } },
+        { provide: InboxService, useValue: { get: getInbox } },
       ],
     });
   });
@@ -359,6 +364,23 @@ describe('NavBadgeService', () => {
     const ids = [...ensure.mock.calls, ...reread.mock.calls].flatMap(([dues]) => dues.map(event => event.accountId));
     expect(ids).toContain(9);
     expect(ids).not.toContain(7);
+  });
+
+  it('counts 待處理 inbox cards (one card read, counts.ask)', () => {
+    getInbox.mockImplementation(() => of(makeInbox([], { ask: 2 })));
+    const svc = service();
+    svc.refresh();
+    answer(0, { counterparties: [counterparty(1, 1)] });
+    expect(getInbox).toHaveBeenCalledWith({ limit: 1 });
+    expect(svc.badges()['accounting-timeline']).toEqual({ count: 3, label: '提醒中心 3 項' });
+  });
+
+  it('a failed inbox read counts 0 and keeps the other reminders', () => {
+    getInbox.mockImplementation(() => throwError(() => new Error('boom')));
+    const svc = service();
+    svc.refresh();
+    answer(0, { counterparties: [counterparty(1, 1)] });
+    expect(svc.badges()['accounting-timeline']).toEqual({ count: 1, label: '提醒中心 1 項' });
   });
 
   it('timeline and badge agree', () => {
