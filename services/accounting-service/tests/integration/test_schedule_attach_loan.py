@@ -414,7 +414,6 @@ def test_floor_ignores_trailing_zero_principal_periods(client, db_session, seed)
     assert _attach(client, d.id, bank, lender, 1000).status_code == 201
 
 
-
 def _interest_only_tail(seed, db_session):
     """Series [1000, 0] with interest 50 on both periods (the S1 fixture's shape)."""
     bank = seed.account("薪轉", opening="5000")
@@ -480,6 +479,7 @@ def test_period_expecting_principal_after_hand_settlement_is_loan_closed(client,
     assert [(row.status, row.note, row.posted_entry_ids) for row in rows] == [("skipped", "貸款已結清", [])] * 2
     assert db_session.get(ScheduleDefinition, d.id).status == "ended"
     assert db_session.scalars(select(LedgerEntry).where(LedgerEntry.source == "schedule")).all() == []
+
 
 def test_all_zero_principal_series_is_nothing_pending(client, db_session, seed):
     """Multica S1: pending periods that repay no principal leave nothing for a loan to settle → 409 nothing_pending."""

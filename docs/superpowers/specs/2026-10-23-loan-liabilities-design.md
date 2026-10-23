@@ -54,7 +54,7 @@ Anti-goals
 - `validate_template` (`schedule_templates.py:63-123`): one `repayment`/`collection` line; `_check_loan` requires the
   linked entry to be `payable`/`receivable`, not a settlement, not a child, same currency as the line.
 - Posting (`schedule_posting.py:152-163, 205-236`): the repayment line settles the loan with
-  `min(amount, open_amount)`; when `open_amount == 0` the outcome is `loan_closed`, remaining pending instances are
+  `min(amount, open_amount)`; when `open_amount == 0` and the period expects principal the outcome is `loan_closed`, remaining pending instances are
   skipped and the definition is `ended`. So an attached loan ends the schedule by itself when the debt is paid.
 - `open_amount(db, entry)` = `abs(amount + Σ settlements in the same currency)` (`settlement_service.py:21-28`).
   `GET /entries?open=true` lists open receivable/payable originals with `open_amount`; `GET /counterparties` carries
