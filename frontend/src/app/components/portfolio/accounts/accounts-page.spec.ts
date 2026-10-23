@@ -308,7 +308,7 @@ describe('PortfolioAccountsPageComponent', () => {
     describe(mode, () => {
       beforeEach(() => layout.set(mode));
 
-      it('shows only the list (with its own header) at /portfolio/accounts', async () => {
+      it('shows the compact page (header, total, cards) at /portfolio/accounts without navigating or a pane', async () => {
         const harness = await open('/portfolio/accounts');
         const navigate = vi.spyOn(router, 'navigate');
         flushList();
@@ -316,10 +316,41 @@ describe('PortfolioAccountsPageComponent', () => {
 
         expect(navigate).not.toHaveBeenCalled();
         expect(router.url).toBe('/portfolio/accounts');
+        expect(TestBed.inject(PaneStateService).paneOpen()).toBe(false);
         expect(el(harness).querySelector('app-portfolio-account-detail')).toBeNull();
-        expect(el(harness).querySelector('.acct-master')).toBeNull();
-        expect(el(harness).querySelectorAll('app-page-header').length).toBe(1);
-        expect(el(harness).querySelector('app-portfolio-accounts-list .accounts-page app-page-header')).not.toBeNull();
+        expect(el(harness).querySelector('.accounts-md')).toBeNull();
+
+        const headers = el(harness).querySelectorAll('app-page-header');
+        expect(headers.length).toBe(1);
+        expect(headers[0].parentElement?.classList).toContain('accounts-compact');
+        expect(headers[0].querySelector('h1')?.textContent).toContain('現金帳戶');
+        expect(headers[0].textContent).toContain('券商交割戶與複委託帳戶的現金');
+        expect(headers[0].querySelectorAll('app-btn').length).toBe(2);
+        expect(headerButton(harness, '記錄入出金').classList).toContain('btn-soft');
+        expect(headerButton(harness, '新增帳戶').classList).toContain('btn-soft');
+        // Phones put the actions on their own line so the title is not squeezed at 390 px.
+        expect(headers[0].classList.contains('actions-below')).toBe(mode === 'phone');
+
+        // The width hook (560 px cap on sheet, full width on phone): the list sits directly in `.accounts-compact`.
+        expect(el(harness).querySelector('.accounts-compact > app-portfolio-accounts-list .acct-master')).not.toBeNull();
+        expect(el(harness).querySelector('.acct-master .acct-total')?.textContent).toContain('現金帳戶總額 · TWD');
+        expect(cards(harness).length).toBe(3);
+        expect(cards(harness).some(card => card.getAttribute('aria-pressed') === 'true')).toBe(false);
+        expect(cards(harness).some(card => card.classList.contains('selected'))).toBe(false);
+      });
+
+      it('opens the account detail when a card is tapped', async () => {
+        const harness = await open('/portfolio/accounts');
+        flushList();
+        await settle(harness);
+
+        cards(harness)[0].click();
+        await settle(harness);
+
+        expect(router.url).toBe('/portfolio/accounts/3');
+        expect(el(harness).querySelector('app-portfolio-accounts-list')).toBeNull();
+        expect(el(harness).querySelector('app-portfolio-account-detail app-page-header')).not.toBeNull();
+        expect(flushDetail(3)).toBe(1);
         expect(TestBed.inject(PaneStateService).paneOpen()).toBe(false);
       });
 
@@ -331,6 +362,70 @@ describe('PortfolioAccountsPageComponent', () => {
         expect(el(harness).querySelector('app-portfolio-accounts-list')).toBeNull();
         expect(el(harness).querySelector('app-portfolio-account-detail app-page-header')).not.toBeNull();
         expect(flushDetail(9)).toBe(1);
+      });
+
+      it('opens the list cash form from 記錄入出金 and the create dialog from 新增帳戶', async () => {
+        const harness = await open('/portfolio/accounts');
+        flushList();
+        await settle(harness);
+        const list = listInstance(harness);
+        const cashForm = vi.spyOn(list, 'openCashForm');
+        const createDialog = vi.spyOn(list, 'openCreateDialog');
+
+        headerButton(harness, '記錄入出金').click();
+        expect(cashForm).toHaveBeenCalledTimes(1);
+        expect(createDialog).not.toHaveBeenCalled();
+
+        headerButton(harness, '新增帳戶').click();
+        expect(createDialog).toHaveBeenCalledTimes(1);
+      });
+
+      it('auto-selects the first active account once on growing to panes', async () => {
+        const harness = await open('/portfolio/accounts');
+        const navigate = vi.spyOn(router, 'navigate');
+        flushList();
+        await settle(harness);
+        expect(navigate).not.toHaveBeenCalled();
+
+        layout.set('panes');
+        await settle(harness);
+        flushList(); // the panes master column's own list
+        await settle(harness);
+
+        expect(navigate).toHaveBeenCalledTimes(1);
+        expect(navigate).toHaveBeenCalledWith(['/portfolio/accounts', 7], { replaceUrl: true });
+        expect(router.url).toBe('/portfolio/accounts/7');
+        flushAnyDetail();
+      });
+
+      it('keeps the detail on shrinking from panes at /portfolio/accounts/7 and selects 7 on growing back', async () => {
+        layout.set('panes');
+        const harness = await open('/portfolio/accounts/7');
+        const navigate = vi.spyOn(router, 'navigate');
+        flushList();
+        await settle(harness);
+        expect(flushDetail(7)).toBe(1);
+
+        layout.set(mode);
+        await settle(harness);
+        expect(router.url).toBe('/portfolio/accounts/7');
+        expect(el(harness).querySelector('app-portfolio-accounts-list')).toBeNull();
+        expect(el(harness).querySelector('.accounts-compact')).toBeNull();
+        expect(el(harness).querySelector('app-portfolio-account-detail app-page-header')).not.toBeNull();
+        expect(TestBed.inject(PaneStateService).paneOpen()).toBe(false);
+        expect(flushDetail(7)).toBe(1); // the route-driven detail of the compact layout
+
+        layout.set('panes');
+        await settle(harness);
+        flushList();
+        await settle(harness);
+        expect(flushDetail(7)).toBe(1);
+        await settle(harness);
+
+        expect(navigate).not.toHaveBeenCalled();
+        expect(el(harness).querySelector('.accounts-md-detail app-portfolio-account-detail')).not.toBeNull();
+        expect(cards(harness)[1].getAttribute('aria-pressed')).toBe('true');
+        expect(TestBed.inject(PaneStateService).paneOpen()).toBe(true);
       });
     });
   }
