@@ -355,7 +355,8 @@ export class ScheduleSheetComponent {
     this.editingId.set(null);
     this.today.set(todayIso());
     this.loanCounterpartyId.set(null);
-    this.loanAmount.set(d.pending_principal === null ? '' : String(Number(d.pending_principal)));
+    // In the payload's form (the currency's decimals, no trailing zeros), so what is shown is what is sent.
+    this.loanAmount.set(d.pending_principal === null ? '' : amountString(Number(d.pending_principal), this.loanCurrency()));
     this.loanDate.set(this.today());
     this.loanName.set(d.name);
     this.attachOpen.set(true);
@@ -364,16 +365,20 @@ export class ScheduleSheetComponent {
         next: rows => {
           if (!this.destroyed()) {
             this.counterparties.set(rows);
+            // The select renders disabled while loading (and the 掛上貸款 button is gone): focus it once enabled.
+            focusSheetField(this.host.nativeElement, '.loan-form .loan-counterparty', this.injector);
           }
         },
         error: () => {
           if (!this.destroyed()) {
             this.error.set('對象讀取失敗，請稍後再試');
+            this.keepFocusInside();
           }
         },
       });
+    } else {
+      focusSheetField(this.host.nativeElement, '.loan-form .loan-counterparty', this.injector);
     }
-    focusSheetField(this.host.nativeElement, '.loan-form .loan-counterparty', this.injector);
   }
 
   closeAttach(): void {
@@ -439,14 +444,14 @@ export class ScheduleSheetComponent {
   /**
    * Handled at the host so the page never sees the key. Esc closes, in order: the 套用範圍 question (nothing is saved),
    * the period editor, the 掛上貸款 form, an open confirmation, the sheet. ⏎ in an amount field saves the period; ⏎ in
-   * a 掛上貸款 field confirms it.
+   * a field of the 掛上貸款 form (only there) confirms it.
    */
   onKeydown(event: KeyboardEvent): void {
     const action = sheetKeyAction(event, this.host.nativeElement.querySelector('.sheet'));
     if (action === 'confirm') {
       if (this.editingId() !== null && !this.askScope()) {
         this.saveEdit();
-      } else if (this.attachOpen()) {
+      } else if (this.attachOpen() && this.host.nativeElement.querySelector('.loan-form')?.contains(event.target as Node | null)) {
         this.attach();
       }
       return;

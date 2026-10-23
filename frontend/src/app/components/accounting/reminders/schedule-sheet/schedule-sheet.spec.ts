@@ -440,6 +440,53 @@ describe('ScheduleSheetComponent', () => {
       const empty = render(loanDetail({ pending_principal: null }));
       openForm(empty);
       expect((empty.querySelector('.loan-amount') as HTMLInputElement).value).toBe('');
+      fixture.destroy();
+      // Shown in the payload's form (TWD whole units), so what is shown is what is sent.
+      const rounded = render(loanDetail({ pending_principal: '286000.6000' }));
+      openForm(rounded);
+      expect((rounded.querySelector('.loan-amount') as HTMLInputElement).value).toBe('286001');
+      pick(rounded, '3');
+      click(rounded, '.loan-confirm');
+      const req = http.expectOne('/api/accounting/schedules/definitions/5/loan');
+      expect(req.request.body.amount).toBe('286001');
+      req.flush({ detail: 'nothing_pending' }, { status: 409, statusText: 'Conflict' });
+    });
+
+    it('focuses 對象 once the counterparties answer', async () => {
+      const el = render(loanDetail());
+      openForm(el);
+      await vi.waitFor(() => {
+        fixture.detectChanges();
+        expect(document.activeElement).toBe(el.querySelector('.loan-counterparty'));
+      });
+    });
+
+    it('keeps focus inside the sheet when the counterparties read fails', async () => {
+      const el = render(loanDetail());
+      click(el, '.sheet-attach-loan');
+      http.expectOne('/api/accounting/counterparties').flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(text(el.querySelector('.form-error'))).toBe('對象讀取失敗，請稍後再試');
+      await vi.waitFor(() => {
+        fixture.detectChanges();
+        expect(el.querySelector('.sheet')!.contains(document.activeElement)).toBe(true);
+      });
+    });
+
+    it('⏎ confirms only from a field of the form', () => {
+      const el = render(loanDetail());
+      openForm(el);
+      pick(el, '3');
+      const enter = () => new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+      el.querySelector('.sheet')!.dispatchEvent(enter());
+      el.querySelector('.rule-summary')!.dispatchEvent(enter());
+      http.expectNone(r => r.url.endsWith('/loan'));
+      el.querySelector('.loan-amount')!.dispatchEvent(enter());
+      http
+        .expectOne('/api/accounting/schedules/definitions/5/loan')
+        .flush(loanDetail({ loan_entry_id: 900, loan_remaining: '286000.0000', pending_principal: null }));
+      fixture.detectChanges();
+      expect(el.querySelector('.loan-form')).toBeNull();
     });
 
     it('確定 disabled without a counterparty or amount', () => {
