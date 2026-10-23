@@ -29,11 +29,13 @@ Independent review and lead validation of this expanded candidate remain pending
 - Deductions: `PATCH /api/portfolio/dividends/{id}/deductions` takes `{fee, tax,
   revision}` (non-negative, 2 dp) for pending and confirmed TW/TWD rows only. The
   net is re-derived as quantity × per-share − fee − tax (stored amount + fee + tax
-  without per-share data), with no 0.01 floor. 422: a negative net, or zero without
-  stock shares. 409: stale revision, legacy/unresolved row, or a confirmed row whose
-  cash legs are missing, duplicated or not auto-derived. On a confirmed row the one
-  auto-derived cash leg takes the new amount (date, account, source and fingerprint
-  unchanged), or is deleted at zero net; snapshot cash is refreshed after commit.
+  without per-share data), with no 0.01 floor. 404: unknown id. 422: a negative net,
+  or zero without stock shares. 409: a non-TW/TWD row, stale revision,
+  legacy/unresolved row, or a confirmed row whose cash legs are missing, duplicated
+  or not auto-derived. On a confirmed row the one auto-derived cash leg takes the new
+  amount (date, account, source and fingerprint unchanged), or is deleted at zero
+  net; snapshot cash is refreshed after commit. Zero net is one-way for a confirmed
+  row: with no leg left, later edits answer 409 and the UI no longer offers them.
   This owner edit is the only path that changes a confirmed row's fee/tax/amount.
   Re-persisting an existing entitlement (auto-record, reconciliation) keeps
   owner-set fee/tax; fee/tax still equal to the defaults for the stored gross follow
