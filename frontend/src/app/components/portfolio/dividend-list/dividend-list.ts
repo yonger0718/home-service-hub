@@ -108,7 +108,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     return parts.join(' · ');
   });
 
-  /** Status SegToggle; any value but 全部 lists the filter-wide set (Decision 7), paged client-side from `statusOffset`. */
+  /** Status SegToggle; any value but 全部 lists the filter-wide set (Decision 7), paged client-side from `statusOffset` (reset by every `loadAll`). */
   readonly status = signal<DividendStatusFilter>('all');
   private readonly statusOffset = signal(0);
   /** The selected status's rows of the filter-wide set; null on 全部 or while the set is not loaded. */
@@ -121,20 +121,14 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   private readonly statusWaiting = computed(() => this.status() !== 'all' && this.summaryRows() === null && !this.summaryFailed());
   /** A status is selected but the set failed: the server page stays, with the list error. */
   readonly statusFailed = computed(() => this.status() !== 'all' && this.summaryFailed());
-  /** Status-mode offset, pulled back to the last page when a reload (e.g. a receipt) shrank the set. */
-  private readonly statusStart = computed(() => {
-    const length = this.statusSet()?.length ?? 0;
-    const limit = this.query().limit ?? 25;
-    return this.statusOffset() < length ? this.statusOffset() : Math.max(0, Math.floor((length - 1) / limit) * limit);
-  });
   readonly listRows = computed<Dividend[]>(() => {
     const set = this.statusSet();
-    if (set) return set.slice(this.statusStart(), this.statusStart() + (this.query().limit ?? 25));
+    if (set) return set.slice(this.statusOffset(), this.statusOffset() + (this.query().limit ?? 25));
     return this.statusWaiting() ? [] : this.dividends();
   });
   /** Status set length in status mode, server `total` otherwise; null while the status set loads. */
   readonly listTotal = computed(() => this.statusSet()?.length ?? (this.statusWaiting() ? null : this.total()));
-  readonly listOffset = computed(() => (this.statusSet() ? this.statusStart() : this.query().offset ?? 0));
+  readonly listOffset = computed(() => (this.statusSet() ? this.statusOffset() : this.query().offset ?? 0));
   readonly listLoading = computed(() => this.loading() || this.statusWaiting());
   readonly headerSubtitle = computed(() => `${periodLabel(this.query())} · 共 ${this.listTotal() ?? '—'} 筆`);
   readonly rowViews = computed(() => {
@@ -246,6 +240,8 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   loadAll() {
     this.summarySub?.unsubscribe();
     const seq = ++this.summarySeq;
+    // A new set (filter, sort or data change) restarts the status list at its first page.
+    this.statusOffset.set(0);
     const { symbol, date_from, date_to, source, sort } = this.query();
     this.summary.set(null);
     this.summaryRows.set(null);

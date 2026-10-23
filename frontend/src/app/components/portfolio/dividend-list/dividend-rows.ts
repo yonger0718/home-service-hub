@@ -16,6 +16,8 @@ export interface DividendRowView {
   primary: string;
   /** 除息日 `YYYY/MM/DD`. */
   exDate: string;
+  /** Phone line under the amount: `除息 {exDate} · {pay.main}`, without the pay part when it is `—`. */
+  dateLine: string;
   /** 發放 / 收款 column. */
   pay: { main: string; sub: string | null };
   /** 每股 × 股數 column: `0.48 × 20,000`, `0.0001`, or `現金股利`. */
@@ -31,7 +33,7 @@ export interface DividendRowView {
 }
 
 const TAG_VARIANTS: Record<DividendStatus, TagVariant> = {
-  pending: 'accent',
+  pending: 'primary',
   confirmed: 'dividend',
   legacy: 'neutral',
   unresolved: 'warning',
@@ -76,13 +78,16 @@ export function deductionLine(d: Dividend): string | null {
 export function dividendRow(d: Dividend, name: string | null, accountName: (id: number) => string | null): DividendRowView {
   const status = dividendStatus(d);
   const net = netAmountLines(d);
+  const exDate = exDateLabel(d.ex_dividend_date);
+  const pay = payLine(d, accountName);
   return {
     id: d.id,
     status,
     square: stockSquare(d.symbol, name),
     primary: name ? `${name} ${d.symbol}` : d.symbol,
-    exDate: exDateLabel(d.ex_dividend_date),
-    pay: payLine(d, accountName),
+    exDate,
+    dateLine: pay.main === '—' ? `除息 ${exDate}` : `除息 ${exDate} · ${pay.main}`,
+    pay,
     perShare: perShareLine(d),
     deductions: deductionLine(d),
     net: { main: net.main, sub: net.sub },

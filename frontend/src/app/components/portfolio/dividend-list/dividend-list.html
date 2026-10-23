@@ -105,6 +105,7 @@
 
 <div class="div-list" [class.compact]="isPhone()">
   @if (!isPhone() && rowViews().length > 0) {
+    <p class="visually-hidden">股利紀錄，欄位：股票、除息日、發放 / 收款、每股 × 股數、淨額、狀態</p>
     <div class="div-head div-grid" aria-hidden="true">
       <span>股票</span><span>除息日</span><span>發放 / 收款</span><span>每股 × 股數</span><span class="num">淨額</span><span>狀態</span>
     </div>
@@ -138,7 +139,7 @@
         <div class="c-net num">
           <div class="net" [class.primary]="row.netClass === 'primary'" [class.dividend]="row.netClass === 'dividend'">{{ row.net.main }}</div>
           @if (isPhone()) {
-            <div class="sub">除息 {{ row.exDate }}</div>
+            <div class="sub">{{ row.dateLine }}</div>
           } @else if (row.net.sub) {
             <div class="sub">{{ row.net.sub }}</div>
           }
@@ -148,7 +149,7 @@
         }
         <div class="c-actions">
           @if (row.status === 'pending') {
-            <app-btn variant="secondary" (click)="openReceipt(item.d)">確認收款</app-btn>
+            <app-btn variant="secondary" [ariaLabel]="'確認收款 ' + row.primary" (click)="openReceipt(item.d)">確認收款</app-btn>
           }
           <button type="button" class="row-action" [attr.aria-label]="'操作 ' + row.primary" aria-haspopup="menu"
             (click)="onRowAction({ id: row.id, event: $event })">⋯</button>

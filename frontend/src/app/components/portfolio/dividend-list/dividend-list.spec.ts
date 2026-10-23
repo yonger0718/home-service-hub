@@ -584,7 +584,7 @@ describe('Dividend filter-wide summary', () => {
       fixture.destroy();
     });
 
-    it('pulls the status page back to the last page when a reload shrinks the set', () => {
+    it('restarts the status list at its first page whenever the filter-wide set reloads, also when it shrinks then grows', () => {
       const fixture = create();
       const component = fixture.componentInstance;
       respond(summaryCalls[0], { items: pendingRows(30), total: 30 });
@@ -598,6 +598,12 @@ describe('Dividend filter-wide summary', () => {
       fixture.detectChanges();
       expect(rowIds(fixture)).toEqual(pendingRows(20).map(d => d.id));
       expect(el(fixture).textContent).not.toContain('無股利紀錄');
+
+      component.saveDividend();
+      respond(summaryCalls[2], { items: pendingRows(30), total: 30 });
+      fixture.detectChanges();
+      expect(rowIds(fixture)).toEqual(pendingRows(25).map(d => d.id));
+      expect(paginator(fixture)).toMatchObject({ first: 0, totalRecords: 30 });
       fixture.destroy();
     });
 
@@ -695,6 +701,9 @@ describe('Dividend filter-wide summary', () => {
       expect(Array.from(el(fixture).querySelectorAll('.div-head span')).map(h => h.textContent?.trim()))
         .toEqual(['股票', '除息日', '發放 / 收款', '每股 × 股數', '淨額', '狀態']);
       expect(el(fixture).querySelector('app-timeline')).toBeNull();
+      expect(el(fixture).querySelector('.div-head')?.getAttribute('aria-hidden')).toBe('true');
+      expect(el(fixture).querySelector('.div-list > .visually-hidden')?.textContent?.trim())
+        .toBe('股利紀錄，欄位：股票、除息日、發放 / 收款、每股 × 股數、淨額、狀態');
 
       const square = el(fixture).querySelector<HTMLElement>('[data-row-id="21"] .div-square')!;
       const token = squareToken('00878');
@@ -707,6 +716,7 @@ describe('Dividend filter-wide summary', () => {
       expect(cell(fixture, 21, '.c-qty')).toBe('0.48 × 20,000 手續費 10 · 補充保費 202');
       expect(cell(fixture, 21, '.c-net .net')).toBe('+9,600');
       expect(cell(fixture, 21, '.c-status')).toBe('待收');
+      expect(el(fixture).querySelector('[data-row-id="21"] .c-status .tag')?.classList).toContain('tag-primary');
       fixture.destroy();
     });
 
@@ -751,6 +761,7 @@ describe('Dividend filter-wide summary', () => {
 
       const confirm = Array.from(el(fixture).querySelectorAll('button')).filter(b => b.textContent?.trim() === '確認收款');
       expect(confirm.map(b => b.closest('[data-row-id]')?.getAttribute('data-row-id'))).toEqual(['21']);
+      expect(confirm[0].getAttribute('aria-label')).toBe('確認收款 國泰永續高股息 00878');
       confirm[0].click();
       expect(component.receiptTarget()?.id).toBe(21);
 
@@ -780,11 +791,12 @@ describe('Dividend filter-wide summary', () => {
       fixture.destroy();
     });
 
-    it('collapses rows: square, name + tag, per-share line, the amount with the ex-date beneath, no column heads', () => {
+    it('collapses rows: square, name + tag, per-share line, the amount with the 除息 / 發放 line beneath, no column heads', () => {
       TestBed.inject(LayoutModeService).set('phone');
       const fixture = create();
-      const tw: Dividend = { ...due, id: 21, symbol: '00878', amount: 9600, cash_dividend_per_share: 0.48, quantity_at_record_date: 20000 };
-      respond(listCalls[0], { items: [tw], total: 1 });
+      const tw: Dividend = { ...due, id: 21, symbol: '00878', amount: 9600, cash_dividend_per_share: 0.48, quantity_at_record_date: 20000, payment_date: '2026-11-18' };
+      const paid: Dividend = { ...confirmed, id: 25, ex_dividend_date: '2026-07-16', receipt_date: '2026-08-12' };
+      respond(listCalls[0], { items: [tw, paid], total: 2 });
       fixture.detectChanges();
       const row = el(fixture).querySelector('[data-row-id="21"]')!;
       const text = (selector: string) => lines(row.querySelector(selector));
@@ -794,7 +806,8 @@ describe('Dividend filter-wide summary', () => {
       expect(row.querySelector('.div-square')).not.toBeNull();
       expect(text('.name-line')).toBe('國泰永續高股息 00878 待收');
       expect(text('.c-stock .sub')).toBe('0.48 × 20,000');
-      expect(text('.c-net')).toBe('+9,600 除息 2026/10/17');
+      expect(text('.c-net')).toBe('+9,600 除息 2026/10/17 · 預定 11/18');
+      expect(lines(el(fixture).querySelector('[data-row-id="25"] .c-net'))).toBe('+37,578 除息 2026/07/16 · 收款 08/12');
       expect(row.querySelector('.c-ex')).toBeNull();
       expect(row.querySelector('.c-pay')).toBeNull();
       expect(row.querySelector('.c-status')).toBeNull();

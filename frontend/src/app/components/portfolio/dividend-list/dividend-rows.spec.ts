@@ -54,7 +54,7 @@ describe('dividend rows', () => {
 
   describe('statusTagVariant', () => {
     it('maps each status to an existing tag variant', () => {
-      expect(statusTagVariant('pending')).toBe('accent');
+      expect(statusTagVariant('pending')).toBe('primary');
       expect(statusTagVariant('confirmed')).toBe('dividend');
       expect(statusTagVariant('legacy')).toBe('neutral');
       expect(statusTagVariant('unresolved')).toBe('warning');
@@ -83,12 +83,13 @@ describe('dividend rows', () => {
         square: stockSquare('00878', '國泰永續高股息'),
         primary: '國泰永續高股息 00878',
         exDate: '2026/10/17',
+        dateLine: '除息 2026/10/17 · 預定 11/18',
         pay: { main: '預定 11/18', sub: 'TWSE 公告' },
         perShare: '0.48 × 20,000',
         deductions: '補充保費 202',
         net: { main: '+9,600', sub: null },
         netClass: 'primary',
-        tag: { text: '待收', variant: 'accent' },
+        tag: { text: '待收', variant: 'primary' },
         reviewReason: null,
         sourceCorrected: false,
       });
@@ -97,7 +98,9 @@ describe('dividend rows', () => {
     it('uses the dividend colour for confirmed and legacy rows and the account name under the receipt date', () => {
       const confirmed = dividendRow(dv({ receipt_status: 'confirmed', receipt_date: '2026-11-20', receipt_account_id: 7 }), null, (id: number) => (id === 7 ? '元大交割戶' : null));
       expect(confirmed).toMatchObject({ primary: '00878', netClass: 'dividend', pay: { main: '收款 11/20', sub: '元大交割戶' }, tag: { text: '已收款' } });
-      expect(dividendRow(dv({ receipt_status: 'legacy_unknown' }), null, noAccounts)).toMatchObject({ netClass: 'dividend', tag: { text: '舊資料 · 未核實', variant: 'neutral' } });
+      expect(confirmed.dateLine).toBe('除息 2026/10/17 · 收款 11/20');
+      expect(dividendRow(dv({ receipt_status: 'legacy_unknown' }), null, noAccounts))
+        .toMatchObject({ netClass: 'dividend', tag: { text: '舊資料 · 未核實', variant: 'neutral' }, dateLine: '除息 2026/10/17' });
     });
 
     it('keeps the review reason and flags a source correction', () => {
