@@ -109,6 +109,18 @@ class CurrencyAmountOut(BaseModel):
     amount: Decimal
 
 
+class DebtTotalOut(BaseModel):
+    open_main: Decimal
+    count: int
+    unconverted: list[CurrencyAmountOut]
+
+
+class DebtsSummaryOut(BaseModel):
+    main_currency: str
+    payables: DebtTotalOut
+    receivables: DebtTotalOut
+
+
 class LoanScheduleOut(BaseModel):
     definition_id: int
     name: str
