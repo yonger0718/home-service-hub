@@ -18,4 +18,17 @@ describe('PortfolioAccountsListComponent page header', () => {
     const create = Array.from(el.querySelectorAll('app-page-header app-btn')).find(btn => btn.textContent?.includes('新增帳戶'));
     expect(create?.querySelector('.btn-soft')).not.toBeNull();
   });
+
+  it('leaves the page header to the master-detail page in master mode', () => {
+    TestBed.configureTestingModule({
+      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
+    });
+    const fixture = TestBed.createComponent(PortfolioAccountsListComponent);
+    fixture.componentRef.setInput('master', true);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+
+    expect(el.querySelector('app-page-header')).toBeNull();
+    expect(el.querySelector('.acct-master .acct-total')).not.toBeNull();
+  });
 });

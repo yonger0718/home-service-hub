@@ -1,8 +1,9 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from app.models.cash_transaction import CashTransaction, CashTxnSource, CashTxnType
-from app.services.cash_account_service import _merge_legs_into_groups
+from app.models.portfolio import Transaction, TransactionType
+from app.services.cash_account_service import _merge_legs_into_groups, annotate_related
 
 
 def _cash(
@@ -68,3 +69,33 @@ def test_merge_legs_keeps_standalone_rows_individual() -> None:
     assert rows[1].id == 4
     assert rows[1].type == CashTxnType.DIVIDEND_CASH
     assert rows[1].child_legs is None
+
+
+def test_merged_group_parent_and_child_legs_are_annotated(db_session) -> None:
+    # SQLite drops tzinfo on write; store the UTC instant of 2026-10-02 23:30 +08:00.
+    db_session.add(
+        Transaction(
+            id=42,
+            symbol="2330",
+            type=TransactionType.BUY,
+            quantity=Decimal("1000"),
+            price=Decimal("1000"),
+            trade_date=datetime(2026, 10, 2, 15, 30, tzinfo=timezone.utc),
+        )
+    )
+    db_session.commit()
+    tax = _cash(id=3, type_=CashTxnType.TAX, amount="-300", txn_date=date(2026, 6, 4))
+    fee = _cash(id=2, type_=CashTxnType.FEE, amount="-285", txn_date=date(2026, 6, 3))
+    settle = _cash(id=1, type_=CashTxnType.BUY_SETTLE, amount="-100000", txn_date=date(2026, 6, 2))
+
+    [group] = annotate_related(db_session, _merge_legs_into_groups([tax, fee, settle]))
+
+    assert group.id == -42
+    assert group.amount == Decimal("-100585")
+    for row in [group, *group.child_legs]:
+        assert row.related_symbol == "2330"
+        assert row.related_quantity == Decimal("1000")
+        assert row.related_trade_date == date(2026, 10, 2)
+        assert row.related_per_share is None
+        assert row.related_fee is None
+        assert row.related_tax is None

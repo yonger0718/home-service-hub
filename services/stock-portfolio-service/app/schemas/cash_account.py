@@ -77,6 +77,14 @@ class CashTransactionOut(CashTransactionBase):
     import_fingerprint: str
     created_at: datetime
     child_legs: list["CashTransactionOut"] | None = None
+    # Response-only context from the linked Transaction / Dividend row
+    # (filled by cash_account_service.annotate_related; None when unlinked).
+    related_symbol: str | None = None
+    related_quantity: Decimal | None = None
+    related_trade_date: date | None = None
+    related_per_share: Decimal | None = None
+    related_fee: Decimal | None = None
+    related_tax: Decimal | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

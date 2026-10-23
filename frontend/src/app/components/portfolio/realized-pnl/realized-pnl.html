@@ -1,35 +1,78 @@
 <p-toast></p-toast>
 
-<app-page-header></app-page-header>
+<app-page-header [subtitle]="headerSubtitle()"></app-page-header>
 
-<div class="realized-summary-row">
-  <div class="bento-item realized-summary-card" [class.is-loss]="Number(summary().filter_scope_total) < 0">
-    <div class="bento-content">
-      <div class="label">已實現損益 (篩選範圍)</div>
-      <div class="value">{{ formatCurrency(summary().filter_scope_total) }}</div>
-      <div class="meta">{{ total() }} 筆交易</div>
-    </div>
+@if (!allFailed()) {
+  <div class="kpi-row">
+    @for (card of cards(); track card.label) {
+      <app-bento class="kpi-card">
+        <div class="label">{{ card.label }}</div>
+        <div class="value" [class.up]="card.sign > 0" [class.down]="card.sign < 0">{{ card.value }}</div>
+        <div class="meta">{{ card.meta }}</div>
+      </app-bento>
+    }
   </div>
-  <div class="bento-item realized-summary-card" [class.is-loss]="Number(summary().ytd_total) < 0">
-    <div class="bento-content">
-      <div class="label">今年累計 (YTD)</div>
-      <div class="value">{{ formatCurrency(summary().ytd_total) }}</div>
-      <div class="meta">{{ ytdTradeCount() }} 筆交易</div>
-    </div>
-  </div>
-</div>
+  @if (allCapped()) {
+    <p class="summary-note">⋯ 僅載入前 10,000 筆；筆數與本月／當沖／費用為已載入部分</p>
+  }
 
-<div class="hub-filter-bar">
+  <app-bento class="bars-card" [title]="'每月已實現 · ' + barsYear()">
+    <p class="bars-caption">柱上數字為當月合計</p>
+    @if (allLoading()) {
+      <p class="bars-loading">查詢中…</p>
+    } @else {
+      <p class="visually-hidden">{{ barsAriaText() }}</p>
+      <div class="bars-scroll" aria-hidden="true">
+        <div class="bars" [style.--pos]="barExtents().pos" [style.--neg]="barExtents().neg">
+          @for (bar of bars(); track bar.month) {
+            <div class="bar-col" [class.future]="bar.future">
+              <div class="half pos">
+                @if (bar.count && bar.total >= 0) {
+                  <span class="bar" [class.up]="bar.sign > 0" [style.--r]="bar.ratio" [attr.data-ratio]="bar.ratio">
+                    <span class="bar-amount">{{ bar.amount }}</span>
+                  </span>
+                }
+              </div>
+              <div class="zero"></div>
+              <div class="half neg">
+                @if (bar.count && bar.total < 0) {
+                  <span class="bar down" [style.--r]="bar.ratio" [attr.data-ratio]="bar.ratio">
+                    <span class="bar-amount">{{ bar.amount }}</span>
+                  </span>
+                }
+              </div>
+              <span class="bar-label">{{ bar.label }}</span>
+            </div>
+          }
+        </div>
+      </div>
+    }
+  </app-bento>
+}
+
+<app-bento class="filter-card" title="篩選">
   <div class="search-wrap">
-    <i class="pi pi-search"></i>
+    <i class="pi pi-search" aria-hidden="true"></i>
     <input
       type="text"
+      aria-label="搜尋代碼或名稱"
       [ngModel]="searchInput()"
       (ngModelChange)="onSearchInput($event)"
       placeholder="搜尋代碼或名稱（例如 2330 或 台積電）" />
   </div>
   <div class="filter-controls">
+    <app-seg-toggle
+      ariaLabel="市場"
+      [options]="marketOptions"
+      [value]="market()"
+      (change)="onMarketSelect($event)"
+    ></app-seg-toggle>
+    <label class="switch-field">
+      <app-switch ariaLabel="僅當沖" [checked]="query().day_trade_only ?? false" (checkedChange)="onDayTradeOnlyChange($event)"></app-switch>
+      <span aria-hidden="true">僅當沖</span>
+    </label>
     <p-datepicker
+      ariaLabel="日期範圍"
       [(ngModel)]="dateRange"
       selectionMode="range"
       [readonlyInput]="true"
@@ -50,14 +93,19 @@
       (ngModelChange)="onYearPresetChange($event)"
       styleClass="year-preset-control">
     </p-selectButton>
-    <label class="day-trade-toggle">
-      <span>僅當沖</span>
-      <p-toggleSwitch
-        [ngModel]="query().day_trade_only ?? false"
-        (ngModelChange)="onDayTradeOnlyChange($event)">
-      </p-toggleSwitch>
-    </label>
+    @if (showBrokerFilter()) {
+      <span class="filter-field">
+        <span class="field-label" aria-hidden="true">券商</span>
+        <app-seg-toggle
+          ariaLabel="券商篩選"
+          [options]="brokerFilterOptions()"
+          [value]="selectedBroker()"
+          (change)="selectBrokerFilter($event)"
+        ></app-seg-toggle>
+      </span>
+    }
     <p-select
+      ariaLabel="排序"
       [options]="sortOptions"
       optionLabel="label"
       optionValue="value"
@@ -66,25 +114,14 @@
       styleClass="hub-mini-select">
     </p-select>
     @if (hasActiveFilters()) {
-      <p-button icon="pi pi-filter-slash" severity="secondary" [text]="true" (onClick)="clearFilters()" pTooltip="清除篩選"></p-button>
+      <button type="button" class="clear-filters" (click)="clearFilters()">清除篩選</button>
     }
   </div>
-</div>
-
-@if (showBrokerFilter()) {
-  <div class="broker-filter-row">
-    <app-seg-toggle
-      ariaLabel="券商篩選"
-      [options]="brokerFilterOptions()"
-      [value]="selectedBroker()"
-      (change)="selectBrokerFilter($event)"
-    ></app-seg-toggle>
-  </div>
-}
+</app-bento>
 
 <div class="hub-result-meta">
-  <span class="meta-count">{{ total() }} 筆</span>
-  @if (loading()) {
+  <span class="meta-count">{{ listTotal() }} 筆</span>
+  @if (loading() || allLoading()) {
     <span class="meta-loading">
       <p-progressSpinner styleClass="w-1rem h-1rem" strokeWidth="4"></p-progressSpinner>
       查詢中…
@@ -92,102 +129,76 @@
   }
 </div>
 
-<div class="hub-modern-list" [class.is-loading]="loading()">
-  @for (event of filteredEvents(); track eventKey(event)) {
-    <div class="realized-row-shell">
-      <app-list-item [clickable]="true" (itemClick)="toggleExpanded(event)">
-        <ng-container left>
-          <div class="main-text realized-main-line">
-            <span class="text-truncate">{{ symbolDisplay(event) }}</span>
-            @if (event.position_side === 'SHORT') {
-              <span class="short-badge">融券</span>
+<section class="rz-list" aria-label="賣出明細" [class.compact]="isPhone()" [class.is-loading]="loading()">
+  @for (row of rows(); track row.key; let i = $index) {
+    @let open = expandedKey() === row.key;
+    <div class="rz-item">
+      <button
+        class="rz-row"
+        type="button"
+        [class.open]="open"
+        [attr.aria-expanded]="open"
+        [attr.aria-controls]="open ? 'rz-detail-' + i : null"
+        (click)="toggleExpanded(row.key)">
+        <span class="rz-square" [class.ink-dark]="row.square.ink === 'dark'" [class.ink-light]="row.square.ink === 'light'"
+          [style.background]="'var(' + row.square.token + ')'"
+          aria-hidden="true">{{ row.square.text }}</span>
+        <span class="rz-main">
+          <span class="rz-name-line">
+            <b class="rz-name">{{ row.name }}</b>
+            @if (!isPhone()) {
+              <small class="rz-symbol">{{ row.symbol }}@if (row.marketNote) { · {{ row.marketNote }} }</small>
             }
-            @if (showForeignColumns() && event.market !== 'TW') {
-              <span class="market-badge">{{ event.market }}</span>
+            @if (row.dayTrade) {
+              <app-tag variant="warning">當沖</app-tag>
             }
-            @if (showBrokerColumn() && showBrokerBadge(event)) {
-              <span class="market-badge broker-badge">{{ brokerLabel(event.broker) }}</span>
+            @for (warning of row.warnings; track warning) {
+              @if (warning === shortWarning) {
+                <app-tag>{{ warning }}</app-tag>
+              } @else {
+                <i class="pi pi-exclamation-triangle warning-icon" role="img" [attr.aria-label]="warning" [pTooltip]="warning"
+                  tooltipPosition="top"></i>
+              }
             }
-            @if (event.is_day_trade) {
-              <span class="day-trade-badge">當沖</span>
-            }
-            @if (event.note === 'no_long_inventory') {
-              <i
-                class="pi pi-exclamation-triangle warning-icon"
-                role="img"
-                tabindex="0"
-                aria-label="LONG 賣出無現股庫存，成本以 0 計算"
-                pTooltip="LONG 賣出無現股庫存，成本以 0 計算"
-                tooltipPosition="top">
-              </i>
-            }
-            @if (event.note === 'no_short_inventory') {
-              <i
-                class="pi pi-exclamation-triangle warning-icon"
-                role="img"
-                tabindex="0"
-                aria-label="SHORT 回補無未平倉空單，視為純成本"
-                pTooltip="SHORT 回補無未平倉空單，視為純成本"
-                tooltipPosition="top">
-              </i>
-            }
-          </div>
-          <div class="sub-text">
-            @if (event.symbol !== symbolDisplay(event)) {
-              {{ event.symbol }} ·
-            }
-            {{ event.trade_date }} · {{ event.quantity | number }} 股 · 售價 {{ displaySellPrice(event) }}
-          </div>
-        </ng-container>
-        <ng-container right>
-          <div class="text-end">
-            <div class="amount-text realized-pnl" [ngClass]="pnlClass(pnlValueForClass(event))">
-              {{ displayPnl(event) }}
+          </span>
+          <small class="rz-meta">{{ row.meta }}</small>
+        </span>
+        <span class="rz-amount-col">
+          <b class="rz-amount" [class.up]="row.amountClass === 'up'" [class.down]="row.amountClass === 'down'">{{ row.amount }}</b>
+          @if (row.pct) {
+            <span class="pct-pill" [class.up]="row.amountClass === 'up'" [class.down]="row.amountClass === 'down'">{{ row.pct }}</span>
+          }
+        </span>
+        <i class="pi pi-chevron-down rz-chevron" aria-hidden="true"></i>
+      </button>
+      @if (open) {
+        <dl class="rz-detail" [id]="'rz-detail-' + i">
+          @for (item of row.detail; track item.label) {
+            <div class="rz-detail-item">
+              <dt>{{ item.label }}</dt>
+              <dd class="main" [class.up]="item.tone === 'up'" [class.down]="item.tone === 'down'">{{ item.main }}</dd>
+              @if (item.sub) {
+                <dd class="sub">{{ item.sub }}</dd>
+              }
             </div>
-            <div class="sub-text">均價 {{ displayAvgCost(event) }}</div>
-          </div>
-        </ng-container>
-      </app-list-item>
-
-      @if (expandedKey() === eventKey(event)) {
-        <div class="realized-detail-panel">
-          <div class="detail-item">
-            <span>成交總額</span>
-            <strong>{{ displayAmount(event, event.proceeds_gross, event.native_proceeds_gross) }}</strong>
-          </div>
-          <div class="detail-item">
-            <span>手續費</span>
-            <strong>{{ displayAmount(event, event.fee, event.native_fee) }}</strong>
-          </div>
-          <div class="detail-item">
-            <span>交易稅</span>
-            <strong>{{ displayAmount(event, event.tax, event.native_tax) }}</strong>
-          </div>
-          <div class="detail-item">
-            <span>淨收入</span>
-            <strong>{{ displayAmount(event, event.proceeds_net, event.native_proceeds) }}</strong>
-          </div>
-          <div class="detail-item">
-            <span>賣出成本</span>
-            <strong>{{ displayAmount(event, event.cost_out, event.native_cost) }}</strong>
-          </div>
-        </div>
+          }
+        </dl>
       }
     </div>
   } @empty {
     <div class="empty-state">
-      <i class="pi pi-chart-line"></i>
+      <i class="pi pi-chart-line" aria-hidden="true"></i>
       <h4>無已實現損益</h4>
       <p>調整篩選條件後再試。</p>
     </div>
   }
-</div>
+</section>
 
-@if (total() > (query().limit ?? 25)) {
+@if (listTotal() > pageSize()) {
   <p-paginator
-    [first]="query().offset ?? 0"
-    [rows]="query().limit ?? 25"
-    [totalRecords]="total()"
+    [first]="listFirst()"
+    [rows]="pageSize()"
+    [totalRecords]="listTotal()"
     [rowsPerPageOptions]="rowsPerPageOptions"
     (onPageChange)="onPageChange($event)"
     styleClass="hub-paginator">

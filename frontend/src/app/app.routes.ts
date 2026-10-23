@@ -1,5 +1,5 @@
 import { inject } from '@angular/core';
-import { Routes } from '@angular/router';
+import { Routes, UrlMatchResult, UrlSegment } from '@angular/router';
 import { ACCOUNTING_PAGES, AccountingPage } from './components/accounting/accounting-pages';
 import { landingPathFor } from './components/shell/navigation';
 import { phoneLayoutGuard, wideLayoutGuard } from './services/layout-mode.service';
@@ -60,6 +60,17 @@ const ACCOUNTING_ROUTES: Routes = [
   { path: '', canMatch: [wideLayoutGuard], children: ACCOUNTING_WIDE_ROUTES },
 ];
 
+/**
+ * `portfolio/accounts` and `portfolio/accounts/:id` as one route (Decision 8), so the master-detail page and its list
+ * stay mounted when the selection (or the first auto-selection) changes the URL.
+ */
+export function portfolioAccountsMatcher(segments: UrlSegment[]): UrlMatchResult | null {
+  if (segments.length < 2 || segments.length > 3 || segments[0].path !== 'portfolio' || segments[1].path !== 'accounts') {
+    return null;
+  }
+  return segments.length === 3 ? { consumed: segments, posParams: { id: segments[2] } } : { consumed: segments };
+}
+
 export const routes: Routes = [
   // The bare URL (the manifest's start_url) opens the first visible group, as the sidebar logo does.
   { path: '', pathMatch: 'full', redirectTo: landingPath },
@@ -72,8 +83,7 @@ export const routes: Routes = [
   { path: 'portfolio/transactions', loadComponent: () => import('./components/portfolio/transaction-list/transaction-list').then(m => m.PortfolioTransactionListComponent) },
   { path: 'portfolio/dividends', loadComponent: () => import('./components/portfolio/dividend-list/dividend-list').then(m => m.PortfolioDividendListComponent) },
   { path: 'portfolio/realized-pnl', loadComponent: () => import('./components/portfolio/realized-pnl/realized-pnl').then(m => m.PortfolioRealizedPnlComponent) },
-  { path: 'portfolio/accounts', loadComponent: () => import('./components/portfolio/accounts/accounts-list').then(m => m.PortfolioAccountsListComponent) },
-  { path: 'portfolio/accounts/:id', loadComponent: () => import('./components/portfolio/accounts/account-detail').then(m => m.PortfolioAccountDetailComponent) },
+  { matcher: portfolioAccountsMatcher, loadComponent: () => import('./components/portfolio/accounts/accounts-page').then(m => m.PortfolioAccountsPageComponent) },
   { path: 'portfolio/import', loadComponent: () => import('./components/portfolio/import/import').then(m => m.PortfolioImportComponent) },
   { path: 'portfolio/import-broker', loadComponent: () => import('./components/portfolio/broker-import/broker-import').then(m => m.PortfolioBrokerImportComponent) },
 
