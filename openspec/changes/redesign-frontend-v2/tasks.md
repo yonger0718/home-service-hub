@@ -41,8 +41,8 @@
 
 ## 5. 已實現損益 and 現金帳戶
 
-- [ ] 5.1 Realized: KPI row (range total, current month, 當沖, sell-side costs), monthly bar chart, expandable rows, 僅當沖 switch
-- [ ] 5.2 Cash accounts: master-detail at ≥ 1024 px, first account selected on `/portfolio/accounts`, running balance column
+- [x] 5.1 Realized: KPI row (range total, current month, 當沖, sell-side costs), monthly bar chart, expandable rows, 僅當沖 switch
+- [x] 5.2 Cash accounts: master-detail at ≥ 1024 px, first account selected on `/portfolio/accounts`, running balance column
 
 ## 6. 匯入
 
