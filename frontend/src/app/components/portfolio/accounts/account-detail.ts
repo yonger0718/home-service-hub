@@ -284,6 +284,11 @@ export class PortfolioAccountDetailComponent implements OnInit {
       )
       .subscribe(({ paged, query }) => this.applyTransactions(paged, query));
 
+    // Embedded beside the list: follow cash writes made anywhere (the route-driven page refetches on each visit).
+    this.portfolioService.cashLedgerChanged$
+      .pipe(filter(() => this.embedded()), takeUntilDestroyed(this.destroyRef))
+      .subscribe(() => this.reload());
+
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(params => {
       const id = Number(params.get('id'));
       if (!id) return;
@@ -394,7 +399,8 @@ export class PortfolioAccountDetailComponent implements OnInit {
         this.savingAccount.set(false);
         this.editDialogVisible.set(false);
         this.messageService.add({ severity: 'success', summary: '已更新', detail: '帳戶資料已更新' });
-        this.loadBalanceHistory();
+        if (!this.embedded()) this.loadBalanceHistory();
+        this.portfolioService.notifyCashLedgerChanged();
       },
       error: () => {
         this.savingAccount.set(false);
@@ -463,10 +469,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
         this.savingTransaction.set(false);
         this.transactionDialogVisible.set(false);
         this.messageService.add({ severity: 'success', summary: '已新增', detail: '交易已建立' });
-        this.loadBalanceHistory();
-        this.fetchTransactions();
-        this.loadAccount();
-        this.portfolioService.notifyCashLedgerChanged();
+        this.ledgerWritten();
       },
       error: () => {
         this.savingTransaction.set(false);
@@ -500,10 +503,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
 
     this.portfolioService.deleteCashTransaction(accountId, txn.id).subscribe({
       next: () => {
-        this.fetchTransactions();
-        this.loadBalanceHistory();
-        this.loadAccount();
-        this.portfolioService.notifyCashLedgerChanged();
+        this.ledgerWritten();
         this.messageService.add({ severity: 'success', summary: '成功', detail: '已刪除' });
       },
       error: error => {
@@ -564,6 +564,19 @@ export class PortfolioAccountDetailComponent implements OnInit {
     return amount.toLocaleString('zh-TW', { style: 'currency', currency, maximumFractionDigits });
   }
 
+  /** After this account's ledger changed here: reload (embedded, through the notification) and tell the others. */
+  private ledgerWritten(): void {
+    if (!this.embedded()) this.reload();
+    this.portfolioService.notifyCashLedgerChanged();
+  }
+
+  private reload(): void {
+    if (!this.effectiveId()) return;
+    this.loadAccount();
+    this.loadBalanceHistory();
+    this.fetchTransactions();
+  }
+
   private loadAccount(): void {
     this.portfolioService.getAccounts({ include_inactive: true }).subscribe({
       next: list => {
@@ -583,6 +596,8 @@ export class PortfolioAccountDetailComponent implements OnInit {
     this.loadingHistory.set(true);
     this.portfolioService.getBalanceHistory(id, range).subscribe({
       next: history => {
+        // A late answer for an account no longer shown (a quick switch) must not replace the current chart.
+        if (history.account_id !== this.effectiveId()) return;
         this.balanceHistory.set(history);
         this.loadingHistory.set(false);
       },

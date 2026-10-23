@@ -1,4 +1,5 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, inject, input, output, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CommonModule } from '@angular/common';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router } from '@angular/router';
@@ -131,6 +132,16 @@ export class PortfolioAccountsListComponent implements OnInit {
     const total = this.displayedTotal();
     return `${total < 0 ? '−' : ''}$${groupedInteger(Math.abs(total))}`;
   });
+
+  constructor() {
+    // Any cash write (this page's form, the embedded detail, elsewhere) changes balances and the total.
+    this.portfolioService.cashLedgerChanged$.pipe(takeUntilDestroyed()).subscribe(() => this.fetchAccounts());
+  }
+
+  /** The cash-flow form recorded a flow: tell every listener (this list refetches through the notification). */
+  onCashFlowCreated(): void {
+    this.portfolioService.notifyCashLedgerChanged();
+  }
 
   openCashForm(): void {
     this.cashFormVisible.set(true);

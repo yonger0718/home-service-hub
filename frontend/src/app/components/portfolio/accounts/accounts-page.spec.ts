@@ -11,6 +11,7 @@ import { portfolioAccountsMatcher } from '../../../app.routes';
 import { BrokerAccount } from '../../../models/portfolio.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PaneStateService } from '../../../services/pane-state.service';
+import { PortfolioService } from '../../../services/portfolio.service';
 import { PortfolioAccountDetailComponent } from './account-detail';
 import { PortfolioAccountsListComponent } from './accounts-list';
 import { PortfolioAccountsPageComponent } from './accounts-page';
@@ -197,6 +198,28 @@ describe('PortfolioAccountsPageComponent', () => {
       flushAnyDetail();
     });
 
+    it('a cash-ledger change refetches the list and the embedded detail without navigating again', async () => {
+      const harness = await open('/portfolio/accounts');
+      const navigate = vi.spyOn(router, 'navigate');
+      flushList();
+      await settle(harness);
+      expect(flushDetail(7)).toBe(1);
+      await settle(harness);
+      expect(navigate).toHaveBeenCalledTimes(1);
+      const loaded: BrokerAccount[][] = [];
+      listInstance(harness).loaded.subscribe(items => loaded.push(items));
+
+      TestBed.inject(PortfolioService).notifyCashLedgerChanged();
+      flushList();
+      expect(flushDetail(7)).toBe(1);
+      await settle(harness);
+
+      expect(loaded).toEqual([ACCOUNTS]);
+      expect(navigate).toHaveBeenCalledTimes(1);
+      expect(router.url).toBe('/portfolio/accounts/7');
+      expect(flushDetail(7)).toBe(0);
+    });
+
     it('does not navigate or request a detail for an empty list', async () => {
       const harness = await open('/portfolio/accounts');
       const navigate = vi.spyOn(router, 'navigate');
@@ -204,6 +227,7 @@ describe('PortfolioAccountsPageComponent', () => {
       flushList([]);
       await settle(harness);
 
+      expect(TestBed.inject(PaneStateService).paneOpen()).toBe(false);
       expect(navigate).not.toHaveBeenCalled();
       expect(router.url).toBe('/portfolio/accounts');
       expect(el(harness).querySelector('app-portfolio-account-detail')).toBeNull();

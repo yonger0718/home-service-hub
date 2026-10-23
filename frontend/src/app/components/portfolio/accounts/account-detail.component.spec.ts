@@ -14,6 +14,7 @@ import { ConfirmationService, MessageService } from 'primeng/api';
 import { PortfolioAccountDetailComponent } from './account-detail';
 import { CashTransaction } from '../../../models/portfolio.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { PortfolioService } from '../../../services/portfolio.service';
 
 @Component({ selector: 'p-chart', template: '' })
 class ChartStubComponent {
@@ -566,6 +567,80 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
     flushLoads(7);
     routed.detectChanges();
     expect((routed.nativeElement as HTMLElement).querySelector('app-page-header')).not.toBeNull();
+  });
+
+  it('embedded: reloads account, history and transactions once per cash-ledger change', () => {
+    render({ accountId: 7, embedded: true });
+    expect(flushLoads(7)).toBe(1);
+
+    TestBed.inject(PortfolioService).notifyCashLedgerChanged();
+    expect(flushLoads(7)).toBe(1);
+  });
+
+  it('route-driven: ignores cash-ledger changes (the page refetches on visit)', () => {
+    params.next(new Map([['id', '7']]));
+    render();
+    expect(flushLoads(7)).toBe(1);
+
+    TestBed.inject(PortfolioService).notifyCashLedgerChanged();
+    expect(flushLoads(7)).toBe(0);
+  });
+
+  it('embedded: an own write notifies once and reloads once through the notification', () => {
+    const fixture = render({ accountId: 7, embedded: true });
+    flushLoads(7);
+    const notify = vi.spyOn(TestBed.inject(PortfolioService), 'notifyCashLedgerChanged');
+
+    fixture.componentInstance.openTransactionDialog();
+    fixture.componentInstance.transactionForm.patchValue({ txn_date: '2026-06-01', type: 'deposit', amount: '5000' });
+    fixture.componentInstance.submitTransaction();
+    httpMock.expectOne(req => req.method === 'POST' && req.url === '/api/portfolio/accounts/7/cash-transactions').flush({});
+
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(flushLoads(7)).toBe(1);
+  });
+
+  for (const embedded of [false, true]) {
+    it(`submitEdit notifies the cash-ledger change after a successful patch (embedded: ${embedded})`, () => {
+      const fixture = render({ accountId: 7, embedded });
+      flushLoads(7);
+      const notify = vi.spyOn(TestBed.inject(PortfolioService), 'notifyCashLedgerChanged');
+
+      fixture.componentInstance.openEditDialog();
+      fixture.componentInstance.submitEdit();
+      httpMock.expectOne(req => req.method === 'PATCH' && req.url === '/api/portfolio/accounts/7').flush({
+        id: 7, broker: 'cathay', nickname: '帳戶 7', currency: 'TWD', opening_balance: '0', opening_date: '2026-01-01',
+        is_active: true, created_at: '2026-01-01T00:00:00Z', native_balance: '100', target_balance: '100', target_currency: 'TWD',
+      });
+
+      expect(notify).toHaveBeenCalledTimes(1);
+      if (embedded) {
+        expect(flushLoads(7)).toBe(1);
+      } else {
+        const histories = httpMock.match(req => req.url === '/api/portfolio/accounts/7/balance-history');
+        expect(histories.length).toBe(1);
+        histories[0].flush({ account_id: 7, currency: 'TWD', points: [] });
+      }
+    });
+  }
+
+  it('drops a balance history that arrives for an account no longer shown', () => {
+    const fixture = render({ accountId: 9 });
+    fixture.componentRef.setInput('accountId', 7);
+    fixture.detectChanges();
+
+    const history = (id: number) => httpMock.expectOne(req => req.url === `/api/portfolio/accounts/${id}/balance-history`);
+    const nine = history(9);
+    history(7).flush({ account_id: 7, currency: 'TWD', points: [{ date: '2026-06-01', balance: '700' }] });
+    nine.flush({ account_id: 9, currency: 'TWD', points: [{ date: '2026-06-01', balance: '900' }] });
+
+    expect(fixture.componentInstance.balanceHistory().account_id).toBe(7);
+    expect(fixture.componentInstance.chartData().datasets[0].data).toEqual([700]);
+    expect(fixture.componentInstance.loadingHistory()).toBe(false);
+    httpMock.match(req => req.url === '/api/portfolio/accounts/').forEach(req =>
+      req.flush({ items: [], target_currency: null, total_target_balance: null, skipped_currencies: [] }));
+    httpMock.match(req => req.url.endsWith('/cash-transactions')).filter(req => !req.cancelled)
+      .forEach(req => req.flush({ items: [], total: 0, offset: 0, limit: 25 }));
   });
 });
 

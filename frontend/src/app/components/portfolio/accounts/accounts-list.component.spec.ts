@@ -3,9 +3,11 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { ReactiveFormsModule } from '@angular/forms';
 import { provideRouter } from '@angular/router';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountsList, BrokerAccount } from '../../../models/portfolio.model';
+import { PortfolioService } from '../../../services/portfolio.service';
+import { CashFlowFormComponent } from '../cash-flow-form/cash-flow-form';
 import { PortfolioAccountsListComponent, cashTotal } from './accounts-list';
 
 describe('PortfolioAccountsListComponent', () => {
@@ -291,6 +293,36 @@ describe('PortfolioAccountsListComponent master mode', () => {
     expect(total.textContent).toContain('未換算: JPY');
     expect(fixture.componentInstance.displayedTotal()).toBe(150000);
     expect(fixture.componentInstance.overdraftCount()).toBe(1);
+  });
+
+  it('refetches on every cash-ledger change until destroyed', () => {
+    const { fixture, emitted } = render(true);
+    const service = TestBed.inject(PortfolioService);
+
+    service.notifyCashLedgerChanged();
+    httpMock.expectOne('/api/portfolio/accounts/?in_currency=TWD').flush({
+      items: accounts.slice(0, 1), target_currency: 'TWD', total_target_balance: '100000', skipped_currencies: [],
+    });
+    expect(emitted).toEqual([accounts, accounts.slice(0, 1)]);
+
+    fixture.destroy();
+    service.notifyCashLedgerChanged();
+    httpMock.expectNone('/api/portfolio/accounts/?in_currency=TWD');
+  });
+
+  it('a cash flow recorded in the form notifies the ledger change, which refetches once', () => {
+    const { fixture } = render(true);
+    const service = TestBed.inject(PortfolioService);
+    const notify = vi.spyOn(service, 'notifyCashLedgerChanged');
+    const form = fixture.debugElement.query(d => d.componentInstance instanceof CashFlowFormComponent)
+      .componentInstance as CashFlowFormComponent;
+
+    form.created.emit({ account_id: 1 } as never);
+
+    expect(notify).toHaveBeenCalledTimes(1);
+    const reqs = httpMock.match('/api/portfolio/accounts/?in_currency=TWD');
+    expect(reqs.length).toBe(1);
+    reqs[0].flush({ items: accounts, target_currency: 'TWD', total_target_balance: '100000', skipped_currencies: [] });
   });
 
   it('keeps today\'s header and cards outside master mode', () => {

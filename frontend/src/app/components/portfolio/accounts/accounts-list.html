@@ -3,7 +3,7 @@
 <app-cash-flow-form
   [visible]="cashFormVisible()"
   (visibleChange)="cashFormVisible.set($event)"
-  (created)="fetchAccounts()">
+  (created)="onCashFlowCreated()">
 </app-cash-flow-form>
 
 @if (master()) {

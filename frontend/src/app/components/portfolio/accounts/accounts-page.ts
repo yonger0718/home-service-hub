@@ -57,8 +57,8 @@ export class PortfolioAccountsPageComponent {
       this.autoNavigated = true;
       untracked(() => void this.router.navigate(['/portfolio/accounts', id], { replaceUrl: true }));
     });
-    // The shell's rail (D2) while the detail pane is beside the list.
-    effect(() => this.paneState.paneOpen.set(this.panes()));
+    // The shell's rail (D2) while a detail pane is beside the list (none for an empty list).
+    effect(() => this.paneState.paneOpen.set(this.panes() && this.selectedId() !== null));
     inject(DestroyRef).onDestroy(() => this.paneState.paneOpen.set(false));
   }
 
