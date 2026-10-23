@@ -331,6 +331,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
       }
       this.clientOffset.set(offset);
       this.clampClientOffset();
+      this.expandedKey.set(null);
       return;
     }
     this.query.set({ ...this.query(), offset, limit });

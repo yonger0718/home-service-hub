@@ -829,6 +829,8 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
       expect(honhai.getAttribute('aria-expanded')).toBe('false');
       expect(honhai.hasAttribute('aria-controls')).toBe(false);
       expect(text(honhai, '.rz-square')).toBe(stockSquare('2317', '鴻海').text);
+      const square = honhai.querySelector('.rz-square')!;
+      expect(square.classList.contains(`ink-${stockSquare('2317', '鴻海').ink}`)).toBe(true);
       expect(text(honhai, '.rz-name')).toBe('鴻海');
       expect(text(honhai, '.rz-symbol')).toBe('2317');
       expect(text(honhai, '.rz-meta')).toBe(`10/02 · 1,000 股 · 均價 160.73 → 賣出 175.00 · ${brokerLabel('TW_CATHAY')}`);
@@ -879,6 +881,21 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
       expect(el(fixture).querySelector('.rz-detail')).toBeNull();
     });
 
+    it('colours a foreign 已實現損益 by the native value it shows, not the TWD sign', () => {
+      const flipped = { ...REALIZED_FIXTURE[2], realized_pnl: '-120' };
+      const fixture = load([flipped], 1, [flipped]);
+      const aapl = rowButtons(fixture)[0];
+      expect(aapl.querySelector('.rz-amount')?.classList.contains('down')).toBe(true);
+
+      aapl.click();
+      fixture.detectChanges();
+
+      const pnl = Array.from(el(fixture).querySelectorAll('.rz-detail-item')).find(item => text(item, 'dt') === '已實現損益')!;
+      expect(text(pnl, '.main')).toBe('+184.50 USD');
+      expect(pnl.querySelector('.main')?.classList.contains('up')).toBe(true);
+      expect(pnl.querySelector('.main')?.classList.contains('down')).toBe(false);
+    });
+
     it('renders the 融券 tag and the inventory warnings inside the row', () => {
       const short = { ...HONHAI, position_side: 'SHORT' as const, note: 'no_short_inventory' };
       const noLong = { ...ETF, note: 'no_long_inventory' };
@@ -917,7 +934,7 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
       expect(portfolioService['getRealizedPnl']).not.toHaveBeenCalled();
     });
 
-    it('pages the 台股 set with a paginator from the set and no API call', () => {
+    it('pages the 台股 set with a paginator from the set, no API call, and collapses the open row', () => {
       const fixture = load(MANY_TW.slice(0, 25), 30, MANY_TW);
       fixture.componentInstance.onMarketChange('TW');
       fixture.detectChanges();
@@ -927,12 +944,17 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
       expect(paginator(fixture)?.totalRecords).toBe(30);
       expect(paginator(fixture)?.first).toBe(0);
       expect(text(el(fixture), '.meta-count')).toBe('30 筆');
+      rowButtons(fixture)[0].click();
+      fixture.detectChanges();
+      expect(fixture.componentInstance.expandedKey()).not.toBeNull();
 
       fixture.componentInstance.onPageChange({ first: 25, rows: 25 });
       fixture.detectChanges();
 
       expect(rowButtons(fixture)).toHaveLength(5);
       expect(paginator(fixture)?.first).toBe(25);
+      expect(fixture.componentInstance.expandedKey()).toBeNull();
+      expect(el(fixture).querySelector('.rz-detail')).toBeNull();
       expect(portfolioService['getRealizedPnl']).not.toHaveBeenCalled();
     });
 

@@ -140,7 +140,8 @@
         [attr.aria-expanded]="open"
         [attr.aria-controls]="open ? 'rz-detail-' + i : null"
         (click)="toggleExpanded(row.key)">
-        <span class="rz-square" [class.ink-dark]="row.square.ink === 'dark'" [style.background]="'var(' + row.square.token + ')'"
+        <span class="rz-square" [class.ink-dark]="row.square.ink === 'dark'" [class.ink-light]="row.square.ink === 'light'"
+          [style.background]="'var(' + row.square.token + ')'"
           aria-hidden="true">{{ row.square.text }}</span>
         <span class="rz-main">
           <span class="rz-name-line">
@@ -175,8 +176,7 @@
           @for (item of row.detail; track item.label) {
             <div class="rz-detail-item">
               <dt>{{ item.label }}</dt>
-              <dd class="main" [class.up]="item.label === '已實現損益' && row.amountClass === 'up'"
-                [class.down]="item.label === '已實現損益' && row.amountClass === 'down'">{{ item.main }}</dd>
+              <dd class="main" [class.up]="item.tone === 'up'" [class.down]="item.tone === 'down'">{{ item.main }}</dd>
               @if (item.sub) {
                 <dd class="sub">{{ item.sub }}</dd>
               }

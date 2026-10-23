@@ -66,6 +66,17 @@ describe('realizedRow', () => {
     ]);
   });
 
+  it('tones only 已實現損益, by the sign of the value it shows', () => {
+    expect(row(HONHAI).detail.map(d => d.tone)).toEqual(['', '', '', '', '', 'up']);
+    expect(row(REALIZED_FIXTURE[3]).detail.at(-1)?.tone).toBe('down');
+    // A native gain that FX turns into a TWD loss: the native main is green, the TWD sub and the row amount red.
+    const flipped = row({ ...AAPL, realized_pnl: '-120' });
+    const pnl = flipped.detail.find(d => d.label === '已實現損益')!;
+    expect([pnl.main, pnl.sub, pnl.tone]).toEqual(['+184.50 USD', '−120', 'up']);
+    expect(flipped.amountClass).toBe('down');
+    expect(row({ ...AAPL, native_proceeds: '876.004' }).detail.find(d => d.label === '已實現損益')?.tone).toBe('');
+  });
+
   it('hides the pct when cost_out is 0', () => {
     expect(row({ ...HONHAI, cost_out: '0' }).pct).toBeNull();
   });

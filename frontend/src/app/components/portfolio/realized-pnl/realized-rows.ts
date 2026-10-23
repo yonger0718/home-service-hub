@@ -8,6 +8,8 @@ export interface RealizedDetail {
   label: string;
   main: string;
   sub: string | null;
+  /** Trend colour of `main`, from the sign of the value it shows (only 已實現損益 carries one). */
+  tone: 'up' | 'down' | '';
 }
 
 /** A sell as the realized list draws it (Decision 4). */
@@ -51,6 +53,15 @@ function signedTwd(value: string | number | null | undefined): string {
   return n == null ? '—' : signedInteger(n);
 }
 
+function toneOf(shown: number): 'up' | 'down' | '' {
+  return shown > 0 ? 'up' : shown < 0 ? 'down' : '';
+}
+
+/** A native amount as shown (rounded to its decimals), so its sign matches the text. */
+function shownNative(value: number, currency: string | null): number {
+  return Number(value.toFixed(currency === 'GBp' ? 4 : 2)) || 0;
+}
+
 /** A TW price or average, 2 dp grouped (`1,106.58`). */
 function price(value: string | number | null | undefined): string {
   const n = finite(value);
@@ -64,8 +75,7 @@ function shares(quantity: number): string {
 /** A native amount with its sign (`+184.50 USD`, `−3.20 USD`); no sign when it shows as zero. */
 function signedNative(value: number | null, currency: string | null): string {
   if (value == null) return '—';
-  const decimals = currency === 'GBp' ? 4 : 2;
-  const shown = Number(value.toFixed(decimals));
+  const shown = shownNative(value, currency);
   return `${shown > 0 ? '+' : shown < 0 ? '−' : ''}${formatNativeAmount(Math.abs(value), currency)}`;
 }
 
@@ -84,6 +94,14 @@ function pct(e: RealizedPnlEvent): string | null {
  * Stable row identity; several rows of the same sell stay apart in `realizedRows`. Fields that tell sells apart
  * without being unique (no id is sent).
  */
+/**
+ * The TWD-per-unit rate implied by a sell's two gross amounts. Local because it is derived per sell, not a stored
+ * rate: TWD gross is whole dollars, so it is only good to about 4 significant digits (32,800 / 1,061.50 → 30.90).
+ */
+function impliedFxRate(twdGross: number, nativeGross: number): number {
+  return Number((twdGross / nativeGross).toPrecision(4));
+}
+
 function rowKey(e: RealizedPnlEvent): string {
   return [e.trade_date, e.symbol, e.market, e.quantity, e.sell_price, e.realized_pnl].join('|');
 }
@@ -98,8 +116,11 @@ export function realizedRow(e: RealizedPnlEvent, name: string | null, brokerLabe
   const meta = [`${e.trade_date.slice(5, 7)}/${e.trade_date.slice(8, 10)}`, `${shares(e.quantity)} 股`, `均價 ${avg} → 賣出 ${sell}`];
   if (brokerLabel) meta.push(brokerLabel);
 
+  const whole = Math.round(finite(e.realized_pnl) ?? 0) || 0;
   const line = (label: string, value: string | number | null | undefined, native: string | number | null | undefined): RealizedDetail =>
-    foreign ? { label, main: formatNativeAmount(native ?? null, currency), sub: twd(value) } : { label, main: twd(value), sub: null };
+    foreign
+      ? { label, main: formatNativeAmount(native ?? null, currency), sub: twd(value), tone: '' }
+      : { label, main: twd(value), sub: null, tone: '' };
   const nativeProceeds = finite(e.native_proceeds);
   const nativePnl = nativeProceeds == null || nativeCost == null ? null : nativeProceeds - nativeCost;
   const detail: RealizedDetail[] = [
@@ -109,17 +130,20 @@ export function realizedRow(e: RealizedPnlEvent, name: string | null, brokerLabe
     line('淨收入', e.proceeds_net, e.native_proceeds),
     line('賣出成本', e.cost_out, e.native_cost),
     foreign
-      ? { label: '已實現損益', main: signedNative(nativePnl, currency), sub: signedTwd(e.realized_pnl) }
-      : { label: '已實現損益', main: signedTwd(e.realized_pnl), sub: null },
+      ? {
+          label: '已實現損益',
+          main: signedNative(nativePnl, currency),
+          sub: signedTwd(e.realized_pnl),
+          tone: nativePnl == null ? '' : toneOf(shownNative(nativePnl, currency)),
+        }
+      : { label: '已實現損益', main: signedTwd(e.realized_pnl), sub: null, tone: toneOf(whole) },
   ];
   const nativeGross = finite(e.native_proceeds_gross);
   const gross = finite(e.proceeds_gross);
   if (foreign && nativeGross != null && nativeGross > 0 && gross != null) {
-    // TWD gross is whole dollars, so the derived rate is only good to about 4 significant digits (32,800 / 1,061.50 → 30.90).
-    detail.push({ label: '匯率', main: formatFxRate(Number((gross / nativeGross).toPrecision(4))), sub: null });
+    detail.push({ label: '匯率', main: formatFxRate(impliedFxRate(gross, nativeGross)), sub: null, tone: '' });
   }
 
-  const whole = Math.round(finite(e.realized_pnl) ?? 0) || 0;
   const warnings: string[] = [];
   if (e.position_side === 'SHORT') warnings.push(SHORT_WARNING);
   if (e.note && NOTE_WARNINGS[e.note]) warnings.push(NOTE_WARNINGS[e.note]);
@@ -133,7 +157,7 @@ export function realizedRow(e: RealizedPnlEvent, name: string | null, brokerLabe
     dayTrade: e.is_day_trade,
     meta: meta.join(' · '),
     amount: signedTwd(e.realized_pnl),
-    amountClass: whole > 0 ? 'up' : whole < 0 ? 'down' : '',
+    amountClass: toneOf(whole),
     pct: pct(e),
     detail,
     warnings,
