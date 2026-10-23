@@ -2,7 +2,7 @@ import { CommonModule } from '@angular/common';
 import { Component, Input } from '@angular/core';
 import { DeferBlockBehavior, TestBed } from '@angular/core/testing';
 import { of } from 'rxjs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { NativeAmountPipe } from '../../../pipes/native-amount.pipe';
 import { PortfolioSummary, StockHolding } from '../../../models/portfolio.model';
@@ -29,6 +29,8 @@ describe('PortfolioDashboardComponent holding groups', () => {
     getBrokerCashFlows: ReturnType<typeof vi.fn>;
     getUpcomingExDividends: ReturnType<typeof vi.fn>;
     getNetworthHistory: ReturnType<typeof vi.fn>;
+    getDividends: ReturnType<typeof vi.fn>;
+    getSymbolNames: ReturnType<typeof vi.fn>;
     cashLedgerChanged$: import('rxjs').Observable<void>;
   };
 
@@ -37,11 +39,13 @@ describe('PortfolioDashboardComponent holding groups', () => {
     const { NEVER } = await import('rxjs');
     portfolioService = {
       refreshQuotes: vi.fn().mockReturnValue(of(null)),
-      getRecalcStatus: vi.fn(),
+      getRecalcStatus: vi.fn().mockReturnValue(of(null)),
       getSummary: vi.fn().mockReturnValue(of(buildSummary([buildHolding()]))),
       getBrokerCashFlows: vi.fn().mockReturnValue(of([])),
       getUpcomingExDividends: vi.fn().mockReturnValue(of([])),
       getNetworthHistory: vi.fn().mockReturnValue(of([])),
+      getDividends: vi.fn().mockReturnValue(of({ items: [], total: 0 })),
+      getSymbolNames: vi.fn().mockReturnValue(of({})),
       cashLedgerChanged$: NEVER,
     };
 
@@ -86,6 +90,9 @@ describe('PortfolioDashboardComponent holding groups', () => {
       .compileComponents();
   });
 
+  // Later spec files share the timers: never leave them faked.
+  afterEach(() => vi.useRealTimers());
+
   it('renders TW-only holdings without group chrome', () => {
     const fixture = TestBed.createComponent(PortfolioDashboardComponent);
     fixture.detectChanges();
@@ -114,6 +121,16 @@ describe('PortfolioDashboardComponent holding groups', () => {
     expect(fixture.nativeElement.querySelector('.fx-info')?.getAttribute('title')).toBe(
       'Revalued at 1 USD = 31.45 TWD',
     );
+  });
+
+  it('sorts a market group by market value when asked', () => {
+    const component = TestBed.createComponent(PortfolioDashboardComponent).componentInstance;
+    const grouped = component.groupHoldingsByMarket([
+      buildHolding({ symbol: 'A', market_value: 10 }),
+      buildHolding({ symbol: 'B', market_value: 30 }),
+      buildHolding({ symbol: 'C', market_value: 20 }),
+    ], 'market_value', 'desc');
+    expect(grouped[0].holdings.map(h => h.symbol)).toEqual(['B', 'C', 'A']);
   });
 
   it('exposes one filter option per present market plus All, and filters rows on selection', () => {

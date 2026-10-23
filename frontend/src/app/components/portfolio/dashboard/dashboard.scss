@@ -2,43 +2,164 @@
   padding-bottom: 2rem;
 }
 
-.bento-grid {
+.bento-grid,
+.kpi-row {
   display: grid;
   gap: 1.25rem;
+}
+
+/* Grid items stretch the bento section, so the cards of one row are equally tall. */
+.kpi-row {
   grid-auto-rows: minmax(140px, auto);
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+
+  > app-bento {
+    display: grid;
+  }
 }
 
 app-bento {
   display: block;
 }
 
-.b-full {
-  grid-column: 1 / -1;
+.hero-body {
+  align-items: stretch;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px;
 }
 
-@media (min-width: 761px) {
-  .bento-grid > app-bento:not(.b-full) {
-    display: grid;
+.hero-main {
+  display: flex;
+  flex: 1 1 320px;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.hero-label {
+  color: var(--app-text-muted);
+  font-size: var(--fs-label);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.hero-total {
+  color: var(--app-text);
+  font-size: 44px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.hero-today {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 14px;
+  gap: 8px;
+}
+
+.hero-today-label {
+  color: var(--app-text-muted);
+}
+
+.hero-today-amount {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.hero-composition {
+  display: flex;
+  flex: 1 1 360px;
+  flex-direction: column;
+  gap: 12px;
+  justify-content: center;
+  min-width: 0;
+}
+
+.composition-bar {
+  background: var(--app-surface-soft);
+  border-radius: 999px;
+  display: flex;
+  gap: 2px;
+  height: 12px;
+  overflow: hidden;
+
+  span {
+    flex-basis: 0;
+    flex-shrink: 1;
   }
 
-  .kpi-card-body {
-    display: flex;
-    flex-direction: column;
-    min-height: 100%;
+  .seg-stocks {
+    background: var(--app-primary);
   }
 
-  .kpi-card-footer {
-    margin-top: auto;
+  .seg-cash {
+    background: var(--app-success);
   }
 }
 
-.primary-tile {
-  min-height: 168px;
+.legend {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
 
-  .value {
-    font-size: 3rem;
-    line-height: 1;
+.legend-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* Hero and chart legends share the label, value and swatch base. */
+.legend-label,
+.chart-legend-label {
+  align-items: center;
+  color: var(--app-text-muted);
+  display: flex;
+  gap: 6px;
+}
+
+.legend-value,
+.chart-legend-value {
+  color: var(--app-text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.swatch,
+.chart-swatch {
+  box-sizing: border-box;
+  flex: none;
+}
+
+.legend-label {
+  font-size: var(--fs-label);
+}
+
+.legend-value {
+  font-size: 16px;
+}
+
+.swatch {
+  border-radius: 3px;
+  height: 8px;
+  width: 8px;
+
+  &.stocks {
+    background: var(--app-primary);
+  }
+
+  &.cash {
+    background: var(--app-success);
+  }
+
+  &.dashed {
+    border: 1.5px dashed var(--app-dividend);
   }
 }
 
@@ -51,24 +172,19 @@ app-bento {
   text-transform: uppercase;
 }
 
+.value-row {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
 .value {
   color: var(--app-text);
   font-size: 2rem;
   font-variant-numeric: tabular-nums;
   font-weight: 800;
   line-height: 1.1;
-
-  &.up {
-    color: var(--app-trend-positive);
-  }
-
-  &.down {
-    color: var(--app-trend-negative);
-  }
-
-  &.dividend {
-    color: var(--app-dividend);
-  }
 }
 
 .meta {
@@ -76,58 +192,6 @@ app-bento {
   font-size: 0.8rem;
   font-weight: 700;
   margin-top: 0.75rem;
-}
-
-.estimated-details {
-  color: var(--app-text-muted);
-  font-size: 0.8rem;
-  font-weight: 700;
-  margin-top: 0.75rem;
-
-  summary {
-    border-radius: 0.25rem;
-    color: var(--app-accent);
-    cursor: pointer;
-    padding: 0.15rem 0;
-
-    &:focus-visible {
-      outline: 2px solid var(--app-accent-soft-strong);
-      outline-offset: 3px;
-    }
-  }
-
-  &[open] summary {
-    margin-bottom: 0.75rem;
-  }
-}
-
-.estimated-breakdown {
-  display: grid;
-  gap: 0.5rem;
-  margin: 0;
-}
-
-.estimated-row {
-  align-items: baseline;
-  display: grid;
-  gap: 0.75rem;
-  grid-template-columns: minmax(0, 1fr) auto;
-}
-
-.estimated-row dt {
-  color: var(--app-text-muted);
-}
-
-.estimated-row dd {
-  color: var(--app-text);
-  font-variant-numeric: tabular-nums;
-  margin: 0;
-  text-align: right;
-}
-
-.estimated-explanation {
-  color: var(--app-text-muted);
-  margin: 0.75rem 0 0;
 }
 
 .chart-head {
@@ -159,114 +223,433 @@ app-bento {
   display: block;
 }
 
+.chart-return {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.chart-return-label {
+  color: var(--app-text-muted);
+  font-size: var(--fs-label);
+  font-weight: 700;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 13px;
+  gap: 8px 20px;
+  margin-bottom: 0.75rem;
+
+  &.two-col {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+
+    .chart-legend-item {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .chart-legend-label {
+      font-size: 12px;
+    }
+
+    .chart-legend-value {
+      font-size: 15px;
+    }
+  }
+}
+
+.chart-legend-item {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chart-legend-label {
+  gap: 8px;
+}
+
+.chart-swatch {
+  border-radius: 2px;
+  height: 3px;
+  width: 16px;
+
+  &.total {
+    background: var(--app-accent);
+  }
+
+  &.holdings {
+    background: var(--app-trend-positive);
+
+    &.down {
+      background: var(--app-trend-negative);
+    }
+  }
+
+  &.band {
+    background: var(--app-accent-soft);
+    border: 1px solid var(--app-border);
+    border-radius: 3px;
+    height: 12px;
+    width: 12px;
+  }
+}
+
+.chart-caption {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  margin: 0.5rem 0 0;
+}
+
 .networth-chart {
+  border-radius: 8px;
   height: 220px;
   position: relative;
 
-  p-chart,
+  &:focus-visible {
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+    outline: none;
+  }
+
+  /* Out of flow, so the chart fills whatever height the wrapper gets (fixed, or grown at >= 1024px). */
+  p-chart {
+    inset: 0;
+    position: absolute !important;
+  }
+
   canvas {
     height: 100% !important;
     width: 100% !important;
   }
 }
 
+.chart-row {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: minmax(0, 1fr);
+
+  > app-bento {
+    display: grid;
+    min-width: 0;
+  }
+}
+
+@media (min-width: 1024px) {
+  .chart-row {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  }
+
+  /* The chart takes the height the allocation card gives the row. */
+  .chart-card-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+  }
+
+  .networth-chart {
+    flex: 1 1 220px;
+    height: auto;
+    min-height: 220px;
+  }
+}
+
+.allocation-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.allocation-title {
+  color: var(--app-text);
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.allocation-bar {
+  border-radius: 999px;
+  display: flex;
+  gap: 2px;
+  height: 14px;
+  overflow: hidden;
+
+  span {
+    flex-basis: 0;
+    flex-shrink: 1;
+  }
+}
+
+.allocation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.allocation-row {
+  align-items: center;
+  display: flex;
+  font-size: 14px;
+  gap: 10px;
+}
+
+.allocation-swatch {
+  border-radius: 3px;
+  flex: none;
+  height: 10px;
+  width: 10px;
+}
+
+.allocation-name {
+  color: var(--app-text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.allocation-pct,
+.pending-amount {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.pending-block {
+  border-top: 1px solid var(--app-border);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 14px;
+}
+
+.pending-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.pending-title {
+  color: var(--app-text);
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.pending-link {
+  color: var(--app-primary);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+
+  &:hover,
+  &:focus-visible {
+    text-decoration: underline;
+  }
+}
+
+.pending-row {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.pending-tile {
+  align-items: center;
+  background: color-mix(in srgb, var(--app-dividend) 12%, transparent);
+  border-radius: 12px;
+  color: var(--app-dividend);
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  height: 40px;
+  justify-content: center;
+  line-height: 1.15;
+  width: 40px;
+
+  b {
+    font-size: 15px;
+  }
+}
+
+.pending-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.pending-name {
+  color: var(--app-text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.pending-note {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pending-amount {
+  font-size: 14px;
+}
+
+.empty-line {
+  color: var(--app-text-muted);
+  font-size: 13px;
+  margin: 0;
+}
+
+.holdings-sub {
+  color: var(--app-text-muted);
+  font-size: 0.8125rem;
+  margin: -0.5rem 0 0.75rem;
+}
+
+$holdings-cols: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 1.3fr) minmax(0, 1.6fr);
+
 .holdings {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
 }
 
-.market-tabs {
-  margin-bottom: 0.25rem;
-  align-self: flex-start;
+.holdings-head {
+  border-bottom: 1px solid var(--app-border);
+  color: var(--app-text-muted);
+  display: grid;
+  font-size: 0.75rem;
+  font-weight: 700;
+  gap: 0.75rem;
+  grid-template-columns: $holdings-cols;
+  letter-spacing: 0.04em;
+  padding: 0.5rem 0.5rem;
+
+  span:not(:first-child) {
+    text-align: right;
+  }
 }
 
 .market-group {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
 }
 
 .market-group-header {
   color: var(--app-text-muted);
-  font-size: 0.75rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  padding: 0.25rem 0.25rem 0;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  padding: 0.75rem 0.5rem 0.375rem;
 }
 
 .stock-row {
-  background: linear-gradient(180deg, var(--app-surface-soft) 0%, var(--app-surface) 100%);
-  border: 1px solid var(--app-border);
-  border-radius: 16px;
-  box-shadow: var(--app-card-shadow);
+  align-items: center;
+  border-bottom: 1px solid var(--app-border);
   cursor: pointer;
-  display: block;
-  padding: 1rem;
-  transition: all 0.2s var(--ease-ios);
+  display: grid;
+  font-variant-numeric: tabular-nums;
+  gap: 0.75rem;
+  grid-template-columns: $holdings-cols;
+  min-height: 52px;
+  padding: 0.625rem 0.5rem;
+  transition: background-color 0.2s var(--ease-ios);
 
   &:hover,
   &:focus-visible {
-    border-color: var(--app-accent-soft-strong);
-    box-shadow: var(--app-raised-shadow);
+    background: var(--app-surface-soft);
     outline: none;
+  }
+
+  > span:not(.stock-main) {
+    text-align: right;
   }
 }
 
-.stock-top {
+.stock-main {
   align-items: center;
   display: flex;
-  justify-content: space-between;
-  margin-bottom: 0.75rem;
+  gap: 0.75rem;
+  min-width: 0;
 }
 
-.stock-sym,
-.stock-price {
+.stock-abbr {
+  align-items: center;
+  border-radius: 12px;
+  color: #fff;
+  display: flex;
+  flex: none;
+  font-size: 0.8125rem;
+  font-weight: 800;
+  height: 40px;
+  justify-content: center;
+  width: 40px;
+}
+
+/* Warm/green fills are too light for white initials (WCAG AA) in light mode. */
+.stock-abbr.ink-dark {
+  color: var(--app-text);
+}
+
+/* Dark series tokens are light, so the initials take the page background for contrast. */
+:host-context(.app-dark-mode) .stock-abbr,
+:host-context(.app-dark-mode) .stock-abbr.ink-dark {
+  color: var(--app-bg);
+}
+
+.stock-sym {
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
-.stock-price {
-  text-align: right;
-}
-
-.stock-sym .s,
-.stock-price .p {
+.stock-sym .s {
   align-items: center;
   color: var(--app-text);
   display: inline-flex;
-  font-size: 1.1rem;
+  font-size: 0.9375rem;
+  font-weight: 700;
   gap: 0.45rem;
-  font-weight: 800;
 }
 
 .stock-sym .n {
   color: var(--app-text-muted);
-  font-size: 0.8rem;
+  font-size: 0.75rem;
 }
 
-.stock-price .c {
-  font-size: 0.85rem;
+.stock-qty,
+.stock-price,
+.stock-value {
+  color: var(--app-text);
+  font-size: 0.875rem;
   font-weight: 600;
 }
 
-.stock-stats {
-  display: flex;
-  gap: 1.5rem;
+.stock-day {
+  font-size: 0.75rem;
+  font-weight: 700;
 }
 
-.st {
+.stock-pnl {
   display: flex;
   flex-direction: column;
+  font-size: 0.875rem;
+  font-weight: 700;
+
+  .pnl-pct {
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
 }
 
-.l {
-  color: var(--app-text-muted);
-  font-size: 0.7rem;
-  font-weight: 600;
-}
-
-.v,
 .d div {
   color: var(--app-text);
   font-variant-numeric: tabular-nums;
@@ -287,7 +670,9 @@ app-bento {
 
 .detail-panel {
   border-top: 1px solid var(--app-border);
-  margin-top: 1rem;
+  cursor: default;
+  grid-column: 1 / -1;
+  margin-top: 0.5rem;
   padding-top: 1rem;
 }
 
@@ -351,19 +736,39 @@ app-bento {
   }
 }
 
-@media (max-width: 1200px) {
-  .bento-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 760px) {
-  .bento-grid,
+  .holdings-head {
+    display: none;
+  }
+
+  .stock-row {
+    gap: 0.125rem 0.75rem;
+    grid-template-areas:
+      'main value'
+      'price pnl'
+      'day pnl'
+      'qty .';
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 0.75rem 0.25rem;
+
+    > span:not(.stock-main):not(.stock-value):not(.stock-pnl) {
+      text-align: left;
+    }
+  }
+
+  .stock-main { grid-area: main; }
+  .stock-value { font-size: 0.9375rem; font-weight: 700; grid-area: value; }
+  .stock-price { color: var(--app-text-muted); font-size: 0.75rem; font-weight: 600; grid-area: price; }
+  .stock-day { grid-area: day; }
+  .stock-pnl { align-items: flex-end; grid-area: pnl; }
+  .stock-qty { color: var(--app-text-muted); font-size: 0.75rem; grid-area: qty; }
+  .stock-qty::before { content: '股數 '; }
+
   .detail-grid {
     grid-template-columns: 1fr;
   }
 
-  .primary-tile .value {
+  .hero-total {
     font-size: 2.35rem;
   }
 }

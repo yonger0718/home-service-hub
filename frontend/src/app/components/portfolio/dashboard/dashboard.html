@@ -1,5 +1,14 @@
 <div class="portfolio-dashboard">
-  <app-page-header>
+  <app-page-header [subtitle]="quoteLine()" [actionsBelowOnPhone]="true">
+    @if (availableMarkets().length > 1) {
+      <app-seg-toggle
+        class="market-toggle"
+        ariaLabel="市場"
+        [options]="marketFilterOptions()"
+        [value]="marketFilter()"
+        (change)="selectMarketFilter($event)"
+      ></app-seg-toggle>
+    }
     <a routerLink="/portfolio/import-broker" class="btn btn-outline-secondary btn-sm">
       <i class="pi pi-upload" aria-hidden="true"></i>
       匯入券商
@@ -8,7 +17,7 @@
   </app-page-header>
 
   @if (loading()) {
-    <div class="bento-grid">
+    <div class="kpi-row">
       @for (i of [1, 2, 3, 4]; track i) {
         <app-bento>
           <p-skeleton width="40%" styleClass="mb-3"></p-skeleton>
@@ -18,285 +27,323 @@
     </div>
   } @else if (summary() && (summary()!.holdings.length > 0 || Number(summary()!.total_assets_twd) !== 0 || Number(summary()!.total_pending_dividends_net ?? 0) !== 0 || Number(summary()!.total_dividends) !== 0)) {
     <div class="bento-grid">
-      @if (!isMarketFiltered()) {
-        <app-bento class="b-full primary-tile" [full]="true">
-          <div class="label">總資產</div>
-          <div class="value">{{ formatCurrency(summary()!.total_assets_twd) }}</div>
+      @let heroData = hero();
+      @if (!isMarketFiltered() && heroData) {
+        <app-bento class="hero" role="region" aria-label="總資產" [full]="true">
+          <div class="hero-body">
+            <div class="hero-main">
+              <span class="hero-label">總資產 · TWD</span>
+              <b class="hero-total">{{ heroData.total }}</b>
+              <span class="hero-today">
+                <span class="hero-today-label">今日</span>
+                <b class="hero-today-amount" [class.up]="heroData.todayAmount > 0" [class.down]="heroData.todayAmount < 0">{{ heroData.todayText }}</b>
+                <app-pct-badge [value]="heroData.todayPercent"></app-pct-badge>
+              </span>
+            </div>
+            <div class="hero-composition">
+              <div class="composition-bar" role="img" [attr.aria-label]="heroData.barLabel">
+                <span class="seg-stocks" [style.flex-grow]="heroData.stocksPct"></span>
+                <span class="seg-cash" [style.flex-grow]="heroData.cashPct"></span>
+              </div>
+              <div class="legend">
+                <div class="legend-item">
+                  <span class="legend-label"><span class="swatch stocks" aria-hidden="true"></span>股票市值</span>
+                  <b class="legend-value">{{ formatAmount(heroData.stocks) }}</b>
+                </div>
+                <div class="legend-item">
+                  <span class="legend-label"><span class="swatch cash" aria-hidden="true"></span>交割戶現金</span>
+                  <b class="legend-value">{{ formatAmount(heroData.cash) }}</b>
+                </div>
+                <div class="legend-item">
+                  <span class="legend-label"><span class="swatch dashed" aria-hidden="true"></span>待收股利</span>
+                  <b class="legend-value">{{ formatAmount(heroData.pending) }}</b>
+                </div>
+              </div>
+            </div>
+          </div>
         </app-bento>
       }
 
-
       @let totals = filteredTotals()!;
-      <app-bento class="kpi-card">
-        <div class="kpi-card-body">
-          <div class="label">總市值{{ isMarketFiltered() ? ' · ' + marketFilter() : '' }}</div>
-          <div class="value">{{ formatNative(totals.total_market_value, totals.currency) }}</div>
-          <div class="kpi-card-footer">
-            <div class="meta">總成本 {{ formatNative(totals.total_cost, totals.currency) }}</div>
+      <div class="kpi-row">
+        <app-bento class="kpi-card">
+          <div class="kpi-card-body">
+            <div class="label">總市值{{ isMarketFiltered() ? ' · ' + marketFilter() : '' }}</div>
+            <div class="value">{{ formatNative(totals.total_market_value, totals.currency) }}</div>
+            <div class="kpi-card-footer">
+              <div class="meta">總成本 {{ formatNative(totals.total_cost, totals.currency) }}</div>
+            </div>
           </div>
-        </div>
-      </app-bento>
+        </app-bento>
 
-      <app-bento class="kpi-card">
-        <div class="kpi-card-body">
-          <div class="label">預估含息損益{{ isMarketFiltered() ? ' · ' + marketFilter() : '' }}</div>
-          <div class="value estimated-total" [class.up]="(totals.estimated_pnl_with_dividends ?? 0) > 0" [class.down]="(totals.estimated_pnl_with_dividends ?? 0) < 0">
-            {{ formatNative(totals.estimated_pnl_with_dividends, totals.currency) }}
+        <app-bento class="kpi-card">
+          <div class="kpi-card-body">
+            <div class="label">
+              預估含息損益{{ isMarketFiltered() ? ' · ' + marketFilter() : '' }}
+              <i class="pi pi-info-circle fx-info" tabindex="0" role="img" [attr.aria-label]="estimateHint" [pTooltip]="estimateHint"></i>
+            </div>
+            <div class="value-row">
+              <div class="value estimated-total" [class.up]="(totals.estimated_pnl_with_dividends ?? 0) > 0" [class.down]="(totals.estimated_pnl_with_dividends ?? 0) < 0">
+                {{ formatNative(totals.estimated_pnl_with_dividends, totals.currency) }}
+              </div>
+              @if (totals.estimated_pnl_percent != null) {
+                <app-pct-badge [value]="totals.estimated_pnl_percent"></app-pct-badge>
+              } @else { <span aria-label="預估含息損益率無法計算">—</span> }
+            </div>
+            <div class="kpi-card-footer">
+              <div class="meta">價差 {{ formatNative(totals.total_unrealized_pnl, totals.currency) }} · 股利 {{ formatNative(totals.total_dividends, totals.currency) }} · 待收 {{ formatNative(totals.pending_dividends_net, totals.currency) }}</div>
+            </div>
           </div>
-          @if (totals.estimated_pnl_percent != null) {
-            <app-pct-badge [value]="totals.estimated_pnl_percent"></app-pct-badge>
-          } @else { <span aria-label="預估含息損益率無法計算">—</span> }
-          <div class="kpi-card-footer">
-            <div class="meta estimated-hint">估算・非可用現金</div>
-            <details class="estimated-details">
-              <summary>查看損益明細</summary>
-              <dl class="estimated-breakdown">
-                <div class="estimated-row">
-                  <dt>未實現價差</dt>
-                  <dd>{{ formatNative(totals.total_unrealized_pnl, totals.currency) }}</dd>
-                </div>
-                <div class="estimated-row">
-                  <dt>已記錄股利</dt>
-                  <dd>{{ formatNative(totals.total_dividends, totals.currency) }}</dd>
-                </div>
-                <div class="estimated-row">
-                  <dt>待收股利</dt>
-                  <dd>{{ formatNative(totals.pending_dividends_net, totals.currency) }}</dd>
-                </div>
-              </dl>
-              <p class="estimated-explanation">估計值，非可用現金；資料不足時顯示 —。</p>
-            </details>
-          </div>
-        </div>
-      </app-bento>
+        </app-bento>
 
-      <app-bento class="kpi-card">
-        <div class="kpi-card-body">
-          <div class="label">年化報酬率</div>
-          @let portfolioXirr = selectedPortfolioXirr();
-          <div class="value" [class.up]="(portfolioXirr ?? 0) > 0" [class.down]="(portfolioXirr ?? 0) < 0">
-            @if (portfolioXirr == null) {
-              <span class="xirr-placeholder" tabindex="0" aria-label="缺少此期間的 XIRR 資料說明" [pTooltip]="xirrGapTooltip">—</span>
-            } @else {
-              {{ formatXirr(portfolioXirr) }}
+        <app-bento class="kpi-card">
+          <div class="kpi-card-body">
+            <div class="label">年化報酬率 XIRR</div>
+            @let portfolioXirr = selectedPortfolioXirr();
+            <div class="value" [class.up]="(portfolioXirr ?? 0) > 0" [class.down]="(portfolioXirr ?? 0) < 0">
+              @if (portfolioXirr == null) {
+                <span class="xirr-placeholder" tabindex="0" aria-label="缺少此期間的 XIRR 資料說明" [pTooltip]="xirrGapTooltip">—</span>
+              } @else {
+                {{ formatXirr(portfolioXirr) }}
+              }
+            </div>
+            <div class="kpi-card-footer">
+              <div class="meta">{{ range() }} · 全市場</div>
+            </div>
+          </div>
+        </app-bento>
+
+        <app-bento class="kpi-card">
+          <div class="kpi-card-body">
+            <div class="label">已記錄股利{{ isMarketFiltered() ? ' · ' + marketFilter() : '' }}</div>
+            <div class="value dividend">{{ formatNative(totals.total_dividends, totals.currency) }}</div>
+            <div class="kpi-card-footer">
+              <div class="meta">含舊資料 · 不代表已核實收款</div>
+            </div>
+          </div>
+        </app-bento>
+      </div>
+
+      <div class="chart-row">
+        <app-bento class="chart-card">
+          <div class="chart-card-body">
+            <div class="chart-head">
+              <div class="chart-head-left">
+                <h3 class="card-title">淨值走勢{{ isMarketFiltered() ? ' · 全市場' : '' }}</h3>
+                <span class="chart-return">
+                  <span class="chart-return-label">帳戶總值</span>
+                  <app-pct-badge [value]="periodReturn()"></app-pct-badge>
+                </span>
+              </div>
+              <app-seg-toggle
+                class="range-tabs"
+                ariaLabel="淨值區間"
+                [options]="rangeOptions"
+                [value]="range()"
+                (change)="selectRange($event)"
+              ></app-seg-toggle>
+            </div>
+            @let legendData = chartLegend();
+            @if (legendData) {
+              <div class="chart-legend" [class.two-col]="isPhone()">
+                <span class="chart-legend-item">
+                  <span class="chart-legend-label"><span class="chart-swatch total" aria-hidden="true"></span>帳戶總值</span>
+                  <b class="chart-legend-value">{{ formatCurrency(legendData.total) }}</b>
+                </span>
+                <span class="chart-legend-item">
+                  <span class="chart-legend-label"><span class="chart-swatch holdings" [class.down]="periodReturn() < 0" aria-hidden="true"></span>持股淨值</span>
+                  <b class="chart-legend-value">{{ formatCurrency(legendData.holdings) }}</b>
+                </span>
+                @if (!isPhone()) {
+                  <span class="chart-legend-item">
+                    <span class="chart-legend-label"><span class="chart-swatch band" aria-hidden="true"></span>兩線差距 = 交割戶現金</span>
+                    <b class="chart-legend-value">{{ formatCurrency(legendData.cash) }}</b>
+                  </span>
+                }
+              </div>
+            }
+            <div
+              class="networth-chart"
+              tabindex="0"
+              role="img"
+              aria-label="淨值走勢圖，使用左右鍵檢視各日數值"
+              (focus)="onChartFocus()"
+              (blur)="onChartBlur()"
+              (keydown)="onChartKeydown($event)"
+            >
+              @defer (when !!chartData) {
+                <p-chart #netWorthChart type="line" [data]="chartData" [options]="chartOptions" [plugins]="chartPlugins"></p-chart>
+              } @placeholder {
+                <p-skeleton width="100%" height="100%"></p-skeleton>
+              }
+            </div>
+            <span class="visually-hidden" aria-live="polite">{{ focusedPointText() }}</span>
+            @if (legendData && isPhone()) {
+              <p class="chart-caption">兩線之間是交割戶現金 {{ formatCurrency(legendData.cash) }}</p>
             }
           </div>
-          <div class="kpi-card-footer">
-            <div class="meta">XIRR · {{ range() }}{{ isMarketFiltered() ? ' · 全市場' : '' }}</div>
-          </div>
-        </div>
-      </app-bento>
+        </app-bento>
 
-      <app-bento class="kpi-card">
-        <div class="kpi-card-body">
-          <div class="label">已記錄股利{{ isMarketFiltered() ? ' · ' + marketFilter() : '' }}</div>
-          <div class="value dividend">{{ formatNative(totals.total_dividends, totals.currency) }}</div>
-          <div class="kpi-card-footer">
-            <div class="meta">保留舊帳務；不代表已核實收款</div>
+        <app-bento class="allocation-card">
+          <div class="allocation-body" role="region" aria-label="持股配置與待收股利">
+            <h2 class="allocation-title">持股配置</h2>
+            @let slices = allocationSlices();
+            @if (slices.length) {
+              <div class="allocation-bar" role="img" aria-label="依市值分配">
+                @for (slice of slices; track $index) {
+                  <span [style.flex-grow]="slice.pct" [style.background]="'var(' + slice.token + ')'"></span>
+                }
+              </div>
+              <div class="allocation-list">
+                @for (slice of slices; track $index) {
+                  <div class="allocation-row">
+                    <span class="allocation-swatch" aria-hidden="true" [style.background]="'var(' + slice.token + ')'"></span>
+                    <span class="allocation-name">{{ slice.name }} {{ slice.symbol }}</span>
+                    <b class="allocation-pct">{{ slice.pct.toFixed(1) }}%</b>
+                  </div>
+                }
+              </div>
+            } @else {
+              <p class="empty-line">尚無持股</p>
+            }
+            @let pending = pendingDividends();
+            @if (pending) {
+              <div class="pending-block">
+                <div class="pending-head">
+                  <h3 class="pending-title">待收股利</h3>
+                  <a routerLink="/portfolio/dividends" class="pending-link">全部</a>
+                </div>
+                @for (row of pending; track row.id) {
+                  <div class="pending-row">
+                    <span class="pending-tile"><span>{{ row.month }}</span><b>{{ row.day }}</b></span>
+                    <span class="pending-text">
+                      <b class="pending-name">{{ row.name }}</b>
+                      <small class="pending-note">{{ row.note }}</small>
+                    </span>
+                    <b class="pending-amount dividend">+{{ row.currency === 'TWD' ? formatAmount(row.amount) : formatNative(row.amount, row.currency) }}</b>
+                  </div>
+                } @empty {
+                  <p class="empty-line">目前沒有待收股利</p>
+                }
+              </div>
+            }
           </div>
-        </div>
-      </app-bento>
+        </app-bento>
+      </div>
 
-      <app-bento class="b-full" [full]="true">
-        <div class="chart-head">
-          <div class="chart-head-left">
-            <h3 class="card-title">淨值走勢{{ isMarketFiltered() ? ' · 全市場' : '' }}</h3>
-            <app-pct-badge [value]="periodReturn()"></app-pct-badge>
-          </div>
-          <app-seg-toggle
-            class="range-tabs"
-            ariaLabel="淨值區間"
-            [options]="rangeOptions"
-            [value]="range()"
-            (change)="selectRange($event)"
-          ></app-seg-toggle>
-        </div>
-        <div class="networth-chart">
-          @defer (when !!chartData) {
-            <p-chart #netWorthChart type="line" [data]="chartData" [options]="chartOptions"></p-chart>
-          } @placeholder {
-            <p-skeleton width="100%" height="100%"></p-skeleton>
-          }
-        </div>
-      </app-bento>
-
-      <app-bento class="b-full" title="持股明細" [full]="true">
+      <app-bento class="holdings-block" title="持股明細" [full]="true">
+        <p class="holdings-sub">{{ filteredHoldings().length }} 檔 · 依市值排序</p>
         <div class="holdings">
-          @if (availableMarkets().length > 1) {
-            <app-seg-toggle
-              class="market-tabs"
-              ariaLabel="市場篩選"
-              [options]="marketFilterOptions()"
-              [value]="marketFilter()"
-              (change)="selectMarketFilter($event)"
-            ></app-seg-toggle>
-          }
+          <div class="holdings-head" aria-hidden="true">
+            <span>名稱</span><span>股數</span><span>現價</span><span>今日</span><span>市值 (TWD)</span><span>預估含息損益</span>
+          </div>
           @if (showMarketGroups()) {
             @for (group of holdingGroups(); track group.market) {
               <section class="market-group">
-                <div class="market-group-header">{{ group.market }}</div>
+                <div class="market-group-header">{{ groupHeader(group) }}</div>
                 @for (stock of group.holdings; track holdingTrackKey(stock)) {
-                  <article
-                    class="stock-row"
-                    role="button"
-                    tabindex="0"
-                    [attr.aria-expanded]="isHoldingExpanded(stock)"
-                    (click)="toggleHoldingExpand(stock)"
-                    (keydown.enter)="toggleHoldingExpand(stock)"
-                    (keydown.space)="toggleHoldingExpand(stock); $event.preventDefault()"
-                  >
-                    <div class="stock-top">
-                      <div class="stock-sym">
-                        <span class="s">
-                          {{ stock.name || stock.symbol }}
-                          @if (stock.market !== 'TW') {
-                            <span class="market-badge">{{ stock.market }}</span>
-                          }
-                        </span>
-                        <span class="n">{{ stock.symbol }}</span>
-                      </div>
-                      <div class="stock-price">
-                        @if (stock.market !== 'TW' && stock.native_close != null) {
-                          <span class="p">{{ stock.native_close | nativeAmount: stock.native_currency }}</span>
-                        } @else {
-                          <span class="p">{{ stock.current_price | number:'1.2-2' }}</span>
-                        }
-                        <span class="c" [class.up]="stock.day_change_amount >= 0" [class.down]="stock.day_change_amount < 0">
-                          {{ stock.day_change_amount >= 0 ? '+' : '' }}{{ stock.day_change_amount | number:'1.2-2' }}
-                          ({{ stock.day_change_percent >= 0 ? '+' : '' }}{{ stock.day_change_percent | number:'1.2-2' }}%)
-                        </span>
-                      </div>
-                    </div>
-
-                    <div class="stock-stats">
-                      <div class="st"><span class="l">股數</span><span class="v">{{ stock.total_quantity | number }}</span></div>
-                      <div class="st">
-                        <span class="l">預估含息損益</span>
-                        <span class="v" [class.up]="(holdingEstimate(stock) ?? 0) > 0" [class.down]="(holdingEstimate(stock) ?? 0) < 0">
-                          {{ formatNative(holdingEstimate(stock), holdingCurrency(stock)) }}
-                          @if (holdingEstimatePercent(stock) != null) {
-                            ({{ holdingEstimatePercent(stock) | number:'1.2-2' }}%)
-                          } @else { <span aria-label="預估含息損益率無法計算">—</span> }
-                        </span>
-                      </div>
-                    </div>
-
-                    @if (isHoldingExpanded(stock)) {
-                      <div class="detail-panel">
-                        <div class="detail-grid">
-                          @if (stock.market !== 'TW') {
-                            <div class="d"><small>市值</small><div>{{ (stock.market_value_native ?? nativeMarketValue(stock)) | nativeAmount: stock.native_currency }}</div></div>
-                            <div class="d">
-                              <small>換算後市值</small>
-                              <div>
-                                {{ marketValueDisplay(stock) }}
-                                @let tooltip = fxTooltip(stock);
-                                @if (tooltip) {
-                                  <i class="pi pi-info-circle fx-info" tabindex="0" [pTooltip]="tooltip" tooltipPosition="top" aria-label="FX rate"></i>
-                                }
-                              </div>
-                            </div>
-                            <div class="d"><small>平均成本</small><div>{{ (stock.avg_cost_native ?? nativeFromTwd(stock.avg_cost, stock)) | nativeAmount: stock.native_currency }}</div></div>
-                            @if (stock.total_dividends_native != null) {
-                              <div class="d"><small>已記錄股利</small><div class="dividend">{{ stock.total_dividends_native | nativeAmount: stock.native_currency }}</div></div>
-                            } @else {
-                              <div class="d"><small>已記錄股利 (TWD)</small><div class="dividend">{{ formatCurrency(stock.total_dividends) }}</div></div>
-                            }
-                            @let nativeUnrealized = stock.unrealized_pnl_native;
-                            <div class="d"><small>未實現價差</small><div [class.up]="(+(nativeUnrealized ?? 0)) >= 0" [class.down]="(+(nativeUnrealized ?? 0)) < 0">{{ nativeUnrealized | nativeAmount: stock.native_currency }}</div></div>
-                            <div class="d"><small>待收股利</small><div>{{ formatNative(0, stock.native_currency) }}</div></div>
-                            <div class="d"><small>預估含息損益</small><div>{{ formatNative(holdingEstimate(stock), holdingCurrency(stock)) }}</div></div>
-                          } @else {
-                            <div class="d"><small>市值</small><div>{{ formatCurrency(stock.market_value) }}</div></div>
-                            <div class="d"><small>平均成本</small><div>{{ stock.avg_cost | number:'1.2-2' }}</div></div>
-                            <div class="d"><small>已記錄股利</small><div class="dividend">{{ formatCurrency(stock.total_dividends) }}</div></div>
-                            <div class="d"><small>未實現價差</small><div [class.up]="stock.unrealized_pnl >= 0" [class.down]="stock.unrealized_pnl < 0">{{ formatNative(stock.unrealized_pnl, 'TWD') }}</div></div>
-                            <div class="d"><small>待收股利</small><div>{{ formatNative(stock.pending_dividends_net, 'TWD') }}</div></div>
-                      <div class="d"><small>預估含息損益</small><div>{{ formatNative(holdingEstimate(stock), 'TWD') }}</div></div>
-                          }
-                          <div class="d">
-                            <small>XIRR</small>
-                            @let holdingXirr = selectedXirr(stock);
-                            <div [class.up]="(holdingXirr ?? 0) > 0" [class.down]="(holdingXirr ?? 0) < 0">
-                              @if (holdingXirr == null) {
-                                <span class="xirr-placeholder" tabindex="0" aria-label="缺少此期間的 XIRR 資料說明" [pTooltip]="xirrGapTooltip">—</span>
-                              } @else {
-                                {{ formatXirr(holdingXirr) }}
-                              }
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    }
-                  </article>
+                  <ng-container *ngTemplateOutlet="holdingRow; context: { $implicit: stock }" />
                 }
               </section>
             }
           } @else {
-            @for (stock of filteredHoldings(); track holdingTrackKey(stock)) {
-              <article
-                class="stock-row"
-                role="button"
-                tabindex="0"
-                [attr.aria-expanded]="isHoldingExpanded(stock)"
-                (click)="toggleHoldingExpand(stock)"
-                (keydown.enter)="toggleHoldingExpand(stock)"
-                (keydown.space)="toggleHoldingExpand(stock); $event.preventDefault()"
-              >
-                <div class="stock-top">
-                  <div class="stock-sym">
-                    <span class="s">{{ stock.name || stock.symbol }}</span>
-                    <span class="n">{{ stock.symbol }}</span>
-                  </div>
-                  <div class="stock-price">
-                    <span class="p">{{ stock.current_price | number:'1.2-2' }}</span>
-                    <span class="c" [class.up]="stock.day_change_amount >= 0" [class.down]="stock.day_change_amount < 0">
-                      {{ stock.day_change_amount >= 0 ? '+' : '' }}{{ stock.day_change_amount | number:'1.2-2' }}
-                      ({{ stock.day_change_percent >= 0 ? '+' : '' }}{{ stock.day_change_percent | number:'1.2-2' }}%)
-                    </span>
-                  </div>
-                </div>
-
-                <div class="stock-stats">
-                  <div class="st"><span class="l">股數</span><span class="v">{{ stock.total_quantity | number }}</span></div>
-                  <div class="st">
-                    <span class="l">預估含息損益</span>
-                        <span class="v" [class.up]="(holdingEstimate(stock) ?? 0) > 0" [class.down]="(holdingEstimate(stock) ?? 0) < 0">
-                          {{ formatNative(holdingEstimate(stock), holdingCurrency(stock)) }}
-                          @if (holdingEstimatePercent(stock) != null) {
-                            ({{ holdingEstimatePercent(stock) | number:'1.2-2' }}%)
-                          } @else { <span aria-label="預估含息損益率無法計算">—</span> }
-                        </span>
-                  </div>
-                </div>
-
-                @if (isHoldingExpanded(stock)) {
-                  <div class="detail-panel">
-                    <div class="detail-grid">
-                      <div class="d"><small>市值</small><div>{{ formatCurrency(stock.market_value) }}</div></div>
-                      <div class="d"><small>平均成本</small><div>{{ stock.avg_cost | number:'1.2-2' }}</div></div>
-                      <div class="d"><small>已記錄股利</small><div class="dividend">{{ formatCurrency(stock.total_dividends) }}</div></div>
-                      <div class="d"><small>未實現價差</small><div [class.up]="stock.unrealized_pnl >= 0" [class.down]="stock.unrealized_pnl < 0">{{ formatNative(stock.unrealized_pnl, 'TWD') }}</div></div>
-                      <div class="d"><small>待收股利</small><div>{{ formatNative(stock.pending_dividends_net, 'TWD') }}</div></div>
-                      <div class="d"><small>預估含息損益</small><div>{{ formatNative(holdingEstimate(stock), 'TWD') }}</div></div>
-                      <div class="d">
-                        <small>XIRR</small>
-                        @let holdingXirr = selectedXirr(stock);
-                        <div [class.up]="(holdingXirr ?? 0) > 0" [class.down]="(holdingXirr ?? 0) < 0">
-                          @if (holdingXirr == null) {
-                            <span class="xirr-placeholder" tabindex="0" aria-label="缺少此期間的 XIRR 資料說明" [pTooltip]="xirrGapTooltip">—</span>
-                          } @else {
-                            {{ formatXirr(holdingXirr) }}
-                          }
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                }
-              </article>
+            @for (stock of holdingGroups()[0]?.holdings ?? []; track holdingTrackKey(stock)) {
+              <ng-container *ngTemplateOutlet="holdingRow; context: { $implicit: stock }" />
             }
           }
         </div>
+
+        <ng-template #holdingRow let-stock>
+          <article
+            class="stock-row"
+            role="button"
+            tabindex="0"
+            [attr.aria-expanded]="isHoldingExpanded(stock)"
+            (click)="toggleHoldingExpand(stock)"
+            (keydown.enter)="toggleHoldingExpand(stock)"
+            (keydown.space)="toggleHoldingExpand(stock); $event.preventDefault()"
+          >
+            <div class="stock-main">
+              <span class="stock-abbr" [class.ink-dark]="holdingInkDark(stock)" aria-hidden="true" [style.background]="'var(' + holdingToken(stock) + ')'">{{ holdingAbbr(stock) }}</span>
+              <div class="stock-sym">
+                <span class="s">
+                  {{ stock.name || stock.symbol }}
+                  @if (stock.market !== 'TW') {
+                    <span class="market-badge">{{ stock.market }}</span>
+                  }
+                </span>
+                <span class="n">{{ stock.symbol }}</span>
+              </div>
+            </div>
+            <span class="stock-qty">{{ stock.total_quantity | number }}</span>
+            <span class="stock-price">
+              @if (stock.market !== 'TW' && stock.native_close != null) {
+                {{ stock.native_close | nativeAmount: stock.native_currency }}
+              } @else {
+                {{ stock.current_price | number:'1.2-2' }}
+              }
+            </span>
+            <span class="stock-day" [class.up]="stock.day_change_amount >= 0" [class.down]="stock.day_change_amount < 0">
+              {{ stock.day_change_amount >= 0 ? '+' : '' }}{{ stock.day_change_amount | number:'1.2-2' }}
+              ({{ stock.day_change_percent >= 0 ? '+' : '' }}{{ stock.day_change_percent | number:'1.2-2' }}%)
+            </span>
+            <span class="stock-value">{{ marketValueDisplay(stock) }}</span>
+            <span class="stock-pnl" [class.up]="(holdingEstimate(stock) ?? 0) > 0" [class.down]="(holdingEstimate(stock) ?? 0) < 0">
+              <span class="pnl-amt">{{ formatNative(holdingEstimate(stock), holdingCurrency(stock)) }}</span>
+              @if (holdingEstimatePercent(stock) != null) {
+                <span class="pnl-pct">({{ holdingEstimatePercent(stock) | number:'1.2-2' }}%)</span>
+              } @else { <span class="pnl-pct" aria-label="預估含息損益率無法計算">—</span> }
+            </span>
+
+            @if (isHoldingExpanded(stock)) {
+              <div class="detail-panel">
+                <div class="detail-grid">
+                  @if (stock.market !== 'TW') {
+                    <div class="d"><small>市值</small><div>{{ (stock.market_value_native ?? nativeMarketValue(stock)) | nativeAmount: stock.native_currency }}</div></div>
+                    <div class="d">
+                      <small>換算後市值</small>
+                      <div>
+                        {{ marketValueDisplay(stock) }}
+                        @let tooltip = fxTooltip(stock);
+                        @if (tooltip) {
+                          <i class="pi pi-info-circle fx-info" tabindex="0" [pTooltip]="tooltip" tooltipPosition="top" aria-label="FX rate"></i>
+                        }
+                      </div>
+                    </div>
+                    <div class="d"><small>平均成本</small><div>{{ (stock.avg_cost_native ?? nativeFromTwd(stock.avg_cost, stock)) | nativeAmount: stock.native_currency }}</div></div>
+                    @if (stock.total_dividends_native != null) {
+                      <div class="d"><small>已記錄股利</small><div class="dividend">{{ stock.total_dividends_native | nativeAmount: stock.native_currency }}</div></div>
+                    } @else {
+                      <div class="d"><small>已記錄股利 (TWD)</small><div class="dividend">{{ formatCurrency(stock.total_dividends) }}</div></div>
+                    }
+                    @let nativeUnrealized = stock.unrealized_pnl_native;
+                    <div class="d"><small>未實現價差</small><div [class.up]="(+(nativeUnrealized ?? 0)) >= 0" [class.down]="(+(nativeUnrealized ?? 0)) < 0">{{ nativeUnrealized | nativeAmount: stock.native_currency }}</div></div>
+                    <div class="d"><small>待收股利</small><div>{{ formatNative(0, stock.native_currency) }}</div></div>
+                    <div class="d"><small>預估含息損益</small><div>{{ formatNative(holdingEstimate(stock), holdingCurrency(stock)) }}</div></div>
+                  } @else {
+                    <div class="d"><small>市值</small><div>{{ formatCurrency(stock.market_value) }}</div></div>
+                    <div class="d"><small>平均成本</small><div>{{ stock.avg_cost | number:'1.2-2' }}</div></div>
+                    <div class="d"><small>已記錄股利</small><div class="dividend">{{ formatCurrency(stock.total_dividends) }}</div></div>
+                    <div class="d"><small>未實現價差</small><div [class.up]="stock.unrealized_pnl >= 0" [class.down]="stock.unrealized_pnl < 0">{{ formatNative(stock.unrealized_pnl, 'TWD') }}</div></div>
+                    <div class="d"><small>待收股利</small><div>{{ formatNative(stock.pending_dividends_net, 'TWD') }}</div></div>
+                    <div class="d"><small>預估含息損益</small><div>{{ formatNative(holdingEstimate(stock), 'TWD') }}</div></div>
+                  }
+                  <div class="d">
+                    <small>XIRR</small>
+                    @let holdingXirr = selectedXirr(stock);
+                    <div [class.up]="(holdingXirr ?? 0) > 0" [class.down]="(holdingXirr ?? 0) < 0">
+                      @if (holdingXirr == null) {
+                        <span class="xirr-placeholder" tabindex="0" aria-label="缺少此期間的 XIRR 資料說明" [pTooltip]="xirrGapTooltip">—</span>
+                      } @else {
+                        {{ formatXirr(holdingXirr) }}
+                      }
+                    </div>
+                  </div>
+                </div>
+              </div>
+            }
+          </article>
+        </ng-template>
       </app-bento>
     </div>
   } @else {

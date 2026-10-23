@@ -12,8 +12,15 @@
   gap: 0.75rem;
 }
 
-h1 {
+.page-title {
+  display: flex;
   flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+h1 {
   font-size: 28px;
   font-weight: 800;
   letter-spacing: var(--tracking-tighter);
@@ -21,6 +28,12 @@ h1 {
   min-width: 0;
   /* A long title wraps inside the row and never pushes the gear off-screen. */
   overflow-wrap: anywhere;
+}
+
+.page-subtitle {
+  color: var(--app-text-muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
 .page-actions {
@@ -71,6 +84,23 @@ h1 {
   &:focus-visible {
     box-shadow: 0 0 0 4px var(--app-focus-ring);
     outline: none;
+  }
+}
+
+/* Gear sits beside the title in the DOM (focus order matches what is seen); the actions wrap to a full-width line. */
+:host(.actions-below) {
+  .page-header-row {
+    flex-wrap: wrap;
+  }
+
+  .page-title {
+    flex-basis: 0;
+  }
+
+  .page-actions {
+    flex: 1 0 100%;
+    gap: 0.5rem;
+    justify-content: flex-start;
   }
 }
 

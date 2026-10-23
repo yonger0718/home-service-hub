@@ -3,6 +3,7 @@ import {
   ChangeDetectorRef,
   Component,
   DestroyRef,
+  InjectionToken,
   OnInit,
   ViewChild,
   computed,
@@ -11,8 +12,8 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterLink } from '@angular/router';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { combineLatest, finalize, interval, switchMap, takeUntil, takeWhile, timer } from 'rxjs';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
+import { Subscription, catchError, combineLatest, finalize, forkJoin, interval, of, switchMap, takeUntil, takeWhile, timer } from 'rxjs';
 
 import { ChartModule, UIChart } from 'primeng/chart';
 import { SkeletonModule } from 'primeng/skeleton';
@@ -21,6 +22,7 @@ import { MessageService } from 'primeng/api';
 
 import { PortfolioService } from '../../../services/portfolio.service';
 import { AppearanceService } from '../../../services/appearance.service';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import {
   ExDividendRecord,
   MarketCode,
@@ -35,8 +37,34 @@ import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-tog
 import { BentoComponent } from '../../ui/bento/bento';
 import { PctBadgeComponent } from '../../ui/pct-badge/pct-badge';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
+import {
+  MARKET_LABELS,
+  PendingRow,
+  allDividendPages,
+  abbrInk,
+  allocation,
+  holdingAbbr,
+  composition,
+  pendingRows,
+  quoteTimeLabel,
+  todayChange,
+} from './dashboard-math';
+import { hoverGuidePlugin } from './chart-guide.plugin';
+
+/** Current time for the quote line's 盤中 / 台股收盤 tag; overridable in tests. */
+export const DASHBOARD_CLOCK = new InjectionToken<() => Date>('DASHBOARD_CLOCK', {
+  providedIn: 'root',
+  factory: () => () => new Date(),
+});
 
 type PortfolioRange = '1M' | '3M' | 'YTD' | '1Y' | '5Y';
+
+/** 帳戶總值 / 持股淨值 at one chart point; cash is the gap between the two lines. */
+interface ChartSeriesValues {
+  total: number;
+  holdings: number;
+  cash: number;
+}
 
 @Component({
   selector: 'app-portfolio-dashboard',
@@ -63,6 +91,8 @@ export class PortfolioDashboardComponent implements OnInit {
   private readonly messageService = inject(MessageService, { optional: true });
   private readonly destroyRef = inject(DestroyRef);
   private readonly cdr = inject(ChangeDetectorRef);
+  private readonly clock = inject(DASHBOARD_CLOCK);
+  private readonly layoutMode = inject(LayoutModeService);
 
   @ViewChild('netWorthChart') netWorthChart?: UIChart;
 
@@ -74,6 +104,19 @@ export class PortfolioDashboardComponent implements OnInit {
   readonly chartPoints = signal<NetworthPoint[]>([]);
   readonly expandedHoldingKey = signal<string | null>(null);
   readonly marketFilter = signal<'ALL' | MarketCode>('ALL');
+  /** `quote_refresh.finished_at` from the latest status read. */
+  private readonly quoteFinishedAt = signal<string | null>(null);
+  /** Re-evaluates the quote line each minute so the 盤中 / 台股收盤 tag follows the clock (-1: interval starts at 0). */
+  private readonly minuteTick = toSignal(interval(60_000), { initialValue: -1 });
+  /** `行情更新於 HH:mm · …` under the page title; null hides it. */
+  readonly quoteLine = computed(() => {
+    this.minuteTick();
+    return quoteTimeLabel(this.quoteFinishedAt(), this.clock());
+  });
+  private quoteStatusLoad?: Subscription;
+  /** 待收股利 rows; null when the dividends or names are unavailable, which omits the block. */
+  readonly pendingDividends = signal<PendingRow[] | null>(null);
+  private pendingDividendsLoad?: Subscription;
 
   readonly rangeOptions: SegToggleOption[] = [
     { label: '1M', value: '1M' },
@@ -84,9 +127,19 @@ export class PortfolioDashboardComponent implements OnInit {
   ];
 
   readonly xirrGapTooltip = '缺少此期間的淨值或價格資料。請執行資料重算後再重新整理。';
+  readonly estimateHint = '估算・非可用現金';
 
   chartData: any = null;
   chartOptions: any = this.buildChartOptions();
+  readonly chartPlugins = [hoverGuidePlugin];
+
+  readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
+
+  /** Latest values for the chart legend; null hides it. */
+  readonly chartLegend = computed<ChartSeriesValues | null>(() => {
+    const points = this.chartPoints();
+    return points.length ? this.seriesValues(points[points.length - 1]) : null;
+  });
 
   readonly periodReturn = computed(() => {
     const values = this.chartValues();
@@ -114,9 +167,24 @@ export class PortfolioDashboardComponent implements OnInit {
   });
 
   readonly marketFilterOptions = computed<SegToggleOption[]>(() => [
-    { label: 'All', value: 'ALL' },
-    ...this.availableMarkets().map(m => ({ label: m, value: m })),
+    { label: '全部', value: 'ALL' },
+    ...this.availableMarkets().map(m => ({ label: MARKET_LABELS[m], value: m })),
   ]);
+
+  readonly hero = computed(() => {
+    const summary = this.summary();
+    if (!summary) return null;
+    const today = todayChange(summary);
+    const parts = composition(summary);
+    return {
+      total: this.formatCurrency(summary.total_assets_twd),
+      todayAmount: today.amount,
+      todayText: `${today.amount > 0 ? '+' : today.amount < 0 ? '-' : ''}${this.formatCurrency(Math.abs(today.amount))}`,
+      todayPercent: today.percent,
+      ...parts,
+      barLabel: `資產組成：股票 ${parts.stocksPct.toFixed(1)}%，現金 ${parts.cashPct.toFixed(1)}%`,
+    };
+  });
 
   readonly filteredHoldings = computed(() => {
     const filter = this.marketFilter();
@@ -124,11 +192,17 @@ export class PortfolioDashboardComponent implements OnInit {
     return filter === 'ALL' ? rows : rows.filter(h => h.market === filter);
   });
 
+  readonly allocationSlices = computed(() => allocation(this.filteredHoldings()));
+
+  private readonly allocationTokens = computed(
+    () => new Map(this.allocationSlices().filter(s => s.market).map(s => [`${s.market}:${s.symbol}`, s.token])),
+  );
+
   readonly showMarketGroups = computed(() =>
     this.filteredHoldings().some(holding => holding.market !== 'TW'),
   );
 
-  readonly holdingGroups = computed(() => this.groupHoldingsByMarket(this.filteredHoldings()));
+  readonly holdingGroups = computed(() => this.groupHoldingsByMarket(this.filteredHoldings(), 'market_value', 'desc'));
 
   readonly isMarketFiltered = computed(() => this.marketFilter() !== 'ALL');
 
@@ -192,6 +266,57 @@ export class PortfolioDashboardComponent implements OnInit {
     return holding.market === 'TW' ? 'TWD' : holding.native_currency;
   }
 
+  /** Point shown while the chart has keyboard focus; -1 when none. */
+  private focusedPointIndex = -1;
+  /** Live-region text for the focused point; the chart itself is a canvas behind role="img". */
+  readonly focusedPointText = signal('');
+
+  onChartFocus(): void {
+    this.showChartPoint(this.chartPoints().length - 1);
+  }
+
+  onChartKeydown(event: KeyboardEvent): void {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    const last = this.chartPoints().length - 1;
+    // The pointer may have moved the tooltip since the last key press: continue from what is shown.
+    const hovered = this.netWorthChart?.chart?.tooltip?.getActiveElements?.()[0]?.index;
+    const from = hovered ?? (this.focusedPointIndex < 0 ? last : this.focusedPointIndex);
+    const step = event.key === 'ArrowLeft' ? -1 : 1;
+    this.showChartPoint(Math.min(last, Math.max(0, from + step)));
+  }
+
+  onChartBlur(): void {
+    this.focusedPointIndex = -1;
+    this.focusedPointText.set('');
+    const chart = this.netWorthChart?.chart;
+    if (!chart) return;
+    chart.setActiveElements([]);
+    chart.tooltip?.setActiveElements([], { x: 0, y: 0 });
+    chart.update('none');
+  }
+
+  private showChartPoint(index: number): void {
+    const chart = this.netWorthChart?.chart;
+    if (!chart || index < 0) return;
+    this.focusedPointIndex = index;
+    const active = [{ datasetIndex: 0, index }, { datasetIndex: 1, index }];
+    const element = chart.getDatasetMeta?.(0)?.data?.[index];
+    chart.setActiveElements(active);
+    chart.tooltip?.setActiveElements(active, { x: element?.x ?? 0, y: element?.y ?? 0 });
+    chart.update('none');
+    const point = this.chartPoints()[index];
+    if (!point) return;
+    const { total, holdings, cash } = this.seriesValues(point);
+    this.focusedPointText.set(
+      `${this.pointDate(point)} · 帳戶總值 ${this.formatCurrency(total)} · 持股淨值 ${this.formatCurrency(holdings)} · 現金 ${this.formatCurrency(cash)}`,
+    );
+  }
+
+  private pointDate(point: NetworthPoint): string {
+    return point.date.slice(0, 10).replaceAll('-', '/');
+  }
+
   private readonly networthCache = new Map<PortfolioRange, NetworthPoint[]>();
   private readonly prefetchOrder: PortfolioRange[] = ['1M', '3M', 'YTD', '5Y'];
 
@@ -215,6 +340,7 @@ export class PortfolioDashboardComponent implements OnInit {
       },
     });
     this.loadExDividends();
+    this.loadPendingDividends();
     this.loadNetworthHistory();
 
     combineLatest([this.appearance.dark$, this.appearance.gainLoss$])
@@ -226,6 +352,7 @@ export class PortfolioDashboardComponent implements OnInit {
       .subscribe(() => {
         this.networthCache.clear();
         this.reloadSummary();
+        this.loadPendingDividends();
         this.loadNetworthHistory();
       });
   }
@@ -262,7 +389,7 @@ export class PortfolioDashboardComponent implements OnInit {
 
   groupHoldingsByMarket(
     holdings: StockHolding[],
-    sortBy?: keyof Pick<StockHolding, 'unrealized_pnl'>,
+    sortBy?: 'unrealized_pnl' | 'market_value',
     direction: 'asc' | 'desc' = 'asc',
   ): { market: MarketCode; holdings: StockHolding[] }[] {
     const order: MarketCode[] = ['TW', 'US', 'LSE'];
@@ -280,6 +407,26 @@ export class PortfolioDashboardComponent implements OnInit {
         return { market, holdings: rows };
       })
       .filter(group => group.holdings.length > 0);
+  }
+
+  holdingAbbr(holding: StockHolding): string {
+    return holdingAbbr(holding.symbol, holding.name);
+  }
+
+  /** Allocation colour of the holding, or the muted token when it falls into 其他. */
+  holdingToken(holding: StockHolding): string {
+    return this.allocationTokens().get(`${holding.market}:${holding.symbol}`) ?? '--app-text-muted';
+  }
+
+  /** True when the holding's fill needs dark initials in light mode. */
+  holdingInkDark(holding: StockHolding): boolean {
+    return abbrInk(this.holdingToken(holding)) === 'dark';
+  }
+
+  /** `台股 · 4 檔 · $2,612,900` */
+  groupHeader(group: { market: MarketCode; holdings: StockHolding[] }): string {
+    const total = group.holdings.reduce((sum, h) => sum + (Number(h.market_value) || 0), 0);
+    return `${MARKET_LABELS[group.market]} · ${group.holdings.length} 檔 · ${this.formatCurrency(total)}`;
   }
 
   fxTooltip(holding: StockHolding): string | null {
@@ -316,6 +463,11 @@ export class PortfolioDashboardComponent implements OnInit {
         this.reloadSummary();
       },
     });
+  }
+
+  /** Hero legend amounts: grouped TWD without the currency sign. */
+  formatAmount(value: number): string {
+    return new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 }).format(value);
   }
 
   formatCurrency(value: number | string | null | undefined): string {
@@ -393,13 +545,40 @@ export class PortfolioDashboardComponent implements OnInit {
     this.portfolioService.getSummary().subscribe({
       next: (data) => {
         this.summary.set(data);
+        // A filter on a market the new summary no longer holds would leave the toggle without a selection.
+        const filter = this.marketFilter();
+        if (filter !== 'ALL' && !this.availableMarkets().includes(filter)) this.selectMarketFilter('ALL');
         this.loading.set(false);
+        this.loadQuoteLine();
       },
       error: (err) => {
         console.error('Failed to load portfolio summary', err);
         this.loading.set(false);
       },
     });
+  }
+
+  // pollRecalcStatus() keeps no status body, so the quote time gets its own read after each summary.
+  // Only the latest read may set the line: an earlier one finishing late would show an older time.
+  private loadQuoteLine(): void {
+    this.quoteStatusLoad?.unsubscribe();
+    this.quoteStatusLoad = this.portfolioService
+      .getRecalcStatus()
+      .pipe(catchError(() => of(null)), takeUntilDestroyed(this.destroyRef))
+      .subscribe(status => this.quoteFinishedAt.set(status?.quote_refresh?.finished_at ?? null));
+  }
+
+  private loadPendingDividends(): void {
+    this.pendingDividendsLoad?.unsubscribe();
+    const dividends = allDividendPages(offset =>
+      this.portfolioService.getDividends({ limit: 100, offset, sort: 'ex_dividend_date:desc' }),
+    ).pipe(catchError(() => of(null)));
+    const names = this.portfolioService.getSymbolNames().pipe(catchError(() => of(null)));
+    this.pendingDividendsLoad = forkJoin([dividends, names])
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(([rows, map]) =>
+        this.pendingDividends.set(rows && map ? pendingRows(rows, d => map[d.symbol] ?? d.symbol) : null),
+      );
   }
 
   private loadExDividends(): void {
@@ -494,6 +673,7 @@ export class PortfolioDashboardComponent implements OnInit {
   }
 
   private rebuildChart(): void {
+    this.focusedPointIndex = -1;
     const points = this.chartPoints();
     const up = this.periodReturn() >= 0;
     const stockLine = this.cssVar(up ? '--app-trend-positive' : '--app-trend-negative');
@@ -505,7 +685,7 @@ export class PortfolioDashboardComponent implements OnInit {
       labels: points.map(point => this.formatChartLabel(point.date)),
       datasets: [
         {
-          label: '總資產',
+          label: '帳戶總值',
           data: points.map(point => this.totalAssetsValue(point)),
           borderColor: cashLine,
           backgroundColor: cashFill,
@@ -516,7 +696,7 @@ export class PortfolioDashboardComponent implements OnInit {
           pointHoverRadius: 4,
         },
         {
-          label: '總市值',
+          label: '持股淨值',
           data: points.map(point => this.numberFrom(point.total_market_value)),
           borderColor: stockLine,
           backgroundColor: stockFill,
@@ -529,6 +709,12 @@ export class PortfolioDashboardComponent implements OnInit {
       ],
     };
     this.chartOptions = this.buildChartOptions();
+  }
+
+  private seriesValues(point: NetworthPoint): ChartSeriesValues {
+    const total = this.totalAssetsValue(point);
+    const holdings = this.numberFrom(point.total_market_value);
+    return { total, holdings, cash: Math.max(0, total - holdings) };
   }
 
   private chartValues(): number[] {
@@ -564,13 +750,14 @@ export class PortfolioDashboardComponent implements OnInit {
           intersect: false,
           axis: 'x',
           callbacks: {
-            label: (ctx: any) => {
-              const v = Number(ctx.parsed?.y ?? 0);
-              return new Intl.NumberFormat('zh-TW', {
-                style: 'currency',
-                currency: 'TWD',
-                minimumFractionDigits: 0,
-              }).format(v);
+            title: (items: any[]) => {
+              const point = this.chartPoints()[items[0]?.dataIndex];
+              return point ? this.pointDate(point) : '';
+            },
+            label: (ctx: any) => `${ctx.dataset?.label ?? ''} ${this.formatCurrency(ctx.parsed?.y ?? 0)}`,
+            afterBody: (items: any[]) => {
+              const point = this.chartPoints()[items[0]?.dataIndex];
+              return point ? `現金 ${this.formatCurrency(this.seriesValues(point).cash)}` : '';
             },
           },
         },

@@ -22,6 +22,20 @@ class Host {
 
 @Component({
   imports: [PageHeaderComponent],
+  template: `<app-page-header title="投資概覽" [subtitle]="subtitle"></app-page-header>`,
+})
+class SubtitleHost {
+  subtitle: string | null = '行情更新於 13:30 · 台股收盤';
+}
+
+@Component({
+  imports: [PageHeaderComponent],
+  template: `<app-page-header title="投資概覽" [actionsBelowOnPhone]="true"><button class="act">新增</button></app-page-header>`,
+})
+class ActionsBelowHost {}
+
+@Component({
+  imports: [PageHeaderComponent],
   template: `<app-page-header [back]="true"></app-page-header>`,
 })
 class BackHost {}
@@ -51,7 +65,13 @@ async function renderBack(urls: string[], opts: { mode?: LayoutMode; hidden?: st
   return { el, back, navigate, button: el.querySelector<HTMLButtonElement>('button.page-back') };
 }
 
-async function render(width: number, url = '/accounting', hidden: string[] | null = null, title?: string) {
+async function render(
+  width: number,
+  url = '/accounting',
+  hidden: string[] | null = null,
+  title?: string,
+  host: typeof Host | typeof ActionsBelowHost = Host,
+) {
   if (hidden) localStorage.setItem('hh-nav-hidden', JSON.stringify(hidden));
   TestBed.configureTestingModule({
     providers: [
@@ -69,22 +89,54 @@ async function render(width: number, url = '/accounting', hidden: string[] | nul
     ],
   });
   await TestBed.inject(Router).navigateByUrl(url);
-  const fixture = TestBed.createComponent(Host);
-  fixture.componentInstance.title = title;
+  const fixture = TestBed.createComponent<Host | ActionsBelowHost>(host);
+  if (fixture.componentInstance instanceof Host) fixture.componentInstance.title = title;
   fixture.detectChanges();
   return fixture.nativeElement as HTMLElement;
 }
 
 describe('PageHeaderComponent', () => {
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => localStorage.removeItem('hh-nav-hidden'));
   // Later spec files share this localStorage: never leave hh-nav-hidden behind.
-  afterEach(() => localStorage.clear());
+  afterEach(() => localStorage.removeItem('hh-nav-hidden'));
 
   it('renders the given title as h1 and projects actions', async () => {
     const el = await render(1440, '/accounting', null, '我的標題');
 
     expect(el.querySelector('h1')?.textContent?.trim()).toBe('我的標題');
     expect(el.querySelector('.page-actions .act')).not.toBeNull();
+  });
+
+  describe('subtitle', () => {
+    function renderSubtitle(subtitle: string | null) {
+      TestBed.configureTestingModule({
+        providers: [
+          provideRouter([{ path: '**', component: BlankPage }]),
+          { provide: MATCH_MEDIA, useValue: null },
+          { provide: NavBadgeService, useValue: { badges: signal({}) } },
+        ],
+      });
+      const fixture = TestBed.createComponent(SubtitleHost);
+      fixture.componentInstance.subtitle = subtitle;
+      fixture.detectChanges();
+      return fixture.nativeElement as HTMLElement;
+    }
+
+    it('renders a muted line under the h1', () => {
+      const el = renderSubtitle('行情更新於 13:30 · 台股收盤');
+      const subtitle = el.querySelector('.page-subtitle');
+
+      expect(subtitle?.textContent?.trim()).toBe('行情更新於 13:30 · 台股收盤');
+      expect(el.querySelector('h1')!.nextElementSibling).toBe(subtitle);
+      expect(subtitle!.parentElement!.classList).toContain('page-title');
+    });
+
+    it('is not rendered without a subtitle', () => {
+      const el = renderSubtitle(null);
+
+      expect(el.querySelector('.page-subtitle')).toBeNull();
+      expect(el.querySelector('h1')?.textContent?.trim()).toBe('投資概覽');
+    });
   });
 
   it('falls back to the active item title', async () => {
@@ -114,6 +166,35 @@ describe('PageHeaderComponent', () => {
     expect(el.querySelector('app-sub-nav')).toBeNull();
   });
 
+  describe('actionsBelowOnPhone', () => {
+    const header = (el: HTMLElement) => el.querySelector('app-page-header')!;
+
+    it('moves the actions to their own line on phones, after the title and gear', async () => {
+      const el = await render(375, '/portfolio', null, undefined, ActionsBelowHost);
+      const actions = el.querySelector('.page-actions')!;
+      const gear = el.querySelector('a[aria-label="設定"]')!;
+
+      expect(header(el).classList).toContain('actions-below');
+      expect(actions.querySelector('.act')).not.toBeNull();
+      expect(gear.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(el.querySelector('.page-title')!.nextElementSibling).toBe(gear);
+    });
+
+    it('keeps the one-line row at 760px and wider', async () => {
+      const el = await render(800, '/portfolio', null, undefined, ActionsBelowHost);
+
+      expect(header(el).classList).not.toContain('actions-below');
+    });
+
+    it('changes nothing without the input', async () => {
+      const el = await render(375);
+      const actions = el.querySelector('.page-actions')!;
+
+      expect(header(el).classList).not.toContain('actions-below');
+      expect(actions.nextElementSibling).toBe(el.querySelector('a[aria-label="設定"]'));
+    });
+  });
+
   describe('back button (Settings as a pushed screen on phones)', () => {
     it('renders ‹ 返回 before the h1 on phones', async () => {
       const { el, button } = await renderBack(['/portfolio', '/settings']);
@@ -122,7 +203,7 @@ describe('PageHeaderComponent', () => {
       expect(button!.getAttribute('aria-label')).toBe('返回');
       expect(button!.getAttribute('type')).toBe('button');
       expect(button!.textContent?.trim()).toBe('‹');
-      expect(el.querySelector('h1')!.previousElementSibling).toBe(button);
+      expect(el.querySelector('.page-title')!.previousElementSibling).toBe(button);
       expect(el.querySelector('h1')!.textContent?.trim()).toBe('設定');
     });
 

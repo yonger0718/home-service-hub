@@ -18,7 +18,7 @@ Below the 總資產 hero the Portfolio dashboard SHALL render a responsive row o
 
 ### Requirement: Net-worth chart with range selector
 
-The dashboard SHALL render a Chart.js line chart titled 淨值走勢 with two series: **帳戶總值** (total assets = holdings market value + broker cash) and **持股淨值** (holdings market value). The area between the two lines SHALL be shaded and the area under 持股淨值 lightly filled. Above the chart a legend SHALL show each series' swatch, name and latest value, plus a third entry 兩線差距 = 交割戶現金 with the latest cash value. Hovering (or focusing) the chart SHALL show a dashed vertical guide, a marker on both lines and a tooltip with the date, 帳戶總值, 持股淨值 and 現金; the tooltip MUST stay inside the card. The header MUST contain the title, a `PctBadge` showing the period change of 帳戶總值 labelled 帳戶總值, and a `SegToggle` with options **1M / 3M / YTD / 1Y / 5Y** (default **1Y**). At < 760px the legend SHALL be a two-column grid above the chart and the hover tooltip MAY be omitted.
+The dashboard SHALL render a Chart.js line chart titled 淨值走勢 with two series: **帳戶總值** (total assets = holdings market value + broker cash) and **持股淨值** (holdings market value). The area between the two lines SHALL be shaded and the area under 持股淨值 lightly filled. Above the chart a legend SHALL show each series' swatch, name and latest value, plus a third entry 兩線差距 = 交割戶現金 with the latest cash value. Hovering (or focusing) the chart SHALL show a dashed vertical guide, a marker on both lines and a tooltip with the date, 帳戶總值, 持股淨值 and 現金; the tooltip MUST stay inside the card. The header MUST contain the title, a `PctBadge` showing the period change of 帳戶總值 labelled 帳戶總值, and a `SegToggle` with options **1M / 3M / YTD / 1Y / 5Y** (default **1Y**). At < 760px the legend SHALL be a two-column grid above the chart and the hover tooltip MAY be omitted. While a market filter is active, the chart title and the XIRR card footnote SHALL name 全市場 (portfolio-wide), since both remain portfolio-wide. Keyboard focus on the chart SHALL show the latest point, and ← / → SHALL move the focused point.
 
 #### Scenario: Default range is 1Y
 - **WHEN** the dashboard first renders
@@ -47,7 +47,7 @@ The 持股淨值 line and its fill SHALL use `--app-trend-positive` when the sel
 
 ### Requirement: 總資產 hero
 
-The dashboard SHALL open with a hero card: label 總資產 · TWD, the total in `--fs-value` or larger, a 今日 change pill in trend colour, and a composition bar 股票市值 / 交割戶現金 with a legend that also lists 待收股利 (dashed swatch, not part of the bar). The page header SHALL show the title, the quote time line, the market `SegToggle`, 匯入券商 and 刷新行情. When a market filter is active the hero SHALL be hidden as today.
+The dashboard SHALL open with a hero card: label 總資產 · TWD, the total in `--fs-value` or larger, a 今日 change pill in trend colour, and a composition bar 股票市值 / 交割戶現金 with a legend that also lists 待收股利 (dashed swatch, not part of the bar). The page header SHALL show the title, the quote time line, the market `SegToggle`, 匯入券商 and 刷新行情. When a market filter is active the hero SHALL be hidden as today. The quote time line SHALL read `行情更新於 HH:mm · 盤中|台股收盤` when the last quote refresh (`quote_refresh.finished_at` from `GET /api/portfolio/imports/recalc/status`) finished today in Asia/Taipei, and `行情更新於 MM/DD HH:mm · 盤中|台股收盤` when it finished on an earlier day. The session tag is computed client-side as 盤中 for Mon–Fri 09:00 ≤ t < 13:30 Asia/Taipei (13:30 itself is 台股收盤) and 台股收盤 otherwise. The market `SegToggle` SHALL be hidden when only one market is present.
 
 #### Scenario: Header contents
 - **GIVEN** the owner holds Taiwan and US stocks
@@ -66,7 +66,7 @@ The dashboard SHALL open with a hero card: label 總資產 · TWD, the total in 
 
 ### Requirement: Allocation and pending dividends card
 
-Beside the chart (stacked below it at < 1024px) the dashboard SHALL render a card 持股配置 with a horizontal allocation bar of holdings by market value and a list of name, symbol and percentage, followed by 待收股利: up to three pending dividends with a date tile (month, day of payment), name, per-share × quantity note and net amount in `var(--app-dividend)`, and a 全部 link to `/portfolio/dividends`.
+Beside the chart (stacked below it at < 1024px) the dashboard SHALL render a card 持股配置 with a horizontal allocation bar of holdings by market value and a list of name, symbol and percentage, followed by 待收股利: up to three pending dividends with a date tile (month, day of payment), name, per-share × quantity note and net amount in `var(--app-dividend)`, and a 全部 link to `/portfolio/dividends`. The 待收股利 list SHALL show dividends with `receipt_status = pending` (reading every page of `GET /api/portfolio/dividends`), dated rows first ordered by payment date, with amounts as returned (net) and non-TWD amounts shown with their currency; the hero's 待收股利 figure remains the server's `total_pending_dividends_net` and MAY differ from this list. Allocation colours SHALL be a five-token series starting with `--app-primary`, and holdings beyond the fifth SHALL be grouped as 其他.
 
 #### Scenario: Allocation sums to 100%
 - **WHEN** the card renders five holdings
