@@ -1785,9 +1785,9 @@ describe('LedgerTimelineComponent', () => {
       return rendered;
     }
 
-    /** `name label` of each legend row (the two spans sit side by side, spaced by the row gap). */
+    /** Accessible text of each legend row: `&ngsp;` keeps a space between the name and the amount (`餐飲 9,820`). */
     function legend(el: HTMLElement): string[] {
-      return Array.from(el.querySelectorAll('.dist-list .dist-row')).map(row => `${text(row.querySelector('.dist-name'))} ${text(row.querySelector('b'))}`);
+      return Array.from(el.querySelectorAll('.dist-list .dist-row')).map(row => row.textContent ?? '');
     }
 
     function segments(el: HTMLElement): HTMLElement[] {
@@ -1839,6 +1839,7 @@ describe('LedgerTimelineComponent', () => {
       expect(getComputedStyle(el.querySelector('.dist-row')!).fontSize).toBe('13px');
       expect(getComputedStyle(el.querySelector('.dist-row b')!).fontSize).toBe('13px'); // not the 0.95rem figure size
       expect(getComputedStyle(el.querySelector('.sum .dist')!).flexBasis).toBe('100%');
+      expect(getComputedStyle(el.querySelector('.sum .dist')!).marginTop).toBe('4px'); // + the 4 px .sum row gap ≈ 8 px
       const swatch = getComputedStyle(el.querySelector('.dist-swatch')!);
       expect([swatch.width, swatch.height, swatch.borderRadius]).toEqual(['8px', '8px', '3px']);
     });
@@ -1898,6 +1899,19 @@ describe('LedgerTimelineComponent', () => {
       expect(legend(el)).toEqual(['餐飲 560', '居家 140']);
       expect(el.querySelector('.dist-bar')!.getAttribute('aria-label')).toBe('支出類別分佈：餐飲 560、居家 140');
       expect(segments(el).map(s => Number(s.style.flexGrow))).toEqual([560, 140]);
+    });
+
+    it('paints a root without a colour with the muted-text fallback in the bar and the legend', () => {
+      const { el } = renderWith('sheet', {
+        expense: '-300.0000',
+        net: '-300.0000',
+        by_category: [
+          { category_id: 1, name: '餐飲', color: '#d0864a', expense: '-200.0000' },
+          { category_id: null, name: '未分類', color: null, expense: '-100.0000' },
+        ],
+      });
+      expect(segments(el).map(s => s.style.background)).toEqual(['rgb(208, 134, 74)', 'var(--app-text-muted)']);
+      expect((el.querySelectorAll('.dist-swatch')[1] as HTMLElement).style.background).toBe('var(--app-text-muted)');
     });
 
     it('renders no bar for a month without spending', () => {

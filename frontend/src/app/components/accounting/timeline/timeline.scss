@@ -101,6 +101,7 @@ app-split-folder {
     flex: 1 1 100%;
     flex-direction: column;
     gap: 10px;
+    margin-top: 4px; /* figures → bar ≈ 8 px with the .sum row gap; the compact card keeps it below canvas 12–16 px */
   }
 
   .dist-bar {

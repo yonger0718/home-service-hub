@@ -476,6 +476,69 @@ def test_month_summary_by_category_skips_unrated_currency(client, db_session):
     }
 
 
+def test_month_summary_by_category_keeps_a_refund_only_root_with_a_positive_expense(client, db_session):
+    wallet = make_account(db_session, "錢包")
+    food = Category(kind="expense", name="餐飲", color="#ff8800")
+    books = Category(kind="expense", name="書籍", color="#abcdef")
+    db_session.add_all([food, books])
+    db_session.flush()
+    day = date(2026, 9, 10)
+    make_entry(db_session, wallet, "-1000", category_id=food.id, entry_date=day)
+    make_entry(db_session, wallet, "300", kind="refund", category_id=books.id, entry_date=day)  # last month's purchase
+    db_session.commit()
+
+    body = client.get("/entries/summary", params={"month": "2026-09"}).json()
+
+    assert body["by_category"] == [
+        {"category_id": food.id, "name": "餐飲", "color": "#ff8800", "expense": "-1000.0000"},
+        {"category_id": books.id, "name": "書籍", "color": "#abcdef", "expense": "300.0000"},
+    ]
+    assert body["expense"] == "-700.0000"
+    assert sum(Decimal(item["expense"]) for item in body["by_category"]) == Decimal(body["expense"])
+
+
+def test_month_summary_lists_an_income_only_unrated_currency_without_touching_by_category(client, db_session):
+    db_session.add(Preference(main_currency="TWD"))
+    wallet = make_account(db_session, "錢包")
+    jpy = make_account(db_session, "去日本的錢", currency="JPY")
+    food = Category(kind="expense", name="餐飲", color="#ff8800")
+    db_session.add(food)
+    db_session.flush()
+    day = date(2026, 9, 10)
+    make_entry(db_session, wallet, "-200", category_id=food.id, entry_date=day)
+    make_entry(db_session, jpy, "5000", kind="income", entry_date=day)
+    db_session.commit()
+
+    body = client.get("/entries/summary", params={"month": "2026-09"}).json()
+
+    assert body == {
+        "month": "2026-09", "currency": "TWD", "expense": "-200.0000", "income": "0.0000", "net": "-200.0000",
+        "missing_rates": ["JPY"],
+        "by_category": [{"category_id": food.id, "name": "餐飲", "color": "#ff8800", "expense": "-200.0000"}],
+    }
+
+
+def test_month_summary_by_category_drops_a_root_whose_spend_and_refund_net_to_zero(client, db_session):
+    wallet = make_account(db_session, "錢包")
+    food = Category(kind="expense", name="餐飲", color="#ff8800")
+    home = Category(kind="expense", name="居家")
+    db_session.add_all([food, home])
+    db_session.flush()
+    lamp = Category(kind="expense", parent_id=home.id, name="燈具")
+    db_session.add(lamp)
+    db_session.flush()
+    day = date(2026, 9, 10)
+    make_entry(db_session, wallet, "-100", category_id=food.id, entry_date=day)
+    make_entry(db_session, wallet, "-250", category_id=lamp.id, entry_date=day)
+    make_entry(db_session, wallet, "250", kind="refund", category_id=home.id, entry_date=day)  # child + root net 0
+    db_session.commit()
+
+    body = client.get("/entries/summary", params={"month": "2026-09"}).json()
+
+    assert body["by_category"] == [{"category_id": food.id, "name": "餐飲", "color": "#ff8800", "expense": "-100.0000"}]
+    assert body["expense"] == "-100.0000"
+
+
 def test_month_summary_reports_currencies_without_a_rate(client, db_session):
     db_session.add(Preference(main_currency="TWD"))
     usd = make_account(db_session, "美金", currency="USD")

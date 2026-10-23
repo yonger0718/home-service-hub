@@ -44,7 +44,7 @@
           @if (!isPhone()) {
             <div class="dist-list">
               @for (seg of distribution(); track $index) {
-                <span class="dist-row"><span class="dist-swatch" aria-hidden="true" [style.background]="seg.color"></span><span class="dist-name">{{ seg.name }}</span><b>{{ seg.label }}</b></span>
+                <span class="dist-row"><span class="dist-swatch" aria-hidden="true" [style.background]="seg.color"></span><span class="dist-name">{{ seg.name }}</span>&ngsp;<b>{{ seg.label }}</b></span>
               }
             </div>
           }

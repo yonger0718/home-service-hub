@@ -65,6 +65,23 @@ describe('categoryDistribution', () => {
     expect(segments.map(s => s.name)).toEqual(['大', '中', '小']);
   });
 
+  it('breaks equal magnitudes by name, so the top five and 其他 do not depend on the API row order', () => {
+    const rows = [cat('F', '-100'), cat('C', '-100'), cat('A', '-100'), cat('E', '-100'), cat('B', '-100'), cat('D', '-100')];
+    const forward = categoryDistribution(summary('-600', rows));
+    const backward = categoryDistribution(summary('-600', [...rows].reverse()));
+
+    expect(forward.map(s => s.name)).toEqual(['A', 'B', 'C', 'D', 'E', '其他']);
+    expect(backward).toEqual(forward);
+  });
+
+  it('applies the name tiebreak with zh-Hant collation for Chinese roots', () => {
+    const rows = [cat('餐飲', '-100'), cat('交通', '-100'), cat('居家', '-100')];
+    const expected = ['餐飲', '交通', '居家'].sort((a, b) => a.localeCompare(b, 'zh-Hant'));
+
+    expect(categoryDistribution(summary('-300', rows)).map(s => s.name)).toEqual(expected);
+    expect(categoryDistribution(summary('-300', [...rows].reverse())).map(s => s.name)).toEqual(expected);
+  });
+
   it('absorb: the tail and a refund-only root fold into 其他 = target − Σ top five', () => {
     const items = [
       cat('A', '-500'), cat('B', '-400'), cat('C', '-300'), cat('D', '-200'), cat('E', '-100'),

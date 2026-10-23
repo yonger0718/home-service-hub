@@ -33,6 +33,7 @@ function segment(name: string, amount: number, color: string, other: boolean): D
  * - remainder = |expense| − Σ top five ≥ 0 → raw top five, plus 其他 = remainder when > 0 (tail, 未分類,
  *   refund-only roots; a refund-only month has no top and becomes a single 其他 = |expense|);
  * - remainder < 0 (refunds outweigh the tail, or FX quantize residue) → top five scaled to |expense|, no 其他.
+ * Equal magnitudes rank by name (`zh-Hant` collation) so the top five never depend on the API row order.
  */
 export function categoryDistribution(summary: MonthSummary | null): DistributionSegment[] {
   const target = Math.abs(Number(summary?.expense ?? 0));
@@ -43,7 +44,7 @@ export function categoryDistribution(summary: MonthSummary | null): Distribution
     .map((c: CategoryExpense) => ({ c, spend: Number(c.expense) }))
     .filter(x => x.spend < 0)
     .map(x => ({ name: x.c.name, color: x.c.color ?? FALLBACK_COLOR, amount: -x.spend }))
-    .sort((a, b) => b.amount - a.amount)
+    .sort((a, b) => b.amount - a.amount || a.name.localeCompare(b.name, 'zh-Hant'))
     .slice(0, TOP_COUNT);
   const topSum = top.reduce((sum, t) => sum + t.amount, 0);
   const remainder = quantize(target - topSum);
