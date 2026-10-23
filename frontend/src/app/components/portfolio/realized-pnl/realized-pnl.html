@@ -6,14 +6,22 @@
   <div class="bento-item realized-summary-card" [class.is-loss]="Number(summary().filter_scope_total) < 0">
     <div class="bento-content">
       <div class="label">已實現損益 (篩選範圍)</div>
-      <div class="value">{{ formatCurrency(summary().filter_scope_total) }}</div>
+      <div class="value">
+        @if (!allLoading()) {
+          {{ formatCurrency(summary().filter_scope_total) }}
+        }
+      </div>
       <div class="meta">{{ total() }} 筆交易</div>
     </div>
   </div>
   <div class="bento-item realized-summary-card" [class.is-loss]="Number(summary().ytd_total) < 0">
     <div class="bento-content">
       <div class="label">今年累計 (YTD)</div>
-      <div class="value">{{ formatCurrency(summary().ytd_total) }}</div>
+      <div class="value">
+        @if (!allLoading()) {
+          {{ formatCurrency(summary().ytd_total) }}
+        }
+      </div>
       <div class="meta">{{ ytdTradeCount() }} 筆交易</div>
     </div>
   </div>
@@ -84,7 +92,7 @@
 
 <div class="hub-result-meta">
   <span class="meta-count">{{ total() }} 筆</span>
-  @if (loading()) {
+  @if (loading() || allLoading()) {
     <span class="meta-loading">
       <p-progressSpinner styleClass="w-1rem h-1rem" strokeWidth="4"></p-progressSpinner>
       查詢中…

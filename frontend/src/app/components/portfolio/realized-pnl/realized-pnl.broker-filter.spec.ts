@@ -87,9 +87,13 @@ describe('PortfolioRealizedPnlComponent broker filter', () => {
     fixture.detectChanges();
 
     expect(fixture.componentInstance.selectedBroker()).toBe('IB');
-    const lastCall = portfolioService.getRealizedPnl.mock.calls.at(-1)?.[0];
-    expect(lastCall?.broker).toBe('IB');
-    expect(lastCall?.offset).toBe(0);
+    // limit 200 = the filter-wide load; the other call is the list page. Both carry the broker.
+    const queries = portfolioService.getRealizedPnl.mock.calls.map(([query]) => query);
+    const listCall = queries.filter(query => query.limit !== 200).at(-1);
+    const allCall = queries.filter(query => query.limit === 200).at(-1);
+    expect(listCall?.broker).toBe('IB');
+    expect(listCall?.offset).toBe(0);
+    expect(allCall).toEqual(expect.objectContaining({ broker: 'IB', offset: 0 }));
   });
 
   it('shows broker filter chip for TW manual rows labeled as 國泰', () => {
