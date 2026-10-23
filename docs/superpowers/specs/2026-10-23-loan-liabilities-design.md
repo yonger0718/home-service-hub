@@ -1,6 +1,6 @@
 # Loan liabilities: attach a loan to an existing installment schedule, count open payables as 負債 — design
 
-Status: rev 3 (2026-10-23, after the builder check and the AGENT-227 review). Owner's problem (after the MOZE cutover): "帳務沒算到我有負債". Decisions below marked
+Status: rev 4 (2026-10-23, after the builder check and the AGENT-227/228 reviews). Owner's problem (after the MOZE cutover): "帳務沒算到我有負債". Decisions below marked
 *[call]* are mine; the owner opted out of the question round ("ok go").
 
 ## 1. Intent
@@ -81,12 +81,20 @@ Anti-goals
 `schedule_templates._check_loan` runs only when `loan_entry_id` is set; a `repayment`/`collection` line with
 `loan_entry_id = None` is valid ("no loan yet"). At posting time (`schedule_posting`, the `kind in LOAN_LINE_KINDS`
 branch) a loan line that has NO applicable loan — `loan_entry_id` None, or the instance's `seq < line["loan_from_seq"]`
-(§4.1) — writes a plain `expense` entry (`income` for `collection`) with the line's account, amount, category (fallback
-`system_category_id(db, "expense")`), project, name, merchant, tags and the line's `counterparty_id`, exactly like the
-`interest` branch writes its entry; no settlement, no loan lock. Repost (`repost_instance`) and reopen→post go through
+(§4.1) — writes a plain entry the way the `interest` branch does (a direct `LedgerEntry(...)` + `db.flush()`, NOT
+`prepare_entry`, which refuses a counterparty on expense/income): `kind="expense"` for repayment / `"income"` for
+collection, `amount = -amount` / `+amount`, the line's account and its currency, `entry_date = posted_date = due`,
+`category_id = None` *[call: the repayment line's category is a payable/receivable-kind category and must not be
+reused on an expense; there is no system "repayment" category — the owner may categorise the rare plain entry later]*,
+`project_id`, `name`, `merchant`, `tags`, `counterparty_id = line["counterparty_id"]`, `source = SOURCE`; no settlement,
+no loan lock; the entry joins the period group like every other line. Repost (`repost_instance`) and reopen→post go through
 the same branch, so periods before the boundary never touch the loan. `PostResult` outcome stays `posted`.
 Template line key `loan_from_seq: int | None` (≥ 1; only on loan-kind lines; carried through `LINE_KEYS`,
-`normalize_template`, `validate_template`, `TemplateLineIn`/`TemplateLineOut`, additive).
+`normalize_template`, `validate_template`, `TemplateLineIn`/`TemplateLineOut`, additive). Lifecycle guard: in
+`update_definition`, when the incoming loan line keeps the same `loan_entry_id` as the stored line but carries no
+`loan_from_seq`, the stored boundary is copied forward (a client that does not know the key cannot erase it); the SPA's
+`schedule-save.ts` line whitelist (`LINE_INPUT_KEYS`) and `ScheduleLineInput` gain `loan_from_seq` so a load → edit →
+PUT round trip preserves it.
 
 ### 4.1 Backend — `POST /schedules/definitions/{definition_id}/loan` (WRITE)
 Body = `LoanIn` (reuse: `account_id`, `counterparty_id`, `category_id?`, `amount` (> 0, the REMAINING principal),

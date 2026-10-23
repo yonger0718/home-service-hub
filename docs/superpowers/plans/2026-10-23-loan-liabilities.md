@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13 / FastAPI / SQLAlchemy (accounting-service), Angular 21 signals / Vitest.
 
-**Spec:** `docs/superpowers/specs/2026-10-23-loan-liabilities-design.md` (rev 3). Plan rev 2 folds in the AGENT-227 review (Musts 1–4, Shoulds 1–4, nit).
+**Spec:** `docs/superpowers/specs/2026-10-23-loan-liabilities-design.md` (rev 4). Plan rev 3 folds in the AGENT-227 review (Musts 1–4, Shoulds 1–4, nit) and the AGENT-228 re-check (M1 boundary lifecycle, M2 plain-entry write path).
 
 ## Global Constraints
 
@@ -16,7 +16,8 @@
 - Backend tests: from `services/accounting-service`, `PYTHONPATH=../shared-python-lib .venv/bin/python -m pytest <file> -q`; never two accounting files concurrently. Frontend: from `frontend`, `npx ng test --include='<spec>'` (rerun once on "could not determine executable"); `npx ng build 2>&1 | tail -3`.
 - Commit messages end with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 - Attach never changes `times`, `total_amount`, `first_seq`, `end_date`, instances (every `amount_override` stays) or `generated_until`; it adds exactly two entries (payable +X, balance_adjustment −X, same `entry_date` and `posted_date`) and sets `loan_entry_id` + `loan_from_seq` on the `repayment` line only.
-- A loan-kind line with no applicable loan (`loan_entry_id` None, or `instance.seq < loan_from_seq`) posts a plain `expense` (`income` for collection) — in post, repost and reopen→post alike; never a settlement.
+- A loan-kind line with no applicable loan (`loan_entry_id` None, or `instance.seq < loan_from_seq`) posts a plain `expense` (`income` for collection) — in post, repost and reopen→post alike; never a settlement. The plain entry is built like the `interest` branch (direct `LedgerEntry`, `category_id=None`, counterparty kept, `source=SOURCE`), never through `prepare_entry`.
+- `loan_from_seq` survives edits: server side (`update_definition` copies the stored boundary when the same loan comes back without it) and client side (`schedule-save.ts` `LINE_INPUT_KEYS` + `ScheduleLineInput`).
 - Error codes/messages verbatim: 422 `loan` 「只有分期可以掛貸款」, 422 `loan` 「排程沒有還款那一行」, 409 `loan_already_attached`, 409 `catch_up_first`, 409 `nothing_pending`, 422 `amount` 「剩餘期數乘以每期金額已達剩餘本金」, 422 `amount` 「超過之後各期本金合計」, 422 `account` 「貸款要掛在還款帳戶」, 409 `definition_ended`; SPA texts: 「排程已結束」「已經有貸款了」「先補記逾期的期數」「沒有待入帳的期數」 and the 422 messages verbatim.
 - The loan route and `GET /schedules/definitions/{id}` return `DefinitionDetailOut` (with `pending_principal`, `loan_remaining`); `loan_summary.remaining`/`repaid` are positive magnitudes and the SPA consumers switch to magnitude wording.
 - Money/dates in the SPA as strings; `LoanIn.entry_date` is required by the API (the SPA defaults it to today). `count` in `/accounts/debts` counts every open original, converted or not.
@@ -60,7 +61,7 @@ Frontend (`frontend/src/app/`):
 - Produces:
   - Template line key `loan_from_seq` (int ≥ 1 or None), carried by `LINE_KEYS`/`normalize_template`, accepted/emitted by the schemas; `validate_template` refuses it on a non-loan-kind line (`ValidationError(field, "只有還款／收款那一行可以有起算期")`) and refuses `< 1`.
   - `_check_loan` is called only when `line["loan_entry_id"] is not None`; a loan-kind line with `None` is valid.
-  - `schedule_posting`: `loan_applies(line: dict, seq: int) -> bool` = `line["loan_entry_id"] is not None and seq >= (line.get("loan_from_seq") or 1)`. In `post_locked`, the loan is looked up / locked only when it applies; the loan-kind branch writes a plain `LedgerEntry(kind="expense" | "income" for collection, amount=-amount | +amount, account, currency = account's, entry_date=posted_date=due, category_id=line["category_id"] or system_category_id(db, "expense"), project_id, name, merchant, tags, counterparty_id=line["counterparty_id"])` via the same `prepare_entry`/`insert_prepared(source=SOURCE)` path the `expense` branch uses, when the loan does not apply; otherwise the existing settlement. `repost_instance` / `reopen_instance` need no change beyond using `loan_applies` where they look up the loan (`schedule_service.py:474-516`).
+  - `schedule_posting`: `loan_applies(line: dict, seq: int) -> bool` = `line["loan_entry_id"] is not None and seq >= (line.get("loan_from_seq") or 1)`. In `post_locked`, the loan is looked up / locked only when it applies (`locked_loan` handling in `repost_instance` likewise, `schedule_service.py:489-516`); when it does NOT apply the loan-kind branch writes the plain entry exactly like the `interest` branch (`schedule_posting.py:165-176`): `LedgerEntry(account_id, currency=account.currency, kind="expense" (repayment) | "income" (collection), amount=-amount | +amount, entry_date=due, entry_time=None, posted_date=due, category_id=None, project_id=line["project_id"], name=name, merchant=line["merchant"], counterparty_id=line["counterparty_id"], description=description, tags=tags, source=SOURCE)` + `db.add` + `db.flush()` — NOT `prepare_entry` (it refuses a counterparty on expense/income and `system_category_id` has no "expense"); the repayment line's own category (a payable-kind category) is deliberately not copied. `reopen_instance` (`:474`) then `post` goes through the same branch.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -99,7 +100,8 @@ def test_unlinked_repayment_posts_as_expense(client, db_session, seed, today):
     kinds = sorted(e.kind for e in rows)
     assert kinds == ["expense", "interest"]
     exp = next(e for e in rows if e.kind == "expense")
-    assert (exp.amount, exp.counterparty_id, exp.is_settlement, exp.settles_entry_id) == (Decimal("-8333"), lender.id, False, None)
+    assert (exp.amount, exp.counterparty_id, exp.is_settlement, exp.settles_entry_id, exp.category_id, exp.source) == (Decimal("-8333"), lender.id, False, None, None, "schedule")
+    assert exp.group_id is not None and exp.group_id == next(e for e in rows if e.kind == "interest").group_id
     assert ledger_service.account_balance(db_session, bank.id) == before - Decimal("8333") - Decimal("620")
 
 
@@ -122,11 +124,31 @@ def test_loan_from_seq_boundary_repost_and_reopen(client, db_session, seed, toda
     r = client.post(f"/schedules/instances/{_instance_id(db_session, d.id, 14)}/repost", json={"amounts": ["8000", "620"]})  # adapt body to the real route
     assert r.status_code in (200, 201), r.text
     assert open_amount(db_session, payable) == Decimal("183000")
+    # reopen 14 then post again → still a plain expense, loan untouched
+    r = client.post(f"/schedules/instances/{_instance_id(db_session, d.id, 14)}/reopen")   # adapt to the real route
+    assert r.status_code in (200, 201), r.text
+    r = client.post(f"/schedules/instances/{_instance_id(db_session, d.id, 14)}/post")
+    assert r.status_code in (200, 201), r.text
+    assert open_amount(db_session, payable) == Decimal("183000")
     # seq 15 → settles
     today(date(2026, 11, 8))
     r = client.post(f"/schedules/instances/{_instance_id(db_session, d.id, 15)}/post")
     assert r.status_code in (200, 201), r.text
     assert open_amount(db_session, payable) == Decimal("183000") - Decimal("8333")
+
+
+def test_unlinked_collection_posts_as_income_and_payable_category_is_not_copied(client, db_session, seed, today):
+    today(date(2026, 10, 9))
+    bank = seed.account("薪轉")
+    friend = seed.counterparty("朋友")
+    cat = seed.category("借出", kind="receivable")
+    d = seed.definition([seed.line("collection", bank, "500", counterparty_id=friend.id, category_id=cat.id)],
+                        kind="installment", name="收回", anchor=date(2026, 10, 8), times=3)
+    db_session.commit()
+    r = _post_next(client, d.id)
+    assert r.status_code in (200, 201), r.text
+    inc = db_session.scalar(select(LedgerEntry).where(LedgerEntry.account_id == bank.id))
+    assert (inc.kind, inc.amount, inc.counterparty_id, inc.category_id) == ("income", Decimal("500"), friend.id, None)
 
 
 def _instance_id(db, definition_id, seq):
@@ -174,6 +196,7 @@ git commit -m "fix(schedules): a repayment line without an applicable loan posts
   - `remaining_principal_series(db, definition) -> list[Decimal]` in `schedule_read.py`: for `seq` from the lowest pending seq (or `max_seq + 1` when none pending) to `times`: the repayment line's amount — the instance's `amount_override[line_index]` when that instance exists with an override, else `Decimal(template line amount)`; `[]` when `times` is None or no repayment line. `pending_principal(db, definition) -> Decimal | None` = its sum (None for `[]`).
   - `attach_loan(db: Session, definition_id: int, loan: LoanIn) -> int` (payable id), in this order: import key shared → `lock_definition` → `moze_id` guard → `kind != "installment"` → 422 `loan` 「只有分期可以掛貸款」 → `status == "ended"` → 409 `definition_ended` → no `repayment` line → 422 `loan` 「排程沒有還款那一行」 → line has `loan_entry_id` → 409 `loan_already_attached` → `loan.account_id != line["account_id"]` → 422 `account` 「貸款要掛在還款帳戶」 → no pending instance → 409 `nothing_pending` → any pending `due_date <= loan.entry_date` → 409 `catch_up_first` → `series = remaining_principal_series(...)`; `loan.amount > sum(series)` → 422 `amount` 「超過之後各期本金合計」; `loan.amount <= sum(series[:-1])` → 422 `amount` 「剩餘期數乘以每期金額已達剩餘本金」 → insert the payable (as `create_definition`), insert the `balance_adjustment` (−amount, same account/date/posted_date, name `掛帳調整：<loan.name or definition.name>`) → `line["loan_entry_id"] = payable_id`, `line["loan_from_seq"] = lowest pending seq`, `definition.template = template`, `template_owner_edited = True` → `validate_template` → `db.flush()`.
   - Route `POST /schedules/definitions/{definition_id}/loan` (body `LoanIn`, `response_model=DefinitionDetailOut`, 201, `service_errors()` + `db.commit()` + the same detail serializer `GET /definitions/{id}` uses; write scope like the other write routes).
+  - `update_definition` (`schedule_service.py:128-205`, where the new template replaces the stored one ~:135/:171): for the loan line, if `new["loan_entry_id"] == old["loan_entry_id"] is not None` and `new.get("loan_from_seq") is None`, set `new["loan_from_seq"] = old.get("loan_from_seq")` before `validate_template` (M1 server-side guard).
   - `loan_summary`: `remaining = open_amount` (positive), `repaid` unchanged; `DefinitionDetailOut.loan_remaining` = that open amount when linked.
 
 - [ ] **Step 1: Write the failing tests**
@@ -357,6 +380,12 @@ def test_update_after_attach_keeps_loan_link(client, db_session, plain):
     r = client.put(f"/schedules/definitions/{plain.definition.id}", json=update)
     assert r.status_code == 200, r.text
     assert r.json()["loan_entry_id"] == body["loan_entry_id"] and r.json()["template"]["lines"][0]["loan_from_seq"] == 15
+    # a client that does not know the key (sends the same loan without loan_from_seq) must not erase the boundary
+    naked = {**update, "name": "信貸（再改）"}
+    naked["template"] = {**update["template"], "lines": [{k: v for k, v in line.items() if k != "loan_from_seq"} for line in update["template"]["lines"]]}
+    r = client.put(f"/schedules/definitions/{plain.definition.id}", json=naked)
+    assert r.status_code == 200, r.text
+    assert r.json()["template"]["lines"][0]["loan_from_seq"] == 15
     # existing behaviour, recorded not fixed here: the rename regenerates future pending instances and flattens their
     # per-period overrides (see spec §5) — assert what happens so the follow-up has a baseline:
     overrides = db_session.scalars(select(ScheduleInstance.amount_override).where(ScheduleInstance.definition_id == plain.definition.id, ScheduleInstance.status == "pending")).all()
@@ -454,12 +483,13 @@ git commit -m "feat(accounts): GET /accounts/debts — open payables/receivables
 - Modify: `frontend/src/app/models/accounting.model.ts` (near `ScheduleLoanInput` ~line 792, `LoanSchedule` ~874)
 - Modify: `frontend/src/app/services/accounting.service.ts` (near `updateScheduleDefinition` ~line 332)
 - Modify: `frontend/src/app/components/accounting/entry-detail/entry-detail.ts` (~line 129) + `entry-detail-schedule.spec.ts` (~line 96), `frontend/src/app/components/accounting/reminders/schedule-queue.ts` (~line 117) + its spec — `loan_schedule.remaining`/`repaid` are now positive magnitudes: render `欠 <formatMoney(remaining)>` for a payable and `待收 <…>` for a receivable (kind from the entry), no leading minus.
+- Modify: `frontend/src/app/components/accounting/entry-form/schedule-save.ts:131-134` — add `'loan_from_seq'` to `LINE_INPUT_KEYS` (and `ScheduleLineInput.loan_from_seq?: number | null` in the model) so the merge at ~:147 keeps the loaded value; test in `schedule-save.spec.ts`: a loaded definition whose repayment line has `loan_entry_id: 9, loan_from_seq: 15` → after a rename the built update payload still carries `loan_from_seq: 15` (M1 client-side).
 - Test: `frontend/src/app/services/accounting-schedules.service.spec.ts` (append)
 
 **Interfaces:**
 - Produces: `DebtTotal {open_main: string; count: number; unconverted: {currency: string; amount: string}[]}`, `DebtsSummary {main_currency: string; payables: DebtTotal; receivables: DebtTotal}`; `ScheduleLine.loan_from_seq?: number | null`; `ScheduleDefinitionDetail.pending_principal: string | null`, `loan_remaining: string | null`; `AccountingService.getDebts(): Observable<DebtsSummary>` (`GET /api/accounting/accounts/debts`), `attachScheduleLoan(id: number, input: ScheduleLoanInput): Observable<ScheduleDefinitionDetail>` (`POST /api/accounting/schedules/definitions/{id}/loan`, through `bump()`).
 
-- [ ] **Step 1: Write the failing specs** — `getDebts hits /accounts/debts`; `attachScheduleLoan posts the loan body and bumps entriesChanged` (HttpTestingController, same style as the file's existing cases); update `entry-detail-schedule.spec.ts:96` and the schedule-queue spec to the magnitude wording (`欠 $…` / `待收 $…`).
+- [ ] **Step 1: Write the failing specs** — `getDebts hits /accounts/debts`; `attachScheduleLoan posts the loan body and bumps entriesChanged` (HttpTestingController, same style as the file's existing cases); update `entry-detail-schedule.spec.ts:96` and the schedule-queue spec to the magnitude wording (`欠 $…` / `待收 $…`); `schedule-save.spec.ts`: `keeps loan_from_seq through a rename round trip`.
 - [ ] **Step 2: Run** `npx ng test --include='src/app/services/accounting-schedules.service.spec.ts'` and the two detail/queue specs — FAIL.
 - [ ] **Step 3: Implement.** - [ ] **Step 4: Run** — pass.
 - [ ] **Step 5: Commit** `feat(spa): debts summary, attach-loan service method, loan magnitudes`.
