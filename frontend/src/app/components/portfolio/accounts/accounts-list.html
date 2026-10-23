@@ -1,5 +1,66 @@
 <p-toast></p-toast>
 
+<app-cash-flow-form
+  [visible]="cashFormVisible()"
+  (visibleChange)="cashFormVisible.set($event)"
+  (created)="fetchAccounts()">
+</app-cash-flow-form>
+
+@if (master()) {
+  <div class="acct-master" [class.is-loading]="loading()">
+    <section class="acct-total" aria-label="現金帳戶總額">
+      <span class="acct-total-label">現金帳戶總額 · TWD</span>
+      <b class="acct-total-value">{{ totalText() }}</b>
+      @if (overdraftCount() > 0) {
+        <span class="acct-total-note pending-note">{{ overdraftCount() }} 個帳戶待補入金紀錄，未計入</span>
+      }
+      @if (accountsList().skipped_currencies.length > 0) {
+        <span class="acct-total-note">未換算: {{ accountsList().skipped_currencies.join(', ') }}</span>
+      } @else {
+        <span class="acct-total-note">以 TWD 換算</span>
+      }
+    </section>
+
+    @for (account of accounts(); track account.id) {
+      @let selected = account.id === selectedId();
+      <button
+        type="button"
+        class="acct-card"
+        [class.selected]="selected"
+        [attr.aria-pressed]="selected"
+        (click)="goToDetail(account)">
+        <span class="acct-card-top">
+          <span
+            class="acct-square"
+            [class.ink-dark]="brokerInk(account) === 'dark'"
+            [style.background]="'var(' + brokerToken(account) + ')'"
+            aria-hidden="true"><i class="pi pi-wallet"></i></span>
+          <span class="acct-card-name">
+            <b>{{ account.nickname }}</b>
+            <small class="acct-card-meta">{{ cardMeta(account, selected) }}</small>
+          </span>
+        </span>
+        <span class="acct-card-bottom">
+          <b class="acct-card-balance" [class.negative]="isOverdraft(account)">{{ cardBalance(account) }}</b>
+          <span class="acct-card-tags">
+            @if (isOverdraft(account)) {
+              <app-tag variant="warning">未記錄入金</app-tag>
+            }
+            <app-tag [variant]="account.is_active ? 'success' : 'neutral'">{{ account.is_active ? '啟用中' : '已停用' }}</app-tag>
+          </span>
+        </span>
+      </button>
+    } @empty {
+      @if (!loading()) {
+        <div class="empty-state">
+          <i class="pi pi-wallet"></i>
+          <h4>尚無現金帳戶</h4>
+          <p>新增帳戶後即可追蹤券商現金餘額。</p>
+        </div>
+      }
+    }
+  </div>
+} @else {
 <div class="accounts-page">
   <app-page-header>
     <app-btn variant="soft" icon="pi-plus" (click)="openCreateDialog()">新增帳戶</app-btn>
@@ -28,12 +89,6 @@
       </p-button>
     </div>
   </div>
-
-  <app-cash-flow-form
-    [visible]="cashFormVisible()"
-    (visibleChange)="cashFormVisible.set($event)"
-    (created)="fetchAccounts()">
-  </app-cash-flow-form>
 
   @if (loading()) {
     <div class="hub-result-meta">
@@ -83,6 +138,7 @@
     }
   </div>
 </div>
+}
 
 <p-dialog
   header="新增帳戶"

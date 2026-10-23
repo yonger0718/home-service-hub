@@ -1,0 +1,23 @@
+@if (panes()) {
+  <div class="accounts-md">
+    <app-page-header title="現金帳戶" subtitle="券商交割戶與複委託帳戶的現金">
+      <app-btn variant="soft" icon="pi-money-bill" (click)="openCashForm()">記錄入出金</app-btn>
+      <app-btn variant="soft" icon="pi-plus" (click)="openCreateDialog()">新增帳戶</app-btn>
+    </app-page-header>
+
+    <div class="accounts-md-body">
+      <section class="accounts-md-master" aria-label="帳戶列表">
+        <app-portfolio-accounts-list [master]="true" [selectedId]="selectedId()" (loaded)="onLoaded($event)" />
+      </section>
+      <section class="accounts-md-detail" aria-label="帳戶明細">
+        @if (selectedId(); as id) {
+          <app-portfolio-account-detail [accountId]="id" [embedded]="true" />
+        }
+      </section>
+    </div>
+  </div>
+} @else if (routeId() === null) {
+  <app-portfolio-accounts-list />
+} @else {
+  <app-portfolio-account-detail />
+}

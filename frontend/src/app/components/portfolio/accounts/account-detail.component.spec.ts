@@ -5,7 +5,9 @@ import { By } from '@angular/platform-browser';
 import { ReactiveFormsModule } from '@angular/forms';
 import { provideRouter } from '@angular/router';
 import { ActivatedRoute } from '@angular/router';
-import { of } from 'rxjs';
+import { BehaviorSubject, of } from 'rxjs';
+import { ChartModule } from 'primeng/chart';
+import { Component, Input } from '@angular/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfirmationService, MessageService } from 'primeng/api';
 
@@ -489,5 +491,121 @@ describe('PortfolioAccountDetailComponent', () => {
       severity: 'error',
       detail: '刪除失敗: only manual cash transactions can be deleted',
     }));
+  });
+});
+
+@Component({ selector: 'p-chart', template: '' })
+class ChartStubComponent {
+  @Input() type = '';
+  @Input() data: unknown;
+  @Input() options: unknown;
+}
+
+describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
+  let httpMock: HttpTestingController;
+  let params: BehaviorSubject<Map<string, string>>;
+
+  beforeEach(() => {
+    localStorage.clear();
+    params = new BehaviorSubject(new Map<string, string>());
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        { provide: ActivatedRoute, useValue: { paramMap: params } },
+      ],
+    }).overrideComponent(PortfolioAccountDetailComponent, {
+      remove: { imports: [ChartModule] },
+      add: { imports: [ChartStubComponent] },
+    });
+    httpMock = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+    localStorage.clear();
+  });
+
+  function render(inputs: { accountId?: number | null; embedded?: boolean } = {}) {
+    const fixture = TestBed.createComponent(PortfolioAccountDetailComponent);
+    if (inputs.accountId !== undefined) fixture.componentRef.setInput('accountId', inputs.accountId);
+    if (inputs.embedded !== undefined) fixture.componentRef.setInput('embedded', inputs.embedded);
+    fixture.detectChanges();
+    return fixture;
+  }
+
+  /** Flushes the three loads for `id` and returns how many sets were sent; fails on a load for any other account. */
+  function flushLoads(id: number): number {
+    const summaries = httpMock.match(req => req.url === '/api/portfolio/accounts/' && req.params.get('include_inactive') === 'true');
+    const histories = httpMock.match(req => req.url === `/api/portfolio/accounts/${id}/balance-history`);
+    const txns = httpMock.match(req => req.url === `/api/portfolio/accounts/${id}/cash-transactions`);
+    expect(summaries.length).toBe(histories.length);
+    expect(txns.length).toBe(histories.length);
+    summaries.forEach(req => req.flush({
+      items: [{
+        id, broker: 'cathay', nickname: `帳戶 ${id}`, currency: 'TWD', opening_balance: '0', opening_date: '2026-01-01',
+        is_active: true, created_at: '2026-01-01T00:00:00Z', native_balance: '100', target_balance: '100', target_currency: 'TWD',
+      }],
+      target_currency: null,
+      total_target_balance: null,
+      skipped_currencies: [],
+    }));
+    histories.forEach(req => req.flush({ account_id: id, currency: 'TWD', points: [] }));
+    txns.forEach(req => req.flush({ items: [], total: 0, offset: 0, limit: 25 }));
+    return histories.length;
+  }
+
+  it('loads the accountId input without a route param and reloads once when it changes', () => {
+    const fixture = render({ accountId: 7 });
+    expect(flushLoads(7)).toBe(1);
+    fixture.detectChanges();
+    expect(fixture.componentInstance.account()?.nickname).toBe('帳戶 7');
+
+    fixture.componentRef.setInput('accountId', 9);
+    fixture.detectChanges();
+    expect(flushLoads(9)).toBe(1);
+    expect(flushLoads(7)).toBe(0);
+
+    fixture.detectChanges();
+    expect(flushLoads(9)).toBe(0);
+  });
+
+  it('prefers the accountId input over the route id', () => {
+    params.next(new Map([['id', '3']]));
+    render({ accountId: 7 });
+    expect(flushLoads(7)).toBe(1);
+    expect(flushLoads(3)).toBe(0);
+  });
+
+  it('loads nothing without an input or a route id', () => {
+    render();
+    expect(httpMock.match(() => true).length).toBe(0);
+  });
+
+  it('follows the route id when accountId is null, reloading once per id change', () => {
+    params.next(new Map([['id', '1']]));
+    const fixture = render();
+    expect(flushLoads(1)).toBe(1);
+
+    params.next(new Map([['id', '2']]));
+    fixture.detectChanges();
+    expect(flushLoads(2)).toBe(1);
+    expect(flushLoads(1)).toBe(0);
+  });
+
+  it('hides the page header when embedded and keeps it otherwise', () => {
+    const embedded = render({ accountId: 7, embedded: true });
+    flushLoads(7);
+    embedded.detectChanges();
+    const el = embedded.nativeElement as HTMLElement;
+    expect(el.querySelector('app-page-header')).toBeNull();
+    expect(el.querySelector('h2')?.textContent).toContain('帳戶 7');
+    expect(el.textContent).toContain('餘額走勢');
+
+    const routed = render({ accountId: 7 });
+    flushLoads(7);
+    routed.detectChanges();
+    expect((routed.nativeElement as HTMLElement).querySelector('app-page-header')).not.toBeNull();
   });
 });

@@ -4,8 +4,11 @@ import {
   DestroyRef,
   OnInit,
   computed,
+  effect,
   inject,
+  input,
   signal,
+  untracked,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CommonModule } from '@angular/common';
@@ -157,7 +160,13 @@ export class PortfolioAccountDetailComponent implements OnInit {
   readonly defaultPageSize = DEFAULT_PAGE_SIZE;
   readonly rowsPerPageOptions = [25, 50, 100];
   readonly selectedWindow = signal<BalanceWindow>('3M');
-  readonly accountId = signal<number>(0);
+  /** Master-detail page (Decision 10): the selected account; null falls back to the route's `:id`. */
+  readonly accountId = input<number | null>(null);
+  /** Inside the master-detail page: no page header (the page owns it). */
+  readonly embedded = input(false);
+  private readonly routeAccountId = signal<number>(0);
+  /** The account every load and write targets. */
+  readonly effectiveId = computed(() => this.accountId() ?? this.routeAccountId());
   readonly account = signal<BrokerAccount | null>(null);
   readonly transactions = signal<CashTransaction[]>([]);
   readonly total = signal<number>(0);
@@ -266,15 +275,25 @@ export class PortfolioAccountDetailComponent implements OnInit {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(params => {
       const id = Number(params.get('id'));
       if (!id) return;
-      this.accountId.set(id);
-      const mergeRelated = this.readMergeRelated(id);
-      this.mergeRelated.set(mergeRelated);
-      this.expandedTransactionIds.set(new Set<number>());
-      this.query.set(this.withMergeRelated({ ...this.query(), offset: 0 }, mergeRelated));
-      this.loadAccount();
-      this.loadBalanceHistory();
-      this.fetchTransactions();
+      this.routeAccountId.set(id);
     });
+  }
+
+  /** Each change of the effective account (route `:id` or the `accountId` input) loads it once. */
+  private readonly loadOnAccountChange = effect(() => {
+    const id = this.effectiveId();
+    untracked(() => this.selectAccount(id));
+  });
+
+  private selectAccount(id: number): void {
+    if (!id) return;
+    const mergeRelated = this.readMergeRelated(id);
+    this.mergeRelated.set(mergeRelated);
+    this.expandedTransactionIds.set(new Set<number>());
+    this.query.set(this.withMergeRelated({ ...this.query(), offset: 0 }, mergeRelated));
+    this.loadAccount();
+    this.loadBalanceHistory();
+    this.fetchTransactions();
   }
 
   onWindowChange(window: BalanceWindow | null): void {
@@ -318,7 +337,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
   onMergeRelatedChange(value: boolean): void {
     if (value === this.mergeRelated()) return;
     this.mergeRelated.set(value);
-    this.persistMergeRelated(this.accountId(), value);
+    this.persistMergeRelated(this.effectiveId(), value);
     this.expandedTransactionIds.set(new Set<number>());
 
     const next = this.withMergeRelated({ ...this.query(), offset: 0 }, value);
@@ -357,7 +376,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
     };
 
     this.savingAccount.set(true);
-    this.portfolioService.patchAccount(this.accountId(), patch).subscribe({
+    this.portfolioService.patchAccount(this.effectiveId(), patch).subscribe({
       next: account => {
         this.account.set(account);
         this.savingAccount.set(false);
@@ -427,7 +446,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
     };
 
     this.savingTransaction.set(true);
-    this.portfolioService.createCashTransaction(this.accountId(), body).subscribe({
+    this.portfolioService.createCashTransaction(this.effectiveId(), body).subscribe({
       next: () => {
         this.savingTransaction.set(false);
         this.transactionDialogVisible.set(false);
@@ -464,7 +483,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
   }
 
   executeDelete(txn: CashTransaction): void {
-    const accountId = this.accountId();
+    const accountId = this.effectiveId();
     if (!accountId) return;
 
     this.portfolioService.deleteCashTransaction(accountId, txn.id).subscribe({
@@ -561,7 +580,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
   private loadAccount(): void {
     this.portfolioService.getAccounts({ include_inactive: true }).subscribe({
       next: list => {
-        const account = list.items.find(item => item.id === this.accountId()) ?? null;
+        const account = list.items.find(item => item.id === this.effectiveId()) ?? null;
         this.account.set(account);
       },
       error: () => {
@@ -571,7 +590,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
   }
 
   private loadBalanceHistory(): void {
-    const id = this.accountId();
+    const id = this.effectiveId();
     if (!id) return;
     const range = this.balanceRange(this.selectedWindow());
     this.loadingHistory.set(true);
@@ -594,7 +613,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
   private requestTransactions(query: CashTransactionQuery): Observable<CashTransactionPaged> {
     this.loadingTransactions.set(true);
     const requestQuery = this.withMergeRelated(query);
-    return this.portfolioService.getCashTransactions(this.accountId(), requestQuery).pipe(
+    return this.portfolioService.getCashTransactions(this.effectiveId(), requestQuery).pipe(
       catchError(() => {
         this.messageService.add({ severity: 'error', summary: '錯誤', detail: '現金交易讀取失敗' });
         return of({ items: [], total: 0, offset: requestQuery.offset ?? 0, limit: requestQuery.limit ?? DEFAULT_PAGE_SIZE });

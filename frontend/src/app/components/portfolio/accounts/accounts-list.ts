@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, computed, inject, input, output, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router } from '@angular/router';
@@ -24,6 +24,11 @@ import { PortfolioService } from '../../../services/portfolio.service';
 import { CashFlowFormComponent } from '../cash-flow-form/cash-flow-form';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { BtnComponent } from '../../ui/btn/btn';
+import { TagComponent } from '../../ui/tag/tag';
+import { abbrInk } from '../dashboard/dashboard-math';
+import { groupedInteger } from '../money';
+import { squareToken } from '../square';
+import { formatCash } from './cash-rows';
 
 const EMPTY_ACCOUNTS_LIST: AccountsList = {
   items: [],
@@ -41,6 +46,27 @@ export const BROKER_OPTIONS: { label: string; value: BrokerEnum }[] = [
   { label: '其他', value: 'other' },
 ];
 
+/** The master-mode total card (Decision 9): what it shows and how many overdraft accounts it leaves out. */
+export interface CashTotal {
+  /** Server `total_target_balance` minus the TWD value of every overdraft account that has one. */
+  total: number;
+  /** Overdraft accounts (`native_balance < 0`) with a non-null `target_balance`, i.e. the ones taken out of `total`. */
+  pendingCount: number;
+}
+
+/**
+ * The server total sums every converted balance, negatives included; an overdraft account is one whose 入金 has not
+ * been recorded yet, so its (negative) TWD value is taken back out. One without a `target_balance` is not in the server
+ * sum (it is listed under 未換算) and is not counted.
+ */
+export function cashTotal(list: AccountsList): CashTotal {
+  const pending = list.items.filter(
+    account => Number(account.native_balance) < 0 && account.target_balance != null && account.target_balance !== '',
+  );
+  const excluded = pending.reduce((sum, account) => sum + Number(account.target_balance), 0);
+  return { total: Number(list.total_target_balance ?? 0) - excluded, pendingCount: pending.length };
+}
+
 const BROKER_LABELS: Record<BrokerEnum, string> = {
   cathay: '國泰證券',
   sinopac: '永豐證券',
@@ -56,6 +82,7 @@ const BROKER_LABELS: Record<BrokerEnum, string> = {
   imports: [
     PageHeaderComponent,
     BtnComponent,
+    TagComponent,
     CommonModule,
     ReactiveFormsModule,
     ButtonModule,
@@ -89,6 +116,22 @@ export class PortfolioAccountsListComponent implements OnInit {
   readonly creating = signal<boolean>(false);
   readonly cashFormVisible = signal<boolean>(false);
 
+  /** Master-detail page (Decision 9): button cards, no page header (the page owns it). */
+  readonly master = input(false);
+  /** The card shown as selected in master mode. */
+  readonly selectedId = input<number | null>(null);
+  /** The accounts after every successful fetch. */
+  readonly loaded = output<BrokerAccount[]>();
+
+  private readonly total = computed(() => cashTotal(this.accountsList()));
+  readonly displayedTotal = computed(() => this.total().total);
+  readonly overdraftCount = computed(() => this.total().pendingCount);
+  /** `$150,000`: whole TWD, `−` before the `$` when negative. */
+  readonly totalText = computed(() => {
+    const total = this.displayedTotal();
+    return `${total < 0 ? '−' : ''}$${groupedInteger(Math.abs(total))}`;
+  });
+
   openCashForm(): void {
     this.cashFormVisible.set(true);
   }
@@ -112,6 +155,7 @@ export class PortfolioAccountsListComponent implements OnInit {
         this.accountsList.set(list);
         this.accounts.set(list.items);
         this.loading.set(false);
+        this.loaded.emit(list.items);
       },
       error: () => {
         this.loading.set(false);
@@ -176,6 +220,27 @@ export class PortfolioAccountsListComponent implements OnInit {
 
   isOverdraft(account: BrokerAccount): boolean {
     return Number(account.native_balance) < 0;
+  }
+
+  /** Master card line: `{broker} · {currency}`, plus `· 期初 {amount}（{YYYY/MM/DD}）` on the selected card. */
+  cardMeta(account: BrokerAccount, selected: boolean): string {
+    const base = `${this.brokerLabel(account.broker)} · ${account.currency}`;
+    if (!selected) return base;
+    const date = account.opening_date.slice(0, 10).replaceAll('-', '/');
+    return `${base} · 期初 ${formatCash(account.opening_balance, account.currency)}（${date}）`;
+  }
+
+  /** Master card balance in its own currency, no prefix (`438,360`, `−2,379.54`). */
+  cardBalance(account: BrokerAccount): string {
+    return formatCash(account.native_balance, account.currency);
+  }
+
+  brokerToken(account: BrokerAccount): string {
+    return squareToken(account.broker);
+  }
+
+  brokerInk(account: BrokerAccount): 'light' | 'dark' {
+    return abbrInk(squareToken(account.broker));
   }
 
   formatCurrency(value: string | number | null | undefined, currency: string): string {
