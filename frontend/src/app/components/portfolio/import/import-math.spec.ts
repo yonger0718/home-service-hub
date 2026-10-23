@@ -5,12 +5,17 @@ import {
   ROW_RESULT_LABEL,
   attemptLine,
   brokerCountSummary,
+  cashFlowRow,
+  cell,
   classifyCommit,
   confirmCount,
   detectedFormat,
   extractImportErrors,
+  fixLines,
   importCounts,
   importErrorDetail,
+  overrideMeta,
+  previewRow,
   rowResult,
   stepFor,
   typeFromQuery,
@@ -359,5 +364,77 @@ describe('brokerCountSummary', () => {
     const counts = { created: 3, skipped: 1, rejected: 2 };
     expect(brokerCountSummary(brokerResult({ dry_run: true, counts }))).toBe('可新增 3；重複 1；錯誤 2');
     expect(brokerCountSummary(brokerResult({ dry_run: false, counts }))).toBe('已新增 3；重複 1；錯誤 2');
+  });
+});
+
+describe('cell', () => {
+  it('reads the nested payload first, then the flat row, skipping empty values', () => {
+    expect(cell({ payload: { symbol: 'MSFT' }, symbol: 'AAPL' }, ['symbol'])).toBe('MSFT');
+    expect(cell({ symbol: 'AAPL' }, ['symbol'])).toBe('AAPL');
+    expect(cell({ payload: { a: '', b: null, c: 0 } }, ['a', 'b', 'c'])).toBe('0');
+    expect(cell({ payload: {} }, ['x'])).toBeNull();
+    expect(cell(null, ['x'])).toBeNull();
+  });
+});
+
+describe('previewRow', () => {
+  it('maps a 交易 row with name, symbol, side and result', () => {
+    const r = importResult({ unresolved_names: [{ name: '台灣50正2', occurrences: 1, sample_dates: [] }] });
+    const v = previewRow(row(2, { trade_date: '2026-10-21', name: '台灣50正2', type: 'BUY', quantity: '1000', price: '285.30' }), r);
+    expect(v).toMatchObject({
+      date: '2026-10-21', name: '台灣50正2', symbol: null, side: 'buy', sideLabel: '買進',
+      quantity: '1000', price: '285.30', result: 'unresolved', label: '代號待確認', variant: 'warning', dimmed: false,
+    });
+  });
+
+  it('falls back to the symbol as the name and reads 賣 / SELL as a sell', () => {
+    const v = previewRow(row(3, { symbol: '2330', side: '賣出' }), importResult());
+    expect(v).toMatchObject({ name: '2330', symbol: null, side: 'sell', sideLabel: '賣出', date: '-', quantity: '-' });
+    expect(previewRow(row(3, { name: '台積電', symbol: '2330', type: 'SELL' }), importResult())).toMatchObject({ name: '台積電', symbol: '2330', side: 'sell' });
+  });
+
+  it('dims only duplicates; errors are danger, new and duplicate are neutral', () => {
+    const r = importResult({ errors: [{ row_index: 5, message: 'x' }] });
+    expect(previewRow(row(5), r)).toMatchObject({ result: 'error', variant: 'danger', dimmed: false });
+    expect(previewRow(row(6), r)).toMatchObject({ result: 'new', label: '新增', variant: 'neutral', dimmed: false });
+    expect(previewRow(row(7, {}, 'duplicate'), r)).toMatchObject({ label: '重複 · 略過', variant: 'neutral', dimmed: true });
+  });
+
+  it('carries the 股利 amount and 入帳日', () => {
+    const v = previewRow(row(2, { ex_dividend_date: '2026-09-04', symbol: '2330', amount: '25', received_date: '2026-10-09' }), importResult());
+    expect(v).toMatchObject({ date: '2026-09-04', amount: '25', received: '2026-10-09' });
+  });
+
+  it('reads broker rows (nested payload, flat legacy shape)', () => {
+    const b = brokerResult({ errors: [{ row_index: 9, reason: 'bad' }] });
+    expect(previewRow({ row_index: 2, payload: { symbol: 'MSFT', quantity: '2', price: '321.50', type: 'BUY', trade_date: '2026-06-05' } }, b))
+      .toMatchObject({ date: '2026-06-05', name: 'MSFT', quantity: '2', price: '321.50', side: 'buy', result: 'new' });
+    expect(previewRow({ row_index: 9, symbol: 'AAPL', type: 'SELL', 交易量: '3' }, b)).toMatchObject({ name: 'AAPL', side: 'sell', quantity: '3', result: 'error' });
+  });
+});
+
+describe('cashFlowRow', () => {
+  it('reads date / type / amount / currency from the payload and dims duplicates', () => {
+    const b = brokerResult();
+    expect(cashFlowRow({ row_index: 3, payload: { date: '2026-06-05', cash_flow_type: 'deposit', amount: '2500.00', currency: 'USD' } }, b))
+      .toEqual({ rowIndex: 3, date: '2026-06-05', kind: 'deposit', amount: '2500.00', currency: 'USD', dimmed: false });
+    expect(cashFlowRow({ row_index: 4, status: 'duplicate', type: 'fee' }, b)).toMatchObject({ kind: 'fee', amount: '-', dimmed: true });
+  });
+});
+
+describe('fixLines', () => {
+  it('prefers HTTP-body row errors, else the 200 body errors (message or reason)', () => {
+    const r = importResult({ errors: [{ row_index: 17, message: '價格欄位為空' }] });
+    expect(fixLines(r, [])).toEqual([{ row_index: 17, reason: '價格欄位為空' }]);
+    expect(fixLines(r, [{ row_index: 3, reason: 'bad' }])).toEqual([{ row_index: 3, reason: 'bad' }]);
+    expect(fixLines(brokerResult({ errors: [{ row_index: 3, reason: 'missing FX rate' }] }), [])).toEqual([{ row_index: 3, reason: 'missing FX rate' }]);
+    expect(fixLines(null, [])).toEqual([]);
+  });
+});
+
+describe('overrideMeta', () => {
+  it('joins occurrences and sample dates', () => {
+    expect(overrideMeta({ name: 'x', occurrences: 3, sample_dates: ['10/21', '10/14', '09/30'] })).toBe('3 筆 · 10/21、10/14、09/30');
+    expect(overrideMeta({ name: 'x', occurrences: 2, sample_dates: [] })).toBe('2 筆');
   });
 });

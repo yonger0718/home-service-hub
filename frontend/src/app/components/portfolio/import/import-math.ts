@@ -1,4 +1,5 @@
-import { BrokerCsvImportResult, ImportResult, ImportRow } from '../../../models/portfolio.model';
+import { BrokerCsvImportResult, ImportResult, ImportRow, UnresolvedName } from '../../../models/portfolio.model';
+import type { TagVariant } from '../../ui/tag/tag';
 
 export type ImportType = 'transactions' | 'dividends' | 'broker';
 
@@ -236,4 +237,100 @@ export function importErrorDetail(err: unknown): string {
 
 export function brokerCountSummary(r: BrokerCsvImportResult): string {
   return `${r.dry_run ? '可新增' : '已新增'} ${r.counts.created}；重複 ${r.counts.skipped}；錯誤 ${r.counts.rejected}`;
+}
+
+/** A cell from a preview row: the nested `payload` first (real API), then the flat row (legacy fixtures); empty → null. */
+export function cell(row: unknown, keys: string[]): string | null {
+  const r = row as { payload?: Record<string, unknown> | null } & Record<string, unknown> | null | undefined;
+  for (const key of keys) {
+    const value = r?.payload?.[key] ?? r?.[key];
+    if (value !== undefined && value !== null && value !== '') return String(value);
+  }
+  return null;
+}
+
+const RESULT_VARIANT: Record<RowResult, TagVariant> = {
+  new: 'neutral',
+  duplicate: 'neutral',
+  unresolved: 'warning',
+  error: 'danger',
+};
+
+export interface PreviewRowView {
+  rowIndex: number;
+  date: string;
+  name: string;
+  symbol: string | null;
+  side: 'buy' | 'sell';
+  sideLabel: string;
+  quantity: string;
+  price: string;
+  amount: string;
+  received: string;
+  result: RowResult;
+  label: string;
+  variant: TagVariant;
+  /** Only `duplicate` rows are dimmed. */
+  dimmed: boolean;
+}
+
+/** One 預覽 grid row (交易 / 股利 / 券商 transactions); cells via `cell`, result via `rowResult`. */
+export function previewRow(row: ImportRow | Record<string, unknown>, r: AnyResult): PreviewRowView {
+  const name = cell(row, ['name', '名稱', '股票', 'stock_name']);
+  const symbol = cell(row, ['symbol', '代號']);
+  const sideText = (cell(row, ['type', 'side', '買賣', '類別', '交易類型']) ?? '').toUpperCase();
+  const side = sideText.includes('SELL') || sideText.includes('賣') ? 'sell' : 'buy';
+  const result = rowResult(row as ImportRow, r);
+  return {
+    rowIndex: Number((row as { row_index?: unknown }).row_index ?? 0),
+    date: cell(row, ['trade_date', 'ex_dividend_date', 'date', '日期']) ?? '-',
+    name: name ?? symbol ?? '-',
+    symbol: name ? symbol : null,
+    side,
+    sideLabel: side === 'sell' ? '賣出' : '買進',
+    quantity: cell(row, ['quantity', 'qty', '股數', '交易量']) ?? '-',
+    price: cell(row, ['price', '價格']) ?? '-',
+    amount: cell(row, ['amount', '金額']) ?? '-',
+    received: cell(row, ['received_date', '入帳日']) ?? '-',
+    result,
+    label: ROW_RESULT_LABEL[result],
+    variant: RESULT_VARIANT[result],
+    dimmed: result === 'duplicate',
+  };
+}
+
+export interface CashFlowRowView {
+  rowIndex: number;
+  date: string;
+  kind: string;
+  amount: string;
+  currency: string;
+  dimmed: boolean;
+}
+
+/** One 現金流 row (日期 / 類型 / 金額 / 幣別). */
+export function cashFlowRow(row: Record<string, unknown>, r: BrokerCsvImportResult): CashFlowRowView {
+  return {
+    rowIndex: Number(row['row_index'] ?? 0),
+    date: cell(row, ['date', 'trade_date']) ?? '-',
+    kind: cell(row, ['cash_flow_type', 'type']) ?? '-',
+    amount: cell(row, ['amount']) ?? '-',
+    currency: cell(row, ['currency']) ?? '-',
+    dimmed: rowResult(row as unknown as ImportRow, r) === 'duplicate',
+  };
+}
+
+/** 需要修正的列: row errors from an HTTP error body win, else the 200 body's `errors` (`message` or `reason`). */
+export function fixLines(r: AnyResult | null, uploadErrors: ImportRowError[]): ImportRowError[] {
+  if (uploadErrors.length > 0) return uploadErrors;
+  return (r?.errors ?? []).map(e => {
+    const err = e as { row_index: number; message?: string; reason?: string };
+    return { row_index: err.row_index, reason: err.reason ?? err.message ?? '未知錯誤' };
+  });
+}
+
+/** `{occurrences} 筆 · {dates joined by 、}`. */
+export function overrideMeta(u: UnresolvedName): string {
+  const dates = u.sample_dates ?? [];
+  return dates.length > 0 ? `${u.occurrences} 筆 · ${dates.join('、')}` : `${u.occurrences} 筆`;
 }

@@ -1,9 +1,10 @@
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, ParamMap, Router, convertToParamMap, provideRouter } from '@angular/router';
+import { Confirmation, ConfirmationService } from 'primeng/api';
 import { BehaviorSubject, of, Subject, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PortfolioService } from '../../../services/portfolio.service';
-import { BrokerCsvImportResult, ImportResult } from '../../../models/portfolio.model';
+import { BrokerCsvImportResult, ImportResult, ImportRow } from '../../../models/portfolio.model';
 import { PortfolioImportComponent } from './import';
 
 const preview: ImportResult = { parsed: 1, created: 1, skipped_duplicates: 0, dry_run: true, errors: [], created_ids: [], rows: [] };
@@ -12,6 +13,31 @@ const brokerPreview: BrokerCsvImportResult = {
   transactions: [{ row_index: 2, fingerprint: 'a', payload: { symbol: 'AAPL' } }],
   cash_flows: [{ row_index: 3, fingerprint: 'b', payload: { amount: '10' } }],
   counts: { created: 2, skipped: 0, rejected: 0 }, errors: [],
+};
+
+const UNRESOLVED = { name: '台灣50正2', occurrences: 3, sample_dates: ['10/21', '10/14', '09/30'] };
+const csvRow = (row_index: number, payload: Record<string, string>, status?: ImportRow['status']): ImportRow =>
+  ({ row_index, fingerprint: `fp-${row_index}`, payload, ...(status ? { status } : {}) });
+/** Wire-shaped generic dry-run (no row status): 41 parsed, 3 duplicates, 1 error. */
+const genericPreview: ImportResult = {
+  ...preview, parsed: 41, created: 0, skipped_duplicates: 3, would_insert: 0, would_skip_duplicate: 0, csv_format: 'generic',
+  errors: [{ row_index: 4, message: '價格欄位為空' }],
+  unresolved_names: [UNRESOLVED],
+  rows: [
+    csvRow(2, { trade_date: '2026-10-20', name: '台積電', symbol: '2330', type: 'BUY', quantity: '100', price: '1075.00' }),
+    csvRow(3, { trade_date: '2026-10-21', name: '台灣50正2', type: 'BUY', quantity: '1000', price: '285.30' }),
+    csvRow(4, { trade_date: '2026-10-08', name: '元大高股息', symbol: '0056', type: 'SELL', quantity: '2000', price: '' }),
+  ],
+};
+/** Nested-payload broker response as the real API returns it (`broker-import.spec.ts` fixture). */
+const brokerNested: BrokerCsvImportResult = {
+  detected_broker: 'FIRSTRADE', dry_run: true,
+  transactions: [
+    { row_index: 2, fingerprint: 't2', status: 'new', payload: { symbol: 'MSFT', quantity: '2', price: '321.50', type: 'BUY', trade_date: '2026-06-05', broker: 'FIRSTRADE' } },
+    { row_index: 4, fingerprint: 't4', status: 'duplicate', payload: { symbol: 'AAPL', quantity: '1', price: '190.50', type: 'SELL', trade_date: '2026-06-01', broker: 'FIRSTRADE' } },
+  ],
+  cash_flows: [{ row_index: 3, fingerprint: 'c3', status: 'new', payload: { date: '2026-06-05', broker: 'FIRSTRADE', cash_flow_type: 'deposit', amount: '2500.00', currency: 'USD' } }],
+  counts: { created: 2, skipped: 1, rejected: 0 }, errors: [],
 };
 
 describe('Portfolio import controls', () => {
@@ -375,6 +401,224 @@ describe('Portfolio import controls', () => {
       expect(fixture.componentInstance.file()).toBe(file);
       expect(fixture.componentInstance.uploadErrors()).toEqual([{ row_index: 4, reason: 'bad date' }]);
       expect(text(fixture)).toContain('bad date');
+    });
+  });
+
+  describe('預覽 / 需要修正的列 / 確認股票代號 / footer', () => {
+    const card = (fixture: { nativeElement: HTMLElement }, cls: string) => el(fixture).querySelector<HTMLElement>(`app-bento.${cls}`);
+    const norm = (t: string | null | undefined) => (t ?? '').replace(/\s+/g, ' ').trim();
+    const cells = (tr: Element | null | undefined) => Array.from(tr?.querySelectorAll('td') ?? []).map(td => norm(td.textContent));
+    const heads = (table: Element | null | undefined) => Array.from(table?.querySelectorAll('th') ?? []).map(th => norm(th.textContent));
+    const commitButton = (fixture: { nativeElement: HTMLElement }) =>
+      Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('.imp-footer button')).find(b => norm(b.textContent).startsWith('確認匯入'))!;
+    function withFile(result: ImportResult, query: Record<string, string> = {}) {
+      service.uploadCsv.mockReturnValue(of(result));
+      const fixture = setup(query);
+      fixture.componentInstance.onSelect({ files: [new File(['x'], 'a.csv')] });
+      fixture.detectChanges();
+      return fixture;
+    }
+    function withBrokerFile(result: BrokerCsvImportResult) {
+      service.uploadBrokerCsv.mockReturnValue(of(result));
+      const fixture = setup({ type: 'broker' });
+      fixture.componentInstance.onSelect({ files: [new File(['x'], 'ft.csv')] });
+      fixture.detectChanges();
+      return fixture;
+    }
+
+    it('renders the 預覽 card with the wire-rule count tags, the 交易 grid and per-row results', () => {
+      const fixture = withFile(genericPreview);
+      const preview = card(fixture, 'preview-card')!;
+      expect(norm(preview.querySelector('h2')?.textContent)).toBe('預覽');
+      expect(Array.from(preview.querySelectorAll('.count-tags app-tag')).map(t => norm(t.textContent))).toEqual(['解析 41', '重複 3', '錯誤 1']);
+      expect(heads(preview.querySelector('table'))).toEqual(['日期', '股票', '買賣', '股數', '價格', '結果']);
+      const rows = Array.from(preview.querySelectorAll('tbody tr'));
+      expect(rows.length).toBe(3);
+      expect(cells(rows[0])).toEqual(['2026-10-20', '台積電2330', '買進', '100', '1075.00', '新增']);
+      expect(norm(rows[0].querySelector('.c-stock small')?.textContent)).toBe('2330');
+      expect(cells(rows[1])[1]).toBe('台灣50正2');
+      expect(rows[1].querySelector('.c-stock small')).toBeNull();
+      expect(norm(rows[0].querySelector('app-side-tag')?.textContent)).toBe('買進');
+      expect(norm(rows[2].querySelector('app-side-tag')?.textContent)).toBe('賣出');
+      expect(rows.map(r => norm(r.querySelector('td:last-child app-tag')?.textContent))).toEqual(['新增', '代號待確認', '錯誤']);
+      expect(rows[1].querySelector('app-tag .tag-warning')).not.toBeNull();
+      expect(rows[2].querySelector('app-tag .tag-danger')).not.toBeNull();
+      // Without row statuses nothing is a duplicate, so nothing is dimmed (an error row is not).
+      expect(preview.querySelector('.dimmed')).toBeNull();
+      expect(norm(commitButton(fixture).textContent)).toBe('確認匯入 38 筆');
+    });
+
+    it('股利 swaps 買賣 / 股數 / 價格 for 股利金額 / 入帳日', () => {
+      const fixture = withFile({ ...preview, rows: [csvRow(2, { ex_dividend_date: '2026-09-04', symbol: '2330', amount: '25', received_date: '2026-10-09' })] }, { type: 'dividends' });
+      const table = card(fixture, 'preview-card')!.querySelector('table');
+      expect(heads(table)).toEqual(['日期', '股票', '股利金額', '入帳日', '結果']);
+      expect(cells(table?.querySelector('tbody tr'))).toEqual(['2026-09-04', '2330', '25', '2026-10-09', '新增']);
+    });
+
+    it('a Cathay dry-run reads would_insert / would_skip_duplicate', () => {
+      const fixture = withFile({ ...genericPreview, csv_format: 'cathay', skipped_duplicates: 0, would_insert: 38, would_skip_duplicate: 3 });
+      expect(Array.from(card(fixture, 'preview-card')!.querySelectorAll('.count-tags app-tag')).map(t => norm(t.textContent)))
+        .toEqual(['解析 41', '重複 3', '錯誤 1']);
+      expect(norm(commitButton(fixture).textContent)).toBe('確認匯入 38 筆');
+    });
+
+    it('rows with status: duplicates are dimmed and counted, N is the number of new rows', () => {
+      const fixture = withFile({
+        ...genericPreview, skipped_duplicates: 9, unresolved_names: [],
+        rows: [
+          csvRow(2, { name: 'A', type: 'BUY' }, 'new'), csvRow(3, { name: 'B', type: 'BUY' }, 'new'),
+          csvRow(4, { name: 'C', type: 'BUY' }, 'duplicate'), csvRow(5, { name: 'D', type: 'BUY' }, 'unresolved'), csvRow(6, { name: 'E', type: 'BUY' }, 'error'),
+        ],
+      });
+      const preview = card(fixture, 'preview-card')!;
+      expect(norm(preview.querySelectorAll('.count-tags app-tag')[1].textContent)).toBe('重複 1');
+      const rows = Array.from(preview.querySelectorAll('tbody tr'));
+      expect(rows.map(r => norm(r.querySelector('td:last-child')?.textContent))).toEqual(['新增', '新增', '重複 · 略過', '代號待確認', '錯誤']);
+      expect(rows.map(r => r.classList.contains('dimmed'))).toEqual([false, false, true, false, false]);
+      expect(norm(commitButton(fixture).textContent)).toBe('確認匯入 2 筆');
+    });
+
+    it('券商 dry-run renders the transactions and 現金流 tables from the nested payload without a created count', () => {
+      const fixture = withBrokerFile(brokerNested);
+      const preview = card(fixture, 'preview-card')!;
+      const tables = preview.querySelectorAll('table');
+      expect(tables.length).toBe(2);
+      expect(heads(tables[0])).toEqual(['日期', '股票', '買賣', '股數', '價格', '結果']);
+      expect(heads(tables[1])).toEqual(['日期', '類型', '金額', '幣別']);
+      const tx = tables[0].querySelectorAll('tbody tr');
+      expect(cells(tx[0])).toEqual(['2026-06-05', 'MSFT', '買進', '2', '321.50', '新增']);
+      expect(tx[0].classList.contains('dimmed')).toBe(false);
+      expect(tx[1].classList.contains('dimmed')).toBe(true);
+      expect(norm(tx[1].textContent)).toContain('重複 · 略過');
+      expect(cells(tables[1].querySelector('tbody tr'))).toEqual(['2026-06-05', 'deposit', '2500.00', 'USD']);
+      expect(Array.from(preview.querySelectorAll('.count-tags app-tag')).map(t => norm(t.textContent))).toEqual(['解析 3', '重複 1', '錯誤 0']);
+      expect(norm(preview.textContent)).not.toMatch(/可新增|已新增/);
+      expect(norm(commitButton(fixture).textContent)).toBe('確認匯入 2 筆');
+      expect(text(fixture)).not.toContain('確認股票代號');
+    });
+
+    it('需要修正的列 lists the 200-body errors and keeps the file', () => {
+      const fixture = withBrokerFile({ ...brokerNested, errors: [{ row_index: 3, reason: 'missing FX rate for 2026-06-02 USD' }] });
+      const fix = card(fixture, 'fix-card')!;
+      expect(norm(fix.querySelector('h2')?.textContent)).toBe('需要修正的列');
+      expect(Array.from(fix.querySelectorAll('.fix-line')).map(l => norm(l.textContent)))
+        .toEqual(['第 3 列 · missing FX rate for 2026-06-02 USD · 此列會被略過']);
+      expect(fixture.componentInstance.file()).not.toBeNull();
+    });
+
+    it('需要修正的列 lists the errors of an HTTP error body and keeps the file', () => {
+      service.uploadBrokerCsv.mockReturnValue(throwError(() => ({ status: 422, error: { errors: [{ row_index: 3, reason: 'missing FX rate for 2026-06-02 USD' }] } })));
+      const fixture = setup({ type: 'broker' });
+      fixture.componentInstance.onSelect({ files: [new File(['x'], 'cs.csv')] });
+      fixture.detectChanges();
+      expect(Array.from(card(fixture, 'fix-card')!.querySelectorAll('.fix-line')).map(l => norm(l.textContent)))
+        .toEqual(['第 3 列 · missing FX rate for 2026-06-02 USD · 此列會被略過']);
+      expect(fixture.componentInstance.file()).not.toBeNull();
+    });
+
+    it('a string detail in the HTTP error body is shown under 需要修正的列 and keeps the file', () => {
+      service.uploadCsv.mockReturnValue(throwError(() => ({ status: 400, error: { detail: 'CSV 編碼不是 UTF-8' } })));
+      const fixture = setup();
+      fixture.componentInstance.onSelect({ files: [new File(['x'], 'a.csv')] });
+      fixture.detectChanges();
+      expect(norm(card(fixture, 'fix-card')?.textContent)).toContain('CSV 編碼不是 UTF-8');
+      expect(fixture.componentInstance.file()).not.toBeNull();
+    });
+
+    it('確認股票代號 renders one block per name with meta, 驗證代號 and the confirmation checkbox', async () => {
+      service.verifyOverrideSymbol.mockReturnValue(of({ status: 'name_mismatch', expected_name: '台灣50正2', fetched_name: '元大台灣50正2' }));
+      const fixture = withFile(genericPreview);
+      const component = fixture.componentInstance;
+      const block = card(fixture, 'override-card')!.querySelector('.override-block')!;
+      expect(norm(block.querySelector('.ov-name b')?.textContent)).toBe('台灣50正2 的股票代號');
+      expect(norm(block.querySelector('.ov-name small')?.textContent)).toBe('3 筆 · 10/21、10/14、09/30');
+      const input = block.querySelector<HTMLInputElement>('input[aria-label="台灣50正2 的股票代號"]')!;
+      input.value = '00631L';
+      input.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+      expect(component.nameOverrides()).toEqual({ 台灣50正2: '00631L' });
+      Array.from(block.querySelectorAll<HTMLButtonElement>('button')).find(b => norm(b.textContent) === '驗證代號')!.click();
+      fixture.detectChanges();
+      expect(service.verifyOverrideSymbol).toHaveBeenCalledWith('台灣50正2', '00631L', '09/30');
+      expect(norm(block.textContent)).toContain('名稱不符：元大台灣50正2');
+      await fixture.whenStable();
+      const confirm = Array.from(block.querySelectorAll('label')).find(l => l.textContent?.includes('確認使用此代號'))!.querySelector('input')!;
+      confirm.click();
+      fixture.detectChanges();
+      expect(component.confirmedOverrides().has('台灣50正2')).toBe(true);
+    });
+
+    it('確認匯入 stays enabled with pending overrides and commits straight away when none is unverified', () => {
+      const fixture = withFile(genericPreview);
+      expect(fixture.componentInstance.pendingOverrideCount()).toBe(1);
+      const commit = commitButton(fixture);
+      expect(commit.disabled).toBe(false);
+      service.uploadCsv.mockReturnValue(of({ ...genericPreview, dry_run: false }));
+      commit.click();
+      expect(service.uploadCsv).toHaveBeenLastCalledWith('transactions', expect.any(File), false, true, {}, []);
+    });
+
+    it('an unverified override opens the 尚有代號未驗證 dialog and accepting submits the commit', () => {
+      const fixture = withFile(genericPreview);
+      const confirmation = fixture.debugElement.injector.get(ConfirmationService);
+      const confirm = vi.spyOn(confirmation, 'confirm').mockImplementation((c: Confirmation) => { c.accept?.(); return confirmation; });
+      fixture.componentInstance.setOverride('台灣50正2', '00631L');
+      fixture.detectChanges();
+      service.uploadCsv.mockReturnValue(of({ ...genericPreview, dry_run: false }));
+      commitButton(fixture).click();
+      expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ header: '尚有代號未驗證' }));
+      expect(service.uploadCsv).toHaveBeenLastCalledWith('transactions', expect.any(File), false, true, { 台灣50正2: '00631L' }, []);
+    });
+
+    it('確認匯入 is disabled without a result and while busy', () => {
+      const pending$ = new Subject<ImportResult>();
+      service.uploadCsv.mockReturnValue(pending$);
+      const fixture = setup();
+      expect(commitButton(fixture).disabled).toBe(true);
+      fixture.componentInstance.onSelect({ files: [new File(['x'], 'a.csv')] });
+      fixture.detectChanges();
+      expect(commitButton(fixture).disabled).toBe(true);
+      pending$.next(genericPreview); pending$.complete();
+      fixture.detectChanges();
+      expect(commitButton(fixture).disabled).toBe(false);
+    });
+
+    it('取消 clears the chip, detected format, preview, errors and symbol blocks', () => {
+      const fixture = withFile(genericPreview);
+      expect(card(fixture, 'preview-card')).not.toBeNull();
+      expect(card(fixture, 'fix-card')).not.toBeNull();
+      expect(card(fixture, 'override-card')).not.toBeNull();
+      button(fixture, '取消')!.click();
+      fixture.detectChanges();
+      expect(el(fixture).querySelector('app-file-chip')).toBeNull();
+      expect(text(fixture)).not.toContain('偵測格式');
+      expect(card(fixture, 'preview-card')).toBeNull();
+      expect(card(fixture, 'fix-card')).toBeNull();
+      expect(card(fixture, 'override-card')).toBeNull();
+      expect(fixture.componentInstance.step()).toBe(1);
+    });
+
+    it('a successful 券商 commit shows created / skipped / rejected, clears the file and keeps the result', () => {
+      const fixture = withBrokerFile(brokerNested);
+      service.uploadBrokerCsv.mockReturnValue(of({ ...brokerNested, detected_broker: 'IB', dry_run: false, counts: { created: 2, skipped: 1, rejected: 0 } }));
+      commitButton(fixture).click();
+      fixture.detectChanges();
+      expect(service.uploadBrokerCsv).toHaveBeenLastCalledWith(expect.any(File), false);
+      expect(norm(card(fixture, 'preview-card')?.querySelector('.commit-counts')?.textContent)).toBe('已新增 2；重複 1；錯誤 0');
+      expect(fixture.componentInstance.file()).toBeNull();
+      expect(fixture.componentInstance.brokerResult()).not.toBeNull();
+      expect(el(fixture).querySelector('app-file-chip')).toBeNull();
+      expect(fixture.componentInstance.step()).toBe(3);
+    });
+
+    it('a 券商 commit with row errors keeps the file', () => {
+      const fixture = withBrokerFile(brokerNested);
+      service.uploadBrokerCsv.mockReturnValue(of({ ...brokerNested, dry_run: false, counts: { created: 1, skipped: 1, rejected: 1 }, errors: [{ row_index: 3, reason: 'bad' }] }));
+      commitButton(fixture).click();
+      fixture.detectChanges();
+      expect(fixture.componentInstance.file()).not.toBeNull();
+      expect(norm(card(fixture, 'preview-card')?.querySelector('.commit-counts')?.textContent)).toBe('已新增 1；重複 1；錯誤 1');
+      expect(Array.from(card(fixture, 'fix-card')!.querySelectorAll('.fix-line')).map(l => norm(l.textContent))).toEqual(['第 3 列 · bad · 此列會被略過']);
     });
   });
 });

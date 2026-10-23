@@ -24,15 +24,21 @@ import { BtnComponent } from '../../ui/btn/btn';
 import { FileChipComponent } from '../../ui/file-chip/file-chip';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { SideTagComponent } from '../../ui/side-tag/side-tag';
+import { TagComponent } from '../../ui/tag/tag';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import {
   ImportRowError,
   ImportType,
   brokerCountSummary,
+  cashFlowRow,
+  confirmCount,
   detectedFormat,
   extractImportErrors,
+  fixLines as fixLinesFor,
   importCounts,
   importErrorDetail,
+  overrideMeta,
+  previewRow,
   stepFor,
   typeFromQuery,
 } from './import-math';
@@ -61,6 +67,7 @@ const POLL_INTERVAL_MS = 5_000;
     FileChipComponent,
     SegToggleComponent,
     SideTagComponent,
+    TagComponent,
   ],
   providers: [ConfirmationService, MessageService],
   templateUrl: './import.html',
@@ -102,6 +109,30 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   readonly activeResult = computed(() => (this.type() === 'broker' ? this.brokerResult() : this.result()));
   readonly counts = computed(() => importCounts(this.type(), this.activeResult(), this.result()?.csv_format ?? null));
   readonly format = computed(() => detectedFormat(this.type(), this.activeResult(), this.detectedFormatLabel()));
+  /** A string `detail` from an HTTP error body without row errors (the file stays selected). */
+  readonly uploadDetail = signal<string | null>(null);
+  /** 確認匯入 N 筆 (Decision 7). */
+  readonly confirmN = computed(() => confirmCount(this.type(), this.activeResult(), this.result()?.csv_format ?? null));
+  /** 預覽 grid rows: 交易 / 股利 rows, or the broker transactions. */
+  readonly previewRows = computed(() => {
+    const r = this.activeResult();
+    if (!r) return [];
+    const list = this.type() === 'broker' ? (r as BrokerCsvImportResult).transactions ?? [] : (r as ImportResult).rows ?? [];
+    return list.map(row => previewRow(row, r));
+  });
+  /** 券商對帳單 現金流 rows. */
+  readonly cashFlowRows = computed(() => {
+    const r = this.brokerResult();
+    return this.type() === 'broker' && r ? (r.cash_flows ?? []).map(row => cashFlowRow(row, r)) : [];
+  });
+  /** 需要修正的列 (HTTP-body row errors first, else the 200 body's errors). */
+  readonly fixLines = computed(() => fixLinesFor(this.activeResult(), this.uploadErrors()));
+  /** created / skipped / rejected after a 券商 commit; never on a dry-run. */
+  readonly brokerCommitSummary = computed(() => {
+    const r = this.brokerResult();
+    return this.type() === 'broker' && r && !r.dry_run ? brokerCountSummary(r) : null;
+  });
+  readonly overrideMeta = overrideMeta;
   readonly recalcStatus = signal<RecalcStatus>({ state: 'idle' });
   readonly hasHeader = signal<boolean>(true);
   readonly recalcSubmitting = signal(false);
@@ -215,14 +246,25 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     this.result.set(null);
     this.brokerResult.set(null);
     this.uploadErrors.set([]);
+    this.uploadDetail.set(null);
     this.committed.set(false);
-    const input = this.fileInput()?.nativeElement;
-    if (input) input.value = '';
+    this.clearNativeInput();
     this.nameOverrides.set({});
     this.confirmedOverrides.set(new Set());
     this.verifyingNames.set(new Set());
     this.localValidations.set(new Map());
     this.unresolvedNameMeta.set(new Map());
+  }
+
+  /** After a successful commit: drop the file and the native input, keep the committed result and its counts. */
+  private clearFile(): void {
+    this.file.set(null);
+    this.clearNativeInput();
+  }
+
+  private clearNativeInput(): void {
+    const input = this.fileInput()?.nativeElement;
+    if (input) input.value = '';
   }
 
   readonly unresolvedRows = computed<UnresolvedName[]>(() => {
@@ -419,6 +461,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     const type = this.type();
     this.busy.set(true);
     this.uploadErrors.set([]);
+    this.uploadDetail.set(null);
     if (!dryRun) this.committing.set(true);
     const error = (err: unknown) => {
       this.onUploadError(err);
@@ -469,11 +512,15 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     if (!dryRun) this.committed.set(true);
     const severity = result.errors.length > 0 || result.counts.rejected > 0 ? 'warn' : 'success';
     this.messageService.add({ severity, summary: dryRun ? '預覽完成' : '匯入完成', detail: brokerCountSummary(result), life: 5000 });
+    if (!dryRun && severity === 'success') this.clearFile();
   }
 
   private onUploadError(err: unknown): void {
     this.busy.set(false);
-    this.uploadErrors.set(extractImportErrors(err));
+    const rows = extractImportErrors(err);
+    this.uploadErrors.set(rows);
+    const detail = (err as { error?: { detail?: unknown } | null } | null)?.error?.detail;
+    this.uploadDetail.set(rows.length === 0 && typeof detail === 'string' && detail.trim() ? detail : null);
     this.messageService.add({ severity: 'error', summary: '匯入失敗', detail: importErrorDetail(err), life: 6000 });
   }
 
@@ -521,6 +568,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
         ? 'warn'
         : 'success';
     this.messageService.add({ severity, summary, detail, life: 5000 });
+    if (!dryRun && severity === 'success') this.clearFile();
     if (!dryRun && result.recalc_scheduled) {
       this.messageService.add({
         severity: 'info', summary: '資料重算執行中…',
@@ -621,23 +669,6 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
         this.stopPolling();
       },
     });
-  }
-
-  payloadKeys(rows: ImportResult['rows']): string[] {
-    return rows.length === 0 ? [] : Object.keys(rows[0].payload);
-  }
-
-  rowValue(row: ImportResult['rows'][number], keys: string[]): string | null {
-    for (const key of keys) {
-      const value = row.payload[key];
-      if (value !== undefined && value !== null && value !== '') return value;
-    }
-    return null;
-  }
-
-  rowSide(row: ImportResult['rows'][number]): 'buy' | 'sell' {
-    const value = String(this.rowValue(row, ['type', 'side', '買賣', '類別']) ?? '').toUpperCase();
-    return value.includes('SELL') || value.includes('賣') ? 'sell' : 'buy';
   }
 
   parsedCount(): number {
