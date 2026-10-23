@@ -1,8 +1,7 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
-import { ReactiveFormsModule } from '@angular/forms';
-import { provideRouter } from '@angular/router';
+import { Router, provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountsList, BrokerAccount } from '../../../models/portfolio.model';
@@ -11,185 +10,6 @@ import { CashFlowFormComponent } from '../cash-flow-form/cash-flow-form';
 import { PortfolioAccountsListComponent, cashTotal } from './accounts-list';
 
 describe('PortfolioAccountsListComponent', () => {
-  let httpMock: HttpTestingController;
-
-  const activeAccounts: BrokerAccount[] = [
-    {
-      id: 1,
-      broker: 'cathay',
-      nickname: '國泰台幣',
-      currency: 'TWD',
-      opening_balance: '10000',
-      opening_date: '2026-01-01',
-      is_active: true,
-      created_at: '2026-01-01T00:00:00Z',
-      native_balance: '100000',
-      target_balance: '100000',
-      target_currency: 'TWD',
-    },
-    {
-      id: 2,
-      broker: 'firstrade',
-      nickname: 'Firstrade USD',
-      currency: 'USD',
-      opening_balance: '1000',
-      opening_date: '2026-01-02',
-      is_active: true,
-      created_at: '2026-01-02T00:00:00Z',
-      native_balance: '1500',
-      target_balance: '50000',
-      target_currency: 'TWD',
-    },
-  ];
-
-  beforeEach(async () => {
-    localStorage.clear();
-
-    await TestBed.configureTestingModule({
-      imports: [PortfolioAccountsListComponent],
-      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
-    })
-      .overrideComponent(PortfolioAccountsListComponent, {
-        set: {
-          template: `
-            <section class="summary">{{ formatCurrency(accountsList().total_target_balance, 'TWD') }}</section>
-            @if (accountsList().skipped_currencies.length > 0) {
-              <small class="skipped">未換算: {{ accountsList().skipped_currencies.join(', ') }}</small>
-            }
-            @for (account of accounts(); track account.id) {
-              <button type="button" class="account-card" (click)="goToDetail(account)">
-                <span>{{ brokerLabel(account.broker) }}</span>
-                <span>{{ account.nickname }}</span>
-                <span>{{ account.currency }}</span>
-                <span>{{ formatCurrency(account.native_balance, account.currency) }}</span>
-              </button>
-            }
-            <button type="button" class="open-create" (click)="openCreateDialog()">新增帳戶</button>
-            @if (createDialogVisible()) {
-              <form [formGroup]="createForm" (ngSubmit)="submitCreate()" class="create-form">
-                <input formControlName="broker" />
-                <input formControlName="nickname" />
-                <input formControlName="currency" />
-                <input formControlName="opening_balance" />
-                <input formControlName="opening_date" />
-                <button type="submit">submit</button>
-              </form>
-            }
-          `,
-          imports: [ReactiveFormsModule],
-        },
-      })
-      .compileComponents();
-
-    httpMock = TestBed.inject(HttpTestingController);
-  });
-
-  afterEach(() => {
-    httpMock.verify();
-    localStorage.clear();
-  });
-
-  function createFixture() {
-    const fixture = TestBed.createComponent(PortfolioAccountsListComponent);
-    fixture.detectChanges();
-    return fixture;
-  }
-
-  function flushAccounts(accounts = activeAccounts, skippedCurrencies: string[] = []) {
-    const req = httpMock.expectOne(request =>
-      request.method === 'GET'
-      && request.url === '/api/portfolio/accounts/'
-      && request.params.get('in_currency') === 'TWD',
-    );
-    req.flush({
-      items: accounts,
-      target_currency: 'TWD',
-      total_target_balance: '150000',
-      skipped_currencies: skippedCurrencies,
-    });
-  }
-
-  it('renders one card per active account from the accounts response', () => {
-    const fixture = createFixture();
-
-    flushAccounts();
-    fixture.detectChanges();
-
-    const cards = fixture.nativeElement.querySelectorAll('.account-card') as NodeListOf<HTMLButtonElement>;
-    expect(cards.length).toBe(2);
-    expect(cards[0].textContent).toContain('國泰證券');
-    expect(cards[0].textContent).toContain('國泰台幣');
-    expect(cards[0].textContent).toContain('TWD');
-    expect(cards[0].textContent).toContain('NT$100,000');
-    expect(cards[1].textContent).toContain('Firstrade');
-  });
-
-  it('shows the TWD converted total summary', () => {
-    const fixture = createFixture();
-
-    flushAccounts();
-    fixture.detectChanges();
-
-    expect(fixture.nativeElement.querySelector('.summary')?.textContent).toContain('NT$150,000');
-  });
-
-  it('renders skipped currency footnote', () => {
-    const fixture = createFixture();
-
-    flushAccounts(activeAccounts, ['JPY']);
-    fixture.detectChanges();
-
-    expect(fixture.nativeElement.querySelector('.skipped')?.textContent).toContain('未換算: JPY');
-  });
-
-  it('submits create account form and refetches the list', () => {
-    const fixture = createFixture();
-    flushAccounts();
-    fixture.detectChanges();
-
-    (fixture.nativeElement.querySelector('.open-create') as HTMLButtonElement).click();
-    fixture.detectChanges();
-
-    fixture.componentInstance.createForm.patchValue({
-      broker: 'sinopac',
-      nickname: '永豐台幣',
-      currency: 'TWD',
-      opening_balance: '5000',
-      opening_date: '2026-06-01',
-    });
-    (fixture.nativeElement.querySelector('.create-form') as HTMLFormElement)
-      .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-
-    const post = httpMock.expectOne('/api/portfolio/accounts/');
-    expect(post.request.method).toBe('POST');
-    expect(post.request.body).toEqual({
-      broker: 'sinopac',
-      nickname: '永豐台幣',
-      currency: 'TWD',
-      opening_balance: '5000',
-      opening_date: '2026-06-01',
-      is_active: true,
-    });
-    post.flush({
-      id: 3,
-      broker: 'sinopac',
-      nickname: '永豐台幣',
-      currency: 'TWD',
-      opening_balance: '5000',
-      opening_date: '2026-06-01',
-      is_active: true,
-      created_at: '2026-06-01T00:00:00Z',
-      native_balance: '5000',
-      target_balance: '5000',
-      target_currency: 'TWD',
-    });
-
-    flushAccounts([...activeAccounts]);
-    expect(fixture.componentInstance.createDialogVisible()).toBe(false);
-  });
-});
-
-describe('PortfolioAccountsListComponent master mode', () => {
   let httpMock: HttpTestingController;
 
   const base: BrokerAccount = {
@@ -222,10 +42,10 @@ describe('PortfolioAccountsListComponent master mode', () => {
 
   afterEach(() => httpMock.verify());
 
-  function render(master: boolean, selectedId: number | null = null) {
+  /** Renders without the `master` input (the default is the master markup); `selectedId` only when given. */
+  function render(selectedId?: number | null) {
     const fixture = TestBed.createComponent(PortfolioAccountsListComponent);
-    fixture.componentRef.setInput('master', master);
-    fixture.componentRef.setInput('selectedId', selectedId);
+    if (selectedId !== undefined) fixture.componentRef.setInput('selectedId', selectedId);
     const emitted: BrokerAccount[][] = [];
     fixture.componentInstance.loaded.subscribe(items => emitted.push(items));
     fixture.detectChanges();
@@ -240,7 +60,7 @@ describe('PortfolioAccountsListComponent master mode', () => {
   }
 
   it('emits loaded with the accounts after each fetch', () => {
-    const { fixture, emitted } = render(true);
+    const { fixture, emitted } = render();
     expect(emitted).toEqual([accounts]);
 
     fixture.componentInstance.fetchAccounts();
@@ -251,7 +71,7 @@ describe('PortfolioAccountsListComponent master mode', () => {
   });
 
   it('renders button cards with aria-pressed and the selected ring, without a page header', () => {
-    const { el } = render(true, 2);
+    const { el } = render(2);
 
     expect(el.querySelector('app-page-header')).toBeNull();
     const cards = Array.from(el.querySelectorAll<HTMLButtonElement>('button.acct-card'));
@@ -262,8 +82,73 @@ describe('PortfolioAccountsListComponent master mode', () => {
     expect(el.querySelectorAll('.acct-card.selected').length).toBe(1);
   });
 
+  it('renders the master markup by default, without the master input', () => {
+    const { fixture, el } = render();
+
+    expect(fixture.componentInstance.master()).toBe(true);
+    expect(el.querySelector('app-page-header')).toBeNull();
+    expect(el.querySelector('.acct-master .acct-total')).not.toBeNull();
+    expect(el.querySelectorAll('button.acct-card').length).toBe(3);
+    expect(el.querySelector('app-cash-flow-form')).not.toBeNull();
+    expect(el.querySelector('p-dialog')).not.toBeNull();
+  });
+
+  it('leaves aria-pressed and the selected ring off every card without a selectedId (navigation buttons)', () => {
+    for (const selectedId of [undefined, null]) {
+      const { fixture, el } = render(selectedId);
+      const cards = Array.from(el.querySelectorAll<HTMLButtonElement>('button.acct-card'));
+
+      expect(cards.length).toBe(3);
+      expect(cards.map(card => card.hasAttribute('aria-pressed'))).toEqual([false, false, false]);
+      expect(el.querySelectorAll('.acct-card.selected').length).toBe(0);
+      fixture.destroy();
+    }
+  });
+
+  it('a card click navigates to the account detail', () => {
+    const { el } = render();
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+
+    el.querySelectorAll<HTMLButtonElement>('button.acct-card')[1].click();
+
+    expect(navigate).toHaveBeenCalledWith(['/portfolio/accounts', 2]);
+  });
+
+  it('opens the create dialog, submits the form and refetches the list', () => {
+    const { fixture, emitted } = render();
+    const component = fixture.componentInstance;
+
+    component.openCreateDialog();
+    expect(component.createDialogVisible()).toBe(true);
+    component.createForm.patchValue({
+      broker: 'sinopac',
+      nickname: ' 永豐台幣 ',
+      currency: 'TWD',
+      opening_balance: '5000',
+      opening_date: '2026-06-01',
+    });
+    component.submitCreate();
+
+    const post = httpMock.expectOne(req => req.method === 'POST' && req.url === '/api/portfolio/accounts/');
+    expect(post.request.body).toEqual({
+      broker: 'sinopac',
+      nickname: '永豐台幣',
+      currency: 'TWD',
+      opening_balance: '5000',
+      opening_date: '2026-06-01',
+      is_active: true,
+    });
+    post.flush({ ...base, id: 3, broker: 'sinopac', nickname: '永豐台幣', opening_balance: '5000', opening_date: '2026-06-01' });
+
+    httpMock.expectOne('/api/portfolio/accounts/?in_currency=TWD').flush({
+      items: accounts, target_currency: 'TWD', total_target_balance: '100000', skipped_currencies: [],
+    });
+    expect(component.createDialogVisible()).toBe(false);
+    expect(emitted.length).toBe(2);
+  });
+
   it('shows the broker · currency line, with the opening balance on the selected card only', () => {
-    const { el } = render(true, 1);
+    const { el } = render(1);
     const metas = Array.from(el.querySelectorAll('.acct-card-meta')).map(meta => meta.textContent?.trim());
 
     expect(metas).toEqual(['國泰證券 · TWD · 期初 300,000（2026/01/02）', 'Firstrade · USD', '永豐證券 · JPY']);
@@ -272,7 +157,7 @@ describe('PortfolioAccountsListComponent master mode', () => {
   });
 
   it('marks negative balances and tags 啟用中 / 已停用 / 未記錄入金', () => {
-    const { el } = render(true);
+    const { el } = render();
     const balances = Array.from(el.querySelectorAll('.acct-card-balance'));
     const tags = Array.from(el.querySelectorAll('.acct-card')).map(card =>
       Array.from(card.querySelectorAll('app-tag')).map(tag => tag.textContent?.trim()));
@@ -284,7 +169,7 @@ describe('PortfolioAccountsListComponent master mode', () => {
   });
 
   it('total card leaves out overdraft accounts that have a TWD value', () => {
-    const { fixture, el } = render(true);
+    const { fixture, el } = render();
     const total = el.querySelector('.acct-total') as HTMLElement;
 
     expect(total.querySelector('.acct-total-label')?.textContent).toBe('現金帳戶總額 · TWD');
@@ -296,7 +181,7 @@ describe('PortfolioAccountsListComponent master mode', () => {
   });
 
   it('refetches on every cash-ledger change until destroyed', () => {
-    const { fixture, emitted } = render(true);
+    const { fixture, emitted } = render();
     const service = TestBed.inject(PortfolioService);
 
     service.notifyCashLedgerChanged();
@@ -311,7 +196,7 @@ describe('PortfolioAccountsListComponent master mode', () => {
   });
 
   it('destroy mid-fetch cancels the fetch: no loaded emit, no state change', () => {
-    const { fixture, emitted } = render(true);
+    const { fixture, emitted } = render();
     const component = fixture.componentInstance;
 
     component.fetchAccounts();
@@ -324,7 +209,7 @@ describe('PortfolioAccountsListComponent master mode', () => {
   });
 
   it('a second fetch cancels the first, so an older response cannot land last', () => {
-    const { fixture, emitted } = render(true);
+    const { fixture, emitted } = render();
     const component = fixture.componentInstance;
 
     component.fetchAccounts();
@@ -339,7 +224,7 @@ describe('PortfolioAccountsListComponent master mode', () => {
   });
 
   it('a cash flow recorded in the form notifies the ledger change, which refetches once', () => {
-    const { fixture } = render(true);
+    const { fixture } = render();
     const service = TestBed.inject(PortfolioService);
     const notify = vi.spyOn(service, 'notifyCashLedgerChanged');
     const form = fixture.debugElement.query(d => d.componentInstance instanceof CashFlowFormComponent)
@@ -353,14 +238,6 @@ describe('PortfolioAccountsListComponent master mode', () => {
     reqs[0].flush({ items: accounts, target_currency: 'TWD', total_target_balance: '100000', skipped_currencies: [] });
   });
 
-  it('keeps today\'s header and cards outside master mode', () => {
-    const { el } = render(false);
-
-    expect(el.querySelector('app-page-header')).not.toBeNull();
-    expect(el.querySelector('.acct-master')).toBeNull();
-    expect(el.querySelectorAll('.account-card').length).toBe(3);
-    expect(el.querySelector('.summary-value')?.textContent).toContain('NT$100,000');
-  });
 });
 
 describe('cashTotal', () => {
