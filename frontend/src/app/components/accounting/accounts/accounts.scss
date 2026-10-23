@@ -12,7 +12,7 @@
   small { color: var(--app-text-muted); font-size: 0.72rem; font-weight: 700; }
   b { display: block; font-size: 1.5rem; font-variant-numeric: tabular-nums; }
   .totals-line { color: var(--app-text-muted); font-size: 0.72rem; }
-  .excluded-hint { display: block; font-weight: 400; }
+  .excluded-hint, .unconverted-hint { display: block; font-weight: 400; }
 }
 
 .grp {
