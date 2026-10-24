@@ -1406,7 +1406,12 @@ describe('PortfolioDashboardComponent', () => {
       expect(flat).toContain("grid-template-areas: 'main value' 'meta pnl'");
       expect(flat).toMatch(/\.stock-meta \{[^}]*display: flex/);
       expect(flat).toMatch(/\.stock-qty::after \{ content: ' 股'; \}/);
+      expect(flat).toMatch(/\.stock-price::before, \.stock-day::before \{ content: '· '; \}/);
       expect(phone).not.toContain('股數 ');
+      // `.stock-day` keeps its .up / .down trend colour: no colour rule may name it on phones.
+      for (const block of flat.match(/[^{}]*\{[^}]*\}/g) ?? []) {
+        if (/\.stock-day(?![:-])/.test(block.split('{')[0])) expect(block).not.toMatch(/\bcolor:/);
+      }
       expect(flat).toMatch(/\.stock-sym \{[^}]*flex-direction: row/);
       const outside = css.slice(0, start).replace(/\s+/g, ' ');
       expect(outside).toMatch(/\.stock-meta \{ display: contents;/);

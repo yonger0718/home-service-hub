@@ -729,15 +729,17 @@ $holdings-cols: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.2fr
     grid-area: meta;
     min-width: 0;
     overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
+  // Each item ellipsizes on its own: `text-overflow` on the flex container would only clip.
   .stock-qty,
   .stock-price,
   .stock-day {
     font-size: inherit;
-    text-align: left;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .stock-qty,
