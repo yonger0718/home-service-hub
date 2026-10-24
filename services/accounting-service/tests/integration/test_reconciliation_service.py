@@ -2119,3 +2119,337 @@ def test_a_structural_rows_child_never_supersedes_a_deferral(seed, db_session, r
     db_session.commit()
     _reconcile(db_session, stmt.id)
     assert db_session.get(ReconciliationCase, deferral.id).status == "resolved"
+
+
+# --- fee children of covered parents: carrier rows and their lock set (fee-child spec 2026-10-24 §5) ---------------
+
+AUG = (date(2026, 8, 1), date(2026, 8, 31))
+
+
+def _with_currency(db, entry, currency):
+    """`entry` stored in `currency` on its own account (a combined account may hold another currency)."""
+    entry.currency = currency
+    db.flush()
+    return entry
+
+
+def _cover_fee_elsewhere(db, run, account, fee, day) -> None:
+    """The fee child `fee` covered on an October statement of `account` by its own fee line (auto coverage)."""
+    from app.services.statements import matching
+    other, (line,), _ = _submit(db, run, account, [_line(1, day, "手續費", -Decimal(fee.amount), "fee")], period=OCT)
+    coverage_service.release_line(db, other, line.id, reason="test_owner")
+    coverage_service.write_claim(db, other, line, [matching.Row(fee.id, "principal", Decimal(fee.amount))],
+                                 entries_by_id={fee.id: fee}, match_kind="auto", match_rule="exact", run_id=None)
+    db.commit()
+
+
+def _fee_line_cases(db, statement_id, line_id, *statuses):
+    return [c for c in _cases(db, statement_id, *statuses) if c.line_id == line_id]
+
+
+def test_load_candidates_builds_a_carrier_for_a_covered_standalone_parent(seed, db_session, run):
+    card = _card(seed, db_session)
+    day = date(2026, 9, 16)
+    # submitted first: the hook finds no entries, so nothing on this statement claims the rows below
+    stmt, ls, _ = _submit(db_session, run, card, [_line(1, day, "AMAZON", 1000), _line(2, day, "手續費", 15, "fee")])
+    parent = seed.entry(card, "-1000", day=day, merchant="AMAZON")
+    fee = seed.entry(card, "-15", kind="fee", day=day, parent_entry_id=parent.id)
+    _with_currency(db_session, seed.entry(card, "-1", kind="fee", day=day, parent_entry_id=parent.id), "USD")
+    seed.entry(_card(seed, db_session, "別卡"), "-2", kind="fee", day=day, parent_entry_id=parent.id)  # not participating
+    db_session.commit()
+    entries, _ = rec.load_candidates(db_session, stmt, [card.id], window_days=15, include_reward=False,
+                                     exclude={parent.id})
+    (carrier,) = [e for e in entries if e.id == parent.id]
+    assert carrier.carrier and carrier.claimable and not carrier.in_reverse and carrier.all_children == ()
+    assert carrier.instance is None and carrier.stand_in is False and carrier.transfer_peer_is_card is None
+    assert [c.id for c in carrier.children] == [fee.id]  # the USD child and the other account's child are not in it
+    # an uncovered parent is an ordinary row, not a carrier
+    (plain,) = rec.load_candidates(db_session, stmt, [card.id], window_days=15, include_reward=False)[0]
+    assert plain.id == parent.id and not plain.carrier and plain.in_reverse
+    # every child claimed elsewhere → no carrier
+    _cover_fee_elsewhere(db_session, run, card, fee, date(2026, 10, 3))
+    entries, _ = rec.load_candidates(db_session, stmt, [card.id], window_days=15, include_reward=False,
+                                     exclude={parent.id})
+    assert all(e.id != parent.id for e in entries)
+
+
+def test_load_candidates_skips_installment_split_member_and_out_of_window_parents(seed, db_session, run):
+    card = _card(seed, db_session)
+    day = date(2026, 9, 10)
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, day, "x", 1)])
+
+    def with_fee(parent):
+        return seed.entry(card, "-15", kind="fee", day=parent.entry_date, parent_entry_id=parent.id)
+
+    installment = seed.entry(card, "-1000", day=day, merchant="手機")
+    seed.instance(seed.definition([seed.line("expense", card, "1000")], kind="installment", name="手機", times=12),
+                  2, day, status="posted", entries=[installment])
+    recurring = seed.entry(card, "-280", day=day, merchant="月費")
+    seed.instance(seed.definition([seed.line("expense", card, "280")], kind="recurring", name="月費"),
+                  1, day, status="posted", entries=[recurring])
+    early = seed.entry(card, "-500", day=date(2026, 8, 12), merchant="早")  # 20 days before period_start: outside 15
+    group = seed.group("split")
+    member = seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    seed.entry(card, "-200", day=day, merchant="餐廳", group_id=group.id)  # uncovered: the group is loaded
+    kids = {e.id: with_fee(e) for e in (installment, recurring, early, member)}
+    db_session.commit()
+    covered = {installment.id, recurring.id, early.id, member.id}
+    entries, _ = rec.load_candidates(db_session, stmt, [card.id], window_days=15, include_reward=False, exclude=covered)
+    by_id = {e.id: e for e in entries}
+    assert installment.id not in by_id and early.id not in by_id
+    assert by_id[recurring.id].carrier and [c.id for c in by_id[recurring.id].children] == [kids[recurring.id].id]
+    assert by_id[recurring.id].instance is None
+    # the covered split member stays a structural row as today: never claimable, never a carrier
+    assert not by_id[member.id].claimable and not by_id[member.id].carrier
+    assert [e.id for e in entries if e.carrier] == [recurring.id]
+
+
+def _matching_entry(i, children, group_id=None, **kw):
+    from app.services.statements import matching as m
+    return m.Entry(id=i, kind="expense", flow=Decimal("-1000"), posted_date=date(2026, 9, 16),
+                   entry_date=date(2026, 9, 16), name=None, merchant="AMAZON", original_amount=None,
+                   original_currency=None, account_id=1, group_id=group_id, parent_entry_id=None, is_settlement=False,
+                   refunds_entry_id=None, transfer_group_id=None, transfer_peer_is_card=None, children=tuple(children),
+                   instance=None, **kw)
+
+
+def test_survivors_drop_a_carrier_without_a_locked_child():
+    from app.services.statements import matching as m
+    kids = (m.Child(21, "fee", Decimal("-15")), m.Child(22, "fee", Decimal("-15")))
+    carrier = _matching_entry(20, kids, carrier=True, claimable=True, in_reverse=False)
+    plain = _matching_entry(30, ())
+    structural = _matching_entry(40, kids, claimable=False, in_reverse=False)
+    locked = {22: object(), 30: object()}  # 21 joined after the lock; the carrier's own id is never locked
+    groups = {20: None, 30: None, 40: None}
+    out = rec._survivors([carrier, plain, structural], locked, groups)
+    assert [(e.id, [c.id for c in e.children]) for e in out] == [(20, [22]), (30, []), (40, [21, 22])]
+    assert out[2] is structural  # non-claimable rows pass unchanged (both child views)
+    assert rec._survivors([carrier], {}, {20: None}) == []  # no locked child → dropped
+    assert rec._survivors([plain], {}, {30: None}) == []  # a claimable non-carrier still needs its own lock
+    assert rec._survivors([plain], {30: object()}, {}) == []  # … and must have been in the first read
+    regrouped = _matching_entry(30, (), group_id=7)
+    assert rec._survivors([regrouped], {30: object()}, {30: None}) == []  # its group changed in between
+
+
+def _owner_matched_fee_month(seed, db_session, run, lines, parents):
+    """Submit `lines` first (the hook finds nothing), then book `parents` [(amount, merchant, [child amounts])] and
+    hand the purchase lines (the first len(parents)) to the owner, one parent each."""
+    card = _card(seed, db_session)
+    day = date(2026, 9, 16)
+    stmt, ls, _ = _submit(db_session, run, card, lines)
+    booked = []
+    for amount, merchant, kids in parents:
+        parent = seed.entry(card, amount, day=day, merchant=merchant)
+        booked.append((parent, [seed.entry(card, k, kind="fee", day=day, parent_entry_id=parent.id) for k in kids]))
+    db_session.commit()
+    for line, (parent, _) in zip(ls, booked):
+        _owner_cover(db_session, stmt, line, [parent])
+    return card, stmt, ls, booked
+
+
+def test_owner_matched_parent_fee_child_claims_the_fee_line_and_is_idempotent(seed, db_session, run):
+    day = date(2026, 9, 16)
+    _, stmt, ls, [(parent, [fee])] = _owner_matched_fee_month(
+        seed, db_session, run, [_line(1, day, "AMAZON", 1000), _line(2, day, "國外交易手續費", 15, "fee")],
+        [("-1000", "AMAZON", ["-15"])])
+    assert [(c.kind, c.context.get("hint")) for c in _fee_line_cases(db_session, stmt.id, ls[1].id, "open")] == [
+        ("line_unmatched", "bank_only")]
+    _reconcile(db_session, stmt.id)
+    rows = _active(db_session, stmt.id)
+    assert sorted((r.line_id, r.entry_id, r.role, r.match_kind, r.match_rule) for r in rows) == [
+        (ls[0].id, parent.id, "principal", "manual", "owner"), (ls[1].id, fee.id, "principal", "auto", "exact")]
+    assert _fee_line_cases(db_session, stmt.id, ls[1].id, "open") == []
+    before = sorted((r.id, r.line_id, r.entry_id) for r in rows)
+    cases_before = [(c.id, c.status) for c in _cases(db_session, stmt.id)]
+    _reconcile(db_session, stmt.id)
+    assert sorted((r.id, r.line_id, r.entry_id) for r in _active(db_session, stmt.id)) == before  # kept, not rewritten
+    assert [(c.id, c.status) for c in _cases(db_session, stmt.id)] == cases_before
+
+
+def test_parent_claimed_on_the_previous_statement_fee_line_on_the_next(seed, db_session, run):
+    card = _card(seed, db_session)
+    sep, (fee_line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 1), "國外交易手續費", 15, "fee")])
+    parent = seed.entry(card, "-1000", day=date(2026, 8, 30), merchant="AMAZON")
+    fee = seed.entry(card, "-15", kind="fee", day=date(2026, 8, 30), parent_entry_id=parent.id)
+    db_session.commit()
+    aug, (buy_line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 8, 30), "AMAZON", 1000)], period=AUG)
+    assert [(r.line_id, r.entry_id, r.match_kind) for r in _active(db_session, aug.id)] == [
+        (buy_line.id, parent.id, "auto")]
+    assert [(c.kind, c.context.get("hint")) for c in _fee_line_cases(db_session, sep.id, fee_line.id, "open")] == [
+        ("line_unmatched", "bank_only")]
+    _reconcile(db_session, sep.id)
+    assert [(r.line_id, r.entry_id, r.role, r.match_kind, r.match_rule) for r in _active(db_session, sep.id)] == [
+        (fee_line.id, fee.id, "principal", "auto", "exact")]
+    assert _fee_line_cases(db_session, sep.id, fee_line.id, "open") == []
+    # the previous statement's claim on the parent is untouched
+    assert [(r.line_id, r.entry_id, r.match_kind) for r in _active(db_session, aug.id)] == [
+        (buy_line.id, parent.id, "auto")]
+
+
+def test_two_manual_parents_two_identical_children_two_identical_lines_pair(seed, db_session, run):
+    day = date(2026, 9, 16)
+    _, stmt, ls, [(p1, [f1]), (p2, [f2])] = _owner_matched_fee_month(
+        seed, db_session, run,
+        [_line(1, day, "AMAZON", 1000), _line(2, day, "APPLE", 2000), _line(3, day, "國外交易手續費", 15, "fee"),
+         _line(4, day, "國外交易手續費", 15, "fee")],
+        [("-1000", "AMAZON", ["-15"]), ("-2000", "APPLE", ["-15"])])
+    assert [c.context.get("hint") for line in ls[2:] for c in _fee_line_cases(db_session, stmt.id, line.id, "open")] \
+        == ["bank_only", "bank_only"]
+    _reconcile(db_session, stmt.id)
+    rows = _active(db_session, stmt.id)
+    assert sorted((r.line_id, r.entry_id, r.match_kind, r.match_rule) for r in rows) == [
+        (ls[0].id, p1.id, "manual", "owner"), (ls[1].id, p2.id, "manual", "owner"),
+        (ls[2].id, f1.id, "auto", "exact_pair"), (ls[3].id, f2.id, "auto", "exact")]
+    coverage_service.assert_conserved(db_session, db_session.get(AccountStatement, stmt.id))
+    assert [c for line in ls[2:] for c in _fee_line_cases(db_session, stmt.id, line.id, "open")] == []
+    before = sorted((r.id, r.line_id, r.entry_id, r.match_rule) for r in rows)
+    _reconcile(db_session, stmt.id)
+    assert sorted((r.id, r.line_id, r.entry_id, r.match_rule) for r in _active(db_session, stmt.id)) == before
+
+
+def test_one_line_two_identical_children_stays_ambiguous(seed, db_session, run):
+    day = date(2026, 9, 16)
+    _, stmt, ls, [(parent, [f1, f2])] = _owner_matched_fee_month(
+        seed, db_session, run, [_line(1, day, "AMAZON", 1000), _line(2, day, "國外交易手續費", 15, "fee")],
+        [("-1000", "AMAZON", ["-15", "-15"])])
+    _reconcile(db_session, stmt.id)
+    (case,) = _fee_line_cases(db_session, stmt.id, ls[1].id, "open")
+    assert case.kind == "ambiguous" and sorted(x["entry_id"] for x in case.candidates) == sorted([f1.id, f2.id])
+    assert [(r.line_id, r.entry_id) for r in _active(db_session, stmt.id)] == [(ls[0].id, parent.id)]
+
+
+def test_near_child_is_named_and_a_corrected_child_is_claimed_next_run(seed, db_session, run):
+    card = _card(seed, db_session)
+    day = date(2026, 9, 16)
+    parent = seed.entry(card, "-1000", day=day, merchant="AMAZON")
+    fee = seed.entry(card, "-5", kind="fee", day=day, parent_entry_id=parent.id)
+    db_session.commit()
+    stmt, ls, _ = _submit(db_session, run, card, [_line(1, day, "AMAZON", 1000), _line(2, day, "國外交易手續費", 6, "fee")])
+    assert [(r.line_id, r.entry_id, r.match_kind) for r in _active(db_session, stmt.id)] == [
+        (ls[0].id, parent.id, "auto")]
+    (case,) = _fee_line_cases(db_session, stmt.id, ls[1].id, "open")
+    assert (case.kind, case.context) == ("line_unmatched", {
+        "hint": "bank_only", "pattern": None,
+        "near_children": [{"entry_id": fee.id, "parent_entry_id": parent.id, "residual": "-1.0000"}]})
+    db_session.get(LedgerEntry, fee.id).amount = Decimal("-6")  # the owner corrects the child to the bank's amount
+    db_session.commit()
+    _reconcile(db_session, stmt.id)
+    assert sorted((r.line_id, r.entry_id, r.match_rule) for r in _active(db_session, stmt.id)) == [
+        (ls[0].id, parent.id, "exact"), (ls[1].id, fee.id, "exact")]
+    assert _fee_line_cases(db_session, stmt.id, ls[1].id, "open") == []
+    assert db_session.get(ReconciliationCase, case.id).status != "open"
+
+
+def test_reconcile_locks_a_carriers_child_never_the_carrier(seed, db_session, run, pg_engine):
+    day = date(2026, 9, 16)
+    _, stmt, ls, [(parent, [fee])] = _owner_matched_fee_month(
+        seed, db_session, run, [_line(1, day, "AMAZON", 1000), _line(2, day, "國外交易手續費", 15, "fee")],
+        [("-1000", "AMAZON", ["-15"])])
+    with pg_engine.connect() as holder:
+        # the child is in the lock set: held elsewhere → reconcile_busy, the session stays usable
+        holder.execute(text("SELECT id FROM ledger_entry WHERE id = :id FOR UPDATE"), {"id": fee.id})
+        with pytest.raises(CodedConflictError) as busy:
+            rec.reconcile(db_session, stmt.id)
+        assert busy.value.code == rec.RECONCILE_BUSY
+        db_session.rollback()
+        holder.rollback()
+        # the carrier (owner-covered parent) is not: held elsewhere, reconcile still claims its child
+        holder.execute(text("SELECT id FROM ledger_entry WHERE id = :id FOR UPDATE"), {"id": parent.id})
+        db_session.execute(text("SET LOCAL lock_timeout = '5s'"))  # a wait on the parent fails the test, never hangs
+        rec.reconcile(db_session, stmt.id)
+        db_session.commit()
+        holder.rollback()
+    assert sorted((r.line_id, r.entry_id, r.match_kind) for r in _active(db_session, stmt.id)) == [
+        (ls[0].id, parent.id, "manual"), (ls[1].id, fee.id, "auto")]
+
+
+def _owner_match_month(seed, db_session, run, kids):
+    """A purchase line and a fee line submitted first (the hook finds nothing), then a parent with `kids` booked; the
+    owner matches the purchase line's `line_unmatched` case to the parent through the action engine."""
+    from app.services.reconciliation_actions import engine
+    card = _card(seed, db_session)
+    day = date(2026, 9, 16)
+    stmt, ls, _ = _submit(db_session, run, card, [_line(1, day, "AMAZON", 1000), _line(2, day, "國外交易手續費", 15, "fee")])
+    parent = seed.entry(card, "-1000", day=day, merchant="AMAZON")
+    children = [seed.entry(card, k, kind="fee", day=day, parent_entry_id=parent.id) for k in kids]
+    db_session.commit()
+    assert stmt.id not in rec.pending_statement_ids(db_session)
+    (case,) = [c for c in _fee_line_cases(db_session, stmt.id, ls[0].id, "open") if c.kind == "line_unmatched"]
+    engine.apply_action(db_session, case_id=case.id, action="match",
+                        params={"line_id": ls[0].id, "entry_id": parent.id}, actor="owner", label="t")
+    db_session.commit()
+    return db_session.get(AccountStatement, stmt.id), ls, parent, children
+
+
+def test_owner_match_of_a_parent_with_a_fee_child_schedules_a_recheck_that_claims_the_fee_line(seed, db_session, run):
+    stmt, ls, parent, [fee] = _owner_match_month(seed, db_session, run, ["-15"])
+    assert stmt.needs_recheck is True  # the fee child is still claimable: a matching reason (ruling 29)
+    assert stmt.id in rec.pending_statement_ids(db_session)
+    _reconcile(db_session, stmt.id)
+    assert sorted((r.line_id, r.entry_id, r.match_kind, r.match_rule) for r in _active(db_session, stmt.id)) == [
+        (ls[0].id, parent.id, "manual", "owner"), (ls[1].id, fee.id, "auto", "exact")]
+    assert db_session.get(AccountStatement, stmt.id).needs_recheck is False
+    assert stmt.id not in rec.pending_statement_ids(db_session)
+
+
+def test_owner_match_with_children_takes_the_fee_child_and_does_not_flag_a_recheck(seed, db_session, run):
+    from app.services.reconciliation_actions import engine
+    card = _card(seed, db_session)
+    day = date(2026, 9, 16)
+    stmt, ls, _ = _submit(db_session, run, card, [_line(1, day, "AMAZON", 1015)])
+    parent = seed.entry(card, "-1000", day=day, merchant="AMAZON")
+    seed.entry(card, "-15", kind="fee", day=day, parent_entry_id=parent.id)
+    db_session.commit()
+    (case,) = [c for c in _fee_line_cases(db_session, stmt.id, ls[0].id, "open") if c.kind == "line_unmatched"]
+    engine.apply_action(db_session, case_id=case.id, action="match",
+                        params={"line_id": ls[0].id, "entry_id": parent.id, "with_children": True}, actor="owner", label="t")
+    db_session.commit()
+    assert db_session.get(AccountStatement, stmt.id).needs_recheck is False
+
+
+def test_owner_match_of_a_parent_whose_only_child_is_covered_by_another_statement_does_not_flag_a_recheck(seed, db_session, run):
+    from app.services.reconciliation_actions import engine
+    card = _card(seed, db_session)
+    day = date(2026, 9, 16)
+    stmt, ls, _ = _submit(db_session, run, card, [_line(1, day, "AMAZON", 1000)])
+    parent = seed.entry(card, "-1000", day=day, merchant="AMAZON")
+    fee = seed.entry(card, "-15", kind="fee", day=day, parent_entry_id=parent.id)
+    db_session.commit()
+    _cover_fee_elsewhere(db_session, run, card, fee, date(2026, 10, 2))
+    (case,) = [c for c in _fee_line_cases(db_session, stmt.id, ls[0].id, "open") if c.kind == "line_unmatched"]
+    engine.apply_action(db_session, case_id=case.id, action="match",
+                        params={"line_id": ls[0].id, "entry_id": parent.id}, actor="owner", label="t")
+    db_session.commit()
+    assert db_session.get(AccountStatement, stmt.id).needs_recheck is False
+
+
+def test_owner_match_of_a_childless_entry_does_not_flag_a_recheck(seed, db_session, run):
+    stmt, ls, parent, _ = _owner_match_month(seed, db_session, run, [])
+    assert stmt.needs_recheck is False
+    assert stmt.id not in rec.pending_statement_ids(db_session)
+    assert [(r.line_id, r.entry_id, r.match_kind) for r in _active(db_session, stmt.id)] == [
+        (ls[0].id, parent.id, "manual")]
+
+
+def test_a_carrier_never_supersedes_its_parents_deferral(seed, db_session, run):
+    """A parent this statement deferred and the next statement then covered becomes a carrier here (its fee child is
+    unclaimed): the carrier is never evaluated as a parent, so the deferral keeps its explanation, as an entry that
+    left the population does."""
+    card = _card(seed, db_session)
+    day = date(2026, 9, 29)
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)])
+    parent = seed.entry(card, "-90", day=day, merchant="咖啡")
+    seed.entry(card, "-3", kind="fee", day=day, parent_entry_id=parent.id)
+    db_session.commit()
+    deferral = ReconciliationCase(statement_id=stmt.id, revision_id=stmt.current_revision_id, kind="entry_unmatched",
+                                  entry_id=parent.id, status="resolved", explanation="deferred_next_period",
+                                  deferred_to_period_end=date(2026, 10, 30), resolved_at=func.now(), context={})
+    db_session.add(deferral)
+    db_session.commit()
+    octo, (late_line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 10, 2), "咖啡", 90)], period=OCT)
+    assert [(r.line_id, r.entry_id) for r in _active(db_session, octo.id)] == [(late_line.id, parent.id)]
+    entries, _ = rec.load_candidates(db_session, db_session.get(AccountStatement, stmt.id), [card.id], window_days=15,
+                                     include_reward=False)
+    assert [e.id for e in entries if e.carrier] == [parent.id]
+    _reconcile(db_session, stmt.id)
+    assert db_session.get(ReconciliationCase, deferral.id).status == "resolved"
