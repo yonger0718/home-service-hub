@@ -8,7 +8,11 @@
   margin: -0.5rem 0 1.25rem;
 }
 
-.bars-card,
+.bars-card {
+  display: block;
+  margin-bottom: 1.25rem;
+}
+
 .bars-caption {
   color: var(--app-text-muted);
   font-size: 0.8rem;

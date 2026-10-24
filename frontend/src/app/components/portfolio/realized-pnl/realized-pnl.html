@@ -108,9 +108,9 @@
         ></app-seg-toggle>
       </div>
     }
-    <label class="hub-filter-field">
+    <label class="hub-filter-field hub-filter-field--row">
       <app-switch ariaLabel="僅當沖" [checked]="query().day_trade_only ?? false" (checkedChange)="onDayTradeOnlyChange($event)"></app-switch>
-      <span>僅當沖</span>
+      <span class="field-label">僅當沖</span>
     </label>
     <div class="hub-filter-field">
       <span class="field-label">排序</span>
