@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, FastAPI, SQLAlchemy 2, pytest (unit + Postgres integration).
 
-**Spec:** `docs/superpowers/specs/2026-10-24-reconciliation-guard-holders-design.md` (rev 2), amending `docs/superpowers/specs/2026-10-24-reconciliation-split-members-design.md` §3 / §5.6.
+**Spec:** `docs/superpowers/specs/2026-10-24-reconciliation-guard-holders-design.md` (rev 3), amending `docs/superpowers/specs/2026-10-24-reconciliation-split-members-design.md` §3 / §5.6.
 
 ## Global Constraints
 
@@ -18,12 +18,14 @@
 - `printed_alone`, `printed_alone_children`, `group_readings`, `guard_lines`, `load_candidates` (beyond `Entry.source`), actions, inbox, schemas, SPA: unchanged.
 - Stable coverage = this statement's active rows with `match_kind in OWNED_KINDS` (`("manual", "agent")`, reconciliation_service.py:396) + every active row of a neighbouring guard line. This statement's own `auto` rows are never read as holders.
 - Exactness: signed Σ `flow` `_same` `line.flow`; or every holder entry `original_currency == line.foreign_currency` and `_same(|Σ original_amount|, |line.foreign_amount|)` with `line.foreign_amount` not null.
-- Stand-in: entry id ∈ `stand_ins.stand_in_entry_ids(db, accounts)` **or** `source == "statement"` (`entry_write_service.STATEMENT_SOURCE`).
+- Stand-in, per holder **row** (parent or child): `stand_in_row(row_id, source, stand_in_ids) = row_id ∈ stand_in_ids or source == "statement"`, `stand_in_ids = stand_ins.stand_in_entry_ids(db, accounts)`. One predicate in `matching.py`, used by both holder sources.
+- Row metadata: every holder row resolves to `(source, original_amount, original_currency)` — from `ledger_entry` (DB side) or from `Entry` / `Child` (own claims, `by_row` over entries ∪ `children` ∪ `all_children`); an unresolved row id → `exact = False`.
+- Stable and own holders never share a line (owner/agent lines are not claimable); `merge_holders` fail-closes a collision (`exact = False`).
 - Fictional amounts in tests (the −300/−280 family); no production ids in test names.
 
 ## Review Focus
 
-1. A line with an owner row **and** a pass-1 claim (merge): exact only when the union of rows sums to the line — Task 1 `test_merge_holders_recheck_exact_over_the_union`.
+1. A line with an owner row **and** a pass-1 claim (merge): never in the pipeline; a collision fail-closes — Task 1 `test_merge_holders_is_a_disjoint_union_and_fail_closes_a_collision`.
 2. Holder row whose `entry_id` was SET NULL and whose snapshot id no longer resolves → not exact, line kept — Task 2 `test_guard_holders_set_null_row_is_never_exact`.
 3. Holder is a fee **child** of a member of this group (printed-alone child line) → related, line kept — Task 1 `test_unrelated_exact_treats_a_members_child_as_related`.
 4. First run on a fresh statement must already release the group (two passes), and a second run must write identical coverage and cases — Task 2 `test_two_passes_release_a_group_on_the_first_run_and_are_idempotent`.
@@ -40,13 +42,14 @@
 **Interfaces:**
 - Produces:
   - `@dataclass(frozen=True) class Holder: entry_ids: frozenset[int]; stand_in: bool; exact: bool`
-  - `Entry.source: str | None = None` (new trailing field)
+  - `Entry.source: str | None = None`; `Child.source: str | None = None`, `Child.original_amount: Decimal | None = None`, `Child.original_currency: str | None = None` (new trailing fields; all existing constructors keep working)
+  - `stand_in_row(row_id: int, source: str | None, stand_in_ids: frozenset[int]) -> bool`
   - `_unrelated_exact(holder: Holder, g: Group, by_id: dict[int, Entry]) -> bool` — `holder.exact and not holder.stand_in and not (holder.entry_ids & related_ids(g, by_id))` where related = `g.member_ids ∪ {c.id for m in g.member_ids if m in by_id for c in _kids(by_id[m])}`.
   - `printed_whole(lines_all, entries, groups, rules, aside, aside_children, account_currency=None, holders: Mapping[int, Holder] | None = None) -> frozenset[int]` — per group, scan only the lines whose holder (if any) is not `_unrelated_exact` for it.
   - `statement_context(kind, lines, lines_all, entries, groups, rules, account_currency, holders=None) -> Context`
   - `match(..., lines_all=None, holders=None) -> MatchResult`
-  - `claim_holders(result: MatchResult, lines_all: list[Line], entries: list[Entry], stand_in: Callable[[Entry], bool]) -> dict[int, Holder]` — one `Holder` per claimed line of `result.claims`: `entry_ids` = the representation's `Row.entry_id`s (child rows included); `exact` = signed Σ `Row.flow` `_same` `line.flow`, or the foreign rule over the top-level entries among the rows (`by_id`); `stand_in` = any `stand_in(by_id[id])` for the row ids that are top-level entries (child ids are never stand-ins). A claimed line absent from `lines_all` is skipped.
-  - `merge_holders(stable: Mapping[int, Holder], own: Mapping[int, Holder]) -> dict[int, Holder]` — a line present on one side only keeps that `Holder`; a line present on **both** sides gets `entry_ids` united, `stand_in` or-ed and `exact = False` (fail-closed: two row sets cannot both sum to the line, and the merge has no flows to re-check; spec §4.1 is corrected to this rule in Task 4).
+  - `claim_holders(result: MatchResult, lines_all: list[Line], entries: list[Entry], stand_in_ids: frozenset[int]) -> dict[int, Holder]` — `by_row = {e.id: e for e in entries} | {c.id: c for e in entries for c in (*e.children, *e.all_children)}`; one `Holder` per claimed line of `result.claims`: `entry_ids` = the representation's `Row.entry_id`s (child rows included); `stand_in` = any `stand_in_row(id, by_row[id].source, stand_in_ids)`; `exact` = every id in `by_row` **and** (signed Σ `Row.flow` `_same` `line.flow`, or every resolved row has `original_currency == line.foreign_currency` and `_same(|Σ original_amount|, |line.foreign_amount|)`). A claimed line absent from `lines_all` is skipped.
+  - `merge_holders(stable: Mapping[int, Holder], own: Mapping[int, Holder]) -> dict[int, Holder]` — a line present on one side only keeps that `Holder`; a line present on **both** sides (the §3 invariant says never) gets `entry_ids` united, `stand_in` or-ed and `exact = False` (fail-closed).
 - Consumes: `_same`, `_kids`, `_date_distance`, `_prints_reading`, `group_readings` (unchanged).
 
 - [ ] **Step 1: Failing unit tests (append after `test_printed_whole_fails_closed_without_the_other_member`)**
@@ -79,28 +82,48 @@ def test_claim_holders_marks_conserving_claims_exact_and_members_related():
     ents = [E(99, d, "-575"), *SPLIT()]
     lines = [L(1, d, "-575"), L(2, d, "-300")]
     res = m.match("card", lines, ents, {5: m.Group(5, "split", (21, 22))}, {}, lambda e: None, R, "TWD")
-    own = m.claim_holders(res, lines, ents, stand_in=lambda e: e.id == 42)
+    own = m.claim_holders(res, lines, ents, frozenset())
     assert own == {1: H(frozenset({99}), False, True)}            # pass 1: group whole, 99 claims line 1, line 2 open
     res2 = m.match("card", lines, ents, {5: m.Group(5, "split", (21, 22))}, {}, lambda e: None, R, "TWD", holders=own)
     assert {c.line_id: c.representation.rows[0].entry_id for c in res2.claims} == {1: 99, 2: 21}
-    assert m.claim_holders(res2, lines, ents, stand_in=lambda e: False)[2] == H(frozenset({21}), False, True)
+    assert m.claim_holders(res2, lines, ents, frozenset())[2] == H(frozenset({21}), False, True)
 
-def test_claim_holders_foreign_exactness_uses_the_entries_original_amount():
+def test_claim_holders_resolves_child_rows_source_and_foreign_fields():          # shapes 11/12
+    fee = m.Child(991, "fee", D("-10"), source="statement")
+    disc = m.Child(992, "discount", D("5"))
+    ents = [E(99, d, "-565", children=(fee,)), E(98, d + timedelta(days=1), "-580", children=(disc,))]
+    lines = [L(1, d, "-575"), L(2, d + timedelta(days=1), "-575")]
+    res = m.match("card", lines, ents, {}, {}, lambda e: None, R, "TWD")
+    own = m.claim_holders(res, lines, ents, frozenset())
+    assert own[1] == H(frozenset({99, 991}), True, True)          # statement-sourced fee child → stand-in holder
+    assert own[2] == H(frozenset({98, 992}), False, True)         # plain parent + discount child, signed sum exact
+    assert m.claim_holders(res, lines, ents, frozenset({98}))[2].stand_in is True   # backfill id → stand-in
+
+def test_claim_holders_foreign_exactness_uses_the_rows_original_amount():
     ents = [E(99, d, "-3010", original_amount="-15000", original_currency="JPY")]
     lines = [L(1, d, "-3010", foreign_amount="-15000", foreign_currency="JPY")]
     res = m.match("card", lines, ents, {}, {}, lambda e: None, R, "TWD")
-    assert m.claim_holders(res, lines, ents, stand_in=lambda e: False) == {1: H(frozenset({99}), False, True)}
+    assert m.claim_holders(res, lines, ents, frozenset()) == {1: H(frozenset({99}), False, True)}
 
-def test_merge_holders_recheck_exact_over_the_union():
+def test_printed_whole_through_match_keeps_a_group_whose_near_line_a_stand_in_claim_holds():   # shape 11 end to end
+    fee = m.Child(991, "fee", D("-10"), source="statement")
+    ents = [E(99, d, "-565", children=(fee,)), *SPLIT()]
+    lines = [L(1, d, "-575"), L(2, d, "-300")]
+    res = m.match("card", lines, ents, {5: m.Group(5, "split", (21, 22))}, {}, lambda e: None, R, "TWD")
+    own = m.claim_holders(res, lines, ents, frozenset())
+    res2 = m.match("card", lines, ents, {5: m.Group(5, "split", (21, 22))}, {}, lambda e: None, R, "TWD", holders=own)
+    assert {c.line_id for c in res2.claims} == {1}                 # line 2 stays open: the group is whole
+
+def test_merge_holders_is_a_disjoint_union_and_fail_closes_a_collision():
     a = {1: H(frozenset({7}), False, True), 2: H(frozenset({8}), True, True)}
     b = {1: H(frozenset({9}), False, True), 3: H(frozenset({10}), False, True)}
     assert m.merge_holders(a, b) == {1: H(frozenset({7, 9}), False, False), 2: a[2], 3: b[3]}
 ```
-(`L(... foreign_amount=, foreign_currency=)` and `E(... children=)` — check the helper signatures at the file top and add the kwargs if a helper lacks them.)
+(`L(... foreign_amount=, foreign_currency=)`, `E(... children=)` and `m.Child(..., source=)` — check the helper signatures at the file top and add kwargs where a helper lacks them.)
 
 - [ ] **Step 2: Run, expect failures** — `pytest tests/unit/test_statement_matching.py -q -k "holder or unrelated_exact or claim_holders or merge_holders"` → `AttributeError: Holder` / `TypeError: holders`.
 
-- [ ] **Step 3: Implement** `Holder`, `Entry.source`, `_unrelated_exact`, the `holders` parameter on `printed_whole` / `statement_context` / `match`, `claim_holders`, `merge_holders` per Interfaces. `printed_whole`'s docstring gains one sentence naming the spec section; the holder filter is applied inside its scan only.
+- [ ] **Step 3: Implement** `Holder`, `Entry.source`, the three `Child` fields, `stand_in_row`, `_unrelated_exact`, the `holders` parameter on `printed_whole` / `statement_context` / `match`, `claim_holders`, `merge_holders` per Interfaces. `printed_whole`'s docstring gains one sentence naming the spec section; the holder filter is applied inside its scan only.
 
 - [ ] **Step 4: Run the whole unit file** — `pytest tests/unit/test_statement_matching.py -q` → all pass (the 154 existing + new).
 
@@ -115,18 +138,19 @@ def test_merge_holders_recheck_exact_over_the_union():
 - Test: `services/accounting-service/tests/integration/test_reconciliation_service.py` (helpers `_card`, `_submit`, `_line`, `_owner_cover` :1518, `_claims_of` :1538, `_active`, `_cases`, `_reconcile`, `_cover_elsewhere` :1529; existing guard tests :1641–1693)
 
 **Interfaces:**
-- Consumes: Task 1 (`matching.Holder`, `claim_holders`, `merge_holders`, `match(..., holders=)`); `stand_ins.stand_in_entry_ids` (already loaded at :271 inside `load_candidates` — expose it: `load_candidates` returns are unchanged; add a module-level helper `_stand_in_predicate(db, accounts) -> Callable[[matching.Entry], bool]` = `lambda e: e.stand_in or e.id in ids or e.source == STATEMENT_SOURCE`, where `ids = stand_ins.stand_in_entry_ids(db, accounts)`).
+- Consumes: Task 1 (`matching.Holder`, `stand_in_row`, `claim_holders`, `merge_holders`, `match(..., holders=)`); `stand_ins.stand_in_entry_ids(db, accounts)` (already called at :271 inside `load_candidates`; call it once more in `reconcile()` and pass the frozenset to both `guard_holders` and `claim_holders`).
 - Produces:
-  - `entry_view` sets `source=e.source`.
-  - `guard_holders(db, statement, accounts, lines_all: list[matching.Line]) -> dict[int, matching.Holder]` — active `StatementCoverage` rows for `{l.id for l in lines_all}` in chunks of 200; rows with `statement_id == statement.id` kept only when `match_kind in OWNED_KINDS`; `entry_ids` per the SET-NULL fallback; one `LedgerEntry` query for the ids (`id, amount, original_amount, original_currency, source`); `stand_in` via the predicate above on ids (`stand_in_entry_ids ∪ source == "statement"`); `exact` per Global Constraints, `False` when any id is unresolved. Read only.
+  - `entry_view` sets `source=e.source`; the two `matching.Child(c.id, c.kind, Decimal(c.amount), c.currency)` constructions (:245, :308) add `source=c.source, original_amount=None if c.original_amount is None else Decimal(c.original_amount), original_currency=c.original_currency`.
+  - `guard_holders(db, statement, lines_all: list[matching.Line], stand_in_ids: frozenset[int]) -> dict[int, matching.Holder]` — active `StatementCoverage` rows for `{l.id for l in lines_all}` in chunks of 200; rows with `statement_id == statement.id` kept only when `match_kind in OWNED_KINDS`; `entry_ids` per the SET-NULL fallback; one `LedgerEntry` query for the ids (`id, amount, original_amount, original_currency, source` — children included, they are ledger rows); `stand_in` = any `matching.stand_in_row(id, source, stand_in_ids)`; `exact` per Global Constraints, `False` when any id is unresolved. Read only.
   - `reconcile()` two passes (replace the single `matching.match(...)` call at :862–864):
     ```python
     lines_all = guard_lines(db, statement, accounts, rules, all_lines)
-    stable = guard_holders(db, statement, accounts, lines_all)
+    stand_in_ids = frozenset(stand_ins.stand_in_entry_ids(db, accounts))
+    stable = guard_holders(db, statement, lines_all, stand_in_ids)
     args = (statement.kind, [_as_line(row) for row in line_rows], entries, groups, plan_map(db, statement.account_id),
             lambda e: proposed_fx_fee(accounts_by_id[e.account_id], e.flow), rules, statement.currency)
     first = matching.match(*args, lines_all=lines_all, holders=stable)
-    own = matching.claim_holders(first, lines_all, entries, _stand_in_predicate(db, accounts))
+    own = matching.claim_holders(first, lines_all, entries, stand_in_ids)
     result = matching.match(*args, lines_all=lines_all, holders=matching.merge_holders(stable, own))
     ```
     `plan_map` / `proposed_fx_fee` are called once; everything after uses `result`.
@@ -164,15 +188,24 @@ def test_guard_holders_sums_the_rows_of_a_group_reading(seed, db_session, run):
     """Shape 8: another split group (−400/−175) claimed the −575 line as a group reading (two coverage rows); their
     flows sum to the line → Holder(exact=True, stand_in=False) with both ids; the −300/−280 group is released."""
 
+def test_reconcile_does_not_follow_a_third_order_chain(seed, db_session, run):
+    """Shape 13: group A (−300 card / −280 錢包) is released in pass 2 by a standalone −575 claiming the −575 line; A's
+    member then claims the −300 line — which is within 5 % of group B's total (−295 card / −10 錢包 = −305). B stays
+    whole in this run (its line was not an own claim in pass 1); a second run is identical."""
+
+def test_a_tie_between_a_pass_one_claimant_and_a_released_member_is_ambiguous_and_stable(seed, db_session, run):
+    """Shape 14: standalone −575 claims the −575 line in pass 1 and releases the −300/−280 group; a second standalone
+    −300 and the member tie on the −300 line → `ambiguous` in pass 2, no claim; a second run writes the same case."""
+
 def test_reconcile_keeps_a_group_whole_when_a_real_stand_in_holds_the_sum_line_on_the_neighbour(seed, db_session, run):
     """Shape 4: August's −580 sum line is held by a `source="statement"` entry (what the policy books) → whole in
     September; the −300 line stays line_unmatched with no member candidate."""
 ```
 Use the existing helpers; the SET-NULL deletion goes through `db_session.delete(entry)` + commit (FK `ondelete="SET NULL"` on `statement_coverage.entry_id`, models/statements.py:270).
 
-- [ ] **Step 3: Run, expect failures** — `pytest tests/integration/test_reconciliation_service.py -q -k "two_passes or guard_holders or real_stand_in or unrelated_entry"`.
+- [ ] **Step 3: Run, expect failures** — `pytest tests/integration/test_reconciliation_service.py -q -k "two_passes or guard_holders or real_stand_in or unrelated_entry or third_order or tie_between"`.
 
-- [ ] **Step 4: Implement** `entry_view` source, `_stand_in_predicate`, `guard_holders`, the two-pass `reconcile()`. Update the module docstring's idempotency paragraph (:13–20) with one sentence on the two passes.
+- [ ] **Step 4: Implement** `entry_view` source, the `Child` fields at :245/:308, `guard_holders`, the two-pass `reconcile()`. Update the module docstring's idempotency paragraph (:13–20) with one sentence on the two passes.
 
 - [ ] **Step 5: Run the file and the policy/actions suites that exercise reconcile** — `pytest tests/integration/test_reconciliation_service.py tests/integration/test_reconciliation_actions_engine.py -q` → pass.
 
@@ -187,8 +220,8 @@ Use the existing helpers; the SET-NULL deletion goes through `db_session.delete(
 - Test: `services/accounting-service/tests/integration/test_reconciliation_policy.py` (helpers `_validator_refusal` :702, `_owner_cover` :756; shape at :765)
 
 **Interfaces:**
-- Consumes: Task 1 + Task 2 (`rec.guard_holders`, `rec._stand_in_predicate`, `matching.match`, `claim_holders`, `merge_holders`). The validator needs `plan_map` and the fee lambda for pass 1: reuse `rec.plan_map(db, statement.account_id)` and `lambda e: rec.proposed_fx_fee(accounts_by_id[e.account_id], e.flow)` with `accounts_by_id` built as reconcile does (:840).
-- Produces: `match_ctx = matching.statement_context(..., holders=merged)` where `merged = merge_holders(stable, claim_holders(pass1, lines_all, entries, pred))` and `pass1 = matching.match(statement.kind, claimable_lines, entries, groups, plan_map, fee, rules, currency, lines_all=lines_all, holders=stable)`. Docstring: one sentence on parity through pass 1.
+- Consumes: Task 1 + Task 2 (`rec.guard_holders`, `stand_ins.stand_in_entry_ids`, `matching.match`, `claim_holders`, `merge_holders`). The validator needs `plan_map` and the fee lambda for pass 1: reuse `rec.plan_map(db, statement.account_id)` and `lambda e: rec.proposed_fx_fee(accounts_by_id[e.account_id], e.flow)` with `accounts_by_id` built as reconcile does (:840).
+- Produces: `match_ctx = matching.statement_context(..., holders=merged)` where `merged = merge_holders(stable, claim_holders(pass1, lines_all, entries, stand_in_ids))` and `pass1 = matching.match(statement.kind, claimable_lines, entries, groups, plan_map, fee, rules, currency, lines_all=lines_all, holders=stable)`. Docstring: one sentence on parity through pass 1.
 
 - [ ] **Step 1: Failing tests** (mirror `_apart_member_case` :560 and the apply test :590)
 
@@ -219,7 +252,18 @@ def test_policy_refuses_the_member_when_a_real_stand_in_holds_the_near_line(seed
 ```
 Under PR #130 the first test refuses (the −575 line keeps the group whole, "0 admissible representation(s)"); under #136 it applies.
 
-- [ ] **Step 2: Run, expect failures.** — `pytest tests/integration/test_reconciliation_policy.py -q -k "pass_one or real_stand_in"`.
+```python
+def test_policy_agrees_with_reconcile_on_the_third_order_chain(seed, db_session, run):
+    """Shape 13 parity: after the reconcile of Task 2's chain test, a proposal naming B's member on the −300 line is
+    refused ('0 admissible representation(s)') — the validator recomputes pass 1 and never reads the stored pass-2
+    member claim that would have skipped B's guard line."""
+
+def test_policy_agrees_with_reconcile_on_the_pass_two_tie(seed, db_session, run):
+    """Shape 14 parity: the ambiguous −300 line; a proposal naming the member is refused with '2 admissible
+    representation(s)' (the validator sees the same apart decision and the same tie)."""
+```
+
+- [ ] **Step 2: Run, expect failures.** — `pytest tests/integration/test_reconciliation_policy.py -q -k "pass_one or real_stand_in or third_order or pass_two_tie"`.
 - [ ] **Step 3: Implement** per Interfaces.
 - [ ] **Step 4: Run** `pytest tests/integration/test_reconciliation_policy.py tests/integration/test_reconciliation_service.py -q` → pass.
 - [ ] **Step 5: Commit** — `feat(policy): validator builds the guard holders through pass one (#136)`.
@@ -230,7 +274,7 @@ Under PR #130 the first test refuses (the −575 line keeps the group whole, "0 
 
 **Files:**
 - Modify: `docs/superpowers/specs/2026-10-24-reconciliation-split-members-design.md` (§3 "Printed whole" paragraph — one pointer line to the #136 spec; §9 one erratum line)
-- Modify: `docs/superpowers/specs/2026-10-24-reconciliation-guard-holders-design.md` (§6: the two flipped fixtures and the merge rule "both sides present → not exact"; §9 Errata header for execution findings)
+- Modify: `docs/superpowers/specs/2026-10-24-reconciliation-guard-holders-design.md` (§9 Errata: execution findings, if any)
 
 - [ ] **Step 1: Edit the two spec files as above.**
 - [ ] **Step 2: Full backend suites** — `pytest tests/unit -q` and `pytest tests/integration -q` → green; paste counts into the commit body.
@@ -240,5 +284,5 @@ Under PR #130 the first test refuses (the −575 line keeps the group whole, "0 
 
 ## Rollout (controller, after the final review; not a subagent task)
 
-1. Bring `~/reports/home-hub-pr130-api-20261024/sim136.py` to the spec arithmetic (signed Σ over all active rows of a line; this statement's own `auto` rows stand in for pass-1 claims; disjointness against members ∪ children; unresolved entry → not exact; stand-in = `stand_in_entry_ids ∪ source = statement`) and run it read-only against production. Pass: groups 4316 and 4300 flip; no group whose hit line has a stand-in holder flips; the flip list (by group) goes into the PR body.
+1. Baseline DONE 2026-10-24 before execution (`~/reports/home-hub-pr130-api-20261024/sim136_v2.py`, spec arithmetic; stored `auto` rows stand in for pass-1 claims): 231 whole decisions, 12 groups flip (4316, 4300 among them; 3999 flips to apart with nothing to claim — harmless), 0 flips with a stand-in-held hit line. Re-run after the final review; the flip list by group goes into the PR body.
 2. PR → Multica review (dev-astra) → owner merge → deploy API (`deploy-130.sh <full sha>` pattern) → reconcile statements 128 and 229 → compare open cases (155 before) and the member outcomes against spec §5.

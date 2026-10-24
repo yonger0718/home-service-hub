@@ -1,6 +1,6 @@
 # Reconciliation — printed-whole guard: lines an unrelated entry explains exactly (design)
 
-Rev 2, 2026-10-24 (rev 1 + builder check: two passes, stand-in definition, signed sums — §8). Amends the split-members design (`2026-10-24-reconciliation-split-members-design.md`, "the base
+Rev 3, 2026-10-24 (rev 2 + Multica AGENT-252 FAIL folded: row metadata for children, merge invariant, validator parity wording — §8). Amends the split-members design (`2026-10-24-reconciliation-split-members-design.md`, "the base
 spec") §3 "Printed whole" and §5.6. GitHub issue #136. Everything the base spec says still holds unless this document
 says otherwise.
 
@@ -59,24 +59,38 @@ side or `aside_all` seeing a different line set than today; a holder of this gro
     run differ from the second and break idempotency (builder check Q1). Rows are read by `line_id` (guard lines span
     statements), not through `coverage_service.active_rows`.
   - **this run's own claims** (in memory, pass 1 → pass 2 below): the rows the matcher claimed on this statement's
-    lines in pass 1 (`Row.id`, `Row.flow` of each claimed representation).
+    lines in pass 1 (`Row.entry_id`, `Row.flow` of each claimed representation — parent **and child** rows, matching.py
+    :550/:568/:576).
+  **Row metadata** («AGENT-252 1»): both sources resolve every holder row id — a top-level entry or a child — to the
+  same three facts, `source`, `original_amount`, `original_currency`. The DB source reads them from `ledger_entry`
+  (children are ledger rows). The in-memory source reads them from the population: `Entry.source` (new) and
+  `Child.source`, `Child.original_amount`, `Child.original_currency` (new; the loader fills them where it builds
+  `matching.Child`, reconciliation_service.py:245 and :308), looked up in `by_row = {e.id: e} ∪ {c.id: c for c in
+  e.children ∪ e.all_children}` over the unfiltered population. A row id neither source can resolve makes the holder
+  **not exact** (fail-closed). One predicate serves both: `stand_in_row(row_id, source, stand_in_ids) = row_id ∈
+  stand_in_ids or source == "statement"`. A fee child `attach_fee` booked (`source = statement`) therefore makes its
+  parent's claim a stand-in holder — the line stays a guard line (fail-closed; reviewer's −90 + −10 example).
   Fields:
   - `entry_ids`: the rows' `entry_id`s, plus the snapshot `id` of a row whose `entry_id` was SET NULL (the entry was
     deleted) — the fallback `_manual_claims` uses (reconciliation_service.py:399–406);
-  - `stand_in`: any holder entry is in `stand_ins.stand_in_entry_ids(db, accounts)` (created by an applied backfill
-    action, the matcher's own `Entry.stand_in`, loaded at reconciliation_service.py:271 — an edited stand-in keeps its
-    id, so it stays one) **or** has `source == STATEMENT_SOURCE` (`"statement"`, entry_write_service.py:245). The union
+  - `stand_in`: `stand_in_row` is true for any holder row — in `stand_ins.stand_in_entry_ids(db, accounts)` (created by
+    an applied backfill action, the matcher's own `Entry.stand_in`, loaded at reconciliation_service.py:271 — an edited
+    stand-in keeps its id, so it stays one) **or** `source == STATEMENT_SOURCE` (`"statement"`, entry_write_service.py:245). The union
     is deliberately broad: `split_entry` members, `create_refund`, `attach_fee` children and the period-adjustment
     entries also carry `source = statement`; a line they hold stays a guard line (fail-closed), at the cost of a rare
-    false whole. The loader exposes the predicate as a new `Entry.source: str | None` (set from `LedgerEntry.source`
-    in `entry_view`), so both holder sources use one rule;
-  - `exact`: every `entry_id` resolves to a live `ledger_entry` row (or, for own claims, to a population entry) **and**
+    false whole;
+  - `exact`: every row id resolves (row metadata above) **and**
     either Σ `flow` over the holder rows `_same` `line.flow` (**signed** — `entry_view` sets `flow = amount` and the
     matcher's `conserved` compares row flows to the line directly, so a purchase member plus a discount child on one
     line is exact), or every holder entry has `original_currency == line.foreign_currency` and
     |Σ `original_amount`| `_same` |`line.foreign_amount`| (`line.foreign_amount` not null; magnitude, as
-    `_foreign_case` does). A row with an unresolvable entry makes `exact = False`.
-  A line with no row from either source has no holder.
+    `_foreign_case` does); for own claims the foreign sum is over the resolved rows' `original_amount`. A row with an
+    unresolvable id makes `exact = False`.
+  A line with no row from either source has no holder. **The two sources never share a line** («AGENT-252 2»): this
+  statement's stable rows sit on owner/agent-covered lines, which are removed from the matcher's claimable `lines`
+  (reconciliation_service.py ~:779–781), and neighbouring lines are never claimable here; `merge_holders` asserts
+  this invariant and, should a line nevertheless carry both, marks it `exact = False` (fail-closed) — it has no
+  flows to re-check.
 
 - **Two passes** (builder check Q1): `reconcile()` runs the matcher twice over the same lines and population.
   Pass 1: `holders = stable`. Pass 2: `holders = stable ∪ holders(pass-1 claims on this statement)`; its result is the
@@ -114,6 +128,15 @@ Worked shapes (the §7 tests):
    identical (idempotency).
 10. Previous run's `auto` row on this statement is the only holder → ignored in pass 1 (not stable); the group is
     whole in pass 1 and, if pass 1 claims the line again, apart in pass 2 — same result as shape 9.
+11. Pass-1 claim of a parent plus its `source = statement` fee child (`attach_fee`) on the near line → `stand_in`
+    → the line stays a guard line → whole (built through `match` → `claim_holders`, not a hand-built `Holder`).
+12. Pass-1 claim of a plain parent plus its plain discount child (`principal_children`, signed sum = the line) →
+    exact, unrelated → apart.
+13. Third-order chain: group A's member, released in pass 2, exactly claims a line that holds group B whole → B
+    stays whole in this run's result **and** in the validator (both stop after pass 2; neither reads stored
+    pass-2 rows).
+14. A pass-1 claimant and a member released in pass 2 tie on one line → `ambiguous` in pass 2, the line released;
+    a second run and the validator reproduce the same decision (pass 1 is recomputed, never read back).
 
 ## 4. Code
 
@@ -124,27 +147,33 @@ Worked shapes (the §7 tests):
   `holders: Mapping[int, Holder] | None` (line id → holder; `None`/`{}` = today's behaviour). Per group, the scan
   skips a line whose holder is an unrelated exact holder for that group (`_unrelated_exact(holder, g, by_id)`).
 - `statement_context(..., holders=None)` and `match(..., lines_all=None, holders=None)` thread it.
-- `claim_holders(result, lines_all, entries, stand_in: Callable[[Entry], bool]) -> dict[int, Holder]`: the pass-1
-  claims of a `MatchResult` as holders (§3 arithmetic over `Row.flow`; `exact` is true by construction for conserving
-  rules but is still computed). Pure.
-- `merge_holders(stable, own) -> dict[int, Holder]`: per line, `entry_ids` united, `stand_in` or-ed, `exact` = the
-  union's rows re-checked (a stable owner row plus an own claim on one line: exact only if the union sums to the
-  line). Pure.
+- `Child.source: str | None = None`, `Child.original_amount: Decimal | None = None`,
+  `Child.original_currency: str | None = None` (loader-set).
+- `claim_holders(result, lines_all, entries, stand_in_ids: frozenset[int]) -> dict[int, Holder]`: the pass-1 claims
+  of a `MatchResult` as holders — rows resolved through `by_row` (§3 row metadata), `stand_in` via `stand_in_row`,
+  `exact` by the §3 arithmetic over `Row.flow` and the resolved rows' foreign fields (true by construction for
+  conserving rules, still computed; an unresolved row id → `False`). Pure.
+- `merge_holders(stable, own) -> dict[int, Holder]`: disjoint union; a line present on both sides gets `entry_ids`
+  united, `stand_in` or-ed and `exact = False` (§3 invariant, fail-closed). Pure.
 
 4.2 `reconciliation_service.py`:
-- `entry_view` sets `Entry.source`.
+- `entry_view` sets `Entry.source`; the two `matching.Child(...)` constructions (:245, :308) set the child's `source`,
+  `original_amount`, `original_currency`.
 - `guard_holders(db, statement, lines_all) -> dict[int, matching.Holder]`: stable rows for the guard lines' ids
   (chunks of 200, `in_`; this statement's rows filtered to `OWNED_KINDS`), their `LedgerEntry` rows (`amount`,
   `original_amount`, `original_currency`, `source`) in one query, `stand_in_entry_ids` already loaded for the run, the
-  §3 arithmetic. Read only.
+  §3 arithmetic (children resolve like parents — they are `ledger_entry` rows). Read only.
 - `reconcile()` (~:864): `lines_all = guard_lines(...)`, `stable = guard_holders(...)`, pass 1 `match(..., holders=stable)`,
-  `own = claim_holders(pass1, ...)`, pass 2 `match(..., holders=merge_holders(stable, own))`; everything after `match()`
+  `own = claim_holders(pass1, lines_all, entries, stand_in_ids)`, pass 2 `match(..., holders=merge_holders(stable, own))`; everything after `match()`
   consumes pass 2 only.
 
 4.3 `policy_service.py` `_single_admissible` (~:516): the same `guard_lines`, `guard_holders`, a pass-1 `match()` with
 the stable holders over the same population and lines reconcile used, `claim_holders` + `merge_holders`, then
 `statement_context(..., holders=…)` — exact parity with reconcile's pass-2 context on unchanged state (base spec §5.6).
-The validator's existing caveat stands: state the owner changed between the run and the validation changes both.
+The validator never reads this statement's stored `auto` rows as holders: they are pass-2 output, and a member claim
+among them would skip a guard line reconcile's pass 2 still honoured (shape 13), admitting a third group reconcile
+kept whole («AGENT-252 3»). The validator's existing caveat stands: state the owner changed between the run and the
+validation changes both.
 
 4.4 Nothing else: `guard_lines`, `load_candidates` (beyond `Entry.source`), actions, inbox, SPA, schemas unchanged.
 
@@ -162,28 +191,44 @@ holder flips; the flip list (groups, not statement rows) is pasted into the PR b
 ## 6. Tests
 
 Unit (`tests/unit/test_statement_matching.py`): shapes 1–8 against `printed_whole` / `statement_context` with a
-hand-built `holders` map; `claim_holders` (a conserving claim → exact; a member claim is related to its own group) and
-`merge_holders` (owner row + own claim on one line); `holders=None` leaves every existing guard test green.
+hand-built `holders` map; shapes 11, 12 and a member-child relatedness case built **through `match` → `claim_holders`**
+(no hand-built `Holder`); `merge_holders` collision → `exact = False`; `holders=None` leaves every existing guard test
+green.
 Integration (`tests/integration/test_reconciliation_service.py`): shape 1 end to end — a statement whose near line
 is covered (`auto`, unrelated entry, exact), the member matched `member_alone` to its own line; shape 3 end to end —
 a stand-in (`source = statement`) covering the sum line keeps the group whole and the member `entry_unmatched`;
 `guard_holders` with a SET-NULL row (shape 7), a neighbouring-statement `auto` row (counted, shape 4) and this
 statement's own `auto` row (ignored, shape 10); shape 9 — first run on a fresh statement matches the member, a second
-run writes the same coverage and cases (idempotency).
-Policy (`tests/integration/test_reconciliation_policy.py`): the validator admits the member's proposal in shape 1 and
-refuses it in shape 3 (parity).
+run writes the same coverage and cases (idempotency); shapes 13 (third-order chain: B whole after the run) and 14
+(tie → `ambiguous`, second run identical). The two PR #130 fixtures whose 代墊 entry is a plain `manual` entry
+(`test_reconcile_keeps_a_group_whole_when_its_sum_line_is_owner_covered`, the `stand_in` branch of
+`…_on_the_previous_statement`) are re-seeded with `source="statement"` (they describe a stand-in) and a sibling test
+pins the plain-entry case as apart (owner-trusted exact holder).
+Policy (`tests/integration/test_reconciliation_policy.py`): the validator admits the member's proposal in shape 1,
+refuses it in shape 3, and agrees with reconcile on shapes 13 and 14 (parity).
 
 ## 7. Open points for the review
 
-- Whether an **owner** manual match to an unrelated exact entry should be trusted the same as an auto claim. Rev 2:
-  yes — the owner said "this line is that entry".
-- Whether the validator should run the pass-1 matcher (exact parity, rev 2) or read this statement's stored `auto`
-  rows (cheaper; diverges only towards refusing more, since pass-2 rows can add member claims or drop a tied claim).
+- Resolved by AGENT-252: an **owner** manual match to an unrelated exact entry is trusted (all rows resolved, no
+  stand-in, disjoint from members and children, signed TWD or full same-currency foreign exactness — never on
+  `manual` alone); the validator recomputes pass 1 (never reads stored `auto` rows).
+- None open.
 
-## 8. Builder check (rev 1 → rev 2, 2026-10-24)
+## 8. Review log
 
+Builder check (rev 1 → rev 2, 2026-10-24):
 - Q1 own `auto` coverage is rewritten by the run → stable rows only, plus a two-pass match; validator runs pass 1.
 - Q2 `source = statement` is broader (split/refund/fee/adjustment entries) and misses nothing a backfill made →
   stand-in = `stand_in_entry_ids` ∪ `source = statement`; `Entry.source` added.
 - Q3 ledger and statement flows share a sign convention → signed Σ for TWD; the baseline script is brought to the
   spec's arithmetic with an explicit pass condition (§5).
+
+Multica AGENT-251/252, dev-astra, rev 2 @ `1833e09` — **FAIL** (one spec round, folded here, rev 3):
+1. major — own-claim holders could not resolve child rows (`Child` had no source/foreign fields) → §3 "Row
+   metadata": `Child.source/original_amount/original_currency`, `by_row` over entries ∪ children, one `stand_in_row`
+   predicate for both sources, unresolved row → not exact; shapes 11/12 and a relatedness case tested through
+   `match` → `claim_holders`.
+2. minor — `merge_holders` cannot re-check exactness from summaries → the two sources never share a line
+   (invariant, §3); a collision is `exact = False`; the overlap test becomes the collision test.
+3. minor — "stored auto rows diverge only towards refusing more" was wrong (shape 13) → sentence removed; the
+   validator recomputes pass 1; shapes 13/14 tested for reconcile and the validator.
