@@ -399,7 +399,8 @@ describe('PortfolioDashboardComponent', () => {
         vi.advanceTimersByTime(2000);
         fixture.detectChanges();
         expect(root.querySelector('.kpi-row p-skeleton')).toBeNull();
-        if (!header(fixture).querySelector('.header-menu')) open();
+        // The menu stayed open across the release; the item is enabled again in place.
+        expect(header(fixture).querySelector('.header-menu')).not.toBeNull();
         expect(header(fixture).querySelectorAll('.header-menu-item')[1].getAttribute('aria-disabled')).toBeNull();
       } finally {
         TestBed.inject(LayoutModeService).set(null);

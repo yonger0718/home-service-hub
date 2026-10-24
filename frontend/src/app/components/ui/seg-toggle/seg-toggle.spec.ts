@@ -1,7 +1,6 @@
 import { Component } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { readFileSync } from 'node:fs';
-import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { SegToggleComponent, SegToggleOption } from './seg-toggle';
@@ -67,9 +66,7 @@ describe('SegToggleComponent', () => {
 
     expect(fixture.nativeElement.querySelector('app-seg-toggle').classList).toContain('block');
 
-    const rel = 'app/components/ui/seg-toggle/seg-toggle.scss';
-    const scss = [join(process.cwd(), 'src', rel), join(process.cwd(), rel)].find(existsSync)!;
-    const css = readFileSync(scss, 'utf8');
+    const css = readFileSync(join(process.cwd(), 'src/app/components/ui/seg-toggle/seg-toggle.scss'), 'utf8');
     const rule = (selector: string) => {
       const start = css.indexOf(selector + ' {');
       expect(start, selector).toBeGreaterThanOrEqual(0);
