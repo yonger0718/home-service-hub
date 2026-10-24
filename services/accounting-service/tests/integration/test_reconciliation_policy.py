@@ -21,12 +21,14 @@ from app.models import (
 )
 from app.schemas.reconciliation import ProposalIn
 from app.services import entry_write_service as ews
-from app.services.errors import CodedConflictError
+from app.services.errors import CodedConflictError, CodedValidationError
 from app.services import coverage_service, policy_service, proposal_service, settings_service, stand_ins
 from app.services import reconciliation_service as rec
 from app.services import reconciliation_actions as registry
 from app.services.policy_service import PolicyResult
 from app.services.reconciliation_actions import audit, engine
+from app.services.reconciliation_actions.base import current_line
+from app.services.statements import matching
 from tests.helpers import make_entry, race, wait_until_blocked
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
     _active, _card, _cases, _open_beside_gap, _line, _submit, run,
@@ -542,6 +544,148 @@ def test_preview_labels_an_agent_proposal_over_its_cap_as_a_skip(ambiguous, db_s
     result = policy_service.run_policy(db_session, s.stmt.id)
     assert (result.applied, result.proposed, result.skipped) == ([], [], {"cap_exceeded": 1})
     assert _reload(db_session, ReconciliationProposal, s.proposal.id).status == "pending"
+
+
+# --- split members printed apart (split-members spec §5.6, §7.18) --------------------------------------------------
+
+def _agent_proposal(db, case, line, entry_id):
+    proposal = proposal_service.create_proposal(
+        db, case_id=case.id, author="hermes",
+        payload=ProposalIn(action="match", params={"line_id": line.id, "entry_id": entry_id},
+                           rationale="same day", confidence=Decimal("0.7")))
+    db.commit()
+    return proposal
+
+
+def _apart_member_case(seed, db, run):
+    """The card's −580 half of a split whose other half (−300) the owner paid from 錢包 — the card statement never
+    prints the −880 sum, so the group is apart — and a standalone −580 the same day: one 580 line, ambiguous between
+    the member and the standalone."""
+    card = _card(seed, db)
+    wallet = seed.account("錢包")
+    seed.entry(card, "-1", day=date(2026, 8, 1), merchant="墊高編號")  # keeps entry ids apart from the line id
+    group = seed.group("split")
+    member = seed.entry(card, "-580", day=DAY, merchant="全聯", group_id=group.id)
+    seed.entry(wallet, "-300", day=DAY, merchant="全聯", group_id=group.id)
+    standalone = seed.entry(card, "-580", day=DAY, merchant="全聯")
+    db.commit()
+    stmt, (line,), _ = _submit(db, run, card, [_line(1, DAY, "全聯", 580)])
+    (case,) = [c for c in _cases(db, stmt.id, "open") if c.kind == "ambiguous"]
+    assert {(c["entry_id"], c["group_id"]) for c in case.candidates} == {(member.id, None), (standalone.id, None)}
+    return SimpleNamespace(card=card, stmt=stmt, line=line, case=case, member=member, standalone=standalone)
+
+
+def test_policy_refuses_a_standalone_proposal_when_an_apart_member_competes(seed, db_session, run):
+    s = _apart_member_case(seed, db_session, run)
+    proposal = _agent_proposal(db_session, s.case, s.line, s.standalone.id)
+    _set_policy(db_session, MATCH_ON)
+
+    result = policy_service.run_policy(db_session, s.stmt.id)
+
+    assert (result.applied, result.proposed, result.skipped) == ([], [], {"not_single_admissible": 1})
+    assert _actions(db_session) == [] and _active(db_session, s.stmt.id) == []
+    assert _reload(db_session, ReconciliationProposal, proposal.id).status == "pending"
+
+
+def test_policy_applies_a_match_proposal_naming_the_single_apart_member(seed, db_session, run):
+    s = _apart_member_case(seed, db_session, run)
+    s.standalone.amount = Decimal("-581")  # the standalone no longer conserves the line: the member is the one reading
+    db_session.commit()
+    proposal = _agent_proposal(db_session, s.case, s.line, s.member.id)
+    _set_policy(db_session, MATCH_ON)
+
+    result = policy_service.run_policy(db_session, s.stmt.id)
+
+    (row,) = _actions(db_session)
+    assert result.applied == [row.id] and (row.action, row.proposal_id) == ("match", proposal.id)
+    (claim,) = _active(db_session, s.stmt.id)
+    assert (claim.line_id, claim.entry_id, claim.role, claim.group_id, claim.match_kind) == \
+        (s.line.id, s.member.id, "principal", None, "agent")
+
+
+def _validator_refusal(db, stmt_id, case, entry_id) -> str:
+    """`_single_admissible` called directly for an agent `match` of `entry_id` on the case's line (the proposal scope
+    check would refuse such a proposal before the policy ever sees it, `id_out_of_scope`): the refusal message."""
+    statement = db.get(AccountStatement, stmt_id)
+    line = current_line(db, case, statement)
+    ctx = SimpleNamespace(db=db, statement=statement, case=case, line=line,
+                          rules=rec.rules_for(settings_service.reconciliation_rules(db), statement.period_end))
+    candidate = policy_service.Candidate(case.id, case.kind, case.status, "match",
+                                         {"line_id": line.id, "entry_id": entry_id}, Decimal(0))
+    with pytest.raises(CodedConflictError) as info:
+        policy_service._single_admissible(ctx, candidate)
+    assert info.value.code == "not_single_admissible"
+    return str(info.value)
+
+
+def test_policy_refuses_the_purchase_member_after_reconcile_claimed_the_fee_lines(seed, db_session, run):
+    """§7.13 end to end: a −100 purchase split with nine fee members, each printed as its own fee line. Nine printed-
+    alone members exceed ASIDE_COMBINATIONS_MAX, so the group's readings are incomplete and it is whole by fail-
+    closed. Reconcile claims the nine fee lines (the claims persist; the fee members leave the claimable population)
+    and the purchase line, which a standalone −100 twin reads, stays `group_readings_incomplete`. The agent cannot
+    propose the purchase member (no candidate names it) and the validator refuses it; the agent's proposal of the
+    twin — the one reading the claimable rows allow — is refused too: the structural incomplete-group block still
+    sees the covered fee members."""
+    card = _card(seed, db_session)
+    group = seed.group("split")
+    purchase = seed.entry(card, "-100", day=DAY, merchant="全聯", group_id=group.id)
+    fees = [seed.entry(card, f"-{i}", kind="fee", day=DAY, group_id=group.id) for i in range(1, 10)]
+    twin = seed.entry(card, "-100", day=DAY, merchant="全聯")
+    db_session.commit()
+    stmt, (line, *fee_lines), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 100)] + [
+        _line(1 + i, DAY, "手續費", i, "fee") for i in range(1, 10)])
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    fee_claims = sorted((c.line_id, c.entry_id) for c in _active(db_session, stmt.id))
+    assert fee_claims == sorted(zip((ln.id for ln in fee_lines), (f.id for f in fees)))
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id]
+    assert case.kind == "ambiguous" and case.context == {"hint": "group_readings_incomplete", "group_ids": [group.id]}
+    assert [c["entry_id"] for c in case.candidates] == [twin.id]
+    with pytest.raises(CodedValidationError, match="id_out_of_scope"):
+        _agent_proposal(db_session, case, line, purchase.id)
+    db_session.rollback()
+    incomplete = f"not_single_admissible: group_readings_incomplete {[group.id]}"
+    assert _validator_refusal(db_session, stmt.id, case, purchase.id) == incomplete
+    proposal = _agent_proposal(db_session, case, line, twin.id)
+    _set_policy(db_session, MATCH_ON)
+
+    result = policy_service.run_policy(db_session, stmt.id)
+
+    assert (result.applied, result.proposed, result.skipped) == ([], [], {"not_single_admissible": 1})
+    assert _actions(db_session) == [] and _reload(db_session, ReconciliationProposal, proposal.id).status == "pending"
+    assert sorted((c.line_id, c.entry_id) for c in _active(db_session, stmt.id)) == fee_claims  # no purchase coverage
+
+
+def _owner_cover(db, statement, line, entries) -> None:
+    """Hand the line to the owner: release whatever the hook claimed on it, then write manual coverage on `entries`."""
+    coverage_service.release_line(db, statement, line.id, reason="test_owner")
+    coverage_service.write_claim(db, statement, line, [matching.Row(e.id, "principal", Decimal(e.amount)) for e in entries],
+                                 entries_by_id={e.id: e for e in entries}, match_kind="manual", match_rule="owner",
+                                 run_id=None)
+    db.commit()
+
+
+def test_policy_and_reconcile_agree_on_whole_with_a_covered_fee_member(seed, db_session, run):
+    """§7.18 (d), through the real loader: split −300/−280/−100 fee, the fee member owner-matched to its fee line. The
+    covered fee line still prints the fee member alone, so the −580 reduced reading marks the group whole — for
+    reconcile and for the validator alike: reconcile writes no member claim and lists no candidate on the −300 line,
+    and the validator refuses the member with no admissible representation. A validator reading only the uncovered
+    lines would know only the −680 total, far from −580, see the group apart and admit the member ("1 admissible")."""
+    card = _card(seed, db_session)
+    group = seed.group("split")
+    member = seed.entry(card, "-300", day=DAY, merchant="餐廳", group_id=group.id)
+    seed.entry(card, "-280", day=DAY, merchant="餐廳", group_id=group.id)
+    fee = seed.entry(card, "-100", kind="fee", day=DAY, group_id=group.id)
+    db_session.commit()
+    stmt, (line, _, fee_line), _ = _submit(db_session, run, card, [
+        _line(1, DAY, "餐廳", 300), _line(2, DAY, "餐廳", 580), _line(3, DAY, "手續費", 100, "fee")])
+    _owner_cover(db_session, stmt, fee_line, [fee])
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    assert [(c.line_id, c.entry_id, c.match_kind) for c in _active(db_session, stmt.id)] == [(fee_line.id, fee.id, "manual")]
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id]
+    assert (case.kind, case.candidates) == ("line_unmatched", [])  # reconcile: whole, the member never alone
+    assert _validator_refusal(db_session, stmt.id, case, member.id) == "not_single_admissible: 0 admissible representation(s)"
 
 
 # --- routes -------------------------------------------------------------------------------------------------------

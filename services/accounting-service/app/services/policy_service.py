@@ -481,13 +481,13 @@ def _drifted(db: Session, case: ReconciliationCase, candidate: Candidate) -> boo
 
 
 def _is_proposed(rep: matching.Representation, params: dict) -> bool:
-    """The representation is the one the `match` params claim: the group (members only) or the entry alone / with
-    its children."""
+    """The representation is the one the `match` params claim: the group (members only) or the entry — standalone
+    or a split member printed apart — alone / with its children."""
     head = rep.rows[0]
     if params.get("group_id") is not None:
         return head.group_id == params["group_id"] and rep.kind in ("group", "installment_group")
-    wanted = "principal_children" if params.get("with_children") else "standalone"
-    return head.group_id is None and head.entry_id == params.get("entry_id") and rep.kind == wanted
+    wanted = ("principal_children", "member_children") if params.get("with_children") else ("standalone", "member_alone")
+    return head.group_id is None and head.entry_id == params.get("entry_id") and rep.kind in wanted
 
 
 def _in_candidates(case: ReconciliationCase, params: dict) -> bool:
@@ -498,17 +498,27 @@ def _in_candidates(case: ReconciliationCase, params: dict) -> bool:
 def _single_admissible(ctx: Context, candidate: Candidate) -> None:
     """Ruling 22's validator, read only: the matcher's representations of the line over the current population
     (every entry claimed anywhere left out, as `reconcile` builds it otherwise) must be exactly one, the proposed
-    one, among the case's candidates."""
+    one, among the case's candidates. The split-member decision is the matcher's own (`statement_context` over every
+    current line and the loader's structural rows, split-members spec §5.6), and a line a split group's incomplete
+    readings block in reconcile (`incomplete_groups` over the structural population, nothing claimed) is refused."""
     db, statement, line = ctx.db, ctx.statement, ctx.line
     if line is None:
         raise CodedConflictError("not_single_admissible", "the line is no longer printed")
     accounts = coverage_service.participating_accounts(db, statement.account_id)
-    include_reward = any(row.line_kind == "reward" for row in rec._current_lines(db, statement))
+    current = rec._current_lines(db, statement)
+    include_reward = any(row.line_kind == "reward" for row in current)
     entries, groups = rec.load_candidates(db, statement, accounts, window_days=matching.population_window_days(ctx.rules),
                                           include_reward=include_reward,
                                           exclude=coverage_service.claimed_entry_ids(db))
-    reps = matching._representations(statement.kind, rec._as_line(line), [e for e in entries if e.claimable], groups,
-                                     rec.plan_map(db, statement.account_id), set(), ctx.rules)
+    match_ctx = matching.statement_context(statement.kind, [rec._as_line(r) for r in current], entries, groups, ctx.rules)
+    matcher_line = rec._as_line(line)
+    reps = matching._representations(statement.kind, matcher_line, [e for e in entries if e.claimable], groups,
+                                     rec.plan_map(db, statement.account_id), set(), ctx.rules,
+                                     aside=match_ctx.aside, apart=match_ctx.apart)
+    incomplete = matching.incomplete_groups(statement.kind, matcher_line, list(match_ctx.structural), groups, set(),
+                                            match_ctx.aside)
+    if incomplete:
+        raise CodedConflictError("not_single_admissible", f"group_readings_incomplete {incomplete}")
     if len(reps) != 1 or not _is_proposed(reps[0], candidate.params) or not _in_candidates(ctx.case, candidate.params):
         raise CodedConflictError("not_single_admissible", f"{len(reps)} admissible representation(s)")
 
