@@ -637,6 +637,49 @@ def test_policy_applies_a_with_children_proposal_naming_the_single_apart_member(
         sorted([(line.id, member.id, "principal", None, "agent"), (line.id, child.id, "child", None, "agent")])
 
 
+def test_policy_validator_loads_the_population_reconcile_does(seed, db_session, run):
+    """Final review, Critical (spec §5.6): split A −300 / B −280, each with a refund child covered on a far statement
+    (+100 / +50), lines −300, −280, −480 and a standalone −280. Reconcile's population keeps A claimable (its own auto
+    claim is re-derived) with no claimable child, so the readings are −580 / −430 and nothing prints them: apart — A
+    claims −300 `member_alone`, the −280 line is ambiguous between B and the standalone. A validator that excluded
+    every claimed entry turned A into a structural row whose child view holds +100, read −480 as printed whole and
+    admitted the standalone alone; loading as reconcile does it sees B competing and refuses."""
+    card = _card(seed, db_session)
+    seed.entry(card, "-1", day=date(2026, 8, 1), merchant="墊高編號")  # keeps entry ids apart from the line id
+    group = seed.group("split")
+    a = seed.entry(card, "-300", day=DAY, merchant="全聯", group_id=group.id)
+    b = seed.entry(card, "-280", day=DAY, merchant="全聯", group_id=group.id)
+    db_session.flush()
+    kid_a = seed.entry(card, "100", kind="refund", day=DAY, parent_entry_id=a.id)
+    kid_b = seed.entry(card, "50", kind="refund", day=DAY, parent_entry_id=b.id)
+    standalone = seed.entry(card, "-280", day=DAY, merchant="全聯")
+    db_session.commit()
+    far, far_lines, _ = _submit(db_session, run, card, [_line(1, date(2026, 12, 5), "退款", -100, "refund"),
+                                                        _line(2, date(2026, 12, 5), "退款", -50, "refund")],
+                                period=(date(2026, 12, 1), date(2026, 12, 31)))
+    for kid, far_line in ((kid_a, far_lines[0]), (kid_b, far_lines[1])):
+        coverage_service.release_line(db_session, far, far_line.id, reason="test")
+        coverage_service.write_claim(db_session, far, far_line, [matching.Row(kid.id, "principal", Decimal(kid.amount))],
+                                     entries_by_id={kid.id: kid}, match_kind="auto", match_rule="exact", run_id=None)
+    db_session.commit()
+    stmt, (line_a, line_b, _), _ = _submit(db_session, run, card, [
+        _line(1, DAY, "全聯", 300), _line(2, DAY, "全聯", 280), _line(3, DAY, "全聯", 480)])
+    claims = [(c.line_id, c.entry_id, c.group_id, c.match_rule) for c in _active(db_session, stmt.id)]
+    assert claims == [(line_a.id, a.id, None, "exact")]
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line_b.id]
+    assert case.kind == "ambiguous" and {c["entry_id"] for c in case.candidates} == {b.id, standalone.id}
+    proposal = _agent_proposal(db_session, case, line_b, standalone.id)
+    _set_policy(db_session, MATCH_ON)
+
+    result = policy_service.run_policy(db_session, stmt.id)
+
+    assert (result.applied, result.proposed, result.skipped) == ([], [], {"not_single_admissible": 1})
+    assert _validator_refusal(db_session, stmt.id, case, standalone.id) == \
+        "not_single_admissible: 2 admissible representation(s)"
+    assert _actions(db_session) == [] and _reload(db_session, ReconciliationProposal, proposal.id).status == "pending"
+    assert [(c.line_id, c.entry_id) for c in _active(db_session, stmt.id)] == [(line_a.id, a.id)]
+
+
 def _validator_refusal(db, stmt_id, case, entry_id) -> str:
     """`_single_admissible` called directly for an agent `match` of `entry_id` on the case's line (the proposal scope
     check would refuse such a proposal before the policy ever sees it, `id_out_of_scope`): the refusal message."""

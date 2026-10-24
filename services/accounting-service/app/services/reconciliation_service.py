@@ -384,6 +384,14 @@ def _manual_claims(db: Session, statement: AccountStatement) -> dict[int, set[in
     return out
 
 
+def owned_coverage(db: Session, statement: AccountStatement) -> tuple[dict[int, set[int]], set[int]]:
+    """This statement's owner/agent/policy coverage (`_manual_claims`: line → entry ids) and the entry ids it holds:
+    the lines a reconcile leaves out of the matcher input and the entries it leaves out of the population (`exclude`).
+    The policy validator loads through the same pair (split-members spec §5.6)."""
+    manual = _manual_claims(db, statement)
+    return manual, set().union(*manual.values()) if manual else set()
+
+
 def _write_coverage(db: Session, statement: AccountStatement, result: matching.MatchResult,
                     lines: dict[int, StatementLine], locked: dict[int, LedgerEntry], run_id: int | None,
                     keep_lines: Iterable[int] = ()) -> None:
@@ -811,9 +819,8 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     rules = rules_for(settings_service.reconciliation_rules(db), statement.period_end)
     all_lines = _current_lines(db, statement)
     include_reward = any(line.line_kind == "reward" for line in all_lines)
-    manual = _manual_claims(db, statement)  # owner coverage: kept as is (ruling 16)
+    manual, owned = owned_coverage(db, statement)  # owner coverage: kept as is (ruling 16)
     line_rows = [line for line in all_lines if line.id not in manual]
-    owned = set().union(*manual.values()) if manual else set()
     # population before the locks, to know what to lock; re-read under the locks
     entries, groups = load_candidates(db, statement, accounts, window_days=matching.population_window_days(rules),
                                       include_reward=include_reward, exclude=owned)
