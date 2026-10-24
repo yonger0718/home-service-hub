@@ -608,6 +608,15 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     expect(cards(fixture)[0].value).toBe('+$21,046');
   });
 
+  it('lays the 每月已實現 card out as a block with its own bottom gap (not the caption rule)', () => {
+    const fixture = create2026();
+    const card = el(fixture).querySelector<HTMLElement>('app-bento.bars-card')!;
+    const style = getComputedStyle(card);
+    expect(style.display).toBe('block');
+    expect(style.marginBottom).toBe('1.25rem');
+    expect(style.fontSize).not.toBe('0.8rem');
+  });
+
   it('draws twelve monthly columns for the year', () => {
     const fixture = create2026();
     const card = el(fixture).querySelector('app-bento.bars-card');
@@ -848,12 +857,38 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     expect(component.selectedYear()).toBe(2026);
   });
 
+  it('重設 clears a date range: the date chip goes and no 年度 preset comes back', () => {
+    const fixture = create();
+    const component = fixture.componentInstance;
+    settle(fixture);
+    component.onDateRangeChange([new Date(2025, 0, 1), new Date(2025, 2, 31)]);
+    settle(fixture);
+    expect(chipTexts(fixture)).toEqual(['日期：2025-01-01 – 2025-03-31']);
+
+    openPanel(fixture);
+    el(fixture).querySelector<HTMLButtonElement>('.panel-reset')!.click();
+    settle(fixture);
+    expect(chipTexts(fixture)).toEqual([]);
+    expect(component.query().date_from ?? null).toBeNull();
+    expect(component.selectedYear()).toBeNull();
+  });
+
+  it('重設 with no secondary filter set issues no request', () => {
+    const fixture = create();
+    settle(fixture);
+    openPanel(fixture);
+    const before = listCalls.length + allCalls.length;
+    el(fixture).querySelector<HTMLButtonElement>('.panel-reset')!.click();
+    fixture.detectChanges();
+    expect(listCalls.length + allCalls.length).toBe(before);
+  });
+
   it('opens the panel as a sheet on a phone', () => {
     TestBed.inject(LayoutModeService).set('phone');
     const fixture = create();
     openPanel(fixture);
     expect(el(fixture).querySelector('.filter-panel.sheet')).not.toBeNull();
-    expect(el(fixture).querySelector('.panel-apply')).not.toBeNull();
+    expect(Array.from(el(fixture).querySelectorAll('.panel-actions button')).map(b => b.textContent?.trim())).toEqual(['重設', '套用']);
   });
 
   it('shows only the first two cards on a phone', () => {

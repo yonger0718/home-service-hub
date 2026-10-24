@@ -1,3 +1,4 @@
+import { EnvironmentInjector, createEnvironmentInjector } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { provideHttpClient } from '@angular/common/http';
@@ -593,7 +594,20 @@ describe('Dividend filter-wide summary', () => {
       fixture.detectChanges();
       el(fixture).querySelector<HTMLButtonElement>('.chip-remove[aria-label="移除 來源：手動"]')!.click();
       fixture.detectChanges();
-      expect(service['getDividends']).toHaveBeenLastCalledWith(expect.not.objectContaining({ source: expect.anything() }));
+      // Replay the last query through the real service: the wire request carries no `source` param at all.
+      const lastQuery = service['getDividends'].mock.calls.at(-1)![0] as DividendQuery;
+      const wire = createEnvironmentInjector(
+        [provideHttpClient(), provideHttpClientTesting(), PortfolioService],
+        TestBed.inject(EnvironmentInjector),
+      );
+      try {
+        wire.get(PortfolioService).getDividends(lastQuery).subscribe();
+        const req = wire.get(HttpTestingController).expectOne(r => r.url === '/api/portfolio/dividends');
+        expect(req.request.params.has('source')).toBe(false);
+        req.flush({ items: [], total: 0 });
+      } finally {
+        wire.destroy();
+      }
       expect(component.query().source ?? null).toBeNull();
       expect(el(fixture).querySelector('.receipt-form')).toBeNull();
       fixture.destroy();
@@ -625,6 +639,18 @@ describe('Dividend filter-wide summary', () => {
       const fixture = create();
       openPanel(fixture);
       expect(el(fixture).querySelector('.filter-panel.sheet')).not.toBeNull();
+      expect(Array.from(el(fixture).querySelectorAll('.panel-actions button')).map(b => b.textContent?.trim())).toEqual(['重設', '套用']);
+      fixture.destroy();
+    });
+
+    it('重設 with no secondary filter set issues no request', () => {
+      const fixture = create();
+      fixture.detectChanges();
+      openPanel(fixture);
+      const before = service['getDividends'].mock.calls.length;
+      el(fixture).querySelector<HTMLButtonElement>('.panel-reset')!.click();
+      fixture.detectChanges();
+      expect(service['getDividends'].mock.calls.length).toBe(before);
       fixture.destroy();
     });
   });

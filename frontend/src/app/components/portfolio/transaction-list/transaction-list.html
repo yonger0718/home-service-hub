@@ -77,12 +77,12 @@
     (change)="onSideFilterChange($event)"
   ></app-seg-toggle>
   <div filterBarSecondary class="filter-fields">
-    <label class="hub-filter-field">
+    <div class="hub-filter-field">
       <span class="field-label">日期範圍</span>
       <p-datepicker ariaLabel="日期範圍" [(ngModel)]="dateRange" selectionMode="range"
         [readonlyInput]="true" [showClear]="true" placeholder="日期範圍" appendTo="body" [baseZIndex]="1200"
         dateFormat="yy-mm-dd" (ngModelChange)="onDateRangeChange($event)"></p-datepicker>
-    </label>
+    </div>
     @if (brokerFilterOptions().length > 0) {
       <div class="hub-filter-field">
         <span class="field-label">券商</span>

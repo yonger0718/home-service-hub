@@ -62,12 +62,12 @@
   </div>
   <app-seg-toggle filterBarPrimary ariaLabel="收款狀態" [options]="statusOptions" [value]="status()" (change)="onStatusChange($event)"></app-seg-toggle>
   <div filterBarSecondary class="filter-fields">
-    <label class="hub-filter-field">
+    <div class="hub-filter-field">
       <span class="field-label">日期範圍</span>
       <p-datepicker ariaLabel="日期範圍" [(ngModel)]="dateRange" selectionMode="range"
         [readonlyInput]="true" [showClear]="true" placeholder="日期範圍" appendTo="body" [baseZIndex]="1200"
         dateFormat="yy-mm-dd" (ngModelChange)="onDateRangeChange($event)"></p-datepicker>
-    </label>
+    </div>
     <label class="hub-filter-field">
       <span class="field-label">股利來源</span>
       <select aria-label="股利來源" [ngModel]="query().source ?? ''" (ngModelChange)="onSourceChange($event || null)">

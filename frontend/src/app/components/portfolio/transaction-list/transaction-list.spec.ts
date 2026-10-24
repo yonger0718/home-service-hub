@@ -287,6 +287,16 @@ describe('PortfolioTransactionListComponent', () => {
       expect(chipLabels(fixture)).toEqual([]);
     });
 
+    it('重設 with no secondary filter set issues no request', () => {
+      const fixture = create();
+      fixture.detectChanges();
+      openPanel(fixture);
+      const before = portfolioService['getTransactions'].mock.calls.length;
+      (el(fixture).querySelector('.panel-reset') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      expect(portfolioService['getTransactions'].mock.calls.length).toBe(before);
+    });
+
     it('shows the secondary filters in a bottom sheet with 套用 and 重設 on a phone', () => {
       TestBed.inject(LayoutModeService).set('phone');
       const fixture = create();

@@ -579,9 +579,9 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     }
   }
 
+  /** 重設: clears only the active secondary filters, so nothing set means no reload. */
   resetSecondaryFilters() {
-    this.removeFilter('date');
-    this.removeFilter('source');
+    for (const { key } of this.filterChips()) this.removeFilter(key);
   }
 
   private toIsoDate(d: Date): string {

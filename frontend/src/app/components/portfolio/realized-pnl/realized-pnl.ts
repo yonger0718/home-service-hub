@@ -389,12 +389,12 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
     }
   }
 
+  /**
+   * 重設: clears only the active secondary filters, so nothing set means no reload. A 年度 preset has no date chip,
+   * so it survives (clearing an absent range would drop it: onDateRangeChange resets the preset).
+   */
   resetSecondaryFilters(): void {
-    // Clearing an absent range would also drop the 年度 preset (onDateRangeChange resets it), which 重設 keeps.
-    if (this.query().date_from || this.query().date_to) this.removeFilter('date');
-    this.removeFilter('market');
-    this.removeFilter('broker');
-    this.removeFilter('dayTrade');
+    for (const { key } of this.filterChips()) this.removeFilter(key);
   }
 
   selectBrokerFilter(value: string): void {
