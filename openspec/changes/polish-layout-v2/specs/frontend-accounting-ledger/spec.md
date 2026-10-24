@@ -10,7 +10,7 @@ Entry rows on the timeline (list mode) and in the account entry history SHALL al
 
 ### Requirement: Empty pane shows the month
 
-At ≥ 1280 px, when no entry or account is selected, the accounting right pane SHALL show the month overview: the category distribution with amounts, the next three due items (card bills and schedule instances) and links to 帳戶 and 對帳. Below 1280 px the one-line empty state SHALL remain.
+At ≥ 1280 px, when no entry or account is selected, the accounting right pane SHALL show the month overview: the category distribution with amounts and the next three due items (card bills and schedule instances). Below 1280 px the one-line empty state SHALL remain.
 
 #### Scenario: Timeline without a selection
 - **WHEN** `/accounting` opens at 1440 px with nothing selected

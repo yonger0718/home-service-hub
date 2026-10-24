@@ -48,13 +48,13 @@ Three patterns exist (inline rows on 交易, a titled card on 已實現, nine wr
 |---|---|---|
 | 交易紀錄 | 全部／買進／賣出 | 日期範圍, 券商, 排序 |
 | 股利 | 狀態 | 日期範圍, 來源, 排序 |
-| 已實現損益 | 年度 (YTD / 年份 / 全部) | 市場, 券商, 僅當沖, 排序 (日期範圍 dropped: 年度 covers it) |
+| 已實現損益 | 年度 (YTD / 年份 / 全部) | 日期範圍, 市場, 券商, 僅當沖, 排序 (owner 2026-10-24: the date range stays, behind 篩選) |
 | 現金帳戶 | 類型 | 日期範圍, 排序 |
 | 記帳時間軸 | 帳戶 | 類型, 類別, 專案, 標籤, 商家, 金額範圍 |
 
 ### D7. Empty right pane shows the month
 
-At ≥ 1280 px with no selection, the accounting pane shows the month overview instead of one line of copy: category distribution with amounts, the next three due items (bills, schedules) and links to 帳戶 and 對帳. Below 1280 px the pane keeps its current one-line empty state. On 帳戶 the empty copy becomes 選擇帳戶查看明細，或按 ＋ 新增 and the selected account card gets the same indigo ring as 現金帳戶.
+At ≥ 1280 px with no selection, the accounting pane shows the month overview instead of one line of copy: category distribution with amounts and the next three due items (bills, schedules); no extra links (owner 2026-10-24: simplified version). Below 1280 px the pane keeps its current one-line empty state. On 帳戶 the empty copy becomes 選擇帳戶查看明細，或按 ＋ 新增 and the selected account card gets the same indigo ring as 現金帳戶.
 
 ### D8. Net-worth chart and cash-only rows
 
@@ -78,6 +78,7 @@ Header = title, at most one primary action, then the shell's icon buttons (gear 
 4. PR D — D5 FAB behaviour, D9 phone headers, phone KPI grid and holdings rows.
 5. PR E — D7 empty pane, D8 chart, balance chart, small items (股利 empty card, 匯入 footer, neutral cost colour, icon set, title placement).
 
-## Open Questions
+## Resolved Questions
 
-- Should 現金帳戶 adopt the accounting two-pane behaviour instead (list collapses when a detail is open)? This change assumes no.
+- 現金帳戶 keeps its always-visible detail (no accounting-style two-pane collapse); only the stray `paneOpen` writes go (D4). Owner ruling 2026-10-24.
+- Owner rulings 2026-10-24: D2 accepted as written; D5 accepted; D6 accepted with the 已實現損益 date range kept behind 篩選; D7 accepted in the simplified form (distribution + three due items, no links).
