@@ -1,31 +1,12 @@
-/* Summary cards: the transactions page's KPI card rules (transaction-list.scss .kpi-row/.label/.value/.meta). */
+/* Summary cards: shared rules live in ../kpi-cards.scss. */
 .kpi-row {
-  display: grid;
-  gap: 1.25rem;
-  grid-auto-rows: minmax(140px, auto);
-  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
   margin-bottom: 1.25rem;
 
-  app-bento {
-    display: grid;
-    height: 100%;
+  .label {
+    align-items: center;
+    display: flex;
+    gap: 0.4rem;
   }
-
-  @media (max-width: 759.98px) {
-    gap: 0.75rem;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-.label {
-  align-items: center;
-  color: var(--app-text-muted);
-  display: flex;
-  font-size: 0.75rem;
-  font-weight: 700;
-  gap: 0.4rem;
-  letter-spacing: 0.08em;
-  margin-bottom: 0.5rem;
 }
 
 .swatch {
@@ -36,27 +17,6 @@
   &.dashed {
     border: 1.5px dashed var(--app-text-muted);
   }
-}
-
-.value {
-  color: var(--app-text);
-  font-size: 2rem;
-  font-variant-numeric: tabular-nums;
-  font-weight: 800;
-  line-height: 1.1;
-  overflow-wrap: anywhere;
-
-  @media (max-width: 759.98px) {
-    font-size: 1.35rem;
-  }
-}
-
-.meta {
-  color: var(--app-text-muted);
-  font-size: 0.8rem;
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
-  margin-top: 0.75rem;
 }
 
 .primary {

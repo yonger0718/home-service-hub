@@ -39,6 +39,7 @@
 }
 
 .acct-total {
+  container-type: inline-size;
   background: var(--app-accent);
   border-radius: var(--radius-xl);
   box-shadow: var(--app-card-shadow);
@@ -57,11 +58,12 @@
 }
 
 .acct-total-value {
-  font-size: 30px;
+  font-size: clamp(18px, 12cqi, var(--fs-value));
   font-variant-numeric: tabular-nums;
   font-weight: 800;
   letter-spacing: -0.03em;
   line-height: 1.15;
+  white-space: nowrap;
 }
 
 .acct-total-note {

@@ -22,7 +22,7 @@ import { PortfolioService } from '../../../services/portfolio.service';
 import { CashFlowFormComponent } from '../cash-flow-form/cash-flow-form';
 import { TagComponent } from '../../ui/tag/tag';
 import { abbrInk } from '../dashboard/dashboard-math';
-import { groupedInteger } from '../money';
+import { formatMoney } from '../../ui/format';
 import { squareToken } from '../square';
 import { formatCash } from './cash-rows';
 
@@ -122,10 +122,7 @@ export class PortfolioAccountsListComponent implements OnInit, OnDestroy {
   readonly displayedTotal = computed(() => this.total().total);
   readonly overdraftCount = computed(() => this.total().pendingCount);
   /** `$150,000`: whole TWD, `−` before the `$` when negative. */
-  readonly totalText = computed(() => {
-    const total = this.displayedTotal();
-    return `${total < 0 ? '−' : ''}$${groupedInteger(Math.abs(total))}`;
-  });
+  readonly totalText = computed(() => formatMoney(this.displayedTotal()));
 
   constructor() {
     // Any cash write (this page's form, the embedded detail, elsewhere) changes balances and the total.
@@ -241,9 +238,9 @@ export class PortfolioAccountsListComponent implements OnInit, OnDestroy {
     return `${base} · 期初 ${formatCash(account.opening_balance, account.currency)}（${date}）`;
   }
 
-  /** Master card balance in its own currency, no prefix (`438,360`, `−2,379.54`). */
+  /** Master card balance in its own currency (`$438,360`, `−2,379.54 USD`). */
   cardBalance(account: BrokerAccount): string {
-    return formatCash(account.native_balance, account.currency);
+    return formatMoney(account.native_balance, { currency: account.currency });
   }
 
   brokerToken(account: BrokerAccount): string {

@@ -88,6 +88,10 @@ describe('realizedRow', () => {
     expect(row({ ...HONHAI, cost_out: '0' }).pct).toBeNull();
   });
 
+  it('drops the pct decimal once the ratio reaches 100%', () => {
+    expect(row({ ...HONHAI, realized_pnl: '1500', cost_out: '1000' }).pct).toBe('+150%');
+  });
+
   it('signs a loss with U+2212 in the amount and the pct', () => {
     const r = row(REALIZED_FIXTURE[3]);
     expect(r.amount).toBe('−4,897');

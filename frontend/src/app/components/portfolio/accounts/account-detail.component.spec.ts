@@ -1130,10 +1130,10 @@ describe('PortfolioAccountDetailComponent cash rows and 餘額', () => {
     fixture.detectChanges();
     const root = el(fixture);
 
-    expect(text(root.querySelector('.balance-value'))).toBe('−NT$12,345');
-    expect(root.querySelector('.account-meta')?.textContent).toContain('期初 −NT$5,000');
+    expect(text(root.querySelector('.balance-value'))).toBe('−$12,345');
+    expect(root.querySelector('.account-meta')?.textContent).toContain('期初 −$5,000');
     expect(text(root.querySelector('.account-meta p-tag'))).toBe('已停用');
-    expect(text(root.querySelector('.overdraft-text'))).toBe('帳戶餘額為負（−NT$12,345），可能漏記入金。');
+    expect(text(root.querySelector('.overdraft-text'))).toBe('帳戶餘額為負（−$12,345），可能漏記入金。');
     expect(root.querySelector('.account-header-card')?.textContent).not.toContain('-NT$');
   });
 
@@ -1141,10 +1141,10 @@ describe('PortfolioAccountDetailComponent cash rows and 餘額', () => {
     const fixture = load();
     const component = fixture.componentInstance;
 
-    expect(component.formatCurrency('-1500.5', 'TWD')).toBe('−NT$1,501');
-    expect(component.formatCurrency(438360, 'TWD')).toBe('NT$438,360');
-    expect(component.formatCurrency('-1500.5', 'USD')).toBe(`−${(1500.5).toLocaleString('zh-TW', { style: 'currency', currency: 'USD' })}`);
-    expect(component.formatCurrency('-0', 'TWD')).toBe('NT$0');
+    expect(component.formatCurrency('-1500.5', 'TWD')).toBe('−$1,501');
+    expect(component.formatCurrency(438360, 'TWD')).toBe('$438,360');
+    expect(component.formatCurrency('-1500.5', 'USD')).toBe('−1,500.50 USD');
+    expect(component.formatCurrency('-0', 'TWD')).toBe('$0');
     expect(text(el(fixture).querySelector('.account-meta p-tag'))).toBe('啟用中');
   });
 });

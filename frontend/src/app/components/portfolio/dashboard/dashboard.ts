@@ -50,7 +50,8 @@ import {
   todayChange,
 } from './dashboard-math';
 import { hoverGuidePlugin } from './chart-guide.plugin';
-import { formatNativeAmount } from '../money';
+import { Amount, displayedSign, formatMoney, formatPct } from '../../ui/format';
+import { isTwdCurrency } from '../money';
 
 /** Current time for the quote line's 盤中 / 台股收盤 tag; overridable in tests. */
 export const DASHBOARD_CLOCK = new InjectionToken<() => Date>('DASHBOARD_CLOCK', {
@@ -83,7 +84,7 @@ interface ChartSeriesValues {
     NativeAmountPipe,
   ],
   templateUrl: './dashboard.html',
-  styleUrl: './dashboard.scss',
+  styleUrls: ['./dashboard.scss', '../kpi-cards.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PortfolioDashboardComponent implements OnInit {
@@ -178,12 +179,13 @@ export class PortfolioDashboardComponent implements OnInit {
     const today = todayChange(summary);
     const parts = composition(summary);
     return {
-      total: this.formatCurrency(summary.total_assets_twd),
+      total: this.twdPlain(summary.total_assets_twd),
       todayAmount: today.amount,
-      todayText: `${today.amount > 0 ? '+' : today.amount < 0 ? '-' : ''}${this.formatCurrency(Math.abs(today.amount))}`,
+      todayText: this.money(today.amount, 'TWD', 'change'),
+      todaySign: displayedSign(today.amount, this.money(today.amount, 'TWD', 'change')),
       todayPercent: today.percent,
       ...parts,
-      barLabel: `資產組成：股票 ${parts.stocksPct.toFixed(1)}%，現金 ${parts.cashPct.toFixed(1)}%`,
+      barLabel: `資產組成：股票 ${this.pct(parts.stocksPct)}，現金 ${this.pct(parts.cashPct)}`,
     };
   });
 
@@ -310,7 +312,7 @@ export class PortfolioDashboardComponent implements OnInit {
     if (!point) return;
     const { total, holdings, cash } = this.seriesValues(point);
     this.focusedPointText.set(
-      `${this.pointDate(point)} · 帳戶總值 ${this.formatCurrency(total)} · 持股淨值 ${this.formatCurrency(holdings)} · 現金 ${this.formatCurrency(cash)}`,
+      `${this.pointDate(point)} · 帳戶總值 ${this.money(total)} · 持股淨值 ${this.money(holdings)} · 現金 ${this.money(cash)}`,
     );
   }
 
@@ -427,7 +429,7 @@ export class PortfolioDashboardComponent implements OnInit {
   /** `台股 · 4 檔 · $2,612,900` */
   groupHeader(group: { market: MarketCode; holdings: StockHolding[] }): string {
     const total = group.holdings.reduce((sum, h) => sum + (Number(h.market_value) || 0), 0);
-    return `${MARKET_LABELS[group.market]} · ${group.holdings.length} 檔 · ${this.formatCurrency(total)}`;
+    return `${MARKET_LABELS[group.market]} · ${group.holdings.length} 檔 · ${this.money(total)}`;
   }
 
   fxTooltip(holding: StockHolding): string | null {
@@ -442,7 +444,7 @@ export class PortfolioDashboardComponent implements OnInit {
 
   marketValueDisplay(holding: StockHolding): string {
     if (holding.market !== 'TW' && holding.live_fx_rate_to_twd == null) return '—';
-    return this.formatCurrency(holding.market_value);
+    return this.money(holding.market_value);
   }
 
   loadSummary(): void {
@@ -466,17 +468,44 @@ export class PortfolioDashboardComponent implements OnInit {
     });
   }
 
-  /** Hero legend amounts: grouped TWD without the currency sign. */
-  formatAmount(value: number): string {
-    return new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 }).format(value);
+  /** Trend sign of the 預估含息損益 value as printed ($0 is neither up nor down). */
+  protected estimatedSign(totals: { estimated_pnl_with_dividends?: Amount; currency?: string | null }): number {
+    const value = totals.estimated_pnl_with_dividends;
+    return displayedSign(value, this.money(value, totals.currency, 'change'));
   }
 
-  formatCurrency(value: number | string | null | undefined): string {
-    return new Intl.NumberFormat('zh-TW', {
-      style: 'currency',
-      currency: 'TWD',
-      minimumFractionDigits: 0,
-    }).format(Number(value ?? 0));
+  /** Trend sign of the XIRR value as printed (a ratio, shown as a percentage). */
+  protected xirrSign(xirr: number | null | undefined): number {
+    return xirr == null ? 0 : displayedSign(xirr, this.pct(xirr * 100));
+  }
+
+  /** Trend sign of a holding's 預估含息損益 as printed (a body that rounds to zero is unsigned). */
+  protected holdingEstimateSign(holding: StockHolding): number {
+    const value = this.holdingEstimate(holding);
+    return displayedSign(value, this.money(value, this.holdingCurrency(holding), 'change'));
+  }
+
+  /** Trend sign of a TW holding's 未實現價差 as printed. */
+  protected holdingPriceSign(holding: StockHolding): number {
+    return displayedSign(holding.unrealized_pnl, this.money(holding.unrealized_pnl, 'TWD', 'change'));
+  }
+
+  /** Market-filtered totals stay in the market's native currency and carry an ISO code: they get the lower clamp. */
+  protected isForeignTotals(totals: { currency?: string | null }): boolean {
+    return !isTwdCurrency(totals.currency);
+  }
+
+  money(value: Amount, currency?: string | null, sign?: 'change'): string {
+    return formatMoney(value, { currency, sign });
+  }
+
+  /** Hero total and legend: grouped TWD without the currency sign (the 總資產 · TWD label names it). */
+  twdPlain(value: Amount): string {
+    return formatMoney(value, { symbol: false });
+  }
+
+  pct(value: Amount, sign?: 'change'): string {
+    return formatPct(value, { sign });
   }
 
   nativeMarketValue(holding: StockHolding): number | null {
@@ -495,15 +524,6 @@ export class PortfolioDashboardComponent implements OnInit {
     if (fx <= 0) return null;
     const base = v / fx;
     return holding.native_currency === 'GBp' ? base * 100 : base;
-  }
-
-  formatNative(value: number | string | null | undefined, currency: string | null | undefined): string {
-    return formatNativeAmount(value, currency, v => this.formatCurrency(v));
-  }
-
-  formatXirr(value: number | null | undefined): string {
-    if (value == null) return 'N/A';
-    return `${(value * 100).toFixed(2)}%`;
   }
 
   selectedXirr(source: PortfolioSummary | StockHolding): number | null | undefined {
@@ -750,10 +770,10 @@ export class PortfolioDashboardComponent implements OnInit {
               const point = this.chartPoints()[items[0]?.dataIndex];
               return point ? this.pointDate(point) : '';
             },
-            label: (ctx: any) => `${ctx.dataset?.label ?? ''} ${this.formatCurrency(ctx.parsed?.y ?? 0)}`,
+            label: (ctx: any) => `${ctx.dataset?.label ?? ''} ${this.money(ctx.parsed?.y ?? 0)}`,
             afterBody: (items: any[]) => {
               const point = this.chartPoints()[items[0]?.dataIndex];
-              return point ? `現金 ${this.formatCurrency(this.seriesValues(point).cash)}` : '';
+              return point ? `現金 ${this.money(this.seriesValues(point).cash)}` : '';
             },
           },
         },

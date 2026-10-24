@@ -65,7 +65,7 @@ const SORT_OPTIONS = [
   ],
   providers: [MessageService],
   templateUrl: './realized-pnl.html',
-  styleUrl: './realized-pnl.scss',
+  styleUrls: ['./realized-pnl.scss', '../kpi-cards.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {

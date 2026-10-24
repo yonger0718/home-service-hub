@@ -6,6 +6,7 @@
 
 .account-header {
   align-items: flex-start;
+  container-type: inline-size;
   display: flex;
   gap: 1rem;
   justify-content: space-between;
@@ -46,9 +47,11 @@
 
 .balance-value {
   color: var(--app-text);
-  font-size: 1.45rem;
+  font-size: clamp(18px, 12cqi, var(--fs-value));
+  font-variant-numeric: tabular-nums;
   font-weight: 800;
   line-height: 1.15;
+  white-space: nowrap;
 }
 
 .section-header {

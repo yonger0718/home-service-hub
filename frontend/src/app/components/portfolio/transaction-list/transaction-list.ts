@@ -25,14 +25,11 @@ import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-tog
 import { TimelineComponent, TimelineRow } from '../../ui/timeline/timeline';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { BentoComponent } from '../../ui/bento/bento';
+import { displayedSign, formatMoney } from '../../ui/format';
 import { allPages } from '../paging';
 import { periodLabel } from '../period';
 import { TradeTotals, feeShareLabel, monthHeading, tradeTotals } from './transaction-math';
 import { transactionRow } from './transaction-rows';
-
-function wholeTwd(value: number): number {
-  return Math.round(value) || 0;
-}
 
 const SORT_OPTIONS = [
   { value: 'trade_date:desc', label: '日期 新→舊' },
@@ -64,7 +61,7 @@ const DEFAULT_CURRENCY_BY_MARKET: Record<Exclude<MarketCode, 'TW'>, string> = {
   ],
   providers: [ConfirmationService, MessageService],
   templateUrl: './transaction-list.html',
-  styleUrl: './transaction-list.scss',
+  styleUrls: ['./transaction-list.scss', '../kpi-cards.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
@@ -400,22 +397,19 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     });
   }
 
-  formatCurrency(value: number | string | null | undefined): string {
-    return new Intl.NumberFormat('zh-TW', {
-      style: 'currency',
-      currency: 'TWD',
-      minimumFractionDigits: 0,
-    }).format(Number(value ?? 0));
+  /** Card figures: whole TWD, `—` while unknown. */
+  formatCardAmount(value: number | null): string {
+    return formatMoney(value);
   }
 
-  /** Card figures: whole TWD (no `-$0`), `—` while unknown. */
-  formatCardAmount(value: number | null): string {
-    return value == null ? '—' : this.formatCurrency(wholeTwd(value));
+  /** The 已實現損益 card: the same figure with an explicit `+` / `−`. */
+  formatSignedCard(value: number | null): string {
+    return formatMoney(value, { sign: 'change' });
   }
 
   /** Sign of the card figure as shown: −0.4 rounds to $0 and gets no trend colour. */
   cardSign(value: number | null): number {
-    return value == null ? 0 : Math.sign(wholeTwd(value));
+    return value == null ? 0 : displayedSign(value, this.formatSignedCard(value));
   }
 
   selectedMarket(): MarketCode {

@@ -1,8 +1,9 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
+import { displayedSign, formatPct } from '../format';
 
 @Component({
   selector: 'app-pct-badge',
-  template: `<span class="pct-badge" [class.down]="hasValue() && isDown()" [class.neutral]="!hasValue() || safeValue() === 0">{{ formatted() }}</span>`,
+  template: `<span class="pct-badge" [class.down]="isDown()" [class.neutral]="isNeutral()">{{ formatted() }}</span>`,
   styleUrl: './pct-badge.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
@@ -18,11 +19,11 @@ export class PctBadgeComponent {
     const num = Number(raw);
     return Number.isFinite(num) ? num : 0;
   });
-  protected readonly isDown = computed(() => this.safeValue() < 0);
+  private readonly sign = computed(() => (this.hasValue() ? displayedSign(this.safeValue(), this.formatted()) : 0));
+  protected readonly isDown = computed(() => this.sign() < 0);
+  protected readonly isNeutral = computed(() => this.sign() === 0);
   protected readonly formatted = computed(() => {
     if (!this.hasValue()) return '—';
-    const value = this.safeValue();
-    const prefix = value > 0 ? '+' : '';
-    return `${prefix}${value.toFixed(2)}%`;
+    return formatPct(this.safeValue(), { sign: 'change' });
   });
 }

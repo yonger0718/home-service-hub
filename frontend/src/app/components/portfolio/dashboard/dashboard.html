@@ -36,7 +36,7 @@
               <b class="hero-total">{{ heroData.total }}</b>
               <span class="hero-today">
                 <span class="hero-today-label">今日</span>
-                <b class="hero-today-amount" [class.up]="heroData.todayAmount > 0" [class.down]="heroData.todayAmount < 0">{{ heroData.todayText }}</b>
+                <b class="hero-today-amount" [class.up]="heroData.todaySign > 0" [class.down]="heroData.todaySign < 0">{{ heroData.todayText }}</b>
                 <app-pct-badge [value]="heroData.todayPercent"></app-pct-badge>
               </span>
             </div>
@@ -48,15 +48,15 @@
               <div class="legend">
                 <div class="legend-item">
                   <span class="legend-label"><span class="swatch stocks" aria-hidden="true"></span>股票市值</span>
-                  <b class="legend-value">{{ formatAmount(heroData.stocks) }}</b>
+                  <b class="legend-value">{{ twdPlain(heroData.stocks) }}</b>
                 </div>
                 <div class="legend-item">
                   <span class="legend-label"><span class="swatch cash" aria-hidden="true"></span>交割戶現金</span>
-                  <b class="legend-value">{{ formatAmount(heroData.cash) }}</b>
+                  <b class="legend-value">{{ twdPlain(heroData.cash) }}</b>
                 </div>
                 <div class="legend-item">
                   <span class="legend-label"><span class="swatch dashed" aria-hidden="true"></span>待收股利</span>
-                  <b class="legend-value">{{ formatAmount(heroData.pending) }}</b>
+                  <b class="legend-value">{{ twdPlain(heroData.pending) }}</b>
                 </div>
               </div>
             </div>
@@ -69,9 +69,9 @@
         <app-bento class="kpi-card">
           <div class="kpi-card-body">
             <div class="label">總市值{{ isMarketFiltered() ? ' · ' + marketFilter() : '' }}</div>
-            <div class="value">{{ formatNative(totals.total_market_value, totals.currency) }}</div>
+            <div class="value" [class.foreign]="isForeignTotals(totals)">{{ money(totals.total_market_value, totals.currency) }}</div>
             <div class="kpi-card-footer">
-              <div class="meta">總成本 {{ formatNative(totals.total_cost, totals.currency) }}</div>
+              <div class="meta">總成本 {{ money(totals.total_cost, totals.currency) }}</div>
             </div>
           </div>
         </app-bento>
@@ -83,15 +83,15 @@
               <i class="pi pi-info-circle fx-info" tabindex="0" role="img" [attr.aria-label]="estimateHint" [pTooltip]="estimateHint"></i>
             </div>
             <div class="value-row">
-              <div class="value estimated-total" [class.up]="(totals.estimated_pnl_with_dividends ?? 0) > 0" [class.down]="(totals.estimated_pnl_with_dividends ?? 0) < 0">
-                {{ formatNative(totals.estimated_pnl_with_dividends, totals.currency) }}
+              <div class="value estimated-total" [class.foreign]="isForeignTotals(totals)" [class.up]="estimatedSign(totals) > 0" [class.down]="estimatedSign(totals) < 0">
+                {{ money(totals.estimated_pnl_with_dividends, totals.currency, 'change') }}
               </div>
               @if (totals.estimated_pnl_percent != null) {
                 <app-pct-badge [value]="totals.estimated_pnl_percent"></app-pct-badge>
               } @else { <span aria-label="預估含息損益率無法計算">—</span> }
             </div>
             <div class="kpi-card-footer">
-              <div class="meta">價差 {{ formatNative(totals.total_unrealized_pnl, totals.currency) }} · 股利 {{ formatNative(totals.total_dividends, totals.currency) }} · 待收 {{ formatNative(totals.pending_dividends_net, totals.currency) }}</div>
+              <div class="meta">價差 {{ money(totals.total_unrealized_pnl, totals.currency, 'change') }} · 股利 {{ money(totals.total_dividends, totals.currency) }} · 待收 {{ money(totals.pending_dividends_net, totals.currency) }}</div>
             </div>
           </div>
         </app-bento>
@@ -100,11 +100,11 @@
           <div class="kpi-card-body">
             <div class="label">年化報酬率 XIRR</div>
             @let portfolioXirr = selectedPortfolioXirr();
-            <div class="value" [class.up]="(portfolioXirr ?? 0) > 0" [class.down]="(portfolioXirr ?? 0) < 0">
+            <div class="value" [class.up]="xirrSign(portfolioXirr) > 0" [class.down]="xirrSign(portfolioXirr) < 0">
               @if (portfolioXirr == null) {
                 <span class="xirr-placeholder" tabindex="0" aria-label="缺少此期間的 XIRR 資料說明" [pTooltip]="xirrGapTooltip">—</span>
               } @else {
-                {{ formatXirr(portfolioXirr) }}
+                {{ pct(portfolioXirr * 100) }}
               }
             </div>
             <div class="kpi-card-footer">
@@ -116,7 +116,7 @@
         <app-bento class="kpi-card">
           <div class="kpi-card-body">
             <div class="label">已記錄股利{{ isMarketFiltered() ? ' · ' + marketFilter() : '' }}</div>
-            <div class="value dividend">{{ formatNative(totals.total_dividends, totals.currency) }}</div>
+            <div class="value dividend" [class.foreign]="isForeignTotals(totals)">{{ money(totals.total_dividends, totals.currency) }}</div>
             <div class="kpi-card-footer">
               <div class="meta">含舊資料 · 不代表已核實收款</div>
             </div>
@@ -148,16 +148,16 @@
               <div class="chart-legend" [class.two-col]="isPhone()">
                 <span class="chart-legend-item">
                   <span class="chart-legend-label"><span class="chart-swatch total" aria-hidden="true"></span>帳戶總值</span>
-                  <b class="chart-legend-value">{{ formatCurrency(legendData.total) }}</b>
+                  <b class="chart-legend-value">{{ money(legendData.total) }}</b>
                 </span>
                 <span class="chart-legend-item">
                   <span class="chart-legend-label"><span class="chart-swatch holdings" [class.down]="periodReturn() < 0" aria-hidden="true"></span>持股淨值</span>
-                  <b class="chart-legend-value">{{ formatCurrency(legendData.holdings) }}</b>
+                  <b class="chart-legend-value">{{ money(legendData.holdings) }}</b>
                 </span>
                 @if (!isPhone()) {
                   <span class="chart-legend-item">
                     <span class="chart-legend-label"><span class="chart-swatch band" aria-hidden="true"></span>兩線差距 = 交割戶現金</span>
-                    <b class="chart-legend-value">{{ formatCurrency(legendData.cash) }}</b>
+                    <b class="chart-legend-value">{{ money(legendData.cash) }}</b>
                   </span>
                 }
               </div>
@@ -179,7 +179,7 @@
             </div>
             <span class="visually-hidden" aria-live="polite">{{ focusedPointText() }}</span>
             @if (legendData && isPhone()) {
-              <p class="chart-caption">兩線之間是交割戶現金 {{ formatCurrency(legendData.cash) }}</p>
+              <p class="chart-caption">兩線之間是交割戶現金 {{ money(legendData.cash) }}</p>
             }
           </div>
         </app-bento>
@@ -199,7 +199,7 @@
                   <div class="allocation-row">
                     <span class="allocation-swatch" aria-hidden="true" [style.background]="'var(' + slice.token + ')'"></span>
                     <span class="allocation-name">{{ slice.name }} {{ slice.symbol }}</span>
-                    <b class="allocation-pct">{{ slice.pct.toFixed(1) }}%</b>
+                    <b class="allocation-pct">{{ pct(slice.pct) }}</b>
                   </div>
                 }
               </div>
@@ -220,7 +220,7 @@
                       <b class="pending-name">{{ row.name }}</b>
                       <small class="pending-note">{{ row.note }}</small>
                     </span>
-                    <b class="pending-amount dividend">+{{ row.currency === 'TWD' ? formatAmount(row.amount) : formatNative(row.amount, row.currency) }}</b>
+                    <b class="pending-amount dividend">{{ money(row.amount, row.currency, 'change') }}</b>
                   </div>
                 } @empty {
                   <p class="empty-line">目前沒有待收股利</p>
@@ -285,13 +285,13 @@
             </span>
             <span class="stock-day" [class.up]="stock.day_change_amount >= 0" [class.down]="stock.day_change_amount < 0">
               {{ stock.day_change_amount >= 0 ? '+' : '' }}{{ stock.day_change_amount | number:'1.2-2' }}
-              ({{ stock.day_change_percent >= 0 ? '+' : '' }}{{ stock.day_change_percent | number:'1.2-2' }}%)
+              ({{ pct(stock.day_change_percent, 'change') }})
             </span>
             <span class="stock-value">{{ marketValueDisplay(stock) }}</span>
-            <span class="stock-pnl" [class.up]="(holdingEstimate(stock) ?? 0) > 0" [class.down]="(holdingEstimate(stock) ?? 0) < 0">
-              <span class="pnl-amt">{{ formatNative(holdingEstimate(stock), holdingCurrency(stock)) }}</span>
+            <span class="stock-pnl" [class.up]="holdingEstimateSign(stock) > 0" [class.down]="holdingEstimateSign(stock) < 0">
+              <span class="pnl-amt">{{ money(holdingEstimate(stock), holdingCurrency(stock), 'change') }}</span>
               @if (holdingEstimatePercent(stock) != null) {
-                <span class="pnl-pct">({{ holdingEstimatePercent(stock) | number:'1.2-2' }}%)</span>
+                <span class="pnl-pct">({{ pct(holdingEstimatePercent(stock), 'change') }})</span>
               } @else { <span class="pnl-pct" aria-label="預估含息損益率無法計算">—</span> }
             </span>
 
@@ -314,28 +314,28 @@
                     @if (stock.total_dividends_native != null) {
                       <div class="d"><small>已記錄股利</small><div class="dividend">{{ stock.total_dividends_native | nativeAmount: stock.native_currency }}</div></div>
                     } @else {
-                      <div class="d"><small>已記錄股利 (TWD)</small><div class="dividend">{{ formatCurrency(stock.total_dividends) }}</div></div>
+                      <div class="d"><small>已記錄股利 (TWD)</small><div class="dividend">{{ money(stock.total_dividends) }}</div></div>
                     }
                     @let nativeUnrealized = stock.unrealized_pnl_native;
                     <div class="d"><small>未實現價差</small><div [class.up]="(+(nativeUnrealized ?? 0)) >= 0" [class.down]="(+(nativeUnrealized ?? 0)) < 0">{{ nativeUnrealized | nativeAmount: stock.native_currency }}</div></div>
-                    <div class="d"><small>待收股利</small><div>{{ formatNative(0, stock.native_currency) }}</div></div>
-                    <div class="d"><small>預估含息損益</small><div>{{ formatNative(holdingEstimate(stock), holdingCurrency(stock)) }}</div></div>
+                    <div class="d"><small>待收股利</small><div>{{ money(0, stock.native_currency) }}</div></div>
+                    <div class="d"><small>預估含息損益</small><div>{{ money(holdingEstimate(stock), holdingCurrency(stock), 'change') }}</div></div>
                   } @else {
-                    <div class="d"><small>市值</small><div>{{ formatCurrency(stock.market_value) }}</div></div>
+                    <div class="d"><small>市值</small><div>{{ money(stock.market_value) }}</div></div>
                     <div class="d"><small>平均成本</small><div>{{ stock.avg_cost | number:'1.2-2' }}</div></div>
-                    <div class="d"><small>已記錄股利</small><div class="dividend">{{ formatCurrency(stock.total_dividends) }}</div></div>
-                    <div class="d"><small>未實現價差</small><div [class.up]="stock.unrealized_pnl >= 0" [class.down]="stock.unrealized_pnl < 0">{{ formatNative(stock.unrealized_pnl, 'TWD') }}</div></div>
-                    <div class="d"><small>待收股利</small><div>{{ formatNative(stock.pending_dividends_net, 'TWD') }}</div></div>
-                    <div class="d"><small>預估含息損益</small><div>{{ formatNative(holdingEstimate(stock), 'TWD') }}</div></div>
+                    <div class="d"><small>已記錄股利</small><div class="dividend">{{ money(stock.total_dividends) }}</div></div>
+                    <div class="d"><small>未實現價差</small><div [class.up]="holdingPriceSign(stock) > 0" [class.down]="holdingPriceSign(stock) < 0">{{ money(stock.unrealized_pnl, 'TWD', 'change') }}</div></div>
+                    <div class="d"><small>待收股利</small><div>{{ money(stock.pending_dividends_net, 'TWD') }}</div></div>
+                    <div class="d"><small>預估含息損益</small><div>{{ money(holdingEstimate(stock), 'TWD', 'change') }}</div></div>
                   }
                   <div class="d">
                     <small>XIRR</small>
                     @let holdingXirr = selectedXirr(stock);
-                    <div [class.up]="(holdingXirr ?? 0) > 0" [class.down]="(holdingXirr ?? 0) < 0">
+                    <div [class.up]="xirrSign(holdingXirr) > 0" [class.down]="xirrSign(holdingXirr) < 0">
                       @if (holdingXirr == null) {
                         <span class="xirr-placeholder" tabindex="0" aria-label="缺少此期間的 XIRR 資料說明" [pTooltip]="xirrGapTooltip">—</span>
                       } @else {
-                        {{ formatXirr(holdingXirr) }}
+                        {{ pct(holdingXirr * 100) }}
                       }
                     </div>
                   </div>

@@ -16,6 +16,7 @@ import { ToastModule } from 'primeng/toast';
 import { MenuModule } from 'primeng/menu';
 import { Menu } from 'primeng/menu';
 import { BtnComponent } from '../../ui/btn/btn';
+import { formatMoney } from '../../ui/format';
 import { BentoComponent } from '../../ui/bento/bento';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { TagComponent } from '../../ui/tag/tag';
@@ -90,7 +91,7 @@ const SOURCE_OPTIONS = [
   ],
   providers: [ConfirmationService, MessageService],
   templateUrl: './dividend-list.html',
-  styleUrl: './dividend-list.scss',
+  styleUrls: ['./dividend-list.scss', '../kpi-cards.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PortfolioDividendListComponent implements OnInit, OnDestroy {
@@ -374,7 +375,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     const gross = qty * perShare;
     const fee = Number(this.newDividend.fee ?? 0);
     const tax = Number(this.newDividend.tax ?? 0);
-    const fmt = (v: number) => `NT$${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+    const fmt = (v: number) => formatMoney(v, { currency: this.newDividend.currency });
     if (tax > 0 || fee > 0) {
       const parts: string[] = [];
       if (fee > 0) parts.push(`匯費 −${fmt(fee)}`);
@@ -567,17 +568,9 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     return `${y}-${m}-${day}`;
   }
 
-  /** Card figures: whole TWD (no `-$0`), `—` while unknown. */
+  /** Card figures: whole TWD, `—` while unknown. */
   formatCardAmount(value: number | null | undefined): string {
-    return value == null ? '—' : this.formatCurrency(Math.round(value) || 0);
-  }
-
-  formatCurrency(value: number | string | null | undefined): string {
-    return new Intl.NumberFormat('zh-TW', {
-      style: 'currency',
-      currency: 'TWD',
-      minimumFractionDigits: 0,
-    }).format(Number(value ?? 0));
+    return formatMoney(value);
   }
 
   private loadUpcomingExDividends(): void {
