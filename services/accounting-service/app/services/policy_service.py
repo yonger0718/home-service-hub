@@ -500,7 +500,10 @@ def _single_admissible(ctx: Context, candidate: Candidate) -> None:
     (every entry claimed anywhere left out, as `reconcile` builds it otherwise) must be exactly one, the proposed
     one, among the case's candidates. The split-member decision is the matcher's own (`statement_context` over every
     current line and the loader's structural rows, split-members spec §5.6), and a line a split group's incomplete
-    readings block in reconcile (`incomplete_groups` over the structural population, nothing claimed) is refused."""
+    readings block in reconcile (`incomplete_groups` over the structural population, nothing claimed) is refused.
+    Known gap: the population here excludes every claimed entry, while reconcile excludes only owned coverage (its
+    own auto claims are re-derived), so a split group whose only loaded members are this statement's auto-claimed
+    fee members is absent here — no reading on either side today; a follow-up issue tracks it."""
     db, statement, line = ctx.db, ctx.statement, ctx.line
     if line is None:
         raise CodedConflictError("not_single_admissible", "the line is no longer printed")

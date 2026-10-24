@@ -603,6 +603,40 @@ def test_policy_applies_a_match_proposal_naming_the_single_apart_member(seed, db
         (s.line.id, s.member.id, "principal", None, "agent")
 
 
+def test_policy_applies_a_with_children_proposal_naming_the_single_apart_member(seed, db_session, run):
+    """`_is_proposed` reads `member_children` for `with_children`: the card's −600 member of a split with a −300 錢包
+    half carries an uncovered +20 refund child, so member + child conserve the 580 line beside a standalone −580
+    (ambiguous); with the standalone moved off the line the member with its child is the one reading."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    seed.entry(card, "-1", day=date(2026, 8, 1), merchant="墊高編號")  # keeps entry ids apart from the line id
+    group = seed.group("split")
+    member = seed.entry(card, "-600", day=DAY, merchant="全聯", group_id=group.id)
+    db_session.flush()
+    child = seed.entry(card, "20", kind="refund", day=DAY, parent_entry_id=member.id)
+    seed.entry(wallet, "-300", day=DAY, merchant="全聯", group_id=group.id)
+    standalone = seed.entry(card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "ambiguous"]
+    assert {c["entry_id"] for c in case.candidates} == {member.id, standalone.id}
+    standalone.amount = Decimal("-581")
+    db_session.commit()
+    proposal = proposal_service.create_proposal(
+        db_session, case_id=case.id, author="hermes",
+        payload=ProposalIn(action="match", params={"line_id": line.id, "entry_id": member.id, "with_children": True},
+                           rationale="same day", confidence=Decimal("0.7")))
+    db_session.commit()
+    _set_policy(db_session, MATCH_ON)
+
+    result = policy_service.run_policy(db_session, stmt.id)
+
+    (row,) = _actions(db_session)
+    assert result.applied == [row.id] and (row.action, row.proposal_id) == ("match", proposal.id)
+    assert sorted((c.line_id, c.entry_id, c.role, c.group_id, c.match_kind) for c in _active(db_session, stmt.id)) == \
+        sorted([(line.id, member.id, "principal", None, "agent"), (line.id, child.id, "child", None, "agent")])
+
+
 def _validator_refusal(db, stmt_id, case, entry_id) -> str:
     """`_single_admissible` called directly for an agent `match` of `entry_id` on the case's line (the proposal scope
     check would refuse such a proposal before the policy ever sees it, `id_out_of_scope`): the refusal message."""
@@ -652,6 +686,7 @@ def test_policy_refuses_the_purchase_member_after_reconcile_claimed_the_fee_line
     result = policy_service.run_policy(db_session, stmt.id)
 
     assert (result.applied, result.proposed, result.skipped) == ([], [], {"not_single_admissible": 1})
+    assert _validator_refusal(db_session, stmt.id, case, twin.id) == incomplete  # the twin: refused by the block
     assert _actions(db_session) == [] and _reload(db_session, ReconciliationProposal, proposal.id).status == "pending"
     assert sorted((c.line_id, c.entry_id) for c in _active(db_session, stmt.id)) == fee_claims  # no purchase coverage
 
@@ -1461,15 +1496,19 @@ def test_policy_never_backfills_a_line_a_split_member_records_or_the_member_clai
     assert _backfills(db_session) == [] and _proposals(db_session) == [] and _booked(db_session) == []
 
 
-def test_policy_never_backfills_a_line_a_split_member_records_when_the_group_is_printed_whole(seed, db_session, run):
-    """The pre-split-members guard, restored by a line near the group's total: the card prints −705 beside the 580
-    line (the −700 total within the near tolerance), so the group is whole and its member never claims the 580 line
-    alone; that line stays open with no candidate and the owner-twin guard keeps the policy off it (the −705 line
-    too: the group is its near twin)."""
+@pytest.mark.parametrize("other, total", [("card", 705), ("wallet", 380)])
+def test_policy_never_backfills_a_line_a_split_member_records_when_the_group_is_printed_whole(seed, db_session, run,
+                                                                                               other, total):
+    """The pre-split-members guard, restored by a line at the group's total: the card prints −705 beside the 580 line
+    (the −700 card total within the near tolerance) or −380 (the card's −580 plus the 錢包 +200), so the group is
+    whole and its member never claims the 580 line alone; that line stays open with no candidate and the owner-twin
+    guard keeps the policy off it. Assertions are scoped to the 580 line: the −705 line is guarded too (the group is
+    its near twin), while the −380 line is a backfill candidate of its own — the twin guard's population is the
+    participating card only, so no card subset takes it (pre-existing twin-guard scope)."""
     card = _card(seed, db_session)
     wallet = seed.account("錢包")
-    member = _split_owner(seed, db_session, card, wallet, other="card")
-    stmt, (line, _), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, DAY, "全聯", 705)])
+    member = _split_owner(seed, db_session, card, wallet, other=other)
+    stmt, (line, _), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, DAY, "全聯", total)])
     case = _open_line_case(db_session, stmt.id, line.id)
     assert not case.candidates and _active(db_session, stmt.id) == []  # a member of a group printed whole never alone
     assert "backfill_entry" in registry.allowed(case)  # the owner still decides
@@ -1478,11 +1517,14 @@ def test_policy_never_backfills_a_line_a_split_member_records_when_the_group_is_
         _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 0,
                                  "actions": {"backfill_entry": {"enabled": True, "max_amount": max_amount}}})
         live = settings_service.reconciliation_policy(db_session)
-        assert [c for c in policy_service.collect_candidates(db_session, statement, live) if c.action == "backfill_entry"] == []
-        assert [c for c, _ in policy_service.preview(db_session, statement, live) if c.action == "backfill_entry"] == []
-        result = policy_service.run_policy(db_session, stmt.id)
-        assert (result.applied, result.proposed) == ([], [])
-    assert _backfills(db_session) == [] and _proposals(db_session) == [] and _booked(db_session) == []
+        assert [c for c in policy_service.collect_candidates(db_session, statement, live)
+                if c.action == "backfill_entry" and c.case_id == case.id] == []
+        assert [c for c, _ in policy_service.preview(db_session, statement, live)
+                if c.action == "backfill_entry" and c.case_id == case.id] == []
+        policy_service.run_policy(db_session, stmt.id)
+    assert [a for a in _backfills(db_session) if a.case_id == case.id] == []
+    assert [p for p in _proposals(db_session) if p.case_id == case.id] == []
+    assert [c for c in _active(db_session, stmt.id) if c.line_id == line.id] == []
     assert _open_line_case(db_session, stmt.id, line.id).id == case.id
     assert db_session.get(LedgerEntry, member.id) is not None
 
@@ -1737,7 +1779,9 @@ def test_policy_never_rebackfills_an_event_whose_stand_in_was_replaced(seed, db_
         assert (result.applied, result.proposed) == ([], [])
     assert [a.id for a in _backfills(db_session)] == [backfill_id] and _proposals(db_session) == []
     assert _booked(db_session) == []
-    if owner_kind != "deleted":  # the matcher re-claims the re-created entry — a split member printed apart, too
+    # `split_apart` now behaves like `plain`: the re-created member's group is still never printed whole on the card,
+    # so the member re-claims the line itself (split-members spec §3) and nothing is left to re-backfill
+    if owner_kind != "deleted":  # the matcher re-claims the re-created entry
         assert [c.entry_id for c in _active(db_session, stmt.id) if c.line_id == line.id] == [new.id]
     else:  # a deleted record leaves the line to the owner
         assert not _open_line_case(db_session, stmt.id, line.id).candidates
@@ -1946,15 +1990,19 @@ def test_policy_never_books_a_system_entry_a_split_member_records_it_is_the_memb
     assert _created(db_session, "create_system_entry") == [] and _proposals(db_session) == [] and _booked(db_session) == []
 
 
-def test_policy_never_books_a_system_entry_a_split_member_records_when_the_group_is_printed_whole(seed, db_session, run):
-    """The pre-split-members guard, restored by a 1315 purchase line near the −1310 total: the group is whole, its fee
-    member is no candidate of the 1200 fee line, which stays bank-only, and the owner-twin guard keeps the policy off
-    it. (The 1315 line itself is a `backfill_entry` candidate — the twin guard's group subsets never pair a fee
-    member with a purchase line — which this policy, enabling `create_system_entry` only, never runs.)"""
+@pytest.mark.parametrize("other, total", [("card", 1315), ("wallet", 990)])
+def test_policy_never_books_a_system_entry_a_split_member_records_when_the_group_is_printed_whole(seed, db_session, run,
+                                                                                                  other, total):
+    """The pre-split-members guard, restored by a purchase line at the group's total — 1315 near the card's −1310, or
+    990 for the card's −1190 fee plus the 錢包 +200: the group is whole, its fee member is no candidate of the 1200 fee
+    line, which stays bank-only, and the owner-twin guard keeps the policy off it. (The total line itself is a
+    `backfill_entry` candidate — pre-existing twin-guard scope: its group subsets never pair a fee member with a
+    purchase line, and a 錢包 member is outside its population — which this policy, enabling `create_system_entry`
+    only, never runs.)"""
     card = _card(seed, db_session)
     wallet = seed.account("錢包")
-    _twin(seed, db_session, card, wallet, "create_system_entry", other="card")
-    stmt, (line, _), _ = _submit(db_session, run, card, [CREATIONS["create_system_entry"][0], _line(2, DAY, "全聯", 1315)])
+    _twin(seed, db_session, card, wallet, "create_system_entry", other=other)
+    stmt, (line, _), _ = _submit(db_session, run, card, [CREATIONS["create_system_entry"][0], _line(2, DAY, "全聯", total)])
     case = _open_line_case(db_session, stmt.id, line.id)
     assert (case.context or {}).get("hint") == "bank_only" and not case.candidates
     assert "create_system_entry" in registry.allowed(case)  # the owner still decides
