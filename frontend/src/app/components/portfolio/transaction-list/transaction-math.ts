@@ -1,4 +1,5 @@
 import { Transaction, TransactionType } from '../../../models/portfolio.model';
+import { formatPct } from '../../ui/format';
 import { formatFxRate, formatNativeAmount, groupedInteger, isTwdCurrency, twdAmount } from '../money';
 
 export interface TradeTotals {
@@ -58,7 +59,7 @@ export function tradeTotals(rows: readonly Transaction[]): TradeTotals {
 
 /** 手續費＋交易稅 card footnote: '佔成交額 0.27%', or '佔成交額 —' when there is no turnover. */
 export function feeShareLabel(feeShare: number | null): string {
-  return `佔成交額 ${feeShare == null ? '—' : `${(feeShare * 100).toFixed(2)}%`}`;
+  return `佔成交額 ${feeShare == null ? '—' : formatPct(feeShare * 100, { digits: 2 })}`;
 }
 
 /** 'YYYY-MM': a string's own date part (no Date parsing), a Date's local calendar month. */

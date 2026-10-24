@@ -45,7 +45,7 @@
         <app-bento class="kpi-card">
           <div class="kpi-card-body">
             <div class="label">已實現損益</div>
-            <div class="value" [class.up]="cardSign(realizedValue) > 0" [class.down]="cardSign(realizedValue) < 0">{{ formatCardAmount(realizedValue) }}</div>
+            <div class="value" [class.up]="cardSign(realizedValue) > 0" [class.down]="cardSign(realizedValue) < 0">{{ formatSignedCard(realizedValue) }}</div>
             <div class="kpi-card-footer">
               <div class="meta">查看明細 →</div>
             </div>

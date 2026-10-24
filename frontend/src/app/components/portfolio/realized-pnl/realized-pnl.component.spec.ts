@@ -540,9 +540,9 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     const fixture = create2026();
 
     expect(cards(fixture)).toEqual([
-      { label: '2026 年已實現', value: '+21,046', up: true, down: false, meta: '5 筆 · 4 筆獲利、1 筆虧損' },
-      { label: '本月（10 月）', value: '+13,498', up: true, down: false, meta: '1 筆' },
-      { label: '當沖', value: '+2,030', up: true, down: false, meta: '1 筆 · 交易稅減半' },
+      { label: '2026 年已實現', value: '+$21,046', up: true, down: false, meta: '5 筆 · 4 筆獲利、1 筆虧損' },
+      { label: '本月（10 月）', value: '+$13,498', up: true, down: false, meta: '1 筆' },
+      { label: '當沖', value: '+$2,030', up: true, down: false, meta: '1 筆 · 交易稅減半' },
       { label: '賣出成本費用', value: '$1,764', up: true, down: false, meta: '賣出手續費＋交易稅' },
     ]);
     expect(el(fixture).querySelector('.summary-note')).toBeNull();
@@ -555,7 +555,7 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     respond(allCalls.at(-1)!, paged([REALIZED_FIXTURE[3]]));
     fixture.detectChanges();
 
-    expect(cards(fixture)[0]).toEqual(expect.objectContaining({ value: '−4,897', up: false, down: true, meta: '1 筆 · 0 筆獲利、1 筆虧損' }));
+    expect(cards(fixture)[0]).toEqual(expect.objectContaining({ value: '−$4,897', up: false, down: true, meta: '1 筆 · 0 筆獲利、1 筆虧損' }));
   });
 
   it('recomputes the cards, the header count and the bars from the 台股 set', () => {
@@ -564,7 +564,7 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     fixture.componentInstance.onMarketChange('TW');
     fixture.detectChanges();
 
-    expect(cards(fixture)[0]).toEqual(expect.objectContaining({ value: '+15,345', up: true, meta: '4 筆 · 3 筆獲利、1 筆虧損' }));
+    expect(cards(fixture)[0]).toEqual(expect.objectContaining({ value: '+$15,345', up: true, meta: '4 筆 · 3 筆獲利、1 筆虧損' }));
     expect(subtitle(fixture)).toBe('2026 年 · 4 筆賣出');
     expect(barCols(fixture)[5].querySelector('.bar')).toBeNull();
     expect(barCols(fixture)[3].querySelector('.bar')).not.toBeNull();
@@ -594,7 +594,7 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     fixture.detectChanges();
 
     expect(el(fixture).querySelector('.summary-note')?.textContent?.trim()).toBe('⋯ 僅載入前 10,000 筆；筆數與本月／當沖／費用為已載入部分');
-    expect(cards(fixture)[0].value).toBe('+21,046');
+    expect(cards(fixture)[0].value).toBe('+$21,046');
   });
 
   it('draws twelve monthly columns for the year', () => {
@@ -666,7 +666,7 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
 
     respond(listCalls.at(-1)!, { ...paged([REALIZED_FIXTURE[1]]), summary: { filter_scope_total: '2030', filter_scope_count: 1, ytd_total: '2030', ytd_count: 1 } });
     fixture.detectChanges();
-    expect(cards(fixture)[0].value).toBe('+2,030');
+    expect(cards(fixture)[0].value).toBe('+$2,030');
   });
 
   it('shows — after 台股 → filter change → 全部 until the refetched list lands', () => {
@@ -676,7 +676,7 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     component.onDayTradeOnlyChange(true);
     respond(allCalls.at(-1)!, paged([REALIZED_FIXTURE[1]]));
     fixture.detectChanges();
-    expect(cards(fixture)[0].value).toBe('+2,030');
+    expect(cards(fixture)[0].value).toBe('+$2,030');
 
     component.onMarketChange('ALL');
     fixture.detectChanges();
@@ -684,7 +684,7 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
 
     respond(listCalls.at(-1)!, { ...paged([REALIZED_FIXTURE[1]]), summary: { filter_scope_total: '2030', filter_scope_count: 1, ytd_total: '2030', ytd_count: 1 } });
     fixture.detectChanges();
-    expect(cards(fixture)[0].value).toBe('+2,030');
+    expect(cards(fixture)[0].value).toBe('+$2,030');
   });
 
   it('falls back to the set total after a list failure under 全部, and to — when the set is capped', () => {
@@ -692,7 +692,7 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     listCalls[0].response.error(new Error('boom'));
     respond(allCalls[0], paged(REALIZED_FIXTURE));
     fixture.detectChanges();
-    expect(cards(fixture)[0].value).toBe('+21,046');
+    expect(cards(fixture)[0].value).toBe('+$21,046');
 
     const capped = TestBed.createComponent(PortfolioRealizedPnlComponent);
     capped.detectChanges();

@@ -162,7 +162,7 @@ describe('PortfolioAccountsListComponent', () => {
     const tags = Array.from(el.querySelectorAll('.acct-card')).map(card =>
       Array.from(card.querySelectorAll('app-tag')).map(tag => tag.textContent?.trim()));
 
-    expect(balances.map(b => b.textContent?.trim())).toEqual(['100,000', '−1,500.50', '−300']);
+    expect(balances.map(b => b.textContent?.trim())).toEqual(['$100,000', '−1,500.50 USD', '−300 JPY']);
     expect(balances.map(b => b.classList.contains('negative'))).toEqual([false, true, true]);
     expect(tags).toEqual([['啟用中'], ['未記錄入金', '啟用中'], ['未記錄入金', '已停用']]);
     expect(el.querySelector('.acct-card app-tag .tag-warning')?.textContent).toContain('未記錄入金');

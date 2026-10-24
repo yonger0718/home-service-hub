@@ -47,6 +47,7 @@ import {
 } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { formatMoney } from '../../ui/format';
 import { SwitchComponent } from '../../ui/switch/switch';
 import { TagComponent } from '../../ui/tag/tag';
 import { BROKER_OPTIONS } from './accounts-list';
@@ -604,15 +605,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
   }
 
   formatCurrency(value: string | number | null | undefined, currency: string): string {
-    const amount = Number(value ?? 0);
-    const maximumFractionDigits = currency === 'JPY' || currency === 'TWD' ? 0 : 2;
-    // A true minus (U+2212), like every other amount in the redesign.
-    const sign = amount < 0 ? '\u2212' : '';
-    const magnitude = Math.abs(amount);
-    if (currency === 'TWD') {
-      return `${sign}NT$${magnitude.toLocaleString('zh-TW', { maximumFractionDigits })}`;
-    }
-    return sign + magnitude.toLocaleString('zh-TW', { style: 'currency', currency, maximumFractionDigits });
+    return formatMoney(value, { currency });
   }
 
   /** A write may go out only to the account its dialog was opened for, while that account is still the one shown. */

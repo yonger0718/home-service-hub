@@ -178,9 +178,9 @@ describe('realizedCards', () => {
 
   it('fills the four cards from the totals and the headline', () => {
     expect(realizedCards(totals, 21046, '2026 年', TODAY)).toEqual([
-      { label: '2026 年已實現', value: '+21,046', sign: 1, meta: '5 筆 · 4 筆獲利、1 筆虧損' },
-      { label: '本月（10 月）', value: '+13,498', sign: 1, meta: '1 筆' },
-      { label: '當沖', value: '+2,030', sign: 1, meta: '1 筆 · 交易稅減半' },
+      { label: '2026 年已實現', value: '+$21,046', sign: 1, meta: '5 筆 · 4 筆獲利、1 筆虧損' },
+      { label: '本月（10 月）', value: '+$13,498', sign: 1, meta: '1 筆' },
+      { label: '當沖', value: '+$2,030', sign: 1, meta: '1 筆 · 交易稅減半' },
       { label: '賣出成本費用', value: '$1,764', sign: 1, meta: '賣出手續費＋交易稅' },
     ]);
   });

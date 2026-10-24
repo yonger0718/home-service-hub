@@ -1,5 +1,6 @@
 import { RealizedPnlEvent, RealizedPnlQuery } from '../../../models/portfolio.model';
 import { isForeign } from '../market';
+import { formatMoney } from '../../ui/format';
 import { groupedInteger } from '../money';
 import { periodLabel } from '../period';
 
@@ -135,11 +136,11 @@ export interface RealizedCard {
  * 當沖 and sell-side fees + tax. `totals` null while the set loads: no values, no footnotes.
  */
 export function realizedCards(totals: RealizedTotals | null, headline: number | null, range: string, today: Date): RealizedCard[] {
-  const card = (label: string, value: number | null, meta: string, format = signedInteger): RealizedCard => {
+  const card = (label: string, value: number | null, meta: string, format = (v: number) => formatMoney(v, { sign: 'change' })): RealizedCard => {
     if (!totals) return { label, value: '', sign: 0, meta: '' };
     return value == null ? { label, value: '—', sign: 0, meta } : { label, value: format(value), sign: Math.sign(Math.round(value) || 0), meta };
   };
-  const costs = (value: number) => `${Math.round(value) < 0 ? '−' : ''}$${groupedInteger(Math.abs(value))}`;
+  const costs = (value: number) => formatMoney(value);
   return [
     card(`${range}已實現`, headline, totals ? `${totals.count} 筆 · ${totals.gains} 筆獲利、${totals.losses} 筆虧損` : ''),
     card(`本月（${today.getMonth() + 1} 月）`, totals?.month ?? null, totals ? `${totals.monthCount} 筆` : ''),

@@ -1,6 +1,7 @@
 import { RealizedPnlEvent } from '../../../models/portfolio.model';
 import { isForeign, marketLabel } from '../market';
 import { formatFxRate, formatNativeAmount, groupedInteger, isTwdCurrency } from '../money';
+import { formatPct } from '../../ui/format';
 import { StockSquare, stockSquare } from '../square';
 import { signedInteger } from './realized-math';
 
@@ -85,10 +86,7 @@ function pct(e: RealizedPnlEvent): string | null {
   const cost = finite(e.cost_out);
   const pnl = finite(e.realized_pnl);
   if (!cost || pnl == null) return null;
-  const ratio = (pnl / cost) * 100;
-  const abs = Math.abs(ratio).toFixed(1);
-  if (abs === '0.0') return '0.0%';
-  return `${ratio > 0 ? '+' : '−'}${abs}%`;
+  return formatPct((pnl / cost) * 100, { sign: 'change' });
 }
 
 /**

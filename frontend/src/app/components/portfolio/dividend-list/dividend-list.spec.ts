@@ -479,7 +479,7 @@ describe('Dividend filter-wide summary', () => {
     const labels = Array.from(document.body.querySelectorAll('.portfolio-form-dialog label')).map(l => l.textContent?.trim());
     expect(labels).toEqual(['股票代號', '股利金額', '除息日期', '匯費', '補充保費']);
     component.newDividend = { ...component.newDividend, quantity_at_record_date: 1000, cash_dividend_per_share: 1, fee: 10 };
-    expect(component.grossHint()).toBe('配息 NT$1,000 (匯費 −NT$10)');
+    expect(component.grossHint()).toBe('配息 $1,000 (匯費 −$10)');
     component.showDialog.set(false);
     fixture.detectChanges();
     fixture.destroy();

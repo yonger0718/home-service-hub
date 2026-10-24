@@ -228,7 +228,7 @@ describe('PortfolioTransactionListComponent', () => {
 
       const all = cards(fixture);
       expect(all.map(c => c.label)).toEqual(['買進金額', '賣出金額', '手續費＋交易稅', '已實現損益']);
-      expect(all.map(c => c.value)).toEqual(['$100,140', '$99,600', '$540', '$8,800']);
+      expect(all.map(c => c.value)).toEqual(['$100,140', '$99,600', '$540', '+$8,800']);
       expect(all[0].meta).toBe('1 筆');
       expect(all[1].meta).toBe('1 筆');
       expect(all[2].meta).toBe('佔成交額 0.27%');
@@ -253,7 +253,7 @@ describe('PortfolioTransactionListComponent', () => {
       fixture.componentInstance.onSideFilterChange('SELL');
       settle(fixture, [sell], '-1234.40');
       const down = cards(fixture)[3];
-      expect(down.value).toBe('-$1,234');
+      expect(down.value).toBe('−$1,234');
       expect(down.card.querySelector('.value')?.classList).toContain('down');
     });
 
@@ -282,7 +282,7 @@ describe('PortfolioTransactionListComponent', () => {
       respond(summaryCalls[2], { items: [sell], total: 1 });
       respond(realizedCalls[2], realizedPage('10.00'));
       fixture.detectChanges();
-      expect(cards(fixture).map(c => c.value)).toEqual(['$0', '$99,600', '$400', '$10']);
+      expect(cards(fixture).map(c => c.value)).toEqual(['$0', '$99,600', '$400', '+$10']);
     });
 
     it('reloads the summary after the debounced search, not on every keystroke', () => {
@@ -332,7 +332,7 @@ describe('PortfolioTransactionListComponent', () => {
       respond(realizedCalls[0], realizedPage('8800.00'));
       fixture.detectChanges();
 
-      expect(cards(fixture).map(c => c.value)).toEqual(['$0', '$99,600', '$400', '$10']);
+      expect(cards(fixture).map(c => c.value)).toEqual(['$0', '$99,600', '$400', '+$10']);
     });
 
     it('hides the cards when the summary load fails and keeps the list', () => {
