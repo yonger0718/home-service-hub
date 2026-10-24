@@ -20,8 +20,10 @@ from app.services import entry_write_service as ews
 from app.services import reconciliation_service as rec
 from app.services import reconciliation_actions as registry
 from app.services import settings_service
+from app.services import stand_ins
 from app.services import statement_revision_service as revs
 from app.services.errors import CodedConflictError, ConflictError
+from app.services.statements.matching import Holder
 from tests.helpers import race, set_dirty, wait_until_blocked
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
     OCT, SEP, _active, _batch, _card, _cases, _open_beside_gap, _code, _interleave, _line, _reconcile, _submit, _transfer, run,
@@ -1646,7 +1648,7 @@ def test_reconcile_keeps_a_group_whole_when_its_sum_line_is_owner_covered(seed, 
     day = date(2026, 9, 12)
     m1 = seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
     m2 = seed.entry(card, "-280", day=day, merchant="餐廳", group_id=group.id)
-    stand_in = seed.entry(card, "-580", day=day, merchant="代墊")
+    stand_in = seed.entry(card, "-580", day=day, merchant="代墊", source="statement")  # holders spec §3 stand-in
     db_session.commit()
     stmt, (sum_line, line), _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 580), _line(2, day, "餐廳", 300)])
     _owner_cover(db_session, stmt, sum_line, [stand_in])
@@ -1659,6 +1661,30 @@ def test_reconcile_keeps_a_group_whole_when_its_sum_line_is_owner_covered(seed, 
     assert _claims_of(db_session, stmt.id) == [(sum_line.id, stand_in.id, None, "manual")]
 
 
+@pytest.mark.parametrize("other", ["-575", "-570"])
+def test_reconcile_releases_a_group_whose_near_line_the_owner_matched_to_an_unrelated_entry(seed, db_session, run,
+                                                                                            other):
+    """Spec #136 shape 5 vs owner-trusted: the −575 line is owner-matched to a plain −575 entry (exact) → unrelated →
+    the group is apart and the −300 line claims the member. The same owner match on a −570 entry (inexact,
+    amount_differs) keeps the group whole. The −570 entry is owner-matched at −575 and then edited (dirty triggers
+    off, so nothing sweeps it): the coverage snapshot still conserves, the ledger row `guard_holders` reads does not."""
+    card = _card(seed, db_session)
+    group = seed.group("split")
+    day = date(2026, 9, 12)
+    m1 = seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    seed.entry(card, "-280", day=day, merchant="餐廳", group_id=group.id)
+    held = seed.entry(card, "-575", day=day, merchant="超市")
+    db_session.commit()
+    stmt, (near, line), _ = _submit(db_session, run, card, [_line(1, day, "超市", 575), _line(2, day, "餐廳", 300)])
+    _owner_cover(db_session, stmt, near, [held])
+    held.amount = Decimal(other)
+    db_session.commit()
+    _reconcile(db_session, stmt.id)
+    owner = (near.id, held.id, None, "manual")
+    assert _claims_of(db_session, stmt.id) == (
+        sorted([owner, (line.id, m1.id, None, "auto")]) if other == "-575" else [owner])
+
+
 @pytest.mark.parametrize("sum_line", ["stand_in", "uncovered"])
 def test_reconcile_keeps_a_group_whole_when_its_sum_line_is_on_the_previous_statement(seed, db_session, run, sum_line):
     """Spec §3 "Guard lines" (final review): the −580 sum line is printed by the August statement — held there by a
@@ -1669,7 +1695,7 @@ def test_reconcile_keeps_a_group_whole_when_its_sum_line_is_on_the_previous_stat
     day = date(2026, 8, 30)
     aug = (date(2026, 8, 1), date(2026, 8, 31))
     if sum_line == "stand_in":
-        stand_in = seed.entry(card, "-580", day=day, merchant="代墊")
+        stand_in = seed.entry(card, "-580", day=day, merchant="代墊", source="statement")  # holders spec §3 stand-in
         db_session.commit()
         previous, (prev_line,), _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 580)], period=aug)
         _owner_cover(db_session, previous, prev_line, [stand_in])
@@ -1689,6 +1715,245 @@ def test_reconcile_keeps_a_group_whole_when_its_sum_line_is_on_the_previous_stat
     _reconcile(db_session, stmt.id)
     assert _active(db_session, stmt.id) == []
     assert [(c.id, c.kind, c.status, c.line_id) for c in _cases(db_session, stmt.id)] == before
+
+
+# --- guard holders (issue #136, holders spec §3, §4.2, §6): stable coverage + this run's pass-1 claims -------------
+
+def _guard_holders(db, statement) -> dict:
+    """`rec.guard_holders` over the statement's guard lines, as `reconcile()` builds them."""
+    accounts = rec.participating_accounts(db, statement.account_id)
+    rules = rec.rules_for(settings_service.reconciliation_rules(db), statement.period_end)
+    return rec.guard_holders(db, statement, rec.guard_lines(db, statement, accounts, rules),
+                             frozenset(stand_ins.stand_in_entry_ids(db, accounts)))
+
+
+def _state(db, statement_id) -> tuple[list, list]:
+    """Active coverage rows and every case, ids included: a second reconcile with nothing changed leaves both equal."""
+    return ([(r.id, r.line_id, r.entry_id, r.match_kind) for r in _active(db, statement_id)],
+            [(c.id, c.kind, c.status, c.line_id, c.entry_id, c.candidates, c.context)
+             for c in _cases(db, statement_id)])
+
+
+def _named_on_lines(db, statement_id) -> set:
+    """Entry ids an open line case names (its `entry_id` or a candidate's)."""
+    cases = [c for c in _cases(db, statement_id, "open") if c.line_id is not None]
+    return {c.entry_id for c in cases} | {x.get("entry_id") for c in cases for x in c.candidates or []}
+
+
+def _split(seed, card, wallet, day, card_amount, wallet_amount, merchant="餐廳"):
+    """A cross-account split group (card member claimable, 錢包 member structural) → (group, card member)."""
+    group = seed.group("split")
+    member = seed.entry(card, card_amount, day=day, merchant=merchant, group_id=group.id)
+    seed.entry(wallet, wallet_amount, day=day, merchant=merchant, group_id=group.id)
+    return group, member
+
+
+def test_two_passes_release_a_group_on_the_first_run_and_are_idempotent(seed, db_session, run):
+    """Shapes 2/9/10: a −575 standalone entry and the −300/−280 split; lines −575 and −300. First run: pass 1 claims
+    −575 for the standalone (group whole under stable holders = none), pass 2 sees that claim → apart → −300 claims
+    the member. Second run: identical claims and cases (its own auto rows are never read as holders)."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    day = date(2026, 9, 12)
+    other = seed.entry(card, "-575", day=day, merchant="超市")
+    _, m1 = _split(seed, card, wallet, day, "-300", "-280")
+    db_session.commit()
+    stmt, (l575, l300), _ = _submit(db_session, run, card, [_line(1, day, "超市", 575), _line(2, day, "餐廳", 300)])
+    assert _claims_of(db_session, stmt.id) == sorted([(l575.id, other.id, None, "auto"),
+                                                      (l300.id, m1.id, None, "auto")])
+    assert _guard_holders(db_session, stmt) == {}  # shape 10: this statement's own auto rows are not stable
+    before = _state(db_session, stmt.id)
+    _reconcile(db_session, stmt.id)
+    assert _state(db_session, stmt.id) == before
+
+
+def test_guard_holders_counts_a_neighbouring_auto_row_and_ignores_this_statements_own(seed, db_session, run):
+    """Shape 4/10 at the function level: August's −575 line is auto-claimed by a standalone; September prints the
+    −300 member line (members Aug 30), a −90 line its own auto row holds and a −120 line the owner holds. After a
+    reconcile, `guard_holders(september)` has the August line (exact, not a stand-in) and the owner line, nothing for
+    September's own auto rows — and the August holder released the group (the −300 line claims the member)."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    standalone = seed.entry(card, "-575", day=date(2026, 8, 28), merchant="超市")
+    db_session.commit()
+    august, (aug_line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 8, 28), "超市", 575)],
+                                     period=(date(2026, 8, 1), date(2026, 8, 31)))
+    assert _claims_of(db_session, august.id) == [(aug_line.id, standalone.id, None, "auto")]
+    _, m1 = _split(seed, card, wallet, date(2026, 8, 30), "-300", "-280")
+    coffee = seed.entry(card, "-90", day=date(2026, 9, 5), merchant="咖啡")
+    owned = seed.entry(card, "-120", day=date(2026, 9, 6), merchant="書店")
+    db_session.commit()
+    sept, (line, coffee_line, owned_line), _ = _submit(db_session, run, card, [
+        _line(1, date(2026, 9, 1), "餐廳", 300), _line(2, date(2026, 9, 5), "咖啡", 90),
+        _line(3, date(2026, 9, 6), "書店", 120)])
+    _owner_cover(db_session, sept, owned_line, [owned])
+    _reconcile(db_session, sept.id)
+    assert _claims_of(db_session, sept.id) == sorted([
+        (line.id, m1.id, None, "auto"), (coffee_line.id, coffee.id, None, "auto"),
+        (owned_line.id, owned.id, None, "manual")])
+    assert _guard_holders(db_session, sept) == {aug_line.id: Holder(frozenset({standalone.id}), False, True),
+                                                owned_line.id: Holder(frozenset({owned.id}), False, True)}
+
+
+def test_guard_holders_set_null_row_is_never_exact(seed, db_session, run):
+    """Shape 7: owner-cover the −575 line, delete the entry (SET NULL, the snapshot keeps the id) → Holder(exact=False)
+    → the group is whole again on reconcile and the member's −300 claim is released."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    day = date(2026, 9, 12)
+    held = seed.entry(card, "-575", day=day, merchant="超市")
+    _, m1 = _split(seed, card, wallet, day, "-300", "-280")
+    db_session.commit()
+    stmt, (near, line), _ = _submit(db_session, run, card, [_line(1, day, "超市", 575), _line(2, day, "餐廳", 300)])
+    _owner_cover(db_session, stmt, near, [held])
+    _reconcile(db_session, stmt.id)
+    assert _claims_of(db_session, stmt.id) == sorted([(near.id, held.id, None, "manual"),
+                                                      (line.id, m1.id, None, "auto")])
+    held_id = held.id
+    db_session.delete(held)
+    db_session.commit()
+    assert _guard_holders(db_session, stmt) == {near.id: Holder(frozenset({held_id}), False, False)}
+    _reconcile(db_session, stmt.id)
+    assert _claims_of(db_session, stmt.id) == [(near.id, None, None, "manual")]
+    assert m1.id not in _named_on_lines(db_session, stmt.id)
+
+
+@pytest.mark.parametrize("other_group", [("-400", "-175"), ("-400", "-170")])
+def test_guard_holders_sums_the_rows_of_a_group_reading(seed, db_session, run, other_group):
+    """Shape 8: another split group claimed the −575 line as a group reading (two coverage rows, owner-covered so they
+    are stable). Flows summing to the line → Holder(exact=True) with both ids and the −300/−280 group is released;
+    −400/−170 (sum −570 ≠ −575) → exact=False and the group stays whole (AGENT-254 3). The −170 row is owner-matched
+    at −175 and then edited (dirty triggers off): the snapshot conserves, the ledger rows do not."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    day = date(2026, 9, 12)
+    _, m1 = _split(seed, card, wallet, day, "-300", "-280")
+    other = seed.group("split")
+    o1 = seed.entry(card, "-400", day=day, merchant="超市", group_id=other.id)
+    o2 = seed.entry(card, "-175", day=day, merchant="超市", group_id=other.id)
+    db_session.commit()
+    stmt, (near, line), _ = _submit(db_session, run, card, [_line(1, day, "超市", 575), _line(2, day, "餐廳", 300)])
+    _owner_cover(db_session, stmt, near, [o1, o2])
+    o2.amount = Decimal(other_group[1])
+    db_session.commit()
+    exact = other_group == ("-400", "-175")
+    assert _guard_holders(db_session, stmt) == {near.id: Holder(frozenset({o1.id, o2.id}), False, exact)}
+    _reconcile(db_session, stmt.id)
+    owner = sorted([(near.id, o1.id, None, "manual"), (near.id, o2.id, None, "manual")])
+    assert _claims_of(db_session, stmt.id) == (sorted(owner + [(line.id, m1.id, None, "auto")]) if exact else owner)
+
+
+@pytest.mark.parametrize("currency, original, exact", [
+    ("JPY", "-15000", True), ("USD", "-15000", False), ("JPY", "-14000", False)])
+def test_guard_holders_foreign_exactness_from_the_db(seed, db_session, run, currency, original, exact):
+    """AGENT-254 3, DB side: an owner-covered JPY line (−3010 TWD / −15000 JPY) held by a plain entry booked at −3005
+    TWD / −15000 JPY → exact=True (foreign rule); the same entry with original_currency USD, or −14000 JPY, → not
+    exact. The entry is owner-matched at −3010, then edited to −3005 (dirty off): only the foreign rule can hold."""
+    card = _card(seed, db_session)
+    day = date(2026, 9, 12)
+    held = seed.entry(card, "-3010", day=day, merchant="東京", original_amount=Decimal(original),
+                      original_currency=currency)
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [
+        _line(1, day, "東京", 3010, foreign_amount=Decimal("-15000"), foreign_currency="JPY")])
+    _owner_cover(db_session, stmt, line, [held])
+    held.amount = Decimal("-3005")
+    db_session.commit()
+    assert _guard_holders(db_session, stmt) == {line.id: Holder(frozenset({held.id}), False, exact)}
+
+
+def test_reconcile_releases_a_jpy_group_held_only_by_a_foreign_exact_holder(seed, db_session, run):
+    """Shape 1 end to end in JPY: split −3000/−2800 (−15000/−14000 JPY) on the card; a −5790 TWD / −29000 JPY line
+    held by an unrelated entry (−5785 TWD, −29000 JPY, owner-covered: matched at −5790, then edited with dirty off);
+    member lines −3000/−15000 JPY and −2800/−14000 JPY free → both members claimed (`member_alone`) in the first run
+    after the edit, and a second run is identical."""
+    card = _card(seed, db_session)
+    day = date(2026, 9, 12)
+    group = seed.group("split")
+    jpy = {"original_currency": "JPY"}
+    m1 = seed.entry(card, "-3000", day=day, merchant="東京", group_id=group.id, original_amount=Decimal("-15000"), **jpy)
+    m2 = seed.entry(card, "-2800", day=day, merchant="東京", group_id=group.id, original_amount=Decimal("-14000"), **jpy)
+    held = seed.entry(card, "-5790", day=day, merchant="大阪", original_amount=Decimal("-29000"), **jpy)
+    db_session.commit()
+    stmt, (sum_line, l1, l2), _ = _submit(db_session, run, card, [
+        _line(1, day, "大阪", 5790, foreign_amount=Decimal("-29000"), foreign_currency="JPY"),
+        _line(2, day, "東京", 3000, foreign_amount=Decimal("-15000"), foreign_currency="JPY"),
+        _line(3, day, "東京", 2800, foreign_amount=Decimal("-14000"), foreign_currency="JPY")])
+    _owner_cover(db_session, stmt, sum_line, [held])
+    held.amount = Decimal("-5785")
+    db_session.commit()
+    _reconcile(db_session, stmt.id)
+    assert _claims_of(db_session, stmt.id) == sorted([
+        (sum_line.id, held.id, None, "manual"), (l1.id, m1.id, None, "auto"), (l2.id, m2.id, None, "auto")])
+    assert {r.match_rule for r in _active(db_session, stmt.id) if r.match_kind == "auto"} == {"exact"}
+    before = _state(db_session, stmt.id)
+    _reconcile(db_session, stmt.id)
+    assert _state(db_session, stmt.id) == before
+
+
+def test_reconcile_does_not_follow_a_third_order_chain(seed, db_session, run):
+    """Shape 13: group A (−300 card / −280 錢包) is released in pass 2 by a standalone −575 claiming the −575 line; A's
+    member then claims the −300 line — which is within 5 % of group B's total (−100 card / −205 錢包 = −305). Lines:
+    −575, −300, −100. B stays whole in this run (the −300 line was not an own claim in pass 1), so B's −100 member
+    does **not** claim the free −100 line (AGENT-254 2: a discriminating line — reading stored pass-2 rows would
+    release B and claim it); a second run is identical."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    day = date(2026, 9, 12)
+    standalone = seed.entry(card, "-575", day=day, merchant="超市")
+    _, a1 = _split(seed, card, wallet, day, "-300", "-280")
+    _, b1 = _split(seed, card, wallet, day, "-100", "-205", merchant="咖啡")
+    db_session.commit()
+    stmt, (l575, l300, l100), _ = _submit(db_session, run, card, [
+        _line(1, day, "超市", 575), _line(2, day, "餐廳", 300), _line(3, day, "咖啡", 100)])
+    assert _claims_of(db_session, stmt.id) == sorted([
+        (l575.id, standalone.id, None, "auto"), (l300.id, a1.id, None, "auto")])
+    assert [(c.kind, list(c.candidates or [])) for c in _cases(db_session, stmt.id, "open") if c.line_id == l100.id] \
+        == [("line_unmatched", [])]
+    assert b1.id not in _named_on_lines(db_session, stmt.id)
+    before = _state(db_session, stmt.id)
+    _reconcile(db_session, stmt.id)
+    assert _state(db_session, stmt.id) == before
+
+
+def test_a_tie_between_a_pass_one_claimant_and_a_released_member_is_ambiguous_and_stable(seed, db_session, run):
+    """Shape 14: standalone −575 claims the −575 line in pass 1 and releases the −300/−280 group; a second standalone
+    −300 and the member tie on the −300 line → `ambiguous` in pass 2, no claim; a second run writes the same case."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    day = date(2026, 9, 12)
+    standalone = seed.entry(card, "-575", day=day, merchant="超市")
+    twin = seed.entry(card, "-300", day=day, merchant="餐廳")
+    _, m1 = _split(seed, card, wallet, day, "-300", "-280")
+    db_session.commit()
+    stmt, (l575, l300), _ = _submit(db_session, run, card, [_line(1, day, "超市", 575), _line(2, day, "餐廳", 300)])
+    assert _claims_of(db_session, stmt.id) == [(l575.id, standalone.id, None, "auto")]
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == l300.id]
+    assert case.kind == "ambiguous" and {x.get("entry_id") for x in case.candidates} == {twin.id, m1.id}
+    before = _state(db_session, stmt.id)
+    _reconcile(db_session, stmt.id)
+    assert _state(db_session, stmt.id) == before
+
+
+def test_reconcile_keeps_a_group_whole_when_a_real_stand_in_holds_the_sum_line_on_the_neighbour(seed, db_session, run):
+    """Shape 4: August's −580 sum line is held (auto, by August's own run) by a `source="statement"` entry (what the
+    policy books) → a stand-in holder, exact but never unrelated → whole in September; the −300 line stays
+    line_unmatched with no member candidate."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    day = date(2026, 8, 30)
+    stand_in = seed.entry(card, "-580", day=day, merchant="代墊", source="statement")
+    db_session.commit()
+    august, (aug_line,), _ = _submit(db_session, run, card, [_line(1, day, "代墊", 580)],
+                                     period=(date(2026, 8, 1), date(2026, 8, 31)))
+    assert _claims_of(db_session, august.id) == [(aug_line.id, stand_in.id, None, "auto")]
+    _, m1 = _split(seed, card, wallet, day, "-300", "-280")
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 1), "餐廳", 300)])
+    assert _guard_holders(db_session, stmt) == {aug_line.id: Holder(frozenset({stand_in.id}), True, True)}
+    assert _active(db_session, stmt.id) == []
+    assert [c.kind for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id] == ["line_unmatched"]
+    assert m1.id not in _named_on_lines(db_session, stmt.id)
 
 
 def test_reconcile_keeps_a_group_whole_when_its_fee_member_is_owner_covered(seed, db_session, run):
