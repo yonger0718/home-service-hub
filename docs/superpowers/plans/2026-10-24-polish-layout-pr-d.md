@@ -1,6 +1,6 @@
 # Polish Layout v2 — PR D (shell and phone) Implementation Plan
 
-_Rev 2 — folds Multica AGENT-279 (majors: accounts panes tests must stay, 刷新行情 test via the refresh-subject pattern; mediums: focus-out scope + `preventDefault`, seg-toggle host width, `ActionsBelowHost` / `dashboard.spec.ts:343-352` / `accounts-page.spec.ts:316` cleanup; minor: phone media query 759.98 px)._
+_Rev 2.1 — after the AGENT-279 re-check PASS: Task 1 marked done, Task 5 gate excludes spec files. Rev 2 — folds Multica AGENT-279 (majors: accounts panes tests must stay, 刷新行情 test via the refresh-subject pattern; mediums: focus-out scope + `preventDefault`, seg-toggle host width, `ActionsBelowHost` / `dashboard.spec.ts:343-352` / `accounts-page.spec.ts:316` cleanup; minor: phone media query 759.98 px)._
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -34,7 +34,7 @@ _Rev 2 — folds Multica AGENT-279 (majors: accounts panes tests must stay, 刷�
 
 ---
 
-### Task 1: Spec rev 12 — header scenarios and the menu's accessibility line
+### Task 1: Spec rev 12 — header scenarios and the menu's accessibility line (DONE — `4d9ccae`)
 
 **Files:**
 - Modify: `openspec/changes/polish-layout-v2/specs/frontend-app-shell/spec.md` (ADDED "Phone page headers keep one row")
@@ -42,7 +42,7 @@ _Rev 2 — folds Multica AGENT-279 (majors: accounts panes tests must stay, 刷�
 
 **Interfaces:** Produces the scenarios Tasks 3–5 implement.
 
-- [ ] **Step 1: Extend the requirement text.** After the sentence ending `SHALL render below the header at full width.` append: `The ⋯ button SHALL be labelled 更多動作 and open a menu (\`role="menu"\`) of the moved actions: the first item takes focus, arrow keys move between items, Escape closes and returns focus to the button. From 760 px the actions stay inline and no ⋯ button renders.`
+- [x] **Step 1: Accessibility scenario (done in `4d9ccae`).** The requirement body stays as is (`--strict` rejects requirements over 500 characters); the obligations live in the scenario "Header menu is labelled and keyboard-operable": ⋯ labelled 更多動作, opens a `role="menu"` of the moved actions, first item focused, arrow keys move, Escape closes and returns focus, nothing rendered from 760 px.
 
 - [ ] **Step 2: Add two scenarios** after "Portfolio dashboard on a phone":
 
@@ -265,7 +265,7 @@ In the `prefers-reduced-motion: reduce` block add `.hub-fab { transition: none; 
 
 - [ ] **Step 4: Implement.** `transaction-list.html:4`: `<app-page-header [subtitle]="headerSubtitle()" [menu]="phoneMenu">`, wrap the 匯入 CSV `<a>` in `@if (!isPhone())`; `transaction-list.ts`: `readonly phoneMenu: PageMenuItem[] = [{ label: '匯入 CSV', icon: 'pi-upload', routerLink: '/portfolio/import' }]`. `accounts-page.ts`: `readonly phone = computed(() => this.layout.mode() === 'phone')`, `readonly phoneMenu: PageMenuItem[] = [{ label: '新增帳戶', icon: 'pi-plus', run: () => this.openCreateDialog() }]`; `accounts-page.html:21`: `<app-page-header title="現金帳戶" subtitle="…" [menu]="phoneMenu">`, keep 記錄入出金, wrap 新增帳戶 in `@if (!phone())`.
 
-- [ ] **Step 5: Delete `actionsBelowOnPhone`.** `page-header.ts`: remove the input, `actionsBelow`, the `host` class binding; `page-header.html`: one gear render after `.header-more-wrap`; `page-header.scss`: remove the `:host(.actions-below)` block and its comment; `page-header.spec.ts`: remove `ActionsBelowHost` (`:31-35`) and the `render()` parameter that selects it, and the describe at `:169-196` (its gear-order assertion `:194` is covered by the Task 3 "no items" test). `dashboard.spec.ts:343-352` was replaced in Task 4; `accounts-page.spec.ts:316` in Step 2. `grep -rn "actionsBelowOnPhone\|actions-below\|ActionsBelowHost" frontend/src` → no matches.
+- [ ] **Step 5: Delete `actionsBelowOnPhone`.** `page-header.ts`: remove the input, `actionsBelow`, the `host` class binding; `page-header.html`: one gear render after `.header-more-wrap`; `page-header.scss`: remove the `:host(.actions-below)` block and its comment; `page-header.spec.ts`: remove `ActionsBelowHost` (`:31-35`) and the `render()` parameter that selects it, and the describe at `:169-196` (its gear-order assertion `:194` is covered by the Task 3 "no items" test). `dashboard.spec.ts:343-352` was replaced in Task 4; `accounts-page.spec.ts:316` in Step 2. Gate: `grep -rn "actionsBelowOnPhone\|ActionsBelowHost" frontend/src` → no matches; `grep -rn "actions-below" frontend/src | grep -v "\.spec\.ts"` → no matches (the specs keep asserting the class is absent).
 
 - [ ] **Step 6: Run** transaction-list, accounts-page, page-header, dashboard specs → PASS.
 
