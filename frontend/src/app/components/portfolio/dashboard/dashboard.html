@@ -199,7 +199,7 @@
                   <div class="allocation-row">
                     <span class="allocation-swatch" aria-hidden="true" [style.background]="'var(' + slice.token + ')'"></span>
                     <span class="allocation-name">{{ slice.name }} {{ slice.symbol }}</span>
-                    <b class="allocation-pct">{{ slice.pct.toFixed(1) }}%</b>
+                    <b class="allocation-pct">{{ pct(slice.pct) }}</b>
                   </div>
                 }
               </div>
