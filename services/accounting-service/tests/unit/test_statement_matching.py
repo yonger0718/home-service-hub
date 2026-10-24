@@ -25,7 +25,7 @@ def E(i, posted, flow, kind="expense", merchant="全聯", **kw):
                    transfer_group_id=kw.get("transfer_group_id"), transfer_peer_is_card=kw.get("peer_is_card"),
                    children=tuple(kw.get("children", ())), instance=kw.get("instance"), in_reverse=kw.get("in_reverse", True),
                    claimable=kw.get("claimable", True), stand_in=kw.get("stand_in", False),
-                   all_children=tuple(kw.get("all_children", ())), currency=kw.get("currency"))
+                   all_children=tuple(kw.get("all_children", ())), currency=kw.get("currency"), carrier=kw.get("carrier", False))
 
 
 def S(*a, **kw):
@@ -1535,3 +1535,47 @@ def test_group_variants_prunes_by_default_and_not_for_the_guard():
     assert ids(m._group_variants(g, by_id, set(), frozenset({32, 33}))) == ([[31], [31, 32], [31, 33]], True)
     assert ids(m._group_variants(g, by_id, set(), frozenset({32, 33}), prune=False)) \
         == ([[31], [31, 32], [31, 32, 33], [31, 33]], True)
+
+
+def test_carrier_child_claims_the_fee_line_and_the_carrier_never_appears():
+    carrier = E(20, date(2026, 9, 16), "-1000", carrier=True, in_reverse=False, children=(m.Child(21, "fee", D("-15")),))
+    res = run([L(1, date(2026, 9, 16), "-15", kind="fee", merchant="")], [carrier])
+    assert [(c.line_id, c.representation.kind, c.representation.rule, [(r.entry_id, r.role) for r in c.representation.rows]) for c in res.claims] == [(1, "child", "exact", [(21, "principal")])]
+    assert res.cases == [] and res.unmatched_entry_ids == []
+
+
+def test_carrier_is_never_a_principal():
+    carrier = E(20, date(2026, 9, 16), "-1000", carrier=True, in_reverse=False, children=(m.Child(21, "fee", D("-15")),))
+    res = run([L(1, date(2026, 9, 16), "-1000", merchant=""), L(2, date(2026, 9, 16), "-1015", merchant="")], [carrier])
+    assert res.claims == [] and [(c.kind, c.context) for c in res.cases] == [("line_unmatched", {}), ("line_unmatched", {})]
+
+
+def test_carrier_is_invisible_to_near_and_drift_fallbacks():
+    carrier = E(20, date(2026, 9, 16), "-1000", carrier=True, in_reverse=False, children=(m.Child(21, "fee", D("-15")),))
+    res = run([L(1, date(2026, 9, 16), "-1004", merchant="")], [carrier])          # within max(10, 5 %) → would be near
+    assert res.claims == [] and res.cases[0].kind == "line_unmatched" and res.cases[0].context == {}
+    res = run([L(1, date(2026, 9, 26), "-1000", merchant="")], [carrier])          # 10 days → would be drift
+    assert res.cases[0].kind == "line_unmatched" and res.cases[0].context == {}
+
+
+@pytest.mark.parametrize("carrier", [True, False])
+def test_second_identical_fee_line_gets_the_same_claimed_by_earlier_line_hint(carrier):
+    parent = E(20, date(2026, 9, 16), "-1000", carrier=carrier, in_reverse=not carrier, children=(m.Child(21, "fee", D("-15")),))
+    lines = [L(1, date(2026, 9, 16), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 16), "-15", kind="fee", merchant="")]
+    res = run(lines + ([] if carrier else [L(3, date(2026, 9, 16), "-1000", merchant="")]), [parent])
+    assert [c.line_id for c in res.claims if c.representation.kind == "child"] == [1]
+    second = next(c for c in res.cases if c.line_id == 2)
+    assert second.kind == "line_unmatched" and second.context == {"hint": "claimed_by_earlier_line", "entry_id": 21}
+
+
+def test_carrier_and_its_unclaimed_child_are_not_in_the_reverse_side():
+    carrier = E(20, date(2026, 9, 16), "-1000", carrier=True, in_reverse=False, children=(m.Child(21, "fee", D("-15")),))
+    res = run([L(1, date(2026, 9, 16), "-580", merchant="")], [carrier])
+    assert res.unmatched_entry_ids == [] and res.explained == {}
+
+
+def test_stand_in_carrier_child_rep_loses_to_an_owner_rep():
+    carrier = E(20, date(2026, 9, 16), "-1000", carrier=True, in_reverse=False, stand_in=True, children=(m.Child(21, "fee", D("-15")),))
+    owner = E(30, date(2026, 9, 16), "-15", kind="fee", merchant="")
+    res = run([L(1, date(2026, 9, 16), "-15", kind="fee", merchant="")], [carrier, owner])
+    assert [[r.entry_id for r in c.representation.rows] for c in res.claims] == [[30]]

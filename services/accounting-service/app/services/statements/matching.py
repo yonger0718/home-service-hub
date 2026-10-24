@@ -92,6 +92,9 @@ class Entry:
     all_children: tuple[Child, ...] = ()
     currency: str | None = None  # the row's own currency (the loader sets it); None: the statement's currency
     source: str | None = None  # the ledger row's `source` (loader-set; None: not statement-sourced), holders spec §3
+    # a parent already covered elsewhere whose kind=fee children are still claimable: never a principal or a fallback
+    # candidate, only visited by the child path so a child can claim its fee line
+    carrier: bool = False
 
 
 @dataclass(frozen=True)
@@ -595,6 +598,8 @@ def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[i
         return out
     rule = {"payment": "payment", "refund": "refund", "transfer_in": "transfer", "transfer_out": "transfer"}.get(line.line_kind, "exact")
     for e in entries:
+        if e.carrier:
+            continue
         # group members (save a lone member for a non-purchase line and a member of a split group the statement
         # prints apart, `apart`), installment instances and children never stand alone (children reach a line via the
         # child path)
@@ -875,6 +880,7 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
                             account_currency, holders)  # over the unfiltered population
     hint_only = [e for e in entries if not e.claimable]
     entries = [e for e in entries if e.claimable]
+    principals = [e for e in entries if not e.carrier]
     aside, apart = ctx.aside, ctx.apart
     for line in sorted(lines, key=lambda ln: ln.id):
         reps = sorted(_representations(statement_kind, line, entries, groups, plan_map, claimed, rules, aside, apart),
@@ -891,7 +897,7 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             claimed |= {r.entry_id for r in best.rows}
             continue
         if line.line_kind == "installment":  # gated by the plan map only: never a generic, foreign or near match
-            result.cases.append(_installment_case(line, reps, entries + hint_only, plan_map, claimed, rules))
+            result.cases.append(_installment_case(line, reps, principals + hint_only, plan_map, claimed, rules))
             continue
         if len(reps) >= 2 and reps[0].score >= rules.ambiguous_floor:  # R6a.2: ambiguity needs two candidates
             result.cases.append(_ambiguous(line, reps))
@@ -901,9 +907,9 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             if taken is not None:
                 result.cases.append(Case(line.id, None, "line_unmatched", (), {"hint": "claimed_by_earlier_line", "entry_id": taken}))
                 continue
-        case = _foreign_case(statement_kind, line, entries, groups, claimed, fee_expected, rules, account_currency, aside, apart) \
-            or _near_case(statement_kind, line, entries, claimed, rules, apart) \
-            or _drift_case(statement_kind, line, entries, claimed, rules, apart)
+        case = _foreign_case(statement_kind, line, principals, groups, claimed, fee_expected, rules, account_currency, aside, apart) \
+            or _near_case(statement_kind, line, principals, claimed, rules, apart) \
+            or _drift_case(statement_kind, line, principals, claimed, rules, apart)
         if case is not None:
             result.cases.append(case)
             continue
