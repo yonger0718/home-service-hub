@@ -564,17 +564,25 @@ describe('記一筆 hides while scrolling (D5)', () => {
     expect(hidden()).toBe(true);
   });
 
-  it('seeds .hub-main from its current scrollTop', async () => {
-    const { el, settle, hidden } = await start();
+  it('a directive re-created after the entry form closes seeds .hub-main from its current scrollTop', async () => {
+    const { el, settle, hidden, fab } = await start();
     const main = el.querySelector('.hub-main')!;
-    fakeScroller(main, 400);
-    main.dispatchEvent(new Event('scroll'));
+    const pane = TestBed.inject(PaneStateService);
+    pane.formOpen.set(true);
     await settle();
-    expect(hidden()).toBe(true);
+    expect(fab()).toBeNull();
+    // The page sits at 400 while the form is open; the new instance must read that, not assume 0.
+    fakeScroller(main, 400);
+    pane.formOpen.set(false);
+    await settle();
     fakeScroller(main, 380);
     main.dispatchEvent(new Event('scroll'));
     await settle();
     expect(hidden()).toBe(false);
+    fakeScroller(main, 420);
+    main.dispatchEvent(new Event('scroll'));
+    await settle();
+    expect(hidden()).toBe(true);
   });
 
   it('returns at the end of the page', async () => {
