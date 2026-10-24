@@ -68,6 +68,7 @@ export class PageHeaderComponent {
   /** A press is in progress inside the menu: Safari blurs a tapped button with relatedTarget null before click. */
   private pressing = false;
   private unlistenPointerDown: (() => void) | null = null;
+  private unlistenPointerUp: (() => void) | null = null;
 
   protected readonly nav = inject(NavigationStateService);
   private readonly layout = inject(LayoutModeService);
@@ -113,6 +114,8 @@ export class PageHeaderComponent {
       const target = e.target as Node | null;
       if (!target || !this.host.nativeElement.contains(target)) this.closeMenu(false);
     });
+    // A press that starts on an item and ends outside the panel would otherwise leave `pressing` set.
+    this.unlistenPointerUp = this.renderer.listen(this.document, 'pointerup', () => (this.pressing = false));
     afterNextRender(() => this.menuItemEls()[0]?.nativeElement.focus({ preventScroll: true }), {
       injector: this.injector,
     });
@@ -175,6 +178,8 @@ export class PageHeaderComponent {
   private stopListening(): void {
     this.unlistenPointerDown?.();
     this.unlistenPointerDown = null;
+    this.unlistenPointerUp?.();
+    this.unlistenPointerUp = null;
   }
 
   protected goBack(): void {
