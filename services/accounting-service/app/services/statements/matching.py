@@ -498,6 +498,19 @@ def _prints_reading(line: Line, reading: Reading, rules: Rules) -> bool:
         and _same(abs(reading.foreign_amount), abs(line.foreign_amount)) and dist <= rules.foreign_window_days
 
 
+def _exact_print(line: Line, reading: Reading, rules: Rules) -> bool:
+    """The exact branches of `_prints_reading`, no near tolerance: the same TWD amount (`_same`) within the wider of
+    the exact and drift windows of the nearest member, or (b) the foreign total by magnitude, same currency, non-zero,
+    within the foreign window. Holders spec §9 errata (final review): an unrelated exact holder never skips a line
+    that prints a reading exactly — a plain entry equal to the group's total is a tie the owner resolves."""
+    dist = min(_date_distance(line, mem) for mem in reading.members)
+    if _same(line.flow, reading.flow) and dist <= max(rules.exact_window_days, rules.drift_window_days):
+        return True
+    return reading.foreign_amount is not None and line.foreign_amount is not None and line.foreign_amount != 0 \
+        and line.foreign_currency == reading.foreign_currency \
+        and _same(abs(reading.foreign_amount), abs(line.foreign_amount)) and dist <= rules.foreign_window_days
+
+
 def _related_ids(g: Group, by_id: dict[int, Entry]) -> frozenset[int]:
     """Holders spec §3: the ids a holder of group `g` must avoid to be unrelated — its members and every member's child
     (the guard's child view, `_kids`)."""
@@ -515,9 +528,10 @@ def printed_whole(lines_all: list[Line], entries: list[Entry], groups: dict[int,
                   account_currency: str | None = None, holders: Mapping[int, Holder] | None = None) -> frozenset[int]:
     """The split groups this statement prints whole: a reading (`group_readings` over the structural population) a
     guard line prints (`_prints_reading`), or readings incomplete or empty — a mixed-currency group included
-    (fail-closed: its members never go apart). Holders spec §3 "Printed whole": per group the scan skips a guard line
+    (fail-closed: its members never go apart). Holders spec §3 "Printed whole" and §9 errata: per group a guard line
     whose holder (`holders`, line id → `Holder`; None/{} = every line) is an unrelated exact holder for it
-    (`_unrelated_exact`); `aside` and `aside_children` stay over every guard line."""
+    (`_unrelated_exact`) counts only for the readings it prints exactly (`_exact_print`), never for a near print;
+    `aside` and `aside_children` stay over every guard line."""
     by_id = {e.id: e for e in entries}
     out: set[int] = set()
     for g in groups.values():
@@ -525,9 +539,11 @@ def printed_whole(lines_all: list[Line], entries: list[Entry], groups: dict[int,
             continue
         readings, complete = group_readings(g, by_id, aside, aside_children, account_currency)
         related = _related_ids(g, by_id) if holders else frozenset()
-        scan = [line for line in lines_all
-                if not holders or line.id not in holders or not _unrelated_exact(holders[line.id], related)]
-        if not complete or not readings or any(_prints_reading(line, r, rules) for r in readings for line in scan):
+        held = {line.id for line in lines_all
+                if holders and line.id in holders and _unrelated_exact(holders[line.id], related)}
+        if not complete or not readings or any(
+                _prints_reading(line, r, rules) and (line.id not in held or _exact_print(line, r, rules))
+                for r in readings for line in lines_all):
             out.add(g.id)
     return frozenset(out)
 

@@ -1089,6 +1089,40 @@ def test_printed_whole_through_match_keeps_a_group_whose_near_line_a_stand_in_cl
     assert {c.line_id for c in res2.claims} == {1}                 # line 2 stays open: the group is whole
 
 
+@pytest.mark.parametrize("total, whole", [("-580", True), ("-575", False)])
+def test_an_unrelated_exact_holder_skips_a_line_only_for_near_prints(total, whole):
+    """Holders spec §9 errata (final review): a cross-account split (card −300 claimable, 錢包 −280 structural) and a
+    plain card entry X equal to the line, lines X and −300. Pass 1: the group is whole and cannot compete for X's
+    line (a member is structural), X claims it. Pass 2: a −580 line prints the group's −580 reading exactly — a tie
+    the owner resolves, so the group stays whole and the −300 line stays open; a −575 line prints it only near, so
+    X's holder skips it, the group goes apart and the member claims the −300 line."""
+    groups = {5: m.Group(5, "split", (21, 22))}
+    ents = [E(99, d, total, merchant="超市"), E(21, d, "-300", group_id=5), S(22, d, "-280", group_id=5)]
+    lines = [L(1, d, total, merchant="超市"), L(2, d, "-300")]
+    first = m.match("card", lines, ents, groups, {}, lambda e: None, R, "TWD", lines_all=lines)
+    own = m.claim_holders(first, lines, ents, frozenset())
+    assert own == {1: H(frozenset({99}), False, True)}
+    second = m.match("card", lines, ents, groups, {}, lambda e: None, R, "TWD", lines_all=lines, holders=own)
+    claims = {c.line_id: c.representation.rows[0].entry_id for c in second.claims}
+    assert claims == ({1: 99} if whole else {1: 99, 2: 21})
+    ctx = m.statement_context("card", lines, lines, ents, groups, R, "TWD", holders=own)
+    assert ctx.whole == ({5} if whole else frozenset())
+
+
+def test_an_exact_foreign_print_keeps_the_group_whole_under_an_unrelated_exact_holder():
+    """The foreign half of the errata: a JPY split (−15000/−14000 JPY) and a line −5790 TWD / −29000 JPY held exactly
+    by an unrelated entry. The line prints the group's −29000 JPY total exactly → whole; the same line at −29100 JPY
+    (its holder −29100 JPY) prints the −5800 TWD total only near → skipped → apart."""
+    jp = dict(original_currency="JPY")
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-3000", group_id=5, original_amount="-15000", **jp),
+            E(22, d, "-2800", group_id=5, original_amount="-14000", **jp)]
+    held = {1: H(frozenset({99}), False, True)}
+    pw = lambda foreign: m.printed_whole([L(1, d, "-5790", foreign_amount=foreign, foreign_currency="JPY")], ents,
+                                         {5: g}, R, frozenset(), frozenset(), holders=held)
+    assert pw("-29000") == {5} and pw("29000") == {5} and pw("-29100") == frozenset()
+
+
 def test_stand_in_row_is_a_backfill_id_or_a_statement_source():
     assert m.stand_in_row(7, None, frozenset({7})) and m.stand_in_row(8, "statement", frozenset())
     assert not m.stand_in_row(8, None, frozenset({7})) and not m.stand_in_row(8, "moze", frozenset())
