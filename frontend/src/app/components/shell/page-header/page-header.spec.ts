@@ -437,5 +437,69 @@ describe('PageHeaderComponent', () => {
       expect(ev.defaultPrevented).toBe(true);
       expect(document.activeElement).toBe(menuItems()[2]);
     });
+    it('keeps the menu open when focus blurs to null during a press inside it (Safari tap)', async () => {
+      const { more, menuItems, panel, flush, host } = await renderMenu();
+      more()!.click();
+      await flush();
+      const item = menuItems()[1];
+
+      item.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      panel()!.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+      await flush();
+      expect(panel()).not.toBeNull();
+
+      item.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+      item.click();
+      await flush();
+      expect(host.ran).toBe(1);
+      expect(panel()).toBeNull();
+    });
+
+    it('closes after a routerLink item is clicked', async () => {
+      const { more, menuItems, panel, flush } = await renderMenu();
+      more()!.click();
+      await flush();
+      menuItems()[0].addEventListener('click', e => e.preventDefault());
+      menuItems()[0].click();
+      await flush();
+      expect(panel()).toBeNull();
+    });
+
+    it('renders a disabled routerLink item as a button, never a link', async () => {
+      const { more, menuItems, flush } = await renderMenu('phone', [
+        { label: '停用連結', routerLink: '/x', disabled: true },
+      ]);
+      more()!.click();
+      await flush();
+      expect(menuItems()[0].tagName).toBe('BUTTON');
+      expect(menuItems()[0].getAttribute('aria-disabled')).toBe('true');
+    });
+
+    it('closes when the layout leaves phone while open', async () => {
+      const { more, panel, flush, el } = await renderMenu();
+      more()!.click();
+      await flush();
+      TestBed.inject(LayoutModeService).set('sheet');
+      await flush();
+      expect(panel()).toBeNull();
+      TestBed.inject(LayoutModeService).set('phone');
+      await flush();
+      expect(more()!.getAttribute('aria-expanded')).toBe('false');
+      expect(el.querySelector('.header-menu')).toBeNull();
+    });
+
+    it('has no aria-controls while closed', async () => {
+      const { more } = await renderMenu();
+      expect(more()!.hasAttribute('aria-controls')).toBe(false);
+    });
+
+    it('removes the document pointerdown listener when destroyed while open', async () => {
+      const { more, flush, fixture } = await renderMenu();
+      more()!.click();
+      await flush();
+      const spy = vi.spyOn(document, 'removeEventListener');
+      fixture.destroy();
+      expect(spy.mock.calls.some(c => c[0] === 'pointerdown')).toBe(true);
+    });
   });
 });

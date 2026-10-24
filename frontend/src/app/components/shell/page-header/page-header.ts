@@ -8,6 +8,7 @@ import {
   Renderer2,
   afterNextRender,
   computed,
+  effect,
   inject,
   input,
   signal,
@@ -16,8 +17,8 @@ import {
 } from '@angular/core';
 import { Params, Router, RouterLink } from '@angular/router';
 
-import { isHandledKey } from '../../accounting/accounting-ui';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { isHandledKey } from '../../accounting/accounting-ui';
 import { NavigationStateService } from '../navigation-state.service';
 import { SubNavComponent } from '../sub-nav/sub-nav';
 
@@ -64,6 +65,8 @@ export class PageHeaderComponent {
   private readonly renderer = inject(Renderer2);
   private readonly document = inject(DOCUMENT);
   private readonly injector = inject(Injector);
+  /** A press is in progress inside the menu: Safari blurs a tapped button with relatedTarget null before click. */
+  private pressing = false;
   private unlistenPointerDown: (() => void) | null = null;
 
   protected readonly nav = inject(NavigationStateService);
@@ -95,6 +98,9 @@ export class PageHeaderComponent {
 
   constructor() {
     inject(DestroyRef).onDestroy(() => this.stopListening());
+    effect(() => {
+      if (!(this.phone() && this.menu().length)) this.closeMenu(false);
+    });
   }
 
   protected toggleMenu(): void {
@@ -115,6 +121,7 @@ export class PageHeaderComponent {
   protected closeMenu(restoreFocus = true): void {
     if (!this.menuOpen()) return;
     this.stopListening();
+    this.pressing = false;
     this.menuOpen.set(false);
     if (restoreFocus) this.more()?.nativeElement.focus({ preventScroll: true });
   }
@@ -154,7 +161,12 @@ export class PageHeaderComponent {
     this.closeMenu();
   }
 
+  protected onMenuPress(down: boolean): void {
+    this.pressing = down;
+  }
+
   protected onMenuFocusout(event: FocusEvent): void {
+    if (this.pressing) return;
     const next = event.relatedTarget as Node | null;
     const wrap = this.host.nativeElement.querySelector('.header-more-wrap');
     if (!next || !wrap?.contains(next)) this.closeMenu(false);

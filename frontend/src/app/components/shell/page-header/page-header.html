@@ -15,14 +15,14 @@
   @if (phone() && menu().length) {
     <div class="header-more-wrap">
       <button #more type="button" class="header-more" aria-label="更多動作" aria-haspopup="menu"
-              [attr.aria-expanded]="menuOpen()" [attr.aria-controls]="menuId" (click)="toggleMenu()">
+              [attr.aria-expanded]="menuOpen()" [attr.aria-controls]="menuOpen() ? menuId : null" (click)="toggleMenu()">
         <i class="pi pi-ellipsis-h" aria-hidden="true"></i>
       </button>
       @if (menuOpen()) {
-        <div class="header-menu" role="menu" [id]="menuId" (keydown)="onMenuKeydown($event)" (focusout)="onMenuFocusout($event)">
-          @for (item of menu(); track item.label) {
-            @if (item.routerLink) {
-              <a #menuItem class="header-menu-item" role="menuitem" [routerLink]="item.routerLink" [queryParams]="item.queryParams ?? null" [attr.aria-disabled]="item.disabled || null" (click)="runItem(item)">
+        <div class="header-menu" role="menu" [id]="menuId" (keydown)="onMenuKeydown($event)" (focusout)="onMenuFocusout($event)" (pointerdown)="onMenuPress(true)" (pointerup)="onMenuPress(false)" (pointercancel)="onMenuPress(false)">
+          @for (item of menu(); track $index) {
+            @if (item.routerLink && !item.disabled) {
+              <a #menuItem class="header-menu-item" role="menuitem" [routerLink]="item.routerLink" [queryParams]="item.queryParams ?? null" (click)="runItem(item)">
                 @if (item.icon) { <i class="pi {{ item.icon }}" aria-hidden="true"></i> }
                 {{ item.label }}
               </a>

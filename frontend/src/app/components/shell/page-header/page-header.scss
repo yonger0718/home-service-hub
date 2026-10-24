@@ -120,6 +120,7 @@ h1 {
   border: 0;
   border-radius: 6px;
   color: var(--app-text);
+  cursor: pointer;
   display: flex;
   font: inherit;
   gap: 10px;
@@ -128,7 +129,7 @@ h1 {
   text-decoration: none;
   width: 100%;
 
-  &:hover,
+  &:hover:not([aria-disabled='true']),
   &:focus-visible {
     background: var(--app-surface-soft);
     outline: none;
