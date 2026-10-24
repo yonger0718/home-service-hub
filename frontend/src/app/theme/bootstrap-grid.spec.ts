@@ -8,7 +8,6 @@ const ALLOWLIST = [
   'src/app/components/item-list/item-list.html',
   'src/app/components/portfolio/dividend-list/dividend-list.html',
   'src/app/components/portfolio/transaction-list/transaction-list.html',
-  'src/app/components/accounting/account-settings/account-settings.html',
 ];
 const GRID_TOKEN = /^(row|col|col-(\d{1,2}|auto|(sm|md|lg|xl|xxl)(-\d{1,2}|-auto)?)|container(-fluid)?)$/;
 
@@ -21,24 +20,28 @@ function walk(dir: string): string[] {
   });
 }
 
-/** `file:line` for every static `class="…"` attribute holding a Bootstrap grid token. */
+/** 1-based line numbers of every static `class="…"` attribute in `file` holding a Bootstrap grid token. */
+function gridLines(file: string): number[] {
+  const out: number[] = [];
+  readFileSync(file, 'utf8')
+    .split('\n')
+    .forEach((line, i) => {
+      for (const m of line.matchAll(/\bclass="([^"]*)"/g)) {
+        if (m[1].split(/\s+/).some((t) => GRID_TOKEN.test(t))) {
+          out.push(i + 1);
+          break;
+        }
+      }
+    });
+  return out;
+}
+
+/** `file:line` for every grid-token class attribute outside the allowlist. */
 function gridOffenders(root: string): string[] {
   const allowed = new Set(ALLOWLIST.map((p) => join(process.cwd(), p)));
-  const out: string[] = [];
-  for (const file of walk(root)) {
-    if (allowed.has(file)) continue;
-    readFileSync(file, 'utf8')
-      .split('\n')
-      .forEach((line, i) => {
-        for (const m of line.matchAll(/\bclass="([^"]*)"/g)) {
-          if (m[1].split(/\s+/).some((t) => GRID_TOKEN.test(t))) {
-            out.push(`${relative(process.cwd(), file)}:${i + 1}`);
-            break;
-          }
-        }
-      });
-  }
-  return out;
+  return walk(root)
+    .filter((file) => !allowed.has(file))
+    .flatMap((file) => gridLines(file).map((n) => `${relative(process.cwd(), file)}:${n}`));
 }
 
 describe('Bootstrap grid class names (polish-layout-v2 D1)', () => {
@@ -50,7 +53,11 @@ describe('Bootstrap grid class names (polish-layout-v2 D1)', () => {
   it('no component template outside the allowlist uses a Bootstrap grid class', () => {
     expect(gridOffenders(join(process.cwd(), 'src/app'))).toEqual([]);
   });
-  it('every allowlisted file still exists', () => {
-    for (const p of ALLOWLIST) expect(existsSync(join(process.cwd(), p)), p).toBe(true);
+  it('every allowlisted file still exists and still uses the grid (otherwise drop it from the list)', () => {
+    for (const p of ALLOWLIST) {
+      const file = join(process.cwd(), p);
+      expect(existsSync(file), p).toBe(true);
+      expect(gridLines(file).length, p).toBeGreaterThan(0);
+    }
   });
 });

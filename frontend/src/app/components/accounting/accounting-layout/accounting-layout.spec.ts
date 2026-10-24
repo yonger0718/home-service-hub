@@ -244,6 +244,19 @@ describe('AccountingLayoutComponent', () => {
     expect(pane.sheetOpen()).toBe(false);
   });
 
+  it('clears the FAB offset and pane state when it is destroyed with a pane still open', async () => {
+    const harness = await start('panes', '/accounting/entries/9');
+    const pane = TestBed.inject(PaneStateService);
+    await find(harness, PANE_PAGE);
+    harness.detectChanges();
+    expect(pane.fabRight()).toBe(FAB_RIGHT_BESIDE_PANE);
+    expect(pane.paneOpen()).toBe(true);
+
+    harness.fixture.destroy();
+    expect(pane.fabRight()).toBeNull();
+    expect(pane.paneOpen()).toBe(false);
+  });
+
   it('publishes the 820px sheet as open, never as a pane', async () => {
     const harness = await start('sheet', '/accounting/entries/9');
     const pane = TestBed.inject(PaneStateService);

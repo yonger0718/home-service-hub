@@ -8,13 +8,13 @@
 
 **Tech Stack:** Angular 21 (standalone, signals, OnPush, zoneless), Vitest via `cd frontend && npx ng test --watch=false --include <spec>`, SCSS with the `--app-*` token set, Playwright-in-Docker for the visual check (as in earlier redesign PRs).
 
-**Spec:** `openspec/changes/polish-layout-v2/` (PR #137, rev 7 `b56f991`): `design.md` D1 and D4, `tasks.md` §1, deltas `specs/frontend-ui-primitives/spec.md` ("Component classes do not collide with Bootstrap"), `specs/frontend-accounting-ledger/spec.md` ("Rows keep the page gutter"), `specs/frontend-design-system/spec.md` ("Logo legible in both themes"), `specs/frontend-app-shell/spec.md` ("Pane state belongs to two-pane layouts"). Evidence: `design_handoff_v2/reviews/2026-10-24-layout-review.md` defects 1, 4, 5.
+**Spec:** `openspec/changes/polish-layout-v2/` (PR #137, rev 8 `9a1e0a6`): `design.md` D1 and D4, `tasks.md` §1, deltas `specs/frontend-ui-primitives/spec.md` ("Component classes do not collide with Bootstrap"), `specs/frontend-accounting-ledger/spec.md` ("Rows keep the page gutter"), `specs/frontend-design-system/spec.md` ("Logo legible in both themes"), `specs/frontend-app-shell/spec.md` ("Pane state belongs to two-pane layouts"). Evidence: `design_handoff_v2/reviews/2026-10-24-layout-review.md` defects 1, 4, 5.
 
 ## Global Constraints
 
 - Frontend only; no API, model or copy change. Branch `fix/polish-layout-pr-a` from `origin/main`.
 - Colours only through `--app-*` tokens; no hex literal in a component template or stylesheet (the contrast spec parses `styles.scss`).
-- Bootstrap grid classes (`row`, `col`, `col-*`, `container`) stay only in the four allowlisted legacy forms: `components/item-list/item-list.html`, `components/portfolio/dividend-list/dividend-list.html`, `components/portfolio/transaction-list/transaction-list.html`, `components/accounting/account-settings/account-settings.html`.
+- Bootstrap grid classes (`row`, `col`, `col-*`, `container`) stay only in the three allowlisted legacy forms: `components/item-list/item-list.html`, `components/portfolio/dividend-list/dividend-list.html`, `components/portfolio/transaction-list/transaction-list.html` (`account-settings` was listed at first but never used the grid — dev-grok, AGENT-262; the gate now also fails when an allowlisted file stops using the grid).
 - The selected-row bleed contract is unchanged: `.sel` bleeds by `--row-sel-bleed` only (spec: "a selected row's highlight MAY bleed only by `--row-sel-bleed`").
 - Shell default FAB offset stays `right: 30px`; the accounting panes offset stays the current formula, now owned by the accounting layout.
 - `N` and the FAB's `href` behaviour are untouched.
@@ -57,7 +57,6 @@ const ALLOWLIST = [
   'src/app/components/item-list/item-list.html',
   'src/app/components/portfolio/dividend-list/dividend-list.html',
   'src/app/components/portfolio/transaction-list/transaction-list.html',
-  'src/app/components/accounting/account-settings/account-settings.html',
 ];
 const GRID_TOKEN = /^(row|col|col-(\d{1,2}|auto|(sm|md|lg|xl|xxl)(-\d{1,2}|-auto)?)|container(-fluid)?)$/;
 
