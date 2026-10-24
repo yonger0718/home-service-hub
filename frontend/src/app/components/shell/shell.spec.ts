@@ -528,7 +528,8 @@ describe('記一筆 hides while scrolling (D5)', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  async function start() {
+  async function start(initialTop = 0) {
+    fakeScroller(document.documentElement, initialTop, 2000, 800);
     const r = await render(viewportOf(1440), { url: '/somewhere' });
     await r.settle();
     const scrollDocument = async (top: number, scrollHeight = 2000, clientHeight = 800) => {
@@ -553,6 +554,27 @@ describe('記一筆 hides while scrolling (D5)', () => {
     const { scrollDocument, hidden } = await start();
     await scrollDocument(600);
     expect(hidden()).toBe(true);
+  });
+
+  it('an instance created while the page is already scrolled treats the next upward scroll as upward', async () => {
+    const { scrollDocument, hidden } = await start(600);
+    await scrollDocument(580);
+    expect(hidden()).toBe(false);
+    await scrollDocument(620);
+    expect(hidden()).toBe(true);
+  });
+
+  it('seeds .hub-main from its current scrollTop', async () => {
+    const { el, settle, hidden } = await start();
+    const main = el.querySelector('.hub-main')!;
+    fakeScroller(main, 400);
+    main.dispatchEvent(new Event('scroll'));
+    await settle();
+    expect(hidden()).toBe(true);
+    fakeScroller(main, 380);
+    main.dispatchEvent(new Event('scroll'));
+    await settle();
+    expect(hidden()).toBe(false);
   });
 
   it('returns at the end of the page', async () => {
