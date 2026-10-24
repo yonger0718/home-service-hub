@@ -50,7 +50,8 @@ export class HideOnScrollDirective {
       return;
     }
     const top = scroller.scrollTop;
-    const previous = this.offsets.get(scroller) ?? top;
+    // A scroller seen for the first time counts from 0, so one instant jump (reduced motion, a scrollbar drag) hides too.
+    const previous = this.offsets.get(scroller) ?? 0;
     this.offsets.set(scroller, top);
     const atEnd = scroller.scrollHeight > scroller.clientHeight && top + scroller.clientHeight >= scroller.scrollHeight - 1;
     const focused = this.document.activeElement === this.host;

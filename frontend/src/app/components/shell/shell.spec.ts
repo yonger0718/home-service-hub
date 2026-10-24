@@ -549,6 +549,12 @@ describe('記一筆 hides while scrolling (D5)', () => {
     expect(hidden()).toBe(false);
   });
 
+  it('hides on the very first scroll event when it already lands below the top (one instant jump)', async () => {
+    const { scrollDocument, hidden } = await start();
+    await scrollDocument(600);
+    expect(hidden()).toBe(true);
+  });
+
   it('returns at the end of the page', async () => {
     const { scrollDocument, hidden } = await start();
     await scrollDocument(0);

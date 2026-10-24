@@ -1403,7 +1403,10 @@ describe('PortfolioDashboardComponent', () => {
       const next = rest.indexOf('\n}\n');
       const phone = rest.slice(0, next);
       const flat = phone.replace(/\s+/g, ' ');
-      expect(flat).toContain("grid-template-areas: 'main value' 'meta pnl'");
+      expect(flat).toContain("grid-template-areas: 'abbr sym value' 'abbr meta pnl'");
+      expect(flat).toMatch(/\.stock-main \{ display: contents; \}/);
+      expect(flat).toMatch(/\.stock-pnl \{[^}]*flex-direction: row/);
+      expect(flat).toMatch(/\.day-pct, \.pnl-pct \{ display: none; \}/);
       expect(flat).toMatch(/\.stock-meta \{[^}]*display: flex/);
       expect(flat).toMatch(/\.stock-qty::after \{ content: ' 股'; \}/);
       expect(flat).toMatch(/\.stock-price::before, \.stock-day::before \{ content: '· '; \}/);

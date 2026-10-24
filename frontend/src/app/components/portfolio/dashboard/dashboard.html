@@ -300,7 +300,7 @@
               </span>
               <span class="stock-day" [class.up]="stock.day_change_amount >= 0" [class.down]="stock.day_change_amount < 0">
                 {{ stock.day_change_amount >= 0 ? '+' : '' }}{{ stock.day_change_amount | number:'1.2-2' }}
-                ({{ pct(stock.day_change_percent, 'change') }})
+                <span class="day-pct">({{ pct(stock.day_change_percent, 'change') }})</span>
               </span>
             </span>
             <span class="stock-value">{{ marketValueDisplay(stock) }}</span>

@@ -1,4 +1,6 @@
 import { Location } from '@angular/common';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { provideLocationMocks } from '@angular/common/testing';
 import { Component, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
@@ -465,5 +467,17 @@ describe('PageHeaderComponent', () => {
       fixture.destroy();
       expect(spy.mock.calls.some(c => c[0] === 'pointerdown')).toBe(true);
     });
+  });
+});
+
+describe('PageHeader phone stylesheet (polish-layout-v2 D9)', () => {
+  it('keeps the title block to one line so the row never grows past the icon buttons', () => {
+    const css = readFileSync(join(process.cwd(), 'src/app/components/shell/page-header/page-header.scss'), 'utf8');
+    const start = css.indexOf('@media (max-width: 759.98px)');
+    expect(start).toBeGreaterThan(-1);
+    const flat = css.slice(start).replace(/\s+/g, ' ');
+    expect(flat).toMatch(/ h1 \{[^}]*font-size: 20px;[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/);
+    expect(flat).toMatch(/\.page-subtitle \{[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/);
+    expect(flat).toMatch(/\.page-actions \{[^}]*flex-wrap: nowrap;/);
   });
 });

@@ -144,3 +144,30 @@ h1 {
 app-sub-nav {
   margin-top: 0.75rem;
 }
+
+/* Phones: title, one primary action, ⋯ and the gear share one row (D9), so the title block is the only part
+   that gives way — a smaller h1 that ellipsizes instead of wrapping, and a one-line subtitle. */
+@media (max-width: 759.98px) {
+  .page-header-row {
+    gap: 0.5rem;
+  }
+
+  h1 {
+    font-size: 20px;
+    overflow: hidden;
+    overflow-wrap: normal;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .page-subtitle {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .page-actions {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+  }
+}
