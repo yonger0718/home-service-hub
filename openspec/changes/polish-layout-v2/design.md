@@ -21,7 +21,7 @@ Today the same value appears as `$3,021,869.34` (hero, 總市值), `3,021,869` (
 | TWD marker | `$3,021,869`. `symbol: false` only where the element's own label or column header already names TWD (the hero total under 總資產 · TWD and its composition legend; table columns headed TWD) → `3,021,869`. |
 | Other currencies | Value, space, ISO code: `1,326.00 USD`, `5,390 JPY`. |
 | Sign | `sign: 'change'` (PnL, day change, ledger entries): `+$4,921` / `−$4,076` (U+2212), zero unsigned. Otherwise no `+`; negatives still `−`. |
-| Percent | `formatPct`: one decimal when |v| < 100, none at or above (`12.3%`, `123%`); half away from zero; `+` / `−` with `sign: 'change'`. |
+| Percent | `formatPct`: one decimal when |v| < 100, none at or above (`12.3%`, `123%`); half away from zero; `+` / `−` with `sign: 'change'`. Ratio-type shares such as 佔成交額 (fees as a share of turnover) pass `digits: 2` and keep two decimals (`0.27%`) — a fee rate is small and the second decimal carries meaning (owner ruling 2026-10-24). |
 | Colour | Trend colours only for a gain or loss. The 賣出成本費用 summary value uses `--app-text`; row-level 手續費 / 交易稅 use `--app-text-muted`. |
 
 Totals and group headers in a foreign market show TWD (whole dollars); native amounts beside them keep two decimals. The cash-account total `NT$150,000` in the legacy accounts spec becomes `$150,000` (MODIFIED there).

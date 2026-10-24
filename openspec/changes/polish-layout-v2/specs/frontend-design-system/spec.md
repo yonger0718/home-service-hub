@@ -47,11 +47,15 @@ A TWD amount SHALL carry the `$` prefix unless the element's own label or column
 
 ### Requirement: Uniform percent formatting
 
-Percentages SHALL be rendered by one function (`formatPct`): one decimal below 100 in magnitude, none at or above, rounded half away from zero, with a `%` suffix; a leading `+` / `−` (U+2212) only with `sign: 'change'`.
+Percentages SHALL be rendered by one function (`formatPct`): one decimal below 100 in magnitude, none at or above, rounded half away from zero, with a `%` suffix; a leading `+` / `−` (U+2212) only with `sign: 'change'`. A ratio-type share (fees as a share of turnover, 佔成交額) SHALL pass `digits: 2` and keep two decimals.
 
 #### Scenario: Percent precision
 - **WHEN** `formatPct` receives 12.345 and 123.4
 - **THEN** it SHALL return `12.3%` and `123%`
+
+#### Scenario: Fee share keeps two decimals
+- **WHEN** the 手續費＋交易稅 card footnote renders a fee share of 0.27 % of turnover
+- **THEN** it SHALL read `佔成交額 0.27%`
 
 #### Scenario: Percent change keeps its sign
 - **WHEN** `formatPct` receives −2.35 as a change
