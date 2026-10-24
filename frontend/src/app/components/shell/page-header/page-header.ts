@@ -1,10 +1,36 @@
-import { Location, NgTemplateOutlet } from '@angular/common';
-import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
-import { Router, RouterLink } from '@angular/router';
+import { DOCUMENT, Location, NgTemplateOutlet } from '@angular/common';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  ElementRef,
+  Injector,
+  Renderer2,
+  afterNextRender,
+  computed,
+  inject,
+  input,
+  signal,
+  viewChildren,
+  viewChild,
+} from '@angular/core';
+import { Params, Router, RouterLink } from '@angular/router';
 
+import { isHandledKey } from '../../accounting/accounting-ui';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { NavigationStateService } from '../navigation-state.service';
 import { SubNavComponent } from '../sub-nav/sub-nav';
+
+export interface PageMenuItem {
+  label: string;
+  icon?: string;
+  routerLink?: string | readonly unknown[];
+  queryParams?: Params;
+  run?: () => void;
+  disabled?: boolean;
+}
+
+let nextMenuId = 0;
 
 /**
  * Page title row (`<h1>` with an optional subtitle, projected page actions, phone gear) with the phone sub-nav below. With `back`, phones get a
@@ -26,6 +52,19 @@ export class PageHeaderComponent {
   readonly subtitle = input<string | null>(null);
   /** Phones only: the actions take their own line under the title and gear instead of squeezing the title. */
   readonly actionsBelowOnPhone = input(false);
+
+  /** Phones only: secondary actions behind a ⋯ button after the projected actions. */
+  readonly menu = input<PageMenuItem[]>([]);
+
+  protected readonly menuOpen = signal(false);
+  protected readonly menuId = `page-menu-${++nextMenuId}`;
+  private readonly more = viewChild<ElementRef<HTMLButtonElement>>('more');
+  private readonly menuItemEls = viewChildren<ElementRef<HTMLElement>>('menuItem');
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly renderer = inject(Renderer2);
+  private readonly document = inject(DOCUMENT);
+  private readonly injector = inject(Injector);
+  private unlistenPointerDown: (() => void) | null = null;
 
   protected readonly nav = inject(NavigationStateService);
   private readonly layout = inject(LayoutModeService);
@@ -53,6 +92,78 @@ export class PageHeaderComponent {
       this.phone() &&
       (this.hasAppHistory() || this.nav.landingPath() !== this.nav.activeItem().path),
   );
+
+  constructor() {
+    inject(DestroyRef).onDestroy(() => this.stopListening());
+  }
+
+  protected toggleMenu(): void {
+    if (this.menuOpen()) {
+      this.closeMenu();
+      return;
+    }
+    this.menuOpen.set(true);
+    this.unlistenPointerDown = this.renderer.listen(this.document, 'pointerdown', (e: Event) => {
+      const target = e.target as Node | null;
+      if (!target || !this.host.nativeElement.contains(target)) this.closeMenu(false);
+    });
+    afterNextRender(() => this.menuItemEls()[0]?.nativeElement.focus({ preventScroll: true }), {
+      injector: this.injector,
+    });
+  }
+
+  protected closeMenu(restoreFocus = true): void {
+    if (!this.menuOpen()) return;
+    this.stopListening();
+    this.menuOpen.set(false);
+    if (restoreFocus) this.more()?.nativeElement.focus({ preventScroll: true });
+  }
+
+  protected onMenuKeydown(event: KeyboardEvent): void {
+    if (isHandledKey(event)) return;
+    const els = this.menuItemEls().map(r => r.nativeElement);
+    const at = els.indexOf(this.document.activeElement as HTMLElement);
+    let next: number;
+    switch (event.key) {
+      case 'ArrowDown':
+        next = at < 0 ? 0 : (at + 1) % els.length;
+        break;
+      case 'ArrowUp':
+        next = at < 0 ? els.length - 1 : (at - 1 + els.length) % els.length;
+        break;
+      case 'Home':
+        next = 0;
+        break;
+      case 'End':
+        next = els.length - 1;
+        break;
+      case 'Escape':
+        event.preventDefault();
+        this.closeMenu();
+        return;
+      default:
+        return;
+    }
+    event.preventDefault();
+    els[next]?.focus({ preventScroll: true });
+  }
+
+  protected runItem(item: PageMenuItem): void {
+    if (item.disabled) return;
+    item.run?.();
+    this.closeMenu();
+  }
+
+  protected onMenuFocusout(event: FocusEvent): void {
+    const next = event.relatedTarget as Node | null;
+    const wrap = this.host.nativeElement.querySelector('.header-more-wrap');
+    if (!next || !wrap?.contains(next)) this.closeMenu(false);
+  }
+
+  private stopListening(): void {
+    this.unlistenPointerDown?.();
+    this.unlistenPointerDown = null;
+  }
 
   protected goBack(): void {
     if (this.hasAppHistory()) {

@@ -12,6 +12,31 @@
     <ng-container *ngTemplateOutlet="gearLink" />
   }
   <div class="page-actions"><ng-content></ng-content></div>
+  @if (phone() && menu().length) {
+    <div class="header-more-wrap">
+      <button #more type="button" class="header-more" aria-label="更多動作" aria-haspopup="menu"
+              [attr.aria-expanded]="menuOpen()" [attr.aria-controls]="menuId" (click)="toggleMenu()">
+        <i class="pi pi-ellipsis-h" aria-hidden="true"></i>
+      </button>
+      @if (menuOpen()) {
+        <div class="header-menu" role="menu" [id]="menuId" (keydown)="onMenuKeydown($event)" (focusout)="onMenuFocusout($event)">
+          @for (item of menu(); track item.label) {
+            @if (item.routerLink) {
+              <a #menuItem class="header-menu-item" role="menuitem" [routerLink]="item.routerLink" [queryParams]="item.queryParams ?? null" [attr.aria-disabled]="item.disabled || null" (click)="runItem(item)">
+                @if (item.icon) { <i class="pi {{ item.icon }}" aria-hidden="true"></i> }
+                {{ item.label }}
+              </a>
+            } @else {
+              <button #menuItem type="button" class="header-menu-item" role="menuitem" [attr.aria-disabled]="item.disabled || null" (click)="runItem(item)">
+                @if (item.icon) { <i class="pi {{ item.icon }}" aria-hidden="true"></i> }
+                {{ item.label }}
+              </button>
+            }
+          }
+        </div>
+      }
+    </div>
+  }
   @if (gear() && !actionsBelow()) {
     <ng-container *ngTemplateOutlet="gearLink" />
   }

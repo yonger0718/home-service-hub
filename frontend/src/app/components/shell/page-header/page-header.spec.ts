@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LayoutMode, LayoutModeService, MATCH_MEDIA, PHONE_QUERY } from '../../../services/layout-mode.service';
 import { NavBadgeService } from '../../../services/nav-badge.service';
-import { PageHeaderComponent } from './page-header';
+import { PageHeaderComponent, PageMenuItem } from './page-header';
 
 @Component({ template: '' })
 class BlankPage {}
@@ -33,6 +33,19 @@ class SubtitleHost {
   template: `<app-page-header title="投資概覽" [actionsBelowOnPhone]="true"><button class="act">新增</button></app-page-header>`,
 })
 class ActionsBelowHost {}
+
+@Component({
+  imports: [PageHeaderComponent],
+  template: `<app-page-header title="T" [menu]="items"><button class="primary">主要</button></app-page-header>`,
+})
+class MenuHost {
+  ran = 0;
+  items: PageMenuItem[] = [
+    { label: '匯入券商', icon: 'pi-upload', routerLink: '/portfolio/import', queryParams: { type: 'broker' } },
+    { label: '刷新行情', icon: 'pi-refresh', run: () => this.ran++ },
+    { label: '停用', run: () => this.ran++, disabled: true },
+  ];
+}
 
 @Component({
   imports: [PageHeaderComponent],
@@ -275,6 +288,154 @@ describe('PageHeaderComponent', () => {
 
       expect(el.querySelector('a[aria-label="設定"]')).toBeNull();
       expect(el.querySelector('app-sub-nav')).not.toBeNull();
+    });
+  });
+  describe('⋯ menu (phone)', () => {
+    async function renderMenu(mode: LayoutMode = 'phone', items?: PageMenuItem[]) {
+      TestBed.configureTestingModule({
+        providers: [
+          provideRouter([{ path: '**', component: BlankPage }]),
+          { provide: MATCH_MEDIA, useValue: null },
+          { provide: NavBadgeService, useValue: { badges: signal({}) } },
+        ],
+      });
+      TestBed.inject(LayoutModeService).set(mode);
+      await TestBed.inject(Router).navigateByUrl('/accounting');
+      const fixture = TestBed.createComponent(MenuHost);
+      if (items) fixture.componentInstance.items = items;
+      document.body.appendChild(fixture.nativeElement);
+      fixture.detectChanges();
+      const el = fixture.nativeElement as HTMLElement;
+      const flush = async () => {
+        fixture.detectChanges();
+        await fixture.whenStable();
+        await new Promise<void>(r => setTimeout(r));
+        fixture.detectChanges();
+      };
+      const more = () => el.querySelector<HTMLButtonElement>('.header-more');
+      const menuItems = () => Array.from(el.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+      const panel = () => el.querySelector<HTMLElement>('.header-menu');
+      const key = (k: string) => {
+        const ev = new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true });
+        panel()!.dispatchEvent(ev);
+        return ev;
+      };
+      return { fixture, el, flush, more, menuItems, panel, key, host: fixture.componentInstance };
+    }
+
+    afterEach(() => document.body.replaceChildren());
+
+    it('renders a 更多動作 button after the actions and before the gear, closed', async () => {
+      const { el, more, panel } = await renderMenu();
+      const b = more()!;
+
+      expect(b.getAttribute('aria-label')).toBe('更多動作');
+      expect(b.getAttribute('aria-haspopup')).toBe('menu');
+      expect(b.getAttribute('aria-expanded')).toBe('false');
+      const actions = el.querySelector('.page-actions')!;
+      const gear = el.querySelector('.header-gear')!;
+      expect(gear).not.toBeNull();
+      expect(actions.nextElementSibling).toBe(b.parentElement);
+      expect(b.parentElement!.nextElementSibling).toBe(gear);
+      expect(panel()).toBeNull();
+    });
+
+    it('renders no menu from 760 px or with no items, and the gear then follows the actions', async () => {
+      const sheet = await renderMenu('sheet');
+      expect(sheet.more()).toBeNull();
+      TestBed.resetTestingModule();
+      const empty = await renderMenu('phone', []);
+      expect(empty.more()).toBeNull();
+      expect(empty.el.querySelector('.page-actions')!.nextElementSibling).toBe(empty.el.querySelector('.header-gear'));
+    });
+
+    it('opens on click, focuses the first item and lists the items in order', async () => {
+      const { more, menuItems, panel, flush } = await renderMenu();
+      more()!.click();
+      await flush();
+
+      expect(panel()!.getAttribute('role')).toBe('menu');
+      expect(more()!.getAttribute('aria-expanded')).toBe('true');
+      expect(more()!.getAttribute('aria-controls')).toBe(panel()!.id);
+      const items = menuItems();
+      expect(items.map(i => i.textContent!.trim())).toEqual(['匯入券商', '刷新行情', '停用']);
+      expect(document.activeElement).toBe(items[0]);
+      expect(items[0].tagName).toBe('A');
+      expect(items[0].getAttribute('href')).toContain('/portfolio/import?type=broker');
+      expect(items[2].getAttribute('aria-disabled')).toBe('true');
+    });
+
+    it('runs an item and closes', async () => {
+      const { more, menuItems, panel, flush, host } = await renderMenu();
+      more()!.click();
+      await flush();
+      menuItems()[2].click();
+      await flush();
+      expect(host.ran).toBe(0);
+      expect(panel()).not.toBeNull();
+
+      menuItems()[1].click();
+      await flush();
+      expect(host.ran).toBe(1);
+      expect(panel()).toBeNull();
+      expect(document.activeElement).toBe(more());
+    });
+
+    it('arrow keys cycle, Home/End jump, Escape closes and restores focus', async () => {
+      const { more, menuItems, panel, flush, key } = await renderMenu();
+      more()!.click();
+      await flush();
+      const items = menuItems();
+
+      key('ArrowDown');
+      key('ArrowDown');
+      expect(document.activeElement).toBe(items[2]);
+      key('ArrowDown');
+      expect(document.activeElement).toBe(items[0]);
+      key('ArrowUp');
+      expect(document.activeElement).toBe(items[2]);
+      key('Home');
+      expect(document.activeElement).toBe(items[0]);
+      key('End');
+      expect(document.activeElement).toBe(items[2]);
+      key('Escape');
+      await flush();
+      expect(panel()).toBeNull();
+      expect(document.activeElement).toBe(more());
+    });
+
+    it('closes on an outside pointerdown and when focus leaves the menu', async () => {
+      const { el, more, menuItems, panel, flush } = await renderMenu();
+      more()!.click();
+      await flush();
+      document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      await flush();
+      expect(panel()).toBeNull();
+
+      more()!.click();
+      await flush();
+      panel()!.dispatchEvent(
+        new FocusEvent('focusout', { bubbles: true, relatedTarget: el.querySelector('.primary') }),
+      );
+      await flush();
+      expect(panel()).toBeNull();
+
+      more()!.click();
+      await flush();
+      panel()!.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: menuItems()[1] }));
+      await flush();
+      expect(panel()).not.toBeNull();
+    });
+
+    it('Home and End are handled (no page scroll)', async () => {
+      const { more, menuItems, flush, key } = await renderMenu();
+      more()!.click();
+      await flush();
+
+      const ev = key('End');
+
+      expect(ev.defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(menuItems()[2]);
     });
   });
 });
