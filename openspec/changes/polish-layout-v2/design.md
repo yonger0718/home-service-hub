@@ -32,7 +32,7 @@ KPI and summary values (the dashboard's four KPI cards; the 交易紀錄, 股利
 
 ### D4. Pane state belongs to two-pane layouts only
 
-`PortfolioAccountsPageComponent` sets `PaneStateService.paneOpen` so the shell auto-collapses the sidebar, and the FAB then uses the accounting formula (`5fr / 6fr` columns) and lands mid-page. The accounts page is not a pane layout: its detail is always shown. **Remove the accounts page's `paneOpen` writes.** The FAB position for pane layouts moves to a CSS custom property (`--fab-right`) the layout sets, so the shell no longer hard-codes accounting's column ratio.
+`PortfolioAccountsPageComponent` sets `PaneStateService.paneOpen` so the shell auto-collapses the sidebar, and the FAB then uses the accounting formula (`5fr / 6fr` columns) and lands mid-page. The accounts page is not a pane layout: its detail is always shown. **Remove the accounts page's `paneOpen` writes.** The live accounts requirement "Master-detail layout on wide screens" (which mandated that write) is MODIFIED accordingly. The FAB position for pane layouts moves to a CSS custom property (`--fab-right`) the layout sets, so the shell no longer hard-codes accounting's column ratio.
 
 ### D5. The floating button yields while scrolling
 
