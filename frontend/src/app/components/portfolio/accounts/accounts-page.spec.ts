@@ -277,30 +277,14 @@ describe('PortfolioAccountsPageComponent', () => {
       expect(document.querySelector('form.account-form')).not.toBeNull();
     });
 
-    it('holds PaneStateService.paneOpen while shown and clears it on destroy', async () => {
+    it('never writes the shell pane state (its detail is always visible)', async () => {
       const paneState = TestBed.inject(PaneStateService);
       const harness = await open('/portfolio/accounts/7');
       flushList();
       await settle(harness);
       flushDetail(7);
-      expect(paneState.paneOpen()).toBe(true);
-      expect(paneState.formOpen()).toBe(false);
-      expect(paneState.sheetOpen()).toBe(false);
-
-      layout.set('sheet');
-      await settle(harness);
       expect(paneState.paneOpen()).toBe(false);
-      flushDetail(7); // the route-driven detail of the sheet layout
-
-      layout.set('panes');
-      await settle(harness);
-      expect(paneState.paneOpen()).toBe(true);
-      flushList();
-      await settle(harness);
-      flushDetail(7);
-
-      harness.fixture.destroy();
-      expect(paneState.paneOpen()).toBe(false);
+      expect(paneState.fabRight()).toBeNull();
     });
   });
 
@@ -425,7 +409,7 @@ describe('PortfolioAccountsPageComponent', () => {
         expect(navigate).not.toHaveBeenCalled();
         expect(el(harness).querySelector('.accounts-md-detail app-portfolio-account-detail')).not.toBeNull();
         expect(cards(harness)[1].getAttribute('aria-pressed')).toBe('true');
-        expect(TestBed.inject(PaneStateService).paneOpen()).toBe(true);
+        expect(TestBed.inject(PaneStateService).paneOpen()).toBe(false);
       });
     });
   }

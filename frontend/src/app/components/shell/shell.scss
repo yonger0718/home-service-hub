@@ -37,7 +37,7 @@
   height: 56px;
   justify-content: center;
   position: fixed;
-  right: 30px;
+  right: var(--fab-right, 30px);
   text-decoration: none;
   width: 56px;
   z-index: 1000;
@@ -50,12 +50,6 @@
   &:focus-visible {
     box-shadow: 0 0 0 4px var(--app-focus-ring), 0 8px 20px rgba(83, 58, 253, 0.35);
     outline: none;
-  }
-
-  /* Panes mode with a pane open: the list column's bottom-right corner (.hub-page side padding 1.75rem, .dbody gap
-     16px, columns 5fr / 6fr), so the button never covers the pane. */
-  &.beside-pane {
-    right: calc(1.75rem + (100vw - var(--sidebar-w) - 3.5rem - 16px) * 6 / 11 + 32px);
   }
 }
 

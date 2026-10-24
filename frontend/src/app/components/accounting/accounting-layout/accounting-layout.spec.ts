@@ -12,7 +12,7 @@ import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.ser
 import { makeEntryDetail, makePreference } from '../testing/fixtures';
 import { PaneStateService } from '../../../services/pane-state.service';
 import { DirtyFormRegistry } from '../dirty-form.service';
-import { AccountingLayoutComponent } from './accounting-layout';
+import { AccountingLayoutComponent, FAB_RIGHT_BESIDE_PANE } from './accounting-layout';
 
 async function start(mode: LayoutMode, url: string): Promise<RouterTestingHarness> {
   TestBed.configureTestingModule({
@@ -224,13 +224,16 @@ describe('AccountingLayoutComponent', () => {
     expect(pane.paneOpen()).toBe(true);
     expect(pane.formOpen()).toBe(false);
     expect(pane.sheetOpen()).toBe(false);
+    expect(pane.fabRight()).toBe(FAB_RIGHT_BESIDE_PANE);
 
     await TestBed.inject(Router).navigateByUrl('/accounting/entry');
     harness.detectChanges();
     expect(pane.formOpen()).toBe(true);
     expect(pane.paneOpen()).toBe(true);
+    expect(pane.fabRight()).toBe(FAB_RIGHT_BESIDE_PANE);
 
     harness.fixture.destroy();
+    expect(pane.fabRight()).toBeNull();
     expect(pane.paneOpen()).toBe(false);
     expect(pane.formOpen()).toBe(false);
     expect(pane.sheetOpen()).toBe(false);
@@ -243,6 +246,7 @@ describe('AccountingLayoutComponent', () => {
     harness.detectChanges();
     expect(pane.sheetOpen()).toBe(true);
     expect(pane.paneOpen()).toBe(false);
+    expect(pane.fabRight()).toBeNull();
 
     await TestBed.inject(Router).navigateByUrl('/accounting');
     harness.detectChanges();

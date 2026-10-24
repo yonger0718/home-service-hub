@@ -16,6 +16,7 @@ import {
 } from '../../services/layout-mode.service';
 import { NavBadgeService } from '../../services/nav-badge.service';
 import { PaneStateService } from '../../services/pane-state.service';
+import { FAB_RIGHT_BESIDE_PANE } from '../accounting/accounting-layout/accounting-layout';
 import { DirtyAware, DirtyFormRegistry } from '../accounting/dirty-form.service';
 import { AccountingShortcutsService, EntryCommand } from '../accounting/keyboard-shortcuts';
 import { ShellComponent } from './shell';
@@ -205,13 +206,13 @@ describe('ShellComponent', () => {
     expect(fab()).not.toBeNull();
   });
 
-  it('moves the floating button beside the list while a pane is open', async () => {
+  it('places the floating button where the pane layout says', async () => {
     const { fab, settle } = await render(viewportOf(1440), { url: '/accounting' });
-    expect(fab()!.classList.contains('beside-pane')).toBe(false);
+    expect(fab()!.style.getPropertyValue('--fab-right')).toBe('');
 
-    TestBed.inject(PaneStateService).paneOpen.set(true);
+    TestBed.inject(PaneStateService).fabRight.set('calc(1px + 2px)');
     await settle();
-    expect(fab()!.classList.contains('beside-pane')).toBe(true);
+    expect(fab()!.style.getPropertyValue('--fab-right')).toBe('calc(1px + 2px)');
   });
 
   it('opens the entry form with N on /portfolio', async () => {
@@ -504,7 +505,7 @@ describe('ShellComponent', () => {
       const { router, find, fab, settle } = await real(1440, '/accounting/entries/9');
       await find('.detail-pane app-entry-detail');
       await settle();
-      expect(fab()!.classList.contains('beside-pane')).toBe(true);
+      expect(fab()!.style.getPropertyValue('--fab-right')).toBe(FAB_RIGHT_BESIDE_PANE);
 
       await router.navigateByUrl('/accounting/entry');
       await find('.detail-pane app-entry-form');
