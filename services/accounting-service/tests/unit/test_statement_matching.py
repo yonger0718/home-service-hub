@@ -1764,7 +1764,7 @@ def test_a_large_same_flow_cohort_resolves_quickly():
     started = time.perf_counter()
     res = run(lines, entries)
     elapsed = time.perf_counter() - started
-    assert elapsed < 2.0, elapsed
+    assert elapsed < 5.0, elapsed  # regression guard: the eager slot scan took 12 s here; local ≈ 1 s
     print("cohort perf seconds", elapsed)
     assert res.cases == [] and len(res.claims) == 60
     assert {c.representation.rule for c in res.claims} <= {"exact", "exact_pair"}

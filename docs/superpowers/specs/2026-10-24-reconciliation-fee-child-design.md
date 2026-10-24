@@ -306,8 +306,9 @@ Unit (`tests/unit/test_statement_matching.py`, helpers `L/E/S/run`; add a `C(...
    parent → Sep 2 reads only 11 and is the lowest slot of an incomplete 2 × 2 component → claims 11 `exact`; Sep 4
    then claims 21 `exact`; no case. Mirror with the single-rep line later (5b) stays `ambiguous` twice.
    5h. Slot predicate, other readings (AGENT-271 F1 wording): a sibling line that also reads a child of another
-   ident (another account, same flow) or a split group is not a slot — the gated line's component has one slot and
-   the gate is off; pin both.
+   ident (another account, same flow) is not a slot — the gated line's component has one slot and the gate is off.
+   A split group can never be a fee line's rep (fee/interest/reward gates hold no `expense`, §4.1 context), so the
+   group variant is pinned as "no group reading, the pair still reads `exact_pair`, `exact`" (execution errata).
 6. Pairing is scoped to the tie: when one child's parent merchant text matches the line (score differs beyond the
    margin), the text winner claims by today's rule (`exact`); the other line's cohort is then one line, one child →
    `exact_pair` (or `exact` if it is the only rep).
