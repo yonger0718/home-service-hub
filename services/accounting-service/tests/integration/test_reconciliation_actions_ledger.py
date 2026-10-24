@@ -688,12 +688,74 @@ def test_adjust_amount_needs_a_standalone_candidate(near_pair, seed, db_session)
     exc = _refuse(db_session, lambda: _apply(db_session, s.case, "adjust_amount",
                                              {"entry_id": stranger.id, "line_id": s.line.id}))
     assert _code(exc) == "entry_out_of_scope"
-    group = seed.group("split")
+    group = seed.group("installment")  # a split member is adjustable since 2026-10-24 (spec §5.2); other kinds are not
     _fresh(db_session, LedgerEntry, s.entry.id).group_id = group.id
     db_session.commit()
     exc = _refuse(db_session, lambda: _apply(db_session, s.case, "adjust_amount", _adjust(s)))
     assert _code(exc) == "not_standalone"
     assert _actions(db_session) == []
+
+
+def test_adjust_amount_rewrites_a_split_member_and_refuses_a_reward_claim_member(near_pair, seed, db_session):
+    """Spec §5.2: a top-level split member is rewritten like a standalone entry — its group stays intact, is locked
+    and recorded in `touched_group_ids`, and the coverage row keeps `group_id NULL`; a reward_claim member is still
+    `not_standalone`."""
+    s = near_pair()
+    claim_group = seed.group("reward_claim")
+    _fresh(db_session, LedgerEntry, s.entry.id).group_id = claim_group.id
+    db_session.commit()
+    exc = _refuse(db_session, lambda: _apply(db_session, s.case, "adjust_amount", _adjust(s)))
+    assert _code(exc) == "not_standalone" and _actions(db_session) == []
+
+    group = seed.group("split")
+    _fresh(db_session, LedgerEntry, s.entry.id).group_id = group.id
+    sibling = seed.entry(s.card, "-200", day=date(2026, 9, 14), merchant="AMAZON", group_id=group.id)
+    db_session.commit()
+    params = AdjustAmountAction.Params(**_adjust(s))
+    locks = AdjustAmountAction().lock_targets(SimpleNamespace(db=db_session, case=s.case), params)
+    assert locks.group_ids == (group.id,) and set(locks.entry_ids) == {s.entry.id, sibling.id}
+
+    row = _apply(db_session, s.case, "adjust_amount", _adjust(s))
+
+    entry = _fresh(db_session, LedgerEntry, s.entry.id)
+    assert entry.amount == Decimal("-1015") and entry.group_id == group.id
+    assert sorted(db_session.execute(select(LedgerEntry.id).where(LedgerEntry.group_id == group.id)).scalars()) == (
+        sorted([s.entry.id, sibling.id]))
+    assert _fresh(db_session, LedgerEntry, sibling.id).amount == Decimal("-200")
+    (claim,) = _active(db_session, s.stmt.id)
+    assert (claim.entry_id, claim.role, claim.group_id) == (s.entry.id, "principal", None)
+    assert row.touched_entry_ids == [s.entry.id] and row.touched_group_ids == [group.id]
+
+
+def test_mixed_match_and_adjust_on_one_group_revert_in_reverse_order_only(seed, db_session, run):
+    """«AGENT-249 3»: a member `match` and a sibling's `adjust_amount` both record the group, so the earlier action
+    reverts only after the later one."""
+    card = _card(seed, db_session)
+    stmt, (l1, l2), _ = _submit(db_session, run, card, [
+        _line(1, date(2026, 9, 15), "書店", 300),
+        _line(2, date(2026, 9, 15), "AMAZON", 1015, foreign_amount=Decimal("-31"), foreign_currency="USD")])
+    (c1,) = [c for c in _open_beside_gap(db_session, stmt.id, "-1315.0000") if c.line_id == l1.id]
+    group = seed.group("split")
+    a = seed.entry(card, "-300", day=date(2026, 9, 14), merchant="書店", group_id=group.id)
+    b = seed.entry(card, "-1000", day=date(2026, 9, 14), merchant="AMAZON", group_id=group.id)
+    db_session.commit()
+    c2 = _delta_case(db_session, stmt, l2, b, fee_matches=False)
+
+    matched = _apply(db_session, c1, "match", {"line_id": l1.id, "entry_id": a.id})
+    adjusted = _apply(db_session, c2, "adjust_amount", {"line_id": l2.id, "entry_id": b.id})
+    assert matched.touched_group_ids == adjusted.touched_group_ids == [group.id]
+    assert _fresh(db_session, LedgerEntry, b.id).amount == Decimal("-1015")
+
+    exc = _refuse(db_session, lambda: _revert(db_session, matched.id))
+    assert _code(exc) == "not_revertable" and f"later action {adjusted.id}" in exc.message
+    assert len(_active(db_session, stmt.id)) == 2
+
+    _revert(db_session, adjusted.id)
+    assert _fresh(db_session, LedgerEntry, b.id).amount == Decimal("-1000")
+    assert [c.entry_id for c in _active(db_session, stmt.id)] == [a.id]
+    _revert(db_session, matched.id)
+    assert _active(db_session, stmt.id) == []
+    assert [a.status for a in _actions(db_session) if a.action != "revert"] == ["reverted", "reverted"]
 
 
 def test_an_amount_edit_between_prepare_and_the_locks_is_a_snapshot_conflict(near_pair, db_session, pg_engine,

@@ -37,6 +37,7 @@ class InboxCandidate(BaseModel):
     reason: str | None
     residual: str | None
     date_distance: int | None
+    group_id: int | None = None  # set for a split member (2026-10-24 spec §5.3: the sheet shows 拆帳成員)
 
 
 class InboxProposal(BaseModel):

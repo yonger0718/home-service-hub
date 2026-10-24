@@ -113,30 +113,36 @@ def test_inbox_counts_ignore_limit(client, seed, db_session, run):
     assert len(_items(body)) == 2 and body["counts"]["ask_items"] == 4
 
 
-def test_amount_differs_hides_accept_on_a_group_member_and_a_scheduled_entry(client, seed, db_session, run):
-    """Review Should 2: `adjustable` mirrors ledger_actions — a split member (group_id) or a scheduled entry gets no button.
-    Adapted fixture: the matcher never names a group member as a near candidate (`_standalone`), so the entry is
-    standalone when the statement reconciles and joins a split group (then a posted schedule instance) afterwards;
-    the dirty triggers are off in tests, so the case keeps naming it."""
+def test_inbox_adjustable_true_for_split_member_false_for_child(client, seed, db_session, run):
+    """`adjustable` mirrors ledger_actions: a split member is adjustable like a standalone entry (2026-10-24 spec
+    §5.3, re-stated from review Should 2's "a group member gets no button"); a member of another group kind, a child
+    or a scheduled entry gets no button. Adapted fixture: the entry is standalone when the statement reconciles and
+    changes shape afterwards; the dirty triggers are off in tests, so the case keeps naming it."""
     account = _bank(seed, db_session)
     entry = seed.entry(account, "-879", day=DAY, merchant="卡費")
     db_session.commit()
     _submit(db_session, run, account, [_line(1, DAY, "卡費", -888, "withdrawal")], kind="bank")
 
-    def differs():
-        return [i for i in _items(_inbox(client)) if i["question"] == "amount_differs"]
+    def offered() -> bool:
+        items = [i for i in _items(_inbox(client)) if i["question"] == "amount_differs"]
+        assert items
+        return "accept_bank_amount" in items[0]["actions"]
 
-    assert "accept_bank_amount" in differs()[0]["actions"]  # control: the standalone entry is adjustable
-    group = seed.group("split")
-    entry.group_id = group.id
+    assert offered()  # control: the standalone entry is adjustable
+    entry.group_id = seed.group("split").id
     db_session.commit()
-    items = differs()
-    assert items and "accept_bank_amount" not in items[0]["actions"]
+    assert offered()  # a split member
+    entry.group_id = seed.group("reward_claim").id
+    db_session.commit()
+    assert not offered()
     entry.group_id = None
+    entry.parent_entry_id = seed.entry(account, "-5000", day=DAY, merchant="母").id
+    db_session.commit()
+    assert not offered()  # a child
+    entry.parent_entry_id = None
     seed.instance(seed.definition([seed.line("expense", account, "-879")]), 1, DAY, status="posted", entries=[entry])
     db_session.commit()
-    items = differs()
-    assert items and "accept_bank_amount" not in items[0]["actions"]
+    assert not offered()
 
 
 def test_default_category_comes_from_a_rule_or_a_past_entry(client, seed, db_session, run):
@@ -179,9 +185,10 @@ def test_search_candidates_excludes_claimed_and_listed_entries(client, seed, db_
                                      entry_id=claimed.id, role="principal", match_rule="owner", match_kind="manual",
                                      status="active", snapshot={"flow": "-3000.0000"}))
     db_session.commit()
-    # final review B4: a group member (match refuses `entry_in_group`) is never offered either
-    member = seed.entry(account, "-3000", day=date(2026, 9, 6), merchant="拆帳")
-    member.group_id = seed.group("split").id
+    # final review B4, re-stated 2026-10-24: a member of a non-split group (match refuses `entry_in_group`) is never
+    # offered; split members are (test_inbox_search_lists_a_split_member_as_owner_override_…)
+    member = seed.entry(account, "-3000", day=date(2026, 9, 6), merchant="分期")
+    member.group_id = seed.group("installment").id
     db_session.commit()
     res = client.get(f"/reconciliation/inbox/cases/{case.id}/search", headers=S)
     assert res.status_code == 200, res.text
@@ -191,6 +198,32 @@ def test_search_candidates_excludes_claimed_and_listed_entries(client, seed, db_
     assert member.id not in ids
     assert all(c["reason"] == "search" for c in res.json())
     assert client.get("/reconciliation/inbox/cases/999999/search", headers=S).status_code == 404
+
+
+def test_inbox_search_lists_a_split_member_as_owner_override_and_never_an_installment_member(client, seed, db_session,
+                                                                                              run):
+    """Spec §5.3 («AGENT-248 5»): search is an owner override — it lists a top-level split member (marked with its
+    `group_id`) whether or not the matcher saw its group printed whole; an installment member and a split member's
+    child are never listed."""
+    account = _bank(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, account, [_line(1, DAY, "店", -3865, "withdrawal")], kind="bank")
+    (case,) = _open_lines(db_session, stmt.id)
+    standalone = seed.entry(account, "-3000", day=date(2026, 9, 4), merchant="單筆")
+    split_group, installment_group = seed.group("split"), seed.group("installment")
+    split_member = seed.entry(account, "-3000", day=date(2026, 9, 5), merchant="拆帳", group_id=split_group.id)
+    seed.entry(account, "-865", day=date(2026, 9, 5), merchant="拆帳", group_id=split_group.id)
+    child = seed.entry(account, "-10", day=date(2026, 9, 5), kind="fee", parent_entry_id=split_member.id)
+    installment_member = seed.entry(account, "-3000", day=date(2026, 9, 6), merchant="分期",
+                                    group_id=installment_group.id)
+    db_session.commit()
+
+    res = client.get(f"/reconciliation/inbox/cases/{case.id}/search", headers=S)
+
+    assert res.status_code == 200, res.text
+    by_id = {c["entry_id"]: c for c in res.json()}
+    assert split_member.id in by_id and standalone.id in by_id
+    assert installment_member.id not in by_id and child.id not in by_id
+    assert by_id[split_member.id]["group_id"] == split_group.id and by_id[standalone.id]["group_id"] is None
 
 
 def test_status_filter_and_scope(client, seed, db_session, run):

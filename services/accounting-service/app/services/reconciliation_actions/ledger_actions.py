@@ -18,7 +18,7 @@ from typing import Literal
 from sqlalchemy import select
 
 from app.models import (
-    Account, LedgerEntry, ReconciliationAction, ReconciliationCase, ReconciliationProposal, StatementLine,
+    Account, EntryGroup, LedgerEntry, ReconciliationAction, ReconciliationCase, ReconciliationProposal, StatementLine,
 )
 from app.schemas.writes import ChildIn, Int32, RefundIn, ShortText
 from app.services import coverage_service, settings_service, settlement_service, stand_ins
@@ -386,8 +386,11 @@ class AdjustAmountAction(ActionBase):
     def lock_targets(self, ctx: Context, params: AdjustAmountParams) -> LockSet:
         if not self._scoped(ctx, params):
             return LockSet()
+        if params.group_id is not None:
+            return lockset_for(ctx.db, entry_ids=(params.entry_id,), group_ids=(params.group_id,))
+        entry = ctx.db.get(LedgerEntry, params.entry_id)  # a split member's group too (spec §5.2); missing: `_plan`
         return lockset_for(ctx.db, entry_ids=(params.entry_id,),
-                           group_ids=() if params.group_id is None else (params.group_id,))
+                           group_ids=() if entry is None or entry.group_id is None else (entry.group_id,))
 
     def validate_before(self, ctx: Context, params: AdjustAmountParams, prepared: Prepared, before: dict) -> None:
         self._plan(ctx, params)
@@ -431,7 +434,8 @@ class AdjustAmountAction(ActionBase):
         if entry.parent_entry_id is not None or any(schedule_rows(db, [entry.id])):
             raise _refuse("entry_id", "not_standalone", f"entry {entry.id}")
         if params.group_id is None:
-            if entry.group_id is not None:
+            # a split member is rewritten like a standalone entry (2026-10-24 spec §5.2); other group kinds are not
+            if entry.group_id is not None and db.get(EntryGroup, entry.group_id).kind != "split":
                 raise _refuse("entry_id", "not_standalone", f"entry {entry.id}")
         else:
             if entry.group_id != params.group_id or entry.id not in {m.id for m in members}:
@@ -484,7 +488,8 @@ class AdjustAmountAction(ActionBase):
             effect.coverage_ids = _claim(ctx, line, [(m, "member") for m in members], self.name, group_id=params.group_id)
             effect.touched_group_ids = [params.group_id]
         else:
-            effect.coverage_ids = _claim(ctx, line, [(entry, "principal")], self.name)
+            effect.coverage_ids = _claim(ctx, line, [(entry, "principal")], self.name)  # a member's row: group_id NULL
+            effect.touched_group_ids = [] if entry.group_id is None else [entry.group_id]  # «AGENT-249 3»
         effect.touched_entry_ids = [entry.id]
         effect.inverse = {"restore": {k: (str(v) if k in _DECIMALS and v is not None else v)
                                       for k, v in restore.items()}}

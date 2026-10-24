@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
-    Account, AccountStatement, Category, LedgerEntry, ReconciliationAudit, ReconciliationCase,
+    Account, AccountStatement, Category, EntryGroup, LedgerEntry, ReconciliationAudit, ReconciliationCase,
     ReconciliationOwnerRule, StatementLine,
 )
 from app.schemas.inbox import InboxApplyIn, InboxCaseRef
@@ -145,12 +145,14 @@ def _single_candidate(case: ReconciliationCase) -> int | None:
 
 
 def adjustable(db: Session, case: ReconciliationCase, *, check_lock: bool = True) -> bool:
-    """Whether `adjust_amount` would accept the case's single candidate: standalone (no parent, no group, no posted
-    schedule instance, the checks `ledger_actions` makes) and not protected. `check_lock=False` leaves the cutover
-    lock to the engine (the rule runner audits it as `locked_until_cutover`)."""
+    """Whether `adjust_amount` would accept the case's single candidate: standalone or a split member (no parent, no
+    group other than a `split`, no posted schedule instance, the checks `ledger_actions` makes) and not protected.
+    `check_lock=False` leaves the cutover lock to the engine (the rule runner audits it as `locked_until_cutover`)."""
     entry_id = _single_candidate(case)
     entry = None if entry_id is None else db.get(LedgerEntry, entry_id)
-    if entry is None or entry.parent_entry_id is not None or entry.group_id is not None:
+    if entry is None or entry.parent_entry_id is not None:
+        return False
+    if entry.group_id is not None and db.get(EntryGroup, entry.group_id).kind != "split":
         return False
     if any(base.schedule_rows(db, [entry.id])):
         return False
@@ -202,7 +204,7 @@ def _candidate(entry: LedgerEntry, categories: dict[int, Category], *, reason: s
                date_distance) -> dict:
     return {"entry_id": entry.id, "date": entry.posted_date, "title": _title(entry, categories),
             "amount": entry.amount, "reason": reason, "residual": None if residual is None else str(residual),
-            "date_distance": None if date_distance is None else int(date_distance)}
+            "date_distance": None if date_distance is None else int(date_distance), "group_id": entry.group_id}
 
 
 def _gate(statement_kind: str, line_kind: str, sign: str):
@@ -217,8 +219,9 @@ def _gate(statement_kind: str, line_kind: str, sign: str):
 
 def search_candidates(db: Session, case_id: int, *, days: int = 14, limit: int = 50) -> list[dict]:
     """Entries the owner may match the case's line to beyond its listed candidates (spec §4.3): the statement
-    account's top-level entries outside any group within ±`days`, same sign, gated like the matcher, unclaimed;
-    newest first."""
+    account's top-level entries outside any group or in a `split` group within ±`days`, same sign, gated like the
+    matcher, unclaimed; newest first. Listing a split member is an owner override (2026-10-24 spec §5.3): it may be
+    a member of a group the statement prints whole — the `match` that follows requires conservation."""
     case = db.get(ReconciliationCase, case_id)
     if case is None:
         raise NotFoundError(f"case {case_id} not found")
@@ -230,8 +233,10 @@ def search_candidates(db: Session, case_id: int, *, days: int = 14, limit: int =
     listed = {c.get("entry_id") for c in case.candidates or []} | {case.entry_id}
     excluded = (listed - {None}) | coverage_service.claimed_entry_ids(db)
     q = (select(LedgerEntry)
+         .outerjoin(EntryGroup, EntryGroup.id == LedgerEntry.group_id)
          .where(LedgerEntry.account_id == statement.account_id, LedgerEntry.currency == statement.currency,
-                LedgerEntry.parent_entry_id.is_(None), LedgerEntry.group_id.is_(None),  # match refuses members
+                LedgerEntry.parent_entry_id.is_(None),
+                or_(LedgerEntry.group_id.is_(None), EntryGroup.kind == "split"),  # match refuses other members
                 LedgerEntry.posted_date.between(line.posted_date - timedelta(days=days),
                                                 line.posted_date + timedelta(days=days)),
                 LedgerEntry.amount < 0 if sign == "-" else LedgerEntry.amount >= 0,
