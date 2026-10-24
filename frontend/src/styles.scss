@@ -795,6 +795,14 @@ body {
   background: var(--app-surface) !important;
 }
 
+.hub-filter-field {
+  display: flex; flex-direction: column; gap: 4px; min-width: 0;
+  > .field-label { color: var(--app-text-muted); font-size: 0.75rem; font-weight: 700; }
+  > select, > input { min-height: 36px; width: 100%; border: 1px solid var(--app-border); border-radius: 10px;
+    background: var(--app-surface-soft); color: inherit; font: inherit; padding: 0 10px; }
+  > select:focus-visible, > input:focus-visible { outline: none; border-color: var(--app-primary); box-shadow: 0 0 0 3px var(--app-focus-ring); }
+}
+
 .hub-paginator {
   margin-top: 0.75rem;
   background: transparent;

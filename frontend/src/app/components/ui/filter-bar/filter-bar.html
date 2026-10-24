@@ -1,0 +1,40 @@
+<ng-template #secondary><ng-content select="[filterBarSecondary]" /></ng-template>
+<div class="filter-bar">
+  <div class="filter-bar-row">
+    <div class="slot-search"><ng-content select="[filterBarSearch]" /></div>
+    <div class="slot-primary"><ng-content select="[filterBarPrimary]" /></div>
+    <button #toggleBtn type="button" class="filter-toggle" aria-haspopup="dialog" [attr.aria-expanded]="open()" (click)="toggle()">篩選{{ count() > 0 ? ' ' + count() : '' }}</button>
+  </div>
+  @if (chips().length > 0) {
+    <div class="filter-chips">
+      @for (chip of chips(); track chip.key) {
+        <span class="filter-chip">{{ chip.label }}<button type="button" class="chip-remove" [attr.aria-label]="'移除 ' + chip.label" (click)="remove.emit(chip.key)">×</button></span>
+      }
+      @if (chips().length >= 2) {
+        <button type="button" class="clear-all" (click)="clearAll.emit()">清除全部</button>
+      }
+    </div>
+  }
+  @if (open()) {
+    @if (isPhone()) {
+      <div class="filter-overlay" (click)="close()">
+        <div #panel class="filter-panel sheet" role="dialog" aria-modal="true" aria-label="篩選" (click)="$event.stopPropagation()" (keydown.escape)="close()">
+          <div class="grab" aria-hidden="true"></div>
+          <div class="slot-secondary"><ng-container [ngTemplateOutlet]="secondary" /></div>
+          <div class="panel-actions">
+            <button type="button" class="panel-reset" (click)="reset.emit()">重設</button>
+            <button type="button" class="panel-apply" (click)="close()">套用</button>
+          </div>
+        </div>
+      </div>
+    } @else {
+      <div #panel class="filter-panel popover" role="dialog" aria-label="篩選" (keydown.escape)="close()">
+        <div class="slot-secondary"><ng-container [ngTemplateOutlet]="secondary" /></div>
+        <div class="panel-actions">
+          <button type="button" class="panel-reset" (click)="reset.emit()">重設</button>
+          <button type="button" class="panel-apply" (click)="close()">套用</button>
+        </div>
+      </div>
+    }
+  }
+</div>
