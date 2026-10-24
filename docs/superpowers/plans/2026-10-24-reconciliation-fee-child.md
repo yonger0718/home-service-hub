@@ -13,9 +13,9 @@ rows for covered standalone parents with unclaimed children; `reconcile()` locks
 The policy validator shares the loader and `match`, so parity needs tests only.
 
 **Tech Stack:** Python 3.13, FastAPI service `services/accounting-service`, SQLAlchemy, pytest (unit + Postgres
-integration). Rev 1, plan rev 1, 2026-10-24.
+integration). Plan rev 2, 2026-10-24 (AGENT-270 folded).
 
-**Spec:** `docs/superpowers/specs/2026-10-24-reconciliation-fee-child-design.md` rev 3 (`184b78b`). Context specs:
+**Spec:** `docs/superpowers/specs/2026-10-24-reconciliation-fee-child-design.md` rev 4 (on this branch, after `b398248`). Context specs:
 `2026-10-24-reconciliation-split-members-design.md`, `2026-10-24-reconciliation-guard-holders-design.md`.
 
 ## Global Constraints
@@ -25,7 +25,8 @@ integration). Rev 1, plan rev 1, 2026-10-24.
 - No schema change, no migration, no new dependency, no settings change.
 - Spec invariants (anti-goals §2): a carrier id never appears in a claim row; a near child is never claimed; the pairing rule fires only for a complete **and** balanced cohort; no change to purchase-line readings, the printed-whole guard, holders, the policy or the twin guard.
 - Existing `bank_only` contexts stay byte-identical when there is no near child (`near_children` key present only when non-empty).
-- Names fixed by this plan: `Entry.carrier`, `principals`, `_exact_pair`, `_cohort`, `_identical_children`, `"exact_pair"` (match rule), `_near_children`, `NEAR_CHILDREN_MAX = 5`, `_carriers`.
+- Names fixed by this plan: `Entry.carrier`, `principals`, `_exact_pair`, `_cohort`, `_identical_children`, `"exact_pair"` (match rule), `_near_children`, `NEAR_CHILDREN_MAX = 5`, `_carriers`, `_survivors`.
+- A pair of two tied fee lines reads `exact_pair` (first line) then `exact` (second line: single rep, ordinary accept branch). `exact_pair` appears once per tie.
 - Commits end with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`. Never print `.env` values; tests use seeded fixtures only.
 
 ## Review Focus
@@ -104,9 +105,9 @@ def test_stand_in_carrier_child_rep_loses_to_an_owner_rep():
 - Consumes: Task 1 (`Entry.carrier`, carriers visible to the child path).
 - Produces:
   - `_identical_children(reps: list[Representation], entries: list[Entry], rules: Rules) -> tuple[str, Decimal, int] | None` — `(kind, flow, account_id)` when every rep is `kind == "child"`, every child shares one kind, one flow and one parent `account_id`, and `reps[0].score - reps[-1].score < rules.margin`; else `None`.
-  - `_cohort(kind: str, line: Line, lines: list[Line], entries: list[Entry], claimed: set[int], claimed_lines: set[int], ident: tuple[str, Decimal, int], rules: Rules) -> list[tuple[Entry, Child]] | None` — the connected component of `line` over left nodes = lines of `lines` not in `claimed_lines` with `line_kind == line.line_kind` and `_same(flow, line.flow)`, right nodes = unclaimed children matching `ident` (child in the line's gate), edges = admissible (`_same(c.flow, l.flow)` and `_date_distance(l, e) <= rules.exact_window_days`); returns the right nodes when the component is complete (every left × right admissible) and balanced (equal sizes), else `None`.
+  - `_cohort(kind: str, line: Line, lines: list[Line], entries: list[Entry], claimed: set[int], claimed_line_ids: set[int], ident: tuple[str, Decimal, int], rules: Rules) -> list[tuple[Entry, Child]] | None` — the connected component of `line` over left nodes = the unclaimed same-kind, same-flow lines `[ln for ln in lines if ln.id not in claimed_line_ids and ln.line_kind == line.line_kind and _same(ln.flow, line.flow)]` (`claimed_line_ids = {c.line_id for c in result.claims}` passed in), right nodes = unclaimed children matching `ident` (child in the line's gate), edges = admissible (`_same(c.flow, l.flow)` and `_date_distance(l, e) <= rules.exact_window_days`); returns the right nodes when the component is complete (every left × right admissible), balanced (equal sizes) **and undecided** (`min(l.id for l in left) == line.id`: the loop decides lines in id order, so a left node with a smaller id was already left as a case and vetoes the pairing — spec §3 Cohort, AGENT-270 finding 1 and its three-lines mirror), else `None`.
   - `_exact_pair(line: Line, cohort: list[tuple[Entry, Child]]) -> Representation` — the child with the smallest `_date_distance(line, e)`, ties by lowest `c.id`; `Representation("child", (Row(c.id, "principal", c.flow),), score, "exact_pair", reasons)` with `score, reasons = _score(line, (e,), rules.exact_window_days)`.
-  - In `match()`: a `claimed_lines: set[int]` updated at every `result.claims.append`; the R6a.2 branch becomes: `if len(reps) >= 2 and reps[0].score >= rules.ambiguous_floor:` → `ident = _identical_children(...)`; `cohort = _cohort(...) if ident and line.line_kind in BANK_ONLY_KINDS else None`; if `cohort`: claim `_exact_pair(line, cohort)` (update `claimed`, `claimed_lines`), else `_ambiguous` as today.
+  - In `match()`: the R6a.2 branch becomes: `if len(reps) >= 2 and reps[0].score >= rules.ambiguous_floor:` → `ident = _identical_children(...)`; `cohort = _cohort(statement_kind, line, lines, entries, claimed, {c.line_id for c in result.claims}, ident, rules) if ident and line.line_kind in BANK_ONLY_KINDS else None`; if `cohort`: claim `_exact_pair(line, cohort)` (update `claimed`), else `_ambiguous` as today. No other bookkeeping: once the first line of a pair takes its child, the second line has one rep and the existing accept branch claims it `exact`.
 
 - [ ] **Step 1: Write the failing tests**:
 
@@ -117,11 +118,19 @@ def _fee_parent(i, day, child_id, flow="-15", **kw):
 def test_complete_balanced_cohort_pairs_by_nearest_parent_date_then_id():
     lines = [L(1, date(2026, 7, 20), "-15", kind="fee", merchant=""), L(2, date(2026, 7, 21), "-15", kind="fee", merchant="")]
     res = run(lines, [_fee_parent(10, date(2026, 7, 20), 11), _fee_parent(20, date(2026, 7, 21), 21)])
-    assert sorted((c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims) == [(1, 11, "exact_pair"), (2, 21, "exact_pair")]
+    assert sorted((c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims) == [(1, 11, "exact_pair"), (2, 21, "exact")]
     same_day = run([L(1, date(2026, 9, 16), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 16), "-15", kind="fee", merchant="")],
                    [_fee_parent(10, date(2026, 9, 16), 11, carrier=True, in_reverse=False), _fee_parent(20, date(2026, 9, 16), 21, carrier=True, in_reverse=False)])
-    assert sorted((c.line_id, c.representation.rows[0].entry_id) for c in same_day.claims) == [(1, 11), (2, 21)]
+    assert sorted((c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in same_day.claims) == [(1, 11, "exact_pair"), (2, 21, "exact")]
     assert run(lines, [_fee_parent(10, date(2026, 7, 20), 11), _fee_parent(20, date(2026, 7, 21), 21)]).claims == res.claims  # deterministic
+
+def test_a_line_already_left_as_a_case_never_balances_a_later_cohort_agent_270():
+    lines = [L(1, date(2026, 9, 2), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 5), "-15", kind="fee", merchant="")]
+    entries = [_fee_parent(10, date(2026, 9, 3), 11), _fee_parent(20, date(2026, 9, 3), 21), E(30, date(2026, 8, 31), "-15", kind="fee", merchant="")]
+    res = run(lines, entries)
+    assert res.claims == [] and [c.kind for c in res.cases if c.line_id in (1, 2)] == ["ambiguous", "ambiguous"]   # B's 2×2 is complete+balanced but A is decided
+    assert {c["entry_id"] for c in next(c for c in res.cases if c.line_id == 1).candidates} == {11, 21, 30}
+    assert {c["entry_id"] for c in next(c for c in res.cases if c.line_id == 2).candidates} == {11, 21}
 
 def test_unbalanced_cohort_stays_ambiguous():
     one_line = run([L(1, date(2026, 8, 2), "-15", kind="fee", merchant="")],
@@ -129,7 +138,7 @@ def test_unbalanced_cohort_stays_ambiguous():
     assert one_line.claims == [] and one_line.cases[0].kind == "ambiguous" and {c["entry_id"] for c in one_line.cases[0].candidates} == {11, 12}
     three_lines = run([L(i, date(2026, 9, 16), "-15", kind="fee", merchant="") for i in (1, 2, 3)],
                       [_fee_parent(10, date(2026, 9, 16), 11), _fee_parent(20, date(2026, 9, 16), 21)])
-    assert three_lines.claims == [] and [c.kind for c in three_lines.cases if c.line_id in (1, 2)] == ["ambiguous", "ambiguous"]
+    assert three_lines.claims == [] and [c.kind for c in three_lines.cases] == ["ambiguous"] * 3   # mirror of AGENT-270 f1: lines 2+3 never pair after line 1
 
 def test_incomplete_cohort_stays_ambiguous_agent_267_counterexample():
     lines = [L(1, date(2026, 9, 4), "-5", kind="fee", merchant=""), L(2, date(2026, 9, 8), "-5", kind="fee", merchant="")]
@@ -162,7 +171,7 @@ def test_pairing_never_crosses_kind_flow_or_account():
 (In the last test's second shape the line 2 child is `-16`: one rep each, claimed `exact` — pins that pairing is not invoked when there is no tie. For the `interest` shape, `CARD_GATES["interest"]` does not admit `fee`; if it does in this codebase, switch the line kind to one whose gate excludes `fee` and keep the assertion.)
 
 - [ ] **Step 2: Run, expect failures** (`exact_pair` never produced; counterexample shapes already pass as `ambiguous` — keep them, they pin the rule's limits).
-- [ ] **Step 3: Implement `_identical_children`, `_cohort`, `_exact_pair` and the `match()` hook** per the Interfaces block. The component: BFS from `line` alternating lines and children over the admissible predicate; `claimed_lines` excludes lines already claimed; completeness = `all(admissible(l, e, c) for l in left for (e, c) in right)`.
+- [ ] **Step 3: Implement `_identical_children`, `_cohort`, `_exact_pair` and the `match()` hook** per the Interfaces block. The component: BFS from `line` alternating unclaimed lines and unclaimed identical children over the admissible predicate; complete = `all(admissible(l, e, c) for l in left for (e, c) in right)`; balanced = `len(left) == len(right)`; undecided = `min(l.id for l in left) == line.id`.
 - [ ] **Step 4: Run `tests/unit/test_statement_matching.py`** — all pass.
 - [ ] **Step 5: Commit** — `feat(matching): exact_pair — identical fee children pair inside a complete balanced cohort`.
 
@@ -212,7 +221,7 @@ def test_bank_only_line_names_its_near_children():
 
 **Interfaces:**
 - Consumes: Task 1 `Entry.carrier`.
-- Produces: `_carriers(db: Session, statement: AccountStatement, accounts: list[int], claimed: set[int], lo: date, hi: date, kinds_out: list[str], stand_in_ids: set[int]) -> list[matching.Entry]` — the covered standalone parents (`id IN claimed` chunked by 200, `group_id IS NULL`, `parent_entry_id IS NULL`, accounts, `currency == statement.currency`, `day` in `[lo, hi]`, `kind NOT IN kinds_out`), minus those whose `_instances(db, ids)` entry has `definition_kind == "installment"`, each with its unclaimed children (today's child query) — only parents with ≥ 1 child; `entry_view(e, children=kids, all_children=(), instance=None, in_reverse=False, claimable=True, carrier=True, stand_in=e.id in stand_in_ids, transfer_peer_is_card=None)`. Appended in `load_candidates` after `_drifted_instances`, before the structural rows. In `reconcile()`: `wanted` and `transfers` exclude carriers (`e.claimable and not e.carrier`); survivor filter admits `e.carrier` without a lock on its own id; `_with_children` applies to carriers as to any claimable row.
+- Produces: `_carriers(db: Session, statement: AccountStatement, accounts: list[int], claimed: set[int], lo: date, hi: date, kinds_out: list[str], stand_in_ids: set[int]) -> list[matching.Entry]` — the covered standalone parents (`id IN claimed` chunked by 200, `group_id IS NULL`, `parent_entry_id IS NULL`, accounts, `currency == statement.currency`, `day` in `[lo, hi]`, `kind NOT IN kinds_out`), minus those whose `_instances(db, ids)` entry has `definition_kind == "installment"`, each with its unclaimed children (today's child query) — only parents with ≥ 1 child; `entry_view(e, children=kids, all_children=(), instance=None, in_reverse=False, claimable=True, carrier=True, stand_in=e.id in stand_in_ids, transfer_peer_is_card=None)`. Appended in `load_candidates` after `_drifted_instances`, before the structural rows. In `reconcile()`: `wanted` and `transfers` exclude carriers (`e.claimable and not e.carrier`); the survivor comprehension (:951–952) moves into a pure `_survivors(entries: list[matching.Entry], locked_rows: Mapping[int, LedgerEntry], first_groups: dict[int, int | None]) -> list[matching.Entry]`: non-claimable rows pass unchanged; a carrier passes without its own id in `locked_rows`; claimable rows are trimmed by `_with_children`; then **a carrier left with no child is dropped** (`not (e.carrier and not e.children)`) — spec §5.2, AGENT-270 finding 3 (`_with_children` returns the trimmed row, it never drops).
 
 - [ ] **Step 1: Write the failing tests**:
 
@@ -222,27 +231,41 @@ def test_load_candidates_builds_a_carrier_for_a_covered_standalone_parent(seed, 
     parent = seed.entry(card, "-1000", day=day, merchant="AMAZON")
     fee = seed.entry(card, "-15", kind="fee", day=day, parent_entry_id=parent.id)
     other_cur = seed.entry(card, "-1", kind="fee", day=day, parent_entry_id=parent.id, currency="USD")
+    other_acct = seed.entry(_card(seed, db_session, "別卡"), "-2", kind="fee", day=day, parent_entry_id=parent.id)   # non-participating account
     stmt, ls, _ = _submit(db_session, run, card, [_line(1, day, "AMAZON", 1000), _line(2, day, "手續費", 15, "fee")])
     entries, _ = rec.load_candidates(db_session, stmt, [card.id], window_days=15, include_reward=False, exclude={parent.id})
     carrier = next(e for e in entries if e.id == parent.id)
     assert carrier.carrier and carrier.claimable and not carrier.in_reverse and carrier.all_children == ()
-    assert [c.id for c in carrier.children] == [fee.id]                      # the USD child is not a child of this population
+    assert [c.id for c in carrier.children] == [fee.id]                      # USD child and other-account child are not in this population
     # all children claimed elsewhere → no carrier; installment parent → no carrier; outside the window → no carrier
     _cover_elsewhere(db_session, run, card, fee, date(2026, 10, 3))
     assert all(e.id != parent.id for e in rec.load_candidates(db_session, stmt, [card.id], window_days=15, include_reward=False, exclude={parent.id})[0])
 
-def test_load_candidates_skips_installment_and_out_of_window_parents(seed, db_session, run):
+def test_load_candidates_skips_installment_split_member_and_out_of_window_parents(seed, db_session, run):
     ...  # an ungrouped installment instance parent (seed.definition(..., kind="installment") → posted entry) with a fee child, covered: no carrier;
-         # a recurring instance parent with a fee child, covered: carrier; a covered parent dated 20 days before period_start: no carrier
+         # a recurring instance parent with a fee child, covered: carrier; a covered parent dated 20 days before period_start: no carrier;
+         # a covered split-group member with a fee child: no carrier (structural row as today, `claimable=False`)
+
+def test_survivors_drop_a_carrier_without_a_locked_child():
+    from app.services.statements import matching as m
+    carrier = m.Entry(..., id=20, carrier=True, claimable=True, in_reverse=False, children=(m.Child(21, "fee", ...), m.Child(22, "fee", ...)))  # build with the unit `E` shape or a local helper
+    plain = m.Entry(..., id=30, claimable=True, children=())
+    locked = {22: object(), 30: object()}                                    # 21 joined after the lock; the carrier's own id is not locked
+    out = rec._survivors([carrier, plain], locked, {20: None, 30: None})
+    assert [(e.id, [c.id for c in e.children]) for e in out] == [(20, [22]), (30, [])]
+    assert rec._survivors([carrier], {}, {20: None}) == []                    # no locked child → dropped
+    assert [e.id for e in rec._survivors([plain], {}, {30: None})] == []     # a claimable non-carrier still needs its own lock
 
 def test_owner_matched_parent_fee_child_claims_the_fee_line_and_is_idempotent(seed, db_session, run):
     card = _card(seed, db_session); day = date(2026, 9, 16)
+    # pre-state (AGENT-270 finding 4): submit FIRST so the revision hook finds no entries; then book the parent + child
+    stmt, ls, _ = _submit(db_session, run, card, [_line(1, day, "AMAZON", 1000), _line(2, day, "國外交易手續費", 15, "fee")])
     parent = seed.entry(card, "-1000", day=day, merchant="AMAZON")
     fee = seed.entry(card, "-15", kind="fee", day=day, parent_entry_id=parent.id)
     db_session.commit()
-    stmt, ls, _ = _submit(db_session, run, card, [_line(1, day, "AMAZON", 1000), _line(2, day, "國外交易手續費", 15, "fee")])
-    _owner_cover(db_session, stmt, ls[0], [parent])          # owner shape: parent manual on line 1; today the fee line is open bank_only
-    assert [c.kind for c in _cases(db_session, stmt.id, "open") if c.line_id == ls[1].id] == ["line_unmatched"]
+    _owner_cover(db_session, stmt, ls[0], [parent])          # owner shape: parent manual on line 1
+    open_fee = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == ls[1].id]
+    assert [(c.kind, c.context.get("hint")) for c in open_fee] == [("line_unmatched", "bank_only")]
     rec.reconcile(db_session, stmt.id); db_session.commit()
     rows = _active(db_session, stmt.id)
     assert sorted((r.line_id, r.entry_id, r.role, r.match_kind, r.match_rule) for r in rows) == [(ls[0].id, parent.id, "principal", "manual", "owner"), (ls[1].id, fee.id, "principal", "auto", "exact")]
@@ -252,10 +275,12 @@ def test_owner_matched_parent_fee_child_claims_the_fee_line_and_is_idempotent(se
     assert sorted((r.id, r.line_id, r.entry_id) for r in _active(db_session, stmt.id)) == before   # kept, not rewritten
 
 def test_parent_claimed_on_the_previous_statement_fee_line_on_the_next(seed, db_session, run):
-    ...  # statement N (Aug) claims the parent dated Aug 30 auto; statement N+1 (Sep 1–30) prints the fee line Sep 1 → N+1's reconcile claims the child (carrier from `claimed` on another statement)
+    ...  # submit N+1 (Sep 1–30, fee line Sep 1) first; then book the parent dated Aug 30 + fee child; then submit N (Aug) whose hook claims the parent
+         # auto; `rec.reconcile(N+1)` → the child claims the Sep 1 fee line (carrier from `claimed` on another statement)
 
 def test_two_manual_parents_two_identical_children_two_identical_lines_pair(seed, db_session, run):
-    ...  # shape 1: both fee lines claimed `exact_pair` by children, coverage conserved, second reconcile identical
+    ...  # shape 1: submit 4 lines (two purchases, two identical fee lines) first; book two parents + identical children; `_owner_cover` both purchase
+         # lines; reconcile → fee line 1 claimed `exact_pair`, fee line 2 `exact` (single rep); coverage conserved; second reconcile identical row ids
 
 def test_one_line_two_identical_children_stays_ambiguous(seed, db_session, run):
     ...  # shape 3: `ambiguous` case with two candidates, no coverage on the fee line
@@ -281,18 +306,27 @@ Write the elided bodies in the style of the first two; produce the owner coverag
 **Interfaces:**
 - Consumes: Tasks 1–4.
 
-- [ ] **Step 1: Write the failing policy test**:
+- [ ] **Step 1: Write the failing policy tests** (pre-state as in Task 4: `_fee_statement` submits the lines first — one 1000 AMAZON purchase + one 15 fee line, `DAY` — then book the entries, then `_owner_cover` the purchase line with the parent; helpers `_agent_proposal` :551, `_validator_refusal` :702, `policy_service.collect_candidates`):
 
 ```python
-def test_validator_and_reconcile_agree_on_a_carrier_child_fee_line(seed, db_session, run):
-    # owner-matched parent, fee child, fee line; a standalone owner twin (-15 fee entry, another parent-less row) exists too
+def test_validator_sees_the_carrier_child_when_it_ties_with_an_owner_twin(seed, db_session, run):
+    # (a) spec §5.4 / test 17a: parent owner-covered, fee child −15 and a standalone owner fee −15 twin, both dated DAY, no merchant text
+    ...  # rec.reconcile → the fee line is `ambiguous`, candidates == {child.id, twin.id}, no coverage on it
+    ...  # _agent_proposal(db, case, fee_line, twin.id); msg = _validator_refusal(db, stmt.id, case, twin.id); assert "2 admissible" in msg
+    ...  # negative control: the same shape without the child → reconcile claims the twin `exact` (today's behaviour, pins what changed)
+
+def test_child_only_fee_line_has_no_case_and_no_policy_candidate(seed, db_session, run):
+    # (b) test 17b: child −15 only → claimed `exact`; no open case on the fee line; collect_candidates(...) has no candidate whose case is on that line
     ...
-    # (a) reconcile: the fee line is claimed by the child (`exact`), no bank_only case; an agent `match` proposal naming the twin → `not_single_admissible` (refusal, no coverage write);
-    # (b) with the twin absent and the child amount off by 1 (near): the line stays bank_only with near_children; `_only_candidate` for create_system_entry is None (twin guard: the child is an owner twin), and the proposal path refuses `owner_may_record`
+
+def test_near_child_keeps_the_twin_guard_closed(seed, db_session, run):
+    # (c) test 17c: child −14, fee line −15 → open line_unmatched {hint bank_only, near_children [{child, parent, "-1.0000"}]}
+    ...  # found = policy_service.collect_candidates(db, stmt, settings_service.reconciliation_policy(db)) with create_system_entry enabled (_set_policy)
+    ...  # assert [c for c in found if c.case_id == case.id] == []     — on the list, never `_only_candidate` (it unpacks exactly one)
 ```
 
-- [ ] **Step 2: Run, expect failure** (today: the line is `bank_only`, the twin proposal is admissible).
-- [ ] **Step 3: No production code expected; if the test exposes a parity gap, fix it in the service and note it in the spec §10.**
+- [ ] **Step 2: Run, expect failure** (today: (a) the validator sees one reading, the twin, and accepts; (b) the line is `bank_only`; (c) `near_children` absent).
+- [ ] **Step 3: No production code expected.** If a test exposes a real reconcile/validator disagreement, do **not** patch the policy: stop, write the disagreement into the task report, and the controller decides (spec §2 anti-goals: no policy change).
 - [ ] **Step 4: Run** `tests/integration/test_reconciliation_policy.py` and then the full suites once: `tests/unit` and `tests/integration` — both green; paste the pass counts into the task report (the branch base is green on both, so any failure is this branch's).
 - [ ] **Step 5: Docs** — the split-members §3 pointer line; fee-child spec §10 execution errata; commit `docs: fee-child errata and cross-spec pointer`.
 
