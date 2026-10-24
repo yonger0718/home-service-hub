@@ -51,6 +51,7 @@ import { formatMoney } from '../../ui/format';
 import { SwitchComponent } from '../../ui/switch/switch';
 import { TagComponent } from '../../ui/tag/tag';
 import { BROKER_OPTIONS } from './accounts-list';
+import { FilterBarComponent, FilterChip } from '../../ui/filter-bar/filter-bar';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { CASH_SOURCE_VARIANTS, cashRow, formatCash, runningBalances } from './cash-rows';
 
@@ -113,6 +114,7 @@ function isCashQueryEvent(event: CashQueryEvent | null): event is CashQueryEvent
   standalone: true,
   imports: [
     PageHeaderComponent,
+    FilterBarComponent,
     FormsModule,
     ReactiveFormsModule,
     ButtonModule,
@@ -577,9 +579,24 @@ export class PortfolioAccountDetailComponent implements OnInit {
     this.fetchTransactions();
   }
 
-  hasActiveFilters(): boolean {
-    const q = this.query();
-    return !!(q.date_from || q.date_to || q.type);
+  /** Lifts the 類型 multiselect panel and the 排序 select panel above the open filter popover. */
+  readonly panelOverlayOptions = { baseZIndex: 1200 };
+
+  /** Secondary filters only: 類型 stays inline and never chips. */
+  readonly filterChips = computed<FilterChip[]>(() => {
+    const { date_from, date_to } = this.query();
+    return date_from || date_to ? [{ key: 'date', label: `日期：${date_from ?? '…'} – ${date_to ?? '…'}` }] : [];
+  });
+
+  removeFilter(key: string): void {
+    if (key === 'date') {
+      this.dateRange = null;
+      this.onDateRangeChange(null);
+    }
+  }
+
+  resetSecondaryFilters(): void {
+    this.removeFilter('date');
   }
 
   transactionKey(txn: CashTransaction): string {

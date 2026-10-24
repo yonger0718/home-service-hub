@@ -7,6 +7,9 @@ import { provideRouter } from '@angular/router';
 import { ActivatedRoute } from '@angular/router';
 import { BehaviorSubject, of } from 'rxjs';
 import { ChartModule } from 'primeng/chart';
+import { DatePicker } from 'primeng/datepicker';
+import { MultiSelect } from 'primeng/multiselect';
+import { Select } from 'primeng/select';
 import { Component, Input } from '@angular/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfirmationService, MessageService } from 'primeng/api';
@@ -1003,17 +1006,48 @@ describe('PortfolioAccountDetailComponent cash rows and 餘額', () => {
     expect(dividend.querySelector('.delete-transaction')).toBeNull();
   });
 
-  it('keeps 合併同筆交易 (switch), the filters and 新增交易 in the header row', () => {
-    const root = el(load());
+  it('renders 類型 inline and 日期範圍 / 排序 behind 篩選', () => {
+    const fixture = load();
+    const root = el(fixture);
     const header = root.querySelector('.transactions-header')!;
-    const toggle = header.querySelector('button[role="switch"]');
-    expect(toggle?.getAttribute('aria-label')).toBe('合併同筆交易');
+    expect(header.querySelector('button[role="switch"]')?.getAttribute('aria-label')).toBe('合併同筆交易');
     expect(header.textContent).toContain('合併同筆交易');
     expect(header.textContent).toContain('新增交易');
-    expect(root.querySelector('.hub-filter-bar p-datepicker')).not.toBeNull();
-    expect(root.querySelector('.hub-filter-bar p-multiselect')).not.toBeNull();
-    expect(root.querySelector('.hub-filter-bar p-select')).not.toBeNull();
     expect(root.querySelector('p-toggleswitch')).toBeNull();
+    expect(root.querySelector('.hub-filter-bar')).toBeNull();
+    expect(root.querySelector('.filter-bar-row p-multiselect')).not.toBeNull();
+    expect(root.querySelector('app-filter-bar p-datepicker')).toBeNull();
+    expect(root.querySelector('app-filter-bar p-select')).toBeNull();
+
+    root.querySelector<HTMLButtonElement>('.filter-toggle')!.click();
+    fixture.detectChanges();
+    expect(root.querySelector('.filter-panel p-datepicker')).not.toBeNull();
+    expect(root.querySelector('.filter-panel p-select')).not.toBeNull();
+    expect(fixture.debugElement.query(By.directive(DatePicker)).componentInstance.baseZIndex).toBe(1200);
+    const sort = fixture.debugElement.queryAll(By.directive(Select)).map(d => d.componentInstance).find(c => c.options === fixture.componentInstance.sortOptions);
+    expect(sort.overlayOptions?.baseZIndex).toBe(1200);
+    expect(fixture.debugElement.query(By.directive(MultiSelect)).componentInstance.overlayOptions?.baseZIndex).toBe(1200);
+  });
+
+  it('a date range behind 篩選 reloads with date_from/date_to, reads 篩選 1 and shows a removable chip', () => {
+    const fixture = load();
+    const root = el(fixture);
+    const toggle = () => text(root.querySelector('.filter-toggle'));
+    expect(toggle()).toBe('篩選');
+
+    fixture.componentInstance.onDateRangeChange([new Date(2026, 0, 1), new Date(2026, 0, 31)]);
+    vi.advanceTimersByTime(300);
+    flushTxns(SCENARIO, params => params.get('date_from') === '2026-01-01' && params.get('date_to') === '2026-01-31');
+    fixture.detectChanges();
+    expect(toggle()).toBe('篩選 1');
+    expect(text(root.querySelector('.filter-chip'))).toContain('日期：2026-01-01 – 2026-01-31');
+
+    root.querySelector<HTMLButtonElement>('.chip-remove')!.click();
+    vi.advanceTimersByTime(300);
+    flushTxns(SCENARIO, params => !params.has('date_from') && !params.has('date_to'));
+    fixture.detectChanges();
+    expect(toggle()).toBe('篩選');
+    expect(root.querySelector('.filter-chip')).toBeNull();
   });
 
   it('a merged parent moves the balance by its net, not its legs', () => {

@@ -89,44 +89,52 @@
     </div>
   </div>
 
-  <div class="hub-filter-bar">
-    <div class="filter-controls">
-      <p-datepicker
-        [(ngModel)]="dateRange"
-        selectionMode="range"
-        [readonlyInput]="true"
-        dateFormat="yy-mm-dd"
-        placeholder="日期範圍"
-        appendTo="body"
-        [showClear]="true"
-        styleClass="hub-mini-datepicker"
-        (onSelect)="onDateRangeChange(dateRange)"
-        (onClear)="onDateRangeChange(null)">
-      </p-datepicker>
-      <p-multiselect
-        [options]="typeOptions"
-        optionLabel="label"
-        optionValue="value"
-        [ngModel]="selectedTypes()"
-        [selectionLimit]="1"
-        placeholder="類型"
-        appendTo="body"
-        styleClass="hub-mini-select"
-        (ngModelChange)="onTypeFilterChange($event)">
-      </p-multiselect>
-      <p-select
-        [options]="sortOptions"
-        optionLabel="label"
-        optionValue="value"
-        [ngModel]="query().sort ?? 'txn_date:desc'"
-        (onChange)="onSortChange($event.value)"
-        styleClass="hub-mini-select">
-      </p-select>
-      @if (hasActiveFilters()) {
-        <p-button icon="pi pi-filter-slash" severity="secondary" [text]="true" (onClick)="clearFilters()" pTooltip="清除篩選"></p-button>
-      }
+  <app-filter-bar [chips]="filterChips()" (remove)="removeFilter($event)" (clearAll)="clearFilters()" (reset)="resetSecondaryFilters()">
+    <p-multiselect
+      filterBarPrimary
+      [options]="typeOptions"
+      optionLabel="label"
+      optionValue="value"
+      [ngModel]="selectedTypes()"
+      [selectionLimit]="1"
+      placeholder="類型"
+      appendTo="body"
+      [overlayOptions]="panelOverlayOptions"
+      styleClass="hub-mini-select"
+      (ngModelChange)="onTypeFilterChange($event)">
+    </p-multiselect>
+    <div filterBarSecondary class="filter-fields">
+      <div class="hub-filter-field">
+        <span class="field-label">日期範圍</span>
+        <p-datepicker
+          ariaLabel="日期範圍"
+          [(ngModel)]="dateRange"
+          selectionMode="range"
+          [readonlyInput]="true"
+          dateFormat="yy-mm-dd"
+          placeholder="日期範圍"
+          appendTo="body"
+          [baseZIndex]="1200"
+          [showClear]="true"
+          styleClass="hub-mini-datepicker"
+          (onSelect)="onDateRangeChange(dateRange)"
+          (onClear)="onDateRangeChange(null)">
+        </p-datepicker>
+      </div>
+      <div class="hub-filter-field">
+        <span class="field-label">排序</span>
+        <p-select
+          [options]="sortOptions"
+          optionLabel="label"
+          optionValue="value"
+          [ngModel]="query().sort ?? 'txn_date:desc'"
+          [overlayOptions]="panelOverlayOptions"
+          (onChange)="onSortChange($event.value)"
+          styleClass="hub-mini-select">
+        </p-select>
+      </div>
     </div>
-  </div>
+  </app-filter-bar>
 
   <div class="hub-result-meta">
     <span class="meta-count">{{ total() }} 筆</span>
