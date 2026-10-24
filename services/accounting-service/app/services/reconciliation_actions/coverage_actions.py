@@ -12,7 +12,7 @@ from sqlalchemy import exists, select
 from app.models import EntryGroup, LedgerEntry, ReconciliationAction, StatementCoverage, StatementLine
 from app.schemas.writes import Int32
 from app.services import coverage_service, settings_service
-from app.services.errors import CodedValidationError
+from app.services.errors import CodedConflictError, CodedValidationError
 from app.services.statements import matching
 
 from . import register
@@ -39,6 +39,15 @@ def case_line(ctx: Context, line_id: int) -> StatementLine:
 def _line_claimed(ctx: Context, line_id: int) -> bool:
     return ctx.db.execute(select(exists().where(StatementCoverage.line_id == line_id,
                                                 StatementCoverage.status == "active"))).scalar_one()
+
+
+def _locked_group(ctx: Context, entry: LedgerEntry) -> None:
+    """Under the locks: the entry's group must be one the engine locked. `lock_targets` read the group without locks,
+    so a regroup committed before the expected snapshot (into another group, or into one from none) would pass the
+    snapshot check while the new group is neither locked nor in `before` (2026-10-24 spec §5.1; precedent
+    `Prepared.lock_set`)."""
+    if entry.group_id is not None and entry.group_id not in (ctx.lock_set.group_ids if ctx.lock_set else ()):
+        raise CodedConflictError("snapshot_conflict", f"entry {entry.id} regrouped to {entry.group_id}")
 
 
 class MatchParams(ActionParams):
@@ -116,6 +125,7 @@ class MatchAction(ActionBase):
             entry = db.get(LedgerEntry, params.entry_id)
             if entry is None:
                 raise _refuse("entry_id", "not_found", f"entry {params.entry_id}")
+            _locked_group(ctx, entry)
             gate(entry, "entry_id")
             if entry.parent_entry_id is not None:
                 raise _refuse("entry_id", "child_entry", f"entry {entry.id}")

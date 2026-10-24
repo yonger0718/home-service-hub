@@ -33,6 +33,7 @@ from .base import (
     lockset_for, schedule_rows,
 )
 from .coverage_actions import _line_claimed as line_claimed
+from .coverage_actions import _locked_group as locked_group
 from .coverage_actions import case_line
 
 CREATE, FEE, AMOUNT = "create", "fee", "amount"
@@ -427,6 +428,7 @@ class AdjustAmountAction(ActionBase):
                 raise CodedConflictError("candidate_changed", f"group {params.group_id} counted {sorted(m.id for m in members)}, "
                                                               f"case designated {designated}")
         entry = _gate(ctx, db.get(LedgerEntry, params.entry_id), "entry_id", params.entry_id)
+        locked_group(ctx, entry)  # a regroup since the unlocked `lock_targets` read is a snapshot_conflict
         ews.assert_entry_editable(db, entry)
         reason = protected_reason(db, entry)
         if reason is not None:

@@ -350,6 +350,34 @@ def test_match_accepts_a_split_member_and_refuses_an_installment_member(unmatche
     assert (sib.status, sib.version) == ("open", sibling_version)
 
 
+def test_a_member_regrouped_between_the_lock_read_and_prepare_is_a_snapshot_conflict(unmatched, seed, db_session,
+                                                                                      pg_engine, monkeypatch):
+    """Review (Tasks 4–5, Important): `lock_targets` reads the member's group without locks; a regroup committed
+    before `prepare`'s expected snapshot passes the snapshot check (both reads show the new group), so `_claim`
+    refuses when the entry's group is not the one locked."""
+    s = unmatched(amount="-120")
+    old, new = seed.group("split"), seed.group("split")
+    member = seed.entry(s.card, "-580", day=DAY, merchant="全聯", group_id=old.id)
+    db_session.commit()
+    member_id, new_id = member.id, new.id
+    real = MatchAction.prepare
+
+    def regroup_then_prepare(self, ctx, params):
+        other = sessionmaker(bind=pg_engine, autoflush=False)()
+        try:
+            other.get(LedgerEntry, member_id).group_id = new_id
+            other.commit()
+        finally:
+            other.close()
+        return real(self, ctx, params)
+
+    monkeypatch.setattr(MatchAction, "prepare", regroup_then_prepare)
+    exc = _refuse(db_session, lambda: _apply(db_session, s.case, params={"line_id": s.line.id, "entry_id": member_id}))
+    assert isinstance(exc, CodedConflictError) and exc.code == "snapshot_conflict"
+    assert _active(db_session, s.stmt.id) == [] and _actions(db_session) == []
+    assert db_session.get(LedgerEntry, member_id).group_id == new_id  # the other session's regroup only
+
+
 def test_revert_of_a_member_match_and_sibling_ordering(seed, db_session, run):
     """Two member matches on one group share the group in `touched_group_ids`, so reverting the first is refused
     (`not_revertable`, "later action …") while the second stands; reverting in reverse order releases both lines and

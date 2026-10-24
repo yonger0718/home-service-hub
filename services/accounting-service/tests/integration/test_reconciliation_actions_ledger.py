@@ -783,6 +783,34 @@ def test_an_amount_edit_between_prepare_and_the_locks_is_a_snapshot_conflict(nea
     assert _actions(db_session) == [] and _active(db_session, s.stmt.id) == []
 
 
+def test_an_entry_joining_a_split_group_between_the_lock_read_and_prepare_is_a_snapshot_conflict(
+        near_pair, seed, db_session, pg_engine, monkeypatch):
+    """Review (Tasks 4–5, Important): `lock_targets` saw a standalone entry (no group locked); it joins a split group
+    before `prepare`'s expected snapshot, so both snapshot reads agree and only `_plan`'s lock-set check refuses."""
+    s = near_pair()
+    group = seed.group("split")
+    seed.entry(s.card, "-200", day=date(2026, 9, 14), merchant="AMAZON", group_id=group.id)
+    db_session.commit()
+    entry_id, group_id = s.entry.id, group.id
+    real = AdjustAmountAction.prepare
+
+    def regroup_then_prepare(self, ctx, params):
+        other = sessionmaker(bind=pg_engine, autoflush=False)()
+        try:
+            other.get(LedgerEntry, entry_id).group_id = group_id
+            other.commit()
+        finally:
+            other.close()
+        return real(self, ctx, params)
+
+    monkeypatch.setattr(AdjustAmountAction, "prepare", regroup_then_prepare)
+    exc = _refuse(db_session, lambda: _apply(db_session, s.case, "adjust_amount", _adjust(s)))
+    assert isinstance(exc, CodedConflictError) and exc.code == "snapshot_conflict"
+    entry = _fresh(db_session, LedgerEntry, entry_id)
+    assert (entry.amount, entry.group_id, entry.description) == (Decimal("-1000"), group_id, "原說明")
+    assert _actions(db_session) == [] and _active(db_session, s.stmt.id) == []
+
+
 def test_adjust_amount_tags_its_dirty_event(near_pair, db_session, dirty_on):
     s = near_pair()
     row = _apply(db_session, s.case, "adjust_amount", _adjust(s))
