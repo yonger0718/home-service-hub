@@ -305,7 +305,8 @@ def _plan_entries(line: Line, entries: list[Entry], definition: int, claimed: se
 ASIDE_COMBINATIONS_MAX = 8  # printed-alone members of one group enumerated in combinations; more: readings incomplete
 
 
-def _group_variants(g: Group, by_id: dict[int, Entry], claimed: set[int], aside: frozenset[int]) -> tuple[list[list[Entry]], bool]:
+def _group_variants(g: Group, by_id: dict[int, Entry], claimed: set[int], aside: frozenset[int], *,
+                   prune: bool = True) -> tuple[list[list[Entry]], bool]:
     """The member sets a `split` group may represent a line with, and whether the list is complete: the whole group
     (the net reading, as before 2026-10-19) and, for the members the statement prints as their own line (`aside`,
     see `printed_alone`), the group without any combination of them — one printed fee line excuses one fee member,
@@ -315,7 +316,9 @@ def _group_variants(g: Group, by_id: dict[int, Entry], claimed: set[int], aside:
     zero — a fee and a reward printed alone go to their own lines); readings that are not nested stay and compete
     (two fees −6 and −4 against one fee −10 tie as ambiguous). Above ASIDE_COMBINATIONS_MAX printed-alone members
     only the whole reading is listed and the result is marked incomplete: the caller never auto-claims such a
-    line (`match`), since an omitted reading could compete."""
+    line (`match`), since an omitted reading could compete. `prune=False` (the printed-whole guard, `group_readings`)
+    skips the subset-sum drop and keeps every combination: the drop compares net totals before any child is added,
+    so a pruned superset can still be the claim side's `group_children` reading under a smaller `aside`."""
     members = [by_id.get(i) for i in g.member_ids]
     if any(mem is None or mem.instance is not None for mem in members):
         return [], True
@@ -334,6 +337,8 @@ def _group_variants(g: Group, by_id: dict[int, Entry], claimed: set[int], aside:
     def total(reading: list[Entry]) -> Decimal:
         return sum((mem.flow for mem in reading), ZERO).quantize(Q)
 
+    if not prune:
+        return readings, complete
     kept = [r for r in readings
             if not any(len(k) < len(r) and {mem.id for mem in k} < {mem.id for mem in r} and total(k) == total(r)
                        for k in readings)]
@@ -394,20 +399,30 @@ def _foreign_currency(currency: str | None, account_currency: str | None) -> boo
 def group_readings(g: Group, by_id: dict[int, Entry], aside: frozenset[int], aside_children: frozenset[int],
                    account_currency: str | None = None) -> tuple[list[Reading], bool]:
     """Every total `_representations` could read the split group `g` as on a fresh statement (claimed = ∅): for each
-    member reading of `_group_variants` the net total and, for each child view — the claimable `children` (what the
-    claim side attaches; a child covered elsewhere is absent from it) and every child as stored (`_kids`) — the total
-    with that view's children minus each combination of its printed-alone ones (`aside_children`, at most
-    ASIDE_COMBINATIONS_MAX per view; above it only the view's full total and the result is incomplete). A reading's
+    member reading of `_group_variants` (unpruned, `prune=False`: see below) the net total and, for each child view —
+    the claimable `children` (what the claim side attaches; a child covered elsewhere is absent from it) and every
+    child as stored (`_kids`) — the total with that view's children minus each combination of its printed-alone ones
+    (`aside_children`, at most ASIDE_COMBINATIONS_MAX per view; above it only the view's full total and the result
+    is incomplete). A reading's
     foreign total is the members' summed `original_amount` when every member carries one in one shared currency. A
     member missing from `by_id`, or a member or child (either view) in a currency other than `account_currency`
     (spec §3 "Mixed currencies": it cannot be summed with the line; None skips the check) → `([], False)`; the
-    caller treats an incomplete or empty result as printed whole (fail-closed)."""
+    caller treats an incomplete or empty result as printed whole (fail-closed).
+
+    Why unpruned (PR #130 review P1): the claim side calls `_group_variants` with its own `aside` (printed alone by
+    the claimable lines, a subset of the guard's `aside_all` here) and the run's `claimed` set, and prunes there. For
+    any claimed set and any `aside ⊆ aside_all`, every member reading the claim side can build is the group without
+    some combination of its `aside` members — one of the unpruned combinations over `aside_all`; the claimed filter
+    and the subset-sum pruning only remove readings (children are then read per member reading by the child views
+    below, as before). Pruning here instead would compare net totals before children: a superset whose net equals a
+    subset's is dropped although its child-inclusive total differs, and the guard would miss the claim side's
+    `group_children` reading. The cap (`complete`) is unchanged."""
     if any(i not in by_id for i in g.member_ids):
         return [], False
     if any(_foreign_currency(x.currency, account_currency)
            for mem in (by_id[i] for i in g.member_ids) for x in (mem, *mem.children, *_kids(mem))):
         return [], False
-    variants, complete = _group_variants(g, by_id, set(), aside)
+    variants, complete = _group_variants(g, by_id, set(), aside, prune=False)
     out: list[Reading] = []
     seen: set[tuple] = set()
 

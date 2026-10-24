@@ -1300,3 +1300,57 @@ def test_guard_drops_a_printed_alone_child_from_the_claimable_children_view(orde
     assert sorted((c.line_id, c.representation.kind, sorted(r.entry_id for r in c.representation.rows))
                   for c in res.claims) == sorted([(refund, "child", [210]), (total, "group_children", [21, 22, 211])])
     assert [(c.line_id, c.kind) for c in res.cases if c.line_id == member] == [(member, "line_unmatched")]
+
+
+@pytest.mark.parametrize("order", ["member_line_first", "sum_line_first"])
+def test_guard_reads_a_superset_the_subset_sum_pruning_drops(order):
+    """PR #130 review P1 (spec §3): fee 23 and refund 24 are printed alone by guard-only lines (covered elsewhere), so
+    `aside_all` = {23, 24} while the claim side's `aside` = ∅. The pruned guard variants drop {21, 22, 23, 24} (net
+    −1000, equal to {21, 22}) before children are added, so its child-inclusive −1100 — the claim side's
+    `group_children` reading — was never tested and the group went apart. The guard enumerates unpruned member
+    readings: −1100 marks the group whole and the −600 line never claims member 21 alone, whatever the line order."""
+    d = date(2026, 9, 3)
+    k31 = m.Child(31, "fee", D("-100"))
+    g = m.Group(5, "split", (21, 22, 23, 24))
+    ents = [E(21, d, "-600", group_id=5), E(22, d, "-400", group_id=5),
+            E(23, d, "-200", kind="fee", group_id=5, children=[k31]), E(24, d, "200", kind="refund", group_id=5)]
+    member_id, sum_id = (1, 2) if order == "member_line_first" else (2, 1)
+    lines = sorted([L(member_id, d, "-600"), L(sum_id, d, "-1100")], key=lambda ln: ln.id)
+    lines_all = lines + [L(3, d, "-200", kind="fee"), L(4, d, "200", kind="refund")]
+    ctx = m.statement_context("card", lines, lines_all, ents, {5: g}, R, "TWD")
+    assert (ctx.aside, ctx.aside_all, ctx.whole, ctx.apart) == (frozenset(), {23, 24}, {5}, frozenset())
+    res = run(lines, ents, groups={5: g}, lines_all=lines_all)
+    assert [(c.line_id, c.representation.kind, sorted(r.entry_id for r in c.representation.rows)) for c in res.claims] \
+        == [(sum_id, "group_children", [21, 22, 23, 24, 31])]
+    assert [(c.line_id, c.kind) for c in res.cases] == [(member_id, "line_unmatched")]
+
+
+def test_guard_reads_a_zero_sum_pair_of_guard_only_members_with_children():
+    """PR #130 review P1: fee 23 (−50, child −20) and reward 24 (+50) sum to zero and are printed alone by guard-only
+    lines; the purchase line prints every member and the child (−320). Pruning would drop the full reading before its
+    child is added (nearest pruned totals −300, −350, −370: outside the near tolerance); unpruned, it is whole."""
+    d = date(2026, 9, 3)
+    g = m.Group(5, "split", (21, 22, 23, 24))
+    ents = [E(21, d, "-200", group_id=5), E(22, d, "-100", group_id=5),
+            E(23, d, "-50", kind="fee", group_id=5, children=[m.Child(31, "fee", D("-20"))]),
+            E(24, d, "50", kind="reward", group_id=5)]
+    lines = [L(1, d, "-200"), L(2, d, "-320")]
+    lines_all = lines + [L(3, d, "-50", kind="fee"), L(4, d, "50", kind="reward")]
+    ctx = m.statement_context("card", lines, lines_all, ents, {5: g}, R, "TWD")
+    assert (ctx.aside_all, ctx.whole, ctx.apart) == ({23, 24}, {5}, frozenset())
+    res = run(lines, ents, groups={5: g}, lines_all=lines_all)
+    assert [(c.line_id, c.representation.kind, sorted(r.entry_id for r in c.representation.rows)) for c in res.claims] \
+        == [(2, "group_children", [21, 22, 23, 24, 31])]
+
+
+def test_group_variants_prunes_by_default_and_not_for_the_guard():
+    """The claim side's default (`prune=True`) drops a reading a strict subset of which sums to the same amount; the
+    guard's `prune=False` keeps every combination (spec §3 "Group readings for the guard")."""
+    d = date(2026, 9, 3)
+    g = m.Group(7, "split", (31, 32, 33))
+    ents = [E(31, d, "-100", group_id=7), E(32, d, "-10", kind="fee", group_id=7), E(33, d, "10", kind="reward", group_id=7)]
+    by_id = {e.id: e for e in ents}
+    ids = lambda res: (sorted(sorted(mem.id for mem in r) for r in res[0]), res[1])
+    assert ids(m._group_variants(g, by_id, set(), frozenset({32, 33}))) == ([[31], [31, 32], [31, 33]], True)
+    assert ids(m._group_variants(g, by_id, set(), frozenset({32, 33}), prune=False)) \
+        == ([[31], [31, 32], [31, 32, 33], [31, 33]], True)
