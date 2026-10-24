@@ -283,10 +283,12 @@ describe('large figures keep the bright tokens', () => {
 
 describe('sidebar wordmark', () => {
   it.each([
-    ['light', light],
-    ['dark', dark],
-  ])('--app-text on --app-surface-glass over --app-bg ≥ 4.5 in the %s theme', (_name, theme) => {
+    ['light', '--app-text', light],
+    ['light', '--app-text-muted', light],
+    ['dark', '--app-text', dark],
+    ['dark', '--app-text-muted', dark],
+  ])('%s theme: %s on --app-surface-glass over --app-bg ≥ 4.5', (_name, token, theme) => {
     const bg = composite(rgba(theme, '--app-surface-glass'), hex(theme, '--app-bg'));
-    expect(ratio(hex(theme, '--app-text'), bg)).toBeGreaterThanOrEqual(4.5);
+    expect(ratio(hex(theme, token), bg)).toBeGreaterThanOrEqual(4.5);
   });
 });

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Angular 21 (standalone, signals, OnPush, zoneless), Vitest via `cd frontend && npx ng test --watch=false --include <spec>`, SCSS with the `--app-*` token set, Playwright-in-Docker for the visual check (as in earlier redesign PRs).
 
-**Spec:** `openspec/changes/polish-layout-v2/` (PR #137, rev 3 `c348095`): `design.md` D1 and D4, `tasks.md` §1, deltas `specs/frontend-ui-primitives/spec.md` ("Component classes do not collide with Bootstrap"), `specs/frontend-accounting-ledger/spec.md` ("Rows keep the page gutter"), `specs/frontend-design-system/spec.md` ("Logo legible in both themes"), `specs/frontend-app-shell/spec.md` ("Pane state belongs to two-pane layouts"). Evidence: `design_handoff_v2/reviews/2026-10-24-layout-review.md` defects 1, 4, 5.
+**Spec:** `openspec/changes/polish-layout-v2/` (PR #137, rev 6 `25c26c6`): `design.md` D1 and D4, `tasks.md` §1, deltas `specs/frontend-ui-primitives/spec.md` ("Component classes do not collide with Bootstrap"), `specs/frontend-accounting-ledger/spec.md` ("Rows keep the page gutter"), `specs/frontend-design-system/spec.md` ("Logo legible in both themes"), `specs/frontend-app-shell/spec.md` ("Pane state belongs to two-pane layouts"). Evidence: `design_handoff_v2/reviews/2026-10-24-layout-review.md` defects 1, 4, 5.
 
 ## Global Constraints
 

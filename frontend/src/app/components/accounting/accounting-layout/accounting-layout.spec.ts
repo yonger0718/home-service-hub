@@ -232,6 +232,11 @@ describe('AccountingLayoutComponent', () => {
     expect(pane.paneOpen()).toBe(true);
     expect(pane.fabRight()).toBe(FAB_RIGHT_BESIDE_PANE);
 
+    await TestBed.inject(Router).navigateByUrl('/accounting');
+    harness.detectChanges();
+    expect(pane.fabRight()).toBeNull();
+    expect(pane.paneOpen()).toBe(false);
+
     harness.fixture.destroy();
     expect(pane.fabRight()).toBeNull();
     expect(pane.paneOpen()).toBe(false);
