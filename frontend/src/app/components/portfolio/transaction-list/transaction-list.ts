@@ -61,7 +61,7 @@ const DEFAULT_CURRENCY_BY_MARKET: Record<Exclude<MarketCode, 'TW'>, string> = {
   ],
   providers: [ConfirmationService, MessageService],
   templateUrl: './transaction-list.html',
-  styleUrl: './transaction-list.scss',
+  styleUrls: ['./transaction-list.scss', '../kpi-cards.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PortfolioTransactionListComponent implements OnInit, OnDestroy {

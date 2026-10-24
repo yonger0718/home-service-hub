@@ -1,0 +1,70 @@
+/* Shared KPI / summary card rules (polish-layout-v2 D3). Nested under .kpi-row so nothing leaks. */
+.kpi-row {
+  display: grid;
+  gap: 1.25rem;
+  grid-auto-rows: minmax(140px, auto);
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+
+  app-bento {
+    container-type: inline-size;
+    display: grid;
+    height: 100%;
+  }
+
+  .label {
+    color: var(--app-text-muted);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.5rem;
+    text-transform: uppercase;
+  }
+
+  .value-row {
+    align-items: baseline;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .value {
+    color: var(--app-text);
+    font-size: clamp(18px, 12cqi, var(--fs-value));
+    font-variant-numeric: tabular-nums;
+    font-weight: 800;
+    line-height: 1.1;
+    min-height: 1.1em;
+    white-space: nowrap;
+
+    &.up {
+      color: var(--app-trend-positive);
+    }
+
+    &.down {
+      color: var(--app-trend-negative);
+    }
+
+    /* `.kpi-row .value` (0,2,0) would otherwise beat the pages' `.dividend` / `.primary` (0,1,0). */
+    &.dividend {
+      color: var(--app-dividend);
+    }
+
+    &.primary {
+      color: var(--app-primary);
+    }
+  }
+
+  .meta {
+    color: var(--app-text-muted);
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    margin-top: 0.75rem;
+  }
+
+  @media (max-width: 759.98px) {
+    --bento-pad: var(--space-4);
+    gap: 12px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

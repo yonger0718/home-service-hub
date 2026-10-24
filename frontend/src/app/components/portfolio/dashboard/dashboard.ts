@@ -83,7 +83,7 @@ interface ChartSeriesValues {
     NativeAmountPipe,
   ],
   templateUrl: './dashboard.html',
-  styleUrl: './dashboard.scss',
+  styleUrls: ['./dashboard.scss', '../kpi-cards.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PortfolioDashboardComponent implements OnInit {

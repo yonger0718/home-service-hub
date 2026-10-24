@@ -2,20 +2,9 @@
   padding-bottom: 2rem;
 }
 
-.bento-grid,
-.kpi-row {
+.bento-grid {
   display: grid;
   gap: 1.25rem;
-}
-
-/* Grid items stretch the bento section, so the cards of one row are equally tall. */
-.kpi-row {
-  grid-auto-rows: minmax(140px, auto);
-  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
-
-  > app-bento {
-    display: grid;
-  }
 }
 
 app-bento {
@@ -161,37 +150,6 @@ app-bento {
   &.dashed {
     border: 1.5px dashed var(--app-dividend);
   }
-}
-
-.label {
-  color: var(--app-text-muted);
-  font-size: 0.75rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  margin-bottom: 0.5rem;
-  text-transform: uppercase;
-}
-
-.value-row {
-  align-items: baseline;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.value {
-  color: var(--app-text);
-  font-size: 2rem;
-  font-variant-numeric: tabular-nums;
-  font-weight: 800;
-  line-height: 1.1;
-}
-
-.meta {
-  color: var(--app-text-muted);
-  font-size: 0.8rem;
-  font-weight: 700;
-  margin-top: 0.75rem;
 }
 
 .chart-head {

@@ -4,7 +4,7 @@
   border-radius: var(--radius-xl);
   box-shadow: var(--app-card-shadow);
   overflow: hidden;
-  padding: var(--space-6);
+  padding: var(--bento-pad, var(--space-6));
   position: relative;
   transition: all 0.25s var(--ease-standard);
 

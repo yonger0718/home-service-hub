@@ -91,7 +91,7 @@ const SOURCE_OPTIONS = [
   ],
   providers: [ConfirmationService, MessageService],
   templateUrl: './dividend-list.html',
-  styleUrl: './dividend-list.scss',
+  styleUrls: ['./dividend-list.scss', '../kpi-cards.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PortfolioDividendListComponent implements OnInit, OnDestroy {
