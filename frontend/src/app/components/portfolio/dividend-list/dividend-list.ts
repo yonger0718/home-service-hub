@@ -18,6 +18,7 @@ import { Menu } from 'primeng/menu';
 import { BtnComponent } from '../../ui/btn/btn';
 import { formatMoney } from '../../ui/format';
 import { BentoComponent } from '../../ui/bento/bento';
+import { FilterBarComponent, FilterChip } from '../../ui/filter-bar/filter-bar';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { TagComponent } from '../../ui/tag/tag';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
@@ -87,7 +88,7 @@ const SOURCE_OPTIONS = [
     InputTextModule, InputNumberModule, DatePickerModule,
     PaginatorModule,
     ConfirmDialogModule, ToastModule, MenuModule,
-    BtnComponent, BentoComponent, SegToggleComponent, TagComponent,
+    BtnComponent, BentoComponent, SegToggleComponent, TagComponent, FilterBarComponent,
   ],
   providers: [ConfirmationService, MessageService],
   templateUrl: './dividend-list.html',
@@ -121,6 +122,19 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   readonly sourceOptions = SOURCE_OPTIONS;
   readonly rowsPerPageOptions = [25, 50, 100];
   readonly statusOptions = STATUS_OPTIONS;
+  /** Secondary filters only: status, search and sort are never chips. */
+  readonly filterChips = computed<FilterChip[]>(() => {
+    const chips: FilterChip[] = [];
+    const { date_from, date_to, source } = this.query();
+    if (date_from || date_to) {
+      chips.push({ key: 'date', label: `日期：${date_from ?? '…'} – ${date_to ?? '…'}` });
+    }
+    if (source) {
+      const label = SOURCE_OPTIONS.find(o => o.value === source)?.label ?? source;
+      chips.push({ key: 'source', label: `來源：${label}` });
+    }
+    return chips;
+  });
   /** Two cards only on phone. */
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
   /** Rows collapse below desktop width (phone and sheet): the seven-column grid needs the panes width. */
@@ -556,9 +570,18 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     this.reload();
   }
 
-  hasActiveFilters(): boolean {
-    const q = this.query();
-    return !!(q.symbol || q.date_from || q.date_to || q.source) || this.status() !== 'all';
+  removeFilter(key: string) {
+    if (key === 'date') {
+      this.dateRange = null;
+      this.onDateRangeChange(null);
+    } else if (key === 'source') {
+      this.onSourceChange(null);
+    }
+  }
+
+  resetSecondaryFilters() {
+    this.removeFilter('date');
+    this.removeFilter('source');
   }
 
   private toIsoDate(d: Date): string {

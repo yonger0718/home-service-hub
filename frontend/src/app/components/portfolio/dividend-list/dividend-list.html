@@ -50,36 +50,43 @@
   }
 </section>
 
-<div class="filter-bar">
-  <div class="search-wrap">
+<app-filter-bar [chips]="filterChips()" (remove)="removeFilter($event)" (clearAll)="clearFilters()" (reset)="resetSecondaryFilters()">
+  <div class="search-wrap" filterBarSearch>
     <i class="pi pi-search" aria-hidden="true"></i>
     <input
       type="text"
       [ngModel]="searchInput()"
       (ngModelChange)="onSearchInput($event)"
-      placeholder="搜尋代碼或名稱" />
+      placeholder="搜尋代碼或名稱"
+      aria-label="搜尋代碼或名稱" />
   </div>
-  <div class="filter-controls">
-    <app-seg-toggle ariaLabel="收款狀態" [options]="statusOptions" [value]="status()" (change)="onStatusChange($event)"></app-seg-toggle>
-    <p-datepicker ariaLabel="日期範圍" [(ngModel)]="dateRange" selectionMode="range"
-      [readonlyInput]="true" [showClear]="true" placeholder="日期範圍" appendTo="body"
-      dateFormat="yy-mm-dd" (ngModelChange)="onDateRangeChange($event)"></p-datepicker>
-    <select aria-label="排序" [ngModel]="query().sort" (ngModelChange)="onSortChange($event)">
-      @for (option of sortOptions; track option.value) {
-        <option [value]="option.value">{{ option.label }}</option>
-      }
-    </select>
-    <select aria-label="股利來源" [ngModel]="query().source ?? ''" (ngModelChange)="onSourceChange($event || null)">
-      <option value="">全部來源</option>
-      @for (option of sourceOptions; track option.value) {
-        <option [value]="option.value">{{ option.label }}</option>
-      }
-    </select>
-    @if (hasActiveFilters()) {
-      <button type="button" class="clear-filters" (click)="clearFilters()">清除篩選</button>
-    }
+  <app-seg-toggle filterBarPrimary ariaLabel="收款狀態" [options]="statusOptions" [value]="status()" (change)="onStatusChange($event)"></app-seg-toggle>
+  <div filterBarSecondary class="filter-fields">
+    <label class="hub-filter-field">
+      <span class="field-label">日期範圍</span>
+      <p-datepicker ariaLabel="日期範圍" [(ngModel)]="dateRange" selectionMode="range"
+        [readonlyInput]="true" [showClear]="true" placeholder="日期範圍" appendTo="body" [baseZIndex]="1200"
+        dateFormat="yy-mm-dd" (ngModelChange)="onDateRangeChange($event)"></p-datepicker>
+    </label>
+    <label class="hub-filter-field">
+      <span class="field-label">股利來源</span>
+      <select aria-label="股利來源" [ngModel]="query().source ?? ''" (ngModelChange)="onSourceChange($event || null)">
+        <option value="">全部來源</option>
+        @for (option of sourceOptions; track option.value) {
+          <option [value]="option.value">{{ option.label }}</option>
+        }
+      </select>
+    </label>
+    <label class="hub-filter-field">
+      <span class="field-label">排序</span>
+      <select aria-label="排序" [ngModel]="query().sort" (ngModelChange)="onSortChange($event)">
+        @for (option of sortOptions; track option.value) {
+          <option [value]="option.value">{{ option.label }}</option>
+        }
+      </select>
+    </label>
   </div>
-</div>
+</app-filter-bar>
 
 <div class="result-meta">
   @if (listLoading()) {

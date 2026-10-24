@@ -73,13 +73,6 @@
   }
 }
 
-.filter-bar {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
-
 .search-wrap {
   position: relative;
 
@@ -102,35 +95,10 @@
   }
 }
 
-.filter-controls {
-  align-items: center;
+.filter-fields {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-
-  select {
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
-    color: var(--app-text);
-    max-width: 100%;
-    padding: 0.5rem;
-  }
-}
-
-.clear-filters {
-  background: none;
-  border: 0;
-  color: var(--app-primary);
-  font: inherit;
-  font-weight: 700;
-  padding: 0.25rem 0.5rem;
-
-  &:focus-visible {
-    border-radius: 6px;
-    box-shadow: 0 0 0 4px var(--app-focus-ring);
-    outline: none;
-  }
+  flex-direction: column;
+  gap: 0.75rem;
 }
 
 .result-meta {

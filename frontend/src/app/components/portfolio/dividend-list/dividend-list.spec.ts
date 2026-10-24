@@ -4,6 +4,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { provideRouter } from '@angular/router';
 import { MessageService } from 'primeng/api';
+import { DatePicker } from 'primeng/datepicker';
 import { Paginator } from 'primeng/paginator';
 import { of, Subject, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -539,29 +540,91 @@ describe('Dividend filter-wide summary', () => {
       fixture.destroy();
     });
 
-    it('offers 清除篩選 in the filter bar only while a filter, including a status, is active', () => {
+    function openPanel(fixture: ComponentFixture<PortfolioDividendListComponent>): void {
+      el(fixture).querySelector<HTMLButtonElement>('.filter-toggle')!.click();
+      fixture.detectChanges();
+    }
+
+    it('shows chips and 清除全部 for the secondary filters; a status alone shows none', () => {
       const fixture = create();
       const component = fixture.componentInstance;
       respond(summaryCalls[0], { items: [confirmed, due], total: 2 });
       fixture.detectChanges();
-      const clear = () => el(fixture).querySelector<HTMLButtonElement>('.filter-bar .clear-filters');
-      expect(clear()).toBeNull();
+      const toggle = () => el(fixture).querySelector('.filter-toggle')?.textContent?.trim();
+      const chips = () => Array.from(el(fixture).querySelectorAll('.filter-chip')).map(c => c.firstChild?.textContent?.trim());
 
-      component.onSourceChange('csv');
+      component.onStatusChange('pending');
       fixture.detectChanges();
-      clear()!.click();
-      fixture.detectChanges();
-      expect(component.query().source).toBeUndefined();
-      expect(clear()).toBeNull();
+      expect(el(fixture).querySelector('.filter-chips')).toBeNull();
+      expect(toggle()).toBe('篩選');
 
-      respond(summaryCalls[2], { items: [confirmed, due], total: 2 });
+      component.onSourceChange('manual');
       fixture.detectChanges();
-      selectStatus(fixture, '待收');
-      expect(clear()?.textContent?.trim()).toBe('清除篩選');
-      clear()!.click();
+      expect(toggle()).toBe('篩選 1');
+      expect(chips()).toEqual(['來源：手動']);
+
+      component.onDateRangeChange([new Date(2026, 0, 1), new Date(2026, 11, 31)]);
       fixture.detectChanges();
+      expect(toggle()).toBe('篩選 2');
+      expect(chips()).toContain('日期：2026-01-01 – 2026-12-31');
+      el(fixture).querySelector<HTMLButtonElement>('.clear-all')!.click();
+      fixture.detectChanges();
+      const q = component.query();
+      expect(q.symbol ?? null).toBeNull();
+      expect(q.date_from ?? null).toBeNull();
+      expect(q.date_to ?? null).toBeNull();
+      expect(q.source ?? null).toBeNull();
       expect(component.status()).toBe('all');
-      expect(clear()).toBeNull();
+      fixture.destroy();
+    });
+
+    it('removing the 來源 chip clears the source and closes an open receipt form', () => {
+      const fixture = create();
+      const component = fixture.componentInstance;
+      const pendingRow: Dividend = { ...due, id: 21, payment_date: '2026-11-18' };
+      respond(listCalls[0], { items: [pendingRow], total: 1 });
+      respond(summaryCalls[0], { items: [pendingRow], total: 1 });
+      fixture.detectChanges();
+      el(fixture).querySelector<HTMLButtonElement>('[data-row-id="21"] .c-actions app-btn button')!.click();
+      fixture.detectChanges();
+      expect(el(fixture).querySelector('.receipt-form')).not.toBeNull();
+
+      component.onSourceChange('manual');
+      fixture.detectChanges();
+      el(fixture).querySelector<HTMLButtonElement>('.chip-remove[aria-label="移除 來源：手動"]')!.click();
+      fixture.detectChanges();
+      expect(service['getDividends']).toHaveBeenLastCalledWith(expect.not.objectContaining({ source: expect.anything() }));
+      expect(component.query().source ?? null).toBeNull();
+      expect(el(fixture).querySelector('.receipt-form')).toBeNull();
+      fixture.destroy();
+    });
+
+    it('renders search and the status toggle inline; 日期範圍, 股利來源 and 排序 only behind 篩選', () => {
+      const fixture = create();
+      const row = el(fixture).querySelector('.filter-bar-row')!;
+      expect(row.querySelector('.search-wrap input')).not.toBeNull();
+      expect(row.querySelector('[role="radiogroup"][aria-label="收款狀態"]')).not.toBeNull();
+      expect(el(fixture).querySelector('p-datepicker')).toBeNull();
+      expect(el(fixture).querySelector('select[aria-label="股利來源"]')).toBeNull();
+      expect(el(fixture).querySelector('select[aria-label="排序"]')).toBeNull();
+
+      openPanel(fixture);
+      const panel = el(fixture).querySelector('.filter-panel')!;
+      expect(panel.querySelector('p-datepicker')).not.toBeNull();
+      expect(panel.querySelector('select[aria-label="股利來源"]')).not.toBeNull();
+      expect(panel.querySelector('select[aria-label="排序"]')).not.toBeNull();
+      expect(fixture.debugElement.query(By.directive(DatePicker)).componentInstance.baseZIndex).toBe(1200);
+
+      fixture.componentInstance.onSourceChange('manual');
+      expect(service['getDividends']).toHaveBeenLastCalledWith(expect.objectContaining({ source: 'manual' }));
+      fixture.destroy();
+    });
+
+    it('opens the panel as a sheet on a phone', () => {
+      TestBed.inject(LayoutModeService).set('phone');
+      const fixture = create();
+      openPanel(fixture);
+      expect(el(fixture).querySelector('.filter-panel.sheet')).not.toBeNull();
       fixture.destroy();
     });
   });
