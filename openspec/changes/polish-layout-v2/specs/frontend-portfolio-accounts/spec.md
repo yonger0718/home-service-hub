@@ -60,3 +60,35 @@ At ≥ 1024px `/portfolio/accounts` and `/portfolio/accounts/:id` SHALL render a
 - **GIVEN** the sidebar is expanded and auto-collapse is on
 - **WHEN** the owner opens `/portfolio/accounts/1` at 1440 px
 - **THEN** the sidebar SHALL stay expanded and the floating button SHALL sit at the default bottom-right offset
+
+### Requirement: Account detail page lives at `/portfolio/accounts/:id`
+
+Clicking an account card SHALL navigate to `/portfolio/accounts/:id` and render an account-detail page containing three sections in order:
+
+1. **Header** — account metadata (broker, nickname, currency, opening balance, opening date), current balance, "編輯" button opening a PATCH-account modal.
+2. **Balance-over-time chart** — ECharts line chart driven by `GET /api/portfolio/accounts/{id}/balance-history`, with a window selector (`1M`, `3M`, `1Y`, `All`, default `3M`).
+3. **Cash transactions list** — paginated list using the existing `hub-modern-list` card layout, with an `<app-filter-bar>` (the 類型 select inline, no search; date range and sort (`txn_date desc` default) behind 篩選, the active date range as a removable chip), page-size selector (`25 / 50 / 100`, persisting to localStorage), and a "新增交易" button opening the manual-entry modal.
+
+#### Scenario: Chart renders 3M default window
+- **GIVEN** the user opens an account detail page
+- **WHEN** the page loads
+- **THEN** the chart SHALL fetch balance-history for the last 90 days
+- **AND** display a step-line of balance points
+
+#### Scenario: Switching window refetches and rerenders
+- **WHEN** the user clicks `1Y`
+- **THEN** the chart SHALL fetch the 365-day window and rerender without a full page reload
+
+#### Scenario: Cash transaction list paginates and filters
+- **GIVEN** the account has 200 cash rows
+- **WHEN** the user sets type=`deposit` and page size 50
+- **THEN** the list SHALL show up to 50 deposit rows and the paginator SHALL reflect the correct total
+
+#### Scenario: Manual-entry modal posts to the correct endpoint
+- **WHEN** the user submits the manual-entry form with `type=deposit, amount=5000, txn_date=2026-06-01, note="…"`
+- **THEN** the page SHALL POST to `/api/portfolio/accounts/{id}/cash-transactions`
+- **AND** on success refresh the cash list and balance chart
+
+#### Scenario: Date range behind 篩選
+- **WHEN** the user sets a date range behind 篩選
+- **THEN** the list SHALL reload with `date_from` / `date_to`, the 篩選 button SHALL read `篩選 1` and a removable chip SHALL show the range
