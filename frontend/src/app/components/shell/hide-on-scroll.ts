@@ -6,7 +6,11 @@ import { filter } from 'rxjs';
 
 import { FAB_IDLE_MS, PAGE_SCROLLER_SELECTOR, nextFabVisibility } from './fab-visibility';
 
-/** Hides the host while the page scrolls down; shows it on scroll up, at the end, after idling, on focus or navigation. */
+/**
+ * Hides the host while the page scrolls down; shows it on scroll up, at the end, after idling, on focus or navigation.
+ * Navigation keeps the remembered offsets: the router does not restore scroll, so the document keeps its scrollTop and a
+ * shorter page's clamped scroll must read as an upward move, not as a downward one from 0.
+ */
 @Directive({
   selector: 'a[appHideOnScroll]',
   host: { '[class.is-hidden]': 'hidden()', '(focus)': 'onFocus()' },
@@ -41,7 +45,6 @@ export class HideOnScrollDirective {
   private reset(): void {
     this.hidden.set(false);
     clearTimeout(this.idleTimer);
-    this.offsets = new WeakMap();
   }
 
   private onScroll(event: Event): void {

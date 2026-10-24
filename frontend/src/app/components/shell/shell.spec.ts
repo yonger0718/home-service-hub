@@ -629,6 +629,18 @@ describe('記一筆 hides while scrolling (D5)', () => {
     expect(hidden()).toBe(false);
   });
 
+  it('a clamped scroll after a route change (shorter page) is an upward move and keeps the button', async () => {
+    const { scrollDocument, hidden, router, settle } = await start();
+    await scrollDocument(0);
+    await scrollDocument(600);
+    expect(hidden()).toBe(true);
+    await router.navigateByUrl('/portfolio/dividends');
+    await settle();
+    expect(hidden()).toBe(false);
+    await scrollDocument(300);
+    expect(hidden()).toBe(false);
+  });
+
   it('the hidden state is a class the stylesheet turns into visibility: hidden', () => {
     const css = readFileSync(join(process.cwd(), 'src/app/components/shell/shell.scss'), 'utf8');
     expect(css).toMatch(/&\.is-hidden\s*{[^}]*visibility:\s*hidden/);
