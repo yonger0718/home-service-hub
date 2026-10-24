@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Component, Input } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DeferBlockBehavior, DeferBlockState, TestBed } from '@angular/core/testing';
@@ -1381,6 +1383,33 @@ describe('PortfolioDashboardComponent', () => {
         g => Array.from(g.querySelectorAll('.stock-row .n')).map(text),
       );
       expect(groups).toEqual([['0050', '2330'], ['MSFT', 'AAPL']]);
+    });
+
+    it('wraps 股數 / 現價 / 今日 in one meta span, in that order', () => {
+      const { root } = render([twHolding('2330', '台積電', 1_000_000), usHolding('AAPL', 'Apple', 12_900)]);
+      const metas = Array.from(root.querySelectorAll<HTMLElement>('.stock-row .stock-meta'));
+      expect(metas.length).toBe(2);
+      for (const m of metas) {
+        expect(Array.from(m.children).map(c => c.className.split(' ')[0])).toEqual(['stock-qty', 'stock-price', 'stock-day']);
+      }
+    });
+
+    it('the phone stylesheet lays a collapsed row out as two lines', () => {
+      const css = readFileSync(join(process.cwd(), 'src/app/components/portfolio/dashboard/dashboard.scss'), 'utf8');
+      expect(css).not.toContain('max-width: 760px');
+      const start = css.indexOf('@media (max-width: 759.98px)');
+      expect(start).toBeGreaterThan(-1);
+      const rest = css.slice(start);
+      const next = rest.indexOf('\n}\n');
+      const phone = rest.slice(0, next);
+      const flat = phone.replace(/\s+/g, ' ');
+      expect(flat).toContain("grid-template-areas: 'main value' 'meta pnl'");
+      expect(flat).toMatch(/\.stock-meta \{[^}]*display: flex/);
+      expect(flat).toMatch(/\.stock-qty::after \{ content: ' 股'; \}/);
+      expect(phone).not.toContain('股數 ');
+      expect(flat).toMatch(/\.stock-sym \{[^}]*flex-direction: row/);
+      const outside = css.slice(0, start).replace(/\s+/g, ' ');
+      expect(outside).toMatch(/\.stock-meta \{ display: contents;/);
     });
 
     it('keeps TW row data and the US native branch unchanged', () => {

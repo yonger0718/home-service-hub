@@ -289,17 +289,19 @@
                 <span class="n">{{ stock.symbol }}</span>
               </div>
             </div>
-            <span class="stock-qty">{{ stock.total_quantity | number }}</span>
-            <span class="stock-price">
-              @if (stock.market !== 'TW' && stock.native_close != null) {
-                {{ stock.native_close | nativeAmount: stock.native_currency }}
-              } @else {
-                {{ stock.current_price | number:'1.2-2' }}
-              }
-            </span>
-            <span class="stock-day" [class.up]="stock.day_change_amount >= 0" [class.down]="stock.day_change_amount < 0">
-              {{ stock.day_change_amount >= 0 ? '+' : '' }}{{ stock.day_change_amount | number:'1.2-2' }}
-              ({{ pct(stock.day_change_percent, 'change') }})
+            <span class="stock-meta">
+              <span class="stock-qty">{{ stock.total_quantity | number }}</span>
+              <span class="stock-price">
+                @if (stock.market !== 'TW' && stock.native_close != null) {
+                  {{ stock.native_close | nativeAmount: stock.native_currency }}
+                } @else {
+                  {{ stock.current_price | number:'1.2-2' }}
+                }
+              </span>
+              <span class="stock-day" [class.up]="stock.day_change_amount >= 0" [class.down]="stock.day_change_amount < 0">
+                {{ stock.day_change_amount >= 0 ? '+' : '' }}{{ stock.day_change_amount | number:'1.2-2' }}
+                ({{ pct(stock.day_change_percent, 'change') }})
+              </span>
             </span>
             <span class="stock-value">{{ marketValueDisplay(stock) }}</span>
             <span class="stock-pnl" [class.up]="holdingEstimateSign(stock) > 0" [class.down]="holdingEstimateSign(stock) < 0">
