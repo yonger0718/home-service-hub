@@ -1,5 +1,5 @@
 import dataclasses
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -18,13 +18,19 @@ def L(i, posted, flow, kind="purchase", merchant="全聯", **kw):
 
 def E(i, posted, flow, kind="expense", merchant="全聯", **kw):
     return m.Entry(id=i, kind=kind, flow=D(flow), posted_date=posted, entry_date=kw.get("entry_date", posted),
-                   name=kw.get("name"), merchant=merchant, original_amount=kw.get("original_amount"),
+                   name=kw.get("name"), merchant=merchant, original_amount=None if kw.get("original_amount") is None else D(kw["original_amount"]),
                    original_currency=kw.get("original_currency"), account_id=kw.get("account_id", 1),
                    group_id=kw.get("group_id"), parent_entry_id=kw.get("parent_entry_id"),
                    is_settlement=kw.get("is_settlement", False), refunds_entry_id=kw.get("refunds_entry_id"),
                    transfer_group_id=kw.get("transfer_group_id"), transfer_peer_is_card=kw.get("peer_is_card"),
                    children=tuple(kw.get("children", ())), instance=kw.get("instance"), in_reverse=kw.get("in_reverse", True),
-                   claimable=kw.get("claimable", True), stand_in=kw.get("stand_in", False))
+                   claimable=kw.get("claimable", True), stand_in=kw.get("stand_in", False),
+                   all_children=tuple(kw.get("all_children", ())))
+
+
+def S(*a, **kw):
+    """A structural row: a split-group member loaded only for the printed-whole guard."""
+    return E(*a, claimable=False, in_reverse=False, **kw)
 
 
 def run(lines, entries, groups=None, plan_map=None, fee=lambda e: None, kind="card"):
@@ -910,3 +916,82 @@ def test_only_the_designated_entry_of_an_amount_delta_is_never_deferred():
     assert two.explained == {10: "deferred_next_period"}  # the secondary candidate defers
     other = run([L(1, late, "-1005", merchant="全聯")], [E(10, late, "-1000", merchant="全聯"), E(12, late, "-77", merchant="早餐")])
     assert other.explained == {12: "deferred_next_period"}  # an unnamed late entry is still deferred
+
+
+# --- split members: structural printed-alone pieces, group readings, printed-whole guard (pure) ---
+
+d = date(2026, 9, 3)
+
+
+def test_printed_alone_children_match_a_non_purchase_line_of_any_coverage():
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-300", group_id=5, children=[m.Child(211, "discount", D("100"))],
+              all_children=[m.Child(210, "reward", D("200")), m.Child(211, "discount", D("100"))]), E(22, d, "-280", group_id=5)]  # 210 covered: structural view only
+    assert m.printed_alone_children("card", [L(1, d, "200", kind="reward")], ents, {5: g}) == {210}
+    assert m.printed_alone_children("card", [L(1, d, "-200", kind="purchase")], ents, {5: g}) == frozenset()
+    # a discount child is never printed alone: no line gate admits "discount" (the matcher's child path cannot claim it)
+    assert m.printed_alone_children("card", [L(1, d, "100", kind="refund")], ents, {5: g}) == frozenset()
+
+
+def test_group_readings_enumerate_members_and_children_like_the_matcher():
+    g = m.Group(5, "split", (21, 22, 23))
+    ents = [E(21, d, "-300", group_id=5, children=[m.Child(210, "reward", D("200")), m.Child(211, "discount", D("100"))]),
+            E(22, d, "-280", group_id=5), S(23, d, "-10", kind="fee", group_id=5)]
+    readings, complete = m.group_readings(g, {e.id: e for e in ents}, aside=frozenset({23}), aside_children=frozenset({210}))
+    assert complete and {r.flow for r in readings} == {D("-590"), D("-290"), D("-490"), D("-580"), D("-280"), D("-480")}
+
+
+def test_group_readings_missing_member_is_incomplete():
+    g = m.Group(5, "split", (21, 22))
+    assert m.group_readings(g, {21: E(21, d, "-300", group_id=5)}, frozenset(), frozenset()) == ([], False)
+
+
+def test_group_readings_foreign_total_needs_one_currency_on_every_member():
+    g = m.Group(5, "split", (21, 22))
+    jp = dict(original_currency="JPY")
+    ents = [E(21, d, "-3000", group_id=5, original_amount="-15000", **jp), S(22, d, "-100", group_id=5, original_amount="-500", **jp)]
+    r, _ = m.group_readings(g, {e.id: e for e in ents}, frozenset({22}), frozenset())
+    assert {(x.flow, x.foreign_amount) for x in r} == {(D("-3100"), D("-15500")), (D("-3000"), D("-15000"))}
+    ents[1] = S(22, d, "-100", group_id=5)
+    assert all(x.foreign_amount is None for x in m.group_readings(g, {e.id: e for e in ents}, frozenset(), frozenset())[0])
+
+
+def test_printed_whole_by_exact_near_drift_and_sign():
+    g = m.Group(5, "split", (21, 22)); ents = [E(21, d, "-300", group_id=5), E(22, d, "-280", group_id=5)]
+    pw = lambda lines: m.printed_whole(lines, ents, {5: g}, R, frozenset(), frozenset())
+    assert pw([L(1, d, "-580")]) == {5} and pw([L(1, d, "-575")]) == {5} and pw([L(1, d + timedelta(days=12), "-580")]) == {5}
+    assert pw([L(1, d + timedelta(days=16), "-580")]) == frozenset() and pw([L(1, d, "-300")]) == frozenset()
+    assert pw([L(1, d, "580", kind="refund")]) == frozenset()
+
+
+def test_printed_whole_ignores_gate_and_uses_structural_rows():
+    g = m.Group(5, "split", (21, 22)); ents = [E(21, d, "20000", kind="income", group_id=5), S(22, d, "10000", kind="income", group_id=5)]
+    assert m.printed_whole([L(1, d, "30000", kind="deposit")], ents, {5: g}, R, frozenset(), frozenset()) == {5}
+
+
+def test_printed_whole_fails_closed_without_the_other_member():
+    g = m.Group(5, "split", (21, 22))
+    assert m.printed_whole([L(1, d, "-300")], [E(21, d, "-300", group_id=5)], {5: g}, R, frozenset(), frozenset()) == {5}
+
+
+def test_printed_whole_by_reduced_and_children_readings_through_covered_lines():
+    g = m.Group(5, "split", (21, 22, 23))
+    ents = [E(21, d, "-300", group_id=5, children=[m.Child(210, "reward", D("200")), m.Child(211, "discount", D("100"))]),
+            E(22, d, "-280", group_id=5), S(23, d, "-100", kind="fee", group_id=5)]
+    lines_all = [L(1, d, "-300"), L(2, d, "-380"), L(3, d, "-100", kind="fee"), L(4, d, "200", kind="reward")]
+    ctx = m.statement_context("card", lines_all, ents, {5: g}, R)
+    assert ctx.aside == {23} and ctx.aside_children == {210} and ctx.whole == {5} and ctx.apart == frozenset()   # -680 -100 fee +100 child = -380
+
+
+def test_printed_whole_by_foreign_total():
+    g = m.Group(5, "split", (21, 22)); jp = dict(original_currency="JPY")
+    ents = [E(21, d, "-3000", group_id=5, original_amount="-15000", **jp), E(22, d, "-100", group_id=5, original_amount="-500", **jp)]
+    line = L(1, d, "-3200", foreign_amount=D("15500"), foreign_currency="JPY")
+    assert m.printed_whole([line], ents, {5: g}, R, frozenset(), frozenset()) == {5}
+
+
+def test_apart_members_are_claimable_split_members_of_apart_groups_only():
+    g5 = m.Group(5, "split", (21, 22)); g6 = m.Group(6, "split", (31, 32)); g7 = m.Group(7, "installment", (41,))
+    ents = [E(21, d, "-300", group_id=5), E(22, d, "-280", group_id=5), E(31, d, "-50", group_id=6), S(32, d, "-60", group_id=6), E(41, d, "-70", group_id=7)]
+    ctx = m.statement_context("card", [L(1, d, "-580")], ents, {5: g5, 6: g6, 7: g7}, R)
+    assert ctx.whole == {5} and ctx.apart == {31}

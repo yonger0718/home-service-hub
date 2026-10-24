@@ -82,6 +82,9 @@ class Entry:
     # (installment_date_drift); never represented, claimed, near/foreign-matched or reported
     claimable: bool = True
     stand_in: bool = False  # R6b.0: a backfilled entry (statement source, applied backfill_entry); owner rows win over it
+    # split members: every child as stored (claimed, covered or gated out included) for the printed-whole guard
+    # (`_kids`); `children` stays the claimable view and claim paths never read this one
+    all_children: tuple[Child, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -343,6 +346,143 @@ def incomplete_groups(kind: str, line: Line, entries: list[Entry], groups: dict[
         return []
     by_id = {e.id: e for e in entries}
     return sorted(g.id for g in groups.values() if g.kind == "split" and not _group_variants(g, by_id, claimed, aside)[1])
+
+
+def _kids(e: Entry) -> tuple[Child, ...]:
+    """The guard's view of a member's children: every child as stored (`all_children`), else the claimable view."""
+    return e.all_children or e.children
+
+
+def _split_member(e: Entry, groups: dict[int, Group]) -> bool:
+    """A top-level entry of a `split` group under `_standalone`'s instance rule (no installment instance)."""
+    if e.group_id is None or e.parent_entry_id is not None \
+            or (e.instance is not None and e.instance.definition_kind == "installment"):
+        return False
+    group = groups.get(e.group_id)
+    return group is not None and group.kind == "split"
+
+
+def printed_alone_children(kind: str, lines_all: list[Line], entries: list[Entry], groups: dict[int, Group]) -> frozenset[int]:
+    """The children of split members this statement prints as their own line: a child (`_kids`) of a kind the line's
+    gate admits whose flow equals a line outside `purchase`/`payment` (the child path of `_representations`), over
+    every current line whatever its coverage. No date window: the generous direction only makes more groups whole."""
+    members = [e for e in entries if _split_member(e, groups)]
+    out: set[int] = set()
+    for line in lines_all:
+        if line.line_kind in ("purchase", "payment"):
+            continue
+        gate = eligible_kinds(kind, line.line_kind)
+        out.update(c.id for e in members for c in _kids(e) if c.kind in gate and _same(c.flow, line.flow))
+    return frozenset(out)
+
+
+@dataclass(frozen=True)
+class Reading:
+    flow: Decimal
+    foreign_amount: Decimal | None
+    foreign_currency: str | None
+    members: tuple[Entry, ...]
+
+
+def group_readings(g: Group, by_id: dict[int, Entry], aside: frozenset[int],
+                   aside_children: frozenset[int]) -> tuple[list[Reading], bool]:
+    """Every total `_representations` could read the split group `g` as on a fresh statement (claimed = ∅): for each
+    member reading of `_group_variants` the net total and, when its members have children (`_kids`), the total with
+    all of them minus each combination of the printed-alone ones (`aside_children`, at most ASIDE_COMBINATIONS_MAX;
+    above it only "all children" and the result is incomplete). A reading's foreign total is the members' summed
+    `original_amount` when every member carries one in one shared currency. A member missing from `by_id` →
+    `([], False)`; the caller treats an incomplete or empty result as printed whole (fail-closed)."""
+    if any(i not in by_id for i in g.member_ids):
+        return [], False
+    variants, complete = _group_variants(g, by_id, set(), aside)
+    out: list[Reading] = []
+    seen: set[tuple] = set()
+
+    def add(flow: Decimal, members: tuple[Entry, ...]) -> None:
+        currencies = {mem.original_currency for mem in members}
+        foreign = None
+        currency = None
+        if all(mem.original_amount is not None for mem in members) and len(currencies) == 1 and None not in currencies:
+            foreign = sum((mem.original_amount for mem in members), ZERO).quantize(Q)
+            currency = next(iter(currencies))
+        key = (flow, foreign, tuple(mem.id for mem in members))
+        if key not in seen:
+            seen.add(key)
+            out.append(Reading(flow, foreign, currency, members))
+
+    for variant in variants:
+        members = tuple(variant)
+        if not members:
+            continue
+        net = sum((mem.flow for mem in members), ZERO).quantize(Q)
+        add(net, members)
+        kids = [c for mem in members for c in _kids(mem)]
+        if not kids:
+            continue
+        removable = [c for c in kids if c.id in aside_children]
+        if len(removable) > ASIDE_COMBINATIONS_MAX:
+            complete = False
+            sizes: range = range(0, 1)
+        else:
+            sizes = range(0, len(removable) + 1)
+        for size in sizes:
+            for combo in itertools.combinations(removable, size):
+                dropped = {c.id for c in combo}
+                add((net + sum((c.flow for c in kids if c.id not in dropped), ZERO)).quantize(Q), members)
+    return out, complete
+
+
+def _prints_reading(line: Line, reading: Reading, rules: Rules) -> bool:
+    """Spec §3 (a)/(b): the line prints the reading's total — (a) same sign within the near tolerance (taken of the
+    total) and the drift window of the nearest member, or (b) the foreign total by magnitude, same currency, within
+    the foreign window. The line's kind, gate and coverage are never consulted."""
+    dist = min(_date_distance(line, mem) for mem in reading.members)
+    tolerance = max(rules.near_tolerance_abs, rules.near_tolerance_pct * abs(reading.flow))
+    if line.flow * reading.flow > 0 and abs(line.flow - reading.flow) <= tolerance and dist <= rules.drift_window_days:
+        return True
+    return reading.foreign_amount is not None and line.foreign_amount is not None and line.foreign_amount != 0 \
+        and line.foreign_currency == reading.foreign_currency \
+        and _same(abs(reading.foreign_amount), abs(line.foreign_amount)) and dist <= rules.foreign_window_days
+
+
+def printed_whole(lines_all: list[Line], entries: list[Entry], groups: dict[int, Group], rules: Rules,
+                  aside: frozenset[int], aside_children: frozenset[int]) -> frozenset[int]:
+    """The split groups this statement prints whole: a reading (`group_readings` over the structural population) a
+    current line prints (`_prints_reading`), or readings incomplete or empty (fail-closed: its members never go
+    apart)."""
+    by_id = {e.id: e for e in entries}
+    out: set[int] = set()
+    for g in groups.values():
+        if g.kind != "split":
+            continue
+        readings, complete = group_readings(g, by_id, aside, aside_children)
+        if not complete or not readings or any(_prints_reading(line, r, rules) for r in readings for line in lines_all):
+            out.add(g.id)
+    return frozenset(out)
+
+
+def apart_members(entries: list[Entry], groups: dict[int, Group], whole: frozenset[int]) -> frozenset[int]:
+    """The claimable split members (`_split_member`) of groups this statement does not print whole."""
+    return frozenset(e.id for e in entries if e.claimable and _split_member(e, groups) and e.group_id not in whole)
+
+
+@dataclass(frozen=True)
+class Context:
+    aside: frozenset[int]
+    aside_children: frozenset[int]
+    whole: frozenset[int]
+    apart: frozenset[int]
+    structural: tuple[Entry, ...]
+
+
+def statement_context(kind: str, lines_all: list[Line], entries: list[Entry], groups: dict[int, Group],
+                      rules: Rules) -> Context:
+    """The per-statement split-member decision over every current line and the unfiltered population (claimable ∪
+    structural rows): printed-alone members and children, groups printed whole, and the apart members."""
+    aside = printed_alone(kind, lines_all, entries, groups, rules)
+    aside_children = printed_alone_children(kind, lines_all, entries, groups)
+    whole = printed_whole(lines_all, entries, groups, rules, aside, aside_children)
+    return Context(aside, aside_children, whole, apart_members(entries, groups, whole), tuple(entries))
 
 
 def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
