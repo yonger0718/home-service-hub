@@ -527,11 +527,8 @@ $holdings-cols: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.2fr
     outline: none;
   }
 
-  .stock-qty,
-  .stock-price,
-  .stock-day,
-  .stock-value,
-  .stock-pnl {
+  // `.stock-meta` is display: contents here, so its three spans inherit the alignment.
+  > span:not(.stock-main) {
     text-align: right;
   }
 }
@@ -707,6 +704,8 @@ $holdings-cols: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.2fr
     display: none;
   }
 
+  .holdings-block { --bento-pad: var(--space-4); }
+
   // Avatar spans both text lines.
   .stock-row {
     gap: 0.25rem 0.5rem;
@@ -718,21 +717,22 @@ $holdings-cols: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.2fr
   }
 
   .stock-main { display: contents; }
-  .stock-abbr { align-self: center; grid-area: abbr; }
-  .stock-value { font-size: 0.9375rem; font-weight: 700; grid-area: value; }
+  .stock-abbr { align-self: center; grid-area: abbr; height: 36px; width: 36px; }
+  .stock-value { grid-area: value; }
   .stock-pnl {
     align-items: baseline;
     flex-direction: row;
+    font-size: 0.8125rem;
     gap: 0.25rem;
     grid-area: pnl;
     justify-content: flex-end;
+
+    .pnl-pct { font-size: 0.6875rem; }
   }
 
   .stock-meta {
     color: var(--app-text-muted);
     display: flex;
-    font-size: 0.75rem;
-    font-weight: 600;
     gap: 0.25rem;
     grid-area: meta;
     min-width: 0;
@@ -744,7 +744,7 @@ $holdings-cols: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.2fr
   .stock-qty,
   .stock-price,
   .stock-day {
-    font-size: inherit;
+    font-size: 0.6875rem;
   }
 
   .stock-qty,
@@ -759,9 +759,8 @@ $holdings-cols: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.2fr
     text-overflow: ellipsis;
   }
 
-  // Percentages go: the 390 px meta line holds qty · price · change only when the PnL column is the bare amount.
-  .day-pct,
-  .pnl-pct { display: none; }
+  // The day percent goes; the PnL keeps its percent (spec) at a smaller size so the meta line is not squeezed.
+  .day-pct { display: none; }
 
   .stock-qty::after { content: ' 股'; }
   .stock-price::before,

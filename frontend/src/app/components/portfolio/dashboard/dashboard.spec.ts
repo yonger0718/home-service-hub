@@ -1406,7 +1406,8 @@ describe('PortfolioDashboardComponent', () => {
       expect(flat).toContain("grid-template-areas: 'abbr sym value' 'abbr meta pnl'");
       expect(flat).toMatch(/\.stock-main \{ display: contents; \}/);
       expect(flat).toMatch(/\.stock-pnl \{[^}]*flex-direction: row/);
-      expect(flat).toMatch(/\.day-pct, \.pnl-pct \{ display: none; \}/);
+      expect(flat).toMatch(/\.day-pct \{ display: none; \}/);
+      expect(flat).not.toMatch(/\.pnl-pct[^{]*\{[^}]*display: none/);
       expect(flat).toMatch(/\.stock-meta \{[^}]*display: flex/);
       expect(flat).toMatch(/\.stock-qty::after \{ content: ' 股'; \}/);
       expect(flat).toMatch(/\.stock-price::before, \.stock-day::before \{ content: '· '; \}/);
