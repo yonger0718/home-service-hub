@@ -250,18 +250,18 @@ describe('StatementDetailComponent', () => {
 
     expect(text(el.querySelector('.entries-error .load-error'))).toBe('帳本讀取失敗');
     expect(el.textContent).not.toContain('這個分類沒有項目');
-    expect(el.querySelector('.row')).toBeNull();
+    expect(el.querySelector('.entry-row')).toBeNull();
 
     el.querySelectorAll<HTMLButtonElement>('[role="radio"]')[2].click();
     fixture.detectChanges();
     expect(text(el.querySelector('.entries-error .load-error'))).toBe('帳本讀取失敗');
     expect(el.textContent).not.toContain('這個分類沒有項目');
-    expect(el.querySelector('.row')).toBeNull();
+    expect(el.querySelector('.entry-row')).toBeNull();
 
     el.querySelectorAll<HTMLButtonElement>('[role="radio"]')[1].click();
     fixture.detectChanges();
     expect(el.querySelector('.entries-error')).toBeNull();
-    expect(text(el.querySelector('.row .name'))).toBe('屈臣氏');
+    expect(text(el.querySelector('.entry-row .name'))).toBe('屈臣氏');
 
     el.querySelectorAll<HTMLButtonElement>('[role="radio"]')[0].click();
     fixture.detectChanges();
@@ -275,8 +275,8 @@ describe('StatementDetailComponent', () => {
 
     expect(el.querySelector('.entries-error')).toBeNull();
     expect(el.textContent).not.toContain('這個分類沒有項目');
-    expect(text(el.querySelector('.row .name'))).toBe('誠品書店');
-    el.querySelector<HTMLButtonElement>('.row')!.click();
+    expect(text(el.querySelector('.entry-row .name'))).toBe('誠品書店');
+    el.querySelector<HTMLButtonElement>('.entry-row')!.click();
     fixture.detectChanges();
     expect(text(el.querySelector('.match-panel'))).toContain('本金 午餐');
   });
@@ -348,7 +348,7 @@ describe('StatementDetailComponent', () => {
     const el = fixture.nativeElement as HTMLElement;
     expect(text(el.querySelector('[role="radio"][aria-checked="true"]'))).toContain('已對帳 1');
 
-    const matched = el.querySelector('.row')!;
+    const matched = el.querySelector('.entry-row')!;
     expect(text(matched.querySelector('.name'))).toBe('誠品書店');
     expect(Array.from(matched.querySelectorAll('.pill')).map(text)).toContain('文字已變更');
     matched.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -360,7 +360,7 @@ describe('StatementDetailComponent', () => {
 
     el.querySelectorAll<HTMLButtonElement>('[role="radio"]')[1].click();
     fixture.detectChanges();
-    const statementRow = el.querySelector('.row')!;
+    const statementRow = el.querySelector('.entry-row')!;
     expect(text(statementRow.querySelector('.name'))).toBe('屈臣氏');
     expect(Array.from(statementRow.querySelectorAll('.pill')).map(text)).toEqual(
       expect.arrayContaining(['資料已變更，待確認', '僅帳單有']),
@@ -368,7 +368,7 @@ describe('StatementDetailComponent', () => {
 
     el.querySelectorAll<HTMLButtonElement>('[role="radio"]')[2].click();
     fixture.detectChanges();
-    const ledgerRows = Array.from(el.querySelectorAll('.row'));
+    const ledgerRows = Array.from(el.querySelectorAll('.entry-row'));
     expect(ledgerRows.map((row) => text(row.querySelector('.name')))).toEqual(['午餐', '餘額差異']);
     ledgerRows[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
     fixture.detectChanges();

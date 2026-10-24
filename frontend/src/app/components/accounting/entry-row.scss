@@ -1,6 +1,6 @@
 /* Entry rows as the timeline lists them; shared with the reminder centre's expanded counterparty entries. */
 
-.row {
+.entry-row {
   align-items: center;
   background: none;
   border: 0;
@@ -17,7 +17,7 @@
   text-align: left;
   width: 100%;
 
-  & + .row {
+  & + .entry-row {
     border-top: 1px solid var(--app-border);
   }
 
@@ -31,7 +31,7 @@
     width: calc(100% + 2 * var(--row-sel-bleed, 0px));
   }
 
-  &.sel + .row {
+  &.sel + .entry-row {
     border-top: 0;
   }
 

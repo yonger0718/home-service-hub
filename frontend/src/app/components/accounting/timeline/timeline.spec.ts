@@ -124,7 +124,7 @@ describe('LedgerTimelineComponent', () => {
     ]);
     fixture.detectChanges();
 
-    const row = el.querySelector('.row')!;
+    const row = el.querySelector('.entry-row')!;
     const amount = row.querySelector('.amt')!;
     expect(text(amount)).toContain('−$1,166');
     expect(text(amount.querySelector('small.fx'))).toBe('¥5,390 @ 0.2163');
@@ -181,7 +181,7 @@ describe('LedgerTimelineComponent', () => {
     ]);
     fixture.detectChanges();
 
-    const rows = Array.from(el.querySelectorAll('.row'));
+    const rows = Array.from(el.querySelectorAll('.entry-row'));
     expect(rows.length).toBe(2);
     expect(text(rows[0].querySelector('.name'))).toBe('聚餐');
     expect(rows[0].querySelector('.name .badge')).toBeNull();
@@ -204,7 +204,7 @@ describe('LedgerTimelineComponent', () => {
     ], 60);
     fixture.detectChanges();
 
-    const rows = Array.from(el.querySelectorAll<HTMLElement>('.row'));
+    const rows = Array.from(el.querySelectorAll<HTMLElement>('.entry-row'));
     expect(rows.length).toBe(3);
     const folder = rows[0].querySelector<HTMLElement>('app-split-folder.folder.compact')!;
     const cells = Array.from(folder.querySelectorAll<HTMLElement>('.cell'));
@@ -233,7 +233,7 @@ describe('LedgerTimelineComponent', () => {
     ], 50);
     fixture.detectChanges();
 
-    const [row, plain] = Array.from(el.querySelectorAll<HTMLElement>('.row'));
+    const [row, plain] = Array.from(el.querySelectorAll<HTMLElement>('.entry-row'));
     const label = row.querySelector<HTMLElement>(':scope > .sr-only')!;
     expect(text(label)).toBe('共 5 項');
     expect(label.closest('[aria-hidden="true"]')).toBeNull();
@@ -259,12 +259,12 @@ describe('LedgerTimelineComponent', () => {
     expect(text(el.querySelector('.day b'))).toBe('−$1,336');
     // The ¥500 row is not in the day net: the header says so.
     expect(text(el.querySelector('.day .net-hint'))).toBe('僅計主幣種');
-    const transfer = Array.from(el.querySelectorAll('.row')).find(row => text(row.querySelector('.sub')).includes('→'))!;
+    const transfer = Array.from(el.querySelectorAll('.entry-row')).find(row => text(row.querySelector('.sub')).includes('→'))!;
     expect(text(transfer.querySelector('.sub'))).toBe('國泰主帳戶 → Line Bank');
     expect(text(transfer.querySelector('.amt'))).toBe('$10,000');
     expect(transfer.querySelector('.amt')!.classList.contains('neg')).toBe(false);
     expect(Array.from(transfer.querySelectorAll('.pill')).map(text)).toEqual(['轉帳']);
-    expect(el.querySelectorAll('.row').length).toBe(4);
+    expect(el.querySelectorAll('.entry-row').length).toBe(4);
   });
 
   it('asks the server to hide rewards and drops any that still arrive', () => {
@@ -277,7 +277,7 @@ describe('LedgerTimelineComponent', () => {
     fixture.detectChanges();
 
     expect(req.request.params.get('hide_rewards')).toBe('true');
-    expect(Array.from(el.querySelectorAll('.row .name')).map(text)).toEqual(['午餐']);
+    expect(Array.from(el.querySelectorAll('.entry-row .name')).map(text)).toEqual(['午餐']);
   });
 
   it('opens the entry detail on tap and highlights the selected entry', () => {
@@ -289,7 +289,7 @@ describe('LedgerTimelineComponent', () => {
     fixture.detectChanges();
     const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
 
-    const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('.row'));
+    const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('.entry-row'));
     expect(rows.map(row => row.classList.contains('sel'))).toEqual([false, true]);
     expect(rows.map(row => row.getAttribute('aria-current'))).toEqual([null, 'true']);
     rows[0].click();
@@ -315,7 +315,7 @@ describe('LedgerTimelineComponent', () => {
     const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
     const url = vi.spyOn(router, 'url', 'get').mockReturnValue('/accounting?month=2026-10');
 
-    const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('.row'));
+    const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('.entry-row'));
     expect(rows.map(row => row.hasAttribute('data-split'))).toEqual([true, false, false]);
     rows[0].click();
     expect(navigate).toHaveBeenLastCalledWith(['/accounting/entries', 40, 'group'], { state: { groupDepth: 1 } });
@@ -338,13 +338,13 @@ describe('LedgerTimelineComponent', () => {
     flushSummary('2026-10');
     flushEntries([makeEntry({ id: 1, name: '午餐' }), makeEntry({ id: 2, name: '捷運' }), makeEntry({ id: 3, name: '早餐' })]);
     fixture.detectChanges();
-    const current = () => Array.from(el.querySelectorAll('.row')).map(row => row.getAttribute('aria-current'));
+    const current = () => Array.from(el.querySelectorAll('.entry-row')).map(row => row.getAttribute('aria-current'));
 
     expect(current()).toEqual([null, null, null]);
     layout.selectedEntryId.set(1);
     fixture.detectChanges();
     expect(current()).toEqual(['true', null, null]);
-    expect(el.querySelector('.row')!.classList).toContain('sel');
+    expect(el.querySelector('.entry-row')!.classList).toContain('sel');
     layout.selectedEntryId.set(3);
     fixture.detectChanges();
     expect(current()).toEqual([null, null, 'true']);
@@ -364,7 +364,7 @@ describe('LedgerTimelineComponent', () => {
       makeEntry({ id: 7, group }),
     ]);
     fixture.detectChanges();
-    const rows = () => Array.from(el.querySelectorAll<HTMLElement>('.row'));
+    const rows = () => Array.from(el.querySelectorAll<HTMLElement>('.entry-row'));
     expect(rows().map(row => row.dataset['entryId'])).toEqual(['9', '5']);
     // ↑ / ↓ in the layout find the current row through these, as the highlight does.
     expect(rows().map(row => row.dataset['memberIds'])).toEqual(['9 8 7', '5']);
@@ -467,14 +467,14 @@ describe('LedgerTimelineComponent', () => {
 
     (el.querySelector('.month-next') as HTMLButtonElement).click();
     fixture.detectChanges();
-    expect(el.querySelectorAll('.row').length).toBe(0);
+    expect(el.querySelectorAll('.entry-row').length).toBe(0);
     expect(el.querySelector('app-skeleton')).not.toBeNull();
     expect(el.querySelector('.empty')).toBeNull();
 
     flushSummary('2026-11');
     flushEntries([makeEntry({ id: 2, entry_date: '2026-11-01', name: '捷運' })]);
     fixture.detectChanges();
-    expect(Array.from(el.querySelectorAll('.row .name')).map(text)).toEqual(['捷運']);
+    expect(Array.from(el.querySelectorAll('.entry-row .name')).map(text)).toEqual(['捷運']);
     expect(el.querySelector('app-skeleton')).toBeNull();
   });
 
@@ -488,13 +488,13 @@ describe('LedgerTimelineComponent', () => {
     httpMock!.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/entries/99').flush(null);
     fixture.detectChanges();
     flushCounterparties();
-    expect(Array.from(el.querySelectorAll('.row .name')).map(text)).toEqual(['午餐']);
+    expect(Array.from(el.querySelectorAll('.entry-row .name')).map(text)).toEqual(['午餐']);
     expect(el.querySelector('app-skeleton')).toBeNull();
 
     flushSummary('2026-10');
     flushEntries([makeEntry({ id: 3, name: '晚餐' })]);
     fixture.detectChanges();
-    expect(Array.from(el.querySelectorAll('.row .name')).map(text)).toEqual(['晚餐']);
+    expect(Array.from(el.querySelectorAll('.entry-row .name')).map(text)).toEqual(['晚餐']);
   });
   it('shows 記錄讀取失敗 with 重試 instead of rows or empty text, and 重試 reloads page 1', () => {
     const { fixture, el } = render();
@@ -508,7 +508,7 @@ describe('LedgerTimelineComponent', () => {
     httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
     fixture.detectChanges();
 
-    expect(el.querySelectorAll('.row').length).toBe(0);
+    expect(el.querySelectorAll('.entry-row').length).toBe(0);
     expect(text(el.querySelector('.load-error'))).toBe('記錄讀取失敗');
     expect(el.querySelector('.empty')).toBeNull();
     expect(el.querySelector('app-skeleton')).toBeNull();
@@ -520,7 +520,7 @@ describe('LedgerTimelineComponent', () => {
     fixture.detectChanges();
     expect(req.request.params.get('offset')).toBe('0');
     expect(el.querySelector('.load-error')).toBeNull();
-    expect(Array.from(el.querySelectorAll('.row .name')).map(text)).toEqual(['捷運']);
+    expect(Array.from(el.querySelectorAll('.entry-row .name')).map(text)).toEqual(['捷運']);
   });
   it('shows the skeleton, not the empty text, while the first page loads', () => {
     const { fixture, el } = render();
@@ -585,7 +585,7 @@ describe('LedgerTimelineComponent', () => {
     httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
     fixture.detectChanges();
     expect(text(el.querySelector('.match-count'))).toBe('符合條件 — 筆');
-    expect(el.querySelector('.row')).toBeNull();
+    expect(el.querySelector('.entry-row')).toBeNull();
   });
 
   describe('filters and month totals', () => {
@@ -1026,7 +1026,7 @@ describe('LedgerTimelineComponent', () => {
       const req = flushEntries([makeEntry({ id: 9, entry_date: '2026-10-05' })]);
       fixture.detectChanges();
       expect(req.request.params.get('date_from')).toBe('2026-10-05');
-      expect(el.querySelectorAll('.day-entries .row').length).toBe(1);
+      expect(el.querySelectorAll('.day-entries .entry-row').length).toBe(1);
     });
 
     const OCT: Partial<DailySummary> = {
@@ -1065,7 +1065,7 @@ describe('LedgerTimelineComponent', () => {
       expect(viewButton(el, '日曆').getAttribute('aria-checked')).toBe('true');
       expect(viewButton(el, '清單').getAttribute('aria-checked')).toBe('false');
       expect(el.querySelector('app-calendar-month')).not.toBeNull();
-      expect(el.querySelectorAll('.row').length).toBe(0);
+      expect(el.querySelectorAll('.entry-row').length).toBe(0);
       expect(el.querySelector('.day')).toBeNull();
     });
 
@@ -1150,7 +1150,7 @@ describe('LedgerTimelineComponent', () => {
       expect(text(net)).toBe('−$734');
       expect(el.querySelector('.day-net .net-hint')).toBeNull();
       expect(net.classList).toContain('neg');
-      const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('.day-entries .row'));
+      const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('.day-entries .entry-row'));
       expect(rows.map(row => row.getAttribute('data-entry-id'))).toEqual(['11', '12']);
       expect(text(rows[0].querySelector('.amt'))).toBe('−$1,234');
       expect(rows[0].querySelector('.amt')!.classList).toContain('neg');
@@ -1270,7 +1270,7 @@ describe('LedgerTimelineComponent', () => {
       second.flush({ items: [makeEntry({ id: 5, entry_date: '2026-10-05', name: '薪水' })], total: 1, limit: 500, offset: 0 });
       first.flush({ items: [makeEntry({ id: 2, entry_date: '2026-10-02', name: '午餐' })], total: 1, limit: 500, offset: 0 });
       fixture.detectChanges();
-      expect(Array.from(el.querySelectorAll('.day-entries .row .name')).map(text)).toEqual(['薪水']);
+      expect(Array.from(el.querySelectorAll('.day-entries .entry-row .name')).map(text)).toEqual(['薪水']);
     });
 
     it('re-requests the daily summary after a preference save', () => {
@@ -1312,7 +1312,7 @@ describe('LedgerTimelineComponent', () => {
       expect(req.request.params.get('limit')).toBe('50');
       expect(localStorage.getItem(VIEW_KEY)).toBe('list');
       expect(el.querySelector('app-calendar-month')).toBeNull();
-      expect(Array.from(el.querySelectorAll('.row .name')).map(text)).toEqual(['午餐']);
+      expect(Array.from(el.querySelectorAll('.entry-row .name')).map(text)).toEqual(['午餐']);
     });
   });
 

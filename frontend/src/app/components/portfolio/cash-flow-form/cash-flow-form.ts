@@ -71,7 +71,7 @@ const BROKER_CURRENCY_DEFAULT: Record<Broker, string> = {
             styleClass="w-full">
           </p-select>
         </div>
-        <div class="row">
+        <div class="field-row">
           <div class="field">
             <label>類型</label>
             <p-select formControlName="type" [options]="typeOptions" optionLabel="label" optionValue="value" styleClass="w-full"></p-select>
@@ -81,7 +81,7 @@ const BROKER_CURRENCY_DEFAULT: Record<Broker, string> = {
             <p-select formControlName="currency" [options]="currencyOptions" optionLabel="label" optionValue="value" styleClass="w-full"></p-select>
           </div>
         </div>
-        <div class="row">
+        <div class="field-row">
           <div class="field">
             <label>金額</label>
             <input pInputText formControlName="amount" inputmode="decimal" placeholder="0.00" />
@@ -104,7 +104,7 @@ const BROKER_CURRENCY_DEFAULT: Record<Broker, string> = {
   `,
   styles: [`
     .cash-flow-form { display: flex; flex-direction: column; gap: 0.75rem; padding-top: 0.5rem; }
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+    .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
     .field { display: flex; flex-direction: column; gap: 0.25rem; }
     .field label { font-size: 0.85rem; color: var(--p-text-muted-color); }
     .actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.5rem; }
