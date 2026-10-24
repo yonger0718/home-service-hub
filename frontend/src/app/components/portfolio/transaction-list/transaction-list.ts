@@ -25,7 +25,7 @@ import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-tog
 import { TimelineComponent, TimelineRow } from '../../ui/timeline/timeline';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { BentoComponent } from '../../ui/bento/bento';
-import { formatMoney } from '../../ui/format';
+import { displayedSign, formatMoney } from '../../ui/format';
 import { allPages } from '../paging';
 import { periodLabel } from '../period';
 import { TradeTotals, feeShareLabel, monthHeading, tradeTotals } from './transaction-math';
@@ -409,7 +409,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
 
   /** Sign of the card figure as shown: −0.4 rounds to $0 and gets no trend colour. */
   cardSign(value: number | null): number {
-    return value == null ? 0 : Math.sign(Math.round(value) || 0);
+    return value == null ? 0 : displayedSign(value, this.formatSignedCard(value));
   }
 
   selectedMarket(): MarketCode {

@@ -196,6 +196,14 @@ describe('realizedCards', () => {
   });
 });
 
+describe('realizedCards rounding', () => {
+  it('signs a -0.5 headline by what it displays (−$1 is down)', () => {
+    const totals = realizedTotals(REALIZED_FIXTURE, TODAY);
+    expect(realizedCards(totals, -0.5, '2026 年', TODAY)[0]).toEqual(expect.objectContaining({ value: '−$1', sign: -1 }));
+    expect(realizedCards(totals, -0.4, '2026 年', TODAY)[0]).toEqual(expect.objectContaining({ value: '$0', sign: 0 }));
+  });
+});
+
 describe('barViews / barExtents', () => {
   const bars = monthlyBars(REALIZED_FIXTURE, 2026, TODAY);
 

@@ -429,6 +429,16 @@ describe('PortfolioDashboardComponent', () => {
       expect(today.querySelector('app-pct-badge')?.textContent?.trim()).toBe('−0.8%');
     });
 
+    it('gives a day change that rounds to $0 neither trend colour', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({ total_day_pnl: -0.4 })));
+      const fixture = createFixture();
+      const amount = hero(fixture)!.querySelector('.hero-today-amount')!;
+
+      expect(amount.textContent?.trim()).toBe('$0');
+      expect(amount.classList).not.toContain('up');
+      expect(amount.classList).not.toContain('down');
+    });
+
     it('shows a dash for the day percent when the assets before today are not positive', () => {
       portfolioService.getSummary.mockReturnValue(of(buildSummary({ total_day_pnl: 10, total_assets_twd: '10',
         total_market_value: 10, total_cash_twd: '0' })));

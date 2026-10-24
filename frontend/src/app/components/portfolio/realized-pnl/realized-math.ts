@@ -1,6 +1,6 @@
 import { RealizedPnlEvent, RealizedPnlQuery } from '../../../models/portfolio.model';
 import { isForeign } from '../market';
-import { formatMoney } from '../../ui/format';
+import { displayedSign, formatMoney } from '../../ui/format';
 import { groupedInteger } from '../money';
 import { periodLabel } from '../period';
 
@@ -138,7 +138,7 @@ export interface RealizedCard {
 export function realizedCards(totals: RealizedTotals | null, headline: number | null, range: string, today: Date): RealizedCard[] {
   const card = (label: string, value: number | null, meta: string, format = (v: number) => formatMoney(v, { sign: 'change' })): RealizedCard => {
     if (!totals) return { label, value: '', sign: 0, meta: '' };
-    return value == null ? { label, value: '—', sign: 0, meta } : { label, value: format(value), sign: Math.sign(Math.round(value) || 0), meta };
+    return value == null ? { label, value: '—', sign: 0, meta } : { label, value: format(value), sign: displayedSign(value, format(value)), meta };
   };
   const costs = (value: number) => formatMoney(value);
   return [

@@ -413,6 +413,15 @@ describe('PortfolioTransactionListComponent', () => {
       expect(realized.card.querySelector('.value')?.classList).not.toContain('down');
     });
 
+    it('colours a realized value of -0.5 down: it displays as −$1', () => {
+      const fixture = create();
+      settle(fixture, [buy, sell], '-0.50');
+
+      const realized = cards(fixture)[3];
+      expect(realized.value).toBe('−$1');
+      expect(realized.card.querySelector('.value')?.classList).toContain('down');
+    });
+
     it('cancels a superseded summary load instead of paging on', () => {
       const fixture = create();
       const first = summaryCalls[0].response;

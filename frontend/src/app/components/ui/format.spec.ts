@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { Amount, MoneyOptions, formatMoney, formatPct } from './format';
+import { Amount, MoneyOptions, displayedSign, formatMoney, formatPct } from './format';
 
 describe('formatMoney', () => {
   const rows: [Amount, MoneyOptions, string][] = [
@@ -50,5 +50,19 @@ describe('formatPct', () => {
 
   it.each(rows)('formatPct(%s, %o) is %s', (value, options, expected) => {
     expect(formatPct(value, options)).toBe(expected);
+  });
+});
+
+describe('displayedSign', () => {
+  const rows: [Amount, string, -1 | 0 | 1][] = [
+    [-0.4, '$0', 0],
+    [-0.04, '0.0%', 0],
+    [-0.5, '−$1', -1],
+    [3, '$3', 1],
+    [null, '—', 0],
+  ];
+
+  it.each(rows)('displayedSign(%s, %s) is %s', (value, formatted, expected) => {
+    expect(displayedSign(value, formatted)).toBe(expected);
   });
 });

@@ -50,7 +50,7 @@ import {
   todayChange,
 } from './dashboard-math';
 import { hoverGuidePlugin } from './chart-guide.plugin';
-import { Amount, formatMoney, formatPct } from '../../ui/format';
+import { Amount, displayedSign, formatMoney, formatPct } from '../../ui/format';
 import { isTwdCurrency } from '../money';
 
 /** Current time for the quote line's 盤中 / 台股收盤 tag; overridable in tests. */
@@ -182,6 +182,7 @@ export class PortfolioDashboardComponent implements OnInit {
       total: this.twdPlain(summary.total_assets_twd),
       todayAmount: today.amount,
       todayText: this.money(today.amount, 'TWD', 'change'),
+      todaySign: displayedSign(today.amount, this.money(today.amount, 'TWD', 'change')),
       todayPercent: today.percent,
       ...parts,
       barLabel: `資產組成：股票 ${this.pct(parts.stocksPct)}，現金 ${this.pct(parts.cashPct)}`,
@@ -465,6 +466,17 @@ export class PortfolioDashboardComponent implements OnInit {
         this.reloadSummary();
       },
     });
+  }
+
+  /** Trend sign of the 預估含息損益 value as printed ($0 is neither up nor down). */
+  protected estimatedSign(totals: { estimated_pnl_with_dividends?: Amount; currency?: string | null }): number {
+    const value = totals.estimated_pnl_with_dividends;
+    return displayedSign(value, this.money(value, totals.currency, 'change'));
+  }
+
+  /** Trend sign of the XIRR value as printed (a ratio, shown as a percentage). */
+  protected xirrSign(xirr: number | null | undefined): number {
+    return xirr == null ? 0 : displayedSign(xirr, this.pct(xirr * 100));
   }
 
   /** Market-filtered totals stay in the market's native currency and carry an ISO code: they get the lower clamp. */

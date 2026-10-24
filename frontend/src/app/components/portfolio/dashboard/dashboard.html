@@ -36,7 +36,7 @@
               <b class="hero-total">{{ heroData.total }}</b>
               <span class="hero-today">
                 <span class="hero-today-label">今日</span>
-                <b class="hero-today-amount" [class.up]="heroData.todayAmount > 0" [class.down]="heroData.todayAmount < 0">{{ heroData.todayText }}</b>
+                <b class="hero-today-amount" [class.up]="heroData.todaySign > 0" [class.down]="heroData.todaySign < 0">{{ heroData.todayText }}</b>
                 <app-pct-badge [value]="heroData.todayPercent"></app-pct-badge>
               </span>
             </div>
@@ -83,7 +83,7 @@
               <i class="pi pi-info-circle fx-info" tabindex="0" role="img" [attr.aria-label]="estimateHint" [pTooltip]="estimateHint"></i>
             </div>
             <div class="value-row">
-              <div class="value estimated-total" [class.foreign]="isForeignTotals(totals)" [class.up]="(totals.estimated_pnl_with_dividends ?? 0) > 0" [class.down]="(totals.estimated_pnl_with_dividends ?? 0) < 0">
+              <div class="value estimated-total" [class.foreign]="isForeignTotals(totals)" [class.up]="estimatedSign(totals) > 0" [class.down]="estimatedSign(totals) < 0">
                 {{ money(totals.estimated_pnl_with_dividends, totals.currency, 'change') }}
               </div>
               @if (totals.estimated_pnl_percent != null) {
@@ -100,7 +100,7 @@
           <div class="kpi-card-body">
             <div class="label">年化報酬率 XIRR</div>
             @let portfolioXirr = selectedPortfolioXirr();
-            <div class="value" [class.up]="(portfolioXirr ?? 0) > 0" [class.down]="(portfolioXirr ?? 0) < 0">
+            <div class="value" [class.up]="xirrSign(portfolioXirr) > 0" [class.down]="xirrSign(portfolioXirr) < 0">
               @if (portfolioXirr == null) {
                 <span class="xirr-placeholder" tabindex="0" aria-label="缺少此期間的 XIRR 資料說明" [pTooltip]="xirrGapTooltip">—</span>
               } @else {

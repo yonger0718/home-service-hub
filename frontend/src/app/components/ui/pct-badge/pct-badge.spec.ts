@@ -30,4 +30,15 @@ describe('PctBadgeComponent', () => {
     expect(badge.textContent).toContain('−1.2%');
     expect(badge.classList.contains('down')).toBe(true);
   });
+
+  it('shows a value that rounds to zero as neutral, not down', () => {
+    const fixture = TestBed.createComponent(PctBadgeHostComponent);
+    fixture.componentInstance.value = -0.04;
+    fixture.detectChanges();
+
+    const badge = fixture.nativeElement.querySelector('.pct-badge') as HTMLElement;
+    expect(badge.textContent).toContain('0.0%');
+    expect(badge.classList.contains('neutral')).toBe(true);
+    expect(badge.classList.contains('down')).toBe(false);
+  });
 });

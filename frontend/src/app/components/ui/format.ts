@@ -43,6 +43,12 @@ export function formatPct(value: Amount, options: { sign?: 'change'; digits?: nu
   return `${prefix(n, text, options.sign === 'change')}${text}%`;
 }
 
+/** Sign of a value as it will be displayed: 0 when the formatted body rounds to zero (`$0`, `0.0%`), else ±1. */
+export function displayedSign(value: Amount, formatted: string): -1 | 0 | 1 {
+  if (!/[1-9]/.test(formatted)) return 0;
+  return Number(value) < 0 ? -1 : 1;
+}
+
 function toNumber(value: Amount): number | null {
   if (value == null || value === '') return null;
   const n = Number(value);
