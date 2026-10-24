@@ -39,7 +39,7 @@
 - Modify: `frontend/src/app/components/accounting/statements/statement-detail/statement-detail.scss:174` (`.row {` → `.entry-row {`)
 - Modify: `frontend/src/app/components/accounting/account-entries/account-entries.html:53` (`row entry` → `entry-row entry`), `account-entries.scss:42,53,56,63` (`.row` → `.entry-row`)
 - Modify: `frontend/src/app/components/portfolio/cash-flow-form/cash-flow-form.ts:74,84,107` (`row` → `field-row`)
-- Test: `frontend/src/app/components/accounting/timeline/timeline.spec.ts` (24 `.row` selectors), `accounting/statements/statement-detail/statement-detail.spec.ts` (8) — selector rewrite only; `accounting-settings.spec.ts` matches `.row-name` and is **not** touched
+- Test: `frontend/src/app/components/accounting/timeline/timeline.spec.ts` (24 `.row` selectors), `accounting/statements/statement-detail/statement-detail.spec.ts` (8), `accounting/reminders/reminders.spec.ts:427,456,561,619` (`.debt-entries .row`, 4) — selector rewrite only; `account-entries.spec.ts` (`.entry`) and `statement-list.spec.ts` (`.statement-row`) survive unchanged; `accounting-settings.spec.ts` matches `.row-name` / `.row-delete` and is **not** touched
 
 **Interfaces:**
 - Produces: class names `entry-row` (accounting list rows, all four `entry-row.scss` users and account-entries) and `field-row` (cash-flow form two-column rows). Task 4 measures `button.entry-row`.
@@ -86,7 +86,7 @@ Implement `gridOffenders` in the spec file (it is test-only). Lines are reported
 Run: `cd frontend && npx ng test --watch=false --include src/app/theme/bootstrap-grid.spec.ts`
 Expected: FAIL; the diff lists `timeline.html:119`, `reminders.html:118`, `statement-detail.html:140`, `statement-list.html:25`, `account-entries.html:53`, `cash-flow-form.ts:74`, `cash-flow-form.ts:84` and nothing else. If another path appears, it is a real collision: rename it too and list it in the commit message.
 
-- [ ] **Step 3: Rename** per the Files list (`entry-row` in the accounting rows and the four stylesheet selectors groups; `field-row` in `cash-flow-form.ts` template and its `styles`). Then rewrite the spec selectors in `timeline.spec.ts` and `statement-detail.spec.ts`: `'.row'` → `'.entry-row'`, `'.row .name'` → `'.entry-row .name'`, `'.day-entries .row'` → `'.day-entries .entry-row'`; leave `.row-name` / `.row-delete` untouched.
+- [ ] **Step 3: Rename** per the Files list (`entry-row` in the accounting rows and the four stylesheet selectors groups; `field-row` in `cash-flow-form.ts` template and its `styles`). Then rewrite the spec selectors in `timeline.spec.ts`, `statement-detail.spec.ts` and `reminders.spec.ts`: `'.row'` → `'.entry-row'`, `'.row .name'` → `'.entry-row .name'`, `'.day-entries .row'` → `'.day-entries .entry-row'`, `'.debt-entries .row'` → `'.debt-entries .entry-row'`; leave `.row-name` / `.row-delete` untouched. `styles.scss:494-500` (`.p-dialog .row` / `.col-6`) serves the allowlisted dialogs and stays.
 
 - [ ] **Step 4: Run the gate and the touched suites**
 
@@ -131,7 +131,7 @@ it('renders the lockup inline with token fills only', async () => {
 
 Run: `cd frontend && npx ng test --watch=false --include src/app/components/sidebar/logo-lockup.spec.ts`
 
-- [ ] **Step 3: Implement `LogoLockupComponent`** per Interfaces; copy the paths/text from `assets/logo-lockup.svg`, replacing each `fill="#…"` with the token above; keep the font stack and sizes. Wire `sidebar.html` / `sidebar.ts` / `sidebar.scss`; delete the asset.
+- [ ] **Step 3: Implement `LogoLockupComponent`** per Interfaces; copy the paths/text from `assets/logo-lockup.svg`, replacing each `fill="#…"` **and the plus sign's `stroke="#ffffff"` (`logo-lockup.svg:7`)** with the token above (`var(--app-surface)` for the stroke) — the component spec's hex ban fails on a leftover stroke; keep the font stack and sizes. The grey bar (`--app-text-muted` on the `--app-text` tile) lands near 2.4:1 in dark mode; it is decorative, but Task 4 screenshots it so the owner can judge. Wire `sidebar.html` / `sidebar.ts` / `sidebar.scss`; delete the asset.
 
 - [ ] **Step 4: Update `sidebar.spec.ts:105`**: expanded sidebar renders `.side-logo app-logo-lockup svg` (not null) and `.side-logo img` is null; the rail case at `:118` (app-icon `<img>`) stays.
 
@@ -202,13 +202,15 @@ and `:507` → `expect(fab()!.style.getPropertyValue('--fab-right')).toBe(FAB_RI
 
 Run: `cd frontend && npx ng test --watch=false --include src/app/components/shell/shell.spec.ts --include src/app/components/portfolio/accounts/accounts-page.spec.ts --include src/app/components/accounting/accounting-layout/accounting-layout.spec.ts`
 
-- [ ] **Step 3: Implement** per Files/Interfaces. In `accounting-layout.ts` the existing effect becomes
+- [ ] **Step 3: Implement** per Files/Interfaces. In `accounting-layout.ts` the existing effect (`:215-219`) **keeps its `formOpen` and `sheetOpen` writes** (`shell.ts:54` hides the button on either; `accounting-layout.spec.ts:230,244` and `shell.spec.ts:195-206,486-512` pin them) and becomes
 ```ts
 const beside = this.mode() === 'panes' && this.paneOpen();
 this.paneState.paneOpen.set(beside);
 this.paneState.fabRight.set(beside ? FAB_RIGHT_BESIDE_PANE : null);
+this.paneState.formOpen.set(this.formOpen());
+this.paneState.sheetOpen.set(this.sheetOpen());
 ```
-and `onDestroy` adds `this.paneState.fabRight.set(null)`. Update the `PaneStateService` doc comment ("written by the accounting layout" → "written by layouts that open a right pane").
+and the existing `onDestroy` (`:220-224`, which already clears the three signals) adds `this.paneState.fabRight.set(null)`. Update the `PaneStateService` doc comment ("written by the accounting layout" → "written by layouts that open a right pane").
 
 - [ ] **Step 4: Run the three suites + navigation-state spec**
 
@@ -235,10 +237,12 @@ Run: `cd frontend && npx ng test --watch=false && npx ng build --output-path /tm
 Expected: all green; build warnings limited to the pre-existing `dashboard.scss` budget notice and protobufjs.
 
 - [ ] **Step 2: Browser measurements** (Playwright in Docker, light + dark):
-  - `/accounting` list mode at 390 px: `button.entry-row` left edge == the day heading's left edge (was 4 px vs 16 px); an entry opened → `.entry-row.sel` left == gutter − `--row-sel-bleed`.
+  - `/accounting` list mode at 390 px: `button.entry-row` left edge == `.day` (`timeline.html:219`) left edge == 16 px (`.hub-page` padding `1rem`, `shell.scss:127-129`; was 4 px from Bootstrap's −12 px margin).
+  - `/accounting/entries/<id>` at 1440 px (the list stays mounted only at ≥ 1024 px; the phone route swaps in the entry page): `.entry-row.sel` left == the list pane's content left − 8 px (`--row-sel-bleed` on `.pane`, `accounting-layout.scss:53`).
   - `/accounting/accounts/<id>` entry history at 390 px: `a.entry-row` left == gutter.
   - Sidebar at 1440 px dark: `app-logo-lockup text` computed `fill` resolves to the dark `--app-text` (`rgb(243, 246, 251)`); screenshot of the sidebar head in both themes; also screenshot the rail icon in dark (Review Focus 5).
   - `/portfolio/accounts/1` at 1440 px: `app-sidebar` width 248 px (not the 72 px rail) and `.hub-fab` computed `right` == 30 px.
   - `/accounting/entries/<id>` at 1440 px: `.hub-fab` computed `right` > 30 px and `--fab-right` set.
-  - `/portfolio/transactions` → 現金流 dialog: the two `.field-row` grids render two columns.
+  - `/portfolio/accounts` → 記錄入出金 (the only mount of `CashFlowFormComponent`, `accounts-list.html:3`): the two `.field-row` grids render two columns — the only browser proof of the inline styles at `cash-flow-form.ts:107`, which the class-attribute gate does not see.
+  - Dark 1440 rail (sidebar collapsed): screenshot `assets/app-icon.svg` for the follow-up decision (tile ≈ 1:1 on the dark glass, marks ≈ 17:1).
 - [ ] **Step 3: Write `NOTES.md`** with the measured numbers and the before/after pairs; nothing from the owner's data (stubbed fixtures only).
