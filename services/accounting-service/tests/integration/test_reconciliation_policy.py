@@ -2357,3 +2357,116 @@ def test_without_the_dirty_triggers_the_policy_creation_is_refused_but_the_owner
                                  label="t")
     db_session.commit()
     assert row.status == "applied" and len(_booked(db_session)) == 1
+
+
+# --- fee children of covered parents (fee-child spec 2026-10-24 §5.4, §7 test 17) -----------------------------------
+
+def _purchase_and_fee_statement(seed, db, run):
+    """`_fee_statement`'s shape for a 1000 AMAZON purchase and a 15 fee line on DAY, nothing booked yet. Not
+    `_fee_statement` itself: it requires every `line_unmatched` case to be `bank_only`, and the purchase line's is
+    not (a purchase line has no bank-only hint) — only the fee line's case is asserted `bank_only` here."""
+    card = _card(seed, db)
+    stmt, printed, _ = _submit(db, run, card, [_line(1, DAY, "AMAZON", 1000), _line(2, DAY, "國外交易手續費", 15, "fee")])
+    (case,) = [c for c in _cases(db, stmt.id, "open") if c.line_id == printed[1].id]
+    assert (case.kind, (case.context or {}).get("hint")) == ("line_unmatched", "bank_only")
+    return SimpleNamespace(card=card, stmt=stmt, lines=printed, cases=[case])
+
+
+def _covered_parent_fee_month(seed, db, run, *, child: str | None, twin: bool):
+    """Test 17 pre-state: a live September card statement printing one 1000 AMAZON purchase and one 15 fee line, both
+    on DAY, submitted first (the hook finds nothing: two `bank_only` cases); then the −1000 AMAZON parent, its fee
+    child `child` (None: no child) and, with `twin`, a standalone owner −15 fee with no merchant text, all on DAY; the
+    purchase line handed to the owner with the parent (the parent is covered: its child reaches the fee line only
+    through a carrier row). The reconcile under test is left to the caller."""
+    s = _purchase_and_fee_statement(seed, db, run)
+    purchase_line, fee_line = s.lines
+    parent = seed.entry(s.card, "-1000", day=DAY, merchant="AMAZON")
+    kid = None if child is None else seed.entry(s.card, child, kind="fee", day=DAY, parent_entry_id=parent.id)
+    owner_fee = seed.entry(s.card, "-15", kind="fee", day=DAY) if twin else None
+    db.commit()
+    _owner_cover(db, s.stmt, purchase_line, [parent])
+    return SimpleNamespace(card=s.card, stmt=s.stmt, purchase_line=purchase_line, fee_line=fee_line, parent=parent,
+                           child=kid, twin=owner_fee)
+
+
+def _line_cases(db, statement_id, line_id, *statuses):
+    return [c for c in _cases(db, statement_id, *statuses) if c.line_id == line_id]
+
+
+def _fee_line_rows(db, statement_id, line_id):
+    return [(r.entry_id, r.match_kind, r.match_rule) for r in _active(db, statement_id) if r.line_id == line_id]
+
+
+def test_validator_sees_the_carrier_child_when_it_ties_with_an_owner_twin(seed, db_session, run):
+    """Test 17 (a): the carrier's child and the owner's standalone twin tie on the fee line (same date, same flow, no
+    text): reconcile leaves it `ambiguous` naming both, and the validator — same loader, same match — refuses an agent
+    `match` of the twin with two admissible readings (before carriers it saw the twin alone and admitted it)."""
+    m = _covered_parent_fee_month(seed, db_session, run, child="-15", twin=True)
+
+    rec.reconcile(db_session, m.stmt.id)
+    db_session.commit()
+
+    (case,) = _line_cases(db_session, m.stmt.id, m.fee_line.id, "open")
+    assert case.kind == "ambiguous"
+    assert {c["entry_id"] for c in case.candidates} == {m.child.id, m.twin.id}
+    assert _fee_line_rows(db_session, m.stmt.id, m.fee_line.id) == []  # no coverage on the fee line
+    _agent_proposal(db_session, case, m.fee_line, m.twin.id)
+    msg = _validator_refusal(db_session, m.stmt.id, case, m.twin.id)
+    assert "2 admissible" in msg
+
+
+def test_without_the_child_the_owner_twin_claims_the_fee_line(seed, db_session, run):
+    """Test 17 (a), negative control: the same shape without the fee child — the twin is the only reading and
+    reconcile claims it `exact`, as before carriers existed (pins what the child changes)."""
+    m = _covered_parent_fee_month(seed, db_session, run, child=None, twin=True)
+
+    rec.reconcile(db_session, m.stmt.id)
+    db_session.commit()
+
+    assert _fee_line_rows(db_session, m.stmt.id, m.fee_line.id) == [(m.twin.id, "auto", "exact")]
+    assert _line_cases(db_session, m.stmt.id, m.fee_line.id, "open") == []
+
+
+def test_child_only_fee_line_has_no_case_and_no_policy_candidate(seed, db_session, run):
+    """Test 17 (b): the carrier's child alone → reconcile claims it `exact`; no open case on the fee line, so the
+    policy has no candidate on that line (not even `create_system_entry`, enabled)."""
+    m = _covered_parent_fee_month(seed, db_session, run, child="-15", twin=False)
+    _set_policy(db_session, SYSTEM_ON)
+
+    rec.reconcile(db_session, m.stmt.id)
+    db_session.commit()
+
+    assert _fee_line_rows(db_session, m.stmt.id, m.fee_line.id) == [(m.child.id, "auto", "exact")]
+    assert _line_cases(db_session, m.stmt.id, m.fee_line.id, "open") == []
+    on_line = {c.id for c in _line_cases(db_session, m.stmt.id, m.fee_line.id)}
+    statement = db_session.get(AccountStatement, m.stmt.id)
+    found = policy_service.collect_candidates(db_session, statement, settings_service.reconciliation_policy(db_session))
+    assert [c for c in found if c.case_id in on_line] == []
+
+
+def test_near_child_keeps_the_twin_guard_closed(seed, db_session, run):
+    """Test 17 (c): the carrier's child −14 against the 15 fee line → `bank_only` naming the near child, and with
+    `create_system_entry` enabled the policy offers no system fee for the case (the twin guard: the child is an owner
+    twin). Control: the pre-state case on the same line (no child yet) does get the `create_system_entry` candidate."""
+    _set_policy(db_session, SYSTEM_ON)
+    s = _purchase_and_fee_statement(seed, db_session, run)
+    purchase_line, fee_line = s.lines
+    (before,) = s.cases
+    statement = db_session.get(AccountStatement, s.stmt.id)
+    found = policy_service.collect_candidates(db_session, statement, settings_service.reconciliation_policy(db_session))
+    assert [c.action for c in found if c.case_id == before.id] == ["create_system_entry"]
+    parent = seed.entry(s.card, "-1000", day=DAY, merchant="AMAZON")
+    child = seed.entry(s.card, "-14", kind="fee", day=DAY, parent_entry_id=parent.id)
+    db_session.commit()
+    _owner_cover(db_session, s.stmt, purchase_line, [parent])
+
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+
+    (case,) = _line_cases(db_session, s.stmt.id, fee_line.id, "open")
+    assert case.kind == "line_unmatched" and case.context["hint"] == "bank_only"
+    assert case.context["near_children"] == [{"entry_id": child.id, "parent_entry_id": parent.id, "residual": "-1.0000"}]
+    assert _fee_line_rows(db_session, s.stmt.id, fee_line.id) == []
+    statement = db_session.get(AccountStatement, s.stmt.id)
+    found = policy_service.collect_candidates(db_session, statement, settings_service.reconciliation_policy(db_session))
+    assert [c for c in found if c.case_id == case.id] == []
