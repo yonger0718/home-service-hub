@@ -432,3 +432,10 @@ app-split-folder {
     min-width: 0;
   }
 }
+
+/* Secondary fields inside the shared filter-bar panel. */
+.filter-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}

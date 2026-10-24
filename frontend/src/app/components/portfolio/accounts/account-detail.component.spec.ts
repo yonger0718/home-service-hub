@@ -1026,7 +1026,19 @@ describe('PortfolioAccountDetailComponent cash rows and 餘額', () => {
     expect(fixture.debugElement.query(By.directive(DatePicker)).componentInstance.baseZIndex).toBe(1200);
     const sort = fixture.debugElement.queryAll(By.directive(Select)).map(d => d.componentInstance).find(c => c.options === fixture.componentInstance.sortOptions);
     expect(sort.overlayOptions?.baseZIndex).toBe(1200);
+    expect(root.querySelector('.filter-panel p-select')!.getAttribute('ariaLabel')).toBe('排序');
     expect(fixture.debugElement.query(By.directive(MultiSelect)).componentInstance.overlayOptions?.baseZIndex).toBe(1200);
+  });
+
+  it('重設 with no secondary filter set issues no request', () => {
+    const fixture = load();
+    const root = el(fixture);
+    root.querySelector<HTMLButtonElement>('.filter-toggle')!.click();
+    fixture.detectChanges();
+    root.querySelector<HTMLButtonElement>('.panel-reset')!.click();
+    fixture.detectChanges();
+    vi.advanceTimersByTime(300);
+    httpMock.expectNone(request => request.url === '/api/portfolio/accounts/1/cash-transactions');
   });
 
   it('a date range behind 篩選 reloads with date_from/date_to, reads 篩選 1 and shows a removable chip', () => {

@@ -125,6 +125,7 @@
         <span class="field-label">排序</span>
         <p-select
           [options]="sortOptions"
+          ariaLabel="排序"
           optionLabel="label"
           optionValue="value"
           [ngModel]="query().sort ?? 'txn_date:desc'"

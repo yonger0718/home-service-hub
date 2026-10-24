@@ -594,7 +594,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
   }
 
   resetSecondaryFilters(): void {
-    this.removeFilter('date');
+    for (const { key } of this.filterChips()) this.removeFilter(key);
   }
 
   transactionKey(txn: CashTransaction): string {
