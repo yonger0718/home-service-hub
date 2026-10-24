@@ -1038,7 +1038,7 @@ describe('PortfolioAccountDetailComponent cash rows and 餘額', () => {
     root.querySelector<HTMLButtonElement>('.panel-reset')!.click();
     fixture.detectChanges();
     vi.advanceTimersByTime(300);
-    httpMock.expectNone(request => request.url === '/api/portfolio/accounts/1/cash-transactions');
+    httpMock.expectNone(request => request.url === '/api/portfolio/accounts/7/cash-transactions');
   });
 
   it('a date range behind 篩選 reloads with date_from/date_to, reads 篩選 1 and shows a removable chip', () => {
