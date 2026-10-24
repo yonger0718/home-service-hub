@@ -110,6 +110,11 @@ describe('PortfolioTransactionListComponent', () => {
     }));
   }
 
+  function openPanel(fixture: ComponentFixture<PortfolioTransactionListComponent>): void {
+    (el(fixture).querySelector('.filter-toggle') as HTMLButtonElement).click();
+    fixture.detectChanges();
+  }
+
   /** Answers the initial list page, one summary page and the realized call. */
   function settle(
     fixture: ComponentFixture<PortfolioTransactionListComponent>,
@@ -171,14 +176,22 @@ describe('PortfolioTransactionListComponent', () => {
       expect(el(fixture).querySelector('app-page-header .page-subtitle')?.textContent?.trim()).toBe('全部期間 · 共 24 筆');
     });
 
-    it('keeps the date range and sort controls inside the filter bar', () => {
+    it('renders search, the 買賣 toggle and 篩選 on one bar; date range, 券商 and 排序 only behind 篩選', () => {
+      brokers = ['TW_CATHAY', 'IB'];
       const fixture = create();
-      const controls = el(fixture).querySelectorAll('.filter-controls');
-      expect(controls).toHaveLength(1);
-      expect(controls[0].closest('.filter-bar')).not.toBeNull();
-      expect(controls[0].querySelector('app-seg-toggle')).not.toBeNull();
-      expect(controls[0].querySelector('p-datepicker')).not.toBeNull();
-      expect(controls[0].querySelector('select[aria-label="排序"]')).not.toBeNull();
+      const row = el(fixture).querySelector('.filter-bar-row') as HTMLElement;
+      expect(row.querySelector('.search-wrap input')).not.toBeNull();
+      expect(row.querySelector('[role="radiogroup"][aria-label="買賣篩選"]')).not.toBeNull();
+      expect(row.querySelector('.filter-toggle')).not.toBeNull();
+      expect(el(fixture).querySelector('p-datepicker')).toBeNull();
+      expect(el(fixture).querySelector('[aria-label="券商篩選"]')).toBeNull();
+      expect(el(fixture).querySelector('select[aria-label="排序"]')).toBeNull();
+
+      openPanel(fixture);
+      const panel = el(fixture).querySelector('.filter-panel') as HTMLElement;
+      expect(panel.querySelector('p-datepicker')).not.toBeNull();
+      expect(panel.querySelector('[aria-label="券商篩選"]')).not.toBeNull();
+      expect(panel.querySelector('select[aria-label="排序"]')).not.toBeNull();
     });
 
     it('no longer carries 清除篩選 among the header actions', () => {
@@ -190,34 +203,89 @@ describe('PortfolioTransactionListComponent', () => {
     });
   });
 
-  describe('清除篩選', () => {
-    function clearButton(fixture: ComponentFixture<PortfolioTransactionListComponent>) {
-      return Array.from(el(fixture).querySelectorAll('.filter-bar button')).find(b => b.textContent?.includes('清除篩選'));
+  describe('chips and 清除全部', () => {
+    function chipLabels(fixture: ComponentFixture<PortfolioTransactionListComponent>): string[] {
+      return Array.from(el(fixture).querySelectorAll('.filter-chip')).map(c => c.firstChild?.textContent ?? '');
     }
-
-    it('appears in the filter bar only while a filter is active', () => {
-      const fixture = create();
-      expect(clearButton(fixture)).toBeUndefined();
-
-      fixture.componentInstance.onSideFilterChange('SELL');
-      fixture.detectChanges();
-      expect(clearButton(fixture)).toBeDefined();
-
-      (clearButton(fixture) as HTMLButtonElement).click();
-      fixture.detectChanges();
-      expect(clearButton(fixture)).toBeUndefined();
-      expect(listCalls.at(-1)!.query.side).toBeUndefined();
-    });
-
-    it('appears with a broker-only filter too', () => {
+    function withTwoFilters(): ComponentFixture<PortfolioTransactionListComponent> {
       brokers = ['TW_CATHAY', 'IB'];
       const fixture = create();
+      fixture.componentInstance.onDateRangeChange([new Date(2026, 0, 1), new Date(2026, 2, 31)]);
+      fixture.componentInstance.onBrokerFilterChange('TW_CATHAY');
+      fixture.detectChanges();
+      return fixture;
+    }
 
-      fixture.componentInstance.onBrokerFilterChange('IB');
+    it('reads 篩選 2 with a date and a broker chip', () => {
+      const fixture = withTwoFilters();
+
+      expect(el(fixture).querySelector('.filter-toggle')?.textContent?.trim()).toBe('篩選 2');
+      expect(chipLabels(fixture)).toEqual(['日期：2026-01-01 – 2026-03-31', '券商：國泰']);
+      expect(el(fixture).querySelector('.clear-all')).not.toBeNull();
+    });
+
+    it('removing the broker chip clears the broker and refreshes the list', () => {
+      const fixture = withTwoFilters();
+
+      (el(fixture).querySelector('.chip-remove[aria-label="移除 券商：國泰"]') as HTMLButtonElement).click();
       fixture.detectChanges();
 
-      expect(fixture.componentInstance.hasActiveFilters()).toBe(true);
-      expect(clearButton(fixture)).toBeDefined();
+      expect(listCalls.at(-1)!.query.broker ?? null).toBeNull();
+      expect(chipLabels(fixture)).toEqual(['日期：2026-01-01 – 2026-03-31']);
+      expect(el(fixture).querySelector('.filter-toggle')?.textContent?.trim()).toBe('篩選 1');
+    });
+
+    it('removing a chip while the popover is open updates the panel control', () => {
+      const fixture = withTwoFilters();
+      openPanel(fixture);
+
+      (el(fixture).querySelector('.chip-remove[aria-label="移除 券商：國泰"]') as HTMLButtonElement).click();
+      fixture.detectChanges();
+
+      expect(el(fixture).querySelector('[aria-label="券商篩選"] [aria-checked="true"]')?.textContent?.trim()).toBe('全部');
+    });
+
+    it('清除全部 clears search, side, date and broker', () => {
+      const fixture = withTwoFilters();
+      fixture.componentInstance.onSearchInput('2330');
+      fixture.componentInstance.onSideFilterChange('BUY');
+      fixture.detectChanges();
+
+      (el(fixture).querySelector('.clear-all') as HTMLButtonElement).click();
+      fixture.detectChanges();
+
+      const q = listCalls.at(-1)!.query;
+      expect(q.symbol ?? null).toBeNull();
+      expect(q.side ?? null).toBeNull();
+      expect(q.date_from ?? null).toBeNull();
+      expect(q.date_to ?? null).toBeNull();
+      expect(q.broker ?? null).toBeNull();
+      expect(el(fixture).querySelector('.filter-chips')).toBeNull();
+    });
+
+    it('重設 clears only the secondary filters', () => {
+      brokers = ['TW_CATHAY', 'IB'];
+      const fixture = create();
+      fixture.componentInstance.onSideFilterChange('BUY');
+      fixture.componentInstance.onDateRangeChange([new Date(2026, 0, 1), new Date(2026, 2, 31)]);
+      fixture.detectChanges();
+      openPanel(fixture);
+
+      (el(fixture).querySelector('.panel-reset') as HTMLButtonElement).click();
+      fixture.detectChanges();
+
+      expect(fixture.componentInstance.query().side).toBe('BUY');
+      expect(chipLabels(fixture)).toEqual([]);
+    });
+
+    it('shows the secondary filters in a bottom sheet with 套用 and 重設 on a phone', () => {
+      TestBed.inject(LayoutModeService).set('phone');
+      const fixture = create();
+
+      openPanel(fixture);
+
+      expect(el(fixture).querySelector('.filter-panel.sheet[aria-modal="true"]')).not.toBeNull();
+      expect(Array.from(el(fixture).querySelectorAll('.panel-actions button')).map(b => b.textContent?.trim())).toEqual(['重設', '套用']);
     });
   });
 
