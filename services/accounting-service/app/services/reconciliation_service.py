@@ -41,7 +41,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from typing import Iterable, Iterator
+from typing import Callable, Iterable, Iterator
 
 from psycopg2.errors import LockNotAvailable
 from sqlalchemy import and_, exists, func, or_, select, update
@@ -467,6 +467,24 @@ def guard_holders(db: Session, statement: AccountStatement, lines_all: list[matc
         out[line_id] = matching.Holder(frozenset(i for i in row_ids if i is not None), stand_in, exact)
     return out
 
+
+def pass_two_holders(db: Session, statement: AccountStatement, accounts: list[int], rules: matching.Rules,
+                     current: list[StatementLine], claimable_lines: list[matching.Line], entries: list[matching.Entry],
+                     groups: dict[int, matching.Group], plans: dict[str, int],
+                     fee: Callable[[matching.Entry], Decimal | None]) -> tuple[list[matching.Line],
+                                                                              dict[int, matching.Holder]]:
+    """Holders spec §3 "Two passes" / §4.3, the one place both `reconcile()` and the policy validator
+    (`policy_service._single_admissible`) build pass 2's holders, so their split-member decisions agree by
+    construction: the guard lines over `current` (covered and neighbouring lines too), the stable holders
+    (`guard_holders`), a pass-1 `match` of `claimable_lines` over `entries` with them, and pass 1's own claims merged
+    in. Returns `(lines_all, holders)`. This statement's stored `auto` rows are never read (they are pass-2 output),
+    so an unchanged re-run — and the validator — derive the same result. Read only."""
+    lines_all = guard_lines(db, statement, accounts, rules, current)
+    stand_in_ids = frozenset(stand_ins.stand_in_entry_ids(db, accounts))
+    stable = guard_holders(db, statement, lines_all, stand_in_ids)
+    first = matching.match(statement.kind, claimable_lines, entries, groups, plans, fee, rules, statement.currency,
+                           lines_all=lines_all, holders=stable)
+    return lines_all, matching.merge_holders(stable, matching.claim_holders(first, lines_all, entries, stand_in_ids))
 
 def _write_coverage(db: Session, statement: AccountStatement, result: matching.MatchResult,
                     lines: dict[int, StatementLine], locked: dict[int, LedgerEntry], run_id: int | None,
@@ -912,16 +930,15 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     # instances, structural split members) pass unchanged
     entries = [e if not e.claimable else _with_children(e, locked_rows) for e in entries
                if not e.claimable or (e.id in locked_rows and e.id in first_groups and first_groups[e.id] == e.group_id)]
-    # two passes (holders spec §3): pass 1 with the stable holders, pass 2 with those and pass 1's own claims — the
-    # run's result; neither reads this statement's stored `auto` rows, so an unchanged re-run derives the same result
-    lines_all = guard_lines(db, statement, accounts, rules, all_lines)  # covered and neighbouring lines too
-    stand_in_ids = frozenset(stand_ins.stand_in_entry_ids(db, accounts))
-    stable = guard_holders(db, statement, lines_all, stand_in_ids)
-    args = (statement.kind, [_as_line(row) for row in line_rows], entries, groups, plan_map(db, statement.account_id),
-            lambda e: proposed_fx_fee(accounts_by_id[e.account_id], e.flow), rules, statement.currency)
-    first = matching.match(*args, lines_all=lines_all, holders=stable)
-    own = matching.claim_holders(first, lines_all, entries, stand_in_ids)
-    result = matching.match(*args, lines_all=lines_all, holders=matching.merge_holders(stable, own))
+    # two passes (holders spec §3): `pass_two_holders` runs pass 1; pass 2 below is the run's result
+    claimable_lines = [_as_line(row) for row in line_rows]
+    plans = plan_map(db, statement.account_id)
+    def fee(e: matching.Entry) -> Decimal | None:
+        return proposed_fx_fee(accounts_by_id[e.account_id], e.flow)
+    lines_all, holders = pass_two_holders(db, statement, accounts, rules, all_lines, claimable_lines, entries, groups,
+                                          plans, fee)
+    result = matching.match(statement.kind, claimable_lines, entries, groups, plans, fee, rules, statement.currency,
+                            lines_all=lines_all, holders=holders)
     lines = {row.id: row for row in line_rows}
     _write_coverage(db, statement, result, lines, locked_rows, run_id, keep_lines=manual)
     deferred = [entry_id for entry_id in result.unmatched_entry_ids if result.explained.get(entry_id) == DEFERRED]

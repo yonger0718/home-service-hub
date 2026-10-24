@@ -503,10 +503,10 @@ def _single_admissible(ctx: Context, candidate: Candidate) -> None:
     lines (`rec.guard_lines`), so the split-member decision (`statement_context`) is the one reconcile made; every
     entry claimed anywhere is then passed as `claimed` to `_representations` over the claimable rows. A line a split
     group's incomplete readings block in reconcile (`incomplete_groups` over the structural population, nothing
-    claimed) is refused. The guard holders are reconcile's too (holders spec §4.3): the stable ones
-    (`rec.guard_holders`) and a recomputed pass 1's own claims, so the context is reconcile's pass-2 context on
-    unchanged state; this statement's stored `auto` rows are never read as holders — they are pass-2 output, and a
-    member claim among them would release a group reconcile kept whole (shape 13)."""
+    claimed) is refused. The guard holders are reconcile's too (holders spec §4.3, `rec.pass_two_holders`): the stable
+    ones and a recomputed pass 1's own claims, so the context is reconcile's pass-2 context on unchanged state; this
+    statement's stored `auto` rows are never read as holders — they are pass-2 output, and a member claim among them
+    would release a group reconcile kept whole (shape 13)."""
     db, statement, line = ctx.db, ctx.statement, ctx.line
     if line is None:
         raise CodedConflictError("not_single_admissible", "the line is no longer printed")
@@ -518,14 +518,10 @@ def _single_admissible(ctx: Context, candidate: Candidate) -> None:
                                           include_reward=include_reward, exclude=owned)
     accounts_by_id = {a.id: a for a in db.execute(select(Account).where(Account.id.in_(accounts))).scalars()}
     claimable_lines = [rec._as_line(r) for r in current if r.id not in manual]
-    lines_all = rec.guard_lines(db, statement, accounts, ctx.rules, current)
-    stand_in_ids = frozenset(stand_ins.stand_in_entry_ids(db, accounts))
-    stable = rec.guard_holders(db, statement, lines_all, stand_in_ids)
     plans = rec.plan_map(db, statement.account_id)
-    first = matching.match(statement.kind, claimable_lines, entries, groups, plans,
-                           lambda e: rec.proposed_fx_fee(accounts_by_id[e.account_id], e.flow), ctx.rules,
-                           statement.currency, lines_all=lines_all, holders=stable)
-    holders = matching.merge_holders(stable, matching.claim_holders(first, lines_all, entries, stand_in_ids))
+    lines_all, holders = rec.pass_two_holders(
+        db, statement, accounts, ctx.rules, current, claimable_lines, entries, groups, plans,
+        lambda e: rec.proposed_fx_fee(accounts_by_id[e.account_id], e.flow))
     match_ctx = matching.statement_context(statement.kind, claimable_lines, lines_all, entries, groups, ctx.rules,
                                            statement.currency, holders=holders)
     matcher_line = rec._as_line(line)

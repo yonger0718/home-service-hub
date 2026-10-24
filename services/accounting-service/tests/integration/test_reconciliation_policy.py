@@ -803,8 +803,9 @@ def _held_near_line_case(seed, db, run, holder_source="manual"):
     twin = seed.entry(card, "-300", day=DAY, merchant="餐廳") if holder_source == "manual" else None
     db.commit()
     stmt, (line575, line300), _ = _submit(db, run, card, [_line(1, DAY, "超市", 575), _line(2, DAY, "餐廳", 300)])
-    (case,) = [c for c in _cases(db, stmt.id, "open") if c.line_id == line300.id]
+    case = None  # statement mode: the caller owner-covers the −575 line and reconciles before reading the case
     if twin is not None:  # pass 1 claims −575 for the standalone, pass 2 releases the group: member and twin tie
+        (case,) = [c for c in _cases(db, stmt.id, "open") if c.line_id == line300.id]
         assert [(c.line_id, c.entry_id, c.match_kind) for c in _active(db, stmt.id)] == [(line575.id, holder.id, "auto")]
         assert case.kind == "ambiguous" and {c["entry_id"] for c in case.candidates} == {member.id, twin.id}
     return SimpleNamespace(stmt=stmt, line300=line300, case=case, member=member, twin=twin, line575=line575,
@@ -827,6 +828,67 @@ def test_policy_admits_the_member_reconcile_released_through_pass_one(seed, db_s
     assert result.applied == [row.id] and (row.action, row.proposal_id) == ("match", proposal.id)
     assert sorted((c.line_id, c.entry_id, c.match_kind) for c in _active(db_session, s.stmt.id)) == \
         sorted([(s.line575.id, s.holder.id, "auto"), (s.line300.id, s.member.id, "agent")])
+
+
+def test_policy_admits_the_member_when_a_stable_owner_holder_releases_the_group(seed, db_session, run):
+    """The first link is stable: the −575 line owner-covered by the plain (not stand-in) −575 entry — an exact
+    unrelated owner holder, so the group is apart already in pass 1 and the −300 line ambiguous with the twin; with
+    the twin off the line the member's proposal is applied. A pass 1 without the stable holders would see the −575
+    line unclaimable and unheld, keep the group whole and refuse."""
+    s = _held_near_line_case(seed, db_session, run)
+    _owner_cover(db_session, s.stmt, s.line575, [s.holder])
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.line_id == s.line300.id]
+    assert case.kind == "ambiguous" and {c["entry_id"] for c in case.candidates} == {s.member.id, s.twin.id}
+    s.twin.amount = Decimal("-301")
+    db_session.commit()
+    proposal = _agent_proposal(db_session, case, s.line300, s.member.id)
+    _set_policy(db_session, MATCH_ON)
+
+    result = policy_service.run_policy(db_session, s.stmt.id)
+
+    (row,) = _actions(db_session)
+    assert result.applied == [row.id] and (row.action, row.proposal_id) == ("match", proposal.id)
+    assert sorted((c.line_id, c.entry_id, c.match_kind) for c in _active(db_session, s.stmt.id)) == \
+        sorted([(s.line575.id, s.holder.id, "manual"), (s.line300.id, s.member.id, "agent")])
+
+
+def test_policy_admits_a_second_group_a_stable_owner_holder_releases_through_pass_one(seed, db_session, run):
+    """The stable link must reach pass 1 itself: the −575 line owner-covered by a plain −575 entry releases group A
+    (−300 card / −280 錢包) in pass 1, so A's member claims the −300 line there — within 5 % of group B's −305 total
+    (−100 card / −205 錢包) — and B is apart in pass 2, its −100 member tying a −100 twin. With the twin off the line
+    the member's proposal is applied; a pass 1 run without the stable holders keeps A whole, never claims the −300
+    line, keeps B whole and refuses."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    seed.entry(card, "-1", day=date(2026, 8, 1), merchant="墊高編號")  # keeps entry ids apart from the line id
+    held = seed.entry(card, "-575", day=DAY, merchant="超市")
+    group_a, group_b = seed.group("split"), seed.group("split")
+    a1 = seed.entry(card, "-300", day=DAY, merchant="餐廳", group_id=group_a.id)
+    seed.entry(wallet, "-280", day=DAY, merchant="餐廳", group_id=group_a.id)
+    b1 = seed.entry(card, "-100", day=DAY, merchant="咖啡", group_id=group_b.id)
+    seed.entry(wallet, "-205", day=DAY, merchant="咖啡", group_id=group_b.id)
+    twin = seed.entry(card, "-100", day=DAY, merchant="咖啡")
+    db_session.commit()
+    stmt, (l575, l300, l100), _ = _submit(db_session, run, card, [
+        _line(1, DAY, "超市", 575), _line(2, DAY, "餐廳", 300), _line(3, DAY, "咖啡", 100)])
+    _owner_cover(db_session, stmt, l575, [held])
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    assert sorted((c.line_id, c.entry_id, c.match_kind) for c in _active(db_session, stmt.id)) == \
+        sorted([(l575.id, held.id, "manual"), (l300.id, a1.id, "auto")])
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == l100.id]
+    assert case.kind == "ambiguous" and {c["entry_id"] for c in case.candidates} == {b1.id, twin.id}
+    twin.amount = Decimal("-101")
+    db_session.commit()
+    proposal = _agent_proposal(db_session, case, l100, b1.id)
+    _set_policy(db_session, MATCH_ON)
+
+    result = policy_service.run_policy(db_session, stmt.id)
+
+    (row,) = _actions(db_session)
+    assert result.applied == [row.id] and (row.action, row.proposal_id) == ("match", proposal.id)
 
 
 def test_policy_refuses_the_member_when_a_real_stand_in_holds_the_near_line(seed, db_session, run):
