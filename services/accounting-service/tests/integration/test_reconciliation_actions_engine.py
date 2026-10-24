@@ -13,8 +13,8 @@ from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import sessionmaker
 
 from app.models import (
-    DIRTY_BARRIER_KEY, AccountStatement, CoverageDirty, LedgerEntry, ReconciliationAction, ReconciliationAudit,
-    ReconciliationCase, StatementCoverage,
+    DIRTY_BARRIER_KEY, AccountStatement, CoverageDirty, EntryGroup, LedgerEntry, ReconciliationAction,
+    ReconciliationAudit, ReconciliationCase, StatementCoverage,
 )
 from app.services import coverage_service as cov
 from app.services import entry_write_service as ews
@@ -283,14 +283,141 @@ def test_match_with_children_and_a_group(unmatched, seed, db_session):
     group = seed.group("split")
     m1 = seed.entry(s.card, "-300", day=DAY, group_id=group.id)
     m2 = seed.entry(s.card, "-280", day=DAY, group_id=group.id)
+    installment = seed.group("installment")
+    term = seed.entry(s.card, "-580", day=DAY, group_id=installment.id)
     db_session.commit()
+    # split members (2026-10-24 spec §5.1): a split member alone is admitted like a standalone entry, so −300 against
+    # the 580 line is refused by conservation; a member of a non-split group stays `entry_in_group`
     exc = _refuse(db_session, lambda: _apply(db_session, s.case, params={"line_id": s.line.id, "entry_id": m1.id}))
+    assert _code(exc) == "not_conserved"
+    exc = _refuse(db_session, lambda: _apply(db_session, s.case, params={"line_id": s.line.id, "entry_id": term.id}))
     assert _code(exc) == "entry_in_group"
     row, _ = _apply(db_session, s.case, params={"line_id": s.line.id, "group_id": group.id})
     assert sorted((c.entry_id, c.role, c.group_id) for c in _active(db_session, s.stmt.id)) == sorted(
         [(m1.id, "member", group.id), (m2.id, "member", group.id)])
     assert row.touched_group_ids == [group.id] and str(group.id) in row.after["groups"]
     assert row.after["groups"][str(group.id)]["member_ids"] == sorted([m1.id, m2.id])
+
+
+def _two_line_card(seed, db, run, amounts=(300, 280)):
+    """A live September card statement with one purchase line per amount and nothing booked when it reconciled (one
+    open line_unmatched case per line), then a split group whose members equal the lines, booked afterwards."""
+    card = _card(seed, db)
+    stmt, lines, _ = _submit(db, run, card, [_line(i, DAY, f"店{i}", a) for i, a in enumerate(amounts, 1)])
+    total = sum(amounts)
+    cases = {c.line_id: c for c in _open_beside_gap(db, stmt.id, f"-{total}.0000")}
+    group = seed.group("split")
+    members = [seed.entry(card, f"-{a}", day=DAY, merchant=f"店{i}", group_id=group.id)
+               for i, a in enumerate(amounts, 1)]
+    db.commit()
+    return SimpleNamespace(card=card, stmt=stmt, lines=lines, cases=[cases[l.id] for l in lines], group=group,
+                           members=members)
+
+
+def test_match_accepts_a_split_member_and_refuses_an_installment_member(unmatched, seed, db_session):
+    """Spec §5.1: a top-level member of a split group is matched alone like a standalone entry — coverage row
+    `group_id NULL`, role principal — and its group is locked and recorded in `touched_group_ids`; the sibling's
+    case is untouched. A member of an installment group is still `entry_in_group`."""
+    s = unmatched(amount="-120")  # the fixture's own entry is not the one matched
+    installment = seed.group("installment")
+    term = seed.entry(s.card, "-580", day=DAY, group_id=installment.id)
+    split = seed.group("split")
+    member = seed.entry(s.card, "-580", day=DAY, merchant="全聯", group_id=split.id)
+    sibling = seed.entry(s.card, "-90", day=DAY, merchant="全聯", group_id=split.id)
+    db_session.commit()
+    sibling_case = _case(db_session, s.stmt, None, "entry_unmatched", entry_id=sibling.id)
+    sibling_version = sibling_case.version
+
+    exc = _refuse(db_session, lambda: _apply(db_session, s.case, params={"line_id": s.line.id, "entry_id": term.id}))
+    assert _code(exc) == "entry_in_group" and _active(db_session, s.stmt.id) == []
+    # the params name only the entry; its group (and so every sibling) joins the lock targets
+    locks = MatchAction().lock_targets(SimpleNamespace(db=db_session),
+                                       MatchAction.Params(line_id=s.line.id, entry_id=member.id))
+    assert locks.group_ids == (split.id,) and set(locks.entry_ids) == {member.id, sibling.id}
+    missing = MatchAction().lock_targets(SimpleNamespace(db=db_session),
+                                         MatchAction.Params(line_id=s.line.id, entry_id=999999))
+    assert missing.group_ids == ()  # a missing entry keeps today's path (`not_found` under the locks)
+
+    row, _ = _apply(db_session, s.case, params={"line_id": s.line.id, "entry_id": member.id})
+
+    (claim,) = _active(db_session, s.stmt.id)
+    assert (claim.entry_id, claim.group_id, claim.role) == (member.id, None, "principal")
+    action = _actions(db_session)[-1]
+    assert action.id == row.id and action.touched_group_ids == [split.id]
+    assert action.touched_entry_ids == [member.id]
+    assert action.after["groups"][str(split.id)]["member_ids"] == sorted([member.id, sibling.id])
+    sib = db_session.get(ReconciliationCase, sibling_case.id)
+    assert (sib.status, sib.version) == ("open", sibling_version)
+
+
+def test_revert_of_a_member_match_and_sibling_ordering(seed, db_session, run):
+    """Two member matches on one group share the group in `touched_group_ids`, so reverting the first is refused
+    (`not_revertable`, "later action …") while the second stands; reverting in reverse order releases both lines and
+    leaves both members unclaimed."""
+    s = _two_line_card(seed, db_session, run)
+    (l1, l2), (c1, c2), (a, b) = s.lines, s.cases, s.members
+    m1, _ = _apply(db_session, c1, params={"line_id": l1.id, "entry_id": a.id})
+    m2, _ = _apply(db_session, c2, params={"line_id": l2.id, "entry_id": b.id})
+    assert m1.touched_group_ids == m2.touched_group_ids == [s.group.id]
+
+    exc = _refuse(db_session, lambda: _revert(db_session, m1.id))
+    assert exc.code == "not_revertable" and f"later action {m2.id}" in exc.message
+    assert len(_active(db_session, s.stmt.id)) == 2
+
+    _revert(db_session, m2.id)
+    assert [c.entry_id for c in _active(db_session, s.stmt.id)] == [a.id]  # the sibling's match is left alone
+    _revert(db_session, m1.id)
+    assert _active(db_session, s.stmt.id) == []
+    assert not {a.id, b.id} & cov.claimed_entry_ids(db_session)
+    assert [db_session.get(ReconciliationCase, c.id).status for c in (c1, c2)] == ["open", "open"]
+
+
+def _sweep_stmt(db, stmt):
+    locked = db.execute(select(AccountStatement).where(AccountStatement.id == stmt.id).with_for_update()
+                        .execution_options(populate_existing=True)).scalar_one()
+    result = cov.sweep(db, locked)
+    db.commit()
+    return result
+
+
+def test_group_update_and_delete_release_a_member_claim_through_the_sweep(unmatched, seed, db_session):
+    """Spec §4.1: the member's coverage row keeps `group_id NULL`, but the snapshot's `group_id` puts its line in the
+    sweep's group index, so a group update (a rename — the sweep releases on any group update, no structural-key
+    comparison) and a group delete each release the member's line."""
+    s = unmatched(amount="-120")
+    group = seed.group("split", name="聚餐")
+    member = seed.entry(s.card, "-580", day=DAY, merchant="全聯", group_id=group.id)
+    seed.entry(s.card, "-90", day=DAY, merchant="全聯", group_id=group.id)
+    db_session.commit()
+    _apply(db_session, s.case, params={"line_id": s.line.id, "entry_id": member.id})
+    (claim,) = _active(db_session, s.stmt.id)
+    assert (claim.group_id, claim.snapshot["group_id"]) == (None, group.id)
+
+    set_dirty(db_session, True)
+    db_session.get(EntryGroup, group.id).name = "改名"
+    db_session.commit()
+    renamed = db_session.execute(select(func.max(CoverageDirty.id))).scalar_one()
+    res = _sweep_stmt(db_session, s.stmt)
+    assert res.stale_lines == [s.line.id] and _active(db_session, s.stmt.id) == []
+    stale = db_session.get(StatementCoverage, claim.id)
+    assert (stale.status, stale.stale_reason) == ("stale", f"dirty:group:{renamed}")
+
+    case = db_session.get(ReconciliationCase, s.case.id)
+    assert case.status == "open"  # the sweep reopened the case at a new version
+    _apply(db_session, case, params={"line_id": s.line.id, "entry_id": member.id})
+    (claim,) = _active(db_session, s.stmt.id)
+    set_dirty(db_session, False)
+    for entry in db_session.execute(select(LedgerEntry).where(LedgerEntry.group_id == group.id)).scalars():
+        entry.group_id = None  # detached while tracking is off: only the group's own delete event remains
+    db_session.commit()
+    set_dirty(db_session, True)
+    db_session.execute(text("DELETE FROM entry_group WHERE id = :id"), {"id": group.id})
+    db_session.commit()
+    deleted = db_session.execute(select(func.max(CoverageDirty.id))).scalar_one()
+    res = _sweep_stmt(db_session, s.stmt)
+    assert res.stale_lines == [s.line.id] and _active(db_session, s.stmt.id) == []
+    stale = db_session.get(StatementCoverage, claim.id)
+    assert (stale.status, stale.stale_reason) == ("stale", f"dirty:group:{deleted}")
 
 
 # --- 2. replay, keys after a revert, reverted keys --------------------------------------------------------------------
