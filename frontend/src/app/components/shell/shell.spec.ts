@@ -627,6 +627,8 @@ describe('記一筆 hides while scrolling (D5)', () => {
     const css = readFileSync(join(process.cwd(), 'src/app/components/shell/shell.scss'), 'utf8');
     expect(css).toMatch(/&\.is-hidden\s*{[^}]*visibility:\s*hidden/);
     expect(css).toMatch(/transition:[^;]*160ms/);
+    expect(css).toMatch(/transition:[^;]*visibility 0s linear 0s/);
+    expect(css).toMatch(/&\.is-hidden\s*{[^}]*transition-delay:\s*0s,\s*0s,\s*160ms/);
     expect(css).toMatch(/prefers-reduced-motion:\s*reduce\)\s*{[\s\S]*\.hub-fab\s*{\s*transition:\s*none/);
   });
 });
