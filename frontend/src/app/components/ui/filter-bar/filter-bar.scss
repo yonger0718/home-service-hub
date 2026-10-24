@@ -20,6 +20,10 @@
 .slot-search {
   flex: 1 1 200px;
   min-width: 0;
+
+  &:empty {
+    display: none;
+  }
 }
 
 .slot-primary {
@@ -97,8 +101,9 @@
   top: calc(100% + 6px);
   right: 0;
   z-index: 1100;
-  width: min(560px, calc(100vw - 32px));
-  min-width: 300px;
+  /* % resolves against .filter-bar (the containing block), so the popover never outgrows its pane. */
+  width: min(560px, 100%);
+  min-width: min(300px, 100%);
   background: var(--app-surface);
   border: 1px solid var(--app-border);
   border-radius: 16px;
@@ -170,5 +175,5 @@
 .panel-apply {
   border: 1px solid var(--app-primary);
   background: var(--app-primary);
-  color: #fff;
+  color: var(--app-on-primary);
 }

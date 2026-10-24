@@ -757,7 +757,12 @@ body {
   > select, > input { min-height: 36px; width: 100%; border: 1px solid var(--app-border); border-radius: 10px;
     background: var(--app-surface-soft); color: inherit; font: inherit; padding: 0 10px; }
   > select:focus-visible, > input:focus-visible { outline: none; border-color: var(--app-primary); box-shadow: 0 0 0 3px var(--app-focus-ring); }
+  /* PrimeNG hosts and their inner input must shrink to the field, or a date range overflows the panel (c3). */
+  > p-datepicker, > p-select, > p-multiselect { width: 100%; min-width: 0; }
+  p-datepicker .p-datepicker, p-datepicker .p-inputtext { width: 100%; }
 }
+/* Switch fields: control and text on one line (僅當沖). */
+.hub-filter-field--row { flex-direction: row; align-items: center; gap: 10px; }
 
 .hub-paginator {
   margin-top: 0.75rem;
