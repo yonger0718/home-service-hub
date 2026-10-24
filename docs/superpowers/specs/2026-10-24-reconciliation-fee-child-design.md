@@ -1,6 +1,6 @@
 # Reconciliation — a fee child claims the statement's fee line (issue #143)
 
-Rev 5, 2026-10-24 (rev 4 + Multica AGENT-271 re-check FAIL folded, §10). Branch `feat/reconciliation-fee-child` from main `fbe7425` (PR #141 merged). Amends the matcher
+Rev 6, 2026-10-24 (rev 5 + the scoped re-review of 0556ef2..9975232 folded, §10). Branch `feat/reconciliation-fee-child` from main `fbe7425` (PR #141 merged). Amends the matcher
 (`app/services/statements/matching.py`) and the candidate loader (`app/services/reconciliation_service.py
 load_candidates`). No schema change. Builds on the split-members spec (`2026-10-24-reconciliation-split-members-design.md`)
 and the guard-holders spec (`2026-10-24-reconciliation-guard-holders-design.md`); neither rules on the shapes below.
@@ -143,7 +143,12 @@ pair's first line has taken its child, the second line has a single rep (and a o
 accept branch claims it with `rule = "exact"` — so a pair of two lines reads `exact_pair`, `exact` (AGENT-270
 finding 2), and `exact_pair` appears exactly once per tie the rule breaks. A line whose single rep is a child of an
 ident shared with a still-undecided sibling line is gated too: when that sibling is a decided `ambiguous` line the
-undecided veto makes it `ambiguous` as well (F2 shape, test 5b/5e).
+undecided veto makes it `ambiguous` as well (F2 shape, test 5b/5f). **Forced take (rev 6):** a gated line with a
+*single* rep that is the lowest slot of its component keeps today's accept (`exact`) even when the component is
+incomplete or unbalanced — a degree-1 line's only edge lies in some maximum assignment (if the child is matched
+elsewhere, swap; if free, add), so the take strands nobody; the sibling then reads the rest (test 5g: lines Sep 2 and
+Sep 4, children under parents Sep 1 and Sep 6 → Sep 2 takes 11 `exact`, Sep 4 takes 21 `exact`, as on main). With
+the single-rep line *later* in id order the earlier multi-rep line is already `ambiguous` and the veto holds (5b).
 
 Why complete *and* balanced, not counts alone (AGENT-267 finding 1): with only equal counts a greedy choice can strand
 a later line — lines dated Sep 4 and Sep 8, parents dated Sep 3 and Sep 5: line 1 ties, takes the lower id (parent
@@ -157,10 +162,10 @@ rebuilt per line from the current `claimed` set and the unclaimed lines, so clai
 (a text-favoured child, a non-tied line) are already removed. Lines the loop already left as a case stay in the graph
 but veto the pairing (**undecided**, §3): they will not be revisited, so they must not make a later line's cohort
 balanced (AGENT-270 finding 1: fee lines Sep 2 and Sep 5, two identical children under Sep 3 parents and a standalone
-fee entry Aug 31 — the Sep 2 line has three reps (not identical children) and stays `ambiguous`; counting it would
-have let the Sep 5 line pair as a "complete 2 × 2" and strand a child; with the veto the Sep 5 line is `ambiguous`
-too), and leaving them out would be the mirror error (three lines, two children: line 1 `ambiguous`, lines 2 and 3
-would pair). Rule in one line: a child-only fee line in a cohort of ≥ 2 slots and ≥ 2 children claims iff its cohort is complete ∧ balanced ∧
+fee entry Aug 31 — the Sep 2 line has three reps (not identical children) and stays `ambiguous`; under rev 4 it
+was a decided left node and vetoed the Sep 5 line; under rev 5 F1 it is not a slot at all, the Sep 5 line's component
+is one slot and it is `ambiguous` by the plain tie — same outcome, test 5d), and leaving decided *slots* out would be
+the mirror error (three identical lines, two children: line 1 `ambiguous`, lines 2 and 3 would pair — test 5). Rule in one line: a child-only fee line in a cohort of ≥ 2 slots and ≥ 2 children claims iff its cohort is complete ∧ balanced ∧
 `min(slot ids) == L.id` (tied → `exact_pair`, untied → `exact`); otherwise `ambiguous`. AGENT-271 F1: a sibling line
 whose best rep is a standalone at distance 1 is not a slot — counting it let line 1 pair and line 2 take the
 standalone, stranding a carrier child nobody reports (§4.4). AGENT-271 F2: lines Sep 5 and Sep 8, children under
@@ -292,10 +297,17 @@ Unit (`tests/unit/test_statement_matching.py`, helpers `L/E/S/run`; add a `C(...
    5f. The gate guards an untied take (AGENT-271 F2): lines Sep 5 and Sep 8, children under parents Sep 5 and Sep 2 →
    both lines `ambiguous`, no claim; the complete variant (parents Sep 5 and Sep 7, both lines admissible to both) →
    line 1 `exact` (margin winner), line 2 `exact`; one line, two untied children → nearest wins `exact` (single slot); two lines, one child → first line `exact`, second `claimed_by_earlier_line` (single child).
-   5d. Decided lines never balance a cohort (AGENT-270 finding 1): fee lines A (Sep 2) and B (Sep 5), identical
-   children x, y under parents dated Sep 3, a standalone fee entry s dated Aug 31 → A has three reps (x, y, s) →
-   `ambiguous`; B's cohort is {A, B} × {x, y}, complete and balanced but A is decided → `ambiguous`; no claim, no
-   `exact_pair`. (And test 5's three-lines shape pins the mirror: lines 2 and 3 never pair after line 1.)
+   5d. A line that reads a standalone is neither slot nor connector (AGENT-270 finding 1 shape under rev 5 F1): fee
+   lines A (Sep 2) and B (Sep 5), identical children x, y under parents dated Sep 3, a standalone fee entry s dated
+   Aug 31 → A has three reps (x, y, s) → `ambiguous`; A is not a slot, so B's component is {B} × {x, y} (one slot,
+   gate off) and B is `ambiguous` by the plain R6a.2 tie; no claim, no `exact_pair`. The undecided veto itself is
+   pinned by 5b, 5f and test 5's three-lines shape (lines 2 and 3 never pair after line 1).
+   5g. Forced take (rev 6, §4.2): lines Sep 2 and Sep 4 (−15), children 11 under a Sep 1 parent and 21 under a Sep 6
+   parent → Sep 2 reads only 11 and is the lowest slot of an incomplete 2 × 2 component → claims 11 `exact`; Sep 4
+   then claims 21 `exact`; no case. Mirror with the single-rep line later (5b) stays `ambiguous` twice.
+   5h. Slot predicate, other readings (AGENT-271 F1 wording): a sibling line that also reads a child of another
+   ident (another account, same flow) or a split group is not a slot — the gated line's component has one slot and
+   the gate is off; pin both.
 6. Pairing is scoped to the tie: when one child's parent merchant text matches the line (score differs beyond the
    margin), the text winner claims by today's rule (`exact`); the other line's cohort is then one line, one child →
    `exact_pair` (or `exact` if it is the only rep).
@@ -350,7 +362,7 @@ Policy (`tests/integration/test_reconciliation_policy.py`):
     (twin guard: the child is an owner twin) — asserted on the list, not via `_only_candidate` (which unpacks one).
 
 Property check (host, not in the suite): the existing `fuzz_holders.py` style — random carriers/children/fee lines;
-(a) a carrier id never appears in a claim row; (b) `exact_pair` claims only inside a complete, balanced, undecided cohort, and every child of that cohort is claimed by the end of the run; (c) two
+(a) a carrier id never appears in a claim row; (b) `exact_pair` claims only inside a complete, balanced, undecided cohort, and every owner child of that cohort is claimed by the end of the run or still listed as an `ambiguous` candidate (errata below); (c) two
 runs give identical claims.
 
 ## 8. Open points for the review
@@ -366,7 +378,11 @@ runs give identical claims.
 4. Whether a child-level resolution (owner `match` admitting a child; `adjust_amount` on a child) should follow —
    today the owner's remedy for shape 5 is to edit the child's amount, which the annotation now points at.
 5. Perfect-matching assignment for incomplete cohorts (AGENT-271 F2 shape has a unique perfect assignment) — left
-   `ambiguous` here; a follow-up once child-level resolution exists.
+   `ambiguous` here; a follow-up once child-level resolution exists. Same family, same result as main (re-review 2
+   finding 7): an untied take can strand a line two hops away through a *non-slot* connector — lines Sep 5, Sep 6,
+   Sep 9 (−15), children 11 (parent Sep 5) and 21 (parent Sep 2), standalone fee 30 on Sep 8 → Sep 5 takes 11
+   `exact`, Sep 6 takes 30 `exact`, Sep 9 `claimed_by_earlier_line`, 21 unclaimed, although Sep 5 → 21, Sep 6 → 11,
+   Sep 9 → 30 exists (Sep 6 reads 30, so it is not a slot and Sep 5's component is one slot).
 
 ## 9. Rollout
 
@@ -423,3 +439,14 @@ as its visible candidate — the §4.2 note "the pair's later line … claims it
 stays a single slot. The child is never silently lost (it is a candidate of an `ambiguous` case); taking it would be
 the §8.5 perfect-matching follow-up. The fuzz property (g) is "owner child of a gated-OK cohort is claimed or visible
 as an `ambiguous` candidate by run end".
+
+Rev 5 → rev 6 (scoped re-review 2 of 0556ef2..9975232, Claude opus, CHANGES REQUIRED, 2026-10-24): **finding 1
+(Important)** — the rev 5 gate vetoed a single-rep line that is the lowest slot of an incomplete component (lines
+Sep 2/Sep 4, parents Sep 1/Sep 6: main paired both, rev 5 left two `ambiguous` cases the owner cannot clear) → forced
+take exemption (§4.2, test 5g). **Finding 2** — the plan gains the Task 2b section it claimed (plan rev 4). **3** — the
+slot check runs lazily inside the BFS and is memoised per cohort (10 s → sub-second at 60 same-flow lines). **4** —
+5d reworded (A is not a slot under F1; the veto is pinned by 5b/5f/test 5). **5** — property (b) restated to match
+the errata. **6** — 5b/5e → 5b/5f. **7** — tests 5h (slot: other-ident child, group) and I1 `with_children` /
+child-covered-elsewhere added; two-hop strand recorded in §8.5. AGENT-271 re-check on `9975232`: **PASS** (F1/F2
+closed; its three wording notes = findings 4/6 here; its note that a one-slot line's nearer-child take leaves a
+carrier sibling child unreported is §4.4 by design).

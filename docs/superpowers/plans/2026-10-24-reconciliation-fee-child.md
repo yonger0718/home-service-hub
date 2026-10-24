@@ -13,9 +13,9 @@ rows for covered standalone parents with unclaimed children; `reconcile()` locks
 The policy validator shares the loader and `match`, so parity needs tests only.
 
 **Tech Stack:** Python 3.13, FastAPI service `services/accounting-service`, SQLAlchemy, pytest (unit + Postgres
-integration). Plan rev 3, 2026-10-24 (AGENT-270 + AGENT-271 folded; Task 2b added).
+integration). Plan rev 4, 2026-10-24 (AGENT-270 + AGENT-271 folded; Task 2b = cohort slots, untied gate, forced take, lazy slots — re-review 2 folded).
 
-**Spec:** `docs/superpowers/specs/2026-10-24-reconciliation-fee-child-design.md` rev 4 (on this branch, after `b398248`). Context specs:
+**Spec:** `docs/superpowers/specs/2026-10-24-reconciliation-fee-child-design.md` rev 6 (on this branch). Context specs:
 `2026-10-24-reconciliation-split-members-design.md`, `2026-10-24-reconciliation-guard-holders-design.md`.
 
 ## Global Constraints
@@ -25,7 +25,7 @@ integration). Plan rev 3, 2026-10-24 (AGENT-270 + AGENT-271 folded; Task 2b adde
 - No schema change, no migration, no new dependency, no settings change.
 - Spec invariants (anti-goals §2): a carrier id never appears in a claim row; a near child is never claimed; the pairing rule fires only for a complete **and** balanced cohort; no change to purchase-line readings, the printed-whole guard, holders, the policy or the twin guard.
 - Existing `bank_only` contexts stay byte-identical when there is no near child (`near_children` key present only when non-empty).
-- Names fixed by this plan: `Entry.carrier`, `principals`, `_exact_pair`, `_cohort`, `_identical_children`, `"exact_pair"` (match rule), `_near_children`, `NEAR_CHILDREN_MAX = 5`, `_carriers`, `_survivors`.
+- Names fixed by this plan: `Entry.carrier`, `principals`, `_exact_pair`, `_cohort`, `_one_ident`, `_tied`, `"exact_pair"` (match rule), `_near_children`, `NEAR_CHILDREN_MAX = 5`, `_carriers`, `_survivors`.
 - A pair of two tied fee lines reads `exact_pair` (first line) then `exact` (second line: single rep, ordinary accept branch). `exact_pair` appears once per tie.
 - Commits end with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`. Never print `.env` values; tests use seeded fixtures only.
 
@@ -104,10 +104,10 @@ def test_stand_in_carrier_child_rep_loses_to_an_owner_rep():
 **Interfaces:**
 - Consumes: Task 1 (`Entry.carrier`, carriers visible to the child path).
 - Produces:
-  - `_identical_children(reps: list[Representation], entries: list[Entry], rules: Rules) -> tuple[str, Decimal, int] | None` — `(kind, flow, account_id)` when every rep is `kind == "child"`, every child shares one kind, one flow and one parent `account_id`, and `reps[0].score - reps[-1].score < rules.margin`; else `None`.
-  - `_cohort(kind: str, line: Line, lines: list[Line], entries: list[Entry], claimed: set[int], claimed_line_ids: set[int], ident: tuple[str, Decimal, int], rules: Rules) -> list[tuple[Entry, Child]] | None` — the connected component of `line` over left nodes = the unclaimed same-kind, same-flow lines `[ln for ln in lines if ln.id not in claimed_line_ids and ln.line_kind == line.line_kind and _same(ln.flow, line.flow)]` (`claimed_line_ids = {c.line_id for c in result.claims}` passed in), right nodes = unclaimed children matching `ident` (child in the line's gate), edges = admissible (`_same(c.flow, l.flow)` and `_date_distance(l, e) <= rules.exact_window_days`); returns the right nodes when the component is complete (every left × right admissible), balanced (equal sizes) **and undecided** (`min(l.id for l in left) == line.id`: the loop decides lines in id order, so a left node with a smaller id was already left as a case and vetoes the pairing — spec §3 Cohort, AGENT-270 finding 1 and its three-lines mirror), else `None`.
-  - `_exact_pair(line: Line, cohort: list[tuple[Entry, Child]]) -> Representation` — the child with the smallest `_date_distance(line, e)`, ties by lowest `c.id`; `Representation("child", (Row(c.id, "principal", c.flow),), score, "exact_pair", reasons)` with `score, reasons = _score(line, (e,), rules.exact_window_days)`.
-  - In `match()`: the R6a.2 branch becomes: `if len(reps) >= 2 and reps[0].score >= rules.ambiguous_floor:` → `ident = _identical_children(...)`; `cohort = _cohort(statement_kind, line, lines, entries, claimed, {c.line_id for c in result.claims}, ident, rules) if ident and line.line_kind in BANK_ONLY_KINDS else None`; if `cohort`: claim `_exact_pair(line, cohort)` (update `claimed`), else `_ambiguous` as today. No other bookkeeping: once the first line of a pair takes its child, the second line has one rep and the existing accept branch claims it `exact`.
+  - *(rev 1–2 text, superseded by Task 2b below — kept for the review log: `_identical_children` with the tie
+    condition, a list-returning `_cohort` over all unclaimed same-flow lines, and the hook inside the R6a.2 branch.)*
+  - `_exact_pair(line: Line, cohort: list[tuple[Entry, Child]], rules: Rules) -> Representation` — pick key
+    `(parent.stand_in, _date_distance(line, parent), child.id)`, rule `"exact_pair"`, rep kind `child`, row role `principal`.
 
 - [ ] **Step 1: Write the failing tests**:
 
@@ -174,6 +174,43 @@ def test_pairing_never_crosses_kind_flow_or_account():
 - [ ] **Step 3: Implement `_identical_children`, `_cohort`, `_exact_pair` and the `match()` hook** per the Interfaces block. The component: BFS from `line` alternating unclaimed lines and unclaimed identical children over the admissible predicate; complete = `all(admissible(l, e, c) for l in left for (e, c) in right)`; balanced = `len(left) == len(right)`; undecided = `min(l.id for l in left) == line.id`.
 - [ ] **Step 4: Run `tests/unit/test_statement_matching.py`** — all pass.
 - [ ] **Step 5: Commit** — `feat(matching): exact_pair — identical fee children pair inside a complete balanced cohort`.
+
+### Task 2b: Cohort slots, the untied gate, the forced take (spec rev 5 §3/§4.2 + rev 6)
+
+**Files:**
+- Modify: `app/services/statements/matching.py` (`_one_ident`, `_tied`, `_cohort`, the gate in `match()`)
+- Test: `tests/unit/test_statement_matching.py`
+
+**Interfaces:**
+- Consumes: Task 1 `Entry.carrier`, Task 2 `_exact_pair`, `BANK_ONLY_KINDS`, `_representations(kind, ln, entries, groups, plan_map, claimed, rules, aside, apart)`.
+- Produces:
+  - `_one_ident(reps: list[Representation], entries: list[Entry]) -> tuple[str, Decimal, int] | None` — `(kind, flow, account_id)` when every rep is a `child` rep and the children share one kind, one `Q`-quantized flow and one parent `account_id`; else `None`. No tie condition.
+  - `_tied(reps: list[Representation], rules: Rules) -> bool` — `len(reps) >= 2 and reps[0].score - reps[-1].score < rules.margin`.
+  - `_cohort(kind, line, lines, entries, groups, plan_map, claimed, claimed_line_ids, ident, rules, aside=frozenset(), apart=frozenset()) -> tuple[list[tuple[Entry, Child]] | None, dict[int, Line], dict[int, tuple[Entry, Child]]]` — right pool = unclaimed children of `ident` in the line's gate; a **slot** = an unclaimed (`id not in claimed_line_ids`) same-`line_kind`, `_same`-flow line whose current reps (`_representations` with the live `claimed`, `aside`, `apart`) are non-empty and all `child` reps of the right pool; the slot test runs **lazily** inside the BFS (only for a line admissible to a just-reached child) and is memoised per call. BFS from `line` over admissible pairs (`_same(c.flow, ln.flow) and _date_distance(ln, e) <= rules.exact_window_days`). Returns `(children if complete and balanced and undecided else None, left, right)` with `undecided = min(left) == line.id`.
+  - Gate in `match()`, **before** the margin accept and after the truncated-group check: `ident = _one_ident(reps, entries) if line.line_kind in BANK_ONLY_KINDS else None`; if `ident`: `cohort, slots, right = _cohort(...)`; if `len(slots) >= 2 and len(right) >= 2`: `cohort is None` → `_ambiguous(line, reps)`, `continue`, **unless** `len(reps) == 1 and min(slots) == line.id` (forced take, rev 6 — fall through to the accept); `_tied(reps, rules) and reps[0].score >= rules.ambiguous_floor` → `_exact_pair`, claim, `continue`; untied → fall through (`exact`). One slot or one child → fall through.
+
+- [ ] **Step 1: Tests** (spec §7 5e, 5f, 5g, 5h; `_fee_parent(i, day, child_id, flow="-15", **kw)` helper exists)
+
+```python
+def test_a_sibling_line_with_a_rep_outside_the_cohort_is_not_a_slot_agent_271_f1(): ...            # 5e: claims [(2, 30, "exact")]; line 1 ambiguous {11, 21}
+def test_an_untied_child_take_that_would_strand_a_sibling_line_is_ambiguous_agent_271_f2(): ...  # 5f: no claims; lines 1, 2 ambiguous; line 2 candidates {11}
+def test_an_untied_take_inside_a_complete_cohort_still_claims_exact(): ...                        # 5f: [(1, 11, "exact"), (2, 21, "exact")]
+def test_one_line_two_untied_children_keeps_nearest_wins(): ...                                   # 5f: [(1, 11, "exact")]
+def test_a_single_rep_lowest_slot_takes_its_child_in_an_incomplete_cohort_forced_first():         # 5g
+    lines = [L(1, date(2026, 9, 2), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 4), "-15", kind="fee", merchant="")]
+    res = run(lines, [_fee_parent(10, date(2026, 9, 1), 11), _fee_parent(20, date(2026, 9, 6), 21)])
+    assert sorted((c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims) == [(1, 11, "exact"), (2, 21, "exact")]
+    assert [c for c in res.cases if c.line_id in (1, 2)] == []
+def test_a_sibling_reading_another_accounts_child_is_not_a_slot():                                 # 5h
+    # lines Sep 16, Sep 19; children 11, 21 under Sep 16 parents (account 1); child 31 under a Sep 19 parent of account 2
+    # → line 2 reads 11, 21 and 31 (two idents) → not a slot → line 1's component has one slot → gate off → line 1 ambiguous by the plain tie {11, 21}; line 2: 31 nearest, untied → `exact` 31
+def test_a_sibling_reading_a_split_group_is_not_a_slot():                                          # 5h, group variant: line 2 also reads a fee group → not a slot
+```
+
+- [ ] **Step 2: Run, expect failure** (5g: both lines `ambiguous` today; 5h: write against the current code and confirm they pin the one-slot path)
+- [ ] **Step 3: Implement** per Interfaces (lazy memoised slot test; forced-take exemption).
+- [ ] **Step 4: Run** `PYTHONPATH=../shared-python-lib .venv/bin/python -m pytest tests/unit/test_statement_matching.py -q -p no:cacheprovider` → green. Timing check: 60 same-flow fee lines + 60 children + 300 unrelated entries, one `match()` < 1 s.
+- [ ] **Step 5: Commit** `fix(matching): forced single-rep take in a gated cohort; lazy slot test`.
 
 ### Task 3: `near_children` annotation
 
@@ -335,4 +372,4 @@ def test_near_child_keeps_the_twin_guard_closed(seed, db_session, run):
 Deploy the API; before/after active-coverage snapshot for statements 504, 554, 555; re-reconcile them; expect 5784,
 5786, 4244, 4242, 4243 claimed by children, 4245 `ambiguous`, 4164 `bank_only` + `near_children` (case re-created
 once); open cases 151 → ≤ 146. Host fuzz (`~/reports/…/fuzz_fee_child.py`): random carriers / children / fee lines,
-properties (a) no carrier id in any row, (b) `exact_pair` only with a complete, balanced, undecided cohort whose children are all claimed by run end, (c) two runs identical.
+properties (a) no carrier id in any row, (b) `exact_pair` only with a complete, balanced, undecided cohort whose owner children are all claimed by run end or still listed as `ambiguous` candidates, (c) two runs identical.
