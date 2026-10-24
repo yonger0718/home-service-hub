@@ -2,7 +2,11 @@
 
 ### Requirement: Uniform amount formatting
 
-Every money amount on screen — totals, KPI and summary values, row amounts, profit and loss, fees and taxes, cash balances and TWD ledger totals — SHALL be rendered by one formatter (`formatMoney`). TWD and JPY amounts SHALL display in whole units; every other currency SHALL keep two decimals; rounding SHALL be half away from zero. A TWD amount SHALL carry the `$` prefix unless the element's own label or column header already names TWD, in which case the bare number is shown. Other currencies SHALL render as the value, a space and the ISO code. A leading sign (`+` or U+2212 `−`) SHALL appear only on changes, profit and loss and ledger entries; other negative amounts keep `−` without a `+` counterpart. Prices, per-share values, the `nativeAmount` pipe output and the ledger's foreign-currency row display (`¥5,390` with its rate) are outside this formatter and keep their own precision. The same value SHALL render identically on every page that shows it.
+Every money amount on screen SHALL be rendered by one formatter (`formatMoney`): TWD and JPY in whole units, every other currency with two decimals, rounding half away from zero. The same value SHALL render identically on every page that shows it.
+
+#### Scenario: Scope of the formatter
+- **WHEN** a screen shows totals, KPI or summary values, row amounts, profit and loss, fees and taxes, cash balances or TWD ledger totals
+- **THEN** each SHALL come from `formatMoney`, while prices, per-share values, the `nativeAmount` pipe output and the ledger's foreign-currency row display (`¥5,390` with its rate) keep their own precision
 
 #### Scenario: Large TWD total
 - **WHEN** the portfolio market value is 3,021,869.34 TWD
@@ -27,6 +31,19 @@ Every money amount on screen — totals, KPI and summary values, row amounts, pr
 #### Scenario: Rounding half away from zero
 - **WHEN** the formatter receives 448.5 TWD and −4,076.5 TWD as changes
 - **THEN** it SHALL return `+$449` and `−$4,077`
+
+### Requirement: Currency marker and sign
+
+A TWD amount SHALL carry the `$` prefix unless the element's own label or column header already names TWD; other currencies SHALL render as value, space, ISO code. A leading sign (`+` or U+2212 `−`) SHALL appear only on changes, profit and loss and ledger entries; other negative amounts keep `−` alone.
+
+#### Scenario: Label already names TWD
+- **GIVEN** the hero label reads 總資產 · TWD
+- **WHEN** the hero total is 3,021,869.34
+- **THEN** it SHALL show `3,021,869` while the 總市值 card shows `$3,021,869`
+
+#### Scenario: Plain negative amount
+- **WHEN** a cash balance is −4,076 TWD outside a change context
+- **THEN** it SHALL show `−$4,076` with no `+` counterpart on positive balances
 
 ### Requirement: Uniform percent formatting
 

@@ -2,7 +2,12 @@
 
 ### Requirement: Chart carries holdings across cash-only snapshot rows
 
-A snapshot point is **cash-only** when `total_market_value`, `total_cost`, `total_unrealized_pnl`, `total_dividends` and `total_realized_pnl` are all 0 and `portfolio_xirr` is null (the shape the backend writes for a date with cash activity and no trading). For every run of consecutive cash-only points that follows a point with holdings, the net-worth chart SHALL carry the last non-cash-only point's five values onto each point of the run, keep the dates, and plot 帳戶總值 for those points as the carried `total_market_value` plus the point's own `total_cash_twd`, ignoring the serialised `total_assets_twd`. Points that are not cash-only (for example a liquidation with non-zero `total_realized_pnl`) and cash-only points before the first holdings point SHALL plot as written. Backend rows are unchanged.
+A point is **cash-only** when its five stock columns (`total_market_value`, `total_cost`, `total_unrealized_pnl`, `total_dividends`, `total_realized_pnl`) are 0 and `portfolio_xirr` is null. For every run of cash-only points after a point with holdings, the chart SHALL carry that point's five values onto the run (dates kept) and plot 帳戶總值 as carried market value + each point's own `total_cash_twd`, ignoring `total_assets_twd`. Other points plot as written; backend rows unchanged.
+
+#### Scenario: Leading cash-only rows
+- **GIVEN** cash-only snapshots before the first point with holdings
+- **WHEN** the chart renders
+- **THEN** those points SHALL plot as written
 
 #### Scenario: Dividend received on a Saturday
 - **GIVEN** a cash-only snapshot on Saturday 2026-01-10 between two trading days with market value about 2.9 M
