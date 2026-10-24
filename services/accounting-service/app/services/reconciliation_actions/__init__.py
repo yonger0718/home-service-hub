@@ -24,7 +24,7 @@ COVERAGE_ACTIONS = frozenset({"match", "unmatch"})  # allowed on historical stat
 KIND_ACTIONS: dict[str, tuple[str, ...]] = {
     "line_unmatched": ("match", "create_entry", "create_system_entry", "backfill_entry", "create_refund", "link_installment_plan",
                        "split_entry", "dismiss"),
-    "ambiguous": ("match", "dismiss"),
+    "ambiguous": ("match", "adjust_amount", "dismiss"),  # adjust_amount on a listed entry candidate (2026-10-24)
     "amount_delta": ("match", "adjust_amount", "attach_fee", "split_entry", "dismiss"),
     "entry_unmatched": ("defer_next_period", "move_account", "replace_stand_in", "dismiss"),
     "balance_gap": ("balance_adjustment_asof", "anchor_opening", "dismiss"),

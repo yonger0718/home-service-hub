@@ -339,3 +339,4 @@ shared across accounts; portfolio Phase 1 case kinds (follow-up mapping into `se
   superseded too), instead of leaving them until the next reconcile. A revert releases the coverage only; the next
   reconcile re-derives whatever is open. Cases that predate the fix are cleared by the next reconcile of their
   statement.
+- 2026-10-24 (PR "adjust_amount on ambiguous"): the registry now allows `adjust_amount` on an `ambiguous` case (2026-10-08 spec §7.2 errata). §4.3 is unchanged: an `ambiguous` card still offers 已記在別處，對到… and 不是同一筆 only — 改成銀行的數 there needs a per-candidate pick (the match sheet with an amount rewrite), deferred to #150 with the child-level resolution UI; until then the owner uses `POST /reconciliation/cases/{id}/actions` with `{"action": "adjust_amount", "params": {"entry_id", "line_id"}}`. `buttons()` ignores the extra allowed action, so `actions` on the card is unchanged.

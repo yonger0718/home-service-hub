@@ -664,6 +664,66 @@ def test_adjust_amount_refuses_half_a_printed_pair(near_pair, db_session, pair):
     assert (entry.amount, entry.original_currency) == (Decimal("-1000"), None) and _actions(db_session) == []
 
 
+def _ambiguous_case(db, stmt, line, entries, *, extra=()) -> ReconciliationCase:
+    """An ambiguous case on `line` naming `entries` as near candidates (what the matcher writes for several near
+    reads of one line), plus any `extra` candidate dicts (e.g. a foreign group)."""
+    cands = [{"entry_id": e.id, "reason": "near", "residual": str(Decimal(line.flow_amount) - Decimal(e.amount))}
+             for e in entries] + list(extra)
+    return _hand_case(db, stmt, line, "ambiguous", candidates=cands, context={})
+
+
+def test_adjust_amount_on_an_ambiguous_case_rewrites_the_chosen_candidate_claims_it_and_reverts(seed, db_session, run):
+    """2026-10-24 (statement 128): a line read near by two entries is `ambiguous`; the owner picks one candidate and
+    takes the bank's amount. Only the case's listed candidates are in scope; the other candidate is left as written."""
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 15), "AMAZON", 1015)])
+    first = seed.entry(card, "-1000", day=date(2026, 9, 14), merchant="AMAZON", description="原說明")
+    second = seed.entry(card, "-1010", day=date(2026, 9, 13), merchant="AMAZON", description="原說明")
+    stranger = seed.entry(card, "-1015", day=date(2026, 9, 12), merchant="AMAZON")
+    db_session.commit()
+    case = _ambiguous_case(db_session, stmt, line, [first, second])
+    assert registry.allowed(case) == ["match", "adjust_amount", "dismiss"]
+
+    exc = _refuse(db_session, lambda: _apply(db_session, case, "adjust_amount",
+                                             {"entry_id": stranger.id, "line_id": line.id}))
+    assert isinstance(exc, ValidationError) and exc.code == "entry_out_of_scope", exc
+    assert _active(db_session, stmt.id) == []
+
+    row = _apply(db_session, case, "adjust_amount", {"entry_id": second.id, "line_id": line.id})
+    assert _fresh(db_session, LedgerEntry, second.id).amount == Decimal("-1015")
+    assert _fresh(db_session, LedgerEntry, second.id).description == "原說明\n對帳調整 原金額 -1010"
+    assert _fresh(db_session, LedgerEntry, first.id).amount == Decimal("-1000")
+    (claim,) = _active(db_session, stmt.id)
+    assert (claim.entry_id, claim.line_id, claim.role, claim.match_kind, claim.match_rule) == (
+        second.id, line.id, "principal", "manual", "adjust_amount")
+    assert row.effect_slot == "amount" and row.touched_entry_ids == [second.id]
+    assert _fresh(db_session, ReconciliationCase, case.id).status == "resolved"
+
+    _revert(db_session, row.id)
+    assert _fresh(db_session, LedgerEntry, second.id).amount == Decimal("-1010")
+    assert _fresh(db_session, LedgerEntry, second.id).description == "原說明"
+    assert _active(db_session, stmt.id) == []
+    assert _fresh(db_session, ReconciliationCase, case.id).status == "open"
+
+
+def test_adjust_amount_on_an_ambiguous_case_leaves_a_group_candidate_out_of_scope(seed, db_session, run):
+    """A foreign `ambiguous` case may list a split group beside entries; the group branch (residual over the counted
+    members, 2026-10-19) is designed for an `amount_delta` case that recorded `entry_ids`, so on `ambiguous` a
+    `group_id` param is out of scope — the owner matches the group or resolves its members one by one."""
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 15), "AMAZON", 1015)])
+    first = seed.entry(card, "-1000", day=date(2026, 9, 14), merchant="AMAZON")
+    group = seed.group("split")
+    member = seed.entry(card, "-1010", day=date(2026, 9, 13), merchant="AMAZON", group_id=group.id)
+    db_session.commit()
+    case = _ambiguous_case(db_session, stmt, line, [first],
+                           extra=[{"group_id": group.id, "reason": "foreign", "residual": "-5"}])
+    exc = _refuse(db_session, lambda: _apply(db_session, case, "adjust_amount",
+                                             {"entry_id": member.id, "line_id": line.id, "group_id": group.id}))
+    assert isinstance(exc, ValidationError) and exc.code == "entry_out_of_scope", exc
+    assert _fresh(db_session, LedgerEntry, member.id).amount == Decimal("-1010") and _active(db_session, stmt.id) == []
+
+
 def test_adjust_amount_of_a_plain_entry_without_a_pair(near_pair, db_session):
     s = near_pair(foreign=None)
     _apply(db_session, s.case, "adjust_amount", _adjust(s))
