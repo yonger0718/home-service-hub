@@ -190,7 +190,7 @@ describe('inboxErrorMessage', () => {
   it('maps the match refusals and falls back to plain words for a non-code', () => {
     expect(inboxErrorMessage('case_moved')).toBe('對象已變，重新整理');
     expect(inboxErrorMessage('entry_claimed')).toBe('這筆記錄已對到別行');
-    expect(inboxErrorMessage('entry_in_group')).toBe('這筆是拆帳成員，不能直接對');
+    expect(inboxErrorMessage('entry_in_group')).toBe('這筆是分期或回饋群組的成員，不能直接對');
     expect(inboxErrorMessage('some_new_code')).toBe('沒成功：some_new_code');
     expect(inboxErrorMessage('IntegrityError')).toBe('沒成功，請重新整理再試');
     expect(inboxErrorMessage('entry 12 is gone')).toBe('沒成功，請重新整理再試');
