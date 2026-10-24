@@ -856,8 +856,9 @@ def test_policy_admits_the_member_when_a_stable_owner_holder_releases_the_group(
 
 def test_policy_admits_a_second_group_a_stable_owner_holder_releases_through_pass_one(seed, db_session, run):
     """The stable link must reach pass 1 itself: the −575 line owner-covered by a plain −575 entry releases group A
-    (−300 card / −280 錢包) in pass 1, so A's member claims the −300 line there — within 5 % of group B's −305 total
-    (−100 card / −205 錢包) — and B is apart in pass 2, its −100 member tying a −100 twin. With the twin off the line
+    (−300 card / −280 錢包) in pass 1, so A's member claims the −300 line there; group B is −100 card / −205 錢包 =
+    −305, and the −300 line is within 5 % of it (a near print, not an exact one) — so B is apart in pass 2, its −100
+    member tying a −100 twin. With the twin off the line
     the member's proposal is applied; a pass 1 run without the stable holders keeps A whole, never claims the −300
     line, keeps B whole and refuses."""
     card = _card(seed, db_session)

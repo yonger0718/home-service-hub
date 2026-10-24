@@ -1724,7 +1724,8 @@ def _guard_holders(db, statement) -> dict:
     accounts = rec.participating_accounts(db, statement.account_id)
     rules = rec.rules_for(settings_service.reconciliation_rules(db), statement.period_end)
     return rec.guard_holders(db, statement, rec.guard_lines(db, statement, accounts, rules),
-                             frozenset(stand_ins.stand_in_entry_ids(db, accounts)))
+                             frozenset(stand_ins.stand_in_entry_ids(db, accounts)),
+                             rec.guard_statement_ids(db, statement, accounts, rules))
 
 
 def _state(db, statement_id) -> tuple[list, list]:
@@ -1815,6 +1816,33 @@ def test_guard_holders_set_null_row_is_never_exact(seed, db_session, run):
     assert _guard_holders(db_session, stmt) == {near.id: Holder(frozenset({held_id}), False, False)}
     _reconcile(db_session, stmt.id)
     assert _claims_of(db_session, stmt.id) == [(near.id, None, None, "manual")]
+    assert m1.id not in _named_on_lines(db_session, stmt.id)
+
+
+def test_guard_holders_a_multi_row_holder_with_one_set_null_row_is_never_exact(seed, db_session, run):
+    """Shape 7 on a two-row holder: the owner covers the −575 line with a −575 entry and a 0 entry (exact, the group
+    is released and the −300 line claims the member); the 0 entry is deleted (SET NULL). The resolved row alone still
+    sums to the line, but an unresolved row makes the holder not exact → the group is whole again and the member's
+    claim is released."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    day = date(2026, 9, 12)
+    held = seed.entry(card, "-575", day=day, merchant="超市")
+    zero = seed.entry(card, "0", day=day, merchant="超市")
+    _, m1 = _split(seed, card, wallet, day, "-300", "-280")
+    db_session.commit()
+    stmt, (near, line), _ = _submit(db_session, run, card, [_line(1, day, "超市", 575), _line(2, day, "餐廳", 300)])
+    _owner_cover(db_session, stmt, near, [held, zero])
+    _reconcile(db_session, stmt.id)
+    owner = sorted([(near.id, held.id, None, "manual"), (near.id, zero.id, None, "manual")])
+    assert _claims_of(db_session, stmt.id) == sorted(owner + [(line.id, m1.id, None, "auto")])
+    zero_id = zero.id
+    db_session.delete(zero)
+    db_session.commit()
+    assert _guard_holders(db_session, stmt) == {near.id: Holder(frozenset({held.id, zero_id}), False, False)}
+    _reconcile(db_session, stmt.id)
+    assert {(r.line_id, r.entry_id, r.match_kind) for r in _active(db_session, stmt.id)} == {
+        (near.id, held.id, "manual"), (near.id, None, "manual")}
     assert m1.id not in _named_on_lines(db_session, stmt.id)
 
 
