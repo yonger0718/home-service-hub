@@ -421,6 +421,89 @@ describe('PageHeaderComponent', () => {
       expect(panel()).toBeNull();
     });
 
+    it('touch order: pointerdown → pointerup → focusout(null) → click on an item still runs it', async () => {
+      const { more, menuItems, panel, flush, host } = await renderMenu();
+      more()!.click();
+      await flush();
+      const item = menuItems()[1];
+
+      item.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      item.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+      panel()!.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+      await flush();
+      expect(panel()).not.toBeNull();
+
+      item.click();
+      await flush();
+      expect(host.ran).toBe(1);
+      expect(panel()).toBeNull();
+    });
+
+    it('touch order: tapping ⋯ while open closes the menu instead of re-opening it', async () => {
+      const { more, panel, flush } = await renderMenu();
+      more()!.click();
+      await flush();
+
+      more()!.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      more()!.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+      panel()!.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+      more()!.click();
+      await flush();
+
+      expect(panel()).toBeNull();
+      expect(more()!.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('a press that ends outside without a click releases the guard after 350 ms', async () => {
+      const { el, more, panel, flush } = await renderMenu();
+      more()!.click();
+      await flush();
+      vi.useFakeTimers();
+      try {
+        el.querySelector('.header-more-wrap')!.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+        vi.advanceTimersByTime(350);
+      } finally {
+        vi.useRealTimers();
+      }
+      panel()!.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+      await flush();
+      expect(panel()).toBeNull();
+    });
+
+    it('labels the menu by the ⋯ button', async () => {
+      const { more, panel, flush } = await renderMenu();
+      more()!.click();
+      await flush();
+      expect(more()!.id).toBeTruthy();
+      expect(panel()!.getAttribute('aria-labelledby')).toBe(more()!.id);
+    });
+
+    it('Escape on the ⋯ button closes the open menu and keeps focus there', async () => {
+      const { more, panel, flush } = await renderMenu();
+      more()!.click();
+      await flush();
+      more()!.focus();
+      more()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await flush();
+      expect(panel()).toBeNull();
+      expect(document.activeElement).toBe(more());
+    });
+
+    it('an item that moves focus elsewhere (a dialog) keeps it', async () => {
+      const input = document.createElement('input');
+      document.body.appendChild(input);
+      const { more, menuItems, panel, flush } = await renderMenu('phone', [
+        { label: '開啟', run: () => input.focus() },
+      ]);
+      more()!.click();
+      await flush();
+      menuItems()[0].click();
+      await flush();
+      expect(panel()).toBeNull();
+      expect(document.activeElement).toBe(input);
+    });
+
     it('closes after a routerLink item is clicked', async () => {
       const { more, menuItems, panel, flush } = await renderMenu();
       more()!.click();

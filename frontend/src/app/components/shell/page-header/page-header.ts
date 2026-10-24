@@ -64,6 +64,7 @@ export class PageHeaderComponent {
   private readonly injector = inject(Injector);
   /** A press is in progress inside the menu: Safari blurs a tapped button with relatedTarget null before click. */
   private pressing = false;
+  private pressTimer: ReturnType<typeof setTimeout> | undefined;
   private unlistenPointerDown: (() => void) | null = null;
   private unlistenPointerUp: (() => void) | null = null;
 
@@ -94,7 +95,10 @@ export class PageHeaderComponent {
   );
 
   constructor() {
-    inject(DestroyRef).onDestroy(() => this.stopListening());
+    inject(DestroyRef).onDestroy(() => {
+      this.stopListening();
+      clearTimeout(this.pressTimer);
+    });
     effect(() => {
       if (!(this.phone() && this.menu().length)) this.closeMenu(false);
     });
@@ -111,7 +115,11 @@ export class PageHeaderComponent {
       if (!target || !this.host.nativeElement.contains(target)) this.closeMenu(false);
     });
     // A press that starts on an item and ends outside the panel would otherwise leave `pressing` set.
-    this.unlistenPointerUp = this.renderer.listen(this.document, 'pointerup', () => (this.pressing = false));
+    // Deferred: on touch, pointerup precedes the compatibility mousedown that moves focus, so the guard must outlive it.
+    this.unlistenPointerUp = this.renderer.listen(this.document, 'pointerup', () => {
+      clearTimeout(this.pressTimer);
+      this.pressTimer = setTimeout(() => (this.pressing = false), 350);
+    });
     afterNextRender(() => this.menuItemEls()[0]?.nativeElement.focus({ preventScroll: true }), {
       injector: this.injector,
     });
@@ -120,12 +128,14 @@ export class PageHeaderComponent {
   protected closeMenu(restoreFocus = true): void {
     if (!this.menuOpen()) return;
     this.stopListening();
+    clearTimeout(this.pressTimer);
     this.pressing = false;
     this.menuOpen.set(false);
     if (restoreFocus) this.more()?.nativeElement.focus({ preventScroll: true });
   }
 
   protected onMenuKeydown(event: KeyboardEvent): void {
+    if (!this.menuOpen()) return;
     if (isHandledKey(event)) return;
     const els = this.menuItemEls().map(r => r.nativeElement);
     const at = els.indexOf(this.document.activeElement as HTMLElement);
@@ -156,8 +166,13 @@ export class PageHeaderComponent {
 
   protected runItem(item: PageMenuItem): void {
     if (item.disabled) return;
+    this.closeMenu(false);
     item.run?.();
-    this.closeMenu();
+    // Only take focus back when nothing else (a dialog opened by `run`) claimed it.
+    const active = this.document.activeElement;
+    if (!active || active === this.document.body || this.host.nativeElement.contains(active)) {
+      this.more()?.nativeElement.focus({ preventScroll: true });
+    }
   }
 
   protected onMenuPress(down: boolean): void {

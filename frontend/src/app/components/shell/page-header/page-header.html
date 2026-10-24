@@ -10,13 +10,13 @@
   </div>
   <div class="page-actions"><ng-content></ng-content></div>
   @if (phone() && menu().length) {
-    <div class="header-more-wrap">
-      <button #more type="button" class="header-more" aria-label="更多動作" aria-haspopup="menu"
+    <div class="header-more-wrap" (keydown)="onMenuKeydown($event)" (pointerdown)="onMenuPress(true)" (pointercancel)="onMenuPress(false)" (click)="onMenuPress(false)">
+      <button #more type="button" [id]="menuId + '-button'" class="header-more" aria-label="更多動作" aria-haspopup="menu"
               [attr.aria-expanded]="menuOpen()" [attr.aria-controls]="menuOpen() ? menuId : null" (click)="toggleMenu()">
         <i class="pi pi-ellipsis-h" aria-hidden="true"></i>
       </button>
       @if (menuOpen()) {
-        <div class="header-menu" role="menu" [id]="menuId" (keydown)="onMenuKeydown($event)" (focusout)="onMenuFocusout($event)" (pointerdown)="onMenuPress(true)" (pointerup)="onMenuPress(false)" (pointercancel)="onMenuPress(false)">
+        <div class="header-menu" role="menu" [id]="menuId" [attr.aria-labelledby]="menuId + '-button'" (focusout)="onMenuFocusout($event)">
           @for (item of menu(); track $index) {
             @if (item.routerLink && !item.disabled) {
               <a #menuItem class="header-menu-item" role="menuitem" [routerLink]="item.routerLink" [queryParams]="item.queryParams ?? null" (click)="runItem(item)">
