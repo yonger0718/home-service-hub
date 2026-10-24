@@ -31,7 +31,6 @@ import { SelectButtonModule } from 'primeng/selectbutton';
 import { SelectModule } from 'primeng/select';
 import { TagModule } from 'primeng/tag';
 import { ToastModule } from 'primeng/toast';
-import { TooltipModule } from 'primeng/tooltip';
 
 import {
   BalanceHistory,
@@ -132,7 +131,6 @@ function isCashQueryEvent(event: CashQueryEvent | null): event is CashQueryEvent
     SelectModule,
     TagModule,
     ToastModule,
-    TooltipModule,
     SwitchComponent,
     TagComponent,
   ],

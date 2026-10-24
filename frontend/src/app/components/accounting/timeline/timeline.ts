@@ -359,7 +359,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
   standalone: true,
   imports: [PageHeaderComponent, CalendarMonthComponent, NgTemplateOutlet, SkeletonComponent, SplitFolderComponent, FilterBarComponent],
   templateUrl: './timeline.html',
-  styleUrls: ['../filters.scss', '../entry-row.scss', './timeline.scss'],
+  styleUrls: ['../entry-row.scss', './timeline.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class LedgerTimelineComponent implements OnInit {
@@ -419,7 +419,7 @@ export class LedgerTimelineComponent implements OnInit {
   readonly merchantFilter = signal('');
   readonly amountMin = signal('');
   readonly amountMax = signal('');
-  /** Category / project choices, fetched the first time a filter select is focused (not on init). */
+  /** Category / project choices, loaded when the 篩選 panel opens (focus is kept as a fallback), not on init. */
   readonly categoryOptions = signal<CategoryNode[]>([]);
   readonly projectOptions = signal<Project[]>([]);
   private optionsRequested = false;
