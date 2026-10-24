@@ -1,6 +1,6 @@
 # Reconciliation — a fee child claims the statement's fee line (issue #143)
 
-Rev 1, 2026-10-24. Branch `feat/reconciliation-fee-child` from main `fbe7425` (PR #141 merged). Amends the matcher
+Rev 2, 2026-10-24 (rev 1 + builder check, §10). Branch `feat/reconciliation-fee-child` from main `fbe7425` (PR #141 merged). Amends the matcher
 (`app/services/statements/matching.py`) and the candidate loader (`app/services/reconciliation_service.py
 load_candidates`). No schema change. Builds on the split-members spec (`2026-10-24-reconciliation-split-members-design.md`)
 and the guard-holders spec (`2026-10-24-reconciliation-guard-holders-design.md`); neither rules on the shapes below.
@@ -74,8 +74,9 @@ Anti-goals (would make this a failure even if the tests pass).
   agent / policy coverage on this one. (This statement's own `auto` rows never count — `_write_coverage` rewrites
   them each run.)
 - **Carrier**: the `Entry` row the loader now builds for a covered parent that has at least one unclaimed child in the
-  participating accounts and the statement currency, inside the population window
-  (`coalesce(posted_date, entry_date)` within `period ± candidate_window_days`, the same bounds as `parents`).
+  participating accounts and the statement currency, inside the loader's population window (the `lo`/`hi` bounds the
+  `parents` query uses: `coalesce(posted_date, entry_date)` within `period ± window_days`, where `window_days =
+  matching.population_window_days(rules)` = 15 today).
   `Entry.carrier = True`, `claimable = True`, `in_reverse = False`, `children` = those unclaimed children,
   `all_children` = (), `stand_in` as for any parent, `instance = None`. A carrier is never a split member
   (`group_id` None by construction) and never `hint_only`.
@@ -85,23 +86,29 @@ Anti-goals (would make this a failure even if the tests pass).
   row role `principal`, rule `exact`).
 - **Identical children** for a fee line: the child representations of that line whose children share one `kind` and
   one `flow` and whose scores are equal within the margin (the condition under which R6a.2 would report `ambiguous`).
-- **Near child**: an unclaimed child in the line's gate, `c.flow` not `_same` as `line.flow`, same sign, and
-  `|line.flow − c.flow| ≤ max(near_tolerance_abs, near_tolerance_pct · |line.flow|)` (the `_near_case` tolerance,
-  taken of the line), with the parent's `_date_distance` to the line ≤ `near_window_days` (5). No merchant overlap
-  required (fee lines rarely print one).
+- **Near child**: a child in the line's gate that no claim of this run names (not in `claimed` when the line is
+  decided), same sign as the line, `|line.flow − c.flow| ≤ max(near_tolerance_abs, near_tolerance_pct · |line.flow|)`
+  (the `_near_case` tolerance, taken of the line; a residual of 0 qualifies), with the parent's `_date_distance` to
+  the line ≤ `near_window_days` (5). No merchant overlap required (fee lines rarely print one). So an exact child the
+  child path could not claim because its parent is 4–5 days away is listed with residual `"0"`; an exact child the
+  child path claimed is not listed.
 
 ## 4. Matcher (`matching.py`)
 
-4.1 `Entry.carrier: bool = False`. `match()` keeps carriers in `entries` (they are claimable) and additionally
-computes `carriers = [e for e in entries if e.carrier]`; every principal path iterates `[e for e in entries if not
-e.carrier]`; **only the child path and the near-child annotation (§4.3) iterate `entries` including carriers.** The
-simplest shape: filter once at the top of `match()` into `principals` and pass `principals` where today's code passes
-`entries`, and `entries` (all) to the child path. `_representations` gets the carriers through its `entries` argument
-and skips them in its principal branches with one `if e.carrier: continue` per branch — or receives both lists; the
-builder chooses, the tests pin the behaviour (§7). `statement_context`, `incomplete_groups`, `printed_alone`,
-`group_readings`, `claim_holders`, `_related_ids`: unchanged (a carrier is not a split member, so no guard path visits
-it; `claim_holders` resolves child rows through `by_row` over `entries ∪ children`, which now contains the carriers'
-children — nothing to add).
+4.1 `Entry.carrier: bool = False`. `match()` keeps carriers in `entries` (they are claimable). **One list, not two:**
+`_representations` keeps receiving the whole `entries` list and skips carriers in each principal branch
+(`standalone`, `principal_children`, member/group and installment branches: `if e.carrier: continue`); the child path
+(:617–625) iterates every entry, carriers included. Consequences the one-list shape buys: `by_id` at :658 contains
+the carriers, so `_is_stand_in_rep` still resolves a carrier's child row to its parent (a stand-in carrier's child rep
+is a stand-in rep); and `_claimed_by_earlier_line` (:841–846), which re-runs `_representations` with `claimed = ∅`,
+names a carrier's child taken by an earlier line exactly as it names an auto parent's child — the owner sees the same
+`claimed_by_earlier_line {entry_id: <child>}` hint for the same duplicate-fee-line shape whoever covered the parent.
+The fallbacks that build cases naming an entry — `_foreign_case`, `_near_case`, `_drift_case`, `_installment_case`
+(and its `entries + hint_only` argument) — receive `principals = [e for e in entries if not e.carrier]`, computed
+once in `match()`. The near-child annotation (§4.3) reads all `entries`. `statement_context`, `incomplete_groups`,
+`printed_alone`, `group_readings`, `claim_holders`, `_related_ids`: unchanged (a carrier is not a split member, so no
+guard path visits it; `claim_holders` resolves child rows through `by_row` over `entries ∪ children`, which now
+contains the carriers' children — nothing to add).
 
 4.2 **Identical-children pairing** (Goal 2), in the claim loop where R6a.2 decides `ambiguous`: when every
 representation of a fee-gate line (`line.line_kind ∈ BANK_ONLY_KINDS`) is a `child` rep, all their children share
@@ -122,8 +129,8 @@ same flow, same account; the bank's fee line does not say which purchase it belo
 condition guarantees a perfect pairing exists, so the rule only picks a canonical one. When the counts differ there is
 a child or a line too many, which the owner must see — e.g. the duplicate child 58248 under 57454 (504/4245).
 
-4.3 **Near-child annotation** (Goal 3): just before `_bank_only` is emitted for a line, collect the near children
-over all `entries` (carriers included) in the line's gate; if any, add
+4.3 **Near-child annotation** (Goal 3): just before `_bank_only` (:833–838) is emitted for a line, collect the near
+children (§3) over all `entries` (carriers included) in the line's gate; if any, add
 `"near_children": [{"entry_id": c.id, "parent_entry_id": e.id, "residual": str(line.flow − c.flow)}, …]` to the
 `bank_only` context, sorted by `|residual|` then `entry_id`, at most `NEAR_CHILDREN_MAX = 5`. The key is present only
 when the list is non-empty, so every existing `bank_only` context is byte-identical. Hint stays `bank_only`:
@@ -151,16 +158,22 @@ choice, one extra query per load. Order carriers after the drifted instances and
 `entries` list order (and so claim order within equal scores) is stable: parents, drifted instances, carriers,
 structural rows.
 
-5.2 `reconcile()` lock set: `wanted` already takes `{e.id for e in entries if e.claimable} | {c.id … if e.claimable
-for c in e.children}`; carriers are claimable, so their id and their children are locked and `_with_children` trims
-them — nothing to add; the integration tests (§7) prove the child claim writes (`entries_by_id[child]` present).
+5.2 `reconcile()` lock set (:942–951): a carrier's **children are locked, the carrier itself is not** — the parent
+row belongs to another statement's active claim or to the owner's coverage, and taking `FOR UPDATE NOWAIT` on it would
+add a new `reconcile_busy` path between statements (shape 6: N+1 locking N's claimed purchase) for a row this run
+never writes. So `wanted = {e.id for e in entries if e.claimable and not e.carrier} | {c.id for e in entries if
+e.claimable for c in e.children}`; `transfers` likewise skip carriers. The survivor filter keeps a carrier without
+requiring its own id in `locked_rows` (`… if not e.claimable or e.carrier or (e.id in locked_rows and …)`), and
+`_with_children` trims its children to the locked ones as for any claimable row; a carrier left with no locked child
+is dropped from the population (nothing to claim). `first_groups` is moot for carriers (`group_id` None).
 `_write_coverage` / `write_claim` unchanged: a child-alone claim writes `entry_id = child`, `role = "principal"`,
-`match_rule = "exact"` or `"exact_pair"`, as today's child path does.
+`match_rule = "exact"` or `"exact_pair"`, as today's child path does; `entries_by_id = locked` holds the child.
 
-5.3 `entry_view` gains the `carrier` passthrough. `_desired_cases`: unchanged logic; the builder checks how an open
-case's identity is keyed — if the context is part of the key, the `near_children` annotation supersedes and
-re-creates the affected `bank_only` cases **once** (≤ 2 live lines today: 554/4164 and, until §4.1 claims it,
-504/4244); record the outcome in the rollout notes.
+5.3 `entry_view` already passes `**extra` through, so `carrier=True` needs only the dataclass field. `_desired_cases`
+unchanged: a case's identity `_key` (reconciliation_service.py:554–558) includes the context (minus the sweep note),
+so the `near_children` annotation supersedes and re-creates an existing `bank_only` case **once**, on the first run
+after deploy; one live line today (554/4164). Subsequent runs are stable (the annotation is deterministic: sorted,
+capped).
 
 5.4 Policy validator (`_single_admissible`): same loader, same `match`, so an agent `match` proposal on a line the
 child path now claims is refused `not_single_admissible` (the single reading is a `child` rep, which `_is_proposed`
@@ -178,7 +191,11 @@ twin; while a near child exists the twin guard still refuses `create_system_entr
 | 3 | 504 / 4245 (08-02) | 57455 and 58248 (both under 57454, manual 504/4267), identical | bank_only | carrier → two children, one line → `ambiguous` with both candidates (owner removes the duplicate) |
 | 4 | 504 / 4242 (07-20), 4243 (07-21) | 57288 (57287 auto 504/4258, 07-20), 57306 (57305 auto 504/4259, 07-21), identical flows | ambiguous ×2 (dismissed 10-17) | §4.2: two lines, two children → 4242←57288, 4243←57306 by nearest parent date |
 | 5 | 554 / 4164 (06-08) | 58223 (56977 auto 554/4156), same day, flow differs | bank_only | bank_only + `near_children: [{58223, 56977, residual}]`; owner corrects the child's amount, next run claims |
-| 6 | parent on statement N, fee line on N+1 (none live today; historical shapes exist) | child unclaimed, parent claimed on N | bank_only on N+1 | carrier on N+1 (parent in window) → child path claims when the parent's date is within 3 days of the fee line |
+| 6 | parent on statement N, fee line on N+1 (none live today; historical shapes exist) | child unclaimed, parent claimed on N | bank_only on N+1 | carrier on N+1 (parent inside N+1's 15-day population window) → child path claims when the parent's date is within 3 days of the fee line |
+
+Shape 2 data check (2026-10-24 SQL over active coverage and current lines): 4244's exact child is 57326 (parent
+57325, owner-matched to 504/4260); the auto parents' children 57288/57306 are near 4244 but exact for 4242/4243
+(shape 4). After the change 4244 has one `child` rep (57326) and no tie — shape 2, not a `near_children` line.
 
 Not covered: a fee printed more than `exact_window_days` after the purchase (child path window is the parent's
 date) — stays `bank_only`, possibly with a `near_children` pointer when within 5 days. See §8.
@@ -192,6 +209,9 @@ Unit (`tests/unit/test_statement_matching.py`, helpers `L/E/S/run`; add a `C(...
    empty (not in reverse).
 2. Carrier never a principal: a purchase line equal to the carrier's flow → no claim, plain `line_unmatched`
    (not `claimed_by_earlier_line`, not `near`); a line equal to carrier + child → no `principal_children`.
+   2b. Consistent hint: two identical fee lines, one carrier child → the first line claims it, the second gets
+   `line_unmatched {"hint": "claimed_by_earlier_line", "entry_id": <child>}` — the same as with an auto parent
+   (assert both variants in one test).
 3. Carrier invisible to fallbacks: a purchase line within the near tolerance of the carrier's flow → no
    `amount_delta` naming the carrier; drift likewise.
 4. Identical pairing, perfect: two −5 fee lines (days 1, 2), two carriers (or one auto parent with two fee
@@ -205,9 +225,11 @@ Unit (`tests/unit/test_statement_matching.py`, helpers `L/E/S/run`; add a `C(...
    recomputed per line).
 7. Pairing never crosses kinds or flows: −5 fee children vs a −5 `interest` line; −5 and −6 children → not identical.
 8. Near child annotation: fee line −6, carrier child −5 (within `max(10, 5 %)`), parent 1 day away → `bank_only`
-   with `near_children: [{entry_id, parent_entry_id, residual "-1"}]`; an exact child beyond the exact window but
-   within 5 days appears with residual `"0"`; a child 6 days away does not; more than 5 → first 5 by residual.
-   A fee line with no near child → context exactly `{"hint": "bank_only", "pattern": None}` (existing tests stay).
+   with `near_children: [{entry_id, parent_entry_id, residual "-1"}]`; an exact child whose parent is 4 days away
+   (outside the 3-day exact window, inside the 5-day near window) appears with residual `"0"` and the line is
+   **not** claimed; a child 6 days away does not appear; an exact child the child path claimed is not listed; more
+   than 5 → first 5 by `|residual|` then id. A fee line with no near child → context exactly
+   `{"hint": "bank_only", "pattern": None}` (existing tests stay).
 9. Reverse side: carrier with an unclaimed child and no fee line → `unmatched_entry_ids` empty, no
    `uncovered_child`.
 10. Stand-in drop: a stand-in carrier's child rep loses to an owner rep as today.
@@ -227,7 +249,12 @@ parent_entry_id=)`, `_owner_cover`-style manual coverage via the `match` action 
     edits the child's amount to the bank's → next `reconcile` claims it and the case resolves.
 16. `load_candidates` unit-ish: a covered standalone parent with one unclaimed child yields a carrier row
     (`carrier=True`, `claimable=True`, `in_reverse=False`, children = that child); a covered parent whose children
-    are all claimed yields none; a covered **split member** yields no carrier (structural row as today).
+    are all claimed yields none; a covered **split member** yields no carrier (structural row as today); a covered
+    parent outside the 15-day window yields none.
+16b. Carrier not locked (if the harness allows a second session; `tests/conftest.py` `SessionLocal`): hold
+    `SELECT … FOR UPDATE` on the covered parent in another session; `reconcile` still claims the child (the parent is
+    not in the lock set) — and, as the negative, holding the lock on the **child** makes `reconcile` raise the
+    existing `reconcile_busy` path.
 
 Policy (`tests/integration/test_reconciliation_policy.py`):
 
@@ -253,6 +280,15 @@ runs give identical claims.
 ## 9. Rollout
 
 No migration. Deploy the accounting API; re-reconcile 504, 554, 555 and compare active coverage before/after (expect
-5784, 5786, 4244, 4242, 4243 claimed by children; 4245 `ambiguous`; 4164 `bank_only` + `near_children`); open cases
-expected 151 → ≤ 146 (−5 line_unmatched / ambiguous-dismissed lines, −2 `entry_unmatched` for 57288/57306). Record
-in `~/reports/`. Owner to-dos surfaced: remove the duplicate child 58248; correct the fee child 58223.
+5784, 5786, 4244, 4242, 4243 claimed by children; 4245 `ambiguous`; 4164 `bank_only` + `near_children`, re-created
+once per §5.3); open cases expected 151 → ≤ 146 (−3 `line_unmatched` 5784/5786/4244, −2 `entry_unmatched`
+57288/57306; 4245 stays open as `ambiguous`, 4164 stays open). Record in `~/reports/`. Owner to-dos surfaced: remove
+the duplicate child 58248; correct the fee child 58223.
+
+## 10. Review log
+
+Rev 1 → rev 2 (builder check, 2026-10-24): near-child predicate made consistent (residual 0 allowed, "not claimed"
+instead of "not `_same`"); one-list carrier shape fixed instead of builder's choice (`_claimed_by_earlier_line` and
+`_is_stand_in_rep` consistency); carriers lock children only (§5.2); population window is `population_window_days`
+(15), not `candidate_window_days`; 504/4244 confirmed as shape 2 by data; `_key` includes the context (§5.3);
+`_bank_only` line reference corrected; tests 2b, 16 (window), 16b added.
