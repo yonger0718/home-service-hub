@@ -1,6 +1,6 @@
 import { Component, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LayoutModeService, MATCH_MEDIA } from '../../../services/layout-mode.service';
 import { FilterBarComponent, FilterChip } from './filter-bar';
@@ -103,7 +103,8 @@ describe('FilterBarComponent', () => {
     expect(q('.filter-overlay')).toBeNull();
     expect(q('.filter-toggle')!.getAttribute('aria-expanded')).toBe('true');
     expect(host.opens).toEqual([true]);
-    expect(document.activeElement).toBe(q('.note'));
+    expect(document.activeElement).toBe(q('.filter-panel'));
+    expect(q('.filter-panel')!.getAttribute('tabindex')).toBe('-1');
     q('.filter-panel')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     await flush();
     expect(q('.filter-panel')).toBeNull();
@@ -131,6 +132,89 @@ describe('FilterBarComponent', () => {
     expect(q('.filter-panel')).toBeNull();
   });
 
+  it('links the toggle to the open panel by a stable id (aria-controls only while open)', async () => {
+    expect(q('.filter-toggle')!.hasAttribute('aria-controls')).toBe(false);
+    await toggle();
+    const id = q('.filter-panel')!.id;
+    expect(id).toMatch(/^filter-panel-\d+$/);
+    expect(q('.filter-toggle')!.getAttribute('aria-controls')).toBe(id);
+    q('.panel-apply')!.click();
+    await flush();
+    expect(q('.filter-toggle')!.hasAttribute('aria-controls')).toBe(false);
+    await toggle();
+    expect(q('.filter-panel')!.id).toBe(id);
+  });
+
+  it('leaves the panel open on an Escape a child already handled (defaultPrevented)', async () => {
+    await toggle();
+    const note = q('.note')!;
+    const stop = (e: Event) => e.preventDefault();
+    note.addEventListener('keydown', stop);
+    try {
+      note.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await flush();
+      expect(q('.filter-panel')).not.toBeNull();
+    } finally {
+      note.removeEventListener('keydown', stop);
+    }
+  });
+
+  it('leaves the panel open on an Escape during IME composition', async () => {
+    await toggle();
+    q('.note')!.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, isComposing: true }),
+    );
+    await flush();
+    expect(q('.filter-panel')).not.toBeNull();
+  });
+
+  it('closes on a plain Escape from a child, marks it handled and refocuses 篩選', async () => {
+    await toggle();
+    const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    q('.note')!.dispatchEvent(esc);
+    await flush();
+    expect(esc.defaultPrevented).toBe(true);
+    expect(q('.filter-panel')).toBeNull();
+    expect(document.activeElement).toBe(q('.filter-toggle'));
+  });
+
+  it('an outside pointerdown closes the popover without moving focus', async () => {
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    try {
+      await toggle();
+      outside.focus();
+      expect(document.activeElement).toBe(outside);
+      outside.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      await flush();
+      expect(q('.filter-panel')).toBeNull();
+      expect(document.activeElement).toBe(outside);
+    } finally {
+      outside.remove();
+    }
+  });
+
+  it('listens for document pointerdown only while open', async () => {
+    const add = vi.spyOn(document, 'addEventListener');
+    const removeSpy = vi.spyOn(document, 'removeEventListener');
+    try {
+      const pd = (spy: typeof add) => spy.mock.calls.filter(c => c[0] === 'pointerdown').length;
+      expect(pd(add)).toBe(0);
+      await toggle();
+      expect(pd(add)).toBe(1);
+      q('.panel-apply')!.click();
+      await flush();
+      expect(pd(removeSpy)).toBe(1);
+      await toggle();
+      expect(pd(add)).toBe(2);
+      fixture.destroy();
+      expect(pd(removeSpy)).toBe(2);
+    } finally {
+      add.mockRestore();
+      removeSpy.mockRestore();
+    }
+  });
+
   it('closes the popover on a pointerdown outside the host and keeps it on one inside', async () => {
     await toggle();
     document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
@@ -151,7 +235,9 @@ describe('FilterBarComponent', () => {
     q('.panel-apply')!.click();
     await flush();
     await toggle();
-    expect(q<HTMLInputElement>('.note')!.value).toBe('abc');
+    expect(q<HTMLInputElement>('.note')).toBe(input);
+    expect(el.querySelectorAll('.note').length).toBe(1);
+    expect(input.value).toBe('abc');
   });
 
   it('keeps the popover open on a pointerdown inside a portaled PrimeNG overlay', async () => {
