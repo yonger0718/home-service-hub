@@ -737,9 +737,10 @@ def _cohort(kind: str, line: Line, lines: list[Line], entries: list[Entry], clai
 
 
 def _exact_pair(line: Line, cohort: list[tuple[Entry, Child]], rules: Rules) -> Representation:
-    """Spec §4.2: inside a complete balanced cohort the line takes the child whose parent is nearest to it, ties by
-    the lowest child id (every remaining child stays admissible for every remaining line)."""
-    e, c = min(cohort, key=lambda ec: (_date_distance(line, ec[0]), ec[1].id))
+    """Spec §4.2: inside a complete balanced cohort the line takes owner children before stand-ins, then the child
+    whose parent is nearest to it, then the lowest child id (every remaining child stays admissible for every
+    remaining line)."""
+    e, c = min(cohort, key=lambda ec: (ec[0].stand_in, _date_distance(line, ec[0]), ec[1].id))
     score, reasons = _score(line, (e,), rules.exact_window_days)
     return Representation("child", (Row(c.id, "principal", c.flow),), score, "exact_pair", reasons)
 

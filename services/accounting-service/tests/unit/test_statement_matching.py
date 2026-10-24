@@ -1642,3 +1642,25 @@ def test_pairing_never_crosses_kind_flow_or_account():
     accounts = run([L(1, date(2026, 9, 16), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 16), "-15", kind="fee", merchant="")],
                    [_fee_parent(10, date(2026, 9, 16), 11, account_id=1), _fee_parent(20, date(2026, 9, 16), 21, account_id=2)])
     assert accounts.claims == [] and [c.kind for c in accounts.cases] == ["ambiguous", "ambiguous"]
+
+
+def test_pairing_right_pool_ignores_children_of_other_accounts_even_stand_ins():
+    lines = [L(i, date(2026, 9, 16), "-15", kind="fee", merchant="") for i in (1, 2, 3)]
+    entries = [_fee_parent(10, date(2026, 9, 16), 11, account_id=1), _fee_parent(20, date(2026, 9, 16), 21, account_id=1),
+               _fee_parent(30, date(2026, 9, 16), 31, account_id=2, stand_in=True)]
+    res = run(lines, entries)
+    assert res.claims == [] and [c.kind for c in res.cases] == ["ambiguous"] * 3      # the account-2 stand-in must not balance the account-1 cohort
+
+
+def test_pairing_requires_all_tied_reps_within_margin():
+    lines = [L(i, date(2026, 9, 16), "-15", kind="fee", merchant="") for i in (1, 2, 3)]
+    entries = [_fee_parent(10, date(2026, 9, 16), 11), _fee_parent(20, date(2026, 9, 17), 21), _fee_parent(30, date(2026, 9, 18), 31)]
+    res = run(lines, entries)
+    assert res.claims == [] and [c.kind for c in res.cases] == ["ambiguous"] * 3      # 0.90 vs 0.8333 is not a tie: no pairing
+
+
+def test_exact_pair_prefers_an_owner_child_over_a_stand_in_child():
+    lines = [L(i, date(2026, 9, 16), "-15", kind="fee", merchant="") for i in (1, 2, 3)]
+    entries = [_fee_parent(5, date(2026, 9, 16), 6, stand_in=True), _fee_parent(10, date(2026, 9, 16), 11), _fee_parent(20, date(2026, 9, 16), 21)]
+    res = run(lines, entries)
+    assert [(c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims] == [(1, 11, "exact_pair"), (2, 21, "exact"), (3, 6, "exact")]
