@@ -1649,3 +1649,26 @@ def test_reconcile_keeps_a_group_whole_when_its_fee_member_is_owner_covered(seed
     open_lines = {c.line_id for c in _cases(db_session, stmt.id, "open")}
     assert {line.id, sum_line.id} <= open_lines
     assert m1.id not in {c.entry_id for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id}
+
+
+def test_reconcile_claims_the_claimable_children_reading_when_a_child_is_covered_elsewhere(seed, db_session, run):
+    """Execution finding (Task 3, spec §3): the +200 child is covered on another statement, the +100 child is not, so
+    the claim side reads −300 −280 +100 = −480 while the all-children total is −280. The guard tests the
+    claimable-children total too: the group is whole, −480 is claimed with both members and the +100 child, the −300
+    line claims nothing; a second reconcile keeps the same rows."""
+    card = _card(seed, db_session)
+    group = seed.group("split")
+    day = date(2026, 9, 12)
+    m1 = seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    m2 = seed.entry(card, "-280", day=day, merchant="餐廳", group_id=group.id)
+    child_100 = seed.entry(card, "100", kind="refund", day=day, parent_entry_id=m1.id)
+    child_200 = seed.entry(card, "200", kind="refund", day=day, parent_entry_id=m1.id)
+    db_session.commit()
+    _cover_elsewhere(db_session, run, card, child_200, date(2026, 10, 3))
+    stmt, (line, sum_line), _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 300), _line(2, day, "餐廳", 480)])
+    rows = _active(db_session, stmt.id)
+    assert sorted((r.line_id, r.entry_id) for r in rows) == sorted(
+        (sum_line.id, i) for i in (m1.id, m2.id, child_100.id))
+    _reconcile(db_session, stmt.id)
+    assert [(r.id, r.line_id, r.entry_id) for r in _active(db_session, stmt.id)] == \
+        [(r.id, r.line_id, r.entry_id) for r in rows]

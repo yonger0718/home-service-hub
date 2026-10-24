@@ -1189,3 +1189,22 @@ def test_group_readings_incomplete_is_structural_and_survives_covered_fee_member
     assert [(c.kind, c.context) for c in solo.cases if c.line_id == 1] == [("line_unmatched", {})]
     solo2 = run([L(1, d, "-100")], [E(21, d, "-100", group_id=5)] + structural, groups={5: g}, lines_all=lines)
     assert solo2.claims == [] and [(c.line_id, c.kind, c.context) for c in solo2.cases] == [(1, "line_unmatched", {})]
+
+
+@pytest.mark.parametrize("order", ["member_line_first", "sum_line_first"])
+def test_guard_reads_the_claimable_children_view_beside_all_children(order):
+    """Execution finding (Task 3, spec §3): child 211 is covered on another statement, so the claim side attaches only
+    child 210 and reads −300 −280 +100 = −480, while the all-children total is −280. The guard must test the
+    claimable-children total too: −480 marks the group whole, the −480 line claims `group_children` and the −300 line
+    never claims the member alone, whatever the line order."""
+    d = date(2026, 9, 3)
+    k210, k211 = m.Child(210, "discount", D("100")), m.Child(211, "reward", D("200"))
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-300", group_id=5, children=[k210], all_children=[k210, k211]), E(22, d, "-280", group_id=5)]
+    member_id, sum_id = (1, 2) if order == "member_line_first" else (2, 1)
+    lines = [L(member_id, d, "-300"), L(sum_id, d, "-480")]
+    assert m.statement_context("card", lines, ents, {5: g}, R).whole == {5}
+    res = run(lines, ents, groups={5: g})
+    assert [(c.line_id, c.representation.kind, sorted(r.entry_id for r in c.representation.rows)) for c in res.claims] \
+        == [(sum_id, "group_children", [21, 22, 210])]
+    assert [(c.line_id, c.kind) for c in res.cases if c.line_id == member_id] == [(member_id, "line_unmatched")]
