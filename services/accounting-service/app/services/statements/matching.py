@@ -498,10 +498,15 @@ def _prints_reading(line: Line, reading: Reading, rules: Rules) -> bool:
         and _same(abs(reading.foreign_amount), abs(line.foreign_amount)) and dist <= rules.foreign_window_days
 
 
-def _unrelated_exact(holder: Holder, g: Group, by_id: dict[int, Entry]) -> bool:
-    """Holders spec §3 "Unrelated exact holder": exact, not a stand-in, and none of its rows is a member of `g` or a
-    member's child (the guard's child view, `_kids`) — so a line a member's fee child holds is never unrelated."""
-    related = set(g.member_ids) | {c.id for i in g.member_ids if i in by_id for c in _kids(by_id[i])}
+def _related_ids(g: Group, by_id: dict[int, Entry]) -> frozenset[int]:
+    """Holders spec §3: the ids a holder of group `g` must avoid to be unrelated — its members and every member's child
+    (the guard's child view, `_kids`)."""
+    return frozenset(g.member_ids) | {c.id for i in g.member_ids if i in by_id for c in _kids(by_id[i])}
+
+
+def _unrelated_exact(holder: Holder, related: frozenset[int]) -> bool:
+    """Holders spec §3 "Unrelated exact holder": exact, not a stand-in, and none of its rows is in `related`
+    (`_related_ids` of the group) — so a line a member's fee child holds is never unrelated."""
     return holder.exact and not holder.stand_in and not (holder.entry_ids & related)
 
 
@@ -519,8 +524,9 @@ def printed_whole(lines_all: list[Line], entries: list[Entry], groups: dict[int,
         if g.kind != "split":
             continue
         readings, complete = group_readings(g, by_id, aside, aside_children, account_currency)
+        related = _related_ids(g, by_id) if holders else frozenset()
         scan = [line for line in lines_all
-                if not holders or line.id not in holders or not _unrelated_exact(holders[line.id], g, by_id)]
+                if not holders or line.id not in holders or not _unrelated_exact(holders[line.id], related)]
         if not complete or not readings or any(_prints_reading(line, r, rules) for r in readings for line in scan):
             out.add(g.id)
     return frozenset(out)
@@ -924,7 +930,7 @@ def claim_holders(result: MatchResult, lines_all: list[Line], entries: list[Entr
     `children` and `all_children`); `stand_in` — any row `stand_in_row`; `exact` — every row resolves and either the
     signed Σ `Row.flow` is the line's flow (true by construction for the matcher's conserving rules, still computed) or
     every row carries the line's foreign currency and an `original_amount` whose summed magnitude is the line's
-    foreign amount. A claimed line absent from `lines_all` is skipped. Pure."""
+    (non-zero, as `_prints_reading`) foreign amount. A claimed line absent from `lines_all` is skipped. Pure."""
     by_line = {ln.id: ln for ln in lines_all}
     by_row: dict[int, Entry | Child] = {e.id: e for e in entries} \
         | {c.id: c for e in entries for c in (*e.children, *e.all_children)}
@@ -940,7 +946,7 @@ def claim_holders(result: MatchResult, lines_all: list[Line], entries: list[Entr
         exact = False
         if all(x is not None for x in found):
             exact = _same(sum((r.flow for r in rows), ZERO), line.flow) or (
-                line.foreign_amount is not None
+                line.foreign_amount is not None and line.foreign_amount != 0
                 and all(x.original_currency == line.foreign_currency and x.original_amount is not None for x in found)
                 and _same(abs(sum((x.original_amount for x in found), ZERO)), abs(line.foreign_amount)))
         out[line.id] = Holder(frozenset(r.entry_id for r in rows), stand_in, exact)

@@ -1005,15 +1005,23 @@ def test_printed_whole_keeps_an_inexact_holder_and_a_missing_holder():          
 
 def test_unrelated_exact_treats_a_member_and_a_members_child_as_related():        # shape 6
     ents = SPLIT(); ents[0] = E(21, d, "-300", group_id=5, children=(m.Child(210, "fee", D("-10")),))
-    g = m.Group(5, "split", (21, 22)); by_id = {e.id: e for e in ents}
-    assert not m._unrelated_exact(H(frozenset({21}), False, True), g, by_id)
-    assert not m._unrelated_exact(H(frozenset({210}), False, True), g, by_id)
-    assert m._unrelated_exact(H(frozenset({99}), False, True), g, by_id)
+    g = m.Group(5, "split", (21, 22)); related = m._related_ids(g, {e.id: e for e in ents})
+    assert related == {21, 22, 210}
+    assert not m._unrelated_exact(H(frozenset({21}), False, True), related)
+    assert not m._unrelated_exact(H(frozenset({210}), False, True), related)
+    assert m._unrelated_exact(H(frozenset({99}), False, True), related)
     # the guard's child view (`_kids`): a child only in `all_children` (covered elsewhere) is related too
     ents[0] = E(21, d, "-300", group_id=5, all_children=(m.Child(211, "fee", D("-10")),))
-    assert not m._unrelated_exact(H(frozenset({211}), False, True), g, {e.id: e for e in ents})
+    assert not m._unrelated_exact(H(frozenset({211}), False, True), m._related_ids(g, {e.id: e for e in ents}))
     # a holder member of the group keeps the line a guard line in printed_whole
     assert _pw([L(1, d, "-575")], SPLIT(), {1: H(frozenset({22}), False, True)}) == {5}
+
+
+def test_unrelated_exact_a_multi_row_holder_overlapping_a_member_is_related():   # shape 8 overlap
+    related = m._related_ids(m.Group(5, "split", (21, 22)), {e.id: e for e in SPLIT()})
+    assert not m._unrelated_exact(H(frozenset({21, 99}), False, True), related)    # one member row + one unrelated row
+    assert m._unrelated_exact(H(frozenset({98, 99}), False, True), related)        # another group's two rows
+    assert _pw([L(1, d, "-575")], SPLIT(), {1: H(frozenset({21, 99}), False, True)}) == {5}   # the line is kept
 
 
 def test_claim_holders_marks_conserving_claims_exact_and_members_related():
@@ -1056,6 +1064,8 @@ def test_claim_holders_foreign_exactness_needs_the_full_same_currency_original_s
     assert own(E(99, d, "-3005", original_amount="-15000", original_currency="USD")).exact is False   # currency mismatch
     assert own(E(99, d, "-3005", original_amount="-14000", original_currency="JPY")).exact is False   # partial sum
     assert own(E(99, d, "-3005", **jp), ln=L(1, d, "-3010")).exact is False                           # no foreign amount
+    zero = L(1, d, "-3010", foreign_amount="0", foreign_currency="JPY")                                # zero foreign amount
+    assert own(E(99, d, "-3005", original_amount="0", original_currency="JPY"), ln=zero).exact is False
     kid = m.Child(991, "fee", D("-3"), original_currency="JPY")                                       # no original_amount
     parent = E(99, d, "-3005", **jp, children=(kid,))
     assert own(parent, (m.Row(99, "principal", D("-3005")), m.Row(991, "child", D("-3")))).exact is False
