@@ -2363,6 +2363,43 @@ def test_reconcile_locks_a_carriers_child_never_the_carrier(seed, db_session, ru
         (ls[0].id, parent.id, "manual"), (ls[1].id, fee.id, "auto")]
 
 
+def _owner_match_month(seed, db_session, run, kids):
+    """A purchase line and a fee line submitted first (the hook finds nothing), then a parent with `kids` booked; the
+    owner matches the purchase line's `line_unmatched` case to the parent through the action engine."""
+    from app.services.reconciliation_actions import engine
+    card = _card(seed, db_session)
+    day = date(2026, 9, 16)
+    stmt, ls, _ = _submit(db_session, run, card, [_line(1, day, "AMAZON", 1000), _line(2, day, "國外交易手續費", 15, "fee")])
+    parent = seed.entry(card, "-1000", day=day, merchant="AMAZON")
+    children = [seed.entry(card, k, kind="fee", day=day, parent_entry_id=parent.id) for k in kids]
+    db_session.commit()
+    assert stmt.id not in rec.pending_statement_ids(db_session)
+    (case,) = [c for c in _fee_line_cases(db_session, stmt.id, ls[0].id, "open") if c.kind == "line_unmatched"]
+    engine.apply_action(db_session, case_id=case.id, action="match",
+                        params={"line_id": ls[0].id, "entry_id": parent.id}, actor="owner", label="t")
+    db_session.commit()
+    return db_session.get(AccountStatement, stmt.id), ls, parent, children
+
+
+def test_owner_match_of_a_parent_with_a_fee_child_schedules_a_recheck_that_claims_the_fee_line(seed, db_session, run):
+    stmt, ls, parent, [fee] = _owner_match_month(seed, db_session, run, ["-15"])
+    assert stmt.needs_recheck is True  # the fee child is still claimable: a matching reason (ruling 29)
+    assert stmt.id in rec.pending_statement_ids(db_session)
+    _reconcile(db_session, stmt.id)
+    assert sorted((r.line_id, r.entry_id, r.match_kind, r.match_rule) for r in _active(db_session, stmt.id)) == [
+        (ls[0].id, parent.id, "manual", "owner"), (ls[1].id, fee.id, "auto", "exact")]
+    assert db_session.get(AccountStatement, stmt.id).needs_recheck is False
+    assert stmt.id not in rec.pending_statement_ids(db_session)
+
+
+def test_owner_match_of_a_childless_entry_does_not_flag_a_recheck(seed, db_session, run):
+    stmt, ls, parent, _ = _owner_match_month(seed, db_session, run, [])
+    assert stmt.needs_recheck is False
+    assert stmt.id not in rec.pending_statement_ids(db_session)
+    assert [(r.line_id, r.entry_id, r.match_kind) for r in _active(db_session, stmt.id)] == [
+        (ls[0].id, parent.id, "manual")]
+
+
 def test_a_carrier_never_supersedes_its_parents_deferral(seed, db_session, run):
     """A parent this statement deferred and the next statement then covered becomes a carrier here (its fee child is
     unclaimed): the carrier is never evaluated as a parent, so the deferral keeps its explanation, as an entry that

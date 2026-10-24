@@ -95,6 +95,20 @@ class MatchAction(ActionBase):
         effect.touched_group_ids = ([params.group_id] if params.group_id is not None
                                     else [] if member_of is None else [member_of])
         effect.inverse = {"release_line": line.id}
+        if params.entry_id is not None and self._leaves_a_child_unclaimed(ctx, params.entry_id, rows):
+            # ruling 29: an action may raise the flag; a still-claimable child is a matching reason (fee-child spec,
+            # carrier rows); only a completed reconcile clears it
+            ctx.statement.needs_recheck = True
+            ctx.db.flush()
+
+    @staticmethod
+    def _leaves_a_child_unclaimed(ctx: Context, entry_id: int, rows) -> bool:
+        """The matched entry has a child this claim did not take and no active coverage holds."""
+        taken = [r.entry_id for r in rows]
+        return ctx.db.execute(select(exists().where(
+            LedgerEntry.parent_entry_id == entry_id, LedgerEntry.id.not_in(taken),
+            ~exists().where(StatementCoverage.entry_id == LedgerEntry.id, StatementCoverage.status == "active"),
+        ))).scalar_one()
 
     def invert(self, ctx: Context, action: ReconciliationAction) -> Effect:
         coverage_service.release_line(ctx.db, ctx.statement, action.inverse["release_line"], reason="revert")
