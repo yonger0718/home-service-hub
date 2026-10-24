@@ -375,3 +375,11 @@ as a case (§3, §4.2 example and the three-lines mirror; test 5d). **Finding 2*
 pre-state for tests 11–13 (statement submitted before the entries exist). **Finding 5** — §5.4 restated as the
 observable parity (ambiguous child-vs-twin → validator sees two readings); test 17 split into (a)/(b)/(c), zero
 candidates asserted on `collect_candidates`.
+
+Rev 4 → execution errata (2026-10-24): `_near_children(statement_kind, line, entries, claimed, rules)` takes the
+statement kind first (`eligible_kinds` needs it); the `_exact_pair` pick key is `(parent.stand_in, _date_distance,
+child id)` — owner children before stand-ins (R6b.0 consistency; the §4.2 tie-break is amended accordingly); carriers
+are also excluded from `by_id`/`evaluated` in `reconcile()`, so a parent's `deferred_next_period` case is never
+superseded by its carrier (§5.2 addendum); `_carriers` selects from the `parents` rows already read, so the one extra
+query per load is the child query (§5.1); `_survivors(entries, locked_rows, first_groups)` is the pure survivor helper
+(§5.2).
