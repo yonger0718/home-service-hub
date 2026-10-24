@@ -12,7 +12,7 @@ R = m.Rules(period_end=date(2026, 9, 30))
 
 def L(i, posted, flow, kind="purchase", merchant="全聯", **kw):
     return m.Line(id=i, event_id=100 + i, posted_date=posted, txn_date=kw.get("txn_date"), flow=D(flow),
-                  foreign_amount=kw.get("foreign_amount"), foreign_currency=kw.get("foreign_currency"), line_kind=kind,
+                  foreign_amount=None if kw.get("foreign_amount") is None else D(kw["foreign_amount"]), foreign_currency=kw.get("foreign_currency"), line_kind=kind,
                   merchant_norm=merchant, installment_seq=kw.get("seq"), installment_total=kw.get("total"))
 
 
@@ -973,6 +973,187 @@ def test_printed_whole_ignores_gate_and_uses_structural_rows():
 def test_printed_whole_fails_closed_without_the_other_member():
     g = m.Group(5, "split", (21, 22))
     assert m.printed_whole([L(1, d, "-300")], [E(21, d, "-300", group_id=5)], {5: g}, R, frozenset(), frozenset()) == {5}
+
+
+# --- guard holders (issue #136): a guard line an unrelated, non-stand-in entry explains exactly is skipped ---
+
+H = m.Holder
+
+
+def _pw(lines, ents, holders):
+    return m.printed_whole(lines, ents, {5: m.Group(5, "split", (21, 22))}, R, frozenset(), frozenset(), holders=holders)
+
+
+def SPLIT():
+    return [E(21, d, "-300", group_id=5), E(22, d, "-280", group_id=5)]
+
+
+def test_printed_whole_skips_a_line_an_unrelated_entry_explains_exactly():        # shapes 1/2
+    near = [L(1, d, "-575")]
+    assert _pw(near, SPLIT(), None) == {5} and _pw(near, SPLIT(), {}) == {5}
+    assert _pw(near, SPLIT(), {1: H(frozenset({99}), False, True)}) == frozenset()
+
+
+def test_printed_whole_keeps_a_stand_in_held_line():                              # shape 3
+    assert _pw([L(1, d, "-580")], SPLIT(), {1: H(frozenset({99}), True, True)}) == {5}
+
+
+def test_printed_whole_keeps_an_inexact_holder_and_a_missing_holder():            # shapes 5/7
+    assert _pw([L(1, d, "-575")], SPLIT(), {1: H(frozenset({99}), False, False)}) == {5}
+    assert _pw([L(1, d, "-575")], SPLIT(), {2: H(frozenset({99}), False, True)}) == {5}
+
+
+def test_unrelated_exact_treats_a_member_and_a_members_child_as_related():        # shape 6
+    ents = SPLIT(); ents[0] = E(21, d, "-300", group_id=5, children=(m.Child(210, "fee", D("-10")),))
+    g = m.Group(5, "split", (21, 22)); related = m._related_ids(g, {e.id: e for e in ents})
+    assert related == {21, 22, 210}
+    assert not m._unrelated_exact(H(frozenset({21}), False, True), related)
+    assert not m._unrelated_exact(H(frozenset({210}), False, True), related)
+    assert m._unrelated_exact(H(frozenset({99}), False, True), related)
+    # the guard's child view (`_kids`): a child only in `all_children` (covered elsewhere) is related too
+    ents[0] = E(21, d, "-300", group_id=5, all_children=(m.Child(211, "fee", D("-10")),))
+    assert not m._unrelated_exact(H(frozenset({211}), False, True), m._related_ids(g, {e.id: e for e in ents}))
+    # a holder member of the group keeps the line a guard line in printed_whole
+    assert _pw([L(1, d, "-575")], SPLIT(), {1: H(frozenset({22}), False, True)}) == {5}
+
+
+def test_unrelated_exact_a_multi_row_holder_overlapping_a_member_is_related():   # shape 8 overlap
+    related = m._related_ids(m.Group(5, "split", (21, 22)), {e.id: e for e in SPLIT()})
+    assert not m._unrelated_exact(H(frozenset({21, 99}), False, True), related)    # one member row + one unrelated row
+    assert m._unrelated_exact(H(frozenset({98, 99}), False, True), related)        # another group's two rows
+    assert _pw([L(1, d, "-575")], SPLIT(), {1: H(frozenset({21, 99}), False, True)}) == {5}   # the line is kept
+
+
+def test_claim_holders_marks_conserving_claims_exact_and_members_related():
+    ents = [E(99, d, "-575"), *SPLIT()]
+    lines = [L(1, d, "-575"), L(2, d, "-300")]
+    res = m.match("card", lines, ents, {5: m.Group(5, "split", (21, 22))}, {}, lambda e: None, R, "TWD")
+    own = m.claim_holders(res, lines, ents, frozenset())
+    assert own == {1: H(frozenset({99}), False, True)}            # pass 1: group whole, 99 claims line 1, line 2 open
+    res2 = m.match("card", lines, ents, {5: m.Group(5, "split", (21, 22))}, {}, lambda e: None, R, "TWD", holders=own)
+    assert {c.line_id: c.representation.rows[0].entry_id for c in res2.claims} == {1: 99, 2: 21}
+    assert m.claim_holders(res2, lines, ents, frozenset())[2] == H(frozenset({21}), False, True)
+    assert m.claim_holders(res2, lines[:1], ents, frozenset()) == {1: H(frozenset({99}), False, True)}  # not a guard line: skipped
+
+
+def test_claim_holders_resolves_child_rows_source_and_foreign_fields():          # shapes 11/12
+    fee = m.Child(991, "fee", D("-10"), source="statement")
+    disc = m.Child(992, "discount", D("5"))
+    later = d + timedelta(days=5)  # outside the exact window of the other entry: each line has one representation
+    ents = [E(99, d, "-565", children=(fee,)), E(98, later, "-580", children=(disc,))]
+    lines = [L(1, d, "-575"), L(2, later, "-575")]
+    res = m.match("card", lines, ents, {}, {}, lambda e: None, R, "TWD")
+    own = m.claim_holders(res, lines, ents, frozenset())
+    assert own[1] == H(frozenset({99, 991}), True, True)          # statement-sourced fee child → stand-in holder
+    assert own[2] == H(frozenset({98, 992}), False, True)         # plain parent + discount child, signed sum exact
+    assert m.claim_holders(res, lines, ents, frozenset({98}))[2].stand_in is True   # backfill id → stand-in
+    assert m.claim_holders(res, lines, ents[:1], frozenset())[2].exact is False     # unresolvable rows → not exact
+
+
+def test_claim_holders_foreign_exactness_needs_the_full_same_currency_original_sum():   # AGENT-254 3
+    # every matcher claim conserves the line's flow (a foreign rule only opens an amount_delta case), so the foreign
+    # branch is exercised on a hand-built claim whose rows do not sum to the line
+    jp = dict(original_amount="-15000", original_currency="JPY")
+    line = L(1, d, "-3010", foreign_amount="-15000", foreign_currency="JPY")
+
+    def own(entry, rows=None, ln=line):
+        rows = rows or (m.Row(entry.id, "principal", entry.flow),)
+        res = m.MatchResult(claims=[m.Claim(1, m.Representation("standalone", rows, D("1"), "exact", ()))])
+        return m.claim_holders(res, [ln], [entry], frozenset())[1]
+    assert own(E(99, d, "-3005", **jp)).exact is True                                 # TWD differs (FX), JPY sum equal
+    assert own(E(99, d, "-3005", original_amount="-15000", original_currency="USD")).exact is False   # currency mismatch
+    assert own(E(99, d, "-3005", original_amount="-14000", original_currency="JPY")).exact is False   # partial sum
+    assert own(E(99, d, "-3005", **jp), ln=L(1, d, "-3010")).exact is False                           # no foreign amount
+    zero = L(1, d, "-3010", foreign_amount="0", foreign_currency="JPY")                                # zero foreign amount
+    assert own(E(99, d, "-3005", original_amount="0", original_currency="JPY"), ln=zero).exact is False
+    kid = m.Child(991, "fee", D("-3"), original_currency="JPY")                                       # no original_amount
+    parent = E(99, d, "-3005", **jp, children=(kid,))
+    assert own(parent, (m.Row(99, "principal", D("-3005")), m.Row(991, "child", D("-3")))).exact is False
+    # through match: a conserving claim is exact by its signed flows whatever its foreign fields
+    res = m.match("card", [line], [parent], {}, {}, lambda e: None, R, "TWD")
+    assert m.claim_holders(res, [line], [parent], frozenset()) == {}                  # -3008: only an amount_delta case
+    kid5 = m.Child(991, "fee", D("-5"), original_currency="JPY")
+    parent5 = E(99, d, "-3005", **jp, children=(kid5,))
+    res = m.match("card", [line], [parent5], {}, {}, lambda e: None, R, "TWD")
+    assert m.claim_holders(res, [line], [parent5], frozenset()) == {1: H(frozenset({99, 991}), False, True)}
+
+
+def test_printed_whole_through_match_keeps_a_group_whose_near_line_a_stand_in_claim_holds():   # shape 11 end to end
+    fee = m.Child(991, "fee", D("-10"), source="statement")
+    ents = [E(99, d, "-565", children=(fee,)), *SPLIT()]
+    lines = [L(1, d, "-575"), L(2, d, "-300")]
+    res = m.match("card", lines, ents, {5: m.Group(5, "split", (21, 22))}, {}, lambda e: None, R, "TWD")
+    own = m.claim_holders(res, lines, ents, frozenset())
+    assert own == {1: H(frozenset({99, 991}), True, True)}
+    res2 = m.match("card", lines, ents, {5: m.Group(5, "split", (21, 22))}, {}, lambda e: None, R, "TWD", holders=own)
+    assert {c.line_id for c in res2.claims} == {1}                 # line 2 stays open: the group is whole
+
+
+@pytest.mark.parametrize("total, whole", [("-580", True), ("-575", False)])
+def test_an_unrelated_exact_holder_skips_a_line_only_for_near_prints(total, whole):
+    """Holders spec §9 errata (final review): a cross-account split (card −300 claimable, 錢包 −280 structural) and a
+    plain card entry X equal to the line, lines X and −300. Pass 1: the group is whole and cannot compete for X's
+    line (a member is structural), X claims it. Pass 2: a −580 line prints the group's −580 reading exactly — a tie
+    the owner resolves, so the group stays whole and the −300 line stays open; a −575 line prints it only near, so
+    X's holder skips it, the group goes apart and the member claims the −300 line."""
+    groups = {5: m.Group(5, "split", (21, 22))}
+    ents = [E(99, d, total, merchant="超市"), E(21, d, "-300", group_id=5), S(22, d, "-280", group_id=5)]
+    lines = [L(1, d, total, merchant="超市"), L(2, d, "-300")]
+    first = m.match("card", lines, ents, groups, {}, lambda e: None, R, "TWD", lines_all=lines)
+    own = m.claim_holders(first, lines, ents, frozenset())
+    assert own == {1: H(frozenset({99}), False, True)}
+    second = m.match("card", lines, ents, groups, {}, lambda e: None, R, "TWD", lines_all=lines, holders=own)
+    claims = {c.line_id: c.representation.rows[0].entry_id for c in second.claims}
+    assert claims == ({1: 99} if whole else {1: 99, 2: 21})
+    ctx = m.statement_context("card", lines, lines, ents, groups, R, "TWD", holders=own)
+    assert ctx.whole == ({5} if whole else frozenset())
+
+
+def test_an_exact_foreign_print_keeps_the_group_whole_under_an_unrelated_exact_holder():
+    """The foreign half of the errata: a JPY split (−15000/−14000 JPY) and a line −5790 TWD / −29000 JPY held exactly
+    by an unrelated entry. The line prints the group's −29000 JPY total exactly → whole; the same line at −29100 JPY
+    (its holder −29100 JPY) prints the −5800 TWD total only near → skipped → apart."""
+    jp = dict(original_currency="JPY")
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-3000", group_id=5, original_amount="-15000", **jp),
+            E(22, d, "-2800", group_id=5, original_amount="-14000", **jp)]
+    held = {1: H(frozenset({99}), False, True)}
+    pw = lambda foreign: m.printed_whole([L(1, d, "-5790", foreign_amount=foreign, foreign_currency="JPY")], ents,
+                                         {5: g}, R, frozenset(), frozenset(), holders=held)
+    assert pw("-29000") == {5} and pw("29000") == {5} and pw("-29100") == frozenset()
+
+
+def test_stand_in_row_is_a_backfill_id_or_a_statement_source():
+    assert m.stand_in_row(7, None, frozenset({7})) and m.stand_in_row(8, "statement", frozenset())
+    assert not m.stand_in_row(8, None, frozenset({7})) and not m.stand_in_row(8, "moze", frozenset())
+
+
+def test_merge_holders_is_a_disjoint_union_and_fail_closes_a_collision():
+    a = {1: H(frozenset({7}), False, True), 2: H(frozenset({8}), True, True)}
+    b = {1: H(frozenset({9}), False, True), 3: H(frozenset({10}), False, True)}
+    assert m.merge_holders(a, b) == {1: H(frozenset({7, 9}), False, False), 2: a[2], 3: b[3]}
+    assert m.merge_holders({}, b) == b and m.merge_holders(a, {}) == a
+
+
+def test_holder_exact_is_the_signed_flow_sum_or_the_full_same_currency_foreign_sum():
+    jpy = L(1, d, "-3010", foreign_amount="-15000", foreign_currency="JPY")
+    assert m.holder_exact([D("-3000"), D("-10")], [(None, None), (None, None)], jpy)  # flows exact
+    assert m.holder_exact([D("-3005")], [(D("-15000"), "JPY")], jpy)  # foreign exact, TWD differs
+    assert m.holder_exact([D("-1505"), D("-1500")], [(D("-7500"), "JPY"), (D("-7500"), "JPY")], jpy)
+    assert not m.holder_exact([D("-3005")], [(D("-15000"), "USD")], jpy)  # currency mismatch
+    assert not m.holder_exact([D("-1505"), D("-1500")], [(D("-15000"), "JPY"), (None, "JPY")], jpy)  # missing amount
+    assert not m.holder_exact([D("-3005")], [(D("-14000"), "JPY")], jpy)  # foreign sum differs
+    zero = L(2, d, "-3010", foreign_amount="0", foreign_currency="JPY")
+    assert not m.holder_exact([D("-3005")], [(D("0"), "JPY")], zero)  # a zero foreign amount never matches
+    assert not m.holder_exact([D("-3005")], [(D("-15000"), "JPY")], L(3, d, "-3010"))  # no foreign amount
+
+
+def test_statement_context_threads_holders_to_the_guard():
+    lines = [L(1, d, "-575")]
+    assert m.statement_context("card", lines, lines, SPLIT(), {5: m.Group(5, "split", (21, 22))}, R, "TWD").whole == {5}
+    ctx = m.statement_context("card", lines, lines, SPLIT(), {5: m.Group(5, "split", (21, 22))}, R, "TWD",
+                              holders={1: H(frozenset({99}), False, True)})
+    assert ctx.whole == frozenset() and ctx.apart == {21, 22}
 
 
 def test_printed_whole_by_reduced_and_children_readings_through_covered_lines():

@@ -19,9 +19,12 @@ only reads the neighbouring statements' current lines, `guard_lines`): a deferra
 `deferred_to_statement_id` only from the LATER statement's reconcile (`_link_earlier_deferrals`, case rows only) or
 from `fill_deferral_links`.
 
-Re-running is idempotent: a line whose active claim equals the new claim (same rows, roles, rule and snapshots)
-keeps its coverage rows; every other active row of the statement (including orphans whose entry was deleted) is
-released with reason `reconcile` and the new claim written. Owner and agent coverage (`match_kind` manual/agent, R1c rulings 16 and 31) is
+Re-running is idempotent: the matcher runs twice (holders spec §3 "Two passes": pass 1 with the stable guard holders
+`guard_holders` reads, pass 2 with those plus pass 1's own claims, `merge_holders`), and both depend only on stable
+state — never on this statement's previous `auto` rows — so an unchanged statement derives the same result. A line
+whose active claim equals the new claim (same rows, roles, rule and snapshots) keeps its coverage rows; every other
+active row of the statement (including orphans whose entry was deleted) is released with reason `reconcile` and the
+new claim written. Owner and agent coverage (`match_kind` manual/agent, R1c rulings 16 and 31) is
 never touched here: its lines leave the matcher input, its entries leave the population, and only the sweep (a dirty
 edit of a covered row) or revision lineage releases it. Likewise an open/proposed matcher case equal to a newly
 derived one (kind, event/entry, candidates, context without the carried `sweep` note) is kept (its line pointer refreshed), every other open matcher
@@ -38,7 +41,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from typing import Iterable, Iterator
+from typing import Callable, Iterable, Iterator
 
 from psycopg2.errors import LockNotAvailable
 from sqlalchemy import and_, exists, func, or_, select, update
@@ -154,21 +157,35 @@ def _as_line(row: StatementLine) -> matching.Line:
         merchant_norm=row.merchant_norm, installment_seq=row.installment_seq, installment_total=row.installment_total)
 
 
+def _guard_neighbours(statement: AccountStatement, accounts: list[int], rules: matching.Rules) -> tuple:
+    """The where-clauses of the guard's neighbouring statements (split-members spec §3 "Guard lines"): the
+    participating accounts' other statements with a current revision whose period intersects
+    `period_start − population_window_days … period_end + population_window_days`, a retired duplicate excluded.
+    `guard_lines` reads their current lines, `guard_statement_ids` their ids."""
+    window = timedelta(days=matching.population_window_days(rules))
+    return (AccountStatement.account_id.in_(accounts), AccountStatement.id != statement.id,
+            AccountStatement.current_revision_id.is_not(None),
+            AccountStatement.period_start <= statement.period_end + window,
+            AccountStatement.period_end >= statement.period_start - window,
+            ~retired.clause(AccountStatement.id))
+
+
+def guard_statement_ids(db: Session, statement: AccountStatement, accounts: list[int],
+                        rules: matching.Rules) -> list[int]:
+    """`statement` and its guard neighbours (`_guard_neighbours`): the statements whose lines `guard_lines` reads, so
+    `guard_holders` can bound its coverage read by the indexed `statement_id`. Read only."""
+    return [statement.id, *db.execute(select(AccountStatement.id).where(*_guard_neighbours(statement, accounts, rules))
+                                      .order_by(AccountStatement.id)).scalars()]
+
+
 def guard_lines(db: Session, statement: AccountStatement, accounts: list[int], rules: matching.Rules,
                 current: list[StatementLine] | None = None) -> list[matching.Line]:
     """The printed-whole guard's lines (split-members spec §3 "Guard lines"): every current line of `statement`
-    (`current`, read when None; covered lines included) and the current lines of the participating accounts' other
-    statements whose period intersects `period_start − population_window_days … period_end + population_window_days`
-    (a retired duplicate excluded), so a group whose sum line the previous or the next statement prints is whole here.
+    (`current`, read when None; covered lines included) and the current lines of its neighbouring statements
+    (`_guard_neighbours`), so a group whose sum line the previous or the next statement prints is whole here.
     Read only — no other statement row is locked; `reconcile()` and the policy validator build the same list."""
     rows = list(current) if current is not None else _current_lines(db, statement)
-    window = timedelta(days=matching.population_window_days(rules))
-    revisions = select(AccountStatement.current_revision_id).where(
-        AccountStatement.account_id.in_(accounts), AccountStatement.id != statement.id,
-        AccountStatement.current_revision_id.is_not(None),
-        AccountStatement.period_start <= statement.period_end + window,
-        AccountStatement.period_end >= statement.period_start - window,
-        ~retired.clause(AccountStatement.id))
+    revisions = select(AccountStatement.current_revision_id).where(*_guard_neighbours(statement, accounts, rules))
     rows += db.execute(select(StatementLine).where(StatementLine.revision_id.in_(revisions))
                        .order_by(StatementLine.id)).scalars()
     return [_as_line(row) for row in rows]
@@ -203,8 +220,16 @@ def entry_view(e: LedgerEntry, **extra) -> matching.Entry:
         original_currency=e.original_currency, account_id=e.account_id, group_id=e.group_id, parent_entry_id=None,
         is_settlement=bool(e.is_settlement), refunds_entry_id=e.refunds_entry_id,
         transfer_group_id=None if e.transfer_group_id is None else str(e.transfer_group_id),
-        transfer_peer_is_card=None, children=(), instance=None, currency=e.currency)
+        transfer_peer_is_card=None, children=(), instance=None, currency=e.currency, source=e.source)
     return matching.Entry(**{**fields_, **extra})
+
+
+def _child_view(c: LedgerEntry) -> matching.Child:
+    """One child row as the matcher sees it, with the ledger facts a holder row resolves to (holders spec §3 "Row
+    metadata": `source`, `original_amount`, `original_currency`)."""
+    return matching.Child(c.id, c.kind, Decimal(c.amount), c.currency, source=c.source,
+                          original_amount=None if c.original_amount is None else Decimal(c.original_amount),
+                          original_currency=c.original_currency)
 
 
 def load_candidates(db: Session, statement: AccountStatement, accounts: list[int], *, window_days: int = 10,
@@ -242,7 +267,7 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
                                    LedgerEntry.currency == statement.currency)
                             .order_by(LedgerEntry.id)).scalars():
             if c.id not in claimed:
-                children[c.parent_entry_id].append(matching.Child(c.id, c.kind, Decimal(c.amount), c.currency))
+                children[c.parent_entry_id].append(_child_view(c))
     transfer_ids = {e.transfer_group_id for e in parents if e.transfer_group_id is not None}
     peer_is_card: dict[int, bool] = {}
     if transfer_ids:
@@ -305,7 +330,7 @@ def _split_structure(db: Session, split_ids: list[int]) -> tuple[list[LedgerEntr
     if members:
         for c in db.execute(select(LedgerEntry).where(LedgerEntry.parent_entry_id.in_([m.id for m in members]))
                             .order_by(LedgerEntry.id)).scalars():
-            kids[c.parent_entry_id].append(matching.Child(c.id, c.kind, Decimal(c.amount), c.currency))
+            kids[c.parent_entry_id].append(_child_view(c))
     return members, kids
 
 
@@ -412,6 +437,73 @@ def owned_coverage(db: Session, statement: AccountStatement) -> tuple[dict[int, 
     The policy validator loads through the same pair (split-members spec §5.6)."""
     manual = _manual_claims(db, statement)
     return manual, set().union(*manual.values()) if manual else set()
+
+
+def guard_holders(db: Session, statement: AccountStatement, lines_all: list[matching.Line],
+                  stand_in_ids: frozenset[int], statement_ids: Iterable[int]) -> dict[int, matching.Holder]:
+    """The stable holders of the guard lines `lines_all` (holders spec §3 "Holder", §4.2): their active coverage rows
+    read by `line_id` across statements (chunks of 200), bounded by `statement_ids` (`guard_statement_ids`: the
+    statements those lines belong to; `statement_coverage` is indexed by `statement_id`, not by `line_id`; a
+    neighbour gone between the two reads only drops holders — the guard keeps more lines, fail-closed) — on
+    `statement` only the rows a reconcile never rewrites
+    (`match_kind` in OWNED_KINDS; its own `auto` rows are the previous run's output and are never read, or a second
+    run would differ from the first), on the neighbouring statements every active row. Each row's id is its
+    `entry_id`, or after a SET NULL delete its snapshot id (the `_manual_claims` fallback), resolved to `ledger_entry`
+    (`amount`, `original_amount`, `original_currency`, `source`; children are ledger rows too) in one query. Per line:
+    `stand_in` — any row `matching.stand_in_row`; `exact` — every row resolves and `matching.holder_exact` holds over
+    the rows' `amount`s and `(original_amount, original_currency)`. Read only."""
+    by_line = {ln.id: ln for ln in lines_all}
+    ids = sorted(by_line)
+    statements = sorted(set(statement_ids))
+    rows: dict[int, list[int | None]] = defaultdict(list)  # line id → holder row ids (None: unresolvable)
+    for start in range(0, len(ids), 200):
+        chunk = ids[start:start + 200]
+        for line_id, statement_id, kind, entry_id, snapshot in db.execute(
+                select(StatementCoverage.line_id, StatementCoverage.statement_id, StatementCoverage.match_kind,
+                       StatementCoverage.entry_id, StatementCoverage.snapshot)
+                .where(StatementCoverage.statement_id.in_(statements), StatementCoverage.line_id.in_(chunk),
+                       StatementCoverage.status == "active")
+                .order_by(StatementCoverage.id)):
+            if statement_id == statement.id and kind not in OWNED_KINDS:
+                continue
+            rows[line_id].append(entry_id if entry_id is not None else (snapshot or {}).get("id"))
+    wanted = {i for row_ids in rows.values() for i in row_ids if i is not None}
+    ledger = {} if not wanted else {r.id: r for r in db.execute(
+        select(LedgerEntry.id, LedgerEntry.amount, LedgerEntry.original_amount, LedgerEntry.original_currency,
+               LedgerEntry.source).where(LedgerEntry.id.in_(wanted)))}
+    out: dict[int, matching.Holder] = {}
+    for line_id, row_ids in rows.items():
+        line = by_line[line_id]
+        found = [ledger.get(i) for i in row_ids]
+        stand_in = any(i is not None and matching.stand_in_row(i, x.source if x is not None else None, stand_in_ids)
+                       for i, x in zip(row_ids, found))
+        exact = False
+        if all(x is not None for x in found):
+            flows = [Decimal(x.amount) for x in found]
+            foreign = [(None if x.original_amount is None else Decimal(x.original_amount), x.original_currency)
+                       for x in found]
+            exact = matching.holder_exact(flows, foreign, line)
+        out[line_id] = matching.Holder(frozenset(i for i in row_ids if i is not None), stand_in, exact)
+    return out
+
+
+def pass_two_holders(db: Session, statement: AccountStatement, accounts: list[int], rules: matching.Rules,
+                     current: list[StatementLine], claimable_lines: list[matching.Line], entries: list[matching.Entry],
+                     groups: dict[int, matching.Group], plans: dict[str, int],
+                     fee: Callable[[matching.Entry], Decimal | None]) -> tuple[list[matching.Line],
+                                                                              dict[int, matching.Holder]]:
+    """Holders spec §3 "Two passes" / §4.3, the one place both `reconcile()` and the policy validator
+    (`policy_service._single_admissible`) build pass 2's holders, so their split-member decisions agree by
+    construction: the guard lines over `current` (covered and neighbouring lines too), the stable holders
+    (`guard_holders`), a pass-1 `match` of `claimable_lines` over `entries` with them, and pass 1's own claims merged
+    in. Returns `(lines_all, holders)`. This statement's stored `auto` rows are never read (they are pass-2 output),
+    so an unchanged re-run — and the validator — derive the same result. Read only."""
+    lines_all = guard_lines(db, statement, accounts, rules, current)
+    stand_in_ids = frozenset(stand_ins.stand_in_entry_ids(db, accounts))
+    stable = guard_holders(db, statement, lines_all, stand_in_ids, guard_statement_ids(db, statement, accounts, rules))
+    first = matching.match(statement.kind, claimable_lines, entries, groups, plans, fee, rules, statement.currency,
+                           lines_all=lines_all, holders=stable)
+    return lines_all, matching.merge_holders(stable, matching.claim_holders(first, lines_all, entries, stand_in_ids))
 
 
 def _write_coverage(db: Session, statement: AccountStatement, result: matching.MatchResult,
@@ -858,10 +950,17 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     # instances, structural split members) pass unchanged
     entries = [e if not e.claimable else _with_children(e, locked_rows) for e in entries
                if not e.claimable or (e.id in locked_rows and e.id in first_groups and first_groups[e.id] == e.group_id)]
-    result = matching.match(
-        statement.kind, [_as_line(row) for row in line_rows], entries, groups, plan_map(db, statement.account_id),
-        lambda e: proposed_fx_fee(accounts_by_id[e.account_id], e.flow), rules, statement.currency,
-        lines_all=guard_lines(db, statement, accounts, rules, all_lines))  # covered and neighbouring lines too
+    # two passes (holders spec §3): `pass_two_holders` runs pass 1; pass 2 below is the run's result
+    claimable_lines = [_as_line(row) for row in line_rows]
+    plans = plan_map(db, statement.account_id)
+
+    def fee(e: matching.Entry) -> Decimal | None:
+        return proposed_fx_fee(accounts_by_id[e.account_id], e.flow)
+
+    lines_all, holders = pass_two_holders(db, statement, accounts, rules, all_lines, claimable_lines, entries, groups,
+                                          plans, fee)
+    result = matching.match(statement.kind, claimable_lines, entries, groups, plans, fee, rules, statement.currency,
+                            lines_all=lines_all, holders=holders)
     lines = {row.id: row for row in line_rows}
     _write_coverage(db, statement, result, lines, locked_rows, run_id, keep_lines=manual)
     deferred = [entry_id for entry_id in result.unmatched_entry_ids if result.explained.get(entry_id) == DEFERRED]
