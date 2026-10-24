@@ -1,0 +1,59 @@
+## Why
+
+Redesign v2 (`2026-10-23-redesign-frontend-v2`) shipped in seven PRs. A layout review on 2026-10-24 ran the latest `main` (#130) against seeded data at 1440, 1100 and 390 px, in light and dark, and compared each screen with the code. It found a handful of real defects (Bootstrap's global `.row` shifting accounting rows 12 px left, KPI numbers overflowing their cards, the logo wordmark vanishing in dark mode, the 現金帳戶 page borrowing the accounting pane geometry) and a set of layout rough edges (three different filter-bar patterns, the 記一筆 button covering row actions, empty right panes, tall phone headers, inconsistent number formatting). This change records the fixes as specs so they can be implemented in small PRs. **This PR contains no code.**
+
+The notification surfaces (提醒中心, 🔔 count, toasts, reconciliation inbox cards) are out of scope here; they get their own change once the owner approves the notification-center design.
+
+## What Changes
+
+- **Defects**
+  - Accounting rows stop inheriting Bootstrap's `.row` grid margins; every row keeps the page gutter (timeline list mode, account entry history).
+  - KPI and hero values always fit their card at every width: TWD values of 1,000 or more drop decimals; the type scales down by container width instead of clipping or wrapping a digit.
+  - The sidebar logo lockup is legible in dark mode.
+  - `/portfolio/accounts` no longer drives the shell's pane state: the 記一筆 button stays at the page's bottom-right and the sidebar does not auto-collapse on that page.
+  - 現金帳戶 balance chart fills its card, uses short date ticks, no point markers and theme tokens.
+  - The net-worth chart bridges cash-only snapshot rows (non-trading days with cash activity) instead of dropping 持股淨值 to 0.
+- **Layout**
+  - One shared filter bar for 交易紀錄, 股利, 已實現損益, 現金帳戶 and the accounting timeline: search plus at most two primary controls inline, everything else behind 篩選 (a sheet on phones), active filters shown as removable chips.
+  - The 記一筆 floating button hides while scrolling down and returns on scroll up or at the end of the page.
+  - Accounting two-pane pages at ≥ 1280 px show a month overview in the empty pane; 帳戶 marks the selected account and its empty state says 選擇帳戶.
+  - Phone page headers keep one row: secondary actions go into a ⋯ menu.
+  - Phone KPI cards use a 2 × 2 grid; phone holdings rows use two lines.
+- **Consistency**
+  - One amount formatter: TWD ≥ 1,000 without decimals everywhere (cards, legends, group headers, rows); foreign currencies keep two; a sign only on changes and PnL; `$` only on TWD totals.
+  - Costs and fees render in neutral text, never in the gain/loss colours.
+  - UI chrome uses the line icon set; emoji remain only for owner-chosen category and account icons.
+  - Accounting pages render their title on the page background like the other groups.
+  - 股利: the 舊資料帳面 card and the 即將除權息 row hide when empty.
+  - 匯入: the footer appears once a file is chosen; the native checkbox becomes a switch.
+
+## Capabilities
+
+### New Capabilities
+
+None.
+
+### Modified Capabilities
+
+- `frontend-design-system`: amount formatting, semantic colour use, dark-mode logo.
+- `frontend-ui-primitives`: filter bar, value fitting, icon set, class-name hygiene.
+- `frontend-app-shell`: floating button behaviour, pane-state ownership, phone header actions.
+- `frontend-accounting-ledger`: row gutter, empty pane overview, selected account, page title placement.
+- `frontend-portfolio-accounts`: balance chart.
+- `frontend-portfolio-dashboard`: chart gaps, phone KPI grid and holdings rows.
+- `frontend-dividend-records`: empty summary card and reminder row.
+- `frontend-realized-pnl`: neutral cost card.
+- `frontend-csv-import`: footer visibility, switch control.
+- `frontend-stock-transactions`: shared filter bar.
+
+## Non-goals
+
+- No notification-center redesign (separate change).
+- No backend change. The chart fix is client-side; the cash-only snapshot rows stay as the backend writes them.
+- No new pages or routes.
+
+## Impact
+
+- Frontend only: `frontend/src/styles.scss`, `components/ui/*`, `components/shell/*`, `components/sidebar/*`, the accounting entry row and account-entries styles, the portfolio pages listed above, a shared money formatter.
+- Visual baselines for the affected pages change; unit tests that assert formatted strings (`$3,021,869.34`) need updating.
+- Evidence: `design_handoff_v2/reviews/2026-10-24-layout-review.md`.
