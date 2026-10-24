@@ -1618,7 +1618,39 @@ def test_incomplete_cohort_stays_ambiguous_agent_267_counterexample():
     res = run(lines, [_fee_parent(100, date(2026, 9, 5), 101, "-5"), _fee_parent(200, date(2026, 9, 3), 102, "-5")])
     first = next(c for c in res.cases if c.line_id == 1)
     assert first.kind == "ambiguous" and not any(c.representation.rule == "exact_pair" for c in res.claims)
-    assert [(c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims] == [(2, 101, "exact")]
+    # AGENT-271 F2: line 2's single rep (101) sits in a 2-slot × 2-child component whose line 1 is decided → vetoed
+    assert res.claims == [] and [c.kind for c in res.cases if c.line_id in (1, 2)] == ["ambiguous", "ambiguous"]
+
+
+def test_a_sibling_line_with_a_rep_outside_the_cohort_is_not_a_slot_agent_271_f1():
+    lines = [L(1, date(2026, 9, 16), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 19), "-15", kind="fee", merchant="")]
+    entries = [_fee_parent(10, date(2026, 9, 16), 11, carrier=True, in_reverse=False), _fee_parent(20, date(2026, 9, 16), 21, carrier=True, in_reverse=False),
+               E(30, date(2026, 9, 20), "-15", kind="fee", merchant="")]
+    res = run(lines, entries)
+    assert [(c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims] == [(2, 30, "exact")]
+    first = next(c for c in res.cases if c.line_id == 1)
+    assert first.kind == "ambiguous" and {c["entry_id"] for c in first.candidates} == {11, 21}
+
+
+def test_an_untied_child_take_that_would_strand_a_sibling_line_is_ambiguous_agent_271_f2():
+    lines = [L(1, date(2026, 9, 5), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 8), "-15", kind="fee", merchant="")]
+    res = run(lines, [_fee_parent(10, date(2026, 9, 5), 11), _fee_parent(20, date(2026, 9, 2), 21)])
+    assert res.claims == []
+    assert [(c.line_id, c.kind) for c in res.cases if c.line_id in (1, 2)] == [(1, "ambiguous"), (2, "ambiguous")]
+    # line 2's single rep (11) sits in a 2-slot × 2-child component whose line 1 is decided: the undecided veto applies
+    assert {c["entry_id"] for c in next(c for c in res.cases if c.line_id == 1).candidates} == {11, 21}
+    assert {c["entry_id"] for c in next(c for c in res.cases if c.line_id == 2).candidates} == {11}
+
+
+def test_an_untied_take_inside_a_complete_cohort_still_claims_exact():
+    lines = [L(1, date(2026, 9, 5), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 7), "-15", kind="fee", merchant="")]
+    res = run(lines, [_fee_parent(10, date(2026, 9, 5), 11), _fee_parent(20, date(2026, 9, 7), 21)])   # line 1: 11 at 0.90, 21 at 0.8333 (untied); both lines admissible to both
+    assert sorted((c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims) == [(1, 11, "exact"), (2, 21, "exact")]
+
+
+def test_one_line_two_untied_children_keeps_nearest_wins():
+    res = run([L(1, date(2026, 9, 5), "-15", kind="fee", merchant="")], [_fee_parent(10, date(2026, 9, 5), 11), _fee_parent(20, date(2026, 9, 2), 21)])
+    assert [(c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims] == [(1, 11, "exact")]
 
 
 def test_child_reachable_only_from_a_later_line_unbalances_the_cohort():

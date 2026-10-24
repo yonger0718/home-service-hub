@@ -683,11 +683,10 @@ def _ambiguous(line: Line, reps: list[Representation]) -> Case:
     return Case(line.id, None, "ambiguous", cands, {})
 
 
-def _identical_children(reps: list[Representation], entries: list[Entry], rules: Rules) -> tuple[str, Decimal, int] | None:
-    """Spec §3 "Identical children": every rep is a `child` rep and the children share one kind, one flow and one
-    parent `account_id`, with scores tied within the margin (`reps` sorted by score, best first) → that
-    `(kind, flow, account_id)`; else None."""
-    if not reps or any(r.kind != "child" for r in reps) or reps[0].score - reps[-1].score >= rules.margin:
+def _one_ident(reps: list[Representation], entries: list[Entry]) -> tuple[str, Decimal, int] | None:
+    """Spec §3 "Identical children" without the tie condition: every rep is a `child` rep and the children share one
+    kind, one flow and one parent `account_id` → that `(kind, flow, account_id)`; else None."""
+    if not reps or any(r.kind != "child" for r in reps):
         return None
     by_child = {c.id: (e, c) for e in entries for c in e.children}
     found = [by_child.get(r.rows[0].entry_id) for r in reps]
@@ -697,20 +696,38 @@ def _identical_children(reps: list[Representation], entries: list[Entry], rules:
     return next(iter(shapes)) if len(shapes) == 1 else None
 
 
-def _cohort(kind: str, line: Line, lines: list[Line], entries: list[Entry], claimed: set[int], claimed_line_ids: set[int],
-            ident: tuple[str, Decimal, int], rules: Rules) -> list[tuple[Entry, Child]] | None:
-    """Spec §3 "Cohort": the connected component of `line` in the bipartite graph of the unclaimed same-kind,
-    same-flow lines × the unclaimed children of the identical `(kind, flow, account_id)` in the line's gate, over the
-    admissible pairs (the child path's predicate). Returns its children when the component is complete (every pair
-    admissible), balanced (equal sides) and undecided (no left line with a smaller id: the loop decides lines in id
-    order, so such a line was already left as a case and vetoes); else None."""
+def _tied(reps: list[Representation], rules: Rules) -> bool:
+    """Spec §3 "Identical children", the tie condition: two or more reps whose scores lie within the margin (`reps`
+    sorted by score, best first). A single rep is never tied."""
+    return len(reps) >= 2 and reps[0].score - reps[-1].score < rules.margin
+
+
+def _cohort(kind: str, line: Line, lines: list[Line], entries: list[Entry], groups: dict[int, Group],
+            plan_map: dict[str, int], claimed: set[int], claimed_line_ids: set[int], ident: tuple[str, Decimal, int],
+            rules: Rules, aside: frozenset[int] = frozenset(), apart: frozenset[int] = frozenset()
+            ) -> tuple[list[tuple[Entry, Child]] | None, dict[int, Line], dict[int, tuple[Entry, Child]]]:
+    """Spec §3 "Cohort": the connected component of `line` in the bipartite graph of the slots × the unclaimed
+    children of the identical `(kind, flow, account_id)` in the line's gate, over the admissible pairs (the child
+    path's predicate). A slot is an unclaimed same-kind, same-flow line whose current reps are non-empty and all
+    `child` reps of those children (AGENT-271 F1: a line that also reads a standalone, a group or another ident's
+    child is neither a slot nor a connector); `line` itself is one by construction. Returns `(children, slots,
+    right)`: `children` is the component's children when it is complete (every pair admissible), balanced (equal
+    sides) and undecided (no slot with a smaller id: the loop decides lines in id order, so such a line was already
+    left as a case and vetoes), else None; `slots` and `right` are the component's two sides."""
     child_kind, flow, account_id = ident
     gate = eligible_kinds(kind, line.line_kind)
-    pool_left = [ln for ln in lines
-                 if ln.id not in claimed_line_ids and ln.line_kind == line.line_kind and _same(ln.flow, line.flow)]
     pool_right = [(e, c) for e in entries for c in e.children
                   if c.id not in claimed and c.kind == child_kind and c.kind in gate and _same(c.flow, flow)
                   and e.account_id == account_id]
+    right_ids = {c.id for _, c in pool_right}
+
+    def slot(ln: Line) -> bool:
+        reps = _representations(kind, ln, entries, groups, plan_map, claimed, rules, aside, apart)
+        return bool(reps) and all(r.kind == "child" and r.rows[0].entry_id in right_ids for r in reps)
+
+    pool_left = [ln for ln in lines
+                 if ln.id != line.id and ln.id not in claimed_line_ids and ln.line_kind == line.line_kind
+                 and _same(ln.flow, line.flow) and slot(ln)]
 
     def admissible(ln: Line, e: Entry, c: Child) -> bool:
         return _same(c.flow, ln.flow) and _date_distance(ln, e) <= rules.exact_window_days
@@ -733,7 +750,7 @@ def _cohort(kind: str, line: Line, lines: list[Line], entries: list[Entry], clai
     complete = all(admissible(ln, e, c) for ln in left.values() for e, c in right.values())
     balanced = len(left) == len(right)
     undecided = min(left) == line.id
-    return list(right.values()) if complete and balanced and undecided else None
+    return (list(right.values()) if complete and balanced and undecided else None), left, right
 
 
 def _exact_pair(line: Line, cohort: list[tuple[Entry, Child]], rules: Rules) -> Representation:
@@ -976,6 +993,24 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             result.cases.append(Case(line.id, None, "ambiguous", _ambiguous(line, reps).candidates,
                                      {"hint": "group_readings_incomplete", "group_ids": truncated}))
             continue
+        # spec §4.2 cohort gate, before the margin accept: a child-only fee line of one ident in a component of
+        # >= 2 slots and >= 2 children claims only inside a complete, balanced, undecided cohort (tied → `exact_pair`,
+        # untied → the accept below, `exact`); else `ambiguous` (AGENT-271 F2: an untied take could strand a sibling).
+        # One slot or one child: nothing can be stranded, today's accept. The pair's later line has a single rep
+        # (never tied) and the accept claims it `exact`.
+        ident = _one_ident(reps, entries) if line.line_kind in BANK_ONLY_KINDS else None
+        if ident:
+            cohort, slots, right = _cohort(statement_kind, line, lines, entries, groups, plan_map, claimed,
+                                           {c.line_id for c in result.claims}, ident, rules, aside, apart)
+            if len(slots) >= 2 and len(right) >= 2:
+                if cohort is None:
+                    result.cases.append(_ambiguous(line, reps))
+                    continue
+                if _tied(reps, rules) and reps[0].score >= rules.ambiguous_floor:
+                    best = _exact_pair(line, cohort, rules)
+                    result.claims.append(Claim(line.id, best))
+                    claimed |= {r.entry_id for r in best.rows}
+                    continue
         if reps and reps[0].score >= rules.accept and (len(reps) == 1 or reps[0].score - reps[1].score >= rules.margin):
             best = reps[0]
             result.claims.append(Claim(line.id, best))
@@ -985,16 +1020,6 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             result.cases.append(_installment_case(line, reps, principals + hint_only, plan_map, claimed, rules))
             continue
         if len(reps) >= 2 and reps[0].score >= rules.ambiguous_floor:  # R6a.2: ambiguity needs two candidates
-            # spec §4.2: tied identical fee children inside a complete, balanced, undecided cohort pair canonically;
-            # the pair's later line then has a single rep and the accept branch above claims it `exact`
-            ident = _identical_children(reps, entries, rules)
-            cohort = _cohort(statement_kind, line, lines, entries, claimed, {c.line_id for c in result.claims}, ident, rules) \
-                if ident and line.line_kind in BANK_ONLY_KINDS else None
-            if cohort:
-                best = _exact_pair(line, cohort, rules)
-                result.claims.append(Claim(line.id, best))
-                claimed |= {r.entry_id for r in best.rows}
-                continue
             result.cases.append(_ambiguous(line, reps))
             continue
         if not reps:
