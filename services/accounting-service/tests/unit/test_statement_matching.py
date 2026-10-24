@@ -978,9 +978,11 @@ def test_printed_whole_by_reduced_and_children_readings_through_covered_lines():
     g = m.Group(5, "split", (21, 22, 23))
     ents = [E(21, d, "-300", group_id=5, children=[m.Child(210, "reward", D("200")), m.Child(211, "discount", D("100"))]),
             E(22, d, "-280", group_id=5), S(23, d, "-100", kind="fee", group_id=5)]
-    lines_all = [L(1, d, "-300"), L(2, d, "-380"), L(3, d, "-100", kind="fee"), L(4, d, "200", kind="reward")]
+    # -480 = members 21+22 (fee 23 printed alone, -580) + child 211 only (+100; reward 210 printed alone): the reduced
+    # reading alone; without aside/aside_children the nearest totals are -580 and -380, 100 off (tolerance 29)
+    lines_all = [L(1, d, "-300"), L(2, d, "-480"), L(3, d, "-100", kind="fee"), L(4, d, "200", kind="reward")]
     ctx = m.statement_context("card", lines_all, ents, {5: g}, R)
-    assert ctx.aside == {23} and ctx.aside_children == {210} and ctx.whole == {5} and ctx.apart == frozenset()   # -680 -100 fee +100 child = -380
+    assert ctx.aside == {23} and ctx.aside_children == {210} and ctx.whole == {5} and ctx.apart == frozenset()
 
 
 def test_printed_whole_by_foreign_total():
@@ -995,3 +997,26 @@ def test_apart_members_are_claimable_split_members_of_apart_groups_only():
     ents = [E(21, d, "-300", group_id=5), E(22, d, "-280", group_id=5), E(31, d, "-50", group_id=6), S(32, d, "-60", group_id=6), E(41, d, "-70", group_id=7)]
     ctx = m.statement_context("card", [L(1, d, "-580")], ents, {5: g5, 6: g6, 7: g7}, R)
     assert ctx.whole == {5} and ctx.apart == {31}
+
+
+def test_a_split_with_a_recurring_member_has_no_readings_and_stays_whole():
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-300", group_id=5, instance=INST("recurring")), E(22, d, "-280", group_id=5)]
+    assert m.group_readings(g, {e.id: e for e in ents}, frozenset(), frozenset()) == ([], True)
+    ctx = m.statement_context("card", [L(1, d, "-50")], ents, {5: g}, R)
+    assert ctx.whole == {5} and ctx.apart == frozenset()
+
+
+def test_split_member_instance_rule_and_children_cap():
+    g = m.Group(5, "split", (21, 22, 23, 24, 25))
+    ents = [E(21, d, "-300", group_id=5), E(22, d, "-100", group_id=5, instance=INST("installment")),
+            E(23, d, "-10", kind="fee", group_id=5, parent_entry_id=21), E(24, d, "-50", group_id=5, instance=INST("recurring")),
+            S(25, d, "-60", group_id=5), E(26, d, "-70")]
+    assert m.apart_members(ents, {5: g}, frozenset()) == {21, 24}
+    assert m.apart_members(ents, {5: g}, frozenset({5})) == frozenset()
+    kids = [m.Child(300 + i, "reward", D(i + 1)) for i in range(m.ASIDE_COMBINATIONS_MAX + 1)]
+    g6 = m.Group(6, "split", (31, 32))
+    capped = [E(31, d, "-300", group_id=6, children=kids), E(32, d, "-280", group_id=6)]
+    readings, complete = m.group_readings(g6, {e.id: e for e in capped}, frozenset(), frozenset(c.id for c in kids))
+    assert complete is False and {r.flow for r in readings} == {D("-580"), D("-580") + sum(c.flow for c in kids)}
+    assert m.printed_whole([L(1, d, "-5000")], capped, {6: g6}, R, frozenset(), frozenset(c.id for c in kids)) == {6}
