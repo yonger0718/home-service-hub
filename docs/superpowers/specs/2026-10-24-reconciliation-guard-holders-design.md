@@ -232,3 +232,12 @@ Multica AGENT-251/252, dev-astra, rev 2 @ `1833e09` — **FAIL** (one spec round
    (invariant, §3); a collision is `exact = False`; the overlap test becomes the collision test.
 3. minor — "stored auto rows diverge only towards refusing more" was wrong (shape 13) → sentence removed; the
    validator recomputes pass 1; shapes 13/14 tested for reconcile and the validator.
+
+## 9. Errata (execution 2026-10-24)
+
+- `match` never claims through the foreign rule (it opens an `amount_delta` case), so `claim_holders`' foreign branch is reached only by hand-built claims; it is kept for the one-rule parity with the DB side.
+- The exactness rule is one public helper `matching.holder_exact(flows, foreign, line)`, used by `claim_holders` and `reconciliation_service.guard_holders` (§4.1/§4.2 named the arithmetic twice).
+- `_related_ids(g, by_id)` is computed once per group in `printed_whole`; `_unrelated_exact(holder, related)`.
+- Coverage always balances when written, so an inexact DB holder exists only after an entry edit with dirty tracking off (tests build it that way).
+- Both `matching.Child` constructions go through `reconciliation_service._child_view`.
+- The policy validator runs one extra `match()` per validation (pass 1); its pre-existing lock-trim caveat is unchanged.
