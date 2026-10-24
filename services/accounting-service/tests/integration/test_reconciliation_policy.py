@@ -785,6 +785,97 @@ def test_policy_and_reconcile_agree_on_whole_with_a_covered_fee_member(seed, db_
     assert _validator_refusal(db_session, stmt.id, case, member.id) == "not_single_admissible: 0 admissible representation(s)"
 
 
+# --- guard holders (holders spec §3 "Two passes", §4.3) ----------------------------------------------------------
+
+def _held_near_line_case(seed, db, run, holder_source="manual"):
+    """Split −300 (card) / −280 (錢包, other account); a standalone −575 the same day and a −575 line it claims exactly
+    (within 5 % of the −580 total: the only thing that could keep the group whole); a second standalone −300 so the
+    −300 line is ambiguous between it and the member (an open case to hang a proposal on). `holder_source="statement"`
+    seeds the −575 entry as a stand-in **and omits the twin** (AGENT-254 1: with the group whole the twin would
+    auto-claim the −300 line and leave no open case) — the −300 line is then `line_unmatched`."""
+    card = _card(seed, db)
+    wallet = seed.account("錢包")
+    seed.entry(card, "-1", day=date(2026, 8, 1), merchant="墊高編號")  # keeps entry ids apart from the line id
+    group = seed.group("split")
+    member = seed.entry(card, "-300", day=DAY, merchant="餐廳", group_id=group.id)
+    seed.entry(wallet, "-280", day=DAY, merchant="餐廳", group_id=group.id)
+    holder = seed.entry(card, "-575", day=DAY, merchant="超市", source=holder_source)
+    twin = seed.entry(card, "-300", day=DAY, merchant="餐廳") if holder_source == "manual" else None
+    db.commit()
+    stmt, (line575, line300), _ = _submit(db, run, card, [_line(1, DAY, "超市", 575), _line(2, DAY, "餐廳", 300)])
+    (case,) = [c for c in _cases(db, stmt.id, "open") if c.line_id == line300.id]
+    if twin is not None:  # pass 1 claims −575 for the standalone, pass 2 releases the group: member and twin tie
+        assert [(c.line_id, c.entry_id, c.match_kind) for c in _active(db, stmt.id)] == [(line575.id, holder.id, "auto")]
+        assert case.kind == "ambiguous" and {c["entry_id"] for c in case.candidates} == {member.id, twin.id}
+    return SimpleNamespace(stmt=stmt, line300=line300, case=case, member=member, twin=twin, line575=line575,
+                           holder=holder)
+
+
+def test_policy_admits_the_member_reconcile_released_through_pass_one(seed, db_session, run):
+    """Shape 1 parity (Review Focus 5): the −575 line is held only by this run's own `auto` claim, so the validator
+    must recompute pass 1 to see the group apart; with the twin off the line the member is the single admissible
+    reading. A validator without pass 1 (PR #130) keeps the group whole and refuses ('0 admissible')."""
+    s = _held_near_line_case(seed, db_session, run)
+    s.twin.amount = Decimal("-301")  # only the member conserves the −300 line now
+    db_session.commit()
+    proposal = _agent_proposal(db_session, s.case, s.line300, s.member.id)
+    _set_policy(db_session, MATCH_ON)
+
+    result = policy_service.run_policy(db_session, s.stmt.id)
+
+    (row,) = _actions(db_session)
+    assert result.applied == [row.id] and (row.action, row.proposal_id) == ("match", proposal.id)
+    assert sorted((c.line_id, c.entry_id, c.match_kind) for c in _active(db_session, s.stmt.id)) == \
+        sorted([(s.line575.id, s.holder.id, "auto"), (s.line300.id, s.member.id, "agent")])
+
+
+def test_policy_refuses_the_member_when_a_real_stand_in_holds_the_near_line(seed, db_session, run):
+    """Shape 3 parity: the −575 line owner-covered with a `source="statement"` stand-in — a stable stand-in holder,
+    never unrelated → whole for reconcile and the validator alike."""
+    s = _held_near_line_case(seed, db_session, run, holder_source="statement")
+    _owner_cover(db_session, s.stmt, s.line575, [s.holder])
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.line_id == s.line300.id]
+    assert (case.kind, case.candidates) == ("line_unmatched", [])  # whole: the member never listed
+    assert _validator_refusal(db_session, s.stmt.id, case, s.member.id) == \
+        "not_single_admissible: 0 admissible representation(s)"
+
+
+def test_policy_agrees_with_reconcile_on_the_third_order_chain(seed, db_session, run):
+    """Shape 13 parity: after the reconcile of Task 2's chain test (B = −100/−205, free −100 line open as
+    `line_unmatched`), a proposal naming B's −100 member on the −100 line is refused ('0 admissible
+    representation(s)') — the validator recomputes pass 1 and never reads the stored pass-2 claim of A's member on the
+    −300 line, which would release B and make the −100 member the single admissible reading (AGENT-254 2)."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    seed.entry(card, "-1", day=date(2026, 8, 1), merchant="墊高編號")  # keeps entry ids apart from the line id
+    standalone = seed.entry(card, "-575", day=DAY, merchant="超市")
+    group_a, group_b = seed.group("split"), seed.group("split")
+    a1 = seed.entry(card, "-300", day=DAY, merchant="餐廳", group_id=group_a.id)
+    seed.entry(wallet, "-280", day=DAY, merchant="餐廳", group_id=group_a.id)
+    b1 = seed.entry(card, "-100", day=DAY, merchant="咖啡", group_id=group_b.id)
+    seed.entry(wallet, "-205", day=DAY, merchant="咖啡", group_id=group_b.id)
+    db_session.commit()
+    stmt, (l575, l300, l100), _ = _submit(db_session, run, card, [
+        _line(1, DAY, "超市", 575), _line(2, DAY, "餐廳", 300), _line(3, DAY, "咖啡", 100)])
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    assert sorted((c.line_id, c.entry_id, c.match_kind) for c in _active(db_session, stmt.id)) == \
+        sorted([(l575.id, standalone.id, "auto"), (l300.id, a1.id, "auto")])
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == l100.id]
+    assert (case.kind, case.candidates) == ("line_unmatched", [])
+    assert _validator_refusal(db_session, stmt.id, case, b1.id) == "not_single_admissible: 0 admissible representation(s)"
+
+
+def test_policy_agrees_with_reconcile_on_the_pass_two_tie(seed, db_session, run):
+    """Shape 14 parity: the ambiguous −300 line; a proposal naming the member is refused with '2 admissible
+    representation(s)' (the validator sees the same apart decision and the same tie)."""
+    s = _held_near_line_case(seed, db_session, run)
+    assert _validator_refusal(db_session, s.stmt.id, s.case, s.member.id) == \
+        "not_single_admissible: 2 admissible representation(s)"
+
+
 # --- routes -------------------------------------------------------------------------------------------------------
 
 def test_reconcile_route_reports_policy_counts(client, seed, db_session, run, dirty_on):
