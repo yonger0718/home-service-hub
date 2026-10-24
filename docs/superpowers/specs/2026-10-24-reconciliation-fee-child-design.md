@@ -414,3 +414,12 @@ connector (§3, §4.2; test 5e). **F2 (Major)** — the cohort gate runs before 
 lines with ≥ 2 slots; untied inside a passing cohort → `exact`, failing cohort → `ambiguous`; single-slot cohorts keep
 today's accept (§4.2; tests 5f, 5b updated). **F3 (Minor)** — plan rollout property (b) wording. Q2 confirmed (three
 identical lines, two children → all `ambiguous`). §8.5 added.
+
+Rev 5 → execution errata (2026-10-24, host fuzz 5 seeds × 20000, properties a–g all 0): the pair's later line does
+not always arrive with a one-slot component. Once earlier claims remove a second account's child from a sibling
+line's reps, that line becomes a slot and can pull a far child into the later line's component; the component is then
+incomplete (or that sibling is already decided) and the gate leaves the later line `ambiguous` with the cohort child
+as its visible candidate — the §4.2 note "the pair's later line … claims it `exact`" holds only while the component
+stays a single slot. The child is never silently lost (it is a candidate of an `ambiguous` case); taking it would be
+the §8.5 perfect-matching follow-up. The fuzz property (g) is "owner child of a gated-OK cohort is claimed or visible
+as an `ambiguous` candidate by run end".
