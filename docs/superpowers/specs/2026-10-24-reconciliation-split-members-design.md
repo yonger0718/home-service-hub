@@ -1,6 +1,6 @@
 # Reconciliation: split-group members printed apart — design
 
-Date: 2026-10-24. Status: rev 4.1 (AGENT-249 plan-review errata: two child views, adjust_amount records the group) — rev 4 folds the AGENT-248 dev-astra round 1 (rev 2: three majors, two minors) and the scoped re-check of rev 3 (the three majors re-raised: a scalar summary cannot reproduce the matcher's readings once pieces are covered). Rev 4 replaces the summary with a structural population and the matcher's own reading enumeration, failing closed where it cannot enumerate. Marks «AGENT-248 n» name the finding. Parent specs: `2026-10-08-statement-reconciliation-design.md` (§6 representations), `2026-10-15-reconciliation-r6-design.md` (R6a matcher rules, `printed_alone` 2026-10-19), `2026-10-21-reconciliation-inbox-design.md` (buttons, `match_candidate`).
+Date: 2026-10-24. Status: implemented on `feat/reconciliation-split-members`, see §9; rev 4.1 (AGENT-249 plan-review errata: two child views, adjust_amount records the group) — rev 4 folds the AGENT-248 dev-astra round 1 (rev 2: three majors, two minors) and the scoped re-check of rev 3 (the three majors re-raised: a scalar summary cannot reproduce the matcher's readings once pieces are covered). Rev 4 replaces the summary with a structural population and the matcher's own reading enumeration, failing closed where it cannot enumerate. Marks «AGENT-248 n» name the finding. Parent specs: `2026-10-08-statement-reconciliation-design.md` (§6 representations), `2026-10-15-reconciliation-r6-design.md` (R6a matcher rules, `printed_alone` 2026-10-19), `2026-10-21-reconciliation-inbox-design.md` (buttons, `match_candidate`).
 
 ## 1. Intent and why
 
@@ -129,3 +129,10 @@ Integration (`tests/integration/test_reconciliation_actions_*.py`, `test_inbox_a
 
 - The whole guard's tolerance reuses `near_tolerance_*` and `drift_window_days`. Alternative: its own rule keys. Spec choice: reuse (one owner-visible notion of "close enough"). Accepted by AGENT-248 as within the stated risk.
 - `match` does not refuse a member of a group printed whole (owner override). Accepted by AGENT-248.
+
+## 9. Errata (execution 2026-10-24)
+
+- §5.1: the revert refusal code is `not_revertable` (detail "later action N"), not `later_actions`.
+- §5.3: `group_id` is present on listed candidates too (the `InboxCandidate` schema gained the optional field), not only on search results.
+- Controller rulings already folded inline: §3 groups with no reading are taken whole by fail-closed; §3 both child views are enumerated; §3 instance members get no structural row; §7.13 wording.
+- SPA: the `entry_in_group` copy now names installment / reward groups (`entry_in_group` fires only for those members).

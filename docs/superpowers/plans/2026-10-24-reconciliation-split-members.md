@@ -389,3 +389,14 @@ def test_policy_and_reconcile_agree_on_whole_with_a_covered_fee_member(...)     
 - [ ] **Step 1b: Errata and copy fixes found during execution** — spec §5.1: the revert refusal code is `not_revertable` (detail "later action N"), not `later_actions`; spec §5.3: the search payload's `group_id` is also present on listed candidates (`InboxCandidate` schema gained the optional field). SPA copy: `frontend/src/app/components/accounting/inbox/inbox-view.ts` maps `entry_in_group` to 「這筆是拆帳成員，不能直接對」 — that code now fires only for installment / reward_claim members; change the copy to 「這筆是分期或回饋群組的成員，不能直接對」 (one line, plus its spec test if one asserts the string: `grep -rn "不能直接對" frontend/src`). Run the touched SPA spec file only (`cd frontend && npx ng test --include='<spec path>'`) if a spec asserts it; otherwise no SPA test run.
 - [ ] **Step 2: Write the rollout note** into the plan's tail (release record steps): deploy API from the release checkout (homehub-api-ctl recipe), then `POST /accounts/{a}/statements/{s}/reconcile` for statements 121, 127, 128, 155, 156, 220, 224, 229, 504, 505; record open-case counts before/after; owner follow-up: `replace_stand_in` for groups 4302 (line 1417) and 4343 (line 3588).
 - [ ] **Step 3: Commit** — `docs(reconciliation): split-members spec status + r6 pointer`.
+
+## Rollout (release record steps)
+
+1. Deploy the accounting API from the release checkout (`homehub-api-ctl` recipe). Alembic has no new migration.
+2. Record open-case counts before (per statement and total), then `POST /accounts/{a}/statements/{s}/reconcile` for statements 121, 127, 128, 155, 156, 220, 224, 229, 504, 505; record open-case counts after.
+3. Owner follow-up: `replace_stand_in` for groups 4302 (line 1417) and 4343 (line 3588).
+4. Follow-up GitHub issues to file after merge:
+   - (i) SPA 「拆帳成員」 label for `group_id` candidates (`inbox.model.ts` lacks the field).
+   - (ii) The policy twin guard is population-bound: a line near a cross-account group total can still be backfilled.
+   - (iii) A pending policy creation proposal on a superseded case is never marked superseded.
+   - (iv) Validator/reconcile parity gap when a group's only loaded members are this statement's auto-claimed fee members.
