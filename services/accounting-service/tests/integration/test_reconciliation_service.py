@@ -1652,7 +1652,9 @@ def test_reconcile_keeps_a_group_whole_when_its_sum_line_is_owner_covered(seed, 
     _owner_cover(db_session, stmt, sum_line, [stand_in])
     _reconcile(db_session, stmt.id)
     assert _claims_of(db_session, stmt.id) == [(sum_line.id, stand_in.id, None, "manual")]
-    assert not {m1.id, m2.id} & {c.entry_id for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id}
+    open_cases = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id]
+    assert not {m1.id, m2.id} & {c.entry_id for c in open_cases}
+    assert not {m1.id, m2.id} & {x.get("entry_id") for c in open_cases for x in c.candidates or []}
     _reconcile(db_session, stmt.id)
     assert _claims_of(db_session, stmt.id) == [(sum_line.id, stand_in.id, None, "manual")]
 

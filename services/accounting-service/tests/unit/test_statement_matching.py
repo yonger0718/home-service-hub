@@ -459,7 +459,9 @@ def test_lone_member_is_split_only_and_only_for_fee_interest_reward_refund_lines
     g = m.Group(id=9, kind="split", member_ids=(51, 52))
     members = [E(51, date(2026, 9, 3), "500", kind="income", group_id=9), E(52, date(2026, 9, 3), "-20", kind="fee", group_id=9)]
     deposit = run([L(1, date(2026, 9, 3), "500", kind="deposit")], members, groups={9: g}, kind="bank")
-    assert deposit.claims == [] and deposit.cases[0].kind == "line_unmatched"  # a deposit never takes a member alone
+    # the 500 deposit is within the near tolerance (25) of the +480 total: the group is printed whole, so the income
+    # member never stands alone (with no such line the group would be apart and the member claimable)
+    assert deposit.claims == [] and deposit.cases[0].kind == "line_unmatched"
     fee = run([L(1, date(2026, 9, 3), "-20", kind="fee")], members, groups={9: g}, kind="bank")
     assert [sorted(r.entry_id for r in c.representation.rows) for c in fee.claims] == [[52]]
 
@@ -1283,7 +1285,7 @@ def test_guard_reads_the_claimable_children_view_beside_all_children(order):
 def test_guard_drops_a_printed_alone_child_from_the_claimable_children_view(order):
     """Review round 2 (spec §3): child 212 (+400) is covered elsewhere, so only `all_children` carries it; the +50
     child is printed alone by its refund line. The matcher reads −300 −280 +30 = −550 (claimable view minus the
-    printed-alone +50), which no all-children combination yields (−180, −230): the guard enumerates the printed-alone
+    printed-alone +50), which no all-children combination yields (−100, −150): the guard enumerates the printed-alone
     combinations over both views, so −550 marks the group whole and the −300 line never claims member 21 alone."""
     d = date(2026, 9, 3)
     k50, k30, k400 = m.Child(210, "refund", D("50")), m.Child(211, "refund", D("30")), m.Child(212, "refund", D("400"))
