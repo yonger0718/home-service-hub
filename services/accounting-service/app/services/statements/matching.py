@@ -897,6 +897,29 @@ BANK_ONLY_KINDS = frozenset({"fee", "interest", "reward"})
 PEER_LINE_KINDS = frozenset({"payment", "transfer_in", "transfer_out"})
 
 
+NEAR_CHILDREN_MAX = 5
+
+
+def _near_children(kind: str, line: Line, entries: list[Entry], claimed: set[int], rules: Rules) -> list[dict]:
+    """Issue #143: an unmatched bank-only line names the unclaimed, same-sign, gate-eligible children of nearby
+    entries (carriers included) whose amount is within the near tolerance, closest residual first."""
+    gate = eligible_kinds(kind, line.line_kind)
+    out: list[tuple[Decimal, int, dict]] = []
+    tolerance = max(rules.near_tolerance_abs, rules.near_tolerance_pct * abs(line.flow))
+    for e in entries:
+        if not e.children or _date_distance(line, e) > rules.near_window_days:
+            continue
+        for c in e.children:
+            if c.id in claimed or c.kind not in gate \
+                    or line.flow == 0 or c.flow == 0 or (line.flow < 0) != (c.flow < 0) \
+                    or abs(line.flow - c.flow) > tolerance:
+                continue
+            residual = (line.flow - c.flow).quantize(Q)
+            out.append((abs(residual), c.id, {"entry_id": c.id, "parent_entry_id": e.id, "residual": str(residual)}))
+    out.sort(key=lambda t: (t[0], t[1]))
+    return [d for _, _, d in out[:NEAR_CHILDREN_MAX]]
+
+
 def _bank_only(line: Line, rules: Rules) -> dict | None:
     """R6a.6: every fee/interest/reward line is bank-side automatic; the matched pattern (if any) only annotates."""
     if line.line_kind not in BANK_ONLY_KINDS:
@@ -987,6 +1010,9 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             continue
         bank_only = _bank_only(line, rules)
         if bank_only:
+            near = _near_children(statement_kind, line, entries, claimed, rules)
+            if near:
+                bank_only["near_children"] = near
             result.cases.append(Case(line.id, None, "line_unmatched", (), bank_only))
             continue
         if line.line_kind in PEER_LINE_KINDS:  # R6b.3/R6b.4: transfers wait for R6c; the owner matches or dismisses

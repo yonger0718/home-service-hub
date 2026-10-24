@@ -1664,3 +1664,21 @@ def test_exact_pair_prefers_an_owner_child_over_a_stand_in_child():
     entries = [_fee_parent(5, date(2026, 9, 16), 6, stand_in=True), _fee_parent(10, date(2026, 9, 16), 11), _fee_parent(20, date(2026, 9, 16), 21)]
     res = run(lines, entries)
     assert [(c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims] == [(1, 11, "exact_pair"), (2, 21, "exact"), (3, 6, "exact")]
+
+
+def test_bank_only_line_names_its_near_children():
+    carrier = E(20, date(2026, 6, 7), "-1000", carrier=True, in_reverse=False, children=(m.Child(21, "fee", D("-5")),))
+    far = E(30, date(2026, 6, 14), "-1000", merchant="", children=(m.Child(31, "fee", D("-6")),))       # 6 days → not near
+    exact_late = E(40, date(2026, 6, 12), "-1000", merchant="", children=(m.Child(41, "fee", D("-6")),)) # 4 days: outside exact, inside near
+    res = run([L(1, date(2026, 6, 8), "-6", kind="fee", merchant="")], [carrier, far, exact_late])
+    assert res.claims == []
+    assert res.cases[0].context == {"hint": "bank_only", "pattern": None,
+                                    "near_children": [{"entry_id": 41, "parent_entry_id": 40, "residual": "0.0000"},
+                                                      {"entry_id": 21, "parent_entry_id": 20, "residual": "-1.0000"}]}
+    plain = run([L(1, date(2026, 6, 8), "-6", kind="fee", merchant="")], [far])
+    assert plain.cases[0].context == {"hint": "bank_only", "pattern": None}
+    many = run([L(1, date(2026, 6, 8), "-6", kind="fee", merchant="")],
+               [E(50 + i, date(2026, 6, 8), "-1000", merchant="", children=(m.Child(60 + i, "fee", D("-7")),)) for i in range(7)])
+    assert [d["entry_id"] for d in many.cases[0].context["near_children"]] == [60, 61, 62, 63, 64]
+    claimed = run([L(1, date(2026, 6, 8), "-5", kind="fee", merchant=""), L(2, date(2026, 6, 8), "-6", kind="fee", merchant="")], [carrier])
+    assert [c.line_id for c in claimed.claims] == [1] and "near_children" not in next(c for c in claimed.cases if c.line_id == 2).context
