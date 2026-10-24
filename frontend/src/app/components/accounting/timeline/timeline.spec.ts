@@ -437,6 +437,25 @@ describe('LedgerTimelineComponent', () => {
     const req = flushEntries([]);
     expect(req.request.params.getAll('account_id')).toEqual(['7']);
   });
+  it('places the filter bar below the month summary and directly above the results', () => {
+    const { fixture, el } = render('sheet');
+    flushSummary('2026-10');
+    flushEntries([makeEntry({ id: 1 })]);
+    fixture.detectChanges();
+    fixture.componentInstance.setKind('expense');
+    fixture.detectChanges();
+    flushEntries([makeEntry({ id: 1 })], 1);
+    fixture.detectChanges();
+    const follows = (a: Element | null, b: Element | null) =>
+      !!a && !!b && !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    const sum = el.querySelector('.sum');
+    const bar = el.querySelector('app-filter-bar');
+    const row = el.querySelector('.match-row');
+    const entry = el.querySelector('.entry-row');
+    expect(follows(sum, bar)).toBe(true);
+    expect(follows(bar, row)).toBe(true);
+    expect(follows(row, entry)).toBe(true);
+  });
   it('notes the currencies left out of the month totals', () => {
     const { fixture, el } = render();
     flushSummary('2026-10', { missing_rates: ['JPY', 'USD'] });
