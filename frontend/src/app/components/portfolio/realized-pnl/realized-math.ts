@@ -123,7 +123,7 @@ export function signedInteger(value: number): string {
   return `${whole > 0 ? '+' : whole < 0 ? '−' : ''}${groupedInteger(Math.abs(whole))}`;
 }
 
-/** One summary card; `sign` is the sign of the shown whole figure (0 → no trend colour). Empty `value` while loading. */
+/** One summary card; `sign` is the sign of the shown whole figure (0 → no trend colour; always 0 for the costs card, which is not a gain or loss). Empty `value` while loading. */
 export interface RealizedCard {
   label: string;
   value: string;
@@ -136,16 +136,16 @@ export interface RealizedCard {
  * 當沖 and sell-side fees + tax. `totals` null while the set loads: no values, no footnotes.
  */
 export function realizedCards(totals: RealizedTotals | null, headline: number | null, range: string, today: Date): RealizedCard[] {
-  const card = (label: string, value: number | null, meta: string, format = (v: number) => formatMoney(v, { sign: 'change' })): RealizedCard => {
+  const card = (label: string, value: number | null, meta: string, format = (v: number) => formatMoney(v, { sign: 'change' }), trend = true): RealizedCard => {
     if (!totals) return { label, value: '', sign: 0, meta: '' };
-    return value == null ? { label, value: '—', sign: 0, meta } : { label, value: format(value), sign: displayedSign(value, format(value)), meta };
+    return value == null ? { label, value: '—', sign: 0, meta } : { label, value: format(value), sign: trend ? displayedSign(value, format(value)) : 0, meta };
   };
   const costs = (value: number) => formatMoney(value);
   return [
     card(`${range}已實現`, headline, totals ? `${totals.count} 筆 · ${totals.gains} 筆獲利、${totals.losses} 筆虧損` : ''),
     card(`本月（${today.getMonth() + 1} 月）`, totals?.month ?? null, totals ? `${totals.monthCount} 筆` : ''),
     card('當沖', totals?.dayTrade ?? null, totals ? `${totals.dayTradeCount} 筆 · 交易稅減半` : ''),
-    card('賣出成本費用', totals?.costs ?? null, '賣出手續費＋交易稅', costs),
+    card('賣出成本費用', totals?.costs ?? null, '賣出手續費＋交易稅', costs, false),
   ];
 }
 

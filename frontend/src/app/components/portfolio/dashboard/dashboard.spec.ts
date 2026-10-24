@@ -664,6 +664,50 @@ describe('PortfolioDashboardComponent', () => {
     expect(root.querySelector('.stock-pnl')?.textContent).not.toContain('30.00%');
   });
 
+  describe('holding rows take trend colour from the displayed value', () => {
+    function open(overrides: Partial<StockHolding>) {
+      const holding = { ...buildHolding(), ...overrides };
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({ holdings: [holding] })));
+      const fixture = createFixture();
+      const root = fixture.nativeElement as HTMLElement;
+      (root.querySelector('.stock-row') as HTMLElement).click();
+      fixture.detectChanges();
+      return root;
+    }
+    const detail = (root: HTMLElement, label: string) =>
+      Array.from(root.querySelectorAll('.detail-panel .d')).find(e => e.querySelector('small')?.textContent === label)!
+        .querySelector('div') as HTMLElement;
+    const neutral = (el: Element | null) => {
+      expect(el?.classList.contains('up')).toBe(false);
+      expect(el?.classList.contains('down')).toBe(false);
+    };
+
+    it('leaves a holding estimate of -0.4 TWD (prints $0) uncoloured', () => {
+      const root = open({ estimated_pnl_with_dividends: -0.4, estimated_pnl_percent: 0 });
+      expect(root.querySelector('.stock-pnl .pnl-amt')?.textContent?.trim()).toBe('$0');
+      neutral(root.querySelector('.stock-pnl'));
+    });
+
+    it('still colours a visible holding estimate', () => {
+      const root = open({ estimated_pnl_with_dividends: -40, estimated_pnl_percent: -1 });
+      expect(root.querySelector('.stock-pnl')?.classList.contains('down')).toBe(true);
+    });
+
+    it('leaves an exact $0 TW 未實現價差 uncoloured and keeps a gain up', () => {
+      neutral(detail(open({ unrealized_pnl: 0 }), '未實現價差'));
+      expect(detail(open({ unrealized_pnl: 0 }), '未實現價差').textContent?.trim()).toBe('$0');
+      expect(detail(open({ unrealized_pnl: 1500 }), '未實現價差').classList.contains('up')).toBe(true);
+    });
+
+    it('leaves a holding XIRR of -0.0004 (prints 0.0%) uncoloured', () => {
+      const root = open({ xirr: -0.0004, xirr_1y: -0.0004 });
+      const cell = detail(root, 'XIRR');
+      expect(cell.textContent?.trim()).toBe('0.0%');
+      neutral(cell);
+      expect(detail(open({ xirr: 0.5, xirr_1y: 0.5 }), 'XIRR').classList.contains('up')).toBe(true);
+    });
+  });
+
   describe('KPI row', () => {
     const kpi = (root: HTMLElement) => Array.from(root.querySelectorAll<HTMLElement>('.kpi-card'));
     const label = (card: HTMLElement) => card.querySelector('.label')?.textContent?.trim();

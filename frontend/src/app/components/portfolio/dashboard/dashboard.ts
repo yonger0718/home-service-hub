@@ -479,6 +479,17 @@ export class PortfolioDashboardComponent implements OnInit {
     return xirr == null ? 0 : displayedSign(xirr, this.pct(xirr * 100));
   }
 
+  /** Trend sign of a holding's 預估含息損益 as printed (a body that rounds to zero is unsigned). */
+  protected holdingEstimateSign(holding: StockHolding): number {
+    const value = this.holdingEstimate(holding);
+    return displayedSign(value, this.money(value, this.holdingCurrency(holding), 'change'));
+  }
+
+  /** Trend sign of a TW holding's 未實現價差 as printed. */
+  protected holdingPriceSign(holding: StockHolding): number {
+    return displayedSign(holding.unrealized_pnl, this.money(holding.unrealized_pnl, 'TWD', 'change'));
+  }
+
   /** Market-filtered totals stay in the market's native currency and carry an ISO code: they get the lower clamp. */
   protected isForeignTotals(totals: { currency?: string | null }): boolean {
     return !isTwdCurrency(totals.currency);

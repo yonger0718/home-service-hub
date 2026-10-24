@@ -543,7 +543,7 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
       { label: '2026 年已實現', value: '+$21,046', up: true, down: false, meta: '5 筆 · 4 筆獲利、1 筆虧損' },
       { label: '本月（10 月）', value: '+$13,498', up: true, down: false, meta: '1 筆' },
       { label: '當沖', value: '+$2,030', up: true, down: false, meta: '1 筆 · 交易稅減半' },
-      { label: '賣出成本費用', value: '$1,764', up: true, down: false, meta: '賣出手續費＋交易稅' },
+      { label: '賣出成本費用', value: '$1,764', up: false, down: false, meta: '賣出手續費＋交易稅' },
     ]);
     expect(el(fixture).querySelector('.summary-note')).toBeNull();
   });

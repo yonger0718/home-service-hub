@@ -288,7 +288,7 @@
               ({{ pct(stock.day_change_percent, 'change') }})
             </span>
             <span class="stock-value">{{ marketValueDisplay(stock) }}</span>
-            <span class="stock-pnl" [class.up]="(holdingEstimate(stock) ?? 0) > 0" [class.down]="(holdingEstimate(stock) ?? 0) < 0">
+            <span class="stock-pnl" [class.up]="holdingEstimateSign(stock) > 0" [class.down]="holdingEstimateSign(stock) < 0">
               <span class="pnl-amt">{{ money(holdingEstimate(stock), holdingCurrency(stock), 'change') }}</span>
               @if (holdingEstimatePercent(stock) != null) {
                 <span class="pnl-pct">({{ pct(holdingEstimatePercent(stock), 'change') }})</span>
@@ -324,14 +324,14 @@
                     <div class="d"><small>市值</small><div>{{ money(stock.market_value) }}</div></div>
                     <div class="d"><small>平均成本</small><div>{{ stock.avg_cost | number:'1.2-2' }}</div></div>
                     <div class="d"><small>已記錄股利</small><div class="dividend">{{ money(stock.total_dividends) }}</div></div>
-                    <div class="d"><small>未實現價差</small><div [class.up]="stock.unrealized_pnl >= 0" [class.down]="stock.unrealized_pnl < 0">{{ money(stock.unrealized_pnl, 'TWD', 'change') }}</div></div>
+                    <div class="d"><small>未實現價差</small><div [class.up]="holdingPriceSign(stock) > 0" [class.down]="holdingPriceSign(stock) < 0">{{ money(stock.unrealized_pnl, 'TWD', 'change') }}</div></div>
                     <div class="d"><small>待收股利</small><div>{{ money(stock.pending_dividends_net, 'TWD') }}</div></div>
                     <div class="d"><small>預估含息損益</small><div>{{ money(holdingEstimate(stock), 'TWD', 'change') }}</div></div>
                   }
                   <div class="d">
                     <small>XIRR</small>
                     @let holdingXirr = selectedXirr(stock);
-                    <div [class.up]="(holdingXirr ?? 0) > 0" [class.down]="(holdingXirr ?? 0) < 0">
+                    <div [class.up]="xirrSign(holdingXirr) > 0" [class.down]="xirrSign(holdingXirr) < 0">
                       @if (holdingXirr == null) {
                         <span class="xirr-placeholder" tabindex="0" aria-label="缺少此期間的 XIRR 資料說明" [pTooltip]="xirrGapTooltip">—</span>
                       } @else {
