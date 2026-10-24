@@ -12,7 +12,7 @@ from sqlalchemy import exists, select
 from app.models import EntryGroup, LedgerEntry, ReconciliationAction, StatementCoverage, StatementLine
 from app.schemas.writes import Int32
 from app.services import coverage_service, settings_service
-from app.services.errors import CodedValidationError
+from app.services.errors import CodedConflictError, CodedValidationError
 from app.services.statements import matching
 
 from . import register
@@ -41,6 +41,15 @@ def _line_claimed(ctx: Context, line_id: int) -> bool:
                                                 StatementCoverage.status == "active"))).scalar_one()
 
 
+def _locked_group(ctx: Context, entry: LedgerEntry) -> None:
+    """Under the locks: the entry's group must be one the engine locked. `lock_targets` read the group without locks,
+    so a regroup committed before the expected snapshot (into another group, or into one from none) would pass the
+    snapshot check while the new group is neither locked nor in `before` (2026-10-24 spec §5.1; precedent
+    `Prepared.lock_set`)."""
+    if entry.group_id is not None and entry.group_id not in (ctx.lock_set.group_ids if ctx.lock_set else ()):
+        raise CodedConflictError("snapshot_conflict", f"entry {entry.id} regrouped to {entry.group_id}")
+
+
 class MatchParams(ActionParams):
     line_id: Int32
     entry_id: Int32 | None = None
@@ -64,8 +73,13 @@ class MatchAction(ActionBase):
     actors = frozenset({OWNER, POLICY})  # coverage only: effect slot c<case.id>v<version> (rulings 31, 36)
 
     def lock_targets(self, ctx: Context, params: MatchParams) -> LockSet:
-        return lockset_for(ctx.db, entry_ids=() if params.entry_id is None else (params.entry_id,),
-                           group_ids=() if params.group_id is None else (params.group_id,))
+        """The entry (or the group) named; a grouped entry's group too (split members, 2026-10-24 spec §5.1), so the
+        snapshot closure covers every member and a concurrent regroup is a `snapshot_conflict`."""
+        if params.entry_id is None:
+            return lockset_for(ctx.db, group_ids=(params.group_id,))
+        entry = ctx.db.get(LedgerEntry, params.entry_id)  # missing: `_claim` refuses `not_found` under the locks
+        return lockset_for(ctx.db, entry_ids=(params.entry_id,),
+                           group_ids=() if entry is None or entry.group_id is None else (entry.group_id,))
 
     def validate_before(self, ctx: Context, params: MatchParams, prepared: Prepared, before: dict) -> None:
         self._claim(ctx, params)
@@ -77,7 +91,9 @@ class MatchAction(ActionBase):
                                                match_rule=OWNER_RULE, run_id=ctx.run_id)
         effect.coverage_ids = [c.id for c in written]
         effect.touched_entry_ids = [r.entry_id for r in rows]
-        effect.touched_group_ids = [] if params.group_id is None else [params.group_id]
+        member_of = None if params.entry_id is None else by_id[params.entry_id].group_id  # a split member alone
+        effect.touched_group_ids = ([params.group_id] if params.group_id is not None
+                                    else [] if member_of is None else [member_of])
         effect.inverse = {"release_line": line.id}
 
     def invert(self, ctx: Context, action: ReconciliationAction) -> Effect:
@@ -109,10 +125,13 @@ class MatchAction(ActionBase):
             entry = db.get(LedgerEntry, params.entry_id)
             if entry is None:
                 raise _refuse("entry_id", "not_found", f"entry {params.entry_id}")
+            _locked_group(ctx, entry)
             gate(entry, "entry_id")
             if entry.parent_entry_id is not None:
                 raise _refuse("entry_id", "child_entry", f"entry {entry.id}")
-            if entry.group_id is not None:
+            if entry.group_id is not None and db.get(EntryGroup, entry.group_id).kind != "split":
+                # a split member is matched alone like a standalone entry (spec §5.1; its coverage row keeps
+                # `group_id NULL`); installment and reward_claim members only go with their group
                 raise _refuse("entry_id", "entry_in_group", f"match group {entry.group_id}")
             picked = [(entry, "principal", None)]
             if params.with_children:

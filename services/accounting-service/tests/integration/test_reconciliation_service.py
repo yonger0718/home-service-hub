@@ -1234,6 +1234,33 @@ def test_group_with_a_member_in_another_currency_is_not_claimed(seed, db_session
     assert _active(db_session, stmt.id) == []
 
 
+def test_a_split_with_a_member_in_another_currency_is_whole_and_its_card_member_stays_home(seed, db_session, run):
+    """Spec §3 "Mixed currencies" (final review): the USD member is a structural row the loader marks with its own
+    currency (as every row and child it builds); its −20 cannot be summed with TWD lines, so the group is whole by
+    fail-closed and the card's member-sized −300 line claims nothing (summed blindly, −320 is 20 off −300, past the
+    10 TWD tolerance, and −220 with the +100 child: the group would be apart and the member claimed)."""
+    card = _card(seed, db_session)
+    usd = _usd_child_card(seed, db_session, card)
+    group = seed.group("split")
+    day = date(2026, 9, 12)
+    card_member = seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    db_session.flush()
+    kid = seed.entry(card, "100", kind="refund", day=day, parent_entry_id=card_member.id)
+    usd_member = seed.entry(usd, "-20", day=day, merchant="餐廳", group_id=group.id)
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 300)])
+    entries, _ = rec.load_candidates(db_session, stmt, rec.participating_accounts(db_session, card.id), window_days=15,
+                                     include_reward=False)
+    by_id = {e.id: e for e in entries}
+    assert (by_id[card_member.id].currency, by_id[usd_member.id].currency, by_id[usd_member.id].claimable) == \
+        ("TWD", "USD", False)
+    assert [(c.id, c.currency) for c in by_id[card_member.id].children] == [(kid.id, "TWD")]
+    assert _active(db_session, stmt.id) == []
+    named = {x.get("entry_id") for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id
+             for x in c.candidates or []} | {c.entry_id for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id}
+    assert card_member.id not in named
+
+
 def test_child_in_another_currency_does_not_complete_its_parent(seed, db_session, run):
     card = _card(seed, db_session)
     usd = _usd_child_card(seed, db_session, card)
@@ -1484,3 +1511,267 @@ def test_transfer_group_parent_and_settlement_link_changes_release(seed, db_sess
     db_session.commit()
     _sweep(db_session, stmt4)
     assert _active(db_session, stmt4.id) == []
+
+
+# --- split members printed apart: the loader's structural rows (spec 2026-10-24 §3, §4.1) ---------------------------
+
+def _owner_cover(db, statement, line, entries) -> None:
+    """Hand the line to the owner: release whatever the hook claimed on it, then write manual coverage on `entries`
+    (each one a principal row, flows summing to the line)."""
+    from app.services.statements import matching
+    coverage_service.release_line(db, statement, line.id, reason="test_owner")
+    coverage_service.write_claim(db, statement, line, [matching.Row(e.id, "principal", Decimal(e.amount)) for e in entries],
+                                 entries_by_id={e.id: e for e in entries}, match_kind="manual", match_rule="owner",
+                                 run_id=None)
+    db.commit()
+
+
+def _cover_elsewhere(db, run, account, entry, day) -> None:
+    """`entry` covered on an October statement of `account` by its own refund line (auto coverage, conserved)."""
+    from app.services.statements import matching
+    other, (line,), _ = _submit(db, run, account, [_line(1, day, "退款", -Decimal(entry.amount), "refund")], period=OCT)
+    coverage_service.write_claim(db, other, line, [matching.Row(entry.id, "principal", Decimal(entry.amount))],
+                                 entries_by_id={entry.id: entry}, match_kind="auto", match_rule="exact", run_id=None)
+    db.commit()
+
+
+def _claims_of(db, statement_id) -> list:
+    """Active coverage of the statement as (line_id, entry_id, group_id, match_kind), sorted."""
+    return sorted((r.line_id, r.entry_id, r.group_id, r.match_kind) for r in _active(db, statement_id))
+
+
+def test_load_candidates_adds_structural_rows_and_two_child_views(seed, db_session, run):
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    group = seed.group("split")
+    day = date(2026, 9, 12)
+    card_member = seed.entry(card, "-500", day=day, merchant="餐廳", group_id=group.id)
+    child_100 = seed.entry(card, "100", kind="refund", day=day, parent_entry_id=card_member.id)
+    child_200 = seed.entry(card, "200", kind="refund", day=day, parent_entry_id=card_member.id)
+    wallet_member = seed.entry(wallet, "-280", day=day, merchant="餐廳", group_id=group.id)
+    fee = seed.entry(card, "-20", kind="fee", day=day, group_id=group.id)
+    db_session.commit()
+    _cover_elsewhere(db_session, run, card, child_200, date(2026, 10, 3))
+    statement, _, _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 777)])
+    entries, groups = rec.load_candidates(db_session, statement, [card.id], window_days=15, include_reward=False,
+                                          exclude={fee.id})
+    by_id = {e.id: e for e in entries}
+    assert sorted(by_id) == sorted([card_member.id, wallet_member.id, fee.id])
+    assert by_id[card_member.id].claimable and not by_id[wallet_member.id].claimable and not by_id[fee.id].claimable
+    assert by_id[fee.id].in_reverse is False and by_id[wallet_member.id].in_reverse is False
+    assert by_id[wallet_member.id].instance is None and by_id[wallet_member.id].stand_in is False
+    # the claimable member: `children` is the claimable view, `all_children` every child as stored
+    assert [c.id for c in by_id[card_member.id].children] == [child_100.id]
+    assert sorted(c.id for c in by_id[card_member.id].all_children) == sorted([child_100.id, child_200.id])
+    assert by_id[wallet_member.id].children == () and by_id[wallet_member.id].all_children == ()
+    assert groups[group.id].member_ids == tuple(sorted([card_member.id, wallet_member.id, fee.id]))
+
+
+def test_load_candidates_structural_member_carries_all_its_children(seed, db_session, run):
+    """A structural row's children (another account and currency included, claimed or not) are its full child list in
+    both views; no structural row for members of a non-split group."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    usd = seed.account("美金", currency="USD")
+    day = date(2026, 9, 12)
+    group = seed.group("split")
+    card_member = seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    wallet_member = seed.entry(wallet, "-280", day=day, merchant="餐廳", group_id=group.id)
+    kid_wallet = seed.entry(wallet, "30", kind="refund", day=day, parent_entry_id=wallet_member.id)
+    kid_usd = seed.entry(usd, "-2", kind="fee", day=day, parent_entry_id=wallet_member.id)
+    reward = seed.group("reward_claim")
+    seed.entry(card, "-90", day=day, merchant="咖啡", group_id=reward.id)
+    other_reward_member = seed.entry(wallet, "-10", day=day, merchant="咖啡", group_id=reward.id)
+    db_session.commit()
+    statement, _, _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 777)])
+    entries, groups = rec.load_candidates(db_session, statement, [card.id], window_days=15, include_reward=False)
+    by_id = {e.id: e for e in entries}
+    structural = by_id[wallet_member.id]
+    assert sorted(c.id for c in structural.children) == sorted([kid_wallet.id, kid_usd.id])
+    assert structural.all_children == structural.children
+    assert by_id[card_member.id].children == () and by_id[card_member.id].all_children == ()
+    assert other_reward_member.id not in by_id and reward.id in groups
+
+
+def test_reconcile_keeps_a_group_whole_through_a_covered_child_on_a_claimable_parent(seed, db_session, run):
+    """«AGENT-249 1»: the +200 child is covered on another statement, so the claimable view drops it; the guard's
+    view (`all_children`) still reads −300 −280 +200 = −380, which the −380 line prints → whole: the −300 line does
+    not claim the member. No reading of the claimable view conserves −380 (the members alone sum to −580), so the
+    −380 line stays open and the +200 child gets no second coverage row."""
+    card = _card(seed, db_session)
+    group = seed.group("split")
+    day = date(2026, 9, 12)
+    m1 = seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    seed.entry(card, "-280", day=day, merchant="餐廳", group_id=group.id)
+    child = seed.entry(card, "200", kind="refund", day=day, parent_entry_id=m1.id)
+    db_session.commit()
+    _cover_elsewhere(db_session, run, card, child, date(2026, 10, 3))
+    stmt, ls, _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 300), _line(2, day, "餐廳", 380)])
+    assert _active(db_session, stmt.id) == []
+    assert db_session.execute(select(func.count()).select_from(StatementCoverage).where(
+        StatementCoverage.entry_id == child.id, StatementCoverage.status == "active")).scalar_one() == 1
+    before = [(c.id, c.kind, c.status, c.line_id) for c in _cases(db_session, stmt.id)]
+    assert {c.line_id for c in _cases(db_session, stmt.id, "open") if c.kind != "balance_gap"} >= {ls[0].id, ls[1].id}
+    _reconcile(db_session, stmt.id)
+    assert _active(db_session, stmt.id) == []
+    assert [(c.id, c.kind, c.status, c.line_id) for c in _cases(db_session, stmt.id)] == before
+
+
+def test_reconcile_claims_a_cross_account_member_and_is_idempotent(seed, db_session, run):
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包", statement_live_from=date(2026, 9, 1))
+    group = seed.group("split")
+    day = date(2026, 9, 12)
+    card_member = seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    wallet_member = seed.entry(wallet, "-280", day=day, merchant="餐廳", group_id=group.id)
+    db_session.commit()
+    # the 錢包 half is matched on the 錢包 statement (its card sibling is a structural row there)
+    wallet_stmt, (wallet_line,), _ = _submit(db_session, run, wallet, [_line(1, day, "餐廳", -280, "withdrawal")],
+                                             kind="bank")
+    assert _claims_of(db_session, wallet_stmt.id) == [(wallet_line.id, wallet_member.id, None, "auto")]
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 300)])
+    rows = _active(db_session, stmt.id)
+    assert [(r.line_id, r.entry_id, r.group_id, r.match_kind) for r in rows] == [(line.id, card_member.id, None, "auto")]
+    _reconcile(db_session, stmt.id)
+    again = _active(db_session, stmt.id)
+    assert [(r.id, r.entry_id) for r in again] == [(rows[0].id, card_member.id)]
+    assert _cases(db_session, stmt.id, "superseded") == []
+
+
+def test_reconcile_keeps_a_group_whole_when_its_sum_line_is_owner_covered(seed, db_session, run):
+    """(a) The −580 sum line is held by the owner on another entry (a stand-in shape): `lines_all` still carries it,
+    so the group is whole and the open −300 line never claims the member."""
+    card = _card(seed, db_session)
+    group = seed.group("split")
+    day = date(2026, 9, 12)
+    m1 = seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    m2 = seed.entry(card, "-280", day=day, merchant="餐廳", group_id=group.id)
+    stand_in = seed.entry(card, "-580", day=day, merchant="代墊")
+    db_session.commit()
+    stmt, (sum_line, line), _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 580), _line(2, day, "餐廳", 300)])
+    _owner_cover(db_session, stmt, sum_line, [stand_in])
+    _reconcile(db_session, stmt.id)
+    assert _claims_of(db_session, stmt.id) == [(sum_line.id, stand_in.id, None, "manual")]
+    open_cases = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id]
+    assert not {m1.id, m2.id} & {c.entry_id for c in open_cases}
+    assert not {m1.id, m2.id} & {x.get("entry_id") for c in open_cases for x in c.candidates or []}
+    _reconcile(db_session, stmt.id)
+    assert _claims_of(db_session, stmt.id) == [(sum_line.id, stand_in.id, None, "manual")]
+
+
+@pytest.mark.parametrize("sum_line", ["stand_in", "uncovered"])
+def test_reconcile_keeps_a_group_whole_when_its_sum_line_is_on_the_previous_statement(seed, db_session, run, sum_line):
+    """Spec §3 "Guard lines" (final review): the −580 sum line is printed by the August statement — held there by a
+    stand-in, or open because August was reconciled before the members were booked. The ±15-day population brings
+    the Aug 30 members into September, which prints a member-sized −300 line: the guard reads August's current lines
+    too, so the group is whole and no member is claimed or listed; a second reconcile changes nothing."""
+    card = _card(seed, db_session)
+    day = date(2026, 8, 30)
+    aug = (date(2026, 8, 1), date(2026, 8, 31))
+    if sum_line == "stand_in":
+        stand_in = seed.entry(card, "-580", day=day, merchant="代墊")
+        db_session.commit()
+        previous, (prev_line,), _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 580)], period=aug)
+        _owner_cover(db_session, previous, prev_line, [stand_in])
+    else:
+        previous, (prev_line,), _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 580)], period=aug)
+        assert _active(db_session, previous.id) == []
+    group = seed.group("split")
+    m1 = seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    m2 = seed.entry(card, "-280", day=day, merchant="餐廳", group_id=group.id)
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 1), "餐廳", 300)])
+    assert _active(db_session, stmt.id) == []
+    named = {c.entry_id for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id} | {
+        x.get("entry_id") for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id for x in c.candidates or []}
+    assert not {m1.id, m2.id} & named
+    before = [(c.id, c.kind, c.status, c.line_id) for c in _cases(db_session, stmt.id)]
+    _reconcile(db_session, stmt.id)
+    assert _active(db_session, stmt.id) == []
+    assert [(c.id, c.kind, c.status, c.line_id) for c in _cases(db_session, stmt.id)] == before
+
+
+def test_reconcile_keeps_a_group_whole_when_its_fee_member_is_owner_covered(seed, db_session, run):
+    """(b) The fee member is owner-matched to its fee line: a structural row, printed alone by that covered line, so
+    the −580 reduced reading marks the group whole. The claimable rows lack the fee member, so `_group_variants` has
+    no reading (today's behaviour, «AGENT-249 2»): no claim at all, the −580 and −300 lines stay open."""
+    card = _card(seed, db_session)
+    group = seed.group("split")
+    day = date(2026, 9, 12)
+    m1 = seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    seed.entry(card, "-280", day=day, merchant="餐廳", group_id=group.id)
+    fee = seed.entry(card, "-10", kind="fee", day=day, group_id=group.id)
+    db_session.commit()
+    stmt, (line, sum_line, fee_line), _ = _submit(db_session, run, card, [
+        _line(1, day, "餐廳", 300), _line(2, day, "餐廳", 580), _line(3, day, "手續費", 10, "fee")])
+    _owner_cover(db_session, stmt, fee_line, [fee])
+    _reconcile(db_session, stmt.id)
+    assert _claims_of(db_session, stmt.id) == [(fee_line.id, fee.id, None, "manual")]
+    open_lines = {c.line_id for c in _cases(db_session, stmt.id, "open")}
+    assert {line.id, sum_line.id} <= open_lines
+    assert m1.id not in {c.entry_id for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id}
+
+
+def test_reconcile_claims_the_claimable_children_reading_when_a_child_is_covered_elsewhere(seed, db_session, run):
+    """Execution finding (Task 3, spec §3): the +200 child is covered on another statement, the +100 child is not, so
+    the claim side reads −300 −280 +100 = −480 while the all-children total is −280. The guard tests the
+    claimable-children total too: the group is whole, −480 is claimed with both members and the +100 child, the −300
+    line claims nothing; a second reconcile keeps the same rows."""
+    card = _card(seed, db_session)
+    group = seed.group("split")
+    day = date(2026, 9, 12)
+    m1 = seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    m2 = seed.entry(card, "-280", day=day, merchant="餐廳", group_id=group.id)
+    child_100 = seed.entry(card, "100", kind="refund", day=day, parent_entry_id=m1.id)
+    child_200 = seed.entry(card, "200", kind="refund", day=day, parent_entry_id=m1.id)
+    db_session.commit()
+    _cover_elsewhere(db_session, run, card, child_200, date(2026, 10, 3))
+    stmt, (line, sum_line), _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 300), _line(2, day, "餐廳", 480)])
+    rows = _active(db_session, stmt.id)
+    assert sorted((r.line_id, r.entry_id) for r in rows) == sorted(
+        (sum_line.id, i) for i in (m1.id, m2.id, child_100.id))
+    _reconcile(db_session, stmt.id)
+    assert [(r.id, r.line_id, r.entry_id) for r in _active(db_session, stmt.id)] == \
+        [(r.id, r.line_id, r.entry_id) for r in rows]
+
+
+def test_a_scheduled_member_gets_no_structural_row_and_keeps_its_group_whole(seed, db_session, run):
+    """Review round 2 (spec §3): the 錢包 member carries a recurring instance, so it gets no structural row: the group
+    misses a member and is whole by fail-closed, and the card's member-sized −300 line claims nothing."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    group = seed.group("split")
+    day = date(2026, 9, 12)
+    card_member = seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    scheduled = seed.entry(wallet, "-280", day=day, merchant="餐廳", group_id=group.id)
+    definition = seed.definition([seed.line("expense", wallet, "280")], kind="recurring", name="月費")
+    seed.instance(definition, 1, day, status="posted", entries=[scheduled])
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 300)])
+    entries, groups = rec.load_candidates(db_session, stmt, [card.id], window_days=15, include_reward=False)
+    assert [e.id for e in entries] == [card_member.id] and groups[group.id].member_ids == (card_member.id, scheduled.id)
+    assert _active(db_session, stmt.id) == []
+    _reconcile(db_session, stmt.id)
+    assert _active(db_session, stmt.id) == []
+
+
+def test_a_structural_rows_child_never_supersedes_a_deferral(seed, db_session, run):
+    """Review round 2: `evaluated` counts claimable rows' children only, so the matcher's deferral of a child that now
+    sits under a structural row (another account's member) keeps its explanation, as an entry that left the
+    population does."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    group = seed.group("split")
+    day = date(2026, 9, 12)
+    seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    wallet_member = seed.entry(wallet, "-280", day=day, merchant="餐廳", group_id=group.id)
+    child = seed.entry(wallet, "20", kind="refund", day=day, parent_entry_id=wallet_member.id)
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 300)])
+    deferral = ReconciliationCase(statement_id=stmt.id, revision_id=stmt.current_revision_id, kind="entry_unmatched",
+                                  entry_id=child.id, status="resolved", explanation="deferred_next_period",
+                                  deferred_to_period_end=date(2026, 10, 30), resolved_at=func.now(), context={})
+    db_session.add(deferral)
+    db_session.commit()
+    _reconcile(db_session, stmt.id)
+    assert db_session.get(ReconciliationCase, deferral.id).status == "resolved"

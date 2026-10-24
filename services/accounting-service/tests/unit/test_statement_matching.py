@@ -1,5 +1,5 @@
 import dataclasses
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -18,17 +18,23 @@ def L(i, posted, flow, kind="purchase", merchant="全聯", **kw):
 
 def E(i, posted, flow, kind="expense", merchant="全聯", **kw):
     return m.Entry(id=i, kind=kind, flow=D(flow), posted_date=posted, entry_date=kw.get("entry_date", posted),
-                   name=kw.get("name"), merchant=merchant, original_amount=kw.get("original_amount"),
+                   name=kw.get("name"), merchant=merchant, original_amount=None if kw.get("original_amount") is None else D(kw["original_amount"]),
                    original_currency=kw.get("original_currency"), account_id=kw.get("account_id", 1),
                    group_id=kw.get("group_id"), parent_entry_id=kw.get("parent_entry_id"),
                    is_settlement=kw.get("is_settlement", False), refunds_entry_id=kw.get("refunds_entry_id"),
                    transfer_group_id=kw.get("transfer_group_id"), transfer_peer_is_card=kw.get("peer_is_card"),
                    children=tuple(kw.get("children", ())), instance=kw.get("instance"), in_reverse=kw.get("in_reverse", True),
-                   claimable=kw.get("claimable", True), stand_in=kw.get("stand_in", False))
+                   claimable=kw.get("claimable", True), stand_in=kw.get("stand_in", False),
+                   all_children=tuple(kw.get("all_children", ())), currency=kw.get("currency"))
 
 
-def run(lines, entries, groups=None, plan_map=None, fee=lambda e: None, kind="card"):
-    return m.match(kind, lines, entries, groups or {}, plan_map or {}, fee, R, "TWD")
+def S(*a, **kw):
+    """A structural row: a split-group member loaded only for the printed-whole guard."""
+    return E(*a, claimable=False, in_reverse=False, **kw)
+
+
+def run(lines, entries, groups=None, plan_map=None, fee=lambda e: None, kind="card", lines_all=None):
+    return m.match(kind, lines, entries, groups or {}, plan_map or {}, fee, R, "TWD", lines_all=lines_all)
 
 
 def test_exact_match_claims_standalone_expense():
@@ -72,7 +78,8 @@ def test_group_with_children_is_a_separate_representation():
     assert [c.representation.rule for c in res2.claims] == ["group", "exact"]
 
 
-def test_partial_group_is_never_admissible():
+def test_partial_group_without_its_other_member_fails_closed_and_is_never_admissible():
+    # no structural row for 22 either: the guard cannot enumerate the group, so it is whole by fail-closed
     g = m.Group(id=5, kind="split", member_ids=(21, 22))
     entries = [E(21, date(2026, 9, 3), "-300", group_id=5)]  # member 22 not in the candidate window
     res = run([L(1, date(2026, 9, 3), "-300")], entries, groups={5: g})
@@ -227,13 +234,18 @@ def test_claims_are_conserved():
 
 # --- fix round 1 -------------------------------------------------------------
 
-def test_bank_withdrawal_respects_split_groups():
+def test_bank_withdrawal_respects_a_split_group_printed_whole_and_takes_a_member_printed_apart():
+    # 2026-10-24: a lone −300 withdrawal no longer stays open — with no line near the −580 total the group is printed
+    # apart and its member stands alone; with the −580 line present the group is whole and the −300 line stays open
     g = m.Group(id=5, kind="split", member_ids=(21, 22))
     entries = [E(21, date(2026, 9, 3), "-300", group_id=5), E(22, date(2026, 9, 3), "-280", group_id=5)]
-    res = run([L(1, date(2026, 9, 3), "-300", kind="withdrawal")], entries, groups={5: g}, kind="bank")
-    assert res.claims == [] and res.cases[0].kind == "line_unmatched"
-    res2 = run([L(1, date(2026, 9, 3), "-580", kind="withdrawal")], entries, groups={5: g}, kind="bank")
-    assert res2.claims[0].representation.rule == "group" and sorted(r.entry_id for r in res2.claims[0].representation.rows) == [21, 22]
+    whole = run([L(1, date(2026, 9, 3), "-300", kind="withdrawal"), L(2, date(2026, 9, 3), "-580", kind="withdrawal")],
+                entries, groups={5: g}, kind="bank")
+    assert [(c.line_id, c.representation.rule, sorted(r.entry_id for r in c.representation.rows)) for c in whole.claims] == [(2, "group", [21, 22])]
+    assert [(c.line_id, c.kind) for c in whole.cases] == [(1, "line_unmatched")]
+    apart = run([L(1, date(2026, 9, 3), "-300", kind="withdrawal")], entries, groups={5: g}, kind="bank")
+    assert [(c.representation.kind, [r.entry_id for r in c.representation.rows]) for c in apart.claims] == [("member_alone", [21])]
+    assert apart.unmatched_entry_ids == [22]
 
 
 def test_bank_withdrawal_never_claims_an_installment_member():
@@ -447,17 +459,11 @@ def test_lone_member_is_split_only_and_only_for_fee_interest_reward_refund_lines
     g = m.Group(id=9, kind="split", member_ids=(51, 52))
     members = [E(51, date(2026, 9, 3), "500", kind="income", group_id=9), E(52, date(2026, 9, 3), "-20", kind="fee", group_id=9)]
     deposit = run([L(1, date(2026, 9, 3), "500", kind="deposit")], members, groups={9: g}, kind="bank")
-    assert deposit.claims == [] and deposit.cases[0].kind == "line_unmatched"  # a deposit never takes a member alone
+    # the 500 deposit is within the near tolerance (25) of the +480 total: the group is printed whole, so the income
+    # member never stands alone (with no such line the group would be apart and the member claimable)
+    assert deposit.claims == [] and deposit.cases[0].kind == "line_unmatched"
     fee = run([L(1, date(2026, 9, 3), "-20", kind="fee")], members, groups={9: g}, kind="bank")
     assert [sorted(r.entry_id for r in c.representation.rows) for c in fee.claims] == [[52]]
-
-
-def test_a_split_member_never_stands_alone_for_a_purchase_line():
-    g, members = _fee_group()
-    res = run([L(1, date(2026, 9, 3), "-300")], members, groups={6: g})
-    assert res.claims == [] and res.cases[0].kind == "line_unmatched"
-    res2 = run([L(1, date(2026, 9, 3), "-10")], members, groups={6: g})  # the fee member, for a purchase line
-    assert res2.claims == [] and res2.cases[0].kind == "line_unmatched"
 
 
 def test_group_in_gate_members_must_all_be_present_and_unclaimed():
@@ -818,7 +824,8 @@ def test_exact_amount_four_to_fifteen_days_apart_is_a_date_drift_proposal():
 
 
 def test_drift_candidates_are_ordered_by_distance_then_id_and_skip_claimed_and_grouped():
-    # Review Focus 5: an entry claimed by an earlier line and a group member never appear. Line 2 sits 4 days from the
+    # Review Focus 5: an entry claimed by an earlier line and a member of a group printed whole (−581, within the
+    # near tolerance of the −580 lines) never appear. Line 2 sits 4 days from the
     # claimed entry 10 (outside the exact window, so no claimed_by_earlier_line shadow) and 7 days from 11/12.
     g = m.Group(id=5, kind="split", member_ids=(30, 31))
     entries = [E(10, date(2026, 9, 3), "-580", merchant=""), E(12, date(2026, 9, 14), "-580", merchant=""),
@@ -910,3 +917,440 @@ def test_only_the_designated_entry_of_an_amount_delta_is_never_deferred():
     assert two.explained == {10: "deferred_next_period"}  # the secondary candidate defers
     other = run([L(1, late, "-1005", merchant="全聯")], [E(10, late, "-1000", merchant="全聯"), E(12, late, "-77", merchant="早餐")])
     assert other.explained == {12: "deferred_next_period"}  # an unnamed late entry is still deferred
+
+
+# --- split members: structural printed-alone pieces, group readings, printed-whole guard (pure) ---
+
+d = date(2026, 9, 3)
+
+
+def test_printed_alone_children_match_a_non_purchase_line_of_any_coverage():
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-300", group_id=5, children=[m.Child(211, "discount", D("100"))],
+              all_children=[m.Child(210, "reward", D("200")), m.Child(211, "discount", D("100"))]), E(22, d, "-280", group_id=5)]  # 210 covered: structural view only
+    assert m.printed_alone_children("card", [L(1, d, "200", kind="reward")], ents, {5: g}) == {210}
+    assert m.printed_alone_children("card", [L(1, d, "-200", kind="purchase")], ents, {5: g}) == frozenset()
+    # a discount child is never printed alone: no line gate admits "discount" (the matcher's child path cannot claim it)
+    assert m.printed_alone_children("card", [L(1, d, "100", kind="refund")], ents, {5: g}) == frozenset()
+
+
+def test_group_readings_enumerate_members_and_children_like_the_matcher():
+    g = m.Group(5, "split", (21, 22, 23))
+    ents = [E(21, d, "-300", group_id=5, children=[m.Child(210, "reward", D("200")), m.Child(211, "discount", D("100"))]),
+            E(22, d, "-280", group_id=5), S(23, d, "-10", kind="fee", group_id=5)]
+    readings, complete = m.group_readings(g, {e.id: e for e in ents}, aside=frozenset({23}), aside_children=frozenset({210}))
+    assert complete and {r.flow for r in readings} == {D("-590"), D("-290"), D("-490"), D("-580"), D("-280"), D("-480")}
+
+
+def test_group_readings_missing_member_is_incomplete():
+    g = m.Group(5, "split", (21, 22))
+    assert m.group_readings(g, {21: E(21, d, "-300", group_id=5)}, frozenset(), frozenset()) == ([], False)
+
+
+def test_group_readings_foreign_total_needs_one_currency_on_every_member():
+    g = m.Group(5, "split", (21, 22))
+    jp = dict(original_currency="JPY")
+    ents = [E(21, d, "-3000", group_id=5, original_amount="-15000", **jp), S(22, d, "-100", group_id=5, original_amount="-500", **jp)]
+    r, _ = m.group_readings(g, {e.id: e for e in ents}, frozenset({22}), frozenset())
+    assert {(x.flow, x.foreign_amount) for x in r} == {(D("-3100"), D("-15500")), (D("-3000"), D("-15000"))}
+    ents[1] = S(22, d, "-100", group_id=5)
+    assert all(x.foreign_amount is None for x in m.group_readings(g, {e.id: e for e in ents}, frozenset(), frozenset())[0])
+
+
+def test_printed_whole_by_exact_near_drift_and_sign():
+    g = m.Group(5, "split", (21, 22)); ents = [E(21, d, "-300", group_id=5), E(22, d, "-280", group_id=5)]
+    pw = lambda lines: m.printed_whole(lines, ents, {5: g}, R, frozenset(), frozenset())
+    assert pw([L(1, d, "-580")]) == {5} and pw([L(1, d, "-575")]) == {5} and pw([L(1, d + timedelta(days=12), "-580")]) == {5}
+    assert pw([L(1, d + timedelta(days=16), "-580")]) == frozenset() and pw([L(1, d, "-300")]) == frozenset()
+    assert pw([L(1, d, "580", kind="refund")]) == frozenset()
+
+
+def test_printed_whole_ignores_gate_and_uses_structural_rows():
+    g = m.Group(5, "split", (21, 22)); ents = [E(21, d, "20000", kind="income", group_id=5), S(22, d, "10000", kind="income", group_id=5)]
+    assert m.printed_whole([L(1, d, "30000", kind="deposit")], ents, {5: g}, R, frozenset(), frozenset()) == {5}
+
+
+def test_printed_whole_fails_closed_without_the_other_member():
+    g = m.Group(5, "split", (21, 22))
+    assert m.printed_whole([L(1, d, "-300")], [E(21, d, "-300", group_id=5)], {5: g}, R, frozenset(), frozenset()) == {5}
+
+
+def test_printed_whole_by_reduced_and_children_readings_through_covered_lines():
+    g = m.Group(5, "split", (21, 22, 23))
+    ents = [E(21, d, "-300", group_id=5, children=[m.Child(210, "reward", D("200")), m.Child(211, "discount", D("100"))]),
+            E(22, d, "-280", group_id=5), S(23, d, "-100", kind="fee", group_id=5)]
+    # -480 = members 21+22 (fee 23 printed alone, -580) + child 211 only (+100; reward 210 printed alone): the reduced
+    # reading alone; without aside/aside_children the nearest totals are -580 and -380, 100 off (tolerance 29)
+    lines_all = [L(1, d, "-300"), L(2, d, "-480"), L(3, d, "-100", kind="fee"), L(4, d, "200", kind="reward")]
+    ctx = m.statement_context("card", lines_all, lines_all, ents, {5: g}, R, "TWD")
+    assert ctx.aside == ctx.aside_all == {23} and ctx.aside_children == {210} and ctx.whole == {5} and ctx.apart == frozenset()
+    # the fee and reward lines covered (in lines_all only): the guard's sets are unchanged, the claim side's aside is
+    # over the claimable lines (spec §4.1)
+    covered = m.statement_context("card", lines_all[:2], lines_all, ents, {5: g}, R, "TWD")
+    assert (covered.aside, covered.aside_all, covered.aside_children, covered.whole) == (frozenset(), {23}, {210}, {5})
+
+
+def test_printed_whole_by_foreign_total():
+    g = m.Group(5, "split", (21, 22)); jp = dict(original_currency="JPY")
+    ents = [E(21, d, "-3000", group_id=5, original_amount="-15000", **jp), E(22, d, "-100", group_id=5, original_amount="-500", **jp)]
+    line = L(1, d, "-3200", foreign_amount=D("15500"), foreign_currency="JPY")
+    assert m.printed_whole([line], ents, {5: g}, R, frozenset(), frozenset()) == {5}
+
+
+def test_apart_members_are_claimable_split_members_of_apart_groups_only():
+    g5 = m.Group(5, "split", (21, 22)); g6 = m.Group(6, "split", (31, 32)); g7 = m.Group(7, "installment", (41,))
+    ents = [E(21, d, "-300", group_id=5), E(22, d, "-280", group_id=5), E(31, d, "-50", group_id=6), S(32, d, "-60", group_id=6), E(41, d, "-70", group_id=7)]
+    ctx = m.statement_context("card", [L(1, d, "-580")], [L(1, d, "-580")], ents, {5: g5, 6: g6, 7: g7}, R, "TWD")
+    assert ctx.whole == {5} and ctx.apart == {31}
+
+
+def test_a_split_with_a_recurring_member_has_no_readings_and_stays_whole():
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-300", group_id=5, instance=INST("recurring")), E(22, d, "-280", group_id=5)]
+    assert m.group_readings(g, {e.id: e for e in ents}, frozenset(), frozenset()) == ([], True)
+    ctx = m.statement_context("card", [L(1, d, "-50")], [L(1, d, "-50")], ents, {5: g}, R, "TWD")
+    assert ctx.whole == {5} and ctx.apart == frozenset()
+
+
+def test_split_member_instance_rule_and_children_cap():
+    g = m.Group(5, "split", (21, 22, 23, 24, 25))
+    ents = [E(21, d, "-300", group_id=5), E(22, d, "-100", group_id=5, instance=INST("installment")),
+            E(23, d, "-10", kind="fee", group_id=5, parent_entry_id=21), E(24, d, "-50", group_id=5, instance=INST("recurring")),
+            S(25, d, "-60", group_id=5), E(26, d, "-70")]
+    assert m.apart_members(ents, {5: g}, frozenset()) == {21, 24}
+    assert m.apart_members(ents, {5: g}, frozenset({5})) == frozenset()
+    kids = [m.Child(300 + i, "reward", D(i + 1)) for i in range(m.ASIDE_COMBINATIONS_MAX + 1)]
+    g6 = m.Group(6, "split", (31, 32))
+    capped = [E(31, d, "-300", group_id=6, children=kids), E(32, d, "-280", group_id=6)]
+    readings, complete = m.group_readings(g6, {e.id: e for e in capped}, frozenset(), frozenset(c.id for c in kids))
+    assert complete is False and {r.flow for r in readings} == {D("-580"), D("-580") + sum(c.flow for c in kids)}
+    assert m.printed_whole([L(1, d, "-5000")], capped, {6: g6}, R, frozenset(), frozenset(c.id for c in kids)) == {6}
+
+
+def test_printed_whole_compares_a_zero_total_with_a_zero_line():
+    """Final review, minor 1: a 0 reading (an expense and the receivable that offsets it) against a 0 line has no sign
+    to share; `_same` counts it."""
+    g = m.Group(5, "split", (21, 22)); ents = [E(21, d, "-100", group_id=5), E(22, d, "100", kind="receivable", group_id=5)]
+    assert m.printed_whole([L(1, d, "0")], ents, {5: g}, R, frozenset(), frozenset()) == {5}
+    assert m.printed_whole([L(1, d, "-100")], ents, {5: g}, R, frozenset(), frozenset()) == frozenset()
+
+
+def test_printed_whole_amount_window_is_the_wider_of_the_exact_and_drift_windows():
+    """Final review, minor 2: an exact window wider than the drift window still bounds the guard."""
+    g = m.Group(5, "split", (21, 22)); ents = [E(21, d, "-300", group_id=5), E(22, d, "-280", group_id=5)]
+    wide = dataclasses.replace(R, exact_window_days=20, drift_window_days=15)
+    line = L(1, d + timedelta(days=18), "-580")
+    assert m.printed_whole([line], ents, {5: g}, wide, frozenset(), frozenset()) == {5}
+    assert m.printed_whole([line], ents, {5: g}, R, frozenset(), frozenset()) == frozenset()
+
+
+def test_a_group_with_a_member_or_child_in_another_currency_is_whole_by_fail_closed():
+    """Spec §3 "Mixed currencies": a structural member on a JPY account cannot be summed with a TWD line, so the group
+    is whole by fail-closed and the card's member-sized line claims nothing; likewise a child in another currency.
+    `None` is the statement's currency."""
+    g = m.Group(5, "split", (21, 22))
+    jpy = [E(21, d, "-300", group_id=5, currency="TWD"), S(22, d, "-1400", group_id=5, account_id=2, currency="JPY")]
+    assert m.group_readings(g, {e.id: e for e in jpy}, frozenset(), frozenset(), "TWD") == ([], False)
+    res = run([L(1, d, "-300")], jpy, groups={5: g})
+    assert res.claims == [] and [(c.kind, c.candidates) for c in res.cases] == [("line_unmatched", ())]
+    usd_kid = m.Child(210, "refund", D("5"), "USD")
+    kid = [E(21, d, "-300", group_id=5, all_children=[usd_kid]), S(22, d, "-280", group_id=5, account_id=2)]
+    assert run([L(1, d, "-300")], kid, groups={5: g}).claims == []
+    same = [E(21, d, "-300", group_id=5, currency="TWD"), S(22, d, "-280", group_id=5, account_id=2, currency="TWD")]
+    assert run([L(1, d, "-300")], same, groups={5: g}).claims[0].representation.kind == "member_alone"
+
+
+# --- split members printed apart (spec 2026-10-24 §4, §7) -------------------------------------------------------------
+
+def test_cross_account_member_claims_its_own_line():
+    d = date(2026, 9, 3)
+    g = m.Group(5, "split", (21, 22))
+    res = run([L(1, d, "-300")], [E(21, d, "-300", group_id=5), S(22, d, "-280", group_id=5, account_id=2)], groups={5: g})  # 22: another account, structural
+    rep = res.claims[0].representation
+    assert (rep.kind, rep.rule, [(r.entry_id, r.group_id) for r in rep.rows]) == ("member_alone", "exact", [(21, None)])
+    assert res.cases == [] and res.unmatched_entry_ids == []
+
+
+def test_cross_account_expense_plus_receivable_whose_sum_the_card_prints_stays_whole():
+    d = date(2026, 9, 3)
+    g = m.Group(5, "split", (21, 22))
+    res = run([L(1, d, "-300")], [E(21, d, "-580", group_id=5), S(22, d, "280", kind="receivable", group_id=5, account_id=2)], groups={5: g})
+    assert res.claims == [] and res.cases[0].kind == "line_unmatched" and res.unmatched_entry_ids == [21]
+
+
+def test_same_card_split_printed_apart_claims_each_member():
+    d = date(2026, 9, 3)
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-300", group_id=5), E(22, d, "-280", group_id=5)]
+    res = run([L(1, d, "-300"), L(2, d, "-280")], ents, groups={5: g})
+    assert sorted(c.representation.rows[0].entry_id for c in res.claims) == [21, 22] and all(c.representation.kind == "member_alone" for c in res.claims)
+    res2 = run([L(1, d, "-300"), L(2, d, "-280"), L(3, d, "-580")], ents, groups={5: g})
+    assert [c.representation.rule for c in res2.claims] == ["group"] and [c.kind for c in res2.cases] == ["line_unmatched", "line_unmatched"]
+
+
+def test_a_split_member_never_stands_alone_when_the_group_is_printed_whole():
+    # rewritten from test_a_split_member_never_stands_alone_for_a_purchase_line: _fee_group is -300/-280/-10 → a -590 line
+    d = date(2026, 9, 3)
+    g, members = _fee_group()
+    res = run([L(1, d, "-300"), L(2, d, "-590")], members, groups={6: g})
+    assert [c.representation.rule for c in res.claims] == ["group"] and res.cases[0].kind == "line_unmatched"
+    res2 = run([L(1, d, "-10")], members, groups={6: g})  # the fee member, for a purchase line: the gate keeps it out
+    assert res2.claims == [] and res2.cases[0].kind == "line_unmatched"
+
+
+def test_whole_by_covered_sum_line_in_lines_all():
+    d = date(2026, 9, 3)
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-300", group_id=5), E(22, d, "-280", group_id=5)]
+    res = run([L(1, d, "-300")], ents, groups={5: g}, lines_all=[L(1, d, "-300"), L(2, d, "-580")])
+    assert res.claims == [] and res.cases[0].kind == "line_unmatched"
+
+
+def test_whole_by_a_neighbouring_statements_sum_line_in_lines_all():
+    """Spec §3 "Guard lines": the −580 sum line sits on the previous statement (dated before this period, never in
+    `lines`); the orchestrator passes it in `lines_all`, so the group is whole and the −300 line claims nothing."""
+    d = date(2026, 9, 3)
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-300", group_id=5), E(22, d, "-280", group_id=5)]
+    previous = L(7, date(2026, 8, 27), "-580")  # R.period_end is 2026-09-30: a line of the August statement
+    res = run([L(1, d, "-300")], ents, groups={5: g}, lines_all=[L(1, d, "-300"), previous])
+    assert res.claims == [] and [(c.line_id, c.kind, c.candidates) for c in res.cases] == [(1, "line_unmatched", ())]
+    assert run([L(1, d, "-300")], ents, groups={5: g}).claims[0].representation.kind == "member_alone"  # without it
+
+
+def test_a_fee_line_covered_by_another_entry_never_reduces_the_purchase_reading():
+    """Final review (spec §4.1): the claim side's `aside` is over the claimable lines. The −10 fee line is held by
+    another entry (a system fee: in `lines_all` only), so the fee member is not printed alone for the claim side and
+    the −300 purchase line has no reduced `group` reading: it stays `line_unmatched`, as before the branch. The guard
+    still reads the covered line: the group is whole, so member 21 never stands alone either."""
+    d = date(2026, 9, 3)
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-300", group_id=5), E(22, d, "-10", kind="fee", group_id=5)]
+    purchase, fee_line = L(1, d, "-300"), L(2, d, "-10", kind="fee")
+    res = run([purchase], ents, groups={5: g}, lines_all=[purchase, fee_line])
+    assert res.claims == [] and [(c.line_id, c.kind, c.candidates) for c in res.cases] == [(1, "line_unmatched", ())]
+    assert run([purchase], ents, groups={5: g}).claims == []  # lines_all defaults to lines: same outcome
+
+
+def test_whole_by_covered_fee_member_keeps_the_purchase_member_home():
+    d = date(2026, 9, 3)
+    g = m.Group(5, "split", (21, 22, 23))
+    ents = [E(21, d, "-300", group_id=5), E(22, d, "-280", group_id=5), S(23, d, "-100", kind="fee", group_id=5)]  # fee 23 owner-covered: structural
+    res = run([L(1, d, "-300"), L(2, d, "-580")], ents, groups={5: g},
+              lines_all=[L(1, d, "-300"), L(2, d, "-580"), L(3, d, "-100", kind="fee")])
+    assert res.claims == [] and [c.kind for c in res.cases] == ["line_unmatched", "line_unmatched"]
+    assert run([L(1, d, "-300"), L(2, d, "-580")], ents, groups={5: g},
+               lines_all=[L(1, d, "-300"), L(2, d, "-580"), L(3, d, "-100", kind="fee")]).claims == []  # idempotent
+
+
+def test_whole_by_children_reading_with_a_covered_child_both_line_orders():
+    d = date(2026, 9, 3)
+    g = m.Group(5, "split", (21, 22))
+    # the covered +200 child is a reward (its reward line's gate admits it; a refund line never marks a discount child)
+    kids = [m.Child(210, "discount", D("100")), m.Child(211, "reward", D("200"))]
+    ents = [E(21, d, "-300", group_id=5, children=kids[:1], all_children=kids), E(22, d, "-280", group_id=5)]  # 211 owner-covered: structural view only
+    covered = L(9, d, "200", kind="reward")  # the +200 child's own line: in lines_all only
+    for first, second in ((1, 2), (2, 1)):  # match() sorts by line id: swap the ids to test both orders
+        lines = [L(first, d, "-300"), L(second, d, "-480")]
+        res = run(lines, ents, groups={5: g}, lines_all=lines + [covered])
+        claim = res.claims[0].representation
+        assert claim.kind == "group_children" and {r.entry_id for r in claim.rows} == {21, 22, 210} and res.cases[0].line_id == first
+    # the −480 line only in lines_all (covered): the group is still whole and the −300 line stays open
+    only_all = run([L(1, d, "-300")], ents, groups={5: g}, lines_all=[L(1, d, "-300"), L(2, d, "-480"), covered])
+    assert only_all.claims == [] and [c.kind for c in only_all.cases] == ["line_unmatched"]
+
+
+def test_whole_by_near_tolerance_or_drift_window_keeps_the_members_home():
+    d = date(2026, 9, 3)
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-300", group_id=5), E(22, d, "-280", group_id=5)]
+    near = run([L(1, d, "-300"), L(2, d, "-575")], ents, groups={5: g})  # −575 within 29 TWD of the −580 total
+    assert near.claims == [] and [(c.line_id, c.kind) for c in near.cases] == [(1, "line_unmatched"), (2, "line_unmatched")]
+    drift = run([L(1, d, "-300"), L(2, d + timedelta(days=12), "-580")], ents, groups={5: g})  # 12 days ≤ drift window
+    assert drift.claims == [] and [(c.line_id, c.kind) for c in drift.cases][0] == (1, "line_unmatched")
+
+
+def test_foreign_whole_group_member_is_not_claimed_by_a_twd_line_equal_to_it():
+    g, members = _jpy_group()  # −660 (−3000 JPY) + −1320 (−6000 JPY); TWD −2500 is far from −1980: whole by foreign only
+    day = date(2026, 9, 8)
+    res = run([L(1, day, "-660"), L(2, day, "-2500", foreign_amount=D("9000"), foreign_currency="JPY")], members, groups={5: g})
+    assert res.claims == [] and [(c.line_id, c.kind) for c in res.cases] == [(1, "line_unmatched"), (2, "amount_delta")]
+    assert res.cases[1].context["group_id"] == 5
+
+
+def test_whole_by_a_covered_reduced_foreign_reading_keeps_the_purchase_member_home():
+    d = date(2026, 9, 3)
+    g = m.Group(5, "split", (21, 22, 23))
+    ents = [E(21, d, "-300", group_id=5, original_amount="-1500", original_currency="JPY"),
+            E(22, d, "-280", group_id=5, original_amount="-1400", original_currency="JPY"),
+            S(23, d, "-100", kind="fee", group_id=5, original_amount="-500", original_currency="JPY")]  # fee 23 owner-covered
+    # covered lines: the fee member's own −100 fee line, and a sum line whose TWD (−900) is near no reading but whose
+    # 2900 JPY is the reduced reading {21, 22}
+    lines_all = [L(1, d, "-300"), L(2, d, "-900", foreign_amount=D("2900"), foreign_currency="JPY"), L(3, d, "-100", kind="fee")]
+    res = run([L(1, d, "-300")], ents, groups={5: g}, lines_all=lines_all)
+    assert res.claims == [] and [c.kind for c in res.cases] == ["line_unmatched"]
+
+
+def test_income_split_on_a_bank_statement_is_whole_only_with_its_deposit_line():
+    d = date(2026, 9, 3)
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "20000", kind="income", group_id=5), E(22, d, "10000", kind="income", group_id=5)]
+    whole = run([L(1, d, "30000", kind="deposit"), L(2, d, "20000", kind="deposit")], ents, groups={5: g}, kind="bank")
+    assert whole.claims == []
+    apart = run([L(2, d, "20000", kind="deposit")], ents, groups={5: g}, kind="bank")
+    assert apart.claims[0].representation.rows[0].entry_id == 21
+
+
+def test_apart_member_foreign_near_and_drift_cases():
+    d = date(2026, 9, 3)
+    g = m.Group(5, "split", (21, 22))
+    # 22 is large enough that no line is within the near tolerance (5 % of the total) of the -4000 / 20000 JPY total
+    ents = [E(21, d, "-3000", group_id=5, original_amount="-15000", original_currency="JPY"),
+            E(22, d, "-1000", group_id=5, original_amount="-5000", original_currency="JPY")]
+    res = run([L(1, d, "-3010", foreign_amount=D("15000"), foreign_currency="JPY")], ents, groups={5: g})
+    assert res.cases[0].kind == "amount_delta" and res.cases[0].candidates[0] == {"entry_id": 21, "reason": "foreign"}
+    assert res.explained.get(21) != "deferred_next_period"
+    g2 = m.Group(6, "split", (31, 32))
+    ents2 = [E(31, d, "-300", group_id=6), E(32, d, "-280", group_id=6)]
+    near = run([L(1, d, "-305")], ents2, groups={6: g2})
+    assert near.cases[0].kind == "amount_delta" and near.cases[0].entry_id == 31
+    drift = run([L(1, d + timedelta(days=6), "-300")], ents2, groups={6: g2})
+    assert drift.cases[0].context.get("hint") == "date_drift" and drift.cases[0].entry_id == 31
+
+
+def test_apart_member_with_discount_child_conserves_as_member_children():
+    d = date(2026, 9, 3)
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-300", group_id=5, children=[m.Child(210, "discount", D("20"))]), E(22, d, "-250", group_id=5)]  # distinct amounts: no ambiguity
+    res = run([L(1, d, "-280"), L(2, d, "-250")], ents, groups={5: g})
+    kinds = sorted(c.representation.kind for c in res.claims)
+    assert kinds == ["member_alone", "member_children"]
+
+
+def test_apart_member_and_standalone_twin_are_ambiguous():
+    d = date(2026, 9, 3)
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-300", group_id=5), E(22, d, "-280", group_id=5), E(30, d, "-300")]
+    res = run([L(1, d, "-300", merchant="")], ents, groups={5: g})
+    assert res.cases[0].kind == "ambiguous" and {(c["entry_id"], c["group_id"]) for c in res.cases[0].candidates} == {(21, None), (30, None)}
+
+
+def test_group_readings_incomplete_is_structural_and_survives_covered_fee_members():
+    # a standalone -100 twin gives the purchase line a reading: the incompleteness check runs only when one exists
+    d = date(2026, 9, 3)
+    g = m.Group(5, "split", tuple([21] + [30 + i for i in range(1, 10)]))
+    fees = [E(30 + i, d, f"-{i}", kind="fee", group_id=5) for i in range(1, 10)]
+    twin = E(90, d, "-100")
+    lines = [L(1, d, "-100")] + [L(10 + i, d, f"-{i}", kind="fee") for i in range(1, 10)]
+    res = run(lines, [E(21, d, "-100", group_id=5), twin] + fees, groups={5: g})
+    blocked = [c for c in res.cases if c.line_id == 1]
+    assert blocked and blocked[0].context.get("hint") == "group_readings_incomplete" and all(c.line_id != 1 for c in res.claims)
+    # the fee members claimed on another statement (structural rows; their fee lines here stay claimable lines)
+    structural = [dataclasses.replace(f, claimable=False, in_reverse=False) for f in fees]
+    res2 = run(lines, [E(21, d, "-100", group_id=5), twin] + structural, groups={5: g})
+    assert res2.claims == [] and res2.cases[0].context.get("hint") == "group_readings_incomplete"
+    # the fee lines owner-covered by the fee members (spec §4.1 ruling: the claim side's aside is over the claimable
+    # lines): no reading of the group exists on the claim side, the twin is the one reading and is claimed as before
+    # the branch; the guard still reads the covered lines, so the group stays whole and 21 never stands alone
+    owner = run([L(1, d, "-100")], [E(21, d, "-100", group_id=5), twin] + structural, groups={5: g}, lines_all=lines)
+    assert [(c.line_id, [r.entry_id for r in c.representation.rows]) for c in owner.claims] == [(1, [90])]
+    # without the twin the line has no reading: whole by fail-closed, so no member claim and a plain open line
+    solo = run(lines, [E(21, d, "-100", group_id=5)] + fees, groups={5: g})
+    assert all(c.line_id != 1 for c in solo.claims)
+    assert [(c.kind, c.context) for c in solo.cases if c.line_id == 1] == [("line_unmatched", {})]
+    solo2 = run([L(1, d, "-100")], [E(21, d, "-100", group_id=5)] + structural, groups={5: g}, lines_all=lines)
+    assert solo2.claims == [] and [(c.line_id, c.kind, c.context) for c in solo2.cases] == [(1, "line_unmatched", {})]
+
+
+@pytest.mark.parametrize("order", ["member_line_first", "sum_line_first"])
+def test_guard_reads_the_claimable_children_view_beside_all_children(order):
+    """Execution finding (Task 3, spec §3): child 211 is covered on another statement, so the claim side attaches only
+    child 210 and reads −300 −280 +100 = −480, while the all-children total is −280. The guard must test the
+    claimable-children total too: −480 marks the group whole, the −480 line claims `group_children` and the −300 line
+    never claims the member alone, whatever the line order."""
+    d = date(2026, 9, 3)
+    k210, k211 = m.Child(210, "discount", D("100")), m.Child(211, "reward", D("200"))
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-300", group_id=5, children=[k210], all_children=[k210, k211]), E(22, d, "-280", group_id=5)]
+    member_id, sum_id = (1, 2) if order == "member_line_first" else (2, 1)
+    lines = [L(member_id, d, "-300"), L(sum_id, d, "-480")]
+    assert m.statement_context("card", lines, lines, ents, {5: g}, R, "TWD").whole == {5}
+    res = run(lines, ents, groups={5: g})
+    assert [(c.line_id, c.representation.kind, sorted(r.entry_id for r in c.representation.rows)) for c in res.claims] \
+        == [(sum_id, "group_children", [21, 22, 210])]
+    assert [(c.line_id, c.kind) for c in res.cases if c.line_id == member_id] == [(member_id, "line_unmatched")]
+
+
+@pytest.mark.parametrize("order", ["member_line_first", "member_line_last"])
+def test_guard_drops_a_printed_alone_child_from_the_claimable_children_view(order):
+    """Review round 2 (spec §3): child 212 (+400) is covered elsewhere, so only `all_children` carries it; the +50
+    child is printed alone by its refund line. The matcher reads −300 −280 +30 = −550 (claimable view minus the
+    printed-alone +50), which no all-children combination yields (−100, −150): the guard enumerates the printed-alone
+    combinations over both views, so −550 marks the group whole and the −300 line never claims member 21 alone."""
+    d = date(2026, 9, 3)
+    k50, k30, k400 = m.Child(210, "refund", D("50")), m.Child(211, "refund", D("30")), m.Child(212, "refund", D("400"))
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-300", group_id=5, children=[k50, k30], all_children=[k50, k30, k400]),
+            E(22, d, "-280", group_id=5)]
+    member, refund, total = (1, 2, 3) if order == "member_line_first" else (3, 1, 2)
+    lines = sorted([L(member, d, "-300"), L(refund, d, "50", kind="refund"), L(total, d, "-550")], key=lambda ln: ln.id)
+    ctx = m.statement_context("card", lines, lines, ents, {5: g}, R, "TWD")
+    assert ctx.whole == {5} and ctx.apart == frozenset()
+    res = run(lines, ents, groups={5: g})
+    assert sorted((c.line_id, c.representation.kind, sorted(r.entry_id for r in c.representation.rows))
+                  for c in res.claims) == sorted([(refund, "child", [210]), (total, "group_children", [21, 22, 211])])
+    assert [(c.line_id, c.kind) for c in res.cases if c.line_id == member] == [(member, "line_unmatched")]
+
+
+@pytest.mark.parametrize("order", ["member_line_first", "sum_line_first"])
+def test_guard_reads_a_superset_the_subset_sum_pruning_drops(order):
+    """PR #130 review P1 (spec §3): fee 23 and refund 24 are printed alone by guard-only lines (covered elsewhere), so
+    `aside_all` = {23, 24} while the claim side's `aside` = ∅. The pruned guard variants drop {21, 22, 23, 24} (net
+    −1000, equal to {21, 22}) before children are added, so its child-inclusive −1100 — the claim side's
+    `group_children` reading — was never tested and the group went apart. The guard enumerates unpruned member
+    readings: −1100 marks the group whole and the −600 line never claims member 21 alone, whatever the line order."""
+    d = date(2026, 9, 3)
+    k31 = m.Child(31, "fee", D("-100"))
+    g = m.Group(5, "split", (21, 22, 23, 24))
+    ents = [E(21, d, "-600", group_id=5), E(22, d, "-400", group_id=5),
+            E(23, d, "-200", kind="fee", group_id=5, children=[k31]), E(24, d, "200", kind="refund", group_id=5)]
+    member_id, sum_id = (1, 2) if order == "member_line_first" else (2, 1)
+    lines = sorted([L(member_id, d, "-600"), L(sum_id, d, "-1100")], key=lambda ln: ln.id)
+    lines_all = lines + [L(3, d, "-200", kind="fee"), L(4, d, "200", kind="refund")]
+    ctx = m.statement_context("card", lines, lines_all, ents, {5: g}, R, "TWD")
+    assert (ctx.aside, ctx.aside_all, ctx.whole, ctx.apart) == (frozenset(), {23, 24}, {5}, frozenset())
+    res = run(lines, ents, groups={5: g}, lines_all=lines_all)
+    assert [(c.line_id, c.representation.kind, sorted(r.entry_id for r in c.representation.rows)) for c in res.claims] \
+        == [(sum_id, "group_children", [21, 22, 23, 24, 31])]
+    assert [(c.line_id, c.kind) for c in res.cases] == [(member_id, "line_unmatched")]
+
+
+def test_guard_reads_a_zero_sum_pair_of_guard_only_members_with_children():
+    """PR #130 review P1: fee 23 (−50, child −20) and reward 24 (+50) sum to zero and are printed alone by guard-only
+    lines; the purchase line prints every member and the child (−320). Pruning would drop the full reading before its
+    child is added (nearest pruned totals −300, −350, −370: outside the near tolerance); unpruned, it is whole."""
+    d = date(2026, 9, 3)
+    g = m.Group(5, "split", (21, 22, 23, 24))
+    ents = [E(21, d, "-200", group_id=5), E(22, d, "-100", group_id=5),
+            E(23, d, "-50", kind="fee", group_id=5, children=[m.Child(31, "fee", D("-20"))]),
+            E(24, d, "50", kind="reward", group_id=5)]
+    lines = [L(1, d, "-200"), L(2, d, "-320")]
+    lines_all = lines + [L(3, d, "-50", kind="fee"), L(4, d, "50", kind="reward")]
+    ctx = m.statement_context("card", lines, lines_all, ents, {5: g}, R, "TWD")
+    assert (ctx.aside_all, ctx.whole, ctx.apart) == ({23, 24}, {5}, frozenset())
+    res = run(lines, ents, groups={5: g}, lines_all=lines_all)
+    assert [(c.line_id, c.representation.kind, sorted(r.entry_id for r in c.representation.rows)) for c in res.claims] \
+        == [(2, "group_children", [21, 22, 23, 24, 31])]
+
+
+def test_group_variants_prunes_by_default_and_not_for_the_guard():
+    """The claim side's default (`prune=True`) drops a reading a strict subset of which sums to the same amount; the
+    guard's `prune=False` keeps every combination (spec §3 "Group readings for the guard")."""
+    d = date(2026, 9, 3)
+    g = m.Group(7, "split", (31, 32, 33))
+    ents = [E(31, d, "-100", group_id=7), E(32, d, "-10", kind="fee", group_id=7), E(33, d, "10", kind="reward", group_id=7)]
+    by_id = {e.id: e for e in ents}
+    ids = lambda res: (sorted(sorted(mem.id for mem in r) for r in res[0]), res[1])
+    assert ids(m._group_variants(g, by_id, set(), frozenset({32, 33}))) == ([[31], [31, 32], [31, 33]], True)
+    assert ids(m._group_variants(g, by_id, set(), frozenset({32, 33}), prune=False)) \
+        == ([[31], [31, 32], [31, 32, 33], [31, 33]], True)

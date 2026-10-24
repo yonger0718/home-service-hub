@@ -21,12 +21,14 @@ from app.models import (
 )
 from app.schemas.reconciliation import ProposalIn
 from app.services import entry_write_service as ews
-from app.services.errors import CodedConflictError
+from app.services.errors import CodedConflictError, CodedValidationError
 from app.services import coverage_service, policy_service, proposal_service, settings_service, stand_ins
 from app.services import reconciliation_service as rec
 from app.services import reconciliation_actions as registry
 from app.services.policy_service import PolicyResult
 from app.services.reconciliation_actions import audit, engine
+from app.services.reconciliation_actions.base import current_line
+from app.services.statements import matching
 from tests.helpers import make_entry, race, wait_until_blocked
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
     _active, _card, _cases, _open_beside_gap, _line, _submit, run,
@@ -542,6 +544,245 @@ def test_preview_labels_an_agent_proposal_over_its_cap_as_a_skip(ambiguous, db_s
     result = policy_service.run_policy(db_session, s.stmt.id)
     assert (result.applied, result.proposed, result.skipped) == ([], [], {"cap_exceeded": 1})
     assert _reload(db_session, ReconciliationProposal, s.proposal.id).status == "pending"
+
+
+# --- split members printed apart (split-members spec §5.6, §7.18) --------------------------------------------------
+
+def _agent_proposal(db, case, line, entry_id):
+    proposal = proposal_service.create_proposal(
+        db, case_id=case.id, author="hermes",
+        payload=ProposalIn(action="match", params={"line_id": line.id, "entry_id": entry_id},
+                           rationale="same day", confidence=Decimal("0.7")))
+    db.commit()
+    return proposal
+
+
+def _apart_member_case(seed, db, run):
+    """The card's −580 half of a split whose other half (−300) the owner paid from 錢包 — the card statement never
+    prints the −880 sum, so the group is apart — and a standalone −580 the same day: one 580 line, ambiguous between
+    the member and the standalone."""
+    card = _card(seed, db)
+    wallet = seed.account("錢包")
+    seed.entry(card, "-1", day=date(2026, 8, 1), merchant="墊高編號")  # keeps entry ids apart from the line id
+    group = seed.group("split")
+    member = seed.entry(card, "-580", day=DAY, merchant="全聯", group_id=group.id)
+    seed.entry(wallet, "-300", day=DAY, merchant="全聯", group_id=group.id)
+    standalone = seed.entry(card, "-580", day=DAY, merchant="全聯")
+    db.commit()
+    stmt, (line,), _ = _submit(db, run, card, [_line(1, DAY, "全聯", 580)])
+    (case,) = [c for c in _cases(db, stmt.id, "open") if c.kind == "ambiguous"]
+    assert {(c["entry_id"], c["group_id"]) for c in case.candidates} == {(member.id, None), (standalone.id, None)}
+    return SimpleNamespace(card=card, stmt=stmt, line=line, case=case, member=member, standalone=standalone)
+
+
+def test_policy_refuses_a_standalone_proposal_when_an_apart_member_competes(seed, db_session, run):
+    s = _apart_member_case(seed, db_session, run)
+    proposal = _agent_proposal(db_session, s.case, s.line, s.standalone.id)
+    _set_policy(db_session, MATCH_ON)
+
+    result = policy_service.run_policy(db_session, s.stmt.id)
+
+    assert (result.applied, result.proposed, result.skipped) == ([], [], {"not_single_admissible": 1})
+    assert _actions(db_session) == [] and _active(db_session, s.stmt.id) == []
+    assert _reload(db_session, ReconciliationProposal, proposal.id).status == "pending"
+
+
+def test_policy_applies_a_match_proposal_naming_the_single_apart_member(seed, db_session, run):
+    s = _apart_member_case(seed, db_session, run)
+    s.standalone.amount = Decimal("-581")  # the standalone no longer conserves the line: the member is the one reading
+    db_session.commit()
+    proposal = _agent_proposal(db_session, s.case, s.line, s.member.id)
+    _set_policy(db_session, MATCH_ON)
+
+    result = policy_service.run_policy(db_session, s.stmt.id)
+
+    (row,) = _actions(db_session)
+    assert result.applied == [row.id] and (row.action, row.proposal_id) == ("match", proposal.id)
+    (claim,) = _active(db_session, s.stmt.id)
+    assert (claim.line_id, claim.entry_id, claim.role, claim.group_id, claim.match_kind) == \
+        (s.line.id, s.member.id, "principal", None, "agent")
+
+
+def test_policy_applies_a_with_children_proposal_naming_the_single_apart_member(seed, db_session, run):
+    """`_is_proposed` reads `member_children` for `with_children`: the card's −600 member of a split with a −300 錢包
+    half carries an uncovered +20 refund child, so member + child conserve the 580 line beside a standalone −580
+    (ambiguous); with the standalone moved off the line the member with its child is the one reading."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    seed.entry(card, "-1", day=date(2026, 8, 1), merchant="墊高編號")  # keeps entry ids apart from the line id
+    group = seed.group("split")
+    member = seed.entry(card, "-600", day=DAY, merchant="全聯", group_id=group.id)
+    db_session.flush()
+    child = seed.entry(card, "20", kind="refund", day=DAY, parent_entry_id=member.id)
+    seed.entry(wallet, "-300", day=DAY, merchant="全聯", group_id=group.id)
+    standalone = seed.entry(card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "ambiguous"]
+    assert {c["entry_id"] for c in case.candidates} == {member.id, standalone.id}
+    standalone.amount = Decimal("-581")
+    db_session.commit()
+    proposal = proposal_service.create_proposal(
+        db_session, case_id=case.id, author="hermes",
+        payload=ProposalIn(action="match", params={"line_id": line.id, "entry_id": member.id, "with_children": True},
+                           rationale="same day", confidence=Decimal("0.7")))
+    db_session.commit()
+    _set_policy(db_session, MATCH_ON)
+
+    result = policy_service.run_policy(db_session, stmt.id)
+
+    (row,) = _actions(db_session)
+    assert result.applied == [row.id] and (row.action, row.proposal_id) == ("match", proposal.id)
+    assert sorted((c.line_id, c.entry_id, c.role, c.group_id, c.match_kind) for c in _active(db_session, stmt.id)) == \
+        sorted([(line.id, member.id, "principal", None, "agent"), (line.id, child.id, "child", None, "agent")])
+
+
+def test_policy_validator_loads_the_population_reconcile_does(seed, db_session, run):
+    """Final review, Critical (spec §5.6): split A −300 / B −280, each with a refund child covered on a far statement
+    (+100 / +50), lines −300, −280, −480 and a standalone −280. Reconcile's population keeps A claimable (its own auto
+    claim is re-derived) with no claimable child, so the readings are −580 / −430 and nothing prints them: apart — A
+    claims −300 `member_alone`, the −280 line is ambiguous between B and the standalone. A validator that excluded
+    every claimed entry turned A into a structural row whose child view holds +100, read −480 as printed whole and
+    admitted the standalone alone; loading as reconcile does it sees B competing and refuses."""
+    card = _card(seed, db_session)
+    seed.entry(card, "-1", day=date(2026, 8, 1), merchant="墊高編號")  # keeps entry ids apart from the line id
+    group = seed.group("split")
+    a = seed.entry(card, "-300", day=DAY, merchant="全聯", group_id=group.id)
+    b = seed.entry(card, "-280", day=DAY, merchant="全聯", group_id=group.id)
+    db_session.flush()
+    kid_a = seed.entry(card, "100", kind="refund", day=DAY, parent_entry_id=a.id)
+    kid_b = seed.entry(card, "50", kind="refund", day=DAY, parent_entry_id=b.id)
+    standalone = seed.entry(card, "-280", day=DAY, merchant="全聯")
+    db_session.commit()
+    far, far_lines, _ = _submit(db_session, run, card, [_line(1, date(2026, 12, 5), "退款", -100, "refund"),
+                                                        _line(2, date(2026, 12, 5), "退款", -50, "refund")],
+                                period=(date(2026, 12, 1), date(2026, 12, 31)))
+    for kid, far_line in ((kid_a, far_lines[0]), (kid_b, far_lines[1])):
+        coverage_service.release_line(db_session, far, far_line.id, reason="test")
+        coverage_service.write_claim(db_session, far, far_line, [matching.Row(kid.id, "principal", Decimal(kid.amount))],
+                                     entries_by_id={kid.id: kid}, match_kind="auto", match_rule="exact", run_id=None)
+    db_session.commit()
+    stmt, (line_a, line_b, _), _ = _submit(db_session, run, card, [
+        _line(1, DAY, "全聯", 300), _line(2, DAY, "全聯", 280), _line(3, DAY, "全聯", 480)])
+    claims = [(c.line_id, c.entry_id, c.group_id, c.match_rule) for c in _active(db_session, stmt.id)]
+    assert claims == [(line_a.id, a.id, None, "exact")]
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line_b.id]
+    assert case.kind == "ambiguous" and {c["entry_id"] for c in case.candidates} == {b.id, standalone.id}
+    proposal = _agent_proposal(db_session, case, line_b, standalone.id)
+    _set_policy(db_session, MATCH_ON)
+
+    result = policy_service.run_policy(db_session, stmt.id)
+
+    assert (result.applied, result.proposed, result.skipped) == ([], [], {"not_single_admissible": 1})
+    assert _validator_refusal(db_session, stmt.id, case, standalone.id) == \
+        "not_single_admissible: 2 admissible representation(s)"
+    assert _actions(db_session) == [] and _reload(db_session, ReconciliationProposal, proposal.id).status == "pending"
+    assert [(c.line_id, c.entry_id) for c in _active(db_session, stmt.id)] == [(line_a.id, a.id)]
+
+
+def test_policy_validator_reads_the_neighbouring_statements_lines(seed, db_session, run):
+    """Spec §3 "Guard lines": the August statement prints the −580 sum of an Aug 30 split (open there: August was
+    reconciled before the members were booked); September prints a member-sized −300 line. Reconcile and the
+    validator both read August's current lines, so the group is whole: no candidate on the −300 line, and the
+    validator finds no admissible representation of the member (a validator reading September alone would see the
+    group apart and the member as "1 admissible")."""
+    card = _card(seed, db_session)
+    day = date(2026, 8, 30)
+    _submit(db_session, run, card, [_line(1, day, "餐廳", 580)], period=(date(2026, 8, 1), date(2026, 8, 31)))
+    group = seed.group("split")
+    member = seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    seed.entry(card, "-280", day=day, merchant="餐廳", group_id=group.id)
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 1), "餐廳", 300)])
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id]
+    assert (case.kind, case.candidates, _active(db_session, stmt.id)) == ("line_unmatched", [], [])
+    assert _validator_refusal(db_session, stmt.id, case, member.id) == "not_single_admissible: 0 admissible representation(s)"
+
+
+def _validator_refusal(db, stmt_id, case, entry_id) -> str:
+    """`_single_admissible` called directly for an agent `match` of `entry_id` on the case's line (the proposal scope
+    check would refuse such a proposal before the policy ever sees it, `id_out_of_scope`): the refusal message."""
+    statement = db.get(AccountStatement, stmt_id)
+    line = current_line(db, case, statement)
+    ctx = SimpleNamespace(db=db, statement=statement, case=case, line=line,
+                          rules=rec.rules_for(settings_service.reconciliation_rules(db), statement.period_end))
+    candidate = policy_service.Candidate(case.id, case.kind, case.status, "match",
+                                         {"line_id": line.id, "entry_id": entry_id}, Decimal(0))
+    with pytest.raises(CodedConflictError) as info:
+        policy_service._single_admissible(ctx, candidate)
+    assert info.value.code == "not_single_admissible"
+    return str(info.value)
+
+
+def test_policy_refuses_the_purchase_member_after_reconcile_claimed_the_fee_lines(seed, db_session, run):
+    """§7.13 end to end: a −100 purchase split with nine fee members, each printed as its own fee line. Nine printed-
+    alone members exceed ASIDE_COMBINATIONS_MAX, so the group's readings are incomplete and it is whole by fail-
+    closed. Reconcile claims the nine fee lines (the claims persist; the fee members leave the claimable population)
+    and the purchase line, which a standalone −100 twin reads, stays `group_readings_incomplete`. The agent cannot
+    propose the purchase member (no candidate names it) and the validator refuses it; the agent's proposal of the
+    twin — the one reading the claimable rows allow — is refused too: the structural incomplete-group block still
+    sees the covered fee members."""
+    card = _card(seed, db_session)
+    group = seed.group("split")
+    purchase = seed.entry(card, "-100", day=DAY, merchant="全聯", group_id=group.id)
+    fees = [seed.entry(card, f"-{i}", kind="fee", day=DAY, group_id=group.id) for i in range(1, 10)]
+    twin = seed.entry(card, "-100", day=DAY, merchant="全聯")
+    db_session.commit()
+    stmt, (line, *fee_lines), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 100)] + [
+        _line(1 + i, DAY, "手續費", i, "fee") for i in range(1, 10)])
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    fee_claims = sorted((c.line_id, c.entry_id) for c in _active(db_session, stmt.id))
+    assert fee_claims == sorted(zip((ln.id for ln in fee_lines), (f.id for f in fees)))
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id]
+    assert case.kind == "ambiguous" and case.context == {"hint": "group_readings_incomplete", "group_ids": [group.id]}
+    assert [c["entry_id"] for c in case.candidates] == [twin.id]
+    with pytest.raises(CodedValidationError, match="id_out_of_scope"):
+        _agent_proposal(db_session, case, line, purchase.id)
+    db_session.rollback()
+    incomplete = f"not_single_admissible: group_readings_incomplete {[group.id]}"
+    assert _validator_refusal(db_session, stmt.id, case, purchase.id) == incomplete
+    proposal = _agent_proposal(db_session, case, line, twin.id)
+    _set_policy(db_session, MATCH_ON)
+
+    result = policy_service.run_policy(db_session, stmt.id)
+
+    assert (result.applied, result.proposed, result.skipped) == ([], [], {"not_single_admissible": 1})
+    assert _validator_refusal(db_session, stmt.id, case, twin.id) == incomplete  # the twin: refused by the block
+    assert _actions(db_session) == [] and _reload(db_session, ReconciliationProposal, proposal.id).status == "pending"
+    assert sorted((c.line_id, c.entry_id) for c in _active(db_session, stmt.id)) == fee_claims  # no purchase coverage
+
+
+def _owner_cover(db, statement, line, entries) -> None:
+    """Hand the line to the owner: release whatever the hook claimed on it, then write manual coverage on `entries`."""
+    coverage_service.release_line(db, statement, line.id, reason="test_owner")
+    coverage_service.write_claim(db, statement, line, [matching.Row(e.id, "principal", Decimal(e.amount)) for e in entries],
+                                 entries_by_id={e.id: e for e in entries}, match_kind="manual", match_rule="owner",
+                                 run_id=None)
+    db.commit()
+
+
+def test_policy_and_reconcile_agree_on_whole_with_a_covered_fee_member(seed, db_session, run):
+    """§7.18 (d), through the real loader: split −300/−280/−100 fee, the fee member owner-matched to its fee line. The
+    covered fee line still prints the fee member alone, so the −580 reduced reading marks the group whole — for
+    reconcile and for the validator alike: reconcile writes no member claim and lists no candidate on the −300 line,
+    and the validator refuses the member with no admissible representation. A validator reading only the uncovered
+    lines would know only the −680 total, far from −580, see the group apart and admit the member ("1 admissible")."""
+    card = _card(seed, db_session)
+    group = seed.group("split")
+    member = seed.entry(card, "-300", day=DAY, merchant="餐廳", group_id=group.id)
+    seed.entry(card, "-280", day=DAY, merchant="餐廳", group_id=group.id)
+    fee = seed.entry(card, "-100", kind="fee", day=DAY, group_id=group.id)
+    db_session.commit()
+    stmt, (line, _, fee_line), _ = _submit(db_session, run, card, [
+        _line(1, DAY, "餐廳", 300), _line(2, DAY, "餐廳", 580), _line(3, DAY, "手續費", 100, "fee")])
+    _owner_cover(db_session, stmt, fee_line, [fee])
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    assert [(c.line_id, c.entry_id, c.match_kind) for c in _active(db_session, stmt.id)] == [(fee_line.id, fee.id, "manual")]
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id]
+    assert (case.kind, case.candidates) == ("line_unmatched", [])  # reconcile: whole, the member never alone
+    assert _validator_refusal(db_session, stmt.id, case, member.id) == "not_single_admissible: 0 admissible representation(s)"
 
 
 # --- routes -------------------------------------------------------------------------------------------------------
@@ -1296,24 +1537,56 @@ def _backfills(db):
 
 
 @pytest.mark.parametrize("other", ["card", "wallet"])
-def test_policy_never_backfills_a_line_a_split_member_records(seed, db_session, run, other):
+def test_policy_never_backfills_a_line_a_split_member_records_or_the_member_claims_it_itself(seed, db_session, run,
+                                                                                               other):
+    """Split-members spec §3: the statement never prints the group's total (−700 on the card, or −380 across the card
+    and 錢包), so the group is printed apart and its −580 member claims the 580 line like a standalone entry. The
+    line is covered: no line case, nothing for the twin guard to guard, nothing for the policy to backfill."""
     card = _card(seed, db_session)
     wallet = seed.account("錢包")
     member = _split_owner(seed, db_session, card, wallet, other=other)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    assert [(c.line_id, c.entry_id, c.role, c.group_id, c.match_rule) for c in _active(db_session, stmt.id)] == \
+        [(line.id, member.id, "principal", None, "exact")]
+    assert [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id] == []
+    statement = db_session.get(AccountStatement, stmt.id)
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 0})
+    live = settings_service.reconciliation_policy(db_session)
+    assert [c for c in policy_service.collect_candidates(db_session, statement, live) if c.action == "backfill_entry"] == []
+    result = policy_service.run_policy(db_session, stmt.id)
+    assert (result.applied, result.proposed) == ([], [])
+    assert _backfills(db_session) == [] and _proposals(db_session) == [] and _booked(db_session) == []
+
+
+@pytest.mark.parametrize("other, total", [("card", 705), ("wallet", 380)])
+def test_policy_never_backfills_a_line_a_split_member_records_when_the_group_is_printed_whole(seed, db_session, run,
+                                                                                               other, total):
+    """The pre-split-members guard, restored by a line at the group's total: the card prints −705 beside the 580 line
+    (the −700 card total within the near tolerance) or −380 (the card's −580 plus the 錢包 +200), so the group is
+    whole and its member never claims the 580 line alone; that line stays open with no candidate and the owner-twin
+    guard keeps the policy off it. Assertions are scoped to the 580 line: the −705 line is guarded too (the group is
+    its near twin), while the −380 line is a backfill candidate of its own — the twin guard's population is the
+    participating card only, so no card subset takes it (pre-existing twin-guard scope)."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    member = _split_owner(seed, db_session, card, wallet, other=other)
+    stmt, (line, _), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, DAY, "全聯", total)])
     case = _open_line_case(db_session, stmt.id, line.id)
-    assert not case.candidates and _active(db_session, stmt.id) == []  # the matcher never claims a split member alone
+    assert not case.candidates and _active(db_session, stmt.id) == []  # a member of a group printed whole never alone
     assert "backfill_entry" in registry.allowed(case)  # the owner still decides
     statement = db_session.get(AccountStatement, stmt.id)
     for max_amount in ("5000", "100"):  # neither applied nor, over max_amount, proposed
         _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 0,
                                  "actions": {"backfill_entry": {"enabled": True, "max_amount": max_amount}}})
         live = settings_service.reconciliation_policy(db_session)
-        assert [c for c in policy_service.collect_candidates(db_session, statement, live) if c.action == "backfill_entry"] == []
-        assert [c for c, _ in policy_service.preview(db_session, statement, live) if c.action == "backfill_entry"] == []
-        result = policy_service.run_policy(db_session, stmt.id)
-        assert (result.applied, result.proposed) == ([], [])
-    assert _backfills(db_session) == [] and _proposals(db_session) == [] and _booked(db_session) == []
+        assert [c for c in policy_service.collect_candidates(db_session, statement, live)
+                if c.action == "backfill_entry" and c.case_id == case.id] == []
+        assert [c for c, _ in policy_service.preview(db_session, statement, live)
+                if c.action == "backfill_entry" and c.case_id == case.id] == []
+        policy_service.run_policy(db_session, stmt.id)
+    assert [a for a in _backfills(db_session) if a.case_id == case.id] == []
+    assert [p for p in _proposals(db_session) if p.case_id == case.id] == []
+    assert [c for c in _active(db_session, stmt.id) if c.line_id == line.id] == []
     assert _open_line_case(db_session, stmt.id, line.id).id == case.id
     assert db_session.get(LedgerEntry, member.id) is not None
 
@@ -1526,7 +1799,7 @@ def test_a_near_twin_recorded_since_the_collect_refuses_the_backfill_under_the_l
     assert _backfills(db_session) == [] and _booked(db_session) == []
 
 
-@pytest.mark.parametrize("owner_kind", ["plain", "split", "deleted"])
+@pytest.mark.parametrize("owner_kind", ["plain", "split_apart", "deleted"])
 def test_policy_never_rebackfills_an_event_whose_stand_in_was_replaced(seed, db_session, run, dirty_on, owner_kind):
     # the policy backfilled the line; the owner's entry arrived and replace_stand_in removed the stand-in; a MOZE
     # re-import then deletes the owner entry and re-creates it with a new id ("deleted": the owner removed it).
@@ -1539,7 +1812,7 @@ def test_policy_never_rebackfills_an_event_whose_stand_in_was_replaced(seed, db_
     stand_in_id = db_session.get(ReconciliationAction, backfill_id).created_entry_ids[0]
 
     def owner_entry():
-        if owner_kind == "split":
+        if owner_kind == "split_apart":  # the card's half of a split with 錢包: the card never prints the total
             return _split_owner(seed, db_session, card, wallet, other="wallet")
         entry = seed.entry(card, "-580", day=DAY, merchant="全聯")
         db_session.commit()
@@ -1568,9 +1841,11 @@ def test_policy_never_rebackfills_an_event_whose_stand_in_was_replaced(seed, db_
         assert (result.applied, result.proposed) == ([], [])
     assert [a.id for a in _backfills(db_session)] == [backfill_id] and _proposals(db_session) == []
     assert _booked(db_session) == []
-    if owner_kind == "plain":  # the matcher re-claims the re-created plain entry
+    # `split_apart` now behaves like `plain`: the re-created member's group is still never printed whole on the card,
+    # so the member re-claims the line itself (split-members spec §3) and nothing is left to re-backfill
+    if owner_kind != "deleted":  # the matcher re-claims the re-created entry
         assert [c.entry_id for c in _active(db_session, stmt.id) if c.line_id == line.id] == [new.id]
-    else:  # a split member is never claimed alone; a deleted record leaves the line to the owner
+    else:  # a deleted record leaves the line to the owner
         assert not _open_line_case(db_session, stmt.id, line.id).candidates
         assert [c for c in _active(db_session, stmt.id) if c.line_id == line.id] == []
 
@@ -1596,7 +1871,9 @@ def test_an_owner_twin_recorded_since_the_collect_refuses_the_backfill_under_the
 CREATIONS = {
     "backfill_entry": (_line(1, DAY, "全聯", 580), {"kind": "expense"}, "-580", "expense"),
     # the fee twin is a near one (2026-10-19: a split's fee member at the exact amount is now claimed by the fee line
-    # itself, so only a near member still leaves the line to the guard)
+    # itself, so only a near member still leaves the line to the guard; since split-members, only while a reconcile
+    # has not yet seen it or its group is printed whole — a near member of a group printed apart is the line's near
+    # candidate)
     "create_system_entry": (_line(1, DAY, "年費", 1200, "fee"), {"kind": "fee"}, "-1190", "fee"),
 }
 
@@ -1635,22 +1912,68 @@ def _created(db, action):
 
 
 @pytest.mark.parametrize("action", sorted(CREATIONS))
-def test_the_policy_supersedes_its_pending_creation_proposal_once_an_owner_twin_arrives(seed, db_session, run, dirty_on,
-                                                                                         action):
-    # review of aa8aaa1: the case keeps its version through reconcile, so supersede_stale never fires; the run does
+def test_a_split_twin_printed_apart_takes_the_line_from_the_pending_creation_proposal(seed, db_session, run, dirty_on,
+                                                                                      action):
+    """Split-members spec §3/§4.1: the twin's group (−580 −120, or −1190 −120 for the fee) is never printed whole, so
+    its member competes like a standalone entry arriving later. `backfill_entry`: the −580 member claims the 580 line
+    and reconcile supersedes the line case, as a plain owner entry would; the proposal, left pending, can no longer
+    be applied (`proposal_superseded`). `create_system_entry`: the −1190 fee member is the 1200 fee line's near
+    candidate (an amount_delta case replaces the bank-only one) and the run supersedes the proposal
+    (`owner_may_record`)."""
     card, wallet, stmt, line, proposal = _over_cap_proposal(seed, db_session, run, action)
-    _twin(seed, db_session, card, wallet, action, other="card")  # the MOZE import arrives later
+    member = _twin(seed, db_session, card, wallet, action, other="card")  # the MOZE import arrives later
     rec.reconcile(db_session, stmt.id)
     db_session.commit()
     result = policy_service.run_policy(db_session, stmt.id)
     assert (result.applied, result.proposed) == ([], [])
+    assert _reload(db_session, ReconciliationCase, proposal.case_id).status == "superseded"
+    if action == "backfill_entry":
+        assert [(c.line_id, c.entry_id, c.group_id) for c in _active(db_session, stmt.id)] == [(line.id, member.id, None)]
+        assert _reload(db_session, ReconciliationProposal, proposal.id).status == "pending"
+        with pytest.raises(CodedConflictError) as info:
+            proposal_service.apply_proposal(db_session, proposal_id=proposal.id, label="owner-test", request_id=None)
+        db_session.rollback()
+        assert info.value.code == "proposal_superseded"  # made at a case version reconcile has moved past
+    else:
+        (near,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id]
+        assert (near.kind, [(c["reason"], c["entry_id"]) for c in near.candidates]) == ("amount_delta", [("near", member.id)])
+        assert _reload(db_session, ReconciliationProposal, proposal.id).status == "superseded"
+        (superseded,) = _audit(db_session, "proposal_superseded")
+        assert superseded.detail == {"proposal_id": proposal.id, "by": "owner_may_record"}
+    assert _created(db_session, action) == [] and _booked(db_session) == []
+
+
+@pytest.mark.parametrize("action", sorted(CREATIONS))
+def test_the_policy_supersedes_its_pending_creation_proposal_once_an_owner_twin_printed_whole_arrives(
+        seed, db_session, run, dirty_on, action):
+    # review of aa8aaa1: the case keeps its version through reconcile, so supersede_stale never fires; the run does.
+    # The statement also prints a line near the twin group's total (−705 for −700, −1315 for −1310): the group is
+    # whole, its member never takes the line alone, and the owner-twin guard is what supersedes the proposal.
+    near_sum = {"backfill_entry": 705, "create_system_entry": 1315}[action]
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    db_session.commit()
+    stmt, (line, _), _ = _submit(db_session, run, card, [CREATIONS[action][0], _line(2, DAY, "全聯", near_sum)])
+    _set_policy(db_session, _creation_policy(action, "100"))
+    policy_service.run_policy(db_session, stmt.id)
+    (proposal,) = [p for p in _proposals(db_session, author="policy", action=action) if
+                   _reload(db_session, ReconciliationCase, p.case_id).line_id == line.id]
+    assert proposal.status == "pending"
+    _twin(seed, db_session, card, wallet, action, other="card")  # the MOZE import arrives later
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    assert _active(db_session, stmt.id) == []
+    result = policy_service.run_policy(db_session, stmt.id)
+    assert (result.applied, result.proposed) == ([], [])
     assert _reload(db_session, ReconciliationProposal, proposal.id).status == "superseded"
-    (superseded,) = _audit(db_session, "proposal_superseded")
-    assert (superseded.actor, superseded.case_id, superseded.statement_id) == ("policy", proposal.case_id, stmt.id)
-    assert superseded.detail == {"proposal_id": proposal.id, "by": "owner_may_record"}
+    assert {p.status for p in _proposals(db_session, author="policy")} == {"superseded"}  # the −705 line's too
+    superseded = [a for a in _audit(db_session, "proposal_superseded") if a.detail["proposal_id"] == proposal.id]
+    assert [(a.actor, a.case_id, a.statement_id, a.detail["by"]) for a in superseded] == \
+        [("policy", proposal.case_id, stmt.id, "owner_may_record")]
     assert _reload(db_session, ReconciliationCase, proposal.case_id).status == "open"  # no live proposal left
-    policy_service.run_policy(db_session, stmt.id)  # nothing pending left: no second audit row
-    assert len(_audit(db_session, "proposal_superseded")) == 1
+    count = len(_audit(db_session, "proposal_superseded"))
+    policy_service.run_policy(db_session, stmt.id)  # nothing pending left: no further audit row
+    assert len(_audit(db_session, "proposal_superseded")) == count
     with pytest.raises(CodedConflictError) as info:
         proposal_service.apply_proposal(db_session, proposal_id=proposal.id, label="owner-test", request_id=None)
     db_session.rollback()
@@ -1708,11 +2031,40 @@ def test_a_replacement_applied_since_the_collect_refuses_the_backfill_under_the_
 # --- PR #77 review M1/S1: the twin re-check under the writer barrier; system entries guarded too ---------------------
 
 @pytest.mark.parametrize("other", ["card", "wallet"])
-def test_policy_never_books_a_system_entry_a_split_member_records(seed, db_session, run, other):
+def test_policy_never_books_a_system_entry_a_split_member_records_it_is_the_members_near_case(seed, db_session, run,
+                                                                                               other):
+    """Split-members spec §3/§4.1: the group's total (−1310 on the card, −990 across the card and 錢包) is far from
+    the 1200 fee line, so the group is printed apart and its −1190 fee member is the line's near candidate like a
+    standalone entry: an amount_delta case for the owner, no bank-only line case and nothing for the policy to book."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    member = _twin(seed, db_session, card, wallet, "create_system_entry", other=other)
+    stmt, (line,), _ = _submit(db_session, run, card, [CREATIONS["create_system_entry"][0]])
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id]
+    assert (case.kind, [(c["reason"], c["entry_id"]) for c in case.candidates]) == ("amount_delta", [("near", member.id)])
+    statement = db_session.get(AccountStatement, stmt.id)
+    for max_amount in ("5000", "100"):  # neither applied nor, over max_amount, proposed
+        _set_policy(db_session, _creation_policy("create_system_entry", max_amount))
+        live = settings_service.reconciliation_policy(db_session)
+        assert policy_service.collect_candidates(db_session, statement, live) == []
+        result = policy_service.run_policy(db_session, stmt.id)
+        assert (result.applied, result.proposed) == ([], [])
+    assert _created(db_session, "create_system_entry") == [] and _proposals(db_session) == [] and _booked(db_session) == []
+
+
+@pytest.mark.parametrize("other, total", [("card", 1315), ("wallet", 990)])
+def test_policy_never_books_a_system_entry_a_split_member_records_when_the_group_is_printed_whole(seed, db_session, run,
+                                                                                                  other, total):
+    """The pre-split-members guard, restored by a purchase line at the group's total — 1315 near the card's −1310, or
+    990 for the card's −1190 fee plus the 錢包 +200: the group is whole, its fee member is no candidate of the 1200 fee
+    line, which stays bank-only, and the owner-twin guard keeps the policy off it. (The total line itself is a
+    `backfill_entry` candidate — pre-existing twin-guard scope: its group subsets never pair a fee member with a
+    purchase line, and a 錢包 member is outside its population — which this policy, enabling `create_system_entry`
+    only, never runs.)"""
     card = _card(seed, db_session)
     wallet = seed.account("錢包")
     _twin(seed, db_session, card, wallet, "create_system_entry", other=other)
-    stmt, (line,), _ = _submit(db_session, run, card, [CREATIONS["create_system_entry"][0]])
+    stmt, (line, _), _ = _submit(db_session, run, card, [CREATIONS["create_system_entry"][0], _line(2, DAY, "全聯", total)])
     case = _open_line_case(db_session, stmt.id, line.id)
     assert (case.context or {}).get("hint") == "bank_only" and not case.candidates
     assert "create_system_entry" in registry.allowed(case)  # the owner still decides
@@ -1720,7 +2072,8 @@ def test_policy_never_books_a_system_entry_a_split_member_records(seed, db_sessi
     for max_amount in ("5000", "100"):  # neither applied nor, over max_amount, proposed
         _set_policy(db_session, _creation_policy("create_system_entry", max_amount))
         live = settings_service.reconciliation_policy(db_session)
-        assert policy_service.collect_candidates(db_session, statement, live) == []
+        assert [c for c in policy_service.collect_candidates(db_session, statement, live)
+                if c.action == "create_system_entry"] == []
         result = policy_service.run_policy(db_session, stmt.id)
         assert (result.applied, result.proposed) == ([], [])
     assert _created(db_session, "create_system_entry") == [] and _proposals(db_session) == [] and _booked(db_session) == []

@@ -50,7 +50,7 @@ export const INBOX_ERRORS: Record<string, string> = {
   no_line: '這筆已不在對帳單上',
   case_moved: '對象已變，重新整理',
   entry_claimed: '這筆記錄已對到別行',
-  entry_in_group: '這筆是拆帳成員，不能直接對',
+  entry_in_group: '這筆是分期或回饋群組的成員，不能直接對',
 };
 
 /** The fallback for a failure whose text is not a business code (a type name, a sentence). */

@@ -32,6 +32,7 @@ class Child:
     id: int
     kind: str
     flow: Decimal
+    currency: str | None = None  # the row's own currency (the loader sets it); None: the statement's currency
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,10 @@ class Entry:
     # (installment_date_drift); never represented, claimed, near/foreign-matched or reported
     claimable: bool = True
     stand_in: bool = False  # R6b.0: a backfilled entry (statement source, applied backfill_entry); owner rows win over it
+    # split members: every child as stored (claimed, covered or gated out included) for the printed-whole guard
+    # (`_kids`); `children` stays the claimable view and claim paths never read this one
+    all_children: tuple[Child, ...] = ()
+    currency: str | None = None  # the row's own currency (the loader sets it); None: the statement's currency
 
 
 @dataclass(frozen=True)
@@ -300,7 +305,8 @@ def _plan_entries(line: Line, entries: list[Entry], definition: int, claimed: se
 ASIDE_COMBINATIONS_MAX = 8  # printed-alone members of one group enumerated in combinations; more: readings incomplete
 
 
-def _group_variants(g: Group, by_id: dict[int, Entry], claimed: set[int], aside: frozenset[int]) -> tuple[list[list[Entry]], bool]:
+def _group_variants(g: Group, by_id: dict[int, Entry], claimed: set[int], aside: frozenset[int], *,
+                   prune: bool = True) -> tuple[list[list[Entry]], bool]:
     """The member sets a `split` group may represent a line with, and whether the list is complete: the whole group
     (the net reading, as before 2026-10-19) and, for the members the statement prints as their own line (`aside`,
     see `printed_alone`), the group without any combination of them — one printed fee line excuses one fee member,
@@ -310,7 +316,9 @@ def _group_variants(g: Group, by_id: dict[int, Entry], claimed: set[int], aside:
     zero — a fee and a reward printed alone go to their own lines); readings that are not nested stay and compete
     (two fees −6 and −4 against one fee −10 tie as ambiguous). Above ASIDE_COMBINATIONS_MAX printed-alone members
     only the whole reading is listed and the result is marked incomplete: the caller never auto-claims such a
-    line (`match`), since an omitted reading could compete."""
+    line (`match`), since an omitted reading could compete. `prune=False` (the printed-whole guard, `group_readings`)
+    skips the subset-sum drop and keeps every combination: the drop compares net totals before any child is added,
+    so a pruned superset can still be the claim side's `group_children` reading under a smaller `aside`."""
     members = [by_id.get(i) for i in g.member_ids]
     if any(mem is None or mem.instance is not None for mem in members):
         return [], True
@@ -329,6 +337,8 @@ def _group_variants(g: Group, by_id: dict[int, Entry], claimed: set[int], aside:
     def total(reading: list[Entry]) -> Decimal:
         return sum((mem.flow for mem in reading), ZERO).quantize(Q)
 
+    if not prune:
+        return readings, complete
     kept = [r for r in readings
             if not any(len(k) < len(r) and {mem.id for mem in k} < {mem.id for mem in r} and total(k) == total(r)
                        for k in readings)]
@@ -345,8 +355,176 @@ def incomplete_groups(kind: str, line: Line, entries: list[Entry], groups: dict[
     return sorted(g.id for g in groups.values() if g.kind == "split" and not _group_variants(g, by_id, claimed, aside)[1])
 
 
+def _kids(e: Entry) -> tuple[Child, ...]:
+    """The guard's view of a member's children: every child as stored (`all_children`), else the claimable view."""
+    return e.all_children or e.children
+
+
+def _split_member(e: Entry, groups: dict[int, Group]) -> bool:
+    """A top-level entry of a `split` group under `_standalone`'s instance rule (no installment instance)."""
+    if e.group_id is None or e.parent_entry_id is not None \
+            or (e.instance is not None and e.instance.definition_kind == "installment"):
+        return False
+    group = groups.get(e.group_id)
+    return group is not None and group.kind == "split"
+
+
+def printed_alone_children(kind: str, lines_all: list[Line], entries: list[Entry], groups: dict[int, Group]) -> frozenset[int]:
+    """The children of split members this statement prints as their own line: a child (`_kids`) of a kind the line's
+    gate admits whose flow equals a line outside `purchase`/`payment` (the child path of `_representations`), over
+    every current line whatever its coverage. No date window: the generous direction only makes more groups whole."""
+    members = [e for e in entries if _split_member(e, groups)]
+    out: set[int] = set()
+    for line in lines_all:
+        if line.line_kind in ("purchase", "payment"):
+            continue
+        gate = eligible_kinds(kind, line.line_kind)
+        out.update(c.id for e in members for c in _kids(e) if c.kind in gate and _same(c.flow, line.flow))
+    return frozenset(out)
+
+
+@dataclass(frozen=True)
+class Reading:
+    flow: Decimal
+    foreign_amount: Decimal | None
+    foreign_currency: str | None
+    members: tuple[Entry, ...]
+
+
+def _foreign_currency(currency: str | None, account_currency: str | None) -> bool:
+    """A row whose own currency (None: the statement's) is not the statement's: never summed with a line."""
+    return account_currency is not None and currency is not None and currency != account_currency
+
+
+def group_readings(g: Group, by_id: dict[int, Entry], aside: frozenset[int], aside_children: frozenset[int],
+                   account_currency: str | None = None) -> tuple[list[Reading], bool]:
+    """Every total `_representations` could read the split group `g` as on a fresh statement (claimed = ∅): for each
+    member reading of `_group_variants` (unpruned, `prune=False`: see below) the net total and, for each child view —
+    the claimable `children` (what the claim side attaches; a child covered elsewhere is absent from it) and every
+    child as stored (`_kids`) — the total with that view's children minus each combination of its printed-alone ones
+    (`aside_children`, at most ASIDE_COMBINATIONS_MAX per view; above it only the view's full total and the result
+    is incomplete). A reading's
+    foreign total is the members' summed `original_amount` when every member carries one in one shared currency. A
+    member missing from `by_id`, or a member or child (either view) in a currency other than `account_currency`
+    (spec §3 "Mixed currencies": it cannot be summed with the line; None skips the check) → `([], False)`; the
+    caller treats an incomplete or empty result as printed whole (fail-closed).
+
+    Why unpruned (PR #130 review P1): the claim side calls `_group_variants` with its own `aside` (printed alone by
+    the claimable lines, a subset of the guard's `aside_all` here) and the run's `claimed` set, and prunes there. For
+    any claimed set and any `aside ⊆ aside_all`, every member reading the claim side can build is the group without
+    some combination of its `aside` members — one of the unpruned combinations over `aside_all`; the claimed filter
+    and the subset-sum pruning only remove readings (children are then read per member reading by the child views
+    below, as before). Pruning here instead would compare net totals before children: a superset whose net equals a
+    subset's is dropped although its child-inclusive total differs, and the guard would miss the claim side's
+    `group_children` reading. The cap (`complete`) is unchanged."""
+    if any(i not in by_id for i in g.member_ids):
+        return [], False
+    if any(_foreign_currency(x.currency, account_currency)
+           for mem in (by_id[i] for i in g.member_ids) for x in (mem, *mem.children, *_kids(mem))):
+        return [], False
+    variants, complete = _group_variants(g, by_id, set(), aside, prune=False)
+    out: list[Reading] = []
+    seen: set[tuple] = set()
+
+    def add(flow: Decimal, members: tuple[Entry, ...]) -> None:
+        currencies = {mem.original_currency for mem in members}
+        foreign = None
+        currency = None
+        if all(mem.original_amount is not None for mem in members) and len(currencies) == 1 and None not in currencies:
+            foreign = sum((mem.original_amount for mem in members), ZERO).quantize(Q)
+            currency = next(iter(currencies))
+        key = (flow, foreign, tuple(mem.id for mem in members))
+        if key not in seen:
+            seen.add(key)
+            out.append(Reading(flow, foreign, currency, members))
+
+    for variant in variants:
+        members = tuple(variant)
+        if not members:
+            continue
+        net = sum((mem.flow for mem in members), ZERO).quantize(Q)
+        add(net, members)
+        claimable_kids = [c for mem in members for c in mem.children]  # the view the claim side attaches
+        for kids in (claimable_kids, [c for mem in members for c in _kids(mem)]):
+            if not kids:
+                continue
+            removable = [c for c in kids if c.id in aside_children]
+            if len(removable) > ASIDE_COMBINATIONS_MAX:
+                complete = False
+                sizes: range = range(0, 1)
+            else:
+                sizes = range(0, len(removable) + 1)
+            for size in sizes:
+                for combo in itertools.combinations(removable, size):
+                    dropped = {c.id for c in combo}
+                    add((net + sum((c.flow for c in kids if c.id not in dropped), ZERO)).quantize(Q), members)
+    return out, complete
+
+
+def _prints_reading(line: Line, reading: Reading, rules: Rules) -> bool:
+    """Spec §3 (a)/(b): the line prints the reading's total — (a) the same amount (`_same`: a 0 total against a 0
+    line counts), or the same sign within the near tolerance (taken of the total), within the wider of the exact and
+    drift windows of the nearest member, or (b) the foreign total by magnitude, same currency, within the foreign
+    window. The line's kind, gate and coverage are never consulted."""
+    dist = min(_date_distance(line, mem) for mem in reading.members)
+    tolerance = max(rules.near_tolerance_abs, rules.near_tolerance_pct * abs(reading.flow))
+    close = _same(line.flow, reading.flow) or (line.flow * reading.flow > 0 and abs(line.flow - reading.flow) <= tolerance)
+    if close and dist <= max(rules.exact_window_days, rules.drift_window_days):
+        return True
+    return reading.foreign_amount is not None and line.foreign_amount is not None and line.foreign_amount != 0 \
+        and line.foreign_currency == reading.foreign_currency \
+        and _same(abs(reading.foreign_amount), abs(line.foreign_amount)) and dist <= rules.foreign_window_days
+
+
+def printed_whole(lines_all: list[Line], entries: list[Entry], groups: dict[int, Group], rules: Rules,
+                  aside: frozenset[int], aside_children: frozenset[int],
+                  account_currency: str | None = None) -> frozenset[int]:
+    """The split groups this statement prints whole: a reading (`group_readings` over the structural population) a
+    guard line prints (`_prints_reading`), or readings incomplete or empty — a mixed-currency group included
+    (fail-closed: its members never go apart)."""
+    by_id = {e.id: e for e in entries}
+    out: set[int] = set()
+    for g in groups.values():
+        if g.kind != "split":
+            continue
+        readings, complete = group_readings(g, by_id, aside, aside_children, account_currency)
+        if not complete or not readings or any(_prints_reading(line, r, rules) for r in readings for line in lines_all):
+            out.add(g.id)
+    return frozenset(out)
+
+
+def apart_members(entries: list[Entry], groups: dict[int, Group], whole: frozenset[int]) -> frozenset[int]:
+    """The claimable split members (`_split_member`) of groups this statement does not print whole."""
+    return frozenset(e.id for e in entries if e.claimable and _split_member(e, groups) and e.group_id not in whole)
+
+
+@dataclass(frozen=True)
+class Context:
+    aside: frozenset[int]  # printed alone by a claimable line: the claim side's (`_representations`, `incomplete_groups`)
+    aside_all: frozenset[int]  # printed alone by a guard line: the printed-whole guard's only
+    aside_children: frozenset[int]
+    whole: frozenset[int]
+    apart: frozenset[int]
+    structural: tuple[Entry, ...]
+
+
+def statement_context(kind: str, lines: list[Line], lines_all: list[Line], entries: list[Entry],
+                      groups: dict[int, Group], rules: Rules, account_currency: str) -> Context:
+    """The per-statement split-member decision over the unfiltered population (claimable ∪ structural rows), spec
+    §4.1: `aside` — the members printed alone by the claimable `lines` (owner-covered lines removed), what the claim
+    side reads, so a fee line another entry holds never changes which reading a purchase line claims; `aside_all`
+    and `aside_children` — over the guard lines `lines_all` (covered and neighbouring lines too), the guard's only;
+    the groups printed whole (mixed currencies fail closed) and the apart members."""
+    aside = printed_alone(kind, lines, entries, groups, rules)
+    aside_all = printed_alone(kind, lines_all, entries, groups, rules)
+    aside_children = printed_alone_children(kind, lines_all, entries, groups)
+    whole = printed_whole(lines_all, entries, groups, rules, aside_all, aside_children, account_currency)
+    return Context(aside, aside_all, aside_children, whole, apart_members(entries, groups, whole), tuple(entries))
+
+
 def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
-                     claimed: set[int], rules: Rules, aside: frozenset[int] = frozenset()) -> list[Representation]:
+                     claimed: set[int], rules: Rules, aside: frozenset[int] = frozenset(),
+                     apart: frozenset[int] = frozenset()) -> list[Representation]:
     gate = eligible_kinds(kind, line.line_kind)
     out: list[Representation] = []
     if line.line_kind == "installment":
@@ -360,17 +538,20 @@ def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[i
         return out
     rule = {"payment": "payment", "refund": "refund", "transfer_in": "transfer", "transfer_out": "transfer"}.get(line.line_kind, "exact")
     for e in entries:
-        # group members (save a lone member for a non-purchase line), installment instances and children never stand
-        # alone (children reach a line via the child path)
-        if e.id in claimed or not (_standalone(e) or _lone_member(e, line.line_kind, groups)) or _entry_class(e) not in gate:
+        # group members (save a lone member for a non-purchase line and a member of a split group the statement
+        # prints apart, `apart`), installment instances and children never stand alone (children reach a line via the
+        # child path)
+        if e.id in claimed or not (_standalone(e) or _lone_member(e, line.line_kind, groups) or e.id in apart) \
+                or _entry_class(e) not in gate:
             continue
         if not _peer_ok(kind, line, e):
             continue
         principal = (Row(e.id, "principal", e.flow),)
         child_rows = tuple(Row(c.id, "child", c.flow) for c in e.children if c.id not in claimed)
-        variants = [("standalone", rule, principal)]
+        alone, with_children = ("member_alone", "member_children") if e.id in apart else ("standalone", "principal_children")
+        variants = [(alone, rule, principal)]
         if child_rows:
-            variants.append(("principal_children", "exact_children", principal + child_rows))
+            variants.append((with_children, "exact_children", principal + child_rows))
         for rep_kind, rep_rule, rows in variants:
             if conserved(rows, line.flow):
                 score, reasons = _score(line, (e,), rules.exact_window_days)
@@ -493,7 +674,8 @@ def _foreign_groups(kind: str, line: Line, entries: list[Entry], groups: dict[in
 
 
 def _foreign_case(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], claimed: set[int], fee_expected,
-                  rules: Rules, currency: str, aside: frozenset[int] = frozenset()) -> Case | None:
+                  rules: Rules, currency: str, aside: frozenset[int] = frozenset(),
+                  apart: frozenset[int] = frozenset()) -> Case | None:
     """The foreign amounts are compared by magnitude (2026-10-19): a line's `foreign_amount` is stored as the parser
     printed it (positive on most debit lines, negative on some refunds) while an entry's `original_amount` carries
     the entry's sign, so a signed comparison never held for a debit line printed unsigned (the production ledger
@@ -503,7 +685,7 @@ def _foreign_case(kind: str, line: Line, entries: list[Entry], groups: dict[int,
         return None
     gate = eligible_kinds(kind, line.line_kind)
     found = sorted((e for e in entries
-                    if e.id not in claimed and _standalone(e) and _entry_class(e) in gate and _peer_ok(kind, line, e)
+                    if e.id not in claimed and (_standalone(e) or e.id in apart) and _entry_class(e) in gate and _peer_ok(kind, line, e)
                     and e.original_amount is not None and e.original_amount != 0 and e.original_currency == line.foreign_currency
                     and _same(abs(e.original_amount), abs(line.foreign_amount)) and _date_distance(line, e) <= rules.foreign_window_days),
                    key=lambda e: (_date_distance(line, e), e.id))
@@ -535,7 +717,8 @@ def _foreign_case(kind: str, line: Line, entries: list[Entry], groups: dict[int,
                 {"residual": str(residual), "fee_expected": None if fee_q is None else str(fee_q), "fee_matches": matches, "entry_id": e.id})
 
 
-def _near_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], rules: Rules) -> Case | None:
+def _near_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], rules: Rules,
+               apart: frozenset[int] = frozenset()) -> Case | None:
     """R6a.4: same amount within max(abs, pct) and the near window. Merchant-token overlap (half of the union) is
     required only for candidates on another day; on the same day amount proximity is enough. Never claims."""
     gate = eligible_kinds(kind, line.line_kind)
@@ -543,7 +726,7 @@ def _near_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], r
     tol = max(rules.near_tolerance_abs, (rules.near_tolerance_pct * abs(line.flow)).quantize(Q))
     found: list[tuple[Decimal, int, int, Decimal]] = []
     for e in entries:
-        if e.id in claimed or _entry_class(e) not in gate or not _standalone(e) or not _peer_ok(kind, line, e):
+        if e.id in claimed or _entry_class(e) not in gate or not (_standalone(e) or e.id in apart) or not _peer_ok(kind, line, e):
             continue
         delta = (line.flow - e.flow).quantize(Q)
         dist = _date_distance(line, e)
@@ -562,13 +745,15 @@ def _near_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], r
     return Case(line.id, best_id, "amount_delta", cands, {"residual": str(best_delta), "fee_matches": False, "entry_id": best_id})
 
 
-def _drift_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], rules: Rules) -> Case | None:
-    """R6a.5: a standalone, gated, unclaimed entry with the same amount and sign, farther than the exact window but
-    within the drift window → an amount_delta proposal (residual 0) the owner confirms with `match`. Never claims."""
+def _drift_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], rules: Rules,
+                apart: frozenset[int] = frozenset()) -> Case | None:
+    """R6a.5: a standalone or apart-member (`apart`), gated, unclaimed entry with the same amount and sign, farther
+    than the exact window but within the drift window → an amount_delta proposal (residual 0) the owner confirms with
+    `match`. Never claims."""
     gate = eligible_kinds(kind, line.line_kind)
     found: list[tuple[int, int]] = []
     for e in entries:
-        if e.id in claimed or _entry_class(e) not in gate or not _standalone(e) or not _peer_ok(kind, line, e):
+        if e.id in claimed or _entry_class(e) not in gate or not (_standalone(e) or e.id in apart) or not _peer_ok(kind, line, e):
             continue
         if not _same(e.flow, line.flow):
             continue
@@ -597,8 +782,8 @@ def _bank_only(line: Line, rules: Rules) -> dict | None:
 
 
 def _claimed_by_earlier_line(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
-                             claimed: set[int], rules: Rules, aside: frozenset[int]) -> int | None:
-    shadow = _representations(kind, line, entries, groups, plan_map, set(), rules, aside)
+                             claimed: set[int], rules: Rules, aside: frozenset[int], apart: frozenset[int]) -> int | None:
+    shadow = _representations(kind, line, entries, groups, plan_map, set(), rules, aside, apart)
     if len(shadow) == 1 and any(row.entry_id in claimed for row in shadow[0].rows):
         return shadow[0].rows[0].entry_id
     return None
@@ -621,15 +806,23 @@ def _designated_by_cases(cases: list[Case]) -> set[int]:
 
 
 def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
-          fee_expected: Callable[[Entry], Decimal | None], rules: Rules, account_currency: str) -> MatchResult:
+          fee_expected: Callable[[Entry], Decimal | None], rules: Rules, account_currency: str,
+          lines_all: list[Line] | None = None) -> MatchResult:
+    """`lines_all`: the guard lines — every current line of the statement, covered ones included, and the
+    neighbouring statements' (default `lines`); `entries` may carry structural rows (`claimable=False`), which only
+    the printed-whole guard (`statement_context`) reads."""
     result = MatchResult()
     claimed: set[int] = set()
+    ctx = statement_context(statement_kind, lines, lines_all or lines, entries, groups, rules,
+                            account_currency)  # over the unfiltered population
     hint_only = [e for e in entries if not e.claimable]
     entries = [e for e in entries if e.claimable]
-    aside = printed_alone(statement_kind, lines, entries, groups, rules)
+    aside, apart = ctx.aside, ctx.apart
     for line in sorted(lines, key=lambda ln: ln.id):
-        reps = sorted(_representations(statement_kind, line, entries, groups, plan_map, claimed, rules, aside), key=lambda r: r.score, reverse=True)
-        truncated = incomplete_groups(statement_kind, line, entries, groups, claimed, aside) if reps else []
+        reps = sorted(_representations(statement_kind, line, entries, groups, plan_map, claimed, rules, aside, apart),
+                      key=lambda r: r.score, reverse=True)
+        # completeness over the structural population with nothing claimed: fee members covered earlier still count
+        truncated = incomplete_groups(statement_kind, line, list(ctx.structural), groups, set(), aside) if reps else []
         if truncated:  # a split group with more printed-alone members than are enumerated: the owner decides
             result.cases.append(Case(line.id, None, "ambiguous", _ambiguous(line, reps).candidates,
                                      {"hint": "group_readings_incomplete", "group_ids": truncated}))
@@ -646,13 +839,13 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             result.cases.append(_ambiguous(line, reps))
             continue
         if not reps:
-            taken = _claimed_by_earlier_line(statement_kind, line, entries, groups, plan_map, claimed, rules, aside)
+            taken = _claimed_by_earlier_line(statement_kind, line, entries, groups, plan_map, claimed, rules, aside, apart)
             if taken is not None:
                 result.cases.append(Case(line.id, None, "line_unmatched", (), {"hint": "claimed_by_earlier_line", "entry_id": taken}))
                 continue
-        case = _foreign_case(statement_kind, line, entries, groups, claimed, fee_expected, rules, account_currency, aside) \
-            or _near_case(statement_kind, line, entries, claimed, rules) \
-            or _drift_case(statement_kind, line, entries, claimed, rules)
+        case = _foreign_case(statement_kind, line, entries, groups, claimed, fee_expected, rules, account_currency, aside, apart) \
+            or _near_case(statement_kind, line, entries, claimed, rules, apart) \
+            or _drift_case(statement_kind, line, entries, claimed, rules, apart)
         if case is not None:
             result.cases.append(case)
             continue
