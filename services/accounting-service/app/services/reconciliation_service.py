@@ -256,11 +256,13 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
     day = func.coalesce(LedgerEntry.posted_date, LedgerEntry.entry_date)
     kinds_out = ["balance_adjustment"] + ([] if include_reward else ["reward"])
     claimed = coverage_service.claimed_entry_ids(db, exclude_statement_id=statement.id) | set(exclude)
-    parents = [e for e in db.execute(
+    rows = list(db.execute(
         select(LedgerEntry)
         .where(LedgerEntry.account_id.in_(accounts), LedgerEntry.currency == statement.currency,
                LedgerEntry.parent_entry_id.is_(None), day >= lo, day <= hi, LedgerEntry.kind.not_in(kinds_out))
-        .order_by(LedgerEntry.id)).scalars() if e.id not in claimed]
+        .order_by(LedgerEntry.id)).scalars())
+    parents = [e for e in rows if e.id not in claimed]
+    covered = [e for e in rows if e.id in claimed and e.group_id is None]  # the carrier population, id order
     ids = [e.id for e in parents]
     children = _claimable_children(db, statement, accounts, ids, claimed)
     transfer_ids = {e.transfer_group_id for e in parents if e.transfer_group_id is not None}
@@ -298,7 +300,7 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
             instance=instances.get(e.id), in_reverse=statement.period_start <= posted <= statement.period_end,
             stand_in=e.id in stand_in_ids))
     entries.extend(_drifted_instances(db, statement, accounts, set(ids) | claimed))
-    entries.extend(_carriers(db, statement, accounts, claimed, lo, hi, kinds_out, stand_in_ids))
+    entries.extend(_carriers(db, statement, accounts, covered, claimed, stand_in_ids))
     loaded = {e.id for e in entries}
     # structural rows (spec 2026-10-24 §3): the split members the gates left out, read only by the printed-whole guard.
     # A member carrying a schedule instance gets none: its group then misses a member and is whole by fail-closed, and
@@ -329,27 +331,15 @@ def _claimable_children(db: Session, statement: AccountStatement, accounts: list
     return children
 
 
-def _carriers(db: Session, statement: AccountStatement, accounts: list[int], claimed: set[int], lo: date, hi: date,
-              kinds_out: list[str], stand_in_ids: set[int]) -> list[matching.Entry]:
-    """Fee-child spec 2026-10-24 §5.1: the covered standalone parents (in `claimed`, ungrouped, top level, the
-    `parents` gates: participating account, statement currency, dated in `[lo, hi]`, kind not in `kinds_out`; no
-    installment instance — a recurring one stays) that still have a claimable child, as carrier rows: claimable,
-    never in reverse, `children` the claimable children, no `all_children` and no instance. Only the child path
-    visits them; `reconcile()` locks their children, never the carrier itself."""
-    if not claimed:
-        return []
-    day = func.coalesce(LedgerEntry.posted_date, LedgerEntry.entry_date)
-    wanted = sorted(claimed)
-    covered: list[LedgerEntry] = []
-    for start in range(0, len(wanted), 200):
-        covered += db.execute(
-            select(LedgerEntry)
-            .where(LedgerEntry.id.in_(wanted[start:start + 200]), LedgerEntry.group_id.is_(None),
-                   LedgerEntry.parent_entry_id.is_(None), LedgerEntry.account_id.in_(accounts),
-                   LedgerEntry.currency == statement.currency, day >= lo, day <= hi,
-                   LedgerEntry.kind.not_in(kinds_out))
-            .order_by(LedgerEntry.id)).scalars()
-    if not covered:  # ascending: the chunks are, and each is read in id order
+def _carriers(db: Session, statement: AccountStatement, accounts: list[int], covered: list[LedgerEntry],
+              claimed: set[int], stand_in_ids: set[int]) -> list[matching.Entry]:
+    """Fee-child spec 2026-10-24 §5.1: the covered standalone parents that still have a claimable child, as carrier
+    rows: claimable, never in reverse, `children` the claimable children, no `all_children` and no instance.
+    `covered` is the rows of `load_candidates`' `parents` read (participating account, statement currency, top level,
+    dated in the window, kind gate) that are in `claimed` and ungrouped, in id order — so the one extra query per
+    load is the child query; a parent with an installment instance is dropped (a recurring one stays). Only the
+    child path visits them; `reconcile()` locks their children, never the carrier itself."""
+    if not covered:
         return []
     scheduled = _instances(db, [e.id for e in covered])
     covered = [e for e in covered if e.id not in scheduled or scheduled[e.id].definition_kind != "installment"]
@@ -1040,7 +1030,7 @@ def _survivors(entries: list[matching.Entry], locked_rows: Mapping[int, LedgerEn
     return out
 
 
-def _with_children(entry: matching.Entry, locked: dict[int, LedgerEntry]) -> matching.Entry:
+def _with_children(entry: matching.Entry, locked: Mapping[int, LedgerEntry]) -> matching.Entry:
     """Trim the claimable `children` to the locked ones; `all_children` (the guard's view) is left untouched."""
     children = tuple(c for c in entry.children if c.id in locked)
     return entry if children == entry.children else replace(entry, children=children)
