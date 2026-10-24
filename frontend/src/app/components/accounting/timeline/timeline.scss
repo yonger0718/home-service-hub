@@ -402,3 +402,33 @@ app-split-folder {
 }
 
 .daily-updating { color: var(--app-text-muted); font-size: 0.72rem; margin: 0 0 8px; }
+
+/* Native controls projected into <app-filter-bar>: mirror the global .hub-filter-field input look. */
+.filter-q,
+.filter-account,
+.amount-range input {
+  min-height: 36px;
+  width: 100%;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: var(--app-surface-soft);
+  color: inherit;
+  font: inherit;
+  padding: 0 10px;
+
+  &:focus-visible {
+    outline: none;
+    border-color: var(--app-primary);
+    box-shadow: 0 0 0 3px var(--app-focus-ring);
+  }
+}
+
+.amount-range {
+  display: flex;
+  gap: 8px;
+
+  input {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}

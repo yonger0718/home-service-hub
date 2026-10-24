@@ -5,15 +5,6 @@
     <button type="button" class="month-prev" aria-label="上個月" (click)="moveMonth(-1)">‹</button>
     <b class="month-label">{{ monthText() }}</b>
     <button type="button" class="month-next" aria-label="下個月" (click)="moveMonth(1)">›</button>
-    @if (isPhone()) {
-      <button
-        type="button"
-        class="search-toggle"
-        aria-label="搜尋"
-        [attr.aria-expanded]="filtersOpen()"
-        (click)="toggleFilters()"
-      >⌕</button>
-    }
     <button type="button" class="bell" [attr.aria-label]="'提醒中心，' + reminderCount() + ' 項'" (click)="openReminders()">🔔@if (reminderCount() > 0) {<span class="bell-count" aria-hidden="true">{{ reminderCount() }}</span>}</button>
     <div class="view-toggle" role="radiogroup" aria-label="檢視模式">
       <button type="button" role="radio" [attr.aria-checked]="view() === 'list'" (click)="setView('list')">清單</button>
@@ -21,6 +12,83 @@
     </div>
   </div>
 
+  <app-filter-bar [chips]="filterChips()" (remove)="removeFilter($event)" (clearAll)="clearFilters()" (reset)="resetSecondaryFilters()" (openChange)="onFilterPanelOpen($event)">
+    <input
+      filterBarSearch
+      #queryInput
+      class="filter-q"
+      type="search"
+      placeholder="搜尋名稱 / 商家 / 備註"
+      aria-label="搜尋名稱、商家或備註"
+      (compositionstart)="onQueryCompositionStart()"
+      (compositionend)="onQueryInput($event)"
+      (input)="onQueryInput($event)"
+      (keydown)="onQueryKeydown($event)"
+    />
+    <select filterBarPrimary class="filter-account" aria-label="帳戶" (change)="setAccount($any($event.target).value)">
+      <option value="" [selected]="accountFilter() === null">全部帳戶</option>
+      @for (account of accounts(); track account.id) {
+        <option [value]="account.id" [selected]="accountFilter() === account.id">{{ account.name }}</option>
+      }
+    </select>
+    <div filterBarSecondary class="filter-fields">
+      <label class="hub-filter-field">
+        <span class="field-label">類型</span>
+        <select class="filter-kind" aria-label="類型" (change)="setKind($any($event.target).value)">
+          <option value="" [selected]="kindFilter() === null">全部類型</option>
+          @for (option of kindOptions; track option.kind) {
+            <option [value]="option.kind" [selected]="kindFilter() === option.kind">{{ option.label }}</option>
+          }
+        </select>
+      </label>
+      <label class="hub-filter-field">
+        <span class="field-label">類別</span>
+        <select class="filter-category" aria-label="類別" (focus)="ensureOptions()" (change)="setCategory($any($event.target).value)">
+          <option value="" [selected]="categoryFilter() === null">全部類別</option>
+          @for (option of categoryOptions(); track option.id) {
+            <option [value]="option.id" [selected]="categoryFilter() === option.id">{{ option.name }}</option>
+          }
+        </select>
+      </label>
+      <label class="hub-filter-field">
+        <span class="field-label">專案</span>
+        <select class="filter-project" aria-label="專案" (focus)="ensureOptions()" (change)="setProject($any($event.target).value)">
+          <option value="" [selected]="projectFilter() === null">全部專案</option>
+          @for (option of projectOptions(); track option.id) {
+            <option [value]="option.id" [selected]="projectFilter() === option.id">{{ option.name }}</option>
+          }
+        </select>
+      </label>
+      <label class="hub-filter-field">
+        <span class="field-label">標籤</span>
+        <input class="filter-tag" type="search" placeholder="# 標籤" aria-label="標籤（空格、逗號或頓號分隔，任一符合）" [value]="tagFilter()" (change)="setTag($any($event.target).value)" />
+      </label>
+      <label class="hub-filter-field">
+        <span class="field-label">商家</span>
+        <input class="filter-merchant" type="search" placeholder="商家" aria-label="商家" [value]="merchantFilter()" (change)="setMerchant($any($event.target).value)" />
+      </label>
+      <div class="hub-filter-field" role="group" aria-labelledby="timeline-amount-label">
+        <span class="field-label" id="timeline-amount-label">金額範圍</span>
+        <div class="amount-range">
+          <input class="filter-amount-min" type="text" inputmode="decimal" placeholder="金額 ≥（原幣）" aria-label="金額下限，以帳戶幣別計，含正負號" [value]="amountMin()" (change)="setAmountMin($any($event.target).value)" />
+          <input class="filter-amount-max" type="text" inputmode="decimal" placeholder="金額 ≤（原幣）" aria-label="金額上限，以帳戶幣別計，含正負號" [value]="amountMax()" (change)="setAmountMax($any($event.target).value)" />
+        </div>
+      </div>
+    </div>
+  </app-filter-bar>
+
+  @if (filtersActive()) {
+    @if (view() === 'list') {
+      <div class="match-row">
+        <span class="match-count">符合條件 {{ total() ?? '—' }} 筆</span>
+        <button type="button" class="clear-filters" aria-label="清除篩選" (click)="clearFilters()">清除篩選</button>
+      </div>
+    } @else {
+      <div class="match-row match-row--calendar">
+        <button type="button" class="clear-filters" aria-label="清除篩選" (click)="clearFilters()">清除篩選</button>
+      </div>
+    }
+  }
   <div class="sum" [attr.aria-busy]="summaryLoading() ? 'true' : null">
     @if (filtersActive()) {
       <small class="sum-scope">全月 · 未套篩選</small>
@@ -52,67 +120,11 @@
       }
     }
   </div>
-  @if (filtersActive()) {
-    @if (view() === 'list') {
-      <div class="match-row">
-        <span class="match-count">符合條件 {{ total() ?? '—' }} 筆</span>
-        <button type="button" class="clear-filters" aria-label="清除篩選" (click)="clearFilters()">清除篩選</button>
-      </div>
-    } @else {
-      <div class="match-row match-row--calendar">
-        <button type="button" class="clear-filters" aria-label="清除篩選" (click)="clearFilters()">清除篩選</button>
-      </div>
-    }
-  }
   @if (view() === 'list' && upcomingBills().length > 0) {
     <button type="button" class="bill-banner" (click)="openUpcoming()">近 7 天有 {{ upcomingBills().length }} 筆繳費到期</button>
   }
   @if (missingRates().length > 0) {
     <p class="missing-rates">部分外幣未換算 ({{ missingRates().join(', ') }})</p>
-  }
-
-  @if (!isPhone() || filtersOpen()) {
-    <div class="chips filters">
-      <select class="chip tag filter-account" aria-label="帳戶" (change)="setAccount($any($event.target).value)">
-        <option value="" [selected]="accountFilter() === null">全部帳戶</option>
-        @for (account of accounts(); track account.id) {
-          <option [value]="account.id" [selected]="accountFilter() === account.id">{{ account.name }}</option>
-        }
-      </select>
-      <select class="chip tag filter-kind" aria-label="類型" (change)="setKind($any($event.target).value)">
-        <option value="" [selected]="kindFilter() === null">全部類型</option>
-        @for (option of kindOptions; track option.kind) {
-          <option [value]="option.kind" [selected]="kindFilter() === option.kind">{{ option.label }}</option>
-        }
-      </select>
-      <input
-        #queryInput
-        class="chip tag filter-q"
-        type="search"
-        placeholder="⌕ 搜尋名稱 / 商家 / 備註"
-        aria-label="搜尋名稱、商家或備註"
-        (compositionstart)="onQueryCompositionStart()"
-        (compositionend)="onQueryInput($event)"
-        (input)="onQueryInput($event)"
-        (keydown)="onQueryKeydown($event)"
-      />
-      <select class="chip tag filter-category" aria-label="類別" (focus)="ensureOptions()" (change)="setCategory($any($event.target).value)">
-        <option value="" [selected]="categoryFilter() === null">全部類別</option>
-        @for (option of categoryOptions(); track option.id) {
-          <option [value]="option.id" [selected]="categoryFilter() === option.id">{{ option.name }}</option>
-        }
-      </select>
-      <select class="chip tag filter-project" aria-label="專案" (focus)="ensureOptions()" (change)="setProject($any($event.target).value)">
-        <option value="" [selected]="projectFilter() === null">全部專案</option>
-        @for (option of projectOptions(); track option.id) {
-          <option [value]="option.id" [selected]="projectFilter() === option.id">{{ option.name }}</option>
-        }
-      </select>
-      <input class="chip tag filter-tag" type="search" placeholder="# 標籤" aria-label="標籤（空格、逗號或頓號分隔，任一符合）" [value]="tagFilter()" (change)="setTag($any($event.target).value)" />
-      <input class="chip tag filter-merchant" type="search" placeholder="商家" aria-label="商家" [value]="merchantFilter()" (change)="setMerchant($any($event.target).value)" />
-      <input class="chip tag filter-amount-min" type="text" inputmode="decimal" placeholder="金額 ≥（原幣）" aria-label="金額下限，以帳戶幣別計，含正負號" [value]="amountMin()" (change)="setAmountMin($any($event.target).value)" />
-      <input class="chip tag filter-amount-max" type="text" inputmode="decimal" placeholder="金額 ≤（原幣）" aria-label="金額上限，以帳戶幣別計，含正負號" [value]="amountMax()" (change)="setAmountMax($any($event.target).value)" />
-    </div>
   }
 
   <ng-template #rowTemplate let-row>
