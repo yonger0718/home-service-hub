@@ -17,7 +17,7 @@ The notification surfaces (提醒中心, 🔔 count, toasts, reconciliation inbo
   - One shared filter bar for 交易紀錄, 股利, 已實現損益, 現金帳戶 and the accounting timeline: search plus at most two primary controls inline, everything else behind 篩選 (a sheet on phones), active filters shown as removable chips.
   - The 記一筆 floating button hides while scrolling down and returns on scroll up or at the end of the page.
   - Accounting two-pane pages at ≥ 1280 px show a month overview in the empty pane; 帳戶 marks the selected account and its empty state says 選擇帳戶.
-  - Phone page headers keep one row: secondary actions go into a ⋯ menu.
+  - Phone page headers keep one row: secondary actions (匯入券商, 刷新行情, 匯入 CSV, 新增帳戶) go into a ⋯ menu labelled 更多動作; the dashboard's market toggle renders under the header at full width.
   - Phone KPI cards use a 2 × 2 grid; phone holdings rows use two lines.
 - **Consistency**
   - One amount formatter: TWD and JPY in whole units everywhere (cards, legends, group headers, rows); other currencies keep two decimals; a sign only on changes, PnL and ledger entries; `$` on TWD amounts except where the element's own label or column header already names TWD. Prices, per-share values and the `nativeAmount` pipe are out of its scope.

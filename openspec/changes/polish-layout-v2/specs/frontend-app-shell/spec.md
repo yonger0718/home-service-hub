@@ -21,6 +21,19 @@ Below 760 px a page header SHALL hold the title, at most one primary action and 
 - **THEN** the header SHALL be one row with 投資概覽, a ⋯ menu holding 匯入券商 and 刷新行情, and the gear (only when the tab bar omits 設定, per the live Hideable groups and tab bar parity rule)
 - **AND** the 全部 / 台股 / 美股 toggle SHALL render under the header
 
+#### Scenario: Transactions on a phone
+- **WHEN** `/portfolio/transactions` renders at 390 px
+- **THEN** the header SHALL be one row with 交易紀錄, the 新增交易 button and a ⋯ menu holding 匯入 CSV
+
+#### Scenario: Cash accounts on a phone
+- **WHEN** `/portfolio/accounts` renders at 390 px
+- **THEN** the header SHALL be one row with 現金帳戶, the 記錄入出金 button and a ⋯ menu holding 新增帳戶
+
+#### Scenario: Header menu is labelled and keyboard-operable
+- **WHEN** the ⋯ button on a phone page header is opened
+- **THEN** the button SHALL be labelled 更多動作 and open a menu (`role="menu"`) of the moved actions, the first item SHALL take focus, arrow keys SHALL move between items, and Escape SHALL close the menu and return focus to the button
+- **AND** from 760 px the actions SHALL stay inline and no ⋯ button SHALL render
+
 ## MODIFIED Requirements
 
 ### Requirement: App-wide 記一筆 floating button
