@@ -1,4 +1,6 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { By } from '@angular/platform-browser';
+import { DatePicker } from 'primeng/datepicker';
 import { provideRouter } from '@angular/router';
 import { MessageService } from 'primeng/api';
 import { Subject, of } from 'rxjs';
@@ -215,6 +217,13 @@ describe('PortfolioTransactionListComponent', () => {
       fixture.detectChanges();
       return fixture;
     }
+
+    it('the in-panel datepicker paints above the panel', () => {
+      const fixture = create();
+      openPanel(fixture);
+
+      expect(fixture.debugElement.query(By.directive(DatePicker)).componentInstance.baseZIndex).toBe(1200);
+    });
 
     it('reads 篩選 2 with a date and a broker chip', () => {
       const fixture = withTwoFilters();
