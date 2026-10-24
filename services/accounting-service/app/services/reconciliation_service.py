@@ -433,9 +433,8 @@ def guard_holders(db: Session, statement: AccountStatement, lines_all: list[matc
     run would differ from the first), on the neighbouring statements every active row. Each row's id is its
     `entry_id`, or after a SET NULL delete its snapshot id (the `_manual_claims` fallback), resolved to `ledger_entry`
     (`amount`, `original_amount`, `original_currency`, `source`; children are ledger rows too) in one query. Per line:
-    `stand_in` — any row `matching.stand_in_row`; `exact` — every row resolves and either the signed Σ `amount` is the
-    line's flow or every row carries the line's foreign currency and an `original_amount` whose summed magnitude is
-    the line's non-zero foreign amount. Read only."""
+    `stand_in` — any row `matching.stand_in_row`; `exact` — every row resolves and `matching.holder_exact` holds over
+    the rows' `amount`s and `(original_amount, original_currency)`. Read only."""
     by_line = {ln.id: ln for ln in lines_all}
     ids = sorted(by_line)
     rows: dict[int, list[int | None]] = defaultdict(list)  # line id → holder row ids (None: unresolvable)
@@ -461,12 +460,10 @@ def guard_holders(db: Session, statement: AccountStatement, lines_all: list[matc
                        for i, x in zip(row_ids, found))
         exact = False
         if all(x is not None for x in found):
-            flow = sum((Decimal(x.amount) for x in found), Decimal(0))
-            foreign = line.foreign_amount is not None and line.foreign_amount != 0 \
-                and all(x.original_currency == line.foreign_currency and x.original_amount is not None for x in found)
-            exact = flow.quantize(_Q) == Decimal(line.flow).quantize(_Q) or (foreign and abs(
-                sum((Decimal(x.original_amount) for x in found), Decimal(0))).quantize(_Q)
-                == abs(Decimal(line.foreign_amount)).quantize(_Q))
+            flows = [Decimal(x.amount) for x in found]
+            foreign = [(None if x.original_amount is None else Decimal(x.original_amount), x.original_currency)
+                       for x in found]
+            exact = matching.holder_exact(flows, foreign, line)
         out[line_id] = matching.Holder(frozenset(i for i in row_ids if i is not None), stand_in, exact)
     return out
 

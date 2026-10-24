@@ -1101,6 +1101,19 @@ def test_merge_holders_is_a_disjoint_union_and_fail_closes_a_collision():
     assert m.merge_holders({}, b) == b and m.merge_holders(a, {}) == a
 
 
+def test_holder_exact_is_the_signed_flow_sum_or_the_full_same_currency_foreign_sum():
+    jpy = L(1, d, "-3010", foreign_amount="-15000", foreign_currency="JPY")
+    assert m.holder_exact([D("-3000"), D("-10")], [(None, None), (None, None)], jpy)  # flows exact
+    assert m.holder_exact([D("-3005")], [(D("-15000"), "JPY")], jpy)  # foreign exact, TWD differs
+    assert m.holder_exact([D("-1505"), D("-1500")], [(D("-7500"), "JPY"), (D("-7500"), "JPY")], jpy)
+    assert not m.holder_exact([D("-3005")], [(D("-15000"), "USD")], jpy)  # currency mismatch
+    assert not m.holder_exact([D("-1505"), D("-1500")], [(D("-15000"), "JPY"), (None, "JPY")], jpy)  # missing amount
+    assert not m.holder_exact([D("-3005")], [(D("-14000"), "JPY")], jpy)  # foreign sum differs
+    zero = L(2, d, "-3010", foreign_amount="0", foreign_currency="JPY")
+    assert not m.holder_exact([D("-3005")], [(D("0"), "JPY")], zero)  # a zero foreign amount never matches
+    assert not m.holder_exact([D("-3005")], [(D("-15000"), "JPY")], L(3, d, "-3010"))  # no foreign amount
+
+
 def test_statement_context_threads_holders_to_the_guard():
     lines = [L(1, d, "-575")]
     assert m.statement_context("card", lines, lines, SPLIT(), {5: m.Group(5, "split", (21, 22))}, R, "TWD").whole == {5}

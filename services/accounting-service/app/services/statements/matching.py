@@ -19,7 +19,7 @@ import itertools
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Callable, Mapping
+from typing import Callable, Iterable, Mapping
 
 from app.services.statements.merchant import normalise, tokens
 
@@ -923,6 +923,19 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
     return result
 
 
+def holder_exact(flows: Iterable[Decimal], foreign: Iterable[tuple[Decimal | None, str | None]], line: Line) -> bool:
+    """Holders spec §3 `exact`, the one rule both holder sources use (`claim_holders`, the service's `guard_holders`),
+    over rows already resolved: the signed Σ `flows` is the line's flow, or every `(original_amount, original_currency)`
+    pair carries the line's foreign currency and an amount, and their summed magnitude is the line's non-zero foreign
+    amount (magnitude, as `_foreign_case`). The caller makes an unresolved row not exact before calling. Pure."""
+    pairs = list(foreign)
+    if _same(sum(flows, ZERO), line.flow):
+        return True
+    return line.foreign_amount is not None and line.foreign_amount != 0 \
+        and all(amount is not None and currency == line.foreign_currency for amount, currency in pairs) \
+        and _same(abs(sum((amount for amount, _ in pairs), ZERO)), abs(line.foreign_amount))
+
+
 def claim_holders(result: MatchResult, lines_all: list[Line], entries: list[Entry],
                   stand_in_ids: frozenset[int]) -> dict[int, Holder]:
     """Holders spec §3/§4.1: a pass-1 `MatchResult`'s claims as holders of their lines (pass 2's own-claim source).
@@ -943,12 +956,8 @@ def claim_holders(result: MatchResult, lines_all: list[Line], entries: list[Entr
         found = [by_row.get(r.entry_id) for r in rows]
         stand_in = any(stand_in_row(r.entry_id, x.source if x is not None else None, stand_in_ids)
                        for r, x in zip(rows, found))
-        exact = False
-        if all(x is not None for x in found):
-            exact = _same(sum((r.flow for r in rows), ZERO), line.flow) or (
-                line.foreign_amount is not None and line.foreign_amount != 0
-                and all(x.original_currency == line.foreign_currency and x.original_amount is not None for x in found)
-                and _same(abs(sum((x.original_amount for x in found), ZERO)), abs(line.foreign_amount)))
+        exact = all(x is not None for x in found) and holder_exact(
+            (r.flow for r in rows), ((x.original_amount, x.original_currency) for x in found), line)
         out[line.id] = Holder(frozenset(r.entry_id for r in rows), stand_in, exact)
     return out
 

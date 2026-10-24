@@ -1843,19 +1843,22 @@ def test_guard_holders_sums_the_rows_of_a_group_reading(seed, db_session, run, o
     assert _claims_of(db_session, stmt.id) == (sorted(owner + [(line.id, m1.id, None, "auto")]) if exact else owner)
 
 
-@pytest.mark.parametrize("currency, original, exact", [
-    ("JPY", "-15000", True), ("USD", "-15000", False), ("JPY", "-14000", False)])
-def test_guard_holders_foreign_exactness_from_the_db(seed, db_session, run, currency, original, exact):
+@pytest.mark.parametrize("line_foreign, currency, original, exact", [
+    ("-15000", "JPY", "-15000", True), ("-15000", "USD", "-15000", False), ("-15000", "JPY", "-14000", False),
+    ("0", "JPY", "0", False)])
+def test_guard_holders_foreign_exactness_from_the_db(seed, db_session, run, line_foreign, currency, original, exact):
     """AGENT-254 3, DB side: an owner-covered JPY line (−3010 TWD / −15000 JPY) held by a plain entry booked at −3005
     TWD / −15000 JPY → exact=True (foreign rule); the same entry with original_currency USD, or −14000 JPY, → not
-    exact. The entry is owner-matched at −3010, then edited to −3005 (dirty off): only the foreign rule can hold."""
+    exact; a zero-foreign line (0 JPY) held by a 0 JPY entry → not exact (a zero foreign amount never matches). The
+    entry is owner-matched at −3010, then edited to −3005 (dirty off): only the foreign rule can hold."""
     card = _card(seed, db_session)
     day = date(2026, 9, 12)
     held = seed.entry(card, "-3010", day=day, merchant="東京", original_amount=Decimal(original),
                       original_currency=currency)
     db_session.commit()
     stmt, (line,), _ = _submit(db_session, run, card, [
-        _line(1, day, "東京", 3010, foreign_amount=Decimal("-15000"), foreign_currency="JPY")])
+        _line(1, day, "東京", 3010, foreign_amount=Decimal(line_foreign), foreign_currency="JPY")])
+    assert line.foreign_amount == Decimal(line_foreign)
     _owner_cover(db_session, stmt, line, [held])
     held.amount = Decimal("-3005")
     db_session.commit()
