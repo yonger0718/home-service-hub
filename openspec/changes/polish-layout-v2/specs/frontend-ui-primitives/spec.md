@@ -19,15 +19,19 @@ The UI library SHALL provide `<app-filter-bar>` with a search field, up to two p
 
 ### Requirement: Values fit their container
 
-KPI, hero and summary values SHALL never wrap a number across lines or clip it. Their font size SHALL scale with the card's inline size between 22 px and the token size; when the floor is reached the card SHALL grow instead.
+KPI and summary values (the dashboard KPI cards; the 交易紀錄, 股利 and 已實現損益 summary cards; the 現金帳戶 header figures) SHALL never wrap a number across lines or clip it. Each card SHALL be an inline-size query container and the value's font size SHALL scale with the card's inline size between 18 px and `--fs-value` (`clamp(18px, 12cqi, var(--fs-value))`), with `white-space: nowrap` and tabular digits. The floor SHALL fit an 8-digit TWD amount (`$12,345,678`) in a 2 × 2 phone cell at 360 px.
 
 #### Scenario: Narrow desktop
 - **WHEN** the 投資概覽 KPI row renders at 1100 px with a market value of 3,021,869
-- **THEN** the 總市值 value SHALL be fully visible inside its card
+- **THEN** the 總市值 value SHALL be fully visible inside its card (`scrollWidth ≤ clientWidth`)
 
 #### Scenario: Phone summary card
 - **WHEN** the 交易紀錄 summary renders at 390 px with 買進金額 2,871,432
 - **THEN** the value SHALL render on one line
+
+#### Scenario: Eight digits in a phone KPI cell
+- **WHEN** the dashboard KPI grid renders at 360 px with 總市值 12,345,678
+- **THEN** `$12,345,678` SHALL be fully visible in its cell
 
 ### Requirement: Line icons for interface chrome
 

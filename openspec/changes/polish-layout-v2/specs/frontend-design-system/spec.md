@@ -2,11 +2,11 @@
 
 ### Requirement: Uniform amount formatting
 
-Every money value on screen SHALL go through one formatter. TWD amounts SHALL display without decimals (rounded to whole dollars); foreign-currency amounts SHALL keep two decimals with their currency; a leading sign (`+` or U+2212 `−`) SHALL appear only on changes, profit and loss, and ledger entries. The same value SHALL render identically on every page that shows it.
+Every money amount on screen — totals, KPI and summary values, row amounts, profit and loss, fees and taxes, cash balances and TWD ledger totals — SHALL be rendered by one formatter (`formatMoney`). TWD and JPY amounts SHALL display in whole units; every other currency SHALL keep two decimals; rounding SHALL be half away from zero. A TWD amount SHALL carry the `$` prefix unless the element's own label or column header already names TWD, in which case the bare number is shown. Other currencies SHALL render as the value, a space and the ISO code. A leading sign (`+` or U+2212 `−`) SHALL appear only on changes, profit and loss and ledger entries; other negative amounts keep `−` without a `+` counterpart. Percentages SHALL be rendered by one function (`formatPct`): one decimal below 100 in magnitude, none at or above. Prices, per-share values, the `nativeAmount` pipe output and the ledger's foreign-currency row display (`¥5,390` with its rate) are outside this formatter and keep their own precision. The same value SHALL render identically on every page that shows it.
 
 #### Scenario: Large TWD total
 - **WHEN** the portfolio market value is 3,021,869.34 TWD
-- **THEN** the hero legend, the 總市值 card and the holdings group header SHALL all show `3,021,869` (with `$` where the element shows currency)
+- **THEN** the 總市值 card and the holdings group header SHALL show `$3,021,869`, and the hero total and its composition legend (under the label 總資產 · TWD) SHALL show `3,021,869`
 
 #### Scenario: Profit keeps sign, loses decimals
 - **WHEN** a holding's estimated PnL is 292,227.2 TWD
@@ -16,13 +16,25 @@ Every money value on screen SHALL go through one formatter. TWD amounts SHALL di
 - **WHEN** a US holding's native PnL is 1,326 USD
 - **THEN** the row SHALL show `1,326.00 USD`
 
+#### Scenario: Yen is whole units
+- **WHEN** the formatter receives 5,390.4 JPY
+- **THEN** it SHALL return `5,390 JPY`
+
 #### Scenario: Same figure on two pages
 - **WHEN** realized PnL for all periods is 35,205 TWD
 - **THEN** the 交易紀錄 summary card and the 已實現損益 summary card SHALL both show `+$35,205`
 
+#### Scenario: Rounding half away from zero
+- **WHEN** the formatter receives 448.5 TWD and −4,076.5 TWD as changes
+- **THEN** it SHALL return `+$449` and `−$4,077`
+
+#### Scenario: Percent precision
+- **WHEN** `formatPct` receives 12.345 and 123.4
+- **THEN** it SHALL return `12.3%` and `123%`
+
 ### Requirement: Gain and loss colours only for gains and losses
 
-`--app-trend-*` colours SHALL be used only for values that are a gain or a loss. Costs, fees and taxes SHALL use `--app-text`.
+`--app-trend-*` colours SHALL be used only for values that are a gain or a loss. The 賣出成本費用 summary value SHALL use `--app-text`; row-level fees and taxes (手續費, 交易稅) SHALL use `--app-text-muted`.
 
 #### Scenario: Selling costs are neutral
 - **WHEN** the 已實現損益 summary shows 賣出成本費用 of 1,249
