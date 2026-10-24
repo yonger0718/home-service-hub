@@ -1208,3 +1208,24 @@ def test_guard_reads_the_claimable_children_view_beside_all_children(order):
     assert [(c.line_id, c.representation.kind, sorted(r.entry_id for r in c.representation.rows)) for c in res.claims] \
         == [(sum_id, "group_children", [21, 22, 210])]
     assert [(c.line_id, c.kind) for c in res.cases if c.line_id == member_id] == [(member_id, "line_unmatched")]
+
+
+@pytest.mark.parametrize("order", ["member_line_first", "member_line_last"])
+def test_guard_drops_a_printed_alone_child_from_the_claimable_children_view(order):
+    """Review round 2 (spec §3): child 212 (+400) is covered elsewhere, so only `all_children` carries it; the +50
+    child is printed alone by its refund line. The matcher reads −300 −280 +30 = −550 (claimable view minus the
+    printed-alone +50), which no all-children combination yields (−180, −230): the guard enumerates the printed-alone
+    combinations over both views, so −550 marks the group whole and the −300 line never claims member 21 alone."""
+    d = date(2026, 9, 3)
+    k50, k30, k400 = m.Child(210, "refund", D("50")), m.Child(211, "refund", D("30")), m.Child(212, "refund", D("400"))
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-300", group_id=5, children=[k50, k30], all_children=[k50, k30, k400]),
+            E(22, d, "-280", group_id=5)]
+    member, refund, total = (1, 2, 3) if order == "member_line_first" else (3, 1, 2)
+    lines = sorted([L(member, d, "-300"), L(refund, d, "50", kind="refund"), L(total, d, "-550")], key=lambda ln: ln.id)
+    ctx = m.statement_context("card", lines, ents, {5: g}, R)
+    assert ctx.whole == {5} and ctx.apart == frozenset()
+    res = run(lines, ents, groups={5: g})
+    assert sorted((c.line_id, c.representation.kind, sorted(r.entry_id for r in c.representation.rows))
+                  for c in res.claims) == sorted([(refund, "child", [210]), (total, "group_children", [21, 22, 211])])
+    assert [(c.line_id, c.kind) for c in res.cases if c.line_id == member] == [(member, "line_unmatched")]

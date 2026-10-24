@@ -1672,3 +1672,45 @@ def test_reconcile_claims_the_claimable_children_reading_when_a_child_is_covered
     _reconcile(db_session, stmt.id)
     assert [(r.id, r.line_id, r.entry_id) for r in _active(db_session, stmt.id)] == \
         [(r.id, r.line_id, r.entry_id) for r in rows]
+
+
+def test_a_scheduled_member_gets_no_structural_row_and_keeps_its_group_whole(seed, db_session, run):
+    """Review round 2 (spec §3): the 錢包 member carries a recurring instance, so it gets no structural row: the group
+    misses a member and is whole by fail-closed, and the card's member-sized −300 line claims nothing."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    group = seed.group("split")
+    day = date(2026, 9, 12)
+    card_member = seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    scheduled = seed.entry(wallet, "-280", day=day, merchant="餐廳", group_id=group.id)
+    definition = seed.definition([seed.line("expense", wallet, "280")], kind="recurring", name="月費")
+    seed.instance(definition, 1, day, status="posted", entries=[scheduled])
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 300)])
+    entries, groups = rec.load_candidates(db_session, stmt, [card.id], window_days=15, include_reward=False)
+    assert [e.id for e in entries] == [card_member.id] and groups[group.id].member_ids == (card_member.id, scheduled.id)
+    assert _active(db_session, stmt.id) == []
+    _reconcile(db_session, stmt.id)
+    assert _active(db_session, stmt.id) == []
+
+
+def test_a_structural_rows_child_never_supersedes_a_deferral(seed, db_session, run):
+    """Review round 2: `evaluated` counts claimable rows' children only, so the matcher's deferral of a child that now
+    sits under a structural row (another account's member) keeps its explanation, as an entry that left the
+    population does."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    group = seed.group("split")
+    day = date(2026, 9, 12)
+    seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    wallet_member = seed.entry(wallet, "-280", day=day, merchant="餐廳", group_id=group.id)
+    child = seed.entry(wallet, "20", kind="refund", day=day, parent_entry_id=wallet_member.id)
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 300)])
+    deferral = ReconciliationCase(statement_id=stmt.id, revision_id=stmt.current_revision_id, kind="entry_unmatched",
+                                  entry_id=child.id, status="resolved", explanation="deferred_next_period",
+                                  deferred_to_period_end=date(2026, 10, 30), resolved_at=func.now(), context={})
+    db_session.add(deferral)
+    db_session.commit()
+    _reconcile(db_session, stmt.id)
+    assert db_session.get(ReconciliationCase, deferral.id).status == "resolved"

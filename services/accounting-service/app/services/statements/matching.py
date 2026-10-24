@@ -387,12 +387,13 @@ class Reading:
 def group_readings(g: Group, by_id: dict[int, Entry], aside: frozenset[int],
                    aside_children: frozenset[int]) -> tuple[list[Reading], bool]:
     """Every total `_representations` could read the split group `g` as on a fresh statement (claimed = ∅): for each
-    member reading of `_group_variants` the net total, the total with the claimable child view (`children`: what the
-    claim side attaches — a child covered elsewhere is absent from it) and, when its members have children (`_kids`),
-    the total with all of them minus each combination of the printed-alone ones (`aside_children`, at most
-    ASIDE_COMBINATIONS_MAX; above it only "all children" and the result is incomplete). A reading's foreign total is the members' summed
-    `original_amount` when every member carries one in one shared currency. A member missing from `by_id` →
-    `([], False)`; the caller treats an incomplete or empty result as printed whole (fail-closed)."""
+    member reading of `_group_variants` the net total and, for each child view — the claimable `children` (what the
+    claim side attaches; a child covered elsewhere is absent from it) and every child as stored (`_kids`) — the total
+    with that view's children minus each combination of its printed-alone ones (`aside_children`, at most
+    ASIDE_COMBINATIONS_MAX per view; above it only the view's full total and the result is incomplete). A reading's
+    foreign total is the members' summed `original_amount` when every member carries one in one shared currency. A
+    member missing from `by_id` → `([], False)`; the caller treats an incomplete or empty result as printed whole
+    (fail-closed)."""
     if any(i not in by_id for i in g.member_ids):
         return [], False
     variants, complete = _group_variants(g, by_id, set(), aside)
@@ -418,21 +419,19 @@ def group_readings(g: Group, by_id: dict[int, Entry], aside: frozenset[int],
         net = sum((mem.flow for mem in members), ZERO).quantize(Q)
         add(net, members)
         claimable_kids = [c for mem in members for c in mem.children]  # the view the claim side attaches
-        if claimable_kids:
-            add((net + sum((c.flow for c in claimable_kids), ZERO)).quantize(Q), members)
-        kids = [c for mem in members for c in _kids(mem)]
-        if not kids:
-            continue
-        removable = [c for c in kids if c.id in aside_children]
-        if len(removable) > ASIDE_COMBINATIONS_MAX:
-            complete = False
-            sizes: range = range(0, 1)
-        else:
-            sizes = range(0, len(removable) + 1)
-        for size in sizes:
-            for combo in itertools.combinations(removable, size):
-                dropped = {c.id for c in combo}
-                add((net + sum((c.flow for c in kids if c.id not in dropped), ZERO)).quantize(Q), members)
+        for kids in (claimable_kids, [c for mem in members for c in _kids(mem)]):
+            if not kids:
+                continue
+            removable = [c for c in kids if c.id in aside_children]
+            if len(removable) > ASIDE_COMBINATIONS_MAX:
+                complete = False
+                sizes: range = range(0, 1)
+            else:
+                sizes = range(0, len(removable) + 1)
+            for size in sizes:
+                for combo in itertools.combinations(removable, size):
+                    dropped = {c.id for c in combo}
+                    add((net + sum((c.flow for c in kids if c.id not in dropped), ZERO)).quantize(Q), members)
     return out, complete
 
 

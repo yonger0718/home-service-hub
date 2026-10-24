@@ -257,11 +257,17 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
             stand_in=e.id in stand_in_ids))
     entries.extend(_drifted_instances(db, statement, accounts, set(ids) | claimed))
     loaded = {e.id for e in entries}
-    # structural rows (spec 2026-10-24 §3): the split members the gates left out, read only by the printed-whole guard;
-    # `instance=None` so `_installment_case` (through `hint_only`) never names one
-    entries.extend(entry_view(e, children=tuple(all_children.get(e.id, ())), all_children=tuple(all_children.get(e.id, ())),
-                              instance=None, in_reverse=False, claimable=False, stand_in=False, transfer_peer_is_card=None)
-                   for e in split_members if e.id not in loaded)
+    # structural rows (spec 2026-10-24 §3): the split members the gates left out, read only by the printed-whole guard.
+    # A member carrying a schedule instance gets none: its group then misses a member and is whole by fail-closed, and
+    # `_installment_case` (through `hint_only`) never names a structural row (`instance=None` on the rows emitted)
+    pending = [e for e in split_members if e.id not in loaded]
+    scheduled = _instances(db, [e.id for e in pending]) if pending else {}
+    for e in pending:
+        if e.id in scheduled:
+            continue
+        kids = tuple(all_children.get(e.id, ()))
+        entries.append(entry_view(e, children=kids, all_children=kids, instance=None, in_reverse=False,
+                                  claimable=False, stand_in=False, transfer_peer_is_card=None))
     return entries, groups
 
 
@@ -826,14 +832,14 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     result = matching.match(
         statement.kind, [_as_line(row) for row in line_rows], entries, groups, plan_map(db, statement.account_id),
         lambda e: proposed_fx_fee(accounts_by_id[e.account_id], e.flow), rules, statement.currency,
-        lines_all=[_as_line(row) for row in all_lines])  # every current line: the printed-whole guard reads covered ones
+        lines_all=[_as_line(row) for row in all_lines])  # every current line: the guard reads covered ones too
     lines = {row.id: row for row in line_rows}
     _write_coverage(db, statement, result, lines, locked_rows, run_id, keep_lines=manual)
     deferred = [entry_id for entry_id in result.unmatched_entry_ids if result.explained.get(entry_id) == DEFERRED]
     created: list[int] = []
     if live:
         by_id = {e.id: e for e in entries if e.claimable}
-        evaluated = set(by_id) | {c.id for e in entries for c in e.children}
+        evaluated = set(by_id) | {c.id for e in entries if e.claimable for c in e.children}
         # deferrals first: the balance gap of `_desired_cases` reads them (`held_balance`)
         _write_deferrals(db, statement, accounts_by_id[statement.account_id], deferred, evaluated)
         created = _write_cases(db, statement, _desired_cases(db, statement, accounts, result, lines, by_id, rules))
