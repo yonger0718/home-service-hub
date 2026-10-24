@@ -8,13 +8,14 @@
 
 **Tech Stack:** Python 3.13, FastAPI, SQLAlchemy, pytest (`services/accounting-service`, `.venv/bin/pytest`; integration tests need the worktree's `.env` — copy from the main checkout, mode 600, never commit).
 
-**Spec:** `docs/superpowers/specs/2026-10-24-reconciliation-split-members-design.md` (rev 4; «AGENT-248 n» marks reviewer folds).
+**Spec:** `docs/superpowers/specs/2026-10-24-reconciliation-split-members-design.md` (rev 4.1; «AGENT-248 n» / «AGENT-249 n» mark reviewer folds). Plan rev 2 folds the AGENT-249 review (1 major, 2 moderate, 1 minor).
 
 ## Global Constraints
 
 - Spec §3: a member is top-level, `group.kind == "split"`, instance rule of `_standalone` (installment instance excluded, recurring allowed).
 - Spec §3: guard tolerance `max(rules.near_tolerance_abs, rules.near_tolerance_pct · |total|)`, same sign, within `rules.drift_window_days` of the nearest structural member; foreign total compared by magnitude with `_same`, within `rules.foreign_window_days`; the line's kind, gate and coverage are never consulted.
 - Spec §3: readings = `_group_variants` member readings × children minus each combination of printed-alone children (cap `ASIDE_COMBINATIONS_MAX`); incomplete or unloadable → whole by fail-closed. Structural rows: `claimable=False, in_reverse=False`, never represented or reported.
+- Spec §3 («AGENT-249 1»): two child views — `Entry.children` (claimable view, unchanged) and `Entry.all_children` (every child as stored, filled for every split-group member); guard functions read `e.all_children or e.children`; claim paths read `children` only.
 - Spec §4.1: member rows are `Row(e.id, "principal", e.flow, group_id=None)`; representation kinds `member_alone` (rule as standalone) and `member_children` (rule `exact_children`).
 - Spec §5.1/§5.2: `entry_in_group` / `not_standalone` stay for `installment` and `reward_claim` members; the member's group is always in the action's lock targets and `touched_group_ids`.
 - Spec §5.3: inbox search is an owner override (may list members of whole groups); automatic candidates come from the matcher only.
@@ -39,10 +40,10 @@
 - Test: `services/accounting-service/tests/unit/test_statement_matching.py`
 
 **Interfaces:**
-- Produces (all pure, no new dataclass fields on `Entry`/`Group`; structural rows are ordinary `Entry` objects with `claimable=False, in_reverse=False`):
-  - `def printed_alone_children(kind: str, lines_all: list[Line], entries: list[Entry], groups: dict[int, Group]) -> frozenset[int]` — child ids of split-group members whose `kind` is in `eligible_kinds(kind, line.line_kind)` and whose flow `_same` a line of `lines_all` with `line_kind not in ("purchase", "payment")` (the child path of `_representations` :380–387).
+- Produces (pure; one new dataclass field `Entry.all_children: tuple[Child, ...] = ()` appended after `stand_in`; structural rows are ordinary `Entry` objects with `claimable=False, in_reverse=False`; the `E(...)` test helper gains `all_children=` and `S(...)` = `E(..., claimable=False, in_reverse=False)`; a helper `_kids(e) = e.all_children or e.children` is used by every guard function):
+  - `def printed_alone_children(kind: str, lines_all: list[Line], entries: list[Entry], groups: dict[int, Group]) -> frozenset[int]` — child ids (from `_kids(member)`) of split-group members whose `kind` is in `eligible_kinds(kind, line.line_kind)` and whose flow `_same` a line of `lines_all` with `line_kind not in ("purchase", "payment")` (the child path of `_representations` :380–387).
   - `@dataclass(frozen=True) class Reading: flow: Decimal; foreign_amount: Decimal | None; foreign_currency: str | None; members: tuple[Entry, ...]`
-  - `def group_readings(g: Group, by_id: dict[int, Entry], aside: frozenset[int], aside_children: frozenset[int]) -> tuple[list[Reading], bool]` — for each member reading of `_group_variants(g, by_id, set(), aside)`: the net reading, and for each combination (sizes 0..k, k ≤ `ASIDE_COMBINATIONS_MAX`) of that reading's children in `aside_children`, the reading plus all children minus that combination; `complete` = `_group_variants` complete and the removable children ≤ cap; a missing member (`by_id` lacks an id of `member_ids`) → `([], False)`. Foreign fields set only when every member of the reading has `original_amount` and one shared `original_currency`.
+  - `def group_readings(g: Group, by_id: dict[int, Entry], aside: frozenset[int], aside_children: frozenset[int]) -> tuple[list[Reading], bool]` — for each member reading of `_group_variants(g, by_id, set(), aside)`: the net reading, and for each combination (sizes 0..k, k ≤ `ASIDE_COMBINATIONS_MAX`) of that reading's children in `aside_children`, the reading plus all of `_kids(member)` minus that combination; `complete` = `_group_variants` complete and the removable children ≤ cap; a missing member (`by_id` lacks an id of `member_ids`) → `([], False)`. Foreign fields set only when every member of the reading has `original_amount` and one shared `original_currency`.
   - `def printed_whole(lines_all: list[Line], entries: list[Entry], groups: dict[int, Group], rules: Rules, aside: frozenset[int], aside_children: frozenset[int]) -> frozenset[int]` — split groups with a reading satisfying spec §3 (a)/(b), **or** whose `group_readings` is incomplete / empty (fail-closed).
   - `def apart_members(entries: list[Entry], groups: dict[int, Group], whole: frozenset[int]) -> frozenset[int]` — ids of **claimable** top-level entries whose `group_id` names a `split` group not in `whole`, `instance is None or instance.definition_kind != "installment"`.
   - `@dataclass(frozen=True) class Context: aside: frozenset[int]; aside_children: frozenset[int]; whole: frozenset[int]; apart: frozenset[int]; structural: tuple[Entry, ...]`
@@ -53,7 +54,8 @@
 ```python
 def test_printed_alone_children_match_a_non_purchase_line_of_any_coverage():
     g = m.Group(5, "split", (21, 22))
-    ents = [E(21, d, "-300", group_id=5, children=[m.Child(210, "discount", D("200")), m.Child(211, "discount", D("100"))]), E(22, d, "-280", group_id=5)]
+    ents = [E(21, d, "-300", group_id=5, children=[m.Child(211, "discount", D("100"))],
+              all_children=[m.Child(210, "discount", D("200")), m.Child(211, "discount", D("100"))]), E(22, d, "-280", group_id=5)]  # 210 covered: structural view only
     assert m.printed_alone_children("card", [L(1, d, "200", kind="refund")], ents, {5: g}) == {210}
     assert m.printed_alone_children("card", [L(1, d, "-200", kind="purchase")], ents, {5: g}) == frozenset()
 
@@ -185,12 +187,14 @@ def test_whole_by_covered_fee_member_keeps_the_purchase_member_home():
 
 def test_whole_by_children_reading_with_a_covered_child_both_line_orders():
     g = m.Group(5, "split", (21, 22))
-    ents = [E(21, d, "-300", group_id=5, children=[m.Child(210, "discount", D("100")), m.Child(211, "discount", D("200"))]), E(22, d, "-280", group_id=5)]
-    covered = L(9, d, "200", kind="refund")   # the +200 child's own line, owner-covered: in lines_all only
-    for lines in ([L(1, d, "-300"), L(2, d, "-480")], [L(2, d, "-480"), L(1, d, "-300")]):
+    kids = [m.Child(210, "discount", D("100")), m.Child(211, "discount", D("200"))]
+    ents = [E(21, d, "-300", group_id=5, children=kids[:1], all_children=kids), E(22, d, "-280", group_id=5)]   # 211 owner-covered: structural view only («AGENT-249 2»)
+    covered = L(9, d, "200", kind="refund")   # the +200 child's own line: in lines_all only
+    for first, second in ((1, 2), (2, 1)):     # match() sorts by line id: swap the ids to test both orders
+        lines = [L(first, d, "-300"), L(second, d, "-480")]
         res = run(lines, ents, groups={5: g}, lines_all=lines + [covered])
         claim = res.claims[0].representation
-        assert claim.kind == "group_children" and {r.entry_id for r in claim.rows} == {21, 22, 210} and res.cases[0].line_id == 1
+        assert claim.kind == "group_children" and {r.entry_id for r in claim.rows} == {21, 22, 210} and res.cases[0].line_id == first
 
 def test_income_split_on_a_bank_statement_is_whole_only_with_its_deposit_line():
     g = m.Group(5, "split", (21, 22))
@@ -213,8 +217,8 @@ def test_apart_member_foreign_near_and_drift_cases():
 
 def test_apart_member_with_discount_child_conserves_as_member_children():
     g = m.Group(5, "split", (21, 22))
-    ents = [E(21, d, "-300", group_id=5, children=[m.Child(210, "discount", D("20"))]), E(22, d, "-280", group_id=5)]
-    res = run([L(1, d, "-280"), L(2, d, "-280")], ents, groups={5: g})
+    ents = [E(21, d, "-300", group_id=5, children=[m.Child(210, "discount", D("20"))]), E(22, d, "-250", group_id=5)]   # distinct amounts: no ambiguity («AGENT-249 2»)
+    res = run([L(1, d, "-280"), L(2, d, "-250")], ents, groups={5: g})
     kinds = sorted(c.representation.kind for c in res.claims); assert kinds == ["member_alone", "member_children"]
 
 def test_apart_member_and_standalone_twin_are_ambiguous():
@@ -238,7 +242,7 @@ Re-state per spec §7.9/10/12/14: `test_drift_candidates_…_skip_claimed_and_gr
 
 - [ ] **Step 2: Run the unit file, expect the new tests to fail and the flipped ones to fail.**
 
-- [ ] **Step 3: Implement** per the Interfaces block: `match()` builds `ctx = statement_context(statement_kind, lines_all or lines, entries, groups, rules)` **before** filtering `claimable`, uses `ctx.aside` where `aside` is used today, evaluates `truncated` over `ctx.structural` with `claimed=set()`, passes `ctx.apart` to `_representations`, `_foreign_case`, `_near_case`, `_drift_case`, `_claimed_by_earlier_line`. In `_representations` the standalone loop condition becomes `_standalone(e) or _lone_member(...) or e.id in apart`; variants for an apart member are `("member_alone", rule, principal)` and `("member_children", "exact_children", principal + child_rows)`. In the three case functions: `(_standalone(e) or e.id in apart)`. `incomplete_groups` and `_group_variants` unchanged.
+- [ ] **Step 3: Implement** per the Interfaces block: `match()` builds `ctx = statement_context(statement_kind, lines_all or lines, entries, groups, rules)` **before** filtering `claimable`, uses `ctx.aside` where `aside` is used today, evaluates `truncated` over `ctx.structural` with `claimed=set()` (still only when `reps` is non-empty — ruling on AGENT-249 Q3, spec §4.1: an incomplete group is whole by fail-closed so no member reading exists), passes `ctx.apart` to `_representations`, `_foreign_case`, `_near_case`, `_drift_case`, `_claimed_by_earlier_line`. In `_representations` the standalone loop condition becomes `_standalone(e) or _lone_member(...) or e.id in apart`; variants for an apart member are `("member_alone", rule, principal)` and `("member_children", "exact_children", principal + child_rows)`. In the three case functions: `(_standalone(e) or e.id in apart)`. `incomplete_groups` and `_group_variants` unchanged.
 
 - [ ] **Step 4: Run the whole unit file, expect PASS.**
 
@@ -254,24 +258,28 @@ Re-state per spec §7.9/10/12/14: `test_drift_candidates_…_skip_claimed_and_gr
 
 **Interfaces:**
 - Consumes: `match(..., lines_all=)` (Task 2); `entry_view` :175.
-- Produces: `load_candidates` appends, for every `split` group in `groups`, each top-level member not already in `entries` as `entry_view(e, children=<all its children as Child>, instance=None, in_reverse=False, claimable=False, stand_in=False, transfer_peer_is_card=None)` — any account, currency, window, claim state or exclusion; one query for the members (`LedgerEntry.group_id IN group_ids AND parent_entry_id IS NULL AND id NOT IN loaded`) and one for their children. `reconcile()` calls `matching.match(..., lines_all=[_as_line(row) for row in all_lines])`. `_lock_candidates` is unchanged: structural rows are not in `wanted` (they are not claimable) — the group lock already covers membership changes.
+- Produces: `load_candidates` (a) queries **every** top-level member of every `split` group in `groups` (`LedgerEntry.group_id IN group_ids AND parent_entry_id IS NULL`) and **every** child of those members in one unfiltered query (no account/currency/claimed filter); (b) sets `all_children` on every loaded split member (claimable ones included — their `children` stays the filtered view, «AGENT-249 1»); (c) appends each member not already in `entries` as `entry_view(e, children=<all its children>, all_children=<same>, instance=None, in_reverse=False, claimable=False, stand_in=False, transfer_peer_is_card=None)`. `reconcile()`: `wanted` = claimable entries' ids + **claimable entries'** `children` ids only (structural rows and `all_children` are never locked or in `wanted`, «AGENT-249 4»); `_with_children` trims `children` only and leaves `all_children` untouched; the post-lock filter keeps structural rows unchanged (`not e.claimable` branch); `matching.match(..., lines_all=[_as_line(row) for row in all_lines])`. `_lock_candidates` unchanged (the group lock covers membership).
 
 - [ ] **Step 1: Write the failing integration tests** (file's seeding helpers; fictional amounts)
 
 ```python
-def test_load_candidates_adds_structural_rows_for_split_members_outside_the_population(...):
-    # split: card member (claimable), 錢包 member (other account), fee member claimed by an owner match on this statement
+def test_load_candidates_adds_structural_rows_and_two_child_views(...):
+    # split: card member (claimable) with children +100 (unclaimed) and +200 (covered elsewhere), 錢包 member (other account), fee member owner-matched on this statement
     entries, groups = rec.load_candidates(db, statement, [card.id], window_days=15, include_reward=False, exclude={fee.id})
     by_id = {e.id: e for e in entries}
     assert by_id[card_member.id].claimable and not by_id[wallet_member.id].claimable and not by_id[fee.id].claimable
-    assert by_id[fee.id].in_reverse is False and [c.id for c in by_id[card_member.id].children] == [discount_child.id]
+    assert by_id[fee.id].in_reverse is False
+    assert [c.id for c in by_id[card_member.id].children] == [child_100.id] and sorted(c.id for c in by_id[card_member.id].all_children) == sorted([child_100.id, child_200.id])
+
+def test_reconcile_keeps_a_group_whole_through_a_covered_child_on_a_claimable_parent(...):   # «AGENT-249 1»
+    # members -300/-280, child +200 covered elsewhere, lines -300 and -380 → the -380 structural reading marks the group whole: no member claim on -300; -380 gets the group_children claim with no child row for +200 (no duplicate coverage); second reconcile identical
 
 def test_reconcile_claims_a_cross_account_member_and_is_idempotent(...):
     # card line -300; split: -300 on the card, -280 on 錢包 (already matched on the 錢包 statement)
     reconcile → coverage for the line == [(card_member.id, None, "auto")]; reconcile again → same row id, no superseded case of this statement
 
 def test_reconcile_keeps_a_group_whole_when_its_sum_line_or_fee_member_is_owner_covered(...):
-    # (a) -580 sum line owner-covered, -300 line open → no member claim; (b) fee member owner-matched to its fee line, lines -300 and -580 → group claim on -580 (reduced reading), no member claim on -300
+    # (a) -580 sum line owner-covered, -300 line open → no member claim; (b) fee member owner-matched to its fee line, lines -300 and -580 → group whole, **no claim at all** (the owner-covered member is absent from the claimable rows, so `_group_variants` has no reading — today's behaviour; «AGENT-249 2»), the -580 and -300 lines stay open, no member claim on -300
 ```
 
 - [ ] **Step 2: Run, expect failure.** — [ ] **Step 3: Implement.** — [ ] **Step 4: Run the file and the unit file, expect PASS.**
@@ -320,7 +328,7 @@ def test_group_update_and_delete_release_a_member_claim_through_the_sweep(...):
 - Test: `services/accounting-service/tests/integration/test_reconciliation_actions_ledger.py`, `tests/integration/test_inbox_api.py`
 
 **Interfaces:**
-- Produces: `AdjustAmountAction.lock_targets` adds the entry's `group_id` when set (as Task 4); `_plan` refuses `not_standalone` for a grouped entry only when its group's kind is not `split`; `inbox_service.adjustable` treats a `split` member like a standalone; `search_candidates` query: `or_(LedgerEntry.group_id.is_(None), EntryGroup.kind == "split")` via an outer join on `EntryGroup`; `_candidate` output gains `"group_id": entry.group_id`.
+- Produces: `AdjustAmountAction.lock_targets` adds the entry's `group_id` when set (as Task 4); `_plan` refuses `not_standalone` for a grouped entry only when its group's kind is not `split`; `apply` (:483–488) sets `effect.touched_group_ids = [entry.group_id]` in the standalone branch when the entry is a member (coverage row keeps `group_id NULL`, «AGENT-249 3»); `inbox_service.adjustable` treats a `split` member like a standalone; `search_candidates` query: `or_(LedgerEntry.group_id.is_(None), EntryGroup.kind == "split")` via an outer join on `EntryGroup`; `_candidate` output gains `"group_id": entry.group_id`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -328,6 +336,9 @@ def test_group_update_and_delete_release_a_member_claim_through_the_sweep(...):
 def test_adjust_amount_rewrites_a_split_member_and_refuses_a_reward_claim_member(...):
     split member amount_delta case → adjust_amount → 200; entry amount == line amount; group still has both members; action.touched_group_ids == [group.id]
     reward_claim member → 422 "not_standalone"
+
+def test_mixed_match_and_adjust_on_one_group_revert_in_reverse_order_only(...):   # «AGENT-249 3»
+    match member A; adjust_amount member B (same group); revert the match → refused later_actions; revert the adjust → ok; revert the match → ok
 
 def test_inbox_adjustable_true_for_split_member_false_for_child(...)
 
@@ -352,7 +363,7 @@ def test_inbox_search_lists_a_split_member_as_owner_override_and_never_an_instal
 
 **Interfaces:**
 - Consumes: `matching.statement_context`, `matching.incomplete_groups`, `rec._current_lines`, `rec._as_line`, `rec.load_candidates` (Task 3 adds structural rows).
-- Produces: `_single_admissible` computes `ctx = matching.statement_context(statement.kind, [rec._as_line(r) for r in rec._current_lines(db, statement)], entries, groups, ctx.rules)`, calls `_representations(..., aside=ctx.aside, apart=ctx.apart)`, and raises `not_single_admissible` when `matching.incomplete_groups(statement.kind, line, list(ctx.structural), groups, set(), ctx.aside)` is non-empty (structural population, `claimed=∅`); `_is_proposed` accepts `member_alone` (no `with_children`) and `member_children` (`with_children`).
+- Produces: `_single_admissible` computes `match_ctx = matching.statement_context(statement.kind, [rec._as_line(r) for r in rec._current_lines(db, statement)], entries, groups, ctx.rules)` (the policy `ctx` keeps its name: `ctx.rules`/`ctx.case` are still used, «AGENT-249 4»), calls `_representations(..., aside=match_ctx.aside, apart=match_ctx.apart)` over `[e for e in entries if e.claimable]`, and raises `not_single_admissible` when `matching.incomplete_groups(statement.kind, rec._as_line(line), list(match_ctx.structural), groups, set(), match_ctx.aside)` is non-empty (structural population, `claimed=∅`; the matcher `Line`, not the ORM row); `_is_proposed` accepts `member_alone` (no `with_children`) and `member_children` (`with_children`).
 
 - [ ] **Step 1: Write the failing tests** (spec §7.18 a–d)
 
