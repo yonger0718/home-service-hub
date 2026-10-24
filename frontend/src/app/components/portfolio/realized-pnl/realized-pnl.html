@@ -50,8 +50,8 @@
   </app-bento>
 }
 
-<app-bento class="filter-card" title="篩選">
-  <div class="search-wrap">
+<app-filter-bar [chips]="filterChips()" (remove)="removeFilter($event)" (clearAll)="clearFilters()" (reset)="resetSecondaryFilters()">
+  <div class="search-wrap" filterBarSearch>
     <i class="pi pi-search" aria-hidden="true"></i>
     <input
       type="text"
@@ -60,64 +60,73 @@
       (ngModelChange)="onSearchInput($event)"
       placeholder="搜尋代碼或名稱（例如 2330 或 台積電）" />
   </div>
-  <div class="filter-controls">
-    <app-seg-toggle
-      ariaLabel="市場"
-      [options]="marketOptions"
-      [value]="market()"
-      (change)="onMarketSelect($event)"
-    ></app-seg-toggle>
-    <label class="switch-field">
-      <app-switch ariaLabel="僅當沖" [checked]="query().day_trade_only ?? false" (checkedChange)="onDayTradeOnlyChange($event)"></app-switch>
-      <span aria-hidden="true">僅當沖</span>
-    </label>
-    <p-datepicker
-      ariaLabel="日期範圍"
-      [(ngModel)]="dateRange"
-      selectionMode="range"
-      [readonlyInput]="true"
-      dateFormat="yy-mm-dd"
-      placeholder="日期範圍"
-      appendTo="body"
-      [showClear]="true"
-      styleClass="hub-mini-datepicker"
-      (onSelect)="onDateRangeChange(dateRange)"
-      (onClear)="onDateRangeChange(null)">
-    </p-datepicker>
-    <p-selectButton
-      [options]="yearPresetOptions"
-      optionLabel="label"
-      optionValue="value"
-      [allowEmpty]="false"
-      [ngModel]="selectedYear()"
-      (ngModelChange)="onYearPresetChange($event)"
-      styleClass="year-preset-control">
-    </p-selectButton>
+  <p-selectButton
+    filterBarPrimary
+    [options]="yearPresetOptions"
+    optionLabel="label"
+    optionValue="value"
+    [allowEmpty]="false"
+    [ngModel]="selectedYear()"
+    (ngModelChange)="onYearPresetChange($event)"
+    styleClass="year-preset-control">
+  </p-selectButton>
+  <div filterBarSecondary class="filter-fields">
+    <div class="hub-filter-field">
+      <span class="field-label">日期範圍</span>
+      <p-datepicker
+        ariaLabel="日期範圍"
+        [(ngModel)]="dateRange"
+        selectionMode="range"
+        [readonlyInput]="true"
+        dateFormat="yy-mm-dd"
+        placeholder="日期範圍"
+        appendTo="body"
+        [baseZIndex]="1200"
+        [showClear]="true"
+        styleClass="hub-mini-datepicker"
+        (onSelect)="onDateRangeChange(dateRange)"
+        (onClear)="onDateRangeChange(null)">
+      </p-datepicker>
+    </div>
+    <div class="hub-filter-field">
+      <span class="field-label">市場</span>
+      <app-seg-toggle
+        ariaLabel="市場"
+        [options]="marketOptions"
+        [value]="market()"
+        (change)="onMarketSelect($event)"
+      ></app-seg-toggle>
+    </div>
     @if (showBrokerFilter()) {
-      <span class="filter-field">
-        <span class="field-label" aria-hidden="true">券商</span>
+      <div class="hub-filter-field">
+        <span class="field-label">券商</span>
         <app-seg-toggle
           ariaLabel="券商篩選"
           [options]="brokerFilterOptions()"
           [value]="selectedBroker()"
           (change)="selectBrokerFilter($event)"
         ></app-seg-toggle>
-      </span>
+      </div>
     }
-    <p-select
-      ariaLabel="排序"
-      [options]="sortOptions"
-      optionLabel="label"
-      optionValue="value"
-      [ngModel]="query().sort ?? 'trade_date:desc'"
-      (onChange)="onSortChange($event.value)"
-      styleClass="hub-mini-select">
-    </p-select>
-    @if (hasActiveFilters()) {
-      <button type="button" class="clear-filters" (click)="clearFilters()">清除篩選</button>
-    }
+    <label class="hub-filter-field hub-filter-field--row">
+      <app-switch ariaLabel="僅當沖" [checked]="query().day_trade_only ?? false" (checkedChange)="onDayTradeOnlyChange($event)"></app-switch>
+      <span class="field-label">僅當沖</span>
+    </label>
+    <div class="hub-filter-field">
+      <span class="field-label">排序</span>
+      <p-select
+        ariaLabel="排序"
+        [options]="sortOptions"
+        optionLabel="label"
+        optionValue="value"
+        [overlayOptions]="sortOverlayOptions"
+        [ngModel]="query().sort ?? 'trade_date:desc'"
+        (onChange)="onSortChange($event.value)"
+        styleClass="hub-mini-select">
+      </p-select>
+    </div>
   </div>
-</app-bento>
+</app-filter-bar>
 
 <div class="hub-result-meta">
   <span class="meta-count">{{ listTotal() }} 筆</span>

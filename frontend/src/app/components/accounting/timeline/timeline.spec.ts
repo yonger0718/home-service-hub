@@ -414,15 +414,21 @@ describe('LedgerTimelineComponent', () => {
     expect(el.querySelector('button.more')).toBeNull();
   });
 
-  it('keeps the filters behind ⌕ on a phone and filters by account', () => {
+  it('renders the filter bar with search and 帳戶 inline at phone width, no ⌕ toggle', () => {
     const { fixture, el } = render('phone');
     flushSummary('2026-10');
     flushEntries([]);
     fixture.detectChanges();
-    expect(el.querySelector('.filters')).toBeNull();
+    expect(el.querySelector('.search-toggle')).toBeNull();
+    expect(el.querySelector('.filter-bar-row .filter-q')).not.toBeNull();
+    expect(el.querySelector('.filter-bar-row .filter-account')).not.toBeNull();
+    expect(el.querySelector('.filter-kind')).toBeNull();
 
-    (el.querySelector('.search-toggle') as HTMLButtonElement).click();
+    (el.querySelector('.filter-toggle') as HTMLButtonElement).click();
     fixture.detectChanges();
+    expect(el.querySelector('.filter-panel.sheet .filter-kind')).not.toBeNull();
+    httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
+
     const select = el.querySelector('.filter-account') as HTMLSelectElement;
     select.value = '7';
     select.dispatchEvent(new Event('change'));
@@ -430,6 +436,25 @@ describe('LedgerTimelineComponent', () => {
 
     const req = flushEntries([]);
     expect(req.request.params.getAll('account_id')).toEqual(['7']);
+  });
+  it('places the filter bar below the month summary and directly above the results', () => {
+    const { fixture, el } = render('sheet');
+    flushSummary('2026-10');
+    flushEntries([makeEntry({ id: 1 })]);
+    fixture.detectChanges();
+    fixture.componentInstance.setKind('expense');
+    fixture.detectChanges();
+    flushEntries([makeEntry({ id: 1 })], 1);
+    fixture.detectChanges();
+    const follows = (a: Element | null, b: Element | null) =>
+      !!a && !!b && !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    const sum = el.querySelector('.sum');
+    const bar = el.querySelector('app-filter-bar');
+    const row = el.querySelector('.match-row');
+    const entry = el.querySelector('.entry-row');
+    expect(follows(sum, bar)).toBe(true);
+    expect(follows(bar, row)).toBe(true);
+    expect(follows(row, entry)).toBe(true);
   });
   it('notes the currencies left out of the month totals', () => {
     const { fixture, el } = render();
@@ -657,14 +682,21 @@ describe('LedgerTimelineComponent', () => {
       expect(timeline.filtersActive()).toBe(false);
     });
 
-    it('fetches the category and project choices once, when a filter select is first focused', () => {
+    const openPanel = (fixture: { detectChanges(): void }, el: HTMLElement) => {
+      (el.querySelector('.filter-toggle') as HTMLButtonElement).click();
+      fixture.detectChanges();
+    };
+    const chipLabels = (el: HTMLElement) => Array.from(el.querySelectorAll('.filter-chip')).map(c => text(c).replace(/\s*[×✕x]$/, '').trim());
+
+    it('loads category and project options once when the panel opens, keeps nested names, drops archived projects, single-flights and retries', () => {
       const { fixture, el } = render('sheet');
       flushSummary('2026-10');
       flushEntries([]);
       fixture.detectChanges();
       httpMock!.expectNone(r => r.url === '/api/accounting/categories');
+      httpMock!.expectNone('/api/accounting/projects');
 
-      el.querySelector<HTMLSelectElement>('.filter-category')!.dispatchEvent(new Event('focus'));
+      openPanel(fixture, el);
       // The real response: roots with nested children (settings_service.list_categories), never a flat list.
       httpMock!.expectOne(r => r.url === '/api/accounting/categories' && r.params.get('kind') === 'expense').flush([
         { id: 1, kind: 'expense', parent_id: null, name: '餐飲', children: [{ id: 2, kind: 'expense', parent_id: 1, name: '午餐', children: [] }] },
@@ -697,10 +729,9 @@ describe('LedgerTimelineComponent', () => {
       flushSummary('2026-10');
       flushEntries([]);
       fixture.detectChanges();
-      const category = el.querySelector<HTMLSelectElement>('.filter-category')!;
-
-      category.dispatchEvent(new Event('focus'));
-      el.querySelector<HTMLSelectElement>('.filter-project')!.dispatchEvent(new Event('focus'));  // pending: no second set
+      openPanel(fixture, el);
+      el.querySelector<HTMLSelectElement>('.filter-category')!.dispatchEvent(new Event('focus'));  // pending: no second set
+      el.querySelector<HTMLSelectElement>('.filter-project')!.dispatchEvent(new Event('focus'));
       const expense = httpMock!.expectOne(r => r.url === '/api/accounting/categories' && r.params.get('kind') === 'expense');
       httpMock!.expectOne(r => r.url === '/api/accounting/categories' && r.params.get('kind') === 'income').flush([]);
       httpMock!.expectOne('/api/accounting/projects').flush([]);
@@ -708,7 +739,8 @@ describe('LedgerTimelineComponent', () => {
       fixture.detectChanges();
       expect(el.querySelectorAll('.filter-category option').length).toBe(1);
 
-      category.dispatchEvent(new Event('focus'));  // after a failure the next focus tries again
+      openPanel(fixture, el);  // close
+      openPanel(fixture, el);  // reopen: after a failure the next open tries again
       httpMock!.expectOne(r => r.url === '/api/accounting/categories' && r.params.get('kind') === 'expense').flush([]);
       httpMock!.expectOne(r => r.url === '/api/accounting/categories' && r.params.get('kind') === 'income').flush([]);
       httpMock!.expectOne('/api/accounting/projects').flush([{ id: 9, name: '日本', is_archived: false, sort_order: 0 }]);
@@ -716,16 +748,18 @@ describe('LedgerTimelineComponent', () => {
       expect(el.querySelectorAll('.filter-project option').length).toBe(2);
     });
 
-    it('keeps the typed merchant and bounds on a phone when the filter row is closed and reopened, and 清除篩選 empties them', () => {
+    it('keeps the typed merchant and bounds when the sheet is closed and reopened, and 清除全部 empties them', () => {
       const { fixture, el } = render('phone');
       flushSummary('2026-10');
       flushEntries([]);
       fixture.detectChanges();
+      expect(el.querySelector('.filter-merchant')).toBeNull();
+      expect(el.querySelector('.filter-amount-min')).toBeNull();
 
-      (el.querySelector('.search-toggle') as HTMLButtonElement).click();
-      fixture.detectChanges();
+      openPanel(fixture, el);
+      httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
       const merchant = el.querySelector<HTMLInputElement>('.filter-merchant')!;
-      merchant.value = '鼎泰';
+      merchant.value = '全聯';
       merchant.dispatchEvent(new Event('change'));
       const min = el.querySelector<HTMLInputElement>('.filter-amount-min')!;
       min.value = '-500';
@@ -734,20 +768,52 @@ describe('LedgerTimelineComponent', () => {
       flushEntries([], 0);
       fixture.detectChanges();
 
-      (el.querySelector('.search-toggle') as HTMLButtonElement).click();  // close
+      (el.querySelector('.panel-apply') as HTMLButtonElement).click();
       fixture.detectChanges();
       expect(el.querySelector('.filter-merchant')).toBeNull();
-      (el.querySelector('.search-toggle') as HTMLButtonElement).click();  // reopen: the recreated inputs show the live filters
-      fixture.detectChanges();
-      expect(el.querySelector<HTMLInputElement>('.filter-merchant')!.value).toBe('鼎泰');
+      expect(el.querySelector('.filter-amount-min')).toBeNull();
+      openPanel(fixture, el);  // reopen: the recreated inputs show the live filters
+      expect(el.querySelector<HTMLInputElement>('.filter-merchant')!.value).toBe('全聯');
       expect(el.querySelector<HTMLInputElement>('.filter-amount-min')!.value).toBe('-500');
+      expect(chipLabels(el)).toEqual(['商家：全聯', '金額 ≥ -500']);
+      expect(text(el.querySelector('.filter-toggle'))).toContain('篩選 2');
 
-      (el.querySelector('.clear-filters') as HTMLButtonElement).click();
+      (el.querySelector('.clear-all') as HTMLButtonElement).click();
       fixture.detectChanges();
       flushEntries([]);
       fixture.detectChanges();
       expect(el.querySelector<HTMLInputElement>('.filter-merchant')!.value).toBe('');
       expect(el.querySelector<HTMLInputElement>('.filter-amount-min')!.value).toBe('');
+      expect(el.querySelector('.filter-chip')).toBeNull();
+    });
+
+    it('reads 篩選 2 with a 類別 and a 商家 chip; removing the 商家 chip drops merchant from the request', () => {
+      const { fixture, el } = render('sheet');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      openPanel(fixture, el);
+      httpMock!.expectOne(r => r.url === '/api/accounting/categories' && r.params.get('kind') === 'expense').flush([
+        { id: 1, kind: 'expense', parent_id: null, name: '餐飲', children: [{ id: 2, kind: 'expense', parent_id: 1, name: '午餐', children: [] }] },
+      ]);
+      httpMock!.expectOne(r => r.url === '/api/accounting/categories' && r.params.get('kind') === 'income').flush([]);
+      httpMock!.expectOne('/api/accounting/projects').flush([]);
+      fixture.detectChanges();
+
+      fixture.componentInstance.setCategory('2');
+      fixture.componentInstance.setMerchant('全聯');
+      fixture.detectChanges();
+      flushEntries([], 0);
+      fixture.detectChanges();
+      expect(text(el.querySelector('.filter-toggle'))).toContain('篩選 2');
+      expect(chipLabels(el)).toEqual(['類別：餐飲 › 午餐', '商家：全聯']);
+
+      (el.querySelector('.chip-remove[aria-label="移除 商家：全聯"]') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      const req = flushEntries([], 0);
+      expect(req.request.params.has('merchant')).toBe(false);
+      fixture.detectChanges();
+      expect(chipLabels(el)).toEqual(['類別：餐飲 › 午餐']);
     });
 
     it('clears the account, kind and query filters from 清除篩選', () => {

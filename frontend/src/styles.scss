@@ -740,50 +740,6 @@ body {
   }
 }
 
-.hub-filter-bar {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  margin-bottom: 1.5rem;
-
-  .search-wrap {
-    position: relative;
-    width: 100%;
-    
-    i { 
-      position: absolute; 
-      left: 1rem; 
-      top: 50%; 
-      transform: translateY(-50%); 
-      color: var(--app-text-muted); 
-    }
-    
-    input {
-      width: 100%;
-      padding: 0.75rem 1rem 0.75rem 2.75rem;
-      border-radius: 16px;
-      border: 1px solid var(--app-border);
-      background: var(--app-surface);
-      font-weight: 500;
-      transition: all 0.2s;
-      
-      &:focus { 
-        outline: none; 
-        border-color: var(--app-accent); 
-        box-shadow: 0 0 0 4px var(--app-focus-ring);
-      }
-    }
-  }
-
-  .filter-controls {
-    display: flex;
-    justify-content: flex-end;
-    align-items: center;
-    gap: 1rem;
-    flex-wrap: wrap;
-  }
-}
-
 .hub-mini-select .p-select {
   border-radius: 12px !important;
   background: var(--app-surface) !important;
@@ -794,6 +750,19 @@ body {
   border-radius: 12px !important;
   background: var(--app-surface) !important;
 }
+
+.hub-filter-field {
+  display: flex; flex-direction: column; gap: 4px; min-width: 0;
+  > .field-label { color: var(--app-text-muted); font-size: 0.75rem; font-weight: 700; }
+  > select, > input { min-height: 36px; width: 100%; border: 1px solid var(--app-border); border-radius: 10px;
+    background: var(--app-surface-soft); color: inherit; font: inherit; padding: 0 10px; }
+  > select:focus-visible, > input:focus-visible { outline: none; border-color: var(--app-primary); box-shadow: 0 0 0 3px var(--app-focus-ring); }
+  /* PrimeNG hosts and their inner input must shrink to the field, or a date range overflows the panel (c3). */
+  > p-datepicker, > p-select, > p-multiselect { width: 100%; min-width: 0; }
+  p-datepicker .p-datepicker, p-datepicker .p-inputtext { width: 100%; }
+}
+/* Switch fields: control and text on one line (僅當沖). */
+.hub-filter-field--row { flex-direction: row; align-items: center; gap: 10px; }
 
 .hub-paginator {
   margin-top: 0.75rem;

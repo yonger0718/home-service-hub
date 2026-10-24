@@ -24,6 +24,7 @@ import { BtnComponent } from '../../ui/btn/btn';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { TimelineComponent, TimelineRow } from '../../ui/timeline/timeline';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
+import { FilterBarComponent, FilterChip } from '../../ui/filter-bar/filter-bar';
 import { BentoComponent } from '../../ui/bento/bento';
 import { displayedSign, formatMoney } from '../../ui/format';
 import { allPages } from '../paging';
@@ -57,7 +58,7 @@ const DEFAULT_CURRENCY_BY_MARKET: Record<Exclude<MarketCode, 'TW'>, string> = {
     InputTextModule, InputNumberModule, SelectButtonModule, SelectModule,
     DatePickerModule, PaginatorModule,
     ConfirmDialogModule, ToastModule, MenuModule,
-    BtnComponent, SegToggleComponent, TimelineComponent,
+    BtnComponent, SegToggleComponent, TimelineComponent, FilterBarComponent,
   ],
   providers: [ConfirmationService, MessageService],
   templateUrl: './transaction-list.html',
@@ -120,6 +121,20 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     ];
   });
   selectedBroker = signal<'ALL' | Broker>('ALL');
+
+  /** Active secondary filters only (date range, broker); search, side and sort never become chips. */
+  readonly filterChips = computed<FilterChip[]>(() => {
+    const chips: FilterChip[] = [];
+    const { date_from, date_to } = this.query();
+    if (date_from || date_to) {
+      chips.push({ key: 'date', label: `日期：${date_from ?? '…'} – ${date_to ?? '…'}` });
+    }
+    const broker = this.selectedBroker();
+    if (broker !== 'ALL') {
+      chips.push({ key: 'broker', label: `券商：${brokerLabel(broker)}` });
+    }
+    return chips;
+  });
 
   private brokerLabel(broker: Broker): string {
     return brokerLabel(broker);
@@ -308,9 +323,18 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     this.updateFilters({});
   }
 
-  hasActiveFilters(): boolean {
-    const q = this.query();
-    return !!(q.symbol || q.date_from || q.date_to || q.side || q.broker);
+  removeFilter(key: string) {
+    if (key === 'date') {
+      this.dateRange = null;
+      this.onDateRangeChange(null);
+    } else if (key === 'broker') {
+      this.onBrokerFilterChange('ALL');
+    }
+  }
+
+  /** 重設: clears only the active secondary filters, so nothing set means no reload. */
+  resetSecondaryFilters() {
+    for (const { key } of this.filterChips()) this.removeFilter(key);
   }
 
   private toIsoDate(d: Date | string): string {

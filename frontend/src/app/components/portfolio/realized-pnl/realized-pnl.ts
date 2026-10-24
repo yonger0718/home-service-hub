@@ -14,6 +14,7 @@ import { Broker, RealizedPnlEvent, RealizedPnlQuery, RealizedPnlSummary, brokerL
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { BentoComponent } from '../../ui/bento/bento';
+import { FilterBarComponent, FilterChip } from '../../ui/filter-bar/filter-bar';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { SwitchComponent } from '../../ui/switch/switch';
 import { TagComponent } from '../../ui/tag/tag';
@@ -59,6 +60,7 @@ const SORT_OPTIONS = [
     ToastModule,
     TooltipModule,
     BentoComponent,
+    FilterBarComponent,
     SegToggleComponent,
     SwitchComponent,
     TagComponent,
@@ -351,18 +353,49 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
     this.reload();
   }
 
-  readonly hasActiveFilters = computed(() => {
-    const q = this.query();
-    return !!(
-      q.symbol ||
-      q.date_from ||
-      q.date_to ||
-      q.year ||
-      q.day_trade_only ||
-      this.selectedBroker() !== 'ALL' ||
-      this.market() !== 'ALL'
-    );
+  /** The 排序 menu opens above the filter panel / phone sheet (z-index 1200). */
+  readonly sortOverlayOptions = { baseZIndex: 1200 };
+
+  /** Secondary filters only: search and the 年度 preset stay inline and never chip. */
+  readonly filterChips = computed<FilterChip[]>(() => {
+    const chips: FilterChip[] = [];
+    const { date_from, date_to, day_trade_only } = this.query();
+    if (date_from || date_to) {
+      chips.push({ key: 'date', label: `日期：${date_from ?? '…'} – ${date_to ?? '…'}` });
+    }
+    if (this.market() !== 'ALL') {
+      chips.push({ key: 'market', label: `市場：${this.market() === 'TW' ? '台股' : '海外'}` });
+    }
+    const broker = this.selectedBroker();
+    if (broker !== 'ALL') {
+      chips.push({ key: 'broker', label: `券商：${brokerLabel(broker)}` });
+    }
+    if (day_trade_only) {
+      chips.push({ key: 'dayTrade', label: '僅當沖' });
+    }
+    return chips;
   });
+
+  removeFilter(key: string): void {
+    if (key === 'date') {
+      this.dateRange = null;
+      this.onDateRangeChange(null);
+    } else if (key === 'market') {
+      this.onMarketChange('ALL');
+    } else if (key === 'broker') {
+      this.selectBrokerFilter('ALL');
+    } else if (key === 'dayTrade') {
+      this.onDayTradeOnlyChange(false);
+    }
+  }
+
+  /**
+   * 重設: clears only the active secondary filters, so nothing set means no reload. A 年度 preset has no date chip,
+   * so it survives (clearing an absent range would drop it: onDateRangeChange resets the preset).
+   */
+  resetSecondaryFilters(): void {
+    for (const { key } of this.filterChips()) this.removeFilter(key);
+  }
 
   selectBrokerFilter(value: string): void {
     const next = value as 'ALL' | Broker;

@@ -48,6 +48,7 @@ import { todayIso } from '../dates';
 import { schedulePill } from '../schedule-math';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, isHandledKey, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
 import { displayTitle, formatMoney, formatSigned } from '../format';
+import { FilterBarComponent, FilterChip } from '../../ui/filter-bar/filter-bar';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { barSegments, categoryDistribution, distributionAriaText } from './category-distribution';
 
@@ -356,9 +357,9 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
 @Component({
   selector: 'app-ledger-timeline',
   standalone: true,
-  imports: [PageHeaderComponent, CalendarMonthComponent, NgTemplateOutlet, SkeletonComponent, SplitFolderComponent],
+  imports: [PageHeaderComponent, CalendarMonthComponent, NgTemplateOutlet, SkeletonComponent, SplitFolderComponent, FilterBarComponent],
   templateUrl: './timeline.html',
-  styleUrls: ['../filters.scss', '../entry-row.scss', './timeline.scss'],
+  styleUrls: ['../entry-row.scss', './timeline.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class LedgerTimelineComponent implements OnInit {
@@ -418,11 +419,10 @@ export class LedgerTimelineComponent implements OnInit {
   readonly merchantFilter = signal('');
   readonly amountMin = signal('');
   readonly amountMax = signal('');
-  /** Category / project choices, fetched the first time a filter select is focused (not on init). */
+  /** Category / project choices, loaded when the 篩選 panel opens (focus is kept as a fallback), not on init. */
   readonly categoryOptions = signal<CategoryNode[]>([]);
   readonly projectOptions = signal<Project[]>([]);
   private optionsRequested = false;
-  readonly filtersOpen = signal(false);
   readonly view = signal<TimelineView>(initialView(untracked(this.layoutMode.mode) === 'panes'));
   readonly daily = signal<DailySummary | null>(null);
   readonly dailyLoading = signal(false);
@@ -1075,8 +1075,59 @@ export class LedgerTimelineComponent implements OnInit {
   }
 
 
-  toggleFilters(): void {
-    this.filtersOpen.update(open => !open);
+  /** Secondary-filter chips: one per set category/project/etc. Account and search are never chips. */
+  readonly filterChips = computed<FilterChip[]>(() => {
+    const chips: FilterChip[] = [];
+    const kind = this.kindFilter();
+    if (kind !== null) {
+      chips.push({ key: 'kind', label: `類型：${ENTRY_KIND_LABELS[kind]}` });
+    }
+    const category = this.categoryFilter();
+    if (category !== null) {
+      const name = this.categoryOptions().find(o => o.id === category)?.name;
+      chips.push({ key: 'category', label: name ? `類別：${name}` : '類別' });
+    }
+    const project = this.projectFilter();
+    if (project !== null) {
+      const name = this.projectOptions().find(o => o.id === project)?.name;
+      chips.push({ key: 'project', label: name ? `專案：${name}` : '專案' });
+    }
+    if (this.tagFilter()) {
+      chips.push({ key: 'tag', label: `標籤：${this.tagFilter()}` });
+    }
+    if (this.merchantFilter()) {
+      chips.push({ key: 'merchant', label: `商家：${this.merchantFilter()}` });
+    }
+    const min = this.amountMin();
+    const max = this.amountMax();
+    if (min || max) {
+      chips.push({ key: 'amount', label: min && max ? `金額：${min} – ${max}` : min ? `金額 ≥ ${min}` : `金額 ≤ ${max}` });
+    }
+    return chips;
+  });
+
+  removeFilter(key: string): void {
+    switch (key) {
+      case 'kind': this.setKind(''); break;
+      case 'category': this.setCategory(''); break;
+      case 'project': this.setProject(''); break;
+      case 'tag': this.setTag(''); break;
+      case 'merchant': this.setMerchant(''); break;
+      case 'amount': this.setAmountMin(''); this.setAmountMax(''); break;
+    }
+  }
+
+  resetSecondaryFilters(): void {
+    for (const key of ['kind', 'category', 'project', 'tag', 'merchant', 'amount']) {
+      this.removeFilter(key);
+    }
+  }
+
+  /** Category / project choices load the first time the filter panel opens. */
+  onFilterPanelOpen(open: boolean): void {
+    if (open) {
+      this.ensureOptions();
+    }
   }
 
   /**

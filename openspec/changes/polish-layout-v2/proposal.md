@@ -26,6 +26,7 @@ The notification surfaces (提醒中心, 🔔 count, toasts, reconciliation inbo
   - Accounting pages render their title on the page background like the other groups.
   - 股利: the 舊資料帳面 card and the 即將除權息 row hide when empty.
   - 匯入: the footer appears once a file is chosen; the native checkbox becomes a switch.
+  - The shared filter bar also covers 股利 (MODIFIED Violet dividend timeline: search and status inline; date range, 股利來源 and sort behind 篩選) and the 現金帳戶 detail page (MODIFIED Account detail page lives at `/portfolio/accounts/:id`: 類型 inline; date range and sort behind 篩選).
 
 ## Capabilities
 
@@ -39,9 +40,9 @@ None.
 - `frontend-ui-primitives`: filter bar, value fitting, icon set, class-name hygiene.
 - `frontend-app-shell`: floating button behaviour, pane-state ownership, phone header actions.
 - `frontend-accounting-ledger`: row gutter, empty pane overview, selected account, page title placement.
-- `frontend-portfolio-accounts`: balance chart.
+- `frontend-portfolio-accounts`: balance chart, account detail filter bar.
 - `frontend-portfolio-dashboard`: chart gaps, phone KPI grid and holdings rows.
-- `frontend-dividend-records`: empty summary card and reminder row.
+- `frontend-dividend-records`: empty summary card and reminder row, filter bar.
 - `frontend-realized-pnl`: neutral cost card.
 - `frontend-csv-import`: footer visibility, switch control.
 - `frontend-stock-transactions`: shared filter bar.

@@ -4,13 +4,6 @@
   gap: 0.75rem;
 }
 
-.filter-bar {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  margin-bottom: 1.25rem;
-}
-
 .search-wrap {
   position: relative;
   width: 100%;
@@ -41,21 +34,11 @@
   }
 }
 
-/* The dividends page's filter controls: one wrapping row inside the filter bar. */
-.filter-controls {
-  align-items: center;
+/* Secondary fields inside the shared filter-bar panel. */
+.filter-fields {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-
-  select {
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
-    color: var(--app-text);
-    max-width: 100%;
-    padding: 0.5rem;
-  }
+  flex-direction: column;
+  gap: 0.75rem;
 }
 
 .result-meta {
@@ -142,19 +125,4 @@
   color: var(--app-text-muted);
   font-size: 0.8rem;
   margin: -0.5rem 0 1.25rem;
-}
-
-.clear-filters {
-  background: none;
-  border: 0;
-  color: var(--app-primary);
-  font: inherit;
-  font-weight: 700;
-  padding: 0.25rem 0.5rem;
-
-  &:focus-visible {
-    border-radius: 6px;
-    box-shadow: 0 0 0 4px var(--app-focus-ring);
-    outline: none;
-  }
 }
