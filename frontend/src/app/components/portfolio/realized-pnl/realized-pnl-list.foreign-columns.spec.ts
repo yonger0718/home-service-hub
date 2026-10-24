@@ -86,6 +86,8 @@ describe('PortfolioRealizedPnlComponent foreign sells', () => {
     const fixture = render();
     const root = fixture.nativeElement as HTMLElement;
 
+    root.querySelector<HTMLButtonElement>('.filter-toggle')!.click();
+    fixture.detectChanges();
     const toggle = root.querySelector('[role="radiogroup"][aria-label="市場"]')!;
     expect(Array.from(toggle.querySelectorAll('button')).map(b => b.textContent?.trim())).toEqual(['全部', '台股', '海外']);
     expect(row(root, 'VOD').querySelector('.rz-symbol')?.textContent).toContain('英股');

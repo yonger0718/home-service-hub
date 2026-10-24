@@ -9,11 +9,6 @@
 }
 
 .bars-card,
-.filter-card {
-  display: block;
-  margin-bottom: 1.25rem;
-}
-
 .bars-caption {
   color: var(--app-text-muted);
   font-size: 0.8rem;
@@ -156,47 +151,10 @@
   }
 }
 
-.filter-controls {
-  align-items: center;
+.filter-fields {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 0.75rem;
-  margin-top: 1rem;
-}
-
-.switch-field,
-.filter-field {
-  align-items: center;
-  color: var(--app-text);
-  display: inline-flex;
-  font-size: 0.9rem;
-  font-weight: 700;
-  gap: 0.5rem;
-  white-space: nowrap;
-}
-
-.switch-field {
-  cursor: pointer;
-}
-
-.field-label {
-  color: var(--app-text-muted);
-  font-size: 0.8rem;
-}
-
-.clear-filters {
-  background: none;
-  border: 0;
-  color: var(--app-primary);
-  font: inherit;
-  font-weight: 700;
-  padding: 0.25rem 0.5rem;
-
-  &:focus-visible {
-    border-radius: 6px;
-    box-shadow: 0 0 0 4px var(--app-focus-ring);
-    outline: none;
-  }
 }
 
 /* Sell rows (Decision 4): the transactions square, name line, meta, amount with the pct pill beneath. */

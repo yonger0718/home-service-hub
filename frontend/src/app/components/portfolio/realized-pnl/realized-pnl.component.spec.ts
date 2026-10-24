@@ -1,7 +1,9 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { provideRouter } from '@angular/router';
+import { DatePicker } from 'primeng/datepicker';
 import { Paginator } from 'primeng/paginator';
+import { Select } from 'primeng/select';
 import { MessageService } from 'primeng/api';
 import { Subject, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -512,8 +514,17 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     return Array.from(el(fixture).querySelectorAll<HTMLElement>('.bar-col'));
   }
 
-  function clearButton(fixture: ComponentFixture<PortfolioRealizedPnlComponent>): HTMLButtonElement | null {
-    return Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('button.clear-filters')).find(b => b.textContent?.trim() === '清除篩選') ?? null;
+  function openPanel(fixture: ComponentFixture<PortfolioRealizedPnlComponent>): void {
+    el(fixture).querySelector<HTMLButtonElement>('.filter-toggle')!.click();
+    fixture.detectChanges();
+  }
+
+  function toggleText(fixture: ComponentFixture<PortfolioRealizedPnlComponent>): string | undefined {
+    return el(fixture).querySelector('.filter-toggle')?.textContent?.trim();
+  }
+
+  function chipTexts(fixture: ComponentFixture<PortfolioRealizedPnlComponent>): (string | undefined)[] {
+    return Array.from(el(fixture).querySelectorAll('.filter-chip')).map(c => c.firstChild?.textContent?.trim());
   }
 
   it('shows the range and the server count in the header before the set lands, then the set count', () => {
@@ -706,29 +717,38 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     expect(cards(capped)[0].value).toBe('—');
   });
 
-  it('renders the filter card controls', () => {
+  it('renders search and the 年度 preset inline; 市場, 僅當沖, 日期範圍, 券商 and 排序 behind 篩選', () => {
     const fixture = create2026();
     fixture.componentInstance.brokerCatalog.set(['TW_CATHAY', 'FIRSTRADE']);
     fixture.detectChanges();
-    const card = Array.from(el(fixture).querySelectorAll('app-bento')).find(b => b.querySelector('.card-title')?.textContent?.trim() === '篩選');
-    expect(card).toBeDefined();
+    const row = el(fixture).querySelector('.filter-bar-row')!;
+    expect(row.querySelector('.search-wrap input[type="text"]')).not.toBeNull();
+    expect(row.querySelector('p-selectbutton')).not.toBeNull();
+    for (const selector of ['p-datepicker', 'p-select', '[aria-label="市場"]', '[aria-label="券商篩選"]', 'button[role="switch"][aria-label="僅當沖"]']) {
+      expect(el(fixture).querySelector(selector)).toBeNull();
+    }
 
-    expect(card!.querySelector('.search-wrap input[type="text"]')).not.toBeNull();
-    const market = card!.querySelector('[role="radiogroup"][aria-label="市場"]');
+    openPanel(fixture);
+    const panel = el(fixture).querySelector('.filter-panel')!;
+    const market = panel.querySelector('[role="radiogroup"][aria-label="市場"]');
     expect(Array.from(market?.querySelectorAll('button') ?? []).map(b => b.textContent?.trim())).toEqual(['全部', '台股', '海外']);
-    const dayTrade = card!.querySelector<HTMLButtonElement>('button[role="switch"][aria-label="僅當沖"]');
-    expect(dayTrade?.getAttribute('aria-checked')).toBe('false');
-    expect(card!.querySelector('p-datepicker')).not.toBeNull();
-    const broker = card!.querySelector('[role="radiogroup"][aria-label="券商篩選"]');
+    expect(panel.querySelector('button[role="switch"][aria-label="僅當沖"]')?.getAttribute('aria-checked')).toBe('false');
+    expect(panel.querySelector('p-datepicker')).not.toBeNull();
+    expect(panel.querySelector('p-select')).not.toBeNull();
+    const broker = panel.querySelector('[role="radiogroup"][aria-label="券商篩選"]');
     expect(broker).not.toBeNull();
-    expect(broker!.closest('.filter-field')?.querySelector('.field-label')?.textContent?.trim()).toBe('券商');
+    expect(broker!.closest('.hub-filter-field')?.querySelector('.field-label')?.textContent?.trim()).toBe('券商');
+    expect(fixture.debugElement.query(By.directive(DatePicker)).componentInstance.baseZIndex).toBe(1200);
+    expect(fixture.debugElement.query(By.directive(Select)).componentInstance.overlayOptions?.baseZIndex).toBe(1200);
     expect(el(fixture).querySelector('.hub-filter-bar')).toBeNull();
+    expect(el(fixture).querySelector('.filter-card')).toBeNull();
     expect(el(fixture).querySelector('.realized-summary-row')).toBeNull();
   });
 
-  it('wires the market toggle and the 僅當沖 switch', () => {
+  it('市場 and 僅當沖 behind 篩選 still drive the filter', () => {
     const fixture = create2026();
     const component = fixture.componentInstance;
+    openPanel(fixture);
 
     el(fixture).querySelector<HTMLButtonElement>('[aria-label="市場"] button[aria-label="海外"]')!.click();
     expect(component.market()).toBe('FOREIGN');
@@ -737,53 +757,103 @@ describe('PortfolioRealizedPnlComponent filter-wide set', () => {
     fixture.detectChanges();
     expect(component.query().day_trade_only).toBe(true);
     expect(el(fixture).querySelector('button[role="switch"][aria-label="僅當沖"]')?.getAttribute('aria-checked')).toBe('true');
-  });
 
-  it('toggles 僅當沖 from its visible label text', () => {
-    const fixture = create2026();
-    const label = el(fixture).querySelector<HTMLLabelElement>('label.switch-field');
-    expect(label?.querySelector('button[role="switch"]')).not.toBeNull();
-    const text = Array.from(label!.querySelectorAll('span')).find(span => span.textContent?.trim() === '僅當沖')!;
-
+    const label = el(fixture).querySelector<HTMLLabelElement>('label.hub-filter-field button[role="switch"][aria-label="僅當沖"]')!.closest('label')!;
+    const text = Array.from(label.querySelectorAll('span')).find(span => span.textContent?.trim() === '僅當沖')!;
     text.click();
     fixture.detectChanges();
-
-    expect(fixture.componentInstance.query().day_trade_only).toBe(true);
+    expect(component.query().day_trade_only).toBeFalsy();
+    expect(el(fixture).querySelector('button[role="switch"][aria-label="僅當沖"]')?.getAttribute('aria-checked')).toBe('false');
   });
 
-  it('offers 清除篩選 with only 僅當沖 on and resets it', () => {
+  it('僅當沖 alone reads 篩選 1 with a 僅當沖 chip; removing it clears the filter', () => {
     const fixture = create();
     settle(fixture);
-    expect(clearButton(fixture)).toBeNull();
-
-    fixture.componentInstance.onDayTradeOnlyChange(true);
+    expect(toggleText(fixture)).toBe('篩選');
+    openPanel(fixture);
+    el(fixture).querySelector<HTMLButtonElement>('button[role="switch"][aria-label="僅當沖"]')!.click();
     settle(fixture);
-    expect(clearButton(fixture)).not.toBeNull();
+    expect(toggleText(fixture)).toBe('篩選 1');
+    expect(chipTexts(fixture)).toEqual(['僅當沖']);
 
-    clearButton(fixture)!.click();
+    el(fixture).querySelector<HTMLButtonElement>('.chip-remove[aria-label="移除 僅當沖"]')!.click();
     settle(fixture);
-    expect(fixture.componentInstance.query().day_trade_only).toBeFalsy();
-    expect(clearButton(fixture)).toBeNull();
+    expect(fixture.componentInstance.query().day_trade_only ?? null).toBeNull();
+    expect(toggleText(fixture)).toBe('篩選');
   });
 
-  it('offers 清除篩選 with only 台股 selected and resets the market with a 全部 fetch', () => {
+  it('台股 alone shows a 市場：台股 chip and 清除全部 appears with a second chip', () => {
     const fixture = create();
     settle(fixture);
     const component = fixture.componentInstance;
 
     component.onMarketChange('TW');
     fixture.detectChanges();
-    expect(clearButton(fixture)).not.toBeNull();
+    expect(chipTexts(fixture)).toEqual(['市場：台股']);
+    expect(toggleText(fixture)).toBe('篩選 1');
+
+    component.onDateRangeChange([new Date(2026, 0, 1), new Date(2026, 5, 30)]);
+    settle(fixture);
+    expect(toggleText(fixture)).toBe('篩選 2');
+    expect(chipTexts(fixture)).toEqual(['日期：2026-01-01 – 2026-06-30', '市場：台股']);
     const lists = listCalls.length;
     const sets = allCalls.length;
 
-    clearButton(fixture)!.click();
+    el(fixture).querySelector<HTMLButtonElement>('.clear-all')!.click();
     expect(component.market()).toBe('ALL');
+    expect(component.query().date_from ?? null).toBeNull();
     expect(listCalls).toHaveLength(lists + 1);
     expect(allCalls).toHaveLength(sets + 1);
     settle(fixture);
-    expect(clearButton(fixture)).toBeNull();
-    expect(el(fixture).querySelector('[aria-label="市場"] button[aria-checked="true"]')?.textContent?.trim()).toBe('全部');
+    expect(el(fixture).querySelector('.filter-chips')).toBeNull();
+  });
+
+  it('a date range shows a removable chip and clears the year preset', () => {
+    const fixture = create();
+    const component = fixture.componentInstance;
+    component.onYearPresetChange(2026);
+    settle(fixture);
+    expect(chipTexts(fixture)).toEqual([]);
+
+    component.dateRange = [new Date(2025, 0, 1), new Date(2025, 2, 31)];
+    component.onDateRangeChange(component.dateRange);
+    settle(fixture);
+    expect(component.selectedYear()).toBeNull();
+    expect(chipTexts(fixture)).toEqual(['日期：2025-01-01 – 2025-03-31']);
+
+    el(fixture).querySelector<HTMLButtonElement>('.chip-remove[aria-label^="移除 日期"]')!.click();
+    settle(fixture);
+    expect(component.dateRange).toBeNull();
+    expect(component.query().date_from ?? null).toBeNull();
+    expect(chipTexts(fixture)).toEqual([]);
+  });
+
+  it('重設 clears all four secondary filters and keeps search and the 年度 preset', () => {
+    const fixture = create();
+    const component = fixture.componentInstance;
+    component.brokerCatalog.set(['TW_CATHAY', 'FIRSTRADE']);
+    component.onYearPresetChange(2026);
+    settle(fixture);
+    component.onMarketChange('FOREIGN');
+    component.onDayTradeOnlyChange(true);
+    component.selectBrokerFilter('FIRSTRADE');
+    settle(fixture);
+    expect(chipTexts(fixture)).toEqual(['市場：海外', `券商：${brokerLabel('FIRSTRADE')}`, '僅當沖']);
+
+    openPanel(fixture);
+    el(fixture).querySelector<HTMLButtonElement>('.panel-reset')!.click();
+    settle(fixture);
+    expect(chipTexts(fixture)).toEqual([]);
+    expect(component.market()).toBe('ALL');
+    expect(component.selectedYear()).toBe(2026);
+  });
+
+  it('opens the panel as a sheet on a phone', () => {
+    TestBed.inject(LayoutModeService).set('phone');
+    const fixture = create();
+    openPanel(fixture);
+    expect(el(fixture).querySelector('.filter-panel.sheet')).not.toBeNull();
+    expect(el(fixture).querySelector('.panel-apply')).not.toBeNull();
   });
 
   it('shows only the first two cards on a phone', () => {
