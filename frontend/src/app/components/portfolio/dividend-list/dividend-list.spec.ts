@@ -480,6 +480,8 @@ describe('Dividend filter-wide summary', () => {
     expect(labels).toEqual(['股票代號', '股利金額', '除息日期', '匯費', '補充保費']);
     component.newDividend = { ...component.newDividend, quantity_at_record_date: 1000, cash_dividend_per_share: 1, fee: 10 };
     expect(component.grossHint()).toBe('配息 $1,000 (匯費 −$10)');
+    component.newDividend = { ...component.newDividend, currency: 'USD', quantity_at_record_date: 24.48, cash_dividend_per_share: 1, fee: 0.1 };
+    expect(component.grossHint()).toBe('配息 24.48 USD (匯費 −0.10 USD)');
     component.showDialog.set(false);
     fixture.detectChanges();
     fixture.destroy();
