@@ -104,6 +104,9 @@
   /* % resolves against .filter-bar (the containing block), so the popover never outgrows its pane. */
   width: min(560px, 100%);
   min-width: min(300px, 100%);
+  /* The global Bootstrap .popover rule caps max-width at 276px and sets its own font; neither applies here. */
+  max-width: none;
+  font: inherit;
   background: var(--app-surface);
   border: 1px solid var(--app-border);
   border-radius: 16px;
@@ -141,6 +144,8 @@
 
 .slot-secondary {
   display: grid;
+  /* minmax(0, …): a wide control (date-range input) must not grow the track past the panel (c3). */
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
 }
 
