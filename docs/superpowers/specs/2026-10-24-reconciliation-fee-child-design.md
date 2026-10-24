@@ -1,6 +1,6 @@
 # Reconciliation — a fee child claims the statement's fee line (issue #143)
 
-Rev 2, 2026-10-24 (rev 1 + builder check, §10). Branch `feat/reconciliation-fee-child` from main `fbe7425` (PR #141 merged). Amends the matcher
+Rev 3, 2026-10-24 (rev 2 + Multica AGENT-267 FAIL folded, §10). Branch `feat/reconciliation-fee-child` from main `fbe7425` (PR #141 merged). Amends the matcher
 (`app/services/statements/matching.py`) and the candidate loader (`app/services/reconciliation_service.py
 load_candidates`). No schema change. Builds on the split-members spec (`2026-10-24-reconciliation-split-members-design.md`)
 and the guard-holders spec (`2026-10-24-reconciliation-guard-holders-design.md`); neither rules on the shapes below.
@@ -39,8 +39,9 @@ Goals.
 1. A fee child whose **standalone** parent (`group_id` None) is covered — by the owner, an agent, the policy, or an
    `auto` claim on another statement — stays a claimable child, so the existing child path claims the fee line
    exactly as it does for an auto-claimed parent of this statement.
-2. Identical fee children are paired with identical fee lines deterministically when, and only when, a perfect
-   pairing exists (as many children as lines); otherwise the tie stays `ambiguous`.
+2. Identical fee children are paired with identical fee lines deterministically when, and only when, the pairing
+   cannot go wrong: the children and lines form a closed, **complete** cohort (every child admissible for every
+   line) of equal size; otherwise the tie stays `ambiguous`.
 3. A `bank_only` fee line that has a *near* child names it (`near_children` in the case context), so the owner sees
    which fee to correct; no new action, no policy change.
 4. Reconcile and the policy validator keep seeing the same population and the same claims (shared loader).
@@ -68,7 +69,9 @@ Anti-goals (would make this a failure even if the tests pass).
 ## 3. Definitions
 
 - **Standalone parent**: `Entry` with `group_id is None`, `parent_entry_id is None`, not an installment instance
-  (`_standalone`). Its `children` are the claimable child view (`_child_view`), as today.
+  (`_standalone`: `instance is None or instance.definition_kind != "installment"` — a recurring instance is still
+  standalone). Installment membership comes from the schedule tables (`_instances`), **not** from `group_id`, so any
+  predicate on "standalone" must consult them. Its `children` are the claimable child view (`_child_view`), as today.
 - **Covered parent**: a standalone parent whose id is in `claimed` as the loader computes it today
   (`claimed_entry_ids(exclude_statement_id=this)` ∪ `exclude`), i.e. active coverage on another statement, or owner /
   agent / policy coverage on this one. (This statement's own `auto` rows never count — `_write_coverage` rewrites
@@ -84,8 +87,18 @@ Anti-goals (would make this a failure even if the tests pass).
   `standalone`, `principal_children`, the installment paths, `_claimed_by_earlier_line`, `_foreign_case`,
   `_near_case`, `_drift_case`, and the reverse side. The **child path** is matching.py:617–625 (rep kind `child`,
   row role `principal`, rule `exact`).
-- **Identical children** for a fee line: the child representations of that line whose children share one `kind` and
-  one `flow` and whose scores are equal within the margin (the condition under which R6a.2 would report `ambiguous`).
+- **Identical children** for a fee line: the child representations of that line whose children share one `kind`,
+  one `flow` **and one parent `account_id`** (participating accounts can hold several accounts; a fee is
+  interchangeable only inside one) and whose scores tie within the margin (the condition under which R6a.2 would
+  report `ambiguous`).
+- **Admissible** (child *c* of parent *e* for line *L*): the child path's own predicate — *c* unclaimed, `c.kind` in
+  *L*'s gate, `_same(c.flow, L.flow)`, and `_date_distance(L, e) ≤ exact_window_days` (so the child path yields a rep
+  with a positive score).
+- **Cohort** of a fee-gate line *L* at the moment the loop decides it: the connected component containing *L* in the
+  bipartite graph whose left nodes are this statement's **claimable, not yet claimed** lines with `line_kind ==
+  L.line_kind` and `flow` `_same` as *L*'s, whose right nodes are the unclaimed children with *L*'s identical
+  `(kind, flow, account_id)`, and whose edges are the admissible pairs. The cohort is **complete** when every left
+  node is admissible for every right node, and **balanced** when the two sides have the same size.
 - **Near child**: a child in the line's gate that no claim of this run names (not in `claimed` when the line is
   decided), same sign as the line, `|line.flow − c.flow| ≤ max(near_tolerance_abs, near_tolerance_pct · |line.flow|)`
   (the `_near_case` tolerance, taken of the line; a residual of 0 qualifies), with the parent's `_date_distance` to
@@ -110,24 +123,31 @@ once in `match()`. The near-child annotation (§4.3) reads all `entries`. `state
 guard path visits it; `claim_holders` resolves child rows through `by_row` over `entries ∪ children`, which now
 contains the carriers' children — nothing to add).
 
-4.2 **Identical-children pairing** (Goal 2), in the claim loop where R6a.2 decides `ambiguous`: when every
-representation of a fee-gate line (`line.line_kind ∈ BANK_ONLY_KINDS`) is a `child` rep, all their children share
-one `kind` and one `flow`, and the top scores tie within `margin`, count
+4.2 **Identical-children pairing** (Goal 2), in the claim loop at the point where R6a.2 would decide `ambiguous`
+(matching.py:896–898): when every representation of a fee-gate line (`line.line_kind ∈ BANK_ONLY_KINDS`) is a
+`child` rep and the reps are *identical children* (§3), build the line's **cohort** (§3). If the cohort is
+**complete and balanced**, claim this line with the child whose parent's `_date_distance` to the line is smallest,
+ties by lowest child id (`rule = "exact_pair"`, rep kind `child`, row role `principal`); the child enters `claimed`.
+Otherwise today's `ambiguous` case, unchanged (candidates list the children).
 
-- `n_children` = those identical children (unclaimed at this point of the loop), and
-- `n_lines` = the claimable lines of this statement, not yet claimed at this point (this line included), with
-  `line_kind` equal to this line's and `flow` `_same` as this line's, whose date is within `exact_window_days` of
-  **some** identical child's parent;
+Why complete *and* balanced, not counts alone (AGENT-267 finding 1): with only equal counts a greedy choice can strand
+a later line — lines dated Sep 4 and Sep 8, parents dated Sep 3 and Sep 5: line 1 ties, takes the lower id (parent
+Sep 5), line 2's only admissible child was that one, the other parent is 5 days away — although the assignment
+1→(Sep 3), 2→(Sep 5) existed. In a **complete** cohort every remaining child is admissible for every remaining line,
+so whatever a line takes (by this rule, or by an untied score when merchant text favours one child) the remaining
+lines can always be completed; **balanced** means no child or line is left over. Completeness also closes the
+reviewer's second gap: a child admissible only for a *later* line is in the component (the graph is built over all
+unclaimed same-flow lines), so it unbalances or breaks completeness and the cohort stays `ambiguous`. The cohort is
+rebuilt per line from the current `claimed` set and the lines not yet claimed, so claims made earlier in the loop
+(a text-favoured child, a non-tied line) are already removed. Why pairing inside such a cohort is safe: the children
+share account, kind and flow and every one of them could legitimately print as any of the lines; the bank's fee line
+names no purchase, so the ledger's attribution (the child under its parent) is untouched and only the
+statement-line ↔ child link is a canonical choice among equivalents. When the cohort is unbalanced there is a child
+or a line too many, which the owner must see — e.g. the duplicate child 58248 under 57454 (504/4245).
 
-if `n_children == n_lines`, claim this line with the child whose parent's `_date_distance` to the line is smallest,
-ties by lowest child id (`rule = "exact_pair"`, rep kind `child`, row role `principal`); the child enters `claimed`,
-so the next identical line takes the next child. If `n_children ≠ n_lines`, today's `ambiguous` case, unchanged
-(candidates list the children). The count is recomputed per line, so a line claimed by a non-tied rep earlier in the
-loop (a child whose parent's merchant text matched) is already out of `n_lines`, and a child it took is out of
-`n_children`. Why this is safe: identical fee children of one account are financially interchangeable (same kind,
-same flow, same account; the bank's fee line does not say which purchase it belongs to either), and the count
-condition guarantees a perfect pairing exists, so the rule only picks a canonical one. When the counts differ there is
-a child or a line too many, which the owner must see — e.g. the duplicate child 58248 under 57454 (504/4245).
+Owner option (§8.2): the same mechanism with a stricter tie-break — pair only when the nearest parent date is
+**unique** for the line, leaving same-day ties `ambiguous` — is a one-line variant; the default here pairs same-day
+ties by id.
 
 4.3 **Near-child annotation** (Goal 3): just before `_bank_only` (:833–838) is emitted for a line, collect the near
 children (§3) over all `entries` (carriers included) in the line's gate; if any, add
@@ -149,8 +169,11 @@ unchanged. A carrier that is a stand-in (`stand_in = True`) makes its child's re
 
 5.1 `load_candidates`: after `parents` (unchanged), select the **covered standalone parents** — same `where` as
 `parents` (accounts, currency, `parent_entry_id IS NULL`, window, `kind.not_in(kinds_out)`) restricted to
-`LedgerEntry.id.in_(claimed)` and `group_id IS NULL` — and their children with today's child query (participating
-accounts, statement currency, `c.id not in claimed`). For each such parent with ≥ 1 unclaimed child, append
+`LedgerEntry.id.in_(claimed)` and `group_id IS NULL`; then drop every one that carries an **installment** instance
+(`_instances(db, ids)` as the loader already does for `parents` and for the structural rows — a recurring instance
+stays; AGENT-267 finding 2: `group_id IS NULL` does not imply `_standalone`) — and load their children with today's
+child query (participating accounts, statement currency, `c.id not in claimed`). For each surviving parent with ≥ 1
+unclaimed child, append
 `entry_view(e, children=kids, all_children=(), instance=None, in_reverse=False, claimable=True, carrier=True,
 stand_in=e.id in stand_in_ids, transfer_peer_is_card=None)`. The `claimed` set can be large; query it as
 `id IN (...)` chunked by 200 like the other id lists, or as a join on `statement_coverage` active rows — builder's
@@ -175,12 +198,15 @@ so the `near_children` annotation supersedes and re-creates an existing `bank_on
 after deploy; one live line today (554/4164). Subsequent runs are stable (the annotation is deterministic: sorted,
 capped).
 
-5.4 Policy validator (`_single_admissible`): same loader, same `match`, so an agent `match` proposal on a line the
-child path now claims is refused `not_single_admissible` (the single reading is a `child` rep, which `_is_proposed`
-does not accept) — correct, those lines are reconcile's. `_system_entry_candidate`: unchanged.
+5.4 Policy validator (`_single_admissible`): same loader, same `match`, so an agent `match` proposal naming some
+other entry for a line the child path claims is refused `not_single_admissible`: before the claim exists the single
+reading is a `child` rep, which `_is_proposed` does not accept; after it exists the validator passes every active
+claimed id to `_representations`, so the child is simply absent and the proposal's entry is not the reading either.
+Both ways the refusal holds — those lines are reconcile's. `_system_entry_candidate`: unchanged.
 
-5.5 `stand_ins.owner_children`: unchanged. Once a child is claimed it leaves `claimed_entry_ids` and stops being a
-twin; while a near child exists the twin guard still refuses `create_system_entry` — the intended fail-closed.
+5.5 `stand_ins.owner_children`: unchanged. Once a child is claimed it **enters** `claimed_entry_ids` and so leaves
+the twin population (stand_ins.py:142–156); while a near child exists the twin guard still refuses
+`create_system_entry` — the intended fail-closed.
 
 ## 6. Worked shapes (production, 2026-10-24; ids and dates only)
 
@@ -214,16 +240,24 @@ Unit (`tests/unit/test_statement_matching.py`, helpers `L/E/S/run`; add a `C(...
    (assert both variants in one test).
 3. Carrier invisible to fallbacks: a purchase line within the near tolerance of the carrier's flow → no
    `amount_delta` naming the carrier; drift likewise.
-4. Identical pairing, perfect: two −5 fee lines (days 1, 2), two carriers (or one auto parent with two fee
-   children, or two auto parents) with −5 fee children dated days 1 and 2 → 4242/4243 shape: each line claims the
-   child whose parent is nearest; same-day tie → lowest child id; rules `exact_pair`; second `match()` identical.
-5. Identical pairing, imperfect: one −5 fee line, two −5 children → `ambiguous`, candidates both, no claim
-   (504/4245). Three lines, two children → the first two lines claim? **No**: `n_lines` (3) ≠ `n_children` (2) →
-   all three `ambiguous`; pin it.
+4. Identical pairing, complete and balanced: two −5 fee lines (days 1, 2), two carriers (or one auto parent with
+   two fee children, or two auto parents) with −5 fee children dated days 1 and 2 → 4242/4243 shape: each line
+   claims the child whose parent is nearest; same-day tie → lowest child id; rules `exact_pair`; second `match()`
+   identical.
+5. Unbalanced: one −5 fee line, two −5 children → `ambiguous`, candidates both, no claim (504/4245). Three lines,
+   two children → all three `ambiguous`; pin it.
+   5b. Incomplete (AGENT-267 counterexample): lines dated Sep 4 and Sep 8, children whose parents are dated Sep 3
+   and Sep 5 → the Sep 8 line is admissible for only one child → cohort incomplete → the Sep 4 line is `ambiguous`
+   (not claimed), nothing is `exact_pair`; the Sep 8 line claims its single admissible child by the ordinary child
+   path (`exact`).
+   5c. Reachable only from a later line: lines A, B (same flow), children x, y admissible for both, child z
+   admissible only for B → component {A, B} × {x, y, z} unbalanced → A and B `ambiguous`.
 6. Pairing is scoped to the tie: when one child's parent merchant text matches the line (score differs beyond the
-   margin), the text winner claims by today's rule (`exact`), the other line then pairs the remaining child (counts
-   recomputed per line).
-7. Pairing never crosses kinds or flows: −5 fee children vs a −5 `interest` line; −5 and −6 children → not identical.
+   margin), the text winner claims by today's rule (`exact`); the other line's cohort is then one line, one child →
+   `exact_pair` (or `exact` if it is the only rep).
+7. Pairing never crosses kinds, flows or accounts: −5 fee children vs a −5 `interest` line; −5 and −6 children →
+   not identical; two −5 fee children whose parents sit on two different participating accounts → not identical →
+   `ambiguous`.
 8. Near child annotation: fee line −6, carrier child −5 (within `max(10, 5 %)`), parent 1 day away → `bank_only`
    with `near_children: [{entry_id, parent_entry_id, residual "-1"}]`; an exact child whose parent is 4 days away
    (outside the 3-day exact window, inside the 5-day near window) appears with residual `"0"` and the line is
@@ -250,7 +284,8 @@ parent_entry_id=)`, `_owner_cover`-style manual coverage via the `match` action 
 16. `load_candidates` unit-ish: a covered standalone parent with one unclaimed child yields a carrier row
     (`carrier=True`, `claimable=True`, `in_reverse=False`, children = that child); a covered parent whose children
     are all claimed yields none; a covered **split member** yields no carrier (structural row as today); a covered
-    parent outside the 15-day window yields none.
+    parent outside the 15-day window yields none; a covered ungrouped parent that is an **installment instance**
+    yields none (AGENT-267 finding 2), while a covered **recurring** instance with an unclaimed fee child does.
 16b. Carrier not locked (if the harness allows a second session; `tests/conftest.py` `SessionLocal`): hold
     `SELECT … FOR UPDATE` on the covered parent in another session; `reconcile` still claims the child (the parent is
     not in the lock set) — and, as the negative, holding the lock on the **child** makes `reconcile` raise the
@@ -269,8 +304,10 @@ runs give identical claims.
 ## 8. Open points for the review
 
 1. Split members' children when the member is owner-covered (non-goal here; fail-closed). Worth a follow-up?
-2. The pairing rule's count condition is deliberately strict (perfect pairing only). Alternative considered and
-   rejected: pair greedily whenever children ≥ lines, which would hide a duplicate child (504/4245).
+2. The pairing rule is deliberately strict (complete and balanced cohort only). Rejected: greedy pairing whenever
+   children ≥ lines (hides a duplicate child, 504/4245); counts without completeness (AGENT-267 finding 1). Owner's
+   open choice: keep same-day ties paired by id (default), or require a unique nearest date (then 555's same-day pair
+   stays `ambiguous`; 4242/4243 still pair). The ledger attribution is unaffected either way (§4.2).
 3. Child dates: the child path and the near-child annotation use the parent's date. Fees the bank posts days after
    the purchase stay open. Giving `Child` its own dates is a separate change (stand-ins already date children by
    their own rows).
@@ -292,3 +329,10 @@ instead of "not `_same`"); one-list carrier shape fixed instead of builder's cho
 `_is_stand_in_rep` consistency); carriers lock children only (§5.2); population window is `population_window_days`
 (15), not `candidate_window_days`; 504/4244 confirmed as shape 2 by data; `_key` includes the context (§5.3);
 `_bank_only` line reference corrected; tests 2b, 16 (window), 16b added.
+
+Rev 2 → rev 3 (Multica AGENT-267, dev-astra FAIL, 2026-10-24): **finding 1 (Major)** — pairing now requires a
+*complete and balanced cohort* (§3 "Admissible", "Cohort"; §4.2 rewritten with the reviewer's Sep 4/8 counterexample
+and the later-line child), account equality made an explicit predicate of "identical"; tests 5b, 5c, 7 (accounts)
+added. **Finding 2 (Medium)** — carriers exclude installment instances via `_instances`, recurring kept (§3, §5.1;
+test 16). **(d)** §5.4 reworded: after the claim exists the validator sees the child as claimed, refusal holds either
+way. **(e)** §5.5: a claimed child *enters* `claimed_entry_ids`.
