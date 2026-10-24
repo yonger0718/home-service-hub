@@ -582,7 +582,7 @@ describe('PortfolioDashboardComponent', () => {
     }})));
     const fixture = createFixture();
     const root = fixture.nativeElement as HTMLElement;
-    for (const [market, amount] of [['TW', '3,190'], ['US', '25.00 USD']]) {
+    for (const [market, amount] of [['TW', '+$3,190'], ['US', '+25.00 USD']]) {
       const label = market === 'TW' ? '台股' : '美股';
       const button = Array.from(root.querySelectorAll<HTMLButtonElement>('app-page-header .market-toggle button'))
         .find(b => b.textContent?.trim() === label)!;
