@@ -18,7 +18,7 @@ Every money amount on screen SHALL be rendered by one formatter (`formatMoney`):
 
 #### Scenario: Foreign amount keeps decimals
 - **WHEN** a US holding's native PnL is 1,326 USD
-- **THEN** the row SHALL show `1,326.00 USD`
+- **THEN** the row SHALL show `+1,326.00 USD`
 
 #### Scenario: Yen is whole units
 - **WHEN** the formatter receives 5,390.4 JPY

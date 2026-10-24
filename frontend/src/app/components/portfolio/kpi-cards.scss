@@ -36,6 +36,11 @@
     min-height: 1.1em;
     white-space: nowrap;
 
+    /* A native-currency total carries a 3-letter ISO code (`+12,345.67 USD`), so it scales lower. */
+    &.foreign {
+      font-size: clamp(16px, 9cqi, var(--fs-value));
+    }
+
     &.up {
       color: var(--app-trend-positive);
     }

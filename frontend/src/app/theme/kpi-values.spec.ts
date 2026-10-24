@@ -23,6 +23,11 @@ describe('KPI and summary values fit their card (polish-layout-v2 D3)', () => {
     }
   });
 
+  it('a foreign-currency value (ISO suffix) uses a lower clamp coefficient', () => {
+    expect(shared).toContain('&.foreign');
+    expect(shared).toContain('clamp(16px, 9cqi, var(--fs-value))');
+  });
+
   it('the bento padding is overridable through --bento-pad', () => {
     expect(read('src/app/components/ui/bento/bento.scss')).toContain('var(--bento-pad, var(--space-6))');
   });

@@ -584,6 +584,25 @@ describe('PortfolioDashboardComponent', () => {
     expect(footnote(root, 1)).toContain('待收 0.00 USD');
   });
 
+  it('gives KPI values the foreign clamp only when the market filter selects a non-TWD market', () => {
+    const us = { ...buildHolding(), market: 'US' as const, native_currency: 'USD' };
+    portfolioService.getSummary.mockReturnValue(of(buildSummary({ holdings: [us], market_totals: {
+      US: {currency: 'USD', cost: 500, market_value: 520, unrealized_pnl: 20, recorded_dividends: 5,
+        pending_dividends_net: 2, estimated_pnl_with_dividends: 27, estimated_pnl_percent: 5},
+    }})));
+    const fixture = createFixture();
+    const root = fixture.nativeElement as HTMLElement;
+    const total = () => root.querySelector('.kpi-row .kpi-card .value') as HTMLElement;
+    expect(total().classList).not.toContain('foreign');
+    fixture.componentInstance.selectMarketFilter('US');
+    fixture.detectChanges();
+    expect(total().classList).toContain('foreign');
+    expect(root.querySelector('.estimated-total')?.classList).toContain('foreign');
+    fixture.componentInstance.selectMarketFilter('ALL');
+    fixture.detectChanges();
+    expect(total().classList).not.toContain('foreign');
+  });
+
   it('shows unavailable estimated valuation/ratio instead of zero or pending-only profit', () => {
     portfolioService.getSummary.mockReturnValue(of(buildSummary({
       estimated_pnl_with_dividends: null, estimated_pnl_percent: null,

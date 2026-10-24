@@ -51,6 +51,7 @@ import {
 } from './dashboard-math';
 import { hoverGuidePlugin } from './chart-guide.plugin';
 import { Amount, formatMoney, formatPct } from '../../ui/format';
+import { isTwdCurrency } from '../money';
 
 /** Current time for the quote line's 盤中 / 台股收盤 tag; overridable in tests. */
 export const DASHBOARD_CLOCK = new InjectionToken<() => Date>('DASHBOARD_CLOCK', {
@@ -464,6 +465,11 @@ export class PortfolioDashboardComponent implements OnInit {
         this.reloadSummary();
       },
     });
+  }
+
+  /** Market-filtered totals stay in the market's native currency and carry an ISO code: they get the lower clamp. */
+  protected isForeignTotals(totals: { currency?: string | null }): boolean {
+    return !isTwdCurrency(totals.currency);
   }
 
   money(value: Amount, currency?: string | null, sign?: 'change'): string {

@@ -33,6 +33,10 @@ KPI and summary values (the dashboard KPI cards; the 交易紀錄, 股利 and �
 - **WHEN** the dashboard KPI grid renders at 360 px with 總市值 12,345,678
 - **THEN** `$12,345,678` SHALL be fully visible in its cell
 
+#### Scenario: Foreign-currency KPI value fits its card
+- **WHEN** the dashboard market filter selects a non-TWD market and a KPI value carries an ISO code (`+12,345.67 USD`)
+- **THEN** the value SHALL use `clamp(16px, 9cqi, var(--fs-value))` (class `foreign`) and SHALL still neither wrap nor clip at 360 / 390 / 1100 / 1440 px
+
 ### Requirement: Line icons for interface chrome
 
 Buttons, badges, markers and navigation SHALL use the app's line icon set. Emoji SHALL appear only where the owner chose them (category and account icons).
