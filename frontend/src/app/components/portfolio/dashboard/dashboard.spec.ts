@@ -340,12 +340,78 @@ describe('PortfolioDashboardComponent', () => {
       expect((fixture.nativeElement as HTMLElement).querySelector('.hero')).not.toBeNull();
     });
 
-    it('puts the header actions on their own line on a phone', () => {
+    const twoMarkets = () => portfolioService.getSummary.mockReturnValue(of(buildSummary({
+      holdings: [buildHolding(), { ...buildHolding(), symbol: 'AAPL', market: 'US', native_currency: 'USD' }],
+    })));
+
+    it('phone: the market toggle renders under the header at full width and the header holds a ⋯ menu', () => {
+      TestBed.inject(LayoutModeService).set('phone');
+      try {
+        twoMarkets();
+        const fixture = createFixture();
+        const root = fixture.nativeElement as HTMLElement;
+        const toggle = root.querySelector('.portfolio-dashboard > .market-toggle-row app-seg-toggle.block');
+
+        expect(header(fixture).querySelector('.market-toggle')).toBeNull();
+        expect(toggle).not.toBeNull();
+        expect(header(fixture).nextElementSibling).toBe(toggle!.parentElement);
+        expect(header(fixture).querySelector('.header-more')).not.toBeNull();
+        expect(Array.from(header(fixture).querySelectorAll('a')).some(a => a.textContent?.includes('匯入券商'))).toBe(false);
+        expect(Array.from(header(fixture).querySelectorAll('app-btn')).some(b => b.textContent?.includes('刷新行情'))).toBe(false);
+        expect(header(fixture).classList).not.toContain('actions-below');
+      } finally {
+        TestBed.inject(LayoutModeService).set(null);
+      }
+    });
+
+    it('phone: the ⋯ menu lists 匯入券商 (link) and 刷新行情 (runs the refresh, disabled while it loads, KPI skeleton shown)', () => {
+      TestBed.inject(LayoutModeService).set('phone');
+      try {
+        const refresh$ = new Subject<unknown>();
+        const fixture = createFixture();
+        portfolioService.refreshQuotes.mockReturnValue(refresh$);
+        const root = fixture.nativeElement as HTMLElement;
+        const open = () => {
+          (header(fixture).querySelector('.header-more') as HTMLButtonElement).click();
+          fixture.detectChanges();
+          return Array.from(header(fixture).querySelectorAll('.header-menu-item')) as HTMLElement[];
+        };
+
+        let items = open();
+        expect(items.map(i => i.textContent?.trim())).toEqual(['匯入券商', '刷新行情']);
+        expect(items[0].getAttribute('href')).toContain('/portfolio/import?type=broker');
+
+        items[1].click();
+        fixture.detectChanges();
+        expect(portfolioService.refreshQuotes).toHaveBeenCalledTimes(1);
+        expect(header(fixture).querySelector('.header-menu')).toBeNull();
+        expect(root.querySelector('.kpi-row p-skeleton')).not.toBeNull();
+
+        items = open();
+        expect(items[1].getAttribute('aria-disabled')).toBe('true');
+        items[1].click();
+        fixture.detectChanges();
+        expect(portfolioService.refreshQuotes).toHaveBeenCalledTimes(1);
+
+        portfolioService.getRecalcStatus.mockReturnValue(of({ state: 'completed' }));
+        refresh$.next({ refresh_scheduled: true });
+        refresh$.complete();
+        vi.advanceTimersByTime(2000);
+        fixture.detectChanges();
+        expect(root.querySelector('.kpi-row p-skeleton')).toBeNull();
+        if (!header(fixture).querySelector('.header-menu')) open();
+        expect(header(fixture).querySelectorAll('.header-menu-item')[1].getAttribute('aria-disabled')).toBeNull();
+      } finally {
+        TestBed.inject(LayoutModeService).set(null);
+      }
+    });
+
+    it('phone: single market — no toggle row at all', () => {
       TestBed.inject(LayoutModeService).set('phone');
       try {
         const fixture = createFixture();
 
-        expect(header(fixture).classList).toContain('actions-below');
+        expect((fixture.nativeElement as HTMLElement).querySelector('.market-toggle-row')).toBeNull();
       } finally {
         TestBed.inject(LayoutModeService).set(null);
       }

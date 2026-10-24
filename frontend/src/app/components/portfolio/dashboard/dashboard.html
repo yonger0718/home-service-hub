@@ -1,20 +1,34 @@
 <div class="portfolio-dashboard">
-  <app-page-header [subtitle]="quoteLine()" [actionsBelowOnPhone]="true">
-    @if (availableMarkets().length > 1) {
+  <app-page-header [subtitle]="quoteLine()" [menu]="phoneMenu()">
+    @if (!isPhone()) {
+      @if (availableMarkets().length > 1) {
+        <app-seg-toggle
+          class="market-toggle"
+          ariaLabel="市場"
+          [options]="marketFilterOptions()"
+          [value]="marketFilter()"
+          (change)="selectMarketFilter($event)"
+        ></app-seg-toggle>
+      }
+      <a routerLink="/portfolio/import" [queryParams]="{ type: 'broker' }" class="btn btn-outline-secondary btn-sm">
+        <i class="pi pi-upload" aria-hidden="true"></i>
+        匯入券商
+      </a>
+      <app-btn variant="secondary" icon="pi-refresh" [loading]="loading()" (click)="loadSummary()">刷新行情</app-btn>
+    }
+  </app-page-header>
+  @if (isPhone() && availableMarkets().length > 1) {
+    <div class="market-toggle-row">
       <app-seg-toggle
         class="market-toggle"
         ariaLabel="市場"
+        [block]="true"
         [options]="marketFilterOptions()"
         [value]="marketFilter()"
         (change)="selectMarketFilter($event)"
       ></app-seg-toggle>
-    }
-    <a routerLink="/portfolio/import" [queryParams]="{ type: 'broker' }" class="btn btn-outline-secondary btn-sm">
-      <i class="pi pi-upload" aria-hidden="true"></i>
-      匯入券商
-    </a>
-    <app-btn variant="secondary" icon="pi-refresh" [loading]="loading()" (click)="loadSummary()">刷新行情</app-btn>
-  </app-page-header>
+    </div>
+  }
 
   @if (loading()) {
     <div class="kpi-row">
