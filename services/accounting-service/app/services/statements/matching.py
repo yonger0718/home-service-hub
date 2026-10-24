@@ -19,7 +19,7 @@ import itertools
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Callable
+from typing import Callable, Mapping
 
 from app.services.statements.merchant import normalise, tokens
 
@@ -33,6 +33,10 @@ class Child:
     kind: str
     flow: Decimal
     currency: str | None = None  # the row's own currency (the loader sets it); None: the statement's currency
+    # guard holders (issue #136, holders spec §3 "Row metadata"): the child's ledger facts, loader-set
+    source: str | None = None
+    original_amount: Decimal | None = None
+    original_currency: str | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +91,24 @@ class Entry:
     # (`_kids`); `children` stays the claimable view and claim paths never read this one
     all_children: tuple[Child, ...] = ()
     currency: str | None = None  # the row's own currency (the loader sets it); None: the statement's currency
+    source: str | None = None  # the ledger row's `source` (loader-set; None: not statement-sourced), holders spec §3
+
+
+@dataclass(frozen=True)
+class Holder:
+    """What already explains a guard line (holders spec §3 "Holder"): the holder rows' entry ids (children included),
+    whether any of them is a stand-in (`stand_in_row`), and whether they explain the line exactly (signed flows, or the
+    full same-currency foreign sum; an unresolvable row id is never exact)."""
+    entry_ids: frozenset[int]
+    stand_in: bool
+    exact: bool
+
+
+def stand_in_row(row_id: int, source: str | None, stand_in_ids: frozenset[int]) -> bool:
+    """Holders spec §3: a holder row (parent or child) is a stand-in when an applied backfill created it
+    (`stand_in_ids`) or it is statement-sourced (`split_entry`, `create_refund`, `attach_fee`, adjustments) — broad on
+    purpose: a line it holds stays a guard line (fail-closed)."""
+    return row_id in stand_in_ids or source == "statement"
 
 
 @dataclass(frozen=True)
@@ -476,19 +498,30 @@ def _prints_reading(line: Line, reading: Reading, rules: Rules) -> bool:
         and _same(abs(reading.foreign_amount), abs(line.foreign_amount)) and dist <= rules.foreign_window_days
 
 
+def _unrelated_exact(holder: Holder, g: Group, by_id: dict[int, Entry]) -> bool:
+    """Holders spec §3 "Unrelated exact holder": exact, not a stand-in, and none of its rows is a member of `g` or a
+    member's child (the guard's child view, `_kids`) — so a line a member's fee child holds is never unrelated."""
+    related = set(g.member_ids) | {c.id for i in g.member_ids if i in by_id for c in _kids(by_id[i])}
+    return holder.exact and not holder.stand_in and not (holder.entry_ids & related)
+
+
 def printed_whole(lines_all: list[Line], entries: list[Entry], groups: dict[int, Group], rules: Rules,
                   aside: frozenset[int], aside_children: frozenset[int],
-                  account_currency: str | None = None) -> frozenset[int]:
+                  account_currency: str | None = None, holders: Mapping[int, Holder] | None = None) -> frozenset[int]:
     """The split groups this statement prints whole: a reading (`group_readings` over the structural population) a
     guard line prints (`_prints_reading`), or readings incomplete or empty — a mixed-currency group included
-    (fail-closed: its members never go apart)."""
+    (fail-closed: its members never go apart). Holders spec §3 "Printed whole": per group the scan skips a guard line
+    whose holder (`holders`, line id → `Holder`; None/{} = every line) is an unrelated exact holder for it
+    (`_unrelated_exact`); `aside` and `aside_children` stay over every guard line."""
     by_id = {e.id: e for e in entries}
     out: set[int] = set()
     for g in groups.values():
         if g.kind != "split":
             continue
         readings, complete = group_readings(g, by_id, aside, aside_children, account_currency)
-        if not complete or not readings or any(_prints_reading(line, r, rules) for r in readings for line in lines_all):
+        scan = [line for line in lines_all
+                if not holders or line.id not in holders or not _unrelated_exact(holders[line.id], g, by_id)]
+        if not complete or not readings or any(_prints_reading(line, r, rules) for r in readings for line in scan):
             out.add(g.id)
     return frozenset(out)
 
@@ -509,16 +542,18 @@ class Context:
 
 
 def statement_context(kind: str, lines: list[Line], lines_all: list[Line], entries: list[Entry],
-                      groups: dict[int, Group], rules: Rules, account_currency: str) -> Context:
+                      groups: dict[int, Group], rules: Rules, account_currency: str,
+                      holders: Mapping[int, Holder] | None = None) -> Context:
     """The per-statement split-member decision over the unfiltered population (claimable ∪ structural rows), spec
     §4.1: `aside` — the members printed alone by the claimable `lines` (owner-covered lines removed), what the claim
     side reads, so a fee line another entry holds never changes which reading a purchase line claims; `aside_all`
     and `aside_children` — over the guard lines `lines_all` (covered and neighbouring lines too), the guard's only;
-    the groups printed whole (mixed currencies fail closed) and the apart members."""
+    the groups printed whole (mixed currencies fail closed; `holders` filter the guard's scan only, holders spec §3)
+    and the apart members."""
     aside = printed_alone(kind, lines, entries, groups, rules)
     aside_all = printed_alone(kind, lines_all, entries, groups, rules)
     aside_children = printed_alone_children(kind, lines_all, entries, groups)
-    whole = printed_whole(lines_all, entries, groups, rules, aside_all, aside_children, account_currency)
+    whole = printed_whole(lines_all, entries, groups, rules, aside_all, aside_children, account_currency, holders)
     return Context(aside, aside_all, aside_children, whole, apart_members(entries, groups, whole), tuple(entries))
 
 
@@ -807,14 +842,15 @@ def _designated_by_cases(cases: list[Case]) -> set[int]:
 
 def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
           fee_expected: Callable[[Entry], Decimal | None], rules: Rules, account_currency: str,
-          lines_all: list[Line] | None = None) -> MatchResult:
+          lines_all: list[Line] | None = None, holders: Mapping[int, Holder] | None = None) -> MatchResult:
     """`lines_all`: the guard lines — every current line of the statement, covered ones included, and the
     neighbouring statements' (default `lines`); `entries` may carry structural rows (`claimable=False`), which only
-    the printed-whole guard (`statement_context`) reads."""
+    the printed-whole guard (`statement_context`) reads; `holders`: what already explains a guard line (holders spec
+    §3; None = the guard sees every line)."""
     result = MatchResult()
     claimed: set[int] = set()
     ctx = statement_context(statement_kind, lines, lines_all or lines, entries, groups, rules,
-                            account_currency)  # over the unfiltered population
+                            account_currency, holders)  # over the unfiltered population
     hint_only = [e for e in entries if not e.claimable]
     entries = [e for e in entries if e.claimable]
     aside, apart = ctx.aside, ctx.apart
@@ -879,3 +915,44 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
                 result.explained[c.id] = "uncovered_child"
     result.unmatched_entry_ids = sorted(unmatched)
     return result
+
+
+def claim_holders(result: MatchResult, lines_all: list[Line], entries: list[Entry],
+                  stand_in_ids: frozenset[int]) -> dict[int, Holder]:
+    """Holders spec §3/§4.1: a pass-1 `MatchResult`'s claims as holders of their lines (pass 2's own-claim source).
+    Every claim row (parent and child) resolves through `by_row` over the unfiltered population (`entries` with their
+    `children` and `all_children`); `stand_in` — any row `stand_in_row`; `exact` — every row resolves and either the
+    signed Σ `Row.flow` is the line's flow (true by construction for the matcher's conserving rules, still computed) or
+    every row carries the line's foreign currency and an `original_amount` whose summed magnitude is the line's
+    foreign amount. A claimed line absent from `lines_all` is skipped. Pure."""
+    by_line = {ln.id: ln for ln in lines_all}
+    by_row: dict[int, Entry | Child] = {e.id: e for e in entries} \
+        | {c.id: c for e in entries for c in (*e.children, *e.all_children)}
+    out: dict[int, Holder] = {}
+    for claim in result.claims:
+        line = by_line.get(claim.line_id)
+        if line is None:
+            continue
+        rows = claim.representation.rows
+        found = [by_row.get(r.entry_id) for r in rows]
+        stand_in = any(stand_in_row(r.entry_id, x.source if x is not None else None, stand_in_ids)
+                       for r, x in zip(rows, found))
+        exact = False
+        if all(x is not None for x in found):
+            exact = _same(sum((r.flow for r in rows), ZERO), line.flow) or (
+                line.foreign_amount is not None
+                and all(x.original_currency == line.foreign_currency and x.original_amount is not None for x in found)
+                and _same(abs(sum((x.original_amount for x in found), ZERO)), abs(line.foreign_amount)))
+        out[line.id] = Holder(frozenset(r.entry_id for r in rows), stand_in, exact)
+    return out
+
+
+def merge_holders(stable: Mapping[int, Holder], own: Mapping[int, Holder]) -> dict[int, Holder]:
+    """Holders spec §3: stable coverage ∪ this run's own claims. The two never share a line (owner/agent lines are not
+    claimable, neighbouring lines never claimed here); should one carry both, its holder unites the ids, or-s the
+    stand-in flag and is not exact (fail-closed: there are no flows to re-check). Pure."""
+    out = dict(stable)
+    for line_id, h in own.items():
+        s = out.get(line_id)
+        out[line_id] = h if s is None else Holder(s.entry_ids | h.entry_ids, s.stand_in or h.stand_in, False)
+    return out
