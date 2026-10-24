@@ -39,8 +39,8 @@ Buttons, badges, markers and navigation SHALL use the app's line icon set. Emoji
 
 ### Requirement: Component classes do not collide with Bootstrap
 
-Component templates SHALL NOT use Bootstrap grid class names (`row`, `col`, `col-*`, `container`) for their own elements, except in `components/item-list`. A CI check SHALL fail when one is introduced.
+Component templates SHALL NOT use Bootstrap grid class names (`row`, `col`, `col-*`, `container`) for their own elements, except in the allowlisted legacy forms that use the Bootstrap grid on purpose (`item-list`, `portfolio/dividend-list`, `portfolio/transaction-list`, `accounting/account-settings`). A test in the unit suite SHALL fail when one is introduced elsewhere, and SHALL fail when an allowlisted file no longer exists.
 
-#### Scenario: CI gate
-- **WHEN** a template outside `components/item-list` adds `class="row"`
-- **THEN** the lint step SHALL fail and name the file
+#### Scenario: Gate
+- **WHEN** a template outside the allowlist adds `class="row"`
+- **THEN** the unit suite SHALL fail and name the file and line

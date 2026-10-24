@@ -5,8 +5,8 @@
 
 ## 1. Defects (PR A)
 
-- [ ] 1.1 Rename component `.row` classes in the nine templates that use them; keep Bootstrap `.row` only in `item-list`
-- [ ] 1.2 CI grep gate: fail on `class="row` outside `components/item-list`
+- [ ] 1.1 Rename component `.row` classes in the six templates that use them (`entry-row` / `field-row`); the four legacy PrimeNG forms keep the Bootstrap grid for now
+- [ ] 1.2 Gate: a Vitest spec that fails, naming file and line, on `row` / `col` / `col-*` / `container` class tokens outside the allowlist (`item-list`, `dividend-list`, `transaction-list`, `account-settings`)
 - [ ] 1.3 Dark-mode logo: inline the lockup SVG with `currentColor`, or swap in a dark variant under `.app-dark-mode`, so the wordmark reads on `--app-surface`
 - [ ] 1.4 Remove `paneOpen` writes from `PortfolioAccountsPageComponent`; FAB pane offset via `--fab-right` set by the accounting layout
 - [ ] 1.5 Tests: timeline row left edge equals the page gutter at 390 px; accounts page leaves `paneOpen` false; FAB right offset on `/portfolio/accounts/1` equals the default
