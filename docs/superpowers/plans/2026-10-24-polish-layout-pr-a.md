@@ -238,7 +238,7 @@ Expected: all green; build warnings limited to the pre-existing `dashboard.scss`
 
 - [ ] **Step 2: Browser measurements** (Playwright in Docker, light + dark):
   - `/accounting` list mode at 390 px: `button.entry-row` left edge == `.day` (`timeline.html:219`) left edge == 16 px (`.hub-page` padding `1rem`, `shell.scss:127-129`; was 4 px from Bootstrap's −12 px margin).
-  - `/accounting/entries/<id>` at 1440 px (the list stays mounted only at ≥ 1024 px; the phone route swaps in the entry page): `.entry-row.sel` left == the list pane's content left − 8 px (`--row-sel-bleed` on `.pane`, `accounting-layout.scss:53`).
+  - `/accounting/entries/<id>` at 1440 px (the list stays mounted from 760 px; below that the phone route swaps in the entry page, and from 760 to 1023 px `--row-sel-bleed` is 0, so only ≥ 1024 px shows the 8 px bleed): `.entry-row.sel` left == the list pane's content left − 8 px (`--row-sel-bleed` on `.pane`, `accounting-layout.scss:53`).
   - `/accounting/accounts/<id>` entry history at 390 px: `a.entry-row` left == gutter.
   - Sidebar at 1440 px dark: `app-logo-lockup text` computed `fill` resolves to the dark `--app-text` (`rgb(243, 246, 251)`); screenshot of the sidebar head in both themes; also screenshot the rail icon in dark (Review Focus 5).
   - `/portfolio/accounts/1` at 1440 px: `app-sidebar` width 248 px (not the 72 px rail) and `.hub-fab` computed `right` == 30 px.
