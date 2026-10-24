@@ -160,6 +160,10 @@ def test_guard_holders_set_null_row_is_never_exact(seed, db_session, run):
     """Shape 7: owner-cover a line, delete the entry (SET NULL, snapshot keeps the id) → Holder(exact=False) → the
     group stays whole on reconcile."""
 
+def test_guard_holders_sums_the_rows_of_a_group_reading(seed, db_session, run):
+    """Shape 8: another split group (−400/−175) claimed the −575 line as a group reading (two coverage rows); their
+    flows sum to the line → Holder(exact=True, stand_in=False) with both ids; the −300/−280 group is released."""
+
 def test_reconcile_keeps_a_group_whole_when_a_real_stand_in_holds_the_sum_line_on_the_neighbour(seed, db_session, run):
     """Shape 4: August's −580 sum line is held by a `source="statement"` entry (what the policy books) → whole in
     September; the −300 line stays line_unmatched with no member candidate."""
