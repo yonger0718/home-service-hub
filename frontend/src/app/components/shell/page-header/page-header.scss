@@ -141,23 +141,6 @@ h1 {
   }
 }
 
-/* Gear sits beside the title in the DOM (focus order matches what is seen); the actions wrap to a full-width line. */
-:host(.actions-below) {
-  .page-header-row {
-    flex-wrap: wrap;
-  }
-
-  .page-title {
-    flex-basis: 0;
-  }
-
-  .page-actions {
-    flex: 1 0 100%;
-    gap: 0.5rem;
-    justify-content: flex-start;
-  }
-}
-
 app-sub-nav {
   margin-top: 0.75rem;
 }

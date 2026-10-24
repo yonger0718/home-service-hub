@@ -8,9 +8,6 @@
       <span class="page-subtitle">{{ subtitle() }}</span>
     }
   </div>
-  @if (gear() && actionsBelow()) {
-    <ng-container *ngTemplateOutlet="gearLink" />
-  }
   <div class="page-actions"><ng-content></ng-content></div>
   @if (phone() && menu().length) {
     <div class="header-more-wrap">
@@ -37,7 +34,7 @@
       }
     </div>
   }
-  @if (gear() && !actionsBelow()) {
+  @if (gear()) {
     <ng-container *ngTemplateOutlet="gearLink" />
   }
 </div>

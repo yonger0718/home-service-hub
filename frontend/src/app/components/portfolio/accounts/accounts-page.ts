@@ -5,7 +5,7 @@ import { map } from 'rxjs';
 
 import { BrokerAccount } from '../../../models/portfolio.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
-import { PageHeaderComponent } from '../../shell/page-header/page-header';
+import { PageHeaderComponent, PageMenuItem } from '../../shell/page-header/page-header';
 import { BtnComponent } from '../../ui/btn/btn';
 import { PortfolioAccountDetailComponent } from './account-detail';
 import { PortfolioAccountsListComponent } from './accounts-list';
@@ -29,6 +29,9 @@ export class PortfolioAccountsPageComponent {
   private readonly layout = inject(LayoutModeService);
 
   readonly panes = computed(() => this.layout.mode() === 'panes');
+  readonly phone = computed(() => this.layout.mode() === 'phone');
+  /** Phones: 新增帳戶 leaves the header row for the ⋯ menu. */
+  readonly phoneMenu: PageMenuItem[] = [{ label: '新增帳戶', icon: 'pi-plus', run: () => this.openCreateDialog() }];
   /** The route's `:id`, or null on `/portfolio/accounts` (and for an id that is not a number). */
   readonly routeId = toSignal(this.route.paramMap.pipe(map(params => Number(params.get('id')) || null)), {
     initialValue: null,

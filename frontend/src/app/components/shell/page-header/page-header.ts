@@ -43,7 +43,6 @@ let nextMenuId = 0;
   templateUrl: './page-header.html',
   styleUrl: './page-header.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { '[class.actions-below]': 'actionsBelow()' },
 })
 export class PageHeaderComponent {
   readonly title = input<string>();
@@ -51,8 +50,6 @@ export class PageHeaderComponent {
   readonly back = input(false);
   /** Muted line under the h1 on every width (e.g. the dashboard's quote time). */
   readonly subtitle = input<string | null>(null);
-  /** Phones only: the actions take their own line under the title and gear instead of squeezing the title. */
-  readonly actionsBelowOnPhone = input(false);
 
   /** Phones only: secondary actions behind a ⋯ button after the projected actions. */
   readonly menu = input<PageMenuItem[]>([]);
@@ -77,7 +74,6 @@ export class PageHeaderComponent {
 
   protected readonly heading = computed(() => this.title() ?? this.nav.activeItem().title);
   protected readonly phone = computed(() => this.layout.mode() === 'phone');
-  protected readonly actionsBelow = computed(() => this.actionsBelowOnPhone() && this.phone());
   /** No gear on 設定 itself: it would link to the page being viewed. */
   protected readonly gear = computed(
     () => this.phone() && this.nav.tabBar().settingsInHeader && this.nav.activeItem().id !== 'settings',
