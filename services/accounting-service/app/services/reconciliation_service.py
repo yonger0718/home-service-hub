@@ -41,7 +41,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from typing import Callable, Iterable, Iterator
+from typing import Callable, Iterable, Iterator, Mapping
 
 from psycopg2.errors import LockNotAvailable
 from sqlalchemy import and_, exists, func, or_, select, update
@@ -246,7 +246,9 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
     `all_children` (every child as stored; `children` stays the claimable view), and each member not loaded above —
     any account, currency, window, claim state or exclusion — is appended as a structural row (`claimable=False`,
     `in_reverse=False`, no instance, all its children in both views) for the printed-whole guard only. Every row and
-    child carries its own `currency` (a structural row in another currency makes its group whole by fail-closed)."""
+    child carries its own `currency` (a structural row in another currency makes its group whole by fail-closed).
+    Covered parents that still have a claimable child follow the drifted instances as carrier rows (`_carriers`,
+    fee-child spec 2026-10-24 §5.1): order parents, drifted instances, carriers, structural rows."""
     if include_reward is None:
         include_reward = any(line.line_kind == "reward" for line in _current_lines(db, statement))
     lo = statement.period_start - timedelta(days=window_days)
@@ -254,20 +256,15 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
     day = func.coalesce(LedgerEntry.posted_date, LedgerEntry.entry_date)
     kinds_out = ["balance_adjustment"] + ([] if include_reward else ["reward"])
     claimed = coverage_service.claimed_entry_ids(db, exclude_statement_id=statement.id) | set(exclude)
-    parents = [e for e in db.execute(
+    rows = list(db.execute(
         select(LedgerEntry)
         .where(LedgerEntry.account_id.in_(accounts), LedgerEntry.currency == statement.currency,
                LedgerEntry.parent_entry_id.is_(None), day >= lo, day <= hi, LedgerEntry.kind.not_in(kinds_out))
-        .order_by(LedgerEntry.id)).scalars() if e.id not in claimed]
+        .order_by(LedgerEntry.id)).scalars())
+    parents = [e for e in rows if e.id not in claimed]
+    covered = [e for e in rows if e.id in claimed and e.group_id is None]  # the carrier population, id order
     ids = [e.id for e in parents]
-    children: dict[int, list[matching.Child]] = defaultdict(list)
-    if ids:
-        for c in db.execute(select(LedgerEntry)
-                            .where(LedgerEntry.parent_entry_id.in_(ids), LedgerEntry.account_id.in_(accounts),
-                                   LedgerEntry.currency == statement.currency)
-                            .order_by(LedgerEntry.id)).scalars():
-            if c.id not in claimed:
-                children[c.parent_entry_id].append(_child_view(c))
+    children = _claimable_children(db, statement, accounts, ids, claimed)
     transfer_ids = {e.transfer_group_id for e in parents if e.transfer_group_id is not None}
     peer_is_card: dict[int, bool] = {}
     if transfer_ids:
@@ -303,6 +300,7 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
             instance=instances.get(e.id), in_reverse=statement.period_start <= posted <= statement.period_end,
             stand_in=e.id in stand_in_ids))
     entries.extend(_drifted_instances(db, statement, accounts, set(ids) | claimed))
+    entries.extend(_carriers(db, statement, accounts, covered, claimed, stand_in_ids))
     loaded = {e.id for e in entries}
     # structural rows (spec 2026-10-24 §3): the split members the gates left out, read only by the printed-whole guard.
     # A member carrying a schedule instance gets none: its group then misses a member and is whole by fail-closed, and
@@ -316,6 +314,42 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
         entries.append(entry_view(e, children=kids, all_children=kids, instance=None, in_reverse=False,
                                   claimable=False, stand_in=False, transfer_peer_is_card=None))
     return entries, groups
+
+
+def _claimable_children(db: Session, statement: AccountStatement, accounts: list[int], parent_ids: list[int],
+                        claimed: set[int]) -> dict[int, list[matching.Child]]:
+    """Parent id → its claimable children (`matching.Child`, id order): participating account, statement currency,
+    not in `claimed`."""
+    children: dict[int, list[matching.Child]] = defaultdict(list)
+    if parent_ids:
+        for c in db.execute(select(LedgerEntry)
+                            .where(LedgerEntry.parent_entry_id.in_(parent_ids), LedgerEntry.account_id.in_(accounts),
+                                   LedgerEntry.currency == statement.currency)
+                            .order_by(LedgerEntry.id)).scalars():
+            if c.id not in claimed:
+                children[c.parent_entry_id].append(_child_view(c))
+    return children
+
+
+def _carriers(db: Session, statement: AccountStatement, accounts: list[int], covered: list[LedgerEntry],
+              claimed: set[int], stand_in_ids: set[int]) -> list[matching.Entry]:
+    """Fee-child spec 2026-10-24 §5.1: the covered standalone parents that still have a claimable child, as carrier
+    rows: claimable, never in reverse, `children` the claimable children, no `all_children` and no instance.
+    `covered` is the rows of `load_candidates`' `parents` read (participating account, statement currency, top level,
+    dated in the window, kind gate) that are in `claimed` and ungrouped, in id order — so the extra queries per
+    load are the child query, then the instance lookup on the parents that have children; a parent with an
+    installment instance is dropped (a recurring one stays). Only the child path visits them; `reconcile()` locks
+    their children, never the carrier itself."""
+    if not covered:
+        return []
+    children = _claimable_children(db, statement, accounts, [e.id for e in covered], claimed)
+    covered = [e for e in covered if children.get(e.id)]
+    if not covered:
+        return []
+    scheduled = _instances(db, [e.id for e in covered])
+    return [entry_view(e, children=tuple(children[e.id]), all_children=(), instance=None, in_reverse=False,
+                       claimable=True, carrier=True, stand_in=e.id in stand_in_ids, transfer_peer_is_card=None)
+            for e in covered if e.id not in scheduled or scheduled[e.id].definition_kind != "installment"]
 
 
 def _split_structure(db: Session, split_ids: list[int]) -> tuple[list[LedgerEntry], dict[int, list[matching.Child]]]:
@@ -938,18 +972,17 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     # population before the locks, to know what to lock; re-read under the locks
     entries, groups = load_candidates(db, statement, accounts, window_days=matching.population_window_days(rules),
                                       include_reward=include_reward, exclude=owned)
-    # claimable rows and their claimable children only: structural rows and `all_children` are never locked
-    wanted = {e.id for e in entries if e.claimable} | {c.id for e in entries if e.claimable for c in e.children}
-    transfers = {e.transfer_group_id for e in entries if e.claimable and e.transfer_group_id is not None}
+    # claimable rows and their claimable children only: structural rows and `all_children` are never locked, and a
+    # carrier (fee-child spec §5.2) only through its children — its own row is another claim's or the owner's
+    wanted = {e.id for e in entries if e.claimable and not e.carrier} | {
+        c.id for e in entries if e.claimable for c in e.children}
+    transfers = {e.transfer_group_id for e in entries
+                 if e.claimable and not e.carrier and e.transfer_group_id is not None}
     locked_rows = _lock_candidates(db, sorted(groups), wanted, {UUID(t) for t in transfers})
     first_groups = {e.id: e.group_id for e in entries}
     entries, groups = load_candidates(db, statement, accounts, window_days=matching.population_window_days(rules),
                                       include_reward=include_reward, exclude=owned)
-    # rows that joined the population after the first read are not locked, and a row whose group changed in between
-    # belongs to a group we did not lock: both are left to the next sweep/recheck; non-claimable rows (drifted
-    # instances, structural split members) pass unchanged
-    entries = [e if not e.claimable else _with_children(e, locked_rows) for e in entries
-               if not e.claimable or (e.id in locked_rows and e.id in first_groups and first_groups[e.id] == e.group_id)]
+    entries = _survivors(entries, locked_rows, first_groups)
     # two passes (holders spec §3): `pass_two_holders` runs pass 1; pass 2 below is the run's result
     claimable_lines = [_as_line(row) for row in line_rows]
     plans = plan_map(db, statement.account_id)
@@ -966,7 +999,7 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     deferred = [entry_id for entry_id in result.unmatched_entry_ids if result.explained.get(entry_id) == DEFERRED]
     created: list[int] = []
     if live:
-        by_id = {e.id: e for e in entries if e.claimable}
+        by_id = {e.id: e for e in entries if e.claimable and not e.carrier}  # a carrier is never a matcher subject
         evaluated = set(by_id) | {c.id for e in entries if e.claimable for c in e.children}
         # deferrals first: the balance gap of `_desired_cases` reads them (`held_balance`)
         _write_deferrals(db, statement, accounts_by_id[statement.account_id], deferred, evaluated)
@@ -980,7 +1013,27 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
                            unmatched_entries=len(result.unmatched_entry_ids) - len(deferred))
 
 
-def _with_children(entry: matching.Entry, locked: dict[int, LedgerEntry]) -> matching.Entry:
+def _survivors(entries: list[matching.Entry], locked_rows: Mapping[int, LedgerEntry],
+               first_groups: dict[int, int | None]) -> list[matching.Entry]:
+    """The population re-read under the locks, trimmed to what was locked. Rows that joined after the first read are
+    not locked, and a row whose group changed in between belongs to a group we did not lock: both are left to the
+    next sweep/recheck. Non-claimable rows (drifted instances, structural split members) pass unchanged. A carrier
+    (fee-child spec §5.2) needs no lock of its own; like every claimable row its children are trimmed to the locked
+    ones, and a carrier left with no child is dropped (nothing to claim)."""
+    out = []
+    for e in entries:
+        if not e.claimable:
+            out.append(e)
+            continue
+        if not e.carrier and not (e.id in locked_rows and e.id in first_groups and first_groups[e.id] == e.group_id):
+            continue
+        e = _with_children(e, locked_rows)
+        if not (e.carrier and not e.children):
+            out.append(e)
+    return out
+
+
+def _with_children(entry: matching.Entry, locked: Mapping[int, LedgerEntry]) -> matching.Entry:
     """Trim the claimable `children` to the locked ones; `all_children` (the guard's view) is left untouched."""
     children = tuple(c for c in entry.children if c.id in locked)
     return entry if children == entry.children else replace(entry, children=children)

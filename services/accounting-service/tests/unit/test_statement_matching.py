@@ -25,7 +25,7 @@ def E(i, posted, flow, kind="expense", merchant="全聯", **kw):
                    transfer_group_id=kw.get("transfer_group_id"), transfer_peer_is_card=kw.get("peer_is_card"),
                    children=tuple(kw.get("children", ())), instance=kw.get("instance"), in_reverse=kw.get("in_reverse", True),
                    claimable=kw.get("claimable", True), stand_in=kw.get("stand_in", False),
-                   all_children=tuple(kw.get("all_children", ())), currency=kw.get("currency"))
+                   all_children=tuple(kw.get("all_children", ())), currency=kw.get("currency"), carrier=kw.get("carrier", False))
 
 
 def S(*a, **kw):
@@ -1535,3 +1535,248 @@ def test_group_variants_prunes_by_default_and_not_for_the_guard():
     assert ids(m._group_variants(g, by_id, set(), frozenset({32, 33}))) == ([[31], [31, 32], [31, 33]], True)
     assert ids(m._group_variants(g, by_id, set(), frozenset({32, 33}), prune=False)) \
         == ([[31], [31, 32], [31, 32, 33], [31, 33]], True)
+
+
+def test_carrier_child_claims_the_fee_line_and_the_carrier_never_appears():
+    carrier = E(20, date(2026, 9, 16), "-1000", carrier=True, in_reverse=False, children=(m.Child(21, "fee", D("-15")),))
+    res = run([L(1, date(2026, 9, 16), "-15", kind="fee", merchant="")], [carrier])
+    assert [(c.line_id, c.representation.kind, c.representation.rule, [(r.entry_id, r.role) for r in c.representation.rows]) for c in res.claims] == [(1, "child", "exact", [(21, "principal")])]
+    assert res.cases == [] and res.unmatched_entry_ids == []
+
+
+def test_carrier_is_never_a_principal():
+    carrier = E(20, date(2026, 9, 16), "-1000", carrier=True, in_reverse=False, children=(m.Child(21, "fee", D("-15")),))
+    res = run([L(1, date(2026, 9, 16), "-1000", merchant=""), L(2, date(2026, 9, 16), "-1015", merchant="")], [carrier])
+    assert res.claims == [] and [(c.kind, c.context) for c in res.cases] == [("line_unmatched", {}), ("line_unmatched", {})]
+
+
+def test_carrier_is_invisible_to_near_and_drift_fallbacks():
+    carrier = E(20, date(2026, 9, 16), "-1000", carrier=True, in_reverse=False, children=(m.Child(21, "fee", D("-15")),))
+    res = run([L(1, date(2026, 9, 16), "-1004", merchant="")], [carrier])          # within max(10, 5 %) → would be near
+    assert res.claims == [] and res.cases[0].kind == "line_unmatched" and res.cases[0].context == {}
+    res = run([L(1, date(2026, 9, 26), "-1000", merchant="")], [carrier])          # 10 days → would be drift
+    assert res.cases[0].kind == "line_unmatched" and res.cases[0].context == {}
+
+
+@pytest.mark.parametrize("carrier", [True, False])
+def test_second_identical_fee_line_gets_the_same_claimed_by_earlier_line_hint(carrier):
+    parent = E(20, date(2026, 9, 16), "-1000", carrier=carrier, in_reverse=not carrier, children=(m.Child(21, "fee", D("-15")),))
+    lines = [L(1, date(2026, 9, 16), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 16), "-15", kind="fee", merchant="")]
+    res = run(lines + ([] if carrier else [L(3, date(2026, 9, 16), "-1000", merchant="")]), [parent])
+    assert [c.line_id for c in res.claims if c.representation.kind == "child"] == [1]
+    second = next(c for c in res.cases if c.line_id == 2)
+    assert second.kind == "line_unmatched" and second.context == {"hint": "claimed_by_earlier_line", "entry_id": 21}
+
+
+def test_carrier_and_its_unclaimed_child_are_not_in_the_reverse_side():
+    carrier = E(20, date(2026, 9, 16), "-1000", carrier=True, in_reverse=False, children=(m.Child(21, "fee", D("-15")),))
+    res = run([L(1, date(2026, 9, 16), "-580", merchant="")], [carrier])
+    assert res.unmatched_entry_ids == [] and res.explained == {}
+
+
+def test_stand_in_carrier_child_rep_loses_to_an_owner_rep():
+    carrier = E(20, date(2026, 9, 16), "-1000", carrier=True, in_reverse=False, stand_in=True, children=(m.Child(21, "fee", D("-15")),))
+    owner = E(30, date(2026, 9, 16), "-15", kind="fee", merchant="")
+    res = run([L(1, date(2026, 9, 16), "-15", kind="fee", merchant="")], [carrier, owner])
+    assert [[r.entry_id for r in c.representation.rows] for c in res.claims] == [[30]]
+
+
+def _fee_parent(i, day, child_id, flow="-15", **kw):
+    return E(i, day, "-1000", merchant="", children=(m.Child(child_id, "fee", D(flow)),), **kw)
+
+
+def test_complete_balanced_cohort_pairs_by_nearest_parent_date_then_id():
+    lines = [L(1, date(2026, 7, 20), "-15", kind="fee", merchant=""), L(2, date(2026, 7, 21), "-15", kind="fee", merchant="")]
+    res = run(lines, [_fee_parent(10, date(2026, 7, 20), 11), _fee_parent(20, date(2026, 7, 21), 21)])
+    assert sorted((c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims) == [(1, 11, "exact_pair"), (2, 21, "exact")]
+    same_day = run([L(1, date(2026, 9, 16), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 16), "-15", kind="fee", merchant="")],
+                   [_fee_parent(10, date(2026, 9, 16), 11, carrier=True, in_reverse=False), _fee_parent(20, date(2026, 9, 16), 21, carrier=True, in_reverse=False)])
+    assert sorted((c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in same_day.claims) == [(1, 11, "exact_pair"), (2, 21, "exact")]
+    assert run(lines, [_fee_parent(10, date(2026, 7, 20), 11), _fee_parent(20, date(2026, 7, 21), 21)]).claims == res.claims  # deterministic
+
+
+def test_a_line_already_left_as_a_case_never_balances_a_later_cohort_agent_270():
+    lines = [L(1, date(2026, 9, 2), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 5), "-15", kind="fee", merchant="")]
+    entries = [_fee_parent(10, date(2026, 9, 3), 11), _fee_parent(20, date(2026, 9, 3), 21), E(30, date(2026, 8, 31), "-15", kind="fee", merchant="")]
+    res = run(lines, entries)
+    assert res.claims == [] and [c.kind for c in res.cases if c.line_id in (1, 2)] == ["ambiguous", "ambiguous"]   # A reads the standalone (30), so it is no slot; B's component is one slot → gate off, B ambiguous by the plain R6a.2 tie
+    assert {c["entry_id"] for c in next(c for c in res.cases if c.line_id == 1).candidates} == {11, 21, 30}
+    assert {c["entry_id"] for c in next(c for c in res.cases if c.line_id == 2).candidates} == {11, 21}
+
+
+def test_unbalanced_cohort_stays_ambiguous():
+    one_line = run([L(1, date(2026, 8, 2), "-15", kind="fee", merchant="")],
+                   [E(10, date(2026, 8, 2), "-1000", merchant="", carrier=True, in_reverse=False, children=(m.Child(11, "fee", D("-15")), m.Child(12, "fee", D("-15"))))])
+    assert one_line.claims == [] and one_line.cases[0].kind == "ambiguous" and {c["entry_id"] for c in one_line.cases[0].candidates} == {11, 12}
+    three_lines = run([L(i, date(2026, 9, 16), "-15", kind="fee", merchant="") for i in (1, 2, 3)],
+                      [_fee_parent(10, date(2026, 9, 16), 11), _fee_parent(20, date(2026, 9, 16), 21)])
+    assert three_lines.claims == [] and [c.kind for c in three_lines.cases] == ["ambiguous"] * 3   # mirror of AGENT-270 f1: lines 2+3 never pair after line 1
+
+
+def test_incomplete_cohort_stays_ambiguous_agent_267_counterexample():
+    lines = [L(1, date(2026, 9, 4), "-5", kind="fee", merchant=""), L(2, date(2026, 9, 8), "-5", kind="fee", merchant="")]
+    res = run(lines, [_fee_parent(100, date(2026, 9, 5), 101, "-5"), _fee_parent(200, date(2026, 9, 3), 102, "-5")])
+    first = next(c for c in res.cases if c.line_id == 1)
+    assert first.kind == "ambiguous" and not any(c.representation.rule == "exact_pair" for c in res.claims)
+    # AGENT-271 F2: line 2's single rep (101) sits in a 2-slot × 2-child component whose line 1 is decided → vetoed
+    assert res.claims == [] and [c.kind for c in res.cases if c.line_id in (1, 2)] == ["ambiguous", "ambiguous"]
+
+
+def test_a_sibling_line_with_a_rep_outside_the_cohort_is_not_a_slot_agent_271_f1():
+    lines = [L(1, date(2026, 9, 16), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 19), "-15", kind="fee", merchant="")]
+    entries = [_fee_parent(10, date(2026, 9, 16), 11, carrier=True, in_reverse=False), _fee_parent(20, date(2026, 9, 16), 21, carrier=True, in_reverse=False),
+               E(30, date(2026, 9, 20), "-15", kind="fee", merchant="")]
+    res = run(lines, entries)
+    assert [(c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims] == [(2, 30, "exact")]
+    first = next(c for c in res.cases if c.line_id == 1)
+    assert first.kind == "ambiguous" and {c["entry_id"] for c in first.candidates} == {11, 21}
+
+
+def test_an_untied_child_take_that_would_strand_a_sibling_line_is_ambiguous_agent_271_f2():
+    lines = [L(1, date(2026, 9, 5), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 8), "-15", kind="fee", merchant="")]
+    res = run(lines, [_fee_parent(10, date(2026, 9, 5), 11), _fee_parent(20, date(2026, 9, 2), 21)])
+    assert res.claims == []
+    assert [(c.line_id, c.kind) for c in res.cases if c.line_id in (1, 2)] == [(1, "ambiguous"), (2, "ambiguous")]
+    # line 2's single rep (11) sits in a 2-slot × 2-child component whose line 1 is decided: the undecided veto applies
+    assert {c["entry_id"] for c in next(c for c in res.cases if c.line_id == 1).candidates} == {11, 21}
+    assert {c["entry_id"] for c in next(c for c in res.cases if c.line_id == 2).candidates} == {11}
+
+
+def test_an_untied_take_inside_a_complete_cohort_still_claims_exact():
+    lines = [L(1, date(2026, 9, 5), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 7), "-15", kind="fee", merchant="")]
+    res = run(lines, [_fee_parent(10, date(2026, 9, 5), 11), _fee_parent(20, date(2026, 9, 7), 21)])   # line 1: 11 at 0.90, 21 at 0.8333 (untied); both lines admissible to both
+    assert sorted((c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims) == [(1, 11, "exact"), (2, 21, "exact")]
+
+
+def test_one_line_two_untied_children_keeps_nearest_wins():
+    res = run([L(1, date(2026, 9, 5), "-15", kind="fee", merchant="")], [_fee_parent(10, date(2026, 9, 5), 11), _fee_parent(20, date(2026, 9, 2), 21)])
+    assert [(c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims] == [(1, 11, "exact")]
+
+
+def test_child_reachable_only_from_a_later_line_unbalances_the_cohort():
+    lines = [L(1, date(2026, 9, 10), "-5", kind="fee", merchant=""), L(2, date(2026, 9, 13), "-5", kind="fee", merchant="")]
+    res = run(lines, [_fee_parent(10, date(2026, 9, 11), 11, "-5"), _fee_parent(20, date(2026, 9, 12), 21, "-5"), _fee_parent(30, date(2026, 9, 15), 31, "-5")])
+    assert res.claims == [] and sorted(c.line_id for c in res.cases if c.kind == "ambiguous") == [1, 2]
+
+
+def test_text_winner_claims_exact_and_the_remaining_single_rep_is_exact():
+    lines = [L(1, date(2026, 9, 16), "-15", kind="fee", merchant="AMAZON 手續費"), L(2, date(2026, 9, 16), "-15", kind="fee", merchant="")]
+    res = run(lines, [E(10, date(2026, 9, 16), "-1000", merchant="AMAZON", children=(m.Child(11, "fee", D("-15")),)), _fee_parent(20, date(2026, 9, 16), 21)])
+    assert sorted((c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims) == [(1, 11, "exact"), (2, 21, "exact")]
+
+
+def test_pairing_never_crosses_kind_flow_or_account():
+    interest = run([L(1, date(2026, 9, 16), "-15", kind="interest", merchant="")], [_fee_parent(10, date(2026, 9, 16), 11), _fee_parent(20, date(2026, 9, 16), 21)])
+    assert interest.claims == [] and interest.cases[0].kind == "line_unmatched"      # fee children are not in the interest gate
+    flows = run([L(1, date(2026, 9, 16), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 16), "-16", kind="fee", merchant="")],
+                [_fee_parent(10, date(2026, 9, 16), 11), _fee_parent(20, date(2026, 9, 16), 21, "-16")])
+    assert sorted((c.line_id, c.representation.rule) for c in flows.claims) == [(1, "exact"), (2, "exact")]  # single reps, no pairing needed
+    accounts = run([L(1, date(2026, 9, 16), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 16), "-15", kind="fee", merchant="")],
+                   [_fee_parent(10, date(2026, 9, 16), 11, account_id=1), _fee_parent(20, date(2026, 9, 16), 21, account_id=2)])
+    assert accounts.claims == [] and [c.kind for c in accounts.cases] == ["ambiguous", "ambiguous"]
+
+
+def test_pairing_right_pool_ignores_children_of_other_accounts_even_stand_ins():
+    lines = [L(i, date(2026, 9, 16), "-15", kind="fee", merchant="") for i in (1, 2, 3)]
+    entries = [_fee_parent(10, date(2026, 9, 16), 11, account_id=1), _fee_parent(20, date(2026, 9, 16), 21, account_id=1),
+               _fee_parent(30, date(2026, 9, 16), 31, account_id=2, stand_in=True)]
+    res = run(lines, entries)
+    assert res.claims == [] and [c.kind for c in res.cases] == ["ambiguous"] * 3      # the account-2 stand-in must not balance the account-1 cohort
+
+
+def test_pairing_requires_all_tied_reps_within_margin():
+    lines = [L(i, date(2026, 9, 16), "-15", kind="fee", merchant="") for i in (1, 2, 3)]
+    entries = [_fee_parent(10, date(2026, 9, 16), 11), _fee_parent(20, date(2026, 9, 17), 21), _fee_parent(30, date(2026, 9, 18), 31)]
+    res = run(lines, entries)
+    assert res.claims == [] and [c.kind for c in res.cases] == ["ambiguous"] * 3      # 0.90 vs 0.8333 is not a tie: no pairing
+
+
+def test_exact_pair_prefers_an_owner_child_over_a_stand_in_child():
+    lines = [L(i, date(2026, 9, 16), "-15", kind="fee", merchant="") for i in (1, 2, 3)]
+    entries = [_fee_parent(5, date(2026, 9, 16), 6, stand_in=True), _fee_parent(10, date(2026, 9, 16), 11), _fee_parent(20, date(2026, 9, 16), 21)]
+    res = run(lines, entries)
+    assert [(c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims] == [(1, 11, "exact_pair"), (2, 21, "exact"), (3, 6, "exact")]
+
+
+def test_bank_only_line_names_its_near_children():
+    carrier = E(20, date(2026, 6, 7), "-1000", carrier=True, in_reverse=False, children=(m.Child(21, "fee", D("-5")),))
+    far = E(30, date(2026, 6, 14), "-1000", merchant="", children=(m.Child(31, "fee", D("-6")),))       # 6 days → not near
+    exact_late = E(40, date(2026, 6, 12), "-1000", merchant="", children=(m.Child(41, "fee", D("-6")),)) # 4 days: outside exact, inside near
+    res = run([L(1, date(2026, 6, 8), "-6", kind="fee", merchant="")], [carrier, far, exact_late])
+    assert res.claims == []
+    assert res.cases[0].context == {"hint": "bank_only", "pattern": None,
+                                    "near_children": [{"entry_id": 41, "parent_entry_id": 40, "residual": "0.0000"},
+                                                      {"entry_id": 21, "parent_entry_id": 20, "residual": "-1.0000"}]}
+    plain = run([L(1, date(2026, 6, 8), "-6", kind="fee", merchant="")], [far])
+    assert plain.cases[0].context == {"hint": "bank_only", "pattern": None}
+    many = run([L(1, date(2026, 6, 8), "-6", kind="fee", merchant="")],
+               [E(50 + i, date(2026, 6, 8), "-1000", merchant="", children=(m.Child(60 + i, "fee", D("-7")),)) for i in range(7)])
+    assert [d["entry_id"] for d in many.cases[0].context["near_children"]] == [60, 61, 62, 63, 64]
+    claimed = run([L(1, date(2026, 6, 8), "-5", kind="fee", merchant=""), L(2, date(2026, 6, 8), "-6", kind="fee", merchant="")], [carrier])
+    assert [c.line_id for c in claimed.claims] == [1] and "near_children" not in next(c for c in claimed.cases if c.line_id == 2).context
+    # an opposite-sign child 1 day away is not listed (+1 vs −6: within the tolerance, so only the sign gate drops it)
+    opposite = run([L(1, date(2026, 6, 8), "-6", kind="fee", merchant="")],
+                   [E(70, date(2026, 6, 9), "-1000", merchant="", children=(m.Child(71, "fee", D("1")),))])
+    assert opposite.cases[0].context == {"hint": "bank_only", "pattern": None}
+    # a child outside the line's gate (interest on a fee line), same flow, 1 day away, is not listed
+    off_gate = run([L(1, date(2026, 6, 8), "-6", kind="fee", merchant="")],
+                   [E(80, date(2026, 6, 9), "-1000", merchant="", children=(m.Child(81, "interest", D("-6")),))])
+    assert off_gate.claims == [] and off_gate.cases[0].context == {"hint": "bank_only", "pattern": None}
+
+
+def test_a_single_rep_that_is_the_lowest_slots_forced_take_claims_despite_an_incomplete_cohort_5g():
+    lines = [L(1, date(2026, 9, 2), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 4), "-15", kind="fee", merchant="")]
+    res = run(lines, [_fee_parent(10, date(2026, 9, 1), 11), _fee_parent(20, date(2026, 9, 6), 21)])
+    assert [(c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims] == [(1, 11, "exact"), (2, 21, "exact")]
+    assert not [c for c in res.cases if c.line_id in (1, 2)]
+
+
+def _sibling_scenario_entries():
+    return [_fee_parent(10, date(2026, 9, 16), 11, carrier=True, in_reverse=False), _fee_parent(20, date(2026, 9, 16), 21, carrier=True, in_reverse=False),
+            _fee_parent(30, date(2026, 9, 20), 31, account_id=2, carrier=True, in_reverse=False)]
+
+
+def test_a_hidden_stand_in_edge_blocks_the_forced_take_agent_275_5i():
+    # lines Sep 2 and Sep 5; owner child 11 under a Sep 4 parent, stand-in child 21 under a Sep 1 parent. Line 1 reads
+    # 11 and 21 but R6b.0 hides 21 from its reps; its graph degree is 2, so the take is not forced: line 1 -> 21,
+    # line 2 -> 11 is a maximum assignment the greedy take would have destroyed.
+    lines = [L(1, date(2026, 9, 2), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 5), "-15", kind="fee", merchant="")]
+    res = run(lines, [_fee_parent(10, date(2026, 9, 4), 11, carrier=True, in_reverse=False),
+                      _fee_parent(20, date(2026, 9, 1), 21, carrier=True, in_reverse=False, stand_in=True)])
+    assert res.claims == []
+    assert [(c.line_id, c.kind, [d["entry_id"] for d in c.candidates]) for c in res.cases if c.line_id in (1, 2)] == \
+           [(1, "ambiguous", [11]), (2, "ambiguous", [11])]
+
+
+def test_a_sibling_reading_another_accounts_child_is_not_a_slot():
+    lines = [L(1, date(2026, 9, 16), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 19), "-15", kind="fee", merchant="")]
+    res = run(lines, _sibling_scenario_entries())
+    first = next(c for c in res.cases if c.line_id == 1)
+    assert first.kind == "ambiguous" and {c["entry_id"] for c in first.candidates} == {11, 21}
+    assert [(c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims] == [(2, 31, "exact")]
+
+
+def test_a_fee_split_group_is_never_a_rep_of_a_fee_line_so_it_cannot_unslot_a_sibling_5h():
+    # the fee/interest/reward gate holds no `expense`, so a split group is no rep of a child-only line: a sibling cannot
+    # lose its slot by reading one, and the plain complete 2x2 cohort pairs (pinned; the brief expected an ambiguous line 1)
+    lines = [L(1, date(2026, 9, 16), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 19), "-15", kind="fee", merchant="")]
+    members = [E(41, date(2026, 9, 20), "-5", kind="fee", merchant="", group_id=8), E(42, date(2026, 9, 20), "-10", kind="fee", merchant="", group_id=8)]
+    group = m.Group(id=8, kind="split", member_ids=(41, 42))
+    res = run(lines, _sibling_scenario_entries()[:2] + members, groups={8: group})
+    assert res.cases == []
+    assert sorted((c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims) == [(1, 11, "exact_pair"), (2, 21, "exact")]
+
+
+def test_a_large_same_flow_cohort_resolves_quickly():
+    import time
+    day = date(2026, 9, 16)
+    lines = [L(i, day, "-15", kind="fee", merchant="") for i in range(1, 61)]
+    entries = [_fee_parent(1000 + i, day, 2000 + i, carrier=True, in_reverse=False) for i in range(60)]
+    entries += [E(5000 + i, day, f"-{100 + i}", merchant=f"M{i}") for i in range(300)]
+    started = time.perf_counter()
+    res = run(lines, entries)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 5.0, elapsed  # regression guard: the eager slot scan took 12 s here; local ≈ 1 s
+    assert res.cases == [] and len(res.claims) == 60
+    assert {c.representation.rule for c in res.claims} <= {"exact", "exact_pair"}
+    assert sorted(c.representation.rows[0].entry_id for c in res.claims) == [2000 + i for i in range(60)]

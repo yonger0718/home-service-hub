@@ -92,6 +92,9 @@ class Entry:
     all_children: tuple[Child, ...] = ()
     currency: str | None = None  # the row's own currency (the loader sets it); None: the statement's currency
     source: str | None = None  # the ledger row's `source` (loader-set; None: not statement-sourced), holders spec §3
+    # a parent already covered elsewhere whose kind=fee children are still claimable: never a principal or a fallback
+    # candidate, only visited by the child path so a child can claim its fee line
+    carrier: bool = False
 
 
 @dataclass(frozen=True)
@@ -595,6 +598,8 @@ def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[i
         return out
     rule = {"payment": "payment", "refund": "refund", "transfer_in": "transfer", "transfer_out": "transfer"}.get(line.line_kind, "exact")
     for e in entries:
+        if e.carrier:
+            continue
         # group members (save a lone member for a non-purchase line and a member of a split group the statement
         # prints apart, `apart`), installment instances and children never stand alone (children reach a line via the
         # child path)
@@ -655,17 +660,20 @@ def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[i
                 if score > ZERO:
                     out.append(Representation("installment_group", rows, score, "installment_group", reasons))
     reps = [r for r in out if conserved(r.rows, line.flow)]
+    if not reps:
+        return reps
     by_id = {e.id: e for e in entries}
-    if any(not _is_stand_in_rep(r, by_id) for r in reps):  # R6b.0: an owner representation drops every stand-in one
-        reps = [r for r in reps if not _is_stand_in_rep(r, by_id)]
+    parent_of = {c.id: e for e in entries for c in e.children}
+    if any(not _is_stand_in_rep(r, by_id, parent_of) for r in reps):  # R6b.0: an owner representation drops every stand-in one
+        reps = [r for r in reps if not _is_stand_in_rep(r, by_id, parent_of)]
     return reps
 
 
-def _is_stand_in_rep(rep: Representation, by_id: dict[int, Entry]) -> bool:
+def _is_stand_in_rep(rep: Representation, by_id: dict[int, Entry], parent_of: dict[int, Entry]) -> bool:
     """A representation made only of stand-in rows (a child row counts as its parent's)."""
-    owners = {by_id[r.entry_id] for r in rep.rows if r.entry_id in by_id}
-    parents = [e for e in by_id.values() if any(r.entry_id in {c.id for c in e.children} for r in rep.rows)]
-    return bool(owners | set(parents)) and all(e.stand_in for e in owners | set(parents))
+    owners = {by_id[r.entry_id].id: by_id[r.entry_id] for r in rep.rows if r.entry_id in by_id}
+    owners.update({parent_of[r.entry_id].id: parent_of[r.entry_id] for r in rep.rows if r.entry_id in parent_of})
+    return bool(owners) and all(e.stand_in for e in owners.values())
 
 
 def _quantum(currency: str) -> Decimal:
@@ -676,6 +684,91 @@ def _ambiguous(line: Line, reps: list[Representation]) -> Case:
     cands = tuple({"entry_id": r.rows[0].entry_id if r.rows[0].group_id is None else None, "group_id": r.rows[0].group_id,
                    "score": str(r.score), "reasons": list(r.reasons)} for r in reps[:5])
     return Case(line.id, None, "ambiguous", cands, {})
+
+
+def _one_ident(reps: list[Representation], entries: list[Entry]) -> tuple[str, Decimal, int] | None:
+    """Spec §3 "Identical children" without the tie condition: every rep is a `child` rep and the children share one
+    kind, one flow and one parent `account_id` → that `(kind, flow, account_id)`; else None."""
+    if not reps or any(r.kind != "child" for r in reps):
+        return None
+    by_child = {c.id: (e, c) for e in entries for c in e.children}
+    found = [by_child.get(r.rows[0].entry_id) for r in reps]
+    if any(x is None for x in found):
+        return None
+    shapes = {(c.kind, c.flow.quantize(Q), e.account_id) for e, c in found}
+    return next(iter(shapes)) if len(shapes) == 1 else None
+
+
+def _tied(reps: list[Representation], rules: Rules) -> bool:
+    """Spec §3 "Identical children", the tie condition: two or more reps whose scores lie within the margin (`reps`
+    sorted by score, best first). A single rep is never tied."""
+    return len(reps) >= 2 and reps[0].score - reps[-1].score < rules.margin
+
+
+def _cohort(kind: str, line: Line, lines: list[Line], entries: list[Entry], groups: dict[int, Group],
+            plan_map: dict[str, int], claimed: set[int], claimed_line_ids: set[int], ident: tuple[str, Decimal, int],
+            rules: Rules, aside: frozenset[int] = frozenset(), apart: frozenset[int] = frozenset()
+            ) -> tuple[list[tuple[Entry, Child]] | None, dict[int, Line], dict[int, tuple[Entry, Child]]]:
+    """Spec §3 "Cohort": the connected component of `line` in the bipartite graph of the slots × the unclaimed
+    children of the identical `(kind, flow, account_id)` in the line's gate, over the admissible pairs (the child
+    path's predicate). A slot is an unclaimed same-kind, same-flow line whose current reps are non-empty and all
+    `child` reps of those children (AGENT-271 F1: a line that also reads a standalone, a group or another ident's
+    child is neither a slot nor a connector); `line` itself is one by construction. Returns `(children, slots,
+    right)`: `children` is the component's children when it is complete (every pair admissible), balanced (equal
+    sides) and undecided (no slot with a smaller id: the loop decides lines in id order, so such a line was already
+    left as a case and vetoes), else None; `slots` and `right` are the component's two sides."""
+    child_kind, flow, account_id = ident
+    gate = eligible_kinds(kind, line.line_kind)
+    pool_right = [(e, c) for e in entries for c in e.children
+                  if c.id not in claimed and c.kind == child_kind and c.kind in gate and _same(c.flow, flow)
+                  and e.account_id == account_id]
+    right_ids = {c.id for _, c in pool_right}
+
+    def slot(ln: Line) -> bool:
+        reps = _representations(kind, ln, entries, groups, plan_map, claimed, rules, aside, apart)
+        return bool(reps) and all(r.kind == "child" and r.rows[0].entry_id in right_ids for r in reps)
+
+    candidates = [ln for ln in lines
+                  if ln.id != line.id and ln.id not in claimed_line_ids and ln.line_kind == line.line_kind
+                  and _same(ln.flow, line.flow)]
+    slot_memo: dict[int, bool] = {}
+
+    def is_slot(ln: Line) -> bool:  # lazy: the representation scan runs only for a line a reached child admits
+        if ln.id not in slot_memo:
+            slot_memo[ln.id] = slot(ln)
+        return slot_memo[ln.id]
+
+    def admissible(ln: Line, e: Entry, c: Child) -> bool:
+        return _same(c.flow, ln.flow) and _date_distance(ln, e) <= rules.exact_window_days
+
+    left: dict[int, Line] = {line.id: line}
+    right: dict[int, tuple[Entry, Child]] = {}
+    frontier: list[Line] = [line]
+    while frontier:
+        reached: list[tuple[Entry, Child]] = []
+        for ln in frontier:
+            for e, c in pool_right:
+                if c.id not in right and admissible(ln, e, c):
+                    right[c.id] = (e, c)
+                    reached.append((e, c))
+        frontier = []
+        for ln in candidates:
+            if ln.id not in left and any(admissible(ln, e, c) for e, c in reached) and is_slot(ln):
+                left[ln.id] = ln
+                frontier.append(ln)
+    complete = all(admissible(ln, e, c) for ln in left.values() for e, c in right.values())
+    balanced = len(left) == len(right)
+    undecided = min(left) == line.id
+    return (list(right.values()) if complete and balanced and undecided else None), left, right
+
+
+def _exact_pair(line: Line, cohort: list[tuple[Entry, Child]], rules: Rules) -> Representation:
+    """Spec §4.2: inside a complete balanced cohort the line takes owner children before stand-ins, then the child
+    whose parent is nearest to it, then the lowest child id (every remaining child stays admissible for every
+    remaining line)."""
+    e, c = min(cohort, key=lambda ec: (ec[0].stand_in, _date_distance(line, ec[0]), ec[1].id))
+    score, reasons = _score(line, (e,), rules.exact_window_days)
+    return Representation("child", (Row(c.id, "principal", c.flow),), score, "exact_pair", reasons)
 
 
 def _installment_case(line: Line, reps: list[Representation], entries: list[Entry], plan_map: dict[str, int],
@@ -830,6 +923,29 @@ BANK_ONLY_KINDS = frozenset({"fee", "interest", "reward"})
 PEER_LINE_KINDS = frozenset({"payment", "transfer_in", "transfer_out"})
 
 
+NEAR_CHILDREN_MAX = 5
+
+
+def _near_children(kind: str, line: Line, entries: list[Entry], claimed: set[int], rules: Rules) -> list[dict]:
+    """Issue #143: an unmatched bank-only line names the unclaimed, same-sign, gate-eligible children of nearby
+    entries (carriers included) whose amount is within the near tolerance, closest residual first."""
+    gate = eligible_kinds(kind, line.line_kind)
+    out: list[tuple[Decimal, int, dict]] = []
+    tolerance = max(rules.near_tolerance_abs, rules.near_tolerance_pct * abs(line.flow))
+    for e in entries:
+        if not e.children or _date_distance(line, e) > rules.near_window_days:
+            continue
+        for c in e.children:
+            if c.id in claimed or c.kind not in gate \
+                    or line.flow == 0 or c.flow == 0 or (line.flow < 0) != (c.flow < 0) \
+                    or abs(line.flow - c.flow) > tolerance:
+                continue
+            residual = (line.flow - c.flow).quantize(Q)
+            out.append((abs(residual), c.id, {"entry_id": c.id, "parent_entry_id": e.id, "residual": str(residual)}))
+    out.sort(key=lambda t: (t[0], t[1]))
+    return [d for _, _, d in out[:NEAR_CHILDREN_MAX]]
+
+
 def _bank_only(line: Line, rules: Rules) -> dict | None:
     """R6a.6: every fee/interest/reward line is bank-side automatic; the matched pattern (if any) only annotates."""
     if line.line_kind not in BANK_ONLY_KINDS:
@@ -875,6 +991,7 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
                             account_currency, holders)  # over the unfiltered population
     hint_only = [e for e in entries if not e.claimable]
     entries = [e for e in entries if e.claimable]
+    principals = [e for e in entries if not e.carrier]
     aside, apart = ctx.aside, ctx.apart
     for line in sorted(lines, key=lambda ln: ln.id):
         reps = sorted(_representations(statement_kind, line, entries, groups, plan_map, claimed, rules, aside, apart),
@@ -885,13 +1002,37 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             result.cases.append(Case(line.id, None, "ambiguous", _ambiguous(line, reps).candidates,
                                      {"hint": "group_readings_incomplete", "group_ids": truncated}))
             continue
+        # spec §4.2 cohort gate, before the margin accept: a child-only fee line of one ident in a component of
+        # >= 2 slots and >= 2 children claims only inside a complete, balanced, undecided cohort (tied → `exact_pair`,
+        # untied → the accept below, `exact`); else `ambiguous` (AGENT-271 F2: an untied take could strand a sibling).
+        # One slot or one child: nothing can be stranded, today's accept. The pair's later line has a single rep
+        # (never tied) and the accept claims it `exact`.
+        ident = _one_ident(reps, entries) if line.line_kind in BANK_ONLY_KINDS else None
+        if ident:
+            cohort, slots, right = _cohort(statement_kind, line, lines, entries, groups, plan_map, claimed,
+                                           {c.line_id for c in result.claims}, ident, rules, aside, apart)
+            if len(slots) >= 2 and len(right) >= 2:
+                # spec §4.2 rev 7 forced take: the line's admissible edges into the component's right side are exactly
+                # its single rep's child (a stand-in child the R6b.0 drop hid from `reps` is still an edge — AGENT-275
+                # finding 1) and the line is the component's lowest slot: the edge lies in some maximum assignment.
+                degree = sum(1 for e, c in right.values()
+                             if _same(c.flow, line.flow) and _date_distance(line, e) <= rules.exact_window_days)
+                forced = len(reps) == 1 and degree == 1 and min(slots) == line.id
+                if cohort is None and not forced:
+                    result.cases.append(_ambiguous(line, reps))
+                    continue
+                if cohort is not None and _tied(reps, rules) and reps[0].score >= rules.ambiguous_floor:
+                    best = _exact_pair(line, cohort, rules)
+                    result.claims.append(Claim(line.id, best))
+                    claimed |= {r.entry_id for r in best.rows}
+                    continue
         if reps and reps[0].score >= rules.accept and (len(reps) == 1 or reps[0].score - reps[1].score >= rules.margin):
             best = reps[0]
             result.claims.append(Claim(line.id, best))
             claimed |= {r.entry_id for r in best.rows}
             continue
         if line.line_kind == "installment":  # gated by the plan map only: never a generic, foreign or near match
-            result.cases.append(_installment_case(line, reps, entries + hint_only, plan_map, claimed, rules))
+            result.cases.append(_installment_case(line, reps, principals + hint_only, plan_map, claimed, rules))
             continue
         if len(reps) >= 2 and reps[0].score >= rules.ambiguous_floor:  # R6a.2: ambiguity needs two candidates
             result.cases.append(_ambiguous(line, reps))
@@ -901,14 +1042,17 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             if taken is not None:
                 result.cases.append(Case(line.id, None, "line_unmatched", (), {"hint": "claimed_by_earlier_line", "entry_id": taken}))
                 continue
-        case = _foreign_case(statement_kind, line, entries, groups, claimed, fee_expected, rules, account_currency, aside, apart) \
-            or _near_case(statement_kind, line, entries, claimed, rules, apart) \
-            or _drift_case(statement_kind, line, entries, claimed, rules, apart)
+        case = _foreign_case(statement_kind, line, principals, groups, claimed, fee_expected, rules, account_currency, aside, apart) \
+            or _near_case(statement_kind, line, principals, claimed, rules, apart) \
+            or _drift_case(statement_kind, line, principals, claimed, rules, apart)
         if case is not None:
             result.cases.append(case)
             continue
         bank_only = _bank_only(line, rules)
         if bank_only:
+            near = _near_children(statement_kind, line, entries, claimed, rules)
+            if near:
+                bank_only["near_children"] = near
             result.cases.append(Case(line.id, None, "line_unmatched", (), bank_only))
             continue
         if line.line_kind in PEER_LINE_KINDS:  # R6b.3/R6b.4: transfers wait for R6c; the owner matches or dismisses
@@ -918,7 +1062,8 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
     unmatched: set[int] = set()
     designated = _designated_by_cases(result.cases)
     for e in entries:
-        if not e.in_reverse:
+        # a carrier is never evaluated as a parent; the loader already sets its in_reverse=False (defense in depth)
+        if not e.in_reverse or e.carrier:
             continue
         if e.parent_entry_id is not None:  # a child passed as a row (outside the contract): reported only under a claimed parent
             if e.id not in claimed and e.parent_entry_id in claimed:
