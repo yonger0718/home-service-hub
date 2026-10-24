@@ -67,7 +67,7 @@ Clicking an account card SHALL navigate to `/portfolio/accounts/:id` and render 
 
 1. **Header** — account metadata (broker, nickname, currency, opening balance, opening date), current balance, "編輯" button opening a PATCH-account modal.
 2. **Balance-over-time chart** — ECharts line chart driven by `GET /api/portfolio/accounts/{id}/balance-history`, with a window selector (`1M`, `3M`, `1Y`, `All`, default `3M`).
-3. **Cash transactions list** — paginated list using the existing `hub-modern-list` card layout, with an `<app-filter-bar>` (the 類型 select inline, no search; date range and sort (`txn_date desc` default) behind 篩選, the active date range as a removable chip), page-size selector (`25 / 50 / 100`, persisting to localStorage), and a "新增交易" button opening the manual-entry modal.
+3. **Cash transactions list** — paginated list using the existing `hub-modern-list` card layout, with an `<app-filter-bar>` (the 類型 multi-select inline, no search; date range and sort (`txn_date desc` default) behind 篩選, the active date range as a removable chip), page-size selector (`25 / 50 / 100`, persisting to localStorage), and a "新增交易" button opening the manual-entry modal.
 
 #### Scenario: Chart renders 3M default window
 - **GIVEN** the user opens an account detail page
