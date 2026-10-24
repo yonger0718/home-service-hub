@@ -1234,6 +1234,33 @@ def test_group_with_a_member_in_another_currency_is_not_claimed(seed, db_session
     assert _active(db_session, stmt.id) == []
 
 
+def test_a_split_with_a_member_in_another_currency_is_whole_and_its_card_member_stays_home(seed, db_session, run):
+    """Spec §3 "Mixed currencies" (final review): the USD member is a structural row the loader marks with its own
+    currency (as every row and child it builds); its −20 cannot be summed with TWD lines, so the group is whole by
+    fail-closed and the card's member-sized −300 line claims nothing (summed blindly, −320 is 20 off −300, past the
+    10 TWD tolerance, and −220 with the +100 child: the group would be apart and the member claimed)."""
+    card = _card(seed, db_session)
+    usd = _usd_child_card(seed, db_session, card)
+    group = seed.group("split")
+    day = date(2026, 9, 12)
+    card_member = seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    db_session.flush()
+    kid = seed.entry(card, "100", kind="refund", day=day, parent_entry_id=card_member.id)
+    usd_member = seed.entry(usd, "-20", day=day, merchant="餐廳", group_id=group.id)
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 300)])
+    entries, _ = rec.load_candidates(db_session, stmt, rec.participating_accounts(db_session, card.id), window_days=15,
+                                     include_reward=False)
+    by_id = {e.id: e for e in entries}
+    assert (by_id[card_member.id].currency, by_id[usd_member.id].currency, by_id[usd_member.id].claimable) == \
+        ("TWD", "USD", False)
+    assert [(c.id, c.currency) for c in by_id[card_member.id].children] == [(kid.id, "TWD")]
+    assert _active(db_session, stmt.id) == []
+    named = {x.get("entry_id") for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id
+             for x in c.candidates or []} | {c.entry_id for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id}
+    assert card_member.id not in named
+
+
 def test_child_in_another_currency_does_not_complete_its_parent(seed, db_session, run):
     card = _card(seed, db_session)
     usd = _usd_child_card(seed, db_session, card)

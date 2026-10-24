@@ -32,6 +32,7 @@ class Child:
     id: int
     kind: str
     flow: Decimal
+    currency: str | None = None  # the row's own currency (the loader sets it); None: the statement's currency
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,7 @@ class Entry:
     # split members: every child as stored (claimed, covered or gated out included) for the printed-whole guard
     # (`_kids`); `children` stays the claimable view and claim paths never read this one
     all_children: tuple[Child, ...] = ()
+    currency: str | None = None  # the row's own currency (the loader sets it); None: the statement's currency
 
 
 @dataclass(frozen=True)
@@ -384,17 +386,26 @@ class Reading:
     members: tuple[Entry, ...]
 
 
-def group_readings(g: Group, by_id: dict[int, Entry], aside: frozenset[int],
-                   aside_children: frozenset[int]) -> tuple[list[Reading], bool]:
+def _foreign_currency(currency: str | None, account_currency: str | None) -> bool:
+    """A row whose own currency (None: the statement's) is not the statement's: never summed with a line."""
+    return account_currency is not None and currency is not None and currency != account_currency
+
+
+def group_readings(g: Group, by_id: dict[int, Entry], aside: frozenset[int], aside_children: frozenset[int],
+                   account_currency: str | None = None) -> tuple[list[Reading], bool]:
     """Every total `_representations` could read the split group `g` as on a fresh statement (claimed = ∅): for each
     member reading of `_group_variants` the net total and, for each child view — the claimable `children` (what the
     claim side attaches; a child covered elsewhere is absent from it) and every child as stored (`_kids`) — the total
     with that view's children minus each combination of its printed-alone ones (`aside_children`, at most
     ASIDE_COMBINATIONS_MAX per view; above it only the view's full total and the result is incomplete). A reading's
     foreign total is the members' summed `original_amount` when every member carries one in one shared currency. A
-    member missing from `by_id` → `([], False)`; the caller treats an incomplete or empty result as printed whole
-    (fail-closed)."""
+    member missing from `by_id`, or a member or child (either view) in a currency other than `account_currency`
+    (spec §3 "Mixed currencies": it cannot be summed with the line; None skips the check) → `([], False)`; the
+    caller treats an incomplete or empty result as printed whole (fail-closed)."""
     if any(i not in by_id for i in g.member_ids):
+        return [], False
+    if any(_foreign_currency(x.currency, account_currency)
+           for mem in (by_id[i] for i in g.member_ids) for x in (mem, *mem.children, *_kids(mem))):
         return [], False
     variants, complete = _group_variants(g, by_id, set(), aside)
     out: list[Reading] = []
@@ -436,12 +447,14 @@ def group_readings(g: Group, by_id: dict[int, Entry], aside: frozenset[int],
 
 
 def _prints_reading(line: Line, reading: Reading, rules: Rules) -> bool:
-    """Spec §3 (a)/(b): the line prints the reading's total — (a) same sign within the near tolerance (taken of the
-    total) and the drift window of the nearest member, or (b) the foreign total by magnitude, same currency, within
-    the foreign window. The line's kind, gate and coverage are never consulted."""
+    """Spec §3 (a)/(b): the line prints the reading's total — (a) the same amount (`_same`: a 0 total against a 0
+    line counts), or the same sign within the near tolerance (taken of the total), within the wider of the exact and
+    drift windows of the nearest member, or (b) the foreign total by magnitude, same currency, within the foreign
+    window. The line's kind, gate and coverage are never consulted."""
     dist = min(_date_distance(line, mem) for mem in reading.members)
     tolerance = max(rules.near_tolerance_abs, rules.near_tolerance_pct * abs(reading.flow))
-    if line.flow * reading.flow > 0 and abs(line.flow - reading.flow) <= tolerance and dist <= rules.drift_window_days:
+    close = _same(line.flow, reading.flow) or (line.flow * reading.flow > 0 and abs(line.flow - reading.flow) <= tolerance)
+    if close and dist <= max(rules.exact_window_days, rules.drift_window_days):
         return True
     return reading.foreign_amount is not None and line.foreign_amount is not None and line.foreign_amount != 0 \
         and line.foreign_currency == reading.foreign_currency \
@@ -449,16 +462,17 @@ def _prints_reading(line: Line, reading: Reading, rules: Rules) -> bool:
 
 
 def printed_whole(lines_all: list[Line], entries: list[Entry], groups: dict[int, Group], rules: Rules,
-                  aside: frozenset[int], aside_children: frozenset[int]) -> frozenset[int]:
+                  aside: frozenset[int], aside_children: frozenset[int],
+                  account_currency: str | None = None) -> frozenset[int]:
     """The split groups this statement prints whole: a reading (`group_readings` over the structural population) a
-    current line prints (`_prints_reading`), or readings incomplete or empty (fail-closed: its members never go
-    apart)."""
+    guard line prints (`_prints_reading`), or readings incomplete or empty — a mixed-currency group included
+    (fail-closed: its members never go apart)."""
     by_id = {e.id: e for e in entries}
     out: set[int] = set()
     for g in groups.values():
         if g.kind != "split":
             continue
-        readings, complete = group_readings(g, by_id, aside, aside_children)
+        readings, complete = group_readings(g, by_id, aside, aside_children, account_currency)
         if not complete or not readings or any(_prints_reading(line, r, rules) for r in readings for line in lines_all):
             out.add(g.id)
     return frozenset(out)
@@ -471,21 +485,26 @@ def apart_members(entries: list[Entry], groups: dict[int, Group], whole: frozens
 
 @dataclass(frozen=True)
 class Context:
-    aside: frozenset[int]
+    aside: frozenset[int]  # printed alone by a claimable line: the claim side's (`_representations`, `incomplete_groups`)
+    aside_all: frozenset[int]  # printed alone by a guard line: the printed-whole guard's only
     aside_children: frozenset[int]
     whole: frozenset[int]
     apart: frozenset[int]
     structural: tuple[Entry, ...]
 
 
-def statement_context(kind: str, lines_all: list[Line], entries: list[Entry], groups: dict[int, Group],
-                      rules: Rules) -> Context:
-    """The per-statement split-member decision over every current line and the unfiltered population (claimable ∪
-    structural rows): printed-alone members and children, groups printed whole, and the apart members."""
-    aside = printed_alone(kind, lines_all, entries, groups, rules)
+def statement_context(kind: str, lines: list[Line], lines_all: list[Line], entries: list[Entry],
+                      groups: dict[int, Group], rules: Rules, account_currency: str) -> Context:
+    """The per-statement split-member decision over the unfiltered population (claimable ∪ structural rows), spec
+    §4.1: `aside` — the members printed alone by the claimable `lines` (owner-covered lines removed), what the claim
+    side reads, so a fee line another entry holds never changes which reading a purchase line claims; `aside_all`
+    and `aside_children` — over the guard lines `lines_all` (covered and neighbouring lines too), the guard's only;
+    the groups printed whole (mixed currencies fail closed) and the apart members."""
+    aside = printed_alone(kind, lines, entries, groups, rules)
+    aside_all = printed_alone(kind, lines_all, entries, groups, rules)
     aside_children = printed_alone_children(kind, lines_all, entries, groups)
-    whole = printed_whole(lines_all, entries, groups, rules, aside, aside_children)
-    return Context(aside, aside_children, whole, apart_members(entries, groups, whole), tuple(entries))
+    whole = printed_whole(lines_all, entries, groups, rules, aside_all, aside_children, account_currency)
+    return Context(aside, aside_all, aside_children, whole, apart_members(entries, groups, whole), tuple(entries))
 
 
 def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
@@ -774,11 +793,13 @@ def _designated_by_cases(cases: list[Case]) -> set[int]:
 def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
           fee_expected: Callable[[Entry], Decimal | None], rules: Rules, account_currency: str,
           lines_all: list[Line] | None = None) -> MatchResult:
-    """`lines_all`: every current line of the statement, covered ones included (default `lines`); `entries` may carry
-    structural rows (`claimable=False`), which only the printed-whole guard (`statement_context`) reads."""
+    """`lines_all`: the guard lines — every current line of the statement, covered ones included, and the
+    neighbouring statements' (default `lines`); `entries` may carry structural rows (`claimable=False`), which only
+    the printed-whole guard (`statement_context`) reads."""
     result = MatchResult()
     claimed: set[int] = set()
-    ctx = statement_context(statement_kind, lines_all or lines, entries, groups, rules)  # over the unfiltered population
+    ctx = statement_context(statement_kind, lines, lines_all or lines, entries, groups, rules,
+                            account_currency)  # over the unfiltered population
     hint_only = [e for e in entries if not e.claimable]
     entries = [e for e in entries if e.claimable]
     aside, apart = ctx.aside, ctx.apart

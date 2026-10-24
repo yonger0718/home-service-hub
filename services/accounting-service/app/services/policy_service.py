@@ -497,23 +497,25 @@ def _in_candidates(case: ReconciliationCase, params: dict) -> bool:
 
 def _single_admissible(ctx: Context, candidate: Candidate) -> None:
     """Ruling 22's validator, read only: the matcher's representations of the line over the current population must
-    be exactly one, the proposed one, among the case's candidates. The population and the lines are reconcile's own
+    be exactly one, the proposed one, among the case's candidates. Population and lines are reconcile's own
     (split-members spec §5.6): loaded with only this statement's owned coverage excluded (`rec.owned_coverage`; its
-    auto claims stay in, as reconcile re-derives them), so the split-member decision (`statement_context`) sees the
-    rows and child views reconcile saw; every entry claimed anywhere is then passed as `claimed` to
-    `_representations` over the claimable rows. A line a split group's incomplete readings block in reconcile
-    (`incomplete_groups` over the structural population, nothing claimed) is refused."""
+    auto claims stay in, as reconcile re-derives them), the claimable lines (owner-covered ones removed) and the guard
+    lines (`rec.guard_lines`), so the split-member decision (`statement_context`) is the one reconcile made; every
+    entry claimed anywhere is then passed as `claimed` to `_representations` over the claimable rows. A line a split
+    group's incomplete readings block in reconcile (`incomplete_groups` over the structural population, nothing
+    claimed) is refused."""
     db, statement, line = ctx.db, ctx.statement, ctx.line
     if line is None:
         raise CodedConflictError("not_single_admissible", "the line is no longer printed")
     accounts = coverage_service.participating_accounts(db, statement.account_id)
     current = rec._current_lines(db, statement)
     include_reward = any(row.line_kind == "reward" for row in current)
-    _, owned = rec.owned_coverage(db, statement)
+    manual, owned = rec.owned_coverage(db, statement)
     entries, groups = rec.load_candidates(db, statement, accounts, window_days=matching.population_window_days(ctx.rules),
                                           include_reward=include_reward, exclude=owned)
-    match_ctx = matching.statement_context(statement.kind, rec.guard_lines(db, statement, accounts, ctx.rules, current),
-                                           entries, groups, ctx.rules)
+    match_ctx = matching.statement_context(statement.kind, [rec._as_line(r) for r in current if r.id not in manual],
+                                           rec.guard_lines(db, statement, accounts, ctx.rules, current),
+                                           entries, groups, ctx.rules, statement.currency)
     matcher_line = rec._as_line(line)
     reps = matching._representations(statement.kind, matcher_line, [e for e in entries if e.claimable], groups,
                                      rec.plan_map(db, statement.account_id), coverage_service.claimed_entry_ids(db),

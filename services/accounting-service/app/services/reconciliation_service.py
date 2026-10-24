@@ -203,7 +203,7 @@ def entry_view(e: LedgerEntry, **extra) -> matching.Entry:
         original_currency=e.original_currency, account_id=e.account_id, group_id=e.group_id, parent_entry_id=None,
         is_settlement=bool(e.is_settlement), refunds_entry_id=e.refunds_entry_id,
         transfer_group_id=None if e.transfer_group_id is None else str(e.transfer_group_id),
-        transfer_peer_is_card=None, children=(), instance=None)
+        transfer_peer_is_card=None, children=(), instance=None, currency=e.currency)
     return matching.Entry(**{**fields_, **extra})
 
 
@@ -220,7 +220,8 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
     owner coverage, ruling 16). Split groups (spec 2026-10-24 §3): every member of a loaded `split` group carries
     `all_children` (every child as stored; `children` stays the claimable view), and each member not loaded above —
     any account, currency, window, claim state or exclusion — is appended as a structural row (`claimable=False`,
-    `in_reverse=False`, no instance, all its children in both views) for the printed-whole guard only."""
+    `in_reverse=False`, no instance, all its children in both views) for the printed-whole guard only. Every row and
+    child carries its own `currency` (a structural row in another currency makes its group whole by fail-closed)."""
     if include_reward is None:
         include_reward = any(line.line_kind == "reward" for line in _current_lines(db, statement))
     lo = statement.period_start - timedelta(days=window_days)
@@ -241,7 +242,7 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
                                    LedgerEntry.currency == statement.currency)
                             .order_by(LedgerEntry.id)).scalars():
             if c.id not in claimed:
-                children[c.parent_entry_id].append(matching.Child(c.id, c.kind, Decimal(c.amount)))
+                children[c.parent_entry_id].append(matching.Child(c.id, c.kind, Decimal(c.amount), c.currency))
     transfer_ids = {e.transfer_group_id for e in parents if e.transfer_group_id is not None}
     peer_is_card: dict[int, bool] = {}
     if transfer_ids:
@@ -304,7 +305,7 @@ def _split_structure(db: Session, split_ids: list[int]) -> tuple[list[LedgerEntr
     if members:
         for c in db.execute(select(LedgerEntry).where(LedgerEntry.parent_entry_id.in_([m.id for m in members]))
                             .order_by(LedgerEntry.id)).scalars():
-            kids[c.parent_entry_id].append(matching.Child(c.id, c.kind, Decimal(c.amount)))
+            kids[c.parent_entry_id].append(matching.Child(c.id, c.kind, Decimal(c.amount), c.currency))
     return members, kids
 
 
@@ -336,7 +337,7 @@ def _drifted_instances(db: Session, statement: AccountStatement, accounts: list[
         entry_date=e.entry_date, name=e.name, merchant=e.merchant, original_amount=None, original_currency=None,
         account_id=e.account_id, group_id=e.group_id, parent_entry_id=None, is_settlement=bool(e.is_settlement),
         refunds_entry_id=e.refunds_entry_id, transfer_group_id=None, transfer_peer_is_card=None, children=(),
-        instance=refs[e.id], in_reverse=False, claimable=False) for e in rows]
+        instance=refs[e.id], in_reverse=False, claimable=False, currency=e.currency) for e in rows]
 
 
 # --- locks -------------------------------------------------------------------------------------------------------
