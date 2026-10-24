@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, FastAPI, SQLAlchemy 2, pytest (unit + Postgres integration).
 
-**Spec:** `docs/superpowers/specs/2026-10-24-reconciliation-guard-holders-design.md` (rev 3), amending `docs/superpowers/specs/2026-10-24-reconciliation-split-members-design.md` §3 / §5.6.
+**Spec:** `docs/superpowers/specs/2026-10-24-reconciliation-guard-holders-design.md` (rev 3). Plan rev 2.1: AGENT-254 PASS-with-minors folded (Task 3 stand-in fixture without a twin; shape-13 B = −100/−205 with a free −100 line; foreign-exactness positives/negatives and the shape-8 negative)., amending `docs/superpowers/specs/2026-10-24-reconciliation-split-members-design.md` §3 / §5.6.
 
 ## Global Constraints
 
@@ -99,11 +99,16 @@ def test_claim_holders_resolves_child_rows_source_and_foreign_fields():         
     assert own[2] == H(frozenset({98, 992}), False, True)         # plain parent + discount child, signed sum exact
     assert m.claim_holders(res, lines, ents, frozenset({98}))[2].stand_in is True   # backfill id → stand-in
 
-def test_claim_holders_foreign_exactness_uses_the_rows_original_amount():
-    ents = [E(99, d, "-3010", original_amount="-15000", original_currency="JPY")]
-    lines = [L(1, d, "-3010", foreign_amount="-15000", foreign_currency="JPY")]
-    res = m.match("card", lines, ents, {}, {}, lambda e: None, R, "TWD")
-    assert m.claim_holders(res, lines, ents, frozenset()) == {1: H(frozenset({99}), False, True)}
+def test_claim_holders_foreign_exactness_needs_the_full_same_currency_original_sum():   # AGENT-254 3
+    jp = dict(original_amount="-15000", original_currency="JPY")
+    line = L(1, d, "-3010", foreign_amount="-15000", foreign_currency="JPY")
+    def own(entry):
+        res = m.match("card", [line], [entry], {}, {}, lambda e: None, R, "TWD")   # the foreign rule claims the line
+        assert [c.line_id for c in res.claims] == [1]
+        return m.claim_holders(res, [line], [entry], frozenset())[1]
+    assert own(E(99, d, "-3005", **jp)).exact is True                                 # TWD differs (FX), JPY sum equal
+    assert own(E(99, d, "-3005", original_amount="-15000", original_currency="USD")).exact is False   # currency mismatch
+    assert own(E(99, d, "-3005", **jp, children=(m.Child(991, "fee", D("-5"), original_currency="JPY"),))).exact is False  # a row without original_amount
 
 def test_printed_whole_through_match_keeps_a_group_whose_near_line_a_stand_in_claim_holds():   # shape 11 end to end
     fee = m.Child(991, "fee", D("-10"), source="statement")
@@ -184,14 +189,27 @@ def test_guard_holders_set_null_row_is_never_exact(seed, db_session, run):
     """Shape 7: owner-cover a line, delete the entry (SET NULL, snapshot keeps the id) → Holder(exact=False) → the
     group stays whole on reconcile."""
 
-def test_guard_holders_sums_the_rows_of_a_group_reading(seed, db_session, run):
-    """Shape 8: another split group (−400/−175) claimed the −575 line as a group reading (two coverage rows); their
-    flows sum to the line → Holder(exact=True, stand_in=False) with both ids; the −300/−280 group is released."""
+@pytest.mark.parametrize("other_group", [("-400", "-175"), ("-400", "-170")])
+def test_guard_holders_sums_the_rows_of_a_group_reading(seed, db_session, run, other_group):
+    """Shape 8: another split group claimed the −575 line as a group reading (two coverage rows, owner-covered so they
+    are stable). Flows summing to the line → Holder(exact=True) with both ids and the −300/−280 group is released;
+    −400/−170 (sum −570 ≠ −575) → exact=False and the group stays whole (AGENT-254 3)."""
+
+def test_guard_holders_foreign_exactness_from_the_db(seed, db_session, run):
+    """AGENT-254 3, DB side: an owner-covered JPY line (−3010 TWD / −15000 JPY) held by a plain entry booked at −3005
+    TWD / −15000 JPY → exact=True (foreign rule); the same entry with original_currency USD → exact=False."""
+
+def test_reconcile_releases_a_jpy_group_held_only_by_a_foreign_exact_holder(seed, db_session, run):
+    """Shape 1 end to end in JPY: split −3000/−2800 (−15000/−14000 JPY) on the card; a −5790 TWD / −29000 JPY line
+    held by an unrelated entry (−5785 TWD, −29000 JPY, owner-covered); member lines −3000/−15000 JPY and
+    −2800/−14000 JPY free → both members claimed in the first run."""
 
 def test_reconcile_does_not_follow_a_third_order_chain(seed, db_session, run):
     """Shape 13: group A (−300 card / −280 錢包) is released in pass 2 by a standalone −575 claiming the −575 line; A's
-    member then claims the −300 line — which is within 5 % of group B's total (−295 card / −10 錢包 = −305). B stays
-    whole in this run (its line was not an own claim in pass 1); a second run is identical."""
+    member then claims the −300 line — which is within 5 % of group B's total (−100 card / −205 錢包 = −305). Lines:
+    −575, −300, −100. B stays whole in this run (the −300 line was not an own claim in pass 1), so B's −100 member
+    does **not** claim the free −100 line (AGENT-254 2: a discriminating line — reading stored pass-2 rows would
+    release B and claim it); a second run is identical."""
 
 def test_a_tie_between_a_pass_one_claimant_and_a_released_member_is_ambiguous_and_stable(seed, db_session, run):
     """Shape 14: standalone −575 claims the −575 line in pass 1 and releases the −300/−280 group; a second standalone
@@ -203,7 +221,7 @@ def test_reconcile_keeps_a_group_whole_when_a_real_stand_in_holds_the_sum_line_o
 ```
 Use the existing helpers; the SET-NULL deletion goes through `db_session.delete(entry)` + commit (FK `ondelete="SET NULL"` on `statement_coverage.entry_id`, models/statements.py:270).
 
-- [ ] **Step 3: Run, expect failures** — `pytest tests/integration/test_reconciliation_service.py -q -k "two_passes or guard_holders or real_stand_in or unrelated_entry or third_order or tie_between"`.
+- [ ] **Step 3: Run, expect failures** — `pytest tests/integration/test_reconciliation_service.py -q -k "two_passes or guard_holders or real_stand_in or unrelated_entry or third_order or tie_between or jpy_group"`.
 
 - [ ] **Step 4: Implement** `entry_view` source, the `Child` fields at :245/:308, `guard_holders`, the two-pass `reconcile()`. Update the module docstring's idempotency paragraph (:13–20) with one sentence on the two passes.
 
@@ -230,7 +248,8 @@ def _held_near_line_case(seed, db, run, holder_source="manual"):
     """Split −300 (card) / −280 (錢包, other account); a standalone −575 the same day and a −575 line it claims exactly
     (within 5 % of the −580 total: the only thing that could keep the group whole); a second standalone −300 so the
     −300 line is ambiguous between it and the member (an open case to hang a proposal on). `holder_source="statement"`
-    seeds the −575 entry as a stand-in instead."""
+    seeds the −575 entry as a stand-in **and omits the twin** (AGENT-254 1: with the group whole the twin would
+    auto-claim the −300 line and leave no open case) — the −300 line is then `line_unmatched`."""
     ... return SimpleNamespace(stmt, line300, case, member, twin, line575, holder)
 
 def test_policy_admits_the_member_reconcile_released_through_pass_one(seed, db_session, run):
@@ -247,16 +266,17 @@ def test_policy_refuses_the_member_when_a_real_stand_in_holds_the_near_line(seed
     _owner_cover(db_session, s.stmt, s.line575, [s.holder])
     rec.reconcile(db_session, s.stmt.id); db_session.commit()
     (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.line_id == s.line300.id]
-    assert case.kind == "line_unmatched" or {c["entry_id"] for c in case.candidates} == {s.twin.id}   # whole: member never listed
-    assert _validator_refusal(db_session, s.stmt.id, case, s.member.id).startswith("not_single_admissible")
+    assert (case.kind, case.candidates) == ("line_unmatched", [])                                   # whole: member never listed
+    assert _validator_refusal(db_session, s.stmt.id, case, s.member.id) == "not_single_admissible: 0 admissible representation(s)"
 ```
 Under PR #130 the first test refuses (the −575 line keeps the group whole, "0 admissible representation(s)"); under #136 it applies.
 
 ```python
 def test_policy_agrees_with_reconcile_on_the_third_order_chain(seed, db_session, run):
-    """Shape 13 parity: after the reconcile of Task 2's chain test, a proposal naming B's member on the −300 line is
-    refused ('0 admissible representation(s)') — the validator recomputes pass 1 and never reads the stored pass-2
-    member claim that would have skipped B's guard line."""
+    """Shape 13 parity: after the reconcile of Task 2's chain test (B = −100/−205, free −100 line open as
+    `line_unmatched`), a proposal naming B's −100 member on the −100 line is refused ('0 admissible
+    representation(s)') — the validator recomputes pass 1 and never reads the stored pass-2 claim of A's member on the
+    −300 line, which would release B and make the −100 member the single admissible reading (AGENT-254 2)."""
 
 def test_policy_agrees_with_reconcile_on_the_pass_two_tie(seed, db_session, run):
     """Shape 14 parity: the ambiguous −300 line; a proposal naming the member is refused with '2 admissible
