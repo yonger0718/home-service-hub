@@ -72,7 +72,7 @@ Header = title, at most one primary action, then the shell's icon buttons (gear 
 
 ## Risks / Trade-offs
 
-- Renaming classes touches many templates; risk of missed selectors in specs. Mitigation: grep gate in CI (D1).
+- Renaming classes touches many templates; risk of missed selectors in specs. Mitigation: the Vitest gate (D1).
 - Hiding the FAB on scroll can surprise; `N` and the phone "+" stay, and the button returns on any upward scroll.
 - Dropping decimals hides cents that do not exist in TWD or JPY; other currencies and the `nativeAmount` pipe are untouched.
 - The 18 px value floor is sized for 8-digit TWD amounts; a 9-digit total would overflow a 2 × 2 phone cell (browser check at 360 px).

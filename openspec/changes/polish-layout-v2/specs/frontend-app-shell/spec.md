@@ -14,18 +14,18 @@ Only layouts that open and close a right pane SHALL write the shell's pane state
 
 ### Requirement: Phone page headers keep one row
 
-Below 760 px a page header SHALL hold the title, at most one primary action and the shell's icon buttons; any further actions SHALL move into a ⋯ menu button. Controls that filter the page (such as the market toggle) SHALL render below the header at full width.
+Below 760 px a page header SHALL hold the title, at most one primary action and the shell's icon buttons (the gear, when the tab bar omits 設定); any further actions SHALL move into a ⋯ menu button. Controls that filter the page (such as the market toggle) SHALL render below the header at full width.
 
 #### Scenario: Portfolio dashboard on a phone
 - **WHEN** `/portfolio` renders at 390 px
-- **THEN** the header SHALL be one row with 投資概覽, a ⋯ menu holding 匯入券商 and 刷新行情, and the gear
+- **THEN** the header SHALL be one row with 投資概覽, a ⋯ menu holding 匯入券商 and 刷新行情, and the gear (only when the tab bar omits 設定, per the live Hideable groups and tab bar parity rule)
 - **AND** the 全部 / 台股 / 美股 toggle SHALL render under the header
 
 ## MODIFIED Requirements
 
 ### Requirement: App-wide 記一筆 floating button
 
-On viewports ≥ 760px every route SHALL show one 56px `--app-primary` floating button at the bottom-right, tooltip `記一筆` with key `N`, that opens the entry form; it SHALL hide while the form is open and, while a pane is open, sit at the right offset the pane layout provides. While the page's scrolling ancestor (the document on ordinary pages, the accounting list pane in panes mode) scrolls down the button SHALL slide out (translate and fade, 160 ms; instant under `prefers-reduced-motion`) and end in `visibility: hidden`, leaving the tab order; it SHALL return on any upward scroll, when the scroll reaches the end, or after 1.2 s without scrolling, and SHALL NOT hide while it has focus. `N` SHALL open the form from any route outside text fields, also while the button is hidden. The sidebar and page headers SHALL NOT contain a 記一筆 button.
+On viewports ≥ 760px every route SHALL show one 56px `--app-primary` floating button at the bottom-right, tooltip `記一筆` with key `N`, that opens the entry form; it SHALL hide while the form is open and, while a pane is open, sit at the right offset the pane layout provides. While the page's scrolling ancestor (the document or `.hub-main` on ordinary pages, the accounting list pane in panes mode) scrolls down the button SHALL slide out (translate and fade, 160 ms; instant under `prefers-reduced-motion`) and end in `visibility: hidden`, leaving the tab order; it SHALL return on any upward scroll, when the scroll reaches the end, or after 1.2 s without scrolling, and SHALL NOT hide while it has focus. `N` SHALL open the form from any route outside text fields, also while the button is hidden. The sidebar and page headers SHALL NOT contain a 記一筆 button.
 
 #### Scenario: Floating button on a portfolio page
 - **WHEN** the owner is on `/portfolio/dividends` at 1440px and presses the floating button
@@ -52,3 +52,7 @@ On viewports ≥ 760px every route SHALL show one 56px `--app-primary` floating 
 #### Scenario: N from anywhere
 - **WHEN** the owner presses `N` on `/portfolio` with no text field focused, the button hidden or not
 - **THEN** the entry form SHALL open
+
+#### Scenario: Page create actions stay secondary
+- **WHEN** `/portfolio/transactions` renders
+- **THEN** its 新增交易 button SHALL use the soft-primary style and no 記一筆 button SHALL appear in the page header or the sidebar

@@ -2,7 +2,7 @@
 
 ### Requirement: Chart carries holdings across cash-only snapshot rows
 
-A snapshot point is **cash-only** when `total_market_value`, `total_cost`, `total_unrealized_pnl`, `total_dividends` and `total_realized_pnl` are all 0 and `portfolio_xirr` is null (the shape the backend writes for a date with cash activity and no trading). For every run of consecutive cash-only points that follows a point with holdings, the net-worth chart SHALL carry the last non-cash-only point's five values onto each point of the run, keep the dates, and plot 帳戶總值 for those points as the carried `total_market_value` plus the point's own `total_cash_twd`, ignoring the serialised `total_assets_twd`. A point with market value and cost 0 but a non-zero `total_realized_pnl` is not cash-only and SHALL plot as written. Cash-only points before the first holdings point SHALL plot as written. The backend rows are unchanged.
+A snapshot point is **cash-only** when `total_market_value`, `total_cost`, `total_unrealized_pnl`, `total_dividends` and `total_realized_pnl` are all 0 and `portfolio_xirr` is null (the shape the backend writes for a date with cash activity and no trading). For every run of consecutive cash-only points that follows a point with holdings, the net-worth chart SHALL carry the last non-cash-only point's five values onto each point of the run, keep the dates, and plot 帳戶總值 for those points as the carried `total_market_value` plus the point's own `total_cash_twd`, ignoring the serialised `total_assets_twd`. Points that are not cash-only (for example a liquidation with non-zero `total_realized_pnl`) and cash-only points before the first holdings point SHALL plot as written. Backend rows are unchanged.
 
 #### Scenario: Dividend received on a Saturday
 - **GIVEN** a cash-only snapshot on Saturday 2026-01-10 between two trading days with market value about 2.9 M
@@ -61,7 +61,7 @@ The dashboard SHALL open with a hero card: label 總資產 · TWD, the total in 
 #### Scenario: Phone header
 - **GIVEN** the owner holds Taiwan and US stocks
 - **WHEN** `/portfolio` renders at 390 px
-- **THEN** the header SHALL be one row with 投資概覽, a ⋯ menu holding 匯入券商 and 刷新行情, and the gear, and the 全部 / 台股 / 美股 toggle SHALL render under the header
+- **THEN** the header SHALL be one row with 投資概覽, a ⋯ menu holding 匯入券商 and 刷新行情, and the gear (only when the tab bar omits 設定, per the live Hideable groups and tab bar parity rule), and the 全部 / 台股 / 美股 toggle SHALL render under the header
 
 #### Scenario: Single market hides the toggle
 - **GIVEN** only Taiwan stocks are held

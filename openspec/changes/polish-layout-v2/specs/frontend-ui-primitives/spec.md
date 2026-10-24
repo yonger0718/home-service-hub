@@ -46,5 +46,5 @@ Buttons, badges, markers and navigation SHALL use the app's line icon set. Emoji
 Component templates SHALL NOT use Bootstrap grid class names (`row`, `col`, `col-*`, `container`) for their own elements, except in the allowlisted legacy forms that use the Bootstrap grid on purpose (`item-list`, `portfolio/dividend-list`, `portfolio/transaction-list`, `accounting/account-settings`). A test in the unit suite SHALL fail when one is introduced elsewhere, and SHALL fail when an allowlisted file no longer exists.
 
 #### Scenario: Gate
-- **WHEN** a template outside the allowlist adds `class="row"`
+- **WHEN** a template outside the allowlist adds a `row` class token (for example `class="row entry"`)
 - **THEN** the unit suite SHALL fail and name the file and line
