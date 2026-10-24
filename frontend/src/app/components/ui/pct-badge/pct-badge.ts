@@ -1,4 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
+import { formatPct } from '../format';
 
 @Component({
   selector: 'app-pct-badge',
@@ -21,8 +22,6 @@ export class PctBadgeComponent {
   protected readonly isDown = computed(() => this.safeValue() < 0);
   protected readonly formatted = computed(() => {
     if (!this.hasValue()) return '—';
-    const value = this.safeValue();
-    const prefix = value > 0 ? '+' : '';
-    return `${prefix}${value.toFixed(2)}%`;
+    return formatPct(this.safeValue(), { sign: 'change' });
   });
 }

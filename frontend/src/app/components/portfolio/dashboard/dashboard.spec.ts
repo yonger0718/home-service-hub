@@ -237,14 +237,14 @@ describe('PortfolioDashboardComponent', () => {
     const fixture = createFixture();
 
     expect(fixture.componentInstance.range()).toBe('1Y');
-    expect(fixture.nativeElement.textContent).toContain('12.34%');
+    expect(fixture.nativeElement.textContent).toContain('12.3%');
 
     const rangeButtons = Array.from(fixture.nativeElement.querySelectorAll('.range-tabs button')) as HTMLButtonElement[];
     rangeButtons.find(button => button.textContent?.trim() === '3M')!.click();
     fixture.detectChanges();
 
     expect(fixture.componentInstance.range()).toBe('3M');
-    expect(fixture.nativeElement.textContent).toContain('3.21%');
+    expect(fixture.nativeElement.textContent).toContain('3.2%');
   });
 
   describe('page header', () => {
@@ -398,13 +398,13 @@ describe('PortfolioDashboardComponent', () => {
       expect(el).not.toBeNull();
       expect(el.compareDocumentPosition(root.querySelector('.kpi-card')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(el.querySelector('.hero-label')?.textContent?.trim()).toBe('總資產 · TWD');
-      expect(el.querySelector('.hero-total')?.textContent?.trim()).toBe(fixture.componentInstance.formatCurrency(1250));
+      expect(el.querySelector('.hero-total')?.textContent?.trim()).toBe('1,250');
 
       const today = el.querySelector('.hero-today')!;
       expect(today.querySelector('.hero-today-label')?.textContent?.trim()).toBe('今日');
       expect(today.querySelector('.hero-today-amount')?.textContent?.trim()).toBe('+$10');
       expect(today.querySelector('.hero-today-amount')?.classList).toContain('up');
-      expect(today.querySelector('app-pct-badge')?.textContent?.trim()).toBe('+0.81%');
+      expect(today.querySelector('app-pct-badge')?.textContent?.trim()).toBe('+0.8%');
 
       const bar = el.querySelector('.composition-bar')!;
       expect(bar.getAttribute('role')).toBe('img');
@@ -424,9 +424,9 @@ describe('PortfolioDashboardComponent', () => {
       const fixture = createFixture();
       const today = hero(fixture)!.querySelector('.hero-today')!;
 
-      expect(today.querySelector('.hero-today-amount')?.textContent?.trim()).toBe('-$10');
+      expect(today.querySelector('.hero-today-amount')?.textContent?.trim()).toBe('−$10');
       expect(today.querySelector('.hero-today-amount')?.classList).toContain('down');
-      expect(today.querySelector('app-pct-badge')?.textContent?.trim()).toBe('-0.79%');
+      expect(today.querySelector('app-pct-badge')?.textContent?.trim()).toBe('−0.8%');
     });
 
     it('shows a dash for the day percent when the assets before today are not positive', () => {
@@ -445,9 +445,9 @@ describe('PortfolioDashboardComponent', () => {
       const el = hero(fixture)!;
       const bar = el.querySelector('.composition-bar')!;
 
-      expect(bar.getAttribute('aria-label')).toBe('資產組成：股票 100.0%，現金 0.0%');
+      expect(bar.getAttribute('aria-label')).toBe('資產組成：股票 100%，現金 0.0%');
       expect(Array.from(bar.querySelectorAll<HTMLElement>('span')).map(s => s.style.flexGrow)).toEqual(['100', '0']);
-      expect(el.querySelectorAll('.legend-value')[1].textContent?.trim()).toBe('-200');
+      expect(el.querySelectorAll('.legend-value')[1].textContent?.trim()).toBe('−200');
     });
 
     it('is hidden while a market filter is active', () => {
@@ -477,7 +477,7 @@ describe('PortfolioDashboardComponent', () => {
       card.textContent?.includes('總資產'),
     );
 
-    expect(totalAssetsCard?.textContent).toContain(fixture.componentInstance.formatCurrency(500000));
+    expect(totalAssetsCard?.textContent).toContain('500,000');
   });
 
   it('builds 帳戶總值 and 持股淨值 datasets', () => {
@@ -547,16 +547,16 @@ describe('PortfolioDashboardComponent', () => {
     })));
     const fixture = createFixture();
     const root = fixture.nativeElement as HTMLElement;
-    expect(root.querySelector('.estimated-total')?.textContent).toContain('4,690');
-    expect(root.querySelector('.stock-pnl')?.textContent).toContain('4,690');
-    expect(root.querySelector('.stock-pnl')?.textContent).toContain('93.80%');
+    expect(root.querySelector('.estimated-total')?.textContent).toContain('+$4,690');
+    expect(root.querySelector('.stock-pnl')?.textContent).toContain('+$4,690');
+    expect(root.querySelector('.stock-pnl')?.textContent).toContain('+93.8%');
     expect(root.querySelector('details')).toBeNull();
     const f = fixture.componentInstance;
-    expect(footnote(root, 1)).toBe(`價差 ${f.formatNative(1500, 'TWD')} · 股利 ${f.formatNative(100, 'TWD')} · 待收 ${f.formatNative(3090, 'TWD')}`);
+    expect(footnote(root, 1)).toBe('價差 +$1,500 · 股利 $100 · 待收 $3,090');
     (root.querySelector('.stock-row') as HTMLElement).click();
     fixture.detectChanges();
     expect(root.querySelector('.detail-panel')?.textContent).toContain('待收股利');
-    expect(root.querySelector('.detail-panel')?.textContent).toContain('3,090');
+    expect(root.querySelector('.detail-panel')?.textContent).toContain('$3,090');
     expect(root.textContent).toContain('已記錄股利');
     expect(root.textContent).not.toContain('已入帳現金');
   });
@@ -581,7 +581,7 @@ describe('PortfolioDashboardComponent', () => {
       expect(root.querySelectorAll('.stock-row')).toHaveLength(market === 'TW' ? 0 : 1);
     }
     expect(footnote(root, 1)).not.toContain('3,090');
-    expect(footnote(root, 1)).toContain('待收 ' + fixture.componentInstance.formatNative(0, 'USD'));
+    expect(footnote(root, 1)).toContain('待收 0.00 USD');
   });
 
   it('shows unavailable estimated valuation/ratio instead of zero or pending-only profit', () => {
@@ -594,7 +594,7 @@ describe('PortfolioDashboardComponent', () => {
     const root = fixture.nativeElement as HTMLElement;
     expect(root.querySelector('.estimated-total')?.textContent?.trim()).toBe('—');
     expect(root.querySelector('.stock-pnl')?.textContent).not.toContain('30.00%');
-    expect(footnote(root, 1)).toContain('待收 ' + fixture.componentInstance.formatNative(3090, 'TWD'));
+    expect(footnote(root, 1)).toContain('待收 $3,090');
   });
 
   it('shows a dash when pending dividends are unavailable', () => {
@@ -620,7 +620,7 @@ describe('PortfolioDashboardComponent', () => {
     })));
     const fixture = createFixture();
     const root = fixture.nativeElement as HTMLElement;
-    const formatted = fixture.componentInstance.formatNative(Number(price), 'TWD');
+    const formatted = price === 0 ? '$0' : price > 0 ? '+$1,500' : '−$1,500';
     expect(footnote(root, 1)).toContain('價差 ' + formatted);
     expect(root.querySelector('.estimated-total')?.textContent?.trim()).toBe('—');
     expect(root.querySelector('[aria-label="預估含息損益率無法計算"]')).not.toBeNull();
@@ -644,8 +644,8 @@ describe('PortfolioDashboardComponent', () => {
       const root = fixture.nativeElement as HTMLElement;
       const f = fixture.componentInstance;
       expect(kpi(root).map(label)).toEqual(['總市值', '預估含息損益', '年化報酬率 XIRR', '已記錄股利']);
-      expect(footnote(root, 0)).toBe(`總成本 ${f.formatCurrency(900)}`);
-      expect(footnote(root, 1)).toBe(`價差 ${f.formatNative(100, 'TWD')} · 股利 ${f.formatNative(20, 'TWD')} · 待收 —`);
+      expect(footnote(root, 0)).toBe('總成本 $900');
+      expect(footnote(root, 1)).toBe('價差 +$100 · 股利 $20 · 待收 —');
       expect(footnote(root, 2)).toBe('1Y · 全市場');
       expect(footnote(root, 3)).toBe('含舊資料 · 不代表已核實收款');
     });
@@ -664,7 +664,7 @@ describe('PortfolioDashboardComponent', () => {
       expect(card.querySelector('[title]')).toBeNull();
       expect(card.querySelector('.value')?.classList.contains('up')).toBe(true);
       expect(card.querySelector('app-pct-badge')).not.toBeNull();
-      expect(footnote(root, 1)).toBe(`價差 ${f.formatNative(100, 'TWD')} · 股利 ${f.formatNative(20, 'TWD')} · 待收 ${f.formatNative(5, 'TWD')}`);
+      expect(footnote(root, 1)).toBe('價差 +$100 · 股利 $20 · 待收 $5');
       expect(kpi(root)[3].querySelector('.value')?.classList.contains('dividend')).toBe(true);
     });
 
@@ -705,8 +705,8 @@ describe('PortfolioDashboardComponent', () => {
       f.selectMarketFilter('US');
       fixture.detectChanges();
       expect(kpi(root).map(label)).toEqual(['總市值 · US', '預估含息損益 · US', '年化報酬率 XIRR', '已記錄股利 · US']);
-      expect(footnote(root, 0)).toBe(`總成本 ${f.formatNative(500, 'USD')}`);
-      expect(footnote(root, 1)).toBe(`價差 ${f.formatNative(20, 'USD')} · 股利 ${f.formatNative(5, 'USD')} · 待收 ${f.formatNative(2, 'USD')}`);
+      expect(footnote(root, 0)).toBe('總成本 500.00 USD');
+      expect(footnote(root, 1)).toBe('價差 +20.00 USD · 股利 5.00 USD · 待收 2.00 USD');
       expect(footnote(root, 2)).toBe('1Y · 全市場');
       f.selectRange('3M');
       fixture.detectChanges();
@@ -832,7 +832,7 @@ describe('PortfolioDashboardComponent', () => {
 
       expect(head.querySelector('.card-title')?.textContent?.trim()).toBe('淨值走勢');
       expect(ret.querySelector('.chart-return-label')?.textContent?.trim()).toBe('帳戶總值');
-      expect(ret.querySelector('app-pct-badge')?.textContent?.trim()).toBe('+25.00%');
+      expect(ret.querySelector('app-pct-badge')?.textContent?.trim()).toBe('+25.0%');
     });
 
     it('titles the chart 全市場 while a market filter is active', () => {
@@ -1064,7 +1064,7 @@ describe('PortfolioDashboardComponent', () => {
       expect(rows.map(r => text(r.querySelector('.pending-name')))).toEqual(['國泰永續高股息', '台積電', '9999']);
       expect(text(rows[1].querySelector('.pending-note'))).toBe('每股 5.00 · 1,000 股');
       expect(rows[0].querySelector('.pending-amount')!.classList).toContain('dividend');
-      expect(text(rows[0].querySelector('.pending-amount'))).toBe('+9,600');
+      expect(text(rows[0].querySelector('.pending-amount'))).toBe('+$9,600');
     });
 
     it('shows a foreign-currency pending amount with its currency', () => {
@@ -1078,7 +1078,7 @@ describe('PortfolioDashboardComponent', () => {
       const fixture = createFixture();
       const amounts = Array.from(pendingBlock(fixture.nativeElement)!.querySelectorAll('.pending-amount')).map(text);
 
-      expect(amounts).toEqual(['+9,600', '+12.35 USD']);
+      expect(amounts).toEqual(['+$9,600', '+12.35 USD']);
     });
 
     it('requests every page, newest ex date first, and lists a row found only on page 2', () => {
@@ -1250,7 +1250,7 @@ describe('PortfolioDashboardComponent', () => {
       const us = rows.find(r => text(r.querySelector('.n')) === 'AAPL')!;
       expect(tw.getAttribute('role')).toBe('button');
       expect(text(tw)).toContain('650.00');
-      expect(text(tw)).toContain('+5.00 (+0.77%)');
+      expect(text(tw)).toContain('+5.00 (+0.8%)');
       expect(text(tw.querySelector('.stock-qty'))).toBe('10');
       expect(text(us)).toContain('190.50 USD');
       expect(text(us.querySelector('.market-badge'))).toBe('US');

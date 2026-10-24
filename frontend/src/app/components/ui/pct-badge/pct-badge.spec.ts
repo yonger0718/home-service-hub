@@ -17,7 +17,7 @@ describe('PctBadgeComponent', () => {
     fixture.detectChanges();
 
     const badge = fixture.nativeElement.querySelector('.pct-badge') as HTMLElement;
-    expect(badge.textContent).toContain('+4.20%');
+    expect(badge.textContent).toContain('+4.2%');
     expect(badge.classList.contains('down')).toBe(false);
   });
 
@@ -27,7 +27,7 @@ describe('PctBadgeComponent', () => {
     fixture.detectChanges();
 
     const badge = fixture.nativeElement.querySelector('.pct-badge') as HTMLElement;
-    expect(badge.textContent).toContain('-1.20%');
+    expect(badge.textContent).toContain('−1.2%');
     expect(badge.classList.contains('down')).toBe(true);
   });
 });
