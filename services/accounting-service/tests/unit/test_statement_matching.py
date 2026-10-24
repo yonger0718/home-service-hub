@@ -1736,6 +1736,18 @@ def _sibling_scenario_entries():
             _fee_parent(30, date(2026, 9, 20), 31, account_id=2, carrier=True, in_reverse=False)]
 
 
+def test_a_hidden_stand_in_edge_blocks_the_forced_take_agent_275_5i():
+    # lines Sep 2 and Sep 5; owner child 11 under a Sep 4 parent, stand-in child 21 under a Sep 1 parent. Line 1 reads
+    # 11 and 21 but R6b.0 hides 21 from its reps; its graph degree is 2, so the take is not forced: line 1 -> 21,
+    # line 2 -> 11 is a maximum assignment the greedy take would have destroyed.
+    lines = [L(1, date(2026, 9, 2), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 5), "-15", kind="fee", merchant="")]
+    res = run(lines, [_fee_parent(10, date(2026, 9, 4), 11, carrier=True, in_reverse=False),
+                      _fee_parent(20, date(2026, 9, 1), 21, carrier=True, in_reverse=False, stand_in=True)])
+    assert res.claims == []
+    assert [(c.line_id, c.kind, [d["entry_id"] for d in c.candidates]) for c in res.cases if c.line_id in (1, 2)] == \
+           [(1, "ambiguous", [11]), (2, "ambiguous", [11])]
+
+
 def test_a_sibling_reading_another_accounts_child_is_not_a_slot():
     lines = [L(1, date(2026, 9, 16), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 19), "-15", kind="fee", merchant="")]
     res = run(lines, _sibling_scenario_entries())

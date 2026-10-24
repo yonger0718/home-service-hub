@@ -1,6 +1,6 @@
 # Reconciliation — a fee child claims the statement's fee line (issue #143)
 
-Rev 6, 2026-10-24 (rev 5 + the scoped re-review of 0556ef2..9975232 folded, §10). Branch `feat/reconciliation-fee-child` from main `fbe7425` (PR #141 merged). Amends the matcher
+Rev 7, 2026-10-24 (rev 6 + Multica PR review AGENT-275 folded, §10). Branch `feat/reconciliation-fee-child` from main `fbe7425` (PR #141 merged). Amends the matcher
 (`app/services/statements/matching.py`) and the candidate loader (`app/services/reconciliation_service.py
 load_candidates`). No schema change. Builds on the split-members spec (`2026-10-24-reconciliation-split-members-design.md`)
 and the guard-holders spec (`2026-10-24-reconciliation-guard-holders-design.md`); neither rules on the shapes below.
@@ -143,10 +143,12 @@ pair's first line has taken its child, the second line has a single rep (and a o
 accept branch claims it with `rule = "exact"` — so a pair of two lines reads `exact_pair`, `exact` (AGENT-270
 finding 2), and `exact_pair` appears exactly once per tie the rule breaks. A line whose single rep is a child of an
 ident shared with a still-undecided sibling line is gated too: when that sibling is a decided `ambiguous` line the
-undecided veto makes it `ambiguous` as well (F2 shape, test 5b/5f). **Forced take (rev 6):** a gated line with a
-*single* rep that is the lowest slot of its component keeps today's accept (`exact`) even when the component is
-incomplete or unbalanced — a degree-1 line's only edge lies in some maximum assignment (if the child is matched
-elsewhere, swap; if free, add), so the take strands nobody; the sibling then reads the rest (test 5g: lines Sep 2 and
+undecided veto makes it `ambiguous` as well (F2 shape, test 5b/5f). **Forced take (rev 6, degree fixed in rev 7):** a gated line
+with a *single* rep whose admissible edges into the component's right side are exactly that rep's child (graph
+degree 1 — a stand-in child the R6b.0 drop hid from the reps is still an edge, AGENT-275 finding 1, test 5i) and that
+is the lowest slot of its component keeps today's accept (`exact`) even when the component is incomplete or
+unbalanced — a degree-1 line's only edge lies in some maximum assignment (if the child is matched elsewhere, swap; if
+free, add), so the take strands nobody; the sibling then reads the rest (test 5g: lines Sep 2 and
 Sep 4, children under parents Sep 1 and Sep 6 → Sep 2 takes 11 `exact`, Sep 4 takes 21 `exact`, as on main). With
 the single-rep line *later* in id order the earlier multi-rep line is already `ambiguous` and the veto holds (5b).
 
@@ -305,6 +307,9 @@ Unit (`tests/unit/test_statement_matching.py`, helpers `L/E/S/run`; add a `C(...
    5g. Forced take (rev 6, §4.2): lines Sep 2 and Sep 4 (−15), children 11 under a Sep 1 parent and 21 under a Sep 6
    parent → Sep 2 reads only 11 and is the lowest slot of an incomplete 2 × 2 component → claims 11 `exact`; Sep 4
    then claims 21 `exact`; no case. Mirror with the single-rep line later (5b) stays `ambiguous` twice.
+   5i. Hidden stand-in edge (AGENT-275 finding 1): lines Sep 2 and Sep 5 (−15); owner child 11 under a Sep 4 parent,
+   stand-in child 21 under a Sep 1 parent → line Sep 2's reps are [11] (R6b.0 hid 21) but its degree is 2 → not
+   forced → both lines `ambiguous` with candidate 11, no claim (Sep 2 → 21, Sep 5 → 11 would be the assignment; §8.5).
    5h. Slot predicate, other readings (AGENT-271 F1 wording): a sibling line that also reads a child of another
    ident (another account, same flow) is not a slot — the gated line's component has one slot and the gate is off.
    A split group can never be a fee line's rep (fee/interest/reward gates hold no `expense`, §4.1 context), so the
@@ -387,7 +392,11 @@ runs give identical claims.
 
 ## 9. Rollout
 
-No migration. Deploy the accounting API; re-reconcile 504, 554, 555 and compare active coverage before/after (expect
+No migration. Deploy the accounting API; re-reconcile 504, 554, 555 first and compare active coverage before/after,
+then re-reconcile **every statement with a current revision** (the R6a release procedure): the new rules act only
+when a statement is reconciled again, and a statement without a new revision or a `needs_recheck` flag is not
+revisited by the timers — the dry run's +40 claims / 49 → 15 `ambiguous` appear only after that full pass (it
+showed 0 auto rows released and 0 claimant changes, so the pass is safe). Per-statement expectation for the three (expect
 5784 (`exact_pair`), 5786 (`exact`), 4244 (`exact`), 4242 (`exact_pair`), 4243 (`exact`) claimed by children; 4245 `ambiguous`; 4164 `bank_only` + `near_children`, re-created
 once per §5.3); open cases expected 151 → ≤ 146 (−3 `line_unmatched` 5784/5786/4244, −2 `entry_unmatched`
 57288/57306; 4245 stays open as `ambiguous`, 4164 stays open). Record in `~/reports/`. Owner to-dos surfaced: remove
@@ -451,3 +460,10 @@ the errata. **6** — 5b/5e → 5b/5f. **7** — tests 5h (slot: other-ident chi
 child-covered-elsewhere added; two-hop strand recorded in §8.5. AGENT-271 re-check on `9975232`: **PASS** (F1/F2
 closed; its three wording notes = findings 4/6 here; its note that a one-slot line's nearer-child take leaves a
 carrier sibling child unreported is §4.4 by design).
+
+Rev 6 → rev 7 (Multica AGENT-275 PR review of #149 @ 2a62603, dev-grok FAIL, 2026-10-24): **finding 1 (Major)** — the
+forced take tested `len(reps) == 1`, but reps are post-R6b.0 (stand-in reps dropped) while the cohort's edges are
+admissible pairs; a lowest slot with a hidden stand-in edge force-took the owner child and stranded the stand-in →
+the degree is now counted on the graph (§4.2, test 5i). **Finding 2 (Minor)** — `MatchAction` raised `needs_recheck`
+for an unclaimed child outside the loader's claimable filter (other currency / non-participating account) → the
+flag applies the same filter (§5.3 addendum; integration test).

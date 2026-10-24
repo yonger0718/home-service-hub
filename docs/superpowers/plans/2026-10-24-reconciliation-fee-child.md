@@ -13,9 +13,9 @@ rows for covered standalone parents with unclaimed children; `reconcile()` locks
 The policy validator shares the loader and `match`, so parity needs tests only.
 
 **Tech Stack:** Python 3.13, FastAPI service `services/accounting-service`, SQLAlchemy, pytest (unit + Postgres
-integration). Plan rev 4, 2026-10-24 (AGENT-270 + AGENT-271 folded; Task 2b = cohort slots, untied gate, forced take, lazy slots — re-review 2 folded).
+integration). Plan rev 5, 2026-10-24 (AGENT-270 + AGENT-271 folded; Task 2b = cohort slots, untied gate, forced take, lazy slots — re-review 2 folded).
 
-**Spec:** `docs/superpowers/specs/2026-10-24-reconciliation-fee-child-design.md` rev 6 (on this branch). Context specs:
+**Spec:** `docs/superpowers/specs/2026-10-24-reconciliation-fee-child-design.md` rev 7 (on this branch). Context specs:
 `2026-10-24-reconciliation-split-members-design.md`, `2026-10-24-reconciliation-guard-holders-design.md`.
 
 ## Global Constraints
@@ -187,7 +187,7 @@ def test_pairing_never_crosses_kind_flow_or_account():
   - `_one_ident(reps: list[Representation], entries: list[Entry]) -> tuple[str, Decimal, int] | None` — `(kind, flow, account_id)` when every rep is a `child` rep and the children share one kind, one `Q`-quantized flow and one parent `account_id`; else `None`. No tie condition.
   - `_tied(reps: list[Representation], rules: Rules) -> bool` — `len(reps) >= 2 and reps[0].score - reps[-1].score < rules.margin`.
   - `_cohort(kind, line, lines, entries, groups, plan_map, claimed, claimed_line_ids, ident, rules, aside=frozenset(), apart=frozenset()) -> tuple[list[tuple[Entry, Child]] | None, dict[int, Line], dict[int, tuple[Entry, Child]]]` — right pool = unclaimed children of `ident` in the line's gate; a **slot** = an unclaimed (`id not in claimed_line_ids`) same-`line_kind`, `_same`-flow line whose current reps (`_representations` with the live `claimed`, `aside`, `apart`) are non-empty and all `child` reps of the right pool; the slot test runs **lazily** inside the BFS (only for a line admissible to a just-reached child) and is memoised per call. BFS from `line` over admissible pairs (`_same(c.flow, ln.flow) and _date_distance(ln, e) <= rules.exact_window_days`). Returns `(children if complete and balanced and undecided else None, left, right)` with `undecided = min(left) == line.id`.
-  - Gate in `match()`, **before** the margin accept and after the truncated-group check: `ident = _one_ident(reps, entries) if line.line_kind in BANK_ONLY_KINDS else None`; if `ident`: `cohort, slots, right = _cohort(...)`; if `len(slots) >= 2 and len(right) >= 2`: `cohort is None` → `_ambiguous(line, reps)`, `continue`, **unless** `len(reps) == 1 and min(slots) == line.id` (forced take, rev 6 — fall through to the accept); `_tied(reps, rules) and reps[0].score >= rules.ambiguous_floor` → `_exact_pair`, claim, `continue`; untied → fall through (`exact`). One slot or one child → fall through.
+  - Gate in `match()`, **before** the margin accept and after the truncated-group check: `ident = _one_ident(reps, entries) if line.line_kind in BANK_ONLY_KINDS else None`; if `ident`: `cohort, slots, right = _cohort(...)`; if `len(slots) >= 2 and len(right) >= 2`: `cohort is None` → `_ambiguous(line, reps)`, `continue`, **unless** `len(reps) == 1 and degree == 1 and min(slots) == line.id` where `degree` = the line's admissible edges into `right` (forced take, rev 6/7 — fall through to the accept); `_tied(reps, rules) and reps[0].score >= rules.ambiguous_floor` → `_exact_pair`, claim, `continue`; untied → fall through (`exact`). One slot or one child → fall through.
 
 - [ ] **Step 1: Tests** (spec §7 5e, 5f, 5g, 5h; `_fee_parent(i, day, child_id, flow="-15", **kw)` helper exists)
 

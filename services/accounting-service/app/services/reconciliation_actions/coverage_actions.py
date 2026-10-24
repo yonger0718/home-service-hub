@@ -103,10 +103,14 @@ class MatchAction(ActionBase):
 
     @staticmethod
     def _leaves_a_child_unclaimed(ctx: Context, entry_id: int, rows) -> bool:
-        """The matched entry has a child this claim did not take and no active coverage holds."""
+        """The matched entry has a child this claim did not take, that no active coverage holds and that the loader
+        would read for this statement (participating account, statement currency — `_claimable_children`'s filter;
+        AGENT-275 finding 2: a child the next reconcile cannot load is no matching reason)."""
         taken = [r.entry_id for r in rows]
+        accounts = coverage_service.participating_accounts(ctx.db, ctx.statement.account_id)
         return ctx.db.execute(select(exists().where(
             LedgerEntry.parent_entry_id == entry_id, LedgerEntry.id.not_in(taken),
+            LedgerEntry.account_id.in_(accounts), LedgerEntry.currency == ctx.statement.currency,
             ~exists().where(StatementCoverage.entry_id == LedgerEntry.id, StatementCoverage.status == "active"),
         ))).scalar_one()
 

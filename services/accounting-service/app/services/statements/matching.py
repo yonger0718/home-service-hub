@@ -1012,7 +1012,12 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             cohort, slots, right = _cohort(statement_kind, line, lines, entries, groups, plan_map, claimed,
                                            {c.line_id for c in result.claims}, ident, rules, aside, apart)
             if len(slots) >= 2 and len(right) >= 2:
-                forced = len(reps) == 1 and min(slots) == line.id  # spec §4.2 rev 6: the only rep, lowest slot: nothing to strand
+                # spec §4.2 rev 7 forced take: the line's admissible edges into the component's right side are exactly
+                # its single rep's child (a stand-in child the R6b.0 drop hid from `reps` is still an edge — AGENT-275
+                # finding 1) and the line is the component's lowest slot: the edge lies in some maximum assignment.
+                degree = sum(1 for e, c in right.values()
+                             if _same(c.flow, line.flow) and _date_distance(line, e) <= rules.exact_window_days)
+                forced = len(reps) == 1 and degree == 1 and min(slots) == line.id
                 if cohort is None and not forced:
                     result.cases.append(_ambiguous(line, reps))
                     continue

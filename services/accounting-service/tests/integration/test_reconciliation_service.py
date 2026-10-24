@@ -2423,6 +2423,24 @@ def test_owner_match_of_a_parent_whose_only_child_is_covered_by_another_statemen
     assert db_session.get(AccountStatement, stmt.id).needs_recheck is False
 
 
+def test_owner_match_of_a_parent_whose_only_child_is_in_another_currency_does_not_flag_a_recheck(seed, db_session, run):
+    """AGENT-275 finding 2: the flag applies the loader's claimable-child filter — a child the next reconcile cannot
+    load (other currency / non-participating account) is no matching reason."""
+    from app.services.reconciliation_actions import engine
+    card = _card(seed, db_session)
+    day = date(2026, 9, 16)
+    stmt, ls, _ = _submit(db_session, run, card, [_line(1, day, "AMAZON", 1000)])
+    parent = seed.entry(card, "-1000", day=day, merchant="AMAZON")
+    fee = seed.entry(card, "-0.50", kind="fee", day=day, parent_entry_id=parent.id)
+    fee.currency = "USD"
+    db_session.commit()
+    (case,) = [c for c in _fee_line_cases(db_session, stmt.id, ls[0].id, "open") if c.kind == "line_unmatched"]
+    engine.apply_action(db_session, case_id=case.id, action="match",
+                        params={"line_id": ls[0].id, "entry_id": parent.id}, actor="owner", label="t")
+    db_session.commit()
+    assert db_session.get(AccountStatement, stmt.id).needs_recheck is False
+
+
 def test_owner_match_of_a_childless_entry_does_not_flag_a_recheck(seed, db_session, run):
     stmt, ls, parent, _ = _owner_match_month(seed, db_session, run, [])
     assert stmt.needs_recheck is False
