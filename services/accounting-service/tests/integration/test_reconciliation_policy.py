@@ -680,6 +680,25 @@ def test_policy_validator_loads_the_population_reconcile_does(seed, db_session, 
     assert [(c.line_id, c.entry_id) for c in _active(db_session, stmt.id)] == [(line_a.id, a.id)]
 
 
+def test_policy_validator_reads_the_neighbouring_statements_lines(seed, db_session, run):
+    """Spec §3 "Guard lines": the August statement prints the −580 sum of an Aug 30 split (open there: August was
+    reconciled before the members were booked); September prints a member-sized −300 line. Reconcile and the
+    validator both read August's current lines, so the group is whole: no candidate on the −300 line, and the
+    validator finds no admissible representation of the member (a validator reading September alone would see the
+    group apart and the member as "1 admissible")."""
+    card = _card(seed, db_session)
+    day = date(2026, 8, 30)
+    _submit(db_session, run, card, [_line(1, day, "餐廳", 580)], period=(date(2026, 8, 1), date(2026, 8, 31)))
+    group = seed.group("split")
+    member = seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    seed.entry(card, "-280", day=day, merchant="餐廳", group_id=group.id)
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 1), "餐廳", 300)])
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id]
+    assert (case.kind, case.candidates, _active(db_session, stmt.id)) == ("line_unmatched", [], [])
+    assert _validator_refusal(db_session, stmt.id, case, member.id) == "not_single_admissible: 0 admissible representation(s)"
+
+
 def _validator_refusal(db, stmt_id, case, entry_id) -> str:
     """`_single_admissible` called directly for an agent `match` of `entry_id` on the case's line (the proposal scope
     check would refuse such a proposal before the policy ever sees it, `id_out_of_scope`): the refusal message."""

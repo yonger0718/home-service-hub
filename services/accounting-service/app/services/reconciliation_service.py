@@ -14,7 +14,8 @@ needs those rows (`statement_coverage.entry_id/group_id`, `reconciliation_case.e
 Waiting would close a cycle, so the group/entry locks are taken NOWAIT inside a savepoint and a held row raises
 `CodedConflictError("reconcile_busy")` (route 409, the batch records it, the hook leaves `needs_recheck`).
 
-No statement row other than its own is locked or referenced by a statement's reconcile: a deferral case gets its
+No statement row other than its own is locked or referenced by a statement's reconcile (the printed-whole guard
+only reads the neighbouring statements' current lines, `guard_lines`): a deferral case gets its
 `deferred_to_statement_id` only from the LATER statement's reconcile (`_link_earlier_deferrals`, case rows only) or
 from `fill_deferral_links`.
 
@@ -151,6 +152,26 @@ def _as_line(row: StatementLine) -> matching.Line:
         id=row.id, event_id=row.event_id, posted_date=row.posted_date, txn_date=row.txn_date, flow=row.flow_amount,
         foreign_amount=row.foreign_amount, foreign_currency=row.foreign_currency, line_kind=row.line_kind,
         merchant_norm=row.merchant_norm, installment_seq=row.installment_seq, installment_total=row.installment_total)
+
+
+def guard_lines(db: Session, statement: AccountStatement, accounts: list[int], rules: matching.Rules,
+                current: list[StatementLine] | None = None) -> list[matching.Line]:
+    """The printed-whole guard's lines (split-members spec §3 "Guard lines"): every current line of `statement`
+    (`current`, read when None; covered lines included) and the current lines of the participating accounts' other
+    statements whose period intersects `period_start − population_window_days … period_end + population_window_days`
+    (a retired duplicate excluded), so a group whose sum line the previous or the next statement prints is whole here.
+    Read only — no other statement row is locked; `reconcile()` and the policy validator build the same list."""
+    rows = list(current) if current is not None else _current_lines(db, statement)
+    window = timedelta(days=matching.population_window_days(rules))
+    revisions = select(AccountStatement.current_revision_id).where(
+        AccountStatement.account_id.in_(accounts), AccountStatement.id != statement.id,
+        AccountStatement.current_revision_id.is_not(None),
+        AccountStatement.period_start <= statement.period_end + window,
+        AccountStatement.period_end >= statement.period_start - window,
+        ~retired.clause(AccountStatement.id))
+    rows += db.execute(select(StatementLine).where(StatementLine.revision_id.in_(revisions))
+                       .order_by(StatementLine.id)).scalars()
+    return [_as_line(row) for row in rows]
 
 
 def _instances(db: Session, ids: list[int]) -> dict[int, matching.InstanceRef]:
@@ -839,7 +860,7 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     result = matching.match(
         statement.kind, [_as_line(row) for row in line_rows], entries, groups, plan_map(db, statement.account_id),
         lambda e: proposed_fx_fee(accounts_by_id[e.account_id], e.flow), rules, statement.currency,
-        lines_all=[_as_line(row) for row in all_lines])  # every current line: the guard reads covered ones too
+        lines_all=guard_lines(db, statement, accounts, rules, all_lines))  # covered and neighbouring lines too
     lines = {row.id: row for row in line_rows}
     _write_coverage(db, statement, result, lines, locked_rows, run_id, keep_lines=manual)
     deferred = [entry_id for entry_id in result.unmatched_entry_ids if result.explained.get(entry_id) == DEFERRED]

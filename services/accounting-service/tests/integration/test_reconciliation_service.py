@@ -1630,6 +1630,38 @@ def test_reconcile_keeps_a_group_whole_when_its_sum_line_is_owner_covered(seed, 
     assert _claims_of(db_session, stmt.id) == [(sum_line.id, stand_in.id, None, "manual")]
 
 
+@pytest.mark.parametrize("sum_line", ["stand_in", "uncovered"])
+def test_reconcile_keeps_a_group_whole_when_its_sum_line_is_on_the_previous_statement(seed, db_session, run, sum_line):
+    """Spec §3 "Guard lines" (final review): the −580 sum line is printed by the August statement — held there by a
+    stand-in, or open because August was reconciled before the members were booked. The ±15-day population brings
+    the Aug 30 members into September, which prints a member-sized −300 line: the guard reads August's current lines
+    too, so the group is whole and no member is claimed or listed; a second reconcile changes nothing."""
+    card = _card(seed, db_session)
+    day = date(2026, 8, 30)
+    aug = (date(2026, 8, 1), date(2026, 8, 31))
+    if sum_line == "stand_in":
+        stand_in = seed.entry(card, "-580", day=day, merchant="代墊")
+        db_session.commit()
+        previous, (prev_line,), _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 580)], period=aug)
+        _owner_cover(db_session, previous, prev_line, [stand_in])
+    else:
+        previous, (prev_line,), _ = _submit(db_session, run, card, [_line(1, day, "餐廳", 580)], period=aug)
+        assert _active(db_session, previous.id) == []
+    group = seed.group("split")
+    m1 = seed.entry(card, "-300", day=day, merchant="餐廳", group_id=group.id)
+    m2 = seed.entry(card, "-280", day=day, merchant="餐廳", group_id=group.id)
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 1), "餐廳", 300)])
+    assert _active(db_session, stmt.id) == []
+    named = {c.entry_id for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id} | {
+        x.get("entry_id") for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id for x in c.candidates or []}
+    assert not {m1.id, m2.id} & named
+    before = [(c.id, c.kind, c.status, c.line_id) for c in _cases(db_session, stmt.id)]
+    _reconcile(db_session, stmt.id)
+    assert _active(db_session, stmt.id) == []
+    assert [(c.id, c.kind, c.status, c.line_id) for c in _cases(db_session, stmt.id)] == before
+
+
 def test_reconcile_keeps_a_group_whole_when_its_fee_member_is_owner_covered(seed, db_session, run):
     """(b) The fee member is owner-matched to its fee line: a structural row, printed alone by that covered line, so
     the −580 reduced reading marks the group whole. The claimable rows lack the fee member, so `_group_variants` has

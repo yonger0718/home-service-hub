@@ -512,7 +512,8 @@ def _single_admissible(ctx: Context, candidate: Candidate) -> None:
     _, owned = rec.owned_coverage(db, statement)
     entries, groups = rec.load_candidates(db, statement, accounts, window_days=matching.population_window_days(ctx.rules),
                                           include_reward=include_reward, exclude=owned)
-    match_ctx = matching.statement_context(statement.kind, [rec._as_line(r) for r in current], entries, groups, ctx.rules)
+    match_ctx = matching.statement_context(statement.kind, rec.guard_lines(db, statement, accounts, ctx.rules, current),
+                                           entries, groups, ctx.rules)
     matcher_line = rec._as_line(line)
     reps = matching._representations(statement.kind, matcher_line, [e for e in entries if e.claimable], groups,
                                      rec.plan_map(db, statement.account_id), coverage_service.claimed_entry_ids(db),

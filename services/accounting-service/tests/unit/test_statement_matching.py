@@ -1067,6 +1067,18 @@ def test_whole_by_covered_sum_line_in_lines_all():
     assert res.claims == [] and res.cases[0].kind == "line_unmatched"
 
 
+def test_whole_by_a_neighbouring_statements_sum_line_in_lines_all():
+    """Spec §3 "Guard lines": the −580 sum line sits on the previous statement (dated before this period, never in
+    `lines`); the orchestrator passes it in `lines_all`, so the group is whole and the −300 line claims nothing."""
+    d = date(2026, 9, 3)
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-300", group_id=5), E(22, d, "-280", group_id=5)]
+    previous = L(7, date(2026, 8, 27), "-580")  # R.period_end is 2026-09-30: a line of the August statement
+    res = run([L(1, d, "-300")], ents, groups={5: g}, lines_all=[L(1, d, "-300"), previous])
+    assert res.claims == [] and [(c.line_id, c.kind, c.candidates) for c in res.cases] == [(1, "line_unmatched", ())]
+    assert run([L(1, d, "-300")], ents, groups={5: g}).claims[0].representation.kind == "member_alone"  # without it
+
+
 def test_whole_by_covered_fee_member_keeps_the_purchase_member_home():
     d = date(2026, 9, 3)
     g = m.Group(5, "split", (21, 22, 23))
