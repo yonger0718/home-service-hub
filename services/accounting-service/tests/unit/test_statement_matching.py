@@ -1627,7 +1627,7 @@ def test_child_reachable_only_from_a_later_line_unbalances_the_cohort():
     assert res.claims == [] and sorted(c.line_id for c in res.cases if c.kind == "ambiguous") == [1, 2]
 
 
-def test_text_winner_claims_exact_and_the_rest_pairs():
+def test_text_winner_claims_exact_and_the_remaining_single_rep_is_exact():
     lines = [L(1, date(2026, 9, 16), "-15", kind="fee", merchant="AMAZON 手續費"), L(2, date(2026, 9, 16), "-15", kind="fee", merchant="")]
     res = run(lines, [E(10, date(2026, 9, 16), "-1000", merchant="AMAZON", children=(m.Child(11, "fee", D("-15")),)), _fee_parent(20, date(2026, 9, 16), 21)])
     assert sorted((c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims) == [(1, 11, "exact"), (2, 21, "exact")]
@@ -1682,3 +1682,11 @@ def test_bank_only_line_names_its_near_children():
     assert [d["entry_id"] for d in many.cases[0].context["near_children"]] == [60, 61, 62, 63, 64]
     claimed = run([L(1, date(2026, 6, 8), "-5", kind="fee", merchant=""), L(2, date(2026, 6, 8), "-6", kind="fee", merchant="")], [carrier])
     assert [c.line_id for c in claimed.claims] == [1] and "near_children" not in next(c for c in claimed.cases if c.line_id == 2).context
+    # an opposite-sign child 1 day away is not listed (+1 vs −6: within the tolerance, so only the sign gate drops it)
+    opposite = run([L(1, date(2026, 6, 8), "-6", kind="fee", merchant="")],
+                   [E(70, date(2026, 6, 9), "-1000", merchant="", children=(m.Child(71, "fee", D("1")),))])
+    assert opposite.cases[0].context == {"hint": "bank_only", "pattern": None}
+    # a child outside the line's gate (interest on a fee line), same flow, 1 day away, is not listed
+    off_gate = run([L(1, date(2026, 6, 8), "-6", kind="fee", merchant="")],
+                   [E(80, date(2026, 6, 9), "-1000", merchant="", children=(m.Child(81, "interest", D("-6")),))])
+    assert off_gate.claims == [] and off_gate.cases[0].context == {"hint": "bank_only", "pattern": None}

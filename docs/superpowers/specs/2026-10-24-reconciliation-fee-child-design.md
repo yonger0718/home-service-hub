@@ -380,6 +380,7 @@ Rev 4 → execution errata (2026-10-24): `_near_children(statement_kind, line, e
 statement kind first (`eligible_kinds` needs it); the `_exact_pair` pick key is `(parent.stand_in, _date_distance,
 child id)` — owner children before stand-ins (R6b.0 consistency; the §4.2 tie-break is amended accordingly); carriers
 are also excluded from `by_id`/`evaluated` in `reconcile()`, so a parent's `deferred_next_period` case is never
-superseded by its carrier (§5.2 addendum); `_carriers` selects from the `parents` rows already read, so the one extra
-query per load is the child query (§5.1); `_survivors(entries, locked_rows, first_groups)` is the pure survivor helper
-(§5.2).
+superseded by its carrier (§5.2 addendum); `_carriers` selects from the `parents` rows already read, so the extra
+queries per load are the child query, then the instance lookup on the parents that have children (§5.1);
+`_survivors(entries, locked_rows, first_groups)` is the pure survivor helper (§5.2); residuals in `near_children` are
+`Q`-quantized strings (`"0.0000"`, `"-1.0000"`) like `_near_case`, where §3/§7 write `"0"`/`"-1"` for brevity.

@@ -1022,7 +1022,8 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
     unmatched: set[int] = set()
     designated = _designated_by_cases(result.cases)
     for e in entries:
-        if not e.in_reverse:
+        # a carrier is never evaluated as a parent; the loader already sets its in_reverse=False (defense in depth)
+        if not e.in_reverse or e.carrier:
             continue
         if e.parent_entry_id is not None:  # a child passed as a row (outside the contract): reported only under a claimed parent
             if e.id not in claimed and e.parent_entry_id in claimed:

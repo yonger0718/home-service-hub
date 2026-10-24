@@ -336,17 +336,20 @@ def _carriers(db: Session, statement: AccountStatement, accounts: list[int], cov
     """Fee-child spec 2026-10-24 §5.1: the covered standalone parents that still have a claimable child, as carrier
     rows: claimable, never in reverse, `children` the claimable children, no `all_children` and no instance.
     `covered` is the rows of `load_candidates`' `parents` read (participating account, statement currency, top level,
-    dated in the window, kind gate) that are in `claimed` and ungrouped, in id order — so the one extra query per
-    load is the child query; a parent with an installment instance is dropped (a recurring one stays). Only the
-    child path visits them; `reconcile()` locks their children, never the carrier itself."""
+    dated in the window, kind gate) that are in `claimed` and ungrouped, in id order — so the extra queries per
+    load are the child query, then the instance lookup on the parents that have children; a parent with an
+    installment instance is dropped (a recurring one stays). Only the child path visits them; `reconcile()` locks
+    their children, never the carrier itself."""
+    if not covered:
+        return []
+    children = _claimable_children(db, statement, accounts, [e.id for e in covered], claimed)
+    covered = [e for e in covered if children.get(e.id)]
     if not covered:
         return []
     scheduled = _instances(db, [e.id for e in covered])
-    covered = [e for e in covered if e.id not in scheduled or scheduled[e.id].definition_kind != "installment"]
-    children = _claimable_children(db, statement, accounts, [e.id for e in covered], claimed)
     return [entry_view(e, children=tuple(children[e.id]), all_children=(), instance=None, in_reverse=False,
                        claimable=True, carrier=True, stand_in=e.id in stand_in_ids, transfer_peer_is_card=None)
-            for e in covered if children.get(e.id)]
+            for e in covered if e.id not in scheduled or scheduled[e.id].definition_kind != "installment"]
 
 
 def _split_structure(db: Session, split_ids: list[int]) -> tuple[list[LedgerEntry], dict[int, list[matching.Child]]]:
