@@ -22,7 +22,7 @@
     <h3 class="section">對帳中</h3>
     @for (statement of live(); track statement.id) {
       <a
-        class="row statement-row"
+        class="entry-row statement-row"
         [routerLink]="['/accounting/accounts', accountId(), 'statements', statement.id]"
       >
         <span class="name">{{ periodText(statement.period_start, statement.period_end) }}</span>

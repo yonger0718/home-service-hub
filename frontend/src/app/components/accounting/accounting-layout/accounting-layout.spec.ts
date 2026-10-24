@@ -12,7 +12,7 @@ import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.ser
 import { makeEntryDetail, makePreference } from '../testing/fixtures';
 import { PaneStateService } from '../../../services/pane-state.service';
 import { DirtyFormRegistry } from '../dirty-form.service';
-import { AccountingLayoutComponent } from './accounting-layout';
+import { AccountingLayoutComponent, FAB_RIGHT_BESIDE_PANE } from './accounting-layout';
 
 async function start(mode: LayoutMode, url: string): Promise<RouterTestingHarness> {
   TestBed.configureTestingModule({
@@ -224,16 +224,37 @@ describe('AccountingLayoutComponent', () => {
     expect(pane.paneOpen()).toBe(true);
     expect(pane.formOpen()).toBe(false);
     expect(pane.sheetOpen()).toBe(false);
+    expect(pane.fabRight()).toBe(FAB_RIGHT_BESIDE_PANE);
 
     await TestBed.inject(Router).navigateByUrl('/accounting/entry');
     harness.detectChanges();
     expect(pane.formOpen()).toBe(true);
     expect(pane.paneOpen()).toBe(true);
+    expect(pane.fabRight()).toBe(FAB_RIGHT_BESIDE_PANE);
+
+    await TestBed.inject(Router).navigateByUrl('/accounting');
+    harness.detectChanges();
+    expect(pane.fabRight()).toBeNull();
+    expect(pane.paneOpen()).toBe(false);
 
     harness.fixture.destroy();
+    expect(pane.fabRight()).toBeNull();
     expect(pane.paneOpen()).toBe(false);
     expect(pane.formOpen()).toBe(false);
     expect(pane.sheetOpen()).toBe(false);
+  });
+
+  it('clears the FAB offset and pane state when it is destroyed with a pane still open', async () => {
+    const harness = await start('panes', '/accounting/entries/9');
+    const pane = TestBed.inject(PaneStateService);
+    await find(harness, PANE_PAGE);
+    harness.detectChanges();
+    expect(pane.fabRight()).toBe(FAB_RIGHT_BESIDE_PANE);
+    expect(pane.paneOpen()).toBe(true);
+
+    harness.fixture.destroy();
+    expect(pane.fabRight()).toBeNull();
+    expect(pane.paneOpen()).toBe(false);
   });
 
   it('publishes the 820px sheet as open, never as a pane', async () => {
@@ -243,6 +264,7 @@ describe('AccountingLayoutComponent', () => {
     harness.detectChanges();
     expect(pane.sheetOpen()).toBe(true);
     expect(pane.paneOpen()).toBe(false);
+    expect(pane.fabRight()).toBeNull();
 
     await TestBed.inject(Router).navigateByUrl('/accounting');
     harness.detectChanges();

@@ -102,7 +102,8 @@ describe('SidebarComponent', () => {
     expect(labels).toContain('記帳記錄');
     expect(labels).not.toContain('庫存');
     expect(host.querySelector('.side-tip')).toBeNull();
-    expect(host.querySelector('.side-logo img')!.getAttribute('src')).toBe('assets/logo-lockup.svg');
+    expect(host.querySelector('.side-logo app-logo-lockup svg')).not.toBeNull();
+    expect(host.querySelector('.side-logo img')).toBeNull();
   });
 
   it('rail at 1100 shows a tooltip per item', async () => {

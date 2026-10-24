@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/c
 import { RouterLink } from '@angular/router';
 
 import { LayoutModeService } from '../../services/layout-mode.service';
+import { LogoLockupComponent } from './logo-lockup';
 import { NavigationStateService } from '../shell/navigation-state.service';
 import { GroupBadgeSummary, NavBadge, NavGroup, NavItem, summarizeGroupBadges } from '../shell/navigation';
 
@@ -10,7 +11,7 @@ const RAIL_WIDTH = '72px';
 
 @Component({
   selector: 'app-sidebar',
-  imports: [RouterLink],
+  imports: [RouterLink, LogoLockupComponent],
   templateUrl: './sidebar.html',
   styleUrl: './sidebar.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

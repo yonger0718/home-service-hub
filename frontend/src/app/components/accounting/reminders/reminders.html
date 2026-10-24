@@ -115,7 +115,7 @@
               <p class="muted">讀取中…</p>
             }
             @for (row of expandedRows(); track row.key) {
-              <button type="button" class="row" [attr.data-entry-id]="row.entryId" (click)="open(row)">
+              <button type="button" class="entry-row" [attr.data-entry-id]="row.entryId" (click)="open(row)">
                 <span class="ico" [style.background]="row.color">{{ row.icon }}</span>
                 <span class="name">{{ row.title }}@if (row.groupCount) {<span class="badge">{{ row.groupCount }}</span>}</span>
                 <span class="sub">{{ row.sub }}</span>

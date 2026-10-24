@@ -39,7 +39,7 @@
 .lbl { color: var(--app-text-muted); font-size: 0.72rem; font-weight: 800; letter-spacing: 0.06em; }
 .entry-list { display: flex; flex-direction: column; min-width: 0; }
 
-.row {
+.entry-row {
   align-items: center;
   color: inherit;
   display: grid;
@@ -50,17 +50,17 @@
   text-decoration: none;
 }
 
-.row + .row { border-top: 1px solid var(--app-border); }
+.entry-row + .entry-row { border-top: 1px solid var(--app-border); }
 
 /* The entry open in the pane, as the timeline marks it: bleeds only as far as the layout pane allows (--row-sel-bleed). */
-.row.sel {
+.entry-row.sel {
   background: var(--app-primary-soft);
   border-radius: var(--radius-sm);
   margin-inline: calc(-1 * var(--row-sel-bleed, 0px));
   padding-inline: var(--row-sel-bleed, 0px);
 }
 
-.row.sel + .row { border-top: 0; }
+.entry-row.sel + .entry-row { border-top: 0; }
 
 .ico {
   align-items: center;

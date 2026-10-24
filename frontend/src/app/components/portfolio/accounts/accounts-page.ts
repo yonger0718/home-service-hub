@@ -1,11 +1,10 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, computed, effect, inject, signal, untracked, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked, viewChild } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router } from '@angular/router';
 import { map } from 'rxjs';
 
 import { BrokerAccount } from '../../../models/portfolio.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
-import { PaneStateService } from '../../../services/pane-state.service';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { BtnComponent } from '../../ui/btn/btn';
 import { PortfolioAccountDetailComponent } from './account-detail';
@@ -28,7 +27,6 @@ export class PortfolioAccountsPageComponent {
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly layout = inject(LayoutModeService);
-  private readonly paneState = inject(PaneStateService);
 
   readonly panes = computed(() => this.layout.mode() === 'panes');
   /** The route's `:id`, or null on `/portfolio/accounts` (and for an id that is not a number). */
@@ -58,9 +56,6 @@ export class PortfolioAccountsPageComponent {
       this.autoNavigated = true;
       untracked(() => void this.router.navigate(['/portfolio/accounts', id], { replaceUrl: true }));
     });
-    // The shell's rail (D2) while a detail pane is beside the list (none for an empty list).
-    effect(() => this.paneState.paneOpen.set(this.panes() && this.selectedId() !== null));
-    inject(DestroyRef).onDestroy(() => this.paneState.paneOpen.set(false));
   }
 
   onLoaded(accounts: readonly BrokerAccount[]): void {

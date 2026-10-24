@@ -58,6 +58,9 @@ const GROUP_URL = /^\/accounting(?:\/accounts\/\d+)?\/entries\/\d+\/group$/;
 const REMINDERS_URL = /^\/accounting\/reminders(?:\/|$)/;
 const PASSBOOK_URL = /^\/accounting\/accounts\/(\d+)(?:\/entries\/\d+(?:\/group)?)?$/;
 const FORM_URL = /^\/accounting\/(?:entry|entries\/\d+\/edit)(?:[/?#]|$)/;
+/** FAB `right` with a pane open: the list column's bottom-right corner (.hub-page side padding 1.75rem, .dbody gap
+ * 16px, columns 5fr / 6fr, see accounting-layout.scss), so the button never covers the pane. */
+export const FAB_RIGHT_BESIDE_PANE = 'calc(1.75rem + (100vw - var(--sidebar-w) - 3.5rem - 16px) * 6 / 11 + 32px)';
 const SWIPE_CLOSE_PX = 80;
 /** A swipe that drifts more than this vertically is a scroll, not a close. */
 const SWIPE_MAX_DY = 40;
@@ -213,7 +216,9 @@ export class AccountingLayoutComponent {
       }
     });
     effect(() => {
-      this.paneState.paneOpen.set(this.mode() === 'panes' && this.paneOpen());
+      const beside = this.mode() === 'panes' && this.paneOpen();
+      this.paneState.paneOpen.set(beside);
+      this.paneState.fabRight.set(beside ? FAB_RIGHT_BESIDE_PANE : null);
       this.paneState.formOpen.set(this.formOpen());
       this.paneState.sheetOpen.set(this.sheetOpen());
     });
@@ -222,6 +227,7 @@ export class AccountingLayoutComponent {
       this.paneState.paneOpen.set(false);
       this.paneState.formOpen.set(false);
       this.paneState.sheetOpen.set(false);
+      this.paneState.fabRight.set(null);
     });
   }
 

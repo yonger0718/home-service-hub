@@ -424,7 +424,7 @@ describe('AccountingRemindersComponent', () => {
     fixture.detectChanges();
 
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('.debt-entries .row'));
+    const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('.debt-entries .entry-row'));
     expect(rows.map(row => row.dataset['entryId'])).toEqual(['72', '74']);
     // The signed remaining under the row's own date, with the original and what came back once something was collected.
     expect(text(rows[0].querySelector('.amt'))).toBe('+$50 2026/09/20');
@@ -453,7 +453,7 @@ describe('AccountingRemindersComponent', () => {
       .flush({ items: [OPEN_ENTRIES[0], closed], total: 2, limit: 500, offset: 0 });
     fixture.detectChanges();
 
-    const rows = Array.from(el.querySelectorAll<HTMLElement>('.debt-entries .row'));
+    const rows = Array.from(el.querySelectorAll<HTMLElement>('.debt-entries .entry-row'));
     expect(text(rows[0].querySelector('.amt'))).toBe('−$100 2026/09/25 · 原始 $300 · 已還 $200');
     expect(rows[0].querySelector('.amt')!.classList).toContain('neg');
     expect(text(rows[1].querySelector('.amt'))).toBe('已結清 2026/09/05');
@@ -558,7 +558,7 @@ describe('AccountingRemindersComponent', () => {
         .expectOne(r => r.params.get('counterparty_id') === '2')
         .flush({ items: OPEN_ENTRIES.filter(entry => entry.counterparty_id === 2), total: 2, limit: 500, offset: 0 });
       fixture.detectChanges();
-      const ids = () => Array.from(el.querySelectorAll<HTMLElement>('.debt-entries .row')).map(row => row.dataset['entryId']);
+      const ids = () => Array.from(el.querySelectorAll<HTMLElement>('.debt-entries .entry-row')).map(row => row.dataset['entryId']);
       expect(ids()).toEqual(['71', '73']);
 
       choose(fixture, select(el, '借／還'), 'receivable');
@@ -616,7 +616,7 @@ describe('AccountingRemindersComponent', () => {
 
     expect(el.querySelector('.card-row')).toBeNull();
     expect(text(el.querySelector('.debt-row .side-count'))).toBe('1 筆應收款項');
-    expect(Array.from(el.querySelectorAll<HTMLElement>('.debt-entries .row')).map(row => row.dataset['entryId'])).toEqual(['74']);
+    expect(Array.from(el.querySelectorAll<HTMLElement>('.debt-entries .entry-row')).map(row => row.dataset['entryId'])).toEqual(['74']);
   });
 
   it('reloads after an account write, re-reading the statement with the new due rule', () => {

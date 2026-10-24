@@ -280,3 +280,15 @@ describe('large figures keep the bright tokens', () => {
     expect(swapped['--tone-pos-ink']).toBe('var(--c-red-ink)');
   });
 });
+
+describe('sidebar wordmark', () => {
+  it.each([
+    ['light', '--app-text', light],
+    ['light', '--app-text-muted', light],
+    ['dark', '--app-text', dark],
+    ['dark', '--app-text-muted', dark],
+  ])('%s theme: %s on --app-surface-glass over --app-bg ≥ 4.5', (_name, token, theme) => {
+    const bg = composite(rgba(theme, '--app-surface-glass'), hex(theme, '--app-bg'));
+    expect(ratio(hex(theme, token), bg)).toBeGreaterThanOrEqual(4.5);
+  });
+});
