@@ -486,7 +486,8 @@ def statement_context(kind: str, lines_all: list[Line], entries: list[Entry], gr
 
 
 def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
-                     claimed: set[int], rules: Rules, aside: frozenset[int] = frozenset()) -> list[Representation]:
+                     claimed: set[int], rules: Rules, aside: frozenset[int] = frozenset(),
+                     apart: frozenset[int] = frozenset()) -> list[Representation]:
     gate = eligible_kinds(kind, line.line_kind)
     out: list[Representation] = []
     if line.line_kind == "installment":
@@ -500,17 +501,20 @@ def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[i
         return out
     rule = {"payment": "payment", "refund": "refund", "transfer_in": "transfer", "transfer_out": "transfer"}.get(line.line_kind, "exact")
     for e in entries:
-        # group members (save a lone member for a non-purchase line), installment instances and children never stand
-        # alone (children reach a line via the child path)
-        if e.id in claimed or not (_standalone(e) or _lone_member(e, line.line_kind, groups)) or _entry_class(e) not in gate:
+        # group members (save a lone member for a non-purchase line and a member of a split group the statement
+        # prints apart, `apart`), installment instances and children never stand alone (children reach a line via the
+        # child path)
+        if e.id in claimed or not (_standalone(e) or _lone_member(e, line.line_kind, groups) or e.id in apart) \
+                or _entry_class(e) not in gate:
             continue
         if not _peer_ok(kind, line, e):
             continue
         principal = (Row(e.id, "principal", e.flow),)
         child_rows = tuple(Row(c.id, "child", c.flow) for c in e.children if c.id not in claimed)
-        variants = [("standalone", rule, principal)]
+        alone, with_children = ("member_alone", "member_children") if e.id in apart else ("standalone", "principal_children")
+        variants = [(alone, rule, principal)]
         if child_rows:
-            variants.append(("principal_children", "exact_children", principal + child_rows))
+            variants.append((with_children, "exact_children", principal + child_rows))
         for rep_kind, rep_rule, rows in variants:
             if conserved(rows, line.flow):
                 score, reasons = _score(line, (e,), rules.exact_window_days)
@@ -633,7 +637,8 @@ def _foreign_groups(kind: str, line: Line, entries: list[Entry], groups: dict[in
 
 
 def _foreign_case(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], claimed: set[int], fee_expected,
-                  rules: Rules, currency: str, aside: frozenset[int] = frozenset()) -> Case | None:
+                  rules: Rules, currency: str, aside: frozenset[int] = frozenset(),
+                  apart: frozenset[int] = frozenset()) -> Case | None:
     """The foreign amounts are compared by magnitude (2026-10-19): a line's `foreign_amount` is stored as the parser
     printed it (positive on most debit lines, negative on some refunds) while an entry's `original_amount` carries
     the entry's sign, so a signed comparison never held for a debit line printed unsigned (the production ledger
@@ -643,7 +648,7 @@ def _foreign_case(kind: str, line: Line, entries: list[Entry], groups: dict[int,
         return None
     gate = eligible_kinds(kind, line.line_kind)
     found = sorted((e for e in entries
-                    if e.id not in claimed and _standalone(e) and _entry_class(e) in gate and _peer_ok(kind, line, e)
+                    if e.id not in claimed and (_standalone(e) or e.id in apart) and _entry_class(e) in gate and _peer_ok(kind, line, e)
                     and e.original_amount is not None and e.original_amount != 0 and e.original_currency == line.foreign_currency
                     and _same(abs(e.original_amount), abs(line.foreign_amount)) and _date_distance(line, e) <= rules.foreign_window_days),
                    key=lambda e: (_date_distance(line, e), e.id))
@@ -675,7 +680,8 @@ def _foreign_case(kind: str, line: Line, entries: list[Entry], groups: dict[int,
                 {"residual": str(residual), "fee_expected": None if fee_q is None else str(fee_q), "fee_matches": matches, "entry_id": e.id})
 
 
-def _near_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], rules: Rules) -> Case | None:
+def _near_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], rules: Rules,
+               apart: frozenset[int] = frozenset()) -> Case | None:
     """R6a.4: same amount within max(abs, pct) and the near window. Merchant-token overlap (half of the union) is
     required only for candidates on another day; on the same day amount proximity is enough. Never claims."""
     gate = eligible_kinds(kind, line.line_kind)
@@ -683,7 +689,7 @@ def _near_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], r
     tol = max(rules.near_tolerance_abs, (rules.near_tolerance_pct * abs(line.flow)).quantize(Q))
     found: list[tuple[Decimal, int, int, Decimal]] = []
     for e in entries:
-        if e.id in claimed or _entry_class(e) not in gate or not _standalone(e) or not _peer_ok(kind, line, e):
+        if e.id in claimed or _entry_class(e) not in gate or not (_standalone(e) or e.id in apart) or not _peer_ok(kind, line, e):
             continue
         delta = (line.flow - e.flow).quantize(Q)
         dist = _date_distance(line, e)
@@ -702,13 +708,14 @@ def _near_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], r
     return Case(line.id, best_id, "amount_delta", cands, {"residual": str(best_delta), "fee_matches": False, "entry_id": best_id})
 
 
-def _drift_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], rules: Rules) -> Case | None:
+def _drift_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], rules: Rules,
+                apart: frozenset[int] = frozenset()) -> Case | None:
     """R6a.5: a standalone, gated, unclaimed entry with the same amount and sign, farther than the exact window but
     within the drift window → an amount_delta proposal (residual 0) the owner confirms with `match`. Never claims."""
     gate = eligible_kinds(kind, line.line_kind)
     found: list[tuple[int, int]] = []
     for e in entries:
-        if e.id in claimed or _entry_class(e) not in gate or not _standalone(e) or not _peer_ok(kind, line, e):
+        if e.id in claimed or _entry_class(e) not in gate or not (_standalone(e) or e.id in apart) or not _peer_ok(kind, line, e):
             continue
         if not _same(e.flow, line.flow):
             continue
@@ -737,8 +744,8 @@ def _bank_only(line: Line, rules: Rules) -> dict | None:
 
 
 def _claimed_by_earlier_line(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
-                             claimed: set[int], rules: Rules, aside: frozenset[int]) -> int | None:
-    shadow = _representations(kind, line, entries, groups, plan_map, set(), rules, aside)
+                             claimed: set[int], rules: Rules, aside: frozenset[int], apart: frozenset[int]) -> int | None:
+    shadow = _representations(kind, line, entries, groups, plan_map, set(), rules, aside, apart)
     if len(shadow) == 1 and any(row.entry_id in claimed for row in shadow[0].rows):
         return shadow[0].rows[0].entry_id
     return None
@@ -761,15 +768,21 @@ def _designated_by_cases(cases: list[Case]) -> set[int]:
 
 
 def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
-          fee_expected: Callable[[Entry], Decimal | None], rules: Rules, account_currency: str) -> MatchResult:
+          fee_expected: Callable[[Entry], Decimal | None], rules: Rules, account_currency: str,
+          lines_all: list[Line] | None = None) -> MatchResult:
+    """`lines_all`: every current line of the statement, covered ones included (default `lines`); `entries` may carry
+    structural rows (`claimable=False`), which only the printed-whole guard (`statement_context`) reads."""
     result = MatchResult()
     claimed: set[int] = set()
+    ctx = statement_context(statement_kind, lines_all or lines, entries, groups, rules)  # over the unfiltered population
     hint_only = [e for e in entries if not e.claimable]
     entries = [e for e in entries if e.claimable]
-    aside = printed_alone(statement_kind, lines, entries, groups, rules)
+    aside, apart = ctx.aside, ctx.apart
     for line in sorted(lines, key=lambda ln: ln.id):
-        reps = sorted(_representations(statement_kind, line, entries, groups, plan_map, claimed, rules, aside), key=lambda r: r.score, reverse=True)
-        truncated = incomplete_groups(statement_kind, line, entries, groups, claimed, aside) if reps else []
+        reps = sorted(_representations(statement_kind, line, entries, groups, plan_map, claimed, rules, aside, apart),
+                      key=lambda r: r.score, reverse=True)
+        # completeness over the structural population with nothing claimed: fee members covered earlier still count
+        truncated = incomplete_groups(statement_kind, line, list(ctx.structural), groups, set(), aside) if reps else []
         if truncated:  # a split group with more printed-alone members than are enumerated: the owner decides
             result.cases.append(Case(line.id, None, "ambiguous", _ambiguous(line, reps).candidates,
                                      {"hint": "group_readings_incomplete", "group_ids": truncated}))
@@ -786,13 +799,13 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             result.cases.append(_ambiguous(line, reps))
             continue
         if not reps:
-            taken = _claimed_by_earlier_line(statement_kind, line, entries, groups, plan_map, claimed, rules, aside)
+            taken = _claimed_by_earlier_line(statement_kind, line, entries, groups, plan_map, claimed, rules, aside, apart)
             if taken is not None:
                 result.cases.append(Case(line.id, None, "line_unmatched", (), {"hint": "claimed_by_earlier_line", "entry_id": taken}))
                 continue
-        case = _foreign_case(statement_kind, line, entries, groups, claimed, fee_expected, rules, account_currency, aside) \
-            or _near_case(statement_kind, line, entries, claimed, rules) \
-            or _drift_case(statement_kind, line, entries, claimed, rules)
+        case = _foreign_case(statement_kind, line, entries, groups, claimed, fee_expected, rules, account_currency, aside, apart) \
+            or _near_case(statement_kind, line, entries, claimed, rules, apart) \
+            or _drift_case(statement_kind, line, entries, claimed, rules, apart)
         if case is not None:
             result.cases.append(case)
             continue
