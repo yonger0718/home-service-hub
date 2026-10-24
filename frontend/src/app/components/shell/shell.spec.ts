@@ -1,9 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { Component, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router, Routes, provideRouter } from '@angular/router';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { routes } from '../../app.routes';
 import {
@@ -512,5 +515,118 @@ describe('ShellComponent', () => {
       await settle();
       expect(fab()).toBeNull();
     });
+  });
+});
+
+function fakeScroller(el: Element, top: number, scrollHeight = 2000, clientHeight = 800) {
+  for (const [k, v] of Object.entries({ scrollTop: top, scrollHeight, clientHeight })) {
+    Object.defineProperty(el, k, { value: v, configurable: true });
+  }
+}
+
+describe('記一筆 hides while scrolling (D5)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  async function start() {
+    const r = await render(viewportOf(1440), { url: '/somewhere' });
+    await r.settle();
+    const scrollDocument = async (top: number, scrollHeight = 2000, clientHeight = 800) => {
+      fakeScroller(document.documentElement, top, scrollHeight, clientHeight);
+      document.dispatchEvent(new Event('scroll'));
+      await r.settle();
+    };
+    const hidden = () => r.fab()!.classList.contains('is-hidden');
+    return { ...r, scrollDocument, hidden };
+  }
+
+  it('hides after a downward document scroll and returns on an upward one', async () => {
+    const { scrollDocument, hidden } = await start();
+    await scrollDocument(0);
+    await scrollDocument(120);
+    expect(hidden()).toBe(true);
+    await scrollDocument(100);
+    expect(hidden()).toBe(false);
+  });
+
+  it('returns at the end of the page', async () => {
+    const { scrollDocument, hidden } = await start();
+    await scrollDocument(0);
+    await scrollDocument(120);
+    expect(hidden()).toBe(true);
+    await scrollDocument(1200, 2000, 800);
+    expect(hidden()).toBe(false);
+  });
+
+  it('returns after 1.2 s without scrolling', async () => {
+    const { scrollDocument, hidden, settle } = await start();
+    await scrollDocument(0);
+    await scrollDocument(120);
+    expect(hidden()).toBe(true);
+    vi.advanceTimersByTime(1199);
+    await settle();
+    expect(hidden()).toBe(true);
+    vi.advanceTimersByTime(1);
+    await settle();
+    expect(hidden()).toBe(false);
+  });
+
+  it('never hides while it has focus', async () => {
+    const { scrollDocument, hidden, fab } = await start();
+    fab()!.focus();
+    await scrollDocument(0);
+    await scrollDocument(120);
+    expect(hidden()).toBe(false);
+  });
+
+  it('ignores scrolls that are not the page scroller', async () => {
+    const { el, settle, hidden } = await start();
+    const page = el.querySelector('.hub-page')!;
+    const plain = document.createElement('div');
+    page.appendChild(plain);
+    fakeScroller(plain, 0);
+    plain.dispatchEvent(new Event('scroll'));
+    fakeScroller(plain, 300);
+    plain.dispatchEvent(new Event('scroll'));
+    await settle();
+    expect(hidden()).toBe(false);
+
+    const marked = document.createElement('div');
+    marked.setAttribute('data-page-scroller', '');
+    page.appendChild(marked);
+    fakeScroller(marked, 0);
+    marked.dispatchEvent(new Event('scroll'));
+    fakeScroller(marked, 300);
+    marked.dispatchEvent(new Event('scroll'));
+    await settle();
+    expect(hidden()).toBe(true);
+  });
+
+  it('reacts to .hub-main when it is the scroller', async () => {
+    const { el, settle, hidden } = await start();
+    const main = el.querySelector('.hub-main')!;
+    fakeScroller(main, 0);
+    main.dispatchEvent(new Event('scroll'));
+    fakeScroller(main, 200);
+    main.dispatchEvent(new Event('scroll'));
+    await settle();
+    expect(hidden()).toBe(true);
+  });
+
+  it('comes back on a route change', async () => {
+    const { scrollDocument, hidden, router, settle } = await start();
+    await scrollDocument(0);
+    await scrollDocument(120);
+    expect(hidden()).toBe(true);
+    await router.navigateByUrl('/portfolio/dividends');
+    await settle();
+    expect(hidden()).toBe(false);
+  });
+
+  it('the hidden state is a class the stylesheet turns into visibility: hidden', () => {
+    const css = readFileSync(join(process.cwd(), 'src/app/components/shell/shell.scss'), 'utf8');
+    expect(css).toMatch(/&\.is-hidden\s*{[^}]*visibility:\s*hidden/);
+    expect(css).toMatch(/transition:[^;]*160ms/);
+    expect(css).toMatch(/prefers-reduced-motion:\s*reduce\)\s*{[\s\S]*\.hub-fab\s*{\s*transition:\s*none/);
   });
 });

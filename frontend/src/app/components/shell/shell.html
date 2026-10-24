@@ -16,6 +16,7 @@
   @if (showFab()) {
     <a
       class="hub-fab"
+      appHideOnScroll
       [style.--fab-right]="paneState.fabRight()"
       [attr.href]="entryFormHref"
       (click)="openEntryForm($event)"
