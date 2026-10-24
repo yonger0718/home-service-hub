@@ -710,8 +710,9 @@ def _near_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], r
 
 def _drift_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], rules: Rules,
                 apart: frozenset[int] = frozenset()) -> Case | None:
-    """R6a.5: a standalone, gated, unclaimed entry with the same amount and sign, farther than the exact window but
-    within the drift window → an amount_delta proposal (residual 0) the owner confirms with `match`. Never claims."""
+    """R6a.5: a standalone or apart-member (`apart`), gated, unclaimed entry with the same amount and sign, farther
+    than the exact window but within the drift window → an amount_delta proposal (residual 0) the owner confirms with
+    `match`. Never claims."""
     gate = eligible_kinds(kind, line.line_kind)
     found: list[tuple[int, int]] = []
     for e in entries:
