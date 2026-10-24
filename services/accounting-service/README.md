@@ -209,7 +209,7 @@ Actions (`params`; the kinds a case must have; `actions_allowed` lists what a ca
 | `replace_stand_in` | none | `entry_unmatched` (stand-in hint) | yes |
 | `create_refund` | `original_entry_id` | `line_unmatched` (refund line) | no |
 | `attach_fee` | `entry_id` | `amount_delta` with `fee_matches` (bundled fee only) | yes |
-| `adjust_amount` | `entry_id`, `line_id`, `group_id` (optional: a foreign group case) | `amount_delta` | no |
+| `adjust_amount` | `entry_id`, `line_id`, `group_id` (optional: a foreign group case) | `amount_delta`; `ambiguous` with a listed entry candidate (no `group_id`) | no |
 | `move_account` | `entry_id`, `account_id` | `entry_unmatched` | no |
 | `split_entry` | `entry_id`, `parts[{amount, category_id, name?}]` (2 or more) | `amount_delta`, `line_unmatched` naming the entry | no |
 | `balance_adjustment_asof` | none | `balance_gap` of a bank or single-account card statement (needs `dirty_enabled`) | no |

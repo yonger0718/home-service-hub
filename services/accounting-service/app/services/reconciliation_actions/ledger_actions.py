@@ -371,17 +371,19 @@ class AdjustAmountAction(ActionBase):
     foreign pair and the rate it implies); the old amount is noted in the description. For a foreign group case
     (`group_id`, 2026-10-19) the named member absorbs the residual of the members the line counts
     (`_counted_members`) instead — its foreign amount stays, the rate it implies is rewritten — and those members
-    are claimed; a fee member the fee line claimed stays with its line."""
+    are claimed; a fee member the fee line claimed stays with its line. On an `ambiguous` case (2026-10-24, several
+    near or foreign reads of one line) the owner names one of the listed entry candidates; a group candidate is out
+    of scope there — the group branch relies on the `entry_ids` an `amount_delta` case designated."""
     name = "adjust_amount"
     Params = AdjustAmountParams
-    case_kinds = frozenset({"amount_delta"})
+    case_kinds = frozenset({"amount_delta", "ambiguous"})
     slot = AMOUNT
 
     @staticmethod
     def _scoped(ctx: Context, params: AdjustAmountParams) -> bool:
         candidates = ctx.case.candidates or []
         if params.group_id is not None:
-            return params.group_id in {c.get("group_id") for c in candidates}
+            return ctx.case.kind == "amount_delta" and params.group_id in {c.get("group_id") for c in candidates}
         return params.entry_id in {c.get("entry_id") for c in candidates}
 
     def lock_targets(self, ctx: Context, params: AdjustAmountParams) -> LockSet:
