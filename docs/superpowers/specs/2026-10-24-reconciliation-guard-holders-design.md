@@ -241,3 +241,4 @@ Multica AGENT-251/252, dev-astra, rev 2 @ `1833e09` — **FAIL** (one spec round
 - Coverage always balances when written, so an inexact DB holder exists only after an entry edit with dirty tracking off (tests build it that way).
 - Both `matching.Child` constructions go through `reconciliation_service._child_view`.
 - The policy validator runs one extra `match()` per validation (pass 1); its pre-existing lock-trim caveat is unchanged.
+- §4.2/§4.3: the parity block (guard lines, stand-in ids, stable holders, pass 1, `claim_holders`, `merge_holders`) is one helper, `reconciliation_service.pass_two_holders(...) -> (lines_all, holders)`, called by `reconcile()` and by `_single_admissible` (Task 3 review ⚠️) — parity by construction. A validator test with a two-link chain (a stable owner holder releases A in pass 1, A's claim releases B in pass 2) pins the pass-1 link.
