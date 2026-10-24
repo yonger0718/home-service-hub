@@ -13,7 +13,7 @@ rows for covered standalone parents with unclaimed children; `reconcile()` locks
 The policy validator shares the loader and `match`, so parity needs tests only.
 
 **Tech Stack:** Python 3.13, FastAPI service `services/accounting-service`, SQLAlchemy, pytest (unit + Postgres
-integration). Plan rev 2, 2026-10-24 (AGENT-270 folded).
+integration). Plan rev 3, 2026-10-24 (AGENT-270 + AGENT-271 folded; Task 2b added).
 
 **Spec:** `docs/superpowers/specs/2026-10-24-reconciliation-fee-child-design.md` rev 4 (on this branch, after `b398248`). Context specs:
 `2026-10-24-reconciliation-split-members-design.md`, `2026-10-24-reconciliation-guard-holders-design.md`.
@@ -335,4 +335,4 @@ def test_near_child_keeps_the_twin_guard_closed(seed, db_session, run):
 Deploy the API; before/after active-coverage snapshot for statements 504, 554, 555; re-reconcile them; expect 5784,
 5786, 4244, 4242, 4243 claimed by children, 4245 `ambiguous`, 4164 `bank_only` + `near_children` (case re-created
 once); open cases 151 → ≤ 146. Host fuzz (`~/reports/…/fuzz_fee_child.py`): random carriers / children / fee lines,
-properties (a) no carrier id in any row, (b) `exact_pair` only with a complete balanced cohort, (c) two runs identical.
+properties (a) no carrier id in any row, (b) `exact_pair` only with a complete, balanced, undecided cohort whose children are all claimed by run end, (c) two runs identical.
