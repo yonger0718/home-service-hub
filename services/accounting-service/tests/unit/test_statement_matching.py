@@ -1599,7 +1599,7 @@ def test_a_line_already_left_as_a_case_never_balances_a_later_cohort_agent_270()
     lines = [L(1, date(2026, 9, 2), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 5), "-15", kind="fee", merchant="")]
     entries = [_fee_parent(10, date(2026, 9, 3), 11), _fee_parent(20, date(2026, 9, 3), 21), E(30, date(2026, 8, 31), "-15", kind="fee", merchant="")]
     res = run(lines, entries)
-    assert res.claims == [] and [c.kind for c in res.cases if c.line_id in (1, 2)] == ["ambiguous", "ambiguous"]   # B's 2×2 is complete+balanced but A is decided
+    assert res.claims == [] and [c.kind for c in res.cases if c.line_id in (1, 2)] == ["ambiguous", "ambiguous"]   # A reads the standalone (30), so it is no slot; B's component is one slot → gate off, B ambiguous by the plain R6a.2 tie
     assert {c["entry_id"] for c in next(c for c in res.cases if c.line_id == 1).candidates} == {11, 21, 30}
     assert {c["entry_id"] for c in next(c for c in res.cases if c.line_id == 2).candidates} == {11, 21}
 
@@ -1722,3 +1722,50 @@ def test_bank_only_line_names_its_near_children():
     off_gate = run([L(1, date(2026, 6, 8), "-6", kind="fee", merchant="")],
                    [E(80, date(2026, 6, 9), "-1000", merchant="", children=(m.Child(81, "interest", D("-6")),))])
     assert off_gate.claims == [] and off_gate.cases[0].context == {"hint": "bank_only", "pattern": None}
+
+
+def test_a_single_rep_that_is_the_lowest_slots_forced_take_claims_despite_an_incomplete_cohort_5g():
+    lines = [L(1, date(2026, 9, 2), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 4), "-15", kind="fee", merchant="")]
+    res = run(lines, [_fee_parent(10, date(2026, 9, 1), 11), _fee_parent(20, date(2026, 9, 6), 21)])
+    assert [(c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims] == [(1, 11, "exact"), (2, 21, "exact")]
+    assert not [c for c in res.cases if c.line_id in (1, 2)]
+
+
+def _sibling_scenario_entries():
+    return [_fee_parent(10, date(2026, 9, 16), 11, carrier=True, in_reverse=False), _fee_parent(20, date(2026, 9, 16), 21, carrier=True, in_reverse=False),
+            _fee_parent(30, date(2026, 9, 20), 31, account_id=2, carrier=True, in_reverse=False)]
+
+
+def test_a_sibling_reading_another_accounts_child_is_not_a_slot():
+    lines = [L(1, date(2026, 9, 16), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 19), "-15", kind="fee", merchant="")]
+    res = run(lines, _sibling_scenario_entries())
+    first = next(c for c in res.cases if c.line_id == 1)
+    assert first.kind == "ambiguous" and {c["entry_id"] for c in first.candidates} == {11, 21}
+    assert [(c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims] == [(2, 31, "exact")]
+
+
+def test_a_fee_split_group_is_never_a_rep_of_a_fee_line_so_it_cannot_unslot_a_sibling_5h():
+    # the fee/interest/reward gate holds no `expense`, so a split group is no rep of a child-only line: a sibling cannot
+    # lose its slot by reading one, and the plain complete 2x2 cohort pairs (pinned; the brief expected an ambiguous line 1)
+    lines = [L(1, date(2026, 9, 16), "-15", kind="fee", merchant=""), L(2, date(2026, 9, 19), "-15", kind="fee", merchant="")]
+    members = [E(41, date(2026, 9, 20), "-5", kind="fee", merchant="", group_id=8), E(42, date(2026, 9, 20), "-10", kind="fee", merchant="", group_id=8)]
+    group = m.Group(id=8, kind="split", member_ids=(41, 42))
+    res = run(lines, _sibling_scenario_entries()[:2] + members, groups={8: group})
+    assert res.cases == []
+    assert sorted((c.line_id, c.representation.rows[0].entry_id, c.representation.rule) for c in res.claims) == [(1, 11, "exact_pair"), (2, 21, "exact")]
+
+
+def test_a_large_same_flow_cohort_resolves_quickly():
+    import time
+    day = date(2026, 9, 16)
+    lines = [L(i, day, "-15", kind="fee", merchant="") for i in range(1, 61)]
+    entries = [_fee_parent(1000 + i, day, 2000 + i, carrier=True, in_reverse=False) for i in range(60)]
+    entries += [E(5000 + i, day, f"-{100 + i}", merchant=f"M{i}") for i in range(300)]
+    started = time.perf_counter()
+    res = run(lines, entries)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 2.0, elapsed
+    print("cohort perf seconds", elapsed)
+    assert res.cases == [] and len(res.claims) == 60
+    assert {c.representation.rule for c in res.claims} <= {"exact", "exact_pair"}
+    assert sorted(c.representation.rows[0].entry_id for c in res.claims) == [2000 + i for i in range(60)]

@@ -660,17 +660,20 @@ def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[i
                 if score > ZERO:
                     out.append(Representation("installment_group", rows, score, "installment_group", reasons))
     reps = [r for r in out if conserved(r.rows, line.flow)]
+    if not reps:
+        return reps
     by_id = {e.id: e for e in entries}
-    if any(not _is_stand_in_rep(r, by_id) for r in reps):  # R6b.0: an owner representation drops every stand-in one
-        reps = [r for r in reps if not _is_stand_in_rep(r, by_id)]
+    parent_of = {c.id: e for e in entries for c in e.children}
+    if any(not _is_stand_in_rep(r, by_id, parent_of) for r in reps):  # R6b.0: an owner representation drops every stand-in one
+        reps = [r for r in reps if not _is_stand_in_rep(r, by_id, parent_of)]
     return reps
 
 
-def _is_stand_in_rep(rep: Representation, by_id: dict[int, Entry]) -> bool:
+def _is_stand_in_rep(rep: Representation, by_id: dict[int, Entry], parent_of: dict[int, Entry]) -> bool:
     """A representation made only of stand-in rows (a child row counts as its parent's)."""
-    owners = {by_id[r.entry_id] for r in rep.rows if r.entry_id in by_id}
-    parents = [e for e in by_id.values() if any(r.entry_id in {c.id for c in e.children} for r in rep.rows)]
-    return bool(owners | set(parents)) and all(e.stand_in for e in owners | set(parents))
+    owners = {by_id[r.entry_id].id: by_id[r.entry_id] for r in rep.rows if r.entry_id in by_id}
+    owners.update({parent_of[r.entry_id].id: parent_of[r.entry_id] for r in rep.rows if r.entry_id in parent_of})
+    return bool(owners) and all(e.stand_in for e in owners.values())
 
 
 def _quantum(currency: str) -> Decimal:
@@ -725,9 +728,15 @@ def _cohort(kind: str, line: Line, lines: list[Line], entries: list[Entry], grou
         reps = _representations(kind, ln, entries, groups, plan_map, claimed, rules, aside, apart)
         return bool(reps) and all(r.kind == "child" and r.rows[0].entry_id in right_ids for r in reps)
 
-    pool_left = [ln for ln in lines
-                 if ln.id != line.id and ln.id not in claimed_line_ids and ln.line_kind == line.line_kind
-                 and _same(ln.flow, line.flow) and slot(ln)]
+    candidates = [ln for ln in lines
+                  if ln.id != line.id and ln.id not in claimed_line_ids and ln.line_kind == line.line_kind
+                  and _same(ln.flow, line.flow)]
+    slot_memo: dict[int, bool] = {}
+
+    def is_slot(ln: Line) -> bool:  # lazy: the representation scan runs only for a line a reached child admits
+        if ln.id not in slot_memo:
+            slot_memo[ln.id] = slot(ln)
+        return slot_memo[ln.id]
 
     def admissible(ln: Line, e: Entry, c: Child) -> bool:
         return _same(c.flow, ln.flow) and _date_distance(ln, e) <= rules.exact_window_days
@@ -743,8 +752,8 @@ def _cohort(kind: str, line: Line, lines: list[Line], entries: list[Entry], grou
                     right[c.id] = (e, c)
                     reached.append((e, c))
         frontier = []
-        for ln in pool_left:
-            if ln.id not in left and any(admissible(ln, e, c) for e, c in reached):
+        for ln in candidates:
+            if ln.id not in left and any(admissible(ln, e, c) for e, c in reached) and is_slot(ln):
                 left[ln.id] = ln
                 frontier.append(ln)
     complete = all(admissible(ln, e, c) for ln in left.values() for e, c in right.values())
@@ -1003,10 +1012,11 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             cohort, slots, right = _cohort(statement_kind, line, lines, entries, groups, plan_map, claimed,
                                            {c.line_id for c in result.claims}, ident, rules, aside, apart)
             if len(slots) >= 2 and len(right) >= 2:
-                if cohort is None:
+                forced = len(reps) == 1 and min(slots) == line.id  # spec §4.2 rev 6: the only rep, lowest slot: nothing to strand
+                if cohort is None and not forced:
                     result.cases.append(_ambiguous(line, reps))
                     continue
-                if _tied(reps, rules) and reps[0].score >= rules.ambiguous_floor:
+                if cohort is not None and _tied(reps, rules) and reps[0].score >= rules.ambiguous_floor:
                     best = _exact_pair(line, cohort, rules)
                     result.claims.append(Claim(line.id, best))
                     claimed |= {r.entry_id for r in best.rows}
