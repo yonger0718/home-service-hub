@@ -1384,6 +1384,10 @@ def test_case_dump_counts_transfer_delta_and_needs_peer_cases_per_account(dirty_
     section = _case_dump()._policy_section(db_session, statements)
     assert section["transfer_delta"] == {str(delta.bank.id): 1, str(delta.card.id): 1}
     assert section["needs_peer"] == {str(bank2.id): 1}
+    pairs = section["transfer_pairs"]
+    assert [(r["statement_id"], r["account_id"], r["kind"], r["day_distance"]) for r in pairs] == [
+        (delta.bstmt.id, delta.bank.id, "amount_delta", 1), (delta.cstmt.id, delta.card.id, "amount_delta", 1)]
+    assert all(r["residual_bucket"] is not None for r in pairs)
 
 
 def test_anchor_is_idempotent_on_rerun_and_after_an_earlier_statement_is_added(seed, db_session, run, dirty_on):

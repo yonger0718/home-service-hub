@@ -40,7 +40,7 @@ def attribute(change: dict) -> str:
         return "R6a.1/R6a.3 new exact claim"
     if after and after[0] == "case":
         kind, hint = after[1], after[2]
-        if kind == "amount_delta" and hint == "transfer_delta":  # R6c.1, before the generic near branch; also from needs_peer
+        if kind in ("amount_delta", "ambiguous") and hint == "transfer_delta":  # R6c.1, before the generic near branch; also from needs_peer
             return "R6c.1 transfer_delta"
         if kind == "line_unmatched" and hint == "needs_peer" and before and before[0] == "case" and before[1] == "amount_delta" and before[2] == "transfer_delta":
             return "R6c.1 transfer_delta cleared"
@@ -144,6 +144,11 @@ def transfers_summary(after: dict) -> str:
     lines = [f"# R6c transfers — candidate {after.get('sha')}", "", "| account | transfer_delta cases | needs_peer cases |", "|---|---|---|"]
     lines += [f"| {a} | {deltas.get(a, 0)} | {peers.get(a, 0)} |" for a in sorted(set(deltas) | set(peers), key=int)]
     lines += ["", f"total: transfer_delta {sum(deltas.values())}, needs_peer {sum(peers.values())}"]
+    pairs = after.get("transfer_pairs")
+    if pairs:
+        lines += ["", "## Pairs", "", "| statement | account | kind | residual bucket | day distance |", "|---|---|---|---|---|"]
+        lines += [f"| {p['statement_id']} | {p['account_id']} | {p['kind']} | {p['residual_bucket'] or '-'} | "
+                  f"{'-' if p['day_distance'] is None else p['day_distance']} |" for p in pairs]
     return "\n".join(lines) + "\n"
 
 

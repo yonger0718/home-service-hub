@@ -155,6 +155,7 @@ def test_attribute_labels_transfer_delta_before_the_generic_near_branch():
     assert dr.attribute(from_peer) == "R6c.1 transfer_delta"
     back = {"before": case("transfer_delta"), "after": case("needs_peer", "line_unmatched")}
     assert dr.attribute(back) == "R6c.1 transfer_delta cleared"
+    assert dr.attribute({"before": None, "after": case("transfer_delta", "ambiguous")}) == "R6c.1 transfer_delta"
     assert dr.attribute({"before": None, "after": case(None)}) == "R6a.4 near proposal"
     assert dr.attribute({"before": case(None, "line_unmatched"), "after": case("needs_peer", "line_unmatched")}) == "unattributed"
 
@@ -193,3 +194,16 @@ def test_main_transfers_refuses_a_dump_without_the_section(tmp_path, monkeypatch
                                      "--candidate", str(tmp_path / "after.json"), "--out-dir", str(tmp_path / "out")])
     assert dr.main() == 2
     assert not (tmp_path / "out").exists()
+
+
+def test_transfers_summary_renders_the_pairs_table_and_tolerates_an_older_dump():
+    after = _dump({"1": {"claims": [], "cases": []}}, sha="cand")
+    after.update({"transfer_delta": {"3": 2}, "needs_peer": {},
+                  "transfer_pairs": [{"statement_id": 7, "account_id": 3, "kind": "amount_delta", "residual_bucket": "<1000", "day_distance": 1},
+                                     {"statement_id": 8, "account_id": 3, "kind": "ambiguous", "residual_bucket": None, "day_distance": None}]})
+    text = dr.transfers_summary(after)
+    assert "| statement | account | kind | residual bucket | day distance |" in text
+    assert "| 7 | 3 | amount_delta | <1000 | 1 |" in text
+    assert "| 8 | 3 | ambiguous | - | - |" in text
+    del after["transfer_pairs"]
+    assert "## Pairs" not in dr.transfers_summary(after)

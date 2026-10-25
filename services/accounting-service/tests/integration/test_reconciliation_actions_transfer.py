@@ -366,6 +366,23 @@ def _legs(db, row):
     return [db.get(LedgerEntry, i) for i in sorted(row.created_entry_ids)]
 
 
+def test_pair_transfer_peer_candidates_drop_credit_account_peers_for_a_card_payment(orphan_pair, seed, run, db_session):
+    p = orphan_pair
+    card2 = _card(seed, db_session, name="卡2")
+    db_session.commit()
+    stmt2, _, _ = _submit(db_session, run, card2, [_line(1, date(2026, 9, 5), "轉出", "20000", kind="transfer_out")])
+    assert _needs_peer(db_session, stmt2) is not None  # complementary to the case line, so only the new filter drops it
+    case = _needs_peer(db_session, p.cstmt)
+    cands = reconciliation_actions.ACTIONS["pair_transfer"].peer_candidates(db_session, case)
+    assert [s.id for s, _ in cands] == [p.bstmt.id] and stmt2.id not in [s.id for s, _ in cands]
+
+
+def test_busy_cases_mirror_the_policy_excluding_cases():
+    from app.services import policy_service
+    from app.services.reconciliation_actions import transfer_support
+    assert transfer_support.BUSY_CASES == policy_service.EXCLUDING_CASES
+
+
 def test_pair_transfer_books_one_transfer_claims_both_lines_and_closes_both_cases(orphan_pair, db_session):
     p = orphan_pair
     case = _needs_peer(db_session, p.cstmt)

@@ -345,6 +345,9 @@ class PairTransferAction(ActionBase):
             AccountStatement.mode == "live", AccountStatement.current_revision_id.is_not(None),
             AccountStatement.period_start <= end, AccountStatement.period_end >= start,
             ~retired.clause(AccountStatement.id)).order_by(AccountStatement.id)).scalars())
+        if statement.kind == "card" and line.line_kind == "payment":  # mirrors `peer_is_card`: a card payment comes from a bank
+            credit = set(db.scalars(select(Account.id).where(Account.is_credit.is_(True))))
+            statements = [s for s in statements if s.account_id not in credit]
         found = complementary_lines(db, statements, line, kinds=matching.PEER_LINE_KINDS, window_days=window)
         return [(s, other) for s, other in found if db.execute(select(exists().where(
             ReconciliationCase.statement_id == s.id, ReconciliationCase.event_id == other.event_id,
