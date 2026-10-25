@@ -1,15 +1,17 @@
 import { Observable, of } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 
-import { Dividend, Paged, StockHolding } from '../../../models/portfolio.model';
+import { Dividend, NetworthPoint, Paged, StockHolding } from '../../../models/portfolio.model';
 import {
   ALLOCATION_SERIES,
   abbrInk,
   MARKET_LABELS,
   allDividendPages,
   allocation,
+  carryHoldings,
   composition,
   holdingAbbr,
+  isCashOnlyPoint,
   pendingRows,
   quoteTimeLabel,
   todayChange,
@@ -328,5 +330,95 @@ describe('abbrInk', () => {
     ['--app-text-muted', 'light'],
   ])('%s -> %s', (token, ink) => {
     expect(abbrInk(token)).toBe(ink);
+  });
+});
+
+function row(
+  date: string,
+  o: { market?: string; cost?: string; upnl?: string; div?: string; rpnl?: string; xirr?: string | null; cash?: string } = {},
+): NetworthPoint {
+  const { market = '0', cost = '0', upnl = '0', div = '0', rpnl = '0', xirr = null, cash = '0' } = o;
+  return {
+    date,
+    total_market_value: market,
+    total_cost: cost,
+    total_unrealized_pnl: upnl,
+    total_dividends: div,
+    total_realized_pnl: rpnl,
+    portfolio_xirr: xirr,
+    total_cash_twd: cash,
+    total_assets_twd: String(Number(market) + Number(cash)),
+  } as NetworthPoint;
+}
+
+const FRIDAY = () =>
+  row('2026-01-09', { market: '2900000', cost: '2500000', upnl: '400000', div: '10000', rpnl: '20000', xirr: '0.1', cash: '100000' });
+
+describe('isCashOnlyPoint', () => {
+  it('is true for all-zero stock columns with null xirr', () => {
+    expect(isCashOnlyPoint(row('2026-01-10', { cash: '5' }))).toBe(true);
+  });
+
+  it.each([{ market: '1' }, { cost: '1' }, { upnl: '1' }, { div: '1' }, { rpnl: '1' }])('is false when %o is non-zero', o => {
+    expect(isCashOnlyPoint(row('2026-01-10', o))).toBe(false);
+  });
+
+  it.each(['0', '0.12'])('is false when xirr is %s', xirr => {
+    expect(isCashOnlyPoint(row('2026-01-10', { xirr }))).toBe(false);
+  });
+});
+
+describe('carryHoldings', () => {
+  it('leaves leading cash-only rows as written', () => {
+    const first = row('2026-01-05', { cash: '50' });
+    const out = carryHoldings([first, row('2026-01-06', { market: '10', cash: '5', xirr: '0.1' })]);
+    expect(out[0]).toBe(first);
+  });
+
+  it('carries Friday onto a Saturday between two trading days', () => {
+    const mon = row('2026-01-12', { market: '3000000', xirr: '0.1', cash: '1' });
+    const out = carryHoldings([FRIDAY(), row('2026-01-10', { cash: '114600' }), mon]);
+    expect(out[1]).toMatchObject({
+      date: '2026-01-10',
+      total_market_value: '2900000',
+      total_cost: '2500000',
+      total_unrealized_pnl: '400000',
+      total_dividends: '10000',
+      total_realized_pnl: '20000',
+      total_cash_twd: '114600',
+      total_assets_twd: '3014600',
+    });
+    expect(out[1].portfolio_xirr).toBeNull();
+    expect(out[2]).toBe(mon);
+  });
+
+  it('carries Friday onto both Saturday and Sunday', () => {
+    const mon = row('2026-01-12', { market: '3000000', xirr: '0.1', cash: '1' });
+    const out = carryHoldings([FRIDAY(), row('2026-01-10', { cash: '10' }), row('2026-01-11', { cash: '20' }), mon]);
+    expect(out[1]).toMatchObject({ total_market_value: '2900000', total_assets_twd: '2900010' });
+    expect(out[2]).toMatchObject({ total_market_value: '2900000', total_assets_twd: '2900020' });
+    expect(out[3]).toBe(mon);
+  });
+
+  it('does not bridge a liquidation row', () => {
+    const liq = row('2026-01-10', { rpnl: '35205', cash: '100' });
+    const out = carryHoldings([FRIDAY(), liq]);
+    expect(out[1]).toBe(liq);
+    expect(out[1].total_market_value).toBe('0');
+  });
+
+  it('keeps a cash-only day after a liquidation at 0', () => {
+    const out = carryHoldings([FRIDAY(), row('2026-01-10', { rpnl: '35205', cash: '100' }), row('2026-01-11', { cash: '100' })]);
+    expect(out[2].total_market_value).toBe('0');
+  });
+
+  it('does not treat holdings with zero cash as cash-only', () => {
+    const h = row('2026-01-10', { market: '100', cash: '0' });
+    expect(carryHoldings([FRIDAY(), h])[1]).toBe(h);
+  });
+
+  it('carries a cash-only row with total_cash_twd 0 after holdings, total assets = the carried market value', () => {
+    const out = carryHoldings([FRIDAY(), row('2026-01-10', { cash: '0' })]);
+    expect(out[1]).toMatchObject({ total_market_value: '2900000', total_cash_twd: '0', total_assets_twd: '2900000' });
   });
 });

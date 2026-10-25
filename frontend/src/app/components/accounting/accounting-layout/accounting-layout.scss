@@ -22,15 +22,24 @@
   --tone-pos-pill-ink: var(--c-red-pill-ink);
 }
 
-.dbody {
-  display: grid;
-  gap: 16px;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+.dwrap {
+  display: flex;
+  flex-direction: column;
   /* viewport minus .hub-page's vertical padding (compact on short screens) */
   height: calc(100dvh - var(--page-pad-y) - var(--page-pad-b));
   /* The panes fill the viewport and scroll on their own: give back the shell's 記一筆 clearance (--fab-clear)… */
   margin-bottom: calc(-1 * var(--fab-clear, 0px));
   min-height: 360px;
+}
+
+.dbody {
+  display: grid;
+  flex: 1;
+  gap: 16px;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  height: auto;
+  margin-bottom: 0;
+  min-height: 0;
 
   /* …and let the list's last rows scroll clear of the button instead. */
   .list-pane {
@@ -61,11 +70,16 @@
 }
 
 /* 760–1023px: one pane; the detail slides in from the right. */
-.dbody--sheet {
+.dwrap--sheet {
   display: block;
   height: auto;
   /* One page scroll: the shell's own bottom padding clears the 記一筆 button. */
   margin-bottom: 0;
+  min-height: 0;
+}
+
+.dbody--sheet {
+  display: block;
   min-height: 0;
 
   .list-pane {

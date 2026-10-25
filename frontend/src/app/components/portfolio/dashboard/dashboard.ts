@@ -43,6 +43,7 @@ import {
   allDividendPages,
   abbrInk,
   allocation,
+  carryHoldings,
   holdingAbbr,
   composition,
   pendingRows,
@@ -370,7 +371,7 @@ export class PortfolioDashboardComponent implements OnInit {
     this.range.set(range);
     const cached = this.networthCache.get(range);
     if (cached) {
-      this.chartPoints.set(cached);
+      this.chartPoints.set(carryHoldings(cached));
       this.rebuildChart();
       return;
     }
@@ -613,7 +614,7 @@ export class PortfolioDashboardComponent implements OnInit {
     const range = this.range();
     const cached = this.networthCache.get(range);
     if (cached) {
-      this.chartPoints.set(cached);
+      this.chartPoints.set(carryHoldings(cached));
       this.rebuildChart();
       this.prefetchRemainingRanges(range);
       return;
@@ -623,7 +624,7 @@ export class PortfolioDashboardComponent implements OnInit {
       next: (points) => {
         this.networthCache.set(range, points);
         if (this.range() === range) {
-          this.chartPoints.set(points);
+          this.chartPoints.set(carryHoldings(points));
           this.rebuildChart();
         }
         this.prefetchRemainingRanges(range);

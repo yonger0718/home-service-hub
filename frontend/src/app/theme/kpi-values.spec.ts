@@ -50,4 +50,25 @@ describe('KPI and summary values fit their card (polish-layout-v2 D3)', () => {
     expect(detail).toContain('container-type: inline-size');
     expect(detail).toContain('clamp(18px, 12cqi, var(--fs-value))');
   });
+
+  it('kpi-cards.scss gives .value the neutral text colour and trend colours only to .up / .down', () => {
+    const valueAt = shared.indexOf('.value {');
+    const upAt = shared.indexOf('&.up');
+    expect(valueAt).toBeGreaterThan(-1);
+    expect(upAt).toBeGreaterThan(valueAt);
+    expect(shared.slice(valueAt, upAt)).toContain('color: var(--app-text);');
+    const positive = shared.match(/--app-trend-positive/g) ?? [];
+    expect(positive).toHaveLength(1);
+    expect(shared.indexOf('--app-trend-positive')).toBeGreaterThan(upAt);
+    expect(shared.slice(upAt, shared.indexOf('&.down'))).toContain('--app-trend-positive');
+    expect(shared.slice(shared.indexOf('&.down'), shared.indexOf('&.dividend'))).toContain('--app-trend-negative');
+  });
+
+  it('row fees and taxes render muted', () => {
+    const css = read('src/app/components/ui/timeline/timeline.scss');
+    const rule = css.match(/\.tl-sub,[^{]*\{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![1]).toContain('color: var(--app-text-muted)');
+    expect(rule![1]).not.toContain('--app-trend');
+  });
 });

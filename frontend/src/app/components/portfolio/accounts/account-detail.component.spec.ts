@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
@@ -16,6 +18,7 @@ import { ConfirmationService, MessageService } from 'primeng/api';
 
 import { PortfolioAccountDetailComponent, TYPE_OPTIONS } from './account-detail';
 import { CashTransaction } from '../../../models/portfolio.model';
+import { AppearanceService } from '../../../services/appearance.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
 
@@ -684,6 +687,60 @@ describe('PortfolioAccountDetailComponent accountId / embedded inputs', () => {
     httpMock.match(req => req.url.endsWith('/cash-transactions')).filter(req => !req.cancelled)
       .forEach(req => req.flush({ items: [], total: 0, offset: 0, limit: 25 }));
   });
+
+  describe('balance chart fills its card (PR E)', () => {
+    afterEach(() => {
+      document.documentElement.style.removeProperty('--app-primary');
+      document.documentElement.style.removeProperty('--app-primary-soft');
+    });
+
+    function loaded() {
+      const fixture = render({ accountId: 1 });
+      flushLoads(1);
+      fixture.componentInstance.balanceHistory.set({
+        account_id: 1,
+        currency: 'TWD',
+        points: [{ date: '2026-09-01', balance: '100' }, { date: '2026-11-30', balance: '200' }],
+      });
+      return fixture.componentInstance;
+    }
+
+    it('colours the balance line from the theme tokens and recolours on a theme change', () => {
+      document.documentElement.style.setProperty('--app-primary', '#112233');
+      document.documentElement.style.setProperty('--app-primary-soft', '#aabbcc');
+      const component = loaded();
+      expect(component.chartData().datasets[0].borderColor).toBe('#112233');
+      expect(component.chartData().datasets[0].backgroundColor).toBe('#aabbcc');
+
+      document.documentElement.style.setProperty('--app-primary', '#445566');
+      TestBed.inject(AppearanceService).dark$.next(true);
+      expect(component.chartData().datasets[0].borderColor).toBe('#445566');
+    });
+
+    it('draws no point markers and fills under the step line', () => {
+      expect(loaded().chartData().datasets[0]).toMatchObject({ pointRadius: 0, pointHoverRadius: 4, fill: true, stepped: true });
+    });
+
+    it('labels the x axis MM/DD with at most 8 ticks', () => {
+      const options = loaded().chartOptions;
+      const ticks = options.scales.x.ticks;
+      expect(ticks.maxTicksLimit).toBe(8);
+      expect(ticks.maxRotation).toBe(0);
+      expect(ticks.callback(0, 0)).toBe('09/01');
+      expect(ticks.callback(1, 0)).toBe('11/30');
+      expect(ticks.callback(5, 0)).toBe('');
+      expect(options.scales.y.beginAtZero).toBe(false);
+    });
+
+    it('sizes the chart box to 280px with a positioned plot', () => {
+      const scss = readFileSync(join(process.cwd(), 'src/app/components/portfolio/accounts/account-detail.scss'), 'utf8');
+      const chart = scss.slice(scss.indexOf('.balance-chart {'));
+      expect(chart).toContain('height: 280px');
+      expect(chart).toContain('position: relative');
+      expect(scss).toMatch(/\.chart-loading,\s*\.networth-empty \{[^}]*height: 280px/);
+    });
+  });
+
   describe('switching accounts (AGENT-223)', () => {
     const summaryFor = (id: number, balance = '100') => ({
       items: [{

@@ -897,6 +897,21 @@ describe('PortfolioDashboardComponent', () => {
       expect(holdings).toMatchObject({ label: '持股淨值', data: [800, 1000] });
     });
 
+    it("carries Friday's holdings onto a cash-only Saturday", () => {
+      portfolioService.getNetworthHistory.mockReturnValue(of([
+        point('2026-10-23', '100', '40', '140'),
+        point('2026-10-24', '0', '54', '54'),
+        point('2026-10-26', '120', '60', '180'),
+      ]));
+      const fixture = createFixture();
+      const datasets = (fixture.componentInstance.chartData as any).datasets;
+      const callbacks = (fixture.componentInstance.chartOptions as any).plugins.tooltip.callbacks;
+
+      expect(datasets[1].data).toEqual([100, 100, 120]);
+      expect(datasets[0].data).toEqual([140, 154, 180]);
+      expect(callbacks.afterBody([{ dataIndex: 1, datasetIndex: 0, dataset: datasets[0], parsed: { y: 154 } }])).toBe('現金 $54');
+    });
+
     it('shows the three legend entries with the latest values and swatches', () => {
       const fixture = createFixture();
       const card = chartCard(fixture.nativeElement);

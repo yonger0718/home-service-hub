@@ -30,3 +30,14 @@ export function daysBetween(from: string, to: string): number {
   };
   return Math.round((utc(to) - utc(from)) / 86_400_000);
 }
+
+/** The local calendar month as `YYYY-MM`. */
+export function currentMonth(today = new Date()): string {
+  return `${today.getFullYear()}-${pad(today.getMonth() + 1)}`;
+}
+
+/** `2026-10` → `2026 年 10 月`. */
+export function monthLabel(month: string): string {
+  const [year, monthNumber] = month.split('-').map(Number);
+  return `${year} 年 ${monthNumber} 月`;
+}

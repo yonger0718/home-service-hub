@@ -9,6 +9,8 @@ import { Counterparty, DailySummary, LedgerAccount, LedgerEntry, MonthSummary, P
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
+import { currentMonth } from '../dates';
+import { AccountingOverviewService } from '../month-overview/overview.service';
 import { makeInbox } from '../inbox/testing';
 import { makeAccount, makeEntry, makeInstance, makePreference } from '../testing/fixtures';
 import { LedgerTimelineComponent, buildDays, schedulePills } from './timeline';
@@ -100,6 +102,16 @@ describe('LedgerTimelineComponent', () => {
   function text(node: Element | null | undefined): string {
     return node?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
   }
+
+  it('omits its page header when embedded', () => {
+    const { fixture, el } = render();
+    flushSummary('2026-10');
+    flushEntries([]);
+    expect(el.querySelector('app-page-header')).not.toBeNull();
+    fixture.componentRef.setInput('embedded', true);
+    fixture.detectChanges();
+    expect(el.querySelector('app-page-header')).toBeNull();
+  });
 
   it('shows the converted amount with the original ¥ amount and rate beneath it at 390px', () => {
     const { fixture, el } = render('phone');
@@ -1495,13 +1507,15 @@ describe('LedgerTimelineComponent', () => {
 
       answerBill(requests, '-12345.0000');
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('💳');
+      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('');
+      expect(cell(el, '2026-10-05').querySelector('.due-badge')!.querySelector('i.pi-credit-card')).not.toBeNull();
       expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10月5日，1 張卡繳費到期');
 
       selectDay(fixture, el, '2026-10-05');
       expectNoBillRequest();
       const line = el.querySelector<HTMLButtonElement>('.day-entries .bill')!;
-      expect(text(line)).toBe('💳 玉山 UNI 帳單 $12,345 · 到期');
+      expect(text(line)).toBe('玉山 UNI 帳單 $12,345 · 到期');
+      expect(line.querySelector('i.pi-credit-card[aria-hidden="true"]')).not.toBeNull();
       expect(line.compareDocumentPosition(el.querySelector('.day-entries .empty')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       line.click();
       expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 9]);
@@ -1547,11 +1561,13 @@ describe('LedgerTimelineComponent', () => {
       const { fixture, el } = renderCalendarWith();
       flushBill('-12345.0000', ['5000.0000']);
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('💳');
+      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('');
+      expect(cell(el, '2026-10-05').querySelector('.due-badge')!.querySelector('i.pi-credit-card')).not.toBeNull();
 
       selectDay(fixture, el, '2026-10-05');
       const line = el.querySelector('.day-entries .bill')!;
-      expect(text(line)).toBe('💳 玉山 UNI 帳單 $12,345 · 到期 已繳 $5,000 · 剩餘 $7,345');
+      expect(text(line)).toBe('玉山 UNI 帳單 $12,345 · 到期 已繳 $5,000 · 剩餘 $7,345');
+      expect(line.querySelector('i.pi-credit-card[aria-hidden="true"]')).not.toBeNull();
       expect(line.classList).toContain('partial');
     });
 
@@ -1613,7 +1629,8 @@ describe('LedgerTimelineComponent', () => {
 
       expect(viewButton(el, '日曆').getAttribute('aria-checked')).toBe('true');
       expect(cell(el, '2026-10-05').getAttribute('aria-pressed')).toBe('true');
-      expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 $12,345 · 到期');
+      expect(text(el.querySelector('.day-entries .bill'))).toBe('玉山 UNI 帳單 $12,345 · 到期');
+      expect(el.querySelector('.day-entries .bill i.pi-credit-card[aria-hidden="true"]')).not.toBeNull();
       expect(el.querySelector('.bill-banner')).toBeNull();
     });
 
@@ -1635,16 +1652,18 @@ describe('LedgerTimelineComponent', () => {
 
       expect(text(el.querySelector('.month-label'))).toBe('2026 年 11 月');
       expect(cell(el, '2026-11-04').getAttribute('aria-pressed')).toBe('true');
-      expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 $200 · 到期');
+      expect(text(el.querySelector('.day-entries .bill'))).toBe('玉山 UNI 帳單 $200 · 到期');
+      expect(el.querySelector('.day-entries .bill i.pi-credit-card[aria-hidden="true"]')).not.toBeNull();
     });
 
     const ALAN: Counterparty = { id: 1, name: 'Alan', open_amounts: [{ currency: 'TWD', amount: '220.0000' }], open_count: 2 };
     const SETTLED: Counterparty = { id: 2, name: 'Bea', open_amounts: [], open_count: 0 };
     const bell = (el: HTMLElement) => el.querySelector<HTMLButtonElement>('.bell')!;
 
-    it('shows the 🔔 without a count when nothing is pending, in both views', () => {
+    it('shows the bell icon without a count when nothing is pending, in both views', () => {
       const { fixture, el } = renderListWith(ACCOUNTS);
-      expect(text(bell(el))).toBe('🔔');
+      expect(bell(el).querySelector('i.pi-bell')).not.toBeNull();
+      expect(text(bell(el))).toBe('');
       expect(bell(el).getAttribute('aria-label')).toBe('提醒中心，0 項');
       expect(el.querySelector('.bell-count')).toBeNull();
 
@@ -1781,7 +1800,8 @@ describe('LedgerTimelineComponent', () => {
       const { fixture, el } = renderCalendarWith([...ACCOUNTS, monthly]);
       flushBill('-500.0000', [], { start: '2026-09-01', end: '2026-09-30', due: '2026-10-05', paidTo: '2026-10-02' });
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('💳');
+      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('');
+      expect(cell(el, '2026-10-05').querySelector('.due-badge')!.querySelector('i.pi-credit-card')).not.toBeNull();
       expect(cell(el, '2026-10-31').classList).toContain('closing');
     });
 
@@ -1802,7 +1822,8 @@ describe('LedgerTimelineComponent', () => {
       expect(el.querySelectorAll('.due-badge').length).toBe(1);
       expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10月5日，1 張卡繳費到期');
       selectDay(fixture, el, '2026-10-05');
-      expect(Array.from(el.querySelectorAll('.day-entries .bill')).map(text)).toEqual(['💳 玉山 UNI 帳單 $1,234 · 到期']);
+      expect(Array.from(el.querySelectorAll('.day-entries .bill')).map(text)).toEqual(['玉山 UNI 帳單 $1,234 · 到期']);
+      expect(el.querySelectorAll('.day-entries .bill i.pi-credit-card').length).toBe(1);
     });
 
     it('renders nothing and asks for no statement without credit cards', () => {
@@ -2055,6 +2076,86 @@ describe('LedgerTimelineComponent', () => {
       expect(text(sum.firstElementChild)).toBe('全月 · 未套篩選');
       expect(el.querySelector('.dist-bar')!.getAttribute('aria-label')).toBe(CANVAS_ARIA);
       expect(segments(el)).toHaveLength(6);
+    });
+  });
+
+  describe('overview publishing', () => {
+    afterEach(() => {
+      TestBed.inject(LayoutModeService).set(null);
+    });
+
+    it('publishes month, summary and due items to AccountingOverviewService', () => {
+      const queue = [makeInstance({ id: 1, due_date: '2026-10-05' })];
+      const { fixture } = render('sheet', makePreference(), [], ACCOUNTS, [], queue);
+      flushSummary('2026-10', { expense: '-100.0000' });
+      flushEntries([]);
+      fixture.detectChanges();
+      const overview = TestBed.inject(AccountingOverviewService);
+      expect(overview.month()).toBe(fixture.componentInstance.month());
+      expect(overview.summary()).toBe(fixture.componentInstance.summary());
+      expect(overview.summary()?.expense).toBe('-100.0000');
+      expect(overview.dueItems()[0].kind).toBe('schedule');
+    });
+
+    it('clears the overview on destroy', () => {
+      const queue = [makeInstance({ id: 1, due_date: '2026-10-05' })];
+      const { fixture } = render('sheet', makePreference(), [], ACCOUNTS, [], queue);
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      const overview = TestBed.inject(AccountingOverviewService);
+      expect(overview.summary()).not.toBeNull();
+      fixture.componentInstance.moveMonth(1);
+      fixture.detectChanges();
+      expect(overview.month()).not.toBe(currentMonth());
+      flushSummary('2026-11');
+      flushEntries([]);
+      fixture.destroy();
+      expect(overview.summary()).toBeNull();
+      expect(overview.dueItems()).toEqual([]);
+      expect(overview.month()).toBe(currentMonth());
+    });
+
+    it('publishes summaryState loading -> ready, loading again on a month switch, and error on a failed read', () => {
+      const { fixture } = render('sheet');
+      const overview = TestBed.inject(AccountingOverviewService);
+      expect(overview.summaryState()).toBe('loading');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(overview.summaryState()).toBe('ready');
+      fixture.componentInstance.moveMonth(1);
+      fixture.detectChanges();
+      expect(overview.summaryState()).toBe('loading');
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries/summary').flush('boom', { status: 500, statusText: 'Server Error' });
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(overview.summaryState()).toBe('error');
+    });
+
+    it('publishes dueState ready once the queue has answered, and resets on destroy', () => {
+      const { fixture } = render('sheet');
+      const overview = TestBed.inject(AccountingOverviewService);
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(overview.dueState()).toBe('ready');
+      fixture.destroy();
+      expect(overview.dueState()).toBe('loading');
+      expect(overview.summaryState()).toBe('loading');
+    });
+
+    it('resets the published summary while a new month loads', () => {
+      const { fixture } = render('sheet');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      const overview = TestBed.inject(AccountingOverviewService);
+      fixture.componentInstance.moveMonth(1);
+      fixture.detectChanges();
+      expect(overview.summary()).toBeNull();
+      flushSummary('2026-11');
+      flushEntries([]);
     });
   });
 });

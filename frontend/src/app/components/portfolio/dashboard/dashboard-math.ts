@@ -1,6 +1,6 @@
 import { Observable, map } from 'rxjs';
 
-import { Dividend, MarketCode, Paged, PortfolioSummary, StockHolding } from '../../../models/portfolio.model';
+import { Dividend, MarketCode, NetworthPoint, Paged, PortfolioSummary, StockHolding } from '../../../models/portfolio.model';
 import { MARKET_LABELS } from '../market';
 import { allPages } from '../paging';
 
@@ -189,4 +189,38 @@ export function allDividendPages(
   pageSize = 100,
 ): Observable<Dividend[]> {
   return allPages(fetch, pageSize).pipe(map(result => result.items));
+}
+
+/** D8: a snapshot row with no stock data at all (all five stock columns 0, no XIRR). */
+export function isCashOnlyPoint(point: NetworthPoint): boolean {
+  return (
+    num(point.total_market_value) === 0 &&
+    num(point.total_cost) === 0 &&
+    num(point.total_unrealized_pnl) === 0 &&
+    num(point.total_dividends) === 0 &&
+    num(point.total_realized_pnl) === 0 &&
+    point.portfolio_xirr === null
+  );
+}
+
+/** D8: cash-only runs after a holdings point take that point's five stock columns; 帳戶總值 = carried market + own cash. */
+export function carryHoldings(points: readonly NetworthPoint[]): NetworthPoint[] {
+  let last: NetworthPoint | null = null;
+  return points.map(point => {
+    if (!isCashOnlyPoint(point)) {
+      last = point;
+      return point;
+    }
+    if (!last) return point;
+    const carried: NetworthPoint = last;
+    return {
+      ...point,
+      total_market_value: carried.total_market_value,
+      total_cost: carried.total_cost,
+      total_unrealized_pnl: carried.total_unrealized_pnl,
+      total_dividends: carried.total_dividends,
+      total_realized_pnl: carried.total_realized_pnl,
+      total_assets_twd: String(num(carried.total_market_value) + num(point.total_cash_twd)),
+    };
+  });
 }

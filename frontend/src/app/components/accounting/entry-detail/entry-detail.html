@@ -234,15 +234,15 @@
     }
 
     <nav class="actions" aria-label="記錄動作">
-      <button type="button" class="action-edit" [disabled]="!canEdit()" (click)="edit()"><span class="ico">✎</span>編輯</button>
-      <button type="button" class="action-copy" (click)="copy()"><span class="ico">⧉</span>複製</button>
+      <button type="button" class="action-edit" [disabled]="!canEdit()" (click)="edit()"><i class="ico pi pi-pencil" aria-hidden="true"></i>編輯</button>
+      <button type="button" class="action-copy" (click)="copy()"><i class="ico pi pi-copy" aria-hidden="true"></i>複製</button>
       @if (refundKind()) {
-        <button type="button" class="action-refund" [disabled]="!canRefund()" (click)="openPanel('refund')"><span class="ico">↺</span>退款</button>
+        <button type="button" class="action-refund" [disabled]="!canRefund()" (click)="openPanel('refund')"><i class="ico pi pi-undo" aria-hidden="true"></i>退款</button>
       }
       @if (isDebt() && !d.is_closed) {
-        <button type="button" class="action-settle" [disabled]="!canSettle()" (click)="openPanel('settle')"><span class="ico">🤝</span>{{ settleLabel() }}</button>
+        <button type="button" class="action-settle" [disabled]="!canSettle()" (click)="openPanel('settle')"><i class="ico pi pi-check-circle" aria-hidden="true"></i>{{ settleLabel() }}</button>
       }
-      <button type="button" class="danger action-delete" [disabled]="locked()" (click)="openPanel('delete')"><span class="ico">🗑</span>刪除</button>
+      <button type="button" class="danger action-delete" [disabled]="locked()" (click)="openPanel('delete')"><i class="ico pi pi-trash" aria-hidden="true"></i>刪除</button>
     </nav>
   }
 </section>

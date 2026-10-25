@@ -232,7 +232,8 @@ describe('phone route matrix (390 px)', () => {
   for (const [url, title, finalUrl] of LIST_LEVEL) {
     // 設定 is a pushed screen: a ‹ back button and no gear (it would link to itself).
     const gear = url === '/settings' ? 'a ‹ back button, no gear' : 'the gear';
-    it(`${url} has one h1 "${title}", ${gear} and the sub-nav`, async () => {
+    // 30 s like theme/bootstrap-grid.spec: the lazy route chunk can take > 5 s under the full parallel run (3 ms–1.6 s alone).
+    it(`${url} has one h1 "${title}", ${gear} and the sub-nav`, { timeout: 30_000 }, async () => {
       const root = await open(url, finalUrl);
       expect(headings(root)).toEqual([title]);
       if (url === '/settings') {

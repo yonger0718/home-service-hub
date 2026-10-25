@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
@@ -129,6 +132,15 @@ describe('AccountingAccountsComponent', () => {
   function rows(el: HTMLElement): HTMLElement[] {
     return Array.from(el.querySelectorAll<HTMLElement>('.acc-row'));
   }
+
+  it('omits its page header when embedded', () => {
+    const fixture = render([], null);
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('app-page-header')).not.toBeNull();
+    fixture.componentRef.setInput('embedded', true);
+    fixture.detectChanges();
+    expect(el.querySelector('app-page-header')).toBeNull();
+  });
 
   it('groups accounts in API order with main-currency subtotals', () => {
     const el = render(ACCOUNTS, LATEST).nativeElement as HTMLElement;
@@ -652,6 +664,66 @@ describe('AccountingAccountsComponent', () => {
     fixture.detectChanges();
     expect(el.querySelector('.load-error')).toBeNull();
     expect(rows(el).length).toBeGreaterThan(0);
+  });
+
+  describe('selected account', () => {
+    async function renderAt(url: string): Promise<HTMLElement> {
+      const router = TestBed.inject(Router);
+      router.resetConfig([{ path: '**', children: [] }]);
+      await router.navigateByUrl(url);
+      return render([account({ id: 7, name: '七號' }), account({ id: 8, name: '八號' })], null).nativeElement as HTMLElement;
+    }
+
+    function rowFor(el: HTMLElement, id: number): HTMLElement {
+      return el.querySelector(`a.acc-row[href="/accounting/accounts/${id}"]`) as HTMLElement;
+    }
+
+    it('marks the routed account with .sel and aria-current', async () => {
+      const el = await renderAt('/accounting/accounts/7');
+      expect(rowFor(el, 7).classList.contains('sel')).toBe(true);
+      expect(rowFor(el, 7).getAttribute('aria-current')).toBe('true');
+      expect(rowFor(el, 8).classList.contains('sel')).toBe(false);
+      expect(rowFor(el, 8).getAttribute('aria-current')).toBeNull();
+    });
+
+    it('follows navigation: the ring moves to the newly routed account', async () => {
+      const router = TestBed.inject(Router);
+      router.resetConfig([{ path: '**', children: [] }]);
+      await router.navigateByUrl('/accounting/accounts/7');
+      const fixture = render([account({ id: 7, name: '七號' }), account({ id: 8, name: '八號' })], null);
+      const el = fixture.nativeElement as HTMLElement;
+      expect(rowFor(el, 7).classList.contains('sel')).toBe(true);
+      await router.navigateByUrl('/accounting/accounts/8');
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.acc-row.sel[aria-current="true"]').length).toBe(1);
+      expect(rowFor(el, 8).classList.contains('sel')).toBe(true);
+      expect(rowFor(el, 7).classList.contains('sel')).toBe(false);
+    });
+
+    it('marks nothing on the list URL or /new', async () => {
+      for (const url of ['/accounting/accounts', '/accounting/accounts/new']) {
+        TestBed.resetTestingModule();
+        await TestBed.configureTestingModule({
+          imports: [AccountingAccountsComponent],
+          providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
+        }).compileComponents();
+        http = TestBed.inject(HttpTestingController);
+        const el = await renderAt(url);
+        expect(el.querySelector('.acc-row.sel')).toBeNull();
+        expect(el.querySelector('.acc-row[aria-current]')).toBeNull();
+        for (const req of http.match('/api/accounting/accounts/debts')) {
+          req.flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+        }
+        http.verify();
+      }
+    });
+
+    it('styles the selected row with the indigo ring and soft fill', () => {
+      const scss = readFileSync(join(process.cwd(), 'src/app/components/accounting/accounts/accounts.scss'), 'utf8');
+      const block = scss.slice(scss.indexOf('.acc-row.sel {'));
+      expect(block).toContain('box-shadow: inset 0 0 0 2px var(--app-primary)');
+      expect(block).toContain('background: var(--app-primary-soft)');
+    });
   });
 
 });

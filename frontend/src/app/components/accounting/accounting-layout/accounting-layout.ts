@@ -18,12 +18,16 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRouteSnapshot, NavigationEnd, Router, RouterOutlet } from '@angular/router';
 import { filter } from 'rxjs';
 
+import { BtnComponent } from '../../ui/btn/btn';
+import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PaneStateService } from '../../../services/pane-state.service';
 import { ACCOUNTING_PAGES, AccountingListKey } from '../accounting-pages';
 import { AccountingToastComponent } from '../accounting-toast';
 import { DirtyFormRegistry } from '../dirty-form.service';
+import { MonthOverviewComponent } from '../month-overview/month-overview';
+import { AccountingOverviewService } from '../month-overview/overview.service';
 import { isHandledKey, trapFocus, OVERLAY_ATTR } from '../accounting-ui';
 import { AccountingShortcutsService, resolveShortcut } from '../keyboard-shortcuts';
 
@@ -77,7 +81,7 @@ const SWIPE_IGNORE = 'input, textarea, select, button:not(.sheet-close), [conten
 @Component({
   selector: 'app-accounting-layout',
   standalone: true,
-  imports: [RouterOutlet, NgComponentOutlet, AccountingToastComponent],
+  imports: [RouterOutlet, NgComponentOutlet, AccountingToastComponent, MonthOverviewComponent, PageHeaderComponent, BtnComponent],
   templateUrl: './accounting-layout.html',
   styleUrl: './accounting-layout.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -97,11 +101,19 @@ export class AccountingLayoutComponent {
   private readonly shortcuts = inject(AccountingShortcutsService);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly listPane = viewChild<ElementRef<HTMLElement>>('listPane');
+  private readonly pageHeader = viewChild('pageHeader', { read: ElementRef<HTMLElement> });
   private readonly detailPane = viewChild<ElementRef<HTMLElement>>('detailPane');
 
   private readonly closeButton = viewChild<ElementRef<HTMLButtonElement>>('closeButton');
   private readonly accounting = inject(AccountingService);
   private readonly paneState = inject(PaneStateService);
+
+  /** The list renders without its own page header: the layout hoists it above the card. */
+  protected readonly outletInputs = { embedded: true };
+
+  addAccount(): void {
+    void this.router.navigateByUrl('/accounting/accounts/new');
+  }
 
   /** `Preference.expense_income_colors`, read once and again after every preference save. */
   readonly colors = signal<'red_green' | 'green_red'>('red_green');
@@ -112,6 +124,14 @@ export class AccountingLayoutComponent {
 
   readonly listKey = computed(() => this.routeState().list);
   readonly paneOpen = computed(() => this.routeState().pane);
+  protected readonly overview = inject(AccountingOverviewService);
+  /** D7: nothing selected on the timeline at ≥ 1280 px → the month overview instead of the one-line empty state. */
+  readonly showOverview = computed(
+    () => this.mode() === 'panes' && this.layoutMode.wideSidebar() && this.listKey() === 'timeline' && !this.paneOpen(),
+  );
+  readonly emptyCopy = computed(() =>
+    this.listKey() === 'accounts' ? '選擇帳戶查看明細，或按 ＋ 新增' : '選擇一筆記錄查看明細，或按 ＋ 新增',
+  );
   readonly listComponent = signal<Type<unknown> | null>(null);
 
   /** Entry shown in the pane (or full screen): lists highlight it. */
@@ -192,9 +212,10 @@ export class AccountingLayoutComponent {
     effect(() => {
       const open = this.sheetOpen();
       const list = this.listPane()?.nativeElement;
+      const header = this.pageHeader()?.nativeElement as HTMLElement | undefined;
       untracked(() => {
         // Remove inert before returning focus to a list/sidebar opener.
-        this.setOutsideInert(open, list);
+        this.setOutsideInert(open, list, header);
         open ? this.focusSheet() : this.restoreFocus();
       });
     });
@@ -232,20 +253,26 @@ export class AccountingLayoutComponent {
   }
 
   private inertList: HTMLElement | null = null;
+  private inertHeader: HTMLElement | null = null;
   private inertSidebar: HTMLElement | null = null;
 
   /** Remember the actual nodes: view queries may be gone by destruction or a layout mode switch. */
-  private setOutsideInert(inert: boolean, list?: HTMLElement): void {
+  private setOutsideInert(inert: boolean, list?: HTMLElement, header?: HTMLElement): void {
     const sidebar = inert ? this.document.querySelector<HTMLElement>('app-sidebar') : null;
     if (!inert || this.inertList !== list) this.inertList?.removeAttribute('inert');
+    if (!inert || this.inertHeader !== header) this.inertHeader?.removeAttribute('inert');
     if (!inert || this.inertSidebar !== sidebar) this.inertSidebar?.removeAttribute('inert');
     if (inert) {
       list?.setAttribute('inert', '');
+      header?.setAttribute('inert', '');
+      this.inertHeader = header ?? null;
       sidebar?.setAttribute('inert', '');
       this.inertList = list ?? null;
       this.inertSidebar = sidebar;
     } else {
       list?.removeAttribute('inert');
+      header?.removeAttribute('inert');
+      this.inertHeader = null;
       this.inertList = null;
       this.inertSidebar = null;
     }

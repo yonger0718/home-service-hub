@@ -162,6 +162,13 @@ describe('SplitGroupComponent (多類別 group view)', () => {
     expect(el(fixture).querySelector<HTMLAnchorElement>('.split-child')?.getAttribute('href')).toBe('/accounting/accounts/3/entries/42');
   });
 
+  it('uses line icons on the actions', () => {
+    const fixture = render();
+    for (const [action, icon] of [['edit', 'pencil'], ['delete', 'trash']]) {
+      expect(el(fixture).querySelector(`.action-${action} i.pi-${icon}[aria-hidden="true"]`), action).not.toBeNull();
+    }
+  });
+
   it('編輯 opens the entry form for the split with the parent bubble selected', () => {
     const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
     const fixture = render();

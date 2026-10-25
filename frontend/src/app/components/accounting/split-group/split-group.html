@@ -84,9 +84,9 @@
     }
 
     <nav class="actions" aria-label="多類別動作">
-      <button type="button" class="action-edit" [disabled]="!canEdit()" (click)="edit()"><span class="ico">✎</span>編輯</button>
+      <button type="button" class="action-edit" [disabled]="!canEdit()" (click)="edit()"><i class="ico pi pi-pencil" aria-hidden="true"></i>編輯</button>
       @if (canDeleteGroup()) {
-        <button type="button" class="danger action-delete" [disabled]="locked()" (click)="openDelete()"><span class="ico">🗑</span>刪除整組</button>
+        <button type="button" class="danger action-delete" [disabled]="locked()" (click)="openDelete()"><i class="ico pi pi-trash" aria-hidden="true"></i>刪除整組</button>
       }
     </nav>
   }

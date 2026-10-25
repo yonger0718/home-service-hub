@@ -1,3 +1,5 @@
+@use './distribution';
+
 :host {
   display: block;
 }
@@ -104,51 +106,7 @@ app-split-folder {
     margin-top: 4px; /* figures → bar ≈ 8 px with the .sum row gap; the compact card keeps it below canvas 12–16 px */
   }
 
-  .dist-bar {
-    border-radius: 999px;
-    display: flex;
-    gap: 2px;
-    height: 10px;
-    overflow: hidden;
-
-    &--phone {
-      height: 8px;
-    }
-
-    span {
-      flex-basis: 0;
-      flex-shrink: 1;
-    }
-  }
-
-  .dist-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 16px;
-  }
-
-  .dist-row {
-    align-items: center;
-    display: flex;
-    font-size: 13px;
-    gap: 6px;
-
-    /* Not the 0.95rem figure size of `.sum b`. */
-    b {
-      font-size: 13px;
-      font-weight: 700;
-    }
-  }
-
-  .dist-swatch {
-    border-radius: 3px;
-    height: 8px;
-    width: 8px;
-  }
-
-  .dist-name {
-    color: var(--app-text-muted);
-  }
+  @include distribution.distribution;
 }
 
 .day {
@@ -295,7 +253,7 @@ app-split-folder {
   cursor: pointer;
   flex: none;
   font: inherit;
-  font-size: 1rem;
+  font-size: 1.05rem;
   line-height: 1;
   padding: 4px;
   position: relative;

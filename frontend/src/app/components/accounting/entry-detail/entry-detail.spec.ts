@@ -79,6 +79,27 @@ describe('EntryDetailComponent', () => {
     return fixture.nativeElement as HTMLElement;
   }
 
+  it('uses line icons on the actions', () => {
+    const icons: Record<string, string> = { edit: 'pencil', copy: 'copy', refund: 'undo', settle: 'check-circle', delete: 'trash' };
+    // A receivable offers 結算 but no 退款; a plain expense offers 退款: check each action on the entry that shows it.
+    const cases: [typeof RECEIVABLE, string[]][] = [
+      [RECEIVABLE, ['edit', 'copy', 'settle', 'delete']],
+      [detail({ id: 42, amount: '-500.0000', name: '外套' }), ['edit', 'copy', 'refund', 'delete']],
+    ];
+    for (const [d, actions] of cases) {
+      const fixture = render(d);
+      const root = el(fixture);
+      for (const action of actions) {
+        const i = root.querySelector(`.action-${action} i.pi-${icons[action]}`);
+        expect(i, action).not.toBeNull();
+        expect(i!.getAttribute('aria-hidden')).toBe('true');
+      }
+      const t = root.querySelector('nav.actions')!.textContent ?? '';
+      expect(/[\u{1F300}-\u{1FAFF}]/u.test(t)).toBe(false);
+      expect(/[✎⧉↺]/.test(t)).toBe(false);
+    }
+  });
+
   it('shows the open amount, the collection and an enabled 新增收款 on a receivable', () => {
     const fixture = render(RECEIVABLE);
 

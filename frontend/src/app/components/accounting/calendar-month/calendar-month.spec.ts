@@ -103,13 +103,15 @@ describe('CalendarMonthComponent', () => {
       const { cell } = render({ billing: BILLING });
       const twoCards = cell('2026-10-05');
       const badge = twoCards.querySelector('.due-badge')!;
-      expect(text(badge)).toBe('💳2');
+      expect(text(badge)).toBe('2');
+      expect(badge.querySelector('i.pi-credit-card')).not.toBeNull();
       expect(badge.getAttribute('aria-hidden')).toBe('true');
       expect(twoCards.classList).toContain('due');
       expect(twoCards.getAttribute('aria-label')).toBe('10月5日，收入 50,042，2 張卡繳費到期');
 
       const oneCard = cell('2026-10-12');
-      expect(text(oneCard.querySelector('.due-badge'))).toBe('💳');
+      expect(text(oneCard.querySelector('.due-badge'))).toBe('');
+      expect(oneCard.querySelector('.due-badge i.pi-credit-card')).not.toBeNull();
       expect(oneCard.getAttribute('aria-label')).toBe('10月12日，1 張卡繳費到期');
     });
 

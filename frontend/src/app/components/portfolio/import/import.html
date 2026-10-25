@@ -39,8 +39,10 @@
             <app-seg-toggle ariaLabel="匯入類型" [options]="typeOptions" [value]="type()" (change)="onTypeSelect($event)"></app-seg-toggle>
           </fieldset>
           @if (type() !== 'broker') {
-            <label class="header-check"><input type="checkbox" [ngModel]="hasHeader()" [disabled]="busy()"
-              (ngModelChange)="onHeaderChange($event)" />首列為欄位名稱</label>
+            <label class="header-check">
+              <app-switch ariaLabel="首列為欄位名稱" [checked]="hasHeader()" [disabled]="busy()" (checkedChange)="onHeaderChange($event)" />
+              <span>首列為欄位名稱</span>
+            </label>
           }
         </div>
         @if (type() === 'broker') {
@@ -202,13 +204,15 @@
         </app-bento>
       }
 
-      <footer class="imp-footer">
-        <app-btn variant="ghost" [disabled]="busy()" (click)="onClear()">取消</app-btn>
-        <app-btn variant="secondary" [disabled]="!file() || busy()" (click)="preview()">重新預覽</app-btn>
-        <app-btn icon="pi-check" [disabled]="!file() || !activeResult() || committed()" [loading]="busy()" (click)="commit()">
-          確認匯入 {{ confirmN() }} 筆
-        </app-btn>
-      </footer>
+      @if (file()) {
+        <footer class="imp-footer">
+          <app-btn variant="ghost" [disabled]="busy()" (click)="onClear()">取消</app-btn>
+          <app-btn variant="secondary" [disabled]="!file() || busy()" (click)="preview()">重新預覽</app-btn>
+          <app-btn icon="pi-check" [disabled]="!file() || !activeResult() || committed()" [loading]="busy()" (click)="commit()">
+            確認匯入 {{ confirmN() }} 筆
+          </app-btn>
+        </footer>
+      }
 
       @if (recalcPanel()) {
         <app-bento class="recalc-card" title="匯入並重算">

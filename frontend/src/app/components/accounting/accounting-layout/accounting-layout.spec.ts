@@ -2,21 +2,42 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { Location } from '@angular/common';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { describe, expect, it, vi } from 'vitest';
 
 import { routes } from '../../../app.routes';
 import { AccountingService } from '../../../services/accounting.service';
-import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
+import { LayoutMode, LayoutModeService, MATCH_MEDIA } from '../../../services/layout-mode.service';
 import { makeEntryDetail, makePreference } from '../testing/fixtures';
 import { PaneStateService } from '../../../services/pane-state.service';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { AccountingLayoutComponent, FAB_RIGHT_BESIDE_PANE } from './accounting-layout';
 
-async function start(mode: LayoutMode, url: string): Promise<RouterTestingHarness> {
+/** Evaluates `(min|max)-width: Npx` conditions against a fixed viewport width. */
+function matchMediaAt(width: number) {
+  return (query: string) => {
+    const conditions = [...query.matchAll(/\((min|max)-width:\s*([\d.]+)px\)/g)];
+    const matches = conditions.every(([, bound, px]) => (bound === 'min' ? width >= Number(px) : width <= Number(px)));
+    return {
+      media: query,
+      matches,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    } as unknown as MediaQueryList;
+  };
+}
+
+async function start(mode: LayoutMode, url: string, width?: number): Promise<RouterTestingHarness> {
   TestBed.configureTestingModule({
-    providers: [provideRouter(routes), provideHttpClient(), provideHttpClientTesting()],
+    providers: [
+      provideRouter(routes),
+      provideHttpClient(),
+      provideHttpClientTesting(),
+      ...(width ? [{ provide: MATCH_MEDIA, useValue: matchMediaAt(width) }] : []),
+    ],
   });
   TestBed.inject(LayoutModeService).set(mode);
   const harness = await RouterTestingHarness.create();
@@ -48,6 +69,36 @@ const PANE_PAGE = '.detail-pane router-outlet + :not(.pane-empty)';
 const SCREEN = ':scope > router-outlet + :not(app-accounting-toast)';
 
 describe('AccountingLayoutComponent', () => {
+  describe('empty pane', () => {
+    it('shows the month overview instead of the empty copy at 1440px on /accounting', async () => {
+      const harness = await start('panes', '/accounting', 1440);
+      await find(harness, 'app-month-overview');
+      expect(harness.routeNativeElement!.querySelector('.pane-empty')).toBeNull();
+    });
+
+    it('keeps the one-line empty copy at 1100px', async () => {
+      const harness = await start('panes', '/accounting', 1100);
+      const empty = await find(harness, '.pane-empty');
+      expect(empty.textContent).toContain('選擇一筆記錄查看明細，或按 ＋ 新增');
+      expect(harness.routeNativeElement!.querySelector('app-month-overview')).toBeNull();
+    });
+
+    it('says 選擇帳戶 on /accounting/accounts at 1440px', async () => {
+      const harness = await start('panes', '/accounting/accounts', 1440);
+      const empty = await find(harness, '.pane-empty');
+      expect(empty.textContent).toContain('選擇帳戶查看明細，或按 ＋ 新增');
+      expect(harness.routeNativeElement!.querySelector('app-month-overview')).toBeNull();
+    });
+
+    it('hides the overview once a pane page opens', async () => {
+      const harness = await start('panes', '/accounting', 1440);
+      await find(harness, 'app-month-overview');
+      await TestBed.inject(Router).navigateByUrl('/accounting/entries/1');
+      await find(harness, PANE_PAGE);
+      expect(harness.routeNativeElement!.querySelector('app-month-overview')).toBeNull();
+    });
+  });
+
   it('sets a scoped .72rem minimum for captions inherited by calendar and keypad', async () => {
     const harness = await start('phone', '/accounting');
     harness.detectChanges();
@@ -614,8 +665,10 @@ describe('AccountingLayoutComponent', () => {
     document.body.appendChild(sidebar);
     const harness = await start('sheet', '/accounting');
     const list = harness.routeNativeElement!.querySelector('.list-pane')!;
+    const header = harness.routeNativeElement!.querySelector('app-page-header')!;
     await find(harness, LIST);
     expect(list.hasAttribute('inert')).toBe(false);
+    expect(header.hasAttribute('inert')).toBe(false);
 
     const router = TestBed.inject(Router);
     await router.navigateByUrl('/accounting/entries/5');
@@ -623,6 +676,7 @@ describe('AccountingLayoutComponent', () => {
     await vi.waitFor(() => {
       harness.detectChanges();
       expect(list.hasAttribute('inert')).toBe(true);
+      expect(header.hasAttribute('inert')).toBe(true);
       expect(sidebar.hasAttribute('inert')).toBe(true);
     });
     expect(harness.routeNativeElement!.querySelector('.sheet-backdrop')!.getAttribute('aria-hidden')).toBe('true');
@@ -631,6 +685,7 @@ describe('AccountingLayoutComponent', () => {
     await vi.waitFor(() => {
       harness.detectChanges();
       expect(list.hasAttribute('inert')).toBe(false);
+      expect(header.hasAttribute('inert')).toBe(false);
       expect(sidebar.hasAttribute('inert')).toBe(false);
     });
     sidebar.remove();
@@ -824,4 +879,35 @@ describe('AccountingLayoutComponent', () => {
     await vi.waitFor(() => expect(router.url).toBe('/accounting'));
   });
 
+
+  describe('page title on the page background', () => {
+    it('renders the page title above the list card', async () => {
+      const harness = await start('panes', '/accounting');
+      await find(harness, '.list-pane > *');
+      const root = harness.routeNativeElement!;
+      expect(root.querySelector(':scope > .dwrap > app-page-header h1')?.textContent).toContain('記帳記錄');
+      expect(root.querySelector('.list-pane app-page-header')).toBeNull();
+      expect(root.querySelector('.list-pane')?.hasAttribute('data-page-scroller')).toBe(true);
+    });
+
+    it('renders 新增帳戶 in the hoisted header on /accounting/accounts', async () => {
+      const harness = await start('panes', '/accounting/accounts');
+      await find(harness, '.list-pane > *');
+      const button = await find(harness, '.dwrap > app-page-header app-btn.add-account button');
+      (button as HTMLButtonElement).click();
+      await vi.waitFor(() => expect(TestBed.inject(Location).path()).toBe('/accounting/accounts/new'));
+    });
+
+    it('hoists the header in sheet mode', async () => {
+      const harness = await start('sheet', '/accounting');
+      await find(harness, '.dwrap--sheet > app-page-header');
+    });
+
+    it('lets .dwrap own the viewport height and the negative FAB margin', () => {
+      const css = readFileSync(join(process.cwd(), 'src/app/components/accounting/accounting-layout/accounting-layout.scss'), 'utf8');
+      const block = (name: string) => css.match(new RegExp(`\\n${name.replace('.', '\\.')} \\{([^}]*)\\}`))?.[1] ?? '';
+      expect(block('.dwrap')).toContain('margin-bottom: calc(-1 * var(--fab-clear, 0px))');
+      expect(block('.dbody')).not.toContain('margin-bottom: calc(-1');
+    });
+  });
 });

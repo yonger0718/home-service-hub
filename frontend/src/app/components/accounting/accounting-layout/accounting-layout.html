@@ -1,52 +1,61 @@
 @if (mode() === 'phone' || !listKey()) {
   <router-outlet />
 } @else {
-  <div class="dbody" [class.dbody--sheet]="mode() === 'sheet'">
-    <section #listPane class="pane list-pane" data-page-scroller aria-label="列表" tabindex="-1">
-      @if (listComponent(); as list) {
-        <ng-container *ngComponentOutlet="list" />
+  <div class="dwrap" [class.dwrap--sheet]="mode() === 'sheet'">
+    <app-page-header #pageHeader>
+      @if (listKey() === 'accounts') {
+        <app-btn class="add-account" variant="soft" icon="pi-plus" (click)="addAccount()">新增帳戶</app-btn>
       }
-    </section>
-
-    @if (sheetOpen()) {
-      <div class="sheet-backdrop" aria-hidden="true" (click)="close()"></div>
-    }
-
-    <!-- data-global-shortcuts: the shell's N (記一筆) still works inside this sheet dialog. -->
-    <section
-      #detailPane
-      (keydown)="onPaneKeydown($event)"
-      class="pane detail-pane"
-      aria-label="明細"
-      data-global-shortcuts
-      [attr.role]="sheetOpen() ? 'dialog' : null"
-      [attr.aria-modal]="sheetOpen() ? 'true' : null"
-      [attr.inert]="sheetClosed() ? '' : null"
-      [attr.aria-hidden]="sheetClosed() ? 'true' : null"
-      [class.open]="paneOpen()"
-    >
-      <div
-        class="sheet-grip"
-        [class.sheet-grip--active]="sheetOpen()"
-        (pointerdown)="onGripPointerDown($event)"
-        (pointermove)="onGripPointerMove($event)"
-        (pointerup)="onGripPointerUp($event)"
-        (pointercancel)="onGripPointerCancel()"
-      >
-        @if (sheetOpen()) {
-          <span class="sheet-handle" aria-hidden="true"></span>
-          <!-- The entry form draws its own ✕ in its header: one visible ✕ per sheet. -->
-          @if (!formOpen()) {
-            <button #closeButton type="button" class="sheet-close" aria-label="關閉" (click)="close()">✕</button>
-          }
+    </app-page-header>
+    <div class="dbody" [class.dbody--sheet]="mode() === 'sheet'">
+      <section #listPane class="pane list-pane" data-page-scroller aria-label="列表" tabindex="-1">
+        @if (listComponent(); as list) {
+          <ng-container *ngComponentOutlet="list; inputs: outletInputs" />
         }
-      </div>
-      <router-outlet name="pane" />
-      @if (!paneOpen()) {
-        <p class="pane-empty">選擇一筆記錄查看明細，或按 ＋ 新增</p>
-      }
-    </section>
+      </section>
 
+      @if (sheetOpen()) {
+        <div class="sheet-backdrop" aria-hidden="true" (click)="close()"></div>
+      }
+
+      <!-- data-global-shortcuts: the shell's N (記一筆) still works inside this sheet dialog. -->
+      <section
+        #detailPane
+        (keydown)="onPaneKeydown($event)"
+        class="pane detail-pane"
+        aria-label="明細"
+        data-global-shortcuts
+        [attr.role]="sheetOpen() ? 'dialog' : null"
+        [attr.aria-modal]="sheetOpen() ? 'true' : null"
+        [attr.inert]="sheetClosed() ? '' : null"
+        [attr.aria-hidden]="sheetClosed() ? 'true' : null"
+        [class.open]="paneOpen()"
+      >
+        <div
+          class="sheet-grip"
+          [class.sheet-grip--active]="sheetOpen()"
+          (pointerdown)="onGripPointerDown($event)"
+          (pointermove)="onGripPointerMove($event)"
+          (pointerup)="onGripPointerUp($event)"
+          (pointercancel)="onGripPointerCancel()"
+        >
+          @if (sheetOpen()) {
+            <span class="sheet-handle" aria-hidden="true"></span>
+            <!-- The entry form draws its own ✕ in its header: one visible ✕ per sheet. -->
+            @if (!formOpen()) {
+              <button #closeButton type="button" class="sheet-close" aria-label="關閉" (click)="close()">✕</button>
+            }
+          }
+        </div>
+        <router-outlet name="pane" />
+        @if (showOverview()) {
+          <app-month-overview [month]="overview.month()" [summary]="overview.summary()" [dueItems]="overview.dueItems()" [summaryState]="overview.summaryState()" [dueState]="overview.dueState()" />
+        } @else if (!paneOpen()) {
+          <p class="pane-empty">{{ emptyCopy() }}</p>
+        }
+      </section>
+
+    </div>
   </div>
 }
 
