@@ -1,0 +1,137 @@
+# Reconciliation R6c: transfers — design
+
+Date: 2026-10-25. Status: rev 1, for the builder check, then Multica spec review (lead-claude, non-Claude reviewer at the exact SHA; owner process rule 2026-10-18: self-verified against code lines, PASS-or-minor accepted). Parent specs: `2026-10-15-reconciliation-r6-design.md` (decisions 7 and 8, R6b.3/R6b.4 deferral, R6b.9 inputs), `2026-10-08-statement-reconciliation-design.md` (§6 representations, §7 actions), `2026-10-21-reconciliation-inbox-design.md` (questions and buttons), `2026-10-24-reconciliation-split-members-design.md` (guard lines, current `match()` shape). Marks *[call]* name a spec author's choice the owner has not ruled on; **owner** marks a ruling.
+
+## 1. Intent and why
+
+R6 decision 7 wanted card payments and own-account transfers booked: they are the largest flow on the bank accounts and keep a `balance_gap` open on most bank months. Decision 8 deferred them to this spec because the review risk (two statements, two cases, two legs) was out of proportion with R6b's single-account actions. Until now a `payment`, `transfer_in` or `transfer_out` line that nothing represents gets `line_unmatched` with `context.hint = "needs_peer"` and only `match` / `dismiss`.
+
+The read-only recon of 2026-10-25 (`~/reports/home-hub-balance-gap-20261025T030426Z/peers.md`, `deltas.md`, mode 600) changed what R6c has to be. Of the 97 open cases that day, 28 touch transfers: 12 `needs_peer` lines, 15 `entry_unmatched` transfer legs, 1 bank `withdrawal` line that is the other side of a card payment. Their shape:
+
+| finding | count |
+|---|---|
+| `needs_peer` line with an **owner-recorded transfer leg on the same account** (MOZE), amount off by 0.02 %–6.7 %, dated 0–5 days away | 7 of 12 |
+| same, amount off by 11.5 % (same day) | 1 of 12 |
+| `needs_peer` line with **no transfer at all**; two of the three sit beside a same-day, same-amount `income` / `expense` entry (the owner recorded a transfer as income or spend) | 3 of 12 |
+| `entry_unmatched` transfer legs that are legs of exactly those transfers; peer leg on a live account | 13 of 15 (the other 2: peer on a card combined into a live card) |
+| all 10 transfers involved: same currency on both legs, no children, no FX, both legs on one date | 10 of 10 |
+| `amount_delta` cases whose entry is a transfer leg (same-day near hits; `adjust_amount` refuses them as `protected`) | 3 |
+
+So the owner *did* record the transfers; MOZE carries an amount a few percent off (statement total paid vs. recorded, or a rounded figure) and the matcher cannot close the pair for two reasons: the near rule demands merchant-token overlap for any candidate not on the same day (a transfer leg has no merchant), and `adjust_amount` refuses a transfer leg (`split_protection.TRANSFER`). On 2026-10-25 the operator closed four such pairs by hand with `PUT /transfers/{group}` set to the statement amounts (balance-gap report §B); each rewrite closed up to four cases at once (two lines, two legs). R6c makes that an engine action, pairs the few lines that have no transfer at all, and leaves a suspense account for later.
+
+**Owner decisions 2026-10-25** (this chat, after the recon): (1) a matcher rule that pairs a payment/transfer line with a same-account transfer leg within a tolerance and the drift window, without merchant overlap; (2) an action that rewrites the whole transfer to the statement figures and closes both statements' cases, **owner-confirmed in the first version, never policy-applied**; (3) `pair_transfer` for two complementary lines with no entry, policy-eligible under a cap; (4) **no suspense account** in R6c (zero lines need it today; from the cutover the owner records transfers in HomeHub); (5) the two mis-kinded income/expense entries are fixed by hand, not by R6c.
+
+## 2. Goals, non-goals, anti-goals
+
+Goals:
+1. A `payment`, `transfer_in` or `transfer_out` line with a transfer leg on its own account whose flow is within the transfer tolerance and the drift window gets an `amount_delta` case naming that leg (hint `transfer_delta`), or `ambiguous` when several legs qualify; the leg is *designated* by the case, so it no longer opens an `entry_unmatched` case of its own.
+2. `adjust_transfer` rewrites that transfer — both legs' amounts to the line's amount, each leg's dates to its own statement line when that line exists — claims the line(s) and closes the cases on both statements in one engine transaction, revertable.
+3. `pair_transfer` books one two-legged transfer from two complementary lines on two live statements that nothing represents, claims both lines, closes both cases; policy-eligible with a cap; revertable.
+4. Every effect on the *other* statement is explicit: it is locked, its case is resolved by the same action row, its pending proposals are superseded, and a revert reopens it.
+5. The `needs_peer` residual on the live statements falls from 12 to the lines no transfer explains (≤ 3 today), and the 15 open transfer-leg cases close with their lines.
+
+Non-goals: the suspense account `對帳待配對` and the spend mode per account (`backfill_transfer`, `transfer_lines_as_spend_accounts`) — a later spec if lines without any counterpart ever accumulate (**owner** 2026-10-25); re-kinding an `income`/`expense` entry into a transfer (owner does it in the ledger); cross-currency transfers (R6c refuses them, §5.2; none exist among today's cases); transfers with children (fee legs; refused, none today); SPA buttons (§7, a "theirs" question); historical statements; MOZE write-back.
+
+Anti-goals (a failure even if the code works): a transfer leg rewritten to a line of a *different* transfer (two card payments in one month with near amounts → the matcher must say `ambiguous`, the action must refuse a changed candidate); a card `payment` line paired with a leg whose other side is another card (today's `_peer_ok` rule stays); an amount rewritten on one leg only (a transfer whose legs disagree); a rewrite the matcher then does not claim exactly (dates must be set so the next reconcile reads both lines `exact`); a peer statement changed without its lock; a `pair_transfer` creating a transfer the owner has already recorded (owner-twin and creation-family checks on **both** events); the policy applying `adjust_transfer`.
+
+## 3. Definitions
+
+- **Transfer line**: a current statement line of kind `payment`, `transfer_in` or `transfer_out` (`matching.PEER_LINE_KINDS`).
+- **Transfer leg**: a top-level ledger entry with `transfer_group_id` set (kind `transfer_out` / `transfer_in`); its **peer leg** is the other top-level entry of the group. A leg is **on** the statement when its account is in `coverage_service.participating_accounts(statement.account_id)` (a combined card's sub-card counts).
+- **Complementary lines**: two transfer lines on two statements of different account families, same currency, `peer.flow == −line.flow` (`_same`), dated within `transfer_pair_window_days` of each other. The line with negative flow is the **out side**; its statement's account is the transfer's `from_account_id`.
+- **Transfer tolerance**: `|line.flow − leg.flow| ≤ max(near_tolerance_abs, transfer_tolerance_pct · |line.flow|)` with `transfer_tolerance_pct` default `0.10` *[call: the recon shows 0.02 %–6.7 % on the pairs the owner confirmed and 11.5 % on one the owner must look at; 10 % keeps the confirmed ones in and that one out, and an owner-confirmed action makes a looser bound safe]*.
+- **Peer statement / peer line** of a case: the live statement of the peer leg's account family holding the complementary line (§5.2 discovery). A transfer may have **no** peer line (peer account not live, or no line printed yet).
+- **Stand-in** (R6b.0, extended as R6b announced): the legs created by an applied `pair_transfer` are stand-ins (`source = "statement"`, provenance `created_entry_ids`). The legs an `adjust_transfer` rewrites are the owner's entries and stay so.
+
+## 4. R6c.1 Matcher: `transfer_delta`
+
+A new builder `_transfer_case(kind, line, entries, claimed, rules, apart) -> Case | None` in `matching.py`, called in `match()` for transfer lines only, between `_foreign_case` and `_near_case` (`_foreign_case(...) or _transfer_case(...) or _near_case(...) or _drift_case(...)`).
+
+Candidates: every entry in `entries` that is unclaimed, `_standalone` or in `apart`, `_entry_class(e)` in the line's gate (`CARD_GATES["payment"] = {transfer_in}`, `BANK_GATES["payment"] = {settlement_out, transfer_out}`, the `transfer_in`/`transfer_out` gates as today), `_peer_ok(kind, line, e)`, **`e.transfer_group_id is not None`** (a settlement is not a transfer), same flow sign, within the transfer tolerance, and `_date_distance(line, e) ≤ drift_window_days`. No merchant-token condition (the one difference from `_near_case` besides the tolerance and the transfer requirement). Sort by (`|delta|`, `dist`, `id`).
+
+- One candidate → `Case(line.id, e.id, "amount_delta", ({"entry_id", "reason": "transfer", "residual", "date_distance"},), {"hint": "transfer_delta", "entry_id", "residual", "date_distance", "fee_matches": False})`. `residual` may be `"0"` (exact amount, 4–15 days away): the transfer case takes precedence over `_drift_case` so the owner sees one hint and one action for every transfer pair.
+- Two or more → `Case(line.id, None, "ambiguous", <the same candidate dicts>, {"hint": "transfer_delta"})` (R6a.2: ambiguity needs two candidates; here every qualifying leg is listed, there is no score).
+- None → unchanged: the existing fallbacks (`_near_case` on a same-day non-transfer entry still produces today's `amount_delta`), then `needs_peer`.
+
+Because the case names the leg (`context.entry_id`), `_designated_by_cases` keeps it out of `unmatched`: the leg's `entry_unmatched` case is superseded on the next reconcile. The exact path is untouched: a leg equal to the line within `exact_window_days` is still claimed by the `payment`/`transfer` representation rule before any case.
+
+`Rules` gains `transfer_tolerance_pct: Decimal = Decimal("0.10")` and `transfer_pair_window_days: int = 7` (§5.3 uses it; defined here so `RULE_DEFAULTS` derives both from the dataclass as today). `settings_service.RULE_UNIT_INTERVAL` adds `transfer_tolerance_pct`; `_check_rules` bounds `transfer_pair_window_days` to 0..60. `rules_version` prefix unchanged (the keys are additive; stale-override handling of R6a.1 does not apply to new keys).
+
+Dry-run: `scripts/r6_dryrun.py --transfers` lists, per live statement, the `transfer_delta` cases the new rule would open (count, hint, residual bucket, day distance), the `needs_peer` lines left, and for each pair whether `adjust_transfer` would be refused and why (§5.2 codes); amounts only in the detail file (mode 600).
+
+## 5. Actions
+
+Both are ordinary engine actions (registered, `KIND_ACTIONS` + `CONDITIONS`, `effect_slot`, `prepare`/`validate_before`/`apply`/`invert`), in a new module `reconciliation_actions/transfer_actions.py` *[call: `ledger_actions.py` is already long; the two actions share the peer-statement discovery and the both-case lifecycle helpers]*. No migration: `reconciliation_action.action` is `String(32)`; no new case kind; new settings are JSON keys.
+
+### 5.1 Both-statement lifecycle (shared, R6b.9 inputs)
+
+1. **Discovery, unlocked** (`lock_targets`): the action finds the peer leg, the peer statement(s) and the peer line (§5.2/§5.3) and returns `LockSet(entry_ids=(both legs), statement_ids=(peer statement ids))`; the engine already locks the case statement, then the extra statements ascending, then the entries with every top-level leg of their transfer group (`_lock_entries`). A lock conflict is the engine's `snapshot_conflict`/retry as for `move_account`.
+2. **Re-derivation, locked** (`validate_before`): the discovery is recomputed under the locks and must equal `prepared.lock_set` and the frozen `prepared.data` (peer leg id, peer statement ids, peer line id or None); a difference refuses `candidate_changed` (`CodedConflictError`, 409) — a peer line claimed, a statement re-parsed or a leg edited since the unlocked read.
+3. **Peer statement exclusions**: a peer statement with `conflict_open`, `needs_recheck` or an open `parse_review` case is refused `peer_statement_busy` (the policy skips such candidates; the owner retries after the recheck). Historical peer statements (`mode != "live"`) are refused `peer_not_live` — the action never writes coverage on a historical statement.
+4. **Writes**: the ledger rewrite or creation; then explicit claims `coverage_service.write_claim` for this line (rule = the action name, `match_kind` by actor as `backfill_entry` does) and, when a peer line exists, for the peer line on the peer statement; `effect.coverage_ids` carries both.
+5. **Peer case**: the peer line's open or proposed case (if any) is resolved by **this** action row — `status = "resolved"`, `resolved_by = ctx.actor`, `resolved_action_id = row.id`, `explanation = f"{action} from case {ctx.case.id}"`; its pending proposals become `superseded` with audit `proposal_superseded` (`by: peer_resolved`) in the same transaction *[call: a helper in `proposal_service` the action calls — `proposal_service` must not import the engine; the builder checks the import graph]*. Peer leg `entry_unmatched` cases vanish through the reconcile below (the leg is covered). `inverse` records `peer_case_id`.
+6. **Reconcile**: `_reconcile_keeping_case(db, ctx.case, [ctx.statement.id, *peer statement ids])` (the `move_account` helper, `barrier_wait=False`, 409 `sweep_barrier_busy` when the sweep holds the barrier) re-derives the other cases of both statements (`balance_gap`, the legs' `entry_unmatched`) inside the transaction.
+7. **Revert**: `revert_lock_targets` adds the stored `statement_ids` (those that still exist) and both legs; the engine releases the recorded coverage rows; `invert` undoes the ledger write (§5.2/§5.3), reopens this case and the stored peer case when it is still `resolved` by this action (`_reopen`), then `_reconcile_keeping_case` on both statements. Refused `not_revertable` when a leg is gone or any restored field changed since (compare with `after`), as `adjust_amount` and the creations do.
+8. **Cap attribution** (policy): the candidate amount is `|line.flow|`, charged once to the case statement's budget (the peer statement is not charged: one transfer, one amount).
+
+### 5.2 `adjust_transfer`
+
+`case_kinds = {amount_delta, ambiguous}`, `actors = {OWNER}` (**owner**: never policy-applied in R6c; an agent proposal through `proposal_service` is still possible and the owner applies it), slot `amount` (shared with `adjust_amount` *[call]*). Params `{entry_id, line_id?}` (`line_id` as `adjust_amount`'s `case_line`). `_scoped`: `entry_id` is among the case's candidates. `CONDITIONS`: `("amount_delta", "adjust_transfer")` when the designated entry (`context.entry_id`) is a transfer leg (any hint: a `transfer_delta`, a same-day near hit, or a `date_drift` on a leg); `("ambiguous", "adjust_transfer")` when at least one listed candidate is a transfer leg. `adjust_amount` keeps refusing legs (`protected`); the inbox's `accept_bank_amount` rule is unchanged.
+
+Discovery: leg = `entry_id`; peer leg = the group's other top-level leg; peer statements = `target_statements`-style: the live statements of the peer leg's account family whose period contains the peer leg's posted date **or** a complementary line (below); peer line = the uncovered current transfer line on those statements with `flow == −line.flow` within `transfer_pair_window_days` of this line. Exactly one → it is the peer line; none → no peer line (the peer leg keeps its dates; its statement, if any, is still locked and reconciled because the leg's amount changes); several → refuse `peer_ambiguous` (the owner edits the transfer in the ledger).
+
+Checks (`_plan`, under the locks): `_scoped`; line open (`_open_line`); both legs exist, `assert_entry_editable`, no children (`not_standalone`), no schedule rows (`not_standalone`), no settlements/refunds (`has_settlements`); both legs in the same currency and that currency is the line's statement currency, else `cross_currency` (**R6c refuses cross-currency transfers**; 0 today); the line prints no foreign pair (`fx_pair_required` otherwise, as `adjust_amount`); this leg's kind agrees with the line's sign (`transfer_in` ↔ flow > 0, `transfer_out` ↔ flow < 0) else `kind_sign`; for a card `payment` line the peer leg's account is not a card (`peer_is_card`, the matcher's `_peer_ok` re-proven); the peer line (when found) is uncovered and `_same(|peer.flow|, |line.flow|)`.
+
+Apply: `out.amount = −|line.flow|`, `in.amount = +|line.flow|`; this leg `posted_date = line.posted_date`, `entry_date = line.txn_date or line.posted_date` *[call]*; the peer leg's dates likewise from the peer line when found, else unchanged; a note appended to both legs' `description` (`adjust_amount`'s `_note` style: the statement, the old amount, the date) *[call: `needs_review` and `source` unchanged — the owner's entry stays the owner's]*; `transfer_service` is **not** called (its `update_transfer` copies one date to both legs and deletes children; the action writes the leg columns directly and keeps the group, category and rule links). Then §5.1 steps 4–6. `effect.touched_entry_ids = [both legs]`; `inverse = {"restore": {leg_id: {amount, entry_date, posted_date, description}}, "statement_ids": [...], "peer_case_id": id | None, "peer_line_id": id | None}`.
+
+Revert (§5.1 step 7): restore both legs' recorded fields.
+
+Net effect of one owner call on today's pairs: the line case, the peer line case and both legs' `entry_unmatched` cases close — four cases per transfer.
+
+### 5.3 `pair_transfer`
+
+`case_kinds = {line_unmatched}`, `actors = {OWNER, POLICY}`, slot `create` (creation family: one creation per event, engine check for this event; the action repeats the check for the **peer event** — `ReconciliationAction.event_id == peer.event_id, effect_slot == create, status == applied` → refuse `duplicate_effect`). Params `{peer_line_id}`. `CONDITIONS[("line_unmatched", "pair_transfer")]`: `context.hint == "needs_peer"` and empty candidates (`_no_peer_hint` keeps hiding `backfill_entry`/`create_entry` for these lines).
+
+Discovery: peer candidates = uncovered current transfer lines on **live** statements of accounts outside this statement's participating family, same currency, complementary (§3), within `transfer_pair_window_days`, whose own case is open/proposed `needs_peer`; `peer_line_id` must be one of them (`peer_out_of_scope` otherwise). Owner-twin guard on **both** lines (`stand_ins.owner_twins` / `owner_may_record`, the `_TwinGuarded` barrier re-check of R6b.1): an owner entry that may record either line refuses `owner_may_record` — the owner should `match`/`adjust_transfer` instead of booking a second transfer.
+
+Apply: `transfer_service.create_transfer(db, TransferIn(from_account_id=<out side's statement account>, to_account_id=<in side's statement account>, out_amount=|flow|, entry_date=<out line txn_date or posted_date>, posted_date=<out line posted_date>, name="對帳配對轉帳", description=<note naming both statements>), source="statement", remember=False)` *[call: category None; `name` fixed]*; then the in leg's `posted_date`/`entry_date` set from the in line; `needs_review = True` on both legs (`_leg_values` writes False). For a combined card statement the leg's account is the statement's account *[call: the sub-card is unknowable from a `payment` line]*. Then §5.1 steps 4–6 with both claims. `effect.created_entry_ids = [both legs]`; `inverse = {"created_entry_ids", "statement_ids", "peer_case_id", "peer_event_id"}`.
+
+Revert: both legs still present and structurally unchanged (`STAND_IN_FIELDS` + `transfer_group_id`), else `not_revertable`; delete both legs (children none by construction; a child added since → `not_revertable`), release both claims, reopen both cases, reconcile both.
+
+Stand-in rules for the created legs: they are stand-ins (R6b.0: the matcher drops a stand-in representation when an owner one exists, so an owner transfer recorded later wins the claim at the next reconcile and the stand-in legs go `orphaned_stand_in`). **`replace_stand_in` refuses a transfer stand-in** (`stand_in_is_transfer`) in R6c *[call: deleting one leg would orphan the other; the owner reverts the `pair_transfer` action instead, which removes both legs; an `orphaned_stand_in` case on a leg says so in its hint]*. Sweep retirement on an owner delete of the transfer (both legs go through `delete_transfer`) works through `created_entry_ids` as for `backfill_entry`.
+
+Policy: `POLICY_ACTIONS += {"pair_transfer": _pair_transfer_candidate}`: case `line_unmatched` + `needs_peer`, statement `mode == "live"`, `period_end + backfill_grace_days ≤ today` *[call: the same grace as backfill — gives the owner's own transfer time to arrive]*, `backfill_accounts` scoping on the case statement's account *[call]*, exactly one peer candidate, peer statement live and not busy (§5.1 step 3), no owner twin on either line; amount `|flow|`; cap `actions.pair_transfer.max_amount`, over cap → proposal as today. `_unchanged` compares status, hint, line kind and amount, the peer line id and its coverage absence. **Reciprocal uniqueness**: both statements' cases are candidates in one run; the first apply resolves the second's case, so the second's `_unchanged` fails and it is skipped — no second transfer. Owner runs skip the grace and the account list.
+
+## 6. Settings
+
+`POLICY_DEFAULTS["actions"]["pair_transfer"] = {"enabled": False, "max_amount": "50000"}` *[call: card payments are large; the owner tunes it]*; `_check_policy` accepts the new action name; `POLICY_VERSION_PREFIX` → `r6c`. `adjust_transfer` has no policy block (owner-only). Rules keys per §4. One wholesale `PUT /settings/reconciliation` (ADMIN token) per step, dry-run before it, as R6b.
+
+## 7. Inbox and SPA
+
+Server (`inbox_service`): `question` for `amount_delta` with hint `transfer_delta` is `amount_differs` (or `date_differs` when `residual == "0"`) as today's rules give; the item's `actions` gain `accept_statement_transfer` → `adjust_transfer {entry_id, line_id}` when `allowed(case)` lists it, and the `transfer` question gains `pair_with` → `pair_transfer {peer_line_id}` with `peer_candidates` (statement account name, date, amount) in the item. **SPA buttons** (改成帳單的轉帳, 配成轉帳): a "theirs" question (§10) — the owner chose API-only for `adjust_amount` on `ambiguous` the same day (#150); the default here is **API + inbox JSON only, SPA buttons tracked in #150** until the owner says otherwise.
+
+## 8. Rollout, evidence, success
+
+1. Spec → Multica review → plan (`superpowers:writing-plans`) → Multica plan review → subagent-driven execution on `feat/reconciliation-r6c` (worktree `/home/opc/workspace/home-hub-r6c`, branched from `origin/main` 56e79cf) → PR → dev-grok PR review (one round + one re-check) → owner merge → deploy (`deploy-NNN.sh <sha>` pattern: detached checkout as `homehub-api`, alembic no-op, `homehub-api-ctl restart`).
+2. After deploy: reconcile the 29 live statements with open cases (`reconcile.py`) → the `transfer_delta` cases appear and the legs' `entry_unmatched` cases supersede; dry-run `--transfers` table in the release record; owner applies `adjust_transfer` on each pair via the API (operator script `apply_actions.py`, amounts only in the 600 log); then `pair_transfer` enabled with the cap for one run; open-case delta before/after.
+3. Release record `~/reports/home-hub-r6c-release-<ts>/` (mode 600): before/after snapshots, the pairs table (ids, kinds, residual %, day distance — no amounts in chat), refusals and their codes, the `needs_peer` residual per account.
+
+Success: transfer-related open cases 28 → ≤ 5 (the 11.5 % pair and the two mis-kinded entries are the owner's); `needs_peer` residual ≤ 3 on the live statements; every anchored bank account's `balance_gap` residual explained by the remaining open cases; no previously claimed line lost (dry-run gate); full suite green.
+
+## 9. Tests (the plan expands these)
+
+Unit (`tests/unit/test_statement_matching.py`): transfer line + same-account leg at 3 % / 2 days → `amount_delta` hint `transfer_delta`, entry designated (not in `unmatched`); exact amount at 5 days → `transfer_delta` with residual 0 (not `date_drift`); 12 % → no case from `_transfer_case`, `needs_peer` fallback; two legs within tolerance → `ambiguous` hint `transfer_delta`; a settlement entry within tolerance is never a transfer candidate; card `payment` line + leg whose peer is a card → not a candidate (`_peer_ok`); a non-transfer line (purchase) never reaches `_transfer_case`; the exact path (same amount, 1 day) still claims without a case; merchant tokens absent on both sides do not block.
+
+Integration (`tests/integration/test_reconciliation_actions_transfer.py`, new): `adjust_transfer` on a two-live-statement fixture: both legs rewritten, per-leg dates, two coverage rows, this case resolved, peer case resolved with `resolved_action_id`, peer proposal superseded, both legs' `entry_unmatched` superseded; revert restores both legs and reopens both cases; refusals `peer_ambiguous`, `cross_currency`, `not_standalone` (child), `kind_sign`, `peer_is_card`, `candidate_changed` (peer line claimed between discovery and the locks), `peer_statement_busy`; no peer line → one claim, peer leg dates untouched; `adjust_amount` still `protected` on the leg; `allowed()` lists `adjust_transfer` on `transfer_delta`, on a same-day near `amount_delta` with a leg, and on an `ambiguous` with a leg, never on a non-leg case. `pair_transfer`: creates `transfer_out`/`transfer_in` with `source="statement"`, `needs_review`, per-leg dates, two claims, both cases resolved; duplicate on the peer event refused `duplicate_effect`; owner twin on either side refused `owner_may_record`; revert deletes both legs and reopens both; `replace_stand_in` refuses a transfer stand-in; policy: candidate built only after the grace, skipped when the peer statement is busy, second case of the pair skipped as `_unchanged` after the first apply, over-cap → proposal; `_check_policy` accepts `pair_transfer` and refuses unknown keys; rules: `transfer_tolerance_pct` unit-interval check, `transfer_pair_window_days` bounds.
+
+## 10. Open points for the review
+
+- **Theirs (owner)**: SPA buttons now or #150 (§7).
+- `adjust_transfer` on `date_drift`-hinted leg cases: offered (the leg is a transfer; the residual is 0; only the dates move). Alternative: leave those to `match`. Spec choice: offered — one action for every transfer pair.
+- Tolerance 10 % and pair window 7 days (§3) — rule keys the owner can change; reviewers may argue for reusing `near_tolerance_pct` (5 %) — that would drop the 6.7 % pair the owner confirmed by hand on 2026-10-25.
+- `replace_stand_in` refusing transfer stand-ins (§5.3) rather than replacing both legs.
+
+## 11. Decisions log
+
+- 2026-10-15 (R6 decisions 7, 8): transfers booked; split into R6c.
+- 2026-10-25 **owner**: R6c shape (§1), no suspense in R6c, `adjust_transfer` owner-confirmed only, `pair_transfer` policy-eligible with cap, mis-kinded entries by hand.
