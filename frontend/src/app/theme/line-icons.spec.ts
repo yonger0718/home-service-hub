@@ -12,13 +12,28 @@ function walk(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
     const p = join(dir, e.name);
     if (e.isDirectory()) return walk(p);
-    return e.name.endsWith('.html') ? [p] : [];
+    const ok = e.name.endsWith('.html') || (e.name.endsWith('.ts') && !e.name.endsWith('.spec.ts'));
+    return ok ? [p] : [];
   });
 }
 
 /** Disallowed emoji in `text` outside HTML comments and `{{ … }}` interpolations (both may span lines). */
 export function hasStaticEmoji(text: string): boolean {
   return offendingLines(text).length > 0;
+}
+
+/** A component file's inline `template:` literals, everything else blanked (newlines kept); an .html file is all template. */
+export function templateOnly(file: string, text: string): string {
+  if (!file.endsWith('.ts')) return text;
+  const blank = (s: string) => s.replace(/[^\n]/g, ' ');
+  let out = '';
+  let last = 0;
+  for (const m of text.matchAll(/\btemplate:\s*`((?:[^`\\]|\\.)*)`/g)) {
+    const start = m.index! + m[0].indexOf('`') + 1;
+    out += blank(text.slice(last, start)) + m[1];
+    last = start + m[1].length;
+  }
+  return out + blank(text.slice(last));
 }
 
 /** 1-based line numbers of `text` that place a disallowed emoji outside a comment or an interpolation. */
@@ -45,9 +60,15 @@ describe('line icons for interface chrome (polish-layout-v2 R5)', () => {
     expect(offendingLines('<p>✕</p>\n<!-- 📅 -->\n<span>🗑</span>')).toEqual([3]);
   });
 
-  it('has no static emoji in any template', { timeout: 30_000 }, () => {
+  it('scans only the inline template of a component file', () => {
+    const ts = "const ICONS = { card: '💳' };\n@Component({\n  template: `\n    <span>{{ icon ?? '🏦' }}</span>\n    <i>🔒</i>\n  `,\n})\nexport class X { fallback = '🔁'; }\n";
+    expect(offendingLines(templateOnly('x.ts', ts))).toEqual([5]);
+    expect(templateOnly('x.html', '<i>🔒</i>')).toBe('<i>🔒</i>');
+  });
+
+  it('has no static emoji in any template (.html or inline)', { timeout: 30_000 }, () => {
     const offenders = walk(join(process.cwd(), 'src/app')).flatMap((file) =>
-      offendingLines(readFileSync(file, 'utf8')).map((n) => `${relative(process.cwd(), file)}:${n}`),
+      offendingLines(templateOnly(file, readFileSync(file, 'utf8'))).map((n) => `${relative(process.cwd(), file)}:${n}`),
     );
     expect(offenders).toEqual([]);
   });

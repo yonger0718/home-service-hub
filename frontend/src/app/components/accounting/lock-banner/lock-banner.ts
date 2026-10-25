@@ -6,7 +6,7 @@ import { ChangeDetectionStrategy, Component, input } from '@angular/core';
   standalone: true,
   template: `
     @if (locked()) {
-      <p class="lock-banner" role="status"><span aria-hidden="true">🔒</span> MOZE 匯入資料，切換後可編輯</p>
+      <p class="lock-banner" role="status"><i class="pi pi-lock" aria-hidden="true"></i> MOZE 匯入資料，切換後可編輯</p>
     }
   `,
   styles: `
