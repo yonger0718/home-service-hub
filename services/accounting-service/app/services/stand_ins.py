@@ -6,8 +6,9 @@ import collections
 import itertools
 from datetime import timedelta
 from decimal import Decimal
+from typing import Iterable
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -63,6 +64,43 @@ def owner_deleted_events(db: Session, statement: AccountStatement) -> set[int]:
             latest[event_id] = (status, inverse or {})
     return {e for e, (status, inverse) in latest.items()
             if status == "reverted" and (inverse.get("deleted_by_event") or inverse.get("deleted_before_watermark"))}
+
+
+PAIR_TRANSFER = "pair_transfer"
+_DELETED_MARKS = ("deleted_by_event", "deleted_before_watermark")
+
+
+def _pairs_event(event_ids: list[int]):
+    """SQL, on ReconciliationAction: the row's event or its `inverse.peer_event_id` is one of `event_ids`."""
+    a = ReconciliationAction
+    return or_(a.event_id.in_(event_ids), a.inverse["peer_event_id"].astext.in_([str(i) for i in event_ids]))
+
+
+def pair_transfer_block(db: Session, event_ids: Iterable[int]) -> bool:
+    """R6c occupancy guard (spec §5.1 step 5, option A): True when a `pair_transfer` row names one of the events (its
+    own event or `inverse.peer_event_id`) and is still `applied`, or is `reverted` with an owner-delete mark
+    (`deleted_by_event` / `deleted_before_watermark`) and no later applied creation exists for that event — a
+    creation row of that event, or a later `pair_transfer` naming it as its peer event. An ordinary engine revert
+    (no mark) blocks nothing."""
+    ids = sorted({int(i) for i in event_ids if i is not None})
+    if not ids:
+        return False
+    a = ReconciliationAction
+    rows = db.execute(select(a.id, a.event_id, a.status, a.inverse).where(
+        a.action == PAIR_TRANSFER, a.status.in_(("applied", "reverted")), _pairs_event(ids))
+        .order_by(a.id)).all()
+    for row_id, event_id, status, inverse in rows:
+        if status == "applied":
+            return True
+        inverse = inverse or {}
+        if not any(mark in inverse for mark in _DELETED_MARKS):
+            continue
+        for event in sorted({event_id, inverse.get("peer_event_id")} & set(ids)):
+            later = db.execute(select(exists().where(
+                a.id > row_id, a.status == "applied", a.effect_slot == CREATION_SLOT, _pairs_event([event])))).scalar_one()
+            if not later:
+                return True
+    return False
 
 
 def retirement_preview(db: Session, statement: AccountStatement) -> dict[str, int]:
