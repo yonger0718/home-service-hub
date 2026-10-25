@@ -111,6 +111,8 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   loading = signal<boolean>(false);
   symbolNames = signal<Record<string, string>>({});
   upcomingExDividends = signal<ExDividendRecord[]>([]);
+  /** #171: the strip reserves its row while loading and stays with 讀取失敗 on error; it hides only when ready and empty. */
+  upcomingState = signal<'loading' | 'error' | 'ready'>('loading');
   showDialog = signal<boolean>(false);
   isEdit = signal<boolean>(false);
 
@@ -597,9 +599,16 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   }
 
   private loadUpcomingExDividends(): void {
+    this.upcomingState.set('loading');
     this.portfolioService.getUpcomingExDividends().subscribe({
-      next: data => this.upcomingExDividends.set(data),
-      error: () => this.upcomingExDividends.set([]),
+      next: data => {
+        this.upcomingExDividends.set(data);
+        this.upcomingState.set('ready');
+      },
+      error: () => {
+        this.upcomingExDividends.set([]);
+        this.upcomingState.set('error');
+      },
     });
   }
 

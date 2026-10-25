@@ -40,14 +40,24 @@
 
 <p class="div-note">有效待收股利會納入「預估含息損益」，但不計入可用現金；待釐清的金額不納入預估。舊資料的收款未經核實。</p>
 
-@if (upcomingExDividends().length > 0) {
-  <section class="upcoming-strip" aria-label="即將除權息提醒">
+@if (upcomingState() !== 'ready' || upcomingExDividends().length > 0) {
+  <section class="upcoming-strip" aria-label="即將除權息提醒" [attr.aria-busy]="upcomingState() === 'loading' ? 'true' : null">
     <span class="upcoming-title">即將除權息提醒</span>
-    @for (row of upcomingExDividends(); track row.symbol + row.ex_dividend_date) {
-      <span class="upcoming-item">
-        <b>{{ row.name || row.symbol }}</b> {{ row.symbol }} · 除息日 {{ row.ex_dividend_date || '-' }}
-        <span class="dividend">{{ row.cash_dividend || '-' }}</span>
-      </span>
+    @switch (upcomingState()) {
+      @case ('loading') {
+        <span class="upcoming-note">讀取中</span>
+      }
+      @case ('error') {
+        <span class="upcoming-note" role="status">讀取失敗</span>
+      }
+      @default {
+        @for (row of upcomingExDividends(); track row.symbol + row.ex_dividend_date) {
+          <span class="upcoming-item">
+            <b>{{ row.name || row.symbol }}</b> {{ row.symbol }} · 除息日 {{ row.ex_dividend_date || '-' }}
+            <span class="dividend">{{ row.cash_dividend || '-' }}</span>
+          </span>
+        }
+      }
     }
   </section>
 }

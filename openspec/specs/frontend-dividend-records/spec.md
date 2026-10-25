@@ -25,15 +25,23 @@ The dividends screen SHALL render summary cards using the `CONTEXT.md` vocabular
 
 ### Requirement: Upcoming ex-dividend grid
 
-When at least one upcoming ex-dividend event exists the screen SHALL render an 即將除權息提醒 grid of upcoming ex-dividend cards; each card MUST show stock name + code, ex-dividend date, and projected per-share amount. When the list is empty no 即將除權息提醒 row SHALL render.
+When at least one upcoming ex-dividend event exists the screen SHALL render an 即將除權息提醒 grid of upcoming ex-dividend cards; each card MUST show stock name + code, ex-dividend date, and projected per-share amount. While the events are loading the row SHALL already be present with a muted 讀取中 so the page does not shift when they arrive; when the fetch fails the row SHALL stay with a muted 讀取失敗 instead of disappearing. When the list has loaded empty no 即將除權息提醒 row SHALL render.
 
 #### Scenario: Upcoming card renders projected amount
 - **WHEN** an upcoming ex-dividend event has a projected per-share amount
 - **THEN** the card displays the amount alongside name + date
 
 #### Scenario: No upcoming events
-- **WHEN** the upcoming ex-dividend list is empty
+- **WHEN** the upcoming ex-dividend list has loaded empty
 - **THEN** no 即將除權息提醒 row SHALL render
+
+#### Scenario: Events still loading
+- **WHEN** the upcoming ex-dividend request has not answered yet
+- **THEN** the 即將除權息提醒 row SHALL render with 讀取中 and no cards
+
+#### Scenario: Events fetch fails
+- **WHEN** the upcoming ex-dividend request fails
+- **THEN** the 即將除權息提醒 row SHALL stay and read 讀取失敗
 
 ### Requirement: Violet dividend timeline
 

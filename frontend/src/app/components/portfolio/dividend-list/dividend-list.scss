@@ -60,6 +60,13 @@
   font-weight: 700;
 }
 
+// Same box as an .upcoming-item so the loading / error row reserves the chip height (#171).
+.upcoming-note {
+  border: 1px solid transparent;
+  color: var(--app-text-muted);
+  padding: 0.3rem 0;
+}
+
 .upcoming-item {
   background: var(--app-surface-soft);
   border: 1px solid var(--app-border);
