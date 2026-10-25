@@ -10,12 +10,16 @@ Entry rows on the timeline (list mode) and in the account entry history SHALL al
 
 ### Requirement: Empty pane shows the month
 
-At ≥ 1280 px, when no entry or account is selected, the accounting right pane SHALL show the month overview: the category distribution with amounts and the next three due items (card bills and schedule instances). Below 1280 px the one-line empty state SHALL remain.
+At ≥ 1280 px, when no entry or account is selected, the accounting right pane SHALL show the month overview: the category distribution with amounts and the next three due items (card bills and schedule instances). Below 1280 px the one-line empty state SHALL remain. While the overview is shown, the list pane's summary strip SHALL hide its category distribution (the 支出 / 收入 / 結餘 figures stay); below 1280 px the strip keeps the distribution.
 
 #### Scenario: Timeline without a selection
 - **GIVEN** the timeline month is 2026-10
 - **WHEN** `/accounting` opens at 1440 px with nothing selected
 - **THEN** the right pane SHALL show October's category amounts and the next three due items
+
+#### Scenario: Distribution shown once
+- **GIVEN** `/accounting` at 1440 px with nothing selected
+- **THEN** the category distribution SHALL render in the overview only, not in the list pane's summary strip
 
 ### Requirement: Accounts list marks the selection
 

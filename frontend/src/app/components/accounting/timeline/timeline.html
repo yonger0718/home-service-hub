@@ -27,7 +27,7 @@
       <div><small>支出</small><b class="neg sum-expense">{{ summary() ? expenseText(summary()!) : '—' }}</b></div>
       <div><small>收入</small><b class="pos sum-income">{{ summary() ? incomeText(summary()!) : '—' }}</b></div>
       <div><small>結餘</small><b class="sum-net">{{ summary() ? formatSigned(summary()!.net, summary()!.currency) : '—' }}</b></div>
-      @if (distribution().length) {
+      @if (distribution().length && !overview.visible()) {
         <div class="dist">
           <div class="dist-bar" role="img" [class.dist-bar--phone]="isPhone()" [attr.aria-label]="distributionAria()">
             @for (seg of distributionBar(); track $index) {

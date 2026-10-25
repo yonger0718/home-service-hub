@@ -379,7 +379,7 @@ export class LedgerTimelineComponent implements OnInit {
 
   private readonly bills = inject(BillingService);
   private readonly inbox = inject(InboxService);
-  private readonly overview = inject(AccountingOverviewService);
+  protected readonly overview = inject(AccountingOverviewService);
 
   readonly preference = signal<Preference | null>(null);
   readonly accounts = signal<LedgerAccount[]>([]);
