@@ -1507,13 +1507,15 @@ describe('LedgerTimelineComponent', () => {
 
       answerBill(requests, '-12345.0000');
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('💳');
+      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('');
+      expect(cell(el, '2026-10-05').querySelector('.due-badge')!.querySelector('i.pi-credit-card')).not.toBeNull();
       expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10月5日，1 張卡繳費到期');
 
       selectDay(fixture, el, '2026-10-05');
       expectNoBillRequest();
       const line = el.querySelector<HTMLButtonElement>('.day-entries .bill')!;
-      expect(text(line)).toBe('💳 玉山 UNI 帳單 $12,345 · 到期');
+      expect(text(line)).toBe('玉山 UNI 帳單 $12,345 · 到期');
+      expect(line.querySelector('i.pi-credit-card[aria-hidden="true"]')).not.toBeNull();
       expect(line.compareDocumentPosition(el.querySelector('.day-entries .empty')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       line.click();
       expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 9]);
@@ -1559,11 +1561,13 @@ describe('LedgerTimelineComponent', () => {
       const { fixture, el } = renderCalendarWith();
       flushBill('-12345.0000', ['5000.0000']);
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('💳');
+      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('');
+      expect(cell(el, '2026-10-05').querySelector('.due-badge')!.querySelector('i.pi-credit-card')).not.toBeNull();
 
       selectDay(fixture, el, '2026-10-05');
       const line = el.querySelector('.day-entries .bill')!;
-      expect(text(line)).toBe('💳 玉山 UNI 帳單 $12,345 · 到期 已繳 $5,000 · 剩餘 $7,345');
+      expect(text(line)).toBe('玉山 UNI 帳單 $12,345 · 到期 已繳 $5,000 · 剩餘 $7,345');
+      expect(line.querySelector('i.pi-credit-card[aria-hidden="true"]')).not.toBeNull();
       expect(line.classList).toContain('partial');
     });
 
@@ -1625,7 +1629,8 @@ describe('LedgerTimelineComponent', () => {
 
       expect(viewButton(el, '日曆').getAttribute('aria-checked')).toBe('true');
       expect(cell(el, '2026-10-05').getAttribute('aria-pressed')).toBe('true');
-      expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 $12,345 · 到期');
+      expect(text(el.querySelector('.day-entries .bill'))).toBe('玉山 UNI 帳單 $12,345 · 到期');
+      expect(el.querySelector('.day-entries .bill i.pi-credit-card[aria-hidden="true"]')).not.toBeNull();
       expect(el.querySelector('.bill-banner')).toBeNull();
     });
 
@@ -1647,16 +1652,18 @@ describe('LedgerTimelineComponent', () => {
 
       expect(text(el.querySelector('.month-label'))).toBe('2026 年 11 月');
       expect(cell(el, '2026-11-04').getAttribute('aria-pressed')).toBe('true');
-      expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 $200 · 到期');
+      expect(text(el.querySelector('.day-entries .bill'))).toBe('玉山 UNI 帳單 $200 · 到期');
+      expect(el.querySelector('.day-entries .bill i.pi-credit-card[aria-hidden="true"]')).not.toBeNull();
     });
 
     const ALAN: Counterparty = { id: 1, name: 'Alan', open_amounts: [{ currency: 'TWD', amount: '220.0000' }], open_count: 2 };
     const SETTLED: Counterparty = { id: 2, name: 'Bea', open_amounts: [], open_count: 0 };
     const bell = (el: HTMLElement) => el.querySelector<HTMLButtonElement>('.bell')!;
 
-    it('shows the 🔔 without a count when nothing is pending, in both views', () => {
+    it('shows the bell icon without a count when nothing is pending, in both views', () => {
       const { fixture, el } = renderListWith(ACCOUNTS);
-      expect(text(bell(el))).toBe('🔔');
+      expect(bell(el).querySelector('i.pi-bell')).not.toBeNull();
+      expect(text(bell(el))).toBe('');
       expect(bell(el).getAttribute('aria-label')).toBe('提醒中心，0 項');
       expect(el.querySelector('.bell-count')).toBeNull();
 
@@ -1793,7 +1800,8 @@ describe('LedgerTimelineComponent', () => {
       const { fixture, el } = renderCalendarWith([...ACCOUNTS, monthly]);
       flushBill('-500.0000', [], { start: '2026-09-01', end: '2026-09-30', due: '2026-10-05', paidTo: '2026-10-02' });
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('💳');
+      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('');
+      expect(cell(el, '2026-10-05').querySelector('.due-badge')!.querySelector('i.pi-credit-card')).not.toBeNull();
       expect(cell(el, '2026-10-31').classList).toContain('closing');
     });
 
@@ -1814,7 +1822,8 @@ describe('LedgerTimelineComponent', () => {
       expect(el.querySelectorAll('.due-badge').length).toBe(1);
       expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10月5日，1 張卡繳費到期');
       selectDay(fixture, el, '2026-10-05');
-      expect(Array.from(el.querySelectorAll('.day-entries .bill')).map(text)).toEqual(['💳 玉山 UNI 帳單 $1,234 · 到期']);
+      expect(Array.from(el.querySelectorAll('.day-entries .bill')).map(text)).toEqual(['玉山 UNI 帳單 $1,234 · 到期']);
+      expect(el.querySelectorAll('.day-entries .bill i.pi-credit-card').length).toBe(1);
     });
 
     it('renders nothing and asks for no statement without credit cards', () => {

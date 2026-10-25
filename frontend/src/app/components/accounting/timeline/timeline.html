@@ -7,7 +7,7 @@
     <button type="button" class="month-prev" aria-label="上個月" (click)="moveMonth(-1)">‹</button>
     <b class="month-label">{{ monthText() }}</b>
     <button type="button" class="month-next" aria-label="下個月" (click)="moveMonth(1)">›</button>
-    <button type="button" class="bell" [attr.aria-label]="'提醒中心，' + reminderCount() + ' 項'" (click)="openReminders()">🔔@if (reminderCount() > 0) {<span class="bell-count" aria-hidden="true">{{ reminderCount() }}</span>}</button>
+    <button type="button" class="bell" [attr.aria-label]="'提醒中心，' + reminderCount() + ' 項'" (click)="openReminders()"><i class="pi pi-bell" aria-hidden="true"></i>@if (reminderCount() > 0) {<span class="bell-count" aria-hidden="true">{{ reminderCount() }}</span>}</button>
     <div class="view-toggle" role="radiogroup" aria-label="檢視模式">
       <button type="button" role="radio" [attr.aria-checked]="view() === 'list'" (click)="setView('list')">清單</button>
       <button type="button" role="radio" [attr.aria-checked]="view() === 'calendar'" (click)="setView('calendar')">日曆</button>
@@ -196,7 +196,7 @@
           <div class="bills" role="group" aria-label="繳費提醒">
             @for (bill of billLines(); track bill.key) {
               <button type="button" class="bill" [class.partial]="bill.paidText !== null" (click)="openCard(bill.accountId)">
-                💳 {{ bill.name }} 帳單 {{ bill.amountText }} · 到期
+                <i class="pi pi-credit-card" aria-hidden="true"></i> {{ bill.name }} 帳單 {{ bill.amountText }} · 到期
                 @if (bill.paidText) {
                   <span class="paid-mark">{{ bill.paidText }}</span>
                 }

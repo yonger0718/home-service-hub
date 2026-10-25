@@ -24,7 +24,7 @@
         >
           <span class="d">{{ cell.day }}</span>
           @if (cell.dueCount > 0) {
-            <span class="due-badge" aria-hidden="true">💳{{ cell.dueCount > 1 ? cell.dueCount : '' }}</span>
+            <span class="due-badge" aria-hidden="true"><i class="pi pi-credit-card"></i>{{ cell.dueCount > 1 ? cell.dueCount : '' }}</span>
           }
           @if (loading() && !cell.outside) {
             <span class="fig daily-placeholder" aria-hidden="true">—</span>
