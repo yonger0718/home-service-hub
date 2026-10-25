@@ -45,6 +45,7 @@ import {
   allocation,
   carryHoldings,
   holdingAbbr,
+  millionsTick,
   composition,
   pendingRows,
   quoteTimeLabel,
@@ -795,7 +796,7 @@ export class PortfolioDashboardComponent implements OnInit {
           ticks: {
             color: muted,
             font: { size: 11 },
-            callback: (value: number) => `${(Number(value) / 1_000_000).toFixed(1)}M`,
+            callback: (value: number, _index: number, ticks: { value: number }[]) => millionsTick(Number(value), ticks),
           },
         },
       },

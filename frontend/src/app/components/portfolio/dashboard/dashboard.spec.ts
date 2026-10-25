@@ -576,6 +576,7 @@ describe('PortfolioDashboardComponent', () => {
       fill: true,
     });
     expect(chartOptions.scales.y.stacked).toBe(false);
+    expect(chartOptions.scales.y.ticks.callback(3_450_000, 1, [{ value: 3_400_000 }, { value: 3_450_000 }])).toBe('3.45M');
   });
 
   it('collapses total assets onto total market value when backfill has not populated cash', () => {
