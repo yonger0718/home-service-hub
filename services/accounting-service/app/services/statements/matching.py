@@ -214,6 +214,18 @@ def eligible_kinds(statement_kind: str, line_kind: str) -> frozenset[str]:
     return table.get(line_kind, frozenset())
 
 
+def is_informational(line: Line) -> bool:
+    """A printed row whose amount is 0 (#152). The parse contract keeps such a row only as `unknown` (`derive.flow_amount`
+    refuses a zero of any other kind); it is a notice — an annual-fee waiver, a reward summary, a zero interest line —
+    not a transaction: kept as a line for audit, never represented, never a case, never a guard line or a holder slot."""
+    return line.line_kind == "unknown" and line.flow == 0
+
+
+def reconcilable(lines: list[Line]) -> list[Line]:
+    """`lines` without the informational rows (`is_informational`)."""
+    return [line for line in lines if not is_informational(line)]
+
+
 def _entry_class(entry: Entry) -> str:
     if entry.is_settlement:
         return "settlement_in" if entry.flow > 0 else "settlement_out"
@@ -575,6 +587,7 @@ def statement_context(kind: str, lines: list[Line], lines_all: list[Line], entri
     and `aside_children` — over the guard lines `lines_all` (covered and neighbouring lines too), the guard's only;
     the groups printed whole (mixed currencies fail closed; `holders` filter the guard's scan only, holders spec §3)
     and the apart members."""
+    lines, lines_all = reconcilable(lines), reconcilable(lines_all)  # #152: the validator calls this directly too
     aside = printed_alone(kind, lines, entries, groups, rules)
     aside_all = printed_alone(kind, lines_all, entries, groups, rules)
     aside_children = printed_alone_children(kind, lines_all, entries, groups)
@@ -987,6 +1000,8 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
     §3; None = the guard sees every line)."""
     result = MatchResult()
     claimed: set[int] = set()
+    lines = reconcilable(lines)  # #152: a zero-amount `unknown` row is a notice — no representation, no case
+    lines_all = reconcilable(lines_all) if lines_all is not None else None
     ctx = statement_context(statement_kind, lines, lines_all or lines, entries, groups, rules,
                             account_currency, holders)  # over the unfiltered population
     hint_only = [e for e in entries if not e.claimable]

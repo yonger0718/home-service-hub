@@ -213,6 +213,24 @@ def test_unknown_deposit_withdrawal_lines_are_never_bank_only():
         assert "hint" not in res.cases[0].context, kind
 
 
+def test_zero_amount_unknown_line_is_informational_no_case_no_claim():
+    """#152: a printed row whose amount is 0 (parse contract: kind `unknown`) is a notice, not a transaction — it
+    neither claims nor opens a case, on a card or a bank statement; a non-zero `unknown` line still opens one."""
+    for kind in ("card", "bank"):
+        res = run([L(1, date(2026, 9, 30), "0", kind="unknown", merchant="年費優惠"),
+                   L(2, date(2026, 9, 30), "12", kind="unknown", merchant="利息")], [], kind=kind)
+        assert res.claims == [] and [(c.line_id, c.kind) for c in res.cases] == [(2, "line_unmatched")], kind
+    assert m.is_informational(L(1, date(2026, 9, 30), "0", kind="unknown"))
+    assert not m.is_informational(L(1, date(2026, 9, 30), "0", kind="purchase"))
+
+
+def test_zero_amount_unknown_line_is_no_guard_line_either():
+    """An informational row among `lines_all` never counts as a printed-alone member or a holder slot."""
+    res = run([L(1, date(2026, 9, 3), "-580")], [E(10, date(2026, 9, 3), "-580")],
+              lines_all=[L(1, date(2026, 9, 3), "-580"), L(2, date(2026, 9, 3), "0", kind="unknown")])
+    assert [(c.line_id, c.representation.rule) for c in res.claims] == [(1, "exact")] and res.cases == []
+
+
 def test_reverse_population_and_deferral():
     entries = [E(10, date(2026, 9, 3), "-580"), E(11, date(2026, 9, 29), "-90")]
     res = run([L(1, date(2026, 9, 3), "-580")], entries)

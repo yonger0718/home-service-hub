@@ -63,6 +63,30 @@ def card_month(seed, db_session, run):
     return stmt, ls, e, group, card, res
 
 
+def test_zero_amount_unknown_line_opens_no_case_and_an_old_one_is_superseded(seed, db_session, run):
+    """#152: a zero-amount `unknown` row (an annual-fee waiver notice) is kept as a line for audit but is not part of
+    the reconcilable population: no case, no gap, not counted; a `line_unmatched` case an earlier run opened on such a
+    line is superseded by the next reconcile."""
+    from app.models import ReconciliationCase
+    card = _card(seed, db_session)
+    buy = seed.entry(card, "-580", day=date(2026, 9, 2), merchant="全聯")
+    db_session.commit()
+    stmt, (line, info), _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580),
+                                                           _line(2, date(2026, 9, 30), "年費優惠", 0, "unknown")])
+    assert [(r.line_id, r.entry_id) for r in _active(db_session, stmt.id)] == [(line.id, buy.id)]
+    assert _cases(db_session, stmt.id, "open") == []
+    assert (stmt.matched_count, stmt.open_case_count) == (1, 0)
+
+    old = ReconciliationCase(statement_id=stmt.id, revision_id=stmt.current_revision_id, kind="line_unmatched",
+                             event_id=info.event_id, line_id=info.id)  # what a run before the fix wrote
+    db_session.add(old)
+    db_session.commit()
+    _reconcile(db_session, stmt.id)
+    db_session.expire_all()
+    assert (old.status, old.version) == ("superseded", 2)
+    assert _cases(db_session, stmt.id, "open") == []
+
+
 def test_card_statement_end_to_end(card_month, db_session):
     stmt, ls, e, group, card, res = card_month
     rows = _active(db_session, stmt.id)
