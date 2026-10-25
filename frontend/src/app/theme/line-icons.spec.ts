@@ -22,13 +22,14 @@ export function hasStaticEmoji(text: string): boolean {
   return offendingLines(text).length > 0;
 }
 
-/** A component file's inline `template:` literals, everything else blanked (newlines kept); an .html file is all template. */
+/** A component file's inline `template:` literals, everything else blanked (newlines kept); an .html file is all template.
+ *  Escapes (including a backslash line continuation) stay inside the literal; a nested backtick literal inside `${…}` is not handled (none in src/app). */
 export function templateOnly(file: string, text: string): string {
   if (!file.endsWith('.ts')) return text;
   const blank = (s: string) => s.replace(/[^\n]/g, ' ');
   let out = '';
   let last = 0;
-  for (const m of text.matchAll(/\btemplate:\s*`((?:[^`\\]|\\.)*)`/g)) {
+  for (const m of text.matchAll(/\btemplate:\s*`((?:[^`\\]|\\[\s\S])*)`/g)) {
     const start = m.index! + m[0].indexOf('`') + 1;
     out += blank(text.slice(last, start)) + m[1];
     last = start + m[1].length;
@@ -64,6 +65,7 @@ describe('line icons for interface chrome (polish-layout-v2 R5)', () => {
     const ts = "const ICONS = { card: '💳' };\n@Component({\n  template: `\n    <span>{{ icon ?? '🏦' }}</span>\n    <i>🔒</i>\n  `,\n})\nexport class X { fallback = '🔁'; }\n";
     expect(offendingLines(templateOnly('x.ts', ts))).toEqual([5]);
     expect(templateOnly('x.html', '<i>🔒</i>')).toBe('<i>🔒</i>');
+    expect(offendingLines(templateOnly('y.ts', 'template: `a \\\n b\n<i>🔒</i>`'))).toEqual([3]);
   });
 
   it('has no static emoji in any template (.html or inline)', { timeout: 30_000 }, () => {
