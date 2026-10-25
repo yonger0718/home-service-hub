@@ -14,6 +14,7 @@ h2 { font-size: 1.15rem; font-weight: 800; margin: 0 0 4px; }
 
   .t { flex: 1; font-weight: 600; min-width: 0; }
   .r { color: var(--app-text-muted); font-size: 0.85rem; max-width: 55%; text-align: right; }
+  > span:first-child > .pi { color: var(--app-text-muted); font-size: 1rem; }
 }
 
 summary.srow { list-style: none; }

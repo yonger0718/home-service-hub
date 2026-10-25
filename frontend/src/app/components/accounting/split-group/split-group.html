@@ -52,7 +52,7 @@
             }
           </span>
           @if (member.protected) {
-            <span class="split-child-lock" role="img" aria-label="受保護">🔒</span>
+            <i class="split-child-lock pi pi-lock" role="img" aria-label="受保護"></i>
           }
           <span class="split-child-amount" [class.neg]="+member.amount < 0" [class.pos]="+member.amount > 0">
             {{ formatMoney(member.amount, member.currency, { sign: true }) }}

@@ -115,7 +115,7 @@ describe('CategoryPickerComponent', () => {
     });
     expect(el.querySelector('[data-bubble="b"]')?.classList.contains('empty')).toBe(true);
     expect(el.querySelector('[data-bubble="b"]')?.getAttribute('aria-pressed')).toBe('true');
-    expect(el.querySelector('[data-bubble="a"]')?.textContent).toContain('🔒');
+    expect(el.querySelector('[data-bubble="a"] .lock.pi-lock')?.getAttribute('aria-label')).toBe('受保護');
     expect((el.querySelector('.add') as HTMLButtonElement).disabled).toBe(true);
     expect(el.querySelector('.bubble-hint')?.textContent).toContain('最多 50 項');
     const selected: string[] = [];
@@ -241,7 +241,9 @@ describe('CategoryPickerComponent', () => {
     const a = el.querySelector('[data-bubble="a"]')!;
     expect(Array.from(a.children).map(node => node.className.split(' ')[0])).toEqual(['ico-wrap', 'name', 'amt']);
     expect(a.querySelector('.ico-wrap .ico')?.textContent).toBe('🍜');
-    expect(a.querySelector('.ico-wrap .lock')?.textContent).toBe('🔒');
+    const lock = a.querySelector('.ico-wrap .lock');
+    expect(lock?.classList.contains('pi-lock')).toBe(true);
+    expect(lock?.getAttribute('aria-label')).toBe('受保護');
     // The emoji stays out of the button's name; the lock is a sibling, outside the hidden subtree.
     expect(a.querySelector('.ico-wrap .ico')?.getAttribute('aria-hidden')).toBe('true');
     expect(a.querySelector('.ico-wrap .lock')?.closest('[aria-hidden="true"]')).toBeNull();

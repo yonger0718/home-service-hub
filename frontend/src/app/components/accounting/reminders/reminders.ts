@@ -15,7 +15,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Observable, catchError, forkJoin, of } from 'rxjs';
 
-import { Counterparty, LedgerAccount, LedgerEntry, ScheduleDefinition, ScheduleInstance } from '../../../models/accounting.model';
+import { Counterparty, DEFAULT_CATEGORY_ICONS, LedgerAccount, LedgerEntry, ScheduleDefinition, ScheduleInstance } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingToastService, scheduleActionError } from '../accounting-toast';
@@ -264,6 +264,7 @@ export class AccountingRemindersComponent {
   private readonly statementsByAccount = signal<ReadonlyMap<number, readonly StatementSummary[]>>(new Map());
 
   readonly tabs = REMINDER_TABS;
+  protected readonly debtIcon = DEFAULT_CATEGORY_ICONS['receivable'];
   readonly tab = signal<ReminderTab>('all');
   readonly accounts = signal<LedgerAccount[]>([]);
   readonly counterparties = signal<Counterparty[]>([]);

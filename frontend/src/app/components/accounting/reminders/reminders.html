@@ -96,7 +96,7 @@
       }
       @for (debt of debtRows(); track debt.id) {
         <button type="button" class="debt-row" [attr.aria-expanded]="expanded() === debt.id" (click)="toggleDebt(debt.id)">
-          <span class="ico">🤝</span>
+          <span class="ico">{{ debtIcon }}</span>
           <span class="name">{{ debt.name }}</span>
           <span class="sides">
             @for (side of debt.sides; track side.kind) {

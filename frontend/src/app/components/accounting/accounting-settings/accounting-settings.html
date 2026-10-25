@@ -8,13 +8,13 @@
   <div class="lbl">資料</div>
 
   <details class="data-section groups-section">
-    <summary class="srow"><span>🗂</span><span class="t">帳戶分組</span><span class="r">{{ groups().length }} 組</span></summary>
+    <summary class="srow"><span><i class="pi pi-folder" aria-hidden="true"></i></span><span class="t">帳戶分組</span><span class="r">{{ groups().length }} 組</span></summary>
     @for (group of groups(); track group.id; let i = $index) {
       <div class="data-row group-row">
         <input class="row-name group-name" aria-label="分組名稱" [value]="group.name" (change)="renameGroup(group, $any($event.target).value)" />
         <button type="button" class="move-up" aria-label="上移" [disabled]="i === 0" (click)="moveGroup(i, -1)">↑</button>
         <button type="button" class="move-down" aria-label="下移" [disabled]="i === groups().length - 1" (click)="moveGroup(i, 1)">↓</button>
-        <button type="button" class="row-delete" [class.danger]="confirming() === 'group:' + group.id" [attr.aria-label]="confirming() === 'group:' + group.id ? '確定刪除' : '刪除分組'" (blur)="confirming() === 'group:' + group.id && confirming.set(null)" (click)="confirmTap('group:' + group.id) && deleteGroup(group)">{{ confirming() === 'group:' + group.id ? '確定刪除' : '🗑' }}</button>
+        <button type="button" class="row-delete" [class.danger]="confirming() === 'group:' + group.id" [attr.aria-label]="confirming() === 'group:' + group.id ? '確定刪除' : '刪除分組'" (blur)="confirming() === 'group:' + group.id && confirming.set(null)" (click)="confirmTap('group:' + group.id) && deleteGroup(group)">@if (confirming() === 'group:' + group.id) { 確定刪除 } @else { <i class="pi pi-trash" aria-hidden="true"></i> }</button>
         @if (confirming() === 'group:' + group.id) {
           <button type="button" class="row-cancel" (click)="confirming.set(null)">取消</button>
         }
@@ -27,12 +27,12 @@
   </details>
 
   <details class="data-section rules-section">
-    <summary class="srow"><span>🧾</span><span class="t">對帳規則 ({{ rules().length }})</span></summary>
+    <summary class="srow"><span><i class="pi pi-receipt" aria-hidden="true"></i></span><span class="t">對帳規則 ({{ rules().length }})</span></summary>
     @for (rule of rules(); track rule.id) {
       <div class="data-row rule-row" [class.hidden-cat]="!rule.enabled">
         <span class="row-name rule-text">{{ ruleText(rule) }}</span>
         <button type="button" class="rule-toggle" [attr.aria-pressed]="rule.enabled" (click)="toggleRule(rule)">{{ rule.enabled ? '停用' : '啟用' }}</button>
-        <button type="button" class="row-delete" [class.danger]="confirming() === 'rule:' + rule.id" [disabled]="deletingRules().has(rule.id)" [attr.aria-label]="confirming() === 'rule:' + rule.id ? '確定刪除' : '刪除規則'" (blur)="confirming() === 'rule:' + rule.id && confirming.set(null)" (click)="confirmTap('rule:' + rule.id) && deleteRule(rule)">{{ confirming() === 'rule:' + rule.id ? '確定刪除' : '🗑' }}</button>
+        <button type="button" class="row-delete" [class.danger]="confirming() === 'rule:' + rule.id" [disabled]="deletingRules().has(rule.id)" [attr.aria-label]="confirming() === 'rule:' + rule.id ? '確定刪除' : '刪除規則'" (blur)="confirming() === 'rule:' + rule.id && confirming.set(null)" (click)="confirmTap('rule:' + rule.id) && deleteRule(rule)">@if (confirming() === 'rule:' + rule.id) { 確定刪除 } @else { <i class="pi pi-trash" aria-hidden="true"></i> }</button>
         @if (confirming() === 'rule:' + rule.id) {
           <button type="button" class="row-cancel" (click)="confirming.set(null)">取消</button>
         }
@@ -41,7 +41,7 @@
   </details>
 
   <details class="data-section categories-section">
-    <summary class="srow"><span>🏷</span><span class="t">類別</span><span class="r">{{ categories().length }} 主 · {{ subCount() }} 子</span></summary>
+    <summary class="srow"><span><i class="pi pi-tag" aria-hidden="true"></i></span><span class="t">類別</span><span class="r">{{ categories().length }} 主 · {{ subCount() }} 子</span></summary>
     <div class="kind-tabs" role="tablist">
       @for (tab of categoryTabs; track tab[0]) {
         <button type="button" role="tab" class="kind-tab" [class.on]="categoryKind() === tab[0]" [attr.aria-selected]="categoryKind() === tab[0]" (click)="setCategoryKind(tab[0])">{{ tab[1] }}</button>
@@ -55,7 +55,7 @@
         <button type="button" class="cat-hide" [attr.aria-pressed]="main.is_hidden" (click)="saveCategory(main, { is_hidden: !main.is_hidden })">{{ main.is_hidden ? '顯示' : '隱藏' }}</button>
         <button type="button" class="move-up" aria-label="上移" [disabled]="i === 0" (click)="moveCategory(categories(), i, -1)">↑</button>
         <button type="button" class="move-down" aria-label="下移" [disabled]="i === categories().length - 1" (click)="moveCategory(categories(), i, 1)">↓</button>
-        <button type="button" class="row-delete" [class.danger]="confirming() === 'cat:' + main.id" [attr.aria-label]="confirming() === 'cat:' + main.id ? '確定刪除' : '刪除類別'" (blur)="confirming() === 'cat:' + main.id && confirming.set(null)" (click)="confirmTap('cat:' + main.id) && deleteCategory(main)">{{ confirming() === 'cat:' + main.id ? '確定刪除' : '🗑' }}</button>
+        <button type="button" class="row-delete" [class.danger]="confirming() === 'cat:' + main.id" [attr.aria-label]="confirming() === 'cat:' + main.id ? '確定刪除' : '刪除類別'" (blur)="confirming() === 'cat:' + main.id && confirming.set(null)" (click)="confirmTap('cat:' + main.id) && deleteCategory(main)">@if (confirming() === 'cat:' + main.id) { 確定刪除 } @else { <i class="pi pi-trash" aria-hidden="true"></i> }</button>
         @if (confirming() === 'cat:' + main.id) {
           <button type="button" class="row-cancel" (click)="confirming.set(null)">取消</button>
         }
@@ -68,7 +68,7 @@
           <button type="button" class="cat-hide" [attr.aria-pressed]="sub.is_hidden" (click)="saveCategory(sub, { is_hidden: !sub.is_hidden })">{{ sub.is_hidden ? '顯示' : '隱藏' }}</button>
           <button type="button" class="move-up" aria-label="上移" [disabled]="j === 0" (click)="moveCategory(main.children, j, -1)">↑</button>
           <button type="button" class="move-down" aria-label="下移" [disabled]="j === main.children.length - 1" (click)="moveCategory(main.children, j, 1)">↓</button>
-        <button type="button" class="row-delete" [class.danger]="confirming() === 'cat:' + sub.id" [attr.aria-label]="confirming() === 'cat:' + sub.id ? '確定刪除' : '刪除子類別'" (blur)="confirming() === 'cat:' + sub.id && confirming.set(null)" (click)="confirmTap('cat:' + sub.id) && deleteCategory(sub)">{{ confirming() === 'cat:' + sub.id ? '確定刪除' : '🗑' }}</button>
+        <button type="button" class="row-delete" [class.danger]="confirming() === 'cat:' + sub.id" [attr.aria-label]="confirming() === 'cat:' + sub.id ? '確定刪除' : '刪除子類別'" (blur)="confirming() === 'cat:' + sub.id && confirming.set(null)" (click)="confirmTap('cat:' + sub.id) && deleteCategory(sub)">@if (confirming() === 'cat:' + sub.id) { 確定刪除 } @else { <i class="pi pi-trash" aria-hidden="true"></i> }</button>
         @if (confirming() === 'cat:' + sub.id) {
           <button type="button" class="row-cancel" (click)="confirming.set(null)">取消</button>
         }
@@ -86,14 +86,14 @@
   </details>
 
   <details class="data-section projects-section">
-    <summary class="srow"><span>📁</span><span class="t">專案</span><span class="r">{{ projects().length }}</span></summary>
+    <summary class="srow"><span><i class="pi pi-briefcase" aria-hidden="true"></i></span><span class="t">專案</span><span class="r">{{ projects().length }}</span></summary>
     @for (project of projects(); track project.id; let i = $index) {
       <div class="data-row project-row" [class.hidden-cat]="project.is_archived">
         <input class="row-name project-name" aria-label="專案名稱" [value]="project.name" (change)="saveProject(project, { name: $any($event.target).value })" />
         <button type="button" class="project-archive" (click)="saveProject(project, { is_archived: !project.is_archived })">{{ project.is_archived ? '取消封存' : '封存' }}</button>
         <button type="button" class="move-up" aria-label="上移" [disabled]="i === 0" (click)="moveProject(i, -1)">↑</button>
         <button type="button" class="move-down" aria-label="下移" [disabled]="i === projects().length - 1" (click)="moveProject(i, 1)">↓</button>
-        <button type="button" class="row-delete" [class.danger]="confirming() === 'project:' + project.id" [attr.aria-label]="confirming() === 'project:' + project.id ? '確定刪除' : '刪除專案'" (blur)="confirming() === 'project:' + project.id && confirming.set(null)" (click)="confirmTap('project:' + project.id) && deleteProject(project)">{{ confirming() === 'project:' + project.id ? '確定刪除' : '🗑' }}</button>
+        <button type="button" class="row-delete" [class.danger]="confirming() === 'project:' + project.id" [attr.aria-label]="confirming() === 'project:' + project.id ? '確定刪除' : '刪除專案'" (blur)="confirming() === 'project:' + project.id && confirming.set(null)" (click)="confirmTap('project:' + project.id) && deleteProject(project)">@if (confirming() === 'project:' + project.id) { 確定刪除 } @else { <i class="pi pi-trash" aria-hidden="true"></i> }</button>
         @if (confirming() === 'project:' + project.id) {
           <button type="button" class="row-cancel" (click)="confirming.set(null)">取消</button>
         }
@@ -106,13 +106,13 @@
   </details>
 
   <details class="data-section counterparties-section">
-    <summary class="srow"><span>👥</span><span class="t">對象</span><span class="r">{{ counterparties().length }}</span></summary>
+    <summary class="srow"><span><i class="pi pi-users" aria-hidden="true"></i></span><span class="t">對象</span><span class="r">{{ counterparties().length }}</span></summary>
     <input class="cp-filter" type="search" placeholder="搜尋對象" [value]="cpFilter()" (input)="cpFilter.set($any($event.target).value)" />
     @for (cp of visibleCounterparties(); track cp.id) {
       <div class="data-row cp-row">
         <input class="row-name cp-name" aria-label="對象名稱" [value]="cp.name" (change)="renameCounterparty(cp, $any($event.target).value)" />
         <span class="cp-open">{{ openAmounts(cp) }}</span>
-        <button type="button" class="row-delete" [class.danger]="confirming() === 'cp:' + cp.id" [attr.aria-label]="confirming() === 'cp:' + cp.id ? '確定刪除' : '刪除對象'" (blur)="confirming() === 'cp:' + cp.id && confirming.set(null)" (click)="confirmTap('cp:' + cp.id) && deleteCounterparty(cp)">{{ confirming() === 'cp:' + cp.id ? '確定刪除' : '🗑' }}</button>
+        <button type="button" class="row-delete" [class.danger]="confirming() === 'cp:' + cp.id" [attr.aria-label]="confirming() === 'cp:' + cp.id ? '確定刪除' : '刪除對象'" (blur)="confirming() === 'cp:' + cp.id && confirming.set(null)" (click)="confirmTap('cp:' + cp.id) && deleteCounterparty(cp)">@if (confirming() === 'cp:' + cp.id) { 確定刪除 } @else { <i class="pi pi-trash" aria-hidden="true"></i> }</button>
         @if (confirming() === 'cp:' + cp.id) {
           <button type="button" class="row-cancel" (click)="confirming.set(null)">取消</button>
         }
@@ -127,21 +127,21 @@
   <div class="lbl">顯示</div>
   @if (preference(); as pref) {
     <label class="srow">
-      <span>🎨</span><span class="t">支出收入顏色</span>
+      <span><i class="pi pi-palette" aria-hidden="true"></i></span><span class="t">支出收入顏色</span>
       <select class="r pref-colors" (change)="setPreference('expense_income_colors', $any($event.target).value)">
         <option value="red_green" [selected]="pref.expense_income_colors === 'red_green'">紅 / 綠</option>
         <option value="green_red" [selected]="pref.expense_income_colors === 'green_red'">綠 / 紅</option>
       </select>
     </label>
     <label class="srow">
-      <span>🔢</span><span class="t">數字鍵盤順序</span>
+      <span><i class="pi pi-sort-numeric-up" aria-hidden="true"></i></span><span class="t">數字鍵盤順序</span>
       <select class="r pref-keypad" (change)="setPreference('keypad_layout', $any($event.target).value)">
         <option value="calculator" [selected]="pref.keypad_layout === 'calculator'">計算機</option>
         <option value="phone" [selected]="pref.keypad_layout === 'phone'">電話</option>
       </select>
     </label>
     <label class="srow">
-      <span>📅</span><span class="t">月曆起始星期</span>
+      <span><i class="pi pi-calendar" aria-hidden="true"></i></span><span class="t">月曆起始星期</span>
       <select class="r pref-week" (change)="setPreference('week_start', +$any($event.target).value)">
         @for (day of weekdays; track $index) {
           <option [value]="$index" [selected]="pref.week_start === $index">{{ day }}</option>
@@ -149,17 +149,17 @@
       </select>
     </label>
     <div class="srow">
-      <span>🙈</span><span class="t">首頁隱藏紅利回饋</span>
+      <span><i class="pi pi-eye-slash" aria-hidden="true"></i></span><span class="t">首頁隱藏紅利回饋</span>
       <button type="button" class="tog pref-hide-rewards" role="switch" aria-label="首頁隱藏紅利回饋" [attr.aria-checked]="pref.hide_rewards_on_timeline" [class.on]="pref.hide_rewards_on_timeline" (click)="setPreference('hide_rewards_on_timeline', !pref.hide_rewards_on_timeline)"></button>
     </div>
     <!-- 總額縮寫 (abbreviate_totals) stays in the preference model; its toggle returns in 2b, with the page that reads it. -->
-    <div class="srow"><span>💱</span><span class="t">主幣種</span><span class="r">{{ pref.main_currency }}</span></div>
+    <div class="srow"><span><i class="pi pi-money-bill" aria-hidden="true"></i></span><span class="t">主幣種</span><span class="r">{{ pref.main_currency }}</span></div>
   }
 
   <div class="lbl">匯入</div>
   <div class="import-box">
     <p class="srow latest-import">
-      <span>📦</span><span class="t">匯入 MOZE 備份 (.zip)</span>
+      <span><i class="pi pi-box" aria-hidden="true"></i></span><span class="t">匯入 MOZE 備份 (.zip)</span>
       <span class="r">
         @if (latest(); as run) {
           上次 {{ run.started_at | date: 'MM/dd HH:mm' }}{{ run.row_count !== null ? ' · ' + (run.row_count | number) + ' 筆' : '' }}
@@ -274,7 +274,7 @@
     }
 
     <div class="srow lock-row">
-      <span>🔒</span><span class="t">匯入鎖定</span><span class="r">未鎖定（切換後鎖定）</span>
+      <span><i class="pi pi-lock" aria-hidden="true"></i></span><span class="t">匯入鎖定</span><span class="r">未鎖定（切換後鎖定）</span>
     </div>
     <p class="lock-note muted">此狀態由伺服器環境變數 ACCOUNTING_IMPORT_LOCKED 控制，頁面無法讀取；切換後設為 true，之後的匯入會被拒絕，所有記錄都可編輯。</p>
   </div>
