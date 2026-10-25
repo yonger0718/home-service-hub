@@ -112,6 +112,7 @@ describe('AccountingLayoutComponent', () => {
       await TestBed.inject(Router).navigateByUrl('/accounting/entries/1');
       await find(harness, PANE_PAGE);
       expect(harness.routeNativeElement!.querySelector('app-month-overview')).toBeNull();
+      expect(TestBed.inject(AccountingOverviewService).visible()).toBe(false);
     });
   });
 

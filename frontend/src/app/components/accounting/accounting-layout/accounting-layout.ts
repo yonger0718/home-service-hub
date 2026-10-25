@@ -247,6 +247,7 @@ export class AccountingLayoutComponent {
     });
     inject(DestroyRef).onDestroy(() => {
       this.setOutsideInert(false);
+      this.overview.visible.set(false);
       this.paneState.paneOpen.set(false);
       this.paneState.formOpen.set(false);
       this.paneState.sheetOpen.set(false);
