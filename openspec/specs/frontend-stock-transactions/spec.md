@@ -2,7 +2,9 @@
 
 ## Purpose
 TBD - created by archiving change redesign-dashboard-handoff. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Date-grouped buy/sell timeline
 
 The stock transactions screen SHALL render trades in descending order grouped by month; with a non-date sort (代碼) the months appear in first-seen order. Each month heading SHALL show the month (2026 年 10 月) and the month's 買 / 賣 totals. Each row MUST display: the trade day and weekday, a stock square, stock name + code, a `SideTag` (`buy` indigo 買 / `sell` slate 賣), a 當沖 tag when the trade is part of a day trade, `qty 股 @ price` with fees and tax beneath, the broker, and the amount (buys: total paid with a leading −; sells: net received with a leading +; foreign trades: TWD amount with the native amount beneath) and a row-actions button. At < 760px rows SHALL collapse to stock square, name + `SideTag`, `qty 股 @ price · broker`, and amount with the date beneath. The month 買 / 賣 totals SHALL use the same TWD all-in rule and row set as the summary cards (the list page's rows only while that set loads or after it failed). Native amounts SHALL show the currency as a suffix (`238.40 USD`). The stock square's fill SHALL be a stable hash of the symbol over the dashboard's five-colour series, so it MAY differ from the allocation-rank colour the dashboard gives the same stock.
@@ -74,7 +76,7 @@ The transaction list SHALL render a broker badge next to the existing market bad
 
 ### Requirement: Period summary cards
 
-Above the filters the screen SHALL render four cards for the current filter: 買進金額 (with count), 賣出金額 (with count), 手續費＋交易稅 (with its share of turnover), and 已實現損益 (trend-coloured, linking to `/portfolio/realized-pnl`). The page header SHALL show the title, the period and total count, and the actions 匯入 CSV (to `/portfolio/import`) and 新增交易 (soft-primary). At < 760px only 買進 and 賣出 SHALL be shown, side by side. The card figures SHALL be TWD all-in totals computed client-side over every row of the active filter, read 100 rows per request and capped at 50 requests, with the note `⋯ 僅載入前 5,000 筆` when the cap is reached; foreign rows without a finite positive `fx_rate_to_twd` SHALL be left out of the figures and counted in the note `不含外幣 n 筆`. 已實現損益 SHALL be the realized-P&L summary (`filter_scope_total`) for the same filters without `side`. The page has no market filter, so the scenario below is met through the symbol, side, broker and date filters, not a 台股 switch.
+Above the filters the screen SHALL render four cards for the current filter: 買進金額 (with count), 賣出金額 (with count), 手續費＋交易稅 (with its share of turnover), and 已實現損益 (trend-coloured, linking to `/portfolio/realized-pnl`). The page header SHALL show the title, the period and total count, and the actions 匯入 CSV (to `/portfolio/import`) and 新增交易 (soft-primary); below 760 px 新增交易 stays as the one primary action and 匯入 CSV moves into a ⋯ menu button. At < 760px only 買進 and 賣出 SHALL be shown, side by side. The card figures SHALL be TWD all-in totals computed client-side over every row of the active filter, read 100 rows per request and capped at 50 requests, with the note `⋯ 僅載入前 5,000 筆` when the cap is reached; foreign rows without a finite positive `fx_rate_to_twd` SHALL be left out of the figures and counted in the note `不含外幣 n 筆`. 已實現損益 SHALL be the realized-P&L summary (`filter_scope_total`) for the same filters without `side`. The page has no market filter, so the scenario below is met through the symbol, side, broker and date filters, not a 台股 switch.
 
 #### Scenario: Summary follows the filter
 - **WHEN** the owner filters to 台股 only
@@ -84,3 +86,14 @@ Above the filters the screen SHALL render four cards for the current filter: 買
 - **WHEN** the owner clicks the 已實現損益 card
 - **THEN** the router navigates to `/portfolio/realized-pnl`
 
+#### Scenario: Phone header
+- **WHEN** `/portfolio/transactions` renders at 390 px
+- **THEN** the header SHALL show the title, 新增交易 and a ⋯ menu holding 匯入 CSV, on one row
+
+### Requirement: Transactions use the shared filter bar
+
+The stock transactions screen SHALL use `<app-filter-bar>` with search and the 全部 / 買進 / 賣出 toggle inline; date range, broker and sort SHALL sit behind 篩選.
+
+#### Scenario: One filter row
+- **WHEN** `/portfolio/transactions` renders at 1440 px with no filters active
+- **THEN** the filters SHALL occupy one row above the list
