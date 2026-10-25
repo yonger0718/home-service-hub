@@ -7,7 +7,6 @@ import { Subscription, finalize } from 'rxjs';
 
 import { ButtonModule } from 'primeng/button';
 import { CardModule } from 'primeng/card';
-import { CheckboxModule } from 'primeng/checkbox';
 import { ConfirmDialogModule } from 'primeng/confirmdialog';
 import { FileUploadModule } from 'primeng/fileupload';
 import { InputTextModule } from 'primeng/inputtext';
@@ -24,6 +23,7 @@ import { PortfolioService } from '../../../services/portfolio.service';
 import { BentoComponent } from '../../ui/bento/bento';
 import { BtnComponent } from '../../ui/btn/btn';
 import { FileChipComponent } from '../../ui/file-chip/file-chip';
+import { SwitchComponent } from '../../ui/switch/switch';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { SideTagComponent } from '../../ui/side-tag/side-tag';
 import { TagComponent } from '../../ui/tag/tag';
@@ -67,7 +67,7 @@ const POLL_INTERVAL_MS = 5_000;
     FormsModule,
     ButtonModule,
     CardModule,
-    CheckboxModule,
+    SwitchComponent,
     ConfirmDialogModule,
     FileUploadModule,
     InputTextModule,

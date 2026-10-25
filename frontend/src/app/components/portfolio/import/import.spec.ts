@@ -72,6 +72,8 @@ describe('Portfolio import controls', () => {
     el(fixture).querySelector('[role="radiogroup"][aria-label="匯入類型"] [aria-checked="true"]')?.textContent?.trim();
   const headerCheckbox = (fixture: { nativeElement: HTMLElement }) =>
     Array.from(el(fixture).querySelectorAll('label')).find(l => l.textContent?.includes('首列為欄位名稱'));
+  const headerSwitch = (fixture: { nativeElement: HTMLElement }) =>
+    el(fixture).querySelector<HTMLButtonElement>('label.header-check [role="switch"]');
   const button = (fixture: { nativeElement: HTMLElement }, label: string) =>
     Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('button')).find(b => b.textContent?.trim() === label);
   const activeStep = (fixture: { nativeElement: HTMLElement }) =>
@@ -495,16 +497,42 @@ describe('Portfolio import controls', () => {
       expect(component.brokerResult()).toBeNull();
     });
 
-    it('unchecking 首列為欄位名稱 re-previews with has_header=false', async () => {
+    it('unchecking 首列為欄位名稱 re-previews with has_header=false', () => {
       const fixture = setup();
       const file = new File(['x'], 'a.csv');
       fixture.componentInstance.onSelect({ files: [file] });
       fixture.detectChanges();
-      await fixture.whenStable(); // ngModel writes the checked state asynchronously
-      const checkbox = headerCheckbox(fixture)!.querySelector('input')!;
-      checkbox.click();
+      headerSwitch(fixture)!.click();
       fixture.detectChanges();
       expect(service.uploadCsv).toHaveBeenLastCalledWith('transactions', file, true, false, {}, []);
+    });
+
+    it('renders 首列為欄位名稱 as a switch that is on by default and disabled while busy', () => {
+      const pending$ = new Subject<ImportResult>();
+      service.uploadCsv.mockReturnValue(pending$);
+      const fixture = setup();
+      expect(el(fixture).querySelector('label.header-check [role="switch"][aria-checked="true"]')).not.toBeNull();
+      expect(headerSwitch(fixture)!.disabled).toBe(false);
+      fixture.componentInstance.onSelect({ files: [new File(['x'], 'a.csv')] }); // preview in flight, never flushed
+      fixture.detectChanges();
+      expect(fixture.componentInstance.busy()).toBe(true);
+      expect(headerSwitch(fixture)!.disabled).toBe(true);
+    });
+
+    it('hides the switch for 券商對帳單', () => {
+      const fixture = setup();
+      typeButton(fixture, '券商對帳單').click();
+      fixture.detectChanges();
+      expect(el(fixture).querySelector('label.header-check')).toBeNull();
+    });
+
+    it('renders no footer before a file is chosen', () => {
+      const fixture = setup();
+      expect(el(fixture).querySelector('.imp-footer')).toBeNull();
+      expect(button(fixture, '確認匯入')).toBeUndefined();
+      fixture.componentInstance.onSelect({ files: [new File(['x'], 'a.csv')] });
+      fixture.detectChanges();
+      expect(el(fixture).querySelector('.imp-footer')).not.toBeNull();
     });
 
     it('更換檔案 opens the native file input', () => {
@@ -832,7 +860,6 @@ describe('Portfolio import controls', () => {
       const pending$ = new Subject<ImportResult>();
       service.uploadCsv.mockReturnValue(pending$);
       const fixture = setup();
-      expect(commitButton(fixture).disabled).toBe(true);
       fixture.componentInstance.onSelect({ files: [new File(['x'], 'a.csv')] });
       fixture.detectChanges();
       expect(commitButton(fixture).disabled).toBe(true);
@@ -853,6 +880,7 @@ describe('Portfolio import controls', () => {
       expect(card(fixture, 'preview-card')).toBeNull();
       expect(card(fixture, 'fix-card')).toBeNull();
       expect(card(fixture, 'override-card')).toBeNull();
+      expect(el(fixture).querySelector('.imp-footer')).toBeNull();
       expect(fixture.componentInstance.step()).toBe(1);
     });
 
@@ -936,8 +964,6 @@ describe('Portfolio import controls', () => {
     it('empty page: 重新預覽 is disabled without a file and 確認匯入 without a result', () => {
       const fixture = setup();
       expect(fixture.componentInstance.file()).toBeNull();
-      expect(button(fixture, '重新預覽')!.disabled).toBe(true);
-      expect(commitButton(fixture).disabled).toBe(true);
       service.uploadCsv.mockReturnValue(throwError(() => ({ status: 400, error: { detail: 'CSV 編碼不是 UTF-8' } })));
       fixture.componentInstance.onSelect({ files: [new File(['x'], 'a.csv')] });
       fixture.detectChanges();
@@ -1110,6 +1136,12 @@ describe('Portfolio import controls', () => {
         fixture.detectChanges();
         return fixture;
       }
+      function inModeWithFile(mode: 'panes' | 'sheet' | 'phone') {
+        const fixture = inMode(mode);
+        fixture.componentInstance.onSelect({ files: [new File(['x'], 'a.csv')] });
+        fixture.detectChanges();
+        return fixture;
+      }
 
       it('panes: 匯入後自動執行 with the three rows verbatim beside the main column', () => {
         const fixture = inMode('panes');
@@ -1151,7 +1183,7 @@ describe('Portfolio import controls', () => {
 
       for (const mode of ['sheet', 'phone'] as const) {
         it(`${mode}: the two cards render under the footer in the main column`, () => {
-          const fixture = inMode(mode);
+          const fixture = inModeWithFile(mode);
           const side = aside(fixture)!;
           const footer = el(fixture).querySelector('.imp-footer')!;
           expect(side.parentElement).toBe(footer.parentElement);
@@ -1162,7 +1194,7 @@ describe('Portfolio import controls', () => {
 
         it(`${mode}: with the recalc card visible the order is footer → 匯入並重算 → side cards`, () => {
           service.getRecalcStatus.mockReturnValue(of({ kind: 'import', state: 'failed' }));
-          const fixture = inMode(mode);
+          const fixture = inModeWithFile(mode);
           const footer = el(fixture).querySelector('.imp-footer')!;
           const card = recalcCard(fixture)!;
           const side = aside(fixture)!;
