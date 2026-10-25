@@ -2561,7 +2561,8 @@ def test_pair_transfer_candidate_respects_the_account_list(orphan_pair, db_sessi
 
 
 @pytest.mark.parametrize("arm", ["owner_twin", "owner_deleted"])
-def test_pair_transfer_candidate_skips_an_owner_twin_and_an_owner_deleted_pair(arm, orphan_pair, seed, db_session):
+def test_pair_transfer_candidate_skips_an_owner_twin_and_an_owner_deleted_pair(arm, orphan_pair, seed, db_session,
+                                                                               monkeypatch):
     p = orphan_pair
     _pair_policy(db_session)
     if arm == "owner_twin":  # (a) an unclaimed owner transfer joining the two families, 15 % off, inside the window
@@ -2582,9 +2583,12 @@ def test_pair_transfer_candidate_skips_an_owner_twin_and_an_owner_deleted_pair(a
     db_session.commit()
     ews.delete_entry(db_session, sorted(row.created_entry_ids)[0])
     db_session.commit()
-    # the bank statement is reconciled and its policy runs BEFORE the card statement's sweep retires the row
+    # the bank statement is reconciled and its policy runs BEFORE the card statement's sweep retires the row: the
+    # reconcile stamps owner_deleted on the bank case and the card case is still resolved (no peer candidate), so
+    # nothing is collected here; the pair_transfer_block arm of the builder is pinned below, after the sweep
     _reconcile(db_session, p.bstmt.id)
     assert _reload(db_session, ReconciliationAction, row.id).status == "applied"
+    assert _needs_peer(db_session, p.bstmt).context.get("owner_deleted") is True
     assert _pair_candidates(db_session, p.bstmt) == []
     result = policy_service.run_policy(db_session, p.bstmt.id)
     assert (result.applied, result.proposed) == ([], [])
@@ -2600,6 +2604,22 @@ def test_pair_transfer_candidate_skips_an_owner_twin_and_an_owner_deleted_pair(a
         result = policy_service.run_policy(db_session, stmt.id)
         assert (result.applied, result.proposed) == ([], [])
     assert [a.id for a in _actions_named(db_session, "pair_transfer")] == [row.id] and _proposals(db_session) == []
+    # the occupancy guard alone: without the bank case's stamp (it is not the row's statement, so
+    # owner_deleted_events does not drop it either) the card line is a peer candidate, and pair_transfer_block
+    # still keeps the builder from pairing — with the guard patched away it would pair
+    bank_case = _needs_peer(db_session, p.bstmt)
+    bank_case.context = {k: v for k, v in bank_case.context.items() if k != "owner_deleted"}
+    db_session.commit()
+    bank_stmt = _reload(db_session, AccountStatement, p.bstmt.id)
+    bank_case = _needs_peer(db_session, p.bstmt)
+    from app.services.reconciliation_actions import transfer_actions
+    assert [line.id for _, line in transfer_actions.PairTransferAction.peer_candidates(db_session, bank_case)] \
+        == [p.cline.id]
+    assert stand_ins.pair_transfer_block(db_session, [bank_case.event_id, p.cline.event_id])
+    assert policy_service._pair_transfer_candidate(db_session, bank_case, bank_stmt) is None
+    assert _pair_candidates(db_session, p.bstmt) == []
+    monkeypatch.setattr(stand_ins, "pair_transfer_block", lambda db, events: False)
+    assert policy_service._pair_transfer_candidate(db_session, bank_case, bank_stmt) is not None
 
 
 def test_pair_transfer_policy_precheck_refuses_a_stale_candidate(orphan_pair, seed, db_session):
@@ -2654,14 +2674,48 @@ def test_pending_pair_transfer_proposal_is_superseded_when_an_owner_twin_appears
     assert (result.applied, result.proposed) == ([], []) and _actions_named(db_session, "pair_transfer") == []
 
 
-def test_pending_pair_transfer_proposal_goes_stale_when_the_owner_transfer_matches_both_lines(orphan_pair, seed,
-                                                                                             db_session):
-    """The brief's exact owner transfer (20000 on 9/5): reconcile matches both lines to its legs, so the case moves
-    on and the proposal is superseded as stale (`supersede_stale`, the routes' call), never applied by the policy."""
+def test_pending_pair_transfer_proposal_is_superseded_when_its_peer_line_leaves_the_candidates(orphan_pair, seed,
+                                                                                               db_session):
+    """Review fix: the owner matches the proposed peer (bank) line elsewhere. The peer statement's change never moves
+    the card case's version (`supersede_stale` finds nothing), so the policy's next run supersedes its own proposal
+    (`by: peer_out_of_scope`) and reopens the case; with no peer left, the run after proposes nothing."""
     p = orphan_pair
     _pair_policy(db_session, actions={"pair_transfer": {"enabled": True, "max_amount": "1000"}})
     policy_service.run_policy(db_session, p.cstmt.id)
     (prop,) = _proposals(db_session, action="pair_transfer", status="pending")
+    case = _needs_peer(db_session, p.cstmt)
+    assert case.status == "proposed"
+    entry = seed.entry(p.bank, "-20000", kind="expense", day=date(2026, 9, 5))
+    db_session.commit()
+    engine.apply_action(db_session, case_id=_needs_peer(db_session, p.bstmt).id, action="match",
+                        params={"line_id": p.bline.id, "entry_id": entry.id}, actor="owner", label="owner-test")
+    db_session.commit()
+    for stmt in (p.bstmt, p.cstmt):
+        _reconcile(db_session, stmt.id)
+    assert _needs_peer(db_session, p.bstmt) is None and _needs_peer(db_session, p.cstmt).id == case.id
+    assert proposal_service.supersede_stale(db_session) == 0  # the case version did not move
+    db_session.commit()
+    result = policy_service.run_policy(db_session, p.cstmt.id)
+    assert _reload(db_session, ReconciliationProposal, prop.id).status == "superseded"
+    (audited,) = _audit(db_session, "proposal_superseded")
+    assert audited.detail == {"proposal_id": prop.id, "by": "peer_out_of_scope"}
+    assert _reload(db_session, ReconciliationCase, case.id).status == "open"
+    assert (result.applied, result.proposed) == ([], [])
+    again = policy_service.run_policy(db_session, p.cstmt.id)
+    assert (again.applied, again.proposed) == ([], []) and _proposals(db_session, status="pending") == []
+    assert _actions_named(db_session, "pair_transfer") == []
+
+
+def test_pending_pair_transfer_proposal_is_superseded_when_the_owner_transfer_matches_both_lines(orphan_pair, seed,
+                                                                                                db_session):
+    """The brief's exact owner transfer (20000 on 9/5): reconcile matches both lines to its legs and closes both
+    cases, so the proposed peer line is no longer a candidate — the policy's next run supersedes the proposal
+    (`by: peer_out_of_scope`; the closed case is not reopened) and applies nothing."""
+    p = orphan_pair
+    _pair_policy(db_session, actions={"pair_transfer": {"enabled": True, "max_amount": "1000"}})
+    policy_service.run_policy(db_session, p.cstmt.id)
+    (prop,) = _proposals(db_session, action="pair_transfer", status="pending")
+    case_id = _needs_peer(db_session, p.cstmt).id
     _transfer(seed, p.bank, p.card, "20000", date(2026, 9, 5))
     db_session.commit()
     for stmt in (p.bstmt, p.cstmt):
@@ -2669,6 +2723,7 @@ def test_pending_pair_transfer_proposal_goes_stale_when_the_owner_transfer_match
     assert _needs_peer(db_session, p.cstmt) is None and _needs_peer(db_session, p.bstmt) is None
     result = policy_service.run_policy(db_session, p.cstmt.id)
     assert (result.applied, result.proposed) == ([], []) and _actions_named(db_session, "pair_transfer") == []
-    assert proposal_service.supersede_stale(db_session) == 1
-    db_session.commit()
     assert _reload(db_session, ReconciliationProposal, prop.id).status == "superseded"
+    (audited,) = _audit(db_session, "proposal_superseded")
+    assert audited.detail == {"proposal_id": prop.id, "by": "peer_out_of_scope"}
+    assert _reload(db_session, ReconciliationCase, case_id).status not in ("open", "proposed")

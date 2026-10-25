@@ -251,26 +251,31 @@ def refuse_owner_recorded(ctx: Context) -> None:
         raise CodedConflictError("owner_may_record", f"case {ctx.case.id}")
 
 
-def _proposal_owner_recorded(db: Session, statement: AccountStatement, case: ReconciliationCase, line: StatementLine,
-                             rules: matching.Rules, proposal: ReconciliationProposal) -> bool:
-    """An owner entry may now record what the proposal would book: the line (`_owner_may_record`), or for a
-    `pair_transfer` the pair with its proposed peer line while that line is still a peer candidate — the
-    transfer-twin guard (`transfer_twin_reason`: rules (a)/(b) and the R6b rule on either line)."""
+def _supersede_reason(db: Session, statement: AccountStatement, case: ReconciliationCase, line: StatementLine,
+                      rules: matching.Rules, proposal: ReconciliationProposal) -> str | None:
+    """Why a pending policy proposal can no longer be applied as written, or None: `owner_may_record` when an owner
+    entry may now record the line (`_owner_may_record`) or, for a `pair_transfer`, the pair with its proposed peer
+    line (the transfer-twin guard, `transfer_twin_reason`: rules (a)/(b) and the R6b rule on either line);
+    `peer_out_of_scope` when that peer line is no longer a peer candidate (claimed, its case closed, its statement
+    retired) — the peer statement's changes never move this case's version, so `supersede_stale` cannot see it."""
     if _owner_may_record(db, statement, case, line, rules):
-        return True
+        return "owner_may_record"
     if proposal.action != "pair_transfer":
-        return False
+        return None
     peer = next(((s, other) for s, other in transfer_actions.PairTransferAction.peer_candidates(db, case)
                  if other.id == (proposal.params or {}).get("peer_line_id")), None)
-    return peer is not None and transfer_actions.transfer_twin_reason(db, rules, (statement, line), peer) is not None
+    if peer is None:
+        return "peer_out_of_scope"
+    return "owner_may_record" if transfer_actions.transfer_twin_reason(db, rules, (statement, line), peer) else None
 
 
 def _supersede_owner_recorded(db: Session, statement_id: int, *, run_id: int | None) -> int:
     """Pending policy-authored `stand_ins.OWNER_TWIN_GUARDED` proposals (`backfill_entry`, `create_system_entry`,
-    `pair_transfer`) of the statement that an owner entry may now record (`_proposal_owner_recorded`) → superseded,
-    audited `proposal_superseded` (`by: owner_may_record`), and a `proposed` case left without a live proposal
-    reopens. The case keeps its version through reconcile, so `supersede_stale` never sees them. Locks statement →
-    cases (ascending) → proposals (the `supersede_stale` order); commits. Returns how many."""
+    `pair_transfer`) of the statement that an owner entry may now record, or a `pair_transfer` whose peer line is no
+    longer a candidate (`_supersede_reason`) → superseded, audited `proposal_superseded` (`by`: the reason), and a
+    `proposed` case left without a live proposal reopens (so the next run may collect the line again). The case
+    keeps its version through reconcile, so `supersede_stale` never sees them. Locks statement → cases (ascending)
+    → proposals (the `supersede_stale` order); commits. Returns how many."""
     case_ids = sorted(set(db.execute(
         select(ReconciliationProposal.case_id)
         .join(ReconciliationCase, ReconciliationCase.id == ReconciliationProposal.case_id)
@@ -289,12 +294,13 @@ def _supersede_owner_recorded(db: Session, statement_id: int, *, run_id: int | N
         if line is None:
             continue
         for proposal in proposal_service._pending(db, case.id, author=POLICY):
-            if proposal.action not in stand_ins.OWNER_TWIN_GUARDED \
-                    or not _proposal_owner_recorded(db, statement, case, line, rules, proposal):
+            by = None if proposal.action not in stand_ins.OWNER_TWIN_GUARDED \
+                else _supersede_reason(db, statement, case, line, rules, proposal)
+            if by is None:
                 continue
             proposal.status, proposal.decided_at = "superseded", func.now()
             audit.record(db, event="proposal_superseded", actor=POLICY, statement_id=statement_id, case_id=case.id,
-                         run_id=run_id, detail={"proposal_id": proposal.id, "by": "owner_may_record"})
+                         run_id=run_id, detail={"proposal_id": proposal.id, "by": by})
             superseded.append(case.id)
     db.flush()
     proposal_service.reopen_idle(db, superseded)
