@@ -50,7 +50,8 @@ describe('Bootstrap grid class names (polish-layout-v2 D1)', () => {
     expect('col-6'.match(GRID_TOKEN)).not.toBeNull();
     for (const ok of ['row-name', 'entry-row', 'field-row', 'rows', 'column', 'col-span']) expect(ok.match(GRID_TOKEN), ok).toBeNull();
   });
-  it('no component template outside the allowlist uses a Bootstrap grid class', () => {
+  // Walks every template; under a full parallel run it has hit vitest's 5 s default.
+  it('no component template outside the allowlist uses a Bootstrap grid class', { timeout: 30_000 }, () => {
     expect(gridOffenders(join(process.cwd(), 'src/app'))).toEqual([]);
   });
   it('every allowlisted file still exists and still uses the grid (otherwise drop it from the list)', () => {

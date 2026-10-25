@@ -68,7 +68,8 @@ h1 {
   }
 }
 
-.header-gear {
+.header-gear,
+.header-more {
   align-items: center;
   background: var(--app-surface);
   border: 1px solid var(--app-border);
@@ -87,23 +88,86 @@ h1 {
   }
 }
 
-/* Gear sits beside the title in the DOM (focus order matches what is seen); the actions wrap to a full-width line. */
-:host(.actions-below) {
-  .page-header-row {
-    flex-wrap: wrap;
+.header-more {
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+
+.header-more-wrap {
+  flex: 0 0 auto;
+  position: relative;
+}
+
+.header-menu {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--app-raised-shadow);
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  padding: 4px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 1100;
+}
+
+.header-menu-item {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--app-text);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 10px;
+  padding: 10px 12px;
+  text-align: left;
+  text-decoration: none;
+  width: 100%;
+
+  &:hover:not([aria-disabled='true']),
+  &:focus-visible {
+    background: var(--app-surface-soft);
+    outline: none;
   }
 
-  .page-title {
-    flex-basis: 0;
-  }
-
-  .page-actions {
-    flex: 1 0 100%;
-    gap: 0.5rem;
-    justify-content: flex-start;
+  &[aria-disabled='true'] {
+    color: var(--app-text-muted);
+    cursor: default;
   }
 }
 
 app-sub-nav {
   margin-top: 0.75rem;
+}
+
+/* Phones: title, one primary action, ⋯ and the gear share one row (D9), so the title block is the only part
+   that gives way — a smaller h1 that ellipsizes instead of wrapping, and a one-line subtitle. */
+@media (max-width: 759.98px) {
+  .page-header-row {
+    gap: 0.5rem;
+  }
+
+  h1 {
+    font-size: 20px;
+    overflow: hidden;
+    overflow-wrap: normal;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .page-subtitle {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .page-actions {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+  }
 }

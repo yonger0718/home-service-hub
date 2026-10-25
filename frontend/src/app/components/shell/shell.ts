@@ -10,6 +10,7 @@ import { DirtyFormRegistry } from '../accounting/dirty-form.service';
 import { MobileNavComponent } from '../mobile-nav/mobile-nav';
 import { SidebarComponent } from '../sidebar/sidebar';
 import { resolveGlobalShortcut } from './global-shortcuts';
+import { HideOnScrollDirective } from './hide-on-scroll';
 import { NavigationStateService } from './navigation-state.service';
 
 const EXPANDED_WIDTH = '248px';
@@ -31,7 +32,7 @@ const ENTRY_FORM: ['/accounting/entry'] = ['/accounting/entry'];
 
 @Component({
   selector: 'app-shell',
-  imports: [RouterOutlet, SidebarComponent, MobileNavComponent],
+  imports: [RouterOutlet, SidebarComponent, MobileNavComponent, HideOnScrollDirective],
   templateUrl: './shell.html',
   styleUrl: './shell.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

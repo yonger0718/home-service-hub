@@ -36,7 +36,7 @@ import { BtnComponent } from '../../ui/btn/btn';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { BentoComponent } from '../../ui/bento/bento';
 import { PctBadgeComponent } from '../../ui/pct-badge/pct-badge';
-import { PageHeaderComponent } from '../../shell/page-header/page-header';
+import { PageHeaderComponent, PageMenuItem } from '../../shell/page-header/page-header';
 import {
   MARKET_LABELS,
   PendingRow,
@@ -136,6 +136,11 @@ export class PortfolioDashboardComponent implements OnInit {
   readonly chartPlugins = [hoverGuidePlugin];
 
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
+  /** Phone header ⋯ menu: the actions that sit in the header from 760 px. */
+  readonly phoneMenu = computed<PageMenuItem[]>(() => [
+    { label: '匯入券商', icon: 'pi-upload', routerLink: '/portfolio/import', queryParams: { type: 'broker' } },
+    { label: '刷新行情', icon: 'pi-refresh', run: () => this.loadSummary(), disabled: this.loading() },
+  ]);
 
   /** Latest values for the chart legend; null hides it. */
   readonly chartLegend = computed<ChartSeriesValues | null>(() => {

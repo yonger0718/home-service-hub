@@ -158,14 +158,26 @@ describe('PortfolioTransactionListComponent', () => {
       expect(el(fixture).querySelector('app-page-header .page-subtitle')?.textContent?.trim()).toBe('2026/01/01 – 2026/10/22 · 共 7 筆');
     });
 
-    it('puts the header actions on their own line on phone only', () => {
+    it('phone: 匯入 CSV moves into the ⋯ menu and 新增交易 stays in the row', () => {
       TestBed.inject(LayoutModeService).set('phone');
       const fixture = create();
-      expect(el(fixture).querySelector('app-page-header')?.classList).toContain('actions-below');
+      const root = el(fixture);
 
-      TestBed.inject(LayoutModeService).set('panes');
+      const inlineLink = Array.from(root.querySelectorAll<HTMLAnchorElement>('app-page-header a')).find(a => a.textContent?.includes('匯入 CSV') && !a.closest('.header-menu'));
+      expect(inlineLink).toBeUndefined();
+      const create_ = Array.from(root.querySelectorAll('app-page-header app-btn')).find(btn => btn.textContent?.includes('新增交易'));
+      expect(create_).toBeDefined();
+      const more = root.querySelector<HTMLButtonElement>('app-page-header .header-more');
+      expect(more).not.toBeNull();
+
+      more!.click();
       fixture.detectChanges();
-      expect(el(fixture).querySelector('app-page-header')?.classList).not.toContain('actions-below');
+      const items = root.querySelectorAll<HTMLElement>('app-page-header .header-menu [role="menuitem"]');
+      expect(items.length).toBe(1);
+      expect(items[0].tagName).toBe('A');
+      expect(items[0].textContent).toContain('匯入 CSV');
+      expect(items[0].getAttribute('href')).toBe('/portfolio/import');
+      expect(root.querySelector('app-page-header')?.classList).not.toContain('actions-below');
     });
 
     it('shows the count only in the subtitle, with 查詢中... in the result line while loading', () => {

@@ -62,6 +62,12 @@ describe('AccountingLayoutComponent', () => {
     expect(getComputedStyle(host).getPropertyValue('--fs-micro').trim()).toBe('0.72rem');
   });
 
+  it('marks the list pane as the page scroller for the shell', async () => {
+    const harness = await start('panes', '/accounting');
+    const pane = await find(harness, '.list-pane');
+    expect(pane.hasAttribute('data-page-scroller')).toBe(true);
+  });
+
   it('keeps the list and updates the URL when a row is selected at 1280px', async () => {
     const harness = await start('panes', '/accounting');
     const list = await find(harness, LIST);

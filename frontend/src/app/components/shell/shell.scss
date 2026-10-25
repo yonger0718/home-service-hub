@@ -39,6 +39,10 @@
   position: fixed;
   right: var(--fab-right, 30px);
   text-decoration: none;
+  transition:
+    transform 160ms var(--ease-standard),
+    opacity 160ms var(--ease-standard),
+    visibility 0s linear 0s;
   width: 56px;
   z-index: 1000;
 
@@ -50,6 +54,14 @@
   &:focus-visible {
     box-shadow: 0 0 0 4px var(--app-focus-ring), 0 8px 20px rgba(83, 58, 253, 0.35);
     outline: none;
+  }
+
+  &.is-hidden {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(24px);
+    transition-delay: 0s, 0s, 160ms; /* visibility flips after the slide, so the button leaves the tab order last */
+    visibility: hidden;
   }
 }
 
@@ -125,6 +137,10 @@
 
 @media (prefers-reduced-motion: reduce) {
   .hub-main {
+    transition: none;
+  }
+
+  .hub-fab {
     transition: none;
   }
 }

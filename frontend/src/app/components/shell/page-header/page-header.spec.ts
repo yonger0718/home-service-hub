@@ -1,4 +1,6 @@
 import { Location } from '@angular/common';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { provideLocationMocks } from '@angular/common/testing';
 import { Component, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
@@ -7,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LayoutMode, LayoutModeService, MATCH_MEDIA, PHONE_QUERY } from '../../../services/layout-mode.service';
 import { NavBadgeService } from '../../../services/nav-badge.service';
-import { PageHeaderComponent } from './page-header';
+import { PageHeaderComponent, PageMenuItem } from './page-header';
 
 @Component({ template: '' })
 class BlankPage {}
@@ -30,9 +32,16 @@ class SubtitleHost {
 
 @Component({
   imports: [PageHeaderComponent],
-  template: `<app-page-header title="投資概覽" [actionsBelowOnPhone]="true"><button class="act">新增</button></app-page-header>`,
+  template: `<app-page-header title="T" [menu]="items"><button class="primary">主要</button></app-page-header>`,
 })
-class ActionsBelowHost {}
+class MenuHost {
+  ran = 0;
+  items: PageMenuItem[] = [
+    { label: '匯入券商', icon: 'pi-upload', routerLink: '/portfolio/import', queryParams: { type: 'broker' } },
+    { label: '刷新行情', icon: 'pi-refresh', run: () => this.ran++ },
+    { label: '停用', run: () => this.ran++, disabled: true },
+  ];
+}
 
 @Component({
   imports: [PageHeaderComponent],
@@ -70,7 +79,6 @@ async function render(
   url = '/accounting',
   hidden: string[] | null = null,
   title?: string,
-  host: typeof Host | typeof ActionsBelowHost = Host,
 ) {
   if (hidden) localStorage.setItem('hh-nav-hidden', JSON.stringify(hidden));
   TestBed.configureTestingModule({
@@ -89,8 +97,8 @@ async function render(
     ],
   });
   await TestBed.inject(Router).navigateByUrl(url);
-  const fixture = TestBed.createComponent<Host | ActionsBelowHost>(host);
-  if (fixture.componentInstance instanceof Host) fixture.componentInstance.title = title;
+  const fixture = TestBed.createComponent(Host);
+  fixture.componentInstance.title = title;
   fixture.detectChanges();
   return fixture.nativeElement as HTMLElement;
 }
@@ -164,35 +172,6 @@ describe('PageHeaderComponent', () => {
 
     expect(el.querySelector('a[aria-label="設定"]')).toBeNull();
     expect(el.querySelector('app-sub-nav')).toBeNull();
-  });
-
-  describe('actionsBelowOnPhone', () => {
-    const header = (el: HTMLElement) => el.querySelector('app-page-header')!;
-
-    it('moves the actions to their own line on phones, after the title and gear', async () => {
-      const el = await render(375, '/portfolio', null, undefined, ActionsBelowHost);
-      const actions = el.querySelector('.page-actions')!;
-      const gear = el.querySelector('a[aria-label="設定"]')!;
-
-      expect(header(el).classList).toContain('actions-below');
-      expect(actions.querySelector('.act')).not.toBeNull();
-      expect(gear.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      expect(el.querySelector('.page-title')!.nextElementSibling).toBe(gear);
-    });
-
-    it('keeps the one-line row at 760px and wider', async () => {
-      const el = await render(800, '/portfolio', null, undefined, ActionsBelowHost);
-
-      expect(header(el).classList).not.toContain('actions-below');
-    });
-
-    it('changes nothing without the input', async () => {
-      const el = await render(375);
-      const actions = el.querySelector('.page-actions')!;
-
-      expect(header(el).classList).not.toContain('actions-below');
-      expect(actions.nextElementSibling).toBe(el.querySelector('a[aria-label="設定"]'));
-    });
   });
 
   describe('back button (Settings as a pushed screen on phones)', () => {
@@ -276,5 +255,312 @@ describe('PageHeaderComponent', () => {
       expect(el.querySelector('a[aria-label="設定"]')).toBeNull();
       expect(el.querySelector('app-sub-nav')).not.toBeNull();
     });
+  });
+  describe('⋯ menu (phone)', () => {
+    async function renderMenu(mode: LayoutMode = 'phone', items?: PageMenuItem[]) {
+      TestBed.configureTestingModule({
+        providers: [
+          provideRouter([{ path: '**', component: BlankPage }]),
+          { provide: MATCH_MEDIA, useValue: null },
+          { provide: NavBadgeService, useValue: { badges: signal({}) } },
+        ],
+      });
+      TestBed.inject(LayoutModeService).set(mode);
+      await TestBed.inject(Router).navigateByUrl('/accounting');
+      const fixture = TestBed.createComponent(MenuHost);
+      if (items) fixture.componentInstance.items = items;
+      document.body.appendChild(fixture.nativeElement);
+      fixture.detectChanges();
+      const el = fixture.nativeElement as HTMLElement;
+      const flush = async () => {
+        fixture.detectChanges();
+        await fixture.whenStable();
+        await new Promise<void>(r => setTimeout(r));
+        fixture.detectChanges();
+      };
+      const more = () => el.querySelector<HTMLButtonElement>('.header-more');
+      const menuItems = () => Array.from(el.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+      const panel = () => el.querySelector<HTMLElement>('.header-menu');
+      const key = (k: string) => {
+        const ev = new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true });
+        panel()!.dispatchEvent(ev);
+        return ev;
+      };
+      return { fixture, el, flush, more, menuItems, panel, key, host: fixture.componentInstance };
+    }
+
+    afterEach(() => document.body.replaceChildren());
+
+    it('renders a 更多動作 button after the actions and before the gear, closed', async () => {
+      const { el, more, panel } = await renderMenu();
+      const b = more()!;
+
+      expect(b.getAttribute('aria-label')).toBe('更多動作');
+      expect(b.getAttribute('aria-haspopup')).toBe('menu');
+      expect(b.getAttribute('aria-expanded')).toBe('false');
+      const actions = el.querySelector('.page-actions')!;
+      const gear = el.querySelector('.header-gear')!;
+      expect(gear).not.toBeNull();
+      expect(actions.nextElementSibling).toBe(b.parentElement);
+      expect(b.parentElement!.nextElementSibling).toBe(gear);
+      expect(panel()).toBeNull();
+    });
+
+    it('renders no menu from 760 px or with no items, and the gear then follows the actions', async () => {
+      const sheet = await renderMenu('sheet');
+      expect(sheet.more()).toBeNull();
+      TestBed.resetTestingModule();
+      const empty = await renderMenu('phone', []);
+      expect(empty.more()).toBeNull();
+      expect(empty.el.querySelector('.page-actions')!.nextElementSibling).toBe(empty.el.querySelector('.header-gear'));
+    });
+
+    it('opens on click, focuses the first item and lists the items in order', async () => {
+      const { more, menuItems, panel, flush } = await renderMenu();
+      more()!.click();
+      await flush();
+
+      expect(panel()!.getAttribute('role')).toBe('menu');
+      expect(more()!.getAttribute('aria-expanded')).toBe('true');
+      expect(more()!.getAttribute('aria-controls')).toBe(panel()!.id);
+      const items = menuItems();
+      expect(items.map(i => i.textContent!.trim())).toEqual(['匯入券商', '刷新行情', '停用']);
+      expect(document.activeElement).toBe(items[0]);
+      expect(items[0].tagName).toBe('A');
+      expect(items[0].getAttribute('href')).toContain('/portfolio/import?type=broker');
+      expect(items[2].getAttribute('aria-disabled')).toBe('true');
+    });
+
+    it('runs an item and closes', async () => {
+      const { more, menuItems, panel, flush, host } = await renderMenu();
+      more()!.click();
+      await flush();
+      menuItems()[2].click();
+      await flush();
+      expect(host.ran).toBe(0);
+      expect(panel()).not.toBeNull();
+
+      menuItems()[1].click();
+      await flush();
+      expect(host.ran).toBe(1);
+      expect(panel()).toBeNull();
+      expect(document.activeElement).toBe(more());
+    });
+
+    it('arrow keys cycle, Home/End jump, Escape closes and restores focus', async () => {
+      const { more, menuItems, panel, flush, key } = await renderMenu();
+      more()!.click();
+      await flush();
+      const items = menuItems();
+
+      key('ArrowDown');
+      key('ArrowDown');
+      expect(document.activeElement).toBe(items[2]);
+      key('ArrowDown');
+      expect(document.activeElement).toBe(items[0]);
+      key('ArrowUp');
+      expect(document.activeElement).toBe(items[2]);
+      key('Home');
+      expect(document.activeElement).toBe(items[0]);
+      key('End');
+      expect(document.activeElement).toBe(items[2]);
+      key('Escape');
+      await flush();
+      expect(panel()).toBeNull();
+      expect(document.activeElement).toBe(more());
+    });
+
+    it('closes on an outside pointerdown and when focus leaves the menu', async () => {
+      const { el, more, menuItems, panel, flush } = await renderMenu();
+      more()!.click();
+      await flush();
+      document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      await flush();
+      expect(panel()).toBeNull();
+
+      more()!.click();
+      await flush();
+      panel()!.dispatchEvent(
+        new FocusEvent('focusout', { bubbles: true, relatedTarget: el.querySelector('.primary') }),
+      );
+      await flush();
+      expect(panel()).toBeNull();
+
+      more()!.click();
+      await flush();
+      panel()!.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: menuItems()[1] }));
+      await flush();
+      expect(panel()).not.toBeNull();
+    });
+
+    it('Home and End are handled (no page scroll)', async () => {
+      const { more, menuItems, flush, key } = await renderMenu();
+      more()!.click();
+      await flush();
+
+      const ev = key('End');
+
+      expect(ev.defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(menuItems()[2]);
+    });
+    it('keeps the menu open when focus blurs to null during a press inside it (Safari tap)', async () => {
+      const { more, menuItems, panel, flush, host } = await renderMenu();
+      more()!.click();
+      await flush();
+      const item = menuItems()[1];
+
+      item.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      panel()!.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+      await flush();
+      expect(panel()).not.toBeNull();
+
+      item.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+      item.click();
+      await flush();
+      expect(host.ran).toBe(1);
+      expect(panel()).toBeNull();
+    });
+
+    it('touch order: pointerdown → pointerup → focusout(null) → click on an item still runs it', async () => {
+      const { more, menuItems, panel, flush, host } = await renderMenu();
+      more()!.click();
+      await flush();
+      const item = menuItems()[1];
+
+      item.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      item.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+      panel()!.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+      await flush();
+      expect(panel()).not.toBeNull();
+
+      item.click();
+      await flush();
+      expect(host.ran).toBe(1);
+      expect(panel()).toBeNull();
+    });
+
+    it('touch order: tapping ⋯ while open closes the menu instead of re-opening it', async () => {
+      const { more, panel, flush } = await renderMenu();
+      more()!.click();
+      await flush();
+
+      more()!.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      more()!.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+      panel()!.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+      more()!.click();
+      await flush();
+
+      expect(panel()).toBeNull();
+      expect(more()!.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('a press that ends outside without a click releases the guard after 350 ms', async () => {
+      const { el, more, panel, flush } = await renderMenu();
+      more()!.click();
+      await flush();
+      vi.useFakeTimers();
+      try {
+        el.querySelector('.header-more-wrap')!.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+        vi.advanceTimersByTime(350);
+      } finally {
+        vi.useRealTimers();
+      }
+      panel()!.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+      await flush();
+      expect(panel()).toBeNull();
+    });
+
+    it('labels the menu by the ⋯ button', async () => {
+      const { more, panel, flush } = await renderMenu();
+      more()!.click();
+      await flush();
+      expect(more()!.id).toBeTruthy();
+      expect(panel()!.getAttribute('aria-labelledby')).toBe(more()!.id);
+    });
+
+    it('Escape on the ⋯ button closes the open menu and keeps focus there', async () => {
+      const { more, panel, flush } = await renderMenu();
+      more()!.click();
+      await flush();
+      more()!.focus();
+      more()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await flush();
+      expect(panel()).toBeNull();
+      expect(document.activeElement).toBe(more());
+    });
+
+    it('an item that moves focus elsewhere (a dialog) keeps it', async () => {
+      const input = document.createElement('input');
+      document.body.appendChild(input);
+      const { more, menuItems, panel, flush } = await renderMenu('phone', [
+        { label: '開啟', run: () => input.focus() },
+      ]);
+      more()!.click();
+      await flush();
+      menuItems()[0].click();
+      await flush();
+      expect(panel()).toBeNull();
+      expect(document.activeElement).toBe(input);
+    });
+
+    it('closes after a routerLink item is clicked', async () => {
+      const { more, menuItems, panel, flush } = await renderMenu();
+      more()!.click();
+      await flush();
+      menuItems()[0].addEventListener('click', e => e.preventDefault());
+      menuItems()[0].click();
+      await flush();
+      expect(panel()).toBeNull();
+    });
+
+    it('renders a disabled routerLink item as a button, never a link', async () => {
+      const { more, menuItems, flush } = await renderMenu('phone', [
+        { label: '停用連結', routerLink: '/x', disabled: true },
+      ]);
+      more()!.click();
+      await flush();
+      expect(menuItems()[0].tagName).toBe('BUTTON');
+      expect(menuItems()[0].getAttribute('aria-disabled')).toBe('true');
+    });
+
+    it('closes when the layout leaves phone while open', async () => {
+      const { more, panel, flush, el } = await renderMenu();
+      more()!.click();
+      await flush();
+      TestBed.inject(LayoutModeService).set('sheet');
+      await flush();
+      expect(panel()).toBeNull();
+      TestBed.inject(LayoutModeService).set('phone');
+      await flush();
+      expect(more()!.getAttribute('aria-expanded')).toBe('false');
+      expect(el.querySelector('.header-menu')).toBeNull();
+    });
+
+    it('has no aria-controls while closed', async () => {
+      const { more } = await renderMenu();
+      expect(more()!.hasAttribute('aria-controls')).toBe(false);
+    });
+
+    it('removes the document pointerdown listener when destroyed while open', async () => {
+      const { more, flush, fixture } = await renderMenu();
+      more()!.click();
+      await flush();
+      const spy = vi.spyOn(document, 'removeEventListener');
+      fixture.destroy();
+      expect(spy.mock.calls.some(c => c[0] === 'pointerdown')).toBe(true);
+    });
+  });
+});
+
+describe('PageHeader phone stylesheet (polish-layout-v2 D9)', () => {
+  it('keeps the title block to one line so the row never grows past the icon buttons', () => {
+    const css = readFileSync(join(process.cwd(), 'src/app/components/shell/page-header/page-header.scss'), 'utf8');
+    const start = css.indexOf('@media (max-width: 759.98px)');
+    expect(start).toBeGreaterThan(-1);
+    const flat = css.slice(start).replace(/\s+/g, ' ');
+    expect(flat).toMatch(/ h1 \{[^}]*font-size: 20px;[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/);
+    expect(flat).toMatch(/\.page-subtitle \{[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/);
+    expect(flat).toMatch(/\.page-actions \{[^}]*flex-wrap: nowrap;/);
   });
 });

@@ -23,7 +23,7 @@ import { Menu } from 'primeng/menu';
 import { BtnComponent } from '../../ui/btn/btn';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { TimelineComponent, TimelineRow } from '../../ui/timeline/timeline';
-import { PageHeaderComponent } from '../../shell/page-header/page-header';
+import { PageHeaderComponent, PageMenuItem } from '../../shell/page-header/page-header';
 import { FilterBarComponent, FilterChip } from '../../ui/filter-bar/filter-bar';
 import { BentoComponent } from '../../ui/bento/bento';
 import { displayedSign, formatMoney } from '../../ui/format';
@@ -104,6 +104,8 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     return parts.join(' · ');
   });
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
+  /** Phones: 匯入 CSV leaves the header row for the ⋯ menu. */
+  readonly phoneMenu: PageMenuItem[] = [{ label: '匯入 CSV', icon: 'pi-upload', routerLink: '/portfolio/import' }];
   protected readonly feeShareLabel = feeShareLabel;
   readonly sortOptions = SORT_OPTIONS;
   readonly sideFilterOptions: SegToggleOption[] = [

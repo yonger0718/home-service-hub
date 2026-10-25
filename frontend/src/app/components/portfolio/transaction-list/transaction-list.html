@@ -1,11 +1,13 @@
 <p-toast></p-toast>
 <p-confirmDialog styleClass="hub-dialog-md"></p-confirmDialog>
 
-<app-page-header [subtitle]="headerSubtitle()" [actionsBelowOnPhone]="true">
-  <a routerLink="/portfolio/import" class="btn btn-outline-secondary btn-sm">
-    <i class="pi pi-upload" aria-hidden="true"></i>
-    匯入 CSV
-  </a>
+<app-page-header [subtitle]="headerSubtitle()" [menu]="phoneMenu">
+  @if (!isPhone()) {
+    <a routerLink="/portfolio/import" class="btn btn-outline-secondary btn-sm">
+      <i class="pi pi-upload" aria-hidden="true"></i>
+      匯入 CSV
+    </a>
+  }
   <app-btn variant="soft" icon="pi-plus" (click)="openNew()">新增交易</app-btn>
 </app-page-header>
 

@@ -309,11 +309,25 @@ describe('PortfolioAccountsPageComponent', () => {
         expect(headers[0].parentElement?.classList).toContain('accounts-compact');
         expect(headers[0].querySelector('h1')?.textContent).toContain('現金帳戶');
         expect(headers[0].textContent).toContain('券商交割戶與複委託帳戶的現金');
-        expect(headers[0].querySelectorAll('app-btn').length).toBe(2);
-        expect(headerButton(harness, '記錄入出金').classList).toContain('btn-soft');
-        expect(headerButton(harness, '新增帳戶').classList).toContain('btn-soft');
-        // Phones put the actions on their own line so the title is not squeezed at 390 px.
-        expect(headers[0].classList.contains('actions-below')).toBe(mode === 'phone');
+        expect(headers[0].classList.contains('actions-below')).toBe(false);
+        if (mode === 'sheet') {
+          expect(headers[0].querySelectorAll('app-btn').length).toBe(2);
+          expect(headerButton(harness, '記錄入出金').classList).toContain('btn-soft');
+          expect(headerButton(harness, '新增帳戶').classList).toContain('btn-soft');
+          expect(headers[0].querySelector('.header-more')).toBeNull();
+        } else {
+          expect(headers[0].querySelectorAll('app-btn').length).toBe(1);
+          expect(headerButton(harness, '記錄入出金').classList).toContain('btn-soft');
+          const more = headers[0].querySelector<HTMLButtonElement>('.header-more');
+          expect(more).not.toBeNull();
+          const createDialog = vi.spyOn(listInstance(harness), 'openCreateDialog');
+          more!.click();
+          harness.detectChanges();
+          const item = Array.from(headers[0].querySelectorAll<HTMLElement>('[role="menuitem"]')).find(i => i.textContent?.includes('新增帳戶'));
+          expect(item).toBeDefined();
+          item!.click();
+          expect(createDialog).toHaveBeenCalledTimes(1);
+        }
 
         // The width hook (560 px cap on sheet, full width on phone): the list sits directly in `.accounts-compact`.
         expect(el(harness).querySelector('.accounts-compact > app-portfolio-accounts-list .acct-master')).not.toBeNull();
@@ -360,7 +374,15 @@ describe('PortfolioAccountsPageComponent', () => {
         expect(cashForm).toHaveBeenCalledTimes(1);
         expect(createDialog).not.toHaveBeenCalled();
 
-        headerButton(harness, '新增帳戶').click();
+        if (mode === 'sheet') {
+          headerButton(harness, '新增帳戶').click();
+        } else {
+          el(harness).querySelector<HTMLButtonElement>('app-page-header .header-more')!.click();
+          harness.detectChanges();
+          Array.from(el(harness).querySelectorAll<HTMLElement>('app-page-header [role="menuitem"]'))
+            .find(i => i.textContent?.includes('新增帳戶'))!
+            .click();
+        }
         expect(createDialog).toHaveBeenCalledTimes(1);
       });
 

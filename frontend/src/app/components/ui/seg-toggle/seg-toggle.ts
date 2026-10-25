@@ -38,12 +38,15 @@ export interface SegToggleOption {
     </div>
   `,
   styleUrl: './seg-toggle.scss',
+  host: { '[class.block]': 'block()' },
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class SegToggleComponent {
   readonly options = input<SegToggleOption[]>([]);
   readonly value = input('');
   readonly ariaLabel = input('');
+  /** Stretch to the full width of the container; the buttons share it equally. */
+  readonly block = input(false);
   readonly change = output<string>();
 
   @ViewChildren('segmentButton') private buttons?: QueryList<ElementRef<HTMLButtonElement>>;
