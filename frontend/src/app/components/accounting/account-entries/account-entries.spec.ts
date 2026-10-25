@@ -130,6 +130,12 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     expect(headerValues(el)).toEqual(['−$1,200', '+$12', '−$1,036']);
   });
 
+  it('keeps a space between the period year and its range', () => {
+    const el = render(page(PERIOD)).nativeElement as HTMLElement;
+    const text = el.querySelector('.period-year')!.parentElement!.textContent!.replace(/\s+/g, ' ').trim();
+    expect(text).toBe('2026 09/16 – 10/15');
+  });
+
   it('summarises new spend, rewards and the period-end balance from the summary endpoint', () => {
     const el = render(page(PERIOD)).nativeElement as HTMLElement;
     expect(Array.from(el.querySelectorAll('.sum small')).map(s => s.textContent?.trim())).toEqual(['新增花費', '紅利回饋', '餘額']);
