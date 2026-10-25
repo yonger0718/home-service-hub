@@ -510,6 +510,36 @@ describe('Dividend filter-wide summary', () => {
       fixture.destroy();
     });
 
+    it('omits 舊資料帳面 once the totals are known and legacy is 0', () => {
+      const fixture = create();
+      respond(listCalls[0], { items: [confirmed], total: 2 });
+      respond(summaryCalls[0], { items: [confirmed, due], total: 2 });
+      fixture.detectChanges();
+
+      expect(cards(fixture).map(card => card.querySelector('.label')?.textContent?.trim())).toEqual(['已確認收款', '有效待收', '已記錄股利']);
+      fixture.destroy();
+    });
+
+    it('renders the four cards while the summary is still loading', () => {
+      const fixture = create();
+      respond(listCalls[0], { items: [confirmed], total: 2 });
+      fixture.detectChanges();
+
+      expect(cards(fixture)).toHaveLength(4);
+      fixture.destroy();
+    });
+
+    it('renders no 即將除權息提醒 row when the list is empty', () => {
+      const fixture = create();
+      respond(listCalls[0], { items: [confirmed], total: 2 });
+      respond(summaryCalls[0], { items: [confirmed, due], total: 2 });
+      fixture.detectChanges();
+
+      expect(el(fixture).querySelector('.upcoming-strip')).toBeNull();
+      expect(el(fixture).textContent).not.toContain('目前沒有即將除權息提醒');
+      fixture.destroy();
+    });
+
     it('renders the explanation note verbatim instead of the interim summary row', () => {
       const fixture = create();
       respond(listCalls[0], { items: [confirmed], total: 3 });
@@ -984,6 +1014,7 @@ describe('Dividend filter-wide summary', () => {
       const strip = el(fixture).querySelector('.upcoming-strip');
       expect(strip?.textContent).toContain('即將除權息提醒');
       expect(strip?.textContent).toContain('元大高股息');
+      expect(el(fixture).textContent).not.toContain('目前沒有即將除權息提醒');
       expect(strip!.compareDocumentPosition(el(fixture).querySelector('.div-list')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       fixture.destroy();
     });

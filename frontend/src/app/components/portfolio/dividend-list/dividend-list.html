@@ -18,12 +18,14 @@
       <div class="value primary">{{ formatCardAmount(totals?.pending) }}</div>
       <div class="meta">{{ totals ? totals.pendingCount + ' 筆 · 納入預估含息損益' : '—' }}</div>
     </app-bento>
-    @if (!isPhone()) {
+    @if (!isPhone() && (totals === null || totals.legacy !== 0)) {
       <app-bento class="kpi-card">
         <div class="label"><span class="swatch dashed" aria-hidden="true"></span>舊資料帳面</div>
         <div class="value">{{ formatCardAmount(totals?.legacy) }}</div>
         <div class="meta">{{ totals ? totals.legacyCount + ' 筆 · 收款未核實' : '—' }}</div>
       </app-bento>
+    }
+    @if (!isPhone()) {
       <app-bento class="kpi-card">
         <div class="label">已記錄股利</div>
         <div class="value dividend">{{ formatCardAmount(totals?.recorded) }}</div>
@@ -38,17 +40,17 @@
 
 <p class="div-note">有效待收股利會納入「預估含息損益」，但不計入可用現金；待釐清的金額不納入預估。舊資料的收款未經核實。</p>
 
-<section class="upcoming-strip" aria-label="即將除權息提醒">
-  <span class="upcoming-title">即將除權息提醒</span>
-  @for (row of upcomingExDividends(); track row.symbol + row.ex_dividend_date) {
-    <span class="upcoming-item">
-      <b>{{ row.name || row.symbol }}</b> {{ row.symbol }} · 除息日 {{ row.ex_dividend_date || '-' }}
-      <span class="dividend">{{ row.cash_dividend || '-' }}</span>
-    </span>
-  } @empty {
-    <span class="upcoming-item">目前沒有即將除權息提醒</span>
-  }
-</section>
+@if (upcomingExDividends().length > 0) {
+  <section class="upcoming-strip" aria-label="即將除權息提醒">
+    <span class="upcoming-title">即將除權息提醒</span>
+    @for (row of upcomingExDividends(); track row.symbol + row.ex_dividend_date) {
+      <span class="upcoming-item">
+        <b>{{ row.name || row.symbol }}</b> {{ row.symbol }} · 除息日 {{ row.ex_dividend_date || '-' }}
+        <span class="dividend">{{ row.cash_dividend || '-' }}</span>
+      </span>
+    }
+  </section>
+}
 
 <app-filter-bar [chips]="filterChips()" (remove)="removeFilter($event)" (clearAll)="clearFilters()" (reset)="resetSecondaryFilters()">
   <div class="search-wrap" filterBarSearch>
