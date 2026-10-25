@@ -282,7 +282,7 @@ def _replace_candidate(db: Session, case: ReconciliationCase, statement: Account
                      evidence=_replace_evidence(case))
 
 
-OWNER_DELETED_GUARDED = frozenset({"create_system_entry", "backfill_entry"})  # R6b.0: never re-book an owner delete
+OWNER_DELETED_GUARDED = frozenset({"create_system_entry", "backfill_entry", "pair_transfer"})  # R6b.0: never re-book an owner delete
 
 POLICY_ACTIONS = {"create_system_entry": _system_entry_candidate, "attach_fee": _attach_fee_candidate,
                   "backfill_entry": _backfill_candidate, "anchor_opening": _anchor_candidate,

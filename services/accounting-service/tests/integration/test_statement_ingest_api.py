@@ -495,7 +495,7 @@ def test_settings_default_policy_and_siblings(client):
     from app.services import settings_service
     got = client.get("/settings/reconciliation", headers=H).json()
     assert got["policy"] == settings_service.POLICY_DEFAULTS
-    assert got["policy_version"] == "r6b-1" and got["account_siblings"] == {}
+    assert got["policy_version"] == "r6c-1" and got["account_siblings"] == {}
 
 
 def test_stale_r1b_row_round_trips_the_effective_rules(client, db_session):
@@ -568,11 +568,11 @@ def test_policy_put_validates(client):
 
 def test_policy_version_bumps_only_when_the_policy_changes(client):
     first = _put(client, {"policy": {"enabled": True}}).json()
-    assert first["policy_version"] == "r6b-%d" % first["version"]
+    assert first["policy_version"] == "r6c-%d" % first["version"]
     same = _put(client, {"policy": {"enabled": True}, "dirty_enabled": True}).json()
     assert same["version"] == first["version"] + 1 and same["policy_version"] == first["policy_version"]
     changed = _put(client, {"policy": {"enabled": True, "monthly_total": "1"}}).json()
-    assert changed["policy_version"] == "r6b-%d" % changed["version"] != first["policy_version"]
+    assert changed["policy_version"] == "r6c-%d" % changed["version"] != first["policy_version"]
 
 
 def test_siblings_put_validates(client, seed, db_session):

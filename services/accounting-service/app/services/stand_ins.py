@@ -17,9 +17,9 @@ from app.models import (
 from app.services import coverage_service
 from app.services.statements import matching
 
-BACKFILL_ACTIONS = frozenset({"backfill_entry"})  # R6c adds its transfer actions
+BACKFILL_ACTIONS = frozenset({"backfill_entry", "pair_transfer"})
 # the automatic creations an owner twin or a replaced event stops (final production finding 2026-10-17, PR #77 S1)
-OWNER_TWIN_GUARDED = frozenset({"backfill_entry", "create_system_entry"})
+OWNER_TWIN_GUARDED = frozenset({"backfill_entry", "create_system_entry", "pair_transfer"})
 CREATION_SLOT = "create"
 
 
@@ -34,7 +34,8 @@ def stand_in_entry_ids(db: Session, account_ids: list[int]) -> set[int]:
     ids = {i for (created,) in rows for i in (created or ())}
     if not ids:
         return set()
-    return set(db.execute(select(LedgerEntry.id).where(LedgerEntry.id.in_(ids))).scalars())
+    return set(db.execute(select(LedgerEntry.id).where(LedgerEntry.id.in_(ids),
+                                                       LedgerEntry.account_id.in_(account_ids))).scalars())
 
 
 def creation_for_entry(db: Session, entry_id: int) -> ReconciliationAction | None:

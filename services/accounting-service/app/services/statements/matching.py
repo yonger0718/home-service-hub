@@ -136,6 +136,8 @@ class Rules:
     candidate_window_days: int = 10
     deferral_days: int = 2
     bank_only_patterns: tuple[str, ...] = ("年費", "循環利息", "現金回饋", "跨行手續費", "轉帳手續費", "利息")
+    transfer_tolerance_pct: Decimal = Decimal("0.10")  # R6c: a transfer pair's two legs may differ by this fraction
+    transfer_pair_window_days: int = 7  # R6c: pair window only; never widens the population
 
 
 def population_window_days(rules: Rules) -> int:

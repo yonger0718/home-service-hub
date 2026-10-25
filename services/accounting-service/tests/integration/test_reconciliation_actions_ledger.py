@@ -9,7 +9,7 @@ from functools import partial
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import sessionmaker
 
 from app.models import (
@@ -21,6 +21,7 @@ from app.services import entry_write_service as ews
 from app.services import policy_service
 from app.services import reconciliation_actions as registry
 from app.services import reconciliation_service as rec
+from app.services import stand_ins
 from app.services.errors import CodedConflictError, ValidationError
 from app.services.reconciliation_actions import engine
 from app.services.reconciliation_actions.ledger_actions import AdjustAmountAction
@@ -1019,3 +1020,15 @@ def test_backfill_may_run_again_after_an_engine_revert(seed, db_session, run):
     assert len(_booked(db_session)) == 1
     assert _reload(db_session, ReconciliationAction, second.id).status == "applied"
     assert _reload(db_session, ReconciliationAction, row.id).status == "reverted"
+
+
+def test_stand_in_entry_ids_filters_by_the_entry_account(dirty_on, seed, run, db_session):
+    card = _card(seed, db_session); other = _card(seed, db_session, name="卡乙")
+    stmt, lines, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "超商", "300")])
+    case = next(c for c in _cases(db_session, stmt.id, "open") if c.kind == "line_unmatched")
+    row = _apply(db_session, case, "backfill_entry", {"kind": "expense"})
+    created = row.created_entry_ids[0]
+    assert created in stand_ins.stand_in_entry_ids(db_session, [card.id])
+    assert created not in stand_ins.stand_in_entry_ids(db_session, [other.id])
+    db_session.execute(update(LedgerEntry).where(LedgerEntry.id == created).values(account_id=other.id)); db_session.commit()
+    assert created not in stand_ins.stand_in_entry_ids(db_session, [card.id])   # the entry's own account decides
