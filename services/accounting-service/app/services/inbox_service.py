@@ -313,6 +313,27 @@ def _buttons(db: Session, case: ReconciliationCase, question: str, allowed: list
     return buttons(question, allowed, adjustable=question == "amount_differs" and adjustable(db, case))
 
 
+def _transfer_out(db: Session, case: ReconciliationCase, allowed) -> dict | None:
+    """Spec §7: the parameters of the transfer actions, which have no inbox button (`actions` is unchanged)."""
+    adjust = pair = None
+    if "adjust_transfer" in allowed:
+        entry_id = (case.context or {}).get("entry_id") or case.entry_id
+        if entry_id is not None and case.line_id is not None:
+            adjust = {"entry_id": entry_id, "line_id": case.line_id}
+    if "pair_transfer" in allowed:
+        action = reconciliation_actions.ACTIONS["pair_transfer"]
+        names = {}
+        candidates = []
+        for peer_statement, peer_line in action.peer_candidates(db, case):
+            if peer_statement.account_id not in names:
+                names[peer_statement.account_id] = db.get(Account, peer_statement.account_id).name
+            candidates.append({"line_id": peer_line.id, "statement_id": peer_statement.id,
+                               "account_name": names[peer_statement.account_id],
+                               "posted_date": peer_line.posted_date, "amount": peer_line.flow_amount})
+        pair = {"peer_candidates": candidates}
+    return None if adjust is None and pair is None else {"adjust_transfer": adjust, "pair_transfer": pair}
+
+
 def _item(db: Session, case: ReconciliationCase, statement: AccountStatement, line: StatementLine | None,
           entries: dict[int, LedgerEntry], categories: dict[int, Category], hint_cache: dict) -> dict:
     allowed = reconciliation_actions.allowed(case)
@@ -332,6 +353,7 @@ def _item(db: Session, case: ReconciliationCase, statement: AccountStatement, li
         "proposal": _proposal_out(db, case),
         "actions": actions,
         "rule_hint": _rule_hint(db, statement, line, hint_cache) if learn else None,
+        "transfer": _transfer_out(db, case, allowed),
     }
 
 
