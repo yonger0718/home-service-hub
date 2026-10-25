@@ -103,6 +103,16 @@ describe('LedgerTimelineComponent', () => {
     return node?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
   }
 
+  it('omits its page header when embedded', () => {
+    const { fixture, el } = render();
+    flushSummary('2026-10');
+    flushEntries([]);
+    expect(el.querySelector('app-page-header')).not.toBeNull();
+    fixture.componentRef.setInput('embedded', true);
+    fixture.detectChanges();
+    expect(el.querySelector('app-page-header')).toBeNull();
+  });
+
   it('shows the converted amount with the original ¥ amount and rate beneath it at 390px', () => {
     const { fixture, el } = render('phone');
     flushSummary('2026-10');

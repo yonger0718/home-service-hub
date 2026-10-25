@@ -1,5 +1,7 @@
 <section class="timeline">
-  <app-page-header></app-page-header>
+  @if (!embedded()) {
+    <app-page-header></app-page-header>
+  }
 
   <div class="monthbar">
     <button type="button" class="month-prev" aria-label="上個月" (click)="moveMonth(-1)">‹</button>

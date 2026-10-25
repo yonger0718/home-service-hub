@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { NavigationEnd, Router, RouterLink } from '@angular/router';
@@ -124,6 +124,8 @@ export function buildAccountGroups(accounts: LedgerAccount[], mainCurrency: stri
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class AccountingAccountsComponent {
+  /** True when the layout renders the page header above the list card. */
+  readonly embedded = input(false);
   private accountingService = inject(AccountingService);
   private readonly bills = inject(BillingService);
   private readonly router = inject(Router);

@@ -18,6 +18,8 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRouteSnapshot, NavigationEnd, Router, RouterOutlet } from '@angular/router';
 import { filter } from 'rxjs';
 
+import { BtnComponent } from '../../ui/btn/btn';
+import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PaneStateService } from '../../../services/pane-state.service';
@@ -79,7 +81,7 @@ const SWIPE_IGNORE = 'input, textarea, select, button:not(.sheet-close), [conten
 @Component({
   selector: 'app-accounting-layout',
   standalone: true,
-  imports: [RouterOutlet, NgComponentOutlet, AccountingToastComponent, MonthOverviewComponent],
+  imports: [RouterOutlet, NgComponentOutlet, AccountingToastComponent, MonthOverviewComponent, PageHeaderComponent, BtnComponent],
   templateUrl: './accounting-layout.html',
   styleUrl: './accounting-layout.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -104,6 +106,13 @@ export class AccountingLayoutComponent {
   private readonly closeButton = viewChild<ElementRef<HTMLButtonElement>>('closeButton');
   private readonly accounting = inject(AccountingService);
   private readonly paneState = inject(PaneStateService);
+
+  /** The list renders without its own page header: the layout hoists it above the card. */
+  protected readonly outletInputs = { embedded: true };
+
+  addAccount(): void {
+    void this.router.navigateByUrl('/accounting/accounts/new');
+  }
 
   /** `Preference.expense_income_colors`, read once and again after every preference save. */
   readonly colors = signal<'red_green' | 'green_red'>('red_green');

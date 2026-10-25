@@ -2,6 +2,8 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { Location } from '@angular/common';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { describe, expect, it, vi } from 'vitest';
@@ -873,4 +875,35 @@ describe('AccountingLayoutComponent', () => {
     await vi.waitFor(() => expect(router.url).toBe('/accounting'));
   });
 
+
+  describe('page title on the page background', () => {
+    it('renders the page title above the list card', async () => {
+      const harness = await start('panes', '/accounting');
+      await find(harness, '.list-pane > *');
+      const root = harness.routeNativeElement!;
+      expect(root.querySelector(':scope > .dwrap > app-page-header h1')?.textContent).toContain('記帳記錄');
+      expect(root.querySelector('.list-pane app-page-header')).toBeNull();
+      expect(root.querySelector('.list-pane')?.hasAttribute('data-page-scroller')).toBe(true);
+    });
+
+    it('renders 新增帳戶 in the hoisted header on /accounting/accounts', async () => {
+      const harness = await start('panes', '/accounting/accounts');
+      await find(harness, '.list-pane > *');
+      const button = await find(harness, '.dwrap > app-page-header app-btn.add-account button');
+      (button as HTMLButtonElement).click();
+      await vi.waitFor(() => expect(TestBed.inject(Location).path()).toBe('/accounting/accounts/new'));
+    });
+
+    it('hoists the header in sheet mode', async () => {
+      const harness = await start('sheet', '/accounting');
+      await find(harness, '.dwrap--sheet > app-page-header');
+    });
+
+    it('lets .dwrap own the viewport height and the negative FAB margin', () => {
+      const css = readFileSync(join(process.cwd(), 'src/app/components/accounting/accounting-layout/accounting-layout.scss'), 'utf8');
+      const block = (name: string) => css.match(new RegExp(`\\n${name.replace('.', '\\.')} \\{([^}]*)\\}`))?.[1] ?? '';
+      expect(block('.dwrap')).toContain('margin-bottom: calc(-1 * var(--fab-clear, 0px))');
+      expect(block('.dbody')).not.toContain('margin-bottom: calc(-1');
+    });
+  });
 });

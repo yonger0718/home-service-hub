@@ -1,7 +1,9 @@
 <section class="ledger-accounts">
-  <app-page-header>
-    <app-btn class="add-account" variant="soft" icon="pi-plus" (click)="addAccount()">新增帳戶</app-btn>
-  </app-page-header>
+  @if (!embedded()) {
+    <app-page-header>
+      <app-btn class="add-account" variant="soft" icon="pi-plus" (click)="addAccount()">新增帳戶</app-btn>
+    </app-page-header>
+  }
 
   @if (importError()) {
     <p class="import-status import-status--failed import-error">

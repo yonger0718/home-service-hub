@@ -7,6 +7,7 @@ import {
   computed,
   effect,
   inject,
+  input,
   signal,
   untracked,
   viewChild,
@@ -358,6 +359,8 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class LedgerTimelineComponent implements OnInit {
+  /** True when the layout renders the page header above the list card. */
+  readonly embedded = input(false);
   private readonly accounting = inject(AccountingService);
   private readonly router = inject(Router);
   private readonly layoutMode = inject(LayoutModeService);

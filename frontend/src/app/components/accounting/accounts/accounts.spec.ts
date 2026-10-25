@@ -133,6 +133,15 @@ describe('AccountingAccountsComponent', () => {
     return Array.from(el.querySelectorAll<HTMLElement>('.acc-row'));
   }
 
+  it('omits its page header when embedded', () => {
+    const fixture = render([], null);
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('app-page-header')).not.toBeNull();
+    fixture.componentRef.setInput('embedded', true);
+    fixture.detectChanges();
+    expect(el.querySelector('app-page-header')).toBeNull();
+  });
+
   it('groups accounts in API order with main-currency subtotals', () => {
     const el = render(ACCOUNTS, LATEST).nativeElement as HTMLElement;
 
