@@ -313,13 +313,18 @@ def _buttons(db: Session, case: ReconciliationCase, question: str, allowed: list
     return buttons(question, allowed, adjustable=question == "amount_differs" and adjustable(db, case))
 
 
-def _transfer_out(db: Session, case: ReconciliationCase, allowed) -> dict | None:
+def _transfer_out(db: Session, case: ReconciliationCase, allowed: list[str]) -> dict | None:
     """Spec §7: the parameters of the transfer actions, which have no inbox button (`actions` is unchanged)."""
     adjust = pair = None
     if "adjust_transfer" in allowed:
-        entry_id = (case.context or {}).get("entry_id") or case.entry_id
-        if entry_id is not None and case.line_id is not None:
-            adjust = {"entry_id": entry_id, "line_id": case.line_id}
+        if case.kind == "ambiguous":
+            entry_id = None
+            legs = [c["entry_id"] for c in case.candidates or ()
+                    if reconciliation_actions._transfer_leg(case, c.get("entry_id"))]
+        else:
+            entry_id = (case.context or {}).get("entry_id") or case.entry_id
+            legs = [entry_id]
+        adjust = {"entry_id": entry_id, "line_id": case.line_id, "candidate_entry_ids": legs}
     if "pair_transfer" in allowed:
         action = reconciliation_actions.ACTIONS["pair_transfer"]
         names = {}

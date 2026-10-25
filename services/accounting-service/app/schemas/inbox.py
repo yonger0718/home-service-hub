@@ -66,8 +66,9 @@ class InboxStatementRef(BaseModel):
 
 class InboxTransferAdjust(BaseModel):
     model_config = Strict
-    entry_id: int
+    entry_id: int | None  # None on an ambiguous case: the owner picks one of `candidate_entry_ids`
     line_id: int
+    candidate_entry_ids: list[int]
 
 
 class InboxPeerCandidate(BaseModel):
