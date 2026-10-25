@@ -24,6 +24,8 @@ import { PaneStateService } from '../../../services/pane-state.service';
 import { ACCOUNTING_PAGES, AccountingListKey } from '../accounting-pages';
 import { AccountingToastComponent } from '../accounting-toast';
 import { DirtyFormRegistry } from '../dirty-form.service';
+import { MonthOverviewComponent } from '../month-overview/month-overview';
+import { AccountingOverviewService } from '../month-overview/overview.service';
 import { isHandledKey, trapFocus, OVERLAY_ATTR } from '../accounting-ui';
 import { AccountingShortcutsService, resolveShortcut } from '../keyboard-shortcuts';
 
@@ -77,7 +79,7 @@ const SWIPE_IGNORE = 'input, textarea, select, button:not(.sheet-close), [conten
 @Component({
   selector: 'app-accounting-layout',
   standalone: true,
-  imports: [RouterOutlet, NgComponentOutlet, AccountingToastComponent],
+  imports: [RouterOutlet, NgComponentOutlet, AccountingToastComponent, MonthOverviewComponent],
   templateUrl: './accounting-layout.html',
   styleUrl: './accounting-layout.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -112,6 +114,14 @@ export class AccountingLayoutComponent {
 
   readonly listKey = computed(() => this.routeState().list);
   readonly paneOpen = computed(() => this.routeState().pane);
+  protected readonly overview = inject(AccountingOverviewService);
+  /** D7: nothing selected on the timeline at ≥ 1280 px → the month overview instead of the one-line empty state. */
+  readonly showOverview = computed(
+    () => this.mode() === 'panes' && this.layoutMode.wideSidebar() && this.listKey() === 'timeline' && !this.paneOpen(),
+  );
+  readonly emptyCopy = computed(() =>
+    this.listKey() === 'accounts' ? '選擇帳戶查看明細，或按 ＋ 新增' : '選擇一筆記錄查看明細，或按 ＋ 新增',
+  );
   readonly listComponent = signal<Type<unknown> | null>(null);
 
   /** Entry shown in the pane (or full screen): lists highlight it. */

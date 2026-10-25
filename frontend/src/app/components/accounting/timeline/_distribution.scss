@@ -1,0 +1,48 @@
+/* 支出類別分佈 bar + legend, shared by the timeline summary and the month overview. */
+@mixin distribution {
+  .dist-bar {
+    border-radius: 999px;
+    display: flex;
+    gap: 2px;
+    height: 10px;
+    overflow: hidden;
+
+    &--phone {
+      height: 8px;
+    }
+
+    span {
+      flex-basis: 0;
+      flex-shrink: 1;
+    }
+  }
+
+  .dist-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+  }
+
+  .dist-row {
+    align-items: center;
+    display: flex;
+    font-size: 13px;
+    gap: 6px;
+
+    /* Not the 0.95rem figure size of `.sum b`. */
+    b {
+      font-size: 13px;
+      font-weight: 700;
+    }
+  }
+
+  .dist-swatch {
+    border-radius: 3px;
+    height: 8px;
+    width: 8px;
+  }
+
+  .dist-name {
+    color: var(--app-text-muted);
+  }
+}

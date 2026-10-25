@@ -8,15 +8,34 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { routes } from '../../../app.routes';
 import { AccountingService } from '../../../services/accounting.service';
-import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
+import { LayoutMode, LayoutModeService, MATCH_MEDIA } from '../../../services/layout-mode.service';
 import { makeEntryDetail, makePreference } from '../testing/fixtures';
 import { PaneStateService } from '../../../services/pane-state.service';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { AccountingLayoutComponent, FAB_RIGHT_BESIDE_PANE } from './accounting-layout';
 
-async function start(mode: LayoutMode, url: string): Promise<RouterTestingHarness> {
+/** Evaluates `(min|max)-width: Npx` conditions against a fixed viewport width. */
+function matchMediaAt(width: number) {
+  return (query: string) => {
+    const conditions = [...query.matchAll(/\((min|max)-width:\s*([\d.]+)px\)/g)];
+    const matches = conditions.every(([, bound, px]) => (bound === 'min' ? width >= Number(px) : width <= Number(px)));
+    return {
+      media: query,
+      matches,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    } as unknown as MediaQueryList;
+  };
+}
+
+async function start(mode: LayoutMode, url: string, width?: number): Promise<RouterTestingHarness> {
   TestBed.configureTestingModule({
-    providers: [provideRouter(routes), provideHttpClient(), provideHttpClientTesting()],
+    providers: [
+      provideRouter(routes),
+      provideHttpClient(),
+      provideHttpClientTesting(),
+      ...(width ? [{ provide: MATCH_MEDIA, useValue: matchMediaAt(width) }] : []),
+    ],
   });
   TestBed.inject(LayoutModeService).set(mode);
   const harness = await RouterTestingHarness.create();
@@ -48,6 +67,36 @@ const PANE_PAGE = '.detail-pane router-outlet + :not(.pane-empty)';
 const SCREEN = ':scope > router-outlet + :not(app-accounting-toast)';
 
 describe('AccountingLayoutComponent', () => {
+  describe('empty pane', () => {
+    it('shows the month overview instead of the empty copy at 1440px on /accounting', async () => {
+      const harness = await start('panes', '/accounting', 1440);
+      await find(harness, 'app-month-overview');
+      expect(harness.routeNativeElement!.querySelector('.pane-empty')).toBeNull();
+    });
+
+    it('keeps the one-line empty copy at 1100px', async () => {
+      const harness = await start('panes', '/accounting', 1100);
+      const empty = await find(harness, '.pane-empty');
+      expect(empty.textContent).toContain('選擇一筆記錄查看明細，或按 ＋ 新增');
+      expect(harness.routeNativeElement!.querySelector('app-month-overview')).toBeNull();
+    });
+
+    it('says 選擇帳戶 on /accounting/accounts at 1440px', async () => {
+      const harness = await start('panes', '/accounting/accounts', 1440);
+      const empty = await find(harness, '.pane-empty');
+      expect(empty.textContent).toContain('選擇帳戶查看明細，或按 ＋ 新增');
+      expect(harness.routeNativeElement!.querySelector('app-month-overview')).toBeNull();
+    });
+
+    it('hides the overview once a pane page opens', async () => {
+      const harness = await start('panes', '/accounting', 1440);
+      await find(harness, 'app-month-overview');
+      await TestBed.inject(Router).navigateByUrl('/accounting/entries/1');
+      await find(harness, PANE_PAGE);
+      expect(harness.routeNativeElement!.querySelector('app-month-overview')).toBeNull();
+    });
+  });
+
   it('sets a scoped .72rem minimum for captions inherited by calendar and keypad', async () => {
     const harness = await start('phone', '/accounting');
     harness.detectChanges();

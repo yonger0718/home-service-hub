@@ -1,0 +1,35 @@
+<h3 class="ov-month">{{ monthLabel(month()) }}</h3>
+
+<h4 class="ov-title">支出類別</h4>
+@if (distribution().length) {
+  <div class="dist">
+    <div class="dist-bar" role="img" [attr.aria-label]="aria()">
+      @for (seg of bar(); track $index) {
+        <span [style.flex-grow]="seg.amount" [style.background]="seg.color"></span>
+      }
+    </div>
+    <div class="dist-list">
+      @for (seg of distribution(); track $index) {
+        <span class="dist-row">@if (seg.kind !== 'refund') {<span class="dist-swatch" aria-hidden="true" [style.background]="seg.color"></span>}<span class="dist-name">{{ seg.name }}</span>&ngsp;<b>{{ seg.label }}</b></span>
+      }
+    </div>
+  </div>
+} @else {
+  <p class="ov-empty">本月尚無支出</p>
+}
+
+<h4 class="ov-title">近期到期</h4>
+@if (dueItems().length) {
+  <ul class="due-list">
+    @for (item of dueItems(); track item.key) {
+      <li class="due-row">
+        <i class="pi" [class.pi-credit-card]="item.kind === 'bill'" [class.pi-replay]="item.kind === 'schedule'" aria-hidden="true"></i>
+        <span class="due-name">{{ item.name }}</span>
+        <span class="due-when">{{ item.dueText }}</span>
+        <b class="due-amount">{{ item.amountText ?? '—' }}</b>
+      </li>
+    }
+  </ul>
+} @else {
+  <p class="ov-empty">沒有即將到期的項目</p>
+}

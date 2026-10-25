@@ -42,8 +42,10 @@
         }
       </div>
       <router-outlet name="pane" />
-      @if (!paneOpen()) {
-        <p class="pane-empty">選擇一筆記錄查看明細，或按 ＋ 新增</p>
+      @if (showOverview()) {
+        <app-month-overview [month]="overview.month()" [summary]="overview.summary()" [dueItems]="overview.dueItems()" />
+      } @else if (!paneOpen()) {
+        <p class="pane-empty">{{ emptyCopy() }}</p>
       }
     </section>
 
