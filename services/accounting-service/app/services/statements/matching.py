@@ -1000,10 +1000,12 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
     §3; None = the guard sees every line)."""
     result = MatchResult()
     claimed: set[int] = set()
-    lines = reconcilable(lines)  # #152: a zero-amount `unknown` row is a notice — no representation, no case
+    # #152: a zero-amount `unknown` row is a notice — no representation, no case, and no guard line (a 0 notice must
+    # not read a net-zero split group as printed whole, AGENT-283); `statement_context` filters for its direct callers
+    lines = reconcilable(lines)
     lines_all = reconcilable(lines_all) if lines_all is not None else None
     ctx = statement_context(statement_kind, lines, lines_all or lines, entries, groups, rules,
-                            account_currency, holders)  # over the unfiltered population
+                            account_currency, holders)  # over the unfiltered entry population (structural rows too)
     hint_only = [e for e in entries if not e.claimable]
     entries = [e for e in entries if e.claimable]
     principals = [e for e in entries if not e.carrier]

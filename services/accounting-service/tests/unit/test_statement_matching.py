@@ -224,11 +224,24 @@ def test_zero_amount_unknown_line_is_informational_no_case_no_claim():
     assert not m.is_informational(L(1, date(2026, 9, 30), "0", kind="purchase"))
 
 
-def test_zero_amount_unknown_line_is_no_guard_line_either():
-    """An informational row among `lines_all` never counts as a printed-alone member or a holder slot."""
-    res = run([L(1, date(2026, 9, 3), "-580")], [E(10, date(2026, 9, 3), "-580")],
-              lines_all=[L(1, date(2026, 9, 3), "-580"), L(2, date(2026, 9, 3), "0", kind="unknown")])
-    assert [(c.line_id, c.representation.rule) for c in res.claims] == [(1, "exact")] and res.cases == []
+def test_zero_amount_unknown_line_never_prints_a_net_zero_group_whole():
+    """#152 / AGENT-283 finding: a split group whose readings net to 0 (an expense and the receivable that offsets it)
+    must not be read whole because an unrelated 0 notice row happens to equal that total — the row is no guard line.
+    With the purchase line printing the expense member alone, the member claims it (`member_alone`), as it would on a
+    statement without the notice; the group is apart and no case opens."""
+    g = m.Group(5, "split", (21, 22))
+    ents = [E(21, d, "-100", group_id=5), E(22, d, "100", kind="receivable", group_id=5)]
+    lines = [L(1, d, "-100"), L(2, d, "0", kind="unknown", merchant="年費優惠")]
+    for lines_all in (None, lines, [L(2, d, "0", kind="unknown")]):
+        res = run(lines, ents, {5: g}, lines_all=lines_all)
+        assert [(c.line_id, c.representation.kind, c.representation.rule, [r.entry_id for r in c.representation.rows])
+                for c in res.claims] == [(1, "member_alone", "exact", [21])], lines_all
+        assert res.cases == []
+        ctx = m.statement_context("card", lines, lines_all or lines, ents, {5: g}, R, "TWD")
+        assert ctx.whole == frozenset() and ctx.apart == frozenset({21, 22})
+    # the same shape without the notice row claims the same way: the notice changes nothing
+    res = run([L(1, d, "-100")], ents, {5: g})
+    assert [(c.line_id, c.representation.kind) for c in res.claims] == [(1, "member_alone")] and res.cases == []
 
 
 def test_reverse_population_and_deferral():
