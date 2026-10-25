@@ -1,7 +1,8 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
-import { Router, RouterLink } from '@angular/router';
-import { Observable, catchError, forkJoin, map, of } from 'rxjs';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { NavigationEnd, Router, RouterLink } from '@angular/router';
+import { Observable, catchError, filter, forkJoin, map, of } from 'rxjs';
 import { SkeletonComponent } from '../skeleton/skeleton';
 
 interface ImportLookup { ok: boolean; v: ImportRun | null; }
@@ -131,9 +132,26 @@ export class AccountingAccountsComponent {
   /** Guards the import lookup; an import 重試 bumps only this one (spec §1.3). */
   private importRequestId = 0;
 
+  private readonly url = toSignal(
+    this.router.events.pipe(
+      filter(event => event instanceof NavigationEnd),
+      map(() => this.router.url),
+    ),
+    { initialValue: this.router.url },
+  );
+  /** The account the detail pane shows (`/accounting/accounts/:id`); null on the list URL and `/new`. */
+  readonly selectedAccountId = computed<number | null>(() => {
+    const match = /^\/accounting\/accounts\/(\d+)(?:\/|$)/.exec(this.url());
+    return match ? Number(match[1]) : null;
+  });
+
   readonly accounts = signal<LedgerAccount[]>([]);
   readonly latestImport = signal<ImportRun | null>(null);
   readonly mainCurrency = signal('TWD');
+  isSelected(account: LedgerAccount): boolean {
+    return account.id === this.selectedAccountId();
+  }
+
   readonly loaded = signal(false);
   readonly loadError = signal(false);
   readonly importError = signal(false);

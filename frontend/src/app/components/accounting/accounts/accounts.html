@@ -15,7 +15,7 @@
   }
 
   <ng-template #row let-account let-node="node" let-sub="sub">
-    <a class="acc-row" [class.sub]="sub" [routerLink]="['/accounting/accounts', account.id]">
+    <a class="acc-row" [class.sub]="sub" [class.sel]="isSelected(account)" [attr.aria-current]="isSelected(account) ? 'true' : null" [routerLink]="['/accounting/accounts', account.id]">
       <span class="ico">{{ account.icon ?? '📁' }}</span>
       <span class="name">{{ account.name }}@if (node?.children.length) {<span class="badge">主帳戶 {{ node.children.length }}</span>}</span>
       <span class="meta">{{ meta(account) }}</span>
