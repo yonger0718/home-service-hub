@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { PortfolioDividendListComponent } from './dividend-list';
-import { Dividend, DividendQuery, Paged } from '../../../models/portfolio.model';
+import { Dividend, DividendQuery, ExDividendRecord, Paged } from '../../../models/portfolio.model';
 import { abbrInk, holdingAbbr } from '../dashboard/dashboard-math';
 import { squareToken } from '../square';
 
@@ -529,14 +529,17 @@ describe('Dividend filter-wide summary', () => {
       fixture.destroy();
     });
 
-    it('renders no 即將除權息提醒 row when the list is empty', () => {
+    it('keeps the 即將除權息提醒 row with 近期沒有即將除權息 when the list is empty (#171)', () => {
       const fixture = create();
       respond(listCalls[0], { items: [confirmed], total: 2 });
       respond(summaryCalls[0], { items: [confirmed, due], total: 2 });
       fixture.detectChanges();
 
-      expect(el(fixture).querySelector('.upcoming-strip')).toBeNull();
-      expect(el(fixture).textContent).not.toContain('目前沒有即將除權息提醒');
+      const strip = el(fixture).querySelector('.upcoming-strip');
+      expect(strip).not.toBeNull();
+      expect(strip?.querySelector('.upcoming-note')?.textContent?.trim()).toBe('近期沒有即將除權息');
+      expect(strip?.querySelectorAll('.upcoming-item')).toHaveLength(0);
+      expect(strip?.getAttribute('aria-busy')).toBeNull();
       fixture.destroy();
     });
 
@@ -1005,6 +1008,51 @@ describe('Dividend filter-wide summary', () => {
 
       el(fixture).querySelector<HTMLButtonElement>('[data-row-id="21"] .row-action')!.click();
       expect(menu).toHaveBeenCalledWith(expect.any(MouseEvent), tw);
+      fixture.destroy();
+    });
+
+    it('reserves the upcoming strip row with 讀取中 while the events load (#171)', () => {
+      const pending = new Subject<ExDividendRecord[]>();
+      service['getUpcomingExDividends'].mockReturnValue(pending);
+      const fixture = rendered([tw]);
+      const strip = el(fixture).querySelector('.upcoming-strip');
+      expect(strip?.getAttribute('aria-busy')).toBe('true');
+      expect(strip?.querySelector('.upcoming-note')?.textContent?.trim()).toBe('讀取中');
+      expect(strip?.querySelectorAll('.upcoming-item')).toHaveLength(0);
+      pending.next([{ symbol: '0056', name: '元大高股息', ex_dividend_date: '2026-10-21', cash_dividend: '0.866' }]);
+      pending.complete();
+      fixture.detectChanges();
+      expect(el(fixture).querySelector('.upcoming-strip')?.getAttribute('aria-busy')).toBeNull();
+      expect(el(fixture).querySelector('.upcoming-note')).toBeNull();
+      expect(el(fixture).querySelectorAll('.upcoming-item')).toHaveLength(1);
+      fixture.destroy();
+    });
+
+    it('keeps the upcoming strip and swaps 讀取中 for 近期沒有即將除權息 once the events load empty (#171)', () => {
+      const pending = new Subject<ExDividendRecord[]>();
+      service['getUpcomingExDividends'].mockReturnValue(pending);
+      const fixture = rendered([tw]);
+      expect(el(fixture).querySelector('.upcoming-note')?.textContent?.trim()).toBe('讀取中');
+      pending.next([]);
+      pending.complete();
+      fixture.detectChanges();
+      const strip = el(fixture).querySelector('.upcoming-strip');
+      expect(strip).not.toBeNull();
+      expect(strip?.getAttribute('aria-busy')).toBeNull();
+      expect(strip?.querySelector('.upcoming-note')?.textContent?.trim()).toBe('近期沒有即將除權息');
+      fixture.destroy();
+    });
+
+    it('keeps the upcoming strip with 讀取失敗 when the events fetch fails (#171)', () => {
+      service['getUpcomingExDividends'].mockReturnValue(throwError(() => new Error('boom')));
+      const fixture = rendered([tw]);
+      const strip = el(fixture).querySelector('.upcoming-strip');
+      expect(strip).not.toBeNull();
+      expect(strip?.getAttribute('aria-busy')).toBeNull();
+      const note = strip?.querySelector('.upcoming-note');
+      expect(note?.textContent?.trim()).toBe('讀取失敗');
+      expect(note?.getAttribute('role')).toBe('status');
+      expect(strip?.querySelectorAll('.upcoming-item')).toHaveLength(0);
       fixture.destroy();
     });
 
