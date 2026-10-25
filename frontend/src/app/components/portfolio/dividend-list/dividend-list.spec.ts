@@ -529,14 +529,17 @@ describe('Dividend filter-wide summary', () => {
       fixture.destroy();
     });
 
-    it('renders no 即將除權息提醒 row when the list is empty', () => {
+    it('keeps the 即將除權息提醒 row with 近期沒有即將除權息 when the list is empty (#171)', () => {
       const fixture = create();
       respond(listCalls[0], { items: [confirmed], total: 2 });
       respond(summaryCalls[0], { items: [confirmed, due], total: 2 });
       fixture.detectChanges();
 
-      expect(el(fixture).querySelector('.upcoming-strip')).toBeNull();
-      expect(el(fixture).textContent).not.toContain('目前沒有即將除權息提醒');
+      const strip = el(fixture).querySelector('.upcoming-strip');
+      expect(strip).not.toBeNull();
+      expect(strip?.querySelector('.upcoming-note')?.textContent?.trim()).toBe('近期沒有即將除權息');
+      expect(strip?.querySelectorAll('.upcoming-item')).toHaveLength(0);
+      expect(strip?.getAttribute('aria-busy')).toBeNull();
       fixture.destroy();
     });
 
@@ -1025,15 +1028,18 @@ describe('Dividend filter-wide summary', () => {
       fixture.destroy();
     });
 
-    it('hides the upcoming strip once the events load empty (#171)', () => {
+    it('keeps the upcoming strip and swaps 讀取中 for 近期沒有即將除權息 once the events load empty (#171)', () => {
       const pending = new Subject<ExDividendRecord[]>();
       service['getUpcomingExDividends'].mockReturnValue(pending);
       const fixture = rendered([tw]);
-      expect(el(fixture).querySelector('.upcoming-strip')).not.toBeNull();
+      expect(el(fixture).querySelector('.upcoming-note')?.textContent?.trim()).toBe('讀取中');
       pending.next([]);
       pending.complete();
       fixture.detectChanges();
-      expect(el(fixture).querySelector('.upcoming-strip')).toBeNull();
+      const strip = el(fixture).querySelector('.upcoming-strip');
+      expect(strip).not.toBeNull();
+      expect(strip?.getAttribute('aria-busy')).toBeNull();
+      expect(strip?.querySelector('.upcoming-note')?.textContent?.trim()).toBe('近期沒有即將除權息');
       fixture.destroy();
     });
 

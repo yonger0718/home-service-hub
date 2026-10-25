@@ -111,7 +111,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   loading = signal<boolean>(false);
   symbolNames = signal<Record<string, string>>({});
   upcomingExDividends = signal<ExDividendRecord[]>([]);
-  /** #171: the strip reserves its row while loading and stays with 讀取失敗 on error; it hides only when ready and empty. */
+  /** #171: the strip is always present — 讀取中 while loading, 讀取失敗 on error, 近期沒有即將除權息 when loaded empty — so the page never shifts. */
   upcomingState = signal<'loading' | 'error' | 'ready'>('loading');
   showDialog = signal<boolean>(false);
   isEdit = signal<boolean>(false);
