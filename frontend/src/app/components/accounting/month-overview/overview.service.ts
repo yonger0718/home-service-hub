@@ -12,6 +12,7 @@ export class AccountingOverviewService {
   readonly dueItems = signal<DueItem[]>([]);
 
   clear(): void {
+    this.month.set(currentMonth());
     this.summary.set(null);
     this.dueItems.set([]);
   }

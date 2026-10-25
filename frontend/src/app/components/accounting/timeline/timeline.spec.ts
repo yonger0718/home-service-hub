@@ -9,6 +9,7 @@ import { Counterparty, DailySummary, LedgerAccount, LedgerEntry, MonthSummary, P
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
+import { currentMonth } from '../dates';
 import { AccountingOverviewService } from '../month-overview/overview.service';
 import { makeInbox } from '../inbox/testing';
 import { makeAccount, makeEntry, makeInstance, makePreference } from '../testing/fixtures';
@@ -2085,9 +2086,15 @@ describe('LedgerTimelineComponent', () => {
       fixture.detectChanges();
       const overview = TestBed.inject(AccountingOverviewService);
       expect(overview.summary()).not.toBeNull();
+      fixture.componentInstance.moveMonth(1);
+      fixture.detectChanges();
+      expect(overview.month()).not.toBe(currentMonth());
+      flushSummary('2026-11');
+      flushEntries([]);
       fixture.destroy();
       expect(overview.summary()).toBeNull();
       expect(overview.dueItems()).toEqual([]);
+      expect(overview.month()).toBe(currentMonth());
     });
 
     it('resets the published summary while a new month loads', () => {
