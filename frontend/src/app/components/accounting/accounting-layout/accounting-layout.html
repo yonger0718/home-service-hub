@@ -49,7 +49,7 @@
         </div>
         <router-outlet name="pane" />
         @if (showOverview()) {
-          <app-month-overview [month]="overview.month()" [summary]="overview.summary()" [dueItems]="overview.dueItems()" />
+          <app-month-overview [month]="overview.month()" [summary]="overview.summary()" [dueItems]="overview.dueItems()" [summaryState]="overview.summaryState()" [dueState]="overview.dueState()" />
         } @else if (!paneOpen()) {
           <p class="pane-empty">{{ emptyCopy() }}</p>
         }

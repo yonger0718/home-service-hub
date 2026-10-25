@@ -47,7 +47,7 @@ import { InboxService } from '../inbox/inbox.service';
 import { parseTags } from '../entry-form/entry-draft';
 import { currentMonth, monthLabel, todayIso } from '../dates';
 import { nextDueItems } from '../month-overview/due-items';
-import { AccountingOverviewService } from '../month-overview/overview.service';
+import { AccountingOverviewService, OverviewState } from '../month-overview/overview.service';
 import { schedulePill } from '../schedule-math';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, isHandledKey, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
 import { displayTitle, formatMoney, formatSigned } from '../format';
@@ -388,6 +388,8 @@ export class LedgerTimelineComponent implements OnInit {
   private counterpartyRequestId = 0;
   /** For the 🔔 count only: the 待完成交易 queue (`queue=true`). */
   private readonly queue = signal<ScheduleInstance[]>([]);
+  /** Not reset on a reload (the old queue stays shown): 'loading' only until the first answer. */
+  private readonly queueState = signal<OverviewState>('loading');
   private queueRequestId = 0;
   /** For the 🔔 count only: reconciliation inbox cards waiting for the owner's answer (`counts.ask`). */
   private readonly inboxAsk = signal(0);
@@ -506,6 +508,14 @@ export class LedgerTimelineComponent implements OnInit {
       this.today(),
     ),
   );
+  /** The overview's due list: loading until the queue answered and every tracked statement settled; error if either failed. */
+  readonly dueState = computed<OverviewState>(() => {
+    const events = this.reminderEvents().filter(event => event.kind === 'due');
+    if (this.queueState() === 'loading' || events.some(event => !this.bills.isSettled(event))) {
+      return 'loading';
+    }
+    return this.queueState() === 'error' || events.some(event => this.bills.failed(event)) ? 'error' : 'ready';
+  });
   /** What the grid marks: every closing day, and the due days of statements with a remaining balance. */
   readonly billing = computed(() => this.monthBilling().filter(event => event.kind === 'closing' || this.openBill(event) !== null));
   readonly billLines = computed(() => {
@@ -554,6 +564,8 @@ export class LedgerTimelineComponent implements OnInit {
     effect(() => this.overview.month.set(this.month()));
     effect(() => this.overview.summary.set(this.summary()));
     effect(() => this.overview.dueItems.set(this.dueItems()));
+    effect(() => this.overview.summaryState.set(this.summaryLoading() ? 'loading' : this.summaryError() ? 'error' : 'ready'));
+    effect(() => this.overview.dueState.set(this.dueState()));
     inject(DestroyRef).onDestroy(() => this.overview.clear());
     fromEvent(this.document, 'visibilitychange')
       .pipe(
@@ -902,10 +914,15 @@ export class LedgerTimelineComponent implements OnInit {
       next: items => {
         if (id === this.queueRequestId) {
           this.queue.set(items);
+          this.queueState.set('ready');
         }
       },
-      // Swallowed like the counterparties: the 🔔 is a hint; the reminder centre reports its own load errors.
-      error: () => undefined,
+      // The 🔔 is a hint (the reminder centre reports its own load errors); the overview's due list shows 讀取失敗.
+      error: () => {
+        if (id === this.queueRequestId) {
+          this.queueState.set('error');
+        }
+      },
     });
   }
 

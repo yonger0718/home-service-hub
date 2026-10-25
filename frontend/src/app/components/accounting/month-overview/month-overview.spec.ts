@@ -5,6 +5,7 @@ import { MonthSummary } from '../../../models/accounting.model';
 import { monthLabel } from '../dates';
 import { categoryDistribution, distributionAriaText } from '../timeline/category-distribution';
 import { DueItem } from './due-items';
+import type { OverviewState } from './overview.service';
 import { MonthOverviewComponent } from './month-overview';
 
 function cat(name: string, expense: string, id: number) {
@@ -21,11 +22,13 @@ const SUMMARY: MonthSummary = {
   by_category: [cat('餐飲', '-3000', 1), cat('交通', '-1200', 2), cat('娛樂', '-500', 3)],
 };
 
-function create(inputs: { summary?: MonthSummary | null; dueItems?: DueItem[] }) {
+function create(inputs: { summary?: MonthSummary | null; dueItems?: DueItem[]; summaryState?: OverviewState; dueState?: OverviewState }) {
   const fixture = TestBed.createComponent(MonthOverviewComponent);
   fixture.componentRef.setInput('month', '2026-10');
   if (inputs.summary !== undefined) fixture.componentRef.setInput('summary', inputs.summary);
   if (inputs.dueItems) fixture.componentRef.setInput('dueItems', inputs.dueItems);
+  if (inputs.summaryState) fixture.componentRef.setInput('summaryState', inputs.summaryState);
+  if (inputs.dueState) fixture.componentRef.setInput('dueState', inputs.dueState);
   fixture.detectChanges();
   return fixture.nativeElement as HTMLElement;
 }
@@ -34,7 +37,7 @@ describe('MonthOverviewComponent', () => {
   it('titles the month and lists the distribution with amounts', () => {
     const el = create({ summary: SUMMARY });
 
-    expect(el.querySelector('h3.ov-month')!.textContent!.trim()).toBe(monthLabel('2026-10'));
+    expect(el.querySelector('h2.ov-month')!.textContent!.trim()).toBe(monthLabel('2026-10'));
     expect(el.querySelectorAll('.dist-bar span').length).toBe(3);
     const rows = Array.from(el.querySelectorAll('.dist-row')).map(r => r.textContent!);
     for (const [name, amount] of [['餐飲', '3,000'], ['交通', '1,200'], ['娛樂', '500']]) {
@@ -71,5 +74,41 @@ describe('MonthOverviewComponent', () => {
     expect(rows[0].textContent).toContain('還有 3 天');
     expect(rows[0].textContent).toContain('$12,345');
     expect(el.querySelector('a, button')).toBeNull();
+  });
+
+  describe('states', () => {
+    it('summary loading: muted 讀取中, no empty copy, no distribution', () => {
+      const el = create({ summary: null, summaryState: 'loading' });
+      const titles = el.querySelectorAll('h3.ov-title');
+      expect(titles[0].nextElementSibling!.textContent!.trim()).toBe('讀取中');
+      expect(el.textContent).not.toContain('本月尚無支出');
+      expect(el.querySelector('.dist-bar')).toBeNull();
+    });
+    it('summary error: 摘要讀取失敗, no link, no empty copy', () => {
+      const el = create({ summary: null, summaryState: 'error' });
+      expect(el.querySelector('h3.ov-title')!.nextElementSibling!.textContent!.trim()).toBe('摘要讀取失敗');
+      expect(el.textContent).not.toContain('本月尚無支出');
+      expect(el.querySelector('a, button')).toBeNull();
+    });
+    it('summary ready without spend: 本月尚無支出', () => {
+      const el = create({ summary: null, summaryState: 'ready' });
+      expect(el.textContent).toContain('本月尚無支出');
+      expect(el.textContent).not.toContain('讀取');
+    });
+    it('due loading: 讀取中 and not the empty copy', () => {
+      const el = create({ summary: SUMMARY, dueItems: [], dueState: 'loading' });
+      expect(el.querySelectorAll('h3.ov-title')[1].nextElementSibling!.textContent!.trim()).toBe('讀取中');
+      expect(el.textContent).not.toContain('沒有即將到期的項目');
+    });
+    it('due error: 讀取失敗, no link, no empty copy', () => {
+      const el = create({ summary: SUMMARY, dueItems: [], dueState: 'error' });
+      expect(el.querySelectorAll('h3.ov-title')[1].nextElementSibling!.textContent!.trim()).toBe('讀取失敗');
+      expect(el.textContent).not.toContain('沒有即將到期的項目');
+      expect(el.querySelector('a, button')).toBeNull();
+    });
+    it('due ready and empty: 沒有即將到期的項目', () => {
+      const el = create({ summary: SUMMARY, dueItems: [], dueState: 'ready' });
+      expect(el.textContent).toContain('沒有即將到期的項目');
+    });
   });
 });

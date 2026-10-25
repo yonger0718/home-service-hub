@@ -1,7 +1,11 @@
-<h3 class="ov-month">{{ monthLabel(month()) }}</h3>
+<h2 class="ov-month">{{ monthLabel(month()) }}</h2>
 
-<h4 class="ov-title">支出類別</h4>
-@if (distribution().length) {
+<h3 class="ov-title">支出類別</h3>
+@if (summaryState() === 'loading') {
+  <p class="ov-empty">讀取中</p>
+} @else if (summaryState() === 'error') {
+  <p class="ov-empty">摘要讀取失敗</p>
+} @else if (distribution().length) {
   <div class="dist">
     <div class="dist-bar" role="img" [attr.aria-label]="aria()">
       @for (seg of bar(); track $index) {
@@ -18,8 +22,12 @@
   <p class="ov-empty">本月尚無支出</p>
 }
 
-<h4 class="ov-title">近期到期</h4>
-@if (dueItems().length) {
+<h3 class="ov-title">近期到期</h3>
+@if (dueState() === 'loading') {
+  <p class="ov-empty">讀取中</p>
+} @else if (dueState() === 'error') {
+  <p class="ov-empty">讀取失敗</p>
+} @else if (dueItems().length) {
   <ul class="due-list">
     @for (item of dueItems(); track item.key) {
       <li class="due-row">

@@ -2116,6 +2116,35 @@ describe('LedgerTimelineComponent', () => {
       expect(overview.month()).toBe(currentMonth());
     });
 
+    it('publishes summaryState loading -> ready, loading again on a month switch, and error on a failed read', () => {
+      const { fixture } = render('sheet');
+      const overview = TestBed.inject(AccountingOverviewService);
+      expect(overview.summaryState()).toBe('loading');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(overview.summaryState()).toBe('ready');
+      fixture.componentInstance.moveMonth(1);
+      fixture.detectChanges();
+      expect(overview.summaryState()).toBe('loading');
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries/summary').flush('boom', { status: 500, statusText: 'Server Error' });
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(overview.summaryState()).toBe('error');
+    });
+
+    it('publishes dueState ready once the queue has answered, and resets on destroy', () => {
+      const { fixture } = render('sheet');
+      const overview = TestBed.inject(AccountingOverviewService);
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(overview.dueState()).toBe('ready');
+      fixture.destroy();
+      expect(overview.dueState()).toBe('loading');
+      expect(overview.summaryState()).toBe('loading');
+    });
+
     it('resets the published summary while a new month loads', () => {
       const { fixture } = render('sheet');
       flushSummary('2026-10');
