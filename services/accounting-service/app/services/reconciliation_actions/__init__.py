@@ -22,8 +22,9 @@ COVERAGE_ACTIONS = frozenset({"match", "unmatch"})  # allowed on historical stat
 
 # The order is the order `allowed` lists them in.
 KIND_ACTIONS: dict[str, tuple[str, ...]] = {
-    "line_unmatched": ("match", "create_entry", "create_system_entry", "backfill_entry", "create_refund", "link_installment_plan",
-                       "split_entry", "dismiss"),
+    # pair_transfer on a needs_peer line (R6c)
+    "line_unmatched": ("match", "create_entry", "create_system_entry", "backfill_entry", "pair_transfer", "create_refund",
+                       "link_installment_plan", "split_entry", "dismiss"),
     # adjust_amount on a listed entry candidate (2026-10-24); adjust_transfer on a listed transfer leg (R6c)
     "ambiguous": ("match", "adjust_amount", "adjust_transfer", "dismiss"),
     "amount_delta": ("match", "adjust_amount", "adjust_transfer", "attach_fee", "split_entry", "dismiss"),
@@ -129,6 +130,7 @@ CONDITIONS: dict[tuple[str, str], Callable[[ReconciliationCase], bool]] = {
     ("line_unmatched", "create_refund"): _refund_line,
     ("line_unmatched", "link_installment_plan"): lambda case: _context(case).get("hint") == "installment_unmapped",
     ("line_unmatched", "split_entry"): _names_an_entry,
+    ("line_unmatched", "pair_transfer"): lambda case: _context(case).get("hint") == PEER_HINT and not case.candidates,
     ("balance_gap", "balance_adjustment_asof"): _single_account_gap,
     ("balance_gap", "anchor_opening"): lambda case: _bank_statement(case) and not _anchored(case),
     ("amount_delta", "attach_fee"): lambda case: _context(case).get("fee_matches") is True,

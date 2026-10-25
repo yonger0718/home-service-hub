@@ -1,7 +1,9 @@
 """R6c `adjust_transfer` (spec §5.1, §5.2): the owner rewrites a transfer to the statement figures across both
 statements — both legs' amounts (and dates from the lines), a claim on this line and on the complementary peer line,
 the peer line's case resolved by the same action row, four cases closed per transfer; revert restores both legs and
-reopens both lines. Synthetic data only."""
+reopens both lines. `pair_transfer` (spec §5.1, §5.3): two complementary needs_peer lines and no owner transfer — one
+transfer booked from the statement figures, both lines claimed, both cases closed; the transfer-twin and occupancy
+guards bind the policy and its proposals, never the owner's own action. Synthetic data only."""
 from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
@@ -13,15 +15,21 @@ from app.models import (
     LedgerEntry, ReconciliationAction, ReconciliationCase, ReconciliationProposal, StatementCoverage,
 )
 from app.schemas.reconciliation import ProposalIn
-from app.services import coverage_service, proposal_service, stand_ins
+from app.services import coverage_service, proposal_service, settings_service, stand_ins
+from app.services import entry_write_service as ews
 from app.services import reconciliation_actions
+from app.services import reconciliation_service as rec
+from app.services.errors import CodedConflictError
+from app.services.reconciliation_actions import transfer_actions
+from app.services.reconciliation_actions.base import POLICY
+from tests.helpers import set_dirty
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
     _active, _card, _cases, _line, _reconcile, _submit, _transfer, run,
 )
 from tests.integration.test_reconciliation_actions_ledger import (
     _ambiguous_case, _apply, _code, _delta_case, _fresh, _hand_case, _refuse, _revert,
 )
-from tests.integration.test_reconciliation_policy import _audit
+from tests.integration.test_reconciliation_policy import _audit, _sweep
 
 
 def _bank(seed, db, name="銀行", **extra):
@@ -34,10 +42,10 @@ BANK_LINE = _line(1, date(2026, 9, 5), "信用卡繳款", "-20000", kind="paymen
 CARD_LINE = _line(1, date(2026, 9, 5), "繳款", "-20000", kind="payment")
 
 
-def _make_pair(seed, run, db, *, bank_lines=(BANK_LINE,), card_lines=(CARD_LINE,)):
+def _make_pair(seed, run, db, *, bank_lines=(BANK_LINE,), card_lines=(CARD_LINE,), owner_transfer=True):
     bank = _bank(seed, db)
     card = _card(seed, db, name="卡")
-    out_leg, in_leg = _transfer(seed, bank, card, "19500", date(2026, 9, 4))
+    out_leg, in_leg = _transfer(seed, bank, card, "19500", date(2026, 9, 4)) if owner_transfer else (None, None)
     db.commit()
     bstmt, blines, _ = _submit(db, run, bank, list(bank_lines), kind="bank")
     cstmt, clines, _ = _submit(db, run, card, list(card_lines))
@@ -316,3 +324,317 @@ def test_pair_transfer_block_reads_applied_and_owner_deleted_pairings(pair, db_s
     db_session.commit()
     assert not stand_ins.pair_transfer_block(db_session, [case.event_id])  # a later creation on that event
     assert stand_ins.pair_transfer_block(db_session, [peer_event])  # none on the peer event
+
+
+# --- pair_transfer (§5.3) -------------------------------------------------------------------------------------------
+
+POLICY_RUN = {"actor": "policy", "label": "policy", "budget": (date(2026, 10, 1), "TWD", Decimal("1"))}
+
+
+@pytest.fixture
+def orphan_pair(dirty_on, seed, run, db_session):
+    """As `pair`, but the owner booked no transfer: the bank's −20000 and the card's +20000 payment lines are both
+    `needs_peer`."""
+    return _make_pair(seed, run, db_session, owner_transfer=False)
+
+
+def _needs_peer(db, stmt):
+    """The open/proposed needs_peer line case of a statement (None when it has none)."""
+    return next((c for c in _cases(db, stmt.id, "open", "proposed")
+                 if c.kind == "line_unmatched" and (c.context or {}).get("hint") == "needs_peer"), None)
+
+
+def _pair_params(line) -> dict:
+    return {"peer_line_id": line.id}
+
+
+def _rules(db, stmt):
+    return rec.rules_for(settings_service.reconciliation_rules(db), stmt.period_end)
+
+
+def _policy_proposal(db, case, line, author=POLICY):
+    prop = proposal_service.create_proposal(
+        db, case_id=case.id, payload=ProposalIn(action="pair_transfer", params=_pair_params(line),
+                                                rationale="complementary lines", confidence=Decimal("0.9")),
+        author=author)
+    db.commit()
+    return prop
+
+
+def _legs(db, row):
+    db.expire_all()
+    return [db.get(LedgerEntry, i) for i in sorted(row.created_entry_ids)]
+
+
+def test_pair_transfer_books_one_transfer_claims_both_lines_and_closes_both_cases(orphan_pair, db_session):
+    p = orphan_pair
+    case = _needs_peer(db_session, p.cstmt)
+    allowed = reconciliation_actions.allowed(case)
+    assert "pair_transfer" in allowed and "backfill_entry" not in allowed  # _no_peer_hint still hides the creations
+    cands = reconciliation_actions.ACTIONS["pair_transfer"].peer_candidates(db_session, case)
+    assert [(s.id, line.id) for s, line in cands] == [(p.bstmt.id, p.bline.id)]
+    row = _apply(db_session, case, "pair_transfer", _pair_params(p.bline))
+    out_leg, in_leg = _legs(db_session, row)
+    assert (out_leg.account_id, out_leg.kind, out_leg.amount, out_leg.posted_date) == (
+        p.bank.id, "transfer_out", Decimal("-20000"), date(2026, 9, 5))
+    assert (in_leg.account_id, in_leg.kind, in_leg.amount, in_leg.posted_date) == (
+        p.card.id, "transfer_in", Decimal("20000"), date(2026, 9, 5))
+    assert out_leg.transfer_group_id == in_leg.transfer_group_id and out_leg.source == in_leg.source == "statement"
+    assert out_leg.needs_review and in_leg.needs_review and out_leg.name == in_leg.name == "對帳配對轉帳"
+    assert "2026-09-30" in out_leg.description and out_leg.category_id is None
+    assert row.effect_slot == "create" and sorted(row.inverse) == [
+        "created_entry_ids", "peer_case_id", "peer_event_id", "peer_line_id", "statement_ids"]
+    assert row.inverse["statement_ids"] == [p.bstmt.id] and row.inverse["peer_line_id"] == p.bline.id
+    assert row.inverse["peer_event_id"] == p.bline.event_id
+    peer = _fresh(db_session, ReconciliationCase, row.inverse["peer_case_id"])
+    assert (peer.status, peer.resolved_action_id, peer.explanation, peer.note) == (
+        "resolved", row.id, None, f"pair_transfer from case {case.id}")
+    assert {(r.line_id, r.entry_id, r.match_rule) for r in _active(db_session, p.cstmt.id)} == {
+        (p.cline.id, in_leg.id, "pair_transfer")}
+    assert {(r.line_id, r.entry_id, r.match_rule) for r in _active(db_session, p.bstmt.id)} == {
+        (p.bline.id, out_leg.id, "pair_transfer")}
+    assert _cases(db_session, p.bstmt.id, "open") == [] and _cases(db_session, p.cstmt.id, "open") == []
+    # option A: the case statement's leg is a stand-in, the peer leg an owner entry on its statement
+    assert in_leg.id in stand_ins.stand_in_entry_ids(db_session, [p.card.id])
+    assert out_leg.id not in stand_ins.stand_in_entry_ids(db_session, [p.bank.id])
+    for stmt in (p.bstmt, p.cstmt):  # a later reconcile keeps it all
+        _reconcile(db_session, stmt.id)
+    assert _cases(db_session, p.bstmt.id, "open") == [] and _cases(db_session, p.cstmt.id, "open") == []
+
+
+def test_pair_transfer_from_the_bank_side_books_the_same_transfer(orphan_pair, db_session):
+    p = orphan_pair
+    row = _apply(db_session, _needs_peer(db_session, p.bstmt), "pair_transfer", _pair_params(p.cline))
+    out_leg, in_leg = _legs(db_session, row)
+    assert (out_leg.account_id, out_leg.amount, in_leg.account_id, in_leg.amount) == (
+        p.bank.id, Decimal("-20000"), p.card.id, Decimal("20000"))
+    assert out_leg.id in stand_ins.stand_in_entry_ids(db_session, [p.bank.id])  # now the bank is the case statement
+    assert _cases(db_session, p.bstmt.id, "open") == [] and _cases(db_session, p.cstmt.id, "open") == []
+
+
+def test_pair_transfer_with_different_line_dates_keeps_each_legs_own_date(dirty_on, seed, run, db_session):
+    p = _make_pair(seed, run, db_session, owner_transfer=False,
+                   card_lines=(_line(1, date(2026, 9, 7), "繳款", "-20000", kind="payment"),))
+    row = _apply(db_session, _needs_peer(db_session, p.cstmt), "pair_transfer", _pair_params(p.bline))
+    out_leg, in_leg = _legs(db_session, row)
+    assert (out_leg.entry_date, out_leg.posted_date) == (date(2026, 9, 5), date(2026, 9, 5))
+    assert (in_leg.entry_date, in_leg.posted_date) == (date(2026, 9, 7), date(2026, 9, 7))
+
+
+def test_pair_transfer_revert_deletes_both_legs_and_reopens_both_cases(orphan_pair, db_session):
+    p = orphan_pair
+    row = _apply(db_session, _needs_peer(db_session, p.cstmt), "pair_transfer", _pair_params(p.bline))
+    _revert(db_session, row.id)
+    db_session.expire_all()
+    assert all(db_session.get(LedgerEntry, i) is None for i in row.created_entry_ids)
+    assert _active(db_session, p.bstmt.id) == [] and _active(db_session, p.cstmt.id) == []
+    assert _needs_peer(db_session, p.bstmt) is not None and _needs_peer(db_session, p.cstmt) is not None
+
+
+@pytest.mark.parametrize("field,value", [("description", "改"), ("category_id", "SEED_CATEGORY"),
+                                         ("amount", Decimal("-20001"))])
+def test_pair_transfer_revert_refuses_snapshot_conflict_after_any_leg_edit(field, value, orphan_pair, seed, db_session):
+    # the category arm sets a real id: create_transfer builds the legs with category_id None
+    row = _apply(db_session, _needs_peer(db_session, orphan_pair.cstmt), "pair_transfer", _pair_params(orphan_pair.bline))
+    leg = db_session.get(LedgerEntry, sorted(row.created_entry_ids)[0])
+    setattr(leg, field, seed.category("對帳測試", kind="transfer_out").id if value == "SEED_CATEGORY" else value)
+    db_session.commit()
+    exc = _refuse(db_session, lambda: _revert(db_session, row.id))
+    assert isinstance(exc, CodedConflictError) and exc.code == "snapshot_conflict"
+    db_session.expire_all()
+    assert all(db_session.get(LedgerEntry, i) is not None for i in row.created_entry_ids)
+    assert _fresh(db_session, ReconciliationAction, row.id).status == "applied"
+
+
+@pytest.mark.parametrize("variant,code", [("third_account", "peer_out_of_scope"), ("busy", "peer_statement_busy"),
+                                          ("historical", "peer_not_live")])
+def test_pair_transfer_refuses_a_peer_outside_the_candidates_and_a_busy_or_historical_peer(
+        variant, code, orphan_pair, seed, run, db_session):
+    p = orphan_pair
+    peer = p.bline
+    if variant == "third_account":  # a live statement of another account printing a non-complementary payment
+        other = _bank(seed, db_session, name="另一銀行")
+        _, (peer,), _ = _submit(db_session, run, other, [_line(1, date(2026, 9, 5), "轉帳", "-15000", kind="payment")],
+                                kind="bank")
+    elif variant == "busy":
+        _fresh(db_session, type(p.bstmt), p.bstmt.id).needs_recheck = True
+        db_session.commit()
+    else:
+        _fresh(db_session, type(p.bstmt), p.bstmt.id).mode = "historical"
+        db_session.commit()
+    exc = _refuse(db_session, lambda: _apply(db_session, _needs_peer(db_session, p.cstmt), "pair_transfer",
+                                             _pair_params(peer)))
+    assert _code(exc) == code
+    assert db_session.query(ReconciliationAction).filter_by(action="pair_transfer").count() == 0
+
+
+def test_pair_transfer_repeats_the_creation_family_check_for_the_peer_event(orphan_pair, seed, db_session):
+    p = orphan_pair
+    category = seed.category("繳卡費")
+    db_session.commit()
+    bank_case = _needs_peer(db_session, p.bstmt)
+    # the bank event gets an applied creation first (a hand row: create_entry is not offered on a needs_peer case)
+    db_session.add(ReconciliationAction(idempotency_key="t-peer-create", event_id=bank_case.event_id,
+                                        effect_slot="create", case_id=bank_case.id, action="create_entry",
+                                        params={"kind": "expense", "category_id": category.id}, actor="owner",
+                                        status="applied"))
+    db_session.commit()
+    exc = _refuse(db_session, lambda: _apply(db_session, _needs_peer(db_session, p.cstmt), "pair_transfer",
+                                             _pair_params(p.bline)))
+    assert _code(exc) == "duplicate_effect"
+
+
+def _add_twin(twin, p, seed, db):
+    if twin == "unclaimed_transfer_any_amount":  # 15 % off: outside the transfer tolerance, inside the window
+        _transfer(seed, p.bank, p.card, "17000", date(2026, 9, 1))
+    elif twin == "near_amount_entry_any_kind":  # 5 % off, an expense on the bank
+        seed.entry(p.bank, "-19000", kind="expense", day=date(2026, 9, 6))
+    else:  # the R6b twin rule: an exact standalone transfer_in on the card
+        seed.entry(p.card, "20000", kind="transfer_in", day=date(2026, 9, 5))
+    db.commit()
+
+
+@pytest.mark.parametrize("twin", ["unclaimed_transfer_any_amount", "near_amount_entry_any_kind", "r6b_twin"])
+def test_pair_transfer_transfer_twin_guard_binds_the_policy_and_policy_proposals_not_the_owner(
+        twin, orphan_pair, seed, db_session):
+    p = orphan_pair
+    case = _needs_peer(db_session, p.cstmt)
+    prop = _policy_proposal(db_session, case, p.bline)  # 1. made while no twin exists (an over-cap policy run)
+    _add_twin(twin, p, seed, db_session)  # 2. the twin arrives; the daily pass reconciles the peer statement
+    _reconcile(db_session, p.bstmt.id)  # (its sweep would otherwise leave it needs_recheck: peer_statement_busy)
+    assert _needs_peer(db_session, p.bstmt) is not None and _needs_peer(db_session, p.cstmt).id == case.id
+    reason = transfer_actions.transfer_twin_reason(db_session, _rules(db_session, p.cstmt), (p.cstmt, p.cline),
+                                                   (p.bstmt, p.bline))
+    assert reason is not None
+    # 3. the policy actor → candidate_changed; the owner applying the policy's proposal → owner_may_record
+    exc = _refuse(db_session, lambda: _apply(db_session, _needs_peer(db_session, p.cstmt), "pair_transfer",
+                                             _pair_params(p.bline), **POLICY_RUN))
+    assert _code(exc) == "candidate_changed"
+    exc = _refuse(db_session, lambda: proposal_service.apply_proposal(db_session, proposal_id=prop.id,
+                                                                      label="owner-test", request_id=None))
+    assert _code(exc) == "owner_may_record"
+    # the plain owner action from the case is not checked
+    row = _apply(db_session, _needs_peer(db_session, p.cstmt), "pair_transfer", _pair_params(p.bline))
+    assert row.status == "applied"
+
+
+def test_pair_transfer_owner_applying_an_agent_proposal_skips_the_twin_guard(orphan_pair, seed, db_session):
+    p = orphan_pair
+    prop = _policy_proposal(db_session, _needs_peer(db_session, p.cstmt), p.bline, author="hermes")
+    _add_twin("r6b_twin", p, seed, db_session)
+    row, _ = proposal_service.apply_proposal(db_session, proposal_id=prop.id, label="owner-test", request_id=None)
+    db_session.commit()
+    assert row.status == "applied" and row.proposal_id == prop.id
+
+
+def test_pair_transfer_owner_may_re_pair_after_deleting_the_pair(orphan_pair, db_session):
+    p = orphan_pair
+    first = _apply(db_session, _needs_peer(db_session, p.cstmt), "pair_transfer", _pair_params(p.bline))
+    ews.delete_entry(db_session, sorted(first.created_entry_ids)[0])  # either leg removes both
+    db_session.commit()
+    for stmt in (p.bstmt, p.cstmt):
+        _reconcile(db_session, stmt.id)
+    case = _needs_peer(db_session, p.cstmt)
+    assert case.context.get("owner_deleted") is True and _needs_peer(db_session, p.bstmt).context.get("owner_deleted")
+    # a policy-authored proposal on the case: the owner applying it is gated like the policy (occupancy guard)
+    prop = _policy_proposal(db_session, case, p.bline)
+    exc = _refuse(db_session, lambda: proposal_service.apply_proposal(db_session, proposal_id=prop.id,
+                                                                      label="owner-test", request_id=None))
+    assert _code(exc) == "owner_deleted"
+    # the owner's own action re-pairs
+    row = _apply(db_session, _needs_peer(db_session, p.cstmt), "pair_transfer", _pair_params(p.bline))
+    assert row.status == "applied" and len(row.created_entry_ids) == 2
+    assert not set(row.created_entry_ids) & set(first.created_entry_ids)
+    assert all(leg is not None for leg in _legs(db_session, row))
+
+
+def test_pair_transfer_twin_rule_a_ignores_a_transfer_whose_legs_are_both_covered(dirty_on, seed, run, db_session):
+    small_bank = _line(2, date(2026, 9, 3), "信用卡繳款", "-5000", kind="payment")
+    small_card = _line(2, date(2026, 9, 3), "繳款", "-5000", kind="payment")
+    bank = _bank(seed, db_session)
+    card = _card(seed, db_session, name="卡")
+    _transfer(seed, bank, card, "5000", date(2026, 9, 3))  # another payment the same week, printed on both
+    db_session.commit()
+    bstmt, blines, _ = _submit(db_session, run, bank, [BANK_LINE, small_bank], kind="bank")
+    cstmt, clines, _ = _submit(db_session, run, card, [CARD_LINE, small_card])
+    assert len(_active(db_session, bstmt.id)) == 1 and len(_active(db_session, cstmt.id)) == 1
+    assert transfer_actions.transfer_twin_reason(db_session, _rules(db_session, cstmt), (cstmt, clines[0]),
+                                                 (bstmt, blines[0])) is None
+    row = _apply(db_session, _needs_peer(db_session, cstmt), "pair_transfer", _pair_params(blines[0]), **POLICY_RUN)
+    assert row.status == "applied" and row.actor == "policy"
+
+
+def test_pair_transfer_dirty_disabled_binds_the_policy_not_the_owner(orphan_pair, db_session):
+    p = orphan_pair
+    set_dirty(db_session, False)
+    db_session.commit()
+    exc = _refuse(db_session, lambda: _apply(db_session, _needs_peer(db_session, p.cstmt), "pair_transfer",
+                                             _pair_params(p.bline), **POLICY_RUN))
+    assert _code(exc) == "dirty_disabled"
+    assert _apply(db_session, _needs_peer(db_session, p.cstmt), "pair_transfer",
+                  _pair_params(p.bline)).status == "applied"
+
+
+@pytest.mark.parametrize("shape", ["shadow", "orphan"])
+def test_replace_stand_in_refuses_a_transfer_stand_in(shape, orphan_pair, seed, db_session):
+    p = orphan_pair
+    row = _apply(db_session, _needs_peer(db_session, p.cstmt), "pair_transfer", _pair_params(p.bline))
+    _, stand_in = _legs(db_session, row)  # the card (case statement) leg
+    if shape == "orphan":  # the stand-in's claim released without an edit (as an unmatch would)
+        coverage_service.release_line(db_session, _fresh(db_session, type(p.cstmt), p.cstmt.id), p.cline.id, reason="test")
+        db_session.commit()
+    _, owner_in = _transfer(seed, p.bank, p.card, "20000", date(2026, 9, 5))  # the owner records it later
+    db_session.commit()
+    _reconcile(db_session, p.cstmt.id)
+    hinted = [c for c in _cases(db_session, p.cstmt.id, "open")
+              if (c.context or {}).get("hint") in ("shadowed_by_stand_in", "orphaned_stand_in")]
+    (case,) = hinted
+    if shape == "orphan":  # the owner's in leg took the line (the stand-in's representation dropped)
+        assert {r.entry_id for r in _active(db_session, p.cstmt.id)} == {owner_in.id}
+        assert (case.context["hint"], case.entry_id) == ("orphaned_stand_in", stand_in.id)
+    else:  # the stand-in keeps its claim; the owner's in leg shadows it
+        assert {r.entry_id for r in _active(db_session, p.cstmt.id)} == {stand_in.id}
+        assert (case.context["hint"], case.entry_id, case.context["stand_in_entry_id"]) == (
+            "shadowed_by_stand_in", owner_in.id, stand_in.id)
+    exc = _refuse(db_session, lambda: _apply(db_session, case, "replace_stand_in", {}))
+    assert _code(exc) == "stand_in_changed"
+    assert _fresh(db_session, LedgerEntry, stand_in.id) is not None
+
+
+def test_owner_deleted_pair_blocks_a_second_pairing_on_both_statements(orphan_pair, db_session):
+    p = orphan_pair
+    row = _apply(db_session, _needs_peer(db_session, p.cstmt), "pair_transfer", _pair_params(p.bline))
+    ews.delete_entry(db_session, sorted(row.created_entry_ids)[0])
+    db_session.commit()
+    peers = {p.bstmt.id: p.cline, p.cstmt.id: p.bline}
+
+    def blocked(stmt):
+        case = _needs_peer(db_session, stmt)
+        assert case.context.get("owner_deleted") is True and case.context["hint"] == "needs_peer"
+        exc = _refuse(db_session, lambda: _apply(db_session, case, "pair_transfer", _pair_params(peers[stmt.id]),
+                                                 **POLICY_RUN))
+        assert _code(exc) == "owner_deleted"
+
+    # (1) the bank statement first: the card statement (the row's own) is not swept yet, so the row is still
+    # applied — the window in which the peer statement's policy runs in the daily pass (the engine sweeps the locked
+    # card statement inside the refused attempt, so the guard sees either arm; the rollback keeps the row applied)
+    _reconcile(db_session, p.bstmt.id)
+    assert _fresh(db_session, ReconciliationAction, row.id).status == "applied"
+    blocked(p.bstmt)
+    assert _fresh(db_session, ReconciliationAction, row.id).status == "applied"
+    # (2) the originating sweep retires the row: the policy actor is still blocked on both statements
+    _sweep(db_session, p.cstmt)
+    retired = _fresh(db_session, ReconciliationAction, row.id)
+    assert retired.status == "reverted" and "deleted_by_event" in retired.inverse
+    for stmt in (p.bstmt, p.cstmt):
+        _reconcile(db_session, stmt.id)
+        blocked(stmt)
+
+
+def test_engine_revert_of_a_pair_does_not_block_a_later_pairing(orphan_pair, db_session):
+    p = orphan_pair
+    row = _apply(db_session, _needs_peer(db_session, p.cstmt), "pair_transfer", _pair_params(p.bline))
+    _revert(db_session, row.id)
+    assert "owner_deleted" not in _needs_peer(db_session, p.cstmt).context
+    again = _apply(db_session, _needs_peer(db_session, p.cstmt), "pair_transfer", _pair_params(p.bline), **POLICY_RUN)
+    assert again.status == "applied"

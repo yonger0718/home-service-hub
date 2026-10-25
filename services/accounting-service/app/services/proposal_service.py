@@ -77,9 +77,17 @@ def _validate(db: Session, case: ReconciliationCase, action: str, params: dict) 
     for name in type(parsed).model_fields:
         value = getattr(parsed, name)
         if name.endswith("_id") and name not in UNSCOPED_IDS and value is not None \
-                and value not in _allowed_ids(db, case, name):
+                and value not in _scoped_ids(db, case, name):
             raise CodedValidationError("params", "id_out_of_scope", f"{name} {value}")
     return parsed
+
+
+def _scoped_ids(db: Session, case: ReconciliationCase, name: str) -> set[int]:
+    """R6c: `peer_line_id` (pair_transfer) is checked against the live peer candidates, computed now and never
+    stored on the case; every other id against the case's own evidence."""
+    if name == "peer_line_id":
+        return {line.id for _, line in ACTIONS["pair_transfer"].peer_candidates(db, case)}
+    return _allowed_ids(db, case, name)
 
 
 def _lock_case_chain(db: Session, case_id: int) -> ReconciliationCase:

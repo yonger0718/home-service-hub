@@ -11,7 +11,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import sessionmaker
 
 from app.models import (
-    AccountStatement, CoverageDirty, IngestRun, LedgerEntry, ReconciliationCase, StatementCoverage,
+    AccountStatement, CoverageDirty, IngestRun, LedgerEntry, ReconciliationAction, ReconciliationCase, StatementCoverage,
 )
 from app.schemas.statements import RevisionIn
 from app.schemas.writes import EntryUpdateIn
@@ -2519,3 +2519,34 @@ def test_r6c_action_name_constants():
     assert {"backfill_entry", "pair_transfer"} == stand_ins.BACKFILL_ACTIONS
     assert "pair_transfer" in stand_ins.OWNER_TWIN_GUARDED and "pair_transfer" in policy_service.OWNER_DELETED_GUARDED
     assert "pair_transfer" in coverage_service.RETIRABLE_ACTIONS and "adjust_transfer" in coverage_service.TARGET_ACTIONS
+
+
+# --- R6c: the owner-deleted stamp on needs_peer cases (spec §5.1 option A) ------------------------------------------
+
+from tests.integration.test_reconciliation_actions_transfer import _needs_peer, orphan_pair  # noqa: E402,F401
+
+
+def test_needs_peer_cases_carry_owner_deleted_while_a_pairing_occupies_either_event(orphan_pair, db_session):
+    p = orphan_pair
+    card_case = _needs_peer(db_session, p.cstmt)
+    row = ReconciliationAction(idempotency_key="t-stamp-pair", event_id=card_case.event_id, effect_slot="create",
+                               case_id=card_case.id, action="pair_transfer", params={}, actor="owner",
+                               status="applied", inverse={"peer_event_id": p.bline.event_id})
+    db_session.add(row)
+    db_session.commit()
+
+    def stamps():
+        for stmt in (p.bstmt, p.cstmt):
+            rec.reconcile(db_session, stmt.id)
+            db_session.commit()
+        cases = [_needs_peer(db_session, stmt) for stmt in (p.bstmt, p.cstmt)]
+        assert all(c.context["hint"] == "needs_peer" for c in cases)  # never the stand_in_deleted hint
+        return [c.context.get("owner_deleted") for c in cases]
+
+    assert stamps() == [True, True]  # still applied (the legs gone before the originating sweep)
+    row.status = "reverted"  # an ordinary engine revert: no stamp
+    db_session.commit()
+    assert stamps() == [None, None]
+    row.inverse = {"peer_event_id": p.bline.event_id, "deleted_by_event": 1}
+    db_session.commit()
+    assert stamps() == [True, True]

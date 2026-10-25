@@ -680,3 +680,27 @@ def test_scoped_supersede_holds_nothing_while_it_waits_for_the_statement(unmatch
     (proposal,) = _proposals(db_session, case_id=s.case.id)
     assert proposal.status == "superseded"
     assert _reload(db_session, ReconciliationCase, s.case.id).status == "open"
+
+
+# --- R6c pair_transfer: peer_line_id is scoped by the live peer candidates ------------------------------------------
+
+from tests.integration.test_reconciliation_actions_transfer import _needs_peer, orphan_pair  # noqa: E402,F401
+
+
+def test_pair_transfer_proposal_validates_peer_line_id_against_the_live_candidates(orphan_pair, db_session):
+    case = _needs_peer(db_session, orphan_pair.cstmt)
+
+    def propose(peer_line_id):
+        return proposal_service.create_proposal(
+            db_session, case_id=case.id, author="hermes",
+            payload=ProposalIn(action="pair_transfer", params={"peer_line_id": peer_line_id},
+                               rationale="the bank line pays the card", confidence=Decimal("0.8")))
+
+    ok = propose(orphan_pair.bline.id)
+    db_session.commit()
+    assert ok.status == "pending" and ok.params == {"peer_line_id": orphan_pair.bline.id}
+    for out_of_range in (999999, orphan_pair.cline.id):  # no such line; the case's own line is no peer
+        with pytest.raises(CodedValidationError) as exc:
+            propose(out_of_range)
+        db_session.rollback()
+        assert exc.value.code == "id_out_of_scope"
