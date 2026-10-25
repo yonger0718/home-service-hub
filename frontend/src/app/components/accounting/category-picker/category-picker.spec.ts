@@ -123,7 +123,7 @@ describe('CategoryPickerComponent', () => {
     (el.querySelector('[data-bubble="parent"]') as HTMLButtonElement).click();
     fixture.detectChanges();
     expect(selected).toEqual(['parent']);
-    // aria-* only where there is a role: the strip is a group, the 🔒 an image.
+    // aria-* only where there is a role: the strip is a group, the lock icon an image.
     expect(el.querySelector('.strip.bubbles')!.getAttribute('role')).toBe('group');
     expect(el.querySelector('.lock')!.getAttribute('role')).toBe('img');
   });
