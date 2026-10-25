@@ -30,7 +30,7 @@
         <span class="ico-wrap">
           <span class="ico" aria-hidden="true" [style.background]="bubble.color">{{ bubble.icon }}</span>
           @if (bubble.protected) {
-            <span class="lock" role="img" aria-label="受保護">🔒</span>
+            <i class="lock pi pi-lock" role="img" aria-label="受保護"></i>
           }
         </span>
         <b class="name" [title]="bubble.label">{{ bubble.label }}</b>

@@ -230,7 +230,7 @@
         </section>
       } @else {
         @if (protectedText(); as text) {
-          <p class="protected-note" role="note">🔒 {{ text }}：只能修改名稱、專案、標籤與備註</p>
+          <p class="protected-note" role="note"><i class="pi pi-lock" aria-hidden="true"></i> {{ text }}：只能修改名稱、專案、標籤與備註</p>
         }
         <div class="tiles">
           @if (kind() !== 'transfer' || childScope()) {
@@ -263,7 +263,7 @@
 
           <div class="tile wide name-tile">
             <input class="name-input" placeholder="名稱" aria-label="名稱" [value]="name()" (input)="name.set($any($event.target).value)" />
-            <button type="button" class="cap star" disabled aria-label="存為範本（之後開放）">☆</button>
+            <button type="button" class="cap star" disabled aria-label="存為範本（之後開放）"><i class="pi pi-star" aria-hidden="true"></i></button>
           </div>
 
           @if (kind() !== 'transfer' || childScope()) {

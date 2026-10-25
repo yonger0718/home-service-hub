@@ -4,13 +4,13 @@
     <h1>{{ account()?.name ?? '帳戶 #' + accountId() }}</h1>
     <span class="head-actions">
       <a class="statements-link" [routerLink]="['/accounting/accounts', accountId(), 'statements']">對帳</a>
-      <a class="settings-link" [routerLink]="['/accounting/accounts', accountId(), 'settings']" aria-label="帳戶設定">⚙</a>
+      <a class="settings-link" [routerLink]="['/accounting/accounts', accountId(), 'settings']" aria-label="帳戶設定"><i class="pi pi-cog" aria-hidden="true"></i></a>
     </span>
   </header>
 
   <div class="monthbar">
     <button type="button" class="period-prev" aria-label="上期" (click)="movePeriod(-1)">‹</button>
-    <span><small class="period-year">{{ periodYear() }}</small> <b class="period-label">{{ periodText() }}</b></span>
+    <span><small class="period-year">{{ periodYear() }}</small>&ngsp;<b class="period-label">{{ periodText() }}</b></span>
     <button type="button" class="period-next" aria-label="下期" (click)="movePeriod(1)">›</button>
   </div>
 
@@ -32,7 +32,7 @@
     </select>
     <input class="chip tag filter-q" type="search" placeholder="搜尋名稱、商家、備註" aria-label="搜尋" [value]="q() ?? ''" (change)="setQuery($any($event.target).value)" />
     <span class="chip tag filter-range">
-      <span class="range-label"><span aria-hidden="true">📅</span> 日期</span>
+      <span class="range-label"><i class="pi pi-calendar" aria-hidden="true"></i> 日期</span>
       <input class="filter-from" type="date" aria-label="起始日期" [value]="dateFrom() ?? ''" (change)="setDateFrom($any($event.target).value)" />
       <span class="sep" aria-hidden="true">–</span>
       <input class="filter-to" type="date" aria-label="結束日期" [value]="dateTo() ?? ''" (change)="setDateTo($any($event.target).value)" />

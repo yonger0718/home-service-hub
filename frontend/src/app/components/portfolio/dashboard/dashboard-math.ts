@@ -224,3 +224,10 @@ export function carryHoldings(points: readonly NetworthPoint[]): NetworthPoint[]
     };
   });
 }
+
+/** y-axis tick label in millions; decimals follow the tick step so narrow ranges stop repeating "3.4M". */
+export function millionsTick(value: number, ticks: readonly { value: number }[]): string {
+  const step = ticks.length > 1 ? Math.abs(ticks[1].value - ticks[0].value) : 100_000;
+  const decimals = Math.min(3, Math.max(1, Math.ceil(-Math.log10(step / 1_000_000) - 1e-9)));
+  return `${(value / 1_000_000).toFixed(decimals)}M`;
+}

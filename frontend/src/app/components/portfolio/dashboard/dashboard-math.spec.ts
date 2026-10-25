@@ -12,6 +12,7 @@ import {
   composition,
   holdingAbbr,
   isCashOnlyPoint,
+  millionsTick,
   pendingRows,
   quoteTimeLabel,
   todayChange,
@@ -420,5 +421,29 @@ describe('carryHoldings', () => {
   it('carries a cash-only row with total_cash_twd 0 after holdings, total assets = the carried market value', () => {
     const out = carryHoldings([FRIDAY(), row('2026-01-10', { cash: '0' })]);
     expect(out[1]).toMatchObject({ total_market_value: '2900000', total_cash_twd: '0', total_assets_twd: '2900000' });
+  });
+});
+
+describe('millionsTick', () => {
+  const t = (...v: number[]) => v.map(value => ({ value }));
+  it('uses one decimal at a 100k step', () => {
+    expect(millionsTick(3_400_000, t(3_400_000, 3_500_000))).toBe('3.4M');
+  });
+  it('uses two decimals at a 50k step', () => {
+    expect(millionsTick(3_450_000, t(3_400_000, 3_450_000))).toBe('3.45M');
+    expect(millionsTick(3_400_000, t(3_400_000, 3_450_000))).toBe('3.40M');
+  });
+  it('uses two decimals at a 10k step', () => {
+    expect(millionsTick(3_420_000, t(3_410_000, 3_420_000))).toBe('3.42M');
+  });
+  it('uses three decimals at a 5k step', () => {
+    expect(millionsTick(3_405_000, t(3_400_000, 3_405_000))).toBe('3.405M');
+  });
+  it('keeps one decimal at a 500k step', () => {
+    expect(millionsTick(3_500_000, t(3_000_000, 3_500_000))).toBe('3.5M');
+  });
+  it('defaults to one decimal with a single or no tick', () => {
+    expect(millionsTick(2_000_000, t(1))).toBe('2.0M');
+    expect(millionsTick(2_000_000, [])).toBe('2.0M');
   });
 });
