@@ -9,8 +9,12 @@ describe('nextDueItems', () => {
   it('merges bills and pending instances, earliest first, three at most', () => {
     const items = nextDueItems([bill], [inst(1, '2026-10-26'), inst(2, '2026-11-05'), inst(3, '2026-11-20')], '2026-10-25');
     expect(items.map(i => [i.kind, i.date])).toEqual([['schedule', '2026-10-26'], ['bill', '2026-10-28'], ['schedule', '2026-11-05']]);
-    expect(items[0]).toMatchObject({ name: '房租 #3', amountText: '−$1,200', dueText: '明天' });
+    expect(items[0]).toMatchObject({ name: '房租 #3', amountText: '$1,200', dueText: '明天' });
     expect(items[1]).toMatchObject({ amountText: '$12,345', dueText: '還有 3 天' });
+  });
+  it('shows an outflow as its absolute value and an inflow as is', () => {
+    const items = nextDueItems([], [inst(1, '2026-10-26', 'pending', '-18000'), inst(2, '2026-10-27', 'pending', '500')], '2026-10-25');
+    expect(items.map(i => i.amountText)).toEqual(['$18,000', '$500']);
   });
   it('skips posted and skipped instances and lists overdue ones first', () => {
     const items = nextDueItems([], [inst(1, '2026-10-20'), inst(2, '2026-10-30', 'posted'), inst(3, '2026-10-29', 'skipped')], '2026-10-25');

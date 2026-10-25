@@ -20,6 +20,12 @@ export interface DueItem {
   dueText: string;
 }
 
+/** One convention with the bills (positive): an outflow shows as its absolute value, an inflow keeps its (plain) sign. */
+function dueAmount(amount: string, currency: string): string {
+  const value = Number(amount);
+  return formatMoney(value < 0 ? Math.abs(value) : amount, currency);
+}
+
 /** The next dues across bills and pending 待完成交易, earliest first (bills before instances on a tie). */
 export function nextDueItems(bills: readonly DueBill[], instances: readonly ScheduleInstance[], today: string, limit = 3): DueItem[] {
   const items: DueItem[] = [
@@ -31,7 +37,7 @@ export function nextDueItems(bills: readonly DueBill[], instances: readonly Sche
         kind: 'schedule' as const,
         name: queueTitle(item),
         date: item.due_date,
-        amountText: item.totals[0] ? formatMoney(item.totals[0].amount, item.totals[0].currency) : null,
+        amountText: item.totals[0] ? dueAmount(item.totals[0].amount, item.totals[0].currency) : null,
         dueText: dueCountdown(item.due_date, today),
       })),
   ];
