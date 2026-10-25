@@ -246,6 +246,23 @@ def test_adjust_transfer_candidate_changed_when_the_peer_line_is_claimed_between
     assert _code(exc) == "candidate_changed" and claimed
 
 
+def test_adjust_transfer_applies_the_discovery_validate_before_verified_under_the_locks(pair, db_session, monkeypatch):
+    """A rediscovery after `validate_before` could reach an unlocked window statement: `apply` must not run one."""
+    impl = reconciliation_actions.ACTIONS["adjust_transfer"]
+    original, calls = impl._discover, []
+
+    def discover(ctx, params):  # lock_targets, then validate_before; any later call sees a different world
+        calls.append(True)
+        found = original(ctx, params)
+        return found if len(calls) <= 2 else {**found, "peer_line_id": None, "peer_line_ids": [], "peer_statement_ids": []}
+
+    monkeypatch.setattr(impl, "_discover", discover)
+    row = _apply(db_session, _delta(db_session, pair.cstmt), "adjust_transfer", _adjust(pair))
+    assert len(calls) == 2
+    assert row.inverse["peer_line_id"] == pair.bline.id and row.inverse["statement_ids"] == [pair.bstmt.id]
+    assert {r.line_id for r in _active(db_session, pair.bstmt.id)} == {pair.bline.id}
+
+
 def test_second_line_on_the_same_leg_is_refused_entry_claimed(dirty_on, seed, run, db_session):
     pair = _make_pair(seed, run, db_session,
                       card_lines=(CARD_LINE, _line(2, date(2026, 9, 6), "繳款", "-20100", kind="payment")))

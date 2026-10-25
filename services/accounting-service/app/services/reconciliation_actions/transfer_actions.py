@@ -237,6 +237,19 @@ class AdjustTransferAction(ActionBase):
                 or tuple(found["peer_statement_ids"]) != tuple(prepared.lock_set.statement_ids)):
             raise CodedConflictError(CANDIDATE_CHANGED, f"discovered {prepared.data}, now {({k: found[k] for k in _FROZEN})}")
         self._plan(ctx, params, found)
+        ctx._transfer_discovery = found  # the locked, verified discovery: `apply` consumes exactly this one
+
+    @staticmethod
+    def _verified(ctx: Context) -> dict:
+        """The discovery `validate_before` proved under the locks; its statements must be the ones the engine
+        locked (a rediscovery could reach an unlocked window statement)."""
+        found = ctx._transfer_discovery
+        if found is None:  # never: the engine runs validate_before first on this context
+            raise RuntimeError("adjust_transfer apply without a verified discovery")
+        locked = tuple(ctx.lock_set.statement_ids) if ctx.lock_set is not None else ()
+        if tuple(found["peer_statement_ids"]) != locked:
+            raise CodedConflictError(CANDIDATE_CHANGED, f"statements {found['peer_statement_ids']}, locked {list(locked)}")
+        return found
 
     def _plan(self, ctx: Context, params: AdjustTransferParams, found: dict) -> _Plan:
         db = ctx.db
@@ -285,7 +298,7 @@ class AdjustTransferAction(ActionBase):
 
     def apply(self, ctx: Context, params: AdjustTransferParams, prepared: Prepared, effect: Effect) -> None:
         db = ctx.db
-        plan = self._plan(ctx, params, self._discover(ctx, params))
+        plan = self._plan(ctx, params, self._verified(ctx))
         magnitude = abs(Decimal(plan.line.flow_amount))
         restore = {}
         for entry, source in ((plan.leg, plan.line), (plan.peer, plan.peer_line)):

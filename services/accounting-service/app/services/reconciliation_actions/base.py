@@ -43,7 +43,9 @@ class Context:
     lock_set: "LockSet | None" = None  # what the engine locked for this attempt (set after the locks; R1d)
     budget_amount: Decimal | None = None  # R6b.2: the amount a policy apply reserved and charged (None for the owner)
     _replace_discovery: dict | None = None  # R6b.5: replace_stand_in's one unlocked discovery (lock_targets → prepare)
-    _transfer_discovery: dict | None = None  # R6c: adjust_transfer's one unlocked discovery (lock_targets → prepare)
+    # R6c: adjust_transfer's discovery — the unlocked one (lock_targets → prepare), then the locked one
+    # validate_before verified (→ apply)
+    _transfer_discovery: dict | None = None
     action_id: int | None = None  # R6c: the action row being applied (set by the engine after its insert, before apply)
 
 
