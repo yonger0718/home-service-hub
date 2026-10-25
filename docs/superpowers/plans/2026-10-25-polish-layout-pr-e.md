@@ -1,6 +1,6 @@
 # Polish Layout v2 — PR E (pages) Implementation Plan
 
-_Rev 1 — for Multica plan review._
+_Rev 2 — folds Multica AGENT-285 (dev-grok): tick callback uses the label index (T6), `.dwrap` carries the negative FAB margin (T4), bill-line and import spec rewrites keep their assertions (T8/T9), `.tl-sub` fee rule pinned + R4 corrected (T7), `clear()` resets `month` (T1 fold in T3), liquidation-then-cash-only test (T5). Rev 1 — for Multica plan review._
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -16,7 +16,7 @@ _Rev 1 — for Multica plan review._
 - R1 — The month overview renders only when the left list is the timeline (`listKey() === 'timeline'`). On `/accounting/accounts` the empty pane shows the 帳戶 copy at every panes width: the 帳戶 requirement names its empty copy without a width cut, and the D7 scenario is "Timeline without a selection".
 - R2 — "Next three due items" = the three earliest of: card due days from `reminderDues` (45-day horizon) whose statement has a remaining balance, and `pending` schedule instances of the 待完成 queue (`queue: true`), sorted by date ascending (overdue first). Amounts: the card's statement total (as the timeline's bill lines show), the instance's first `totals` entry.
 - R3 — 舊資料帳面 is omitted only once the totals are known and `legacy === 0`; while the summary is loading the four cards render as today (no 3 → 4 jump for a ledger that has legacy rows).
-- R4 — 已實現損益 賣出成本費用 already renders in `--app-text` (`sign: 0`, no `.up`/`.down`); 5.6 adds the pinning tests only. 交易紀錄 rows do not render per-row 手續費 / 交易稅 (only the KPI card and the form do), so the row-level `--app-text-muted` scenario has no code to change in this PR.
+- R4 — 已實現損益 賣出成本費用 already renders in `--app-text` (`sign: 0`, no `.up`/`.down`), and 交易紀錄 row fees (`transaction-rows.ts:59` `feeLine` → `.tl-sub`) already render in `--app-text-muted` (`components/ui/timeline/timeline.scss:237-241`); 5.6 adds pinning tests only, no colour code changes.
 - R5 — Icon scope is tasks.md 5.8: 🔔 (timeline), 💳 (calendar badge and the day's bill rows), the entry-detail actions, plus the same action glyphs repeated in `split-group.html`. ✕ ✓ ‹ › and the settings row glyphs stay (not in 5.8).
 - R6 — Balance chart plot height 280 px (fixed, like the dashboard's 220 px pattern: absolute `p-chart` inside a positioned box; the loading / empty placeholders take the same height).
 
@@ -120,6 +120,8 @@ describe('nextDueItems', () => {
 
 - [ ] **Step 8: Commit** — `feat(accounting): overview service — timeline publishes month summary and the next due items (D7)`.
 
+_Rev 2 fold (done inside Task 3's dispatch, own commit): `clear()` also resets `month` to `currentMonth()` so a re-created overview never titles the previous month; the destroy test asserts `overview.month()` equals `currentMonth()`._
+
 ---
 
 ### Task 2: `<app-month-overview>` in the empty pane at ≥ 1280 px; 帳戶 empty copy
@@ -222,7 +224,7 @@ describe('nextDueItems', () => {
   </div>
   ```
   `addAccount()` = `void this.router.navigateByUrl('/accounting/accounts/new')` (moved verbatim from `accounts.ts:256-258`, which keeps its own copy for phone mode).
-- SCSS: `.dwrap { display: flex; flex-direction: column; height: calc(100dvh - var(--page-pad-y) - var(--page-pad-b)); min-height: 360px; }`, `.dbody { flex: 1; min-height: 0; height: auto; }` (drop the `height` and `min-height` lines now on `.dbody`), `.dwrap--sheet { display: block; height: auto; }`. `app-page-header` keeps its own `margin-bottom: 1rem`.
+- SCSS: `.dwrap { display: flex; flex-direction: column; height: calc(100dvh - var(--page-pad-y) - var(--page-pad-b)); margin-bottom: calc(-1 * var(--fab-clear, 0px)); min-height: 360px; }`, `.dbody { flex: 1; min-height: 0; height: auto; margin-bottom: 0; }` (drop the `height`, `min-height` and negative `margin-bottom` now on `.dbody` — the shell pads the page bottom by `page-pad-b + fab-clear`, so the wrapper that owns the height must own the compensating margin or `/accounting` scrolls at 1280 × 800), `.dwrap--sheet { display: block; height: auto; margin-bottom: 0; }`. `.list-pane` keeps `padding-bottom: calc(14px + var(--fab-clear, 0px))`. `app-page-header` keeps its own `margin-bottom: 1rem`. Stylesheet test: `accounting-layout.scss` has `.dwrap {` containing `margin-bottom: calc(-1 * var(--fab-clear, 0px))` and `.dbody {` no longer containing `margin-bottom: calc(-1`.
 
 - [ ] **Step 1: Tests.**
   - `accounting-layout.spec.ts`: `renders the page title above the list card` — at `start('panes', '/accounting')`: `harness.routeNativeElement.querySelector(':scope > .dwrap > app-page-header h1')` text 記帳記錄; `.list-pane app-page-header` null; `.list-pane` still has `data-page-scroller`. `renders 新增帳戶 in the hoisted header on /accounting/accounts` — `.dwrap > app-page-header app-btn.add-account button` exists; click → `Location.path()` is `/accounting/accounts/new`. `keeps the title inside the list in sheet mode too` is NOT a requirement — instead `hoists the header in sheet mode` — `start('sheet', '/accounting')` → `.dwrap--sheet > app-page-header` present.
@@ -259,11 +261,12 @@ export function carryHoldings(points: readonly NetworthPoint[]): NetworthPoint[]
   - `a Saturday between two trading days carries Friday` — Fri market 2.9 M cost 2.5 M upnl 0.4 M div 10 k rpnl 20 k xirr '0.1' cash 100 k; Sat cash-only cash 114.6 k; Mon holdings → Sat point `toMatchObject({ date: '2026-01-10', total_market_value: '2900000', total_cost: '2500000', total_unrealized_pnl: '400000', total_dividends: '10000', total_realized_pnl: '20000', total_cash_twd: '114600', total_assets_twd: '3014600' })`; `portfolio_xirr` stays `null` (not one of the five).
   - `Saturday and Sunday both carry Friday` — two consecutive cash-only rows → both carry; Monday unchanged.
   - `liquidation is not bridged` — `row(…, { rpnl: '35205' })` after holdings → same reference, market stays `'0'`.
+  - `a cash-only day after a liquidation stays at 0` — `[holdings, liquidation (rpnl '35205'), cashOnly]` → the third point's `total_market_value` stays `'0'` (the liquidation row is the new "last non-cash-only point" and its market is 0).
   - `holdings with zero cash are not cash-only` — market '100', cash '0' → unchanged reference.
 
 - [ ] **Step 2: Run** `--include 'src/app/components/portfolio/dashboard/dashboard-math.spec.ts'` → FAIL.
 
-- [ ] **Step 3: Implement** in `dashboard-math.ts`; apply in `dashboard.ts`: every `this.chartPoints.set(x)` for history rows (`selectRange` cached branch 371, `loadNetworthHistory` 616 and 626) becomes `this.chartPoints.set(carryHoldings(x))`; the cache keeps the raw rows.
+- [ ] **Step 3: Implement** in `dashboard-math.ts`; apply in `dashboard.ts`: every `this.chartPoints.set(x)` for history rows (`selectRange` cached branch 373, `loadNetworthHistory` 616 and 626; the error branch 634 sets `[]` and prefetch writes only the cache) becomes `this.chartPoints.set(carryHoldings(x))`; the cache keeps the raw rows.
 
 - [ ] **Step 4: `dashboard.spec.ts`** — in `describe('net-worth chart')` (line 860, helper `point(date, market, cash, total)` extended with the five fields where needed): `carries Friday's holdings onto a cash-only Saturday` — history `[Fri(100, cash 40, total 140), Sat cash-only (cash 54, total 54), Mon(120, cash 60, total 180)]` → `chartData.datasets[1].data` `[100, 100, 120]` and `datasets[0].data` `[140, 154, 180]`; the tooltip `afterBody` for index 1 reads `現金 $54` (whatever the existing `money` format yields for 54); the existing `collapses total assets…` test (581) still passes untouched.
 
@@ -279,12 +282,12 @@ export function carryHoldings(points: readonly NetworthPoint[]): NetworthPoint[]
 - Modify: `frontend/src/app/components/portfolio/accounts/account-detail.ts:226-278`, `account-detail.scss:92-104`
 - Test: `frontend/src/app/components/portfolio/accounts/account-detail.component.spec.ts`
 
-**Interfaces:** Produces in `AccountDetailComponent`: `private readonly dark = toSignal(inject(AppearanceService).dark$, { initialValue: false })`; `chartData` computed reads `this.dark()` then `cssVar('--app-primary')` / `cssVar('--app-primary-soft')` (private `cssVar(name)` = `getComputedStyle(document.documentElement).getPropertyValue(name).trim()`); dataset gains `pointRadius: 0, pointHoverRadius: 4, fill: true, borderWidth: 2`; `chartOptions.scales.x.ticks = { maxTicksLimit: 8, maxRotation: 0, autoSkip: true, callback: (_v, index) => this.tickLabel(index) }` with `tickLabel(index) = mmdd(this.chartData().labels[index])` (`'2026-09-01' → '09/01'`, empty string for a missing label); `chartOptions.scales.y.beginAtZero = false`; `animation: false`.
+**Interfaces:** Produces in `AccountDetailComponent`: `private readonly dark = toSignal(inject(AppearanceService).dark$, { initialValue: false })`; `chartData` computed reads `this.dark()` then `cssVar('--app-primary')` / `cssVar('--app-primary-soft')` (private `cssVar(name)` = `getComputedStyle(document.documentElement).getPropertyValue(name).trim()`); dataset gains `pointRadius: 0, pointHoverRadius: 4, fill: true, borderWidth: 2`; `chartOptions.scales.x.ticks = { maxTicksLimit: 8, maxRotation: 0, autoSkip: true, callback: (value: string | number) => this.tickLabel(Number(value)) }` with `tickLabel(labelIndex) = mmdd(this.chartData().labels[labelIndex] ?? '')` (`'2026-09-01' → '09/01'`, empty string for a missing label). Chart.js 4 calls a category tick callback as `callback(labelIndex, visibleTickIndex, ticks)` — the FIRST argument is the label index; using the second would place the first dates on later ticks once `autoSkip` drops ticks.; `chartOptions.scales.y.beginAtZero = false`; `animation: false`.
 
 - [ ] **Step 1: Tests** (the spec stubs `p-chart` at line 22; `document.documentElement.style.setProperty('--app-primary', '#112233')` in the test, cleared in `afterEach`):
   - `colours the balance line from the theme tokens and recolours on a theme change` — `datasets[0].borderColor` `'#112233'`, `backgroundColor` = the `--app-primary-soft` value set; set `--app-primary` to `'#445566'` and emit `dark$.next(true)` → `borderColor` `'#445566'`.
   - `draws no point markers and fills under the step line` — `toMatchObject({ pointRadius: 0, pointHoverRadius: 4, fill: true, stepped: true })`.
-  - `labels the x axis MM/DD with at most 8 ticks` — `chartOptions.scales.x.ticks.maxTicksLimit` 8, `maxRotation` 0; with labels `['2026-09-01', '2026-11-30']`, `callback(0, 0)` → `'09/01'`, `callback(0, 1)` → `'11/30'`, `callback(0, 5)` → `''`; `scales.y.beginAtZero` false.
+  - `labels the x axis MM/DD with at most 8 ticks` — `chartOptions.scales.x.ticks.maxTicksLimit` 8, `maxRotation` 0; with labels `['2026-09-01', '2026-11-30']`, `callback(0, 0)` → `'09/01'`, `callback(1, 0)` → `'11/30'` (second label, first visible tick), `callback(5, 0)` → `''`; `scales.y.beginAtZero` false.
   - stylesheet: `account-detail.scss` contains `.balance-chart {` with `height: 280px` and `position: relative`, and `.chart-loading, .networth-empty` with `height: 280px`.
 
 - [ ] **Step 2: Run** `--include 'src/app/components/portfolio/accounts/account-detail.component.spec.ts'` → FAIL.
@@ -310,11 +313,11 @@ export function carryHoldings(points: readonly NetworthPoint[]): NetworthPoint[]
 
 - [ ] **Step 2: Run** `--include 'src/app/components/portfolio/dividend-list/dividend-list.spec.ts'` → FAIL.
 
-- [ ] **Step 3: Implement.** Card: `@if (!isPhone() && (summary() === null || summary()!.legacy !== 0)) { …舊資料帳面 card… }` (use the template's existing alias for the summary if one is in scope). Strip: wrap the `<section class="upcoming-strip">` in `@if (upcomingExDividends().length > 0) { … }` and delete the `@empty` branch.
+- [ ] **Step 3: Implement.** Card: the current `@if (!isPhone())` wraps both 舊資料帳面 and 已記錄股利 — split it so only the legacy card gains the condition: `@if (!isPhone() && (totals === null || totals.legacy !== 0)) { …舊資料帳面 card… }` (`totals` = the template's existing alias for `summary()`; 已記錄股利 keeps plain `@if (!isPhone())`). Strip: wrap the `<section class="upcoming-strip">` in `@if (upcomingExDividends().length > 0) { … }` and delete the `@empty` branch.
 
 - [ ] **Step 4: Run** → PASS.
 
-- [ ] **Step 5: Cost colour tests (R4, no code change).** The gain/loss convention only swaps the `--app-trend-*` token values (`AppearanceService.apply`), so a value without `.up` / `.down` is convention-independent by construction; `realized-pnl.component.spec.ts:551-560` already asserts `up: false, down: false` for 賣出成本費用 — add the label to that assertion's message if missing, no new component test. `theme/kpi-values.spec.ts`: `kpi-cards.scss gives .value the neutral text colour and trend colours only to .up / .down` — file contains `color: var(--app-text);` inside `.value {` before `&.up`, and `--app-trend-positive` appears only inside `&.up`. Run `--include 'src/app/components/portfolio/realized-pnl/*.spec.ts' --include 'src/app/theme/*.spec.ts'` → PASS.
+- [ ] **Step 5: Cost colour tests (R4, no code change).** The gain/loss convention only swaps the `--app-trend-*` token values (`AppearanceService.apply`), so a value without `.up` / `.down` is convention-independent by construction; `realized-pnl.component.spec.ts:551-560` already asserts `up: false, down: false` for 賣出成本費用 — add the label to that assertion's message if missing, no new component test. `theme/kpi-values.spec.ts`: `kpi-cards.scss gives .value the neutral text colour and trend colours only to .up / .down` — file contains `color: var(--app-text);` inside `.value {` before `&.up`, and `--app-trend-positive` appears only inside `&.up`; plus `row fees and taxes render muted` — `components/ui/timeline/timeline.scss` contains a `.tl-sub` rule (lines ~237-241) with `color: var(--app-text-muted)` and no `--app-trend` token (the design-system "Transaction fees" scenario: `transaction-rows.ts:59` puts 手續費 / 交易稅 into `.tl-sub`). Run `--include 'src/app/components/portfolio/realized-pnl/*.spec.ts' --include 'src/app/theme/*.spec.ts'` → PASS.
 
 - [ ] **Step 6: Commit** — `fix(portfolio): 股利 hides 舊資料帳面 at 0 and the empty 即將除權息 row; cost colour pinned (5.5, 5.6)`.
 
@@ -330,7 +333,8 @@ export function carryHoldings(points: readonly NetworthPoint[]): NetworthPoint[]
   - Change the test at 498 to find `label.header-check [role="switch"]` and `click()` it (no `whenStable` needed: the switch is a button); expectation unchanged (`has_header=false`).
   - `renders 首列為欄位名稱 as a switch that is on by default and disabled while busy` — `[role="switch"][aria-checked="true"]` present; with `busy()` true (set through the component's busy signal or during an in-flight preview) the button is `disabled`.
   - `hides the switch for 券商對帳單` — select type `broker` → no `label.header-check`.
-  - `renders no footer before a file is chosen` — fresh component → `.imp-footer` null (so no 確認匯入 button, the spec's Fresh import screen scenario); after `onSelect({ files: [file] })` → `.imp-footer` present. The `commitButton` helper (555) already looks inside `.imp-footer`; tests that cancel (`onClear`) and then expect the footer gone should assert `.imp-footer` null.
+  - `renders no footer before a file is chosen` — fresh component → `.imp-footer` null (so no 確認匯入 button, the spec's Fresh import screen scenario); after `onSelect({ files: [file] })` → `.imp-footer` present.
+  - Existing tests that read the footer on a fresh page must select a file first and keep their assertions: `import.spec.ts:831` and `:936` (重新預覽 / 確認匯入 disabled on a fresh page → call `onSelect` first, then assert disabled while no result), `:1156` and `:1166` (`.imp-footer` precedes the side cards on sheet and phone → after `onSelect`), `:844` (取消 → after `onClear()` assert `.imp-footer` null as well as the cleared state). The `commitButton` helper (555) already looks inside `.imp-footer`.
 
 - [ ] **Step 2: Run** `--include 'src/app/components/portfolio/import/import.spec.ts'` → FAIL.
 
@@ -362,7 +366,7 @@ export function carryHoldings(points: readonly NetworthPoint[]): NetworthPoint[]
 
 **Interfaces:** bell → `<i class="pi pi-bell" aria-hidden="true"></i>` (aria-label on the button unchanged); calendar badge → `<span class="due-badge" aria-hidden="true"><i class="pi pi-credit-card"></i>{{ cell.dueCount > 1 ? cell.dueCount : '' }}</span>`; bill rows → `<i class="pi pi-credit-card" aria-hidden="true"></i> {{ bill.name }} 帳單 …`; actions → `<i class="ico pi pi-pencil" aria-hidden="true"></i>編輯`, `pi-copy` 複製, `pi-undo` 退款, `pi-check-circle` {{ settleLabel() }}, `pi-trash` 刪除 / 刪除整組 (the `.ico` class stays on the `<i>` so the existing sizing rules apply).
 
-- [ ] **Step 1: Update tests.** `calendar-month.spec.ts:106` → badge has `i.pi-credit-card` and `text(badge)` is `'2'`; `:112` → `''`. `timeline.spec.ts:1498/1550` likewise; `1504/1554/1616/1638` → text starts with `玉山 UNI 帳單` (trimmed) and the `.bill` contains `i.pi-credit-card`; `1647` → `bell(el).querySelector('i.pi-bell')` not null and `text(bell(el))` is `''`. `entry-detail.spec.ts`: add `uses line icons on the actions` — `.action-edit i.pi-pencil`, `.action-copy i.pi-copy`, `.action-refund i.pi-undo`, `.action-settle i.pi-check-circle`, `.action-delete i.pi-trash`, each `aria-hidden="true"`, and `nav.actions` text contains no character ≥ U+1F300 and none of `✎ ⧉ ↺`. `split-group.spec.ts`: `.action-edit i.pi-pencil`, `.action-delete i.pi-trash`.
+- [ ] **Step 1: Update tests.** `calendar-month.spec.ts:106` → badge has `i.pi-credit-card` and `text(badge)` is `'2'`; `:112` → `''`. `timeline.spec.ts:1498/1550` likewise; the bill-line assertions `1504`, `1554`, `1616`, `1638`, `1784`, `1805` keep their FULL strings minus the leading emoji (`text()` trims): `玉山 UNI 帳單 $12,345 · 到期`, `玉山 UNI 帳單 $12,345 · 到期 已繳 $5,000 · 剩餘 $7,345`, `… $200 · 到期`, `… $1,234 · 到期`, and each `.bill` additionally contains `i.pi-credit-card[aria-hidden="true"]`; `calendar-month.spec.ts:107` (`aria-hidden`) and the cell `aria-label`s at `:109` / `:113` stay; `1647` → `bell(el).querySelector('i.pi-bell')` not null and `text(bell(el))` is `''`. `entry-detail.spec.ts`: add `uses line icons on the actions` — `.action-edit i.pi-pencil`, `.action-copy i.pi-copy`, `.action-refund i.pi-undo`, `.action-settle i.pi-check-circle`, `.action-delete i.pi-trash`, each `aria-hidden="true"`, and `nav.actions` text contains no character ≥ U+1F300 and none of `✎ ⧉ ↺`. `split-group.spec.ts`: `.action-edit i.pi-pencil`, `.action-delete i.pi-trash`.
 
 - [ ] **Step 2: Run** the four specs → FAIL.
 
