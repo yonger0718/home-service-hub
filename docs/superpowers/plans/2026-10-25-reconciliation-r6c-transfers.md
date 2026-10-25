@@ -231,7 +231,7 @@ def pair(dirty_on, seed, run, db_session):
     out_leg, in_leg = _transfer(seed, bank, card, "19500", date(2026, 9, 4)); db_session.commit()
     bstmt, blines, _ = _submit(db_session, run, bank, [_line(1, date(2026, 9, 5), "信用卡繳款", "-20000", kind="payment")], kind="bank")
     cstmt, clines, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 5), "繳款", "20000", kind="payment")])
-    return SimpleNamespace(bank=bank, card=card, out_leg=out_leg, in_leg=in_leg, bstmt=bstmt, cstmt=cstmt, bline=blines[1], cline=clines[1])
+    return SimpleNamespace(bank=bank, card=card, out_leg=out_leg, in_leg=in_leg, bstmt=bstmt, cstmt=cstmt, bline=blines[0], cline=clines[0])
 
 def _delta(db, stmt):  # the transfer_delta case of a statement
     return next(c for c in _cases(db, stmt.id, "open") if c.kind == "amount_delta" and (c.context or {}).get("hint") == "transfer_delta")
@@ -281,7 +281,7 @@ def test_adjust_transfer_without_a_peer_line_rewrites_amounts_and_keeps_the_peer
     bank.statement_live_from = None; db_session.commit()
     out_leg, in_leg = _transfer(seed, bank, card, "19500", date(2026, 9, 4)); db_session.commit()
     cstmt, clines, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 5), "繳款", "20000", kind="payment")])
-    row = _apply(db_session, _delta(db_session, cstmt), "adjust_transfer", {"entry_id": in_leg.id, "line_id": clines[1].id})
+    row = _apply(db_session, _delta(db_session, cstmt), "adjust_transfer", {"entry_id": in_leg.id, "line_id": clines[0].id})
     assert _fresh(db_session, LedgerEntry, out_leg.id).amount == Decimal("-20000") and _fresh(db_session, LedgerEntry, out_leg.id).posted_date == date(2026, 9, 4)
     assert row.inverse["peer_line_id"] is None and row.inverse["statement_ids"] == [] and len(_active(db_session, cstmt.id)) == 1
 
@@ -292,9 +292,9 @@ def test_adjust_transfer_finds_a_complementary_line_on_the_next_live_period(dirt
     bsep, _, _ = _submit(db_session, run, bank, [], kind="bank")                                   # September bank statement: no complementary line
     boct, blines, _ = _submit(db_session, run, bank, [_line(1, date(2026, 10, 2), "信用卡繳款", "-20000", kind="payment")], kind="bank", period=(date(2026, 10, 1), date(2026, 10, 31)))   # `_submit(period=...)`, same shape as `SEP`
     cstmt, clines, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 28), "繳款", "20000", kind="payment")])
-    row = _apply(db_session, _delta(db_session, cstmt), "adjust_transfer", {"entry_id": in_leg.id, "line_id": clines[1].id})
-    assert row.inverse["peer_line_id"] == blines[1].id and sorted(row.inverse["statement_ids"]) == sorted({bsep.id, boct.id})   # leg-date statement + line statement
-    assert _fresh(db_session, LedgerEntry, out_leg.id).posted_date == date(2026, 10, 2) and {r.line_id for r in _active(db_session, boct.id)} == {blines[1].id}
+    row = _apply(db_session, _delta(db_session, cstmt), "adjust_transfer", {"entry_id": in_leg.id, "line_id": clines[0].id})
+    assert row.inverse["peer_line_id"] == blines[0].id and sorted(row.inverse["statement_ids"]) == sorted({bsep.id, boct.id})   # leg-date statement + line statement
+    assert _fresh(db_session, LedgerEntry, out_leg.id).posted_date == date(2026, 10, 2) and {r.line_id for r in _active(db_session, boct.id)} == {blines[0].id}
 
 def test_adjust_transfer_finds_a_bank_withdrawal_peer_line(dirty_on, seed, run, db_session):
     # bank prints the card payment as a withdrawal (not a payment line)
@@ -394,9 +394,9 @@ def test_pair_transfer_revert_deletes_both_legs_and_reopens_both_cases(orphan_pa
     assert all(db_session.get(LedgerEntry, i) is None for i in row.created_entry_ids)
     assert _needs_peer(db_session, orphan_pair.bstmt) is not None and _needs_peer(db_session, orphan_pair.cstmt) is not None
 
-@pytest.mark.parametrize("field,value", [("description", "改"), ("category_id", None), ("amount", Decimal("-20001"))])
+@pytest.mark.parametrize("field,value", [("description", "改"), ("category_id", "SEED_CATEGORY"), ("amount", Decimal("-20001"))])   # category arm must set a real id: create_transfer builds legs with category_id None, so None would be no change
 def test_pair_transfer_revert_refuses_snapshot_conflict_after_any_leg_edit(field, value, orphan_pair, db_session):
-    row = _apply(...); leg = db_session.get(LedgerEntry, row.created_entry_ids[0]); setattr(leg, field, value if field != "category_id" else seed_category_id); db_session.commit()
+    row = _apply(...); leg = db_session.get(LedgerEntry, row.created_entry_ids[0]); setattr(leg, field, seed.category("對帳測試").id if value == "SEED_CATEGORY" else value); db_session.commit()
     exc = _refuse(db_session, lambda: _revert(db_session, row.id)); assert isinstance(exc, CodedConflictError) and exc.code == "snapshot_conflict"
     assert all(db_session.get(LedgerEntry, i) is not None for i in row.created_entry_ids) and _fresh(db_session, ReconciliationAction, row.id).status == "applied"
 
@@ -576,7 +576,7 @@ def test_needs_peer_item_lists_peer_candidates(orphan_pair, client):
 def test_items_without_transfer_actions_carry_a_null_transfer_field(client, ...):  # an ordinary bank_only item → item["transfer"] is None
 ```
 
-(Existing `test_amount_differs_hides_accept_on_a_transfer_entry` :98 becomes a `transfer_delta` case; keep its assertion and add `item["transfer"]["adjust_transfer"] is not None`.)
+(Existing `test_amount_differs_hides_accept_on_a_transfer_entry` :98 keeps its bank `withdrawal` line — outside `PEER_LINE_KINDS`, so it stays a same-day near `amount_delta`, not `transfer_delta`; keep its assertion and add `item["transfer"]["adjust_transfer"] is not None`, offered on any designated transfer leg.)
 
 - [ ] **Step 2: Run to verify failure** — `… -m pytest tests/integration/test_inbox_api.py -k transfer -q -p no:cacheprovider` → FAIL (`KeyError: 'transfer'`).
 - [ ] **Step 3: Implement** per Interfaces (the SPA `InboxItem` TS interface needs no change: extra JSON keys are ignored).
@@ -606,4 +606,5 @@ def test_items_without_transfer_actions_carry_a_null_transfer_field(client, ...)
 - Owner rulings B + B (spec rev 7) folded: twin guard and occupancy guard both bind POLICY and policy-authored proposals only (one `_guard_code` copy in Task 4); family check every actor; four tests; Task 5's over-cap proposal test keeps the `owner_may_record` comment.
 - Type consistency: `peer_candidates` returns `list[tuple[AccountStatement, StatementLine]]` everywhere (Tasks 4, 5, 6); inverse keys identical in Tasks 3/4; `TRANSFER_HINT` string `"transfer_delta"` in Tasks 2/3/6/7.
 - AGENT-291 round 1 (dev-grok, CHANGES REQUIRED at af5c447) folded: (1) revert gate = engine `snapshot_conflict` (Review Focus 3, Task 3/4 `invert`, Task 4 test); (2) `allowed()` membership asserts (Tasks 3/4); (3) `dirty_disabled` gated by `_guard_code` (Task 4); (4) `adjust_transfer` discovery spans `drift_window_days` around the line → next-period statement (Task 3 `peer_statements(start, end)` + test); minors: header rev, Task 3 assert precedence, §7 `peer_candidates` wrapper, twin-test order.
+- AGENT-291 re-check PASS with minors (598be20) folded: `_submit` lines are 0-based (`[0]`); inbox :98 test keeps `withdrawal`; category revert arm uses a real category id.
 - Proportion: ~330 lines for a 140-line spec; code blocks are tests and signatures only.
