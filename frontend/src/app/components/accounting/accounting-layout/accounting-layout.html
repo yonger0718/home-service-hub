@@ -2,7 +2,7 @@
   <router-outlet />
 } @else {
   <div class="dwrap" [class.dwrap--sheet]="mode() === 'sheet'">
-    <app-page-header>
+    <app-page-header #pageHeader>
       @if (listKey() === 'accounts') {
         <app-btn class="add-account" variant="soft" icon="pi-plus" (click)="addAccount()">新增帳戶</app-btn>
       }

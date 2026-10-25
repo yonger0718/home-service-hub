@@ -101,6 +101,7 @@ export class AccountingLayoutComponent {
   private readonly shortcuts = inject(AccountingShortcutsService);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly listPane = viewChild<ElementRef<HTMLElement>>('listPane');
+  private readonly pageHeader = viewChild('pageHeader', { read: ElementRef<HTMLElement> });
   private readonly detailPane = viewChild<ElementRef<HTMLElement>>('detailPane');
 
   private readonly closeButton = viewChild<ElementRef<HTMLButtonElement>>('closeButton');
@@ -211,9 +212,10 @@ export class AccountingLayoutComponent {
     effect(() => {
       const open = this.sheetOpen();
       const list = this.listPane()?.nativeElement;
+      const header = this.pageHeader()?.nativeElement as HTMLElement | undefined;
       untracked(() => {
         // Remove inert before returning focus to a list/sidebar opener.
-        this.setOutsideInert(open, list);
+        this.setOutsideInert(open, list, header);
         open ? this.focusSheet() : this.restoreFocus();
       });
     });
@@ -251,20 +253,26 @@ export class AccountingLayoutComponent {
   }
 
   private inertList: HTMLElement | null = null;
+  private inertHeader: HTMLElement | null = null;
   private inertSidebar: HTMLElement | null = null;
 
   /** Remember the actual nodes: view queries may be gone by destruction or a layout mode switch. */
-  private setOutsideInert(inert: boolean, list?: HTMLElement): void {
+  private setOutsideInert(inert: boolean, list?: HTMLElement, header?: HTMLElement): void {
     const sidebar = inert ? this.document.querySelector<HTMLElement>('app-sidebar') : null;
     if (!inert || this.inertList !== list) this.inertList?.removeAttribute('inert');
+    if (!inert || this.inertHeader !== header) this.inertHeader?.removeAttribute('inert');
     if (!inert || this.inertSidebar !== sidebar) this.inertSidebar?.removeAttribute('inert');
     if (inert) {
       list?.setAttribute('inert', '');
+      header?.setAttribute('inert', '');
+      this.inertHeader = header ?? null;
       sidebar?.setAttribute('inert', '');
       this.inertList = list ?? null;
       this.inertSidebar = sidebar;
     } else {
       list?.removeAttribute('inert');
+      header?.removeAttribute('inert');
+      this.inertHeader = null;
       this.inertList = null;
       this.inertSidebar = null;
     }

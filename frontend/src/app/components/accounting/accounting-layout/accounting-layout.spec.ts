@@ -665,8 +665,10 @@ describe('AccountingLayoutComponent', () => {
     document.body.appendChild(sidebar);
     const harness = await start('sheet', '/accounting');
     const list = harness.routeNativeElement!.querySelector('.list-pane')!;
+    const header = harness.routeNativeElement!.querySelector('app-page-header')!;
     await find(harness, LIST);
     expect(list.hasAttribute('inert')).toBe(false);
+    expect(header.hasAttribute('inert')).toBe(false);
 
     const router = TestBed.inject(Router);
     await router.navigateByUrl('/accounting/entries/5');
@@ -674,6 +676,7 @@ describe('AccountingLayoutComponent', () => {
     await vi.waitFor(() => {
       harness.detectChanges();
       expect(list.hasAttribute('inert')).toBe(true);
+      expect(header.hasAttribute('inert')).toBe(true);
       expect(sidebar.hasAttribute('inert')).toBe(true);
     });
     expect(harness.routeNativeElement!.querySelector('.sheet-backdrop')!.getAttribute('aria-hidden')).toBe('true');
@@ -682,6 +685,7 @@ describe('AccountingLayoutComponent', () => {
     await vi.waitFor(() => {
       harness.detectChanges();
       expect(list.hasAttribute('inert')).toBe(false);
+      expect(header.hasAttribute('inert')).toBe(false);
       expect(sidebar.hasAttribute('inert')).toBe(false);
     });
     sidebar.remove();
