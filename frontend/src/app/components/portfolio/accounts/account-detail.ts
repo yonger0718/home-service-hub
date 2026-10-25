@@ -10,7 +10,7 @@ import {
   signal,
   untracked,
 } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { FormBuilder, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute } from '@angular/router';
 import { BehaviorSubject, Observable, catchError, debounceTime, distinctUntilChanged, filter, map, merge, of, switchMap } from 'rxjs';
@@ -45,6 +45,7 @@ import {
   PatchBrokerAccount,
 } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { AppearanceService } from '../../../services/appearance.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { formatMoney } from '../../ui/format';
 import { SwitchComponent } from '../../ui/switch/switch';
@@ -223,7 +224,11 @@ export class PortfolioAccountDetailComponent implements OnInit {
     note: this.fb.nonNullable.control(''),
   });
 
+  private readonly dark = toSignal(inject(AppearanceService).dark$, { initialValue: false });
+
   readonly chartData = computed(() => {
+    // The token values flip on :root with the theme; reading dark() is what re-runs this computed.
+    this.dark();
     const points = this.balanceHistory().points;
     const currency = this.balanceHistory().currency || this.account()?.currency || 'TWD';
 
@@ -233,11 +238,14 @@ export class PortfolioAccountDetailComponent implements OnInit {
         {
           label: `餘額 (${currency})`,
           data: points.map(point => Number(point.balance)),
-          borderColor: '#533afd',
-          backgroundColor: '#533afd',
+          borderColor: this.cssVar('--app-primary'),
+          backgroundColor: this.cssVar('--app-primary-soft'),
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
           tension: 0.2,
           stepped: true,
-          fill: false,
+          fill: true,
         },
       ],
     };
@@ -246,6 +254,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
   readonly chartOptions = {
     responsive: true,
     maintainAspectRatio: false,
+    animation: false,
     interaction: {
       mode: 'index',
       intersect: false,
@@ -268,14 +277,31 @@ export class PortfolioAccountDetailComponent implements OnInit {
         grid: {
           display: false,
         },
+        ticks: {
+          maxTicksLimit: 8,
+          maxRotation: 0,
+          autoSkip: true,
+          // Chart.js passes the label index first, then the visible tick index.
+          callback: (value: string | number, _tickIndex?: number) => this.tickLabel(Number(value)),
+        },
       },
       y: {
+        beginAtZero: false,
         ticks: {
           callback: (value: string | number) => this.formatCurrency(value, this.balanceCurrency()),
         },
       },
     },
   };
+
+  private cssVar(name: string): string {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  private tickLabel(labelIndex: number): string {
+    const date = this.chartData().labels[labelIndex] ?? '';
+    return date.slice(5).replace('-', '/');
+  }
 
   ngOnInit(): void {
     const queryEvents$ = this.filterQuery$.pipe(filter(isCashQueryEvent));

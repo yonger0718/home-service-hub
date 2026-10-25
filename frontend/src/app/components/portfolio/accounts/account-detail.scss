@@ -90,8 +90,19 @@
 }
 
 .balance-chart {
-  height: 20rem;
+  height: 280px;
   margin-top: 1rem;
+  position: relative;
+
+  p-chart {
+    inset: 0;
+    position: absolute !important;
+  }
+
+  canvas {
+    height: 100% !important;
+    width: 100% !important;
+  }
 }
 
 .chart-loading,
@@ -100,7 +111,7 @@
   color: var(--app-text-muted);
   display: flex;
   font-weight: 700;
-  height: 18rem;
+  height: 280px;
   justify-content: center;
 }
 
