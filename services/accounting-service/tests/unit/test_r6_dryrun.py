@@ -145,3 +145,50 @@ def test_policy_summary_counts_partially_stranded_actions():
     assert "action_partially_stranded: 3 (by statement: 1=2, 4=1)" in dr.policy_summary(after)
     del after["action_partially_stranded"]
     assert "action_partially_stranded: 0 (by statement: none)" in dr.policy_summary(after)
+
+
+def test_attribute_labels_transfer_delta_before_the_generic_near_branch():
+    case = lambda hint, kind="amount_delta": ("case", kind, hint, (7,), 7)
+    new = {"before": None, "after": case("transfer_delta")}
+    assert dr.attribute(new) == "R6c.1 transfer_delta"
+    from_peer = {"before": case("needs_peer", "line_unmatched"), "after": case("transfer_delta")}
+    assert dr.attribute(from_peer) == "R6c.1 transfer_delta"
+    back = {"before": case("transfer_delta"), "after": case("needs_peer", "line_unmatched")}
+    assert dr.attribute(back) == "R6c.1 transfer_delta cleared"
+    assert dr.attribute({"before": None, "after": case(None)}) == "R6a.4 near proposal"
+    assert dr.attribute({"before": case(None, "line_unmatched"), "after": case("needs_peer", "line_unmatched")}) == "unattributed"
+
+
+def test_transfers_summary_is_counts_only_per_account():
+    after = _dump({"1": {"claims": [], "cases": []}}, sha="cand")
+    after.update({"transfer_delta": {"3": 2, "12": 1}, "needs_peer": {"3": 1, "9": 4}})
+    text = dr.transfers_summary(after)
+    assert "| 3 | 2 | 1 |" in text and "| 12 | 1 | 0 |" in text and "| 9 | 0 | 4 |" in text
+    assert "| account | transfer_delta cases | needs_peer cases |" in text
+    assert "cand" in text and "total: transfer_delta 3, needs_peer 5" in text
+
+
+def test_main_transfers_writes_private_summary_and_exits_zero(tmp_path, monkeypatch):
+    before = _dump({"1": {"claims": [], "cases": []}}, sha="base")
+    after = _dump({"1": {"claims": [[1, "exact", [5]]], "cases": []}}, sha="cand")
+    after.update({"transfer_delta": {"3": 1}, "needs_peer": {}})
+    # a gate-failing pair (watermark differs) still exits 0 under --transfers
+    after["watermark"] = [9, 9, 9]
+    for name, d in (("before.json", before), ("after.json", after)):
+        (tmp_path / name).write_text(json.dumps(d))
+    out = tmp_path / "out"
+    monkeypatch.setattr("sys.argv", ["r6_dryrun.py", "--transfers", "--baseline", str(tmp_path / "before.json"),
+                                     "--candidate", str(tmp_path / "after.json"), "--out-dir", str(out)])
+    assert dr.main() == 0
+    path = out / "transfers-summary.md"
+    assert path.stat().st_mode & 0o777 == 0o600 and "| 3 | 1 | 0 |" in path.read_text()
+    assert "gate: FAIL" in (out / "summary.md").read_text()  # the verdict is still recorded
+
+
+def test_main_transfers_refuses_a_dump_without_the_section(tmp_path, monkeypatch):
+    plain = _dump({"1": {"claims": [], "cases": []}})
+    for name in ("before.json", "after.json"):
+        (tmp_path / name).write_text(json.dumps(plain))
+    monkeypatch.setattr("sys.argv", ["r6_dryrun.py", "--transfers", "--baseline", str(tmp_path / "before.json"),
+                                     "--candidate", str(tmp_path / "after.json"), "--out-dir", str(tmp_path / "out")])
+    assert dr.main() == 2

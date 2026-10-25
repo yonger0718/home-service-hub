@@ -146,3 +146,21 @@ Integration (`tests/integration/test_reconciliation_actions_transfer.py`, new): 
 - 2026-10-25 rev 7.1 (plan review AGENT-291 dev-grok finding 1, errata, no semantic change): revert of `adjust_transfer`/`pair_transfer` after a leg edit or deletion is the engine's 409 `snapshot_conflict` (gate before `invert`), not an action-level `not_revertable`; §5.2/§5.3 revert sentences corrected.
 - 2026-10-25 rev 4 (Multica AGENT-290 dev-grok round 1, CHANGES REQUIRED, 9 findings folded): occupancy guard on both events + `pair_transfer` in the four action-name constants (1); revert order inside `invert` (2); twin predicate for every actor, combined lock set (3); peer-line window = drift window (4); tolerance on twin rule (b) (5); no `buttons()` change, `transfer` item field (6); twin rules scoped to unclaimed entries (7); one inverse schema (8); `update_transfer` source clause (9).
 - 2026-10-25 rev 2 (builder check, author's calls): no change to `unmatched` for designated legs; no leg reservation across lines; peer candidates computed on read, `_validate` special case; `peer_leg_claimed` refusal; bank `withdrawal`/`deposit` admitted as *peer* lines of `adjust_transfer` only; transfer-twin guard for `pair_transfer`; `owner_deleted` guard on both events; lock-order, conflict-code, policy-run and `classify` wording corrected to the code.
+
+## 12. Errata
+
+Execution facts the spec got wrong or left open (found while building, no semantic change):
+
+- `ReconciliationCase.explanation` is an enum; the peer case carries its text in `note`.
+- `Context.action_id` was added so actions stamp `resolved_action_id`.
+- Peer-line claims use `coverage_service.write_claim` directly (`_claim` binds `ctx.statement`).
+- `coverage_service.TARGET_ACTIONS` gains `adjust_transfer` (sweep retirement of a stranded amount action).
+- The peer-busy predicate is a local copy; actions do not import `policy_service`.
+- The `needs_peer` `owner_deleted` stamp keeps hint `needs_peer`.
+- A revert after any leg edit is the engine's 409 `snapshot_conflict`, not `not_revertable` (§5.2/§5.3, rev 7.1).
+- `adjust_transfer` applies only the discovery `validate_before` verified under the locks.
+- Shared helpers live in `reconciliation_actions/transfer_support.py`.
+- §7 `transfer.adjust_transfer` is `{entry_id: int | null, line_id, candidate_entry_ids: [..]}`, present on `ambiguous` cases too (`entry_id` null, the transfer-leg candidates).
+- A pending policy `pair_transfer` proposal whose peer line leaves the candidates is superseded by the policy run (audit `by: peer_out_of_scope`) and the case reopens.
+- `peer_not_live` is in practice unreachable: a mode flip surfaces as `candidate_changed`.
+- Policy tests need `backfill_grace_days` 0 because a September `period_end` + 14 days is after the test `TODAY`.

@@ -75,8 +75,8 @@ def _bucket(amount) -> str:
     return "<1000" if value < 1000 else "<5000" if value < 5000 else ">=5000"
 
 
-def _count_hint(db, statements, hint: str) -> dict[str, int]:
-    """Open line_unmatched cases with this hint, per account."""
+def _count_hint(db, statements, hint: str, kind: str = "line_unmatched") -> dict[str, int]:
+    """Open cases of this kind (default line_unmatched) with this hint, per account."""
     from app.models import ReconciliationCase
     out: dict[str, int] = {}
     for stmt in statements:
@@ -93,7 +93,8 @@ def _policy_section(db, statements) -> dict:
     from app.services import coverage_service, policy_service, stand_ins
     from app.services.reconciliation_actions import structural_actions as sa
     policy = settings_service.reconciliation_policy(db)
-    out = {"policy": {}, "anchor_blockers": [], "anchor_above_earlier_statement": [], "needs_peer": _count_hint(db, statements, "needs_peer"), "owner_deleted": {},
+    out = {"policy": {}, "anchor_blockers": [], "anchor_above_earlier_statement": [], "needs_peer": _count_hint(db, statements, "needs_peer"),
+           "transfer_delta": _count_hint(db, statements, "transfer_delta", "amount_delta"), "owner_deleted": {},
            "retirements": {}, "action_partially_stranded": {}, "sweep": {"would_release_old": 0, "would_release_new": 0, "kept_by_key": {}, "released_by_key": {}},
            "structural_keys": sorted(coverage_service.STRUCTURAL_KEYS), "accounts": {str(s.id): s.account_id for s in statements}}
     seen = set()

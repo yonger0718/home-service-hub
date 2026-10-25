@@ -63,3 +63,18 @@ summary and writes `policy-summary.md` (mode 600) next to the others, then exits
 - `sweep: old rule ... new rule ...`: lines with a pending entry update event the pre-R6b rule would release (every edit) vs the
   R6b.0 rule (structural keys only), with the key breakdown (cosmetic keys kept, structural keys released) and the structural key set.
   This table is the R6b.0 regression-gate evidence; nothing fails automatically, the release record keeps it with both SHAs.
+
+## Transfers mode (R6c)
+
+Run by the controller at release time against the live database (read-only; never by an implementer). Dump the candidate
+checkout with `--policy`, then diff with `--transfers`:
+
+    PYTHONPATH=$CAND .venv/bin/python scripts/r6_case_dump.py --policy --out $OUT/after-policy.json
+    .venv/bin/python scripts/r6_dryrun.py --transfers --baseline $OUT/before.json --candidate $OUT/after-policy.json --out-dir $OUT
+
+The dump's policy section adds `transfer_delta` (open `amount_delta` cases with hint `transfer_delta`, per account, via
+`_count_hint(..., "transfer_delta", "amount_delta")`) next to `needs_peer`. `--transfers` writes `transfers-summary.md`
+(mode 600: `| account | transfer_delta cases | needs_peer cases |` plus totals, counts only) and exits 0 whatever the gate says;
+`summary.md` and `delta.jsonl` are still written, so the gate verdict is recorded but does not set the exit code. A dump
+without the section exits 2 and writes nothing. In the diff, a case that becomes `transfer_delta` (new, or from `needs_peer`)
+is attributed `R6c.1 transfer_delta`; a `transfer_delta` case back to `needs_peer` is `R6c.1 transfer_delta cleared`.
