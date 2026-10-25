@@ -204,7 +204,7 @@
         </app-bento>
       }
 
-      @if (file()) {
+      @if (file() || committed()) {
         <footer class="imp-footer">
           <app-btn variant="ghost" [disabled]="busy()" (click)="onClear()">取消</app-btn>
           <app-btn variant="secondary" [disabled]="!file() || busy()" (click)="preview()">重新預覽</app-btn>

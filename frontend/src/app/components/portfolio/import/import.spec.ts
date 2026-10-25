@@ -952,6 +952,22 @@ describe('Portfolio import controls', () => {
       expect(card(fixture, 'preview-card')).not.toBeNull();
     });
 
+    it('keeps the footer with 取消 after a clean commit', () => {
+      const fixture = withFile({ ...genericPreview, errors: [] });
+      service.uploadCsv.mockReturnValue(of({ ...genericPreview, dry_run: false, created: 38, errors: [], unresolved_names: [] }));
+      commitButton(fixture).click();
+      fixture.detectChanges();
+      expect(fixture.componentInstance.file()).toBeNull();
+      expect(el(fixture).querySelector('.imp-footer')).not.toBeNull();
+      expect(button(fixture, '取消')!.disabled).toBe(false);
+      expect(commitButton(fixture).disabled).toBe(true);
+      expect(button(fixture, '重新預覽')!.disabled).toBe(true);
+      button(fixture, '取消')!.click();
+      fixture.detectChanges();
+      expect(el(fixture).querySelector('.imp-footer')).toBeNull();
+      expect(fixture.componentInstance.result()).toBeNull();
+    });
+
     it('a CSV commit with skipped_unresolved keeps the file and the 確認股票代號 card', () => {
       const fixture = withFile({ ...genericPreview, errors: [] });
       service.uploadCsv.mockReturnValue(of({ ...genericPreview, dry_run: false, created: 37, errors: [], skipped_unresolved: 3 }));
