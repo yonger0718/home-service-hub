@@ -9,6 +9,7 @@ import { Counterparty, DailySummary, LedgerAccount, LedgerEntry, MonthSummary, P
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
+import { AccountingOverviewService } from '../month-overview/overview.service';
 import { makeInbox } from '../inbox/testing';
 import { makeAccount, makeEntry, makeInstance, makePreference } from '../testing/fixtures';
 import { LedgerTimelineComponent, buildDays, schedulePills } from './timeline';
@@ -2055,6 +2056,51 @@ describe('LedgerTimelineComponent', () => {
       expect(text(sum.firstElementChild)).toBe('全月 · 未套篩選');
       expect(el.querySelector('.dist-bar')!.getAttribute('aria-label')).toBe(CANVAS_ARIA);
       expect(segments(el)).toHaveLength(6);
+    });
+  });
+
+  describe('overview publishing', () => {
+    afterEach(() => {
+      TestBed.inject(LayoutModeService).set(null);
+    });
+
+    it('publishes month, summary and due items to AccountingOverviewService', () => {
+      const queue = [makeInstance({ id: 1, due_date: '2026-10-05' })];
+      const { fixture } = render('sheet', makePreference(), [], ACCOUNTS, [], queue);
+      flushSummary('2026-10', { expense: '-100.0000' });
+      flushEntries([]);
+      fixture.detectChanges();
+      const overview = TestBed.inject(AccountingOverviewService);
+      expect(overview.month()).toBe(fixture.componentInstance.month());
+      expect(overview.summary()).toBe(fixture.componentInstance.summary());
+      expect(overview.summary()?.expense).toBe('-100.0000');
+      expect(overview.dueItems()[0].kind).toBe('schedule');
+    });
+
+    it('clears the overview on destroy', () => {
+      const queue = [makeInstance({ id: 1, due_date: '2026-10-05' })];
+      const { fixture } = render('sheet', makePreference(), [], ACCOUNTS, [], queue);
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      const overview = TestBed.inject(AccountingOverviewService);
+      expect(overview.summary()).not.toBeNull();
+      fixture.destroy();
+      expect(overview.summary()).toBeNull();
+      expect(overview.dueItems()).toEqual([]);
+    });
+
+    it('resets the published summary while a new month loads', () => {
+      const { fixture } = render('sheet');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      const overview = TestBed.inject(AccountingOverviewService);
+      fixture.componentInstance.moveMonth(1);
+      fixture.detectChanges();
+      expect(overview.summary()).toBeNull();
+      flushSummary('2026-11');
+      flushEntries([]);
     });
   });
 });

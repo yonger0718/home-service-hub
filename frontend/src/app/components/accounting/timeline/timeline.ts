@@ -44,7 +44,9 @@ import { groupCommands, listOpenState } from '../split-group/group-nav';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
 import { InboxService } from '../inbox/inbox.service';
 import { parseTags } from '../entry-form/entry-draft';
-import { todayIso } from '../dates';
+import { currentMonth, monthLabel, todayIso } from '../dates';
+import { nextDueItems } from '../month-overview/due-items';
+import { AccountingOverviewService } from '../month-overview/overview.service';
 import { schedulePill } from '../schedule-math';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, isHandledKey, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
 import { displayTitle, formatMoney, formatSigned } from '../format';
@@ -168,9 +170,7 @@ export interface TimelineDay {
   rows: TimelineRow[];
 }
 
-export function currentMonth(today = new Date()): string {
-  return `${today.getFullYear()}-${pad(today.getMonth() + 1)}`;
-}
+export { currentMonth, monthLabel } from '../dates';
 
 export function shiftMonth(month: string, delta: number): string {
   const [year, monthNumber] = month.split('-').map(Number);
@@ -182,11 +182,6 @@ export function monthRange(month: string): { from: string; to: string } {
   const [year, monthNumber] = month.split('-').map(Number);
   const lastDay = new Date(year, monthNumber, 0).getDate();
   return { from: `${month}-01`, to: `${month}-${pad(lastDay)}` };
-}
-
-export function monthLabel(month: string): string {
-  const [year, monthNumber] = month.split('-').map(Number);
-  return `${year} 年 ${monthNumber} 月`;
 }
 
 export function dayLabel(date: string): string {
@@ -381,6 +376,7 @@ export class LedgerTimelineComponent implements OnInit {
 
   private readonly bills = inject(BillingService);
   private readonly inbox = inject(InboxService);
+  private readonly overview = inject(AccountingOverviewService);
 
   readonly preference = signal<Preference | null>(null);
   readonly accounts = signal<LedgerAccount[]>([]);
@@ -496,6 +492,17 @@ export class LedgerTimelineComponent implements OnInit {
     const bill = this.bills.bill(event);
     return bill && bill.remaining > 0 ? bill : null;
   }
+  /** The overview pane's three due rows: dues with a remaining statement (45-day horizon) + the pending queue. */
+  readonly dueItems = computed(() =>
+    nextDueItems(
+      this.reminderEvents().flatMap(event => {
+        const bill = this.openBill(event);
+        return bill ? [{ key: billKey(event), name: event.name, date: event.date, amountText: formatMoney(bill.statement, bill.currency) }] : [];
+      }),
+      this.queue(),
+      this.today(),
+    ),
+  );
   /** What the grid marks: every closing day, and the due days of statements with a remaining balance. */
   readonly billing = computed(() => this.monthBilling().filter(event => event.kind === 'closing' || this.openBill(event) !== null));
   readonly billLines = computed(() => {
@@ -541,6 +548,10 @@ export class LedgerTimelineComponent implements OnInit {
   readonly formatSigned = formatSigned;
 
   constructor() {
+    effect(() => this.overview.month.set(this.month()));
+    effect(() => this.overview.summary.set(this.summary()));
+    effect(() => this.overview.dueItems.set(this.dueItems()));
+    inject(DestroyRef).onDestroy(() => this.overview.clear());
     fromEvent(this.document, 'visibilitychange')
       .pipe(
         filter(() => this.document.visibilityState === 'visible'),
