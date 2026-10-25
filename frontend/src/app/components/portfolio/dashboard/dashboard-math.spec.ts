@@ -416,4 +416,9 @@ describe('carryHoldings', () => {
     const h = row('2026-01-10', { market: '100', cash: '0' });
     expect(carryHoldings([FRIDAY(), h])[1]).toBe(h);
   });
+
+  it('carries a cash-only row with total_cash_twd 0 after holdings, total assets = the carried market value', () => {
+    const out = carryHoldings([FRIDAY(), row('2026-01-10', { cash: '0' })]);
+    expect(out[1]).toMatchObject({ total_market_value: '2900000', total_cash_twd: '0', total_assets_twd: '2900000' });
+  });
 });

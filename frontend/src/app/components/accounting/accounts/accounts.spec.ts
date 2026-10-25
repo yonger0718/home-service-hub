@@ -686,6 +686,20 @@ describe('AccountingAccountsComponent', () => {
       expect(rowFor(el, 8).getAttribute('aria-current')).toBeNull();
     });
 
+    it('follows navigation: the ring moves to the newly routed account', async () => {
+      const router = TestBed.inject(Router);
+      router.resetConfig([{ path: '**', children: [] }]);
+      await router.navigateByUrl('/accounting/accounts/7');
+      const fixture = render([account({ id: 7, name: '七號' }), account({ id: 8, name: '八號' })], null);
+      const el = fixture.nativeElement as HTMLElement;
+      expect(rowFor(el, 7).classList.contains('sel')).toBe(true);
+      await router.navigateByUrl('/accounting/accounts/8');
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.acc-row.sel[aria-current="true"]').length).toBe(1);
+      expect(rowFor(el, 8).classList.contains('sel')).toBe(true);
+      expect(rowFor(el, 7).classList.contains('sel')).toBe(false);
+    });
+
     it('marks nothing on the list URL or /new', async () => {
       for (const url of ['/accounting/accounts', '/accounting/accounts/new']) {
         TestBed.resetTestingModule();
