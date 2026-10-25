@@ -2,12 +2,14 @@
 
 ## Purpose
 TBD - created by archiving change add-broker-cash-accounts. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Accounts list page lives at `/portfolio/accounts`
 
-The Angular app SHALL register a standalone route `/portfolio/accounts` rendering an accounts-list page. The page SHALL fetch `GET /api/portfolio/accounts?in_currency=TWD` on activation and display one PrimeNG card per account showing: broker label (Chinese for Cathay/SinoPac, English for foreign), nickname, currency code, `native_balance` formatted with currency symbol, `target_balance` in TWD (when present), and a small `is_active` badge.
+The Angular app SHALL register a standalone route `/portfolio/accounts` rendering an accounts-list page. The page SHALL fetch `GET /api/portfolio/accounts?in_currency=TWD` on activation and display one card per account showing: broker label (Chinese for Cathay/SinoPac, English for foreign), nickname, currency code, `native_balance` through the uniform formatter (`frontend-design-system`), `target_balance` in TWD (when present), and a small `is_active` badge.
 
-The page header SHALL render a TWD-total summary card: sum of all `target_balance` values, with a footnote listing any `skipped_currencies` returned by the API.
+The page header SHALL render a TWD-total summary: sum of all `target_balance` values, with a footnote listing any `skipped_currencies` returned by the API.
 
 A primary "新增帳戶" button SHALL open a modal containing the create-account form (POST `/api/portfolio/accounts`).
 
@@ -20,7 +22,7 @@ A primary "新增帳戶" button SHALL open a modal containing the create-account
 #### Scenario: TWD total reflects converted balances
 - **GIVEN** the API returns an account with `target_balance=100000` and another with `target_balance=50000`
 - **WHEN** the page renders
-- **THEN** the header summary SHALL show `NT$150,000`
+- **THEN** the header summary SHALL show `$150,000`
 
 #### Scenario: Skipped currencies are surfaced
 - **GIVEN** the API response contains `skipped_currencies=["JPY"]`
@@ -33,7 +35,7 @@ Clicking an account card SHALL navigate to `/portfolio/accounts/:id` and render 
 
 1. **Header** — account metadata (broker, nickname, currency, opening balance, opening date), current balance, "編輯" button opening a PATCH-account modal.
 2. **Balance-over-time chart** — ECharts line chart driven by `GET /api/portfolio/accounts/{id}/balance-history`, with a window selector (`1M`, `3M`, `1Y`, `All`, default `3M`).
-3. **Cash transactions list** — paginated list using the existing `hub-modern-list` card layout, with filters (date range, type multi-select), sort dropdown (`txn_date desc` default), page-size selector (`25 / 50 / 100`, persisting to localStorage), and a "新增交易" button opening the manual-entry modal.
+3. **Cash transactions list** — paginated list using the existing `hub-modern-list` card layout, with an `<app-filter-bar>` (the 類型 multi-select inline, no search; date range and sort (`txn_date desc` default) behind 篩選, the active date range as a removable chip), page-size selector (`25 / 50 / 100`, persisting to localStorage), and a "新增交易" button opening the manual-entry modal.
 
 #### Scenario: Chart renders 3M default window
 - **GIVEN** the user opens an account detail page
@@ -54,6 +56,10 @@ Clicking an account card SHALL navigate to `/portfolio/accounts/:id` and render 
 - **WHEN** the user submits the manual-entry form with `type=deposit, amount=5000, txn_date=2026-06-01, note="…"`
 - **THEN** the page SHALL POST to `/api/portfolio/accounts/{id}/cash-transactions`
 - **AND** on success refresh the cash list and balance chart
+
+#### Scenario: Date range behind 篩選
+- **WHEN** the user sets a date range behind 篩選
+- **THEN** the list SHALL reload with `date_from` / `date_to`, the 篩選 button SHALL read `篩選 1` and a removable chip SHALL show the range
 
 ### Requirement: Nav entry "現金帳戶"
 
@@ -170,7 +176,7 @@ Toggle state SHALL persist per account in `localStorage` under key `accounts.mer
 
 ### Requirement: Master-detail layout on wide screens
 
-At ≥ 1024px `/portfolio/accounts` and `/portfolio/accounts/:id` SHALL render as one page: a left column (at most 360px) with the 現金帳戶總額 · TWD card and one card per account, and a right column with the selected account's detail (header, balance chart, cash transactions). The selected card SHALL carry a `--app-primary` ring and `aria-pressed="true"`. `/portfolio/accounts` SHALL select the first active account. Below 1024px the existing two-page flow SHALL remain. Both URLs SHALL be one route (a URL matcher), so a selection change, including the first auto-selection (one `replaceUrl` navigation), SHALL not remount the page. While the master-detail shows a selection the page SHALL report an open pane (D2), so the sidebar collapses to its rail under the auto-collapse setting. An unknown `:id` SHALL select no card and show an empty detail: the placeholder header (讀取中 / 現金帳戶), the empty states and the two load-error toasts; the pane state still reports open. The 現金帳戶總額 figure SHALL be the server `total_target_balance` minus the `target_balance` of every overdraft account (`native_balance < 0`), and the footnote SHALL count those accounts. The list SHALL keep the API default `include_inactive=false`, so 已停用 cards appear only when inactive accounts are requested. The list and the detail SHALL refresh each other after a cash-ledger change (a recorded cash flow, a created or deleted cash transaction, an account edit).
+At ≥ 1024px `/portfolio/accounts` and `/portfolio/accounts/:id` SHALL render as one page: a left column (at most 360px) with the 現金帳戶總額 · TWD card and one card per account, and a right column with the selected account's detail (header, balance chart, cash transactions). The selected card SHALL carry a `--app-primary` ring and `aria-pressed="true"`. `/portfolio/accounts` SHALL select the first active account. Below 1024px the existing two-page flow SHALL remain. Both URLs SHALL be one route (a URL matcher), so a selection change, including the first auto-selection (one `replaceUrl` navigation), SHALL not remount the page. The page SHALL NOT write the shell's pane state: its detail is always visible, so the sidebar keeps its stored width and the 記一筆 floating button stays at the page's bottom-right (polish-layout-v2 D4). An unknown `:id` SHALL select no card and show an empty detail: the placeholder header (讀取中 / 現金帳戶), the empty states and the two load-error toasts. The 現金帳戶總額 figure SHALL be the server `total_target_balance` minus the `target_balance` of every overdraft account (`native_balance < 0`), and the footnote SHALL count those accounts. The list SHALL keep the API default `include_inactive=false`, so 已停用 cards appear only when inactive accounts are requested. The list and the detail SHALL refresh each other after a cash-ledger change (a recorded cash flow, a created or deleted cash transaction, an account edit).
 
 #### Scenario: Wide list selects the first account
 - **WHEN** the owner opens `/portfolio/accounts` at 1440px
@@ -184,6 +190,11 @@ At ≥ 1024px `/portfolio/accounts` and `/portfolio/accounts/:id` SHALL render a
 #### Scenario: Narrow keeps two pages
 - **WHEN** the owner taps an account at 390px
 - **THEN** the router navigates to `/portfolio/accounts/:id` as today
+
+#### Scenario: Sidebar keeps its width
+- **GIVEN** the sidebar is expanded and auto-collapse is on
+- **WHEN** the owner opens `/portfolio/accounts/1` at 1440 px
+- **THEN** the sidebar SHALL stay expanded and the floating button SHALL sit at the default bottom-right offset
 
 ### Requirement: Running balance in cash transactions
 
@@ -204,3 +215,15 @@ The cash transactions list SHALL show, per row: date, a type icon with a subtitl
 - **WHEN** the list renders the first page sorted newest first
 - **THEN** the first row SHALL show 438,360 and the second row 418,360
 
+### Requirement: Balance chart fills its card
+
+The account balance chart SHALL fill its card's plot height, label the x-axis with `MM/DD` ticks (at most 8), draw no point markers, and take its line and fill colours from theme tokens.
+
+#### Scenario: Three-month range
+- **WHEN** the 3M range is selected on `/portfolio/accounts/1`
+- **THEN** the chart SHALL show at most 8 horizontal `MM/DD` labels and the line SHALL span the plot height between the range's minimum and maximum
+
+#### Scenario: Dark mode line
+- **GIVEN** dark mode is on
+- **WHEN** the chart renders
+- **THEN** the line SHALL use the dark `--app-primary`

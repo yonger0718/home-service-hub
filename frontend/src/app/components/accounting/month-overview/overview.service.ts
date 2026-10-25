@@ -16,6 +16,9 @@ export class AccountingOverviewService {
   readonly summaryState = signal<OverviewState>('loading');
   readonly dueState = signal<OverviewState>('loading');
 
+  /** The layout currently renders <app-month-overview>; the layout owns it, so clear() leaves it alone. */
+  readonly visible = signal(false);
+
   clear(): void {
     this.month.set(currentMonth());
     this.summary.set(null);

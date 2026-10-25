@@ -14,6 +14,7 @@ import { LayoutMode, LayoutModeService, MATCH_MEDIA } from '../../../services/la
 import { makeEntryDetail, makePreference } from '../testing/fixtures';
 import { PaneStateService } from '../../../services/pane-state.service';
 import { DirtyFormRegistry } from '../dirty-form.service';
+import { AccountingOverviewService } from '../month-overview/overview.service';
 import { AccountingLayoutComponent, FAB_RIGHT_BESIDE_PANE } from './accounting-layout';
 
 /** Evaluates `(min|max)-width: Npx` conditions against a fixed viewport width. */
@@ -90,12 +91,28 @@ describe('AccountingLayoutComponent', () => {
       expect(harness.routeNativeElement!.querySelector('app-month-overview')).toBeNull();
     });
 
+    it('publishes overview visibility to the service', async () => {
+      await start('panes', '/accounting', 1440);
+      expect(TestBed.inject(AccountingOverviewService).visible()).toBe(true);
+    });
+
+    it('publishes overview visibility false at 1100px', async () => {
+      await start('panes', '/accounting', 1100);
+      expect(TestBed.inject(AccountingOverviewService).visible()).toBe(false);
+    });
+
+    it('publishes overview visibility false on /accounting/accounts at 1440px', async () => {
+      await start('panes', '/accounting/accounts', 1440);
+      expect(TestBed.inject(AccountingOverviewService).visible()).toBe(false);
+    });
+
     it('hides the overview once a pane page opens', async () => {
       const harness = await start('panes', '/accounting', 1440);
       await find(harness, 'app-month-overview');
       await TestBed.inject(Router).navigateByUrl('/accounting/entries/1');
       await find(harness, PANE_PAGE);
       expect(harness.routeNativeElement!.querySelector('app-month-overview')).toBeNull();
+      expect(TestBed.inject(AccountingOverviewService).visible()).toBe(false);
     });
   });
 

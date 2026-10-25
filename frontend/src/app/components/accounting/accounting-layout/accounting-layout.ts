@@ -164,6 +164,8 @@ export class AccountingLayoutComponent {
   private sheetWasOpen = false;
 
   constructor() {
+    effect(() => this.overview.visible.set(this.showOverview()));
+
     this.router.events
       .pipe(
         filter((event): event is NavigationEnd => event instanceof NavigationEnd),
@@ -245,6 +247,7 @@ export class AccountingLayoutComponent {
     });
     inject(DestroyRef).onDestroy(() => {
       this.setOutsideInert(false);
+      this.overview.visible.set(false);
       this.paneState.paneOpen.set(false);
       this.paneState.formOpen.set(false);
       this.paneState.sheetOpen.set(false);

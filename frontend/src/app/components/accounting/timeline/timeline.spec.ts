@@ -1881,6 +1881,19 @@ describe('LedgerTimelineComponent', () => {
       return Array.from(el.querySelectorAll<HTMLElement>('.dist-bar > span'));
     }
 
+    it('hides the category distribution while the overview is visible', () => {
+      const { el, fixture } = renderWith('sheet', CANVAS_SUMMARY);
+      const overview = TestBed.inject(AccountingOverviewService);
+      expect(el.querySelector('.dist')).not.toBeNull();
+      overview.visible.set(true);
+      fixture.detectChanges();
+      expect(el.querySelector('.dist')).toBeNull();
+      expect(el.querySelector('.sum-expense')).not.toBeNull();
+      overview.visible.set(false);
+      fixture.detectChanges();
+      expect(el.querySelector('.dist')).not.toBeNull();
+    });
+
     it('renders six segments weighted by the raw amounts, the aria text and the wrapping legend at the sheet layout', () => {
       const { el } = renderWith('sheet', CANVAS_SUMMARY);
       const bar = el.querySelector('.sum .dist .dist-bar')!;
