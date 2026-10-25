@@ -1369,6 +1369,23 @@ def _case_dump():
     return module
 
 
+def test_case_dump_counts_transfer_delta_and_needs_peer_cases_per_account(dirty_on, seed, run, db_session):
+    # R6c dump side: `_count_hint` filters on the kind it is given, so an amount_delta transfer_delta case is counted
+    # next to a line_unmatched needs_peer case, each under its own account.
+    from tests.integration.test_reconciliation_actions_transfer import _bank, _delta, _make_pair
+    from tests.integration.statement_fixtures import _card, _transfer
+    delta = _make_pair(seed, run, db_session)  # owner transfer 19500 vs lines 20000: transfer_delta on both statements
+    bank2, card2 = _bank(seed, db_session, "銀行2"), _card(seed, db_session, name="卡2")
+    db_session.commit()
+    stmt_b, _, _ = _submit(db_session, run, bank2, [_line(1, date(2026, 9, 6), "信用卡繳款", "-7000", kind="payment")], kind="bank")
+    assert _delta(db_session, delta.bstmt) is not None and _delta(db_session, delta.cstmt) is not None
+    assert _needs_peer(db_session, stmt_b) is not None
+    statements = [db_session.get(AccountStatement, sid) for sid in (delta.bstmt.id, delta.cstmt.id, stmt_b.id)]
+    section = _case_dump()._policy_section(db_session, statements)
+    assert section["transfer_delta"] == {str(delta.bank.id): 1, str(delta.card.id): 1}
+    assert section["needs_peer"] == {str(bank2.id): 1}
+
+
 def test_anchor_is_idempotent_on_rerun_and_after_an_earlier_statement_is_added(seed, db_session, run, dirty_on):
     # spec R6b.8 / final review C1: September arrives first and is anchored by the policy (it starts within the
     # account's first live month: live from 8/15); August arrives later with a deposit and a fee the ledger lacks.

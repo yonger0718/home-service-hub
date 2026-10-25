@@ -81,7 +81,7 @@ def _count_hint(db, statements, hint: str, kind: str = "line_unmatched") -> dict
     out: dict[str, int] = {}
     for stmt in statements:
         n = db.scalar(select(func.count(ReconciliationCase.id)).where(
-            ReconciliationCase.statement_id == stmt.id, ReconciliationCase.kind == "line_unmatched",
+            ReconciliationCase.statement_id == stmt.id, ReconciliationCase.kind == kind,
             ReconciliationCase.status == "open", ReconciliationCase.context["hint"].astext == hint))
         if n:
             out[str(stmt.account_id)] = out.get(str(stmt.account_id), 0) + n

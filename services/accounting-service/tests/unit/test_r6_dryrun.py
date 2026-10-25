@@ -192,3 +192,4 @@ def test_main_transfers_refuses_a_dump_without_the_section(tmp_path, monkeypatch
     monkeypatch.setattr("sys.argv", ["r6_dryrun.py", "--transfers", "--baseline", str(tmp_path / "before.json"),
                                      "--candidate", str(tmp_path / "after.json"), "--out-dir", str(tmp_path / "out")])
     assert dr.main() == 2
+    assert not (tmp_path / "out").exists()

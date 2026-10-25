@@ -171,15 +171,15 @@ def main() -> int:
     if args.policy and "policy" not in after:
         print(f"{args.candidate}: no policy section; dump it with r6_case_dump.py --policy", file=sys.stderr)
         return 2
+    if args.transfers and not args.policy and "transfer_delta" not in after:
+        print(f"{args.candidate}: no transfer_delta section; dump it with r6_case_dump.py --policy", file=sys.stderr)
+        return 2
     os.makedirs(args.out_dir, mode=0o700, exist_ok=True)
     if args.policy:
         text = f"baseline {before['sha']}\n" + policy_summary(after)
         _write_private(os.path.join(args.out_dir, "policy-summary.md"), text)
         print(text)
         return 0
-    if args.transfers and "transfer_delta" not in after:
-        print(f"{args.candidate}: no transfer_delta section; dump it with r6_case_dump.py --policy", file=sys.stderr)
-        return 2
     changes = diff_dumps(before, after)
     rules = Counter(attribute(c) for c in changes)
     failures = gate_failures(changes, after, before)

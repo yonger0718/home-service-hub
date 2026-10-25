@@ -76,5 +76,5 @@ The dump's policy section adds `transfer_delta` (open `amount_delta` cases with 
 `_count_hint(..., "transfer_delta", "amount_delta")`) next to `needs_peer`. `--transfers` writes `transfers-summary.md`
 (mode 600: `| account | transfer_delta cases | needs_peer cases |` plus totals, counts only) and exits 0 whatever the gate says;
 `summary.md` and `delta.jsonl` are still written, so the gate verdict is recorded but does not set the exit code. A dump
-without the section exits 2 and writes nothing. In the diff, a case that becomes `transfer_delta` (new, or from `needs_peer`)
+without the section exits 2 and writes nothing. When `--policy` is also given, `--policy` wins and `--transfers` is ignored (no `transfers-summary.md` is written). In the diff, a case that becomes `transfer_delta` (new, or from `needs_peer`)
 is attributed `R6c.1 transfer_delta`; a `transfer_delta` case back to `needs_peer` is `R6c.1 transfer_delta cleared`.
