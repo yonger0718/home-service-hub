@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import func, select, text
+from sqlalchemy.orm import sessionmaker
 
 from app.models import (AccountStatement, LedgerEntry, ReconciliationAudit, ReconciliationCase, StatementAutoPay,
                         StatementCoverage)
@@ -518,6 +519,11 @@ def test_retire_pair_directly_ignores_the_window(seed, db_session, world):
     db, (bank, card, stmt) = db_session, world
     row, out_leg, in_leg = _book(db, stmt)
     out_id, in_id = out_leg.id, in_leg.id
+    assert aps.retire_pair(db, row, reason="twin") is None  # re-validated under the lock: no twin, nothing retired
+    db.commit()
+    assert row.status == "booked"
+    _transfer(seed, bank, card, 580, PAY)
+    db.commit()
     assert aps.retire_pair(db, row, reason="twin") == set()  # the sweep path (Task 7): no window, no claims held
     db.commit()
     assert (row.status, row.reason) == ("retired", "twin")
@@ -645,3 +651,79 @@ def test_owner_transfer_to_savings_is_not_a_twin(seed, db_session, world):
     db.commit()
     assert row.status == "booked"
     assert db.get(LedgerEntry, out_id) is not None and db.get(LedgerEntry, in_id) is not None
+
+
+def _retired_audits(db, statement_id):
+    return _events(db, statement_id).count("auto_pay_retired")
+
+
+def test_retire_pair_on_a_row_another_connection_already_retired_writes_nothing(pg_engine, seed, db_session, world):
+    db, (bank, card, stmt) = db_session, world
+    row, out_leg, in_leg = _book(db, stmt)
+    out_id, in_id = out_leg.id, in_leg.id
+    _transfer(seed, bank, card, 580, PAY)  # the twin both retirers saw
+    db.commit()
+    assert row.status == "booked"  # loaded before the other retirer commits: the ORM row goes stale
+    with pg_engine.begin() as other:  # e.g. the worker-poll sweep retired the pair first
+        other.execute(text("UPDATE statement_auto_pay SET status = 'retired', reason = 'twin' WHERE id = :id"),
+                      {"id": row.id})
+        other.execute(text("DELETE FROM ledger_entry WHERE id IN (:a, :b)"), {"a": out_id, "b": in_id})
+    entries = _entry_count(db)
+    assert aps.retire_pair(db, row, reason="twin") is None
+    db.commit()
+    assert _retired_audits(db, stmt.id) == 0  # the other retirer's audit is its own; this call wrote none
+    assert _entry_count(db) == entries
+    db.refresh(row)
+    assert (row.status, row.reason) == ("retired", "twin")
+
+
+def test_retire_pair_leaves_legs_the_owner_took_over(pg_engine, seed, db_session, world):
+    db, (bank, card, stmt) = db_session, world
+    row, out_leg, in_leg = _book(db, stmt)
+    out_id, in_id, group_id = out_leg.id, in_leg.id, row.transfer_group_id
+    _transfer(seed, bank, card, 580, PAY)
+    db.commit()
+    assert row.status == "booked"
+    other = sessionmaker(bind=pg_engine, autoflush=False)()
+    try:  # PUT /transfers in another session: the legs become the owner's (source='manual')
+        transfer_service.update_transfer(other, group_id, TransferIn(
+            from_account_id=bank.id, to_account_id=card.id, out_amount=Decimal("580"), entry_date=PAY,
+            posted_date=PAY, name="自動扣繳", description="我付的"))
+        other.commit()
+    finally:
+        other.close()
+    assert aps.retire_pair(db, row, reason="twin") is None
+    db.commit()
+    assert {db.get(LedgerEntry, out_id).source, db.get(LedgerEntry, in_id).source} == {"manual"}
+    db.refresh(row)
+    assert row.status == "booked"
+    assert _retired_audits(db, stmt.id) == 0
+
+
+def test_check_row_returns_none_when_the_owner_edits_between_the_check_and_the_lock(pg_engine, seed, db_session,
+                                                                                    world, monkeypatch):
+    db, (bank, card, stmt) = db_session, world
+    row, out_leg, in_leg = _book(db, stmt)
+    out_id, in_id, group_id = out_leg.id, in_leg.id, row.transfer_group_id
+    _transfer(seed, bank, card, 580, PAY)
+    db.commit()
+    real_lock_pair = aps.lock_pair
+
+    def owner_edits_then_lock(session, locked_row):  # runs after the row lock, before the leg lock
+        other = sessionmaker(bind=pg_engine, autoflush=False)()
+        try:
+            transfer_service.update_transfer(other, group_id, TransferIn(
+                from_account_id=bank.id, to_account_id=card.id, out_amount=Decimal("580"), entry_date=PAY,
+                posted_date=PAY, name="自動扣繳", description="我付的"))
+            other.commit()
+        finally:
+            other.close()
+        return real_lock_pair(session, locked_row)
+
+    monkeypatch.setattr(aps, "lock_pair", owner_edits_then_lock)
+    assert aps.check_row(db, row, TODAY, _settings()) is None
+    db.commit()
+    assert db.get(LedgerEntry, out_id) is not None and db.get(LedgerEntry, in_id) is not None
+    db.refresh(row)
+    assert row.status == "booked"
+    assert _retired_audits(db, stmt.id) == 0

@@ -15,8 +15,9 @@ bank account makes on the due date, as a system transfer pair, before either sta
   dated on the pay date, the card leg posted on the next business day; the `booked` row and an `auto_pay_booked`
   audit row in the same transaction.
 - Housekeeping (§4.4 step 0): `check_row` moves a `booked` row to `owner_deleted` / `owner_edited`, retires the pair
-  when a twin appears (`retire_pair`: release the legs' coverage, delete them, `retired`), copies action edits of
-  the legs onto the row, or flags a changed statement header once.
+  when a twin appears (`retire_pair`: lock the row and its legs, re-validate, release the legs' coverage, delete
+  them, `retired`; nothing when the locked re-check fails), copies action edits of the legs onto the row, or flags
+  a changed statement header once.
 
 Locks: `book` takes the shared ledger-import advisory key (as `schedule_posting.post_instance` does) so a booking
 never interleaves with a MOZE backup import; the job takes it too, around each statement's transaction, and a second
@@ -340,15 +341,45 @@ def lock_pair(db: Session, row: StatementAutoPay) -> tuple[LedgerEntry | None, L
     return legs.get(row.out_entry_id), legs.get(row.in_entry_id)
 
 
-def retire_pair(db: Session, row: StatementAutoPay, *, reason: str, run_id: int | None = None) -> set[int]:
-    """Delete the row's pair and mark it `retired`: lock both legs, release the coverage they hold (reason
-    `auto_pay:<reason>`), delete them, flag the released statements `needs_recheck`, audit `auto_pay_retired`.
-    Returns the released statement ids. Flushes, never commits."""
-    lock_pair(db, row)
+def _lock_row(db: Session, row_id: int) -> StatementAutoPay | None:
+    """The auto-pay row locked `FOR UPDATE NOWAIT` and refreshed from the database (None when it is gone). A row
+    another transaction holds raises `auto_pay_busy`; the savepoint leaves the session usable."""
+    try:
+        with db.begin_nested():
+            return db.scalar(select(StatementAutoPay).where(StatementAutoPay.id == row_id)
+                             .with_for_update(nowait=True).execution_options(populate_existing=True))
+    except OperationalError as exc:
+        if isinstance(exc.orig, LockNotAvailable):
+            raise CodedConflictError(PAIR_BUSY, f"auto-pay row {row_id} is locked by another write") from exc
+        raise
+
+
+def retire_pair(db: Session, row: StatementAutoPay, *, reason: str, run_id: int | None = None,
+                window_days: int | None = None) -> set[int] | None:
+    """Delete the row's pair and mark it `retired`: lock the row, then both legs, and re-validate under the locks —
+    the row still `booked`, both legs present and `source='statement'`, and for `reason="twin"` a twin still within
+    `window_days` (default: the settings' `twin_window_days`) of the pay date. If any check fails (another retirer,
+    an owner delete or PUT /transfers landed after the caller's unlocked check) return None and write nothing.
+    Otherwise release the coverage the legs hold (reason `auto_pay:<reason>`), delete them, flag the released
+    statements `needs_recheck`, audit `auto_pay_retired`, and return the released statement ids (possibly empty).
+    A row or leg another transaction holds raises `auto_pay_busy`. Flushes, never commits."""
+    row = _lock_row(db, row.id)
+    if row is None or row.status != "booked":
+        return None
+    out_leg, in_leg = lock_pair(db, row)
+    if out_leg is None or in_leg is None or STATEMENT_SOURCE != out_leg.source or STATEMENT_SOURCE != in_leg.source:
+        return None
+    if reason == "twin":
+        if window_days is None:
+            window_days = int(settings_service.read_auto_pay_settings(db)["twin_window_days"])
+        if not find_twins(db, card_account_id=row.card_account_id, pay_account_id=row.pay_account_id,
+                          amount=row.amount, pay_date=row.pay_date, window_days=window_days,
+                          exclude=(out_leg.id, in_leg.id)):
+            return None
     # delete_entries_cascade ends with expire_all and the leg FKs are ON DELETE SET NULL: copy everything first
     row_id, statement_id = row.id, row.statement_id
-    out_id, in_id = row.out_entry_id, row.in_entry_id
-    legs = [i for i in (out_id, in_id) if i is not None]
+    out_id, in_id = out_leg.id, in_leg.id
+    legs = [out_id, in_id]
     released = coverage_service.release_entries(db, legs, reason=f"auto_pay:{reason}")
     entry_write_service.delete_entries_cascade(db, legs)
     row = db.get(StatementAutoPay, row_id)
@@ -377,10 +408,12 @@ def check_row(db: Session, row: StatementAutoPay, today: date, settings: dict) -
     """One housekeeping pass over a booked row (§4.4 step 0); returns the transition applied, or None. In order:
     both legs gone → `owner_deleted`; a leg gone or not `source='statement'` (an owner edit, PUT /transfers) →
     `owner_edited` (figures untouched); a twin within `twin_window_days` of the pay date, looked for until
-    `pay_date + twin_window_days + 7` → the pair is retired → `retired`; the legs' amount / date / accounts differ
+    `pay_date + twin_window_days + 7` → the pair is retired → `retired` (None when `retire_pair`'s locked
+    re-check fails: another write got there first); the legs' amount / date / accounts differ
     from the row → copied onto it (no audit) → `updated`; the statement's total or due date differs from the row →
     both legs `needs_review`, `reason='header_changed'` (once) → `header_changed`. A description, name or category
-    change is none of these. Reads without locks (only `retire_pair` locks). Flushes, never commits."""
+    change is none of these. Reads without locks (only `retire_pair` locks, then re-checks). Flushes, never
+    commits."""
     if row.status != "booked":
         return None
     out_id, in_id = row.out_entry_id, row.in_entry_id
@@ -393,7 +426,8 @@ def check_row(db: Session, row: StatementAutoPay, today: date, settings: dict) -
     if today <= row.pay_date + timedelta(days=window + TWIN_LOOKOUT_EXTRA_DAYS) and find_twins(
             db, card_account_id=row.card_account_id, pay_account_id=row.pay_account_id, amount=row.amount,
             pay_date=row.pay_date, window_days=window, exclude=(out_id, in_id)):
-        retire_pair(db, row, reason="twin")
+        if retire_pair(db, row, reason="twin", window_days=window) is None:
+            return None  # the locked re-check failed: another write got there first; the next run looks again
         return "retired"
     figures = (-out_leg.amount, out_leg.entry_date, out_leg.account_id, in_leg.account_id)
     if figures != (row.amount, row.pay_date, row.pay_account_id, row.card_account_id):
@@ -423,8 +457,8 @@ def retire_twins_for_statement(db: Session, statement: AccountStatement, account
     with a leg on `accounts` whose pay date lies within the period ± `matching.population_window_days`, both legs
     still the system's (`source='statement'`; anything else is housekeeping's `owner_edited`), and a twin within
     the settings' `twin_window_days` → `retire_pair(reason="twin")`. A pair another transaction holds
-    (`auto_pay_busy`) is logged and left for the next sweep or the job. Returns the retired row ids. Flushes, never
-    commits."""
+    (`auto_pay_busy`) is logged and left for the next sweep or the job; a row whose locked re-check fails
+    (`retire_pair` returns None) is skipped. Returns the retired row ids. Flushes, never commits."""
     from .reconciliation_service import rules_for  # local: the reconciler calls this function
 
     rules = rules_for(settings_service.reconciliation_rules(db), statement.period_end)
@@ -447,11 +481,13 @@ def retire_twins_for_statement(db: Session, statement: AccountStatement, account
                           exclude=[leg.id for leg in legs]):
             continue
         try:
-            retire_pair(db, row, reason="twin")
+            released = retire_pair(db, row, reason="twin", window_days=window)
         except CodedConflictError as exc:
             if exc.code != PAIR_BUSY:
                 raise
             logger.info("auto_pay.sweep_retire_busy", extra={"auto_pay_id": row_id, "statement_id": statement.id})
+            continue
+        if released is None:  # the locked re-check failed (already retired, or the owner took the legs over)
             continue
         retired.append(row_id)
     return retired
