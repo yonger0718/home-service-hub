@@ -41,7 +41,7 @@ from app.services import coverage_service, ledger_service, proposal_service, set
 from app.services import reconciliation_actions as registry
 from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, ConflictError, NotFoundError, ValidationError
-from app.services.reconciliation_actions import OPEN_STATUSES, audit, engine
+from app.services.reconciliation_actions import OPEN_STATUSES, audit, engine, transfer_actions
 from app.services.reconciliation_actions.base import POLICY, Context, current_line
 from app.services.reconciliation_actions.engine import BudgetExceeded
 from app.services.statements import matching
@@ -175,18 +175,22 @@ def _attach_fee_candidate(db: Session, case: ReconciliationCase, statement: Acco
     return Candidate(case.id, case.kind, case.status, "attach_fee", {"entry_id": entry_id}, amount, entry_id=entry_id)
 
 
+def _past_grace_in_scope(db: Session, statement: AccountStatement) -> bool:
+    """R6b.1 (and R6c `pair_transfer`): `backfill_grace_days` have passed since the statement's period end and its
+    account is in `backfill_accounts` (empty = every account)."""
+    policy = settings_service.reconciliation_policy(db)
+    if statement.period_end + timedelta(days=int(policy["backfill_grace_days"])) > ledger_service._today():
+        return False
+    accounts = policy.get("backfill_accounts") or []
+    return not accounts or statement.account_id in accounts
+
+
 def _backfill_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
     """R6b.1 policy column: the owner eligibility plus live mode, the grace, the account list and no owner delete."""
     if case.kind != "line_unmatched" or (case.context or {}).get("owner_deleted"):
         return None
     kind = registry.backfill_eligibility(case)
-    if kind is None or statement.mode != "live":
-        return None
-    policy = settings_service.reconciliation_policy(db)
-    if statement.period_end + timedelta(days=int(policy["backfill_grace_days"])) > ledger_service._today():
-        return None
-    accounts = policy.get("backfill_accounts") or []
-    if accounts and statement.account_id not in accounts:
+    if kind is None or statement.mode != "live" or not _past_grace_in_scope(db, statement):
         return None
     line = current_line(db, case, statement)
     if line is None or _absorbed_by_anchor(db, statement, line):
@@ -195,6 +199,39 @@ def _backfill_candidate(db: Session, case: ReconciliationCase, statement: Accoun
     if _owner_may_record(db, statement, case, line, rules):
         return None
     return Candidate(case.id, case.kind, case.status, "backfill_entry", {"kind": kind}, _money(line.flow_amount))
+
+
+def _single_peer(db: Session, case: ReconciliationCase) -> tuple[AccountStatement, StatementLine] | None:
+    """The case's only peer candidate (`PairTransferAction.peer_candidates`); None when there is none or several."""
+    found = transfer_actions.PairTransferAction.peer_candidates(db, case)
+    return found[0] if len(found) == 1 else None
+
+
+def _pair_transfer_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
+    """R6c §5.3 policy column: an open `needs_peer` line on a live statement past the grace and in the account list
+    (`_past_grace_in_scope`, as for a backfill), never an owner delete, with exactly one peer candidate on a statement
+    no automatic answer is kept off (`statement_excluded`), no owner entry that may already record the pair
+    (`transfer_twin_reason`) and no pairing still applied or owner-deleted on either event (`pair_transfer_block`)
+    → pair the two lines; amount = |flow|. Reciprocal uniqueness follows from the apply: it resolves the peer case,
+    so the peer statement's run finds nothing to pair."""
+    context = case.context or {}
+    if case.kind != "line_unmatched" or context.get("hint") != transfer_actions.PEER_HINT \
+            or context.get("owner_deleted") or statement.mode != "live" or not _past_grace_in_scope(db, statement):
+        return None
+    line = current_line(db, case, statement)
+    peer = None if line is None else _single_peer(db, case)
+    if peer is None:
+        return None
+    peer_statement, peer_line = peer
+    if statement_excluded(db, peer_statement) is not None:  # peer_candidates keeps busy peers; the action refuses them
+        return None
+    rules = rec.rules_for(settings_service.reconciliation_rules(db), statement.period_end)
+    if transfer_actions.transfer_twin_reason(db, rules, (statement, line), peer) is not None \
+            or stand_ins.pair_transfer_block(db, [case.event_id, peer_line.event_id]):
+        return None
+    return Candidate(case.id, case.kind, case.status, "pair_transfer", {"peer_line_id": peer_line.id},
+                     _money(line.flow_amount),
+                     evidence={"peer_statement_id": peer_statement.id, "peer_line_id": peer_line.id})
 
 
 def _owner_may_record(db: Session, statement: AccountStatement, case: ReconciliationCase, line: StatementLine,
@@ -214,12 +251,31 @@ def refuse_owner_recorded(ctx: Context) -> None:
         raise CodedConflictError("owner_may_record", f"case {ctx.case.id}")
 
 
+def _supersede_reason(db: Session, statement: AccountStatement, case: ReconciliationCase, line: StatementLine,
+                      rules: matching.Rules, proposal: ReconciliationProposal) -> str | None:
+    """Why a pending policy proposal can no longer be applied as written, or None: `owner_may_record` when an owner
+    entry may now record the line (`_owner_may_record`) or, for a `pair_transfer`, the pair with its proposed peer
+    line (the transfer-twin guard, `transfer_twin_reason`: rules (a)/(b) and the R6b rule on either line);
+    `peer_out_of_scope` when that peer line is no longer a peer candidate (claimed, its case closed, its statement
+    retired) — the peer statement's changes never move this case's version, so `supersede_stale` cannot see it."""
+    if _owner_may_record(db, statement, case, line, rules):
+        return "owner_may_record"
+    if proposal.action != "pair_transfer":
+        return None
+    peer = next(((s, other) for s, other in transfer_actions.PairTransferAction.peer_candidates(db, case)
+                 if other.id == (proposal.params or {}).get("peer_line_id")), None)
+    if peer is None:
+        return "peer_out_of_scope"
+    return "owner_may_record" if transfer_actions.transfer_twin_reason(db, rules, (statement, line), peer) else None
+
+
 def _supersede_owner_recorded(db: Session, statement_id: int, *, run_id: int | None) -> int:
-    """Pending policy-authored `backfill_entry` / `create_system_entry` proposals of the statement whose line an owner entry may now record
-    (`_owner_may_record`) → superseded, audited `proposal_superseded` (`by: owner_may_record`), and a `proposed` case
-    left without a live proposal reopens. The case keeps its version through reconcile, so `supersede_stale` never
-    sees them. Locks statement → cases (ascending) → proposals (the `supersede_stale` order); commits. Returns how
-    many."""
+    """Pending policy-authored `stand_ins.OWNER_TWIN_GUARDED` proposals (`backfill_entry`, `create_system_entry`,
+    `pair_transfer`) of the statement that an owner entry may now record, or a `pair_transfer` whose peer line is no
+    longer a candidate (`_supersede_reason`) → superseded, audited `proposal_superseded` (`by`: the reason), and a
+    `proposed` case left without a live proposal reopens (so the next run may collect the line again). The case
+    keeps its version through reconcile, so `supersede_stale` never sees them. Locks statement → cases (ascending)
+    → proposals (the `supersede_stale` order); commits. Returns how many."""
     case_ids = sorted(set(db.execute(
         select(ReconciliationProposal.case_id)
         .join(ReconciliationCase, ReconciliationCase.id == ReconciliationProposal.case_id)
@@ -235,14 +291,16 @@ def _supersede_owner_recorded(db: Session, statement_id: int, *, run_id: int | N
         case = db.execute(select(ReconciliationCase).where(ReconciliationCase.id == case_id).with_for_update()
                           .execution_options(populate_existing=True)).scalar_one()
         line = current_line(db, case, statement)
-        if line is None or not _owner_may_record(db, statement, case, line, rules):
+        if line is None:
             continue
         for proposal in proposal_service._pending(db, case.id, author=POLICY):
-            if proposal.action not in stand_ins.OWNER_TWIN_GUARDED:
+            by = None if proposal.action not in stand_ins.OWNER_TWIN_GUARDED \
+                else _supersede_reason(db, statement, case, line, rules, proposal)
+            if by is None:
                 continue
             proposal.status, proposal.decided_at = "superseded", func.now()
             audit.record(db, event="proposal_superseded", actor=POLICY, statement_id=statement_id, case_id=case.id,
-                         run_id=run_id, detail={"proposal_id": proposal.id, "by": "owner_may_record"})
+                         run_id=run_id, detail={"proposal_id": proposal.id, "by": by})
             superseded.append(case.id)
     db.flush()
     proposal_service.reopen_idle(db, superseded)
@@ -282,11 +340,11 @@ def _replace_candidate(db: Session, case: ReconciliationCase, statement: Account
                      evidence=_replace_evidence(case))
 
 
-OWNER_DELETED_GUARDED = frozenset({"create_system_entry", "backfill_entry"})  # R6b.0: never re-book an owner delete
+OWNER_DELETED_GUARDED = frozenset({"create_system_entry", "backfill_entry", "pair_transfer"})  # R6b.0: never re-book an owner delete
 
 POLICY_ACTIONS = {"create_system_entry": _system_entry_candidate, "attach_fee": _attach_fee_candidate,
                   "backfill_entry": _backfill_candidate, "anchor_opening": _anchor_candidate,
-                  "replace_stand_in": _replace_candidate}
+                  "replace_stand_in": _replace_candidate, "pair_transfer": _pair_transfer_candidate}
 
 
 def _agent_authors(authors: Iterable[str]) -> set[str]:
@@ -457,6 +515,11 @@ def _unchanged(ctx: Context, candidate: Candidate) -> bool:
         return not context.get("owner_deleted") and not case.candidates \
             and registry.backfill_eligibility(case) == candidate.params.get("kind") \
             and not _owner_may_record(ctx.db, ctx.statement, case, ctx.line, ctx.rules)
+    if candidate.action == "pair_transfer":  # still a needs_peer line whose single peer candidate is the collected one
+        peer = _single_peer(ctx.db, case)
+        return context.get("hint") == transfer_actions.PEER_HINT and ctx.line is not None and peer is not None \
+            and {"peer_statement_id": peer[0].id, "peer_line_id": peer[1].id} == candidate.evidence \
+            and not stand_ins.pair_transfer_block(ctx.db, [case.event_id, peer[1].event_id])
     return True
 
 

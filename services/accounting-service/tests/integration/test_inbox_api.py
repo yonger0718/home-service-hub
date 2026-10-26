@@ -9,6 +9,10 @@ from app.models import ReconciliationCase
 from tests.integration.statement_fixtures import (  # noqa: F401
     _card, _cases, _line, _submit, run,
 )
+# top-level import is safe: test_reconciliation_actions_transfer does not import this module
+from tests.integration.test_reconciliation_actions_transfer import (  # noqa: E402,F401
+    _ambiguous_case, _delta, _needs_peer, orphan_pair, pair,
+)
 
 TOKENS = "spa:spa-token,hermes:hermes-token"
 SCOPES = "spa=legacy; hermes=read,propose,enqueue"
@@ -104,6 +108,7 @@ def test_amount_differs_hides_accept_on_a_transfer_entry(client, seed, db_sessio
     _submit(db_session, run, account, [_line(1, DAY, "卡費", -888, "withdrawal")], kind="bank")
     items = [i for i in _items(_inbox(client)) if i["question"] == "amount_differs"]
     assert items and "accept_bank_amount" not in items[0]["actions"]
+    assert items[0]["transfer"]["adjust_transfer"] is not None
 
 
 def test_inbox_counts_ignore_limit(client, seed, db_session, run):
@@ -607,3 +612,38 @@ def test_actions_list_carries_label_and_answer(client, seed, db_session, run):
     assert mine["case_id"] == c1.id and by_case[c2.id]["case_id"] == c2.id
     assert mine["line"] == {"date": "2026-09-03", "merchant": "店", "amount": "-10.0000"}
     assert by_case[c2.id]["line"] == {"date": "2026-10-03", "merchant": "店", "amount": "-10.0000"}
+
+
+def test_transfer_delta_item_is_amount_differs_with_the_transfer_field_and_no_accept_button(pair, client, db_session):
+    item = next(i for i in _items(_inbox(client), "amount_differs") if i["case_id"] == _delta(db_session, pair.cstmt).id)
+    assert item["actions"] == ["match_candidate", "dismiss"]
+    assert item["transfer"] == {"adjust_transfer": {"entry_id": pair.in_leg.id, "line_id": pair.cline.id,
+                                                    "candidate_entry_ids": [pair.in_leg.id]},
+                                "pair_transfer": None}
+
+
+def test_needs_peer_item_lists_peer_candidates(orphan_pair, client, db_session):
+    item = next(i for i in _items(_inbox(client), "transfer")
+                if i["case_id"] == _needs_peer(db_session, orphan_pair.cstmt).id)
+    assert item["actions"] == ["match_candidate", "dismiss"]
+    assert item["transfer"]["pair_transfer"] == {"peer_candidates": [
+        {"line_id": orphan_pair.bline.id, "statement_id": orphan_pair.bstmt.id, "account_name": "銀行",
+         "posted_date": "2026-09-05", "amount": "-20000.0000"}]}
+
+
+def test_items_without_transfer_actions_carry_a_null_transfer_field(client, seed, db_session, run):
+    account = _bank(seed, db_session)
+    _submit(db_session, run, account, [_line(1, DAY, "咖啡", -50, "withdrawal")], kind="bank")
+    items = _items(_inbox(client))
+    assert items and all(i["transfer"] is None for i in items)
+
+
+def test_ambiguous_item_offers_adjust_transfer_over_its_transfer_leg_candidates(pair, seed, db_session, client):
+    from tests.integration.statement_fixtures import _transfer
+    _, second_in = _transfer(seed, pair.bank, pair.card, "20050", date(2026, 9, 5))
+    plain = seed.entry(pair.card, "20060", kind="income", day=date(2026, 9, 5))
+    db_session.commit()
+    case = _ambiguous_case(db_session, pair.cstmt, pair.cline, [pair.in_leg, plain, second_in])
+    item = next(i for i in _items(_inbox(client)) if i["case_id"] == case.id)
+    assert item["transfer"]["adjust_transfer"] == {"entry_id": None, "line_id": pair.cline.id,
+                                                   "candidate_entry_ids": [pair.in_leg.id, second_in.id]}

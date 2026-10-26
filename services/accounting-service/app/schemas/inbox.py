@@ -64,6 +64,33 @@ class InboxStatementRef(BaseModel):
     period_end: date
 
 
+class InboxTransferAdjust(BaseModel):
+    model_config = Strict
+    entry_id: int | None  # None on an ambiguous case: the owner picks one of `candidate_entry_ids`
+    line_id: int
+    candidate_entry_ids: list[int]
+
+
+class InboxPeerCandidate(BaseModel):
+    model_config = Strict
+    line_id: int
+    statement_id: int
+    account_name: str
+    posted_date: date
+    amount: Decimal
+
+
+class InboxPairTransfer(BaseModel):
+    model_config = Strict
+    peer_candidates: list[InboxPeerCandidate]
+
+
+class InboxTransfer(BaseModel):
+    model_config = Strict
+    adjust_transfer: InboxTransferAdjust | None = None
+    pair_transfer: InboxPairTransfer | None = None
+
+
 class InboxItem(BaseModel):
     model_config = Strict
     case_id: int
@@ -80,6 +107,7 @@ class InboxItem(BaseModel):
     proposal: InboxProposal | None
     actions: list[str]
     rule_hint: InboxRuleHint | None
+    transfer: InboxTransfer | None = None
 
 
 class InboxAccount(BaseModel):

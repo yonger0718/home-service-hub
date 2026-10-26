@@ -136,6 +136,8 @@ class Rules:
     candidate_window_days: int = 10
     deferral_days: int = 2
     bank_only_patterns: tuple[str, ...] = ("年費", "循環利息", "現金回饋", "跨行手續費", "轉帳手續費", "利息")
+    transfer_tolerance_pct: Decimal = Decimal("0.10")  # R6c: a transfer pair's two legs may differ by this fraction
+    transfer_pair_window_days: int = 7  # R6c: pair window only; never widens the population
 
 
 def population_window_days(rules: Rules) -> int:
@@ -934,6 +936,38 @@ def _drift_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], 
 
 BANK_ONLY_KINDS = frozenset({"fee", "interest", "reward"})
 PEER_LINE_KINDS = frozenset({"payment", "transfer_in", "transfer_out"})
+TRANSFER_HINT = "transfer_delta"
+
+
+def _transfer_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], rules: Rules,
+                   apart: frozenset[int] = frozenset()) -> Case | None:
+    """R6c.2: a payment/transfer line paired with a same-account transfer leg (carries a transfer_group_id) of the same
+    sign within max(abs, transfer pct) and the drift window. No merchant-token condition. Never claims, never reserves
+    a leg across lines; one candidate → amount_delta, several → ambiguous."""
+    if line.line_kind not in PEER_LINE_KINDS:
+        return None
+    gate = eligible_kinds(kind, line.line_kind)
+    tol = max(rules.near_tolerance_abs, (rules.transfer_tolerance_pct * abs(line.flow)).quantize(Q))
+    found: list[tuple[Decimal, int, int, Decimal]] = []
+    for e in entries:
+        if e.id in claimed or _entry_class(e) not in gate or not (_standalone(e) or e.id in apart) or not _peer_ok(kind, line, e):
+            continue
+        if e.transfer_group_id is None or (e.flow > 0) != (line.flow > 0):
+            continue
+        delta = (line.flow - e.flow).quantize(Q)
+        dist = _date_distance(line, e)
+        if abs(delta) > tol or dist > rules.drift_window_days:
+            continue
+        found.append((abs(delta), dist, e.id, delta))
+    if not found:
+        return None
+    found.sort()
+    cands = tuple({"entry_id": eid, "reason": "transfer", "residual": str(delta), "date_distance": dist} for _, dist, eid, delta in found)
+    if len(found) > 1:
+        return Case(line.id, None, "ambiguous", cands, {"hint": TRANSFER_HINT})
+    _, dist, eid, delta = found[0]
+    return Case(line.id, eid, "amount_delta", cands,
+                {"hint": TRANSFER_HINT, "entry_id": eid, "residual": str(delta), "date_distance": dist, "fee_matches": False})
 
 
 NEAR_CHILDREN_MAX = 5
@@ -1060,6 +1094,7 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
                 result.cases.append(Case(line.id, None, "line_unmatched", (), {"hint": "claimed_by_earlier_line", "entry_id": taken}))
                 continue
         case = _foreign_case(statement_kind, line, principals, groups, claimed, fee_expected, rules, account_currency, aside, apart) \
+            or _transfer_case(statement_kind, line, principals, claimed, rules, apart) \
             or _near_case(statement_kind, line, principals, claimed, rules, apart) \
             or _drift_case(statement_kind, line, principals, claimed, rules, apart)
         if case is not None:

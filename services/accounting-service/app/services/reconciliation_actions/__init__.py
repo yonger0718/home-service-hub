@@ -9,7 +9,7 @@ from typing import Callable
 
 from sqlalchemy.orm import object_session
 
-from app.models import AccountStatement, ReconciliationCase, StatementLine
+from app.models import AccountStatement, LedgerEntry, ReconciliationCase, StatementLine
 from app.services import reconciliation_service as rec
 from app.services.coverage_service import participating_accounts
 
@@ -22,10 +22,12 @@ COVERAGE_ACTIONS = frozenset({"match", "unmatch"})  # allowed on historical stat
 
 # The order is the order `allowed` lists them in.
 KIND_ACTIONS: dict[str, tuple[str, ...]] = {
-    "line_unmatched": ("match", "create_entry", "create_system_entry", "backfill_entry", "create_refund", "link_installment_plan",
-                       "split_entry", "dismiss"),
-    "ambiguous": ("match", "adjust_amount", "dismiss"),  # adjust_amount on a listed entry candidate (2026-10-24)
-    "amount_delta": ("match", "adjust_amount", "attach_fee", "split_entry", "dismiss"),
+    # pair_transfer on a needs_peer line (R6c)
+    "line_unmatched": ("match", "create_entry", "create_system_entry", "backfill_entry", "pair_transfer", "create_refund",
+                       "link_installment_plan", "split_entry", "dismiss"),
+    # adjust_amount on a listed entry candidate (2026-10-24); adjust_transfer on a listed transfer leg (R6c)
+    "ambiguous": ("match", "adjust_amount", "adjust_transfer", "dismiss"),
+    "amount_delta": ("match", "adjust_amount", "adjust_transfer", "attach_fee", "split_entry", "dismiss"),
     "entry_unmatched": ("defer_next_period", "move_account", "replace_stand_in", "dismiss"),
     "balance_gap": ("balance_adjustment_asof", "anchor_opening", "dismiss"),
     "duplicate_claim": ("unmatch", "dismiss"),
@@ -106,6 +108,21 @@ def _anchored(case: ReconciliationCase) -> bool:
     return statement is not None and structural_actions.anchor_applied(db, statement.account_id)
 
 
+def _transfer_leg(case: ReconciliationCase, entry_id) -> bool:
+    db = object_session(case)
+    entry = None if db is None or entry_id is None else db.get(LedgerEntry, entry_id)
+    return entry is not None and entry.transfer_group_id is not None
+
+
+def _designates_transfer_leg(case: ReconciliationCase) -> bool:  # R6c: any hint (transfer_delta, near, date_drift)
+    named = _context(case).get("entry_id")
+    return _transfer_leg(case, case.entry_id if named is None else named)
+
+
+def _lists_transfer_leg(case: ReconciliationCase) -> bool:
+    return any(_transfer_leg(case, c.get("entry_id")) for c in case.candidates or ())
+
+
 CONDITIONS: dict[tuple[str, str], Callable[[ReconciliationCase], bool]] = {
     ("line_unmatched", "create_entry"): _no_peer_hint,
     ("line_unmatched", "create_system_entry"): _system_line,
@@ -113,9 +130,12 @@ CONDITIONS: dict[tuple[str, str], Callable[[ReconciliationCase], bool]] = {
     ("line_unmatched", "create_refund"): _refund_line,
     ("line_unmatched", "link_installment_plan"): lambda case: _context(case).get("hint") == "installment_unmapped",
     ("line_unmatched", "split_entry"): _names_an_entry,
+    ("line_unmatched", "pair_transfer"): lambda case: _context(case).get("hint") == PEER_HINT and not case.candidates,
     ("balance_gap", "balance_adjustment_asof"): _single_account_gap,
     ("balance_gap", "anchor_opening"): lambda case: _bank_statement(case) and not _anchored(case),
     ("amount_delta", "attach_fee"): lambda case: _context(case).get("fee_matches") is True,
+    ("amount_delta", "adjust_transfer"): _designates_transfer_leg,
+    ("ambiguous", "adjust_transfer"): _lists_transfer_leg,
     ("entry_unmatched", "replace_stand_in"):
         lambda case: _context(case).get("hint") in ("shadowed_by_stand_in", "orphaned_stand_in"),
 }
@@ -142,4 +162,4 @@ def allowed(case: ReconciliationCase) -> list[str]:
 
 
 # register every action module
-from . import case_actions, coverage_actions, ledger_actions, structural_actions  # noqa: E402,F401
+from . import case_actions, coverage_actions, ledger_actions, structural_actions, transfer_actions  # noqa: E402,F401

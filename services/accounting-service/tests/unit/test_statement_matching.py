@@ -1811,3 +1811,74 @@ def test_a_large_same_flow_cohort_resolves_quickly():
     assert res.cases == [] and len(res.claims) == 60
     assert {c.representation.rule for c in res.claims} <= {"exact", "exact_pair"}
     assert sorted(c.representation.rows[0].entry_id for c in res.claims) == [2000 + i for i in range(60)]
+
+
+# ---- R6c.2: transfer_delta ----
+_TD = date(2026, 9, 3)
+
+
+def test_transfer_line_with_a_same_account_leg_inside_tolerance_is_a_transfer_delta_case():
+    d = _TD
+    res = run([L(1, d, "20000", kind="payment", merchant="信用卡繳款")],
+              [E(10, d + timedelta(days=2), "19500", kind="transfer_in", name="轉帳", transfer_group_id="g1", peer_is_card=False)])
+    c = res.cases[0]
+    assert (c.kind, c.entry_id, c.context["hint"], c.context["residual"], c.context["date_distance"]) == ("amount_delta", 10, "transfer_delta", "500.0000", 2)
+    assert c.candidates == ({"entry_id": 10, "reason": "transfer", "residual": "500.0000", "date_distance": 2},)
+    assert res.explained.get(10) != "deferred_next_period" and 10 in res.unmatched_entry_ids
+
+
+def test_exact_amount_leg_five_days_away_is_transfer_delta_not_date_drift():
+    d = _TD
+    res = run([L(1, d, "20000", kind="payment")], [E(10, d + timedelta(days=5), "20000", kind="transfer_in", transfer_group_id="g1", peer_is_card=False)])
+    assert res.cases[0].context["hint"] == "transfer_delta" and res.cases[0].context["residual"] == "0.0000"
+
+
+def test_leg_outside_the_transfer_tolerance_falls_back_to_needs_peer():
+    d = _TD
+    res = run([L(1, d, "20000", kind="payment")], [E(10, d + timedelta(days=1), "17000", kind="transfer_in", transfer_group_id="g1", peer_is_card=False)])
+    assert res.cases[0].kind == "line_unmatched" and res.cases[0].context == {"hint": "needs_peer"}
+
+
+def test_two_legs_inside_tolerance_are_ambiguous_with_the_transfer_hint():
+    d = _TD
+    legs = [E(10, d, "19800", kind="transfer_in", transfer_group_id="g1", peer_is_card=False), E(11, d + timedelta(days=1), "20300", kind="transfer_in", transfer_group_id="g2", peer_is_card=False)]
+    c = run([L(1, d, "20000", kind="payment")], legs).cases[0]
+    assert c.kind == "ambiguous" and c.context == {"hint": "transfer_delta"} and [x["entry_id"] for x in c.candidates] == [10, 11]
+
+
+def test_two_lines_may_designate_one_leg_without_reservation():
+    d = _TD
+    leg = [E(10, d, "20000", kind="transfer_in", transfer_group_id="g1", peer_is_card=False)]
+    res = run([L(1, d, "19900", kind="payment"), L(2, d + timedelta(days=1), "20100", kind="payment")], leg)
+    assert [c.entry_id for c in res.cases] == [10, 10]
+
+
+def test_settlement_and_non_transfer_entries_are_never_transfer_candidates():
+    d = _TD
+    bank = run([L(1, d, "-20000", kind="payment")], [E(10, d, "-19900", kind="expense"), E(11, d, "-19900", kind="receivable", is_settlement=True)], kind="bank")
+    assert bank.cases[0].kind == "amount_delta" and bank.cases[0].context.get("hint") is None
+
+
+def test_card_payment_line_ignores_a_leg_whose_peer_is_a_card():
+    d = _TD
+    res = run([L(1, d, "20000", kind="payment")], [E(10, d + timedelta(days=1), "19900", kind="transfer_in", transfer_group_id="g1", peer_is_card=True)])
+    assert res.cases[0].context == {"hint": "needs_peer"}
+
+
+def test_purchase_lines_never_reach_the_transfer_builder():
+    d = _TD
+    res = run([L(1, d, "-300")], [E(10, d + timedelta(days=2), "-290", kind="transfer_out", transfer_group_id="g1", peer_is_card=False)])
+    assert res.cases[0].kind == "line_unmatched"
+
+
+def test_exact_leg_within_the_exact_window_still_claims_without_a_case():
+    d = _TD
+    res = run([L(1, d, "20000", kind="payment")], [E(10, d + timedelta(days=1), "20000", kind="transfer_in", transfer_group_id="g1", peer_is_card=False)])
+    assert res.claims[0].representation.rule == "payment" and res.cases == []
+
+
+def test_transfer_tolerance_rule_key_is_honoured():
+    d = _TD
+    rules = m.Rules(period_end=date(2026, 9, 30), transfer_tolerance_pct=Decimal("0.01"))
+    res = m.match("card", [L(1, d, "20000", kind="payment", merchant="信用卡繳款")], [E(10, d + timedelta(days=2), "19500", kind="transfer_in", transfer_group_id="g1", peer_is_card=False)], {}, {}, lambda e: None, rules, "TWD")
+    assert res.cases[0].context == {"hint": "needs_peer"}

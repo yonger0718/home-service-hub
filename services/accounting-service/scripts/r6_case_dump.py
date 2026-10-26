@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 from sqlalchemy import func, select, text
@@ -75,17 +76,35 @@ def _bucket(amount) -> str:
     return "<1000" if value < 1000 else "<5000" if value < 5000 else ">=5000"
 
 
-def _count_hint(db, statements, hint: str) -> dict[str, int]:
-    """Open line_unmatched cases with this hint, per account."""
+def _count_hint(db, statements, hint: str, kind: str | tuple[str, ...] = "line_unmatched") -> dict[str, int]:
+    """Open cases of this kind (default line_unmatched; a tuple matches any of them) with this hint, per account."""
     from app.models import ReconciliationCase
     out: dict[str, int] = {}
     for stmt in statements:
         n = db.scalar(select(func.count(ReconciliationCase.id)).where(
-            ReconciliationCase.statement_id == stmt.id, ReconciliationCase.kind == "line_unmatched",
+            ReconciliationCase.statement_id == stmt.id,
+            ReconciliationCase.kind.in_(kind) if isinstance(kind, tuple) else ReconciliationCase.kind == kind,
             ReconciliationCase.status == "open", ReconciliationCase.context["hint"].astext == hint))
         if n:
             out[str(stmt.account_id)] = out.get(str(stmt.account_id), 0) + n
     return out
+
+
+def _transfer_pairs(db, statements) -> list[dict]:
+    """One row per open amount_delta/ambiguous transfer_delta case: ids, kind, residual bucket and day distance only."""
+    from app.models import ReconciliationCase
+    rows = []
+    for stmt in sorted(statements, key=lambda s: s.id):
+        cases = db.scalars(select(ReconciliationCase).where(
+            ReconciliationCase.statement_id == stmt.id, ReconciliationCase.kind.in_(("amount_delta", "ambiguous")),
+            ReconciliationCase.status == "open", ReconciliationCase.context["hint"].astext == "transfer_delta")
+            .order_by(ReconciliationCase.id)).all()
+        for c in cases:
+            ctx = c.context or {}
+            rows.append({"statement_id": stmt.id, "account_id": stmt.account_id, "kind": c.kind,
+                         "residual_bucket": _bucket(Decimal(str(ctx["residual"]))) if ctx.get("residual") is not None else None,
+                         "day_distance": ctx.get("date_distance")})
+    return rows
 
 
 def _policy_section(db, statements) -> dict:
@@ -93,8 +112,9 @@ def _policy_section(db, statements) -> dict:
     from app.services import coverage_service, policy_service, stand_ins
     from app.services.reconciliation_actions import structural_actions as sa
     policy = settings_service.reconciliation_policy(db)
-    out = {"policy": {}, "anchor_blockers": [], "anchor_above_earlier_statement": [], "needs_peer": _count_hint(db, statements, "needs_peer"), "owner_deleted": {},
-           "retirements": {}, "action_partially_stranded": {}, "sweep": {"would_release_old": 0, "would_release_new": 0, "kept_by_key": {}, "released_by_key": {}},
+    out = {"policy": {}, "anchor_blockers": [], "anchor_above_earlier_statement": [], "needs_peer": _count_hint(db, statements, "needs_peer"),
+           "transfer_delta": _count_hint(db, statements, "transfer_delta", ("amount_delta", "ambiguous")), "owner_deleted": {},
+           "transfer_pairs": _transfer_pairs(db, statements), "retirements": {}, "action_partially_stranded": {}, "sweep": {"would_release_old": 0, "would_release_new": 0, "kept_by_key": {}, "released_by_key": {}},
            "structural_keys": sorted(coverage_service.STRUCTURAL_KEYS), "accounts": {str(s.id): s.account_id for s in statements}}
     seen = set()
     for stmt in statements:

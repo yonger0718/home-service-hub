@@ -113,7 +113,7 @@ def _warn_stale_rules(stored: dict, version: str, warned: list[str]) -> None:
                     key, stored[key], version)
 
 
-POLICY_VERSION_PREFIX = "r6b"
+POLICY_VERSION_PREFIX = "r6c"
 POLICY_DEFAULTS = {
     "enabled": False, "accept_agent_proposals": False, "per_statement_count": 5, "per_statement_total": "5000",
     "monthly_total": "20000",
@@ -124,7 +124,8 @@ POLICY_DEFAULTS = {
                 "match": {"enabled": False, "max_amount": "0"},
                 "backfill_entry": {"enabled": False, "max_amount": "5000"},
                 "anchor_opening": {"enabled": False, "max_amount": "200000"},
-                "replace_stand_in": {"enabled": True, "max_amount": "0"}},
+                "replace_stand_in": {"enabled": True, "max_amount": "0"},
+                "pair_transfer": {"enabled": False, "max_amount": "50000"}},
     "per_currency_enabled": ["TWD"],
 }
 
@@ -214,7 +215,7 @@ def _check_composite_map(db: Session, composite_map, account_map: dict) -> dict:
     return out
 
 
-RULE_UNIT_INTERVAL = {"accept", "margin", "ambiguous_floor", "near_tolerance_pct"}  # scores / fractions: [0, 1]
+RULE_UNIT_INTERVAL = {"accept", "margin", "ambiguous_floor", "near_tolerance_pct", "transfer_tolerance_pct"}  # scores / fractions: [0, 1]
 RULE_NON_NEGATIVE = {"near_tolerance_abs"}
 
 
@@ -233,6 +234,8 @@ def _check_rules(rules) -> dict:
             ok = isinstance(value, bool)
         elif isinstance(default, int):
             ok = isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 10000
+            if ok and key == "transfer_pair_window_days":
+                ok = value <= 60
         elif isinstance(default, Decimal):
             try:
                 ok = isinstance(value, str) and Decimal(value).is_finite()

@@ -279,6 +279,7 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
             action=action, params=json.loads(canonical), actor=actor, run_id=run_id, status="applied", before=before),
             indexes=(EFFECT_INDEX,),
             duplicate=lambda: CodedValidationError("action", "duplicate_effect", f"{action} on event {case.event_id}"))
+        ctx.action_id = row.id  # R6c: a peer case resolved inside apply names this row
         _set_guc(db, row.id)
         effect = Effect(before=before)
         impl.apply(ctx, parsed, prepared, effect)

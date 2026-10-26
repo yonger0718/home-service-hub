@@ -645,6 +645,9 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
         if c.kind == "line_unmatched" and event_id in deleted:  # R6b.0: derived every reconcile, never carried
             context = {**(context or {}), "owner_deleted": True}
             context.setdefault("hint", "stand_in_deleted")
+        if c.kind == "line_unmatched" and (context or {}).get("hint") == "needs_peer" \
+                and stand_ins.pair_transfer_block(db, [event_id]):  # R6c: an occupied or owner-deleted pairing
+            context = {**context, "owner_deleted": True}
         out.append(_case(c.kind, event_id=event_id, line_id=c.line_id, entry_id=c.entry_id,
                          candidates=c.candidates, context=context))
     for entry_id in result.unmatched_entry_ids:

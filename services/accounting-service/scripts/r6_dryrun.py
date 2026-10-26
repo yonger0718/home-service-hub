@@ -40,6 +40,10 @@ def attribute(change: dict) -> str:
         return "R6a.1/R6a.3 new exact claim"
     if after and after[0] == "case":
         kind, hint = after[1], after[2]
+        if kind in ("amount_delta", "ambiguous") and hint == "transfer_delta":  # R6c.1, before the generic near branch; also from needs_peer
+            return "R6c.1 transfer_delta"
+        if kind == "line_unmatched" and hint == "needs_peer" and before and before[0] == "case" and before[1] == "amount_delta" and before[2] == "transfer_delta":
+            return "R6c.1 transfer_delta cleared"
         if kind == "amount_delta" and hint == "date_drift":
             return "R6a.5 date_drift proposal"
         if kind == "amount_delta" and (before is None or before[1] != "amount_delta"):
@@ -134,6 +138,20 @@ def policy_summary(after: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def transfers_summary(after: dict) -> str:
+    """Markdown for the R6c transfers section of a `r6_case_dump.py --policy` dump: open case counts per account, nothing else."""
+    deltas, peers = after.get("transfer_delta", {}), after.get("needs_peer", {})
+    lines = [f"# R6c transfers — candidate {after.get('sha')}", "", "| account | transfer_delta cases | needs_peer cases |", "|---|---|---|"]
+    lines += [f"| {a} | {deltas.get(a, 0)} | {peers.get(a, 0)} |" for a in sorted(set(deltas) | set(peers), key=int)]
+    lines += ["", f"total: transfer_delta {sum(deltas.values())}, needs_peer {sum(peers.values())}"]
+    pairs = after.get("transfer_pairs")
+    if pairs:
+        lines += ["", "## Pairs", "", "| statement | account | kind | residual bucket | day distance |", "|---|---|---|---|---|"]
+        lines += [f"| {p['statement_id']} | {p['account_id']} | {p['kind']} | {p['residual_bucket'] or '-'} | "
+                  f"{'-' if p['day_distance'] is None else p['day_distance']} |" for p in pairs]
+    return "\n".join(lines) + "\n"
+
+
 def _write_private(path: str, payload: str) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as fh:
@@ -147,6 +165,8 @@ def main() -> int:
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--policy", action="store_true",
                     help="print the R6b policy preview (decisions, retirements, sweep regression table) and write policy-summary.md; exit 0")
+    ap.add_argument("--transfers", action="store_true",
+                    help="write transfers-summary.md (open transfer_delta / needs_peer cases per account) and exit 0, whatever the gate says")
     ap.add_argument("--allow-moved-claims", action="store_true",
                     help="waive both moved-claim shapes (reported, not failed): a claim whose line is now claimed_by_earlier_line, "
                          "and a claim whose entry set changed")
@@ -155,6 +175,9 @@ def main() -> int:
         before, after = json.load(fb), json.load(fa)
     if args.policy and "policy" not in after:
         print(f"{args.candidate}: no policy section; dump it with r6_case_dump.py --policy", file=sys.stderr)
+        return 2
+    if args.transfers and not args.policy and "transfer_delta" not in after:
+        print(f"{args.candidate}: no transfer_delta section; dump it with r6_case_dump.py --policy", file=sys.stderr)
         return 2
     os.makedirs(args.out_dir, mode=0o700, exist_ok=True)
     if args.policy:
@@ -183,6 +206,11 @@ def main() -> int:
         with os.fdopen(fd, "w") as fh:
             fh.write(payload)
     print("\n".join(lines))
+    if args.transfers:  # evidence mode: the gate verdict stays in summary.md, the exit code is 0
+        text = transfers_summary(after)
+        _write_private(os.path.join(args.out_dir, "transfers-summary.md"), text)
+        print(text)
+        return 0
     return 1 if failures else 0
 
 

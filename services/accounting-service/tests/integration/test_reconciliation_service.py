@@ -11,18 +11,19 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import sessionmaker
 
 from app.models import (
-    AccountStatement, CoverageDirty, IngestRun, LedgerEntry, ReconciliationCase, StatementCoverage,
+    AccountStatement, CoverageDirty, IngestRun, LedgerEntry, ReconciliationAction, ReconciliationCase, StatementCoverage,
 )
 from app.schemas.statements import RevisionIn
 from app.schemas.writes import EntryUpdateIn
 from app.services import coverage_service
+from app.services import policy_service
 from app.services import entry_write_service as ews
 from app.services import reconciliation_service as rec
 from app.services import reconciliation_actions as registry
 from app.services import settings_service
 from app.services import stand_ins
 from app.services import statement_revision_service as revs
-from app.services.errors import CodedConflictError, ConflictError
+from app.services.errors import CodedConflictError, ConflictError, ValidationError
 from app.services.statements.matching import Holder
 from tests.helpers import race, set_dirty, wait_until_blocked
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
@@ -1421,10 +1422,10 @@ def test_r6b_policy_defaults_and_validation(db_session):
     assert policy["actions"]["backfill_entry"] == {"enabled": False, "max_amount": "5000"}
     assert policy["actions"]["anchor_opening"] == {"enabled": False, "max_amount": "200000"}
     assert policy["actions"]["replace_stand_in"] == {"enabled": True, "max_amount": "0"}
-    assert settings["policy_version"] == "r6b-1"  # no stored row: the default label
+    assert settings["policy_version"] == "r6c-1"  # no stored row: the default label
     out = settings_service.update_reconciliation_settings(
         db_session, {"dirty_enabled": False, "policy": {"backfill_grace_days": 7, "backfill_accounts": [3, 5]}})
-    assert out["policy_version"] == f"r6b-{out['version']}" and out["policy"]["backfill_grace_days"] == 7
+    assert out["policy_version"] == f"r6c-{out['version']}" and out["policy"]["backfill_grace_days"] == 7
     for bad in ({"backfill_grace_days": 400}, {"backfill_grace_days": "7"}, {"backfill_accounts": ["3"]},
                 {"backfill_accounts": 3}, {"actions": {"backfill_entry": {"grace": 1}}}):
         with pytest.raises(settings_service.ValidationError):
@@ -2495,3 +2496,57 @@ def test_a_carrier_never_supersedes_its_parents_deferral(seed, db_session, run):
     assert [e.id for e in entries if e.carrier] == [parent.id]
     _reconcile(db_session, stmt.id)
     assert db_session.get(ReconciliationCase, deferral.id).status == "resolved"
+
+
+def test_r6c_rules_and_policy_defaults(db_session):
+    settings = settings_service.read_reconciliation_settings(db_session)
+    assert settings["rules"]["transfer_tolerance_pct"] == "0.10" and settings["rules"]["transfer_pair_window_days"] == 7
+    assert settings["policy"]["actions"]["pair_transfer"] == {"enabled": False, "max_amount": "50000"}
+    assert "adjust_transfer" not in settings["policy"]["actions"]
+    rules = rec.rules_for(settings_service.reconciliation_rules(db_session), date(2026, 9, 30))
+    assert rules.transfer_tolerance_pct == Decimal("0.10") and rules.transfer_pair_window_days == 7
+    out = settings_service.update_reconciliation_settings(db_session, {"dirty_enabled": settings["dirty_enabled"], "rules": {"transfer_pair_window_days": 60}, "policy": {"actions": {"pair_transfer": {"enabled": True, "max_amount": "1000"}}}})
+    assert out["policy_version"].startswith("r6c-") and out["rules"]["transfer_pair_window_days"] == 60
+    with pytest.raises(ValidationError):
+        settings_service.update_reconciliation_settings(db_session, {"dirty_enabled": False, "rules": {"transfer_pair_window_days": 61}})
+    with pytest.raises(ValidationError):
+        settings_service.update_reconciliation_settings(db_session, {"dirty_enabled": False, "rules": {"transfer_tolerance_pct": "1.5"}})
+    with pytest.raises(ValidationError):
+        settings_service.update_reconciliation_settings(db_session, {"dirty_enabled": False, "policy": {"actions": {"adjust_transfer": {"enabled": True}}}})
+
+
+def test_r6c_action_name_constants():
+    assert {"backfill_entry", "pair_transfer"} == stand_ins.BACKFILL_ACTIONS
+    assert "pair_transfer" in stand_ins.OWNER_TWIN_GUARDED and "pair_transfer" in policy_service.OWNER_DELETED_GUARDED
+    assert "pair_transfer" in coverage_service.RETIRABLE_ACTIONS and "adjust_transfer" in coverage_service.TARGET_ACTIONS
+
+
+# --- R6c: the owner-deleted stamp on needs_peer cases (spec §5.1 option A) ------------------------------------------
+
+from tests.integration.test_reconciliation_actions_transfer import _needs_peer, orphan_pair  # noqa: E402,F401
+
+
+def test_needs_peer_cases_carry_owner_deleted_while_a_pairing_occupies_either_event(orphan_pair, db_session):
+    p = orphan_pair
+    card_case = _needs_peer(db_session, p.cstmt)
+    row = ReconciliationAction(idempotency_key="t-stamp-pair", event_id=card_case.event_id, effect_slot="create",
+                               case_id=card_case.id, action="pair_transfer", params={}, actor="owner",
+                               status="applied", inverse={"peer_event_id": p.bline.event_id})
+    db_session.add(row)
+    db_session.commit()
+
+    def stamps():
+        for stmt in (p.bstmt, p.cstmt):
+            rec.reconcile(db_session, stmt.id)
+            db_session.commit()
+        cases = [_needs_peer(db_session, stmt) for stmt in (p.bstmt, p.cstmt)]
+        assert all(c.context["hint"] == "needs_peer" for c in cases)  # never the stand_in_deleted hint
+        return [c.context.get("owner_deleted") for c in cases]
+
+    assert stamps() == [True, True]  # still applied (the legs gone before the originating sweep)
+    row.status = "reverted"  # an ordinary engine revert: no stamp
+    db_session.commit()
+    assert stamps() == [None, None]
+    row.inverse = {"peer_event_id": p.bline.event_id, "deleted_by_event": 1}
+    db_session.commit()
+    assert stamps() == [True, True]

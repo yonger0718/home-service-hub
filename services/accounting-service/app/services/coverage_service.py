@@ -541,7 +541,7 @@ def has_pending_events(db: Session, statement: AccountStatement) -> bool:
     return db.execute(select(exists().where(s.id == statement.id, _touches(s), ~retired.clause(s.id)))).scalar_one()
 
 
-RETIRABLE_ACTIONS = ("backfill_entry", "create_entry", "create_system_entry", "create_refund")
+RETIRABLE_ACTIONS = ("backfill_entry", "create_entry", "create_system_entry", "create_refund", "pair_transfer")
 
 
 def _locked_applied(db: Session, action_ids) -> list[ReconciliationAction]:
@@ -625,7 +625,7 @@ def _retire_stranded_creations(db: Session, statement: AccountStatement, run_id)
 # partially_stranded`, the dry-run's `action_partially_stranded`; no audit row, so a daily sweep writes nothing for it)
 # and keeps refusing a retire, so it reaches the owner. Not a creation (effect slot `create`), so
 # `stand_ins.owner_deleted_events` never counts a retired one: a re-import is no owner delete.
-TARGET_ACTIONS = ("match", "adjust_amount", "attach_fee", "move_account", "split_entry")
+TARGET_ACTIONS = ("match", "adjust_amount", "attach_fee", "move_account", "split_entry", "adjust_transfer")
 
 
 def _target_ids(row: ReconciliationAction) -> tuple[list[int], list[int]]:
