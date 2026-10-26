@@ -1974,6 +1974,16 @@ def test_an_earlier_farther_line_leaves_the_leg_to_the_line_in_the_exact_window(
     assert [c for c in res.cases if c.line_id == 2] == []
 
 
+def test_an_earlier_in_window_line_that_ended_in_a_case_does_not_hold_the_leg_back():
+    # line 1 (distance 1 to the leg) meets two owner legs 3 days off: owner reps drop the stand-in one and tie →
+    # ambiguous; line 2 (distance 14 to the leg, 16 to the owners) still claims the leg through auto_pay
+    res = run([_ap_line(1, AP_DAY - timedelta(days=13)), _ap_line(2)],
+              [_ap_leg(10, 14), _owner_leg(11, 16), _owner_leg(12, 16)])
+    (case,) = [c for c in res.cases if c.line_id == 1]
+    assert case.kind == "ambiguous" and {c["entry_id"] for c in case.candidates} == {11, 12}
+    assert _claims(res) == [(2, "auto_pay", [10])]
+
+
 def test_a_claimed_exact_window_line_does_not_hold_the_leg_back():
     # the other line in the exact window is already claimed: the leg stays admissible for this line
     near, far = _ap_line(2), _ap_line(1, AP_DAY - timedelta(days=12))

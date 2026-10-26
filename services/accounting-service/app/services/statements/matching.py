@@ -983,9 +983,10 @@ def _auto_pay_claim(kind: str, line: Line, entries: list[Entry], claimed: set[in
     debit, often farther than the exact window. Exactly one admissible auto-pay leg (gated, peer-checked, same flow,
     unclaimed, within the drift window) claims a line of `AUTO_PAY_LINE_KINDS[kind]` at `rules.accept`, unless an owner
     entry (not a stand-in, unclaimed) passes the same class/flow/distance test: the owner path then decides the line.
-    Two legs → None (`_transfer_case` names both as ambiguous). A leg another unclaimed line of the statement
-    (`lines` minus `claimed_lines`) fits within the exact window is left to that line: it claims the leg exactly on
-    its own turn, so an earlier, farther line never takes it first."""
+    Two legs → None (`_transfer_case` names both as ambiguous). A leg a later, unclaimed line of the statement
+    (`match` visits lines in id order: a larger id, not in `claimed_lines`) fits within the exact window is left to
+    that line: it claims the leg exactly on its own turn, so an earlier, farther line never takes it first. An earlier
+    line has had its turn (a claim or a case) and never holds the leg back."""
     if line.line_kind not in AUTO_PAY_LINE_KINDS.get(kind, frozenset()):
         return None
 
@@ -999,7 +1000,7 @@ def _auto_pay_claim(kind: str, line: Line, entries: list[Entry], claimed: set[in
                              for e in entries):
         return None
     leg = legs[0]
-    if any(ln.id != line.id and ln.id not in claimed_lines and _peer_ok(kind, ln, leg)
+    if any(ln.id > line.id and ln.id not in claimed_lines and _peer_ok(kind, ln, leg)
            and fits(ln, leg, rules.exact_window_days) for ln in lines):
         return None
     d = _date_distance(line, leg)
