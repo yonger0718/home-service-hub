@@ -23,6 +23,7 @@ DIRTY_BARRIER_HEAD = "e2a9c4d1b7f0"
 R1B_HEAD = "f3b1d2c4a9e7"
 OWNER_RULES_HEAD = "a7c3e1d9b2f4"
 ACCOUNT_LOGO_HEAD = "b8d4f2a1c6e3"
+AUTO_PAY_HEAD = "c4a7e2d9f1b3"
 
 
 def _schema(url) -> dict:
@@ -312,7 +313,7 @@ def test_downgrade_refuses_when_phase_2a_data_exists(database_factory, alembic_c
     assert "1 ledger_entry rows with source = manual" in message
     assert "1 ledger_entry rows whose posted_date differs from entry_date" in message
     assert "1 account_group rows" in message
-    assert _version(url) == ACCOUNT_LOGO_HEAD
+    assert _version(url) == AUTO_PAY_HEAD
 
 
 def test_downgrade_refusal_names_every_blocker(database_factory, alembic_config):
@@ -348,7 +349,7 @@ def test_downgrade_refusal_names_every_blocker(database_factory, alembic_config)
     assert "1 ledger_entry rows with source = moze_backup" in message
     assert "1 reward_rule rows" in message
     assert "source = manual" not in message
-    assert _version(url) == ACCOUNT_LOGO_HEAD
+    assert _version(url) == AUTO_PAY_HEAD
 
 
 def test_self_referencing_entry_links_are_indexed(pg_engine):
@@ -418,7 +419,7 @@ def test_upgrade_adds_schedule_source_and_tables_and_drops_moze_schedule(databas
     assert "moze_schedule" not in tables
     assert "schedule" in sources
     assert kinds == 0
-    assert _version(url) == ACCOUNT_LOGO_HEAD
+    assert _version(url) == AUTO_PAY_HEAD
 
 
 def test_downgrade_recreates_an_empty_moze_schedule(database_factory, alembic_config):
@@ -454,7 +455,7 @@ def test_downgrade_refuses_while_homehub_posted_data_exists(database_factory, al
     assert message.startswith("refusing to downgrade c4e8b2f1a7d3: ")
     assert "1 ledger_entry rows with source = schedule" in message
     assert "1 schedule instances posted or skipped by HomeHub (acted_by auto or owner)" in message
-    assert _version(url) == ACCOUNT_LOGO_HEAD
+    assert _version(url) == AUTO_PAY_HEAD
 
 
 def test_reconcile_downgrade_refuses_with_statement_rows(database_factory, alembic_config):
@@ -468,7 +469,7 @@ def test_reconcile_downgrade_refuses_with_statement_rows(database_factory, alemb
     engine.dispose()
     with pytest.raises(RuntimeError, match="refusing to downgrade d1f3a7c2e9b4: 1 ingest runs"):
         command.downgrade(cfg, SCHEDULES_HEAD)
-    assert _version(url) == ACCOUNT_LOGO_HEAD
+    assert _version(url) == AUTO_PAY_HEAD
 
 
 def test_reconcile_downgrade_refuses_with_a_manual_statement_and_no_run(database_factory, alembic_config):
@@ -492,7 +493,7 @@ def test_reconcile_downgrade_refuses_with_a_manual_statement_and_no_run(database
     with pytest.raises(RuntimeError) as excinfo:
         command.downgrade(cfg, SCHEDULES_HEAD)
     assert str(excinfo.value) == "refusing to downgrade d1f3a7c2e9b4: 1 statements"
-    assert _version(url) == ACCOUNT_LOGO_HEAD
+    assert _version(url) == AUTO_PAY_HEAD
 
 
 @pytest.mark.parametrize(
@@ -522,7 +523,7 @@ def test_reconcile_downgrade_refusal_names_each_guard(database_factory, alembic_
     with pytest.raises(RuntimeError) as excinfo:
         command.downgrade(cfg, SCHEDULES_HEAD)
     assert str(excinfo.value) == f"refusing to downgrade d1f3a7c2e9b4: {label}"
-    assert _version(url) == ACCOUNT_LOGO_HEAD
+    assert _version(url) == AUTO_PAY_HEAD
 
 
 def test_reconcile_downgrade_passes_a_never_saved_settings_row(database_factory, alembic_config):
@@ -612,7 +613,7 @@ def test_dirty_barrier_upgrade_adds_and_downgrade_removes_the_shared_lock(databa
     url = database_factory()
     cfg = alembic_config(url)
     command.upgrade(cfg, "head")
-    assert _version(url) == ACCOUNT_LOGO_HEAD
+    assert _version(url) == AUTO_PAY_HEAD
     defs = _function_defs(url)
     assert len(defs) == 3 and all("pg_advisory_xact_lock_shared(1145655892)" in body for body in defs.values())
 
@@ -644,7 +645,7 @@ def test_statement_event_flag_round_trip(database_factory, alembic_config):
     url = database_factory()
     cfg = alembic_config(url)
     command.upgrade(cfg, "head")
-    assert _version(url) == ACCOUNT_LOGO_HEAD and "flag" in _event_columns(url)
+    assert _version(url) == AUTO_PAY_HEAD and "flag" in _event_columns(url)
 
     command.downgrade(cfg, DIRTY_BARRIER_HEAD)
     assert _version(url) == DIRTY_BARRIER_HEAD and "flag" not in _event_columns(url)
@@ -667,7 +668,7 @@ def test_owner_rules_round_trip(database_factory, alembic_config):
     url = database_factory()
     cfg = alembic_config(url)
     command.upgrade(cfg, "head")
-    assert _version(url) == ACCOUNT_LOGO_HEAD
+    assert _version(url) == AUTO_PAY_HEAD
     present, indexes = _owner_rule_table(url)
     assert present
     key = [i for i in indexes if i["name"] == "uq_reconciliation_owner_rule_key"]
@@ -693,7 +694,7 @@ def test_account_logo_round_trip(database_factory, alembic_config):
     url = database_factory()
     cfg = alembic_config(url)
     command.upgrade(cfg, "head")
-    assert _version(url) == ACCOUNT_LOGO_HEAD
+    assert _version(url) == AUTO_PAY_HEAD
     column = _account_logo_column(url)
     assert column is not None
     assert column["type"].length == 32 and column["nullable"] is True
@@ -703,3 +704,19 @@ def test_account_logo_round_trip(database_factory, alembic_config):
 
     command.upgrade(cfg, "head")
     assert _account_logo_column(url) is not None
+
+
+def test_statement_auto_pay_round_trip(database_factory, alembic_config):
+    url = database_factory()
+    cfg = alembic_config(url)
+    command.upgrade(cfg, "head")
+    assert _version(url) == AUTO_PAY_HEAD
+    schema = _schema(url)
+    assert "statement_auto_pay" in schema["tables"]
+    assert any(name == "ex_statement_auto_pay_card_window" for name, _, _ in schema["statement_auto_pay"]["indexes"])
+
+    command.downgrade(cfg, ACCOUNT_LOGO_HEAD)
+    assert _version(url) == ACCOUNT_LOGO_HEAD and "statement_auto_pay" not in _schema(url)["tables"]
+
+    command.upgrade(cfg, "head")
+    assert "statement_auto_pay" in _schema(url)["tables"]

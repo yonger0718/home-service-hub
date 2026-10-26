@@ -392,7 +392,8 @@ class ReconciliationAudit(Base):
 class StatementAutoPay(Base):
     """Provenance of a system-booked card-payment transfer (auto-pay spec §4.2), one row per statement.
 
-    The DB also carries `ex_statement_auto_pay_card_window` (added in the migration with raw SQL): EXCLUDE USING gist
+    The DB also carries `ex_statement_auto_pay_card_window` (raw SQL in the migration, mirrored by the `after_create`
+    listener at the end of this module so create_all matches): EXCLUDE USING gist
     (card_account_id WITH =, daterange(pay_date, pay_date + 20) WITH &&) WHERE (status = 'booked')."""
     __tablename__ = "statement_auto_pay"
     __table_args__ = (
@@ -577,3 +578,12 @@ event.listen(EntryGroup.__table__, "after_create", DDL(DIRTY_GROUP_FUNCTION_SQL)
 event.listen(EntryGroup.__table__, "after_create", DDL(DIRTY_GROUP_TRIGGER_SQL))
 event.listen(Account.__table__, "after_create", DDL(DIRTY_ACCOUNT_FUNCTION_SQL))
 event.listen(Account.__table__, "after_create", DDL(DIRTY_ACCOUNT_TRIGGER_SQL))
+
+# statement_auto_pay (c4a7e2d9f1b3): the exclusion constraint mirrors the migration so create_all and alembic agree.
+AUTO_PAY_EXCLUSION_SQL = (
+    "ALTER TABLE statement_auto_pay ADD CONSTRAINT ex_statement_auto_pay_card_window "
+    "EXCLUDE USING gist (card_account_id WITH =, daterange(pay_date, pay_date + 20) WITH &&) "
+    "WHERE (status = 'booked')"
+)
+event.listen(StatementAutoPay.__table__, "before_create", DDL("CREATE EXTENSION IF NOT EXISTS btree_gist"))
+event.listen(StatementAutoPay.__table__, "after_create", DDL(AUTO_PAY_EXCLUSION_SQL))
