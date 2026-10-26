@@ -32,6 +32,8 @@ def diff_dumps(before: dict, after: dict) -> list[dict]:
 
 def attribute(change: dict) -> str:
     before, after = change["before"], change["after"]
+    if after and after[0] == "claim" and after[1] == "auto_pay":
+        return "auto-pay claim (2026-10-26)"
     if after and after[0] == "claim":
         if before and before[0] == "claim":
             return "R6a.1 claim moved to another entry" if before[2] != after[2] else "claim rule changed"

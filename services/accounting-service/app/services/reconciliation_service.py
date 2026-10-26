@@ -6,7 +6,15 @@ FOR UPDATE → flush → `coverage_service.sweep` (briefly takes the dirty barri
 ledger_entry lock, because a writer holding the shared barrier may be waiting on a row this transaction would hold)
 → entry_group rows ascending → the candidate entries, their
 children and their transfer legs in ONE ordered SELECT … FOR UPDATE → re-read the population under those locks →
-match → coverage → cases → counts. Reconcile writes no ledger rows, so it emits no dirty events of its own.
+match → coverage → cases → counts. The only ledger rows a reconcile writes are the auto-pay retirement's (auto-pay
+spec §4.5, `auto_pay_service.retire_twins_for_statement`, after the sweep and before the group/entry locks): it
+locks a twinned pair's `statement_auto_pay` row and then its legs NOWAIT (a held row or leg skips the pair),
+re-checks the row, the legs and the twin under those locks (a failed re-check skips the pair), releases their
+coverage on any statement, deletes them — so their dirty triggers hold the shared dirty barrier until this
+transaction ends, and the events land past this sweep's cap for the next sweep — and flags the released statements
+`needs_recheck`. The release and the flag are plain UPDATEs: they take blocking (non-NOWAIT) row locks on the other
+statements' coverage rows and on those statements' rows (`needs_recheck`). Otherwise a reconcile emits no dirty
+events of its own.
 
 Reconcile yields on lock conflicts: the sweep (and, in the revision hook, the coverage transfer) has already written
 coverage/case rows when the group/entry locks are taken, while a ledger delete locks the entry/group first and then
@@ -14,8 +22,10 @@ needs those rows (`statement_coverage.entry_id/group_id`, `reconciliation_case.e
 Waiting would close a cycle, so the group/entry locks are taken NOWAIT inside a savepoint and a held row raises
 `CodedConflictError("reconcile_busy")` (route 409, the batch records it, the hook leaves `needs_recheck`).
 
-No statement row other than its own is locked or referenced by a statement's reconcile (the printed-whole guard
-only reads the neighbouring statements' current lines, `guard_lines`): a deferral case gets its
+Apart from that auto-pay retirement (which updates the coverage rows and the `needs_recheck` flag of the other
+statements a retired leg was claimed on), no statement row other than its own is locked or written by a
+statement's reconcile (the printed-whole guard only reads the neighbouring statements' current lines,
+`guard_lines`): a deferral case gets its
 `deferred_to_statement_id` only from the LATER statement's reconcile (`_link_earlier_deferrals`, case rows only) or
 from `fill_deferral_links`.
 
@@ -52,7 +62,7 @@ from app.models import (
     Account, AccountStatement, EntryGroup, InstallmentPlanMap, LedgerEntry, ReconciliationCase, ScheduleDefinition,
     ScheduleInstance, StatementCoverage, StatementLine, StatementRevision,
 )
-from app.services import coverage_service, settings_service, stand_ins
+from app.services import auto_pay_service, coverage_service, settings_service, stand_ins
 from app.services.entry_write_service import lock_group, proposed_fx_fee
 from app.services.errors import CodedConflictError, NotFoundError
 from app.services.ledger_service import account_balance
@@ -291,6 +301,7 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
             groups[g.id] = matching.Group(g.id, g.kind, tuple(members[g.id]))
     split_members, all_children = _split_structure(db, [g.id for g in groups.values() if g.kind == "split"])
     stand_in_ids = stand_ins.stand_in_entry_ids(db, accounts)
+    auto_pay_ids = set(stand_ins.auto_pay_legs(db, accounts))
     entries = []
     for e in parents:
         posted = e.posted_date or e.entry_date
@@ -298,7 +309,7 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
             e, transfer_peer_is_card=peer_is_card.get(e.id), children=tuple(children.get(e.id, ())),
             all_children=tuple(all_children.get(e.id, ())),
             instance=instances.get(e.id), in_reverse=statement.period_start <= posted <= statement.period_end,
-            stand_in=e.id in stand_in_ids))
+            stand_in=e.id in stand_in_ids, auto_pay=e.id in auto_pay_ids))
     entries.extend(_drifted_instances(db, statement, accounts, set(ids) | claimed))
     entries.extend(_carriers(db, statement, accounts, covered, claimed, stand_in_ids))
     loaded = {e.id for e in entries}
@@ -633,7 +644,12 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
     deleted = stand_ins.owner_deleted_events(db, statement)
     # R6b.5: the stand-in hints, from their own queries (the stand-in's line is a keep_line, not in `result`)
     shadow_by_entry = {s["entry_id"]: s for s in stand_ins.shadows(db, statement, accounts, rules)}
-    orphan_by_entry = {o["entry_id"]: o for o in stand_ins.orphans(db, statement, accounts)}
+    # an auto-pay leg the matcher did not report unmatched (outside the period by its posted date) or deferred to the
+    # next statement is waiting for that statement, not an orphan (auto-pay spec §4.5)
+    unmatched = set(result.unmatched_entry_ids)
+    orphan_by_entry = {o["entry_id"]: o for o in stand_ins.orphans(db, statement, accounts)
+                       if "auto_pay_id" not in o
+                       or (o["entry_id"] in unmatched and result.explained.get(o["entry_id"]) != DEFERRED)}
     out = []
     for c in result.cases:
         context = c.context
@@ -668,9 +684,12 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
                          context={"hint": "shadowed_by_stand_in", "stand_in_entry_id": s["stand_in_entry_id"],
                                   "backfill_action_id": s["backfill_action_id"], "drift_days": s["drift_days"]}))
     for o in orphan_by_entry.values():
+        context = {"hint": "orphaned_stand_in", "backfill_action_id": o["backfill_action_id"],
+                   "claimant_entry_id": o["claimant_entry_id"]}
+        if "auto_pay_id" in o:  # an auto-pay leg (auto-pay spec §4.5): the owner deletes the pair or matches it
+            context["auto_pay_id"] = o["auto_pay_id"]
         out.append(_case("entry_unmatched", event_id=o["event_id"], line_id=o["line_id"], entry_id=o["entry_id"],
-                         context={"hint": "orphaned_stand_in", "backfill_action_id": o["backfill_action_id"],
-                                  "claimant_entry_id": o["claimant_entry_id"]}))
+                         context=context))
     gap = balance_gap(db, statement, accounts)
     if gap != 0:
         out.append(_case("balance_gap", context={"gap": str(gap)} if statement.kind == "bank"
@@ -966,6 +985,9 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
         return ReconcileResult(skipped=skipped)
     live = statement.mode == "live"
     accounts = participating_accounts(db, statement.account_id)
+    # auto-pay §4.5: a pair whose owner twin has arrived is retired before the population is read, so the line meets
+    # only the twin (the deleted legs are absent from `load_candidates`)
+    auto_pay_service.retire_twins_for_statement(db, statement, accounts)
     accounts_by_id = {a.id: a for a in db.execute(select(Account).where(Account.id.in_(accounts))).scalars()}
     rules = rules_for(settings_service.reconciliation_rules(db), statement.period_end)
     all_lines = _current_lines(db, statement)

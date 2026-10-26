@@ -12,8 +12,8 @@ from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
-    AccountStatement, EntryGroup, LedgerEntry, ReconciliationAction, ReconciliationCase, StatementCoverage,
-    StatementLine,
+    AccountStatement, EntryGroup, LedgerEntry, ReconciliationAction, ReconciliationCase, StatementAutoPay,
+    StatementCoverage, StatementLine,
 )
 from app.services import coverage_service
 from app.services.statements import matching
@@ -24,8 +24,26 @@ OWNER_TWIN_GUARDED = frozenset({"backfill_entry", "create_system_entry", "pair_t
 CREATION_SLOT = "create"
 
 
+def auto_pay_legs(db: Session, account_ids: list[int]) -> dict[int, int]:
+    """Auto-pay spec §4.5: entry id → `statement_auto_pay.id` for the legs of `booked` rows whose OWN account is one
+    of these (the bank leg on the bank's statements, the card leg on the card family's)."""
+    out: dict[int, int] = {}
+    for column in (StatementAutoPay.out_entry_id, StatementAutoPay.in_entry_id):
+        rows = db.execute(select(LedgerEntry.id, StatementAutoPay.id)
+                          .join(StatementAutoPay, column == LedgerEntry.id)
+                          .where(StatementAutoPay.status == "booked", LedgerEntry.account_id.in_(account_ids)))
+        out.update({entry_id: row_id for entry_id, row_id in rows})
+    return out
+
+
 def stand_in_entry_ids(db: Session, account_ids: list[int]) -> set[int]:
-    """Entries created by an applied backfill action on a statement of these accounts that still exist."""
+    """Entries of these accounts that stand in for a printed line until an owner representation wins: those created
+    by an applied backfill action on a statement of these accounts that still exist, and the booked auto-pay legs
+    (`auto_pay_legs`)."""
+    return _backfilled_ids(db, account_ids) | set(auto_pay_legs(db, account_ids))
+
+
+def _backfilled_ids(db: Session, account_ids: list[int]) -> set[int]:
     rows = db.execute(
         select(ReconciliationAction.created_entry_ids)
         .join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
@@ -123,12 +141,14 @@ def retirement_preview(db: Session, statement: AccountStatement) -> dict[str, in
 # --- R6b.5 shadow / orphan discovery (own queries: nothing from the matcher result, M1) ------------------------------
 
 def held_by_stand_ins(db: Session, statement: AccountStatement,
-                      accounts: list[int]) -> dict[int, tuple[StatementLine, int, int]]:
+                      accounts: list[int]) -> dict[int, tuple[StatementLine, int, int | None]]:
     """event_id → (current-revision line, stand_in_entry_id, backfill_action_id) for this statement's active coverage
-    rows whose entry is a stand-in. Queried directly: these lines are keep_lines for the matcher."""
+    rows whose entry is a stand-in. Queried directly: these lines are keep_lines for the matcher. An auto-pay leg has
+    no creating action: its backfill_action_id is None."""
     ids = stand_in_entry_ids(db, accounts)
     if not ids:
         return {}
+    legs = auto_pay_legs(db, accounts)
     rows = db.execute(
         select(StatementCoverage, StatementLine)
         .join(StatementLine, StatementLine.id == StatementCoverage.line_id)
@@ -137,6 +157,9 @@ def held_by_stand_ins(db: Session, statement: AccountStatement,
         .order_by(StatementCoverage.id)).all()
     out = {}
     for cov, line in rows:
+        if cov.entry_id in legs:
+            out[line.event_id] = (line, cov.entry_id, None)
+            continue
         action = creation_for_entry(db, cov.entry_id)
         if action is not None:
             out[line.event_id] = (line, cov.entry_id, action.id)
@@ -315,7 +338,10 @@ def shadows(db: Session, statement: AccountStatement, accounts: list[int], rules
 
 def orphans(db: Session, statement: AccountStatement, accounts: list[int]) -> list[dict]:
     """R6b.5 orphaned_stand_in: a stand-in with NO active coverage anywhere whose creating event's current line
-    is held by a non-stand-in entry on this statement."""
+    is held by a non-stand-in entry on this statement. Auto-pay spec §4.5: also every auto-pay leg of `accounts` with
+    no active coverage anywhere whose `entry_date` lies in the statement's period and whose row has no twin (the
+    settings' `twin_window_days`) — no event, line or claimant; `auto_pay_id` names the row. A leg waiting for a later
+    statement is not an orphan."""
     ids = stand_in_entry_ids(db, accounts)
     if not ids:
         return []
@@ -336,4 +362,27 @@ def orphans(db: Session, statement: AccountStatement, accounts: list[int]) -> li
         line, claimant = by_event[action.event_id]
         out.append({"entry_id": stand_in_id, "event_id": action.event_id, "line_id": line.id,
                     "backfill_action_id": action.id, "claimant_entry_id": claimant})
+    return out + _auto_pay_orphans(db, statement, accounts, claimed)
+
+
+def _auto_pay_orphans(db: Session, statement: AccountStatement, accounts: list[int], claimed: set[int]) -> list[dict]:
+    from app.services import auto_pay_service, settings_service  # local: auto_pay_service imports this module
+
+    legs = {entry_id: row_id for entry_id, row_id in auto_pay_legs(db, accounts).items() if entry_id not in claimed}
+    if not legs:
+        return []
+    in_period = set(db.execute(select(LedgerEntry.id).where(
+        LedgerEntry.id.in_(legs), LedgerEntry.entry_date.between(statement.period_start, statement.period_end)))
+        .scalars())
+    window = int(settings_service.read_auto_pay_settings(db)["twin_window_days"])
+    out = []
+    for entry_id in sorted(in_period):
+        row = db.get(StatementAutoPay, legs[entry_id])
+        if auto_pay_service.find_twins(
+                db, card_account_id=row.card_account_id, pay_account_id=row.pay_account_id, amount=row.amount,
+                pay_date=row.pay_date, window_days=window,
+                exclude=[i for i in (row.out_entry_id, row.in_entry_id) if i is not None]):
+            continue
+        out.append({"entry_id": entry_id, "event_id": None, "line_id": None, "backfill_action_id": None,
+                    "auto_pay_id": row.id, "claimant_entry_id": None})
     return out

@@ -136,8 +136,10 @@ CONDITIONS: dict[tuple[str, str], Callable[[ReconciliationCase], bool]] = {
     ("amount_delta", "attach_fee"): lambda case: _context(case).get("fee_matches") is True,
     ("amount_delta", "adjust_transfer"): _designates_transfer_leg,
     ("ambiguous", "adjust_transfer"): _lists_transfer_leg,
+    # an auto-pay leg's hint carries no backfill action (auto-pay spec §4.5): the owner deletes the pair instead
     ("entry_unmatched", "replace_stand_in"):
-        lambda case: _context(case).get("hint") in ("shadowed_by_stand_in", "orphaned_stand_in"),
+        lambda case: _context(case).get("hint") in ("shadowed_by_stand_in", "orphaned_stand_in")
+        and _context(case).get("backfill_action_id") is not None,
 }
 
 

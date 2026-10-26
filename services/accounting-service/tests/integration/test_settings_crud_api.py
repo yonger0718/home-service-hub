@@ -7,6 +7,7 @@ from decimal import Decimal
 import pytest
 
 from app.models import Account
+from tests.integration.statement_fixtures import run  # noqa: F401  (fixture)
 
 
 def _account_body(**fields) -> dict:
@@ -168,6 +169,31 @@ def test_account_with_entries_cannot_be_deleted(client, db_session, seed):
     assert refused.status_code == 409 and "is_archived" in refused.json()["message"]
     assert client.delete(f"/accounts/{unused_id}").status_code == 204
     assert client.get(f"/accounts/{unused_id}").status_code == 404
+
+
+def test_account_referenced_by_auto_pay_cannot_be_deleted(client, db_session, seed, run):
+    # A skipped auto-pay row keeps both accounts referenced (FK RESTRICT): 409, not an IntegrityError 500.
+    from datetime import date
+
+    from app.models import StatementAutoPay
+    from tests.integration.statement_fixtures import SEP, _card, _line, _submit
+
+    bank = seed.account("扣款戶")
+    card = _card(seed, db_session, "卡", auto_pay_account_id=bank.id)
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)], period=SEP,
+                         due_date=date(2026, 10, 24))
+    db_session.add(StatementAutoPay(statement_id=stmt.id, card_account_id=card.id, pay_account_id=bank.id,
+                                    amount=Decimal("580"), due_date=date(2026, 10, 24), pay_date=date(2026, 10, 27),
+                                    status="skipped", reason="over_cap", settings_version=1))
+    db_session.commit()
+    bank_id, card_id = bank.id, card.id
+
+    for account_id in (bank_id, card_id):
+        refused = client.delete(f"/accounts/{account_id}")
+        assert refused.status_code == 409, refused.text
+        assert "auto-pay" in refused.json()["message"] and "is_archived" in refused.json()["message"]
+    db_session.expire_all()
+    assert db_session.get(Account, card_id).auto_pay_account_id == bank_id  # nothing cleared
 
 
 # --- shared credit limit (額度共用) -----------------------------------------------

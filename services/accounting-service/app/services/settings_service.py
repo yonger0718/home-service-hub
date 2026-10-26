@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from dataclasses import fields
+from datetime import date
 from hashlib import sha256
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -24,7 +25,7 @@ from ..models import (
     Project,
     RewardRule,
 )
-from ..models.statements import ReconciliationSettings
+from ..models.statements import ReconciliationSettings, StatementAutoPay
 from .statements import matching
 from ..schemas.writes import AccountGroupIn, AccountIn, CategoryIn, CounterpartyIn, PreferenceIn, ProjectIn
 from . import schedule_entry_hooks
@@ -143,6 +144,10 @@ def _stored_rules_version(data: dict) -> str:
     return data.get("rules_version") or (f"{STALE_RULE_PREFIX}-1" if data.get("rules") else RULES_VERSION)
 
 
+AUTO_PAY_DEFAULTS = {"enabled": False, "enabled_from": None, "max_amount": "200000", "monthly_total": "500000",
+                     "twin_window_days": 7, "retry_days": 30, "extra_holidays": [], "extra_workdays": []}
+
+
 def _reconciliation_dict(row: ReconciliationSettings) -> dict:
     """Stored data plus defaults: `rules` = the matching.Rules defaults overlaid with the stored keys, and
     `rules_version` (bumped whenever the defaults change meaning)."""
@@ -153,6 +158,7 @@ def _reconciliation_dict(row: ReconciliationSettings) -> dict:
             "composite_map": data.get("composite_map") or {}, "dirty_enabled": data.get("dirty_enabled") is True,
             "rules": rules, "rules_version": version, "version": row.version,
             "policy": _effective_policy(data.get("policy")),
+            "auto_pay": {**AUTO_PAY_DEFAULTS, **(data.get("auto_pay") or {})},
             "policy_version": data.get("policy_version") or f"{POLICY_VERSION_PREFIX}-1",
             "account_siblings": data.get("account_siblings") or {}}
 
@@ -311,6 +317,47 @@ def _check_policy(policy) -> dict:
     return out
 
 
+def _iso_date(value) -> bool:
+    try:
+        return isinstance(value, str) and date.fromisoformat(value) is not None
+    except ValueError:
+        return False
+
+
+def _check_auto_pay(auto_pay) -> dict:
+    """The card-statement auto-pay settings, validated and returned as given (defaults are overlaid on read):
+    unknown keys are refused; dates are ISO strings because the settings row is JSONB."""
+    if not isinstance(auto_pay, dict):
+        raise ValidationError("auto_pay", "must be an object")
+    out = {}
+    for key, value in auto_pay.items():
+        if key not in AUTO_PAY_DEFAULTS:
+            raise ValidationError("auto_pay", f"unknown key {key!r}")
+        if key == "enabled":
+            if not isinstance(value, bool):
+                raise ValidationError("auto_pay", f"{key!r} must be a boolean")
+        elif key == "enabled_from":
+            if value is not None and not _iso_date(value):
+                raise ValidationError("auto_pay", f"{key!r} must be null or an ISO date")
+        elif key in ("max_amount", "monthly_total"):
+            _check_amount("auto_pay", key, value)
+        elif key == "twin_window_days":
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 30:
+                raise ValidationError("auto_pay", f"{key!r} must be an integer in 0..30")
+        elif key == "retry_days":
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 365:
+                raise ValidationError("auto_pay", f"{key!r} must be an integer in 0..365")
+        elif not isinstance(value, list) or not all(_iso_date(d) for d in value):  # extra_holidays / extra_workdays
+            raise ValidationError("auto_pay", f"{key!r} must be a list of ISO dates")
+        out[key] = value
+    effective = {**AUTO_PAY_DEFAULTS, **out}
+    if effective["enabled"] and effective["enabled_from"] is None:
+        raise ValidationError("auto_pay", "'enabled_from' is required when enabled")
+    if set(effective["extra_holidays"]) & set(effective["extra_workdays"]):
+        raise ValidationError("auto_pay", "a date cannot be in both 'extra_holidays' and 'extra_workdays'")
+    return out
+
+
 def _check_siblings(db: Session, siblings) -> dict[str, list[int]]:
     """`{account id: [sibling account ids]}`: every account exists and is not archived; siblings share the key
     account's currency, are distinct and are not the key itself. Keys are normalised to int strings."""
@@ -374,6 +421,12 @@ def read_reconciliation_settings(db: Session) -> dict:
     return _reconciliation_dict(row if row is not None else ReconciliationSettings(id=1, data={}, version=1))
 
 
+def read_auto_pay_settings(db: Session) -> dict:
+    """The effective `auto_pay` block plus the settings `version` (SELECT-only)."""
+    settings = read_reconciliation_settings(db)
+    return {**settings["auto_pay"], "version": settings["version"]}
+
+
 def read_reconciliation_rules(db: Session) -> dict:
     settings = read_reconciliation_settings(db)
     row = db.get(ReconciliationSettings, 1)
@@ -400,10 +453,12 @@ def update_reconciliation_settings(db: Session, data: dict) -> dict:
         raise ValidationError("dirty_enabled", "must be a boolean")
     rules = _check_rules(data.get("rules", {}))
     policy = _check_policy(data.get("policy", {}))
+    auto_pay = _check_auto_pay(data.get("auto_pay", {}))
     siblings = _check_siblings(db, data.get("account_siblings", {}))
     row = _reconciliation_row(db, lock=True)
     before = _reconciliation_dict(row)
-    row.data = {**data, "composite_map": composite, "rules": rules, "policy": policy, "account_siblings": siblings}
+    row.data = {**data, "composite_map": composite, "rules": rules, "policy": policy, "auto_pay": auto_pay,
+                "account_siblings": siblings}
     row.version = row.version + 1
     if _effective_policy(policy) != before["policy"]:
         row.data = {**row.data, "policy_version": f"{POLICY_VERSION_PREFIX}-{row.version}"}
@@ -486,8 +541,10 @@ def _validate_account(db: Session, payload: AccountIn, account: Account | None) 
         _check_combined(db, self_id, payload.combined_account_id)
     if payload.auto_pay_account_id is not None and payload.auto_pay_account_id != getattr(account, "auto_pay_account_id", None):
         target = db.get(Account, payload.auto_pay_account_id)
-        if payload.auto_pay_account_id == self_id or target is None or target.is_archived:
+        if payload.auto_pay_account_id == self_id or target is None:
             raise ValidationError("auto_pay_account_id", "must be another existing, non-archived account")
+        if target.is_credit or target.is_archived or target.currency != payload.currency:
+            raise ValidationError("auto_pay_account_id", "must be a non-credit, non-archived account in the same currency")
     if account is not None and payload.currency != account.currency and _count(db, LedgerEntry.account_id == account.id):
         raise ValidationError("currency", "currency cannot change while the account has entries")
     _check_sharing_members(db, payload, self_id)
@@ -571,6 +628,12 @@ def update_account(db: Session, account_id: int, payload: AccountIn) -> None:
     _validate_account(db, payload, account)
     if payload.is_archived and not account.is_archived:
         schedule_entry_hooks.assert_not_referenced(db, account_id=account_id)
+        # An archived account cannot be a link target: clear the links (and keep that across a re-import).
+        db.execute(
+            update(Account)
+            .where(Account.auto_pay_account_id == account_id)
+            .values(auto_pay_account_id=None, settings_locally_edited=True)
+        )
     previous_sharing_id = account.credit_sharing_id
     for field, value in payload.model_dump(exclude=ACCOUNT_COLUMNS_EXCLUDE).items():
         setattr(account, field, value)
@@ -593,6 +656,13 @@ def delete_account(db: Session, account_id: int) -> None:
     )
     if rule is not None:
         raise ConflictError("account is used by reward rules; set is_archived instead of deleting it")
+    auto_pay = db.scalar(
+        select(StatementAutoPay.id)
+        .where(or_(StatementAutoPay.card_account_id == account_id, StatementAutoPay.pay_account_id == account_id))
+        .limit(1)
+    )
+    if auto_pay is not None:  # the FK is RESTRICT: refuse with 409 instead of an IntegrityError
+        raise ConflictError("account is used by card auto-pay records; set is_archived instead of deleting it")
     # Accounts whose links are cleared changed settings, so a re-import must keep that (settings_locally_edited).
     db.execute(
         update(Account)

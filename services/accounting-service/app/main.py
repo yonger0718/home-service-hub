@@ -9,7 +9,7 @@ from .routers import (
     accounts, balance_adjustments, entries, imports, reconciliation, schedules, settings, splits, statements,
     transfers,
 )
-from .services import schedule_job
+from .services import auto_pay_job, schedule_job
 
 app = create_app(
     title="Home Service Hub - Accounting API",
@@ -42,3 +42,13 @@ def _start_schedule_job() -> None:
 @app.on_event("shutdown")
 def _stop_schedule_job() -> None:
     schedule_job.stop()
+
+
+@app.on_event("startup")
+def _start_auto_pay_job() -> None:
+    auto_pay_job.start(engine)
+
+
+@app.on_event("shutdown")
+def _stop_auto_pay_job() -> None:
+    auto_pay_job.stop()
