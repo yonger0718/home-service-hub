@@ -1,7 +1,7 @@
 - [x] 1. `account.logo` column, migration, API field, OpenSpec skeleton
-- [ ] 2. Logo set: fetch, normalise, manifest, SOURCES.md, gate
+- [x] 2. Logo set: fetch, normalise, manifest, SOURCES.md, gate
 - [x] 3. Importer `imageName` to `logo` (dropped rows with no bundled file: AccountCollection02_07 and 02_17 -> union-bank, AccountCollection20_01 -> pionex)
-- [ ] 4. `<app-account-icon>` + model + tile token + form plumbing
+- [x] 4. `<app-account-icon>` + model + tile token + form plumbing
 - [x] 5. Slots: accounts list, picker, 🔔 cards
 - [x] 6. Account settings 品牌 logo picker
-- [ ] 7. Whole-suite verification + browser evidence
+- [x] 7. Whole-suite verification + browser evidence
