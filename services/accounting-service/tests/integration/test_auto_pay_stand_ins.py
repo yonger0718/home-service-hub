@@ -286,3 +286,42 @@ def test_a_deferred_bank_leg_is_not_an_orphan(seed, db_session, run, today):
     assert _orphan_cases(db) == []
     assert [c for c in _cases(db, bank_stmt.id, "open") if c.entry_id == w.out_id] == []
 
+
+
+# --- Task 8: the next statements claim the legs (matcher rule auto_pay) ---------------------------------------------
+
+LATE = (date(2026, 10, 10), date(2026, 11, 30))  # holds every line day below; ends on the card's closing day
+
+
+def _claim_rules(db, stmt_id):
+    return [(c.line_id, c.entry_id, c.match_rule) for c in _active(db, stmt_id)]
+
+
+@pytest.mark.parametrize("line_day, rule", [(date(2026, 10, 28), "payment"),   # distance 0: the exact path
+                                            (date(2026, 11, 1), "auto_pay"),   # 4: beyond the exact window
+                                            (date(2026, 11, 8), "auto_pay")])  # 11
+def test_next_statements_claim_the_legs(line_day, rule, seed, db_session, run, today):
+    db = db_session
+    w = _booked(seed, db, run, today)
+    card_stmt, (line,), _ = _submit(db, run, w.card, [_line(1, line_day, "繳款", -580, "payment")], period=LATE,
+                                    opening=580)
+    rec.reconcile(db, card_stmt.id)
+    db.commit()
+    assert _claim_rules(db, card_stmt.id) == [(line.id, w.in_id, rule)]
+    assert [c for c in _cases(db, card_stmt.id, "open") if c.line_id == line.id or c.entry_id == w.in_id] == []
+    assert _row(db, w).status == "booked"
+
+
+@pytest.mark.parametrize("line_kind, line_day, rule", [("withdrawal", PAY, "exact"),
+                                                       ("payment", PAY, "payment"),
+                                                       ("transfer_out", PAY, "transfer"),
+                                                       ("withdrawal", date(2026, 11, 2), "auto_pay")])  # distance 6
+def test_bank_statement_lines_claim_the_out_leg(line_kind, line_day, rule, seed, db_session, run, today):
+    db = db_session
+    w = _booked(seed, db, run, today)
+    bank_stmt, (line,), _ = _submit(db, run, w.bank, [_line(1, line_day, "卡費", -580, line_kind)], kind="bank",
+                                    period=LATE)
+    rec.reconcile(db, bank_stmt.id)
+    db.commit()
+    assert _claim_rules(db, bank_stmt.id) == [(line.id, w.out_id, rule)]
+    assert [c for c in _cases(db, bank_stmt.id, "open") if c.line_id == line.id or c.entry_id == w.out_id] == []

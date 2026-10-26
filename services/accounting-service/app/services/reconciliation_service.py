@@ -298,6 +298,7 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
             groups[g.id] = matching.Group(g.id, g.kind, tuple(members[g.id]))
     split_members, all_children = _split_structure(db, [g.id for g in groups.values() if g.kind == "split"])
     stand_in_ids = stand_ins.stand_in_entry_ids(db, accounts)
+    auto_pay_ids = set(stand_ins.auto_pay_legs(db, accounts))
     entries = []
     for e in parents:
         posted = e.posted_date or e.entry_date
@@ -305,7 +306,7 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
             e, transfer_peer_is_card=peer_is_card.get(e.id), children=tuple(children.get(e.id, ())),
             all_children=tuple(all_children.get(e.id, ())),
             instance=instances.get(e.id), in_reverse=statement.period_start <= posted <= statement.period_end,
-            stand_in=e.id in stand_in_ids))
+            stand_in=e.id in stand_in_ids, auto_pay=e.id in auto_pay_ids))
     entries.extend(_drifted_instances(db, statement, accounts, set(ids) | claimed))
     entries.extend(_carriers(db, statement, accounts, covered, claimed, stand_in_ids))
     loaded = {e.id for e in entries}

@@ -24,7 +24,7 @@ def E(i, posted, flow, kind="expense", merchant="全聯", **kw):
                    is_settlement=kw.get("is_settlement", False), refunds_entry_id=kw.get("refunds_entry_id"),
                    transfer_group_id=kw.get("transfer_group_id"), transfer_peer_is_card=kw.get("peer_is_card"),
                    children=tuple(kw.get("children", ())), instance=kw.get("instance"), in_reverse=kw.get("in_reverse", True),
-                   claimable=kw.get("claimable", True), stand_in=kw.get("stand_in", False),
+                   claimable=kw.get("claimable", True), stand_in=kw.get("stand_in", False), auto_pay=kw.get("auto_pay", False),
                    all_children=tuple(kw.get("all_children", ())), currency=kw.get("currency"), carrier=kw.get("carrier", False))
 
 
@@ -1882,3 +1882,104 @@ def test_transfer_tolerance_rule_key_is_honoured():
     rules = m.Rules(period_end=date(2026, 9, 30), transfer_tolerance_pct=Decimal("0.01"))
     res = m.match("card", [L(1, d, "20000", kind="payment", merchant="信用卡繳款")], [E(10, d + timedelta(days=2), "19500", kind="transfer_in", transfer_group_id="g1", peer_is_card=False)], {}, {}, lambda e: None, rules, "TWD")
     assert res.cases[0].context == {"hint": "needs_peer"}
+
+
+# --- auto-pay claim (auto-pay spec §4.5, Task 8) ---------------------------------------------------------------------
+
+AP_DAY = date(2026, 9, 20)
+
+
+def _ap_line(i=1, day=AP_DAY, flow="580", kind="payment"):
+    return L(i, day, flow, kind=kind, merchant="繳款")
+
+
+def _ap_leg(i, days_before, flow="580", kind="transfer_in", **kw):
+    """A booked auto-pay leg: a stand-in transfer leg whose peer is a bank account (posted dates only)."""
+    kw = {"transfer_group_id": f"g{i}", "peer_is_card": False, "stand_in": True, "auto_pay": True, **kw}
+    return E(i, AP_DAY - timedelta(days=days_before), flow, kind=kind, merchant=None, **kw)
+
+
+def _owner_leg(i, days_before, flow="580", kind="transfer_in"):
+    return E(i, AP_DAY - timedelta(days=days_before), flow, kind=kind, merchant=None, transfer_group_id=f"o{i}",
+             peer_is_card=False)
+
+
+def _claims(res):
+    return [(c.line_id, c.representation.rule, [r.entry_id for r in c.representation.rows]) for c in res.claims]
+
+
+def test_auto_pay_leg_claims_a_payment_line_12_days_later():
+    res = run([_ap_line()], [_ap_leg(10, 12)])
+    assert _claims(res) == [(1, "auto_pay", [10])]
+    rep = res.claims[0].representation
+    assert rep.kind == "standalone" and rep.score == R.accept and rep.reasons == ("date_distance=12", "auto_pay")
+    assert [r.role for r in rep.rows] == ["principal"] and rep.rows[0].flow == D("580")
+    assert res.cases == [] and res.unmatched_entry_ids == []
+
+
+def test_auto_pay_leg_within_three_days_claims_exact():
+    res = run([_ap_line()], [_ap_leg(10, 2)])
+    assert _claims(res) == [(1, "payment", [10])]
+
+
+def test_owner_entry_in_the_drift_window_blocks_the_auto_pay_claim():
+    res = run([_ap_line()], [_owner_leg(11, 10), _ap_leg(10, 5)])
+    assert res.claims == []
+    (case,) = [c for c in res.cases if c.line_id == 1]
+    assert case.kind in ("amount_delta", "ambiguous")
+    assert 11 in {c.get("entry_id") for c in case.candidates}
+
+
+def test_two_auto_pay_legs_are_ambiguous():
+    res = run([_ap_line()], [_ap_leg(10, 5), _ap_leg(12, 8)])
+    assert res.claims == []
+    (case,) = [c for c in res.cases if c.line_id == 1]
+    assert case.kind == "ambiguous" and {c["entry_id"] for c in case.candidates} == {10, 12}
+
+
+def test_claimed_owner_entry_does_not_block():
+    # line 1 claims the owner leg on its own day; line 2 then meets the owner leg (distance 10) as claimed
+    owner_day = AP_DAY - timedelta(days=10)
+    res = run([_ap_line(1, owner_day), _ap_line(2)], [_owner_leg(11, 10), _ap_leg(10, 5)])
+    assert _claims(res) == [(1, "payment", [11]), (2, "auto_pay", [10])]
+    rep = m._auto_pay_claim("card", _ap_line(2), [_owner_leg(11, 10), _ap_leg(10, 5)], {11}, R)
+    assert rep is not None and rep.rule == m.AUTO_PAY_RULE and [r.entry_id for r in rep.rows] == [10]
+    assert m._auto_pay_claim("card", _ap_line(2), [_owner_leg(11, 10), _ap_leg(10, 5)], set(), R) is None
+
+
+@pytest.mark.parametrize("line_kind", ["withdrawal", "payment", "transfer_out"])
+def test_bank_lines_claim_the_out_leg(line_kind):
+    res = run([_ap_line(flow="-580", kind=line_kind)], [_ap_leg(10, 6, flow="-580", kind="transfer_out")], kind="bank")
+    assert _claims(res) == [(1, "auto_pay", [10])]
+    assert [c for c in res.cases if c.line_id == 1] == []
+
+
+def test_auto_pay_leg_beyond_drift_window_does_not_claim():
+    res = run([_ap_line()], [_ap_leg(10, 16)])
+    assert res.claims == []
+
+
+@pytest.mark.parametrize("kind, line_kind, flow, leg_kind", [("bank", "deposit", "580", "transfer_in"),
+                                                             ("bank", "transfer_in", "580", "transfer_in"),
+                                                             ("card", "purchase", "-580", "expense")])
+def test_auto_pay_never_claims_a_line_kind_outside_its_kinds(kind, line_kind, flow, leg_kind):
+    assert line_kind not in m.AUTO_PAY_LINE_KINDS[kind]
+    res = run([_ap_line(flow=flow, kind=line_kind)], [_ap_leg(10, 6, flow=flow, kind=leg_kind)], kind=kind)
+    assert [c for c in res.claims if c.representation.rule == m.AUTO_PAY_RULE] == []
+
+
+def test_auto_pay_leg_with_a_card_peer_never_claims_a_card_payment():
+    res = run([_ap_line()], [_ap_leg(10, 6, peer_is_card=True)])
+    assert res.claims == []
+
+
+def test_r6_dryrun_attributes_auto_pay_claims():
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("r6_dryrun", Path(__file__).parents[2] / "scripts" / "r6_dryrun.py")
+    dryrun = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dryrun)
+    assert dryrun.attribute({"before": None, "after": ("claim", "auto_pay", (1,))}) == "auto-pay claim (2026-10-26)"
+    assert dryrun.attribute({"before": ("case", "amount_delta", "transfer_delta", (), 1),
+                             "after": ("claim", "auto_pay", (1,))}) == "auto-pay claim (2026-10-26)"
+    assert dryrun.attribute({"before": None, "after": ("claim", "exact", (1,))}) == "R6a.1/R6a.3 new exact claim"
