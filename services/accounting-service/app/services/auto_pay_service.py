@@ -21,6 +21,7 @@ shared xact lock in one transaction is harmless. Nothing here commits; callers o
 The UNIQUE `statement_id` and the 20-day exclusion constraint make a concurrent duplicate fail the second commit.
 """
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -33,12 +34,13 @@ from sqlalchemy.orm import Session
 
 from ..models import Account, AccountStatement, LedgerEntry, ReconciliationCase, StatementAutoPay
 from ..schemas.writes import TransferIn
-from . import coverage_service, entry_write_service, transfer_service
+from . import coverage_service, entry_write_service, settings_service, stand_ins, transfer_service
 from .business_days import next_business_day
 from .entry_write_service import STATEMENT_SOURCE
 from .errors import CodedConflictError
 from .reconciliation_actions import audit
 from .schedule_locks import take_import_key_shared
+from .statements import matching
 
 AUTO_PAY_NAME = "自動扣繳"
 ACTOR = "auto_pay"
@@ -50,6 +52,8 @@ HEADER_CASE_KINDS = ("parse_review", "statement_conflict")
 PAIR_BUSY = "auto_pay_busy"
 HEADER_CHANGED = "header_changed"  # the booked row's reason once the header change is audited (§4.4 step 0)
 TWIN_LOOKOUT_EXTRA_DAYS = 7  # the job's twin test runs until pay_date + twin_window_days + 7; the sweep has no window
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -391,3 +395,45 @@ def check_row(db: Session, row: StatementAutoPay, today: date, settings: dict) -
                              else statement.due_date.isoformat()})
         return HEADER_CHANGED
     return None
+
+
+# --- sweep-time twin retire (§4.5) ----------------------------------------------------------------------------------
+
+
+def retire_twins_for_statement(db: Session, statement: AccountStatement, accounts: list[int]) -> list[int]:
+    """The sweep's half of owner-wins (§4.5), run by `reconcile` before it loads the population: every booked row
+    with a leg on `accounts` whose pay date lies within the period ± `matching.population_window_days`, both legs
+    still the system's (`source='statement'`; anything else is housekeeping's `owner_edited`), and a twin within
+    the settings' `twin_window_days` → `retire_pair(reason="twin")`. A pair another transaction holds
+    (`auto_pay_busy`) is logged and left for the next sweep or the job. Returns the retired row ids. Flushes, never
+    commits."""
+    from .reconciliation_service import rules_for  # local: the reconciler calls this function
+
+    rules = rules_for(settings_service.reconciliation_rules(db), statement.period_end)
+    span = timedelta(days=matching.population_window_days(rules))
+    lo, hi = statement.period_start - span, statement.period_end + span
+    row_ids = sorted(set(stand_ins.auto_pay_legs(db, accounts).values()))
+    if not row_ids:
+        return []
+    window = int(settings_service.read_auto_pay_settings(db)["twin_window_days"])
+    retired = []
+    for row_id in row_ids:
+        row = db.get(StatementAutoPay, row_id)
+        if not lo <= row.pay_date <= hi:
+            continue
+        legs = [_leg(db, i) for i in (row.out_entry_id, row.in_entry_id)]
+        if any(leg is None or leg.source != STATEMENT_SOURCE for leg in legs):
+            continue
+        if not find_twins(db, card_account_id=row.card_account_id, pay_account_id=row.pay_account_id,
+                          amount=row.amount, pay_date=row.pay_date, window_days=window,
+                          exclude=[leg.id for leg in legs]):
+            continue
+        try:
+            retire_pair(db, row, reason="twin")
+        except CodedConflictError as exc:
+            if exc.code != PAIR_BUSY:
+                raise
+            logger.info("auto_pay.sweep_retire_busy", extra={"auto_pay_id": row_id, "statement_id": statement.id})
+            continue
+        retired.append(row_id)
+    return retired

@@ -52,7 +52,7 @@ from app.models import (
     Account, AccountStatement, EntryGroup, InstallmentPlanMap, LedgerEntry, ReconciliationCase, ScheduleDefinition,
     ScheduleInstance, StatementCoverage, StatementLine, StatementRevision,
 )
-from app.services import coverage_service, settings_service, stand_ins
+from app.services import auto_pay_service, coverage_service, settings_service, stand_ins
 from app.services.entry_write_service import lock_group, proposed_fx_fee
 from app.services.errors import CodedConflictError, NotFoundError
 from app.services.ledger_service import account_balance
@@ -668,9 +668,12 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
                          context={"hint": "shadowed_by_stand_in", "stand_in_entry_id": s["stand_in_entry_id"],
                                   "backfill_action_id": s["backfill_action_id"], "drift_days": s["drift_days"]}))
     for o in orphan_by_entry.values():
+        context = {"hint": "orphaned_stand_in", "backfill_action_id": o["backfill_action_id"],
+                   "claimant_entry_id": o["claimant_entry_id"]}
+        if "auto_pay_id" in o:  # an auto-pay leg (auto-pay spec §4.5): the owner deletes the pair or matches it
+            context["auto_pay_id"] = o["auto_pay_id"]
         out.append(_case("entry_unmatched", event_id=o["event_id"], line_id=o["line_id"], entry_id=o["entry_id"],
-                         context={"hint": "orphaned_stand_in", "backfill_action_id": o["backfill_action_id"],
-                                  "claimant_entry_id": o["claimant_entry_id"]}))
+                         context=context))
     gap = balance_gap(db, statement, accounts)
     if gap != 0:
         out.append(_case("balance_gap", context={"gap": str(gap)} if statement.kind == "bank"
@@ -966,6 +969,9 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
         return ReconcileResult(skipped=skipped)
     live = statement.mode == "live"
     accounts = participating_accounts(db, statement.account_id)
+    # auto-pay §4.5: a pair whose owner twin has arrived is retired before the population is read, so the line meets
+    # only the twin (the deleted legs are absent from `load_candidates`)
+    auto_pay_service.retire_twins_for_statement(db, statement, accounts)
     accounts_by_id = {a.id: a for a in db.execute(select(Account).where(Account.id.in_(accounts))).scalars()}
     rules = rules_for(settings_service.reconciliation_rules(db), statement.period_end)
     all_lines = _current_lines(db, statement)
