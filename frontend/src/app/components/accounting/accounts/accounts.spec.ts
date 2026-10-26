@@ -58,6 +58,10 @@ describe('AccountingAccountsComponent', () => {
     for (const req of http.match('/api/accounting/accounts/debts')) {
       req.flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
     }
+    // The business-day calendar is read once per session and never gates the page; tests that do not care leave it.
+    for (const req of http.match(r => r.url === '/api/accounting/calendar/business-days')) {
+      req.flush({ holidays: [], workdays: [], last_known_day: '2027-12-31' });
+    }
     http.verify();
     vi.useRealTimers();
   });
@@ -726,6 +730,9 @@ describe('AccountingAccountsComponent', () => {
         expect(el.querySelector('.acc-row[aria-current]')).toBeNull();
         for (const req of http.match('/api/accounting/accounts/debts')) {
           req.flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+        }
+        for (const req of http.match(r => r.url === '/api/accounting/calendar/business-days')) {
+          req.flush({ holidays: [], workdays: [], last_known_day: '2027-12-31' });
         }
         http.verify();
       }

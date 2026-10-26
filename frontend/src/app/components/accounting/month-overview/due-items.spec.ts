@@ -4,7 +4,7 @@ import { DueBill, nextDueItems } from './due-items';
 describe('nextDueItems', () => {
   const inst = (id: number, due: string, status: ScheduleInstanceStatus = 'pending', amount = '-1200') =>
     ({ id, definition_name: '房租', seq: 3, times: null, due_date: due, status, totals: [{ currency: 'TWD', amount }] }) as ScheduleInstance;
-  const bill: DueBill = { key: 'bill:7:2026-10', name: '玉山 UNI', date: '2026-10-28', amountText: '$12,345' };
+  const bill: DueBill = { key: 'bill:7:2026-10', name: '玉山 UNI', date: '2026-10-28', payDate: '2026-10-28', amountText: '$12,345' };
 
   it('merges bills and pending instances, earliest first, three at most', () => {
     const items = nextDueItems([bill], [inst(1, '2026-10-26'), inst(2, '2026-11-05'), inst(3, '2026-11-20')], '2026-10-25');

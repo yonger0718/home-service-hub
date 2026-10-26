@@ -7,7 +7,10 @@ import { queueTitle } from '../reminders/schedule-queue';
 export interface DueBill {
   key: string;
   name: string;
+  /** The printed due date (sort key). */
   date: string;
+  /** The debit day the countdown counts to (`date` when nothing shifts). */
+  payDate: string;
   amountText: string;
 }
 
@@ -29,7 +32,7 @@ function dueAmount(amount: string, currency: string): string {
 /** The next dues across bills and pending 待完成交易, earliest first (bills before instances on a tie). */
 export function nextDueItems(bills: readonly DueBill[], instances: readonly ScheduleInstance[], today: string, limit = 3): DueItem[] {
   const items: DueItem[] = [
-    ...bills.map(bill => ({ ...bill, kind: 'bill' as const, dueText: dueCountdown(bill.date, today) })),
+    ...bills.map(bill => ({ ...bill, kind: 'bill' as const, dueText: dueCountdown(bill.payDate, today) })),
     ...instances
       .filter(item => item.status === 'pending')
       .map(item => ({

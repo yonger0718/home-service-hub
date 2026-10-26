@@ -29,6 +29,10 @@ describe('LedgerTimelineComponent', () => {
 
   afterEach(() => {
     localStorage.removeItem(VIEW_KEY);
+    // The business-day calendar is read once per session and never gates the page; tests that do not care leave it.
+    for (const request of httpMock?.match(r => r.url === '/api/accounting/calendar/business-days') ?? []) {
+      request.flush({ holidays: [], workdays: [], last_known_day: '2027-12-31' });
+    }
     httpMock?.verify();
     httpMock = null;
     vi.useRealTimers();
@@ -1811,7 +1815,8 @@ describe('LedgerTimelineComponent', () => {
       const requests = billRequests();
       const childSummary = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/21/summary');
       expect(childSummary.request.params.get('date_to')).toBe(SEPT.end);
-      httpMock!.expectNone(r => r.url === '/api/accounting/accounts/21/entries');
+      // The 副卡's payments are read with the master's (#196); none here.
+      httpMock!.expectOne(r => r.url === '/api/accounting/accounts/21/entries').flush({ items: [], total: 0, limit: 100, offset: 0 });
       answerBill(requests, '-1000.0000');
       childSummary.flush({
         account_id: 21, currency: 'TWD', date_from: '', date_to: '', spend: '-234.0000', income: '0', rewards: '0',

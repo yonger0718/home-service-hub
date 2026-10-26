@@ -74,3 +74,11 @@ class ProposalRejectIn(BaseModel):
     model_config = Strict
     note: str | None = Field(default=None, max_length=1000)
 
+
+
+class BusinessDaysOut(BaseModel):
+    """`GET /calendar/business-days?from=&to=`: closed days and make-up workdays within the range (weekends implied)."""
+
+    holidays: list[date]
+    workdays: list[date]
+    last_known_day: date

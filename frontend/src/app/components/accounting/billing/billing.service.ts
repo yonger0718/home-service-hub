@@ -2,11 +2,12 @@ import { Injectable, Signal, computed, inject, signal, untracked } from '@angula
 
 import { AccountingService } from '../../../services/accounting.service';
 import { Period } from '../cycle';
-import { BillingEvent, billBalance, paymentWindowEnd } from './billing-math';
+import { BillingEvent, billBalance, payDateOf, paymentWindowEnd } from './billing-math';
 
 /**
- * Payments to a card read per payment window (closing → `paymentWindowEnd`), one page, no paging. Far more than happen
- * in practice; a window with more than this many `transfer_in` rows would understate `paid` (and overstate `remaining`).
+ * Payments to a card read per payment window (closing → `paymentWindowEnd`), one page per card (the master and each
+ * combined card), no paging. Far more than happen in practice; a card with more than this many `transfer_in` rows in
+ * the window would understate `paid` (and overstate `remaining`).
  */
 export const BILL_PAYMENT_LIMIT = 100;
 
@@ -17,19 +18,22 @@ export interface BillState {
   period: Period;
   /** The payment due date (`YYYY-MM-DD`). */
   due: string;
+  /** The bank's debit day: the first business day on or after `due` (equal to `due` when nothing shifts). */
+  payDate: string;
   currency: string;
   /** −spend of the cycle: positive for a bill, ≤ 0 for a zero or refund-heavy statement. */
   statement: number;
   /**
-   * Σ `transfer_in` to the card from the closing date through `paymentWindowEnd` (the day before the next closing,
-   * capped at the day of the read): a late payment still clears the bill.
+   * Σ `transfer_in` to the master and its combined cards (副卡) from the closing date through `paymentWindowEnd` (the
+   * day before the next closing, capped at the day of the read): a late payment still clears the bill, and a payment
+   * recorded on a 副卡 counts as much as one on the master.
    */
   paid: number;
   remaining: number;
 }
 
 /**
- * One round's reads: a summary per card of the statement (the master and its combined cards) and the master's
+ * One round's reads: per card of the statement (the master and its combined cards) a period summary and a page of
  * payments. The state is committed once all have landed; `null` = that read failed.
  */
 interface Pending {
@@ -39,7 +43,8 @@ interface Pending {
   id: number;
   /** Per account id: its period spend and currency. */
   spends: Map<number, { spend: string; currency: string } | null>;
-  payments?: string[] | null;
+  /** Per account id: the amounts of its `transfer_in` entries in the payment window. */
+  payments: Map<number, string[] | null>;
 }
 
 /** Cache key of a due event's statement: the card, the cycle and the due date (a changed due rule is a new key). */
@@ -50,21 +55,24 @@ export function billKey(event: Pick<BillingEvent, 'accountId' | 'period' | 'date
 /** A completed round's failure: undefined when none, null for a failed read, `幣別不同` for a currency mismatch. */
 function failureOf(round: Pending, cards: number[]): string | null | undefined {
   const spends = cards.map(id => round.spends.get(id));
-  if (round.payments === null || spends.some(spend => spend === null)) {
+  if (cards.some(id => round.payments.get(id) === null) || spends.some(spend => spend === null)) {
     return null;
   }
   const currency = spends[0]?.currency;
   return spends.some(spend => spend?.currency !== currency) ? '幣別不同' : undefined;
 }
 
-/** A round's inputs beyond its key: the combined cards (sorted) and the period start. */
+/**
+ * A round's inputs beyond its key: the combined cards (sorted), the period start and the debit day. The calendar
+ * landing after a round started changes `payDate`, so the same statement starts a new round with the right stamp.
+ */
 function fingerprint(event: BillingEvent): string {
-  return `${[...(event.childIds ?? [])].sort((a, b) => a - b).join(',')}|${event.period.start}`;
+  return `${[...(event.childIds ?? [])].sort((a, b) => a - b).join(',')}|${event.period.start}|${event.payDate ?? ''}`;
 }
 
 /**
- * The single source of statement figures: one summary read + one payments read per due event and change round,
- * shared by every consumer. A round ends on `entriesChanged` or `accountsChanged`; the previous figures stay shown until
+ * The single source of statement figures: one summary read + one payments read per card of a due event and change
+ * round, shared by every consumer. A round ends on `entriesChanged` or `accountsChanged`; the previous figures stay shown until
  * the new round has fully landed, and the answers of a superseded round are dropped.
  */
 @Injectable({ providedIn: 'root' })
@@ -119,11 +127,13 @@ export class BillingService {
 
   private start(event: BillingEvent, today: string, generation: number): void {
     const key = billKey(event);
-    const round: Pending = { generation, fingerprint: fingerprint(event), id: ++this.requestId, spends: new Map() };
+    const round: Pending = {
+      generation, fingerprint: fingerprint(event), id: ++this.requestId, spends: new Map(), payments: new Map(),
+    };
     this.rounds.set(key, round);
     const cards = [event.accountId, ...(event.childIds ?? [])];
     const commit = () => {
-      if (round.payments === undefined || cards.some(id => !round.spends.has(id))) {
+      if (cards.some(id => !round.spends.has(id) || !round.payments.has(id))) {
         return;
       }
       const failure = failureOf(round, cards);
@@ -139,7 +149,8 @@ export class BillingService {
       this.states.update(states => new Map(states).set(key, this.resolve(event, round, cards)));
     };
     const current = () => this.rounds.get(key)?.id === round.id;
-    // Combined cards (副卡) are read with the master, over the same period, as part of the same round.
+    // Combined cards (副卡) are read with the master, over the same period and window, as part of the same round.
+    const paidTo = paymentWindowEnd(event, today);
     for (const accountId of cards) {
       this.accounting.getAccountSummary(accountId, event.period.start, event.period.end).subscribe({
         next: summary => {
@@ -155,24 +166,23 @@ export class BillingService {
           }
         },
       });
+      this.accounting
+        .getEntries(accountId, { kind: 'transfer_in', date_from: event.period.end, date_to: paidTo, limit: BILL_PAYMENT_LIMIT })
+        .subscribe({
+          next: page => {
+            if (current()) {
+              round.payments.set(accountId, page.items.map(entry => entry.amount));
+              commit();
+            }
+          },
+          error: () => {
+            if (current()) {
+              round.payments.set(accountId, null);
+              commit();
+            }
+          },
+        });
     }
-    const patch = (payments: string[] | null) => {
-      if (current()) {
-        round.payments = payments;
-        commit();
-      }
-    };
-    this.accounting
-      .getEntries(event.accountId, {
-        kind: 'transfer_in',
-        date_from: event.period.end,
-        date_to: paymentWindowEnd(event, today),
-        limit: BILL_PAYMENT_LIMIT,
-      })
-      .subscribe({
-        next: page => patch(page.items.map(entry => entry.amount)),
-        error: () => patch(null),
-      });
   }
 
   /** The due event's statement once resolved (reactive); null while unresolved or when a read failed. */
@@ -196,13 +206,14 @@ export class BillingService {
   }
 
   /**
-   * The statement: Σ period spend of the master and its combined cards, less the master's payments. Unresolved (and
-   * failed, see `failureOf`) when any read failed or a combined card's currency differs from the master's.
+   * The statement: Σ period spend of the master and its combined cards, less the payments to any of them. Unresolved
+   * (and failed, see `failureOf`) when any read failed or a combined card's currency differs from the master's.
    */
   private resolve(event: BillingEvent, round: Pending, cards: number[]): BillState | null {
     const spends = cards.map(id => round.spends.get(id));
+    const payments = cards.map(id => round.payments.get(id));
     const master = spends[0];
-    if (!master || !Array.isArray(round.payments) || spends.some(spend => !spend || spend.currency !== master.currency)) {
+    if (!master || payments.some(page => !Array.isArray(page)) || spends.some(spend => !spend || spend.currency !== master.currency)) {
       return null;
     }
     const total = spends.reduce((sum, spend) => sum + Number(spend!.spend), 0);
@@ -211,8 +222,9 @@ export class BillingService {
       name: event.name,
       period: event.period,
       due: event.date,
+      payDate: payDateOf(event),
       currency: master.currency,
-      ...billBalance(String(total), round.payments),
+      ...billBalance(String(total), payments.flatMap(page => page!)),
     };
   }
 }

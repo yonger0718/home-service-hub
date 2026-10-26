@@ -2,6 +2,7 @@ import { LedgerAccount } from '../../../models/accounting.model';
 import { pad, shiftMonth } from '../accounting-ui';
 import { Period, dueDate, shiftPeriod, statementPeriod } from '../cycle';
 import { addDays, daysBetween, shortDate } from '../dates';
+import { BusinessCalendar, WEEKENDS_ONLY, nextBusinessDay } from './business-days';
 
 export type BillingCard = Pick<
   LedgerAccount,
@@ -22,6 +23,22 @@ export interface BillingEvent {
    * statement; omitted when there are none.
    */
   childIds?: number[];
+  /**
+   * A due event's debit day: the first business day on or after `date`. Present only when it differs from `date`
+   * (a weekend or holiday due date). Countdowns, pills and overdue states use it; the calendar grid keeps `date`.
+   */
+  payDate?: string;
+}
+
+/** The day a due event's payment moves: `payDate` when the due date was shifted, otherwise `date`. */
+export function payDateOf(event: Pick<BillingEvent, 'date' | 'payDate'>): string {
+  return event.payDate ?? event.date;
+}
+
+/** The `payDate` field of a due event: present only when the bank debits later than the printed due date. */
+function payField(due: string, calendar: BusinessCalendar): { payDate?: string } {
+  const pay = nextBusinessDay(due, calendar);
+  return pay === due ? {} : { payDate: pay };
 }
 
 /**
@@ -67,9 +84,10 @@ function childField(children: Map<number, number[]>, id: number): { childIds?: n
 
 /**
  * Closing and due events falling inside `month` (`YYYY-MM`), sorted by date (due before closing on the same
- * day, then in card order). A card without a due rule has closing events only.
+ * day, then in card order). A card without a due rule has closing events only. `calendar` decides each due
+ * event's `payDate`.
  */
-export function billingEvents(cards: BillingCard[], month: string): BillingEvent[] {
+export function billingEvents(cards: BillingCard[], month: string, calendar: BusinessCalendar = WEEKENDS_ONLY): BillingEvent[] {
   const events: BillingEvent[] = [];
   const children = childrenByMaster(cards);
   for (const card of billingCards(cards)) {
@@ -84,7 +102,7 @@ export function billingEvents(cards: BillingCard[], month: string): BillingEvent
       }
       const due = dueDate(period.end, card.due_rule, card.due_value);
       if (due !== null && due.slice(0, 7) === month) {
-        events.push({ ...base, kind: 'due', date: due });
+        events.push({ ...base, kind: 'due', date: due, ...payField(due, calendar) });
       }
     }
   }
@@ -98,13 +116,20 @@ export function billingEvents(cards: BillingCard[], month: string): BillingEvent
     .map(({ event }) => event);
 }
 
-/** Due events from `today` through `today + 6` (this month's and next month's). */
-export function upcomingDues(cards: BillingCard[], today: string): BillingEvent[] {
+/**
+ * Due events whose debit day falls from `today` through `today + 6`. Scans the previous, current and next month: a
+ * due printed at the end of last month can still debit this month.
+ */
+export function upcomingDues(cards: BillingCard[], today: string, calendar: BusinessCalendar = WEEKENDS_ONLY): BillingEvent[] {
   const [year, month] = today.split('-').map(Number);
-  const [nextYear, nextMonth] = shiftMonth(year, month, 1);
   const last = addDays(today, UPCOMING_DAYS - 1);
-  return [...billingEvents(cards, today.slice(0, 7)), ...billingEvents(cards, `${nextYear}-${pad(nextMonth)}`)].filter(
-    event => event.kind === 'due' && event.date >= today && event.date <= last,
+  return [-1, 0, 1]
+    .flatMap(delta => {
+      const [y, m] = shiftMonth(year, month, delta);
+      return billingEvents(cards, `${y}-${pad(m)}`, calendar);
+    })
+    .filter(
+    event => event.kind === 'due' && payDateOf(event) >= today && payDateOf(event) <= last,
   );
 }
 
@@ -116,7 +141,7 @@ export const REMINDER_HORIZON_DAYS = 45;
  * the closing day itself still belongs to the open cycle), whether its due date is ahead or already past. Cards
  * without a due rule have no due event and are left out.
  */
-export function currentDues(cards: BillingCard[], today: string): BillingEvent[] {
+export function currentDues(cards: BillingCard[], today: string, calendar: BusinessCalendar = WEEKENDS_ONLY): BillingEvent[] {
   const events: BillingEvent[] = [];
   const children = childrenByMaster(cards);
   for (const card of billingCards(cards)) {
@@ -125,15 +150,18 @@ export function currentDues(cards: BillingCard[], today: string): BillingEvent[]
     const due = dueDate(period.end, card.due_rule, card.due_value);
     if (due !== null) {
       const nextClosing = shiftPeriod(closingDay, period, 1).end;
-      events.push({ accountId: card.id, name: card.name, kind: 'due', date: due, period, nextClosing, ...childField(children, card.id) });
+      events.push({
+        accountId: card.id, name: card.name, kind: 'due', date: due, period, nextClosing,
+        ...childField(children, card.id), ...payField(due, calendar),
+      });
     }
   }
   return events;
 }
 
 /** The reminder centre's statements: `currentDues` falling due at most `REMINDER_HORIZON_DAYS` from `today`. */
-export function reminderDues(cards: BillingCard[], today: string): BillingEvent[] {
-  return currentDues(cards, today).filter(event => daysBetween(today, event.date) <= REMINDER_HORIZON_DAYS);
+export function reminderDues(cards: BillingCard[], today: string, calendar: BusinessCalendar = WEEKENDS_ONLY): BillingEvent[] {
+  return currentDues(cards, today, calendar).filter(event => daysBetween(today, event.date) <= REMINDER_HORIZON_DAYS);
 }
 
 /** Reminder centre countdown: `還有 N 天` (N ≥ 2), `明天`, `今天`, `已逾期 N 天`. */
@@ -155,13 +183,14 @@ export function duePillText(due: string, today: string): string {
 }
 
 /**
- * Last day whose card payments count toward `event`'s statement: the day before the next closing (or the due date,
- * when a `days_after_closing` rule puts it later), capped at `today` and never before the closing date. A payment
- * made after the due date still clears the bill until the next statement closes.
+ * Last day whose card payments count toward `event`'s statement: the day before the next closing (or the debit
+ * day, when a `days_after_closing` rule puts it later), capped at `today` and never before the closing date. A
+ * payment made after the due date still clears the bill until the next statement closes.
  */
-export function paymentWindowEnd(event: Pick<BillingEvent, 'date' | 'period' | 'nextClosing'>, today: string): string {
+export function paymentWindowEnd(event: Pick<BillingEvent, 'date' | 'payDate' | 'period' | 'nextClosing'>, today: string): string {
   const dayBeforeNext = addDays(event.nextClosing, -1);
-  const last = event.date > dayBeforeNext ? event.date : dayBeforeNext;
+  const payDate = payDateOf(event);
+  const last = payDate > dayBeforeNext ? payDate : dayBeforeNext;
   const capped = today < last ? today : last;
   return capped < event.period.end ? event.period.end : capped;
 }

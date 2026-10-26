@@ -10,8 +10,10 @@ import {
   dueCountdown,
   paymentWindowEnd,
   duePillText,
+  payDateOf,
   upcomingDues,
 } from './billing-math';
+import { calendarFrom } from './business-days';
 
 const card = (overrides: Parameters<typeof makeAccount>[0]) =>
   makeAccount({ is_credit: true, due_rule: null, due_value: null, ...overrides });
@@ -176,6 +178,17 @@ describe('upcomingDues', () => {
     expect(upcomingDues([uni], '2026-11-04')).toEqual([]);
   });
 
+  it('keeps a due printed in the previous month whose debit day is still ahead', () => {
+    // Closing 10-15 + 16 days = Sat 2026-10-31; weekends-only debit Mon 11-02. Today Sun 11-01 scans Nov + Dec, so the
+    // October due must come from the previous month's events.
+    const monthEnd = card({ id: 2, name: '月底卡', closing_day: 15, due_rule: 'days_after_closing', due_value: 16 });
+    expect(upcomingDues([monthEnd], '2026-11-01')).toMatchObject([{ date: '2026-10-31', payDate: '2026-11-02' }]);
+    expect(upcomingDues([monthEnd], '2026-11-02')).toHaveLength(1);
+    expect(upcomingDues([monthEnd], '2026-11-03')).toEqual([]);
+    // A previous-month due whose debit day has also passed stays out.
+    expect(upcomingDues([monthEnd], '2026-11-01').filter(event => event.date === '2026-09-30')).toEqual([]);
+  });
+
   it('never includes closing days', () => {
     expect(upcomingDues([uni], '2026-10-12')).toEqual([]);
   });
@@ -266,5 +279,49 @@ describe('paymentWindowEnd', () => {
 
   it('never ends before the closing date (a statement not yet closed)', () => {
     expect(paymentWindowEnd(event, '2026-09-01')).toBe('2026-09-15');
+  });
+});
+
+describe('payDate (#197)', () => {
+  const OCT_2026 = calendarFrom({ holidays: ['2026-10-09', '2026-10-26'], workdays: [], last_known_day: '2027-12-31' });
+  // Closes the 6th, due 18 days later: the September statement falls due Sat 2026-10-24.
+  const hsbc = card({ id: 94, name: 'HSBC', closing_day: 6, due_rule: 'days_after_closing', due_value: 18 });
+
+  it('is absent when the due date is a business day', () => {
+    const uni = card({ id: 1, name: '玉山 UNI', closing_day: 15, due_rule: 'days_after_closing', due_value: 20 });
+    // Today 2026-10-10: the last closed cycle ends 09-15 and falls due Mon 2026-10-05.
+    const [due] = currentDues([uni], '2026-10-10', OCT_2026);
+    expect(due.date).toBe('2026-10-05');
+    expect(due.payDate).toBeUndefined();
+    expect(payDateOf(due)).toBe('2026-10-05');
+  });
+
+  it('moves a weekend due date to the next business day, over a holiday when the calendar lists one', () => {
+    const [due] = currentDues([hsbc], '2026-10-26', OCT_2026);
+    expect(due).toMatchObject({ date: '2026-10-24', payDate: '2026-10-27' });
+    expect(payDateOf(due)).toBe('2026-10-27');
+    // Without the calendar only the weekend shifts.
+    expect(currentDues([hsbc], '2026-10-26')[0].payDate).toBe('2026-10-26');
+    // The same statement as a month event and as a reminder carries the same debit day.
+    expect(billingEvents([hsbc], '2026-10', OCT_2026).find(event => event.kind === 'due')).toMatchObject({ date: '2026-10-24', payDate: '2026-10-27' });
+    expect(reminderDues([hsbc], '2026-10-26', OCT_2026)[0].payDate).toBe('2026-10-27');
+    // The 近 7 天 window is on the debit day: 10-20..10-26 misses the Tue 10-27 debit, 10-21..10-27 has it.
+    expect(upcomingDues([hsbc], '2026-10-20', OCT_2026)).toHaveLength(0);
+    expect(upcomingDues([hsbc], '2026-10-21', OCT_2026)[0]).toMatchObject({ date: '2026-10-24', payDate: '2026-10-27' });
+    // Sun 10-25: the printed due date has passed but the debit (Tue 10-27) is ahead, so the 近 7 天 banner keeps it.
+    expect(upcomingDues([hsbc], '2026-10-25', OCT_2026)).toHaveLength(1);
+    expect(upcomingDues([hsbc], '2026-10-28', OCT_2026)).toHaveLength(0);
+  });
+
+  it('counts the countdown and the pill to the debit day', () => {
+    expect(dueCountdown('2026-10-27', '2026-10-26')).toBe('明天');
+    expect(duePillText('2026-10-27', '2026-10-26')).toBe('明天繳費截止');
+    expect(dueCountdown('2026-10-27', '2026-10-28')).toBe('已逾期 1 天');
+  });
+
+  it('extends the payment window to the debit day when it falls after the next closing\'s eve', () => {
+    const event = { date: '2026-11-05', payDate: '2026-11-09', period: { start: '2026-10-07', end: '2026-11-06' }, nextClosing: '2026-11-06' };
+    expect(paymentWindowEnd(event, '2026-11-20')).toBe('2026-11-09');
+    expect(paymentWindowEnd({ ...event, payDate: undefined }, '2026-11-20')).toBe('2026-11-06');
   });
 });

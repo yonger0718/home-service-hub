@@ -17,6 +17,7 @@ import { Observable, catchError, forkJoin, of } from 'rxjs';
 
 import { Counterparty, DEFAULT_CATEGORY_ICONS, LedgerAccount, LedgerEntry, ScheduleDefinition, ScheduleInstance } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { BusinessCalendarService } from '../../../services/business-calendar.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingToastService, scheduleActionError } from '../accounting-toast';
 import { isHandledKey } from '../accounting-ui';
@@ -72,10 +73,12 @@ export interface CardReminder {
   /** Billing cycle end, matched to `account_statement.period_end`. */
   periodEnd: string;
   due: string;
+  /** `MM/DD 截止`, plus ` · MM/DD 扣款` when the bank debits on a later business day. */
   dueText: string;
   figures: { label: string; text: string }[];
+  /** Counted to the debit day (`BillState.payDate`), not the printed due date. */
   countdown: string;
-  /** Past the due date (negative tone) / due today or tomorrow (warning tone). */
+  /** Past the debit day (negative tone) / debited today or tomorrow (warning tone). */
   overdue: boolean;
   soon: boolean;
   recon: ReconChip | null;
@@ -165,7 +168,7 @@ export function cardReminders(
     .filter(bill => bill.remaining > 0)
     .sort((a, b) => a.due.localeCompare(b.due) || a.accountId - b.accountId)
     .map(bill => {
-      const days = daysBetween(today, bill.due);
+      const days = daysBetween(today, bill.payDate);
       return {
         accountId: bill.accountId,
         name: bill.name,
@@ -174,13 +177,13 @@ export function cardReminders(
         currency: bill.currency,
         periodEnd: bill.period.end,
         due: bill.due,
-        dueText: `${shortDate(bill.due)} 截止`,
+        dueText: bill.payDate === bill.due ? `${shortDate(bill.due)} 截止` : `${shortDate(bill.due)} 截止 · ${shortDate(bill.payDate)} 扣款`,
         figures: [
           { label: '應繳', text: formatMoney(bill.statement, bill.currency) },
           { label: '已繳', text: formatMoney(bill.paid, bill.currency) },
           { label: '剩餘', text: formatMoney(bill.remaining, bill.currency) },
         ],
-        countdown: dueCountdown(bill.due, today),
+        countdown: dueCountdown(bill.payDate, today),
         overdue: days < 0,
         soon: days === 0 || days === 1,
         recon: null,
@@ -253,6 +256,7 @@ export function debtReminders(counterparties: Counterparty[], openEntries: Ledge
 export class AccountingRemindersComponent {
   private readonly accounting = inject(AccountingService);
   private readonly bills = inject(BillingService);
+  private readonly calendar = inject(BusinessCalendarService);
   private readonly statements = inject(StatementsService);
   private readonly inboxService = inject(InboxService);
   private readonly router = inject(Router);
@@ -305,7 +309,7 @@ export class AccountingRemindersComponent {
   readonly debtKindOptions = DEBT_KIND_OPTIONS;
 
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
-  private readonly dues = computed(() => reminderDues(this.accounts(), this.today()));
+  private readonly dues = computed(() => reminderDues(this.accounts(), this.today(), this.calendar.calendar()));
   readonly cardRows = computed(() => {
     const byAccount = this.statementsByAccount();
     return cardReminders(

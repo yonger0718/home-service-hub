@@ -105,7 +105,7 @@ function bankOnly(caseId: number): InboxItem {
 describe('cardReminders logo', () => {
   it('cardReminders carries the account logo', () => {
     const bill = {
-      accountId: 10, name: '國泰卡', period: { start: '2026-09-01', end: '2026-09-30' }, due: '2026-10-15',
+      accountId: 10, name: '國泰卡', period: { start: '2026-09-01', end: '2026-09-30' }, due: '2026-10-15', payDate: '2026-10-15',
       currency: 'TWD', statement: 100, paid: 0, remaining: 100,
     } as unknown as BillState;
     const rows = cardReminders([bill], [{ id: 10, icon: '🏔', logo: 'cathay-united' }], '2026-10-03');
@@ -157,6 +157,10 @@ describe('AccountingRemindersComponent', () => {
     // The 對帳 chip reads statements for cards already in the due window. Tests that don't care flush nothing.
     for (const request of http.match(r => /\/accounts\/\d+\/statements$/.test(r.url))) {
       request.flush([]);
+    }
+    // The business-day calendar is read once per session and never gates the page; tests that do not care leave it.
+    for (const request of http.match(r => r.url === '/api/accounting/calendar/business-days')) {
+      request.flush({ holidays: [], workdays: [], last_known_day: '2027-12-31' });
     }
     http.verify();
     vi.useRealTimers();
@@ -240,9 +244,11 @@ describe('AccountingRemindersComponent', () => {
 
     const rows = Array.from(el.querySelectorAll('.card-row'));
     expect(rows.map(row => text(row.querySelector('.name')))).toEqual(['台新 FlyGo', '富邦 J卡', '玉山 UNI']);
-    expect(rows.map(row => text(row.querySelector('.countdown')))).toEqual(['已逾期 2 天', '明天', '還有 2 天']);
+    // 富邦 J卡 falls due Sun 10-04: the bank debits Mon 10-05, so the countdown counts to the debit day (#197).
+    expect(rows.map(row => text(row.querySelector('.countdown')))).toEqual(['已逾期 2 天', '還有 2 天', '還有 2 天']);
+    expect(rows.map(row => text(row.querySelector('.due-date')))).toEqual(['10/01 截止', '10/04 截止 · 10/05 扣款', '10/05 截止']);
     expect(rows[0].querySelector('.countdown')!.classList).toContain('overdue');
-    expect(rows[1].querySelector('.countdown')!.classList).toContain('soon');
+    expect(rows[1].querySelector('.countdown')!.classList).not.toContain('soon');
     expect(rows[2].querySelector('.countdown')!.classList).not.toContain('soon');
     expect(Array.from(rows[2].querySelectorAll('.figs .fig')).map(text)).toEqual(['應繳 $12,345', '已繳 $5,000', '剩餘 $7,345']);
     expect(text(rows[2].querySelector('.due-date'))).toBe('10/05 截止');
@@ -321,13 +327,16 @@ describe('AccountingRemindersComponent', () => {
         account_id: 16, currency: 'TWD', date_from: '', date_to: '', spend: '-345.0000', income: '0', rewards: '0',
         net: '0', end_balance: '0', count: 1,
       });
-    http.expectNone(r => r.url === '/api/accounting/accounts/16/entries');
+    // The 副卡's payments count toward the master (#196): a 345 paid on the 副卡 leaves the master's 1,000.
+    const childPayments = http.expectOne(r => r.url === '/api/accounting/accounts/16/entries');
+    expect([childPayments.request.params.get('kind'), childPayments.request.params.get('date_from')]).toEqual(['transfer_in', '2026-09-15']);
+    childPayments.flush({ items: [makeEntry({ id: 95, kind: 'transfer_in', amount: '345.0000' })], total: 1, limit: 100, offset: 0 });
     flushBill(9, '-1000.0000');
     fixture.detectChanges();
 
     const rows = Array.from(el.querySelectorAll('.card-row'));
     expect(rows.map(row => text(row.querySelector('.name')))).toEqual(['玉山 UNI']);
-    expect(text(rows[0].querySelector('.fig'))).toBe('應繳 $1,345');
+    expect(Array.from(rows[0].querySelectorAll('.fig')).map(text)).toEqual(['應繳 $1,345', '已繳 $345', '剩餘 $1,000']);
   });
 
   it('shows 帳單讀取失敗 with 重試 instead of the empty state when a statement cannot be read', () => {
@@ -371,6 +380,7 @@ describe('AccountingRemindersComponent', () => {
         account_id: 16, currency: 'USD', date_from: '', date_to: '', spend: '-30.0000', income: '0', rewards: '0',
         net: '0', end_balance: '0', count: 1,
       });
+    http.expectOne(r => r.url === '/api/accounting/accounts/16/entries').flush({ items: [], total: 0, limit: 100, offset: 0 });
     flushBill(9, '-1000.0000');
     fixture.detectChanges();
 
@@ -379,11 +389,14 @@ describe('AccountingRemindersComponent', () => {
     expect(text(el.querySelector('.bill-error .msg'))).toBe('帳單讀取失敗（幣別不同）');
   });
 
-  it('says 今天 on the due day', () => {
+  it('counts a Saturday due date to the Monday debit, not 今天 (#197)', () => {
+    // Due Sat 2026-10-03 (today): the bank debits Mon 10-05, so the card is not overdue and not due today.
     const { fixture, el } = render([TODAY]);
     flushBill(13, '-100.0000');
     fixture.detectChanges();
-    expect(text(el.querySelector('.card-row .countdown'))).toBe('今天');
+    expect(text(el.querySelector('.card-row .countdown'))).toBe('還有 2 天');
+    expect(text(el.querySelector('.card-row .due-date'))).toBe('10/03 截止 · 10/05 扣款');
+    expect(el.querySelector('.card-row .countdown')!.classList).not.toContain('overdue');
   });
 
   it("opens the card's passbook on tap", () => {
@@ -658,7 +671,9 @@ describe('AccountingRemindersComponent', () => {
     payments.forEach(req => req.flush({ items: [], total: 0, limit: 100, offset: 0 }));
     fixture.detectChanges();
 
-    expect(text(el.querySelector('.card-row .countdown'))).toBe('明天');
+    // The new rule puts the due date on Sun 10-04: the bank debits Mon 10-05 (#197), the same countdown as before.
+    expect(text(el.querySelector('.card-row .countdown'))).toBe('還有 2 天');
+    expect(text(el.querySelector('.card-row .due-date'))).toBe('10/04 截止 · 10/05 扣款');
   });
 
   it('drops a superseded load', () => {
