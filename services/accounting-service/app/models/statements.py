@@ -1,7 +1,7 @@
 """Reconciliation schema (design §4). Triggers append to coverage_dirty and never touch their source tables."""
 from sqlalchemy import (
     BigInteger, Boolean, CheckConstraint, Column, DDL, Date, DateTime, Enum, ForeignKey, ForeignKeyConstraint, Index,
-    Integer, Numeric, SmallInteger, String, Text, UniqueConstraint, event, func, text,
+    Integer, Numeric, SmallInteger, String, Text, UniqueConstraint, Uuid, event, func, text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
@@ -31,6 +31,7 @@ CASE_EXPLANATIONS = ("deferred_next_period", "accepted_exception")
 RECONCILIATION_ACTORS = ("owner", "policy")
 PROPOSAL_STATUSES = ("pending", "applied", "rejected", "superseded")
 ACTION_STATUSES = ("applied", "reverted", "failed")
+AUTO_PAY_STATUSES = ("booked", "retired", "owner_deleted", "owner_edited", "skipped")
 DIRTY_KINDS = ("entry", "group", "account")
 DIRTY_OPS = ("insert", "update", "delete")
 
@@ -386,6 +387,35 @@ class ReconciliationAudit(Base):
     request_id = Column(String(64))
     detail = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=NOW)
+
+
+class StatementAutoPay(Base):
+    """Provenance of a system-booked card-payment transfer (auto-pay spec §4.2), one row per statement.
+
+    The DB also carries `ex_statement_auto_pay_card_window` (added in the migration with raw SQL): EXCLUDE USING gist
+    (card_account_id WITH =, daterange(pay_date, pay_date + 20) WITH &&) WHERE (status = 'booked')."""
+    __tablename__ = "statement_auto_pay"
+    __table_args__ = (
+        CheckConstraint("status IN ('booked', 'retired', 'owner_deleted', 'owner_edited', 'skipped')",
+                        name="ck_statement_auto_pay_status"),
+        Index("ix_statement_auto_pay_card_account_id", "card_account_id"),
+        Index("ix_statement_auto_pay_status", "status"),
+    )
+    id = Column(Integer, primary_key=True)
+    statement_id = Column(Integer, ForeignKey("account_statement.id", ondelete="RESTRICT"), nullable=False, unique=True)
+    card_account_id = Column(Integer, ForeignKey("account.id", ondelete="RESTRICT"), nullable=False)
+    pay_account_id = Column(Integer, ForeignKey("account.id", ondelete="RESTRICT"), nullable=False)
+    amount = Column(MONEY, nullable=False)
+    due_date = Column(Date, nullable=False)
+    pay_date = Column(Date, nullable=False)
+    transfer_group_id = Column(Uuid, nullable=True)
+    out_entry_id = Column(Integer, ForeignKey("ledger_entry.id", ondelete="SET NULL"), nullable=True)
+    in_entry_id = Column(Integer, ForeignKey("ledger_entry.id", ondelete="SET NULL"), nullable=True)
+    status = Column(String(16), nullable=False)
+    reason = Column(String(64), nullable=True)
+    settings_version = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=NOW)
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=NOW, onupdate=NOW)
 
 
 class PolicyBudget(Base):
