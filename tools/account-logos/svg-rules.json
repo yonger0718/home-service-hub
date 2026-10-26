@@ -1,0 +1,6 @@
+{
+  "forbidden_elements": ["script", "foreignObject", "image", "style", "animate", "set", "animateMotion", "animateTransform"],
+  "forbidden_text": ["<!DOCTYPE", "<!ENTITY", "data:"],
+  "forbidden_regex": ["url\\((?!\\s*['\"]?#)"],
+  "max_bytes": 262144
+}
