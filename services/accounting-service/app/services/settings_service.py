@@ -25,7 +25,7 @@ from ..models import (
     Project,
     RewardRule,
 )
-from ..models.statements import ReconciliationSettings
+from ..models.statements import ReconciliationSettings, StatementAutoPay
 from .statements import matching
 from ..schemas.writes import AccountGroupIn, AccountIn, CategoryIn, CounterpartyIn, PreferenceIn, ProjectIn
 from . import schedule_entry_hooks
@@ -656,6 +656,13 @@ def delete_account(db: Session, account_id: int) -> None:
     )
     if rule is not None:
         raise ConflictError("account is used by reward rules; set is_archived instead of deleting it")
+    auto_pay = db.scalar(
+        select(StatementAutoPay.id)
+        .where(or_(StatementAutoPay.card_account_id == account_id, StatementAutoPay.pay_account_id == account_id))
+        .limit(1)
+    )
+    if auto_pay is not None:  # the FK is RESTRICT: refuse with 409 instead of an IntegrityError
+        raise ConflictError("account is used by card auto-pay records; set is_archived instead of deleting it")
     # Accounts whose links are cleared changed settings, so a re-import must keep that (settings_locally_edited).
     db.execute(
         update(Account)

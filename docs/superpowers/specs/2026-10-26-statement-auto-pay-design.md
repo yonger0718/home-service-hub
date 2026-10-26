@@ -199,11 +199,15 @@ No change in this feature. The pill's `paid` sums the master's `transfer_in` fro
 - The job lock key is `0x41505041`.
 - A transient skip past `retry_days` becomes `expired` even when the gate now passes; a new candidate with no row still books.
 - The sweep retires a twinned pair only while both legs keep `source='statement'`.
-- An auto-pay orphan is reported only when the matcher leaves the leg unmatched and not deferred.
+- An auto-pay orphan is reported only when the matcher leaves the leg unmatched and not deferred, with no twin and its `entry_date` in the period.
 - `replace_stand_in` is never offered or attempted for an auto-pay leg; the owner deletes the pair.
 - The matcher's `auto_pay` rule leaves the leg to a later line of the statement that fits within the exact window.
 - The job retries nothing after `busy` / `import_running` (next day or next restart).
 - A dry run performs no housekeeping.
+- `duplicate_statement` (§4.2, §4.4) counts every final row of the card (`booked`, `retired`, `owner_deleted`, `owner_edited`) whose pay date is strictly within 20 days, not only `booked` ones, so a re-parsed duplicate never books a bill the owner deleted or a twin retired. The exclusion constraint stays on `booked` rows.
+- Twin (§4.1), narrowed: a `transfer_out` of the negative amount on the pay account is a twin only when its peer leg (the same `transfer_group_id`'s `transfer_in`) is on the card family, or when it has no peer leg. A transfer from the pay account to savings or to another card is not a twin. The family `transfer_in` and statement-booked `expense` shapes are unchanged.
+- `retire_pair` locks the `statement_auto_pay` row (NOWAIT, `auto_pay_busy`), then the legs, and re-validates under the locks: the row still `booked`, both legs present with `source='statement'`, and for a twin retire a twin still present. A failed re-check writes nothing; housekeeping reports no transition and the sweep skips the row.
+- The CLI refuses an `--as-of` later than today (Asia/Taipei) unless `--dry-run` (one line on stderr, exit 2).
 
 
 - Module layout (`auto_pay_job.py` vs a package), the advisory-lock key, APScheduler wiring in `app/main.py` next to the schedule job.

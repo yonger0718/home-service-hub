@@ -17,7 +17,8 @@ Order, under the lock:
 Logs carry ids, counts and error classes only — never amounts or names.
 
 CLI: python -m app.services.auto_pay_job [--dry-run] [--as-of YYYY-MM-DD]
-Prints the report as JSON; exit 0 for completed / dry_run / disabled, else 1.
+Prints the report as JSON; exit 0 for completed / dry_run / disabled, else 1. An `--as-of` later than today
+(Asia/Taipei) is refused (exit 2, one line on stderr) unless `--dry-run`.
 """
 
 import argparse
@@ -278,6 +279,11 @@ def main(argv: Sequence[str] | None = None, *, engine: Engine | None = None) -> 
     parser.add_argument("--as-of", type=date.fromisoformat, default=None, metavar="YYYY-MM-DD",
                         help="run as if today were this date (default: today in Asia/Taipei)")
     args = parser.parse_args(argv)
+    if args.as_of is not None and not args.dry_run and args.as_of > ledger_service._today():
+        # a real run books on the pay date; looking ahead would book payments that have not happened yet
+        print(f"--as-of {args.as_of.isoformat()} is later than today (Asia/Taipei); use --dry-run to look ahead",
+              file=sys.stderr)
+        return 2
     if engine is None:
         from ..database import engine as default_engine
 

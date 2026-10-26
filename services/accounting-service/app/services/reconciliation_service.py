@@ -8,10 +8,13 @@ ledger_entry lock, because a writer holding the shared barrier may be waiting on
 children and their transfer legs in ONE ordered SELECT … FOR UPDATE → re-read the population under those locks →
 match → coverage → cases → counts. The only ledger rows a reconcile writes are the auto-pay retirement's (auto-pay
 spec §4.5, `auto_pay_service.retire_twins_for_statement`, after the sweep and before the group/entry locks): it
-locks a twinned pair's legs NOWAIT (a held leg skips the pair), releases their coverage on any statement, deletes
-them — so their dirty triggers hold the shared dirty barrier until this transaction ends, and the events land past
-this sweep's cap for the next sweep — and flags the released statements `needs_recheck`. Otherwise a reconcile
-emits no dirty events of its own.
+locks a twinned pair's `statement_auto_pay` row and then its legs NOWAIT (a held row or leg skips the pair),
+re-checks the row, the legs and the twin under those locks (a failed re-check skips the pair), releases their
+coverage on any statement, deletes them — so their dirty triggers hold the shared dirty barrier until this
+transaction ends, and the events land past this sweep's cap for the next sweep — and flags the released statements
+`needs_recheck`. The release and the flag are plain UPDATEs: they take blocking (non-NOWAIT) row locks on the other
+statements' coverage rows and on those statements' rows (`needs_recheck`). Otherwise a reconcile emits no dirty
+events of its own.
 
 Reconcile yields on lock conflicts: the sweep (and, in the revision hook, the coverage transfer) has already written
 coverage/case rows when the group/entry locks are taken, while a ledger delete locks the entry/group first and then

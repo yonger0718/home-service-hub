@@ -32,6 +32,20 @@ def test_main_parses_as_of_and_dry_run(monkeypatch, capsys):
     assert seen == {"trigger": "manual", "today": date(2026, 10, 27), "dry_run": True}
 
 
+def test_main_refuses_a_future_as_of_unless_dry_run(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(auto_pay_job.ledger_service, "_today", lambda: date(2026, 10, 27))
+    monkeypatch.setattr(auto_pay_job, "run", lambda engine, trigger, **kw: calls.append(kw) or {"status": "completed"})
+    capsys.readouterr()
+    assert auto_pay_job.main(["--as-of", "2026-10-28"], engine=object()) == 2
+    out, err = capsys.readouterr()
+    assert calls == [] and out == ""
+    assert len(err.strip().splitlines()) == 1 and "2026-10-28" in err
+    assert auto_pay_job.main(["--as-of", "2026-10-28", "--dry-run"], engine=object()) == 0  # a dry run may look ahead
+    assert auto_pay_job.main(["--as-of", "2026-10-27"], engine=object()) == 0  # today itself is fine
+    assert [kw["today"] for kw in calls] == [date(2026, 10, 28), date(2026, 10, 27)]
+
+
 def test_main_exit_codes(monkeypatch, capsys):
     for status, code in (("completed", 0), ("dry_run", 0), ("disabled", 0), ("busy", 1), ("import_running", 1)):
         monkeypatch.setattr(auto_pay_job, "run", lambda engine, trigger, status=status, **kw: {"status": status})
