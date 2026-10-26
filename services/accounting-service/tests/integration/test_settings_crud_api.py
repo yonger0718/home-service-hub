@@ -1,7 +1,10 @@
 """Settings CRUD: account validation and flags, shared credit limits, groups, category tree, projects, counterparties."""
 
 import uuid
+
 from decimal import Decimal
+
+import pytest
 
 from app.models import Account
 
@@ -494,3 +497,16 @@ def test_a_row_missing_from_the_reread_listing_is_404_not_500(client, db_session
     response = client.post("/account-groups", json={"name": "銀行"})
 
     assert response.status_code == 404
+
+
+def test_account_logo_round_trips_and_clears_when_omitted(client, db_session):
+    created = client.post("/accounts", json=_account_body(logo="cathay-united")).json()
+    assert created["logo"] == "cathay-united"
+    assert client.get("/accounts").json()[0]["logo"] == "cathay-united"
+    body = _account_body()  # no logo key
+    assert client.put(f"/accounts/{created['id']}", json=body).json()["logo"] is None
+
+
+@pytest.mark.parametrize("bad", ["Cathay", "cathay_united", "a" * 33, ""])
+def test_account_logo_must_be_a_slug(client, db_session, bad):
+    assert client.post("/accounts", json=_account_body(logo=bad)).status_code == 422

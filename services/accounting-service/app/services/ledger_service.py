@@ -46,7 +46,7 @@ REWARD_RULE_FIELDS = (
     "moze_id",
 )
 ACCOUNT_FIELDS = (
-    "id", "name", "currency", "opening_balance", "group_id", "icon", "color", "is_archived", "include_in_total",
+    "id", "name", "currency", "opening_balance", "group_id", "icon", "logo", "color", "is_archived", "include_in_total",
     "is_credit", "closing_day", "due_rule", "due_value", "credit_limit", "combined_account_id", "credit_sharing_id",
     "auto_pay_account_id", "fx_fee_pct", "fx_fee_rounding", "fx_fee_refundable", "sort_order",
     "settings_locally_edited", "moze_id",

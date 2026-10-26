@@ -1,0 +1,7 @@
+- [x] 1. `account.logo` column, migration, API field, OpenSpec skeleton
+- [ ] 2. Logo set: fetch, normalise, manifest, SOURCES.md, gate
+- [ ] 3. Importer `imageName` to `logo`
+- [ ] 4. `<app-account-icon>` + model + tile token + form plumbing
+- [ ] 5. Slots: accounts list, picker, 🔔 cards
+- [ ] 6. Account settings 品牌 logo picker
+- [ ] 7. Whole-suite verification + browser evidence
