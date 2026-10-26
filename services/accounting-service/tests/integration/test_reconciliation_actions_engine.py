@@ -400,6 +400,104 @@ def test_revert_of_a_member_match_and_sibling_ordering(seed, db_session, run):
     assert [db_session.get(ReconciliationCase, c.id).status for c in (c1, c2)] == ["open", "open"]
 
 
+# --- a fee child matched alone (issue #183) ----------------------------------------------------------------------
+
+def _fee_twin(seed, db, run):
+    """Issue #183: a card statement printing a purchase and, as its own `purchase` row with an empty merchant, the
+    purchase's foreign-transaction fee, which the owner booked as a `fee` child. The matcher claims the parent for the
+    purchase line; the fee line stays `line_unmatched` (the child path skips purchase lines) and the child
+    `entry_unmatched` / `uncovered_child`."""
+    card = _card(seed, db)
+    parent = seed.entry(card, "-1200", day=DAY, merchant="海外店")
+    child = seed.entry(card, "-30", kind="fee", day=DAY, parent_entry_id=parent.id)
+    db.commit()
+    stmt, (purchase, fee_line), _ = _submit(db, run, card, [_line(1, DAY, "海外店", 1200), _line(2, DAY, "", 30)])
+    assert [(c.line_id, c.entry_id) for c in _active(db, stmt.id)] == [(purchase.id, parent.id)]
+    opened = _cases(db, stmt.id, "open")
+    (case,) = [c for c in opened if c.kind == "line_unmatched" and c.line_id == fee_line.id]
+    (uncovered,) = [c for c in opened if c.kind == "entry_unmatched" and c.entry_id == child.id]
+    assert uncovered.context == {"hint": "uncovered_child"}
+    return SimpleNamespace(card=card, stmt=stmt, purchase=purchase, line=fee_line, case=case, parent=parent,
+                           child=child, uncovered=uncovered)
+
+
+def test_match_claims_a_child_alone_as_the_line_principal(seed, db_session, run):
+    """Issue #183 option 1: the owner's `match` names the fee child; it is claimed as the line's sole principal row,
+    like the matcher's child representation (§6.3). The child's uncovered case is superseded, and the next reconcile
+    keeps the owner coverage, re-claims the parent for the purchase line and opens nothing for the pair."""
+    s = _fee_twin(seed, db_session, run)
+
+    row, _ = _apply(db_session, s.case, params={"line_id": s.line.id, "entry_id": s.child.id})
+
+    claims = {c.line_id: c for c in _active(db_session, s.stmt.id)}
+    claim = claims[s.line.id]
+    assert (claim.entry_id, claim.role, claim.group_id, claim.match_kind, claim.match_rule) == (
+        s.child.id, "principal", None, "manual", "owner")
+    assert claims[s.purchase.id].entry_id == s.parent.id
+    assert (row.touched_entry_ids, row.touched_group_ids) == ([s.child.id], [])
+    assert s.child.id in cov.claimed_entry_ids(db_session)
+    assert db_session.get(AccountStatement, s.stmt.id).needs_recheck is False  # a child has no child to leave
+    assert db_session.get(ReconciliationCase, s.case.id).status == "resolved"
+    assert db_session.get(ReconciliationCase, s.uncovered.id).status == "superseded"
+
+    _reconcile(db_session, s.stmt.id)
+
+    after = {c.line_id: c for c in _active(db_session, s.stmt.id)}
+    assert after[s.line.id].id == claim.id and after[s.purchase.id].entry_id == s.parent.id
+    assert [c.id for c in _cases(db_session, s.stmt.id, "open")
+            if c.entry_id in (s.parent.id, s.child.id) or c.line_id in (s.purchase.id, s.line.id)] == []
+
+
+def test_match_of_a_child_refuses_with_children_and_the_gate(unmatched, seed, db_session):
+    """A child has no children to take (`with_children_on_child`); otherwise it passes the same gate as any entry
+    (`wrong_account`, `not_conserved`). Its parent need not be covered (issue #183: a `receivable` parent left
+    uncovered)."""
+    s = unmatched(amount="-1200", kind="receivable")  # the parent: uncovered, not the line's amount
+    stranger = seed.account("路人")
+    child = seed.entry(s.card, "-580", kind="fee", day=DAY, parent_entry_id=s.entry.id)
+    short = seed.entry(s.card, "-500", kind="fee", day=DAY, parent_entry_id=s.entry.id)
+    theirs = seed.entry(stranger, "-580", kind="fee", day=DAY, parent_entry_id=s.entry.id)
+    db_session.commit()
+
+    def attempt(entry, **extra):
+        return _code(_refuse(db_session, lambda: _apply(db_session, s.case, params={
+            "line_id": s.line.id, "entry_id": entry.id, **extra})))
+
+    assert attempt(child, with_children=True) == "with_children_on_child"
+    assert attempt(short) == "not_conserved"
+    assert attempt(theirs) == "wrong_account"
+    assert _active(db_session, s.stmt.id) == [] and _actions(db_session) == []
+
+    _apply(db_session, s.case, params={"line_id": s.line.id, "entry_id": child.id})
+    (claim,) = _active(db_session, s.stmt.id)
+    assert (claim.entry_id, claim.role) == (child.id, "principal")
+    assert s.entry.id not in cov.claimed_entry_ids(db_session)
+
+
+def test_a_matched_child_stays_claimed_until_the_match_is_reverted(seed, db_session, run):
+    """A child one line claims is `entry_claimed` for another line; reverting the match releases it."""
+    card = _card(seed, db_session)
+    stmt, (l1, l2), _ = _submit(db_session, run, card, [_line(1, DAY, "", 30), _line(2, DAY, "", 30)])
+    cases = {c.line_id: c for c in _open_beside_gap(db_session, stmt.id, "-60.0000")}
+    parent = seed.entry(card, "-1200", day=DAY, merchant="海外店")
+    child = seed.entry(card, "-30", kind="fee", day=DAY, parent_entry_id=parent.id)
+    db_session.commit()
+    row, _ = _apply(db_session, cases[l1.id], params={"line_id": l1.id, "entry_id": child.id})
+    (claim,) = _active(db_session, stmt.id)
+    exc = _refuse(db_session, lambda: _apply(db_session, cases[l2.id], params={"line_id": l2.id, "entry_id": child.id}))
+    assert _code(exc) == "entry_claimed"
+
+    _revert(db_session, row.id)
+
+    old = db_session.get(StatementCoverage, claim.id)
+    assert (old.status, old.stale_reason) == ("stale", "revert")
+    assert child.id not in cov.claimed_entry_ids(db_session)
+    assert db_session.get(ReconciliationCase, cases[l1.id].id).status == "open"
+    _apply(db_session, cases[l2.id], params={"line_id": l2.id, "entry_id": child.id})
+    (again,) = _active(db_session, stmt.id)
+    assert (again.line_id, again.entry_id, again.role) == (l2.id, child.id, "principal")
+
+
 def _sweep_stmt(db, stmt):
     locked = db.execute(select(AccountStatement).where(AccountStatement.id == stmt.id).with_for_update()
                         .execution_options(populate_existing=True)).scalar_one()
