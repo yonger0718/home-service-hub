@@ -1,7 +1,8 @@
 """Coverage-only actions (R1c; spec §4.9 action table, rulings 4, 8, 14, 16, 25, 29): `match` claims a line with an
-entry (optionally with its children) or a complete group as owner coverage (`match_kind='manual'`, or
-`'agent'` whenever actor='policy' applies it; `match_rule='owner'`, kept by reconcile); `unmatch` releases a line's coverage and flags the statement for matching
-again. Neither writes a ledger row, so neither emits a dirty event."""
+entry (optionally with its children; a child alone as the line's principal, issue #183) or a complete group as owner
+coverage (`match_kind='manual'`, or `'agent'` whenever actor='policy' applies it; `match_rule='owner'`, kept by
+reconcile); `unmatch` releases a line's coverage and flags the statement for matching again. Neither writes a ledger
+row, so neither emits a dirty event."""
 from __future__ import annotations
 
 from decimal import Decimal
@@ -145,8 +146,10 @@ class MatchAction(ActionBase):
                 raise _refuse("entry_id", "not_found", f"entry {params.entry_id}")
             _locked_group(ctx, entry)
             gate(entry, "entry_id")
-            if entry.parent_entry_id is not None:
-                raise _refuse("entry_id", "child_entry", f"entry {entry.id}")
+            if entry.parent_entry_id is not None and params.with_children:
+                # issue #183: a child is claimed alone as the line's principal, like the matcher's child
+                # representation (§6.3; its parent need not be covered); it has no children to take
+                raise _refuse("entry_id", "with_children_on_child", f"entry {entry.id}")
             if entry.group_id is not None and db.get(EntryGroup, entry.group_id).kind != "split":
                 # a split member is matched alone like a standalone entry (spec §5.1; its coverage row keeps
                 # `group_id NULL`); installment and reward_claim members only go with their group
