@@ -1,6 +1,6 @@
 # Account brand logos: a built-in logo set for accounting accounts (#175) — design
 
-Status: rev 1 (2026-10-26, before the builder check). Owner's wish (2026-10-25, while reviewing the line-icon sweep):
+Status: rev 2 (2026-10-26, after the builder check: nothing important left). Owner's wish (2026-10-25, while reviewing the line-icon sweep):
 "我之後會想把一部分 ex: 國泰就找真的icon來放這樣" — MOZE showed a bank logo next to every account in its account list;
 HomeHub shows an emoji. Decisions marked *[call]* are mine; everything else the owner said.
 
@@ -80,7 +80,7 @@ Anti-goals
 
 ## 4. The logo set
 
-**Location** *[call]*: `frontend/src/assets/logos/<slug>.svg` (PNG `@2x` ≥ 256 px only when no vector exists), served
+**Location** *[call]*: `frontend/src/assets/logos/<slug>.svg` (PNG ≥ 180 px square only when no vector exists), served
 at `assets/logos/<slug>.svg` like the app icon. Shipped in the SPA bundle; no CDN, no runtime fetch elsewhere.
 
 **Manifest** *[call]*: `frontend/src/app/theme/account-logos.ts` exports
@@ -94,8 +94,10 @@ fetch date, "trademark of its owner; bundled for this household's private app, n
 
 **Sourcing** (owner: 「你去官網抓，統一裁成方形」): the builder fetches each mark from the institution's official site
 (brand / press page, site header SVG, or `apple-touch-icon` / favicon SVG); when the site blocks or serves only
-raster, use the official mark as hosted on Wikimedia Commons (SVG) *[call]*; last resort a ≥ 256 px PNG from the
-official site. Normalise every file: square viewBox, the mark centred with ~8 % padding, no background rectangle
+raster, use the official mark as hosted on Wikimedia Commons (SVG) *[call]*; last resort the official site's
+`apple-touch-icon` / PWA icon PNG (≥ 180 px, already square, brand background kept) *[call]*. A probe on
+2026-10-26 found Commons SVGs for some institutions (國泰世華, 匯豐, 中華郵政) and none for others (台新, 華南, 星展,
+LINE Bank, Firstrade, Pionex), so expect a mixed SVG / PNG set. Normalise every file: square viewBox, the mark centred with ~8 % padding, no background rectangle
 (the SPA draws the tile), colours untouched. A logo that cannot be obtained in acceptable quality is left out of
 the set and listed in the PR body; its accounts keep their emoji. Downloaded files are untrusted input: fetch into
 an empty scratch directory, inspect (`file`, size, an SVG parse that rejects `<script>`, `<foreignObject>`, external
