@@ -362,20 +362,35 @@ def retire_pair(db: Session, row: StatementAutoPay, *, reason: str, run_id: int 
     an owner delete or PUT /transfers landed after the caller's unlocked check) return None and write nothing.
     Otherwise release the coverage the legs hold (reason `auto_pay:<reason>`), delete them, flag the released
     statements `needs_recheck`, audit `auto_pay_retired`, and return the released statement ids (possibly empty).
-    A row or leg another transaction holds raises `auto_pay_busy`. Flushes, never commits."""
-    row = _lock_row(db, row.id)
-    if row is None or row.status != "booked":
-        return None
-    out_leg, in_leg = lock_pair(db, row)
-    if out_leg is None or in_leg is None or STATEMENT_SOURCE != out_leg.source or STATEMENT_SOURCE != in_leg.source:
-        return None
-    if reason == "twin":
-        if window_days is None:
-            window_days = int(settings_service.read_auto_pay_settings(db)["twin_window_days"])
-        if not find_twins(db, card_account_id=row.card_account_id, pay_account_id=row.pay_account_id,
-                          amount=row.amount, pay_date=row.pay_date, window_days=window_days,
-                          exclude=(out_leg.id, in_leg.id)):
+    A row or leg another transaction holds raises `auto_pay_busy`; a busy result or a failed re-check leaves no
+    lock behind (both locks live in one savepoint that is rolled back). Flushes, never commits."""
+    # One savepoint around both locks: a busy leg or a failed re-check rolls the row lock back with it, so a
+    # bailed-out retire leaves no lock behind for the rest of the caller's transaction (an owner delete of a leg
+    # needs the row through the ON DELETE SET NULL foreign keys).
+    locks = db.begin_nested()
+    try:
+        row = _lock_row(db, row.id)
+        if row is None or row.status != "booked":
+            locks.rollback()
             return None
+        out_leg, in_leg = lock_pair(db, row)
+        if (out_leg is None or in_leg is None or STATEMENT_SOURCE != out_leg.source
+                or STATEMENT_SOURCE != in_leg.source):
+            locks.rollback()
+            return None
+        if reason == "twin":
+            if window_days is None:
+                window_days = int(settings_service.read_auto_pay_settings(db)["twin_window_days"])
+            if not find_twins(db, card_account_id=row.card_account_id, pay_account_id=row.pay_account_id,
+                              amount=row.amount, pay_date=row.pay_date, window_days=window_days,
+                              exclude=(out_leg.id, in_leg.id)):
+                locks.rollback()
+                return None
+    except BaseException:
+        if locks.is_active:
+            locks.rollback()
+        raise
+    locks.commit()  # release the savepoint; the row and leg locks stay until the caller commits
     # delete_entries_cascade ends with expire_all and the leg FKs are ON DELETE SET NULL: copy everything first
     row_id, statement_id = row.id, row.statement_id
     out_id, in_id = out_leg.id, in_leg.id

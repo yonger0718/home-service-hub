@@ -515,7 +515,7 @@ def test_twin_window_closed_after_14_days(seed, db_session, world):
     assert row.status == "retired"
 
 
-def test_retire_pair_directly_ignores_the_window(seed, db_session, world):
+def test_retire_pair_directly_ignores_the_lookout_limit(seed, db_session, world):
     db, (bank, card, stmt) = db_session, world
     row, out_leg, in_leg = _book(db, stmt)
     out_id, in_id = out_leg.id, in_leg.id
@@ -559,6 +559,14 @@ def test_retire_pair_busy_when_a_leg_is_locked(pg_engine, db_session, world):
         with pytest.raises(CodedConflictError) as caught:
             aps.retire_pair(db, row, reason="twin")
         assert caught.value.code == aps.PAIR_BUSY == "auto_pay_busy"
+        # the busy result left no row lock behind in the caller's still-open transaction
+        prober = pg_engine.connect()
+        try:
+            prober.begin()
+            prober.execute(text("SELECT id FROM statement_auto_pay WHERE id = :id FOR UPDATE NOWAIT"), {"id": row.id})
+        finally:
+            prober.rollback()
+            prober.close()
         db.rollback()
     finally:
         holder.rollback()
