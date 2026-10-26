@@ -95,6 +95,7 @@ const ACCOUNT_INPUT: AccountInput = {
   is_archived: false,
   group_id: 3,
   icon: '💳',
+  logo: null,
   color: null,
   note: null,
   sort_order: 0,

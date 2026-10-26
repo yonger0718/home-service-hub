@@ -43,6 +43,7 @@ interface AccountForm {
   opening_balance: string;
   group_id: number | null;
   icon: string;
+  logo: string | null;
   color: string;
   note: string;
   sort_order: number;
@@ -63,7 +64,7 @@ interface AccountForm {
 }
 
 const EMPTY_FORM: AccountForm = {
-  name: '', currency: 'TWD', opening_balance: '0', group_id: null, icon: '', color: '', note: '', sort_order: 0,
+  name: '', currency: 'TWD', opening_balance: '0', group_id: null, icon: '', logo: null, color: '', note: '', sort_order: 0,
   include_in_total: true, is_archived: false, is_credit: false, closing_day: '', due_rule: '', due_value: '',
   credit_limit: '', combined_account_id: null, credit_sharing_id: null, auto_pay_account_id: null,
   fx_fee_on: false, fx_fee_pct: '', fx_fee_rounding: 'keep', fx_fee_refundable: false,
@@ -111,6 +112,7 @@ export function accountToInput(account: AccountDetail): AccountInput {
     is_archived: account.is_archived,
     group_id: account.group_id,
     icon: account.icon,
+    logo: account.logo,
     color: account.color,
     note: account.note ?? null,
     sort_order: account.sort_order,
@@ -136,6 +138,7 @@ function formFrom(account: AccountDetail): AccountForm {
     opening_balance: decimalText(account.opening_balance) || '0',
     group_id: account.group_id,
     icon: account.icon ?? '',
+    logo: account.logo ?? null,
     color: account.color ?? '',
     note: account.note ?? '',
     sort_order: account.sort_order,
@@ -166,6 +169,7 @@ function formToInput(form: AccountForm, members: number[]): AccountInput {
     is_archived: form.is_archived,
     group_id: form.group_id,
     icon: textOrNull(form.icon),
+    logo: form.logo,
     color: textOrNull(form.color),
     note: textOrNull(form.note),
     sort_order: form.sort_order,

@@ -6,6 +6,7 @@ import { BehaviorSubject } from 'rxjs';
 import { MockInstance, afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountDetail, LedgerAccount } from '../../../models/accounting.model';
+import { ACCOUNT_LOGOS } from '../../../theme/account-logos';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { AccountSettingsComponent, accountToInput, decimalText } from './account-settings';
 
@@ -181,13 +182,27 @@ describe('AccountSettingsComponent', () => {
     expect(req.request.method).toBe('PUT');
     expect(req.request.body).toEqual({
       name: '玉山 Only', currency: 'TWD', opening_balance: '-3693', is_archived: false, group_id: 3, icon: '💳',
-      color: null, note: '主要餐飲卡', sort_order: 0, include_in_total: true, is_credit: true, closing_day: 15,
+      logo: null, color: null, note: '主要餐飲卡', sort_order: 0, include_in_total: true, is_credit: true, closing_day: 15,
       due_rule: 'days_after_closing', due_value: 20, credit_limit: '350000', combined_account_id: 10,
       credit_sharing_id: null, credit_sharing_members: [], auto_pay_account_id: 2, fx_fee_pct: '1.5', fx_fee_rounding: 'floor',
       fx_fee_refundable: false,
     });
     req.flush(DETAIL);
     expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 11]);
+  });
+
+  it('a 圖示-only edit keeps the stored logo', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, logo: ACCOUNT_LOGOS[0].slug } as AccountDetail);
+    const icon = el(fixture).querySelector<HTMLInputElement>('.icon-input')!;
+    icon.value = '🏦';
+    icon.dispatchEvent(new Event('input'));
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body.icon).toBe('🏦');
+    expect(req.request.body.logo).toBe(ACCOUNT_LOGOS[0].slug);
+    req.flush(DETAIL);
   });
 
   it('keeps every digit of balances ≥ 1e12 on the way into the form and back', async () => {

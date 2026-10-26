@@ -18,6 +18,7 @@
   --app-surface: #fafcff;       /* card / panel surface */
   --app-surface-glass: rgba(250, 252, 255, 0.8); /* frosted nav & headers */
   --app-surface-soft: #edf1f6;  /* inset / secondary surface */
+  --app-logo-tile: #fff;        /* white tile behind bundled institution logos */
   --app-border: #d8dee7;        /* hairline borders */
   --app-text: #151821;          /* primary text — near-black navy */
   --app-text-muted: #6b7280;    /* secondary / label text */
@@ -166,6 +167,7 @@
   --app-surface: #171c24;
   --app-surface-glass: rgba(23, 28, 36, 0.75);
   --app-surface-soft: #202733;
+  --app-logo-tile: #fff;
   --app-border: #313a48;
   --app-text: #f3f6fb;
   --app-text-muted: #99a3b3;
