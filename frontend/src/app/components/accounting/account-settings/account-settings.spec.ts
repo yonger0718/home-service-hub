@@ -205,6 +205,53 @@ describe('AccountSettingsComponent', () => {
     req.flush(DETAIL);
   });
 
+  it('shows the current logo label and lists the set with 無 first', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, logo: 'cathay-united' } as AccountDetail);
+    const current = el(fixture).querySelector<HTMLButtonElement>('.logo-current')!;
+    expect(current.textContent).toContain('國泰世華');
+    expect(el(fixture).querySelector('.logo-grid')).toBeNull();
+    current.click();
+    fixture.detectChanges();
+    const cells = Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('.logo-grid button'));
+    expect(cells[0].textContent?.trim()).toBe('無');
+    expect(cells.length).toBe(ACCOUNT_LOGOS.length + 1);
+    expect(cells.find(c => c.getAttribute('aria-label') === '國泰世華')!.getAttribute('aria-pressed')).toBe('true');
+    expect(cells[0].getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('picking a logo updates the big icon and the saved payload', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    el(fixture).querySelector<HTMLButtonElement>('.logo-current')!.click();
+    fixture.detectChanges();
+    const target = ACCOUNT_LOGOS[1];
+    el(fixture).querySelector<HTMLButtonElement>(`.logo-grid button[aria-label="${target.label}"]`)!.click();
+    fixture.detectChanges();
+    expect(el(fixture).querySelector('.logo-grid')).toBeNull();
+    expect(el(fixture).querySelector<HTMLImageElement>('.bigicon app-account-icon img')!.getAttribute('src')).toMatch(new RegExp(`${target.file}$`));
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body.logo).toBe(target.slug);
+    req.flush(DETAIL);
+  });
+
+  it('無 clears the logo and keeps the emoji', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, logo: ACCOUNT_LOGOS[0].slug } as AccountDetail);
+    el(fixture).querySelector<HTMLButtonElement>('.logo-current')!.click();
+    fixture.detectChanges();
+    el(fixture).querySelector<HTMLButtonElement>('.logo-grid button')!.click();
+    fixture.detectChanges();
+    expect(el(fixture).querySelector('.bigicon app-account-icon img')).toBeNull();
+    expect(el(fixture).querySelector('.bigicon app-account-icon')!.textContent).toContain('💳');
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body.logo).toBeNull();
+    expect(req.request.body.icon).toBe('💳');
+    req.flush(DETAIL);
+  });
+
   it('keeps every digit of balances ≥ 1e12 on the way into the form and back', async () => {
     await setup('11');
     const big = { ...DETAIL, opening_balance: '-1234567890123.4500', credit_limit: '9007199254740993.0000' } as AccountDetail;

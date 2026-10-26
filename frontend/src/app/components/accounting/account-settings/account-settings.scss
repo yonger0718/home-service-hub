@@ -47,7 +47,7 @@
   gap: 4px;
   padding: 6px 0 10px;
 
-  .ico { align-items: center; background: var(--app-surface-soft); border-radius: 50%; display: flex; font-size: 1.8rem; height: 64px; justify-content: center; width: 64px; }
+  .ico { --ico-size: 64px; border-radius: 50%; display: flex; height: var(--ico-size); width: var(--ico-size); }
   b { font-size: 1.2rem; font-variant-numeric: tabular-nums; }
   small { color: var(--app-text-muted); font-size: 0.75rem; }
 }
@@ -113,3 +113,24 @@
 .field-error, .form-message { color: var(--app-danger); font-size: 0.8rem; }
 .currency-note { color: var(--app-text-muted); font-size: 0.75rem; }
 .neg { color: var(--tone-neg, var(--c-red)); }
+
+.ico-sm { --ico-size: 1.5rem; border-radius: 50%; display: inline-flex; height: var(--ico-size); vertical-align: middle; width: var(--ico-size); }
+.logo-current { align-items: center; background: none; border: 0; color: var(--app-text); cursor: pointer; display: inline-flex; font: inherit; gap: 6px; }
+.logo-grid { display: grid; gap: 0.5rem; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); padding: 0.5rem 0; }
+.logo-opt {
+  align-items: center;
+  background: var(--app-surface-soft);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--app-text);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  justify-content: center;
+  min-height: 44px;
+  padding: 6px 2px;
+
+  small { color: var(--app-text-muted); font-size: 0.7rem; }
+  &[aria-pressed="true"] { outline: 2px solid var(--app-primary); }
+}

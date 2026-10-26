@@ -31,3 +31,25 @@ The page SHALL show the latest import's timestamp, status and the number of entr
 - **GIVEN** an account with `logo` `cathay-united` and one with none
 - **THEN** the first row SHALL render the bundled image (`assets/logos/…`) and no emoji; the second SHALL render its emoji
 - **AND** an unknown slug or a failed image load SHALL render the emoji
+
+### Requirement: Account settings page
+
+The SPA SHALL provide `/accounting/accounts/:id/settings` and `/accounting/accounts/new` as a settings-style list: the account's brand logo when set, else its icon, and live balance at the top; rows 名稱, 主幣種, 帳戶分組, 品牌 logo (a button showing the current choice that opens a grid of the bundled logo set with `無` first), 圖示, 初始金額, 帳單週期 (closing day with the computed current cycle), 信用帳戶 toggle revealing 繳款期限 (fixed day or days after closing, showing the computed due date), 信用額度, 額度共用 (multi-select of credit accounts), 主帳戶 (picker), 自動扣繳 (account picker); 紅利回饋 (read-only list of the account's rules in 2a); 國外交易手續費 toggle revealing %, rounding, refund flag; 納入總餘額; 封存帳戶; 刪除帳戶 (enabled only with no entries). 主幣種 SHALL be read-only once the account has entries. Saving calls the account write endpoints and validation errors SHALL be shown beside the field. An imported account whose settings were edited locally SHALL show a note "已自訂，匯入不再覆寫" with a 還原 MOZE 設定 action that clears the flag.
+
+#### Scenario: Credit toggle reveals card fields
+- **WHEN** 信用帳戶 is switched on
+- **THEN** the 繳款期限, 信用額度, 額度共用, 主帳戶 and 自動扣繳 rows SHALL appear
+
+#### Scenario: Due date preview
+- **GIVEN** closing day 15 and 繳款期限 = 20 days after closing
+- **WHEN** the row renders on 2026-10-02
+- **THEN** it SHALL show the current cycle `09/16 – 10/15` and the due date `11/04`
+
+#### Scenario: Pick a logo
+- **WHEN** the owner opens the 品牌 logo grid and taps a logo
+- **THEN** the grid SHALL close, the header SHALL show that logo's image, and saving SHALL send its slug as `logo`
+
+#### Scenario: Clear the logo
+- **GIVEN** an account with a logo and the emoji `💳`
+- **WHEN** the owner taps `無` in the 品牌 logo grid and saves
+- **THEN** `logo` SHALL be null, the header SHALL show the emoji, and `icon` SHALL be unchanged

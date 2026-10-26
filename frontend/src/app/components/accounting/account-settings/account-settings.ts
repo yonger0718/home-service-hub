@@ -23,6 +23,8 @@ import {
   RoundingMode,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { ACCOUNT_LOGOS, accountLogo } from '../../../theme/account-logos';
+import { AccountIconComponent } from '../account-icon/account-icon';
 import { accountLabel, isHandledKey, restoreOverlayFocus } from '../accounting-ui';
 import { DueRule, dueDate, periodLabel, statementPeriod } from '../cycle';
 import { DirtyAware, DirtyFormRegistry } from '../dirty-form.service';
@@ -206,7 +208,7 @@ interface LoadedAccount {
 @Component({
   selector: 'app-account-settings',
   standalone: true,
-  imports: [RouterLink],
+  imports: [RouterLink, AccountIconComponent],
   templateUrl: './account-settings.html',
   styleUrl: './account-settings.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -248,6 +250,10 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   readonly message = signal<string | null>(null);
   readonly saving = signal(false);
   readonly confirmDelete = signal(false);
+
+  protected readonly logos = ACCOUNT_LOGOS;
+  readonly logoPickerOpen = signal(false);
+  readonly logoLabel = computed(() => accountLogo(this.form().logo)?.label ?? '無');
 
   readonly roundingOptions = Object.entries(ROUNDING_LABELS) as [RoundingMode, string][];
   readonly formatMoney = formatMoney;
@@ -457,6 +463,11 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
 
   set<K extends keyof AccountForm>(key: K, value: AccountForm[K]): void {
     this.form.update(form => ({ ...form, [key]: value }));
+  }
+
+  pickLogo(slug: string | null): void {
+    this.set('logo', slug);
+    this.logoPickerOpen.set(false);
   }
 
   toggle(key: 'is_credit' | 'include_in_total' | 'is_archived' | 'fx_fee_on' | 'fx_fee_refundable'): void {
