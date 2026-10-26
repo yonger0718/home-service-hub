@@ -25,7 +25,7 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models import (
-    AccountStatement, ReconciliationAction, ReconciliationCase, ReconciliationProposal, StatementEvent,
+    AccountStatement, ReconciliationAction, ReconciliationCase, ReconciliationProposal, StatementAutoPay, StatementEvent,
 )
 from app.services import coverage_service
 from app.services import reconciliation_service as rec
@@ -134,6 +134,12 @@ def retire_statement(db: Session, *, account_id: int, statement_id: int, note: s
         "note": note, "previous_mode": previous_mode, "released_coverage": released, "retired_events": sorted(events),
         "superseded_cases": [c.id for c in cases], "superseded_proposals": sorted(p for p, _ in proposals),
         "unlinked_deferrals": sorted(unlinked)})
+    booked = db.execute(select(StatementAutoPay).where(StatementAutoPay.statement_id == statement.id,
+                                                       StatementAutoPay.status == "booked")).scalar_one_or_none()
+    if booked is not None:  # the pair stays (it is real money moved); only the audit trail notes it
+        audit.record(db, event="auto_pay_statement_retired", actor=label, statement_id=statement.id,
+                     request_id=request_id, detail={"auto_pay_id": booked.id, "out_entry_id": booked.out_entry_id,
+                                                    "in_entry_id": booked.in_entry_id})
     db.flush()
     return RetireResult(statement, already_retired=False, released_coverage=released, retired_events=len(events),
                         superseded_cases=len(cases))

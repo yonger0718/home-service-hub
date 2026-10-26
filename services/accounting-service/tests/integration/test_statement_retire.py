@@ -367,3 +367,28 @@ def test_retire_refuses_the_target_of_another_statements_anchor_until_it_is_reve
     db_session.commit()
     assert _retire(db_session, a.aug).already_retired is False
     assert _fresh(db_session, AccountStatement, a.aug.id).mode == "historical"
+
+
+def test_retire_leaves_a_booked_auto_pay_row_and_audits_it(seed, db_session, run):
+    from app.models import LedgerEntry, StatementAutoPay
+    from app.services import auto_pay_service as aps
+    from app.services.settings_service import AUTO_PAY_DEFAULTS
+    due, today = date(2026, 10, 24), date(2026, 10, 27)
+    settings = {**AUTO_PAY_DEFAULTS, "enabled": True, "enabled_from": "2026-09-01", "version": 1}
+    bank = seed.account("薪轉")
+    card = _card(seed, db_session, "卡", auto_pay_account_id=bank.id)
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)], period=SEP, due_date=due)
+    [cand] = [c for c in aps.candidates(db_session, today, settings) if c.statement_id == stmt.id]
+    assert aps.decide(db_session, cand, today, settings)["decision"] == "booked"
+    db_session.commit()
+    row = db_session.query(StatementAutoPay).filter_by(statement_id=stmt.id).one()
+    legs = (row.out_entry_id, row.in_entry_id)
+
+    assert _retire(db_session, stmt).already_retired is False
+
+    db_session.expire_all()
+    row = db_session.get(StatementAutoPay, row.id)
+    assert row.status == "booked" and (row.out_entry_id, row.in_entry_id) == legs
+    assert db_session.query(LedgerEntry).filter(LedgerEntry.id.in_(legs)).count() == 2
+    tail = db_session.query(ReconciliationAudit).filter_by(statement_id=stmt.id, event="auto_pay_statement_retired").all()
+    assert len(tail) == 1 and tail[0].detail == {"auto_pay_id": row.id, "out_entry_id": legs[0], "in_entry_id": legs[1]}

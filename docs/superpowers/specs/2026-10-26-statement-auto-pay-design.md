@@ -1,6 +1,6 @@
 # Card statement auto-pay — design
 
-**Status:** rev 3 (builder check + Multica AGENT-303 P1/P2/minors folded), for re-check + owner review. **Owner decision:** 2026-10-26 「自動扣繳做選項 1」 — the fully automatic form, not the one-tap confirmation.
+**Status:** rev 4.1 (plan errata in §8; rev 3 was builder check + Multica AGENT-303 P1/P2/minors folded), for re-check + owner review. **Owner decision:** 2026-10-26 「自動扣繳做選項 1」 — the fully automatic form, not the one-tap confirmation.
 **Code paths** below are relative to `services/accounting-service/` unless they start with `frontend/`. Line numbers are from main `f2d8498` (#185 merged).
 
 ## 1. Intent
@@ -189,6 +189,22 @@ No change in this feature. The pill's `paid` sums the master's `transfer_in` fro
 - Dry-run gate: `r6_dryrun.py` on the live dump before and after deploy with the flag off shows no change.
 
 ## 8. Left to the builder
+
+**rev 4.1 errata (plan).**
+
+- Task 1's Alembic revision id is `c4a7e2d9f1b3`.
+- A `no_link` skip row has no linked bank account; it stores the card's own `card_account_id` in the NOT NULL `pay_account_id`.
+- The job shares the `ACCOUNTING_SCHEDULER_ENABLED` switch with the schedule job (`false` turns both off).
+- The `header_changed` marker lives in `reason` of the booked row.
+- The job lock key is `0x41505041`.
+- A transient skip past `retry_days` becomes `expired` even when the gate now passes; a new candidate with no row still books.
+- The sweep retires a twinned pair only while both legs keep `source='statement'`.
+- An auto-pay orphan is reported only when the matcher leaves the leg unmatched and not deferred.
+- `replace_stand_in` is never offered or attempted for an auto-pay leg; the owner deletes the pair.
+- The matcher's `auto_pay` rule leaves the leg to a later line of the statement that fits within the exact window.
+- The job retries nothing after `busy` / `import_running` (next day or next restart).
+- A dry run performs no housekeeping.
+
 
 - Module layout (`auto_pay_job.py` vs a package), the advisory-lock key, APScheduler wiring in `app/main.py` next to the schedule job.
 - How the matcher learns auto-pay provenance (a `stand_in_kind` on the entry rows it loads, or a second id set), and the exact insertion point of the `auto_pay` rule relative to `_transfer_case`.
