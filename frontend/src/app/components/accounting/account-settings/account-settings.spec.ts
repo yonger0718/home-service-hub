@@ -220,6 +220,28 @@ describe('AccountSettingsComponent', () => {
     expect(cells[0].getAttribute('aria-pressed')).toBe('false');
   });
 
+  it('names the current-logo button 品牌 logo：<label> and shows the account icon when no logo is set', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, icon: '🍱', logo: null } as AccountDetail);
+    const current = el(fixture).querySelector<HTMLButtonElement>('.logo-current')!;
+    expect(current.getAttribute('aria-label')).toBe('品牌 logo：無');
+    expect(current.querySelector('app-account-icon .emoji')!.textContent).toBe('🍱');
+  });
+
+  it('labels a stored slug the set does not know as 未知 logo, with 無 not pressed', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, logo: 'china-airlines' } as AccountDetail);
+    const current = el(fixture).querySelector<HTMLButtonElement>('.logo-current')!;
+    expect(current.textContent).toContain('未知 logo');
+    expect(current.getAttribute('aria-label')).toBe('品牌 logo：未知 logo');
+    current.click();
+    fixture.detectChanges();
+    const cells = Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('.logo-grid button'));
+    expect(cells[0].textContent?.trim()).toBe('無');
+    expect(cells[0].getAttribute('aria-pressed')).toBe('false');
+    expect(cells.filter(c => c.getAttribute('aria-pressed') === 'true')).toEqual([]);
+  });
+
   it('picking a logo updates the big icon and the saved payload', async () => {
     await setup('11');
     const fixture = render(DETAIL);

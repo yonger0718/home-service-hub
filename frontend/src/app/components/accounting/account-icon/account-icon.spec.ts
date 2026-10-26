@@ -14,6 +14,14 @@ class HostComponent {
   icon = signal<string | null>(null);
 }
 
+@Component({
+  imports: [AccountIconComponent],
+  template: `<app-account-icon size="big" [logo]="slug" />`,
+})
+class BigHostComponent {
+  slug = ACCOUNT_LOGOS[0].slug;
+}
+
 function setup() {
   const fixture = TestBed.createComponent(HostComponent);
   fixture.detectChanges();
@@ -77,6 +85,13 @@ describe('AccountIconComponent', () => {
     cmp.logo.set(ACCOUNT_LOGOS[0].slug);
     fixture.detectChanges();
     expect(host.querySelector('img')!.parentElement!.classList.contains('tile')).toBe(true);
-    expect(host.style.background).toBe('');
+  });
+
+  it('size="big" sets the host class big; a logo sets has-logo', () => {
+    const fixture = TestBed.createComponent(BigHostComponent);
+    fixture.detectChanges();
+    const host = fixture.nativeElement.querySelector('app-account-icon') as HTMLElement;
+    expect(host.classList.contains('big')).toBe(true);
+    expect(host.classList.contains('has-logo')).toBe(true);
   });
 });

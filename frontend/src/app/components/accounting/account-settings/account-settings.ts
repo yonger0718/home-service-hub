@@ -253,7 +253,11 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
 
   protected readonly logos = ACCOUNT_LOGOS;
   readonly logoPickerOpen = signal(false);
-  readonly logoLabel = computed(() => accountLogo(this.form().logo)?.label ?? '無');
+  /** 無 for no logo; 未知 logo for a stored slug the bundled set does not know (the form still keeps and re-saves it). */
+  readonly logoLabel = computed(() => {
+    const slug = this.form().logo;
+    return slug === null ? '無' : (accountLogo(slug)?.label ?? '未知 logo');
+  });
 
   readonly roundingOptions = Object.entries(ROUNDING_LABELS) as [RoundingMode, string][];
   readonly formatMoney = formatMoney;

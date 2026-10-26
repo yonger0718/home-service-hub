@@ -89,7 +89,7 @@ describe('AccountPickerComponent', () => {
     const icons = [
       el.querySelector('.acct-trigger app-account-icon'),
       panel.querySelector('.acct-recent-chip app-account-icon'),
-      panel.querySelector('.acct-list app-account-icon.acct-ico img, .acct-list [data-account-id="7"] app-account-icon'),
+      panel.querySelector('.acct-option[data-account-id="7"] app-account-icon'),
     ];
     expect(icons.every(icon => icon !== null && icon.classList.contains('acct-ico'))).toBe(true);
     const srcs = Array.from(el.querySelectorAll('img')).map(img => img.getAttribute('src'));

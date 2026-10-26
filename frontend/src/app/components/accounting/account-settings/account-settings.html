@@ -58,8 +58,8 @@
   <div class="rw">
     <span class="k">品牌 logo</span>
     <span class="v">
-      <button type="button" class="logo-current" [attr.aria-expanded]="logoPickerOpen()" (click)="logoPickerOpen.set(!logoPickerOpen())">
-        <app-account-icon class="ico-sm" [logo]="form().logo" /> {{ logoLabel() }}
+      <button type="button" class="logo-current" [attr.aria-label]="'品牌 logo：' + logoLabel()" [attr.aria-expanded]="logoPickerOpen()" (click)="logoPickerOpen.set(!logoPickerOpen())">
+        <app-account-icon class="ico-sm" [logo]="form().logo" [icon]="form().icon" fallback="folder" /> {{ logoLabel() }}
       </button>
     </span>
   </div>

@@ -25,10 +25,31 @@ const numbers = (viewBox: string | null) =>
     .split(/[\s,]+/)
     .map(Number);
 
-/** [width, height]: SVG → the OUTERMOST element's viewBox (never a regex over the text); PNG → IHDR. */
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PNG_CHUNKS = new Set(['IHDR', 'PLTE', 'tRNS', 'IDAT', 'IEND']);
+
+/** [width, height]: SVG → the OUTERMOST element's viewBox (never a regex over the text); PNG → IHDR, after checking
+ *  the signature and walking every chunk (length, type, data, CRC): only the normaliser's IHDR/PLTE/tRNS/IDAT/IEND
+ *  kinds, IHDR first, IEND last. */
 function dimensions(path: string): [number, number] {
   if (path.endsWith('.png')) {
     const b = readFileSync(path);
+    expect(b.subarray(0, 8).equals(PNG_SIGNATURE), `${path}: PNG signature`).toBe(true);
+    expect(b.toString('latin1', 12, 16), `${path}: IHDR at offset 12`).toBe('IHDR');
+    const types: string[] = [];
+    for (let pos = 8; pos < b.length;) {
+      expect(pos + 12, `${path}: truncated chunk at ${pos}`).toBeLessThanOrEqual(b.length);
+      const size = b.readUInt32BE(pos);
+      types.push(b.toString('latin1', pos + 4, pos + 8));
+      pos += 12 + size;
+      expect(pos, `${path}: chunk ${types.at(-1)} overruns the file`).toBeLessThanOrEqual(b.length);
+    }
+    expect(
+      types.filter((t) => !PNG_CHUNKS.has(t)),
+      `${path}: chunk types`,
+    ).toEqual([]);
+    expect(types.at(-1), `${path}: last chunk`).toBe('IEND');
+    expect(types.indexOf('IEND'), `${path}: IEND only at the end`).toBe(types.length - 1);
     return [b.readUInt32BE(16), b.readUInt32BE(20)];
   }
   const [, , w, h] = numbers(

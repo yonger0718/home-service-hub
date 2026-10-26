@@ -510,3 +510,10 @@ def test_account_logo_round_trips_and_clears_when_omitted(client, db_session):
 @pytest.mark.parametrize("bad", ["Cathay", "cathay_united", "a" * 33, ""])
 def test_account_logo_must_be_a_slug(client, db_session, bad):
     assert client.post("/accounts", json=_account_body(logo=bad)).status_code == 422
+
+
+def test_account_logo_put_rejects_a_bad_slug(client, db_session):
+    created = client.post("/accounts", json=_account_body(logo="cathay-united")).json()
+    response = client.put(f"/accounts/{created['id']}", json=_account_body(logo="Bad Slug!"))
+    assert response.status_code == 422
+    assert client.get("/accounts").json()[0]["logo"] == "cathay-united"
