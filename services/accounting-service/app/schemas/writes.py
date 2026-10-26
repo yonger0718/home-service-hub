@@ -190,6 +190,7 @@ class AccountIn(BaseModel):
     is_archived: bool = False
     group_id: Int32 | None = None
     icon: Annotated[str, Field(max_length=16)] | None = None
+    logo: Annotated[str, Field(pattern=r"^[a-z0-9-]{1,32}$")] | None = None
     color: Color | None = None
     note: str | None = None
     sort_order: Int32 = 0

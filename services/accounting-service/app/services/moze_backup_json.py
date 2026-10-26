@@ -251,6 +251,40 @@ ICON_BY_IMAGE: dict[str, str] = {
     "Account_13": "🧾",  # interest
 }
 
+# MOZE account picture -> SPA brand-logo slug; generic pictures are absent.
+LOGO_BY_IMAGE: dict[str, str] = {
+    "AccountCollection01_02": "standard-chartered",
+    "AccountCollection01_04": "bank-of-taiwan",
+    "AccountCollection01_08": "ctbc",
+    "AccountCollection01_11": "taishin",
+    "AccountCollection01_12": "cathay-united",
+    "AccountCollection01_13": "hsbc",
+    "AccountCollection01_14": "sinopac",
+    "AccountCollection01_16": "hua-nan",
+    "AccountCollection01_17": "yuanta",
+    "AccountCollection01_20": "taipei-fubon",
+    "AccountCollection02_01": "line-bank",
+    "AccountCollection02_05": "amex",
+    "AccountCollection02_10": "chunghwa-post",
+    "AccountCollection02_11": "chang-hwa",
+    "AccountCollection05_15": "starbucks",
+    "AccountCollection06_01": "kgi",
+    "AccountCollection06_02": "chang-hwa",
+    "AccountCollection06_04": "richart",
+    "AccountCollection06_10": "line-points",
+    "AccountCollection09_20": "taipei-fubon",
+    "AccountCollection10_01": "dawho",
+    "AccountCollection10_03": "rakuten-bank",
+    "AccountCollection10_05": "cathay-united",
+    "AccountCollection10_06": "sinopac-securities",
+    "AccountCollection10_18": "interactive-brokers",
+    "AccountCollection10_19": "firstrade",
+    "AccountCollection11_02": "hsbc",
+    "AccountCollection11_05": "dbs",
+    "AccountCollection13_05": "next-bank",
+    "Account_02": "cota",
+}
+
 # AHAccountGroup.name key -> account emoji (design D25).
 ICON_BY_GROUP: dict[str, str] = {
     "APP_GROUP_CASH": "👛",

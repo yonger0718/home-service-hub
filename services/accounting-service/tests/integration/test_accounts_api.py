@@ -56,7 +56,7 @@ def test_accounts_list_shows_computed_balances_sorted_by_group_then_order_then_n
     assert (body[1]["balance"], body[1]["entry_count"]) == ("178500.0000", 1)
     assert body[3]["id"] == loose.id
     assert set(body[0]) >= {
-        "balance_main", "icon", "color", "is_archived", "include_in_total", "is_credit", "closing_day", "due_rule",
+        "balance_main", "icon", "logo", "color", "is_archived", "include_in_total", "is_credit", "closing_day", "due_rule",
         "due_value", "credit_limit", "available_credit", "combined_account_id", "credit_sharing_id",
         "auto_pay_account_id", "fx_fee_pct", "fx_fee_rounding", "fx_fee_refundable", "sort_order",
         "settings_locally_edited", "moze_id", "rule_summaries",

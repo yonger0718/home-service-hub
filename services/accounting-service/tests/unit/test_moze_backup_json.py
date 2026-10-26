@@ -1,4 +1,5 @@
 from datetime import datetime
+from pathlib import Path
 from decimal import Decimal
 
 import pytest
@@ -8,6 +9,7 @@ from app.services.moze_backup_json import (
     CATEGORY_TYPE_TO_KIND,
     category_name,
     DUE_RULE_MAP,
+    LOGO_BY_IMAGE,
     POSTING_MAP,
     RECORD_TYPE_TO_KIND,
     ROUNDING_MAP,
@@ -310,3 +312,16 @@ def test_digit_bearing_keys_map_or_fall_back_and_are_collected():
     assert category_name("CATEGORY_3C", unmapped) == "3C"
     assert category_name("CATEGORY_4K_TV", unmapped) == "4K Tv"
     assert unmapped == {"CATEGORY_4K_TV"}
+
+
+LOGOS_DIR = Path(__file__).resolve().parents[4] / "frontend" / "src" / "assets" / "logos"
+
+
+@pytest.mark.skipif(not LOGOS_DIR.is_dir(), reason="frontend tree absent")
+def test_every_logo_slug_has_a_bundled_file():
+    files = {p.name.split(".")[0] for p in LOGOS_DIR.iterdir() if p.suffix in {".svg", ".png"}}
+    assert set(LOGO_BY_IMAGE.values()) <= files
+
+
+def test_generic_moze_pictures_have_no_logo():
+    assert not {"Account_05", "Account_24", "Payable"} & LOGO_BY_IMAGE.keys()

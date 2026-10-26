@@ -42,7 +42,7 @@
       @for (card of cardRows(); track card.accountId) {
         <div class="card-item">
           <button type="button" class="card-row" (click)="openCard(card.accountId)">
-            <span class="ico">{{ card.icon }}</span>
+            <app-account-icon class="ico" [logo]="card.logo" [icon]="card.icon" fallback="card" />
             <span class="name">{{ card.name }}</span>
             <span class="countdown" [class.overdue]="card.overdue" [class.soon]="card.soon">{{ card.countdown }}</span>
             <span class="figs">

@@ -6,6 +6,7 @@ import { BehaviorSubject } from 'rxjs';
 import { MockInstance, afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountDetail, LedgerAccount } from '../../../models/accounting.model';
+import { ACCOUNT_LOGOS } from '../../../theme/account-logos';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { AccountSettingsComponent, accountToInput, decimalText } from './account-settings';
 
@@ -181,13 +182,97 @@ describe('AccountSettingsComponent', () => {
     expect(req.request.method).toBe('PUT');
     expect(req.request.body).toEqual({
       name: '玉山 Only', currency: 'TWD', opening_balance: '-3693', is_archived: false, group_id: 3, icon: '💳',
-      color: null, note: '主要餐飲卡', sort_order: 0, include_in_total: true, is_credit: true, closing_day: 15,
+      logo: null, color: null, note: '主要餐飲卡', sort_order: 0, include_in_total: true, is_credit: true, closing_day: 15,
       due_rule: 'days_after_closing', due_value: 20, credit_limit: '350000', combined_account_id: 10,
       credit_sharing_id: null, credit_sharing_members: [], auto_pay_account_id: 2, fx_fee_pct: '1.5', fx_fee_rounding: 'floor',
       fx_fee_refundable: false,
     });
     req.flush(DETAIL);
     expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 11]);
+  });
+
+  it('a 圖示-only edit keeps the stored logo', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, logo: ACCOUNT_LOGOS[0].slug } as AccountDetail);
+    const icon = el(fixture).querySelector<HTMLInputElement>('.icon-input')!;
+    icon.value = '🏦';
+    icon.dispatchEvent(new Event('input'));
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body.icon).toBe('🏦');
+    expect(req.request.body.logo).toBe(ACCOUNT_LOGOS[0].slug);
+    req.flush(DETAIL);
+  });
+
+  it('shows the current logo label and lists the set with 無 first', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, logo: 'cathay-united' } as AccountDetail);
+    const current = el(fixture).querySelector<HTMLButtonElement>('.logo-current')!;
+    expect(current.textContent).toContain('國泰世華');
+    expect(el(fixture).querySelector('.logo-grid')).toBeNull();
+    current.click();
+    fixture.detectChanges();
+    const cells = Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('.logo-grid button'));
+    expect(cells[0].textContent?.trim()).toBe('無');
+    expect(cells.length).toBe(ACCOUNT_LOGOS.length + 1);
+    expect(cells.find(c => c.getAttribute('aria-label') === '國泰世華')!.getAttribute('aria-pressed')).toBe('true');
+    expect(cells[0].getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('names the current-logo button 品牌 logo：<label> and shows the account icon when no logo is set', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, icon: '🍱', logo: null } as AccountDetail);
+    const current = el(fixture).querySelector<HTMLButtonElement>('.logo-current')!;
+    expect(current.getAttribute('aria-label')).toBe('品牌 logo：無');
+    expect(current.querySelector('app-account-icon .emoji')!.textContent).toBe('🍱');
+  });
+
+  it('labels a stored slug the set does not know as 未知 logo, with 無 not pressed', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, logo: 'china-airlines' } as AccountDetail);
+    const current = el(fixture).querySelector<HTMLButtonElement>('.logo-current')!;
+    expect(current.textContent).toContain('未知 logo');
+    expect(current.getAttribute('aria-label')).toBe('品牌 logo：未知 logo');
+    current.click();
+    fixture.detectChanges();
+    const cells = Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('.logo-grid button'));
+    expect(cells[0].textContent?.trim()).toBe('無');
+    expect(cells[0].getAttribute('aria-pressed')).toBe('false');
+    expect(cells.filter(c => c.getAttribute('aria-pressed') === 'true')).toEqual([]);
+  });
+
+  it('picking a logo updates the big icon and the saved payload', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    el(fixture).querySelector<HTMLButtonElement>('.logo-current')!.click();
+    fixture.detectChanges();
+    const target = ACCOUNT_LOGOS[1];
+    el(fixture).querySelector<HTMLButtonElement>(`.logo-grid button[aria-label="${target.label}"]`)!.click();
+    fixture.detectChanges();
+    expect(el(fixture).querySelector('.logo-grid')).toBeNull();
+    expect(el(fixture).querySelector<HTMLImageElement>('.bigicon app-account-icon img')!.getAttribute('src')).toMatch(new RegExp(`${target.file}$`));
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body.logo).toBe(target.slug);
+    req.flush(DETAIL);
+  });
+
+  it('無 clears the logo and keeps the emoji', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, logo: ACCOUNT_LOGOS[0].slug } as AccountDetail);
+    el(fixture).querySelector<HTMLButtonElement>('.logo-current')!.click();
+    fixture.detectChanges();
+    el(fixture).querySelector<HTMLButtonElement>('.logo-grid button')!.click();
+    fixture.detectChanges();
+    expect(el(fixture).querySelector('.bigicon app-account-icon img')).toBeNull();
+    expect(el(fixture).querySelector('.bigicon app-account-icon')!.textContent).toContain('💳');
+    expect(el(fixture).querySelector('.bigicon app-account-icon .emoji')!.textContent?.trim()).toBe('💳');
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body.logo).toBeNull();
+    expect(req.request.body.icon).toBe('💳');
+    req.flush(DETAIL);
   });
 
   it('keeps every digit of balances ≥ 1e12 on the way into the form and back', async () => {

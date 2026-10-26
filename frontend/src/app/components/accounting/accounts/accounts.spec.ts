@@ -8,6 +8,7 @@ import { Router, provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountInput, ImportRun, LedgerAccount } from '../../../models/accounting.model';
+import { ACCOUNT_LOGOS } from '../../../theme/account-logos';
 import { AccountingService } from '../../../services/accounting.service';
 import { AccountingAccountsComponent } from './accounts';
 
@@ -132,6 +133,18 @@ describe('AccountingAccountsComponent', () => {
   function rows(el: HTMLElement): HTMLElement[] {
     return Array.from(el.querySelectorAll<HTMLElement>('.acc-row'));
   }
+
+  it('shows the brand logo instead of the emoji when the account has one', () => {
+    const el = render([
+      account({ id: 1, name: '錢包' }),
+      account({ id: 3, name: '玉山銀行', icon: '🏦', logo: ACCOUNT_LOGOS[0].slug }),
+    ], null).nativeElement as HTMLElement;
+    const row = (id: number) => el.querySelector(`a.acc-row[href="/accounting/accounts/${id}"]`)!;
+    expect(row(3).querySelector('app-account-icon.ico img')?.getAttribute('src')).toContain(ACCOUNT_LOGOS[0].file);
+    expect(row(3).querySelector('app-account-icon.ico')?.textContent).not.toContain('🏦');
+    expect(row(1).querySelector('app-account-icon.ico img')).toBeNull();
+    expect(row(1).querySelector('app-account-icon.ico')?.textContent?.trim()).toBe('👛');
+  });
 
   it('omits its page header when embedded', () => {
     const fixture = render([], null);

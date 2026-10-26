@@ -9,6 +9,7 @@ interface ImportLookup { ok: boolean; v: ImportRun | null; }
 
 
 import { DebtsSummary, ImportRun, LedgerAccount } from '../../../models/accounting.model';
+import { AccountIconComponent } from '../account-icon/account-icon';
 import { AccountingService } from '../../../services/accounting.service';
 import { currentDues, duePillText } from '../billing/billing-math';
 import { BillState, BillingService } from '../billing/billing.service';
@@ -118,7 +119,7 @@ export function buildAccountGroups(accounts: LedgerAccount[], mainCurrency: stri
 @Component({
   selector: 'app-accounting-accounts',
   standalone: true,
-  imports: [PageHeaderComponent, BtnComponent, DatePipe, NgTemplateOutlet, RouterLink, SkeletonComponent],
+  imports: [AccountIconComponent, PageHeaderComponent, BtnComponent, DatePipe, NgTemplateOutlet, RouterLink, SkeletonComponent],
   templateUrl: './accounts.html',
   styleUrl: './accounts.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

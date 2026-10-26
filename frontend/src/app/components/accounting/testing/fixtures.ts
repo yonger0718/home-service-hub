@@ -25,6 +25,7 @@ export function makeAccount(overrides: Partial<LedgerAccount> = {}): LedgerAccou
     group_id: null,
     group_name: null,
     icon: null,
+    logo: null,
     color: null,
     is_archived: false,
     include_in_total: true,

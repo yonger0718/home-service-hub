@@ -89,6 +89,11 @@
   letter-spacing: 0.04em;
 }
 
+.acct-ico {
+  --ico-size: 1.5rem;
+  border-radius: 50%;
+}
+
 .acct-recent-chip {
   background: var(--app-surface-soft);
   border: 1px solid var(--app-border);
@@ -152,4 +157,9 @@
   color: var(--app-text-muted);
   margin: 12px 0;
   text-align: center;
+}
+
+.acct-recent-chip .acct-ico {
+  --ico-size: 1.25rem;
+  vertical-align: middle;
 }

@@ -116,6 +116,7 @@ class Account(Base, TimestampMixin):
     is_archived = Column(Boolean, nullable=False, server_default=text("false"))
     group_id = Column(Integer, ForeignKey("account_group.id"), nullable=True)
     icon = Column(String(16), nullable=True)
+    logo = Column(String(32), nullable=True)
     color = Column(String(9), nullable=True)
     note = Column(Text, nullable=True)
     sort_order = Column(Integer, nullable=False, server_default=text("0"))

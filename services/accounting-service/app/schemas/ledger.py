@@ -52,6 +52,7 @@ class AccountOut(BaseModel):
     group_id: int | None
     group_name: str | None
     icon: str | None
+    logo: str | None
     color: str | None
     is_archived: bool
     include_in_total: bool

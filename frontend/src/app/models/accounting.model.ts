@@ -66,6 +66,8 @@ export interface LedgerAccount {
   group_id: number | null;
   group_name: string | null;
   icon: string | null;
+  /** Bundled institution-logo slug (see theme/account-logos.ts); null = none. */
+  logo: string | null;
   color: string | null;
   is_archived: boolean;
   include_in_total: boolean;
@@ -404,6 +406,7 @@ export interface AccountInput {
   is_archived: boolean;
   group_id: number | null;
   icon: string | null;
+  logo: string | null;
   color: string | null;
   note: string | null;
   sort_order: number;

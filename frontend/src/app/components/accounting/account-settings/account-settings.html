@@ -15,7 +15,7 @@
   }
 
   <div class="bigicon">
-    <span class="ico">{{ form().icon || '📁' }}</span>
+    <app-account-icon class="ico" size="big" [logo]="form().logo" [icon]="form().icon" fallback="folder" />
     @if (detail(); as d) {
       <b [class.neg]="+d.balance < 0">{{ formatMoney(d.balance, d.currency) }}</b>
     }
@@ -54,6 +54,25 @@
       }
     </select>
   </label>
+
+  <div class="rw">
+    <span class="k">品牌 logo</span>
+    <span class="v">
+      <button type="button" class="logo-current" [attr.aria-label]="'品牌 logo：' + logoLabel()" [attr.aria-expanded]="logoPickerOpen()" (click)="logoPickerOpen.set(!logoPickerOpen())">
+        <app-account-icon class="ico-sm" [logo]="form().logo" [icon]="form().icon" fallback="folder" /> {{ logoLabel() }}
+      </button>
+    </span>
+  </div>
+  @if (logoPickerOpen()) {
+    <div class="logo-grid" role="group" aria-label="品牌 logo">
+      <button type="button" class="logo-opt" [attr.aria-pressed]="form().logo === null" (click)="pickLogo(null)">無</button>
+      @for (l of logos; track l.slug) {
+        <button type="button" class="logo-opt" [attr.aria-pressed]="form().logo === l.slug" [attr.aria-label]="l.label" (click)="pickLogo(l.slug)">
+          <app-account-icon class="ico-sm" [logo]="l.slug" /><small>{{ l.label }}</small>
+        </button>
+      }
+    </div>
+  }
 
   <div class="rw">
     <span class="k">圖示</span>
