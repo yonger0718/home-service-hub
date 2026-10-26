@@ -178,6 +178,17 @@ describe('upcomingDues', () => {
     expect(upcomingDues([uni], '2026-11-04')).toEqual([]);
   });
 
+  it('keeps a due printed in the previous month whose debit day is still ahead', () => {
+    // Closing 10-15 + 16 days = Sat 2026-10-31; weekends-only debit Mon 11-02. Today Sun 11-01 scans Nov + Dec, so the
+    // October due must come from the previous month's events.
+    const monthEnd = card({ id: 2, name: '月底卡', closing_day: 15, due_rule: 'days_after_closing', due_value: 16 });
+    expect(upcomingDues([monthEnd], '2026-11-01')).toMatchObject([{ date: '2026-10-31', payDate: '2026-11-02' }]);
+    expect(upcomingDues([monthEnd], '2026-11-02')).toHaveLength(1);
+    expect(upcomingDues([monthEnd], '2026-11-03')).toEqual([]);
+    // A previous-month due whose debit day has also passed stays out.
+    expect(upcomingDues([monthEnd], '2026-11-01').filter(event => event.date === '2026-09-30')).toEqual([]);
+  });
+
   it('never includes closing days', () => {
     expect(upcomingDues([uni], '2026-10-12')).toEqual([]);
   });

@@ -116,15 +116,19 @@ export function billingEvents(cards: BillingCard[], month: string, calendar: Bus
     .map(({ event }) => event);
 }
 
-/** Due events whose debit day falls from `today` through `today + 6` (this month's and next month's). */
+/**
+ * Due events whose debit day falls from `today` through `today + 6`. Scans the previous, current and next month: a
+ * due printed at the end of last month can still debit this month.
+ */
 export function upcomingDues(cards: BillingCard[], today: string, calendar: BusinessCalendar = WEEKENDS_ONLY): BillingEvent[] {
   const [year, month] = today.split('-').map(Number);
-  const [nextYear, nextMonth] = shiftMonth(year, month, 1);
   const last = addDays(today, UPCOMING_DAYS - 1);
-  return [
-    ...billingEvents(cards, today.slice(0, 7), calendar),
-    ...billingEvents(cards, `${nextYear}-${pad(nextMonth)}`, calendar),
-  ].filter(
+  return [-1, 0, 1]
+    .flatMap(delta => {
+      const [y, m] = shiftMonth(year, month, delta);
+      return billingEvents(cards, `${y}-${pad(m)}`, calendar);
+    })
+    .filter(
     event => event.kind === 'due' && payDateOf(event) >= today && payDateOf(event) <= last,
   );
 }
