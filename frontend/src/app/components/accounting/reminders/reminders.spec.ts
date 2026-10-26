@@ -671,8 +671,9 @@ describe('AccountingRemindersComponent', () => {
     payments.forEach(req => req.flush({ items: [], total: 0, limit: 100, offset: 0 }));
     fixture.detectChanges();
 
-    // The new rule puts the due date on Sun 10-04: the bank debits Mon 10-05 (#197).
+    // The new rule puts the due date on Sun 10-04: the bank debits Mon 10-05 (#197), the same countdown as before.
     expect(text(el.querySelector('.card-row .countdown'))).toBe('還有 2 天');
+    expect(text(el.querySelector('.card-row .due-date'))).toBe('10/04 截止 · 10/05 扣款');
   });
 
   it('drops a superseded load', () => {

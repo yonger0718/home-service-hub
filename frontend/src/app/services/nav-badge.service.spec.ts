@@ -9,7 +9,7 @@ import { countReminders } from '../components/accounting/billing/reminder-count'
 import { InboxService } from '../components/accounting/inbox/inbox.service';
 import { makeInbox } from '../components/accounting/inbox/testing';
 import { makeAccount, makeEntry, makeInstance } from '../components/accounting/testing/fixtures';
-import { Counterparty, ImportRun, LedgerAccount, ScheduleInstance } from '../models/accounting.model';
+import { BusinessDays, Counterparty, ImportRun, LedgerAccount, ScheduleInstance } from '../models/accounting.model';
 import { RecalcStatus } from '../models/portfolio.model';
 import { AccountingService } from './accounting.service';
 import { ImportHistoryService } from './import-history.service';
@@ -98,6 +98,7 @@ describe('NavBadgeService', () => {
         }),
       ),
       getEntries: vi.fn(() => of({ items: [], total: 0, limit: 100, offset: 0 })),
+      getBusinessDays: vi.fn(() => of({ holidays: [], workdays: [], last_known_day: '2027-12-31' })),
     };
     TestBed.configureTestingModule({
       providers: [
@@ -394,6 +395,32 @@ describe('NavBadgeService', () => {
     const ids = [...ensure.mock.calls, ...reread.mock.calls].flatMap(([dues]) => dues.map(event => event.accountId));
     expect(ids).toContain(9);
     expect(ids).not.toContain(7);
+  });
+
+  it('re-asks the statements with the debit day once the business-day calendar lands (#197)', () => {
+    // Card 9 falls due Thu 2026-11-05; the calendar read is still open when the accounts land.
+    const calendar = new Subject<BusinessDays>();
+    accountingStub['getBusinessDays'] = vi.fn(() => calendar);
+    const bills = TestBed.inject(BillingService);
+    const asked = vi.spyOn(bills, 'ensure');
+    const reread = vi.spyOn(bills, 'refresh');
+    // The latest ensure/refresh call, whichever came last.
+    const lastDues = () =>
+      [asked, reread]
+        .flatMap(spy => spy.mock.calls.map((call, index) => ({ order: spy.mock.invocationCallOrder[index], dues: call[0] })))
+        .sort((a, b) => a.order - b.order)
+        .at(-1)!.dues;
+    const svc = service();
+    svc.refresh();
+    answer(0, { accounts: [card(9)] });
+    expect(lastDues()[0]).toMatchObject({ accountId: 9, date: '2026-11-05' });
+    expect(lastDues()[0].payDate).toBeUndefined();
+
+    // The calendar lists the due day as a holiday: the same statement is asked for again with the Friday debit.
+    calendar.next({ holidays: ['2026-11-05'], workdays: [], last_known_day: '2027-12-31' });
+    TestBed.tick();
+    expect(lastDues()[0]).toMatchObject({ accountId: 9, date: '2026-11-05', payDate: '2026-11-06' });
+    expect(bills.bill(lastDues()[0])).toMatchObject({ payDate: '2026-11-06' });
   });
 
   it('counts 待處理 inbox cards (one card read, counts.ask)', () => {

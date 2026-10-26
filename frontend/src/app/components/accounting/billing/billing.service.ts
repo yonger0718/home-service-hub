@@ -62,9 +62,12 @@ function failureOf(round: Pending, cards: number[]): string | null | undefined {
   return spends.some(spend => spend?.currency !== currency) ? '幣別不同' : undefined;
 }
 
-/** A round's inputs beyond its key: the combined cards (sorted) and the period start. */
+/**
+ * A round's inputs beyond its key: the combined cards (sorted), the period start and the debit day. The calendar
+ * landing after a round started changes `payDate`, so the same statement starts a new round with the right stamp.
+ */
 function fingerprint(event: BillingEvent): string {
-  return `${[...(event.childIds ?? [])].sort((a, b) => a - b).join(',')}|${event.period.start}`;
+  return `${[...(event.childIds ?? [])].sort((a, b) => a - b).join(',')}|${event.period.start}|${event.payDate ?? ''}`;
 }
 
 /**

@@ -391,4 +391,22 @@ describe('BillingService', () => {
 
     expect(billing.bill(shifted)).toMatchObject({ due: '2026-10-24', payDate: '2026-10-27', remaining: 0 });
   });
+  it('starts a new round when the calendar lands and moves the debit day (#197)', () => {
+    // Due Sat 2026-10-24: weekends-only gives Mon 10-26; the calendar then lists 10-26 as a holiday → Tue 10-27.
+    const weekend: BillingEvent = { ...OCT, date: '2026-10-24', payDate: '2026-10-26' };
+    billing.ensure([weekend], '2026-10-26');
+    answer(requests(weekend, '2026-10-26'), '-500.0000');
+    expect(billing.bill(weekend)).toMatchObject({ payDate: '2026-10-26', remaining: 500 });
+
+    const shifted: BillingEvent = { ...weekend, payDate: '2026-10-27' };
+    billing.ensure([shifted], '2026-10-26');
+    const again = requests(shifted, '2026-10-26');
+    // The previous figures stay shown until the new round lands.
+    expect(billing.bill(shifted)).toMatchObject({ payDate: '2026-10-26' });
+    answer(again, '-500.0000', ['500.0000']);
+    expect(billing.bill(shifted)).toMatchObject({ payDate: '2026-10-27', remaining: 0 });
+
+    billing.ensure([shifted], '2026-10-26');
+    http.expectNone(r => r.url.startsWith('/api/accounting/accounts/'));
+  });
 });

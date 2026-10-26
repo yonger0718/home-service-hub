@@ -294,7 +294,12 @@ describe('payDate (#197)', () => {
     // The same statement as a month event and as a reminder carries the same debit day.
     expect(billingEvents([hsbc], '2026-10', OCT_2026).find(event => event.kind === 'due')).toMatchObject({ date: '2026-10-24', payDate: '2026-10-27' });
     expect(reminderDues([hsbc], '2026-10-26', OCT_2026)[0].payDate).toBe('2026-10-27');
-    expect(upcomingDues([hsbc], '2026-10-20', OCT_2026)[0]).toMatchObject({ date: '2026-10-24', payDate: '2026-10-27' });
+    // The 近 7 天 window is on the debit day: 10-20..10-26 misses the Tue 10-27 debit, 10-21..10-27 has it.
+    expect(upcomingDues([hsbc], '2026-10-20', OCT_2026)).toHaveLength(0);
+    expect(upcomingDues([hsbc], '2026-10-21', OCT_2026)[0]).toMatchObject({ date: '2026-10-24', payDate: '2026-10-27' });
+    // Sun 10-25: the printed due date has passed but the debit (Tue 10-27) is ahead, so the 近 7 天 banner keeps it.
+    expect(upcomingDues([hsbc], '2026-10-25', OCT_2026)).toHaveLength(1);
+    expect(upcomingDues([hsbc], '2026-10-28', OCT_2026)).toHaveLength(0);
   });
 
   it('counts the countdown and the pill to the debit day', () => {
