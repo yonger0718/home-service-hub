@@ -27,4 +27,11 @@ describe('account logo tile (#175)', () => {
     expect(src).toMatch(/\.tile \{[^}]*background: var\(--app-logo-tile\)/);
     expect(src).not.toMatch(/:host \{[^}]*background/);
   });
+
+  it('the account settings big icon keeps its fill and emoji size for the no-logo case', () => {
+    const scss = read('src/app/components/accounting/account-settings/account-settings.scss');
+    const ico = /\.bigicon \{[\s\S]*?\.ico \{([^}]*)\}/.exec(scss)?.[1] ?? '';
+    expect(ico).toContain('background: var(--app-surface-soft)');
+    expect(ico).toContain('font-size: 1.8rem');
+  });
 });

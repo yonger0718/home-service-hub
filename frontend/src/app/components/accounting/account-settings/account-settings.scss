@@ -47,7 +47,7 @@
   gap: 4px;
   padding: 6px 0 10px;
 
-  .ico { --ico-size: 64px; border-radius: 50%; display: flex; height: var(--ico-size); width: var(--ico-size); }
+  .ico { --ico-size: 64px; align-items: center; background: var(--app-surface-soft); border-radius: 50%; display: flex; font-size: 1.8rem; height: var(--ico-size); justify-content: center; width: var(--ico-size); }
   b { font-size: 1.2rem; font-variant-numeric: tabular-nums; }
   small { color: var(--app-text-muted); font-size: 0.75rem; }
 }

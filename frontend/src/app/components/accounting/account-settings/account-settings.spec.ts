@@ -245,6 +245,7 @@ describe('AccountSettingsComponent', () => {
     fixture.detectChanges();
     expect(el(fixture).querySelector('.bigicon app-account-icon img')).toBeNull();
     expect(el(fixture).querySelector('.bigicon app-account-icon')!.textContent).toContain('💳');
+    expect(el(fixture).querySelector('.bigicon app-account-icon .emoji')!.textContent?.trim()).toBe('💳');
     el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
     const req = http.expectOne('/api/accounting/accounts/11');
     expect(req.request.body.logo).toBeNull();
