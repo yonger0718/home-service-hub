@@ -300,3 +300,81 @@ def test_dry_run_writes_nothing(db_session, world):
     assert db.query(StatementAutoPay).count() == 0
     assert db.scalar(select(func.count()).select_from(LedgerEntry)) == entries
     assert db.scalar(select(func.count()).select_from(ReconciliationAudit)) == audits
+
+
+def _over_cap_skip(db, stmt_id):
+    capped = _settings(max_amount="500")
+    aps.decide(db, _cand(db, stmt_id, settings=capped), TODAY, capped)
+    db.commit()
+
+
+def test_cleared_transient_skip_past_retry_days_expires_instead_of_booking(db_session, world):
+    db, (bank, card, stmt) = db_session, world
+    _over_cap_skip(db, stmt.id)
+    entries = db.scalar(select(func.count()).select_from(LedgerEntry))
+    raised = _settings()  # the cap no longer fails
+    late = PAY + timedelta(days=31)
+    assert _dry(db, stmt.id, late)["reason"] == "expired"
+    out = aps.decide(db, _cand(db, stmt.id, late, raised), late, raised)
+    db.commit()
+    assert (out["decision"], out["reason"]) == ("skipped", "expired")
+    row = db.query(StatementAutoPay).filter_by(statement_id=stmt.id).one()
+    assert (row.status, row.reason) == ("skipped", "expired")
+    assert db.scalar(select(func.count()).select_from(LedgerEntry)) == entries  # nothing booked
+    assert aps.candidates(db, late, raised) == []
+
+
+def test_cleared_transient_skip_on_the_last_retry_day_still_books(db_session, world):
+    db, (bank, card, stmt) = db_session, world
+    _over_cap_skip(db, stmt.id)
+    raised = _settings()
+    last = PAY + timedelta(days=30)
+    out = aps.decide(db, _cand(db, stmt.id, last, raised), last, raised)
+    db.commit()
+    assert out["decision"] == "booked"
+    assert db.query(StatementAutoPay).filter_by(statement_id=stmt.id).one().status == "booked"
+
+
+def test_gate_precedence_pairs(seed, db_session, run, world):
+    db, (bank, card, stmt) = db_session, world
+    other = seed.account("別戶")
+    db.commit()
+    # twin before over_cap
+    _transfer(seed, bank, card, 580, PAY)
+    db.flush()
+    assert _reason(db, stmt.id, max_amount="500") == "twin"
+    db.rollback()
+    # cutoff before duplicate_statement
+    b, _, _ = _submit(db, run, card, [_line(1, date(2026, 10, 3), "全聯", 580)], period=OCT, due_date=date(2026, 10, 21))
+    _booked_row(db, b, card, bank, date(2026, 10, 20))
+    db.flush()
+    assert _reason(db, stmt.id) == "duplicate_statement"
+    assert _reason(db, stmt.id, enabled_from="2026-11-01") == "cutoff"
+    db.rollback()
+    # link_ineligible before twin
+    archived = seed.account("舊戶", is_archived=True)
+    db.commit()
+    _transfer(seed, other, card, 580, PAY)  # a transfer_in on the card: a twin for any pay account
+    db.flush()
+    assert _reason(db, stmt.id) == "twin"
+    card.auto_pay_account_id = archived.id
+    db.flush()
+    assert _reason(db, stmt.id) == "link_ineligible"
+    db.rollback()
+    # over_cap before monthly_budget
+    card2 = _card(seed, db, "卡二", auto_pay_account_id=bank.id)
+    s2, _, _ = _submit(db, run, card2, [_line(1, DAY, "全聯", 580)], period=SEP, due_date=date(2026, 10, 30))
+    _booked_row(db, s2, card2, bank, date(2026, 10, 2))
+    db.flush()
+    assert _reason(db, stmt.id, monthly_total="1000") == "monthly_budget"
+    assert _reason(db, stmt.id, monthly_total="1000", max_amount="500") == "over_cap"
+
+
+def test_twin_window_upper_edge(seed, db_session, world):
+    db, (bank, card, stmt) = db_session, world
+    _transfer(seed, bank, card, 580, PAY + timedelta(days=8))
+    db.flush()
+    assert _reason(db, stmt.id) is None  # +8 is outside the 7-day window
+    _transfer(seed, bank, card, 580, PAY + timedelta(days=7))
+    db.flush()
+    assert _reason(db, stmt.id) == "twin"  # +7 is inside (inclusive)

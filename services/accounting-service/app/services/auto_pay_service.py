@@ -6,7 +6,7 @@ bank account makes on the due date, as a system transfer pair, before either sta
   has no `statement_auto_pay` row or only a `skipped` row with a transient reason (§4.2). Final rows (`booked`,
   `retired`, `owner_deleted`, `owner_edited`) and terminal skips are never re-evaluated.
 - Gates (§4.4 step 3), in order: cutoff → duplicate_statement → header_disputed → no_link → link_ineligible → twin →
-  over_cap → monthly_budget. A transient reason turns `expired` once `today > pay_date + retry_days`.
+  over_cap → monthly_budget. A transient skip turns `expired` once `today > pay_date + retry_days`, even if its condition has cleared.
 - Twin (§4.1): another ledger representation of the same payment, whatever its source.
 - Booking (§4.4 step 4): a transfer pay account → card master, `source='statement'`, `name='自動扣繳'`, both legs
   dated on the pay date, the card leg posted on the next business day; the `booked` row and an `auto_pay_booked`
@@ -41,7 +41,6 @@ TERMINAL_REASONS = frozenset({"twin", "cutoff", "duplicate_statement", "expired"
 TRANSIENT_REASONS = frozenset({"header_disputed", "no_link", "link_ineligible", "over_cap", "monthly_budget"})
 FINAL_STATUSES = frozenset({"booked", "retired", "owner_deleted", "owner_edited"})
 HEADER_CASE_KINDS = ("parse_review", "statement_conflict")
-OPEN_CASE_STATUSES = ("open", "proposed")
 
 
 @dataclass(frozen=True)
@@ -158,7 +157,7 @@ def _duplicate_booked(db: Session, cand: Candidate) -> bool:
 def _header_disputed(db: Session, statement_id: int) -> bool:
     return db.scalar(select(ReconciliationCase.id).where(
         ReconciliationCase.statement_id == statement_id, ReconciliationCase.kind.in_(HEADER_CASE_KINDS),
-        ReconciliationCase.status.in_(OPEN_CASE_STATUSES)).limit(1)) is not None
+        ReconciliationCase.status.in_(coverage_service.OPEN_CASE_STATUSES)).limit(1)) is not None
 
 
 def _link_ineligible(db: Session, cand: Candidate) -> bool:
@@ -199,10 +198,12 @@ def _first_failing_gate(db: Session, cand: Candidate, settings: dict) -> str | N
 
 def gate(db: Session, cand: Candidate, today: date, settings: dict) -> str | None:
     """The first gate the candidate fails (§4.4 order), or None to book. `cutoff` is not checked while
-    `enabled_from` is None (the host dry run runs before the settings PUT). A transient reason becomes `expired`
-    once `today > pay_date + retry_days`."""
+    `enabled_from` is None (the host dry run runs before the settings PUT). A transient reason, found now or stored
+    on the existing `skipped` row, becomes `expired` once `today > pay_date + retry_days` even if the condition has
+    cleared (§4.2); a terminal reason found now wins over `expired`. A new candidate (no row) past retry_days books."""
     reason = _first_failing_gate(db, cand, settings)
-    if reason in TRANSIENT_REASONS and today > cand.pay_date + timedelta(days=int(settings["retry_days"])):
+    past_retry = today > cand.pay_date + timedelta(days=int(settings["retry_days"]))
+    if past_retry and (reason in TRANSIENT_REASONS or (reason is None and cand.existing_reason in TRANSIENT_REASONS)):
         return "expired"
     return reason
 
