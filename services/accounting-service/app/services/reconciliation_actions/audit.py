@@ -14,6 +14,8 @@ EVENTS = frozenset({
     "statement_retired",  # also the retired-statement marker (app.services.statements.retired)
     "action_retired",  # the sweep retired an applied non-creation action a ledger delete made unrevertable
     "rule_applied", "rule_skipped", "inbox_answer",  # inbox (spec 2026-10-21 §5, §6.3)
+    "auto_pay_booked", "auto_pay_skipped", "auto_pay_retired", "auto_pay_owner_deleted", "auto_pay_owner_edited",
+    "auto_pay_header_changed", "auto_pay_statement_retired", "auto_pay_calendar_stale",  # card statement auto-pay
 })
 
 

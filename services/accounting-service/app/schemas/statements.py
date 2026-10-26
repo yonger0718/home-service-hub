@@ -422,6 +422,7 @@ class ReconciliationSettingsIn(BaseModel):
     dirty_enabled: bool = False
     rules: dict = {}  # matching.Rules overrides (settings_service validates keys and types); {} = the defaults
     policy: dict = {}  # agent-autonomy policy overrides (settings_service validates); {} = the defaults
+    auto_pay: dict = {}  # card-statement auto-pay settings (settings_service validates); {} = the defaults
     account_siblings: dict[str, list[Int32]] = {}  # account id -> sibling account ids (same currency)
 
 
@@ -434,6 +435,7 @@ class ReconciliationSettingsOut(BaseModel):
     rules_version: str
     policy: dict
     policy_version: str
+    auto_pay: dict
     account_siblings: dict[str, list[int]]
     version: int
 
