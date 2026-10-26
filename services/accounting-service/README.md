@@ -335,7 +335,7 @@ Action error codes (422 unless noted):
 | `duplicate_effect` | the effect slot is taken (one creation per statement event; one coverage-only effect per case version, slot `c<case id>v<version>`) |
 | `line_not_in_case`, `line_claimed`, `not_claimed` | line problems (`match`, `unmatch`, creation family) |
 | `entry_out_of_scope`, `id_out_of_scope` | the id is not among the case's candidates/context (`id_out_of_scope` also for proposals) |
-| `not_found`, `wrong_account`, `wrong_currency`, `entry_claimed`, `child_entry`, `entry_in_group`, `empty_group`, `not_conserved` | `match` and entry gates |
+| `not_found`, `wrong_account`, `wrong_currency`, `entry_claimed`, `with_children_on_child`, `entry_in_group`, `empty_group`, `not_conserved` | `match` and entry gates (`with_children_on_child`: a child is matched alone, as the line's principal) |
 | `line_not_printed`, `kind_sign`, `refund_sign`, `refund_exceeds`, `not_refundable` | creation family (`line_not_printed`: the case's line is not in the current revision; also `attach_fee`, `adjust_amount`) |
 | `fee_sign`, `fee_out_of_bounds`, `fee_quantum`, `fee_unexpected`, `not_foreign`, `not_standalone` | `attach_fee` (also `not_standalone` for `adjust_amount`) |
 | `fx_pair_required`, `foreign_zero`, `kind_sign`, `not_member` | `adjust_amount` (`fx_pair_required`: an FX entry needs the line's printed pair, and a line printing only half of it is refused; `not_member`: with `group_id`, `entry_id` must be a top-level member of that group, and the group must be the one the case names — `entry_out_of_scope` otherwise) |
