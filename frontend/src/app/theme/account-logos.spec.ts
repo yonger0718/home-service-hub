@@ -35,6 +35,38 @@ function dimensions(path: string): [number, number] {
   return [w, h];
 }
 
+/** Every rule offence in one SVG's text: the raw-text pass, then a DOM walk that re-checks each attribute value and
+ *  each element's own text after the parser has decoded character references (`&#117;rl(…)` is `url(…)` in the DOM). */
+export function svgOffences(file: string, text: string): string[] {
+  const forbidden = new Set(RULES.forbidden_elements);
+  const regexes = RULES.forbidden_regex.map((r) => new RegExp(r, 'i'));
+  const banned = (where: string, value: string) => [
+    ...RULES.forbidden_text
+      .filter((t) => value.toLowerCase().includes(t.toLowerCase()))
+      .map((t) => `${file}: ${where}: forbidden text "${t}"`),
+    ...regexes.filter((r) => r.test(value)).map((r) => `${file}: ${where}: forbidden pattern ${r}`),
+  ];
+  const out = banned('raw text', text);
+  const doc = parse(text);
+  if (doc.getElementsByTagName('parsererror').length > 0) return [...out, `${file}: parse error`];
+  for (const el of Array.from(doc.getElementsByTagName('*'))) {
+    if (forbidden.has(el.localName)) out.push(`${file}: <${el.localName}>: forbidden element`);
+    for (const a of Array.from(el.attributes)) {
+      const where = `<${el.localName} ${a.name}="${a.value}">`;
+      if (a.localName.toLowerCase().startsWith('on')) out.push(`${file}: ${where}: event handler`);
+      if (a.localName === 'href' && !a.value.startsWith('#'))
+        out.push(`${file}: ${where}: non-fragment href`);
+      out.push(...banned(where, a.value));
+    }
+    const ownText = Array.from(el.childNodes)
+      .filter((n) => n.nodeType === 3 || n.nodeType === 4)
+      .map((n) => n.nodeValue ?? '')
+      .join('');
+    out.push(...banned(`<${el.localName}> text`, ownText));
+  }
+  return out;
+}
+
 describe('bundled institution logos (#175)', () => {
   it('every manifest entry has a square file and every file is in the manifest', () => {
     const files = readdirSync(DIR).filter((f) => f !== 'SOURCES.md');
@@ -67,24 +99,35 @@ describe('bundled institution logos (#175)', () => {
   });
 
   it('svg files obey tools/account-logos/svg-rules.json', () => {
-    const forbidden = new Set(RULES.forbidden_elements);
-    const regexes = RULES.forbidden_regex.map((r) => new RegExp(r, 'i'));
     for (const l of svgs()) {
-      const text = readFileSync(join(DIR, l.file), 'utf8');
-      for (const t of RULES.forbidden_text)
-        expect(text.toLowerCase().includes(t.toLowerCase()), `${l.file}: ${t}`).toBe(false);
-      for (const r of regexes) expect(r.test(text), `${l.file}: ${r}`).toBe(false);
-      const doc = parse(text);
-      expect(doc.getElementsByTagName('parsererror').length, l.file).toBe(0);
-      for (const el of Array.from(doc.getElementsByTagName('*'))) {
-        expect(forbidden.has(el.localName), `${l.file}: <${el.localName}>`).toBe(false);
-        for (const a of Array.from(el.attributes)) {
-          expect(a.localName.toLowerCase().startsWith('on'), `${l.file}: ${a.name}`).toBe(false);
-          if (a.localName === 'href')
-            expect(a.value.startsWith('#'), `${l.file}: ${a.name}=${a.value}`).toBe(true);
-        }
-      }
+      expect(svgOffences(l.file, readFileSync(join(DIR, l.file), 'utf8'))).toEqual([]);
     }
+  });
+
+  it('reports forbidden content hidden behind character references in attributes and text', () => {
+    const svg = (body: string) =>
+      `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 4 4">${body}</svg>`;
+    expect(svgOffences('ok.svg', svg(`<rect fill="url(#g)" stroke="url('#g')"/>`))).toEqual([]);
+    expect(svgOffences('a.svg', svg(`<rect fill="&#117;rl(https://evil/x.svg#g)"/>`))).toEqual([
+      expect.stringMatching(
+        /^a\.svg: <rect fill="url\(https:\/\/evil\/x\.svg#g\)">: forbidden pattern/,
+      ),
+    ]);
+    expect(
+      svgOffences('b.svg', svg(`<rect style="fill:url(&#100;ata:image/png;base64,AA)"/>`)),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^b\.svg: <rect style=.*: forbidden text "data:"/),
+      ]),
+    );
+    expect(svgOffences('c.svg', svg(`<text>&#117;rl(//evil/x)</text>`))).toEqual([
+      expect.stringMatching(/^c\.svg: <text> text: forbidden pattern/),
+    ]);
+    expect(svgOffences('d.svg', svg(`<use xlink:href="http://evil/x.svg#a"/>`))).toEqual([
+      expect.stringMatching(/^d\.svg: <use xlink:href=.*non-fragment href/),
+    ]);
+    expect(svgOffences('e.svg', svg(`<rect onclick="x()"/><script/>`))).toHaveLength(2);
+    expect(svgOffences('f.svg', '<svg')).toEqual([expect.stringMatching(/^f\.svg: parse error/)]);
   });
 
   it('slugs are unique and labels non-empty', () => {
