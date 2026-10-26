@@ -8,6 +8,7 @@ import {
   AccountGroupInput,
   AccountInput,
   AccountPeriodSummary,
+  BusinessDays,
   AllEntriesQuery,
   BackupImportOptions,
   BalanceAdjustmentInput,
@@ -127,6 +128,11 @@ export class AccountingService {
     return this.http.get<AccountPeriodSummary>(`${this.apiUrl}/accounts/${accountId}/summary`, {
       params: { date_from: dateFrom, date_to: dateTo },
     });
+  }
+
+  /** Holidays and make-up workdays within [from, to] (`BusinessDaysOut`); weekends are implied. */
+  getBusinessDays(from: string, to: string): Observable<BusinessDays> {
+    return this.http.get<BusinessDays>(`${this.apiUrl}/calendar/business-days`, { params: { from, to } });
   }
 
   createAccount(input: AccountInput): Observable<AccountDetail> {

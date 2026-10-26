@@ -34,9 +34,10 @@ import {
   defaultCategoryIcon,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { BusinessCalendarService } from '../../../services/business-calendar.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
-import { BillingEvent, billingEvents, reminderDues, upcomingDues } from '../billing/billing-math';
+import { BillingEvent, billingEvents, payDateOf, reminderDues, upcomingDues } from '../billing/billing-math';
 import { BillState, BillingService, billKey } from '../billing/billing.service';
 import { countReminders } from '../billing/reminder-count';
 import { SkeletonComponent } from '../skeleton/skeleton';
@@ -378,6 +379,7 @@ export class LedgerTimelineComponent implements OnInit {
   private readonly queryInput = viewChild<ElementRef<HTMLInputElement>>('queryInput');
 
   private readonly bills = inject(BillingService);
+  private readonly calendar = inject(BusinessCalendarService);
   private readonly inbox = inject(InboxService);
   protected readonly overview = inject(AccountingOverviewService);
 
@@ -477,11 +479,11 @@ export class LedgerTimelineComponent implements OnInit {
     return date ? dayLabel(date) : '';
   });
   /** Credit-card closing / due days of the shown month (empty without cards that have a closing day). */
-  private readonly monthBilling = computed(() => billingEvents(this.accounts(), this.month()));
+  private readonly monthBilling = computed(() => billingEvents(this.accounts(), this.month(), this.calendar.calendar()));
   /** Due days from today through today + 6 (may reach into next month). */
-  private readonly upcomingEvents = computed(() => upcomingDues(this.accounts(), this.today()));
+  private readonly upcomingEvents = computed(() => upcomingDues(this.accounts(), this.today(), this.calendar.calendar()));
   /** Each card's current statement as the reminder centre lists it (for the 🔔 count). */
-  private readonly reminderEvents = computed(() => reminderDues(this.accounts(), this.today()));
+  private readonly reminderEvents = computed(() => reminderDues(this.accounts(), this.today(), this.calendar.calendar()));
   /** Due events whose statement is needed: the shown month's, the 近 7 天 window's and the 🔔's (deduplicated). */
   private readonly trackedDues = computed(() => {
     const events = new Map<string, BillingEvent>();
@@ -502,7 +504,9 @@ export class LedgerTimelineComponent implements OnInit {
     nextDueItems(
       this.reminderEvents().flatMap(event => {
         const bill = this.openBill(event);
-        return bill ? [{ key: billKey(event), name: event.name, date: event.date, amountText: formatMoney(bill.statement, bill.currency) }] : [];
+        return bill
+          ? [{ key: billKey(event), name: event.name, date: event.date, payDate: payDateOf(event), amountText: formatMoney(bill.statement, bill.currency) }]
+          : [];
       }),
       this.queue(),
       this.today(),

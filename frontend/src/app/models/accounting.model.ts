@@ -97,6 +97,14 @@ export interface AccountDetail extends LedgerAccount {
   credit_sharing_members: number[];
 }
 
+/** `GET /calendar/business-days?from=&to=`: closed days beyond weekends, and make-up workdays, within the range. */
+export interface BusinessDays {
+  holidays: string[];
+  workdays: string[];
+  /** Last day the server's holiday table knows; later dates shift over weekends only. */
+  last_known_day: string;
+}
+
 /** `GET /accounts/{id}/summary?date_from=&date_to=` (`AccountPeriodSummaryOut`, Task 4); dates filter on `posted_date`. */
 export interface AccountPeriodSummary {
   account_id: number;

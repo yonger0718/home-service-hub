@@ -86,6 +86,7 @@ describe('BillingService', () => {
       name: '玉山 UNI',
       period: SEPT.period,
       due: '2026-10-05',
+      payDate: '2026-10-05',
       currency: 'TWD',
       statement: 12345,
       paid: 5000,
@@ -169,6 +170,13 @@ describe('BillingService', () => {
     expect(billing.bill(SEPT)?.remaining).toBe(100);
   });
 
+  /** A combined card's payments read (same window as the master's). */
+  function paymentsFor(accountId: number): TestRequest {
+    return http.expectOne(r => r.url === `/api/accounting/accounts/${accountId}/entries` && r.params.get('kind') === 'transfer_in');
+  }
+
+  const noPayments = { items: [], total: 0, limit: BILL_PAYMENT_LIMIT, offset: 0 };
+
   function summaryFor(accountId: number, event = SEPT): TestRequest {
     const req = http.expectOne(
       r => r.url === `/api/accounting/accounts/${accountId}/summary` && r.params.get('date_to') === event.period.end,
@@ -182,22 +190,26 @@ describe('BillingService', () => {
     end_balance: spend, count: 1,
   });
 
-  it("adds the combined cards' spend to the master's statement, reading payments on the master only", () => {
+  it("adds the combined cards' spend and payments to the master's statement, one read of each per card", () => {
     const combined: BillingEvent = { ...SEPT, childIds: [11, 12] };
     billing.ensure([combined], TODAY);
     const master = requests(combined);
     const first = summaryFor(11);
     const second = summaryFor(12);
-    http.expectNone(r => r.url.endsWith('/11/entries') || r.url.endsWith('/12/entries'));
+    const firstPayments = paymentsFor(11);
+    const secondPayments = paymentsFor(12);
+    expect(firstPayments.request.params.get('date_to')).toBe(TODAY);
 
     master.summary.flush(spendBody(9, '-1000.0000'));
     first.flush(spendBody(11, '-200.0000'));
     master.payments.flush({ items: [makeEntry({ kind: 'transfer_in', amount: '300.0000' })], total: 1, limit: 100, offset: 0 });
-    // Not committed until every card of the statement has landed.
-    expect(billing.bill(combined)).toBeNull();
+    firstPayments.flush({ items: [makeEntry({ id: 61, kind: 'transfer_in', amount: '200.0000' })], total: 1, limit: 100, offset: 0 });
     second.flush(spendBody(12, '-50.0000'));
+    // Not committed until every read of every card has landed.
+    expect(billing.bill(combined)).toBeNull();
+    secondPayments.flush(noPayments);
 
-    expect(billing.bill(combined)).toMatchObject({ accountId: 9, statement: 1250, paid: 300, remaining: 950 });
+    expect(billing.bill(combined)).toMatchObject({ accountId: 9, statement: 1250, paid: 500, remaining: 750 });
     billing.ensure([combined], TODAY);
     http.expectNone(r => r.url.startsWith('/api/accounting/accounts/'));
   });
@@ -207,6 +219,7 @@ describe('BillingService', () => {
     billing.ensure([combined], TODAY);
     const master = requests(combined);
     const child = summaryFor(11);
+    paymentsFor(11).flush(noPayments);
     answer(master, '-1000.0000');
     child.flush('boom', { status: 500, statusText: 'Server Error' });
 
@@ -219,6 +232,7 @@ describe('BillingService', () => {
     billing.ensure([combined], TODAY);
     const master = requests(combined);
     const child = summaryFor(11);
+    paymentsFor(11).flush(noPayments);
     answer(master, '-1000.0000');
     child.flush(spendBody(11, '-50.0000', 'USD'));
 
@@ -238,6 +252,7 @@ describe('BillingService', () => {
     billing.ensure([combined], TODAY);
     const master = requests(combined);
     const child = summaryFor(11);
+    paymentsFor(11).flush(noPayments);
     expect(billing.bill(combined)?.statement).toBe(1000);
     answer(master, '-1000.0000');
     child.flush(spendBody(11, '-200.0000'));
@@ -331,5 +346,49 @@ describe('BillingService', () => {
     answer(requests(), '-100.0000');
     expect(billing.failed(SEPT)).toBe(false);
     expect(billing.bill(SEPT)?.remaining).toBe(100);
+  });
+  it('counts payments recorded on a combined card (副卡) toward the master (#196)', () => {
+    const family: BillingEvent = { ...SEPT, childIds: [21] };
+    billing.ensure([family], TODAY);
+    const master = requests(family);
+    const childSummary = http.expectOne(r => r.url === '/api/accounting/accounts/21/summary');
+    const childPayments = http.expectOne(r => r.url === '/api/accounting/accounts/21/entries');
+    expect(childPayments.request.params.get('kind')).toBe('transfer_in');
+    expect(childPayments.request.params.get('date_from')).toBe(family.period.end);
+    expect(childPayments.request.params.get('date_to')).toBe(TODAY);
+    answer(master, '-1000.0000');
+    childSummary.flush({
+      account_id: 21, currency: 'TWD', date_from: '', date_to: '', spend: '-2800.0000', income: '0', rewards: '0',
+      net: '0', end_balance: '0', count: 1,
+    });
+    expect(billing.bill(family)).toBeNull();
+    childPayments.flush({ items: [makeEntry({ id: 77, kind: 'transfer_in', amount: '2800.0000' })], total: 1, limit: 100, offset: 0 });
+
+    expect(billing.bill(family)).toMatchObject({ statement: 3800, paid: 2800, remaining: 1000 });
+  });
+
+  it('fails the round when a combined card\'s payments cannot be read', () => {
+    const family: BillingEvent = { ...SEPT, childIds: [21] };
+    billing.ensure([family], TODAY);
+    answer(requests(family), '-1000.0000');
+    http.expectOne(r => r.url === '/api/accounting/accounts/21/summary').flush({
+      account_id: 21, currency: 'TWD', date_from: '', date_to: '', spend: '0', income: '0', rewards: '0', net: '0',
+      end_balance: '0', count: 0,
+    });
+    http.expectOne(r => r.url === '/api/accounting/accounts/21/entries').flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+
+    expect(billing.bill(family)).toBeNull();
+    expect(billing.failed(family)).toBe(true);
+    expect(billing.failureReason(family)).toBeNull();
+  });
+
+  it('carries the debit day and reads payments through it when the due date was shifted (#197)', () => {
+    // Due Sat 2026-10-24, debited Tue 2026-10-27; today is the debit day, after the next closing's eve (10-14).
+    const shifted: BillingEvent = { ...OCT, date: '2026-10-24', payDate: '2026-10-27' };
+    billing.ensure([shifted], '2026-10-27');
+    const reqs = requests(shifted, '2026-10-27');
+    answer(reqs, '-500.0000', ['500.0000']);
+
+    expect(billing.bill(shifted)).toMatchObject({ due: '2026-10-24', payDate: '2026-10-27', remaining: 0 });
   });
 });

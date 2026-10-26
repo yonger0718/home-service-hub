@@ -11,6 +11,7 @@ interface ImportLookup { ok: boolean; v: ImportRun | null; }
 import { DebtsSummary, ImportRun, LedgerAccount } from '../../../models/accounting.model';
 import { AccountIconComponent } from '../account-icon/account-icon';
 import { AccountingService } from '../../../services/accounting.service';
+import { BusinessCalendarService } from '../../../services/business-calendar.service';
 import { currentDues, duePillText } from '../billing/billing-math';
 import { BillState, BillingService } from '../billing/billing.service';
 import { dueDate, statementPeriod } from '../cycle';
@@ -129,6 +130,7 @@ export class AccountingAccountsComponent {
   readonly embedded = input(false);
   private accountingService = inject(AccountingService);
   private readonly bills = inject(BillingService);
+  private readonly calendar = inject(BusinessCalendarService);
   private readonly router = inject(Router);
   /** Guards the page load (accounts + preference). */
   private accountsRequestId = 0;
@@ -186,7 +188,7 @@ export class AccountingAccountsComponent {
   readonly reviewCount = computed(() => importReviewCount(this.latestImport()));
   readonly formatMoney = formatMoney;
   /** Each card's current statement (the same resolution as the calendar and the reminder centre). */
-  private readonly dues = computed(() => currentDues(this.accounts(), this.today()));
+  private readonly dues = computed(() => currentDues(this.accounts(), this.today(), this.calendar.calendar()));
   /** Per card id: the current statement when something is left to pay. */
   private readonly owed = computed(() => {
     const owed = new Map<number, BillState>();
@@ -359,7 +361,10 @@ export class AccountingAccountsComponent {
     return parts.join(' · ');
   }
 
-  /** `待繳帳款 $X` and `MM/DD 繳費截止` / `明天繳費截止` / `今天繳費截止` / `已逾期`; null when nothing is left to pay. */
+  /**
+   * `待繳帳款 $X` and `MM/DD 繳費截止` / `明天繳費截止` / `今天繳費截止` / `已逾期`, counted to the debit day (`payDate`: a
+   * weekend or holiday due date is paid on the next business day); null when nothing is left to pay.
+   */
   cardDue(account: LedgerAccount): CardDue | null {
     const bill = this.owed().get(account.id);
     if (!bill) {
@@ -367,8 +372,8 @@ export class AccountingAccountsComponent {
     }
     return {
       owedText: `待繳帳款 ${formatMoney(bill.remaining, bill.currency)}`,
-      pill: duePillText(bill.due, this.today()),
-      overdue: daysBetween(this.today(), bill.due) < 0,
+      pill: duePillText(bill.payDate, this.today()),
+      overdue: daysBetween(this.today(), bill.payDate) < 0,
     };
   }
 

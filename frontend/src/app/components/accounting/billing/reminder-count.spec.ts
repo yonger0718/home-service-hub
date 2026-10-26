@@ -26,6 +26,7 @@ function billOf(event: BillingEvent, remaining: number): BillState {
     name: event.name,
     period: event.period,
     due: event.date,
+    payDate: event.payDate ?? event.date,
     currency: 'TWD',
     statement: remaining,
     paid: 0,
