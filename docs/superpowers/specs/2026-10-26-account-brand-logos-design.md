@@ -80,8 +80,10 @@ Anti-goals
 
 ## 4. The logo set
 
-**Location** *[call]*: `frontend/src/assets/logos/<slug>.svg` (PNG ≥ 180 px square only when no vector exists), served
-at `assets/logos/<slug>.svg` like the app icon. Shipped in the SPA bundle; no CDN, no runtime fetch elsewhere.
+**Location** *[call]*: `frontend/src/assets/logos/<slug>.<sha256[:8]>.svg` (PNG ≥ 180 px square only when no vector exists),
+served at `assets/logos/<file>` like the app icon; the manifest maps slug → file. File names are content-hashed (rev 2.1,
+final review I2) because the SPA publisher keeps any `name.hash.ext` asset immutable forever — a re-cropped mark ships as
+a new file name, never as changed bytes. Shipped in the SPA bundle; no CDN, no runtime fetch elsewhere.
 
 **Manifest** *[call]*: `frontend/src/app/theme/account-logos.ts` exports
 `ACCOUNT_LOGOS: readonly AccountLogo[]` with `{ slug, label, file }` (label = the institution's Chinese short name
