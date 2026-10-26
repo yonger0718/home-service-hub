@@ -8,14 +8,14 @@
 
 **Tech Stack:** FastAPI + SQLAlchemy 2 + Alembic + Pydantic v2 (Python 3.13, pytest); Angular 21 standalone / signals / OnPush / zoneless, Vitest; OpenSpec CLI.
 
-**Spec:** `docs/superpowers/specs/2026-10-26-account-brand-logos-design.md` (rev 2). Rev 1 recon facts: `/home/opc/.claude/jobs/2741e73c/tmp/f175-recon.md` (controller only).
+**Spec:** `docs/superpowers/specs/2026-10-26-account-brand-logos-design.md` (rev 2). Plan rev 2 (2026-10-26) folds Multica AGENT-297 (dev-grok, FAIL at 4f9938e: read-field delta, tile cascade, picker box, sanitiser gate + minors). Rev 1 recon facts: `/home/opc/.claude/jobs/2741e73c/tmp/f175-recon.md` (controller only).
 
 ## Global Constraints
 
 - Branch `feat/account-brand-logos` in worktree `/home/opc/workspace/home-hub-redesign` (from origin/main 5b519a2). Never touch other branches, never `git stash`, `git add` explicit paths.
 - Slug shape everywhere: `^[a-z0-9-]{1,32}$`. Column `account.logo VARCHAR(32) NULL`. API validates shape only.
 - Logo files: `frontend/src/assets/logos/<slug>.svg` (or `.png`, ≥ 180 px, square); served at `assets/logos/<file>` (relative URL, no leading slash, like `assets/app-icon.svg`). No runtime fetch from any third-party host.
-- Every SVG must have a square `viewBox` (width == height); no `<script>`, `<foreignObject>`, `<image>`, no `on*` attributes, no `href` / `xlink:href` that does not start with `#`; `<metadata>` stripped.
+- SVG safety rules live once in `tools/account-logos/svg-rules.json` and are applied by both `normalize.py` (pre-copy) and the Vitest gate (CI): forbidden elements (by localName) `script`, `foreignObject`, `image`, `style`, `animate`, `set`, `animateMotion`, `animateTransform`; no attribute whose name starts with `on`; no `href` / `xlink:href` that does not start with `#` (internal `<use href="#…">` stays allowed); no `url(` and no `data:` anywhere in the text; text containing `<!DOCTYPE` or `<!ENTITY` is rejected before parsing; `max_bytes` 262144 for SVG and PNG; `<metadata>` stripped. Every normalised SVG is a square outer `<svg viewBox="0 0 S S">` with exactly one child `<svg>` placed by the 1.16 formula (Task 2).
 - Downloaded files are untrusted: fetch into an empty scratch directory outside the repo (`/home/opc/.claude/jobs/2741e73c/tmp/logo-fetch/`), run checks with `python3 -I`, copy into the repo only after they pass.
 - Emoji may appear in templates only inside `{{ … }}` interpolations (gate `frontend/src/app/theme/line-icons.spec.ts`); line icons are PrimeIcons `<i class="pi pi-…" aria-hidden="true">`. Colours via `--app-*` tokens only; new token `--app-logo-tile` = `#fff` in light and dark.
 - Copy strings (exact): row label `品牌 logo`, clear option `無`, 圖示 row unchanged.
@@ -29,7 +29,7 @@
 2. The image file 404s or fails to decode → the slot falls back to the emoji after the `error` event, and a later different slug renders again. (Task 4)
 3. `PUT /accounts/{id}` without `logo` clears it (full-payload semantics), and `accountToInput` on a re-save keeps the stored logo — so a 圖示-only edit must not silently drop the logo. (Tasks 1, 6)
 4. A re-import of a backup never overwrites a logo on an account the owner edited (`settings_locally_edited`) or that already has one. (Task 3)
-5. Dark mode: the logo tile stays white in both themes while the emoji slot keeps `--app-surface-soft`. (Task 4)
+5. Dark mode: the logo tile stays white in both themes while the emoji slot keeps `--app-surface-soft` — the tile is painted on an inner element the slot CSS never targets, so the slots' own `background` rules cannot override it. (Tasks 4, 7)
 
 ---
 
@@ -42,7 +42,7 @@
 - Test: `services/accounting-service/tests/integration/test_accounts_api.py`, `tests/integration/test_settings_crud_api.py`
 
 **Interfaces:**
-- Produces: `Account.logo: Mapped[str | None]` (`String(32)`), `AccountIn.logo: Annotated[str, Field(pattern=r"^[a-z0-9-]{1,32}$")] | None = None`, `AccountOut.logo: str | None`, `"logo"` in `ACCOUNT_FIELDS`. JSON field name `logo` on `GET /accounts`, `GET /accounts/{id}`, `POST /accounts`, `PUT /accounts/{id}`.
+- Produces: `Account.logo` (`Column(String(32), nullable=True)`), `AccountIn.logo: Annotated[str, Field(pattern=r"^[a-z0-9-]{1,32}$")] | None = None`, `AccountOut.logo: str | None`, `"logo"` in `ACCOUNT_FIELDS`. JSON field name `logo` on `GET /accounts`, `GET /accounts/{id}`, `POST /accounts`, `PUT /accounts/{id}`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -69,7 +69,7 @@ Expected: FAIL (`KeyError: 'logo'` / 422 vs 201 mismatch).
 
 - [ ] **Step 3: Implement**
 
-`ledger.py`: `logo: Mapped[str | None] = mapped_column(String(32))` after `icon` (match the file's column style). `writes.py:192` → add `logo` after `icon` with the pattern above. `ledger.py` (schemas) `AccountOut`: `logo: str | None` after `icon`. `ACCOUNT_FIELDS`: `"logo"` after `"icon"`. Migration `b8d4f2a1c6e3_account_logo.py` with `down_revision = "a7c3e1d9b2f4"`, `op.add_column("account", sa.Column("logo", sa.String(32), nullable=True))`, `op.drop_column` in `downgrade`.
+`ledger.py`: `logo = Column(String(32), nullable=True)` right after `icon` (:118, same `Column` style). `writes.py:192` → add `logo` after `icon` with the pattern above. `ledger.py` (schemas) `AccountOut`: `logo: str | None` after `icon`. `ACCOUNT_FIELDS`: `"logo"` after `"icon"`. Migration `b8d4f2a1c6e3_account_logo.py` with `down_revision = "a7c3e1d9b2f4"`, `op.add_column("account", sa.Column("logo", sa.String(32), nullable=True))`, `op.drop_column` in `downgrade`.
 
 - [ ] **Step 4: Run the tests**
 
@@ -86,6 +86,8 @@ Expected: PASS. Also `alembic heads` from `services/accounting-service` prints e
 - **THEN** the API SHALL answer 422; `"cathay-united"` SHALL be stored and returned on every account read
 ```
 
+Also a `### Requirement: Read-only ledger endpoints` MODIFIED block (copy `openspec/specs/accounting-ledger/spec.md:192…` whole) that inserts `logo` right after `icon` in the `GET /api/accounting/accounts` field list (the detail endpoint says "the same fields", so it is covered).
+
 Run: `npx -y @fission-ai/openspec@latest validate account-brand-logos --strict` → valid.
 
 - [ ] **Step 6: Commit**
@@ -101,7 +103,7 @@ git commit -m "feat(accounting): account.logo slug column and API field (#175)"
 
 **Files:**
 - Create: `frontend/src/assets/logos/<slug>.svg|png` (one per obtainable slug), `frontend/src/assets/logos/SOURCES.md`
-- Create: `tools/account-logos/normalize.py` (stdlib only), `frontend/src/app/theme/account-logos.ts`, `frontend/src/app/theme/account-logos.spec.ts`
+- Create: `tools/account-logos/svg-rules.json`, `tools/account-logos/normalize.py` (stdlib only), `frontend/src/app/theme/account-logos.ts`, `frontend/src/app/theme/account-logos.spec.ts`
 
 **Interfaces:**
 - Produces: `export interface AccountLogo { slug: string; label: string; file: string }`, `export const ACCOUNT_LOGOS: readonly AccountLogo[]` (manifest order = the design §4 table order), `export function accountLogo(slug: string | null | undefined): AccountLogo | undefined`, `export const LOGO_SLUG = /^[a-z0-9-]{1,32}$/`.
@@ -117,12 +119,21 @@ it('every manifest entry has a square file and every file is in the manifest', (
   for (const l of ACCOUNT_LOGOS) {
     expect(l.slug).toMatch(LOGO_SLUG);
     expect(l.file).toBe(`${l.slug}${extname(l.file)}`);
-    const [w, h] = dimensions(join(DIR, l.file));   // svg: root viewBox w/h; png: IHDR width/height
+    const [w, h] = dimensions(join(DIR, l.file));   // svg: OUTERMOST viewBox via DOMParser documentElement; png: IHDR width/height
     expect(w).toBe(h);
+    expect(statSync(join(DIR, l.file)).size).toBeLessThanOrEqual(RULES.max_bytes);
     if (l.file.endsWith('.png')) expect(w).toBeGreaterThanOrEqual(180);
   }
 });
-it('svg files carry no script, foreignObject, image, event handler or external href', …);  // regex over the text
+it('every svg is the normaliser\'s wrap: one child <svg> centred by the 1.16 formula', () => {
+  // documentElement has exactly one element child, localName 'svg', with x/y/width/height such that
+  // S = max(w, h) * 1.16, x = (S - w) / 2, y = (S - h) / 2 (tolerance 0.01) and its own viewBox
+});
+it('svg files obey tools/account-logos/svg-rules.json', () => {
+  // RULES = JSON.parse(readFileSync(join(__dirname, '../../../../tools/account-logos/svg-rules.json')));
+  // text: no /<!DOCTYPE|<!ENTITY/i, no /url\(/i, no /data:/i; DOMParser('image/svg+xml'): no parsererror, no element whose
+  // localName is in RULES.forbidden_elements, no attribute name starting with 'on', every href / xlink:href starts with '#'
+});
 it('slugs are unique and labels non-empty', …);
 it('accountLogo resolves a slug and returns undefined for unknown / null', () => {
   expect(accountLogo('cathay-united')?.label).toBe('國泰世華');
@@ -131,25 +142,27 @@ it('accountLogo resolves a slug and returns undefined for unknown / null', () =>
 });
 ```
 
-`dimensions()` is a helper in the spec: SVG → parse the root `viewBox="a b w h"` with a regex; PNG → read bytes 16–24 of the IHDR as two big-endian uint32.
+`dimensions()` is a helper in the spec: SVG → `new DOMParser().parseFromString(text, 'image/svg+xml').documentElement.getAttribute('viewBox')` (the outermost element only — never a regex over the text, which would bind the inner, non-square viewBox); PNG → bytes 16–24 of the IHDR as two big-endian uint32. The DOM walk uses `localName`.
 
 - [ ] **Step 2: Run it to verify it fails** — `cd frontend && npx ng test --watch=false --include 'src/app/theme/account-logos.spec.ts'` → FAIL (module not found).
 
-- [ ] **Step 3: `tools/account-logos/normalize.py`** (stdlib: `xml.etree.ElementTree`, `struct`, `argparse`; run with `python3 -I`):
-  `normalize.py <in.svg|in.png> <out-dir> <slug>`; for SVG: parse, reject on any forbidden element / attribute (Global Constraints), drop `<metadata>`; take the root's `viewBox` (or `width`/`height` when no viewBox), compute `S = max(w, h) * 1.16`, write a new root `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 S S">` whose single child is the original root `<svg>` with `x`, `y`, `width`, `height` set so the mark is centred with 8 % padding on the long side (`width=w`, `height=h`, `x=(S-w)/2`, `y=(S-h)/2`; the inner element keeps its original `viewBox`, so the mark scales with the outer square); exit 1 with a reason on rejection. For PNG: verify IHDR width == height ≥ 180, copy as-is. Prints the output path.
+- [ ] **Step 3: `tools/account-logos/svg-rules.json`** — `{ "forbidden_elements": ["script", "foreignObject", "image", "style", "animate", "set", "animateMotion", "animateTransform"], "forbidden_text": ["<!DOCTYPE", "<!ENTITY", "url(", "data:"], "max_bytes": 262144 }` (the single source for Global Constraints' SVG rules; the Vitest gate reads the same file).
+
+  **`tools/account-logos/normalize.py`** (stdlib: `xml.etree.ElementTree`, `struct`, `zlib`, `json`, `argparse`; run with `python3 -I`):
+  `normalize.py <in.svg|in.png> <out-dir> <slug>`; for SVG: refuse files over `max_bytes` or containing any `forbidden_text` (case-insensitive) before parsing; parse; reject any element whose localName is in `forbidden_elements`, any attribute starting with `on`, any `href` / `xlink:href` not starting with `#`; drop `<metadata>`; the root's `viewBox` (or `width`/`height` when no viewBox) must be absolute unitless / `px` numbers — exit 1 otherwise (`mm`, `%`, `em` …); strip `width` / `height` declarations from the root's `style` attribute so the wrapper's attributes size the viewport; compute `S = max(w, h) * 1.16`, write a new root `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 S S">` whose single child is the original root `<svg>` with `x`, `y`, `width`, `height` set so the mark is centred with 8 % padding on the long side (`width=w`, `height=h`, `x=(S-w)/2`, `y=(S-h)/2`; the inner element keeps its original `viewBox`, so the mark scales with the outer square); exit 1 with a reason on rejection. For PNG: refuse over `max_bytes`; verify the signature and IHDR width == height ≥ 180; re-write the file keeping only the chunks `IHDR`, `PLTE`, `tRNS`, `IDAT`, `IEND` (CRCs recomputed with `zlib.crc32`) — metadata (`tEXt`, `iTXt`, `eXIf`, `iCCP` …) dropped. Prints the output path.
 
 - [ ] **Step 4: Fetch and normalise.** Per design §4 slug table, in order: official site (brand/press page, header SVG, `apple-touch-icon` / PWA icon link tags), then Wikimedia Commons (`https://commons.wikimedia.org/w/api.php?action=query&list=search&srnamespace=6&format=json&srsearch=<name> logo svg`, then `action=query&prop=imageinfo&iiprop=url&titles=File:…`), then official PNG. `curl -sS -L -m 20 -A 'Mozilla/5.0 (X11; Linux) HomeHub-logo-fetch'` into `/home/opc/.claude/jobs/2741e73c/tmp/logo-fetch/<slug>/`, `file` each download, then `python3 -I tools/account-logos/normalize.py … frontend/src/assets/logos <slug>`. `richart` / `dawho`: if no sub-brand mark is found, copy the `taishin` / `sinopac` output under the sub-brand slug. Record every row in `SOURCES.md` (`| slug | institution | source URL | fetched | notes |`, header paragraph: trademarks of their owners, bundled for this household's private app, not redistributed). Slugs that fail → not in the manifest, listed in the report.
 
 - [ ] **Step 5: Manifest** `account-logos.ts` — `ACCOUNT_LOGOS` with the obtained slugs in table order, labels from the design table; `accountLogo()` as a `Map` lookup; `LOGO_SLUG` regex.
 
-- [ ] **Step 6: Run the gate and the line-icon gate**
+- [ ] **Step 6: Run the gate and the line-icon gate** (and `python3 -I tools/account-logos/normalize.py` on a hand-made SVG containing `<script>` → exit 1; one with `viewBox="0 0 10mm 10mm"` → exit 1)
 
 Run: `npx ng test --watch=false --include 'src/app/theme/account-logos.spec.ts' --include 'src/app/theme/line-icons.spec.ts'` → PASS. `ls frontend/src/assets/logos | wc -l` reported.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add frontend/src/assets/logos tools/account-logos/normalize.py frontend/src/app/theme/account-logos.ts frontend/src/app/theme/account-logos.spec.ts
+git add frontend/src/assets/logos tools/account-logos frontend/src/app/theme/account-logos.ts frontend/src/app/theme/account-logos.spec.ts
 git commit -m "feat(frontend): bundled institution logo set with manifest and gate (#175)"
 ```
 
@@ -164,7 +177,7 @@ git commit -m "feat(frontend): bundled institution logo set with manifest and ga
 
 **Interfaces:**
 - Consumes: Task 1 `Account.logo`; Task 2's report (slugs omitted from the manifest).
-- Produces: `LOGO_BY_IMAGE: dict[str, str]` = design §8 table minus any slug Task 2 could not obtain (drop the row, note it in `tasks.md`).
+- Produces: `LOGO_BY_IMAGE: dict[str, str]` = design §8 table minus any slug Task 2 could not obtain (drop the row, note it in `tasks.md`). The tests below pin `cathay-united` / `taishin` / `richart`; if Task 2 omitted one of them, substitute a slug that was bundled (and its MOZE code from the table) — same assertions.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -205,7 +218,7 @@ def test_generic_moze_pictures_have_no_logo():
 
 - [ ] **Step 2: Run to verify they fail** — `pytest tests/integration/test_backup_settings_import.py -k logo tests/unit/test_moze_backup_json.py -k logo -q` → FAIL (ImportError / AttributeError `logo`).
 
-- [ ] **Step 3: Implement** — `LOGO_BY_IMAGE` in `moze_backup_json.py` next to `ICON_BY_IMAGE` with a one-line docstring ("MOZE account picture → SPA brand-logo slug; generic pictures absent"); import it in the import service; in `_upsert_accounts` right after the `icon` rule (:301-302): `if account.logo is None and not account.settings_locally_edited: account.logo = LOGO_BY_IMAGE.get(record["imageName"])` (covers new accounts too, since they are created with `logo` unset — confirm the new-account path reaches this line; if the icon assignment is inside the "existing" branch only, hoist both).
+- [ ] **Step 3: Implement** — `LOGO_BY_IMAGE` in `moze_backup_json.py` next to `ICON_BY_IMAGE` with a one-line docstring ("MOZE account picture → SPA brand-logo slug; generic pictures absent"); import it in the import service; in `_upsert_accounts` right after the `icon` rule (:301-302): `if account.logo is None and not account.settings_locally_edited: account.logo = LOGO_BY_IMAGE.get(record["imageName"])` — that line runs for new and existing rows alike (the icon rule sits after the `account is None` branch), so new accounts are covered.
 
 - [ ] **Step 4: Run** `pytest tests/integration/test_backup_settings_import.py tests/unit/test_moze_backup_json.py -q` → PASS.
 
@@ -233,12 +246,12 @@ git commit -m "feat(accounting): MOZE imageName → account logo on import (#175
 
 **Files:**
 - Create: `frontend/src/app/components/accounting/account-icon/account-icon.ts` (inline template + styles), `account-icon.spec.ts`
-- Modify: `frontend/src/app/models/accounting.model.ts:68` (`LedgerAccount.logo`), `:400…` (`AccountInput.logo`), `frontend/src/styles.scss` (token `--app-logo-tile: #fff` in both the light and the dark token blocks, next to `--app-surface-soft`)
+- Modify: `frontend/src/app/models/accounting.model.ts:68` (`LedgerAccount.logo`), `:400…` (`AccountInput.logo`), `frontend/src/styles.scss` (token `--app-logo-tile: #fff` in both the light and the dark token blocks, next to `--app-surface-soft`), `components/accounting/account-settings/account-settings.ts` (`AccountForm.logo`, `EMPTY_FORM`, `formFrom`, `formToInput`, `accountToInput` — plumbing only, no UI)
 - Test: `frontend/src/app/theme/contrast.spec.ts` or a new `theme/logo-tile.spec.ts` (stylesheet-text test, same pattern as `kpi-values.spec.ts`)
 
 **Interfaces:**
 - Consumes: Task 2 `accountLogo()`.
-- Produces: `AccountIconComponent` selector `app-account-icon`, standalone, `ChangeDetectionStrategy.OnPush`, inputs `logo = input<string | null>(null)`, `icon = input<string | null>(null)`, `fallback = input<string>('')`, `size = input<'row' | 'big'>('row')`; `host: { '[class.has-logo]': 'entry() !== undefined', '[class.big]': "size() === 'big'" }`. `LedgerAccount.logo: string | null`, `AccountInput.logo: string | null`.
+- Produces: `AccountIconComponent` selector `app-account-icon`, standalone, `ChangeDetectionStrategy.OnPush`, inputs `logo = input<string | null>(null)`, `icon = input<string | null>(null)`, `fallback = input<string>('')`, `size = input<'row' | 'big'>('row')`; `host: { '[class.has-logo]': 'entry() !== undefined', '[class.big]': "size() === 'big'" }`. The host sizes itself from the slot's `--ico-size` (`width: var(--ico-size, 1.25em); height: var(--ico-size, 1.25em); flex: none`). `LedgerAccount.logo: string | null`, `AccountInput.logo: string | null`, `AccountForm.logo: string | null` (settings form plumbing; the picker UI is Task 6).
 
 - [ ] **Step 1: Write the failing tests** `account-icon.spec.ts` (TestBed host template `<app-account-icon class="ico" [logo]="logo()" [icon]="icon()" fallback="📁" />`):
 
@@ -248,7 +261,10 @@ it('renders the emoji for an unknown slug', …)              // logo 'nope', ic
 it('renders the fallback when neither logo nor icon', …)    // → '📁'
 it('falls back to the emoji after the image errors and recovers on a new slug', …)  // dispatch new Event('error') on the img → .emoji; set another known slug → img again
 it('host carries has-logo only while an image renders', …)
+it('paints the tile on an inner element, not the host', …)   // img's parentElement has class 'tile'; host has no inline background
 ```
+
+Settings plumbing test (in `account-settings.spec.ts`, Review Focus 3): `it('a 圖示-only edit keeps the stored logo', …)` — DETAIL with `logo: ACCOUNT_LOGOS[0].slug`, set the icon, save → `updateAccount` payload `.logo === DETAIL.logo`.
 
 - [ ] **Step 2: Run** `npx ng test --watch=false --include 'src/app/components/accounting/account-icon/*.spec.ts'` → FAIL (cannot find module).
 
@@ -257,15 +273,15 @@ it('host carries has-logo only while an image renders', …)
 
 ```html
 @if (entry(); as e) {
-  <img class="logo" [src]="'assets/logos/' + e.file" alt="" aria-hidden="true" loading="lazy" decoding="async" (error)="failedSlug.set(e.slug)" />
+  <span class="tile"><img class="logo" [src]="'assets/logos/' + e.file" alt="" aria-hidden="true" loading="lazy" decoding="async" (error)="failedSlug.set(e.slug)" /></span>
 } @else {
   <span class="emoji">{{ icon() || fallback() }}</span>
 }
 ```
 
-  styles: `:host { display: inline-flex; align-items: center; justify-content: center; overflow: hidden; }`, `:host.has-logo { background: var(--app-logo-tile); }`, `.logo { width: 100%; height: 100%; object-fit: contain; padding: 10%; box-sizing: border-box; display: block; }`, `.emoji { line-height: 1; }`. The host inherits size, radius and the default background from the slot class it is given (`.ico` / `.acct-ico`), so slots keep their geometry. `styles.scss`: `--app-logo-tile: #fff;` in the light block and the dark block.
+  styles: `:host { display: inline-flex; align-items: center; justify-content: center; overflow: hidden; width: var(--ico-size, 1.25em); height: var(--ico-size, 1.25em); flex: none; }`, `.tile { display: block; width: 100%; height: 100%; background: var(--app-logo-tile); border-radius: inherit; }`, `.logo { width: 100%; height: 100%; object-fit: contain; padding: 0; display: block; }` (the 8 % inset is already in the SVG), `.emoji { line-height: 1; }`. The tile is painted on `.tile`, which no slot stylesheet targets, so the slots' `background: var(--app-surface-soft)` host rules (`accounts.scss:64`, `account-settings.scss:50`, `reminders.scss:137`) cannot override it; the host keeps the slot's radius and the emoji keeps the slot background. `styles.scss`: `--app-logo-tile: #fff;` in the light block and the dark block. Settings plumbing: `AccountForm.logo: string | null`, `EMPTY_FORM` `logo: null`, `formFrom` `logo: account.logo ?? null`, `formToInput` `logo: form.logo`, `accountToInput` `logo: account.logo`.
 
-- [ ] **Step 4: Stylesheet test** (new `theme/logo-tile.spec.ts`, reading `src/styles.scss` as text like `kpi-values.spec.ts`): `--app-logo-tile: #fff` appears at least twice (light + dark blocks). Model: add `logo: string | null;` to `LedgerAccount` after `icon` and to `AccountInput` after `icon`. Fix the compiler's complaints (object literals typed `AccountInput`, e.g. `accountToInput` — set `logo: account.logo` there now; Task 6 owns the form).
+- [ ] **Step 4: Stylesheet test** (new `theme/logo-tile.spec.ts`, reading `src/styles.scss` and `account-icon.ts` as text like `kpi-values.spec.ts`): `--app-logo-tile: #fff` appears once inside the light token block and once inside the dark block (locate the blocks by their selectors, not a bare count); the component styles put `background: var(--app-logo-tile)` on `.tile` and no `background` on `:host`. Model: add `logo: string | null;` to `LedgerAccount` after `icon` and to `AccountInput` after `icon`; then the settings plumbing above, so `ng build` is green without a `logo: null` stop-gap that would clear stored logos on save.
 
 - [ ] **Step 5: Run** `npx ng test --watch=false --include 'src/app/components/accounting/account-icon/*.spec.ts' --include 'src/app/theme/*.spec.ts' --include 'src/app/components/accounting/account-settings/*.spec.ts'` → PASS; `npx ng build` compiles (or `npx tsc -p tsconfig.app.json --noEmit`).
 
@@ -281,7 +297,7 @@ git commit -m "feat(frontend): app-account-icon renders a bundled logo or the em
 ### Task 5: Swap the slots — accounts list, account picker, 🔔 card rows
 
 **Files:**
-- Modify: `frontend/src/app/components/accounting/accounts/accounts.html:21` (+ `accounts.ts` imports), `account-picker/account-picker.html:15, 51, 71` (+ `account-picker.ts` imports, `account-picker.scss` for the chip), `reminders/reminders.ts:68-75, 155-169` + `reminders.html:45`
+- Modify: `frontend/src/app/components/accounting/accounts/accounts.html:21` (+ `accounts.ts` imports), `account-picker/account-picker.html:15, 51, 71` (+ `account-picker.ts` imports, `account-picker.scss`: `.acct-ico` has no rules today — add `--ico-size` + `border-radius: 50%` for the trigger, the option row and the recent chip), `reminders/reminders.ts:68-75, 155-169` + `reminders.html:45`
 - Create: `openspec/changes/account-brand-logos/specs/frontend-accounting-ledger/spec.md` (accounts list part; Task 6 appends the settings part)
 - Test: `accounts.spec.ts`, `account-picker.spec.ts`, `reminders.spec.ts`
 
@@ -301,11 +317,11 @@ it('cardReminders carries the account logo', () => { expect(cardReminders([bill]
 
 - [ ] **Step 2: Run** the three specs → FAIL.
 
-- [ ] **Step 3: Implement** — each slot becomes `<app-account-icon class="<same class>" [logo]="account.logo" [icon]="account.icon" fallback="<slot's current emoji>" />` (`aria-hidden` moves inside the component; keep any `aria-hidden` the slot had). The recent chip (`:51`): `<app-account-icon class="acct-ico" … /> {{ account.name }}` with `.acct-recent-chip .acct-ico { --ico-size: 1.25rem; }` or the chip's existing font size. `reminders.html:45`: `<app-account-icon class="ico" [logo]="card.logo" [icon]="card.icon" fallback="💳" />`; `cardReminders` keeps the `icons` map and adds `logos = new Map(accounts.map(a => [a.id, a.logo]))`, `logo: logos.get(bill.accountId) ?? null`; fix the call site at `reminders.ts:307` if its `Pick` type is spelled there.
+- [ ] **Step 3: Implement** — each slot becomes `<app-account-icon class="<same class>" [logo]="account.logo" [icon]="account.icon" fallback="<slot's current emoji>" />` (`aria-hidden` moves inside the component; keep any `aria-hidden` the slot had). The recent chip (`:51`): `<app-account-icon class="acct-ico" … /> {{ account.name }}`. `account-picker.scss`: `.acct-ico { --ico-size: 1.5rem; border-radius: 50%; }` (trigger + option row; the host sizes itself from `--ico-size`, see Task 4) and `.acct-recent-chip .acct-ico { --ico-size: 1.25rem; vertical-align: middle; }` — without these the viewBox-only SVG would render at the default replaced size and blow the row out. jsdom cannot resolve `--ico-size`, so the picker spec asserts the three `app-account-icon` elements carry class `acct-ico`; the geometry is Task 7's browser evidence. `reminders.html:45`: `<app-account-icon class="ico" [logo]="card.logo" [icon]="card.icon" fallback="💳" />`; `cardReminders` keeps the `icons` map and adds `logos = new Map(accounts.map(a => [a.id, a.logo]))`, `logo: logos.get(bill.accountId) ?? null`; fix the call site at `reminders.ts:307` if its `Pick` type is spelled there.
 
 - [ ] **Step 4: Run** `npx ng test --watch=false --include 'src/app/components/accounting/accounts/*.spec.ts' --include 'src/app/components/accounting/account-picker/*.spec.ts' --include 'src/app/components/accounting/reminders/*.spec.ts' --include 'src/app/theme/line-icons.spec.ts'` → PASS.
 
-- [ ] **Step 5: Spec delta** `specs/frontend-accounting-ledger/spec.md`: `## MODIFIED Requirements` for the accounts-list requirement that reads "icon and name" (`openspec/specs/frontend-accounting-ledger/spec.md:~99-12`; copy it whole) → "its brand logo when set, else its icon, and name"; scenario:
+- [ ] **Step 5: Spec delta** `specs/frontend-accounting-ledger/spec.md`: `## MODIFIED Requirements` / `### Requirement: Accounts list page` (`openspec/specs/frontend-accounting-ledger/spec.md:8`, copy it whole); its bullet at `:12` "icon and name" → "its brand logo when set, else its icon, and name"; scenario:
 
 ```
 #### Scenario: Brand logo in the list
@@ -328,13 +344,13 @@ git commit -m "feat(frontend): account logos in the accounts list, picker and ca
 ### Task 6: Account settings — form field, 品牌 logo picker, big icon
 
 **Files:**
-- Modify: `frontend/src/app/components/accounting/account-settings/account-settings.ts` (`AccountForm`, `EMPTY_FORM`, `formFrom`, `formToInput`, `accountToInput` (done in Task 4), new `logoPickerOpen`, `logoLabel`, `pickLogo`), `account-settings.html:17-18, 58-64`, `account-settings.scss`
+- Modify: `frontend/src/app/components/accounting/account-settings/account-settings.ts` (form plumbing done in Task 4; new `logoPickerOpen`, `logoLabel`, `pickLogo`, `logos`), `account-settings.html:17-18, 58-64`, `account-settings.scss`
 - Modify: `openspec/changes/account-brand-logos/specs/frontend-accounting-ledger/spec.md` (append), create `specs/frontend-ui-primitives/spec.md`
 - Test: `account-settings.spec.ts`
 
 **Interfaces:**
 - Consumes: Task 2 `ACCOUNT_LOGOS`, `accountLogo`; Task 4 component.
-- Produces: `AccountForm.logo: string | null`; `logoPickerOpen = signal(false)`; `logoLabel = computed(() => accountLogo(this.form().logo)?.label ?? '無')`; `pickLogo(slug: string | null): void` (sets `form.logo`, closes the grid); `protected readonly logos = ACCOUNT_LOGOS`.
+- Consumes `AccountForm.logo` (Task 4). Produces: `logoPickerOpen = signal(false)`; `logoLabel = computed(() => accountLogo(this.form().logo)?.label ?? '無')`; `pickLogo(slug: string | null): void` (sets `form.logo`, closes the grid); `protected readonly logos = ACCOUNT_LOGOS`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -342,14 +358,13 @@ git commit -m "feat(frontend): account logos in the accounts list, picker and ca
 it('shows the current logo label and lists the set with 無 first', …)      // DETAIL with logo 'cathay-united' → button.logo-current text contains '國泰世華'; click → .logo-grid buttons[0] text '無', count === ACCOUNT_LOGOS.length + 1, the cathay cell aria-pressed="true"
 it('picking a logo updates the big icon and the saved payload', …)         // click a cell → .bigicon app-account-icon img src ends with that file; save → updateAccount payload.logo === slug; grid closed
 it('無 clears the logo and keeps the emoji', …)                              // click 無 → payload.logo null, payload.icon unchanged ('💳'), .bigicon shows the emoji
-it('a 圖示-only edit keeps the stored logo', …)                              // set icon → save → payload.logo === DETAIL.logo (Review Focus 3)
 ```
 
-Existing fixtures: add `logo: null` to the `account()` helper defaults and `logo: 'cathay-united'` (any manifest slug) to `DETAIL`.
+(The 圖示-only test for Review Focus 3 already exists from Task 4.) Existing fixtures: `logo: null` in the `account()` helper defaults and `logo: ACCOUNT_LOGOS[0].slug` on `DETAIL` (if Task 4 did not add them).
 
 - [ ] **Step 2: Run** `npx ng test --watch=false --include 'src/app/components/accounting/account-settings/*.spec.ts'` → FAIL.
 
-- [ ] **Step 3: Implement** — form plumbing (`logo: account.logo ?? null` in `formFrom`, `logo: form.logo` in `formToInput`, `null` in `EMPTY_FORM`); template: the `.bigicon .ico` span becomes `<app-account-icon class="ico" size="big" [logo]="form().logo" [icon]="form().icon" fallback="📁" />`; new row above the 圖示 row:
+- [ ] **Step 3: Implement** — template: the `.bigicon .ico` span becomes `<app-account-icon class="ico" size="big" [logo]="form().logo" [icon]="form().icon" fallback="📁" />`; new row above the 圖示 row:
 
 ```html
 <div class="rw">
@@ -394,7 +409,7 @@ git commit -m "feat(frontend): 品牌 logo picker on the account settings page (
 - Evidence dir (outside the repo): `~/reports/home-hub-account-logos-<TS>/` — `NOTES.md`, PNGs
 
 - [ ] **Step 1: Suites** — `cd services/accounting-service && pytest -q` → all green; `cd frontend && npx ng test --watch=false` → all green (report files/tests counts); `npx ng build` → clean apart from the pre-existing protobufjs warning; `npx -y @fission-ai/openspec@latest validate account-brand-logos --strict` → valid.
-- [ ] **Step 2: Browser evidence** (Chromium via the existing probe tooling from `~/reports/home-hub-polish-pr-e-20261025T034833Z/`, fictional stubbed fixtures with `logo` set on two accounts): `/accounting/accounts` list, the picker open in the entry form, `/accounting/accounts/<id>` settings with the grid open, 🔔 card rows; light + dark; 1440 × 900 and 390 × 844; assert `img[src^="assets/logos/"]` count, `naturalWidth > 0`, no console errors, white tile `getComputedStyle(...).backgroundColor === 'rgb(255, 255, 255)'` in dark.
+- [ ] **Step 2: Browser evidence** (Chromium via the existing probe tooling from `~/reports/home-hub-polish-pr-e-20261025T034833Z/`, fictional stubbed fixtures with `logo` set on two accounts): `/accounting/accounts` list, the picker open in the entry form, `/accounting/accounts/<id>` settings with the grid open, 🔔 card rows; light + dark; 1440 × 900 and 390 × 844; assert `img[src^="assets/logos/"]` count, `naturalWidth > 0`, no console errors; in dark mode every `app-account-icon .tile` has `getComputedStyle(el).backgroundColor === 'rgb(255, 255, 255)'` (Review Focus 5); every `app-account-icon` host's `getBoundingClientRect()` width equals its height and is ≤ 48 px in the picker trigger, option rows and recent chips (no blow-out).
 - [ ] **Step 3: Commit** `tasks.md` ticks: `git commit -m "docs(openspec): account-brand-logos tasks complete (#175)"`.
 
 Controller follow-ups (not tasks): PR with the evidence summary and the list of slugs without a logo; Multica review; after merge deploy API (alembic upgrade) then SPA; one-off logo apply from the private table; 三信薪轉戶 archive.
