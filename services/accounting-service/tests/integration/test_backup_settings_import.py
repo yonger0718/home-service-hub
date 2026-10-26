@@ -346,3 +346,25 @@ def test_builtin_subcategory_keys_import_with_chinese_names_and_unmapped_keys_ar
 def test_unmapped_category_keys_is_empty_list_when_all_mapped(db_session, backup):
     summary = _import_backup(db_session, backup.data(categories=[backup.category("C-FOOD", "CATEGORY_FOOD", 1)]))
     assert summary["unmapped_category_keys"] == []
+
+
+def test_new_accounts_get_the_logo_of_their_moze_picture(db_session, backup):
+    _import_backup(db_session, _settings_backup(backup, accounts=[
+        backup.account("A-1", "國泰", imageName="AccountCollection10_05"),
+        backup.account("A-2", "錢包", imageName="Account_24"),
+    ]))
+    assert (_account(db_session, "國泰").logo, _account(db_session, "錢包").logo) == ("cathay-united", None)
+
+
+def test_reimport_fills_a_missing_logo_but_never_overwrites_one(db_session, backup):
+    data = _settings_backup(backup, accounts=[backup.account("A-1", "台新", imageName="AccountCollection01_11")])
+    _import_backup(db_session, data)
+    a = _account(db_session, "台新"); a.logo = "richart"; db_session.commit()
+    _import_backup(db_session, data)
+    db_session.refresh(a); assert a.logo == "richart"
+    a.logo = None; a.settings_locally_edited = True; db_session.commit()
+    _import_backup(db_session, data)
+    db_session.refresh(a); assert a.logo is None
+    a.settings_locally_edited = False; db_session.commit()
+    _import_backup(db_session, data)
+    db_session.refresh(a); assert a.logo == "taishin"

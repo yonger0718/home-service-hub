@@ -54,6 +54,7 @@ from .moze_backup_json import (
     ICON_BY_GROUP,
     ICON_BY_IMAGE,
     KEYPAD_MAP,
+    LOGO_BY_IMAGE,
     POSTING_MAP,
     PROJECT_NAMES,
     REWARD_METHOD_MAP,
@@ -300,6 +301,8 @@ def _upsert_accounts(session: Session, data: BackupData, result: SettingsResult)
         _apply_account_settings(account, _account_settings(record, result), differences)
         if account.icon is None and not account.settings_locally_edited:
             account.icon = ICON_BY_GROUP.get(group_keys.get(record["group"], ""))
+        if account.logo is None and not account.settings_locally_edited:
+            account.logo = LOGO_BY_IMAGE.get(record["imageName"])
         result.accounts[record["identifier"]] = account
         session.flush()
 
