@@ -11,6 +11,9 @@ bank account makes on the due date, as a system transfer pair, before either sta
 - Booking (§4.4 step 4): a transfer pay account → card master, `source='statement'`, `name='自動扣繳'`, both legs
   dated on the pay date, the card leg posted on the next business day; the `booked` row and an `auto_pay_booked`
   audit row in the same transaction.
+- Housekeeping (§4.4 step 0): `check_row` moves a `booked` row to `owner_deleted` / `owner_edited`, retires the pair
+  when a twin appears (`retire_pair`: release the legs' coverage, delete them, `retired`), copies action edits of
+  the legs onto the row, or flags a changed statement header once.
 
 Locks: `book` takes the shared ledger-import advisory key (as `schedule_posting.post_instance` does) so a booking
 never interleaves with a MOZE backup import; the job takes it too, around each statement's transaction, and a second
@@ -23,14 +26,17 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 
+from psycopg2.errors import LockNotAvailable
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from ..models import Account, AccountStatement, LedgerEntry, ReconciliationCase, StatementAutoPay
 from ..schemas.writes import TransferIn
-from . import coverage_service, transfer_service
+from . import coverage_service, entry_write_service, transfer_service
 from .business_days import next_business_day
 from .entry_write_service import STATEMENT_SOURCE
+from .errors import CodedConflictError
 from .reconciliation_actions import audit
 from .schedule_locks import take_import_key_shared
 
@@ -41,6 +47,9 @@ TERMINAL_REASONS = frozenset({"twin", "cutoff", "duplicate_statement", "expired"
 TRANSIENT_REASONS = frozenset({"header_disputed", "no_link", "link_ineligible", "over_cap", "monthly_budget"})
 FINAL_STATUSES = frozenset({"booked", "retired", "owner_deleted", "owner_edited"})
 HEADER_CASE_KINDS = ("parse_review", "statement_conflict")
+PAIR_BUSY = "auto_pay_busy"
+HEADER_CHANGED = "header_changed"  # the booked row's reason once the header change is audited (§4.4 step 0)
+TWIN_LOOKOUT_EXTRA_DAYS = 7  # the job's twin test runs until pay_date + twin_window_days + 7; the sweep has no window
 
 
 @dataclass(frozen=True)
@@ -220,7 +229,7 @@ def _row_for(db: Session, cand: Candidate) -> StatementAutoPay:
     return row
 
 
-def _figures(cand: Candidate) -> dict:
+def _figures(cand: "Candidate | StatementAutoPay") -> dict:
     return {"card_account_id": cand.card_account_id, "pay_account_id": cand.pay_account_id,
             "amount": str(cand.amount), "pay_date": cand.pay_date.isoformat()}
 
@@ -279,3 +288,106 @@ def decide(db: Session, cand: Candidate, today: date, settings: dict, *, dry_run
     return {"statement_id": cand.statement_id, "card_account_id": cand.card_account_id,
             "pay_account_id": cand.pay_account_id, "amount": str(cand.amount),
             "pay_date": cand.pay_date.isoformat(), "decision": decision, "reason": reason}
+
+
+# --- housekeeping ---------------------------------------------------------------------------------------------------
+
+
+def booked_rows(db: Session) -> list[StatementAutoPay]:
+    """The `booked` rows, in id order (the job checks each one every run)."""
+    return list(db.scalars(select(StatementAutoPay).where(StatementAutoPay.status == "booked")
+                           .order_by(StatementAutoPay.id)))
+
+
+def lock_pair(db: Session, row: StatementAutoPay) -> tuple[LedgerEntry | None, LedgerEntry | None]:
+    """The row's (out, in) legs locked in ONE `SELECT … FOR UPDATE NOWAIT` ordered by id (the `locked_with_legs`
+    order), refreshed from the database; a leg that is gone (its id column NULL, or the row deleted) comes back None.
+    A leg another transaction holds raises `auto_pay_busy`; the savepoint leaves the session usable."""
+    ids = [i for i in (row.out_entry_id, row.in_entry_id) if i is not None]
+    if not ids:
+        return None, None
+    try:
+        with db.begin_nested():
+            legs = {leg.id: leg for leg in db.scalars(
+                select(LedgerEntry).where(LedgerEntry.id.in_(ids)).order_by(LedgerEntry.id)
+                .with_for_update(nowait=True).execution_options(populate_existing=True))}
+    except OperationalError as exc:
+        if isinstance(exc.orig, LockNotAvailable):
+            raise CodedConflictError(PAIR_BUSY, f"a leg of auto-pay row {row.id} is locked by another write") from exc
+        raise
+    return legs.get(row.out_entry_id), legs.get(row.in_entry_id)
+
+
+def retire_pair(db: Session, row: StatementAutoPay, *, reason: str, run_id: int | None = None) -> set[int]:
+    """Delete the row's pair and mark it `retired`: lock both legs, release the coverage they hold (reason
+    `auto_pay:<reason>`), delete them, flag the released statements `needs_recheck`, audit `auto_pay_retired`.
+    Returns the released statement ids. Flushes, never commits."""
+    lock_pair(db, row)
+    # delete_entries_cascade ends with expire_all and the leg FKs are ON DELETE SET NULL: copy everything first
+    row_id, statement_id = row.id, row.statement_id
+    out_id, in_id = row.out_entry_id, row.in_entry_id
+    legs = [i for i in (out_id, in_id) if i is not None]
+    released = coverage_service.release_entries(db, legs, reason=f"auto_pay:{reason}")
+    entry_write_service.delete_entries_cascade(db, legs)
+    row = db.get(StatementAutoPay, row_id)
+    row.status, row.reason = "retired", reason
+    for sid in released:
+        db.get(AccountStatement, sid).needs_recheck = True
+    db.flush()
+    audit.record(db, event="auto_pay_retired", actor=ACTOR, statement_id=statement_id, run_id=run_id,
+                 detail={"reason": reason, "out_entry_id": out_id, "in_entry_id": in_id,
+                         "released_statement_ids": sorted(released)})
+    return released
+
+
+def _leg(db: Session, entry_id: int | None) -> LedgerEntry | None:
+    return None if entry_id is None else db.get(LedgerEntry, entry_id, populate_existing=True)
+
+
+def _final(db: Session, row: StatementAutoPay, status: str, detail: dict) -> str:
+    row.status = status
+    db.flush()
+    audit.record(db, event=f"auto_pay_{status}", actor=ACTOR, statement_id=row.statement_id, detail=detail)
+    return status
+
+
+def check_row(db: Session, row: StatementAutoPay, today: date, settings: dict) -> str | None:
+    """One housekeeping pass over a booked row (§4.4 step 0); returns the transition applied, or None. In order:
+    both legs gone → `owner_deleted`; a leg gone or not `source='statement'` (an owner edit, PUT /transfers) →
+    `owner_edited` (figures untouched); a twin within `twin_window_days` of the pay date, looked for until
+    `pay_date + twin_window_days + 7` → the pair is retired → `retired`; the legs' amount / date / accounts differ
+    from the row → copied onto it (no audit) → `updated`; the statement's total or due date differs from the row →
+    both legs `needs_review`, `reason='header_changed'` (once) → `header_changed`. A description, name or category
+    change is none of these. Reads without locks (only `retire_pair` locks). Flushes, never commits."""
+    if row.status != "booked":
+        return None
+    out_id, in_id = row.out_entry_id, row.in_entry_id
+    out_leg, in_leg = _leg(db, out_id), _leg(db, in_id)
+    if out_leg is None and in_leg is None:
+        return _final(db, row, "owner_deleted", _figures(row))
+    if out_leg is None or in_leg is None or STATEMENT_SOURCE != out_leg.source or STATEMENT_SOURCE != in_leg.source:
+        return _final(db, row, "owner_edited", {**_figures(row), "out_entry_id": out_id, "in_entry_id": in_id})
+    window = int(settings["twin_window_days"])
+    if today <= row.pay_date + timedelta(days=window + TWIN_LOOKOUT_EXTRA_DAYS) and find_twins(
+            db, card_account_id=row.card_account_id, pay_account_id=row.pay_account_id, amount=row.amount,
+            pay_date=row.pay_date, window_days=window, exclude=(out_id, in_id)):
+        retire_pair(db, row, reason="twin")
+        return "retired"
+    figures = (-out_leg.amount, out_leg.entry_date, out_leg.account_id, in_leg.account_id)
+    if figures != (row.amount, row.pay_date, row.pay_account_id, row.card_account_id):
+        row.amount, row.pay_date, row.pay_account_id, row.card_account_id = figures
+        db.flush()
+        return "updated"
+    statement = db.get(AccountStatement, row.statement_id, populate_existing=True)
+    if (statement.statement_total != row.amount or statement.due_date != row.due_date) \
+            and row.reason != HEADER_CHANGED:
+        out_leg.needs_review = in_leg.needs_review = True
+        row.reason = HEADER_CHANGED
+        db.flush()
+        audit.record(db, event="auto_pay_header_changed", actor=ACTOR, statement_id=row.statement_id,
+                     detail={**_figures(row), "due_date": row.due_date.isoformat(),
+                             "statement_total": str(statement.statement_total),
+                             "statement_due_date": None if statement.due_date is None
+                             else statement.due_date.isoformat()})
+        return HEADER_CHANGED
+    return None

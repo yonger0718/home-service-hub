@@ -4,11 +4,16 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
-from app.models import LedgerEntry, ReconciliationAudit, ReconciliationCase, StatementAutoPay
+from app.models import (AccountStatement, LedgerEntry, ReconciliationAudit, ReconciliationCase, StatementAutoPay,
+                        StatementCoverage)
+from app.schemas.writes import TransferIn
 from app.services import auto_pay_service as aps
+from app.services import entry_write_service as ews
+from app.services import reconciliation_service as rec
 from app.services import transfer_service
+from app.services.errors import CodedConflictError
 from app.services.settings_service import AUTO_PAY_DEFAULTS
 from tests.integration.statement_fixtures import OCT, SEP, _card, _line, _submit, _transfer, run  # noqa: F401
 
@@ -378,3 +383,179 @@ def test_twin_window_upper_edge(seed, db_session, world):
     _transfer(seed, bank, card, 580, PAY + timedelta(days=7))
     db.flush()
     assert _reason(db, stmt.id) == "twin"  # +7 is inside (inclusive)
+
+
+# --- housekeeping (Task 5) ------------------------------------------------------------------------------------------
+
+
+def _book(db, stmt):
+    """Book the statement through `decide` and commit; returns (row, out_leg, in_leg)."""
+    assert aps.decide(db, _cand(db, stmt.id), TODAY, _settings())["decision"] == "booked"
+    db.commit()
+    row = db.query(StatementAutoPay).filter_by(statement_id=stmt.id).one()
+    out_leg, in_leg = transfer_service.transfer_legs(db, row.transfer_group_id)
+    return row, out_leg, in_leg
+
+
+def _audit_tail(db, statement_id):
+    return db.query(ReconciliationAudit).filter_by(statement_id=statement_id).order_by(ReconciliationAudit.id) \
+        .all()[-1]
+
+
+def test_owner_deleted(db_session, world):
+    db, (bank, card, stmt) = db_session, world
+    row, out_leg, in_leg = _book(db, stmt)
+    assert aps.booked_rows(db) == [row]
+    ews.delete_entry(db, out_leg.id)  # both legs go
+    db.commit()
+    assert aps.check_row(db, row, TODAY, _settings()) == "owner_deleted"
+    db.commit()
+    assert (row.status, row.out_entry_id, row.in_entry_id) == ("owner_deleted", None, None)
+    tail = _audit_tail(db, stmt.id)
+    assert (tail.event, tail.actor) == ("auto_pay_owner_deleted", "auto_pay")
+    assert tail.detail == {"card_account_id": card.id, "pay_account_id": bank.id, "amount": "580.0000",
+                           "pay_date": "2026-10-27"}
+    assert aps.booked_rows(db) == []
+    assert aps.check_row(db, row, TODAY, _settings()) is None
+    db.commit()
+    assert _events(db, stmt.id).count("auto_pay_owner_deleted") == 1
+
+
+def test_owner_edited_via_put_transfers(db_session, world):
+    db, (bank, card, stmt) = db_session, world
+    row, out_leg, in_leg = _book(db, stmt)
+    out_id, in_id = out_leg.id, in_leg.id
+    transfer_service.update_transfer(db, row.transfer_group_id, TransferIn(
+        from_account_id=bank.id, to_account_id=card.id, out_amount=Decimal("580"), entry_date=PAY, posted_date=PAY,
+        name="自動扣繳", description="我付的"))
+    db.commit()
+    assert {db.get(LedgerEntry, out_id).source, db.get(LedgerEntry, in_id).source} == {"manual"}
+    assert aps.check_row(db, row, TODAY, _settings()) == "owner_edited"
+    db.commit()
+    assert (row.status, row.amount, row.pay_date, row.out_entry_id, row.in_entry_id) == (
+        "owner_edited", Decimal("580"), PAY, out_id, in_id)  # figures untouched
+    assert db.get(LedgerEntry, out_id) is not None and db.get(LedgerEntry, in_id) is not None
+    tail = _audit_tail(db, stmt.id)
+    assert tail.event == "auto_pay_owner_edited"
+    assert (tail.detail["out_entry_id"], tail.detail["in_entry_id"]) == (out_id, in_id)
+    assert aps.check_row(db, row, TODAY, _settings()) is None
+    assert _events(db, stmt.id).count("auto_pay_owner_edited") == 1
+
+
+def test_description_only_edit_keeps_booked(db_session, world):
+    db, (bank, card, stmt) = db_session, world
+    row, out_leg, in_leg = _book(db, stmt)
+    out_leg.description = "x"
+    in_leg.name = "改名"
+    db.commit()
+    assert aps.check_row(db, row, TODAY, _settings()) is None
+    db.commit()
+    assert row.status == "booked" and row.reason is None
+    assert _events(db, stmt.id)[-1] == "auto_pay_booked"
+
+
+def test_action_style_redate_updates_figures(db_session, world):
+    db, (bank, card, stmt) = db_session, world
+    row, out_leg, in_leg = _book(db, stmt)
+    out_leg.entry_date = in_leg.entry_date = PAY + timedelta(days=1)  # source stays statement
+    db.commit()
+    assert aps.check_row(db, row, TODAY, _settings()) == "updated"
+    db.commit()
+    assert (row.status, row.pay_date, row.amount, row.pay_account_id, row.card_account_id, row.due_date) == (
+        "booked", PAY + timedelta(days=1), Decimal("580"), bank.id, card.id, DUE)
+    assert _events(db, stmt.id)[-1] == "auto_pay_booked"  # no audit
+    assert aps.check_row(db, row, TODAY, _settings()) is None  # settled: not "updated" on every run
+
+
+def test_twin_after_booking_retires_the_pair_and_releases_claims(seed, db_session, run, world):
+    db, (bank, card, stmt) = db_session, world
+    bank.statement_live_from = date(2026, 9, 1)
+    db.commit()
+    row, out_leg, in_leg = _book(db, stmt)
+    out_id, in_id = out_leg.id, in_leg.id
+    bank_stmt, (line,), _ = _submit(db, run, bank, [_line(1, PAY, "卡費", -580, "withdrawal")], kind="bank",
+                                    period=OCT)
+    (held,) = db.query(StatementCoverage).filter_by(statement_id=bank_stmt.id, status="active").all()
+    assert (held.line_id, held.entry_id, held.match_rule) == (line.id, out_id, "exact")
+    bank_stmt.needs_recheck = False
+    db.commit()
+    twin_out, twin_in = _transfer(seed, bank, card, 580, PAY)
+    db.commit()
+    twin_out_id = twin_out.id
+    assert aps.check_row(db, row, TODAY, _settings()) == "retired"
+    db.commit()
+    assert db.get(LedgerEntry, out_id) is None and db.get(LedgerEntry, in_id) is None
+    db.refresh(held)
+    assert (held.status, held.stale_reason) == ("stale", "auto_pay:twin")
+    assert db.get(AccountStatement, bank_stmt.id).needs_recheck is True
+    assert (row.status, row.reason) == ("retired", "twin")
+    tail = _audit_tail(db, stmt.id)
+    assert (tail.event, tail.actor) == ("auto_pay_retired", "auto_pay")
+    assert tail.detail == {"reason": "twin", "out_entry_id": out_id, "in_entry_id": in_id,
+                           "released_statement_ids": [bank_stmt.id]}
+    rec.reconcile(db, bank_stmt.id)
+    db.commit()
+    (claim,) = db.query(StatementCoverage).filter_by(statement_id=bank_stmt.id, status="active").all()
+    assert (claim.line_id, claim.entry_id) == (line.id, twin_out_id)
+
+
+def test_twin_window_closed_after_14_days(seed, db_session, world):
+    db, (bank, card, stmt) = db_session, world
+    row, out_leg, in_leg = _book(db, stmt)
+    _transfer(seed, bank, card, 580, PAY)
+    db.commit()
+    assert aps.check_row(db, row, PAY + timedelta(days=15), _settings()) is None  # the job stopped looking
+    db.commit()
+    assert row.status == "booked"
+    assert aps.check_row(db, row, PAY + timedelta(days=14), _settings()) == "retired"  # last day still looks
+    db.commit()
+    assert row.status == "retired"
+
+
+def test_retire_pair_directly_ignores_the_window(seed, db_session, world):
+    db, (bank, card, stmt) = db_session, world
+    row, out_leg, in_leg = _book(db, stmt)
+    out_id, in_id = out_leg.id, in_leg.id
+    assert aps.retire_pair(db, row, reason="twin") == set()  # the sweep path (Task 7): no window, no claims held
+    db.commit()
+    assert (row.status, row.reason) == ("retired", "twin")
+    assert db.get(LedgerEntry, out_id) is None and db.get(LedgerEntry, in_id) is None
+
+
+def test_header_change_marks_needs_review_once(db_session, world):
+    db, (bank, card, stmt) = db_session, world
+    row, out_leg, in_leg = _book(db, stmt)
+    out_id, in_id = out_leg.id, in_leg.id
+    db.execute(text("UPDATE account_statement SET statement_total = 600 WHERE id = :id"), {"id": stmt.id})
+    db.commit()
+    assert aps.check_row(db, row, TODAY, _settings()) == "header_changed"
+    db.commit()
+    assert (row.status, row.reason, row.amount) == ("booked", "header_changed", Decimal("580"))
+    assert db.get(LedgerEntry, out_id).needs_review and db.get(LedgerEntry, in_id).needs_review
+    tail = _audit_tail(db, stmt.id)
+    assert tail.event == "auto_pay_header_changed"
+    assert (tail.detail["statement_total"], tail.detail["due_date"]) == ("600.0000", DUE.isoformat())
+    assert aps.check_row(db, row, TODAY, _settings()) is None
+    db.commit()
+    assert _events(db, stmt.id).count("auto_pay_header_changed") == 1
+
+
+def test_retire_pair_busy_when_a_leg_is_locked(pg_engine, db_session, world):
+    db, (bank, card, stmt) = db_session, world
+    row, out_leg, in_leg = _book(db, stmt)
+    out_id, in_id = out_leg.id, in_leg.id
+    holder = pg_engine.connect()
+    try:
+        holder.begin()
+        holder.execute(text("SELECT id FROM ledger_entry WHERE id = :id FOR UPDATE"), {"id": in_id})
+        with pytest.raises(CodedConflictError) as caught:
+            aps.retire_pair(db, row, reason="twin")
+        assert caught.value.code == aps.PAIR_BUSY == "auto_pay_busy"
+        db.rollback()
+    finally:
+        holder.rollback()
+        holder.close()
+    db.refresh(row)
+    assert (row.status, row.reason, row.out_entry_id, row.in_entry_id) == ("booked", None, out_id, in_id)
+    assert db.get(LedgerEntry, out_id) is not None and db.get(LedgerEntry, in_id) is not None
+    assert _events(db, stmt.id)[-1] == "auto_pay_booked"

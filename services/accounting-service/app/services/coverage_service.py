@@ -128,6 +128,19 @@ def release_rows(db: Session, coverage_ids, *, reason: str) -> int:
     return _release(db, [StatementCoverage.id.in_(ids)], reason) if ids else 0
 
 
+def release_entries(db: Session, entry_ids, *, reason: str) -> set[int]:
+    """Release every active coverage row of the given entries; the statements those rows belonged to (auto-pay
+    pair retirement, which deletes the entries next)."""
+    ids = sorted(set(entry_ids))
+    if not ids:
+        return set()
+    conds = [StatementCoverage.entry_id.in_(ids)]
+    statement_ids = set(db.scalars(select(StatementCoverage.statement_id)
+                                   .where(StatementCoverage.status == "active", *conds)))
+    _release(db, conds, reason)
+    return statement_ids
+
+
 def release_statement(db: Session, statement: AccountStatement, *, reason: str) -> int:
     return _release(db, [StatementCoverage.statement_id == statement.id], reason)
 
