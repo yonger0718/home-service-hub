@@ -59,6 +59,7 @@ function dimensions(path: string): [number, number] {
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
+const XML_NS = 'http://www.w3.org/XML/1998/namespace';
 
 /** Every rule offence in one SVG's text: the raw-text pass, then a DOM walk that re-checks each attribute value and
  *  each element's own text after the parser has decoded character references (`&#117;rl(…)` is `url(…)` in the DOM).
@@ -93,6 +94,8 @@ export function svgOffences(file: string, text: string): string[] {
       if (a.localName.toLowerCase().startsWith('on')) out.push(`${file}: ${where}: event handler`);
       if (a.localName === 'href' && !a.value.startsWith('#'))
         out.push(`${file}: ${where}: non-fragment href`);
+      if (a.namespaceURI === XML_NS && a.localName === 'base')
+        out.push(`${file}: ${where}: xml:base retargets fragment references`);
       out.push(...banned(where, a.value));
     }
     const ownText = Array.from(el.childNodes)
@@ -205,6 +208,21 @@ describe('bundled institution logos (#175)', () => {
         'img.svg',
         `<svg ${NS}><img ${XHTML} src="https://evil.example/t.gif"/></svg>`,
         /<img>: foreign-namespace element/,
+      ],
+      [
+        'image.svg',
+        `<svg ${NS} style="background:image('https://evil.example/p.png')"/>`,
+        /forbidden pattern \/image\\\(/,
+      ],
+      [
+        'fade.svg',
+        `<svg ${NS}><rect style="fill:cross-fade(url(#a), url(#b), 50%)"/></svg>`,
+        /forbidden pattern \/cross-fade/,
+      ],
+      [
+        'base.svg',
+        `<svg ${NS} xml:base="https://evil.example/"><use href="#a"/></svg>`,
+        /xml:base retargets fragment references/,
       ],
     ];
     for (const [file, text, offence] of payloads) {

@@ -96,6 +96,9 @@ def sanitize(el: ET.Element) -> None:
         if ans is not None and ans not in KEPT_ATTR_NS:
             del el.attrib[name]  # inkscape:/sodipodi:/i: … editor attributes
             continue
+        if ans == XML_NS and alocal == "base":
+            del el.attrib[name]  # xml:base would retarget fragment hrefs / url(#…) away from this document
+            continue
         check_chars(el.attrib[name], f"<{local} {alocal}>")
     for child in list(el):
         if not isinstance(child.tag, str):

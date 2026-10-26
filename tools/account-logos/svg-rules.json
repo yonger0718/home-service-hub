@@ -1,7 +1,7 @@
 {
   "forbidden_elements": ["script", "foreignObject", "image", "style", "animate", "set", "animateMotion", "animateTransform"],
   "forbidden_text": ["<!DOCTYPE", "<!ENTITY", "<?", "data:"],
-  "forbidden_regex": ["url\\((?!\\s*['\"]?#)", "image-set\\(", "@import", "src\\("],
+  "forbidden_regex": ["url\\((?!\\s*['\"]?#)", "image-set\\(", "@import", "src\\(", "image\\(", "cross-fade\\("],
   "forbidden_attr_chars": ["\\"],
   "max_bytes": 262144
 }
