@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { LedgerAccount } from '../../../models/accounting.model';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
+import { ACCOUNT_LOGOS } from '../../../theme/account-logos';
 import { makeAccount } from '../testing/fixtures';
 import { AccountPickerComponent } from './account-picker';
 import { RECENT_ACCOUNTS_KEY } from './recent-accounts';
@@ -78,6 +79,23 @@ describe('AccountPickerComponent', () => {
     fixture.componentRef.setInput('value', null);
     fixture.detectChanges();
     expect(text(trigger)).toContain('選擇帳戶');
+  });
+
+  it('renders the logo in the trigger, the recent chip and the option row', () => {
+    const logoAccount = makeAccount({ id: 7, name: '標誌銀行', icon: '🏦', logo: ACCOUNT_LOGOS[0].slug, group_name: '銀行' });
+    localStorage.setItem(RECENT_ACCOUNTS_KEY, JSON.stringify([7]));
+    const { fixture, el } = render({ accounts: [WALLET, logoAccount], value: 7 });
+    const panel = openPanel(fixture);
+    const icons = [
+      el.querySelector('.acct-trigger app-account-icon'),
+      panel.querySelector('.acct-recent-chip app-account-icon'),
+      panel.querySelector('.acct-list app-account-icon.acct-ico img, .acct-list [data-account-id="7"] app-account-icon'),
+    ];
+    expect(icons.every(icon => icon !== null && icon.classList.contains('acct-ico'))).toBe(true);
+    const srcs = Array.from(el.querySelectorAll('img')).map(img => img.getAttribute('src'));
+    expect(srcs.length).toBe(3);
+    expect(new Set(srcs).size).toBe(1);
+    expect(srcs[0]).toContain(ACCOUNT_LOGOS[0].file);
   });
 
   it('shows the name only when compact', () => {

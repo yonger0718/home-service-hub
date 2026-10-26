@@ -9,9 +9,10 @@ import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingToastService } from '../accounting-toast';
 import { makeAccount, makeDefinition, makeEntry, makeInstance } from '../testing/fixtures';
+import { BillState } from '../billing/billing.service';
 import { StatementSummary } from '../statements/statement.model';
 import { InboxItem, InboxOut } from '../inbox/inbox.model';
-import { AccountingRemindersComponent, withImportedStatement } from './reminders';
+import { AccountingRemindersComponent, cardReminders, withImportedStatement } from './reminders';
 
 const credit = (overrides: Partial<LedgerAccount>) => makeAccount({ is_credit: true, icon: '💳', ...overrides });
 
@@ -101,11 +102,24 @@ function bankOnly(caseId: number): InboxItem {
   };
 }
 
+describe('cardReminders logo', () => {
+  it('cardReminders carries the account logo', () => {
+    const bill = {
+      accountId: 10, name: '國泰卡', period: { start: '2026-09-01', end: '2026-09-30' }, due: '2026-10-15',
+      currency: 'TWD', statement: 100, paid: 0, remaining: 100,
+    } as unknown as BillState;
+    const rows = cardReminders([bill], [{ id: 10, icon: '🏔', logo: 'cathay-united' }], '2026-10-03');
+    expect(rows[0].logo).toBe('cathay-united');
+    expect(cardReminders([bill], [{ id: 10, icon: null, logo: null }], '2026-10-03')[0].logo).toBeNull();
+  });
+});
+
 describe('withImportedStatement', () => {
   const row = {
     accountId: 9,
     name: '玉山 UNI',
     icon: '💳',
+    logo: null,
     currency: 'TWD',
     periodEnd: '2026-09-15',
     due: '2026-10-05',

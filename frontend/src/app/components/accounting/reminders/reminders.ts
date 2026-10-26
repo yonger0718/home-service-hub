@@ -21,6 +21,7 @@ import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingToastService, scheduleActionError } from '../accounting-toast';
 import { isHandledKey } from '../accounting-ui';
 import { BillingEvent, billingCards, dueCountdown, reminderDues } from '../billing/billing-math';
+import { AccountIconComponent } from '../account-icon/account-icon';
 import { BillState, BillingService } from '../billing/billing.service';
 import { AppInboxHandledListComponent } from '../inbox/handled-list/handled-list';
 import { AppInboxPanelComponent } from '../inbox/inbox-panel/inbox-panel';
@@ -65,7 +66,8 @@ export interface ReconChip {
 export interface CardReminder {
   accountId: number;
   name: string;
-  icon: string;
+  icon: string | null;
+  logo: string | null;
   currency: string;
   /** Billing cycle end, matched to `account_statement.period_end`. */
   periodEnd: string;
@@ -154,10 +156,11 @@ export function debtRemaining(entry: LedgerEntry): DebtRemaining | null {
 /** Cards with something left to pay on their current statement, soonest due first. */
 export function cardReminders(
   bills: BillState[],
-  accounts: Pick<LedgerAccount, 'id' | 'icon'>[],
+  accounts: Pick<LedgerAccount, 'id' | 'icon' | 'logo'>[],
   today: string,
 ): CardReminder[] {
   const icons = new Map(accounts.map(account => [account.id, account.icon]));
+  const logos = new Map(accounts.map(account => [account.id, account.logo]));
   return bills
     .filter(bill => bill.remaining > 0)
     .sort((a, b) => a.due.localeCompare(b.due) || a.accountId - b.accountId)
@@ -166,7 +169,8 @@ export function cardReminders(
       return {
         accountId: bill.accountId,
         name: bill.name,
-        icon: icons.get(bill.accountId) ?? '💳',
+        icon: icons.get(bill.accountId) ?? null,
+        logo: logos.get(bill.accountId) ?? null,
         currency: bill.currency,
         periodEnd: bill.period.end,
         due: bill.due,
@@ -240,7 +244,7 @@ export function debtReminders(counterparties: Counterparty[], openEntries: Ledge
 @Component({
   selector: 'app-accounting-reminders',
   standalone: true,
-  imports: [RouterLink, NgTemplateOutlet, ScheduleSheetComponent, AppInboxPanelComponent, AppInboxHandledListComponent],
+  imports: [AccountIconComponent, RouterLink, NgTemplateOutlet, ScheduleSheetComponent, AppInboxPanelComponent, AppInboxHandledListComponent],
   templateUrl: './reminders.html',
   styleUrls: ['../filters.scss', '../entry-row.scss', './reminders.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,

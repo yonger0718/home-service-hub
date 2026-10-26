@@ -12,7 +12,7 @@
   (click)="toggle()"
 >
   @if (selected(); as account) {
-    <span class="acct-ico" aria-hidden="true">{{ account.icon ?? '🏦' }}</span>
+    <app-account-icon class="acct-ico" aria-hidden="true" [logo]="account.logo" [icon]="account.icon" fallback="bank" />
     <span class="acct-name">{{ account.name }}</span>
     @if (!compact()) {
       <span class="acct-trigger-balance">· {{ balanceText(account) }}</span>
@@ -48,7 +48,7 @@
       <span class="acct-recent-label">最近使用</span>
       @for (account of recentAccounts(); track account.id) {
         <button type="button" class="acct-recent-chip" [attr.data-account-id]="account.id" (click)="choose(account.id)">
-          {{ account.icon ?? '🏦' }} {{ account.name }}
+          <app-account-icon class="acct-ico" aria-hidden="true" [logo]="account.logo" [icon]="account.icon" fallback="bank" /> {{ account.name }}
         </button>
       }
     </div>
@@ -68,7 +68,7 @@
             (click)="choose(account.id)"
             (focusin)="onOptionFocus(account.id)"
           >
-            <span class="acct-ico" aria-hidden="true">{{ account.icon ?? '🏦' }}</span>
+            <app-account-icon class="acct-ico" aria-hidden="true" [logo]="account.logo" [icon]="account.icon" fallback="bank" />
             <span class="acct-name">{{ account.name }}</span>
             <span class="acct-currency">{{ account.currency }}</span>
             <span class="acct-balance" [class.neg]="+account.balance < 0">{{ balanceText(account) }}</span>

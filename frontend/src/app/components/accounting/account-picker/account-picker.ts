@@ -1,4 +1,5 @@
 // frontend/src/app/components/accounting/account-picker/account-picker.ts
+import { AccountIconComponent } from '../account-icon/account-icon';
 import { DOCUMENT, NgTemplateOutlet } from '@angular/common';
 import {
   ChangeDetectionStrategy,
@@ -35,7 +36,7 @@ const POPOVER_GAP = 4;
 @Component({
   selector: 'app-account-picker',
   standalone: true,
-  imports: [NgTemplateOutlet],
+  imports: [NgTemplateOutlet, AccountIconComponent],
   templateUrl: './account-picker.html',
   styleUrls: ['../sheet.scss', './account-picker.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
