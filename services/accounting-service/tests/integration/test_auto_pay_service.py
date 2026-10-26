@@ -213,8 +213,8 @@ def test_twin_shapes(seed, db_session, world):
         "owner transfer bank→card": lambda: _transfer(seed, bank, card, 580, PAY),
         "owner transfer bank→child card": lambda: _transfer(seed, bank, child, 580, PAY),
         "transfer_in on the child card from another account": lambda: _transfer(seed, other, child, 580, PAY),
-        "transfer_out on the bank to another account, 3 days later":
-            lambda: _transfer(seed, bank, other, 580, date(2026, 10, 30)),
+        "transfer_out on the bank without a peer leg, 3 days later":
+            lambda: seed.entry(bank, "-580", kind="transfer_out", day=date(2026, 10, 30)),
         "statement-sourced expense on the bank": lambda: seed.entry(bank, "-580", day=PAY, source="statement"),
         "pair_transfer shape (source=statement)": lambda: (
             seed.entry(bank, "-580", kind="transfer_out", day=PAY, source="statement", transfer_group_id=pair),
@@ -229,6 +229,8 @@ def test_twin_shapes(seed, db_session, world):
         "owner transfer 9 days later": lambda: _transfer(seed, bank, card, 580, date(2026, 11, 5)),
         "owner transfer of another amount": lambda: _transfer(seed, bank, card, 581, PAY),
         "transfer_in on the bank": lambda: seed.entry(bank, "580", kind="transfer_in", day=PAY),
+        "transfer_out on the bank to another account, 3 days later":
+            lambda: _transfer(seed, bank, other, 580, date(2026, 10, 30)),
     }
     for label, make in not_twins.items():
         assert twin_after(make) is None, label
@@ -607,3 +609,39 @@ def test_duplicate_gate_sees_a_retired_pair_when_the_twin_is_outside_the_duplica
     db.commit()
     assert (out["decision"], out["reason"]) == ("skipped", "duplicate_statement")
     assert _entry_count(db) == entries
+
+
+def test_two_cards_paid_from_one_bank_with_equal_totals_both_book(seed, db_session, run, world):
+    db, (bank, card, stmt) = db_session, world
+    card_b = _card(seed, db, "卡二", auto_pay_account_id=bank.id)
+    due_b = date(2026, 10, 29)  # Thu, the same week
+    stmt_b, _, _ = _submit(db, run, card_b, [_line(1, DAY, "全聯", 580)], period=SEP, due_date=due_b)
+    assert aps.decide(db, _cand(db, stmt.id), TODAY, _settings())["decision"] == "booked"
+    db.commit()
+    # card A's out leg (bank → card A) is a transfer_out of 580 on the bank 2 days away, but its peer is not on B
+    out = aps.decide(db, _cand(db, stmt_b.id, due_b), due_b, _settings())
+    db.commit()
+    assert (out["decision"], out["reason"]) == ("booked", None)
+    rows = db.query(StatementAutoPay).filter_by(status="booked").order_by(StatementAutoPay.id).all()
+    assert [(r.card_account_id, r.pay_account_id, r.amount) for r in rows] == [
+        (card.id, bank.id, Decimal("580")), (card_b.id, bank.id, Decimal("580"))]
+    # neither pair is the other's twin: housekeeping keeps both
+    for row in rows:
+        assert aps.check_row(db, row, due_b, _settings()) is None
+    db.commit()
+    assert db.query(StatementAutoPay).filter_by(status="booked").count() == 2
+
+
+def test_owner_transfer_to_savings_is_not_a_twin(seed, db_session, world):
+    db, (bank, card, stmt) = db_session, world
+    savings = seed.account("儲蓄")
+    db.commit()
+    _transfer(seed, bank, savings, 580, PAY + timedelta(days=1))  # the owner moves the same amount to savings
+    db.commit()
+    assert _reason(db, stmt.id) is None  # the gate passes
+    row, out_leg, in_leg = _book(db, stmt)
+    out_id, in_id = out_leg.id, in_leg.id
+    assert aps.check_row(db, row, TODAY, _settings()) is None  # and housekeeping does not retire the pair
+    db.commit()
+    assert row.status == "booked"
+    assert db.get(LedgerEntry, out_id) is not None and db.get(LedgerEntry, in_id) is not None

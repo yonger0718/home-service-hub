@@ -9,7 +9,8 @@ bank account makes on the due date, as a system transfer pair, before either sta
   over_cap → monthly_budget. `duplicate_statement` looks at every final row of the card (owner-deleted and retired
   pairs too), pay dates strictly within 20 days. A transient skip turns `expired` once `today > pay_date +
   retry_days`, even if its condition has cleared.
-- Twin (§4.1): another ledger representation of the same payment, whatever its source.
+- Twin (§4.1): another ledger representation of the same payment, whatever its source; a `transfer_out` on the pay
+  account counts only when its peer leg is on the card family or it has no peer (§8 errata).
 - Booking (§4.4 step 4): a transfer pay account → card master, `source='statement'`, `name='自動扣繳'`, both legs
   dated on the pay date, the card leg posted on the next business day; the `booked` row and an `auto_pay_booked`
   audit row in the same transaction.
@@ -31,9 +32,9 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from psycopg2.errors import LockNotAvailable
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ..models import Account, AccountStatement, LedgerEntry, ReconciliationCase, StatementAutoPay
 from ..schemas.writes import TransferIn
@@ -141,16 +142,24 @@ def find_twins(db: Session, *, card_account_id: int, pay_account_id: int, amount
                window_days: int, exclude: Iterable[int] = ()) -> list[int]:
     """Top-level entries that already represent this payment (§4.1), whatever their source, with `entry_date` within
     `window_days` of the pay date: a `transfer_in` of `amount` on the card family, or on the pay account a
-    `transfer_out` of `-amount` or a statement-booked `expense` of `-amount` (a `backfill_entry` stand-in)."""
+    `transfer_out` of `-amount` whose peer leg (the same `transfer_group_id`'s `transfer_in`) is on the card family
+    or that has no peer leg at all, or a statement-booked `expense` of `-amount` (a `backfill_entry` stand-in). A
+    `transfer_out` to another account (savings, another card's payment) is not a twin (§8 errata)."""
     family = coverage_service.participating_accounts(db, card_account_id)
     window = timedelta(days=window_days)
+    peer = aliased(LedgerEntry)
+    peer_leg = and_(peer.transfer_group_id == LedgerEntry.transfer_group_id, peer.id != LedgerEntry.id,
+                    peer.kind == "transfer_in")
+    paid_to_family_or_peerless = or_(LedgerEntry.transfer_group_id.is_(None),
+                                     ~exists().where(peer_leg),
+                                     exists().where(peer_leg, peer.account_id.in_(family)))
     query = select(LedgerEntry.id).where(
         LedgerEntry.parent_entry_id.is_(None),
         LedgerEntry.entry_date.between(pay_date - window, pay_date + window),
         or_(and_(LedgerEntry.account_id.in_(family), LedgerEntry.kind == "transfer_in",
                  LedgerEntry.amount == amount),
             and_(LedgerEntry.account_id == pay_account_id, LedgerEntry.amount == -amount,
-                 or_(LedgerEntry.kind == "transfer_out",
+                 or_(and_(LedgerEntry.kind == "transfer_out", paid_to_family_or_peerless),
                      and_(LedgerEntry.kind == "expense", LedgerEntry.source == STATEMENT_SOURCE)))))
     excluded = list(exclude)
     if excluded:
