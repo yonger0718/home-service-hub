@@ -1,6 +1,7 @@
 /// <reference types="node" />
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { extname, join } from 'node:path';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ACCOUNT_LOGOS, LOGO_SLUG, accountLogo } from './account-logos';
 
@@ -84,11 +85,16 @@ export function svgOffences(file: string, text: string): string[] {
 
 describe('bundled institution logos (#175)', () => {
   it('every manifest entry has a square file and every file is in the manifest', () => {
-    const files = readdirSync(DIR).filter((f) => f !== 'SOURCES.md');
+    const files = readdirSync(DIR);
     expect(new Set(ACCOUNT_LOGOS.map((l) => l.file))).toEqual(new Set(files));
     for (const l of ACCOUNT_LOGOS) {
       expect(l.slug).toMatch(LOGO_SLUG);
-      expect(l.file).toBe(`${l.slug}${extname(l.file)}`);
+      const hashed = new RegExp(`^${l.slug}\\.([0-9a-f]{8})\\.(svg|png)$`).exec(l.file);
+      expect(hashed, l.file).not.toBeNull();
+      const digest = createHash('sha256')
+        .update(readFileSync(join(DIR, l.file)))
+        .digest('hex');
+      expect(hashed![1], `${l.file} content hash`).toBe(digest.slice(0, 8));
       const [w, h] = dimensions(join(DIR, l.file));
       expect(w, l.file).toBeGreaterThan(0);
       expect(w, l.file).toBe(h);

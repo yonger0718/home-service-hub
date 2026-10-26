@@ -10,11 +10,14 @@ then every element and attribute is checked (forbidden elements, on* handlers, n
 namespace elements and attributes are dropped, and the mark is wrapped in a
 square <svg viewBox="0 0 S S"> with S = max(w, h) * 1.16 so it sits centred with 8 % padding on the long side.
 PNG: size cap, signature, square IHDR >= 180 px; re-written with only the IHDR/PLTE/tRNS/IDAT/IEND chunks.
+The output is <out-dir>/<slug>.<sha256[:8]>.<svg|png> (content-hashed, as the SPA publisher keeps every
+hashed asset immutable: a changed mark gets a new name; update the manifest's `file` and delete the old file).
 Prints the output path; exits 1 with a reason on any rejection. Stdlib only.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import struct
@@ -105,7 +108,7 @@ def sanitize(el: ET.Element) -> None:
         sanitize(child)
 
 
-def normalize_svg(data: bytes, out: Path) -> None:
+def normalize_svg(data: bytes) -> bytes:
     try:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError as e:
@@ -160,10 +163,10 @@ def normalize_svg(data: bytes, out: Path) -> None:
     encoded = result.encode("utf-8")
     if len(encoded) > RULES["max_bytes"]:
         raise Rejected(f"output is {len(encoded)} bytes > {RULES['max_bytes']}")
-    out.write_bytes(encoded)
+    return encoded
 
 
-def normalize_png(data: bytes, out: Path) -> None:
+def normalize_png(data: bytes) -> bytes:
     if not data.startswith(PNG_SIG):
         raise Rejected("not a PNG (bad signature)")
     pos, chunks = len(PNG_SIG), []
@@ -194,7 +197,7 @@ def normalize_png(data: bytes, out: Path) -> None:
     for kind, body in chunks:
         if kind in PNG_KEEP:
             buf += struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
-    out.write_bytes(bytes(buf))
+    return bytes(buf)
 
 
 def main(argv: list[str]) -> int:
@@ -210,8 +213,10 @@ def main(argv: list[str]) -> int:
         if len(data) > RULES["max_bytes"]:
             raise Rejected(f"input is {len(data)} bytes > {RULES['max_bytes']}")
         is_png = data.startswith(PNG_SIG)
-        out = args.out_dir / f"{args.slug}.{'png' if is_png else 'svg'}"
-        (normalize_png if is_png else normalize_svg)(data, out)
+        result = (normalize_png if is_png else normalize_svg)(data)
+        digest = hashlib.sha256(result).hexdigest()[:8]
+        out = args.out_dir / f"{args.slug}.{digest}.{'png' if is_png else 'svg'}"
+        out.write_bytes(result)
     except Rejected as e:
         print(f"rejected {args.input}: {e}", file=sys.stderr)
         return 1

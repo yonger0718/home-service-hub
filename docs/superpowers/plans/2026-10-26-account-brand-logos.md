@@ -101,6 +101,8 @@ git commit -m "feat(accounting): account.logo slug column and API field (#175)"
 
 ### Task 2: The logo set — fetch, normalise, manifest, SOURCES.md, manifest gate
 
+> Final fix wave note (2026-10-26): `SOURCES.md` moved to `tools/account-logos/SOURCES.md`, and logo files are named `<slug>.<sha256[:8]>.<ext>` (gate-checked against the bytes) instead of `<slug>.<ext>`.
+
 **Files:**
 - Create: `frontend/src/assets/logos/<slug>.svg|png` (one per obtainable slug), `frontend/src/assets/logos/SOURCES.md`
 - Create: `tools/account-logos/svg-rules.json`, `tools/account-logos/normalize.py` (stdlib only), `frontend/src/app/theme/account-logos.ts`, `frontend/src/app/theme/account-logos.spec.ts`

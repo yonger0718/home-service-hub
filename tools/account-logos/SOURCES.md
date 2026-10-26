@@ -1,14 +1,18 @@
 # Institution logos — sources
 
-Every logo in this directory is a trademark of its owner. They are bundled only for this household's private
+Every logo in `frontend/src/assets/logos/` is a trademark of its owner. They are bundled only for this household's private
 HomeHub app, so accounts show their institution's mark, and are not redistributed.
 
-Each file was downloaded into a scratch directory outside the repo, checked with `file`, and written here only by
+Each file was downloaded into a scratch directory outside the repo, checked with `file`, and written there only by
 `tools/account-logos/normalize.py` (SVG: rules in `tools/account-logos/svg-rules.json`, metadata and editor data
 dropped, mark wrapped in a square viewBox with 8 % padding; PNG: square ≥ 180 px, only IHDR/PLTE/tRNS/IDAT/IEND
 kept). Before normalising, some downloads were pre-cleaned in the scratch directory: the standard SVG DOCTYPE and
 comments removed, class-only `<style>` rules inlined as `style=""`, wordmark text removed and the viewBox cropped
 to the symbol, or a raster cropped / padded to a square. Colours were not changed. All fetched 2026-10-26.
+
+Files are named `<slug>.<sha256[:8]>.<svg|png>` (content-hashed, so the SPA publisher's immutable-asset rule lets
+a changed mark ship under a new name); the slug column below is the first segment of the file name. This file
+lives in `tools/account-logos/` so it is not copied into the SPA build.
 
 | slug | institution | source URL | fetched | notes |
 |---|---|---|---|---|

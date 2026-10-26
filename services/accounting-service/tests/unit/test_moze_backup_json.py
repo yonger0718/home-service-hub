@@ -319,7 +319,7 @@ LOGOS_DIR = Path(__file__).resolve().parents[4] / "frontend" / "src" / "assets" 
 
 @pytest.mark.skipif(not LOGOS_DIR.is_dir(), reason="frontend tree absent")
 def test_every_logo_slug_has_a_bundled_file():
-    files = {p.stem for p in LOGOS_DIR.iterdir() if p.suffix in {".svg", ".png"}}
+    files = {p.name.split(".")[0] for p in LOGOS_DIR.iterdir() if p.suffix in {".svg", ".png"}}
     assert set(LOGO_BY_IMAGE.values()) <= files
 
 
