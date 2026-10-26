@@ -1,8 +1,9 @@
-import { DestroyRef, Injectable, Signal, computed, effect, inject, signal, untracked } from '@angular/core';
+import { DestroyRef, Injectable, Injector, Signal, computed, effect, inject, signal, untracked } from '@angular/core';
 import { DOCUMENT } from '@angular/common';
 import { Observable, catchError, forkJoin, map, of } from 'rxjs';
 
 import { BillingEvent, reminderDues } from '../components/accounting/billing/billing-math';
+import { WEEKENDS_ONLY } from '../components/accounting/billing/business-days';
 import { BillingService } from '../components/accounting/billing/billing.service';
 import { countReminders } from '../components/accounting/billing/reminder-count';
 import { todayIso } from '../components/accounting/dates';
@@ -40,7 +41,7 @@ export class NavBadgeService {
   private readonly accounting = inject(AccountingService);
   private readonly portfolio = inject(PortfolioService);
   private readonly bills = inject(BillingService);
-  private readonly calendar = inject(BusinessCalendarService);
+  private readonly injector = inject(Injector);
   private readonly inbox = inject(InboxService);
   private readonly importHistory = inject(ImportHistoryService);
   private readonly document = inject(DOCUMENT);
@@ -48,12 +49,21 @@ export class NavBadgeService {
 
   private readonly reminders = signal<ReminderInputs | null>(null);
   /**
+   * The business-day calendar, first asked for when the reminders load (not at construction: the calendar service
+   * reads the server once when created, and this service is created with the shell). `WEEKENDS_ONLY` before that.
+   */
+  private readonly calendar = signal<BusinessCalendarService | null>(null);
+  /**
    * The cards' current statements as due events, with the debit day from the calendar: recomputed when the calendar
    * lands, so the rounds `BillingService` keeps carry the right `payDate` (its round key includes it).
    */
   private readonly dues: Signal<BillingEvent[]> = computed(() => {
     const reminders = this.reminders();
-    return reminders ? reminderDues(reminders.accounts, reminders.today, this.calendar.calendar()).filter(event => event.kind === 'due') : [];
+    if (!reminders) {
+      return [];
+    }
+    const calendar = this.calendar()?.calendar() ?? WEEKENDS_ONLY;
+    return reminderDues(reminders.accounts, reminders.today, calendar).filter(event => event.kind === 'due');
   });
   private readonly latestImport = signal<ImportRun | null>(null);
   private readonly recalc = signal<RecalcStatus | null>(null);
@@ -159,6 +169,9 @@ export class NavBadgeService {
   /** The reminders and the latest import (the accounting badges); `rereadBills`: an accepted refresh (see the field). */
   private loadAccounting(rereadBills = false): void {
     const today = todayIso();
+    if (untracked(this.calendar) === null) {
+      this.calendar.set(this.injector.get(BusinessCalendarService));
+    }
     this.load(
       'reminders',
       forkJoin({
