@@ -1884,7 +1884,7 @@ def test_transfer_tolerance_rule_key_is_honoured():
     assert res.cases[0].context == {"hint": "needs_peer"}
 
 
-# --- auto-pay claim (auto-pay spec §4.5, Task 8) ---------------------------------------------------------------------
+# --- auto-pay claim (auto-pay spec §4.6, Task 8) ---------------------------------------------------------------------
 
 AP_DAY = date(2026, 9, 20)
 
@@ -1942,9 +1942,10 @@ def test_claimed_owner_entry_does_not_block():
     owner_day = AP_DAY - timedelta(days=10)
     res = run([_ap_line(1, owner_day), _ap_line(2)], [_owner_leg(11, 10), _ap_leg(10, 5)])
     assert _claims(res) == [(1, "payment", [11]), (2, "auto_pay", [10])]
-    rep = m._auto_pay_claim("card", _ap_line(2), [_owner_leg(11, 10), _ap_leg(10, 5)], {11}, R)
+    ents, line = [_owner_leg(11, 10), _ap_leg(10, 5)], _ap_line(2)
+    rep = m._auto_pay_claim("card", line, ents, {11}, R, lines=[line], claimed_lines=set())
     assert rep is not None and rep.rule == m.AUTO_PAY_RULE and [r.entry_id for r in rep.rows] == [10]
-    assert m._auto_pay_claim("card", _ap_line(2), [_owner_leg(11, 10), _ap_leg(10, 5)], set(), R) is None
+    assert m._auto_pay_claim("card", line, ents, set(), R, lines=[line], claimed_lines=set()) is None
 
 
 @pytest.mark.parametrize("line_kind", ["withdrawal", "payment", "transfer_out"])
@@ -1957,6 +1958,29 @@ def test_bank_lines_claim_the_out_leg(line_kind):
 def test_auto_pay_leg_beyond_drift_window_does_not_claim():
     res = run([_ap_line()], [_ap_leg(10, 16)])
     assert res.claims == []
+
+
+def test_auto_pay_leg_on_the_drift_window_edge_claims():
+    res = run([_ap_line()], [_ap_leg(10, 15)])
+    assert _claims(res) == [(1, "auto_pay", [10])]
+
+
+def test_an_earlier_farther_line_leaves_the_leg_to_the_line_in_the_exact_window():
+    # line 1 at D-12 (distance 11 to the leg), line 2 at D (distance 1): line 2 claims exactly, line 1 keeps its case
+    res = run([_ap_line(1, AP_DAY - timedelta(days=12)), _ap_line(2)], [_ap_leg(10, 1)])
+    assert _claims(res) == [(2, "payment", [10])]
+    (case,) = [c for c in res.cases if c.line_id == 1]
+    assert case.kind in ("amount_delta", "ambiguous", "line_unmatched")
+    assert [c for c in res.cases if c.line_id == 2] == []
+
+
+def test_a_claimed_exact_window_line_does_not_hold_the_leg_back():
+    # the other line in the exact window is already claimed: the leg stays admissible for this line
+    near, far = _ap_line(2), _ap_line(1, AP_DAY - timedelta(days=12))
+    ents = [_ap_leg(10, 1)]
+    assert m._auto_pay_claim("card", far, ents, set(), R, lines=[far, near], claimed_lines=set()) is None
+    rep = m._auto_pay_claim("card", far, ents, set(), R, lines=[far, near], claimed_lines={2})
+    assert rep is not None and rep.rule == m.AUTO_PAY_RULE and rep.reasons == ("date_distance=11", "auto_pay")
 
 
 @pytest.mark.parametrize("kind, line_kind, flow, leg_kind", [("bank", "deposit", "580", "transfer_in"),

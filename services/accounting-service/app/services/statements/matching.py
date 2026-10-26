@@ -87,7 +87,7 @@ class Entry:
     # (installment_date_drift); never represented, claimed, near/foreign-matched or reported
     claimable: bool = True
     stand_in: bool = False  # R6b.0: a backfilled entry (statement source, applied backfill_entry); owner rows win over it
-    # auto-pay spec §4.5: a booked auto-pay leg (always also `stand_in`); it may claim its line beyond the exact window
+    # auto-pay spec §4.5: a booked auto-pay leg (always also `stand_in`); §4.6: it may claim its line beyond the exact window
     # (`_auto_pay_claim`)
     auto_pay: bool = False
     # split members: every child as stored (claimed, covered or gated out included) for the printed-whole guard
@@ -977,23 +977,31 @@ AUTO_PAY_RULE = "auto_pay"
 AUTO_PAY_LINE_KINDS = {"card": frozenset({"payment"}), "bank": frozenset({"withdrawal", "payment", "transfer_out"})}
 
 
-def _auto_pay_claim(kind: str, line: Line, entries: list[Entry], claimed: set[int], rules: Rules) -> Representation | None:
-    """Auto-pay spec §4.5: the card `payment` line of a booked auto-pay pair posts the next business day after the
+def _auto_pay_claim(kind: str, line: Line, entries: list[Entry], claimed: set[int], rules: Rules, *,
+                    lines: list[Line], claimed_lines: set[int]) -> Representation | None:
+    """Auto-pay spec §4.6: the card `payment` line of a booked auto-pay pair posts the next business day after the
     debit, often farther than the exact window. Exactly one admissible auto-pay leg (gated, peer-checked, same flow,
     unclaimed, within the drift window) claims a line of `AUTO_PAY_LINE_KINDS[kind]` at `rules.accept`, unless an owner
     entry (not a stand-in, unclaimed) passes the same class/flow/distance test: the owner path then decides the line.
-    Two legs → None (`_transfer_case` names both as ambiguous)."""
+    Two legs → None (`_transfer_case` names both as ambiguous). A leg another unclaimed line of the statement
+    (`lines` minus `claimed_lines`) fits within the exact window is left to that line: it claims the leg exactly on
+    its own turn, so an earlier, farther line never takes it first."""
     if line.line_kind not in AUTO_PAY_LINE_KINDS.get(kind, frozenset()):
         return None
-    gate = eligible_kinds(kind, line.line_kind)
 
-    def fits(e: Entry) -> bool:
-        return _entry_class(e) in gate and _same(e.flow, line.flow) and _date_distance(line, e) <= rules.drift_window_days
+    def fits(ln: Line, e: Entry, window: int) -> bool:
+        return _entry_class(e) in eligible_kinds(kind, ln.line_kind) and _same(e.flow, ln.flow) \
+            and _date_distance(ln, e) <= window
 
-    legs = [e for e in entries if e.auto_pay and e.id not in claimed and _peer_ok(kind, line, e) and fits(e)]
-    if len(legs) != 1 or any(not e.stand_in and e.id not in claimed and fits(e) for e in entries):
+    legs = [e for e in entries
+            if e.auto_pay and e.id not in claimed and _peer_ok(kind, line, e) and fits(line, e, rules.drift_window_days)]
+    if len(legs) != 1 or any(not e.stand_in and e.id not in claimed and fits(line, e, rules.drift_window_days)
+                             for e in entries):
         return None
     leg = legs[0]
+    if any(ln.id != line.id and ln.id not in claimed_lines and _peer_ok(kind, ln, leg)
+           and fits(ln, leg, rules.exact_window_days) for ln in lines):
+        return None
     d = _date_distance(line, leg)
     return Representation("standalone", (Row(leg.id, "principal", leg.flow),), rules.accept, AUTO_PAY_RULE,
                           (f"date_distance={d}", "auto_pay"))
@@ -1122,7 +1130,8 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             if taken is not None:
                 result.cases.append(Case(line.id, None, "line_unmatched", (), {"hint": "claimed_by_earlier_line", "entry_id": taken}))
                 continue
-        auto_pay = _auto_pay_claim(statement_kind, line, principals, claimed, rules)
+        auto_pay = _auto_pay_claim(statement_kind, line, principals, claimed, rules, lines=lines,
+                                   claimed_lines={c.line_id for c in result.claims})
         if auto_pay is not None:
             result.claims.append(Claim(line.id, auto_pay))
             claimed |= {r.entry_id for r in auto_pay.rows}
