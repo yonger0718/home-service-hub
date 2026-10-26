@@ -1,0 +1,5 @@
+- [x] 1. `GET /calendar/business-days` (router, schema, README, API tests)
+- [x] 2. Frontend business-day helpers + `BusinessCalendarService` (weekends-only fallback)
+- [x] 3. `payDate` on due events; countdown / pill / overdue count to it; reminder card ` · MM/DD 扣款`
+- [x] 4. Billing round reads payments for the master and its combined cards
+- [x] 5. Specs: business-days, billing-math, billing.service, reminders; calendar read flushed in component specs
