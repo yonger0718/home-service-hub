@@ -333,8 +333,12 @@ def _replace_evidence(case: ReconciliationCase) -> dict:
 
 def _replace_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
     """R6b.5: an open entry_unmatched case with a stand-in hint → replace the stand-in (amount 0). A shadow's
-    evidence carries its `drift_days`: farther than the exact window it is only proposed (C2, `_prefilter`)."""
-    if case.kind != "entry_unmatched" or (case.context or {}).get("hint") not in REPLACE_HINTS:
+    evidence carries its `drift_days`: farther than the exact window it is only proposed (C2, `_prefilter`). A hint
+    without a `backfill_action_id` is an auto-pay leg's (auto-pay spec §4.5): never replaced, the owner deletes the
+    pair."""
+    context = case.context or {}
+    if case.kind != "entry_unmatched" or context.get("hint") not in REPLACE_HINTS \
+            or context.get("backfill_action_id") is None:
         return None
     return Candidate(case.id, case.kind, case.status, "replace_stand_in", {}, REPLACE_AMOUNT, entry_id=None,
                      evidence=_replace_evidence(case))

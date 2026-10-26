@@ -6,7 +6,12 @@ FOR UPDATE → flush → `coverage_service.sweep` (briefly takes the dirty barri
 ledger_entry lock, because a writer holding the shared barrier may be waiting on a row this transaction would hold)
 → entry_group rows ascending → the candidate entries, their
 children and their transfer legs in ONE ordered SELECT … FOR UPDATE → re-read the population under those locks →
-match → coverage → cases → counts. Reconcile writes no ledger rows, so it emits no dirty events of its own.
+match → coverage → cases → counts. The only ledger rows a reconcile writes are the auto-pay retirement's (auto-pay
+spec §4.5, `auto_pay_service.retire_twins_for_statement`, after the sweep and before the group/entry locks): it
+locks a twinned pair's legs NOWAIT (a held leg skips the pair), releases their coverage on any statement, deletes
+them — so their dirty triggers hold the shared dirty barrier until this transaction ends, and the events land past
+this sweep's cap for the next sweep — and flags the released statements `needs_recheck`. Otherwise a reconcile
+emits no dirty events of its own.
 
 Reconcile yields on lock conflicts: the sweep (and, in the revision hook, the coverage transfer) has already written
 coverage/case rows when the group/entry locks are taken, while a ledger delete locks the entry/group first and then
@@ -14,8 +19,10 @@ needs those rows (`statement_coverage.entry_id/group_id`, `reconciliation_case.e
 Waiting would close a cycle, so the group/entry locks are taken NOWAIT inside a savepoint and a held row raises
 `CodedConflictError("reconcile_busy")` (route 409, the batch records it, the hook leaves `needs_recheck`).
 
-No statement row other than its own is locked or referenced by a statement's reconcile (the printed-whole guard
-only reads the neighbouring statements' current lines, `guard_lines`): a deferral case gets its
+Apart from that auto-pay retirement (which updates the coverage rows and the `needs_recheck` flag of the other
+statements a retired leg was claimed on), no statement row other than its own is locked or written by a
+statement's reconcile (the printed-whole guard only reads the neighbouring statements' current lines,
+`guard_lines`): a deferral case gets its
 `deferred_to_statement_id` only from the LATER statement's reconcile (`_link_earlier_deferrals`, case rows only) or
 from `fill_deferral_links`.
 
@@ -633,7 +640,12 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
     deleted = stand_ins.owner_deleted_events(db, statement)
     # R6b.5: the stand-in hints, from their own queries (the stand-in's line is a keep_line, not in `result`)
     shadow_by_entry = {s["entry_id"]: s for s in stand_ins.shadows(db, statement, accounts, rules)}
-    orphan_by_entry = {o["entry_id"]: o for o in stand_ins.orphans(db, statement, accounts)}
+    # an auto-pay leg the matcher did not report unmatched (outside the period by its posted date) or deferred to the
+    # next statement is waiting for that statement, not an orphan (auto-pay spec §4.5)
+    unmatched = set(result.unmatched_entry_ids)
+    orphan_by_entry = {o["entry_id"]: o for o in stand_ins.orphans(db, statement, accounts)
+                       if "auto_pay_id" not in o
+                       or (o["entry_id"] in unmatched and result.explained.get(o["entry_id"]) != DEFERRED)}
     out = []
     for c in result.cases:
         context = c.context

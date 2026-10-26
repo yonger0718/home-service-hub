@@ -12,12 +12,13 @@ from app.models import (AccountStatement, LedgerEntry, ReconciliationAction, Rec
                         StatementAutoPay, StatementCoverage)
 from app.services import auto_pay_service as aps
 from app.services import policy_service, settings_service, stand_ins, transfer_service
+from app.services import reconciliation_actions as registry
 from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
     OCT, SEP, _active, _card, _cases, _line, _submit, _transfer, run,
 )
-from tests.integration.test_reconciliation_policy import BACKFILL_ON, _set_policy
+from tests.integration.test_reconciliation_policy import POLICY_EVENTS, BACKFILL_ON, _actions, _proposals, _set_policy
 
 DAY = date(2026, 9, 3)
 DUE = date(2026, 10, 24)  # Sat; Mon 10-26 is the 光復節 make-up holiday
@@ -226,3 +227,62 @@ def test_sweep_retire_skips_a_pair_locked_elsewhere(pg_engine, seed, db_session,
     db.commit()
     _assert_retired(db, w)
     assert len(_retired_audits(db, w)) == 1
+
+
+# --- fix round 1 ----------------------------------------------------------------------------------------------------
+
+
+def _card_orphan(seed, db, run, today):
+    """The booked pair and the October card statement (no payment line) holding its leg's orphaned_stand_in case."""
+    w = _booked(seed, db, run, today)
+    card_stmt, _, _ = _submit(db, run, w.card, [_line(1, date(2026, 10, 5), "全聯", 300)], period=OCT, opening=580)
+    (orphan,) = _orphan_cases(db)
+    return w, card_stmt, orphan
+
+
+@pytest.mark.parametrize("hint", ["shadowed_by_stand_in", "orphaned_stand_in"])
+def test_an_auto_pay_hint_never_offers_or_builds_a_replacement(hint):
+    case = ReconciliationCase(id=1, statement_id=1, kind="entry_unmatched", status="open", entry_id=2,
+                              context={"hint": hint, "backfill_action_id": None, "auto_pay_id": 3})
+    assert "replace_stand_in" not in registry.allowed(case)
+    assert policy_service._replace_candidate(None, case, None) is None
+    case.context = {**case.context, "backfill_action_id": 4}  # a backfilled stand-in's hint keeps both
+    assert "replace_stand_in" in registry.allowed(case)
+    assert policy_service._replace_candidate(None, case, None).action == "replace_stand_in"
+
+
+def test_policy_leaves_an_auto_pay_orphan_alone(seed, db_session, run, today, dirty_on):
+    db = db_session
+    w, card_stmt, orphan = _card_orphan(seed, db, run, today)
+    assert "replace_stand_in" not in registry.allowed(orphan)
+    _set_policy(db, {"enabled": True, "actions": {"replace_stand_in": {"enabled": True}}})
+    result = policy_service.run_policy(db, card_stmt.id)
+    assert (result.applied, result.proposed, result.skipped) == ([], [], {})
+    db.expire_all()
+    assert db.query(ReconciliationAudit).filter(ReconciliationAudit.statement_id == card_stmt.id,
+                                                ReconciliationAudit.event.in_(POLICY_EVENTS)).all() == []
+    assert _actions(db) == [] and _proposals(db) == []
+    assert db.get(LedgerEntry, w.in_id) is not None and _orphan_cases(db)[0].id == orphan.id
+
+
+def test_a_card_leg_posted_after_the_period_end_is_not_an_orphan(seed, db_session, run, today):
+    db = db_session
+    w = _booked(seed, db, run, today)  # the card leg: entry_date 10-27 (the pay date), posted 10-28
+    card_stmt, _, _ = _submit(db, run, w.card, [_line(1, date(2026, 10, 5), "全聯", 300)],
+                              period=(date(2026, 10, 1), PAY), opening=580)
+    rec.reconcile(db, card_stmt.id)
+    db.commit()
+    assert _orphan_cases(db) == []
+    assert [c for c in _cases(db, card_stmt.id, "open") if c.entry_id == w.in_id] == []
+
+
+def test_a_deferred_bank_leg_is_not_an_orphan(seed, db_session, run, today):
+    db = db_session
+    w = _booked(seed, db, run, today)  # the bank leg posted 10-27, within the last 2 days of a period ending 10-28
+    bank_stmt, _, _ = _submit(db, run, w.bank, [_line(1, date(2026, 10, 5), "存入", 100, "deposit")], kind="bank",
+                              period=(date(2026, 10, 1), date(2026, 10, 28)))
+    rec.reconcile(db, bank_stmt.id)
+    db.commit()
+    assert _orphan_cases(db) == []
+    assert [c for c in _cases(db, bank_stmt.id, "open") if c.entry_id == w.out_id] == []
+
