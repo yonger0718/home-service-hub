@@ -29,8 +29,9 @@ fee under the purchase; `attach_fee` books the same shape). The bank prints **tw
 
 In every gap the policy's `create_system_entry` then refuses — `stand_ins.owner_children` makes the unclaimed child an
 owner twin (`owner_may_record`, the 2026-10-17 fix), which is right: booking a system fee beside the owner's child
-would duplicate it. And the owner cannot match the child by hand: the `match` action refuses a child (`child_entry`; since issue #183 it claims a child alone as the line's principal),
-`adjust_amount` / `attach_fee` refuse `not_standalone`. The line is stuck. This spec unsticks the matcher side.
+would duplicate it. And at the time of this spec the owner could not match the child by hand either: `match` refused a child
+(the former `child_entry`; since issue #183 it claims a child alone as the line's principal), `adjust_amount` / `attach_fee`
+refuse `not_standalone`. The line was stuck. This spec unsticks the matcher side.
 
 ## 2. Goals, non-goals, anti-goals
 
@@ -49,8 +50,8 @@ Goals.
 
 Non-goals (follow-ups if the owner wants them).
 
-- Owner `match` / agent proposals naming a child (`child_entry`, `_is_proposed` has no `child` kind) — unchanged here;
-  owner `match` admits a child since issue #183 (agent proposals still do not).
+- Agent proposals naming a child (`_is_proposed` has no `child` kind) — unchanged here. Owner `match` admits a child
+  alone since issue #183 (it was refused as `child_entry` when this spec was written).
 - Children of **split-group members** that are owner-covered: today a structural row (`claimable=False`) read by the
   printed-whole guard only; its children still do not claim lines. Keeping it fail-closed; see §8.
 - Child-level `amount_delta`, `adjust_amount` on a child, `Child` dates: unchanged. A near child is *reported*
