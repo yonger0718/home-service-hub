@@ -6,7 +6,9 @@ bank account makes on the due date, as a system transfer pair, before either sta
   has no `statement_auto_pay` row or only a `skipped` row with a transient reason (§4.2). Final rows (`booked`,
   `retired`, `owner_deleted`, `owner_edited`) and terminal skips are never re-evaluated.
 - Gates (§4.4 step 3), in order: cutoff → duplicate_statement → header_disputed → no_link → link_ineligible → twin →
-  over_cap → monthly_budget. A transient skip turns `expired` once `today > pay_date + retry_days`, even if its condition has cleared.
+  over_cap → monthly_budget. `duplicate_statement` looks at every final row of the card (owner-deleted and retired
+  pairs too), pay dates strictly within 20 days. A transient skip turns `expired` once `today > pay_date +
+  retry_days`, even if its condition has cleared.
 - Twin (§4.1): another ledger representation of the same payment, whatever its source.
 - Booking (§4.4 step 4): a transfer pay account → card master, `source='statement'`, `name='自動扣繳'`, both legs
   dated on the pay date, the card leg posted on the next business day; the `booked` row and an `auto_pay_booked`
@@ -18,7 +20,8 @@ bank account makes on the due date, as a system transfer pair, before either sta
 Locks: `book` takes the shared ledger-import advisory key (as `schedule_posting.post_instance` does) so a booking
 never interleaves with a MOZE backup import; the job takes it too, around each statement's transaction, and a second
 shared xact lock in one transaction is harmless. Nothing here commits; callers own the transaction (flush only).
-The UNIQUE `statement_id` and the 20-day exclusion constraint make a concurrent duplicate fail the second commit.
+The UNIQUE `statement_id` and the 20-day exclusion constraint (on `booked` rows) make a concurrent duplicate fail the
+second commit.
 """
 
 import logging
@@ -44,7 +47,7 @@ from .statements import matching
 
 AUTO_PAY_NAME = "自動扣繳"
 ACTOR = "auto_pay"
-DUPLICATE_DAYS = 20  # two booked pay dates of one card strictly fewer than 20 days apart are one bill (§4.2)
+DUPLICATE_DAYS = 20  # two final pay dates of one card strictly fewer than 20 days apart are one bill (§4.2)
 TERMINAL_REASONS = frozenset({"twin", "cutoff", "duplicate_statement", "expired"})
 TRANSIENT_REASONS = frozenset({"header_disputed", "no_link", "link_ineligible", "over_cap", "monthly_budget"})
 FINAL_STATUSES = frozenset({"booked", "retired", "owner_deleted", "owner_edited"})
@@ -158,10 +161,14 @@ def find_twins(db: Session, *, card_account_id: int, pay_account_id: int, amount
 # --- gates ----------------------------------------------------------------------------------------------------------
 
 
-def _duplicate_booked(db: Session, cand: Candidate) -> bool:
+def _duplicate_final(db: Session, cand: Candidate) -> bool:
+    """Another statement of the same card already has a final row (`booked`, `retired`, `owner_deleted`,
+    `owner_edited`) whose pay date is strictly within DUPLICATE_DAYS of the candidate's: one bill (§4.2). A pair the
+    owner deleted or a twin retired still counts, so a re-parsed duplicate never books the bill again. (The DB
+    exclusion constraint covers `booked` rows only.)"""
     span = timedelta(days=DUPLICATE_DAYS)
     return db.scalar(select(StatementAutoPay.id).where(
-        StatementAutoPay.card_account_id == cand.card_account_id, StatementAutoPay.status == "booked",
+        StatementAutoPay.card_account_id == cand.card_account_id, StatementAutoPay.status.in_(FINAL_STATUSES),
         StatementAutoPay.statement_id != cand.statement_id,
         StatementAutoPay.pay_date > cand.pay_date - span, StatementAutoPay.pay_date < cand.pay_date + span,
     ).limit(1)) is not None
@@ -191,7 +198,7 @@ def _first_failing_gate(db: Session, cand: Candidate, settings: dict) -> str | N
     enabled_from = settings["enabled_from"]
     if enabled_from is not None and cand.pay_date < date.fromisoformat(enabled_from):
         return "cutoff"
-    if _duplicate_booked(db, cand):
+    if _duplicate_final(db, cand):
         return "duplicate_statement"
     if _header_disputed(db, cand.statement_id):
         return "header_disputed"
@@ -211,9 +218,11 @@ def _first_failing_gate(db: Session, cand: Candidate, settings: dict) -> str | N
 
 def gate(db: Session, cand: Candidate, today: date, settings: dict) -> str | None:
     """The first gate the candidate fails (§4.4 order), or None to book. `cutoff` is not checked while
-    `enabled_from` is None (the host dry run runs before the settings PUT). A transient reason, found now or stored
-    on the existing `skipped` row, becomes `expired` once `today > pay_date + retry_days` even if the condition has
-    cleared (§4.2); a terminal reason found now wins over `expired`. A new candidate (no row) past retry_days books."""
+    `enabled_from` is None (the host dry run runs before the settings PUT). `duplicate_statement` counts every final
+    row of the card (`booked`, `retired`, `owner_deleted`, `owner_edited`), not only booked ones. A transient
+    reason, found now or stored on the existing `skipped` row, becomes `expired` once `today > pay_date + retry_days`
+    even if the condition has cleared (§4.2); a terminal reason found now wins over `expired`. A new candidate (no
+    row) past retry_days books."""
     reason = _first_failing_gate(db, cand, settings)
     past_retry = today > cand.pay_date + timedelta(days=int(settings["retry_days"]))
     if past_retry and (reason in TRANSIENT_REASONS or (reason is None and cand.existing_reason in TRANSIENT_REASONS)):

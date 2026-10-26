@@ -559,3 +559,51 @@ def test_retire_pair_busy_when_a_leg_is_locked(pg_engine, db_session, world):
     assert (row.status, row.reason, row.out_entry_id, row.in_entry_id) == ("booked", None, out_id, in_id)
     assert db.get(LedgerEntry, out_id) is not None and db.get(LedgerEntry, in_id) is not None
     assert _events(db, stmt.id)[-1] == "auto_pay_booked"
+
+
+# --- final fix wave: duplicate gate over final rows, transfer_out twin peers, retire under the row lock ---------------
+
+
+def _entry_count(db):
+    return db.scalar(select(func.count()).select_from(LedgerEntry))
+
+
+def test_duplicate_gate_sees_an_owner_deleted_pair(seed, db_session, run, world):
+    db, (bank, card, stmt) = db_session, world
+    row, out_leg, in_leg = _book(db, stmt)
+    ews.delete_entry(db, out_leg.id)  # the owner deletes the pair
+    db.commit()
+    assert aps.check_row(db, row, TODAY, _settings()) == "owner_deleted"
+    db.commit()
+    # a re-parsed duplicate of the same bill (period_end + 5 days, same total) must not book it again
+    b, _, _ = _submit(db, run, card, [_line(1, date(2026, 9, 8), "全聯", 580)],
+                      period=(date(2026, 9, 6), date(2026, 10, 5)), due_date=DUE)
+    entries = _entry_count(db)
+    out = aps.decide(db, _cand(db, b.id), TODAY, _settings())
+    db.commit()
+    assert (out["decision"], out["reason"]) == ("skipped", "duplicate_statement")
+    assert _entry_count(db) == entries
+    assert db.query(StatementAutoPay).filter_by(statement_id=b.id).one().status == "skipped"
+
+
+def test_duplicate_gate_sees_a_retired_pair_when_the_twin_is_outside_the_duplicates_window(seed, db_session, run,
+                                                                                          world):
+    db, (bank, card, stmt) = db_session, world
+    row, _, _ = _book(db, stmt)
+    _transfer(seed, bank, card, 580, PAY - timedelta(days=5))  # the owner's own payment: a twin of A
+    db.commit()
+    assert aps.check_row(db, row, TODAY, _settings()) == "retired"
+    db.commit()
+    # the duplicate's due date is misread 3 days late: the owner's payment is 8 days from its pay date
+    late_due = PAY + timedelta(days=3)  # Fri 10-30, a business day
+    b, _, _ = _submit(db, run, card, [_line(1, date(2026, 9, 8), "全聯", 580)],
+                      period=(date(2026, 9, 6), date(2026, 10, 5)), due_date=late_due)
+    cand = _cand(db, b.id, late_due)
+    assert cand.pay_date == late_due
+    assert aps.find_twins(db, card_account_id=card.id, pay_account_id=bank.id, amount=cand.amount,
+                          pay_date=cand.pay_date, window_days=7) == []
+    entries = _entry_count(db)
+    out = aps.decide(db, cand, late_due, _settings())
+    db.commit()
+    assert (out["decision"], out["reason"]) == ("skipped", "duplicate_statement")
+    assert _entry_count(db) == entries
