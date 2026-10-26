@@ -3,9 +3,11 @@
 
 Usage: python3 -I tools/account-logos/normalize.py <in.svg|in.png> <out-dir> <slug>
 
-Downloads are untrusted. SVG: size cap, forbidden text / regex (svg-rules.json, case-insensitive) checked
-before parsing; then every element and attribute is checked (forbidden elements, on* handlers, non-fragment
-hrefs), <metadata> and editor-namespace elements / attributes are dropped, and the mark is wrapped in a
+Downloads are untrusted. SVG: size cap, a leading `<?xml …?>` declaration dropped, forbidden text / regex
+(svg-rules.json, case-insensitive; `<?` there rejects every other processing instruction) checked before parsing;
+then every element and attribute is checked (forbidden elements, on* handlers, non-fragment hrefs, any
+`forbidden_attr_chars` such as a CSS-escape backslash in a value or text), <metadata> and editor- / foreign-
+namespace elements and attributes are dropped, and the mark is wrapped in a
 square <svg viewBox="0 0 S S"> with S = max(w, h) * 1.16 so it sits centred with 8 % padding on the long side.
 PNG: size cap, signature, square IHDR >= 180 px; re-written with only the IHDR/PLTE/tRNS/IDAT/IEND chunks.
 Prints the output path; exits 1 with a reason on any rejection. Stdlib only.
@@ -29,6 +31,7 @@ KEPT_ATTR_NS = {XLINK_NS, XML_NS}
 SLUG = re.compile(r"^[a-z0-9-]{1,32}$")
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
 PNG_KEEP = {b"IHDR", b"PLTE", b"tRNS", b"IDAT", b"IEND"}
+XML_DECL = re.compile(r"^\s*<\?xml\s[^?]*\?>")
 NUMBER = re.compile(r"^\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s*(px)?\s*$")
 
 
@@ -67,11 +70,20 @@ def length(value: str | None, what: str) -> float:
     return float(m.group(1))
 
 
+def check_chars(value: str | None, where: str) -> None:
+    for c in RULES["forbidden_attr_chars"]:
+        if value and c in value:
+            raise Rejected(f"forbidden character {c!r} in {where}: {value[:60]!r}")
+
+
 def sanitize(el: ET.Element) -> None:
     """Reject unsafe content below (and including) `el`; drop metadata and editor-namespace nodes."""
     ns, local = split(el.tag)
     if local in RULES["forbidden_elements"]:
         raise Rejected(f"forbidden element <{local}>")
+    check_chars(el.text, f"<{local}> text")
+    for child in el:
+        check_chars(child.tail, f"<{local}> text")
     for name in list(el.attrib):
         ans, alocal = split(name)
         if alocal.lower().startswith("on"):
@@ -80,6 +92,8 @@ def sanitize(el: ET.Element) -> None:
             raise Rejected(f"non-fragment href {el.attrib[name][:60]!r} on <{local}>")
         if ans is not None and ans not in KEPT_ATTR_NS:
             del el.attrib[name]  # inkscape:/sodipodi:/i: … editor attributes
+            continue
+        check_chars(el.attrib[name], f"<{local} {alocal}>")
     for child in list(el):
         if not isinstance(child.tag, str):
             el.remove(child)
@@ -96,6 +110,7 @@ def normalize_svg(data: bytes, out: Path) -> None:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError as e:
         raise Rejected(f"not UTF-8: {e}") from None
+    text = XML_DECL.sub("", text, count=1)
     check_text(text)
     try:
         root = ET.fromstring(text)

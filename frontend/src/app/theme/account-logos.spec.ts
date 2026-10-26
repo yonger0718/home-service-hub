@@ -10,6 +10,7 @@ const RULES: {
   forbidden_elements: string[];
   forbidden_text: string[];
   forbidden_regex: string[];
+  forbidden_attr_chars: string[];
   max_bytes: number;
 } = JSON.parse(
   readFileSync(join(__dirname, '../../../../tools/account-logos/svg-rules.json'), 'utf8'),
@@ -35,8 +36,13 @@ function dimensions(path: string): [number, number] {
   return [w, h];
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
 /** Every rule offence in one SVG's text: the raw-text pass, then a DOM walk that re-checks each attribute value and
- *  each element's own text after the parser has decoded character references (`&#117;rl(…)` is `url(…)` in the DOM). */
+ *  each element's own text after the parser has decoded character references (`&#117;rl(…)` is `url(…)` in the DOM).
+ *  Also rejected: any element outside the SVG namespace (an XHTML `<iframe>` / `<img>` would load in a standalone SVG
+ *  document), any processing instruction or doctype at document level, and a backslash anywhere (a CSS escape such
+ *  as `\75 rl(` spells `url(` past the regex). */
 export function svgOffences(file: string, text: string): string[] {
   const forbidden = new Set(RULES.forbidden_elements);
   const regexes = RULES.forbidden_regex.map((r) => new RegExp(r, 'i'));
@@ -45,11 +51,20 @@ export function svgOffences(file: string, text: string): string[] {
       .filter((t) => value.toLowerCase().includes(t.toLowerCase()))
       .map((t) => `${file}: ${where}: forbidden text "${t}"`),
     ...regexes.filter((r) => r.test(value)).map((r) => `${file}: ${where}: forbidden pattern ${r}`),
+    ...RULES.forbidden_attr_chars
+      .filter((c) => value.includes(c))
+      .map((c) => `${file}: ${where}: forbidden character "${c}"`),
   ];
   const out = banned('raw text', text);
   const doc = parse(text);
   if (doc.getElementsByTagName('parsererror').length > 0) return [...out, `${file}: parse error`];
+  for (const n of Array.from(doc.childNodes)) {
+    if (n.nodeType === 7) out.push(`${file}: <?${n.nodeName}?>: processing instruction`);
+    if (n.nodeType === 10) out.push(`${file}: <!DOCTYPE ${n.nodeName}>: doctype`);
+  }
   for (const el of Array.from(doc.getElementsByTagName('*'))) {
+    if (el.namespaceURI !== SVG_NS)
+      out.push(`${file}: <${el.localName}>: foreign-namespace element`);
     if (forbidden.has(el.localName)) out.push(`${file}: <${el.localName}>: forbidden element`);
     for (const a of Array.from(el.attributes)) {
       const where = `<${el.localName} ${a.name}="${a.value}">`;
@@ -128,6 +143,49 @@ describe('bundled institution logos (#175)', () => {
     ]);
     expect(svgOffences('e.svg', svg(`<rect onclick="x()"/><script/>`))).toHaveLength(2);
     expect(svgOffences('f.svg', '<svg')).toEqual([expect.stringMatching(/^f\.svg: parse error/)]);
+  });
+
+  it('reports PIs, CSS escapes, string-URL CSS functions and foreign-namespace elements', () => {
+    const NS = 'xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"';
+    const XHTML = 'xmlns="http://www.w3.org/1999/xhtml"';
+    const payloads: [string, string, RegExp][] = [
+      [
+        'pi.svg',
+        `<?xml-stylesheet type="text/css" href="https://evil.example/x.css"?><svg ${NS}/>`,
+        /: <\?xml-stylesheet\?>: processing instruction$/,
+      ],
+      [
+        'esc.svg',
+        `<svg ${NS}><rect style="fill:\\75 rl(https://evil.example/x.svg#g)"/></svg>`,
+        /forbidden character "\\"/,
+      ],
+      [
+        'set.svg',
+        `<svg ${NS} style="background-image:image-set('https://evil.example/p.png' 1x)"/>`,
+        /forbidden pattern \/image-set/,
+      ],
+      [
+        'srcdoc.svg',
+        `<svg ${NS}><iframe ${XHTML} srcdoc="&lt;script&gt;1&lt;/script&gt;"/></svg>`,
+        /<iframe>: foreign-namespace element/,
+      ],
+      [
+        'js.svg',
+        `<svg ${NS}><iframe ${XHTML} src="javascript:1"/></svg>`,
+        /<iframe>: foreign-namespace element/,
+      ],
+      [
+        'img.svg',
+        `<svg ${NS}><img ${XHTML} src="https://evil.example/t.gif"/></svg>`,
+        /<img>: foreign-namespace element/,
+      ],
+    ];
+    for (const [file, text, offence] of payloads) {
+      const found = svgOffences(file, text);
+      expect(found.length, file).toBeGreaterThan(0);
+      expect(found, file).toEqual(expect.arrayContaining([expect.stringMatching(offence)]));
+    }
+    expect(svgOffences('ok.svg', `<svg ${NS}><rect fill="url(#g)"/></svg>`)).toEqual([]);
   });
 
   it('slugs are unique and labels non-empty', () => {
