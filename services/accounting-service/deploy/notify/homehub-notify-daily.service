@@ -1,0 +1,12 @@
+[Unit]
+Description=HomeHub accounting notifier: daily debit reminder
+OnFailure=homehub-notify-failed@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/releases/home-hub-notify/current/services/accounting-service
+Environment=PYTHONUNBUFFERED=1
+Environment=TZ=Asia/Taipei
+UMask=0077
+ExecStart=%h/releases/home-hub-notify/venv/bin/python -m notify daily --send
+Nice=10

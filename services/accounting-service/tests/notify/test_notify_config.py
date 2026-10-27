@@ -5,7 +5,7 @@ import pytest
 from notify.config import ConfigError, load_config, read_token
 
 REPO = Path(__file__).resolve().parents[4]
-EXAMPLE_FILE = REPO / "deploy/notify/homehub-notify.example.toml"
+EXAMPLE_FILE = REPO / "services/accounting-service/deploy/notify/homehub-notify.example.toml"
 MINIMAL = (
     'api_base = "http://x"\n'
     'token_file = "~/tok"\n'

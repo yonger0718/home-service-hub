@@ -270,6 +270,45 @@ Card statement auto-pay (spec `docs/superpowers/specs/2026-10-26-statement-auto-
 - Calendar for the SPA: `GET /calendar/business-days?from=YYYY-MM-DD&to=YYYY-MM-DD` (read scope, span ≤ 1100 days) returns `holidays` (the built-in TW table ∪ `extra_holidays`, within the range), `workdays` (`extra_workdays`, within the range) and `last_known_day`; weekends are implied and a listed workday wins, exactly as `business_days.is_business_day` decides. The frontend uses it to shift a card's printed due date to the bank's debit day (#197).
 - Rollout: apply the migration, restart the API (the job starts disabled: housekeeping runs, nothing books), run the host dry run, then the owner sets `enabled: true` and `enabled_from` (the first live run books nothing due before it), then watch the first run in `GET /reconciliation/audit`. Rollback: `enabled: false`; booked pairs stay and housekeeping continues.
 
+Notifications (notify/)
+-----------------------
+
+`notify/` is a small read-only notifier (spec `docs/superpowers/specs/2026-10-27-accounting-notifications-design.md`): a daily
+debit reminder (07:00 Asia/Taipei, sent only when at least one item is due) and a Saturday 10:00 weekly digest (always sent),
+delivered through `hermes send` to `discord_target`. It only issues GET requests with a token labelled `notify`, scope `read`
+(`token_file` in the config, default `~/.config/homehub-notify-token`, mode 0600); it adds no tables, routes or frontend.
+Business days come from `GET /calendar/business-days`; a due date past its `last_known_day` is a failure.
+
+- Config: `~/.config/homehub-notify.toml` (mode 0600), copied from `deploy/notify/homehub-notify.example.toml`. Required keys
+  `api_base`, `token_file`, `hub_base_url`, `discord_target` (write `<discord target>` placeholders in anything committed); optional
+  `lead_business_days`, `weekly_open_case_limit`, `expected_statement_grace_days`, `min_buffer`, `state_file`
+  (default `~/.local/state/homehub-notify/state.json`) and a `[lead_overrides]` table per account id.
+- CLI (run from `services/accounting-service` with the notifier venv):
+
+      python -m notify daily  [--as-of YYYY-MM-DD] [--dry-run | --send] [--config PATH]
+      python -m notify weekly [--as-of YYYY-MM-DD] [--dry-run | --send] [--config PATH]
+      python -m notify failed <unit> [--config PATH]
+
+  Without `--send` the rendered message is printed and nothing is written (`--dry-run` is the same, explicit). `--send` delivers
+  and then writes the state file. Exit codes: 0 sent or nothing to send, 1 failure, 2 bad arguments.
+- Failures (spec section 7): a failing `--send` run writes one line to `last_failure.txt` next to the state file, delivers nothing
+  itself and leaves the state untouched. The user units `homehub-notify-daily.service` / `-weekly.service` carry
+  `OnFailure=homehub-notify-failed@%n.service`; that template unit runs `python -m notify failed <unit>`, which sends the stored
+  text (or a generic line when the run died before writing one) and always exits 0.
+- Units (`deploy/notify/`, user scope for `opc`): `homehub-notify-daily.timer`, `homehub-notify-weekly.timer` (both
+  `Persistent=true`), the two services and `homehub-notify-failed@.service`. They run
+  `%h/releases/home-hub-notify/venv/bin/python` from `%h/releases/home-hub-notify/current/services/accounting-service`.
+  Python dependency: `requirements-notify.txt` (`httpx`).
+- Rollout (spec section 9): (0) every card the bank debits automatically has its 扣款帳戶 link set in HomeHub; the weekly 設定缺漏
+  list is the checklist, and an unlinked card is reminded as 手動繳 and never reduces a projection. (1) Add label `notify`,
+  scope `read` to `ACCOUNTING_TOKEN_SCOPES` and its token to `ACCOUNTING_API_TOKENS` in the API `.env`, restart through
+  `homehub-api-ctl`, and write the token to `~/.config/homehub-notify-token` (0600). (2) Write `~/.config/homehub-notify.toml` from the
+  example (`<discord target>`, hub URL). (3) Make the release checkout `~/releases/home-hub-notify/<sha>` (with a `current` link) and a
+  venv `~/releases/home-hub-notify/venv` from `requirements-notify.txt`, then run `deploy/notify/install.sh` (copies the five
+  units, reloads, enables both timers; safe to repeat). (4) First run by hand: `python -m notify daily --dry-run`, then `--send`;
+  the same for `weekly`; the owner confirms both messages in the channel. (5) Follow-ups: a Loki/Grafana heartbeat alert (#200),
+  a periodic Hermes review of the digest.
+
 Enabling the policy (it does nothing until every step is done): (0) deploy R1d first (the policy's claims, budget, skip audit, supersede order and plan-revert fixes are not in R1c); (1) keep `dirty_enabled` on and reconcile working;
 (2) set `per_currency_enabled` and the caps first, `PUT /settings/reconciliation` with the full body and a `policy` that
 still has `enabled: false`; (3) enable ONE action (`actions.create_system_entry.enabled: true`, with its `max_amount`),
@@ -570,6 +609,8 @@ skips it.
     .venv/bin/python -m app.services.schedule_job               # run now (same as POST /schedules/run-now)
     .venv/bin/python -m app.services.auto_pay_job --dry-run [--as-of YYYY-MM-DD]   # every candidate's would-be decision, writes nothing
     .venv/bin/python -m app.services.auto_pay_job [--as-of YYYY-MM-DD]             # run now (housekeeping, then booking when enabled; a future --as-of exits 2)
+    .venv/bin/python -m notify daily  --dry-run [--as-of YYYY-MM-DD]   # print the daily debit reminder, send and write nothing (notify venv, see Notifications)
+    .venv/bin/python -m notify weekly --dry-run [--as-of YYYY-MM-DD]   # print the weekly digest
 
 Every schedule write shares the import advisory key; during a backup import (a few seconds) schedule writes answer
 HTTP 409 `import_running`. An import waits up to 30 s (`IMPORT_LOCK_WAIT_SEC` in `moze_import_service`) for
