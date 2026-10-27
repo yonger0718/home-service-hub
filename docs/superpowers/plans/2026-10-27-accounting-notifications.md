@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, `httpx==0.28.1` (already pinned for the worker), stdlib `tomllib`/`json`/`datetime`/`decimal`/`subprocess`, `pytest` with `httpx.MockTransport` fakes, systemd user units.
 
-**Spec:** `docs/superpowers/specs/2026-10-27-accounting-notifications-design.md` (rev 2; plan rev 2.1 folds Multica AGENT-314 and the AGENT-315 items rev 2 had not covered).
+**Spec:** `docs/superpowers/specs/2026-10-27-accounting-notifications-design.md` (rev 2; plan rev 2.2 folds Multica AGENT-314, the AGENT-315 rev 1 items, and the AGENT-315 PASS-with-minor items at `fcb76398`).
 
 ## Global Constraints
 
@@ -147,13 +147,13 @@ def test_state_roundtrip_and_corrupt(tmp_path):
 **Interfaces:**
 - Consumes: `cycles.Calendar`.
 - Produces:
-  - `class ApiError(Exception): status: int; path: str` — message is `f"{status} {path}"`, never the body.
+  - `class ApiError(Exception): status: int | None; path: str; reason: str | None = None` — message is `f"{status} {path}"` or `f"{path}: {reason}"` when `status` is None, never the body.
   - `class ReadClient: __init__(self, client: httpx.Client, token: str)`; every method is a GET via `_get(path, params) -> Any` that raises `ApiError` on ≥ 400:
     - `settings() -> dict` (`/settings/reconciliation`)
     - `calendar(date_from: date, date_to: date) -> Calendar` (`/calendar/business-days?from&to`; `last_known_day` kept on the `Calendar`)
     - `accounts(as_of: date) -> list[dict]` (`/accounts?include_archived=false&as_of=`)
     - `statements(account_id: int) -> list[dict]` (`/accounts/{id}/statements`)
-    - `entries(account_ids: list[int], kind: str, date_from: date, date_to: date) -> list[dict]` (`/entries` with repeated `account_id`, `limit=500`, paging by `offset` until `offset + len(items) == total`; an empty page before that raises `ApiError(502, path)`)
+    - `entries(account_ids: list[int], kind: str, date_from: date, date_to: date) -> list[dict]` (`/entries` with repeated `account_id`, `limit=500`, paging by `offset` until `offset + len(items) == total`; an empty page before that raises `CappedRead(None, path, reason="entries page ended early")` — no invented HTTP status; the failure line names the path and that reason)
     - `pending_instances(until: date) -> list[dict]` (`/schedules/instances?status=pending&until=`; `until` always passed — the default is today + 30)
     - `audit(limit: int = 1000) -> list[dict]` (`/reconciliation/audit?limit=`; newest first)
     - `open_cases(account_id: int) -> list[dict]` (`/reconciliation/cases?status=open&account_id=&limit=1000`)
@@ -215,13 +215,13 @@ def test_full_audit_page_inside_window_is_capped(fake):
   - `REASON_TEXT: dict[str, str]` — exactly the spec §5.5 table (`no_link` → 卡片沒有設定扣款帳戶, …).
 - Rules the tests pin (all from spec rev 2):
   - one item per card for the last closed period (and the one before, for overdue): statement matched by `period_end` within ±3 days of the cycle end (closest first, then highest id) among `mode == "live" and not retired`; rule-only when none (`from_rule=True`, `amount=None`, `cls="manual"`). A matched statement with `due_date` null → manual item, `note="到期日未辨識"`, `due=debit_day=None`, never projected.
-  - **plus** one item per every other live, non-retired card statement with `statement_total > 0` and a due date (its own due/debit day); 帳單未到 only when the cycle had no match.
-  - `cls="auto"` iff `auto_pay_account_id` set and `settings["auto_pay"]["enabled"]` and statement present with a due date and `debit_day >= enabled_from` and the link is eligible now: target account exists in `snap.accounts`, not archived, not `is_credit`, `currency == card.currency`. A currency mismatch sets `note="幣別不同，請自行確認"` on the (manual) item.
-  - `debit_day = next_business_day(due, cal)`; `lead(card) = cfg.lead_overrides.get(card.id, cfg.lead_business_days)`; `in_window = debit_day >= today and business_days_between(today, debit_day) <= lead(card)` — `business_days_between` is never called for a past debit day; a due date after `cal.last_known_day` raises `CalendarExhausted` (handled in Task 8 as a failure).
+  - **plus** one item per every other live, non-retired statement of a `kind == "card"` account with `statement_total > 0` and a due date (its own due/debit day); 帳單未到 only when the cycle had no match.
+  - `cls="auto"` iff `auto_pay_account_id` set and `settings["auto_pay"]["enabled"]` and statement present with a due date and `debit_day >= enabled_from` (the API stores `settings["auto_pay"]["enabled_from"]` as an ISO string or null — parse with `date.fromisoformat` when it is a `str`; null → never auto) and the link is eligible now: target account exists in `snap.accounts`, not archived, not `is_credit`, `currency == card.currency`. A currency mismatch sets `note="幣別不同，請自行確認"` on the (manual) item.
+  - `debit_day = next_business_day(due, cal)`; `lead(card) = cfg.lead_overrides.get(card.id, cfg.lead_business_days)`; `in_window = debit_day is not None and debit_day >= today and business_days_between(today, debit_day) <= lead(card)` — `business_days_between` is never called for a past or missing debit day; an item with `debit_day is None` (null due date) has `in_window=False`, no payment window, `paid=Decimal(0)`, and is never overdue; a due date after `cal.last_known_day` raises `CalendarExhausted` (handled in Task 8 as a failure).
   - payment window = `[period_end, min(today, max(debit_day, next_closing − 1))]`; `paid` = Σ `transfer_in` on master+children with `entry_date` in it. Auto item dropped iff some `transfer_in` on master+children has `amount == statement_total` and `|entry_date − debit_day| <= settings["auto_pay"]["twin_window_days"]`. Manual item dropped iff `paid >= amount`. `amount <= 0` dropped.
   - projection per source: `balance(as_of today)` − Σ **full** `amount` of auto items with `debit_day <= D` − Σ `|line.amount|` over pending instance lines with `line.account_id == source`, `line.amount < 0`, `instance.due_date <= D`; `shortfall = cfg.min_buffer − projected` if positive. D = max debit day among the block's in-window items.
-  - overdue: manual item with `debit_day < today` and unpaid → `overdue_days = (today − due).days`, kept only while `0 < overdue_days <= 30` (rule-only too, `note="帳單未到"`); auto item with `debit_day < today` unpaid → `unpaid_reason` = latest `auto_pay_skipped` `detail["reason"] != "cutoff"` for that statement (or `"unknown"`).
-  - skips: `auto_pay_skipped` events with `created_at >= yesterday 06:00 Asia/Taipei` and `reason != "cutoff"`.
+  - overdue (only when `debit_day is not None`): manual item with `debit_day < today` and unpaid → `overdue_days = (today − due).days`, kept only while `0 < overdue_days <= 30` (rule-only too, `note="帳單未到"`); auto item with `debit_day < today` unpaid → `unpaid_reason` = latest `auto_pay_skipped` `detail["reason"] != "cutoff"` for that statement (or `"unknown"`).
+  - skips: `auto_pay_skipped` events with `created_at >= yesterday 06:00 Asia/Taipei` and `detail["reason"] != "cutoff"`.
 
 - [ ] **Step 1: Write the failing tests** (fictional fixtures; `today = 2026-11-03` Tue, calendar with 2026-11-05 as a holiday):
 
@@ -237,8 +237,9 @@ def test_rule_only_when_statement_missing(fx):
 
 def test_cutoff_uses_debit_day(fx):
     # due Thu 11-05 (holiday) → debit Fri 11-06: enabled_from 11-06 keeps it auto, 11-07 makes it manual
-    assert fx.find(build_daily(fx.snapshot(enabled_from=date(2026, 11, 6)), fx.cfg()), "旅遊卡").cls == "auto"
-    assert fx.find(build_daily(fx.snapshot(enabled_from=date(2026, 11, 7)), fx.cfg()), "旅遊卡").cls == "manual"
+    # the fixture puts the string in settings["auto_pay"]["enabled_from"], as the real API does
+    assert fx.find(build_daily(fx.snapshot(enabled_from="2026-11-06"), fx.cfg()), "旅遊卡").cls == "auto"
+    assert fx.find(build_daily(fx.snapshot(enabled_from="2026-11-07"), fx.cfg()), "旅遊卡").cls == "manual"
     assert fx.find(build_daily(fx.snapshot(auto_pay_enabled=False), fx.cfg()), "旅遊卡").cls == "manual"
 
 def test_link_predicate_evaluated_now(fx):
@@ -357,7 +358,7 @@ def test_skip_once(fx):
 **Interfaces:**
 - Consumes: `debits.DailyReport`, `digest.WeeklyReport` (Task 7 — define the dataclass in this task's test as the contract: `WeeklyReport(today, open_cases: list[AccountCases], missing: list[MissingStatement], skips: list[Skip], gaps: Gaps, last_daily_run: datetime | None)`; Task 7 imports it from `notify/digest.py`, so create `notify/digest.py` here with only the dataclasses).
 - Produces: `render_daily(rep: DailyReport, cfg: NotifyConfig) -> list[str]`, `render_weekly(rep: WeeklyReport, cfg: NotifyConfig) -> list[str]`, `render_failure(reason: str) -> str`, `split_blocks(blocks: list[str], limit: int = 2000) -> list[str]`, `fmt_amount(d: Decimal) -> str` (`48,200`, no decimals when integral, else two), `weekday_zh(d: date) -> str` (（一）…（日）).
-- Daily text = spec §5.7 sample exactly (header `🔔 扣款提醒 YYYY-MM-DD（X）`, block header `**name**  餘額 B → 扣款後 P` + ` ⚠ 缺 S` when shortfall, item lines incl. `· 已繳 X / Y`, `· 今天扣款`, `⚠ 逾期未繳 N 天`, `⚠ 逾期未繳 · 帳單未到`, `⚠ 未扣款 · 原因 <REASON_TEXT>`, `· 到期日未辨識`, `· 幣別不同，請自行確認`, `**手動繳**`, `⏭ 自動扣繳跳過`, cleared lines `✅ name 已補足`); links as spec. A second golden `daily_overdue.txt` covers the overdue / 未扣款 / 帳單未到 / 已繳 lines. Weekly text = sections of §6.1 in order with `📋 帳務週報 YYYY-MM-DD` header; empty → spec §6.2 line.
+- Daily text = spec §5.7 sample exactly (header `🔔 扣款提醒 YYYY-MM-DD（X）`, block header `**name**  餘額 B → 扣款後 P` + ` ⚠ 缺 S` when shortfall, item lines incl. `· 已繳 X / Y`, `· 今天扣款`, `⚠ 逾期未繳 N 天`, `⚠ 逾期未繳 · 帳單未到`, `⚠ 未扣款 · 原因 <REASON_TEXT>`, `· 到期日未辨識`, `· 幣別不同，請自行確認`, `**手動繳**`, `⏭ 自動扣繳跳過`, cleared lines `✅ name 已補足`); links as spec. A second golden `daily_overdue.txt` covers the overdue / 未扣款 / 帳單未到 / 已繳 lines. Weekly text = sections of §6.1 in order with `📋 帳務週報 YYYY-MM-DD` header; empty → spec §6.2 line, with `尚無` in place of the `MM/DD HH:MM` stamp when `rep.last_daily_run is None` (add `test_weekly_empty_without_daily_run` asserting the line ends `最近一次每日檢查 尚無`).
 
 - [ ] **Step 1: Write the failing tests** — golden comparison for the §5.7 sample built from fixtures (fictional data, `hub_base_url="https://example.invalid/hub"`), weekly sample, empty weekly; plus:
 
@@ -387,7 +388,7 @@ def test_oversized_block_is_split_on_lines():
   - `AccountCases(account_id, name, count, oldest_days, items: list[CaseLine], truncated: int)` where `CaseLine(date: date | None, amount: Decimal | None, text: str, question_zh: str, statement_id: int)`; items from `inbox.accounts[*].items` (date/amount/text from `item.line` or `item.entry`), capped at `cfg.weekly_open_case_limit`, `oldest_days` from `snap.open_cases[account_id][*].created_at`; `QUESTION_TEXT` map exactly spec §6.1: bank_only→只有銀行有, ledger_only→只有帳本有, transfer→疑似轉帳, amount_differs→金額不同, date_differs→日期不同, ambiguous→多個候選, balance_gap→餘額差, settlement→結算, proposed→已提議, other→其他.
   - `MissingStatement(account_id, name, last_period_end: date, expected: date, days_late: int)` — cadence: `closing_day` set → `shift_period(closing_day, (…, last_period_end), 1).end`; else the median gap in days of the last three live `period_end`s — two gaps → the **lower** one (`sorted(gaps)[(len(gaps) - 1) // 2]`), one statement → +1 month via `shift_period(None, …)`; listed when `expected + grace < today` and no live statement with `period_end > last`.
   - `Gaps(unlinked_cards: list[str], cards_without_rule: list[str], statements_without_due: list[tuple[str, int]])`.
-  - skips: last 7 days, reason ≠ cutoff, one per statement (latest).
+  - skips: last 7 days, `detail["reason"] != "cutoff"`, one per statement (latest).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -427,7 +428,7 @@ def test_gaps(fx):
 - Consumes: everything above.
 - Produces:
   - `send.deliver(messages: list[str], target: str, runner: Callable[[list[str], str], int] = _run_hermes) -> None` — runs `["hermes", "send", "-t", target, "-q"]` with the message on stdin, in order; non-zero → `SendError` (caught by the CLI: exit 1, state untouched — dedupe state is computed before delivery but written only after every chunk was accepted).
-  - `cli.main(argv: list[str] | None = None) -> int` — `daily|weekly [--as-of D] [--dry-run] [--send] [--config PATH]`; default config path `~/.config/homehub-notify.toml`; flow: load config/token → `httpx.Client(base_url=cfg.api_base, timeout=30)` → fetch → build → (daily: dedupe) → render → if `--send`: deliver (when there is anything) then `save_state` on **every** exit 0 (daily sets `state.last_daily_run`, weekly `state.last_weekly_run`, both `datetime.now(Asia/Taipei)`; daily also sets `state.last_send = LastSend(today, keys)` when it sent; weekly passes the stored `last_daily_run` to `build_weekly`); else print messages to stdout separated by `\n---\n` and touch nothing. Same-day suppression: if `state.last_send.day == today` and `keys == state.last_send.triggers`, send nothing (exit 0, state still saved). Weekly always has ≥ 1 message; daily with none → log `daily: nothing to send`, exit 0. `ApiError` (incl. `CappedRead`)/`cycles.CalendarExhausted`/`ConfigError`/`httpx.HTTPError` → with `--send` deliver `render_failure(short)` where `short = f"{type(exc).__name__} {getattr(exc, 'status', '')}".strip(); exit 1; state untouched. One stderr line per run: `daily: N items, sent M messages`.
+  - `cli.main(argv: list[str] | None = None) -> int` — `daily|weekly [--as-of D] [--dry-run] [--send] [--config PATH]`; default config path `~/.config/homehub-notify.toml`; flow: load config/token → `httpx.Client(base_url=cfg.api_base, timeout=30)` → fetch → build → (daily: dedupe) → render → if `--send`: deliver (when there is anything) then `save_state` on **every** exit 0 (daily sets `state.last_daily_run`, weekly `state.last_weekly_run`, both `datetime.now(Asia/Taipei)`; daily also sets `state.last_send = LastSend(today, keys)` when it sent; weekly passes the stored `last_daily_run` to `build_weekly`); else print messages to stdout separated by `\n---\n` and touch nothing. Same-day suppression: if `state.last_send.day == today` and `keys == state.last_send.triggers`, send nothing (exit 0, state still saved). Weekly always has ≥ 1 message; daily with none → log `daily: nothing to send`, exit 0. `ApiError` (incl. `CappedRead`)/`cycles.CalendarExhausted`/`ConfigError`/`httpx.HTTPError`/`send.SendError` → with `--send` deliver `render_failure(short)` where `short = f"{type(exc).__name__} {getattr(exc, 'status', None) or getattr(exc, 'reason', None) or ''}".strip()`; exit 1; state untouched (a `SendError` after a partial delivery also exits 1 with the state file absent; the failure message is attempted once). One stderr line per run: `daily: N items, sent M messages`.
 
 - [ ] **Step 1: Write the failing tests** (monkeypatch `send._run_hermes` with a recorder; API via Task 3 fakes; config via `tmp_path`):
 
@@ -443,6 +444,7 @@ def test_daily_nothing_to_send_still_writes_state(cli_env_quiet, capsys):
     assert load_state(cli_env_quiet.state_path).last_daily_run is not None
 
 def test_same_day_rerun_sends_nothing(cli_env):
+    # cli_env.sent is an append-only recorder: the second run added nothing
     assert main(["daily", "--as-of", "2026-11-03", "--send", "--config", cli_env.cfg]) == 0 and len(cli_env.sent) == 1
     assert main(["daily", "--as-of", "2026-11-03", "--send", "--config", cli_env.cfg]) == 0 and len(cli_env.sent) == 1
 
