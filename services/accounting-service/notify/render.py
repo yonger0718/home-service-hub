@@ -137,7 +137,7 @@ def render_weekly(rep: WeeklyReport, cfg: NotifyConfig) -> list[str]:
     gaps = rep.gaps
     gap_lines = ([f"• {n} · 沒有設定扣款帳戶" for n in gaps.unlinked_cards]
                  + [f"• {n} · 缺結帳日或繳款規則，每日提醒無法涵蓋" for n in gaps.cards_without_rule]
-                 + [f"• {n} · {c} 張帳單沒有到期日" for n, c in gaps.statements_without_due])
+                 + [f"• {n} 帳單 #{sid} 沒有到期日" for n, sid in gaps.statements_without_due])
     if gap_lines:
         blocks.append("\n".join(["**設定缺漏**"] + gap_lines))
     if not blocks:

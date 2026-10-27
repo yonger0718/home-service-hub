@@ -75,7 +75,7 @@ def test_weekly_matches_golden(fx):
             CaseLine(None, None, "轉帳", "疑似轉帳", 155)], 10)],
         missing=[MissingStatement(93, "黑啤卡", date(2026, 10, 15), date(2026, 11, 15), 12)],
         skips=[fx.skip(7, card_id=100)],
-        gaps=Gaps(["聯名卡"], ["海外卡"], [("旅遊卡", 1)]),
+        gaps=Gaps(["聯名卡"], ["海外卡"], [("旅遊卡", 155)]),
         last_daily_run=None)
     assert render_weekly(rep, cfg) == [golden("weekly.txt")]
 
