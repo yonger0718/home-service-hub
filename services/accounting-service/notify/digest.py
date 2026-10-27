@@ -4,11 +4,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from .api import TZ, Snapshot, created_at_of
 from .config import NotifyConfig
 from .cycles import shift_period
 from .debits import CUTOFF, SKIPPED, Skip
+
+TAIPEI = ZoneInfo("Asia/Taipei")
+ACTIVE_DAYS = 90
 
 QUESTION_TEXT: dict[str, str] = {
     "bank_only": "只有銀行有", "ledger_only": "只有帳本有", "transfer": "疑似轉帳", "amount_differs": "金額不同",
@@ -79,10 +83,10 @@ def _case_line(item: dict) -> CaseLine:
 def _open_cases(snap: Snapshot, limit: int) -> list[AccountCases]:
     out = []
     for acct in (snap.inbox or {}).get("accounts", []):
-        items = acct.get("items") or []
+        items = [i for i in acct.get("items") or [] if not i.get("folded")]
         if not items:
             continue
-        created = [created_at_of(c).date() for c in snap.open_cases.get(acct["id"], [])]
+        created = [created_at_of(c).astimezone(TAIPEI).date() for c in snap.open_cases.get(acct["id"], [])]
         oldest = (snap.today - min(created)).days if created else 0
         lines = [_case_line(i) for i in items[:limit]]
         out.append(AccountCases(account_id=acct["id"], name=acct["name"], count=len(items), oldest_days=oldest,
@@ -139,17 +143,23 @@ def _skips(snap: Snapshot) -> list[Skip]:
     return sorted(out, key=lambda s: s.event_id)
 
 
+def _recent_payment(snap: Snapshot, acct: dict) -> bool:
+    since = snap.today - timedelta(days=ACTIVE_DAYS)
+    rows = snap.payments.get(acct.get("combined_account_id") or acct["id"], [])
+    return any(r.get("kind") == "transfer_in" and r.get("parent_entry_id") is None
+               and date.fromisoformat(str(r["entry_date"])) >= since for r in rows)
+
+
 def _gaps(snap: Snapshot) -> Gaps:
     unlinked, no_rule, no_due = [], [], []
     for acct in snap.accounts:
         if not acct.get("is_credit"):
             continue
         live = _live(snap.statements.get(acct["id"], []))
-        if not live:
-            continue
-        if not acct.get("auto_pay_account_id"):
+        if live and not acct.get("auto_pay_account_id"):
             unlinked.append(acct["name"])
-        if any(acct.get(k) is None for k in ("closing_day", "due_rule", "due_value")):
+        if (live or _recent_payment(snap, acct)) and any(
+                acct.get(k) is None for k in ("closing_day", "due_rule", "due_value")):
             no_rule.append(acct["name"])
         no_due += [(acct["name"], r["id"]) for r in live
                    if Decimal(str(r["statement_total"])) > 0 and r.get("due_date") is None]

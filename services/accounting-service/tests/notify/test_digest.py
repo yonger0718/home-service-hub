@@ -67,3 +67,27 @@ def test_gaps(fx):
     g = build_weekly(snap, fx.cfg(), None).gaps
     assert "無規則卡" in g.cards_without_rule and ("無規則卡", snap.statements[11][0]["id"]) in g.statements_without_due
     assert "無規則卡" in g.unlinked_cards and "旅遊卡" not in g.unlinked_cards
+
+
+def test_oldest_days_uses_taipei_date(fx):
+    snap = fx.weekly_snapshot(today=date(2026, 11, 28), inbox_items={"旅遊卡": 1})
+    snap.open_cases[100][0]["created_at"] = "2026-11-01T17:00:00Z"  # Nov 2 01:00 in Taipei
+    assert build_weekly(snap, fx.cfg(), None).open_cases[0].oldest_days == 26
+
+
+def test_folded_items_are_not_counted(fx):
+    snap = fx.weekly_snapshot(inbox_items={"旅遊卡": 2})
+    snap.inbox["accounts"][0]["items"][1]["folded"] = True
+    ac = build_weekly(snap, fx.cfg(), None).open_cases[0]
+    assert (ac.count, len(ac.items), ac.truncated) == (1, 1, 0)
+
+
+def test_cards_without_rule_counts_recent_payment_activity(fx):
+    def gaps(entry_date):
+        pay = fx.entry(account_id=12, kind="transfer_in", amount="500", entry_date=entry_date)
+        snap = fx.weekly_snapshot(extra_cards=[fx.account(id=12, name="閒置卡", closing_day=None)],
+                                  payments={12: [pay]})
+        return build_weekly(snap, fx.cfg(), None).gaps
+    assert "閒置卡" in gaps(date(2026, 11, 3) - timedelta(days=90)).cards_without_rule
+    g = gaps(date(2026, 11, 3) - timedelta(days=91))
+    assert "閒置卡" not in g.cards_without_rule and g.statements_without_due == []
