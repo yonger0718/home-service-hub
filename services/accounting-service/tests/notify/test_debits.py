@@ -205,3 +205,48 @@ def test_past_auto_item_paid_by_hand_is_dropped(fx):
     # after the debit day the job will not debit again: two halves paid by hand clear the 未扣款 line
     pays = [fx.entry(account_id=100, kind="transfer_in", amount="24100", entry_date=d) for d in (date(2026, 11, 7), date(2026, 11, 10))]
     assert fx.find(build_daily(fx.snapshot(today=date(2026, 11, 12), payments={100: pays}), fx.cfg()), "旅遊卡") is None
+
+
+def _nodue_and_prev(fx):
+    """旅遊卡's 10-15 statement without a due date, plus the default 0-total 09-15 one (no 帳單未到 for that cycle)."""
+    prev = fx.statement(id=145, account_id=100, total="0", period_end=date(2026, 9, 15), due_date=date(2026, 10, 5))
+    return fx.statement_default("旅遊卡", due_date=None), prev
+
+
+def test_paid_null_due_statement_is_dropped(fx):
+    # Ruling 18: an undated matched statement is a manual item; payments in [period_end, min(today, next_closing − 1)]
+    nodue, prev = _nodue_and_prev(fx)
+    pay = [fx.entry(account_id=104, kind="transfer_in", amount="48200", entry_date=date(2026, 10, 20))]
+    assert fx.find(build_daily(fx.snapshot(statements_for={"旅遊卡": [nodue, prev]}, payments={100: pay}), fx.cfg()), "旅遊卡") is None
+    # a partial payment keeps it, with 已繳
+    half = [fx.entry(account_id=100, kind="transfer_in", amount="10000", entry_date=date(2026, 10, 20))]
+    item = fx.find(build_daily(fx.snapshot(statements_for={"旅遊卡": [nodue, prev]}, payments={100: half}), fx.cfg()), "旅遊卡")
+    assert item is not None and item.paid == Decimal("10000") and item.note == "到期日未辨識"
+
+
+def test_unpaid_recent_null_due_statement_stays(fx):
+    # Tue 11-03: the 10-15 statement matches the last closed cycle; a payment before period_end does not count
+    nodue, prev = _nodue_and_prev(fx)
+    early = [fx.entry(account_id=100, kind="transfer_in", amount="48200", entry_date=date(2026, 10, 14))]
+    rep = build_daily(fx.snapshot(statements_for={"旅遊卡": [nodue, prev]}, payments={100: early}), fx.cfg())
+    assert [i.statement_id for i in rep.manual if i.card_name == "旅遊卡"] == [155]
+
+
+def test_old_null_due_statement_is_dropped(fx):
+    # Fri 11-20: the 11-15 cycle has closed, so the undated 10-15 statement sits in the older cycle's match zone
+    # (<= C−1 end + 3) → gone; it never turns into a 帳單未到 line for that cycle either
+    nodue = fx.statement_default("旅遊卡", due_date=None)
+    rep = build_daily(fx.snapshot(today=date(2026, 11, 20), statements_for={"旅遊卡": [nodue]}), fx.cfg())
+    lines = [i for i in [x for b in rep.blocks for x in b.items] + rep.manual if i.card_name == "旅遊卡"]
+    assert all(i.statement_id != 155 for i in lines) and all(i.due != date(2026, 11, 5) for i in lines)
+
+
+def test_past_auto_item_dropped_after_30_days(fx):
+    # 旅遊卡 155 due 11-05 (debit 11-06), never debited: 未扣款 through day 30 (12-05), gone on day 31 (12-06)
+    audit = [fx.audit_event(id=5, statement_id=155, reason="over_cap", created_at="2026-11-06T06:00:00+08:00")]
+    def item_155(today):
+        rep = build_daily(fx.snapshot(today=today, audit=audit), fx.cfg())
+        return [i for i in [x for b in rep.blocks for x in b.items] + rep.manual if i.statement_id == 155]
+    (kept,) = item_155(date(2026, 12, 5))
+    assert kept.cls == "auto" and kept.unpaid_reason == "over_cap"
+    assert item_155(date(2026, 12, 6)) == []

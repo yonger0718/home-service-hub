@@ -1,9 +1,9 @@
 """Daily debit items (spec §5.1–§5.5): pure functions over a `Snapshot`, no I/O.
 
 The report carries only renderable items — in the lead window, overdue, or 未扣款 — after the drop rules (paid,
-twin, nothing to pay, past debit day more than 30 days after the due date). Projections are computed over every
-auto item first, so a debit day <= D outside a shorter per-card window still counts (§5.3). Dedupe (Task 5)
-decides which blocks are sent.
+twin, nothing to pay, past debit day more than 30 days after the due date, an undated statement once the next
+cycle has closed). Projections are computed over every auto item first, so a debit day <= D outside a shorter
+per-card window still counts (§5.3). Dedupe (Task 5) decides which blocks are sent.
 """
 from __future__ import annotations
 
@@ -211,8 +211,12 @@ class _Run:
         common = dict(statement_id=stmt["id"], amount=amount, from_rule=False,
                       open_cases=int(stmt.get("open_case_count") or 0))
         due = _day(stmt.get("due_date"))
-        if due is None:  # never booked by the job, never projected, never overdue
-            return self._item(card, **common, due=None, debit_day=None, cls="manual", in_window=False,
+        if due is None:  # never booked by the job, never projected, never overdue: a manual item (Ruling 18)
+            period_end = _day(stmt["period_end"])
+            paid = self.paid(card, period_end, period_end)  # window [period_end, min(today, next_closing − 1)]
+            if paid >= amount:
+                return None
+            return self._item(card, **common, paid=paid, due=None, debit_day=None, cls="manual", in_window=False,
                               note=NOTE_NO_DUE)
         debit_day = next_business_day(due, self.cal)
         paid = self.paid(card, _day(stmt["period_end"]), debit_day)
@@ -242,6 +246,10 @@ class _Run:
         older_end = shift_period(closing, last, -2)[1]
         live = [s for s in self.snap.statements.get(card["id"], []) if s.get("mode") == "live" and not s.get("retired")]
         matched = {cycle: _match(live, cycle[1]) for cycle in cycles}
+        # A dated statement ages out through the 30-day overdue horizon; an undated one has none, so it stays only
+        # while newer than the older cycle's match zone (C−1 end + 3, the analogue of the C−2 end + 3 bound below):
+        # it is dropped once the next cycle has closed (Ruling 18). The weekly 設定缺漏 still lists it.
+        no_due_horizon = cycles[0][1] + timedelta(days=MATCH_DAYS)
         matched_ids = {s["id"] for s in matched.values() if s is not None}
         # Other billable statements count only when newer than the cycle-before-last's match zone: older history
         # is outside the payment fetch (today − 120) and the 30-day overdue horizon.
@@ -253,6 +261,8 @@ class _Run:
         for cycle in cycles:
             stmt = matched[cycle]
             if stmt is not None:
+                if stmt.get("due_date") is None and _day(stmt["period_end"]) <= no_due_horizon:
+                    continue
                 items.append(self.statement_item(card, stmt))
             elif not other_items:  # a surviving off-cycle bill is this period's bill: no 帳單未到 next to it
                 items.append(self.rule_item(card, cycle))

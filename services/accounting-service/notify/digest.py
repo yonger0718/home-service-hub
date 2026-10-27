@@ -156,13 +156,15 @@ def _gaps(snap: Snapshot) -> Gaps:
         if not acct.get("is_credit"):
             continue
         live = _live(snap.statements.get(acct["id"], []))
+        no_due += [(acct["name"], r["id"]) for r in live
+                   if Decimal(str(r["statement_total"])) > 0 and r.get("due_date") is None]
+        if acct.get("combined_account_id"):  # a 副卡 is folded into its master: its link and rule are the master's
+            continue
         if live and not acct.get("auto_pay_account_id"):
             unlinked.append(acct["name"])
         if (live or _recent_payment(snap, acct)) and any(
                 acct.get(k) is None for k in ("closing_day", "due_rule", "due_value")):
             no_rule.append(acct["name"])
-        no_due += [(acct["name"], r["id"]) for r in live
-                   if Decimal(str(r["statement_total"])) > 0 and r.get("due_date") is None]
     return Gaps(unlinked, no_rule, no_due)
 
 

@@ -93,6 +93,13 @@ def cli_env_quiet(tmp_path, monkeypatch, fx):
 
 
 @pytest.fixture
+def cli_env_skip(tmp_path, monkeypatch, fx):
+    audit = [fx.audit_event(id=9, reason="no_link", created_at="2026-11-03T06:30:00+08:00", card_account_id=93,
+                            amount="4378")]
+    return Env(tmp_path, monkeypatch, fx.snapshot(audit=audit))
+
+
+@pytest.fixture
 def cli_env_far_due(tmp_path, monkeypatch, fx):
     return Env(tmp_path, monkeypatch, fx.snapshot())
 
@@ -148,7 +155,9 @@ def test_same_day_rerun_sends_nothing(cli_env):
 def test_calendar_exhausted_is_failure(cli_env_far_due):
     rc = main(["daily", "--as-of", "2028-01-03", "--send", "--config", cli_env_far_due.cfg])
     assert rc == 1 and cli_env_far_due.sent == []
-    assert "CalendarExhausted" in cli_env_far_due.failure_file.read_text()
+    text = cli_env_far_due.failure_file.read_text()
+    assert text.startswith("❌ 帳務通知失敗：daily 2028-01-03 CalendarExhausted 20")  # the message names the dates
+    assert "last known day" in text
     assert not cli_env_far_due.state_path.exists()
 
 
@@ -162,7 +171,7 @@ def test_api_failure_writes_failure_file_and_sends_nothing(cli_env_401, capsys):
     rc = main(["daily", "--as-of", "2026-11-03", "--send", "--config", cli_env_401.cfg])
     assert cli_env_401.sent == [] and stat.S_IMODE(cli_env_401.failure_file.stat().st_mode) == 0o600
     text = cli_env_401.failure_file.read_text()
-    assert rc == 1 and text.startswith("❌ 帳務通知失敗：ApiError 401") and SECRET not in text
+    assert rc == 1 and text.startswith("❌ 帳務通知失敗：daily 2026-11-03 ApiError 401") and SECRET not in text
     err = capsys.readouterr().err
     assert "ApiError 401" in err and SECRET not in err and not cli_env_401.state_path.exists()
 
@@ -187,7 +196,7 @@ def test_send_failure_leaves_state_absent(cli_env_two_chunks):
 def test_failed_subcommand_sends_stored_text_then_removes_it(cli_env_401):
     main(["daily", "--as-of", "2026-11-03", "--send", "--config", cli_env_401.cfg])
     rc = main(["failed", "homehub-notify-daily.service", "--config", cli_env_401.cfg])
-    assert rc == 0 and cli_env_401.sent[-1][1].startswith("❌ 帳務通知失敗：ApiError 401")
+    assert rc == 0 and cli_env_401.sent[-1][1].startswith("❌ 帳務通知失敗：daily 2026-11-03 ApiError 401")
     assert not cli_env_401.failure_file.exists()
 
 
@@ -241,3 +250,29 @@ def test_weekly_after_daily_shows_last_daily_run_stamp(cli_env_quiet):
     assert main(["weekly", "--as-of", "2026-11-21", "--send", "--config", cli_env_quiet.cfg]) == 0
     text = cli_env_quiet.sent[-1][1]
     assert "最近一次每日檢查" in text and "尚無" not in text
+
+
+def test_same_day_rerun_with_skip_sends_nothing(cli_env_skip, capsys):
+    # Ruling 17: the first send consumes the skip (skips_seen); the re-run must still produce the same trigger set
+    args = ["daily", "--as-of", "2026-11-03", "--send", "--config", cli_env_skip.cfg]
+    assert main(args) == 0 and len(cli_env_skip.sent) == 1 and "⏭ 自動扣繳跳過" in cli_env_skip.sent[0][1]
+    assert "skip:9" in load_state(cli_env_skip.state_path).last_send.triggers
+    capsys.readouterr()
+    assert main(args) == 0 and len(cli_env_skip.sent) == 1
+    assert "nothing to send" in capsys.readouterr().err
+
+
+def test_token_config_error_names_the_key_and_writes_prefixed_file(cli_env, capsys):
+    token = cli_env.state_path.parent.parent / "token"
+    token.write_text("\n")
+    rc = main(["weekly", "--as-of", "2026-11-07", "--send", "--config", cli_env.cfg])
+    assert rc == 1 and cli_env.sent == []
+    assert cli_env.failure_file.read_text() == "❌ 帳務通知失敗：weekly 2026-11-07 ConfigError token"
+    assert "ConfigError token" in capsys.readouterr().err
+
+
+def test_bad_config_names_the_key(tmp_path, capsys):
+    cfg = tmp_path / "notify.toml"
+    cfg.write_text('api_base = "http://api.invalid"\n')
+    assert main(["daily", "--as-of", "2026-11-03", "--config", str(cfg)]) == 1
+    assert "❌ 帳務通知失敗：daily 2026-11-03 ConfigError token_file" in capsys.readouterr().err

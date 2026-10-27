@@ -297,17 +297,43 @@ Business days come from `GET /calendar/business-days`; a due date past its `last
   text (or a generic line when the run died before writing one) and always exits 0.
 - Units (`deploy/notify/`, user scope for `opc`): `homehub-notify-daily.timer`, `homehub-notify-weekly.timer` (both
   `Persistent=true`), the two services and `homehub-notify-failed@.service`. They run
-  `%h/releases/home-hub-notify/venv/bin/python` from `%h/releases/home-hub-notify/current/services/accounting-service`.
-  Python dependency: `requirements-notify.txt` (`httpx`).
-- Rollout (spec section 9): (0) every card the bank debits automatically has its 扣款帳戶 link set in HomeHub; the weekly 設定缺漏
-  list is the checklist, and an unlinked card is reminded as 手動繳 and never reduces a projection. (1) Add label `notify`,
-  scope `read` to `ACCOUNTING_TOKEN_SCOPES` and its token to `ACCOUNTING_API_TOKENS` in the API `.env`, restart through
-  `homehub-api-ctl`, and write the token to `~/.config/homehub-notify-token` (0600). (2) Write `~/.config/homehub-notify.toml` from the
-  example (`<discord target>`, hub URL). (3) Make the release checkout `~/releases/home-hub-notify/<sha>` (with a `current` link) and a
-  venv `~/releases/home-hub-notify/venv` from `requirements-notify.txt`, then run `deploy/notify/install.sh` (copies the five
-  units, reloads, enables both timers; safe to repeat). (4) First run by hand: `python -m notify daily --dry-run`, then `--send`;
-  the same for `weekly`; the owner confirms both messages in the channel. (5) Follow-ups: a Loki/Grafana heartbeat alert (#200),
-  a periodic Hermes review of the digest.
+  `%h/releases/home-hub-notify/venv/bin/python` from `%h/releases/home-hub-notify/current/services/accounting-service`
+  with `Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin`: `hermes` lives in `~/.local/bin`, which the systemd
+  user manager's default PATH does not contain. Python dependency: `requirements-notify.txt` (`httpx`); Python 3.11+
+  (`tomllib`), the venv uses CPython 3.13 like the rest of the repo.
+- Rollout (spec section 9), in this order:
+  0. Every card the bank debits automatically has its 扣款帳戶 link set in HomeHub; the weekly 設定缺漏 list is the
+     checklist, and an unlinked card is reminded as 手動繳 and never reduces a projection.
+  1. Add label `notify`, scope `read` to `ACCOUNTING_TOKEN_SCOPES` and its token to `ACCOUNTING_API_TOKENS` in the API
+     `.env`, restart through `homehub-api-ctl`, and write the token to `~/.config/homehub-notify-token` (0600).
+  2. Write `~/.config/homehub-notify.toml` (0600) from the example (`<discord target>`, hub URL).
+  3. Release checkout `~/releases/home-hub-notify/<sha>` (a clean checkout of `<sha>`), the `current` link and the venv.
+     The host `python3` is 3.8, too old (`tomllib` needs 3.11), so the venv is made with the uv CPython 3.13:
+
+         ln -sfn ~/releases/home-hub-notify/<sha> ~/releases/home-hub-notify/current
+         uv venv --seed --python 3.13 ~/releases/home-hub-notify/venv
+         #   or: ~/.local/share/uv/python/cpython-3.13.13-linux-aarch64-gnu/bin/python3.13 -m venv ~/releases/home-hub-notify/venv
+         ~/releases/home-hub-notify/venv/bin/pip install -r ~/releases/home-hub-notify/current/services/accounting-service/requirements-notify.txt
+
+  4. First run by hand, BEFORE installing the units (`install.sh` enables the timers with `--now`):
+     `cd ~/releases/home-hub-notify/current/services/accounting-service`, then
+     `~/releases/home-hub-notify/venv/bin/python -m notify daily --dry-run`, then `--send`; the same for `weekly`; the
+     owner confirms both messages in the channel.
+  5. Acceptance in the real unit environment (PATH, working directory, venv), before any timer is enabled: copy the units
+     without enabling them (from the release's `services/accounting-service`): `mkdir -p ~/.config/systemd/user &&
+     install -m 0644 deploy/notify/homehub-notify-* ~/.config/systemd/user/ && systemctl --user daemon-reload`, then
+     `systemctl --user start homehub-notify-failed@smoke.service`. It must post the generic line
+     「❌ 帳務通知失敗：smoke 非正常結束，請看 journalctl --user -u smoke」 through hermes (or the stored line, if a failing
+     hand run left `last_failure.txt`). `failed` always exits 0, so check the channel, then
+     `journalctl --user -u 'homehub-notify-*'`: a `failed: SendError` line means `hermes` could not be started or failed
+     under the unit environment.
+  6. `deploy/notify/install.sh` copies the five units, reloads and enables both timers with `--now` (safe to repeat).
+  7. Follow-ups: a Loki/Grafana heartbeat alert (#200), a periodic Hermes review of the digest.
+
+  First-run note (historical data): expect 「⚠ 逾期未繳 N 天」 lines for last cycle's hand-paid bills whose payment is not
+  a `transfer_in` on the card (or a 副卡) dated inside `[period_end, next_closing − 1]`, and a daily 帳單未到 line for every
+  rule-bearing card whose statements are not ingested. Remedies: record the payment, ingest the statement, or clear the
+  card's rule (closing day / due rule) — it then surfaces weekly under 設定缺漏 instead.
 
 Enabling the policy (it does nothing until every step is done): (0) deploy R1d first (the policy's claims, budget, skip audit, supersede order and plan-revert fixes are not in R1c); (1) keep `dirty_enabled` on and reconcile working;
 (2) set `per_currency_enabled` and the caps first, `PUT /settings/reconciliation` with the full body and a `policy` that

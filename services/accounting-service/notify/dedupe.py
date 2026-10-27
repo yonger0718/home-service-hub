@@ -27,6 +27,10 @@ def apply(report: DailyReport, state: State, today: date) -> tuple[DailyReport, 
                   skips_seen=set(state.skips_seen))
     keys: set[str] = set()
     blocks, cleared = [], []
+    # Keys of today's last send that this run cannot re-derive from state alone (the send consumed them): a same-day
+    # re-run must reproduce the same key set, or it would resend (spec §5.6, Ruling 17).
+    last = state.last_send
+    sent_today = last.triggers if last is not None and last.day == today else frozenset()
 
     for blk in report.blocks:
         bkeys = _item_keys(blk.items, state, today)
@@ -36,6 +40,8 @@ def apply(report: DailyReport, state: State, today: date) -> tuple[DailyReport, 
         if prev is not None and prev.last_shortfall is not None and blk.shortfall is None:
             keys.add(f"cleared:{blk.account_id}")
             cleared.append(blk)
+        elif blk.shortfall is None and f"cleared:{blk.account_id}" in sent_today:
+            keys.add(f"cleared:{blk.account_id}")  # announced earlier today: key kept, line not repeated
         if bkeys:
             blocks.append(blk)
             keys |= bkeys
@@ -50,8 +56,8 @@ def apply(report: DailyReport, state: State, today: date) -> tuple[DailyReport, 
     manual = report.manual if mkeys else []
     keys |= mkeys
 
-    skips = [s for s in report.skips if s.event_id not in state.skips_seen]
-    keys |= {f"skip:{s.event_id}" for s in skips}
+    skips = [s for s in report.skips if s.event_id not in state.skips_seen]  # rendered once per event id
+    keys |= {f"skip:{s.event_id}" for s in report.skips}  # keyed while in the report, seen or not (Ruling 17)
     new.skips_seen |= {s.event_id for s in skips}
 
     for it in [i for b in blocks for i in b.items] + manual:

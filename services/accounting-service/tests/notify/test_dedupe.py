@@ -2,7 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 from notify.dedupe import apply
-from notify.state import State
+from notify.state import LastSend, State
 
 
 def test_new_then_quiet_then_debit_day(fx):
@@ -71,3 +71,33 @@ def test_new_key_stable_on_notification_day_but_not_next_day(fx):
     _, st, keys = apply(rep, State.empty(), date(2026, 11, 3)); assert keys == {"new:1"}
     _, _, again = apply(rep, st, date(2026, 11, 3)); assert "new:1" in again
     out, _, later = apply(rep, st, date(2026, 11, 4)); assert "new:1" not in later and not out.blocks
+
+
+def test_same_day_reapply_keeps_seen_skip_key(fx):
+    # Ruling 17: the key set carries every skip in the report; only the rendered list is unseen-only
+    d = date(2026, 11, 3)
+    rep = fx.report(items=[fx.item(1)], skips=[fx.skip(9)])
+    out, st, first = apply(rep, State.empty(), d)
+    assert out.skips and "skip:9" in first
+    st.last_send = LastSend(d, first)
+    out, _, again = apply(rep, st, d)
+    assert again == first and not out.skips
+
+
+def test_same_day_reapply_keeps_cleared_key_with_new_item(fx):
+    # day 1 short; day 2 cleared and sent; a same-day re-run keeps cleared:76 (line not repeated);
+    # a new item that same day changes the set
+    rep = fx.report(items=[fx.item(1)], shortfall=Decimal("3900"))
+    _, st, _ = apply(rep, State.empty(), date(2026, 11, 3))
+    d = date(2026, 11, 4)
+    cleared = fx.report(items=[fx.item(1)], shortfall=None)
+    out, st, first = apply(cleared, st, d)
+    assert out.cleared and "cleared:76" in first
+    st.last_send = LastSend(d, first)
+    out, st2, again = apply(cleared, st, d)
+    assert again == first and not out.cleared
+    out, _, more = apply(fx.report(items=[fx.item(1), fx.item(2)], shortfall=None), st, d)
+    assert "cleared:76" in more and "new:2" in more and more != first and not out.cleared
+    # the next day the key is gone
+    _, _, later = apply(cleared, st2, date(2026, 11, 5))
+    assert "cleared:76" not in later

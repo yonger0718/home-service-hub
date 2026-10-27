@@ -49,7 +49,13 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _short(exc: Exception) -> str:
-    return f"{type(exc).__name__} {getattr(exc, 'status', None) or getattr(exc, 'reason', None) or ''}".strip()
+    """Exception class plus the safe detail: the HTTP status / reason, or for ConfigError (names the key or the
+    config path, never a value) and CalendarExhausted (names the dates) the message itself."""
+    if isinstance(exc, (ConfigError, CalendarExhausted)):
+        detail = str(exc)
+    else:
+        detail = getattr(exc, "status", None) or getattr(exc, "reason", None) or ""
+    return f"{type(exc).__name__} {detail}".strip()
 
 
 def _write_failure(cfg: NotifyConfig, line: str) -> None:
@@ -61,8 +67,7 @@ def _write_failure(cfg: NotifyConfig, line: str) -> None:
     os.chmod(path, 0o600)
 
 
-def _run(args: argparse.Namespace, cfg: NotifyConfig) -> None:
-    today = args.as_of or datetime.now(TZ).date()
+def _run(args: argparse.Namespace, cfg: NotifyConfig, today: date) -> None:
     token = read_token(cfg.token_file)
     state = load_state(cfg.state_file)
     with httpx.Client(base_url=cfg.api_base, timeout=30) as http:
@@ -119,11 +124,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "failed":
         return _failed(args)
     cfg = None
+    today = args.as_of or datetime.now(TZ).date()
     try:
         cfg = load_config(Path(args.config).expanduser())
-        _run(args, cfg)
+        _run(args, cfg, today)
     except FAILURES as exc:
-        line = render_failure(_short(exc))
+        # command + as-of date first, so a stale file from a hand run is identifiable
+        line = render_failure(f"{args.command} {today.isoformat()} {_short(exc)}")
         print(line, file=sys.stderr)
         if args.send and cfg is not None:
             _write_failure(cfg, line)

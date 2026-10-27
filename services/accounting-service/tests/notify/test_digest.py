@@ -69,6 +69,17 @@ def test_gaps(fx):
     assert "無規則卡" in g.unlinked_cards and "旅遊卡" not in g.unlinked_cards
 
 
+def test_gaps_skip_child_cards(fx):
+    # Ruling 19: a rule-less, unlinked 副卡 with a live statement is folded into its master, never a gap itself
+    child = fx.account(id=105, name="無規則副卡", combined_account_id=100, closing_day=None, due_rule=None,
+                       due_value=None)
+    snap = fx.weekly_snapshot(extra_cards=[child], statements_for={
+        "無規則副卡": [fx.statement(account_id=105, period_end=date(2026, 10, 15), total="500")]})
+    g = build_weekly(snap, fx.cfg(), None).gaps
+    assert "無規則副卡" not in g.cards_without_rule and "無規則副卡" not in g.unlinked_cards
+    assert "副卡" not in g.cards_without_rule and "副卡" not in g.unlinked_cards
+
+
 def test_oldest_days_uses_taipei_date(fx):
     snap = fx.weekly_snapshot(today=date(2026, 11, 28), inbox_items={"旅遊卡": 1})
     snap.open_cases[100][0]["created_at"] = "2026-11-01T17:00:00Z"  # Nov 2 01:00 in Taipei

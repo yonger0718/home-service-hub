@@ -6,6 +6,7 @@ Type=oneshot
 WorkingDirectory=%h/releases/home-hub-notify/current/services/accounting-service
 Environment=PYTHONUNBUFFERED=1
 Environment=TZ=Asia/Taipei
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 UMask=0077
 ExecStart=%h/releases/home-hub-notify/venv/bin/python -m notify failed %i
 Nice=10

@@ -62,7 +62,7 @@ def _item_line(it: DebitItem, today: date, cfg: NotifyConfig) -> str:
         segs.append("到期日未辨識")
     elif it.cls == "manual":
         segs.append(f"到期 {_md(it.due)}{weekday_zh(it.due)}")
-    elif it.due != it.debit_day:
+    elif it.due != it.debit_day or it.unpaid_reason is not None:  # a 未扣款 line always names its due date
         segs.append(f"到期 {_md(it.due)}")
     if it.cls == "auto" and it.debit_day is not None and it.debit_day >= today:
         segs.append(f"扣款 {_md(it.debit_day)}{weekday_zh(it.debit_day)}")
