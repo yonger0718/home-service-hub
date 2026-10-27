@@ -367,8 +367,8 @@ cadence rules with fictional fixtures; golden-text tests for `render`; an API-cl
 ## 9. Rollout
 
 0. Owner: every card the bank debits automatically has its 扣款帳戶 link set in HomeHub (the weekly 設定缺漏 list
-   is the checklist; on 2026-10-27 one unlinked card with live statements remained, pending the owner's answer on
-   whether it is bank-debited or paid by hand). Unlinked cards are reminded as 手動繳 and never reduce a projection.
+   is the checklist; on 2026-10-27 the one unlinked card with live statements was confirmed by the owner as paid by hand,
+   so it stays a 手動繳 reminder and the checklist is clear). Unlinked cards are reminded as 手動繳 and never reduce a projection.
 1. Owner: add label `notify` with scope `read` to `ACCOUNTING_TOKEN_SCOPES` + token to `ACCOUNTING_API_TOKENS` in the
    API `.env`, restart via `homehub-api-ctl`; write the token to `~/.config/homehub-notify-token` (0600).
 2. Owner: write `~/.config/homehub-notify.toml` from the example (channel id, hub URL).
