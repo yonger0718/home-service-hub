@@ -1,6 +1,6 @@
 # Accounting notifications (扣款提醒 + 週報) — design
 
-Rev 1, 2026-10-27. Owner-approved direction (2026-10-27): deterministic digest computed from the HomeHub
+Rev 2, 2026-10-27 (rev 1 dba71677; rev 2 folds the Multica spec review AGENT-314: 11 majors, 3 minors). Owner-approved direction (2026-10-27): deterministic digest computed from the HomeHub
 accounting API, pushed to a dedicated Discord channel through `hermes send`, no LLM in the loop.
 
 ## 1. Intent
@@ -64,8 +64,12 @@ Anti-goals (would make it a failure even if it "works")
   therefore runs as `opc` from a release checkout (`~/releases/home-hub-notify/<sha>`, own venv), never from a dev
   worktree, and never as `homehub-api`/`homehub-worker`.
 - Asia/Taipei everywhere. "Today" is the Taipei date at run time (or `--as-of`).
-- Business days come from the API (`GET /calendar/business-days`), so the notifier, the app and the auto-pay job
-  agree on the debit day; the notifier never ships its own holiday table.
+- Business days come from the API (`GET /calendar/business-days?from&to`, span ≤ 1100 days), so the notifier, the
+  app and the auto-pay job agree on the debit day; the notifier never ships its own holiday table. The response is
+  `{holidays, workdays, last_known_day}`, not a list of business days: a day is a business day when it is a weekday
+  not in `holidays`, or any day in `workdays` (a workday wins). `last_known_day` (2027-12-31 today) ends the table;
+  the job only shifts weekends past it. The notifier refuses to state a debit day past it: any due date in use
+  after `last_known_day` is a §7 failure (exit 1, failure message), never a guessed date.
 - No new database tables or migrations. All state the notifier needs is a small local JSON file (§6.3).
 - Python 3.13, `httpx`, stdlib otherwise; tests with `pytest` and recorded fixtures; same layout conventions as
   `services/accounting-service/worker/` (config from env, `python -m … <cmd>`).
@@ -78,8 +82,9 @@ services/accounting-service/notify/        # new package, sibling of worker/
   calendar.py  debits.py  digest.py        # pure functions over API payloads → items
   render.py    state.py   send.py          # items → Discord text; dedupe state; hermes send wrapper
 deploy/notify/                             # unit files + install script (opc user units)
-  homehub-notify-daily.service/.timer      # OnCalendar=*-*-* 07:00 Asia/Taipei
-  homehub-notify-weekly.service/.timer     # OnCalendar=Sat *-*-* 10:00 Asia/Taipei
+  homehub-notify-daily.service/.timer      # ExecStart=… -m notify daily --send ; OnCalendar=*-*-* 07:00 Asia/Taipei
+  homehub-notify-weekly.service/.timer     # ExecStart=… -m notify weekly --send ; OnCalendar=Sat *-*-* 10:00 Asia/Taipei
+                                           # both services: Environment=TZ=Asia/Taipei; "today" is always ZoneInfo("Asia/Taipei")
   install.sh                               # copies units to ~/.config/systemd/user, enables timers
 ```
 
@@ -125,36 +130,49 @@ The app's reminders page already derives dues from the card's rule without a sta
   that day belongs to the open cycle, so the last closed cycle ended last month. Rule due date = `dueDate(period_end,
   due_rule, due_value)` ported from `cycle.ts`: `days_after_closing` → `period_end + value` days; `fixed_day` → day
   `value` of the closing month when that day (clamped) is after the closing day, else day `value` of the next month.
-- Statement match: the live statement (`mode = live`, status not retired) whose `period_end` equals the expected
-  cycle's end (±3 days tolerance for banks that close on business days). When present, its `due_date`,
-  `statement_total`, `open_case_count` and id are used; the rule's due date is only a fallback.
+- Statement match: among the card's live statements (`mode = live` and `retired = false`; `status` is open/reconciled
+  and irrelevant here) the one whose `period_end` is within ±3 days of the expected cycle's end — closest
+  `period_end` first, then highest id. When present, its `due_date`, `statement_total`, `open_case_count` and id are
+  used; the rule's due date is only a fallback. A matched statement with `due_date` null is a **manual** line
+  「到期日未辨識 · 金額 X · 請自行確認」 (the job never books it) and is not a projection input.
+- Every other live, non-retired `kind = card` statement of the card with `statement_total > 0` and a due date is
+  **also** an item (its own due/debit day, same class rules): the job books by statement, not by rule cycle, so a
+  statement the rule did not expect still debits. 帳單未到 is emitted only when no statement matched the cycle.
 - Debit day = first business day on or after the due date (the API calendar; same as auto-pay `pay_date_for` and the
   app's `payDateOf`).
 - In window when `business_days_between(today, debit_day) <= lead` where `lead = lead_overrides[account] or
   lead_business_days`. `business_days_between(today, today) = 0`; a debit day that is today is in the window.
 - No statement in window → the item reads 「📄 帳單未到 · 到期 MM/DD（規則）· 金額未知，請自行確認 · 不會自動扣繳」,
   goes into the manual block regardless of `auto_pay_account_id`, is excluded from the projection (§5.3) and is
-  included every day until the statement arrives or the debit day passes. The weekly 該來沒來的帳單 section (§6.1)
-  still lists it afterwards.
+  included every day. After the debit day it stays for 30 days as 「⚠ 逾期未繳 · 帳單未到 · 到期 MM/DD（規則）」 until a
+  statement matches the cycle — a missing statement must not go quiet on the day it mattered. Rule-only items have
+  no statement id; state keys them by `-card_id` (§6.3). The weekly 該來沒來的帳單 section (§6.1) lists them too.
 - Statement present with `statement_total <= 0` → nothing to pay; dropped (same as auto-pay).
-- Paid when the sum of `transfer_in` entries on the master + 副卡 with `entry_date` in `[period_end, today]`
-  is `>= statement_total` (statement present). A positive sum below the total is a partial payment: the item stays
-  and shows 「已繳 X / Y」; a minimum-only payment is partial. Payments before `period_end` do not count (same as the
-  app's pill); an overpayment is simply paid. For a rule-only item there is no amount, so it is never "paid" and
-  stays until the statement arrives or the debit day passes. Paid statements are dropped. A statement the auto-pay
-  job already booked is therefore dropped the moment the legs exist (booking happens on the debit day at 06:00; the
-  07:00 reminder that day shows nothing for it). `GET /accounts/{id}/statements` has no status filter; the client
-  keeps `mode = live` and drops retired statements. (Builder-check items; my calls.)
+- Payment window (both classes): `[period_end, min(today, max(debit_day, next_closing − 1))]` where `next_closing`
+  is the next cycle's end — the app's `paymentWindowEnd` — so a later cycle's payment never clears this one.
+  `paid` = Σ `transfer_in` on the master + non-archived 副卡 with `entry_date` in that window.
+- **Auto item** is dropped only when the debit already exists as the job would see it (`find_twins` rule): a
+  `transfer_in` on the master + 副卡 of exactly `statement_total` with `entry_date` within `auto_pay.twin_window_days`
+  of the debit day (the job's own booked legs satisfy this on the debit day, so the 07:00 reminder that day shows
+  nothing for it). Otherwise it stays, the line may show 「已繳 X / Y」, and the projection subtracts the **full**
+  `statement_total` because that is what the job will debit.
+- **Manual item** is dropped when `paid >= statement_total`; a positive sum below the total shows 「已繳 X / Y」; a
+  minimum-only payment is partial; an overpayment is simply paid. For a rule-only item there is no amount, so it is
+  never "paid" and stays until a statement matches.
+- `GET /accounts/{id}/statements` has no status filter; the client keeps `mode = live` and `retired = false`.
 - 逾期 rule (§5.4) looks back 30 days from today over the same cycle logic (previous closed cycle too).
 
 ### 5.2 Grouping and classification
 
-- **Auto-paid item**: the card has `auto_pay_account_id`, `auto_pay.enabled` is true in `/settings/reconciliation`,
-  the statement exists, and its due date is on/after `auto_pay.enabled_from`. Everything else — manual cards,
-  rule-only items (帳單未到), statements before the cutoff, any statement while auto-pay is disabled, cards whose
-  link the job rejected (`link_ineligible`) — is a **manual item**: it is reminded as 「手動繳」, never projected
-  (§5.3), and follows the manual overdue rule (§5.4). The settings read is therefore not informational: it decides
-  the class. (Builder-check item; my call.)
+- **Auto item**: the card has `auto_pay_account_id`, `auto_pay.enabled` is true in `/settings/reconciliation`, the
+  statement exists with a due date, its **debit day** is on/after `auto_pay.enabled_from` (the job's `cutoff` gate
+  compares `pay_date`, not the due date), and the link is eligible by the job's own predicate evaluated now from
+  `/accounts` — the target exists, is not archived, is not a credit account and has the card's currency
+  (`_link_ineligible`); the lead window has no audit row yet, so the notifier must not wait for one. Everything
+  else — manual cards, rule-only items (帳單未到), statements before the cutoff, any statement while auto-pay is
+  disabled, ineligible links — is a **manual item**: reminded as 「手動繳」, never projected (§5.3), manual overdue
+  rule (§5.4). An ineligible link because of currency adds 「幣別不同，請自行確認」 to the line. The settings read
+  therefore decides the class.
 - Items are grouped by source account: all auto-paid items with `auto_pay_account_id = X` whose debit day is in
   the window form one block for X, ordered by debit day. Manual items form their own block.
 - When a block is rendered it lists **every** in-window unpaid item of that source (full picture, with the balance
@@ -162,10 +180,10 @@ The app's reminders page already derives dues from the card's rule without a sta
   (§5.6). The shortfall line belongs to the block (the source account), not to a card. (My call.)
 - `business_days_between(today, debit_day)` = number of business days strictly after `today` up to and including
   `debit_day` (0 when equal, Fri→Mon = 1, Sat→Mon = 1, Sat→Tue = 2). With `lead = 2` a Wednesday debit is first
-  reminded on Monday 07:00; a Tuesday debit on Saturday 07:00. (My call.)
+  reminded on Monday 07:00; a Tuesday debit on Friday 07:00 (Fri→Tue = Mon, Tue = 2). (My call.)
 - Lead is in business days of the TW calendar for every card; the planned US card gets `lead_overrides` (e.g. 4).
   A card's currency is the account's `currency`. A foreign-currency card paid from a source in the same currency
-  is projected normally; a currency mismatch is reported without a projection (§5.3). (My call.)
+  is projected normally; a currency mismatch makes the link ineligible (manual item, see above). (My call.)
 
 ### 5.3 Projected balance (auto-pay cards)
 
@@ -173,24 +191,28 @@ For source account X and the window's last debit day D:
 
 ```
 projected(X, D) = balance(X, today)
-                − Σ statement_total of unpaid card statements with auto_pay_account_id = X and debit_day ≤ D
-                − Σ amount of pending schedule instances debiting X with due_date ≤ D
+                − Σ statement_total of auto items (§5.2) with auto_pay_account_id = X and debit_day ≤ D
+                − Σ |amount| of pending schedule-instance lines with account_id = X, amount < 0, due_date ≤ D
 ```
 
+`GET /schedules/instances?status=pending&until=<D>` (the default `until` is today + 30, so `until` must be passed);
+`lines[].amount` is signed — outflows negative, income/payable/collection positive — so only negative lines count
+and positive ones are left out.
+
 - `balance(X, today)` = the `balance` field of `GET /accounts?as_of=<today>` for X (posted entries through today).
-- The first sum includes cards outside the lead window whose debit day is still ≤ D (a 3-card Friday). It excludes
-  statements the auto-pay job will skip for a terminal reason the owner has already been told about? No — it
-  includes them; a skip the owner fixes before the debit day still needs the money.
+- The first sum includes cards outside the lead window whose debit day is still ≤ D (a 3-card Friday) and every
+  auto item regardless of partial payments (§5.1: the job debits the full total). It includes statements the job
+  may later skip for `over_cap`/`monthly_budget`/`twin`: a skip the owner fixes before the debit day still needs
+  the money.
 - Shortfall = `min_buffer − projected` when positive. Items read 「缺 X 元」 and the block is marked ⚠.
-- Currency: each card statement is in the card's currency; a source account in another currency (foreign card paid
-  from a TWD account) is reported without a projection: 「幣別不同，請自行確認」. (Builder keeps this simple; FX
-  projection is out of scope.)
+- Currency: the source account's currency is the block's currency; a card in another currency never reaches the
+  block (its link is ineligible, §5.2). FX projection is out of scope.
 
 ### 5.4 Manual cards and overdue
 
 - Manual card (`auto_pay_account_id` null) in window: 「手動繳 · 到期 MM/DD · 金額」. No balance line.
-- Manual card whose due date has passed, unpaid (§5.1 rule), due within the last 30 days: 「⚠ 逾期未繳 N 天」, every
-  day until paid.
+- Manual item whose debit day has passed, unpaid (§5.1 rule), due within the last 30 days: 「⚠ 逾期未繳 N 天」, every
+  day until paid; a rule-only item reads 「⚠ 逾期未繳 · 帳單未到」 (§5.1).
 - Auto-paid item whose debit day has passed and is unpaid (the job skipped it for a terminal reason other than
   `cutoff`): 「⚠ 未扣款 · 原因 <reason>」 using the latest `auto_pay_skipped` audit detail for that statement; every
   day until paid or until the statement is retired. A `cutoff` skip makes the item manual (§5.2), so it follows the
@@ -205,13 +227,18 @@ projected(X, D) = balance(X, today)
 
 ### 5.6 Dedupe
 
-State file (§6.3) keyed by statement id: `first_notified`, `last_shortfall`, `last_overdue_day`. Rules:
-- A statement in the window with no shortfall is included on the day it first enters the window and then only if the
-  debit day is today (a final 「今天扣款」 line). Not on the days between.
-- A statement with a shortfall is included every day while the shortfall persists; when it clears, one 「已補足」
-  line, then silence.
-- Overdue / 未扣款 lines are included every day.
-- Skips are included once per audit event id.
+Shortfall is a property of the source block, not of a statement. State file (§6.3) keyed by statement id (rule-only
+items by `-card_id`): `first_notified`; per source account: `last_shortfall`. A block **fires** — and then lists
+every in-window unpaid item with the full projection (§5.2) — when any of:
+- an item is new in the window (no `first_notified`);
+- any item's debit day is today (a final 「今天扣款」 marker on that line);
+- the block's shortfall is positive (every day while it persists);
+- the shortfall just cleared since `last_shortfall` (one 「✅ <source> 已補足」 line, then silence);
+- any item is overdue / 未扣款 / 帳單未到 (every day).
+On the days between, a block with none of these is omitted entirely — never a subset. The manual block follows the
+same triggers (new / debit today / overdue / 帳單未到). Skips are included once per audit event id.
+Same-day re-run: state records the Taipei date and the set of trigger keys of the last send; a run on the same date
+with an identical trigger set sends nothing (exit 0). Any difference (a new item, a cleared shortfall) sends again.
 
 ### 5.7 Message
 
@@ -247,10 +274,13 @@ Runs Saturday 10:00 Asia/Taipei. Sections, each omitted when empty:
 
 ### 6.1 Sections
 
-1. **對不上的交易** — `GET /reconciliation/inbox` grouped by account; per account: open count, oldest case age
-   (from `created_at` via `/reconciliation/cases?status=open`), then up to `weekly_open_case_limit` items with
-   date, amount, merchant/description and the case kind in words (ask / proposed / balance_gap / settlement), and
-   「+N 筆」 when truncated. Link to the statement page.
+1. **對不上的交易** — `GET /reconciliation/inbox` (already grouped by account; items carry `question`, not a case
+   kind): per account the open count, the oldest age from `GET /reconciliation/cases?status=open&account_id=<id>`
+   (`created_at`, newest first), then up to `weekly_open_case_limit` items with date, amount, merchant/description
+   and the `question` in words — `bank_only` 只有銀行有, `ledger_only` 只有帳本有, `transfer` 疑似轉帳, `amount_differs`
+   金額不同, `date_differs` 日期不同, `ambiguous` 多個候選, `balance_gap` 餘額差, `settlement` 結算, `proposed` 已提議,
+   `other` 其他 — and 「+N 筆」 when truncated. Link to the statement page. Reading the inbox lets the API supersede
+   stale proposal rows (`supersede_stale`); that read-scope side effect is accepted — it posts nothing to the ledger.
 2. **該來沒來的帳單** — for every account that has at least one live statement: expected next `period_end` =
    last live `period_end` + cadence, where cadence = the account's `closing_day` month step for cards, else the
    median gap of its last three live statements (one statement → 1 month). Listed when
@@ -267,13 +297,16 @@ Runs Saturday 10:00 Asia/Taipei. Sections, each omitted when empty:
 
 The weekly digest is sent even when every section is empty: 「✅ 本週沒有待處理 · 最近一次每日檢查 MM/DD HH:MM」.
 This is the liveness signal: a quiet week and a dead timer look identical otherwise. (My call; the owner asked for
-quiet when nothing happens, which the daily job honours.)
+quiet when nothing happens, which the daily job honours.) `最近一次每日檢查` is `last_daily_run`, which every daily
+run that exits 0 writes — including a run that sent nothing — so a healthy quiet week never reads as a dead timer.
 
 ### 6.3 State file
 
-`~/.local/state/homehub-notify/state.json` (0600): `{"statements": {<id>: {...§5.6}}, "skips_seen": [event ids],
-"last_daily_run": iso, "last_weekly_run": iso}`. Written atomically after a successful send. Missing or corrupt
-file → treated as empty (first-run behaviour: every window statement is "new"; acceptable).
+`~/.local/state/homehub-notify/state.json` (0600): `{"statements": {<id or -card_id>: {"first_notified": date}},
+"sources": {<account id>: {"last_shortfall": amount|null}}, "skips_seen": [event ids], "last_daily_run": iso,
+"last_weekly_run": iso, "last_send": {"date": YYYY-MM-DD, "triggers": [keys]}}`. Written atomically on every exit 0
+(sent or nothing to send); untouched on failure (§7). Missing or corrupt file → treated as empty (first-run
+behaviour: every window statement is "new"; acceptable).
 
 ## 7. Failure behaviour
 
@@ -282,6 +315,11 @@ file → treated as empty (first-run behaviour: every window statement is "new";
 - `hermes send` fails: exit 1, state not written, so the next run resends. systemd `OnFailure` is not used; the
   weekly liveness line covers a dead daily timer.
 - A partial API failure (one account's statements 500) fails the whole run; no half-digests.
+- Capped reads are failures too, not short successes: `/entries` is paged by `offset` until `offset + len(items)
+  == total`; for `/reconciliation/audit` (newest first, `limit` ≤ 1000, no `since`/`event` filter),
+  `/reconciliation/inbox` (≤ 1000) and `/reconciliation/cases` (≤ 1000, no offset), a full page whose oldest row is
+  still inside the window the run needs → §7 failure. Never render from a truncated page.
+- A due date after the calendar's `last_known_day` → §7 failure (§3).
 - Logs: stderr only, one line per run (`daily: 3 items, sent 1 message`), no amounts.
 
 ## 8. CLI and tests
@@ -314,9 +352,7 @@ cadence rules with fictional fixtures; golden-text tests for `render`; an API-cl
 - Exact httpx client shape (reuse `worker/api.py` patterns: bearer header, redaction, no retries beyond one).
 - The Python port of `cycle.ts` (`statementPeriod`, `shiftPeriod`, `dueDate`, month clamping) lives in
   `notify/cycles.py` with tests mirroring `cycle.spec.ts` cases; the frontend stays the reference implementation.
-- Whether `GET /accounts?as_of=` already returns a `balance` field (the design assumes it; if not, derive from
-  `/accounts/{id}/summary … end_balance` with `date_from = opening`).
-- Audit endpoint filters (`/reconciliation/audit` params) for `auto_pay_skipped`; fall back to fetching recent audit
-  rows and filtering client-side.
+- `GET /accounts?as_of=` returns `balance` (posted on/before `as_of`) — confirmed; `/reconciliation/audit` has only
+  `statement_id`/`limit`, so `auto_pay_skipped` is filtered client-side under the §7 cap rule.
 - Message splitting and emoji choices; Discord markdown escaping of account names.
 - The `install.sh` idempotency and the release-checkout layout (mirror `~/releases/home-hub-portfolio`).
