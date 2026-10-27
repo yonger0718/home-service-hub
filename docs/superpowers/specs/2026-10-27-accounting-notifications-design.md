@@ -1,6 +1,6 @@
 # Accounting notifications (扣款提醒 + 週報) — design
 
-Rev 3, 2026-10-27 (rev 1 dba71677; rev 2 folds the Multica spec review AGENT-314: 11 majors, 3 minors; rev 3 adds the systemd `OnFailure` backstop, the linked-cards-only note in §5.3 and the rollout link check, per the owner 2026-10-27; rev 3 also folds the AGENT-314 re-check minors: all three `find_twins` shapes, the window predicate, no 帳單未到 beside an off-cycle statement). Owner-approved direction (2026-10-27): deterministic digest computed from the HomeHub
+Rev 3, 2026-10-27 (rev 1 dba71677; rev 2 folds the Multica spec review AGENT-314: 11 majors, 3 minors; rev 3 adds the systemd `OnFailure` backstop, the linked-cards-only note in §5.3 and the rollout link check, per the owner 2026-10-27; rev 3 also folds the AGENT-314 re-check minors: all three `find_twins` shapes, the window predicate, no 帳單未到 beside an off-cycle statement); rev 3.1 (closeout) bounds that suppression to statements newer than the cycle-before-last's match zone. Owner-approved direction (2026-10-27): deterministic digest computed from the HomeHub
 accounting API, pushed to a dedicated Discord channel through `hermes send`, no LLM in the loop.
 
 ## 1. Intent
@@ -139,9 +139,11 @@ The app's reminders page already derives dues from the card's rule without a sta
 - Every other live, non-retired `kind = card` statement of the card with `statement_total > 0` and a due date is
   **also** an item (its own due/debit day, same class rules): the job books by statement, not by rule cycle, so a
   statement the rule did not expect still debits. 帳單未到 is emitted only when no statement matched the cycle
-  **and** the card has no other live, non-retired statement with `statement_total > 0` and a due date: an off-cycle
+  **and** the card has no other live, non-retired, unmatched statement with `statement_total > 0` and a due date
+  whose `period_end` is newer than the cycle-before-last's match zone (that cycle's end + 3 days): an off-cycle
   statement is the bill for that cycle as far as the owner is concerned, and 「不會自動扣繳」 next to an auto item
-  for the same card would contradict it.
+  for the same card would contradict it. An older statement never silences the line (rev 3.1: implementation
+  Ruling 5 — the rev 3 wording let any old live statement suppress 帳單未到 forever).
 - Debit day = first business day on or after the due date (the API calendar; same as auto-pay `pay_date_for` and the
   app's `payDateOf`).
 - In window when `debit_day >= today` **and** `business_days_between(today, debit_day) <= lead` where
