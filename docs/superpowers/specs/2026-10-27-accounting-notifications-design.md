@@ -140,7 +140,9 @@ The app's reminders page already derives dues from the card's rule without a sta
   **also** an item (its own due/debit day, same class rules): the job books by statement, not by rule cycle, so a
   statement the rule did not expect still debits. 帳單未到 is emitted only when no statement matched the cycle
   **and** the card has no other live, non-retired, unmatched statement with `statement_total > 0` and a due date
-  whose `period_end` is newer than the cycle-before-last's match zone (that cycle's end + 3 days): an off-cycle
+  whose `period_end` is newer than the end of the cycle before it + 3 days, decided per cycle (for the last closed
+  cycle C the C−1 end + 3; for C−1 the C−2 end + 3) and only for a statement that still yields an item (not paid or
+  twinned): a statement covering only the older cycle does not clear the current one; an off-cycle
   statement is the bill for that cycle as far as the owner is concerned, and 「不會自動扣繳」 next to an auto item
   for the same card would contradict it. An older statement never silences the line (rev 3.1: implementation
   Ruling 5 — the rev 3 wording let any old live statement suppress 帳單未到 forever).

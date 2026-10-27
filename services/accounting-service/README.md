@@ -274,7 +274,7 @@ Notifications (notify/)
 -----------------------
 
 `notify/` is a small read-only notifier (spec `docs/superpowers/specs/2026-10-27-accounting-notifications-design.md`): a daily
-debit reminder (07:00 Asia/Taipei, sent only when at least one item is due) and a Saturday 10:00 weekly digest (always sent),
+debit reminder (07:00 Asia/Taipei, sent only when something is actionable (a new or due item, an overdue one, a shortfall, a cleared shortfall or an auto-pay skip)) and a Saturday 10:00 weekly digest (always sent),
 delivered through `hermes send` to `discord_target`. It only issues GET requests with a token labelled `notify`, scope `read`
 (`token_file` in the config, default `~/.config/homehub-notify-token`, mode 0600); it adds no tables, routes or frontend.
 Business days come from `GET /calendar/business-days`; a due date past its `last_known_day` is a failure.

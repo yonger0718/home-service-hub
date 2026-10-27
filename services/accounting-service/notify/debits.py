@@ -256,7 +256,8 @@ class _Run:
         horizon = older_end + timedelta(days=MATCH_DAYS)
         others = [s for s in live if s["id"] not in matched_ids and s.get("kind") == "card"
                   and Decimal(s["statement_total"]) > 0 and s.get("due_date") and _day(s["period_end"]) > horizon]
-        other_items = [i for i in (self.statement_item(card, s) for s in others) if i is not None]
+        surviving = [(s, i) for s, i in ((s, self.statement_item(card, s)) for s in others) if i is not None]
+        other_items = [i for _, i in surviving]
         items: list[DebitItem | None] = []
         for cycle in cycles:
             stmt = matched[cycle]
@@ -264,8 +265,12 @@ class _Run:
                 if stmt.get("due_date") is None and _day(stmt["period_end"]) <= no_due_horizon:
                     continue
                 items.append(self.statement_item(card, stmt))
-            elif not other_items:  # a surviving off-cycle bill is this period's bill: no 帳單未到 next to it
-                items.append(self.rule_item(card, cycle))
+            else:
+                # A surviving off-cycle bill newer than the previous cycle's match zone (its end + 3) is this
+                # cycle's bill: no 帳單未到 next to it. One that only covers an older cycle does not clear this one.
+                bound = shift_period(closing, cycle, -1)[1] + timedelta(days=MATCH_DAYS)
+                if not any(_day(s["period_end"]) > bound for s, _ in surviving):
+                    items.append(self.rule_item(card, cycle))
         return [i for i in items if i is not None] + other_items
 
     # --- blocks (§5.3) and skips (§5.5) ------------------------------------------------------------------------

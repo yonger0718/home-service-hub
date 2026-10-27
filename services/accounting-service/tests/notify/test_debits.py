@@ -59,13 +59,40 @@ def test_unexpected_statement_still_projected(fx):
     assert fx.block(rep, "薪轉戶 A").projected == Decimal("-900") and len([i for i in rep.blocks[0].items if i.card_name == "旅遊卡"]) == 2
 
 
+def _card(rep, name):
+    return [i for i in rep.blocks[0].items + rep.manual if i.card_name == name]
+
+
 def test_off_cycle_statement_suppresses_missing_line(fx):
-    # 超市卡's cycle has no match, but an off-cycle live statement exists → no 帳單未到, the statement is the item
+    # 超市卡 (closing 25, due fixed_day 7): neither cycle has a match, one off-cycle live statement (period_end 09-20)
     # Fri 11-06: the off-cycle debit day Tue 11-10 is 2 business days out → in window
     off = fx.statement_default("超市卡", period_end=date(2026, 9, 20), due_date=date(2026, 11, 10))
     rep = build_daily(fx.snapshot(today=date(2026, 11, 6), statements_for={"超市卡": [off]}), fx.cfg())
-    items = [i for i in rep.blocks[0].items + rep.manual if i.card_name == "超市卡"]
+    items = _card(rep, "超市卡")
+    # 09-20 > 08-28 (C−2 end + 3) suppresses the C−1 line (due 10-07); 09-20 is not newer than 09-28 (C−1 end + 3),
+    # so the current cycle still gets its 帳單未到 (due 11-07)
+    assert len(items) == 2
+    stmt = [i for i in items if not i.from_rule]; rule = [i for i in items if i.from_rule]
+    assert len(stmt) == 1 and stmt[0].amount is not None
+    assert len(rule) == 1 and rule[0].due == date(2026, 11, 7)
+    assert not any(i.from_rule and i.due == date(2026, 10, 7) for i in items)
+
+
+def test_newer_off_cycle_statement_suppresses_both_missing_lines(fx):
+    # period_end 10-15 is newer than 09-28 (C−1 end + 3): it is the current cycle's bill too → no 帳單未到 at all
+    off = fx.statement_default("超市卡", period_end=date(2026, 10, 15), due_date=date(2026, 11, 10))
+    rep = build_daily(fx.snapshot(today=date(2026, 11, 6), statements_for={"超市卡": [off]}), fx.cfg())
+    items = _card(rep, "超市卡")
     assert len(items) == 1 and not items[0].from_rule and items[0].amount is not None
+
+
+def test_out_of_window_off_cycle_statement_keeps_current_missing_line(fx):
+    # Thu 11-05: the off-cycle statement (period_end 09-20, due 11-20) is out of window; the current cycle's
+    # 帳單未到 (due 11-07) still appears, the C−1 line (due 10-07) stays suppressed
+    off = fx.statement_default("超市卡", period_end=date(2026, 9, 20), due_date=date(2026, 11, 20))
+    rep = build_daily(fx.snapshot(today=date(2026, 11, 5), statements_for={"超市卡": [off]}), fx.cfg())
+    rule = [i for i in rep.manual if i.card_name == "超市卡" and i.from_rule]
+    assert [i.due for i in rule] == [date(2026, 11, 7)] and rule[0].in_window
 
 
 def test_source_side_twins_drop_auto_item(fx):
