@@ -1,6 +1,6 @@
 # Accounting notifications (扣款提醒 + 週報) — design
 
-Rev 2, 2026-10-27 (rev 1 dba71677; rev 2 folds the Multica spec review AGENT-314: 11 majors, 3 minors). Owner-approved direction (2026-10-27): deterministic digest computed from the HomeHub
+Rev 3, 2026-10-27 (rev 1 dba71677; rev 2 folds the Multica spec review AGENT-314: 11 majors, 3 minors; rev 3 adds the systemd `OnFailure` backstop, the linked-cards-only note in §5.3 and the rollout link check, per the owner 2026-10-27; rev 3 also folds the AGENT-314 re-check minors: all three `find_twins` shapes, the window predicate, no 帳單未到 beside an off-cycle statement). Owner-approved direction (2026-10-27): deterministic digest computed from the HomeHub
 accounting API, pushed to a dedicated Discord channel through `hermes send`, no LLM in the loop.
 
 ## 1. Intent
@@ -84,6 +84,7 @@ services/accounting-service/notify/        # new package, sibling of worker/
 deploy/notify/                             # unit files + install script (opc user units)
   homehub-notify-daily.service/.timer      # ExecStart=… -m notify daily --send ; OnCalendar=*-*-* 07:00 Asia/Taipei
   homehub-notify-weekly.service/.timer     # ExecStart=… -m notify weekly --send ; OnCalendar=Sat *-*-* 10:00 Asia/Taipei
+  homehub-notify-failed@.service           # OnFailure target: ExecStart=… -m notify failed %i (§7)
                                            # both services: Environment=TZ=Asia/Taipei; "today" is always ZoneInfo("Asia/Taipei")
   install.sh                               # copies units to ~/.config/systemd/user, enables timers
 ```
@@ -137,24 +138,34 @@ The app's reminders page already derives dues from the card's rule without a sta
   「到期日未辨識 · 金額 X · 請自行確認」 (the job never books it) and is not a projection input.
 - Every other live, non-retired `kind = card` statement of the card with `statement_total > 0` and a due date is
   **also** an item (its own due/debit day, same class rules): the job books by statement, not by rule cycle, so a
-  statement the rule did not expect still debits. 帳單未到 is emitted only when no statement matched the cycle.
+  statement the rule did not expect still debits. 帳單未到 is emitted only when no statement matched the cycle
+  **and** the card has no other live, non-retired statement with `statement_total > 0` and a due date: an off-cycle
+  statement is the bill for that cycle as far as the owner is concerned, and 「不會自動扣繳」 next to an auto item
+  for the same card would contradict it.
 - Debit day = first business day on or after the due date (the API calendar; same as auto-pay `pay_date_for` and the
   app's `payDateOf`).
-- In window when `business_days_between(today, debit_day) <= lead` where `lead = lead_overrides[account] or
-  lead_business_days`. `business_days_between(today, today) = 0`; a debit day that is today is in the window.
+- In window when `debit_day >= today` **and** `business_days_between(today, debit_day) <= lead` where
+  `lead = lead_overrides[account] or lead_business_days`. `business_days_between(today, today) = 0`; a debit day
+  that is today is in the window; a past debit day is never in the window (`business_days_between` is not called
+  for it) — past items are rendered only through §5.4's overdue set: `debit_day < today`, unpaid, and
+  `0 < (today − due).days <= 30`.
 - No statement in window → the item reads 「📄 帳單未到 · 到期 MM/DD（規則）· 金額未知，請自行確認 · 不會自動扣繳」,
   goes into the manual block regardless of `auto_pay_account_id`, is excluded from the projection (§5.3) and is
-  included every day. After the debit day it stays for 30 days as 「⚠ 逾期未繳 · 帳單未到 · 到期 MM/DD（規則）」 until a
-  statement matches the cycle — a missing statement must not go quiet on the day it mattered. Rule-only items have
+  included every day. After the debit day it stays while `0 < (today − due).days <= 30` as 「⚠ 逾期未繳 · 帳單未到 ·
+  到期 MM/DD（規則）」 until a statement matches the cycle — a missing statement must not go quiet on the day it mattered. Rule-only items have
   no statement id; state keys them by `-card_id` (§6.3). The weekly 該來沒來的帳單 section (§6.1) lists them too.
 - Statement present with `statement_total <= 0` → nothing to pay; dropped (same as auto-pay).
 - Payment window (both classes): `[period_end, min(today, max(debit_day, next_closing − 1))]` where `next_closing`
   is the next cycle's end — the app's `paymentWindowEnd` — so a later cycle's payment never clears this one.
   `paid` = Σ `transfer_in` on the master + non-archived 副卡 with `entry_date` in that window.
-- **Auto item** is dropped only when the debit already exists as the job would see it (`find_twins` rule): a
-  `transfer_in` on the master + 副卡 of exactly `statement_total` with `entry_date` within `auto_pay.twin_window_days`
-  of the debit day (the job's own booked legs satisfy this on the debit day, so the 07:00 reminder that day shows
-  nothing for it). Otherwise it stays, the line may show 「已繳 X / Y」, and the projection subtracts the **full**
+- **Auto item** is dropped only when the debit already exists as the job would see it (`find_twins` rule), i.e.
+  an entry with `entry_date` within `auto_pay.twin_window_days` of the debit day in any of the three shapes the
+  job matches: (a) a `transfer_in` on the master + 副卡 of exactly `statement_total`; (b) a `transfer_out` on the
+  source account of exactly `−statement_total` whose `transfer_group_id` is null or matches a `transfer_in` on the
+  master + 副卡 (the job also accepts a peerless `transfer_out`; the notifier cannot see peers on other accounts
+  and treats a grouped `transfer_out` whose peer is elsewhere as not a twin — the error is on the warning side);
+  (c) an `expense` on the source account of exactly `−statement_total` with `source = "statement"`. The job's own
+  booked legs satisfy (a) on the debit day, so the 07:00 reminder that day shows nothing for it. Otherwise it stays, the line may show 「已繳 X / Y」, and the projection subtracts the **full**
   `statement_total` because that is what the job will debit.
 - **Manual item** is dropped when `paid >= statement_total`; a positive sum below the total shows 「已繳 X / Y」; a
   minimum-only payment is partial; an overpayment is simply paid. For a rule-only item there is no amount, so it is
@@ -200,6 +211,10 @@ projected(X, D) = balance(X, today)
 and positive ones are left out.
 
 - `balance(X, today)` = the `balance` field of `GET /accounts?as_of=<today>` for X (posted entries through today).
+- Only linked cards (`auto_pay_account_id = X`) are subtracted. A card the bank debits automatically but that has
+  no link in HomeHub is a manual item (§5.4) and reduces no projection, so the reminder can read 「餘額足夠」 while
+  the bank still debits that card. The weekly 設定缺漏 section (§6.1) lists such cards; §9 step 0 clears them
+  before the first run.
 - The first sum includes cards outside the lead window whose debit day is still ≤ D (a 3-card Friday) and every
   auto item regardless of partial payments (§5.1: the job debits the full total). It includes statements the job
   may later skip for `over_cap`/`monthly_budget`/`twin`: a skip the owner fixes before the debit day still needs
@@ -310,10 +325,19 @@ behaviour: every window statement is "new"; acceptable).
 
 ## 7. Failure behaviour
 
-- API unreachable / non-2xx / token rejected: the run sends one message 「❌ 帳務通知失敗：<short reason>」 (no
-  payload echo, no token) and exits 1. The state file is not touched.
-- `hermes send` fails: exit 1, state not written, so the next run resends. systemd `OnFailure` is not used; the
-  weekly liveness line covers a dead daily timer.
+- API unreachable / non-2xx / token rejected / calendar exhausted / bad config: the run writes one line
+  「❌ 帳務通知失敗：<short reason>」 (no payload echo, no token) to `last_failure.txt` next to the state file
+  (0600), logs it to stderr, and exits 1. The state file is not touched. The run does **not** deliver the failure
+  itself.
+- Delivery of failures is systemd's job: both `.service` units carry `OnFailure=homehub-notify-failed@%n.service`.
+  That template unit runs `python -m notify failed <unit>`, which sends the text of `last_failure.txt` when it
+  exists (then deletes it) or the generic line 「❌ 帳務通知失敗：<unit> 非正常結束，請看 journalctl --user -u <unit>」
+  when it does not (crash before the handler, missing venv, OOM, signal), then exits 0 whatever happened. One
+  failure → one message, also for failures the program never saw.
+- `hermes send` fails inside a run: exit 1, state not written, so the next run resends; the `OnFailure` unit then
+  tries `hermes send` once more and gives up silently if Hermes is still down. A dead Hermes gateway is therefore
+  invisible until the Saturday 「最近一次每日檢查」 stamp; the Hermes-independent heartbeat alert over Loki is
+  issue #200 (after the first real run).
 - A partial API failure (one account's statements 500) fails the whole run; no half-digests.
 - Capped reads are failures too, not short successes: `/entries` is paged by `offset` until `offset + len(items)
   == total`; for `/reconciliation/audit` (newest first, `limit` ≤ 1000, no `since`/`event` filter),
@@ -327,7 +351,11 @@ behaviour: every window statement is "new"; acceptable).
 ```
 python -m notify daily  [--as-of YYYY-MM-DD] [--dry-run] [--send]
 python -m notify weekly [--as-of YYYY-MM-DD] [--dry-run] [--send]
+python -m notify failed <unit>
 ```
+`failed` is only run by the `OnFailure` unit (§7): it reads config for the Discord target, sends the stored or
+generic failure line, and always exits 0.
+
 `--dry-run` prints the rendered message(s) to stdout and does not touch the state file; `--send` delivers and
 updates state; neither flag → prints and exits 0 (safe default). Exit codes: 0 sent or nothing to send, 1 failure,
 2 bad arguments.
@@ -338,14 +366,18 @@ cadence rules with fictional fixtures; golden-text tests for `render`; an API-cl
 
 ## 9. Rollout
 
+0. Owner: every card the bank debits automatically has its 扣款帳戶 link set in HomeHub (the weekly 設定缺漏 list
+   is the checklist; on 2026-10-27 one unlinked card with live statements remained, pending the owner's answer on
+   whether it is bank-debited or paid by hand). Unlinked cards are reminded as 手動繳 and never reduce a projection.
 1. Owner: add label `notify` with scope `read` to `ACCOUNTING_TOKEN_SCOPES` + token to `ACCOUNTING_API_TOKENS` in the
    API `.env`, restart via `homehub-api-ctl`; write the token to `~/.config/homehub-notify-token` (0600).
 2. Owner: write `~/.config/homehub-notify.toml` from the example (channel id, hub URL).
-3. Release checkout `~/releases/home-hub-notify/<sha>` + venv; `deploy/notify/install.sh` installs and enables the
-   two `opc` user timers.
+3. Release checkout `~/releases/home-hub-notify/<sha>` + venv; `deploy/notify/install.sh` installs the five `opc`
+   user units and enables the two timers.
 4. First run by hand: `python -m notify daily --dry-run`, then `--send`; same for `weekly`. The owner confirms the
    two messages in the channel.
-5. Follow-up issues: Hermes periodic LLM review of the digest; reports; LINE/DM if ever wanted.
+5. Follow-up issues: #200 Loki/Grafana heartbeat alert (no `daily:` log line in 30 h, Hermes-independent); Hermes
+   periodic LLM review of the digest; reports; LINE/DM if ever wanted.
 
 ## 10. Left to the builder
 

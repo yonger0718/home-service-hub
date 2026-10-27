@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, `httpx==0.28.1` (already pinned for the worker), stdlib `tomllib`/`json`/`datetime`/`decimal`/`subprocess`, `pytest` with `httpx.MockTransport` fakes, systemd user units.
 
-**Spec:** `docs/superpowers/specs/2026-10-27-accounting-notifications-design.md` (rev 2; plan rev 2.2 folds Multica AGENT-314, the AGENT-315 rev 1 items, and the AGENT-315 PASS-with-minor items at `fcb76398`).
+**Spec:** `docs/superpowers/specs/2026-10-27-accounting-notifications-design.md` (rev 3; plan rev 2.3 folds Multica AGENT-314 incl. its re-check minors, the AGENT-315 items, and spec rev 3's `OnFailure` backstop + `failed` subcommand).
 
 ## Global Constraints
 
@@ -159,8 +159,8 @@ def test_state_roundtrip_and_corrupt(tmp_path):
     - `open_cases(account_id: int) -> list[dict]` (`/reconciliation/cases?status=open&account_id=&limit=1000`)
     - `inbox() -> dict` (`/reconciliation/inbox?limit=1000`; this read lets the API supersede stale proposal rows — accepted, spec §6.1)
   - `class CappedRead(ApiError)` raised by `fetch_*` when a capped list came back full and its oldest row is still inside the window the run needs (audit: `created_at >= since`; cases: any full page; inbox: `len(items) == 1000`).
-  - `@dataclass(frozen=True) class Snapshot: today: date; settings: dict; calendar: Calendar; accounts: list[dict]; statements: dict[int, list[dict]]; payments: dict[int, list[dict]]; pending: list[dict]; audit: list[dict]; open_cases: dict[int, list[dict]]; inbox: dict | None`
-  - `fetch_daily(client: ReadClient, today: date) -> Snapshot` — calendar `today−40 … today+60`; statements for every non-archived credit account; payments = `transfer_in` entries for each master+children group from `today − 120 days` to `today` (paged); pending instances until `today + 60`; audit (cap-checked against `yesterday 06:00`); `open_cases`/`inbox` left `{}`/`None`.
+  - `@dataclass(frozen=True) class Snapshot: today: date; settings: dict; calendar: Calendar; accounts: list[dict]; statements: dict[int, list[dict]]; payments: dict[int, list[dict]]; source_entries: dict[int, list[dict]]; pending: list[dict]; audit: list[dict]; open_cases: dict[int, list[dict]]; inbox: dict | None`
+  - `fetch_daily(client: ReadClient, today: date) -> Snapshot` — calendar `today−40 … today+60`; statements for every non-archived credit account; payments = `transfer_in` entries for each master+children group from `today − 120 days` to `today` (paged); `source_entries[X]` = `transfer_out` + `expense` entries (two calls) on each distinct `auto_pay_account_id` X over the same range (paged); pending instances until `today + 60`; audit (cap-checked against `yesterday 06:00`); `open_cases`/`inbox` left `{}`/`None`.
   - `fetch_weekly(client: ReadClient, today: date) -> Snapshot` — as daily plus `inbox` and `open_cases` per inbox account; statements for **every** non-archived account (missing-statement check covers banks too); audit cap-checked against `today − 7`.
 
 - [ ] **Step 1: Write the failing tests** using `fakes.make_client(routes: dict[str, Any])` that returns an `httpx.Client(transport=MockTransport(handler), base_url="http://api")` and records every request:
@@ -201,7 +201,7 @@ def test_full_audit_page_inside_window_is_capped(fake):
 
 **Files:**
 - Create: `notify/debits.py`
-- Test: `tests/notify/test_debits.py`, `tests/notify/fixtures.py` (builders: `account(...)`, `statement(...)`, `entry(...)`, `instance(lines=[...], due_date=...)`, `line(account_id, amount, kind="expense")`, `audit_event(id, statement_id=None, reason=..., created_at=...)` which builds the real shape `{"event": "auto_pay_skipped", "detail": {"reason": ..., ...}}` — the reason is **only** in `detail`, `snapshot(...)` returning `api.Snapshot` with fictional data; `created_at` strings carry `+08:00` and are compared in Asia/Taipei)
+- Test: `tests/notify/test_debits.py`, `tests/notify/fixtures.py` (builders: `account(...)`, `statement(...)`, `entry(..., transfer_group_id: str | None = None, source: str = "manual")` (EntryOut shape), `instance(lines=[...], due_date=...)`, `line(account_id, amount, kind="expense")`, `audit_event(id, statement_id=None, reason=..., created_at=...)` which builds the real shape `{"event": "auto_pay_skipped", "detail": {"reason": ..., ...}}` — the reason is **only** in `detail`, `snapshot(..., source_entries: dict[int, list[dict]] | None = None)` returning `api.Snapshot` with fictional data (`source_entries` defaults to `{}`); `created_at` strings carry `+08:00` and are compared in Asia/Taipei)
 
 **Interfaces:**
 - Consumes: `cycles.*`, `api.Snapshot`, `config.NotifyConfig`.
@@ -215,10 +215,10 @@ def test_full_audit_page_inside_window_is_capped(fake):
   - `REASON_TEXT: dict[str, str]` — exactly the spec §5.5 table (`no_link` → 卡片沒有設定扣款帳戶, …).
 - Rules the tests pin (all from spec rev 2):
   - one item per card for the last closed period (and the one before, for overdue): statement matched by `period_end` within ±3 days of the cycle end (closest first, then highest id) among `mode == "live" and not retired`; rule-only when none (`from_rule=True`, `amount=None`, `cls="manual"`). A matched statement with `due_date` null → manual item, `note="到期日未辨識"`, `due=debit_day=None`, never projected.
-  - **plus** one item per every other live, non-retired statement of a `kind == "card"` account with `statement_total > 0` and a due date (its own due/debit day); 帳單未到 only when the cycle had no match.
+  - **plus** one item per every other live, non-retired statement of a `kind == "card"` account with `statement_total > 0` and a due date (its own due/debit day); 帳單未到 only when the cycle had no match **and** the card has no such other statement (spec §5.1).
   - `cls="auto"` iff `auto_pay_account_id` set and `settings["auto_pay"]["enabled"]` and statement present with a due date and `debit_day >= enabled_from` (the API stores `settings["auto_pay"]["enabled_from"]` as an ISO string or null — parse with `date.fromisoformat` when it is a `str`; null → never auto) and the link is eligible now: target account exists in `snap.accounts`, not archived, not `is_credit`, `currency == card.currency`. A currency mismatch sets `note="幣別不同，請自行確認"` on the (manual) item.
   - `debit_day = next_business_day(due, cal)`; `lead(card) = cfg.lead_overrides.get(card.id, cfg.lead_business_days)`; `in_window = debit_day is not None and debit_day >= today and business_days_between(today, debit_day) <= lead(card)` — `business_days_between` is never called for a past or missing debit day; an item with `debit_day is None` (null due date) has `in_window=False`, no payment window, `paid=Decimal(0)`, and is never overdue; a due date after `cal.last_known_day` raises `CalendarExhausted` (handled in Task 8 as a failure).
-  - payment window = `[period_end, min(today, max(debit_day, next_closing − 1))]`; `paid` = Σ `transfer_in` on master+children with `entry_date` in it. Auto item dropped iff some `transfer_in` on master+children has `amount == statement_total` and `|entry_date − debit_day| <= settings["auto_pay"]["twin_window_days"]`. Manual item dropped iff `paid >= amount`. `amount <= 0` dropped.
+  - payment window = `[period_end, min(today, max(debit_day, next_closing − 1))]`; `paid` = Σ `transfer_in` on master+children with `entry_date` in it. Auto item dropped iff, with `|entry_date − debit_day| <= settings["auto_pay"]["twin_window_days"]`, (a) some `transfer_in` on master+children has `amount == statement_total`, or (b) some `transfer_out` in `snap.source_entries[source_id]` has `amount == -statement_total` and `transfer_group_id` is None or equals the `transfer_group_id` of a `transfer_in` in `snap.payments` for the family, or (c) some `expense` in `snap.source_entries[source_id]` has `amount == -statement_total` and `source == "statement"` (spec §5.1, the three `find_twins` shapes). Manual item dropped iff `paid >= amount`. `amount <= 0` dropped.
   - projection per source: `balance(as_of today)` − Σ **full** `amount` of auto items with `debit_day <= D` − Σ `|line.amount|` over pending instance lines with `line.account_id == source`, `line.amount < 0`, `instance.due_date <= D`; `shortfall = cfg.min_buffer − projected` if positive. D = max debit day among the block's in-window items.
   - overdue (only when `debit_day is not None`): manual item with `debit_day < today` and unpaid → `overdue_days = (today − due).days`, kept only while `0 < overdue_days <= 30` (rule-only too, `note="帳單未到"`); auto item with `debit_day < today` unpaid → `unpaid_reason` = latest `auto_pay_skipped` `detail["reason"] != "cutoff"` for that statement (or `"unknown"`).
   - skips: `auto_pay_skipped` events with `created_at >= yesterday 06:00 Asia/Taipei` and `detail["reason"] != "cutoff"`.
@@ -270,6 +270,29 @@ def test_unexpected_statement_still_projected(fx):
     extra = fx.statement(account_id=100, total="5000", period_end=date(2026, 9, 30), due_date=date(2026, 11, 4))
     rep = build_daily(fx.snapshot(statements_for={"旅遊卡": [fx.statement_default("旅遊卡"), extra]}), fx.cfg())
     assert fx.block(rep, "薪轉戶 A").projected == Decimal("-900") and len([i for i in rep.blocks[0].items if i.card_name == "旅遊卡"]) == 2
+
+def test_off_cycle_statement_suppresses_missing_line(fx):
+    # 超市卡's cycle has no match, but an off-cycle live statement exists → no 帳單未到, the statement is the item
+    off = fx.statement_default("超市卡", period_end=date(2026, 9, 20), due_date=date(2026, 11, 10))
+    rep = build_daily(fx.snapshot(statements_for={"超市卡": [off]}), fx.cfg())
+    items = [i for i in rep.blocks[0].items + rep.manual if i.card_name == "超市卡"]
+    assert len(items) == 1 and not items[0].from_rule and items[0].amount is not None
+
+def test_source_side_twins_drop_auto_item(fx):
+    # (b) grouped transfer_out on the source whose peer transfer_in sits on the card family
+    gid = "7b1e0a2c-0000-4000-8000-000000000001"
+    snap = fx.snapshot(payments={100: [fx.entry(account_id=100, kind="transfer_in", amount="48200", entry_date=date(2026, 11, 5), transfer_group_id=gid)]},
+                       source_entries={76: [fx.entry(account_id=76, kind="transfer_out", amount="-48200", entry_date=date(2026, 11, 5), transfer_group_id=gid)]})
+    assert fx.find(build_daily(snap, fx.cfg()), "旅遊卡") is None
+    # (b) grouped transfer_out whose peer is elsewhere → not a twin, item stays
+    snap = fx.snapshot(source_entries={76: [fx.entry(account_id=76, kind="transfer_out", amount="-48200", entry_date=date(2026, 11, 5), transfer_group_id=gid)]})
+    assert fx.find(build_daily(snap, fx.cfg()), "旅遊卡") is not None
+    # (c) statement-booked expense on the source
+    snap = fx.snapshot(source_entries={76: [fx.entry(account_id=76, kind="expense", amount="-48200", entry_date=date(2026, 11, 4), source="statement")]})
+    assert fx.find(build_daily(snap, fx.cfg()), "旅遊卡") is None
+    # (c) a hand-entered expense of the same amount is not a twin
+    snap = fx.snapshot(source_entries={76: [fx.entry(account_id=76, kind="expense", amount="-48200", entry_date=date(2026, 11, 4), source="manual")]})
+    assert fx.find(build_daily(snap, fx.cfg()), "旅遊卡") is not None
 
 def test_null_due_statement_is_manual_note(fx):
     rep = build_daily(fx.snapshot(statements_for={"旅遊卡": [fx.statement_default("旅遊卡", due_date=None)]}), fx.cfg())
@@ -428,7 +451,7 @@ def test_gaps(fx):
 - Consumes: everything above.
 - Produces:
   - `send.deliver(messages: list[str], target: str, runner: Callable[[list[str], str], int] = _run_hermes) -> None` — runs `["hermes", "send", "-t", target, "-q"]` with the message on stdin, in order; non-zero → `SendError` (caught by the CLI: exit 1, state untouched — dedupe state is computed before delivery but written only after every chunk was accepted).
-  - `cli.main(argv: list[str] | None = None) -> int` — `daily|weekly [--as-of D] [--dry-run] [--send] [--config PATH]`; default config path `~/.config/homehub-notify.toml`; flow: load config/token → `httpx.Client(base_url=cfg.api_base, timeout=30)` → fetch → build → (daily: dedupe) → render → if `--send`: deliver (when there is anything) then `save_state` on **every** exit 0 (daily sets `state.last_daily_run`, weekly `state.last_weekly_run`, both `datetime.now(Asia/Taipei)`; daily also sets `state.last_send = LastSend(today, keys)` when it sent; weekly passes the stored `last_daily_run` to `build_weekly`); else print messages to stdout separated by `\n---\n` and touch nothing. Same-day suppression: if `state.last_send.day == today` and `keys == state.last_send.triggers`, send nothing (exit 0, state still saved). Weekly always has ≥ 1 message; daily with none → log `daily: nothing to send`, exit 0. `ApiError` (incl. `CappedRead`)/`cycles.CalendarExhausted`/`ConfigError`/`httpx.HTTPError`/`send.SendError` → with `--send` deliver `render_failure(short)` where `short = f"{type(exc).__name__} {getattr(exc, 'status', None) or getattr(exc, 'reason', None) or ''}".strip()`; exit 1; state untouched (a `SendError` after a partial delivery also exits 1 with the state file absent; the failure message is attempted once). One stderr line per run: `daily: N items, sent M messages`.
+  - `cli.main(argv: list[str] | None = None) -> int` — `daily|weekly [--as-of D] [--dry-run] [--send] [--config PATH]`; default config path `~/.config/homehub-notify.toml`; flow: load config/token → `httpx.Client(base_url=cfg.api_base, timeout=30)` → fetch → build → (daily: dedupe) → render → if `--send`: deliver (when there is anything) then `save_state` on **every** exit 0 (daily sets `state.last_daily_run`, weekly `state.last_weekly_run`, both `datetime.now(Asia/Taipei)`; daily also sets `state.last_send = LastSend(today, keys)` when it sent; weekly passes the stored `last_daily_run` to `build_weekly`); else print messages to stdout separated by `\n---\n` and touch nothing. Same-day suppression: if `state.last_send.day == today` and `keys == state.last_send.triggers`, send nothing (exit 0, state still saved). Weekly always has ≥ 1 message; daily with none → log `daily: nothing to send`, exit 0. `ApiError` (incl. `CappedRead`)/`cycles.CalendarExhausted`/`ConfigError`/`httpx.HTTPError`/`send.SendError` → write `render_failure(short)` where `short = f"{type(exc).__name__} {getattr(exc, 'status', None) or getattr(exc, 'reason', None) or ''}".strip()` to `failure_path(cfg) = cfg.state_path.with_name("last_failure.txt")` (mode 0600, overwrite), log the same line to stderr, exit 1; state untouched; **no delivery from the failing run** (spec §7: the `OnFailure` unit delivers). A `SendError` after a partial delivery is handled the same way (state file absent, failure file written). `failed <unit>` subcommand: load config; if `failure_path(cfg)` exists send its text and unlink it, else send `f"❌ 帳務通知失敗：{unit} 非正常結束，請看 journalctl --user -u {unit}"`; `SendError` → one stderr line; always return 0; never touches the state file. One stderr line per run: `daily: N items, sent M messages`.
 
 - [ ] **Step 1: Write the failing tests** (monkeypatch `send._run_hermes` with a recorder; API via Task 3 fakes; config via `tmp_path`):
 
@@ -454,13 +477,30 @@ def test_calendar_exhausted_is_failure(cli_env_far_due):
 def test_weekly_always_sends(cli_env_quiet):
     rc = main(["weekly", "--as-of", "2026-11-21", "--send", "--config", cli_env_quiet.cfg]); assert rc == 0 and "✅ 本週沒有待處理" in cli_env_quiet.sent[0][1]
 
-def test_api_failure_sends_failure_message(cli_env_401):
+def test_api_failure_writes_failure_file_and_sends_nothing(cli_env_401):
     rc = main(["daily", "--as-of", "2026-11-03", "--send", "--config", cli_env_401.cfg])
-    assert rc == 1 and cli_env_401.sent[0][1].startswith("❌ 帳務通知失敗：ApiError 401") and "secret-token" not in cli_env_401.sent[0][1] and not cli_env_401.state_path.exists()
+    assert cli_env_401.sent == [] and (cli_env_401.state_path.parent / "last_failure.txt").stat().st_mode & 0o777 == 0o600
+    text = (cli_env_401.state_path.parent / "last_failure.txt").read_text()
+    assert rc == 1 and text.startswith("❌ 帳務通知失敗：ApiError 401") and "secret-token" not in text
 
 def test_send_failure_leaves_state_absent(cli_env_two_chunks):
     cli_env_two_chunks.fail_on_chunk(2)
     rc = main(["daily", "--as-of", "2026-11-03", "--send", "--config", cli_env_two_chunks.cfg]); assert rc == 1 and not cli_env_two_chunks.state_path.exists()
+
+def test_failed_subcommand_sends_stored_text_then_removes_it(cli_env_401):
+    main(["daily", "--as-of", "2026-11-03", "--send", "--config", cli_env_401.cfg])
+    rc = main(["failed", "homehub-notify-daily.service", "--config", cli_env_401.cfg])
+    assert rc == 0 and cli_env_401.sent[-1][1].startswith("❌ 帳務通知失敗：ApiError 401")
+    assert not (cli_env_401.state_path.parent / "last_failure.txt").exists()
+
+def test_failed_subcommand_generic_without_file(cli_env):
+    rc = main(["failed", "homehub-notify-daily.service", "--config", cli_env.cfg])
+    assert rc == 0 and cli_env.sent[-1][1] == "❌ 帳務通知失敗：homehub-notify-daily.service 非正常結束，請看 journalctl --user -u homehub-notify-daily.service"
+    assert not cli_env.state_path.exists()
+
+def test_failed_subcommand_survives_send_error(cli_env):
+    cli_env.fail_on_chunk(1)
+    assert main(["failed", "homehub-notify-daily.service", "--config", cli_env.cfg]) == 0
 
 def test_bad_args(): assert main(["monthly"]) == 2
 ```
@@ -471,13 +511,13 @@ def test_bad_args(): assert main(["monthly"]) == 2
 ### Task 9: Deployment units, install script, docs
 
 **Files:**
-- Create: `deploy/notify/homehub-notify-daily.service`, `deploy/notify/homehub-notify-daily.timer`, `deploy/notify/homehub-notify-weekly.service`, `deploy/notify/homehub-notify-weekly.timer`, `deploy/notify/install.sh`, `services/accounting-service/requirements-notify.txt` (`httpx==0.28.1` only)
+- Create: `deploy/notify/homehub-notify-daily.service`, `deploy/notify/homehub-notify-daily.timer`, `deploy/notify/homehub-notify-weekly.service`, `deploy/notify/homehub-notify-weekly.timer`, `deploy/notify/homehub-notify-failed@.service`, `deploy/notify/install.sh`, `services/accounting-service/requirements-notify.txt` (`httpx==0.28.1` only)
 - Modify: `services/accounting-service/README.md` (new section "Notifications (notify/)" after the auto-pay section: purpose, config file, token label, CLI, timers, rollout steps from spec §9), `openspec/changes/accounting-notifications/` (proposal.md, tasks.md, specs/accounting-notifications/spec.md — new capability, requirements ≤ 500 chars each; `openspec validate accounting-notifications --strict` passes)
 - Test: `tests/notify/test_units.py`
 
 **Interfaces:**
-- Units (user scope, run by `opc`): `.service` `Type=oneshot`, `WorkingDirectory=%h/releases/home-hub-notify/current/services/accounting-service`, `ExecStart=%h/releases/home-hub-notify/venv/bin/python -m notify daily --send` (weekly likewise), `Environment=PYTHONUNBUFFERED=1`, `Environment=TZ=Asia/Taipei`; `.timer` `OnCalendar=*-*-* 07:00:00 Asia/Taipei` / `OnCalendar=Sat *-*-* 10:00:00 Asia/Taipei`, `Persistent=true`, `WantedBy=timers.target`.
-- `install.sh`: `set -euo pipefail`; copies the four units to `~/.config/systemd/user/`, `systemctl --user daemon-reload`, `enable --now` both timers; idempotent; prints `systemctl --user list-timers | grep homehub-notify`. Does not create the venv or the checkout (release steps are in the README).
+- Units (user scope, run by `opc`): `.service` `Type=oneshot`, `WorkingDirectory=%h/releases/home-hub-notify/current/services/accounting-service`, `ExecStart=%h/releases/home-hub-notify/venv/bin/python -m notify daily --send` (weekly likewise), `Environment=PYTHONUNBUFFERED=1`, `Environment=TZ=Asia/Taipei`, `OnFailure=homehub-notify-failed@%n.service`; `homehub-notify-failed@.service` is the same oneshot shape with `ExecStart=%h/releases/home-hub-notify/venv/bin/python -m notify failed %i` and no `OnFailure`; `.timer` `OnCalendar=*-*-* 07:00:00 Asia/Taipei` / `OnCalendar=Sat *-*-* 10:00:00 Asia/Taipei`, `Persistent=true`, `WantedBy=timers.target`.
+- `install.sh`: `set -euo pipefail`; copies the five units to `~/.config/systemd/user/`, `systemctl --user daemon-reload`, `enable --now` both timers; idempotent; prints `systemctl --user list-timers | grep homehub-notify`. Does not create the venv or the checkout (release steps are in the README).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -489,6 +529,9 @@ def test_units_match_spec():
     for name in ("daily", "weekly"):
         svc = (d / f"homehub-notify-{name}.service").read_text()
         assert f"-m notify {name} --send" in svc and "Type=oneshot" in svc and "Environment=TZ=Asia/Taipei" in svc
+        assert "OnFailure=homehub-notify-failed@%n.service" in svc
+    failed = (d / "homehub-notify-failed@.service").read_text()
+    assert "-m notify failed %i" in failed and "OnFailure" not in failed
     assert "Persistent=true" in (d / "homehub-notify-daily.timer").read_text()
 ```
 
