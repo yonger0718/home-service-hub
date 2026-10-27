@@ -11,8 +11,10 @@ def test_window_and_debit_day(fx):
 
 
 def test_rule_only_when_statement_missing(fx):
-    rep = build_daily(fx.snapshot(statements_for={"超市卡": []}), fx.cfg())
+    # Thu 11-05: the rule debit day Mon 11-09 is 2 business days out → in window
+    rep = build_daily(fx.snapshot(today=date(2026, 11, 5), statements_for={"超市卡": []}), fx.cfg())
     item = fx.find(rep, "超市卡"); assert item.from_rule and item.amount is None and item.cls == "manual" and item in rep.manual
+    assert any(i.from_rule and i.due == date(2026, 11, 7) and i.in_window for i in rep.manual if i.card_name == "超市卡")
 
 
 def test_cutoff_uses_debit_day(fx):
@@ -59,8 +61,9 @@ def test_unexpected_statement_still_projected(fx):
 
 def test_off_cycle_statement_suppresses_missing_line(fx):
     # 超市卡's cycle has no match, but an off-cycle live statement exists → no 帳單未到, the statement is the item
+    # Fri 11-06: the off-cycle debit day Tue 11-10 is 2 business days out → in window
     off = fx.statement_default("超市卡", period_end=date(2026, 9, 20), due_date=date(2026, 11, 10))
-    rep = build_daily(fx.snapshot(statements_for={"超市卡": [off]}), fx.cfg())
+    rep = build_daily(fx.snapshot(today=date(2026, 11, 6), statements_for={"超市卡": [off]}), fx.cfg())
     items = [i for i in rep.blocks[0].items + rep.manual if i.card_name == "超市卡"]
     assert len(items) == 1 and not items[0].from_rule and items[0].amount is not None
 
@@ -131,11 +134,59 @@ def test_reason_text_table():
 
 
 def test_default_world_items(fx):
-    # the 副卡 is folded into 旅遊卡 (never its own card); the 0-total previous-cycle statements are dropped;
-    # items outside the lead window are carried with in_window=False (加油卡 debit Mon 11-09 is 3 business days out)
-    rep = build_daily(fx.snapshot(), fx.cfg())
-    assert [(i.card_name, i.in_window) for i in fx.block(rep, "薪轉戶 A").items] == [("旅遊卡", True), ("加油卡", False)]
+    # Thu 11-05 = the spec §5.7 sample: the 副卡 is folded into 旅遊卡 (never its own card) and the 0-total
+    # previous-cycle statements are dropped
+    rep = build_daily(fx.snapshot(today=date(2026, 11, 5)), fx.cfg())
+    blk = fx.block(rep, "薪轉戶 A")
+    assert [i.card_name for i in blk.items] == ["旅遊卡", "加油卡"] and (blk.projected, blk.shortfall) == (Decimal("-3900"), Decimal("3900"))
     assert [(i.card_name, i.from_rule, i.due) for i in rep.manual] == [("黑啤卡", False, date(2026, 11, 6)), ("超市卡", True, date(2026, 11, 7))]
+
+
+def test_out_of_window_item_absent_in_window_present(fx):
+    # Tue 11-03: 加油卡 (debit Mon 11-09, 3 business days out) and 超市卡's rule line (same day) are not carried
+    rep = build_daily(fx.snapshot(), fx.cfg())
+    assert [i.card_name for i in fx.block(rep, "薪轉戶 A").items] == ["旅遊卡"] and fx.find(rep, "加油卡") is None
+    assert [i.card_name for i in rep.manual] == ["黑啤卡"] and fx.block(rep, "薪轉戶 A").projected == Decimal("4100")
+
+
+def test_projection_counts_debits_outside_a_shorter_card_window(fx):
+    # 旅遊卡 lead 0: its 11-06 debit is outside its own window on 11-05 but <= D (加油卡's 11-09) → still projected
+    rep = build_daily(fx.snapshot(today=date(2026, 11, 5)), fx.cfg(lead_overrides={100: 0}))
+    blk = fx.block(rep, "薪轉戶 A"); assert [i.card_name for i in blk.items] == ["加油卡"] and blk.projected == Decimal("-3900")
+
+
+def test_old_booked_statement_outside_fetch_is_not_an_item(fx):
+    # a 05-15 cycle bill booked by the job on 06-05: its payment is older than the today − 120 fetch
+    old = fx.statement(account_id=100, total="30000", period_end=date(2026, 5, 15), due_date=date(2026, 6, 5))
+    snap = fx.snapshot(enabled_from="2026-01-01", statements_for={"旅遊卡": [fx.statement_default("旅遊卡"), old]})
+    rep = build_daily(snap, fx.cfg())
+    assert [i for i in [x for b in rep.blocks for x in b.items] + rep.manual if i.statement_id == old["id"]] == []
+    assert fx.block(rep, "薪轉戶 A").projected == Decimal("4100")
+
+
+def test_paid_off_cycle_statement_does_not_suppress_missing_line(fx):
+    # last month's off-cycle bill (period_end 09-20, due Sat 10-10) paid 10-09; this cycle's 10-25 bill is missing
+    off = fx.statement_default("超市卡", period_end=date(2026, 9, 20), due_date=date(2026, 10, 10))
+    pay = [fx.entry(account_id=98, kind="transfer_in", amount="2350", entry_date=date(2026, 10, 9))]
+    for today in (date(2026, 11, 5), date(2026, 11, 9)):
+        rep = build_daily(fx.snapshot(today=today, statements_for={"超市卡": [off]}, payments={98: pay}), fx.cfg())
+        lines = [i for i in rep.manual if i.card_name == "超市卡"]
+        assert any(i.from_rule and i.due == date(2026, 11, 7) for i in lines) and all(i.statement_id is None for i in lines)
+
+
+def test_older_statement_does_not_suppress_missing_line(fx):
+    # an unpaid billable statement at the cycle-before-last (period_end 08-25 <= C−2 end + 3) is history
+    older = fx.statement_default("超市卡", period_end=date(2026, 8, 25), due_date=date(2026, 9, 7))
+    rep = build_daily(fx.snapshot(today=date(2026, 11, 5), statements_for={"超市卡": [older]}), fx.cfg())
+    lines = [i for i in rep.manual if i.card_name == "超市卡"]
+    assert any(i.from_rule and i.due == date(2026, 11, 7) for i in lines) and all(i.statement_id != older["id"] for i in lines)
+
+
+def test_split_child_payment_is_ignored(fx):
+    # /entries returns split children (parent_entry_id set); find_twins ignores them, and so does paid
+    child = fx.entry(account_id=104, kind="transfer_in", amount="48200", entry_date=date(2026, 11, 1), parent_entry_id=999)
+    item = fx.find(build_daily(fx.snapshot(payments={100: [child]}), fx.cfg()), "旅遊卡")
+    assert item is not None and item.paid == Decimal(0)
 
 
 def test_enabled_from_null_is_never_auto(fx):

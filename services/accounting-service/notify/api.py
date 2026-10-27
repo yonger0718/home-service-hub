@@ -106,14 +106,14 @@ class Snapshot:
     inbox: dict | None = None
 
 
-def _created_at(row: dict) -> datetime:
+def created_at_of(row: dict) -> datetime:
     value = datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
     return value if value.tzinfo else value.replace(tzinfo=TZ)
 
 
 def _checked_audit(client: ReadClient, since: datetime) -> list[dict]:
     rows = client.audit(1000)
-    if len(rows) >= 1000 and min(_created_at(r) for r in rows) >= since:
+    if len(rows) >= 1000 and min(created_at_of(r) for r in rows) >= since:
         raise CappedRead(None, "/reconciliation/audit", reason="audit page full inside the window")
     return rows
 

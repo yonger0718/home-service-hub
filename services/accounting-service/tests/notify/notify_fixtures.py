@@ -88,11 +88,11 @@ def _default_statements() -> dict[str, list[dict]]:
 
 
 def entry(*, account_id: int, kind: str, amount: str, entry_date: date, transfer_group_id: str | None = None,
-          source: str = "manual", id: int | None = None) -> dict:
+          source: str = "manual", id: int | None = None, parent_entry_id: int | None = None) -> dict:
     """EntryOut shape (the fields the notifier reads, plus a few for realism)."""
     return {"id": next(_ids) if id is None else id, "kind": kind, "amount": amount, "currency": "TWD",
             "entry_date": entry_date.isoformat(), "posted_date": entry_date.isoformat(), "account_id": account_id,
-            "parent_entry_id": None, "transfer_group_id": transfer_group_id, "source": source}
+            "parent_entry_id": parent_entry_id, "transfer_group_id": transfer_group_id, "source": source}
 
 
 def line(account_id: int, amount: str, kind: str = "expense") -> dict:

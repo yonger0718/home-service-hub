@@ -1,8 +1,9 @@
 """Daily debit items (spec §5.1–§5.5): pure functions over a `Snapshot`, no I/O.
 
-The report carries every current item of every rule-bearing card — in the lead window or not (`in_window`),
-overdue / 未扣款 — after the drop rules (paid, twin, nothing to pay, overdue past 30 days). Dedupe (Task 5) and
-rendering (Task 6) decide what is shown.
+The report carries only renderable items — in the lead window, overdue, or 未扣款 — after the drop rules (paid,
+twin, nothing to pay, past debit day more than 30 days after the due date). Projections are computed over every
+auto item first, so a debit day <= D outside a shorter per-card window still counts (§5.3). Dedupe (Task 5)
+decides which blocks are sent.
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Literal
 
-from .api import TZ, Snapshot
+from .api import TZ, Snapshot, created_at_of
 from .config import NotifyConfig
 from .cycles import (
     Period,
@@ -102,21 +103,16 @@ def _day(value) -> date | None:
     return date.fromisoformat(value)
 
 
-def _created_at(row: dict) -> datetime:
-    value = datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
-    return value if value.tzinfo else value.replace(tzinfo=TZ)
-
-
 class _Run:
     """One build: the snapshot, the config and the lookups every rule needs."""
 
     def __init__(self, snap: Snapshot, cfg: NotifyConfig):
         self.snap, self.cfg, self.today, self.cal = snap, cfg, snap.today, snap.calendar
         self.accounts = {a["id"]: a for a in snap.accounts}
-        auto_pay = snap.settings.get("auto_pay") or {}
-        self.auto_enabled = bool(auto_pay.get("enabled"))
-        self.enabled_from = _day(auto_pay.get("enabled_from"))  # null → never auto
-        self.twin_days = int(auto_pay.get("twin_window_days", 0))
+        auto_pay = snap.settings["auto_pay"]
+        self.auto_enabled = bool(auto_pay["enabled"])
+        self.enabled_from = _day(auto_pay["enabled_from"])  # null → never auto
+        self.twin_days = int(auto_pay["twin_window_days"])
 
     # --- classification (§5.2) ---------------------------------------------------------------------------------
 
@@ -146,8 +142,8 @@ class _Run:
     # --- payments and twins (§5.1) -----------------------------------------------------------------------------
 
     def transfers_in(self, card: dict) -> list[dict]:
-        """`transfer_in` entries on the card and its 副卡 (`snap.payments` is keyed by the master)."""
-        return [e for e in self.snap.payments.get(card["id"], []) if e["kind"] == "transfer_in"]
+        """Top-level `transfer_in` entries on the card and its 副卡 (`snap.payments` is keyed by the master)."""
+        return [e for e in self.snap.payments.get(card["id"], []) if e["kind"] == "transfer_in" and _top_level(e)]
 
     def paid(self, card: dict, period_end: date, debit_day: date) -> Decimal:
         """Σ transfer_in in [period_end, min(today, max(debit_day, next_closing − 1))]."""
@@ -166,7 +162,7 @@ class _Run:
             return True
         groups = {str(e["transfer_group_id"]) for e in ins if e.get("transfer_group_id")}
         for e in self.snap.source_entries.get(card["auto_pay_account_id"], []):
-            if not near(e) or Decimal(e["amount"]) != -amount:
+            if not _top_level(e) or not near(e) or Decimal(e["amount"]) != -amount:
                 continue
             gid = e.get("transfer_group_id")
             if e["kind"] == "transfer_out" and (gid is None or str(gid) in groups):
@@ -180,7 +176,7 @@ class _Run:
                 and (r.get("detail") or {}).get("reason") not in (None, CUTOFF)]
         if not rows:
             return "unknown"
-        return max(rows, key=lambda r: (_created_at(r), r["id"]))["detail"]["reason"]
+        return max(rows, key=lambda r: (created_at_of(r), r["id"]))["detail"]["reason"]
 
     # --- items ---------------------------------------------------------------------------------------------------
 
@@ -223,7 +219,8 @@ class _Run:
         overdue, unpaid_reason = 0, None
         if self.is_auto(card, debit_day):
             cls = "auto"
-            if self.has_twin(card, amount, debit_day) or (past and paid >= amount):
+            if (self.has_twin(card, amount, debit_day) or (past and paid >= amount)
+                    or self.overdue_days(due, debit_day) is None):
                 return None
             if past:
                 unpaid_reason = self.unpaid_reason(stmt["id"])
@@ -245,24 +242,25 @@ class _Run:
         live = [s for s in self.snap.statements.get(card["id"], []) if s.get("mode") == "live" and not s.get("retired")]
         matched = {cycle: _match(live, cycle[1]) for cycle in cycles}
         matched_ids = {s["id"] for s in matched.values() if s is not None}
+        # Other billable statements count only when newer than the cycle-before-last's match zone: older history
+        # is outside the payment fetch (today − 120) and the 30-day overdue horizon.
+        horizon = older_end + timedelta(days=MATCH_DAYS)
         others = [s for s in live if s["id"] not in matched_ids and s.get("kind") == "card"
-                  and Decimal(s["statement_total"]) > 0 and s.get("due_date")]
-        # An unmatched billable statement newer than the cycle before's match zone is this period's bill as far as
-        # the owner is concerned: no 帳單未到 next to it (older history does not suppress the line).
-        has_current_other = any(_day(s["period_end"]) > older_end + timedelta(days=MATCH_DAYS) for s in others)
+                  and Decimal(s["statement_total"]) > 0 and s.get("due_date") and _day(s["period_end"]) > horizon]
+        other_items = [i for i in (self.statement_item(card, s) for s in others) if i is not None]
         items: list[DebitItem | None] = []
         for cycle in cycles:
             stmt = matched[cycle]
             if stmt is not None:
                 items.append(self.statement_item(card, stmt))
-            elif not has_current_other:
+            elif not other_items:  # a surviving off-cycle bill is this period's bill: no 帳單未到 next to it
                 items.append(self.rule_item(card, cycle))
-        items.extend(self.statement_item(card, s) for s in others)
-        return [i for i in items if i is not None]
+        return [i for i in items if i is not None] + other_items
 
     # --- blocks (§5.3) and skips (§5.5) ------------------------------------------------------------------------
 
     def block(self, source_id: int, items: list[DebitItem]) -> SourceBlock:
+        """Projection over every auto item of the source; `items` keeps the renderable ones only."""
         source = self.accounts[source_id]
         items = sorted(items, key=lambda i: (i.debit_day, i.card_name, i.key))
         horizon = max((i.debit_day for i in items if i.in_window), default=self.today)
@@ -272,7 +270,7 @@ class _Run:
         gap = self.cfg.min_buffer - projected
         return SourceBlock(account_id=source_id, name=source["name"], currency=source["currency"],
                            balance=Decimal(source["balance"]), projected=projected,
-                           shortfall=gap if gap > 0 else None, items=items)
+                           shortfall=gap if gap > 0 else None, items=[i for i in items if _renderable(i)])
 
     def pending_outflow(self, source_id: int, horizon: date) -> Decimal:
         total = Decimal(0)
@@ -290,7 +288,7 @@ class _Run:
         out = []
         for row in self.snap.audit:
             detail = row.get("detail") or {}
-            if row.get("event") != SKIPPED or detail.get("reason") in (None, CUTOFF) or _created_at(row) < since:
+            if row.get("event") != SKIPPED or detail.get("reason") in (None, CUTOFF) or created_at_of(row) < since:
                 continue
             card = self.accounts.get(detail.get("card_account_id")) or {}
             out.append(Skip(event_id=row["id"], card_name=card.get("name") or f"#{detail.get('card_account_id')}",
@@ -302,6 +300,16 @@ def _match(live: list[dict], cycle_end: date) -> dict | None:
     """The live statement whose period_end is within ±3 days of `cycle_end`: closest first, then highest id."""
     near = [s for s in live if abs((_day(s["period_end"]) - cycle_end).days) <= MATCH_DAYS]
     return min(near, key=lambda s: (abs((_day(s["period_end"]) - cycle_end).days), -s["id"]), default=None)
+
+
+def _top_level(entry: dict) -> bool:
+    """Split children (`parent_entry_id` set) are ignored, as the job's `find_twins` ignores them."""
+    return entry.get("parent_entry_id") is None
+
+
+def _renderable(item: DebitItem) -> bool:
+    """In window, overdue, 未扣款, or 到期日未辨識 (no debit day, so never in a window: always shown)."""
+    return item.in_window or item.overdue_days > 0 or item.unpaid_reason is not None or item.debit_day is None
 
 
 def _is_card(account: dict) -> bool:
@@ -318,9 +326,9 @@ def build_daily(snap: Snapshot, cfg: NotifyConfig) -> DailyReport:
     for item in items:
         if item.cls == "auto":
             by_source.setdefault(item.source_id, []).append(item)
-    blocks = sorted((run.block(source_id, group) for source_id, group in by_source.items()),
+    blocks = sorted((b for b in (run.block(source_id, group) for source_id, group in by_source.items()) if b.items),
                     key=lambda b: (b.items[0].debit_day, b.account_id))
     # statement-backed bills first (by debit day, undated last), then the 帳單未到 lines
-    manual = sorted((i for i in items if i.cls == "manual"),
+    manual = sorted((i for i in items if i.cls == "manual" and _renderable(i)),
                     key=lambda i: (i.from_rule, i.debit_day or date.max, i.card_name, i.key))
     return DailyReport(today=snap.today, blocks=blocks, manual=manual, skips=run.skips())
