@@ -44,3 +44,10 @@ def test_wrong_shape_is_empty(tmp_path):
     p = tmp_path / "state.json"
     p.write_text('{"statements": {"x": {"first_notified": "bad"}}}')
     assert load_state(p) == State.empty()
+
+
+def test_non_utf8_state_is_empty(tmp_path, capsys):
+    p = tmp_path / "state.json"
+    p.write_bytes(b"\xff\xfe")
+    assert load_state(p) == State.empty()
+    assert capsys.readouterr().err.count("\n") == 1

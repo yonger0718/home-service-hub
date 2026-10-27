@@ -72,7 +72,7 @@ def load_config(path: Path) -> NotifyConfig:
 def read_token(path: Path) -> str:
     try:
         token = Path(path).read_text().strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         raise ConfigError("token") from None
     if not token:
         raise ConfigError("token")

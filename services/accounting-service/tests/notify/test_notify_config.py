@@ -67,3 +67,11 @@ def test_read_token(tmp_path):
     with pytest.raises(ConfigError) as e:
         read_token(tmp_path / "missing")
     assert "secret" not in str(e.value)
+
+
+def test_read_token_non_utf8(tmp_path):
+    p = tmp_path / "t"
+    p.write_bytes(b"\xff\xfesecret")
+    with pytest.raises(ConfigError) as e:
+        read_token(p)
+    assert str(e.value) == "token"

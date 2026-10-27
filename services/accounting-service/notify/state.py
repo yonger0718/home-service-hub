@@ -87,14 +87,14 @@ def _from_json(raw: dict) -> State:
 
 def load_state(path: Path) -> State:
     try:
-        text = Path(path).read_text()
+        data = Path(path).read_bytes()
     except FileNotFoundError:
         return State.empty()
     except OSError as exc:
         print(f"notify: state file unreadable ({type(exc).__name__}); starting empty", file=sys.stderr)
         return State.empty()
     try:
-        return _from_json(json.loads(text))
+        return _from_json(json.loads(data.decode("utf-8")))
     except Exception as exc:  # corrupt or wrong shape: start over, one stderr line
         print(f"notify: state file corrupt ({type(exc).__name__}); starting empty", file=sys.stderr)
         return State.empty()
