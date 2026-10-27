@@ -1,0 +1,10 @@
+[Unit]
+Description=HomeHub accounting notifier: weekly digest on Saturday 10:00 Taipei
+
+[Timer]
+OnCalendar=Sat *-*-* 10:00:00 Asia/Taipei
+Persistent=true
+Unit=homehub-notify-weekly.service
+
+[Install]
+WantedBy=timers.target

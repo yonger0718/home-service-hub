@@ -1,0 +1,14 @@
+# Example notifier config. Copy to ~/.config/homehub-notify.toml (mode 0600) and edit.
+# Placeholders only.
+api_base = "http://127.0.0.1:8000"
+token_file = "~/.config/homehub-notify-token"
+hub_base_url = "https://hub.example.invalid"       # for links in messages
+discord_target = "discord:<channel-id>"
+lead_business_days = 2                             # debit reminder window
+weekly_open_case_limit = 10                        # items listed per account before "+N more"
+expected_statement_grace_days = 7
+min_buffer = "0"                                   # projected balance must stay >= this
+state_file = "~/.local/state/homehub-notify/state.json"
+
+[lead_overrides]                                   # per account id, e.g. a US card
+# "123" = 4

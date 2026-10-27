@@ -1,0 +1,10 @@
+[Unit]
+Description=HomeHub accounting notifier: daily debit reminder at 07:00 Taipei
+
+[Timer]
+OnCalendar=*-*-* 07:00:00 Asia/Taipei
+Persistent=true
+Unit=homehub-notify-daily.service
+
+[Install]
+WantedBy=timers.target

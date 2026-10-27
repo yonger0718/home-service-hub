@@ -270,6 +270,71 @@ Card statement auto-pay (spec `docs/superpowers/specs/2026-10-26-statement-auto-
 - Calendar for the SPA: `GET /calendar/business-days?from=YYYY-MM-DD&to=YYYY-MM-DD` (read scope, span ≤ 1100 days) returns `holidays` (the built-in TW table ∪ `extra_holidays`, within the range), `workdays` (`extra_workdays`, within the range) and `last_known_day`; weekends are implied and a listed workday wins, exactly as `business_days.is_business_day` decides. The frontend uses it to shift a card's printed due date to the bank's debit day (#197).
 - Rollout: apply the migration, restart the API (the job starts disabled: housekeeping runs, nothing books), run the host dry run, then the owner sets `enabled: true` and `enabled_from` (the first live run books nothing due before it), then watch the first run in `GET /reconciliation/audit`. Rollback: `enabled: false`; booked pairs stay and housekeeping continues.
 
+Notifications (notify/)
+-----------------------
+
+`notify/` is a small read-only notifier (spec `docs/superpowers/specs/2026-10-27-accounting-notifications-design.md`): a daily
+debit reminder (07:00 Asia/Taipei, sent only when something is actionable (a new or due item, an overdue one, a shortfall, a cleared shortfall or an auto-pay skip)) and a Saturday 10:00 weekly digest (always sent),
+delivered through `hermes send` to `discord_target`. It only issues GET requests with a token labelled `notify`, scope `read`
+(`token_file` in the config, default `~/.config/homehub-notify-token`, mode 0600); it adds no tables, routes or frontend.
+Business days come from `GET /calendar/business-days`; a due date past its `last_known_day` is a failure.
+
+- Config: `~/.config/homehub-notify.toml` (mode 0600), copied from `deploy/notify/homehub-notify.example.toml`. Required keys
+  `api_base`, `token_file`, `hub_base_url`, `discord_target` (write `<discord target>` placeholders in anything committed); optional
+  `lead_business_days`, `weekly_open_case_limit`, `expected_statement_grace_days`, `min_buffer`, `state_file`
+  (default `~/.local/state/homehub-notify/state.json`) and a `[lead_overrides]` table per account id.
+- CLI (run from `services/accounting-service` with the notifier venv):
+
+      python -m notify daily  [--as-of YYYY-MM-DD] [--dry-run | --send] [--config PATH]
+      python -m notify weekly [--as-of YYYY-MM-DD] [--dry-run | --send] [--config PATH]
+      python -m notify failed <unit> [--config PATH]
+
+  Without `--send` the rendered message is printed and nothing is written (`--dry-run` is the same, explicit). `--send` delivers
+  and then writes the state file. Exit codes: 0 sent or nothing to send, 1 failure, 2 bad arguments.
+- Failures (spec section 7): a failing `--send` run writes one line to `last_failure.txt` next to the state file, delivers nothing
+  itself and leaves the state untouched. The user units `homehub-notify-daily.service` / `-weekly.service` carry
+  `OnFailure=homehub-notify-failed@%n.service`; that template unit runs `python -m notify failed <unit>`, which sends the stored
+  text (or a generic line when the run died before writing one) and always exits 0.
+- Units (`deploy/notify/`, user scope for `opc`): `homehub-notify-daily.timer`, `homehub-notify-weekly.timer` (both
+  `Persistent=true`), the two services and `homehub-notify-failed@.service`. They run
+  `%h/releases/home-hub-notify/venv/bin/python` from `%h/releases/home-hub-notify/current/services/accounting-service`
+  with `Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin`: `hermes` lives in `~/.local/bin`, which the systemd
+  user manager's default PATH does not contain. Python dependency: `requirements-notify.txt` (`httpx`); Python 3.11+
+  (`tomllib`), the venv uses CPython 3.13 like the rest of the repo.
+- Rollout (spec section 9), in this order:
+  0. Every card the bank debits automatically has its 扣款帳戶 link set in HomeHub; the weekly 設定缺漏 list is the
+     checklist, and an unlinked card is reminded as 手動繳 and never reduces a projection.
+  1. Add label `notify`, scope `read` to `ACCOUNTING_TOKEN_SCOPES` and its token to `ACCOUNTING_API_TOKENS` in the API
+     `.env`, restart through `homehub-api-ctl`, and write the token to `~/.config/homehub-notify-token` (0600).
+  2. Write `~/.config/homehub-notify.toml` (0600) from the example (`<discord target>`, hub URL).
+  3. Release checkout `~/releases/home-hub-notify/<sha>` (a clean checkout of `<sha>`), the `current` link and the venv.
+     The host `python3` is 3.8, too old (`tomllib` needs 3.11), so the venv is made with the uv CPython 3.13:
+
+         ln -sfn ~/releases/home-hub-notify/<sha> ~/releases/home-hub-notify/current
+         uv venv --seed --python 3.13 ~/releases/home-hub-notify/venv
+         #   or: ~/.local/share/uv/python/cpython-3.13.13-linux-aarch64-gnu/bin/python3.13 -m venv ~/releases/home-hub-notify/venv
+         ~/releases/home-hub-notify/venv/bin/pip install -r ~/releases/home-hub-notify/current/services/accounting-service/requirements-notify.txt
+
+  4. First run by hand, BEFORE installing the units (`install.sh` enables the timers with `--now`):
+     `cd ~/releases/home-hub-notify/current/services/accounting-service`, then
+     `~/releases/home-hub-notify/venv/bin/python -m notify daily --dry-run`, then `--send`; the same for `weekly`; the
+     owner confirms both messages in the channel.
+  5. Acceptance in the real unit environment (PATH, working directory, venv), before any timer is enabled: copy the units
+     without enabling them (from the release's `services/accounting-service`): `mkdir -p ~/.config/systemd/user &&
+     install -m 0644 deploy/notify/homehub-notify-* ~/.config/systemd/user/ && systemctl --user daemon-reload`, then
+     `systemctl --user start homehub-notify-failed@smoke.service`. It must post the generic line
+     「❌ 帳務通知失敗：smoke 非正常結束，請看 journalctl --user -u smoke」 through hermes (or the stored line, if a failing
+     hand run left `last_failure.txt`). `failed` always exits 0, so check the channel, then
+     `journalctl --user -u 'homehub-notify-*'`: a `failed: SendError` line means `hermes` could not be started or failed
+     under the unit environment.
+  6. `deploy/notify/install.sh` copies the five units, reloads and enables both timers with `--now` (safe to repeat).
+  7. Follow-ups: a Loki/Grafana heartbeat alert (#200), a periodic Hermes review of the digest.
+
+  First-run note (historical data): expect 「⚠ 逾期未繳 N 天」 lines for last cycle's hand-paid bills whose payment is not
+  a `transfer_in` on the card (or a 副卡) dated inside `[period_end, next_closing − 1]`, and a daily 帳單未到 line for every
+  rule-bearing card whose statements are not ingested. Remedies: record the payment, ingest the statement, or clear the
+  card's rule (closing day / due rule) — it then surfaces weekly under 設定缺漏 instead.
+
 Enabling the policy (it does nothing until every step is done): (0) deploy R1d first (the policy's claims, budget, skip audit, supersede order and plan-revert fixes are not in R1c); (1) keep `dirty_enabled` on and reconcile working;
 (2) set `per_currency_enabled` and the caps first, `PUT /settings/reconciliation` with the full body and a `policy` that
 still has `enabled: false`; (3) enable ONE action (`actions.create_system_entry.enabled: true`, with its `max_amount`),
@@ -570,6 +635,8 @@ skips it.
     .venv/bin/python -m app.services.schedule_job               # run now (same as POST /schedules/run-now)
     .venv/bin/python -m app.services.auto_pay_job --dry-run [--as-of YYYY-MM-DD]   # every candidate's would-be decision, writes nothing
     .venv/bin/python -m app.services.auto_pay_job [--as-of YYYY-MM-DD]             # run now (housekeeping, then booking when enabled; a future --as-of exits 2)
+    .venv/bin/python -m notify daily  --dry-run [--as-of YYYY-MM-DD]   # print the daily debit reminder, send and write nothing (notify venv, see Notifications)
+    .venv/bin/python -m notify weekly --dry-run [--as-of YYYY-MM-DD]   # print the weekly digest
 
 Every schedule write shares the import advisory key; during a backup import (a few seconds) schedule writes answer
 HTTP 409 `import_running`. An import waits up to 30 s (`IMPORT_LOCK_WAIT_SEC` in `moze_import_service`) for
