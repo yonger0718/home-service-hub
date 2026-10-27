@@ -37,7 +37,7 @@ def test_overdue_unpaid_and_rule_only_fire_every_day(fx):
     rep = fx.report(items=[fx.item(1, overdue_days=2), fx.item(2, unpaid_reason="insufficient"),
                            fx.item(None, card_id=98, from_rule=True)])
     _, st, _ = apply(rep, State.empty(), d)
-    out, st, keys = apply(rep, st, d)
+    out, st, keys = apply(rep, st, date(2026, 11, 5))
     assert out.blocks and keys == {"overdue:1", "overdue:2", "overdue:-98"}
 
 
@@ -64,3 +64,10 @@ def test_state_records_first_notified_and_last_shortfall(fx):
     assert st.statements[1].first_notified == date(2026, 11, 3) and st.sources[76].last_shortfall == Decimal("3900")
     _, st, _ = apply(rep, st, date(2026, 11, 4))
     assert st.statements[1].first_notified == date(2026, 11, 3)
+
+
+def test_new_key_stable_on_notification_day_but_not_next_day(fx):
+    rep = fx.report(items=[fx.item(statement_id=1, debit_day=date(2026, 11, 20))])
+    _, st, keys = apply(rep, State.empty(), date(2026, 11, 3)); assert keys == {"new:1"}
+    _, _, again = apply(rep, st, date(2026, 11, 3)); assert "new:1" in again
+    out, _, later = apply(rep, st, date(2026, 11, 4)); assert "new:1" not in later and not out.blocks

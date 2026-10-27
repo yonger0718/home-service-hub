@@ -217,3 +217,27 @@ def test_deliver_runs_hermes_per_chunk_in_order():
 def test_deliver_nonzero_raises_send_error():
     with pytest.raises(send.SendError):
         send.deliver(["a", "b"], "discord:1", runner=lambda argv, text: 3)
+
+
+def test_same_day_rerun_with_new_overdue_and_short_keys_sends_nothing(cli_env, capsys):
+    args = ["daily", "--as-of", "2026-11-04", "--send", "--config", cli_env.cfg]
+    assert main(args) == 0 and len(cli_env.sent) == 1
+    first = load_state(cli_env.state_path).last_send.triggers
+    assert any(k.startswith("new:") for k in first) and any(k.startswith(("overdue:", "short:")) for k in first)
+    capsys.readouterr()
+    assert main(args) == 0 and len(cli_env.sent) == 1
+    assert "nothing to send" in capsys.readouterr().err
+
+
+def test_successful_send_clears_stale_failure_file(cli_env):
+    cli_env.failure_file.parent.mkdir(parents=True, exist_ok=True)
+    cli_env.failure_file.write_text("❌ 帳務通知失敗：old")
+    assert main(["daily", "--as-of", "2026-11-03", "--send", "--config", cli_env.cfg]) == 0
+    assert not cli_env.failure_file.exists()
+
+
+def test_weekly_after_daily_shows_last_daily_run_stamp(cli_env_quiet):
+    assert main(["daily", "--as-of", "2026-11-20", "--send", "--config", cli_env_quiet.cfg]) == 0
+    assert main(["weekly", "--as-of", "2026-11-21", "--send", "--config", cli_env_quiet.cfg]) == 0
+    text = cli_env_quiet.sent[-1][1]
+    assert "最近一次每日檢查" in text and "尚無" not in text

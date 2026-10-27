@@ -85,6 +85,7 @@ def _run(args: argparse.Namespace, cfg: NotifyConfig) -> None:
     now = datetime.now(TZ)
     state = replace(state, last_daily_run=now) if args.command == "daily" else replace(state, last_weekly_run=now)
     save_state(cfg.state_file, state)
+    failure_path(cfg).unlink(missing_ok=True)  # a stale reason must not be resent later
     noun = "message" if len(messages) == 1 else "messages"
     if args.command == "daily":
         print(f"daily: {items} items, sent {len(messages)} {noun}" if messages else "daily: nothing to send",

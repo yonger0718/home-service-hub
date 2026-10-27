@@ -12,7 +12,7 @@ def _item_keys(items: list[DebitItem], state: State, today: date) -> set[str]:
     keys: set[str] = set()
     for it in items:
         known = state.statements.get(it.key)
-        if known is None or known.first_notified is None:
+        if known is None or known.first_notified in (None, today):  # today: stable across same-day re-runs
             keys.add(f"new:{it.key}")
         if it.debit_day == today:
             keys.add(f"today:{it.key}")
