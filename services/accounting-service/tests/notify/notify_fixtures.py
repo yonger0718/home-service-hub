@@ -153,10 +153,30 @@ def snapshot(*, today: date = TODAY, statements_for: dict[str, list[dict]] | Non
                     inbox=inbox)
 
 
-def weekly_snapshot(**overrides) -> Snapshot:
-    """The daily world plus the weekly-only reads (empty inbox, no open cases unless given)."""
-    overrides.setdefault("inbox", {"accounts": []})
-    return snapshot(**overrides)
+def weekly_snapshot(*, inbox_items: dict[str, int] | None = None, oldest_created: date | None = None,
+                    statements_for: dict[str, list[dict]] | None = None, **overrides) -> Snapshot:
+    """The daily world plus the weekly-only reads.
+
+    The rule-only 超市卡 gets its current-cycle statement (so a quiet world has nothing missing);
+    `inbox_items={card name: n}` builds n bank_only inbox items and n open cases (oldest created `oldest_created`).
+    """
+    statements_for = dict(statements_for or {})
+    statements_for.setdefault("超市卡", [statement_default("超市卡"), statement_default("超市卡", id=148, total="0",
+                                                                                       period_end=date(2026, 9, 25))])
+    ids = {a["name"]: a["id"] for a in _default_accounts()}
+    inbox, open_cases = {"accounts": []}, {}
+    for name, n in (inbox_items or {}).items():
+        items = [{"case_id": 9000 + i, "question": "bank_only", "statement": {"id": 155, "period_end": "2026-10-15"},
+                  "line": {"id": 7000 + i, "date": f"2026-10-{1 + i:02d}", "merchant": f"商店{i}",
+                           "amount": f"{100 + i}", "line_kind": "purchase"}, "entry": None} for i in range(n)]
+        inbox["accounts"].append({"id": ids[name], "name": name, "currency": "TWD", "is_credit": True,
+                                  "items": items})
+        base = oldest_created or date(2026, 11, 1)
+        open_cases[ids[name]] = [{"id": 9000 + i, "created_at": f"{(base + timedelta(days=n - 1 - i)).isoformat()}T09:00:00+08:00"}
+                                 for i in range(n)]
+    overrides.setdefault("inbox", inbox)
+    overrides.setdefault("open_cases", open_cases)
+    return snapshot(statements_for=statements_for, **overrides)
 
 
 # --- report helpers (for the dedupe / render tests) ---------------------------------------------------------------
