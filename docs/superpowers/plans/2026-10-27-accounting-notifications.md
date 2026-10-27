@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, `httpx==0.28.1` (already pinned for the worker), stdlib `tomllib`/`json`/`datetime`/`decimal`/`subprocess`, `pytest` with `httpx.MockTransport` fakes, systemd user units.
 
-**Spec:** `docs/superpowers/specs/2026-10-27-accounting-notifications-design.md` (rev 2; plan rev 2 folds Multica AGENT-314).
+**Spec:** `docs/superpowers/specs/2026-10-27-accounting-notifications-design.md` (rev 2; plan rev 2.1 folds Multica AGENT-314 and the AGENT-315 items rev 2 had not covered).
 
 ## Global Constraints
 
@@ -28,7 +28,7 @@
 
 ## Review Focus
 
-1. Today is a Saturday or holiday: the window still counts business days strictly after today (Sat→Tue = 2), so a Tuesday debit is reminded Saturday 07:00 — Task 1 `test_business_days_between_from_weekend`.
+1. Today is a Saturday or holiday: the window still counts business days strictly after today (Sat→Tue = 2, Fri→Tue = 2), so a Tuesday debit is first reminded Friday 07:00 and still on Saturday — Task 1 `test_business_days_between_from_weekend`.
 2. Payment made from a 副卡 only: counts for the master's statement — Task 4 `test_paid_by_child_card`.
 3. Closing day 31 in February with `fixed_day` 31: clamps to 02-28 and the due date clamps too — Task 1 `test_due_date_clamps_short_month`.
 4. One source account feeding a TWD card and a USD card: the USD item shows 「幣別不同」 and is left out of the TWD projection — Task 4 `test_mixed_currency_source`.
@@ -70,6 +70,8 @@ def test_business_days_between_from_weekend():
     assert business_days_between(date(2026, 10, 24), date(2026, 10, 27), cal) == 1   # Sat → Tue over the 10-26 holiday
     assert business_days_between(date(2026, 10, 23), date(2026, 10, 26), cal) == 0   # Fri → holiday Mon: no business day in between
     assert business_days_between(date(2026, 10, 24), date(2026, 10, 24), cal) == 0
+    assert business_days_between(date(2026, 10, 30), date(2026, 11, 3), cal) == 2   # Fri → Tue: the first 07:00 inside lead 2
+    assert business_days_between(date(2026, 10, 29), date(2026, 11, 3), cal) == 3   # Thu → Tue: outside lead 2
     assert next_business_day(date(2026, 10, 24), cal) == date(2026, 10, 27)
     with pytest.raises(ValueError):
         business_days_between(date(2026, 10, 27), date(2026, 10, 26), cal)
@@ -151,11 +153,11 @@ def test_state_roundtrip_and_corrupt(tmp_path):
     - `calendar(date_from: date, date_to: date) -> Calendar` (`/calendar/business-days?from&to`; `last_known_day` kept on the `Calendar`)
     - `accounts(as_of: date) -> list[dict]` (`/accounts?include_archived=false&as_of=`)
     - `statements(account_id: int) -> list[dict]` (`/accounts/{id}/statements`)
-    - `entries(account_ids: list[int], kind: str, date_from: date, date_to: date) -> list[dict]` (`/entries` with repeated `account_id`, `limit=500`, paging by `offset` until `len(items) == total`)
+    - `entries(account_ids: list[int], kind: str, date_from: date, date_to: date) -> list[dict]` (`/entries` with repeated `account_id`, `limit=500`, paging by `offset` until `offset + len(items) == total`; an empty page before that raises `ApiError(502, path)`)
     - `pending_instances(until: date) -> list[dict]` (`/schedules/instances?status=pending&until=`; `until` always passed — the default is today + 30)
     - `audit(limit: int = 1000) -> list[dict]` (`/reconciliation/audit?limit=`; newest first)
     - `open_cases(account_id: int) -> list[dict]` (`/reconciliation/cases?status=open&account_id=&limit=1000`)
-    - `inbox() -> dict` (`/reconciliation/inbox?limit=1000`)
+    - `inbox() -> dict` (`/reconciliation/inbox?limit=1000`; this read lets the API supersede stale proposal rows — accepted, spec §6.1)
   - `class CappedRead(ApiError)` raised by `fetch_*` when a capped list came back full and its oldest row is still inside the window the run needs (audit: `created_at >= since`; cases: any full page; inbox: `len(items) == 1000`).
   - `@dataclass(frozen=True) class Snapshot: today: date; settings: dict; calendar: Calendar; accounts: list[dict]; statements: dict[int, list[dict]]; payments: dict[int, list[dict]]; pending: list[dict]; audit: list[dict]; open_cases: dict[int, list[dict]]; inbox: dict | None`
   - `fetch_daily(client: ReadClient, today: date) -> Snapshot` — calendar `today−40 … today+60`; statements for every non-archived credit account; payments = `transfer_in` entries for each master+children group from `today − 120 days` to `today` (paged); pending instances until `today + 60`; audit (cap-checked against `yesterday 06:00`); `open_cases`/`inbox` left `{}`/`None`.
@@ -199,7 +201,7 @@ def test_full_audit_page_inside_window_is_capped(fake):
 
 **Files:**
 - Create: `notify/debits.py`
-- Test: `tests/notify/test_debits.py`, `tests/notify/fixtures.py` (builders: `account(...)`, `statement(...)`, `entry(...)`, `instance(...)`, `audit_event(...)`, `snapshot(...)` returning `api.Snapshot` with fictional data)
+- Test: `tests/notify/test_debits.py`, `tests/notify/fixtures.py` (builders: `account(...)`, `statement(...)`, `entry(...)`, `instance(lines=[...], due_date=...)`, `line(account_id, amount, kind="expense")`, `audit_event(id, statement_id=None, reason=..., created_at=...)` which builds the real shape `{"event": "auto_pay_skipped", "detail": {"reason": ..., ...}}` — the reason is **only** in `detail`, `snapshot(...)` returning `api.Snapshot` with fictional data; `created_at` strings carry `+08:00` and are compared in Asia/Taipei)
 
 **Interfaces:**
 - Consumes: `cycles.*`, `api.Snapshot`, `config.NotifyConfig`.
@@ -215,10 +217,10 @@ def test_full_audit_page_inside_window_is_capped(fake):
   - one item per card for the last closed period (and the one before, for overdue): statement matched by `period_end` within ±3 days of the cycle end (closest first, then highest id) among `mode == "live" and not retired`; rule-only when none (`from_rule=True`, `amount=None`, `cls="manual"`). A matched statement with `due_date` null → manual item, `note="到期日未辨識"`, `due=debit_day=None`, never projected.
   - **plus** one item per every other live, non-retired card statement with `statement_total > 0` and a due date (its own due/debit day); 帳單未到 only when the cycle had no match.
   - `cls="auto"` iff `auto_pay_account_id` set and `settings["auto_pay"]["enabled"]` and statement present with a due date and `debit_day >= enabled_from` and the link is eligible now: target account exists in `snap.accounts`, not archived, not `is_credit`, `currency == card.currency`. A currency mismatch sets `note="幣別不同，請自行確認"` on the (manual) item.
-  - `debit_day = next_business_day(due, cal)`; `in_window = business_days_between(today, debit_day) <= lead(card)`; a due date after `cal.last_known_day` raises `CalendarExhausted` (handled in Task 8 as a failure).
+  - `debit_day = next_business_day(due, cal)`; `lead(card) = cfg.lead_overrides.get(card.id, cfg.lead_business_days)`; `in_window = debit_day >= today and business_days_between(today, debit_day) <= lead(card)` — `business_days_between` is never called for a past debit day; a due date after `cal.last_known_day` raises `CalendarExhausted` (handled in Task 8 as a failure).
   - payment window = `[period_end, min(today, max(debit_day, next_closing − 1))]`; `paid` = Σ `transfer_in` on master+children with `entry_date` in it. Auto item dropped iff some `transfer_in` on master+children has `amount == statement_total` and `|entry_date − debit_day| <= settings["auto_pay"]["twin_window_days"]`. Manual item dropped iff `paid >= amount`. `amount <= 0` dropped.
   - projection per source: `balance(as_of today)` − Σ **full** `amount` of auto items with `debit_day <= D` − Σ `|line.amount|` over pending instance lines with `line.account_id == source`, `line.amount < 0`, `instance.due_date <= D`; `shortfall = cfg.min_buffer − projected` if positive. D = max debit day among the block's in-window items.
-  - overdue: manual item with `debit_day < today` and unpaid → `overdue_days = (today − due).days` (rule-only: kept 30 days after the due date, `note="帳單未到"`); auto item with `debit_day < today` unpaid → `unpaid_reason` = latest non-cutoff skip reason for that statement (or `"unknown"`).
+  - overdue: manual item with `debit_day < today` and unpaid → `overdue_days = (today − due).days`, kept only while `0 < overdue_days <= 30` (rule-only too, `note="帳單未到"`); auto item with `debit_day < today` unpaid → `unpaid_reason` = latest `auto_pay_skipped` `detail["reason"] != "cutoff"` for that statement (or `"unknown"`).
   - skips: `auto_pay_skipped` events with `created_at >= yesterday 06:00 Asia/Taipei` and `reason != "cutoff"`.
 
 - [ ] **Step 1: Write the failing tests** (fictional fixtures; `today = 2026-11-03` Tue, calendar with 2026-11-05 as a holiday):
@@ -292,7 +294,8 @@ def test_overdue_manual_and_unpaid_auto(fx):
 def test_rule_only_stays_overdue_for_30_days(fx):
     snap = fx.snapshot(today=date(2026, 11, 20), statements_for={"超市卡": []})
     item = fx.find(build_daily(snap, fx.cfg()), "超市卡"); assert item.from_rule and item.overdue_days == 13 and item.note == "帳單未到"
-    assert fx.find(build_daily(fx.snapshot(today=date(2026, 12, 10), statements_for={"超市卡": []}), fx.cfg()), "超市卡") is None
+    assert fx.find(build_daily(fx.snapshot(today=date(2026, 12, 7), statements_for={"超市卡": []}), fx.cfg()), "超市卡").overdue_days == 30
+    assert fx.find(build_daily(fx.snapshot(today=date(2026, 12, 8), statements_for={"超市卡": []}), fx.cfg()), "超市卡") is None   # day 31 drops it
 
 def test_skips_since_yesterday_0600(fx):
     snap = fx.snapshot(audit=[fx.audit_event(id=1, reason="cutoff", created_at="2026-11-03T06:00:00+08:00"), fx.audit_event(id=2, reason="no_link", created_at="2026-11-03T06:00:01+08:00"), fx.audit_event(id=3, reason="twin", created_at="2026-11-02T05:59:00+08:00")])
@@ -349,12 +352,12 @@ def test_skip_once(fx):
 
 **Files:**
 - Create: `notify/render.py`
-- Test: `tests/notify/test_render.py`, `tests/notify/golden/daily.txt`, `tests/notify/golden/weekly.txt`, `tests/notify/golden/weekly_empty.txt`
+- Test: `tests/notify/test_render.py`, `tests/notify/golden/daily.txt`, `tests/notify/golden/daily_overdue.txt`, `tests/notify/golden/weekly.txt`, `tests/notify/golden/weekly_empty.txt` (the empty golden contains the `最近一次每日檢查 11/20 07:00` stamp)
 
 **Interfaces:**
 - Consumes: `debits.DailyReport`, `digest.WeeklyReport` (Task 7 — define the dataclass in this task's test as the contract: `WeeklyReport(today, open_cases: list[AccountCases], missing: list[MissingStatement], skips: list[Skip], gaps: Gaps, last_daily_run: datetime | None)`; Task 7 imports it from `notify/digest.py`, so create `notify/digest.py` here with only the dataclasses).
 - Produces: `render_daily(rep: DailyReport, cfg: NotifyConfig) -> list[str]`, `render_weekly(rep: WeeklyReport, cfg: NotifyConfig) -> list[str]`, `render_failure(reason: str) -> str`, `split_blocks(blocks: list[str], limit: int = 2000) -> list[str]`, `fmt_amount(d: Decimal) -> str` (`48,200`, no decimals when integral, else two), `weekday_zh(d: date) -> str` (（一）…（日）).
-- Daily text = spec §5.7 sample exactly (header `🔔 扣款提醒 YYYY-MM-DD（X）`, block header `**name**  餘額 B → 扣款後 P` + ` ⚠ 缺 S` when shortfall, item lines, `**手動繳**`, `⏭ 自動扣繳跳過`, cleared lines `✅ name 已補足`); links as spec. Weekly text = sections of §6.1 in order with `📋 帳務週報 YYYY-MM-DD` header; empty → spec §6.2 line.
+- Daily text = spec §5.7 sample exactly (header `🔔 扣款提醒 YYYY-MM-DD（X）`, block header `**name**  餘額 B → 扣款後 P` + ` ⚠ 缺 S` when shortfall, item lines incl. `· 已繳 X / Y`, `· 今天扣款`, `⚠ 逾期未繳 N 天`, `⚠ 逾期未繳 · 帳單未到`, `⚠ 未扣款 · 原因 <REASON_TEXT>`, `· 到期日未辨識`, `· 幣別不同，請自行確認`, `**手動繳**`, `⏭ 自動扣繳跳過`, cleared lines `✅ name 已補足`); links as spec. A second golden `daily_overdue.txt` covers the overdue / 未扣款 / 帳單未到 / 已繳 lines. Weekly text = sections of §6.1 in order with `📋 帳務週報 YYYY-MM-DD` header; empty → spec §6.2 line.
 
 - [ ] **Step 1: Write the failing tests** — golden comparison for the §5.7 sample built from fixtures (fictional data, `hub_base_url="https://example.invalid/hub"`), weekly sample, empty weekly; plus:
 
@@ -382,7 +385,7 @@ def test_oversized_block_is_split_on_lines():
 - Consumes: `api.Snapshot` (weekly), `cycles.*`, `config.NotifyConfig`, `debits.REASON_TEXT`.
 - Produces: `build_weekly(snap: Snapshot, cfg: NotifyConfig, last_daily_run: datetime | None) -> WeeklyReport` with
   - `AccountCases(account_id, name, count, oldest_days, items: list[CaseLine], truncated: int)` where `CaseLine(date: date | None, amount: Decimal | None, text: str, question_zh: str, statement_id: int)`; items from `inbox.accounts[*].items` (date/amount/text from `item.line` or `item.entry`), capped at `cfg.weekly_open_case_limit`, `oldest_days` from `snap.open_cases[account_id][*].created_at`; `QUESTION_TEXT` map exactly spec §6.1: bank_only→只有銀行有, ledger_only→只有帳本有, transfer→疑似轉帳, amount_differs→金額不同, date_differs→日期不同, ambiguous→多個候選, balance_gap→餘額差, settlement→結算, proposed→已提議, other→其他.
-  - `MissingStatement(account_id, name, last_period_end: date, expected: date, days_late: int)` — cadence: `closing_day` set → `shift_period(closing_day, (…, last_period_end), 1).end`; else median gap of the last three live `period_end`s (one statement → +1 month via `shift_period(None, …)`); listed when `expected + grace < today` and no live statement with `period_end > last`.
+  - `MissingStatement(account_id, name, last_period_end: date, expected: date, days_late: int)` — cadence: `closing_day` set → `shift_period(closing_day, (…, last_period_end), 1).end`; else the median gap in days of the last three live `period_end`s — two gaps → the **lower** one (`sorted(gaps)[(len(gaps) - 1) // 2]`), one statement → +1 month via `shift_period(None, …)`; listed when `expected + grace < today` and no live statement with `period_end > last`.
   - `Gaps(unlinked_cards: list[str], cards_without_rule: list[str], statements_without_due: list[tuple[str, int]])`.
   - skips: last 7 days, reason ≠ cutoff, one per statement (latest).
 
@@ -423,7 +426,7 @@ def test_gaps(fx):
 **Interfaces:**
 - Consumes: everything above.
 - Produces:
-  - `send.deliver(messages: list[str], target: str, runner: Callable[[list[str], str], int] = _run_hermes) -> None` — runs `["hermes", "send", "-t", target, "-q"]` with the message on stdin, in order; non-zero → `SendError`.
+  - `send.deliver(messages: list[str], target: str, runner: Callable[[list[str], str], int] = _run_hermes) -> None` — runs `["hermes", "send", "-t", target, "-q"]` with the message on stdin, in order; non-zero → `SendError` (caught by the CLI: exit 1, state untouched — dedupe state is computed before delivery but written only after every chunk was accepted).
   - `cli.main(argv: list[str] | None = None) -> int` — `daily|weekly [--as-of D] [--dry-run] [--send] [--config PATH]`; default config path `~/.config/homehub-notify.toml`; flow: load config/token → `httpx.Client(base_url=cfg.api_base, timeout=30)` → fetch → build → (daily: dedupe) → render → if `--send`: deliver (when there is anything) then `save_state` on **every** exit 0 (daily sets `state.last_daily_run`, weekly `state.last_weekly_run`, both `datetime.now(Asia/Taipei)`; daily also sets `state.last_send = LastSend(today, keys)` when it sent; weekly passes the stored `last_daily_run` to `build_weekly`); else print messages to stdout separated by `\n---\n` and touch nothing. Same-day suppression: if `state.last_send.day == today` and `keys == state.last_send.triggers`, send nothing (exit 0, state still saved). Weekly always has ≥ 1 message; daily with none → log `daily: nothing to send`, exit 0. `ApiError` (incl. `CappedRead`)/`cycles.CalendarExhausted`/`ConfigError`/`httpx.HTTPError` → with `--send` deliver `render_failure(short)` where `short = f"{type(exc).__name__} {getattr(exc, 'status', '')}".strip(); exit 1; state untouched. One stderr line per run: `daily: N items, sent M messages`.
 
 - [ ] **Step 1: Write the failing tests** (monkeypatch `send._run_hermes` with a recorder; API via Task 3 fakes; config via `tmp_path`):
@@ -452,6 +455,10 @@ def test_weekly_always_sends(cli_env_quiet):
 def test_api_failure_sends_failure_message(cli_env_401):
     rc = main(["daily", "--as-of", "2026-11-03", "--send", "--config", cli_env_401.cfg])
     assert rc == 1 and cli_env_401.sent[0][1].startswith("❌ 帳務通知失敗：ApiError 401") and "secret-token" not in cli_env_401.sent[0][1] and not cli_env_401.state_path.exists()
+
+def test_send_failure_leaves_state_absent(cli_env_two_chunks):
+    cli_env_two_chunks.fail_on_chunk(2)
+    rc = main(["daily", "--as-of", "2026-11-03", "--send", "--config", cli_env_two_chunks.cfg]); assert rc == 1 and not cli_env_two_chunks.state_path.exists()
 
 def test_bad_args(): assert main(["monthly"]) == 2
 ```
