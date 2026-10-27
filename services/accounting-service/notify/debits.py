@@ -86,6 +86,7 @@ class Skip:
     card_name: str
     amount: Decimal
     reason: str  # the audit reason code; REASON_TEXT has the words
+    card_id: int | None = None  # for the settings link; None when the audit detail carries no card
 
 
 @dataclass(frozen=True)
@@ -292,7 +293,8 @@ class _Run:
                 continue
             card = self.accounts.get(detail.get("card_account_id")) or {}
             out.append(Skip(event_id=row["id"], card_name=card.get("name") or f"#{detail.get('card_account_id')}",
-                            amount=Decimal(str(detail.get("amount", "0"))), reason=detail["reason"]))
+                            amount=Decimal(str(detail.get("amount", "0"))), reason=detail["reason"],
+                            card_id=detail.get("card_account_id")))
         return sorted(out, key=lambda s: s.event_id)
 
 

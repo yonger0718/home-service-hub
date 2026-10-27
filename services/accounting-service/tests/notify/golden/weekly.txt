@@ -1,0 +1,18 @@
+📋 帳務週報 2026-11-07
+
+**對不上的交易**
+**旅遊卡** · 12 筆 · 最久 9 天
+• 11/02 · 1,280 · 全聯 · 只有銀行有 → https://example.invalid/hub/accounting/accounts/76/statements/155
+• 轉帳 · 疑似轉帳 → https://example.invalid/hub/accounting/accounts/76/statements/155
++10 筆
+
+**該來沒來的帳單**
+• 黑啤卡 · 上次截止 10/15 · 預期 11/15 · 晚了 12 天
+
+**自動扣繳本週跳過**
+• 旅遊卡 · 48,200 · 超過單筆上限 → https://example.invalid/hub/accounting/accounts/100/settings
+
+**設定缺漏**
+• 聯名卡 · 沒有設定扣款帳戶
+• 海外卡 · 缺結帳日或繳款規則，每日提醒無法涵蓋
+• 旅遊卡 · 1 張帳單沒有到期日
