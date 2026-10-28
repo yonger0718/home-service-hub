@@ -465,7 +465,7 @@ def _repair_merchants(services: Services, data: bytes, password: str | None, can
         log.info("ocr merchant repair: parse %s", exc.reason)
         return parsed, f"ocr: merchant repair skipped (parse {exc.reason})", 0
     text_keys: dict[tuple, int] = {}
-    for line in garbled:
+    for line in parsed.lines:  # every text line, clean or garbled: a key shared with a clean line is ambiguous too
         text_keys[_line_key(line)] = text_keys.get(_line_key(line), 0) + 1
     ocr_by_key: dict[tuple, list[parse_schema.ParsedLine]] = {}
     for line in ocr_parsed.lines:

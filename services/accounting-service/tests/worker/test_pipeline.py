@@ -994,9 +994,10 @@ def test_both_attempts_fail_is_parse_with_one_ocr_start(world, tmp_path, db_sess
     assert again["unchanged"] == 1 and services.ocr.starts == 1
 
 
-def _garbled_text_parse(services, *, ocr_merchant="咖啡店", ocr_amount=None, mark="OCRMARK"):
+def _garbled_text_parse(services, *, ocr_merchant="咖啡店", ocr_amount=None, mark="OCRMARK", text_twin=False):
     """#206: the text-layer parse prints line 1's merchant as `(cid:N)` garbage; the OCR text (carries `mark`) parses
-    to the same statement with `ocr_merchant` on line 1 (and `ocr_amount` instead of its amount when given)."""
+    to the same statement with `ocr_merchant` on line 1 (and `ocr_amount` instead of its amount when given).
+    `text_twin`: on the text side only, the clean line 2 takes line 1's dates, amount and kind (a shared key)."""
     calls = []
     real = services.parser.parse
 
@@ -1009,7 +1010,11 @@ def _garbled_text_parse(services, *, ocr_merchant="咖啡店", ocr_amount=None, 
             return parsed.model_copy(update={"lines": [first.model_copy(update=update), *parsed.lines[1:]]})
         calls.append("text")
         garbled = first.model_copy(update={"merchant_raw": "(cid:222)(cid:221)X"})
-        return parsed.model_copy(update={"lines": [garbled, *parsed.lines[1:]]})
+        rest = parsed.lines[1:]
+        if text_twin:
+            key = {f: getattr(first, f) for f in ("txn_date", "posted_date", "printed_amount", "line_kind")}
+            rest = [rest[0].model_copy(update=key), *rest[1:]]
+        return parsed.model_copy(update={"lines": [garbled, *rest]})
     services.parser.parse = parse
     return calls
 
@@ -1043,6 +1048,19 @@ def test_ocr_line_with_another_amount_does_not_repair(world, tmp_path, db_sessio
     parser, notes, merchants, amounts = _revision(db_session)
     assert parser == "claude-cli" and merchants.startswith("(cid:222)") and summary["merchant_lines_repaired"] == 0
     assert notes.startswith("ocr: merchant repair 0/1 lines") and summary["parsed"] == 1
+
+
+def test_key_shared_with_a_clean_text_line_does_not_repair(world, tmp_path, db_session):
+    """AGENT-323: uniqueness counts every text line, not only the garbled ones — one OCR match is not enough when a
+    clean text line carries the same (txn_date, posted_date, printed_amount, line_kind) key."""
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    calls = _garbled_text_parse(services, text_twin=True)
+    summary = pipeline.run(services, trigger="owner_cli")
+    parser, notes, merchants, _ = _revision(db_session)
+    # the twin changes the printed total, so the guardrail holds the revision for review; the merchants are the point
+    assert calls == ["text", "ocr"] and summary["needs_review"] == 1 and summary["merchant_lines_repaired"] == 0
+    assert parser == "claude-cli" and merchants == "(cid:222)(cid:221)X|BOOKS"
+    assert notes.startswith("ocr: merchant repair 0/1 lines")
 
 
 def test_still_garbled_ocr_merchant_does_not_replace(world, tmp_path, db_session):
