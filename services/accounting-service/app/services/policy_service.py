@@ -335,10 +335,14 @@ def _replace_candidate(db: Session, case: ReconciliationCase, statement: Account
     """R6b.5: an open entry_unmatched case with a stand-in hint → replace the stand-in (amount 0). A shadow's
     evidence carries its `drift_days`: farther than the exact window it is only proposed (C2, `_prefilter`). A hint
     without a `backfill_action_id` is an auto-pay leg's (auto-pay spec §4.5): never replaced, the owner deletes the
-    pair."""
+    pair. A `pair_transfer` stand-in (a transfer leg) is never replaced either (spec §5.3: the action refuses
+    `stand_in_changed`), so it is not offered — the policy would otherwise retry it on every run (#178)."""
     context = case.context or {}
     if case.kind != "entry_unmatched" or context.get("hint") not in REPLACE_HINTS \
             or context.get("backfill_action_id") is None:
+        return None
+    creating = db.get(ReconciliationAction, context["backfill_action_id"])
+    if creating is not None and creating.action == "pair_transfer":
         return None
     return Candidate(case.id, case.kind, case.status, "replace_stand_in", {}, REPLACE_AMOUNT, entry_id=None,
                      evidence=_replace_evidence(case))

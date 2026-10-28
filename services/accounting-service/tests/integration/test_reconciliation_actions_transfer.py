@@ -15,7 +15,7 @@ from app.models import (
     LedgerEntry, ReconciliationAction, ReconciliationCase, ReconciliationProposal, StatementCoverage,
 )
 from app.schemas.reconciliation import ProposalIn
-from app.services import coverage_service, proposal_service, settings_service, stand_ins
+from app.services import coverage_service, policy_service, proposal_service, settings_service, stand_ins
 from app.services import entry_write_service as ews
 from app.services import reconciliation_actions
 from app.services import reconciliation_service as rec
@@ -616,6 +616,8 @@ def test_replace_stand_in_refuses_a_transfer_stand_in(shape, orphan_pair, seed, 
     exc = _refuse(db_session, lambda: _apply(db_session, case, "replace_stand_in", {}))
     assert _code(exc) == "stand_in_changed"
     assert _fresh(db_session, LedgerEntry, stand_in.id) is not None
+    # #178: the policy never offers it, so a daily run does not retry and audit the refusal again
+    assert policy_service._replace_candidate(db_session, case, p.cstmt) is None
 
 
 def test_owner_deleted_pair_blocks_a_second_pairing_on_both_statements(orphan_pair, db_session):
