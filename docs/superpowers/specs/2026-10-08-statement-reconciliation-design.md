@@ -387,3 +387,18 @@ Layout padding is otherwise kept for the parser. A compact date followed by an a
 
 **Deviations from rev 3.** The glyph-level trigger (45 % of page-1 glyphs) in place of the token share; the R5.3 parse-failure fallback; `OCRResource` as a distinct retry-later outcome (needs_review/no_text_layer, no latch, in pipeline and export); the pre-mask text bound (OCR text over the parser's `STDIN_CAP`, or any single OCR line over 4 096 characters, is `needs_review/too_large` before any masking, logging or sink, in pipeline and export; AGENT-118 ruling 2026-10-14); `has_text_layer=false` on an OCR `failed/parse`; `STATEMENT_OCR_CHILD` is a string of shell words rather than a path; the self-test preflight per run; the fail-closed thread guard.
 
+### Owner-password-only PDFs (2026-10-28, PR "worker: empty user password")
+
+**Finding.** AMEX statements (manual folder `手動下載/AMEX BR`, account-map key `manual/AMEX BR`) carry an `/Encrypt`
+dictionary with an empty user password: any reader opens them without a credential, only editing is owner-locked.
+`pdf.unlock` tried the password-file candidates only, so a folder with no password line failed every file as
+`failed/password`, and the password grammar cannot express "no password" (an empty value is no candidate).
+
+**Change.** `unlock` first tries the empty user password on an encrypted file and, when it opens, treats the file like
+a plain one (`password_index` None, `extract` with no password). Candidates follow as before, so a real user password
+is still required when set. No password-file change is needed for such a folder.
+
+**Retry.** A file already `failed/password` is retried only when `credential_version` (the password file's hash)
+changes: after deploying this change the owner touches the password file (a comment line is enough) or the files stay
+failed until the next credential change.
+

@@ -567,6 +567,9 @@ Password file. One `folder=value` line per Drive folder (suffix `.alt`, `.alt2` 
 `STATEMENT_BIRTH_DATE`, `STATEMENT_HOLDER_NAMES` that drive masking. An inline comment starts with two spaces and `#`.
 A literal `+` in a password value is not supported (the grammar splits on `+` to join parts, e.g. `$ID+$BIRTH4`): a bank
 whose password contains a plus sign cannot be configured in R2. The values never appear in logs, errors, reports or API calls.
+A PDF encrypted with an owner password only (an empty user password, e.g. AMEX) needs no line: the worker tries the
+empty password first and treats the file as unencrypted. A file already `failed/password` is retried when the password file
+changes (`credential_version`), so add a comment line to it after deploying a worker that gained an unlock path.
 
 Gate and latch. Every `run`, `poll`, `backfill` and `verify` first checks `<state_dir>/gate-<hash>.json` (one evidence
 file per parser configuration, valid for 24 h while the CLI version, model, login directory listing, argv template and

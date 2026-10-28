@@ -22,6 +22,29 @@ def test_unencrypted_pdf_has_no_index():
     assert pdf.unlock(make_pdf([statement_lines()]), ["x"]).password_index is None
 
 
+def test_owner_password_only_pdf_opens_without_a_candidate():
+    # AMEX-style: encrypted with an owner password but an empty user password → no credential needed
+    data = encrypt(make_pdf([statement_lines()]), "", owner_password="owner-secret")
+    assert pdf.unlock(data, []).password_index is None
+    assert pdf.unlock(data, ["unrelated"]).password_index is None  # the empty password wins before any candidate
+    assert "MERCHANT 003" in pdf.extract(data, None).text  # the text path needs no password either
+
+
+def test_user_password_still_required_when_set():
+    data = encrypt(make_pdf([statement_lines()]), "user-pw", owner_password="owner-secret")
+    with pytest.raises(pdf.PasswordError):
+        pdf.unlock(data, [])
+    assert pdf.unlock(data, ["user-pw"]).password_index == 0
+
+
+def test_empty_owner_password_does_not_bypass_a_set_user_password():
+    # pypdf answers the empty string with an OWNER match (2) here; only a USER match (1) may skip the candidates
+    data = encrypt(make_pdf([statement_lines()]), "user-pw", owner_password="")
+    with pytest.raises(pdf.PasswordError):
+        pdf.unlock(data, [])
+    assert pdf.unlock(data, ["user-pw"]).password_index == 0
+
+
 def test_extract_text_and_page_count():
     data = make_pdf([statement_lines(), ["PAGE TWO"]])
     out = pdf.extract(data, None)

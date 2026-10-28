@@ -116,6 +116,15 @@ def unlock(data: bytes, candidates: list[str], *, max_bytes: int = 20_000_000) -
         reader = PdfReader(BytesIO(data))
         if not reader.is_encrypted:
             return Unlocked(reader, None)
+        # Owner-password-only encryption (an empty user password, e.g. AMEX): opens without a credential,
+        # so it is tried first and counts as "no password" (index None) like a plain file. Only a USER-password
+        # match (1) counts: pypdf checks the owner password first, so an empty owner password answers 2 even when
+        # the user password is set — that file stays on the candidate path.
+        try:
+            if reader.decrypt("") == 1:
+                return Unlocked(reader, None)
+        except (PdfReadError, NotImplementedError):
+            pass
         for index, candidate in enumerate(candidates):
             try:
                 if reader.decrypt(candidate) > 0:
