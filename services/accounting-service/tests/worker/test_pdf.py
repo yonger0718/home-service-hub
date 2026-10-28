@@ -37,6 +37,14 @@ def test_user_password_still_required_when_set():
     assert pdf.unlock(data, ["user-pw"]).password_index == 0
 
 
+def test_empty_owner_password_does_not_bypass_a_set_user_password():
+    # pypdf answers the empty string with an OWNER match (2) here; only a USER match (1) may skip the candidates
+    data = encrypt(make_pdf([statement_lines()]), "user-pw", owner_password="")
+    with pytest.raises(pdf.PasswordError):
+        pdf.unlock(data, [])
+    assert pdf.unlock(data, ["user-pw"]).password_index == 0
+
+
 def test_extract_text_and_page_count():
     data = make_pdf([statement_lines(), ["PAGE TWO"]])
     out = pdf.extract(data, None)

@@ -62,9 +62,11 @@ def make_pdf_words(pages: list[list[tuple[float, float, str]]]) -> bytes:
 
 
 def encrypt(data: bytes, password: str, owner_password: str | None = None) -> bytes:
-    """`owner_password` set with an empty `password` makes an owner-password-only file (opens without a credential)."""
+    """`owner_password` None means the same as `password`; an explicit value (even "") is used as given, so both
+    owner-only files (password "", owner set) and empty-owner files (password set, owner "") can be built."""
     writer = PdfWriter(clone_from=PdfReader(BytesIO(data)))
-    writer.encrypt(user_password=password, owner_password=owner_password or password, algorithm="AES-256")
+    owner = password if owner_password is None else owner_password
+    writer.encrypt(user_password=password, owner_password=owner, algorithm="AES-256")
     out = BytesIO()
     writer.write(out)
     return out.getvalue()
