@@ -5,11 +5,14 @@ from starlette.middleware import Middleware
 
 from .auth import ApiTokenMiddleware, api_auth_status, docs_paths, validate_auth_config
 from .database import engine, get_db
+from .logging_setup import configure_logging
 from .routers import (
     accounts, balance_adjustments, calendar, entries, imports, reconciliation, schedules, settings, splits,
     statements, transfers,
 )
 from .services import auto_pay_job, schedule_job
+
+configure_logging()  # #190: app.* loggers (job run summaries) to stderr → journal, level from ACCOUNTING_LOG_LEVEL
 
 app = create_app(
     title="Home Service Hub - Accounting API",

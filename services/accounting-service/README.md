@@ -641,6 +641,14 @@ skips it.
     .venv/bin/python -m notify daily  --dry-run [--as-of YYYY-MM-DD]   # print the daily debit reminder, send and write nothing (notify venv, see Notifications)
     .venv/bin/python -m notify weekly --dry-run [--as-of YYYY-MM-DD]   # print the weekly digest
 
+Both jobs log one run line each (`auto_pay_job.run`, `schedule_job.run`: trigger, status and counts) plus their
+start/stop and error lines on the `app.*` loggers. The API process writes those to stderr, which is the journal under
+the systemd unit (`homehub-api-ctl logs`), one line per record: `<time> <LEVEL> <logger> <event> key=value …`, where
+each value is bare when it is a plain token and JSON otherwise. `ACCOUNTING_LOG_LEVEL` (a level name such as `DEBUG`,
+`INFO`, `WARNING`; default `INFO`, an unknown name falls back to `INFO` with a `logging.unknown_level` warning) sets the
+level of the `app` loggers without a code change; uvicorn's own loggers are not affected. The records still propagate,
+so an OpenTelemetry log handler, when `OTEL_COLLECTOR_ENDPOINT_GRPC` is set, receives them as before.
+
 Every schedule write shares the import advisory key; during a backup import (a few seconds) schedule writes answer
 HTTP 409 `import_running`. An import waits up to 30 s (`IMPORT_LOCK_WAIT_SEC` in `moze_import_service`) for
 schedule writers to finish and is refused afterwards (`ImportAlreadyRunningError`, HTTP 409 `import already running`);
