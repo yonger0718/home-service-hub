@@ -1,16 +1,15 @@
 """Taiwan business-day calendar (pure; callers pass settings-based overrides).
 
 Source: 行政院人事行政總處 政府行政機關辦公日曆表, 115年 (2026) and 116年 (2027).
-The dgpa.gov.tw pages were not fetchable from the build environment, so the
-dates were compiled from the published calendar as reported by press
-(https://smart.businessweekly.com.tw/Reading/IndepArticle.aspx?id=6019512 for
-115年, https://www.ettoday.net/news/20260521/3169805.htm for 116年) plus the
-rule that a holiday on a rest day is made up on the previous/next working day.
-A human should audit the list below against the official calendar.
-Make-up holidays (補假) are included; make-up workdays (補班) are not (the
-official calendars list none for 2026/2027; use ``extra_workdays`` if one
-appears). Only dates that fall on weekdays are listed (weekends are never
-business days anyway).
+Audited 2026-10-28 (issue #195) against the official xlsx files on dgpa.gov.tw:
+115年 (https://www.dgpa.gov.tw/information?uid=30&pid=12573, file uploaded
+2025-11, 120 days off) and 116年 (https://www.dgpa.gov.tw/information?uid=30&pid=12982,
+file uploaded 2026-07, 121 days off). Every weekday shaded 放假日 in those files
+is listed below and nothing else; neither year has a make-up workday (補班), so
+``extra_workdays`` stays the escape hatch should one be decreed later.
+Make-up holidays (補假) are included. Only dates that fall on weekdays are listed
+(weekends are never business days anyway). The 117年 (2028) calendar is usually
+published around May of the year before; extend the table and LAST_KNOWN_DAY then.
 """
 
 from datetime import date, timedelta
