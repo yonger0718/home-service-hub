@@ -14,6 +14,9 @@ Order, under the lock:
    any other error rolls that statement back and is reported as a `failed` decision (logged, the run goes on);
 5. a candidate due past business_days.LAST_KNOWN_DAY sets `calendar_stale`; a real run audits
    `auto_pay_calendar_stale` once per `today` (skipped when that day's audit row exists).
+Scheduler (#191): a scheduled run that ends `busy` / `import_running` / `crashed` adds a retry every RETRY_MINUTES
+for the rest of that Asia/Taipei day; the next run that ends otherwise removes it, and a retry firing on a new day
+removes itself (the 06:00 run takes over). The CLI never schedules a retry.
 Logs carry ids, counts and error classes only — never amounts or names.
 
 CLI: python -m app.services.auto_pay_job [--dry-run] [--as-of YYYY-MM-DD]
@@ -33,6 +36,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
@@ -48,9 +52,12 @@ from .schedule_locks import AUTO_PAY_JOB_LOCK_KEY, ImportRunningError, take_impo
 
 logger = logging.getLogger(__name__)
 
-TRIGGERS = ("cron", "startup", "manual")
+TRIGGERS = ("cron", "startup", "retry", "manual")
 DAILY_JOB_ID = "auto_pay_daily"
 STARTUP_JOB_ID = "auto_pay_startup"
+RETRY_JOB_ID = "auto_pay_retry"
+RETRY_MINUTES = 10
+RETRY_STATUSES = ("busy", "import_running", "crashed")
 STARTUP_DELAY_SEC = 20
 HOUSEKEEPING_KEYS = ("checked", "owner_deleted", "owner_edited", "retired", "updated", "header_changed", "busy",
                      "failed")
@@ -229,9 +236,35 @@ def run(engine: Engine, trigger: str, *, today: date | None = None, dry_run: boo
 
 def _job(engine: Engine, trigger: str) -> None:
     try:
-        run(engine, trigger)
+        report = run(engine, trigger)
     except Exception as exc:  # noqa: BLE001 — the scheduler thread must survive
         _log_error("auto_pay_job.crashed", exc, trigger=trigger)
+        report = {"status": "crashed", "today": ledger_service._today().isoformat()}
+    _after_run(engine, report)
+
+
+def _after_run(engine: Engine, report: dict, scheduler=None) -> None:
+    """busy / import_running / crashed → retry every RETRY_MINUTES that Taipei day; any other end clears the retry."""
+    scheduler = scheduler if scheduler is not None else _scheduler
+    if scheduler is None:
+        return
+    if report["status"] in RETRY_STATUSES:
+        scheduler.add_job(
+            _retry, IntervalTrigger(minutes=RETRY_MINUTES, timezone=TZ_NAME), id=RETRY_JOB_ID, replace_existing=True,
+            kwargs={"engine": engine, "day": report["today"]}, coalesce=True, max_instances=1,
+        )
+        logger.info("auto_pay_job.retry_scheduled", extra={"run_status": report["status"], "day": report["today"],
+                                                           "minutes": RETRY_MINUTES})
+    elif scheduler.get_job(RETRY_JOB_ID) is not None:
+        scheduler.remove_job(RETRY_JOB_ID)
+
+
+def _retry(engine: Engine, day: str) -> None:
+    if ledger_service._today().isoformat() != day:  # a new Taipei day: the 06:00 run takes over
+        if _scheduler is not None and _scheduler.get_job(RETRY_JOB_ID) is not None:
+            _scheduler.remove_job(RETRY_JOB_ID)
+        return
+    _job(engine, "retry")
 
 
 def build_scheduler(engine: Engine) -> BackgroundScheduler:
