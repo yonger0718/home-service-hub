@@ -237,7 +237,7 @@ def _add_dividend_cash_row(
             account_id=account.id,
             txn_date=_date_of(dividend.ex_dividend_date),
             type=CashTxnType.DIVIDEND_CASH,
-            amount=_as_decimal(dividend.amount),
+            amount=cash_account_service.dividend_cash_amount(dividend),
             currency=account.currency,
             related_transaction_id=None,
             related_dividend_id=dividend.id,

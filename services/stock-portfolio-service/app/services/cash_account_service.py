@@ -4,7 +4,7 @@ import hashlib
 import logging
 import os
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Select, delete, func, select
@@ -71,6 +71,23 @@ class CashAccountAmbiguous(ValueError):
 
 def _normalize_currency(value: str) -> str:
     return value.strip().upper()
+
+
+_CASH_QUANTUM = Decimal("0.0001")  # cash_transactions.amount is Numeric(20, 4)
+
+
+def dividend_cash_amount(dividend: object) -> Decimal:
+    """The amount a dividend's cash leg posts, in the account's major unit (#125).
+
+    An LSE dividend stored in pence (the exact token ``GBp``) lands in a
+    pounds (``GBP``) account, so it is divided by 100 and rounded half-up to
+    the cash column's four places; every other currency (``GBP`` included) is
+    the stored amount unchanged.
+    """
+    amount = _as_decimal(getattr(dividend, "amount", None))
+    if (getattr(dividend, "currency", None) or "").strip() == "GBp":
+        return (amount / Decimal("100")).quantize(_CASH_QUANTUM, rounding=ROUND_HALF_UP)
+    return amount
 
 
 def _as_decimal(value: Decimal | int | str | None) -> Decimal:
@@ -365,7 +382,7 @@ def sync_dividend_cash_leg(
     txn_date = dividend.receipt_date if getattr(dividend, 'receipt_status', None) == 'confirmed' else _dividend_ex_date(dividend)
     if getattr(dividend, 'receipt_status', None) == 'confirmed' and dividend.receipt_account_id != account_id:
         raise ValueError('confirmed receipt account is immutable')
-    amount = _as_decimal(dividend.amount)
+    amount = dividend_cash_amount(dividend)
     currency = _normalize_currency(account.currency)
     row = session.execute(
         select(CashTransaction).where(
