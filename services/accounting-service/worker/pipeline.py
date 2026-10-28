@@ -195,6 +195,8 @@ class Summary:
     live_revisions: int = 0
     ocr_trigger: int = 0   # R5: files whose pages the OCR child read because there was no usable text layer
     ocr_fallback: int = 0  # R5: files OCR'd after their text-layer parse failed (parse/schema/422)
+    ocr_merchant_repair: int = 0  # #206: text-layer parses with `(cid:` merchants whose file the OCR child re-read
+    merchant_lines_repaired: int = 0  # #206: lines whose merchant text came from the OCR parse
     composite_files: int = 0  # composite statements (spec §4): files that reached the section split
     sections_parsed: int = 0
     sections_anchor: int = 0
@@ -298,8 +300,12 @@ def process_file(services: Services, lease: Lease, file_row: dict, listed: drive
         return _process_composite(services, lease, file_row, data, password, targets, candidates, summary)
     # the first parser call is never `final`: on the trigger path a parser timeout or exit after a successful OCR read
     # is transient (backoff, retry), exactly as on the text-layer path; only the fallback's second call is final
+    repair = None
+    if services.ocr is not None and ocr_note is None:
+        def repair(parsed):
+            return _repair_merchants(services, data, password, candidates, closing_day, parsed, summary)
     status = _parse_submit(services, lease, file_row, account_id, extracted, candidates, ocr_note, summary,
-                           closing_day=closing_day)
+                           closing_day=closing_day, repair=repair)
     if status is not PARSE_FAILED:
         return status
     # R5.3 fallback (AGENT-118 ruling 2026-10-14): the text-layer parse failed with parse/schema/422. Some issuers
@@ -406,9 +412,83 @@ def _process_composite(services: Services, lease: Lease, file_row: dict, data: b
 PARSE_FAILED = "parse_failed"  # _parse_submit sentinel: the parser or the API rejected the text (parse/schema/422)
 
 
+def garbled_merchant(merchant: str) -> bool:
+    """#206: a merchant the text layer could not map — the font carries no Unicode for its glyphs (pdfminer renders
+    them `(cid:N)`); seen on AMEX BR's Chinese merchant names, below the file-level OCR trigger."""
+    return pdf.GARBAGE_GLYPH in merchant
+
+
+def _latch_host_fault(services: Services, exc: parser_mod.ParseError, summary: Summary) -> None:
+    services.parser_disabled = True
+    services.gate.latch(f"{exc.reason} on real input", services.gate.key(services.parser))
+    if "parser_disabled" not in summary.errors:
+        summary.errors.append("parser_disabled")
+
+
+def _line_key(line: parse_schema.ParsedLine) -> tuple:
+    return line.txn_date, line.posted_date, line.printed_amount, line.line_kind
+
+
+def _repair_merchants(services: Services, data: bytes, password: str | None, candidates: list[str],
+                      closing_day: int | None, parsed: parse_schema.StatementParse,
+                      summary: Summary) -> tuple[parse_schema.StatementParse, str, int]:
+    """#206: the text-layer parse succeeded but some merchants are `(cid:N)` garbage. One OCR read and one more
+    parser call; a garbled line takes the OCR parse's merchant only when exactly one OCR line and exactly one garbled
+    text line share its (txn_date, posted_date, printed_amount, line_kind) and that OCR merchant is clean. Amounts,
+    dates, kinds and every other field stay the text layer's, so the submission is never worse than the text parse
+    alone; any OCR or parser failure keeps the text parse unchanged (a host fault still latches the parser).
+    Returns (parse, provenance note, lines repaired)."""
+    garbled = [line for line in parsed.lines if garbled_merchant(line.merchant_raw)]
+    summary.ocr_merchant_repair += 1  # counted at the OCR start, whatever the outcome (the counters are the record)
+    try:
+        result = services.ocr.read(data, password)
+    except ocr_mod.OCRUnavailable:
+        log.info("ocr merchant repair: OCRUnavailable")
+        if "ocr_unavailable" not in summary.errors:
+            summary.errors.append("ocr_unavailable")
+        return parsed, "ocr: merchant repair skipped (OCRUnavailable)", 0
+    except (ocr_mod.OCRTimeout, ocr_mod.OCRResource, ocr_mod.OCRLowConfidence, pdf.TooLarge, pdf.Malformed) as exc:
+        log.info("ocr merchant repair: %s", type(exc).__name__)
+        return parsed, f"ocr: merchant repair skipped ({type(exc).__name__})", 0
+    rejected = ocr_text_rejected(result.extracted.text)
+    if rejected:
+        log.info("ocr merchant repair: text %s", rejected)
+        return parsed, f"ocr: merchant repair skipped (text {rejected})", 0
+    masked = parse_schema.hint(closing_day) + services.masker.mask_ocr(result.extracted.text, candidates)
+    if len(masked.encode("utf-8")) > parser_mod.STDIN_CAP:
+        return parsed, "ocr: merchant repair skipped (too_large)", 0
+    try:
+        ocr_parsed = services.parser.parse(masked)
+    except parser_mod.ParseError as exc:
+        if exc.reason in ("sandbox", "cli_version", "auth"):
+            _latch_host_fault(services, exc, summary)
+        log.info("ocr merchant repair: parse %s", exc.reason)
+        return parsed, f"ocr: merchant repair skipped (parse {exc.reason})", 0
+    text_keys: dict[tuple, int] = {}
+    for line in garbled:
+        text_keys[_line_key(line)] = text_keys.get(_line_key(line), 0) + 1
+    ocr_by_key: dict[tuple, list[parse_schema.ParsedLine]] = {}
+    for line in ocr_parsed.lines:
+        ocr_by_key.setdefault(_line_key(line), []).append(line)
+    repaired, lines = 0, []
+    for line in parsed.lines:
+        if garbled_merchant(line.merchant_raw):
+            key = _line_key(line)
+            found = ocr_by_key.get(key, [])
+            if text_keys[key] == 1 and len(found) == 1 and not garbled_merchant(found[0].merchant_raw) \
+                    and found[0].merchant_raw.strip():
+                line = line.model_copy(update={"merchant_raw": found[0].merchant_raw})
+                repaired += 1
+        lines.append(line)
+    summary.merchant_lines_repaired += repaired
+    note = (f"ocr: merchant repair {repaired}/{len(garbled)} lines mean_confidence={result.mean_confidence:.2f} "
+            f"boxes={result.boxes} scale={ocr_mod.SCALE}")
+    return parsed.model_copy(update={"lines": lines}), note, repaired
+
+
 def _parse_submit(services: Services, lease: Lease, file_row: dict, account_id: int, extracted: pdf.Extracted,
                   candidates: list[str], ocr_note: str | None, summary: Summary, *, final: bool = False,
-                  closing_day: int | None = None) -> str:
+                  closing_day: int | None = None, repair=None) -> str:
     """Mask → STDIN_CAP → parser → submit → guardrail/parsed. Returns the file's terminal status, or PARSE_FAILED
     when the parser (parse/schema) or the API (422) rejected the text, so the caller can decide on the R5.3
     fallback; every other outcome (sandbox latch, transient, too_large, guardrail) is terminal here. `final` (the
@@ -424,16 +504,19 @@ def _parse_submit(services: Services, lease: Lease, file_row: dict, account_id: 
         parsed = services.parser.parse(masked)
     except parser_mod.ParseError as exc:
         if exc.reason in ("sandbox", "cli_version", "auth"):
-            services.parser_disabled = True
-            services.gate.latch(f"{exc.reason} on real input", services.gate.key(services.parser))
-            if "parser_disabled" not in summary.errors:
-                summary.errors.append("parser_disabled")
+            _latch_host_fault(services, exc, summary)
             return _fail(services, lease, file_row, "sandbox", summary, parser_version=services.parser_version)
         if exc.reason in ("timeout", "exit") and not final:  # CLI non-zero, rate limit, outage: retry on the ladder
             return _fail(services, lease, file_row, "transient", summary)
         return PARSE_FAILED
+    parser_label = "claude-cli+ocr" if ocr_note else "claude-cli"
+    # #206: `repair` (text-layer path only) re-reads a parse with garbled merchants through the OCR child
+    if repair is not None and ocr_note is None and any(garbled_merchant(l.merchant_raw) for l in parsed.lines):
+        parsed, ocr_note, repaired = repair(parsed)
+        if repaired:
+            parser_label = "claude-cli+ocr-merchants"
     body = revision_body(parsed, file_id=file_row["id"], account_id=account_id, parser_version=services.parser_version,
-                         parser="claude-cli+ocr" if ocr_note else "claude-cli", extra_note=ocr_note)
+                         parser=parser_label, extra_note=ocr_note)
     try:
         out = services.api.submit_revision(lease, body)
     except LeaseLost:

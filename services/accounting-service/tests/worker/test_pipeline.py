@@ -994,6 +994,96 @@ def test_both_attempts_fail_is_parse_with_one_ocr_start(world, tmp_path, db_sess
     assert again["unchanged"] == 1 and services.ocr.starts == 1
 
 
+def _garbled_text_parse(services, *, ocr_merchant="咖啡店", ocr_amount=None, mark="OCRMARK"):
+    """#206: the text-layer parse prints line 1's merchant as `(cid:N)` garbage; the OCR text (carries `mark`) parses
+    to the same statement with `ocr_merchant` on line 1 (and `ocr_amount` instead of its amount when given)."""
+    calls = []
+    real = services.parser.parse
+
+    def parse(masked):
+        parsed = real(masked)
+        first = parsed.lines[0]
+        if mark in masked:
+            calls.append("ocr")
+            update = {"merchant_raw": ocr_merchant} | ({"printed_amount": ocr_amount} if ocr_amount else {})
+            return parsed.model_copy(update={"lines": [first.model_copy(update=update), *parsed.lines[1:]]})
+        calls.append("text")
+        garbled = first.model_copy(update={"merchant_raw": "(cid:222)(cid:221)X"})
+        return parsed.model_copy(update={"lines": [garbled, *parsed.lines[1:]]})
+    services.parser.parse = parse
+    return calls
+
+
+def _revision(db_session):
+    return db_session.execute(text(
+        "select r.parser, r.raw->>'notes', (select string_agg(l.merchant_raw, '|' order by l.seq) from statement_line l "
+        "where l.revision_id = r.id), (select string_agg(l.printed_amount::text, '|' order by l.seq) "
+        "from statement_line l where l.revision_id = r.id) from statement_revision r")).one()
+
+
+def test_garbled_merchants_are_repaired_from_the_ocr_parse(world, tmp_path, db_session):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT, boxes=7))
+    calls = _garbled_text_parse(services)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["parsed"] == 1 and summary["errors"] == [] and calls == ["text", "ocr"]
+    assert summary["ocr_merchant_repair"] == 1 and summary["merchant_lines_repaired"] == 1
+    assert summary["ocr_trigger"] == 0 and summary["ocr_fallback"] == 0 and services.ocr.starts == 1
+    parser, notes, merchants, amounts = _revision(db_session)
+    assert parser == "claude-cli+ocr-merchants" and merchants == "咖啡店|BOOKS"
+    assert notes == "ocr: merchant repair 1/1 lines mean_confidence=0.93 boxes=7 scale=3.0"
+    assert db_session.execute(text("select status, has_text_layer from statement_file")).one() == ("parsed", True)
+
+
+def test_ocr_line_with_another_amount_does_not_repair(world, tmp_path, db_session):
+    """Amounts always come from the text layer: an OCR line that disagrees on the amount is no match."""
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    _garbled_text_parse(services, ocr_amount="81")
+    summary = pipeline.run(services, trigger="owner_cli")
+    parser, notes, merchants, amounts = _revision(db_session)
+    assert parser == "claude-cli" and merchants.startswith("(cid:222)") and summary["merchant_lines_repaired"] == 0
+    assert notes.startswith("ocr: merchant repair 0/1 lines") and summary["parsed"] == 1
+
+
+def test_still_garbled_ocr_merchant_does_not_replace(world, tmp_path, db_session):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    _garbled_text_parse(services, ocr_merchant="(cid:5)")
+    pipeline.run(services, trigger="owner_cli")
+    assert _revision(db_session)[0] == "claude-cli" and _revision(db_session)[2].startswith("(cid:222)")
+
+
+def test_ocr_failure_during_repair_submits_the_text_parse(world, tmp_path, db_session):
+    services, _, _ = _text_layer_world(world, tmp_path, None, selftest="unavailable")
+    calls = _garbled_text_parse(services)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["parsed"] == 1 and calls == ["text"] and summary["errors"] == ["ocr_unavailable"]
+    parser, notes, merchants, _ = _revision(db_session)
+    assert parser == "claude-cli" and merchants.startswith("(cid:222)")
+    assert notes == "ocr: merchant repair skipped (OCRUnavailable)"
+
+
+def test_ocr_parse_failure_during_repair_submits_the_text_parse(world, tmp_path, db_session):
+    from worker import parser as parser_mod
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    calls = _garbled_text_parse(services)
+    inner = services.parser.parse
+
+    def parse(masked):
+        if "OCRMARK" in masked:
+            raise parser_mod.ParseError("timeout", "synthetic")
+        return inner(masked)
+    services.parser.parse = parse
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["parsed"] == 1 and _file_rows(db_session) == [("parsed", None)]
+    assert _revision(db_session)[1] == "ocr: merchant repair skipped (parse timeout)" and calls == ["text"]
+
+
+def test_clean_text_parse_never_starts_the_repair(world, tmp_path, db_session):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["parsed"] == 1 and services.ocr.starts == 0 and summary["ocr_merchant_repair"] == 0
+    assert _revision(db_session)[0] == "claude-cli"
+
+
 def test_ocr_unavailable_during_fallback_keeps_parse_and_reports_the_code(world, tmp_path, db_session):
     services, _, _ = _text_layer_world(world, tmp_path, None, selftest="unavailable")
     _text_parse_fails(services, "schema")
