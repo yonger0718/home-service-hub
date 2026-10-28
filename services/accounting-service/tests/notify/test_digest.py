@@ -93,6 +93,33 @@ def test_folded_items_are_not_counted(fx):
     assert (ac.count, len(ac.items), ac.truncated) == (1, 1, 0)
 
 
+def test_folded_member_under_an_unfolded_leader_stays_hidden(fx):
+    snap = fx.weekly_snapshot(inbox_items={"旅遊卡": 2})
+    items = snap.inbox["accounts"][0]["items"]
+    items[0]["group_key"] = items[1]["group_key"] = "gap:155"
+    items[1]["folded"] = True
+    ac = build_weekly(snap, fx.cfg(), None).open_cases[0]
+    assert (ac.count, len(ac.items)) == (1, 1) and ac.items[0].date == date(2026, 10, 1)
+
+
+def test_all_folded_group_keeps_its_first_member(fx):
+    """#203: two folded balance_gap rows sharing a group_key and no leader still produce one line."""
+    snap = fx.weekly_snapshot(inbox_items={"旅遊卡": 3})
+    items = snap.inbox["accounts"][0]["items"]
+    items[1]["folded"] = items[2]["folded"] = True
+    items[1]["group_key"] = items[2]["group_key"] = "gap:155"
+    ac = build_weekly(snap, fx.cfg(), None).open_cases[0]
+    assert (ac.count, len(ac.items), ac.truncated) == (2, 2, 0)
+    assert [l.date for l in ac.items] == [date(2026, 10, 1), date(2026, 10, 2)]
+
+
+def test_all_folded_account_without_group_key_stays_empty(fx):
+    snap = fx.weekly_snapshot(inbox_items={"旅遊卡": 2})
+    for item in snap.inbox["accounts"][0]["items"]:
+        item["folded"] = True
+    assert build_weekly(snap, fx.cfg(), None).open_cases == []
+
+
 def test_cards_without_rule_counts_recent_payment_activity(fx):
     def gaps(entry_date):
         pay = fx.entry(account_id=12, kind="transfer_in", amount="500", entry_date=entry_date)
