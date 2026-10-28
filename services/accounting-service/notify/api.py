@@ -15,6 +15,7 @@ from .cycles import Calendar
 
 PAGE = 500
 CASE_CAP = 1000
+SKIPPED_EVENT = "auto_pay_skipped"  # the only audit event the daily and the weekly read (debits.SKIPPED)
 TZ = timezone(timedelta(hours=8))
 
 
@@ -80,8 +81,15 @@ class ReadClient:
     def pending_instances(self, until: date) -> list[dict]:
         return self._get("/schedules/instances", {"status": "pending", "until": until.isoformat()})
 
-    def audit(self, limit: int = 1000) -> list[dict]:
-        return self._get("/reconciliation/audit", {"limit": str(limit)})
+    def audit(self, limit: int = 1000, *, since: datetime | None = None, event: str | None = None) -> list[dict]:
+        """Newest first. `since`/`event` narrow the page server-side (#201); an older API ignores them and returns
+        the unfiltered newest page, which the §7 cap check still guards."""
+        params: dict[str, str] = {"limit": str(limit)}
+        if since is not None:
+            params["since"] = since.isoformat()
+        if event is not None:
+            params["event"] = event
+        return self._get("/reconciliation/audit", params)
 
     def open_cases(self, account_id: int) -> list[dict]:
         return self._get("/reconciliation/cases",
@@ -112,7 +120,7 @@ def created_at_of(row: dict) -> datetime:
 
 
 def _checked_audit(client: ReadClient, since: datetime) -> list[dict]:
-    rows = client.audit(1000)
+    rows = client.audit(1000, since=since, event=SKIPPED_EVENT)
     if len(rows) >= 1000 and min(created_at_of(r) for r in rows) >= since:
         raise CappedRead(None, "/reconciliation/audit", reason="audit page full inside the window")
     return rows
