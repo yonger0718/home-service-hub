@@ -34,6 +34,16 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_live)
 
 
+@pytest.fixture(autouse=True)
+def _never_reach_the_configured_database(monkeypatch):
+    """app.database loads the root .env with override=True at import, so the setdefault above loses to the file. The
+    scheduler and the post-import chain open app.database.SessionLocal (the configured database, production on the
+    host) instead of the test session; keep both off for every test. Tests that exercise either enable the flag
+    themselves and fake the work."""
+    monkeypatch.setenv("SCHEDULER_ENABLED", "false")
+    monkeypatch.setenv("POST_IMPORT_RECALC_ENABLED", "false")
+
+
 @pytest.fixture()
 def db_session():
     engine = create_engine(
