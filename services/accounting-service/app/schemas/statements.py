@@ -142,6 +142,7 @@ class AccountMapOut(BaseModel):
     composite_map: dict[str, dict[str, CompositeTarget]] = {}
     mapping_version: str
     closing_days: dict[str, int] = {}  # account id -> closing day of the cards that have one (the parser's hint)
+    card_accounts: list[int] = []  # ids of the credit accounts: a mapped file's `kind` follows its account (#205)
 
 
 # ---- sources ----

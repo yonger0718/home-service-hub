@@ -455,6 +455,8 @@ def test_account_map_carries_the_cards_closing_days(client, seed, db_session):
     assert got.status_code == 200
     assert got.json()["closing_days"] == {str(card.id): 6}
     assert str(other.id) not in got.json()["closing_days"] and str(bank.id) not in got.json()["closing_days"]
+    # #205: every credit account is listed (closing day or not), banks are not
+    assert {card.id, other.id} <= set(got.json()["card_accounts"]) and bank.id not in got.json()["card_accounts"]
 
 
 def test_settings_put_accepts_manual_and_mail_key_shapes_only(client, card):

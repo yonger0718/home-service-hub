@@ -1402,6 +1402,23 @@ def composite_world(world, client, seed, db_session, card, monkeypatch):
     return services, drive_files, cfg, accounts
 
 
+def test_manual_card_folder_registers_its_files_as_card(world, client, card, db_session):
+    """#205: a manual-root file whose folder maps to a credit account registers with `kind = card`; an unmapped
+    manual folder keeps the folder convention (`bank`, the 綜合月結單 root)."""
+    services, drive_files, cfg = world
+    drive_files["id-a"] = ("AMEX/2026-10_AMEX.pdf", make_pdf([statement_lines()]))
+    drive_files["id-u"] = ("未對應/2026-10_x.pdf", make_pdf([["unmapped"]]))  # distinct bytes: its own file row
+    response = client.put("/settings/reconciliation", headers={"Authorization": "Bearer spa-token"},
+                          json={"account_map": {"mail/信用卡/國泰世華": card.id, "manual/AMEX": card.id},
+                                "dirty_enabled": False, "rules": {}})
+    assert response.status_code == 200, response.text
+    pipeline.run(services, trigger="owner_cli")
+    kinds = dict(db_session.execute(text(
+        "select src.drive_path, f.kind from statement_source src join statement_file f on f.id = src.file_id "
+        "where src.root = 'manual'")).all())
+    assert kinds == {"AMEX/2026-10_AMEX.pdf": "card", "未對應/2026-10_x.pdf": "bank"}
+
+
 def _statements(db_session, account_id):
     return db_session.execute(text("select id, mode, current_revision_id, opening_balance, statement_total from account_statement "
                                    "where account_id = :a order by id"), {"a": account_id}).all()
