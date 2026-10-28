@@ -235,20 +235,22 @@ def run(engine: Engine, trigger: str, *, today: date | None = None, dry_run: boo
 
 
 def _job(engine: Engine, trigger: str) -> None:
+    started = ledger_service._today().isoformat()  # a crash keeps the day the run began, not the day it failed on
     try:
         report = run(engine, trigger)
     except Exception as exc:  # noqa: BLE001 — the scheduler thread must survive
         _log_error("auto_pay_job.crashed", exc, trigger=trigger)
-        report = {"status": "crashed", "today": ledger_service._today().isoformat()}
+        report = {"status": "crashed", "today": started}
     _after_run(engine, report)
 
 
 def _after_run(engine: Engine, report: dict, scheduler=None) -> None:
-    """busy / import_running / crashed → retry every RETRY_MINUTES that Taipei day; any other end clears the retry."""
+    """busy / import_running / crashed → retry every RETRY_MINUTES that Taipei day; any other end — or a run whose day
+    is already over (it crossed midnight) — clears the retry."""
     scheduler = scheduler if scheduler is not None else _scheduler
     if scheduler is None:
         return
-    if report["status"] in RETRY_STATUSES:
+    if report["status"] in RETRY_STATUSES and report["today"] == ledger_service._today().isoformat():
         scheduler.add_job(
             _retry, IntervalTrigger(minutes=RETRY_MINUTES, timezone=TZ_NAME), id=RETRY_JOB_ID, replace_existing=True,
             kwargs={"engine": engine, "day": report["today"]}, coalesce=True, max_instances=1,

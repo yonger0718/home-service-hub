@@ -47,7 +47,8 @@ def test_build_scheduler_registers_the_daily_and_startup_runs():
     assert daily.kwargs["trigger"] == "cron" and jobs["schedule_startup"].kwargs["trigger"] == "startup"
 
 
-def test_after_run_adds_and_clears_the_retry():
+def test_after_run_adds_and_clears_the_retry(monkeypatch):
+    monkeypatch.setattr(ledger_service, "_today", lambda: date(2026, 10, 9))
     fake = FakeScheduler()
     schedule_job._after_run(object(), {"status": "import_running", "today": "2026-10-09"}, scheduler=fake)
     retry = fake.jobs["schedule_retry"]
@@ -55,6 +56,21 @@ def test_after_run_adds_and_clears_the_retry():
     assert retry["kwargs"]["day"] == "2026-10-09"
     schedule_job._after_run(object(), {"status": "completed", "today": "2026-10-09"}, scheduler=fake)
     assert fake.removed == ["schedule_retry"]
+
+
+def test_a_crash_after_midnight_keeps_the_start_day_and_schedules_no_retry(monkeypatch):
+    """AGENT-325 (same pattern as the auto-pay job): the crash report carries the day the run began."""
+    days = iter([date(2026, 10, 9), date(2026, 10, 10)])  # _job start, _after_run
+    monkeypatch.setattr(ledger_service, "_today", lambda: next(days))
+    fake = FakeScheduler()
+    fake.jobs["schedule_retry"] = {}
+    monkeypatch.setattr(schedule_job, "_scheduler", fake)
+
+    def boom(engine, trigger):
+        raise RuntimeError("fictional")
+    monkeypatch.setattr(schedule_job, "run", boom)
+    schedule_job._job(object(), "retry")
+    assert fake.jobs == {} and fake.removed == ["schedule_retry"]
 
 
 def test_retry_stops_on_a_new_taipei_day(monkeypatch):

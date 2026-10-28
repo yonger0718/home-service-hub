@@ -97,3 +97,46 @@ def test_records_still_propagate_to_root_handlers(app_logger, monkeypatch):
     finally:
         logging.getLogger().removeHandler(root_handler)
     assert seen == ["schedule_job.run"]
+
+
+SECRET = "customer=Alice amount=12345"  # fictional
+
+
+@pytest.mark.parametrize("level", ["DEBUG", "INFO"])
+def test_exception_messages_are_withheld_at_every_level(app_logger, monkeypatch, level):
+    """AGENT-325: a database error's text can carry SQL parameters; stderr gets the frames and the class chain only."""
+    from app.services import auto_pay_job
+    monkeypatch.setenv(logging_setup.LOG_LEVEL_ENV, level)
+    logging_setup.configure_logging()
+    stream = _capture(app_logger)
+    try:
+        try:
+            raise KeyError(SECRET)
+        except KeyError as inner:
+            raise RuntimeError(SECRET) from inner
+    except RuntimeError as exc:
+        auto_pay_job._log_error("auto_pay_job.crashed", exc, trigger="cron")  # ERROR line + DEBUG exc_info line
+        logging.getLogger("app.services.policy_service").exception("policy run failed for statement %s", 7)
+    out = stream.getvalue()
+    assert "Alice" not in out and "12345" not in out
+    assert "RuntimeError <- KeyError (message withheld)" in out and "policy run failed for statement 7" in out
+    assert len(out.splitlines()) == (3 if level == "DEBUG" else 2)
+
+
+def test_another_formatters_cached_exception_text_is_not_reused():
+    try:
+        raise ValueError(SECRET)
+    except ValueError:
+        import sys
+        record = logging.LogRecord("app.x", logging.ERROR, __file__, 1, "x.failed", None, sys.exc_info())
+    record.exc_text = f"Traceback ... ValueError: {SECRET}"  # what a default formatter on another handler caches
+    line = logging_setup.ExtraFormatter().format(record)
+    assert SECRET not in line and "ValueError (message withheld)" in line
+    assert record.exc_text == f"Traceback ... ValueError: {SECRET}"  # that handler's own cache is left as it was
+
+
+@pytest.mark.parametrize("brk", ["\r", "\n", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"])
+def test_every_line_break_is_escaped(brk):
+    record = logging.LogRecord("app.x", logging.INFO, __file__, 1, f"first{brk}second", None, None)
+    record.note = f"a{brk}b"
+    assert len(logging_setup.ExtraFormatter().format(record).splitlines()) == 1

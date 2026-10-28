@@ -30,7 +30,8 @@ def test_constants():
 
 
 @pytest.mark.parametrize("status", ["busy", "import_running", "crashed"])
-def test_after_run_adds_the_retry_and_any_other_end_clears_it(status):
+def test_after_run_adds_the_retry_and_any_other_end_clears_it(status, monkeypatch):
+    monkeypatch.setattr(auto_pay_job.ledger_service, "_today", lambda: date(2026, 10, 27))
     fake = FakeScheduler()
     auto_pay_job._after_run(object(), {"status": status, "today": "2026-10-27"}, scheduler=fake)
     retry = fake.jobs["auto_pay_retry"]
@@ -56,6 +57,30 @@ def test_a_crashed_scheduled_run_schedules_the_retry(monkeypatch):
     monkeypatch.setattr(auto_pay_job, "run", boom)
     auto_pay_job._job(object(), "cron")
     assert fake.jobs["auto_pay_retry"]["kwargs"]["day"] == "2026-10-27"
+
+
+def test_after_run_never_schedules_for_a_day_that_is_over(monkeypatch):
+    """A run that began before midnight and ended busy after it: no retry for the new day, an old one is removed."""
+    monkeypatch.setattr(auto_pay_job.ledger_service, "_today", lambda: date(2026, 10, 28))
+    fake = FakeScheduler()
+    fake.jobs["auto_pay_retry"] = {}
+    auto_pay_job._after_run(object(), {"status": "busy", "today": "2026-10-27"}, scheduler=fake)
+    assert fake.jobs == {} and fake.removed == ["auto_pay_retry"]
+
+
+def test_a_retry_that_crashes_after_midnight_does_not_carry_into_the_new_day(monkeypatch):
+    """AGENT-325: the crash report keeps the day the run began, so a 23:5x retry failing at 00:0x stops retrying."""
+    days = iter([date(2026, 10, 27), date(2026, 10, 27), date(2026, 10, 28)])  # _retry check, _job start, _after_run
+    monkeypatch.setattr(auto_pay_job.ledger_service, "_today", lambda: next(days))
+    fake = FakeScheduler()
+    fake.jobs["auto_pay_retry"] = {}
+    monkeypatch.setattr(auto_pay_job, "_scheduler", fake)
+
+    def boom(engine, trigger):
+        raise RuntimeError("fictional")
+    monkeypatch.setattr(auto_pay_job, "run", boom)
+    auto_pay_job._retry(object(), "2026-10-27")
+    assert fake.jobs == {} and fake.removed == ["auto_pay_retry"]
 
 
 def test_retry_stops_on_a_new_taipei_day(monkeypatch):
