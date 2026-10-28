@@ -5,7 +5,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import date as dt_date
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 import structlog
 from sqlalchemy import select
@@ -69,8 +69,19 @@ def _increment_summary(result: BackfillResult, account_id: int, leg_name: str) -
     account_summary[leg_name] = account_summary.get(leg_name, 0) + 1
 
 
+_CASH_QUANTUM = Decimal("0.0001")  # cash_transactions.amount is Numeric(20, 4)
+
+
+def _major_unit(amount: Decimal, currency: str | None) -> Decimal:
+    """A GBp (pence) trade's price, fee and tax land in the pounds account ÷100 (#125 review); else unchanged."""
+    if (currency or "").strip() == "GBp":
+        return (amount / Decimal("100")).quantize(_CASH_QUANTUM, rounding=ROUND_HALF_UP)
+    return amount
+
+
 def _transaction_legs(transaction: Transaction) -> list[dict[str, object]]:
-    gross_amount = _as_decimal(transaction.quantity) * _as_decimal(transaction.price)
+    gross_amount = _major_unit(_as_decimal(transaction.quantity) * _as_decimal(transaction.price),
+                               transaction.currency)
     if transaction.type == TransactionType.BUY:
         settle_type = CashTxnType.BUY_SETTLE
         settle_amount = -gross_amount
@@ -85,7 +96,7 @@ def _transaction_legs(transaction: Transaction) -> list[dict[str, object]]:
             "amount": settle_amount,
         }
     ]
-    fee = _as_decimal(transaction.fee)
+    fee = _major_unit(_as_decimal(transaction.fee), transaction.currency)
     if fee > 0:
         legs.append(
             {
@@ -94,7 +105,7 @@ def _transaction_legs(transaction: Transaction) -> list[dict[str, object]]:
                 "amount": -fee,
             }
         )
-    tax = _as_decimal(transaction.tax)
+    tax = _major_unit(_as_decimal(transaction.tax), transaction.currency)
     if tax > 0:
         legs.append(
             {

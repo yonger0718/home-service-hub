@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 from ..models.fx_rate import FXRate
 from ..models.cash_transaction import CashTxnSource
 from ..models import portfolio as models
+from ..schemas.portfolio import normalize_currency
 from .cash_flow_service import CashFlowRow, write_cash_flows
 from . import cash_account_service
 from . import portfolio_service as svc
@@ -536,8 +537,14 @@ def _row_date(value: object) -> date_type:
     return value.date() if hasattr(value, "date") else value  # type: ignore[return-value]
 
 
+_FX_QUANT = Decimal("0.00000001")  # fx_rate_to_twd is Numeric(20, 8)
+
+
 def _exact_fx_rate(db: Session, currency: str, date_: date_type) -> Decimal | None:
-    normalized = (currency or "TWD").strip().upper()
+    """The day's stored rate. ``GBp`` (pence) reads the GBP row and returns it per penny (÷100), the unit a GBp
+    transaction's ``fx_rate_to_twd`` is stored in (#125 review); fx_rates never holds a GBp row."""
+    pence = (currency or "").strip() == "GBp"
+    normalized = "GBP" if pence else (currency or "TWD").strip().upper()
     if normalized == "TWD":
         return None
     rate = (
@@ -546,7 +553,9 @@ def _exact_fx_rate(db: Session, currency: str, date_: date_type) -> Decimal | No
         .filter(FXRate.date == date_)
         .scalar()
     )
-    return Decimal(rate) if rate is not None else None
+    if rate is None:
+        return None
+    return (Decimal(rate) / Decimal("100")).quantize(_FX_QUANT) if pence else Decimal(rate)
 
 
 def _missing_fx_error(row: ParsedRow, date_: date_type, currency: str) -> ParseError:
@@ -661,7 +670,7 @@ def _commit_broker_rows(
             continue
         seen_transactions.add(row.fingerprint)
         trade_date = _row_date(payload["trade_date"])
-        currency = str(payload.get("currency", "TWD")).upper()
+        currency = normalize_currency(str(payload.get("currency", "TWD")))  # GBp (pence) keeps its token
         fx_rate = _exact_fx_rate(db, currency, trade_date)
         if currency != "TWD" and fx_rate is None:
             errors.append(_missing_fx_error(row, trade_date, currency))
