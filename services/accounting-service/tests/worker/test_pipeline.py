@@ -1016,8 +1016,9 @@ def _garbled_text_parse(services, *, ocr_merchant="咖啡店", ocr_amount=None, 
 
 def _revision(db_session):
     return db_session.execute(text(
-        "select r.parser, r.raw->>'notes', (select string_agg(l.merchant_raw, '|' order by l.seq) from statement_line l "
-        "where l.revision_id = r.id), (select string_agg(l.printed_amount::text, '|' order by l.seq) "
+        "select r.parser, r.raw->>'notes', "
+        "(select string_agg(l.merchant_raw, '|' order by l.seq) from statement_line l where l.revision_id = r.id), "
+        "(select string_agg(l.printed_amount::text, '|' order by l.seq) "
         "from statement_line l where l.revision_id = r.id) from statement_revision r")).one()
 
 
