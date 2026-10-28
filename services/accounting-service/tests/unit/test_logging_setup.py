@@ -12,7 +12,8 @@ from app import logging_setup
 def app_logger(monkeypatch):
     # In a full run alembic's fileConfig (the integration session's in-process upgrade) has disabled the loggers that
     # existed before it; the API process never runs it, so re-enable the ones these tests log through.
-    for name in (logging_setup.APP_LOGGER, "app.services.auto_pay_job", "app.services.schedule_job"):
+    for name in (logging_setup.APP_LOGGER, "app.services.auto_pay_job", "app.services.schedule_job",
+                 "app.services.policy_service"):
         monkeypatch.setattr(logging.getLogger(name), "disabled", False)
     logger = logging.getLogger(logging_setup.APP_LOGGER)
     saved_level, saved_handlers = logger.level, list(logger.handlers)
