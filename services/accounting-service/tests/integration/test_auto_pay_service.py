@@ -101,6 +101,21 @@ def test_books_the_pair_with_two_posting_dates_and_the_row(db_session, world):
     assert aps.find_twins(db, **common, exclude=[out_leg.id, in_leg.id]) == []
 
 
+@pytest.mark.parametrize("reason", sorted(aps.TERMINAL_REASONS))
+def test_a_terminal_skip_of_another_statement_does_not_block(seed, db_session, run, world, reason):
+    """#193 / spec §4.2 + §4.4: a terminal `skipped` row ends ITS statement only; `duplicate_statement` counts the
+    rows that moved money or that the owner or a twin settled (`FINAL_STATUSES`), so a second statement of the card
+    whose pay date is 7 days away goes through its own gates. Pins the scope of `_duplicate_final`: widening it to
+    `skipped` rows makes this test fail."""
+    db, (bank, card, stmt) = db_session, world
+    b, _, _ = _submit(db, run, card, [_line(1, date(2026, 10, 3), "全聯", 580)], period=OCT, due_date=date(2026, 10, 21))
+    b_row = _booked_row(db, b, card, bank, date(2026, 10, 20))
+    b_row.status, b_row.reason, b_row.out_entry_id, b_row.in_entry_id = "skipped", reason, None, None
+    db.flush()
+    assert "skipped" not in aps.FINAL_STATUSES
+    assert _reason(db, stmt.id) is None
+
+
 def test_not_a_candidate_before_pay_date_and_without_due_date(seed, db_session, run, world):
     db, (bank, card, stmt) = db_session, world
     assert aps.candidates(db, date(2026, 10, 26), _settings()) == []  # due Sat, pay Tue: not yet
