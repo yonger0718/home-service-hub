@@ -153,6 +153,9 @@ def _check_unsupported_section(lines: list[str], i: int, end: int) -> None:
             raise StatementError("stray_line")
         if not _has_item_shape(lines[i]) or i + 3 >= end:
             raise StatementError("item_grammar")
+        qty_t, price_t = lines[i].split(" ")[-5:-3]
+        if _uint(qty_t, "item_grammar") <= 0 or Decimal(price_t.replace(",", "")) <= 0:
+            raise StatementError("item_grammar")
         _signed(lines[i + 1], "item_grammar")
         if not _MARGIN_LINE3_RE.match(lines[i + 2]):
             raise StatementError("line3")

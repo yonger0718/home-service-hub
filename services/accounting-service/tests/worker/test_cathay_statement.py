@@ -274,6 +274,11 @@ def test_unsupported_section_lines_are_still_checked():
     assert code_of(base.replace("-12,305\n0 23", "12,305\n0 23")) == "item_grammar"
     assert code_of(base.replace("XY99900\n0\n", "XY99900\nx\n")) == "line4"
     assert code_of(base.replace("範例電子 資買 1,000 12.3 12,300 5 0", "範例電子 資買 1,000 x 12,300 5 0")) == "item_grammar"
+    assert code_of(base.replace("範例電子 資買 1,000 12.3", "範例電子 資買 0 12.3")) == "item_grammar"
+    assert code_of(base.replace("範例電子 資買 1,000 12.3", "範例電子 資買 1,000 0")) == "item_grammar"
+    second = "範例高息 資賣 {} 20.5 41,000 5 0\n+40,995\n0 0 0 0 XY77700\n0\n總合計 "
+    assert parse_statement(base.replace("\n總合計 ", "\n" + second.format("2,000"))).unsupported
+    assert code_of(base.replace("\n總合計 ", "\n" + second.format("0"))) == "item_grammar"
 
 def test_footer_prepaid_and_retained_must_be_zero():
     assert code_of(load("single").replace("預收款： 0 留置款： 0", "預收款： 1 留置款： 0")) == "totals"
