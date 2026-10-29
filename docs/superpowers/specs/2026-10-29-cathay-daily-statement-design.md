@@ -3,7 +3,7 @@
 Status: rev 2.2 (2026-10-29), after the AGENT-335 review (findings 1–6 folded) and its re-check (buy tax pinned to 0);
 rev 2.2 adds §7 notifications to the scope (owner 2026-10-29: a stuck date must reach the owner, not only a log);
 rev 2.3 folds the AGENT-337 review (run deadline, notifier isolation, acknowledgement model), and its re-check
-minor (pending envelope); rev 2.4 pins the text extractor (§4.1), a fact found while planning. Owner rulings 2026-10-29: the daily
+minor (pending envelope); rev 2.4 pins the text extractor (§4.1), a fact found while planning; rev 2.5 records the full text layout and footer sums of all 466 archived statements (§2, §4.2), found when the parser first met the archive. Owner rulings 2026-10-29: the daily
 statement is the primary source for the dates it covers ("對帳單為主，按日期分"); current days matter most and the
 archive is used to validate the parser, not to wait for a full backfill; the first writer of a date owns it and a
 mismatch is never resolved automatically in either direction (option A — the owner imports the CSV only after the
@@ -28,22 +28,31 @@ statements.
   `財務對帳單/投資/國泰證券/日對帳單/` as `YYYY-MM-DD_國泰證券_日對帳單_<msgid10>_01_國泰證券日對帳單.pdf` (mail date in
   Asia/Taipei). Its daily trigger runs at 06:10 Asia/Taipei, so day D is in Drive by D+1 06:30.
 - PDF: 1–2 pages, text layer (pdfium extracts it; no OCR), encrypted with the statement ID-number password.
-- Header: `證券日對帳單 115年 3月 9日`, then one line `成交日期 交割日期 預收款 留置款 淨收付`, for example
-  `2026/03/09 2026/03/11 0 0 -12,345`.
+- Header: `證券日對帳單 115年 3月 9日`, three fixed greeting lines (`親愛的 … 先生/小姐 您好:`, `以下是您…的客戶日對帳單。`,
+  `您的一般台股電子交易手續費…元起。`), the column line `成交日期 交割日期 預收款 留置款 客戶淨收(+)/付(-)金額`, then the
+  data line, for example `2026/03/09 2026/03/11 0 0 -12,345`. When part of a fee was paid with 小樹點數 (108 of 466),
+  a line `客戶淨收(+)/付(-)點數` follows the column line, the data line ends after 留置款, and the cash net and the points
+  net follow on their own lines. Then a fixed 8-line item column header (`商品名稱 類別 成交股數 單價 成交金額 手續費
+  交易稅` … `融券手續費 債息利息 委託書號`), present even with no items.
 - One block per line item, four text lines:
   1. `<商品名稱> <類別> <成交股數> <單價> <成交金額> <手續費> <交易稅>`, for example `範例電子 集買 1,000 12.3 12,300 5 0`
   2. `<客戶應收付額>` signed, for example `-12,305`
-  3. margin columns then the 7-character `委託書號` last, for example `0 0 0 0 XY12300`; a fee paid with points
-     prefixes the line with `(小樹點數)`; a 資賣 line carries the 融資利息 here (`0 23 XY45600` = interest 23)
+  3. margin columns then the 7-character `委託書號` last, for example `0 0 0 0 XY12300`; a line paid with 小樹點數
+     prefixes it with `(小樹點數)`; a 資賣 line carries the 融資利息 here (`0 23 XY45600` = interest 23)
   4. `0` (債息利息)
 - 類別 seen: 集買 613, 集賣 241, 沖買 89, 沖賣 82, 資買 1, 資賣 1. 券買 / 券賣 never appeared.
 - Every 集買 / 集賣 / 沖買 / 沖賣 line (1025) has line 3 exactly `0 0 0 0 <委託書號>` (after an optional
   `(小樹點數) ` prefix) and line 4 exactly `0`, and its net is exact: buy `net = −(amount + fee)`, sell
   `net = amount − fee − tax`; every buy line (集買 613, 沖買 89) has tax 0. The 資買 / 資賣 lines carry 融資 columns whose meaning the text layer does not fix
   (the 資賣 loan repayment is not on its line at all).
-- Footer: `總合計 <成交金額> <手續費> <交易稅>`, totals, `淨收付金額`, then a holdings table
-  `代碼 股票名稱 當日收盤價 集保股數 集保市值 融資股數 融券股數` (one row per position held after the day; a position
-  sold out that day is absent).
+- Footer: `總合計 <成交金額> <手續費> <交易稅>`, the signed Σ net (commas optional), margin totals `0 0 0 0` and `0`
+  (non-zero only on 資買 / 資賣 days), `買進總計： … 賣出總計： … 本期買+賣合計： … 當沖損益： …`, `預收款： 0 留置款： 0
+  應收付金額： <net> 現沖損益： …`, `淨收付金額： <net>`, in the points variant `淨收付點數： <points>`, the footnote
+  `*表示交易稅為千分之一`, then a holdings table `代碼 股票名稱 當日收盤價 集保股數 集保市值 融資股數 融券股數 理財資訊`
+  (one row per position held after the day, price with an optional ▲ / ▼, an optional link suffix
+  `停損/停利通知 個股分析 我要下單`; a position sold out that day is absent; the whole table is absent when nothing is
+  held), `集保市值總計： …`, and one link line starting `智慧選股 `. Lines end with `\r` (stripped). Signed numbers carry
+  an explicit `+` / `-`.
 - **Granularity: the statement has one line per (委託, price); the CSV has one row per fill.** The 委託書號 on the
   statement is the CSV 委託書號 plus a two-digit price-group suffix (`XY123` → `XY12300`, `XY12301`). Lines and
   rows agree on totals: Σ quantity, Σ 手續費, Σ 交易稅 of the fills equal the line.
@@ -109,7 +118,11 @@ it means.
   and tax actually booked; no line can carry a fee component the identity does not see).
 - Per buy line (集買 / 沖買): tax = 0. The buy identity does not contain tax and the cash legs book any positive tax, so
   a non-zero buy tax rejects the statement. The portfolio applies the same check to the payload (HTTP 422).
-- Σ line amount / fee / tax = the `總合計` amount / fee / tax; Σ line net = the header net = `淨收付金額`.
+- Σ line amount / fee / tax = the `總合計` amount / fee / tax; 買進總計 / 賣出總計 = Σ amount of the buy / sell lines and
+  本期買+賣合計 their sum; Σ line net = the footer net line = 應收付金額 (the payload `net_amount`); the header cash net =
+  `淨收付金額` = 應收付金額 − Σ net of the `(小樹點數)` lines (a buy paid entirely with points: 5 lines in the archive; it
+  imports as a normal buy with `points: true`, as the CSV import already books it); in the points variant the footer
+  `淨收付點數` equals the header points line. Margin totals are `0 0 0 0` / `0`.
 - Holdings rows: code `[0-9A-Z]{4,6}`, shares a non-negative integer.
 
 The file-name date is not a check: the Apps Script names by mail date. A different file-name date only adds
