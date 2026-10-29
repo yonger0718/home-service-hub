@@ -50,11 +50,9 @@ def _fresh_post_import_results():
     chain run by an earlier test must not answer a later test's status read (#211)."""
     from app.services import post_import_orchestrator as orch
 
-    with orch._RESULTS_LOCK:
-        orch._LATEST_RESULTS.clear()
+    orch.reset_state_for_tests()
     yield
-    with orch._RESULTS_LOCK:
-        orch._LATEST_RESULTS.clear()
+    orch.reset_state_for_tests()
 
 
 @pytest.fixture()
