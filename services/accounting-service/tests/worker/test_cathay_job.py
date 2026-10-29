@@ -365,13 +365,51 @@ def test_run_report_posted_on_ok_latched_failed(w):
     assert datetime.fromisoformat(ok["run_at"]).tzinfo is not None
     w.portfolio.reply = lambda payload, params: httpx.Response(422)
     w.add("id-3", "c.pdf", fx("two_pages.txt", (2026, 3, 11)))
-    w.go(unlatch=True)
+    w.go()
     assert w.portfolio.runs[-1] | {"run_at": ""} == {"run_at": "", "result": "latched", "code": "portfolio:422", "files_seen": 3, "posted": 1}
+    with pytest.raises(cathay.CathayDisabled):  # a plain run refused while latched still reports
+        w.go()
+    assert w.portfolio.runs[-1] | {"run_at": ""} == {"run_at": "", "result": "latched", "code": "portfolio:422", "files_seen": 0, "posted": 0}
     w.latch.unlink()
     w.list_rc = 3
     w.go()
     assert w.portfolio.runs[-1]["result"] == "failed" and w.portfolio.runs[-1]["code"] == "drive_listing"
-    assert len(w.portfolio.runs) == 3
+    assert len(w.portfolio.runs) == 4
+
+
+def test_only_a_plain_daily_run_reports(w):
+    w.add("id-1", "a.pdf", fx("single.txt"))
+    w.go(file_id="id-1")
+    w.go(since=date(2026, 1, 1))
+    w.go(until=date(2026, 12, 31))
+    w.go(retry_date=date(2026, 3, 9))
+    w.go(unlatch=True)
+    w.go(dry_run=True)
+    w.go(validate_history=True)
+    w.go(ack_date=date(2026, 3, 9))
+    assert w.portfolio.runs == []
+    w.latch.write_text('{"reason": "x"}')
+    for kw in ({"dry_run": True}, {"file_id": "id-1"}, {"since": date(2026, 1, 1)}, {"retry_date": date(2026, 3, 9)}):
+        n = len(w.portfolio.runs)
+        with pytest.raises(cathay.CathayDisabled):
+            w.go(**kw)
+        assert len(w.portfolio.runs) == n
+
+
+def test_nothing_is_written_to_inbox_and_staging_is_empty(w):
+    w.add("id-1", "a.pdf", fx("single.txt"))
+    w.add("id-2", "b.pdf", "garbage")
+    w.cfg.staging_dir.mkdir(parents=True, exist_ok=True)
+    stale = w.cfg.staging_dir / "cathay-1-1.pdf"
+    stale.write_bytes(b"x")
+    other = w.cfg.staging_dir / "id-9.tmp"
+    other.write_bytes(b"x")
+    for kw in ({}, {"dry_run": True}, {"validate_history": True}):
+        w.go(**kw)
+        w.latch.unlink(missing_ok=True)
+        assert not w.cfg.inbox_dir.exists() and not (w.cfg.state_dir / "inbox").exists()
+        assert list(w.cfg.staging_dir.glob("cathay-*")) == []
+    assert other.exists()
 
 
 def test_run_report_failure_does_not_break_the_run(w):

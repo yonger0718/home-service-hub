@@ -76,6 +76,12 @@ itself, add it to `fx_rates`; exits 1 without latching). A run
 that fails without latching still exits 1, so the unit shows failed: `systemctl --user list-units --failed`, and in Loki
 `{job="homehub", unit="homehub-portfolio-flex.service"} |= "\"codes\": [\""` shows a query that is pending every day.
 
+Settled states. `pre_cutover` is terminal like `imported`: a file dated before the cutover is skipped on later runs. If `STATEMENT_CATHAY_CUTOVER` is ever moved
+earlier, those dates must be re-posted one at a time with `--retry DATE`. `held` is never written and is posted again on every run.
+
+Run report. Only a plain daily commit run (no `--file`, `--since`, `--until`, `--retry`, `--unlatch`, `--ack`, `--dry-run`, `--validate-history`) posts the run
+report. A plain daily run refused because the job is latched posts `result: latched` with the latch reason as `code` (`files_seen` and `posted` 0), then exits 1.
+
 Recovery after fixing the cause (a plain daily run; it clears the latch only when the run ends with no codes, so a
 `stale_fx` day keeps the latch; `--dry-run`, `--query-id` and `--from-file` never clear it):
 
@@ -146,23 +152,25 @@ Flags (`python -m worker cathay`; the summary is one JSON line, exit 1 when `cod
 
 | Flag | Effect |
 |---|---|
-| (none) | commit run: post every new file, write state, report the run |
-| `--dry-run` | post with `dry_run=true`; no state, no latch, no run report |
+| (none) | plain daily commit run: post every new file, write state, report the run (the only run that reports, also when refused while latched) |
+| `--dry-run` | post with `dry_run=true`; no state, no latch, no run report; nothing under `<state_dir>/inbox/` (downloads are staged and deleted) |
 | `--validate-history` | dry run over every file including pre-cutover dates; still reads the state file (a corrupt one stops the run) but skips nothing and writes nothing to it; writes `cathay-history-report.json` (`mismatch_dates`, `held`, `errors`); prints only `counts` |
 | `--file <drive-id>` / `--since DATE` / `--until DATE` | restrict the run to one Drive file / a trade-date range |
-| `--retry DATE` | post that trade date again even though its file is settled (for example after a `held` or `mismatch` is fixed) |
+| `--retry DATE` | re-post the settled file of that trade date (for example a `mismatch` after the rows are fixed); a date before the cutover stays `pre_cutover` |
 | `--ack DATE` | acknowledge a pending day at the portfolio (`POST …/days/DATE/ack`); touches neither Drive nor state, works while latched, exclusive with every other flag (exit 2 otherwise) |
 | `--unlatch` | clear the latch; see below |
 
 Latch rule. Only a commit run (no `--dry-run`, no `--validate-history`) latches. A non-transient failure writes the latch and
 every later run exits 1 (`cathay disabled`) until it is cleared: `decrypt` (no password fits), `pdf_malformed`,
 `pdf_too_large`, `extract` (text extraction failed), a parser error code, a portfolio 4xx other than 408/429. These do NOT latch: Drive and listing errors,
-portfolio 5xx / 408 / 429, timeouts and connection errors, `portfolio:body`, a missing password file or state file. A run
+portfolio 5xx / 408 / 429, timeouts and connection errors, `portfolio:body`, an unreadable password file (`password_file`) or a corrupt state file (`state_file`). A missing
+password file is refused by the CLI before the run (exit 2). A run
 that fails without latching still exits 1, so the unit shows failed: `systemctl --user list-units --failed`.
 Exit codes: 0 ok, 1 codes / latched / nothing pending for `--ack`, 2 bad flags or missing password file, 3 already running.
 
 Recovery after fixing the cause (a plain daily run; it clears the latch only when the run ends with no codes, so
-`--file`, `--since`, `--until`, `--retry` and dry runs never clear it):
+`--file`, `--since`, `--until`, `--retry` and dry runs never clear it). A statement the parser cannot read latches again on every `--unlatch`; the way out is a
+parser fix, or moving that file out of the Drive folder and importing that day by CSV:
 
     sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker cathay --unlatch'
 
@@ -185,7 +193,7 @@ Deploy order (the portfolio side is already live):
        systemctl --user enable --now homehub-portfolio-cathay.timer
        journalctl --user -u homehub-portfolio-cathay.service
 
-In Loki `{job="homehub", unit="homehub-portfolio-cathay.service"} |= "\"codes\": [\""` shows a run that fails every day.
+In Loki `{job="homehub", unit="homehub-portfolio-cathay.service"} |~ "\"codes\": \\[\"|cathay disabled"` shows a run that fails every day, including runs refused while latched (those print `cathay disabled`).
 
 ## Read-only database role for `verify` (ruling 11)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -22,6 +23,7 @@ log = logging.getLogger("worker")
 LATCH = "cathay-disabled.json"
 LOCK = ".cathay.lock"
 STATE = "cathay-state.json"
+STAGE_PREFIX = "cathay-"
 HISTORY = "cathay-history-report.json"
 ENDPOINT = "/api/portfolio/imports/cathay-statement"
 OUTCOMES = frozenset({"imported", "verified", "duplicate", "mismatch", "held", "conflict"})
@@ -98,6 +100,14 @@ def _report(cfg: WorkerConfig, http: httpx.Client, summary: dict) -> None:
         http.post(f"{ENDPOINT}/runs", json=body, timeout=cfg.cathay_timeout_s).raise_for_status()
     except httpx.HTTPError as exc:  # the report is best effort: it must not change the run's result
         log.info("cathay: run report not posted (%s)", type(exc).__name__)
+
+
+def _latch_reason(latch: Path) -> str:
+    try:
+        reason = json.loads(latch.read_text(encoding="utf-8")).get("reason")
+    except (OSError, ValueError, AttributeError):
+        reason = None
+    return reason[:64] if isinstance(reason, str) and reason else "latched"
 
 
 def _ack(cfg: WorkerConfig, http: httpx.Client, day: date) -> dict:
@@ -184,16 +194,25 @@ class _Job:
         return False
 
     def fetch(self, item: Listed) -> tuple[str, bytes]:
+        """Download into staging, check the listing's md5 and size, return (sha256, bytes); staging never keeps the file."""
         self._staged += 1
-        staged = self.cfg.staging_dir / f"cathay-{os.getpid()}-{self._staged}.pdf"
+        staged = self.cfg.staging_dir / f"{STAGE_PREFIX}{os.getpid()}-{self._staged}.pdf"
         try:
             self.drive.download(item, staged)
-            published = inbox.Inbox(self.cfg).publish(staged, expected_md5=item.md5, expected_size=item.size)
-            return published.sha256, published.path.read_bytes()
-        except (DownloadError, inbox.VerifyError, inbox.CollisionError, OSError) as exc:
+            data = staged.read_bytes()
+            if hashlib.md5(data).hexdigest() != item.md5.lower() or len(data) != item.size:
+                raise CathayError("drive:VerifyError")
+            return hashlib.sha256(data).hexdigest(), data
+        except (DownloadError, OSError) as exc:
             raise CathayError(f"drive:{type(exc).__name__}") from None
         finally:
             staged.unlink(missing_ok=True)
+
+    def sweep_staging(self) -> None:
+        """Remove this job's own files left behind by a crashed run (the pipeline's `<id>.tmp` files are not ours)."""
+        if self.cfg.staging_dir.is_dir():
+            for stale in self.cfg.staging_dir.glob(f"{STAGE_PREFIX}*.pdf"):
+                stale.unlink(missing_ok=True)
 
     def read(self, data: bytes) -> str:
         candidates = self.candidates()
@@ -246,6 +265,7 @@ class _Job:
             parser.write_private_json(self.cfg.state_dir, self.state_path, self.state)
 
     def run(self) -> None:
+        self.sweep_staging()
         self.load_state()
         items = sorted(self.drive._list_root("cathay", f"{self.cfg.drive_root}/{self.cfg.cathay_folder}"), key=lambda i: i.path)
         if self.file_id:
@@ -274,7 +294,11 @@ def run(cfg: WorkerConfig, *, portfolio_http: httpx.Client, drive: Drive, dry_ru
     with _lock(cfg):
         if ack_date:  # touches neither Drive nor state: allowed while latched
             return _ack(cfg, portfolio_http, ack_date)
+        # only a plain daily commit run reports: the notifier reads the report as "the daily run's result"
+        plain = not (dry_run or validate_history or file_id or since or until or retry_date or unlatch)
         if latch.exists() and not unlatch:
+            if plain:
+                _report(cfg, portfolio_http, {"codes": ["latched", _latch_reason(latch)], "files_seen": 0, "posted": 0})
             raise CathayDisabled("cathay disabled until `python -m worker cathay --unlatch` succeeds")
         job = _Job(cfg, portfolio_http, drive, dry_run=dry_run, file_id=file_id, since=since, until=until,
                    retry_date=retry_date, validate_history=validate_history)
@@ -289,9 +313,9 @@ def run(cfg: WorkerConfig, *, portfolio_http: httpx.Client, drive: Drive, dry_ru
         if validate_history:
             parser.write_private_json(cfg.state_dir, cfg.state_dir / HISTORY, job.history)
         summary = job.summary()
-        if job.commit:
+        if plain:
             _report(cfg, portfolio_http, summary)
-            plain = not (file_id or since or until or retry_date)
-            if unlatch and plain and not summary["codes"]:
+        if job.commit:
+            if unlatch and not (file_id or since or until or retry_date) and not summary["codes"]:
                 latch.unlink(missing_ok=True)  # only a clean plain daily commit run clears it
         return summary
