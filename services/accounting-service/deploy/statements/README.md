@@ -76,12 +76,6 @@ itself, add it to `fx_rates`; exits 1 without latching). A run
 that fails without latching still exits 1, so the unit shows failed: `systemctl --user list-units --failed`, and in Loki
 `{job="homehub", unit="homehub-portfolio-flex.service"} |= "\"codes\": [\""` shows a query that is pending every day.
 
-Settled states. `pre_cutover` is terminal like `imported`: a file dated before the cutover is skipped on later runs. If `STATEMENT_CATHAY_CUTOVER` is ever moved
-earlier, those dates must be re-posted one at a time with `--retry DATE`. `held` is never written and is posted again on every run.
-
-Run report. Only a plain daily commit run (no `--file`, `--since`, `--until`, `--retry`, `--unlatch`, `--ack`, `--dry-run`, `--validate-history`) posts the run
-report. A plain daily run refused because the job is latched posts `result: latched` with the latch reason as `code` (`files_seen` and `posted` 0), then exits 1.
-
 Recovery after fixing the cause (a plain daily run; it clears the latch only when the run ends with no codes, so a
 `stale_fx` day keeps the latch; `--dry-run`, `--query-id` and `--from-file` never clear it):
 
@@ -159,6 +153,12 @@ Flags (`python -m worker cathay`; the summary is one JSON line, exit 1 when `cod
 | `--retry DATE` | re-post the settled file of that trade date (for example a `mismatch` after the rows are fixed); a date before the cutover stays `pre_cutover` |
 | `--ack DATE` | acknowledge a pending day at the portfolio (`POST …/days/DATE/ack`); touches neither Drive nor state, works while latched, exclusive with every other flag (exit 2 otherwise) |
 | `--unlatch` | clear the latch; see below |
+
+Settled states. `pre_cutover` is terminal like `imported`: a file dated before the cutover is skipped on later runs. If `STATEMENT_CATHAY_CUTOVER` is ever moved
+earlier, those dates must be re-posted one at a time with `--retry DATE`. `held` is never written and is posted again on every run.
+
+Run report. Only a plain daily commit run (no `--file`, `--since`, `--until`, `--retry`, `--unlatch`, `--ack`, `--dry-run`, `--validate-history`) posts the run
+report. A plain daily run refused because the job is latched posts `result: latched` with the latch reason as `code` (`files_seen` and `posted` 0), then exits 1.
 
 Latch rule. Only a commit run (no `--dry-run`, no `--validate-history`) latches. A non-transient failure writes the latch and
 every later run exits 1 (`cathay disabled`) until it is cleared: `decrypt` (no password fits), `pdf_malformed`,
