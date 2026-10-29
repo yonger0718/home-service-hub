@@ -1,0 +1,10 @@
+[Unit]
+Description=HomeHub portfolio: 國泰證券 daily statements at 06:40 Taipei (after the previous day's statement is on Drive)
+
+[Timer]
+OnCalendar=*-*-* 06:40:00 Asia/Taipei
+Persistent=true
+Unit=homehub-portfolio-cathay.service
+
+[Install]
+WantedBy=timers.target

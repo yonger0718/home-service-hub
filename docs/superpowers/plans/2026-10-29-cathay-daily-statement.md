@@ -13,7 +13,7 @@ The notifier reads two new portfolio endpoints in an isolated step.
 **Tech Stack:** Python 3.13, FastAPI, SQLAlchemy 2, Alembic, Postgres (SQLite in tests), httpx, pypdfium2 5.14.0,
 pydantic, Angular 21 (one label).
 
-**Spec:** `docs/superpowers/specs/2026-10-29-cathay-daily-statement-design.md` rev 2.4 (`97da2b25`). Section numbers
+**Spec:** `docs/superpowers/specs/2026-10-29-cathay-daily-statement-design.md` rev 2.4 (`97da2b25`); rev 2.5 (PR B) records the real text layout from the 466-statement archive. Section numbers
 below (§x) refer to it. Read the spec before any task.
 
 ## Global Constraints

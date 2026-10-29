@@ -1,4 +1,4 @@
-"""python -m worker <command>: run | poll | backfill | gate | export-masked | verify | flex."""
+"""python -m worker <command>: run | poll | backfill | gate | export-masked | verify | flex | cathay."""
 from __future__ import annotations
 
 import argparse
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import httpx
 
-from worker import config, flex, pipeline
+from worker import cathay, config, flex, pipeline
 from worker.runner import SubprocessRunner
 
 
@@ -61,6 +61,35 @@ def _flex(cfg: config.WorkerConfig, args: argparse.Namespace) -> int:
     return 1 if summary["codes"] else 0
 
 
+def _cathay(cfg: config.WorkerConfig, args: argparse.Namespace) -> int:
+    from worker.drive import Drive
+
+    others = (args.dry_run, args.file, args.since, args.until, args.retry, args.unlatch, args.validate_history)
+    if args.ack and any(others):
+        print("--ack cannot be combined with other flags", file=sys.stderr)
+        return 2
+    try:
+        with httpx.Client(base_url=cfg.portfolio_api_url, timeout=cfg.cathay_timeout_s) as portfolio_http:
+            summary = cathay.run(cfg, portfolio_http=portfolio_http, drive=Drive(cfg, SubprocessRunner()),
+                                 dry_run=args.dry_run, file_id=args.file, since=args.since, until=args.until,
+                                 retry_date=args.retry, ack_date=args.ack, unlatch=args.unlatch,
+                                 validate_history=args.validate_history)
+    except cathay.AlreadyRunning:
+        print("already running")
+        return 3
+    except cathay.CathayDisabled as exc:
+        print(f"cathay disabled: {exc}", file=sys.stderr)
+        return 1
+    except cathay.NothingPending as exc:
+        print(f"nothing pending for {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # the CLI is the output boundary: a class name, never text or a traceback
+        print(f"cathay failed: {type(exc).__name__}", file=sys.stderr)
+        return 1
+    print(json.dumps({"counts": summary["counts"]} if args.validate_history else summary, ensure_ascii=False))
+    return 1 if summary["codes"] else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="worker")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -82,6 +111,15 @@ def main(argv: list[str] | None = None) -> int:
     p_fx.add_argument("--from-file", type=Path, default=None)
     p_fx.add_argument("--legacy-until", type=date.fromisoformat, default=None)
     p_fx.add_argument("--unlatch", action="store_true")
+    p_ct = sub.add_parser("cathay")
+    p_ct.add_argument("--dry-run", action="store_true")
+    p_ct.add_argument("--file", default=None)
+    p_ct.add_argument("--since", type=date.fromisoformat, default=None)
+    p_ct.add_argument("--until", type=date.fromisoformat, default=None)
+    p_ct.add_argument("--retry", type=date.fromisoformat, default=None)
+    p_ct.add_argument("--ack", type=date.fromisoformat, default=None)
+    p_ct.add_argument("--unlatch", action="store_true")
+    p_ct.add_argument("--validate-history", action="store_true")
     args = ap.parse_args(argv)
     os.umask(0o077)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -96,6 +134,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.cmd == "flex":
         return _flex(cfg, args)
+    if args.cmd == "cathay":
+        return _cathay(cfg, args)
     runner = SubprocessRunner()
     if args.cmd == "gate":
         from worker.parser import Gate, Parser
