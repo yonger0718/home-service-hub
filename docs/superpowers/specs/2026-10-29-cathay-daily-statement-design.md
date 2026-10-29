@@ -1,6 +1,7 @@
 # 國泰證券日對帳單 auto-import — design
 
-Status: rev 2.1 (2026-10-29), after the AGENT-335 review (findings 1–6 folded) and its re-check (buy tax pinned to 0). Owner rulings 2026-10-29: the daily
+Status: rev 2.2 (2026-10-29), after the AGENT-335 review (findings 1–6 folded) and its re-check (buy tax pinned to 0);
+rev 2.2 adds §7 notifications to the scope (owner 2026-10-29: a stuck date must reach the owner, not only a log). Owner rulings 2026-10-29: the daily
 statement is the primary source for the dates it covers ("對帳單為主，按日期分"); current days matter most and the
 archive is used to validate the parser, not to wait for a full backfill; the first writer of a date owns it and a
 mismatch is never resolved automatically in either direction (option A — the owner imports the CSV only after the
@@ -15,7 +16,7 @@ duplicates.
 
 Non-goals: the accounting ledger (settlement cash stays on the 國泰 bank account and its bank statement; R7 §4
 settlement matching is not built yet and is not part of this change); 永豐證券 / 期貨 statements; monthly
-statements; push notifications (§7.3 names the follow-up).
+statements.
 
 ## 2. Facts (from 319 archived statements, 2024-01 → 2026-10)
 
@@ -188,17 +189,49 @@ differences go into `last_detail.holdings_diff` and the response. A held date sk
 - Latch (`cathay-disabled.json`, like the Flex job) on: decrypt failure with every candidate, any §4.1 / §4.2
   failure, HTTP 422. Unit failed; `--unlatch` after a fix; dry runs never clear it.
 
-## 7. Rollout and history
+## 7. Notifications (in scope)
+
+A date that needs the owner, and a job that stopped, must reach the owner through the existing notifier
+(accounting-service `notify/`, Discord); the worker log alone is not enough. The worker runs as `homehub-worker` and
+the notifier as the owner's user, so both meet at the portfolio API.
+
+### 7.1 Portfolio read and report endpoints
+
+- `GET /api/portfolio/imports/cathay-statement/pending` → `[{"trade_date", "status", "reason", "since", "last_at"}]`:
+  every date whose latest attempt is `held` or `mismatch` and that is not owned, plus every owned date whose latest
+  attempt is `conflict`; `since` is the first attempt that put the date in this state. Sorted by date.
+- `POST /api/portfolio/imports/cathay-statement/runs` (worker, once per commit run, also when the run ends latched or
+  failed): `{"run_at", "result": "ok" | "latched" | "failed", "code", "files_seen", "posted"}`. Portfolio keeps the
+  latest row per result plus the latest overall (`cathay_statement_run`, small table).
+- `GET /api/portfolio/imports/cathay-statement/runs/latest` → the latest overall row and the latest `ok` row.
+- A `conflict` leaves the pending list only when the owner runs `python -m worker cathay --ack <date>`, which
+  posts `POST …/days/<date>/ack` and sets the latest attempt to `acknowledged` (acceptance unchanged). `held` and
+  `mismatch` leave it when the date is accepted (or the owner acks it after importing that day by CSV elsewhere).
+- No auth today, like every portfolio route (issue #117 adds bearer auth for all of them later); the endpoints carry
+  dates, statuses and reason codes only, no amounts or names beyond the unresolved name in `reason`.
+
+### 7.2 Notifier
+
+- Config: optional `portfolio_base` (e.g. `http://127.0.0.1:8001`); absent → the section is off and nothing else
+  changes. `cathay_stale_hours` (default 48).
+- Daily (`python -m notify daily`): a section 「國泰對帳單」 with one item per pending date
+  (`10/27 保留：名稱對不到代號 範例電子`, `10/28 對不上 CSV`, `10/29 收到不同版本的對帳單`) and one item when the latest
+  run is `latched` / `failed`, or the latest run is older than `cathay_stale_hours`. Items count like the other daily
+  items, so a day with only this section still sends, and the same-day dedupe applies as for every other item.
+- Weekly: the same pending dates under its 「該處理的事」 part.
+- A portfolio read error never fails the debit reminders: the section becomes one item 「國泰對帳單狀態讀不到」 and
+  the rest of the run continues.
+
+## 8. Rollout and history
 
 - Cutover = the first date after the last CSV import (2026-10-16). Dates before it run `dry_run` only: the archive
   produces a validation report (would-verify / mismatch / held counts and the mismatch list) for the owner; no write,
   no ownership row. Dates from the cutover commit normally, so 2026-10-16 → today import on the first run.
 - The owner adds the password line `投資/國泰證券/日對帳單=$ID` to the worker's password file.
 - Deploy order: portfolio (migration + endpoint + CSV change) first, then the worker job and timer.
-- Notifications: the worker summary and journald only; a daily-notifier line for `mismatch` / `held` / `conflict`
-  / latch is a follow-up issue.
+- Notifier: release the notifier with `portfolio_base` set after the portfolio and the worker are live.
 
-## 8. Tests (fictional fixtures only; never a real statement)
+## 9. Tests (fictional fixtures only; never a real statement)
 
 Worker: a fixture text per shape (single line, two pages, 沖買/沖賣 pair, points prefix, two price groups of one
 order); an unsupported 資買 line → no lines posted with reason; each §4.1 grammar failure; each §4.2 failure,
@@ -211,9 +244,12 @@ rehash never selects a statement row; imported → conflict (corrected sha) → 
 fingerprints unchanged; CSV-first verified then the same statement again → duplicate; same totals but different
 day-trade marker → mismatch; two sessions (CSV commit and statement commit for one date, interleaved at the read):
 exactly one writes, the other sees ownership or rows under the lock; a failure after inserting rows rolls back the
-ownership row; held then mapping fixed → imported; dry run writes nothing.
+ownership row; held then mapping fixed → imported; dry run writes nothing; pending list contents per status, conflict
+until ack, ack never touches acceptance; run report latest rows.
+Notifier: section off without `portfolio_base`; items for held / mismatch / conflict / latched / failed / stale; a
+day with only this section sends; portfolio read error → one item and the debit items still sent.
 
-## 9. Review focus
+## 10. Review focus
 
 1. A statement line and a CSV fill must never both become transactions for one date (§5.3 lock, §5.5 guard).
 2. A layout change must stop the job, not import a wrong number (§4.1 grammar, §4.2 net identity).
@@ -221,3 +257,5 @@ ownership row; held then mapping fixed → imported; dry run writes nothing.
 4. Unresolved names or unsupported lines must not import a partial day (§5.4 case 3).
 5. Cash legs and realized P&L of an imported date must equal what the CSV import would have produced: same columns,
    same calls, same day-trade marker.
+6. A stuck date or a stopped job must reach the owner's Discord within a day, and a portfolio outage must not
+   silence the debit reminders (§7).
