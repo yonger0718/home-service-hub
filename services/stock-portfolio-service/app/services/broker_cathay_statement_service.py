@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import portfolio as models
-from ..models.cathay_statement import CathayStatementDay
+from ..models.cathay_statement import CathayStatementDay, CathayStatementRun
 from ..schemas.cathay_statement import Holding, StatementPayload
 from . import broker_cathay_service, cash_account_service
 from .broker_cathay_service import CATHAY_SIDE_MAP
@@ -431,3 +431,88 @@ def covered_check(rows: list[ParsedRow], canonical: list[dict]) -> bool:
         for line in canonical
     )
     return csv_sums == line_sums
+
+
+# --- Owner-facing reads and reports (spec 7.1) -----------------------------
+
+PENDING_STATUSES = ("held", "mismatch", "conflict")
+PENDING_LIMIT = 50
+PENDING_REASON_CHARS = 40
+
+
+def _pending_filter():
+    return and_(
+        CathayStatementDay.last_status.in_(PENDING_STATUSES),
+        or_(
+            CathayStatementDay.ack_sha256.is_(None),
+            CathayStatementDay.ack_status.is_(None),
+            CathayStatementDay.ack_sha256 != CathayStatementDay.last_sha256,
+            CathayStatementDay.ack_status != CathayStatementDay.last_status,
+        ),
+    )
+
+
+def pending_days(db: Session) -> dict:
+    """Dates whose latest attempt needs the owner and is not acknowledged (spec 7.1)."""
+    query = db.query(CathayStatementDay).filter(_pending_filter())
+    total = query.count()
+    rows = query.order_by(CathayStatementDay.trade_date).limit(PENDING_LIMIT).all()
+    items = [
+        {
+            "trade_date": row.trade_date.isoformat(),
+            "status": row.last_status,
+            "reason": (row.last_reason or "")[:PENDING_REASON_CHARS] or None,
+            "since": row.since.isoformat() if row.since else None,
+            "last_at": row.last_at.isoformat() if row.last_at else None,
+        }
+        for row in rows
+    ]
+    return {"items": items, "total": total, "truncated": total > len(items)}
+
+
+def acknowledge_day(db: Session, trade_date: date) -> CathayStatementDay | None:
+    """Store the current (sha, status) as the ack; None when the date is not pending."""
+    day = (
+        db.query(CathayStatementDay)
+        .filter(CathayStatementDay.trade_date == trade_date, _pending_filter())
+        .with_for_update()
+        .one_or_none()
+    )
+    if day is None:
+        return None
+    day.ack_sha256 = day.last_sha256
+    day.ack_status = day.last_status
+    day.ack_at = _now()
+    db.commit()
+    return day
+
+
+def _upsert_run(db: Session, kind: str, report: dict) -> None:
+    row = db.query(CathayStatementRun).filter(CathayStatementRun.kind == kind).one_or_none()
+    if row is None:
+        row = CathayStatementRun(kind=kind)
+        db.add(row)
+    for key, value in report.items():
+        setattr(row, key, value)
+
+
+def record_run(db: Session, report: dict) -> None:
+    """Upsert the ``latest`` run, and the ``ok`` run when the run succeeded."""
+    _upsert_run(db, "latest", report)
+    if report["result"] == "ok":
+        _upsert_run(db, "ok", report)
+    db.commit()
+
+
+def latest_runs(db: Session) -> dict:
+    rows = {r.kind: r for r in db.query(CathayStatementRun).all()}
+
+    def view(row: CathayStatementRun | None) -> dict | None:
+        if row is None:
+            return None
+        return {
+            "run_at": row.run_at.isoformat(), "result": row.result, "code": row.code,
+            "files_seen": row.files_seen, "posted": row.posted,
+        }
+
+    return {"latest": view(rows.get("latest")), "latest_ok": view(rows.get("ok"))}
