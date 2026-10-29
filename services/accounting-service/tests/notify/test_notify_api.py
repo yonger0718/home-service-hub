@@ -65,7 +65,7 @@ def test_fetch_daily_groups_children():
     assert set(snap.payments) == {100} and set(snap.source_entries) == {1}
     assert snap.calendar.holidays == frozenset({date(2026, 10, 26)}) and snap.calendar.last_known_day == date(2027, 12, 31)
     assert set(snap.statements) == {100, 104} and snap.inbox is None and snap.open_cases == {}
-    pay = [r for r in log if r.url.path == "/entries" and r.url.params["kind"] == "transfer_in"][0]
+    pay = [r for r in log if r.url.path == "/entries" and r.url.params.get("kind") == "transfer_in"][0]
     assert pay.url.params.get_list("account_id") == ["100", "104"]
     assert {r.method for r in log} == {"GET"}
 
@@ -113,3 +113,12 @@ def test_full_cases_page_is_capped():
     client, _ = make_client(DAILY | {"/reconciliation/cases": [{}] * 1000})
     with pytest.raises(CappedRead):
         fetch_weekly(ReadClient(client, "t"), TODAY)
+
+
+def test_fetch_reads_every_kind_of_card_entry_per_group():
+    client, log = make_client(DAILY)
+    snap = fetch_daily(ReadClient(client, "t"), TODAY)
+    assert snap.card_activity == {100: []}
+    every = [r for r in log if r.url.path == "/entries" and "kind" not in r.url.params]
+    assert [r.url.params.get_list("account_id") for r in every] == [["100", "104"]]
+    assert every[0].url.params["date_from"] == "2026-06-29" and every[0].url.params["date_to"] == "2026-10-27"

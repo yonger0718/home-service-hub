@@ -16,6 +16,7 @@ from .cycles import Calendar
 PAGE = 500
 CASE_CAP = 1000
 SKIPPED_EVENT = "auto_pay_skipped"  # the only audit event the daily and the weekly read (debits.SKIPPED)
+READ_DAYS = 120  # entries are read over [today − 120, today]
 TZ = timezone(timedelta(hours=8))
 
 
@@ -63,11 +64,12 @@ class ReadClient:
     def statements(self, account_id: int) -> list[dict]:
         return self._get(f"/accounts/{account_id}/statements")
 
-    def entries(self, account_ids: list[int], kind: str, date_from: date, date_to: date) -> list[dict]:
+    def entries(self, account_ids: list[int], kind: str | None, date_from: date, date_to: date) -> list[dict]:
+        """Every page of the matching entries; `kind=None` reads all kinds."""
         path, out, offset = "/entries", [], 0
         while True:
-            params = [("account_id", str(i)) for i in account_ids] + [
-                ("kind", kind), ("date_from", date_from.isoformat()), ("date_to", date_to.isoformat()),
+            params = [("account_id", str(i)) for i in account_ids] + ([("kind", kind)] if kind else []) + [
+                ("date_from", date_from.isoformat()), ("date_to", date_to.isoformat()),
                 ("limit", str(PAGE)), ("offset", str(offset))]
             page = self._get(path, params)
             items = page["items"]
@@ -112,6 +114,9 @@ class Snapshot:
     audit: list[dict]
     open_cases: dict[int, list[dict]] = field(default_factory=dict)
     inbox: dict | None = None
+    # every entry of each credit group (keyed by the master) over the read window, any kind; None = not read, and
+    # then no cycle is ever judged quiet (debits.no_bill_expected)
+    card_activity: dict[int, list[dict]] | None = None
 
 
 def created_at_of(row: dict) -> datetime:
@@ -144,8 +149,10 @@ def _fetch(client: ReadClient, today: date, *, weekly: bool) -> Snapshot:
     accounts = [a for a in client.accounts(today) if not a.get("is_archived")]
     stmt_accounts = accounts if weekly else [a for a in accounts if a.get("is_credit")]
     statements = {a["id"]: client.statements(a["id"]) for a in stmt_accounts}
-    start = today - timedelta(days=120)
-    payments = {m: client.entries(ids, "transfer_in", start, today) for m, ids in _groups(accounts).items()}
+    start = today - timedelta(days=READ_DAYS)
+    groups = _groups(accounts)
+    payments = {m: client.entries(ids, "transfer_in", start, today) for m, ids in groups.items()}
+    card_activity = {m: client.entries(ids, None, start, today) for m, ids in groups.items()}
     sources = sorted({a["auto_pay_account_id"] for a in accounts if a.get("is_credit") and a.get("auto_pay_account_id")})
     source_entries = {x: client.entries([x], "transfer_out", start, today) + client.entries([x], "expense", start, today)
                       for x in sources}
@@ -166,7 +173,7 @@ def _fetch(client: ReadClient, today: date, *, weekly: bool) -> Snapshot:
                     raise CappedRead(None, "/reconciliation/cases", reason="cases page full")
                 open_cases[acct["id"]] = cases
     return Snapshot(today, settings, calendar, accounts, statements, payments, source_entries, pending, audit,
-                    open_cases, inbox)
+                    open_cases, inbox, card_activity)
 
 
 def fetch_daily(client: ReadClient, today: date) -> Snapshot:

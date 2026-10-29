@@ -12,7 +12,7 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Literal
 
-from .api import TZ, Snapshot, created_at_of
+from .api import READ_DAYS, TZ, Snapshot, created_at_of
 from .config import NotifyConfig
 from .cycles import (
     Period,
@@ -42,6 +42,7 @@ MATCH_DAYS = 3        # a statement matches a cycle when its period_end is withi
 OVERDUE_DAYS = 30     # manual / rule-only items stay overdue while 0 < (today − due).days <= 30
 SKIPPED = "auto_pay_skipped"
 CUTOFF = "cutoff"
+NOT_ACTIVITY = frozenset({"balance_adjustment"})  # a ledger correction, never a line on the bank's statement
 
 
 @dataclass(frozen=True)
@@ -269,7 +270,8 @@ class _Run:
                 # A surviving off-cycle bill newer than the previous cycle's match zone (its end + 3) is this
                 # cycle's bill: no 帳單未到 next to it. One that only covers an older cycle does not clear this one.
                 bound = shift_period(closing, cycle, -1)[1] + timedelta(days=MATCH_DAYS)
-                if not any(_day(s["period_end"]) > bound for s, _ in surviving):
+                if not any(_day(s["period_end"]) > bound for s, _ in surviving) and not no_bill_expected(
+                        live, activity_of(self.snap, card), cycle[1], self.today):
                     items.append(self.rule_item(card, cycle))
         return [i for i in items if i is not None] + other_items
 
@@ -317,6 +319,40 @@ def _match(live: list[dict], cycle_end: date) -> dict | None:
     """The live statement whose period_end is within ±3 days of `cycle_end`: closest first, then highest id."""
     near = [s for s in live if abs((_day(s["period_end"]) - cycle_end).days) <= MATCH_DAYS]
     return min(near, key=lambda s: (abs((_day(s["period_end"]) - cycle_end).days), -s["id"]), default=None)
+
+
+def activity_of(snap: Snapshot, account: dict) -> list[dict] | None:
+    """The card group's entries (`card_activity` is keyed by the master); None when the snapshot did not read them."""
+    if snap.card_activity is None:
+        return None
+    return snap.card_activity.get(account.get("combined_account_id") or account["id"], [])
+
+
+def no_bill_expected(statements: list[dict], activity: list[dict] | None, cycle_end: date, today: date) -> bool:
+    """§5.1 quiet cycle (owner ruling 2026-10-29): the bank sends no statement for a cycle that opens with nothing
+    owed and has nothing on it. True when the last live statement ending before the cycle (period_end more than 3
+    days before `cycle_end`) has `statement_total <= 0`, ends inside the entry read window, and no top-level entry
+    of the group other than a balance adjustment falls after its period_end through `cycle_end` (by the later of
+    entry and posted date). Unknown activity, no such statement, or a statement older than the window → False."""
+    if activity is None:
+        return False
+    before = [s for s in statements if s.get("mode") == "live" and not s.get("retired")
+              and _day(s["period_end"]) < cycle_end - timedelta(days=MATCH_DAYS)]
+    if not before:
+        return False
+    last = max(before, key=lambda s: (_day(s["period_end"]), s["id"]))
+    last_end = _day(last["period_end"])
+    if Decimal(str(last["statement_total"])) > 0 or last_end < today - timedelta(days=READ_DAYS):
+        return False
+    return not any(e["kind"] not in NOT_ACTIVITY and _top_level(e) and last_end < _booked(e) <= cycle_end
+                   for e in activity)
+
+
+def _booked(entry: dict) -> date:
+    """The later of entry and posted date: a purchase the bank posts after the closing day is on the next bill."""
+    posted = _day(entry.get("posted_date"))
+    booked = _day(entry["entry_date"])
+    return max(booked, posted) if posted else booked
 
 
 def _top_level(entry: dict) -> bool:

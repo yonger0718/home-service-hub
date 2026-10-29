@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from .api import TZ, Snapshot, created_at_of
 from .config import NotifyConfig
 from .cycles import shift_period
-from .debits import CUTOFF, SKIPPED, Skip
+from .debits import CUTOFF, SKIPPED, Skip, activity_of, no_bill_expected
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 ACTIVE_DAYS = 90
@@ -135,7 +135,14 @@ def _missing(snap: Snapshot, grace: int) -> list[MissingStatement]:
         if not live:
             continue
         ends = [date.fromisoformat(r["period_end"]) for r in live]
-        expected = _expected(acct.get("closing_day"), ends)
+        closing = acct.get("closing_day")
+        expected = _expected(closing, ends)
+        if acct.get("is_credit") and closing is not None:
+            # a quiet cycle has no bill (§5.1): the next expected one is the first cycle with something on it
+            activity = activity_of(snap, acct)
+            while (expected + timedelta(days=grace) < snap.today
+                   and no_bill_expected(live, activity, expected, snap.today)):
+                expected = shift_period(closing, (expected - timedelta(days=30), expected), 1)[1]
         if expected + timedelta(days=grace) < snap.today:
             out.append(MissingStatement(acct["id"], acct["name"], ends[-1], expected, (snap.today - expected).days))
     return out
