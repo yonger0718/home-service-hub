@@ -15,7 +15,7 @@ PORTFOLIO = Path(__file__).resolve().parents[3] / "stock-portfolio-service"
 
 
 def load(name: str) -> str:
-    return (FIXTURES / f"{name}.txt").read_text(encoding="utf-8")
+    return (FIXTURES / f"{name}.txt").read_bytes().decode("utf-8").replace("\r\n", "\n")
 
 
 def payload(text: str, file_name: str = "2026-03-09_國泰證券_日對帳單_範例.pdf") -> dict:
@@ -44,7 +44,7 @@ def test_single_payload_matches_the_portfolio_fixture():
 def test_two_pages_and_sell():
     st = parse_statement(load("two_pages"))
     assert [(ln["category"], ln["tax"], ln["net"]) for ln in st.lines] == [("集買", 0, -12305), ("集賣", 120, 39860)]
-    assert [h["code"] for h in st.holdings] == ["9999", "8888"]
+    assert [h["code"] for h in st.holdings] == ["9999", "99999", "999999"]
     assert st.totals == {"amount": 52300, "fee": 25, "tax": 120, "net": 27555}
 
 
@@ -57,6 +57,7 @@ def test_day_trade_pair_with_empty_holdings():
 def test_points_prefix():
     st = parse_statement(load("points"))
     assert st.lines[0]["points"] is True and st.lines[0]["order_no"] == "XY12300"
+    assert st.net_amount == -12305
 
 
 def test_one_order_in_two_price_groups():
@@ -72,8 +73,8 @@ def test_unsupported_category():
 
 
 def test_unsupported_still_checks_header_and_footer():
-    assert code_of(load("unsupported").replace("115年 3月 9日", "115年 3月 8日")) == "date_line"
-    assert code_of(load("unsupported").replace("淨收付金額 -12,305", "淨收付金額 -12,306")) == "net_total"
+    assert code_of(load("unsupported").replace("證券日對帳單 115年 3月 9日", "證券日對帳單 115年 3月 8日")) == "date_line"
+    assert code_of(load("unsupported").replace("淨收付金額： -12,305", "淨收付金額： -12,306")) == "net_total"
     assert code_of(load("unsupported").replace("9999 範例電子", "12 範例電子")) == "holdings"
 
 
@@ -93,7 +94,7 @@ def test_header_and_date_line_disagree():
 
 
 def test_missing_header():
-    assert code_of(load("single").replace("證券日對帳單", "對帳單")) == "header"
+    assert code_of(load("single").replace("證券日對帳單", "對帳單", 1)) == "header"
 
 
 def test_stray_line_in_item_section():
@@ -127,7 +128,7 @@ def test_fee_total_differs():
 
 
 def test_header_net_differs_from_footer_net():
-    assert code_of(load("single").replace("淨收付金額 -12,305", "淨收付金額 -12,306")) == "net_total"
+    assert code_of(load("single").replace("淨收付金額： -12,305", "淨收付金額： -12,306")) == "net_total"
     assert code_of(load("single").replace("0 0 -12,305", "0 0 -12,306")) == "net_total"
 
 
@@ -148,12 +149,53 @@ def test_holdings_code_too_short():
     ("XY12300", "XY1230", "line3"),
     ("XY12300", "XY123000", "line3"),
     ("XY12300", "XY-2300", "line3"),
-    ("12.5 1,000 12,500 0 0", "12.5 -1 12,500 0 0", "holdings"),
+    ("▲12.35 1,000 12,350", "▲12.35 -1 12,350", "holdings"),
 ])
 def test_item_field_negatives(old, new, code):
     text = load("single")
     assert old in text
     assert code_of(text.replace(old, new, 1)) == code
+
+
+def test_points_footer_differs_from_header_points():
+    assert code_of(load("points").replace("淨收付點數： +3", "淨收付點數： +4")) == "net_total"
+    assert code_of(load("points").replace("淨收付點數： +3\n", "")) == "net_total"
+    assert code_of(load("single").replace("*表示", "淨收付點數： +3\n*表示")) == "net_total"
+
+
+def test_greeting_missing():
+    assert code_of(load("single").replace("親愛的 王小明 先生/小姐 您好:\n", "")) == "header"
+
+
+def test_greeting_without_name_is_fine():
+    assert parse_statement(load("single").replace("親愛的 王小明 先生/小姐", "親愛的 先生/小姐")).net_amount == -12305
+
+
+def test_item_column_header_missing():
+    assert code_of(load("single").replace("客戶應收付額\n", "")) == "header"
+
+
+def test_buy_total_off_by_one():
+    assert code_of(load("single").replace("買進總計： 12,300", "買進總計： 12,301")) == "totals"
+    assert code_of(load("two_pages").replace("賣出總計： 40,000", "賣出總計： 40,001")) == "totals"
+
+
+def test_nonzero_margin_totals_on_supported_statement():
+    assert code_of(load("single").replace("0 0 0 0\n0\n買進", "0 34,000 0 0\n0\n買進")) == "totals"
+
+
+def test_empty_line_inside_item_section():
+    assert code_of(load("two_pages").replace("XY12300\n0\n", "XY12300\n0\n\n")) == "stray_line"
+
+
+def test_optional_commas_and_signs():
+    text = load("single").replace("0 0 -12,305", "0 0 -12305")
+    assert parse_statement(text).net_amount == -12305
+
+
+def test_link_line_variant_and_trailing_blank_lines():
+    text = load("single").replace("智慧選股 台股行情 申購股票 熱門新聞", "智慧選股 除權除息表 股東會時間表 申購股票 理財行事曆 申報轉讓") + "\n\n"
+    assert parse_statement(text).holdings[0]["code"] == "9999"
 
 
 def test_filename_date_warning_only():

@@ -16,16 +16,34 @@ BUY = ("集買", "沖買")
 POINTS_PREFIX = "(小樹點數) "
 
 _HEADER_RE = re.compile(r"^證券日對帳單 (\d+)年 (\d{1,2})月 (\d{1,2})日$")
-_COLUMNS_RE = re.compile(r"^成交日期 交割日期( \S+)*$")
-_DATE_LINE_RE = re.compile(r"^(\d{4})/(\d{2})/(\d{2}) (\d{4})/(\d{2})/(\d{2}) (\S+) (\S+) (\S+)$")
-_ITEM_COLUMNS = "商品名稱 類別 成交股數 單價 成交金額 手續費 交易稅"
-_HOLDINGS_COLUMNS = "代碼 股票名稱 當日收盤價 集保股數 集保市值 融資股數 融券股數"
-_CATEGORY_RE = re.compile(r"^[一-鿿]{2}$")
-_UINT_RE = re.compile(r"^(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)$")
-_PRICE_RE = re.compile(r"^(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?$")
+_COLUMNS = "成交日期 交割日期 預收款 留置款 客戶淨收(+)/付(-)金額"
+_POINTS_COLUMNS = "客戶淨收(+)/付(-)點數"
+_DATES = r"(\d{4})/(\d{2})/(\d{2}) (\d{4})/(\d{2})/(\d{2})"
+_DATE_LINE_RE = re.compile(rf"^{_DATES} (\S+) (\S+)(?: (\S+))?$")
+_ITEM_COLUMNS = [
+    "商品名稱 類別 成交股數 單價 成交金額 手續費 交易稅", "客戶應收付額", "預收款/留置款", "融資自備款/", "融券擔保品",
+    "融資金額/", "融券保證金", "融券手續費 債息利息 委託書號",
+]
+_HOLDINGS_COLUMNS = "代碼 股票名稱 當日收盤價 集保股數 集保市值 融資股數 融券股數 理財資訊"
+_HOLDINGS_SUFFIX = " 停損/停利通知 個股分析 我要下單"
+_FOOTNOTE = "*表示交易稅為千分之一"
+_NUM = r"(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)"
+_SNUM = rf"[+-]?{_NUM}"
+_TRADE_TOTALS_RE = re.compile(rf"^買進總計： ({_NUM}) 賣出總計： ({_NUM}) 本期買\+賣合計： ({_NUM}) 當沖損益： ({_SNUM})$")
+_CASH_TOTALS_RE = re.compile(rf"^預收款： ({_NUM}) 留置款： ({_NUM}) 應收付金額： ({_SNUM}) 現沖損益： ({_SNUM})$")
+_NET_LINE_RE = re.compile(rf"^淨收付金額： ({_SNUM})$")
+_POINTS_LINE_RE = re.compile(rf"^淨收付點數： ({_SNUM})$")
+_HOLDINGS_TOTAL_RE = re.compile(rf"^集保市值總計： {_NUM}(?:\.[0-9]+)?$")
+_HOLDING_PRICE_RE = re.compile(rf"^[▲▼]?{_NUM}(?:\.[0-9]+)?$")
+_VALUE_RE = re.compile(rf"^{_NUM}(?:\.[0-9]+)?$")
+_CATEGORY_RE = re.compile(r"^[\u4e00-\u9fff]{2}$")
+_UINT_RE = re.compile(rf"^{_NUM}$")
+_SINT_RE = re.compile(rf"^{_SNUM}$")
+_PRICE_RE = re.compile(rf"^{_NUM}(?:\.[0-9]+)?$")
 _ORDER_RE = re.compile(r"^[A-Za-z0-9]{7}$")
 _CODE_RE = re.compile(r"^[0-9A-Z]{4,6}$")
 _FILENAME_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
+_LINK_PREFIX = "智慧選股 "
 
 
 class StatementError(ValueError):
@@ -71,23 +89,25 @@ def _uint(token: str, code: str) -> int:
 
 
 def _signed(token: str, code: str) -> int:
-    if token.startswith("-"):
-        return -_uint(token[1:], code)
-    return _uint(token, code)
+    if not _SINT_RE.match(token):
+        raise StatementError(code)
+    return int(token.replace(",", ""))
 
 
-def _parse_dates(lines: list[str]) -> tuple[date, date, int, int]:
-    """Returns (trade, settlement, net, index of the first line after the data line)."""
-    for i, line in enumerate(lines):
-        m = _HEADER_RE.match(line)
-        if m:
-            break
-    else:
+def _parse_header(lines: list[str]) -> tuple[date, date, int, int | None, int]:
+    """Returns (trade, settlement, cash net, points net or None, index of the first line after the header)."""
+    m = _HEADER_RE.match(lines[0]) if lines else None
+    if not m or len(lines) < 6:
         raise StatementError("header")
-    if i + 2 >= len(lines) or not _COLUMNS_RE.match(lines[i + 1]):
+    greeting, intro, fee = lines[1:4]
+    if not (greeting.startswith("親愛的 ") and greeting.endswith(" 您好:")
+            and intro.startswith("以下是您") and intro.endswith(" 的客戶日對帳單。")
+            and fee.startswith("您的") and fee.endswith("元起。") and lines[4] == _COLUMNS):
         raise StatementError("header")
-    d = _DATE_LINE_RE.match(lines[i + 2])
-    if not d:
+    points = lines[5] == _POINTS_COLUMNS
+    at = 6 if points else 5
+    d = _DATE_LINE_RE.match(lines[at])
+    if not d or (d.group(9) is None) != points or d.group(7) != "0" or d.group(8) != "0":
         raise StatementError("date_line")
     try:
         header = date(int(m.group(1)) + 1911, int(m.group(2)), int(m.group(3)))
@@ -97,9 +117,11 @@ def _parse_dates(lines: list[str]) -> tuple[date, date, int, int]:
         raise StatementError("date_line") from None
     if header != trade:
         raise StatementError("date_line")
-    _uint(d.group(7), "date_line")
-    _uint(d.group(8), "date_line")
-    return trade, settle, _signed(d.group(9), "date_line"), i + 3
+    if points:
+        if at + 2 >= len(lines):
+            raise StatementError("date_line")
+        return trade, settle, _signed(lines[at + 1], "date_line"), _signed(lines[at + 2], "date_line"), at + 3
+    return trade, settle, _signed(d.group(9), "date_line"), None, at + 1
 
 
 def _is_item_start(line: str) -> bool:
@@ -146,52 +168,85 @@ def _parse_item(lines: list[str], i: int) -> dict:
             "tax": tax, "net": net, "order_no": parts[4], "points": points}
 
 
-def _parse_footer(lines: list[str]) -> tuple[dict, int, int]:
-    """lines start at the 總合計 line. Returns (totals with net, 淨收付金額, index of the holdings column header)."""
-    tokens = lines[0].split(" ")
+@dataclass
+class _Footer:
+    totals: dict
+    line_net: int
+    buy_total: int
+    sell_total: int
+    both_total: int
+    cash_net: int
+    net: int
+    points: int | None
+    margin_ok: bool
+    next_index: int
+
+
+def _parse_footer(lines: list[str], at: int) -> _Footer:
+    """lines[at] is the 總合計 line."""
+    if at + 8 > len(lines):
+        raise StatementError("totals")
+    tokens = lines[at].split(" ")
     if len(tokens) != 4 or tokens[0] != "總合計":
         raise StatementError("totals")
     amount, fee, tax = (_uint(t, "totals") for t in tokens[1:])
-    try:
-        end = lines.index(_HOLDINGS_COLUMNS)
-    except ValueError:
-        raise StatementError("holdings") from None
-    rest = lines[1:end]
-    # `<totals net>` then `淨收付金額 <net>`; the label's number may sit on the next line.
-    if len(rest) == 3 and rest[1] == "淨收付金額":
-        rest = [rest[0], f"淨收付金額 {rest[2]}"]
-    if len(rest) != 2:
+    line_net = _signed(lines[at + 1], "totals")
+    margin_ok = lines[at + 2] == "0 0 0 0" and lines[at + 3] == "0"
+    trade = _TRADE_TOTALS_RE.match(lines[at + 4])
+    cash = _CASH_TOTALS_RE.match(lines[at + 5])
+    net = _NET_LINE_RE.match(lines[at + 6])
+    if not (trade and cash and net):
         raise StatementError("totals")
-    label = rest[1].split(" ")
-    if len(label) != 2 or label[0] != "淨收付金額":
+    i = at + 7
+    points = None
+    pm = _POINTS_LINE_RE.match(lines[i])
+    if pm:
+        points = int(pm.group(1).replace(",", ""))
+        i += 1
+    if i >= len(lines) or lines[i] != _FOOTNOTE:
         raise StatementError("totals")
-    net = _signed(rest[0], "totals")
-    return {"amount": amount, "fee": fee, "tax": tax, "net": net}, _signed(label[1], "totals"), end
+    to_int = lambda t: int(t.replace(",", ""))  # noqa: E731
+    return _Footer({"amount": amount, "fee": fee, "tax": tax, "net": line_net}, line_net, to_int(trade.group(1)),
+                   to_int(trade.group(2)), to_int(trade.group(3)), to_int(cash.group(3)), to_int(net.group(1)),
+                   points, margin_ok, i + 1)
 
 
-def _parse_holdings(rows: list[str]) -> list[dict]:
+def _parse_holdings(lines: list[str], at: int) -> list[dict]:
+    """lines[at:] is the optional holdings table then the link line."""
+    if len(lines) - at == 1 and lines[at].startswith(_LINK_PREFIX):
+        return []
+    if lines[at] != _HOLDINGS_COLUMNS or not lines[-1].startswith(_LINK_PREFIX) or len(lines) - at < 3:
+        raise StatementError("holdings")
+    if not _HOLDINGS_TOTAL_RE.match(lines[-2]):
+        raise StatementError("holdings")
     out = []
-    for row in rows:
+    for row in lines[at + 1:-2]:
+        if row.endswith(_HOLDINGS_SUFFIX):
+            row = row[: -len(_HOLDINGS_SUFFIX)]
         t = row.split(" ")
-        if len(t) < 7 or not _CODE_RE.match(t[0]):
+        if len(t) != 7 or not _CODE_RE.match(t[0]) or not _HOLDING_PRICE_RE.match(t[2]):
             raise StatementError("holdings")
-        if not _PRICE_RE.match(t[-5]):
+        shares = _uint(t[3], "holdings")
+        if not _VALUE_RE.match(t[4]):
             raise StatementError("holdings")
-        shares = _uint(t[-4], "holdings")
-        for token in t[-3:]:
-            _uint(token, "holdings")
-        out.append({"code": t[0], "name": " ".join(t[1:-5]), "shares": shares})
+        _uint(t[5], "holdings")
+        _uint(t[6], "holdings")
+        out.append({"code": t[0], "name": t[1], "shares": shares})
     return out
 
 
 def parse_statement(text: str) -> ParsedStatement:
-    lines = [ln.strip() for ln in text.splitlines()]
-    lines = [ln for ln in lines if ln]
-    trade, settle, header_net, i = _parse_dates(lines)
-    if i < len(lines) and lines[i] == _ITEM_COLUMNS:
-        i += 1
+    lines = [ln.strip() for ln in text.split("\n")]
+    while lines and not lines[-1]:
+        lines.pop()
+    if any(not ln for ln in lines):
+        raise StatementError("stray_line")
+    trade, settle, header_net, header_points, i = _parse_header(lines)
+    if lines[i:i + len(_ITEM_COLUMNS)] != _ITEM_COLUMNS:
+        raise StatementError("header")
+    i += len(_ITEM_COLUMNS)
     try:
-        total_at = next(k for k in range(i, len(lines)) if lines[k].startswith("總合計"))
+        total_at = next(k for k in range(i, len(lines)) if lines[k].startswith("總合計 "))
     except StopIteration:
         raise StatementError("totals") from None
     items: list[dict] = []
@@ -207,19 +262,25 @@ def parse_statement(text: str) -> ParsedStatement:
         i += 4
     if i > total_at:
         raise StatementError("stray_line")
-    totals, footer_net, holdings_at = _parse_footer(lines[total_at:])
-    holdings = _parse_holdings(lines[total_at + holdings_at + 1:])
+    foot = _parse_footer(lines, total_at)
+    holdings = _parse_holdings(lines, foot.next_index)
+    if (foot.points is None) != (header_points is None) or foot.points != header_points:
+        raise StatementError("net_total")
+    if not (header_net == foot.line_net == foot.cash_net == foot.net):
+        raise StatementError("net_total")
     if unsupported:
         items = []
     else:
         for key in ("amount", "fee", "tax"):
-            if sum(item[key] for item in items) != totals[key]:
+            if sum(item[key] for item in items) != foot.totals[key]:
                 raise StatementError("totals")
-        if not (sum(item["net"] for item in items) == header_net == footer_net == totals["net"]):
+        buy = sum(it["amount"] for it in items if it["category"] in BUY)
+        sell = sum(it["amount"] for it in items if it["category"] not in BUY)
+        if not (foot.buy_total == buy and foot.sell_total == sell and foot.both_total == buy + sell and foot.margin_ok):
+            raise StatementError("totals")
+        if sum(item["net"] for item in items) != header_net:
             raise StatementError("net_total")
-    if unsupported and not (header_net == footer_net == totals["net"]):
-        raise StatementError("net_total")
-    return ParsedStatement(trade, settle, Decimal(header_net), items, {k: Decimal(v) for k, v in totals.items()},
+    return ParsedStatement(trade, settle, Decimal(header_net), items, {k: Decimal(v) for k, v in foot.totals.items()},
                            holdings, unsupported)
 
 
