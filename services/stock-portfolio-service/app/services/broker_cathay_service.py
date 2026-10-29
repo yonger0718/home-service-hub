@@ -41,6 +41,7 @@ CATHAY_SIDE_MAP: dict[str, tuple[str, str]] = {
 }
 
 _DATA_PATH = Path(__file__).resolve().parents[1] / "data/name_to_symbol.json"
+_ALIASES_PATH = Path(__file__).resolve().parents[1] / "data/name_aliases.json"
 
 
 def _load_name_to_symbol() -> dict[str, list[str]]:
@@ -54,6 +55,25 @@ def _load_name_to_symbol() -> dict[str, list[str]]:
 NAME_TO_SYMBOL: dict[str, list[str]] = _load_name_to_symbol()
 
 
+def _load_name_aliases(path: Path, name_to_symbol: dict[str, list[str]]) -> dict[str, str]:
+    """Old or broker-short names the twstock map does not know, e.g. a pre-merger name.
+
+    Fails at load when an alias targets a code the map lacks, or when the alias is itself a current
+    name (it would silently change how that name resolves).
+    """
+    aliases = json.loads(path.read_text(encoding="utf-8"))
+    known_codes = {code for codes in name_to_symbol.values() for code in codes}
+    for name, code in aliases.items():
+        if code not in known_codes:
+            raise ValueError(f"name alias {name!r} points to unknown code {code!r}")
+        if name in name_to_symbol:
+            raise ValueError(f"name alias {name!r} is already a current name for {name_to_symbol[name]}")
+    return aliases
+
+
+NAME_ALIASES: dict[str, str] = _load_name_aliases(_ALIASES_PATH, NAME_TO_SYMBOL)
+
+
 def resolve_symbol(name: str, overrides: dict[str, str] | None = None) -> str:
     if overrides and name in overrides:
         # User-typed code may include broker suffixes or stray whitespace;
@@ -63,6 +83,8 @@ def resolve_symbol(name: str, overrides: dict[str, str] | None = None) -> str:
         if not override_symbol:
             raise ValueError(f"invalid override symbol for 股名='{name}'")
         return override_symbol
+    if name in NAME_ALIASES:
+        return NAME_ALIASES[name]
     candidates = NAME_TO_SYMBOL.get(name, [])
     if len(candidates) == 1:
         return candidates[0]

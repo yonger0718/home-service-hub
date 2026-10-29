@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 
 from app.models import portfolio as models
-from app.services import broker_cathay_service, import_service
+from app.services import broker_cathay_service, broker_cathay_statement_service, import_service
 from app.services.per_date_verify import OverrideValidation
 
 CATHAY_HEADER = (
@@ -116,6 +116,40 @@ def test_resolve_symbol_ambiguous_raises_with_candidates(monkeypatch):
         match=r"ambiguous symbol for 股名='元大23購15': \['A', 'B'\]",
     ):
         broker_cathay_service.resolve_symbol("元大23購15")
+
+
+# ---------- Name aliases (app/data/name_aliases.json) ----------
+
+
+@pytest.mark.parametrize(("alias", "code"), [("台新金", "2887"), ("期街口布蘭特正2", "00715L")])
+def test_resolve_symbol_alias(alias, code):
+    assert alias not in broker_cathay_service.NAME_TO_SYMBOL
+    assert broker_cathay_service.resolve_symbol(alias) == code
+
+
+def test_alias_never_shadows_override():
+    assert broker_cathay_service.resolve_symbol("台新金", overrides={"台新金": "9999"}) == "9999"
+
+
+def test_alias_resolves_csv_row_and_statement_line(db_session):
+    parsed = broker_cathay_service.parse_cathay_rows(_cathay_csv(_row(name="台新金")))
+    assert parsed.unresolved_names == []
+    assert parsed.rows[0].payload["symbol"] == "2887"
+    assert broker_cathay_statement_service.resolve_line_symbol(db_session, "台新金", []) == "2887"
+
+
+def test_alias_to_unknown_code_fails_at_load(tmp_path):
+    path = tmp_path / "aliases.json"
+    path.write_text('{"舊名": "0000X"}', encoding="utf-8")
+    with pytest.raises(ValueError, match="name alias '舊名' points to unknown code '0000X'"):
+        broker_cathay_service._load_name_aliases(path, {"範例電子": ["9999"]})
+
+
+def test_alias_that_is_a_current_name_fails_at_load(tmp_path):
+    path = tmp_path / "aliases.json"
+    path.write_text('{"範例電子": "9998"}', encoding="utf-8")
+    with pytest.raises(ValueError, match="name alias '範例電子' is already a current name"):
+        broker_cathay_service._load_name_aliases(path, {"範例電子": ["9999"], "範例二號": ["9998"]})
 
 
 @pytest.mark.parametrize(
