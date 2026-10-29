@@ -152,6 +152,19 @@ class DividendBase(BaseModel):
         self.currency = normalize_currency(self.currency)
         return self
 
+# A GBp dividend's fx_rate_to_twd is per POUND (the read path divides the pence amount by 100), while /fx-rates and
+# GBp transactions use the per-PENNY rate. GBP/TWD has stayed far above 1 and its per-penny rate far below it (#127).
+GBP_DIVIDEND_FX_MIN = Decimal("1")
+
+
+def _reject_per_penny_gbp_dividend_fx(currency: str, fx_rate_to_twd: Optional[Decimal]) -> None:
+    if currency == "GBp" and fx_rate_to_twd is not None and fx_rate_to_twd < GBP_DIVIDEND_FX_MIN:
+        raise ValueError(
+            f"fx_rate_to_twd for a GBp dividend is TWD per pound (GBP/TWD), not per penny; "
+            f"got {fx_rate_to_twd}, expected at least {GBP_DIVIDEND_FX_MIN} (multiply a per-penny rate by 100)"
+        )
+
+
 class DividendCreate(DividendBase):
     amount: Decimal = Field(..., gt=Decimal("0"), decimal_places=4)
     fee: Decimal = Field(default=Decimal("0"), ge=Decimal("0"), decimal_places=2)
@@ -161,6 +174,7 @@ class DividendCreate(DividendBase):
     @model_validator(mode="after")
     def require_fx_rate_for_foreign_currency(self) -> Self:
         _require_fx_rate_for_foreign_currency(self.currency, self.fx_rate_to_twd)
+        _reject_per_penny_gbp_dividend_fx(self.currency, self.fx_rate_to_twd)
         return self
 
 class ReceiptConfirmation(BaseModel):

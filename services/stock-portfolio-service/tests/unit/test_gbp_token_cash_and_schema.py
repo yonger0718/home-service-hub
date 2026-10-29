@@ -94,3 +94,34 @@ def test_backfill_posts_a_gbp_pence_trade_in_pounds(db_session) -> None:
         CashTransaction.related_transaction_id == pence.id)}
     assert all(row.account_id == account.id for row in db_session.query(CashTransaction))
     assert legs == {"buy_settle": Decimal("-72.5000"), "fee": Decimal("-3.0000")}  # 7250p, 300p
+
+
+# --- #127: a GBp dividend's fx is per pound; a per-penny rate (the /fx-rates GBp value) is refused -----------------
+
+def _dividend(currency: str, fx: str):
+    from app.schemas.portfolio import DividendCreate
+
+    return DividendCreate(symbol="vod", market="lse", amount=Decimal("120"), currency=currency,
+                          fx_rate_to_twd=Decimal(fx), ex_dividend_date="2026-06-01T00:00:00")
+
+
+@pytest.mark.parametrize("fx", ["0.41", "0.9999"])
+def test_gbp_dividend_refuses_a_per_penny_rate(fx: str) -> None:
+    with pytest.raises(ValueError, match="per pound"):
+        _dividend("GBp", fx)
+
+
+@pytest.mark.parametrize(("currency", "fx"), [("GBp", "41"), ("GBp", "1"), ("GBP", "0.41"), ("USD", "0.5")])
+def test_other_rates_are_accepted(currency: str, fx: str) -> None:
+    assert _dividend(currency, fx).fx_rate_to_twd == Decimal(fx)
+
+
+def test_dividend_api_returns_422_for_a_per_penny_gbp_rate(client, db_session) -> None:
+    from app.models import portfolio as models
+
+    payload = {"symbol": "vod", "market": "lse", "amount": "120", "currency": "GBp", "fx_rate_to_twd": "0.41",
+               "ex_dividend_date": "2026-06-01T00:00:00"}
+    response = client.post("/api/portfolio/dividends", json=payload)
+    assert response.status_code == 422 and "per pound" in response.text
+    assert db_session.query(models.Dividend).count() == 0
+    assert client.post("/api/portfolio/dividends", json={**payload, "fx_rate_to_twd": "41"}).status_code == 200
