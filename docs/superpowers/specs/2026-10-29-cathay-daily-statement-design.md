@@ -1,6 +1,6 @@
 # 國泰證券日對帳單 auto-import — design
 
-Status: rev 2 (2026-10-29), after the AGENT-335 review (findings 1–6 folded). Owner rulings 2026-10-29: the daily
+Status: rev 2.1 (2026-10-29), after the AGENT-335 review (findings 1–6 folded) and its re-check (buy tax pinned to 0). Owner rulings 2026-10-29: the daily
 statement is the primary source for the dates it covers ("對帳單為主，按日期分"); current days matter most and the
 archive is used to validate the parser, not to wait for a full backfill; the first writer of a date owns it and a
 mismatch is never resolved automatically in either direction (option A — the owner imports the CSV only after the
@@ -36,7 +36,7 @@ statements; push notifications (§7.3 names the follow-up).
 - 類別 seen: 集買 613, 集賣 241, 沖買 89, 沖賣 82, 資買 1, 資賣 1. 券買 / 券賣 never appeared.
 - Every 集買 / 集賣 / 沖買 / 沖賣 line (1025) has line 3 exactly `0 0 0 0 <委託書號>` (after an optional
   `(小樹點數) ` prefix) and line 4 exactly `0`, and its net is exact: buy `net = −(amount + fee)`, sell
-  `net = amount − fee − tax`. The 資買 / 資賣 lines carry 融資 columns whose meaning the text layer does not fix
+  `net = amount − fee − tax`; every buy line (集買 613, 沖買 89) has tax 0. The 資買 / 資賣 lines carry 融資 columns whose meaning the text layer does not fix
   (the 資賣 loan repayment is not on its line at all).
 - Footer: `總合計 <成交金額> <手續費> <交易稅>`, totals, `淨收付金額`, then a holdings table
   `代碼 股票名稱 當日收盤價 集保股數 集保市值 融資股數 融券股數` (one row per position held after the day; a position
@@ -97,6 +97,8 @@ it means.
 
 - Per line: |quantity × price − amount| < 1, and the exact net identity of §2 for its 類別 (this is what pins the fee
   and tax actually booked; no line can carry a fee component the identity does not see).
+- Per buy line (集買 / 沖買): tax = 0. The buy identity does not contain tax and the cash legs book any positive tax, so
+  a non-zero buy tax rejects the statement. The portfolio applies the same check to the payload (HTTP 422).
 - Σ line amount / fee / tax = the `總合計` amount / fee / tax; Σ line net = the header net = `淨收付金額`.
 - Holdings rows: code `[0-9A-Z]{4,6}`, shares a non-negative integer.
 
@@ -201,7 +203,8 @@ differences go into `last_detail.holdings_diff` and the response. A held date sk
 Worker: a fixture text per shape (single line, two pages, 沖買/沖賣 pair, points prefix, two price groups of one
 order); an unsupported 資買 line → no lines posted with reason; each §4.1 grammar failure; each §4.2 failure,
 including a line whose fee is changed while every footer total is changed to match (the net identity must reject
-it); file-name date differs → warning only; response validation; state file: held re-posted, mismatch not re-posted
+it) and a buy line whose tax and the footer tax are made non-zero with every net unchanged (rejected before any post,
+and the portfolio returns 422 for the same payload with no row written); file-name date differs → warning only; response validation; state file: held re-posted, mismatch not re-posted
 without `--retry`, dry run then commit, 5xx retried, 422 latches.
 Portfolio: mapping table; fingerprint namespace; §5.4 cases 1–5; §5.5 covered / error / other dates untouched /
 rehash never selects a statement row; imported → conflict (corrected sha) → CSV multi-fill upload: transactions and
