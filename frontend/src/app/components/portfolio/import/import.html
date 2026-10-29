@@ -78,7 +78,7 @@
             <app-tag variant="primary">解析 {{ counts().parsed }}</app-tag>
             <app-tag variant="warning">重複 {{ counts().duplicates }}</app-tag>
             @if (counts().covered > 0) {
-              <app-tag variant="neutral">已由對帳單匯入 {{ counts().covered }}</app-tag>
+              <app-tag variant="neutral">對帳單已涵蓋 {{ counts().covered }}</app-tag>
             }
             @if (counts().updated > 0) {
               <app-tag variant="neutral">更新 {{ counts().updated }}</app-tag>

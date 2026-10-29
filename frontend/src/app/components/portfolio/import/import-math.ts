@@ -9,7 +9,7 @@ export type RowResult = 'new' | 'duplicate' | 'covered' | 'rehash' | 'unresolved
 export const ROW_RESULT_LABEL: Record<RowResult, string> = {
   new: '新增',
   duplicate: '重複 · 略過',
-  covered: '已由對帳單匯入',
+  covered: '對帳單已涵蓋',
   rehash: '更新',
   unresolved: '代號待確認',
   error: '錯誤',
@@ -31,7 +31,7 @@ export interface ImportCounts {
   errors: number;
   /** Cathay rows re-fingerprinted in place (`rehash`); the 更新 tag shows only when > 0. */
   updated: number;
-  /** Rows already booked by a 對帳單 import (`covered`); counted apart from 重複, the 已由對帳單匯入 tag shows only when > 0. */
+  /** Rows already booked by a 對帳單 import (`covered`); counted apart from 重複, the 對帳單已涵蓋 tag shows only when > 0. */
   covered: number;
 }
 
@@ -318,12 +318,12 @@ export function importErrorDetail(err: unknown): string {
   return bodyReason(err) ?? nonEmptyString((err as { message?: unknown } | null)?.message) ?? '未知錯誤';
 }
 
-/** Dry-run toast counts (`可新增 N；重複 d；[更新 u；][已由對帳單匯入 c；]錯誤 e`) from the preview's `importCounts` / `confirmCount`. */
+/** Dry-run toast counts (`可新增 N；重複 d；[更新 u；][對帳單已涵蓋 c；]錯誤 e`) from the preview's `importCounts` / `confirmCount`. */
 export function previewCountSummary(type: ImportType, r: AnyResult, csvFormat: string | null): string {
   const counts = importCounts(type, r, csvFormat);
   const parts = [`可新增 ${confirmCount(type, r, csvFormat)}`, `重複 ${counts.duplicates}`];
   if (counts.updated > 0) parts.push(`更新 ${counts.updated}`);
-  if (counts.covered > 0) parts.push(`已由對帳單匯入 ${counts.covered}`);
+  if (counts.covered > 0) parts.push(`對帳單已涵蓋 ${counts.covered}`);
   parts.push(`錯誤 ${counts.errors}`);
   return parts.join('；');
 }

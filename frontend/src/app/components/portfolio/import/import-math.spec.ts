@@ -124,7 +124,7 @@ describe('ROW_RESULT_LABEL', () => {
     expect(ROW_RESULT_LABEL).toEqual({
       new: '新增',
       duplicate: '重複 · 略過',
-      covered: '已由對帳單匯入',
+      covered: '對帳單已涵蓋',
       rehash: '更新',
       unresolved: '代號待確認',
       error: '錯誤',
@@ -135,7 +135,7 @@ describe('ROW_RESULT_LABEL', () => {
 describe('covered rows', () => {
   const r = importResult({ parsed: 3, rows: [...rows(1, 1, 'new'), ...rows(1, 2, 'covered'), ...rows(1, 3, 'duplicate')], csv_format: 'cathay', dry_run: true });
   it('covered row gets the label and duplicate variant', () => {
-    expect(previewRow(r.rows[1], r)).toMatchObject({ result: 'covered', label: '已由對帳單匯入', variant: 'neutral', dimmed: true, hint: null });
+    expect(previewRow(r.rows[1], r)).toMatchObject({ result: 'covered', label: '對帳單已涵蓋', variant: 'neutral', dimmed: true, hint: null });
   });
   it('covered rows are not counted as new', () => {
     expect(importCounts('transactions', r, 'cathay')).toEqual({ parsed: 3, duplicates: 1, errors: 0, updated: 0, covered: 1 });
@@ -479,9 +479,9 @@ describe('previewCountSummary', () => {
     expect(previewCountSummary('transactions', r, 'cathay')).toBe('可新增 3；重複 1；更新 2；錯誤 0');
   });
 
-  it('shows 已由對帳單匯入 only when > 0', () => {
+  it('shows 對帳單已涵蓋 only when > 0', () => {
     const r = importResult({ parsed: 3, rows: [...rows(1, 1, 'new'), ...rows(1, 2, 'covered'), ...rows(1, 3, 'duplicate')], csv_format: 'cathay', dry_run: true });
-    expect(previewCountSummary('transactions', r, 'cathay')).toBe('可新增 1；重複 1；已由對帳單匯入 1；錯誤 0');
+    expect(previewCountSummary('transactions', r, 'cathay')).toBe('可新增 1；重複 1；對帳單已涵蓋 1；錯誤 0');
   });
 });
 

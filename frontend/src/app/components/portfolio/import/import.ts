@@ -601,7 +601,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     }
     const covered = importCounts(this.type(), result, result.csv_format ?? null).covered;
     if (!dryRun && covered > 0) {
-      parts.push(`已由對帳單匯入 ${covered} 筆`);
+      parts.push(`對帳單已涵蓋 ${covered} 筆`);
     }
     if (result.skipped_unresolved && result.skipped_unresolved > 0) {
       parts.push(`未識別股名 ${result.skipped_unresolved} 筆（請於下方填代號）`);
