@@ -55,6 +55,12 @@ def test_day_trade_pair_with_empty_holdings():
 
 
 def test_points_prefix():
+    st = parse_statement(load("points_paid"))
+    assert st.lines[1]["points"] is True and st.lines[1]["order_no"] == "XY12301"
+    assert st.lines[0]["points"] is False
+
+
+def test_points_variant_without_prefixed_line():
     st = parse_statement(load("points"))
     assert st.lines[0]["points"] is False and st.net_amount == -12305
 
@@ -233,3 +239,44 @@ def test_extract_text_layout():
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     assert lines == page1 + page2
     assert "two\nPage two" in text.replace("\r\n", "\n")
+
+
+ALL_FIXTURES = ["single", "two_pages", "pair", "points", "points_paid", "price_groups", "unsupported"]
+
+
+@pytest.mark.parametrize("fixture", ALL_FIXTURES)
+def test_any_truncation_raises_statement_error(fixture):
+    lines = load(fixture).split("\n")
+    while not lines[-1].strip():
+        lines.pop()  # the link line is the last statement line: every shorter text is truncated
+    for k in range(len(lines)):
+        with pytest.raises(StatementError):
+            parse_statement("\n".join(lines[:k]))
+
+
+def test_shifted_item_line_is_not_unsupported():
+    text = load("single").replace("範例電子 集買 1,000 12.3 12,300 5 0", "範例 電子 集買 1,000 12.3 12,300 5")
+    assert code_of(text) == "item_grammar"
+
+
+def test_unsupported_margin_totals_must_still_be_numbers():
+    assert code_of(load("unsupported").replace("0 34,000 0 0", "0 x 0 0")) == "totals"
+    assert code_of(load("unsupported").replace("0 34,000 0 0\n0\n", "0 34,000 0 0\nx\n")) == "totals"
+    assert parse_statement(load("unsupported")).unsupported
+
+
+def test_footer_prepaid_and_retained_must_be_zero():
+    assert code_of(load("single").replace("預收款： 0 留置款： 0", "預收款： 1 留置款： 0")) == "totals"
+    assert code_of(load("single").replace("預收款： 0 留置款： 0", "預收款： 0 留置款： 1")) == "totals"
+
+
+def test_signs_are_required_except_on_footer_line_two():
+    pos = load("pair")
+    assert parse_statement(pos.replace("\n153\n", "\n+153\n")).net_amount == 153  # footer line 2 may carry a plus
+    assert code_of(pos.replace("0 0 +153", "0 0 153")) == "date_line"
+    assert code_of(pos.replace("淨收付金額： +153", "淨收付金額： 153")) == "totals"
+    assert code_of(pos.replace("應收付金額： +153", "應收付金額： 153")) == "totals"
+    assert code_of(pos.replace("\n+12,458\n", "\n12,458\n")) == "item_grammar"
+    assert code_of(load("points").replace("淨收付點數： +3", "淨收付點數： 3")) == "totals"
+    assert code_of(load("points").replace("\n+3\n", "\n3\n")) == "date_line"
+    assert parse_statement(pos.replace("0 0 +153", "0 0 +153")).net_amount == 153
