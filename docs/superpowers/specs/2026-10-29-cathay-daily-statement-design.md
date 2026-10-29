@@ -2,7 +2,8 @@
 
 Status: rev 2.2 (2026-10-29), after the AGENT-335 review (findings 1–6 folded) and its re-check (buy tax pinned to 0);
 rev 2.2 adds §7 notifications to the scope (owner 2026-10-29: a stuck date must reach the owner, not only a log);
-rev 2.3 folds the AGENT-337 review (run deadline, notifier isolation, acknowledgement model). Owner rulings 2026-10-29: the daily
+rev 2.3 folds the AGENT-337 review (run deadline, notifier isolation, acknowledgement model), and its re-check
+minor (pending envelope). Owner rulings 2026-10-29: the daily
 statement is the primary source for the dates it covers ("對帳單為主，按日期分"); current days matter most and the
 archive is used to validate the parser, not to wait for a full backfill; the first writer of a date owns it and a
 mismatch is never resolved automatically in either direction (option A — the owner imports the CSV only after the
@@ -202,11 +203,12 @@ the notifier as the owner's user, so both meet at the portfolio API.
 
 ### 7.1 Portfolio read and report endpoints
 
-- `GET /api/portfolio/imports/cathay-statement/pending` → `[{"trade_date", "status", "reason", "since", "last_at"}]`:
+- `GET /api/portfolio/imports/cathay-statement/pending` → `{"items": [{"trade_date", "status", "reason", "since",
+  "last_at"}], "total": <int>, "truncated": <bool>}`:
   every date whose latest attempt is `held` or `mismatch` and that is not owned, plus every owned date whose latest
   attempt is `conflict` — except a date whose (`last_sha256`, `last_status`) equals its (`ack_sha256`,
-  `ack_status`). `since` is the first attempt that put the date in this state. Sorted by date, at most 50 rows
-  (`truncated: true` beyond). `reason` is a code plus at most one name, cut to 40 characters.
+  `ack_status`). `since` is the first attempt that put the date in this state. Sorted by date, at most 50 items; `total`
+  counts every pending date and `truncated` is `total > len(items)`. `reason` is a code plus at most one name, cut to 40 characters.
 - `POST /api/portfolio/imports/cathay-statement/runs` (worker, once per commit run, also when the run ends latched or
   failed): `{"run_at", "result": "ok" | "latched" | "failed", "code", "files_seen", "posted"}`. Portfolio keeps the
   latest row overall and the latest `ok` row (`cathay_statement_run`, small table).
@@ -229,7 +231,7 @@ the notifier as the owner's user, so both meet at the portfolio API.
   first run with `portfolio_base` set.
 - Daily (`python -m notify daily`): a section 「國泰對帳單」 with one item per pending date
   (`10/27 保留：名稱對不到代號 範例電子`, `10/28 對不上 CSV`, `10/29 收到不同版本的對帳單`), at most 10 items plus
-  「另有 N 天」, and one item when the latest run is `latched` / `failed` or stale. Items count like the other daily
+  「另有 N 天」 with N = `total` − the items shown, and one item when the latest run is `latched` / `failed` or stale. Items count like the other daily
   items, so a day with only this section still sends, and the same-day dedupe applies as for every other item.
 - Weekly: a new block 「國泰對帳單待處理」 after 「自動扣繳本週跳過」 (`notify/render.py`), listing the same pending
   dates (same cap) and the run state; absent when there is nothing to list.
@@ -262,7 +264,8 @@ rehash never selects a statement row; imported → conflict (corrected sha) → 
 fingerprints unchanged; CSV-first verified then the same statement again → duplicate; same totals but different
 day-trade marker → mismatch; two sessions (CSV commit and statement commit for one date, interleaved at the read):
 exactly one writes, the other sees ownership or rows under the lock; a failure after inserting rows rolls back the
-ownership row; held then mapping fixed → imported; dry run writes nothing; pending list contents per status and cap;
+ownership row; held then mapping fixed → imported; dry run writes nothing; pending list contents per status, cap and envelope (51 pending dates → 50 items, total 51, truncated; the
+notifier shows 10 and 「另有 41 天」);
 held → CSV import elsewhere → ack → identical held repost stays acknowledged; a new sha after an ack shows again; a
 conflict until ack; ack never touches acceptance and an acknowledged held date still imports; run report latest rows.
 Notifier: section off without `portfolio_base`; items for held / mismatch / conflict / latched / failed; stale on
