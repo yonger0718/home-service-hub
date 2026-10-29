@@ -24,7 +24,7 @@ During the interim deviation (rulings 3/11: `opc`, scope `export-masked` and `ve
 installed but the timers are NOT enabled:
 
     mkdir -p ~/.config/systemd/user
-    ln -sf ~/workspace/home-hub/services/accounting-service/deploy/statements/homehub-{statements,portfolio-flex}*.{service,timer} ~/.config/systemd/user/
+    ln -sf ~/workspace/home-hub/services/accounting-service/deploy/statements/homehub-{statements,portfolio-flex,portfolio-cathay}*.{service,timer} ~/.config/systemd/user/
     systemctl --user daemon-reload
 
 Today's hard guard is the feature flag: with `ACCOUNTING_RECONCILIATION_ENABLED` off the statement routes answer 404, so a
@@ -118,6 +118,74 @@ lines never reach Loki. Then:
     journalctl --user -u homehub-portfolio-flex.service
 
 Deleting the backfill query in IB Account Management after the import is mandatory.
+
+## 國泰證券 daily statement timer (2026-10-29)
+
+`homehub-portfolio-cathay.service` / `.timer` run `python -m worker cathay` daily at 06:40 Asia/Taipei (`Persistent=true`).
+The worker lists the Drive folder `投資/國泰證券/日對帳單` (`STATEMENT_CATHAY_FOLDER`, also the password-file key), downloads
+each new PDF, unlocks and parses it, and POSTs the trades to the portfolio service
+(`POST /api/portfolio/imports/cathay-statement`), then reports the run (`/runs`, best effort; the notifier reads it).
+Design: spec `docs/superpowers/specs/2026-10-29-cathay-daily-statement-design.md`. The timer is installed with the glob
+above and NOT enabled until the deploy order below is done. Statements dated before the cutover (`STATEMENT_CATHAY_CUTOVER`,
+default 2026-10-16) are never committed: they are counted as `pre_cutover`, and `--validate-history` covers them as a dry run.
+
+Password line, added by the owner to the worker's password file (`STATEMENT_PASSWORD_FILE`, default
+`~/.config/homehub-statement-passwords.env`), same format as the other folders (the key is the Drive folder):
+
+    投資/國泰證券/日對帳單=$ID
+
+Overrides (all optional, in `~/.config/homehub-statements.env`): `STATEMENT_CATHAY_FOLDER`, `STATEMENT_CATHAY_CUTOVER`,
+`STATEMENT_CATHAY_TIMEOUT_S` (portfolio request timeout, default 60), `STATEMENT_PORTFOLIO_API_URL`. `STATEMENT_STATE_DIR`
+is `<state_dir>` below. Every manual command is written out in full for the reason given in the flex section.
+
+State files (0600, directory 0700): `<state_dir>/cathay-state.json` (settled files by Drive id and sha256, so an unchanged
+file is skipped), `<state_dir>/cathay-disabled.json` (the latch), `<state_dir>/cathay-history-report.json` (the last
+`--validate-history` report), `<state_dir>/.cathay.lock` (a second run prints `already running`, exit 3).
+
+Flags (`python -m worker cathay`; the summary is one JSON line, exit 1 when `codes` is non-empty):
+
+| Flag | Effect |
+|---|---|
+| (none) | commit run: post every new file, write state, report the run |
+| `--dry-run` | post with `dry_run=true`; no state, no latch, no run report |
+| `--validate-history` | dry run over every file including pre-cutover dates; ignores the state file; writes `cathay-history-report.json` (`mismatch_dates`, `held`, `errors`); prints only `counts` |
+| `--file <drive-id>` / `--since DATE` / `--until DATE` | restrict the run to one Drive file / a trade-date range |
+| `--retry DATE` | post that trade date again even though its file is settled (for example after a `held` or `mismatch` is fixed) |
+| `--ack DATE` | acknowledge a pending day at the portfolio (`POST …/days/DATE/ack`); touches neither Drive nor state, works while latched, exclusive with every other flag (exit 2 otherwise) |
+| `--unlatch` | clear the latch; see below |
+
+Latch rule. Only a commit run (no `--dry-run`, no `--validate-history`) latches. A non-transient failure writes the latch and
+every later run exits 1 (`cathay disabled`) until it is cleared: `decrypt` (no password fits), `pdf_malformed`,
+`pdf_too_large`, a parser error code, a portfolio 4xx other than 408/429. These do NOT latch: Drive and listing errors,
+portfolio 5xx / 408 / 429, timeouts and connection errors, `portfolio:body`, a missing password file or state file. A run
+that fails without latching still exits 1, so the unit shows failed: `systemctl --user list-units --failed`.
+Exit codes: 0 ok, 1 codes / latched / nothing pending for `--ack`, 2 bad flags or missing password file, 3 already running.
+
+Recovery after fixing the cause (a plain daily run; it clears the latch only when the run ends with no codes, so
+`--file`, `--since`, `--until`, `--retry` and dry runs never clear it):
+
+    sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker cathay --unlatch'
+
+Deploy order (the portfolio side is already live):
+
+1. Install the units with the glob above (`systemctl --user daemon-reload`); the owner adds the password line.
+2. Validate the history once and show the owner the report; nothing is written to the portfolio or the state:
+
+       sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker cathay --validate-history'
+       jq . <state_dir>/cathay-history-report.json
+
+   Read `counts`, `mismatch_dates`, `held` and `errors`; stop and ask the owner about any `mismatch` or `error`.
+3. One manual commit run, then check the summary (`codes` empty, `posted` as expected):
+
+       sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker cathay'
+
+4. Before enabling the timer add `_SYSTEMD_USER_UNIT=homehub-portfolio-cathay.service` to the Alloy journal matcher in
+   `/home/opc/workspace/monitoring/alloy/config.alloy` (outside this repo), else the unit's lines never reach Loki. Then:
+
+       systemctl --user enable --now homehub-portfolio-cathay.timer
+       journalctl --user -u homehub-portfolio-cathay.service
+
+In Loki `{job="homehub", unit="homehub-portfolio-cathay.service"} |= "\"codes\": [\""` shows a run that fails every day.
 
 ## Read-only database role for `verify` (ruling 11)
 
