@@ -14,7 +14,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -39,9 +39,29 @@ def _key(day: date) -> int:
     return 0x43415448 << 32 | day.toordinal()
 
 
+def _refuse_unless_throwaway(engine) -> None:
+    """Never drop a real database: only an empty one, or one holding just this module's tables, is used."""
+    existing = set(inspect(engine).get_table_names())
+    with engine.connect() as conn:
+        alembic = conn.execute(
+            text("SELECT count(*) FROM information_schema.tables WHERE table_name = 'alembic_version'")
+        ).scalar_one()
+    foreign = existing - set(Base.metadata.tables)
+    if alembic or foreign:
+        pytest.fail(
+            f"CATHAY_PG_TEST_URL is not a throwaway database (alembic_version present: {bool(alembic)}; "
+            f"tables outside the model set: {sorted(foreign)}); refusing to drop or create its schema",
+            pytrace=False,
+        )
+
+
 @pytest.fixture(scope="module")
 def engine():
-    engine = create_engine(PG_URL)
+    # Server-side bounds so a stray lock or a stuck statement fails the run instead of hanging it.
+    engine = create_engine(
+        PG_URL, connect_args={"options": "-c lock_timeout=30s -c statement_timeout=60s"}
+    )
+    _refuse_unless_throwaway(engine)
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     yield engine
@@ -80,6 +100,14 @@ def _backend_pid(conn) -> int:
     pid = conn.exec_driver_sql("SELECT pg_backend_pid()").scalar_one()
     conn.rollback()
     return pid
+
+
+def _state(future) -> str:
+    """A worker that already ended names its exception, so a failure points at the thread, not the poll."""
+    if not future.done():
+        return "still running"
+    exc = future.exception()
+    return f"ended with {exc!r}" if exc is not None else "returned without waiting"
 
 
 def _advisory(engine, pid: int, key: int, *, granted: bool) -> bool:
@@ -122,18 +150,18 @@ def test_statement_first_csv_waits(engine, monkeypatch, order):
         with ThreadPoolExecutor(max_workers=2) as pool:
             try:
                 first = pool.submit(run, "first")
-                assert first_locked.wait(timeout=10), "first path never took the lock"
+                assert first_locked.wait(timeout=10), f"first path never took the lock; first {_state(first)}"
                 assert _advisory(engine, pids["first"], key, granted=True)
                 second = pool.submit(run, "second")
-                assert second_started.wait(timeout=10)
+                assert second_started.wait(timeout=10), f"second path never started; second {_state(second)}"
                 deadline = time.monotonic() + WAIT_SECONDS
                 waiting = False
                 while not waiting and time.monotonic() < deadline:
                     waiting = _advisory(engine, pids["second"], key, granted=False)
                     if not waiting:
                         time.sleep(0.02)
-                assert waiting, "second path was never seen waiting on the date lock"
-                assert not second.done()
+                assert waiting, f"second path was never seen waiting on the date lock; second {_state(second)}"
+                assert not second.done(), f"second {_state(second)}"
             finally:
                 release.set()
             outcomes = {"first": first.result(timeout=30), "second": second.result(timeout=30)}
@@ -166,7 +194,7 @@ def test_statement_first_csv_waits(engine, monkeypatch, order):
         assert [row.id for row in rows] == csv_result.created_ids
         assert statement.outcome == "verified"
         assert (statement.counts["created"], statement.errors) == (0, [])
-    assert all(row.trade_date == datetime(2026, 3, 9, tzinfo=timezone.utc) for row in rows)
+    assert all(row.trade_date == datetime(D.year, D.month, D.day, tzinfo=timezone.utc) for row in rows)
     # Every cash leg belongs to a surviving transaction, two legs (trade + fee) per transaction.
     assert sorted(leg.related_transaction_id for leg in cash) == sorted(row.id for row in rows for _ in range(2))
     assert [(day.trade_date, day.accepted_kind, day.last_status) for day in days] == [
