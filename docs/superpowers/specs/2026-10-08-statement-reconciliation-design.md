@@ -402,3 +402,23 @@ is still required when set. No password-file change is needed for such a folder.
 changes: after deploying this change the owner touches the password file (a comment line is enough) or the files stay
 failed until the next credential change.
 
+### OCR merchant repair (2026-10-28, issue #206)
+
+**Problem.** AMEX BR prints its Chinese merchant names in a font without a ToUnicode map, so pdfminer renders those
+glyphs as `(cid:N)`. The page-1 garbage share stays under `GARBAGE_GLYPH_SHARE` (0.45): the file keeps its text layer
+and parses, but those lines carry a garbage `merchant_raw` (5 of 53 lines over the first five statements; no other
+account in the corpus has a `(cid:` merchant — 國泰's unmapped icons never reach the merchant field).
+
+**Rule.** On the text-layer path only, when the parse succeeded and at least one line's `merchant_raw` contains
+`(cid:`, the worker runs one OCR read and one more parser call before submitting. A garbled line takes the OCR parse's
+merchant only when exactly one OCR line and exactly one garbled text line share its `(txn_date, posted_date,
+printed_amount, line_kind)` and the OCR merchant is non-empty and clean. Every other field — amounts, dates, kinds,
+header — stays the text layer's, so the submission is never worse than the text parse alone. Any OCR or parser failure
+submits the text parse unchanged (a sandbox / auth / CLI-version failure still latches the parser). The revision is
+labelled `claude-cli+ocr-merchants` when at least one line was repaired (else `claude-cli`) and its notes carry
+`ocr: merchant repair <repaired>/<garbled> lines …` or `ocr: merchant repair skipped (<reason>)`. Run summary:
+`ocr_merchant_repair` (files re-read, counted at the OCR start) and `merchant_lines_repaired`.
+
+**Not changed.** The file-level trigger and the R5.3 fallback are untouched; a file the OCR child already read is never
+repaired again. Already-parsed files are not re-read (no parser-version change); an operator re-queue re-parses one.
+
