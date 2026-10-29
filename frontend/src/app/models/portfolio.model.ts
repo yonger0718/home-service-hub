@@ -61,8 +61,8 @@ export interface Transaction {
 
 export type ImportKind = 'transactions' | 'dividends';
 
-/** `rehash` (Cathay only): an existing trade re-fingerprinted in place, nothing inserted. */
-export type ImportRowStatus = 'new' | 'duplicate' | 'rehash' | 'unresolved' | 'error';
+/** `rehash` (Cathay only): an existing trade re-fingerprinted in place, nothing inserted. `covered`: already booked by a 對帳單 import. */
+export type ImportRowStatus = 'new' | 'duplicate' | 'covered' | 'rehash' | 'unresolved' | 'error';
 
 export interface ImportRow {
   row_index: number;
@@ -102,6 +102,7 @@ export interface ImportResult {
   parsed: number;
   created: number;
   skipped_duplicates: number;
+  covered?: number;
   rehashed?: number;
   would_rehash?: number;
   would_insert?: number;
