@@ -4,11 +4,12 @@ import type { TagVariant } from '../../ui/tag/tag';
 export type ImportType = 'transactions' | 'dividends' | 'broker';
 
 /** Per-row preview result; read from `row.status` when the API sends it (Task 1b). */
-export type RowResult = 'new' | 'duplicate' | 'rehash' | 'unresolved' | 'error';
+export type RowResult = 'new' | 'duplicate' | 'covered' | 'rehash' | 'unresolved' | 'error';
 
 export const ROW_RESULT_LABEL: Record<RowResult, string> = {
   new: '新增',
   duplicate: '重複 · 略過',
+  covered: '對帳單已涵蓋',
   rehash: '更新',
   unresolved: '代號待確認',
   error: '錯誤',
@@ -30,11 +31,13 @@ export interface ImportCounts {
   errors: number;
   /** Cathay rows re-fingerprinted in place (`rehash`); the 更新 tag shows only when > 0. */
   updated: number;
+  /** Rows already booked by a 對帳單 import (`covered`); counted apart from 重複, the 對帳單已涵蓋 tag shows only when > 0. */
+  covered: number;
 }
 
 type AnyResult = ImportResult | BrokerCsvImportResult;
 
-const ROW_RESULTS: ReadonlySet<string> = new Set<RowResult>(['new', 'duplicate', 'rehash', 'unresolved', 'error']);
+const ROW_RESULTS: ReadonlySet<string> = new Set<RowResult>(['new', 'duplicate', 'covered', 'rehash', 'unresolved', 'error']);
 
 /** Title / screen-reader hint on a 更新 row tag. */
 export const REHASH_HINT = '既有交易原地更新：指紋、多空、當沖標記與現金腳';
@@ -44,7 +47,7 @@ const NAME_KEYS = ['name', '名稱', '股票', 'stock_name'];
 
 const MANUAL_WARNING = '將以通用手動 CSV 解析';
 
-/** `row.status` when it is one of the five known values; tolerant of models without the field. */
+/** `row.status` when it is one of the six known values; tolerant of models without the field. */
 function statusOf(row: unknown): RowResult | null {
   const status = (row as { status?: unknown } | null)?.status;
   return typeof status === 'string' && ROW_RESULTS.has(status) ? (status as RowResult) : null;
@@ -76,21 +79,22 @@ function cathayDryRun(r: ImportResult, csvFormat: string | null): boolean {
  * 更新 is `would_rehash` on a Cathay dry run, `rehashed` on a commit, else 0.
  */
 export function importCounts(type: ImportType, r: AnyResult | null, csvFormat: string | null): ImportCounts {
-  if (!r) return { parsed: 0, duplicates: 0, errors: 0, updated: 0 };
+  if (!r) return { parsed: 0, duplicates: 0, errors: 0, updated: 0, covered: 0 };
   const list = tableRows(type, r);
   const errors = r.errors?.length ?? 0;
   const withStatus = hasStatuses(list);
   const statusDuplicates = withStatus ? countStatus(list, 'duplicate') : null;
   const statusUpdated = withStatus ? countStatus(list, 'rehash') : null;
+  const statusCovered = withStatus ? countStatus(list, 'covered') : null;
   if (type === 'broker') {
     const b = r as BrokerCsvImportResult;
-    return { parsed: list.length, duplicates: statusDuplicates ?? b.counts?.skipped ?? 0, errors, updated: statusUpdated ?? 0 };
+    return { parsed: list.length, duplicates: statusDuplicates ?? b.counts?.skipped ?? 0, errors, updated: statusUpdated ?? 0, covered: statusCovered ?? 0 };
   }
   const t = r as ImportResult;
   const cathay = cathayDryRun(t, csvFormat);
   const wireDuplicates = cathay ? (t.would_skip_duplicate ?? 0) : (t.skipped_duplicates ?? 0);
   const wireUpdated = cathay ? (t.would_rehash ?? 0) : t.dry_run ? 0 : (t.rehashed ?? 0);
-  return { parsed: t.parsed ?? 0, duplicates: statusDuplicates ?? wireDuplicates, errors, updated: statusUpdated ?? wireUpdated };
+  return { parsed: t.parsed ?? 0, duplicates: statusDuplicates ?? wireDuplicates, errors, updated: statusUpdated ?? wireUpdated, covered: statusCovered ?? t.covered ?? 0 };
 }
 
 /** N in 確認匯入 N 筆 (Decision 7); never negative, errors never subtracted for 交易/股利; 更新 rows insert nothing. */
@@ -107,7 +111,7 @@ export function confirmCount(type: ImportType, r: AnyResult | null, csvFormat: s
   const t = r as ImportResult;
   if (cathayDryRun(t, csvFormat)) return Math.max(0, t.would_insert ?? 0);
   const counts = importCounts(type, r, csvFormat);
-  return Math.max(0, (t.parsed ?? 0) - counts.duplicates - counts.updated);
+  return Math.max(0, (t.parsed ?? 0) - counts.duplicates - counts.updated - counts.covered);
 }
 
 function rowName(row: ImportRow): string | null {
@@ -119,7 +123,7 @@ function rowName(row: ImportRow): string | null {
   return null;
 }
 
-/** Row status first; otherwise error → unresolved → new. Never invents `duplicate` or `rehash`. */
+/** Row status first; otherwise error → unresolved → new. Never invents `duplicate`, `covered` or `rehash`. */
 export function rowResult(row: ImportRow, r: AnyResult): RowResult {
   const status = statusOf(row);
   if (status) return status;
@@ -314,11 +318,12 @@ export function importErrorDetail(err: unknown): string {
   return bodyReason(err) ?? nonEmptyString((err as { message?: unknown } | null)?.message) ?? '未知錯誤';
 }
 
-/** Dry-run toast counts (`可新增 N；重複 d；[更新 u；]錯誤 e`) from the preview's `importCounts` / `confirmCount`. */
+/** Dry-run toast counts (`可新增 N；重複 d；[更新 u；][對帳單已涵蓋 c；]錯誤 e`) from the preview's `importCounts` / `confirmCount`. */
 export function previewCountSummary(type: ImportType, r: AnyResult, csvFormat: string | null): string {
   const counts = importCounts(type, r, csvFormat);
   const parts = [`可新增 ${confirmCount(type, r, csvFormat)}`, `重複 ${counts.duplicates}`];
   if (counts.updated > 0) parts.push(`更新 ${counts.updated}`);
+  if (counts.covered > 0) parts.push(`對帳單已涵蓋 ${counts.covered}`);
   parts.push(`錯誤 ${counts.errors}`);
   return parts.join('；');
 }
@@ -342,6 +347,7 @@ export function cell(row: unknown, keys: string[]): string | null {
 const RESULT_VARIANT: Record<RowResult, TagVariant> = {
   new: 'neutral',
   duplicate: 'neutral',
+  covered: 'neutral',
   rehash: 'neutral',
   unresolved: 'warning',
   error: 'danger',
@@ -363,7 +369,7 @@ export interface PreviewRowView {
   variant: TagVariant;
   /** Title / screen-reader hint on the result tag (`rehash` only). */
   hint: string | null;
-  /** Only `duplicate` rows are dimmed (a `rehash` row is updated, not skipped). */
+  /** `duplicate` and `covered` rows are dimmed (a `rehash` row is updated, not skipped). */
   dimmed: boolean;
 }
 
@@ -389,7 +395,7 @@ export function previewRow(row: ImportRow | Record<string, unknown>, r: AnyResul
     label: ROW_RESULT_LABEL[result],
     variant: RESULT_VARIANT[result],
     hint: result === 'rehash' ? REHASH_HINT : null,
-    dimmed: result === 'duplicate',
+    dimmed: result === 'duplicate' || result === 'covered',
   };
 }
 
@@ -410,7 +416,7 @@ export function cashFlowRow(row: Record<string, unknown>, r: BrokerCsvImportResu
     kind: cell(row, ['cash_flow_type', 'type']) ?? '-',
     amount: cell(row, ['amount']) ?? '-',
     currency: cell(row, ['currency']) ?? '-',
-    dimmed: rowResult(row as unknown as ImportRow, r) === 'duplicate',
+    dimmed: ['duplicate', 'covered'].includes(rowResult(row as unknown as ImportRow, r)),
   };
 }
 

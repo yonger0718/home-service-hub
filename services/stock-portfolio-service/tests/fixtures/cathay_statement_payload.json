@@ -1,0 +1,7 @@
+{"source": {"drive_file_id": "fictional-file-id", "sha256": "0000000000000000000000000000000000000000000000000000000000000001", "file_name": "2026-03-09_國泰證券_日對帳單_範例.pdf"},
+ "trade_date": "2026-03-09", "settlement_date": "2026-03-11", "net_amount": "-12305",
+ "lines": [{"name": "範例電子", "category": "集買", "quantity": 1000, "price": "12.3", "amount": "12300",
+            "fee": "5", "tax": "0", "net": "-12305", "order_no": "XY12300", "points": false}],
+ "totals": {"amount": "12300", "fee": "5", "tax": "0", "net": "-12305"},
+ "holdings": [{"code": "9999", "name": "範例電子", "shares": 1000}],
+ "warnings": []}

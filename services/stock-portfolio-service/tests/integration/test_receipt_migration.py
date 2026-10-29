@@ -35,7 +35,7 @@ def test_legacy_upgrade_preserves_cash_and_unknown_receipt_and_safe_downgrade():
     engine.dispose()
 
 
-def test_real_alembic_head_upgrade_and_a4_downgrade_preserve_deployed_data(tmp_path, monkeypatch):
+def test_real_alembic_a5_upgrade_and_a4_downgrade_preserve_deployed_data(tmp_path, monkeypatch):
     """Exercise the unmodified graph/env against a synthetic deployed-a4 database.
 
     The version row is part of the predecessor fixture, not a stamp command or
@@ -79,7 +79,7 @@ def test_real_alembic_head_upgrade_and_a4_downgrade_preserve_deployed_data(tmp_p
     monkeypatch.setattr(database, 'SQLALCHEMY_DATABASE_URL', url)
     config = Config(str(service / 'alembic.ini'))
     config.set_main_option('script_location', str(service / 'alembic'))
-    command.upgrade(config, 'head')
+    command.upgrade(config, 'a5receipt')
     assert ScriptDirectory.from_config(config).get_revision('a5receipt').down_revision == 'a4p5q6r7s8t9'
     assert snapshot() == before
     with engine.begin() as conn:
@@ -99,8 +99,8 @@ def test_real_alembic_head_upgrade_and_a4_downgrade_preserve_deployed_data(tmp_p
     with engine.connect() as conn:
         assert conn.exec_driver_sql('SELECT version_num FROM alembic_version').scalar_one() == 'a4p5q6r7s8t9'
         assert 'receipt_status' not in {c['name'] for c in sa.inspect(conn).get_columns('dividends')}
-    command.upgrade(config, 'head')
-    command.upgrade(config, 'head')
+    command.upgrade(config, 'a5receipt')
+    command.upgrade(config, 'a5receipt')
     assert snapshot() == before
     engine.dispose()
 
@@ -115,7 +115,7 @@ def test_real_graph_has_one_head():
     script = ScriptDirectory.from_config(config)
     heads = script.get_heads()
     assert 'a4p5q6r7s8t9' not in heads, 'receipt migration must descend from a4'
-    assert script.get_current_head() == 'a5receipt'
+    assert script.get_current_head() == 'b6cathay'
 
 
 def test_fresh_database_real_environment_traverses_every_revision_once(tmp_path, monkeypatch):
@@ -150,6 +150,6 @@ def test_fresh_database_real_environment_traverses_every_revision_once(tmp_path,
     assert visited[start:start + 4] == ['l9a0b1c2d3e4', 'm0b1c2d3e4f5', 'm0b1c2d3e4f6', 'n1c2d3e4f5g6']
     engine = sa.create_engine(url)
     with engine.connect() as conn:
-        assert conn.exec_driver_sql('SELECT version_num FROM alembic_version').scalar_one() == 'a5receipt'
+        assert conn.exec_driver_sql('SELECT version_num FROM alembic_version').scalar_one() == 'b6cathay'
         assert sa.inspect(conn).get_table_names() == ['alembic_version']
     engine.dispose()

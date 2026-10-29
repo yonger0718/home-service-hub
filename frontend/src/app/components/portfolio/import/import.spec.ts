@@ -811,6 +811,15 @@ describe('Portfolio import controls', () => {
       expect(detail).not.toContain('重算指紋');
     });
 
+    it('the commit toast lists 對帳單已涵蓋 {covered} 筆 when > 0', () => {
+      const fixture = withFile(genericPreview);
+      const add = vi.spyOn(fixture.debugElement.injector.get(MessageService), 'add');
+      service.uploadCsv.mockReturnValue(of({ ...genericPreview, dry_run: false, created: 1, errors: [], covered: 4 }));
+      commitButton(fixture).click();
+      const detail = String(add.mock.calls.find(([m]) => m.summary === '匯入完成')?.[0].detail);
+      expect(detail).toContain('對帳單已涵蓋 4 筆');
+    });
+
     it('確認股票代號 renders one block per name with meta, 驗證代號 and the confirmation checkbox', async () => {
       service.verifyOverrideSymbol.mockReturnValue(of({ status: 'name_mismatch', expected_name: '台灣50正2', fetched_name: '元大台灣50正2' }));
       const fixture = withFile(genericPreview);

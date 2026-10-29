@@ -18,15 +18,17 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from datetime import date as dt_date, datetime, timedelta, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Query, Response, UploadFile
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from ..database import SessionLocal, get_db
 from ..models import portfolio as portfolio_models
-from ..services import broker_cathay_service, broker_ib_flex_service, import_service, per_date_verify, post_import_orchestrator
+from ..schemas.cathay_statement import StatementPayload
+from ..services import broker_cathay_service, broker_cathay_statement_service, broker_ib_flex_service, import_service, per_date_verify, post_import_orchestrator
 
 router = APIRouter(prefix="/api/portfolio/imports", tags=["Portfolio Imports"])
 
@@ -100,6 +102,7 @@ def _serialize_result(
         "would_rehash": result.would_rehash,
         "would_insert": result.would_insert,
         "would_skip_duplicate": result.would_skip_duplicate,
+        "covered": result.covered,
         "rows": serialized_rows,
         "recalc_scheduled": recalc_scheduled,
         "csv_format": csv_format,
@@ -474,3 +477,67 @@ def import_ib_flex(
     }
     body["candidates"] = len(legacy.pending.rows) - result.skipped_duplicates - commit_errors
     return body
+
+
+# --- 國泰證券 daily statement (spec 6, 7.1) --------------------------------
+# Static sub-paths are declared before anything parameterised so they never
+# collide with the POST on ``/cathay-statement``.
+
+
+class CathayRunReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_at: AwareDatetime
+    result: Literal["ok", "latched", "failed"]
+    code: Optional[str] = Field(default=None, max_length=64)
+    files_seen: int = Field(ge=0)
+    posted: int = Field(ge=0)
+
+
+@router.post("/cathay-statement")
+def import_cathay_statement(
+    payload: StatementPayload,
+    background_tasks: BackgroundTasks,
+    response: Response,
+    dry_run: bool = Query(default=False),
+    db: Session = Depends(get_db),
+) -> dict:
+    outcome = broker_cathay_statement_service.import_statement(db, payload, dry_run=dry_run)
+    if outcome.errors:
+        # A rolled-back attempt must read as transient to the worker (spec 6).
+        response.status_code = 500
+    elif outcome.created_ids:
+        symbols, min_trade = _touched_symbols_and_min_trade_date(db, outcome.created_ids)
+        _maybe_schedule_chain(background_tasks, touched_symbols=symbols, recalc_from=min_trade)
+    return {
+        "outcome": outcome.outcome,
+        "trade_date": outcome.trade_date.isoformat(),
+        "reason": outcome.reason,
+        "counts": outcome.counts,
+        "holdings_diff": outcome.holdings_diff,
+        "errors": outcome.errors,
+    }
+
+
+@router.get("/cathay-statement/pending")
+def cathay_statement_pending(db: Session = Depends(get_db)) -> dict:
+    return broker_cathay_statement_service.pending_days(db)
+
+
+@router.post("/cathay-statement/runs", status_code=204)
+def cathay_statement_record_run(report: CathayRunReport, db: Session = Depends(get_db)) -> Response:
+    broker_cathay_statement_service.record_run(db, report.model_dump())
+    return Response(status_code=204)
+
+
+@router.get("/cathay-statement/runs/latest")
+def cathay_statement_latest_run(db: Session = Depends(get_db)) -> dict:
+    return broker_cathay_statement_service.latest_runs(db)
+
+
+@router.post("/cathay-statement/days/{trade_date}/ack")
+def cathay_statement_ack(trade_date: dt_date, db: Session = Depends(get_db)) -> dict:
+    day = broker_cathay_statement_service.acknowledge_day(db, trade_date)
+    if day is None:
+        raise HTTPException(status_code=404, detail="no pending statement for this date")
+    return {"trade_date": day.trade_date.isoformat(), "ack_status": day.ack_status}

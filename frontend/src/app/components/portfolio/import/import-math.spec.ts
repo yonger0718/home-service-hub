@@ -124,6 +124,7 @@ describe('ROW_RESULT_LABEL', () => {
     expect(ROW_RESULT_LABEL).toEqual({
       new: '新增',
       duplicate: '重複 · 略過',
+      covered: '對帳單已涵蓋',
       rehash: '更新',
       unresolved: '代號待確認',
       error: '錯誤',
@@ -131,14 +132,25 @@ describe('ROW_RESULT_LABEL', () => {
   });
 });
 
+describe('covered rows', () => {
+  const r = importResult({ parsed: 3, rows: [...rows(1, 1, 'new'), ...rows(1, 2, 'covered'), ...rows(1, 3, 'duplicate')], csv_format: 'cathay', dry_run: true });
+  it('covered row gets the label and duplicate variant', () => {
+    expect(previewRow(r.rows[1], r)).toMatchObject({ result: 'covered', label: '對帳單已涵蓋', variant: 'neutral', dimmed: true, hint: null });
+  });
+  it('covered rows are not counted as new', () => {
+    expect(importCounts('transactions', r, 'cathay')).toEqual({ parsed: 3, duplicates: 1, errors: 0, updated: 0, covered: 1 });
+    expect(confirmCount('transactions', r, 'cathay')).toBe(1);
+  });
+});
+
 describe('importCounts / confirmCount — 交易 / 股利', () => {
   it('generic fixture reads skipped_duplicates and never subtracts errors', () => {
-    expect(importCounts('transactions', GENERIC_DRY_RUN, 'generic')).toEqual({ parsed: 41, duplicates: 3, errors: 1, updated: 0 });
+    expect(importCounts('transactions', GENERIC_DRY_RUN, 'generic')).toEqual({ parsed: 41, duplicates: 3, errors: 1, updated: 0, covered: 0 });
     expect(confirmCount('transactions', GENERIC_DRY_RUN, 'generic')).toBe(38);
   });
 
   it('Cathay dry-run reads would_skip_duplicate and would_insert', () => {
-    expect(importCounts('transactions', CATHAY_DRY_RUN, 'cathay')).toEqual({ parsed: 41, duplicates: 3, errors: 1, updated: 0 });
+    expect(importCounts('transactions', CATHAY_DRY_RUN, 'cathay')).toEqual({ parsed: 41, duplicates: 3, errors: 1, updated: 0, covered: 0 });
     expect(confirmCount('transactions', CATHAY_DRY_RUN, 'cathay')).toBe(38);
   });
 
@@ -149,17 +161,17 @@ describe('importCounts / confirmCount — 交易 / 股利', () => {
   });
 
   it('works the same for dividends', () => {
-    expect(importCounts('dividends', GENERIC_DRY_RUN, 'generic')).toEqual({ parsed: 41, duplicates: 3, errors: 1, updated: 0 });
+    expect(importCounts('dividends', GENERIC_DRY_RUN, 'generic')).toEqual({ parsed: 41, duplicates: 3, errors: 1, updated: 0, covered: 0 });
     expect(confirmCount('dividends', GENERIC_DRY_RUN, 'generic')).toBe(38);
   });
 
   it('status-bearing rows win over the wire counters', () => {
-    expect(importCounts('transactions', STATUS_DRY_RUN, 'generic')).toEqual({ parsed: 41, duplicates: 2, errors: 1, updated: 0 });
+    expect(importCounts('transactions', STATUS_DRY_RUN, 'generic')).toEqual({ parsed: 41, duplicates: 2, errors: 1, updated: 0, covered: 0 });
     expect(confirmCount('transactions', STATUS_DRY_RUN, 'generic')).toBe(38);
   });
 
   it('Cathay rehash rows count as 更新, not 重複, and are excluded from 確認匯入 N', () => {
-    expect(importCounts('transactions', CATHAY_STATUS_DRY_RUN, 'cathay')).toEqual({ parsed: 41, duplicates: 2, errors: 0, updated: 3 });
+    expect(importCounts('transactions', CATHAY_STATUS_DRY_RUN, 'cathay')).toEqual({ parsed: 41, duplicates: 2, errors: 0, updated: 3, covered: 0 });
     expect(confirmCount('transactions', CATHAY_STATUS_DRY_RUN, 'cathay')).toBe(36);
     // Statuses win even when the counters disagree.
     const disagree = importResult({ ...CATHAY_STATUS_DRY_RUN, would_rehash: 9, would_insert: 0 });
@@ -169,7 +181,7 @@ describe('importCounts / confirmCount — 交易 / 股利', () => {
 
   it('without statuses 更新 reads would_rehash on a Cathay dry run and rehashed on a commit', () => {
     const wire = importResult({ ...CATHAY_DRY_RUN, would_insert: 36, would_rehash: 2 });
-    expect(importCounts('transactions', wire, 'cathay')).toEqual({ parsed: 41, duplicates: 3, errors: 1, updated: 2 });
+    expect(importCounts('transactions', wire, 'cathay')).toEqual({ parsed: 41, duplicates: 3, errors: 1, updated: 2, covered: 0 });
     expect(confirmCount('transactions', wire, 'cathay')).toBe(36);
     const committed = importResult({ ...wire, dry_run: false, skipped_duplicates: 3, rehashed: 2 });
     expect(importCounts('transactions', committed, 'cathay').updated).toBe(2);
@@ -184,9 +196,9 @@ describe('importCounts / confirmCount — 交易 / 股利', () => {
   });
 
   it('null result is all zeros', () => {
-    expect(importCounts('transactions', null, null)).toEqual({ parsed: 0, duplicates: 0, errors: 0, updated: 0 });
+    expect(importCounts('transactions', null, null)).toEqual({ parsed: 0, duplicates: 0, errors: 0, updated: 0, covered: 0 });
     expect(confirmCount('transactions', null, null)).toBe(0);
-    expect(importCounts('broker', null, null)).toEqual({ parsed: 0, duplicates: 0, errors: 0, updated: 0 });
+    expect(importCounts('broker', null, null)).toEqual({ parsed: 0, duplicates: 0, errors: 0, updated: 0, covered: 0 });
     expect(confirmCount('broker', null, null)).toBe(0);
   });
 });
@@ -203,7 +215,7 @@ describe('importCounts / confirmCount — 券商對帳單', () => {
   });
 
   it('counts both tables, counts.skipped and all errors', () => {
-    expect(importCounts('broker', broker, null)).toEqual({ parsed: 7, duplicates: 1, errors: 2, updated: 0 });
+    expect(importCounts('broker', broker, null)).toEqual({ parsed: 7, duplicates: 1, errors: 2, updated: 0, covered: 0 });
   });
 
   it('confirm subtracts skipped and only the errors that hit a rendered row', () => {
@@ -216,7 +228,7 @@ describe('importCounts / confirmCount — 券商對帳單', () => {
       cash_flows: [...rows(1, 5, 'new'), ...rows(1, 6, 'duplicate')],
       counts: { created: 0, skipped: 9, rejected: 0 },
     });
-    expect(importCounts('broker', withStatus, null)).toEqual({ parsed: 6, duplicates: 2, errors: 0, updated: 0 });
+    expect(importCounts('broker', withStatus, null)).toEqual({ parsed: 6, duplicates: 2, errors: 0, updated: 0, covered: 0 });
     expect(confirmCount('broker', withStatus, null)).toBe(4);
   });
 
@@ -465,6 +477,11 @@ describe('previewCountSummary', () => {
   it('shows 更新 only when > 0', () => {
     const r = importResult({ parsed: 6, csv_format: 'cathay', would_insert: 3, would_skip_duplicate: 1, would_rehash: 2 });
     expect(previewCountSummary('transactions', r, 'cathay')).toBe('可新增 3；重複 1；更新 2；錯誤 0');
+  });
+
+  it('shows 對帳單已涵蓋 only when > 0', () => {
+    const r = importResult({ parsed: 3, rows: [...rows(1, 1, 'new'), ...rows(1, 2, 'covered'), ...rows(1, 3, 'duplicate')], csv_format: 'cathay', dry_run: true });
+    expect(previewCountSummary('transactions', r, 'cathay')).toBe('可新增 1；重複 1；對帳單已涵蓋 1；錯誤 0');
   });
 });
 

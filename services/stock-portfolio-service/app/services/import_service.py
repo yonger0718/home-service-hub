@@ -89,7 +89,7 @@ TYPE_VALUE_SYNONYMS = {
 }
 
 
-RowStatus = Literal["new", "duplicate", "rehash", "unresolved", "error"]
+RowStatus = Literal["new", "duplicate", "rehash", "covered", "unresolved", "error"]
 
 
 @dataclass
@@ -101,9 +101,12 @@ class ParsedRow:
     # ``new`` = inserted (or would be), ``duplicate`` = fingerprint already
     # stored or seen earlier in the batch, ``rehash`` = Cathay only: an
     # existing trade re-fingerprinted in place (fingerprint, side, day-trade
-    # marker, cash legs refreshed; nothing inserted), ``unresolved`` =
+    # marker, cash legs refreshed; nothing inserted), ``covered`` = Cathay
+    # only: the date is owned by an accepted 國泰 daily statement whose lines
+    # these rows sum to (nothing written), ``unresolved`` =
     # skipped for an unverified name override, ``error`` =
-    # parsed but rejected at write time (FX missing, ledger guard). Rows that
+    # parsed but rejected at write time (FX missing, ledger guard, rows that
+    # differ from the owning statement). Rows that
     # fail to parse never become a ParsedRow — they live in ``errors``.
     status: RowStatus | None = None
 
@@ -144,6 +147,8 @@ class ImportResult:
     would_rehash: int = 0
     would_insert: int = 0
     would_skip_duplicate: int = 0
+    # Cathay rows on statement-owned dates that match the statement (dry run and commit alike).
+    covered: int = 0
 
 
 def _required(row: dict, key: str, row_index: int) -> str:
