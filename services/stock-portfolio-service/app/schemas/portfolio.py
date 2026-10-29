@@ -22,6 +22,12 @@ def _normalize_symbol(value: str, market: Optional[str] = None) -> str:
     return normalized
 
 
+def normalize_currency(currency: Optional[str]) -> str:
+    """LSE pence keep the exact ``GBp`` token (``GBP`` = pounds); every other code is upper-cased (#115, #124)."""
+    stripped = (currency or "TWD").strip()
+    return stripped if stripped == "GBp" else stripped.upper()
+
+
 def _require_fx_rate_for_foreign_currency(currency: str, fx_rate_to_twd: Optional[Decimal]) -> None:
     normalized_currency = (currency or "TWD").strip().upper()
     if normalized_currency != "TWD":
@@ -91,7 +97,7 @@ class TransactionBase(BaseModel):
     def normalize_symbol(self) -> Self:
         self.symbol = _normalize_symbol(self.symbol, self.market)
         self.market = (self.market or "TW").strip().upper()
-        self.currency = (self.currency or "TWD").strip().upper()
+        self.currency = normalize_currency(self.currency)
         if self.broker is None:
             self.broker = Broker.TW_MANUAL if self.market == "TW" else Broker.FOREIGN_MANUAL
         return self
@@ -143,10 +149,7 @@ class DividendBase(BaseModel):
     def normalize_symbol(self) -> Self:
         self.symbol = _normalize_symbol(self.symbol, self.market)
         self.market = (self.market or "TW").strip().upper()
-        # LSE pence keep the exact ``GBp`` token (``GBP`` = pounds); every
-        # other code is upper-cased (#115).
-        currency = (self.currency or "TWD").strip()
-        self.currency = currency if currency == "GBp" else currency.upper()
+        self.currency = normalize_currency(self.currency)
         return self
 
 class DividendCreate(DividendBase):

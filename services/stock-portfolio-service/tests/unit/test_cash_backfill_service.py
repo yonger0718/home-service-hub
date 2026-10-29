@@ -461,3 +461,26 @@ def test_replay_skips_existing_broker_cash_flow_fingerprint(db_session) -> None:
     assert len(rows) == 1
     assert result.cash_rows_inserted == 0
     assert result.cash_rows_skipped == 1
+
+
+def test_replay_posts_a_gbp_pence_dividend_in_pounds(db_session) -> None:
+    """#125: a dividend stored in pence (``GBp``) lands in the GBP account divided by 100; GBP rows are untouched."""
+    cathay = _account()
+    ib_gbp = _account(broker=BrokerEnum.IB, nickname="IB GBP", currency="GBP")
+    buy = _transaction(1, type_=TransactionType.BUY, trade_date=datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc),
+                       symbol="VOD", market="LSE", broker=Broker.IB, currency="GBp")
+    pence = _dividend(1, ex_dividend_date=datetime(2025, 2, 1, 9, 0, tzinfo=timezone.utc), symbol="VOD",
+                      market="LSE", currency="GBp")
+    pence.amount = Decimal("1234.5650")
+    pounds = _dividend(2, ex_dividend_date=datetime(2025, 3, 1, 9, 0, tzinfo=timezone.utc), symbol="VOD",
+                       market="LSE", currency="GBP")
+    db_session.add_all([cathay, ib_gbp, buy, pence, pounds])
+    db_session.commit()
+
+    cash_backfill_service.replay_all(db_session)
+
+    legs = {row.related_dividend_id: row for row in db_session.scalars(
+        select(CashTransaction).where(CashTransaction.related_dividend_id.is_not(None)))}
+    assert legs[pence.id].account_id == ib_gbp.id and legs[pence.id].currency == "GBP"
+    assert legs[pence.id].amount == Decimal("12.3457")
+    assert legs[pounds.id].account_id == ib_gbp.id and legs[pounds.id].amount == Decimal("25.00")
