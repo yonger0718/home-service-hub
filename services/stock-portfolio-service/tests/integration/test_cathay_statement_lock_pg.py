@@ -1,12 +1,14 @@
 """§5.3 on a real Postgres: a statement commit and a 國泰 CSV commit for one date serialise on the date lock.
 
-Runs only when ``CATHAY_PG_TEST_URL`` points at a throwaway database (schema built with ``create_all``); the
-root ``.env`` and ``app.database.engine`` are never used. The first path is paused while holding the lock; the
+Runs only when ``CATHAY_PG_TEST_URL`` names a throwaway Postgres server. The module creates its own database there
+(schema built with ``create_all``) and drops it afterwards; the URL's own database is never touched, and the root
+``.env`` and ``app.database.engine`` are never used. The first path is paused while holding the lock; the
 second path is seen waiting in ``pg_locks`` before the first is released — the deterministic evidence.
 """
 from __future__ import annotations
 
 import os
+import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -14,8 +16,10 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy import create_engine, event, make_url, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import NullPool
 
 from app.database import Base
 from app.models import portfolio as models
@@ -39,34 +43,38 @@ def _key(day: date) -> int:
     return 0x43415448 << 32 | day.toordinal()
 
 
-def _refuse_unless_throwaway(engine) -> None:
-    """Never drop a real database: only an empty one, or one holding just this module's tables, is used."""
-    existing = set(inspect(engine).get_table_names())
-    with engine.connect() as conn:
-        alembic = conn.execute(
-            text("SELECT count(*) FROM information_schema.tables WHERE table_name = 'alembic_version'")
-        ).scalar_one()
-    foreign = existing - set(Base.metadata.tables)
-    if alembic or foreign:
-        pytest.fail(
-            f"CATHAY_PG_TEST_URL is not a throwaway database (alembic_version present: {bool(alembic)}; "
-            f"tables outside the model set: {sorted(foreign)}); refusing to drop or create its schema",
-            pytrace=False,
-        )
+# Server-side bounds so a stray lock or a stuck statement fails the run instead of hanging it.
+_BOUNDS = {"options": "-c lock_timeout=30s -c statement_timeout=60s"}
 
 
 @pytest.fixture(scope="module")
 def engine():
-    # Server-side bounds so a stray lock or a stuck statement fails the run instead of hanging it.
-    engine = create_engine(
-        PG_URL, connect_args={"options": "-c lock_timeout=30s -c statement_timeout=60s"}
-    )
-    _refuse_unless_throwaway(engine)
-    Base.metadata.drop_all(engine)
-    Base.metadata.create_all(engine)
-    yield engine
-    Base.metadata.drop_all(engine)
-    engine.dispose()
+    """A database this module creates on the URL's server and drops afterwards.
+
+    The database the URL names is only used to issue CREATE / DROP DATABASE; nothing in it is read, dropped or
+    truncated.
+    """
+    name = f"cathay_lock_test_{secrets.token_hex(8)}"
+    admin = create_engine(PG_URL, isolation_level="AUTOCOMMIT", poolclass=NullPool, connect_args=_BOUNDS)
+    try:
+        with admin.connect() as conn:
+            conn.execute(text(f'CREATE DATABASE "{name}"'))
+    except DBAPIError as exc:
+        admin.dispose()
+        pytest.fail(
+            f"cannot CREATE DATABASE on the CATHAY_PG_TEST_URL server ({exc.orig!r}); "
+            "the lock test only runs in a database it creates itself",
+            pytrace=False,
+        )
+    engine = create_engine(make_url(PG_URL).set(database=name), connect_args=_BOUNDS)
+    try:
+        Base.metadata.create_all(engine)
+        yield engine
+    finally:
+        engine.dispose()
+        with admin.connect() as conn:
+            conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        admin.dispose()
 
 
 @pytest.fixture(autouse=True)
