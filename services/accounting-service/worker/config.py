@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import date
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
@@ -58,6 +59,9 @@ class WorkerConfig:
     flex_poll_attempts: int = 12
     flex_poll_interval_s: int = 10
     portfolio_api_url: str = "http://127.0.0.1:8001"
+    cathay_folder: str = "投資/國泰證券/日對帳單"  # Drive folder under drive_root, also the password-file key
+    cathay_cutover: date = date(2026, 10, 16)
+    cathay_timeout_s: int = 60
 
     @property
     def mail_root(self) -> str:
@@ -92,6 +96,13 @@ def _ident(env: Mapping[str, str], key: str, default: str) -> str:
     if not _IDENT.match(value):
         raise ConfigError(f"{key} must match [A-Za-z0-9._-]{{1,64}}")
     return value
+
+
+def _date(env: Mapping[str, str], key: str, default: str) -> date:
+    try:
+        return date.fromisoformat(_str(env, key, default))
+    except ValueError:
+        raise ConfigError(f"{key} must be an ISO date") from None
 
 
 def load(env: Mapping[str, str] = os.environ) -> WorkerConfig:
@@ -130,4 +141,7 @@ def load(env: Mapping[str, str] = os.environ) -> WorkerConfig:
         flex_poll_attempts=int(_str(env, "STATEMENT_FLEX_POLL_ATTEMPTS", "12")),
         flex_poll_interval_s=int(_str(env, "STATEMENT_FLEX_POLL_INTERVAL", "10")),
         portfolio_api_url=_str(env, "STATEMENT_PORTFOLIO_API_URL", "http://127.0.0.1:8001").rstrip("/"),
+        cathay_folder=_str(env, "STATEMENT_CATHAY_FOLDER", "投資/國泰證券/日對帳單").strip("/"),
+        cathay_cutover=_date(env, "STATEMENT_CATHAY_CUTOVER", "2026-10-16"),
+        cathay_timeout_s=int(_str(env, "STATEMENT_CATHAY_TIMEOUT_S", "60")),
     )
