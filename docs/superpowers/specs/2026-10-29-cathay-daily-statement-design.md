@@ -1,7 +1,8 @@
 # 國泰證券日對帳單 auto-import — design
 
 Status: rev 2.2 (2026-10-29), after the AGENT-335 review (findings 1–6 folded) and its re-check (buy tax pinned to 0);
-rev 2.2 adds §7 notifications to the scope (owner 2026-10-29: a stuck date must reach the owner, not only a log). Owner rulings 2026-10-29: the daily
+rev 2.2 adds §7 notifications to the scope (owner 2026-10-29: a stuck date must reach the owner, not only a log);
+rev 2.3 folds the AGENT-337 review (run deadline, notifier isolation, acknowledgement model). Owner rulings 2026-10-29: the daily
 statement is the primary source for the dates it covers ("對帳單為主，按日期分"); current days matter most and the
 archive is used to validate the parser, not to wait for a full backfill; the first writer of a date owns it and a
 mismatch is never resolved automatically in either direction (option A — the owner imports the CSV only after the
@@ -64,8 +65,9 @@ it means.
 - **Portfolio** (stock-portfolio-service): new `POST /api/portfolio/imports/cathay-statement` (JSON body,
   `dry_run` query flag), service `broker_cathay_statement_service`. Cathay semantics live here, next to
   `broker_cathay_service`: 類別 mapping, order number, symbol resolution, date ownership, the CSV interplay.
-- Timer `homehub-portfolio-cathay.timer` daily 07:30 Asia/Taipei (after the Apps Script run) plus an owner-run
-  command for one file or a date range.
+- Timer `homehub-portfolio-cathay.timer` daily 06:40 Asia/Taipei — after the Apps Script trigger (06:10, which Apps
+  Script may start up to 15 minutes late) and before the 07:00 notifier — plus an owner-run command for one file or a
+  date range. A statement saved after a run is picked up by the next run.
 
 ## 4. Statement payload (worker → portfolio)
 
@@ -135,6 +137,9 @@ Table `cathay_statement_day`, one row per trade date, two parts:
 
 A date is **owned** once `accepted_kind` is set. `held`, `mismatch` and `conflict` never set or clear acceptance.
 
+- **Acknowledgement (owner, §7.1):** `ack_sha256`, `ack_status`, `ack_at` — the (sha, status) of the latest attempt
+  at the moment of the ack. It never changes acceptance or any other column, and never blocks a later import.
+
 ### 5.3 Atomicity
 
 The statement commit and the CSV commit (`_commit_rehash`) take the same lock before reading anything for a date:
@@ -199,29 +204,41 @@ the notifier as the owner's user, so both meet at the portfolio API.
 
 - `GET /api/portfolio/imports/cathay-statement/pending` → `[{"trade_date", "status", "reason", "since", "last_at"}]`:
   every date whose latest attempt is `held` or `mismatch` and that is not owned, plus every owned date whose latest
-  attempt is `conflict`; `since` is the first attempt that put the date in this state. Sorted by date.
+  attempt is `conflict` — except a date whose (`last_sha256`, `last_status`) equals its (`ack_sha256`,
+  `ack_status`). `since` is the first attempt that put the date in this state. Sorted by date, at most 50 rows
+  (`truncated: true` beyond). `reason` is a code plus at most one name, cut to 40 characters.
 - `POST /api/portfolio/imports/cathay-statement/runs` (worker, once per commit run, also when the run ends latched or
   failed): `{"run_at", "result": "ok" | "latched" | "failed", "code", "files_seen", "posted"}`. Portfolio keeps the
-  latest row per result plus the latest overall (`cathay_statement_run`, small table).
-- `GET /api/portfolio/imports/cathay-statement/runs/latest` → the latest overall row and the latest `ok` row.
-- A `conflict` leaves the pending list only when the owner runs `python -m worker cathay --ack <date>`, which
-  posts `POST …/days/<date>/ack` and sets the latest attempt to `acknowledged` (acceptance unchanged). `held` and
-  `mismatch` leave it when the date is accepted (or the owner acks it after importing that day by CSV elsewhere).
+  latest row overall and the latest `ok` row (`cathay_statement_run`, small table).
+- `GET /api/portfolio/imports/cathay-statement/runs/latest` → `{"latest": row | null, "latest_ok": row | null}`.
+- Acknowledgement: `python -m worker cathay --ack <date>` posts `POST …/days/<date>/ack`, which stores the date's
+  current (`last_sha256`, `last_status`) as the ack. An identical retry (same sha, same status — e.g. a `held` file
+  re-posted every run after the owner imported that day by CSV) stays acknowledged; a new sha or a new status is a new
+  incident and shows again. Acceptance is never touched, so an acknowledged held date still imports if a later post is
+  accepted.
 - No auth today, like every portfolio route (issue #117 adds bearer auth for all of them later); the endpoints carry
-  dates, statuses and reason codes only, no amounts or names beyond the unresolved name in `reason`.
+  dates, statuses and reason codes only, no amounts.
 
 ### 7.2 Notifier
 
 - Config: optional `portfolio_base` (e.g. `http://127.0.0.1:8001`); absent → the section is off and nothing else
-  changes. `cathay_stale_hours` (default 48).
+  changes. `cathay_run_time` (default `06:40`, Asia/Taipei) and `cathay_run_grace_minutes` (default 15).
+- Run deadline: the latest scheduled run is the most recent `cathay_run_time` at least `cathay_run_grace_minutes`
+  before now. Stale = `latest` is null, or `latest.run_at` is before that scheduled run. The daily notifier runs at
+  07:00, so a run missed at 06:40 is reported at 07:00 the same day; a worker that never reported is reported on the
+  first run with `portfolio_base` set.
 - Daily (`python -m notify daily`): a section 「國泰對帳單」 with one item per pending date
-  (`10/27 保留：名稱對不到代號 範例電子`, `10/28 對不上 CSV`, `10/29 收到不同版本的對帳單`) and one item when the latest
-  run is `latched` / `failed`, or the latest run is older than `cathay_stale_hours`. Items count like the other daily
+  (`10/27 保留：名稱對不到代號 範例電子`, `10/28 對不上 CSV`, `10/29 收到不同版本的對帳單`), at most 10 items plus
+  「另有 N 天」, and one item when the latest run is `latched` / `failed` or stale. Items count like the other daily
   items, so a day with only this section still sends, and the same-day dedupe applies as for every other item.
 - Weekly: a new block 「國泰對帳單待處理」 after 「自動扣繳本週跳過」 (`notify/render.py`), listing the same pending
-  dates and the run state; absent when there is nothing to list.
-- A portfolio read error never fails the debit reminders: the section becomes one item 「國泰對帳單狀態讀不到」 and
-  the rest of the run continues.
+  dates (same cap) and the run state; absent when there is nothing to list.
+- Isolation: the portfolio part runs in its own client (timeout 10 s, response body at most 64 KiB) and its own
+  step — fetch, strict validation (status 200, the exact shapes above, ISO dates and timestamps, status values in the
+  sets, `reason` ≤ 40 characters), normalisation and rendering of the section's lines, each line ≤ 120 characters —
+  before the debit items are rendered. Any exception in that step (HTTP error, timeout, oversized body, invalid JSON,
+  wrong shape, bad date, unknown status) replaces the whole section with the single item 「國泰對帳單狀態讀不到」;
+  the debit and weekly items render and send exactly as without the section.
 
 ## 8. Rollout and history
 
@@ -245,10 +262,13 @@ rehash never selects a statement row; imported → conflict (corrected sha) → 
 fingerprints unchanged; CSV-first verified then the same statement again → duplicate; same totals but different
 day-trade marker → mismatch; two sessions (CSV commit and statement commit for one date, interleaved at the read):
 exactly one writes, the other sees ownership or rows under the lock; a failure after inserting rows rolls back the
-ownership row; held then mapping fixed → imported; dry run writes nothing; pending list contents per status, conflict
-until ack, ack never touches acceptance; run report latest rows.
-Notifier: section off without `portfolio_base`; items for held / mismatch / conflict / latched / failed / stale; a
-day with only this section sends; portfolio read error → one item and the debit items still sent.
+ownership row; held then mapping fixed → imported; dry run writes nothing; pending list contents per status and cap;
+held → CSV import elsewhere → ack → identical held repost stays acknowledged; a new sha after an ack shows again; a
+conflict until ack; ack never touches acceptance and an acknowledged held date still imports; run report latest rows.
+Notifier: section off without `portfolio_base`; items for held / mismatch / conflict / latched / failed; stale on
+the timeline Monday 06:40 ok → Tuesday 06:40 missed → reported Tuesday 07:00; empty run history → reported; the item
+cap; a day with only this section sends; timeout, invalid JSON, a missing field, a bad timestamp, an unknown status and
+an oversized body or reason each → one item, and the debit messages are still delivered within the Discord limit.
 
 ## 10. Review focus
 
