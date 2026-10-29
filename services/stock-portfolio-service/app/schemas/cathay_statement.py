@@ -28,8 +28,8 @@ class _Strict(BaseModel):
 
 
 class StatementSource(_Strict):
-    drive_file_id: str
-    sha256: str
+    drive_file_id: str = Field(max_length=128)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     file_name: str
 
 

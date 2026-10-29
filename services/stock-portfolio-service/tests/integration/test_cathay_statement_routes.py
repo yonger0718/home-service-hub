@@ -246,8 +246,51 @@ def test_runs_latest(client):
 
 @pytest.mark.parametrize("patch", [
     {"result": "weird"}, {"files_seen": -1}, {"posted": -1}, {"code": "x" * 65}, {"run_at": "not-a-time"},
+    {"run_at": "2026-03-09T10:00:00"},
 ])
 def test_runs_invalid_422(client, patch):
     body = {"run_at": "2026-03-09T10:00:00+08:00", "result": "ok", "code": None,
             "files_seen": 0, "posted": 0, **patch}
     assert client.post(f"{BASE}/runs", json=body).status_code == 422
+
+
+@pytest.mark.parametrize("source", [
+    {"sha256": "a" * 63}, {"sha256": "A" * 64}, {"sha256": "a" * 65}, {"drive_file_id": "d" * 129},
+])
+def test_post_statement_422_bad_source(client, source):
+    body = _body()
+    body["source"].update(source)
+    assert _post(client, body).status_code == 422
+
+
+def _conflict(client):
+    assert _post(client, _body()).json()["outcome"] == "imported"
+    other = _body(lines=OTHER_LINES, holdings=OTHER_HOLDINGS, sha="c" * 64)
+    assert _post(client, other).json()["outcome"] == "conflict"
+
+
+def _dup_new_drive_id(client):
+    body = _body()
+    body["source"]["drive_file_id"] = "drive-file-2"
+    return _post(client, body).json()["outcome"]
+
+
+def test_duplicate_does_not_clear_unacked_conflict(client, db_session):
+    _conflict(client)
+    assert _dup_new_drive_id(client) == "duplicate"
+    day = _day(db_session)
+    db_session.refresh(day)
+    assert day.last_status == "conflict"
+    assert day.last_sha256 == "c" * 64
+    assert day.drive_file_id == "drive-file-1"
+    assert [i["status"] for i in _pending(client)["items"]] == ["conflict"]
+
+
+def test_duplicate_after_acked_conflict_records(client, db_session):
+    _conflict(client)
+    assert _ack(client).status_code == 200
+    assert _dup_new_drive_id(client) == "duplicate"
+    day = _day(db_session)
+    db_session.refresh(day)
+    assert day.last_status == "duplicate"
+    assert _pending(client)["total"] == 0

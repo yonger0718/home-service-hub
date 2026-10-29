@@ -7,6 +7,7 @@ from collections import defaultdict
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -23,6 +24,9 @@ from .import_service import (
     UnresolvedName,
     _transaction_fingerprint,
 )
+
+if TYPE_CHECKING:
+    from ..models.cathay_statement import CathayStatementDay
 
 CATHAY_SIDE_MAP: dict[str, tuple[str, str]] = {
     # (TransactionType.value, PositionSide.value)
@@ -418,7 +422,7 @@ def _insert_transaction(
 
 
 def _judge_owned(
-    owned_rows: dict[date, list[ParsedRow]], owned: dict
+    owned_rows: dict[date, list[ParsedRow]], owned: dict[date, CathayStatementDay]
 ) -> tuple[int, list[ParseError]]:
     """§5.5: rows on a statement-owned date are compared, never written.
 

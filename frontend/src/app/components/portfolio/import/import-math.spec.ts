@@ -478,6 +478,11 @@ describe('previewCountSummary', () => {
     const r = importResult({ parsed: 6, csv_format: 'cathay', would_insert: 3, would_skip_duplicate: 1, would_rehash: 2 });
     expect(previewCountSummary('transactions', r, 'cathay')).toBe('可新增 3；重複 1；更新 2；錯誤 0');
   });
+
+  it('shows 已由對帳單匯入 only when > 0', () => {
+    const r = importResult({ parsed: 3, rows: [...rows(1, 1, 'new'), ...rows(1, 2, 'covered'), ...rows(1, 3, 'duplicate')], csv_format: 'cathay', dry_run: true });
+    expect(previewCountSummary('transactions', r, 'cathay')).toBe('可新增 1；重複 1；已由對帳單匯入 1；錯誤 0');
+  });
 });
 
 describe('cell', () => {

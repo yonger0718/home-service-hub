@@ -47,7 +47,7 @@ const NAME_KEYS = ['name', '名稱', '股票', 'stock_name'];
 
 const MANUAL_WARNING = '將以通用手動 CSV 解析';
 
-/** `row.status` when it is one of the five known values; tolerant of models without the field. */
+/** `row.status` when it is one of the six known values; tolerant of models without the field. */
 function statusOf(row: unknown): RowResult | null {
   const status = (row as { status?: unknown } | null)?.status;
   return typeof status === 'string' && ROW_RESULTS.has(status) ? (status as RowResult) : null;
@@ -318,11 +318,12 @@ export function importErrorDetail(err: unknown): string {
   return bodyReason(err) ?? nonEmptyString((err as { message?: unknown } | null)?.message) ?? '未知錯誤';
 }
 
-/** Dry-run toast counts (`可新增 N；重複 d；[更新 u；]錯誤 e`) from the preview's `importCounts` / `confirmCount`. */
+/** Dry-run toast counts (`可新增 N；重複 d；[更新 u；][已由對帳單匯入 c；]錯誤 e`) from the preview's `importCounts` / `confirmCount`. */
 export function previewCountSummary(type: ImportType, r: AnyResult, csvFormat: string | null): string {
   const counts = importCounts(type, r, csvFormat);
   const parts = [`可新增 ${confirmCount(type, r, csvFormat)}`, `重複 ${counts.duplicates}`];
   if (counts.updated > 0) parts.push(`更新 ${counts.updated}`);
+  if (counts.covered > 0) parts.push(`已由對帳單匯入 ${counts.covered}`);
   parts.push(`錯誤 ${counts.errors}`);
   return parts.join('；');
 }

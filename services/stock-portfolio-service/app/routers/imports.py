@@ -21,7 +21,7 @@ from datetime import date as dt_date, datetime, timedelta, timezone
 from typing import Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Query, Response, UploadFile
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
@@ -487,7 +487,7 @@ def import_ib_flex(
 class CathayRunReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    run_at: datetime
+    run_at: AwareDatetime
     result: Literal["ok", "latched", "failed"]
     code: Optional[str] = Field(default=None, max_length=64)
     files_seen: int = Field(ge=0)

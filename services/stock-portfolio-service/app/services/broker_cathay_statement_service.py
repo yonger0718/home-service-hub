@@ -312,6 +312,12 @@ def _record_attempt(
     if day is None:
         day = CathayStatementDay(trade_date=payload.trade_date)
         db.add(day)
+    elif (
+        decision.outcome == "duplicate"
+        and day.last_status == "conflict"
+        and not (day.ack_sha256 == day.last_sha256 and day.ack_status == "conflict")
+    ):
+        return  # a pending conflict stays pending until the owner acks it
     if decision.outcome in ("imported", "verified"):
         day.accepted_kind = decision.outcome
         day.accepted_sha256 = payload.source.sha256
