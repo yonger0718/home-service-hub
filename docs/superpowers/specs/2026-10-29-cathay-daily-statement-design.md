@@ -20,7 +20,7 @@ Non-goals: the accounting ledger (settlement cash stays on the 國泰 bank accou
 settlement matching is not built yet and is not part of this change); 永豐證券 / 期貨 statements; monthly
 statements.
 
-## 2. Facts (from 319 archived statements, 2024-01 → 2026-10)
+## 2. Facts (from 466 archived statements, 2023-01 → 2026-10; the first survey covered 319, 2024-01 → 2026-10)
 
 - Mail: sender `e-notification@ebill1.cathaysec.com.tw`, subject `國泰綜合證券日對帳單` (no date), one attachment
   `國泰證券日對帳單.pdf` plus `smime.p7s`, sent the trade day between about 19:50 and 20:30 Asia/Taipei, only on
@@ -40,10 +40,11 @@ statements.
   3. margin columns then the 7-character `委託書號` last, for example `0 0 0 0 XY12300`; a line paid with 小樹點數
      prefixes it with `(小樹點數)`; a 資賣 line carries the 融資利息 here (`0 23 XY45600` = interest 23)
   4. `0` (債息利息)
-- 類別 seen: 集買 613, 集賣 241, 沖買 89, 沖賣 82, 資買 1, 資賣 1. 券買 / 券賣 never appeared.
-- Every 集買 / 集賣 / 沖買 / 沖賣 line (1025) has line 3 exactly `0 0 0 0 <委託書號>` (after an optional
+- 類別 seen: 集買 907, 集賣 391, 沖買 114, 沖賣 104, 資買 18, 資賣 16 (資買 / 資賣 in 25 statements). 券買 / 券賣 never
+  appeared.
+- Every 集買 / 集賣 / 沖買 / 沖賣 line of the 441 statements without 資買 / 資賣 (1461 lines) has line 3 exactly `0 0 0 0 <委託書號>` (after an optional
   `(小樹點數) ` prefix) and line 4 exactly `0`, and its net is exact: buy `net = −(amount + fee)`, sell
-  `net = amount − fee − tax`; every buy line (集買 613, 沖買 89) has tax 0. The 資買 / 資賣 lines carry 融資 columns whose meaning the text layer does not fix
+  `net = amount − fee − tax`; every buy line (集買, 沖買) has tax 0. The 資買 / 資賣 lines carry 融資 columns whose meaning the text layer does not fix
   (the 資賣 loan repayment is not on its line at all).
 - Footer: `總合計 <成交金額> <手續費> <交易稅>`, the signed Σ net (commas optional), margin totals `0 0 0 0` and `0`
   (non-zero only on 資買 / 資賣 days), `買進總計： … 賣出總計： … 本期買+賣合計： … 當沖損益： …`, `預收款： 0 留置款： 0
@@ -56,7 +57,7 @@ statements.
 - **Granularity: the statement has one line per (委託, price); the CSV has one row per fill.** The 委託書號 on the
   statement is the CSV 委託書號 plus a two-digit price-group suffix (`XY123` → `XY12300`, `XY12301`). Lines and
   rows agree on totals: Σ quantity, Σ 手續費, Σ 交易稅 of the fills equal the line.
-- Matching the archive against the portfolio: 989 of 1027 lines match a portfolio row by business key (symbol,
+- Matching the archive against the portfolio (first survey, 319 statements): 989 of 1027 lines match a portfolio row by business key (symbol,
   type, quantity, price, fee, tax, date); every line of a post-2026-06 CSV import also matches its fingerprint
   (`_transaction_fingerprint` with order_id = 委託書號 minus the suffix); 5 lines are multi-fill aggregates; 25
   are trades after the last CSV import (2026-10-15); 1 is a 資賣 whose stored fee predates the interest fold.
@@ -100,7 +101,7 @@ it means.
   used for this job; `pdf.unlock` still picks the password candidate.
 
 - Header `證券日對帳單 <ROC>年 <M>月 <D>日` and the `成交日期 交割日期 …` data line must agree (ROC year + 1911). A
-  two-page statement is read as one text (the archive's 167 two-page statements parse this way).
+  two-page statement is read as one text (301 of the 466 archived statements are two pages and parse this way).
 - An item starts at a line matching `<name> <類別> <qty> <price> <amount> <fee> <tax>` where 類別 ∈ {集買, 集賣, 沖買,
   沖賣}; qty a positive integer with optional thousands commas, price a positive decimal, amount / fee / tax
   non-negative integers. Line 2 is one signed integer. Line 3: the optional `(小樹點數) ` prefix is removed first
