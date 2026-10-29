@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 from collections import defaultdict
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -40,6 +41,8 @@ CATHAY_SIDE_MAP: dict[str, tuple[str, str]] = {
     "券賣": ("SELL", "SHORT"),
 }
 
+logger = logging.getLogger(__name__)
+
 _DATA_PATH = Path(__file__).resolve().parents[1] / "data/name_to_symbol.json"
 _ALIASES_PATH = Path(__file__).resolve().parents[1] / "data/name_aliases.json"
 
@@ -55,20 +58,31 @@ def _load_name_to_symbol() -> dict[str, list[str]]:
 NAME_TO_SYMBOL: dict[str, list[str]] = _load_name_to_symbol()
 
 
+def invalid_name_aliases(aliases: dict[str, str], name_to_symbol: dict[str, list[str]]) -> dict[str, str]:
+    """Unusable aliases and why: the alias targets a code the map lacks, or it is itself a current name
+    (it would silently change how that name resolves)."""
+    known_codes = {code for codes in name_to_symbol.values() for code in codes}
+    problems = {}
+    for name, code in aliases.items():
+        if code not in known_codes:
+            problems[name] = f"name alias {name!r} points to unknown code {code!r}"
+        elif name in name_to_symbol:
+            problems[name] = f"name alias {name!r} is already a current name for {name_to_symbol[name]}"
+    return problems
+
+
 def _load_name_aliases(path: Path, name_to_symbol: dict[str, list[str]]) -> dict[str, str]:
     """Old or broker-short names the twstock map does not know, e.g. a pre-merger name.
 
-    Fails at load when an alias targets a code the map lacks, or when the alias is itself a current
-    name (it would silently change how that name resolves).
+    An unusable alias is dropped with a warning instead of stopping the service: a twstock refresh can
+    delist a code. The unit suite checks the checked-in file strictly, so a refresh that breaks one fails
+    the tests before it deploys.
     """
     aliases = json.loads(path.read_text(encoding="utf-8"))
-    known_codes = {code for codes in name_to_symbol.values() for code in codes}
-    for name, code in aliases.items():
-        if code not in known_codes:
-            raise ValueError(f"name alias {name!r} points to unknown code {code!r}")
-        if name in name_to_symbol:
-            raise ValueError(f"name alias {name!r} is already a current name for {name_to_symbol[name]}")
-    return aliases
+    problems = invalid_name_aliases(aliases, name_to_symbol)
+    for problem in problems.values():
+        logger.warning("%s; alias ignored", problem)
+    return {name: code for name, code in aliases.items() if name not in problems}
 
 
 NAME_ALIASES: dict[str, str] = _load_name_aliases(_ALIASES_PATH, NAME_TO_SYMBOL)

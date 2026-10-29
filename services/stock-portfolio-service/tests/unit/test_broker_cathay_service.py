@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from io import BytesIO
 from decimal import Decimal
@@ -138,18 +139,21 @@ def test_alias_resolves_csv_row_and_statement_line(db_session):
     assert broker_cathay_statement_service.resolve_line_symbol(db_session, "台新金", []) == "2887"
 
 
-def test_alias_to_unknown_code_fails_at_load(tmp_path):
-    path = tmp_path / "aliases.json"
-    path.write_text('{"舊名": "0000X"}', encoding="utf-8")
-    with pytest.raises(ValueError, match="name alias '舊名' points to unknown code '0000X'"):
-        broker_cathay_service._load_name_aliases(path, {"範例電子": ["9999"]})
+def test_checked_in_aliases_all_valid():
+    # Fails after a twstock refresh delists an alias target or makes an alias a current name; fix the alias file.
+    aliases = json.loads(broker_cathay_service._ALIASES_PATH.read_text(encoding="utf-8"))
+    assert broker_cathay_service.invalid_name_aliases(aliases, broker_cathay_service.NAME_TO_SYMBOL) == {}
+    assert broker_cathay_service.NAME_ALIASES == aliases
 
 
-def test_alias_that_is_a_current_name_fails_at_load(tmp_path):
+def test_unusable_alias_dropped_with_warning_not_raised(tmp_path, caplog):
     path = tmp_path / "aliases.json"
-    path.write_text('{"範例電子": "9998"}', encoding="utf-8")
-    with pytest.raises(ValueError, match="name alias '範例電子' is already a current name"):
-        broker_cathay_service._load_name_aliases(path, {"範例電子": ["9999"], "範例二號": ["9998"]})
+    path.write_text('{"舊名": "0000X", "範例電子": "9998", "舊名二": "9999"}', encoding="utf-8")
+    with caplog.at_level("WARNING"):
+        aliases = broker_cathay_service._load_name_aliases(path, {"範例電子": ["9999"], "範例二號": ["9998"]})
+    assert aliases == {"舊名二": "9999"}
+    assert "name alias '舊名' points to unknown code '0000X'; alias ignored" in caplog.text
+    assert "name alias '範例電子' is already a current name for ['9999']; alias ignored" in caplog.text
 
 
 @pytest.mark.parametrize(
