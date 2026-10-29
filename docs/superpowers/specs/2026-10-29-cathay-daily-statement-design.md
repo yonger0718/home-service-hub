@@ -218,7 +218,8 @@ the notifier as the owner's user, so both meet at the portfolio API.
   (`10/27 保留：名稱對不到代號 範例電子`, `10/28 對不上 CSV`, `10/29 收到不同版本的對帳單`) and one item when the latest
   run is `latched` / `failed`, or the latest run is older than `cathay_stale_hours`. Items count like the other daily
   items, so a day with only this section still sends, and the same-day dedupe applies as for every other item.
-- Weekly: the same pending dates under its 「該處理的事」 part.
+- Weekly: a new block 「國泰對帳單待處理」 after 「自動扣繳本週跳過」 (`notify/render.py`), listing the same pending
+  dates and the run state; absent when there is nothing to list.
 - A portfolio read error never fails the debit reminders: the section becomes one item 「國泰對帳單狀態讀不到」 and
   the rest of the run continues.
 
