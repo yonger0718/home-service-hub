@@ -77,13 +77,14 @@ def engine():
         try:
             with admin.connect() as conn:
                 conn.execute(text(f'CREATE DATABASE "{name}"'))
+                # Set before the connection closes, so a failure on close still reaches the DROP below.
+                created = True
         except DBAPIError as exc:
             pytest.fail(
                 f"cannot CREATE DATABASE on the CATHAY_PG_TEST_URL server ({exc.orig!r}); "
                 "the lock test only runs in a database it creates itself",
                 pytrace=False,
             )
-        created = True
         url, connect_args = _engine_args(PG_URL, name)
         engine = create_engine(url, connect_args=connect_args)
         with engine.connect() as conn:
