@@ -56,8 +56,26 @@ def test_day_trade_pair_with_empty_holdings():
 
 def test_points_prefix():
     st = parse_statement(load("points"))
-    assert st.lines[0]["points"] is True and st.lines[0]["order_no"] == "XY12300"
-    assert st.net_amount == -12305
+    assert st.lines[0]["points"] is False and st.net_amount == -12305
+
+
+def test_points_paid_line_cash_net():
+    st = parse_statement(load("points_paid"))
+    assert [ln["points"] for ln in st.lines] == [False, True]
+    assert st.lines[1]["net"] == -2862 and st.net_amount == -15167 == sum(ln["net"] for ln in st.lines)
+    out = payload(load("points_paid"))
+    assert out["net_amount"] == out["totals"]["net"] == "-15167"
+
+
+def test_points_paid_cash_net_must_exclude_the_points_line():
+    text = load("points_paid")
+    assert code_of(text.replace("淨收付金額： -12,305", "淨收付金額： -15,167")) == "net_total"
+    assert code_of(text.replace("0 0 -12,305", "0 0 -15,167").replace("淨收付金額： -12,305", "淨收付金額： -15,167")) == "net_total"
+
+
+def test_points_line_needs_the_points_variant():
+    text = load("single").replace("0 0 0 0 XY12300", "(小樹點數) 0 0 0 0 XY12300")
+    assert code_of(text) == "net_total"
 
 
 def test_one_order_in_two_price_groups():
@@ -78,7 +96,7 @@ def test_unsupported_still_checks_header_and_footer():
     assert code_of(load("unsupported").replace("9999 範例電子", "12 範例電子")) == "holdings"
 
 
-@pytest.mark.parametrize("fixture", ["single", "two_pages", "pair", "points", "price_groups", "unsupported"])
+@pytest.mark.parametrize("fixture", ["single", "two_pages", "pair", "points", "points_paid", "price_groups", "unsupported"])
 def test_payload_loads_into_the_portfolio_schema(fixture):
     path = PORTFOLIO / "app/schemas/cathay_statement.py"
     spec = importlib.util.spec_from_file_location("portfolio_cathay_statement_schema", path)

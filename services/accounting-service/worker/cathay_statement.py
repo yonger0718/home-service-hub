@@ -266,11 +266,19 @@ def parse_statement(text: str) -> ParsedStatement:
     holdings = _parse_holdings(lines, foot.next_index)
     if (foot.points is None) != (header_points is None) or foot.points != header_points:
         raise StatementError("net_total")
-    if not (header_net == foot.line_net == foot.cash_net == foot.net):
+    # 應收付金額 is the signed sum of every line; 淨收付金額 is the cash part, without the lines paid with points
+    if foot.line_net != foot.cash_net or header_net != foot.net:
         raise StatementError("net_total")
     if unsupported:
         items = []
+        if foot.net != foot.cash_net:
+            raise StatementError("net_total")
     else:
+        points_net = sum(item["net"] for item in items if item["points"])
+        if header_points is None and any(item["points"] for item in items):
+            raise StatementError("net_total")
+        if foot.net != foot.cash_net - points_net or sum(item["net"] for item in items) != foot.cash_net:
+            raise StatementError("net_total")
         for key in ("amount", "fee", "tax"):
             if sum(item[key] for item in items) != foot.totals[key]:
                 raise StatementError("totals")
@@ -278,9 +286,7 @@ def parse_statement(text: str) -> ParsedStatement:
         sell = sum(it["amount"] for it in items if it["category"] not in BUY)
         if not (foot.buy_total == buy and foot.sell_total == sell and foot.both_total == buy + sell and foot.margin_ok):
             raise StatementError("totals")
-        if sum(item["net"] for item in items) != header_net:
-            raise StatementError("net_total")
-    return ParsedStatement(trade, settle, Decimal(header_net), items, {k: Decimal(v) for k, v in foot.totals.items()},
+    return ParsedStatement(trade, settle, Decimal(foot.line_net), items, {k: Decimal(v) for k, v in foot.totals.items()},
                            holdings, unsupported)
 
 
