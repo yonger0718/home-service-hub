@@ -200,14 +200,20 @@ def _cathay_rows_on(db: Session, trade_date: date) -> list[models.Transaction]:
     )
 
 
-def _group(items: Iterable[tuple]) -> list[dict]:
-    """Sum (quantity, fee, tax) per (symbol, type, position_side, marker, price)."""
+def _sums(items: Iterable[tuple]) -> dict[tuple, list[Decimal]]:
+    """Sum (quantity, fee, tax) per (symbol, type, position_side, marker, price, *rest); price normalised."""
     sums: dict[tuple, list[Decimal]] = defaultdict(lambda: [Decimal(0)] * 3)
-    for symbol, type_, side, marker, price, quantity, fee, tax in items:
-        acc = sums[(symbol, type_, side, marker, _num(price))]
+    for symbol, type_, side, marker, price, *rest, quantity, fee, tax in items:
+        acc = sums[(symbol, type_, side, marker, _num(price), *rest)]
         acc[0] += Decimal(quantity)
         acc[1] += Decimal(fee or 0)
         acc[2] += Decimal(tax or 0)
+    return sums
+
+
+def _group(items: Iterable[tuple]) -> list[dict]:
+    """Sum (quantity, fee, tax) per (symbol, type, position_side, marker, price)."""
+    sums = _sums(items)
     return [
         {"symbol": k[0], "type": k[1], "position_side": k[2], "marker": k[3], "price": k[4],
          "quantity": _num(v[0]), "fee": _num(v[1]), "tax": _num(v[2])}
@@ -374,3 +380,54 @@ def import_statement(db: Session, payload: StatementPayload, *, dry_run: bool) -
         return outcome(decision, errors=[str(exc)])
     counts["created"] = len(created_ids)
     return outcome(decision, holdings_diff, created_ids)
+
+
+# --- CSV import on an owned date (spec 5.5) --------------------------------
+
+
+def owned_days(db: Session, dates: Iterable[date]) -> dict[date, CathayStatementDay]:
+    """Ownership rows (``accepted_kind`` set) for ``dates``, re-read from the database."""
+    dates = set(dates)
+    if not dates:
+        return {}
+    days = (
+        db.query(CathayStatementDay)
+        .filter(CathayStatementDay.trade_date.in_(dates), CathayStatementDay.accepted_kind.is_not(None))
+        .populate_existing()
+        .all()
+    )
+    return {day.trade_date: day for day in days}
+
+
+def split_owned(
+    rows: list[ParsedRow], owned: dict[date, CathayStatementDay]
+) -> tuple[dict[date, list[ParsedRow]], list[ParsedRow]]:
+    """CSV rows by owned trade date, and the rows on dates no statement owns (in upload order)."""
+    by_date: dict[date, list[ParsedRow]] = defaultdict(list)
+    free: list[ParsedRow] = []
+    for row in rows:
+        trade_date = row.payload["trade_date"].date()
+        if trade_date in owned:
+            by_date[trade_date].append(row)
+        else:
+            free.append(row)
+    return dict(by_date), free
+
+
+def covered_check(rows: list[ParsedRow], canonical: list[dict]) -> bool:
+    """True when the CSV rows of an owned date sum to its accepted statement lines.
+
+    Grouped per (symbol, type, position_side, marker, price, 委託書號); a statement order_no is
+    the CSV 委託書號 plus a two-character suffix.
+    """
+    csv_sums = _sums(
+        (p["symbol"], p["type"], p["position_side"], p["broker_day_trade_marker"], p["price"],
+         p["order_id"], p["quantity"], p["fee"], p["tax"])
+        for p in (row.payload for row in rows)
+    )
+    line_sums = _sums(
+        (line["symbol"], line["type"], line["position_side"], line["marker"], line["price"],
+         line["order_no"][:-2], line["quantity"], line["fee"], line["tax"])
+        for line in canonical
+    )
+    return csv_sums == line_sums

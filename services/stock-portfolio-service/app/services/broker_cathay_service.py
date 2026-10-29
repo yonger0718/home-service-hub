@@ -417,7 +417,49 @@ def _insert_transaction(
     return tx
 
 
+def _judge_owned(
+    owned_rows: dict[date, list[ParsedRow]], owned: dict
+) -> tuple[int, list[ParseError]]:
+    """§5.5: rows on a statement-owned date are compared, never written.
+
+    Each date's rows become ``covered`` when they sum to the accepted lines, else
+    each becomes an ``error`` naming the date. Returns (covered count, errors).
+    """
+    from . import broker_cathay_statement_service as stmt
+
+    covered = 0
+    errors: list[ParseError] = []
+    for trade_date in sorted(owned_rows):
+        rows = owned_rows[trade_date]
+        if stmt.covered_check(rows, owned[trade_date].canonical_lines):
+            for row in rows:
+                row.status = "covered"
+            covered += len(rows)
+            continue
+        for row in rows:
+            row.status = "error"
+            errors.append(ParseError(
+                row_index=row.row_index,
+                message=(
+                    f"row {row.row_index}: {trade_date.isoformat()} is owned by a 國泰 daily statement "
+                    "and this date's CSV rows differ from it; nothing of that date is imported"
+                ),
+            ))
+    errors.sort(key=lambda error: error.row_index)
+    return covered, errors
+
+
+def _batch_dates(rows: list[ParsedRow]) -> set[date]:
+    return {row.payload["trade_date"].date() for row in rows}
+
+
 def _dry_run_rehash(db: Session, parsed: ParseResult) -> ImportResult:
+    from . import broker_cathay_statement_service as stmt
+
+    # Ownership read once, without the lock; the commit re-reads it under the lock.
+    owned = stmt.owned_days(db, _batch_dates(parsed.rows))
+    owned_rows, free_rows = stmt.split_owned(parsed.rows, owned)
+    covered, owned_errors = _judge_owned(owned_rows, owned)
     existing = {
         fingerprint
         for (fingerprint,) in db.query(models.Transaction.import_fingerprint)
@@ -429,13 +471,13 @@ def _dry_run_rehash(db: Session, parsed: ParseResult) -> ImportResult:
     # Build a business-key index once so the dry-run mirrors the commit-path
     # `_business_key_match` fallback for rows whose legacy fingerprint never
     # existed (pre-cathay rows whose stored trade_date had a wall-clock time).
-    business_index = _build_business_key_index(db, parsed.rows)
-    batch_fingerprints = {r.fingerprint for r in parsed.rows}
+    business_index = _build_business_key_index(db, free_rows)
+    batch_fingerprints = {r.fingerprint for r in free_rows}
     claimed_business_ids: set[int] = set()
     would_rehash = 0
     would_insert = 0
     would_skip_duplicate = 0
-    for row in parsed.rows:
+    for row in free_rows:
         legacy_fp = _legacy_fingerprint(row)
         new_fp = row.fingerprint
         if legacy_fp in available_legacy:
@@ -480,7 +522,7 @@ def _dry_run_rehash(db: Session, parsed: ParseResult) -> ImportResult:
         parsed=len(parsed.rows),
         created=0,
         skipped_duplicates=0,
-        errors=list(parsed.errors),
+        errors=list(parsed.errors) + owned_errors,
         dry_run=True,
         created_ids=[],
         skipped_unresolved=sum(
@@ -490,6 +532,7 @@ def _dry_run_rehash(db: Session, parsed: ParseResult) -> ImportResult:
         would_rehash=would_rehash,
         would_insert=would_insert,
         would_skip_duplicate=would_skip_duplicate,
+        covered=covered,
     )
 
 
@@ -521,21 +564,31 @@ def _commit_rehash(
             unresolved_names=parsed.unresolved_names,
         )
 
+    from . import broker_cathay_statement_service as stmt
+
     created_ids: list[int] = []
     errors: list[ParseError] = []
     created = 0
     skipped_duplicates = 0
     rehashed = 0
+    covered = 0
     if db.in_transaction():
         db.rollback()
     claimed_ids: set[int] = set()
-    batch_fingerprints = {row.fingerprint for row in parsed.rows}
     try:
         with db.begin():
+            # §5.3: the per-date lock shared with the statement commit comes first;
+            # ownership is re-read under it, nothing decided before is reused.
+            dates = _batch_dates(parsed.rows)
+            stmt.lock_trade_dates(db, dates)
+            owned = stmt.owned_days(db, dates)
+            owned_rows, free_rows = stmt.split_owned(parsed.rows, owned)
+            covered, errors = _judge_owned(owned_rows, owned)
+            batch_fingerprints = {row.fingerprint for row in free_rows}
             cash_account_id: int | None = None
             if cash_account_service.cash_leg_enabled():
                 cash_account_id = cash_account_service.resolve_default_cathay_twd_account(db).id
-            for row in parsed.rows:
+            for row in free_rows:
                 legacy_fp = _legacy_fingerprint(row)
                 existing = (
                     db.query(models.Transaction)
@@ -617,19 +670,23 @@ def _commit_rehash(
         raise
     except ValueError as exc:
         db.rollback()
-        errors.append(ParseError(row_index=0, message=str(exc)))
+        # Whole batch rolled back: the owned-date verdicts go with it.
+        errors = [ParseError(row_index=0, message=str(exc))]
         created_ids.clear()
         created = 0
         rehashed = 0
         skipped_duplicates = 0
+        covered = 0
         _clear_statuses(batch)
     except IntegrityError as exc:
         db.rollback()
-        errors.append(ParseError(row_index=0, message=str(exc)))
+        # Whole batch rolled back: the owned-date verdicts go with it.
+        errors = [ParseError(row_index=0, message=str(exc))]
         created_ids.clear()
         created = 0
         rehashed = 0
         skipped_duplicates = 0
+        covered = 0
         _clear_statuses(batch)
     return ImportResult(
         parsed=len(parsed.rows),
@@ -643,6 +700,7 @@ def _commit_rehash(
             unresolved.occurrences for unresolved in parsed.unresolved_names
         ),
         unresolved_names=parsed.unresolved_names,
+        covered=covered,
     )
 
 

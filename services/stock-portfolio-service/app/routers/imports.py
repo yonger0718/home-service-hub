@@ -100,6 +100,7 @@ def _serialize_result(
         "would_rehash": result.would_rehash,
         "would_insert": result.would_insert,
         "would_skip_duplicate": result.would_skip_duplicate,
+        "covered": result.covered,
         "rows": serialized_rows,
         "recalc_scheduled": recalc_scheduled,
         "csv_format": csv_format,
