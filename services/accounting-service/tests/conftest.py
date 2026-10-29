@@ -1,5 +1,7 @@
 import json
+import re
 import sys
+import time
 import uuid
 from contextlib import ExitStack, contextmanager
 from datetime import date
@@ -47,16 +49,55 @@ LEDGER_TABLES = (
 )
 
 
+TEST_DB_PREFIX = "accounting_test_"
+STALE_TEST_DB_SECONDS = 6 * 3600  # a full suite takes ~16 minutes; a database this old belongs to a killed run
+_STAMPED = re.compile(rf"^{TEST_DB_PREFIX}(\d{{10}})_[0-9a-f]{{8}}$")
+
+
+def make_test_db_name(now: float | None = None) -> str:
+    """`accounting_test_<unix seconds>_<8 hex>`: the creation time is in the name, so a later run can tell a
+    leftover from a database another run is still using (#194)."""
+    return f"{TEST_DB_PREFIX}{int(time.time() if now is None else now)}_{uuid.uuid4().hex[:8]}"
+
+
+def stale_test_dbs(names: list[str], connected: set[str], now: float) -> list[str]:
+    """The stamped test databases older than STALE_TEST_DB_SECONDS that no session is connected to. Unstamped names
+    (the format before #194) are never chosen: their age is unknown."""
+    out = []
+    for name in names:
+        match = _STAMPED.match(name)
+        if match and name not in connected and now - int(match.group(1)) > STALE_TEST_DB_SECONDS:
+            out.append(name)
+    return sorted(out)
+
+
+def _drop_stale_test_dbs(admin: Engine) -> None:
+    """Drop the leftovers of killed runs (a SIGKILL or a timeout skips the fixture's teardown). Best effort: a
+    database that gained a connection meanwhile makes DROP fail, and it is left alone."""
+    with admin.connect() as conn:
+        names = list(conn.execute(text("SELECT datname FROM pg_database WHERE datname LIKE :p"),
+                                  {"p": TEST_DB_PREFIX + "%"}).scalars())
+        connected = set(conn.execute(text("SELECT DISTINCT datname FROM pg_stat_activity WHERE datname LIKE :p"),
+                                     {"p": TEST_DB_PREFIX + "%"}).scalars())
+        for name in stale_test_dbs(names, connected, time.time()):
+            try:
+                conn.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
+            except OperationalError:
+                pass
+
+
 @contextmanager
 def _disposable_database():
-    """Create an empty database in the dev Postgres server and drop it afterwards.
+    """Create an empty database in the dev Postgres server and drop it afterwards (on failure and Ctrl-C too: the
+    `finally` below); leftovers of killed runs are dropped at the next session start.
 
     Credentials come from the root .env via app.database; they are never printed.
     """
     base_url = make_url(SQLALCHEMY_DATABASE_URL)
-    name = f"accounting_test_{uuid.uuid4().hex[:12]}"
+    name = make_test_db_name()
     admin = create_engine(base_url.set(database="postgres"), isolation_level="AUTOCOMMIT")
     try:
+        _drop_stale_test_dbs(admin)
         with admin.connect() as conn:
             conn.execute(text(f'CREATE DATABASE "{name}"'))
     except OperationalError as exc:

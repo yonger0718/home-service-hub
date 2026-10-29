@@ -248,7 +248,8 @@ def test_an_auto_pay_hint_never_offers_or_builds_a_replacement(hint):
     assert policy_service._replace_candidate(None, case, None) is None
     case.context = {**case.context, "backfill_action_id": 4}  # a backfilled stand-in's hint keeps both
     assert "replace_stand_in" in registry.allowed(case)
-    assert policy_service._replace_candidate(None, case, None).action == "replace_stand_in"
+    backfilled = SimpleNamespace(get=lambda model, ident: SimpleNamespace(action="backfill_entry"))
+    assert policy_service._replace_candidate(backfilled, case, None).action == "replace_stand_in"
 
 
 def test_policy_leaves_an_auto_pay_orphan_alone(seed, db_session, run, today, dirty_on):

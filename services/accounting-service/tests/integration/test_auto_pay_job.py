@@ -108,6 +108,31 @@ def test_import_running_blocks_writes(pg_engine, db_session, world):
     assert _rows(db) == [] and _entries(db) == entries and _audits(db) == []
 
 
+def test_import_running_is_retried_the_same_day_and_books(pg_engine, db_session, world, today, monkeypatch):
+    """#191: a scheduled run that meets an import adds the same-day retry; the retry, once the import key is free,
+    books the candidate and removes itself. A further retry fire books nothing twice."""
+    from tests.unit.test_schedule_job_scheduler import FakeScheduler
+
+    db, (bank, card, stmt) = db_session, world
+    _enable(db)
+    today(TODAY)
+    fake = FakeScheduler()
+    monkeypatch.setattr(auto_pay_job, "_scheduler", fake)
+    with Held(pg_engine, IMPORT_LOCK_KEY):
+        auto_pay_job._job(pg_engine, "cron")
+    assert _rows(db) == []
+    retry = fake.jobs["auto_pay_retry"]
+    assert retry["kwargs"] == {"engine": pg_engine, "day": "2026-10-27"}
+    retry["func"](**retry["kwargs"])
+    (row,) = _rows(db)
+    assert row.status == "booked" and row.statement_id == stmt.id
+    assert fake.removed == ["auto_pay_retry"] and "auto_pay_retry" not in fake.jobs
+    entries = _entries(db)
+    retry["func"](**retry["kwargs"])  # a stray fire: housekeeping only, no second booking
+    assert [r.id for r in _rows(db)] == [row.id] and _entries(db) == entries
+    assert len(_audits(db, "auto_pay_booked")) == 1
+
+
 def test_import_running_blocks_housekeeping_too(pg_engine, db_session, seed, world):
     db, (bank, card, stmt) = db_session, world
     _enable(db)
