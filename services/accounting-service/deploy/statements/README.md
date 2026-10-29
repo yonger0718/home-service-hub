@@ -138,8 +138,8 @@ Overrides (all optional, in `~/.config/homehub-statements.env`): `STATEMENT_CATH
 `STATEMENT_CATHAY_TIMEOUT_S` (portfolio request timeout, default 60), `STATEMENT_PORTFOLIO_API_URL`. `STATEMENT_STATE_DIR`
 is `<state_dir>` below. Every manual command is written out in full for the reason given in the flex section.
 
-State files (0600, directory 0700): `<state_dir>/cathay-state.json` (settled files by Drive id and sha256, so an unchanged
-file is skipped), `<state_dir>/cathay-disabled.json` (the latch), `<state_dir>/cathay-history-report.json` (the last
+State files (0600, directory 0700): `<state_dir>/cathay-state.json` (settled files keyed by Drive id and sha256; a listed file whose Drive id and md5
+match a settled entry is skipped without download), `<state_dir>/cathay-disabled.json` (the latch), `<state_dir>/cathay-history-report.json` (the last
 `--validate-history` report), `<state_dir>/.cathay.lock` (a second run prints `already running`, exit 3).
 
 Flags (`python -m worker cathay`; the summary is one JSON line, exit 1 when `codes` is non-empty):
@@ -148,7 +148,7 @@ Flags (`python -m worker cathay`; the summary is one JSON line, exit 1 when `cod
 |---|---|
 | (none) | commit run: post every new file, write state, report the run |
 | `--dry-run` | post with `dry_run=true`; no state, no latch, no run report |
-| `--validate-history` | dry run over every file including pre-cutover dates; ignores the state file; writes `cathay-history-report.json` (`mismatch_dates`, `held`, `errors`); prints only `counts` |
+| `--validate-history` | dry run over every file including pre-cutover dates; still reads the state file (a corrupt one stops the run) but skips nothing and writes nothing to it; writes `cathay-history-report.json` (`mismatch_dates`, `held`, `errors`); prints only `counts` |
 | `--file <drive-id>` / `--since DATE` / `--until DATE` | restrict the run to one Drive file / a trade-date range |
 | `--retry DATE` | post that trade date again even though its file is settled (for example after a `held` or `mismatch` is fixed) |
 | `--ack DATE` | acknowledge a pending day at the portfolio (`POST …/days/DATE/ack`); touches neither Drive nor state, works while latched, exclusive with every other flag (exit 2 otherwise) |
@@ -156,7 +156,7 @@ Flags (`python -m worker cathay`; the summary is one JSON line, exit 1 when `cod
 
 Latch rule. Only a commit run (no `--dry-run`, no `--validate-history`) latches. A non-transient failure writes the latch and
 every later run exits 1 (`cathay disabled`) until it is cleared: `decrypt` (no password fits), `pdf_malformed`,
-`pdf_too_large`, a parser error code, a portfolio 4xx other than 408/429. These do NOT latch: Drive and listing errors,
+`pdf_too_large`, `extract` (text extraction failed), a parser error code, a portfolio 4xx other than 408/429. These do NOT latch: Drive and listing errors,
 portfolio 5xx / 408 / 429, timeouts and connection errors, `portfolio:body`, a missing password file or state file. A run
 that fails without latching still exits 1, so the unit shows failed: `systemctl --user list-units --failed`.
 Exit codes: 0 ok, 1 codes / latched / nothing pending for `--ack`, 2 bad flags or missing password file, 3 already running.
