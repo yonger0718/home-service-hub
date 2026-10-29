@@ -68,9 +68,6 @@ def _cathay(cfg: config.WorkerConfig, args: argparse.Namespace) -> int:
     if args.ack and any(others):
         print("--ack cannot be combined with other flags", file=sys.stderr)
         return 2
-    if not cfg.password_file.is_file() and not args.ack:
-        print("password file is missing or not a file", file=sys.stderr)
-        return 2
     try:
         with httpx.Client(base_url=cfg.portfolio_api_url, timeout=cfg.cathay_timeout_s) as portfolio_http:
             summary = cathay.run(cfg, portfolio_http=portfolio_http, drive=Drive(cfg, SubprocessRunner()),

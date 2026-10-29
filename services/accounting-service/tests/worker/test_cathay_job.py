@@ -1,4 +1,3 @@
-import dataclasses
 import hashlib
 import json
 from datetime import date, datetime
@@ -289,7 +288,7 @@ def test_validate_history_report(w):
     w.add("id-1", "a.pdf", fx("single.txt", (2026, 3, 9)))
     w.add("id-2", "b.pdf", fx("pair.txt", (2026, 3, 10)))
     w.add("id-3", "c.pdf", fx("two_pages.txt", (2026, 3, 11)))
-    outcomes = {"2026-03-09": ("verified", None), "2026-03-10": ("mismatch", None), "2026-03-11": ("held", "symbol_unmapped")}
+    outcomes = {"2026-03-09": ("verified", None), "2026-03-10": ("mismatch", None), "2026-03-11": ("held", "unresolved_symbol:範例電子")}
     w.portfolio.reply = lambda payload, params: Portfolio.ok(payload, outcomes[payload["trade_date"]][0],
                                                              reason=outcomes[payload["trade_date"]][1])
     before = {"seed:abc": {"outcome": "imported", "trade_date": "2026-03-01", "md5": "x", "at": "t"}}
@@ -300,10 +299,18 @@ def test_validate_history_report(w):
     report_path = w.cfg.state_dir / "cathay-history-report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report == {"counts": {"verified": 1, "mismatch": 1, "held": 1}, "mismatch_dates": ["2026-03-10"],
-                      "held": [{"trade_date": "2026-03-11", "reason": "symbol_unmapped"}], "errors": []}
+                      "held": [{"trade_date": "2026-03-11", "reason": "unresolved_symbol"}], "errors": []}
     assert oct(report_path.stat().st_mode)[-3:] == "600" and json.loads(state_path.read_text(encoding="utf-8")) == before
     assert all(p[1] == {"dry_run": "true"} for p in w.portfolio.posts) and w.portfolio.runs == []
     assert summary["counts"] == {"verified": 1, "mismatch": 1, "held": 1} and "mismatch_dates" not in summary
+    assert "範例電子" not in report_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("reason, code", [("unsupported_category", "unsupported_category"),
+                                          ("unresolved_symbol:範例電子", "unresolved_symbol"),
+                                          ("範例電子", ""), (None, ""), (7, "")])
+def test_history_reason_keeps_the_code_only(reason, code):
+    assert cathay._reason_code(reason) == code
 
 
 def test_validate_history_ignores_state_and_collects_errors(w):
@@ -376,6 +383,20 @@ def test_run_report_posted_on_ok_latched_failed(w):
     assert w.portfolio.runs[-1]["result"] == "failed" and w.portfolio.runs[-1]["code"] == "drive_listing"
     assert len(w.portfolio.runs) == 4
 
+
+
+def test_missing_password_file_reports(w):
+    w.add("id-1", "a.pdf", fx("single.txt"))
+    w.cfg.password_file.unlink()
+    summary = w.go()
+    assert summary["codes"] == ["failed", "password_file"] and w.portfolio.posts == [] and not w.latch.exists()
+    assert w.portfolio.runs[-1] | {"run_at": ""} == {"run_at": "", "result": "failed", "code": "password_file", "files_seen": 0, "posted": 0}
+    w.go(dry_run=True)
+    assert len(w.portfolio.runs) == 1  # an owner run reports nothing
+    w.latch.write_text('{"reason": "decrypt"}')
+    with pytest.raises(cathay.CathayDisabled):  # the latch still wins
+        w.go()
+    assert w.portfolio.runs[-1] | {"run_at": ""} == {"run_at": "", "result": "latched", "code": "decrypt", "files_seen": 0, "posted": 0}
 
 def test_only_a_plain_daily_run_reports(w):
     w.add("id-1", "a.pdf", fx("single.txt"))
@@ -534,11 +555,6 @@ def test_no_statement_text_in_summary_or_logs(w, caplog):
 def test_cli_exit_codes(tmp_path, monkeypatch, capsys):
     cfg = config.load({"STATEMENT_STATE_DIR": str(tmp_path / "s"), "STATEMENT_PASSWORD_FILE": str(tmp_path / "absent.env")})
     monkeypatch.setattr(config, "load", lambda env=None: cfg)
-    assert cli.main(["cathay"]) == 2 and "password file" in capsys.readouterr().err
-    pw = tmp_path / "pw.env"
-    pw.write_text("x=y\n")
-    cfg = dataclasses.replace(cfg, password_file=pw)
-    monkeypatch.setattr(config, "load", lambda env=None: cfg)
     seen = {}
 
     def fake(kind):
@@ -554,6 +570,7 @@ def test_cli_exit_codes(tmp_path, monkeypatch, capsys):
                 raise RuntimeError("boom 範例電子")
             return {"counts": {}, "codes": ["failed", "x"] if kind == "failed" else []}
         return run
+    # a missing password file is not refused by the CLI: the job reports it (test_missing_password_file_reports)
     for kind, code in [("ok", 0), ("failed", 1), ("running", 3), ("disabled", 1), ("pending", 1), ("boom", 1)]:
         monkeypatch.setattr(cathay, "run", fake(kind))
         assert cli.main(["cathay"]) == code, kind

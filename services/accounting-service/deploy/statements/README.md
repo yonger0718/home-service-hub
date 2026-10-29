@@ -148,7 +148,7 @@ Flags (`python -m worker cathay`; the summary is one JSON line, exit 1 when `cod
 |---|---|
 | (none) | plain daily commit run: post every new file, write state, report the run (the only run that reports, also when refused while latched) |
 | `--dry-run` | post with `dry_run=true`; no state, no latch, no run report; nothing under `<state_dir>/inbox/` (downloads are staged and deleted) |
-| `--validate-history` | dry run over every file including pre-cutover dates; still reads the state file (a corrupt one stops the run) but skips nothing and writes nothing to it; writes `cathay-history-report.json` (`mismatch_dates`, `held`, `errors`); prints only `counts` |
+| `--validate-history` | dry run over every file including pre-cutover dates; still reads the state file (a corrupt one stops the run) but skips nothing and writes nothing to it; writes `cathay-history-report.json` (`mismatch_dates`, `held` as date + reason code without the product name, `errors`); prints only `counts` |
 | `--file <drive-id>` / `--since DATE` / `--until DATE` | restrict the run to one Drive file / a trade-date range |
 | `--retry DATE` | re-post the settled file of that trade date (for example a `mismatch` after the rows are fixed); a date before the cutover stays `pre_cutover` |
 | `--ack DATE` | acknowledge a pending day at the portfolio (`POST …/days/DATE/ack`); touches neither Drive nor state, works while latched, exclusive with every other flag (exit 2 otherwise) |
@@ -163,10 +163,10 @@ report. A plain daily run refused because the job is latched posts `result: latc
 Latch rule. Only a commit run (no `--dry-run`, no `--validate-history`) latches. A non-transient failure writes the latch and
 every later run exits 1 (`cathay disabled`) until it is cleared: `decrypt` (no password fits), `pdf_malformed`,
 `pdf_too_large`, `extract` (text extraction failed), a parser error code, a portfolio 4xx other than 408/429. These do NOT latch: Drive and listing errors,
-portfolio 5xx / 408 / 429, timeouts and connection errors, `portfolio:body`, an unreadable password file (`password_file`) or a corrupt state file (`state_file`). A missing
-password file is refused by the CLI before the run (exit 2). A run
+portfolio 5xx / 408 / 429, timeouts and connection errors, `portfolio:body`, an missing or unreadable password file (`password_file`) or a corrupt state file (`state_file`). A missing password file
+fails the run before Drive is listed, so the daily run reports it. A run
 that fails without latching still exits 1, so the unit shows failed: `systemctl --user list-units --failed`.
-Exit codes: 0 ok, 1 codes / latched / nothing pending for `--ack`, 2 bad flags or missing password file, 3 already running.
+Exit codes: 0 ok, 1 codes / latched / nothing pending for `--ack`, 2 bad flags, 3 already running.
 
 Recovery after fixing the cause (a plain daily run; it clears the latch only when the run ends with no codes, so
 `--file`, `--since`, `--until`, `--retry` and dry runs never clear it). A statement the parser cannot read latches again on every `--unlatch`; the way out is a

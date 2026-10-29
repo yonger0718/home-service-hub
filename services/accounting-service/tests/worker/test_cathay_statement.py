@@ -265,6 +265,16 @@ def test_unsupported_margin_totals_must_still_be_numbers():
     assert parse_statement(load("unsupported")).unsupported
 
 
+def test_unsupported_section_lines_are_still_checked():
+    base = load("unsupported")
+    assert parse_statement(base).unsupported
+    assert code_of(base.replace("原資買 1,000 12.1 12,100 5 XY88800", "原資買 範例電子 free text")) == "stray_line"
+    assert code_of(base.replace("\n總合計 ", "\nany extra line\n總合計 ")) == "stray_line"
+    assert code_of(base.replace("0 23 XY99900", "0 23 x XY99900")) == "line3"
+    assert code_of(base.replace("-12,305\n0 23", "12,305\n0 23")) == "item_grammar"
+    assert code_of(base.replace("XY99900\n0\n", "XY99900\nx\n")) == "line4"
+    assert code_of(base.replace("範例電子 資買 1,000 12.3 12,300 5 0", "範例電子 資買 1,000 x 12,300 5 0")) == "item_grammar"
+
 def test_footer_prepaid_and_retained_must_be_zero():
     assert code_of(load("single").replace("預收款： 0 留置款： 0", "預收款： 1 留置款： 0")) == "totals"
     assert code_of(load("single").replace("預收款： 0 留置款： 0", "預收款： 0 留置款： 1")) == "totals"

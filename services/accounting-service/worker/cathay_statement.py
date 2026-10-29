@@ -45,6 +45,9 @@ _SINT_OPT_RE = re.compile(rf"^{_SNUM}$")
 _PRICE_RE = re.compile(rf"^{_NUM}(?:\.[0-9]+)?$")
 _ORDER_RE = re.compile(r"^[A-Za-z0-9]{7}$")
 _CODE_RE = re.compile(r"^[0-9A-Z]{4,6}$")
+# from the first unsupported item on: line 3 has two or four numbers before the order no.; 原資買 lines follow some items
+_MARGIN_LINE3_RE = re.compile(rf"^(?:\(小樹點數\) )?{_NUM} {_NUM}(?: {_NUM} {_NUM})? [A-Za-z0-9]{{7}}$")
+_MARGIN_ORIGIN_RE = re.compile(rf"^原資買 {_NUM} {_NUM}(?:\.[0-9]+)? {_NUM} {_NUM} [A-Za-z0-9]{{7}}$")  # qty price amount fee order
 _FILENAME_DATE_RE = re.compile(r"^([0-9]{4}-[0-9]{2}-[0-9]{2})")
 _LINK_PREFIX = "智慧選股 "
 
@@ -138,6 +141,23 @@ def _has_item_shape(line: str) -> bool:
     """qty / price / amount / fee / tax in the last five columns."""
     t = line.split(" ")[-5:]
     return all(_UINT_RE.match(x) for x in (t[0], t[2], t[3], t[4])) and bool(_PRICE_RE.match(t[1]))
+
+
+def _check_unsupported_section(lines: list[str], i: int, end: int) -> None:
+    """From the first unsupported item to 總合計: shapes only, as these lines are never imported."""
+    while i < end:
+        if _MARGIN_ORIGIN_RE.match(lines[i]):
+            i += 1
+            continue
+        if not _is_item_start(lines[i]):
+            raise StatementError("stray_line")
+        if not _has_item_shape(lines[i]) or i + 3 >= end:
+            raise StatementError("item_grammar")
+        _signed(lines[i + 1], "item_grammar")
+        if not _MARGIN_LINE3_RE.match(lines[i + 2]):
+            raise StatementError("line3")
+        _uint(lines[i + 3], "line4")
+        i += 4
 
 
 def _parse_item(lines: list[str], i: int) -> dict:
@@ -272,9 +292,8 @@ def parse_statement(text: str) -> ParsedStatement:
             raise StatementError("stray_line")
         category = lines[i].split(" ")[-6]
         if category not in SUPPORTED:
-            if not _has_item_shape(lines[i]):
-                raise StatementError("item_grammar")
-            unsupported = True  # margin lines carry columns §4.1 leaves open: the rest of the section is not read
+            unsupported = True
+            _check_unsupported_section(lines, i, total_at)
             break
         items.append(_parse_item(lines, i))
         i += 4

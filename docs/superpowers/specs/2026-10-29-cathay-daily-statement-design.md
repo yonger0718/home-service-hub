@@ -1,9 +1,9 @@
 # 國泰證券日對帳單 auto-import — design
 
-Status: rev 2.5 (2026-10-29). Rev 2.2 came after the AGENT-335 review (findings 1–6 folded) and its re-check (buy tax pinned to 0);
+Status: rev 2.6 (2026-10-29). Rev 2.2 came after the AGENT-335 review (findings 1–6 folded) and its re-check (buy tax pinned to 0);
 rev 2.2 adds §7 notifications to the scope (owner 2026-10-29: a stuck date must reach the owner, not only a log);
 rev 2.3 folds the AGENT-337 review (run deadline, notifier isolation, acknowledgement model), and its re-check
-minor (pending envelope); rev 2.4 pins the text extractor (§4.1), a fact found while planning; rev 2.5 records the full text layout and footer sums of all 466 archived statements (§2, §4.2), found when the parser first met the archive. Owner rulings 2026-10-29: the daily
+minor (pending envelope); rev 2.4 pins the text extractor (§4.1), a fact found while planning; rev 2.5 records the full text layout and footer sums of all 466 archived statements (§2, §4.2), found when the parser first met the archive; rev 2.6 folds the AGENT-344 review (the margin-day item grammar in §4.1, a missing password file reported by the daily run in §7.1). Owner rulings 2026-10-29: the daily
 statement is the primary source for the dates it covers ("對帳單為主，按日期分"); current days matter most and the
 archive is used to validate the parser, not to wait for a full backfill; the first writer of a date owns it and a
 mismatch is never resolved automatically in either direction (option A — the owner imports the CSV only after the
@@ -111,6 +111,11 @@ it means.
   statement **unsupported**: the worker posts no lines for it and the portfolio records the date `held` with reason
   `unsupported_category` (§5.4), so the date stays with the CSV. Margin and short lines are imported by CSV only
   until a later change defines their columns.
+- From the first unsupported item to `總合計` the lines are never imported, so they are checked by shape only (all
+  25 margin days in the archive follow it): every item, of any 類別, is a start line with the column shape above,
+  a signed line 2, a line 3 of two or four non-negative integers before the order number (optional `(小樹點數) `
+  prefix) and a non-negative integer line 4; between items only `原資買 <qty> <price> <amount> <fee> <order_no>`
+  lines may appear.
 - Every other line between the column header and `總合計` fails the statement.
 
 ### 4.2 Self-checks (all must hold, else the statement is rejected with a code and not posted)
@@ -230,7 +235,8 @@ the notifier as the owner's user, so both meet at the portfolio API.
   `ack_status`). `since` is the first attempt that put the date in this state. Sorted by date, at most 50 items; `total`
   counts every pending date and `truncated` is `total > len(items)`. `reason` is a code plus at most one name, cut to 40 characters.
 - `POST /api/portfolio/imports/cathay-statement/runs` (worker, once per plain daily commit run, also when the run ends
-  latched or failed and when it is refused because the job is latched; owner runs with `--file`, `--since`, `--until`,
+  latched or failed — a missing password file included, reported as `failed` with code `password_file` — and when
+  it is refused because the job is latched; owner runs with `--file`, `--since`, `--until`,
   `--retry`, `--unlatch`, `--ack`, `--dry-run` or `--validate-history` never report, so `latest` always describes the
   timer's run): `{"run_at", "result": "ok" | "latched" | "failed", "code", "files_seen", "posted"}`. Portfolio keeps the
   latest row overall and the latest `ok` row (`cathay_statement_run`, small table).

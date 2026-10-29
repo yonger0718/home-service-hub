@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from collections.abc import Iterator
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -100,6 +101,12 @@ def _report(cfg: WorkerConfig, http: httpx.Client, summary: dict) -> None:
         http.post(f"{ENDPOINT}/runs", json=body, timeout=cfg.cathay_timeout_s).raise_for_status()
     except httpx.HTTPError as exc:  # the report is best effort: it must not change the run's result
         log.info("cathay: run report not posted (%s)", type(exc).__name__)
+
+
+def _reason_code(reason: object) -> str:
+    """The portfolio sends `code:name`; the history report keeps the code only, never a product name."""
+    code = reason.split(":", 1)[0] if isinstance(reason, str) else ""
+    return code if re.fullmatch(r"[a-z_]{1,40}", code) else ""
 
 
 def _latch_reason(latch: Path) -> str:
@@ -256,8 +263,7 @@ class _Job:
         if self.validate and outcome == "mismatch":
             self.history["mismatch_dates"].append(trade.isoformat())
         if self.validate and outcome == "held":
-            reason = body.get("reason")
-            self.history["held"].append({"trade_date": trade.isoformat(), "reason": reason if isinstance(reason, str) else ""})
+            self.history["held"].append({"trade_date": trade.isoformat(), "reason": _reason_code(body.get("reason"))})
         if self.commit and outcome in TERMINAL:  # held is never written: it is posted again on every run
             self.remember(item, sha, outcome, trade)
         elif self.commit and self.state.pop(f"{item.drive_file_id}:{sha}", None) is not None:
@@ -265,6 +271,8 @@ class _Job:
             parser.write_private_json(self.cfg.state_dir, self.state_path, self.state)
 
     def run(self) -> None:
+        if not self.cfg.password_file.is_file():  # checked here, not in the CLI, so the daily run reports it
+            raise CathayError("password_file", stop=True)
         self.sweep_staging()
         self.load_state()
         items = sorted(self.drive._list_root("cathay", f"{self.cfg.drive_root}/{self.cfg.cathay_folder}"), key=lambda i: i.path)
