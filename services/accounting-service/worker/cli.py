@@ -64,7 +64,11 @@ def _flex(cfg: config.WorkerConfig, args: argparse.Namespace) -> int:
 def _cathay(cfg: config.WorkerConfig, args: argparse.Namespace) -> int:
     from worker.drive import Drive
 
-    if not cfg.password_file.is_file():
+    others = (args.dry_run, args.file, args.since, args.until, args.retry, args.unlatch, args.validate_history)
+    if args.ack and any(others):
+        print("--ack cannot be combined with other flags", file=sys.stderr)
+        return 2
+    if not cfg.password_file.is_file() and not args.ack:
         print("password file is missing or not a file", file=sys.stderr)
         return 2
     try:
@@ -85,7 +89,7 @@ def _cathay(cfg: config.WorkerConfig, args: argparse.Namespace) -> int:
     except Exception as exc:  # the CLI is the output boundary: a class name, never text or a traceback
         print(f"cathay failed: {type(exc).__name__}", file=sys.stderr)
         return 1
-    print(json.dumps(summary, ensure_ascii=False))
+    print(json.dumps({"counts": summary["counts"]} if args.validate_history else summary, ensure_ascii=False))
     return 1 if summary["codes"] else 0
 
 

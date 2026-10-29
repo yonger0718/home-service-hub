@@ -129,7 +129,6 @@ class _Job:
         self.codes: list[str] = []
         self.counts: dict[str, int] = {}
         self.files_seen = self.posted = self.skipped = 0
-        self.by_sha: dict[str, tuple[str | None, str]] = {}
         self.history: dict = {"counts": self.counts, "mismatch_dates": [], "held": [], "errors": []}
         self._candidates: list[str] | None = None
         self._staged = 0
@@ -216,12 +215,6 @@ class _Job:
 
     def process(self, item: Listed) -> None:
         sha, data = self.fetch(item)
-        if sha in self.by_sha:  # the same bytes under another Drive file: reuse the first answer
-            outcome, trade = self.by_sha[sha]
-            if outcome and self.commit and outcome in TERMINAL:
-                self.remember(item, sha, outcome, date.fromisoformat(trade))
-            self.skipped += 1
-            return
         text = self.read(data)
         try:
             statement = parse_statement(text)
@@ -229,7 +222,6 @@ class _Job:
         except StatementError as exc:
             raise CathayError(exc.code, latch=True) from None
         trade = statement.trade_date
-        self.by_sha[sha] = (None, trade.isoformat())
         if (self.since and trade < self.since) or (self.until and trade > self.until):
             self.skipped += 1
             return
@@ -237,7 +229,6 @@ class _Job:
             self.counts["pre_cutover"] = self.counts.get("pre_cutover", 0) + 1
             if self.commit:
                 self.remember(item, sha, "pre_cutover", trade)
-                self.by_sha[sha] = ("pre_cutover", trade.isoformat())
             return
         self.posted += 1
         body = _post_statement(self.cfg, self.http, payload, dry_run=not self.commit)
@@ -250,7 +241,9 @@ class _Job:
             self.history["held"].append({"trade_date": trade.isoformat(), "reason": reason if isinstance(reason, str) else ""})
         if self.commit and outcome in TERMINAL:  # held is never written: it is posted again on every run
             self.remember(item, sha, outcome, trade)
-            self.by_sha[sha] = (outcome, trade.isoformat())
+        elif self.commit and self.state.pop(f"{item.drive_file_id}:{sha}", None) is not None:
+            # a --retry re-post that came back held: drop the old terminal entry so the daily runs keep posting it
+            parser.write_private_json(self.cfg.state_dir, self.state_path, self.state)
 
     def run(self) -> None:
         self.load_state()
@@ -279,10 +272,10 @@ def run(cfg: WorkerConfig, *, portfolio_http: httpx.Client, drive: Drive, dry_ru
     """List, read and post the statements; failures become codes, never exceptions (a dry run never touches state)."""
     latch = cfg.state_dir / LATCH
     with _lock(cfg):
+        if ack_date:  # touches neither Drive nor state: allowed while latched
+            return _ack(cfg, portfolio_http, ack_date)
         if latch.exists() and not unlatch:
             raise CathayDisabled("cathay disabled until `python -m worker cathay --unlatch` succeeds")
-        if ack_date:
-            return _ack(cfg, portfolio_http, ack_date)
         job = _Job(cfg, portfolio_http, drive, dry_run=dry_run, file_id=file_id, since=since, until=until,
                    retry_date=retry_date, validate_history=validate_history)
         try:
@@ -291,11 +284,14 @@ def run(cfg: WorkerConfig, *, portfolio_http: httpx.Client, drive: Drive, dry_ru
             job.fail(exc)
         except ListingError:
             job.fail(CathayError("drive_listing"))
+        except Exception as exc:  # noqa: BLE001 — the run report still goes out; the class name is the only detail
+            job.fail(CathayError(f"internal:{type(exc).__name__}"[:64]))
         if validate_history:
             parser.write_private_json(cfg.state_dir, cfg.state_dir / HISTORY, job.history)
         summary = job.summary()
         if job.commit:
             _report(cfg, portfolio_http, summary)
-            if unlatch and not summary["codes"]:
-                latch.unlink(missing_ok=True)  # only a clean commit run clears it
+            plain = not (file_id or since or until or retry_date)
+            if unlatch and plain and not summary["codes"]:
+                latch.unlink(missing_ok=True)  # only a clean plain daily commit run clears it
         return summary

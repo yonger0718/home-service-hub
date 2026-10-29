@@ -389,9 +389,71 @@ def test_run_report_failure_does_not_break_the_run(w):
 def test_same_sha_twice_in_one_run(w):
     data = w.add("id-1", "a.pdf", fx("single.txt"))
     w.add("id-2", "copy-of-a.pdf", fx("single.txt"), data=data)
+    seen = set()
+
+    def by_sha(payload, params):  # the portfolio answers by sha, as the real one does
+        sha_ = payload["source"]["sha256"]
+        outcome = "duplicate" if sha_ in seen else "imported"
+        seen.add(sha_)
+        return Portfolio.ok(payload, outcome)
+    w.portfolio.reply = by_sha
+    summary = w.go()
+    assert len(w.portfolio.posts) == 2 and summary["counts"] == {"imported": 1, "duplicate": 1}
+    assert {k.split(":")[0]: v["outcome"] for k, v in w.state.items()} == {"id-1": "imported", "id-2": "duplicate"}
+
+
+def test_unexpected_exception_reports_failed_run(w, monkeypatch):
+    w.add("id-1", "a.pdf", fx("single.txt"))
+
+    def boom(*a, **k):
+        raise OSError("disk 範例電子")
+    monkeypatch.setattr(cathay.parser, "write_private_json", boom)
+    summary = w.go()
+    assert summary["codes"] == ["failed", "internal:OSError"] and not w.latch.exists()
+    assert w.portfolio.runs[-1]["result"] == "failed" and w.portfolio.runs[-1]["code"] == "internal:OSError"
+
+
+def test_unlatch_needs_a_plain_run(w):
+    w.add("id-1", "a.pdf", fx("single.txt"))
+    w.portfolio.reply = lambda payload, params: httpx.Response(422)
     w.go()
-    assert len(w.portfolio.posts) == 1 and w.portfolio.runs[-1]["posted"] == 1
-    assert {k.split(":")[0] for k in w.state} == {"id-1", "id-2"}
+    w.portfolio.reply = lambda payload, params: Portfolio.ok(payload)
+    for kw in ({"file_id": "id-1"}, {"since": date(2026, 1, 1)}, {"until": date(2026, 12, 31)}, {"retry_date": date(2026, 3, 9)}):
+        assert w.go(unlatch=True, **kw)["codes"] == [] and w.latch.exists()
+    w.go(unlatch=True)
+    assert not w.latch.exists()
+
+
+def test_ack_works_while_latched_and_rejects_other_flags(w, tmp_path, monkeypatch, capsys):
+    w.add("id-1", "a.pdf", fx("single.txt"))
+    w.portfolio.reply = lambda payload, params: httpx.Response(422)
+    w.go()
+    assert w.go(ack_date=date(2026, 3, 9))["ack"]["trade_date"] == "2026-03-09" and w.latch.exists()
+    monkeypatch.setattr(config, "load", lambda env=None: w.cfg)
+    monkeypatch.setattr(cathay, "run", lambda c, **kw: pytest.fail("must not run"))
+    assert cli.main(["cathay", "--ack", "2026-03-09", "--dry-run"]) == 2
+    assert "--ack" in capsys.readouterr().err
+
+
+def test_retry_that_comes_back_held_drops_the_old_entry(w):
+    w.add("id-1", "a.pdf", fx("single.txt"))
+    w.portfolio.reply = lambda payload, params: Portfolio.ok(payload, "mismatch")
+    w.go()
+    assert len(w.state) == 1
+    w.portfolio.reply = lambda payload, params: Portfolio.ok(payload, "held", reason="symbol_unmapped")
+    w.go(retry_date=date(2026, 3, 9))
+    assert w.state == {}
+    w.go()
+    assert len(w.portfolio.posts) == 3  # held is posted again on the daily run
+
+
+def test_validate_history_prints_counts_only(tmp_path, monkeypatch, capsys):
+    cfg = config.load({"STATEMENT_STATE_DIR": str(tmp_path / "s"), "STATEMENT_PASSWORD_FILE": str(tmp_path / "pw.env")})
+    (tmp_path / "pw.env").write_text("x=y\n")
+    monkeypatch.setattr(config, "load", lambda env=None: cfg)
+    monkeypatch.setattr(cathay, "run", lambda c, **kw: {"counts": {"verified": 1}, "codes": [], "files_seen": 3, "posted": 1})
+    assert cli.main(["cathay", "--validate-history"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"counts": {"verified": 1}}
 
 
 def test_drive_failure_reports_failed_run(w):
@@ -452,7 +514,7 @@ def test_cli_exit_codes(tmp_path, monkeypatch, capsys):
                 raise cathay.NothingPending("2026-03-09")
             if kind == "boom":
                 raise RuntimeError("boom 範例電子")
-            return {"codes": ["failed", "x"] if kind == "failed" else []}
+            return {"counts": {}, "codes": ["failed", "x"] if kind == "failed" else []}
         return run
     for kind, code in [("ok", 0), ("failed", 1), ("running", 3), ("disabled", 1), ("pending", 1), ("boom", 1)]:
         monkeypatch.setattr(cathay, "run", fake(kind))
@@ -461,8 +523,9 @@ def test_cli_exit_codes(tmp_path, monkeypatch, capsys):
     assert "範例電子" not in err and "RuntimeError" in err and "nothing pending" in err
     monkeypatch.setattr(cathay, "run", fake("ok"))
     argv = ["cathay", "--dry-run", "--file", "F", "--since", "2026-03-01", "--until", "2026-03-31", "--retry", "2026-03-09",
-            "--ack", "2026-03-10", "--unlatch", "--validate-history"]
+            "--unlatch", "--validate-history"]
     assert cli.main(argv) == 0
     assert (seen["dry_run"], seen["file_id"], seen["since"], seen["until"], seen["retry_date"], seen["ack_date"],
             seen["unlatch"], seen["validate_history"]) == (True, "F", date(2026, 3, 1), date(2026, 3, 31),
-                                                           date(2026, 3, 9), date(2026, 3, 10), True, True)
+                                                           date(2026, 3, 9), None, True, True)
+    assert cli.main(["cathay", "--ack", "2026-03-10"]) == 0 and seen["ack_date"] == date(2026, 3, 10)
