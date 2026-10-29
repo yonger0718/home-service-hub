@@ -13,6 +13,13 @@ from notify.state import load_state
 SECRET = "secret-token"
 
 
+def busy(account_id: int, today: date) -> list[dict]:
+    """One fictional expense a week over the read window."""
+    return [{"id": 50000 + k, "kind": "expense", "amount": "-100", "account_id": account_id, "parent_entry_id": None,
+             "entry_date": (today - timedelta(days=7 * k)).isoformat(),
+             "posted_date": (today - timedelta(days=7 * k)).isoformat()} for k in range(18)]
+
+
 def _routes(snap, *, status: int | None = None):
     """Build a handler answering the read-only paths from a fixture Snapshot (status forces an error)."""
     cal = snap.calendar
@@ -32,7 +39,11 @@ def _routes(snap, *, status: int | None = None):
         if path.startswith("/accounts/") and path.endswith("/statements"):
             return httpx.Response(200, json=snap.statements.get(int(path.split("/")[2]), []))
         if path == "/entries":
-            ids, kind = [int(i) for i in params.get_list("account_id")], params["kind"]
+            ids, kind = [int(i) for i in params.get_list("account_id")], params.get("kind")
+            if kind is None:  # card activity; a world without it is busy every week, so no cycle is quiet
+                items = [e for key in ids for e in (busy(key, snap.today) if snap.card_activity is None
+                                                    else snap.card_activity.get(key, []))]
+                return httpx.Response(200, json={"items": items, "total": len(items), "limit": 500, "offset": 0})
             pool = snap.payments if kind == "transfer_in" else snap.source_entries
             items = [e for key in ids for e in pool.get(key, []) if kind == "transfer_in" or e["kind"] == kind]
             return httpx.Response(200, json={"items": items, "total": len(items), "limit": 500, "offset": 0})

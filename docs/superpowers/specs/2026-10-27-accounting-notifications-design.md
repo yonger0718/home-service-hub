@@ -1,6 +1,6 @@
 # Accounting notifications (扣款提醒 + 週報) — design
 
-Rev 3, 2026-10-27 (rev 1 dba71677; rev 2 folds the Multica spec review AGENT-314: 11 majors, 3 minors; rev 3 adds the systemd `OnFailure` backstop, the linked-cards-only note in §5.3 and the rollout link check, per the owner 2026-10-27; rev 3 also folds the AGENT-314 re-check minors: all three `find_twins` shapes, the window predicate, no 帳單未到 beside an off-cycle statement); rev 3.1 (closeout) bounds that suppression to statements newer than the cycle-before-last's match zone. Owner-approved direction (2026-10-27): deterministic digest computed from the HomeHub
+Rev 3, 2026-10-27 (rev 1 dba71677; rev 2 folds the Multica spec review AGENT-314: 11 majors, 3 minors; rev 3 adds the systemd `OnFailure` backstop, the linked-cards-only note in §5.3 and the rollout link check, per the owner 2026-10-27; rev 3 also folds the AGENT-314 re-check minors: all three `find_twins` shapes, the window predicate, no 帳單未到 beside an off-cycle statement); rev 3.1 (closeout) bounds that suppression to statements newer than the cycle-before-last's match zone; rev 3.2 (owner ruling 2026-10-29) drops 帳單未到 and 該來沒來的帳單 for a quiet cycle (§5.1). Owner-approved direction (2026-10-27): deterministic digest computed from the HomeHub
 accounting API, pushed to a dedicated Discord channel through `hermes send`, no LLM in the loop.
 
 ## 1. Intent
@@ -146,6 +146,16 @@ The app's reminders page already derives dues from the card's rule without a sta
   statement is the bill for that cycle as far as the owner is concerned, and 「不會自動扣繳」 next to an auto item
   for the same card would contradict it. An older statement never silences the line (rev 3.1: implementation
   Ruling 5 — the rev 3 wording let any old live statement suppress 帳單未到 forever).
+- **Quiet cycle (rev 3.2, owner ruling 2026-10-29).** A bank sends no statement for a cycle that opens with nothing
+  owed and has nothing on the card, so such a cycle gets no 帳單未到. A cycle is quiet when the last live,
+  non-retired statement of the card whose `period_end` is more than 3 days before the cycle end has
+  `statement_total <= 0`, that `period_end` is inside the entry read window (today − 120), and no top-level entry of
+  the card or its 副卡 other than a `balance_adjustment` falls after that `period_end` through the cycle end, dated
+  by the later of `entry_date` and `posted_date` (a purchase the bank posts after the closing day is on the next
+  bill). Payments, refunds, fees, rewards and split parents all count as activity; split children do not. The
+  entries are read once per card group, every kind, over the read window. No such statement, a statement outside
+  the window, or unread activity (no list at all, or none for the card group) → not quiet (the reminder stays). The check trusts the ledger: a purchase
+  missing from HomeHub makes a cycle look quiet.
 - Debit day = first business day on or after the due date (the API calendar; same as auto-pay `pay_date_for` and the
   app's `payDateOf`).
 - In window when `debit_day >= today` **and** `business_days_between(today, debit_day) <= lead` where
@@ -306,6 +316,8 @@ Runs Saturday 10:00 Asia/Taipei. Sections, each omitted when empty:
    last live `period_end` + cadence, where cadence = the account's `closing_day` month step for cards, else the
    median gap of its last three live statements (one statement → 1 month). Listed when
    `expected + expected_statement_grace_days < today` and no live statement with `period_end > last` exists.
+   For a card with a `closing_day`, a quiet expected cycle (§5.1) moves `expected` to the next cycle, repeatedly, so
+   the line names the first cycle with activity, or is dropped while that cycle is inside the grace days.
    Shows account, last period end, expected date, days late.
 3. **自動扣繳本週跳過** — `auto_pay_skipped` events in the last 7 days with reason ≠ `cutoff`, one line each
    (same wording as §5.5), deduped per statement (latest reason).

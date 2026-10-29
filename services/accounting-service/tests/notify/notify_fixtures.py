@@ -88,10 +88,12 @@ def _default_statements() -> dict[str, list[dict]]:
 
 
 def entry(*, account_id: int, kind: str, amount: str, entry_date: date, transfer_group_id: str | None = None,
-          source: str = "manual", id: int | None = None, parent_entry_id: int | None = None) -> dict:
-    """EntryOut shape (the fields the notifier reads, plus a few for realism)."""
+          source: str = "manual", id: int | None = None, parent_entry_id: int | None = None,
+          posted_date: date | None = None) -> dict:
+    """EntryOut shape (the fields the notifier reads, plus a few for realism); posted_date defaults to entry_date."""
     return {"id": next(_ids) if id is None else id, "kind": kind, "amount": amount, "currency": "TWD",
-            "entry_date": entry_date.isoformat(), "posted_date": entry_date.isoformat(), "account_id": account_id,
+            "entry_date": entry_date.isoformat(), "posted_date": (posted_date or entry_date).isoformat(),
+            "account_id": account_id,
             "parent_entry_id": parent_entry_id, "transfer_group_id": transfer_group_id, "source": source}
 
 
@@ -131,7 +133,9 @@ def snapshot(*, today: date = TODAY, statements_for: dict[str, list[dict]] | Non
              pending: list[dict] | None = None, audit: list[dict] | None = None,
              enabled_from: str | None = "2026-10-01", auto_pay_enabled: bool = True,
              source_overrides: dict[int, dict] | None = None, extra_cards: list[dict] | None = None,
-             open_cases: dict[int, list[dict]] | None = None, inbox: dict | None = None) -> Snapshot:
+             open_cases: dict[int, list[dict]] | None = None, inbox: dict | None = None,
+             card_activity: dict[int, list[dict]] | None = None) -> Snapshot:
+    """`card_activity` left out = not read (no cycle is ever quiet); pass {card id: entries} to read it."""
     accounts = _default_accounts() + list(extra_cards or [])
     for acct in accounts:
         acct.update((source_overrides or {}).get(acct["id"], {}))
@@ -150,7 +154,7 @@ def snapshot(*, today: date = TODAY, statements_for: dict[str, list[dict]] | Non
     return Snapshot(today=today, settings=settings, calendar=calendar, accounts=accounts, statements=statements,
                     payments=dict(payments or {}), source_entries=dict(source_entries or {}),
                     pending=list(pending or []), audit=list(audit or []), open_cases=dict(open_cases or {}),
-                    inbox=inbox)
+                    inbox=inbox, card_activity=card_activity)
 
 
 def weekly_snapshot(*, inbox_items: dict[str, int] | None = None, oldest_created: date | None = None,

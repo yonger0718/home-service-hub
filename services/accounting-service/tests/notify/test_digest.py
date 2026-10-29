@@ -129,3 +129,27 @@ def test_cards_without_rule_counts_recent_payment_activity(fx):
     assert "閒置卡" in gaps(date(2026, 11, 3) - timedelta(days=90)).cards_without_rule
     g = gaps(date(2026, 11, 3) - timedelta(days=91))
     assert "閒置卡" not in g.cards_without_rule and g.statements_without_due == []
+
+
+def _zero_supermarket(fx):
+    return {"超市卡": [fx.statement(id=148, total="0", period_end=date(2026, 9, 25))]}
+
+
+def test_quiet_card_is_not_missing(fx):
+    def supermarket(snap):
+        return [m.expected for m in build_weekly(snap, fx.cfg(), None).missing if m.name == "超市卡"]
+
+    assert supermarket(fx.weekly_snapshot(today=date(2026, 11, 28), statements_for=_zero_supermarket(fx))) == [
+        date(2026, 10, 25)]  # activity unread
+    assert supermarket(fx.weekly_snapshot(today=date(2026, 11, 28), statements_for=_zero_supermarket(fx),
+                                          card_activity={98: []})) == []
+    assert supermarket(fx.weekly_snapshot(today=date(2026, 11, 28), statements_for=_zero_supermarket(fx),
+                                          card_activity={})) == [date(2026, 10, 25)]  # group not read
+
+
+def test_missing_moves_to_the_first_cycle_with_activity(fx):
+    spend = fx.entry(account_id=98, kind="expense", amount="-120", entry_date=date(2026, 11, 1))
+    snap = fx.weekly_snapshot(today=date(2026, 12, 10), statements_for=_zero_supermarket(fx),
+                              card_activity={98: [spend]})
+    m = next(m for m in build_weekly(snap, fx.cfg(), None).missing if m.name == "超市卡")
+    assert (m.last_period_end, m.expected, m.days_late) == (date(2026, 9, 25), date(2026, 11, 25), 15)

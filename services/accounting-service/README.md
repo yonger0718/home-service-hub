@@ -335,6 +335,10 @@ Business days come from `GET /calendar/business-days`; a due date past its `last
   rule-bearing card whose statements are not ingested. Remedies: record the payment, ingest the statement, or clear the
   card's rule (closing day / due rule) — it then surfaces weekly under 設定缺漏 instead.
 
+  Quiet cycles (spec §5.1, rev 3.2): a card whose last statement owed nothing and that has no entry since (payments,
+  refunds and fees count; balance adjustments do not) gets no 帳單未到 and no 該來沒來的帳單 line, since the bank
+  sends no statement for such a cycle. A purchase missing from the ledger makes the cycle look quiet.
+
 Enabling the policy (it does nothing until every step is done): (0) deploy R1d first (the policy's claims, budget, skip audit, supersede order and plan-revert fixes are not in R1c); (1) keep `dirty_enabled` on and reconcile working;
 (2) set `per_currency_enabled` and the caps first, `PUT /settings/reconciliation` with the full body and a `policy` that
 still has `enabled: false`; (3) enable ONE action (`actions.create_system_entry.enabled: true`, with its `max_amount`),

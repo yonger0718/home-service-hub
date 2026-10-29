@@ -277,3 +277,74 @@ def test_past_auto_item_dropped_after_30_days(fx):
     (kept,) = item_155(date(2026, 12, 5))
     assert kept.cls == "auto" and kept.unpaid_reason == "over_cap"
     assert item_155(date(2026, 12, 6)) == []
+
+
+# --- quiet cycles (§5.1, owner ruling 2026-10-29): nothing owed and nothing on the card → no bill expected ---------
+
+def _supermarket(fx, today=date(2026, 11, 5), **kw):
+    """超市卡 (98, closing 25): only the 0-total 09-25 statement (148), so the 10-25 cycle has no statement."""
+    zero = fx.statement(id=148, total="0", period_end=date(2026, 9, 25), due_date=date(2026, 10, 7))
+    return build_daily(fx.snapshot(today=today, statements_for={"超市卡": [zero]}, **kw), fx.cfg())
+
+
+def test_quiet_cycle_has_no_missing_line(fx):
+    assert fx.find(_supermarket(fx, card_activity={98: []}), "超市卡") is None
+
+
+def test_unread_activity_keeps_missing_line(fx):
+    assert fx.find(_supermarket(fx), "超市卡").note == "帳單未到"
+    # a read map without the card's group is unread for that card, not an empty one (AGENT-331)
+    assert fx.find(_supermarket(fx, card_activity={}), "超市卡").note == "帳單未到"
+    assert fx.find(_supermarket(fx, card_activity={100: []}), "超市卡").note == "帳單未到"
+
+
+def test_purchase_after_zero_statement_keeps_missing_line(fx):
+    spend = fx.entry(account_id=98, kind="expense", amount="-120", entry_date=date(2026, 10, 10))
+    assert fx.find(_supermarket(fx, card_activity={98: [spend]}), "超市卡").note == "帳單未到"
+
+
+def test_payment_after_zero_statement_is_activity(fx):
+    pay = fx.entry(account_id=98, kind="transfer_in", amount="300", entry_date=date(2026, 10, 1))
+    assert fx.find(_supermarket(fx, card_activity={98: [pay]}), "超市卡").note == "帳單未到"
+
+
+def test_balance_adjustment_and_split_child_are_not_activity(fx):
+    adj = fx.entry(account_id=98, kind="balance_adjustment", amount="-15", entry_date=date(2026, 10, 1))
+    child = fx.entry(account_id=98, kind="fee", amount="-2", entry_date=date(2026, 10, 2), parent_entry_id=1)
+    assert fx.find(_supermarket(fx, card_activity={98: [adj, child]}), "超市卡") is None
+
+
+def test_purchase_posted_after_the_zero_statement_counts(fx):
+    late = fx.entry(account_id=98, kind="expense", amount="-120", entry_date=date(2026, 9, 24),
+                    posted_date=date(2026, 9, 27))
+    assert fx.find(_supermarket(fx, card_activity={98: [late]}), "超市卡").note == "帳單未到"
+    early = fx.entry(account_id=98, kind="expense", amount="-120", entry_date=date(2026, 9, 24))
+    assert fx.find(_supermarket(fx, card_activity={98: [early]}), "超市卡") is None  # on the 09-25 bill
+
+
+def test_owed_previous_statement_keeps_missing_line(fx):
+    owed = fx.statement(id=148, total="500", period_end=date(2026, 9, 25), due_date=date(2026, 10, 7))
+    snap = fx.snapshot(today=date(2026, 11, 5), statements_for={"超市卡": [owed]}, card_activity={98: []})
+    lines = [i for i in build_daily(snap, fx.cfg()).manual if i.card_name == "超市卡" and i.from_rule]
+    assert [i.due for i in lines] == [date(2026, 11, 7)]
+
+
+def test_two_quiet_cycles_in_a_row_have_no_missing_lines(fx):
+    rep = _supermarket(fx, today=date(2026, 12, 5), card_activity={98: []})
+    assert [i for i in rep.manual if i.card_name == "超市卡"] == []
+
+
+def test_zero_statement_older_than_the_read_window_keeps_missing_line(fx):
+    old = fx.statement(id=148, total="0", period_end=date(2026, 6, 25), due_date=date(2026, 7, 7))
+    snap = fx.snapshot(today=date(2026, 11, 5), statements_for={"超市卡": [old]}, card_activity={98: []})
+    assert fx.find(build_daily(snap, fx.cfg()), "超市卡").note == "帳單未到"
+
+
+def test_secondary_card_activity_counts_for_the_master(fx):
+    # 旅遊卡 (100) without its 10-15 statement: only the 0-total 09-15 one (145); 副卡 104 spent in the cycle
+    spend = fx.entry(account_id=104, kind="expense", amount="-80", entry_date=date(2026, 10, 1))
+    rows = [fx.statement(id=145, account_id=100, total="0", period_end=date(2026, 9, 15), due_date=date(2026, 10, 5))]
+    busy = fx.snapshot(statements_for={"旅遊卡": rows}, card_activity={100: [spend]})
+    quiet = fx.snapshot(statements_for={"旅遊卡": rows}, card_activity={100: []})
+    assert fx.find(build_daily(busy, fx.cfg()), "旅遊卡").note == "帳單未到"
+    assert fx.find(build_daily(quiet, fx.cfg()), "旅遊卡") is None
