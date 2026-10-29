@@ -3,7 +3,7 @@
 Status: rev 2.2 (2026-10-29), after the AGENT-335 review (findings 1–6 folded) and its re-check (buy tax pinned to 0);
 rev 2.2 adds §7 notifications to the scope (owner 2026-10-29: a stuck date must reach the owner, not only a log);
 rev 2.3 folds the AGENT-337 review (run deadline, notifier isolation, acknowledgement model), and its re-check
-minor (pending envelope). Owner rulings 2026-10-29: the daily
+minor (pending envelope); rev 2.4 pins the text extractor (§4.1), a fact found while planning. Owner rulings 2026-10-29: the daily
 statement is the primary source for the dates it covers ("對帳單為主，按日期分"); current days matter most and the
 archive is used to validate the parser, not to wait for a full backfill; the first writer of a date owns it and a
 mismatch is never resolved automatically in either direction (option A — the owner imports the CSV only after the
@@ -83,6 +83,12 @@ it means.
 ```
 
 ### 4.1 Parser grammar (anything else fails the statement)
+
+- Text source: pypdfium2 (pinned 5.14.0 in `requirements-worker.txt`), `PdfDocument(data, password=…)` and each
+  page's `get_textpage().get_text_range()`, pages joined by a newline, lines stripped. The grammar below and every
+  count in §2 come from this extractor. The worker's general `pdf.extract` (pdfplumber) lays the same PDF out
+  differently (net before the item, margin columns and order number on the item line, spaced title) and is not
+  used for this job; `pdf.unlock` still picks the password candidate.
 
 - Header `證券日對帳單 <ROC>年 <M>月 <D>日` and the `成交日期 交割日期 …` data line must agree (ROC year + 1911). A
   two-page statement is read as one text (the archive's 167 two-page statements parse this way).
