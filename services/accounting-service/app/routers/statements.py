@@ -328,9 +328,10 @@ def read_account_map(db: Session = Depends(get_db)):
     closing_days = {str(account_id): day for account_id, day in db.execute(
         select(Account.id, Account.closing_day).where(Account.closing_day.is_not(None))).all()}
     composite_map = data.get("composite_map") or {}
+    card_accounts = list(db.execute(select(Account.id).where(Account.is_credit).order_by(Account.id)).scalars())
     return AccountMapOut(account_map=account_map, composite_map=composite_map,
                          mapping_version=settings_service.mapping_version(account_map, composite_map),
-                         closing_days=closing_days)
+                         closing_days=closing_days, card_accounts=card_accounts)
 
 
 @router.get("/reconciliation/cases", response_model=list[CaseOut], dependencies=READ)

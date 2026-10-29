@@ -633,8 +633,18 @@ def _ensure_stored(services: Services, lease: Lease, file_row: dict, published_p
     return True
 
 
+def _kind_for(listed: drive_mod.Listed, account_map: dict[str, int] | None, card_accounts: frozenset[int]) -> str:
+    """#205: a file whose folder is mapped takes its kind from the mapped account (`card` iff the account is a credit
+    account); an unmapped one (a composite folder, a folder not yet mapped) keeps the folder convention."""
+    account_id = (account_map or {}).get(_folder_key(listed))
+    if account_id is None:
+        return drive_mod.kind_of(listed)
+    return "card" if account_id in card_accounts else "bank"
+
+
 def _acquire(services: Services, lease: Lease, listed: drive_mod.Listed, known: dict[str, dict], summary: Summary,
-             trace: dict | None = None):
+             trace: dict | None = None, *, account_map: dict[str, int] | None = None,
+             card_accounts: frozenset[int] = frozenset()):
     """Ruling 10: fetch bytes only when the index does not know them; register the source every listing;
     ensure the object is stored. Returns (file_row, bytes-or-None, listed) or None when skipped this run."""
     if listed.size > inbox_mod.MAX_PDF_BYTES:
@@ -657,7 +667,7 @@ def _acquire(services: Services, lease: Lease, listed: drive_mod.Listed, known: 
         data = path.read_bytes()
         services.index.put(listed.drive_file_id, listed.md5, sha)
     trace["sha"] = sha
-    kind = drive_mod.kind_of(listed)
+    kind = _kind_for(listed, account_map, card_accounts)
     file_row = services.api.register_file(lease, sha, path.stat().st_size, kind, f"by-sha/{sha}.pdf")
     if sha not in known:
         summary.new_files += 1
@@ -728,7 +738,7 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
             except parser_mod.GateUnavailable:  # transient canary failure: skip parsing, nothing latched, run done
                 services.parser_disabled = True
                 summary.errors.append("gate_unavailable")
-            account_map, mapping_version, closing_days, composite_map = services.api.account_map()
+            account_map, mapping_version, closing_days, composite_map, card_accounts = services.api.account_map()
             summary.versions["mapping_version"] = mapping_version
             try:
                 listing = services.drive.list_pdfs()
@@ -744,7 +754,8 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
                     raise RunAborted("lease lost")
                 row, trace = None, {}
                 try:
-                    acquired = _acquire(services, lease, listed, known, summary, trace)
+                    acquired = _acquire(services, lease, listed, known, summary, trace, account_map=account_map,
+                                        card_accounts=card_accounts)
                     if acquired is None:
                         continue
                     file_row, data, listed = acquired

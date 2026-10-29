@@ -3,7 +3,7 @@
 Behind `require_feature()` like the statements router. Owner actions need `write`; reads need `read`. The engine
 never commits and these handlers do; policy does not run after owner actions.
 """
-
+from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -148,8 +148,10 @@ def revert_action(action_id: int, request: Request, db: Session = Depends(get_db
 
 @router.get("/reconciliation/audit", response_model=list[AuditOut], dependencies=READ)
 def list_audit(statement_id: int | None = None, limit: int = Query(200, ge=1, le=1000),
-               db: Session = Depends(get_db)):
-    return ingest.list_audit(db, statement_id=statement_id, limit=limit)
+               since: datetime | None = None, event: str | None = Query(None, min_length=1, max_length=48),
+               offset: int = Query(0, ge=0), db: Session = Depends(get_db)):
+    """Newest first; `since` (ISO datetime, naive = UTC), `event` and `offset` narrow the page (#201)."""
+    return ingest.list_audit(db, statement_id=statement_id, limit=limit, since=since, event=event, offset=offset)
 
 
 # --- agent proposals (Task 9) ---------------------------------------------------------------------------------------

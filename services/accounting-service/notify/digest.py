@@ -80,10 +80,28 @@ def _case_line(item: dict) -> CaseLine:
         statement_id=item["statement"]["id"])
 
 
+def _visible_items(items: list[dict]) -> list[dict]:
+    """The inbox's unfolded items (Ruling 13: split members are shown under their group), plus the first member of a
+    group whose members are ALL folded — two `balance_gap` rows sharing a `group_key` with no leader (#203) — so the
+    digest never hides a case the inbox counts. Order as the inbox lists them."""
+    led = {i.get("group_key") for i in items if not i.get("folded") and i.get("group_key") is not None}
+    out, kept = [], set()
+    for item in items:
+        if not item.get("folded"):
+            out.append(item)
+            continue
+        key = item.get("group_key")
+        if key is None or key in led or key in kept:
+            continue
+        kept.add(key)
+        out.append(item)
+    return out
+
+
 def _open_cases(snap: Snapshot, limit: int) -> list[AccountCases]:
     out = []
     for acct in (snap.inbox or {}).get("accounts", []):
-        items = [i for i in acct.get("items") or [] if not i.get("folded")]
+        items = _visible_items(acct.get("items") or [])
         if not items:
             continue
         created = [created_at_of(c).astimezone(TAIPEI).date() for c in snap.open_cases.get(acct["id"], [])]

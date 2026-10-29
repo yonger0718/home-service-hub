@@ -298,7 +298,9 @@ Runs Saturday 10:00 Asia/Taipei. Sections, each omitted when empty:
    (`created_at`, newest first), then up to `weekly_open_case_limit` items with date, amount, merchant/description
    and the `question` in words — `bank_only` 只有銀行有, `ledger_only` 只有帳本有, `transfer` 疑似轉帳, `amount_differs`
    金額不同, `date_differs` 日期不同, `ambiguous` 多個候選, `balance_gap` 餘額差, `settlement` 結算, `proposed` 已提議,
-   `other` 其他 — and 「+N 筆」 when truncated. Link to the statement page. Reading the inbox lets the API supersede
+   `other` 其他 — and 「+N 筆」 when truncated. Folded items (`folded: true`, split members shown under their
+   group) are skipped, except that a group whose members are ALL folded keeps its first member, so no counted case
+   is hidden (#203). Link to the statement page. Reading the inbox lets the API supersede
    stale proposal rows (`supersede_stale`); that read-scope side effect is accepted — it posts nothing to the ledger.
 2. **該來沒來的帳單** — for every account that has at least one live statement: expected next `period_end` =
    last live `period_end` + cadence, where cadence = the account's `closing_day` month step for cards, else the
@@ -344,7 +346,8 @@ behaviour: every window statement is "new"; acceptable).
   issue #200 (after the first real run).
 - A partial API failure (one account's statements 500) fails the whole run; no half-digests.
 - Capped reads are failures too, not short successes: `/entries` is paged by `offset` until `offset + len(items)
-  == total`; for `/reconciliation/audit` (newest first, `limit` ≤ 1000, no `since`/`event` filter),
+  == total`; for `/reconciliation/audit` (newest first, `limit` ≤ 1000; read with `since=<window start>` and
+  `event=auto_pay_skipped` since #201 — an older API ignores both and the cap rule still holds),
   `/reconciliation/inbox` (≤ 1000) and `/reconciliation/cases` (≤ 1000, no offset), a full page whose oldest row is
   still inside the window the run needs → §7 failure. Never render from a truncated page.
 - A due date after the calendar's `last_known_day` → §7 failure (§3).
@@ -388,7 +391,8 @@ cadence rules with fictional fixtures; golden-text tests for `render`; an API-cl
 - Exact httpx client shape (reuse `worker/api.py` patterns: bearer header, redaction, no retries beyond one).
 - The Python port of `cycle.ts` (`statementPeriod`, `shiftPeriod`, `dueDate`, month clamping) lives in
   `notify/cycles.py` with tests mirroring `cycle.spec.ts` cases; the frontend stays the reference implementation.
-- `GET /accounts?as_of=` returns `balance` (posted on/before `as_of`) — confirmed; `/reconciliation/audit` has only
-  `statement_id`/`limit`, so `auto_pay_skipped` is filtered client-side under the §7 cap rule.
+- `GET /accounts?as_of=` returns `balance` (posted on/before `as_of`) — confirmed; `/reconciliation/audit` takes
+  `since`/`event`/`offset` since #201 (the notifier passes the window start and `auto_pay_skipped`); the §7 cap
+  rule stays as the guard and `auto_pay_skipped` is still filtered client-side for an older API.
 - Message splitting and emoji choices; Discord markdown escaping of account names.
 - The `install.sh` idempotency and the release-checkout layout (mirror `~/releases/home-hub-portfolio`).

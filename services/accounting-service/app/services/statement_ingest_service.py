@@ -484,10 +484,17 @@ def list_actions(db: Session, *, statement_id: int | None = None, case_id: int |
     return list(db.execute(q.order_by(ReconciliationAction.id.desc()).limit(limit)).scalars())
 
 
-def list_audit(db: Session, *, statement_id: int | None = None, limit: int = 200) -> list[dict]:
-    """Audit rows newest first (as `list_actions`); with `limit`, the latest `limit` rows."""
+def list_audit(db: Session, *, statement_id: int | None = None, limit: int = 200, since: datetime | None = None,
+               event: str | None = None, offset: int = 0) -> list[dict]:
+    """Audit rows newest first (as `list_actions`); with `limit`, the latest `limit` rows after `offset`. `since`
+    keeps rows created on or after it (a naive value is UTC), `event` one event name (#201: the notifier reads
+    `auto_pay_skipped` inside its window instead of a capped page of everything)."""
     q = select(ReconciliationAudit)
     if statement_id is not None:
         q = q.where(ReconciliationAudit.statement_id == statement_id)
-    q = q.order_by(ReconciliationAudit.id.desc()).limit(limit)
+    if since is not None:
+        q = q.where(ReconciliationAudit.created_at >= (since if since.tzinfo else since.replace(tzinfo=timezone.utc)))
+    if event is not None:
+        q = q.where(ReconciliationAudit.event == event)
+    q = q.order_by(ReconciliationAudit.id.desc()).offset(offset).limit(limit)
     return [_row(r, AUDIT_FIELDS) for r in db.execute(q).scalars()]

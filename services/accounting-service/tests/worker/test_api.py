@@ -50,8 +50,18 @@ def test_lease_lost_on_submission_with_a_stale_token(worker_api):
 def test_account_map(worker_api, client):
     client.put("/settings/reconciliation", headers={"Authorization": "Bearer spa-token"},
                json={"account_map": {"manual/國泰世華": 3}, "dirty_enabled": False, "rules": {}})
-    mapping, version, closing_days, composite_map = worker_api.account_map()
+    mapping, version, closing_days, composite_map, card_accounts = worker_api.account_map()
     assert mapping == {"manual/國泰世華": 3} and len(version) == 16 and closing_days == {} and composite_map == {}
+    assert isinstance(card_accounts, frozenset)
+
+
+def test_account_map_lists_the_credit_accounts(worker_api, seed, db_session):
+    """#205: the worker derives a mapped file's kind from its account, so the map carries the credit account ids."""
+    card = seed.account("卡", is_credit=True)
+    bank = seed.account("活存", is_credit=False, currency="TWD")
+    db_session.commit()
+    card_accounts = worker_api.account_map()[4]
+    assert card.id in card_accounts and bank.id not in card_accounts
 
 
 def test_account_map_carries_the_composite_map(worker_api, client, seed, db_session):
@@ -67,7 +77,7 @@ def test_account_map_carries_the_composite_map(worker_api, client, seed, db_sess
 def test_account_map_tolerates_an_api_without_closing_days(worker_api, monkeypatch):
     """Deploy order API-then-worker: a new worker against the old response (no `closing_days`) gets an empty map."""
     monkeypatch.setattr(worker_api, "_call", lambda *a, **k: {"account_map": {"manual/國泰世華": 3}, "mapping_version": "0" * 16})
-    assert worker_api.account_map() == ({"manual/國泰世華": 3}, "0" * 16, {}, {})
+    assert worker_api.account_map() == ({"manual/國泰世華": 3}, "0" * 16, {}, {}, frozenset())
 
 
 def test_guard_blocks_lease_routes_before_sending(client):

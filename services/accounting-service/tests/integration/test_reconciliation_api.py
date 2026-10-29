@@ -177,6 +177,18 @@ def test_action_and_audit_listings(client, db_session, unmatched):
     assert [a["id"] for a in client.get(f"/reconciliation/audit?statement_id={stmt.id}&limit=1",
                                         headers=H).json()] == ids[:1]
     assert client.get("/reconciliation/audit?limit=0", headers=H).status_code == 422
+    # #201: since / event / offset narrow the page; newest first throughout
+    newest = client.get("/reconciliation/audit?limit=1", headers=H).json()[0]
+    assert [a["id"] for a in client.get("/reconciliation/audit", params={"since": newest["created_at"]},
+                                        headers=H).json()] == [newest["id"]]
+    assert client.get("/reconciliation/audit?since=2999-01-01T00:00:00Z", headers=H).json() == []
+    by_event = client.get(f"/reconciliation/audit?event={newest['event']}", headers=H).json()
+    assert by_event and {a["event"] for a in by_event} == {newest["event"]}
+    assert client.get("/reconciliation/audit?event=no_such_event", headers=H).json() == []
+    page = [a["id"] for a in client.get("/reconciliation/audit?limit=50", headers=H).json()]
+    assert [a["id"] for a in client.get("/reconciliation/audit?limit=1&offset=1", headers=H).json()] == page[1:2]
+    assert client.get("/reconciliation/audit?offset=-1", headers=H).status_code == 422
+    assert client.get("/reconciliation/audit?since=yesterday", headers=H).status_code == 422
 
 
 def _two_statements(seed, db_session, run):

@@ -85,6 +85,17 @@ def test_full_audit_page_inside_window_is_capped():
         fetch_daily(ReadClient(client, "t"), TODAY)
 
 
+def test_audit_is_read_inside_the_window_for_the_skip_event_only():
+    """#201: the daily asks the API for `auto_pay_skipped` rows since the window start (06:00 the day before)."""
+    client, log = make_client(DAILY)
+    fetch_daily(ReadClient(client, "t"), TODAY)
+    audit = [r for r in log if r.url.path.endswith("/reconciliation/audit")]
+    assert len(audit) == 1
+    params = audit[0].url.params
+    assert (params["limit"], params["event"], params["since"]) == (
+        "1000", "auto_pay_skipped", "2026-10-26T06:00:00+08:00")
+
+
 def test_full_audit_page_older_than_window_is_fine():
     rows = [{"id": i, "created_at": "2026-10-20T06:00:00+08:00"} for i in range(1000)]
     client, _ = make_client(DAILY | {"/reconciliation/audit": rows})
