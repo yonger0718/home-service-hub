@@ -1,6 +1,6 @@
 # 國泰證券日對帳單 auto-import — design
 
-Status: rev 2.2 (2026-10-29), after the AGENT-335 review (findings 1–6 folded) and its re-check (buy tax pinned to 0);
+Status: rev 2.5 (2026-10-29). Rev 2.2 came after the AGENT-335 review (findings 1–6 folded) and its re-check (buy tax pinned to 0);
 rev 2.2 adds §7 notifications to the scope (owner 2026-10-29: a stuck date must reach the owner, not only a log);
 rev 2.3 folds the AGENT-337 review (run deadline, notifier isolation, acknowledgement model), and its re-check
 minor (pending envelope); rev 2.4 pins the text extractor (§4.1), a fact found while planning; rev 2.5 records the full text layout and footer sums of all 466 archived statements (§2, §4.2), found when the parser first met the archive. Owner rulings 2026-10-29: the daily
@@ -53,7 +53,7 @@ statements.
   (one row per position held after the day, price with an optional ▲ / ▼, an optional link suffix
   `停損/停利通知 個股分析 我要下單`; a position sold out that day is absent; the whole table is absent when nothing is
   held), `集保市值總計： …`, and one link line starting `智慧選股 `. Lines end with `\r` (stripped). Signed numbers carry
-  an explicit `+` / `-`.
+  an explicit `+` / `-`, except the footer net line under `總合計`, which prints a positive net without `+`.
 - **Granularity: the statement has one line per (委託, price); the CSV has one row per fill.** The 委託書號 on the
   statement is the CSV 委託書號 plus a two-digit price-group suffix (`XY123` → `XY12300`, `XY12301`). Lines and
   rows agree on totals: Σ quantity, Σ 手續費, Σ 交易稅 of the fills equal the line.
@@ -229,8 +229,10 @@ the notifier as the owner's user, so both meet at the portfolio API.
   attempt is `conflict` — except a date whose (`last_sha256`, `last_status`) equals its (`ack_sha256`,
   `ack_status`). `since` is the first attempt that put the date in this state. Sorted by date, at most 50 items; `total`
   counts every pending date and `truncated` is `total > len(items)`. `reason` is a code plus at most one name, cut to 40 characters.
-- `POST /api/portfolio/imports/cathay-statement/runs` (worker, once per commit run, also when the run ends latched or
-  failed): `{"run_at", "result": "ok" | "latched" | "failed", "code", "files_seen", "posted"}`. Portfolio keeps the
+- `POST /api/portfolio/imports/cathay-statement/runs` (worker, once per plain daily commit run, also when the run ends
+  latched or failed and when it is refused because the job is latched; owner runs with `--file`, `--since`, `--until`,
+  `--retry`, `--unlatch`, `--ack`, `--dry-run` or `--validate-history` never report, so `latest` always describes the
+  timer's run): `{"run_at", "result": "ok" | "latched" | "failed", "code", "files_seen", "posted"}`. Portfolio keeps the
   latest row overall and the latest `ok` row (`cathay_statement_run`, small table).
 - `GET /api/portfolio/imports/cathay-statement/runs/latest` → `{"latest": row | null, "latest_ok": row | null}`.
 - Acknowledgement: `python -m worker cathay --ack <date>` posts `POST …/days/<date>/ack`, which stores the date's
