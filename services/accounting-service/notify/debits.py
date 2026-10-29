@@ -322,10 +322,11 @@ def _match(live: list[dict], cycle_end: date) -> dict | None:
 
 
 def activity_of(snap: Snapshot, account: dict) -> list[dict] | None:
-    """The card group's entries (`card_activity` is keyed by the master); None when the snapshot did not read them."""
+    """The card group's entries (`card_activity` is keyed by the master); None when the snapshot did not read them,
+    for the whole map or for this group (an unread group is never quiet)."""
     if snap.card_activity is None:
         return None
-    return snap.card_activity.get(account.get("combined_account_id") or account["id"], [])
+    return snap.card_activity.get(account.get("combined_account_id") or account["id"])
 
 
 def no_bill_expected(statements: list[dict], activity: list[dict] | None, cycle_end: date, today: date) -> bool:

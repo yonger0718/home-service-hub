@@ -293,6 +293,9 @@ def test_quiet_cycle_has_no_missing_line(fx):
 
 def test_unread_activity_keeps_missing_line(fx):
     assert fx.find(_supermarket(fx), "超市卡").note == "帳單未到"
+    # a read map without the card's group is unread for that card, not an empty one (AGENT-331)
+    assert fx.find(_supermarket(fx, card_activity={}), "超市卡").note == "帳單未到"
+    assert fx.find(_supermarket(fx, card_activity={100: []}), "超市卡").note == "帳單未到"
 
 
 def test_purchase_after_zero_statement_keeps_missing_line(fx):

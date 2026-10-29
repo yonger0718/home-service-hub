@@ -143,6 +143,8 @@ def test_quiet_card_is_not_missing(fx):
         date(2026, 10, 25)]  # activity unread
     assert supermarket(fx.weekly_snapshot(today=date(2026, 11, 28), statements_for=_zero_supermarket(fx),
                                           card_activity={98: []})) == []
+    assert supermarket(fx.weekly_snapshot(today=date(2026, 11, 28), statements_for=_zero_supermarket(fx),
+                                          card_activity={})) == [date(2026, 10, 25)]  # group not read
 
 
 def test_missing_moves_to_the_first_cycle_with_activity(fx):

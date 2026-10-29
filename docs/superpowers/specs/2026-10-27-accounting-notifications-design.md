@@ -154,7 +154,7 @@ The app's reminders page already derives dues from the card's rule without a sta
   by the later of `entry_date` and `posted_date` (a purchase the bank posts after the closing day is on the next
   bill). Payments, refunds, fees, rewards and split parents all count as activity; split children do not. The
   entries are read once per card group, every kind, over the read window. No such statement, a statement outside
-  the window, or an unread activity list → not quiet (the reminder stays). The check trusts the ledger: a purchase
+  the window, or unread activity (no list at all, or none for the card group) → not quiet (the reminder stays). The check trusts the ledger: a purchase
   missing from HomeHub makes a cycle look quiet.
 - Debit day = first business day on or after the due date (the API calendar; same as auto-pay `pay_date_for` and the
   app's `payDateOf`).
