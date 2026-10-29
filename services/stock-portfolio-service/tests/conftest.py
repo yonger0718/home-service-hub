@@ -44,6 +44,17 @@ def _never_reach_the_configured_database(monkeypatch):
     monkeypatch.setenv("POST_IMPORT_RECALC_ENABLED", "false")
 
 
+@pytest.fixture(autouse=True)
+def _fresh_post_import_results():
+    """The post-import chain keeps its latest results in process (latest_status prefers the newest import); an import
+    chain run by an earlier test must not answer a later test's status read (#211)."""
+    from app.services import post_import_orchestrator as orch
+
+    orch.reset_state_for_tests()
+    yield
+    orch.reset_state_for_tests()
+
+
 @pytest.fixture()
 def db_session():
     engine = create_engine(
