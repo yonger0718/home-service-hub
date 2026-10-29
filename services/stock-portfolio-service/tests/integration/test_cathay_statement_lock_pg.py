@@ -16,7 +16,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine, event, make_url, text
+from sqlalchemy import URL, create_engine, event, make_url, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
@@ -47,34 +47,62 @@ def _key(day: date) -> int:
 _BOUNDS = {"options": "-c lock_timeout=30s -c statement_timeout=60s"}
 
 
+# libpq keys that pick the database; any of them in the URL query would override the database we connect to.
+_DB_ROUTING_KEYS = ("dbname", "database", "service")
+
+
+def _engine_args(pg_url: str, name: str) -> tuple[URL, dict]:
+    """The URL and connect args for the module's own database ``name`` on ``pg_url``'s server.
+
+    Database-routing query keys are dropped and ``dbname`` is pinned in the connect args, which the driver
+    applies last, so nothing in ``pg_url`` can route the test engine back to the URL's own database.
+    """
+    url = make_url(pg_url)
+    query = {key: value for key, value in url.query.items() if key not in _DB_ROUTING_KEYS}
+    return url.set(database=name, query=query), {**_BOUNDS, "dbname": name}
+
+
 @pytest.fixture(scope="module")
 def engine():
     """A database this module creates on the URL's server and drops afterwards.
 
     The database the URL names is only used to issue CREATE / DROP DATABASE; nothing in it is read, dropped or
-    truncated.
+    truncated. The test engine must report the created database as ``current_database()`` before any write.
     """
     name = f"cathay_lock_test_{secrets.token_hex(8)}"
     admin = create_engine(PG_URL, isolation_level="AUTOCOMMIT", poolclass=NullPool, connect_args=_BOUNDS)
+    created = False
+    engine = None
     try:
-        with admin.connect() as conn:
-            conn.execute(text(f'CREATE DATABASE "{name}"'))
-    except DBAPIError as exc:
-        admin.dispose()
-        pytest.fail(
-            f"cannot CREATE DATABASE on the CATHAY_PG_TEST_URL server ({exc.orig!r}); "
-            "the lock test only runs in a database it creates itself",
-            pytrace=False,
-        )
-    engine = create_engine(make_url(PG_URL).set(database=name), connect_args=_BOUNDS)
-    try:
+        try:
+            with admin.connect() as conn:
+                conn.execute(text(f'CREATE DATABASE "{name}"'))
+        except DBAPIError as exc:
+            pytest.fail(
+                f"cannot CREATE DATABASE on the CATHAY_PG_TEST_URL server ({exc.orig!r}); "
+                "the lock test only runs in a database it creates itself",
+                pytrace=False,
+            )
+        created = True
+        url, connect_args = _engine_args(PG_URL, name)
+        engine = create_engine(url, connect_args=connect_args)
+        with engine.connect() as conn:
+            current = conn.execute(text("SELECT current_database()")).scalar_one()
+        if current != name:
+            pytest.fail(f"test engine connected to {current!r}, not the created database {name!r}", pytrace=False)
         Base.metadata.create_all(engine)
         yield engine
     finally:
-        engine.dispose()
-        with admin.connect() as conn:
-            conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
-        admin.dispose()
+        try:
+            if engine is not None:
+                engine.dispose()
+        finally:
+            try:
+                if created:
+                    with admin.connect() as conn:
+                        conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+            finally:
+                admin.dispose()
 
 
 @pytest.fixture(autouse=True)
