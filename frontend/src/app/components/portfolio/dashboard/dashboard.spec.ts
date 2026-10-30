@@ -664,6 +664,45 @@ describe('PortfolioDashboardComponent', () => {
     expect(footnote(root, 1)).toContain('待收 0.00 USD');
   });
 
+  describe('market filter card titles', () => {
+    const pick = (fixture: ReturnType<typeof createFixture>, label: string) => {
+      const root = fixture.nativeElement as HTMLElement;
+      Array.from(root.querySelectorAll<HTMLButtonElement>('app-page-header .market-toggle button'))
+        .find(b => b.textContent?.trim() === label)!.click();
+      fixture.detectChanges();
+      return root;
+    };
+    const totals = (currency: string) => ({ currency, cost: 500, market_value: 520, unrealized_pnl: 20,
+      recorded_dividends: 5, pending_dividends_net: 2, estimated_pnl_with_dividends: 27, estimated_pnl_percent: 5 });
+    const holding = (market: 'US' | 'LSE', currency: string) => ({ ...buildHolding(), market, native_currency: currency });
+
+    it.each([['TW', '台股'], ['US', '美股'], ['LSE', '英股']] as const)('titles the %s filter cards with %s, not the code', (code, name) => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({
+        holdings: [buildHolding(), holding('US', 'USD'), holding('LSE', 'GBp')],
+        market_totals: { TW: totals('TWD'), US: totals('USD'), LSE: totals('GBp') },
+      })));
+      const fixture = createFixture();
+      const root = pick(fixture, name);
+      const labels = Array.from(root.querySelectorAll<HTMLElement>('.kpi-card .label')).map(l => l.textContent?.replace(/\s+/g, ' ').trim());
+      expect(labels[0]).toBe(`總市值 · ${name}`);
+      expect(labels[1]).toBe(`預估含息損益 · ${name}`);
+      expect(labels[3]).toBe(`已記錄股利 · ${name}`);
+      expect(root.querySelector('.kpi-row')?.textContent).not.toContain(`· ${code}`);
+    });
+
+    it('pins the LSE native dividend figure: the GBp bucket amount, printed as GBp', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({
+        holdings: [buildHolding(), holding('LSE', 'GBp')],
+        market_totals: { TW: totals('TWD'), LSE: { ...totals('GBp'), recorded_dividends: 1234.5, pending_dividends_net: 40 } },
+      })));
+      const fixture = createFixture();
+      const root = pick(fixture, '英股');
+      const card = Array.from(root.querySelectorAll<HTMLElement>('.kpi-card')).find(c => c.textContent?.includes('已記錄股利'))!;
+      expect(card.querySelector('.value')?.textContent?.trim()).toBe('1,234.50 GBp');
+      expect(card.querySelector('.value')?.classList).toContain('foreign');
+    });
+  });
+
   it('gives KPI values the foreign clamp only when the market filter selects a non-TWD market', () => {
     const us = { ...buildHolding(), market: 'US' as const, native_currency: 'USD' };
     portfolioService.getSummary.mockReturnValue(of(buildSummary({ holdings: [us], market_totals: {
@@ -847,7 +886,7 @@ describe('PortfolioDashboardComponent', () => {
       const f = fixture.componentInstance;
       f.selectMarketFilter('US');
       fixture.detectChanges();
-      expect(kpi(root).map(label)).toEqual(['總市值 · US', '預估含息損益 · US', '年化報酬率 XIRR', '已記錄股利 · US']);
+      expect(kpi(root).map(label)).toEqual(['總市值 · 美股', '預估含息損益 · 美股', '年化報酬率 XIRR', '已記錄股利 · 美股']);
       expect(footnote(root, 0)).toBe('總成本 500.00 USD');
       expect(footnote(root, 1)).toBe('價差 +20.00 USD · 股利 5.00 USD · 待收 2.00 USD');
       expect(footnote(root, 2)).toBe('1Y · 全市場');

@@ -82,7 +82,7 @@
       <div class="kpi-row">
         <app-bento class="kpi-card">
           <div class="kpi-card-body">
-            <div class="label">總市值{{ isMarketFiltered() ? ' · ' + marketFilter() : '' }}</div>
+            <div class="label">總市值{{ isMarketFiltered() ? ' · ' + marketLabel(marketFilter()) : '' }}</div>
             <div class="value" [class.foreign]="isForeignTotals(totals)">{{ money(totals.total_market_value, totals.currency) }}</div>
             <div class="kpi-card-footer">
               <div class="meta">總成本 {{ money(totals.total_cost, totals.currency) }}</div>
@@ -93,7 +93,7 @@
         <app-bento class="kpi-card">
           <div class="kpi-card-body">
             <div class="label">
-              預估含息損益{{ isMarketFiltered() ? ' · ' + marketFilter() : '' }}
+              預估含息損益{{ isMarketFiltered() ? ' · ' + marketLabel(marketFilter()) : '' }}
               <i class="pi pi-info-circle fx-info" tabindex="0" role="img" [attr.aria-label]="estimateHint" [pTooltip]="estimateHint"></i>
             </div>
             <div class="value-row">
@@ -129,7 +129,7 @@
 
         <app-bento class="kpi-card">
           <div class="kpi-card-body">
-            <div class="label">已記錄股利{{ isMarketFiltered() ? ' · ' + marketFilter() : '' }}</div>
+            <div class="label">已記錄股利{{ isMarketFiltered() ? ' · ' + marketLabel(marketFilter()) : '' }}</div>
             <div class="value dividend" [class.foreign]="isForeignTotals(totals)">{{ money(totals.total_dividends, totals.currency) }}</div>
             <div class="kpi-card-footer">
               <div class="meta">含舊資料 · 不代表已核實收款</div>
