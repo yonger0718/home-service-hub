@@ -54,6 +54,7 @@ import {
 import { hoverGuidePlugin } from './chart-guide.plugin';
 import { Amount, displayedSign, formatMoney, formatPct } from '../../ui/format';
 import { isTwdCurrency } from '../money';
+import { marketLabel } from '../market';
 
 /** Current time for the quote line's 盤中 / 台股收盤 tag; overridable in tests. */
 export const DASHBOARD_CLOCK = new InjectionToken<() => Date>('DASHBOARD_CLOCK', {
@@ -213,6 +214,8 @@ export class PortfolioDashboardComponent implements OnInit {
   );
 
   readonly holdingGroups = computed(() => this.groupHoldingsByMarket(this.filteredHoldings(), 'market_value', 'desc'));
+
+  protected readonly marketLabel = marketLabel;
 
   readonly isMarketFiltered = computed(() => this.marketFilter() !== 'ALL');
 
