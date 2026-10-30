@@ -45,7 +45,8 @@ class DismissAction(ActionBase):
     name = "dismiss"
     Params = DismissParams
     case_kinds = frozenset({"line_unmatched", "ambiguous", "amount_delta", "entry_unmatched", "balance_gap",
-                            "duplicate_claim", "recheck", "parse_review"})  # not statement_conflict (ruling 34)
+                            "duplicate_claim", "recheck", "parse_review",
+                            "settlement"})  # not statement_conflict (ruling 34); settlement: R7 §4.4
 
     def apply(self, ctx: Context, params: DismissParams, prepared: Prepared, effect: Effect) -> None:
         ctx.case.note = params.note

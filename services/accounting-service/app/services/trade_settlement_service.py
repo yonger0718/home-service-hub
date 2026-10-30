@@ -1,6 +1,6 @@
 """國泰 settlement bookings (portfolio integration spec §4.3–§4.5, §4.7, §9): the reconcile half — the feed read, the
 global assignment's case outcomes, the stand-in claim link, drift over claimed lines, the owner-delete / owner-edit
-housekeeping of both origins and the twin retirement. (Task 9 adds the stand-in job half.)
+housekeeping of both origins and the twin retirement; and the daily stand-in job half (§4.7, owner decision Q7).
 
 - Feed (§4.1, §4.3): `fetch_by_settlement_window` asks the portfolio for every settlement whose (printed or derived)
   date can fall in a settlement window, the trade bound proven from the bank calendar (`settlement_match.trade_bounds`
@@ -23,6 +23,14 @@ housekeeping of both origins and the twin retirement. (Task 9 adds the stand-in 
   a `booked` row whose legs are gone to `owner_deleted` (items released in the same transaction) and one whose leg is
   gone or no longer `source='statement'` to `owner_edited` (items kept). `retire_twins_for_statement` retires a pair
   whose owner twin appeared (`retire_pair(reason="twin")`, the auto-pay semantics: coverage released).
+- Stand-in job (`run_stand_ins`, §4.7): on each settlement day a `bookable`, statement-dated feed row on or after
+  go-live is booked as the same transfer under a `stand_in` row (`stand_in_candidates` → `gate` → `book_stand_in`,
+  else `record_skip`); the bank line later claims it on the exact date (reconcile). The job's own UNCLAIMED rows are
+  retired (owner twin, feed row gone or no longer bookable) or replaced (the trade day's facts changed: `replace`,
+  one transaction) by `check_row`; a claimed stand-in's later change is reconcile's `source_drift`. Departures from
+  auto-pay (C4: the lifecycles differ, only pure helpers and the lock step are shared): no statement header; a pair
+  is replaceable while unclaimed; retirement for a source reason refuses a claimed pair (the claim is released for
+  twins only); `housekeep` also runs inside reconcile; and, like auto-pay, nothing takes the account row.
 
 Locks (§4.7 Locks, rev 4.3 — the one protocol): the booking row FOR UPDATE NOWAIT → its two legs FOR UPDATE NOWAIT →
 coverage re-read, in one savepoint (`lock_pair` over `pair_locks.lock_row_and_legs`); a held row or leg is
@@ -32,29 +40,36 @@ account row would close the two cycles §4.7 Locks (a)/(b) describes. `reconcile
 holds that leg (`_lock_candidates`, NOWAIT), so a job holding the legs makes the reconcile `reconcile_busy` and a
 reconcile holding them makes the job skip the row. The C4 ruling keeps this lifecycle separate from auto-pay's on
 purpose (claimed pairs refused except for twins, replacement, two origins, feed facts instead of a header); only the
-lock step is shared. Nothing here commits; callers own the transaction (flush only)."""
+lock step is shared. Nothing here commits — callers own the transaction (flush only) — except `run_stand_ins`, which
+runs every decision in a transaction of its own under `SETTLEMENT_JOB_LOCK_KEY`."""
 from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from dataclasses import dataclass, field, replace
+import dataclasses
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 
-from sqlalchemy import and_, exists, or_, select, update
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy import and_, exists, func, or_, select, text, update
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, aliased, sessionmaker
 
 from app.models import (
     Account, AccountStatement, LedgerEntry, ReconciliationCase, SettlementBooking, SettlementBookingItem,
     StatementCoverage, StatementLine,
 )
+from app.schemas.writes import TransferIn
 from app.services import (
-    auto_pay_service, coverage_service, entry_write_service, pair_locks, portfolio_client, settings_service, stand_ins,
+    auto_pay_service, coverage_service, entry_write_service, ledger_service, pair_locks, portfolio_client,
+    settings_service, stand_ins, transfer_service,
 )
 from app.services.entry_write_service import STATEMENT_SOURCE
 from app.services.errors import CodedConflictError
 from app.services.portfolio_client import Feed, PortfolioClient, PortfolioUnavailable, Settlement
 from app.services.reconciliation_actions import audit
+from app.services.schedule_locks import SETTLEMENT_JOB_LOCK_KEY, ImportRunningError, take_import_key_shared
 from app.services.statements import matching, retired, settlement_match
 
 ACTOR = "settlement"
@@ -68,6 +83,11 @@ FACTS_KEYS = ("fingerprint", "trade_date", "settlement_date", "net_amount", "dat
 # `incomplete` answer came from a reachable server; after a transport / body failure they are skipped (one timeout)
 DRIFT_READ_AFTER = frozenset({"calendar", "incomplete"})
 _Q = Decimal("0.0001")
+TRANSFER_NAME = "證券交割"  # the pair's name, both origins (spec §4.4 item 2, §4.7 Booking)
+# a booking's unique violations → the code both origins report (Task 7: 409 codes; Task 9: skip reasons)
+UNIQUE_CODES = (("ux_settlement_booking_item_source", "constituent_reserved"),
+                ("ux_settlement_booking_fingerprint_booked", "already_booked"),
+                ("ux_settlement_booking_day_booked", "day_booked"))
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +107,8 @@ def _calendar(db: Session) -> tuple[frozenset[date], frozenset[date]]:
 
 def _dated(db: Session, feed: Feed) -> Feed:
     holidays, workdays = _calendar(db)
-    return replace(feed, rows=tuple(settlement_match.with_dates(list(feed.rows), extra_holidays=holidays,
-                                                                 extra_workdays=workdays)))
+    rows = settlement_match.with_dates(list(feed.rows), extra_holidays=holidays, extra_workdays=workdays)
+    return dataclasses.replace(feed, rows=tuple(rows))
 
 
 def fetch_by_settlement_window(db: Session, account: Account, settle_from: date, settle_to: date, *,
@@ -703,3 +723,508 @@ def flag_neighbours_safe(db: Session, statement_id: int) -> int:
         logger.exception("settlement.neighbour_flag_failed", extra={"statement_id": statement_id})
         db.rollback()
         return 0
+
+
+# --- the daily stand-in job (spec §4.7, owner decision Q7) -----------------------------------------------------------
+
+HOUSEKEEPING_KEYS = ("checked", "owner_deleted", "owner_edited", "retired", "replaced", "replaced_waiting",
+                     "settlement_busy", "failed")
+FINAL_STATUSES = ("booked", "owner_deleted", "owner_edited")  # with `retired` of FINAL_RETIRED_REASONS (spec §4.7)
+FINAL_RETIRED_REASONS = ("twin", "revert")
+SETTLEMENT_CASE_HINTS = ("settlement_pending", "settlement_ambiguous", "settlement_mismatch")
+FINAL = "final"
+
+
+@dataclass(frozen=True)
+class StandInCandidate:
+    account_id: int
+    target_account_id: int
+    settlement: Settlement
+
+
+@dataclass
+class _Notes:
+    """What one decision did, merged into the run's report only after its transaction committed (or, in a dry run,
+    rolled back as planned): ids, dates and codes, never amounts."""
+    booked: list[dict] = field(default_factory=list)
+    skipped: list[dict] = field(default_factory=list)
+    touched: set[date] = field(default_factory=set)
+
+
+def _note_booked(notes: _Notes | None, row: SettlementBooking) -> None:
+    if notes is not None:
+        notes.booked.append({"account_id": row.account_id, "settlement_date": row.settlement_date.isoformat(),
+                             "booking_id": row.id})
+        notes.touched.add(row.settlement_date)
+
+
+def _note_skipped(notes: _Notes | None, account_id: int, day: date | None, reason: str) -> None:
+    if notes is not None:
+        notes.skipped.append({"account_id": account_id, "settlement_date": None if day is None else day.isoformat(),
+                              "reason": reason})
+
+
+def ineligibility(settlement: Settlement, settings: dict, today: date) -> str | None:
+    """Why `stand_in_candidates` drops a feed row (M9), or None: `not_statement_dated` (a CSV-only day: no persisted
+    國泰 statement date), `not_bookable` (margin day, legs disagree), `zero`, `pre_go_live` (before
+    `settlement.enabled_from`, or no go-live date at all), `future` (settles after `today`)."""
+    if settlement.date_source != "statement" or settlement.settlement_date is None:
+        return "not_statement_dated"
+    if not settlement.bookable:
+        return "not_bookable"
+    if Decimal(settlement.net_amount) == 0:
+        return "zero"
+    enabled_from = settings.get("enabled_from")
+    if enabled_from is None or settlement.settlement_date < date.fromisoformat(enabled_from):
+        return "pre_go_live"
+    if settlement.settlement_date > today:
+        return "future"
+    return None
+
+
+def _target_of(settings: dict, account_id: int) -> int | None:
+    return (settings.get("target_accounts") or {}).get(str(account_id))
+
+
+def _booked_days(db: Session, account_id: int) -> set[date]:
+    return set(db.scalars(select(SettlementBooking.settlement_date).where(
+        SettlementBooking.account_id == account_id, SettlementBooking.kind == KIND,
+        SettlementBooking.status == "booked")))
+
+
+def stand_in_candidates(db: Session, rows: list[Settlement], account: Account, settings: dict,
+                        today: date) -> list[StandInCandidate]:
+    """Spec §4.7 Candidate: the feed rows with no `ineligibility` on a `settlement_source` account with a target in
+    `settlement.target_accounts`, minus the days that already hold a `booked` row of either origin (the gate would
+    report `final`; the job re-run books nothing new). Read only."""
+    target = _target_of(settings, account.id)
+    if target is None or not account.settlement_source:
+        return []
+    booked = _booked_days(db, account.id)
+    return [StandInCandidate(account.id, target, s) for s in rows
+            if ineligibility(s, settings, today) is None and s.settlement_date not in booked]
+
+
+def _final_on(db: Session, account_id: int, day: date) -> bool:
+    return db.scalar(select(exists().where(
+        SettlementBooking.account_id == account_id, SettlementBooking.kind == KIND,
+        SettlementBooking.settlement_date == day,
+        or_(SettlementBooking.status.in_(FINAL_STATUSES),
+            and_(SettlementBooking.status == "retired", SettlementBooking.reason.in_(FINAL_RETIRED_REASONS)))))) is True
+
+
+def _dismissed(db: Session, account_id: int, settlement: Settlement) -> bool:
+    """A `dismissed` settlement case of the account (kind `settlement`, or a line case with a settlement hint) whose
+    context fingerprint is this one or whose line posted on the settlement date (controller ruling 2026-10-30)."""
+    settlement_case = or_(ReconciliationCase.kind == KIND,
+                          ReconciliationCase.context["hint"].astext.in_(SETTLEMENT_CASE_HINTS))
+    return db.scalar(select(exists().where(
+        ReconciliationCase.status == "dismissed", settlement_case,
+        ReconciliationCase.statement_id == AccountStatement.id, AccountStatement.account_id == account_id,
+        or_(ReconciliationCase.context["fingerprint"].astext == settlement.fingerprint,
+            exists().where(StatementLine.id == ReconciliationCase.line_id,
+                           StatementLine.posted_date == settlement.settlement_date))))) is True
+
+
+def gate(db: Session, cand: StandInCandidate, settings: dict) -> str | None:
+    """The first gate the candidate fails (spec §4.7 Gates, in order), or None to book: `disabled`; `zero`; `final`
+    — a row for (account, settlement date) `booked`, `owner_deleted`, `owner_edited`, or `retired` by a twin or a
+    revert (a `skipped` row is never final: it is re-evaluated every run, M7; `final` is reported, never recorded);
+    `dismissed`; `constituent_reserved` (a constituent or the fingerprint held, `reservations`); `day_booked` (a
+    `booked` row of the day under another fingerprint, M10); `twin` (an owner record, `find_twins`). Read only."""
+    s = cand.settlement
+    if settings.get("stand_in_enabled") is not True:
+        return "disabled"
+    if Decimal(s.net_amount) == 0:
+        return "zero"
+    if _final_on(db, cand.account_id, s.settlement_date):
+        return FINAL
+    if _dismissed(db, cand.account_id, s):
+        return "dismissed"
+    fps, ids = reservations(db)
+    if s.fingerprint in fps or ids.intersection(s.source_ids):
+        return "constituent_reserved"
+    if db.scalar(select(exists().where(
+            SettlementBooking.account_id == cand.account_id, SettlementBooking.kind == KIND,
+            SettlementBooking.status == "booked", SettlementBooking.settlement_date == s.settlement_date,
+            SettlementBooking.fingerprint != s.fingerprint))):
+        return "day_booked"
+    if find_twins(db, account_id=cand.account_id, target_account_id=cand.target_account_id,
+                  amount=Decimal(s.net_amount), settlement_date=s.settlement_date,
+                  window_days=int(settings.get("twin_window_days", TWIN_WINDOW_DAYS))):
+        return "twin"
+    return None
+
+
+def _items(facts: dict) -> list[SettlementBookingItem]:
+    return [SettlementBookingItem(source=i["source_id"].split(":")[0], source_id=i["source_id"],
+                                  amount=Decimal(i["amount"])) for i in facts["items"]]
+
+
+def book_stand_in(db: Session, cand: StandInCandidate, settings: dict) -> SettlementBooking:
+    """Spec §4.7 Booking: the §4.4 item 2 transfer (bank → target for a negative net, target → bank for a positive
+    one, `|net|`, both legs on the settlement date, name `證券交割`, description `證券交割 <trade date>`, source
+    `statement`) and its `settlement_booking` row (`origin='stand_in'`, `status='booked'`, `event_id` NULL, `facts`
+    = `facts_of`) with its items, all inside one savepoint. No account row lock: the partial unique on (account,
+    settlement_date) over `booked` rows serialises it against a concurrent `book_settlement`; a unique violation
+    rolls the savepoint back and is recorded as the skip it means (`UNIQUE_CODES`: `day_booked`,
+    `constituent_reserved`, `already_booked`) — the returned row is then that `skipped` row. Audit
+    `settlement_booked`. The caller has run `gate`. Flushes, never commits."""
+    s = cand.settlement
+    account = db.get(Account, cand.account_id)
+    net = Decimal(s.net_amount)
+    source, sink = (cand.account_id, cand.target_account_id) if net < 0 else (cand.target_account_id, cand.account_id)
+    facts = facts_of(s)
+    try:
+        with db.begin_nested():
+            group_id = transfer_service.create_transfer(db, TransferIn(
+                from_account_id=source, to_account_id=sink, out_amount=abs(net), entry_date=s.settlement_date,
+                posted_date=s.settlement_date, name=TRANSFER_NAME,
+                description=f"{TRANSFER_NAME} {facts['trade_date']}"),
+                source=STATEMENT_SOURCE, remember=False)
+            out_leg, in_leg = transfer_service.transfer_legs(db, group_id)
+            row = SettlementBooking(
+                kind=KIND, origin="stand_in", account_id=cand.account_id, target_account_id=cand.target_account_id,
+                event_id=None, source=account.settlement_source, fingerprint=s.fingerprint, trade_date=s.trade_date,
+                settlement_date=s.settlement_date, net_amount=net, facts=facts, transfer_group_id=group_id,
+                out_entry_id=out_leg.id, in_entry_id=in_leg.id, status="booked", items=_items(facts))
+            db.add(row)
+            db.flush()
+    except IntegrityError as exc:
+        code = next((code for index, code in UNIQUE_CODES if index in str(exc.orig)), None)
+        if code is None:
+            raise
+        logger.info("settlement.stand_in_lost_race", extra={"account_id": cand.account_id, "code": code,
+                                                            "settlement_date": s.settlement_date.isoformat()})
+        return record_skip(db, account, s, code)
+    audit.record(db, event="settlement_booked", actor=ACTOR,
+                 detail={**_figures(row), "trade_date": facts["trade_date"], "out_entry_id": out_leg.id,
+                         "in_entry_id": in_leg.id})
+    return row
+
+
+def record_skip(db: Session, account: Account, settlement: Settlement, reason: str) -> SettlementBooking:
+    """The day's `skipped` row for `reason` (one per (account, settlement date, reason)): the existing one rewritten in
+    place with the current facts, or a new one; audit `settlement_skipped` only when the reason differs from the
+    day's latest skip (a repeat is no event). Takes the feed row, so an ineligible row is recorded too; an undated one
+    (a CSV-only day past the calendar) is recorded on its trade date — the column is NOT NULL. No items: a skipped row
+    reserves nothing. Never `final` (M7: callers report it instead). Flushes, never commits."""
+    day = settlement.settlement_date or settlement.trade_date
+    rows = list(db.scalars(select(SettlementBooking).where(
+        SettlementBooking.account_id == account.id, SettlementBooking.kind == KIND,
+        SettlementBooking.settlement_date == day, SettlementBooking.status == "skipped")
+        .order_by(SettlementBooking.updated_at.desc(), SettlementBooking.id.desc())))
+    latest = rows[0] if rows else None
+    row = next((r for r in rows if r.reason == reason), None)
+    if row is None:
+        row = SettlementBooking(kind=KIND, origin="stand_in", account_id=account.id, status="skipped", reason=reason)
+        db.add(row)
+    row.target_account_id = _target_of(settings_service.read_settlement_settings(db), account.id)
+    row.source = account.settlement_source
+    row.fingerprint, row.trade_date, row.settlement_date = settlement.fingerprint, settlement.trade_date, day
+    row.net_amount, row.facts = Decimal(settlement.net_amount), facts_of(settlement)
+    row.updated_at = func.now()  # the day's latest verdict is the most recently written row
+    db.flush()
+    if latest is None or latest.reason != reason:
+        audit.record(db, event="settlement_skipped", actor=ACTOR,
+                     detail={**_figures(row), "reason": reason, "trade_date": settlement.trade_date.isoformat()})
+    return row
+
+
+def unclaimed_stand_ins(db: Session, account_id: int) -> set[int]:
+    """The booking ids of the account's `booked` stand-ins with no active coverage on either leg
+    (`stand_ins.unclaimed_settlement_legs`). Read without locks: every retirement re-reads the claim under the row and
+    leg locks (`retire_pair`)."""
+    return set(stand_ins.unclaimed_settlement_legs(db, account_id).values())
+
+
+def _retire(db: Session, row: SettlementBooking, reason: str, notes: _Notes | None) -> str | None:
+    day = row.settlement_date
+    if retire_pair(db, row, reason=reason) is None:
+        return None  # the locked re-check failed (a claim landed, an owner write got there first): the pair stays
+    if notes is not None:
+        notes.touched.add(day)
+    return "retired"
+
+
+def check_row(db: Session, row: SettlementBooking, feed: dict[date, Settlement], settings: dict,
+              today: date, *, notes: _Notes | None = None) -> str | None:
+    """One job pass over a `booked` stand-in (spec §4.7 Housekeeping, for an UNCLAIMED stand-in only — claimed rows
+    and bank-origin rows are `housekeep`'s and reconcile's): the row must be in `unclaimed_stand_ins` (a module
+    global, read unlocked); then, in order, an owner twin → `retire_pair(reason="twin")` → `retired`; no feed row for
+    the row's trade date (`feed` is keyed by trade date: the account's one `settlement_source` and the booking's trade
+    day, never the stored fingerprint), or the row no longer `bookable` → `retire_pair(reason=<feed reason or
+    "gone">)` → `retired`; the trade day's row present with other facts (`same_facts`) → `replace` → `replaced` /
+    `replaced_waiting`. Every retirement re-reads the claim under `lock_pair`: a claim that landed since the
+    unlocked read → None, the pair stays. A held row or leg → `settlement_busy` (logged by ids; the row is left for
+    the next run). Returns the transition or None. Flushes, never commits."""
+    if row.status != "booked" or row.origin != "stand_in" or row.kind != KIND:
+        return None
+    if row.id not in unclaimed_stand_ins(db, row.account_id):
+        return None
+    try:
+        if find_twins(db, account_id=row.account_id, target_account_id=row.target_account_id,
+                      amount=Decimal(row.net_amount), settlement_date=row.settlement_date,
+                      window_days=int(settings.get("twin_window_days", TWIN_WINDOW_DAYS)),
+                      exclude=[i for i in (row.out_entry_id, row.in_entry_id) if i is not None]):
+            return _retire(db, row, "twin", notes)
+        trade_date = row.trade_date or date.fromisoformat(row.facts["trade_date"])
+        new = feed.get(trade_date)
+        if new is None or not new.bookable:
+            return _retire(db, row, "gone" if new is None else (new.reason or "not_bookable"), notes)
+        if not same_facts(row.facts, facts_of(new)):
+            return replace(db, row, new, settings, today, notes=notes)
+        return None
+    except CodedConflictError as exc:
+        if exc.code != SETTLEMENT_BUSY:
+            raise
+        logger.info("settlement.job_busy", extra={"settlement_booking_id": row.id, "account_id": row.account_id})
+        return SETTLEMENT_BUSY
+
+
+def replace(db: Session, row: SettlementBooking, new: Settlement, settings: dict, today: date, *,
+            notes: _Notes | None = None) -> str | None:
+    """Spec §4.7 (AGENT-360 major 5): a changed feed row on the same trade day replaces the unclaimed stand-in inside
+    the caller's ONE transaction — `retire_pair(reason="replaced")` (None → None, nothing else happens), then the new
+    facts go through `stand_in_candidates` and `gate` again: eligible → `book_stand_in` → `replaced`; otherwise the
+    first `ineligibility` or gate reason (`no_target` when the account lost its target) is recorded as the new day's
+    skip (`record_skip`; `final` is reported, never recorded, M7) → `replaced_waiting`: the old pair is gone and the
+    day waits for a legal date or a bank line. Audit `settlement_replaced` with both fingerprints. Flushes, never
+    commits."""
+    old_id, old_fp, old_day, account_id = row.id, row.fingerprint, row.settlement_date, row.account_id
+    if retire_pair(db, row, reason="replaced") is None:
+        return None
+    account = db.get(Account, account_id)
+    target = _target_of(settings, account_id)
+    found = stand_in_candidates(db, [new], account, settings, today)
+    if found:
+        cand, reason = found[0], gate(db, found[0], settings)
+    else:  # dropped: ineligible, no target, or the new day already holds a `booked` row (the gate's `final`)
+        cand = None if target is None else StandInCandidate(account_id, target, new)
+        reason = ineligibility(new, settings, today) or ("no_target" if cand is None else gate(db, cand, settings)) \
+            or FINAL
+    booked = None
+    if reason is None:
+        result = book_stand_in(db, cand, settings)
+        if result.status == "booked":
+            booked = result
+        else:
+            reason = result.reason
+    elif reason != FINAL:
+        record_skip(db, account, new, reason)
+    outcome = "replaced" if booked is not None else "replaced_waiting"
+    audit.record(db, event="settlement_replaced", actor=ACTOR, detail={
+        "account_id": account_id, "old_booking_id": old_id, "new_booking_id": None if booked is None else booked.id,
+        "old_fingerprint": old_fp, "new_fingerprint": new.fingerprint, "old_settlement_date": old_day.isoformat(),
+        "new_settlement_date": None if new.settlement_date is None else new.settlement_date.isoformat(),
+        "outcome": outcome, "reason": reason})
+    if notes is not None:
+        notes.touched.add(old_day)
+        if booked is not None:
+            _note_booked(notes, booked)
+        else:
+            _note_skipped(notes, account_id, new.settlement_date, reason)
+            if new.settlement_date is not None:
+                notes.touched.add(new.settlement_date)
+    return outcome
+
+
+# --- the run ---------------------------------------------------------------------------------------------------------
+
+
+def _log_failure(event: str, exc: BaseException, **ids) -> None:
+    """ERROR with ids and the error class only — never the message (a driver's text can carry amounts); the full
+    exception goes to DEBUG."""
+    logger.error(event, extra={**ids, "error_class": exc.__class__.__name__})
+    logger.debug(event, exc_info=exc)
+
+
+def _new_report() -> dict:
+    return {"status": "completed", "booked": [], "skipped": [],
+            "housekeeping": dict.fromkeys(HOUSEKEEPING_KEYS, 0), "touched_dates": {}}
+
+
+def _merge(report: dict, account_id: int, notes: _Notes) -> None:
+    report["booked"] += notes.booked
+    report["skipped"] += notes.skipped
+    if notes.touched:
+        days = set(report["touched_dates"].get(account_id, [])) | {d.isoformat() for d in notes.touched}
+        report["touched_dates"][account_id] = sorted(days)
+
+
+def _settle_from(db: Session, account_id: int, settings: dict) -> date | None:
+    """`min(enabled_from, the oldest booked stand-in's settlement date)` (either may be missing; None: nothing to
+    read). Statement days are found by their persisted date, so a statement that arrives late for an old trade day is
+    picked up as long as it settles on or after go-live."""
+    oldest = db.scalar(select(func.min(SettlementBooking.settlement_date)).where(
+        SettlementBooking.account_id == account_id, SettlementBooking.kind == KIND,
+        SettlementBooking.origin == "stand_in", SettlementBooking.status == "booked"))
+    days = [d for d in (None if settings.get("enabled_from") is None else date.fromisoformat(settings["enabled_from"]),
+                        oldest) if d is not None]
+    return min(days) if days else None
+
+
+def _accounts(db: Session, settings: dict) -> list[tuple[int, date]]:
+    """(account id, settle_from) for every `settlement_source` account with a booked stand-in, or — while the job is
+    enabled — a target, in id order, skipping those with nothing to read (no go-live date and no stand-in)."""
+    with_stand_ins = set(db.scalars(select(SettlementBooking.account_id).where(
+        SettlementBooking.kind == KIND, SettlementBooking.origin == "stand_in", SettlementBooking.status == "booked")))
+    enabled = settings.get("stand_in_enabled") is True
+    out = []
+    for account in db.scalars(select(Account).where(Account.settlement_source.is_not(None)).order_by(Account.id)):
+        if account.id not in with_stand_ins and not (enabled and _target_of(settings, account.id) is not None):
+            continue
+        settle_from = _settle_from(db, account.id, settings)
+        if settle_from is not None:
+            out.append((account.id, settle_from))
+    return out
+
+
+class _Stop(Exception):
+    """An import holds the key: the run stops `import_running` (decisions already committed stay done)."""
+
+
+def _decide(factory, report: dict, account_id: int, dry_run: bool, fn, **ids) -> object:
+    """One decision in its own transaction: the shared import key (not in a dry run) → `fn(db, notes)` → commit (a dry
+    run rolls back); the notes reach the report only then. `ImportRunningError` → `_Stop`; any other error rolls the
+    decision back, is logged by ids and counts `failed`. Returns `fn`'s result (None after a failure)."""
+    notes = _Notes()
+    with factory() as db:
+        try:
+            if not dry_run:
+                take_import_key_shared(db)
+            result = fn(db, notes)
+            if dry_run:
+                db.rollback()
+            else:
+                db.commit()
+        except ImportRunningError:
+            db.rollback()
+            raise _Stop() from None
+        except Exception as exc:  # noqa: BLE001 — one broken decision must not stop the others
+            db.rollback()
+            _log_failure("settlement_job.decision_failed", exc, account_id=account_id, **ids)
+            report["housekeeping"]["failed"] += 1
+            return None
+    _merge(report, account_id, notes)
+    return result
+
+
+def _run_account(factory, account_id: int, feed: Feed, settings: dict, today: date, report: dict, *,
+                 dry_run: bool, enabled: bool) -> None:
+    counts = report["housekeeping"]
+    by_trade_date = {r.trade_date: r for r in feed.rows}
+
+    def housekeeping(db, notes):
+        return housekeep(db, account_id)
+
+    moved = _decide(factory, report, account_id, dry_run, housekeeping, step="housekeep")
+    for key, value in (moved or {}).items():
+        counts[key] += value
+    with factory() as db:
+        rows = [(row.id, row.trade_date or date.fromisoformat(row.facts["trade_date"]))
+                for row in booked_rows(db, account_id) if row.origin == "stand_in"]
+    decided: set[date] = set()  # the trade days `check_row` looked at: their fate is decided there, not as candidates
+    for row_id, trade_date in rows:
+        decided.add(trade_date)
+        counts["checked"] += 1
+
+        def check(db, notes, row_id=row_id):
+            row = db.get(SettlementBooking, row_id)
+            return None if row is None else check_row(db, row, by_trade_date, settings, today, notes=notes)
+
+        transition = _decide(factory, report, account_id, dry_run, check, settlement_booking_id=row_id)
+        if transition is not None:
+            counts[transition] += 1
+    if not enabled:
+        return
+    with factory() as db:
+        found = stand_in_candidates(db, [r for r in feed.rows if r.trade_date not in decided],
+                                    db.get(Account, account_id), settings, today)
+    for cand in found:
+        def decide(db, notes, cand=cand):
+            reason = gate(db, cand, settings)
+            day = cand.settlement.settlement_date
+            if reason is None:
+                row = book_stand_in(db, cand, settings)
+                if row.status == "booked":
+                    _note_booked(notes, row)
+                    return
+                reason = row.reason
+            elif reason != FINAL:
+                record_skip(db, db.get(Account, cand.account_id), cand.settlement, reason)
+            _note_skipped(notes, cand.account_id, day, reason)
+
+        _decide(factory, report, account_id, dry_run, decide,
+                settlement_date=cand.settlement.settlement_date.isoformat())
+
+
+def _run_locked(factory, today: date, dry_run: bool, report: dict) -> None:
+    with factory() as db:
+        settings = settings_service.read_settlement_settings(db)
+        if dry_run:  # the preview runs whatever `stand_in_enabled` says; without a go-live date, as if live from today
+            settings = {**settings, "stand_in_enabled": True,
+                        "enabled_from": settings.get("enabled_from") or today.isoformat()}
+        enabled = settings.get("stand_in_enabled") is True
+        accounts = [(db.get(Account, account_id), settle_from) for account_id, settle_from in _accounts(db, settings)]
+        feeds: list[tuple[int, Feed]] = []
+        for account, settle_from in accounts:
+            if settle_from > today:
+                continue
+            try:  # every feed is read before anything is written: unreachable → nothing booked, nothing retired (§9)
+                feeds.append((account.id, fetch_by_settlement_window(db, account, settle_from, today)))
+            except PortfolioUnavailable as exc:
+                logger.info("settlement_job.source_unavailable", extra={"account_id": account.id, "code": exc.code})
+                report["status"] = "source_unavailable"
+                return
+        db.rollback()
+    try:
+        for account_id, feed in feeds:
+            _run_account(factory, account_id, feed, settings, today, report, dry_run=dry_run, enabled=enabled)
+    except _Stop:
+        report["status"] = "import_running"
+        return
+    if dry_run:
+        report["status"] = "dry_run"
+    elif not enabled:
+        report["status"] = "disabled"
+
+
+def run_stand_ins(engine: Engine, *, today: date | None = None, dry_run: bool = False) -> dict:
+    """The daily stand-in job (spec §4.7; triggers §4.5): under `SETTLEMENT_JOB_LOCK_KEY` (session-level, on a
+    dedicated connection — a second runner returns `busy` and writes nothing), per `settlement_source` account with
+    a target (or a booked stand-in): ONE `fetch_by_settlement_window(settle_from, today)` with `settle_from =
+    min(enabled_from, the oldest booked stand-in's settlement date)` — all feeds first, so `PortfolioUnavailable` →
+    `source_unavailable` with nothing written — then `housekeep`, `check_row` over its booked stand-ins, and the
+    candidates (`stand_in_candidates` → `gate` → `book_stand_in` / `record_skip`). Each decision runs in its own
+    transaction: the shared import key → (row → legs NOWAIT for a retirement or replacement) → write → commit; no
+    account row lock (spec §4.7 Locks). `ImportRunningError` stops the run `import_running`. Disabled → housekeeping
+    and the replacements / retirements of the job's own rows still run, no new day is booked (`disabled`). A dry run
+    takes no import key, rolls every transaction back and previews whatever `stand_in_enabled` says (without a
+    go-live date: as if live from `today`).
+
+    Report: `status` (completed | busy | disabled | source_unavailable | import_running | dry_run), `booked`
+    [{account_id, settlement_date, booking_id}], `skipped` [{account_id, settlement_date, reason}] (gated candidates and
+    `replaced_waiting` days, `final` included), `housekeeping` (every `HOUSEKEEPING_KEYS` key: `checked` = every
+    booked stand-in looked at, claimed or not; the transitions; `settlement_busy`; `failed`), `touched_dates`
+    {account_id: [ISO dates]} — the dates booked, retired or replaced (old and new) and every `replaced_waiting`
+    day (§4.5 item 1's flag set). Ids, dates and codes, never amounts; never raises for an expected condition."""
+    today = today or ledger_service._today()
+    report = _new_report()
+    with engine.connect() as lock_conn:
+        acquired = lock_conn.execute(
+            text("SELECT pg_try_advisory_lock(:key)"), {"key": SETTLEMENT_JOB_LOCK_KEY}).scalar_one()
+        lock_conn.commit()
+        if not acquired:
+            report["status"] = "busy"
+        else:
+            try:
+                _run_locked(sessionmaker(bind=engine, autoflush=False), today, dry_run, report)
+            finally:
+                lock_conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": SETTLEMENT_JOB_LOCK_KEY})
+                lock_conn.commit()
+    logger.info("settlement_job.run", extra={
+        "today": today.isoformat(), "run_status": report["status"], "housekeeping": report["housekeeping"],
+        "booked": [b["booking_id"] for b in report["booked"]],
+        "skipped": [(s["account_id"], s["settlement_date"], s["reason"]) for s in report["skipped"]]})
+    return report

@@ -55,11 +55,9 @@ from .base import OWNER, POLICY, ActionParams, Context, Effect, LockSet, NotReve
 from .ledger_actions import STATEMENT_SOURCE, _claim, _open_line, _refuse, _release, _TwinGuarded
 
 NAME = "book_settlement"
-TRANSFER_NAME = "證券交割"
+TRANSFER_NAME = tss.TRANSFER_NAME
 PENDING_HINT = "settlement_pending"
-UNIQUE_CODES = (("ux_settlement_booking_item_source", "constituent_reserved"),
-                ("ux_settlement_booking_fingerprint_booked", "already_booked"),
-                ("ux_settlement_booking_day_booked", "day_booked"))
+UNIQUE_CODES = tss.UNIQUE_CODES
 
 
 class BookSettlementParams(ActionParams):

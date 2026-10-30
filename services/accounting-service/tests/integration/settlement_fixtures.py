@@ -1,7 +1,8 @@
 """R7 Phase 1 settlement fixtures (portfolio integration spec §4.3–§4.7): a settlement-source bank account and its
 target, bank statements printing settlement lines, a stubbed portfolio ledger feed served over `httpx.MockTransport`
 (filtered by the request's two axes as the portfolio does, bounds echoed) and stand-in bookings written in the
-Task 9 job's shape. The accounts are the fixture's own — no owner account ids anywhere. Fictional amounts only."""
+Task 9 job's shape; `stand_ins_on` switches the stand-in job on and `ingest_fixture` opens an ingest run on another
+session. The accounts are the fixture's own — no owner account ids anywhere. Fictional amounts only."""
 from datetime import date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ from app.models import ReconciliationSettings, SettlementBooking, SettlementBook
 from app.schemas.statements import ReconciliationSettingsIn
 from app.schemas.writes import TransferIn
 from app.services import portfolio_client, settings_service, transfer_service
+from app.services import statement_ingest_service as ing
 from app.services import trade_settlement_service as tss
 from app.services.entry_write_service import STATEMENT_SOURCE
 from app.services.portfolio_client import Item, Settlement
@@ -52,6 +54,27 @@ def settlement_bank(seed, db, *, target=True):
         stored = {k: v for k, v in block.items() if k in settings_service.SETTLEMENT_DEFAULTS}
         put_settings(db, settlement={**stored, "target_accounts": {**stored["target_accounts"], str(bank.id): market.id}})
     return bank, market
+
+
+@pytest.fixture
+def stand_ins_on(db_session):
+    """`stand_ins_on(bank, target, *, enabled_from)`: `settlement.stand_in_enabled = true`, `enabled_from` (ISO) and
+    `target_accounts[bank] = target`, the other `settlement` keys and every other block as stored (GET the current
+    settings, PUT them back with the block merged: the endpoint resets omitted blocks); committed."""
+    def on(bank, target, *, enabled_from: str) -> dict:
+        block = settings_service.read_settlement_settings(db_session)
+        stored = {k: v for k, v in block.items() if k in settings_service.SETTLEMENT_DEFAULTS}
+        return put_settings(db_session, settlement={
+            **stored, "stand_in_enabled": True, "enabled_from": enabled_from,
+            "target_accounts": {**stored["target_accounts"], str(bank.id): target.id}})
+    return on
+
+
+def ingest_fixture(session):
+    """A claimed worker ingest run on `session` (the `statement_fixtures.run` fixture's `(run, token)` pair), for a
+    second session submitting a statement while the test's own session holds its state."""
+    r = ing.create_worker_run(session, trigger="timer", initiator_hint=None, mode="live")
+    return ing.claim_run(session, r.id, label="worker")
 
 
 @pytest.fixture
