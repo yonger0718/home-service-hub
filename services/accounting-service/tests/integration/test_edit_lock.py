@@ -191,6 +191,7 @@ EXPECTED_WRITES = {
     ("/statements/sources", "POST"), ("/statements/sources/mark-removed", "POST"),
     ("/statements/revisions", "POST"), ("/settings/reconciliation", "PUT"),
     ("/accounts/{account_id}/statements/{statement_id}/reconcile", "POST"), ("/reconciliation/sweep", "POST"),
+    ("/reconciliation/settlements/run", "POST"),
     # Owner statements: a manual statement (statement tables, reconcile) and the confirm (case and statement rows).
     ("/accounts/{account_id}/statements", "POST"), ("/accounts/{account_id}/statements/{statement_id}/confirm", "POST"),
     # Retire a duplicate statement (admin): statement, event, case, coverage and audit rows, never ledger rows.

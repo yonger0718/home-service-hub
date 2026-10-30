@@ -282,7 +282,8 @@ def test_sweep_needs_ingest_and_a_lease_and_reports_the_batch(client, card, seed
     done = client.post("/reconciliation/sweep", headers=W, json=lease)
     assert done.status_code == 200, done.text
     assert done.json() == {"statements": 1, "claims": 1, "cases_opened": 0, "errors": [], "links_filled": 0,
-                           "settlement_source_unavailable": 0}
+                           "settlement_source_unavailable": 0,
+                           "stand_ins": {"status": "disabled", "booked": 0, "skipped": 0, "flagged": 0}}
     assert db_session.execute(text("SELECT needs_recheck FROM account_statement")).scalar_one() is False
 
 

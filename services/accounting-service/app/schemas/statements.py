@@ -470,6 +470,21 @@ class SweepError(BaseModel):
     error: str
 
 
+class SettlementRunIn(BaseModel):
+    model_config = Strict
+    source: Literal["portfolio:cathay"]
+
+
+class SettlementRunOut(BaseModel):
+    """Counts and codes only: never an amount, a merchant or a ledger id."""
+    model_config = Strict
+    status: str
+    booked: int
+    skipped: int
+    housekeeping: dict[str, int]
+    flagged: int
+
+
 class SweepOut(BaseModel):
     model_config = Strict
     statements: int
@@ -478,3 +493,4 @@ class SweepOut(BaseModel):
     errors: list[SweepError]
     links_filled: int
     settlement_source_unavailable: int  # statements whose settlement feed could not be read (spec §9)
+    stand_ins: dict = Field(default_factory=dict)  # the stand-in job's counts: status, booked, skipped, flagged

@@ -15,6 +15,7 @@ from pathlib import Path
 import httpx
 
 from worker import inbox, parser, passwords, pdf
+from worker.api import ApiClient
 from worker.cathay_statement import StatementError, extract_text, parse_statement, to_payload
 from worker.config import WorkerConfig
 from worker.drive import Drive, DownloadError, ListingError, Listed
@@ -101,6 +102,19 @@ def _report(cfg: WorkerConfig, http: httpx.Client, summary: dict) -> None:
         http.post(f"{ENDPOINT}/runs", json=body, timeout=cfg.cathay_timeout_s).raise_for_status()
     except httpx.HTTPError as exc:  # the report is best effort: it must not change the run's result
         log.info("cathay: run report not posted (%s)", type(exc).__name__)
+
+
+def _settlement_run(cfg: WorkerConfig, homehub: ApiClient) -> str:
+    """Spec §4.5: ask HomeHub to run the settlement stand-in job and flag the touched statements for re-check. The
+    result is a status or `failed:<ExceptionClass>` for the summary only: it never changes the run's result."""
+    try:
+        data = homehub._call("POST", "/reconciliation/settlements/run", json={"source": "portfolio:cathay"},
+                             timeout=cfg.cathay_timeout_s)
+        status = data.get("status") if isinstance(data, dict) else None
+        return status[:32] if isinstance(status, str) and status else "failed:body"
+    except Exception as exc:  # noqa: BLE001 — a class name only; the portfolio import already succeeded
+        log.info("cathay: settlement run not done (%s)", type(exc).__name__)
+        return f"failed:{type(exc).__name__}"[:64]
 
 
 def _reason_code(reason: object) -> str:
@@ -296,7 +310,7 @@ class _Job:
 def run(cfg: WorkerConfig, *, portfolio_http: httpx.Client, drive: Drive, dry_run: bool = False,
         file_id: str | None = None, since: date | None = None, until: date | None = None,
         retry_date: date | None = None, ack_date: date | None = None, unlatch: bool = False,
-        validate_history: bool = False) -> dict:
+        validate_history: bool = False, homehub: ApiClient | None = None) -> dict:
     """List, read and post the statements; failures become codes, never exceptions (a dry run never touches state)."""
     latch = cfg.state_dir / LATCH
     with _lock(cfg):
@@ -323,6 +337,8 @@ def run(cfg: WorkerConfig, *, portfolio_http: httpx.Client, drive: Drive, dry_ru
         summary = job.summary()
         if plain:
             _report(cfg, portfolio_http, summary)
+            if homehub is not None and job.commit:
+                summary["settlement_run"] = _settlement_run(cfg, homehub)
         if job.commit:
             if unlatch and not (file_id or since or until or retry_date) and not summary["codes"]:
                 latch.unlink(missing_ok=True)  # only a clean plain daily commit run clears it

@@ -6,10 +6,14 @@ import pytest
 from sqlalchemy import select, text
 
 from app import auth
-from app.models import LedgerEntry, ReconciliationAudit, ReconciliationCase, StatementCoverage
+from app.models import AccountStatement, LedgerEntry, ReconciliationAudit, ReconciliationCase, StatementCoverage
 from app.services import coverage_service, settings_service
 from app.services import reconciliation_service as rec
 from tests.helpers import set_dirty
+from tests.integration.settlement_fixtures import (  # noqa: F401  (fixtures)
+    feed, portfolio_stub, settle_line, settlement_bank, stand_ins_on, submit_bank,
+)
+from tests.integration.test_settlement_reconcile import _cases as _settlement_cases
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
     OCT, _card, _cases, _open_beside_gap, _line, _reconcile, _submit, run,
 )
@@ -276,3 +280,28 @@ def test_a_match_on_the_replacement_case_after_a_dirty_edit_claims_again(client,
     db_session.commit()
     duplicate = match(new.id, other.id)
     assert duplicate.status_code == 422 and "duplicate_effect" in duplicate.text, duplicate.text
+
+
+# ---- settlement re-reconcile triggers (R7 Task 10) ----
+def test_settlement_run_books_flags_and_reports_counts_only(client, seed, db_session, run, portfolio_stub, stand_ins_on):
+    bank, target = settlement_bank(seed, db_session); stand_ins_on(bank, target, enabled_from="2026-09-01")
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])  # feed empty -> settlement_pending
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)))
+    res = client.post("/reconciliation/settlements/run", headers=W, json={"source": "portfolio:cathay"})
+    assert res.status_code == 200 and (res.json()["status"], res.json()["booked"], res.json()["flagged"]) == ("completed", 1, 1)
+    assert "12305" not in res.text and db_session.get(AccountStatement, sid).needs_recheck is True
+
+
+def test_settlement_run_needs_the_ingest_scope(client):
+    assert client.post("/reconciliation/settlements/run", headers=H, json={"source": "portfolio:cathay"}).status_code == 403
+    assert client.post("/reconciliation/settlements/run", headers=W, json={"source": "other"}).status_code == 422
+
+
+def test_sweep_rechecks_statements_with_open_settlement_cases(client, seed, db_session, run, portfolio_stub):
+    bank, _ = settlement_bank(seed, db_session)
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])  # pending: nothing dirty, nothing needs_recheck
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)))
+    ingest_run, token = run  # the fixture's claimed ingest run holds the lease the sweep needs
+    res = client.post("/reconciliation/sweep", headers=W, json={"run_id": ingest_run.id, "lease_token": token})
+    assert res.status_code == 200 and res.json()["statements"] == 1
+    assert [c.kind for c in _settlement_cases(db_session, sid, "open")] == ["settlement"]

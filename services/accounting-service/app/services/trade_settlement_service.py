@@ -713,6 +713,43 @@ def flag_neighbours(db: Session, statement: AccountStatement) -> int:
     return count
 
 
+def recheck_statement_ids(db: Session) -> list[int]:
+    """Spec §4.5: the live, non-retired statements of `settlement_source` accounts holding an open case whose hint is
+    `settlement_pending`, `settlement_ambiguous` or `settlement_mismatch`, ascending. Read only."""
+    return sorted(db.execute(
+        select(AccountStatement.id).distinct()
+        .join(ReconciliationCase, ReconciliationCase.statement_id == AccountStatement.id)
+        .join(Account, Account.id == AccountStatement.account_id)
+        .where(ReconciliationCase.status == "open",
+               ReconciliationCase.context["hint"].astext.in_(SETTLEMENT_CASE_HINTS),
+               Account.settlement_source.is_not(None), Account.settlement_source != "",
+               AccountStatement.mode == "live", AccountStatement.current_revision_id.is_not(None),
+               ~retired.clause(AccountStatement.id))).scalars())
+
+
+def flag_for_recheck(db: Session, report: dict) -> int:
+    """Spec §4.5 item 1: `needs_recheck` on the live, non-retired statements whose period holds a `touched_dates` day
+    of their account, plus `recheck_statement_ids`; returns the number flagged. Flushes; the caller commits."""
+    wanted = set(recheck_statement_ids(db))
+    for account_id, days in (report.get("touched_dates") or {}).items():
+        spans = [and_(AccountStatement.period_start <= day, AccountStatement.period_end >= day)
+                 for day in (date.fromisoformat(d) if isinstance(d, str) else d for d in days)]
+        if not spans:
+            continue
+        wanted |= set(db.execute(
+            select(AccountStatement.id)
+            .where(AccountStatement.account_id == int(account_id), AccountStatement.mode == "live",
+                   AccountStatement.current_revision_id.is_not(None), or_(*spans),
+                   ~retired.clause(AccountStatement.id))).scalars())
+    if not wanted:
+        return 0
+    count = db.execute(
+        update(AccountStatement).where(AccountStatement.id.in_(wanted), AccountStatement.needs_recheck.is_(False))
+        .values(needs_recheck=True).execution_options(synchronize_session=False)).rowcount
+    db.flush()
+    return count
+
+
 def flag_neighbours_safe(db: Session, statement_id: int) -> int:
     """For the ingest routes, after their commit (`SubmitResult.neighbours_recheck`, the `run_rules_safe` pattern):
     `flag_neighbours` in a short transaction of its own, so neither a yielded hook pass (`reconcile_busy`,
