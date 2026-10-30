@@ -1,6 +1,6 @@
 # Portfolio ↔ ledger integration (證券交割對帳、市值帳戶、海外券商) — design
 
-Status: rev 4.3 (2026-10-30) owner rulings 2026-10-30 (Q1–Q7, `.superpowers/r7-refresh/owner-rulings.md`) and the
+Status: rev 4.4 (2026-10-30) owner rulings 2026-10-30 (Q1–Q7, `.superpowers/r7-refresh/owner-rulings.md`) and the
 drift-audit errata (`.superpowers/r7-refresh/drift-audit.md`): settlement date from the 國泰 daily statement, T+2 bank
 business days as the fallback, no trading calendar (§4.1); 國泰 rows only (TW_CATHAY + NULL broker), margin days fail
 closed (§4.1); owner twins claim first (§4.3); the booking owner mirrors `statement_auto_pay`, `book_settlement` is
@@ -11,7 +11,8 @@ statement (§4.7), superseding §3's "nothing is written until the line exists" 
 ruling 2026-10-30 (owner to confirm): a dismissed settlement case or a reverted / owner-deleted bank booking is final
 for the stand-in job (§4.7 gates, §9); rev 4.2 (AGENT-360): two-axis feed query with echoed bounds (§4.1, §4.3),
 housekeeping for both origins + the lock protocol + replacement re-gated (§4.7); rev 4.3 (re-verify 2): the trade axis
-returns every row of a trade date, the stand-in lifecycle takes no account row lock (§4.1, §4.7 Locks); §2, §8–§11 follow. §5: Phase 1 scope sentence added (read-through in the account
+returns every row of a trade date, the stand-in lifecycle takes no account row lock (§4.1, §4.7 Locks); rev 4.4 (AGENT-360
+re-check minors): the engine's lock order quoted precisely (§4.7 Locks); §2, §8–§11 follow. §5: Phase 1 scope sentence added (read-through in the account
 read models only); §6–§7 unchanged.
 Rev 3 (2026-10-20) §7 amended by the Phase 2 plan: XML instead of CSV; the token travels only in the Flex `t` query parameter (IB offers no other transport); section list; legacy-duplicate pass; `--unlatch` / `--dry-run` / `--query-id` / `--from-file`.
 Rev 2 (2026-10-19) after the AGENT-175 review of rev 1 `31ab6f4`: booking owner + constituent reservations
@@ -286,10 +287,13 @@ and the monthly bank statement re-reconciles them. The machinery is the auto-pay
   auto-pay order: the booking row FOR UPDATE NOWAIT → its two legs FOR UPDATE NOWAIT → coverage re-read, inside one
   savepoint; a held row or leg is 409 / a skipped row (`settlement_busy`), never a wait (a blocking row lock would
   close a cycle: a job holding a twin-retired pair blocks on a statement's `needs_recheck` update while that
-  statement's reconcile, holding the statement row, waits for the booking row). The stand-in lifecycle takes **no account row lock**: the
-  engine's invariant (engine_locks.py:1-9) is that the account row is a blocking lock whose takers hold no entry
-  or statement lock, and that is what keeps it cycle-free. Taking it in the job or in `reconcile` would close two
-  cycles: (a) the job holds the account row, retires a twin and blocks on another statement's `needs_recheck`
+  statement's reconcile, holding the statement row, waits for the booking row). The stand-in lifecycle takes **no account row lock**. The
+  engine's real order (engine.py:244-270): statement rows ascending → the case row → the account row + writer
+  barrier (blocking) → schedule / group / entry rows NOWAIT; its invariant (engine_locks.py:1-9) is that the
+  account-row takers (`balance_adjustment_asof`, `anchor_opening`, `backfill_entry`, `create_system_entry`) hold
+  no entry or group lock, and that no ledger writer locks a case or action row — that, not any statement rule, is
+  what keeps the blocking account lock cycle-free. A job or a `reconcile` that took it would hold entry locks or a
+  statement row at the same time and close two cycles: (a) the job holds the account row, retires a twin and blocks on another statement's `needs_recheck`
   update while that statement's reconcile, holding its statement row, waits for the account row; (b) a reconcile
   that has flushed an `owner_deleted` tombstone waits for the account row while the job, holding it, waits for
   that booking row. Serialisation instead: the job's advisory lock (`SETTLEMENT_JOB_LOCK_KEY`) serialises jobs;
@@ -297,7 +301,9 @@ and the monthly bank statement re-reconciles them. The machinery is the auto-pay
   books (`book_stand_in` vs `book_settlement`); `reconcile` claims a stand-in leg only while it holds that leg
   (`_lock_candidates`, NOWAIT) and runs `housekeep` under its statement row with the same row → legs NOWAIT order;
   `book_settlement` and its revert keep the engine's own account lock + writer barrier (`_TwinGuarded`, a ledger
-  writer like `create_system_entry`) and lock the booking row → legs NOWAIT after the case checks. So a job
+  writer like `create_system_entry`) and lock the booking row → legs NOWAIT after the case checks; the revert
+  already holds the legs NOWAIT from `lock_rows` (engine.py:482) when it reaches the booking row, so that later
+  booking-row lock is a reverse-order try-lock and must stay NOWAIT (409 `settlement_busy`), never blocking. So a job
   holding the legs makes the reconcile `reconcile_busy` and a reconcile holding them makes the job skip the row.
 - **Bank line.** The monthly statement's settlement line claims the stand-in's bank leg on exact amount and exact
   date (§4.3 step 2): the stand-in becomes the bank-attested booking (its row stays `booked`, `event_id` set to the
