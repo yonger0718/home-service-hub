@@ -271,6 +271,23 @@ def test_stalled_request_is_unreadable_within_the_deadline(monkeypatch, first):
     assert elapsed < 0.3 + 1
 
 
+class _CloseFails(httpx.BaseTransport):
+    def __init__(self, inner):
+        self.inner = inner
+
+    def handle_request(self, request):
+        return self.inner.handle_request(request)
+
+    def close(self):
+        raise OSError("portfolio close failed")
+
+
+def test_cleanup_failure_is_unreadable_not_an_exception():
+    client, _ = make_client(healthy())
+    client = httpx.Client(transport=_CloseFails(client._transport), base_url="http://api")
+    assert cathay_lines(cfg(), TUE_0650, lambda **kw: client) == UNREADABLE
+
+
 def test_client_factory_receives_base_and_timeout():
     seen = {}
     client, _ = make_client(healthy())

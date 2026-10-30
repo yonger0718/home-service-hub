@@ -12,7 +12,7 @@ import pytest
 from notify import cli, render, send
 from notify.cathay import LATEST_PATH, PENDING_PATH
 from notify.state import load_state
-from tests.notify.test_cathay import BAD_CASES, FAULT_PATH, _blocking_stream, LATEST as _L, PENDING as _P, TIMEOUT_CASE, item as cathay_item, pending as cathay_pending
+from tests.notify.test_cathay import BAD_CASES, FAULT_PATH, _CloseFails, _blocking_stream, LATEST as _L, PENDING as _P, TIMEOUT_CASE, item as cathay_item, pending as cathay_pending
 
 SECRET = "secret-token"
 
@@ -431,6 +431,24 @@ def test_stalled_portfolio_still_delivers_the_debit_message(cli_env, monkeypatch
         assert main(["daily", "--as-of", "2026-11-03", "--send", "--config", cli_env.cfg]) == 0
     finally:
         release.set()
+    text = "\n\n".join(t for _, t in cli_env.sent)
+    assert UNREADABLE_LINE in text and "旅遊卡" in text
+    assert text.replace(f"\n\n**國泰對帳單**\n• {UNREADABLE_LINE}", "") == base
+
+
+def test_portfolio_cleanup_failure_still_delivers_the_debit_message(cli_env, monkeypatch):
+    base = _sent_text(cli_env, ["daily", "--as-of", "2026-11-03", "--config", cli_env.config_without_portfolio()])
+    cli_env.sent.clear()
+    real = httpx.Client
+
+    def client(**kw):
+        inner = real(**kw)  # the mock-transport client installed by cli_env
+        if "portfolio" in str(kw.get("base_url", "")):
+            inner._transport = _CloseFails(inner._transport)
+        return inner
+
+    monkeypatch.setattr(cli.httpx, "Client", client)
+    assert main(["daily", "--as-of", "2026-11-03", "--send", "--config", cli_env.cfg]) == 0
     text = "\n\n".join(t for _, t in cli_env.sent)
     assert UNREADABLE_LINE in text and "旅遊卡" in text
     assert text.replace(f"\n\n**國泰對帳單**\n• {UNREADABLE_LINE}", "") == base

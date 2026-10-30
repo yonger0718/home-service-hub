@@ -211,9 +211,12 @@ def cathay_lines(
             lines.append(CathayLine(f"cathay:stale:{scheduled.isoformat()}", "國泰對帳單今天沒有執行"))
         if any(len(line.text) > MAX_LINE for line in lines):
             raise ValueError("line too long")
-        return lines
+        result = lines
     except Exception:
-        return [CathayLine("cathay:unreadable", UNREADABLE)]
-    finally:
-        if client is not None and not abandoned:
+        result = [CathayLine("cathay:unreadable", UNREADABLE)]
+    if client is not None and not abandoned:
+        try:
             client.close()
+        except Exception:  # cleanup failure is part of the isolated step: collapse, never raise
+            result = [CathayLine("cathay:unreadable", UNREADABLE)]
+    return result
