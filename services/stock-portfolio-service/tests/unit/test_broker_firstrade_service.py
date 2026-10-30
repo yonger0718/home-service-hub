@@ -409,3 +409,105 @@ def test_five_decimal_fills_that_store_alike_get_distinct_fingerprints(db_sessio
     first = import_service.commit_transactions(db_session, parsed, dry_run=False)
     second = import_service.commit_transactions(db_session, broker_firstrade_service.parse(raw), dry_run=False)
     assert (first.created, second.created, second.skipped_duplicates) == (2, 0, 2)
+
+
+def test_sell_books_the_fee_netted_out_of_the_proceeds() -> None:
+    parsed = broker_firstrade_service.parse(
+        _csv('"2026/9/21","賣出","-10","ABC CORP S/D: 09/22/2026","ABC","融資","10.00","99.97"')
+    )
+
+    assert parsed.rows[0].payload["fee"] == Decimal("0.03")
+
+
+def test_sub_cent_gaps_and_buys_book_no_fee() -> None:
+    parsed = broker_firstrade_service.parse(
+        _csv(
+            '"2025/11/4","賣出","-1","ABC CORP","ABC","融資","334.475","334.48"',
+            '"2025/11/5","賣出","-1","ABC CORP","ABC","融資","10.004","10.00"',
+            '"2026/7/29","買進","50","ABC CORP","ABC","融資","11.1199","-556.00"',
+        )
+    )
+
+    assert [row.payload["fee"] for row in parsed.rows] == [Decimal("0")] * 3
+
+
+def _store_sell(db_session, *, fee: Decimal, quantity: str = "10") -> models.Transaction:
+    from datetime import datetime, timezone
+
+    tx = models.Transaction(
+        symbol="ABC",
+        market="US",
+        name="ABC CORP",
+        type=models.TransactionType.SELL,
+        position_side=models.PositionSide.LONG,
+        quantity=Decimal(quantity),
+        price=Decimal("10.00"),
+        currency="USD",
+        fx_rate_to_twd=Decimal("31.42"),
+        trade_date=datetime(2026, 9, 21, tzinfo=timezone.utc),
+        fee=fee,
+        tax=Decimal("0"),
+        broker="FIRSTRADE",
+        import_fingerprint=None,
+    )
+    db_session.add(tx)
+    db_session.commit()
+    return tx
+
+
+_FEE_SELL = '"2026/9/21","賣出","-10","ABC CORP","ABC","融資","10.00","99.97"'
+
+
+def test_reimporting_a_sell_stored_without_fee_is_still_duplicate(db_session) -> None:
+    _seed_usd_fx(db_session, date(2026, 9, 21))
+    _store_sell(db_session, fee=Decimal("0"))
+
+    result = import_service.commit_transactions(
+        db_session, broker_firstrade_service.parse(_csv(_FEE_SELL)), dry_run=False
+    )
+
+    assert (result.created, result.skipped_duplicates) == (0, 1)
+
+
+def test_backfill_sell_fees_dry_run_writes_nothing(db_session) -> None:
+    tx = _store_sell(db_session, fee=Decimal("0"))
+
+    updates = broker_firstrade_service.backfill_sell_fees(
+        db_session, broker_firstrade_service.parse(_csv(_FEE_SELL)), apply=False
+    )
+
+    assert [(u.transaction_id, u.fee) for u in updates] == [(tx.id, Decimal("0.03"))]
+    db_session.expire_all()
+    assert db_session.get(models.Transaction, tx.id).fee == Decimal("0")
+
+
+def test_backfill_sell_fees_applies_once_and_skips_rows_with_a_fee(db_session) -> None:
+    empty = _store_sell(db_session, fee=Decimal("0"))
+    priced = _store_sell(db_session, fee=Decimal("0.05"), quantity="20")
+    raw = _csv(_FEE_SELL, '"2026/9/21","賣出","-20","ABC CORP","ABC","融資","10.00","199.94"')
+
+    first = broker_firstrade_service.backfill_sell_fees(
+        db_session, broker_firstrade_service.parse(raw), apply=True
+    )
+    second = broker_firstrade_service.backfill_sell_fees(
+        db_session, broker_firstrade_service.parse(raw), apply=True
+    )
+
+    assert [u.transaction_id for u in first] == [empty.id]
+    assert second == []
+    db_session.expire_all()
+    assert db_session.get(models.Transaction, empty.id).fee == Decimal("0.03")
+    assert db_session.get(models.Transaction, priced.id).fee == Decimal("0.05")
+
+
+def test_backfill_sell_fees_pairs_identical_sells_one_to_one(db_session) -> None:
+    first = _store_sell(db_session, fee=Decimal("0"))
+    second = _store_sell(db_session, fee=Decimal("0"))
+
+    updates = broker_firstrade_service.backfill_sell_fees(
+        db_session, broker_firstrade_service.parse(_csv(_FEE_SELL)), apply=True
+    )
+
+    assert [u.transaction_id for u in updates] == [first.id]
+    db_session.expire_all()
+    assert db_session.get(models.Transaction, second.id).fee == Decimal("0")

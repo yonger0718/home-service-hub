@@ -3,20 +3,25 @@ from __future__ import annotations
 import csv
 import io
 import re
-from collections import Counter
+from collections import Counter, defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 import structlog
 
 from ..models import portfolio as models
 from .cash_flow_service import cash_flow_fingerprint
+from sqlalchemy.orm import Session
+
 from .import_service import (
     ParseError,
     ParseResult,
     ParsedRow,
     _as_stored,
     _broker_transaction_fingerprint,
+    _row_content_key,
+    _trade_content_key,
 )
 
 log = structlog.get_logger(__name__)
@@ -30,6 +35,7 @@ _NAME_NOISE = re.compile(
 # Cash ↔ margin sub-account sweeps: each pair nets to zero inside the broker.
 _INTERNAL_TRANSFERS = {"XFER CASH TO MARGIN", "XFER MARGIN TO CASH"}
 _WIRE_REBATE_PREFIX = "REBATE FOR WIRE"
+_CENT = Decimal("0.01")  # transactions.fee is Numeric(12, 2)
 
 
 def _decimal(value: str) -> Decimal:
@@ -48,6 +54,16 @@ def _clean_name(description: str | None) -> str | None:
 
 def _is_clean(description: str | None) -> bool:
     return bool(description) and _clean_name(description) == description
+
+
+def _sell_fee(quantity: Decimal, price: Decimal, proceeds: Decimal) -> Decimal:
+    """SEC fee + FINRA TAF: a sell's 金額 is already net of them (#228).
+
+    A gap under one cent is notional rounding, not a charge, and is left out.
+    Buys carry no such fee; their gap is that rounding only.
+    """
+    fee = (quantity * price - proceeds).quantize(_CENT, rounding=ROUND_HALF_UP)
+    return fee if fee >= _CENT else Decimal("0")
 
 
 def _cash_flow_type(action: str, note: str | None, amount: Decimal) -> tuple[str, Decimal] | None:
@@ -97,6 +113,7 @@ def parse(raw_bytes: bytes) -> ParseResult:
                 quantity = _as_stored(abs(_decimal(raw.get("數量") or "0")))
                 price = _as_stored(_decimal(raw.get("價格") or "0"))
                 type_ = "BUY" if action == "買進" else "SELL"
+                fee = _sell_fee(quantity, price, amount) if type_ == "SELL" else Decimal("0")
                 if _is_clean(note):
                     clean_names.setdefault(symbol, note)
                 elif _clean_name(note):
@@ -115,7 +132,7 @@ def parse(raw_bytes: bytes) -> ParseResult:
                     quantity=quantity,
                     price=price,
                     trade_date=date_value,
-                    fee=Decimal("0"),
+                    fee=fee,
                     tax=Decimal("0"),
                     currency="USD",
                     note=fingerprint_note,
@@ -137,7 +154,7 @@ def parse(raw_bytes: bytes) -> ParseResult:
                             "price": price,
                             "currency": "USD",
                             "trade_date": date_value,
-                            "fee": Decimal("0"),
+                            "fee": fee,
                             "tax": Decimal("0"),
                         },
                     )
@@ -182,3 +199,49 @@ def parse(raw_bytes: bytes) -> ParseResult:
         if payload["_kind"] == "transaction" and payload["symbol"] in names:
             payload["name"] = names[payload["symbol"]]
     return ParseResult(rows=rows, errors=errors)
+
+
+@dataclass(frozen=True)
+class SellFeeUpdate:
+    transaction_id: int
+    symbol: str
+    trade_date: datetime
+    fee: Decimal
+
+
+def backfill_sell_fees(db: Session, parsed: ParseResult, *, apply: bool) -> list[SellFeeUpdate]:
+    """Give stored Firstrade sells booked with ``fee=0`` the fee their CSV row implies (#228).
+
+    A re-import cannot do this: content matching treats those sells as duplicates.
+    Each CSV sell pairs with one stored sell of the same content key (oldest id
+    first). Only a stored fee of 0 is changed, so a second run changes nothing.
+    """
+    stored: dict[tuple, list[models.Transaction]] = defaultdict(list)
+    for tx in (
+        db.query(models.Transaction)
+        .filter(models.Transaction.broker == models.Broker.FIRSTRADE.value)
+        .filter(models.Transaction.type == models.TransactionType.SELL)
+        .order_by(models.Transaction.id)
+    ):
+        stored[
+            _trade_content_key(tx.broker, tx.symbol, tx.type, tx.quantity, tx.price, tx.trade_date)
+        ].append(tx)
+    updates: list[SellFeeUpdate] = []
+    for row in parsed.rows:
+        payload = row.payload
+        if payload["_kind"] != "transaction" or payload["type"] != "SELL":
+            continue
+        candidates = stored.get(_row_content_key(payload))
+        if not candidates:
+            continue
+        tx = candidates.pop(0)
+        if payload["fee"] <= 0 or Decimal(tx.fee or 0) != 0:
+            continue
+        updates.append(
+            SellFeeUpdate(transaction_id=tx.id, symbol=tx.symbol, trade_date=tx.trade_date, fee=payload["fee"])
+        )
+        if apply:
+            tx.fee = payload["fee"]
+    if apply:
+        db.commit()
+    return updates
