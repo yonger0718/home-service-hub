@@ -415,3 +415,22 @@ def test_points_flag_change_with_a_later_date_refreshes_from_the_old_date(db_ses
 
     assert calls == [(date(2026, 5, 1), today)]
     assert _cash_rows(db_session, transaction.id) == []
+
+
+def test_tw_settle_legs_truncate_to_whole_twd_like_the_broker(db_session, monkeypatch) -> None:
+    monkeypatch.setenv("CASH_LEG_ENABLED", "true")
+    _add_cathay_account(db_session)
+    buy = portfolio_service.create_transaction(
+        db_session,
+        _payload(tx_type=schemas.TransactionType.BUY, quantity=55, price="12.03", fee="1.00"),
+    )
+    assert _cash_by_type(db_session, buy.id)[CashTxnType.BUY_SETTLE].amount == Decimal("-661.0000")
+
+    sell = portfolio_service.create_transaction(
+        db_session,
+        _payload(
+            tx_type=schemas.TransactionType.SELL, quantity=55, price="12.99", fee="1.00", tax="2.00",
+            trade_date=datetime(2026, 5, 2, 1, 30, tzinfo=timezone.utc),
+        ),
+    )
+    assert _cash_by_type(db_session, sell.id)[CashTxnType.SELL_SETTLE].amount == Decimal("714.0000")

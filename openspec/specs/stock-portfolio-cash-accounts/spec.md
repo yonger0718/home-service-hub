@@ -94,7 +94,7 @@ When a rate is missing for `asof`, the most recent rate dated `<= asof` SHALL be
 The system SHALL provide a CLI invokable as `python -m app.services.cash_backfill_service --all [--dry-run]` that iterates every `transactions` row and every `dividends` row in `trade_date` ascending order, and for each emits one or more `cash_transaction` rows tagged `source=csv_import` (if the originating row's importer was a broker CSV) or `source=auto_derive` (otherwise).
 
 For each `transactions` row, the backfill SHALL emit:
-- one `buy_settle` (BUY) or `sell_settle` (SELL) row with `amount = ±(quantity * price)` (sign per side),
+- one `buy_settle` (BUY) or `sell_settle` (SELL) row with `amount = ±(quantity * price)` (sign per side), truncated to whole TWD for a TW (TWD) trade as the broker's 成交金額 is,
 - one `fee` row with `amount = -fee` if `fee > 0`,
 - one `tax` row with `amount = -tax` if `tax > 0`.
 

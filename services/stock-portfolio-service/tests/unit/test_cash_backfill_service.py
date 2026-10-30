@@ -499,3 +499,21 @@ def test_replay_skips_points_paid_transactions(db_session) -> None:
     assert result.transactions_processed == 2
     assert result.cash_rows_inserted == 2
     assert {row.related_transaction_id for row in _cash_rows(db_session)} == {cash_buy.id}
+
+
+def test_replay_truncates_tw_settlement_but_not_foreign(db_session) -> None:
+    start = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    tw_buy = _transaction(1, type_=TransactionType.BUY, trade_date=start)
+    tw_buy.quantity = 55
+    tw_buy.price = Decimal("12.03")
+    db_session.add_all([_account(), tw_buy])
+    db_session.commit()
+
+    cash_backfill_service.replay_all(db_session)
+
+    settle = [row for row in _cash_rows(db_session) if row.type == CashTxnType.BUY_SETTLE]
+    assert [row.amount for row in settle] == [Decimal("-661.0000")]
+    usd = Transaction(symbol="VOO", market="US", currency="USD", type=TransactionType.BUY,
+                      quantity=Decimal("1.5"), price=Decimal("10.01"), fee=Decimal("0"), tax=Decimal("0"),
+                      trade_date=start)
+    assert cash_backfill_service._transaction_legs(usd)[0]["amount"] == Decimal("-15.015")
