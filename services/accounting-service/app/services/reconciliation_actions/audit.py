@@ -16,6 +16,8 @@ EVENTS = frozenset({
     "rule_applied", "rule_skipped", "inbox_answer",  # inbox (spec 2026-10-21 §5, §6.3)
     "auto_pay_booked", "auto_pay_skipped", "auto_pay_retired", "auto_pay_owner_deleted", "auto_pay_owner_edited",
     "auto_pay_header_changed", "auto_pay_statement_retired", "auto_pay_calendar_stale",  # card statement auto-pay
+    "settlement_booked", "settlement_skipped", "settlement_retired", "settlement_replaced",
+    "settlement_owner_deleted", "settlement_owner_edited", "settlement_claimed",  # brokerage settlement stand-ins
 })
 
 

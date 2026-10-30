@@ -71,6 +71,8 @@ class AccountOut(BaseModel):
     sort_order: int
     settings_locally_edited: bool
     moze_id: str | None
+    settlement_source: str | None
+    valuation_source: str | None
     rule_summaries: list[str]
 
 

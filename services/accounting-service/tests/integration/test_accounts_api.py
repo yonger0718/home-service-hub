@@ -2,6 +2,9 @@ import uuid
 from datetime import date, time, timedelta
 from decimal import Decimal
 
+import pytest
+
+from app import auth
 from app.models import Account, AccountGroup, Category, EntryGroup, FxRate, LedgerEntry, Preference, Project, RewardRule
 from app.services import ledger_service
 
@@ -466,3 +469,30 @@ def test_debts_summary_converts_with_a_cached_rate(client, db_session, seed):
     db_session.commit()
     body = client.get("/accounts/debts").json()
     assert body["payables"]["open_main"] == "20000.0000" and body["payables"]["unconverted"] == [] and body["payables"]["count"] == 1
+
+
+@pytest.fixture
+def scoped(monkeypatch):
+    monkeypatch.setenv(auth.TOKENS_ENV, "adm:adm-token,wr:wr-token")
+    monkeypatch.setenv(auth.SCOPES_ENV, "adm=read,write,admin; wr=read,write")
+
+
+def test_admin_patch_sets_the_sources(client, db_session, scoped):
+    account = _account(db_session, "測試券商")
+    db_session.commit()
+    admin = {"Authorization": "Bearer adm-token"}
+    response = client.patch(f"/accounts/{account.id}", headers=admin, json={"settlement_source": "portfolio:cathay"})
+    assert response.status_code == 200, response.text
+    assert response.json()["settlement_source"] == "portfolio:cathay"
+    body = client.get(f"/accounts/{account.id}", headers=admin).json()
+    assert body["settlement_source"] == "portfolio:cathay" and body["valuation_source"] is None
+    assert client.patch(f"/accounts/{account.id}", headers=admin, json={"valuation_source": "portfolio:x"}).status_code == 200
+    body = client.get(f"/accounts/{account.id}", headers=admin).json()
+    assert body["settlement_source"] == "portfolio:cathay" and body["valuation_source"] == "portfolio:x"
+
+
+def test_patch_sources_needs_admin(client, db_session, scoped):
+    account = _account(db_session, "測試券商")
+    db_session.commit()
+    write = {"Authorization": "Bearer wr-token"}
+    assert client.patch(f"/accounts/{account.id}", headers=write, json={"settlement_source": "x"}).status_code == 403

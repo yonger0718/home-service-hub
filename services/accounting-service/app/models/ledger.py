@@ -136,6 +136,8 @@ class Account(Base, TimestampMixin):
     moze_id = Column(String(64), nullable=True, unique=True)
     statement_password_rule = Column(String(64), nullable=True)
     statement_live_from = Column(Date, nullable=True)
+    settlement_source = Column(String(64), nullable=True)
+    valuation_source = Column(String(64), nullable=True)
     # app/models/statements.py owns (creates) the statement_source_root type; the PostgreSQL ENUM is used here
     # because the generic Enum silently ignores create_type.
     statement_source_root = Column(

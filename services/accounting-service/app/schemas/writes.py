@@ -183,6 +183,12 @@ class BalanceAdjustmentIn(BaseModel):
     description: str | None = None
 
 
+class AccountSourcesPatch(BaseModel):
+    """Only the fields present are written (an explicit null clears one)."""
+    settlement_source: Annotated[str, Field(max_length=64)] | None = None
+    valuation_source: Annotated[str, Field(max_length=64)] | None = None
+
+
 class AccountIn(BaseModel):
     name: Annotated[str, Field(min_length=1, max_length=64)]
     currency: Currency

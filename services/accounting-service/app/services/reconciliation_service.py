@@ -74,7 +74,7 @@ participating_accounts = coverage_service.participating_accounts
 OPEN = ("open", "proposed")
 # Open cases the matcher owns: superseded when a run no longer derives them (parse_review / statement_conflict are not).
 MATCHER_KINDS = ("line_unmatched", "ambiguous", "amount_delta", "entry_unmatched", "duplicate_claim", "balance_gap",
-                 "recheck")
+                 "recheck", "settlement", "dividend")
 DEFERRED = "deferred_next_period"
 UNCOVERED_CHILD = "uncovered_child"
 CROSS_ACCOUNT_DAYS = 3
