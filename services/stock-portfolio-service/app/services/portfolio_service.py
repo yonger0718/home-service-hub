@@ -1582,6 +1582,7 @@ def update_transaction(db: Session, transaction_id: int, transaction_update: sch
     )
     old_calendar = _trade_calendar_date(db_transaction.trade_date)
     old_points = db_transaction.paid_with_points
+    old_leg_date = cash_account_service._transaction_trade_date(db_transaction)
 
     update_data = transaction_update.model_dump(exclude_unset=True)
     update_data["symbol"] = _normalize_symbol_for_market(
@@ -1638,7 +1639,8 @@ def update_transaction(db: Session, transaction_id: int, transaction_update: sch
 
         today = portfolio_snapshot_service._today_tw()
         leg_date = cash_account_service._transaction_trade_date(db_transaction)
-        cash_account_service._refresh_snapshot_cash_range(db, min(leg_date, today), today)
+        start = min(old_leg_date, leg_date, today)
+        cash_account_service._refresh_snapshot_cash_range(db, start, today)
         db.refresh(db_transaction)
     return db_transaction
 

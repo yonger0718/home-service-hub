@@ -386,3 +386,32 @@ def test_points_flag_change_refreshes_snapshot_cash_from_trade_date(db_session, 
     marked.paid_with_points = True
     portfolio_service.update_transaction(db_session, transaction.id, marked)
     assert calls == [(date(2026, 5, 1), today)]
+
+
+def test_points_flag_change_with_a_later_date_refreshes_from_the_old_date(db_session, monkeypatch) -> None:
+    from app.services import portfolio_snapshot_service
+
+    monkeypatch.setenv("CASH_LEG_ENABLED", "true")
+    _add_cathay_account(db_session)
+    transaction = portfolio_service.create_transaction(
+        db_session,
+        _payload(tx_type=schemas.TransactionType.BUY),
+    )
+    today = date(2026, 6, 4)
+    calls: list[tuple[date, date]] = []
+    monkeypatch.setattr(portfolio_snapshot_service, "_today_tw", lambda: today)
+    monkeypatch.setattr(
+        portfolio_snapshot_service,
+        "refresh_snapshot_cash_range",
+        lambda _session, start, end: calls.append((start, end)),
+    )
+
+    moved = _payload(
+        tx_type=schemas.TransactionType.BUY,
+        trade_date=datetime(2026, 5, 10, 1, 30, tzinfo=timezone.utc),
+    )
+    moved.paid_with_points = True
+    portfolio_service.update_transaction(db_session, transaction.id, moved)
+
+    assert calls == [(date(2026, 5, 1), today)]
+    assert _cash_rows(db_session, transaction.id) == []

@@ -775,4 +775,3 @@ describe('PortfolioTransactionListComponent', () => {
     });
   });
 });
-
