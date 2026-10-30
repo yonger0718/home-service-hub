@@ -15,7 +15,8 @@ from app.models import (
     SettlementBooking,
 )
 from app.services import entry_write_service as ews
-from app.services import policy_service, proposal_service, reconciliation_actions, settings_service
+from app.services import policy_service, proposal_service, reconciliation_actions, settings_service, transfer_service
+from app.services.errors import CodedConflictError
 from app.services.reconciliation_actions import engine
 from app.services.reconciliation_actions.base import LockSet
 from tests.conftest import Seed
@@ -220,6 +221,40 @@ def test_a_day_another_fingerprint_holds_is_day_booked(seed, db_session, run, po
     db_session.commit()                                                                        # a stand-in of other figures on that day
     exc = _refuse(db_session, lambda: _apply(db_session, case.id, "book_settlement", {"fingerprint": case.context["fingerprint"]}))
     assert _code(exc) == "day_booked" and db_session.scalar(select(func.count(SettlementBooking.id))) == 1
+
+
+@pytest.mark.parametrize("index, code, competitor", [
+    ("ux_settlement_booking_fingerprint_booked", "already_booked", {"settlement_date": date(2026, 9, 20)}),
+    ("ux_settlement_booking_day_booked", "day_booked", {"fingerprint": "cathay:2026-09-11:racer"})])
+def test_a_booking_lost_to_a_unique_index_maps_its_code_and_rolls_back(seed, db_session, run, portfolio_stub, monkeypatch,
+                                                                         index, code, competitor):
+    """A competing `booked` row lands after the action's locked checks and before its insert (the race the partial
+    unique indexes settle, spec §4.4 item 1 / §9): the index refuses the booking, its code is mapped, and the attempt
+    savepoint undoes the transfer — the session stays usable. The competitor is written in the same transaction (a
+    second session would wait on the account row the action holds) and goes with the rollback."""
+    bank, target, sid, case = _case_and_booking(seed, db_session, run, portfolio_stub)
+    fingerprint = case.context["fingerprint"]
+    original = transfer_service.create_transfer
+
+    def racing(db, payload, **kw):
+        group = original(db, payload, **kw)
+        db.add(SettlementBooking(**{"kind": "settlement", "origin": "stand_in", "account_id": bank.id,
+                                    "target_account_id": target.id, "source": "portfolio:cathay",
+                                    "fingerprint": fingerprint, "settlement_date": date(2026, 9, 14),
+                                    "net_amount": Decimal("-12305"), "status": "booked", **competitor}))
+        db.flush()
+        return group
+
+    monkeypatch.setattr(transfer_service, "create_transfer", racing)
+    with pytest.raises(CodedConflictError) as info:
+        engine.apply_action(db_session, case_id=case.id, action="book_settlement", params={"fingerprint": fingerprint},
+                            actor="owner", label="owner-test")
+    assert info.value.code == code and index in str(info.value.__cause__.orig)
+    assert db_session.scalar(select(func.count(LedgerEntry.id)).where(LedgerEntry.source == "statement")) == 0
+    assert db_session.scalar(select(func.count(SettlementBooking.id))) == 0                    # nothing of the attempt left
+    assert db_session.scalar(select(func.count(ReconciliationAction.id))) == 0
+    db_session.rollback()
+    assert _fresh(db_session, ReconciliationCase, case.id).status == "open"
 
 
 @pytest.mark.parametrize("mutate", ["out_amount", "in_date", "child"])

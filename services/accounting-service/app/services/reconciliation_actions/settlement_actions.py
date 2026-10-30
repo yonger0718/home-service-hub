@@ -9,7 +9,8 @@ Steps (the engine's order, `engine.apply_action`):
   A portfolio failure is 409 `source_unavailable`.
 - `check_before_locks` (statement + case locks): the statement not `needs_recheck` (409), a target account in
   `settlement.target_accounts` (409 `no_target`), the `_TwinGuarded` dirty-flag check.
-- `validate_before` (account row + writer barrier, `_TwinGuarded`): every `booked` row of this event, fingerprint or
+- `validate_before` (account row + writer barrier, `_TwinGuarded`; the plan is proved once and stored on the context
+  for `apply`): every `booked` row of this event, fingerprint or
   (account, settlement date) is locked row → legs NOWAIT (`trade_settlement_service.lock_pair`, 409
   `settlement_busy`; M11) and re-read; a row of THIS event that is still active coverage (booked, both legs present,
   its bank leg claiming a line of the event) → nothing new: the engine replays its action (`Replay`); then the line
@@ -115,7 +116,7 @@ class BookSettlementAction(_TwinGuarded):
     # --- under the account row and the writer barrier ----------------------------------------------------------------
 
     def validate_before(self, ctx: Context, params: BookSettlementParams, prepared: Prepared, before: dict) -> None:
-        self._plan(ctx, params, prepared)
+        ctx._settlement_plan = self._plan(ctx, params, prepared)  # proved once; `apply` consumes exactly this one
 
     def _plan(self, ctx: Context, params: BookSettlementParams, prepared: Prepared) -> tuple[StatementLine, dict, int]:
         """Every check under the engine's locks (module docstring); returns (line, the re-read facts, target id)."""
@@ -198,7 +199,9 @@ class BookSettlementAction(_TwinGuarded):
 
     def apply(self, ctx: Context, params: BookSettlementParams, prepared: Prepared, effect: Effect) -> None:
         db = ctx.db
-        line, facts, target_id = self._plan(ctx, params, prepared)
+        if ctx._settlement_plan is None:  # the engine always runs validate_before first, under the same locks
+            raise RuntimeError("book_settlement applied without its validated plan")
+        line, facts, target_id = ctx._settlement_plan
         flow = Decimal(line.flow_amount)
         bank_id = ctx.statement.account_id
         source, sink = (bank_id, target_id) if flow < 0 else (target_id, bank_id)

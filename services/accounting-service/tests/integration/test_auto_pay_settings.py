@@ -64,6 +64,13 @@ def test_settlement_block_defaults_and_targets(client, seed, db_session):
     assert settings_service.read_settlement_settings(db_session)["twin_window_days"] == 5
 
 
+def test_the_settlement_block_is_a_copy(db_session):
+    block = settings_service.read_settlement_settings(db_session)
+    block["target_accounts"]["1"] = 2
+    assert settings_service.SETTLEMENT_DEFAULTS["target_accounts"] == {}
+    assert settings_service.read_settlement_settings(db_session)["target_accounts"] == {}
+
+
 def test_audit_events_registered():
     assert {"auto_pay_booked", "auto_pay_skipped", "auto_pay_retired", "auto_pay_owner_deleted", "auto_pay_owner_edited",
             "auto_pay_header_changed", "auto_pay_statement_retired", "auto_pay_calendar_stale"} <= audit.EVENTS

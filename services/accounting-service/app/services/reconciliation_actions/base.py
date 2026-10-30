@@ -46,6 +46,8 @@ class Context:
     # R6c: the transfer actions' discovery — the unlocked one (lock_targets → prepare), then the locked one
     # validate_before verified (→ apply)
     _transfer_discovery: dict | None = None
+    # R7: book_settlement's plan, proved once under the locks by `validate_before` (→ apply)
+    _settlement_plan: tuple | None = None
     action_id: int | None = None  # R6c: the action row being applied (set by the engine after its insert, before apply)
 
 

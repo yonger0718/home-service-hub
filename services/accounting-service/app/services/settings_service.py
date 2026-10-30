@@ -1,5 +1,6 @@
 """Settings reads and writes. Task 5: preference; Task 16 adds accounts, groups, categories, projects, counterparties."""
 
+import copy
 import json
 import logging
 import re
@@ -165,7 +166,7 @@ def _reconciliation_dict(row: ReconciliationSettings) -> dict:
             "rules": rules, "rules_version": version, "version": row.version,
             "policy": _effective_policy(data.get("policy")),
             "auto_pay": {**AUTO_PAY_DEFAULTS, **(data.get("auto_pay") or {})},
-            "settlement": {**SETTLEMENT_DEFAULTS, **(data.get("settlement") or {})},
+            "settlement": copy.deepcopy({**SETTLEMENT_DEFAULTS, **(data.get("settlement") or {})}),
             "policy_version": data.get("policy_version") or f"{POLICY_VERSION_PREFIX}-1",
             "account_siblings": data.get("account_siblings") or {}}
 
