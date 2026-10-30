@@ -152,6 +152,24 @@ Manual transactions created before this feature shipped (no linked cash row) SHA
 - **THEN** the three linked cash rows SHALL be removed in the same DB transaction
 - **AND** the account balance SHALL revert
 
+### Requirement: Points-paid buys carry no cash legs
+
+A buy paid entirely with 國泰 小樹點數 moves no cash. `transactions.paid_with_points` (BOOLEAN, NOT NULL, default false) SHALL mark such a buy, and a flagged row SHALL carry no `cash_transaction` legs: every leg sync (manual create and update, CSV import and rehash, statement import) SHALL delete or skip its settlement, fee and tax legs, and the backfill CLI SHALL emit none for it. Holdings, cost basis and realized P&L SHALL be unchanged by the flag.
+
+#### Scenario: A points line on a statement imports without legs
+- **WHEN** a 國泰 statement with one `points: true` buy line and one normal buy line is imported
+- **THEN** the points row SHALL have `paid_with_points = true` and no cash legs, and the normal row SHALL keep its legs
+
+### Requirement: Transaction writes keep the points flag consistent
+
+The transaction schema SHALL accept `paid_with_points: true` on a BUY only (HTTP 422 otherwise). An update that omits the field SHALL keep the stored value, and a row updated to a non-BUY type SHALL drop the flag. The 國泰 statement import SHALL set the flag from the line's `points` value. When an update changes the flag, the service SHALL refresh the snapshot `total_cash_twd` from the trade date through today, as a manual cash entry does.
+
+#### Scenario: Marking a buy as points-paid removes its legs
+- **GIVEN** a buy with a settlement leg and a fee leg
+- **WHEN** it is updated with `paid_with_points: true`
+- **THEN** both legs SHALL be deleted and the snapshot cash SHALL be refreshed from its trade date
+- **AND** unmarking it SHALL create the legs again
+
 ### Requirement: Accounts REST endpoints
 
 The system SHALL expose:

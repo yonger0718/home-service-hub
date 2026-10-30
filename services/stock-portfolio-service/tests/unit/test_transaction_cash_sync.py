@@ -291,3 +291,127 @@ def test_create_transaction_missing_cathay_account_rolls_back_parent_transaction
 
     assert db_session.execute(select(Transaction)).scalars().all() == []
     assert db_session.execute(select(CashTransaction)).scalars().all() == []
+
+
+def test_create_points_buy_emits_no_cash_legs(db_session, monkeypatch) -> None:
+    monkeypatch.setenv("CASH_LEG_ENABLED", "true")
+    _add_cathay_account(db_session)
+    payload = _payload(tx_type=schemas.TransactionType.BUY)
+    payload.paid_with_points = True
+
+    transaction = portfolio_service.create_transaction(db_session, payload)
+
+    assert transaction.paid_with_points is True
+    assert _cash_rows(db_session, transaction.id) == []
+
+
+def test_update_marking_points_deletes_legs_and_unmarking_restores(db_session, monkeypatch) -> None:
+    monkeypatch.setenv("CASH_LEG_ENABLED", "true")
+    _add_cathay_account(db_session)
+    transaction = portfolio_service.create_transaction(
+        db_session,
+        _payload(tx_type=schemas.TransactionType.BUY),
+    )
+    assert set(_cash_by_type(db_session, transaction.id)) == {CashTxnType.BUY_SETTLE, CashTxnType.FEE}
+
+    marked = _payload(tx_type=schemas.TransactionType.BUY)
+    marked.paid_with_points = True
+    portfolio_service.update_transaction(db_session, transaction.id, marked)
+    assert _cash_rows(db_session, transaction.id) == []
+
+    unmarked = _payload(tx_type=schemas.TransactionType.BUY)
+    unmarked.paid_with_points = False
+    portfolio_service.update_transaction(db_session, transaction.id, unmarked)
+    rows = _cash_by_type(db_session, transaction.id)
+    assert set(rows) == {CashTxnType.BUY_SETTLE, CashTxnType.FEE}
+    assert rows[CashTxnType.BUY_SETTLE].amount == Decimal("-50000.0000")
+
+
+def test_update_without_points_field_keeps_the_flag(db_session, monkeypatch) -> None:
+    monkeypatch.setenv("CASH_LEG_ENABLED", "true")
+    _add_cathay_account(db_session)
+    payload = _payload(tx_type=schemas.TransactionType.BUY)
+    payload.paid_with_points = True
+    transaction = portfolio_service.create_transaction(db_session, payload)
+
+    portfolio_service.update_transaction(
+        db_session,
+        transaction.id,
+        _payload(tx_type=schemas.TransactionType.BUY, fee="23.00"),
+    )
+
+    db_session.refresh(transaction)
+    assert transaction.paid_with_points is True
+    assert transaction.fee == Decimal("23.00")
+    assert _cash_rows(db_session, transaction.id) == []
+
+
+def test_points_flag_rejected_on_sell() -> None:
+    with pytest.raises(ValueError, match="paid_with_points"):
+        schemas.TransactionCreate(
+            symbol="2330",
+            type=schemas.TransactionType.SELL,
+            quantity=1,
+            price=Decimal("50"),
+            paid_with_points=True,
+        )
+
+
+def test_points_flag_change_refreshes_snapshot_cash_from_trade_date(db_session, monkeypatch) -> None:
+    from app.services import portfolio_snapshot_service
+
+    monkeypatch.setenv("CASH_LEG_ENABLED", "true")
+    _add_cathay_account(db_session)
+    transaction = portfolio_service.create_transaction(
+        db_session,
+        _payload(tx_type=schemas.TransactionType.BUY),
+    )
+    today = date(2026, 6, 4)
+    calls: list[tuple[date, date]] = []
+    monkeypatch.setattr(portfolio_snapshot_service, "_today_tw", lambda: today)
+    monkeypatch.setattr(
+        portfolio_snapshot_service,
+        "refresh_snapshot_cash_range",
+        lambda _session, start, end: calls.append((start, end)),
+    )
+
+    portfolio_service.update_transaction(
+        db_session,
+        transaction.id,
+        _payload(tx_type=schemas.TransactionType.BUY, fee="23.00"),
+    )
+    assert calls == []
+
+    marked = _payload(tx_type=schemas.TransactionType.BUY, fee="23.00")
+    marked.paid_with_points = True
+    portfolio_service.update_transaction(db_session, transaction.id, marked)
+    assert calls == [(date(2026, 5, 1), today)]
+
+
+def test_points_flag_change_with_a_later_date_refreshes_from_the_old_date(db_session, monkeypatch) -> None:
+    from app.services import portfolio_snapshot_service
+
+    monkeypatch.setenv("CASH_LEG_ENABLED", "true")
+    _add_cathay_account(db_session)
+    transaction = portfolio_service.create_transaction(
+        db_session,
+        _payload(tx_type=schemas.TransactionType.BUY),
+    )
+    today = date(2026, 6, 4)
+    calls: list[tuple[date, date]] = []
+    monkeypatch.setattr(portfolio_snapshot_service, "_today_tw", lambda: today)
+    monkeypatch.setattr(
+        portfolio_snapshot_service,
+        "refresh_snapshot_cash_range",
+        lambda _session, start, end: calls.append((start, end)),
+    )
+
+    moved = _payload(
+        tx_type=schemas.TransactionType.BUY,
+        trade_date=datetime(2026, 5, 10, 1, 30, tzinfo=timezone.utc),
+    )
+    moved.paid_with_points = True
+    portfolio_service.update_transaction(db_session, transaction.id, moved)
+
+    assert calls == [(date(2026, 5, 1), today)]
+    assert _cash_rows(db_session, transaction.id) == []

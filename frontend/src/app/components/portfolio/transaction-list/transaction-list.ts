@@ -14,6 +14,7 @@ import { InputNumberModule } from 'primeng/inputnumber';
 import { SelectButtonModule } from 'primeng/selectbutton';
 import { SelectModule } from 'primeng/select';
 import { DatePickerModule } from 'primeng/datepicker';
+import { CheckboxModule } from 'primeng/checkbox';
 import { PaginatorModule, PaginatorState } from 'primeng/paginator';
 import { ConfirmationService, MessageService, MenuItem } from 'primeng/api';
 import { ConfirmDialogModule } from 'primeng/confirmdialog';
@@ -56,7 +57,7 @@ const DEFAULT_CURRENCY_BY_MARKET: Record<Exclude<MarketCode, 'TW'>, string> = {
     PageHeaderComponent, RouterLink, BentoComponent,
     CommonModule, DialogModule, FormsModule,
     InputTextModule, InputNumberModule, SelectButtonModule, SelectModule,
-    DatePickerModule, PaginatorModule,
+    DatePickerModule, PaginatorModule, CheckboxModule,
     ConfirmDialogModule, ToastModule, MenuModule,
     BtnComponent, SegToggleComponent, TimelineComponent, FilterBarComponent,
   ],
@@ -442,6 +443,11 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     return this.newTransaction.market ?? 'TW';
   }
 
+  /** Only a TW buy can be paid with 小樹點數. */
+  canPayWithPoints(): boolean {
+    return this.newTransaction.type === TransactionType.BUY && !this.isForeignTrade();
+  }
+
   isForeignTrade(): boolean {
     return this.selectedMarket() !== 'TW';
   }
@@ -536,6 +542,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   private transactionPayload(): Partial<Transaction> {
     const payload: Partial<Transaction> = { ...this.newTransaction };
     const market = this.selectedMarket();
+    payload.paid_with_points = this.canPayWithPoints() && this.newTransaction.paid_with_points === true;
     if (market === 'TW') {
       delete payload.market;
       delete payload.currency;

@@ -438,6 +438,7 @@ def _insert_transaction(
         broker_day_trade_marker=payload.get("broker_day_trade_marker"),
         instrument_type=symbol_map_service.lookup_warrant_type(db, payload["symbol"]),
         import_fingerprint=row.fingerprint,
+        paid_with_points=payload.get("paid_with_points", False),
     )
     db.add(tx)
     db.flush()

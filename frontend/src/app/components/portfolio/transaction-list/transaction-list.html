@@ -203,6 +203,14 @@
       <label class="d-block mb-1 small fw-bold">交易稅</label>
       <p-inputNumber [(ngModel)]="newTransaction.tax" [fluid]="true"></p-inputNumber>
     </div>
+    @if (canPayWithPoints()) {
+      <div class="col-12">
+        <label class="points-checkbox">
+          <p-checkbox [(ngModel)]="newTransaction.paid_with_points" [binary]="true"></p-checkbox>
+          <span>小樹點數付款（不扣現金）</span>
+        </label>
+      </div>
+    }
     @if (isForeignTrade()) {
       <div class="col-6">
         <label class="d-block mb-1 small fw-bold">幣別</label>

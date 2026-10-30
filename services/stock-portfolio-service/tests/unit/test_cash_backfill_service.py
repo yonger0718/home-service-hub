@@ -484,3 +484,18 @@ def test_replay_posts_a_gbp_pence_dividend_in_pounds(db_session) -> None:
     assert legs[pence.id].account_id == ib_gbp.id and legs[pence.id].currency == "GBP"
     assert legs[pence.id].amount == Decimal("12.3457")
     assert legs[pounds.id].account_id == ib_gbp.id and legs[pounds.id].amount == Decimal("25.00")
+
+
+def test_replay_skips_points_paid_transactions(db_session) -> None:
+    start = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)
+    points_buy = _transaction(1, type_=TransactionType.BUY, trade_date=start)
+    points_buy.paid_with_points = True
+    cash_buy = _transaction(2, type_=TransactionType.BUY, trade_date=start)
+    db_session.add_all([_account(), points_buy, cash_buy])
+    db_session.commit()
+
+    result = cash_backfill_service.replay_all(db_session)
+
+    assert result.transactions_processed == 2
+    assert result.cash_rows_inserted == 2
+    assert {row.related_transaction_id for row in _cash_rows(db_session)} == {cash_buy.id}

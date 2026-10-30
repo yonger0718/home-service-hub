@@ -1581,6 +1581,8 @@ def update_transaction(db: Session, transaction_id: int, transaction_update: sch
         getattr(db_transaction, "market", "TW"),
     )
     old_calendar = _trade_calendar_date(db_transaction.trade_date)
+    old_points = db_transaction.paid_with_points
+    old_leg_date = cash_account_service._transaction_trade_date(db_transaction)
 
     update_data = transaction_update.model_dump(exclude_unset=True)
     update_data["symbol"] = _normalize_symbol_for_market(
@@ -1613,6 +1615,9 @@ def update_transaction(db: Session, transaction_id: int, transaction_update: sch
 
     for key, value in update_data.items():
         setattr(db_transaction, key, value)
+    # An omitted flag keeps its stored value, but only a buy can be paid with points.
+    if db_transaction.type != models.TransactionType.BUY:
+        db_transaction.paid_with_points = False
 
     db.flush()
     _sync_transaction_cash_legs_if_twd(db, db_transaction)
@@ -1628,6 +1633,15 @@ def update_transaction(db: Session, transaction_id: int, transaction_update: sch
 
     db.commit()
     db.refresh(db_transaction)
+    if db_transaction.paid_with_points != old_points and cash_account_service.cash_leg_enabled():
+        # The cash legs appeared or vanished, so the cash history from that day changed.
+        from . import portfolio_snapshot_service
+
+        today = portfolio_snapshot_service._today_tw()
+        leg_date = cash_account_service._transaction_trade_date(db_transaction)
+        start = min(old_leg_date, leg_date, today)
+        cash_account_service._refresh_snapshot_cash_range(db, start, today)
+        db.refresh(db_transaction)
     return db_transaction
 
 def delete_transaction(db: Session, transaction_id: int):

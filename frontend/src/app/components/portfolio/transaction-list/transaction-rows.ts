@@ -47,6 +47,10 @@ export function rowAmount(t: Transaction): { amount: string; amountNote: string 
 export function transactionRow(t: Transaction, name: string): TimelineRow {
   const isBuy = t.type === TransactionType.BUY;
   const broker = brokerLabel(t.broker);
+  const tags = [
+    ...(t.is_day_trade === true ? ['當沖'] : []),
+    ...(t.paid_with_points === true ? ['點數付款'] : []),
+  ];
   return {
     id: t.id,
     date: t.trade_date ?? '',
@@ -54,7 +58,7 @@ export function transactionRow(t: Transaction, name: string): TimelineRow {
     sideLabel: isBuy ? '買' : '賣',
     primary: `${name} ${t.symbol}`,
     square: stockSquare(t.symbol, name),
-    tags: t.is_day_trade === true ? ['當沖'] : undefined,
+    tags: tags.length ? tags : undefined,
     meta: quantityLine(t),
     sub: feeLine(t),
     broker: broker || undefined,

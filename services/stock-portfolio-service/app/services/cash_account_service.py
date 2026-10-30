@@ -189,6 +189,8 @@ def _desired_transaction_cash_legs(
     transaction: Transaction,
     currency: str,
 ) -> dict[str, dict[str, object]]:
+    if getattr(transaction, "paid_with_points", False):
+        return {}
     txn_date = _transaction_trade_date(transaction)
     gross_amount = _transaction_amount(transaction.quantity) * _transaction_amount(transaction.price)
     if transaction.type == TransactionType.SELL:

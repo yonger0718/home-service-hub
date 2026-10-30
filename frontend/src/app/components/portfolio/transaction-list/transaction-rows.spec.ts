@@ -46,4 +46,9 @@ describe('transaction rows', () => {
     expect(row.primary).toBe('台積電 2330');
     expect(row.square?.text).toBe('30');
   });
+
+  it('tags a points-paid buy and keeps 當沖 first', () => {
+    expect(transactionRow(tx({ paid_with_points: true }), '台積電').tags).toEqual(['點數付款']);
+    expect(transactionRow(tx({ is_day_trade: true, paid_with_points: true }), '台積電').tags).toEqual(['當沖', '點數付款']);
+  });
 });

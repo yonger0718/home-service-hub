@@ -97,6 +97,13 @@ class Transaction(Base, TimestampMixin):
         server_default=expression.false(),
     )
     import_fingerprint = Column(String(64), nullable=True)
+    # 小樹點數 paid the whole buy: no cash moved, so the row carries no cash legs.
+    paid_with_points = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=expression.false(),
+    )
 
 class Dividend(Base, TimestampMixin):
     __tablename__ = "dividends"
