@@ -4,7 +4,7 @@ import hashlib
 import logging
 import os
 from datetime import date, datetime, timedelta, timezone
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Select, delete, func, select
@@ -185,6 +185,17 @@ def _transaction_amount(value: Decimal | int | str | None) -> Decimal:
     return _as_decimal(value)
 
 
+def settle_gross(transaction: Transaction) -> Decimal:
+    """quantity x price as the settlement books it: a TW (TWD) 成交金額 is truncated to whole TWD, as on the
+    國泰 statements; other markets keep the exact product."""
+    gross = _transaction_amount(transaction.quantity) * _transaction_amount(transaction.price)
+    market = (getattr(transaction, "market", None) or "TW").strip().upper()
+    currency = (getattr(transaction, "currency", None) or "TWD").strip().upper()
+    if market == "TW" and currency == "TWD":
+        return gross.to_integral_value(rounding=ROUND_DOWN)
+    return gross
+
+
 def _desired_transaction_cash_legs(
     transaction: Transaction,
     currency: str,
@@ -192,7 +203,7 @@ def _desired_transaction_cash_legs(
     if getattr(transaction, "paid_with_points", False):
         return {}
     txn_date = _transaction_trade_date(transaction)
-    gross_amount = _transaction_amount(transaction.quantity) * _transaction_amount(transaction.price)
+    gross_amount = settle_gross(transaction)
     if transaction.type == TransactionType.SELL:
         settle_amount = gross_amount
         settle_type = CashTxnType.SELL_SETTLE

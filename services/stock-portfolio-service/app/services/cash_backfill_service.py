@@ -82,8 +82,7 @@ def _major_unit(amount: Decimal, currency: str | None) -> Decimal:
 def _transaction_legs(transaction: Transaction) -> list[dict[str, object]]:
     if transaction.paid_with_points:
         return []
-    gross_amount = _major_unit(_as_decimal(transaction.quantity) * _as_decimal(transaction.price),
-                               transaction.currency)
+    gross_amount = _major_unit(cash_account_service.settle_gross(transaction), transaction.currency)
     if transaction.type == TransactionType.BUY:
         settle_type = CashTxnType.BUY_SETTLE
         settle_amount = -gross_amount
