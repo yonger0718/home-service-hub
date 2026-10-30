@@ -15,6 +15,7 @@ from .import_service import (
     ParseError,
     ParseResult,
     ParsedRow,
+    _as_stored,
     _broker_transaction_fingerprint,
 )
 
@@ -91,8 +92,10 @@ def parse(raw_bytes: bytes) -> ParseResult:
             note = (raw.get("說明") or "").strip() or None
             if action in {"買進", "賣出"}:
                 symbol = (raw.get("代號") or "").strip().upper()
-                quantity = abs(_decimal(raw.get("數量") or "0"))
-                price = _decimal(raw.get("價格") or "0")
+                # Rounded the way Numeric(_, 4) stores them, so the ordinal below,
+                # the fingerprint and the stored row all agree (0.47445 -> 0.4745).
+                quantity = _as_stored(abs(_decimal(raw.get("數量") or "0")))
+                price = _as_stored(_decimal(raw.get("價格") or "0"))
                 type_ = "BUY" if action == "買進" else "SELL"
                 if _is_clean(note):
                     clean_names.setdefault(symbol, note)

@@ -707,6 +707,52 @@ def _consume(counts: Counter, key: tuple) -> bool:
     return True
 
 
+def _row_content_key(payload: dict) -> tuple:
+    if payload.get("_kind") == "cash_flow":
+        return _cash_flow_content_key(
+            payload["broker"], payload["date"], payload["cash_flow_type"], payload["amount"], str(payload["currency"])
+        )
+    return _trade_content_key(
+        payload["broker"],
+        payload["symbol"],
+        payload["type"],
+        payload["quantity"],
+        payload["price"],
+        payload["trade_date"],
+    )
+
+
+def _claim_fingerprint_matches(
+    db: Session,
+    parsed: ParseResult,
+    existing_transactions: set[str],
+    stored_trades: Counter,
+    stored_flows: Counter,
+) -> set[int]:
+    """Rows (by ``id``) whose fingerprint is already stored. Each takes its own stored row out of the content
+    counts first, so content matching cannot hand that row to a different incoming row (AGENT-352)."""
+    existing_flows = {
+        fingerprint
+        for (fingerprint,) in db.query(models.BrokerCashFlow.import_fingerprint)
+        .filter(models.BrokerCashFlow.broker.in_(_CONTENT_MATCHED_BROKERS))
+        .filter(models.BrokerCashFlow.import_fingerprint.is_not(None))
+    }
+    owned: set[int] = set()
+    claimed: set[str] = set()
+    for row in parsed.rows:
+        payload = row.payload
+        if payload.get("broker") not in _CONTENT_MATCHED_BROKERS:
+            continue
+        is_flow = payload.get("_kind") == "cash_flow"
+        if row.fingerprint not in (existing_flows if is_flow else existing_transactions):
+            continue
+        owned.add(id(row))
+        if row.fingerprint not in claimed:
+            claimed.add(row.fingerprint)
+            _consume(stored_flows if is_flow else stored_trades, _row_content_key(payload))
+    return owned
+
+
 def apply_stored_names(db: Session, parsed: ParseResult) -> None:
     """Reuse the name a content-matched broker's symbol already has, so one
     holding keeps one name whatever wording the broker export uses."""
@@ -808,6 +854,9 @@ def _commit_broker_rows(
     }
     stored_trades, stored_flows = _stored_content_counts(db)
     apply_market_overrides(db, parsed)
+    fingerprint_owned = _claim_fingerprint_matches(
+        db, parsed, existing_transactions, stored_trades, stored_flows
+    )
     apply_stored_names(db, parsed)
     _backfill_missing_fx(db, parsed)
     seen_transactions: set[str] = set()
@@ -818,16 +867,13 @@ def _commit_broker_rows(
     for row in parsed.rows:
         payload = row.payload
         kind = payload.get("_kind", "transaction")
-        content_matched = payload.get("broker") in _CONTENT_MATCHED_BROKERS
+        content_matched = (
+            payload.get("broker") in _CONTENT_MATCHED_BROKERS and id(row) not in fingerprint_owned
+        )
         if kind == "cash_flow":
             flow_date = payload["date"]
             currency = str(payload["currency"]).upper()
-            if content_matched and _consume(
-                stored_flows,
-                _cash_flow_content_key(
-                    payload["broker"], flow_date, payload["cash_flow_type"], payload["amount"], currency
-                ),
-            ):
+            if content_matched and _consume(stored_flows, _row_content_key(payload)):
                 skipped += 1
                 row.status = "duplicate"
                 continue
@@ -852,17 +898,7 @@ def _commit_broker_rows(
             row.status = "duplicate" if result.skipped_duplicates else "new"
             continue
 
-        if content_matched and _consume(
-            stored_trades,
-            _trade_content_key(
-                payload["broker"],
-                payload["symbol"],
-                payload["type"],
-                payload["quantity"],
-                payload["price"],
-                payload["trade_date"],
-            ),
-        ):
+        if content_matched and _consume(stored_trades, _row_content_key(payload)):
             skipped += 1
             row.status = "duplicate"
             continue

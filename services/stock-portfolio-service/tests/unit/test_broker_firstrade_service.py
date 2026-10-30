@@ -366,3 +366,46 @@ def test_five_decimal_fractional_share_matches_its_stored_four_decimal_row(db_se
     result = import_service.commit_transactions(db_session, broker_firstrade_service.parse(raw), dry_run=False)
 
     assert (result.created, result.skipped_duplicates) == (0, 1)
+
+
+def test_a_fingerprint_match_owns_its_stored_row_before_content_matching(db_session) -> None:
+    _seed_usd_fx(db_session, date(2026, 6, 5))
+    wire_a = '"2026/6/5","存款","0","Wire A","","融資","0.00","100.00"'
+    import_service.commit_transactions(db_session, broker_firstrade_service.parse(_csv(wire_a)), dry_run=False)
+    raw = _csv('"2026/6/5","存款","0","Wire B","","融資","0.00","100.00"', wire_a)
+
+    result = import_service.commit_transactions(db_session, broker_firstrade_service.parse(raw), dry_run=False)
+
+    assert (result.created, result.skipped_duplicates) == (1, 1)
+    notes = {flow.note for flow in db_session.query(models.BrokerCashFlow)}
+    assert notes == {"Wire A", "Wire B"}
+
+
+def test_a_trade_fingerprint_match_owns_its_stored_row_before_content_matching(db_session) -> None:
+    _seed_usd_fx(db_session, date(2026, 6, 5))
+    fill = '"2026/6/5","買進","10","Energy Fuels Inc","UUUU","融資","15.65","-156.50"'
+    raw = _csv(fill, fill)
+    parsed = broker_firstrade_service.parse(raw)
+    import_service.commit_transactions(db_session, parsed, dry_run=False)
+    # Only the file's second fill (#2) stays stored; the first must be re-booked.
+    db_session.query(models.Transaction).filter_by(import_fingerprint=parsed.rows[0].fingerprint).delete()
+    db_session.commit()
+
+    result = import_service.commit_transactions(db_session, broker_firstrade_service.parse(raw), dry_run=False)
+
+    assert (result.created, result.skipped_duplicates) == (1, 1)
+    assert db_session.query(models.Transaction).count() == 2
+
+
+def test_five_decimal_fills_that_store_alike_get_distinct_fingerprints(db_session) -> None:
+    _seed_usd_fx(db_session, date(2026, 6, 5))
+    raw = _csv(
+        '"2026/6/5","買進","0.47441","ABC CORP","ABC","融資","10.00","-4.74"',
+        '"2026/6/5","買進","0.47442","ABC CORP","ABC","融資","10.00","-4.74"',
+    )
+    parsed = broker_firstrade_service.parse(raw)
+
+    assert parsed.rows[0].fingerprint != parsed.rows[1].fingerprint
+    first = import_service.commit_transactions(db_session, parsed, dry_run=False)
+    second = import_service.commit_transactions(db_session, broker_firstrade_service.parse(raw), dry_run=False)
+    assert (first.created, second.created, second.skipped_duplicates) == (2, 0, 2)
