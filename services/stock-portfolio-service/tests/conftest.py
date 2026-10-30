@@ -45,6 +45,20 @@ def _never_reach_the_configured_database(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_fx_history_fetch_on_import(monkeypatch):
+    """A broker import with missing FX rates fetches history from yfinance; keep every test off the network. Tests
+    that exercise the backfill patch ``import_service._fetch_fx_history`` themselves."""
+    from app.services import import_service
+    from app.services.quotes.fx_rate_service import RefreshResult
+
+    monkeypatch.setattr(
+        import_service,
+        "_fetch_fx_history",
+        lambda db, period: RefreshResult(ok_count=0, skipped_count=0, errors=[]),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _fresh_post_import_results():
     """The post-import chain keeps its latest results in process (latest_status prefers the newest import); an import
     chain run by an earlier test must not answer a later test's status read (#211)."""

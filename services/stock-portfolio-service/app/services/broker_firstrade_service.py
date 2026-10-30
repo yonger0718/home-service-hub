@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import io
+import re
+from collections import Counter
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
@@ -18,6 +20,16 @@ from .import_service import (
 
 log = structlog.get_logger(__name__)
 
+# Order-ticket suffixes Firstrade appends to the security description
+# ("***CAMECO CORP UNSOLICITED EXEC TIME: ... S/D: 10/27/2026").
+_NAME_NOISE = re.compile(
+    r"\s+(?:UNSOLICITED|PRODUCT DESCRIPTION UNDER SEPARATE COVER|EXEC TIME:|S/D:).*$",
+    re.IGNORECASE,
+)
+# Cash ↔ margin sub-account sweeps: each pair nets to zero inside the broker.
+_INTERNAL_TRANSFERS = {"XFER CASH TO MARGIN", "XFER MARGIN TO CASH"}
+_WIRE_REBATE_PREFIX = "REBATE FOR WIRE"
+
 
 def _decimal(value: str) -> Decimal:
     return Decimal((value or "0").replace(",", "").strip() or "0")
@@ -27,11 +39,49 @@ def _trade_date(value: str) -> datetime:
     return datetime.strptime(value.strip(), "%Y/%m/%d").replace(tzinfo=timezone.utc)
 
 
+def _clean_name(description: str | None) -> str | None:
+    if not description:
+        return None
+    return _NAME_NOISE.sub("", description.lstrip("*")).strip() or None
+
+
+def _is_clean(description: str | None) -> bool:
+    return bool(description) and _clean_name(description) == description
+
+
+def _cash_flow_type(action: str, note: str | None, amount: Decimal) -> tuple[str, Decimal] | None:
+    """(type, signed amount) for a cash row, ``None`` for an internal transfer.
+
+    Outflows are stored negative because ``list_balances`` sums amounts as-is
+    (same convention as ``routers.cash_flows._normalize_outflow_sign``).
+    Raises ``ValueError`` for a row we do not know how to book.
+    """
+    if action == "存款":
+        return models.BrokerCashFlowType.DEPOSIT.value, abs(amount)
+    if action == "提款":
+        return models.BrokerCashFlowType.WITHDRAWAL.value, -abs(amount)
+    if action == "利息收入":
+        return models.BrokerCashFlowType.INTEREST.value, amount
+    if action == "股息":
+        # Amount is already net of the non-resident withholding.
+        return models.BrokerCashFlowType.DIVIDEND_CASH.value, amount
+    upper_note = (note or "").upper()
+    if action == "其他" and upper_note in _INTERNAL_TRANSFERS:
+        return None
+    if action == "其他" and upper_note.startswith(_WIRE_REBATE_PREFIX):
+        # Firstrade refunds the incoming-wire fee; book it as money in.
+        return models.BrokerCashFlowType.DEPOSIT.value, abs(amount)
+    raise ValueError(f"unsupported Firstrade row: {action} {note or ''}".strip())
+
+
 def parse(raw_bytes: bytes) -> ParseResult:
     stream = io.StringIO(raw_bytes.decode("utf-8-sig"))
     reader = csv.DictReader(stream)
     rows: list[ParsedRow] = []
     errors: list[ParseError] = []
+    clean_names: dict[str, str] = {}
+    stripped_names: dict[str, str] = {}
+    occurrences: Counter[tuple] = Counter()
     for row_index, raw in enumerate(reader, start=1):
         try:
             action = (raw.get("交易類別") or "").strip()
@@ -44,6 +94,16 @@ def parse(raw_bytes: bytes) -> ParseResult:
                 quantity = abs(_decimal(raw.get("數量") or "0"))
                 price = _decimal(raw.get("價格") or "0")
                 type_ = "BUY" if action == "買進" else "SELL"
+                if _is_clean(note):
+                    clean_names.setdefault(symbol, note)
+                elif _clean_name(note):
+                    stripped_names.setdefault(symbol, _clean_name(note))
+                # The description is left out of the fingerprint: the same fill
+                # arrives with different wording (manual entry vs CSV ticket text).
+                # Identical fills in one file stay distinct via their ordinal.
+                occurrences[(symbol, type_, quantity, price, date_only)] += 1
+                ordinal = occurrences[(symbol, type_, quantity, price, date_only)]
+                fingerprint_note = f"#{ordinal}" if ordinal > 1 else None
                 fingerprint = _broker_transaction_fingerprint(
                     broker=models.Broker.FIRSTRADE.value,
                     symbol=symbol,
@@ -55,7 +115,7 @@ def parse(raw_bytes: bytes) -> ParseResult:
                     fee=Decimal("0"),
                     tax=Decimal("0"),
                     currency="USD",
-                    note=note,
+                    note=fingerprint_note,
                 )
                 rows.append(
                     ParsedRow(
@@ -66,7 +126,8 @@ def parse(raw_bytes: bytes) -> ParseResult:
                             "broker": models.Broker.FIRSTRADE.value,
                             "symbol": symbol,
                             "market": "US",
-                            "name": note,
+                            "name": _clean_name(note),
+                            "fingerprint_note": fingerprint_note,
                             "type": type_,
                             "position_side": models.PositionSide.LONG.value,
                             "quantity": quantity,
@@ -79,15 +140,11 @@ def parse(raw_bytes: bytes) -> ParseResult:
                     )
                 )
                 continue
-            cash_flow_type = None
-            if action == "存款":
-                cash_flow_type = models.BrokerCashFlowType.DEPOSIT.value
-                amount = abs(amount)
-            elif action == "利息收入":
-                cash_flow_type = models.BrokerCashFlowType.INTEREST.value
-            if cash_flow_type is None:
+            mapped = _cash_flow_type(action, note, amount)
+            if mapped is None:
                 log.debug("broker.firstrade.skip", action=action, row_index=row_index)
                 continue
+            cash_flow_type, amount = mapped
             fingerprint = cash_flow_fingerprint(
                 broker=models.Broker.FIRSTRADE.value,
                 date_=date_only,
@@ -113,4 +170,12 @@ def parse(raw_bytes: bytes) -> ParseResult:
             )
         except (ValueError, InvalidOperation) as exc:
             errors.append(ParseError(row_index=row_index, message=str(exc)))
+    # One name per symbol: a plain description elsewhere in the file beats a
+    # stripped ticket line (newest first, the export's order), so holdings do
+    # not flip between spellings.
+    names = {**stripped_names, **clean_names}
+    for row in rows:
+        payload = row.payload
+        if payload["_kind"] == "transaction" and payload["symbol"] in names:
+            payload["name"] = names[payload["symbol"]]
     return ParseResult(rows=rows, errors=errors)
