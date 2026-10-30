@@ -76,6 +76,23 @@ def test_failures_are_unavailable_with_a_code_only(make, code, caplog):
     assert info.value.code == code and str(info.value) == code and TOKEN not in str(info.value) + repr(info.value) + caplog.text
 
 
+@pytest.mark.parametrize("row", [{**ROW, "bookable": "false"}, {**ROW, "net_amount": "NaN"}, {**ROW, "legs_net": "Infinity"}])
+def test_loose_settlement_values_are_bad_body(row):
+    body = {"rows": [row], "bounds": BOUNDS, "complete": True}
+    with pytest.raises(pc.PortfolioUnavailable) as info:
+        pc.PortfolioClient("http://p.test", transport=httpx.MockTransport(lambda r: httpx.Response(200, json=body))).settlements("cathay", **WINDOW)
+    assert info.value.code == "bad_body"
+
+
+@pytest.mark.parametrize("body", [{"rows": [], "bounds": BOUNDS, "complete": "true"}, {**VALUATION, "complete": 1},
+                                  {**VALUATION, "missing": "2330"}, {**VALUATION, "missing": [2330]}, {**VALUATION, "cash": "NaN"}])
+def test_loose_feed_and_valuation_values_are_bad_body(body):
+    client = pc.PortfolioClient("http://p.test", transport=httpx.MockTransport(lambda r: httpx.Response(200, json=body)))
+    with pytest.raises(pc.PortfolioUnavailable) as info:
+        client.settlements("cathay", **WINDOW) if "rows" in body else client.valuation("cathay", date(2026, 9, 30))
+    assert info.value.code == "bad_body"
+
+
 def test_repr_does_not_leak_the_token():
     assert TOKEN not in repr(pc.PortfolioClient("http://p.test", TOKEN))
 
@@ -104,3 +121,24 @@ def test_client_for_reads_the_environment_at_call_time(monkeypatch):
     monkeypatch.setenv("PORTFOLIO_READ_TOKEN", TOKEN)
     client = pc.client_for()
     assert client.base_url == "http://p.test" and client.token == TOKEN
+
+
+def test_cached_client_does_not_share_different_args_and_memoises_valuation():
+    seen = []
+
+    def handler(request):
+        seen.append(dict(request.url.params))
+        if request.url.path.endswith("valuation"):
+            return httpx.Response(200, json=VALUATION)
+        p = request.url.params
+        bounds = {"settle_from": p["settle_from"], "settle_to": p["settle_to"], "from": p["from"], "to": p["to"]}
+        return httpx.Response(200, json={"rows": [ROW], "bounds": bounds, "complete": True})
+
+    with pc.cached(pc.PortfolioClient("http://p.test", transport=httpx.MockTransport(handler))) as c:
+        c.settlements("cathay", **WINDOW)
+        c.settlements("cathay", **{**WINDOW, "settle_to": date(2026, 9, 29)})
+        c.settlements("other", **WINDOW)
+        c.valuation("cathay", date(2026, 9, 30))
+        c.valuation("cathay", date(2026, 9, 30))
+        c.valuation("cathay", date(2026, 9, 29))
+    assert [p["broker"] for p in seen].count("other") == 1 and len(seen) == 5

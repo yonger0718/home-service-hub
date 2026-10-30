@@ -91,7 +91,22 @@ def _opt_date(value: object) -> date | None:
 def _dec(value: object) -> Decimal:
     if not isinstance(value, str):
         raise ValueError("amount must be a string")
-    return Decimal(value)
+    amount = Decimal(value)
+    if not amount.is_finite():
+        raise ValueError("amount must be finite")
+    return amount
+
+
+def _bool(value: object) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError("expected a JSON boolean")
+    return value
+
+
+def _strings(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ValueError("expected a list of strings")
+    return tuple(value)
 
 
 def _item(raw: dict) -> Item:
@@ -106,7 +121,7 @@ def _settlement(raw: dict) -> Settlement:
         net_amount=_dec(raw["net_amount"]),
         legs_net=_dec(raw["legs_net"]),
         currency=raw["currency"],
-        bookable=bool(raw["bookable"]),
+        bookable=_bool(raw["bookable"]),
         reason=raw["reason"],
         items=tuple(_item(i) for i in raw["items"]),
         fingerprint=raw["fingerprint"],
@@ -126,8 +141,8 @@ def _valuation(raw: dict) -> Valuation:
         market_value=_dec(raw["market_value"]),
         cash=_dec(raw["cash"]),
         total=_dec(raw["total"]),
-        complete=bool(raw["complete"]),
-        missing=tuple(raw["missing"]),
+        complete=_bool(raw["complete"]),
+        missing=_strings(raw["missing"]),
     )
 
 
@@ -180,10 +195,10 @@ class PortfolioClient:
         try:
             bounds = _bounds(body["bounds"])
             rows = tuple(_settlement(r) for r in body["rows"])
-            complete = body["complete"]
+            complete = _bool(body["complete"])
         except (KeyError, TypeError, ValueError, InvalidOperation):
             raise PortfolioUnavailable("bad_body") from None
-        if complete is not True or bounds != Bounds(settle_from, settle_to, trade_from, trade_to):
+        if not complete or bounds != Bounds(settle_from, settle_to, trade_from, trade_to):
             raise PortfolioUnavailable("incomplete")
         return Feed(rows=rows, bounds=bounds, complete=True)
 
