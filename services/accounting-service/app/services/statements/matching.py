@@ -98,6 +98,9 @@ class Entry:
     # a parent already covered elsewhere whose kind=fee children are still claimable: never a principal or a fallback
     # candidate, only visited by the child path so a child can claim its fee line
     carrier: bool = False
+    # R7 Phase 1: a booked 國泰 settlement stand-in (loader-set). Never represented; a settlement line claims it only on its
+    # exact date and amount (`_settlement_stand_in_claim`), otherwise the global assignment (`settlement_match`) decides
+    settlement_stand_in: bool = False
 
 
 @dataclass(frozen=True)
@@ -124,6 +127,11 @@ class Group:
     member_ids: tuple[int, ...]
 
 
+SETTLEMENT_LABELS = ("交割股款", "申購股款")
+SETTLEMENT_STAND_IN_RULE = "settlement_stand_in"
+SETTLEMENT_LINE_HINT = "settlement_line"
+
+
 @dataclass(frozen=True)
 class Rules:
     period_end: date
@@ -141,6 +149,9 @@ class Rules:
     bank_only_patterns: tuple[str, ...] = ("年費", "循環利息", "現金回饋", "跨行手續費", "轉帳手續費", "利息")
     transfer_tolerance_pct: Decimal = Decimal("0.10")  # R6c: a transfer pair's two legs may differ by this fraction
     transfer_pair_window_days: int = 7  # R6c: pair window only; never widens the population
+    settlement_labels: tuple[str, ...] = SETTLEMENT_LABELS  # R7: a bank line naming one of these is a 國泰 settlement line
+    settlement_window_days: int = 2  # R7: |settlement date - posted date| a settlement may sit from its line
+    settlement_sum_matching: bool = False  # R7 spec §9 gate: a line may equal the sum of several settlements
 
 
 def population_window_days(rules: Rules) -> int:
@@ -332,6 +343,11 @@ def _peer_ok(kind: str, line: Line, entry: Entry) -> bool:
 
 def _same(a: Decimal, b: Decimal) -> bool:
     return a.quantize(Q) == b.quantize(Q)
+
+
+def is_settlement_line(line: Line, rules: Rules) -> bool:
+    """R7: a bank withdrawal/deposit whose merchant names a settlement label."""
+    return line.line_kind in ("withdrawal", "deposit") and any(label in line.merchant_norm for label in rules.settlement_labels)
 
 
 def _plan_key(line: Line) -> str:
@@ -616,7 +632,7 @@ def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[i
         return out
     rule = {"payment": "payment", "refund": "refund", "transfer_in": "transfer", "transfer_out": "transfer"}.get(line.line_kind, "exact")
     for e in entries:
-        if e.carrier:
+        if e.carrier or e.settlement_stand_in:  # a settlement stand-in is claimed only by `_settlement_stand_in_claim`
             continue
         # group members (save a lone member for a non-purchase line and a member of a split group the statement
         # prints apart, `apart`), installment instances and children never stand alone (children reach a line via the
@@ -1008,6 +1024,17 @@ def _auto_pay_claim(kind: str, line: Line, entries: list[Entry], claimed: set[in
                           (f"date_distance={d}", "auto_pay"))
 
 
+def _settlement_stand_in_claim(line: Line, entries: list[Entry], claimed: set[int], rules: Rules) -> Representation | None:
+    """R7: exactly one unclaimed settlement stand-in of the line's flow on the line's exact posted date claims it
+    (standalone, `rules.accept`); none or several → None (the global assignment decides)."""
+    hits = [e for e in entries if e.settlement_stand_in and e.id not in claimed and _same(e.flow, line.flow)
+            and e.entry_date == line.posted_date]
+    if len(hits) != 1:
+        return None
+    return Representation("standalone", (Row(hits[0].id, "principal", hits[0].flow),), rules.accept,
+                          SETTLEMENT_STAND_IN_RULE, ("date_distance=0", SETTLEMENT_STAND_IN_RULE))
+
+
 NEAR_CHILDREN_MAX = 5
 
 
@@ -1125,6 +1152,14 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             continue
         if len(reps) >= 2 and reps[0].score >= rules.ambiguous_floor:  # R6a.2: ambiguity needs two candidates
             result.cases.append(_ambiguous(line, reps))
+            continue
+        if statement_kind == "bank" and is_settlement_line(line, rules):  # R7: owner twins above, then the stand-in
+            stand_in = _settlement_stand_in_claim(line, entries, claimed, rules)
+            if stand_in is not None:
+                result.claims.append(Claim(line.id, stand_in))
+                claimed |= {r.entry_id for r in stand_in.rows}
+            else:
+                result.cases.append(Case(line.id, None, "line_unmatched", (), {"hint": SETTLEMENT_LINE_HINT}))
             continue
         if not reps:
             taken = _claimed_by_earlier_line(statement_kind, line, entries, groups, plan_map, claimed, rules, aside, apart)
