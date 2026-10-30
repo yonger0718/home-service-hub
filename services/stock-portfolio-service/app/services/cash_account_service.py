@@ -526,6 +526,8 @@ def get_total_balance_in(
         if source_currency == target:
             total += native_balance
             continue
+        if native_balance == 0:
+            continue
 
         rate = fx_rate_service.get_rate(session, asof_date, source_currency, target)
         if rate is None:

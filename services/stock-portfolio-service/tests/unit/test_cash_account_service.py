@@ -116,6 +116,22 @@ def test_get_total_balance_in_converts_and_skips_missing_rate(db_session) -> Non
     assert skipped == ["JPY"]
 
 
+def test_get_total_balance_in_does_not_skip_a_zero_balance_without_rate(db_session) -> None:
+    usd = _account(nickname="US", currency="USD", opening_balance="0")
+    twd = _account(broker=BrokerEnum.CATHAY, nickname="TW", currency="TWD", opening_balance="30000")
+    db_session.add_all([usd, twd])
+    db_session.commit()
+
+    total, skipped = cash_account_service.get_total_balance_in(
+        db_session,
+        "TWD",
+        asof=date(2026, 6, 1),
+    )
+
+    assert total == Decimal("30000.0000")
+    assert skipped == []
+
+
 def test_create_manual_cash_transaction_normalizes_and_is_idempotent(db_session) -> None:
     account = _account(currency="USD")
     db_session.add(account)
