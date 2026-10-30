@@ -115,7 +115,7 @@ def test_real_graph_has_one_head():
     script = ScriptDirectory.from_config(config)
     heads = script.get_heads()
     assert 'a4p5q6r7s8t9' not in heads, 'receipt migration must descend from a4'
-    assert script.get_current_head() == 'b6cathay'
+    assert script.get_current_head() == 'c7points'
 
 
 def test_fresh_database_real_environment_traverses_every_revision_once(tmp_path, monkeypatch):
@@ -150,6 +150,6 @@ def test_fresh_database_real_environment_traverses_every_revision_once(tmp_path,
     assert visited[start:start + 4] == ['l9a0b1c2d3e4', 'm0b1c2d3e4f5', 'm0b1c2d3e4f6', 'n1c2d3e4f5g6']
     engine = sa.create_engine(url)
     with engine.connect() as conn:
-        assert conn.exec_driver_sql('SELECT version_num FROM alembic_version').scalar_one() == 'b6cathay'
+        assert conn.exec_driver_sql('SELECT version_num FROM alembic_version').scalar_one() == 'c7points'
         assert sa.inspect(conn).get_table_names() == ['alembic_version']
     engine.dispose()

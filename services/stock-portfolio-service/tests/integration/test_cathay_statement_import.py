@@ -353,3 +353,33 @@ def test_holdings_diff_empty_table(db_session):
         {"symbol": "9997", "statement_shares": 0, "portfolio_shares": 3000},
         {"symbol": "9998", "statement_shares": 0, "portfolio_shares": 2000},
     ]
+
+
+def _points_lines():
+    points_line = _line("範例電子", "集買", 1000, "12.3", 5, order_no="XY12300")
+    points_line["points"] = True
+    return [points_line, DEFAULT_LINES[1]]
+
+
+def test_points_line_imports_without_cash_legs(db_session):
+    result = import_statement(db_session, _payload(lines=_points_lines()), dry_run=False)
+
+    assert result.outcome == "imported"
+    points_row, cash_row = (
+        db_session.query(models.Transaction).order_by(models.Transaction.id).all()
+    )
+    assert points_row.paid_with_points is True
+    assert points_row.fee == Decimal("5")
+    assert db_session.query(CashTransaction).filter_by(related_transaction_id=points_row.id).count() == 0
+    assert cash_row.paid_with_points is False
+    assert db_session.query(CashTransaction).filter_by(related_transaction_id=cash_row.id).count() == 2
+
+
+def test_points_line_verifies_against_csv_rows(db_session):
+    _add_row(db_session, quantity=1000, fee="5")
+    _add_row(db_session, symbol="9998", name="範例化學", quantity=2000, price="25", fee="21")
+
+    result = import_statement(db_session, _payload(lines=_points_lines()), dry_run=False)
+
+    assert result.outcome == "verified"
+    assert db_session.query(models.Transaction).count() == 2

@@ -107,6 +107,7 @@ def map_statement(db: Session, payload: StatementPayload) -> Mapped | HeldReason
                 "order_id": line.order_no[:-2],
                 "broker_subtype": side[0],
                 "broker_day_trade_marker": marker,
+                "paid_with_points": line.points,
             },
         )
         row.fingerprint = statement_fingerprint(row, line.order_no)

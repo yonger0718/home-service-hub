@@ -92,6 +92,7 @@ class TransactionBase(BaseModel):
     fee: Decimal = Decimal("0.0")
     tax: Decimal = Decimal("0.0")
     broker: Optional[Broker] = None
+    paid_with_points: bool = False
 
     @model_validator(mode="after")
     def normalize_symbol(self) -> Self:
@@ -111,6 +112,12 @@ class TransactionCreate(TransactionBase):
     @model_validator(mode="after")
     def require_fx_rate_for_foreign_currency(self) -> Self:
         _require_fx_rate_for_foreign_currency(self.currency, self.fx_rate_to_twd)
+        return self
+
+    @model_validator(mode="after")
+    def points_only_on_buy(self) -> Self:
+        if self.paid_with_points and self.type != TransactionType.BUY:
+            raise ValueError("paid_with_points is only valid on a buy")
         return self
 
 class Transaction(TransactionBase):
