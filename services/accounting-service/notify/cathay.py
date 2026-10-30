@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import re
-import time as _time
+import threading
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -21,8 +21,7 @@ from .config import NotifyConfig
 PENDING_PATH = "/api/portfolio/imports/cathay-statement/pending"
 LATEST_PATH = "/api/portfolio/imports/cathay-statement/runs/latest"
 MAX_BODY = 65536
-READ_DEADLINE = 10.0  # seconds for one whole streamed read
-_monotonic = _time.monotonic
+REQUEST_DEADLINE = 10.0  # wall-clock seconds for one whole request: connect, headers, body and EOF
 MAX_ITEMS = 10
 MAX_REASON = 40
 MAX_LINE = 120
@@ -63,7 +62,6 @@ def _timestamp(value: object) -> datetime:
 
 
 def _get(client: httpx.Client, path: str) -> dict:
-    deadline = _monotonic() + READ_DEADLINE
     with client.stream("GET", path, headers={"Accept-Encoding": "identity"}) as response:
         if response.status_code != 200:
             raise ValueError("status")
@@ -77,12 +75,34 @@ def _get(client: httpx.Client, path: str) -> dict:
             body += chunk
             if len(body) > MAX_BODY:
                 raise ValueError("oversize")
-            if _monotonic() > deadline:
-                raise ValueError("deadline")
     data = json.loads(bytes(body))
     if not isinstance(data, dict):
         raise ValueError("shape")
     return data
+
+
+class _Deadline(Exception):
+    pass
+
+
+def _get_bounded(client: httpx.Client, path: str) -> dict:
+    """Run `_get` in a daemon thread and give up after REQUEST_DEADLINE; a stalled server cannot extend it."""
+    box: dict = {}
+
+    def work() -> None:
+        try:
+            box["data"] = _get(client, path)
+        except BaseException as exc:  # handed to the caller below
+            box["error"] = exc
+
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+    thread.join(REQUEST_DEADLINE)
+    if thread.is_alive():
+        raise _Deadline(path)  # the thread is abandoned; it is a daemon and cannot block exit
+    if "error" in box:
+        raise box["error"]
+    return box["data"]
 
 
 def _check_pending(data: dict) -> list[dict]:
@@ -93,6 +113,8 @@ def _check_pending(data: dict) -> list[dict]:
         raise ValueError("pending shape")
     if not _is_int(data["total"], len(items)):
         raise ValueError("total")
+    if data["truncated"] != (data["total"] > len(items)):
+        raise ValueError("truncated")
     for item in items:
         if not isinstance(item, dict) or set(item) != ITEM_KEYS:
             raise ValueError("item keys")
@@ -162,11 +184,17 @@ def cathay_lines(
     if cfg.portfolio_base is None:
         return None
     factory = client_factory if client_factory is not None else httpx.Client
+    client = None
+    abandoned = False
     try:
-        with factory(base_url=cfg.portfolio_base, timeout=10) as client:
-            pending = _get(client, PENDING_PATH)
+        client = factory(base_url=cfg.portfolio_base, timeout=10)
+        try:
+            pending = _get_bounded(client, PENDING_PATH)
             items = _check_pending(pending)
-            latest = _check_latest(_get(client, LATEST_PATH))
+            latest = _check_latest(_get_bounded(client, LATEST_PATH))
+        except _Deadline:
+            abandoned = True  # a blocked thread may still hold the client: do not close it under that thread
+            raise
         lines = [
             CathayLine(f"cathay:{i['trade_date']}:{i['status']}", _item_text(i))
             for i in sorted(items, key=lambda i: i["trade_date"])[:MAX_ITEMS]
@@ -186,3 +214,6 @@ def cathay_lines(
         return lines
     except Exception:
         return [CathayLine("cathay:unreadable", UNREADABLE)]
+    finally:
+        if client is not None and not abandoned:
+            client.close()

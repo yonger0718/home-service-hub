@@ -1,4 +1,6 @@
 import gzip
+import threading
+import time as clock
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
@@ -153,6 +155,8 @@ BAD_CASES = {
     "invalid_json": _bad(PENDING, httpx.Response(200, content=b"{nope")),
     "not_object": _bad(PENDING, httpx.Response(200, json=[])),
     "missing_total": _bad(PENDING, {"items": [], "truncated": False}),
+    "truncated_false_but_more": _bad(PENDING, {"items": [], "total": 1, "truncated": False}),
+    "truncated_true_but_complete": _bad(PENDING, {"items": [], "total": 0, "truncated": True}),
     "extra_key": _bad(PENDING, {**pending(), "extra": 1}),
     "total_below_items": _bad(PENDING, {"items": [item()], "total": 0, "truncated": False}),
     "truncated_not_bool": _bad(PENDING, {"items": [], "total": 0, "truncated": 0}),
@@ -241,20 +245,30 @@ def test_compressed_body_is_rejected_before_any_chunk_is_read():
     assert log[0].headers["accept-encoding"] == "identity"
 
 
-def test_slow_stream_past_the_whole_read_deadline_is_unreadable(monkeypatch):
-    clock = [1000.0]
-    monkeypatch.setattr("notify.cathay._monotonic", lambda: clock[0])
-
+def _blocking_stream(first: bytes | None, release: threading.Event):
     class Stream(httpx.SyncByteStream):
         def __iter__(self):
-            for _ in range(20):
-                clock[0] += 1.0
-                yield b" "
+            if first is not None:
+                yield first
+            release.wait(30)  # blocked until the test ends
 
+    return Stream()
+
+
+@pytest.mark.parametrize("first", [None, b"{}"], ids=["before_first_chunk", "before_eof"])
+def test_stalled_request_is_unreadable_within_the_deadline(monkeypatch, first):
+    monkeypatch.setattr("notify.cathay.REQUEST_DEADLINE", 0.3)
+    release = threading.Event()
     routes = healthy()
-    routes[PENDING] = httpx.Response(200, stream=Stream())
-    out, _ = lines(routes, TUE_0700)
+    routes[PENDING] = httpx.Response(200, stream=_blocking_stream(first, release))
+    started = clock.monotonic()
+    try:
+        out, _ = lines(routes, TUE_0700)
+        elapsed = clock.monotonic() - started
+    finally:
+        release.set()
     assert out == UNREADABLE
+    assert elapsed < 0.3 + 1
 
 
 def test_client_factory_receives_base_and_timeout():

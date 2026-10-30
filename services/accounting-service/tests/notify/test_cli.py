@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import stat
+import threading
 from pathlib import Path
 from datetime import date, timedelta
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ import pytest
 from notify import cli, render, send
 from notify.cathay import LATEST_PATH, PENDING_PATH
 from notify.state import load_state
-from tests.notify.test_cathay import BAD_CASES, FAULT_PATH, LATEST as _L, PENDING as _P, TIMEOUT_CASE, item as cathay_item, pending as cathay_pending
+from tests.notify.test_cathay import BAD_CASES, FAULT_PATH, _blocking_stream, LATEST as _L, PENDING as _P, TIMEOUT_CASE, item as cathay_item, pending as cathay_pending
 
 SECRET = "secret-token"
 
@@ -417,3 +418,19 @@ def test_default_routes_add_nothing(cli_env):
     cli_env.portfolio_paths.clear()
     assert _sent_text(cli_env, ["daily", "--as-of", "2026-11-03", "--config", cli_env.cfg]) == base
     assert {_P, _L} <= set(cli_env.portfolio_paths)
+
+
+@pytest.mark.parametrize("first", [None, b"{}"], ids=["before_first_chunk", "before_eof"])
+def test_stalled_portfolio_still_delivers_the_debit_message(cli_env, monkeypatch, first):
+    monkeypatch.setattr("notify.cathay.REQUEST_DEADLINE", 0.3)
+    base = _sent_text(cli_env, ["daily", "--as-of", "2026-11-03", "--config", cli_env.config_without_portfolio()])
+    cli_env.sent.clear()
+    release = threading.Event()
+    cli_env.portfolio[_P] = httpx.Response(200, stream=_blocking_stream(first, release))
+    try:
+        assert main(["daily", "--as-of", "2026-11-03", "--send", "--config", cli_env.cfg]) == 0
+    finally:
+        release.set()
+    text = "\n\n".join(t for _, t in cli_env.sent)
+    assert UNREADABLE_LINE in text and "旅遊卡" in text
+    assert text.replace(f"\n\n**國泰對帳單**\n• {UNREADABLE_LINE}", "") == base
