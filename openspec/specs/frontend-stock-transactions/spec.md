@@ -7,7 +7,7 @@ TBD - created by archiving change redesign-dashboard-handoff. Update Purpose aft
 
 ### Requirement: Date-grouped buy/sell timeline
 
-The stock transactions screen SHALL render trades in descending order grouped by month; with a non-date sort (代碼) the months appear in first-seen order. Each month heading SHALL show the month (2026 年 10 月) and the month's 買 / 賣 totals. Each row MUST display: the trade day and weekday, a stock square, stock name + code, a `SideTag` (`buy` indigo 買 / `sell` slate 賣), a 當沖 tag when the trade is part of a day trade, `qty 股 @ price` with fees and tax beneath, the broker, and the amount (buys: total paid with a leading −; sells: net received with a leading +; foreign trades: TWD amount with the native amount beneath) and a row-actions button. At < 760px rows SHALL collapse to stock square, name + `SideTag`, `qty 股 @ price · broker`, and amount with the date beneath. The month 買 / 賣 totals SHALL use the same TWD all-in rule and row set as the summary cards (the list page's rows only while that set loads or after it failed). Native amounts SHALL show the currency as a suffix (`238.40 USD`). The stock square's fill SHALL be a stable hash of the symbol over the dashboard's five-colour series, so it MAY differ from the allocation-rank colour the dashboard gives the same stock.
+The stock transactions screen SHALL render trades in descending order grouped by month; with a non-date sort (代碼) the months appear in first-seen order. Each month heading SHALL show the month (2026 年 10 月) and the month's 買 / 賣 totals. Each row MUST display: the trade day and weekday, a stock square, stock name + code, a `SideTag` (`buy` indigo 買 / `sell` slate 賣), a 當沖 tag when the trade is part of a day trade, a 點數付款 tag after it when the buy was paid with 小樹點數 (`paid_with_points`), `qty 股 @ price` with fees and tax beneath, the broker, and the amount (buys: total paid with a leading −; sells: net received with a leading +; foreign trades: TWD amount with the native amount beneath) and a row-actions button. At < 760px rows SHALL collapse to stock square, name + `SideTag`, `qty 股 @ price · broker`, and amount with the date beneath. The month 買 / 賣 totals SHALL use the same TWD all-in rule and row set as the summary cards (the list page's rows only while that set loads or after it failed). Native amounts SHALL show the currency as a suffix (`238.40 USD`). The stock square's fill SHALL be a stable hash of the symbol over the dashboard's five-colour series, so it MAY differ from the allocation-rank colour the dashboard gives the same stock.
 
 #### Scenario: Buy row uses buy styling
 - **WHEN** a buy trade renders
@@ -20,6 +20,10 @@ The stock transactions screen SHALL render trades in descending order grouped by
 #### Scenario: Day trade is tagged
 - **WHEN** a buy and a sell of the same symbol on the same day are rendered
 - **THEN** both rows show a 當沖 tag
+
+#### Scenario: Points-paid buy is tagged
+- **WHEN** a buy with `paid_with_points: true` renders
+- **THEN** the row shows a 點數付款 tag
 
 ### Requirement: Transaction form accepts market plus conditional FX inputs
 
@@ -40,6 +44,15 @@ The transaction create/edit form SHALL include a `market` dropdown (options `TW`
 #### Scenario: Non-positive fx_rate_to_twd blocks submission
 - **WHEN** the user selects `US` and enters `fx_rate_to_twd <= 0`
 - **THEN** client-side validation SHALL block submission and surface an inline error
+
+### Requirement: Transaction form marks a points-paid buy
+
+The transaction create/edit form SHALL show the checkbox 小樹點數付款（不扣現金） bound to `paid_with_points` on a TW buy only. The submitted `paid_with_points` SHALL be false whenever the trade is not a TW buy.
+
+#### Scenario: Points checkbox appears on a TW buy only
+- **WHEN** the form shows a TW buy
+- **THEN** the 小樹點數付款 checkbox SHALL be visible
+- **AND** switching to a sell or a non-TW market SHALL hide it and submit `paid_with_points: false`
 
 ### Requirement: Transaction list renders market column for non-TW rows
 

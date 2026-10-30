@@ -55,6 +55,8 @@ export interface Transaction {
   fee: number;
   tax: number;
   is_day_trade?: boolean;
+  /** 小樹點數 paid the whole buy: the row books no cash. */
+  paid_with_points?: boolean;
   created_at?: string;
   updated_at?: string;
 }

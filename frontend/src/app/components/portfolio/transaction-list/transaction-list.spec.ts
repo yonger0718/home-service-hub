@@ -1,3 +1,4 @@
+import { ChangeDetectorRef } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { DatePicker } from 'primeng/datepicker';
@@ -732,4 +733,46 @@ describe('PortfolioTransactionListComponent', () => {
       expect(fixture.componentInstance.newTransaction.id).toBe(twSell.id);
     });
   });
+
+  describe('小樹點數付款', () => {
+    const points = () => document.body.querySelector('.points-checkbox');
+
+    it('offers the checkbox on a TW buy only', () => {
+      const fixture = create();
+      const component = fixture.componentInstance;
+      component.openNew();
+      fixture.detectChanges();
+      expect(points()?.textContent).toContain('小樹點數付款');
+
+      // The form edits newTransaction in place; ngModel marks the OnPush view in the app.
+      const refresh = () => {
+        fixture.componentRef.injector.get(ChangeDetectorRef).markForCheck();
+        fixture.detectChanges();
+      };
+      component.newTransaction.type = TransactionType.SELL;
+      refresh();
+      expect(points()).toBeNull();
+
+      component.newTransaction.type = TransactionType.BUY;
+      component.onMarketChange('US');
+      refresh();
+      expect(points()).toBeNull();
+    });
+
+    it('sends the flag on a buy and clears it when the trade is no longer a TW buy', () => {
+      const fixture = create();
+      const component = fixture.componentInstance;
+      component.openNew();
+      component.newTransaction.paid_with_points = true;
+      component.saveTransaction();
+      expect(portfolioService['createTransaction'].mock.calls[0][0].paid_with_points).toBe(true);
+
+      component.openNew();
+      component.newTransaction.paid_with_points = true;
+      component.newTransaction.type = TransactionType.SELL;
+      component.saveTransaction();
+      expect(portfolioService['createTransaction'].mock.calls[1][0].paid_with_points).toBe(false);
+    });
+  });
 });
+
