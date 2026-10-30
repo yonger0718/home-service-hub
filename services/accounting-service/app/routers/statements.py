@@ -283,7 +283,9 @@ def reconcile_statement(account_id: int, statement_id: int, db: Session = Depend
             raise NotFoundError(f"statement {statement_id} not found")
         result = recon.reconcile(db, statement_id)
         out = {"claims": result.claims, "cases_opened": result.cases_opened, "explained": result.explained,
-               "unmatched_entries": result.unmatched_entries, "skipped": result.skipped}
+               "unmatched_entries": result.unmatched_entries, "skipped": result.skipped,
+               "settlement_source_unavailable": result.settlement_source_unavailable,
+               "settlements": dict(result.settlements)}
     db.commit()
     owner_rule_service.run_rules_safe(db, statement_id)
     policy = policy_service.run_policy_safe(db, statement_id)
@@ -294,7 +296,7 @@ def reconcile_statement(account_id: int, statement_id: int, db: Session = Depend
 def sweep(body: Lease, request: Request, db: Session = Depends(get_db)):
     """The worker's daily pass over every pending statement. One transaction per statement: the next statement's
     sweep must not run while this one still holds the previous statement's entry/group locks."""
-    totals = {"statements": 0, "claims": 0, "cases_opened": 0}
+    totals = {"statements": 0, "claims": 0, "cases_opened": 0, "settlement_source_unavailable": 0}
     errors: list[dict] = []
     with service_errors():
         ingest.require_lease(db, body.run_id, body.lease_token, label=_label(request))
@@ -308,6 +310,7 @@ def sweep(body: Lease, request: Request, db: Session = Depends(get_db)):
                 totals["statements"] += 1
                 totals["claims"] += item["result"].claims
                 totals["cases_opened"] += len(item["result"].cases_opened)
+                totals["settlement_source_unavailable"] += int(item["result"].settlement_source_unavailable)
             db.commit()  # the items done so far stay committed
             if "error" not in item:
                 owner_rule_service.run_rules_safe(db, item["statement_id"], run_id=body.run_id)

@@ -17,7 +17,9 @@ from app.models import (
     ReconciliationOwnerRule, StatementLine,
 )
 from app.schemas.inbox import InboxApplyIn, InboxCaseRef
-from app.services import coverage_service, proposal_service, reconciliation_actions, split_protection
+from app.services import (
+    coverage_service, proposal_service, reconciliation_actions, settings_service, split_protection,
+)
 from app.services import entry_write_service as ews
 from app.services.edit_lock import EditLockedError
 from app.services.errors import (
@@ -27,7 +29,7 @@ from app.services.reconciliation_actions import OPEN_STATUSES, audit, base, engi
 from app.services.reconciliation_actions.base import Context
 from app.services.statements import matching
 
-SETTLEMENT_LABELS: tuple[str, ...] = ("交割股款", "申購股款")
+SETTLEMENT_LABELS: tuple[str, ...] = matching.SETTLEMENT_LABELS  # the default; callers pass the rules' labels
 QUESTIONS = ("bank_only", "transfer", "ledger_only", "amount_differs", "date_differs",
              "ambiguous", "balance_gap", "settlement", "proposed", "other")
 FOLDED = frozenset({"proposed", "balance_gap", "settlement", "other"})
@@ -48,11 +50,19 @@ def pattern(merchant_norm: str) -> str:
 
 
 def classify(*, kind: str, status: str, statement_kind: str, hint: str | None,
-             merchant_norm: str | None, allowed: list[str]) -> str:
-    """Map a reconciliation case to its inbox question."""
+             merchant_norm: str | None, allowed: list[str],
+             settlement_labels: tuple[str, ...] = matching.SETTLEMENT_LABELS) -> str:
+    """Map a reconciliation case to its inbox question. Portfolio integration spec §8: a `settlement` case (a
+    booking candidate or `source_drift`) and an `ambiguous` one with hint `settlement_ambiguous` are `settlement`
+    questions, as an unmatched bank line naming a settlement label (`settlement_labels`, the rules' list) is; a
+    `dividend` case is `other` until its follow-up plan gives it a card."""
     if (statement_kind == "bank" and kind == "line_unmatched"
-            and any(label in (merchant_norm or "") for label in SETTLEMENT_LABELS)):
+            and any(label in (merchant_norm or "") for label in settlement_labels)):
         return "settlement"
+    if kind == "settlement" or (kind == "ambiguous" and hint == "settlement_ambiguous"):
+        return "settlement"
+    if kind == "dividend":
+        return "other"
     if status == "proposed":
         return "proposed"
     if hint == "needs_peer":
@@ -139,8 +149,9 @@ def _single_candidate(case: ReconciliationCase) -> int | None:
     if case.entry_id is not None:
         return case.entry_id
     candidates = case.candidates or []
-    if len(candidates) == 1 and candidates[0].get("entry_id") is not None:
-        return int(candidates[0]["entry_id"])
+    # a settlement candidate names a fingerprint, not an entry: skipped, never an error
+    if len(candidates) == 1 and isinstance(candidates[0].get("entry_id"), int):
+        return candidates[0]["entry_id"]
     return None
 
 
@@ -270,7 +281,8 @@ def _listed_candidates(case: ReconciliationCase, entries: dict[int, LedgerEntry]
     inbox names an entry)."""
     out = []
     for cand in case.candidates or []:
-        entry = entries.get(cand.get("entry_id"))
+        entry_id = cand.get("entry_id")
+        entry = entries.get(entry_id) if isinstance(entry_id, int) else None  # a settlement candidate has none
         if entry is None:
             continue
         out.append(_candidate(entry, categories, reason=cand.get("reason"), residual=cand.get("residual"),
@@ -301,11 +313,16 @@ def _rule_hint(db: Session, statement: AccountStatement, line: StatementLine, ca
             "amount": f"{line.flow_amount:.4f}", "default_category_id": cache[key]}
 
 
+def settlement_labels(db: Session) -> tuple[str, ...]:
+    """The rules' `settlement_labels` (the one setting the matcher's settlement-line test reads too)."""
+    return tuple(settings_service.reconciliation_rules(db).get("settlement_labels") or matching.SETTLEMENT_LABELS)
+
+
 def _question(case: ReconciliationCase, statement: AccountStatement, line: StatementLine | None,
-              allowed: list[str]) -> str:
+              allowed: list[str], *, labels: tuple[str, ...]) -> str:
     return classify(kind=case.kind, status=case.status, statement_kind=statement.kind,
                     hint=(case.context or {}).get("hint"),
-                    merchant_norm=line.merchant_norm if line else None, allowed=allowed)
+                    merchant_norm=line.merchant_norm if line else None, allowed=allowed, settlement_labels=labels)
 
 
 def _buttons(db: Session, case: ReconciliationCase, question: str, allowed: list[str]) -> list[str]:
@@ -340,9 +357,10 @@ def _transfer_out(db: Session, case: ReconciliationCase, allowed: list[str]) -> 
 
 
 def _item(db: Session, case: ReconciliationCase, statement: AccountStatement, line: StatementLine | None,
-          entries: dict[int, LedgerEntry], categories: dict[int, Category], hint_cache: dict) -> dict:
+          entries: dict[int, LedgerEntry], categories: dict[int, Category], hint_cache: dict,
+          labels: tuple[str, ...]) -> dict:
     allowed = reconciliation_actions.allowed(case)
-    question = _question(case, statement, line, allowed)
+    question = _question(case, statement, line, allowed, labels=labels)
     actions = _buttons(db, case, question, allowed)
     learn = (line is not None and bool(pattern(line.merchant_norm or ""))  # an empty pattern can never be a rule
              and any(learnable(question, b) for b in actions))
@@ -391,10 +409,11 @@ def build_inbox(db: Session, *, statuses: tuple[str, ...] = ("open", "proposed")
     entries = _by_id(db, LedgerEntry, entry_ids)
     categories = _by_id(db, Category, (e.category_id for e in entries.values()))
     hint_cache: dict = {}
+    labels = settlement_labels(db)
     keyed = []
     for case, statement, account in rows:
         line = lines.get(case.line_id)
-        item = _item(db, case, statement, line, entries, categories, hint_cache)
+        item = _item(db, case, statement, line, entries, categories, hint_cache, labels)
         entry = entries.get(case.entry_id)
         day = line.posted_date if line else (entry.posted_date if entry else date.max)
         keyed.append(((account.name, account.id, -statement.period_end.toordinal(), day, case.id), account, item))
@@ -493,14 +512,15 @@ def _check_params(body: InboxApplyIn) -> None:
                                   else "entry_ids required for every case")
 
 
-def _asked_question(case: ReconciliationCase, statement: AccountStatement, line: StatementLine | None) -> str:
+def _asked_question(case: ReconciliationCase, statement: AccountStatement, line: StatementLine | None, *,
+                    labels: tuple[str, ...]) -> str:
     """The question the case's card asked: as it stands while open, else as if still open with the whole registry
     (a replayed member is closed now; `allowed` only narrows `create_entry`, which `needs_peer` already decides)."""
     if case.status in OPEN_STATUSES:
-        return _question(case, statement, line, reconciliation_actions.allowed(case))
+        return _question(case, statement, line, reconciliation_actions.allowed(case), labels=labels)
     return classify(kind=case.kind, status="open", statement_kind=statement.kind,
                     hint=(case.context or {}).get("hint"), merchant_norm=line.merchant_norm if line else None,
-                    allowed=list(reconciliation_actions.ACTIONS))
+                    allowed=list(reconciliation_actions.ACTIONS), settlement_labels=labels)
 
 
 def _check_batch(db: Session, body: InboxApplyIn) -> tuple[list[ReconciliationCase], list[StatementLine | None]]:
@@ -518,10 +538,12 @@ def _check_batch(db: Session, body: InboxApplyIn) -> tuple[list[ReconciliationCa
     statements = _by_id(db, AccountStatement, (case.statement_id for case in by_id.values()))
     cases = [by_id[case_id] for case_id in ids]
     lines = [base.current_line(db, case, statements[case.statement_id]) for case in cases]
+    labels = settlement_labels(db)
     questions = set()
     for ref, case, line in zip(body.cases, cases, lines):
         if case.status in OPEN_STATUSES and case.version == ref.case_version:
-            questions.add(_question(case, statements[case.statement_id], line, reconciliation_actions.allowed(case)))
+            questions.add(_question(case, statements[case.statement_id], line, reconciliation_actions.allowed(case),
+                                    labels=labels))
     if len(questions) > 1:
         raise ValidationError("cases", "mixed questions")
     if questions:
@@ -544,7 +566,9 @@ def _rule_key(db: Session, body: InboxApplyIn, cases: list[ReconciliationCase],
               if case.status not in OPEN_STATUSES or case.version == ref.case_version]
     if not judged:
         return None, None, None
-    questions = [_asked_question(case, db.get(AccountStatement, case.statement_id), line) for case, line in judged]
+    labels = settlement_labels(db)
+    questions = [_asked_question(case, db.get(AccountStatement, case.statement_id), line, labels=labels)
+                 for case, line in judged]
     refused = next((q for q in questions if not learnable(q, body.action)), None)
     if refused is not None:
         raise CodedValidationError("learn", "not_learnable", f"{body.action} on {refused}")
@@ -582,7 +606,8 @@ def _apply_member(db: Session, ref: InboxCaseRef, body: InboxApplyIn, *, label: 
         if case.version != ref.case_version:
             return _result(case.id, "refused", code="stale_case")
         allowed = reconciliation_actions.allowed(case)
-        if action is None or body.action not in _buttons(db, case, _question(case, statement, line, allowed), allowed):
+        question = _question(case, statement, line, allowed, labels=settlement_labels(db))
+        if action is None or body.action not in _buttons(db, case, question, allowed):
             return _result(case.id, "refused", code="not_offered")
         row, replayed = engine.apply_action(db, case_id=case.id, action=action, params=params, actor="owner",
                                             label=label, request_id=request_id,

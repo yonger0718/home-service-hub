@@ -12,8 +12,8 @@ from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
-    AccountStatement, EntryGroup, LedgerEntry, ReconciliationAction, ReconciliationCase, StatementAutoPay,
-    StatementCoverage, StatementLine,
+    AccountStatement, EntryGroup, LedgerEntry, ReconciliationAction, ReconciliationCase, SettlementBooking,
+    StatementAutoPay, StatementCoverage, StatementLine,
 )
 from app.services import coverage_service
 from app.services.statements import matching
@@ -36,11 +36,46 @@ def auto_pay_legs(db: Session, account_ids: list[int]) -> dict[int, int]:
     return out
 
 
+def settlement_legs(db: Session, account_ids: list[int]) -> dict[int, int]:
+    """Portfolio integration spec §4.7: entry id → `settlement_booking.id` for the legs of `booked` settlement
+    stand-ins (`kind='settlement'`, `origin='stand_in'`) whose OWN account is one of these (the bank leg on the bank
+    account's statements; the target leg only where the target is a participating account). A bank-origin booking
+    is no stand-in: its bank leg was booked for its line (`book_settlement`)."""
+    out: dict[int, int] = {}
+    for column in (SettlementBooking.out_entry_id, SettlementBooking.in_entry_id):
+        rows = db.execute(select(LedgerEntry.id, SettlementBooking.id)
+                          .join(SettlementBooking, column == LedgerEntry.id)
+                          .where(SettlementBooking.status == "booked", SettlementBooking.kind == "settlement",
+                                 SettlementBooking.origin == "stand_in", LedgerEntry.account_id.in_(account_ids)))
+        out.update({entry_id: row_id for entry_id, row_id in rows})
+    return out
+
+
+def unclaimed_settlement_legs(db: Session, account_id: int) -> dict[int, int]:
+    """The one "unclaimed stand-in" query (spec §4.7): bank leg entry id → booking id for the `booked` stand-in rows
+    of the account (`origin='stand_in'`, `kind='settlement'`) with no active coverage on EITHER leg. Read without
+    locks; a retirement re-reads the claim under the row and leg locks (`trade_settlement_service.retire_pair`)."""
+    def covered(column):
+        return exists().where(StatementCoverage.entry_id == column, StatementCoverage.status == "active")
+
+    rows = db.execute(
+        select(LedgerEntry.id, SettlementBooking.id)
+        .join(SettlementBooking, or_(LedgerEntry.id == SettlementBooking.out_entry_id,
+                                     LedgerEntry.id == SettlementBooking.in_entry_id))
+        .where(SettlementBooking.account_id == account_id, SettlementBooking.status == "booked",
+               SettlementBooking.kind == "settlement", SettlementBooking.origin == "stand_in",
+               LedgerEntry.account_id == account_id,
+               ~covered(SettlementBooking.out_entry_id), ~covered(SettlementBooking.in_entry_id))
+        .order_by(SettlementBooking.id)).all()
+    return {entry_id: row_id for entry_id, row_id in rows}
+
+
 def stand_in_entry_ids(db: Session, account_ids: list[int]) -> set[int]:
     """Entries of these accounts that stand in for a printed line until an owner representation wins: those created
-    by an applied backfill action on a statement of these accounts that still exist, and the booked auto-pay legs
-    (`auto_pay_legs`)."""
-    return _backfilled_ids(db, account_ids) | set(auto_pay_legs(db, account_ids))
+    by an applied backfill action on a statement of these accounts that still exist, the booked auto-pay legs
+    (`auto_pay_legs`) and the booked settlement stand-in legs (`settlement_legs`)."""
+    return (_backfilled_ids(db, account_ids) | set(auto_pay_legs(db, account_ids))
+            | set(settlement_legs(db, account_ids)))
 
 
 def _backfilled_ids(db: Session, account_ids: list[int]) -> set[int]:
@@ -341,7 +376,8 @@ def orphans(db: Session, statement: AccountStatement, accounts: list[int]) -> li
     is held by a non-stand-in entry on this statement. Auto-pay spec §4.5: also every auto-pay leg of `accounts` with
     no active coverage anywhere whose `entry_date` lies in the statement's period and whose row has no twin (the
     settings' `twin_window_days`) — no event, line or claimant; `auto_pay_id` names the row. A leg waiting for a later
-    statement is not an orphan."""
+    statement is not an orphan. Portfolio integration spec §4.7: likewise every unclaimed settlement stand-in's bank
+    leg (`_settlement_orphans`, `settlement_booking_id` names the row)."""
     ids = stand_in_entry_ids(db, accounts)
     if not ids:
         return []
@@ -362,7 +398,8 @@ def orphans(db: Session, statement: AccountStatement, accounts: list[int]) -> li
         line, claimant = by_event[action.event_id]
         out.append({"entry_id": stand_in_id, "event_id": action.event_id, "line_id": line.id,
                     "backfill_action_id": action.id, "claimant_entry_id": claimant})
-    return out + _auto_pay_orphans(db, statement, accounts, claimed)
+    return out + _auto_pay_orphans(db, statement, accounts, claimed) + _settlement_orphans(db, statement, accounts,
+                                                                                         claimed)
 
 
 def _auto_pay_orphans(db: Session, statement: AccountStatement, accounts: list[int], claimed: set[int]) -> list[dict]:
@@ -385,4 +422,31 @@ def _auto_pay_orphans(db: Session, statement: AccountStatement, accounts: list[i
             continue
         out.append({"entry_id": entry_id, "event_id": None, "line_id": None, "backfill_action_id": None,
                     "auto_pay_id": row.id, "claimant_entry_id": None})
+    return out
+
+
+def _settlement_orphans(db: Session, statement: AccountStatement, accounts: list[int], claimed: set[int]) -> list[dict]:
+    """Spec §4.7 "Bank line": the bank legs of the statement account's unclaimed settlement stand-ins
+    (`unclaimed_settlement_legs`, neither leg covered anywhere) whose `entry_date` lies in the period and whose row has
+    no settlement twin (`trade_settlement_service.find_twins`, the settlement settings' `twin_window_days`): no
+    event, line or claimant; `settlement_booking_id` names the row (the auto-pay orphan surfacing)."""
+    from app.services import trade_settlement_service as tss  # local: trade_settlement_service imports this module
+
+    legs = {entry_id: row_id for entry_id, row_id in unclaimed_settlement_legs(db, statement.account_id).items()
+            if entry_id not in claimed}
+    if not legs:
+        return []
+    in_period = set(db.execute(select(LedgerEntry.id).where(
+        LedgerEntry.id.in_(legs), LedgerEntry.entry_date.between(statement.period_start, statement.period_end)))
+        .scalars())
+    window = tss.twin_window_days(db)
+    out = []
+    for entry_id in sorted(in_period):
+        row = db.get(SettlementBooking, legs[entry_id])
+        if tss.find_twins(db, account_id=row.account_id, target_account_id=row.target_account_id,
+                          amount=row.net_amount, settlement_date=row.settlement_date, window_days=window,
+                          exclude=[i for i in (row.out_entry_id, row.in_entry_id) if i is not None]):
+            continue
+        out.append({"entry_id": entry_id, "event_id": None, "line_id": None, "backfill_action_id": None,
+                    "settlement_booking_id": row.id, "claimant_entry_id": None})
     return out

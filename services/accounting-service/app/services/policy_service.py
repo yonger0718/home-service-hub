@@ -592,7 +592,8 @@ def _single_admissible(ctx: Context, candidate: Candidate) -> None:
     plans = rec.plan_map(db, statement.account_id)
     lines_all, holders = rec.pass_two_holders(
         db, statement, accounts, ctx.rules, current, claimable_lines, entries, groups, plans,
-        lambda e: rec.proposed_fx_fee(accounts_by_id[e.account_id], e.flow))
+        lambda e: rec.proposed_fx_fee(accounts_by_id[e.account_id], e.flow),
+        settlement_account=bool(accounts_by_id[statement.account_id].settlement_source))  # reconcile's pass 1 (R7)
     match_ctx = matching.statement_context(statement.kind, claimable_lines, lines_all, entries, groups, ctx.rules,
                                            statement.currency, holders=holders)
     matcher_line = rec._as_line(line)

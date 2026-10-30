@@ -1,0 +1,306 @@
+"""R7 Phase 1 reconcile orchestration (portfolio integration spec §4.3–§4.5, §4.7, §9): the settlement feed read
+by settlement window, the global assignment's cases, the stand-in claim and its link, mismatches and orphans,
+drift over claimed lines, twin retirement, owner-delete housekeeping and the neighbour re-check. Fictional amounts;
+the fixture's own accounts only."""
+from datetime import date
+from decimal import Decimal
+
+import pytest
+from sqlalchemy import select, text, update
+from sqlalchemy.orm import sessionmaker
+
+from app import auth
+from app.models import AccountStatement, LedgerEntry, SettlementBooking
+from app.services import entry_write_service as ews
+from app.services import statement_retire_service
+from app.services import trade_settlement_service as tss
+from app.services.errors import CodedConflictError
+from tests.integration import statement_fixtures
+from tests.integration.settlement_fixtures import (  # noqa: F401  (portfolio_stub is a fixture)
+    AUG, bank_line, feed, portfolio_stub, seed_stand_in, settle_line, settlement_bank, submit_bank,
+)
+from tests.integration.statement_fixtures import OCT, _active, _reconcile, _transfer, run  # noqa: F401
+
+
+def _cases(db, statement_id, *statuses):
+    """The statement's line and entry cases: a bank statement whose ledger lacks a printed settlement also opens a
+    `balance_gap` case, which none of these tests is about."""
+    return [c for c in statement_fixtures._cases(db, statement_id, *statuses) if c.kind != "balance_gap"]
+
+
+def test_unique_settlement_writes_a_settlement_case_and_never_a_backfill(seed, db_session, run, portfolio_stub):
+    bank, _ = settlement_bank(seed, db_session)
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5", "ct:7")))
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    (case,) = _cases(db_session, sid, "open")
+    assert (case.kind, case.context["fingerprint"], case.candidates[0]["settlement_date"]) == (
+        "settlement", portfolio_stub.rows[0]["fingerprint"], "2026-09-14")
+
+
+def test_net_mismatch_stays_pending(seed, db_session, run, portfolio_stub):
+    bank, _ = settlement_bank(seed, db_session)
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12306", ("ct:5",)))
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    (case,) = _cases(db_session, sid, "open")
+    assert (case.kind, case.context["hint"]) == ("line_unmatched", "settlement_pending")
+    assert case.context["nearest"] == {"date": "2026-09-14", "delta": "-1.0000"}  # spec §9: spot the missing import
+
+
+def test_portfolio_unavailable_reconciles_the_rest(seed, db_session, run, portfolio_stub):
+    bank, _ = settlement_bank(seed, db_session)
+    portfolio_stub.down = True
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305"),
+                                              bank_line(2, date(2026, 9, 15), "ATM", "-1000")])
+    result = _reconcile(db_session, sid)
+    assert result.settlement_source_unavailable is True and result.settlements["unavailable_code"] == "http_503"
+    assert {(c.kind, (c.context or {}).get("hint")) for c in _cases(db_session, sid, "open")} >= {
+        ("line_unmatched", "settlement_pending")}
+
+
+def test_owner_twin_claims_first_and_contests_its_settlement(seed, db_session, run, portfolio_stub):
+    bank, target = settlement_bank(seed, db_session)
+    _transfer(seed, bank, target, Decimal("12305"), date(2026, 9, 14))  # the owner's own record
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)))
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305"),
+                                              settle_line(2, date(2026, 9, 15), "-12305")])
+    kinds = {c.line_id: (c.kind, c.context.get("hint")) for c in _cases(db_session, sid, "open")}
+    assert len(_active(db_session, sid)) == 1 and list(kinds.values()) == [("ambiguous", "settlement_ambiguous")]
+
+
+def test_stand_in_is_claimed_on_its_exact_date_and_linked(seed, db_session, run, portfolio_stub):
+    bank, target = settlement_bank(seed, db_session)
+    booking = seed_stand_in(db_session, bank, target, settlement_date=date(2026, 9, 14), net="-12305",
+                            fingerprint="cathay:2026-09-10:aa", ids=("ct:5",))
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)), fingerprint="cathay:2026-09-10:aa")
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    db_session.refresh(booking)
+    assert _cases(db_session, sid, "open") == [] and booking.event_id is not None and booking.status == "booked"
+    assert [c.match_rule for c in _active(db_session, sid)] == ["settlement_stand_in"]
+    result = _reconcile(db_session, sid)  # the claim is kept and counted; the link is idempotent
+    assert (result.settlements["claimed"], result.settlements["drift"]) == (1, 0)
+
+
+def test_bank_line_on_another_date_is_a_mismatch_and_an_orphan(seed, db_session, run, portfolio_stub):
+    bank, target = settlement_bank(seed, db_session)
+    booking = seed_stand_in(db_session, bank, target, settlement_date=date(2026, 9, 14), net="-12305",
+                            fingerprint="cathay:2026-09-10:aa", ids=("ct:5",))
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)), fingerprint="cathay:2026-09-10:aa")
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 15), "-12305")])
+    hints = {c.context.get("hint"): c for c in _cases(db_session, sid, "open")}
+    assert hints["settlement_mismatch"].context["settlement_booking_id"] == booking.id
+    assert hints["orphaned_stand_in"].context["settlement_booking_id"] == booking.id
+    db_session.refresh(booking)
+    assert (booking.status, booking.event_id) == ("booked", None)  # nothing moved
+
+
+def test_drift_on_a_claimed_stand_in_opens_source_drift(seed, db_session, run, portfolio_stub):
+    bank, target = settlement_bank(seed, db_session)
+    seed_stand_in(db_session, bank, target, settlement_date=date(2026, 9, 14), net="-12305",
+                  fingerprint="cathay:2026-09-10:aa", ids=("ct:5", "ct:7"))
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5", "ct:7")),
+                               fingerprint="cathay:2026-09-10:aa")
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5", "ct:7")),
+                               fingerprint="cathay:2026-09-10:aa", amounts=("-12299", "-6"))  # offsetting edit
+    _reconcile(db_session, sid)
+    (case,) = _cases(db_session, sid, "open")
+    assert (case.kind, case.context["hint"]) == ("settlement", "source_drift") and len(_active(db_session, sid)) == 1
+
+
+def test_owner_twin_retires_an_unclaimed_stand_in_at_reconcile(seed, db_session, run, portfolio_stub):
+    bank, target = settlement_bank(seed, db_session)
+    booking = seed_stand_in(db_session, bank, target, settlement_date=date(2026, 9, 14), net="-12305",
+                            fingerprint="cathay:2026-09-10:aa", ids=("ct:5",))
+    _transfer(seed, bank, target, Decimal("12305"), date(2026, 9, 14))
+    submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    db_session.refresh(booking)
+    assert (booking.status, booking.reason, booking.out_entry_id) == ("retired", "twin", None)
+
+
+def test_a_new_statement_flags_its_live_neighbour_for_recheck(seed, db_session, run, portfolio_stub):
+    bank, _ = settlement_bank(seed, db_session)
+    aug = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 8, 31), "-5000")], period=AUG)
+    submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 1), "-5000")])
+    assert db_session.get(AccountStatement, aug).needs_recheck is True
+
+
+def test_a_window_past_the_calendar_assigns_nothing(seed, db_session, run, portfolio_stub):
+    bank, _ = settlement_bank(seed, db_session)
+    portfolio_stub.rows = feed(("2028-01-04", "2028-01-06", "-1000", ("ct:5",)))
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2028, 1, 6), "-1000")],
+                      period=(date(2028, 1, 1), date(2028, 1, 31)))
+    result = _reconcile(db_session, sid)
+    assert portfolio_stub.calls == [] and result.settlements["unavailable_code"] == "calendar"  # no provable bound
+    assert _cases(db_session, sid, "open")[0].context["hint"] == "settlement_pending"
+
+
+def test_a_long_holiday_settlement_is_fetched_by_settlement_date(seed, db_session, run, portfolio_stub):
+    bank, _ = settlement_bank(seed, db_session)
+    portfolio_stub.rows = feed(("2026-02-13", "2026-02-24", "-12305", ("ct:5",)),  # last session before 春節, printed
+                               ("2026-02-23", None, "-12305", ("ct:6",), {"date_source": "legs"}))  # CSV-only, 02-25
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 2, 24), "-12305")],
+                      period=(date(2026, 2, 24), date(2026, 3, 23)))
+    (case,) = _cases(db_session, sid, "open")
+    assert (case.kind, case.context["hint"]) == ("ambiguous", "settlement_ambiguous") and len(case.candidates) == 2
+    # T+2(02-12) = 02-23 ≥ 02-19, T+2(02-11) = 02-13 < 02-19: from business_days, not a constant
+    assert portfolio_stub.calls[-1]["settle_from"] == "2026-02-19" and portfolio_stub.calls[-1]["from"] == "2026-02-12"
+
+
+def test_an_incomplete_feed_answer_assigns_nothing(seed, db_session, run, portfolio_stub):
+    bank, _ = settlement_bank(seed, db_session)
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)))
+    portfolio_stub.narrow = True
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    result = _reconcile(db_session, sid)
+    (case,) = _cases(db_session, sid, "open")
+    assert (case.context["hint"], result.settlement_source_unavailable, result.settlements["unavailable_code"]) == (
+        "settlement_pending", True, "incomplete")
+
+
+def test_undated_rows_are_counted_through_to_the_result(seed, db_session, run, portfolio_stub):
+    bank, _ = settlement_bank(seed, db_session)
+    portfolio_stub.rows = feed(("2027-12-29", None, "-1000", ("ct:5",), {"date_source": "legs"}))  # T+2 past 2027-12-31
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2027, 12, 26), "-1000")],
+                      period=(date(2027, 12, 1), date(2027, 12, 26)))  # settle_hi = 12-31, still covered (B3)
+    result = _reconcile(db_session, sid)
+    assert result.settlements["unknown_dates"] == 1
+    assert _cases(db_session, sid, "open")[0].context["hint"] == "settlement_pending"
+
+
+def test_a_covered_neighbour_line_still_contests(seed, db_session, run, portfolio_stub):
+    bank, target = settlement_bank(seed, db_session)
+    _transfer(seed, bank, target, Decimal("5000"), date(2026, 9, 30))  # the owner recorded September's line
+    portfolio_stub.rows = feed(("2026-09-29", "2026-10-01", "-5000", ("ct:5",)))
+    sep = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 30), "-5000")])  # owner twin → covered
+    assert _cases(db_session, sep, "open") == []
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 10, 2), "-5000")], period=OCT)
+    (case,) = _cases(db_session, sid, "open")
+    assert (case.kind, case.context["hint"]) == ("ambiguous", "settlement_ambiguous")  # 09-30 contests 10-01
+
+
+def test_date_only_drift_on_a_claimed_row_opens_source_drift(seed, db_session, run, portfolio_stub):
+    bank, target = settlement_bank(seed, db_session)
+    seed_stand_in(db_session, bank, target, settlement_date=date(2026, 9, 14), net="-12305",
+                  fingerprint="cathay:2026-09-10:aa", ids=("ct:5",))
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)), fingerprint="cathay:2026-09-10:aa")
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-15", "-12305", ("ct:5",)),
+                               fingerprint="cathay:2026-09-10:aa")  # only the printed date moved
+    _reconcile(db_session, sid)
+    (case,) = _cases(db_session, sid, "open")
+    assert (case.kind, case.context["hint"], case.context["now"]["settlement_date"]) == (
+        "settlement", "source_drift", "2026-09-15")
+    assert len(_active(db_session, sid)) == 1 and db_session.scalar(select(SettlementBooking.status)) == "booked"
+
+
+def test_drift_case_is_carried_while_the_feed_is_down(seed, db_session, run, portfolio_stub):
+    bank, target = settlement_bank(seed, db_session)
+    seed_stand_in(db_session, bank, target, settlement_date=date(2026, 9, 14), net="-12305",
+                  fingerprint="cathay:2026-09-10:aa", ids=("ct:5",))
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-15", "-12305", ("ct:5",)), fingerprint="cathay:2026-09-10:aa")
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    (drift,) = _cases(db_session, sid, "open")
+    portfolio_stub.down = True
+    _reconcile(db_session, sid)  # the owner still sees it: silence never supersedes a drift case
+    assert [c.id for c in _cases(db_session, sid, "open")] == [drift.id]
+
+
+def test_reconcile_tombstones_an_owner_deleted_bank_booking_before_reserving(seed, db_session, run, portfolio_stub):
+    bank, target = settlement_bank(seed, db_session)
+    booking = seed_stand_in(db_session, bank, target, settlement_date=date(2026, 9, 14), net="-12305",
+                            fingerprint="cathay:2026-09-10:aa", ids=("ct:5",), origin="bank")
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)), fingerprint="cathay:2026-09-10:aa")
+    ews.delete_entry(db_session, booking.out_entry_id)
+    db_session.commit()
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])  # no job ran
+    db_session.refresh(booking)
+    (case,) = _cases(db_session, sid, "open")
+    assert (booking.status, booking.items) == ("owner_deleted", [])
+    assert (case.kind, case.context["owner_deleted"]) == ("settlement", True)
+
+
+def test_a_retired_or_historical_neighbours_line_is_not_in_the_graph(seed, db_session, run, portfolio_stub):
+    bank, _ = settlement_bank(seed, db_session)
+    portfolio_stub.rows = feed(("2026-09-29", "2026-10-01", "-5000", ("ct:5",)))
+    old = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 30), "-5000")])  # would contest 10-01
+    statement_retire_service.retire_statement(db_session, account_id=bank.id, statement_id=old, note="t",
+                                              label="owner-test", request_id=None)
+    db_session.commit()
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 10, 2), "-5000")], period=OCT)
+    assert [c.kind for c in _cases(db_session, sid, "open")] == ["settlement"]  # the retired line does not contest (B4)
+
+
+def test_neighbour_lines_at_the_window_edge_are_in_the_graph(seed, db_session, run, portfolio_stub):
+    bank, _ = settlement_bank(seed, db_session)
+    portfolio_stub.rows = feed(("2026-09-29", "2026-10-01", "-5000", ("ct:5",)))
+    sep = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 30), "-5000")])  # within 10-01's window
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 10, 2), "-5000")], period=OCT)
+    assert {c.context.get("hint") for c in _cases(db_session, sid, "open")} == {"settlement_ambiguous"}
+    assert db_session.get(AccountStatement, sep).needs_recheck is True  # the hook only flags September …
+    _reconcile(db_session, sep)  # … its own reconcile sees October's line (B6)
+    assert {c.context.get("hint") for c in _cases(db_session, sep, "open")} == {"settlement_ambiguous"}
+
+
+def test_the_reconcile_route_reports_the_settlement_outcome(client, seed, db_session, run, portfolio_stub,
+                                                            monkeypatch):
+    monkeypatch.setenv(auth.TOKENS_ENV, "spa:spa-token")
+    monkeypatch.setenv(auth.SCOPES_ENV, "spa=legacy")
+    monkeypatch.setenv(auth.FEATURE_ENV, "true")
+    bank, _ = settlement_bank(seed, db_session)
+    portfolio_stub.down = True
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    done = client.post(f"/accounts/{bank.id}/statements/{sid}/reconcile", headers={"Authorization": "Bearer spa-token"})
+    assert done.status_code == 200, done.text
+    body = done.json()
+    assert (body["settlement_source_unavailable"], body["settlements"]["unavailable_code"],
+            body["settlements"]["pending"]) == (True, "http_503", 1)
+
+
+def test_an_owner_edited_leg_tombstones_the_row_and_keeps_its_reservation(seed, db_session, run, portfolio_stub):
+    bank, target = settlement_bank(seed, db_session)
+    booking = seed_stand_in(db_session, bank, target, settlement_date=date(2026, 9, 14), net="-12305",
+                            fingerprint="cathay:2026-09-10:aa", ids=("ct:5",))
+    db_session.execute(update(LedgerEntry).where(LedgerEntry.id == booking.in_entry_id).values(source="manual"))
+    db_session.commit()  # the owner took the target leg over (PUT /transfers)
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)), fingerprint="cathay:2026-09-10:aa")
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 15), "-12305")])
+    db_session.refresh(booking)
+    assert (booking.status, [i.source_id for i in booking.items]) == ("owner_edited", ["ct:5"])
+    # the edited pair still records the event: no longer a stand-in, its bank leg meets the line as any owner entry
+    # does, and ct:5 stays reserved — never offered to another line
+    (held,) = _active(db_session, sid)
+    assert (held.entry_id, _cases(db_session, sid, "open")) == (booking.out_entry_id, [])
+    assert "ct:5" in tss.reservations(db_session)[1]
+
+
+def test_a_claimed_stand_in_is_never_retired_for_a_source_reason(seed, db_session, run, portfolio_stub):
+    bank, target = settlement_bank(seed, db_session)
+    booking = seed_stand_in(db_session, bank, target, settlement_date=date(2026, 9, 14), net="-12305",
+                            fingerprint="cathay:2026-09-10:aa", ids=("ct:5",))
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    assert len(_active(db_session, sid)) == 1
+    assert tss.retire_pair(db_session, db_session.get(SettlementBooking, booking.id), reason="gone") is None
+    db_session.commit()
+    db_session.refresh(booking)
+    assert (booking.status, len(_active(db_session, sid))) == ("booked", 1)  # AGENT-360 major 2
+
+
+def test_a_held_booking_row_is_settlement_busy_never_a_wait(pg_engine, seed, db_session, run, portfolio_stub):
+    bank, target = settlement_bank(seed, db_session)
+    booking = seed_stand_in(db_session, bank, target, settlement_date=date(2026, 9, 14), net="-12305",
+                            fingerprint="cathay:2026-09-10:aa", ids=("ct:5",))
+    ews.delete_entry(db_session, booking.out_entry_id)  # the owner deleted the pair
+    db_session.commit()
+    holder = sessionmaker(bind=pg_engine)()
+    try:
+        holder.execute(text("SELECT id FROM settlement_booking WHERE id = :id FOR UPDATE"), {"id": booking.id})
+        with pytest.raises(CodedConflictError) as caught:
+            tss.lock_pair(db_session, db_session.get(SettlementBooking, booking.id))
+        assert caught.value.code == tss.SETTLEMENT_BUSY
+        # the session is still usable after the busy savepoint; the held row waits for the next run, still reserving
+        assert tss.housekeep(db_session, bank.id) == {"owner_deleted": 0, "owner_edited": 0, "settlement_busy": 1}
+        db_session.commit()
+    finally:
+        holder.rollback()
+        holder.close()
+    assert tss.housekeep(db_session, bank.id)["owner_deleted"] == 1

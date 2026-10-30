@@ -455,6 +455,11 @@ class ReconcileOut(BaseModel):
     unmatched_entries: int
     skipped: str | None
     policy: PolicyCountsOut  # the policy pass run after the matching commit (R1c Task 10; zeros while it is off)
+    # portfolio integration spec §4.3, §9: the settlement feed could not be read completely; `settlements` counts
+    # booked / ambiguous / pending / mismatch / drift / claimed / unknown_dates and names the `unavailable_code`
+    # (empty for a statement without a settlement step)
+    settlement_source_unavailable: bool
+    settlements: dict
 
 
 class SweepError(BaseModel):
@@ -470,3 +475,4 @@ class SweepOut(BaseModel):
     cases_opened: int
     errors: list[SweepError]
     links_filled: int
+    settlement_source_unavailable: int  # statements whose settlement feed could not be read (spec §9)

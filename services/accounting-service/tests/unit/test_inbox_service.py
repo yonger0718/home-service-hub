@@ -2,6 +2,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.models import ReconciliationCase
 from app.services import inbox_service as ib
 
 
@@ -28,6 +29,7 @@ def test_pattern_only_digits_is_empty():
     ("ambiguous", "open", "card", None, "全聯", ["match", "dismiss"], "ambiguous"),
     ("balance_gap", "open", "bank", None, None, ["anchor_opening", "dismiss"], "balance_gap"),
     ("duplicate_claim", "open", "card", None, "全聯", ["unmatch", "dismiss"], "other"),
+    ("dividend", "open", "bank", None, "現金股利", ["dismiss"], "other"),  # until its follow-up plan gives it a card
 ])
 def test_classify(kind, status, skind, hint, merchant, allowed, expected):
     assert ib.classify(kind=kind, status=status, statement_kind=skind, hint=hint, merchant_norm=merchant,
@@ -75,3 +77,16 @@ def test_learnable_and_flow_sign():
     assert ib.learnable("amount_differs", "accept_bank_amount")
     assert not ib.learnable("bank_only", "match_candidate") and not ib.learnable("ledger_only", "dismiss")
     assert ib.flow_sign(Decimal("-1")) == "-" and ib.flow_sign(Decimal("0")) == "+"
+
+
+@pytest.mark.parametrize("kind,hint", [("settlement", None), ("ambiguous", "settlement_ambiguous"),
+                                       ("settlement", "source_drift")])
+def test_settlement_cases_classify_as_settlement(kind, hint):
+    assert ib.classify(kind=kind, status="open", statement_kind="bank", hint=hint, merchant_norm="交割股款",
+                       allowed=["book_settlement", "dismiss"]) == "settlement"
+
+
+def test_fingerprint_candidates_are_skipped_not_raised():
+    case = ReconciliationCase(kind="settlement", status="open", candidates=[
+        {"fingerprint": "cathay:2026-09-10:aa", "net_amount": "-12305.0000", "items": []}], context={})
+    assert ib._single_candidate(case) is None and ib._listed_candidates(case, {}, {}) == []

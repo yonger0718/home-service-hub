@@ -254,6 +254,7 @@ def apply_rules(db: Session, statement_id: int, *, run_id: int | None = None) ->
     case_ids = list(db.execute(select(ReconciliationCase.id).where(
         ReconciliationCase.statement_id == statement_id, ReconciliationCase.status == "open")
         .order_by(ReconciliationCase.id)).scalars())
+    labels = inbox_service.settlement_labels(db)
     for case_id in case_ids:
         case = db.get(ReconciliationCase, case_id, populate_existing=True)
         statement = db.get(AccountStatement, statement_id)
@@ -262,7 +263,7 @@ def apply_rules(db: Session, statement_id: int, *, run_id: int | None = None) ->
         line = current_line(db, case, statement)
         if line is None or proposal_service.pending_for_case(db, case.id):
             continue
-        question = inbox_service._question(case, statement, line, reconciliation_actions.allowed(case))
+        question = inbox_service._question(case, statement, line, reconciliation_actions.allowed(case), labels=labels)
         if question not in QUESTION_ACTIONS:  # settlement, transfer, other, proposed, ...: never a rule's
             continue
         rule = match_rule(_eligible(db, case, question, rules), line_kind=str(line.line_kind),

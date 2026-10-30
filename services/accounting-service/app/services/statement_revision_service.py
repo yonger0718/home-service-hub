@@ -69,17 +69,23 @@ def reconciliation_hook(db: Session, statement: AccountStatement, revision: Stat
     the pass (an import holding the import key, `reconcile_busy`, `sweep_barrier_busy`, `duplicate_claim`, coverage
     not conserved) and a residual `DeadlockDetected` roll back only the savepoint and leave the pass to the daily
     batch (`needs_recheck`): the revision itself is stored and the ingest commits. Any other OperationalError
-    propagates. Imported late: reconciliation_service depends on the ledger services, the revision service must not
-    at import time."""
+    propagates. After a completed reconcile of a statement whose account has a `settlement_source`, the account's
+    other live, non-retired statements within `period ± 7` get `needs_recheck` in the same savepoint
+    (`trade_settlement_service.flag_neighbours`, portfolio integration spec §4.5 item 3), so their settlement cases
+    are re-derived against the new lines. Imported late: reconciliation_service depends on the ledger services, the
+    revision service must not at import time."""
     if statement.current_revision_id != revision.id or not revision.guardrail_ok:
         return []
-    from app.services import reconciliation_service
+    from app.services import reconciliation_service, trade_settlement_service
 
     db.flush()  # the revision, lines and current-revision switch stay outside the savepoint
     try:
         with db.begin_nested():
             result = reconciliation_service.reconcile(db, statement.id, run_id=run.id, locked=True,
                                                       barrier_wait=False)
+            if result.skipped is None and db.get(Account, statement.account_id).settlement_source:
+                # portfolio integration spec §4.5 item 3: the new lines may change a neighbour's global assignment
+                trade_settlement_service.flag_neighbours(db, statement)
     except (ConflictError, OperationalError) as exc:
         if isinstance(exc, OperationalError) and not isinstance(exc.orig, DeadlockDetected):
             raise
