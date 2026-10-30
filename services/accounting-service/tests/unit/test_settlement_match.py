@@ -57,11 +57,12 @@ def test_non_settlement_lines_are_ignored_and_amount_is_exact():
 
 
 def test_sum_matching_is_off_by_default_and_gated_when_on():
-    lines, sets = [L(1, date(2026, 9, 14), "-8000")], [S("f1", date(2026, 9, 14), "-5000"), S("f2", date(2026, 9, 14), "-3000", ids=("ct:2",))]
+    lines, sets = [L(1, date(2026, 9, 14), "-8000")], [S("f1", date(2026, 9, 14), "-5000"), S("f2", date(2026, 9, 14), "-3000", td=date(2026, 9, 15), ids=("ct:2",))]
     assert A(lines, sets).pending == {1: None}
     on = m.Rules(period_end=date(2026, 9, 30), settlement_sum_matching=True)
     a = A(lines, sets, rules=on)
     assert (a.booked[1].fingerprint, a.booked[1].source_ids, a.booked[1].net_amount) == ("f1+f2", ("ct:1", "ct:2"), Decimal("-8000"))
+    assert a.booked[1].trade_date == date(2026, 9, 14)
     assert A(lines + [L(2, date(2026, 9, 14), "-5000")], sets, rules=on).booked == {}           # sum vs single → ambiguous
 
 

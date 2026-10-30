@@ -59,13 +59,14 @@ class Assignment:
 
 
 def _merge(parts: tuple[Settlement, ...]) -> Settlement | None:
-    """Two settlements as one candidate; None unless they agree on trade date, settlement date and date source."""
+    """Two settlements as one candidate; None unless they agree on settlement date and date source. The pair is two
+    trade days settling together: its `trade_date` is the earlier one and its fingerprint the sorted join, so a pair
+    is never re-read by trade date."""
     first = parts[0]
-    if any((p.trade_date, p.settlement_date, p.date_source) != (first.trade_date, first.settlement_date, first.date_source)
-           for p in parts):
+    if any((p.settlement_date, p.date_source) != (first.settlement_date, first.date_source) for p in parts):
         return None
     parts = tuple(sorted(parts, key=lambda p: p.fingerprint))
-    return replace(first, net_amount=sum((p.net_amount for p in parts), Decimal(0)),
+    return replace(first, trade_date=min(p.trade_date for p in parts), net_amount=sum((p.net_amount for p in parts), Decimal(0)),
                    legs_net=sum((p.legs_net for p in parts), Decimal(0)),
                    bookable=all(p.bookable for p in parts),
                    reason=next((p.reason for p in parts if p.reason), None),
