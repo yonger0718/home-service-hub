@@ -199,3 +199,32 @@ def test_realized_pnl_endpoint_returns_short_cover_event(client, db_session) -> 
     [event] = body["items"]
     assert event["position_side"] == "SHORT"
     assert event["realized_pnl"] == "20000.0000"
+
+
+def test_realized_pnl_endpoint_serves_fractional_share_sells(client, db_session) -> None:
+    db_session.add_all([
+        models.Transaction(
+            symbol="VOO", market="US", currency="USD", fx_rate_to_twd=Decimal("30"),
+            type=models.TransactionType.BUY, quantity=Decimal("2.5"), price=Decimal("100"),
+            fee=Decimal("0"), tax=Decimal("0"), trade_date=datetime(2025, 1, 1, 15, 0),
+            broker="FIRSTRADE",
+        ),
+        models.Transaction(
+            symbol="VOO", market="US", currency="USD", fx_rate_to_twd=Decimal("30"),
+            type=models.TransactionType.SELL, quantity=Decimal("1.6"), price=Decimal("110"),
+            fee=Decimal("0"), tax=Decimal("0"), trade_date=datetime(2025, 1, 2, 15, 0),
+            broker="FIRSTRADE",
+        ),
+        _tx(symbol="2330", side=models.TransactionType.BUY, quantity=100, price="100.00",
+            trade_date=datetime(2025, 1, 1, 9, 0)),
+        _tx(symbol="2330", side=models.TransactionType.SELL, quantity=10, price="120.00",
+            trade_date=datetime(2025, 1, 2, 9, 0)),
+    ])
+    db_session.commit()
+
+    response = client.get("/api/portfolio/realized-pnl")
+
+    assert response.status_code == 200
+    quantities = {item["symbol"]: item["quantity"] for item in response.json()["items"]}
+    assert quantities == {"VOO": 1.6, "2330": 10}
+    assert isinstance(quantities["2330"], int)

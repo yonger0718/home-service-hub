@@ -99,7 +99,7 @@ def test_case4_inserts_and_owns(db_session):
     assert [r.id for r in rows] == result.created_ids
     mapped = broker_cathay_statement_service.map_statement(db_session, _payload())
     assert [r.import_fingerprint for r in rows] == [r.fingerprint for r in mapped.rows]
-    assert all(r.broker is None for r in rows)
+    assert all(r.broker == "TW_CATHAY" for r in rows)
     for r in rows:
         assert db_session.query(CashTransaction).filter_by(related_transaction_id=r.id).count() == 2
     day = _day(db_session)
@@ -383,3 +383,20 @@ def test_points_line_verifies_against_csv_rows(db_session):
 
     assert result.outcome == "verified"
     assert db_session.query(models.Transaction).count() == 2
+
+
+def test_statement_rows_keep_their_broker_through_an_edit(db_session):
+    from app.schemas import portfolio as schemas
+    from app.services import portfolio_service
+
+    import_statement(db_session, _payload(), dry_run=False)
+    row = db_session.query(models.Transaction).order_by(models.Transaction.id).first()
+    body = schemas.Transaction.model_validate(row).model_dump(exclude={"id", "is_day_trade", "created_at", "updated_at"})
+    assert body["broker"] == "TW_CATHAY"
+
+    body["fee"] = Decimal("6")
+    portfolio_service.update_transaction(db_session, row.id, schemas.TransactionCreate(**body))
+
+    db_session.refresh(row)
+    assert row.broker == "TW_CATHAY"
+    assert row.fee == Decimal("6")
