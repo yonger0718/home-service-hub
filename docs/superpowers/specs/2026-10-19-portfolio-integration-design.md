@@ -7,8 +7,10 @@ closed (§4.1); owner twins claim first (§4.3); the booking owner mirrors `stat
 zero-charged and exempt from every policy cap (§4.4); re-reconcile = the worker after each 國泰 post + the daily sweep
 re-check + the monthly statement arrival, no portfolio→HomeHub call (§3, §4.5); dividend formula `amount == flow`,
 confirmed receipts ± 3 days (§4.6); **owner decision 2026-10-30 (Q7): daily settlement stand-ins from the 國泰 daily
-statement (§4.7), superseding §3's "nothing is written until the line exists" for 國泰 settlements**; §2, §8–§11
-follow. §5–§7 unchanged.
+statement (§4.7), superseding §3's "nothing is written until the line exists" for 國泰 settlements**; controller
+ruling 2026-10-30 (owner to confirm): a dismissed settlement case or a reverted / owner-deleted bank booking is final
+for the stand-in job (§4.7 gates, §9); §2, §8–§11 follow. §5: Phase 1 scope sentence added (read-through in the account
+read models only); §6–§7 unchanged.
 Rev 3 (2026-10-20) §7 amended by the Phase 2 plan: XML instead of CSV; the token travels only in the Flex `t` query parameter (IB offers no other transport); section list; legacy-duplicate pass; `--unlatch` / `--dry-run` / `--query-id` / `--from-file`.
 Rev 2 (2026-10-19) after the AGENT-175 review of rev 1 `31ab6f4`: booking owner + constituent reservations
 (Must 1), global assignment before any booking (Must 2), foreign cash from `broker_cash_flows` and the trade-inclusive
@@ -28,7 +30,7 @@ market value; the investment cash is the 國泰 bank account (67) itself. IB / F
 market-value accounts plus their funding wires; their internal trades never touch the ledger. 永豐證券/期貨 are out
 of scope. IB statements arrive by Flex Query, not by parsing the monthly PDFs.
 
-## 2. Facts the design rests on (verified 2026-10-19)
+## 2. Facts the design rests on (verified 2026-10-19; the counts in the first bullet are historical — Task 11's dry run recomputes them)
 
 - Bank side: account 67's statements print ONE line per settlement day (`交割股款`, withdrawal or deposit; also
   `申購股款`), posted on the settlement date; `txn_date == posted_date` on every such line (146/146).
@@ -101,7 +103,8 @@ never booked — with `reason = "margin_day"` when the statement day was held `u
 券賣; owner ruling Q2: the owner settles margin days) and `reason = "legs_disagree"` when a statement day's cash net
 differs from `legs_net`. A CSV-only margin day cannot be recognised (the CSV rows do not keep the side), but its
 full-gross legs never equal the owner's part the bank moves, so it stays pending by amount. Rows whose net is zero
-are omitted. Settlement dates are strictly order-preserving on a valid calendar, so two trade dates never settle
+(`net_amount == 0`, whatever the source — a cash net of 0 when every buy was paid with points, a legs net of 0 on a
+沖買/沖賣 CSV day) are omitted, items or not; the stand-in job (§4.7) never books a zero amount. Settlement dates are strictly order-preserving on a valid calendar, so two trade dates never settle
 on one day; the "sum of two" rule of §9 exists only for a calendar fault and is gated behind an explicit fixture.
 
 ### 4.2 Account setting
@@ -114,7 +117,8 @@ like `statement_live_from`). `account.valuation_source` (§5) is a sibling colum
 
 In `reconciliation_service.reconcile`, when the statement's account has `settlement_source` and the statement
 prints a settlement line, the orchestrator fetches the settlements whose (statement or derived) settlement date can
-fall in `period_start − 5 … period_end + 5` (one HTTP call per reconcile, made before the candidate row locks with
+fall in `period_start − 5 … period_end + 5` (the feed is bounded by trade date, so the query starts 10 calendar days
+earlier — a 春節 run settles up to 11 days after its trade — and the rows are filtered by settlement date; one HTTP call per reconcile, made before the candidate row locks with
 a short timeout; HTTP failure → every settlement line `settlement_pending` and a `settlement_source_unavailable`
 note on the `ReconcileResult`, the rest of the statement reconciled as usual, never a crash).
 
@@ -239,8 +243,11 @@ and the monthly bank statement re-reconciles them. The machinery is the auto-pay
   or before today (Asia/Taipei), on a `settlement_source` account with a target account configured. Margin days
   (`margin_day`), `legs_disagree` rows and CSV-only days get no stand-in: they wait for the bank line and the §4.3
   path (the CSV-only day with the T+2 business-day date). Days before go-live get none.
-- **Gates**, in order: the stand-in setting enabled; no final booking row for (account, settlement date) and no
-  reserved constituent; no owner twin — an owner entry on the bank account with the net's amount, or an owner
+- **Gates**, in order: the stand-in setting enabled; a non-zero net; no final booking row for (account, settlement date)
+  — `booked`, `owner_deleted`, `owner_edited`, a `retired` row of a reverted `book_settlement` or a twin — and no
+  dismissed settlement case of the account for that fingerprint or that settlement date (controller ruling
+  2026-10-30, owner to confirm: an owner's dismissal or revert of the bank booking is final for the stand-in job as
+  well, the auto-pay `owner_deleted` principle; the bank path of §4.4 is unchanged); no reserved constituent; no owner twin — an owner entry on the bank account with the net's amount, or an owner
   transfer leg on the target account with its mirror, within `settlement.twin_window_days` (default 3) of the
   settlement date (owner ruling Q5: owner twins first) → `skipped` `twin`.
 - **Booking.** The same transfer as §4.4 item 2, dated the settlement date, name `證券交割`, description
@@ -266,7 +273,8 @@ and the monthly bank statement re-reconciles them. The machinery is the auto-pay
 
 - `account.valuation_source = "portfolio:<broker>"`. Such an account's **balance is read through**: the ledger
   keeps only the transfer legs (cost flows) and the API's balance/net-worth reads replace the ledger balance
-  with the portfolio's valuation, returning `{balance, valuation: {value, as_of, source}}`. No valuation entry
+  with the portfolio's valuation, returning `{balance, balance_kind, stale, valuation: {value, currency, as_of,
+  priced_through, complete, missing}}` (`balance` null while no complete valuation is available). No valuation entry
   is ever written; unrealised P&L is the portfolio's business and is not a ledger figure.
 - Portfolio API (new): `GET /valuation?broker=<broker>&as_of=YYYY-MM-DD` → `{market_value, cash, total,
   currency, as_of, priced_through}` in the BROKER's currency (USD stays USD): positions as of `as_of` × the last
@@ -275,8 +283,9 @@ and the monthly bank statement re-reconciles them. The machinery is the auto-pay
   `list_balances`: explicit `broker_cash_flows` ± trade deltas — never recomputed here, never trades added
   twice). For `cathay` the cash term is 0 by definition (the cash is bank 67; its legacy `cash_transaction`
   ledger is not consulted for valuation).
-- HomeHub contract: a valuation account's balance in every read (account list, account detail,
-  `ledger_service.account_balance:109`, net worth) is `valuation.total` for the requested `as_of` (today by
+- HomeHub contract (Phase 1 scope, rev 4: the account list and account detail — `list_accounts` / `get_account` —
+  only; `ledger_service.account_balance:109`, `held_balance`, period `end_balance` and the net-worth totals stay
+  ledger figures until Phase 1b): a valuation account's balance in those reads is `valuation.total` for the requested `as_of` (today by
   default; a historical query asks the portfolio for that date, never today's value). Period/running ledger
   figures (`ledger_service` running balances, cost flows) stay ledger figures and are labelled "cost basis" in
   the API (`balance_kind: "valuation" | "ledger"`), so a client never mistakes one for the other. HomeHub caches
@@ -377,7 +386,8 @@ and the monthly bank statement re-reconciles them. The machinery is the auto-pay
   The stand-in job and a reconcile take the same account locks.
 - Valuation stale → shown stale, never guessed.
 - Revert of a `book_settlement` after a later reconcile: the line reopens as `settlement_pending`; the next
-  reconcile books again unless the owner dismisses the case (`owner_deleted` rule as for backfills).
+  reconcile books again unless the owner dismisses the case (`owner_deleted` rule as for backfills). The stand-in
+  job never re-books that settlement day (§4.7 gates).
 
 ## 10. Tests (per phase, named so the plan can pin them)
 
