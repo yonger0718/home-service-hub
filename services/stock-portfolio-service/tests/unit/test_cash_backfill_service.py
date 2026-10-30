@@ -499,3 +499,18 @@ def test_replay_skips_points_paid_transactions(db_session) -> None:
     assert result.transactions_processed == 2
     assert result.cash_rows_inserted == 2
     assert {row.related_transaction_id for row in _cash_rows(db_session)} == {cash_buy.id}
+
+
+@pytest.mark.parametrize("broker", [None, Broker.TW_CATHAY])
+def test_replay_rejects_two_active_cathay_twd_accounts(db_session, broker) -> None:
+    db_session.add_all([
+        _account(nickname="Cathay A"),
+        _account(nickname="Cathay B"),
+        _transaction(1, type_=TransactionType.BUY, trade_date=datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc),
+                     broker=broker),
+    ])
+    db_session.commit()
+
+    with pytest.raises(cash_account_service.CashAccountAmbiguous):
+        cash_backfill_service.replay_all(db_session)
+    assert _cash_rows(db_session) == []

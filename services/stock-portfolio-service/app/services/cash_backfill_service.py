@@ -138,7 +138,8 @@ def _resolve_account_for_broker_currency(
     broker: str | None,
     currency: str | None,
 ) -> BrokerAccount | None:
-    if broker is None:
+    # 國泰 TWD rows (NULL is the legacy spelling) go through the default resolver, which rejects duplicates.
+    if broker is None or (broker == Broker.TW_CATHAY.value and _normalize_currency(currency) == "TWD"):
         return cash_account_service.resolve_default_cathay_twd_account(session)
 
     mapped_broker = _BROKER_ENUM_MAP.get(broker)
