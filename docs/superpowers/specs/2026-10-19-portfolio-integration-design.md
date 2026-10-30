@@ -1,6 +1,6 @@
 # Portfolio ↔ ledger integration (證券交割對帳、市值帳戶、海外券商) — design
 
-Status: rev 4 (2026-10-30) owner rulings 2026-10-30 (Q1–Q7, `.superpowers/r7-refresh/owner-rulings.md`) and the
+Status: rev 4.2 (2026-10-30) owner rulings 2026-10-30 (Q1–Q7, `.superpowers/r7-refresh/owner-rulings.md`) and the
 drift-audit errata (`.superpowers/r7-refresh/drift-audit.md`): settlement date from the 國泰 daily statement, T+2 bank
 business days as the fallback, no trading calendar (§4.1); 國泰 rows only (TW_CATHAY + NULL broker), margin days fail
 closed (§4.1); owner twins claim first (§4.3); the booking owner mirrors `statement_auto_pay`, `book_settlement` is
@@ -9,7 +9,8 @@ re-check + the monthly statement arrival, no portfolio→HomeHub call (§3, §4.
 confirmed receipts ± 3 days (§4.6); **owner decision 2026-10-30 (Q7): daily settlement stand-ins from the 國泰 daily
 statement (§4.7), superseding §3's "nothing is written until the line exists" for 國泰 settlements**; controller
 ruling 2026-10-30 (owner to confirm): a dismissed settlement case or a reverted / owner-deleted bank booking is final
-for the stand-in job (§4.7 gates, §9); §2, §8–§11 follow. §5: Phase 1 scope sentence added (read-through in the account
+for the stand-in job (§4.7 gates, §9); rev 4.2 (AGENT-360): two-axis feed query with echoed bounds (§4.1, §4.3),
+housekeeping for both origins + the lock protocol + replacement re-gated (§4.7); §2, §8–§11 follow. §5: Phase 1 scope sentence added (read-through in the account
 read models only); §6–§7 unchanged.
 Rev 3 (2026-10-20) §7 amended by the Phase 2 plan: XML instead of CSV; the token travels only in the Flex `t` query parameter (IB offers no other transport); section list; legacy-duplicate pass; `--unlatch` / `--dry-run` / `--query-id` / `--from-file`.
 Rev 2 (2026-10-19) after the AGENT-175 review of rev 1 `31ab6f4`: booking owner + constituent reservations
@@ -81,15 +82,23 @@ Nothing in this design depends on order or freshness:
 
 ### 4.1 Portfolio read API (new, stock-portfolio-service)
 
-`GET /api/portfolio/ledger-feed/settlements?broker=cathay&from=YYYY-MM-DD&to=YYYY-MM-DD` (no auth until #117;
+`GET /api/portfolio/ledger-feed/settlements?broker=cathay&settle_from=…&settle_to=…&from=…&to=…` (no auth until #117;
 HomeHub sends its read token once #117 adds one) →
 ```
 {"rows": [{"trade_date": "2026-09-10", "settlement_date": "2026-09-12", "date_source": "statement",
            "net_amount": "-12345.0000", "legs_net": "-12345.0000", "currency": "TWD", "bookable": true,
            "reason": null, "items": [{"source_id": "ct:5", "type": "buy_settle", "amount": "-12300.0000"}, ..],
-           "fingerprint": "cathay:2026-09-10:<sha256 of sorted ids, 16 hex>"}]}
+           "fingerprint": "cathay:2026-09-10:<sha256 of sorted ids, 16 hex>"}],
+ "bounds": {"settle_from": "…", "settle_to": "…", "from": "…", "to": "…"}, "complete": true}
 ```
-(amounts fictional). `from` / `to` bound the TRADE date. One row per trade date with 國泰 cash: the legs
+(amounts fictional). Two axes (rev 4.2, AGENT-360): `settle_from` / `settle_to` bound the persisted settlement date of
+statement days; `from` / `to` bound the TRADE date of the days without facts (CSV-only). A row is returned when its
+persisted `settlement_date` lies in the settlement window, OR it has no facts and its trade date lies in the
+trade range. The caller computes the trade range from its own business-day calendar (the earliest trade date whose
+T+2 can reach `settle_from`, up to `settle_to`), so completeness never rests on a fixed calendar-day margin; the
+response echoes the bounds it applied and `complete` (false when a row cap truncated it), and a caller that cannot
+assert completeness (error, narrower bounds, `complete: false`) assigns nothing automatically — its lines stay
+`settlement_pending`. One row per trade date with 國泰 cash: the legs
 (`buy_settle`, `sell_settle`, `fee`, `tax`) of the trades in `TW_CATHAY_FILTER` (market TW, broker TW_CATHAY or
 NULL; owner ruling Q2 — TW_MANUAL / TW_SINOPAC legs share the cash account and are left out), `legs_net = Σ amount`
 (negative = money leaves the bank). The settlement date and the net come from the persisted 國泰 daily statement of
@@ -117,9 +126,9 @@ like `statement_live_from`). `account.valuation_source` (§5) is a sibling colum
 
 In `reconciliation_service.reconcile`, when the statement's account has `settlement_source` and the statement
 prints a settlement line, the orchestrator fetches the settlements whose (statement or derived) settlement date can
-fall in `period_start − 5 … period_end + 5` (the feed is bounded by trade date, so the query starts 15 calendar days
-earlier — a 春節 run settles up to 11 days after its trade — and the rows are filtered by settlement date; a longer
-market closure leaves such a row unfetched and its line `settlement_pending`, never a silent booking; one HTTP call per reconcile, made before the candidate row locks with
+fall in `period_start − 5 … period_end + 5` (a settlement-window query of the feed, §4.1: statement days by their
+printed date, CSV-only days by the trade range the bank calendar implies — a 春節 run is found by its printed date;
+an incomplete answer leaves every settlement line `settlement_pending`, never a silent booking; one HTTP call per reconcile, made before the candidate row locks with
 a short timeout; HTTP failure → every settlement line `settlement_pending` and a `settlement_source_unavailable`
 note on the `ReconcileResult`, the rest of the statement reconciled as usual, never a crash).
 
@@ -255,13 +264,28 @@ and the monthly bank statement re-reconciles them. The machinery is the auto-pay
   `證券交割 <trade_date>`, a `settlement_booking` row `origin = stand_in`, `status = booked`, event_id NULL, with its
   items; zero-charged and outside every policy cap (it is not a policy action). Idempotent per (account,
   settlement_date): the job re-run books nothing new.
-- **Housekeeping** (every run, like auto-pay's `check_row`): both legs gone → `owner_deleted` (the owner reverted
-  it; never re-booked, and the §4.3 path then treats the event as owner-deleted: proposed, never auto-booked); a leg
-  gone or edited → `owner_edited`; an owner twin appeared → the pair is retired (`retired`, reason `twin`); the feed
-  row changed (another net, date or item set — a re-posted statement, a CSV edit) while the bank leg is unclaimed →
-  the pair is deleted and the row `replaced`, and the new figures are booked as a fresh row; the same change after
-  a line claimed it → nothing here (§4.4 item 4: `source_drift` on the line). A feed row that is no longer
-  `bookable` retires an unclaimed stand-in (`retired`, the reason).
+- **Housekeeping** (rev 4.2, AGENT-360; both origins, `bank` and `stand_in`, in the job AND at the start of every
+  reconcile of the account, before the reservations are read): both legs gone → `owner_deleted` (the row leaves
+  `booked` and releases its items in the same transaction; the tombstone stays: never re-booked, and the §4.3 path
+  treats the event as owner-deleted — proposed, never auto-booked); a leg gone or edited → `owner_edited` (items
+  kept: the edited pair still records the event); an owner twin appeared → the pair is retired (`retired`, reason
+  `twin`, the auto-pay semantics: coverage released, the line re-meets the owner twin). For an UNCLAIMED stand-in
+  only, under the row and leg locks with the claim state re-read: the feed row changed (another net, date or item
+  set — a re-posted statement, a CSV edit) → the pair is deleted and the row `replaced`, then the new figures go
+  through the candidate rules and gates again (statement source, bookable, non-zero, go-live ≤ new date ≤ today,
+  final / dismissed / twin / reservation on the new date) and are booked only when they pass — otherwise the day
+  waits; a feed row gone or no longer `bookable` → `retired` with the reason. A claimed stand-in is never retired
+  or replaced by the job: a change after the claim is reconcile's `source_drift` (§4.4 item 4; the comparison
+  covers net, settlement date, items, `bookable` and `date_source`). Where this departs from auto-pay: auto-pay
+  pairs are never replaced (a card bill has one figure), so `retire_pair`'s "release the claim" step is reused for
+  twins only; replacement and retirement for source reasons refuse a claimed pair instead of releasing it.
+- **Locks.** One protocol for everything that writes settlement bookings: statement locks (when a statement is in
+  hand) → the account row FOR UPDATE → the booking row → the two legs NOWAIT → coverage re-read. The job takes the
+  shared import key, then the account row, the row and the legs per decision; `book_settlement` and its revert take
+  the engine's account lock + writer barrier (`_TwinGuarded`) and the booking row; `reconcile` claims a stand-in leg
+  only while it holds that leg (`_lock_candidates`, NOWAIT), so a job holding the legs makes the reconcile
+  `reconcile_busy` and a reconcile holding them makes the job skip the row (`settlement_busy`); the partial unique
+  on (account, settlement_date) catches a bank booking and a stand-in racing for one day.
 - **Bank line.** The monthly statement's settlement line claims the stand-in's bank leg on exact amount and exact
   date (§4.3 step 2): the stand-in becomes the bank-attested booking (its row stays `booked`, `event_id` set to the
   line's event), no second booking, no duplicate effect. An owner twin found at reconcile retires it first, as
@@ -358,7 +382,7 @@ and the monthly bank statement re-reconciles them. The machinery is the auto-pay
   another figure is `line_unmatched` + `settlement_mismatch`; drift is `settlement` + `source_drift`; an unclaimed
   stand-in in a live period is `entry_unmatched` + `orphaned_stand_in`.
 - HomeHub endpoint: `POST /reconciliation/settlements/run` (ingest scope; §4.5). Portfolio:
-  `GET /api/portfolio/ledger-feed/settlements`, `/valuation`, `/dividends`; Phase 1b `/funding`, `POST
+  `GET /api/portfolio/ledger-feed/settlements` (two axes + bounds echo), `/valuation`, `/dividends` (follow-up plan); Phase 1b `/funding`, `POST
   /imports/ib-flex`.
 
 ## 9. Failure modes (fail closed, owner sees)
@@ -384,7 +408,8 @@ and the monthly bank statement re-reconciles them. The machinery is the auto-pay
   `settlement` case that is proposed only (never auto-booked), and the job never re-books the stand-in.
 - Concurrent reconciles of two statements of the same account racing for one settlement → the second insert
   into `settlement_booking_item` fails the unique constraint; that booking rolls back and its line stays open.
-  The stand-in job and a reconcile take the same account locks.
+  The stand-in job and a reconcile serialise on the stand-in's leg rows (§4.7 Locks); a job that lost the race
+  re-reads the claim under the locks and leaves the pair alone.
 - Valuation stale → shown stale, never guessed.
 - Revert of a `book_settlement` after a later reconcile: the line reopens as `settlement_pending`; the next
   reconcile books again unless the owner dismisses the case (`owner_deleted` rule as for backfills). The stand-in
