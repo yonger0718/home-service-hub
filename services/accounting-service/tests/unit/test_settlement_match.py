@@ -41,7 +41,7 @@ def test_a_contestant_blocks_its_look_alike_and_is_never_booked():
 
 
 def test_reserved_and_undated_are_never_candidates():
-    sets = [S("f1", date(2026, 9, 14), "-5000"), S("f2", None, "-5000", ids=("ct:2",)), S("f3", date(2026, 9, 14), "-5000", ids=("ct:9", "ct:1"))]
+    sets = [S("f1", date(2026, 9, 14), "-5000", ids=("ct:3",)), S("f2", None, "-5000", ids=("ct:2",)), S("f3", date(2026, 9, 14), "-5000", ids=("ct:9", "ct:1"))]
     a = A([L(1, date(2026, 9, 14), "-5000")], sets, fps={"f1"}, ids={"ct:1"})
     assert a.booked == {} and a.pending == {1: None} and a.unknown_dates == 1
 
@@ -53,11 +53,11 @@ def test_a_sole_non_bookable_candidate_is_pending_with_its_reason():
 
 def test_non_settlement_lines_are_ignored_and_amount_is_exact():
     a = A([L(1, date(2026, 9, 14), "-5000", merchant="網銀轉帳"), L(2, date(2026, 9, 14), "-5001")], [S("f1", date(2026, 9, 14), "-5000")])
-    assert a.pending == {2: None} and 1 not in a.ambiguous
+    assert a.pending == {2: None} and 1 not in a.ambiguous and a.booked == {}
 
 
 def test_sum_matching_is_off_by_default_and_gated_when_on():
-    lines, sets = [L(1, date(2026, 9, 14), "-8000")], [S("f1", date(2026, 9, 14), "-5000"), S("f2", date(2026, 9, 15), "-3000", ids=("ct:2",))]
+    lines, sets = [L(1, date(2026, 9, 14), "-8000")], [S("f1", date(2026, 9, 14), "-5000"), S("f2", date(2026, 9, 14), "-3000", ids=("ct:2",))]
     assert A(lines, sets).pending == {1: None}
     on = m.Rules(period_end=date(2026, 9, 30), settlement_sum_matching=True)
     a = A(lines, sets, rules=on)
@@ -79,3 +79,23 @@ def test_with_dates_derives_t_plus_two_only_for_legs_rows():
     rows = sm.with_dates([S("f1", None, "-1", td=date(2026, 10, 7), source="legs"), S("f2", date(2026, 10, 8), "-1", td=date(2026, 10, 6))],
                          extra_holidays=frozenset(), extra_workdays=frozenset())
     assert [r.settlement_date for r in rows] == [date(2026, 10, 12), date(2026, 10, 8)]
+
+
+def test_window_is_two_days_inclusive():
+    assert list(A([L(1, date(2026, 9, 14), "-5000")], [S("f1", date(2026, 9, 16), "-5000")]).booked) == [1]
+    assert A([L(1, date(2026, 9, 14), "-5000")], [S("f1", date(2026, 9, 17), "-5000")]).pending == {1: None}
+
+
+def test_merged_pair_sorts_fingerprints_and_needs_agreeing_dates():
+    on = m.Rules(period_end=date(2026, 9, 30), settlement_sum_matching=True)
+    lines = [L(1, date(2026, 9, 14), "-8000")]
+    a = A(lines, [S("f2", date(2026, 9, 14), "-3000", ids=("ct:2",)), S("f1", date(2026, 9, 14), "-5000")], rules=on)
+    assert a.booked[1].fingerprint == "f1+f2"
+    split = [S("f1", date(2026, 9, 14), "-5000"), S("f2", date(2026, 9, 15), "-3000", ids=("ct:2",))]
+    assert A(lines, split, rules=on).pending == {1: None}
+
+
+def test_unknown_dates_ignores_reserved_rows():
+    sets = [S("f1", None, "-1"), S("f2", None, "-1", ids=("ct:2",)), S("f3", None, "-1", ids=("ct:3",))]
+    a = A([], sets, fps={"f1"}, ids={"ct:3"})
+    assert a.unknown_dates == 1

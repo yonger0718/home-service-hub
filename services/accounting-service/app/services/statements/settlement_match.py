@@ -58,8 +58,13 @@ class Assignment:
     unknown_dates: int = 0
 
 
-def _merge(parts: tuple[Settlement, ...]) -> Settlement:
+def _merge(parts: tuple[Settlement, ...]) -> Settlement | None:
+    """Two settlements as one candidate; None unless they agree on trade date, settlement date and date source."""
     first = parts[0]
+    if any((p.trade_date, p.settlement_date, p.date_source) != (first.trade_date, first.settlement_date, first.date_source)
+           for p in parts):
+        return None
+    parts = tuple(sorted(parts, key=lambda p: p.fingerprint))
     return replace(first, net_amount=sum((p.net_amount for p in parts), Decimal(0)),
                    legs_net=sum((p.legs_net for p in parts), Decimal(0)),
                    bookable=all(p.bookable for p in parts),
@@ -75,9 +80,9 @@ def assign(lines: list[Line], settlements: list[Settlement], *, reserved_fps: se
     Booked: one candidate, no constituent wanted by another line (contestants compete but are never reported), and
     bookable; a sole non-bookable candidate → pending with its reason; no candidate → pending None; else ambiguous."""
     out = Assignment()
-    out.unknown_dates = sum(1 for s in settlements if s.settlement_date is None)
-    pool = [s for s in settlements if s.settlement_date is not None and s.fingerprint not in reserved_fps
-            and not reserved_ids.intersection(s.source_ids)]
+    free = [s for s in settlements if s.fingerprint not in reserved_fps and not reserved_ids.intersection(s.source_ids)]
+    out.unknown_dates = sum(1 for s in free if s.settlement_date is None)
+    pool = [s for s in free if s.settlement_date is not None]
     singles = [(s,) for s in pool]
     sums = [c for c in combinations(pool, 2) if not set(c[0].source_ids) & set(c[1].source_ids)] \
         if rules.settlement_sum_matching else []
@@ -88,7 +93,7 @@ def assign(lines: list[Line], settlements: list[Settlement], *, reserved_fps: se
         found = []
         for parts in singles + sums:
             merged = parts[0] if len(parts) == 1 else _merge(parts)
-            if _same(merged.net_amount, line.flow) and all(
+            if merged is not None and _same(merged.net_amount, line.flow) and all(
                     abs((p.settlement_date - line.posted_date).days) <= rules.settlement_window_days for p in parts):
                 found.append(merged)
         cands[line.id] = found

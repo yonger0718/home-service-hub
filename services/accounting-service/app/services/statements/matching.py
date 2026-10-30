@@ -1092,11 +1092,13 @@ def _designated_by_cases(cases: list[Case]) -> set[int]:
 
 def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
           fee_expected: Callable[[Entry], Decimal | None], rules: Rules, account_currency: str,
-          lines_all: list[Line] | None = None, holders: Mapping[int, Holder] | None = None) -> MatchResult:
+          lines_all: list[Line] | None = None, holders: Mapping[int, Holder] | None = None, *,
+          settlement_account: bool = False) -> MatchResult:
     """`lines_all`: the guard lines — every current line of the statement, covered ones included, and the
     neighbouring statements' (default `lines`); `entries` may carry structural rows (`claimable=False`), which only
     the printed-whole guard (`statement_context`) reads; `holders`: what already explains a guard line (holders spec
-    §3; None = the guard sees every line)."""
+    §3; None = the guard sees every line); `settlement_account`: the account has a `settlement_source` (R7), so its
+    settlement lines take the stand-in / global-assignment path instead of the ordinary one."""
     result = MatchResult()
     claimed: set[int] = set()
     # #152: a zero-amount `unknown` row is a notice — no representation, no case, and no guard line (a 0 notice must
@@ -1107,7 +1109,7 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
                             account_currency, holders)  # over the unfiltered entry population (structural rows too)
     hint_only = [e for e in entries if not e.claimable]
     entries = [e for e in entries if e.claimable]
-    principals = [e for e in entries if not e.carrier]
+    principals = [e for e in entries if not e.carrier and not e.settlement_stand_in]
     aside, apart = ctx.aside, ctx.apart
     for line in sorted(lines, key=lambda ln: ln.id):
         reps = sorted(_representations(statement_kind, line, entries, groups, plan_map, claimed, rules, aside, apart),
@@ -1153,7 +1155,7 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
         if len(reps) >= 2 and reps[0].score >= rules.ambiguous_floor:  # R6a.2: ambiguity needs two candidates
             result.cases.append(_ambiguous(line, reps))
             continue
-        if statement_kind == "bank" and is_settlement_line(line, rules):  # R7: owner twins above, then the stand-in
+        if settlement_account and statement_kind == "bank" and is_settlement_line(line, rules):  # R7: owner twins above, then the stand-in
             stand_in = _settlement_stand_in_claim(line, entries, claimed, rules)
             if stand_in is not None:
                 result.claims.append(Claim(line.id, stand_in))
@@ -1181,7 +1183,7 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             continue
         bank_only = _bank_only(line, rules)
         if bank_only:
-            near = _near_children(statement_kind, line, entries, claimed, rules)
+            near = _near_children(statement_kind, line, [e for e in entries if not e.settlement_stand_in], claimed, rules)
             if near:
                 bank_only["near_children"] = near
             result.cases.append(Case(line.id, None, "line_unmatched", (), bank_only))

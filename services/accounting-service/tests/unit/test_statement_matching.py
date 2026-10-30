@@ -2020,15 +2020,15 @@ def test_r6_dryrun_attributes_auto_pay_claims():
     assert dryrun.attribute({"before": None, "after": ("claim", "exact", (1,))}) == "R6a.1/R6a.3 new exact claim"
 
 
-def _bank_match(lines, entries, rules=None):
-    return m.match("bank", lines, entries, {}, {}, lambda e: None, rules or R, "TWD")
+def _bank_match(lines, entries, rules=None, **kw):
+    return m.match("bank", lines, entries, {}, {}, lambda e: None, rules or R, "TWD", **kw)
 
 
 def test_settlement_line_is_claimed_by_an_exact_owner_entry_first():
     line = L(1, date(2026, 9, 14), "-12305", kind="withdrawal", merchant="交割股款")
     owner = E(10, date(2026, 9, 14), "-12305", kind="transfer_out", merchant="")
     stand_in = E(11, date(2026, 9, 14), "-12305", kind="transfer_out", merchant="", settlement_stand_in=True)
-    res = _bank_match([line], [owner, stand_in])
+    res = _bank_match([line], [owner, stand_in], settlement_account=True)
     (claim,) = res.claims
     rep = claim.representation
     assert (claim.line_id, tuple(r.entry_id for r in rep.rows), rep.rule) == (1, (10,), "exact") and res.cases == []
@@ -2036,12 +2036,27 @@ def test_settlement_line_is_claimed_by_an_exact_owner_entry_first():
 
 def test_settlement_stand_in_claims_only_on_the_exact_date():
     line = L(1, date(2026, 9, 14), "-12305", kind="withdrawal", merchant="交割股款")
-    assert _bank_match([line], [E(11, date(2026, 9, 14), "-12305", kind="transfer_out", merchant="", settlement_stand_in=True)]).claims[0].representation.rule == "settlement_stand_in"
-    res = _bank_match([line], [E(11, date(2026, 9, 15), "-12305", kind="transfer_out", merchant="", settlement_stand_in=True)])
+    assert _bank_match([line], [E(11, date(2026, 9, 14), "-12305", kind="transfer_out", merchant="", settlement_stand_in=True)], settlement_account=True).claims[0].representation.rule == "settlement_stand_in"
+    res = _bank_match([line], [E(11, date(2026, 9, 15), "-12305", kind="transfer_out", merchant="", settlement_stand_in=True)], settlement_account=True)
     assert res.claims == [] and [(c.kind, c.context) for c in res.cases] == [("line_unmatched", {"hint": "settlement_line"})]
 
 
 def test_settlement_line_never_gets_near_or_bank_only():
     line = L(1, date(2026, 9, 14), "-12305", kind="withdrawal", merchant="交割股款")
-    res = _bank_match([line], [E(10, date(2026, 9, 14), "-12300", kind="transfer_out", merchant="")])   # near amount: no amount_delta case
+    res = _bank_match([line], [E(10, date(2026, 9, 14), "-12300", kind="transfer_out", merchant="")], settlement_account=True)   # near amount: no amount_delta case
     assert res.claims == [] and [(c.kind, c.context.get("hint")) for c in res.cases] == [("line_unmatched", "settlement_line")]
+
+
+def test_settlement_label_on_a_non_settlement_account_takes_the_ordinary_path():
+    line = L(1, date(2026, 9, 14), "-12305", kind="withdrawal", merchant="交割股款")
+    near = E(10, date(2026, 9, 14), "-12300", kind="transfer_out", merchant="")
+    plain = _bank_match([line], [near])
+    gated = _bank_match([line], [near], settlement_account=True)
+    assert [c.context.get("hint") for c in plain.cases] != ["settlement_line"]
+    assert [c.context.get("hint") for c in gated.cases] == ["settlement_line"]
+
+
+def test_a_stand_in_is_never_proposed_for_an_ordinary_line():
+    line = L(1, date(2026, 9, 14), "-12305", kind="withdrawal", merchant="網銀轉帳")
+    res = _bank_match([line], [E(11, date(2026, 9, 4), "-12305", kind="transfer_out", merchant="", settlement_stand_in=True)])
+    assert res.claims == [] and all(c.entry_id != 11 and not c.candidates for c in res.cases)
