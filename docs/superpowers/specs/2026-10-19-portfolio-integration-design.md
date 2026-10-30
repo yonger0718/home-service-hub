@@ -1,6 +1,6 @@
 # Portfolio ↔ ledger integration (證券交割對帳、市值帳戶、海外券商) — design
 
-Status: rev 4.2 (2026-10-30) owner rulings 2026-10-30 (Q1–Q7, `.superpowers/r7-refresh/owner-rulings.md`) and the
+Status: rev 4.3 (2026-10-30) owner rulings 2026-10-30 (Q1–Q7, `.superpowers/r7-refresh/owner-rulings.md`) and the
 drift-audit errata (`.superpowers/r7-refresh/drift-audit.md`): settlement date from the 國泰 daily statement, T+2 bank
 business days as the fallback, no trading calendar (§4.1); 國泰 rows only (TW_CATHAY + NULL broker), margin days fail
 closed (§4.1); owner twins claim first (§4.3); the booking owner mirrors `statement_auto_pay`, `book_settlement` is
@@ -10,7 +10,8 @@ confirmed receipts ± 3 days (§4.6); **owner decision 2026-10-30 (Q7): daily se
 statement (§4.7), superseding §3's "nothing is written until the line exists" for 國泰 settlements**; controller
 ruling 2026-10-30 (owner to confirm): a dismissed settlement case or a reverted / owner-deleted bank booking is final
 for the stand-in job (§4.7 gates, §9); rev 4.2 (AGENT-360): two-axis feed query with echoed bounds (§4.1, §4.3),
-housekeeping for both origins + the lock protocol + replacement re-gated (§4.7); §2, §8–§11 follow. §5: Phase 1 scope sentence added (read-through in the account
+housekeeping for both origins + the lock protocol + replacement re-gated (§4.7); rev 4.3 (re-verify 2): the trade axis
+returns every row of a trade date, the stand-in lifecycle takes no account row lock (§4.1, §4.7 Locks); §2, §8–§11 follow. §5: Phase 1 scope sentence added (read-through in the account
 read models only); §6–§7 unchanged.
 Rev 3 (2026-10-20) §7 amended by the Phase 2 plan: XML instead of CSV; the token travels only in the Flex `t` query parameter (IB offers no other transport); section list; legacy-duplicate pass; `--unlatch` / `--dry-run` / `--query-id` / `--from-file`.
 Rev 2 (2026-10-19) after the AGENT-175 review of rev 1 `31ab6f4`: booking owner + constituent reservations
@@ -91,10 +92,12 @@ HomeHub sends its read token once #117 adds one) →
            "fingerprint": "cathay:2026-09-10:<sha256 of sorted ids, 16 hex>"}],
  "bounds": {"settle_from": "…", "settle_to": "…", "from": "…", "to": "…"}, "complete": true}
 ```
-(amounts fictional). Two axes (rev 4.2, AGENT-360): `settle_from` / `settle_to` bound the persisted settlement date of
-statement days; `from` / `to` bound the TRADE date of the days without facts (CSV-only). A row is returned when its
-persisted `settlement_date` lies in the settlement window, OR it has no facts and its trade date lies in the
-trade range. The caller computes the trade range from its own business-day calendar (the earliest trade date whose
+(amounts fictional). Two axes (rev 4.2, AGENT-360; rev 4.3): `from` / `to` bound the TRADE date of every row, with
+or without statement facts; `settle_from` / `settle_to` additionally pull in statement days whose persisted
+`settlement_date` lies in the window, whatever their trade date. A row is returned when its trade date lies in the
+trade range, OR its persisted `settlement_date` lies in the settlement window — the settlement window is the only
+filter that reads the settlement date, so a caller asking for one trade date gets that day's row regardless of
+when it settles. The caller computes the trade range from its own business-day calendar (the earliest trade date whose
 T+2 can reach `settle_from`, up to `settle_to`), so completeness never rests on a fixed calendar-day margin; the
 response echoes the bounds it applied and `complete` (false when a row cap truncated it), and a caller that cannot
 assert completeness (error, narrower bounds, `complete: false`) assigns nothing automatically — its lines stay
@@ -279,13 +282,21 @@ and the monthly bank statement re-reconciles them. The machinery is the auto-pay
   covers net, settlement date, items, `bookable` and `date_source`). Where this departs from auto-pay: auto-pay
   pairs are never replaced (a card bill has one figure), so `retire_pair`'s "release the claim" step is reused for
   twins only; replacement and retirement for source reasons refuse a claimed pair instead of releasing it.
-- **Locks.** One protocol for everything that writes settlement bookings: statement locks (when a statement is in
-  hand) → the account row FOR UPDATE → the booking row → the two legs NOWAIT → coverage re-read. The job takes the
-  shared import key, then the account row, the row and the legs per decision; `book_settlement` and its revert take
-  the engine's account lock + writer barrier (`_TwinGuarded`) and the booking row; `reconcile` claims a stand-in leg
-  only while it holds that leg (`_lock_candidates`, NOWAIT), so a job holding the legs makes the reconcile
-  `reconcile_busy` and a reconcile holding them makes the job skip the row (`settlement_busy`); the partial unique
-  on (account, settlement_date) catches a bank booking and a stand-in racing for one day.
+- **Locks** (rev 4.3). One protocol for everything that retires, replaces or tombstones a settlement booking, the
+  auto-pay order: the booking row FOR UPDATE → its two legs FOR UPDATE NOWAIT → coverage re-read; a held leg is
+  409 / a skipped row (`settlement_busy`), never a wait. The stand-in lifecycle takes **no account row lock**: the
+  engine's invariant (engine_locks.py:1-9) is that the account row is a blocking lock whose takers hold no entry
+  or statement lock, and that is what keeps it cycle-free. Taking it in the job or in `reconcile` would close two
+  cycles: (a) the job holds the account row, retires a twin and blocks on another statement's `needs_recheck`
+  update while that statement's reconcile, holding its statement row, waits for the account row; (b) a reconcile
+  that has flushed an `owner_deleted` tombstone waits for the account row while the job, holding it, waits for
+  that booking row. Serialisation instead: the job's advisory lock (`SETTLEMENT_JOB_LOCK_KEY`) serialises jobs;
+  the partial unique on (account, settlement_date) over `booked` rows serialises bookings for one day, whoever
+  books (`book_stand_in` vs `book_settlement`); `reconcile` claims a stand-in leg only while it holds that leg
+  (`_lock_candidates`, NOWAIT) and runs `housekeep` under its statement row with the same row → legs NOWAIT order;
+  `book_settlement` and its revert keep the engine's own account lock + writer barrier (`_TwinGuarded`, a ledger
+  writer like `create_system_entry`) and lock the booking row → legs NOWAIT after the case checks. So a job
+  holding the legs makes the reconcile `reconcile_busy` and a reconcile holding them makes the job skip the row.
 - **Bank line.** The monthly statement's settlement line claims the stand-in's bank leg on exact amount and exact
   date (§4.3 step 2): the stand-in becomes the bank-attested booking (its row stays `booked`, `event_id` set to the
   line's event), no second booking, no duplicate effect. An owner twin found at reconcile retires it first, as
