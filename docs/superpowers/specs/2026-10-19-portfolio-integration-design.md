@@ -283,8 +283,10 @@ and the monthly bank statement re-reconciles them. The machinery is the auto-pay
   pairs are never replaced (a card bill has one figure), so `retire_pair`'s "release the claim" step is reused for
   twins only; replacement and retirement for source reasons refuse a claimed pair instead of releasing it.
 - **Locks** (rev 4.3). One protocol for everything that retires, replaces or tombstones a settlement booking, the
-  auto-pay order: the booking row FOR UPDATE → its two legs FOR UPDATE NOWAIT → coverage re-read; a held leg is
-  409 / a skipped row (`settlement_busy`), never a wait. The stand-in lifecycle takes **no account row lock**: the
+  auto-pay order: the booking row FOR UPDATE NOWAIT → its two legs FOR UPDATE NOWAIT → coverage re-read, inside one
+  savepoint; a held row or leg is 409 / a skipped row (`settlement_busy`), never a wait (a blocking row lock would
+  close a cycle: a job holding a twin-retired pair blocks on a statement's `needs_recheck` update while that
+  statement's reconcile, holding the statement row, waits for the booking row). The stand-in lifecycle takes **no account row lock**: the
   engine's invariant (engine_locks.py:1-9) is that the account row is a blocking lock whose takers hold no entry
   or statement lock, and that is what keeps it cycle-free. Taking it in the job or in `reconcile` would close two
   cycles: (a) the job holds the account row, retires a twin and blocks on another statement's `needs_recheck`
