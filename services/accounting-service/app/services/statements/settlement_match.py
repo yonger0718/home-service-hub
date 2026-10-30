@@ -58,7 +58,7 @@ class Assignment:
     unknown_dates: int = 0
 
 
-def _merge(parts: tuple[Settlement, ...]) -> Settlement | None:
+def merge(parts: tuple[Settlement, ...]) -> Settlement | None:
     """Two settlements as one candidate; None unless they agree on settlement date and date source. The pair is two
     trade days settling together: its `trade_date` is the earlier one and its fingerprint the sorted join, so a pair
     is never re-read by trade date."""
@@ -93,7 +93,7 @@ def assign(lines: list[Line], settlements: list[Settlement], *, reserved_fps: se
             continue
         found = []
         for parts in singles + sums:
-            merged = parts[0] if len(parts) == 1 else _merge(parts)
+            merged = parts[0] if len(parts) == 1 else merge(parts)
             if merged is not None and _same(merged.net_amount, line.flow) and all(
                     abs((p.settlement_date - line.posted_date).days) <= rules.settlement_window_days for p in parts):
                 found.append(merged)

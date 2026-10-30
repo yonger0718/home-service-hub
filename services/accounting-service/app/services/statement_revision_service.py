@@ -69,23 +69,18 @@ def reconciliation_hook(db: Session, statement: AccountStatement, revision: Stat
     the pass (an import holding the import key, `reconcile_busy`, `sweep_barrier_busy`, `duplicate_claim`, coverage
     not conserved) and a residual `DeadlockDetected` roll back only the savepoint and leave the pass to the daily
     batch (`needs_recheck`): the revision itself is stored and the ingest commits. Any other OperationalError
-    propagates. After a completed reconcile of a statement whose account has a `settlement_source`, the account's
-    other live, non-retired statements within `period ± 7` get `needs_recheck` in the same savepoint
-    (`trade_settlement_service.flag_neighbours`, portfolio integration spec §4.5 item 3), so their settlement cases
-    are re-derived against the new lines. Imported late: reconciliation_service depends on the ledger services, the
-    revision service must not at import time."""
+    propagates. The settlement neighbours' re-check flag is not written here (`SubmitResult.neighbours_recheck`).
+    Imported late: reconciliation_service depends on the ledger services, the revision service must not at import
+    time."""
     if statement.current_revision_id != revision.id or not revision.guardrail_ok:
         return []
-    from app.services import reconciliation_service, trade_settlement_service
+    from app.services import reconciliation_service
 
     db.flush()  # the revision, lines and current-revision switch stay outside the savepoint
     try:
         with db.begin_nested():
             result = reconciliation_service.reconcile(db, statement.id, run_id=run.id, locked=True,
                                                       barrier_wait=False)
-            if result.skipped is None and db.get(Account, statement.account_id).settlement_source:
-                # portfolio integration spec §4.5 item 3: the new lines may change a neighbour's global assignment
-                trade_settlement_service.flag_neighbours(db, statement)
     except (ConflictError, OperationalError) as exc:
         if isinstance(exc, OperationalError) and not isinstance(exc.orig, DeadlockDetected):
             raise
@@ -102,6 +97,11 @@ class SubmitResult:
     lineage_counts: dict[str, int]
     case_ids: list[int]
     replayed: bool = False
+    # Portfolio integration spec §4.5 item 3: a revision became current (guardrails passed) on an account with a
+    # `settlement_source`, so the new lines may change a neighbour's global assignment. The routes then flag the
+    # neighbours after their commit (`trade_settlement_service.flag_neighbours_safe`): in a transaction of their own,
+    # never inside the hook's savepoint, whose pass may yield (busy) or lose a deadlock and roll the flag back with it.
+    neighbours_recheck: bool = False
 
 
 LINE_COLUMNS = ("seq", "txn_date", "posted_date", "merchant_raw", "printed_amount", "foreign_amount", "foreign_currency",
@@ -698,4 +698,6 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
     _recount(db, statement)
     db.flush()
     # 9. lineage counts
-    return SubmitResult(statement, revision, counts, case_ids)
+    recheck = statement.current_revision_id == revision.id and revision.guardrail_ok \
+        and bool(account.settlement_source)
+    return SubmitResult(statement, revision, counts, case_ids, neighbours_recheck=recheck)

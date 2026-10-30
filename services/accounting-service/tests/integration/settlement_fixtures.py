@@ -37,8 +37,11 @@ def settlement_bank(seed, db):
 
 
 def submit_bank(db, run, bank, lines, **kw) -> int:
-    """A bank statement through the real ingest path (the hook reconciles); its id."""
-    statement, _, _ = _submit(db, run, bank, lines, kind="bank", **kw)
+    """A bank statement through the real ingest path (the hook reconciles, then the routes' post-commit neighbour
+    flag runs as they run it); its id."""
+    statement, _, res = _submit(db, run, bank, lines, kind="bank", **kw)
+    if res.neighbours_recheck:
+        tss.flag_neighbours_safe(db, statement.id)
     return statement.id
 
 
@@ -88,14 +91,14 @@ def feed(*rows, fingerprint=None, amounts=None) -> list[dict]:
 def portfolio_stub(monkeypatch):
     """`portfolio_client.client_for` → a client over a MockTransport serving `.rows` filtered by the two axes (trade
     date in `from … to`, or a printed `settlement_date` in `settle_from … settle_to`) with the request's bounds
-    echoed; `.down = True` → 503; `.narrow = True` → the echoed `from` is one day later; `.calls` = each request's
-    query params."""
-    stub = SimpleNamespace(rows=[], down=False, narrow=False, calls=[])
+    echoed; `.down = True` → 503; `.fail_after = n` → 503 from the request after the n-th on; `.narrow = True` → the
+    echoed `from` is one day later; `.calls` = each request's query params."""
+    stub = SimpleNamespace(rows=[], down=False, fail_after=None, narrow=False, calls=[])
 
     def handler(request: httpx.Request) -> httpx.Response:
         params = dict(request.url.params)
         stub.calls.append(params)
-        if stub.down:
+        if stub.down or (stub.fail_after is not None and len(stub.calls) > stub.fail_after):
             return httpx.Response(503)
         lo, hi = date.fromisoformat(params["from"]), date.fromisoformat(params["to"])
         s_lo, s_hi = date.fromisoformat(params["settle_from"]), date.fromisoformat(params["settle_to"])

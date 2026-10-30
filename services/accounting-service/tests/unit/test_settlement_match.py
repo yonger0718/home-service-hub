@@ -96,6 +96,13 @@ def test_merged_pair_sorts_fingerprints_and_needs_agreeing_dates():
     assert A(lines, split, rules=on).pending == {1: None}
 
 
+def test_merge_is_public_and_joins_parts_in_fingerprint_order():
+    late = S("f2", date(2026, 9, 14), "-3000", td=date(2026, 9, 11), ids=("ct:2",))
+    pair = sm.merge((late, S("f1", date(2026, 9, 14), "-5000", td=date(2026, 9, 10))))
+    assert (pair.fingerprint, pair.trade_date, pair.net_amount) == ("f1+f2", date(2026, 9, 10), Decimal("-8000"))
+    assert sm.merge((late, S("f1", date(2026, 9, 15), "-5000"))) is None  # the parts settle on different days
+
+
 def test_unknown_dates_ignores_reserved_rows():
     sets = [S("f1", None, "-1"), S("f2", None, "-1", ids=("ct:2",)), S("f3", None, "-1", ids=("ct:3",))]
     a = A([], sets, fps={"f1"}, ids={"ct:3"})

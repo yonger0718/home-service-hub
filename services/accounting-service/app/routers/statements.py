@@ -56,7 +56,7 @@ from ..schemas.statements import (
 )
 from ..services import confirm_service, owner_rule_service, policy_service, statement_retire_service
 from ..services import reconciliation_service as recon
-from ..services import settings_service
+from ..services import settings_service, trade_settlement_service
 from ..services import statement_ingest_service as ingest
 from ..services.errors import ConflictError, NotFoundError, ValidationError
 from .errors import service_errors
@@ -199,8 +199,10 @@ def submit_revision(body: RevisionIn, request: Request, db: Session = Depends(ge
         settings = settings_service.get_reconciliation_settings(db)
         result = ingest.submit_revision(db, run, body, account_map=settings.get("account_map", {}),
                                         composite_map=settings.get("composite_map", {}))
-        out = _revision_out(result)
+        out, recheck = _revision_out(result), result.neighbours_recheck
     db.commit()
+    if recheck:  # its own transaction, after the ingest commit (SubmitResult.neighbours_recheck)
+        trade_settlement_service.flag_neighbours_safe(db, out["statement_id"])
     if out["mode"] == "live" and not out["replayed"]:
         owner_rule_service.run_rules_safe(db, out["statement_id"], run_id=body.run_id)
         policy_service.run_policy_safe(db, out["statement_id"], run_id=body.run_id)
@@ -214,9 +216,11 @@ def create_manual_statement(account_id: int, body: ManualStatementIn, request: R
     with service_errors():
         result = ingest.create_manual_statement(db, account_id=account_id, payload=body,
                                                 label=_label(request) or "owner")
-        out = _revision_out(result)
+        out, recheck = _revision_out(result), result.neighbours_recheck
         run_id = result.revision.run_id
     db.commit()
+    if recheck:
+        trade_settlement_service.flag_neighbours_safe(db, out["statement_id"])
     if out["mode"] == "live" and not out["replayed"]:
         owner_rule_service.run_rules_safe(db, out["statement_id"], run_id=run_id)
         policy_service.run_policy_safe(db, out["statement_id"], run_id=run_id)

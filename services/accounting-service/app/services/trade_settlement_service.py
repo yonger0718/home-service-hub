@@ -542,7 +542,7 @@ def _now_for(db: Session, account: Account, row: SettlementBooking, client: Port
                     and (len(parts) > 1 or r.trade_date == trade_date)), key=lambda r: r.fingerprint)
     if len(found) != len(parts) or len({r.fingerprint for r in found}) != len(parts):
         return None
-    merged = found[0] if len(found) == 1 else settlement_match._merge(tuple(found))
+    merged = found[0] if len(found) == 1 else settlement_match.merge(tuple(found))
     return None if merged is None else facts_of(merged)
 
 
@@ -552,8 +552,10 @@ def _drift(db: Session, statement: AccountStatement, account: Account, all_lines
     `booked` row's leg (either origin, owned and matcher coverage alike) has the row's facts re-read
     (`_now_for`); a difference or a vanished row → a `settlement` case `{"hint": "source_drift", "booking_id",
     "booked", "now"}` without candidates on that line (taken from `all_lines`). The pair stays; nothing is rebooked.
-    When the feed cannot be read (`skip_reads`, or the re-read raises) an open `source_drift` case of the line is
-    carried as it stands, never superseded by silence."""
+    When the feed cannot be read (`skip_reads`, or a re-read raises) an open `source_drift` case of the line is
+    carried as it stands, never superseded by silence; the first re-read that raises sets `skip_reads` for the
+    remaining lines, so a portfolio that stops answering costs one client timeout, not one per line, while this
+    transaction holds the statement row and its locks."""
     from app.services.reconciliation_service import _case  # local: the reconciler calls this function
 
     by_line = {ln.id: ln for ln in all_lines}
@@ -577,7 +579,7 @@ def _drift(db: Session, statement: AccountStatement, account: Account, all_lines
             try:
                 now = _now_for(db, account, row, client)
             except PortfolioUnavailable:
-                readable = False
+                readable, skip_reads = False, True
         if not readable:
             case = carried.get((line_id, row.id))
             if case is not None:  # `_write_cases` keeps it: the same key (its sweep note is not part of it)
@@ -601,8 +603,8 @@ def settle(db: Session, statement: AccountStatement, account: Account, result: m
     → `line_unmatched` + `settlement_pending` (`reason`, `nearest`), or, with no candidate (`reason is None`) beside an
     unclaimed stand-in within the window, `settlement_mismatch` naming it (a sole non-bookable candidate keeps
     `settlement_pending` with its reason, D8); the feed unavailable / incomplete / past the calendar → every
-    placeholder `settlement_pending` and `unavailable`. Then the drift cases. Counts per `COUNT_KEYS` +
-    `unavailable_code`."""
+    placeholder `settlement_pending` and `unavailable`. Then the drift cases (live statements only). Counts per
+    `COUNT_KEYS` + `unavailable_code`."""
     from app.services.reconciliation_service import _as_line  # local: the reconciler calls this function
 
     counts: dict = dict.fromkeys(COUNT_KEYS, 0)
@@ -651,16 +653,17 @@ def settle(db: Session, statement: AccountStatement, account: Account, result: m
                     counts["pending"] += 1
     cases = [outcome.get(c.line_id, c) if c.line_id in placeholders else c for c in result.cases]
     skip_reads = unavailable_code is not None and unavailable_code not in DRIFT_READ_AFTER
-    drift = _drift(db, statement, account, all_lines, legs, client, skip_reads)
+    # drift cases are live-only (the reconciler writes no historical cases): a historical reconcile re-reads nothing
+    drift = _drift(db, statement, account, all_lines, legs, client, skip_reads) if statement.mode == "live" else []
     counts["drift"] = sum(1 for d in drift if d["context"].get("hint") == "source_drift")
     return Settled(cases=cases, drift=drift, counts=counts, unavailable=unavailable_code is not None)
 
 
 def flag_neighbours(db: Session, statement: AccountStatement) -> int:
-    """Spec §4.5 item 3: after the monthly statement's reconcile, the account's other live, non-retired statements
-    whose period overlaps `period_start − 7 … period_end + 7` get `needs_recheck`, so no case derived before the new
-    lines existed stays actionable. One UPDATE of statement rows (the `needs_recheck` flag `retire_pair` writes the
-    same way); returns the number flagged."""
+    """Spec §4.5 item 3: once a revision of the statement became current, the account's other live, non-retired
+    statements whose period overlaps `period_start − 7 … period_end + 7` get `needs_recheck`, so no case derived
+    before the new lines existed stays actionable. One UPDATE of statement rows (the `needs_recheck` flag `retire_pair`
+    writes the same way); returns the number flagged."""
     span = timedelta(days=NEIGHBOUR_RECHECK_DAYS)
     count = db.execute(
         update(AccountStatement)
@@ -673,3 +676,19 @@ def flag_neighbours(db: Session, statement: AccountStatement) -> int:
         .execution_options(synchronize_session=False)).rowcount
     db.flush()
     return count
+
+
+def flag_neighbours_safe(db: Session, statement_id: int) -> int:
+    """For the ingest routes, after their commit (`SubmitResult.neighbours_recheck`, the `run_rules_safe` pattern):
+    `flag_neighbours` in a short transaction of its own, so neither a yielded hook pass (`reconcile_busy`,
+    `sweep_barrier_busy`, the import key) nor a lost deadlock drops the flag, and the UPDATE runs while no statement
+    row of the ingest is held. Any error rolls back and is only logged (ids only); returns the number flagged."""
+    try:
+        statement = db.get(AccountStatement, statement_id)
+        count = 0 if statement is None else flag_neighbours(db, statement)
+        db.commit()
+        return count
+    except Exception:  # noqa: BLE001  (the revision is stored; the daily re-check is the backstop)
+        logger.exception("settlement.neighbour_flag_failed", extra={"statement_id": statement_id})
+        db.rollback()
+        return 0

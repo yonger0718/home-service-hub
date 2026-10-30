@@ -14,12 +14,12 @@ coverage on any statement, deletes them — so their dirty triggers hold the sha
 transaction ends, and the events land past this sweep's cap for the next sweep — and flags the released statements
 `needs_recheck`. The release and the flag are plain UPDATEs: they take blocking (non-NOWAIT) row locks on the other
 statements' coverage rows and on those statements' rows (`needs_recheck`). A bank statement of a `settlement_source`
-account printing a settlement line (portfolio integration spec §4.3, §4.7) does the same for its `settlement_booking`
-rows at the same point (`trade_settlement_service.housekeep` tombstones owner-deleted / owner-edited bookings, then
-`retire_twins_for_statement`; booking row → legs NOWAIT, never the account row), reads the settlement feed once
-before the group/entry locks, and after its coverage is written links a claimed stand-in to its line's event (the
-booking row try-locked NOWAIT) and derives the settlement cases (`trade_settlement_service.settle`). Otherwise a
-reconcile emits no dirty events of its own.
+account printing a settlement line (portfolio integration spec §4.3, §4.7) first reads the settlement feed once
+(before any pair or group/entry lock), then does the same for its `settlement_booking` rows at the same point
+(`trade_settlement_service.housekeep` tombstones owner-deleted / owner-edited bookings, then
+`retire_twins_for_statement`; booking row → legs NOWAIT, never the account row), and after its coverage is written
+links a claimed stand-in to its line's event (the booking row try-locked NOWAIT) and derives the settlement cases
+(`trade_settlement_service.settle`). Otherwise a reconcile emits no dirty events of its own.
 
 Reconcile yields on lock conflicts: the sweep (and, in the revision hook, the coverage transfer) has already written
 coverage/case rows when the group/entry locks are taken, while a ledger delete locks the entry/group first and then
@@ -1003,37 +1003,40 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
         return ReconcileResult(skipped=skipped)
     live = statement.mode == "live"
     accounts = participating_accounts(db, statement.account_id)
-    # auto-pay §4.5: a pair whose owner twin has arrived is retired before the population is read, so the line meets
-    # only the twin (the deleted legs are absent from `load_candidates`)
-    auto_pay_service.retire_twins_for_statement(db, statement, accounts)
     accounts_by_id = {a.id: a for a in db.execute(select(Account).where(Account.id.in_(accounts))).scalars()}
     account = accounts_by_id[statement.account_id]
     rules = rules_for(settings_service.reconciliation_rules(db), statement.period_end)
     all_lines = _current_lines(db, statement)
     settles = trade_settlement_service.applies(account, statement, all_lines, rules)
-    if settles:
-        # portfolio integration spec §4.7 Housekeeping: both origins' owner deletes / edits tombstone their rows
-        # before the reservations are read (the bank origin has no job, AGENT-360 major 1), then an owner twin
-        # retires its pair as the auto-pay twin does — both under this statement row, row → legs NOWAIT
-        trade_settlement_service.housekeep(db, statement.account_id)
-        trade_settlement_service.retire_twins_for_statement(db, statement, accounts)
     # one cached client for the settlement step: the window read below and the drift re-reads (M3)
     with portfolio_client.cached(portfolio_client.client_for()) if settles else nullcontext() as client:
+        # spec §4.3: the one window read (an HTTP call, ≤ the client timeout) comes before any pair or candidate row
+        # lock of this reconcile, and before the twin retirements' leg deletes hold the dirty barrier; the feed does
+        # not depend on them (housekeeping changes only the reservations `settle` reads later)
+        feed, unavailable_code = (trade_settlement_service.fetch_for(db, account, statement, client=client)
+                                  if settles else (None, None))
+        # auto-pay §4.5: a pair whose owner twin has arrived is retired before the population is read, so the line
+        # meets only the twin (the deleted legs are absent from `load_candidates`)
+        auto_pay_service.retire_twins_for_statement(db, statement, accounts)
+        if settles:
+            # portfolio integration spec §4.7 Housekeeping: both origins' owner deletes / edits tombstone their rows
+            # before the reservations are read (the bank origin has no job, AGENT-360 major 1), then an owner twin
+            # retires its pair as the auto-pay twin does — both under this statement row, row → legs NOWAIT
+            trade_settlement_service.housekeep(db, statement.account_id)
+            trade_settlement_service.retire_twins_for_statement(db, statement, accounts)
         return _match_and_record(db, statement, accounts, accounts_by_id, rules, all_lines, run_id=run_id, live=live,
-                                 settles=settles, client=client)
+                                 settles=settles, client=client, feed=feed, unavailable_code=unavailable_code)
 
 
 def _match_and_record(db: Session, statement: AccountStatement, accounts: list[int], accounts_by_id: dict[int, Account],
                       rules: matching.Rules, all_lines: list[StatementLine], *, run_id: int | None, live: bool,
-                      settles: bool, client) -> ReconcileResult:
-    """`reconcile` after the sweep and the stand-in retirements: population, locks, match, coverage, cases, counts.
-    With `settles` (spec §4.3) the settlement feed is read once BEFORE the candidate row locks (an HTTP call with a
-    short timeout; a failure leaves every settlement line `settlement_pending`, the rest reconciled as usual), and
-    the settlement outcomes replace the matcher's `settlement_line` placeholders after the coverage is written
-    (`trade_settlement_service.settle`)."""
+                      settles: bool, client, feed, unavailable_code: str | None) -> ReconcileResult:
+    """`reconcile` after the sweep, the settlement window read and the stand-in retirements: population, locks,
+    match, coverage, cases, counts. With `settles` (spec §4.3) `feed` is the window read `reconcile` made before any
+    row lock (None with `unavailable_code` on a failure: every settlement line `settlement_pending`, the rest
+    reconciled as usual), and the settlement outcomes replace the matcher's `settlement_line` placeholders after the
+    coverage is written (`trade_settlement_service.settle`)."""
     account = accounts_by_id[statement.account_id]
-    feed, unavailable_code = (trade_settlement_service.fetch_for(db, account, statement, client=client)
-                              if settles else (None, None))
     include_reward = any(line.line_kind == "reward" for line in all_lines)
     manual, owned = owned_coverage(db, statement)  # owner coverage: kept as is (ruling 16)
     line_rows = [line for line in all_lines if line.id not in manual]

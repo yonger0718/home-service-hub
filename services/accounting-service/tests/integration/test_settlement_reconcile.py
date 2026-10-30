@@ -11,7 +11,10 @@ from sqlalchemy.orm import sessionmaker
 
 from app import auth
 from app.models import AccountStatement, LedgerEntry, SettlementBooking
+from app.schemas.statements import RevisionIn
 from app.services import entry_write_service as ews
+from app.services import pair_locks
+from app.services import reconciliation_service as rec
 from app.services import statement_retire_service
 from app.services import trade_settlement_service as tss
 from app.services.errors import CodedConflictError
@@ -19,7 +22,7 @@ from tests.integration import statement_fixtures
 from tests.integration.settlement_fixtures import (  # noqa: F401  (portfolio_stub is a fixture)
     AUG, bank_line, feed, portfolio_stub, seed_stand_in, settle_line, settlement_bank, submit_bank,
 )
-from tests.integration.statement_fixtures import OCT, _active, _reconcile, _transfer, run  # noqa: F401
+from tests.integration.statement_fixtures import OCT, SEP, _active, _reconcile, _transfer, run  # noqa: F401
 
 
 def _cases(db, statement_id, *statuses):
@@ -75,6 +78,8 @@ def test_stand_in_is_claimed_on_its_exact_date_and_linked(seed, db_session, run,
     sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
     db_session.refresh(booking)
     assert _cases(db_session, sid, "open") == [] and booking.event_id is not None and booking.status == "booked"
+    # §4.7 no duplicate effect: the claimed stand-in alone closes the statement's balance (no `balance_gap` either)
+    assert statement_fixtures._cases(db_session, sid, "open") == []
     assert [c.match_rule for c in _active(db_session, sid)] == ["settlement_stand_in"]
     result = _reconcile(db_session, sid)  # the claim is kept and counted; the link is idempotent
     assert (result.settlements["claimed"], result.settlements["drift"]) == (1, 0)
@@ -304,3 +309,93 @@ def test_a_held_booking_row_is_settlement_busy_never_a_wait(pg_engine, seed, db_
         holder.rollback()
         holder.close()
     assert tss.housekeep(db_session, bank.id)["owner_deleted"] == 1
+
+
+def test_the_neighbour_flag_lands_after_the_ingest_commit_when_the_hook_pass_yields(
+        client, seed, db_session, run, portfolio_stub, monkeypatch):
+    monkeypatch.setenv(auth.TOKENS_ENV, "worker:worker-token")
+    monkeypatch.setenv(auth.SCOPES_ENV, "worker=ingest")
+    monkeypatch.setenv(auth.FEATURE_ENV, "true")
+    bank, _ = settlement_bank(seed, db_session)
+    aug = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 8, 31), "-5000")], period=AUG)
+    assert db_session.get(AccountStatement, aug).needs_recheck is False
+    real = rec.reconcile
+
+    def yielded(*args, **kwargs):  # the hook pass meets a held candidate row
+        raise CodedConflictError("reconcile_busy", "held")
+
+    monkeypatch.setattr(rec, "reconcile", yielded)
+    r, token = run
+    body = RevisionIn(run_id=r.id, lease_token=token, file_id=None, account_id=bank.id, kind="bank", parser="t",
+                      parser_version="1", currency=bank.currency, period_start=SEP[0], period_end=SEP[1],
+                      opening_balance=Decimal(0), statement_total=Decimal("-5000"),
+                      lines=[settle_line(1, date(2026, 9, 1), "-5000")], raw={})
+    done = client.post("/statements/revisions", headers={"Authorization": "Bearer worker-token"},
+                       json=body.model_dump(mode="json"))
+    assert done.status_code == 201, done.text
+    sep = done.json()["statement_id"]
+    db_session.expire_all()
+    # the pass yielded (its own statement waits for the batch), yet the neighbour flag was written after the commit
+    assert (db_session.get(AccountStatement, sep).needs_recheck, db_session.get(AccountStatement, aug).needs_recheck) \
+        == (True, True)
+    monkeypatch.setattr(rec, "reconcile", real)
+    (item,) = list(rec.reconcile_each(db_session, [sep]))  # the batch path then completes the yielded pass
+    db_session.commit()
+    assert item["result"].skipped is None and len(_cases(db_session, sep, "open")) == 1
+    assert db_session.get(AccountStatement, aug).needs_recheck is True
+
+
+def test_drift_reads_stop_after_the_first_failure(seed, db_session, run, portfolio_stub):
+    bank, target = settlement_bank(seed, db_session)
+    for day, net, fp in ((14, "-12305", "cathay:2026-09-10:aa"), (15, "-4000", "cathay:2026-09-11:bb")):
+        seed_stand_in(db_session, bank, target, settlement_date=date(2026, 9, day), net=net, fingerprint=fp,
+                      ids=(f"ct:{day}",))
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:14",)), fingerprint="cathay:2026-09-10:aa") \
+        + feed(("2026-09-11", "2026-09-15", "-4000", ("ct:15",)), fingerprint="cathay:2026-09-11:bb")
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305"),
+                                              settle_line(2, date(2026, 9, 15), "-4000")])
+    assert len(_active(db_session, sid)) == 2
+    portfolio_stub.fail_after = len(portfolio_stub.calls) + 1  # the window read answers, every later read fails
+    result = _reconcile(db_session, sid)
+    # one failed drift re-read; the second claimed line is not re-read (and nothing is superseded by the silence)
+    assert len(portfolio_stub.calls) == portfolio_stub.fail_after + 1
+    assert (result.settlement_source_unavailable, result.settlements["drift"]) == (False, 0)
+    assert _cases(db_session, sid, "open") == []
+
+
+def test_a_historical_reconcile_makes_no_drift_read(seed, db_session, run, portfolio_stub):
+    bank, target = settlement_bank(seed, db_session)
+    bank.statement_live_from = date(2026, 12, 1)  # September is a historical statement
+    db_session.commit()
+    seed_stand_in(db_session, bank, target, settlement_date=date(2026, 9, 14), net="-12305",
+                  fingerprint="cathay:2026-09-10:aa", ids=("ct:5",))
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)), fingerprint="cathay:2026-09-10:aa")
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    assert db_session.get(AccountStatement, sid).mode == "historical" and len(_active(db_session, sid)) == 1
+    before = len(portfolio_stub.calls)
+    result = _reconcile(db_session, sid)
+    assert len(portfolio_stub.calls) == before + 1 and result.settlements["drift"] == 0  # the window read only
+
+
+def test_the_window_read_comes_before_any_row_lock(seed, db_session, run, portfolio_stub, monkeypatch):
+    bank, target = settlement_bank(seed, db_session)
+    booking = seed_stand_in(db_session, bank, target, settlement_date=date(2026, 9, 14), net="-12305",
+                            fingerprint="cathay:2026-09-10:aa", ids=("ct:5",))
+    ews.delete_entry(db_session, booking.out_entry_id)  # housekeep locks the row and its legs
+    db_session.commit()
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)))
+    seen: list[tuple[str, int]] = []
+
+    def spy(name, real):
+        def wrapped(*args, **kwargs):
+            seen.append((name, len(portfolio_stub.calls)))
+            return real(*args, **kwargs)
+        return wrapped
+
+    for module, name in ((pair_locks, "lock_row"), (pair_locks, "lock_legs"), (rec, "_lock_candidates")):
+        monkeypatch.setattr(module, name, spy(name, getattr(module, name)))
+    submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305"),
+                                        bank_line(2, date(2026, 9, 15), "ATM", "-1000")])
+    db_session.refresh(booking)
+    assert booking.status == "owner_deleted" and {"lock_row", "_lock_candidates"} <= {n for n, _ in seen}
+    assert {calls for _, calls in seen} == {1}  # every lock was taken after the one window read
