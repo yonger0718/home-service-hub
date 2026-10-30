@@ -13,7 +13,7 @@ from tests.integration.statement_fixtures import _submit, run  # noqa: F401  (ru
 
 @pytest.fixture
 def valuation_stub(monkeypatch):
-    stub = SimpleNamespace(total="0", complete=True, missing=[], down=False, seen=[])
+    stub = SimpleNamespace(currency="TWD", total="0", complete=True, missing=[], down=False, seen=[])
 
     class _Client:
         def valuation(self, broker, as_of):
@@ -21,7 +21,7 @@ def valuation_stub(monkeypatch):
             if stub.down:
                 raise PortfolioUnavailable("connect")
             total = Decimal(stub.total)
-            return Valuation(broker=broker, currency="TWD", as_of=as_of, priced_through=as_of, market_value=total,
+            return Valuation(broker=broker, currency=stub.currency, as_of=as_of, priced_through=as_of, market_value=total,
                              cash=Decimal(0), total=total, complete=stub.complete, missing=tuple(stub.missing))
 
     monkeypatch.setattr(portfolio_client, "client_for", lambda: _Client())
@@ -84,3 +84,35 @@ def test_warm_cache_with_portfolio_down_serves_the_stale_value(client, seed, db_
     valuation_stub.down = True; valuation_service.expire_cache()                                # expired, not cleared
     body = client.get(f"/accounts/{pos.id}").json()
     assert (body["balance"], body["stale"]) == ("123456.0000", True)                             # M15: a known value beats null
+
+
+def test_down_portfolio_is_asked_once_per_negative_window(client, seed, db_session, valuation_stub):
+    pos = seed.account("國泰持股", valuation_source="portfolio:cathay")
+    valuation_stub.down = True
+    db_session.commit()
+    client.get(f"/accounts/{pos.id}")
+    client.get(f"/accounts/{pos.id}")
+    assert len(valuation_stub.seen) == 1
+    valuation_service.expire_cache()
+    client.get(f"/accounts/{pos.id}")
+    assert len(valuation_stub.seen) == 2
+
+
+def test_other_currency_is_unavailable_and_logs_only_the_code(client, seed, db_session, valuation_stub, caplog, monkeypatch):
+    pos = seed.account("國泰持股", valuation_source="portfolio:cathay")
+    valuation_stub.currency, valuation_stub.total = "USD", "424242"
+    db_session.commit()
+    monkeypatch.setattr(valuation_service.logger, "disabled", False)  # alembic fileConfig disables pre-existing loggers
+    with caplog.at_level("DEBUG"):
+        body = client.get(f"/accounts/{pos.id}").json()
+    assert (body["balance"], body["stale"], body["valuation"]) == (None, True, None)
+    mine = [r.getMessage() for r in caplog.records if r.name == valuation_service.__name__]
+    assert mine and "code=currency" in mine[0] and not any("424242" in m for m in mine)
+
+
+@pytest.mark.parametrize("source", ["portfolio", "portfolio:"])
+def test_valuation_source_without_a_broker_is_unavailable(client, seed, db_session, valuation_stub, source):
+    pos = seed.account("國泰持股", valuation_source=source)
+    db_session.commit()
+    body = client.get(f"/accounts/{pos.id}").json()
+    assert (body["balance"], body["stale"], body["valuation"], valuation_stub.seen) == (None, True, None, [])

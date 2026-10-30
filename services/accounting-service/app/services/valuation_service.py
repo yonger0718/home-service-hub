@@ -13,19 +13,24 @@ from .portfolio_client import PortfolioUnavailable, Valuation
 logger = logging.getLogger(__name__)
 
 CACHE_TTL_SECONDS = 600
+NEGATIVE_TTL = 60  # a failed fetch is remembered this long, so a down portfolio costs one timeout per minute per key
 AMOUNT_QUANTUM = Decimal("0.0001")
 
 _cache: dict[tuple[str, date], tuple[float, Valuation]] = {}
+_failed: dict[tuple[str, date], float] = {}
 
 
 def clear_cache() -> None:
     _cache.clear()
+    _failed.clear()
 
 
 def expire_cache() -> None:
     """Test seam: back-date every entry past the TTL without dropping it."""
     for key, (_, valuation) in list(_cache.items()):
         _cache[key] = (float("-inf"), valuation)
+    for key in list(_failed):
+        _failed[key] = float("-inf")
 
 
 def broker_of(account: Account) -> str | None:
@@ -59,15 +64,23 @@ def valuation_for(db, account: Account, as_of: date) -> dict | None:
     if entry is not None and time.monotonic() - entry[0] < CACHE_TTL_SECONDS:
         valuation = entry[1]
     else:
-        try:
-            valuation = portfolio_client.client_for().valuation(broker, as_of)
-        except PortfolioUnavailable as exc:
-            logger.warning("valuation unavailable broker=%s code=%s", broker, exc.code)
+        failed_at = _failed.get(key)
+        if failed_at is not None and time.monotonic() - failed_at < NEGATIVE_TTL:
             if entry is None:
                 return None
             valuation, stale = entry[1], True
         else:
-            _cache[key] = (time.monotonic(), valuation)
+            try:
+                valuation = portfolio_client.client_for().valuation(broker, as_of)
+            except PortfolioUnavailable as exc:
+                logger.warning("valuation unavailable broker=%s code=%s", broker, exc.code)
+                _failed[key] = time.monotonic()
+                if entry is None:
+                    return None
+                valuation, stale = entry[1], True
+            else:
+                _failed.pop(key, None)
+                _cache[key] = (time.monotonic(), valuation)
     if valuation.currency != account.currency:
         logger.warning("valuation currency mismatch broker=%s code=currency", broker)
         return None
