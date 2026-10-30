@@ -22,11 +22,13 @@ from __future__ import annotations
 import csv
 import io
 from dataclasses import dataclass, field
-from datetime import date as date_type, datetime, timezone
-from decimal import Decimal, InvalidOperation
+from collections import Counter
+from datetime import date as date_type, datetime, timedelta, timezone
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from hashlib import sha256
 from typing import Literal
 
+import structlog
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -38,6 +40,8 @@ from .cash_flow_service import CashFlowRow, write_cash_flows
 from . import cash_account_service
 from . import portfolio_service as svc
 from .per_date_verify import OverrideValidation
+
+log = structlog.get_logger(__name__)
 
 TRANSACTION_FIELDS = (
     "symbol",
@@ -548,6 +552,18 @@ _FX_QUANT = Decimal("0.00000001")  # fx_rate_to_twd is Numeric(20, 8)
 def _exact_fx_rate(db: Session, currency: str, date_: date_type) -> Decimal | None:
     """The day's stored rate. ``GBp`` (pence) reads the GBP row and returns it per penny (÷100), the unit a GBp
     transaction's ``fx_rate_to_twd`` is stored in (#125 review); fx_rates never holds a GBp row."""
+    return _fx_rate_on_or_before(db, currency, date_, lookback_days=0)
+
+
+_FX_LOOKBACK_DAYS = 7  # covers weekends and US/TW holidays without a stored rate
+
+
+def _fx_rate_on_or_before(
+    db: Session, currency: str, date_: date_type, *, lookback_days: int = _FX_LOOKBACK_DAYS
+) -> Decimal | None:
+    """The latest stored rate dated ``date_`` or up to ``lookback_days`` earlier (GBp handled as in
+    ``_exact_fx_rate``). fx_rates holds trading days only and ``/fx/refresh`` writes today only, so a
+    weekend cash flow or a not-yet-backfilled date would otherwise fail its import row."""
     pence = (currency or "").strip() == "GBp"
     normalized = "GBP" if pence else (currency or "TWD").strip().upper()
     if normalized == "TWD":
@@ -555,7 +571,10 @@ def _exact_fx_rate(db: Session, currency: str, date_: date_type) -> Decimal | No
     rate = (
         db.query(FXRate.rate_to_twd)
         .filter(FXRate.currency == normalized)
-        .filter(FXRate.date == date_)
+        .filter(FXRate.date <= date_)
+        .filter(FXRate.date >= date_ - timedelta(days=lookback_days))
+        .order_by(FXRate.date.desc())
+        .limit(1)
         .scalar()
     )
     if rate is None:
@@ -627,6 +646,203 @@ def apply_market_overrides(db: Session, parsed: ParseResult) -> None:
                 )
 
 
+# Brokers whose rows are also matched against stored rows by content. Firstrade
+# rows already in the database carry older fingerprints (security name in the
+# hash, hand-entered fixes), so a re-import has to recognise them by what they are.
+_CONTENT_MATCHED_BROKERS = (models.Broker.FIRSTRADE.value,)
+_AMOUNT_QUANT = Decimal("0.0001")  # quantity, price and amount are Numeric(_, 4)
+
+
+def _as_stored(value) -> Decimal:
+    """Round like a Numeric(_, 4) column does (half up): a 0.47445-share fill is stored as 0.4745."""
+    return Decimal(value).quantize(_AMOUNT_QUANT, rounding=ROUND_HALF_UP)
+
+
+def _trade_content_key(broker, symbol, type_, quantity, price, trade_date) -> tuple:
+    return (
+        broker,
+        symbol,
+        models.TransactionType(type_).value,
+        _as_stored(quantity),
+        _as_stored(price),
+        svc._trade_calendar_date(trade_date),
+    )
+
+
+def _cash_flow_content_key(broker, date_, type_, amount, currency) -> tuple:
+    return (broker, date_, type_, _as_stored(amount), currency.upper())
+
+
+def _stored_content_counts(db: Session) -> tuple[Counter, Counter]:
+    """How many stored trades / cash flows share each content key. Each match
+    absorbs one incoming row, so identical fills are counted, not collapsed."""
+    trades = Counter(
+        _trade_content_key(*values)
+        for values in db.query(
+            models.Transaction.broker,
+            models.Transaction.symbol,
+            models.Transaction.type,
+            models.Transaction.quantity,
+            models.Transaction.price,
+            models.Transaction.trade_date,
+        ).filter(models.Transaction.broker.in_(_CONTENT_MATCHED_BROKERS))
+    )
+    flows = Counter(
+        _cash_flow_content_key(*values)
+        for values in db.query(
+            models.BrokerCashFlow.broker,
+            models.BrokerCashFlow.date,
+            models.BrokerCashFlow.type,
+            models.BrokerCashFlow.amount,
+            models.BrokerCashFlow.currency,
+        ).filter(models.BrokerCashFlow.broker.in_(_CONTENT_MATCHED_BROKERS))
+    )
+    return trades, flows
+
+
+def _consume(counts: Counter, key: tuple) -> bool:
+    if counts[key] <= 0:
+        return False
+    counts[key] -= 1
+    return True
+
+
+def _row_content_key(payload: dict) -> tuple:
+    if payload.get("_kind") == "cash_flow":
+        return _cash_flow_content_key(
+            payload["broker"], payload["date"], payload["cash_flow_type"], payload["amount"], str(payload["currency"])
+        )
+    return _trade_content_key(
+        payload["broker"],
+        payload["symbol"],
+        payload["type"],
+        payload["quantity"],
+        payload["price"],
+        payload["trade_date"],
+    )
+
+
+def _claim_fingerprint_matches(
+    db: Session,
+    parsed: ParseResult,
+    existing_transactions: set[str],
+    stored_trades: Counter,
+    stored_flows: Counter,
+) -> set[int]:
+    """Rows (by ``id``) whose fingerprint is already stored. Each takes its own stored row out of the content
+    counts first, so content matching cannot hand that row to a different incoming row (AGENT-352)."""
+    existing_flows = {
+        fingerprint
+        for (fingerprint,) in db.query(models.BrokerCashFlow.import_fingerprint)
+        .filter(models.BrokerCashFlow.broker.in_(_CONTENT_MATCHED_BROKERS))
+        .filter(models.BrokerCashFlow.import_fingerprint.is_not(None))
+    }
+    owned: set[int] = set()
+    claimed: set[str] = set()
+    for row in parsed.rows:
+        payload = row.payload
+        if payload.get("broker") not in _CONTENT_MATCHED_BROKERS:
+            continue
+        is_flow = payload.get("_kind") == "cash_flow"
+        if row.fingerprint not in (existing_flows if is_flow else existing_transactions):
+            continue
+        owned.add(id(row))
+        if row.fingerprint not in claimed:
+            claimed.add(row.fingerprint)
+            _consume(stored_flows if is_flow else stored_trades, _row_content_key(payload))
+    return owned
+
+
+def apply_stored_names(db: Session, parsed: ParseResult) -> None:
+    """Reuse the name a content-matched broker's symbol already has, so one
+    holding keeps one name whatever wording the broker export uses."""
+    for broker in _CONTENT_MATCHED_BROKERS:
+        symbols = {
+            row.payload["symbol"]
+            for row in parsed.rows
+            if row.payload.get("_kind", "transaction") == "transaction"
+            and row.payload.get("broker") == broker
+        }
+        if not symbols:
+            continue
+        names: dict[str, str] = {}
+        for symbol, name in (
+            db.query(models.Transaction.symbol, models.Transaction.name)
+            .filter(models.Transaction.broker == broker)
+            .filter(models.Transaction.symbol.in_(symbols))
+            .filter(models.Transaction.name.is_not(None))
+            .order_by(models.Transaction.trade_date.desc(), models.Transaction.id.desc())
+        ):
+            names.setdefault(symbol, name)
+        for row in parsed.rows:
+            payload = row.payload
+            if payload.get("_kind", "transaction") != "transaction" or payload.get("broker") != broker:
+                continue
+            if payload["symbol"] in names:
+                payload["name"] = names[payload["symbol"]]
+
+
+# Brokers whose rows may borrow the latest rate up to _FX_LOOKBACK_DAYS earlier,
+# and whose missing history is fetched once per import. IB keeps the exact-day
+# rule: its daily Flex run retries a row once that day's rate lands (stale_fx).
+_PRIOR_FX_BROKERS = (models.Broker.FIRSTRADE.value,)
+
+
+def _broker_fx_rate(db: Session, broker: str, currency: str, date_: date_type) -> Decimal | None:
+    if broker in _PRIOR_FX_BROKERS:
+        return _fx_rate_on_or_before(db, currency, date_)
+    return _exact_fx_rate(db, currency, date_)
+
+
+def _yfinance_period_covering(earliest: date_type) -> str:
+    days = (date_type.today() - earliest).days
+    for limit, period in ((180, "6mo"), (365, "1y"), (730, "2y"), (1825, "5y"), (3650, "10y")):
+        if days < limit:
+            return period
+    return "max"
+
+
+def _fetch_fx_history(db: Session, period: str):
+    from .quotes import fx_rate_service as quote_fx_rate_service
+
+    return quote_fx_rate_service.backfill_range(db, period=period)
+
+
+def _backfill_missing_fx(db: Session, parsed: ParseResult) -> None:
+    """Fetch FX history once when a prior-FX broker row has no usable rate.
+
+    ``/fx/refresh`` writes today's rate only, so a first upload of an older
+    statement would otherwise fail every row until someone ran the backfill CLI.
+    Rows still without a rate afterwards fail as before.
+    """
+    checked: set[tuple[str, date_type]] = set()
+    missing: list[date_type] = []
+    for row in parsed.rows:
+        payload = row.payload
+        if payload.get("broker") not in _PRIOR_FX_BROKERS:
+            continue
+        currency = normalize_currency(str(payload.get("currency", "TWD")))
+        if currency == "TWD":
+            continue
+        day = payload["date"] if payload.get("_kind") == "cash_flow" else _row_date(payload["trade_date"])
+        if (currency, day) in checked:
+            continue
+        checked.add((currency, day))
+        if _fx_rate_on_or_before(db, currency, day) is None:
+            missing.append(day)
+    if not missing:
+        return
+    period = _yfinance_period_covering(min(missing))
+    result = _fetch_fx_history(db, period)
+    log.info(
+        "import.fx_backfill",
+        missing_days=len(missing),
+        period=period,
+        ok_count=result.ok_count,
+        errors=result.errors,
+    )
+
+
 def _commit_broker_rows(
     db: Session, parsed: ParseResult, *, dry_run: bool
 ) -> ImportResult:
@@ -636,7 +852,13 @@ def _commit_broker_rows(
         .filter(models.Transaction.import_fingerprint.is_not(None))
         .all()
     }
+    stored_trades, stored_flows = _stored_content_counts(db)
     apply_market_overrides(db, parsed)
+    fingerprint_owned = _claim_fingerprint_matches(
+        db, parsed, existing_transactions, stored_trades, stored_flows
+    )
+    apply_stored_names(db, parsed)
+    _backfill_missing_fx(db, parsed)
     seen_transactions: set[str] = set()
     created_ids: list[int] = []
     errors = list(parsed.errors)
@@ -645,10 +867,17 @@ def _commit_broker_rows(
     for row in parsed.rows:
         payload = row.payload
         kind = payload.get("_kind", "transaction")
+        content_matched = (
+            payload.get("broker") in _CONTENT_MATCHED_BROKERS and id(row) not in fingerprint_owned
+        )
         if kind == "cash_flow":
             flow_date = payload["date"]
             currency = str(payload["currency"]).upper()
-            fx_rate = _exact_fx_rate(db, currency, flow_date)
+            if content_matched and _consume(stored_flows, _row_content_key(payload)):
+                skipped += 1
+                row.status = "duplicate"
+                continue
+            fx_rate = _broker_fx_rate(db, payload["broker"], currency, flow_date)
             if currency != "TWD" and fx_rate is None:
                 errors.append(_missing_fx_error(row, flow_date, currency))
                 row.status = "error"
@@ -669,6 +898,10 @@ def _commit_broker_rows(
             row.status = "duplicate" if result.skipped_duplicates else "new"
             continue
 
+        if content_matched and _consume(stored_trades, _row_content_key(payload)):
+            skipped += 1
+            row.status = "duplicate"
+            continue
         if row.fingerprint in existing_transactions or row.fingerprint in seen_transactions:
             skipped += 1
             row.status = "duplicate"
@@ -676,7 +909,7 @@ def _commit_broker_rows(
         seen_transactions.add(row.fingerprint)
         trade_date = _row_date(payload["trade_date"])
         currency = normalize_currency(str(payload.get("currency", "TWD")))  # GBp (pence) keeps its token
-        fx_rate = _exact_fx_rate(db, currency, trade_date)
+        fx_rate = _broker_fx_rate(db, payload["broker"], currency, trade_date)
         if currency != "TWD" and fx_rate is None:
             errors.append(_missing_fx_error(row, trade_date, currency))
             row.status = "error"
