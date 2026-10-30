@@ -59,6 +59,7 @@ def _legs_by_date(db: Session, window) -> dict[date, list[CashTransaction]]:
 
 def _row(trade_date: date, legs: list[CashTransaction], day: CathayStatementDay | None) -> dict | None:
     legs_net = sum((Decimal(leg.amount) for leg in legs), ZERO)
+    # a statement row with neither settlement_date nor net_amount carries no facts: treated as a CSV-only day
     has_facts = day is not None and (day.settlement_date is not None or day.net_amount is not None)
     reason = None
     if has_facts:
@@ -68,7 +69,9 @@ def _row(trade_date: date, legs: list[CashTransaction], day: CathayStatementDay 
             net = Decimal(day.net_amount) if day.net_amount is not None else ZERO
             bookable, reason = False, "margin_day"
         elif day.cash_net is None:
-            net, bookable = legs_net, True
+            # a supported day with no cash facts: only the legs speak, and they cannot be checked against a statement
+            net = legs_net
+            bookable, reason = (True, None) if net == 0 else (False, "legs_disagree")
         else:
             net = Decimal(day.cash_net)
             bookable = net == 0 or net == legs_net

@@ -151,3 +151,21 @@ def test_valuation_reports_unpriced_holdings_and_ignores_later_splits(client, ca
     cathay.split("9999", "2026-09-20", ratio="2")
     body = client.get(VALUATION, params={"broker": "cathay", "as_of": "2026-09-12"}).json()
     assert (body["market_value"], body["complete"], body["missing"]) == ("100000.0000", False, ["9998"])
+
+
+def test_statement_day_without_cash_net_is_not_bookable_unless_legs_net_zero(client, cathay):
+    cathay.trade("2026-09-24", "BUY", qty=1000, price="10", fee="14")
+    cathay.statement_day("2026-09-24", settlement="2026-09-28", net="-10014", cash_net=None)
+    cathay.statement_day("2026-09-25", settlement="2026-09-29", net="0", cash_net=None)
+    (row,) = client.get(SETTLEMENTS, params=Q("2026-09-24", "2026-09-29", "2026-09-24", "2026-09-25")).json()["rows"]
+    assert (row["trade_date"], row["date_source"], row["net_amount"], row["bookable"], row["reason"]) == ("2026-09-24", "statement", "-10014.0000", False, "legs_disagree")
+
+
+def test_valuation_nets_sells_and_drops_fully_sold_symbols(client, cathay):
+    cathay.trade("2026-09-01", "BUY", qty=1000, price="90", symbol="9999")
+    cathay.trade("2026-09-02", "SELL", qty=400, price="95", symbol="9999")
+    cathay.trade("2026-09-01", "BUY", qty=10, price="5", symbol="9998")
+    cathay.trade("2026-09-03", "SELL", qty=10, price="6", symbol="9998")
+    cathay.price("9999", "2026-09-10", "100")
+    body = client.get(VALUATION, params={"broker": "cathay", "as_of": "2026-09-12"}).json()
+    assert (body["market_value"], body["complete"], body["missing"]) == ("60000.0000", True, [])
