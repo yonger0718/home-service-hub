@@ -1,3 +1,4 @@
+import gzip
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
@@ -158,6 +159,16 @@ BAD_CASES = {
     "bad_date": _bad(PENDING, pending([item("2026-13-40")])),
     "bad_timestamp": _bad(PENDING, pending([{**item(), "since": "yesterday"}])),
     "naive_timestamp": _bad(PENDING, pending([{**item(), "last_at": "2026-10-27T06:41:00"}])),
+    "basic_date": _bad(PENDING, pending([item("20261027")])),
+    "iso_week_date": _bad(PENDING, pending([item("2026-W44-1")])),
+    "basic_timestamp": _bad(PENDING, pending([{**item(), "since": "20261027T064100+0800"}])),
+    "space_timestamp": _bad(PENDING, pending([{**item(), "last_at": "2026-10-27 06:41:00+08:00"}])),
+    "reason_newline": _bad(PENDING, pending([item(reason="a\nb")])),
+    "reason_tab": _bad(PENDING, pending([item(reason="a\tb")])),
+    "reason_cr": _bad(PENDING, pending([item(reason="a\rb")])),
+    "latest_basic_run_at": _bad(LATEST, latest(run(at="20261027T064000+0800"), None)),
+    "gzip_encoded": _bad(PENDING, httpx.Response(
+        200, headers={"content-encoding": "gzip"}, content=gzip.compress(b'{"items": []}'))),
     "unknown_status": _bad(PENDING, pending([item(status="weird")])),
     "reason_41": _bad(PENDING, pending([item(reason="x" * 41)])),
     "item_extra_key": _bad(PENDING, pending([{**item(), "amount": 1}])),
@@ -171,11 +182,23 @@ BAD_CASES = {
 }
 
 
+FAULT_PATH = {name: LATEST if name.startswith("latest_") else PENDING for name in BAD_CASES}
+TIMEOUT_CASE = {PENDING: httpx.ConnectTimeout("slow")}  # CLI-level fault: the mock raises it
+
+
 @pytest.mark.parametrize("name", sorted(BAD_CASES))
 def test_unreadable_on(name):
     out, log = lines(BAD_CASES[name], TUE_0700)
     assert out == UNREADABLE
     assert log, "the injected client must have been used"
+    if name.startswith("latest_"):
+        assert len(log) == 2, "both endpoints must have been requested"
+
+
+def test_canonical_timestamp_forms_are_accepted():
+    row = run(at="2026-10-27T06:41:00Z")
+    out, _ = lines({PENDING: pending([{**item(), "since": "2026-10-27T06:41:00.5+08:00"}]), LATEST: latest(row, row)})
+    assert out != UNREADABLE
 
 
 def test_unreadable_on_timeout():
@@ -198,6 +221,40 @@ def test_oversize_stream_stops_reading():
     out, _ = lines(routes, TUE_0700)
     assert out == UNREADABLE
     assert len(yielded) <= 9
+
+
+def test_compressed_body_is_rejected_before_any_chunk_is_read():
+    yielded = []
+
+    class Stream(httpx.SyncByteStream):
+        def __iter__(self):
+            blob = gzip.compress(b" " * (50 * 1024 * 1024))
+            for i in range(0, len(blob), 1024):
+                yielded.append(1)
+                yield blob[i:i + 1024]
+
+    routes = healthy()
+    routes[PENDING] = httpx.Response(200, headers={"content-encoding": "gzip"}, stream=Stream())
+    out, log = lines(routes, TUE_0700)
+    assert out == UNREADABLE
+    assert len(yielded) <= 1
+    assert log[0].headers["accept-encoding"] == "identity"
+
+
+def test_slow_stream_past_the_whole_read_deadline_is_unreadable(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr("notify.cathay._monotonic", lambda: clock[0])
+
+    class Stream(httpx.SyncByteStream):
+        def __iter__(self):
+            for _ in range(20):
+                clock[0] += 1.0
+                yield b" "
+
+    routes = healthy()
+    routes[PENDING] = httpx.Response(200, stream=Stream())
+    out, _ = lines(routes, TUE_0700)
+    assert out == UNREADABLE
 
 
 def test_client_factory_receives_base_and_timeout():

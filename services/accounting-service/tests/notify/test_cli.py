@@ -11,6 +11,7 @@ import pytest
 from notify import cli, render, send
 from notify.cathay import LATEST_PATH, PENDING_PATH
 from notify.state import load_state
+from tests.notify.test_cathay import BAD_CASES, FAULT_PATH, LATEST as _L, PENDING as _P, TIMEOUT_CASE, item as cathay_item, pending as cathay_pending
 
 SECRET = "secret-token"
 
@@ -96,6 +97,8 @@ class Env:
             default = {PENDING_PATH: {"items": [], "total": 0, "truncated": False},
                        LATEST_PATH: {"latest": row, "latest_ok": row}}[path]
             value = self.portfolio.get(path, default)
+            if isinstance(value, Exception):
+                raise value
             return value if isinstance(value, httpx.Response) else httpx.Response(200, json=value)
 
         transport = httpx.MockTransport(handler)
@@ -332,8 +335,6 @@ def test_bad_config_names_the_key(tmp_path, capsys):
 
 # --- 國泰證券 statement section (spec §7.2) -------------------------------------------------------------------------
 
-from tests.notify.test_cathay import BAD_CASES, LATEST as _L, PENDING as _P, item as cathay_item, pending as cathay_pending
-
 HELD = cathay_pending([cathay_item("2026-10-27", "held", "unsupported_category")])
 CATHAY_BLOCK = "**國泰對帳單**\n• 10/27 保留：含融資融券交易"
 UNREADABLE_LINE = "國泰對帳單狀態讀不到"
@@ -393,9 +394,9 @@ def test_failure_goes_through_mock_on_either_endpoint(cli_env_quiet, fault_path)
 
 
 @pytest.mark.parametrize("command,as_of", [("daily", "2026-11-03"), ("weekly", "2026-11-07")])
-@pytest.mark.parametrize("name", sorted(BAD_CASES))
+@pytest.mark.parametrize("name", sorted(BAD_CASES) + ["timeout"])
 def test_reader_failure_matrix(cli_env, command, as_of, name):
-    for path, body in BAD_CASES[name].items():
+    for path, body in (TIMEOUT_CASE if name == "timeout" else BAD_CASES[name]).items():
         cli_env.portfolio[path] = body
     base = _sent_text(cli_env, [command, "--as-of", as_of, "--config", cli_env.config_without_portfolio()])
     cli_env.sent.clear()
@@ -404,9 +405,15 @@ def test_reader_failure_matrix(cli_env, command, as_of, name):
     text = "\n\n".join(t for _, t in cli_env.sent)
     block = "**國泰對帳單**" if command == "daily" else "**國泰對帳單待處理**"
     assert text.replace(f"\n\n{block}\n• {UNREADABLE_LINE}", "") == base
-    assert UNREADABLE_LINE in text and cli_env.portfolio_paths
+    assert UNREADABLE_LINE in text
+    if name != "timeout":
+        assert FAULT_PATH[name] in cli_env.portfolio_paths, "the failing path must have been requested"
+    else:
+        assert set(cli_env.portfolio_paths) & {_P, _L}
 
 
 def test_default_routes_add_nothing(cli_env):
     base = _sent_text(cli_env, ["daily", "--as-of", "2026-11-03", "--config", cli_env.config_without_portfolio()])
+    cli_env.portfolio_paths.clear()
     assert _sent_text(cli_env, ["daily", "--as-of", "2026-11-03", "--config", cli_env.cfg]) == base
+    assert {_P, _L} <= set(cli_env.portfolio_paths)

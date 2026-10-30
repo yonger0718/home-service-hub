@@ -39,11 +39,19 @@ def _int(raw: dict, key: str, default: int) -> int:
     return value
 
 
+def _grace(raw: dict, key: str, default: int) -> int:
+    value = _int(raw, key, default)
+    if not 0 <= value <= 1439:
+        raise ConfigError(key)
+    return value
+
+
 def _hhmm(raw: dict, key: str, default: time) -> time:
     value = raw.get(key)
     if value is None:
         return default
-    if not isinstance(value, str) or len(value) != 5 or value[2] != ":":
+    if (not isinstance(value, str) or len(value) != 5 or value[2] != ":"
+            or not (value[:2].isascii() and value[:2].isdigit() and value[3:].isascii() and value[3:].isdigit())):
         raise ConfigError(key)
     try:
         return time(int(value[:2]), int(value[3:]))
@@ -93,7 +101,7 @@ def load_config(path: Path) -> NotifyConfig:
         state_file=Path(raw.get("state_file", DEFAULT_STATE_FILE)).expanduser(),
         portfolio_base=_optional_str(raw, "portfolio_base"),
         cathay_run_time=_hhmm(raw, "cathay_run_time", time(6, 40)),
-        cathay_run_grace_minutes=_int(raw, "cathay_run_grace_minutes", 15),
+        cathay_run_grace_minutes=_grace(raw, "cathay_run_grace_minutes", 15),
     )
 
 

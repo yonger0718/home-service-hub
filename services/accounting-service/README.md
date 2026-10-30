@@ -283,6 +283,9 @@ Business days come from `GET /calendar/business-days`; a due date past its `last
   `api_base`, `token_file`, `hub_base_url`, `discord_target` (write `<discord target>` placeholders in anything committed); optional
   `lead_business_days`, `weekly_open_case_limit`, `expected_statement_grace_days`, `min_buffer`, `state_file`
   (default `~/.local/state/homehub-notify/state.json`) and a `[lead_overrides]` table per account id.
+  The 國泰證券 daily-statement status section is off unless `portfolio_base` is set (the portfolio API, e.g. `http://127.0.0.1:8001`);
+  `cathay_run_time` (default `"06:40"`, Asia/Taipei) is the worker's daily run and `cathay_run_grace_minutes` (default 15, 0 to 1439)
+  how long after it a missing run counts as stale. With `--as-of D` the section is evaluated at D 07:00 Asia/Taipei.
 - CLI (run from `services/accounting-service` with the notifier venv):
 
       python -m notify daily  [--as-of YYYY-MM-DD] [--dry-run | --send] [--config PATH]

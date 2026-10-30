@@ -73,8 +73,8 @@ def _run(args: argparse.Namespace, cfg: NotifyConfig, today: date) -> None:
     state = load_state(cfg.state_file)
     # Own isolated step, before the debit items: it never raises and returns None when the section is off. The
     # reference time is the notifier's own 07:00 slot of the as-of day, so --as-of previews are deterministic.
-    now = datetime.now(TZ) if args.as_of is None else datetime.combine(today, time(7, 0), TZ)
-    cathay = cathay_lines(cfg, now) or []
+    cathay_now = datetime.now(TZ) if args.as_of is None else datetime.combine(today, time(7, 0), TZ)
+    cathay = cathay_lines(cfg, cathay_now) or []
     with httpx.Client(base_url=cfg.api_base, timeout=30) as http:
         client = ReadClient(http, token)
         if args.command == "daily":

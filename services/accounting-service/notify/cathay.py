@@ -6,6 +6,9 @@ single unreadable line, so the debit and weekly items are never affected.
 from __future__ import annotations
 
 import json
+import re
+import time as _time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -18,6 +21,8 @@ from .config import NotifyConfig
 PENDING_PATH = "/api/portfolio/imports/cathay-statement/pending"
 LATEST_PATH = "/api/portfolio/imports/cathay-statement/runs/latest"
 MAX_BODY = 65536
+READ_DEADLINE = 10.0  # seconds for one whole streamed read
+_monotonic = _time.monotonic
 MAX_ITEMS = 10
 MAX_REASON = 40
 MAX_LINE = 120
@@ -26,6 +31,7 @@ RESULTS = frozenset({"ok", "latched", "failed"})
 UNREADABLE = "國泰對帳單狀態讀不到"
 ITEM_KEYS = {"trade_date", "status", "reason", "since", "last_at"}
 RUN_KEYS = {"run_at", "result", "code", "files_seen", "posted"}
+_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$")
 
 
 @dataclass(frozen=True)
@@ -48,7 +54,7 @@ def _is_int(value: object, minimum: int = 0) -> bool:
 
 
 def _timestamp(value: object) -> datetime:
-    if not isinstance(value, str):
+    if not isinstance(value, str) or not _TIMESTAMP.match(value):
         raise ValueError("timestamp")
     parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
@@ -57,14 +63,22 @@ def _timestamp(value: object) -> datetime:
 
 
 def _get(client: httpx.Client, path: str) -> dict:
-    with client.stream("GET", path) as response:
+    deadline = _monotonic() + READ_DEADLINE
+    with client.stream("GET", path, headers={"Accept-Encoding": "identity"}) as response:
         if response.status_code != 200:
             raise ValueError("status")
+        if response.headers.get("content-encoding", "identity").strip().lower() not in ("", "identity"):
+            raise ValueError("content-encoding")
         body = bytearray()
-        for chunk in response.iter_bytes():
+        # Raw bytes: the cap bounds memory and nothing is decompressed. A response already held in memory (a canned
+        # reply from a fake transport) cannot be streamed again; its content is the raw body since encodings are rejected.
+        chunks = [response.content] if response.is_stream_consumed else response.iter_raw()
+        for chunk in chunks:
             body += chunk
             if len(body) > MAX_BODY:
                 raise ValueError("oversize")
+            if _monotonic() > deadline:
+                raise ValueError("deadline")
     data = json.loads(bytes(body))
     if not isinstance(data, dict):
         raise ValueError("shape")
@@ -84,11 +98,14 @@ def _check_pending(data: dict) -> list[dict]:
             raise ValueError("item keys")
         if not isinstance(item["trade_date"], str):
             raise ValueError("trade_date")
-        date.fromisoformat(item["trade_date"])
+        if date.fromisoformat(item["trade_date"]).isoformat() != item["trade_date"]:
+            raise ValueError("trade_date")
         if item["status"] not in STATUSES:
             raise ValueError("item status")
         reason = item["reason"]
         if reason is not None and (not isinstance(reason, str) or len(reason) > MAX_REASON):
+            raise ValueError("reason")
+        if reason is not None and any(unicodedata.category(c) == "Cc" for c in reason):
             raise ValueError("reason")
         for key in ("since", "last_at"):
             if item[key] is not None:

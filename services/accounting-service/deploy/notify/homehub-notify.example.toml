@@ -9,6 +9,9 @@ weekly_open_case_limit = 10                        # items listed per account be
 expected_statement_grace_days = 7
 min_buffer = "0"                                   # projected balance must stay >= this
 state_file = "~/.local/state/homehub-notify/state.json"
+# portfolio_base = "http://127.0.0.1:8001"         # enables the 國泰證券 statement section; absent = section off
+cathay_run_time = "06:40"                          # the worker's daily run, Asia/Taipei (HH:MM)
+cathay_run_grace_minutes = 15                      # a run later than this after cathay_run_time counts as missed (0-1439)
 
 [lead_overrides]                                   # per account id, e.g. a US card
 # "123" = 4
