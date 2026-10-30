@@ -27,6 +27,7 @@ from ..models import (
     Project,
     RewardRule,
 )
+from . import valuation_service
 from .moze_import_service import import_locked
 
 LEDGER_TZ = ZoneInfo("Asia/Taipei")  # ledger dates are naive Taipei dates (D8)
@@ -188,11 +189,23 @@ def _account_rows(
             used = shared_balances[account.credit_sharing_id] if account.credit_sharing_id else balances[account.id]
             available = account.credit_limit + used
         item = {field: getattr(account, field) for field in ACCOUNT_FIELDS}
+        balance_kind, stale, valuation = "ledger", False, None
+        if account.valuation_source:
+            # Spec §5: display the portfolio's market total; the ledger figure stays in account_balance & co.
+            balance_kind = "valuation"
+            valuation = valuation_service.valuation_for(db, account, as_of)
+            stale = valuation is None or valuation["stale"]
+            balance = valuation["value"] if valuation is not None and valuation["complete"] else None
         item.update(
             {
                 "group_name": group_name,
                 "balance": balance,
-                "balance_main": balance if account.currency == main else _convert(balance, rates.get(account.currency)),
+                "balance_main": None if balance is None else (
+                    balance if account.currency == main else _convert(balance, rates.get(account.currency))
+                ),
+                "balance_kind": balance_kind,
+                "stale": stale,
+                "valuation": valuation,
                 "entry_count": count,
                 "available_credit": available,
                 "rule_summaries": [_rule_summary(rule) for rule in rules[account.id] if rule.is_enabled],
