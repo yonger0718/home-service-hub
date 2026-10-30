@@ -1,14 +1,16 @@
-# Portfolio integration — Phase 1 (國泰 settlement match + daily stand-ins, 117 read-through valuation, dividends) Implementation Plan
+# Portfolio integration — Phase 1 (國泰 settlement match + daily stand-ins, 117 read-through valuation) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Bank 交割股款 lines on account 67 are explained from the portfolio's 國泰 settlements and booked as 67↔117 transfers under one booking owner; a settlement the 國泰 daily statement attests is visible in the ledger on its settlement day as a stand-in that the monthly bank line later claims or contradicts; account 117 shows the portfolio's market value without valuation entries; dividend lines on 67 are booked as income.
+**Goal:** Bank 交割股款 lines on account 67 are explained from the portfolio's 國泰 settlements and booked as 67↔117 transfers under one booking owner; a settlement the 國泰 daily statement attests is visible in the ledger on its settlement day as a stand-in that the monthly bank line later claims or contradicts; account 117 shows the portfolio's market value without valuation entries. Dividends (spec §4.6) are the follow-up plan `docs/superpowers/plans/2026-10-30-portfolio-integration-dividends.md`.
 
 **Architecture:** The stock-portfolio-service persists the 國泰 daily statement's settlement facts and serves a read-only ledger feed (`/api/portfolio/ledger-feed/settlements`, `/valuation`, later `/dividends`). The accounting-service gains `account.settlement_source` / `valuation_source`, a `settlement_booking` owner table shaped like `statement_auto_pay`, a `portfolio_client`, a global settlement assignment step inside `reconcile`, a `book_settlement` action on the `_TwinGuarded` / `PairTransferAction` patterns, a daily stand-in job modelled on `auto_pay_service`, and read-through valuation in the account read models only. Nothing synchronises: every write carries portfolio ids and source facts; re-runs are no-ops, replacements while unclaimed, or `source_drift` cases.
 
 **Tech Stack:** Python 3.13, FastAPI, SQLAlchemy 2, Alembic (both services), httpx 0.28.1 (accounting → portfolio, worker → accounting), pytest (accounting: `tests/unit`, `tests/integration` on PostgreSQL, `tests/worker`; portfolio: `tests/unit`, `tests/integration` on SQLite `create_all`), PostgreSQL.
 
-**Spec:** `docs/superpowers/specs/2026-10-19-portfolio-integration-design.md` rev 4 (2026-10-30; owner rulings Q1–Q7 in `.superpowers/r7-refresh/owner-rulings.md`, errata from `.superpowers/r7-refresh/drift-audit.md`).
+**Spec:** `docs/superpowers/specs/2026-10-19-portfolio-integration-design.md` rev 4.2 (2026-10-30; owner rulings Q1–Q7 in `.superpowers/r7-refresh/owner-rulings.md`, errata from `.superpowers/r7-refresh/drift-audit.md`).
+
+**Plan rev 4.2 (2026-10-30, after Multica review AGENT-360, FAIL on the stand-in lifecycle):** owner-delete / edit housekeeping for both booking origins runs in `reconcile` before the reservation read (Task 6); one lock protocol for the job, `reconcile`, `book_settlement` and its revert — the job re-reads the claim under row + leg locks and never retires or replaces a claimed pair (Tasks 6, 9, two-session test); `fetch_by_settlement_window` / `fetch_by_trade_date` split, the action re-verifies by trade date + fingerprint (Tasks 6, 7, 9); every live neighbour line, covered or not, is a contestant (Task 6); replacement re-runs the candidate rules and gates on the new facts (Task 9); claimed-row drift covers settlement date, `bookable` and `date_source` (Task 6); the feed is queried on two axes with a trade margin from `business_days` and echoes its bounds — no fixed calendar margin, an incomplete answer assigns nothing (Tasks 2, 4, 5, 6, 9); `unknown_dates` travels fetch → assign → result (Tasks 4–6); Tasks 12–13 moved to the dividends follow-up plan.
 
 **Plan rev 4.1 (2026-10-30, fix wave 1 after `.superpowers/r7-refresh/verify-rev4.md`):** `{"rows": [...]}` envelope everywhere; the reconcile fetch is on the settlement-date axis (trade-date query widened by 15 days, then filtered) with a 春節 test; `find_twins` takes explicit fields; a dismissed case or a reverted / owner-deleted bank booking is final for the stand-in job (controller ruling, owner to confirm); zero-net rows are omitted from the feed and the job; `assign` filters non-settlement lines; every test has a body; `_submit` is unpacked through `submit_bank`.
 
@@ -24,6 +26,7 @@
 - Sum matching (spec §9) ships with `settlement_sum_matching: false`; the code path exists and is tested with a synthetic calendar-fault fixture.
 - `book_settlement`, `book_dividend` and the stand-ins are zero-charged and exempt from `max_amount`, the monthly budget, `per_statement_total` and `per_statement_count` (Q4); they stay revertable.
 - Owner twins first (Q5): an owner entry that records the event wins over every system booking, before booking (gate / `_TwinGuarded`) and after (twin retirement).
+- The stand-in job never retires or replaces a pair whose bank leg holds active coverage; it re-reads coverage under the row and leg locks before every retirement or replacement (AGENT-360 major 2).
 - Stand-ins only for feed rows with `date_source = "statement"` and `bookable = true`, settlement date in [`settlement.enabled_from`, `ledger_service._today()`] (Asia/Taipei); never for margin days, CSV-only days or days before go-live (Q7).
 - No change to `composite_map`, `account_map`, matching of non-settlement lines, or the SPA in this plan; setting `valuation_source` on 117 waits for the SPA to handle `balance: null` (Task 11 rollout gate).
 - Migrations are additive (nullable columns, new tables, appended enum values); downgrade drops columns and tables; appended `case_kind` values stay (PostgreSQL cannot drop them).
@@ -35,7 +38,10 @@
 2. The bank posts the settlement on another day than the statement's 交割日期 (or another amount): no claim, the line is `settlement_mismatch` naming the stand-in, the stand-in surfaces as `orphaned_stand_in`, neither moves — Task 6 `test_bank_line_on_another_date_is_a_mismatch_and_an_orphan`.
 3. The owner deletes a stand-in pair, then the bank line arrives: the row is `owner_deleted`, the job never re-books it, the line's `settlement` case is proposed, never auto-booked — Task 9 `test_owner_deleted_stand_in_is_never_rebooked`, Task 7 `test_policy_proposes_an_owner_deleted_settlement`.
 4. Two equal buys two days apart with two equal bank lines: nothing books, both ambiguous — Task 5 `test_two_lines_one_amount_two_settlements_are_ambiguous`.
-5. A trade on the last session before 春節 settles 9–11 calendar days later, inside a statement whose period starts after the trade date: the settlement must still be fetched (settlement-date axis) and booked — Task 6 `test_a_long_holiday_settlement_is_fetched_by_settlement_date`.
+5. A trade on the last session before 春節 settles 9–11 calendar days later, inside a statement whose period starts after the trade date: the settlement must still be fetched (its printed settlement date) and, with a same-amount CSV-only settlement visible in the window, be ambiguous rather than booked — Task 6 `test_a_long_holiday_settlement_is_fetched_by_settlement_date`, `test_an_incomplete_feed_answer_assigns_nothing`.
+10. The owner deletes the legs of a bank-origin booking: the next reconcile alone (no job run) frees the reservation, tombstones the row `owner_deleted`, and the policy proposes instead of booking — Task 7 `test_policy_proposes_an_owner_deleted_settlement`.
+11. The job reads a stand-in as unclaimed, a reconcile claims it and commits, then the job acquires the locks: the pair survives — Task 9 `test_claim_wins_over_a_concurrent_replacement`.
+12. Only the printed settlement date of a claimed stand-in changes: the pair stays, `source_drift` opens — Task 6 `test_date_only_drift_on_a_claimed_row_opens_source_drift`.
 6. A settlement line whose portfolio net differs by one trade's fee rounding: never booked; pending if unbooked, `source_drift` if booked — Task 6 `test_net_mismatch_stays_pending`.
 7. The portfolio down during the sweep or the job: settlement lines pending with `settlement_source_unavailable`, the rest reconciled; the job books and retires nothing — Task 6 `test_portfolio_unavailable_reconciles_the_rest`, Task 9 `test_job_with_portfolio_down_changes_nothing`.
 8. A historical `as_of` on `GET /accounts/117` returns that date's valuation, never today's; a cold cache with the portfolio down returns `balance: null, stale: true` — Task 8 `test_historical_as_of_asks_for_that_date`, `test_cold_cache_with_portfolio_down_is_null_and_stale`.
@@ -146,8 +152,8 @@ git commit -m "accounting: add_business_days for the T+2 settlement fallback"
 
 **Interfaces:**
 - Consumes: Task 1 columns; `broker_cathay_statement_service.TW_CATHAY_FILTER` (`:135`); `cash_account_service.resolve_default_cathay_twd_account` (`:157`); `portfolio_service._load_corp_actions_by_symbol` (`:159`), `_apply_corp_action_factors` (`:138`); `PriceHistory`.
-- Produces: `ledger_feed_service.settlements(db, broker: str, date_from: date, date_to: date) -> list[dict]` (the router wraps it as `{"rows": [...]}`, spec §4.1) and `ledger_feed_service.valuation(db, broker: str, as_of: date) -> dict` (a bare object); `broker != "cathay"` → `UnknownBroker` → 404 `{"detail": "unknown_broker"}`.
-  - Settlement row (spec §4.1): `{"trade_date", "settlement_date": str|None, "date_source": "statement"|"legs", "net_amount", "legs_net", "currency": "TWD", "bookable": bool, "reason": None|"margin_day"|"legs_disagree", "items": [{"source_id": "ct:<cash_transaction.id>", "type", "amount"}], "fingerprint": "cathay:<trade_date>:<sha256(','.join(sorted ids))[:16]>"}`; amounts as 4-place strings. `from`/`to` bound the trade date. Legs = `buy_settle` / `sell_settle` / `fee` / `tax` cash rows of the 國泰 TWD account whose `related_transaction_id` is a `TW_CATHAY_FILTER` transaction. A day with statement facts: `date_source "statement"`, `settlement_date` from the statement; margin (`last_status == "held"` and `last_reason == "unsupported_category"`) → `net_amount` = statement `net_amount`, `bookable false`, `reason "margin_day"`; else `net_amount = cash_net`, and `cash_net != legs_net` → `bookable false`, `reason "legs_disagree"`. A day without facts: `date_source "legs"`, `settlement_date null`, `net_amount = legs_net`, `bookable true`. Zero-net rows are omitted (spec §4.1): a day whose chosen `net_amount` is 0 — `cash_net == 0` with facts (every buy paid with points), `legs_net == 0` without facts (a 沖買/沖賣 day) — never appears, items or not; the `legs_disagree` test is run only on non-zero figures. The `SettlementRow` schema docstring says: "`net_amount` is the statement's cash net (淨收付) on a bookable statement day, the legs' net on a CSV-only day, and the statement's 應收付 on a `margin_day` row — never book from a row whose `bookable` is false". Sorted by trade date.
+- Produces: `ledger_feed_service.settlements(db, broker: str, *, settle_from: date, settle_to: date, trade_from: date, trade_to: date) -> dict` → `{"rows": [...], "bounds": {"settle_from", "settle_to", "from", "to"}, "complete": bool}` (spec §4.1 rev 4.2): a trade date is included when its persisted `settlement_date` lies in `settle_from … settle_to`, OR it has no facts and lies in `trade_from … trade_to`; `complete` is false when more than `ROW_CAP = 2000` trade dates matched (the rows are then cut at the cap); the query parameters are `settle_from`, `settle_to`, `from`, `to`, all required and `ledger_feed_service.valuation(db, broker: str, as_of: date) -> dict` (a bare object); `broker != "cathay"` → `UnknownBroker` → 404 `{"detail": "unknown_broker"}`.
+  - Settlement row (spec §4.1): `{"trade_date", "settlement_date": str|None, "date_source": "statement"|"legs", "net_amount", "legs_net", "currency": "TWD", "bookable": bool, "reason": None|"margin_day"|"legs_disagree", "items": [{"source_id": "ct:<cash_transaction.id>", "type", "amount"}], "fingerprint": "cathay:<trade_date>:<sha256(','.join(sorted ids))[:16]>"}`; amounts as 4-place strings. Legs = `buy_settle` / `sell_settle` / `fee` / `tax` cash rows of the 國泰 TWD account whose `related_transaction_id` is a `TW_CATHAY_FILTER` transaction. A day with statement facts: `date_source "statement"`, `settlement_date` from the statement; margin (`last_status == "held"` and `last_reason == "unsupported_category"`) → `net_amount` = statement `net_amount`, `bookable false`, `reason "margin_day"`; else `net_amount = cash_net`, and `cash_net != legs_net` → `bookable false`, `reason "legs_disagree"`. A day without facts: `date_source "legs"`, `settlement_date null`, `net_amount = legs_net`, `bookable true`. Zero-net rows are omitted (spec §4.1): a day whose chosen `net_amount` is 0 — `cash_net == 0` with facts (every buy paid with points), `legs_net == 0` without facts (a 沖買/沖賣 day) — never appears, items or not; the `legs_disagree` test is run only on non-zero figures. The `SettlementRow` schema docstring says: "`net_amount` is the statement's cash net (淨收付) on a bookable statement day, the legs' net on a CSV-only day, and the statement's 應收付 on a `margin_day` row — never book from a row whose `bookable` is false". Sorted by trade date.
   - Valuation: `{"broker": "cathay", "currency": "TWD", "as_of", "priced_through": str|None, "market_value", "cash": "0.0000", "total", "complete": bool, "missing": [symbol]}` — LONG quantities of `TW_CATHAY_FILTER` transactions traded on or before `as_of`, corporate actions effective on or before `as_of` only, × the last `price_history.close` on or before `as_of`; `priced_through` = the oldest of those price dates; a held symbol with no price → in `missing`, excluded from `market_value`, `complete false`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -156,23 +162,26 @@ git commit -m "accounting: add_business_days for the T+2 settlement fallback"
 def test_statement_day_uses_the_printed_date_and_cash_net(client, cathay):
     cathay.trade("2026-09-10", "BUY", qty=1000, price="12.3", fee="5")          # legs -12305 (fictional)
     cathay.statement_day("2026-09-10", settlement="2026-09-14", net="-12305", cash_net="-12305")
-    (row,) = client.get("/api/portfolio/ledger-feed/settlements", params={"broker": "cathay", "from": "2026-09-01", "to": "2026-09-30"}).json()["rows"]
+    body = client.get("/api/portfolio/ledger-feed/settlements", params=Q("2026-09-12", "2026-09-16", "2026-09-12", "2026-09-16")).json()  # trade 09-10 is outside the trade range: found by its printed date
+    (row,) = body["rows"]
     assert (row["settlement_date"], row["date_source"], row["net_amount"], row["bookable"], row["reason"]) == ("2026-09-14", "statement", "-12305.0000", True, None)
+    assert body["bounds"] == {"settle_from": "2026-09-12", "settle_to": "2026-09-16", "from": "2026-09-12", "to": "2026-09-16"} and body["complete"] is True
     assert {i["type"] for i in row["items"]} == {"buy_settle", "fee"} and row["fingerprint"].startswith("cathay:2026-09-10:")
 
 
 def test_csv_only_day_has_no_date_and_other_brokers_are_left_out(client, cathay):
     cathay.trade("2026-09-11", "SELL", qty=100, price="50", fee="7", tax="15")
     cathay.trade("2026-09-11", "BUY", qty=10, price="10", fee="1", broker="TW_MANUAL")  # same cash account, out of scope
-    (row,) = client.get("/api/portfolio/ledger-feed/settlements", params={"broker": "cathay", "from": "2026-09-11", "to": "2026-09-11"}).json()["rows"]
+    (row,) = client.get("/api/portfolio/ledger-feed/settlements", params=Q("2026-09-11", "2026-09-11", "2026-09-11", "2026-09-11")).json()["rows"]
     assert (row["settlement_date"], row["date_source"], row["net_amount"], row["legs_net"]) == (None, "legs", "4978.0000", "4978.0000")
+    assert client.get("/api/portfolio/ledger-feed/settlements", params=Q("2026-09-11", "2026-09-11", "2026-09-12", "2026-09-12")).json()["rows"] == []  # a CSV-only day is found by trade date only
 
 
 def test_margin_day_and_disagreeing_legs_are_not_bookable(client, cathay):
     cathay.statement_day("2026-09-15", settlement="2026-09-17", net="-30000", cash_net=None, held="unsupported_category")
     cathay.trade("2026-09-16", "BUY", qty=1000, price="10", fee="14")
     cathay.statement_day("2026-09-16", settlement="2026-09-18", net="-10014", cash_net="-10015")
-    rows = client.get("/api/portfolio/ledger-feed/settlements", params={"broker": "cathay", "from": "2026-09-15", "to": "2026-09-16"}).json()["rows"]
+    rows = client.get("/api/portfolio/ledger-feed/settlements", params=Q("2026-09-15", "2026-09-18", "2026-09-15", "2026-09-16")).json()["rows"]
     assert [(r["trade_date"], r["bookable"], r["reason"]) for r in rows] == [("2026-09-15", False, "margin_day"), ("2026-09-16", False, "legs_disagree")]
 
 
@@ -180,11 +189,18 @@ def test_zero_net_days_are_omitted_with_or_without_items(client, cathay):
     cathay.trade("2026-09-17", "BUY", qty=100, price="10", fee="0", points=True)          # legs exist; statement cash net 0
     cathay.statement_day("2026-09-17", settlement="2026-09-21", net="-1000", cash_net="0")
     cathay.trade("2026-09-18", "BUY", qty=100, price="10", fee="0"); cathay.trade("2026-09-18", "SELL", qty=100, price="10", fee="0", tax="0")  # CSV-only, legs net 0
-    assert client.get("/api/portfolio/ledger-feed/settlements", params={"broker": "cathay", "from": "2026-09-17", "to": "2026-09-18"}).json() == {"rows": []}
+    assert client.get("/api/portfolio/ledger-feed/settlements", params=Q("2026-09-17", "2026-09-21", "2026-09-17", "2026-09-18")).json()["rows"] == []
+
+
+def test_row_cap_reports_incomplete(client, cathay, monkeypatch):
+    monkeypatch.setattr(ledger_feed_service, "ROW_CAP", 1)
+    cathay.trade("2026-09-22", "BUY", qty=100, price="10", fee="1"); cathay.trade("2026-09-23", "BUY", qty=100, price="10", fee="1")
+    body = client.get("/api/portfolio/ledger-feed/settlements", params=Q("2026-09-22", "2026-09-30", "2026-09-22", "2026-09-23")).json()
+    assert body["complete"] is False and len(body["rows"]) == 1
 
 
 def test_unknown_broker_is_404(client):
-    assert client.get("/api/portfolio/ledger-feed/settlements", params={"broker": "ib", "from": "2026-09-01", "to": "2026-09-02"}).status_code == 404
+    assert client.get("/api/portfolio/ledger-feed/settlements", params=Q("2026-09-01", "2026-09-02", "2026-09-01", "2026-09-02", broker="ib")).status_code == 404
 
 
 def test_valuation_last_price_on_or_before_as_of(client, cathay):
@@ -202,7 +218,7 @@ def test_valuation_reports_unpriced_holdings_and_ignores_later_splits(client, ca
     assert (body["market_value"], body["complete"], body["missing"]) == ("100000.0000", False, ["9998"])
 ```
 
-`cathay` is a module fixture object with `trade(..., points=False)` (inserts the `Transaction` and, unless `points`, its legs through the same `cash_account_service` path the CSV importer uses, `CASH_LEG_ENABLED=true`), `statement_day(...)`, `price(...)`, `split(...)`.
+`Q(settle_from, settle_to, trade_from, trade_to, broker="cathay")` builds the query dict (`from` / `to` for the trade bounds). `cathay` is a module fixture object with `trade(..., points=False)` (inserts the `Transaction` and, unless `points`, its legs through the same `cash_account_service` path the CSV importer uses, `CASH_LEG_ENABLED=true`), `statement_day(...)`, `price(...)`, `split(...)`.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -294,8 +310,8 @@ git commit -m "accounting: settlement booking owner table, account settlement/va
 
 **Interfaces:**
 - Produces: frozen dataclasses `Item(source_id: str, type: str, amount: Decimal)`; `Settlement(trade_date: date, settlement_date: date | None, date_source: str, net_amount: Decimal, legs_net: Decimal, currency: str, bookable: bool, reason: str | None, items: tuple[Item, ...], fingerprint: str)` with property `source_ids -> tuple[str, ...]` (sorted); `Valuation(broker, currency, as_of: date, priced_through: date | None, market_value: Decimal, cash: Decimal, total: Decimal, complete: bool, missing: tuple[str, ...])`.
-- `PortfolioClient(base_url: str, token: str | None = None, *, timeout: float = 5.0, transport: httpx.BaseTransport | None = None)` with `settlements(broker, date_from, date_to) -> list[Settlement]` (reads `body["rows"]`) and `valuation(broker, as_of) -> Valuation` (a bare object); paths `/api/portfolio/ledger-feed/settlements|valuation`; header `Authorization: Bearer <token>` only when a token is set; `__repr__ = object.__repr__`.
-- `PortfolioUnavailable(RuntimeError)` with `.code` ∈ {`connect`, `timeout`, `http_<status>`, `bad_body`} on any failure; message = the code only.
+- `PortfolioClient(base_url: str, token: str | None = None, *, timeout: float = 5.0, transport: httpx.BaseTransport | None = None)` with `settlements(broker, *, settle_from: date, settle_to: date, trade_from: date, trade_to: date) -> Feed` and `valuation(broker, as_of) -> Valuation` (a bare object); `Feed(rows: tuple[Settlement, ...], bounds: Bounds, complete: bool)` with `Bounds(settle_from, settle_to, trade_from, trade_to)`; the client raises `PortfolioUnavailable("incomplete")` when `complete` is false or the echoed bounds differ from the request (completeness is asserted here, once); paths `/api/portfolio/ledger-feed/settlements|valuation`; header `Authorization: Bearer <token>` only when a token is set; `__repr__ = object.__repr__`.
+- `PortfolioUnavailable(RuntimeError)` with `.code` ∈ {`connect`, `timeout`, `http_<status>`, `bad_body`, `incomplete`} on any failure; message = the code only.
 - `client_for() -> PortfolioClient`: base URL `PORTFOLIO_BASE_URL` (default `http://127.0.0.1:8001`), token `PORTFOLIO_READ_TOKEN` (optional), read at call time.
 - `cached(client) -> ContextManager[PortfolioClient]`: memoises reads per (method, args) inside the block.
 
@@ -303,6 +319,8 @@ git commit -m "accounting: settlement booking owner table, account settlement/va
 
 ```python
 TOKEN = "secret-token-value"
+WINDOW = dict(settle_from=date(2026, 9, 1), settle_to=date(2026, 9, 30), trade_from=date(2026, 8, 27), trade_to=date(2026, 9, 30))
+BOUNDS = {"settle_from": "2026-09-01", "settle_to": "2026-09-30", "from": "2026-08-27", "to": "2026-09-30"}
 ROW = {"trade_date": "2026-09-10", "settlement_date": "2026-09-14", "date_source": "statement", "net_amount": "-12305.0000",
        "legs_net": "-12305.0000", "currency": "TWD", "bookable": True, "reason": None, "fingerprint": "cathay:2026-09-10:abc",
        "items": [{"source_id": "ct:7", "type": "fee", "amount": "-5.0000"}, {"source_id": "ct:5", "type": "buy_settle", "amount": "-12300.0000"}]}
@@ -312,15 +330,23 @@ def test_settlements_parse_and_header_only_with_a_token():
     seen = []
     def handler(request):
         seen.append((request.url.path, request.headers.get("authorization")))
-        return httpx.Response(200, json={"rows": [ROW]})
-    (row,) = pc.PortfolioClient("http://p.test", transport=httpx.MockTransport(handler)).settlements("cathay", date(2026, 9, 1), date(2026, 9, 30))
-    pc.PortfolioClient("http://p.test", TOKEN, transport=httpx.MockTransport(handler)).settlements("cathay", date(2026, 9, 1), date(2026, 9, 30))
+        return httpx.Response(200, json={"rows": [ROW], "bounds": BOUNDS, "complete": True})
+    (row,) = pc.PortfolioClient("http://p.test", transport=httpx.MockTransport(handler)).settlements("cathay", **WINDOW).rows
+    pc.PortfolioClient("http://p.test", TOKEN, transport=httpx.MockTransport(handler)).settlements("cathay", **WINDOW)
     assert seen == [("/api/portfolio/ledger-feed/settlements", None), ("/api/portfolio/ledger-feed/settlements", f"Bearer {TOKEN}")]
     assert (row.settlement_date, row.net_amount, row.bookable, row.source_ids) == (date(2026, 9, 14), Decimal("-12305.0000"), True, ("ct:5", "ct:7"))
 
 
+@pytest.mark.parametrize("body", [{"rows": [ROW], "bounds": BOUNDS, "complete": False},
+                                  {"rows": [ROW], "bounds": {**BOUNDS, "from": "2026-09-05"}, "complete": True}])
+def test_incomplete_or_narrowed_answers_are_unavailable(body):
+    with pytest.raises(pc.PortfolioUnavailable) as info:
+        pc.PortfolioClient("http://p.test", transport=httpx.MockTransport(lambda r: httpx.Response(200, json=body))).settlements("cathay", **WINDOW)
+    assert info.value.code == "incomplete"
+
+
 @pytest.mark.parametrize("make, code", [(lambda r: httpx.Response(500), "http_500"), (lambda r: httpx.Response(404), "http_404"),
-                                        (lambda r: httpx.Response(200, json=[ROW]), "bad_body"),
+                                        (lambda r: httpx.Response(200, json=[ROW]), "bad_body"),  # a bare list: no envelope
                                         (lambda r: (_ for _ in ()).throw(httpx.ConnectError("down")), "connect")])
 def test_failures_are_unavailable_with_a_code_only(make, code, caplog):
     with pytest.raises(pc.PortfolioUnavailable) as info:
@@ -332,9 +358,9 @@ def test_cached_client_memoises_within_the_block():
     calls = []
     def handler(request):
         calls.append(1)
-        return httpx.Response(200, json={"rows": [ROW]})
+        return httpx.Response(200, json={"rows": [ROW], "bounds": BOUNDS, "complete": True})
     with pc.cached(pc.PortfolioClient("http://p.test", transport=httpx.MockTransport(handler))) as c:
-        c.settlements("cathay", date(2026, 9, 1), date(2026, 9, 30)); c.settlements("cathay", date(2026, 9, 1), date(2026, 9, 30))
+        c.settlements("cathay", **WINDOW); c.settlements("cathay", **WINDOW)
     assert calls == [1]
 
 
@@ -366,7 +392,7 @@ git commit -m "accounting: read-only portfolio ledger-feed client with token-saf
 - Consumes: `matching.Line`, `matching.Entry`, `matching._same` (`:333`), Task 4 `Settlement`, Task 1 `add_business_days`.
 - Produces in `matching`: `SETTLEMENT_LABELS = ("交割股款", "申購股款")`; `Rules.settlement_labels: tuple[str, ...] = SETTLEMENT_LABELS`, `Rules.settlement_window_days: int = 2`, `Rules.settlement_sum_matching: bool = False` (`RULE_DEFAULTS` and `_check_rules` pick them up from the dataclass, `settings_service.py:81,228`); `Entry.settlement_stand_in: bool = False`; `is_settlement_line(line: Line, rules: Rules) -> bool` (`line_kind ∈ {withdrawal, deposit}` and a label is a substring of `merchant_norm`); `SETTLEMENT_STAND_IN_RULE = "settlement_stand_in"`; `SETTLEMENT_LINE_HINT = "settlement_line"`.
 - `match` on a bank statement, for a settlement line: the accept and ambiguous steps as today (owner twins; stand-in reps are absent); no claimed-by-earlier-line case (the global assignment treats look-alikes); then `_settlement_stand_in_claim(line, entries, claimed) -> Representation | None` (exactly one unclaimed entry with `settlement_stand_in`, `flow == line.flow`, `entry_date == line.posted_date` → standalone claim at `rules.accept`, rule `settlement_stand_in`); otherwise `Case(line.id, None, "line_unmatched", (), {"hint": "settlement_line"})` — no installment, auto-pay, foreign, transfer, near, drift, bank-only or needs-peer step. `_representations` never represents an entry with `settlement_stand_in`.
-- Produces in `settlement_match`: `with_dates(rows: list[Settlement], *, extra_holidays, extra_workdays) -> list[Settlement]` (a `legs` row gets `add_business_days(trade_date, 2, …)`; None stays None); `@dataclass Assignment(booked: dict[int, Settlement], ambiguous: dict[int, list[Settlement]], pending: dict[int, str | None], unknown_dates: int)`; `assign(lines: list[Line], settlements: list[Settlement], *, reserved_fps: set[str], reserved_ids: set[str], contestants: set[int], rules: Rules) -> Assignment` — `assign` first drops every line for which `is_settlement_line(line, rules)` is false (callers may pass a statement's whole line list).
+- Produces in `settlement_match`: `trade_bounds(settle_from: date, settle_to: date, *, extra_holidays, extra_workdays) -> tuple[date, date]` — the trade range whose T+2 can land in the settlement window: `trade_from` = the earliest day `t` with `add_business_days(t, 2, …) >= settle_from` (walk back from `settle_from` until the condition fails), `trade_to = settle_to`; computed from `business_days`, never a fixed margin; `with_dates(rows: list[Settlement], *, extra_holidays, extra_workdays) -> list[Settlement]` (a `legs` row gets `add_business_days(trade_date, 2, …)`; None stays None — the row is kept and `assign` counts it in `unknown_dates`); `@dataclass Assignment(booked: dict[int, Settlement], ambiguous: dict[int, list[Settlement]], pending: dict[int, str | None], unknown_dates: int)`; `assign(lines: list[Line], settlements: list[Settlement], *, reserved_fps: set[str], reserved_ids: set[str], contestants: set[int], rules: Rules) -> Assignment` — `assign` first drops every line for which `is_settlement_line(line, rules)` is false (callers may pass a statement's whole line list).
   - Candidate of a line: `net_amount == line.flow` (`_same`), dated, `|settlement_date − posted_date| <= settlement_window_days`, fingerprint not in `reserved_fps`, no constituent in `reserved_ids`. Sum candidates only when `settlement_sum_matching` (spec §9 gate; fingerprint `f1+f2`, items merged).
   - A line in `contestants` (already explained) competes and is never in `booked` / `ambiguous` / `pending`.
   - Booked: the line has one candidate, no constituent is wanted by another line (contestants included), and the candidate is `bookable`. One non-bookable sole candidate → `pending[line] = reason`; no candidate → `pending[line] = None`; else `ambiguous`.
@@ -431,6 +457,11 @@ def test_sum_matching_is_off_by_default_and_gated_when_on():
     assert A(lines + [L(2, date(2026, 9, 14), "-5000")], sets, rules=on).booked == {}           # sum vs single → ambiguous
 
 
+def test_trade_bounds_follow_the_bank_calendar():
+    assert sm.trade_bounds(date(2026, 2, 24), date(2026, 3, 23), extra_holidays=frozenset(), extra_workdays=frozenset()) == (date(2026, 2, 13), date(2026, 3, 23))  # 春節: 02-13 is the first trade day settling on or after 02-24
+    assert sm.trade_bounds(date(2026, 9, 1), date(2026, 9, 30), extra_holidays=frozenset(), extra_workdays=frozenset()) == (date(2026, 8, 28), date(2026, 9, 30))
+
+
 def test_with_dates_derives_t_plus_two_only_for_legs_rows():
     rows = sm.with_dates([S("f1", None, "-1", td=date(2026, 10, 7), source="legs"), S("f2", date(2026, 10, 8), "-1", td=date(2026, 10, 6))],
                          extra_holidays=frozenset(), extra_workdays=frozenset())
@@ -477,20 +508,26 @@ git commit -m "accounting: settlement lines meet owner twins, then the stand-in 
 **Interfaces:**
 - Consumes: Task 3 models, Task 4 client, Task 5 `assign` / `with_dates` / `is_settlement_line` / `SETTLEMENT_LINE_HINT`; `auto_pay_service.calendar_sets` (`:81`) over `read_auto_pay_settings` for the calendar overrides; `_guard_neighbours` / `guard_lines` (`reconciliation_service.py:170-201`) for the live neighbour lines.
 - Produces in `stand_ins`: `settlement_legs(db, account_ids: list[int]) -> dict[int, int]` (entry id → `settlement_booking.id` for legs of `booked` rows of `kind = settlement` and `origin = stand_in` whose own account is listed); `stand_in_entry_ids` = backfills ∪ auto-pay legs ∪ settlement legs; `_settlement_orphans(db, statement, accounts, claimed) -> list[dict]` (unclaimed settlement stand-in legs dated in the period with no settlement twin → `{"entry_id", "event_id": None, "line_id": None, "backfill_action_id": None, "settlement_booking_id", "claimant_entry_id": None}`; `_desired_cases` copies `settlement_booking_id` into the `orphaned_stand_in` context like `auto_pay_id` `:689-690`).
-- Produces in `trade_settlement_service`: `ACTOR = "settlement"`; `fetch(db, account: Account, lo: date, hi: date) -> list[Settlement]` (settlement-date bounds; trade-date query `lo − 15 … hi`, `with_dates`, filter; raises `PortfolioUnavailable`); `find_twins(db, *, account_id: int, target_account_id: int, amount: Decimal, settlement_date: date, window_days: int, exclude: Iterable[int] = ()) -> list[int]` (the `auto_pay_service.find_twins` shape `:142`; top-level entries not of statement source within `window_days` of `settlement_date`: on `account_id` an entry of `amount` (negative = money out), or a transfer leg on `target_account_id` of `−amount` whose peer is on `account_id`; callers pass a row's or a candidate's fields); `retire_pair(db, row, *, reason: str) -> set[int] | None` (the `auto_pay_service.retire_pair` sequence `:357-409`: lock row then legs, re-check, release coverage, `delete_entries_cascade`, items deleted, status `retired`, released statements `needs_recheck`, audit `settlement_retired`); `retire_twins_for_statement(db, statement, accounts) -> list[int]`; `link_claims(db, statement) -> list[int]` (a booked stand-in whose bank leg holds active coverage on a current line of this statement gets `event_id` = that line's event, audit `settlement_claimed`; idempotent); `bookings_by_event(db, account_id) -> dict[int, SettlementBooking]`.
-- `reconcile` (when `accounts_by_id[statement.account_id].settlement_source` is set and the statement is a bank statement printing a settlement line): before `_lock_candidates` (`:1006`): `lo, hi = period_start − 5, period_end + 5` is the SETTLEMENT-date window (spec §4.3); the feed bounds the trade date, so `fetch(db, account, lo, hi)` queries trade dates `lo − 15 … hi` (a 春節 run settles at most 11 calendar days after the trade; a longer closure leaves the row unfetched and the line `settlement_pending` — fail closed), runs `with_dates`, and keeps the rows whose settlement date lies in `lo … hi` (undated rows are counted as `unknown_dates` only); inside `portfolio_client.cached`; then `trade_settlement_service.retire_twins_for_statement` right after the auto-pay call at `:990`; population entries get `settlement_stand_in=e.id in settlement_legs`; after `_write_coverage` (`:1023`) call `link_claims`; in live mode, before `_write_cases`, replace each `settlement_line` placeholder with the assignment's outcome:
-  - lines in the graph = settlement lines of this statement's `all_lines` ∪ uncovered settlement lines of live neighbour statements with a posted date in `lo − 2 … hi + 2` (settlement-date axis: the kept rows' dates ± `settlement_window_days`); contestants = lines with active coverage (any kind, from `all_lines`) or claimed in this run;
-  - `reserved_fps` / `reserved_ids` = fingerprints / item ids of `booked` rows;
+- Produces in `trade_settlement_service`: `ACTOR = "settlement"`; `SETTLEMENT_BUSY = "settlement_busy"`.
+  - `fetch_by_settlement_window(db, account: Account, settle_from: date, settle_to: date) -> Feed` — `trade_from, trade_to = settlement_match.trade_bounds(...)` with the auto-pay calendar overrides, one client call, `with_dates` over the rows; raises `PortfolioUnavailable` (incl. `incomplete`). `fetch_by_trade_date(db, account: Account, trade_from: date, trade_to: date) -> Feed` — the same call with `settle_from = settle_to = trade_from` and the given trade range (a trade date's own row, whatever its settlement date, is found because its trade date is in range and, for a statement day, the settlement window is ignored by the service when `from <= trade_date <= to` — the feed includes a trade date when EITHER axis matches; Task 2 states both). `Feed.rows` keeps undated rows.
+  - `find_twins(db, *, account_id: int, target_account_id: int, amount: Decimal, settlement_date: date, window_days: int, exclude: Iterable[int] = ()) -> list[int]` (the `auto_pay_service.find_twins` shape `:142`; top-level entries not of statement source within `window_days` of `settlement_date`: on `account_id` an entry of `amount` (negative = money out), or a transfer leg on `target_account_id` of `−amount` whose peer is on `account_id`).
+  - `lock_pair(db, row: SettlementBooking) -> tuple[LedgerEntry | None, LedgerEntry | None]` — the account row FOR UPDATE (`select(Account).with_for_update()`, as `engine_locks.lock_account_and_barrier` `:60-66` does, no barrier), the booking row FOR UPDATE, then both legs `FOR UPDATE NOWAIT` (`auto_pay_service.lock_pair` `:325`); a held leg → `CodedConflictError(SETTLEMENT_BUSY)`. **The one lock protocol** (spec §4.7 Locks): statements (when in hand) → account row → booking row → legs → coverage re-read; `book_settlement` / revert add the writer barrier between the account row and the booking row (`_TwinGuarded.lock_targets`), `reconcile` holds a stand-in leg through `_lock_candidates` (NOWAIT, `:1006`) while it claims it, so the two sides exclude each other on the leg rows.
+  - `housekeep(db, account_id: int) -> dict[str, int]` — every `booked` row of the account, both origins: both legs gone → status `owner_deleted`, items deleted (the reservation is released in the same transaction), audit `settlement_owner_deleted`; a leg gone or not `source='statement'` → `owner_edited`, items kept, audit `settlement_owner_edited`. Called by `reconcile` (below) and by the job; flushes, never commits. Departure from auto-pay: `check_row` runs only in the job there; here the bank origin has no job of its own, so `reconcile` runs it before reading reservations (AGENT-360 major 1).
+  - `retire_pair(db, row, *, reason: str) -> set[int] | None` — `lock_pair`, re-check `booked` + legs present + statement source; for `reason == "twin"` the twin must still exist and the pair is retired with its coverage released (`coverage_service.release_entries`, the auto-pay sequence `:357-409`); for every other reason (`gone`, a feed `reason`, `replaced`) the active coverage of the legs is re-read under the locks and ANY active row → return None (claimed: never retired by the job; AGENT-360 major 2). Then `delete_entries_cascade`, items deleted, status / reason set, released statements `needs_recheck`, audit `settlement_retired`.
+  - `retire_twins_for_statement(db, statement, accounts) -> list[int]` (twin reason only, for both origins' `booked` rows whose settlement date lies in the period ± population window); `link_claims(db, statement) -> list[int]` (a booked stand-in whose bank leg holds active coverage on a current line of this statement gets `event_id` = that line's event, audit `settlement_claimed`; idempotent); `bookings_by_event(db, account_id) -> dict[int, SettlementBooking]`.
+- `reconcile` (when `accounts_by_id[statement.account_id].settlement_source` is set and the statement is a bank statement printing a settlement line): right after the auto-pay call at `:990`: `trade_settlement_service.housekeep(db, statement.account_id)` then `retire_twins_for_statement`; before `_lock_candidates` (`:1006`): `settle_lo, settle_hi = period_start − 5, period_end + 5` and `feed = fetch_by_settlement_window(db, account, settle_lo, settle_hi)` inside `portfolio_client.cached` (`PortfolioUnavailable`, `incomplete` included → the unavailable outcome below: no automatic assignment on an answer whose completeness is not asserted); population entries get `settlement_stand_in=e.id in settlement_legs`; after `_write_coverage` (`:1023`) call `link_claims`; in live mode, before `_write_cases`, replace each `settlement_line` placeholder with the assignment's outcome:
+  - lines in the graph = EVERY settlement line (covered or not) of this statement's `all_lines` ∪ every settlement line (covered or not) of the account's live, non-retired neighbour statements (`_guard_neighbours`, `:170`) whose posted date lies in `settle_lo − 2 … settle_hi + 2`; contestants = every graph line with active coverage anywhere (`coverage_service.active_rows` per statement, this run's claims included) — spec §4.3: an explained line still competes and is never booked (AGENT-360 major 4);
+  - `reserved_fps` / `reserved_ids` = fingerprints / item ids of `booked` rows (read AFTER `housekeep`, so an owner-deleted booking no longer reserves);
   - booked → `settlement` case, candidates `[{"fingerprint", "settlement_date", "trade_date", "net_amount", "date_source", "items": [...]}]`, context `{"fingerprint", "source": account.settlement_source, "owner_deleted": bool}` (`owner_deleted` = an `owner_deleted` row with this fingerprint or this (account, settlement_date) exists);
   - ambiguous → `ambiguous` + `{"hint": "settlement_ambiguous"}`, candidates as above;
   - pending → `line_unmatched` + `{"hint": "settlement_pending", "reason": <reason|None>}`; a pending line with an unclaimed booked stand-in of the account within 2 days → `{"hint": "settlement_mismatch", "settlement_booking_id", "stand_in_date", "stand_in_amount"}` instead;
-  - portfolio unavailable → every placeholder `settlement_pending` + `result.settlement_source_unavailable = True`.
-- Drift (live mode, after `_write_coverage`): for every current line of `all_lines` whose active coverage entry is a leg of a `booked` settlement row (owned and matcher coverage alike), the feed row with that fingerprint's trade date recomputed; a different net or different `(source_id, amount)` set, or the row gone → a `settlement` case `{"hint": "source_drift", "booking_id", "booked": {...}, "now": {...}|None}` with no candidates, written through `_write_cases` with the line taken from `all_lines` (not `lines`). Nothing is rebooked.
-- `ReconcileResult.settlement_source_unavailable: bool = False`, `ReconcileResult.settlements: dict[str, int]` (`booked`, `ambiguous`, `pending`, `mismatch`, `drift`, `claimed`); `ReconcileOut` and `SweepOut` (`settlement_source_unavailable: int` = count of statements) carry them.
+  - portfolio unavailable or incomplete → every placeholder `settlement_pending` + `result.settlement_source_unavailable = True` (`settlements["unavailable_code"]` = the client code).
+- Drift (live mode, after `_write_coverage`): for every current line of `all_lines` whose active coverage entry is a leg of a `booked` settlement row (either origin, owned and matcher coverage alike), the row's trade date is re-read through `fetch_by_trade_date(trade_date, trade_date)` (the cached client); a difference in net, settlement date, `(source_id, amount)` set, `bookable` or `date_source` against `facts`, or the row gone → a `settlement` case `{"hint": "source_drift", "booking_id", "booked": {...}, "now": {...}|None}` with no candidates, written through `_write_cases` with the line taken from `all_lines` (not `lines`). The pair stays; nothing is rebooked (AGENT-360 major 6).
+- `ReconcileResult.settlement_source_unavailable: bool = False`, `ReconcileResult.settlements: dict[str, int | str | None]` (`booked`, `ambiguous`, `pending`, `mismatch`, `drift`, `claimed`, `unknown_dates` = `Assignment.unknown_dates`, `unavailable_code`); `ReconcileOut.settlements: dict` and `SweepOut.settlement_source_unavailable: int` (count of statements) carry them (AGENT-360 minor 8).
 - `reconciliation_hook`: after its reconcile of a statement whose account has `settlement_source`, set `needs_recheck` on the account's other live, non-retired statements whose period overlaps `period_start − 7 … period_end + 7`.
 - `inbox_service.classify(..., settlement_labels=matching.SETTLEMENT_LABELS)`: `kind == "settlement"` → `settlement`; `kind == "ambiguous"` with hint `settlement_ambiguous` → `settlement`; the existing `line_unmatched` + label rule keeps its place; `kind == "dividend"` → `other`. `SETTLEMENT_LABELS` (`:30`) becomes `matching.SETTLEMENT_LABELS`; the caller passes the rules' labels. `_single_candidate` / `_listed_candidates` skip candidates without an integer `entry_id`.
 
-`settlement_fixtures.py`: `bank_67(seed, db)` → (bank account with `settlement_source="portfolio:cathay"`, a target TWD account); `submit_bank(db, run, bank, lines, **kw) -> int` (= `statement_fixtures._submit(..., kind="bank", **kw)` — which returns `(AccountStatement, lines, res)` — unpacked to the statement id; every `sid` below comes from it); `feed(*rows, fingerprint=None, amounts=None)` builds feed JSON from `(trade_date, settlement_date|None, net, ids[, overrides])` tuples (fictional amounts; `amounts` = per-item amounts, default: the whole net on the first item and 0 on the rest; `overrides` patch `bookable` / `reason` / `date_source`; the fingerprint defaults to `cathay:<trade_date>:<ids joined>`); fixture `portfolio_stub` (monkeypatches `portfolio_client.client_for` to a client over `httpx.MockTransport`; `.rows` list, `.down = True` → 503, `.calls` = the query params of each request); `seed_stand_in(db, bank, target, *, settlement_date, net, fingerprint, ids)` (a `create_transfer` pair with `source="statement"` and a `booked` `origin = stand_in` row with items — the Task 9 job's shape, written directly); `bank_line(seq, day, merchant, flow)` → a `_line` of kind `withdrawal` / `deposit` by the flow's sign, printed so that `_flow` returns `flow`; `settle_line(seq, day, flow)` = `bank_line(seq, day, "交割股款", flow)`.
+`settlement_fixtures.py`: `bank_67(seed, db)` → (bank account with `settlement_source="portfolio:cathay"`, a target TWD account); `submit_bank(db, run, bank, lines, **kw) -> int` (= `statement_fixtures._submit(..., kind="bank", **kw)` — which returns `(AccountStatement, lines, res)` — unpacked to the statement id; every `sid` below comes from it); `feed(*rows, fingerprint=None, amounts=None)` builds feed JSON from `(trade_date, settlement_date|None, net, ids[, overrides])` tuples (fictional amounts; `amounts` = per-item amounts, default: the whole net on the first item and 0 on the rest; `overrides` patch `bookable` / `reason` / `date_source`; the fingerprint defaults to `cathay:<trade_date>:<ids joined>`); fixture `portfolio_stub` (monkeypatches `portfolio_client.client_for` to a client over `httpx.MockTransport`; `.rows` list, served FILTERED by the request's two axes exactly as Task 2 does and echoed with the request's bounds; `.down = True` → 503; `.narrow = True` → the echoed `from` is one day later than requested; `.calls` = the query params of each request); `seed_stand_in(db, bank, target, *, settlement_date, net, fingerprint, ids, origin="stand_in")` (a `create_transfer` pair with `source="statement"` and a `booked` row of that origin with items — the Task 9 job's shape, written directly); `bank_line(seq, day, merchant, flow)` → a `_line` of kind `withdrawal` / `deposit` by the flow's sign, printed so that `_flow` returns `flow`; `settle_line(seq, day, flow)` = `bank_line(seq, day, "交割股款", flow)`.
 
 - [ ] **Step 1: Write the failing integration tests**
 
@@ -579,10 +616,63 @@ def test_a_new_statement_flags_its_live_neighbour_for_recheck(seed, db_session, 
 
 def test_a_long_holiday_settlement_is_fetched_by_settlement_date(seed, db_session, run, portfolio_stub):
     bank, _ = bank_67(seed, db_session)
-    portfolio_stub.rows = feed(("2026-02-13", "2026-02-24", "-12305", ("ct:5",)))                # last session before 春節
+    portfolio_stub.rows = feed(("2026-02-13", "2026-02-24", "-12305", ("ct:5",)),                # last session before 春節, printed date
+                               ("2026-02-23", None, "-12305", ("ct:6",), {"date_source": "legs"}))  # a same-amount CSV-only day, T+2 = 02-25
     sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 2, 24), "-12305")], period=(date(2026, 2, 24), date(2026, 3, 23)))
     (case,) = _cases(db_session, sid, "open")
-    assert case.kind == "settlement" and portfolio_stub.calls[-1]["from"] <= "2026-02-13"
+    assert (case.kind, case.context["hint"]) == ("ambiguous", "settlement_ambiguous") and len(case.candidates) == 2   # both visible → never a silent single booking
+    assert portfolio_stub.calls[-1]["settle_from"] == "2026-02-19" and portfolio_stub.calls[-1]["from"] == "2026-02-11"  # bounds from business_days, not a constant
+
+
+def test_an_incomplete_feed_answer_assigns_nothing(seed, db_session, run, portfolio_stub):
+    bank, _ = bank_67(seed, db_session)
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",))); portfolio_stub.narrow = True
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    result = _reconcile(db_session, sid)
+    (case,) = _cases(db_session, sid, "open")
+    assert (case.context["hint"], result.settlement_source_unavailable, result.settlements["unavailable_code"]) == ("settlement_pending", True, "incomplete")
+
+
+def test_undated_rows_are_counted_through_to_the_result(seed, db_session, run, portfolio_stub):
+    bank, _ = bank_67(seed, db_session)
+    portfolio_stub.rows = feed(("2027-12-30", None, "-1000", ("ct:5",), {"date_source": "legs"}))   # T+2 passes LAST_KNOWN_DAY
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2027, 12, 31), "-1000")], period=(date(2027, 12, 1), date(2027, 12, 31)))
+    result = _reconcile(db_session, sid)
+    assert result.settlements["unknown_dates"] == 1 and _cases(db_session, sid, "open")[0].context["hint"] == "settlement_pending"
+
+
+def test_a_covered_neighbour_line_still_contests(seed, db_session, run, portfolio_stub):
+    bank, target = bank_67(seed, db_session)
+    _transfer(seed, bank, target, Decimal("5000"), date(2026, 9, 30))                            # the owner recorded September's line
+    portfolio_stub.rows = feed(("2026-09-29", "2026-10-01", "-5000", ("ct:5",)))
+    sep = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 30), "-5000")])      # claimed by the owner twin → covered
+    assert _cases(db_session, sep, "open") == []
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 10, 2), "-5000")], period=OCT)
+    (case,) = _cases(db_session, sid, "open")
+    assert (case.kind, case.context["hint"]) == ("ambiguous", "settlement_ambiguous")            # the covered 09-30 line contests 10-01
+
+
+def test_date_only_drift_on_a_claimed_row_opens_source_drift(seed, db_session, run, portfolio_stub):
+    bank, target = bank_67(seed, db_session)
+    seed_stand_in(db_session, bank, target, settlement_date=date(2026, 9, 14), net="-12305", fingerprint="cathay:2026-09-10:aa", ids=("ct:5",))
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)), fingerprint="cathay:2026-09-10:aa")
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-15", "-12305", ("ct:5",)), fingerprint="cathay:2026-09-10:aa")   # only the printed date moved
+    _reconcile(db_session, sid)
+    (case,) = _cases(db_session, sid, "open")
+    assert (case.kind, case.context["hint"], case.context["now"]["settlement_date"]) == ("settlement", "source_drift", "2026-09-15")
+    assert len(_active(db_session, sid)) == 1 and db_session.scalar(select(SettlementBooking.status)) == "booked"      # the pair stays
+
+
+def test_reconcile_tombstones_an_owner_deleted_bank_booking_before_reserving(seed, db_session, run, portfolio_stub):
+    bank, target = bank_67(seed, db_session)
+    booking = seed_stand_in(db_session, bank, target, settlement_date=date(2026, 9, 14), net="-12305", fingerprint="cathay:2026-09-10:aa", ids=("ct:5",), origin="bank")
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)), fingerprint="cathay:2026-09-10:aa")
+    ews.delete_entry(db_session, booking.out_entry_id); db_session.commit()
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])     # no job ran
+    db_session.refresh(booking)
+    (case,) = _cases(db_session, sid, "open")
+    assert (booking.status, booking.items) == ("owner_deleted", []) and (case.kind, case.context["owner_deleted"]) == ("settlement", True)
 
 
 def test_a_retired_or_historical_neighbours_line_is_not_in_the_graph(seed, db_session, run, portfolio_stub):
@@ -638,9 +728,9 @@ git commit -m "accounting: reconcile assigns settlement lines globally, claims s
 - Test: `services/accounting-service/tests/integration/test_auto_pay_settings.py` (+2: an unknown `settlement` key → 422; `stand_in_enabled: true` without `enabled_from` → 422), `services/accounting-service/tests/integration/test_settlement_actions.py` (helpers `_apply` / `_revert` / `_refuse` / `_code` / `_fresh` from `test_reconciliation_actions_ledger.py`; fixtures from `settlement_fixtures.py`)
 
 **Interfaces:**
-- Consumes: Task 3 models, Task 6 cases and `trade_settlement_service.fetch`; `_TwinGuarded` (`ledger_actions.py:132-169`: `lock_targets` = `LockSet(account_lock=True, barrier=True)`, `check_before_locks`, `_twin_check`); the `PairTransferAction.apply` / `invert` sequence (`transfer_actions.py:434-478`: `transfer_service.create_transfer(db, TransferIn(...), source=STATEMENT_SOURCE, remember=False)`, `transfer_legs`, claim, `_release` → `ews.delete_entries_cascade`); `engine._check_creation_family` (`engine.py:313`, slot `CREATE`).
+- Consumes: Task 3 models, Task 6 cases and `trade_settlement_service.fetch_by_trade_date`; `_TwinGuarded` (`ledger_actions.py:132-169`: `lock_targets` = `LockSet(account_lock=True, barrier=True)`, `check_before_locks`, `_twin_check`); the `PairTransferAction.apply` / `invert` sequence (`transfer_actions.py:434-478`: `transfer_service.create_transfer(db, TransferIn(...), source=STATEMENT_SOURCE, remember=False)`, `transfer_legs`, claim, `_release` → `ews.delete_entries_cascade`); `engine._check_creation_family` (`engine.py:313`, slot `CREATE`).
 - Produces: `BookSettlementParams(fingerprint: str)`; `BookSettlementAction(_TwinGuarded)`, `name = "book_settlement"`:
-  - `prepare` / `apply`: the fingerprint must be one of the case's candidates; the settlement is re-fetched (`fetch` over the candidate's trade date) and must still equal the candidate (net, `(source_id, amount)` set, `bookable`), else `candidate_changed`; the statement must not be `needs_recheck` (`needs_recheck`); `_twin_check(line)`; a `booked` row for the same event → nothing new (replay); a `booked` row with this fingerprint for another event → `already_booked`; then the transfer (67 → target for a negative net, target → 67 for a positive one; `out_amount = |line.flow|`; dates = the line's posted date; name `證券交割`; description `證券交割 <trade_date>`; `needs_review` stays the `create_transfer` default False), the booking row (`kind settlement`, `origin bank`, `event_id`, `facts` = the candidate, `action_id`) and its items; the 67 leg claims the line (`match_rule = "book_settlement"`). An `IntegrityError` on `ux_settlement_booking_item_source` → `constituent_reserved`, on `ux_settlement_booking_fingerprint_booked` → `already_booked`, on `ux_settlement_booking_day_booked` → `day_booked` (the savepoint rolls back; the session stays usable).
+  - `prepare` / `apply`: the fingerprint must be one of the case's candidates; the settlement is re-fetched with `fetch_by_trade_date(trade_date, trade_date)` and the row with the candidate's fingerprint must still equal it (net, settlement date, `(source_id, amount)` set, `bookable`, `date_source`), else `candidate_changed` (AGENT-360 major 3); the statement must not be `needs_recheck` (`needs_recheck`); `_twin_check(line)`; a `booked` row for the same event → nothing new (replay); a `booked` row with this fingerprint for another event → `already_booked`; then the transfer (67 → target for a negative net, target → 67 for a positive one; `out_amount = |line.flow|`; dates = the line's posted date; name `證券交割`; description `證券交割 <trade_date>`; `needs_review` stays the `create_transfer` default False), the booking row (`kind settlement`, `origin bank`, `event_id`, `facts` = the candidate, `action_id`) and its items; the 67 leg claims the line (`match_rule = "book_settlement"`). An `IntegrityError` on `ux_settlement_booking_item_source` → `constituent_reserved`, on `ux_settlement_booking_fingerprint_booked` → `already_booked`, on `ux_settlement_booking_day_booked` → `day_booked` (the savepoint rolls back; the session stays usable).
   - `invert`: `_release` → `delete_entries_cascade` of both legs → the booking row `retired` (reason `revert`) with its items deleted → reopen as `line_unmatched` + `{"hint": "settlement_pending"}` with `candidates = []`; the engine's snapshot gate refuses a revert after either leg changed.
 - Settings: `SETTLEMENT_DEFAULTS = {"stand_in_enabled": False, "enabled_from": None, "target_accounts": {}, "twin_window_days": 3, "dividend_category_id": None}`; `_check_settlement(block) -> dict` (`enabled_from` ISO date, required when `stand_in_enabled`; `target_accounts` maps an account id string to an account id, both existing, same currency; `twin_window_days` int 0–15; `dividend_category_id` int or None); `read_settlement_settings(db) -> dict` (block + settings `version`).
 - Target account: `read_settlement_settings(db)["target_accounts"][str(statement.account_id)]`; missing → refused `no_target`.
@@ -697,7 +787,7 @@ def test_policy_proposes_an_owner_deleted_settlement(seed, db_session, run, port
     row = _apply(db_session, case.id, "book_settlement", {"fingerprint": case.context["fingerprint"]})
     booking = db_session.scalar(select(SettlementBooking))
     ews.delete_entry(db_session, booking.out_entry_id); db_session.commit()                    # the owner deletes the pair (both legs go)
-    _reconcile(db_session, sid); policy_service.run_policy(db_session, sid)
+    _reconcile(db_session, sid); policy_service.run_policy(db_session, sid)                     # reconcile's housekeep tombstones the row; no job run
     (case,) = _cases(db_session, sid, "open", "proposed")
     assert db_session.get(SettlementBooking, booking.id).status == "owner_deleted"
     assert (case.kind, case.context["owner_deleted"], case.status) == ("settlement", True, "proposed")
@@ -886,9 +976,16 @@ git commit -m "accounting: read-through valuation for valuation_source accounts 
 - Test: `services/accounting-service/tests/integration/test_settlement_stand_ins.py`
 
 **Interfaces:**
-- Consumes: Task 3 models, Task 4 client, Task 6 `fetch` / `find_twins` / `retire_pair`; `transfer_service.create_transfer` (`transfer_service.py:139`) and `transfer_legs` (`:164`); `take_import_key_shared`; the `auto_pay_job.run` shape (`auto_pay_job.py:206`: a session-level `pg_try_advisory_lock`, one transaction per candidate, `ImportRunningError` → stop with `import_running`).
+- Consumes: Task 3 models, Task 4 client, Task 6 `fetch_by_settlement_window` / `find_twins` / `lock_pair` / `retire_pair` / `housekeep`; `transfer_service.create_transfer` (`transfer_service.py:139`) and `transfer_legs` (`:164`); `take_import_key_shared`; the `auto_pay_job.run` shape (`auto_pay_job.py:206`: a session-level `pg_try_advisory_lock`, one transaction per candidate, `ImportRunningError` → stop with `import_running`).
 - Consumes also: Task 7 `read_settlement_settings` (the `settlement` block).
-- Produces in `trade_settlement_service`: `SETTLEMENT_JOB_LOCK_KEY` (a new advisory key, distinct from `AUTO_PAY_JOB_LOCK_KEY`); `@dataclass(frozen=True) StandInCandidate(account_id, target_account_id, settlement: Settlement)`; `stand_in_candidates(db, rows: list[Settlement], account: Account, settings: dict, today: date) -> list[StandInCandidate]` (`date_source == "statement"`, `bookable`, `net_amount != 0`, `enabled_from <= settlement_date <= today`); `gate(db, cand, settings) -> str | None` (in order: `disabled`; `net_amount == 0` → `zero` (never a transfer of 0); a row for (account, settlement_date) with status `booked`, `owner_deleted`, `owner_edited`, `retired` with reason `twin` or `revert`, or `skipped` with reason `twin` / `dismissed` → `final`; a `dismissed` reconciliation case of the account on a settlement line whose context fingerprint is the candidate's or whose line posted date is the settlement date → `dismissed` (recorded as a `skipped` row, final; controller ruling 2026-10-30, spec §4.7); a reserved constituent → `reserved`; an owner twin (`find_twins` with the candidate's account, target, amount and settlement date) → `twin`); `book_stand_in(db, cand, settings) -> SettlementBooking` (the transfer of Task 7 dated the settlement date, `origin stand_in`, `event_id None`, items, audit `settlement_booked`); `record_skip(db, cand, reason) -> SettlementBooking` (one `skipped` row per (account, settlement_date, reason), audit `settlement_skipped` on change); `check_row(db, row, feed: dict[str, Settlement], settings) -> str | None` (in order: both legs gone → `owner_deleted`; one leg gone or not `source='statement'` → `owner_edited`; an owner twin (`find_twins` with the row's account, target, `net_amount`, `settlement_date`) → `retire_pair(reason="twin")` → `retired`; unclaimed and the feed row of its trade date gone or no longer `bookable` → `retire_pair(reason=<feed reason or "gone">)`; unclaimed and the feed row's net / date / items differ from `facts` → `replace(db, row, new)` → `replaced`; claimed → None (drift belongs to reconcile)); `replace(db, row, settlement) -> SettlementBooking` (retire the pair with status `replaced`, then `book_stand_in` for the new figures, both in one transaction, audit `settlement_replaced`); `run_stand_ins(engine, *, today: date | None = None, dry_run: bool = False) -> dict` (report `{"status": completed|busy|disabled|source_unavailable|import_running|dry_run, "booked": [{"account_id", "settlement_date", "booking_id"}], "skipped": [{"account_id", "settlement_date", "reason"}], "housekeeping": {transition: count}, "touched_dates": {account_id: [dates]}}` — ids, dates, codes, never amounts; for each `settlement_source` account with a target: fetch trade dates `max(enabled_from − 10, min(today − 14, oldest unclaimed stand-in's trade_date)) … today`, housekeeping over its `booked` stand-ins first, then the candidates; `PortfolioUnavailable` → `source_unavailable`, nothing written; a dry run takes no import key and rolls every transaction back).
+- Produces in `trade_settlement_service`: `SETTLEMENT_JOB_LOCK_KEY` (a new advisory key, distinct from `AUTO_PAY_JOB_LOCK_KEY`); `@dataclass(frozen=True) StandInCandidate(account_id, target_account_id, settlement: Settlement)`.
+  - `stand_in_candidates(db, rows: list[Settlement], account: Account, settings: dict, today: date) -> list[StandInCandidate]` (`date_source == "statement"`, `bookable`, `net_amount != 0`, `enabled_from <= settlement_date <= today`).
+  - `gate(db, cand, settings) -> str | None` (in order: `disabled`; `net_amount == 0` → `zero`; a row for (account, settlement_date) with status `booked`, `owner_deleted`, `owner_edited`, `retired` with reason `twin` or `revert`, or `skipped` with reason `twin` / `dismissed` → `final`; a `dismissed` reconciliation case of the account on a settlement line whose context fingerprint is the candidate's or whose line posted date is the settlement date → `dismissed` (recorded as a `skipped` row, final; controller ruling 2026-10-30, spec §4.7); a reserved constituent → `reserved`; an owner twin (`find_twins` with the candidate's fields) → `twin`).
+  - `book_stand_in(db, cand, settings) -> SettlementBooking` (under the account row FOR UPDATE: the transfer of Task 7 dated the settlement date, `origin stand_in`, `event_id None`, items, audit `settlement_booked`); `record_skip(db, cand, reason) -> SettlementBooking` (one `skipped` row per (account, settlement_date, reason), audit `settlement_skipped` on change).
+  - `check_row(db, row, feed: dict[str, Settlement], settings, today) -> str | None` — for `booked` rows of `origin = stand_in` whose bank leg is UNCLAIMED on the unlocked read (claimed rows and bank-origin rows are `housekeep`'s and reconcile's business), in order: an owner twin → `retire_pair(reason="twin")` → `retired`; the feed row of its trade date gone or no longer `bookable` → `retire_pair(reason=<feed reason or "gone">)` → `retired`; the feed row's net / settlement date / items / `date_source` differ from `facts` → `replace(db, row, new, settings, today)` → `replaced` or `replaced_waiting`. Every retirement re-reads the claim under `lock_pair` (Task 6): a claim that landed since the unlocked read → `retire_pair` returns None → `check_row` returns None, the pair stays (AGENT-360 major 2). `SETTLEMENT_BUSY` → logged by ids, the row is left for the next run.
+  - `replace(db, row, new: Settlement, settings, today) -> str` — `retire_pair(row, reason="replaced")` (status `replaced`; None → return None, nothing else happens), then the new facts go through `stand_in_candidates([new], …)` and `gate` again: eligible → `book_stand_in` in the same transaction → `replaced`; not eligible (a future or pre-go-live settlement date, margin, zero, `final` / `dismissed` / `twin` / `reserved` on the new date) → `record_skip(new, reason)` → `replaced_waiting`: the old pair is gone, the day waits for a legal date or a bank line (AGENT-360 major 5). Audit `settlement_replaced` with both fingerprints.
+  - `run_stand_ins(engine, *, today: date | None = None, dry_run: bool = False) -> dict` (report `{"status": completed|busy|disabled|source_unavailable|import_running|dry_run, "booked": [{"account_id", "settlement_date", "booking_id"}], "skipped": [{"account_id", "settlement_date", "reason"}], "housekeeping": {transition: count}, "touched_dates": {account_id: [dates]}}` — ids, dates, codes, never amounts). Per `settlement_source` account with a target, one `fetch_by_settlement_window(db, account, settle_from, today)` with `settle_from = min(enabled_from, oldest booked stand-in's settlement_date)` (statement days are found by their persisted date, so a statement that arrives late for an old trade day — a held day fixed weeks later — is picked up on the next run as long as its settlement date is on or after go-live; CSV-only days are irrelevant to the job; no `enabled_from − N` or rolling-14-day constant), then `housekeep(account_id)`, then `check_row` over its `booked` stand-ins (by fingerprint against the feed), then the candidates. Each decision runs in its own transaction: shared import key → account row FOR UPDATE → (row → legs NOWAIT for a retirement) → write → commit; `PortfolioUnavailable` → `source_unavailable`, nothing written; a dry run takes no import key and rolls every transaction back.
+- Departures from the auto-pay pattern, stated once: (1) no `pay_account_id` / statement header — the candidate is a feed row, so `header_changed` has no analogue; (2) the pair can be replaced while unclaimed, auto-pay's never is; (3) retirement for a source reason refuses a claimed pair, auto-pay's twin retirement releases the claim (kept here for twins only); (4) `housekeep` also runs inside `reconcile` because bank-origin rows have no job.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -978,6 +1075,55 @@ def test_owner_deleted_stand_in_is_never_rebooked(pg_engine, seed, db_session, r
     assert (case.kind, case.status, case.context["owner_deleted"]) == ("settlement", "proposed", True) and _entries(db_session) == 0
 
 
+def test_claim_wins_over_a_concurrent_replacement(pg_engine, seed, db_session, run, portfolio_stub, stand_ins_on):
+    bank, target, row = _booked(pg_engine, seed, db_session, portfolio_stub, stand_ins_on)
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12310", ("ct:5", "ct:9")))          # the job will want to replace
+    feed_map = {r.fingerprint: r for r in tss.fetch_by_settlement_window(db_session, bank, date(2026, 9, 1), date(2026, 9, 16)).rows}
+    with Session(pg_engine) as other:                                                           # session B: the monthly statement claims first
+        other_run = ingest_fixture(other)
+        portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)))
+        sid = submit_bank(other, other_run, other.get(Account, bank.id), [settle_line(1, date(2026, 9, 14), "-12305")]); other.commit()
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12310", ("ct:5", "ct:9")))
+    assert tss.check_row(db_session, db_session.get(SettlementBooking, row.id), feed_map, _settings(db_session), date(2026, 9, 16)) is None   # unlocked read said unclaimed; the locked re-read sees the claim
+    db_session.commit(); db_session.refresh(row)
+    assert row.status == "booked" and _entries(db_session) == 2 and [c.match_rule for c in _active(db_session, sid)] == ["settlement_stand_in"]
+    _reconcile(db_session, sid)
+    assert {c.context.get("hint") for c in _cases(db_session, sid, "open")} == {"source_drift"}   # the change is reconcile's to show
+
+
+def test_job_skips_a_pair_whose_leg_another_session_holds(pg_engine, seed, db_session, portfolio_stub, stand_ins_on):
+    bank, target, row = _booked(pg_engine, seed, db_session, portfolio_stub, stand_ins_on)
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",), {"bookable": False, "reason": "legs_disagree"}))
+    with Session(pg_engine) as other:
+        other.execute(select(LedgerEntry).where(LedgerEntry.id == row.out_entry_id).with_for_update())   # a reconcile holding the leg
+        report = tss.run_stand_ins(pg_engine, today=date(2026, 9, 15))
+        other.rollback()
+    assert report["housekeeping"].get("settlement_busy") == 1 and _fresh(db_session, SettlementBooking, row.id).status == "booked"
+    assert tss.run_stand_ins(pg_engine, today=date(2026, 9, 15))["housekeeping"].get("retired") == 1               # next run: retired
+
+
+def test_replacement_to_a_future_date_waits(pg_engine, seed, db_session, portfolio_stub, stand_ins_on):
+    bank, target, row = _booked(pg_engine, seed, db_session, portfolio_stub, stand_ins_on)
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-17", "-12305", ("ct:5",)))                # the printed date moved to the future
+    report = tss.run_stand_ins(pg_engine, today=date(2026, 9, 15))
+    db_session.expire_all()
+    assert report["housekeeping"] == {"replaced_waiting": 1} and _entries(db_session) == 0
+    assert sorted(r.status for r in db_session.scalars(select(SettlementBooking))) == ["replaced", "skipped"]
+    assert tss.run_stand_ins(pg_engine, today=date(2026, 9, 17))["booked"][0]["settlement_date"] == "2026-09-17"   # booked on its day
+
+
+def test_replacement_to_a_dismissed_date_is_final(pg_engine, seed, db_session, run, portfolio_stub, stand_ins_on):
+    bank, target = bank_67(seed, db_session); stand_ins_on(bank, target, enabled_from="2026-09-01")
+    portfolio_stub.rows = feed(("2026-09-11", "2026-09-15", "-7000", ("ct:6",)))
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 15), "-7000")])
+    (case,) = _cases(db_session, sid, "open"); _apply(db_session, case.id, "dismiss", {"note": "owner says no"})
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)))
+    tss.run_stand_ins(pg_engine, today=date(2026, 9, 16))                                       # books 09-14
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-15", "-12305", ("ct:5",)))                # re-posted onto the dismissed day
+    report = tss.run_stand_ins(pg_engine, today=date(2026, 9, 16))
+    assert report["housekeeping"] == {"replaced_waiting": 1} and report["skipped"][0]["reason"] == "dismissed" and _entries(db_session) == 0
+
+
 def test_dismissed_case_or_reverted_bank_booking_is_final_for_the_job(pg_engine, seed, db_session, run, portfolio_stub, stand_ins_on):
     bank, target = bank_67(seed, db_session); stand_ins_on(bank, target, enabled_from="2026-09-01")
     portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)), ("2026-09-11", "2026-09-15", "-7000", ("ct:6",)))
@@ -1023,7 +1169,7 @@ def test_stand_ins_are_outside_the_policy_caps(pg_engine, seed, db_session, port
     assert row.status == "booked" and db_session.scalar(select(func.count(PolicyBudget.month))) == 0
 ```
 
-`stand_ins_on(bank, target, *, enabled_from)` writes the `settlement` block through `update_reconciliation_settings`; `policy_on` is the Task 7 fixture; the job tests pass `pg_engine` as `tests/integration/test_auto_pay_job.py:68` does; the owner-delete path is `entry_write_service.delete_entry` on one leg (both legs go), as `tests/integration/test_auto_pay_service.py:423-429` does.
+`stand_ins_on(bank, target, *, enabled_from)` writes the `settlement` block through `update_reconciliation_settings`; `_settings(db)` = `read_settlement_settings`; `ingest_fixture(session)` builds a `(run, token)` pair like the `run` fixture on another session; `policy_on` is the Task 7 fixture; the job tests pass `pg_engine` as `tests/integration/test_auto_pay_job.py:68` does; the owner-delete path is `entry_write_service.delete_entry` on one leg (both legs go), as `tests/integration/test_auto_pay_service.py:423-429` does.
 
 
 - [ ] **Step 2: Run to verify failure**
@@ -1035,7 +1181,7 @@ Expected: FAIL
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd services/accounting-service && .venv/bin/python -m pytest -q tests/integration/test_settlement_stand_ins.py tests/integration/test_settlement_reconcile.py tests/integration/test_auto_pay_settings.py tests/integration/test_auto_pay_job.py`
+Run: `cd services/accounting-service && .venv/bin/python -m pytest -q tests/integration/test_settlement_stand_ins.py tests/integration/test_settlement_reconcile.py tests/integration/test_auto_pay_settings.py tests/integration/test_auto_pay_job.py` (the two-session tests need the `pg_engine` PostgreSQL fixture, as `statement_fixtures._interleave` does)
 Expected: all pass
 
 - [ ] **Step 5: Commit**
@@ -1169,49 +1315,16 @@ git commit -m "docs: portfolio integration phase 1 — settings, routes, settlem
 
 ---
 
-## Dividends (Tasks 12–13, separable)
+## Dividends
 
-Owner ruling Q6 (a); spec §4.6. Tasks 1–11 ship without these; the group may become its own PR or follow-up plan (controller's call). Both reuse the Task 3 tables (`kind = 'dividend'`, items `source = 'div'`) and the Task 7 cap exemption.
-
-### Task 12: Portfolio `GET /api/portfolio/ledger-feed/dividends` + client method
-
-**Files:**
-- Modify: `services/stock-portfolio-service/app/services/ledger_feed_service.py`, `app/routers/ledger_feed.py`, `app/schemas/ledger_feed.py`
-- Modify: `services/accounting-service/app/services/portfolio_client.py`
-- Test: `services/stock-portfolio-service/tests/integration/test_ledger_feed.py` (+2), `services/accounting-service/tests/unit/test_portfolio_client.py` (+1)
-
-**Interfaces:**
-- Produces: `ledger_feed_service.dividends(db, broker: str, date_from: date, date_to: date) -> list[dict]` — `dividends` rows with `receipt_status == "confirmed"`, `receipt_account_id` = `resolve_default_cathay_twd_account(db).id`, `receipt_date` in range: `{"id", "symbol", "receipt_date", "amount" (net, as stored), "currency", "fingerprint": "dividend:<id>"}`; client `Dividend(id: int, symbol: str, receipt_date: date, amount: Decimal, currency: str, fingerprint: str)` and `PortfolioClient.dividends(broker, date_from, date_to) -> list[Dividend]`.
-
-- [ ] **Step 1: Failing tests** — `test_dividends_lists_confirmed_receipts_on_the_cathay_account_net` (a confirmed receipt with `amount 990`, `fee 10`: `amount == "990.0000"`, never `980`; a `pending` row and a receipt on another account are absent); `test_dividends_range_bounds_the_receipt_date`; client parse test.
-- [ ] **Step 2: Run** `cd services/stock-portfolio-service && .venv/bin/python -m pytest -q tests/integration/test_ledger_feed.py -k dividends` → FAIL
-- [ ] **Step 3: Implement**
-- [ ] **Step 4: Run** both services' touched test files → pass
-- [ ] **Step 5: Commit** `git commit -m "portfolio+accounting: dividend receipts in the ledger feed"`
-
-### Task 13: Accounting — `dividend` candidates and `book_dividend`
-
-**Files:**
-- Modify: `services/accounting-service/app/services/statements/matching.py` (`Rules.dividend_labels: tuple[str, ...] = ("股利", "股息", "現金股利")`)
-- Modify: `services/accounting-service/app/services/reconciliation_service.py` (after the settlement step: an unclaimed `deposit` line with a dividend label and exactly one unreserved receipt with `amount == line.flow` and `|receipt_date − posted_date| <= 3` → `dividend` case; several → `ambiguous` + `dividend_ambiguous`; none → the line's ordinary case)
-- Modify: `services/accounting-service/app/services/reconciliation_actions/settlement_actions.py` (`BookDividendAction(_TwinGuarded)`, `name = "book_dividend"`), `reconciliation_actions/__init__.py` (`KIND_ACTIONS["dividend"] = ("book_dividend", "match", "dismiss")`), `stand_ins.py` (`OWNER_TWIN_GUARDED` += `book_dividend`), `policy_service.py` (`_dividend_candidate`, `POLICY_ACTIONS`, `OWNER_DELETED_GUARDED`, `collect_candidates` kinds += `dividend`), `settings_service.py` (`POLICY_DEFAULTS["actions"]["book_dividend"] = {"enabled": True, "max_amount": "0"}`)
-- Test: `services/accounting-service/tests/integration/test_dividend_actions.py`
-
-**Interfaces:**
-- Consumes: Task 12 `Dividend`; Task 7 `CAP_EXEMPT`, booking helpers; `settlement.dividend_category_id` (Task 7 `SETTLEMENT_DEFAULTS`).
-- Produces: `book_dividend` books one `income` entry on the bank account through `_Creation._book` (category = `dividend_category_id`, `needs_review = True` when it is None), a `settlement_booking` row (`kind dividend`, `origin bank`, `target_account_id None`, `in_entry_id None`, fingerprint `dividend:<id>`) and one item (`div`, `<id>`); revert = `_Creation.invert` + the row `retired` with its items deleted.
-
-- [ ] **Step 1: Failing tests** — `test_book_dividend_books_income_idempotently_and_reverts` (apply → one income entry of the line's flow, row + item; reconcile again → no second case; revert → entry gone, row `retired`); `test_dividend_amount_must_equal_the_line_exactly` (a receipt 1 TWD off → no `dividend` case); `test_owner_income_entry_claims_first`; `test_policy_books_dividends_cap_exempt`.
-- [ ] **Step 2: Run** `cd services/accounting-service && .venv/bin/python -m pytest -q tests/integration/test_dividend_actions.py` → FAIL
-- [ ] **Step 3: Implement**
-- [ ] **Step 4: Run** `tests/integration/test_dividend_actions.py tests/integration/test_settlement_actions.py tests/integration/test_reconciliation_policy.py` → pass
-- [ ] **Step 5: Commit** `git commit -m "accounting: book_dividend — confirmed 國泰 dividend receipts booked as income on the bank line, cap-exempt"`
+Moved to `docs/superpowers/plans/2026-10-30-portfolio-integration-dividends.md` (AGENT-360): a separate booking owner path with its own recovery semantics; it reuses the Task 3 tables (`kind = dividend`), the Task 7 cap exemption and the Task 2 feed.
 
 ---
 
 ## Self-review notes (plan author, 2026-10-30)
 
-- Spec coverage: §4.1 → Tasks 1–2; §4.2 → Task 3 + Task 11 owner SQL; §4.3 → Tasks 5–6; §4.4 → Tasks 3, 6 (drift), 7; §4.5 → Task 6 (revision hook) + Task 10; §4.6 → Tasks 12–13; §4.7 → Task 3 (table), 5 (claim), 6 (claim link, mismatch, orphan, twin retirement), 9 (job), 10 (triggers); §5 → Tasks 2 + 8; §8 → Tasks 3, 5, 7, 9; §9 → Task 5 (sum gate), 6 (unavailable, drift, mismatch), 7 (unique races, revert), 9 (owner delete, job unavailable); §10 → the named tests; §11 step 1 → Task 11. §6 (wires, `/funding`) and §7 (Flex) are the Phase 1b / Phase 2 plans.
+- Spec coverage: §4.1 → Tasks 1–2; §4.2 → Task 3 + Task 11 owner SQL; §4.3 → Tasks 5–6; §4.4 → Tasks 3, 6 (drift), 7; §4.5 → Task 6 (revision hook) + Task 10; §4.6 → the dividends follow-up plan; §4.7 → Task 3 (table), 5 (claim), 6 (claim link, mismatch, orphan, twin retirement), 9 (job), 10 (triggers); §5 → Tasks 2 + 8; §8 → Tasks 3, 5, 7, 9; §9 → Task 5 (sum gate), 6 (unavailable, drift, mismatch), 7 (unique races, revert), 9 (owner delete, job unavailable); §10 → the named tests; §11 step 1 → Task 11. §6 (wires, `/funding`) and §7 (Flex) are the Phase 1b / Phase 2 plans.
+- AGENT-360 (rev 4.2): major 1 → Task 6 `housekeep` in `reconcile` + `test_reconcile_tombstones_an_owner_deleted_bank_booking_before_reserving`; major 2 → `lock_pair`, `retire_pair` claim re-read, Task 9 two-session tests; major 3 → `fetch_by_settlement_window` / `fetch_by_trade_date`; major 4 → covered neighbour lines as contestants + test; major 5 → `replace` re-gates + two tests; major 6 → drift fields + test; major 7 → two-axis feed with `trade_bounds` from `business_days`, bounds echo, `incomplete`; minor 8 → `unknown_dates` through `Feed` → `assign` → `settlements`; Tasks 12–13 → the dividends plan.
 - Q7 changed: Task 3 (`origin`, `status` set, partial uniques, no `ledger_entry` column), Task 5 (stand-in claim, `settlement_stand_in` flag), Task 6 (claim link, `settlement_mismatch`, settlement orphans, twin retirement, drift over stand-in claims), Task 7 (`owner_deleted` → propose), Task 9 (new), Task 10 (the worker call runs after every plain run, so a settlement day reached that morning is seen), Task 11 (`enabled_from`, stand-ins in the dry-run listing), Review Focus 1–3.
 - Type consistency: `Settlement` fields (`trade_date, settlement_date, date_source, net_amount, legs_net, currency, bookable, reason, items, fingerprint`) are the same in Tasks 4–10; case candidate keys (`fingerprint, settlement_date, trade_date, net_amount, date_source, items`) identical in Tasks 6–7; `settlement_booking_id` is the context key in Task 6 orphans/mismatch and Task 11 docs; `trade_settlement_service` functions named in Task 6 are the ones Tasks 7, 9, 10 consume.
 - Precedents named in the tests: owner delete = `entry_write_service.delete_entry` (`test_auto_pay_service.py:423-429`); the sweep lease = `test_reconciliation_policy._claim` (`:971`).
