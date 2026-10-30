@@ -400,3 +400,32 @@ def test_statement_rows_keep_their_broker_through_an_edit(db_session):
     db_session.refresh(row)
     assert row.broker == "TW_CATHAY"
     assert row.fee == Decimal("6")
+
+
+def test_facts_persisted_on_import_and_points_are_not_cash(db_session):
+    points = _line("範例電子", "集買", 10, "12.3", 0, order_no="XY12301") | {"points": True}
+    p = _payload(lines=DEFAULT_LINES + [points])
+    import_statement(db_session, p, dry_run=False)
+    day = _day(db_session)
+    assert day.settlement_date == date(2026, 3, 11) and day.net_amount == Decimal(p.net_amount)
+    assert day.cash_net == Decimal(p.net_amount) - Decimal(points["net"])
+
+
+def test_facts_persisted_on_a_held_unsupported_day_without_cash_net(db_session):
+    p = _payload(lines=[], warnings=["unsupported_category"])
+    import_statement(db_session, p, dry_run=False)
+    day = _day(db_session)
+    assert (day.last_status, day.last_reason, day.settlement_date, day.cash_net) == ("held", "unsupported_category", date(2026, 3, 11), None)
+
+
+def test_duplicate_fills_missing_facts_and_conflict_never_writes_them(db_session):
+    import_statement(db_session, _payload(), dry_run=False)
+    day = _day(db_session)
+    day.settlement_date = day.net_amount = day.cash_net = None  # a pre-e9settle row
+    db_session.commit()
+    import_statement(db_session, _payload(), dry_run=False)                       # same sha → duplicate
+    assert _day(db_session).settlement_date == date(2026, 3, 11)
+    before = (_day(db_session).net_amount, _day(db_session).cash_net)
+    other = [_line("範例電子", "集買", 1000, "12.3", 6, order_no="XY12300"), DEFAULT_LINES[1]]
+    import_statement(db_session, _payload(lines=other, sha="b" * 64), dry_run=False)  # corrected file → conflict
+    assert (_day(db_session).last_status, _day(db_session).net_amount, _day(db_session).cash_net) == ("conflict", *before)
