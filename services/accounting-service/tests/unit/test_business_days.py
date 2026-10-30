@@ -46,3 +46,13 @@ def test_every_2027_due_date_is_inside_the_calendar():
         assert bd.calendar_covers(day)
         day = date.fromordinal(day.toordinal() + 1)
     assert bd.next_business_day(date(2027, 12, 31)) == date(2028, 1, 3)  # 12-31 補假, then the 2028 weekend
+
+
+def test_t_plus_two_over_weekend_holiday_and_overrides():
+    from app.services.business_days import add_business_days
+
+    assert add_business_days(date(2026, 10, 1), 2) == date(2026, 10, 5)     # Thu → Mon
+    assert add_business_days(date(2026, 10, 7), 2) == date(2026, 10, 12)    # Wed → Mon (10-09 補假, weekend)
+    assert add_business_days(date(2026, 10, 7), 2, extra_workdays=frozenset({date(2026, 10, 10)})) == date(2026, 10, 10)
+    assert add_business_days(date(2026, 10, 1), 2, extra_holidays=frozenset({date(2026, 10, 2)})) == date(2026, 10, 6)
+    assert add_business_days(date(2027, 12, 30), 2) is None                  # past LAST_KNOWN_DAY
