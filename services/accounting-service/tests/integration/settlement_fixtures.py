@@ -9,9 +9,10 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from app.models import SettlementBooking, SettlementBookingItem
+from app.models import ReconciliationSettings, SettlementBooking, SettlementBookingItem
+from app.schemas.statements import ReconciliationSettingsIn
 from app.schemas.writes import TransferIn
-from app.services import portfolio_client, transfer_service
+from app.services import portfolio_client, settings_service, transfer_service
 from app.services import trade_settlement_service as tss
 from app.services.entry_write_service import STATEMENT_SOURCE
 from app.services.portfolio_client import Item, Settlement
@@ -28,12 +29,43 @@ def settlement_target(seed, db):
     return target
 
 
-def settlement_bank(seed, db):
+def put_settings(db, **blocks) -> dict:
+    """`settings_service.update_reconciliation_settings` with the stored blocks kept and `blocks` replacing theirs (a
+    PUT replaces every block it carries); committed."""
+    row = db.get(ReconciliationSettings, 1)
+    stored = dict(row.data or {}) if row is not None else {}
+    data = {key: stored[key] for key in ReconciliationSettingsIn.model_fields if key in stored}
+    out = settings_service.update_reconciliation_settings(db, {**data, **blocks})
+    db.commit()
+    return out
+
+
+def settlement_bank(seed, db, *, target=True):
     """(a live bank account with `settlement_source`, its target account). Live from 2026-01-01 so every period the
-    tests use is a live statement."""
+    tests use is a live statement. `target=True` maps the bank to the target in `settlement.target_accounts` (the
+    other `settlement` keys as stored)."""
     bank = seed.account("交割戶", statement_live_from=date(2026, 1, 1), settlement_source=SOURCE)
     db.commit()
-    return bank, settlement_target(seed, db)
+    market = settlement_target(seed, db)
+    if target:
+        block = settings_service.read_settlement_settings(db)
+        stored = {k: v for k, v in block.items() if k in settings_service.SETTLEMENT_DEFAULTS}
+        put_settings(db, settlement={**stored, "target_accounts": {**stored["target_accounts"], str(bank.id): market.id}})
+    return bank, market
+
+
+@pytest.fixture
+def policy_on(db_session):
+    """`policy_on(**caps)`: the policy enabled with `book_settlement` on and the dirty triggers on (the owner-twin
+    re-check needs the writer barrier), written through `update_reconciliation_settings`; `caps` are policy keys
+    (`per_statement_count`, `per_statement_total`, `monthly_total`, ...), and `max_amount_everywhere` sets every
+    action's `max_amount`."""
+    def on(*, max_amount_everywhere: str | None = None, **caps):
+        actions = {name: {"max_amount": max_amount_everywhere} for name in settings_service.POLICY_DEFAULTS["actions"]} \
+            if max_amount_everywhere is not None else {}
+        actions["book_settlement"] = {**actions.get("book_settlement", {}), "enabled": True}
+        return put_settings(db_session, dirty_enabled=True, policy={"enabled": True, "actions": actions, **caps})
+    return on
 
 
 def submit_bank(db, run, bank, lines, **kw) -> int:

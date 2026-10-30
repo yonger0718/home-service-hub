@@ -348,11 +348,32 @@ def _replace_candidate(db: Session, case: ReconciliationCase, statement: Account
                      evidence=_replace_evidence(case))
 
 
-OWNER_DELETED_GUARDED = frozenset({"create_system_entry", "backfill_entry", "pair_transfer"})  # R6b.0: never re-book an owner delete
+SETTLEMENT_AMOUNT = Decimal("0.0000")  # R7: a settlement booking moves no budget (the bank already moved the money)
+# R7 owner ruling Q4 (b): zero-charged and outside `max_amount`, the monthly budget, `per_statement_total` and
+# `per_statement_count` — no reservation, no charge, never counted toward a cap
+CAP_EXEMPT = frozenset({"book_settlement", "book_dividend"})
+
+
+def _settlement_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
+    """R7 (portfolio integration §4.4): an open `settlement` case without a hint (a `source_drift` case names a
+    claimed line) → book its one settlement; amount 0 (cap-exempt). An owner-deleted one is proposed (`_prefilter`)."""
+    context = case.context or {}
+    if case.kind != "settlement" or context.get("hint") is not None or not context.get("fingerprint"):
+        return None
+    return Candidate(case.id, case.kind, case.status, "book_settlement", {"fingerprint": context["fingerprint"]},
+                     SETTLEMENT_AMOUNT)
+
+
+OWNER_DELETED_GUARDED = frozenset({"create_system_entry", "backfill_entry", "pair_transfer",
+                                   "book_settlement"})  # R6b.0: never re-book an owner delete
+# R7 spec §4.7 / §9: an owner-deleted settlement is proposed, not dropped: these are kept by `collect_candidates`
+# (the policy never APPLIES them: `_prefilter` proposes and `_unchanged` refuses)
+PROPOSED_WHEN_OWNER_DELETED = frozenset({"book_settlement"})
 
 POLICY_ACTIONS = {"create_system_entry": _system_entry_candidate, "attach_fee": _attach_fee_candidate,
                   "backfill_entry": _backfill_candidate, "anchor_opening": _anchor_candidate,
-                  "replace_stand_in": _replace_candidate, "pair_transfer": _pair_transfer_candidate}
+                  "replace_stand_in": _replace_candidate, "pair_transfer": _pair_transfer_candidate,
+                  "book_settlement": _settlement_candidate}
 
 
 def _agent_authors(authors: Iterable[str]) -> set[str]:
@@ -397,11 +418,12 @@ def collect_candidates(db: Session, statement: AccountStatement, policy: dict) -
     neither applied nor proposed even when the sweep reopened its case with the old context (final review I3)."""
     cases = db.execute(select(ReconciliationCase).where(
         ReconciliationCase.statement_id == statement.id, ReconciliationCase.status == "open",
-        ReconciliationCase.kind.in_(("line_unmatched", "amount_delta", "balance_gap", "entry_unmatched")))
+        ReconciliationCase.kind.in_(("line_unmatched", "amount_delta", "balance_gap", "entry_unmatched", "settlement")))
         .order_by(ReconciliationCase.id)).scalars().all()
     deleted = stand_ins.owner_deleted_events(db, statement)
     out = [c for case in cases for make in POLICY_ACTIONS.values() if (c := make(db, case, statement)) is not None
-           and not (c.action in OWNER_DELETED_GUARDED and case.event_id in deleted)]
+           and not (c.action in OWNER_DELETED_GUARDED and c.action not in PROPOSED_WHEN_OWNER_DELETED
+                    and case.event_id in deleted)]
     if policy.get("accept_agent_proposals") is True:
         out += _agent_candidates(db, statement)
     return sorted(out, key=lambda c: (c.case_id, c.proposal_id or 0))
@@ -463,19 +485,22 @@ def _decision_label(result: tuple) -> str:
 
 
 def _applied_totals(db: Session, statement_id: int) -> tuple[int, Decimal]:
-    """(count, total amount) of the applied `actor='policy'` rows on the statement's cases; the amount is what each
-    row charged to the budget (`after.policy_budget.amount`)."""
+    """(count, total amount) of the applied `actor='policy'` rows on the statement's cases, `CAP_EXEMPT` actions
+    left out (R7); the amount is what each row charged to the budget (`after.policy_budget.amount`)."""
     afters = db.execute(
         select(ReconciliationAction.after)
         .join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
         .where(ReconciliationCase.statement_id == statement_id, ReconciliationAction.actor == POLICY,
-               ReconciliationAction.status == "applied", ReconciliationAction.action != "revert")).scalars().all()
+               ReconciliationAction.status == "applied", ReconciliationAction.action != "revert",
+               ReconciliationAction.action.not_in(sorted(CAP_EXEMPT)))).scalars().all()
     total = sum((_money(((after or {}).get("policy_budget") or {}).get("amount", "0")) or Decimal(0)
                  for after in afters), Decimal(0))
     return len(afters), total
 
 
 def _cap_reason(db: Session, statement_id: int, candidate: Candidate, policy: dict) -> str | None:
+    if candidate.action in CAP_EXEMPT:
+        return None
     if candidate.amount > Decimal(str(_rule(policy, candidate.action).get("max_amount", "0"))):
         return "max_amount"
     count, total = _applied_totals(db, statement_id)
@@ -487,6 +512,8 @@ def _cap_reason(db: Session, statement_id: int, candidate: Candidate, policy: di
 
 
 def _amount_now(ctx: Context, candidate: Candidate) -> Decimal | None:
+    if candidate.action in CAP_EXEMPT:
+        return SETTLEMENT_AMOUNT
     if candidate.action == "replace_stand_in":
         return REPLACE_AMOUNT
     if candidate.action == "attach_fee":
@@ -523,6 +550,8 @@ def _unchanged(ctx: Context, candidate: Candidate) -> bool:
         return not context.get("owner_deleted") and not case.candidates \
             and registry.backfill_eligibility(case) == candidate.params.get("kind") \
             and not _owner_may_record(ctx.db, ctx.statement, case, ctx.line, ctx.rules)
+    if candidate.action == "book_settlement":  # still the unhinted settlement case of the collected fingerprint
+        return context.get("hint") is None and context.get("fingerprint") == candidate.params.get("fingerprint")
     if candidate.action == "pair_transfer":  # still a needs_peer line whose single peer candidate is the collected one
         peer = _single_peer(ctx.db, case)
         return context.get("hint") == transfer_actions.PEER_HINT and ctx.line is not None and peer is not None \
@@ -632,9 +661,18 @@ def _policy_precheck(candidate: Candidate, ctx: Context) -> None:
         raise CapExceeded(reason)
 
 
+def _owner_deleted(db: Session, case: ReconciliationCase) -> bool:
+    """R7: the settlement case's event is owner-deleted — its context says so (an `owner_deleted` booking tombstone of
+    the fingerprint or the day, spec §4.7) or the event's last creation was retired by an owner delete (R6b.0)."""
+    if (case.context or {}).get("owner_deleted"):
+        return True
+    statement = db.get(AccountStatement, case.statement_id)
+    return case.event_id is not None and case.event_id in stand_ins.owner_deleted_events(db, statement)
+
+
 def _prefilter(db: Session, candidate: Candidate, policy: dict) -> tuple[str, str | None, str | None]:
-    """Unlocked: ("try", None, None), ("propose", None, cap reason | "date_drift") or ("skip", code, reason) — an
-    agent's proposal over a cap is skipped (it stays pending for the owner)."""
+    """Unlocked: ("try", None, None), ("propose", None, cap reason | "date_drift" | "owner_deleted") or ("skip", code,
+    reason) — an agent's proposal over a cap is skipped (it stays pending for the owner)."""
     case = db.execute(select(ReconciliationCase).where(ReconciliationCase.id == candidate.case_id)
                       .execution_options(populate_existing=True)).scalar_one_or_none()
     if case is None or (case.status, case.kind) != (candidate.status, candidate.kind):
@@ -645,6 +683,8 @@ def _prefilter(db: Session, candidate: Candidate, policy: dict) -> tuple[str, st
             return "skip", "proposal_not_pending", None
     if _rule(policy, candidate.action).get("enabled") is not True:
         return "skip", ACTION_DISABLED, None
+    if candidate.action in PROPOSED_WHEN_OWNER_DELETED and _owner_deleted(db, case):
+        return "propose", None, "owner_deleted"
     if _drifted(db, case, candidate):
         return "propose", None, "date_drift"
     reason = _cap_reason(db, case.statement_id, candidate, policy)
@@ -660,10 +700,10 @@ def apply_candidate(db: Session, statement: AccountStatement, candidate: Candida
     """The engine with the policy's budget and precheck, then the `policy_applied` audit. Returns the action row, or
     None when the engine replayed an existing row (nothing charged). Raises what the engine raises (incl.
     `BudgetExceeded` / `CapExceeded`). Never commits: `run_policy` does, per candidate."""
+    budget = None if candidate.action in CAP_EXEMPT else (month, statement.currency, candidate.amount)  # R7: no charge
     row, replayed = engine.apply_action(
         db, case_id=candidate.case_id, action=candidate.action, params=candidate.params, actor=POLICY, label=POLICY,
-        proposal_id=candidate.proposal_id, run_id=run_id, budget=(month, statement.currency, candidate.amount),
-        precheck=partial(_policy_precheck, candidate))
+        proposal_id=candidate.proposal_id, run_id=run_id, budget=budget, precheck=partial(_policy_precheck, candidate))
     if replayed:
         return None
     audit.record(db, event="policy_applied", actor=POLICY, statement_id=statement.id, case_id=candidate.case_id,

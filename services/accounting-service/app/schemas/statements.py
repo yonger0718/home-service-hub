@@ -424,6 +424,7 @@ class ReconciliationSettingsIn(BaseModel):
     rules: dict = {}  # matching.Rules overrides (settings_service validates keys and types); {} = the defaults
     policy: dict = {}  # agent-autonomy policy overrides (settings_service validates); {} = the defaults
     auto_pay: dict = {}  # card-statement auto-pay settings (settings_service validates); {} = the defaults
+    settlement: dict = {}  # brokerage settlement settings (portfolio integration §8; settings_service validates)
     account_siblings: dict[str, list[Int32]] = {}  # account id -> sibling account ids (same currency)
 
 
@@ -437,6 +438,7 @@ class ReconciliationSettingsOut(BaseModel):
     policy: dict
     policy_version: str
     auto_pay: dict
+    settlement: dict
     account_siblings: dict[str, list[int]]
     version: int
 

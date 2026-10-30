@@ -45,7 +45,7 @@ from app.services.schedule_locks import take_import_key_shared
 from . import ACTIONS, COVERAGE_ACTIONS, OPEN_STATUSES, allowed, audit, snapshots
 from . import engine_locks as locks
 from .base import (
-    POLICY, Action, ActionParams, Context, Effect, LockSet, NotRevertable, check_effect_slot, current_line,
+    POLICY, Action, ActionParams, Context, Effect, LockSet, NotRevertable, Replay, check_effect_slot, current_line,
 )
 
 __all__ = ["BudgetExceeded", "NotRevertable", "apply_action", "canonical_params", "find_by_key", "idempotency_key",
@@ -214,16 +214,18 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
     Raises ValidationError 422 (`unknown action`, params, actor, not allowed, `historical_statement`,
     `duplicate_effect`, `budget`, the action's own codes), CodedConflictError 409 (`action_reverted`, `action_failed`,
     `case_moved`, `case_closed`, `action_busy`, `snapshot_conflict`, `sweep_barrier_busy`, `reconcile_busy`),
-    NotFoundError; with `budget` (policy only: `(month, currency, amount)`) also `BudgetExceeded` 409. Never commits;
-    on any error nothing is written (the budget charge included)."""
+    NotFoundError; with `budget` (policy only: `(month, currency, amount)`; a `budget_exempt` action — R7
+    `book_settlement` — runs without one) also `BudgetExceeded` 409. An action's `validate_before` may raise `Replay`
+    (an applied row already holds the effect): that row is replayed. Never commits; on any error nothing is written
+    (the budget charge included)."""
     impl = _lookup(action)
     parsed = _parse(impl, params)
     if actor not in impl.actors:
         raise ValidationError("actor", f"{action} cannot be applied by {actor}")
     if budget is not None and actor != POLICY:
         raise ValidationError("actor", "only the policy spends the policy budget")
-    if actor == POLICY and budget is None:
-        raise ValidationError("budget", "the policy must spend the policy budget")  # R1d item 6
+    if actor == POLICY and budget is None and not getattr(impl, "budget_exempt", False):
+        raise ValidationError("budget", "the policy must spend the policy budget")  # R1d item 6 (R7: CAP_EXEMPT aside)
     case = db.get(ReconciliationCase, case_id)
     if case is None:
         raise NotFoundError(f"case {case_id} not found")
@@ -271,7 +273,12 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
         locks.lock_rows(db, targets, prepared.expected)
         before = snapshots.snapshot_set(db, *snapshots.ids_of(prepared.expected))
         _check_snapshots(prepared.expected, before)
-        impl.validate_before(ctx, parsed, prepared, before)
+        try:
+            impl.validate_before(ctx, parsed, prepared, before)
+        except Replay as replay:  # R7: an applied row already holds the effect (nothing written or charged yet)
+            if reserved is not None:
+                raise RuntimeError(f"{action} replayed after a budget charge") from replay
+            return _replay(db, replay.row, case.statement_id, label=label, run_id=run_id, request_id=request_id)
         slot = check_effect_slot(impl.effect_slot(ctx, parsed))
         _check_creation_family(db, case, slot)
         row = _insert(db, ReconciliationAction(

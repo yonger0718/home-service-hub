@@ -335,7 +335,7 @@ def test_cases_listing_needs_read_and_validates_status(client, card, seed, db_se
 def test_settings_expose_rules_and_validate_rule_keys(client, card):
     current = client.get("/settings/reconciliation", headers=H).json()
     assert set(current) == {"account_map", "dirty_enabled", "rules", "rules_version", "version", "policy", "policy_version", "composite_map",
-                            "account_siblings", "auto_pay"}
+                            "account_siblings", "auto_pay", "settlement"}
     assert current["rules"]["accept"] == "0.80" and "period_end" not in current["rules"]
     for bad in ({"nope": 1}, {"period_end": "2026-09-30"}, {"deferral_days": "x"}, {"deferral_days": True},
                 {"accept": 0.8}, {"bank_only_patterns": "年費"}, {"bank_only_patterns": [1]}):

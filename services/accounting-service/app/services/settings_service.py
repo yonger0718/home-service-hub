@@ -126,7 +126,10 @@ POLICY_DEFAULTS = {
                 "backfill_entry": {"enabled": False, "max_amount": "5000"},
                 "anchor_opening": {"enabled": False, "max_amount": "200000"},
                 "replace_stand_in": {"enabled": True, "max_amount": "0"},
-                "pair_transfer": {"enabled": False, "max_amount": "50000"}},
+                "pair_transfer": {"enabled": False, "max_amount": "50000"},
+                # portfolio integration spec §4.4 (owner ruling Q4 (b)): on by default, zero-charged and cap-exempt
+                # (`policy_service.CAP_EXEMPT`): the bank already moved the money
+                "book_settlement": {"enabled": True, "max_amount": "0"}},
     "per_currency_enabled": ["TWD"],
 }
 
@@ -146,6 +149,9 @@ def _stored_rules_version(data: dict) -> str:
 
 AUTO_PAY_DEFAULTS = {"enabled": False, "enabled_from": None, "max_amount": "200000", "monthly_total": "500000",
                      "twin_window_days": 7, "retry_days": 30, "extra_holidays": [], "extra_workdays": []}
+# portfolio integration spec §8: the brokerage settlement block (stand-ins §4.7, targets §4.4, dividends §4.6)
+SETTLEMENT_DEFAULTS = {"stand_in_enabled": False, "enabled_from": None, "target_accounts": {}, "twin_window_days": 3,
+                       "dividend_category_id": None}
 
 
 def _reconciliation_dict(row: ReconciliationSettings) -> dict:
@@ -159,6 +165,7 @@ def _reconciliation_dict(row: ReconciliationSettings) -> dict:
             "rules": rules, "rules_version": version, "version": row.version,
             "policy": _effective_policy(data.get("policy")),
             "auto_pay": {**AUTO_PAY_DEFAULTS, **(data.get("auto_pay") or {})},
+            "settlement": {**SETTLEMENT_DEFAULTS, **(data.get("settlement") or {})},
             "policy_version": data.get("policy_version") or f"{POLICY_VERSION_PREFIX}-1",
             "account_siblings": data.get("account_siblings") or {}}
 
@@ -358,6 +365,64 @@ def _check_auto_pay(auto_pay) -> dict:
     return out
 
 
+def _account_id(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _check_settlement(db: Session, settlement) -> dict:
+    """The brokerage settlement settings (spec §8), validated and returned with `target_accounts` keys normalised to
+    int strings (defaults are overlaid on read): unknown keys are refused; `enabled_from` is an ISO date, required
+    when `stand_in_enabled`; `target_accounts` maps a bank account id to another existing account of the same
+    currency; `twin_window_days` is an integer in 0..15; `dividend_category_id` an id or null."""
+    if not isinstance(settlement, dict):
+        raise ValidationError("settlement", "must be an object")
+    out = {}
+    for key, value in settlement.items():
+        if key not in SETTLEMENT_DEFAULTS:
+            raise ValidationError("settlement", f"unknown key {key!r}")
+        if key == "stand_in_enabled":
+            if not isinstance(value, bool):
+                raise ValidationError("settlement", f"{key!r} must be a boolean")
+        elif key == "enabled_from":
+            if value is not None and not _iso_date(value):
+                raise ValidationError("settlement", f"{key!r} must be null or an ISO date")
+        elif key == "target_accounts":
+            value = _check_targets(db, value)
+        elif key == "twin_window_days":
+            if not _account_id(value) or not 0 <= value <= 15:
+                raise ValidationError("settlement", f"{key!r} must be an integer in 0..15")
+        elif value is not None and not _account_id(value):  # dividend_category_id
+            raise ValidationError("settlement", f"{key!r} must be null or a category id")
+        out[key] = value
+    effective = {**SETTLEMENT_DEFAULTS, **out}
+    if effective["stand_in_enabled"] and effective["enabled_from"] is None:
+        raise ValidationError("settlement", "'enabled_from' is required when stand_in_enabled")
+    return out
+
+
+def _check_targets(db: Session, targets) -> dict[str, int]:
+    if not isinstance(targets, dict):
+        raise ValidationError("settlement", "'target_accounts' must be an object")
+    parsed: dict[int, int] = {}
+    for key, value in targets.items():
+        if not isinstance(key, str) or not key.isascii() or not key.isdigit():
+            raise ValidationError("settlement", f"target_accounts key {key!r} is not an account id")
+        if not _account_id(value):
+            raise ValidationError("settlement", f"target_accounts value for {key!r} must be an account id")
+        if int(key) == value:
+            raise ValidationError("settlement", f"account {key} cannot be its own target")
+        parsed[int(key)] = value
+    ids = set(parsed) | set(parsed.values())
+    accounts = {a.id: a for a in db.execute(select(Account).where(Account.id.in_(ids))).scalars()} if ids else {}
+    for key, value in parsed.items():
+        for account_id in (key, value):
+            if account_id not in accounts:
+                raise ValidationError("settlement", f"target_accounts: account {account_id} does not exist")
+        if accounts[key].currency != accounts[value].currency:
+            raise ValidationError("settlement", f"target_accounts: account {value} has a different currency than {key}")
+    return {str(key): value for key, value in parsed.items()}
+
+
 def _check_siblings(db: Session, siblings) -> dict[str, list[int]]:
     """`{account id: [sibling account ids]}`: every account exists and is not archived; siblings share the key
     account's currency, are distinct and are not the key itself. Keys are normalised to int strings."""
@@ -427,6 +492,12 @@ def read_auto_pay_settings(db: Session) -> dict:
     return {**settings["auto_pay"], "version": settings["version"]}
 
 
+def read_settlement_settings(db: Session) -> dict:
+    """The effective `settlement` block plus the settings `version` (SELECT-only)."""
+    settings = read_reconciliation_settings(db)
+    return {**settings["settlement"], "version": settings["version"]}
+
+
 def read_reconciliation_rules(db: Session) -> dict:
     settings = read_reconciliation_settings(db)
     row = db.get(ReconciliationSettings, 1)
@@ -454,11 +525,12 @@ def update_reconciliation_settings(db: Session, data: dict) -> dict:
     rules = _check_rules(data.get("rules", {}))
     policy = _check_policy(data.get("policy", {}))
     auto_pay = _check_auto_pay(data.get("auto_pay", {}))
+    settlement = _check_settlement(db, data.get("settlement", {}))
     siblings = _check_siblings(db, data.get("account_siblings", {}))
     row = _reconciliation_row(db, lock=True)
     before = _reconciliation_dict(row)
     row.data = {**data, "composite_map": composite, "rules": rules, "policy": policy, "auto_pay": auto_pay,
-                "account_siblings": siblings}
+                "settlement": settlement, "account_siblings": siblings}
     row.version = row.version + 1
     if _effective_policy(policy) != before["policy"]:
         row.data = {**row.data, "policy_version": f"{POLICY_VERSION_PREFIX}-{row.version}"}

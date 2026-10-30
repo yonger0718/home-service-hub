@@ -60,7 +60,7 @@ from app.services.statements import matching, retired, settlement_match
 ACTOR = "settlement"
 SETTLEMENT_BUSY = "settlement_busy"
 KIND = "settlement"
-TWIN_WINDOW_DAYS = 3  # spec §8 `settlement.twin_window_days` default (the settings block arrives with Task 7)
+TWIN_WINDOW_DAYS = 3  # spec §8 `settlement.twin_window_days` default (`settings_service.SETTLEMENT_DEFAULTS`)
 SETTLE_MARGIN_DAYS = 5  # spec §4.3: the settlements whose date can fall in period_start − 5 … period_end + 5
 NEIGHBOUR_RECHECK_DAYS = 7  # spec §4.5 item 3: the revision hook flags statements within period ± 7
 FACTS_KEYS = ("fingerprint", "trade_date", "settlement_date", "net_amount", "date_source", "bookable", "items")
@@ -149,7 +149,7 @@ def same_facts(booked: dict, now: dict | None) -> bool:
 
 
 def twin_window_days(db: Session) -> int:
-    """`settlement.twin_window_days` when the settings carry the block (Task 7), else the spec default 3."""
+    """`settlement.twin_window_days` (the settings block's default is the spec's 3)."""
     block = settings_service.read_reconciliation_settings(db).get("settlement") or {}
     return int(block.get("twin_window_days", TWIN_WINDOW_DAYS))
 
@@ -531,12 +531,23 @@ def _pending(line: matching.Line, reason: str | None, rows: list[Settlement] | N
 
 
 def _now_for(db: Session, account: Account, row: SettlementBooking, client: PortfolioClient) -> dict | None:
-    """The booking's settlement as the feed shows it now (M1): its trade day re-read on the trade axis and the row of
-    that trade date with the booked fingerprint; a pair (fingerprint `a+b`, `trade_date` the earlier part, never
-    re-read by one trade date) re-reads `trade_date … settlement_date` and merges its parts again. None: gone."""
-    trade_date = row.trade_date or date.fromisoformat(row.facts["trade_date"])
-    parts = row.facts["fingerprint"].split("+")
-    hi = trade_date if len(parts) == 1 else row.settlement_date
+    """The booking's settlement as the feed shows it now (`facts_now` over its booked fingerprint, trade date and
+    settlement date). None: gone."""
+    return facts_now(db, account, fingerprint=row.facts["fingerprint"],
+                     trade_date=row.trade_date or date.fromisoformat(row.facts["trade_date"]),
+                     settlement_date=row.settlement_date, client=client)
+
+
+def facts_now(db: Session, account: Account, *, fingerprint: str, trade_date: date, settlement_date: date | None,
+              client: PortfolioClient | None = None) -> dict | None:
+    """A settlement's facts as the feed shows them now (M1; `book_settlement` and the drift re-read): its trade day
+    re-read on the trade axis and the row of that trade date with the fingerprint; a pair (fingerprint `a+b`,
+    `trade_date` the earlier part, never re-read by one trade date) re-reads `trade_date … settlement_date` and merges
+    its parts again. None: gone (or a pair without a settlement date). Raises `PortfolioUnavailable`."""
+    parts = fingerprint.split("+")
+    hi = trade_date if len(parts) == 1 else settlement_date
+    if hi is None:
+        return None
     feed = fetch_by_trade_date(db, account, trade_date, hi, client=client)
     found = sorted((r for r in feed.rows if r.fingerprint in parts and trade_date <= r.trade_date <= hi
                     and (len(parts) > 1 or r.trade_date == trade_date)), key=lambda r: r.fingerprint)

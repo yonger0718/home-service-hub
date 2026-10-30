@@ -12,9 +12,10 @@ def _reconciliation_on(monkeypatch):
     monkeypatch.setenv(auth.FEATURE_ENV, "true")
 
 
-def _body(client, **auto_pay):
+def _body(client, settlement=None, **auto_pay):
     current = client.get("/settings/reconciliation").json()
-    return {"account_map": current["account_map"], "dirty_enabled": current["dirty_enabled"], "auto_pay": auto_pay}
+    body = {"account_map": current["account_map"], "dirty_enabled": current["dirty_enabled"], "auto_pay": auto_pay}
+    return body if settlement is None else {**body, "settlement": settlement}
 
 
 def test_defaults_and_version_bump(client, db_session):
@@ -38,6 +39,29 @@ def test_defaults_and_version_bump(client, db_session):
 def test_refusals_name_the_field(client, auto_pay):
     res = client.put("/settings/reconciliation", json=_body(client, **auto_pay))
     assert res.status_code == 422 and "auto_pay" in str(res.json()["detail"])
+
+
+def test_unknown_settlement_key_is_refused(client):
+    res = client.put("/settings/reconciliation", json=_body(client, settlement={"bogus": 1}))
+    assert res.status_code == 422 and "settlement" in str(res.json()["detail"])
+
+
+def test_stand_ins_need_a_go_live_date(client):
+    res = client.put("/settings/reconciliation", json=_body(client, settlement={"stand_in_enabled": True, "enabled_from": None}))
+    assert res.status_code == 422 and "enabled_from" in str(res.json()["detail"])
+
+
+def test_settlement_block_defaults_and_targets(client, seed, db_session):
+    bank, market, usd = seed.account("交割戶"), seed.account("證券市值"), seed.account("美股", currency="USD")
+    db_session.commit()
+    assert client.get("/settings/reconciliation").json()["settlement"] == settings_service.SETTLEMENT_DEFAULTS
+    for targets in ({str(bank.id): usd.id}, {str(bank.id): 999999}, {str(bank.id): bank.id}, {"x": market.id}):
+        res = client.put("/settings/reconciliation", json=_body(client, settlement={"target_accounts": targets}))
+        assert res.status_code == 422 and "settlement" in str(res.json()["detail"]), targets
+    res = client.put("/settings/reconciliation", json=_body(client, settlement={"target_accounts": {str(bank.id): market.id},
+                                                                                "twin_window_days": 5}))
+    assert res.status_code == 200 and res.json()["settlement"]["target_accounts"] == {str(bank.id): market.id}
+    assert settings_service.read_settlement_settings(db_session)["twin_window_days"] == 5
 
 
 def test_audit_events_registered():

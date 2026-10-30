@@ -5,8 +5,9 @@ then need coverage/case rows the action already holds (ON DELETE SET NULL), so t
 are NOWAIT: a held row raises 409 `action_busy` instead of closing a cycle. The case, action and account locks
 wait by design: no ledger writer locks a case or action row, and the account lockers (`balance_adjustment_asof`,
 `anchor_opening`, `backfill_entry`, `create_system_entry`) take no entry or group lock, so those waits cannot close a
-cycle. The barrier waits at most
-BARRIER_LOCK_TIMEOUT (409 `sweep_barrier_busy`)."""
+cycle. R7 `book_settlement` takes the account row and the barrier too; the settlement booking rows and legs it then
+needs (and its revert's booking row, taken after the legs) are try-locked NOWAIT (409 `settlement_busy`), never
+waited for. The barrier waits at most BARRIER_LOCK_TIMEOUT (409 `sweep_barrier_busy`)."""
 from __future__ import annotations
 
 from typing import Iterable
