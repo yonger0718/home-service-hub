@@ -117,8 +117,9 @@ like `statement_live_from`). `account.valuation_source` (§5) is a sibling colum
 
 In `reconciliation_service.reconcile`, when the statement's account has `settlement_source` and the statement
 prints a settlement line, the orchestrator fetches the settlements whose (statement or derived) settlement date can
-fall in `period_start − 5 … period_end + 5` (the feed is bounded by trade date, so the query starts 10 calendar days
-earlier — a 春節 run settles up to 11 days after its trade — and the rows are filtered by settlement date; one HTTP call per reconcile, made before the candidate row locks with
+fall in `period_start − 5 … period_end + 5` (the feed is bounded by trade date, so the query starts 15 calendar days
+earlier — a 春節 run settles up to 11 days after its trade — and the rows are filtered by settlement date; a longer
+market closure leaves such a row unfetched and its line `settlement_pending`, never a silent booking; one HTTP call per reconcile, made before the candidate row locks with
 a short timeout; HTTP failure → every settlement line `settlement_pending` and a `settlement_source_unavailable`
 note on the `ReconcileResult`, the rest of the statement reconciled as usual, never a crash).
 
