@@ -8,6 +8,7 @@ from sqlalchemy import select, text
 from app import auth
 from app.models import AccountStatement, LedgerEntry, ReconciliationAudit, ReconciliationCase, StatementCoverage
 from app.services import coverage_service, settings_service
+from app.services import trade_settlement_service as tss
 from app.services import reconciliation_service as rec
 from tests.helpers import set_dirty
 from tests.integration.settlement_fixtures import (  # noqa: F401  (fixtures)
@@ -305,3 +306,54 @@ def test_sweep_rechecks_statements_with_open_settlement_cases(client, seed, db_s
     res = client.post("/reconciliation/sweep", headers=W, json={"run_id": ingest_run.id, "lease_token": token})
     assert res.status_code == 200 and res.json()["statements"] == 1
     assert [c.kind for c in _settlement_cases(db_session, sid, "open")] == ["settlement"]
+
+
+def test_sweep_survives_a_failing_stand_in_job(client, seed, db_session, run, portfolio_stub, monkeypatch):
+    bank, _ = settlement_bank(seed, db_session)
+    submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)))
+    db_session.execute(text("UPDATE account_statement SET needs_recheck = true"))
+    db_session.commit()
+
+    def boom(*a, **kw):
+        raise RuntimeError("boom 12305")
+    monkeypatch.setattr(tss, "run_stand_ins", boom)
+    ingest_run, token = run
+    res = client.post("/reconciliation/sweep", headers=W, json={"run_id": ingest_run.id, "lease_token": token})
+    assert res.status_code == 200 and res.json()["statements"] == 1
+    assert res.json()["stand_ins"] == {"status": "failed", "booked": 0, "skipped": 0, "flagged": 0}
+    assert "12305" not in res.text
+
+
+def _flag_setup(seed, db_session, run):
+    bank, _ = settlement_bank(seed, db_session)
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    db_session.execute(text("UPDATE account_statement SET needs_recheck = false"))
+    db_session.commit()
+    return bank, sid
+
+
+def test_flag_for_recheck_is_idempotent_and_takes_iso_strings_or_dates(seed, db_session, run):
+    bank, sid = _flag_setup(seed, db_session, run)
+    assert tss.flag_for_recheck(db_session, {"touched_dates": {bank.id: ["2026-09-14"]}}) == 1
+    assert db_session.get(AccountStatement, sid).needs_recheck is True
+    assert tss.flag_for_recheck(db_session, {"touched_dates": {bank.id: ["2026-09-14"]}}) == 0
+    db_session.execute(text("UPDATE account_statement SET needs_recheck = false"))
+    assert tss.flag_for_recheck(db_session, {"touched_dates": {bank.id: [date(2026, 9, 14)]}}) == 1
+
+
+def test_flag_for_recheck_skips_retired_and_non_live_statements(seed, db_session, run):
+    bank, sid = _flag_setup(seed, db_session, run)
+    report = {"touched_dates": {bank.id: ["2026-09-14"]}}
+    db_session.execute(text("UPDATE account_statement SET current_revision_id = NULL"))
+    db_session.flush()
+    assert tss.flag_for_recheck(db_session, report) == 0  # no current revision
+    db_session.rollback()
+    db_session.execute(text("INSERT INTO reconciliation_audit (statement_id, event, actor) "
+                            "VALUES (:s, 'statement_retired', 'test')"), {"s": sid})
+    db_session.flush()
+    assert tss.flag_for_recheck(db_session, report) == 0  # retired
+    db_session.rollback()
+    db_session.execute(text("UPDATE account_statement SET mode = 'historical'"))
+    db_session.flush()
+    assert tss.flag_for_recheck(db_session, report) == 0  # not live

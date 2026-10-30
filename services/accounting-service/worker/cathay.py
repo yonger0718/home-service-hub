@@ -337,8 +337,8 @@ def run(cfg: WorkerConfig, *, portfolio_http: httpx.Client, drive: Drive, dry_ru
         summary = job.summary()
         if plain:
             _report(cfg, portfolio_http, summary)
-            if homehub is not None and job.commit:
-                summary["settlement_run"] = _settlement_run(cfg, homehub)
+            if job.commit:
+                summary["settlement_run"] = _settlement_run(cfg, homehub) if homehub is not None else "skipped:no_token"
         if job.commit:
             if unlatch and not (file_id or since or until or retry_date) and not summary["codes"]:
                 latch.unlink(missing_ok=True)  # only a clean plain daily commit run clears it

@@ -71,11 +71,14 @@ def _cathay(cfg: config.WorkerConfig, args: argparse.Namespace) -> int:
         return 2
     try:
         plain = not (args.ack or any(others))  # only a plain commit run asks HomeHub for the settlement run
-        token = cfg.api_token_file.read_text(encoding="utf-8").strip() if plain else ""
+        try:
+            token = cfg.api_token_file.read_text(encoding="utf-8").strip() if plain else ""
+        except OSError:  # no token: the run still imports; its summary says `skipped:no_token`
+            token = ""
         with (httpx.Client(base_url=cfg.portfolio_api_url, timeout=cfg.cathay_timeout_s) as portfolio_http,
               httpx.Client(base_url=cfg.api_url, timeout=cfg.cathay_timeout_s) as homehub_http):
             summary = cathay.run(cfg, portfolio_http=portfolio_http, drive=Drive(cfg, SubprocessRunner()),
-                                 homehub=ApiClient(homehub_http, token) if plain else None,
+                                 homehub=ApiClient(homehub_http, token) if token else None,
                                  dry_run=args.dry_run, file_id=args.file, since=args.since, until=args.until,
                                  retry_date=args.retry, ack_date=args.ack, unlatch=args.unlatch,
                                  validate_history=args.validate_history)

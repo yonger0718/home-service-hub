@@ -11,6 +11,8 @@ The reconcile, revision and manual-statement (live statements) and sweep routes 
 Task 10) after their own commit; both commit per case/candidate and neither error ever fails the route.
 """
 
+import logging
+
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -54,6 +56,7 @@ from ..schemas.statements import (
     SourcesMarkRemovedIn,
     SourcesMarkRemovedOut,
     StatementDetailOut,
+    StandInsOut,
     StatementOut,
     SweepOut,
 )
@@ -64,6 +67,7 @@ from ..services import statement_ingest_service as ingest
 from ..services.errors import ConflictError, NotFoundError, ValidationError
 from .errors import service_errors
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Statements"], dependencies=[Depends(require_feature())])
 
 ENQUEUE = [Depends(require("enqueue"))]
@@ -321,12 +325,23 @@ def sweep(body: Lease, request: Request, db: Session = Depends(get_db), engine: 
         ingest.require_lease(db, body.run_id, body.lease_token, label=_label(request))
         db.commit()  # release the lease row lock; each statement then commits on its own
         label = _label(request)
-        report = trade_settlement_service.run_stand_ins(engine)  # the job's own transactions; `db` holds none
-        flagged = trade_settlement_service.flag_for_recheck(db, report)
-        db.commit()
-        stand_ins = {"status": report["status"], "booked": len(report["booked"]), "skipped": len(report["skipped"]),
-                     "flagged": flagged}
-        pending = sorted(set(recon.pending_statement_ids(db)) | set(trade_settlement_service.recheck_statement_ids(db)))
+        stand_ins = StandInsOut(status="failed", booked=0, skipped=0, flagged=0)
+        extra_ids: list[int] = []
+        try:  # the stand-in job must never cost the day's reconciliation (class name only: a message may carry ids)
+            report = trade_settlement_service.run_stand_ins(engine)  # the job's own transactions; `db` holds none
+            flagged = trade_settlement_service.flag_for_recheck(db, report)
+            db.commit()
+            stand_ins = StandInsOut(status=report["status"], booked=len(report["booked"]),
+                                    skipped=len(report["skipped"]), flagged=flagged)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("sweep.stand_ins_failed: %s", type(exc).__name__)
+            db.rollback()
+        try:
+            extra_ids = trade_settlement_service.recheck_statement_ids(db)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("sweep.recheck_ids_failed: %s", type(exc).__name__)
+            db.rollback()
+        pending = sorted(set(recon.pending_statement_ids(db)) | set(extra_ids))
         for index, item in enumerate(recon.reconcile_each(db, pending, run_id=body.run_id)):
             if "error" in item:
                 errors.append({"statement_id": item["statement_id"], "error": item["error"]})

@@ -485,6 +485,15 @@ class SettlementRunOut(BaseModel):
     flagged: int
 
 
+class StandInsOut(BaseModel):
+    """The stand-in job's outcome as the sweep reports it: a status code and counts."""
+    model_config = Strict
+    status: str
+    booked: int
+    skipped: int
+    flagged: int
+
+
 class SweepOut(BaseModel):
     model_config = Strict
     statements: int
@@ -493,4 +502,4 @@ class SweepOut(BaseModel):
     errors: list[SweepError]
     links_filled: int
     settlement_source_unavailable: int  # statements whose settlement feed could not be read (spec §9)
-    stand_ins: dict = Field(default_factory=dict)  # the stand-in job's counts: status, booked, skipped, flagged
+    stand_ins: StandInsOut

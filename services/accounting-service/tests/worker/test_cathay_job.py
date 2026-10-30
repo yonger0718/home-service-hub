@@ -147,6 +147,15 @@ def test_plain_commit_run_calls_homehub_after_posting(w):
     assert summary["settlement_run"] == "completed" and summary["codes"] == []
 
 
+def test_plain_commit_run_without_a_homehub_client_is_skipped(w, tmp_path):
+    w.add("id-1", "2026-03-09_對帳單.pdf", fx("single.txt"))
+    with httpx.Client(base_url="http://portfolio.test", transport=httpx.MockTransport(w.portfolio)) as ph:
+        summary = cathay.run(w.cfg, portfolio_http=ph, drive=Drive(w.cfg, w.runner))
+        dry = cathay.run(w.cfg, portfolio_http=ph, drive=Drive(w.cfg, w.runner), dry_run=True)
+    assert summary["settlement_run"] == "skipped:no_token" and summary["codes"] == []
+    assert "settlement_run" not in dry
+
+
 def test_dry_run_latched_and_file_runs_do_not_call_homehub(w):
     w.add("id-1", "2026-03-09_對帳單.pdf", fx("single.txt"))
     w.go(dry_run=True)
@@ -597,8 +606,7 @@ def test_no_statement_text_in_summary_or_logs(w, caplog):
 
 
 def test_cli_exit_codes(tmp_path, monkeypatch, capsys):
-    token = tmp_path / "token"
-    token.write_text("worker-token\n", encoding="utf-8")
+    token = tmp_path / "absent-token"  # a missing token file must not stop a run
     cfg = config.load({"STATEMENT_STATE_DIR": str(tmp_path / "s"), "STATEMENT_PASSWORD_FILE": str(tmp_path / "absent.env"),
                        "STATEMENT_API_TOKEN_FILE": str(token)})
     monkeypatch.setattr(config, "load", lambda env=None: cfg)
@@ -632,4 +640,8 @@ def test_cli_exit_codes(tmp_path, monkeypatch, capsys):
                                                            date(2026, 3, 9), None, True, True)
     assert seen["homehub"] is None  # a flagged run builds no HomeHub client
     assert cli.main(["cathay", "--ack", "2026-03-10"]) == 0 and seen["ack_date"] == date(2026, 3, 10)
+    assert cli.main(["cathay"]) == 0 and seen["homehub"] is None  # no token file: the run goes on without HomeHub
+    token.write_text("  \n", encoding="utf-8")
+    assert cli.main(["cathay"]) == 0 and seen["homehub"] is None  # an empty token file counts as none
+    token.write_text("worker-token\n", encoding="utf-8")
     assert cli.main(["cathay"]) == 0 and seen["homehub"] is not None
