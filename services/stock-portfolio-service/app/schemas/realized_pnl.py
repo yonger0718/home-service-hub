@@ -1,15 +1,25 @@
 from datetime import date
 from decimal import Decimal
-from typing import List, Literal, Optional
+from typing import Annotated, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, PlainSerializer
+
+# Whole shares stay JSON integers; fractional foreign shares (Firstrade, IB) come out as numbers.
+Shares = Annotated[
+    Decimal,
+    PlainSerializer(
+        lambda v: int(v) if v == v.to_integral_value() else float(v),
+        return_type=int | float,
+        when_used="json",
+    ),
+]
 
 
 class RealizedPnlEventOut(BaseModel):
     trade_date: date
     symbol: str
     name: Optional[str] = None
-    quantity: int
+    quantity: Shares
     sell_price: Decimal
     avg_cost_at_sale: Decimal
     fee: Decimal

@@ -435,6 +435,7 @@ def _insert_transaction(
         trade_date=payload["trade_date"],
         fee=payload["fee"],
         tax=payload["tax"],
+        broker=models.Broker.TW_CATHAY.value,
         broker_day_trade_marker=payload.get("broker_day_trade_marker"),
         instrument_type=symbol_map_service.lookup_warrant_type(db, payload["symbol"]),
         import_fingerprint=row.fingerprint,
