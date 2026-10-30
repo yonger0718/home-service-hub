@@ -100,6 +100,8 @@ def render_daily(rep: DailyReport, cfg: NotifyConfig) -> list[str]:
         blocks.append("\n".join(["**手動繳**"] + [_item_line(i, rep.today, cfg) for i in rep.manual]))
     if rep.skips:
         blocks.append("\n".join(["⏭ 自動扣繳跳過"] + [_skip_line(s, cfg) for s in rep.skips]))
+    if rep.cathay:
+        blocks.append("\n".join(["**國泰對帳單**"] + [f"• {line.text}" for line in rep.cathay]))
     if not blocks:
         return []
     return split_blocks([f"🔔 扣款提醒 {rep.today.isoformat()}{weekday_zh(rep.today)}"] + blocks)
@@ -134,6 +136,8 @@ def render_weekly(rep: WeeklyReport, cfg: NotifyConfig) -> list[str]:
             for m in rep.missing]))
     if rep.skips:
         blocks.append("\n".join(["**自動扣繳本週跳過**"] + [_skip_line(s, cfg) for s in rep.skips]))
+    if rep.cathay:
+        blocks.append("\n".join(["**國泰對帳單待處理**"] + [f"• {line.text}" for line in rep.cathay]))
     gaps = rep.gaps
     gap_lines = ([f"• {n} · 沒有設定扣款帳戶" for n in gaps.unlinked_cards]
                  + [f"• {n} · 缺結帳日或繳款規則，每日提醒無法涵蓋" for n in gaps.cards_without_rule]

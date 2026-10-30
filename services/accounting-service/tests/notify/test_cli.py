@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import stat
+from pathlib import Path
 from datetime import date, timedelta
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from notify import cli, render, send
+from notify.cathay import LATEST_PATH, PENDING_PATH
 from notify.state import load_state
 
 SECRET = "secret-token"
@@ -60,6 +62,13 @@ def _routes(snap, *, status: int | None = None):
     return handler
 
 
+PORTFOLIO = "http://portfolio.invalid"
+
+
+def _portfolio_row(day: date) -> dict:
+    return {"run_at": f"{day.isoformat()}T06:41:00+08:00", "result": "ok", "code": None, "files_seen": 1, "posted": 1}
+
+
 class Env:
     def __init__(self, tmp_path, monkeypatch, snap, *, status=None):
         self.state_path = tmp_path / "state" / "state.json"
@@ -69,13 +78,45 @@ class Env:
         (tmp_path / "notify.toml").write_text(
             f'api_base = "http://api.invalid"\ntoken_file = "{token}"\n'
             f'hub_base_url = "https://example.invalid/hub"\ndiscord_target = "discord:000000000000000000"\n'
-            f'state_file = "{self.state_path}"\n')
+            f'state_file = "{self.state_path}"\n'
+            f'portfolio_base = "{PORTFOLIO}"\n')
         self.sent: list[tuple[list[str], str]] = []
         self._fail_on: int | None = None
-        transport = httpx.MockTransport(_routes(snap, status=status))
+        self.today = None  # the as-of day of the current run, captured below
+        self.portfolio: dict = {}  # path -> JSON | httpx.Response overriding the healthy default
+        self.portfolio_paths: list[str] = []  # every portfolio path the mock served
+        api = _routes(snap, status=status)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if path not in (PENDING_PATH, LATEST_PATH):
+                return api(request)
+            self.portfolio_paths.append(path)
+            row = _portfolio_row(self.today)  # fresh: this morning's run, 06:41 Asia/Taipei
+            default = {PENDING_PATH: {"items": [], "total": 0, "truncated": False},
+                       LATEST_PATH: {"latest": row, "latest_ok": row}}[path]
+            value = self.portfolio.get(path, default)
+            return value if isinstance(value, httpx.Response) else httpx.Response(200, json=value)
+
+        transport = httpx.MockTransport(handler)
         real = httpx.Client
+        real_run = cli._run
+
+        def run(args, cfg, today):
+            self.today = today
+            return real_run(args, cfg, today)
+
+        monkeypatch.setattr(cli, "_run", run)
         monkeypatch.setattr(cli.httpx, "Client", lambda **kw: real(transport=transport, **kw))
         monkeypatch.setattr(send, "_run_hermes", self._run)
+
+    def config_without_portfolio(self) -> str:
+        """A config identical to the main one but with the section off and its own state file."""
+        text = Path(self.cfg).read_text().replace(f'portfolio_base = "{PORTFOLIO}"\n', "")
+        text = text.replace(str(self.state_path), str(self.state_path.parent / "off" / "state.json"))
+        path = Path(self.cfg).with_name("notify-off.toml")
+        path.write_text(text)
+        return str(path)
 
     def _run(self, argv, text):
         self.sent.append((argv, text))
@@ -287,3 +328,85 @@ def test_bad_config_names_the_key(tmp_path, capsys):
     cfg.write_text('api_base = "http://api.invalid"\n')
     assert main(["daily", "--as-of", "2026-11-03", "--config", str(cfg)]) == 1
     assert "❌ 帳務通知失敗：daily 2026-11-03 ConfigError token_file" in capsys.readouterr().err
+
+
+# --- 國泰證券 statement section (spec §7.2) -------------------------------------------------------------------------
+
+from tests.notify.test_cathay import BAD_CASES, LATEST as _L, PENDING as _P, item as cathay_item, pending as cathay_pending
+
+HELD = cathay_pending([cathay_item("2026-10-27", "held", "unsupported_category")])
+CATHAY_BLOCK = "**國泰對帳單**\n• 10/27 保留：含融資融券交易"
+UNREADABLE_LINE = "國泰對帳單狀態讀不到"
+
+
+def _sent_text(env, argv):
+    env.sent.clear()
+    assert main(argv + ["--send"]) == 0
+    return "\n\n".join(text for _, text in env.sent)
+
+
+def test_daily_only_cathay_section_sends(cli_env_quiet):
+    cli_env_quiet.portfolio[PENDING_PATH] = HELD
+    assert main(["daily", "--as-of", "2026-11-20", "--send", "--config", cli_env_quiet.cfg]) == 0
+    assert len(cli_env_quiet.sent) == 1 and CATHAY_BLOCK in cli_env_quiet.sent[0][1]
+    assert set(cli_env_quiet.portfolio_paths) == {PENDING_PATH, LATEST_PATH}
+
+
+def test_daily_dedupe_includes_cathay_keys(cli_env_quiet):
+    cli_env_quiet.portfolio[PENDING_PATH] = HELD
+    args = ["daily", "--as-of", "2026-11-20", "--send", "--config", cli_env_quiet.cfg]
+    assert main(args) == 0 and len(cli_env_quiet.sent) == 1
+    assert "cathay:2026-10-27:held" in load_state(cli_env_quiet.state_path).last_send.triggers
+    assert main(args) == 0 and len(cli_env_quiet.sent) == 1  # same day, same lines
+    assert main(["daily", "--as-of", "2026-11-21", "--send", "--config", cli_env_quiet.cfg]) == 0
+    assert len(cli_env_quiet.sent) == 2  # a new day sends again
+
+
+def test_daily_portfolio_down_debits_still_sent(cli_env):
+    cli_env.portfolio[PENDING_PATH] = httpx.Response(500, json={})
+    base = _sent_text(cli_env, ["daily", "--as-of", "2026-11-03", "--config", cli_env.config_without_portfolio()])
+    cli_env.sent.clear()
+    assert main(["daily", "--as-of", "2026-11-03", "--send", "--config", cli_env.cfg]) == 0
+    text = "\n\n".join(t for _, t in cli_env.sent)
+    assert UNREADABLE_LINE in text and "旅遊卡" in text
+    assert text.replace(f"\n\n**國泰對帳單**\n• {UNREADABLE_LINE}", "") == base
+
+
+def test_daily_oversized_portfolio_body_debits_within_limit(cli_env):
+    cli_env.portfolio[PENDING_PATH] = httpx.Response(200, content=b" " * 70000)
+    assert main(["daily", "--as-of", "2026-11-03", "--send", "--config", cli_env.cfg]) == 0
+    assert cli_env.sent and all(len(t) <= render.LIMIT for _, t in cli_env.sent)
+    assert UNREADABLE_LINE in "\n".join(t for _, t in cli_env.sent)
+
+
+def test_daily_stale_run_is_listed(cli_env_quiet):
+    cli_env_quiet.portfolio[_L] = {"latest": None, "latest_ok": None}
+    assert main(["daily", "--as-of", "2026-11-20", "--send", "--config", cli_env_quiet.cfg]) == 0
+    assert "國泰對帳單今天沒有執行" in cli_env_quiet.sent[0][1]
+
+
+@pytest.mark.parametrize("fault_path", [_P, _L])
+def test_failure_goes_through_mock_on_either_endpoint(cli_env_quiet, fault_path):
+    cli_env_quiet.portfolio[fault_path] = httpx.Response(500, json={})
+    assert main(["daily", "--as-of", "2026-11-20", "--send", "--config", cli_env_quiet.cfg]) == 0
+    assert fault_path in cli_env_quiet.portfolio_paths and UNREADABLE_LINE in cli_env_quiet.sent[0][1]
+
+
+@pytest.mark.parametrize("command,as_of", [("daily", "2026-11-03"), ("weekly", "2026-11-07")])
+@pytest.mark.parametrize("name", sorted(BAD_CASES))
+def test_reader_failure_matrix(cli_env, command, as_of, name):
+    for path, body in BAD_CASES[name].items():
+        cli_env.portfolio[path] = body
+    base = _sent_text(cli_env, [command, "--as-of", as_of, "--config", cli_env.config_without_portfolio()])
+    cli_env.sent.clear()
+    assert main([command, "--as-of", as_of, "--send", "--config", cli_env.cfg]) == 0
+    assert all(len(t) <= render.LIMIT for _, t in cli_env.sent)
+    text = "\n\n".join(t for _, t in cli_env.sent)
+    block = "**國泰對帳單**" if command == "daily" else "**國泰對帳單待處理**"
+    assert text.replace(f"\n\n{block}\n• {UNREADABLE_LINE}", "") == base
+    assert UNREADABLE_LINE in text and cli_env.portfolio_paths
+
+
+def test_default_routes_add_nothing(cli_env):
+    base = _sent_text(cli_env, ["daily", "--as-of", "2026-11-03", "--config", cli_env.config_without_portfolio()])
+    assert _sent_text(cli_env, ["daily", "--as-of", "2026-11-03", "--config", cli_env.cfg]) == base
