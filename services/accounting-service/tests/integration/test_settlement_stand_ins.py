@@ -324,3 +324,44 @@ def test_a_lost_constituent_race_is_recorded_as_constituent_reserved(seed, db_se
     row = tss.book_stand_in(db_session, cand, _settings(db_session))
     db_session.commit()
     assert (row.status, row.reason, _entries(db_session)) == ("skipped", "constituent_reserved", 2)
+
+
+# --- fix round 1: the dry run previews read only and says what it assumed; record_skip uses the run's settings ----
+
+
+def test_dry_run_states_the_settings_it_previewed(pg_engine, seed, db_session, portfolio_stub):
+    bank, target = settlement_bank(seed, db_session)                                            # stand-ins off, no go-live date
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)))
+    preview = tss.run_stand_ins(pg_engine, today=date(2026, 9, 14), dry_run=True)
+    assert preview["previewed_settings"] == {"stand_in_enabled": False, "enabled_from": None,
+                                             "effective_enabled_from": "2026-09-14"}
+    assert preview["booked"] == [{"account_id": bank.id, "settlement_date": "2026-09-14", "booking_id": None}]
+    live = tss.run_stand_ins(pg_engine, today=date(2026, 9, 14))
+    assert live["status"] == "disabled" and "previewed_settings" not in live
+
+
+def test_dry_run_leaves_booked_stand_ins_alone(pg_engine, seed, db_session, portfolio_stub, stand_ins_on):
+    bank, target, row = _booked(pg_engine, seed, db_session, portfolio_stub, stand_ins_on)
+    legs = (row.out_entry_id, row.in_entry_id)
+    for changed in (feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",), {"bookable": False, "reason": "legs_disagree"})),
+                    feed(("2026-09-10", "2026-09-15", "-12310", ("ct:5", "ct:9")))):           # a live run would retire, then replace
+        portfolio_stub.rows = changed
+        with Session(pg_engine) as other:                                                       # a held leg would have made a live run busy
+            other.execute(select(LedgerEntry).where(LedgerEntry.id == row.out_entry_id).with_for_update())
+            report = tss.run_stand_ins(pg_engine, today=date(2026, 9, 15), dry_run=True)
+            other.rollback()
+        assert (report["status"], report["housekeeping"]) == ("dry_run", _hk())
+        fresh = _fresh(db_session, SettlementBooking, row.id)
+        assert (fresh.status, (fresh.out_entry_id, fresh.in_entry_id), _entries(db_session)) == ("booked", legs, 2)
+        assert db_session.scalar(select(func.count(SettlementBooking.id))) == 1
+
+
+def test_record_skip_takes_the_target_from_the_given_settings(seed, db_session, portfolio_stub, stand_ins_on):
+    bank, target = settlement_bank(seed, db_session); stand_ins_on(bank, target, enabled_from="2026-09-01")
+    other_target = seed.account("另一個市值"); db_session.commit()
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)))
+    cand = _candidate(db_session, bank, target, portfolio_stub.rows[0])
+    settings = {**_settings(db_session), "target_accounts": {str(bank.id): other_target.id}}   # the run's dict, not the store
+    row = tss.record_skip(db_session, bank, cand.settlement, "twin", settings=settings)
+    db_session.commit()
+    assert (row.status, row.reason, row.target_account_id) == ("skipped", "twin", other_target.id)

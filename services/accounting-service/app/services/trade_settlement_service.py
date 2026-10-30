@@ -40,8 +40,12 @@ account row would close the two cycles §4.7 Locks (a)/(b) describes. `reconcile
 holds that leg (`_lock_candidates`, NOWAIT), so a job holding the legs makes the reconcile `reconcile_busy` and a
 reconcile holding them makes the job skip the row. The C4 ruling keeps this lifecycle separate from auto-pay's on
 purpose (claimed pairs refused except for twins, replacement, two origins, feed facts instead of a header); only the
-lock step is shared. Nothing here commits — callers own the transaction (flush only) — except `run_stand_ins`, which
-runs every decision in a transaction of its own under `SETTLEMENT_JOB_LOCK_KEY`."""
+lock step is shared. The one account-row lock that remains is implicit: a leg insert (`book_stand_in`, the job's
+replacement too) takes the FK's `FOR KEY SHARE` on the account row while the job holds the shared DIRTY barrier, so it
+can deadlock with an engine action holding the account row FOR UPDATE and waiting for the barrier; Postgres detects
+it — the job's decision counts `failed` and retries next run, the engine answers 409 `sweep_barrier_busy` — the same
+shape as the auto-pay job. Nothing here commits — callers own the transaction (flush only) — except
+`run_stand_ins`, which runs every decision in a transaction of its own under `SETTLEMENT_JOB_LOCK_KEY`."""
 from __future__ import annotations
 
 import logging
@@ -896,19 +900,21 @@ def book_stand_in(db: Session, cand: StandInCandidate, settings: dict) -> Settle
             raise
         logger.info("settlement.stand_in_lost_race", extra={"account_id": cand.account_id, "code": code,
                                                             "settlement_date": s.settlement_date.isoformat()})
-        return record_skip(db, account, s, code)
+        return record_skip(db, account, s, code, settings=settings)
     audit.record(db, event="settlement_booked", actor=ACTOR,
                  detail={**_figures(row), "trade_date": facts["trade_date"], "out_entry_id": out_leg.id,
                          "in_entry_id": in_leg.id})
     return row
 
 
-def record_skip(db: Session, account: Account, settlement: Settlement, reason: str) -> SettlementBooking:
+def record_skip(db: Session, account: Account, settlement: Settlement, reason: str, *,
+                settings: dict) -> SettlementBooking:
     """The day's `skipped` row for `reason` (one per (account, settlement date, reason)): the existing one rewritten in
     place with the current facts, or a new one; audit `settlement_skipped` only when the reason differs from the
     day's latest skip (a repeat is no event). Takes the feed row, so an ineligible row is recorded too; an undated one
     (a CSV-only day past the calendar) is recorded on its trade date — the column is NOT NULL. No items: a skipped row
-    reserves nothing. Never `final` (M7: callers report it instead). Flushes, never commits."""
+    reserves nothing. Never `final` (M7: callers report it instead). `settings` is the caller's (the run's)
+    settlement block: the target is read from it, not re-read from the store. Flushes, never commits."""
     day = settlement.settlement_date or settlement.trade_date
     rows = list(db.scalars(select(SettlementBooking).where(
         SettlementBooking.account_id == account.id, SettlementBooking.kind == KIND,
@@ -919,7 +925,7 @@ def record_skip(db: Session, account: Account, settlement: Settlement, reason: s
     if row is None:
         row = SettlementBooking(kind=KIND, origin="stand_in", account_id=account.id, status="skipped", reason=reason)
         db.add(row)
-    row.target_account_id = _target_of(settings_service.read_settlement_settings(db), account.id)
+    row.target_account_id = _target_of(settings, account.id)
     row.source = account.settlement_source
     row.fingerprint, row.trade_date, row.settlement_date = settlement.fingerprint, settlement.trade_date, day
     row.net_amount, row.facts = Decimal(settlement.net_amount), facts_of(settlement)
@@ -1011,7 +1017,7 @@ def replace(db: Session, row: SettlementBooking, new: Settlement, settings: dict
         else:
             reason = result.reason
     elif reason != FINAL:
-        record_skip(db, account, new, reason)
+        record_skip(db, account, new, reason, settings=settings)
     outcome = "replaced" if booked is not None else "replaced_waiting"
     audit.record(db, event="settlement_replaced", actor=ACTOR, detail={
         "account_id": account_id, "old_booking_id": old_id, "new_booking_id": None if booked is None else booked.id,
@@ -1118,15 +1124,18 @@ def _run_account(factory, account_id: int, feed: Feed, settings: dict, today: da
     def housekeeping(db, notes):
         return housekeep(db, account_id)
 
-    moved = _decide(factory, report, account_id, dry_run, housekeeping, step="housekeep")
-    for key, value in (moved or {}).items():
-        counts[key] += value
+    if not dry_run:  # the auto-pay shape: a dry run touches no booked row (no NOWAIT locks, no retire / replace)
+        moved = _decide(factory, report, account_id, dry_run, housekeeping, step="housekeep")
+        for key, value in (moved or {}).items():
+            counts[key] += value
     with factory() as db:
         rows = [(row.id, row.trade_date or date.fromisoformat(row.facts["trade_date"]))
                 for row in booked_rows(db, account_id) if row.origin == "stand_in"]
     decided: set[date] = set()  # the trade days `check_row` looked at: their fate is decided there, not as candidates
     for row_id, trade_date in rows:
         decided.add(trade_date)
+        if dry_run:
+            continue
         counts["checked"] += 1
 
         def check(db, notes, row_id=row_id):
@@ -1145,6 +1154,14 @@ def _run_account(factory, account_id: int, feed: Feed, settings: dict, today: da
         def decide(db, notes, cand=cand):
             reason = gate(db, cand, settings)
             day = cand.settlement.settlement_date
+            if dry_run:  # read only: the would-book list has no booking id yet; nothing is written, then rolled back
+                if reason is None:
+                    notes.booked.append({"account_id": cand.account_id, "settlement_date": day.isoformat(),
+                                         "booking_id": None})
+                    notes.touched.add(day)
+                else:
+                    _note_skipped(notes, cand.account_id, day, reason)
+                return
             if reason is None:
                 row = book_stand_in(db, cand, settings)
                 if row.status == "booked":
@@ -1152,7 +1169,7 @@ def _run_account(factory, account_id: int, feed: Feed, settings: dict, today: da
                     return
                 reason = row.reason
             elif reason != FINAL:
-                record_skip(db, db.get(Account, cand.account_id), cand.settlement, reason)
+                record_skip(db, db.get(Account, cand.account_id), cand.settlement, reason, settings=settings)
             _note_skipped(notes, cand.account_id, day, reason)
 
         _decide(factory, report, account_id, dry_run, decide,
@@ -1163,8 +1180,11 @@ def _run_locked(factory, today: date, dry_run: bool, report: dict) -> None:
     with factory() as db:
         settings = settings_service.read_settlement_settings(db)
         if dry_run:  # the preview runs whatever `stand_in_enabled` says; without a go-live date, as if live from today
-            settings = {**settings, "stand_in_enabled": True,
-                        "enabled_from": settings.get("enabled_from") or today.isoformat()}
+            effective_from = settings.get("enabled_from") or today.isoformat()
+            report["previewed_settings"] = {"stand_in_enabled": settings.get("stand_in_enabled") is True,
+                                            "enabled_from": settings.get("enabled_from"),
+                                            "effective_enabled_from": effective_from}
+            settings = {**settings, "stand_in_enabled": True, "enabled_from": effective_from}
         enabled = settings.get("stand_in_enabled") is True
         accounts = [(db.get(Account, account_id), settle_from) for account_id, settle_from in _accounts(db, settings)]
         feeds: list[tuple[int, Feed]] = []
@@ -1198,10 +1218,16 @@ def run_stand_ins(engine: Engine, *, today: date | None = None, dry_run: bool = 
     `source_unavailable` with nothing written — then `housekeep`, `check_row` over its booked stand-ins, and the
     candidates (`stand_in_candidates` → `gate` → `book_stand_in` / `record_skip`). Each decision runs in its own
     transaction: the shared import key → (row → legs NOWAIT for a retirement or replacement) → write → commit; no
-    account row lock (spec §4.7 Locks). `ImportRunningError` stops the run `import_running`. Disabled → housekeeping
-    and the replacements / retirements of the job's own rows still run, no new day is booked (`disabled`). A dry run
-    takes no import key, rolls every transaction back and previews whatever `stand_in_enabled` says (without a
-    go-live date: as if live from `today`).
+    account row lock (spec §4.7 Locks) — but inserting a leg takes the FK's `FOR KEY SHARE` on the account row while
+    the decision holds the shared DIRTY barrier, so a deadlock with an engine action that holds the account row FOR
+    UPDATE and waits for the barrier is possible; Postgres detects it, this decision counts `failed` and is retried
+    next run, the engine gets 409 `sweep_barrier_busy` — the auto-pay job's shape. `ImportRunningError` stops the run
+    `import_running`. Disabled → housekeeping and the replacements / retirements of the job's own rows still run, no
+    new day is booked (`disabled`). A dry run (the auto-pay shape) takes no import key, skips `housekeep` and
+    `check_row` (no booked row is locked, retired or replaced; `housekeeping` stays zero), gates the candidates read
+    only (`booked` entries carry `booking_id: None`), rolls every transaction back, and previews whatever
+    `stand_in_enabled` says — without a go-live date, as if live from `today`; the report then carries
+    `previewed_settings` {stand_in_enabled, enabled_from (as stored), effective_enabled_from (the date used)}.
 
     Report: `status` (completed | busy | disabled | source_unavailable | import_running | dry_run), `booked`
     [{account_id, settlement_date, booking_id}], `skipped` [{account_id, settlement_date, reason}] (gated candidates and
