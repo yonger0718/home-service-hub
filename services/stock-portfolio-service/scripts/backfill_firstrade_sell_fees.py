@@ -32,12 +32,14 @@ def main() -> int:
     args = parse_args()
     session = SessionLocal()
     try:
-        updates = []
+        parsed_files = []
         for path in args.csv:
             parsed = broker_firstrade_service.parse(path.read_bytes())
             for error in parsed.errors:
                 print(f"{path.name}: row {error.row_index}: {error.message}")
-            updates += broker_firstrade_service.backfill_sell_fees(session, parsed, apply=args.apply)
+            parsed_files.append(parsed)
+        # One call: stored sells pair one-to-one across all files, not per file.
+        updates = broker_firstrade_service.backfill_sell_fees(session, parsed_files, apply=args.apply)
         if not updates:
             print("nothing to update")
             return 0

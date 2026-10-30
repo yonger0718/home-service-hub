@@ -473,7 +473,7 @@ def test_backfill_sell_fees_dry_run_writes_nothing(db_session) -> None:
     tx = _store_sell(db_session, fee=Decimal("0"))
 
     updates = broker_firstrade_service.backfill_sell_fees(
-        db_session, broker_firstrade_service.parse(_csv(_FEE_SELL)), apply=False
+        db_session, [broker_firstrade_service.parse(_csv(_FEE_SELL))], apply=False
     )
 
     assert [(u.transaction_id, u.fee) for u in updates] == [(tx.id, Decimal("0.03"))]
@@ -487,10 +487,10 @@ def test_backfill_sell_fees_applies_once_and_skips_rows_with_a_fee(db_session) -
     raw = _csv(_FEE_SELL, '"2026/9/21","賣出","-20","ABC CORP","ABC","融資","10.00","199.94"')
 
     first = broker_firstrade_service.backfill_sell_fees(
-        db_session, broker_firstrade_service.parse(raw), apply=True
+        db_session, [broker_firstrade_service.parse(raw)], apply=True
     )
     second = broker_firstrade_service.backfill_sell_fees(
-        db_session, broker_firstrade_service.parse(raw), apply=True
+        db_session, [broker_firstrade_service.parse(raw)], apply=True
     )
 
     assert [u.transaction_id for u in first] == [empty.id]
@@ -505,7 +505,42 @@ def test_backfill_sell_fees_pairs_identical_sells_one_to_one(db_session) -> None
     second = _store_sell(db_session, fee=Decimal("0"))
 
     updates = broker_firstrade_service.backfill_sell_fees(
-        db_session, broker_firstrade_service.parse(_csv(_FEE_SELL)), apply=True
+        db_session, [broker_firstrade_service.parse(_csv(_FEE_SELL))], apply=True
+    )
+
+    assert [u.transaction_id for u in updates] == [first.id]
+    db_session.expire_all()
+    assert db_session.get(models.Transaction, second.id).fee == Decimal("0")
+
+
+def test_backfill_sell_fees_pairs_one_to_one_across_files(db_session) -> None:
+    first = _store_sell(db_session, fee=Decimal("0"))
+    second = _store_sell(db_session, fee=Decimal("0"))
+    files = [
+        broker_firstrade_service.parse(_csv(_FEE_SELL)),
+        broker_firstrade_service.parse(_csv('"2026/9/21","賣出","-10","ABC CORP","ABC","融資","10.00","99.96"')),
+    ]
+
+    planned = broker_firstrade_service.backfill_sell_fees(db_session, files, apply=False)
+    applied = broker_firstrade_service.backfill_sell_fees(db_session, files, apply=True)
+
+    expected = [(first.id, Decimal("0.03")), (second.id, Decimal("0.04"))]
+    assert [(u.transaction_id, u.fee) for u in planned] == expected
+    assert [(u.transaction_id, u.fee) for u in applied] == expected
+    db_session.expire_all()
+    assert [db_session.get(models.Transaction, i).fee for i in (first.id, second.id)] == [
+        Decimal("0.03"),
+        Decimal("0.04"),
+    ]
+
+
+def test_backfill_sell_fees_counts_a_row_repeated_in_overlapping_files_once(db_session) -> None:
+    first = _store_sell(db_session, fee=Decimal("0"))
+    second = _store_sell(db_session, fee=Decimal("0"))
+    same_export = broker_firstrade_service.parse(_csv(_FEE_SELL))
+
+    updates = broker_firstrade_service.backfill_sell_fees(
+        db_session, [same_export, broker_firstrade_service.parse(_csv(_FEE_SELL))], apply=True
     )
 
     assert [u.transaction_id for u in updates] == [first.id]

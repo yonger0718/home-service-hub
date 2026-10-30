@@ -209,12 +209,17 @@ class SellFeeUpdate:
     fee: Decimal
 
 
-def backfill_sell_fees(db: Session, parsed: ParseResult, *, apply: bool) -> list[SellFeeUpdate]:
+def backfill_sell_fees(
+    db: Session, parsed_files: list[ParseResult], *, apply: bool
+) -> list[SellFeeUpdate]:
     """Give stored Firstrade sells booked with ``fee=0`` the fee their CSV row implies (#228).
 
     A re-import cannot do this: content matching treats those sells as duplicates.
-    Each CSV sell pairs with one stored sell of the same content key (oldest id
-    first). Only a stored fee of 0 is changed, so a second run changes nothing.
+    All files share one pool, so each CSV sell pairs with one stored sell of the
+    same content key (oldest id first) across the whole run. A row whose
+    fingerprint an earlier file already had is the same fill from an overlapping
+    export and is skipped. Only a stored fee of 0 is changed, so a second run
+    changes nothing.
     """
     stored: dict[tuple, list[models.Transaction]] = defaultdict(list)
     for tx in (
@@ -227,21 +232,28 @@ def backfill_sell_fees(db: Session, parsed: ParseResult, *, apply: bool) -> list
             _trade_content_key(tx.broker, tx.symbol, tx.type, tx.quantity, tx.price, tx.trade_date)
         ].append(tx)
     updates: list[SellFeeUpdate] = []
-    for row in parsed.rows:
-        payload = row.payload
-        if payload["_kind"] != "transaction" or payload["type"] != "SELL":
-            continue
-        candidates = stored.get(_row_content_key(payload))
-        if not candidates:
-            continue
-        tx = candidates.pop(0)
-        if payload["fee"] <= 0 or Decimal(tx.fee or 0) != 0:
-            continue
-        updates.append(
-            SellFeeUpdate(transaction_id=tx.id, symbol=tx.symbol, trade_date=tx.trade_date, fee=payload["fee"])
-        )
-        if apply:
-            tx.fee = payload["fee"]
+    seen: set[str] = set()
+    for parsed in parsed_files:
+        fingerprints: set[str] = set()
+        for row in parsed.rows:
+            payload = row.payload
+            if payload["_kind"] != "transaction" or payload["type"] != "SELL":
+                continue
+            if row.fingerprint in seen:
+                continue
+            fingerprints.add(row.fingerprint)
+            candidates = stored.get(_row_content_key(payload))
+            if not candidates:
+                continue
+            tx = candidates.pop(0)
+            if payload["fee"] <= 0 or Decimal(tx.fee or 0) != 0:
+                continue
+            updates.append(
+                SellFeeUpdate(transaction_id=tx.id, symbol=tx.symbol, trade_date=tx.trade_date, fee=payload["fee"])
+            )
+            if apply:
+                tx.fee = payload["fee"]
+        seen |= fingerprints
     if apply:
         db.commit()
     return updates
