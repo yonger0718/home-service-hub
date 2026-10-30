@@ -146,7 +146,7 @@ everything else.
   holdings-table code for that name. Still unresolved → the date is `held` (§5.4).
 - Fingerprint: `_broker_transaction_fingerprint(broker="TW_CATHAY_STATEMENT", market="TW", currency="TWD",
   note=<7-char order_no>, …)` — a namespace no CSV or IB Flex row can produce.
-- An inserted row gets the same columns as `broker_cathay_service._insert_transaction` (broker NULL), so every reader
+- An inserted row gets the same columns as `broker_cathay_service._insert_transaction` (broker `TW_CATHAY` since #222; earlier rows were NULL), so every reader
   that treats CSV rows as Cathay treats it the same. A "TW Cathay row" below is a transaction with market `TW` and
   broker NULL or `TW_CATHAY`; a `TW_MANUAL` row is never compared and never blocks.
 

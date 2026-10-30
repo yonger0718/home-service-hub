@@ -517,3 +517,18 @@ def test_replay_truncates_tw_settlement_but_not_foreign(db_session) -> None:
                       quantity=Decimal("1.5"), price=Decimal("10.01"), fee=Decimal("0"), tax=Decimal("0"),
                       trade_date=start)
     assert cash_backfill_service._transaction_legs(usd)[0]["amount"] == Decimal("-15.015")
+
+
+@pytest.mark.parametrize("broker", [None, Broker.TW_CATHAY])
+def test_replay_rejects_two_active_cathay_twd_accounts(db_session, broker) -> None:
+    db_session.add_all([
+        _account(nickname="Cathay A"),
+        _account(nickname="Cathay B"),
+        _transaction(1, type_=TransactionType.BUY, trade_date=datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc),
+                     broker=broker),
+    ])
+    db_session.commit()
+
+    with pytest.raises(cash_account_service.CashAccountAmbiguous):
+        cash_backfill_service.replay_all(db_session)
+    assert _cash_rows(db_session) == []

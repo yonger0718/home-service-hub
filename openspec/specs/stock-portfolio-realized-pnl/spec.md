@@ -17,7 +17,7 @@ The system SHALL treat `realized_pnl_service.iter_realized_events` as the single
 
 ### Requirement: Per-SELL realized event listing
 
-The system SHALL expose `GET /api/portfolio/realized-pnl` returning realized P&L events computed against the corporate-action-adjusted transaction view using moving-average cost basis per `position_side` pool. Each event SHALL include `trade_date`, `symbol`, `name`, `quantity`, `sell_price`, `avg_cost_at_sale`, `fee`, `tax`, `proceeds_gross`, `proceeds_net`, `cost_out`, `realized_pnl`, `is_day_trade`, `position_side`, and an optional `note` field.
+The system SHALL expose `GET /api/portfolio/realized-pnl` returning realized P&L events computed against the corporate-action-adjusted transaction view using moving-average cost basis per `position_side` pool. Each event SHALL include `trade_date`, `symbol`, `name`, `quantity`, `sell_price`, `avg_cost_at_sale`, `fee`, `tax`, `proceeds_gross`, `proceeds_net`, `cost_out`, `realized_pnl`, `is_day_trade`, `position_side`, and an optional `note` field. `quantity` SHALL serialize as a JSON integer for whole shares and as a JSON number for fractional shares.
 
 Realized events SHALL be emitted for closing transactions only:
 
