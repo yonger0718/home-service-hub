@@ -156,7 +156,7 @@ EXPECTED_WRITES = {
     ("/transfers", "POST"), ("/transfers/{group_id}", "PUT"),
     ("/splits", "POST"), ("/splits/{group_id}", "PUT"), ("/splits/{group_id}", "DELETE"),
     ("/balance-adjustments", "POST"),
-    ("/accounts", "POST"), ("/accounts/{account_id}", "PUT"), ("/accounts/{account_id}", "DELETE"),
+    ("/accounts", "POST"), ("/accounts/{account_id}", "PUT"), ("/accounts/{account_id}", "PATCH"), ("/accounts/{account_id}", "DELETE"),
     ("/accounts/{account_id}/reset-settings-flag", "POST"),
     ("/account-groups", "POST"), ("/account-groups/order", "PUT"),
     ("/account-groups/{group_id}", "PUT"), ("/account-groups/{group_id}", "DELETE"),
