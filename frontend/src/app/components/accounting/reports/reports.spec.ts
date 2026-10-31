@@ -482,6 +482,27 @@ describe('AccountingReportsComponent', () => {
       expect(cards[1].querySelector('.pl-tag')?.textContent?.trim()).toBe('進行中');
     });
 
+    it('keeps the project cards when the API leaves first / last date out (over 50 groups, 其他), without inventing dates', async () => {
+      const { harness, el } = await open('/accounting/reports?month=2026-10&tab=plan');
+      const reads = pending();
+      const lifetime = reads.breakdowns.pop()!;
+      answer(reads);
+      const report = sampleBreakdown(breakdownQuery(lifetime));
+      lifetime.flush({ ...report, rows: report.rows.map(row => ({ ...row, first_date: null, last_date: null })) });
+      flushStatus();
+      http.expectOne('/api/accounting/projects').flush(PROJECTS);
+      http.expectOne(r => r.url === '/api/accounting/categories').flush(ROOTS);
+      harness.detectChanges();
+
+      const cards = Array.from(el.querySelectorAll('.pl-project'));
+      expect(cards.map(c => c.querySelector('.pl-project-title b')?.textContent?.trim())).toEqual(['東京旅行', '客廳整理']);
+      expect(cards[0].querySelector('.pl-project-title small')?.textContent?.trim()).toBe('不計入月報');
+      expect(cards[0].querySelector('.pl-tag')?.textContent?.trim()).toBe('已結束');
+      expect(cards[1].querySelector('.pl-project-title small')?.textContent?.trim()).toBe('');
+      expect(cards[1].querySelector('.pl-tag')?.textContent?.trim()).toBe('進行中');
+      expect(el.querySelector('.pl-projects .pl-empty')).toBeNull();
+    });
+
     it('edits amounts from the month on, adds a budget for a category without one, and removes one', async () => {
       const { harness, el, store } = await openPlan();
 

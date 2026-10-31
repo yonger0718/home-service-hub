@@ -104,24 +104,34 @@ export class ReportPlanComponent {
     }),
   );
 
-  /** Projects active in the period: entries on or before its last day and on or after its first. */
+  /**
+   * Projects active in the period: entries on or before its last day and on or after its first. The API leaves
+   * first / last date out above 50 groups and on 其他; unknown dates keep the card and drop the date line.
+   */
   readonly cards = computed<ProjectCard[]>(() => {
     const period = this.period();
     const budgets = this.status()?.budgets ?? [];
     return (this.projects()?.rows ?? [])
-      .filter(row => row.key !== null && num(row.amount) > 0 && (row.first_date ?? '') <= period.to && (row.last_date ?? '') >= period.from)
+      .filter(
+        row =>
+          row.key !== null &&
+          num(row.amount) > 0 &&
+          (row.first_date == null || row.first_date <= period.to) &&
+          (row.last_date == null || row.last_date >= period.from),
+      )
       .map(row => {
         const project = this.projectList().find(p => String(p.id) === row.key);
         const budget = budgets.find(b => b.scope === 'project' && String(b.project_id) === row.key);
         const total = num(row.amount);
-        const first = row.first_date ?? period.from;
-        const last = row.last_date ?? period.to;
-        const finished = project?.is_archived || last < this.today();
-        const days = daysBetween(first, last) + 1;
-        const meta = [
-          finished ? `${shortDate(first)} – ${shortDate(last)} · ${days} 天 · 日均 ${n0(total / days)}` : `${shortDate(first)} 起 · 進行中`,
-          ...(project?.exclude_from_reports ? ['不計入月報'] : []),
-        ].join(' · ');
+        const first = row.first_date;
+        const last = row.last_date;
+        const finished = !!project?.is_archived || (last != null && last < this.today());
+        const days = first != null && last != null ? daysBetween(first, last) + 1 : 0;
+        const dates =
+          first == null || last == null
+            ? []
+            : [finished ? `${shortDate(first)} – ${shortDate(last)} · ${days} 天 · 日均 ${n0(total / days)}` : `${shortDate(first)} 起 · 進行中`];
+        const meta = [...dates, ...(project?.exclude_from_reports ? ['不計入月報'] : [])].join(' · ');
         const splits = (row.splits ?? []).filter(split => num(split.amount) > 0);
         return {
           key: row.key!,
