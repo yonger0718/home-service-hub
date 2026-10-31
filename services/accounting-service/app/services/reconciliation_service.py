@@ -809,11 +809,12 @@ def _dismissed(dismissed: list[ReconciliationCase], want: dict) -> bool:
     event whatever its kind: a revert reopens a `settlement` case as `settlement_pending`, a pending line becomes
     `settlement` once the feed answers, an ambiguity narrows to one — the owner's dismissal holds across each (owner
     ruling A: the bank path re-books on the next reconcile unless dismissed; R7 final review I1). The dividend family
-    and the line's plain case hide each other both ways (dividends R6/R7): a dividend-family want is hidden by a
-    dismissed plain `line_unmatched` case (no hint) on the event — the owner dismissed the line before its receipt was
-    confirmed — and a plain `line_unmatched` want (no hint, or `stand_in_deleted`: `dividend_service.PLAIN_HINTS`) by
-    a dismissed dividend-family case on the event — the feed is down, or the receipt left the feed or is no longer
-    confirmed, or the owner deleted the booked receipt while the feed is down (final review M1)."""
+    and the line's plain case hide each other both ways (dividends R6/R7; plain = `line_unmatched` with a hint in
+    `dividend_service.PLAIN_HINTS`: none, or `stand_in_deleted`, final review M1): a dividend-family want is hidden by
+    a dismissed plain case on the event — the owner dismissed the line before its receipt was confirmed, or after
+    deleting its booked receipt while the feed was down — and a plain want by a dismissed dividend-family case on the
+    event — the feed is down, the receipt left the feed or is no longer confirmed, or the owner deleted the booked
+    receipt while the feed is down."""
     plain_want = (want["kind"] == "line_unmatched"
                   and (want["context"] or {}).get("hint") in dividend_service.PLAIN_HINTS)
     if want["event_id"] is not None and plain_want and any(
@@ -823,7 +824,8 @@ def _dismissed(dismissed: list[ReconciliationCase], want: dict) -> bool:
         dividend = _dividend_family(want["kind"], want["context"])
         return any(case.event_id == want["event_id"] and (
             _settlement_family(case.kind, case.context)
-            or (dividend and case.kind == "line_unmatched" and (case.context or {}).get("hint") is None))
+            or (dividend and case.kind == "line_unmatched"
+                and (case.context or {}).get("hint") in dividend_service.PLAIN_HINTS))
             for case in dismissed)
     for case in dismissed:
         if case.kind != want["kind"]:
