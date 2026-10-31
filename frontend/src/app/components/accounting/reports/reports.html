@@ -77,7 +77,21 @@
         />
       }
       @case ('plan') {
-        <p class="rp-soon">專案與預算會在之後的 PR 加入，需要後端的預算 API。</p>
+        <app-report-plan
+          [status]="budgets()"
+          [statusState]="budgetsState()"
+          [projects]="projectReport()"
+          [projectsState]="projectReportState()"
+          [projectList]="projectList()"
+          [categories]="expenseRoots()"
+          [period]="period()"
+          [today]="today()"
+          [busy]="planBusy()"
+          [error]="planError()"
+          (saveAmounts)="saveBudgetAmounts($event)"
+          (addBudget)="addBudget($event)"
+          (removeBudget)="removeBudget($event)"
+        />
       }
     }
   }

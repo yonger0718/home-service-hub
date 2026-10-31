@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { gross, num } from './report-math';
-import { SAMPLE_EXPENSE, SAMPLE_INCOME, SAMPLE_REFUND, sampleBreakdown, sampleTrend } from './sample-report-data';
+import { SAMPLE_EXPENSE, SAMPLE_INCOME, SAMPLE_REFUND, SampleBudgetStore, sampleBreakdown, sampleTrend } from './sample-report-data';
 
 const OCTOBER = { date_from: '2026-10-01', date_to: '2026-10-31' } as const;
 
@@ -51,5 +51,38 @@ describe('sample report data', () => {
     expect(coffee.average['all']).toBe('992');
     const tag = sampleTrend({ date_from: '2026-05-01', date_to: '2026-10-31', granularity: 'month', tag: ['家用'] });
     expect(tag.buckets.at(-1)?.values['all']).toBe('6420');
+  });
+});
+
+describe('sample budgets and projects', () => {
+  it('reports the canvas budgets for October with 購物 over', () => {
+    const status = new SampleBudgetStore().status('2026-10', '2026-10-30');
+    expect(status.time_progress).toBeCloseTo(30 / 31, 3);
+    const shopping = status.budgets.find(b => b.label === '購物')!;
+    expect(shopping).toMatchObject({ scope: 'category', category_id: 4, limit: '3000', used: '3490', remaining: '-490', over: true });
+    expect(shopping.ratio).toBeCloseTo(1.1633, 3);
+    expect(status.budgets.find(b => b.scope === 'total')).toMatchObject({ limit: '45000', used: '41890', over: false });
+    // 購物's budget starts in September: August has no row for it.
+    expect(new SampleBudgetStore().status('2026-08', '2026-10-30').budgets.map(b => b.label)).not.toContain('購物');
+  });
+
+  it('keeps writes in memory: a new amount from the month on, a new budget, a removal', () => {
+    const store = new SampleBudgetStore();
+    store.update(1, { amount: '12000', effective_from: '2026-11' });
+    expect(store.status('2026-11', '2026-11-30').budgets.find(b => b.id === 1)?.limit).toBe('12000');
+    const created = store.create({ scope: 'category', category_id: 1, amount: '20000', effective_from: '2026-10' });
+    expect(created).toMatchObject({ label: '居家', used: '20250', over: true });
+    store.remove(created.id);
+    expect(store.status('2026-10', '2026-10-31').budgets.some(b => b.id === created.id)).toBe(false);
+  });
+
+  it('lists the projects over their life, 東京旅行 only when excluded projects are asked for', () => {
+    const query = { date_from: '2000-01-01', date_to: '2026-10-31', group_by: 'project' as const, split_by: 'category' as const };
+    expect(sampleBreakdown(query).rows.map(row => row.label)).toEqual(['客廳整理', '']);
+    const all = sampleBreakdown({ ...query, include_excluded_projects: true });
+    expect(all.rows.map(row => [row.key, row.label])).toEqual([['1', '東京旅行'], ['2', '客廳整理'], [null, '']]);
+    expect(all.rows[0]).toMatchObject({ amount: '24860', first_date: '2026-10-10', last_date: '2026-10-15' });
+    expect(all.rows[0].splits!.reduce((sum, split) => sum + Number(split.amount), 0)).toBe(24860);
+    expect(all.rows[1].last_date).toBe('2026-10-31');
   });
 });

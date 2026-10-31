@@ -90,6 +90,7 @@
     @for (project of projects(); track project.id; let i = $index) {
       <div class="data-row project-row" [class.hidden-cat]="project.is_archived">
         <input class="row-name project-name" aria-label="專案名稱" [value]="project.name" (change)="saveProject(project, { name: $any($event.target).value })" />
+        <span class="project-exclude"><app-switch [checked]="!!project.exclude_from_reports" [ariaLabel]="project.name + ' 不計入報表'" (checkedChange)="saveProject(project, { exclude_from_reports: $event })" /><span class="project-exclude-label">不計入報表</span></span>
         <button type="button" class="project-archive" (click)="saveProject(project, { is_archived: !project.is_archived })">{{ project.is_archived ? '取消封存' : '封存' }}</button>
         <button type="button" class="move-up" aria-label="上移" [disabled]="i === 0" (click)="moveProject(i, -1)">↑</button>
         <button type="button" class="move-down" aria-label="下移" [disabled]="i === projects().length - 1" (click)="moveProject(i, 1)">↓</button>

@@ -1,15 +1,19 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router } from '@angular/router';
-import { forkJoin } from 'rxjs';
+import { Observable, forkJoin } from 'rxjs';
 
-import { BreakdownResponse, BreakdownRow, TrendQuery, TrendResponse } from '../../../models/reports.model';
+import { CategoryNode, Project } from '../../../models/accounting.model';
+import { BreakdownResponse, BreakdownRow, BudgetInput, BudgetStatusResponse, TrendQuery, TrendResponse } from '../../../models/reports.model';
+import { AccountingService } from '../../../services/accounting.service';
 import { ReportsService } from '../../../services/reports.service';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { todayIso } from '../dates';
 import { formatMoney, formatSigned } from '../format';
+import { writeErrorMessage } from '../http-errors';
 import { ReportOverviewComponent } from './overview-tab';
+import { BudgetAmount, ReportPlanComponent } from './plan-tab';
 import { OTHER_KEY, RANK_DIMENSIONS, RankDimension, ReportRankComponent } from './rank-tab';
 import {
   PeriodUnit,
@@ -56,7 +60,7 @@ const CURRENCY_NAMES: Record<string, string> = { TWD: '台幣', JPY: '日圓', U
  */
 @Component({
   selector: 'app-accounting-reports',
-  imports: [PageHeaderComponent, SegToggleComponent, ReportOverviewComponent, ReportTrendComponent, ReportRankComponent],
+  imports: [PageHeaderComponent, SegToggleComponent, ReportOverviewComponent, ReportTrendComponent, ReportRankComponent, ReportPlanComponent],
   templateUrl: './reports.html',
   styleUrl: './reports.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -65,10 +69,13 @@ export class AccountingReportsComponent {
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly reports = inject(ReportsService);
+  private readonly accounting = inject(AccountingService);
   private requestId = 0;
   private trendRequestId = 0;
   private rankRequestId = 0;
   private sparkRequestId = 0;
+  private planRequestId = 0;
+  private referenceRequested = false;
 
   private readonly params = toSignal(this.route.queryParamMap, { initialValue: this.route.snapshot.queryParamMap });
   readonly today = signal(todayIso());
@@ -108,6 +115,15 @@ export class AccountingReportsComponent {
   readonly rankSelected = signal<string | null | undefined>(undefined);
   readonly spark = signal<TrendResponse | null>(null);
   readonly sparkState = signal<LoadState>('loading');
+  /** 專案與預算: the month's budget status, the projects' lifetime breakdown, and the reference lists behind both. */
+  readonly budgets = signal<BudgetStatusResponse | null>(null);
+  readonly budgetsState = signal<LoadState>('loading');
+  readonly projectReport = signal<BreakdownResponse | null>(null);
+  readonly projectReportState = signal<LoadState>('loading');
+  readonly projectList = signal<Project[]>([]);
+  readonly expenseRoots = signal<CategoryNode[]>([]);
+  readonly planBusy = signal(false);
+  readonly planError = signal<string | null>(null);
   /** The figures are the handoff's sample month (no report API yet). */
   readonly sample = this.reports.sample;
 
@@ -183,6 +199,84 @@ export class AccountingReportsComponent {
       const dimension = this.dimension();
       untracked(() => this.loadSpark(row, period, dimension));
     });
+    effect(() => {
+      if (this.tab() !== 'plan') return;
+      const period = this.period();
+      untracked(() => this.loadPlan(period));
+    });
+  }
+
+  private loadPlan(period: ReportPeriod): void {
+    const id = ++this.planRequestId;
+    this.planError.set(null);
+    this.loadBudgets(period, id);
+    this.projectReportState.set('loading');
+    // The projects' whole life (a project budget counts it all), 不計入報表 projects included: the cards name them.
+    this.reports
+      .getBreakdown({ date_from: '2000-01-01', date_to: period.to, metric: 'expense', group_by: 'project', split_by: 'category', include_excluded_projects: true })
+      .subscribe({
+        next: report => {
+          if (id !== this.planRequestId) return;
+          this.projectReport.set(report);
+          this.projectReportState.set('ready');
+        },
+        error: () => {
+          if (id !== this.planRequestId) return;
+          this.projectReport.set(null);
+          this.projectReportState.set('error');
+        },
+      });
+    if (!this.referenceRequested) {
+      this.referenceRequested = true;
+      this.accounting.getProjects().subscribe({ next: projects => this.projectList.set(projects), error: () => (this.referenceRequested = false) });
+      this.accounting.getCategories('expense').subscribe({ next: roots => this.expenseRoots.set(roots), error: () => undefined });
+    }
+  }
+
+  private loadBudgets(period: ReportPeriod, id = ++this.planRequestId): void {
+    this.budgetsState.set('loading');
+    this.reports.getBudgetStatus(monthOf(period.from)).subscribe({
+      next: status => {
+        if (id !== this.planRequestId) return;
+        this.budgets.set(status);
+        this.budgetsState.set('ready');
+      },
+      error: () => {
+        if (id !== this.planRequestId) return;
+        this.budgets.set(null);
+        this.budgetsState.set('error');
+      },
+    });
+  }
+
+  /** A budget write, then the month's status again; a failure keeps what is on screen and says why. */
+  private writeBudgets(request: Observable<unknown>): void {
+    this.planBusy.set(true);
+    this.planError.set(null);
+    request.subscribe({
+      next: () => {
+        this.planBusy.set(false);
+        this.loadBudgets(this.period());
+      },
+      error: error => {
+        this.planBusy.set(false);
+        this.planError.set(writeErrorMessage(error));
+      },
+    });
+  }
+
+  saveBudgetAmounts(amounts: BudgetAmount[]): void {
+    if (!amounts.length) return;
+    const month = monthOf(this.period().from);
+    this.writeBudgets(forkJoin(amounts.map(({ id, amount }) => this.reports.updateBudget(id, { amount, effective_from: month }))));
+  }
+
+  addBudget(input: BudgetInput): void {
+    this.writeBudgets(this.reports.createBudget(input));
+  }
+
+  removeBudget(id: number): void {
+    this.writeBudgets(this.reports.deleteBudget(id));
   }
 
   /** The selected ranked row, when it has its own six-month bars (not （無…）, not the fold). */
@@ -196,6 +290,7 @@ export class AccountingReportsComponent {
     this.load(this.period());
     this.loadTrend(this.period(), this.trendSeries());
     if (this.tab() === 'rank') this.loadRank(this.period(), this.dimension());
+    if (this.tab() === 'plan') this.loadPlan(this.period());
   }
 
   private loadRank(period: ReportPeriod, dimension: RankDimension): void {

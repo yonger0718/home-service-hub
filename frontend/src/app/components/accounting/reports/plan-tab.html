@@ -1,0 +1,104 @@
+<div class="pl">
+  <section class="pl-card pl-budgets" aria-label="預算">
+    <div class="pl-head">
+      <h2>{{ title() }}</h2>
+      <span class="pl-sub">{{ subtitle() }}</span>
+    </div>
+    @if (error(); as message) {
+      <p class="pl-error" role="alert">{{ message }}</p>
+    }
+    @if (statusState() === 'error') {
+      <p class="pl-empty" role="alert">預算讀取失敗</p>
+    } @else if (!status()) {
+      <p class="pl-empty">讀取中</p>
+    } @else if (editing()) {
+      <div class="pl-editor" [attr.aria-busy]="busy()">
+        @for (bar of bars(); track bar.id) {
+          <div class="pl-edit-row">
+            <span class="pl-swatch" aria-hidden="true" [style.background]="bar.color"></span>
+            <span class="pl-edit-name" [class.total]="bar.total">{{ bar.label }}</span>
+            <input class="pl-amount" type="number" min="1" step="1" inputmode="numeric" [attr.aria-label]="bar.label + ' 預算'" [value]="drafts()[bar.id]" (input)="setDraft(bar.id, $any($event.target).value)" />
+            <button type="button" class="pl-remove" [attr.aria-label]="'刪除 ' + bar.label + ' 預算'" [disabled]="busy()" (click)="remove(bar)"><i class="pi pi-trash" aria-hidden="true"></i></button>
+          </div>
+        }
+        @for (budget of projectBudgets(); track budget.id) {
+          <div class="pl-edit-row">
+            <span class="pl-swatch pl-swatch--project" aria-hidden="true"></span>
+            <span class="pl-edit-name">專案 · {{ budget.label }}</span>
+            <input class="pl-amount" type="number" min="1" step="1" inputmode="numeric" [attr.aria-label]="budget.label + ' 預算'" [value]="drafts()[budget.id]" (input)="setDraft(budget.id, $any($event.target).value)" />
+            <button type="button" class="pl-remove" [attr.aria-label]="'刪除 ' + budget.label + ' 預算'" [disabled]="busy()" (click)="remove(budget)"><i class="pi pi-trash" aria-hidden="true"></i></button>
+          </div>
+        }
+        <div class="pl-edit-row pl-add-row">
+          <select class="pl-new-scope" aria-label="新增預算的範圍" [value]="newScope()" (change)="newScope.set($any($event.target).value)">
+            <option value="">新增預算…</option>
+            @for (option of candidates(); track option.value) {
+              <option [value]="option.value">{{ option.label }}</option>
+            }
+          </select>
+          <input class="pl-amount pl-new-amount" type="number" min="1" step="1" inputmode="numeric" placeholder="金額" aria-label="新增預算的金額" [value]="newAmount()" (input)="newAmount.set($any($event.target).value)" />
+          <button type="button" class="pl-add" [disabled]="busy() || !newScope() || !(+newAmount() > 0)" (click)="add()">新增</button>
+        </div>
+        <small class="pl-edit-note">金額從 {{ title().replace('預算', '') }}起生效，之前的月份保留原預算。</small>
+        <div class="pl-edit-actions">
+          <button type="button" class="pl-save" [disabled]="busy() || !draftsValid()" (click)="save()">儲存</button>
+          <button type="button" class="pl-cancel" [disabled]="busy()" (click)="cancel()">取消</button>
+        </div>
+      </div>
+    } @else if (!bars().length) {
+      <p class="pl-empty">還沒有預算。</p>
+      <button type="button" class="pl-edit" (click)="startEditing()">編輯預算</button>
+    } @else {
+      @for (bar of bars(); track bar.id) {
+        <div class="pl-budget" [class.over]="bar.over" [class.total]="bar.total">
+          <div class="pl-budget-line">
+            <span class="pl-budget-name"><span class="pl-swatch" aria-hidden="true" [style.background]="bar.color"></span>{{ bar.label }}</span>
+            <span class="pl-budget-figures"><b>{{ bar.usedText }}</b><span class="pl-limit"> / {{ bar.limitText }}</span></span>
+          </div>
+          <span class="pl-bar" aria-hidden="true">
+            <span class="pl-fill" [style.width]="bar.width" [style.background]="bar.over ? null : bar.color"></span>
+            <span class="pl-marker" [style.left]="markerLeft()"></span>
+          </span>
+          <small class="pl-note">{{ bar.note }}</small>
+        </div>
+      }
+      <button type="button" class="pl-edit" (click)="startEditing()">編輯預算</button>
+    }
+  </section>
+
+  <section class="pl-projects" aria-label="專案">
+    @if (projectsState() === 'error') {
+      <p class="pl-empty" role="alert">專案讀取失敗</p>
+    } @else if (!projects()) {
+      <p class="pl-empty">讀取中</p>
+    } @else if (!cards().length) {
+      <p class="pl-empty">這段期間沒有專案支出</p>
+    } @else {
+      @for (card of cards(); track card.key) {
+        <article class="pl-card pl-project" [attr.aria-label]="card.name">
+          <div class="pl-project-head">
+            <span class="pl-project-title">
+              <b>{{ card.name }}</b>
+              <small>{{ card.meta }}</small>
+            </span>
+            <span class="pl-tag">{{ card.tag }}</span>
+          </div>
+          <div class="pl-project-total">
+            <b>{{ card.totalText }}</b>&ngsp;
+            @if (card.budgetText) { <span>{{ card.budgetText }}</span> }
+          </div>
+          <span class="pl-segments" aria-hidden="true">
+            @for (segment of card.segments; track segment.label) {
+              <span [style.flex]="segment.amount" [style.background]="segment.color"></span>
+            }
+          </span>
+          <div class="pl-legend">
+            @for (segment of card.segments; track segment.label) {
+              <span><span class="pl-swatch pl-swatch--small" aria-hidden="true" [style.background]="segment.color"></span>{{ segment.label }} <b>{{ segment.amountText }}</b></span>
+            }
+          </div>
+        </article>
+      }
+    }
+  </section>
+</div>

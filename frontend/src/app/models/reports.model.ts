@@ -137,3 +137,46 @@ export interface TrendResponse {
   buckets: TrendBucket[];
   average: Record<string, string>;
 }
+
+// ---- budgets (design D3) -------------------------------------------------------------------------------------------
+
+export type BudgetScope = 'total' | 'category' | 'project';
+
+/** One budget as `GET /reports/budgets/status?month=` reports it for that month. */
+export interface BudgetStatus {
+  id: number;
+  scope: BudgetScope;
+  /** Top-level category of a `category` budget. */
+  category_id: number | null;
+  project_id: number | null;
+  /** 全部支出, the category's or the project's name. */
+  label: string;
+  color: string | null;
+  /** The month's limit (main currency, positive). */
+  limit: string;
+  /** Expense rule (refunds reduce it); a project budget's used covers the project's whole life. */
+  used: string;
+  remaining: string;
+  /** `used / limit`. */
+  ratio: number;
+  over: boolean;
+  /** `YYYY-MM` the limit applies from (monthly scopes). */
+  effective_from: string | null;
+}
+
+export interface BudgetStatusResponse {
+  month: string;
+  currency: string;
+  /** Elapsed days / days in the month; 1.0 for past months. */
+  time_progress: number;
+  budgets: BudgetStatus[];
+}
+
+/** `POST /reports/budgets`; `PUT /reports/budgets/{id}` takes `amount` and `effective_from` (a new row from that month). */
+export interface BudgetInput {
+  scope: BudgetScope;
+  category_id?: number | null;
+  project_id?: number | null;
+  amount: string;
+  effective_from: string;
+}

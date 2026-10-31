@@ -11,7 +11,7 @@ import { LayoutMode, LayoutModeService, MATCH_MEDIA } from '../../../services/la
 import { NavBadgeService } from '../../../services/nav-badge.service';
 import { ReportsService } from '../../../services/reports.service';
 import { AccountingReportsComponent } from './reports';
-import { sampleBreakdown, sampleTrend } from './sample-report-data';
+import { SampleBudgetStore, sampleBreakdown, sampleTrend } from './sample-report-data';
 
 @Component({ template: '' })
 class BlankPage {}
@@ -28,6 +28,7 @@ function breakdownQuery(request: TestRequest): BreakdownQuery {
     group_by: params.get('group_by') as ReportDimension,
     split_by: (params.get('split_by') as ReportDimension | null) ?? undefined,
     compare: (params.get('compare') as ReportCompare | null) ?? undefined,
+    ...(params.has('include_excluded_projects') ? { include_excluded_projects: params.get('include_excluded_projects') === 'true' } : {}),
   };
 }
 
@@ -275,9 +276,14 @@ describe('AccountingReportsComponent', () => {
     harness.detectChanges();
     expect(TestBed.inject(Router).url).toBe('/accounting/reports?month=2026-10&tab=plan');
     expect(el.querySelector('.rp-tab.on')?.getAttribute('aria-selected')).toBe('true');
-    expect(el.querySelector('.rp-soon')).not.toBeNull();
+    expect(el.querySelector('app-report-plan')).not.toBeNull();
+    // The figures above the tabs are not read again; only the tab's own reads go out.
     expect(texts(el, '.rp-figure-value')[0]).toBe('$41,890');
-    http.expectNone(() => true);
+    const reads = pending();
+    expect(reads.breakdowns.map(r => r.request.params.get('group_by'))).toEqual(['project']);
+    expect(reads.trends).toEqual([]);
+    answer(reads);
+    for (const request of http.match(() => true)) request.flush(request.request.url.endsWith('/status') ? new SampleBudgetStore().status('2026-10', '2026-10-31') : []);
   });
 
   describe('排行', () => {
@@ -408,6 +414,125 @@ describe('AccountingReportsComponent', () => {
       harness.detectChanges();
       expect(el.querySelector('.rk-panel h2')?.textContent?.trim()).toBe('媽媽');
       expect(el.querySelector('.rk-drill')).toBeNull();
+    });
+  });
+
+  describe('專案與預算', () => {
+    const BUDGETS = '/api/accounting/reports/budgets';
+    const PROJECTS = [
+      { id: 1, name: '東京旅行', is_archived: true, sort_order: 0, moze_id: null, exclude_from_reports: true },
+      { id: 2, name: '客廳整理', is_archived: false, sort_order: 1, moze_id: null, exclude_from_reports: false },
+    ];
+    const ROOTS = [
+      { id: 1, kind: 'expense', parent_id: null, name: '居家', icon: null, color: '#123456', sort_order: 0, is_hidden: false, default_account_id: null, default_project_id: null, children: [] },
+      { id: 2, kind: 'expense', parent_id: null, name: '餐飲', icon: null, color: null, sort_order: 1, is_hidden: false, default_account_id: null, default_project_id: null, children: [] },
+    ];
+
+    function flushStatus(store = new SampleBudgetStore()) {
+      const status = http.expectOne(r => r.url === `${BUDGETS}/status`);
+      expect(status.request.params.get('month')).toBe('2026-10');
+      status.flush(store.status('2026-10', '2026-10-31'));
+      return store;
+    }
+
+    async function openPlan() {
+      const opened = await open('/accounting/reports?month=2026-10&tab=plan');
+      const reads = pending();
+      expect(reads.breakdowns).toHaveLength(4);
+      expect(breakdownQuery(reads.breakdowns[3])).toEqual({ date_from: '2000-01-01', date_to: '2026-10-31', metric: 'expense', group_by: 'project', split_by: 'category', compare: undefined, include_excluded_projects: true });
+      answer(reads);
+      const store = flushStatus();
+      http.expectOne('/api/accounting/projects').flush(PROJECTS);
+      const roots = http.expectOne(r => r.url === '/api/accounting/categories');
+      expect(roots.request.params.get('kind')).toBe('expense');
+      roots.flush(ROOTS);
+      opened.harness.detectChanges();
+      return { ...opened, store };
+    }
+
+    it('draws the month\'s budgets with the time marker, 剩 N and 超出 N, and the project cards', async () => {
+      const { el } = await openPlan();
+
+      expect(el.querySelector('.pl-budgets h2')?.textContent?.trim()).toBe('10 月預算');
+      expect(el.querySelector('.pl-sub')?.textContent?.trim()).toBe('已過 31 / 31 天 · 直線＝時間進度');
+      const budgets = Array.from(el.querySelectorAll('.pl-budget'));
+      expect(budgets.map(b => b.querySelector('.pl-budget-name')?.textContent?.trim())).toEqual(['餐飲', '交通', '購物', '娛樂', '全部支出']);
+      expect(budgets.map(b => b.querySelector('.pl-budget-figures')?.textContent?.replace(/\s+/g, ''))).toEqual(['9,860/10,000', '4,110/5,000', '3,490/3,000', '2,050/2,500', '41,890/45,000']);
+      expect(budgets.map(b => b.querySelector('.pl-note')?.textContent?.trim())).toEqual(['剩 140', '剩 890', '超出 490（116.3%）', '剩 450', '剩 3,110']);
+      const shopping = budgets[2];
+      expect(shopping.classList.contains('over')).toBe(true);
+      expect((shopping.querySelector('.pl-fill') as HTMLElement).style.width).toBe('100%');
+      expect((shopping.querySelector('.pl-marker') as HTMLElement).style.left).toBe('100%');
+      expect(budgets[4].classList.contains('total')).toBe(true);
+
+      const cards = Array.from(el.querySelectorAll('.pl-project'));
+      expect(cards.map(c => c.querySelector('.pl-project-title b')?.textContent?.trim())).toEqual(['東京旅行', '客廳整理']);
+      expect(cards[0].querySelector('.pl-project-title small')?.textContent?.trim()).toBe('10/10 – 10/15 · 6 天 · 日均 4,143 · 不計入月報');
+      expect(cards[0].querySelector('.pl-tag')?.textContent?.trim()).toBe('已結束');
+      expect(cards[0].querySelector('.pl-project-total')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('$24,860 預算 25,000 · 用了 99.4%');
+      expect(texts(cards[0], '.pl-legend > span')).toEqual(['機票 9,800', '住宿 8,400', '餐飲 3,960', '交通 1,420', '購物 1,280']);
+      expect(cards[1].querySelector('.pl-project-title small')?.textContent?.trim()).toBe('09/01 起 · 進行中');
+      expect(cards[1].querySelector('.pl-tag')?.textContent?.trim()).toBe('進行中');
+    });
+
+    it('edits amounts from the month on, adds a budget for a category without one, and removes one', async () => {
+      const { harness, el, store } = await openPlan();
+
+      el.querySelector<HTMLButtonElement>('.pl-edit')!.click();
+      harness.detectChanges();
+      const inputs = Array.from(el.querySelectorAll<HTMLInputElement>('.pl-edit-row .pl-amount:not(.pl-new-amount)'));
+      expect(inputs.map(input => input.value)).toEqual(['10000', '5000', '3000', '2500', '45000', '25000', '20000']);
+      // Only 居家 is left for a new category budget; both projects already have one.
+      expect(texts(el, '.pl-new-scope option')).toEqual(['新增預算…', '居家']);
+
+      inputs[0].value = '12000';
+      inputs[0].dispatchEvent(new Event('input'));
+      harness.detectChanges();
+      el.querySelector<HTMLButtonElement>('.pl-save')!.click();
+      const put = http.expectOne(r => r.method === 'PUT' && r.url === `${BUDGETS}/1`);
+      expect(put.request.body).toEqual({ amount: '12000', effective_from: '2026-10' });
+      put.flush(store.update(1, put.request.body));
+      flushStatus(store);
+      harness.detectChanges();
+      expect(el.querySelector('.pl-editor')).toBeNull();
+      expect(el.querySelector('.pl-budget .pl-budget-figures')?.textContent?.replace(/\s+/g, '')).toBe('9,860/12,000');
+
+      el.querySelector<HTMLButtonElement>('.pl-edit')!.click();
+      harness.detectChanges();
+      const scope = el.querySelector<HTMLSelectElement>('.pl-new-scope')!;
+      scope.value = 'category:1';
+      scope.dispatchEvent(new Event('change'));
+      const amount = el.querySelector<HTMLInputElement>('.pl-new-amount')!;
+      amount.value = '20000';
+      amount.dispatchEvent(new Event('input'));
+      harness.detectChanges();
+      el.querySelector<HTMLButtonElement>('.pl-add')!.click();
+      const post = http.expectOne(r => r.method === 'POST' && r.url === BUDGETS);
+      expect(post.request.body).toEqual({ scope: 'category', category_id: 1, project_id: null, amount: '20000', effective_from: '2026-10' });
+      post.flush(store.create(post.request.body));
+      flushStatus(store);
+      harness.detectChanges();
+      expect(texts(el, '.pl-edit-row .pl-edit-name')).toContain('居家');
+
+      Array.from(el.querySelectorAll<HTMLButtonElement>('.pl-remove')).find(b => b.getAttribute('aria-label') === '刪除 娛樂 預算')!.click();
+      const del = http.expectOne(r => r.method === 'DELETE' && r.url === `${BUDGETS}/4`);
+      del.flush(null);
+      store.remove(4);
+      flushStatus(store);
+      harness.detectChanges();
+      expect(texts(el, '.pl-edit-row .pl-edit-name')).not.toContain('娛樂');
+    });
+
+    it('keeps the editor and says why when a write fails', async () => {
+      const { harness, el } = await openPlan();
+      el.querySelector<HTMLButtonElement>('.pl-edit')!.click();
+      harness.detectChanges();
+      Array.from(el.querySelectorAll<HTMLButtonElement>('.pl-remove'))[0].click();
+      http.expectOne(r => r.method === 'DELETE').flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+      harness.detectChanges();
+      expect(el.querySelector('.pl-error')).not.toBeNull();
+      expect(el.querySelector('.pl-editor')).not.toBeNull();
+      http.expectNone(r => r.url === `${BUDGETS}/status`);
     });
   });
 
