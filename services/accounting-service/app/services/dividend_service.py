@@ -15,6 +15,12 @@ income entry under one `settlement_booking` row of kind `dividend`.
   window (`read_window`). An unavailable, incomplete or other-currency answer leaves the lines in their ordinary case.
 - Re-check (R11): `recheck_statement_ids` names every statement holding an open dividend-family or plain
   dividend-line case; `trade_settlement_service.recheck_targets` unions it in.
+- Owner wins (R6, spec §4.7 single leg, Phase 1 parity under owner ruling 2026-10-31): `housekeep` tombstones a
+  booking whose income entry the owner deleted (`owner_deleted`, items cleared: the receipt is free and the policy
+  proposes it, never books it) or edited structurally (`owner_edited`, items kept: the receipt stays reserved);
+  `retire_twins_for_statement` retires a booking whose owner `income` twin arrived (`retire_twin`). Both run in
+  `reconcile` after the feed reads and before the population is read, under the statement row; the locks are the
+  Phase 1 protocol (`tss.lock_pair`: booking row → entry NOWAIT, `settlement_busy`, never the account row).
 
 Nothing here commits; the reconciler and the engine own the transaction."""
 from __future__ import annotations
@@ -30,12 +36,16 @@ from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
-    Account, AccountStatement, Category, ReconciliationCase, ReconciliationSettings, SettlementBooking, StatementLine,
+    Account, AccountStatement, Category, LedgerEntry, ReconciliationCase, ReconciliationSettings, SettlementBooking,
+    StatementLine,
 )
 from app.schemas.writes import SETTLEMENT_SOURCES
-from app.services import portfolio_client, settings_service
+from app.services import coverage_service, entry_write_service, portfolio_client, settings_service
 from app.services import trade_settlement_service as tss
+from app.services.entry_write_service import STATEMENT_SOURCE
+from app.services.errors import CodedConflictError
 from app.services.portfolio_client import Dividend, DividendFeed, PortfolioClient, PortfolioUnavailable
+from app.services.reconciliation_actions import audit
 from app.services.statements import matching, retired
 
 KIND = "dividend"
@@ -290,3 +300,136 @@ def recheck_statement_ids(db: Session) -> list[int]:
                Account.settlement_source.in_(SETTLEMENT_SOURCES),
                AccountStatement.mode == "live", AccountStatement.current_revision_id.is_not(None),
                ~retired.clause(AccountStatement.id))).scalars())
+
+
+# --- owner wins (R6, spec §4.7 single leg) ----------------------------------------------------------------------------
+
+
+def _income(db: Session, entry_id: int | None) -> LedgerEntry | None:
+    return None if entry_id is None else db.get(LedgerEntry, entry_id, populate_existing=True)
+
+
+def _system(entry: LedgerEntry | None) -> bool:
+    return entry is not None and entry.source == STATEMENT_SOURCE
+
+
+def _figures(row: SettlementBooking) -> dict:
+    return {"booking_id": row.id, "account_id": row.account_id, "fingerprint": row.fingerprint,
+            "settlement_date": row.settlement_date.isoformat(), "in_entry_id": row.in_entry_id}
+
+
+def _booked(db: Session, *where) -> list[SettlementBooking]:
+    """The `booked` dividend rows matching `where`, id order, refreshed from the database (an owner delete in another
+    transaction set `in_entry_id` NULL)."""
+    return list(db.scalars(select(SettlementBooking).where(
+        SettlementBooking.kind == KIND, SettlementBooking.status == "booked", *where).order_by(SettlementBooking.id)
+        .execution_options(populate_existing=True)))
+
+
+def housekeep(db: Session, account_id: int) -> dict[str, int]:
+    """R6 Housekeeping over the account's `booked` dividend rows, Phase 1 parity (`tss.housekeep`, owner ruling
+    2026-10-31): a row whose income entry is still present with `source='statement'` is skipped; any other is locked
+    row → entry NOWAIT (`tss.lock_pair`) and re-checked under the lock. Entry gone → `owner_deleted`, items cleared
+    (the receipt is free again: the next reconcile offers it and the policy proposes it, never books it), audit
+    `dividend_owner_deleted`; present but no longer the statement's (a structural owner edit flips it to `manual`) →
+    `owner_edited`, items kept (the edited entry still records the receipt, so it stays reserved), audit
+    `dividend_owner_edited`. A held row or entry (`settlement_busy`) is logged, counted and left for the next run; it
+    keeps reserving (fail closed). Flushes, never commits."""
+    counts = {"owner_deleted": 0, "owner_edited": 0, "settlement_busy": 0}
+    for row in _booked(db, SettlementBooking.account_id == account_id):
+        if _system(_income(db, row.in_entry_id)):
+            continue
+        try:
+            _, entry = tss.lock_pair(db, row)
+        except CodedConflictError as exc:
+            if exc.code != tss.SETTLEMENT_BUSY:
+                raise
+            logger.info("dividend.housekeep_busy", extra={"settlement_booking_id": row.id})
+            counts["settlement_busy"] += 1
+            continue
+        if row.status != "booked" or _system(entry):  # re-checked under the locks
+            continue
+        if entry is None:
+            row.status = "owner_deleted"
+            row.items.clear()  # delete-orphan: the reservation goes with the row's `booked` status
+            event = "dividend_owner_deleted"
+        else:
+            row.status = "owner_edited"  # the item stays: the edited entry still records the receipt
+            event = "dividend_owner_edited"
+        db.flush()
+        audit.record(db, event=event, actor=tss.ACTOR, detail=_figures(row))
+        counts[row.status] += 1
+    return counts
+
+
+def _twins(db: Session, row: SettlementBooking, entry: LedgerEntry, window_days: int) -> list[int]:
+    return tss.find_twins(db, account_id=row.account_id, target_account_id=None, amount=entry.amount,
+                          settlement_date=entry.entry_date, window_days=window_days, exclude=[entry.id])
+
+
+def retire_twin(db: Session, row: SettlementBooking) -> set[int] | None:
+    """`tss.retire_pair(reason="twin")` for one leg: lock the row, then its income entry (`tss.lock_pair`), and
+    re-check under the locks in one savepoint — the row still `booked`, the entry present and `source='statement'`,
+    the owner twin still found. A failed re-check returns None and leaves no lock behind. Otherwise the entry's
+    coverage is released (the line re-meets the twin), the entry deleted (`delete_entries_cascade`), the row
+    `retired` / `twin` with its items cleared, the released statements `needs_recheck`, audit `dividend_retired`;
+    returns the released statement ids (possibly empty). A held row or entry raises `settlement_busy`. Flushes,
+    never commits."""
+    locks = db.begin_nested()
+    try:
+        _, entry = tss.lock_pair(db, row)
+        if row.status != "booked" or not _system(entry) or not _twins(db, row, entry, tss.twin_window_days(db)):
+            locks.rollback()
+            return None
+    except BaseException:
+        if locks.is_active:
+            locks.rollback()
+        raise
+    locks.commit()  # release the savepoint; the row and entry locks stay until the caller commits
+    # delete_entries_cascade ends with expire_all and `in_entry_id` is ON DELETE SET NULL: copy everything first
+    row_id, figures, entry_id = row.id, {**_figures(row), "origin": row.origin}, entry.id
+    released = coverage_service.release_entries(db, [entry_id], reason="dividend:twin")
+    entry_write_service.delete_entries_cascade(db, [entry_id])
+    row = db.get(SettlementBooking, row_id)
+    row.status, row.reason = "retired", "twin"
+    row.items.clear()
+    for sid in released:
+        db.get(AccountStatement, sid).needs_recheck = True
+    db.flush()
+    audit.record(db, event="dividend_retired", actor=tss.ACTOR,
+                 detail={**figures, "reason": "twin", "released_statement_ids": sorted(released)})
+    return released
+
+
+def retire_twins_for_statement(db: Session, statement: AccountStatement, accounts: list[int]) -> list[int]:
+    """The reconcile's half of owner-wins for dividends (`tss.retire_twins_for_statement`'s shape), run before the
+    population is read: every `booked` dividend row on `accounts` whose settlement date lies in the period ±
+    `matching.population_window_days`, its income entry still the system's, and an owner entry of the same amount
+    within `tss.twin_window_days` of the entry's date (`tss.find_twins`, `target_account_id=None`) → `retire_twin`.
+    A row another transaction holds (`settlement_busy`) is logged and left for the next run; a failed locked re-check
+    is skipped. Returns the retired row ids. Flushes, never commits."""
+    from app.services.reconciliation_service import rules_for  # local: the reconciler calls this function
+
+    rules = rules_for(settings_service.reconciliation_rules(db), statement.period_end)
+    span = timedelta(days=matching.population_window_days(rules))
+    rows = _booked(db, SettlementBooking.account_id.in_(accounts),
+                   SettlementBooking.settlement_date.between(statement.period_start - span, statement.period_end + span))
+    if not rows:
+        return []
+    window_days = tss.twin_window_days(db)
+    out = []
+    for row in rows:
+        entry = _income(db, row.in_entry_id)
+        if not _system(entry) or not _twins(db, row, entry, window_days):
+            continue  # housekeeping's owner_edited / owner_deleted, or no owner twin
+        try:
+            released = retire_twin(db, row)
+        except CodedConflictError as exc:
+            if exc.code != tss.SETTLEMENT_BUSY:
+                raise
+            logger.info("dividend.sweep_retire_busy",
+                        extra={"settlement_booking_id": row.id, "statement_id": statement.id})
+            continue
+        if released is not None:
+            out.append(row.id)
+    return out

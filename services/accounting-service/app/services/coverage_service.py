@@ -555,9 +555,10 @@ def has_pending_events(db: Session, statement: AccountStatement) -> bool:
 
 
 # R7 `book_settlement`: an owner delete of its pair retires the action too, so the event's creation slot is free for
-# the owner's answer to the proposal the policy makes instead (portfolio integration spec §4.7 Housekeeping, §9)
+# the owner's answer to the proposal the policy makes instead (portfolio integration spec §4.7 Housekeeping, §9);
+# `book_dividend` likewise for its income entry (dividends R7, rev 2.1)
 RETIRABLE_ACTIONS = ("backfill_entry", "create_entry", "create_system_entry", "create_refund", "pair_transfer",
-                     "book_settlement")
+                     "book_settlement", "book_dividend")
 
 
 def _locked_applied(db: Session, action_ids) -> list[ReconciliationAction]:

@@ -12,12 +12,14 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.models import (
-    Account, AccountStatement, LedgerEntry, PolicyBudget, ReconciliationAudit, ReconciliationCase, SettlementBooking,
-    StatementLine,
+    Account, AccountStatement, LedgerEntry, PolicyBudget, ReconciliationAction, ReconciliationAudit, ReconciliationCase,
+    ReconciliationProposal, SettlementBooking, StatementLine,
 )
 from app.services import dividend_service as ds
 from app.services import entry_write_service as ews
-from app.services import pair_locks, policy_service, portfolio_client, reconciliation_actions, settings_service
+from app.services import (
+    pair_locks, policy_service, portfolio_client, proposal_service, reconciliation_actions, settings_service,
+)
 from app.services import reconciliation_service as rec
 from app.services import trade_settlement_service as tss
 from app.services.reconciliation_actions import engine, engine_locks
@@ -31,6 +33,7 @@ from tests.integration.statement_fixtures import OCT, _active, _reconcile, run  
 from tests.integration.test_reconciliation_actions_ledger import _apply, _code, _fresh, _refuse, _revert
 from tests.integration.test_settlement_actions import _all_cases, _booked
 from tests.integration.test_settlement_reconcile import _cases
+from tests.integration.test_stand_ins import _put_body
 
 
 FACTS = {"fingerprint": "dividend:7", "id": 7, "symbol": "9999", "receipt_date": "2026-09-11", "amount": "990.0000",
@@ -450,3 +453,103 @@ def test_policy_refuses_when_an_owner_income_entry_appears_under_the_barrier(pg_
     exc = _refuse(db_session, lambda: policy_service.apply_candidate(db_session, db_session.get(AccountStatement, sid), cand,
                                                                      month=date(2026, 9, 1)))
     assert _code(exc) == "candidate_changed" and _booked(db_session) == 0
+
+
+# --- owner wins (R6, spec §4.7 single leg) ----------------------------------------------------------------------------
+
+
+def test_an_owner_delete_tombstones_the_booking_and_the_policy_proposes(seed, db_session, run, portfolio_stub, policy_on):
+    policy_on()
+    _, sid, (case,) = _dividend_case(seed, db_session, run, portfolio_stub)
+    _apply(db_session, case.id, "book_dividend", {"fingerprint": "dividend:7"})
+    booking = db_session.scalar(select(SettlementBooking))
+    ews.delete_entry(db_session, booking.in_entry_id); db_session.commit()
+    _reconcile(db_session, sid); policy_service.run_policy(db_session, sid); db_session.commit()
+    row = _fresh(db_session, SettlementBooking, booking.id)
+    assert (row.status, row.items) == ("owner_deleted", [])
+    (case,) = _cases(db_session, sid, "open", "proposed")
+    assert (case.kind, case.context["owner_deleted"], case.status) == ("dividend", True, "proposed")
+    assert _booked(db_session) == 0
+    assert db_session.scalar(select(func.count(ReconciliationAudit.id)).where(
+        ReconciliationAudit.event == "dividend_owner_deleted")) == 1
+
+
+def test_the_owner_may_book_the_proposal_after_an_owner_delete(seed, db_session, run, portfolio_stub, policy_on):
+    """The sweep retires the deleted entry's `book_dividend` action (`RETIRABLE_ACTIONS`), so the create slot is free
+    and the owner's answer to the policy's proposal books the receipt again (the Phase 1 settlement test's shape)."""
+    policy_on()
+    _, sid, (case,) = _dividend_case(seed, db_session, run, portfolio_stub)
+    first = _apply(db_session, case.id, "book_dividend", {"fingerprint": "dividend:7"})
+    ews.delete_entry(db_session, db_session.scalar(select(SettlementBooking.in_entry_id))); db_session.commit()
+    _reconcile(db_session, sid); policy_service.run_policy(db_session, sid)
+    assert _fresh(db_session, ReconciliationAction, first.id).status == "reverted"
+    (proposal,) = db_session.scalars(select(ReconciliationProposal).where(ReconciliationProposal.status == "pending"))
+    assert (proposal.author, proposal.action) == ("policy", "book_dividend")
+    proposal_service.apply_proposal(db_session, proposal_id=proposal.id, label="owner-test", request_id=None)
+    db_session.commit()
+    assert sorted(db_session.scalars(select(SettlementBooking.status))) == ["booked", "owner_deleted"]
+
+
+@pytest.mark.parametrize("edit,status", [("category", "booked"), ("amount", "owner_edited")])
+def test_an_owner_edit_tombstones_the_booking_only_when_structural(seed, db_session, run, portfolio_stub, client, policy_on,
+                                                                  edit, status):
+    """Owner ruling 2026-10-31, Phase 1 parity (`trade_settlement_service.py:312-318`): a structural edit tombstones the
+    row `owner_edited` and KEEPS its item, so the receipt stays reserved. Neither the next reconcile nor the policy
+    opens or proposes anything for it, and nothing is booked."""
+    policy_on()
+    _, sid, (case,) = _dividend_case(seed, db_session, run, portfolio_stub)
+    _apply(db_session, case.id, "book_dividend", {"fingerprint": "dividend:7"})
+    booking = db_session.scalar(select(SettlementBooking))
+    entry = db_session.get(LedgerEntry, booking.in_entry_id)
+    # 500, far from 990: the line is unmatched again, yet the kept item still reserves the receipt
+    fields = {"category_id": seed.category("股利收入", "income").id} if edit == "category" else {"amount": "500"}
+    db_session.commit()
+    assert client.put(f"/entries/{entry.id}", json=_put_body(entry, **fields)).status_code == 200
+    for _ in range(2):                                                               # the next runs, too
+        _reconcile(db_session, sid); policy_service.run_policy(db_session, sid); db_session.commit()
+        row = _fresh(db_session, SettlementBooking, booking.id)
+        assert row.status == status and [(i.source, i.source_id) for i in row.items] == [("dividend", "dividend:7")]
+        assert tss.reservations(db_session, kind="dividend") == (
+            ({"dividend:7"}, {"dividend:7"}) if status == "booked" else (set(), {"dividend:7"}))
+        assert _booked(db_session) == (1 if status == "booked" else 0)
+        assert db_session.scalar(select(func.count(SettlementBooking.id))) == 1
+        assert [c.id for c in _cases(db_session, sid, "open", "proposed")
+                if c.kind == "dividend" or (c.context or {}).get("hint") in ds.FAMILY_HINTS] == []
+        assert db_session.scalar(select(func.count(ReconciliationProposal.id))) == 0
+    assert db_session.scalar(select(func.count(ReconciliationAudit.id)).where(
+        ReconciliationAudit.event == "dividend_owner_edited")) == (1 if status == "owner_edited" else 0)
+
+
+def test_dividend_housekeeping_locks_come_after_the_dividend_read(seed, db_session, run, portfolio_stub, monkeypatch):
+    """Rev 2.1 Should 2: `dividend_service.housekeep` locks the owner-deleted booking (row → entry NOWAIT) only after
+    the reconcile's one dividend read."""
+    _, sid, (case,) = _dividend_case(seed, db_session, run, portfolio_stub)
+    _apply(db_session, case.id, "book_dividend", {"fingerprint": "dividend:7"})
+    ews.delete_entry(db_session, db_session.scalar(select(SettlementBooking.in_entry_id))); db_session.commit()
+    before, seen = len(portfolio_stub.dividend_calls), []
+
+    def spy(name, real):
+        def wrapped(*args, **kwargs):
+            seen.append((name, len(portfolio_stub.dividend_calls)))
+            return real(*args, **kwargs)
+        return wrapped
+
+    for module, name in ((pair_locks, "lock_row"), (pair_locks, "lock_legs"), (rec, "_lock_candidates")):
+        monkeypatch.setattr(module, name, spy(name, getattr(module, name)))
+    _reconcile(db_session, sid)
+    assert {"lock_row", "_lock_candidates"} <= {name for name, _ in seen}
+    assert {calls for _, calls in seen} == {before + 1}
+
+
+def test_an_owner_income_entry_arriving_later_retires_the_booking(seed, db_session, run, portfolio_stub):
+    bank, sid, (case,) = _dividend_case(seed, db_session, run, portfolio_stub)
+    _apply(db_session, case.id, "book_dividend", {"fingerprint": "dividend:7"})
+    booking = db_session.scalar(select(SettlementBooking))
+    system_id = booking.in_entry_id
+    owner = seed.entry(bank, "990", kind="income", day=date(2026, 9, 13)); db_session.commit()
+    _reconcile(db_session, sid)
+    row = _fresh(db_session, SettlementBooking, booking.id)
+    assert (row.status, row.reason, row.items) == ("retired", "twin", []) and db_session.get(LedgerEntry, system_id) is None
+    assert [c.entry_id for c in _active(db_session, sid)] == [owner.id] and _cases(db_session, sid, "open") == []
+    assert db_session.scalars(select(ReconciliationAudit.detail).where(
+        ReconciliationAudit.event == "dividend_retired")).one()["reason"] == "twin"

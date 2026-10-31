@@ -17,7 +17,9 @@ statements' coverage rows and on those statements' rows (`needs_recheck`). A ban
 account printing a settlement line (portfolio integration spec §4.3, §4.7) first reads the settlement feed once
 (before any pair or group/entry lock), then does the same for its `settlement_booking` rows at the same point
 (`trade_settlement_service.housekeep` tombstones owner-deleted / owner-edited bookings, then
-`retire_twins_for_statement`; booking row → legs NOWAIT, never the account row), and after its coverage is written
+`retire_twins_for_statement`; booking row → legs NOWAIT, never the account row; a statement printing a dividend line
+does the same for its `kind='dividend'` bookings through `dividend_service.housekeep` / `retire_twins_for_statement`
+after the dividend read), and after its coverage is written
 links a claimed stand-in to its line's event (the booking row try-locked NOWAIT) and derives the settlement cases
 (`trade_settlement_service.settle`). Otherwise a reconcile emits no dirty events of its own.
 
@@ -1062,6 +1064,12 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
             # retires its pair as the auto-pay twin does — both under this statement row, row → legs NOWAIT
             trade_settlement_service.housekeep(db, statement.account_id)
             trade_settlement_service.retire_twins_for_statement(db, statement, accounts)
+        if divides:
+            # spec §4.7 (dividends R6, single leg): an owner delete / structural edit of a booked dividend's income
+            # entry tombstones its row before the dividend reservations are read, then an owner income twin retires
+            # the booking — the same point and the same row → entry NOWAIT order as the settlement block above
+            dividend_service.housekeep(db, statement.account_id)
+            dividend_service.retire_twins_for_statement(db, statement, accounts)
         return _match_and_record(db, statement, accounts, accounts_by_id, rules, all_lines, run_id=run_id, live=live,
                                  settles=settles, client=client, feed=feed, unavailable_code=unavailable_code,
                                  divides=divides, dividends=dividends, dividend_code=dividend_code)

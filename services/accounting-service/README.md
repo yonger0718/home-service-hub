@@ -754,3 +754,16 @@ reopens the case as `line_unmatched`. A dismissal of the line's plain case, or o
 these kinds. `POST /reconciliation/settlements/run` and the daily sweep re-check every statement that holds an open
 `dividend`, `dividend_ambiguous` or `dividend_mismatch` case, or a plain case on a dividend line, so the next run sees a
 receipt the portfolio has confirmed or corrected since.
+
+The owner wins over a booked dividend (§4.7, one leg; each reconcile of a statement printing a dividend line checks the
+account's bookings first, under the same row → entry NOWAIT locks as settlements):
+- the owner deletes the income entry: the booking becomes `owner_deleted` and the receipt is freed. The next reconcile
+  offers it again as a `dividend` case with `owner_deleted: true`; the policy proposes it but never books it, and the
+  owner's answer to the proposal books it again;
+- a structural edit (amount, a date, the account or kind — a `coverage_service.STRUCTURAL_KEYS` change — or a fee /
+  discount child, so the entry is no longer `source='statement'`): the booking becomes `owner_edited` and the receipt
+  stays reserved: the edited entry records it, so it is never offered or proposed again;
+- a cosmetic edit (category, name, merchant, tags and the like) keeps the booking `booked`;
+- an owner `income` entry of the same amount on the account within `settlement.twin_window_days` of the booked entry
+  retires the booking (`retired`, reason `twin`): the system entry and its coverage go, and the line meets the owner's
+  entry.

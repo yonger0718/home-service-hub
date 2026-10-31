@@ -599,3 +599,19 @@ Check afterwards (counts and codes only):
   runs once the source is cleared;
 - a reconcile of a 67 statement answers `settlements: {}` and `settlement_source_unavailable: false`; the candidate
   `r6_case_dump.py` lists no `book_settlement` or `stand_in_claim` outcome for 67.
+
+## Dividends rollout (portfolio integration dividends)
+
+Proposed; the owner confirms each step.
+
+1. **Before the accounting deploy:**
+   - Put the dividend category in place: GET the settings document, set `settlement.dividend_category_id` to an income category, and PUT it back whole. The current release already accepts that key.
+   - Set `policy.enabled = false`. The current release refuses a `book_dividend` key (`settings_service._check_policy`), so the new default `enabled: true` cannot be pre-disabled per action.
+2. **Deploy** the portfolio release (no migration), then the accounting API (no migration).
+3. **Settings PUT** (whole document): `policy.enabled = true`, `policy.actions.book_dividend.enabled = false`. GET it back and check.
+4. **Re-reconcile the settlement-source account's live statements** (67 in the settings example). The dividend cases appear without bookings, and their counts are in each answer's `settlements`. A `dividend_mismatch` line names its nearest receipt and the signed delta: the owner corrects that receipt's fee in the portfolio, and the next settlements run picks it up (R11), or the owner dismisses the line. The owner reviews them one case per question. `r6_case_dump.py` does not list dividend outcomes; the cases themselves are the review list.
+5. **Enable** `book_dividend.enabled = true` and run the policy on those statements.
+
+**Rollback:**
+- The `dividend` case kind already exists, so an accounting release below this one can still read the cases.
+- To disable, set `book_dividend.enabled = false`. Booked rows stay, and each can be reverted from its action.

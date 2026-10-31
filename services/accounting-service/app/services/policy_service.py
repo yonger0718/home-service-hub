@@ -376,10 +376,10 @@ def _dividend_candidate(db: Session, case: ReconciliationCase, statement: Accoun
 
 
 OWNER_DELETED_GUARDED = frozenset({"create_system_entry", "backfill_entry", "pair_transfer",
-                                   "book_settlement"})  # R6b.0: never re-book an owner delete
-# R7 spec §4.7 / §9: an owner-deleted settlement is proposed, not dropped: these are kept by `collect_candidates`
-# (the policy never APPLIES them: `_prefilter` proposes and `_unchanged` refuses)
-PROPOSED_WHEN_OWNER_DELETED = frozenset({"book_settlement"})
+                                   "book_settlement", "book_dividend"})  # R6b.0: never re-book an owner delete
+# R7 spec §4.7 / §9: an owner-deleted settlement or dividend (dividends R6/R7) is proposed, not dropped: these are kept
+# by `collect_candidates` (the policy never APPLIES them: `_prefilter` proposes and `_unchanged` refuses)
+PROPOSED_WHEN_OWNER_DELETED = frozenset({"book_settlement", "book_dividend"})
 
 POLICY_ACTIONS = {"create_system_entry": _system_entry_candidate, "attach_fee": _attach_fee_candidate,
                   "backfill_entry": _backfill_candidate, "anchor_opening": _anchor_candidate,
