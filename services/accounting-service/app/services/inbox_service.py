@@ -55,13 +55,17 @@ def classify(*, kind: str, status: str, statement_kind: str, hint: str | None,
     """Map a reconciliation case to its inbox question. Portfolio integration spec §8: a `settlement` case (a
     booking candidate or `source_drift`) and an `ambiguous` one with hint `settlement_ambiguous` are `settlement`
     questions, as an unmatched bank line naming a settlement label (`settlement_labels`, the rules' list) is; a
-    `dividend` case is `other` until its follow-up plan gives it a card."""
+    `dividend` case, an `ambiguous` one with hint `dividend_ambiguous` (its candidates are receipts, not entries) and a
+    `line_unmatched` one with hint `dividend_mismatch` (answered in the portfolio, by the fee, or by dismissal, never
+    as a bank-only line) are `other` until their follow-up plan gives them a card."""
+    from app.services import dividend_service  # call time only (#247)
+
     if (statement_kind == "bank" and kind == "line_unmatched"
             and any(label in (merchant_norm or "") for label in settlement_labels)):
         return "settlement"
     if kind == "settlement" or (kind == "ambiguous" and hint == "settlement_ambiguous"):
         return "settlement"
-    if kind == "dividend":
+    if kind == dividend_service.KIND or hint in dividend_service.FAMILY_HINTS:
         return "other"
     if status == "proposed":
         return "proposed"
