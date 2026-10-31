@@ -203,6 +203,9 @@ EXPECTED_WRITES = {
     # Inbox (spec 2026-10-21): batch apply = engine actions under the engine's own locks; owner rules = rule rows only.
     ("/reconciliation/inbox/apply", "POST"), ("/reconciliation/owner-rules/{rule_id}", "PATCH"),
     ("/reconciliation/owner-rules/{rule_id}", "DELETE"),
+    # Reports (openspec add-accounting-reports): budget and saved_report rows only, never ledger rows.
+    ("/reports/budgets", "POST"), ("/reports/budgets/{budget_id}", "PUT"), ("/reports/budgets/{budget_id}", "DELETE"),
+    ("/reports/saved", "POST"), ("/reports/saved/{report_id}", "PUT"), ("/reports/saved/{report_id}", "DELETE"),
 }
 
 

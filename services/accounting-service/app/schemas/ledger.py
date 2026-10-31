@@ -305,6 +305,7 @@ class ProjectOut(BaseModel):
     is_archived: bool
     sort_order: int
     moze_id: str | None
+    exclude_from_reports: bool
 
 
 class OpenAmountOut(BaseModel):

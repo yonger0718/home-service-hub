@@ -247,6 +247,7 @@ class ProjectIn(BaseModel):
     name: Annotated[str, Field(min_length=1, max_length=128)]
     is_archived: bool = False
     sort_order: Int32 = 0
+    exclude_from_reports: bool = False
 
 
 class CounterpartyIn(BaseModel):
