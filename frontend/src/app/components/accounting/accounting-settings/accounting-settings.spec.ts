@@ -584,3 +584,32 @@ describe('AccountingSettingsComponent', () => {
     });
   });
 });
+
+describe('AccountingSettingsComponent 專案 › 不計入報表', () => {
+  it('flips exclude_from_reports with a PUT that keeps the other fields', async () => {
+    await TestBed.configureTestingModule({
+      imports: [AccountingSettingsComponent],
+      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
+    }).compileComponents();
+    const http = TestBed.inject(HttpTestingController);
+    const fixture = TestBed.createComponent(AccountingSettingsComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/preference').flush(PREFERENCE);
+    http.expectOne('/api/accounting/account-groups').flush(GROUPS);
+    for (const req of http.match(r => r.url === '/api/accounting/categories')) req.flush(req.request.params.get('kind') === 'income' ? INCOME_TREE : EXPENSE_TREE);
+    http.expectOne('/api/accounting/projects').flush([{ ...PROJECTS[0], exclude_from_reports: false }, { ...PROJECTS[1], exclude_from_reports: true }]);
+    http.expectOne('/api/accounting/counterparties').flush(COUNTERPARTIES);
+    for (const req of http.match(() => true)) req.flush([]);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+
+    const switches = Array.from(el.querySelectorAll<HTMLButtonElement>('.project-row .project-exclude button'));
+    expect(switches.map(s => s.getAttribute('aria-checked'))).toEqual(['false', 'true']);
+    expect(switches[0].getAttribute('aria-label')).toBe('生活 不計入報表');
+    switches[0].click();
+    const put = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/projects/4');
+    expect(put.request.body).toEqual({ name: '生活', is_archived: false, sort_order: 0, exclude_from_reports: true });
+    put.flush({});
+    http.expectOne('/api/accounting/projects').flush([]);
+  });
+});

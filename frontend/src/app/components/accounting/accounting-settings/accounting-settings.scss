@@ -111,3 +111,18 @@ summary.srow::-webkit-details-marker { display: none; }
 .schedule-review-lines li {
   overflow-wrap: anywhere;
 }
+
+/* 專案 › 不計入報表 (add-accounting-reports): the switch and its label sit between the name and 封存. */
+.project-exclude {
+  align-items: center;
+  color: var(--app-text-muted);
+  display: inline-flex;
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  gap: 6px;
+  white-space: nowrap;
+
+  @media (max-width: 479.98px) {
+    .project-exclude-label { display: none; }
+  }
+}

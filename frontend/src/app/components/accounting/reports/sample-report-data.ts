@@ -3,11 +3,14 @@ import {
   BreakdownResponse,
   BreakdownRow,
   BreakdownSplit,
+  BudgetInput,
+  BudgetStatus,
+  BudgetStatusResponse,
   TREND_ALL,
   TrendQuery,
   TrendResponse,
 } from '../../../models/reports.model';
-import { compareRange, monthOf, shiftMonth } from './report-math';
+import { compareRange, daysInMonth, elapsedDays, monthOf, monthPeriod, shiftMonth } from './report-math';
 
 /**
  * The handoff's sample month (`design_handoff_v3/README.md`, "Sample data"), shaped like the `/reports/*` answers.
@@ -124,6 +127,46 @@ function dimensionRow([label, amount, count, refund]: [string | null, number, nu
   };
 }
 
+/** The two sample projects (專案與預算): 東京旅行 is 不計入報表 and outside the month's figures. */
+interface SampleProject {
+  id: number;
+  name: string;
+  count: number;
+  first: string;
+  /** null = still running (the query's last day). */
+  last: string | null;
+  budget: number;
+  segments: [string, number][];
+}
+
+const PROJECTS: SampleProject[] = [
+  { id: 1, name: '東京旅行', count: 23, first: '2026-10-10', last: '2026-10-15', budget: 25000, segments: [['機票', 9800], ['住宿', 8400], ['餐飲', 3960], ['交通', 1420], ['購物', 1280]] },
+  { id: 2, name: '客廳整理', count: 9, first: '2026-09-01', last: null, budget: 20000, segments: [['家具', 12800], ['收納', 2350], ['燈具', 1690]] },
+];
+
+const projectTotal = (p: SampleProject) => sum(p.segments.map(([, amount]) => amount));
+
+function projectRow(p: SampleProject, query: BreakdownQuery): BreakdownRow {
+  const total = projectTotal(p);
+  return {
+    key: String(p.id),
+    label: p.name,
+    color: null,
+    amount: text(total),
+    refund: '0',
+    count: p.count,
+    avg: text(total / p.count),
+    median: null,
+    min: null,
+    max: null,
+    first_date: p.first,
+    last_date: p.last ?? query.date_to,
+    avg_interval_days: null,
+    compare_amount: query.compare ? '0' : undefined,
+    splits: query.split_by ? p.segments.map(([label, amount], index) => ({ key: String(p.id * 100 + index + 1), label, amount: text(amount), count: Math.max(1, Math.round(p.count / p.segments.length)) })) : undefined,
+  };
+}
+
 /** The sample answer to a breakdown: the same month whatever the dates, which are echoed back. */
 export function sampleBreakdown(query: BreakdownQuery): BreakdownResponse {
   const metric = query.metric ?? 'expense';
@@ -131,9 +174,14 @@ export function sampleBreakdown(query: BreakdownQuery): BreakdownResponse {
   const categories = income ? INCOME : EXPENSE;
   const dimension = DIMENSIONS[query.group_by];
   const rows =
-    query.group_by === 'category' || query.group_by === 'subcategory' || !dimension
-      ? categories.map(c => categoryRow(c, query))
-      : dimension.rows.map((row, index) => dimensionRow(row, index, query));
+    query.group_by === 'project'
+      ? [
+          ...PROJECTS.filter(p => query.include_excluded_projects || p.id !== 1).map(p => projectRow(p, query)),
+          { ...categoryRow({ id: 0, name: '', count: 78, prev: 0, ly: 0, refund: 490, subs: [['（無專案）', 25540, 78]] }, { ...query, split_by: undefined }), key: null, label: '' },
+        ]
+      : query.group_by === 'category' || query.group_by === 'subcategory' || !dimension
+        ? categories.map(c => categoryRow(c, query))
+        : dimension.rows.map((row, index) => dimensionRow(row, index, query));
   const window = query.compare ? compareRange(query.date_from, query.date_to, query.compare) : null;
   const compare = window
     ? {
@@ -211,4 +259,108 @@ export function sampleTrend(query: TrendQuery): TrendResponse {
     }),
   );
   return { currency: 'TWD', granularity: 'month', buckets, average };
+}
+
+// ---- budgets ------------------------------------------------------------------------------------------------------
+
+interface SampleBudget {
+  id: number;
+  scope: BudgetStatus['scope'];
+  category_id: number | null;
+  project_id: number | null;
+  label: string;
+  amount: number;
+  effective_from: string;
+}
+
+/** The canvas's October budgets: four categories, 全部支出 and one per project. */
+const BUDGET_SEEDS: SampleBudget[] = [
+  { id: 1, scope: 'category', category_id: 2, project_id: null, label: '餐飲', amount: 10000, effective_from: '2026-01' },
+  { id: 2, scope: 'category', category_id: 3, project_id: null, label: '交通', amount: 5000, effective_from: '2026-01' },
+  { id: 3, scope: 'category', category_id: 4, project_id: null, label: '購物', amount: 3000, effective_from: '2026-09' },
+  { id: 4, scope: 'category', category_id: 5, project_id: null, label: '娛樂', amount: 2500, effective_from: '2026-01' },
+  { id: 5, scope: 'total', category_id: null, project_id: null, label: '全部支出', amount: 45000, effective_from: '2026-01' },
+  { id: 6, scope: 'project', category_id: null, project_id: 1, label: '東京旅行', amount: 25000, effective_from: '2026-10' },
+  { id: 7, scope: 'project', category_id: null, project_id: 2, label: '客廳整理', amount: 20000, effective_from: '2026-09' },
+];
+
+/** What the sample month spent against a budget: the category's net, the month's expense, or the project's life. */
+function sampleUsed(budget: SampleBudget): number {
+  if (budget.scope === 'total') return SAMPLE_EXPENSE;
+  if (budget.scope === 'category') {
+    const category = EXPENSE.find(c => c.id === budget.category_id);
+    return category ? net(category) : 0;
+  }
+  const project = PROJECTS.find(p => p.id === budget.project_id);
+  return project ? projectTotal(project) : 0;
+}
+
+/**
+ * The budget endpoints on the sample: status for a month, and writes kept in memory for the session so 編輯預算
+ * can be tried before the API exists.
+ */
+export class SampleBudgetStore {
+  private budgets: SampleBudget[] = BUDGET_SEEDS.map(b => ({ ...b }));
+  private nextId = BUDGET_SEEDS.length + 1;
+
+  status(month: string, today: string): BudgetStatusResponse {
+    const period = monthPeriod(month);
+    const elapsed = elapsedDays(period, today);
+    return {
+      month,
+      currency: 'TWD',
+      time_progress: Math.round((elapsed.days / daysInMonth(month)) * 1000) / 1000,
+      budgets: this.budgets.filter(b => b.effective_from <= month).map(b => this.toStatus(b)),
+    };
+  }
+
+  create(input: BudgetInput): BudgetStatus {
+    const label =
+      input.scope === 'total'
+        ? '全部支出'
+        : input.scope === 'category'
+          ? (EXPENSE.find(c => c.id === input.category_id)?.name ?? `類別 ${input.category_id}`)
+          : (PROJECTS.find(p => p.id === input.project_id)?.name ?? `專案 ${input.project_id}`);
+    const budget: SampleBudget = {
+      id: this.nextId++,
+      scope: input.scope,
+      category_id: input.category_id ?? null,
+      project_id: input.project_id ?? null,
+      label,
+      amount: Number(input.amount),
+      effective_from: input.effective_from,
+    };
+    this.budgets.push(budget);
+    return this.toStatus(budget);
+  }
+
+  update(id: number, input: Pick<BudgetInput, 'amount' | 'effective_from'>): BudgetStatus {
+    const budget = this.budgets.find(b => b.id === id);
+    if (!budget) throw new Error(`no sample budget ${id}`);
+    budget.amount = Number(input.amount);
+    budget.effective_from = input.effective_from;
+    return this.toStatus(budget);
+  }
+
+  remove(id: number): void {
+    this.budgets = this.budgets.filter(b => b.id !== id);
+  }
+
+  private toStatus(budget: SampleBudget): BudgetStatus {
+    const used = sampleUsed(budget);
+    return {
+      id: budget.id,
+      scope: budget.scope,
+      category_id: budget.category_id,
+      project_id: budget.project_id,
+      label: budget.label,
+      color: null,
+      limit: text(budget.amount),
+      used: text(used),
+      remaining: text(budget.amount - used),
+      ratio: budget.amount > 0 ? Math.round((used / budget.amount) * 10000) / 10000 : 0,
+      over: used > budget.amount,
+      effective_from: budget.effective_from,
+    };
+  }
 }

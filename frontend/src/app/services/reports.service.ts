@@ -2,19 +2,30 @@ import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Injectable, inject, signal } from '@angular/core';
 import { Observable, OperatorFunction, catchError, of, throwError } from 'rxjs';
 
-import { BreakdownQuery, BreakdownResponse, TrendQuery, TrendResponse } from '../models/reports.model';
-import { sampleBreakdown, sampleTrend } from '../components/accounting/reports/sample-report-data';
+import {
+  BreakdownQuery,
+  BreakdownResponse,
+  BudgetInput,
+  BudgetStatus,
+  BudgetStatusResponse,
+  TrendQuery,
+  TrendResponse,
+} from '../models/reports.model';
+import { SampleBudgetStore, sampleBreakdown, sampleTrend } from '../components/accounting/reports/sample-report-data';
+import { todayIso } from '../components/accounting/dates';
 import { toParams } from './accounting.service';
 
 /**
- * `GET /reports/breakdown` and `/reports/trend` (openspec `add-accounting-reports`, design D1). Until the
- * accounting service ships them, a 404 answers with the handoff's sample month and `sample` turns on, so the page
- * can say it is showing 示範資料; every other error is the caller's.
+ * `GET /reports/breakdown`, `/reports/trend` and the budget endpoints (openspec `add-accounting-reports`, design
+ * D1 / D3). Until the accounting service ships them, a 404 answers with the handoff's sample month and `sample`
+ * turns on, so the page can say it is showing 示範資料; every other error is the caller's. Budget writes on the
+ * sample land in an in-memory store so the editor can be tried end to end.
  */
 @Injectable({ providedIn: 'root' })
 export class ReportsService {
   private readonly http = inject(HttpClient);
   private readonly apiUrl = '/api/accounting/reports';
+  private readonly sampleBudgets = new SampleBudgetStore();
 
   /** A report request met a 404: the figures on screen are the sample data, not the ledger. */
   readonly sample = signal(false);
@@ -29,6 +40,27 @@ export class ReportsService {
     return this.http
       .get<TrendResponse>(`${this.apiUrl}/trend`, { params: toParams(query) })
       .pipe(this.sampleOn404(() => sampleTrend(query)));
+  }
+
+  getBudgetStatus(month: string): Observable<BudgetStatusResponse> {
+    return this.http
+      .get<BudgetStatusResponse>(`${this.apiUrl}/budgets/status`, { params: { month } })
+      .pipe(this.sampleOn404(() => this.sampleBudgets.status(month, todayIso())));
+  }
+
+  createBudget(input: BudgetInput): Observable<BudgetStatus> {
+    return this.http.post<BudgetStatus>(`${this.apiUrl}/budgets`, input).pipe(this.sampleOn404(() => this.sampleBudgets.create(input)));
+  }
+
+  /** A new amount from `effective_from` on; the server keeps earlier months on the old row. */
+  updateBudget(id: number, input: Pick<BudgetInput, 'amount' | 'effective_from'>): Observable<BudgetStatus> {
+    return this.http
+      .put<BudgetStatus>(`${this.apiUrl}/budgets/${id}`, input)
+      .pipe(this.sampleOn404(() => this.sampleBudgets.update(id, input)));
+  }
+
+  deleteBudget(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.apiUrl}/budgets/${id}`).pipe(this.sampleOn404(() => this.sampleBudgets.remove(id)));
   }
 
   private sampleOn404<T>(make: () => T): OperatorFunction<T, T> {

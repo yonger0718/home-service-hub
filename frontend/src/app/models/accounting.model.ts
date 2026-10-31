@@ -502,12 +502,15 @@ export interface Project {
   is_archived: boolean;
   sort_order: number;
   moze_id: string | null;
+  /** 不計入報表 (add-accounting-reports D2); absent from an older API. */
+  exclude_from_reports?: boolean;
 }
 
 export interface ProjectInput {
   name: string;
   is_archived?: boolean;
   sort_order?: number;
+  exclude_from_reports?: boolean;
 }
 
 export interface Counterparty {

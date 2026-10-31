@@ -23,6 +23,7 @@ import { formatMoney } from '../format';
 import { writeErrorMessage } from '../http-errors';
 import { ReportView, summarizeReport } from './import-report';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
+import { SwitchComponent } from '../../ui/switch/switch';
 
 export type CategoryTab = 'expense' | 'income' | 'transfer_out' | 'receivable' | 'payable';
 
@@ -49,7 +50,7 @@ function swap<T>(list: T[], index: number, delta: number): T[] | null {
 @Component({
   selector: 'app-accounting-settings',
   standalone: true,
-  imports: [PageHeaderComponent, DatePipe, DecimalPipe],
+  imports: [PageHeaderComponent, SwitchComponent, DatePipe, DecimalPipe],
   templateUrl: './accounting-settings.html',
   styleUrl: './accounting-settings.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -385,8 +386,10 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
   }
 
   // 專案
-  saveProject(project: Project, patch: Partial<Pick<Project, 'name' | 'is_archived' | 'sort_order'>>): void {
-    const body = { name: project.name, is_archived: project.is_archived, sort_order: project.sort_order, ...patch };
+  saveProject(project: Project, patch: Partial<Pick<Project, 'name' | 'is_archived' | 'sort_order' | 'exclude_from_reports'>>): void {
+    // 不計入報表 (add-accounting-reports) rides along once the API reports it, so an older server never sees the field.
+    const exclude = project.exclude_from_reports === undefined ? {} : { exclude_from_reports: project.exclude_from_reports };
+    const body = { name: project.name, is_archived: project.is_archived, sort_order: project.sort_order, ...exclude, ...patch };
     body.name = body.name.trim();
     if (body.name) {
       this.write(this.service.updateProject(project.id, body), () => this.loadProjects(), '名稱重複');
