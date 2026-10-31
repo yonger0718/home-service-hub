@@ -31,6 +31,7 @@ const PAGES: [string, string][] = [
   ['/accounting/entries/9/group', 'app-split-group'],
   ['/accounting/entries/9/edit', 'app-entry-form'],
   ['/accounting/settings', 'app-accounting-settings'],
+  ['/accounting/reports', 'app-accounting-reports'],
   ['/accounting/reminders', 'app-accounting-reminders'],
 ];
 
@@ -132,7 +133,8 @@ describe('accounting routes per viewport', () => {
             return;
           }
           const list = url.startsWith('/accounting/accounts') ? LISTS['accounts'] : LISTS['timeline'];
-          if (url === '/accounting/settings') {
+          if (url === '/accounting/settings' || url === '/accounting/reports') {
+            // Whole-page routes: no list beside them.
             expect(root.querySelector('.dbody')).toBeNull();
           } else if (selector === list) {
             expect(root.querySelector(`.list-pane ${selector}`)).not.toBeNull();
@@ -182,6 +184,7 @@ const LIST_LEVEL: [string, string, string?][] = [
   ['/accounting', '記帳記錄'],
   ['/accounting/accounts', '記帳帳戶'],
   ['/accounting/settings', '記帳設定'],
+  ['/accounting/reports', '報表'],
   ['/settings', '設定'],
 ];
 
@@ -382,12 +385,13 @@ describe('accounting route redirects and shortcuts', () => {
 });
 
 describe('accounting navigation', () => {
-  it('points the accounting sub-nav at 記錄, 帳戶 and 記帳設定', () => {
+  it('points the accounting sub-nav at 記錄, 帳戶, 報表 and 記帳設定', () => {
     const accounting = NAV_GROUPS.find(group => group.id === 'accounting')!;
     expect(accounting.defaultPath).toBe('/accounting');
     expect(accounting.items.map(item => [item.label, item.path])).toEqual([
       ['記錄', '/accounting'],
       ['帳戶', '/accounting/accounts'],
+      ['報表', '/accounting/reports'],
       ['記帳設定', '/accounting/settings'],
     ]);
     expect(accounting.items[0].title).toBe('記帳記錄');

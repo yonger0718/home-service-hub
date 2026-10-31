@@ -62,6 +62,14 @@
      tint; #146b4b 5.56 / 5.06 on green-soft). Only pills / badges use it; plain small text keeps the ink pair. */
   --c-red-pill-ink: #b5353a;  --c-green-pill-ink: #146b4b;
   --app-category-other: #8a94a6;   /* 支出類別分佈 其他 swatch (canvas C.other; same in both themes) */
+  /* 報表 spend comparisons (design_handoff_v3 colour mapping): 多花 / 少花 have their own hues, never the gain/loss
+     pair, so the 紅漲綠跌 setting cannot flip them. Small text: #b5323a 6.5:1, #2f6f9f 5.4:1 on --app-surface. */
+  --app-spend-more: #b5323a;
+  --app-spend-less: #2f6f9f;
+  /* 報表 series palette for rows without a category colour (the canvas PAL): primary, then muted teal / amber /
+     rose / violet / slate / grey. */
+  --app-series-1: #533afd; --app-series-2: #4f8f8a; --app-series-3: #b7843f; --app-series-4: #b9687e;
+  --app-series-5: #7e78a8; --app-series-6: #5f7f98; --app-series-7: #8a93a3;
 
   --app-buy:  #533afd;  --app-buy-soft:  rgba(83, 58, 253, 0.10);   /* purchases = indigo */
   --app-sell: #51607a;  --app-sell-soft: rgba(81, 96, 121, 0.12);   /* proceeds = neutral slate */
@@ -200,6 +208,11 @@
   --app-primary-ink-bg: #6c5ce7;
   --app-primary-ink-bg-hover: #5a4ad1;
   --app-category-other: #8a94a6;   /* 支出類別分佈 其他 swatch (canvas C.other; same in both themes) */
+  /* 報表 多花 / 少花 on the dark surfaces: #ff8a8e 7.4:1, #7fb5e0 7.9:1 on #171c24. */
+  --app-spend-more: #ff8a8e;
+  --app-spend-less: #7fb5e0;
+  --app-series-1: #8b7dff; --app-series-2: #6fb3ae; --app-series-3: #d0a06a; --app-series-4: #d38a9c;
+  --app-series-5: #aba6d0; --app-series-6: #8daec7; --app-series-7: #7d8696;
   --app-buy: #8b7dff;  --app-buy-soft: rgba(139, 125, 255, 0.16);
   --app-sell: #9aa6bd; --app-sell-soft: rgba(154, 166, 189, 0.16);
   --app-card-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);

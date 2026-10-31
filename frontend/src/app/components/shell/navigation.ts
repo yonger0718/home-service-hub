@@ -55,6 +55,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: 'accounting-timeline', path: '/accounting', icon: 'pi-list', label: '記錄', sidebarLabel: '記帳記錄', title: '記帳記錄', group: 'accounting', exact: true },
       { id: 'accounting', path: '/accounting/accounts', icon: 'pi-wallet', label: '帳戶', sidebarLabel: '帳戶', title: '記帳帳戶', group: 'accounting', sub: true },
+      { id: 'accounting-reports', path: '/accounting/reports', icon: 'pi-chart-pie', label: '報表', sidebarLabel: '報表', title: '報表', group: 'accounting', sub: true },
       { id: 'accounting-settings', path: '/accounting/settings', icon: 'pi-sliders-h', label: '記帳設定', sidebarLabel: '記帳設定', title: '記帳設定', group: 'accounting', sub: true, exact: true },
     ],
   },

@@ -11,6 +11,7 @@ export type AccountingPage =
   | 'entryDetail'
   | 'splitGroup'
   | 'settings'
+  | 'reports'
   | 'reminders';
 
 /** Pages that act as the left-hand list in the two-pane layout (Task 21). */
@@ -33,5 +34,6 @@ export const ACCOUNTING_PAGES: Record<AccountingPage, PageLoader> = {
   entryDetail: () => import('./entry-detail/entry-detail').then(m => m.EntryDetailComponent),
   splitGroup: () => import('./split-group/split-group').then(m => m.SplitGroupComponent),
   settings: () => import('./accounting-settings/accounting-settings').then(m => m.AccountingSettingsComponent),
+  reports: () => import('./reports/reports').then(m => m.AccountingReportsComponent),
   reminders: () => import('./reminders/reminders').then(m => m.AccountingRemindersComponent),
 };
