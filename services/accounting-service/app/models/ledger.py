@@ -21,7 +21,7 @@ from sqlalchemy import (
     event,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, ENUM
+from sqlalchemy.dialects.postgresql import ARRAY, ENUM, JSONB
 from sqlalchemy.sql import func
 
 from ..database import Base, TimestampMixin
@@ -178,6 +178,7 @@ class Project(Base):
     is_archived = Column(Boolean, nullable=False, server_default=text("false"))
     sort_order = Column(Integer, nullable=False, server_default=text("0"))
     moze_id = Column(String(64), nullable=True, unique=True)
+    exclude_from_reports = Column(Boolean, nullable=False, server_default=text("false"))
 
 
 class Counterparty(Base):
@@ -324,3 +325,34 @@ class Preference(Base):
     hide_rewards_on_timeline = Column(Boolean, nullable=False, server_default=text("false"))
     abbreviate_totals = Column(Boolean, nullable=False, server_default=text("true"))
 
+
+class Budget(Base):
+    __tablename__ = "budget"
+    __table_args__ = (
+        CheckConstraint("scope IN ('total', 'category', 'project')", name="ck_budget_scope"),
+        CheckConstraint("amount > 0", name="ck_budget_amount_positive"),
+        Index("ix_budget_identity", "scope", "category_id", "project_id", "effective_from"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    scope = Column(String(16), nullable=False)
+    category_id = Column(Integer, ForeignKey("category.id", ondelete="CASCADE"), nullable=True)
+    project_id = Column(Integer, ForeignKey("project.id", ondelete="CASCADE"), nullable=True)
+    amount = Column(Numeric(20, 4), nullable=False)
+    effective_from = Column(String(7), nullable=True)
+    archived = Column(Boolean, nullable=False, server_default=text("false"))
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class SavedReport(Base):
+    __tablename__ = "saved_report"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(40), nullable=False, unique=True)
+    config = Column(JSONB, nullable=False)
+    chart = Column(String(8), nullable=False)
+    pinned = Column(Boolean, nullable=False, server_default=text("false"))
+    sort_order = Column(Integer, nullable=False, server_default=text("0"))
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())

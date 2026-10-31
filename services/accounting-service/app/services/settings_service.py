@@ -934,6 +934,7 @@ def _project_dict(project: Project) -> dict:
     return {
         "id": project.id, "name": project.name, "is_archived": project.is_archived,
         "sort_order": project.sort_order, "moze_id": project.moze_id,
+        "exclude_from_reports": project.exclude_from_reports,
     }
 
 

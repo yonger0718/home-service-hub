@@ -409,6 +409,16 @@ def test_projects_crud_and_delete_rule(client, db_session, seed):
     assert client.delete(f"/projects/{trip['id']}").status_code == 204
 
 
+def test_project_exclude_from_reports_round_trip(client):
+    created = client.post("/projects", json={"name": "報表外"})
+    assert created.status_code == 201 and created.json()["exclude_from_reports"] is False
+    project_id = created.json()["id"]
+    updated = client.put(f"/projects/{project_id}", json={"name": "報表外", "exclude_from_reports": True})
+    assert updated.status_code == 200 and updated.json()["exclude_from_reports"] is True
+    listed = {project["id"]: project for project in client.get("/projects").json()}
+    assert listed[project_id]["exclude_from_reports"] is True
+
+
 # --- counterparties ------------------------------------------------------------------
 
 
