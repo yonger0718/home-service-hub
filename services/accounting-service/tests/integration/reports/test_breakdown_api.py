@@ -3,7 +3,9 @@
 from datetime import date
 from decimal import Decimal
 
-from app.models import Account
+from sqlalchemy import select
+
+from app.models import Account, LedgerEntry
 from tests.helpers import make_entry
 
 OCTOBER = {"date_from": "2026-10-01", "date_to": "2026-10-31"}
@@ -170,6 +172,26 @@ def test_compare_weekday_matches_by_key(client, ledger):
 
     assert Decimal(rows["6"]["compare_amount"]) == 520
     assert rows["7"]["compare_amount"] is None
+
+
+def test_merchant_of_a_split_group_keys_its_members(client, db_session, ledger):
+    before = _rows(_breakdown(client, **OCTOBER, group_by="merchant"))[None]
+    members = [{"account_id": ledger.wallet, "kind": "expense", "amount": amount, "category_id": ledger.dinner}
+               for amount in ("300", "200")]
+    created = client.post("/splits", json={"entry_date": "2026-10-25", "members": members, "name": "聚餐",
+                                           "merchant": "饗食天堂"})
+    assert created.status_code == 201, created.text
+    member_ids = created.json()["member_ids"]
+    assert db_session.scalars(select(LedgerEntry.merchant).where(LedgerEntry.id.in_(member_ids))).all() == [None, None]
+
+    rows = _rows(_breakdown(client, **OCTOBER, group_by="merchant"))
+    filtered = _breakdown(client, **OCTOBER, group_by="merchant", merchant="饗食")
+
+    feast = rows["饗食天堂"]
+    assert (Decimal(feast["amount"]), feast["count"], feast["label"]) == (500, 2, "饗食天堂")
+    assert (Decimal(feast["min"]), Decimal(feast["max"])) == (200, 300)
+    assert (rows[None]["count"], rows[None]["amount"]) == (before["count"], before["amount"])
+    assert [(row["key"], Decimal(row["amount"]), row["count"]) for row in filtered["rows"]] == [("饗食天堂", 500, 2)]
 
 
 def test_invalid_split_422(client, ledger):

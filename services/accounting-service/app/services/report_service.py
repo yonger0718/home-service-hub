@@ -15,7 +15,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from sqlalchemy import Date, DateTime, Integer, Text, and_, cast, extract, func, literal, select, true, union_all
 from sqlalchemy.orm import Session, aliased
 
-from ..models import Account, Category, Counterparty, LedgerEntry, Project
+from ..models import Account, Category, Counterparty, EntryGroup, LedgerEntry, Project
 from . import ledger_service
 from .report_rules import (
     AMOUNT_QUANTUM,
@@ -58,8 +58,11 @@ ZERO_SUMS: Sums = (Decimal(0), Decimal(0), Decimal(0), 0)
 
 def _key_column(dimension: Dimension, root_parent, tag_column):
     """The SQL grouping expression of a dimension. `category` is the root (the parent when there is one, else the
-    category itself — `_category_expense`'s outer-join trick); `tag_column` is the unnested tag or None."""
+    category itself — `_category_expense`'s outer-join trick); `tag_column` is the unnested tag or None. `merchant` is
+    the entry's own, else its group's (a split receipt carries the merchant on `EntryGroup`, as the filter matches)."""
     entry = LedgerEntry
+    if dimension == "merchant":
+        return func.coalesce(entry.merchant, EntryGroup.merchant)
     if dimension == "category":
         return func.coalesce(root_parent.id, Category.id)
     if dimension == "tag":
@@ -72,7 +75,7 @@ def _key_column(dimension: Dimension, root_parent, tag_column):
         return cast(extract("isodow", entry.entry_date), Integer)
     return {
         "subcategory": entry.category_id, "account": entry.account_id, "project": entry.project_id,
-        "counterparty": entry.counterparty_id, "merchant": entry.merchant, "day": entry.entry_date,
+        "counterparty": entry.counterparty_id, "day": entry.entry_date,
     }[dimension]
 
 
@@ -109,6 +112,9 @@ def _grouped_select(where: list, dimensions: tuple[Dimension, ...], *, untagged:
         stmt = stmt.outerjoin(Category, Category.id == LedgerEntry.category_id).outerjoin(
             parent, parent.id == Category.parent_id
         )
+    if "merchant" in dimensions:
+        # group_id references entry_group's primary key: at most one group per entry, so no row is multiplied
+        stmt = stmt.outerjoin(EntryGroup, EntryGroup.id == LedgerEntry.group_id)
     if tags is not None:
         stmt = stmt.join(tags, true())
     if untagged:

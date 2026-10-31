@@ -64,6 +64,7 @@ Report endpoints and the month and daily summaries SHALL use one rule set: expen
 - **WHEN** a breakdown is grouped by each dimension
 - **THEN** `category`, `subcategory`, `account`, `project` and `counterparty` keys SHALL be the id as text, `merchant` and `tag` keys the text itself, `month` `YYYY-MM`, `week` and `day` `YYYY-MM-DD`, `weekday` `"1"` to `"7"` with 1 = Monday; a `null` key SHALL mean no value for the dimension and carry `label: ""`; time dimensions SHALL never have a null key
 - **AND** category and subcategory rows SHALL carry the category name and colour (a subcategory row is the entry's own category, which may itself be top-level), account rows the account name and colour, project and counterparty rows the name with `color: null`
+- **AND** a `merchant` key SHALL be the entry's own merchant, else the merchant of its split group (members of a split receipt without their own merchant fall under the group's merchant, as the `merchant` filter matches them)
 
 #### Scenario: Weeks start on Monday
 - **WHEN** `group_by=week` is read for 2026-10-05 to 2026-10-18
