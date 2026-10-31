@@ -123,6 +123,55 @@ def test_compare_previous_whole_month(client, ledger):
     assert Decimal(_rows(body)[str(ledger.transport)]["compare_amount"]) == Decimal("-200")
 
 
+def test_compare_months_pair_by_position(client, db_session, ledger):
+    wallet = db_session.get(Account, ledger.wallet)
+    make_entry(db_session, wallet, "-1000", entry_date=date(2026, 7, 10))
+    make_entry(db_session, wallet, "-2000", entry_date=date(2026, 8, 10))
+    db_session.commit()
+
+    body = _breakdown(client, date_from="2026-09-01", date_to="2026-10-31", group_by="month", compare="previous")
+
+    assert (body["compare"]["date_from"], body["compare"]["date_to"]) == ("2026-07-01", "2026-08-31")
+    rows = _rows(body)
+    assert Decimal(rows["2026-09"]["amount"]) == 3290
+    assert Decimal(rows["2026-09"]["compare_amount"]) == 1000
+    assert Decimal(rows["2026-10"]["compare_amount"]) == 2000
+
+
+def test_compare_weeks_pair_by_position(client, ledger):
+    # current weeks from Monday 09-28: 09-28, 10-05, 10-12, 10-19, 10-26; September's from 08-31: 08-31 (no spend),
+    # 09-07 (380), 09-14 (110 + 100), 09-21 (the 300 refund), 09-28 (3000) — the 09-28 key appears in both windows
+    rows = _rows(_breakdown(client, **OCTOBER, group_by="week", compare="previous"))
+
+    assert rows["2026-09-28"]["compare_amount"] is None
+    assert Decimal(rows["2026-10-05"]["compare_amount"]) == 380
+    assert Decimal(rows["2026-10-12"]["compare_amount"]) == 210
+    assert Decimal(rows["2026-10-19"]["compare_amount"]) == -300
+
+
+def test_compare_last_year_days_pair_by_position(client, db_session, ledger):
+    wallet = db_session.get(Account, ledger.wallet)
+    make_entry(db_session, wallet, "-70", entry_date=date(2025, 10, 3))
+    make_entry(db_session, wallet, "-40", entry_date=date(2025, 10, 6))
+    db_session.commit()
+
+    body = _breakdown(client, date_from="2026-10-03", date_to="2026-10-06", group_by="day", compare="last_year")
+
+    rows = _rows(body)
+    assert list(rows) == ["2026-10-03", "2026-10-04", "2026-10-06"]
+    assert Decimal(rows["2026-10-03"]["compare_amount"]) == 70
+    assert rows["2026-10-04"]["compare_amount"] is None
+    assert Decimal(rows["2026-10-06"]["compare_amount"]) == 40
+
+
+def test_compare_weekday_matches_by_key(client, ledger):
+    # 2025-10: 晚餐 520 on Saturday 10-11, 午餐 150 on Monday 10-20, salary on Sunday 10-05
+    rows = _rows(_breakdown(client, **OCTOBER, group_by="weekday", compare="last_year"))
+
+    assert Decimal(rows["6"]["compare_amount"]) == 520
+    assert rows["7"]["compare_amount"] is None
+
+
 def test_invalid_split_422(client, ledger):
     same = client.get("/reports/breakdown", params={**OCTOBER, "group_by": "tag", "split_by": "tag"})
     reversed_dates = client.get("/reports/breakdown", params={

@@ -38,6 +38,7 @@ MAX_ROWS = 200
 MAX_STAT_GROUPS = 50
 OTHER_KEY = "__other__"
 TIME_DIMENSIONS = frozenset({"month", "week", "day", "weekday"})
+ORDINAL_DIMENSIONS = frozenset({"month", "week", "day"})  # compare pairs their buckets by position
 _ROW_FILTERS = {"expense": spend_filter, "income": income_filter, "net": counted_filter, "count": counted_filter}
 
 
@@ -262,15 +263,27 @@ def _fold(rows: list[dict], metric: Metric) -> list[dict]:
     return [*kept, other]
 
 
+def _bucket_keys(dimension: Granularity, date_from: date, date_to: date) -> list[str]:
+    """The row keys of every `month` / `week` / `day` bucket of a window, in order (as `_key_column` renders them)."""
+    starts = _bucket_starts(dimension, date_from, date_to)
+    return [start.strftime("%Y-%m") if dimension == "month" else start.isoformat() for start in starts]
+
+
 def _compare(db: Session, f: ReportFilters, compare: Compare, metric: Metric, group_by: Dimension,
              rates_for) -> tuple[dict, dict[str | None, Decimal]]:
-    """The comparison window: its five totals and each group key's amount there."""
+    """The comparison window: its five totals and, per current row key, the comparison amount. `month`, `week` and
+    `day` pair buckets by position from each window's start (the i-th comparison bucket goes to the i-th current
+    bucket; unpaired buckets get nothing); every other dimension, `weekday` included, matches the same key."""
     date_from, date_to = compare_window(f.date_from, f.date_to, compare)
     where = entry_filters(db, replace(f, date_from=date_from, date_to=date_to))
     totals_raw = _group_rows(db, [*where, counted_filter()], ())
     rows_raw = _group_rows(db, [*where, _ROW_FILTERS[metric]()], (group_by,))
     rates = rates_for(totals_raw + rows_raw)
     amounts = {keys[0]: _amount(sums, metric) for keys, sums in _convert_groups(rows_raw, rates).items()}
+    if group_by in ORDINAL_DIMENSIONS:
+        current = _bucket_keys(group_by, f.date_from, f.date_to)
+        previous = _bucket_keys(group_by, date_from, date_to)
+        amounts = {key: amounts[old] for key, old in zip(current, previous) if old in amounts}
     return {"date_from": date_from, "date_to": date_to, "totals": _totals(totals_raw, rates)}, amounts
 
 

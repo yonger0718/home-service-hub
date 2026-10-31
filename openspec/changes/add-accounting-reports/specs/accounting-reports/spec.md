@@ -201,7 +201,7 @@ Report `totals` and `compare.totals` SHALL be one sum per currency converted onc
 
 ### Requirement: Comparison windows
 
-With `compare`, the breakdown SHALL return `compare` with the comparison window's dates and its five totals, and each row's `compare_amount` SHALL be the same key's amount there or null when the key is absent. `previous` and `last_year` SHALL resolve the window as the scenarios below state.
+With `compare`, the breakdown SHALL return `compare` with the comparison window's dates and its five totals, and each row's `compare_amount` SHALL be the same key's amount there (for `month`, `week` and `day`, the bucket at the same position) or null when there is none. `previous` and `last_year` SHALL resolve the window as the scenarios below state.
 
 #### Scenario: Previous for whole calendar months
 - **WHEN** `compare=previous` is sent with a range starting on the 1st and ending on the last day of a month
@@ -214,6 +214,11 @@ With `compare`, the breakdown SHALL return `compare` with the comparison window'
 #### Scenario: Last year
 - **WHEN** `compare=last_year` is sent
 - **THEN** both dates SHALL move back one year with Feb 29 becoming Feb 28: `2024-01-01..2024-12-31` → `2023-01-01..2023-12-31`, `2024-02-29` → `2023-02-28`
+
+#### Scenario: Time buckets pair by position
+- **WHEN** `compare` is sent with `group_by` `month`, `week` or `day`
+- **THEN** each window's buckets SHALL be enumerated from its start (months from `date_from`'s month, weeks from the Monday of `date_from`'s week, every day) and the i-th comparison bucket's amount SHALL be the `compare_amount` of the i-th current bucket, null when the comparison window has no such bucket or it has no amount: `2026-09-01..2026-10-31` by month with `compare=previous` pairs 2026-09 with 2026-07 and 2026-10 with 2026-08
+- **AND** `weekday` and the non-time dimensions SHALL keep matching the same key
 
 ### Requirement: Budget writes
 
