@@ -703,14 +703,20 @@ is available, with `balance_kind` `"valuation"` and a `valuation` object; a ledg
   `enabled_from` (no stand-in for a day settled before it).
   `PUT /settings/reconciliation` replaces the whole document: a block you omit (including `settlement` and `policy`) resets to
   its defaults. GET the current document, edit it and PUT it back whole.
-- Policy action `book_settlement` (cap-exempt, off by default): books an open `settlement` case's candidate as a ledger entry.
-- Case kinds and hints: kind `settlement` (a bookable candidate, no hint); `ambiguous` with hint `settlement_ambiguous`;
-  `line_unmatched` with hints `settlement_pending` (no settlement yet), `settlement_mismatch` (amounts disagree),
-  `source_drift` (the feed changed under a claim) and `orphaned_stand_in` (a stand-in booking no line claims; its context
-  carries `settlement_booking_id`). Claims of rule `settlement_stand_in` are the stand-in's.
+- Policy action `book_settlement`: enabled by default with `max_amount` "0", and cap-exempt (no per-statement or monthly
+  budget); it acts whenever the policy itself (`policy.enabled`) is on. It books an open `settlement` case's candidate as a ledger entry, so set `enabled: false` before an account gets
+  its `settlement_source` (see the rollout in `deploy/statements/README.md`).
+- Case kinds and hints: kind `settlement` (a bookable candidate, no hint; with hint `source_drift`: the feed changed under a
+  booked, claimed pair); `ambiguous` with hint `settlement_ambiguous`; `line_unmatched` with hints `settlement_pending` (no
+  settlement yet) and `settlement_mismatch` (amounts disagree); `entry_unmatched` with hint `orphaned_stand_in` (a stand-in
+  booking no line claims; its context carries `settlement_booking_id`). Claims of rule `settlement_stand_in` are the
+  stand-in's. A dismissal of a `settlement`, `settlement_pending`, `settlement_ambiguous` or `settlement_mismatch` case holds
+  for its line's event whichever of these kinds the next reconcile derives (no re-booking after a dismissal).
 - `POST /reconciliation/settlements/run` (body `{"source": "portfolio:cathay"}`, INGEST scope): runs the stand-in job now and
-  flags the statements it touched, and those with open settlement cases, for re-check; the answer is counts and codes
-  (`status`, `booked`, `skipped`, `housekeeping`, `flagged`). The daily `POST /reconciliation/sweep` runs the same job first and
+  flags the statements it touched, and those with open settlement cases, for re-check, then reconciles them (one transaction
+  each, then the owner rules and the policy, as the sweep does) so the flag clears within the call; a statement that yields
+  keeps its flag for the sweep. The answer is counts, ids and codes (`status`, `booked`, `skipped`, `housekeeping`,
+  `flagged`, `reconciled`, `busy`, `errors` as `{statement_id, error}`). The daily `POST /reconciliation/sweep` runs the same job first and
   reports it as `stand_ins` (`status`, `booked`, `skipped`, `flagged`); a failed job never costs the day's reconciliation.
 - The route has no `dry_run` parameter. The read-only dry run is `trade_settlement_service.run_stand_ins(engine, dry_run=True)`
   from a Python shell: it books nothing (every `booked` entry has `booking_id: null`), rolls back, and ignores `stand_in_enabled`

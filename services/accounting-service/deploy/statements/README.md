@@ -504,16 +504,29 @@ Order:
 1. Deploy the portfolio release (migration `e9settle`); confirm `CASH_LEG_ENABLED=true` in its env.
 2. Deploy the accounting API (migration `d5e1f7a3b9c2`; `PORTFOLIO_BASE_URL` in its env if not the default `http://127.0.0.1:8001`,
    optional `PORTFOLIO_READ_TOKEN`) and the worker checkout.
-3. Owner SQL: `UPDATE account SET settlement_source = 'portfolio:cathay' WHERE id = 67;`. `valuation_source` on 117 waits for the
-   SPA follow-up that renders `balance: null` as 「市值暫不可得」 (rollout gate).
-4. Settings PUT: `PUT /settings/reconciliation` replaces the whole document, so GET the current one, edit, PUT it back whole.
-   For the dry run set `policy.actions.book_settlement.enabled = false` and
+3. Settings PUT, BEFORE the owner SQL of step 4: `book_settlement` is enabled by default (`max_amount` "0", cap-exempt), so
+   any reconcile of 67 after step 4 would book under the stored settings. `PUT /settings/reconciliation` replaces the whole
+   document, so GET the current one, edit, PUT it back whole. For the dry run set
+   `policy.actions.book_settlement.enabled = false` and
    `settlement = {"stand_in_enabled": false, "enabled_from": null, "target_accounts": {"67": 117}, "twin_window_days": 3}`
-   (`dividend_category_id` stays null).
+   (`dividend_category_id` stays null). GET it back and check both switches read `false`.
+4. Owner SQL: `UPDATE account SET settlement_source = 'portfolio:cathay' WHERE id = 67;`. `valuation_source` on 117 waits for the
+   SPA follow-up that renders `balance: null` as 「市值暫不可得」 (rollout gate).
 5. Dry run: `r6_case_dump.py` baseline and candidate, then `r6_dryrun.py --settlements [--stand-ins report.json]`
    (the stand-in report is `run_stand_ins(engine, dry_run=True)` as JSON: read-only, `booking_id: null`, ignores
-   `stand_in_enabled`, `previewed_settings` shows what it assumed). The owner reviews the listing case by case, one case per
+   `stand_in_enabled`, `previewed_settings` shows what it assumed). The candidate dump reads the settlement feed and lists
+   each settlement line's outcome (`book_settlement`, `ambiguous`, `pending`, `mismatch`, `drift`, `stand_in_claim`) as the
+   next reconcile would derive it, without writing. The owner reviews the listing case by case, one case per
    question; counts from 2026-10-19 are not expected to hold.
+
+   Before step 6 the owner confirms 67's `statement_live_from` and the chosen `enabled_from` are on or after 2026-01-01
+   (the bank business-day table starts there).
 6. Enable: `book_settlement.enabled = true`; `settlement.stand_in_enabled = true` with `enabled_from` = the go-live date (no
    stand-ins for days settled before it); reconcile 67's live statements; check the first stand-in on the next settlement day.
    `POST /reconciliation/settlements/run` needs the INGEST scope; the daily sweep runs the stand-in job first (`stand_ins` in its answer).
+
+Rollback: once the first `settlement` case exists, an accounting API rolled back below this release cannot load it (the
+case kind is a new enum value: inbox and case reads return 500), and the migrations' downgrades leave the enum values in
+place. So there is no code rollback after that point: rollback = disable (`policy.actions.book_settlement.enabled = false`,
+`settlement.stand_in_enabled = false`, one whole-document settings PUT) and roll forward with a fix. Before the first
+settlement case (steps 1–2 only), the previous release can still be restored.
