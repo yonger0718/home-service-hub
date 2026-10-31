@@ -205,4 +205,3 @@ def seed_stand_in(db, bank, target, *, settlement_date, net, fingerprint, ids, o
     db.add(row)
     db.commit()
     return row
-
