@@ -134,7 +134,7 @@ export class ReportPlanComponent {
           first == null || last == null
             ? []
             : [finished ? `${shortDate(first)} – ${shortDate(last)} · ${days} 天 · 日均 ${n0(total / days)}` : `${shortDate(first)} 起 · 進行中`];
-        const meta = [...dates, ...(project?.exclude_from_reports ? ['不計入月報'] : [])].join(' · ');
+        const meta = [...dates, ...(project?.exclude_from_reports ? ['不計入報表'] : [])].join(' · ');
         const splits = (row.splits ?? []).filter(split => num(split.amount) > 0);
         return {
           key: row.key!,
