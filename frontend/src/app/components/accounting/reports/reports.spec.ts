@@ -510,13 +510,14 @@ describe('AccountingReportsComponent', () => {
       expect(cards[1].querySelector('.pl-tag')?.textContent?.trim()).toBe('進行中');
     });
 
-    it('keeps the project cards when the API leaves first / last date out (over 50 groups, 其他), without inventing dates', async () => {
+    it('keeps the project cards when the API leaves first / last date out (over 50 groups), without inventing dates, and never renders the 其他 fold as a card', async () => {
       const { harness, el } = await open('/accounting/reports?month=2026-10&tab=plan', 'panes', PROJECTS);
       const reads = pending();
       const lifetime = reads.breakdowns.pop()!;
       answer(reads);
       const report = sampleBreakdown(breakdownQuery(lifetime));
-      lifetime.flush({ ...report, rows: report.rows.map(row => ({ ...row, first_date: null, last_date: null })) });
+      const undated = report.rows.map(row => ({ ...row, first_date: null, last_date: null }));
+      lifetime.flush({ ...report, rows: [...undated, { ...undated[0], key: '__other__', label: '其他', amount: '999' }] });
       flushStatus();
       http.expectOne(r => r.url === '/api/accounting/categories').flush(ROOTS);
       harness.detectChanges();

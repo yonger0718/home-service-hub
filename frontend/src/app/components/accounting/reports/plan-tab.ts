@@ -4,6 +4,7 @@ import { CategoryNode, Project } from '../../../models/accounting.model';
 import { BreakdownResponse, BudgetInput, BudgetStatus, BudgetStatusResponse } from '../../../models/reports.model';
 import { daysBetween, shortDate } from '../dates';
 import type { LoadState } from './reports';
+import { OTHER_KEY } from './rank-tab';
 import { ReportPeriod, daysInMonth, monthOf, n0, num, pct1, seriesColor } from './report-math';
 
 interface BudgetBar {
@@ -106,7 +107,8 @@ export class ReportPlanComponent {
 
   /**
    * Projects active in the period: entries on or before its last day and on or after its first. The API leaves
-   * first / last date out above 50 groups and on 其他; unknown dates keep the card and drop the date line.
+   * first / last date out above 50 groups and on 其他; unknown dates keep the card and drop the date line. The
+   * 其他 fold (rows past 200) is not a project and never gets a card.
    */
   readonly cards = computed<ProjectCard[]>(() => {
     const period = this.period();
@@ -115,6 +117,7 @@ export class ReportPlanComponent {
       .filter(
         row =>
           row.key !== null &&
+          row.key !== OTHER_KEY &&
           num(row.amount) > 0 &&
           (row.first_date == null || row.first_date <= period.to) &&
           (row.last_date == null || row.last_date >= period.from),
