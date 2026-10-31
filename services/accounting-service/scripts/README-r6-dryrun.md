@@ -92,3 +92,10 @@ case that vanished without a replacement row is listed as `dismissed`. A stateme
 settlement-flavoured row is not listed (the dump does not say which accounts are `settlement_source`). `--stand-ins` is a
 `run_stand_ins(engine, dry_run=True)` report as JSON; its would-book days are listed as `stand_ins` (`account_id`,
 `settlement_date`, `booking_id`, null in a dry run), with `skipped` and `previewed_settings`. No amounts, merchants or names.
+
+The candidate dump derives the settlement cases itself for a statement of a `settlement_source` account that prints a
+settlement line: it reads the settlement feed (the portfolio must be reachable from where the dump runs, with the API's
+`PORTFOLIO_BASE_URL` (default `http://127.0.0.1:8001`) and `PORTFOLIO_READ_TOKEN` if set in the dump's environment) and runs `trade_settlement_service.outcomes`, the reconcile's settlement step without its
+writes, inside the dump's READ ONLY transaction. Reconcile's writes before that step are skipped, so an owner-deleted
+booking that the next reconcile would tombstone still reserves its settlement in the dump; a feed failure lists every
+settlement line of the statement as `pending`.
