@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>自訂報表 · 手機</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; position: relative; overflow: hidden; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500">
+  <div style="padding: 12px 16px 24px; display: flex; flex-direction: column; gap: 12px">
+    <header style="display: flex; align-items: center; gap: 6px">
+      <a href="ReportsPhone.dc.html" aria-label="返回報表" style="width: 44px; height: 44px; margin-left: -10px; border-radius: 22px; color: {{t.text}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"></path></svg>
+      </a>
+      <h1 style="flex: 1; margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.02em">週末外食</h1>
+      <button type="button" onClick="{{openSheet}}" style="min-height: 40px; padding: 0 14px; border-radius: 12px; border: 0; background: {{t.primarySoft}}; color: {{t.primary}}; font: inherit; font-size: 14px; font-weight: 700">編輯條件</button>
+    </header>
+    <p style="margin: 0; font-size: 13px; line-height: 1.55; color: {{t.muted}}">近 6 個月 · 支出 · 依月份 · 細分子類別 · 餐飲（午餐、晚餐、宵夜）且星期六、日</p>
+
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px">
+      <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 16px; padding: 12px 14px; display: flex; flex-direction: column; gap: 2px">
+        <span style="font-size: 12px; font-weight: 700; color: {{t.muted}}">合計</span><b style="font-size: 20px; font-weight: 800">$17,960</b><span style="font-size: 11px; color: {{t.more}}">▲ 80 比去年同期</span>
+      </div>
+      <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 16px; padding: 12px 14px; display: flex; flex-direction: column; gap: 2px">
+        <span style="font-size: 12px; font-weight: 700; color: {{t.muted}}">平均每月</span><b style="font-size: 20px; font-weight: 800">$2,993</b><span style="font-size: 11px; color: {{t.muted}}">53 筆 · 每筆 339</span>
+      </div>
+    </div>
+
+    <section aria-label="每月週末外食" style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 18px; padding: 14px 14px 8px; display: flex; flex-direction: column; gap: 8px">
+      <div style="display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px">
+        <sc-for list="{{legend}}" as="l" hint-placeholder-count="4">
+          <span style="display: flex; align-items: center; gap: 5px"><span aria-hidden="true" style="width: 10px; height: 10px; border-radius: 3px; background: {{l.color}}; border: {{l.border}}"></span>{{l.label}}</span>
+        </sc-for>
+      </div>
+      <svg viewBox="0 0 358 210" width="100%" height="210" role="img" aria-label="{{aria}}">
+        <sc-for list="{{rects}}" as="b" hint-placeholder-count="12">
+          <rect x="{{b.x}}" y="{{b.y}}" width="{{b.w}}" height="{{b.h}}" rx="3" fill="{{b.fill}}" stroke="{{b.stroke}}" stroke-width="1.5" stroke-dasharray="{{b.dash}}"></rect>
+        </sc-for>
+        <sc-for list="{{xs}}" as="x" hint-placeholder-count="6">
+          <text x="{{x.x}}" y="204" text-anchor="middle" font-size="11" fill="{{t.muted}}">{{x.label}}</text>
+          <text x="{{x.x}}" y="{{x.ty}}" text-anchor="middle" font-size="11" font-weight="800" fill="{{t.text}}">{{x.total}}</text>
+        </sc-for>
+      </svg>
+    </section>
+
+    <section aria-label="明細表" style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 18px; padding: 4px 14px">
+      <sc-for list="{{rows}}" as="r" hint-placeholder-count="6">
+        <div style="display: flex; align-items: center; gap: 10px; min-height: 40px; border-top: 1px solid {{r.line}}; font-size: 14px; font-weight: {{r.weight}}">
+          <span style="flex: 1">{{r.label}}</span><span style="color: {{t.muted}}; font-size: 12px">{{r.count}} 筆</span><b style="width: 64px; text-align: right; font-weight: 700">{{r.total}}</b><span style="width: 64px; text-align: right; font-size: 12px; color: {{r.dColor}}">{{r.d}}</span>
+        </div>
+      </sc-for>
+    </section>
+  </div>
+
+  <!-- 編輯條件：底部表單 -->
+  <sc-if value="{{sheet}}" hint-placeholder-val="{{false}}">
+    <div style="position: absolute; inset: 0; background: rgba(10,12,18,0.42)"></div>
+    <section role="dialog" aria-label="編輯條件" style="position: absolute; left: 0; right: 0; bottom: 0; background: {{t.surface}}; border-radius: 22px 22px 0 0; padding: 10px 16px 28px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 -10px 30px rgba(0,0,0,.2)">
+      <span aria-hidden="true" style="align-self: center; width: 40px; height: 5px; border-radius: 3px; background: {{t.border}}"></span>
+      <div style="display: flex; align-items: center; justify-content: space-between">
+        <b style="font-size: 18px; font-weight: 800">編輯條件</b>
+        <button type="button" onClick="{{closeSheet}}" style="min-height: 40px; padding: 0 14px; border-radius: 12px; border: 0; background: {{t.primary}}; color: {{t.onPrimary}}; font: inherit; font-size: 14px; font-weight: 700">套用</button>
+      </div>
+      <sc-for list="{{fields}}" as="f" hint-placeholder-count="5">
+        <button type="button" style="display: grid; grid-template-columns: 84px minmax(0, 1fr) 16px; align-items: center; gap: 8px; min-height: 48px; padding: 0 12px; border-radius: 12px; border: 1px solid {{t.border}}; background: {{t.bg}}; color: {{t.text}}; font: inherit; text-align: left">
+          <span style="font-size: 13px; color: {{t.muted}}">{{f.label}}</span>
+          <b style="font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{f.value}}</b>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"></path></svg>
+        </button>
+      </sc-for>
+      <button type="button" onClick="{{closeSheet}}" style="min-height: 44px; border: 0; background: transparent; color: {{t.muted}}; font: inherit; font-size: 14px; font-weight: 700">取消</button>
+    </section>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const st = this.state || {};
+    const dark = !!(this.props.dark ?? false);
+    const t = dark ? {
+      bg: '#0f1218', surface: '#171c24', soft: '#202733', border: '#313a48', line: '#252c38', text: '#f3f6fb', muted: '#99a3b3',
+      primary: '#8b7dff', onPrimary: '#14112b', primarySoft: 'rgba(139,125,255,0.16)', more: '#ff8a8e', less: '#7fb5e0',
+      shadow: '0 12px 28px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)'
+    } : {
+      bg: '#f1f3f6', surface: '#fafcff', soft: '#edf1f6', border: '#d8dee7', line: '#e8ecf2', text: '#151821', muted: '#5f6673',
+      primary: '#533afd', onPrimary: '#ffffff', primarySoft: 'rgba(83,58,253,0.10)', more: '#b5323a', less: '#2f6f9f',
+      shadow: '0 10px 30px rgba(18,26,40,0.045), inset 0 1px 0 rgba(255,255,255,0.62)'
+    };
+    const PAL = dark ? ['#8b7dff', '#6fb3ae', '#d0a06a'] : ['#533afd', '#4f8f8a', '#b7843f'];
+    const n0 = (v) => Math.round(v).toLocaleString('en-US');
+    // 與 ReportBuilder「週末外食」相同
+    const XS = ['5月', '6月', '7月', '8月', '9月', '10月'];
+    const KEYS = ['晚餐', '午餐', '宵夜'];
+    const DATA = [[1820, 980, 320], [1690, 870, 300], [2140, 1050, 350], [1760, 920, 300], [1410, 780, 220], [1880, 910, 260]];
+    const CMP = [2610, 2930, 3380, 3120, 2550, 3290];
+    const COUNTS = [9, 8, 11, 9, 7, 9];
+    const totals = DATA.map((r) => r.reduce((s, v) => s + v, 0));
+    const top = 4000;
+    const yOf = (v) => 186 - (v / top) * 166;
+    const slot = 358 / 6, bw = 20;
+    const rects = [];
+    const xs = XS.map((label, i) => {
+      const cx = slot * i + slot / 2;
+      let y = 186;
+      DATA[i].forEach((v, k) => { const h = v / top * 166; y -= h; rects.push({ x: (cx - bw - 2).toFixed(1), y: y.toFixed(1), w: bw, h: Math.max(h - 1, 0).toFixed(1), fill: PAL[k], stroke: 'none', dash: '0' }); });
+      rects.push({ x: (cx + 2).toFixed(1), y: yOf(CMP[i]).toFixed(1), w: bw, h: (186 - yOf(CMP[i])).toFixed(1), fill: 'transparent', stroke: t.muted, dash: '4 3' });
+      return { label, x: cx.toFixed(1), total: n0(totals[i]), ty: (Math.min(yOf(totals[i]), yOf(CMP[i])) - 6).toFixed(1) };
+    });
+    const legend = [...KEYS.map((k, i) => ({ label: k, color: PAL[i], border: 'none' })), { label: '去年同期', color: 'transparent', border: '1.5px dashed ' + t.muted }];
+    const rows = XS.map((label, i) => {
+      const d = totals[i] - CMP[i];
+      return { label, count: COUNTS[i], total: n0(totals[i]), d: (d > 0 ? '▲ ' : '▼ ') + n0(Math.abs(d)), dColor: d > 0 ? t.more : t.less, weight: 500, line: i === 0 ? 'transparent' : t.line };
+    });
+    const fields = [['期間', '近 6 個月（滾動）'], ['看什麼', '支出'], ['依什麼分組', '月份'], ['再細分', '子類別'], ['篩選', '餐飲 › 午餐、晚餐、宵夜 · 星期六、日'], ['比較', '去年同期']]
+      .map(([label, value]) => ({ label, value }));
+    return { t, legend, rects, xs, rows, fields, sheet: !!st.sheet,
+      aria: '週末外食每月：' + XS.map((x, i) => x + ' ' + n0(totals[i])).join('、'),
+      openSheet: () => this.setState({ sheet: true }), closeSheet: () => this.setState({ sheet: false }) };
+  }
+}
+</script>
+</body>
+</html>

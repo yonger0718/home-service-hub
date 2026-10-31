@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>通知中心 · 手機</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 390px; height: 1460px; position: relative; overflow: hidden; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500">
+  <div style="padding: 16px 16px 40px; display: flex; flex-direction: column; gap: 14px">
+
+    <header style="display: flex; align-items: center; gap: 8px">
+      <a href="TimelinePhone.dc.html" aria-label="返回" style="width: 44px; height: 44px; margin-left: -10px; border-radius: 22px; color: {{t.text}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"></path></svg>
+      </a>
+      <span style="flex: 1; display: flex; flex-direction: column; gap: 1px">
+        <h1 style="margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.03em">通知</h1>
+        <span style="font-size: 12px; color: {{t.muted}}"><b style="color: {{t.text}}">7 件要處理</b> · <b style="color: {{t.red}}">3 件已逾期</b></span>
+      </span>
+    </header>
+
+    <div role="radiogroup" aria-label="來源" style="display: flex; gap: 6px">
+      <sc-for list="{{chips}}" as="c" hint-placeholder-count="3">
+        <button type="button" role="radio" aria-checked="{{c.on}}" onClick="{{c.pick}}" style="display: flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid {{c.border}}; background: {{c.bg}}; color: {{c.fg}}; font: inherit; font-size: 14px; font-weight: {{c.weight}}">{{c.label}}<span style="font-size: 12px; font-weight: 800; opacity: .8">{{c.count}}</span></button>
+      </sc-for>
+    </div>
+
+    <sc-for list="{{sections}}" as="s" hint-placeholder-count="4">
+      <div style="display: flex; flex-direction: column; gap: 6px">
+        <h2 style="margin: 0; padding: 0 4px; display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{s.titleColor}}">
+          <span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 4px; background: {{s.titleColor}}"></span>{{s.title}}<span style="font-weight: 600; letter-spacing: 0; color: {{t.muted}}">{{s.count}}</span>
+        </h2>
+        <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 18px; overflow: hidden">
+          <sc-for list="{{s.rows}}" as="r" hint-placeholder-count="2">
+            <div style="display: flex; gap: 12px; padding: 12px 14px; border-top: 1px solid {{r.line}}">
+              <span style="width: 40px; height: 40px; border-radius: 12px; background: {{r.iconBg}}; display: flex; align-items: center; justify-content: center; flex: none">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{r.iconFg}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{r.icon}}"></path></svg>
+              </span>
+              <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px">
+                <span style="display: flex; align-items: baseline; gap: 8px">
+                  <b style="flex: 1; min-width: 0; font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{r.title}}</b>
+                  <sc-if value="{{r.hasAmt}}" hint-placeholder-val="{{true}}">
+                    <b style="flex: none; font-size: 15px; font-weight: 700; color: {{r.amtColor}}">{{r.amt}}</b>
+                  </sc-if>
+                </span>
+                <span style="font-size: 12px; line-height: 1.45; color: {{t.muted}}"><b style="font-weight: 700; color: {{r.whenColor}}">{{r.when}}</b>{{r.meta}}</span>
+                <sc-if value="{{r.hasBar}}" hint-placeholder-val="{{false}}">
+                  <span aria-hidden="true" style="display: block; height: 6px; border-radius: 3px; background: {{t.soft}}; overflow: hidden"><span style="display: block; height: 6px; width: {{r.bar}}; background: {{t.primary}}"></span></span>
+                </sc-if>
+                <span style="display: flex; gap: 8px; margin-top: 4px">
+                  <a href="{{r.href}}" style="min-height: 36px; padding: 0 14px; border-radius: 10px; background: {{r.btnBg}}; color: {{r.btnFg}}; font-size: 13px; font-weight: 700; display: flex; align-items: center; text-decoration: none">{{r.action}}</a>
+                  <button type="button" style="min-height: 36px; padding: 0 12px; border-radius: 10px; border: 0; background: transparent; color: {{t.muted}}; font: inherit; font-size: 13px; font-weight: 700">{{r.later}}</button>
+                </span>
+              </span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </sc-for>
+
+    <details style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 18px; overflow: hidden">
+      <summary style="display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 0 14px; cursor: pointer; font-size: 14px; font-weight: 700">
+        <span style="flex: 1">追蹤中 <span style="font-weight: 500; color: {{t.muted}}">· 不計入數字</span></span>
+        <span style="font-size: 12px; font-weight: 600; color: {{t.muted}}">6 件</span>
+      </summary>
+      <sc-for list="{{tracking}}" as="r" hint-placeholder-count="2">
+        <div style="display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-top: 1px solid {{t.line}}">
+          <span style="width: 36px; height: 36px; border-radius: 11px; background: {{t.soft}}; display: flex; align-items: center; justify-content: center; flex: none">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{r.icon}}"></path></svg>
+          </span>
+          <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+            <b style="font-size: 14px; font-weight: 700">{{r.title}}</b>
+            <small style="font-size: 12px; line-height: 1.45; color: {{t.muted}}">{{r.meta}}</small>
+          </span>
+        </div>
+      </sc-for>
+    </details>
+    <a href="#" style="align-self: flex-start; padding: 6px 4px; font-size: 13px; font-weight: 700; color: {{t.muted}}; text-decoration: none">已處理（近 7 天）12 件 ›</a>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":390,"height":1460}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const st = this.state || {};
+    const dark = !!(this.props.dark ?? false);
+    const t = dark ? {
+      bg: '#0f1218', surface: '#171c24', soft: '#202733', border: '#313a48', line: '#252c38',
+      text: '#f3f6fb', muted: '#99a3b3', primary: '#8b7dff', onPrimary: '#14112b', primarySoft: 'rgba(139,125,255,0.16)',
+      red: '#ff6369', redSoft: 'rgba(255,99,105,0.14)', dividend: '#aba6d0',
+      shadow: '0 12px 28px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)'
+    } : {
+      bg: '#f1f3f6', surface: '#fafcff', soft: '#edf1f6', border: '#d8dee7', line: '#e8ecf2',
+      text: '#151821', muted: '#5f6673', primary: '#533afd', onPrimary: '#ffffff', primarySoft: 'rgba(83,58,253,0.10)',
+      red: '#c9373c', redSoft: 'rgba(229,72,77,0.10)', dividend: '#6b6596',
+      shadow: '0 10px 30px rgba(18,26,40,0.045), inset 0 1px 0 rgba(255,255,255,0.62)'
+    };
+    const I = {
+      card: 'M2 6h20v12H2z M2 10h20 M6 15h4',
+      repeat: 'M17 2l4 4-4 4 M3 11V9a3 3 0 0 1 3-3h15 M7 22l-4-4 4-4 M21 13v2a3 3 0 0 1-3 3H3',
+      check: 'M9 11l3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11',
+      percent: 'M19 5L5 19 M6.5 6.5h.01 M17.5 17.5h.01',
+      upload: 'M12 16V4 M7 9l5-5 5 5 M4 20h16',
+      users: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8 M22 21v-2a4 4 0 0 0-3-3.9 M16 3.1a4 4 0 0 1 0 7.8',
+      clock: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 6v6l4 2'
+    };
+    const filter = st.filter || 'all';
+    const chips = [['all', '全部', 7], ['ledger', '財務', 5], ['portfolio', '投資', 2]].map(([id, label, count]) => {
+      const on = id === filter;
+      return { label, count, on: on ? 'true' : 'false', bg: on ? t.text : t.surface, fg: on ? t.bg : t.text, border: on ? t.text : t.border,
+        weight: on ? 700 : 500, pick: () => this.setState({ filter: id }) };
+    });
+    const all = [
+      { title: '已逾期', tone: 'urgent', rows: [
+        { src: 'ledger', icon: I.card, title: '國泰 CUBE 卡帳單', when: '10/20 截止 · 逾期 4 天', meta: ' · 已繳 $0', amt: '$16,639', action: '記繳款', later: '明天提醒', tone: 'urgent' },
+        { src: 'ledger', icon: I.repeat, title: 'Netflix · 3 期未入帳', when: '最早 8/20', meta: ' · 每月 20 日 · 國泰 CUBE 卡', amt: '−$1,170', action: '全部入帳', later: '逐期處理', tone: 'urgent' },
+        { src: 'ledger', icon: I.repeat, title: 'iPhone 分期 5 / 12', when: '10/10 · 逾期 14 天', meta: ' · 玉山 Pi 卡', amt: '−$3,000', action: '入帳', later: '略過這期', tone: 'urgent' }
+      ] },
+      { title: '今天', tone: 'task', rows: [
+        { src: 'ledger', icon: I.repeat, title: '房租', when: '今天', meta: ' · 每月 24 日 · 玉山銀行', amt: '−$18,000', action: '入帳', later: '改金額', tone: 'task' }
+      ] },
+      { title: '要你確認', tone: 'task', rows: [
+        { src: 'ledger', icon: I.check, title: '對帳 · 國泰 CUBE 卡 9 月', when: '10 筆要你決定', meta: ' · 已對上 17 / 28 行', bar: '61%', action: '開始對帳', later: '稍後', href: 'ReconPhone.dc.html', tone: 'task', noAmt: true },
+        { src: 'portfolio', icon: I.percent, title: '股利待確認收款 · 2 筆', when: '已過發放日', meta: ' · 玉山金、台積電', amt: '+$14,600', amtTone: 'div', action: '確認收款', later: '稍後', href: 'PfDividendsPhone.dc.html', tone: 'task' }
+      ] },
+      { title: '系統', tone: 'sys', rows: [
+        { src: 'portfolio', icon: I.upload, title: '匯入失敗', when: '10/22 21:14', meta: ' · 國泰證券_202610.csv 第 12 列代號無法對應', action: '查看', later: '關閉', tone: 'sys', noAmt: true }
+      ] }
+    ];
+    const toneOf = (tone) => tone === 'urgent' ? { bg: t.redSoft, fg: t.red, when: t.red } : tone === 'sys' ? { bg: t.redSoft, fg: t.red, when: t.text } : { bg: t.primarySoft, fg: t.primary, when: t.text };
+    const sections = all.map((s) => {
+      const rows = s.rows.filter((r) => filter === 'all' || r.src === filter).map((r, i) => {
+        const k = toneOf(r.tone);
+        return { ...r, href: r.href || '#', iconBg: k.bg, iconFg: k.fg, whenColor: k.when, line: i === 0 ? 'transparent' : t.line,
+          hasAmt: !r.noAmt, amtColor: r.amtTone === 'div' ? t.dividend : t.text, hasBar: !!r.bar,
+          btnBg: r.tone === 'urgent' ? t.primary : t.primarySoft, btnFg: r.tone === 'urgent' ? t.onPrimary : t.primary };
+      });
+      return { title: s.title, count: rows.length, titleColor: s.tone === 'urgent' ? t.red : t.muted, rows };
+    }).filter((s) => s.rows.length > 0);
+    const tracking = [
+      { icon: I.users, title: '借還款 · 3 位', meta: '應收 $1,550 · 應付 $5,000' },
+      { icon: I.clock, title: '即將到來 · 3 件', meta: '玉山 Pi 卡帳單 10/27 · Spotify 10/28 · 00878 除息 11/17' }
+    ];
+    return { t, chips, sections, tracking };
+  }
+}
+</script>
+</body>
+</html>
