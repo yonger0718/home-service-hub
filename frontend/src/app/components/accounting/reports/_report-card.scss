@@ -1,0 +1,68 @@
+/* Shared pieces of the 報表 page and its tabs (design_handoff_v3/ReportsDesktop, ReportsPhone). */
+
+@mixin card {
+  background: var(--app-surface);
+  border-radius: 20px;
+  box-shadow: var(--app-card-shadow), inset 0 1px 0 var(--app-inset-line);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 18px 20px;
+
+  @media (max-width: 759.98px) {
+    border-radius: 18px;
+    padding: 14px 16px;
+  }
+}
+
+@mixin card-title {
+  font-size: 1.125rem;
+  font-weight: 800;
+  margin: 0;
+}
+
+/* Spend comparisons (design D6): their own tokens, never the gain / loss pair. */
+@mixin change-colours {
+  .more { color: var(--app-spend-more); }
+  .less { color: var(--app-spend-less); }
+  .same { color: var(--app-text-muted); }
+}
+
+@mixin swatch {
+  border-radius: 3px;
+  display: inline-block;
+  flex: none;
+  height: 10px;
+  width: 10px;
+}
+
+@mixin pill-radios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+
+  button {
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 999px;
+    color: var(--app-text);
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--fs-sm);
+    min-height: 32px;
+    padding: 0 12px;
+
+    &[aria-checked='true'] {
+      background: var(--app-text);
+      border-color: var(--app-text);
+      color: var(--app-bg);
+      font-weight: 700;
+    }
+
+    &:focus-visible {
+      box-shadow: 0 0 0 4px var(--app-focus-ring);
+      outline: none;
+    }
+  }
+}

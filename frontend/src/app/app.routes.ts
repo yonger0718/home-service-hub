@@ -37,6 +37,7 @@ const ACCOUNTING_PHONE_ROUTES: Routes = [
   { path: 'accounts', pathMatch: 'full', loadComponent: ACCOUNTING_PAGES.accounts },
   ...PANE_PAGES.map(({ path, page }) => ({ path, loadComponent: ACCOUNTING_PAGES[page] })),
   { path: 'settings', loadComponent: ACCOUNTING_PAGES.settings },
+  { path: 'reports', loadComponent: ACCOUNTING_PAGES.reports },
 ];
 
 /** The page shown in the layout's `pane` outlet; an empty-path named child keeps the URL free of `(pane:…)`. */
@@ -50,6 +51,8 @@ const ACCOUNTING_WIDE_ROUTES: Routes = [
   { path: 'accounts', pathMatch: 'full', data: { list: 'accounts' }, children: [] },
   ...PANE_PAGES.map(({ path, list, page }) => ({ path, data: { list }, children: pane(page) })),
   { path: 'settings', loadComponent: ACCOUNTING_PAGES.settings },
+  // 報表 is a whole page on every width, like 記帳設定 (no list beside it).
+  { path: 'reports', loadComponent: ACCOUNTING_PAGES.reports },
 ];
 
 /** The first visible group's page, as the sidebar logo; absolute, so `**` can use it too (redirects do not chain). */

@@ -119,7 +119,7 @@ describe('SidebarComponent', () => {
     expect(host.querySelector('.side-logo img')!.getAttribute('src')).toBe('assets/app-icon.svg');
 
     const items = Array.from(host.querySelectorAll<HTMLAnchorElement>('a.side-item'));
-    expect(items.length).toBe(10);
+    expect(items.length).toBe(11);
     for (const item of items) {
       const navItem = NAV_ITEMS.find(candidate => item.getAttribute('href') === candidate.path)!;
       const tip = item.querySelector('.side-tip');

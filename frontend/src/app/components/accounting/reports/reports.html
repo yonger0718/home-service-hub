@@ -1,0 +1,73 @@
+<section class="rp">
+  <app-page-header [subtitle]="rules()"></app-page-header>
+
+  <div class="rp-period">
+    <app-seg-toggle [options]="units" [value]="period().unit" ariaLabel="期間單位" (change)="setUnit($event)" />
+    @if (period().unit === 'custom') {
+      <div class="rp-range" role="group" aria-label="自訂期間">
+        <input class="rp-from" type="date" aria-label="起日" [value]="period().from" [max]="period().to" (change)="setCustom($any($event.target).value, period().to)" />
+        <span aria-hidden="true">–</span>
+        <input class="rp-to" type="date" aria-label="迄日" [value]="period().to" [min]="period().from" (change)="setCustom(period().from, $any($event.target).value)" />
+      </div>
+    } @else {
+      <div class="rp-stepper">
+        <button type="button" class="rp-prev" [attr.aria-label]="stepLabels()[0]" (click)="move(-1)">‹</button>
+        <b class="rp-period-label" aria-live="polite">{{ periodText() }}</b>
+        <button type="button" class="rp-next" [attr.aria-label]="stepLabels()[1]" (click)="move(1)">›</button>
+      </div>
+    }
+  </div>
+
+  @if (sample()) {
+    <p class="rp-sample" role="status">報表 API 尚未就緒，目前顯示的是示範資料（手稿的 2026 年 10 月範例），不是帳本。</p>
+  }
+
+  <nav class="rp-tabs" role="tablist" aria-label="報表類型">
+    @for (entry of tabs; track entry[0]) {
+      <button type="button" role="tab" class="rp-tab" [class.on]="tab() === entry[0]" [attr.aria-selected]="tab() === entry[0]" (click)="setTab(entry[0])">{{ entry[1] }}</button>
+    }
+  </nav>
+
+  @if (state() === 'error') {
+    <p class="rp-error" role="alert">報表讀取失敗 <button type="button" class="rp-retry" (click)="reload()">重試</button></p>
+  } @else {
+    <div class="rp-figures" [attr.aria-busy]="state() === 'loading'">
+      @for (figure of figures(); track figure.label) {
+        <div class="rp-figure">
+          <span class="rp-figure-label">{{ figure.label }}</span>
+          <b class="rp-figure-value">{{ figure.value }}</b>
+          <span class="rp-figure-foot">{{ figure.foot }}</span>
+        </div>
+      }
+    </div>
+
+    @switch (tab()) {
+      @case ('overview') {
+        @if (expense(); as expense) {
+          @if (income(); as income) {
+            <app-report-overview [expense]="expense" [income]="income" [labels]="labels()" [drillMonth]="drillMonth()" />
+          }
+        } @else {
+          <p class="rp-loading">讀取中</p>
+        }
+      }
+      @case ('trend') {
+        <app-report-trend
+          [trend]="trend()"
+          [trendState]="trendState()"
+          [expense]="expense()"
+          [lastYear]="expenseLastYear()"
+          [period]="period()"
+          [series]="trendSeries()"
+          (seriesChange)="trendSeries.set($event)"
+        />
+      }
+      @case ('rank') {
+        <p class="rp-soon">排行（商家、標籤、對象、帳戶）會在下一個 PR 加入。</p>
+      }
+      @case ('plan') {
+        <p class="rp-soon">專案與預算會在之後的 PR 加入，需要後端的預算 API。</p>
+      }
+    }
+  }
+</section>

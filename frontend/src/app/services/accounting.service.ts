@@ -50,7 +50,7 @@ import {
 } from '../models/accounting.model';
 
 /** Query object → params; skips null / undefined / '' and repeats array values (`account_id=1&account_id=2`). */
-function toParams(query: object): HttpParams {
+export function toParams(query: object): HttpParams {
   let params = new HttpParams();
   for (const [key, value] of Object.entries(query)) {
     if (value === null || value === undefined || value === '') {

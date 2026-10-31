@@ -29,14 +29,22 @@ async function render(url: string, badges: Record<string, NavBadge> = {}, showBa
 describe('SubNavComponent', () => {
   beforeEach(() => localStorage.clear());
 
-  it('shows the accounting sub-nav 記錄 / 帳戶 / 記帳設定', async () => {
+  it('shows the accounting sub-nav 記錄 / 帳戶 / 報表 / 記帳設定', async () => {
     const el = await render('/accounting');
 
     const links = Array.from(el.querySelectorAll('a'));
-    expect(links.map(a => a.textContent?.trim())).toEqual(['記錄', '帳戶', '記帳設定']);
-    expect(links.map(a => a.getAttribute('href'))).toEqual(['/accounting', '/accounting/accounts', '/accounting/settings']);
+    expect(links.map(a => a.textContent?.trim())).toEqual(['記錄', '帳戶', '報表', '記帳設定']);
+    expect(links.map(a => a.getAttribute('href'))).toEqual(['/accounting', '/accounting/accounts', '/accounting/reports', '/accounting/settings']);
     expect(links[0].getAttribute('aria-current')).toBe('page');
     expect(el.querySelector('.seg-control')).not.toBeNull();
+  });
+
+  it('marks 報表 active on /accounting/reports', async () => {
+    const el = await render('/accounting/reports?month=2026-10&tab=trend');
+
+    const links = Array.from(el.querySelectorAll('a'));
+    expect(links[2].getAttribute('aria-current')).toBe('page');
+    expect(links[0].getAttribute('aria-current')).toBeNull();
   });
 
   it('shows a count on the 帳戶 link and names it with the badge', async () => {

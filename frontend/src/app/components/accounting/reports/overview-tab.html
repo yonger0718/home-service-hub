@@ -1,0 +1,76 @@
+<div class="ov">
+  <section class="ov-card ov-share" aria-label="類別占比">
+    <div class="ov-head">
+      <h2>類別占比</h2>
+      <app-seg-toggle [options]="kinds" [value]="kind()" ariaLabel="收支" (change)="setKind($event)" />
+    </div>
+    @if (lines().length) {
+      <div class="ov-body">
+        <svg class="ov-donut" viewBox="0 0 200 200" role="img" [attr.aria-label]="donutAria()">
+          <circle cx="100" cy="100" r="74" fill="none" stroke="var(--app-surface-soft)" stroke-width="28"></circle>
+          @for (arc of arcs(); track $index) {
+            <circle
+              cx="100"
+              cy="100"
+              r="74"
+              fill="none"
+              [attr.stroke]="arc.color"
+              [attr.stroke-width]="$index === selectedIndex() ? 34 : 28"
+              [attr.stroke-dasharray]="arc.dasharray"
+              [attr.stroke-dashoffset]="arc.dashoffset"
+              transform="rotate(-90 100 100)"
+            ></circle>
+          }
+          <text class="ov-donut-label" x="100" y="94" text-anchor="middle">{{ donutLabel() }}</text>
+          <text class="ov-donut-total" x="100" y="118" text-anchor="middle">{{ donutTotal() }}</text>
+        </svg>
+        <div class="ov-list">
+          @for (line of lines(); track line.key; let i = $index) {
+            <button type="button" class="ov-row" [class.on]="i === selectedIndex()" [attr.aria-pressed]="i === selectedIndex()" (click)="select(line.key)">
+              <span class="ov-swatch" aria-hidden="true" [style.background]="line.color"></span>
+              <span class="ov-name">{{ line.label }}<small>{{ line.count }} 筆</small></span>
+              <b class="ov-amount">{{ line.amountText }}</b>
+              <span class="ov-share-pct">{{ line.share }}</span>
+            </button>
+          }
+          @if (refundLine(); as refund) {
+            <div class="ov-refund">
+              <span></span><span class="ov-refund-label">{{ refund.label }}</span><b>{{ refund.text }}</b><span></span>
+            </div>
+          }
+        </div>
+      </div>
+    } @else {
+      <p class="ov-empty">{{ kind() === 'expense' ? '本期沒有支出' : '本期沒有收入' }}</p>
+    }
+  </section>
+
+  @if (selected(); as row) {
+    <section class="ov-card ov-detail" aria-label="類別細項">
+      <div class="ov-head ov-head--baseline">
+        <h2>{{ row.label }} · 細項</h2>
+        <span class="ov-foot">{{ selectedLine()?.amountText }} · {{ row.count }} 筆</span>
+      </div>
+      @if (splits().length) {
+        <div class="ov-splits">
+          @for (split of splits(); track split.label) {
+            <div class="ov-split">
+              <div class="ov-split-line"><span class="ov-split-name">{{ split.label }}<small>{{ split.count }} 筆</small></span><b>{{ split.amountText }}</b></div>
+              <span class="ov-bar" aria-hidden="true"><span [style.width]="split.width" [style.background]="selectedLine()?.color"></span></span>
+            </div>
+          }
+        </div>
+      } @else {
+        <p class="ov-empty">沒有子類別</p>
+      }
+      <div class="ov-stats">
+        @for (stat of stats(); track stat.label) {
+          <span class="ov-stat"><small>{{ stat.label }}</small>&ngsp;<b [class]="stat.direction ?? ''">{{ stat.value }}</b></span>
+        }
+      </div>
+      @if (drillParams(); as params) {
+        <a class="ov-drill" routerLink="/accounting" [queryParams]="params">在記帳記錄看這 {{ row.count }} 筆 ›</a>
+      }
+    </section>
+  }
+</div>

@@ -1,0 +1,252 @@
+@use 'report-card' as rc;
+
+:host { display: block; min-width: 0; }
+
+.ov {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+
+  @media (max-width: 759.98px) {
+    gap: 14px;
+  }
+}
+
+.ov-card {
+  @include rc.card;
+}
+
+.ov-share { flex: 5 1 440px; gap: 14px; }
+.ov-detail { flex: 4 1 360px; }
+
+.ov-head {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+
+  h2 { @include rc.card-title; }
+
+  &--baseline { align-items: baseline; }
+}
+
+.ov-foot {
+  color: var(--app-text-muted);
+  font-size: var(--fs-sm);
+}
+
+.ov-body {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+
+  @media (max-width: 759.98px) {
+    gap: 14px;
+  }
+}
+
+.ov-donut {
+  flex: none;
+  height: 200px;
+  width: 200px;
+
+  @media (max-width: 759.98px) {
+    height: 132px;
+    width: 132px;
+  }
+}
+
+.ov-donut-label {
+  fill: var(--app-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ov-donut-total {
+  fill: var(--app-text);
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+.ov-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 220px;
+
+  @media (max-width: 759.98px) {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+}
+
+.ov-row,
+.ov-refund {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 12px minmax(0, 1fr) auto 52px;
+}
+
+.ov-row {
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  color: var(--app-text);
+  cursor: pointer;
+  font: inherit;
+  margin: 0 -8px;
+  min-height: 40px;
+  padding: 0 8px;
+  text-align: left;
+
+  &.on { background: var(--app-primary-soft); }
+  &.on .ov-name { font-weight: 800; }
+
+  &:focus-visible {
+    box-shadow: 0 0 0 3px var(--app-focus-ring);
+    outline: none;
+  }
+
+  @media (max-width: 759.98px) {
+    border-radius: 0;
+    border-top: 1px solid var(--app-border);
+    margin: 0;
+    min-height: 44px;
+    padding: 0;
+
+    &.on { background: transparent; }
+  }
+}
+
+.ov-swatch { @include rc.swatch; }
+
+.ov-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  small {
+    color: var(--app-text-muted);
+    font-size: var(--fs-label);
+    font-weight: 600;
+    margin-left: 6px;
+  }
+}
+
+.ov-amount {
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.ov-share-pct {
+  color: var(--app-text-muted);
+  font-size: var(--fs-label);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  text-align: right;
+}
+
+.ov-refund {
+  border-top: 1px dashed var(--app-border);
+  color: var(--app-text-muted);
+  font-size: var(--fs-sm);
+  margin-top: 4px;
+  min-height: 36px;
+
+  b { font-variant-numeric: tabular-nums; font-weight: 700; }
+}
+
+.ov-empty {
+  color: var(--app-text-muted);
+  font-size: var(--fs-sm);
+  margin: 0;
+}
+
+/* ---- detail card ---------------------------------------------------------------------------------------------- */
+
+.ov-splits {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ov-split {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ov-split-line {
+  display: flex;
+  font-size: 0.9rem;
+  justify-content: space-between;
+
+  b { font-variant-numeric: tabular-nums; font-weight: 700; }
+}
+
+.ov-split-name {
+  font-weight: 600;
+
+  small {
+    color: var(--app-text-muted);
+    margin-left: 6px;
+  }
+}
+
+.ov-bar {
+  background: var(--app-surface-soft);
+  border-radius: 4px;
+  display: block;
+  height: 8px;
+  overflow: hidden;
+
+  span {
+    display: block;
+    height: 8px;
+  }
+}
+
+.ov-stats {
+  border-top: 1px solid var(--app-border);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding-top: 12px;
+
+  @include rc.change-colours;
+}
+
+.ov-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+
+  small {
+    color: var(--app-text-muted);
+    font-size: var(--fs-label);
+  }
+
+  b {
+    font-size: 0.95rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 800;
+  }
+}
+
+.ov-drill {
+  align-self: flex-start;
+  color: var(--app-primary);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  text-decoration: none;
+
+  &:hover { text-decoration: underline; }
+}

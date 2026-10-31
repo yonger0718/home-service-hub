@@ -571,6 +571,18 @@ export class LedgerTimelineComponent implements OnInit {
     effect(() => this.overview.summaryState.set(this.summaryLoading() ? 'loading' : this.summaryError() ? 'error' : 'ready'));
     effect(() => this.overview.dueState.set(this.dueState()));
     inject(DestroyRef).onDestroy(() => this.overview.clear());
+    // 報表 drill-through (add-accounting-reports D7): `/accounting?month=2026-10&category_id=12` opens that month
+    // filtered to the category. Read once at construction: the list is created afresh when the URL comes from 報表.
+    const query = this.router.routerState.snapshot.root.queryParamMap;
+    const month = query.get('month');
+    if (month && /^\d{4}-\d{2}$/.test(month)) {
+      this.month.set(month);
+    }
+    const category = query.get('category_id');
+    if (category && /^\d+$/.test(category)) {
+      this.categoryFilter.set(Number(category));
+      this.ensureOptions(); // so the chip can name the category
+    }
     fromEvent(this.document, 'visibilitychange')
       .pipe(
         filter(() => this.document.visibilityState === 'visible'),
