@@ -26,7 +26,22 @@
     @for (entry of tabs; track entry[0]) {
       <button type="button" role="tab" class="rp-tab" [class.on]="tab() === entry[0]" [attr.aria-selected]="tab() === entry[0]" (click)="setTab(entry[0])">{{ entry[1] }}</button>
     }
+    @if (!isPhone()) {
+      <span class="rp-tabs-sep" aria-hidden="true"></span>
+      @for (saved of pinnedReports(); track saved.id) {
+        <a class="rp-tab rp-tab--saved" [routerLink]="['/accounting/reports/custom', saved.id]"><i class="pi pi-bookmark-fill" aria-hidden="true"></i>{{ saved.name }}</a>
+      }
+      <a class="rp-tab rp-tab--new" routerLink="/accounting/reports/custom/new">＋ 自訂報表</a>
+    }
   </nav>
+  @if (isPhone() && pinnedReports().length) {
+    <nav class="rp-saved" aria-label="我的報表">
+      <small>我的報表</small>
+      @for (saved of pinnedReports(); track saved.id) {
+        <a class="rp-saved-chip" [routerLink]="['/accounting/reports/custom', saved.id]">{{ saved.name }}</a>
+      }
+    </nav>
+  }
 
   @if (state() === 'error') {
     <p class="rp-error" role="alert">報表讀取失敗 <button type="button" class="rp-retry" (click)="reload()">重試</button></p>
@@ -45,7 +60,7 @@
       @case ('overview') {
         @if (expense(); as expense) {
           @if (income(); as income) {
-            <app-report-overview [expense]="expense" [income]="income" [labels]="labels()" [drillMonth]="drillMonth()" />
+            <app-report-overview [expense]="expense" [income]="income" [labels]="labels()" [drillMonth]="drillMonth()" [period]="period()" />
           }
         } @else {
           <p class="rp-loading">讀取中</p>

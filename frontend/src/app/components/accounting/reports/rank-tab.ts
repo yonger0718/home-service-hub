@@ -4,7 +4,7 @@ import { Params, RouterLink } from '@angular/router';
 import { BreakdownResponse, BreakdownRow, ReportDimension, TrendResponse } from '../../../models/reports.model';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import type { LoadState } from './reports';
-import { ReportPeriod, barGeometry, bucketLabel, n0, num, pct1, periodLabel } from './report-math';
+import { ReportPeriod, barGeometry, bucketLabel, drillText, n0, num, pct1, periodLabel } from './report-math';
 
 /** The four ranking dimensions (spec: 商家, 標籤, 對象, 帳戶). */
 export type RankDimension = Extract<ReportDimension, 'merchant' | 'tag' | 'counterparty' | 'account'>;
@@ -46,6 +46,9 @@ interface Stat {
 
 /** The six-month drawing (ReportsDesktop 明細統計): viewBox 300 × 90. */
 const SPARK = { width: 300, height: 90, plot: { left: 4, width: 292, top: 6, height: 66 }, labelY: 88 };
+
+/** The panel statistics the API computes on spend rows only (refunds left out). */
+const SPEND_ONLY = new Set(['中位數', '最大', '最小', '平均間隔']);
 
 /**
  * 排行: spend ranked by 商家 / 標籤 / 對象 / 帳戶 with a bar, count and average per row; rows without the dimension
@@ -136,6 +139,11 @@ export class ReportRankComponent {
     return stats;
   });
 
+  /** The API computes 中位數 / 最大 / 最小 / 平均間隔 on spend rows only; 筆數 and 平均 keep the refunds. */
+  readonly statsNote = computed(() =>
+    this.stats().some(stat => SPEND_ONLY.has(stat.label)) ? '中位數、最大、最小、平均間隔只算支出（退款不計入統計）；筆數、平均含退款' : null,
+  );
+
   private readonly sparkValues = computed(() => (this.spark()?.buckets ?? []).map(bucket => num(Object.values(bucket.values)[0])));
   private readonly sparkAverage = computed(() => {
     const spark = this.spark();
@@ -168,6 +176,8 @@ export class ReportRankComponent {
     }
     return params;
   });
+
+  readonly drillLabel = computed(() => drillText(this.period(), this.selected()?.count ?? 0));
 
   protected labelOf(row: BreakdownRow): string {
     if (row.key === null) return this.copy().none;

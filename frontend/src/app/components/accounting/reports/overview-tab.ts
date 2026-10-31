@@ -3,7 +3,7 @@ import { RouterLink } from '@angular/router';
 
 import { BreakdownResponse, BreakdownRow } from '../../../models/reports.model';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
-import { Change, change, donutArcs, gross, n0, num, pct1, seriesColor } from './report-math';
+import { Change, ReportPeriod, change, donutArcs, drillText, gross, n0, num, pct1, seriesColor } from './report-math';
 
 type Kind = 'expense' | 'income';
 
@@ -50,6 +50,8 @@ export class ReportOverviewComponent {
   readonly labels = input.required<{ previous: string; lastYear: string }>();
   /** `YYYY-MM` the timeline opens on. */
   readonly drillMonth = input.required<string>();
+  /** The report period: the link promises N entries only for a 月 period. */
+  readonly period = input.required<ReportPeriod>();
 
   protected readonly kinds: SegToggleOption[] = [
     { value: 'expense', label: '支出' },
@@ -128,6 +130,8 @@ export class ReportOverviewComponent {
     const row = this.selected();
     return row ? { month: this.drillMonth(), category_id: row.key } : null;
   });
+
+  readonly drillLabel = computed(() => drillText(this.period(), this.selected()?.count ?? 0));
 
   constructor() {
     // Another period or kind: the selection follows the rows, so a key that vanished falls back to the largest row.

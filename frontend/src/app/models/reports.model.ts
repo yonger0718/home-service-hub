@@ -180,3 +180,44 @@ export interface BudgetInput {
   amount: string;
   effective_from: string;
 }
+
+// ---- saved reports (design D4) ------------------------------------------------------------------------------------
+
+export type ReportChart = 'bar' | 'line' | 'donut' | 'table';
+
+export type PeriodPreset = 'this_month' | 'last_month' | 'last_6_months' | 'last_12_months' | 'this_year' | 'last_year' | 'all';
+
+/** A preset resolved on every open (relative periods roll forward), or fixed dates. */
+export type ReportPeriodConfig = { preset: PeriodPreset } | { from: string; to: string };
+
+/** The versioned `saved_report.config`. */
+export interface ReportConfig {
+  v: 1;
+  period: ReportPeriodConfig;
+  metric: ReportMetric;
+  group_by: ReportDimension;
+  split_by?: ReportDimension;
+  filters: ReportFilters;
+  compare?: ReportCompare;
+}
+
+export interface SavedReport {
+  id: number;
+  name: string;
+  config: ReportConfig;
+  chart: ReportChart;
+  pinned: boolean;
+  sort_order: number;
+  /** Ids in the saved filters that no longer exist; the server drops them from `config` on read. */
+  stale_refs?: string[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface SavedReportInput {
+  name: string;
+  config: ReportConfig;
+  chart: ReportChart;
+  pinned: boolean;
+  sort_order?: number;
+}

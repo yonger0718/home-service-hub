@@ -6,12 +6,13 @@ import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { Project } from '../../../models/accounting.model';
 import { BreakdownQuery, ReportCompare, ReportDimension, ReportMetric, TrendQuery } from '../../../models/reports.model';
 import { LayoutMode, LayoutModeService, MATCH_MEDIA } from '../../../services/layout-mode.service';
 import { NavBadgeService } from '../../../services/nav-badge.service';
 import { ReportsService } from '../../../services/reports.service';
 import { AccountingReportsComponent } from './reports';
-import { SampleBudgetStore, sampleBreakdown, sampleTrend } from './sample-report-data';
+import { SampleBudgetStore, SampleSavedReportStore, sampleBreakdown, sampleTrend } from './sample-report-data';
 
 @Component({ template: '' })
 class BlankPage {}
@@ -94,10 +95,14 @@ describe('AccountingReportsComponent', () => {
 
   const flushSample = () => answer(pending());
 
-  async function open(url: string, mode: LayoutMode = 'panes'): Promise<{ harness: RouterTestingHarness; el: HTMLElement }> {
+  /** Opens the page and answers its own reads: the saved reports and the projects (the rules line names the excluded ones). */
+  async function open(url: string, mode: LayoutMode = 'panes', projects: Project[] = []): Promise<{ harness: RouterTestingHarness; el: HTMLElement }> {
     TestBed.inject(LayoutModeService).set(mode);
     const harness = await RouterTestingHarness.create();
     await harness.navigateByUrl(url);
+    harness.detectChanges();
+    http.expectOne(r => r.url === '/api/accounting/reports/saved').flush(new SampleSavedReportStore().list());
+    http.expectOne('/api/accounting/projects').flush(projects);
     harness.detectChanges();
     return { harness, el: harness.routeNativeElement as HTMLElement };
   }
@@ -134,6 +139,18 @@ describe('AccountingReportsComponent', () => {
     expect(el.querySelector('.rp-sample')).toBeNull();
   });
 
+  it('names the 不計入報表 projects on the rules line (the October header test covers none)', async () => {
+    const projects: Project[] = [
+      { id: 1, name: '東京旅行', is_archived: true, sort_order: 0, moze_id: null, exclude_from_reports: true },
+      { id: 2, name: '客廳整理', is_archived: false, sort_order: 1, moze_id: null, exclude_from_reports: false },
+      { id: 3, name: '公司代墊', is_archived: false, sort_order: 2, moze_id: null, exclude_from_reports: true },
+    ];
+    const { harness, el } = await open('/accounting/reports?month=2026-10', 'panes', projects);
+    flushSample();
+    harness.detectChanges();
+    expect(el.querySelector('.page-subtitle')?.textContent?.trim()).toBe('以台幣計 · 退款抵減支出 · 轉帳不計入 · 不計入：東京旅行、公司代墊');
+  });
+
   it('lists the categories on gross with the refund as its own line, and details the selected one', async () => {
     const { harness, el } = await open('/accounting/reports?month=2026-10');
     flushSample();
@@ -156,6 +173,15 @@ describe('AccountingReportsComponent', () => {
     const drill = el.querySelector<HTMLAnchorElement>('.ov-drill')!;
     expect(drill.textContent?.trim()).toBe('在記帳記錄看這 46 筆 ›');
     expect(drill.getAttribute('href')).toBe('/accounting?month=2026-10&category_id=2');
+  });
+
+  it('points 在記帳記錄看 at the month the timeline opens for a 年 period, without the whole-year count', async () => {
+    const { harness, el } = await open('/accounting/reports?year=2026');
+    flushSample();
+    harness.detectChanges();
+    const drill = el.querySelector<HTMLAnchorElement>('.ov-drill')!;
+    expect(drill.textContent?.trim()).toBe('在記帳記錄看 2026-01（期間第一個月） ›');
+    expect(drill.getAttribute('href')).toBe('/accounting?month=2026-01&category_id=1');
   });
 
   it('switches to 收入 and back without a new read', async () => {
@@ -262,8 +288,13 @@ describe('AccountingReportsComponent', () => {
     expect(year.trends).toHaveLength(1);
     answer(year);
     harness.detectChanges();
-    expect(texts(el, '.rp-figure-foot')[0]).toBe('比去年 ▲ 2,282 · 比前年 ▼ 2,160');
-    expect(texts(el, '.tr-table thead th')).toEqual(['類別', '今年', '去年', '增減', '前年', '年增減']);
+    // A calendar year's previous period is last year: one comparison, named 去年, no 前年 column.
+    expect(texts(el, '.rp-figure-foot')[0]).toBe('比去年 ▲ 2,282');
+    expect(el.querySelector('.tr-card:nth-of-type(2) h2')?.textContent?.trim()).toBe('比較 · 2026 年 對去年');
+    expect(texts(el, '.tr-table thead th')).toEqual(['類別', '今年', '去年', '增減']);
+    const total = Array.from(el.querySelectorAll('.tr-table tbody tr')).at(-1)!;
+    expect(texts(total, 'td')).toEqual(['41,890', '39,608', '▲ 2,282 (5.8%)']);
+    expect(total.querySelectorAll('td')[2].getAttribute('data-label')).toBe('比去年');
   });
 
   it('links each tab through the URL and keeps the figures above every tab', async () => {
@@ -342,6 +373,8 @@ describe('AccountingReportsComponent', () => {
       expect(texts(el, '.rk-stat')).toEqual([
         '合計 1,035', '筆數 12', '平均 86', '中位數 85', '最大 120', '最小 65', '平均間隔 2.5 天', '占支出 2.5%', '近 6 月月均 992',
       ]);
+      // The API computes those four on spend rows only; 筆數 and 平均 keep the refunds.
+      expect(el.querySelector('.rk-stats-note')?.textContent?.trim()).toBe('中位數、最大、最小、平均間隔只算支出（退款不計入統計）；筆數、平均含退款');
       expect(el.querySelector('.rk-spark-chart')?.getAttribute('aria-label')).toMatch(/^路易莎 近 6 個月支出：5月 880、/);
       const drill = el.querySelector<HTMLAnchorElement>('.rk-drill')!;
       expect(drill.textContent?.trim()).toBe('在記帳記錄看這 12 筆 ›');
@@ -358,6 +391,7 @@ describe('AccountingReportsComponent', () => {
       http.expectNone(() => true);
       expect(el.querySelector('.rk-panel h2')?.textContent?.trim()).toBe('（無商家）');
       expect(texts(el, '.rk-stat')).toEqual(['合計 1,240', '筆數 9', '平均 138', '占支出 3.0%']);
+      expect(el.querySelector('.rk-stats-note')).toBeNull();
       expect(el.querySelector('.rk-spark')).toBeNull();
       expect(el.querySelector('.rk-drill')).toBeNull();
     });
@@ -419,7 +453,7 @@ describe('AccountingReportsComponent', () => {
 
   describe('專案與預算', () => {
     const BUDGETS = '/api/accounting/reports/budgets';
-    const PROJECTS = [
+    const PROJECTS: Project[] = [
       { id: 1, name: '東京旅行', is_archived: true, sort_order: 0, moze_id: null, exclude_from_reports: true },
       { id: 2, name: '客廳整理', is_archived: false, sort_order: 1, moze_id: null, exclude_from_reports: false },
     ];
@@ -436,13 +470,14 @@ describe('AccountingReportsComponent', () => {
     }
 
     async function openPlan() {
-      const opened = await open('/accounting/reports?month=2026-10&tab=plan');
+      const opened = await open('/accounting/reports?month=2026-10&tab=plan', 'panes', PROJECTS);
       const reads = pending();
       expect(reads.breakdowns).toHaveLength(4);
       expect(breakdownQuery(reads.breakdowns[3])).toEqual({ date_from: '2000-01-01', date_to: '2026-10-31', metric: 'expense', group_by: 'project', split_by: 'category', compare: undefined, include_excluded_projects: true });
       answer(reads);
       const store = flushStatus();
-      http.expectOne('/api/accounting/projects').flush(PROJECTS);
+      // The projects came with the page; the tab reads only the categories.
+      http.expectNone('/api/accounting/projects');
       const roots = http.expectOne(r => r.url === '/api/accounting/categories');
       expect(roots.request.params.get('kind')).toBe('expense');
       roots.flush(ROOTS);
@@ -473,6 +508,27 @@ describe('AccountingReportsComponent', () => {
       expect(texts(cards[0], '.pl-legend > span')).toEqual(['機票 9,800', '住宿 8,400', '餐飲 3,960', '交通 1,420', '購物 1,280']);
       expect(cards[1].querySelector('.pl-project-title small')?.textContent?.trim()).toBe('09/01 起 · 進行中');
       expect(cards[1].querySelector('.pl-tag')?.textContent?.trim()).toBe('進行中');
+    });
+
+    it('keeps the project cards when the API leaves first / last date out (over 50 groups), without inventing dates, and never renders the 其他 fold as a card', async () => {
+      const { harness, el } = await open('/accounting/reports?month=2026-10&tab=plan', 'panes', PROJECTS);
+      const reads = pending();
+      const lifetime = reads.breakdowns.pop()!;
+      answer(reads);
+      const report = sampleBreakdown(breakdownQuery(lifetime));
+      const undated = report.rows.map(row => ({ ...row, first_date: null, last_date: null }));
+      lifetime.flush({ ...report, rows: [...undated, { ...undated[0], key: '__other__', label: '其他', amount: '999' }] });
+      flushStatus();
+      http.expectOne(r => r.url === '/api/accounting/categories').flush(ROOTS);
+      harness.detectChanges();
+
+      const cards = Array.from(el.querySelectorAll('.pl-project'));
+      expect(cards.map(c => c.querySelector('.pl-project-title b')?.textContent?.trim())).toEqual(['東京旅行', '客廳整理']);
+      expect(cards[0].querySelector('.pl-project-title small')?.textContent?.trim()).toBe('不計入月報');
+      expect(cards[0].querySelector('.pl-tag')?.textContent?.trim()).toBe('已結束');
+      expect(cards[1].querySelector('.pl-project-title small')?.textContent?.trim()).toBe('');
+      expect(cards[1].querySelector('.pl-tag')?.textContent?.trim()).toBe('進行中');
+      expect(el.querySelector('.pl-projects .pl-empty')).toBeNull();
     });
 
     it('edits amounts from the month on, adds a budget for a category without one, and removes one', async () => {
@@ -534,6 +590,36 @@ describe('AccountingReportsComponent', () => {
       expect(el.querySelector('.pl-editor')).not.toBeNull();
       http.expectNone(r => r.url === `${BUDGETS}/status`);
     });
+  });
+
+  it('lists the pinned saved reports after the four tabs on desktop, as chips on phones', async () => {
+    const desktop = await open('/accounting/reports?month=2026-10');
+    flushSample();
+    desktop.harness.detectChanges();
+    const tabs = Array.from(desktop.el.querySelectorAll<HTMLElement>('.rp-tabs .rp-tab'));
+    expect(tabs.map(tab => tab.textContent?.trim())).toEqual(['總覽', '趨勢與比較', '排行', '專案與預算', '週末外食', '訂閱月費', '＋ 自訂報表']);
+    expect(tabs[4].getAttribute('href')).toBe('/accounting/reports/custom/1');
+    expect(tabs[6].getAttribute('href')).toBe('/accounting/reports/custom/new');
+    expect(desktop.el.querySelector('.rp-saved')).toBeNull();
+    http.verify({ ignoreCancelled: true });
+    TestBed.resetTestingModule();
+
+    TestBed.configureTestingModule({
+      providers: [
+        provideRouter([{ path: 'accounting/reports', component: AccountingReportsComponent }, { path: '**', component: BlankPage }]),
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: MATCH_MEDIA, useValue: null },
+        { provide: NavBadgeService, useValue: { badges: signal({}) } },
+      ],
+    });
+    http = TestBed.inject(HttpTestingController);
+    const phone = await open('/accounting/reports?month=2026-10', 'phone');
+    flushSample();
+    phone.harness.detectChanges();
+    expect(texts(phone.el, '.rp-tabs .rp-tab')).toEqual(['總覽', '趨勢與比較', '排行', '專案與預算']);
+    expect(texts(phone.el, '.rp-saved .rp-saved-chip')).toEqual(['週末外食', '訂閱月費']);
+    expect(phone.el.querySelector('.rp-saved-chip')?.getAttribute('href')).toBe('/accounting/reports/custom/1');
   });
 
   it('falls back to the sample month when the report API is not there yet, and says so', async () => {

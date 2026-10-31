@@ -404,8 +404,14 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
       return;
     }
     const [a, b] = current.sort_order === other.sort_order ? [index + delta, index] : [other.sort_order, current.sort_order];
+    // Every field rides along (the API writes the whole project), so a reorder keeps 不計入報表 exactly as saveProject does.
     const put = (project: Project, sortOrder: number) =>
-      this.service.updateProject(project.id, { name: project.name, is_archived: project.is_archived, sort_order: sortOrder });
+      this.service.updateProject(project.id, {
+        name: project.name,
+        is_archived: project.is_archived,
+        sort_order: sortOrder,
+        ...(project.exclude_from_reports === undefined ? {} : { exclude_from_reports: project.exclude_from_reports }),
+      });
     // No batch endpoint for projects: two PUTs in order, and a failed second one puts the first back, so the pair is
     // never half-swapped. Once the first PUT has committed, every failure re-reads the list (revert or not), so it
     // shows what the server has; a failed first PUT changed nothing.

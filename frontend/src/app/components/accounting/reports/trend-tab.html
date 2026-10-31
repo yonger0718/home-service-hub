@@ -39,8 +39,10 @@
               <th scope="col">{{ nouns().current }}</th>
               <th scope="col" class="tr-col-base">{{ nouns().previous }}</th>
               <th scope="col">{{ period().unit === 'month' ? '月增減' : '增減' }}</th>
-              <th scope="col" class="tr-col-base">{{ nouns().lastYear }}</th>
-              <th scope="col">年增減</th>
+              @if (!nouns().single) {
+                <th scope="col" class="tr-col-base">{{ nouns().lastYear }}</th>
+                <th scope="col">年增減</th>
+              }
             </tr>
           </thead>
           <tbody>
@@ -53,8 +55,10 @@
                 <td class="tr-current">{{ row.current }}</td>
                 <td class="tr-col-base tr-muted">{{ row.previous }}</td>
                 <td class="tr-change {{ row.monthChange.direction }}" [attr.data-label]="labels().previous">{{ row.monthChange.text }}</td>
-                <td class="tr-col-base tr-muted">{{ row.lastYear }}</td>
-                <td class="tr-change {{ row.yearChange.direction }}" [attr.data-label]="labels().lastYear">{{ row.yearChange.text }}</td>
+                @if (!nouns().single) {
+                  <td class="tr-col-base tr-muted">{{ row.lastYear }}</td>
+                  <td class="tr-change {{ row.yearChange.direction }}" [attr.data-label]="labels().lastYear">{{ row.yearChange.text }}</td>
+                }
               </tr>
             }
           </tbody>

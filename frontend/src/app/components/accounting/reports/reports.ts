@@ -1,11 +1,12 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { ActivatedRoute, Router } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Observable, forkJoin } from 'rxjs';
 
 import { CategoryNode, Project } from '../../../models/accounting.model';
-import { BreakdownResponse, BreakdownRow, BudgetInput, BudgetStatusResponse, TrendQuery, TrendResponse } from '../../../models/reports.model';
+import { BreakdownResponse, BreakdownRow, BudgetInput, BudgetStatusResponse, SavedReport, TrendQuery, TrendResponse } from '../../../models/reports.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import { ReportsService } from '../../../services/reports.service';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
@@ -60,7 +61,7 @@ const CURRENCY_NAMES: Record<string, string> = { TWD: '台幣', JPY: '日圓', U
  */
 @Component({
   selector: 'app-accounting-reports',
-  imports: [PageHeaderComponent, SegToggleComponent, ReportOverviewComponent, ReportTrendComponent, ReportRankComponent, ReportPlanComponent],
+  imports: [RouterLink, PageHeaderComponent, SegToggleComponent, ReportOverviewComponent, ReportTrendComponent, ReportRankComponent, ReportPlanComponent],
   templateUrl: './reports.html',
   styleUrl: './reports.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -70,12 +71,14 @@ export class AccountingReportsComponent {
   private readonly router = inject(Router);
   private readonly reports = inject(ReportsService);
   private readonly accounting = inject(AccountingService);
+  private readonly layoutMode = inject(LayoutModeService);
   private requestId = 0;
   private trendRequestId = 0;
   private rankRequestId = 0;
   private sparkRequestId = 0;
   private planRequestId = 0;
   private referenceRequested = false;
+  private projectsFailed = false;
 
   private readonly params = toSignal(this.route.queryParamMap, { initialValue: this.route.snapshot.queryParamMap });
   readonly today = signal(todayIso());
@@ -124,6 +127,10 @@ export class AccountingReportsComponent {
   readonly expenseRoots = signal<CategoryNode[]>([]);
   readonly planBusy = signal(false);
   readonly planError = signal<string | null>(null);
+  /** Saved reports (design D4): the pinned ones follow the four tabs on desktop and line up as chips on phones. */
+  readonly savedReports = signal<SavedReport[]>([]);
+  readonly pinnedReports = computed(() => this.savedReports().filter(report => report.pinned));
+  readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
   /** The figures are the handoff's sample month (no report API yet). */
   readonly sample = this.reports.sample;
 
@@ -137,11 +144,13 @@ export class AccountingReportsComponent {
   /** The month the timeline opens on from 在記帳記錄看這 N 筆 (the timeline shows one month). */
   readonly drillMonth = computed(() => monthOf(this.period().from));
 
-  /** The statistics rules under the title; the currencies left out follow when the API reports any. */
+  /** The statistics rules under the title; the 不計入報表 projects and the currencies left out follow when there are any. */
   readonly rules = computed(() => {
     const currency = this.currency();
     const parts = [`以${CURRENCY_NAMES[currency] ?? currency}計`, '退款抵減支出', '轉帳不計入'];
     const missing = new Set([...(this.expense()?.missing_rates ?? []), ...(this.income()?.missing_rates ?? [])]);
+    const excluded = this.projectList().filter(project => project.exclude_from_reports).map(project => project.name);
+    if (excluded.length) parts.push(`不計入：${excluded.join('、')}`);
     if (missing.size) parts.push(`未換算：${[...missing].join('、')}`);
     return parts.join(' · ');
   });
@@ -170,7 +179,12 @@ export class AccountingReportsComponent {
       .map(row => `${row.label} ${n0(row.amount)}`);
     const elapsed = elapsedDays(this.period(), this.today());
     return [
-      { label: '支出', value: formatMoney(spent, currency), foot: `${labels.previous} ${previous} · ${labels.lastYear} ${yearAgo}` },
+      {
+        label: '支出',
+        value: formatMoney(spent, currency),
+        // One window (a calendar year): the previous period is last year, so it is said once.
+        foot: labels.single ? `${labels.previous} ${previous}` : `${labels.previous} ${previous} · ${labels.lastYear} ${yearAgo}`,
+      },
       { label: '收入', value: formatMoney(earned, currency), foot: topIncome.length ? topIncome.join(' · ') : '本期沒有收入' },
       { label: '結餘', value: formatSigned(earned - spent, currency), foot: earned > 0 ? `儲蓄率 ${pct1(earned - spent, earned)}` : '儲蓄率 —' },
       { label: '日均支出', value: formatMoney(spent / elapsed.days, currency), foot: elapsed.running ? `已過 ${elapsed.days} 天` : `共 ${elapsed.days} 天` },
@@ -178,6 +192,8 @@ export class AccountingReportsComponent {
   });
 
   constructor() {
+    this.reports.listSaved().subscribe({ next: list => this.savedReports.set(list), error: () => undefined });
+    this.loadProjects();
     effect(() => {
       const period = this.period();
       untracked(() => this.load(period));
@@ -206,6 +222,12 @@ export class AccountingReportsComponent {
     });
   }
 
+  /** With the page: the rules line names the 不計入報表 projects, and 專案與預算 reuses the list (re-read there after a failure). */
+  private loadProjects(): void {
+    this.projectsFailed = false;
+    this.accounting.getProjects().subscribe({ next: projects => this.projectList.set(projects), error: () => (this.projectsFailed = true) });
+  }
+
   private loadPlan(period: ReportPeriod): void {
     const id = ++this.planRequestId;
     this.planError.set(null);
@@ -226,10 +248,10 @@ export class AccountingReportsComponent {
           this.projectReportState.set('error');
         },
       });
+    if (this.projectsFailed) this.loadProjects();
     if (!this.referenceRequested) {
       this.referenceRequested = true;
-      this.accounting.getProjects().subscribe({ next: projects => this.projectList.set(projects), error: () => (this.referenceRequested = false) });
-      this.accounting.getCategories('expense').subscribe({ next: roots => this.expenseRoots.set(roots), error: () => undefined });
+      this.accounting.getCategories('expense').subscribe({ next: roots => this.expenseRoots.set(roots), error: () => (this.referenceRequested = false) });
     }
   }
 

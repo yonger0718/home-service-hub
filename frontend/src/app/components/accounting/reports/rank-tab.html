@@ -38,6 +38,7 @@
           <span class="rk-stat"><small>{{ stat.label }}</small>&ngsp;<b>{{ stat.value }}</b></span>
         }
       </div>
+      @if (statsNote(); as note) { <small class="rk-stats-note">{{ note }}</small> }
       @if (!selectedMuted()) {
         <div class="rk-spark">
           <small>近 6 個月</small>
@@ -56,7 +57,7 @@
         </div>
       }
       @if (drillParams(); as params) {
-        <a class="rk-drill" routerLink="/accounting" [queryParams]="params">在記帳記錄看這 {{ row.count }} 筆 ›</a>
+        <a class="rk-drill" routerLink="/accounting" [queryParams]="params">{{ drillLabel() }}</a>
       }
     </section>
   }
