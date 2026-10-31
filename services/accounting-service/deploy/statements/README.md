@@ -530,3 +530,36 @@ case kind is a new enum value: inbox and case reads return 500), and the migrati
 place. So there is no code rollback after that point: rollback = disable (`policy.actions.book_settlement.enabled = false`,
 `settlement.stand_in_enabled = false`, one whole-document settings PUT) and roll forward with a fix. Before the first
 settlement case (steps 1–2 only), the previous release can still be restored.
+
+Disabling stops new bookings, not every write. While 67 keeps its `settlement_source`:
+
+- the stand-in job (06:40 worker call and the daily sweep) still runs for every account with a known
+  `settlement_source` and a booked stand-in (`trade_settlement_service._accounts`): `housekeep` tombstones owner-deleted /
+  owner-edited pairs; `check_row` retires an unclaimed stand-in whose owner twin appeared (`twin`) or whose feed row is gone
+  or no longer bookable (`gone` / the feed reason), and a changed feed row retires the stand-in (`replaced`) and then fails
+  the disabled gate — a `skipped` row with reason `disabled`, `replaced_waiting`, and no transfer for that day any more;
+- each reconcile of a 67 bank statement printing a settlement line still reads the feed, runs `housekeep` and the owner-twin
+  retirements, and links claimed stand-ins to their lines; the owner can still apply `book_settlement` by hand (only the
+  policy's action is switched off).
+
+To freeze everything, also clear the source: owner SQL `UPDATE account SET settlement_source = NULL WHERE id = 67;` (or the
+admin `PATCH /accounts/67` with `{"settlement_source": null}`). A NULL source takes 67 out of both paths:
+`trade_settlement_service.applies()` is false, so the reconcile makes no feed read, no `housekeep`, no twin retirement, no
+claim link and no settlement outcome (its `settlements` count block is `{}`), and `_accounts()` / `recheck_statement_ids()`
+select only `settlement_source IN SETTLEMENT_SOURCES`, so the job and the re-check list skip 67. `book_settlement` is then
+refused `no_target`. The booked pairs and stand-ins stay in the ledger as they are; 67's settlement lines reconcile as
+ordinary bank lines (no `settlement_*` hints) until the source is set again, and owner deletes / edits made meanwhile are
+tombstoned by the first reconcile or job run after it is restored.
+
+Check afterwards (counts and codes only):
+
+- `run_stand_ins(engine, dry_run=True)` with the source cleared: `booked` and `skipped` empty, `touched_dates` `{}`,
+  `housekeeping` all zero (a dry run previews as if `stand_in_enabled` were true, so with the source kept it still lists
+  the days it would book — `previewed_settings.stand_in_enabled` shows the stored `false`);
+- `POST /reconciliation/settlements/run` (or the worker summary's `settlement_run`): `status` `disabled`, `booked` 0;
+  with the source cleared every `housekeeping` count is 0 — with it kept, `retired` / `replaced_waiting` /
+  `owner_deleted` / `owner_edited` show the continuing writes above;
+- `SELECT status, reason, count(*) FROM settlement_booking WHERE account_id = 67 GROUP BY 1, 2;` is unchanged between two
+  runs once the source is cleared;
+- a reconcile of a 67 statement answers `settlements: {}` and `settlement_source_unavailable: false`; the candidate
+  `r6_case_dump.py` lists no `book_settlement` or `stand_in_claim` outcome for 67.
