@@ -8,6 +8,7 @@ query whose keys include `tag`.
 """
 
 from dataclasses import replace
+from statistics import median
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -31,6 +32,7 @@ from .report_rules import (
 )
 
 MAX_ROWS = 200
+MAX_STAT_GROUPS = 50
 OTHER_KEY = "__other__"
 TIME_DIMENSIONS = frozenset({"month", "week", "day", "weekday"})
 _ROW_FILTERS = {"expense": spend_filter, "income": income_filter, "net": counted_filter, "count": counted_filter}
@@ -144,6 +146,65 @@ def _avg(amount: Decimal, count: int, metric: Metric) -> Decimal:
     return (amount / count).quantize(AMOUNT_QUANTUM, rounding=ROUND_HALF_UP)
 
 
+def row_statistics(amounts_dates: list[tuple[Decimal, date]]) -> dict:
+    """Median / min / max / first / last date / average days between entries of one group's converted magnitudes.
+    `avg_interval_days = (last − first).days / (n − 1)` over n entries (0.0 for one), 1 dp; all None when empty."""
+    if not amounts_dates:
+        return {"median": None, "min": None, "max": None, "first_date": None, "last_date": None,
+                "avg_interval_days": None}
+    amounts = [amount for amount, _ in amounts_dates]
+    dates = [entry_date for _, entry_date in amounts_dates]
+    first, last = min(dates), max(dates)
+    count = len(amounts_dates)
+    return {
+        "median": Decimal(median(amounts)).quantize(AMOUNT_QUANTUM, rounding=ROUND_HALF_UP),
+        "min": min(amounts).quantize(AMOUNT_QUANTUM), "max": max(amounts).quantize(AMOUNT_QUANTUM),
+        "first_date": first, "last_date": last,
+        "avg_interval_days": 0.0 if count == 1 else round((last - first).days / (count - 1), 1),
+    }
+
+
+def _stat_rows(db: Session, where: list, dimension: Dimension, metric: Metric) -> list[tuple]:
+    """(key text, currency, signed amount, entry_date) per counted row; `tag` unnests, the empty-tags rows form the
+    null-key bucket."""
+    def select_rows(untagged: bool):
+        parent = aliased(Category)
+        tags = None
+        if dimension == "tag" and not untagged:
+            tags = func.unnest(LedgerEntry.tags).table_valued("tag").render_derived(name="entry_tag")
+        key = literal(None, Text) if untagged else _key_column(dimension, parent, tags.c.tag if tags is not None else None)
+        stmt = select(key, LedgerEntry.currency, LedgerEntry.amount, LedgerEntry.entry_date).select_from(LedgerEntry)
+        if dimension == "category":
+            stmt = stmt.outerjoin(Category, Category.id == LedgerEntry.category_id).outerjoin(
+                parent, parent.id == Category.parent_id
+            )
+        if tags is not None:
+            stmt = stmt.join(tags, true())
+        if untagged:
+            where_ = [*where, func.cardinality(LedgerEntry.tags) == 0]
+        else:
+            where_ = where
+        return stmt.where(*where_)
+
+    stmt = select_rows(False)
+    if dimension == "tag":
+        stmt = union_all(stmt, select_rows(True))
+    return [(_key_text(row[0]), row[1], row[2], row[3]) for row in db.execute(stmt).all()]
+
+
+def _statistics(db: Session, where: list, dimension: Dimension, metric: Metric,
+                rates: dict[str, Decimal]) -> dict[str | None, dict]:
+    buckets: dict[str | None, list[tuple[Decimal, date]]] = {}
+    for key, currency, amount, entry_date in _stat_rows(db, where, dimension, metric):
+        rate = rates.get(currency)
+        if rate is None:
+            continue
+        value = convert(amount, rate)
+        # expense rows are positive spending (a refund row negative); income and net keep the ledger sign
+        buckets.setdefault(key, []).append((Decimal(0) - value if metric == "expense" else value, entry_date))
+    return {key: row_statistics(items) for key, items in buckets.items()}
+
+
 def _totals(raw: list[tuple], rates: dict[str, Decimal]) -> dict:
     spend, refund, income, count = _convert_groups(raw, rates).get((), ZERO_SUMS)
     expense = Decimal(0) - spend
@@ -215,7 +276,7 @@ def _compare(db: Session, f: ReportFilters, compare: Compare, metric: Metric, gr
 def breakdown(db: Session, f: ReportFilters, *, metric: Metric, group_by: Dimension, split_by: Dimension | None,
               compare: Compare | None) -> dict:
     """Totals, rows per `group_by` key (splits per `split_by` key) and the optional comparison, shaped as
-    `BreakdownOut`. Row statistics stay null here."""
+    `BreakdownOut`; row statistics come from one extra query when there are ≤ 50 groups and metric != count."""
     main = ledger_service.main_currency(db)
     rate_cache: dict[str, Decimal | None] = {}
 
@@ -255,6 +316,11 @@ def breakdown(db: Session, f: ReportFilters, *, metric: Metric, group_by: Dimens
         compare_out, compare_amounts = _compare(db, f, compare, metric, group_by, rates_for)
         for row in rows:
             row["compare_amount"] = compare_amounts.get(row["key"])
+
+    if metric != "count" and len(rows) <= MAX_STAT_GROUPS:
+        stats = _statistics(db, [*where, row_filter], group_by, metric, rates)
+        for row in rows:
+            row.update(stats.get(row["key"]) or row_statistics([]))
 
     rows = _fold(_sort(rows, group_by), metric)
     labels = _resolve_labels(db, group_by, {row["key"] for row in rows})

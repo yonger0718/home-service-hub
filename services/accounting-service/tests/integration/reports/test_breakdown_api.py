@@ -40,7 +40,7 @@ def test_totals_match_month_summary_exactly(client, ledger):
     assert [row["key"] for row in body["rows"]] == [str(ledger.transport), str(ledger.food), str(ledger.shopping), None]
     assert (rows[str(ledger.food)]["label"], rows[str(ledger.food)]["color"]) == ("餐飲", "#ff8800")
     assert (rows[None]["label"], rows[None]["color"], Decimal(rows[None]["amount"])) == ("", None, Decimal("15"))
-    assert rows[str(ledger.food)]["splits"] is None and rows[str(ledger.food)]["median"] is None
+    assert rows[str(ledger.food)]["splits"] is None and Decimal(rows[str(ledger.food)]["median"]) == 450
 
 
 def test_expense_rows_exclude_income_only_categories(client, ledger):
