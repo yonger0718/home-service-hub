@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass, field
+from datetime import time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -26,6 +27,9 @@ class NotifyConfig:
     expected_statement_grace_days: int = 7
     min_buffer: Decimal = Decimal("0")
     state_file: Path = Path(DEFAULT_STATE_FILE).expanduser()
+    portfolio_base: str | None = None
+    cathay_run_time: time = time(6, 40)
+    cathay_run_grace_minutes: int = 15
 
 
 def _int(raw: dict, key: str, default: int) -> int:
@@ -33,6 +37,35 @@ def _int(raw: dict, key: str, default: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ConfigError(key)
     return value
+
+
+def _grace(raw: dict, key: str, default: int) -> int:
+    value = _int(raw, key, default)
+    if not 0 <= value <= 1439:
+        raise ConfigError(key)
+    return value
+
+
+def _hhmm(raw: dict, key: str, default: time) -> time:
+    value = raw.get(key)
+    if value is None:
+        return default
+    if (not isinstance(value, str) or len(value) != 5 or value[2] != ":"
+            or not (value[:2].isascii() and value[:2].isdigit() and value[3:].isascii() and value[3:].isdigit())):
+        raise ConfigError(key)
+    try:
+        return time(int(value[:2]), int(value[3:]))
+    except ValueError:
+        raise ConfigError(key) from None
+
+
+def _optional_str(raw: dict, key: str) -> str | None:
+    if key not in raw:
+        return None
+    value = raw[key]
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(key)
+    return value.strip().rstrip("/")
 
 
 def load_config(path: Path) -> NotifyConfig:
@@ -66,6 +99,9 @@ def load_config(path: Path) -> NotifyConfig:
         expected_statement_grace_days=_int(raw, "expected_statement_grace_days", 7),
         min_buffer=min_buffer,
         state_file=Path(raw.get("state_file", DEFAULT_STATE_FILE)).expanduser(),
+        portfolio_base=_optional_str(raw, "portfolio_base"),
+        cathay_run_time=_hhmm(raw, "cathay_run_time", time(6, 40)),
+        cathay_run_grace_minutes=_grace(raw, "cathay_run_grace_minutes", 15),
     )
 
 

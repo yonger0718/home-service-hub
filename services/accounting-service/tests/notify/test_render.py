@@ -112,3 +112,39 @@ def test_oversized_block_is_split_on_lines():
     block = "\n".join(["x" * 100] * 30)   # 3029 chars, no block boundary
     out = split_blocks([block], limit=2000)
     assert len(out) == 2 and all(len(m) <= 2000 for m in out) and "\n".join(out) == block
+
+
+def _cathay_weekly(lines, **kw):
+    from dataclasses import replace
+    from notify.cathay import CathayLine
+    base = _empty(datetime(2026, 11, 20, 7, 0, tzinfo=TZ8))
+    return replace(base, cathay=[CathayLine(k, t) for k, t in lines], **kw)
+
+
+def test_weekly_block_order(fx):
+    rep = _cathay_weekly([("cathay:2026-10-27:held", "10/27 對不上 CSV")],
+                         skips=[fx.skip(7, card_id=100)], gaps=Gaps(["聯名卡"], [], []))
+    (out,) = render_weekly(rep, fx.cfg())
+    skip, cathay, gaps = (out.index(s) for s in ("**自動扣繳本週跳過**", "**國泰對帳單待處理**\n• 10/27 對不上 CSV", "**設定缺漏**"))
+    assert skip < cathay < gaps and "本週沒有待處理" not in out
+
+
+def test_weekly_unreadable_only(fx):
+    (out,) = render_weekly(_cathay_weekly([("cathay:unreadable", "國泰對帳單狀態讀不到")]), fx.cfg())
+    assert out.endswith("**國泰對帳單待處理**\n• 國泰對帳單狀態讀不到") and "本週沒有待處理" not in out
+
+
+def test_daily_cathay_block_after_skips(fx):
+    from dataclasses import replace
+    from notify.cathay import CathayLine
+    rep = replace(sample_report(fx), skips=[fx.skip(7, card_id=100)], cathay=[CathayLine("k", "10/28 對不上 CSV")])
+    out = render_daily(rep, fx.cfg())[-1]
+    assert out.index("⏭ 自動扣繳跳過") < out.index("**國泰對帳單**\n• 10/28 對不上 CSV")
+
+
+def test_daily_cathay_only_counts_as_a_block(fx):
+    from notify.cathay import CathayLine
+    rep = debits.DailyReport(today=date(2026, 11, 3), blocks=[], manual=[], skips=[],
+                             cathay=[CathayLine("k", "10/28 對不上 CSV")])
+    (out,) = render_daily(rep, fx.cfg())
+    assert out.endswith("**國泰對帳單**\n• 10/28 對不上 CSV")

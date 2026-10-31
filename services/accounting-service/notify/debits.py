@@ -13,6 +13,7 @@ from decimal import Decimal
 from typing import Literal
 
 from .api import READ_DAYS, TZ, Snapshot, created_at_of
+from .cathay import CathayLine
 from .config import NotifyConfig
 from .cycles import (
     Period,
@@ -97,6 +98,7 @@ class DailyReport:
     manual: list[DebitItem]
     skips: list[Skip]
     cleared: list[SourceBlock] = field(default_factory=list)  # filled by dedupe (Task 5) only
+    cathay: list[CathayLine] = field(default_factory=list)  # 國泰證券 statement status (spec §7.2), set by cli
 
 
 def _day(value) -> date | None:

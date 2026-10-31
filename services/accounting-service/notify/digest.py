@@ -7,6 +7,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from .api import TZ, Snapshot, created_at_of
+from .cathay import CathayLine
 from .config import NotifyConfig
 from .cycles import shift_period
 from .debits import CUTOFF, SKIPPED, Skip, activity_of, no_bill_expected
@@ -64,6 +65,7 @@ class WeeklyReport:
     skips: list[Skip]
     gaps: Gaps
     last_daily_run: datetime | None
+    cathay: list[CathayLine] = field(default_factory=list)
 
 
 # --- builder ----------------------------------------------------------------------------------------------------

@@ -9,13 +9,14 @@ import argparse
 import os
 import sys
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 
 import httpx
 
 from . import send
 from .api import TZ, ApiError, ReadClient, fetch_daily, fetch_weekly
+from .cathay import cathay_lines
 from .config import ConfigError, NotifyConfig, load_config, read_token
 from .cycles import CalendarExhausted
 from .debits import build_daily
@@ -70,19 +71,26 @@ def _write_failure(cfg: NotifyConfig, line: str) -> None:
 def _run(args: argparse.Namespace, cfg: NotifyConfig, today: date) -> None:
     token = read_token(cfg.token_file)
     state = load_state(cfg.state_file)
+    # Own isolated step, before the debit items: it never raises and returns None when the section is off. The
+    # reference time is the notifier's own 07:00 slot of the as-of day, so --as-of previews are deterministic.
+    cathay_now = datetime.now(TZ) if args.as_of is None else datetime.combine(today, time(7, 0), TZ)
+    cathay = cathay_lines(cfg, cathay_now) or []
     with httpx.Client(base_url=cfg.api_base, timeout=30) as http:
         client = ReadClient(http, token)
         if args.command == "daily":
             report, state, keys = apply(build_daily(fetch_daily(client, today), cfg), state, today)
+            report = replace(report, cathay=cathay)
+            keys = keys | {line.key for line in cathay}
             messages = render_daily(report, cfg)
-            items = sum(len(b.items) for b in report.blocks) + len(report.manual)
+            items = sum(len(b.items) for b in report.blocks) + len(report.manual) + len(cathay)
             last = state.last_send
             if last is not None and last.day == today and last.triggers == keys:
                 messages = []  # same triggers already sent today
             elif messages:
                 state.last_send = LastSend(today, keys)
         else:
-            messages = render_weekly(build_weekly(fetch_weekly(client, today), cfg, state.last_daily_run), cfg)
+            weekly = replace(build_weekly(fetch_weekly(client, today), cfg, state.last_daily_run), cathay=cathay)
+            messages = render_weekly(weekly, cfg)
     if not args.send:
         print("\n---\n".join(messages))
         return
