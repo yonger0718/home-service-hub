@@ -31,7 +31,15 @@ Revert (`invert`): the engine holds the legs NOWAIT (`lock_rows`) and its snapsh
 leg; the booking row is then try-locked NOWAIT — a reverse-order lock, so held → 409 `settlement_busy`, never a wait
 (M11) — then release → `delete_entries_cascade` of both legs → the row `retired` (reason `revert`) with its items
 deleted → the case reopens as `line_unmatched` + `settlement_pending` without candidates. The next reconcile re-derives
-the line (spec §9: the bank path may book again)."""
+the line (spec §9: the bank path may book again).
+
+`book_dividend` (dividends plan R4) is its single-leg sibling: a `dividend` case (or, as the owner override, an
+`ambiguous` + `dividend_ambiguous` one) books the line's confirmed 國泰 receipt as ONE `income` entry (`_Creation._book`,
+name `股利 <symbol>`, category `settlement.dividend_category_id` else `needs_review`) under a `kind='dividend'`
+`settlement_booking` row with one item (`dividend`, `dividend:<id>`). `prepare` re-reads the line's window once
+(`dividend_service.read_window`); under the locks the plan re-runs the statement's assignment
+(`dividend_service.assignment_for`) against the current lines and reservations. Revert deletes the entry, retires the
+row (items cleared) and reopens the case as a plain `line_unmatched` case (audit `dividend_retired`)."""
 from __future__ import annotations
 
 import dataclasses
@@ -40,12 +48,13 @@ from decimal import Decimal
 
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from app.models import (
     Account, LedgerEntry, ReconciliationAction, SettlementBooking, SettlementBookingItem, StatementCoverage, StatementLine,
 )
-from app.schemas.writes import TransferIn
-from app.services import settings_service, transfer_service
+from app.schemas.writes import SOURCE_CURRENCIES, TransferIn
+from app.services import dividend_service, settings_service, transfer_service
 from app.services import entry_write_service as ews
 from app.services import pair_locks
 from app.services import trade_settlement_service as tss
@@ -77,6 +86,20 @@ def _target_id(ctx: Context) -> int | None:
 
 def _day(facts: dict, line: StatementLine) -> date:
     return date.fromisoformat(facts["settlement_date"]) if facts.get("settlement_date") else line.posted_date
+
+
+def _add_booking(db: Session, booking: SettlementBooking, label: str) -> None:
+    """The booking row and its items in a savepoint; a unique violation is the 409 `tss.UNIQUE_CODES` names
+    (`constituent_reserved` / `already_booked` / `day_booked`)."""
+    try:
+        with db.begin_nested():
+            db.add(booking)
+            db.flush()
+    except IntegrityError as exc:
+        code = next((code for index, code in tss.UNIQUE_CODES if index in str(exc.orig)), None)
+        if code is None:
+            raise
+        raise CodedConflictError(code, label) from exc
 
 
 class BookSettlementAction(_TwinGuarded):
@@ -225,15 +248,7 @@ class BookSettlementAction(_TwinGuarded):
             out_entry_id=out_leg.id, in_entry_id=in_leg.id, status="booked", action_id=ctx.action_id,
             items=[SettlementBookingItem(source=i["source_id"].split(":")[0], source_id=i["source_id"],
                                          amount=Decimal(i["amount"])) for i in facts["items"]])
-        try:
-            with db.begin_nested():
-                db.add(booking)
-                db.flush()
-        except IntegrityError as exc:
-            code = next((code for index, code in tss.UNIQUE_CODES if index in str(exc.orig)), None)
-            if code is None:
-                raise
-            raise CodedConflictError(code, f"settlement {params.fingerprint}") from exc
+        _add_booking(db, booking, f"settlement {params.fingerprint}")
         bank_leg = out_leg if flow < 0 else in_leg
         effect.coverage_ids = _claim(ctx, line, [(bank_leg, "principal")], self.name)
         effect.created_entry_ids = [out_leg.id, in_leg.id]
@@ -272,3 +287,179 @@ class BookSettlementAction(_TwinGuarded):
 
 
 register(BookSettlementAction())
+
+
+# --- book_dividend (dividends plan R4) --------------------------------------------------------------------------------
+
+DIVIDEND_NAME = "book_dividend"
+
+
+class BookDividendParams(ActionParams):
+    fingerprint: str
+
+
+class BookDividendAction(_TwinGuarded):
+    name = DIVIDEND_NAME
+    Params = BookDividendParams
+    case_kinds = frozenset({"dividend", "ambiguous"})
+    actors = frozenset({OWNER, POLICY})
+    budget_exempt = True  # zero-charged and outside every policy cap (spec §4.6 / §8, `policy_service.CAP_EXEMPT`)
+
+    # --- unlocked ---------------------------------------------------------------------------------------------------
+
+    def prepare(self, ctx: Context, params: BookDividendParams) -> Prepared:
+        prepared = super().prepare(ctx, params)
+        if _candidate(ctx, params.fingerprint) is None:
+            raise _refuse("fingerprint", "not_a_candidate", f"case {ctx.case.id}")
+        if ctx.case.kind == "ambiguous" and ctx.actor != OWNER:  # the owner override only (owner ruling 2026-10-31)
+            raise _refuse("fingerprint", "not_a_candidate", f"case {ctx.case.id} is ambiguous")
+        if not ctx.account.settlement_source or ctx.line is None:
+            return dataclasses.replace(prepared, data={"rows": (), "now": None, "read": False})  # refused later
+        try:
+            rows = dividend_service.read_window(ctx.account, ctx.line.posted_date)  # the action's one HTTP call
+        except PortfolioUnavailable as exc:
+            raise CodedConflictError("source_unavailable", exc.code) from exc
+        row = next((r for r in rows if r.fingerprint == params.fingerprint), None)
+        return dataclasses.replace(prepared, data={
+            "rows": rows, "now": None if row is None else dividend_service.facts_of(row), "read": True})
+
+    # --- under the statement and case locks -------------------------------------------------------------------------
+
+    def check_before_locks(self, ctx: Context, params: BookDividendParams) -> None:
+        if ctx.statement.needs_recheck:
+            raise CodedConflictError("needs_recheck", f"statement {ctx.statement.id} awaits its re-check")
+        if not ctx.account.settlement_source:
+            raise CodedConflictError("no_source", f"account {ctx.statement.account_id} has no settlement source")
+        super().check_before_locks(ctx, params)
+
+    # --- under the account row and the writer barrier ----------------------------------------------------------------
+
+    def validate_before(self, ctx: Context, params: BookDividendParams, prepared: Prepared, before: dict) -> None:
+        ctx._settlement_plan = self._plan(ctx, params, prepared)  # proved once; `apply` consumes exactly this one
+
+    def _plan(self, ctx: Context, params: BookDividendParams, prepared: Prepared) -> tuple[StatementLine, dict]:
+        """Every check under the engine's locks (module docstring); returns (line, the re-read facts)."""
+        from app.services import reconciliation_service  # local: the reconciler imports this package (#247)
+
+        db = ctx.db
+        candidate = _candidate(ctx, params.fingerprint)  # the LOCKED case's listing
+        if candidate is None:
+            raise _refuse("fingerprint", "not_a_candidate", f"case {ctx.case.id}")
+        event_id = None if ctx.line is None else ctx.line.event_id
+        rows = self._holders(ctx, params.fingerprint, event_id)
+        for row in rows:
+            tss.lock_pair(db, row)  # row → entry NOWAIT, refreshed in place (settlement_busy)
+        holders = [row for row in rows if row.status == "booked"]
+        for row in holders:
+            if event_id is not None and row.event_id == event_id and self._covers_event(ctx, row, event_id):
+                BookSettlementAction._replay(ctx, row)
+        line = _open_line(ctx)
+        if any(row.fingerprint == params.fingerprint for row in holders):
+            raise CodedConflictError("already_booked", f"receipt {params.fingerprint} is booked for another event")
+        now = prepared.data.get("now")
+        if not prepared.data.get("read") or not dividend_service.same_facts(candidate, now) \
+                or Decimal(now["amount"]) != Decimal(line.flow_amount):
+            raise CodedConflictError("candidate_changed", f"receipt {params.fingerprint} changed in the feed")
+        # rev 2.1 Should 3: the account row is held by the engine's lock; re-read it here (the lock's SELECT is never
+        # fetched, so it does not refresh `ctx.account`) — a concurrent source or currency change is refused
+        account = db.get(Account, ctx.statement.account_id, populate_existing=True)
+        if not account.settlement_source:
+            raise CodedConflictError("no_source", f"account {ctx.statement.account_id} has no settlement source")
+        if not (SOURCE_CURRENCIES.get(account.settlement_source) == account.currency
+                == ctx.statement.currency == now["currency"]):
+            raise CodedConflictError(tss.CURRENCY_MISMATCH, f"account {ctx.statement.account_id} or receipt "
+                                                            f"{params.fingerprint} is not in its source's currency")
+        # rev 2.1 Must 2: the assignment re-run against the current lines and reservations, after the locks above
+        found = dividend_service.assignment_for(db, ctx.statement.account_id,
+                                                reconciliation_service._current_lines(db, ctx.statement),
+                                                prepared.data["rows"], ctx.rules)
+        unique = found.unique.get(line.id)
+        fitting = [] if unique is None else [unique]
+        if ctx.case.kind != dividend_service.KIND:  # the owner override: unique or still among the line's candidates
+            fitting += found.ambiguous.get(line.id, ())
+        fits = params.fingerprint in {r.fingerprint for r in fitting}
+        if not fits:
+            raise CodedConflictError("candidate_changed", f"receipt {params.fingerprint} no longer fits line {line.id}")
+        self._dividend_twin_check(ctx, line)
+        return line, now
+
+    @staticmethod
+    def _holders(ctx: Context, fingerprint: str, event_id: int | None) -> list[SettlementBooking]:
+        """The `booked` dividend rows this booking would meet: of the fingerprint or the event."""
+        clauses = [SettlementBooking.fingerprint == fingerprint]
+        if event_id is not None:
+            clauses.append(SettlementBooking.event_id == event_id)
+        return list(ctx.db.scalars(select(SettlementBooking).where(
+            SettlementBooking.kind == dividend_service.KIND, SettlementBooking.status == "booked", or_(*clauses))
+            .order_by(SettlementBooking.id).execution_options(populate_existing=True)))
+
+    @staticmethod
+    def _covers_event(ctx: Context, row: SettlementBooking, event_id: int) -> bool:
+        """The row is still active coverage of the event: its income entry present and claiming a line of it."""
+        db = ctx.db
+        if row.in_entry_id is None or db.get(LedgerEntry, row.in_entry_id) is None:
+            return False
+        return db.scalar(
+            select(StatementCoverage.id).join(StatementLine, StatementLine.id == StatementCoverage.line_id)
+            .where(StatementCoverage.entry_id == row.in_entry_id, StatementCoverage.status == "active",
+                   StatementLine.event_id == event_id).limit(1)) is not None
+
+    def _dividend_twin_check(self, ctx: Context, line: StatementLine) -> None:
+        """Under the writer barrier, for the guarded actors: the `_TwinGuarded` owner twin of the line, then an owner
+        entry of the line's flow on the bank account within `settlement.twin_window_days` (`tss.find_twins`)."""
+        self._twin_check(ctx, line)
+        code = self._guard_code(ctx)
+        if code is not None and tss.find_twins(
+                ctx.db, account_id=ctx.statement.account_id, target_account_id=None,
+                amount=Decimal(line.flow_amount), settlement_date=line.posted_date,
+                window_days=tss.twin_window_days(ctx.db)):
+            raise CodedConflictError(code, f"an owner entry may already record line {line.id}")
+
+    def apply(self, ctx: Context, params: BookDividendParams, prepared: Prepared, effect: Effect) -> None:
+        db = ctx.db
+        if ctx._settlement_plan is None:  # the engine always runs validate_before first, under the same locks
+            raise RuntimeError("book_dividend applied without its validated plan")
+        line, facts = ctx._settlement_plan
+        category_id, needs_review = dividend_service.category_for(db)
+        entry = self._book(ctx, line, effect, kind="income", category_id=category_id, needs_review=needs_review,
+                           name=f"股利 {facts['symbol']}")
+        receipt_date = date.fromisoformat(facts["receipt_date"])
+        booking = SettlementBooking(
+            kind=dividend_service.KIND, origin="bank", account_id=ctx.statement.account_id, target_account_id=None,
+            event_id=line.event_id, source=ctx.account.settlement_source, fingerprint=params.fingerprint,
+            trade_date=receipt_date, settlement_date=receipt_date, net_amount=Decimal(facts["amount"]), facts=facts,
+            transfer_group_id=None, out_entry_id=None, in_entry_id=entry.id, status="booked", action_id=ctx.action_id,
+            items=[SettlementBookingItem(source=dividend_service.ITEM_SOURCE, source_id=params.fingerprint,
+                                         amount=Decimal(facts["amount"]))])
+        _add_booking(db, booking, f"dividend {params.fingerprint}")
+        effect.inverse = {"created_entry_id": entry.id, "booking_id": booking.id}
+
+    # --- revert -----------------------------------------------------------------------------------------------------
+
+    def revert_lock_targets(self, ctx: Context, action: ReconciliationAction) -> LockSet:
+        """The entry (engine default) plus the account row and the writer barrier, as the apply took them."""
+        return dataclasses.replace(super().revert_lock_targets(ctx, action), account_lock=True, barrier=True)
+
+    def invert(self, ctx: Context, action: ReconciliationAction) -> Effect:
+        db = ctx.db
+        booking_id = action.inverse["booking_id"]
+        row = pair_locks.lock_row(db, SettlementBooking, booking_id, busy_code=tss.SETTLEMENT_BUSY,
+                                  label="settlement_booking row")  # reverse order: NOWAIT, never a wait (M11)
+        if row is None or row.status != "booked":
+            raise NotRevertable(f"dividend booking {booking_id} is {None if row is None else row.status}")
+        detail = {"booking_id": row.id, "origin": row.origin, "account_id": row.account_id,
+                  "fingerprint": row.fingerprint, "settlement_date": row.settlement_date.isoformat(),
+                  "reason": "revert", "in_entry_id": row.in_entry_id}
+        effect = super().invert(ctx, action)  # coverage released, the entry deleted (ends with expire_all)
+        row = db.get(SettlementBooking, booking_id)
+        row.status, row.reason = "retired", "revert"
+        row.items.clear()  # the reservation goes with the `booked` status
+        case = ctx.case
+        case.kind, case.candidates, case.context = "line_unmatched", [], {}
+        db.flush()
+        audit.record(db, event="dividend_retired", actor=ctx.label, statement_id=ctx.statement.id, case_id=case.id,
+                     action_id=action.id, detail=detail)
+        return effect
+
+
+register(BookDividendAction())

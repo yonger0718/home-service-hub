@@ -18,6 +18,7 @@ EVENTS = frozenset({
     "auto_pay_header_changed", "auto_pay_statement_retired", "auto_pay_calendar_stale",  # card statement auto-pay
     "settlement_booked", "settlement_skipped", "settlement_retired", "settlement_replaced",
     "settlement_owner_deleted", "settlement_owner_edited", "settlement_claimed",  # brokerage settlement stand-ins
+    "dividend_retired",  # a reverted book_dividend (portfolio integration dividends R4)
 })
 
 
