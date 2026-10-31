@@ -57,9 +57,9 @@ from .base import OWNER, POLICY, ActionParams, Context, Effect, LockSet, NotReve
 from .ledger_actions import STATEMENT_SOURCE, _claim, _open_line, _refuse, _release, _TwinGuarded
 
 NAME = "book_settlement"
-TRANSFER_NAME = tss.TRANSFER_NAME
 PENDING_HINT = "settlement_pending"
-UNIQUE_CODES = tss.UNIQUE_CODES
+# `tss.TRANSFER_NAME` / `tss.UNIQUE_CODES` are read at call time, never here: `trade_settlement_service` imports this
+# package, so a module-level read fails when a script imports the settlement service first (issue #247).
 
 
 class BookSettlementParams(ActionParams):
@@ -213,7 +213,8 @@ class BookSettlementAction(_TwinGuarded):
         source, sink = (bank_id, target_id) if flow < 0 else (target_id, bank_id)
         group_id = transfer_service.create_transfer(db, TransferIn(
             from_account_id=source, to_account_id=sink, out_amount=abs(flow), entry_date=line.posted_date,
-            posted_date=line.posted_date, name=TRANSFER_NAME, description=f"{TRANSFER_NAME} {facts['trade_date']}"),
+            posted_date=line.posted_date, name=tss.TRANSFER_NAME,
+            description=f"{tss.TRANSFER_NAME} {facts['trade_date']}"),
             source=STATEMENT_SOURCE, remember=False)
         out_leg, in_leg = transfer_service.transfer_legs(db, group_id)
         booking = SettlementBooking(
@@ -229,7 +230,7 @@ class BookSettlementAction(_TwinGuarded):
                 db.add(booking)
                 db.flush()
         except IntegrityError as exc:
-            code = next((code for index, code in UNIQUE_CODES if index in str(exc.orig)), None)
+            code = next((code for index, code in tss.UNIQUE_CODES if index in str(exc.orig)), None)
             if code is None:
                 raise
             raise CodedConflictError(code, f"settlement {params.fingerprint}") from exc
