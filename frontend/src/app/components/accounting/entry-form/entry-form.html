@@ -134,7 +134,7 @@
           />
         </div>
 
-        <div class="tile wide current-balance"><span class="cap">當前餘額</span><span>{{ currentBalance() }}</span></div>
+        <div class="tile wide current-balance"><span class="cap">當前餘額</span><span>{{ currentBalance() }}@if (currentBalanceHint(); as hint) {<small class="kind-hint">{{ hint }}</small>}</span></div>
         <div class="tile amount wide target-tile" [class.invalid]="amountError()">
           <span class="cur">{{ accountCurrency() }}</span>
           @if (isPhone()) {

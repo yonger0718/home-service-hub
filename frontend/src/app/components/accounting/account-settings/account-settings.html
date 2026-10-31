@@ -17,7 +17,10 @@
   <div class="bigicon">
     <app-account-icon class="ico" size="big" [logo]="form().logo" [icon]="form().icon" fallback="folder" />
     @if (detail(); as d) {
-      <b [class.neg]="+d.balance < 0">{{ formatMoney(d.balance, d.currency) }}</b>
+      <b [class.neg]="balanceNegative(d)" [class.unavailable]="d.balance === null">{{ balanceText(d) }}</b>
+      @if (valuationHint(d); as hint) {
+        <small class="kind-hint">{{ hint }}</small>
+      }
     }
     <small>{{ form().name || '新帳戶' }}{{ form().note ? ' · 備註：' + form().note : '' }}</small>
   </div>

@@ -29,6 +29,7 @@ import { accountLabel, isHandledKey, restoreOverlayFocus } from '../accounting-u
 import { DueRule, dueDate, periodLabel, statementPeriod } from '../cycle';
 import { DirtyAware, DirtyFormRegistry } from '../dirty-form.service';
 import { shortDate, todayIso } from '../dates';
+import { balanceNegative, balanceText, valuationHint } from '../account-balance';
 import { formatMoney } from '../format';
 import { fieldErrors, writeErrorMessage } from '../http-errors';
 
@@ -261,6 +262,9 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
 
   readonly roundingOptions = Object.entries(ROUNDING_LABELS) as [RoundingMode, string][];
   readonly formatMoney = formatMoney;
+  readonly balanceText = balanceText;
+  readonly balanceNegative = balanceNegative;
+  readonly valuationHint = valuationHint;
 
   readonly currencyLocked = computed(() => (this.detail()?.entry_count ?? 0) > 0);
   /** Edit mode whose account never loaded: nothing to save or delete (✓ and 刪除 stay disabled). */

@@ -651,3 +651,6 @@
     color: #fff;
   }
 }
+
+// 當前餘額 of a valuation account (R7 §5): the amount is a market value, labelled beside it.
+.current-balance .kind-hint { color: var(--app-text-muted); font-size: var(--fs-micro); font-weight: 700; margin-left: 4px; }

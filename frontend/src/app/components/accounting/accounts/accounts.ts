@@ -16,6 +16,7 @@ import { currentDues, duePillText } from '../billing/billing-math';
 import { BillState, BillingService } from '../billing/billing.service';
 import { dueDate, statementPeriod } from '../cycle';
 import { daysBetween, shortDate, todayIso } from '../dates';
+import { balanceNegative, balanceText, valuationHint } from '../account-balance';
 import { formatMoney } from '../format';
 import { importReviewCount } from '../import-review-count';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
@@ -96,7 +97,10 @@ export function buildAccountGroups(accounts: LedgerAccount[], mainCurrency: stri
     const children = childrenOf.get(account.id) ?? [];
     const family = [account, ...children];
     const sameCurrency = children.every(child => child.currency === account.currency);
-    const unrated = !sameCurrency && family.some(member => member.balance_main === null || member.balance_main === undefined);
+    // No total for a family that cannot be summed: a mixed-currency member without a main-currency rate, or a member
+    // whose valuation is unavailable (`balance` null) — never a silent 0 for either.
+    const unrated = family.some(member => member.balance === null)
+      || (!sameCurrency && family.some(member => member.balance_main === null || member.balance_main === undefined));
     const total = unrated
       ? null
       : family.reduce((sum, member) => sum + value(sameCurrency ? member.balance : member.balance_main), 0);
@@ -187,6 +191,9 @@ export class AccountingAccountsComponent {
   );
   readonly reviewCount = computed(() => importReviewCount(this.latestImport()));
   readonly formatMoney = formatMoney;
+  readonly balanceText = balanceText;
+  readonly balanceNegative = balanceNegative;
+  readonly valuationHint = valuationHint;
   /** Each card's current statement (the same resolution as the calendar and the reminder centre). */
   private readonly dues = computed(() => currentDues(this.accounts(), this.today(), this.calendar.calendar()));
   /** Per card id: the current statement when something is left to pay. */

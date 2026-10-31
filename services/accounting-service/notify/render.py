@@ -81,6 +81,8 @@ def _item_line(it: DebitItem, today: date, cfg: NotifyConfig) -> str:
 
 
 def _source_block(b: SourceBlock, today: date, cfg: NotifyConfig) -> str:
+    if b.balance is None or b.projected is None:  # valuation source without a value (debits.SourceBlock)
+        return "\n".join([f"**{b.name}**  餘額 市值暫不可得"] + [_item_line(i, today, cfg) for i in b.items])
     head = f"**{b.name}**  餘額 {fmt_amount(b.balance)} → 扣款後 {fmt_amount(b.projected)}"
     if b.shortfall is not None:
         head += f" ⚠ 缺 {fmt_amount(b.shortfall)}"

@@ -53,15 +53,36 @@ export interface RewardRule {
   moze_id: string | null;
 }
 
+/** `AccountOut.valuation`: the portfolio's market total behind a `balance_kind: "valuation"` account (R7 spec §5). */
+export interface AccountValuation {
+  value: string;
+  currency: string;
+  as_of: string;
+  /** Latest priced day behind `value`; null when nothing was priced yet. */
+  priced_through: string | null;
+  complete: boolean;
+  /** Symbols without a price on `as_of`. */
+  missing: string[];
+}
+
 /** `GET /accounts` row (`AccountOut`). */
 export interface LedgerAccount {
   id: number;
   name: string;
   currency: string;
   opening_balance: string;
-  balance: string;
-  /** Balance in the main currency; null when no rate to the main currency is cached. */
+  /**
+   * Ledger sum, or the portfolio market total for a `balance_kind: "valuation"` account; null while that valuation
+   * is unavailable (no feed, incomplete prices) — shown as 市值暫不可得 and left out of every sum.
+   */
+  balance: string | null;
+  /** Balance in the main currency; null when no rate to the main currency is cached (or `balance` is null). */
   balance_main: string | null;
+  /** "valuation" when `valuation_source` is set on the account: `balance` is a market value, labelled 市值. */
+  balance_kind: 'ledger' | 'valuation';
+  /** True when the valuation shown is older than today's (or missing). */
+  stale: boolean;
+  valuation: AccountValuation | null;
   entry_count: number;
   group_id: number | null;
   group_name: string | null;

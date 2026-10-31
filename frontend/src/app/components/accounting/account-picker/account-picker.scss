@@ -163,3 +163,7 @@
   --ico-size: 1.25rem;
   vertical-align: middle;
 }
+
+// Valuation balances (R7 §5): the amount is a market value, labelled beside it.
+.acct-trigger-balance .kind-hint,
+.acct-balance .kind-hint { color: var(--app-text-muted); font-size: var(--fs-micro); font-weight: 700; margin-left: 4px; }

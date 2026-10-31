@@ -32,6 +32,11 @@ The page SHALL show the latest import's timestamp, status and the number of entr
 - **WHEN** the page renders
 - **THEN** `玉山信用卡` SHALL show a badge `3` and the three cards SHALL be indented beneath it
 
+#### Scenario: Valuation balance
+- **GIVEN** an account with `balance_kind: "valuation"` (a `valuation_source` is set, so `balance` is the portfolio's market total)
+- **WHEN** the list, the account-settings hero, the account picker or the entry form's 當前餘額 shows its balance
+- **THEN** a value SHALL be formatted like any balance and labelled `市值` (`市值（資料較舊）` when `stale` is true), a null `balance` SHALL read `市值暫不可得` in muted text (never red, never `0`) and that account SHALL be left out of the totals, and a 主帳戶 family containing it SHALL show no family total
+
 ### Requirement: Account entry history page
 
 The SPA SHALL provide the route `/accounting/accounts/:id`. It SHALL show a period navigator following the account's statement cycle (`closing_day`; calendar month when NULL), a summary of the period (new spend, income or rewards, period-end balance), and the account's entries newest first, showing for each entry:

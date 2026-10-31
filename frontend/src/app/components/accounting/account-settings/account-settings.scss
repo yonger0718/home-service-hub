@@ -49,7 +49,9 @@
 
   .ico { --ico-size: 64px; align-items: center; background: var(--app-surface-soft); border-radius: 50%; display: flex; font-size: 1.8rem; height: var(--ico-size); justify-content: center; width: var(--ico-size); }
   b { font-size: 1.2rem; font-variant-numeric: tabular-nums; }
+  b.unavailable { color: var(--app-text-muted); font-weight: 700; }
   small { color: var(--app-text-muted); font-size: 0.75rem; }
+  .kind-hint { font-weight: 700; margin-top: -4px; }
 }
 
 .custom-note {

@@ -28,7 +28,7 @@
           <span class="bal" [class.neg]="node.total < 0">{{ formatMoney(node.total, node.totalCurrency) }}</span>
         }
       } @else {
-        <span class="bal" [class.neg]="+account.balance < 0">{{ formatMoney(account.balance, account.currency) }}</span>
+        <span class="bal" [class.neg]="balanceNegative(account)" [class.unavailable]="account.balance === null">{{ balanceText(account) }}@if (valuationHint(account); as hint) {<small class="kind-hint">{{ hint }}</small>}</span>
       }
       @if (cardDue(account); as owed) {
         <span class="due">

@@ -65,6 +65,7 @@ import { AmountKeypadComponent } from '../amount-keypad/amount-keypad';
 import { evaluateAmount, prettyExpression, roundHalfAway } from '../amount-math';
 import { Bubble, CategoryPickerComponent, categoryColor, categoryIcon } from '../category-picker/category-picker';
 import { FeeSheetComponent } from '../fee-sheet/fee-sheet';
+import { balanceText, valuationHint } from '../account-balance';
 import { currencyDecimals, formatMoney, formatNumber } from '../format';
 import { FxSheetComponent, FxValue } from '../fx-sheet/fx-sheet';
 import { fieldErrors, writeErrorMessage } from '../http-errors';
@@ -615,7 +616,12 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   });
   readonly currentBalance = computed(() => {
     const account = this.account();
-    return account ? formatMoney(account.balance, account.currency) : '—';
+    return account ? balanceText(account) : '—';
+  });
+  /** 市值 / 市值（資料較舊） beside 當前餘額 when the account's balance is a portfolio valuation (R7 §5). */
+  readonly currentBalanceHint = computed(() => {
+    const account = this.account();
+    return account ? valuationHint(account) : null;
   });
   /**
    * The owner fixed the converted amount (轉換成) and the original amount has changed since: the saved rate is the

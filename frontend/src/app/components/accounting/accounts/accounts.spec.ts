@@ -10,11 +10,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AccountInput, ImportRun, LedgerAccount } from '../../../models/accounting.model';
 import { ACCOUNT_LOGOS } from '../../../theme/account-logos';
 import { AccountingService } from '../../../services/accounting.service';
-import { AccountingAccountsComponent } from './accounts';
+import { AccountingAccountsComponent, buildAccountGroups } from './accounts';
 
 function account(fields: Record<string, unknown>): LedgerAccount {
   return {
-    id: 0, name: '', currency: 'TWD', opening_balance: '0', balance: '0', balance_main: '0', entry_count: 1,
+    id: 0, name: '', currency: 'TWD', opening_balance: '0', balance: '0', balance_main: '0', balance_kind: 'ledger',
+    stale: false, valuation: null, entry_count: 1,
     group_id: 1, group_name: '現金', icon: '👛', color: null, is_archived: false, include_in_total: true,
     is_credit: false, closing_day: null, due_rule: null, due_value: null, credit_limit: null,
     combined_account_id: null, credit_sharing_id: null, auto_pay_account_id: null, fx_fee_pct: null,
@@ -516,6 +517,40 @@ describe('AccountingAccountsComponent', () => {
     expect(el.querySelector('.grp b')?.textContent?.trim()).toBe('+$3,070');
     // 總額 / 總資產 / 總負債 say that one account was left out.
     expect(el.querySelector('.nw .excluded-hint')?.textContent?.trim()).toBe('另有 1 個帳戶未換算，未計入');
+  });
+
+  it('labels valuation balances 市值 (資料較舊 when stale) and shows 市值暫不可得 for one without a value (R7 §5)', () => {
+    const valuation = { value: '514200', currency: 'TWD', as_of: '2026-10-02', priced_through: '2026-10-01', complete: true, missing: [] };
+    const el = render([
+      account({ id: 1, name: '錢包', balance: '3070', balance_main: '3070' }),
+      account({ id: 117, name: '國泰高雄', group_id: 2, group_name: '投資', icon: '📈', balance: '514200', balance_main: '514200', balance_kind: 'valuation', valuation }),
+      account({ id: 118, name: '美股', group_id: 2, group_name: '投資', icon: '📈', balance: '-10', balance_main: '-10', balance_kind: 'valuation', stale: true, valuation: { ...valuation, value: '-10' } }),
+      account({ id: 119, name: '港股', group_id: 2, group_name: '投資', icon: '📈', balance: null, balance_main: null, balance_kind: 'valuation', stale: true, valuation: null }),
+    ], LATEST).nativeElement as HTMLElement;
+
+    const [, fresh, stale, missing] = rows(el).map(row => row.querySelector('.bal')!);
+    expect(fresh.textContent?.replace(/\s+/g, '')).toBe('$514,200市值');
+    expect(fresh.classList.contains('neg')).toBe(false);
+    expect(stale.textContent?.replace(/\s+/g, '')).toBe('−$10市值（資料較舊）');
+    expect(stale.classList.contains('neg')).toBe(true);
+    // No value: the words instead of a number, muted (never red), and left out of every sum.
+    expect(missing.textContent?.trim()).toBe('市值暫不可得');
+    expect(missing.querySelector('.kind-hint')).toBeNull();
+    expect(missing.classList.contains('unavailable')).toBe(true);
+    expect(missing.classList.contains('neg')).toBe(false);
+    expect(el.querySelector('.total-amount')?.textContent?.trim()).toBe('$517,260');
+    expect(el.querySelector('.nw .excluded-hint')?.textContent?.trim()).toBe('另有 1 個帳戶未換算，未計入');
+    // A ledger balance keeps its plain number.
+    expect(rows(el)[0].querySelector('.bal')?.textContent?.trim()).toBe('$3,070');
+  });
+
+  it('buildAccountGroups: a family with a member whose valuation is unavailable has no total (never a silent 0)', () => {
+    const master = account({ id: 20, name: '主', combined_account_id: null, balance: '100', balance_main: '100' });
+    const child = account({ id: 21, name: '子', combined_account_id: 20, balance: null, balance_main: null, balance_kind: 'valuation' });
+    const [group] = buildAccountGroups([master, child], 'TWD');
+    expect(group.nodes[0].total).toBeNull();
+    expect(group.subtotal).toBe(100);
+    expect(group.partial).toBe(true);
   });
 
   it('shows no excluded hint when every counted account has a rate (an excluded-from-total one does not count)', () => {
