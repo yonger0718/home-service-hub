@@ -60,7 +60,7 @@
       @case ('overview') {
         @if (expense(); as expense) {
           @if (income(); as income) {
-            <app-report-overview [expense]="expense" [income]="income" [labels]="labels()" [drillMonth]="drillMonth()" />
+            <app-report-overview [expense]="expense" [income]="income" [labels]="labels()" [drillMonth]="drillMonth()" [period]="period()" />
           }
         } @else {
           <p class="rp-loading">讀取中</p>

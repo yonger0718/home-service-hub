@@ -153,6 +153,14 @@ export function compareTitle(period: ReportPeriod): string {
   return comparesCoincide(period) ? `${subject} ${lastYear}` : `${subject} 對前一期、${lastYear}`;
 }
 
+/**
+ * The link to the timeline under a row (design D7). The timeline opens one month, so only a 月 period can promise the
+ * row's N entries; any other period names the month that opens.
+ */
+export function drillText(period: ReportPeriod, count: number): string {
+  return period.unit === 'month' ? `在記帳記錄看這 ${count} 筆 ›` : `在記帳記錄看 ${monthOf(period.from)}（期間第一個月） ›`;
+}
+
 /** `YYYY-MM-DD` is the last day of its month. */
 function isMonthEnd(iso: string): boolean {
   return Number(iso.slice(8, 10)) === daysInMonth(monthOf(iso));

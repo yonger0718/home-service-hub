@@ -175,6 +175,15 @@ describe('AccountingReportsComponent', () => {
     expect(drill.getAttribute('href')).toBe('/accounting?month=2026-10&category_id=2');
   });
 
+  it('points 在記帳記錄看 at the month the timeline opens for a 年 period, without the whole-year count', async () => {
+    const { harness, el } = await open('/accounting/reports?year=2026');
+    flushSample();
+    harness.detectChanges();
+    const drill = el.querySelector<HTMLAnchorElement>('.ov-drill')!;
+    expect(drill.textContent?.trim()).toBe('在記帳記錄看 2026-01（期間第一個月） ›');
+    expect(drill.getAttribute('href')).toBe('/accounting?month=2026-01&category_id=1');
+  });
+
   it('switches to 收入 and back without a new read', async () => {
     const { harness, el } = await open('/accounting/reports?month=2026-10');
     flushSample();

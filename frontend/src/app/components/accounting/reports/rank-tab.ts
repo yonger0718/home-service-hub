@@ -4,7 +4,7 @@ import { Params, RouterLink } from '@angular/router';
 import { BreakdownResponse, BreakdownRow, ReportDimension, TrendResponse } from '../../../models/reports.model';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import type { LoadState } from './reports';
-import { ReportPeriod, barGeometry, bucketLabel, n0, num, pct1, periodLabel } from './report-math';
+import { ReportPeriod, barGeometry, bucketLabel, drillText, n0, num, pct1, periodLabel } from './report-math';
 
 /** The four ranking dimensions (spec: 商家, 標籤, 對象, 帳戶). */
 export type RankDimension = Extract<ReportDimension, 'merchant' | 'tag' | 'counterparty' | 'account'>;
@@ -176,6 +176,8 @@ export class ReportRankComponent {
     }
     return params;
   });
+
+  readonly drillLabel = computed(() => drillText(this.period(), this.selected()?.count ?? 0));
 
   protected labelOf(row: BreakdownRow): string {
     if (row.key === null) return this.copy().none;

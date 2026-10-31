@@ -8,6 +8,7 @@ import {
   comparesCoincide,
   compareTitle,
   donutArcs,
+  drillText,
   elapsedDays,
   monthPeriod,
   n0,
@@ -81,6 +82,12 @@ describe('report period', () => {
     expect(comparesCoincide(short)).toBe(false);
     expect(compareLabels(short)).toEqual({ previous: '比前一期', lastYear: '比去年同期', single: false });
     expect(compareTitle(short)).toBe('本期 對前一期、對去年同期');
+  });
+
+  it('words the timeline link: N entries for a month, the month that opens for any other period', () => {
+    expect(drillText(monthPeriod('2026-10'), 46)).toBe('在記帳記錄看這 46 筆 ›');
+    expect(drillText(yearPeriod(2026), 460)).toBe('在記帳記錄看 2026-01（期間第一個月） ›');
+    expect(drillText({ unit: 'custom', from: '2026-09-15', to: '2026-10-14' }, 12)).toBe('在記帳記錄看 2026-09（期間第一個月） ›');
   });
 
   it('computes the comparison windows: whole months before, the same dates a year earlier', () => {

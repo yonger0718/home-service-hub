@@ -57,7 +57,7 @@
         </div>
       }
       @if (drillParams(); as params) {
-        <a class="rk-drill" routerLink="/accounting" [queryParams]="params">在記帳記錄看這 {{ row.count }} 筆 ›</a>
+        <a class="rk-drill" routerLink="/accounting" [queryParams]="params">{{ drillLabel() }}</a>
       }
     </section>
   }
