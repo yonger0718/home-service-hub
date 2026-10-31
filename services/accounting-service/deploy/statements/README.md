@@ -542,8 +542,40 @@ Disabling stops new bookings, not every write. While 67 keeps its `settlement_so
   retirements, and links claimed stand-ins to their lines; the owner can still apply `book_settlement` by hand (only the
   policy's action is switched off).
 
-To freeze everything, also clear the source: owner SQL `UPDATE account SET settlement_source = NULL WHERE id = 67;` (or the
-admin `PATCH /accounts/67` with `{"settlement_source": null}`). A NULL source takes 67 out of both paths:
+To freeze everything, also clear the source. Clearing it only changes what LATER runs select: a stand-in job already
+running has read its accounts and their feeds at its start (`trade_settlement_service._run_locked`) and can still retire
+an unclaimed pair whose feed row is gone after the SQL commits, and a sweep or `POST /reconciliation/settlements/run`
+reconciles the statements it chose after its job. So drain first, in this order:
+
+1. Stop the timers that start a stand-in job (the 06:40 國泰 worker call and the 03:30 full run's sweep; the poll timer's
+   queued runs never sweep), and start no `python -m worker run`, `POST /reconciliation/sweep` or
+   `POST /reconciliation/settlements/run` by hand before step 5 (whose checks run them with the source cleared):
+
+       systemctl --user stop homehub-portfolio-cathay.timer homehub-statements-daily.timer
+
+2. Wait until nothing is running. Both units read `inactive` (a run in progress reads `activating`):
+
+       systemctl --user is-active homehub-portfolio-cathay.service homehub-statements.service
+
+   then, in the accounting database, no session holds the job's run lock (`schedule_locks.SETTLEMENT_JOB_LOCK_KEY`,
+   0x53544C4D, a session-level advisory lock) and no ingest run holds a lease (a sweep runs under one):
+
+       SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND classid = 0 AND objid = 1398033485 AND objsubid = 1
+         AND database = (SELECT oid FROM pg_database WHERE datname = current_database());
+       SELECT id, trigger, status FROM ingest_run WHERE status IN ('claimed', 'running');
+
+   Both must return no rows; re-run them until they do.
+3. Disable the switches (`policy.actions.book_settlement.enabled = false`, `settlement.stand_in_enabled = false`, one
+   whole-document settings PUT) if the rollback above has not already done it; GET it back and check both read `false`.
+4. Clear the source: owner SQL `UPDATE account SET settlement_source = NULL WHERE id = 67;` (or the admin
+   `PATCH /accounts/67` with `{"settlement_source": null}`).
+5. Verify with the checks listed under "Check afterwards" below.
+6. Start `homehub-statements-daily.timer` again; start `homehub-portfolio-cathay.timer` again if 67 stays a live account
+   (the 國泰 statements keep flowing into the portfolio; with the source cleared its `settlement_run` writes nothing for 67):
+
+       systemctl --user start homehub-statements-daily.timer homehub-portfolio-cathay.timer
+
+A NULL source takes 67 out of both paths:
 `trade_settlement_service.applies()` is false, so the reconcile makes no feed read, no `housekeep`, no twin retirement, no
 claim link and no settlement outcome (its `settlements` count block is `{}`), and `_accounts()` / `recheck_statement_ids()`
 select only `settlement_source IN SETTLEMENT_SOURCES`, so the job and the re-check list skip 67. `book_settlement` is then
