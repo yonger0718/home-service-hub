@@ -7,6 +7,7 @@ import pytest
 from app import auth
 from app.models import Account, AccountGroup, Category, EntryGroup, FxRate, LedgerEntry, Preference, Project, RewardRule
 from app.services import ledger_service
+from tests.integration.settlement_fixtures import settlement_bank
 
 
 def _account(db, name="錢包", currency="TWD", opening="2000", archived=False) -> Account:
@@ -520,3 +521,26 @@ def test_patch_refuses_a_settlement_source_in_a_currency_the_source_does_not_ans
     assert client.get(f"/accounts/{account.id}", headers=admin).json()["settlement_source"] is None
     assert client.patch(f"/accounts/{account.id}", headers=admin, json={"settlement_source": None}).status_code == 200
     assert client.patch(f"/accounts/{account.id}", headers=admin, json={"valuation_source": "portfolio:x"}).status_code == 200
+
+
+def test_put_refuses_a_currency_change_on_a_settlement_bound_account(client, db_session, seed):
+    """PR #234 re-check finding 1, at the origin: an account carrying a `settlement_source` or `valuation_source`, or a
+    key or value of `settlement.target_accounts`, keeps its currency (409 `currency_locked`), even without entries; a
+    plain entry-less account may still change it."""
+    bank, target = settlement_bank(seed, db_session)
+    valued = seed.account("估值帳戶", valuation_source="portfolio:x")
+    plain = seed.account("空帳戶")
+    db_session.commit()
+    bank_id, target_id, valued_id, plain_id = bank.id, target.id, valued.id, plain.id
+
+    def put(account_id, name):
+        return client.put(f"/accounts/{account_id}", json={"name": name, "currency": "USD"})
+
+    for account_id, name in ((bank_id, "交割戶"), (target_id, "證券市值"), (valued_id, "估值帳戶")):
+        response = put(account_id, name)
+        assert response.status_code == 409, response.text
+        assert response.json()["message"].startswith("currency_locked"), response.text
+        assert client.get(f"/accounts/{account_id}").json()["currency"] == "TWD"
+    assert client.put(f"/accounts/{bank_id}", json={"name": "交割戶改名", "currency": "TWD"}).status_code == 200
+    changed = put(plain_id, "空帳戶")
+    assert changed.status_code == 200 and changed.json()["currency"] == "USD"

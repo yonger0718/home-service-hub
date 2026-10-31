@@ -96,6 +96,7 @@ Writes (every new row gets `source = 'manual'`, and an edit of a schedule-posted
 - `POST /splits` -> `{group_id, member_ids}`, `PUT /splits/{group_id}`, `DELETE /splits/{group_id}`
 - `POST /balance-adjustments` (`target_balance`; stores the delta)
 - `POST /accounts`, `PUT /accounts/{id}`, `DELETE /accounts/{id}` (409 while it has entries; archive instead), `POST /accounts/{id}/reset-settings-flag`
+  - `PUT /accounts/{id}` never changes `currency` while the account has entries (422) or while it carries a `settlement_source` / `valuation_source` or is a key or value of `settlement.target_accounts` (409 `currency_locked`; clear the source / mapping first) — the R7 writers re-check these currencies under their locks (PR #234).
 - `POST /account-groups`, `PUT /account-groups/{id}`, `DELETE /account-groups/{id}`, `PUT /account-groups/order` (`{"ids": [...]}`)
 - `POST /categories`, `PUT /categories/{id}`, `DELETE /categories/{id}`, `PUT /categories/order`
 - `POST /projects`, `PUT /projects/{id}`, `DELETE /projects/{id}`

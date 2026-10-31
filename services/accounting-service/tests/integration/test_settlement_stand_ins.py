@@ -5,7 +5,7 @@ owner-deleted and owner-edited pairs alone. Fictional amounts; the fixture's own
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.models import Account, LedgerEntry, PolicyBudget, ReconciliationAudit, SettlementBooking
@@ -400,3 +400,29 @@ def test_gate_refuses_a_target_in_another_currency(seed, db_session, portfolio_s
     cand = _candidate(db_session, bank, usd, portfolio_stub.rows[0])
     settings = {**_settings(db_session), "target_accounts": {str(bank.id): usd.id}}
     assert tss.gate(db_session, cand, settings) == "currency_mismatch"
+
+
+def test_a_currency_change_racing_the_stand_in_is_skipped_and_writes_nothing(pg_engine, seed, db_session, portfolio_stub,
+                                                                             stand_ins_on, monkeypatch):
+    """PR #234 re-check finding 1: the gate passed on TWD accounts; a concurrent writer changes the bank and its target
+    to USD before the savepoint's writes. `book_stand_in` re-reads both accounts inside the savepoint and returns the
+    skip `currency_mismatch` with nothing written (no transfer, no booked or skipped row)."""
+    bank, target = settlement_bank(seed, db_session); stand_ins_on(bank, target, enabled_from="2026-09-01")
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)))
+    cand = _candidate(db_session, bank, target, portfolio_stub.rows[0])
+    assert tss.gate(db_session, cand, _settings(db_session)) is None
+    db_session.commit()
+    original = db_session.begin_nested
+
+    def racing():
+        with Session(pg_engine) as writer:
+            writer.execute(update(Account).where(Account.id.in_((bank.id, target.id))).values(currency="USD"))
+            writer.commit()
+        return original()
+
+    monkeypatch.setattr(db_session, "begin_nested", racing)
+    row = tss.book_stand_in(db_session, cand, _settings(db_session))
+    monkeypatch.undo()
+    db_session.commit()
+    assert (row.status, row.reason) == ("skipped", "currency_mismatch")
+    assert _entries(db_session) == 0 and db_session.scalar(select(func.count(SettlementBooking.id))) == 0

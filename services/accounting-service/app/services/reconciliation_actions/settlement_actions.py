@@ -17,8 +17,10 @@ Steps (the engine's order, `engine.apply_action`):
   open (`line_claimed` …); a booked row of the fingerprint for another event → 409 `already_booked`; of the day under
   another fingerprint → 409 `day_booked`; the locked candidate equal to the re-read (net, settlement date,
   `(source_id, amount)` set, `bookable`, `date_source`: `same_facts`), bookable and of the line's flow, else 409
-  `candidate_changed` (AGENT-360 major 3); the owner-twin re-check for guarded actors (`_twin_check` plus the
-  settlement twin `find_twins` within `settlement.twin_window_days`).
+  `candidate_changed` (AGENT-360 major 3); the target still mapped and the source still set (409 `no_target`); the
+  bank (refreshed by the engine's account lock), the re-read target and the source in one currency
+  (`tss.pair_currency_ok`, else 409 `currency_mismatch`; PR #234 re-check finding 1); the owner-twin re-check for
+  guarded actors (`_twin_check` plus the settlement twin `find_twins` within `settlement.twin_window_days`).
 - `apply`: `transfer_service.create_transfer` bank → target for a negative net, target → bank for a positive one
   (`|line.flow|`, both legs on the line's posted date, name `證券交割`, description `證券交割 <trade date>`, source
   `statement`), the booking row (`facts` = the re-read facts) and its items in a savepoint — a unique violation is
@@ -40,7 +42,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app.models import (
-    LedgerEntry, ReconciliationAction, SettlementBooking, SettlementBookingItem, StatementCoverage, StatementLine,
+    Account, LedgerEntry, ReconciliationAction, SettlementBooking, SettlementBookingItem, StatementCoverage, StatementLine,
 )
 from app.schemas.writes import TransferIn
 from app.services import settings_service, transfer_service
@@ -141,8 +143,14 @@ class BookSettlementAction(_TwinGuarded):
                 or Decimal(now["net_amount"]) != Decimal(line.flow_amount):
             raise CodedConflictError("candidate_changed", f"settlement {params.fingerprint} changed in the feed")
         target_id = _target_id(ctx)
-        if target_id is None:
+        if not ctx.account.settlement_source or target_id is None:
             raise CodedConflictError("no_target", f"account {ctx.statement.account_id} has no settlement target")
+        # PR #234 re-check finding 1: `prepare` checked the currencies unlocked; the engine's account lock refreshed
+        # `ctx.account`, and the target is re-read here — a concurrent currency change is refused, never booked
+        target = ctx.db.get(Account, target_id, populate_existing=True)
+        if not tss.pair_currency_ok(ctx.account, target):
+            raise CodedConflictError("currency_mismatch", f"account {ctx.statement.account_id} or its target "
+                                                          f"{target_id} is not in its settlement source's currency")
         self._settlement_twin_check(ctx, line, target_id)
         return line, now, target_id
 

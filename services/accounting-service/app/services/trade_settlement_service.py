@@ -114,6 +114,15 @@ def currency_mismatch(account: Account, rows: Iterable[Settlement] = ()) -> bool
         r.currency != account.currency for r in rows)
 
 
+def pair_currency_ok(bank: Account, target: Account | None) -> bool:
+    """PR #234 re-check finding 1: the bank, its target and the bank's settlement source agree on one currency
+    (`bank.currency == target.currency == SOURCE_CURRENCIES[bank.settlement_source]`). Fail-closed: no target, or a
+    bank without a known source, is a mismatch. The writers check it on rows they have just re-read under their
+    locks (`book_settlement`'s plan, `book_stand_in`'s savepoint). Pure."""
+    expected = SOURCE_CURRENCIES.get(bank.settlement_source)
+    return target is not None and expected is not None and bank.currency == target.currency == expected
+
+
 def _calendar(db: Session) -> tuple[frozenset[date], frozenset[date]]:
     """The bank calendar overrides (`auto_pay.extra_holidays` / `extra_workdays`, owner ruling Q1 (b))."""
     return auto_pay_service.calendar_sets(settings_service.read_auto_pay_settings(db))
@@ -966,6 +975,10 @@ def _items(facts: dict) -> list[SettlementBookingItem]:
                                   amount=Decimal(i["amount"])) for i in facts["items"]]
 
 
+class _CurrencyChanged(Exception):
+    """`book_stand_in`: an account's currency changed after `gate` (rolls the savepoint back, nothing written)."""
+
+
 def book_stand_in(db: Session, cand: StandInCandidate, settings: dict) -> SettlementBooking:
     """Spec §4.7 Booking: the §4.4 item 2 transfer (bank → target for a negative net, target → bank for a positive
     one, `|net|`, both legs on the settlement date, name `證券交割`, description `證券交割 <trade date>`, source
@@ -973,8 +986,12 @@ def book_stand_in(db: Session, cand: StandInCandidate, settings: dict) -> Settle
     = `facts_of`) with its items, all inside one savepoint. No account row lock: the partial unique on (account,
     settlement_date) over `booked` rows serialises it against a concurrent `book_settlement`; a unique violation
     rolls the savepoint back and is recorded as the skip it means (`UNIQUE_CODES`: `day_booked`,
-    `constituent_reserved`, `already_booked`) — the returned row is then that `skipped` row. Audit
-    `settlement_booked`. The caller has run `gate`. Flushes, never commits."""
+    `constituent_reserved`, `already_booked`) — the returned row is then that `skipped` row. Inside the savepoint,
+    before any write, both accounts are re-read from the database (`gate` read them earlier, unlocked): a currency
+    that changed since (`pair_currency_ok` false, or the feed row in another currency; PR #234 re-check finding 1)
+    writes nothing and returns a TRANSIENT `skipped` row of reason `currency_mismatch` (never added to the session:
+    like the job's own `currency_mismatch` skips, no `skipped` row is stored). Audit `settlement_booked`. The caller
+    has run `gate`. Flushes, never commits."""
     s = cand.settlement
     account = db.get(Account, cand.account_id)
     net = Decimal(s.net_amount)
@@ -982,6 +999,10 @@ def book_stand_in(db: Session, cand: StandInCandidate, settings: dict) -> Settle
     facts = facts_of(s)
     try:
         with db.begin_nested():
+            bank = db.get(Account, cand.account_id, populate_existing=True)
+            target = db.get(Account, cand.target_account_id, populate_existing=True)
+            if not pair_currency_ok(bank, target) or currency_mismatch(bank, [s]):
+                raise _CurrencyChanged
             group_id = transfer_service.create_transfer(db, TransferIn(
                 from_account_id=source, to_account_id=sink, out_amount=abs(net), entry_date=s.settlement_date,
                 posted_date=s.settlement_date, name=TRANSFER_NAME,
@@ -995,6 +1016,12 @@ def book_stand_in(db: Session, cand: StandInCandidate, settings: dict) -> Settle
                 out_entry_id=out_leg.id, in_entry_id=in_leg.id, status="booked", items=_items(facts))
             db.add(row)
             db.flush()
+    except _CurrencyChanged:
+        logger.info("settlement.currency_mismatch", extra={"account_id": cand.account_id, "code": CURRENCY_MISMATCH,
+                                                           "settlement_date": s.settlement_date.isoformat()})
+        return SettlementBooking(kind=KIND, origin="stand_in", account_id=cand.account_id, status="skipped",
+                                 reason=CURRENCY_MISMATCH, fingerprint=s.fingerprint, trade_date=s.trade_date,
+                                 settlement_date=s.settlement_date, net_amount=net)
     except IntegrityError as exc:
         code = next((code for index, code in UNIQUE_CODES if index in str(exc.orig)), None)
         if code is None:

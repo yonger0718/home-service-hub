@@ -32,7 +32,7 @@ from ..schemas.writes import (
     SOURCE_CURRENCIES, AccountGroupIn, AccountIn, CategoryIn, CounterpartyIn, PreferenceIn, ProjectIn,
 )
 from . import schedule_entry_hooks
-from .errors import ConflictError, NotFoundError, ValidationError  # noqa: F401  (re-exported)
+from .errors import CodedConflictError, ConflictError, NotFoundError, ValidationError  # noqa: F401  (re-exported)
 from .ledger_service import open_debt_filter
 
 PREFERENCE_FIELDS = (
@@ -607,6 +607,16 @@ def _check_combined(db: Session, self_id: int | None, combined_id: int) -> None:
         current = db.get(Account, current.combined_account_id)
 
 
+def _settlement_bound(db: Session, account: Account) -> bool:
+    """PR #234 re-check finding 1, at the origin: the account carries a `settlement_source` or `valuation_source`, or
+    is a key or a value of `settlement.target_accounts` — its currency is what the R7 writers re-check under their
+    locks, so it is locked here (409 `currency_locked`) even while the account has no entries."""
+    if account.settlement_source or account.valuation_source:
+        return True
+    targets = read_settlement_settings(db)["target_accounts"]
+    return str(account.id) in targets or account.id in targets.values()
+
+
 def _validate_account(db: Session, payload: AccountIn, account: Account | None) -> None:
     self_id = account.id if account is not None else None
     if not payload.is_credit:
@@ -630,6 +640,9 @@ def _validate_account(db: Session, payload: AccountIn, account: Account | None) 
             raise ValidationError("auto_pay_account_id", "must be a non-credit, non-archived account in the same currency")
     if account is not None and payload.currency != account.currency and _count(db, LedgerEntry.account_id == account.id):
         raise ValidationError("currency", "currency cannot change while the account has entries")
+    if account is not None and payload.currency != account.currency and _settlement_bound(db, account):
+        raise CodedConflictError("currency_locked", "currency cannot change while the account carries a portfolio "
+                                                    "source or is in settlement.target_accounts")
     _check_sharing_members(db, payload, self_id)
 
 

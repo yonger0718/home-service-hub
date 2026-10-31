@@ -7,17 +7,17 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.models import (
-    AccountStatement, LedgerEntry, PolicyBudget, ReconciliationAction, ReconciliationCase, ReconciliationProposal,
-    SettlementBooking,
+    Account, AccountStatement, LedgerEntry, PolicyBudget, ReconciliationAction, ReconciliationCase,
+    ReconciliationProposal, SettlementBooking,
 )
 from app.services import entry_write_service as ews
 from app.services import policy_service, proposal_service, reconciliation_actions, settings_service, transfer_service
 from app.services.errors import CodedConflictError
-from app.services.reconciliation_actions import engine
+from app.services.reconciliation_actions import engine, engine_locks
 from app.services.reconciliation_actions.base import LockSet
 from tests.conftest import Seed
 from tests.integration.settlement_fixtures import (  # noqa: F401  (portfolio_stub, policy_on are fixtures)
@@ -374,3 +374,25 @@ def test_book_settlement_is_refused_once_the_feed_answers_in_another_currency(se
     exc = _refuse(db_session, lambda: _apply(db_session, case.id, "book_settlement", {"fingerprint": case.context["fingerprint"]}))
     assert (_code(exc), str(exc)) == ("source_unavailable", "source_unavailable: currency_mismatch")
     assert db_session.scalar(select(func.count(SettlementBooking.id))) == 0
+
+
+def test_a_currency_change_racing_the_booking_is_refused_under_the_locks(pg_engine, seed, db_session, run, portfolio_stub,
+                                                                          monkeypatch):
+    """PR #234 re-check finding 1: prepare's feed re-read saw TWD accounts; a concurrent writer changes the bank and
+    its target to USD after check_before_locks and before the account lock. `_plan` re-reads both accounts under the
+    locks and refuses 409 `currency_mismatch` — no USD transfer of a TWD amount, no booking row."""
+    bank, target, sid, case = _case_and_booking(seed, db_session, run, portfolio_stub)
+    original = engine_locks.lock_account_and_barrier
+
+    def racing(db, targets, statement):
+        with Session(pg_engine) as writer:                                                    # the other request commits first
+            writer.execute(update(Account).where(Account.id.in_((bank.id, target.id))).values(currency="USD"))
+            writer.commit()
+        original(db, targets, statement)
+
+    monkeypatch.setattr(engine_locks, "lock_account_and_barrier", racing)
+    exc = _refuse(db_session, lambda: _apply(db_session, case.id, "book_settlement", {"fingerprint": case.context["fingerprint"]}))
+    assert _code(exc) == "currency_mismatch"
+    assert db_session.scalar(select(func.count(SettlementBooking.id))) == 0
+    assert db_session.scalar(select(func.count(LedgerEntry.id)).where(LedgerEntry.source == "statement")) == 0
+    assert db_session.scalar(select(func.count(ReconciliationAction.id))) == 0
