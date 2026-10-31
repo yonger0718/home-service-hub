@@ -6,6 +6,7 @@ import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { Project } from '../../../models/accounting.model';
 import { BreakdownQuery, ReportCompare, ReportDimension, ReportMetric, TrendQuery } from '../../../models/reports.model';
 import { LayoutMode, LayoutModeService, MATCH_MEDIA } from '../../../services/layout-mode.service';
 import { NavBadgeService } from '../../../services/nav-badge.service';
@@ -94,12 +95,14 @@ describe('AccountingReportsComponent', () => {
 
   const flushSample = () => answer(pending());
 
-  async function open(url: string, mode: LayoutMode = 'panes'): Promise<{ harness: RouterTestingHarness; el: HTMLElement }> {
+  /** Opens the page and answers its own reads: the saved reports and the projects (the rules line names the excluded ones). */
+  async function open(url: string, mode: LayoutMode = 'panes', projects: Project[] = []): Promise<{ harness: RouterTestingHarness; el: HTMLElement }> {
     TestBed.inject(LayoutModeService).set(mode);
     const harness = await RouterTestingHarness.create();
     await harness.navigateByUrl(url);
     harness.detectChanges();
     http.expectOne(r => r.url === '/api/accounting/reports/saved').flush(new SampleSavedReportStore().list());
+    http.expectOne('/api/accounting/projects').flush(projects);
     harness.detectChanges();
     return { harness, el: harness.routeNativeElement as HTMLElement };
   }
@@ -134,6 +137,18 @@ describe('AccountingReportsComponent', () => {
     expect(texts(el, '.rp-figure-value')).toEqual(['$41,890', '$68,126', '+$26,236', '$1,351']);
     expect(texts(el, '.rp-figure-foot')).toEqual(['比 9 月 ▲ 2,282 · 比去年 10 月 ▼ 2,160', '薪資 68,000 · 回饋 126', '儲蓄率 38.5%', '共 31 天']);
     expect(el.querySelector('.rp-sample')).toBeNull();
+  });
+
+  it('names the 不計入報表 projects on the rules line (the October header test covers none)', async () => {
+    const projects: Project[] = [
+      { id: 1, name: '東京旅行', is_archived: true, sort_order: 0, moze_id: null, exclude_from_reports: true },
+      { id: 2, name: '客廳整理', is_archived: false, sort_order: 1, moze_id: null, exclude_from_reports: false },
+      { id: 3, name: '公司代墊', is_archived: false, sort_order: 2, moze_id: null, exclude_from_reports: true },
+    ];
+    const { harness, el } = await open('/accounting/reports?month=2026-10', 'panes', projects);
+    flushSample();
+    harness.detectChanges();
+    expect(el.querySelector('.page-subtitle')?.textContent?.trim()).toBe('以台幣計 · 退款抵減支出 · 轉帳不計入 · 不計入：東京旅行、公司代墊');
   });
 
   it('lists the categories on gross with the refund as its own line, and details the selected one', async () => {
@@ -426,7 +441,7 @@ describe('AccountingReportsComponent', () => {
 
   describe('專案與預算', () => {
     const BUDGETS = '/api/accounting/reports/budgets';
-    const PROJECTS = [
+    const PROJECTS: Project[] = [
       { id: 1, name: '東京旅行', is_archived: true, sort_order: 0, moze_id: null, exclude_from_reports: true },
       { id: 2, name: '客廳整理', is_archived: false, sort_order: 1, moze_id: null, exclude_from_reports: false },
     ];
@@ -443,13 +458,14 @@ describe('AccountingReportsComponent', () => {
     }
 
     async function openPlan() {
-      const opened = await open('/accounting/reports?month=2026-10&tab=plan');
+      const opened = await open('/accounting/reports?month=2026-10&tab=plan', 'panes', PROJECTS);
       const reads = pending();
       expect(reads.breakdowns).toHaveLength(4);
       expect(breakdownQuery(reads.breakdowns[3])).toEqual({ date_from: '2000-01-01', date_to: '2026-10-31', metric: 'expense', group_by: 'project', split_by: 'category', compare: undefined, include_excluded_projects: true });
       answer(reads);
       const store = flushStatus();
-      http.expectOne('/api/accounting/projects').flush(PROJECTS);
+      // The projects came with the page; the tab reads only the categories.
+      http.expectNone('/api/accounting/projects');
       const roots = http.expectOne(r => r.url === '/api/accounting/categories');
       expect(roots.request.params.get('kind')).toBe('expense');
       roots.flush(ROOTS);
@@ -483,14 +499,13 @@ describe('AccountingReportsComponent', () => {
     });
 
     it('keeps the project cards when the API leaves first / last date out (over 50 groups, 其他), without inventing dates', async () => {
-      const { harness, el } = await open('/accounting/reports?month=2026-10&tab=plan');
+      const { harness, el } = await open('/accounting/reports?month=2026-10&tab=plan', 'panes', PROJECTS);
       const reads = pending();
       const lifetime = reads.breakdowns.pop()!;
       answer(reads);
       const report = sampleBreakdown(breakdownQuery(lifetime));
       lifetime.flush({ ...report, rows: report.rows.map(row => ({ ...row, first_date: null, last_date: null })) });
       flushStatus();
-      http.expectOne('/api/accounting/projects').flush(PROJECTS);
       http.expectOne(r => r.url === '/api/accounting/categories').flush(ROOTS);
       harness.detectChanges();
 

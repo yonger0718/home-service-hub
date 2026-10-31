@@ -78,6 +78,7 @@ export class AccountingReportsComponent {
   private sparkRequestId = 0;
   private planRequestId = 0;
   private referenceRequested = false;
+  private projectsFailed = false;
 
   private readonly params = toSignal(this.route.queryParamMap, { initialValue: this.route.snapshot.queryParamMap });
   readonly today = signal(todayIso());
@@ -143,11 +144,13 @@ export class AccountingReportsComponent {
   /** The month the timeline opens on from 在記帳記錄看這 N 筆 (the timeline shows one month). */
   readonly drillMonth = computed(() => monthOf(this.period().from));
 
-  /** The statistics rules under the title; the currencies left out follow when the API reports any. */
+  /** The statistics rules under the title; the 不計入報表 projects and the currencies left out follow when there are any. */
   readonly rules = computed(() => {
     const currency = this.currency();
     const parts = [`以${CURRENCY_NAMES[currency] ?? currency}計`, '退款抵減支出', '轉帳不計入'];
     const missing = new Set([...(this.expense()?.missing_rates ?? []), ...(this.income()?.missing_rates ?? [])]);
+    const excluded = this.projectList().filter(project => project.exclude_from_reports).map(project => project.name);
+    if (excluded.length) parts.push(`不計入：${excluded.join('、')}`);
     if (missing.size) parts.push(`未換算：${[...missing].join('、')}`);
     return parts.join(' · ');
   });
@@ -190,6 +193,7 @@ export class AccountingReportsComponent {
 
   constructor() {
     this.reports.listSaved().subscribe({ next: list => this.savedReports.set(list), error: () => undefined });
+    this.loadProjects();
     effect(() => {
       const period = this.period();
       untracked(() => this.load(period));
@@ -218,6 +222,12 @@ export class AccountingReportsComponent {
     });
   }
 
+  /** With the page: the rules line names the 不計入報表 projects, and 專案與預算 reuses the list (re-read there after a failure). */
+  private loadProjects(): void {
+    this.projectsFailed = false;
+    this.accounting.getProjects().subscribe({ next: projects => this.projectList.set(projects), error: () => (this.projectsFailed = true) });
+  }
+
   private loadPlan(period: ReportPeriod): void {
     const id = ++this.planRequestId;
     this.planError.set(null);
@@ -238,10 +248,10 @@ export class AccountingReportsComponent {
           this.projectReportState.set('error');
         },
       });
+    if (this.projectsFailed) this.loadProjects();
     if (!this.referenceRequested) {
       this.referenceRequested = true;
-      this.accounting.getProjects().subscribe({ next: projects => this.projectList.set(projects), error: () => (this.referenceRequested = false) });
-      this.accounting.getCategories('expense').subscribe({ next: roots => this.expenseRoots.set(roots), error: () => undefined });
+      this.accounting.getCategories('expense').subscribe({ next: roots => this.expenseRoots.set(roots), error: () => (this.referenceRequested = false) });
     }
   }
 
