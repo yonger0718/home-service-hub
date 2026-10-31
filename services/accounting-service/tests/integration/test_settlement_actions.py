@@ -303,3 +303,65 @@ def test_revert_is_settlement_busy_while_another_session_holds_the_booking_row(p
         exc = _refuse(db_session, lambda: _revert(db_session, row.id))
         other.rollback()
     assert _code(exc) == "settlement_busy" and _fresh(db_session, SettlementBooking, 1).status == "booked"   # nothing released
+
+
+def _booked(db) -> int:
+    return db.scalar(select(func.count(SettlementBooking.id)).where(SettlementBooking.status == "booked"))
+
+
+def _all_cases(db, sid):
+    return [(c.kind, (c.context or {}).get("hint"), c.status)
+            for c in _cases(db, sid, "open", "proposed", "resolved", "dismissed")]
+
+
+def test_a_dismissal_after_a_revert_holds_across_the_kind_change(seed, db_session, run, portfolio_stub, policy_on):
+    """Owner ruling A (final review I1): the bank path re-books on the next reconcile UNLESS the case is dismissed —
+    the reverted case reopens as `line_unmatched` + `settlement_pending`, the next reconcile derives a `settlement`
+    case for the same event, and the dismissal of the first must hide the second."""
+    policy_on()
+    bank, target = settlement_bank(seed, db_session)
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)))
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    policy_service.run_policy(db_session, sid); db_session.commit()
+    booking = db_session.scalar(select(SettlementBooking))
+    assert booking.status == "booked"
+    _revert(db_session, booking.action_id)
+    (case,) = _cases(db_session, sid, "open")
+    assert (case.kind, case.context["hint"]) == ("line_unmatched", "settlement_pending")
+    _apply(db_session, case.id, "dismiss", {"note": "owner: no"})
+    _reconcile(db_session, sid); policy_service.run_policy(db_session, sid); db_session.commit()
+    assert _booked(db_session) == 0
+    assert _all_cases(db_session, sid) == [("line_unmatched", "settlement_pending", "dismissed")]
+
+
+def test_a_dismissed_pending_case_hides_the_settlement_once_the_feed_answers(seed, db_session, run, portfolio_stub,
+                                                                            policy_on):
+    policy_on()
+    bank, target = settlement_bank(seed, db_session)
+    portfolio_stub.down = True
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    (case,) = _cases(db_session, sid, "open")
+    assert (case.kind, case.context["hint"]) == ("line_unmatched", "settlement_pending")
+    _apply(db_session, case.id, "dismiss", {"note": "owner: not a trade"})
+    portfolio_stub.down = False
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)))
+    _reconcile(db_session, sid); policy_service.run_policy(db_session, sid); db_session.commit()
+    assert _booked(db_session) == 0
+    assert _all_cases(db_session, sid) == [("line_unmatched", "settlement_pending", "dismissed")]
+
+
+def test_source_drift_and_orphaned_stand_in_stay_outside_the_settlement_family():
+    """The family match covers the cases about whether to book (a `settlement` case other than `source_drift`, or a
+    line case with a settlement hint); `source_drift` (a booked pair's facts moved) and `orphaned_stand_in` keep the
+    same-kind rule."""
+    from app.services.reconciliation_service import _dismissed
+    book = SimpleNamespace(kind="settlement", event_id=7, entry_id=None, context={"fingerprint": "f"})
+    pending = SimpleNamespace(kind="line_unmatched", event_id=7, entry_id=None, context={"hint": "settlement_pending"})
+    drift = SimpleNamespace(kind="settlement", event_id=7, entry_id=None, context={"hint": "source_drift"})
+    want = {"kind": "ambiguous", "event_id": 7, "entry_id": None, "context": {"hint": "settlement_ambiguous"}}
+    want_book = {"kind": "settlement", "event_id": 7, "entry_id": None, "context": {"fingerprint": "g"}}
+    orphan = {"kind": "entry_unmatched", "event_id": 7, "entry_id": 3, "context": {"hint": "orphaned_stand_in"}}
+    assert _dismissed([book], want) is True and _dismissed([pending], want_book) is True
+    assert _dismissed([book], dict(want, event_id=8)) is False                       # another event
+    assert _dismissed([drift], want) is False and _dismissed([drift], want_book) is False
+    assert _dismissed([book, pending], orphan) is False

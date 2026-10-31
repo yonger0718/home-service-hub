@@ -783,10 +783,26 @@ def _owner_deferred_entries(db: Session, statement: AccountStatement) -> set[int
                ReconciliationCase.resolved_by == "owner", ReconciliationCase.entry_id.is_not(None))).scalars())
 
 
+def _settlement_family(kind: str, context: Mapping | None) -> bool:
+    """A settlement line case about whether to book (portfolio integration final review I1): kind `settlement` other
+    than the `source_drift` hint, or a line case whose hint is `settlement_pending` / `settlement_ambiguous` /
+    `settlement_mismatch`. `source_drift` (a booked pair's facts moved) and `orphaned_stand_in` are not."""
+    hint = (context or {}).get("hint")
+    return (kind == trade_settlement_service.KIND and hint != "source_drift") or (
+        hint in trade_settlement_service.SETTLEMENT_CASE_HINTS)
+
+
 def _dismissed(dismissed: list[ReconciliationCase], want: dict) -> bool:
     """A dismissed case of the same kind on the same event (line cases), entry (entry cases) or gap (balance_gap).
     An `entry_unmatched` case with an event (the stand-in hints) matches on event AND entry: dismissing the shadow
-    case of entry X never hides the case of a later entry Y on the same line (final review I1)."""
+    case of entry X never hides the case of a later entry Y on the same line (final review I1).
+    A settlement-family line case (`_settlement_family`) matches any dismissed settlement-family case on the same
+    event whatever its kind: a revert reopens a `settlement` case as `settlement_pending`, a pending line becomes
+    `settlement` once the feed answers, an ambiguity narrows to one — the owner's dismissal holds across each (owner
+    ruling A: the bank path re-books on the next reconcile unless dismissed; R7 final review I1)."""
+    if want["event_id"] is not None and _settlement_family(want["kind"], want["context"]):
+        return any(case.event_id == want["event_id"] and _settlement_family(case.kind, case.context)
+                   for case in dismissed)
     for case in dismissed:
         if case.kind != want["kind"]:
             continue
