@@ -491,3 +491,29 @@ Watching composite files: a composite failure is deliberate and silent by design
   does not have). Clear it by moving the latch file aside after the re-login; the next `verify` run re-canaries.
 - A one-off verify of a few files: set `STATEMENT_VERIFY_DIR` to a fresh directory holding `masked/<sha>.json` metas and
   `pdf-cache/inbox/by-sha/<sha>.pdf`; the usual verify dir re-verifies every snapshot it holds (hundreds of parses).
+
+## R7 Phase 1 rollout (portfolio settlement integration)
+
+Worker: `homehub-portfolio-cathay.service` needs `STATEMENT_API_TOKEN_FILE` (default `~/.config/homehub-statement-token`) to call
+HomeHub (`POST /reconciliation/settlements/run`) after a plain commit run. Without the file the run still succeeds and its
+summary shows `settlement_run = "skipped:no_token"`. The worker deploy is an update of the `%h/workspace/home-hub` checkout the
+unit runs from (see the 國泰證券 daily statement timer section above).
+
+Order:
+
+1. Deploy the portfolio release (migration `e9settle`); confirm `CASH_LEG_ENABLED=true` in its env.
+2. Deploy the accounting API (migration `d5e1f7a3b9c2`; `PORTFOLIO_BASE_URL` in its env if not the default `http://127.0.0.1:8001`,
+   optional `PORTFOLIO_READ_TOKEN`) and the worker checkout.
+3. Owner SQL: `UPDATE account SET settlement_source = 'portfolio:cathay' WHERE id = 67;`. `valuation_source` on 117 waits for the
+   SPA follow-up that renders `balance: null` as 「市值暫不可得」 (rollout gate).
+4. Settings PUT: `PUT /settings/reconciliation` replaces the whole document, so GET the current one, edit, PUT it back whole.
+   For the dry run set `policy.actions.book_settlement.enabled = false` and
+   `settlement = {"stand_in_enabled": false, "enabled_from": null, "target_accounts": {"67": 117}, "twin_window_days": 3}`
+   (`dividend_category_id` stays null).
+5. Dry run: `r6_case_dump.py` baseline and candidate, then `r6_dryrun.py --settlements [--stand-ins report.json]`
+   (the stand-in report is `run_stand_ins(engine, dry_run=True)` as JSON: read-only, `booking_id: null`, ignores
+   `stand_in_enabled`, `previewed_settings` shows what it assumed). The owner reviews the listing case by case, one case per
+   question; counts from 2026-10-19 are not expected to hold.
+6. Enable: `book_settlement.enabled = true`; `settlement.stand_in_enabled = true` with `enabled_from` = the go-live date (no
+   stand-ins for days settled before it); reconcile 67's live statements; check the first stand-in on the next settlement day.
+   `POST /reconciliation/settlements/run` needs the INGEST scope; the daily sweep runs the stand-in job first (`stand_ins` in its answer).

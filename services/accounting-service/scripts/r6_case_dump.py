@@ -55,7 +55,7 @@ def _statement(db, statement) -> dict:
     desired = rec._desired_cases(db, statement, accounts, result, lines, by_id, rules)
     claims = [[lines[c.line_id].event_id, c.representation.rule, sorted(r.entry_id for r in c.representation.rows)] for c in result.claims]
 
-    def _keys(cands):  # a candidate is an entry id, or "g<id>" for a group representation (matching._ambiguous)
+    def _keys(cands):  # a candidate is an entry id, "g<id>" for a group representation (matching._ambiguous), or a settlement fingerprint
         out = []
         for x in cands or ():
             if not isinstance(x, dict):
@@ -64,6 +64,8 @@ def _statement(db, statement) -> dict:
                 out.append(x["entry_id"])
             elif x.get("group_id") is not None:
                 out.append(f"g{x['group_id']}")
+            elif isinstance(x.get("fingerprint"), str):  # a settlement candidate (trade_settlement_service.facts_of): its key, never its amounts
+                out.append(x["fingerprint"])
         return sorted(out, key=str)
     cases = [[c.get("event_id"), c["kind"], (c.get("context") or {}).get("hint"), _keys(c.get("candidates")), c.get("entry_id")]
              for c in desired]

@@ -207,3 +207,29 @@ def test_transfers_summary_renders_the_pairs_table_and_tolerates_an_older_dump()
     assert "| 8 | 3 | ambiguous | - | - |" in text
     del after["transfer_pairs"]
     assert "## Pairs" not in dr.transfers_summary(after)
+
+
+def test_settlements_listing_lists_one_row_per_settlement_line():
+    dump = _dump({"1": {"claims": [[11, "settlement_stand_in", [5]]], "cases": [[12, "line_unmatched", "settlement_pending", [], None]]},
+                  "2": {"claims": [], "cases": [[21, "settlement", None, ["cathay:2026-09-10:aa"], None], [22, "ambiguous", "settlement_ambiguous", ["f1", "f2"], None]]}})
+    stand_ins = {"booked": [{"account_id": 1, "settlement_date": "2026-09-16", "booking_id": 7}], "skipped": []}
+    out = dr.settlements_listing(dump, stand_ins)
+    assert [(r["statement_id"], r["event_id"], r["outcome"]) for r in out["lines"]] == [
+        ("1", 11, "stand_in_claim"), ("1", 12, "pending"), ("2", 21, "book_settlement"), ("2", 22, "ambiguous")]
+    assert out["stand_ins"] == [{"account_id": 1, "settlement_date": "2026-09-16", "booking_id": 7}]
+    assert not {"flow", "merchant", "amount", "net_amount"} & set(json.dumps(out))              # ids, dates and codes only
+
+
+def test_settlements_listing_maps_every_outcome_and_tolerates_a_dry_run_report():
+    dump = _dump({"3": {"claims": [[31, "exact", [9]], [32, "settlement_stand_in", [10]]],
+                        "cases": [[33, "line_unmatched", "settlement_mismatch", [], None], [34, "line_unmatched", "source_drift", [], None],
+                                  [35, "line_unmatched", "orphaned_stand_in", [], None], [36, "line_unmatched", "bank_only", [], None]]},
+                  "4": {"claims": [[41, "exact", [11]]], "cases": []}})
+    report = {"booked": [{"account_id": 1, "settlement_date": "2026-09-16", "booking_id": None}], "skipped": [],
+              "previewed_settings": {"stand_in_enabled": False, "enabled_from": None, "effective_enabled_from": "2026-10-31"}}
+    out = dr.settlements_listing(dump, report)
+    assert [(r["event_id"], r["outcome"]) for r in out["lines"]] == [
+        (31, "owner_match"), (32, "stand_in_claim"), (33, "mismatch"), (34, "drift"), (35, "orphaned_stand_in")]
+    assert out["stand_ins"][0]["booking_id"] is None
+    assert out["previewed_settings"] == report["previewed_settings"]
+    assert dr.settlements_listing(dump, None)["stand_ins"] == []
