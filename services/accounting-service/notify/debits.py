@@ -76,8 +76,10 @@ class SourceBlock:
     account_id: int
     name: str
     currency: str
-    balance: Decimal
-    projected: Decimal
+    # None for a `balance_kind: "valuation"` source whose market value the API could not produce (`balance: null`,
+    # R7 spec §5): nothing to project against, so `projected` and `shortfall` are None too and the block only lists.
+    balance: Decimal | None
+    projected: Decimal | None
     shortfall: Decimal | None
     items: list[DebitItem]
 
@@ -283,6 +285,10 @@ class _Run:
         """Projection over every auto item of the source; `items` keeps the renderable ones only."""
         source = self.accounts[source_id]
         items = sorted(items, key=lambda i: (i.debit_day, i.card_name, i.key))
+        renderable = [i for i in items if _renderable(i)]
+        if source.get("balance") is None:  # a valuation account without a value: list the debits, project nothing
+            return SourceBlock(account_id=source_id, name=source["name"], currency=source["currency"],
+                               balance=None, projected=None, shortfall=None, items=renderable)
         horizon = max((i.debit_day for i in items if i.in_window), default=self.today)
         projected = (Decimal(source["balance"])
                      - sum((i.amount for i in items if i.debit_day <= horizon), Decimal(0))
@@ -290,7 +296,7 @@ class _Run:
         gap = self.cfg.min_buffer - projected
         return SourceBlock(account_id=source_id, name=source["name"], currency=source["currency"],
                            balance=Decimal(source["balance"]), projected=projected,
-                           shortfall=gap if gap > 0 else None, items=[i for i in items if _renderable(i)])
+                           shortfall=gap if gap > 0 else None, items=renderable)
 
     def pending_outflow(self, source_id: int, horizon: date) -> Decimal:
         total = Decimal(0)

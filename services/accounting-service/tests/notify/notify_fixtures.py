@@ -37,7 +37,7 @@ def cfg(**overrides) -> NotifyConfig:
     return NotifyConfig(**{**base, **overrides})
 
 
-def account(*, id: int, name: str, currency: str = "TWD", balance: str = "0", is_credit: bool = True,
+def account(*, id: int, name: str, currency: str = "TWD", balance: str | None = "0", is_credit: bool = True,
             is_archived: bool = False, closing_day: int | None = 15, due_rule: str | None = "fixed_day",
             due_value: int | None = 5, combined_account_id: int | None = None,
             auto_pay_account_id: int | None = None) -> dict:

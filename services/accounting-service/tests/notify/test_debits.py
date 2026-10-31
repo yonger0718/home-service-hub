@@ -348,3 +348,11 @@ def test_secondary_card_activity_counts_for_the_master(fx):
     quiet = fx.snapshot(statements_for={"旅遊卡": rows}, card_activity={100: []})
     assert fx.find(build_daily(busy, fx.cfg()), "旅遊卡").note == "帳單未到"
     assert fx.find(build_daily(quiet, fx.cfg()), "旅遊卡") is None
+
+
+def test_valuation_source_without_a_value_lists_debits_but_projects_nothing(fx):
+    # R7 spec §5: a `valuation_source` account answers `balance: null` while the portfolio cannot value it; the block
+    # still lists the debits but has no balance to project against (no projected, no shortfall), and never raises.
+    rep = build_daily(fx.snapshot(source_overrides={76: {"balance": None, "balance_kind": "valuation", "stale": True}}), fx.cfg())
+    blk = fx.block(rep, "薪轉戶 A")
+    assert blk.balance is None and blk.projected is None and blk.shortfall is None and blk.items

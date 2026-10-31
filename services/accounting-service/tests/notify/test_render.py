@@ -148,3 +148,12 @@ def test_daily_cathay_only_counts_as_a_block(fx):
                              cathay=[CathayLine("k", "10/28 對不上 CSV")])
     (out,) = render_daily(rep, fx.cfg())
     assert out.endswith("**國泰對帳單**\n• 10/28 對不上 CSV")
+
+
+def test_valuation_source_without_a_value_renders_市值暫不可得(fx):
+    from dataclasses import replace
+    rep = sample_report(fx)
+    blank = replace(rep.blocks[0], balance=None, projected=None, shortfall=None)
+    out = render_daily(replace(rep, blocks=[blank] + rep.blocks[1:]), fx.cfg())[0]
+    head = next(line for line in out.split("\n") if line.startswith("**薪轉戶 A**"))
+    assert head == "**薪轉戶 A**  餘額 市值暫不可得" and "扣款後" not in head
