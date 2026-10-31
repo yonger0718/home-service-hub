@@ -27,13 +27,15 @@
   - A claimed owner line with its unclaimed neighbour: `test_a_receipt_beside_an_owner_claimed_line_is_never_handed_to_its_neighbour`. By the symmetric rule the neighbour is `ambiguous`, never assigned.
   - The structural-edit test now runs the policy and asserts `proposed`, `owner_deleted` and zero booked rows. Rev 2.2 ruling 2 supersedes this: the receipt stays reserved and nothing is proposed.
   - Late confirmation goes through `POST /reconciliation/settlements/run`, which exercises its flagging step: `test_settlement_run_flags_and_books_a_dividend_confirmed_later`.
-- **Should 2 (lock boundary).** The Architecture line, R3 and Task 13 Step 7 now state the precise boundary. New ordering test: `test_both_feed_reads_come_before_any_row_lock_with_one_cached_client` (Task 13), plus a dividend-housekeeping variant (Task 14).
+- **Should 2 (lock boundary).** The Architecture line, R3 and Task 13 Step 7 now state the precise boundary. New ordering test: `test_both_feed_reads_come_before_any_pair_or_candidate_lock_with_one_cached_client` (Task 13), plus a dividend-housekeeping variant (Task 14).
 - **Should 3 (currency under the locks).** `_plan` re-validates the refreshed account, its source currency, the statement currency and the receipt currency (409 `currency_mismatch`). New test: `test_an_account_currency_change_racing_the_booking_is_refused_under_the_locks`.
 - **Nit.** The spec is cited as rev 4.5 and the parent plan as rev 4.5. References to untracked `.superpowers/` files are replaced by the ruling text and inline file:line evidence.
 - **Must 1 (owner booking from an ambiguous case) waits for an owner ruling.** This revision keeps rev 2's `case_kinds {"dividend", "ambiguous"}` (owner override, policy never). Ruled in rev 2.2.
 - **Found during the fold.**
   - `coverage_service.RETIRABLE_ACTIONS` (:559-560) lacks `book_dividend`. Task 14 adds it, with `test_the_owner_may_book_the_proposal_after_an_owner_delete`.
   - An open question for the owner on R6 `owner_edited`. Ruled in rev 2.2.
+
+**Plan rev 2.3 (2026-10-31, re-check AGENT-374 on `27d2afda`: PASS-with-minor, folded):** Task 13 Step 7 states the `if divides` gate around `dividend_service.outcomes` and the no-source / no-label response assertion (Should); the ordering test is named after the pair/candidate locks it spies on (Nit).
 
 **Plan rev 2.2 (2026-10-31, three owner rulings of 2026-10-31):**
 - **Ruling 1: owner override from an ambiguous case (AGENT-374 Must 1, variant A, Phase 1 parity).**
@@ -659,7 +661,7 @@ def test_an_account_currency_change_racing_the_booking_is_refused_under_the_lock
     assert db_session.scalar(select(func.count(LedgerEntry.id)).where(LedgerEntry.source == "statement")) == 0
 
 
-def test_both_feed_reads_come_before_any_row_lock_with_one_cached_client(seed, db_session, run, portfolio_stub,
+def test_both_feed_reads_come_before_any_pair_or_candidate_lock_with_one_cached_client(seed, db_session, run, portfolio_stub,
                                                                          monkeypatch):
     """Rev 2.1 Should 2, the Phase 1 `test_the_window_read_comes_before_any_row_lock` shape: a statement printing a
     settlement line AND a dividend line; tss.housekeep locks an owner-deleted stand-in (row → legs NOWAIT)."""
@@ -945,7 +947,7 @@ Expected: FAIL. The cases stay `line_unmatched` and `book_dividend` is not regis
       - Extend the comment at :1029-1031 to name both reads.
 
       Both reads are passed to `_match_and_record(..., divides=divides, dividends=dividends, dividend_code=dividend_code)`.
-    - In `_match_and_record`, after the `settles` block: `divided = dividend_service.outcomes(db, statement, account, result.cases, all_lines, rules, dividends, dividend_code)` and `result = replace(result, cases=divided.cases)`. The result's `settlements` merges both counts dicts, and `settlement_source_unavailable` ORs both `unavailable`.
+    - In `_match_and_record`, after the `settles` block, gated exactly like the settlement step (re-check Should): `divided = dividend_service.outcomes(db, statement, account, result.cases, all_lines, rules, dividends, dividend_code) if divides else None`; when `divided` is not None, `result = replace(result, cases=divided.cases)`, the result's `settlements` merges its counts dict and `settlement_source_unavailable` ORs its `unavailable`. With `divides` False nothing dividend-related is computed or reported: a statement without `settlement_source` or without a labelled line never carries dividend counts or a dividend unavailable code (R3's source-and-label gate). The existing no-source / no-label fixtures assert this on the response (`settlements` has no `dividend*` keys and `settlement_source_unavailable` is unchanged), not only the absence of HTTP calls.
     - `_settlement_family`: True also for `kind == "dividend"` or a hint in `dividend_service.FAMILY_HINTS` (`dividend_ambiguous`, `dividend_mismatch`).
     - `_dismissed`: a want of the dividend family is also hidden by a dismissed `line_unmatched` case without a hint on the same event.
       - A dismissed mismatch is itself family, so it hides the `dividend` case that a fee correction later yields.
