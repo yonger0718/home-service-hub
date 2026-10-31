@@ -87,3 +87,29 @@ def test_split_by_tag_null_split(client, ledger):
     # 交通: 長榮航空 is tagged 旅行, the Uber row is not
     assert {s["key"]: s["label"] for s in transport["splits"]} == {"旅行": "旅行", None: ""}
     assert [(s["key"], s["label"], s["count"]) for s in shopping["splits"]] == [(None, "", 2)]
+
+
+def test_expense_statistics_leave_refunds_out(client, ledger):
+    # 購物: 1590 無印良品 on 10-13 and its 490 refund on 10-20 (the JPY row has no rate)
+    shopping = _rows(_breakdown(client, **OCTOBER, group_by="category"))[str(ledger.shopping)]
+
+    assert (Decimal(shopping["amount"]), Decimal(shopping["refund"]), shopping["count"]) == (1100, 490, 2)
+    assert Decimal(shopping["avg"]) == 550
+    assert Decimal(shopping["min"]) == Decimal(shopping["max"]) == Decimal(shopping["median"]) == 1590
+    assert (shopping["first_date"], shopping["last_date"]) == ("2026-10-13", "2026-10-13")
+    assert shopping["avg_interval_days"] == 0.0
+
+
+def test_net_statistics_stay_signed(client, ledger):
+    shopping = _rows(_breakdown(client, **OCTOBER, group_by="category", metric="net"))[str(ledger.shopping)]
+
+    assert Decimal(shopping["amount"]) == -1100
+    assert (Decimal(shopping["min"]), Decimal(shopping["max"])) == (-1590, 490)
+    assert (shopping["first_date"], shopping["last_date"]) == ("2026-10-13", "2026-10-20")
+
+
+def test_income_statistics_from_income_rows(client, ledger):
+    salary = _rows(_breakdown(client, **OCTOBER, group_by="category", metric="income"))[str(ledger.salary)]
+
+    assert Decimal(salary["min"]) == Decimal(salary["max"]) == 52000
+    assert salary["last_date"] == "2026-10-05"

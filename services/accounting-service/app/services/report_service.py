@@ -12,13 +12,14 @@ from statistics import median
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import Date, DateTime, Integer, Text, cast, extract, func, literal, select, true, union_all
+from sqlalchemy import Date, DateTime, Integer, Text, and_, cast, extract, func, literal, select, true, union_all
 from sqlalchemy.orm import Session, aliased
 
 from ..models import Account, Category, Counterparty, LedgerEntry, Project
 from . import ledger_service
 from .report_rules import (
     AMOUNT_QUANTUM,
+    EXPENSE_KINDS,
     Compare,
     Dimension,
     Granularity,
@@ -38,6 +39,16 @@ MAX_STAT_GROUPS = 50
 OTHER_KEY = "__other__"
 TIME_DIMENSIONS = frozenset({"month", "week", "day", "weekday"})
 _ROW_FILTERS = {"expense": spend_filter, "income": income_filter, "net": counted_filter, "count": counted_filter}
+
+
+def _pure_spend_filter():
+    """The spend rows without refunds: the rows `metric=expense` statistics are computed over."""
+    return and_(LedgerEntry.kind.in_(EXPENSE_KINDS), LedgerEntry.amount < 0)
+
+
+# Row statistics: expense over pure spend rows (a refund is no purchase), income over income rows, net signed over
+# every counted row.
+_STAT_FILTERS = {"expense": _pure_spend_filter, "income": income_filter, "net": counted_filter}
 
 # A converted group: (spend ≤ 0 incl. refunds, refund ≥ 0, income ≥ 0, count), all in the main currency.
 Sums = tuple[Decimal, Decimal, Decimal, int]
@@ -174,7 +185,7 @@ def row_statistics(amounts_dates: list[tuple[Decimal, date]]) -> dict:
 
 
 def _stat_rows(db: Session, where: list, dimension: Dimension) -> list[tuple]:
-    """(key text, currency, signed amount, entry_date) per counted row, built on the same select as the groups;
+    """(key text, currency, signed amount, entry_date) per row `where` selects, built on the same select as the groups;
     `tag` unnests, the empty-tags rows form the null-key bucket."""
     stmt = _grouped_select(where, (dimension,), per_row=True)
     if dimension == "tag":
@@ -190,7 +201,7 @@ def _statistics(db: Session, where: list, dimension: Dimension, metric: Metric,
         if rate is None:
             continue
         value = convert(amount, rate)
-        # expense rows are positive spending (a refund row negative); income and net keep the ledger sign
+        # expense rows (pure spend, no refunds) are positive spending; income and net keep the ledger sign
         buckets.setdefault(key, []).append((Decimal(0) - value if metric == "expense" else value, entry_date))
     return {key: row_statistics(items) for key, items in buckets.items()}
 
@@ -308,7 +319,7 @@ def breakdown(db: Session, f: ReportFilters, *, metric: Metric, group_by: Dimens
             row["compare_amount"] = compare_amounts.get(row["key"])
 
     if metric != "count" and len(rows) <= MAX_STAT_GROUPS:
-        stats = _statistics(db, [*where, row_filter], group_by, metric, rates)
+        stats = _statistics(db, [*where, _STAT_FILTERS[metric]()], group_by, metric, rates)
         for row in rows:
             row.update(stats.get(row["key"]) or row_statistics([]))
 

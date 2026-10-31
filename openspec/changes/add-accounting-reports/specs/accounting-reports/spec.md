@@ -87,6 +87,12 @@ For groups numbering 50 or fewer, each breakdown row SHALL include `median`, `mi
 - **WHEN** a year is grouped by `day`
 - **THEN** the days after the first 200 SHALL fold into `__other__`, while `GET /reports/trend` with `granularity=day` SHALL return the uncapped series
 
+#### Scenario: Statistics leave refunds out of expense
+- **GIVEN** 購物 holds a 1,590 purchase on 2026-10-13 and a 490 refund on 2026-10-20 in October
+- **WHEN** October is grouped by category with `metric=expense`
+- **THEN** the 購物 row SHALL keep `amount` 1,100, `refund` 490, `count` 2 and `avg` 550, while `median`, `min` and `max` SHALL be 1,590 and `first_date`, `last_date` and `avg_interval_days` SHALL come from the purchase alone (expense statistics cover the negative `expense` and `fee` rows only)
+- **AND** with `metric=income` the statistics SHALL cover the income rows, and with `metric=net` every counted row signed (income positive, spending negative: 購物 `min` −1,590, `max` 490)
+
 #### Scenario: Statistics only on few groups
 - **WHEN** a breakdown has more than 50 groups or `metric=count`
 - **THEN** `median`, `min`, `max`, `first_date`, `last_date` and `avg_interval_days` SHALL be null on every row
