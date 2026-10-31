@@ -399,3 +399,37 @@ def test_the_window_read_comes_before_any_row_lock(seed, db_session, run, portfo
     db_session.refresh(booking)
     assert booking.status == "owner_deleted" and {"lock_row", "_lock_candidates"} <= {n for n, _ in seen}
     assert {calls for _, calls in seen} == {1}  # every lock was taken after the one window read
+
+
+@pytest.mark.parametrize("stored", ["", "portfolio:cathy"])
+def test_an_unknown_stored_source_is_neither_rechecked_nor_read_by_the_job(seed, db_session, run, portfolio_stub, stored):
+    """Final review Minor 3: owner SQL can store what the PATCH schema refuses; the re-check list and the job's
+    account list both take the known sources only, so "" and a typo are treated alike."""
+    from app.services import settings_service
+    bank, target = settlement_bank(seed, db_session)
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])   # feed empty -> pending
+    seed_stand_in(db_session, bank, target, settlement_date=date(2026, 9, 21), net="-500",
+                  fingerprint="cathay:2026-09-17:ct:9", ids=("ct:9",))
+    settings = settings_service.read_settlement_settings(db_session)
+    assert tss.recheck_statement_ids(db_session) == [sid] and [a for a, _ in tss._accounts(db_session, settings)] == [bank.id]
+    db_session.execute(update(type(bank)).where(type(bank).id == bank.id).values(settlement_source=stored))
+    db_session.commit()
+    assert tss.recheck_statement_ids(db_session) == [] and tss._accounts(db_session, settings) == []
+
+
+def test_a_failed_neighbour_flag_logs_the_class_name_only(seed, db_session, run, portfolio_stub, monkeypatch, caplog):
+    """Final review Minor 5: no message, no traceback (a driver message can carry amounts)."""
+    import logging
+    bank, _ = settlement_bank(seed, db_session)
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+
+    def boom(db, statement):
+        raise ValueError("amount 12305")
+
+    monkeypatch.setattr(tss, "flag_neighbours", boom)
+    monkeypatch.setattr(tss.logger, "disabled", False)  # alembic's fileConfig disables loggers created before it
+    with caplog.at_level(logging.INFO, logger=tss.logger.name):
+        assert tss.flag_neighbours_safe(db_session, sid) == 0
+    (record,) = [r for r in caplog.records if r.getMessage().startswith("settlement.neighbour_flag_failed")]
+    assert record.getMessage() == "settlement.neighbour_flag_failed: ValueError" and record.exc_info is None
+    assert "12305" not in caplog.text

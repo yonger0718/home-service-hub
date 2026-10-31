@@ -64,7 +64,7 @@ from app.models import (
     Account, AccountStatement, LedgerEntry, ReconciliationCase, SettlementBooking, SettlementBookingItem,
     StatementCoverage, StatementLine,
 )
-from app.schemas.writes import TransferIn
+from app.schemas.writes import SETTLEMENT_SOURCES, TransferIn
 from app.services import (
     auto_pay_service, coverage_service, entry_write_service, ledger_service, pair_locks, portfolio_client,
     settings_service, stand_ins, transfer_service,
@@ -740,7 +740,8 @@ def flag_neighbours(db: Session, statement: AccountStatement) -> int:
 
 
 def recheck_statement_ids(db: Session) -> list[int]:
-    """Spec §4.5: the live, non-retired statements of `settlement_source` accounts holding an open case whose hint is
+    """Spec §4.5: the live, non-retired statements of accounts with a known `settlement_source` (`SETTLEMENT_SOURCES`)
+    holding an open case whose hint is
     `settlement_pending`, `settlement_ambiguous` or `settlement_mismatch`, ascending. Read only."""
     return sorted(db.execute(
         select(AccountStatement.id).distinct()
@@ -748,7 +749,7 @@ def recheck_statement_ids(db: Session) -> list[int]:
         .join(Account, Account.id == AccountStatement.account_id)
         .where(ReconciliationCase.status == "open",
                ReconciliationCase.context["hint"].astext.in_(SETTLEMENT_CASE_HINTS),
-               Account.settlement_source.is_not(None), Account.settlement_source != "",
+               Account.settlement_source.in_(SETTLEMENT_SOURCES),  # "" or an unknown stored value: not a source
                AccountStatement.mode == "live", AccountStatement.current_revision_id.is_not(None),
                ~retired.clause(AccountStatement.id))).scalars())
 
@@ -798,8 +799,9 @@ def flag_neighbours_safe(db: Session, statement_id: int) -> int:
         count = 0 if statement is None else flag_neighbours(db, statement)
         db.commit()
         return count
-    except Exception:  # noqa: BLE001  (the revision is stored; the daily re-check is the backstop)
-        logger.exception("settlement.neighbour_flag_failed", extra={"statement_id": statement_id})
+    except Exception as exc:  # noqa: BLE001  (the revision is stored; the daily re-check is the backstop)
+        # the class name only, never the message or traceback (a driver message can carry amounts; final review M5)
+        logger.error("settlement.neighbour_flag_failed: %s", type(exc).__name__, extra={"statement_id": statement_id})
         db.rollback()
         return 0
 
@@ -1146,13 +1148,15 @@ def _settle_from(db: Session, account_id: int, settings: dict) -> date | None:
 
 
 def _accounts(db: Session, settings: dict) -> list[tuple[int, date]]:
-    """(account id, settle_from) for every `settlement_source` account with a booked stand-in, or — while the job is
+    """(account id, settle_from) for every account with a known `settlement_source` (`SETTLEMENT_SOURCES`, as
+    `recheck_statement_ids`) with a booked stand-in, or — while the job is
     enabled — a target, in id order, skipping those with nothing to read (no go-live date and no stand-in)."""
     with_stand_ins = set(db.scalars(select(SettlementBooking.account_id).where(
         SettlementBooking.kind == KIND, SettlementBooking.origin == "stand_in", SettlementBooking.status == "booked")))
     enabled = settings.get("stand_in_enabled") is True
     out = []
-    for account in db.scalars(select(Account).where(Account.settlement_source.is_not(None)).order_by(Account.id)):
+    for account in db.scalars(select(Account).where(Account.settlement_source.in_(SETTLEMENT_SOURCES))
+                              .order_by(Account.id)):
         if account.id not in with_stand_ins and not (enabled and _target_of(settings, account.id) is not None):
             continue
         settle_from = _settle_from(db, account.id, settings)

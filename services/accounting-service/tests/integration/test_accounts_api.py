@@ -496,3 +496,13 @@ def test_patch_sources_needs_admin(client, db_session, scoped):
     db_session.commit()
     write = {"Authorization": "Bearer wr-token"}
     assert client.patch(f"/accounts/{account.id}", headers=write, json={"settlement_source": "x"}).status_code == 403
+
+
+def test_patch_refuses_an_unknown_settlement_source_and_clears_on_empty(client, db_session, scoped):
+    account = _account(db_session, "測試券商")
+    db_session.commit()
+    admin = {"Authorization": "Bearer adm-token"}
+    assert client.patch(f"/accounts/{account.id}", headers=admin, json={"settlement_source": "portfolio:cathy"}).status_code == 422
+    assert client.patch(f"/accounts/{account.id}", headers=admin, json={"settlement_source": "portfolio:cathay"}).status_code == 200
+    response = client.patch(f"/accounts/{account.id}", headers=admin, json={"settlement_source": ""})
+    assert response.status_code == 200 and response.json()["settlement_source"] is None

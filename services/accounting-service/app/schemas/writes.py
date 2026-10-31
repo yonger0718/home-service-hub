@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Discriminator, Field, Tag, model_validator
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Discriminator, Field, Tag, model_validator
 
 from .ledger import EntryDetailOut, EntryKind
 
@@ -183,9 +183,17 @@ class BalanceAdjustmentIn(BaseModel):
     description: str | None = None
 
 
+SETTLEMENT_SOURCES = ("portfolio:cathay",)  # the settlement feeds HomeHub can read (portfolio integration spec §4.2)
+
+
+def _empty_is_null(value):
+    return None if value == "" else value
+
+
 class AccountSourcesPatch(BaseModel):
-    """Only the fields present are written (an explicit null clears one)."""
-    settlement_source: Annotated[str, Field(max_length=64)] | None = None
+    """Only the fields present are written (an explicit null clears one). `settlement_source` is one of
+    `SETTLEMENT_SOURCES` or null; "" clears it as null does (R7 final review Minor 3)."""
+    settlement_source: Annotated[Literal[SETTLEMENT_SOURCES] | None, BeforeValidator(_empty_is_null)] = None
     valuation_source: Annotated[str, Field(max_length=64)] | None = None
 
 
