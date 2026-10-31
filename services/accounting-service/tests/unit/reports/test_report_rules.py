@@ -32,3 +32,15 @@ def test_week_start_is_monday():
 def test_period_bounds_is_half_open():
     assert period_bounds("2026-12") == (date(2026, 12, 1), date(2027, 1, 1))
     assert period_bounds("2026-10") == (date(2026, 10, 1), date(2026, 11, 1))
+
+
+def test_previous_whole_month_ending_on_the_30th_ends_on_the_31st():
+    assert compare_window(date(2026, 9, 1), date(2026, 9, 30), "previous") == (date(2026, 8, 1), date(2026, 8, 31))
+
+
+def test_previous_february_ends_on_january_31st():
+    assert compare_window(date(2026, 2, 1), date(2026, 2, 28), "previous") == (date(2026, 1, 1), date(2026, 1, 31))
+
+
+def test_previous_multi_month_range_ending_on_the_30th():
+    assert compare_window(date(2026, 4, 1), date(2026, 9, 30), "previous") == (date(2025, 10, 1), date(2026, 3, 31))

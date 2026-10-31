@@ -96,8 +96,7 @@ def compare_window(date_from: date, date_to: date, compare: Compare) -> tuple[da
         return _shift_months(date_from, -12), _shift_months(date_to, -12)
     if date_from.day == 1 and date_to.day == calendar.monthrange(date_to.year, date_to.month)[1]:
         months = (date_to.year - date_from.year) * 12 + date_to.month - date_from.month + 1
-        start = _shift_months(date_from, -months)
-        return start, _shift_months(date_to, -months)
+        return _shift_months(date_from, -months), date_from - timedelta(days=1)
     days = (date_to - date_from).days + 1
     return date_from - timedelta(days=days), date_from - timedelta(days=1)
 
