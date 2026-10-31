@@ -4,14 +4,15 @@ from datetime import date
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import Field
 from sqlalchemy.orm import Session
 
 from ..auth import method_scope
 from ..database import get_db
-from ..schemas.reports import BreakdownOut, TrendOut
-from ..services import report_service
+from ..schemas.reports import MONTH_PATTERN, BreakdownOut, BudgetAmendIn, BudgetIn, BudgetStatusListOut, BudgetStatusOut, TrendOut
+from ..services import budget_service, report_service
+from .errors import service_errors
 from ..services.report_rules import Compare, Dimension, Granularity, Metric, ReportFilters
 
 router = APIRouter(prefix="/reports", tags=["Reports"], dependencies=[Depends(method_scope())])
@@ -106,3 +107,36 @@ def get_trend(
     if series and not report_service.top_level_category_ids(db, series):
         raise HTTPException(status_code=422, detail="series must be top-level categories")
     return report_service.trend(db, filters, metric=metric, granularity=granularity, series=series)
+
+
+@router.get("/budgets/status", response_model=BudgetStatusListOut)
+def get_budget_status(month: str = Query(pattern=MONTH_PATTERN), db: Session = Depends(get_db)):
+    return budget_service.status(db, month)
+
+
+def _written(db: Session, budget_id: int, month: str | None) -> dict:
+    return budget_service.status_of(db, budget_id, month or budget_service.current_month())
+
+
+@router.post("/budgets", response_model=BudgetStatusOut, status_code=201)
+def post_budget(payload: BudgetIn, db: Session = Depends(get_db)):
+    with service_errors():
+        budget_id = budget_service.create(db, payload)
+        db.commit()
+        return _written(db, budget_id, payload.effective_from)
+
+
+@router.put("/budgets/{budget_id}", response_model=BudgetStatusOut)
+def put_budget(budget_id: int, payload: BudgetAmendIn, db: Session = Depends(get_db)):
+    with service_errors():
+        new_id = budget_service.amend(db, budget_id, payload)
+        db.commit()
+        return _written(db, new_id, payload.effective_from)
+
+
+@router.delete("/budgets/{budget_id}", status_code=204)
+def delete_budget(budget_id: int, db: Session = Depends(get_db)):
+    with service_errors():
+        budget_service.archive(db, budget_id)
+    db.commit()
+    return Response(status_code=204)

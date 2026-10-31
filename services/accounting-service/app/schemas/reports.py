@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class BreakdownSplitOut(BaseModel):
@@ -67,3 +67,49 @@ class TrendOut(BaseModel):
     granularity: Literal["month", "week", "day"]
     buckets: list[TrendBucketOut]
     average: dict[str, Decimal]
+
+
+# ---- budgets (design D3) ----------------------------------------------------------------------------------------
+
+BudgetScope = Literal["total", "category", "project"]
+MONTH_PATTERN = r"^\d{4}-(0[1-9]|1[0-2])$"
+
+
+class BudgetIn(BaseModel):
+    """`POST /reports/budgets`. `effective_from` is required for `total` / `category` (checked by the service) and
+    ignored for `project`."""
+
+    scope: BudgetScope
+    category_id: int | None = None
+    project_id: int | None = None
+    amount: Decimal = Field(gt=0, max_digits=20, decimal_places=4)
+    effective_from: str | None = Field(default=None, pattern=MONTH_PATTERN)
+
+
+class BudgetAmendIn(BaseModel):
+    """`PUT /reports/budgets/{id}`: a new limit from `effective_from` (ignored for a project budget)."""
+
+    amount: Decimal = Field(gt=0, max_digits=20, decimal_places=4)
+    effective_from: str | None = Field(default=None, pattern=MONTH_PATTERN)
+
+
+class BudgetStatusOut(BaseModel):
+    id: int
+    scope: BudgetScope
+    category_id: int | None
+    project_id: int | None
+    label: str
+    color: str | None
+    limit: Decimal
+    used: Decimal
+    remaining: Decimal
+    ratio: float
+    over: bool
+    effective_from: str | None
+
+
+class BudgetStatusListOut(BaseModel):
+    month: str
+    currency: str
+    time_progress: float
+    budgets: list[BudgetStatusOut]
