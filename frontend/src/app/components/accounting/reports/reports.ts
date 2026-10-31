@@ -176,7 +176,12 @@ export class AccountingReportsComponent {
       .map(row => `${row.label} ${n0(row.amount)}`);
     const elapsed = elapsedDays(this.period(), this.today());
     return [
-      { label: '支出', value: formatMoney(spent, currency), foot: `${labels.previous} ${previous} · ${labels.lastYear} ${yearAgo}` },
+      {
+        label: '支出',
+        value: formatMoney(spent, currency),
+        // One window (a calendar year): the previous period is last year, so it is said once.
+        foot: labels.single ? `${labels.previous} ${previous}` : `${labels.previous} ${previous} · ${labels.lastYear} ${yearAgo}`,
+      },
       { label: '收入', value: formatMoney(earned, currency), foot: topIncome.length ? topIncome.join(' · ') : '本期沒有收入' },
       { label: '結餘', value: formatSigned(earned - spent, currency), foot: earned > 0 ? `儲蓄率 ${pct1(earned - spent, earned)}` : '儲蓄率 —' },
       { label: '日均支出', value: formatMoney(spent / elapsed.days, currency), foot: elapsed.running ? `已過 ${elapsed.days} 天` : `共 ${elapsed.days} 天` },

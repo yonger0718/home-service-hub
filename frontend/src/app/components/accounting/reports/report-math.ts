@@ -109,33 +109,48 @@ function shortMonth(month: string, relativeTo: string): string {
   return year === Number(relativeTo.slice(0, 4)) ? `${m} 月` : `${year} 年 ${m} 月`;
 }
 
-/** The comparison labels of the header and the tables: `比 9 月` / `比去年 10 月`; `比去年` / `比前年` for a year. */
-export function compareLabels(period: ReportPeriod): { previous: string; lastYear: string } {
+/**
+ * The previous period and the same period last year are one window (a calendar year, or any twelve whole months):
+ * the page then shows a single comparison, named after last year, instead of the same figure twice.
+ */
+export function comparesCoincide(period: ReportPeriod): boolean {
+  const previous = compareRange(period.from, period.to, 'previous');
+  const lastYear = compareRange(period.from, period.to, 'last_year');
+  return previous.from === lastYear.from && previous.to === lastYear.to;
+}
+
+/**
+ * The comparison labels of the header and the tables: `比 9 月` / `比去年 10 月`, `比前一期` / `比去年同期`; `single`
+ * when both windows coincide (`比去年` for a year), and then both labels name that one window.
+ */
+export function compareLabels(period: ReportPeriod): { previous: string; lastYear: string; single: boolean } {
   if (period.unit === 'month') {
     const month = monthOf(period.from);
     const [, m] = month.split('-').map(Number);
-    return { previous: `比 ${shortMonth(shiftMonth(month, -1), month)}`, lastYear: `比去年 ${m} 月` };
+    return { previous: `比 ${shortMonth(shiftMonth(month, -1), month)}`, lastYear: `比去年 ${m} 月`, single: false };
   }
-  if (period.unit === 'year') return { previous: '比去年', lastYear: '比前年' };
-  return { previous: '比前一期', lastYear: '比去年同期' };
+  const lastYear = period.unit === 'year' ? '比去年' : '比去年同期';
+  return comparesCoincide(period) ? { previous: lastYear, lastYear, single: true } : { previous: '比前一期', lastYear, single: false };
 }
 
-/** `本月` / `上月` / `去年同月`, `今年` / `去年` / `前年`, `本期` / `前一期` / `去年同期` (table headings). */
-export function periodNouns(period: ReportPeriod): { current: string; previous: string; lastYear: string } {
-  if (period.unit === 'month') return { current: '本月', previous: '上月', lastYear: '去年同月' };
-  if (period.unit === 'year') return { current: '今年', previous: '去年', lastYear: '前年' };
-  return { current: '本期', previous: '前一期', lastYear: '去年同期' };
+/** `本月` / `上月` / `去年同月`, `本期` / `前一期` / `去年同期`; `今年` / `去年` alone for a year (table headings). */
+export function periodNouns(period: ReportPeriod): { current: string; previous: string; lastYear: string; single: boolean } {
+  if (period.unit === 'month') return { current: '本月', previous: '上月', lastYear: '去年同月', single: false };
+  const current = period.unit === 'year' ? '今年' : '本期';
+  const lastYear = period.unit === 'year' ? '去年' : '去年同期';
+  return comparesCoincide(period) ? { current, previous: lastYear, lastYear, single: true } : { current, previous: '前一期', lastYear, single: false };
 }
 
-/** `10 月 對 9 月、對去年 10 月` for the comparison card title. */
+/** `10 月 對 9 月、對去年 10 月` for the comparison card title (`2026 年 對去年` when there is one comparison). */
 export function compareTitle(period: ReportPeriod): string {
   if (period.unit === 'month') {
     const month = monthOf(period.from);
     const [, m] = month.split('-').map(Number);
     return `${m} 月 對 ${shortMonth(shiftMonth(month, -1), month)}、對去年 ${m} 月`;
   }
-  if (period.unit === 'year') return `${period.from.slice(0, 4)} 年 對去年、對前年`;
-  return '本期 對前一期、對去年同期';
+  const subject = period.unit === 'year' ? `${period.from.slice(0, 4)} 年` : '本期';
+  const lastYear = period.unit === 'year' ? '對去年' : '對去年同期';
+  return comparesCoincide(period) ? `${subject} ${lastYear}` : `${subject} 對前一期、${lastYear}`;
 }
 
 /** `YYYY-MM-DD` is the last day of its month. */

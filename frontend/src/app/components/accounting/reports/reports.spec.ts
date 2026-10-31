@@ -264,8 +264,13 @@ describe('AccountingReportsComponent', () => {
     expect(year.trends).toHaveLength(1);
     answer(year);
     harness.detectChanges();
-    expect(texts(el, '.rp-figure-foot')[0]).toBe('比去年 ▲ 2,282 · 比前年 ▼ 2,160');
-    expect(texts(el, '.tr-table thead th')).toEqual(['類別', '今年', '去年', '增減', '前年', '年增減']);
+    // A calendar year's previous period is last year: one comparison, named 去年, no 前年 column.
+    expect(texts(el, '.rp-figure-foot')[0]).toBe('比去年 ▲ 2,282');
+    expect(el.querySelector('.tr-card:nth-of-type(2) h2')?.textContent?.trim()).toBe('比較 · 2026 年 對去年');
+    expect(texts(el, '.tr-table thead th')).toEqual(['類別', '今年', '去年', '增減']);
+    const total = Array.from(el.querySelectorAll('.tr-table tbody tr')).at(-1)!;
+    expect(texts(total, 'td')).toEqual(['41,890', '39,608', '▲ 2,282 (5.8%)']);
+    expect(total.querySelectorAll('td')[2].getAttribute('data-label')).toBe('比去年');
   });
 
   it('links each tab through the URL and keeps the figures above every tab', async () => {

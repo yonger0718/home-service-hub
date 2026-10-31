@@ -5,6 +5,7 @@ import {
   change,
   compareLabels,
   compareRange,
+  comparesCoincide,
   compareTitle,
   donutArcs,
   elapsedDays,
@@ -14,6 +15,7 @@ import {
   pct1,
   periodFromParams,
   periodLabel,
+  periodNouns,
   periodParams,
   periodWithUnit,
   seriesColor,
@@ -56,10 +58,29 @@ describe('report period', () => {
     expect(periodLabel(monthPeriod('2026-10'))).toBe('2026 年 10 月');
     expect(periodLabel(yearPeriod(2026))).toBe('2026 年');
     expect(periodLabel({ unit: 'custom', from: '2026-10-03', to: '2026-11-15' })).toBe('2026/10/03 – 2026/11/15');
-    expect(compareLabels(monthPeriod('2026-10'))).toEqual({ previous: '比 9 月', lastYear: '比去年 10 月' });
-    expect(compareLabels(monthPeriod('2026-01'))).toEqual({ previous: '比 2025 年 12 月', lastYear: '比去年 1 月' });
-    expect(compareLabels(yearPeriod(2026))).toEqual({ previous: '比去年', lastYear: '比前年' });
+    expect(compareLabels(monthPeriod('2026-01'))).toEqual({ previous: '比 2025 年 12 月', lastYear: '比去年 1 月', single: false });
     expect(compareTitle(monthPeriod('2026-10'))).toBe('10 月 對 9 月、對去年 10 月');
+  });
+
+  it('keeps two comparisons for a month (上月 / 去年同月) and one, named 去年, when both windows are the same year', () => {
+    expect(comparesCoincide(monthPeriod('2026-10'))).toBe(false);
+    expect(compareLabels(monthPeriod('2026-10'))).toEqual({ previous: '比 9 月', lastYear: '比去年 10 月', single: false });
+    expect(periodNouns(monthPeriod('2026-10'))).toEqual({ current: '本月', previous: '上月', lastYear: '去年同月', single: false });
+    // A calendar year: previous = whole months before = last year, so there is only one comparison.
+    expect(comparesCoincide(yearPeriod(2026))).toBe(true);
+    expect(compareLabels(yearPeriod(2026))).toEqual({ previous: '比去年', lastYear: '比去年', single: true });
+    expect(periodNouns(yearPeriod(2026))).toEqual({ current: '今年', previous: '去年', lastYear: '去年', single: true });
+    expect(compareTitle(yearPeriod(2026))).toBe('2026 年 對去年');
+    // Twelve whole months that are not a calendar year coincide too; a shorter custom range does not.
+    const twelve = { unit: 'custom' as const, from: '2026-03-01', to: '2027-02-28' };
+    expect(comparesCoincide(twelve)).toBe(true);
+    expect(compareLabels(twelve)).toEqual({ previous: '比去年同期', lastYear: '比去年同期', single: true });
+    expect(periodNouns(twelve)).toEqual({ current: '本期', previous: '去年同期', lastYear: '去年同期', single: true });
+    expect(compareTitle(twelve)).toBe('本期 對去年同期');
+    const short = { unit: 'custom' as const, from: '2026-10-05', to: '2026-10-14' };
+    expect(comparesCoincide(short)).toBe(false);
+    expect(compareLabels(short)).toEqual({ previous: '比前一期', lastYear: '比去年同期', single: false });
+    expect(compareTitle(short)).toBe('本期 對前一期、對去年同期');
   });
 
   it('computes the comparison windows: whole months before, the same dates a year earlier', () => {
