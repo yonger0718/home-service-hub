@@ -63,7 +63,18 @@
         />
       }
       @case ('rank') {
-        <p class="rp-soon">排行（商家、標籤、對象、帳戶）會在下一個 PR 加入。</p>
+        <app-report-rank
+          [rank]="rank()"
+          [rankState]="rankState()"
+          [dimension]="dimension()"
+          [period]="period()"
+          [selectedKey]="rankSelected()"
+          [spark]="spark()"
+          [sparkState]="sparkState()"
+          [drillMonth]="drillMonth()"
+          (dimensionChange)="setDimension($event)"
+          (select)="rankSelected.set($event)"
+        />
       }
       @case ('plan') {
         <p class="rp-soon">專案與預算會在之後的 PR 加入，需要後端的預算 API。</p>

@@ -1,0 +1,63 @@
+<div class="rk">
+  <section class="rk-card rk-list" aria-label="排行">
+    <div class="rk-head">
+      <h2>支出排行</h2>
+      <app-seg-toggle [options]="options" [value]="dimension()" ariaLabel="排行依據" (change)="setDimension($event)" />
+    </div>
+    @if (rankState() === 'error') {
+      <p class="rk-empty" role="alert">排行讀取失敗</p>
+    } @else if (!rank()) {
+      <p class="rk-empty">讀取中</p>
+    } @else if (!lines().length) {
+      <p class="rk-empty">本期沒有支出</p>
+    } @else {
+      <div class="rk-rows">
+        @for (line of lines(); track line.key ?? '__none__'; let i = $index) {
+          <button type="button" class="rk-row" [class.on]="selected()?.key === line.key && selectedKey() !== undefined" [class.muted]="line.muted" [attr.aria-pressed]="selected()?.key === line.key && selectedKey() !== undefined" (click)="pick(line.key)">
+            <b class="rk-rank">{{ i + 1 }}</b>
+            <span class="rk-main">
+              <span class="rk-title"><span class="rk-name">{{ line.label }}</span><small>{{ line.count }} 筆 · 平均 {{ line.avgText }}</small></span>
+              <span class="rk-bar" aria-hidden="true"><span [style.width]="line.width"></span></span>
+            </span>
+            <b class="rk-amount">{{ line.amountText }}</b>
+          </button>
+        }
+      </div>
+      <small class="rk-foot">{{ foot() }}<span class="rk-hint"> · 點一列看平均、中位數、間隔</span></small>
+    }
+  </section>
+
+  @if (selected(); as row) {
+    <section class="rk-card rk-panel" aria-label="明細統計">
+      <div class="rk-panel-head">
+        <small>{{ panelTitle() }}</small>
+        <h2>{{ selectedLabel() }}</h2>
+      </div>
+      <div class="rk-stats">
+        @for (stat of stats(); track stat.label) {
+          <span class="rk-stat"><small>{{ stat.label }}</small>&ngsp;<b>{{ stat.value }}</b></span>
+        }
+      </div>
+      @if (!selectedMuted()) {
+        <div class="rk-spark">
+          <small>近 6 個月</small>
+          @if (sparkState() === 'error') {
+            <p class="rk-empty">六個月走勢讀取失敗</p>
+          } @else if (!spark()) {
+            <p class="rk-empty">讀取中</p>
+          } @else {
+            <svg class="rk-spark-chart" [attr.viewBox]="'0 0 ' + sparkWidth + ' ' + sparkHeight" role="img" [attr.aria-label]="sparkAria()">
+              @for (bar of sparkBars(); track $index) {
+                <rect class="rk-spark-bar" [class.last]="bar.last" [attr.x]="bar.x" [attr.y]="bar.y" [attr.width]="bar.width" [attr.height]="bar.height" rx="5"></rect>
+                <text class="rk-spark-label" [attr.x]="bar.cx" [attr.y]="sparkLabelY" text-anchor="middle">{{ bar.label }}</text>
+              }
+            </svg>
+          }
+        </div>
+      }
+      @if (drillParams(); as params) {
+        <a class="rk-drill" routerLink="/accounting" [queryParams]="params">在記帳記錄看這 {{ row.count }} 筆 ›</a>
+      }
+    </section>
+  }
+</div>

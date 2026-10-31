@@ -1,0 +1,228 @@
+@use 'report-card' as rc;
+
+:host { display: block; min-width: 0; }
+
+.rk {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+
+  @media (max-width: 759.98px) {
+    gap: 14px;
+  }
+}
+
+.rk-card {
+  @include rc.card;
+
+  h2 { @include rc.card-title; }
+}
+
+.rk-list { flex: 6 1 480px; }
+.rk-panel { flex: 4 1 320px; }
+
+.rk-head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+
+  /* Phones: the dimension control alone, full width (the title is the tab). */
+  @media (max-width: 759.98px) {
+    h2 { display: none; }
+    app-seg-toggle { width: 100%; }
+  }
+}
+
+.rk-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.rk-row {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  color: var(--app-text);
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  gap: 10px;
+  grid-template-columns: 28px minmax(0, 1fr) 110px;
+  margin: 0 -8px;
+  padding: 9px 8px;
+  text-align: left;
+
+  &.on { background: var(--app-primary-soft); }
+  &.muted .rk-name { color: var(--app-text-muted); }
+  &.muted .rk-bar span { background: var(--app-text-muted); }
+
+  &:focus-visible {
+    box-shadow: 0 0 0 3px var(--app-focus-ring);
+    outline: none;
+  }
+
+  @media (max-width: 759.98px) {
+    border-radius: 0;
+    border-top: 1px solid var(--app-border);
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+    margin: 0;
+    padding: 10px 0;
+
+    &:first-child { border-top: 0; }
+    &.on { background: transparent; }
+    &.on .rk-name { color: var(--app-primary); }
+  }
+}
+
+.rk-rank {
+  color: var(--app-text-muted);
+  font-size: var(--fs-sm);
+  font-weight: 800;
+}
+
+.rk-main {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.rk-title {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+
+  small {
+    color: var(--app-text-muted);
+    flex: none;
+    font-size: var(--fs-label);
+  }
+}
+
+.rk-name {
+  font-size: 0.9rem;
+  font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rk-bar {
+  background: var(--app-surface-soft);
+  border-radius: 3px;
+  display: block;
+  height: 6px;
+  overflow: hidden;
+
+  span {
+    background: var(--app-primary);
+    display: block;
+    height: 6px;
+  }
+}
+
+.rk-amount {
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  text-align: right;
+}
+
+.rk-foot,
+.rk-empty {
+  color: var(--app-text-muted);
+  font-size: var(--fs-label);
+  margin: 0;
+}
+
+.rk-hint {
+  @media (min-width: 760px) { display: none; }
+}
+
+/* ---- statistics panel ----------------------------------------------------------------------------------------- */
+
+.rk-panel-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+
+  small {
+    color: var(--app-text-muted);
+    font-size: var(--fs-label);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+
+  h2 { font-size: 1.25rem; }
+}
+
+.rk-stats {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.rk-stat {
+  background: var(--app-surface-soft);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+
+  small {
+    color: var(--app-text-muted);
+    font-size: var(--fs-label);
+  }
+
+  b {
+    font-size: 1rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 800;
+  }
+}
+
+.rk-spark {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  > small {
+    color: var(--app-text-muted);
+    font-size: var(--fs-label);
+    font-weight: 700;
+  }
+}
+
+.rk-spark-chart {
+  display: block;
+  height: auto;
+  width: 100%;
+}
+
+.rk-spark-bar {
+  fill: var(--app-border);
+
+  &.last { fill: var(--app-primary); }
+}
+
+.rk-spark-label {
+  fill: var(--app-text-muted);
+  font-size: 11px;
+}
+
+.rk-drill {
+  align-self: flex-start;
+  color: var(--app-primary);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  text-decoration: none;
+
+  &:hover { text-decoration: underline; }
+}

@@ -33,11 +33,16 @@ function breakdownQuery(request: TestRequest): BreakdownQuery {
 
 function trendQuery(request: TestRequest): TrendQuery {
   const params = request.request.params;
+  const numbers = (name: string) => params.getAll(name)?.map(Number) ?? undefined;
   return {
     date_from: params.get('date_from')!,
     date_to: params.get('date_to')!,
     granularity: 'month',
-    series: params.getAll('series')?.map(Number) ?? undefined,
+    series: numbers('series'),
+    merchant: params.get('merchant'),
+    tag: params.getAll('tag') ?? undefined,
+    counterparty_id: params.has('counterparty_id') ? Number(params.get('counterparty_id')) : null,
+    account_id: numbers('account_id'),
   };
 }
 
@@ -107,7 +112,9 @@ describe('AccountingReportsComponent', () => {
       { date_from: '2026-10-01', date_to: '2026-10-31', metric: 'expense', group_by: 'category', split_by: undefined, compare: 'last_year' },
       { date_from: '2026-10-01', date_to: '2026-10-31', metric: 'income', group_by: 'category', split_by: 'subcategory', compare: 'previous' },
     ]);
-    expect(reads.trends.map(trendQuery)).toEqual([{ date_from: '2025-11-01', date_to: '2026-10-31', granularity: 'month', series: undefined }]);
+    expect(reads.trends.map(trendQuery)).toEqual([
+      { date_from: '2025-11-01', date_to: '2026-10-31', granularity: 'month', series: undefined, merchant: null, tag: undefined, counterparty_id: null, account_id: undefined },
+    ]);
     expect(reads.trends[0].request.params.get('metric')).toBe('expense');
     answer(reads);
   });
@@ -263,14 +270,145 @@ describe('AccountingReportsComponent', () => {
     flushSample();
     harness.detectChanges();
 
-    Array.from(el.querySelectorAll<HTMLButtonElement>('.rp-tab')).find(b => b.textContent?.trim() === '排行')!.click();
+    Array.from(el.querySelectorAll<HTMLButtonElement>('.rp-tab')).find(b => b.textContent?.trim() === '專案與預算')!.click();
     await harness.fixture.whenStable();
     harness.detectChanges();
-    expect(TestBed.inject(Router).url).toBe('/accounting/reports?month=2026-10&tab=rank');
+    expect(TestBed.inject(Router).url).toBe('/accounting/reports?month=2026-10&tab=plan');
     expect(el.querySelector('.rp-tab.on')?.getAttribute('aria-selected')).toBe('true');
     expect(el.querySelector('.rp-soon')).not.toBeNull();
     expect(texts(el, '.rp-figure-value')[0]).toBe('$41,890');
     http.expectNone(() => true);
+  });
+
+  describe('排行', () => {
+    const rankRows = (el: Element) => Array.from(el.querySelectorAll<HTMLButtonElement>('.rk-row'));
+    const rankNames = (el: Element) => rankRows(el).map(row => row.querySelector('.rk-name')?.textContent?.trim());
+
+    /** Opens 排行 on October: the page reads, then the ranking, then the first row's six months. */
+    async function openRank(url = '/accounting/reports?month=2026-10&tab=rank') {
+      const opened = await open(url);
+      const first = pending();
+      expect(first.breakdowns).toHaveLength(4);
+      const ranking = first.breakdowns[3];
+      expect(breakdownQuery(ranking)).toMatchObject({ date_from: '2026-10-01', date_to: '2026-10-31', metric: 'expense' });
+      answer(first);
+      opened.harness.detectChanges();
+      return { ...opened, dimension: ranking.request.params.get('group_by') };
+    }
+
+    it('ranks merchants with bars, mutes （無商家） and the fold, and opens the largest row in the panel', async () => {
+      const { harness, el, dimension } = await openRank();
+      expect(dimension).toBe('merchant');
+      // The first row's six-month bars.
+      const spark = pending();
+      expect(spark.trends.map(r => [r.request.params.get('merchant'), r.request.params.get('date_from'), r.request.params.get('date_to')])).toEqual([['房東', '2026-05-01', '2026-10-31']]);
+      answer(spark);
+      harness.detectChanges();
+
+      expect(rankNames(el)).toEqual(['房東', '鼎泰豐', '中油', '全聯', '台電', '（無商家）', 'UNIQLO', '路易莎', '其他']);
+      const rows = rankRows(el);
+      expect(rows[0].classList.contains('on')).toBe(true);
+      expect(rows[5].classList.contains('muted')).toBe(true);
+      expect(rows[8].classList.contains('muted')).toBe(true);
+      expect(rows[1].querySelector('.rk-title small')?.textContent?.trim()).toBe('3 筆 · 平均 980');
+      expect((rows[1].querySelector('.rk-bar span') as HTMLElement).style.width).toBe('16.3%');
+      expect(el.querySelector('.rk-foot')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('共 7 家 · 顯示前 200 · 點一列看平均、中位數、間隔');
+      expect(el.querySelector('.rk-panel h2')?.textContent?.trim()).toBe('房東');
+      expect(el.querySelector('.rk-panel-head small')?.textContent?.trim()).toBe('商家 · 2026 年 10 月');
+      expect(el.querySelectorAll('.rk-spark-bar')).toHaveLength(6);
+      expect(texts(el, '.rk-spark-label')).toEqual(['5月', '6月', '7月', '8月', '9月', '10月']);
+    });
+
+    it('shows 路易莎 statistics on selection: 12 筆, 平均 86, 中位數 85, 最大 120, 最小 65, 平均間隔 2.5 天', async () => {
+      const { harness, el } = await openRank();
+      answer(pending());
+      harness.detectChanges();
+
+      rankRows(el).find(row => row.textContent?.includes('路易莎'))!.click();
+      harness.detectChanges();
+      const spark = pending();
+      expect(spark.breakdowns).toEqual([]);
+      expect(spark.trends.map(r => r.request.params.get('merchant'))).toEqual(['路易莎']);
+      answer(spark);
+      harness.detectChanges();
+
+      expect(el.querySelector('.rk-panel h2')?.textContent?.trim()).toBe('路易莎');
+      expect(texts(el, '.rk-stat')).toEqual([
+        '合計 1,035', '筆數 12', '平均 86', '中位數 85', '最大 120', '最小 65', '平均間隔 2.5 天', '占支出 2.5%', '近 6 月月均 992',
+      ]);
+      expect(el.querySelector('.rk-spark-chart')?.getAttribute('aria-label')).toMatch(/^路易莎 近 6 個月支出：5月 880、/);
+      const drill = el.querySelector<HTMLAnchorElement>('.rk-drill')!;
+      expect(drill.textContent?.trim()).toBe('在記帳記錄看這 12 筆 ›');
+      expect(drill.getAttribute('href')).toBe('/accounting?month=2026-10&merchant=%E8%B7%AF%E6%98%93%E8%8E%8E');
+    });
+
+    it('keeps （無商家） to the plain figures: no six months, no drill link', async () => {
+      const { harness, el } = await openRank();
+      answer(pending());
+      harness.detectChanges();
+
+      rankRows(el)[5].click();
+      harness.detectChanges();
+      http.expectNone(() => true);
+      expect(el.querySelector('.rk-panel h2')?.textContent?.trim()).toBe('（無商家）');
+      expect(texts(el, '.rk-stat')).toEqual(['合計 1,240', '筆數 9', '平均 138', '占支出 3.0%']);
+      expect(el.querySelector('.rk-spark')).toBeNull();
+      expect(el.querySelector('.rk-drill')).toBeNull();
+    });
+
+    it('switches the dimension through the URL, keeps the period, and notes overlapping tag totals', async () => {
+      const { harness, el } = await openRank();
+      answer(pending());
+      harness.detectChanges();
+
+      Array.from(el.querySelectorAll<HTMLButtonElement>('.rk-head app-seg-toggle button')).find(b => b.textContent?.trim() === '標籤')!.click();
+      await harness.fixture.whenStable();
+      harness.detectChanges();
+      expect(TestBed.inject(Router).url).toBe('/accounting/reports?month=2026-10&tab=rank&dim=tag');
+      const reads = pending();
+      expect(reads.breakdowns.map(breakdownQuery)).toEqual([{ date_from: '2026-10-01', date_to: '2026-10-31', metric: 'expense', group_by: 'tag', split_by: undefined, compare: undefined }]);
+      expect(reads.trends).toEqual([]);
+      answer(reads);
+      harness.detectChanges();
+      // The first tag row is （無標籤）: no six months for it.
+      expect(pending().trends).toEqual([]);
+
+      expect(rankNames(el)).toEqual(['（無標籤）', '家用', '朋友', '出差', '生日']);
+      expect(el.querySelector('.rk-foot')?.textContent).toContain('共 4 個標籤 · 一筆可有多個標籤，合計會大於支出');
+      expect(el.querySelector('.rk-panel-head small')?.textContent?.trim()).toBe('標籤 · 2026 年 10 月');
+
+      rankRows(el)[1].click();
+      harness.detectChanges();
+      const spark = pending();
+      expect(spark.trends.map(r => r.request.params.getAll('tag'))).toEqual([['家用']]);
+      answer(spark);
+      harness.detectChanges();
+      expect(el.querySelector<HTMLAnchorElement>('.rk-drill')?.getAttribute('href')).toBe('/accounting?month=2026-10&tag=%E5%AE%B6%E7%94%A8');
+    });
+
+    it('filters the six months by account id for 帳戶 and offers no link for 對象', async () => {
+      const { harness, el } = await openRank('/accounting/reports?month=2026-10&tab=rank&dim=account');
+      const spark = pending();
+      expect(spark.trends.map(r => r.request.params.getAll('account_id'))).toEqual([['1']]);
+      answer(spark);
+      harness.detectChanges();
+      expect(el.querySelector('.rk-panel h2')?.textContent?.trim()).toBe('玉山銀行');
+      expect(el.querySelector<HTMLAnchorElement>('.rk-drill')?.getAttribute('href')).toBe('/accounting?month=2026-10&account_id=1');
+
+      Array.from(el.querySelectorAll<HTMLButtonElement>('.rk-head app-seg-toggle button')).find(b => b.textContent?.trim() === '對象')!.click();
+      await harness.fixture.whenStable();
+      harness.detectChanges();
+      answer(pending());
+      harness.detectChanges();
+      rankRows(el)[1].click();
+      harness.detectChanges();
+      const counterparty = pending();
+      expect(counterparty.trends.map(r => r.request.params.get('counterparty_id'))).toEqual(['2']);
+      answer(counterparty);
+      harness.detectChanges();
+      expect(el.querySelector('.rk-panel h2')?.textContent?.trim()).toBe('媽媽');
+      expect(el.querySelector('.rk-drill')).toBeNull();
+    });
   });
 
   it('falls back to the sample month when the report API is not there yet, and says so', async () => {

@@ -583,6 +583,13 @@ export class LedgerTimelineComponent implements OnInit {
       this.categoryFilter.set(Number(category));
       this.ensureOptions(); // so the chip can name the category
     }
+    // 排行 rows: the same link filtered to a merchant, a tag or an account.
+    const account = query.get('account_id');
+    if (account && /^\d+$/.test(account)) {
+      this.accountFilter.set(Number(account));
+    }
+    this.merchantFilter.set(query.get('merchant')?.trim() ?? '');
+    this.tagFilter.set(query.get('tag')?.trim() ?? '');
     fromEvent(this.document, 'visibilitychange')
       .pipe(
         filter(() => this.document.visibilityState === 'visible'),

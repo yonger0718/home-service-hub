@@ -101,10 +101,13 @@ function categoryRow(c: SampleCategory, query: BreakdownQuery): BreakdownRow {
   };
 }
 
-function dimensionRow([label, amount, count, refund]: [string | null, number, number, number?], query: BreakdownQuery): BreakdownRow {
+/** 帳戶 and 對象 rows are keyed by id (their position in the sample list); 商家 and 標籤 by the name itself. */
+const ID_KEYED = new Set<string>(['account', 'counterparty']);
+
+function dimensionRow([label, amount, count, refund]: [string | null, number, number, number?], index: number, query: BreakdownQuery): BreakdownRow {
   const isCoffee = label === '路易莎';
   return {
-    key: label,
+    key: label === null || label === '__other__' ? label : ID_KEYED.has(query.group_by) ? String(index + 1) : label,
     label: label ?? '',
     color: null,
     amount: text(amount),
@@ -130,7 +133,7 @@ export function sampleBreakdown(query: BreakdownQuery): BreakdownResponse {
   const rows =
     query.group_by === 'category' || query.group_by === 'subcategory' || !dimension
       ? categories.map(c => categoryRow(c, query))
-      : dimension.rows.map(row => dimensionRow(row, query));
+      : dimension.rows.map((row, index) => dimensionRow(row, index, query));
   const window = query.compare ? compareRange(query.date_from, query.date_to, query.compare) : null;
   const compare = window
     ? {
@@ -171,11 +174,28 @@ function derivedSeries(id: number): number[] {
   return series;
 }
 
+/** The six-month shape the canvas draws for a ranked row, around its month amount. */
+const ROW_SHAPE = [0.85, 1.08, 0.91, 0.98, 0.93, 1];
+
+/** A ranked row's trend (the 排行 panel): the row's amount under the canvas shape, in the last buckets. */
+function rowSeries(query: TrendQuery): number[] | null {
+  const dimension = query.merchant ? 'merchant' : query.tag?.length ? 'tag' : query.counterparty_id != null ? 'counterparty' : query.account_id?.length ? 'account' : null;
+  if (!dimension) return null;
+  const rows = DIMENSIONS[dimension]?.rows ?? [];
+  const label = query.merchant ?? query.tag?.[0] ?? null;
+  const id = query.counterparty_id ?? query.account_id?.[0] ?? null;
+  const row = label !== null ? rows.find(([name]) => name === label) : id !== null ? rows[id - 1] : undefined;
+  const amount = row ? row[1] : 0;
+  const shape = TREND_SERIES[TREND_ALL].map((_, index, list) => ROW_SHAPE[index - (list.length - ROW_SHAPE.length)] ?? 0.9);
+  return shape.map(factor => Math.round(amount * factor));
+}
+
 /** The sample trend: twelve monthly buckets ending at the query's last month (shorter ranges keep the tail). */
 export function sampleTrend(query: TrendQuery): TrendResponse {
   const last = monthOf(query.date_to);
   const keys = query.series?.length ? query.series.map(String) : [TREND_ALL];
-  const series = Object.fromEntries(keys.map(key => [key, TREND_SERIES[key] ?? derivedSeries(Number(key))]));
+  const filtered = rowSeries(query);
+  const series = Object.fromEntries(keys.map(key => [key, filtered ?? TREND_SERIES[key] ?? derivedSeries(Number(key))]));
   const months = TREND_SERIES[TREND_ALL].map((_, index, list) => shiftMonth(last, index - (list.length - 1)));
   const first = monthOf(query.date_from);
   const buckets = months

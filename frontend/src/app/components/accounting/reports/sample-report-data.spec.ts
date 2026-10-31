@@ -44,4 +44,12 @@ describe('sample report data', () => {
     expect(home.buckets).toHaveLength(6);
     expect(home.buckets.at(-1)?.values['1']).toBe('20250');
   });
+
+  it('shapes a ranked row\'s six months around its amount', () => {
+    const coffee = sampleTrend({ date_from: '2026-05-01', date_to: '2026-10-31', granularity: 'month', merchant: '路易莎' });
+    expect(coffee.buckets.map(bucket => bucket.values['all'])).toEqual(['880', '1118', '942', '1014', '963', '1035']);
+    expect(coffee.average['all']).toBe('992');
+    const tag = sampleTrend({ date_from: '2026-05-01', date_to: '2026-10-31', granularity: 'month', tag: ['家用'] });
+    expect(tag.buckets.at(-1)?.values['all']).toBe('6420');
+  });
 });
