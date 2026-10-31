@@ -615,3 +615,8 @@ Proposed; the owner confirms each step.
 **Rollback:**
 - The `dividend` case kind already exists, so an accounting release below this one can still read the cases.
 - To disable, set `book_dividend.enabled = false`. Booked rows stay, and each can be reverted from its action.
+- After this deploy, the settings GET returns `rules.dividend_labels`, so every whole-document PUT (step 3 included) stores
+  it. An accounting release below this one refuses that key in `settings_service._check_rules` ("unknown rule"): every
+  whole-document settings save, the SPA's included, fails 422 until the key is gone. Before saving settings on the older
+  release, remove `rules.dividend_labels` from the document. The policy side needs nothing: the older release reads only
+  its own policy defaults, so a stored `book_dividend` key is ignored there.
