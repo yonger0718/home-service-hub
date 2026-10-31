@@ -117,6 +117,36 @@ describe('LedgerTimelineComponent', () => {
     expect(el.querySelector('app-page-header')).toBeNull();
   });
 
+  it('opens the month and filters named in the URL (報表 drill-through)', async () => {
+    TestBed.configureTestingModule({
+      imports: [LedgerTimelineComponent],
+      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([{ path: '**', children: [] }])],
+    });
+    httpMock = TestBed.inject(HttpTestingController);
+    TestBed.inject(LayoutModeService).set('phone');
+    await TestBed.inject(Router).navigateByUrl('/accounting?month=2026-09&category_id=5&merchant=全聯&tag=家用&account_id=2');
+    const fixture = TestBed.createComponent(LedgerTimelineComponent);
+    fixture.detectChanges();
+    httpMock.expectOne('/api/accounting/preference').flush(makePreference());
+    httpMock.expectOne('/api/accounting/accounts').flush(ACCOUNTS);
+    flushCounterparties();
+    fixture.detectChanges();
+
+    flushSummary('2026-09');
+    const req = flushEntries([], 0);
+    expect(req.request.params.get('date_from')).toBe('2026-09-01');
+    expect(req.request.params.getAll('category_id')).toEqual(['5']);
+    expect(req.request.params.get('merchant')).toBe('全聯');
+    expect(req.request.params.getAll('tag')).toEqual(['家用']);
+    expect(req.request.params.getAll('account_id')).toEqual(['2']);
+    // The category / project options are read at once so the chip can name the category.
+    for (const options of httpMock.match(r => r.url === '/api/accounting/categories')) options.flush([]);
+    httpMock.expectOne('/api/accounting/projects').flush([]);
+    fixture.detectChanges();
+    expect(fixture.componentInstance.filtersActive()).toBe(true);
+    expect(text(fixture.nativeElement.querySelector('.month-label, .month-title, h2'))).toContain('9 月');
+  });
+
   it('shows the converted amount with the original ¥ amount and rate beneath it at 390px', () => {
     const { fixture, el } = render('phone');
     flushSummary('2026-10');

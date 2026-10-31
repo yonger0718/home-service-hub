@@ -3,13 +3,14 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router } from '@angular/router';
 import { forkJoin } from 'rxjs';
 
-import { BreakdownResponse, TrendResponse } from '../../../models/reports.model';
+import { BreakdownResponse, BreakdownRow, TrendQuery, TrendResponse } from '../../../models/reports.model';
 import { ReportsService } from '../../../services/reports.service';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { todayIso } from '../dates';
 import { formatMoney, formatSigned } from '../format';
 import { ReportOverviewComponent } from './overview-tab';
+import { OTHER_KEY, RANK_DIMENSIONS, RankDimension, ReportRankComponent } from './rank-tab';
 import {
   PeriodUnit,
   ReportPeriod,
@@ -55,7 +56,7 @@ const CURRENCY_NAMES: Record<string, string> = { TWD: '台幣', JPY: '日圓', U
  */
 @Component({
   selector: 'app-accounting-reports',
-  imports: [PageHeaderComponent, SegToggleComponent, ReportOverviewComponent, ReportTrendComponent],
+  imports: [PageHeaderComponent, SegToggleComponent, ReportOverviewComponent, ReportTrendComponent, ReportRankComponent],
   templateUrl: './reports.html',
   styleUrl: './reports.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -66,6 +67,8 @@ export class AccountingReportsComponent {
   private readonly reports = inject(ReportsService);
   private requestId = 0;
   private trendRequestId = 0;
+  private rankRequestId = 0;
+  private sparkRequestId = 0;
 
   private readonly params = toSignal(this.route.queryParamMap, { initialValue: this.route.snapshot.queryParamMap });
   readonly today = signal(todayIso());
@@ -76,6 +79,11 @@ export class AccountingReportsComponent {
   readonly tab = computed<ReportTab>(() => {
     const tab = this.params().get('tab');
     return REPORT_TABS.some(([id]) => id === tab) ? (tab as ReportTab) : 'overview';
+  });
+  /** 排行's dimension (`?dim=`), 商家 by default. */
+  readonly dimension = computed<RankDimension>(() => {
+    const dim = this.params().get('dim');
+    return RANK_DIMENSIONS.includes(dim as RankDimension) ? (dim as RankDimension) : 'merchant';
   });
 
   protected readonly tabs = REPORT_TABS;
@@ -94,6 +102,12 @@ export class AccountingReportsComponent {
   readonly trendState = signal<LoadState>('loading');
   /** The trend's category (chip); null = everything. */
   readonly trendSeries = signal<number | null>(null);
+  /** 排行: the ranked rows of the dimension, the selected row and its six-month bars. Read only while the tab is open. */
+  readonly rank = signal<BreakdownResponse | null>(null);
+  readonly rankState = signal<LoadState>('loading');
+  readonly rankSelected = signal<string | null | undefined>(undefined);
+  readonly spark = signal<TrendResponse | null>(null);
+  readonly sparkState = signal<LoadState>('loading');
   /** The figures are the handoff's sample month (no report API yet). */
   readonly sample = this.reports.sample;
 
@@ -157,11 +171,79 @@ export class AccountingReportsComponent {
       const series = this.trendSeries();
       untracked(() => this.loadTrend(period, series));
     });
+    effect(() => {
+      if (this.tab() !== 'rank') return;
+      const period = this.period();
+      const dimension = this.dimension();
+      untracked(() => this.loadRank(period, dimension));
+    });
+    effect(() => {
+      const row = this.rankRow();
+      const period = this.period();
+      const dimension = this.dimension();
+      untracked(() => this.loadSpark(row, period, dimension));
+    });
   }
+
+  /** The selected ranked row, when it has its own six-month bars (not （無…）, not the fold). */
+  private readonly rankRow = computed<BreakdownRow | null>(() => {
+    const key = this.rankSelected();
+    if (key === undefined || key === null || key === OTHER_KEY) return null;
+    return this.rank()?.rows.find(row => row.key === key) ?? null;
+  });
 
   reload(): void {
     this.load(this.period());
     this.loadTrend(this.period(), this.trendSeries());
+    if (this.tab() === 'rank') this.loadRank(this.period(), this.dimension());
+  }
+
+  private loadRank(period: ReportPeriod, dimension: RankDimension): void {
+    const id = ++this.rankRequestId;
+    this.rankState.set('loading');
+    this.rankSelected.set(undefined);
+    this.reports.getBreakdown({ date_from: period.from, date_to: period.to, metric: 'expense', group_by: dimension }).subscribe({
+      next: rank => {
+        if (id !== this.rankRequestId) return;
+        this.rank.set(rank);
+        this.rankState.set('ready');
+        // The largest row opens in the panel, as the canvas shows it.
+        this.rankSelected.set(rank.rows[0]?.key);
+      },
+      error: () => {
+        if (id !== this.rankRequestId) return;
+        this.rank.set(null);
+        this.rankState.set('error');
+      },
+    });
+  }
+
+  /** Six monthly buckets of the selected row: the trend filtered to that merchant / tag / counterparty / account. */
+  private loadSpark(row: BreakdownRow | null, period: ReportPeriod, dimension: RankDimension): void {
+    const id = ++this.sparkRequestId;
+    this.spark.set(null);
+    if (!row || row.key === null) return;
+    this.sparkState.set('loading');
+    const range = trendRange(period, 6);
+    const filter: Partial<TrendQuery> =
+      dimension === 'merchant'
+        ? { merchant: row.label }
+        : dimension === 'tag'
+          ? { tag: [row.label] }
+          : dimension === 'counterparty'
+            ? { counterparty_id: Number(row.key) }
+            : { account_id: [Number(row.key)] };
+    this.reports.getTrend({ date_from: range.from, date_to: range.to, metric: 'expense', granularity: 'month', ...filter }).subscribe({
+      next: spark => {
+        if (id !== this.sparkRequestId) return;
+        this.spark.set(spark);
+        this.sparkState.set('ready');
+      },
+      error: () => {
+        if (id !== this.sparkRequestId) return;
+        this.sparkState.set('error');
+      },
+    });
   }
 
   private load(period: ReportPeriod): void {
@@ -214,6 +296,10 @@ export class AccountingReportsComponent {
 
   setTab(tab: ReportTab): void {
     this.navigate({ tab: tab === 'overview' ? null : tab });
+  }
+
+  setDimension(dimension: RankDimension): void {
+    this.navigate({ dim: dimension === 'merchant' ? null : dimension });
   }
 
   setUnit(unit: string): void {
