@@ -21,6 +21,11 @@ from app.services import settings_service
 from app.services.entry_write_service import proposed_fx_fee
 from app.services.statements import matching
 
+try:  # R7 Phase 1; absent from a baseline tree older than it
+    from app.services import trade_settlement_service as tss
+except ImportError:
+    tss = None
+
 
 def _sha() -> str:
     """HEAD of the tree that actually supplied the imported `app` package (not whatever PYTHONPATH says)."""
@@ -36,6 +41,25 @@ def _watermark(db) -> list[int]:
     return [db.scalar(select(func.coalesce(func.max(t.id), 0))) for t in (ReconciliationCase, StatementCoverage, LedgerEntry)]
 
 
+def _settled(db, statement, account, result, all_lines, rules, manual):
+    """The reconcile's settlement outcomes without its writes (`trade_settlement_service.outcomes`, R7 final review I2):
+    the one window read through a cached client as the reconcile makes it, over this statement's coverage as the run
+    would leave it (this run's claims plus the owner's coverage, `manual`). Housekeeping, twin retirements and the
+    claim link are writes and are skipped: an owner-deleted booking the next reconcile would tombstone still reserves
+    here. Returns `(result with the placeholders replaced, drift cases)`."""
+    from dataclasses import replace
+
+    from app.services import portfolio_client
+    coverage = {line_id: set(ids) for line_id, ids in manual.items()}
+    for c in result.claims:
+        coverage.setdefault(c.line_id, set()).update(r.entry_id for r in c.representation.rows)
+    with portfolio_client.cached(portfolio_client.client_for()) as client:
+        feed, code = tss.fetch_for(db, account, statement, client=client)
+        settled = tss.outcomes(db, statement, account, result, all_lines, rules, feed, code, client=client,
+                               coverage=coverage)
+    return replace(result, cases=settled.cases), settled.drift
+
+
 def _statement(db, statement) -> dict:
     accounts = rec.participating_accounts(db, statement.account_id)
     accounts_by_id = {a.id: a for a in db.execute(select(Account).where(Account.id.in_(accounts))).scalars()}
@@ -47,12 +71,21 @@ def _statement(db, statement) -> dict:
     window = matching.population_window_days(rules) if hasattr(matching, "population_window_days") else rules.candidate_window_days
     entries, groups = rec.load_candidates(db, statement, accounts, window_days=window,
                                           include_reward=any(l.line_kind == "reward" for l in all_lines), exclude=owned)
+    account = accounts_by_id[statement.account_id]
+    # R7: a settlement_source account's settlement lines take the stand-in / assignment path (a baseline tree without
+    # the column passes nothing, its matcher has no such keyword)
+    settles = getattr(account, "settlement_source", None) and tss is not None and hasattr(tss, "outcomes") \
+        and tss.applies(account, statement, all_lines, rules)
     result = matching.match(statement.kind, [rec._as_line(r) for r in line_rows], entries, groups,
                             rec.plan_map(db, statement.account_id),
-                            lambda e: proposed_fx_fee(accounts_by_id[e.account_id], e.flow), rules, statement.currency)
+                            lambda e: proposed_fx_fee(accounts_by_id[e.account_id], e.flow), rules, statement.currency,
+                            **({"settlement_account": True} if getattr(account, "settlement_source", None) else {}))
+    drift = []
+    if settles:
+        result, drift = _settled(db, statement, account, result, all_lines, rules, manual)
     lines = {r.id: r for r in line_rows}
     by_id = {e.id: e for e in entries if e.claimable}
-    desired = rec._desired_cases(db, statement, accounts, result, lines, by_id, rules)
+    desired = rec._desired_cases(db, statement, accounts, result, lines, by_id, rules) + drift
     claims = [[lines[c.line_id].event_id, c.representation.rule, sorted(r.entry_id for r in c.representation.rows)] for c in result.claims]
 
     def _keys(cands):  # a candidate is an entry id, "g<id>" for a group representation (matching._ambiguous), or a settlement fingerprint

@@ -49,7 +49,7 @@ shape as the auto-pay job. Nothing here commits — callers own the transaction 
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 import dataclasses
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -474,14 +474,16 @@ COUNT_KEYS = ("booked", "ambiguous", "pending", "mismatch", "drift", "claimed", 
 
 
 def _graph(db: Session, statement: AccountStatement, all_lines: list[StatementLine], rules: matching.Rules,
-           excluded_entries: set[int]) -> tuple[list[matching.Line], set[int]]:
+           excluded_entries: set[int], coverage: Mapping[int, Iterable[int | None]] | None = None,
+           ) -> tuple[list[matching.Line], set[int]]:
     """Spec §4.3 "Assignment is global": EVERY settlement line of this statement and of the account's LIVE,
     non-retired neighbour statements (the `_guard_neighbours` shape over the account itself, bounded by this window
     rather than the population window, which the rules could set narrower) whose posted date lies in the settlement
     window ± `settlement_window_days`, covered or not, MINUS the lines whose active coverage entry is a `booked` row's
     leg (`excluded_entries`; rev 4.5 B7). Historical (shadow) statements stay as they are (§11). Returns `(lines,
     contestants)`: contestants are the remaining lines with active coverage anywhere (this run's claims included) —
-    they compete and are never booked. Read only."""
+    they compete and are never booked. `coverage` (`outcomes`): this statement's active coverage as the run leaves it,
+    line id → entry ids, in place of this statement's stored rows (None: read them). Read only."""
     from app.services.reconciliation_service import _as_line  # local: the reconciler calls this function
 
     lo, hi = settle_window(statement)
@@ -496,11 +498,14 @@ def _graph(db: Session, statement: AccountStatement, all_lines: list[StatementLi
         rows += db.scalars(select(StatementLine).where(StatementLine.revision_id.in_(list(neighbours.values())),
                                                        StatementLine.posted_date.between(lo - edge, hi + edge))
                            .order_by(StatementLine.id))
-    statement_ids = sorted({statement.id, *neighbours})
+    statement_ids = sorted({statement.id, *neighbours} if coverage is None else neighbours)
     lines = [ln for ln in (_as_line(r) for r in rows) if matching.is_settlement_line(ln, rules)]
     ids = [ln.id for ln in lines]
     covered: dict[int, set[int | None]] = {}
-    for start in range(0, len(ids), 200):
+    if coverage is not None:
+        own = {r.id for r in all_lines}
+        covered.update({lid: set(coverage[lid]) for lid in ids if lid in own and lid in coverage})
+    for start in range(0, len(ids) if statement_ids else 0, 200):
         for line_id, entry_id in db.execute(
                 select(StatementCoverage.line_id, StatementCoverage.entry_id)
                 .where(StatementCoverage.statement_id.in_(statement_ids),
@@ -527,11 +532,13 @@ def _nearest(line: matching.Line, rows: list[Settlement]) -> dict | None:
 
 
 def _mismatched_stand_in(db: Session, account_id: int, line: matching.Line,
-                         rules: matching.Rules) -> SettlementBooking | None:
+                         rules: matching.Rules, claimed: set[int] = frozenset()) -> SettlementBooking | None:
     """Spec §4.3 bullet 3: an unclaimed booked stand-in of the account (`unclaimed_settlement_legs`) settling within
-    `settlement_window_days` of the line — the nearest date first, then the nearest net, then id."""
+    `settlement_window_days` of the line — the nearest date first, then the nearest net, then id. `claimed`: entry
+    ids the run claims without stored coverage yet (`outcomes` with a `coverage` override); their rows are claimed."""
     found = [db.get(SettlementBooking, row_id) for row_id in sorted(set(
-        stand_ins.unclaimed_settlement_legs(db, account_id).values()))]
+        row_id for entry_id, row_id in stand_ins.unclaimed_settlement_legs(db, account_id).items()
+        if entry_id not in claimed))]
     found = [r for r in found if abs((r.settlement_date - line.posted_date).days) <= rules.settlement_window_days]
     if not found:
         return None
@@ -582,7 +589,8 @@ def facts_now(db: Session, account: Account, *, fingerprint: str, trade_date: da
 
 
 def _drift(db: Session, statement: AccountStatement, account: Account, all_lines: list[StatementLine],
-           legs: dict[int, SettlementBooking], client: PortfolioClient | None, skip_reads: bool) -> list[dict]:
+           legs: dict[int, SettlementBooking], client: PortfolioClient | None, skip_reads: bool,
+           coverage: Mapping[int, Iterable[int | None]] | None = None) -> list[dict]:
     """Spec §4.4 item 4 (AGENT-360 major 6): every current line of the statement whose active coverage entry is a
     `booked` row's leg (either origin, owned and matcher coverage alike) has the row's facts re-read
     (`_now_for`); a difference or a vanished row → a `settlement` case `{"hint": "source_drift", "booking_id",
@@ -590,13 +598,15 @@ def _drift(db: Session, statement: AccountStatement, account: Account, all_lines
     When the feed cannot be read (`skip_reads`, or a re-read raises) an open `source_drift` case of the line is
     carried as it stands, never superseded by silence; the first re-read that raises sets `skip_reads` for the
     remaining lines, so a portfolio that stops answering costs one client timeout, not one per line, while this
-    transaction holds the statement row and its locks."""
+    transaction holds the statement row and its locks. `coverage` as in `_graph`."""
     from app.services.reconciliation_service import _case  # local: the reconciler calls this function
 
     by_line = {ln.id: ln for ln in all_lines}
     held: dict[int, SettlementBooking] = {}
-    for line_id, rows in coverage_service.active_rows(db, statement.id).items():
-        row = next((legs[r.entry_id] for r in rows if r.entry_id in legs), None)
+    entry_ids = coverage if coverage is not None else {
+        line_id: [r.entry_id for r in rows] for line_id, rows in coverage_service.active_rows(db, statement.id).items()}
+    for line_id, entries in entry_ids.items():
+        row = next((legs[e] for e in entries if e in legs), None)
         if row is not None and line_id in by_line:
             held[line_id] = row
     if not held:
@@ -632,19 +642,34 @@ def settle(db: Session, statement: AccountStatement, account: Account, result: m
            all_lines: list[StatementLine], rules: matching.Rules, feed: Feed | None, unavailable_code: str | None, *,
            client: PortfolioClient | None) -> Settled:
     """The reconcile's settlement outcomes (spec §4.3, §4.4 item 4, §4.7 "Bank line", §9), after the statement's
-    coverage is written: `link_claims`; the global assignment over `_graph` (reservations read after `housekeep`);
-    each `settlement_line` placeholder replaced — booked → `settlement` (candidates `[facts]`, context `{fingerprint,
-    source, owner_deleted}`); ambiguous → `ambiguous` + `settlement_ambiguous` (candidates the settlements); pending
-    → `line_unmatched` + `settlement_pending` (`reason`, `nearest`), or, with no candidate (`reason is None`) beside an
-    unclaimed stand-in within the window, `settlement_mismatch` naming it (a sole non-bookable candidate keeps
-    `settlement_pending` with its reason, D8); the feed unavailable / incomplete / past the calendar → every
-    placeholder `settlement_pending` and `unavailable`. Then the drift cases (live statements only). Counts per
-    `COUNT_KEYS` + `unavailable_code`."""
+    coverage is written: `link_claims` (the one write; `counts["claimed"]`), then `outcomes` over the coverage just
+    written."""
+    claimed = len(link_claims(db, statement))
+    settled = outcomes(db, statement, account, result, all_lines, rules, feed, unavailable_code, client=client)
+    settled.counts["claimed"] = claimed
+    return settled
+
+
+def outcomes(db: Session, statement: AccountStatement, account: Account, result: matching.MatchResult,
+             all_lines: list[StatementLine], rules: matching.Rules, feed: Feed | None, unavailable_code: str | None, *,
+             client: PortfolioClient | None, coverage: Mapping[int, Iterable[int | None]] | None = None) -> Settled:
+    """`settle` without its write (`link_claims`), read only — the dry-run dump (`scripts/r6_case_dump.py`, under
+    `SET TRANSACTION READ ONLY`) calls it directly: the global assignment over `_graph` (reservations as stored: the
+    reconcile reads them after `housekeep`); each `settlement_line` placeholder replaced — booked → `settlement`
+    (candidates `[facts]`, context `{fingerprint, source, owner_deleted}`); ambiguous → `ambiguous` +
+    `settlement_ambiguous` (candidates the settlements); pending → `line_unmatched` + `settlement_pending` (`reason`,
+    `nearest`), or, with no candidate (`reason is None`) beside an unclaimed stand-in within the window,
+    `settlement_mismatch` naming it (a sole non-bookable candidate keeps `settlement_pending` with its reason, D8); the
+    feed unavailable / incomplete / past the calendar → every placeholder `settlement_pending` and `unavailable`. Then
+    the drift cases (live statements only; the drift re-reads are portfolio GETs). Counts per `COUNT_KEYS` +
+    `unavailable_code` (`claimed` 0: `settle` sets it). `coverage`: this statement's active coverage as the run would
+    leave it (line id → entry ids) when it is not written (the dump: the run's claims plus the owner's coverage);
+    None reads the stored rows (the reconcile, after `_write_coverage`)."""
     from app.services.reconciliation_service import _as_line  # local: the reconciler calls this function
 
     counts: dict = dict.fromkeys(COUNT_KEYS, 0)
     counts["unavailable_code"] = unavailable_code
-    counts["claimed"] = len(link_claims(db, statement))
+    claimed = set() if coverage is None else {e for entries in coverage.values() for e in entries if e is not None}
     placeholders = {c.line_id for c in result.cases
                     if c.kind == "line_unmatched" and (c.context or {}).get("hint") == matching.SETTLEMENT_LINE_HINT}
     lines = {row.id: _as_line(row) for row in all_lines}
@@ -656,7 +681,7 @@ def settle(db: Session, statement: AccountStatement, account: Account, result: m
         counts["pending"] = len(placeholders)
     else:
         fps, ids = reservations(db)
-        graph, contestants = _graph(db, statement, all_lines, rules, set(legs))
+        graph, contestants = _graph(db, statement, all_lines, rules, set(legs), coverage)
         assignment = settlement_match.assign(graph, list(feed.rows), reserved_fps=fps, reserved_ids=ids,
                                              contestants=contestants, rules=rules)
         counts["unknown_dates"] = assignment.unknown_dates
@@ -676,7 +701,7 @@ def settle(db: Session, statement: AccountStatement, account: Account, result: m
                 counts["ambiguous"] += 1
             else:
                 reason = assignment.pending.get(line_id)
-                stand_in = None if reason is not None else _mismatched_stand_in(db, account.id, line, rules)
+                stand_in = None if reason is not None else _mismatched_stand_in(db, account.id, line, rules, claimed)
                 if stand_in is not None:
                     outcome[line_id] = matching.Case(line_id, None, "line_unmatched", (), {
                         "hint": "settlement_mismatch", "settlement_booking_id": stand_in.id,
@@ -689,7 +714,8 @@ def settle(db: Session, statement: AccountStatement, account: Account, result: m
     cases = [outcome.get(c.line_id, c) if c.line_id in placeholders else c for c in result.cases]
     skip_reads = unavailable_code is not None and unavailable_code not in DRIFT_READ_AFTER
     # drift cases are live-only (the reconciler writes no historical cases): a historical reconcile re-reads nothing
-    drift = _drift(db, statement, account, all_lines, legs, client, skip_reads) if statement.mode == "live" else []
+    drift = (_drift(db, statement, account, all_lines, legs, client, skip_reads, coverage)
+             if statement.mode == "live" else [])
     counts["drift"] = sum(1 for d in drift if d["context"].get("hint") == "source_drift")
     return Settled(cases=cases, drift=drift, counts=counts, unavailable=unavailable_code is not None)
 
