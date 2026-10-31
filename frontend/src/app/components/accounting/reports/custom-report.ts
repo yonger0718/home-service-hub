@@ -128,7 +128,7 @@ interface TableRow {
   selector: 'app-custom-report',
   imports: [NgTemplateOutlet, RouterLink, SwitchComponent],
   templateUrl: './custom-report.html',
-  styleUrl: './custom-report.scss',
+  styleUrls: ['../sheet.scss', './custom-report.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { '(document:keydown.escape)': 'onEscape($event)' },
 })
