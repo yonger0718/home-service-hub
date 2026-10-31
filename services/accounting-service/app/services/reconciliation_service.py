@@ -806,9 +806,15 @@ def _dismissed(dismissed: list[ReconciliationCase], want: dict) -> bool:
     A settlement-family line case (`_settlement_family`) matches any dismissed settlement-family case on the same
     event whatever its kind: a revert reopens a `settlement` case as `settlement_pending`, a pending line becomes
     `settlement` once the feed answers, an ambiguity narrows to one — the owner's dismissal holds across each (owner
-    ruling A: the bank path re-books on the next reconcile unless dismissed; R7 final review I1). A dividend-family
-    want is also hidden by a dismissed plain `line_unmatched` case (no hint) on the event: the owner dismissed the line
-    before its receipt was confirmed (dividends R7)."""
+    ruling A: the bank path re-books on the next reconcile unless dismissed; R7 final review I1). The dividend family
+    and the line's plain case hide each other both ways (dividends R6/R7): a dividend-family want is hidden by a
+    dismissed plain `line_unmatched` case (no hint) on the event — the owner dismissed the line before its receipt was
+    confirmed — and a plain `line_unmatched` want by a dismissed dividend-family case on the event — the feed is down,
+    or the receipt left the feed or is no longer confirmed."""
+    plain_want = want["kind"] == "line_unmatched" and (want["context"] or {}).get("hint") is None
+    if want["event_id"] is not None and plain_want and any(
+            case.event_id == want["event_id"] and _dividend_family(case.kind, case.context) for case in dismissed):
+        return True
     if want["event_id"] is not None and _settlement_family(want["kind"], want["context"]):
         dividend = _dividend_family(want["kind"], want["context"])
         return any(case.event_id == want["event_id"] and (

@@ -26,10 +26,12 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Account, AccountStatement, Category, ReconciliationCase, SettlementBooking, StatementLine
+from app.models import (
+    Account, AccountStatement, Category, ReconciliationCase, ReconciliationSettings, SettlementBooking, StatementLine,
+)
 from app.schemas.writes import SETTLEMENT_SOURCES
 from app.services import portfolio_client, settings_service
 from app.services import trade_settlement_service as tss
@@ -251,25 +253,40 @@ def category_for(db: Session) -> tuple[int | None, bool]:
     return (category.id, False) if category is not None and category.kind == "income" else (None, True)
 
 
+def _stored_labels(db: Session) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """(dividend labels, settlement labels) as the rules document stores them, else the `matching.Rules` defaults.
+    Read straight from the settings row: neither key is touched by `settings_service.normalise_stale_rules` (only
+    the R1b and score-scale keys are), so this equals what `rules_for` yields, without re-running that
+    normalisation (and its stale-rule warnings) on every re-check."""
+    row = db.get(ReconciliationSettings, 1)
+    stored = ((row.data or {}).get("rules") or {}) if row is not None else {}
+    return (tuple(stored.get("dividend_labels", matching.DIVIDEND_LABELS)),
+            tuple(stored.get("settlement_labels", matching.SETTLEMENT_LABELS)))
+
+
 def recheck_statement_ids(db: Session) -> list[int]:
     """R11: the live, non-retired statements, ascending, of accounts with a known `settlement_source`
-    (`SETTLEMENT_SOURCES`) holding an open case of kind `dividend`, with a hint in `FAMILY_HINTS`, or a plain
-    `line_unmatched` one (no hint) on a deposit line naming one of the rules' `dividend_labels`. It compares nothing
-    (Phase 1's shape): while such a case is open, each run's reconcile re-reads the feed. Read only."""
-    from app.services.reconciliation_service import rules_for  # local: the reconciler imports this module
-
-    labels = rules_for(settings_service.reconciliation_rules(db), date.today()).dividend_labels
+    (`SETTLEMENT_SOURCES`) holding an open case of kind `dividend`, with a hint in `FAMILY_HINTS`, or a plain one —
+    `line_unmatched`, no hint, no candidates — on a dividend line (`matching.is_dividend_line`: a deposit naming one
+    of the rules' `dividend_labels` and none of their `settlement_labels`). It compares nothing (Phase 1's shape):
+    while such a case is open, each run's reconcile re-reads the feed. Read only."""
+    labels, settlement_labels = _stored_labels(db)
     hint = ReconciliationCase.context["hint"].astext
-    plain_line = (ReconciliationCase.kind == "line_unmatched") & hint.is_(None) & exists().where(
-        StatementLine.id == ReconciliationCase.line_id, StatementLine.line_kind == "deposit",
-        or_(*(StatementLine.merchant_norm.contains(label, autoescape=True) for label in labels)))
+    family = [ReconciliationCase.kind == KIND, hint.in_(FAMILY_HINTS)]
+    if labels:
+        dividend_line = [StatementLine.id == ReconciliationCase.line_id, StatementLine.line_kind == "deposit",
+                         or_(*(StatementLine.merchant_norm.contains(label, autoescape=True) for label in labels))]
+        if settlement_labels:
+            dividend_line.append(~or_(*(StatementLine.merchant_norm.contains(label, autoescape=True)
+                                        for label in settlement_labels)))
+        family.append((ReconciliationCase.kind == "line_unmatched") & hint.is_(None)
+                      & (func.jsonb_array_length(ReconciliationCase.candidates) == 0)
+                      & exists().where(*dividend_line))
     return sorted(db.execute(
         select(AccountStatement.id).distinct()
         .join(ReconciliationCase, ReconciliationCase.statement_id == AccountStatement.id)
         .join(Account, Account.id == AccountStatement.account_id)
-        .where(ReconciliationCase.status == "open",
-               or_(ReconciliationCase.kind == KIND, hint.in_(FAMILY_HINTS), plain_line) if labels
-               else or_(ReconciliationCase.kind == KIND, hint.in_(FAMILY_HINTS)),
+        .where(ReconciliationCase.status == "open", or_(*family),
                Account.settlement_source.in_(SETTLEMENT_SOURCES),
                AccountStatement.mode == "live", AccountStatement.current_revision_id.is_not(None),
                ~retired.clause(AccountStatement.id))).scalars())

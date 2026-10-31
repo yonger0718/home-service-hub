@@ -102,6 +102,34 @@ def _add_booking(db: Session, booking: SettlementBooking, label: str) -> None:
         raise CodedConflictError(code, label) from exc
 
 
+def _holders(ctx: Context, kind: str, fingerprint: str, event_id: int | None,
+             day: date | None = None) -> list[SettlementBooking]:
+    """The `booked` rows of `kind` a booking would meet: of the fingerprint, the event or (settlements) the
+    account-day, in id order, refreshed from the database."""
+    clauses = [SettlementBooking.fingerprint == fingerprint]
+    if event_id is not None:
+        clauses.append(SettlementBooking.event_id == event_id)
+    if day is not None:
+        clauses.append((SettlementBooking.account_id == ctx.statement.account_id)
+                       & (SettlementBooking.settlement_date == day))
+    return list(ctx.db.scalars(select(SettlementBooking).where(
+        SettlementBooking.kind == kind, SettlementBooking.status == "booked", or_(*clauses))
+        .order_by(SettlementBooking.id).execution_options(populate_existing=True)))
+
+
+def _owner_twin_check(action: _TwinGuarded, ctx: Context, line: StatementLine, target_id: int | None) -> None:
+    """Under the writer barrier, for the guarded actors: the `_TwinGuarded` owner twin of the line, then the owner
+    record of spec §4.7 (`tss.find_twins`: an owner entry of the line's flow on the bank account or, with a
+    `target_id`, an owner transfer leg of its mirror on the target, within `settlement.twin_window_days`)."""
+    action._twin_check(ctx, line)
+    code = action._guard_code(ctx)
+    if code is not None and tss.find_twins(
+            ctx.db, account_id=ctx.statement.account_id, target_account_id=target_id,
+            amount=Decimal(line.flow_amount), settlement_date=line.posted_date,
+            window_days=tss.twin_window_days(ctx.db)):
+        raise CodedConflictError(code, f"an owner entry may already record line {line.id}")
+
+
 class BookSettlementAction(_TwinGuarded):
     name = NAME
     Params = BookSettlementParams
@@ -149,7 +177,7 @@ class BookSettlementAction(_TwinGuarded):
             raise _refuse("fingerprint", "not_a_candidate", f"case {ctx.case.id}")
         event_id = None if line is None else line.event_id
         day = None if line is None else _day(candidate, line)
-        rows = self._holders(ctx, params.fingerprint, event_id, day)
+        rows = _holders(ctx, tss.KIND, params.fingerprint, event_id, day)
         for row in rows:
             tss.lock_pair(db, row)  # row → legs NOWAIT, refreshed in place (settlement_busy)
         holders = [row for row in rows if row.status == "booked"]
@@ -174,22 +202,8 @@ class BookSettlementAction(_TwinGuarded):
         if not tss.pair_currency_ok(ctx.account, target):
             raise CodedConflictError("currency_mismatch", f"account {ctx.statement.account_id} or its target "
                                                           f"{target_id} is not in its settlement source's currency")
-        self._settlement_twin_check(ctx, line, target_id)
+        _owner_twin_check(self, ctx, line, target_id)
         return line, now, target_id
-
-    @staticmethod
-    def _holders(ctx: Context, fingerprint: str, event_id: int | None,
-                 day: date | None) -> list[SettlementBooking]:
-        """The `booked` settlement rows this booking would meet: of the event, the fingerprint or the account-day."""
-        clauses = [SettlementBooking.fingerprint == fingerprint]
-        if event_id is not None:
-            clauses.append(SettlementBooking.event_id == event_id)
-        if day is not None:
-            clauses.append((SettlementBooking.account_id == ctx.statement.account_id)
-                           & (SettlementBooking.settlement_date == day))
-        return list(ctx.db.scalars(select(SettlementBooking).where(
-            SettlementBooking.kind == tss.KIND, SettlementBooking.status == "booked", or_(*clauses))
-            .order_by(SettlementBooking.id).execution_options(populate_existing=True)))
 
     @staticmethod
     def _covers_event(ctx: Context, row: SettlementBooking, event_id: int) -> bool:
@@ -213,18 +227,6 @@ class BookSettlementAction(_TwinGuarded):
         if action is not None and action.status == "applied":
             raise Replay(action)
         raise CodedConflictError("already_booked", f"booking {row.id} holds this event")
-
-    def _settlement_twin_check(self, ctx: Context, line: StatementLine, target_id: int) -> None:
-        """Under the writer barrier, for the guarded actors: the `_TwinGuarded` owner twin of the line, then the
-        settlement twin of spec §4.7 (an owner entry of the net on the bank account, or an owner transfer leg of its
-        mirror on the target, within `settlement.twin_window_days` of the line)."""
-        self._twin_check(ctx, line)
-        code = self._guard_code(ctx)
-        if code is not None and tss.find_twins(
-                ctx.db, account_id=ctx.statement.account_id, target_account_id=target_id,
-                amount=Decimal(line.flow_amount), settlement_date=line.posted_date,
-                window_days=tss.twin_window_days(ctx.db)):
-            raise CodedConflictError(code, f"an owner entry may already record line {line.id}")
 
     def apply(self, ctx: Context, params: BookSettlementParams, prepared: Prepared, effect: Effect) -> None:
         db = ctx.db
@@ -346,7 +348,7 @@ class BookDividendAction(_TwinGuarded):
         if candidate is None:
             raise _refuse("fingerprint", "not_a_candidate", f"case {ctx.case.id}")
         event_id = None if ctx.line is None else ctx.line.event_id
-        rows = self._holders(ctx, params.fingerprint, event_id)
+        rows = _holders(ctx, dividend_service.KIND, params.fingerprint, event_id)
         for row in rows:
             tss.lock_pair(db, row)  # row → entry NOWAIT, refreshed in place (settlement_busy)
         holders = [row for row in rows if row.status == "booked"]
@@ -380,18 +382,8 @@ class BookDividendAction(_TwinGuarded):
         fits = params.fingerprint in {r.fingerprint for r in fitting}
         if not fits:
             raise CodedConflictError("candidate_changed", f"receipt {params.fingerprint} no longer fits line {line.id}")
-        self._dividend_twin_check(ctx, line)
+        _owner_twin_check(self, ctx, line, None)
         return line, now
-
-    @staticmethod
-    def _holders(ctx: Context, fingerprint: str, event_id: int | None) -> list[SettlementBooking]:
-        """The `booked` dividend rows this booking would meet: of the fingerprint or the event."""
-        clauses = [SettlementBooking.fingerprint == fingerprint]
-        if event_id is not None:
-            clauses.append(SettlementBooking.event_id == event_id)
-        return list(ctx.db.scalars(select(SettlementBooking).where(
-            SettlementBooking.kind == dividend_service.KIND, SettlementBooking.status == "booked", or_(*clauses))
-            .order_by(SettlementBooking.id).execution_options(populate_existing=True)))
 
     @staticmethod
     def _covers_event(ctx: Context, row: SettlementBooking, event_id: int) -> bool:
@@ -403,17 +395,6 @@ class BookDividendAction(_TwinGuarded):
             select(StatementCoverage.id).join(StatementLine, StatementLine.id == StatementCoverage.line_id)
             .where(StatementCoverage.entry_id == row.in_entry_id, StatementCoverage.status == "active",
                    StatementLine.event_id == event_id).limit(1)) is not None
-
-    def _dividend_twin_check(self, ctx: Context, line: StatementLine) -> None:
-        """Under the writer barrier, for the guarded actors: the `_TwinGuarded` owner twin of the line, then an owner
-        entry of the line's flow on the bank account within `settlement.twin_window_days` (`tss.find_twins`)."""
-        self._twin_check(ctx, line)
-        code = self._guard_code(ctx)
-        if code is not None and tss.find_twins(
-                ctx.db, account_id=ctx.statement.account_id, target_account_id=None,
-                amount=Decimal(line.flow_amount), settlement_date=line.posted_date,
-                window_days=tss.twin_window_days(ctx.db)):
-            raise CodedConflictError(code, f"an owner entry may already record line {line.id}")
 
     def apply(self, ctx: Context, params: BookDividendParams, prepared: Prepared, effect: Effect) -> None:
         db = ctx.db

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Account, AccountStatement, LedgerEntry, PolicyBudget, ReconciliationAudit, ReconciliationCase, SettlementBooking,
+    StatementLine,
 )
 from app.services import dividend_service as ds
 from app.services import entry_write_service as ews
@@ -244,8 +245,11 @@ def test_one_dividend_read_per_reconcile_and_none_without_a_label_or_source(seed
     assert len(portfolio_stub.dividend_calls) == before + 1 and portfolio_stub.calls == []
     assert portfolio_stub.dividend_calls[-1] == {"broker": "cathay", "from": "2026-08-29", "to": "2026-10-03"}
     plain = seed.account("活存", statement_live_from=date(2026, 1, 1)); db_session.commit()
-    submit_bank(db_session, run, plain, [dividend_line(1, date(2026, 9, 12), "990")])               # no settlement_source
-    submit_bank(db_session, run, bank, [bank_line(1, date(2026, 10, 5), "薪資", "990")], period=OCT)  # no dividend label
+    no_source = submit_bank(db_session, run, plain, [dividend_line(1, date(2026, 9, 12), "990")])  # no settlement_source
+    no_label = submit_bank(db_session, run, bank, [bank_line(1, date(2026, 10, 5), "薪資", "990")], period=OCT)
+    for other in (no_source, no_label):                                     # R3's gate: nothing dividend-related
+        result = _reconcile(db_session, other)
+        assert (result.settlements, result.settlement_source_unavailable) == ({}, False)
     assert len(portfolio_stub.dividend_calls) == before + 1
 
 
@@ -309,6 +313,43 @@ def test_a_dismissed_ambiguity_holds_when_it_narrows_to_one(seed, db_session, ru
     assert _booked(db_session) == 0 and _all_cases(db_session, sid) == [("ambiguous", "dividend_ambiguous", "dismissed")]
 
 
+def test_a_dismissed_dividend_case_holds_while_the_feed_is_down(seed, db_session, run, portfolio_stub):
+    """Fix round 1, Important 1 (owner wins, R6): the line falls back to its plain case while the feed is down; the
+    owner's dismissal of the `dividend` case still holds and nothing reopens."""
+    _, sid, (case,) = _dividend_case(seed, db_session, run, portfolio_stub)
+    _apply(db_session, case.id, "dismiss", {"note": "owner: handled"})
+    portfolio_stub.down = True
+    result = _reconcile(db_session, sid)
+    assert result.settlement_source_unavailable is True
+    assert _all_cases(db_session, sid) == [("dividend", None, "dismissed")] and _cases(db_session, sid, "open") == []
+
+
+def test_a_dismissed_dividend_case_holds_once_the_receipt_leaves_the_feed(seed, db_session, run, portfolio_stub):
+    _, sid, (case,) = _dividend_case(seed, db_session, run, portfolio_stub)
+    _apply(db_session, case.id, "dismiss", {"note": "owner: handled"})
+    portfolio_stub.dividends = []                                           # gone, or no longer confirmed
+    result = _reconcile(db_session, sid)
+    assert result.settlements["dividend"] == 0 and result.settlement_source_unavailable is False
+    assert _all_cases(db_session, sid) == [("dividend", None, "dismissed")] and _cases(db_session, sid, "open") == []
+
+
+def test_the_recheck_takes_plain_cases_of_dividend_lines_only(seed, db_session, run, portfolio_stub):
+    """Fix round 1, Minor 2: the plain-line shape mirrors `is_dividend_line` and `_plain` — no candidates, no
+    settlement label, the rules' `dividend_labels`."""
+    _, sid, (case,) = _dividend_case(seed, db_session, run, portfolio_stub, rows=[])        # plain: still pending
+    assert ds.recheck_statement_ids(db_session) == [sid]
+    case.candidates = [{"entry_id": 1}]; db_session.commit()                                # listing candidates
+    assert ds.recheck_statement_ids(db_session) == []
+    case.candidates = []; db_session.commit()
+    line = db_session.get(StatementLine, case.line_id)
+    line.merchant_norm = "交割股款 股利"; db_session.commit()                                # a settlement label wins
+    assert ds.recheck_statement_ids(db_session) == []
+    line.merchant_norm = "配息"; db_session.commit()
+    assert ds.recheck_statement_ids(db_session) == []
+    put_settings(db_session, rules={"dividend_labels": ["配息"]})                            # the rules' labels
+    assert ds.recheck_statement_ids(db_session) == [sid]
+
+
 def test_the_dividend_family_and_its_dismissal_rule():
     from app.services.reconciliation_service import _dismissed, _settlement_family
     plain = SimpleNamespace(kind="line_unmatched", event_id=7, entry_id=None, context={})
@@ -321,6 +362,10 @@ def test_the_dividend_family_and_its_dismissal_rule():
     assert _dismissed([plain], book) and _dismissed([plain], many) and not _dismissed([plain], dict(book, event_id=8))
     assert _dismissed([plain], near) and _dismissed([SimpleNamespace(**near)], book)       # holds across a fee fix
     assert not _dismissed([plain], settle)                   # a plain dismissal stands in for the dividend family only
+    want = {"kind": "line_unmatched", "event_id": 7, "entry_id": None, "context": {}}       # fix round 1: both ways
+    assert _dismissed([SimpleNamespace(**book)], want) and _dismissed([SimpleNamespace(**many)], want)
+    assert not _dismissed([SimpleNamespace(**book)], dict(want, event_id=8))
+    assert not _dismissed([SimpleNamespace(**settle)], want)
     assert not set(ds.FAMILY_HINTS) & set(tss.SETTLEMENT_CASE_HINTS)                       # never a stand-in hint
 
 
