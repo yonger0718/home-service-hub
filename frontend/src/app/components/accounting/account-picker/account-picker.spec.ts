@@ -103,6 +103,16 @@ describe('AccountPickerComponent', () => {
     expect(text(el.querySelector('.acct-trigger'))).not.toContain('$3,070');
   });
 
+  it('shows 市值暫不可得 (not red) for a valuation account without a value, on the trigger and in the list (R7 §5)', () => {
+    const position = makeAccount({ id: 7, name: '國泰高雄', icon: '📈', balance: null, balance_main: null, balance_kind: 'valuation', stale: true, group_name: '投資' });
+    const { fixture, el } = render({ value: 7, accounts: [WALLET, position] });
+    expect(text(el.querySelector('.acct-trigger-balance'))).toBe('· 市值暫不可得');
+    const panel = openPanel(fixture);
+    const option = panel.querySelector('.acct-option[data-account-id="7"]')!;
+    expect(text(option.querySelector('.acct-balance'))).toBe('市值暫不可得');
+    expect(option.querySelector('.acct-balance')!.classList.contains('neg')).toBe(false);
+  });
+
   it('lists groups with currency badges and balances, marks the selected row, archived only when allowed', () => {
     const { fixture, el } = render({ value: 4 });
     const panel = openPanel(fixture);

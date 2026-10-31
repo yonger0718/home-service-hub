@@ -12,7 +12,8 @@ import { AccountSettingsComponent, accountToInput, decimalText } from './account
 
 function account(fields: Record<string, unknown>): LedgerAccount {
   return {
-    id: 0, name: '', currency: 'TWD', opening_balance: '0', balance: '0', balance_main: '0', entry_count: 0,
+    id: 0, name: '', currency: 'TWD', opening_balance: '0', balance: '0', balance_main: '0', balance_kind: 'ledger',
+    stale: false, valuation: null, entry_count: 0,
     group_id: null, group_name: null, icon: null, color: null, is_archived: false, include_in_total: true,
     is_credit: false, closing_day: null, due_rule: null, due_value: null, credit_limit: null, combined_account_id: null,
     credit_sharing_id: null, auto_pay_account_id: null, fx_fee_pct: null, fx_fee_rounding: null, fx_fee_refundable: false,
@@ -80,6 +81,23 @@ describe('AccountSettingsComponent', () => {
     http.verify();
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it('hero: a valuation balance is labelled 市值 (R7 §5)', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, balance: '514200', balance_main: '514200', balance_kind: 'valuation', is_credit: false } as AccountDetail);
+    expect(el(fixture).querySelector('.bigicon b')?.textContent?.trim()).toBe('$514,200');
+    expect(el(fixture).querySelector('.bigicon .kind-hint')?.textContent?.trim()).toBe('市值');
+  });
+
+  it('hero: an unavailable valuation reads 市值暫不可得 without the red tone (R7 §5)', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, balance: null, balance_main: null, balance_kind: 'valuation', stale: true, is_credit: false } as AccountDetail);
+    const hero = el(fixture).querySelector('.bigicon b')!;
+    expect(hero.textContent?.trim()).toBe('市值暫不可得');
+    expect(hero.classList.contains('neg')).toBe(false);
+    expect(hero.classList.contains('unavailable')).toBe(true);
+    expect(el(fixture).querySelector('.bigicon .kind-hint')).toBeNull();
   });
 
   function render(detail: AccountDetail | null): ComponentFixture<AccountSettingsComponent> {

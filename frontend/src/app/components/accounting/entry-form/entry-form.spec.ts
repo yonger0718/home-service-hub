@@ -183,6 +183,16 @@ describe('EntryFormComponent', () => {
     return node?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
   }
 
+  it('shows 市值暫不可得 as 當前餘額 for a valuation account without a value (R7 §5)', async () => {
+    // 當前餘額 reads the account list row (the detail GET only carries the rules), so the null balance comes from there.
+    const position = makeAccount({ id: 1, name: '國泰高雄', balance: null, balance_main: null, balance_kind: 'valuation', stale: true });
+    const { el } = await open('/accounting/entry?kind=system', 'phone', [position, ...ACCOUNTS.slice(1)]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ ...position }));
+    expect(text(el.querySelector('.current-balance'))).toContain('市值暫不可得');
+    // The expense category tree is requested (and cancelled) in the background; it plays no part here.
+    httpMock.match(r => r.url.startsWith('/api/accounting/categories'));
+  });
+
   it('creates an expense in three taps: 飲食, 午餐, 170, ✓', async () => {
     const { el, left } = await open('/accounting/entry');
     respond('/api/accounting/categories', [FOOD]);

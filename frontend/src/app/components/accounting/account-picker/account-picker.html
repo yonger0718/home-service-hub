@@ -71,7 +71,7 @@
             <app-account-icon class="acct-ico" aria-hidden="true" [logo]="account.logo" [icon]="account.icon" fallback="bank" />
             <span class="acct-name">{{ account.name }}</span>
             <span class="acct-currency">{{ account.currency }}</span>
-            <span class="acct-balance" [class.neg]="+account.balance < 0">{{ balanceText(account) }}</span>
+            <span class="acct-balance" [class.neg]="balanceNegative(account)">{{ balanceText(account) }}</span>
             @if (account.id === value()) {
               <span class="acct-check" aria-hidden="true">✓</span>
             }
