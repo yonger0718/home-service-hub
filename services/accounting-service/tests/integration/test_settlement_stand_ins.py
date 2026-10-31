@@ -365,3 +365,38 @@ def test_record_skip_takes_the_target_from_the_given_settings(seed, db_session, 
     row = tss.record_skip(db_session, bank, cand.settlement, "twin", settings=settings)
     db_session.commit()
     assert (row.status, row.reason, row.target_account_id) == ("skipped", "twin", other_target.id)
+
+
+def test_job_skips_a_feed_in_another_currency_and_books_nothing(pg_engine, seed, db_session, portfolio_stub, stand_ins_on):
+    """PR #234 review finding 1: the account's candidates are skipped `currency_mismatch`, nothing is written."""
+    bank, target = settlement_bank(seed, db_session); stand_ins_on(bank, target, enabled_from="2026-09-01")
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",), {"currency": "USD"}))
+    preview = tss.run_stand_ins(pg_engine, today=date(2026, 9, 14), dry_run=True)
+    report = tss.run_stand_ins(pg_engine, today=date(2026, 9, 14))
+    skip = [{"account_id": bank.id, "settlement_date": "2026-09-14", "reason": "currency_mismatch"}]
+    assert (preview["status"], preview["booked"], preview["skipped"]) == ("dry_run", [], skip)
+    assert (report["status"], report["booked"], report["skipped"]) == ("completed", [], skip)
+    assert report["housekeeping"] == _hk(currency_mismatch=1) and report["touched_dates"] == {}
+    assert db_session.scalar(select(func.count(SettlementBooking.id))) == 0 and _entries(db_session) == 0
+
+
+def test_job_leaves_its_stand_ins_alone_while_the_feed_answers_in_another_currency(pg_engine, seed, db_session,
+                                                                                  portfolio_stub, stand_ins_on):
+    """No retirement or replacement is decided from a feed in another currency: the booked stand-in stays."""
+    bank, target, old = _booked(pg_engine, seed, db_session, portfolio_stub, stand_ins_on)
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12310", ("ct:5", "ct:9"), {"currency": "USD"}))
+    report = tss.run_stand_ins(pg_engine, today=date(2026, 9, 15))
+    db_session.expire_all()
+    assert report["housekeeping"] == _hk(currency_mismatch=1) and report["booked"] == []
+    assert [(r.id, r.status) for r in db_session.scalars(select(SettlementBooking))] == [(old.id, "booked")]
+    assert _entries(db_session) == 2
+
+
+def test_gate_refuses_a_target_in_another_currency(seed, db_session, portfolio_stub, stand_ins_on):
+    """The settings refuse such a pair; the gate asserts it anyway (the run's dict, not the store)."""
+    bank, target = settlement_bank(seed, db_session); stand_ins_on(bank, target, enabled_from="2026-09-01")
+    usd = seed.account("美股市值", currency="USD"); db_session.commit()
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)))
+    cand = _candidate(db_session, bank, usd, portfolio_stub.rows[0])
+    settings = {**_settings(db_session), "target_accounts": {str(bank.id): usd.id}}
+    assert tss.gate(db_session, cand, settings) == "currency_mismatch"

@@ -64,6 +64,19 @@ def test_settlement_block_defaults_and_targets(client, seed, db_session):
     assert settings_service.read_settlement_settings(db_session)["twin_window_days"] == 5
 
 
+def test_settlement_targets_refuse_a_currency_the_source_does_not_answer(client, seed, db_session):
+    """PR #234 review finding 1: a USD bank / target pair is refused whether or not the bank already carries the
+    source (`SOURCE_CURRENCIES`: Phase 1's `portfolio:cathay` is TWD only)."""
+    bank, market = seed.account("美股交割", currency="USD"), seed.account("美股市值", currency="USD")
+    db_session.commit()
+    for source in (None, "portfolio:cathay"):   # the second as owner SQL would store it past the PATCH check
+        bank.settlement_source = source
+        db_session.commit()
+        res = client.put("/settings/reconciliation", json=_body(client, settlement={"target_accounts": {str(bank.id): market.id}}))
+        assert res.status_code == 422 and "currency" in str(res.json()["detail"]), source
+    assert settings_service.read_settlement_settings(db_session)["target_accounts"] == {}
+
+
 def test_the_settlement_block_is_a_copy(db_session):
     block = settings_service.read_settlement_settings(db_session)
     block["target_accounts"]["1"] = 2

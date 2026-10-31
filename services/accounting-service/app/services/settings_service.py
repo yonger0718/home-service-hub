@@ -28,7 +28,9 @@ from ..models import (
 )
 from ..models.statements import ReconciliationSettings, StatementAutoPay
 from .statements import matching
-from ..schemas.writes import AccountGroupIn, AccountIn, CategoryIn, CounterpartyIn, PreferenceIn, ProjectIn
+from ..schemas.writes import (
+    SOURCE_CURRENCIES, AccountGroupIn, AccountIn, CategoryIn, CounterpartyIn, PreferenceIn, ProjectIn,
+)
 from . import schedule_entry_hooks
 from .errors import ConflictError, NotFoundError, ValidationError  # noqa: F401  (re-exported)
 from .ledger_service import open_debt_filter
@@ -374,7 +376,8 @@ def _check_settlement(db: Session, settlement) -> dict:
     """The brokerage settlement settings (spec §8), validated and returned with `target_accounts` keys normalised to
     int strings (defaults are overlaid on read): unknown keys are refused; `enabled_from` is an ISO date, required
     when `stand_in_enabled`; `target_accounts` maps a bank account id to another existing account of the same
-    currency; `twin_window_days` is an integer in 0..15; `dividend_category_id` an id or null."""
+    currency, one the bank's settlement source answers in (`SOURCE_CURRENCIES`); `twin_window_days` is an integer
+    in 0..15; `dividend_category_id` an id or null."""
     if not isinstance(settlement, dict):
         raise ValidationError("settlement", "must be an object")
     out = {}
@@ -421,6 +424,13 @@ def _check_targets(db: Session, targets) -> dict[str, int]:
                 raise ValidationError("settlement", f"target_accounts: account {account_id} does not exist")
         if accounts[key].currency != accounts[value].currency:
             raise ValidationError("settlement", f"target_accounts: account {value} has a different currency than {key}")
+        # PR #234 review finding 1: the bank's source (or, before the source is set, any known source) answers in
+        # the pair's currency (`SOURCE_CURRENCIES`); Phase 1 is TWD only
+        source = accounts[key].settlement_source
+        supported = {SOURCE_CURRENCIES[source]} if source in SOURCE_CURRENCIES else set(SOURCE_CURRENCIES.values())
+        if accounts[key].currency not in supported:
+            raise ValidationError("settlement", f"target_accounts: account {key}'s currency {accounts[key].currency} "
+                                                "is not one its settlement source answers in")
     return {str(key): value for key, value in parsed.items()}
 
 

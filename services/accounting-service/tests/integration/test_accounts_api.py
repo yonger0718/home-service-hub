@@ -506,3 +506,17 @@ def test_patch_refuses_an_unknown_settlement_source_and_clears_on_empty(client, 
     assert client.patch(f"/accounts/{account.id}", headers=admin, json={"settlement_source": "portfolio:cathay"}).status_code == 200
     response = client.patch(f"/accounts/{account.id}", headers=admin, json={"settlement_source": ""})
     assert response.status_code == 200 and response.json()["settlement_source"] is None
+
+
+def test_patch_refuses_a_settlement_source_in_a_currency_the_source_does_not_answer(client, db_session, scoped):
+    """PR #234 review finding 1: Phase 1's `portfolio:cathay` feed is TWD only (`SOURCE_CURRENCIES`)."""
+    account = _account(db_session, "美股交割", currency="USD")
+    db_session.commit()
+    admin = {"Authorization": "Bearer adm-token"}
+    response = client.patch(f"/accounts/{account.id}", headers=admin, json={"settlement_source": "portfolio:cathay"})
+    assert response.status_code == 422, response.text
+    (error,) = response.json()["detail"]
+    assert error["loc"] == ["settlement_source"] and error["msg"].startswith("currency_mismatch")
+    assert client.get(f"/accounts/{account.id}", headers=admin).json()["settlement_source"] is None
+    assert client.patch(f"/accounts/{account.id}", headers=admin, json={"settlement_source": None}).status_code == 200
+    assert client.patch(f"/accounts/{account.id}", headers=admin, json={"valuation_source": "portfolio:x"}).status_code == 200

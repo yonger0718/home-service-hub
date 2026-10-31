@@ -19,8 +19,8 @@ from app.services import statement_retire_service
 from app.services import trade_settlement_service as tss
 from app.services.errors import CodedConflictError
 from tests.integration import statement_fixtures
-from tests.integration.settlement_fixtures import (  # noqa: F401  (portfolio_stub is a fixture)
-    AUG, bank_line, feed, portfolio_stub, seed_stand_in, settle_line, settlement_bank, submit_bank,
+from tests.integration.settlement_fixtures import (  # noqa: F401  (portfolio_stub, policy_on are fixtures)
+    AUG, bank_line, feed, policy_on, portfolio_stub, seed_stand_in, settle_line, settlement_bank, submit_bank,
 )
 from tests.integration.statement_fixtures import OCT, SEP, _active, _reconcile, _transfer, run  # noqa: F401
 
@@ -433,3 +433,39 @@ def test_a_failed_neighbour_flag_logs_the_class_name_only(seed, db_session, run,
     (record,) = [r for r in caplog.records if r.getMessage().startswith("settlement.neighbour_flag_failed")]
     assert record.getMessage() == "settlement.neighbour_flag_failed: ValueError" and record.exc_info is None
     assert "12305" not in caplog.text
+
+
+def test_a_feed_in_another_currency_leaves_every_line_pending_and_books_nothing(seed, db_session, run, portfolio_stub,
+                                                                                policy_on, monkeypatch, caplog):
+    """PR #234 review finding 1: a feed answering in a currency other than the account's is treated as an
+    unavailable source — every settlement line pending, code `currency_mismatch`, logged by code only."""
+    import logging
+    from sqlalchemy import func
+    from app.services import policy_service
+    policy_on()
+    bank, _ = settlement_bank(seed, db_session)
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",), {"currency": "USD"}))
+    monkeypatch.setattr(tss.logger, "disabled", False)  # alembic's fileConfig disables loggers created before it
+    with caplog.at_level(logging.INFO, logger=tss.logger.name):
+        sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+        policy_service.run_policy(db_session, sid)
+        result = _reconcile(db_session, sid)
+    assert result.settlement_source_unavailable is True
+    assert (result.settlements["unavailable_code"], result.settlements["pending"], result.settlements["booked"]) == (
+        "currency_mismatch", 1, 0)
+    (case,) = _cases(db_session, sid, "open")
+    assert (case.kind, case.context["hint"], case.context["nearest"]) == ("line_unmatched", "settlement_pending", None)
+    assert db_session.scalar(select(func.count(SettlementBooking.id))) == 0
+    assert db_session.scalar(select(func.count(LedgerEntry.id)).where(LedgerEntry.account_id == bank.id)) == 0
+    records = [r for r in caplog.records if r.getMessage() == "settlement.currency_mismatch"]
+    assert records and {r.code for r in records} == {"currency_mismatch"} and "12305" not in caplog.text
+
+
+def test_drift_is_not_read_from_a_feed_in_another_currency(seed, db_session, run, portfolio_stub):
+    """The re-read behind drift and `book_settlement` (`facts_now`) refuses a row in another currency."""
+    bank, _ = settlement_bank(seed, db_session)
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",), {"currency": "USD"}))
+    with pytest.raises(tss.PortfolioUnavailable) as info:
+        tss.facts_now(db_session, bank, fingerprint=portfolio_stub.rows[0]["fingerprint"], trade_date=date(2026, 9, 10),
+                      settlement_date=date(2026, 9, 14))
+    assert info.value.code == "currency_mismatch"

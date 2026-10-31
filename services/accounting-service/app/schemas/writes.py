@@ -184,6 +184,9 @@ class BalanceAdjustmentIn(BaseModel):
 
 
 SETTLEMENT_SOURCES = ("portfolio:cathay",)  # the settlement feeds HomeHub can read (portfolio integration spec §4.2)
+# The one currency each source's feed answers in (PR #234 review finding 1): an account carrying the source must be in
+# it, and so must every feed row (`trade_settlement_service.currency_mismatch`). Phase 1: the 國泰 feed is TWD only.
+SOURCE_CURRENCIES = {"portfolio:cathay": "TWD"}
 
 
 def _empty_is_null(value):

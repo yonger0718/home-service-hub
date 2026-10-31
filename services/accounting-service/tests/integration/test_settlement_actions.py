@@ -365,3 +365,12 @@ def test_source_drift_and_orphaned_stand_in_stay_outside_the_settlement_family()
     assert _dismissed([book], dict(want, event_id=8)) is False                       # another event
     assert _dismissed([drift], want) is False and _dismissed([drift], want_book) is False
     assert _dismissed([book, pending], orphan) is False
+
+
+def test_book_settlement_is_refused_once_the_feed_answers_in_another_currency(seed, db_session, run, portfolio_stub):
+    """PR #234 review finding 1: the booking's re-read refuses a feed row in a currency other than the account's."""
+    bank, target, sid, case = _case_and_booking(seed, db_session, run, portfolio_stub)
+    portfolio_stub.rows = [{**r, "currency": "USD"} for r in portfolio_stub.rows]
+    exc = _refuse(db_session, lambda: _apply(db_session, case.id, "book_settlement", {"fingerprint": case.context["fingerprint"]}))
+    assert (_code(exc), str(exc)) == ("source_unavailable", "source_unavailable: currency_mismatch")
+    assert db_session.scalar(select(func.count(SettlementBooking.id))) == 0

@@ -64,7 +64,7 @@ from app.models import (
     Account, AccountStatement, LedgerEntry, ReconciliationCase, SettlementBooking, SettlementBookingItem,
     StatementCoverage, StatementLine,
 )
-from app.schemas.writes import SETTLEMENT_SOURCES, TransferIn
+from app.schemas.writes import SETTLEMENT_SOURCES, SOURCE_CURRENCIES, TransferIn
 from app.services import (
     auto_pay_service, coverage_service, entry_write_service, ledger_service, pair_locks, portfolio_client,
     settings_service, stand_ins, transfer_service,
@@ -78,6 +78,7 @@ from app.services.statements import matching, retired, settlement_match
 
 ACTOR = "settlement"
 SETTLEMENT_BUSY = "settlement_busy"
+CURRENCY_MISMATCH = "currency_mismatch"  # PR #234 review finding 1 (`currency_mismatch`)
 KIND = "settlement"
 TWIN_WINDOW_DAYS = 3  # spec §8 `settlement.twin_window_days` default (`settings_service.SETTLEMENT_DEFAULTS`)
 SETTLE_MARGIN_DAYS = 5  # spec §4.3: the settlements whose date can fall in period_start − 5 … period_end + 5
@@ -102,6 +103,15 @@ logger = logging.getLogger(__name__)
 def broker_of(account: Account) -> str:
     """`portfolio:cathay` → `cathay` (spec §4.2: the feed's `broker` parameter)."""
     return (account.settlement_source or "").removeprefix("portfolio:")
+
+
+def currency_mismatch(account: Account, rows: Iterable[Settlement] = ()) -> bool:
+    """PR #234 review finding 1, fail-closed: the account is outside the currency its known source answers in
+    (`SOURCE_CURRENCIES`), or a feed row is in a currency other than the account's. Nothing is booked, retired or
+    replaced from such a feed (`outcomes`, `facts_now`, the job). Pure."""
+    expected = SOURCE_CURRENCIES.get(account.settlement_source)
+    return (expected is not None and account.currency != expected) or any(
+        r.currency != account.currency for r in rows)
 
 
 def _calendar(db: Session) -> tuple[frozenset[date], frozenset[date]]:
@@ -574,7 +584,8 @@ def facts_now(db: Session, account: Account, *, fingerprint: str, trade_date: da
     """A settlement's facts as the feed shows them now (M1; `book_settlement` and the drift re-read): its trade day
     re-read on the trade axis and the row of that trade date with the fingerprint; a pair (fingerprint `a+b`,
     `trade_date` the earlier part, never re-read by one trade date) re-reads `trade_date … settlement_date` and merges
-    its parts again. None: gone (or a pair without a settlement date). Raises `PortfolioUnavailable`."""
+    its parts again. None: gone (or a pair without a settlement date). Raises `PortfolioUnavailable` — the feed's,
+    or `currency_mismatch` for a row in another currency than the account's (`currency_mismatch`)."""
     parts = fingerprint.split("+")
     hi = trade_date if len(parts) == 1 else settlement_date
     if hi is None:
@@ -584,6 +595,8 @@ def facts_now(db: Session, account: Account, *, fingerprint: str, trade_date: da
                     and (len(parts) > 1 or r.trade_date == trade_date)), key=lambda r: r.fingerprint)
     if len(found) != len(parts) or len({r.fingerprint for r in found}) != len(parts):
         return None
+    if currency_mismatch(account, found):
+        raise PortfolioUnavailable(CURRENCY_MISMATCH)
     merged = found[0] if len(found) == 1 else settlement_match.merge(tuple(found))
     return None if merged is None else facts_of(merged)
 
@@ -660,13 +673,19 @@ def outcomes(db: Session, statement: AccountStatement, account: Account, result:
     `settlement_ambiguous` (candidates the settlements); pending → `line_unmatched` + `settlement_pending` (`reason`,
     `nearest`), or, with no candidate (`reason is None`) beside an unclaimed stand-in within the window,
     `settlement_mismatch` naming it (a sole non-bookable candidate keeps `settlement_pending` with its reason, D8); the
-    feed unavailable / incomplete / past the calendar → every placeholder `settlement_pending` and `unavailable`. Then
+    feed unavailable / incomplete / past the calendar, or answering in another currency than the account's
+    (`currency_mismatch`, code `currency_mismatch`, logged by code) → every placeholder `settlement_pending` and
+    `unavailable`. Then
     the drift cases (live statements only; the drift re-reads are portfolio GETs). Counts per `COUNT_KEYS` +
     `unavailable_code` (`claimed` 0: `settle` sets it). `coverage`: this statement's active coverage as the run would
     leave it (line id → entry ids) when it is not written (the dump: the run's claims plus the owner's coverage);
     None reads the stored rows (the reconcile, after `_write_coverage`)."""
     from app.services.reconciliation_service import _as_line  # local: the reconciler calls this function
 
+    if feed is not None and currency_mismatch(account, feed.rows):  # treated as an unavailable source (finding 1)
+        logger.info("settlement.currency_mismatch", extra={"statement_id": statement.id, "account_id": account.id,
+                                                           "code": CURRENCY_MISMATCH})
+        feed, unavailable_code = None, CURRENCY_MISMATCH
     counts: dict = dict.fromkeys(COUNT_KEYS, 0)
     counts["unavailable_code"] = unavailable_code
     claimed = set() if coverage is None else {e for entries in coverage.values() for e in entries if e is not None}
@@ -809,7 +828,7 @@ def flag_neighbours_safe(db: Session, statement_id: int) -> int:
 # --- the daily stand-in job (spec §4.7, owner decision Q7) -----------------------------------------------------------
 
 HOUSEKEEPING_KEYS = ("checked", "owner_deleted", "owner_edited", "retired", "replaced", "replaced_waiting",
-                     "settlement_busy", "failed")
+                     "settlement_busy", "failed", CURRENCY_MISMATCH)
 FINAL_STATUSES = ("booked", "owner_deleted", "owner_edited")  # with `retired` of FINAL_RETIRED_REASONS (spec §4.7)
 FINAL_RETIRED_REASONS = ("twin", "revert")
 SETTLEMENT_CASE_HINTS = ("settlement_pending", "settlement_ambiguous", "settlement_mismatch")
@@ -908,7 +927,9 @@ def _dismissed(db: Session, account_id: int, settlement: Settlement) -> bool:
 
 
 def gate(db: Session, cand: StandInCandidate, settings: dict) -> str | None:
-    """The first gate the candidate fails (spec §4.7 Gates, in order), or None to book: `disabled`; `zero`; `final`
+    """The first gate the candidate fails (spec §4.7 Gates, in order), or None to book: `disabled`;
+    `currency_mismatch` (the feed row, the bank or the target outside the bank's currency / its source's, finding 1 —
+    the settings refuse such a pair, this asserts it); `zero`; `final`
     — a row for (account, settlement date) `booked`, `owner_deleted`, `owner_edited`, or `retired` by a twin or a
     revert (a `skipped` row is never final: it is re-evaluated every run, M7; `final` is reported, never recorded);
     `dismissed`; `constituent_reserved` (a constituent or the fingerprint held, `reservations`); `day_booked` (a
@@ -916,6 +937,9 @@ def gate(db: Session, cand: StandInCandidate, settings: dict) -> str | None:
     s = cand.settlement
     if settings.get("stand_in_enabled") is not True:
         return "disabled"
+    account, target = db.get(Account, cand.account_id), db.get(Account, cand.target_account_id)
+    if target is None or currency_mismatch(account, [s]) or target.currency != account.currency:
+        return CURRENCY_MISMATCH
     if Decimal(s.net_amount) == 0:
         return "zero"
     if _final_on(db, cand.account_id, s.settlement_date):
@@ -1199,6 +1223,11 @@ def _run_account(factory, account_id: int, feed: Feed, settings: dict, today: da
                  dry_run: bool, enabled: bool) -> None:
     counts = report["housekeeping"]
     by_trade_date = {r.trade_date: r for r in feed.rows}
+    with factory() as db:
+        mismatch = currency_mismatch(db.get(Account, account_id), feed.rows)
+    if mismatch:  # finding 1: logged by code; `housekeep` (owner deletes / edits, no feed) still runs below
+        logger.info("settlement_job.currency_mismatch", extra={"account_id": account_id, "code": CURRENCY_MISMATCH})
+        counts[CURRENCY_MISMATCH] += 1
 
     def housekeeping(db, notes):
         return housekeep(db, account_id)
@@ -1213,7 +1242,7 @@ def _run_account(factory, account_id: int, feed: Feed, settings: dict, today: da
     decided: set[date] = set()  # the trade days `check_row` looked at: their fate is decided there, not as candidates
     for row_id, trade_date in rows:
         decided.add(trade_date)
-        if dry_run:
+        if dry_run or mismatch:  # never a retirement or a replacement from a feed in another currency
             continue
         counts["checked"] += 1
 
@@ -1229,6 +1258,12 @@ def _run_account(factory, account_id: int, feed: Feed, settings: dict, today: da
     with factory() as db:
         found = stand_in_candidates(db, [r for r in feed.rows if r.trade_date not in decided],
                                     db.get(Account, account_id), settings, today)
+    if mismatch:  # every candidate reported skipped, nothing written (no `skipped` row either)
+        notes = _Notes()
+        for cand in found:
+            _note_skipped(notes, account_id, cand.settlement.settlement_date, CURRENCY_MISMATCH)
+        _merge(report, account_id, notes)
+        return
     for cand in found:
         def decide(db, notes, cand=cand):
             reason = gate(db, cand, settings)
@@ -1306,12 +1341,16 @@ def run_stand_ins(engine: Engine, *, today: date | None = None, dry_run: bool = 
     `check_row` (no booked row is locked, retired or replaced; `housekeeping` stays zero), gates the candidates read
     only (`booked` entries carry `booking_id: None`), rolls every transaction back, and previews whatever
     `stand_in_enabled` says — without a go-live date, as if live from `today`; the report then carries
-    `previewed_settings` {stand_in_enabled, enabled_from (as stored), effective_enabled_from (the date used)}.
+    `previewed_settings` {stand_in_enabled, enabled_from (as stored), effective_enabled_from (the date used)}. An
+    account whose feed answers in another currency than its own (`currency_mismatch`, PR #234 review finding 1) gets
+    `housekeep` only: no `check_row`, its candidates reported `skipped` `currency_mismatch` with nothing written,
+    `housekeeping.currency_mismatch` +1 (dry runs too), logged by code.
 
     Report: `status` (completed | busy | disabled | source_unavailable | import_running | dry_run), `booked`
     [{account_id, settlement_date, booking_id}], `skipped` [{account_id, settlement_date, reason}] (gated candidates and
     `replaced_waiting` days, `final` included), `housekeeping` (every `HOUSEKEEPING_KEYS` key: `checked` = every
-    booked stand-in looked at, claimed or not; the transitions; `settlement_busy`; `failed`), `touched_dates`
+    booked stand-in looked at, claimed or not; the transitions; `settlement_busy`; `failed`; `currency_mismatch`
+    accounts), `touched_dates`
     {account_id: [ISO dates]} — the dates booked, retired or replaced (old and new) and every `replaced_waiting`
     day (§4.5 item 1's flag set). Ids, dates and codes, never amounts; never raises for an expected condition."""
     today = today or ledger_service._today()
