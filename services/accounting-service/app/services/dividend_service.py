@@ -52,6 +52,10 @@ KIND = "dividend"
 AMBIGUOUS_HINT = "dividend_ambiguous"
 MISMATCH_HINT = "dividend_mismatch"
 FAMILY_HINTS = (AMBIGUOUS_HINT, MISMATCH_HINT)
+# a dividend line's plain case: no hint, or the owner-deleted marker `_desired_cases` gives a line whose booked
+# receipt the owner deleted while the feed cannot say more (final review M1)
+STAND_IN_DELETED_HINT = "stand_in_deleted"  # reconciliation_actions.STAND_IN_DELETED_HINT (a circular import)
+PLAIN_HINTS = (None, STAND_IN_DELETED_HINT)
 WINDOW_DAYS = 3
 ITEM_SOURCE = "dividend"
 UNAVAILABLE_KEY = "dividend_unavailable_code"
@@ -277,9 +281,10 @@ def _stored_labels(db: Session) -> tuple[tuple[str, ...], tuple[str, ...]]:
 def recheck_statement_ids(db: Session) -> list[int]:
     """R11: the live, non-retired statements, ascending, of accounts with a known `settlement_source`
     (`SETTLEMENT_SOURCES`) holding an open case of kind `dividend`, with a hint in `FAMILY_HINTS`, or a plain one —
-    `line_unmatched`, no hint, no candidates — on a dividend line (`matching.is_dividend_line`: a deposit naming one
-    of the rules' `dividend_labels` and none of their `settlement_labels`). It compares nothing (Phase 1's shape):
-    while such a case is open, each run's reconcile re-reads the feed. Read only."""
+    `line_unmatched`, a hint in `PLAIN_HINTS` (none, or `stand_in_deleted`: the owner deleted the booked receipt while
+    the feed was down, final review M1), no candidates — on a dividend line (`matching.is_dividend_line`: a deposit
+    naming one of the rules' `dividend_labels` and none of their `settlement_labels`). It compares nothing (Phase 1's
+    shape): while such a case is open, each run's reconcile re-reads the feed. Read only."""
     labels, settlement_labels = _stored_labels(db)
     hint = ReconciliationCase.context["hint"].astext
     family = [ReconciliationCase.kind == KIND, hint.in_(FAMILY_HINTS)]
@@ -289,7 +294,8 @@ def recheck_statement_ids(db: Session) -> list[int]:
         if settlement_labels:
             dividend_line.append(~or_(*(StatementLine.merchant_norm.contains(label, autoescape=True)
                                         for label in settlement_labels)))
-        family.append((ReconciliationCase.kind == "line_unmatched") & hint.is_(None)
+        family.append((ReconciliationCase.kind == "line_unmatched")
+                      & or_(hint.is_(None), hint == STAND_IN_DELETED_HINT)
                       & (func.jsonb_array_length(ReconciliationCase.candidates) == 0)
                       & exists().where(*dividend_line))
     return sorted(db.execute(

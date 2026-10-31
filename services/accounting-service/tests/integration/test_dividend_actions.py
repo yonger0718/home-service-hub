@@ -369,6 +369,9 @@ def test_the_dividend_family_and_its_dismissal_rule():
     assert _dismissed([SimpleNamespace(**book)], want) and _dismissed([SimpleNamespace(**many)], want)
     assert not _dismissed([SimpleNamespace(**book)], dict(want, event_id=8))
     assert not _dismissed([SimpleNamespace(**settle)], want)
+    deleted = dict(want, context={"hint": "stand_in_deleted", "owner_deleted": True})      # final review M1
+    assert _dismissed([SimpleNamespace(**book)], deleted)
+    assert not _dismissed([SimpleNamespace(**book)], dict(deleted, event_id=8))
     assert not set(ds.FAMILY_HINTS) & set(tss.SETTLEMENT_CASE_HINTS)                       # never a stand-in hint
 
 
@@ -472,6 +475,28 @@ def test_an_owner_delete_tombstones_the_booking_and_the_policy_proposes(seed, db
     assert _booked(db_session) == 0
     assert db_session.scalar(select(func.count(ReconciliationAudit.id)).where(
         ReconciliationAudit.event == "dividend_owner_deleted")) == 1
+
+
+def test_an_owner_delete_during_a_feed_outage_stays_rechecked_and_the_policy_proposes(seed, db_session, run,
+                                                                                       portfolio_stub, policy_on):
+    """Final review M1: book, the owner deletes the income entry, reconcile with the feed down — the line's case is
+    `line_unmatched` hinted `stand_in_deleted`; R11 still re-checks the statement, and once the feed answers the
+    `dividend` case (owner-deleted) is back and the policy proposes it."""
+    policy_on()
+    _, sid, (case,) = _dividend_case(seed, db_session, run, portfolio_stub)
+    _apply(db_session, case.id, "book_dividend", {"fingerprint": "dividend:7"})
+    ews.delete_entry(db_session, db_session.scalar(select(SettlementBooking.in_entry_id))); db_session.commit()
+    portfolio_stub.down = True
+    _reconcile(db_session, sid); policy_service.run_policy(db_session, sid); db_session.commit()
+    (case,) = _cases(db_session, sid, "open", "proposed")
+    assert (case.kind, case.context["hint"], case.context["owner_deleted"], case.candidates) == (
+        "line_unmatched", "stand_in_deleted", True, [])
+    assert ds.recheck_statement_ids(db_session) == [sid]
+    portfolio_stub.down = False
+    _reconcile(db_session, sid); policy_service.run_policy(db_session, sid); db_session.commit()
+    (case,) = _cases(db_session, sid, "open", "proposed")
+    assert (case.kind, case.context["owner_deleted"], case.status) == ("dividend", True, "proposed")
+    assert _booked(db_session) == 0
 
 
 def test_the_owner_may_book_the_proposal_after_an_owner_delete(seed, db_session, run, portfolio_stub, policy_on):

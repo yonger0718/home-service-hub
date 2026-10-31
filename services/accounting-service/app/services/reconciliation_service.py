@@ -811,9 +811,11 @@ def _dismissed(dismissed: list[ReconciliationCase], want: dict) -> bool:
     ruling A: the bank path re-books on the next reconcile unless dismissed; R7 final review I1). The dividend family
     and the line's plain case hide each other both ways (dividends R6/R7): a dividend-family want is hidden by a
     dismissed plain `line_unmatched` case (no hint) on the event — the owner dismissed the line before its receipt was
-    confirmed — and a plain `line_unmatched` want by a dismissed dividend-family case on the event — the feed is down,
-    or the receipt left the feed or is no longer confirmed."""
-    plain_want = want["kind"] == "line_unmatched" and (want["context"] or {}).get("hint") is None
+    confirmed — and a plain `line_unmatched` want (no hint, or `stand_in_deleted`: `dividend_service.PLAIN_HINTS`) by
+    a dismissed dividend-family case on the event — the feed is down, or the receipt left the feed or is no longer
+    confirmed, or the owner deleted the booked receipt while the feed is down (final review M1)."""
+    plain_want = (want["kind"] == "line_unmatched"
+                  and (want["context"] or {}).get("hint") in dividend_service.PLAIN_HINTS)
     if want["event_id"] is not None and plain_want and any(
             case.event_id == want["event_id"] and _dividend_family(case.kind, case.context) for case in dismissed):
         return True

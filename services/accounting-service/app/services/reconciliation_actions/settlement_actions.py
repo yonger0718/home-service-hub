@@ -117,6 +117,15 @@ def _holders(ctx: Context, kind: str, fingerprint: str, event_id: int | None,
         .order_by(SettlementBooking.id).execution_options(populate_existing=True)))
 
 
+def _replay(ctx: Context, row: SettlementBooking) -> None:
+    """Spec §4.4 item 3, for both booking actions: a booking for this event exists → nothing new. Its applied action
+    replays; a booking without one (a claimed stand-in) has no row to replay and is refused `already_booked`."""
+    action = None if row.action_id is None else ctx.db.get(ReconciliationAction, row.action_id)
+    if action is not None and action.status == "applied":
+        raise Replay(action)
+    raise CodedConflictError("already_booked", f"booking {row.id} holds this event")
+
+
 def _owner_twin_check(action: _TwinGuarded, ctx: Context, line: StatementLine, target_id: int | None) -> None:
     """Under the writer barrier, for the guarded actors: the `_TwinGuarded` owner twin of the line, then the owner
     record of spec §4.7 (`tss.find_twins`: an owner entry of the line's flow on the bank account or, with a
@@ -183,7 +192,7 @@ class BookSettlementAction(_TwinGuarded):
         holders = [row for row in rows if row.status == "booked"]
         for row in holders:
             if event_id is not None and row.event_id == event_id and self._covers_event(ctx, row, event_id):
-                self._replay(ctx, row)
+                _replay(ctx, row)
         line = _open_line(ctx)
         if any(row.fingerprint == params.fingerprint for row in holders):
             raise CodedConflictError("already_booked", f"fingerprint {params.fingerprint} is booked for another event")
@@ -218,15 +227,6 @@ class BookSettlementAction(_TwinGuarded):
             select(StatementCoverage.id).join(StatementLine, StatementLine.id == StatementCoverage.line_id)
             .where(StatementCoverage.entry_id == bank_leg, StatementCoverage.status == "active",
                    StatementLine.event_id == event_id).limit(1)) is not None
-
-    @staticmethod
-    def _replay(ctx: Context, row: SettlementBooking) -> None:
-        """Spec §4.4 item 3: a booking for this event exists → nothing new. Its applied action replays; a booking
-        without one (a claimed stand-in) has no row to replay and is refused `already_booked`."""
-        action = None if row.action_id is None else ctx.db.get(ReconciliationAction, row.action_id)
-        if action is not None and action.status == "applied":
-            raise Replay(action)
-        raise CodedConflictError("already_booked", f"booking {row.id} holds this event")
 
     def apply(self, ctx: Context, params: BookSettlementParams, prepared: Prepared, effect: Effect) -> None:
         db = ctx.db
@@ -354,7 +354,7 @@ class BookDividendAction(_TwinGuarded):
         holders = [row for row in rows if row.status == "booked"]
         for row in holders:
             if event_id is not None and row.event_id == event_id and self._covers_event(ctx, row, event_id):
-                BookSettlementAction._replay(ctx, row)
+                _replay(ctx, row)
         line = _open_line(ctx)
         if any(row.fingerprint == params.fingerprint for row in holders):
             raise CodedConflictError("already_booked", f"receipt {params.fingerprint} is booked for another event")

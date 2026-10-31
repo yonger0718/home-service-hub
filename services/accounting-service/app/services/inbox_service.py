@@ -57,7 +57,9 @@ def classify(*, kind: str, status: str, statement_kind: str, hint: str | None,
     questions, as an unmatched bank line naming a settlement label (`settlement_labels`, the rules' list) is; a
     `dividend` case, an `ambiguous` one with hint `dividend_ambiguous` (its candidates are receipts, not entries) and a
     `line_unmatched` one with hint `dividend_mismatch` (answered in the portfolio, by the fee, or by dismissal, never
-    as a bank-only line) are `other` until their follow-up plan gives them a card."""
+    as a bank-only line) are `other` until their follow-up plan gives them a card — unless the policy proposed the
+    case (its owner-deleted re-book): a `proposed` question then, so the one dividend answer the policy leaves to the
+    owner is never folded into `other` (final review M5; the `proposed` check precedes the dividend branch)."""
     from app.services import dividend_service  # call time only (#247)
 
     if (statement_kind == "bank" and kind == "line_unmatched"
@@ -65,10 +67,10 @@ def classify(*, kind: str, status: str, statement_kind: str, hint: str | None,
         return "settlement"
     if kind == "settlement" or (kind == "ambiguous" and hint == "settlement_ambiguous"):
         return "settlement"
-    if kind == dividend_service.KIND or hint in dividend_service.FAMILY_HINTS:
-        return "other"
     if status == "proposed":
         return "proposed"
+    if kind == dividend_service.KIND or hint in dividend_service.FAMILY_HINTS:
+        return "other"
     if hint == "needs_peer":
         return "transfer"
     if kind == "line_unmatched" and hint == "installment_unmapped":  # the registry still allows create_entry here
