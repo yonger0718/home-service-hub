@@ -13,8 +13,13 @@ re-checks the row, the legs and the twin under those locks (a failed re-check sk
 coverage on any statement, deletes them — so their dirty triggers hold the shared dirty barrier until this
 transaction ends, and the events land past this sweep's cap for the next sweep — and flags the released statements
 `needs_recheck`. The release and the flag are plain UPDATEs: they take blocking (non-NOWAIT) row locks on the other
-statements' coverage rows and on those statements' rows (`needs_recheck`). Otherwise a reconcile emits no dirty
-events of its own.
+statements' coverage rows and on those statements' rows (`needs_recheck`). A bank statement of a `settlement_source`
+account printing a settlement line (portfolio integration spec §4.3, §4.7) first reads the settlement feed once
+(before any pair or group/entry lock), then does the same for its `settlement_booking` rows at the same point
+(`trade_settlement_service.housekeep` tombstones owner-deleted / owner-edited bookings, then
+`retire_twins_for_statement`; booking row → legs NOWAIT, never the account row), and after its coverage is written
+links a claimed stand-in to its line's event (the booking row try-locked NOWAIT) and derives the settlement cases
+(`trade_settlement_service.settle`). Otherwise a reconcile emits no dirty events of its own.
 
 Reconcile yields on lock conflicts: the sweep (and, in the revision hook, the coverage transfer) has already written
 coverage/case rows when the group/entry locks are taken, while a ledger delete locks the entry/group first and then
@@ -44,6 +49,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import nullcontext
 from calendar import monthrange
 from collections import defaultdict
 from dataclasses import dataclass, field, fields, replace
@@ -62,7 +68,8 @@ from app.models import (
     Account, AccountStatement, EntryGroup, InstallmentPlanMap, LedgerEntry, ReconciliationCase, ScheduleDefinition,
     ScheduleInstance, StatementCoverage, StatementLine, StatementRevision,
 )
-from app.services import auto_pay_service, coverage_service, settings_service, stand_ins
+from app.services import auto_pay_service, coverage_service, portfolio_client, settings_service, stand_ins
+from app.services import trade_settlement_service
 from app.services.entry_write_service import lock_group, proposed_fx_fee
 from app.services.errors import CodedConflictError, NotFoundError
 from app.services.ledger_service import account_balance
@@ -74,7 +81,7 @@ participating_accounts = coverage_service.participating_accounts
 OPEN = ("open", "proposed")
 # Open cases the matcher owns: superseded when a run no longer derives them (parse_review / statement_conflict are not).
 MATCHER_KINDS = ("line_unmatched", "ambiguous", "amount_delta", "entry_unmatched", "duplicate_claim", "balance_gap",
-                 "recheck")
+                 "recheck", "settlement", "dividend")
 DEFERRED = "deferred_next_period"
 UNCOVERED_CHILD = "uncovered_child"
 CROSS_ACCOUNT_DAYS = 3
@@ -89,6 +96,11 @@ class ReconcileResult:
     explained: int = 0  # entries explained as deferred_next_period by this run
     unmatched_entries: int = 0  # reverse-population entries left unmatched and not deferred
     skipped: str | None = None  # "no_current_revision" | "parse_review" | "retired"
+    # portfolio integration spec §4.3, §9: the settlement feed could not be read completely (every settlement line
+    # stayed `settlement_pending`); `settlements` counts the outcomes (`trade_settlement_service.COUNT_KEYS` +
+    # `unavailable_code`), empty when the statement takes no settlement step
+    settlement_source_unavailable: bool = False
+    settlements: dict[str, int | str | None] = field(default_factory=dict)
 
 
 # --- inputs ------------------------------------------------------------------------------------------------------
@@ -302,6 +314,7 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
     split_members, all_children = _split_structure(db, [g.id for g in groups.values() if g.kind == "split"])
     stand_in_ids = stand_ins.stand_in_entry_ids(db, accounts)
     auto_pay_ids = set(stand_ins.auto_pay_legs(db, accounts))
+    settlement_ids = set(stand_ins.settlement_legs(db, accounts))  # R7: claimed only on the exact date (§4.3 step 2)
     entries = []
     for e in parents:
         posted = e.posted_date or e.entry_date
@@ -309,7 +322,8 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
             e, transfer_peer_is_card=peer_is_card.get(e.id), children=tuple(children.get(e.id, ())),
             all_children=tuple(all_children.get(e.id, ())),
             instance=instances.get(e.id), in_reverse=statement.period_start <= posted <= statement.period_end,
-            stand_in=e.id in stand_in_ids, auto_pay=e.id in auto_pay_ids))
+            stand_in=e.id in stand_in_ids, auto_pay=e.id in auto_pay_ids,
+            settlement_stand_in=e.id in settlement_ids))
     entries.extend(_drifted_instances(db, statement, accounts, set(ids) | claimed))
     entries.extend(_carriers(db, statement, accounts, covered, claimed, stand_in_ids))
     loaded = {e.id for e in entries}
@@ -535,19 +549,20 @@ def guard_holders(db: Session, statement: AccountStatement, lines_all: list[matc
 def pass_two_holders(db: Session, statement: AccountStatement, accounts: list[int], rules: matching.Rules,
                      current: list[StatementLine], claimable_lines: list[matching.Line], entries: list[matching.Entry],
                      groups: dict[int, matching.Group], plans: dict[str, int],
-                     fee: Callable[[matching.Entry], Decimal | None]) -> tuple[list[matching.Line],
-                                                                              dict[int, matching.Holder]]:
+                     fee: Callable[[matching.Entry], Decimal | None], *,
+                     settlement_account: bool = False) -> tuple[list[matching.Line], dict[int, matching.Holder]]:
     """Holders spec §3 "Two passes" / §4.3, the one place both `reconcile()` and the policy validator
     (`policy_service._single_admissible`) build pass 2's holders, so their split-member decisions agree by
     construction: the guard lines over `current` (covered and neighbouring lines too), the stable holders
     (`guard_holders`), a pass-1 `match` of `claimable_lines` over `entries` with them, and pass 1's own claims merged
     in. Returns `(lines_all, holders)`. This statement's stored `auto` rows are never read (they are pass-2 output),
-    so an unchanged re-run — and the validator — derive the same result. Read only."""
+    so an unchanged re-run — and the validator — derive the same result. `settlement_account`: the statement's account
+    has a `settlement_source` (R7; both passes take the settlement-line path, `matching.match`). Read only."""
     lines_all = guard_lines(db, statement, accounts, rules, current)
     stand_in_ids = frozenset(stand_ins.stand_in_entry_ids(db, accounts))
     stable = guard_holders(db, statement, lines_all, stand_in_ids, guard_statement_ids(db, statement, accounts, rules))
     first = matching.match(statement.kind, claimable_lines, entries, groups, plans, fee, rules, statement.currency,
-                           lines_all=lines_all, holders=stable)
+                           lines_all=lines_all, holders=stable, settlement_account=settlement_account)
     return lines_all, matching.merge_holders(stable, matching.claim_holders(first, lines_all, entries, stand_in_ids))
 
 
@@ -647,8 +662,9 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
     # an auto-pay leg the matcher did not report unmatched (outside the period by its posted date) or deferred to the
     # next statement is waiting for that statement, not an orphan (auto-pay spec §4.5)
     unmatched = set(result.unmatched_entry_ids)
+    # (likewise a settlement stand-in's bank leg, portfolio integration spec §4.7 "Bank line")
     orphan_by_entry = {o["entry_id"]: o for o in stand_ins.orphans(db, statement, accounts)
-                       if "auto_pay_id" not in o
+                       if not ({"auto_pay_id", "settlement_booking_id"} & o.keys())
                        or (o["entry_id"] in unmatched and result.explained.get(o["entry_id"]) != DEFERRED)}
     out = []
     for c in result.cases:
@@ -688,6 +704,8 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
                    "claimant_entry_id": o["claimant_entry_id"]}
         if "auto_pay_id" in o:  # an auto-pay leg (auto-pay spec §4.5): the owner deletes the pair or matches it
             context["auto_pay_id"] = o["auto_pay_id"]
+        if "settlement_booking_id" in o:  # a settlement stand-in (spec §4.7): matched, deleted or left for later
+            context["settlement_booking_id"] = o["settlement_booking_id"]
         out.append(_case("entry_unmatched", event_id=o["event_id"], line_id=o["line_id"], entry_id=o["entry_id"],
                          context=context))
     gap = balance_gap(db, statement, accounts)
@@ -765,10 +783,26 @@ def _owner_deferred_entries(db: Session, statement: AccountStatement) -> set[int
                ReconciliationCase.resolved_by == "owner", ReconciliationCase.entry_id.is_not(None))).scalars())
 
 
+def _settlement_family(kind: str, context: Mapping | None) -> bool:
+    """A settlement line case about whether to book (portfolio integration final review I1): kind `settlement` other
+    than the `source_drift` hint, or a line case whose hint is `settlement_pending` / `settlement_ambiguous` /
+    `settlement_mismatch`. `source_drift` (a booked pair's facts moved) and `orphaned_stand_in` are not."""
+    hint = (context or {}).get("hint")
+    return (kind == trade_settlement_service.KIND and hint != "source_drift") or (
+        hint in trade_settlement_service.SETTLEMENT_CASE_HINTS)
+
+
 def _dismissed(dismissed: list[ReconciliationCase], want: dict) -> bool:
     """A dismissed case of the same kind on the same event (line cases), entry (entry cases) or gap (balance_gap).
     An `entry_unmatched` case with an event (the stand-in hints) matches on event AND entry: dismissing the shadow
-    case of entry X never hides the case of a later entry Y on the same line (final review I1)."""
+    case of entry X never hides the case of a later entry Y on the same line (final review I1).
+    A settlement-family line case (`_settlement_family`) matches any dismissed settlement-family case on the same
+    event whatever its kind: a revert reopens a `settlement` case as `settlement_pending`, a pending line becomes
+    `settlement` once the feed answers, an ambiguity narrows to one — the owner's dismissal holds across each (owner
+    ruling A: the bank path re-books on the next reconcile unless dismissed; R7 final review I1)."""
+    if want["event_id"] is not None and _settlement_family(want["kind"], want["context"]):
+        return any(case.event_id == want["event_id"] and _settlement_family(case.kind, case.context)
+                   for case in dismissed)
     for case in dismissed:
         if case.kind != want["kind"]:
             continue
@@ -985,12 +1019,40 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
         return ReconcileResult(skipped=skipped)
     live = statement.mode == "live"
     accounts = participating_accounts(db, statement.account_id)
-    # auto-pay §4.5: a pair whose owner twin has arrived is retired before the population is read, so the line meets
-    # only the twin (the deleted legs are absent from `load_candidates`)
-    auto_pay_service.retire_twins_for_statement(db, statement, accounts)
     accounts_by_id = {a.id: a for a in db.execute(select(Account).where(Account.id.in_(accounts))).scalars()}
+    account = accounts_by_id[statement.account_id]
     rules = rules_for(settings_service.reconciliation_rules(db), statement.period_end)
     all_lines = _current_lines(db, statement)
+    settles = trade_settlement_service.applies(account, statement, all_lines, rules)
+    # one cached client for the settlement step: the window read below and the drift re-reads (M3)
+    with portfolio_client.cached(portfolio_client.client_for()) if settles else nullcontext() as client:
+        # spec §4.3: the one window read (an HTTP call, ≤ the client timeout) comes before any pair or candidate row
+        # lock of this reconcile, and before the twin retirements' leg deletes hold the dirty barrier; the feed does
+        # not depend on them (housekeeping changes only the reservations `settle` reads later)
+        feed, unavailable_code = (trade_settlement_service.fetch_for(db, account, statement, client=client)
+                                  if settles else (None, None))
+        # auto-pay §4.5: a pair whose owner twin has arrived is retired before the population is read, so the line
+        # meets only the twin (the deleted legs are absent from `load_candidates`)
+        auto_pay_service.retire_twins_for_statement(db, statement, accounts)
+        if settles:
+            # portfolio integration spec §4.7 Housekeeping: both origins' owner deletes / edits tombstone their rows
+            # before the reservations are read (the bank origin has no job, AGENT-360 major 1), then an owner twin
+            # retires its pair as the auto-pay twin does — both under this statement row, row → legs NOWAIT
+            trade_settlement_service.housekeep(db, statement.account_id)
+            trade_settlement_service.retire_twins_for_statement(db, statement, accounts)
+        return _match_and_record(db, statement, accounts, accounts_by_id, rules, all_lines, run_id=run_id, live=live,
+                                 settles=settles, client=client, feed=feed, unavailable_code=unavailable_code)
+
+
+def _match_and_record(db: Session, statement: AccountStatement, accounts: list[int], accounts_by_id: dict[int, Account],
+                      rules: matching.Rules, all_lines: list[StatementLine], *, run_id: int | None, live: bool,
+                      settles: bool, client, feed, unavailable_code: str | None) -> ReconcileResult:
+    """`reconcile` after the sweep, the settlement window read and the stand-in retirements: population, locks,
+    match, coverage, cases, counts. With `settles` (spec §4.3) `feed` is the window read `reconcile` made before any
+    row lock (None with `unavailable_code` on a failure: every settlement line `settlement_pending`, the rest
+    reconciled as usual), and the settlement outcomes replace the matcher's `settlement_line` placeholders after the
+    coverage is written (`trade_settlement_service.settle`)."""
+    account = accounts_by_id[statement.account_id]
     include_reward = any(line.line_kind == "reward" for line in all_lines)
     manual, owned = owned_coverage(db, statement)  # owner coverage: kept as is (ruling 16)
     line_rows = [line for line in all_lines if line.id not in manual]
@@ -1011,16 +1073,22 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     # two passes (holders spec §3): `pass_two_holders` runs pass 1; pass 2 below is the run's result
     claimable_lines = [_as_line(row) for row in line_rows]
     plans = plan_map(db, statement.account_id)
+    settlement_account = bool(account.settlement_source)  # R7: settlement lines take the stand-in / assignment path
 
     def fee(e: matching.Entry) -> Decimal | None:
         return proposed_fx_fee(accounts_by_id[e.account_id], e.flow)
 
     lines_all, holders = pass_two_holders(db, statement, accounts, rules, all_lines, claimable_lines, entries, groups,
-                                          plans, fee)
+                                          plans, fee, settlement_account=settlement_account)
     result = matching.match(statement.kind, claimable_lines, entries, groups, plans, fee, rules, statement.currency,
-                            lines_all=lines_all, holders=holders)
+                            lines_all=lines_all, holders=holders, settlement_account=settlement_account)
     lines = {row.id: row for row in line_rows}
     _write_coverage(db, statement, result, lines, locked_rows, run_id, keep_lines=manual)
+    settled = None
+    if settles:  # spec §4.3 / §4.7: the claim link, the global assignment and drift, over the coverage just written
+        settled = trade_settlement_service.settle(db, statement, account, result, all_lines, rules, feed,
+                                                  unavailable_code, client=client)
+        result = replace(result, cases=settled.cases)
     deferred = [entry_id for entry_id in result.unmatched_entry_ids if result.explained.get(entry_id) == DEFERRED]
     created: list[int] = []
     if live:
@@ -1028,14 +1096,19 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
         evaluated = set(by_id) | {c.id for e in entries if e.claimable for c in e.children}
         # deferrals first: the balance gap of `_desired_cases` reads them (`held_balance`)
         _write_deferrals(db, statement, accounts_by_id[statement.account_id], deferred, evaluated)
-        created = _write_cases(db, statement, _desired_cases(db, statement, accounts, result, lines, by_id, rules))
+        desired = _desired_cases(db, statement, accounts, result, lines, by_id, rules)
+        if settled is not None:  # `source_drift` sits on a claimed line, possibly owner-covered: not in `lines`
+            desired += settled.drift
+        created = _write_cases(db, statement, desired)
     _link_earlier_deferrals(db, statement)
     coverage_service.assert_conserved(db, statement)
     _recount(db, statement)
     statement.needs_recheck = False  # matching ran to completion: the only place the flag is discharged (ruling 29)
     db.flush()
     return ReconcileResult(claims=len(result.claims), cases_opened=created, explained=len(deferred),
-                           unmatched_entries=len(result.unmatched_entry_ids) - len(deferred))
+                           unmatched_entries=len(result.unmatched_entry_ids) - len(deferred),
+                           settlement_source_unavailable=bool(settled and settled.unavailable),
+                           settlements={} if settled is None else settled.counts)
 
 
 def _survivors(entries: list[matching.Entry], locked_rows: Mapping[int, LedgerEntry],

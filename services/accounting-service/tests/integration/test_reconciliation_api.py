@@ -6,12 +6,19 @@ import pytest
 from sqlalchemy import select, text
 
 from app import auth
-from app.models import LedgerEntry, ReconciliationAudit, ReconciliationCase, StatementCoverage
+from app.models import (
+    AccountStatement, LedgerEntry, ReconciliationAudit, ReconciliationCase, SettlementBooking, StatementCoverage,
+)
 from app.services import coverage_service, settings_service
+from app.services import trade_settlement_service as tss
 from app.services import reconciliation_service as rec
 from tests.helpers import set_dirty
+from tests.integration.settlement_fixtures import (  # noqa: F401  (fixtures)
+    feed, portfolio_stub, settle_line, settlement_bank, stand_ins_on, submit_bank,
+)
+from tests.integration.test_settlement_reconcile import _cases as _settlement_cases
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
-    OCT, _card, _cases, _open_beside_gap, _line, _reconcile, _submit, run,
+    OCT, _active, _card, _cases, _open_beside_gap, _line, _reconcile, _submit, run,
 )
 
 TOKENS = "spa:spa-token,hermes:hermes-token,worker:worker-token"
@@ -276,3 +283,118 @@ def test_a_match_on_the_replacement_case_after_a_dirty_edit_claims_again(client,
     db_session.commit()
     duplicate = match(new.id, other.id)
     assert duplicate.status_code == 422 and "duplicate_effect" in duplicate.text, duplicate.text
+
+
+# ---- settlement re-reconcile triggers (R7 Task 10) ----
+def test_settlement_run_books_flags_and_reports_counts_only(client, seed, db_session, run, portfolio_stub, stand_ins_on):
+    bank, target = settlement_bank(seed, db_session); stand_ins_on(bank, target, enabled_from="2026-09-01")
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])  # feed empty -> settlement_pending
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)))
+    res = client.post("/reconciliation/settlements/run", headers=W, json={"source": "portfolio:cathay"})
+    assert res.status_code == 200 and (res.json()["status"], res.json()["booked"], res.json()["flagged"]) == ("completed", 1, 1)
+    assert (res.json()["reconciled"], res.json()["busy"], res.json()["errors"]) == (1, 0, [])  # final review I3
+    db_session.expire_all()
+    assert "12305" not in res.text and db_session.get(AccountStatement, sid).needs_recheck is False
+    assert [c.match_rule for c in _active(db_session, sid)] == ["settlement_stand_in"]          # claimed in the call
+
+
+def test_settlement_run_reconciles_what_it_flags_so_the_owner_can_book(client, seed, db_session, run, portfolio_stub):
+    """Final review I3: the worker trigger flags every statement holding an open settlement case and reconciles it in
+    the same call, so the owner's `book_settlement` on a `settlement_ambiguous` case is not 409 `needs_recheck`
+    until the 03:30 sweep."""
+    from tests.integration.test_reconciliation_actions_ledger import _apply
+    bank, _ = settlement_bank(seed, db_session)
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-5000", ("ct:1",)), ("2026-09-11", "2026-09-14", "-5000", ("ct:2",)))
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-5000")])
+    (case,) = _settlement_cases(db_session, sid, "open")
+    assert case.context["hint"] == "settlement_ambiguous"
+    res = client.post("/reconciliation/settlements/run", headers=W, json={"source": "portfolio:cathay"})
+    assert res.status_code == 200 and (res.json()["flagged"], res.json()["reconciled"], res.json()["busy"]) == (1, 1, 0)
+    db_session.expire_all()
+    assert db_session.get(AccountStatement, sid).needs_recheck is False
+    (again,) = _settlement_cases(db_session, sid, "open")
+    assert (again.id, again.version) == (case.id, case.version)                                 # unchanged: kept, not superseded
+    _apply(db_session, again.id, "book_settlement", {"fingerprint": portfolio_stub.rows[0]["fingerprint"]})
+    assert db_session.scalar(select(SettlementBooking.status)) == "booked"
+
+
+def test_settlement_run_leaves_a_busy_statement_flagged(client, seed, db_session, run, portfolio_stub, monkeypatch):
+    from app.services.errors import CodedConflictError
+    bank, _ = settlement_bank(seed, db_session)
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-5000")])   # feed empty -> settlement_pending
+
+    def held(*args, **kwargs):  # a candidate row is locked elsewhere
+        raise CodedConflictError("reconcile_busy", "held")
+
+    monkeypatch.setattr(rec, "reconcile", held)
+    res = client.post("/reconciliation/settlements/run", headers=W, json={"source": "portfolio:cathay"})
+    assert res.status_code == 200 and (res.json()["flagged"], res.json()["reconciled"], res.json()["busy"]) == (1, 0, 1)
+    assert res.json()["errors"] == [{"statement_id": sid, "error": "reconcile_busy"}]
+    db_session.expire_all()
+    assert db_session.get(AccountStatement, sid).needs_recheck is True                         # the sweep re-checks it
+
+
+def test_settlement_run_needs_the_ingest_scope(client):
+    assert client.post("/reconciliation/settlements/run", headers=H, json={"source": "portfolio:cathay"}).status_code == 403
+    assert client.post("/reconciliation/settlements/run", headers=W, json={"source": "other"}).status_code == 422
+
+
+def test_sweep_rechecks_statements_with_open_settlement_cases(client, seed, db_session, run, portfolio_stub):
+    bank, _ = settlement_bank(seed, db_session)
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])  # pending: nothing dirty, nothing needs_recheck
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)))
+    ingest_run, token = run  # the fixture's claimed ingest run holds the lease the sweep needs
+    res = client.post("/reconciliation/sweep", headers=W, json={"run_id": ingest_run.id, "lease_token": token})
+    assert res.status_code == 200 and res.json()["statements"] == 1
+    assert [c.kind for c in _settlement_cases(db_session, sid, "open")] == ["settlement"]
+
+
+def test_sweep_survives_a_failing_stand_in_job(client, seed, db_session, run, portfolio_stub, monkeypatch):
+    bank, _ = settlement_bank(seed, db_session)
+    submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)))
+    db_session.execute(text("UPDATE account_statement SET needs_recheck = true"))
+    db_session.commit()
+
+    def boom(*a, **kw):
+        raise RuntimeError("boom 12305")
+    monkeypatch.setattr(tss, "run_stand_ins", boom)
+    ingest_run, token = run
+    res = client.post("/reconciliation/sweep", headers=W, json={"run_id": ingest_run.id, "lease_token": token})
+    assert res.status_code == 200 and res.json()["statements"] == 1
+    assert res.json()["stand_ins"] == {"status": "failed", "booked": 0, "skipped": 0, "flagged": 0}
+    assert "12305" not in res.text
+
+
+def _flag_setup(seed, db_session, run):
+    bank, _ = settlement_bank(seed, db_session)
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-12305")])
+    db_session.execute(text("UPDATE account_statement SET needs_recheck = false"))
+    db_session.commit()
+    return bank, sid
+
+
+def test_flag_for_recheck_is_idempotent_and_takes_iso_strings_or_dates(seed, db_session, run):
+    bank, sid = _flag_setup(seed, db_session, run)
+    assert tss.flag_for_recheck(db_session, {"touched_dates": {bank.id: ["2026-09-14"]}}) == 1
+    assert db_session.get(AccountStatement, sid).needs_recheck is True
+    assert tss.flag_for_recheck(db_session, {"touched_dates": {bank.id: ["2026-09-14"]}}) == 0
+    db_session.execute(text("UPDATE account_statement SET needs_recheck = false"))
+    assert tss.flag_for_recheck(db_session, {"touched_dates": {bank.id: [date(2026, 9, 14)]}}) == 1
+
+
+def test_flag_for_recheck_skips_retired_and_non_live_statements(seed, db_session, run):
+    bank, sid = _flag_setup(seed, db_session, run)
+    report = {"touched_dates": {bank.id: ["2026-09-14"]}}
+    db_session.execute(text("UPDATE account_statement SET current_revision_id = NULL"))
+    db_session.flush()
+    assert tss.flag_for_recheck(db_session, report) == 0  # no current revision
+    db_session.rollback()
+    db_session.execute(text("INSERT INTO reconciliation_audit (statement_id, event, actor) "
+                            "VALUES (:s, 'statement_retired', 'test')"), {"s": sid})
+    db_session.flush()
+    assert tss.flag_for_recheck(db_session, report) == 0  # retired
+    db_session.rollback()
+    db_session.execute(text("UPDATE account_statement SET mode = 'historical'"))
+    db_session.flush()
+    assert tss.flag_for_recheck(db_session, report) == 0  # not live

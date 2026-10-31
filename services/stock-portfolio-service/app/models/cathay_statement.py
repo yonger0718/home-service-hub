@@ -1,7 +1,7 @@
 """Cathay daily statement: per-date ownership record and import-job run state."""
 
 import sqlalchemy as sa
-from sqlalchemy import CheckConstraint, Column, Date, DateTime, Integer, String
+from sqlalchemy import CheckConstraint, Column, Date, DateTime, Integer, Numeric, String
 from sqlalchemy.dialects import postgresql
 
 from ..database import Base
@@ -45,6 +45,11 @@ class CathayStatementDay(Base):
     last_detail = Column(_JSON, nullable=True)
     last_at = Column(DateTime(timezone=True), nullable=True)
     since = Column(DateTime(timezone=True), nullable=True)  # first attempt in the current status
+
+    # Settlement facts of the accepted file (the latest post for unaccepted days); NULL before e9settle.
+    settlement_date = Column(Date, nullable=True)
+    net_amount = Column(Numeric(18, 4), nullable=True)  # 應收付, points lines included
+    cash_net = Column(Numeric(18, 4), nullable=True)  # 淨收付, points lines excluded; NULL for an unsupported day
 
     # Owner acknowledgement (spec 7.1).
     ack_sha256 = Column(String(64), nullable=True)

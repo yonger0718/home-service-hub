@@ -26,7 +26,7 @@ KIND_ACTIONS: dict[str, tuple[str, ...]] = {
     "line_unmatched": ("match", "create_entry", "create_system_entry", "backfill_entry", "pair_transfer", "create_refund",
                        "link_installment_plan", "split_entry", "dismiss"),
     # adjust_amount on a listed entry candidate (2026-10-24); adjust_transfer on a listed transfer leg (R6c)
-    "ambiguous": ("match", "adjust_amount", "adjust_transfer", "dismiss"),
+    "ambiguous": ("match", "adjust_amount", "adjust_transfer", "book_settlement", "dismiss"),
     "amount_delta": ("match", "adjust_amount", "adjust_transfer", "attach_fee", "split_entry", "dismiss"),
     "entry_unmatched": ("defer_next_period", "move_account", "replace_stand_in", "dismiss"),
     "balance_gap": ("balance_adjustment_asof", "anchor_opening", "dismiss"),
@@ -34,6 +34,8 @@ KIND_ACTIONS: dict[str, tuple[str, ...]] = {
     "recheck": ("match", "unmatch", "dismiss"),
     "parse_review": ("dismiss",),  # resolved by a new revision; the owner may only dismiss it
     "statement_conflict": ("resolve_conflict",),  # ruling 34: a dismissed conflict would leave conflict_open set
+    # R7 (portfolio integration §4.4): the candidates carry fingerprints, not entry ids — no `match` (M5)
+    "settlement": ("book_settlement", "dismiss"),
 }
 
 
@@ -136,6 +138,9 @@ CONDITIONS: dict[tuple[str, str], Callable[[ReconciliationCase], bool]] = {
     ("amount_delta", "attach_fee"): lambda case: _context(case).get("fee_matches") is True,
     ("amount_delta", "adjust_transfer"): _designates_transfer_leg,
     ("ambiguous", "adjust_transfer"): _lists_transfer_leg,
+    ("ambiguous", "book_settlement"): lambda case: _context(case).get("hint") == "settlement_ambiguous",
+    # a `source_drift` case names a claimed line: the owner reverts and re-reconciles, nothing is booked on it
+    ("settlement", "book_settlement"): lambda case: _context(case).get("hint") is None,
     # an auto-pay leg's hint carries no backfill action (auto-pay spec §4.5): the owner deletes the pair instead
     ("entry_unmatched", "replace_stand_in"):
         lambda case: _context(case).get("hint") in ("shadowed_by_stand_in", "orphaned_stand_in")
@@ -164,4 +169,6 @@ def allowed(case: ReconciliationCase) -> list[str]:
 
 
 # register every action module
-from . import case_actions, coverage_actions, ledger_actions, structural_actions, transfer_actions  # noqa: E402,F401
+from . import (  # noqa: E402,F401
+    case_actions, coverage_actions, ledger_actions, settlement_actions, structural_actions, transfer_actions,
+)

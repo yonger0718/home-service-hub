@@ -84,3 +84,22 @@ def next_business_day(
 def calendar_covers(day: date) -> bool:
     """False once ``day`` is past the last date the holiday table knows."""
     return day <= LAST_KNOWN_DAY
+
+
+def add_business_days(
+    day: date,
+    n: int,
+    *,
+    extra_holidays: frozenset[date] = frozenset(),
+    extra_workdays: frozenset[date] = frozenset(),
+) -> date | None:
+    """The ``n``-th business day strictly after ``day``; None once a step passes the known calendar."""
+    for _ in range(n):
+        day += timedelta(days=1)
+        while not calendar_covers(day) or not is_business_day(
+            day, extra_holidays=extra_holidays, extra_workdays=extra_workdays
+        ):
+            if not calendar_covers(day):
+                return None
+            day += timedelta(days=1)
+    return day

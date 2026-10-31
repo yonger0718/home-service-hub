@@ -41,13 +41,25 @@ class RewardRuleOut(BaseModel):
     moze_id: str | None
 
 
+class ValuationOut(BaseModel):
+    value: Decimal
+    currency: str
+    as_of: date
+    priced_through: date | None
+    complete: bool
+    missing: list[str]
+
+
 class AccountOut(BaseModel):
     id: int
     name: str
     currency: str
     opening_balance: Decimal
-    balance: Decimal
+    balance: Decimal | None
     balance_main: Decimal | None
+    balance_kind: Literal["ledger", "valuation"] = "ledger"
+    stale: bool = False
+    valuation: ValuationOut | None = None
     entry_count: int
     group_id: int | None
     group_name: str | None
@@ -71,6 +83,8 @@ class AccountOut(BaseModel):
     sort_order: int
     settings_locally_edited: bool
     moze_id: str | None
+    settlement_source: str | None
+    valuation_source: str | None
     rule_summaries: list[str]
 
 

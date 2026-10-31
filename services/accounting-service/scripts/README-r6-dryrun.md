@@ -78,3 +78,24 @@ The dump's policy section adds `transfer_delta` (open `amount_delta` cases with 
 `summary.md` and `delta.jsonl` are still written, so the gate verdict is recorded but does not set the exit code. A dump
 without the section exits 2 and writes nothing. When `--policy` is also given, `--policy` wins and `--transfers` is ignored (no `transfers-summary.md` is written). In the diff, a case that becomes `transfer_delta` (new, or from `needs_peer`)
 is attributed `R6c.1 transfer_delta`; a `transfer_delta` case back to `needs_peer` is `R6c.1 transfer_delta cleared`.
+
+## Settlements mode (R7 Phase 1)
+
+    .venv/bin/python scripts/r6_dryrun.py --settlements [--stand-ins stand-ins.json] --baseline $OUT/before.json --candidate $OUT/after.json --out-dir $OUT
+
+Writes `settlements-listing.json` (mode 600) and exits 0 (evidence, not a gate). One row per settlement line of the candidate
+dump: `statement_id, event_id, outcome` with outcome one of `stand_in_claim`, `owner_match`, `book_settlement`, `pending`,
+`ambiguous`, `mismatch`, `drift`, `orphaned_stand_in`; case rows carry `kind`, `hint` and `candidates` (entry ids, `g<id>`, or a
+settlement fingerprint), and `supersedes` when the baseline had a different case on that line. `owner_match` rows cover every claimed line of a listed statement (the dump cannot tell which lines are settlement lines), including
+ordinary `exact` claims on unrelated lines, so "one row per settlement line" is an upper bound for that outcome. A baseline settlement
+case that vanished without a replacement row is listed as `dismissed`. A statement with no
+settlement-flavoured row is not listed (the dump does not say which accounts are `settlement_source`). `--stand-ins` is a
+`run_stand_ins(engine, dry_run=True)` report as JSON; its would-book days are listed as `stand_ins` (`account_id`,
+`settlement_date`, `booking_id`, null in a dry run), with `skipped` and `previewed_settings`. No amounts, merchants or names.
+
+The candidate dump derives the settlement cases itself for a statement of a `settlement_source` account that prints a
+settlement line: it reads the settlement feed (the portfolio must be reachable from where the dump runs, with the API's
+`PORTFOLIO_BASE_URL` (default `http://127.0.0.1:8001`) and `PORTFOLIO_READ_TOKEN` if set in the dump's environment) and runs `trade_settlement_service.outcomes`, the reconcile's settlement step without its
+writes, inside the dump's READ ONLY transaction. Reconcile's writes before that step are skipped, so an owner-deleted
+booking that the next reconcile would tombstone still reserves its settlement in the dump; a feed failure lists every
+settlement line of the statement as `pending`.

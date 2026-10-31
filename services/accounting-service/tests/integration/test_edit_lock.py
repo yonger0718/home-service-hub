@@ -156,7 +156,7 @@ EXPECTED_WRITES = {
     ("/transfers", "POST"), ("/transfers/{group_id}", "PUT"),
     ("/splits", "POST"), ("/splits/{group_id}", "PUT"), ("/splits/{group_id}", "DELETE"),
     ("/balance-adjustments", "POST"),
-    ("/accounts", "POST"), ("/accounts/{account_id}", "PUT"), ("/accounts/{account_id}", "DELETE"),
+    ("/accounts", "POST"), ("/accounts/{account_id}", "PUT"), ("/accounts/{account_id}", "PATCH"), ("/accounts/{account_id}", "DELETE"),
     ("/accounts/{account_id}/reset-settings-flag", "POST"),
     ("/account-groups", "POST"), ("/account-groups/order", "PUT"),
     ("/account-groups/{group_id}", "PUT"), ("/account-groups/{group_id}", "DELETE"),
@@ -191,6 +191,7 @@ EXPECTED_WRITES = {
     ("/statements/sources", "POST"), ("/statements/sources/mark-removed", "POST"),
     ("/statements/revisions", "POST"), ("/settings/reconciliation", "PUT"),
     ("/accounts/{account_id}/statements/{statement_id}/reconcile", "POST"), ("/reconciliation/sweep", "POST"),
+    ("/reconciliation/settlements/run", "POST"),
     # Owner statements: a manual statement (statement tables, reconcile) and the confirm (case and statement rows).
     ("/accounts/{account_id}/statements", "POST"), ("/accounts/{account_id}/statements/{statement_id}/confirm", "POST"),
     # Retire a duplicate statement (admin): statement, event, case, coverage and audit rows, never ledger rows.

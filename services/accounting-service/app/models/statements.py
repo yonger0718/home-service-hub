@@ -4,6 +4,7 @@ from sqlalchemy import (
     Integer, Numeric, SmallInteger, String, Text, UniqueConstraint, Uuid, event, func, text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.orm import relationship
 
 from app.database import Base
 from app.models.ledger import STATEMENT_SOURCE_ROOTS
@@ -25,13 +26,16 @@ COVERAGE_ROLES = ("principal", "child", "member")
 COVERAGE_STATUSES = ("active", "stale")
 MATCH_KINDS = ("auto", "manual", "agent")
 CASE_KINDS = ("line_unmatched", "entry_unmatched", "amount_delta", "ambiguous", "duplicate_claim", "balance_gap",
-              "statement_conflict", "parse_review", "recheck")
+              "statement_conflict", "parse_review", "recheck", "settlement", "dividend")
 CASE_STATUSES = ("open", "proposed", "resolved", "dismissed", "superseded")
 CASE_EXPLANATIONS = ("deferred_next_period", "accepted_exception")
 RECONCILIATION_ACTORS = ("owner", "policy")
 PROPOSAL_STATUSES = ("pending", "applied", "rejected", "superseded")
 ACTION_STATUSES = ("applied", "reverted", "failed")
 AUTO_PAY_STATUSES = ("booked", "retired", "owner_deleted", "owner_edited", "skipped")
+SETTLEMENT_KINDS = ("settlement", "dividend")
+SETTLEMENT_ORIGINS = ("bank", "stand_in")
+SETTLEMENT_STATUSES = ("booked", "retired", "replaced", "owner_deleted", "owner_edited", "skipped")
 DIRTY_KINDS = ("entry", "group", "account")
 DIRTY_OPS = ("insert", "update", "delete")
 
@@ -417,6 +421,57 @@ class StatementAutoPay(Base):
     settings_version = Column(Integer, nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=NOW)
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=NOW, onupdate=NOW)
+
+
+class SettlementBooking(Base):
+    """Provenance of a settlement / dividend transfer booked for a brokerage cash leg (portfolio integration spec §4).
+
+    `origin` says who produced the booking: `bank` (matched to a bank statement line) or `stand_in` (booked from the
+    portfolio feed until the bank line arrives). Only `booked` rows reserve their fingerprint (and, for settlements,
+    their account-day) through the partial unique indexes; every other status leaves the slot free."""
+    __tablename__ = "settlement_booking"
+    __table_args__ = (
+        CheckConstraint("status IN ('booked', 'retired', 'replaced', 'owner_deleted', 'owner_edited', 'skipped')",
+                        name="ck_settlement_booking_status"),
+        Index("ix_settlement_booking_event_id", "event_id"),
+        Index("ux_settlement_booking_fingerprint_booked", "fingerprint", unique=True,
+              postgresql_where=text("status = 'booked'")),
+        Index("ux_settlement_booking_day_booked", "account_id", "settlement_date", unique=True,
+              postgresql_where=text("status = 'booked' AND kind = 'settlement'")),
+    )
+    id = Column(Integer, primary_key=True)
+    kind = Column(String(16), nullable=False)
+    origin = Column(String(16), nullable=False)
+    account_id = Column(Integer, ForeignKey("account.id", ondelete="RESTRICT"), nullable=False)
+    target_account_id = Column(Integer, ForeignKey("account.id", ondelete="RESTRICT"), nullable=True)
+    event_id = Column(Integer, ForeignKey("statement_event.id", ondelete="RESTRICT"), nullable=True)
+    source = Column(String(64), nullable=False)
+    fingerprint = Column(String(128), nullable=False)
+    trade_date = Column(Date, nullable=True)
+    settlement_date = Column(Date, nullable=False)
+    net_amount = Column(MONEY, nullable=False)
+    facts = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    transfer_group_id = Column(Uuid, nullable=True)
+    out_entry_id = Column(Integer, ForeignKey("ledger_entry.id", ondelete="SET NULL"), nullable=True)
+    in_entry_id = Column(Integer, ForeignKey("ledger_entry.id", ondelete="SET NULL"), nullable=True)
+    status = Column(String(16), nullable=False)
+    reason = Column(String(64), nullable=True)
+    action_id = Column(Integer, ForeignKey("reconciliation_action.id", ondelete="RESTRICT"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=NOW)
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=NOW, onupdate=NOW)
+    items = relationship("SettlementBookingItem", cascade="all, delete-orphan", back_populates="booking")
+
+
+class SettlementBookingItem(Base):
+    """One portfolio-feed row (`source_id` is the feed id verbatim, e.g. `ct:5`) a booking settles."""
+    __tablename__ = "settlement_booking_item"
+    __table_args__ = (UniqueConstraint("source", "source_id", name="ux_settlement_booking_item_source"),)
+    id = Column(Integer, primary_key=True)
+    booking_id = Column(Integer, ForeignKey("settlement_booking.id", ondelete="CASCADE"), nullable=False)
+    source = Column(String(16), nullable=False)
+    source_id = Column(String(64), nullable=False)
+    amount = Column(MONEY, nullable=False)
+    booking = relationship("SettlementBooking", back_populates="items")
 
 
 class PolicyBudget(Base):

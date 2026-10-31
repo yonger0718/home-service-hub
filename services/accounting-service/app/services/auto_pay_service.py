@@ -32,14 +32,12 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 
-from psycopg2.errors import LockNotAvailable
 from sqlalchemy import and_, exists, func, or_, select
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, aliased
 
 from ..models import Account, AccountStatement, LedgerEntry, ReconciliationCase, StatementAutoPay
 from ..schemas.writes import TransferIn
-from . import coverage_service, entry_write_service, settings_service, stand_ins, transfer_service
+from . import coverage_service, entry_write_service, pair_locks, settings_service, stand_ins, transfer_service
 from .business_days import next_business_day
 from .entry_write_service import STATEMENT_SOURCE
 from .errors import CodedConflictError
@@ -325,33 +323,17 @@ def booked_rows(db: Session) -> list[StatementAutoPay]:
 def lock_pair(db: Session, row: StatementAutoPay) -> tuple[LedgerEntry | None, LedgerEntry | None]:
     """The row's (out, in) legs locked in ONE `SELECT … FOR UPDATE NOWAIT` ordered by id (the `locked_with_legs`
     order), refreshed from the database; a leg that is gone (its id column NULL, or the row deleted) comes back None.
-    A leg another transaction holds raises `auto_pay_busy`; the savepoint leaves the session usable."""
-    ids = [i for i in (row.out_entry_id, row.in_entry_id) if i is not None]
-    if not ids:
-        return None, None
-    try:
-        with db.begin_nested():
-            legs = {leg.id: leg for leg in db.scalars(
-                select(LedgerEntry).where(LedgerEntry.id.in_(ids)).order_by(LedgerEntry.id)
-                .with_for_update(nowait=True).execution_options(populate_existing=True))}
-    except OperationalError as exc:
-        if isinstance(exc.orig, LockNotAvailable):
-            raise CodedConflictError(PAIR_BUSY, f"a leg of auto-pay row {row.id} is locked by another write") from exc
-        raise
-    return legs.get(row.out_entry_id), legs.get(row.in_entry_id)
+    A leg another transaction holds raises `auto_pay_busy`; the savepoint leaves the session usable
+    (`pair_locks.lock_legs`, the step `settlement_booking` shares)."""
+    return pair_locks.lock_legs(db, (row.out_entry_id, row.in_entry_id), busy_code=PAIR_BUSY,
+                                label=f"auto-pay row {row.id}")
 
 
 def _lock_row(db: Session, row_id: int) -> StatementAutoPay | None:
     """The auto-pay row locked `FOR UPDATE NOWAIT` and refreshed from the database (None when it is gone). A row
-    another transaction holds raises `auto_pay_busy`; the savepoint leaves the session usable."""
-    try:
-        with db.begin_nested():
-            return db.scalar(select(StatementAutoPay).where(StatementAutoPay.id == row_id)
-                             .with_for_update(nowait=True).execution_options(populate_existing=True))
-    except OperationalError as exc:
-        if isinstance(exc.orig, LockNotAvailable):
-            raise CodedConflictError(PAIR_BUSY, f"auto-pay row {row_id} is locked by another write") from exc
-        raise
+    another transaction holds raises `auto_pay_busy`; the savepoint leaves the session usable
+    (`pair_locks.lock_row`)."""
+    return pair_locks.lock_row(db, StatementAutoPay, row_id, busy_code=PAIR_BUSY, label="auto-pay row")
 
 
 def retire_pair(db: Session, row: StatementAutoPay, *, reason: str, run_id: int | None = None,

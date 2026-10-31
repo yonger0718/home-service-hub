@@ -96,6 +96,7 @@ Writes (every new row gets `source = 'manual'`, and an edit of a schedule-posted
 - `POST /splits` -> `{group_id, member_ids}`, `PUT /splits/{group_id}`, `DELETE /splits/{group_id}`
 - `POST /balance-adjustments` (`target_balance`; stores the delta)
 - `POST /accounts`, `PUT /accounts/{id}`, `DELETE /accounts/{id}` (409 while it has entries; archive instead), `POST /accounts/{id}/reset-settings-flag`
+  - `PUT /accounts/{id}` never changes `currency` while the account has entries (422) or while it carries a `settlement_source` / `valuation_source` or is a key or value of `settlement.target_accounts` (409 `currency_locked`; clear the source / mapping first) — the R7 writers re-check these currencies under their locks (PR #234).
 - `POST /account-groups`, `PUT /account-groups/{id}`, `DELETE /account-groups/{id}`, `PUT /account-groups/order` (`{"ids": [...]}`)
 - `POST /categories`, `PUT /categories/{id}`, `DELETE /categories/{id}`, `PUT /categories/order`
 - `POST /projects`, `PUT /projects/{id}`, `DELETE /projects/{id}`
@@ -687,3 +688,43 @@ may revive it) and the instance before the ledger's locks; if the definition end
 two overlapping transactions per case (`tests.helpers.race`): the first holds its locks, the second must block, then
 complete once the first commits. These tests serialize whole operations; they are not a proof of deadlock freedom
 under arbitrary interleavings.
+
+Portfolio settlement integration (R7 Phase 1)
+---------------------------------------------
+
+A bank line that pays out a 國泰證券 trade (交割股款) is matched to the portfolio service's settlement feed
+(`GET /api/portfolio/ledger-feed/settlements`), and a stand-in booking can cover the day before the bank statement arrives.
+Environment of the accounting API: `PORTFOLIO_BASE_URL` (default `http://127.0.0.1:8001`) and an optional
+`PORTFOLIO_READ_TOKEN`. Account columns: `settlement_source` (e.g. `portfolio:cathay`, set by owner SQL on the bank account)
+and `valuation_source` (a brokerage account valued from the feed: its account `balance` is then `null` when no valuation
+is available, with `balance_kind` `"valuation"` and a `valuation` object; a ledger account keeps `balance_kind: "ledger"`).
+
+- Rules keys (`GET/PUT /settings/reconciliation`, `rules`): `settlement_labels` (merchant labels that mark a bank line as a
+  settlement line), `settlement_window_days` (default 2: how far a settlement date may sit from the line's posted date),
+  `settlement_sum_matching` (default `false`: a line may equal the sum of several settlements).
+- `settlement` settings block, defaults `stand_in_enabled: false`, `enabled_from: null`, `target_accounts: {}` (settlement-source
+  account id to brokerage account id), `twin_window_days: 3`, `dividend_category_id: null`. `stand_in_enabled: true` requires
+  `enabled_from` (no stand-in for a day settled before it).
+  `PUT /settings/reconciliation` replaces the whole document: a block you omit (including `settlement` and `policy`) resets to
+  its defaults. GET the current document, edit it and PUT it back whole.
+- Policy action `book_settlement`: enabled by default with `max_amount` "0", and cap-exempt (no per-statement or monthly
+  budget); it acts whenever the policy itself (`policy.enabled`) is on. It books an open `settlement` case's candidate as a ledger entry, so set `enabled: false` before an account gets
+  its `settlement_source` (see the rollout in `deploy/statements/README.md`).
+- Case kinds and hints: kind `settlement` (a bookable candidate, no hint; with hint `source_drift`: the feed changed under a
+  booked, claimed pair); `ambiguous` with hint `settlement_ambiguous`; `line_unmatched` with hints `settlement_pending` (no
+  settlement yet) and `settlement_mismatch` (amounts disagree); `entry_unmatched` with hint `orphaned_stand_in` (a stand-in
+  booking no line claims; its context carries `settlement_booking_id`). Claims of rule `settlement_stand_in` are the
+  stand-in's. A dismissal of a `settlement`, `settlement_pending`, `settlement_ambiguous` or `settlement_mismatch` case holds
+  for its line's event whichever of these kinds the next reconcile derives (no re-booking after a dismissal).
+- `POST /reconciliation/settlements/run` (body `{"source": "portfolio:cathay"}`, INGEST scope): runs the stand-in job now and
+  flags the statements it touched, and those with open settlement cases, for re-check, then reconciles them (one transaction
+  each, then the owner rules and the policy, as the sweep does) so the flag clears within the call; a statement that yields
+  keeps its flag for the sweep. The answer is counts, ids and codes (`status`, `booked`, `skipped`, `housekeeping`,
+  `flagged`, `reconciled`, `busy`, `errors` as `{statement_id, error}`). The daily `POST /reconciliation/sweep` runs the same job first and
+  reports it as `stand_ins` (`status`, `booked`, `skipped`, `flagged`); a failed job never costs the day's reconciliation.
+- The route has no `dry_run` parameter. The read-only dry run is `trade_settlement_service.run_stand_ins(engine, dry_run=True)`
+  from a Python shell: it books nothing (every `booked` entry has `booking_id: null`), rolls back, and ignores `stand_in_enabled`
+  (its `previewed_settings` shows what it assumed). Feed its JSON report to `r6_dryrun.py --settlements --stand-ins`
+  (see `scripts/README-r6-dryrun.md`).
+- The 國泰 worker (`homehub-portfolio-cathay.service`) calls the settlement run after each plain commit run; see
+  `deploy/statements/README.md`.

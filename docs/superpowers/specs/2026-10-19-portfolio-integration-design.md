@@ -1,6 +1,6 @@
 # Portfolio ↔ ledger integration (證券交割對帳、市值帳戶、海外券商) — design
 
-Status: rev 4.4 (2026-10-30) owner rulings 2026-10-30 (Q1–Q7, `.superpowers/r7-refresh/owner-rulings.md`) and the
+Status: rev 4.5 (2026-10-30) owner rulings 2026-10-30 (Q1–Q7, `.superpowers/r7-refresh/owner-rulings.md`) and the
 drift-audit errata (`.superpowers/r7-refresh/drift-audit.md`): settlement date from the 國泰 daily statement, T+2 bank
 business days as the fallback, no trading calendar (§4.1); 國泰 rows only (TW_CATHAY + NULL broker), margin days fail
 closed (§4.1); owner twins claim first (§4.3); the booking owner mirrors `statement_auto_pay`, `book_settlement` is
@@ -12,7 +12,9 @@ ruling 2026-10-30 (owner to confirm): a dismissed settlement case or a reverted 
 for the stand-in job (§4.7 gates, §9); rev 4.2 (AGENT-360): two-axis feed query with echoed bounds (§4.1, §4.3),
 housekeeping for both origins + the lock protocol + replacement re-gated (§4.7); rev 4.3 (re-verify 2): the trade axis
 returns every row of a trade date, the stand-in lifecycle takes no account row lock (§4.1, §4.7 Locks); rev 4.4 (AGENT-360
-re-check minors): the engine's lock order quoted precisely (§4.7 Locks); §2, §8–§11 follow. §5: Phase 1 scope sentence added (read-through in the account
+re-check minors): the engine's lock order quoted precisely (§4.7 Locks); rev 4.5 (pre-flight scan, controller rulings): a
+line covered by a settlement booking leg leaves the contestant graph (§4.3 B7), `dividend_labels` belongs to the dividends
+follow-up (§9), net-worth read-through is Phase 1b (§5), `valuation_source` on 117 waits for the SPA gate (§10); §2, §8–§11 follow. §5: Phase 1 scope sentence added (read-through in the account
 read models only); §6–§7 unchanged.
 Rev 3 (2026-10-20) §7 amended by the Phase 2 plan: XML instead of CSV; the token travels only in the Flex `t` query parameter (IB offers no other transport); section list; legacy-duplicate pass; `--unlatch` / `--dry-run` / `--query-id` / `--from-file`.
 Rev 2 (2026-10-19) after the AGENT-175 review of rev 1 `31ab6f4`: booking owner + constituent reservations
@@ -153,7 +155,11 @@ candidate graph between EVERY settlement line of the account whose posted date f
 — the statement under reconcile and its neighbours' lines alike (current lines of the account's LIVE statements,
 retired statements excluded; historical statements stay as they are, §11) — and every unreserved, dated settlement of
 the window. A line something already explains (owner or policy coverage, a stand-in claim, this run's exact claim)
-stays in the graph as a contestant that is never booked, so its settlement is never handed to a look-alike line.
+stays in the graph as a contestant that is never booked, so its settlement is never handed to a look-alike line —
+with one exception (rev 4.5, controller ruling B7): a line whose active coverage is a leg of a `settlement_booking`
+row, bank or stand-in origin, leaves the graph altogether: its settlement is already identified and its
+constituents are reserved, so keeping it would make every same-amount neighbour ambiguous forever. Owner-covered
+and other explained lines still compete.
 A pair is booked only when it is the unique feasible assignment on both sides: the line has exactly one candidate,
 that settlement has exactly one candidate line, and the settlement is `bookable`. Everything else is left open:
 - a line with two candidates, or a settlement wanted by two lines (same amount within the window, e.g. two
@@ -336,8 +342,9 @@ and the monthly bank statement re-reconciles them. The machinery is the auto-pay
   per (broker, as_of) for 10 minutes; on a miss with the portfolio unreachable the read returns
   `valuation: null, stale: true` and the UI shows "市值暫不可得" — never zero and never the ledger cost in the
   valuation slot.
-- Net worth: `include_in_total` accounts sum their read-through totals; a USD total is converted ONCE, in
-  HomeHub, at HomeHub's own FX rate of `as_of` (existing `fx_rate` table), shown with the rate used.
+- Net worth (Phase 1b, rev 4.5 — Phase 1 keeps the ledger totals, see above): `include_in_total` accounts sum their
+  read-through totals; a USD total is converted ONCE, in HomeHub, at HomeHub's own FX rate of `as_of` (existing
+  `fx_rate` table), shown with the rate used.
 
 ## 6. Foreign brokers (Phase 1b)
 
@@ -389,7 +396,7 @@ and the monthly bank statement re-reconciles them. The machinery is the auto-pay
   Portfolio, one migration: `cathay_statement_day.settlement_date`, `net_amount`, `cash_net` (nullable; §4.1). No
   `tw_trading_calendar` (rev 4: Q1 (c) + the accounting `business_days` fallback replace it).
 - `settings.reconciliation.rules`: `settlement_labels` (default `["交割股款", "申購股款"]`), `settlement_window_days`
-  (default 2), `settlement_sum_matching` (default false in Phase 1: the plan enables it only with a real closure fixture), `dividend_labels`; Phase 1b: `wire_labels`, `wire_accounts`.
+  (default 2), `settlement_sum_matching` (default false in Phase 1: the plan enables it only with a real closure fixture); `dividend_labels` arrives with the dividends follow-up plan (rev 4.5); Phase 1b: `wire_labels`, `wire_accounts`.
 - `settings.reconciliation.policy` actions: `book_settlement` (enabled true, cap-exempt, Q4), `book_dividend`
   (enabled true, cap-exempt); Phase 1b: `book_wire` (enabled false — owner confirms the first few).
 - `settings.reconciliation.settlement` (new block, like `auto_pay`): `stand_in_enabled` (default false),
@@ -466,8 +473,9 @@ and the monthly bank statement re-reconciles them. The machinery is the auto-pay
 
 ## 11. Rollout
 
-1. Phase 1 (國泰): both migrations + settings, the portfolio cash-leg setting on; set `settlement_source` on 67 and
-   `valuation_source` on 117; then a dry run (no writes) lists, per live statement of 67, each settlement line's
+1. Phase 1 (國泰): both migrations + settings, the portfolio cash-leg setting on; set `settlement_source` on 67
+   (`valuation_source` on 117 waits for the SPA follow-up that renders `balance: null` as 「市值暫不可得」 — a
+   deliberate rollout gate, rev 4.5); then a dry run (no writes) lists, per live statement of 67, each settlement line's
    outcome — stand-in to claim, owner match, `book_settlement` candidate, pending, ambiguous, mismatch — and the
    cases it would dismiss or supersede (the pending settlement proposals of rev 3 are now `settlement` cases); the
    owner decides case by case, one case per question (owner ruling Q5). Then enable `book_settlement` and the

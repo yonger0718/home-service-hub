@@ -305,6 +305,14 @@ def _holdings_diff(
     ]
 
 
+def statement_facts(payload: StatementPayload) -> tuple[date, Decimal, Decimal | None]:
+    """Settlement date, 應收付 and 淨收付 (應收付 less 小樹點數 lines); no cash net without lines."""
+    if not payload.lines:
+        return payload.settlement_date, payload.net_amount, None
+    points = sum((line.net for line in payload.lines if line.points), Decimal(0))
+    return payload.settlement_date, payload.net_amount, payload.net_amount - points
+
+
 def _record_attempt(
     db: Session, payload: StatementPayload, day: CathayStatementDay | None, decision: _Decision,
     holdings_diff: list[dict],
@@ -319,6 +327,16 @@ def _record_attempt(
         and not (day.ack_sha256 == day.last_sha256 and day.ack_status == "conflict")
     ):
         return  # a pending conflict stays pending until the owner acks it
+    facts = statement_facts(payload)
+    if decision.outcome in ("imported", "verified", "held", "mismatch"):
+        day.settlement_date, day.net_amount, day.cash_net = facts
+    elif decision.outcome == "duplicate":  # fill only what a pre-e9settle row lacks
+        if day.settlement_date is None:
+            day.settlement_date = facts[0]
+        if day.net_amount is None:
+            day.net_amount = facts[1]
+        if day.cash_net is None:
+            day.cash_net = facts[2]
     if decision.outcome in ("imported", "verified"):
         day.accepted_kind = decision.outcome
         day.accepted_sha256 = payload.source.sha256

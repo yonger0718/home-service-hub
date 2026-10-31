@@ -207,3 +207,68 @@ def test_transfers_summary_renders_the_pairs_table_and_tolerates_an_older_dump()
     assert "| 8 | 3 | ambiguous | - | - |" in text
     del after["transfer_pairs"]
     assert "## Pairs" not in dr.transfers_summary(after)
+
+
+def test_settlements_listing_lists_one_row_per_settlement_line():
+    dump = _dump({"1": {"claims": [[11, "settlement_stand_in", [5]]], "cases": [[12, "line_unmatched", "settlement_pending", [], None]]},
+                  "2": {"claims": [], "cases": [[21, "settlement", None, ["cathay:2026-09-10:aa"], None], [22, "ambiguous", "settlement_ambiguous", ["f1", "f2"], None]]}})
+    stand_ins = {"booked": [{"account_id": 1, "settlement_date": "2026-09-16", "booking_id": 7}], "skipped": []}
+    out = dr.settlements_listing(dump, stand_ins)
+    assert [(r["statement_id"], r["event_id"], r["outcome"]) for r in out["lines"]] == [
+        ("1", 11, "stand_in_claim"), ("1", 12, "pending"), ("2", 21, "book_settlement"), ("2", 22, "ambiguous")]
+    assert out["stand_ins"] == [{"account_id": 1, "settlement_date": "2026-09-16", "booking_id": 7}]
+    assert not {"flow", "merchant", "amount", "net_amount"} & set(json.dumps(out))              # ids, dates and codes only
+
+
+def test_settlements_listing_maps_every_outcome_and_tolerates_a_dry_run_report():
+    dump = _dump({"3": {"claims": [[31, "exact", [9]], [32, "settlement_stand_in", [10]]],
+                        "cases": [[33, "line_unmatched", "settlement_mismatch", [], None], [34, "line_unmatched", "source_drift", [], None],
+                                  [35, "line_unmatched", "orphaned_stand_in", [], None], [36, "line_unmatched", "bank_only", [], None]]},
+                  "4": {"claims": [[41, "exact", [11]]], "cases": []}})
+    report = {"booked": [{"account_id": 1, "settlement_date": "2026-09-16", "booking_id": None}], "skipped": [],
+              "previewed_settings": {"stand_in_enabled": False, "enabled_from": None, "effective_enabled_from": "2026-10-31"}}
+    out = dr.settlements_listing(dump, report)
+    assert [(r["event_id"], r["outcome"]) for r in out["lines"]] == [
+        (31, "owner_match"), (32, "stand_in_claim"), (33, "mismatch"), (34, "drift"), (35, "orphaned_stand_in")]
+    assert out["stand_ins"][0]["booking_id"] is None
+    assert out["previewed_settings"] == report["previewed_settings"]
+    assert dr.settlements_listing(dump, None)["stand_ins"] == []
+
+
+def test_settlements_listing_supersedes_and_dismissed_from_the_baseline():
+    base = _dump({"1": {"claims": [], "cases": [[11, "line_unmatched", "settlement_pending", [], None],
+                                                  [12, "line_unmatched", "settlement_pending", [], None],
+                                                  [13, "line_unmatched", "bank_only", [], None]]}}, sha="base")
+    cand = _dump({"1": {"claims": [[11, "settlement_stand_in", [5]]], "cases": []}})
+    out = dr.settlements_listing(cand, None, base)
+    assert [(r["event_id"], r["outcome"], r.get("supersedes")) for r in out["lines"]] == [
+        (11, "stand_in_claim", {"kind": "line_unmatched", "hint": "settlement_pending"}),
+        (12, "dismissed", {"kind": "line_unmatched", "hint": "settlement_pending"})]  # 13 is not a settlement case: no row
+
+
+def test_settlements_listing_skipped_stand_ins_keep_a_null_date():
+    dump = _dump({"1": {"claims": [[11, "settlement_stand_in", [5]]], "cases": []}})
+    report = {"booked": [], "skipped": [{"account_id": 1, "settlement_date": None, "reason": "final"},
+                                        {"account_id": 1, "settlement_date": "2026-09-16", "reason": "gated"}]}
+    assert dr.settlements_listing(dump, report)["skipped"] == [
+        {"account_id": 1, "settlement_date": None, "reason": "final"}, {"account_id": 1, "settlement_date": "2026-09-16", "reason": "gated"}]
+
+
+def test_main_settlements_writes_private_listing_from_a_stand_in_file_and_exits_zero(tmp_path, monkeypatch):
+    before = _dump({"1": {"claims": [], "cases": []}}, sha="base")
+    after = _dump({"1": {"claims": [[11, "settlement_stand_in", [5]]], "cases": []}}, sha="cand")
+    for name, d in (("before.json", before), ("after.json", after)):
+        (tmp_path / name).write_text(json.dumps(d))
+    (tmp_path / "si.json").write_text(json.dumps({"booked": [{"account_id": 1, "settlement_date": "2026-09-16", "booking_id": None}],
+                                                  "skipped": [], "previewed_settings": {"stand_in_enabled": False}}))
+    out = tmp_path / "out"
+    monkeypatch.setattr("sys.argv", ["r6_dryrun.py", "--settlements", "--stand-ins", str(tmp_path / "si.json"),
+                                     "--baseline", str(tmp_path / "before.json"), "--candidate", str(tmp_path / "after.json"),
+                                     "--out-dir", str(out)])
+    assert dr.main() == 0
+    path = out / "settlements-listing.json"
+    assert path.stat().st_mode & 0o777 == 0o600
+    listing = json.loads(path.read_text())
+    assert listing["stand_ins"] == [{"account_id": 1, "settlement_date": "2026-09-16", "booking_id": None}]
+    assert listing["previewed_settings"] == {"stand_in_enabled": False}
+    assert [r["outcome"] for r in listing["lines"]] == ["stand_in_claim"]

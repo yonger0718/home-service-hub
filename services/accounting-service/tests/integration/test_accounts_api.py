@@ -2,8 +2,12 @@ import uuid
 from datetime import date, time, timedelta
 from decimal import Decimal
 
+import pytest
+
+from app import auth
 from app.models import Account, AccountGroup, Category, EntryGroup, FxRate, LedgerEntry, Preference, Project, RewardRule
 from app.services import ledger_service
+from tests.integration.settlement_fixtures import settlement_bank
 
 
 def _account(db, name="錢包", currency="TWD", opening="2000", archived=False) -> Account:
@@ -466,3 +470,77 @@ def test_debts_summary_converts_with_a_cached_rate(client, db_session, seed):
     db_session.commit()
     body = client.get("/accounts/debts").json()
     assert body["payables"]["open_main"] == "20000.0000" and body["payables"]["unconverted"] == [] and body["payables"]["count"] == 1
+
+
+@pytest.fixture
+def scoped(monkeypatch):
+    monkeypatch.setenv(auth.TOKENS_ENV, "adm:adm-token,wr:wr-token")
+    monkeypatch.setenv(auth.SCOPES_ENV, "adm=read,write,admin; wr=read,write")
+
+
+def test_admin_patch_sets_the_sources(client, db_session, scoped):
+    account = _account(db_session, "測試券商")
+    db_session.commit()
+    admin = {"Authorization": "Bearer adm-token"}
+    response = client.patch(f"/accounts/{account.id}", headers=admin, json={"settlement_source": "portfolio:cathay"})
+    assert response.status_code == 200, response.text
+    assert response.json()["settlement_source"] == "portfolio:cathay"
+    body = client.get(f"/accounts/{account.id}", headers=admin).json()
+    assert body["settlement_source"] == "portfolio:cathay" and body["valuation_source"] is None
+    assert client.patch(f"/accounts/{account.id}", headers=admin, json={"valuation_source": "portfolio:x"}).status_code == 200
+    body = client.get(f"/accounts/{account.id}", headers=admin).json()
+    assert body["settlement_source"] == "portfolio:cathay" and body["valuation_source"] == "portfolio:x"
+
+
+def test_patch_sources_needs_admin(client, db_session, scoped):
+    account = _account(db_session, "測試券商")
+    db_session.commit()
+    write = {"Authorization": "Bearer wr-token"}
+    assert client.patch(f"/accounts/{account.id}", headers=write, json={"settlement_source": "x"}).status_code == 403
+
+
+def test_patch_refuses_an_unknown_settlement_source_and_clears_on_empty(client, db_session, scoped):
+    account = _account(db_session, "測試券商")
+    db_session.commit()
+    admin = {"Authorization": "Bearer adm-token"}
+    assert client.patch(f"/accounts/{account.id}", headers=admin, json={"settlement_source": "portfolio:cathy"}).status_code == 422
+    assert client.patch(f"/accounts/{account.id}", headers=admin, json={"settlement_source": "portfolio:cathay"}).status_code == 200
+    response = client.patch(f"/accounts/{account.id}", headers=admin, json={"settlement_source": ""})
+    assert response.status_code == 200 and response.json()["settlement_source"] is None
+
+
+def test_patch_refuses_a_settlement_source_in_a_currency_the_source_does_not_answer(client, db_session, scoped):
+    """PR #234 review finding 1: Phase 1's `portfolio:cathay` feed is TWD only (`SOURCE_CURRENCIES`)."""
+    account = _account(db_session, "美股交割", currency="USD")
+    db_session.commit()
+    admin = {"Authorization": "Bearer adm-token"}
+    response = client.patch(f"/accounts/{account.id}", headers=admin, json={"settlement_source": "portfolio:cathay"})
+    assert response.status_code == 422, response.text
+    (error,) = response.json()["detail"]
+    assert error["loc"] == ["settlement_source"] and error["msg"].startswith("currency_mismatch")
+    assert client.get(f"/accounts/{account.id}", headers=admin).json()["settlement_source"] is None
+    assert client.patch(f"/accounts/{account.id}", headers=admin, json={"settlement_source": None}).status_code == 200
+    assert client.patch(f"/accounts/{account.id}", headers=admin, json={"valuation_source": "portfolio:x"}).status_code == 200
+
+
+def test_put_refuses_a_currency_change_on_a_settlement_bound_account(client, db_session, seed):
+    """PR #234 re-check finding 1, at the origin: an account carrying a `settlement_source` or `valuation_source`, or a
+    key or value of `settlement.target_accounts`, keeps its currency (409 `currency_locked`), even without entries; a
+    plain entry-less account may still change it."""
+    bank, target = settlement_bank(seed, db_session)
+    valued = seed.account("估值帳戶", valuation_source="portfolio:x")
+    plain = seed.account("空帳戶")
+    db_session.commit()
+    bank_id, target_id, valued_id, plain_id = bank.id, target.id, valued.id, plain.id
+
+    def put(account_id, name):
+        return client.put(f"/accounts/{account_id}", json={"name": name, "currency": "USD"})
+
+    for account_id, name in ((bank_id, "交割戶"), (target_id, "證券市值"), (valued_id, "估值帳戶")):
+        response = put(account_id, name)
+        assert response.status_code == 409, response.text
+        assert response.json()["message"].startswith("currency_locked"), response.text
+        assert client.get(f"/accounts/{account_id}").json()["currency"] == "TWD"
+    assert client.put(f"/accounts/{bank_id}", json={"name": "交割戶改名", "currency": "TWD"}).status_code == 200
+    changed = put(plain_id, "空帳戶")
+    assert changed.status_code == 200 and changed.json()["currency"] == "USD"

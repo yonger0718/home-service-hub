@@ -154,6 +154,56 @@ def transfers_summary(after: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+_SETTLEMENT_HINTS = {"settlement_ambiguous": "ambiguous", "settlement_pending": "pending", "settlement_mismatch": "mismatch",
+                     "source_drift": "drift", "orphaned_stand_in": "orphaned_stand_in"}
+
+
+def _settlement_outcome(kind: str, hint: str | None) -> str | None:
+    if hint in _SETTLEMENT_HINTS:
+        return _SETTLEMENT_HINTS[hint]
+    return "book_settlement" if kind == "settlement" and hint is None else None
+
+
+def settlements_listing(dump: dict, stand_ins: dict | None, baseline: dict | None = None) -> dict:
+    """R7 Phase 1 dry run: one row per settlement line (stand-in claim, owner match, or a settlement case) of every statement
+    in the dump that has at least one, plus the stand-ins the job would book. Ids, dates and codes only: candidate keys are
+    entry ids / "g<id>" / settlement fingerprints. `baseline` (optional) adds `supersedes`: the case the line carried before, and a `dismissed` row for a settlement case that vanished without a replacement row.
+    `stand_ins` is a `run_stand_ins(dry_run=True)` report (`booking_id` is None in a dry run) or None."""
+    before = _index(baseline) if baseline else {}
+    lines = []
+    for sid in sorted(dump["statements"], key=int):
+        st = dump["statements"][sid]
+        rows = []
+        for event_id, rule, entries in st["claims"]:
+            rows.append({"statement_id": sid, "event_id": event_id,
+                         "outcome": "stand_in_claim" if rule == "settlement_stand_in" else "owner_match", "rule": rule, "entries": list(entries)})
+        for event_id, kind, hint, cands, entry_id in st["cases"]:
+            outcome = _settlement_outcome(kind, hint)
+            if outcome is not None and event_id is not None:
+                rows.append({"statement_id": sid, "event_id": event_id, "outcome": outcome, "kind": kind, "hint": hint,
+                             "candidates": list(cands)})
+        present = {r["event_id"] for r in rows} | {c[0] for c in st["cases"]} | {c[0] for c in st["claims"]}
+        for (bsid, event_id), prior in before.items():  # a settlement case that is gone and left no row: the candidate dismisses it
+            if bsid == sid and event_id not in present and prior[0] == "case" and _settlement_outcome(prior[1], prior[2]):
+                rows.append({"statement_id": sid, "event_id": event_id, "outcome": "dismissed", "supersedes": {"kind": prior[1], "hint": prior[2]}})
+        if not any(r["outcome"] not in ("owner_match",) for r in rows):  # an owner match alone is not a settlement line
+            continue
+        for row in sorted(rows, key=lambda r: r["event_id"] or 0):
+            prior = before.get((sid, row["event_id"]))
+            if prior and prior[0] == "case" and (prior[1], prior[2]) != (row.get("kind"), row.get("hint")):
+                row["supersedes"] = {"kind": prior[1], "hint": prior[2]}
+            lines.append(row)
+    report = stand_ins or {}
+    out = {"sha": dump.get("sha"), "lines": lines,
+           "stand_ins": [{"account_id": b["account_id"], "settlement_date": b["settlement_date"], "booking_id": b.get("booking_id")}
+                         for b in report.get("booked", [])],
+           "skipped": [{"account_id": k["account_id"], "settlement_date": k["settlement_date"], "reason": k["reason"]}
+                       for k in report.get("skipped", [])]}
+    if "previewed_settings" in report:
+        out["previewed_settings"] = report["previewed_settings"]
+    return out
+
+
 def _write_private(path: str, payload: str) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as fh:
@@ -169,6 +219,10 @@ def main() -> int:
                     help="print the R6b policy preview (decisions, retirements, sweep regression table) and write policy-summary.md; exit 0")
     ap.add_argument("--transfers", action="store_true",
                     help="write transfers-summary.md (open transfer_delta / needs_peer cases per account) and exit 0, whatever the gate says")
+    ap.add_argument("--settlements", action="store_true",
+                    help="write settlements-listing.json (one row per settlement line of the candidate dump, plus the stand-ins "
+                         "--stand-ins would book) and exit 0")
+    ap.add_argument("--stand-ins", help="a run_stand_ins(dry_run=True) report as JSON, for --settlements")
     ap.add_argument("--allow-moved-claims", action="store_true",
                     help="waive both moved-claim shapes (reported, not failed): a claim whose line is now claimed_by_earlier_line, "
                          "and a claim whose entry set changed")
@@ -182,6 +236,15 @@ def main() -> int:
         print(f"{args.candidate}: no transfer_delta section; dump it with r6_case_dump.py --policy", file=sys.stderr)
         return 2
     os.makedirs(args.out_dir, mode=0o700, exist_ok=True)
+    if args.settlements:
+        report = None
+        if args.stand_ins:
+            with open(args.stand_ins) as fs:
+                report = json.load(fs)
+        listing = settlements_listing(after, report, before)
+        _write_private(os.path.join(args.out_dir, "settlements-listing.json"), json.dumps(listing, indent=1) + "\n")
+        print(f"settlements: {len(listing['lines'])} lines, {len(listing['stand_ins'])} stand-ins would book")
+        return 0
     if args.policy:
         text = f"baseline {before['sha']}\n" + policy_summary(after)
         _write_private(os.path.join(args.out_dir, "policy-summary.md"), text)

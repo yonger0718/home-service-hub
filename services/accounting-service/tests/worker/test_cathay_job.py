@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from worker import cathay, cli, config
+from worker.api import ApiClient
 from worker.drive import Drive
 from worker.runner import FakeRunner, Result
 from tests.worker.pdfgen import encrypt, make_pdf
@@ -57,6 +58,22 @@ class Portfolio:
         return out
 
 
+class HomeHub:
+    """The HomeHub API: records `(method, path, json)` of every call; `.fail = 503` answers that status."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, str, dict]] = []
+        self.fail: int | None = None
+        self.reply: dict | None = None  # the settlement run's body (None: a clean `completed`)
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.calls.append((request.method, request.url.path, json.loads(request.content)))
+        if self.fail:
+            return httpx.Response(self.fail, json={"detail": "unavailable"})
+        return httpx.Response(200, json=self.reply if self.reply is not None else {
+            "status": "completed", "booked": 0, "skipped": 0, "housekeeping": {}, "flagged": 0})
+
+
 class World:
     def __init__(self, tmp_path, monkeypatch, cutover="2026-03-01", password=PASSWORD):
         pw = tmp_path / "passwords.env"
@@ -69,6 +86,7 @@ class World:
         self.list_rc = 0
         self.fail_ids: set[str] = set()
         self.portfolio = Portfolio()
+        self.homehub = HomeHub()
         self.runner = FakeRunner({"rclone": self._rclone})
         monkeypatch.setattr(cathay, "extract_text", self._extract)
 
@@ -99,8 +117,10 @@ class World:
         return [c[4] for c in self.runner.calls if c[1] == "backend"]
 
     def go(self, **kw):
+        homehub = ApiClient(httpx.Client(base_url="http://homehub.test", transport=httpx.MockTransport(self.homehub)),
+                            "worker-token")
         with httpx.Client(base_url="http://portfolio.test", transport=httpx.MockTransport(self.portfolio)) as ph:
-            return cathay.run(self.cfg, portfolio_http=ph, drive=Drive(self.cfg, self.runner), **kw)
+            return cathay.run(self.cfg, portfolio_http=ph, drive=Drive(self.cfg, self.runner), homehub=homehub, **kw)
 
     @property
     def state(self) -> dict:
@@ -119,6 +139,60 @@ def w(tmp_path, monkeypatch):
 
 def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def test_plain_commit_run_calls_homehub_after_posting(w):
+    w.add("id-1", "2026-03-09_對帳單.pdf", fx("single.txt"))
+    summary = w.go()
+    assert w.homehub.calls == [("POST", "/reconciliation/settlements/run", {"source": "portfolio:cathay"})]
+    assert summary["settlement_run"] == "completed" and summary["codes"] == []
+
+
+@pytest.mark.parametrize("reply, expected", [
+    ({"status": "completed", "busy": 1, "housekeeping": {"failed": 2, "checked": 4},
+      "errors": [{"statement_id": 9071, "error": "reconcile_busy"}, {"statement_id": 9072, "error": "Boom"}]},
+     "completed:errors=2,busy=1,failed=2"),
+    ({"status": "completed", "busy": 0, "housekeeping": {"failed": 0, "currency_mismatch": 1}, "errors": []},
+     "completed:currency_mismatch=1"),
+    ({"status": "disabled", "busy": 0, "housekeeping": {"failed": 1}, "errors": []}, "disabled:failed=1"),
+    ({"status": "completed", "busy": 0, "housekeeping": {"failed": 0}, "errors": []}, "completed"),
+    ({"status": "completed", "busy": True, "housekeeping": {"failed": "3"}, "errors": "x"}, "completed"),  # junk: no count
+])
+def test_settlement_run_summary_keeps_errors_busy_and_failures(w, reply, expected):
+    """PR #234 review finding 2: a `completed` run with reconcile errors, busy statements or failed decisions says so
+    in the summary (counts and codes only, ≤ 64 chars); the run's result is unchanged."""
+    w.add("id-1", "2026-03-09_對帳單.pdf", fx("single.txt"))
+    w.homehub.reply = reply
+    summary = w.go()
+    assert summary["settlement_run"] == expected and len(summary["settlement_run"]) <= 64
+    assert summary["codes"] == [] and summary["counts"] == {"imported": 1} and "907" not in json.dumps(summary)
+
+
+def test_plain_commit_run_without_a_homehub_client_is_skipped(w, tmp_path):
+    w.add("id-1", "2026-03-09_對帳單.pdf", fx("single.txt"))
+    with httpx.Client(base_url="http://portfolio.test", transport=httpx.MockTransport(w.portfolio)) as ph:
+        summary = cathay.run(w.cfg, portfolio_http=ph, drive=Drive(w.cfg, w.runner))
+        dry = cathay.run(w.cfg, portfolio_http=ph, drive=Drive(w.cfg, w.runner), dry_run=True)
+    assert summary["settlement_run"] == "skipped:no_token" and summary["codes"] == []
+    assert "settlement_run" not in dry
+
+
+def test_dry_run_latched_and_file_runs_do_not_call_homehub(w):
+    w.add("id-1", "2026-03-09_對帳單.pdf", fx("single.txt"))
+    w.go(dry_run=True)
+    w.go(file_id="id-1")
+    w.latch.write_text("{}", encoding="utf-8")
+    with pytest.raises(cathay.CathayDisabled):
+        w.go()
+    assert w.homehub.calls == []
+
+
+def test_homehub_failure_never_changes_the_run_result(w):
+    w.add("id-1", "2026-03-09_對帳單.pdf", fx("single.txt"))
+    w.homehub.fail = 503
+    summary = w.go()
+    assert summary["settlement_run"] == "failed:ApiError" and summary["codes"] == [] and summary["counts"] == {"imported": 1}
+    assert "worker-token" not in json.dumps(summary)
 
 
 def test_imports_and_records_state(w):
@@ -553,7 +627,9 @@ def test_no_statement_text_in_summary_or_logs(w, caplog):
 
 
 def test_cli_exit_codes(tmp_path, monkeypatch, capsys):
-    cfg = config.load({"STATEMENT_STATE_DIR": str(tmp_path / "s"), "STATEMENT_PASSWORD_FILE": str(tmp_path / "absent.env")})
+    token = tmp_path / "absent-token"  # a missing token file must not stop a run
+    cfg = config.load({"STATEMENT_STATE_DIR": str(tmp_path / "s"), "STATEMENT_PASSWORD_FILE": str(tmp_path / "absent.env"),
+                       "STATEMENT_API_TOKEN_FILE": str(token)})
     monkeypatch.setattr(config, "load", lambda env=None: cfg)
     seen = {}
 
@@ -583,4 +659,10 @@ def test_cli_exit_codes(tmp_path, monkeypatch, capsys):
     assert (seen["dry_run"], seen["file_id"], seen["since"], seen["until"], seen["retry_date"], seen["ack_date"],
             seen["unlatch"], seen["validate_history"]) == (True, "F", date(2026, 3, 1), date(2026, 3, 31),
                                                            date(2026, 3, 9), None, True, True)
+    assert seen["homehub"] is None  # a flagged run builds no HomeHub client
     assert cli.main(["cathay", "--ack", "2026-03-10"]) == 0 and seen["ack_date"] == date(2026, 3, 10)
+    assert cli.main(["cathay"]) == 0 and seen["homehub"] is None  # no token file: the run goes on without HomeHub
+    token.write_text("  \n", encoding="utf-8")
+    assert cli.main(["cathay"]) == 0 and seen["homehub"] is None  # an empty token file counts as none
+    token.write_text("worker-token\n", encoding="utf-8")
+    assert cli.main(["cathay"]) == 0 and seen["homehub"] is not None

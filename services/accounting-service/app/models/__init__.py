@@ -70,6 +70,8 @@ from .statements import (
     ReconciliationSettings,
     StatementCoverage,
     StatementEvent,
+    SettlementBooking,
+    SettlementBookingItem,
     StatementAutoPay,
     StatementFile,
     StatementLine,

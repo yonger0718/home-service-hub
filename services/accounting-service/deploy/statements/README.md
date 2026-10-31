@@ -491,3 +491,111 @@ Watching composite files: a composite failure is deliberate and silent by design
   does not have). Clear it by moving the latch file aside after the re-login; the next `verify` run re-canaries.
 - A one-off verify of a few files: set `STATEMENT_VERIFY_DIR` to a fresh directory holding `masked/<sha>.json` metas and
   `pdf-cache/inbox/by-sha/<sha>.pdf`; the usual verify dir re-verifies every snapshot it holds (hundreds of parses).
+
+## R7 Phase 1 rollout (portfolio settlement integration)
+
+Worker: `homehub-portfolio-cathay.service` needs `STATEMENT_API_TOKEN_FILE` (default `~/.config/homehub-statement-token`) to call
+HomeHub (`POST /reconciliation/settlements/run`) after a plain commit run. Without the file the run still succeeds and its
+summary shows `settlement_run = "skipped:no_token"`. The worker deploy is an update of the `%h/workspace/home-hub` checkout the
+unit runs from (see the 國泰證券 daily statement timer section above).
+
+Order:
+
+1. Deploy the portfolio release (migration `e9settle`); confirm `CASH_LEG_ENABLED=true` in its env.
+2. Deploy the accounting API (migration `d5e1f7a3b9c2`; `PORTFOLIO_BASE_URL` in its env if not the default `http://127.0.0.1:8001`,
+   optional `PORTFOLIO_READ_TOKEN`) and the worker checkout.
+3. Settings PUT, BEFORE the owner SQL of step 4: `book_settlement` is enabled by default (`max_amount` "0", cap-exempt), so
+   any reconcile of 67 after step 4 would book under the stored settings. `PUT /settings/reconciliation` replaces the whole
+   document, so GET the current one, edit, PUT it back whole. For the dry run set
+   `policy.actions.book_settlement.enabled = false` and
+   `settlement = {"stand_in_enabled": false, "enabled_from": null, "target_accounts": {"67": 117}, "twin_window_days": 3}`
+   (`dividend_category_id` stays null). GET it back and check both switches read `false`.
+4. Owner SQL: `UPDATE account SET settlement_source = 'portfolio:cathay' WHERE id = 67;`. `valuation_source` on 117 waits for the
+   SPA follow-up that renders `balance: null` as 「市值暫不可得」 (rollout gate).
+5. Dry run: `r6_case_dump.py` baseline and candidate, then `r6_dryrun.py --settlements [--stand-ins report.json]`
+   (the stand-in report is `run_stand_ins(engine, dry_run=True)` as JSON: read-only, `booking_id: null`, ignores
+   `stand_in_enabled`, `previewed_settings` shows what it assumed). The candidate dump reads the settlement feed and lists
+   each settlement line's outcome (`book_settlement`, `ambiguous`, `pending`, `mismatch`, `drift`, `stand_in_claim`) as the
+   next reconcile would derive it, without writing. The owner reviews the listing case by case, one case per
+   question; counts from 2026-10-19 are not expected to hold.
+
+   Before step 6 the owner confirms 67's `statement_live_from` and the chosen `enabled_from` are on or after 2026-01-01
+   (the bank business-day table starts there).
+6. Enable: `book_settlement.enabled = true`; `settlement.stand_in_enabled = true` with `enabled_from` = the go-live date (no
+   stand-ins for days settled before it); reconcile 67's live statements; check the first stand-in on the next settlement day.
+   `POST /reconciliation/settlements/run` needs the INGEST scope; the daily sweep runs the stand-in job first (`stand_ins` in its answer).
+
+Rollback: once the first `settlement` case exists, an accounting API rolled back below this release cannot load it (the
+case kind is a new enum value: inbox and case reads return 500), and the migrations' downgrades leave the enum values in
+place. So there is no code rollback after that point: rollback = disable (`policy.actions.book_settlement.enabled = false`,
+`settlement.stand_in_enabled = false`, one whole-document settings PUT) and roll forward with a fix. Before the first
+settlement case (steps 1–2 only), the previous release can still be restored.
+
+Disabling stops new bookings, not every write. While 67 keeps its `settlement_source`:
+
+- the stand-in job (06:40 worker call and the daily sweep) still runs for every account with a known
+  `settlement_source` and a booked stand-in (`trade_settlement_service._accounts`): `housekeep` tombstones owner-deleted /
+  owner-edited pairs; `check_row` retires an unclaimed stand-in whose owner twin appeared (`twin`) or whose feed row is gone
+  or no longer bookable (`gone` / the feed reason), and a changed feed row retires the stand-in (`replaced`) and then fails
+  the disabled gate — a `skipped` row with reason `disabled`, `replaced_waiting`, and no transfer for that day any more;
+- each reconcile of a 67 bank statement printing a settlement line still reads the feed, runs `housekeep` and the owner-twin
+  retirements, and links claimed stand-ins to their lines; the owner can still apply `book_settlement` by hand (only the
+  policy's action is switched off).
+
+To freeze everything, also clear the source. Clearing it only changes what LATER runs select: a stand-in job already
+running has read its accounts and their feeds at its start (`trade_settlement_service._run_locked`) and can still retire
+an unclaimed pair whose feed row is gone after the SQL commits, and a sweep or `POST /reconciliation/settlements/run`
+reconciles the statements it chose after its job. So drain first, in this order:
+
+1. Stop the timers that start a stand-in job (the 06:40 國泰 worker call and the 03:30 full run's sweep; the poll timer's
+   queued runs never sweep), and start no `python -m worker run`, `POST /reconciliation/sweep` or
+   `POST /reconciliation/settlements/run` by hand before step 5 (whose checks run them with the source cleared):
+
+       systemctl --user stop homehub-portfolio-cathay.timer homehub-statements-daily.timer
+
+2. Wait until nothing is running. Both units read `inactive` (a run in progress reads `activating`):
+
+       systemctl --user is-active homehub-portfolio-cathay.service homehub-statements.service
+
+   then, in the accounting database, no session holds the job's run lock (`schedule_locks.SETTLEMENT_JOB_LOCK_KEY`,
+   0x53544C4D, a session-level advisory lock) and no ingest run holds a lease (a sweep runs under one):
+
+       SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND classid = 0 AND objid = 1398033485 AND objsubid = 1
+         AND database = (SELECT oid FROM pg_database WHERE datname = current_database());
+       SELECT id, trigger, status FROM ingest_run WHERE status IN ('claimed', 'running');
+
+   Both must return no rows; re-run them until they do. Those two checks do not see a direct
+   `POST /accounts/{id}/statements/{id}/reconcile` or the reconcile phase of an ad-hoc `/reconciliation/settlements/run`
+   (neither holds the job lock or an ingest lease once past its job): send no reconcile requests by hand or from the SPA
+   from step 1 on, and let every request already in flight return its full response before step 3 (queued ingest hooks
+   included). A reconcile that evaluated `applies()` before the source is cleared can still retire an owner-twin pair.
+3. Disable the switches (`policy.actions.book_settlement.enabled = false`, `settlement.stand_in_enabled = false`, one
+   whole-document settings PUT) if the rollback above has not already done it; GET it back and check both read `false`.
+4. Clear the source: owner SQL `UPDATE account SET settlement_source = NULL WHERE id = 67;` (or the admin
+   `PATCH /accounts/67` with `{"settlement_source": null}`).
+5. Verify with the checks listed under "Check afterwards" below.
+6. Start `homehub-statements-daily.timer` again; start `homehub-portfolio-cathay.timer` again if 67 stays a live account
+   (the 國泰 statements keep flowing into the portfolio; with the source cleared its `settlement_run` writes nothing for 67):
+
+       systemctl --user start homehub-statements-daily.timer homehub-portfolio-cathay.timer
+
+A NULL source takes 67 out of both paths:
+`trade_settlement_service.applies()` is false, so the reconcile makes no feed read, no `housekeep`, no twin retirement, no
+claim link and no settlement outcome (its `settlements` count block is `{}`), and `_accounts()` / `recheck_statement_ids()`
+select only `settlement_source IN SETTLEMENT_SOURCES`, so the job and the re-check list skip 67. `book_settlement` is then
+refused `no_target`. The booked pairs and stand-ins stay in the ledger as they are; 67's settlement lines reconcile as
+ordinary bank lines (no `settlement_*` hints) until the source is set again, and owner deletes / edits made meanwhile are
+tombstoned by the first reconcile or job run after it is restored.
+
+Check afterwards (counts and codes only):
+
+- `run_stand_ins(engine, dry_run=True)` with the source cleared: `booked` and `skipped` empty, `touched_dates` `{}`,
+  `housekeeping` all zero (a dry run previews as if `stand_in_enabled` were true, so with the source kept it still lists
+  the days it would book — `previewed_settings.stand_in_enabled` shows the stored `false`);
+- `POST /reconciliation/settlements/run` (or the worker summary's `settlement_run`): `status` `disabled`, `booked` 0;
+  with the source cleared every `housekeeping` count is 0 — with it kept, `retired` / `replaced_waiting` /
+  `owner_deleted` / `owner_edited` show the continuing writes above;
+- `SELECT status, reason, count(*) FROM settlement_booking WHERE account_id = 67 GROUP BY 1, 2;` is unchanged between two
+  runs once the source is cleared;
+- a reconcile of a 67 statement answers `settlements: {}` and `settlement_source_unavailable: false`; the candidate
+  `r6_case_dump.py` lists no `book_settlement` or `stand_in_claim` outcome for 67.

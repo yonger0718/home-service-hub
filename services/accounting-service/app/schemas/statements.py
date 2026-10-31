@@ -424,6 +424,7 @@ class ReconciliationSettingsIn(BaseModel):
     rules: dict = {}  # matching.Rules overrides (settings_service validates keys and types); {} = the defaults
     policy: dict = {}  # agent-autonomy policy overrides (settings_service validates); {} = the defaults
     auto_pay: dict = {}  # card-statement auto-pay settings (settings_service validates); {} = the defaults
+    settlement: dict = {}  # brokerage settlement settings (portfolio integration §8; settings_service validates)
     account_siblings: dict[str, list[Int32]] = {}  # account id -> sibling account ids (same currency)
 
 
@@ -437,6 +438,7 @@ class ReconciliationSettingsOut(BaseModel):
     policy: dict
     policy_version: str
     auto_pay: dict
+    settlement: dict
     account_siblings: dict[str, list[int]]
     version: int
 
@@ -455,12 +457,44 @@ class ReconcileOut(BaseModel):
     unmatched_entries: int
     skipped: str | None
     policy: PolicyCountsOut  # the policy pass run after the matching commit (R1c Task 10; zeros while it is off)
+    # portfolio integration spec §4.3, §9: the settlement feed could not be read completely; `settlements` counts
+    # booked / ambiguous / pending / mismatch / drift / claimed / unknown_dates and names the `unavailable_code`
+    # (empty for a statement without a settlement step)
+    settlement_source_unavailable: bool
+    settlements: dict
 
 
 class SweepError(BaseModel):
     model_config = Strict
     statement_id: int
     error: str
+
+
+class SettlementRunIn(BaseModel):
+    model_config = Strict
+    source: Literal["portfolio:cathay"]
+
+
+class SettlementRunOut(BaseModel):
+    """Counts and codes only: never an amount, a merchant or a ledger id."""
+    model_config = Strict
+    status: str
+    booked: int
+    skipped: int
+    housekeeping: dict[str, int]
+    flagged: int
+    reconciled: int  # flagged statements reconciled in the call (their flag cleared)
+    busy: int  # of `errors`, those that yielded `reconcile_busy`: they keep the flag for the sweep
+    errors: list[SweepError]  # statement id + code per statement the call could not reconcile
+
+
+class StandInsOut(BaseModel):
+    """The stand-in job's outcome as the sweep reports it: a status code and counts."""
+    model_config = Strict
+    status: str
+    booked: int
+    skipped: int
+    flagged: int
 
 
 class SweepOut(BaseModel):
@@ -470,3 +504,5 @@ class SweepOut(BaseModel):
     cases_opened: int
     errors: list[SweepError]
     links_filled: int
+    settlement_source_unavailable: int  # statements whose settlement feed could not be read (spec §9)
+    stand_ins: StandInsOut

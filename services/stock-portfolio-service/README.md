@@ -98,3 +98,16 @@ Snapshot replay keeps Phase 1 price fetches weekday-only, but forward-fills week
 5. **Onboard the rest.** Repeat step 2 for SinoPac / Firstrade / IB / Schwab accounts (one row per broker × currency). Phase 4 broker importers already emit `broker_cash_flows`; this rollout layer folds them into the unified `cash_transaction` ledger.
 
 Frontend `/portfolio/accounts` page renders the resulting balances (native + TWD-converted), a typed cash transaction list with filters, a manual deposit/withdraw form, and a balance-over-time chart. The 合併同筆交易 toggle on the detail page collapses settle/fee/tax legs into a single row per trade (per-account `localStorage` persisted). Manual rows can be deleted with the trash icon — `auto_derive` and `csv_import` rows are locked.
+
+## Ledger feed (R7 Phase 1)
+
+Read-only routes the accounting service pulls (國泰 only; an unknown `broker` answers 404 `{"detail": "unknown_broker"}`):
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/portfolio/ledger-feed/settlements?broker=&settle_from=&settle_to=&from=&to=` | one row per trade day: `trade_date`, `settlement_date`, `date_source` (`statement` \| `legs`), `net_amount`, `legs_net`, `bookable` / `reason` (`margin_day`, `legs_disagree`), `items`, `fingerprint`; plus `bounds` and `complete`. `settle_*` bound the settlement axis, `from` / `to` the trade axis. |
+| `GET` | `/api/portfolio/ledger-feed/valuation?broker=&as_of=` | `market_value`, `cash`, `total`, `priced_through`, `complete`, `missing` |
+
+The daily statement import persists the statement's facts on `cathay_statement_day` (migration `e9settle`): `settlement_date`,
+`net_amount` (應收付) and `cash_net` (淨收付). The feed prefers them (`date_source: "statement"`) and falls back to the cash legs.
+`CASH_LEG_ENABLED=true` is a precondition: the feed reads `cash_transaction` legs, so with the flag off it carries none.

@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Discriminator, Field, Tag, model_validator
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Discriminator, Field, Tag, model_validator
 
 from .ledger import EntryDetailOut, EntryKind
 
@@ -181,6 +181,23 @@ class BalanceAdjustmentIn(BaseModel):
     entry_date: date
     entry_time: time | None = None
     description: str | None = None
+
+
+SETTLEMENT_SOURCES = ("portfolio:cathay",)  # the settlement feeds HomeHub can read (portfolio integration spec §4.2)
+# The one currency each source's feed answers in (PR #234 review finding 1): an account carrying the source must be in
+# it, and so must every feed row (`trade_settlement_service.currency_mismatch`). Phase 1: the 國泰 feed is TWD only.
+SOURCE_CURRENCIES = {"portfolio:cathay": "TWD"}
+
+
+def _empty_is_null(value):
+    return None if value == "" else value
+
+
+class AccountSourcesPatch(BaseModel):
+    """Only the fields present are written (an explicit null clears one). `settlement_source` is one of
+    `SETTLEMENT_SOURCES` or null; "" clears it as null does (R7 final review Minor 3)."""
+    settlement_source: Annotated[Literal[SETTLEMENT_SOURCES] | None, BeforeValidator(_empty_is_null)] = None
+    valuation_source: Annotated[str, Field(max_length=64)] | None = None
 
 
 class AccountIn(BaseModel):

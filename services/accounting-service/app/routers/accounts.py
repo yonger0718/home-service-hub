@@ -3,7 +3,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
-from ..auth import method_scope
+from ..auth import method_scope, require
 from ..database import get_db
 from ..models import Account
 from ..schemas.ledger import (
@@ -15,8 +15,9 @@ from ..schemas.ledger import (
     EntryPage,
     RewardRuleOut,
 )
-from ..schemas.writes import AccountIn
+from ..schemas.writes import SOURCE_CURRENCIES, AccountIn, AccountSourcesPatch
 from ..services import ledger_service, settings_service
+from ..services.errors import CodedValidationError
 from .errors import service_errors
 
 router = APIRouter(prefix="/accounts", tags=["Accounts"], dependencies=[Depends(method_scope())])
@@ -93,6 +94,26 @@ def put_account(account_id: int, payload: AccountIn, db: Session = Depends(get_d
     """Settings writes are allowed on imported accounts at any time (D19); they set settings_locally_edited."""
     with service_errors():
         settings_service.update_account(db, account_id, payload)
+    db.commit()
+    return ledger_service.get_account(db, account_id)
+
+
+@router.patch("/{account_id}", response_model=AccountDetailOut, dependencies=[Depends(require("admin"))])
+def patch_account_sources(account_id: int, payload: AccountSourcesPatch, db: Session = Depends(get_db)):
+    """Admin-only: set the portfolio feed sources of an account (settlement / valuation); absent fields stay. A
+    `settlement_source` is refused 422 `currency_mismatch` on an account outside the source's currency
+    (`SOURCE_CURRENCIES`; PR #234 review finding 1)."""
+    account = db.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="account not found")
+    source = payload.settlement_source
+    if "settlement_source" in payload.model_fields_set and source is not None \
+            and account.currency != SOURCE_CURRENCIES[source]:
+        with service_errors():
+            raise CodedValidationError("settlement_source", "currency_mismatch",
+                                       f"{source} answers in {SOURCE_CURRENCIES[source]} only")
+    for field in payload.model_fields_set:
+        setattr(account, field, getattr(payload, field))
     db.commit()
     return ledger_service.get_account(db, account_id)
 

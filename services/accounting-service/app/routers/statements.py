@@ -11,13 +11,16 @@ The reconcile, revision and manual-statement (live statements) and sweep routes 
 Task 10) after their own commit; both commit per case/candidate and neither error ever fails the route.
 """
 
+import logging
+
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from ..auth import require, require_feature
-from ..database import get_db
+from ..database import get_db, get_engine
 from ..models import Account, AccountStatement
 from ..schemas.statements import (
     AccountMapOut,
@@ -47,20 +50,24 @@ from ..schemas.statements import (
     RunOut,
     RunStatus,
     SourceOut,
+    SettlementRunIn,
+    SettlementRunOut,
     SourceRegisterIn,
     SourcesMarkRemovedIn,
     SourcesMarkRemovedOut,
     StatementDetailOut,
+    StandInsOut,
     StatementOut,
     SweepOut,
 )
 from ..services import confirm_service, owner_rule_service, policy_service, statement_retire_service
 from ..services import reconciliation_service as recon
-from ..services import settings_service
+from ..services import settings_service, trade_settlement_service
 from ..services import statement_ingest_service as ingest
 from ..services.errors import ConflictError, NotFoundError, ValidationError
 from .errors import service_errors
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Statements"], dependencies=[Depends(require_feature())])
 
 ENQUEUE = [Depends(require("enqueue"))]
@@ -199,8 +206,10 @@ def submit_revision(body: RevisionIn, request: Request, db: Session = Depends(ge
         settings = settings_service.get_reconciliation_settings(db)
         result = ingest.submit_revision(db, run, body, account_map=settings.get("account_map", {}),
                                         composite_map=settings.get("composite_map", {}))
-        out = _revision_out(result)
+        out, recheck = _revision_out(result), result.neighbours_recheck
     db.commit()
+    if recheck:  # its own transaction, after the ingest commit (SubmitResult.neighbours_recheck)
+        trade_settlement_service.flag_neighbours_safe(db, out["statement_id"])
     if out["mode"] == "live" and not out["replayed"]:
         owner_rule_service.run_rules_safe(db, out["statement_id"], run_id=body.run_id)
         policy_service.run_policy_safe(db, out["statement_id"], run_id=body.run_id)
@@ -214,9 +223,11 @@ def create_manual_statement(account_id: int, body: ManualStatementIn, request: R
     with service_errors():
         result = ingest.create_manual_statement(db, account_id=account_id, payload=body,
                                                 label=_label(request) or "owner")
-        out = _revision_out(result)
+        out, recheck = _revision_out(result), result.neighbours_recheck
         run_id = result.revision.run_id
     db.commit()
+    if recheck:
+        trade_settlement_service.flag_neighbours_safe(db, out["statement_id"])
     if out["mode"] == "live" and not out["replayed"]:
         owner_rule_service.run_rules_safe(db, out["statement_id"], run_id=run_id)
         policy_service.run_policy_safe(db, out["statement_id"], run_id=run_id)
@@ -283,24 +294,70 @@ def reconcile_statement(account_id: int, statement_id: int, db: Session = Depend
             raise NotFoundError(f"statement {statement_id} not found")
         result = recon.reconcile(db, statement_id)
         out = {"claims": result.claims, "cases_opened": result.cases_opened, "explained": result.explained,
-               "unmatched_entries": result.unmatched_entries, "skipped": result.skipped}
+               "unmatched_entries": result.unmatched_entries, "skipped": result.skipped,
+               "settlement_source_unavailable": result.settlement_source_unavailable,
+               "settlements": dict(result.settlements)}
     db.commit()
     owner_rule_service.run_rules_safe(db, statement_id)
     policy = policy_service.run_policy_safe(db, statement_id)
     return {**out, "policy": {"applied": len(policy.applied), "proposed": len(policy.proposed)}}
 
 
+@router.post("/reconciliation/settlements/run", response_model=SettlementRunOut, dependencies=INGEST)
+def run_settlements(body: SettlementRunIn, db: Session = Depends(get_db), engine: Engine = Depends(get_engine)):
+    """Spec §4.5 item 1: run the daily stand-in job now (the 國泰 worker calls it after each commit run), flag the
+    statements it touched, plus those with open settlement cases, for re-check, and reconcile them as the sweep does
+    (one transaction per statement, then the owner rules and the policy), so the flag clears within the call and the
+    owner's `book_settlement` is not refused `needs_recheck` until the next sweep (R7 final review I3). A statement
+    that yields (`reconcile_busy`, ...) keeps its flag for the sweep. Counts, ids and codes only."""
+    report = trade_settlement_service.run_stand_ins(engine)  # its own transactions: `db` has none open yet
+    with service_errors():
+        targets = sorted(trade_settlement_service.recheck_targets(db, report))
+        flagged = trade_settlement_service.flag_statements(db, targets)
+    db.commit()
+    reconciled, busy, errors = 0, 0, []
+    for item in recon.reconcile_each(db, targets):
+        if "error" in item:
+            errors.append({"statement_id": item["statement_id"], "error": item["error"]})
+            busy += int(item["error"] == "reconcile_busy")
+        else:
+            reconciled += 1
+        db.commit()  # each statement on its own: the next one's sweep must not run under this one's row locks
+        if "error" not in item:
+            owner_rule_service.run_rules_safe(db, item["statement_id"])
+            policy_service.run_policy_safe(db, item["statement_id"])
+    return {"status": report["status"], "booked": len(report["booked"]), "skipped": len(report["skipped"]),
+            "housekeeping": report["housekeeping"], "flagged": flagged, "reconciled": reconciled, "busy": busy,
+            "errors": errors}
+
+
 @router.post("/reconciliation/sweep", response_model=SweepOut, dependencies=INGEST)
-def sweep(body: Lease, request: Request, db: Session = Depends(get_db)):
+def sweep(body: Lease, request: Request, db: Session = Depends(get_db), engine: Engine = Depends(get_engine)):
     """The worker's daily pass over every pending statement. One transaction per statement: the next statement's
     sweep must not run while this one still holds the previous statement's entry/group locks."""
-    totals = {"statements": 0, "claims": 0, "cases_opened": 0}
+    totals = {"statements": 0, "claims": 0, "cases_opened": 0, "settlement_source_unavailable": 0}
     errors: list[dict] = []
     with service_errors():
         ingest.require_lease(db, body.run_id, body.lease_token, label=_label(request))
         db.commit()  # release the lease row lock; each statement then commits on its own
         label = _label(request)
-        pending = recon.pending_statement_ids(db)
+        stand_ins = StandInsOut(status="failed", booked=0, skipped=0, flagged=0)
+        extra_ids: list[int] = []
+        try:  # the stand-in job must never cost the day's reconciliation (class name only: a message may carry ids)
+            report = trade_settlement_service.run_stand_ins(engine)  # the job's own transactions; `db` holds none
+            flagged = trade_settlement_service.flag_for_recheck(db, report)
+            db.commit()
+            stand_ins = StandInsOut(status=report["status"], booked=len(report["booked"]),
+                                    skipped=len(report["skipped"]), flagged=flagged)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("sweep.stand_ins_failed: %s", type(exc).__name__)
+            db.rollback()
+        try:
+            extra_ids = trade_settlement_service.recheck_statement_ids(db)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("sweep.recheck_ids_failed: %s", type(exc).__name__)
+            db.rollback()
+        pending = sorted(set(recon.pending_statement_ids(db)) | set(extra_ids))
         for index, item in enumerate(recon.reconcile_each(db, pending, run_id=body.run_id)):
             if "error" in item:
                 errors.append({"statement_id": item["statement_id"], "error": item["error"]})
@@ -308,6 +365,7 @@ def sweep(body: Lease, request: Request, db: Session = Depends(get_db)):
                 totals["statements"] += 1
                 totals["claims"] += item["result"].claims
                 totals["cases_opened"] += len(item["result"].cases_opened)
+                totals["settlement_source_unavailable"] += int(item["result"].settlement_source_unavailable)
             db.commit()  # the items done so far stay committed
             if "error" not in item:
                 owner_rule_service.run_rules_safe(db, item["statement_id"], run_id=body.run_id)
@@ -317,7 +375,7 @@ def sweep(body: Lease, request: Request, db: Session = Depends(get_db)):
                 raise ConflictError("lease")
         links = recon.fill_deferral_links(db)
     db.commit()
-    return {**totals, "errors": errors, "links_filled": links}
+    return {**totals, "errors": errors, "links_filled": links, "stand_ins": stand_ins}
 
 
 @router.get("/statements/account-map", response_model=AccountMapOut, dependencies=INGEST)

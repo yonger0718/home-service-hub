@@ -241,8 +241,10 @@ def test_reconcile_route_needs_write_and_the_statements_account(client, card, se
     assert client.post(f"/accounts/{other.id}/statements/{statement_id}/reconcile", headers=S).status_code == 404
     done = client.post(url, headers=S)
     assert done.status_code == 200, done.text
-    assert set(done.json()) == {"claims", "cases_opened", "explained", "unmatched_entries", "skipped", "policy"}
+    assert set(done.json()) == {"claims", "cases_opened", "explained", "unmatched_entries", "skipped", "policy",
+                                "settlement_source_unavailable", "settlements"}
     assert done.json()["claims"] == 1 and done.json()["skipped"] is None
+    assert (done.json()["settlement_source_unavailable"], done.json()["settlements"]) == (False, {})  # no settlement step
 
 
 def test_detail_shows_coverage_and_matched(client, card, seed, db_session):
@@ -279,7 +281,9 @@ def test_sweep_needs_ingest_and_a_lease_and_reports_the_batch(client, card, seed
     assert client.post("/reconciliation/sweep", headers=W, json=lease | {"lease_token": "x" * 48}).status_code == 409
     done = client.post("/reconciliation/sweep", headers=W, json=lease)
     assert done.status_code == 200, done.text
-    assert done.json() == {"statements": 1, "claims": 1, "cases_opened": 0, "errors": [], "links_filled": 0}
+    assert done.json() == {"statements": 1, "claims": 1, "cases_opened": 0, "errors": [], "links_filled": 0,
+                           "settlement_source_unavailable": 0,
+                           "stand_ins": {"status": "disabled", "booked": 0, "skipped": 0, "flagged": 0}}
     assert db_session.execute(text("SELECT needs_recheck FROM account_statement")).scalar_one() is False
 
 
@@ -332,7 +336,7 @@ def test_cases_listing_needs_read_and_validates_status(client, card, seed, db_se
 def test_settings_expose_rules_and_validate_rule_keys(client, card):
     current = client.get("/settings/reconciliation", headers=H).json()
     assert set(current) == {"account_map", "dirty_enabled", "rules", "rules_version", "version", "policy", "policy_version", "composite_map",
-                            "account_siblings", "auto_pay"}
+                            "account_siblings", "auto_pay", "settlement"}
     assert current["rules"]["accept"] == "0.80" and "period_end" not in current["rules"]
     for bad in ({"nope": 1}, {"period_end": "2026-09-30"}, {"deferral_days": "x"}, {"deferral_days": True},
                 {"accept": 0.8}, {"bank_only_patterns": "年費"}, {"bank_only_patterns": [1]}):

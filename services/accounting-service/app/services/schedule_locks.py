@@ -17,6 +17,7 @@ from .moze_import_service import IMPORT_LOCK_KEY
 
 SCHEDULE_JOB_LOCK_KEY = 0x53434844  # "SCHD"; held by one job run at a time (session-level, dedicated connection)
 AUTO_PAY_JOB_LOCK_KEY = 0x41505041  # "APPA"; the auto-pay job's run lock, held the same way
+SETTLEMENT_JOB_LOCK_KEY = 0x53544C4D  # "STLM"; the settlement stand-in job's run lock (portfolio §4.7), the same way
 IMPORT_RUNNING = "import_running"
 
 

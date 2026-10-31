@@ -46,6 +46,8 @@ class Context:
     # R6c: the transfer actions' discovery — the unlocked one (lock_targets → prepare), then the locked one
     # validate_before verified (→ apply)
     _transfer_discovery: dict | None = None
+    # R7: book_settlement's plan, proved once under the locks by `validate_before` (→ apply)
+    _settlement_plan: tuple | None = None
     action_id: int | None = None  # R6c: the action row being applied (set by the engine after its insert, before apply)
 
 
@@ -88,6 +90,16 @@ class Prepared:
     expected: dict
     data: dict = field(default_factory=dict)
     lock_set: LockSet = field(default_factory=LockSet)
+
+
+class Replay(Exception):
+    """Raised by an action's `validate_before` when an applied action row already holds the effect asked for (R7
+    `book_settlement`: a booking owns this event): the engine replays that row — no new effect, audited
+    `action_replayed`. Only for budget-exempt actions (nothing is charged before `validate_before`)."""
+
+    def __init__(self, row: ReconciliationAction):
+        super().__init__(f"action {row.id}")
+        self.row = row
 
 
 class NotRevertable(CodedValidationError):
@@ -139,6 +151,8 @@ class ActionBase:
     case_kinds: ClassVar[frozenset[str]] = frozenset()
     actors: ClassVar[frozenset[str]] = frozenset({OWNER})
     slot: ClassVar[str | None] = None  # ledger-effect actions set their fixed slot (ruling 7)
+    # R7: a policy apply of this action reserves and charges no budget (`policy_service.CAP_EXEMPT`)
+    budget_exempt: ClassVar[bool] = False
 
     def effect_slot(self, ctx: Context, params) -> str:
         """Rulings 31 and 36: an action that writes no ledger rows (match, unmatch, dismiss, defer_next_period) is one
