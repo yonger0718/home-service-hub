@@ -1,12 +1,13 @@
 """Response shapes of GET /reports/* (design D1), field for field the SPA's `reports.model.ts`. Amounts are positive
 magnitudes in the main currency, serialized as decimal strings."""
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from ..services.report_rules import Compare, Dimension, Metric
+from .writes import Int32
 
 
 class BreakdownSplitOut(BaseModel):
@@ -136,21 +137,37 @@ class DatePeriod(BaseModel):
     to: date
 
 
+def _decimal_text(value: str) -> str:
+    """A finite decimal number as text (what the GET's `Decimal` query parameter accepts), kept as sent."""
+    try:
+        number = Decimal(value)
+    except InvalidOperation:
+        raise ValueError("not a decimal number") from None
+    if not number.is_finite():
+        raise ValueError("not a finite decimal number")
+    return value
+
+
+DecimalText = Annotated[str, Field(max_length=40), AfterValidator(_decimal_text)]
+MAX_FILTER_ITEMS = 100
+
+
 class ReportFiltersIn(BaseModel):
-    """The SPA's wire `ReportFilters` (reports.model.ts); `include_excluded_projects` is a GET flag, never stored."""
+    """The SPA's wire `ReportFilters` (reports.model.ts); `include_excluded_projects` is a GET flag, never stored.
+    As strict as the GET it feeds: text up to 100 characters, decimal bounds, int4 ids, at most 100 items a list."""
 
     model_config = ConfigDict(extra="forbid")
 
-    account_id: list[int] = []
-    category_id: list[int] = []
-    project_id: list[int] = []
-    tag: list[str] = []
-    merchant: str | None = None
-    counterparty_id: int | None = None
-    amount_min: str | None = None
-    amount_max: str | None = None
-    q: str | None = None
-    weekday: list[Annotated[int, Field(ge=1, le=7)]] = []
+    account_id: list[Int32] = Field(default=[], max_length=MAX_FILTER_ITEMS)
+    category_id: list[Int32] = Field(default=[], max_length=MAX_FILTER_ITEMS)
+    project_id: list[Int32] = Field(default=[], max_length=MAX_FILTER_ITEMS)
+    tag: list[str] = Field(default=[], max_length=MAX_FILTER_ITEMS)
+    merchant: str | None = Field(default=None, max_length=100)
+    counterparty_id: Int32 | None = None
+    amount_min: DecimalText | None = None
+    amount_max: DecimalText | None = None
+    q: str | None = Field(default=None, max_length=100)
+    weekday: list[Annotated[int, Field(ge=1, le=7)]] = Field(default=[], max_length=MAX_FILTER_ITEMS)
 
 
 class ReportConfigIn(BaseModel):
@@ -186,7 +203,7 @@ class SavedReportIn(BaseModel):
     config: ReportConfigIn
     chart: ReportChart
     pinned: bool
-    sort_order: int | None = None
+    sort_order: Int32 | None = None  # an INTEGER column
 
 
 class SavedReportOut(BaseModel):

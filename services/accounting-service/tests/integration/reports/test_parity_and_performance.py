@@ -81,11 +81,11 @@ def test_breakdown_12_months_under_300ms_on_20k_entries(client, db_session):
     assert len(body["rows"]) == 8
 
     timings = []
-    for _ in range(5):
+    for _ in range(9):
         start = time.perf_counter()
         response = client.get("/reports/breakdown", params=params)
         timings.append(time.perf_counter() - start)
         assert response.status_code == 200, response.text
     median = statistics.median(timings)
     print(f"breakdown 20k: warm-up {warm_up:.4f}s, timings {[round(t, 4) for t in timings]}, median {median:.4f}s")
-    assert median < 0.3, f"median {median:.4f}s over 5 calls (warm-up {warm_up:.4f}s): {timings}"
+    assert median < 0.3, f"median {median:.4f}s over 9 calls (warm-up {warm_up:.4f}s): {timings}"

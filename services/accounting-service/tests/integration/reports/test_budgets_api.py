@@ -44,6 +44,21 @@ def test_over_budget(client, db_session, ledger):
     assert item["color"] == "#3366ff"
 
 
+def test_top_level_budget_rolls_up_its_subcategories(client, ledger):
+    # 餐飲 has no entries of its own: 晚餐 2860 + 600 + 450 and 午餐 120 + 95 + 130 + 45.67 USD (1421.4057)
+    assert _post(client, scope="category", category_id=ledger.food, amount="6000",
+                 effective_from="2026-10").status_code == 201
+    breakdown = client.get("/reports/breakdown", params={"date_from": "2026-10-01", "date_to": "2026-10-31",
+                                                         "group_by": "category"})
+    assert breakdown.status_code == 200, breakdown.text
+    food_row = next(row for row in breakdown.json()["rows"] if row["key"] == str(ledger.food))
+
+    item = _by_label(client)["餐飲"]
+
+    assert item["used"] == food_row["amount"] == "5676.4057"
+    assert item["remaining"] == "323.5943" and item["over"] is False
+
+
 def test_changing_amount_keeps_history(client, db_session, ledger):
     first = _post(client, scope="category", category_id=ledger.food, amount="10000", effective_from="2026-01")
     assert first.status_code == 201

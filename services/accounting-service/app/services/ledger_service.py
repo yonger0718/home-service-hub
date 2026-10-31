@@ -6,7 +6,7 @@ listings use the canonical order (entry_date, entry_time NULLS FIRST, seq) or it
 
 from collections import defaultdict
 from datetime import date, datetime
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Iterable
 from zoneinfo import ZoneInfo
 

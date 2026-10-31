@@ -21,7 +21,7 @@ Report endpoints and the month and daily summaries SHALL use one rule set: expen
 
 ### Requirement: Breakdown endpoint
 
-`GET /reports/breakdown` SHALL take `date_from`, `date_to`, `metric` (`expense`, `income`, `net`, `count`), `group_by`, an optional `split_by` different from `group_by`, the `/entries` filters plus `weekday[]` and `project_id[]`, and an optional `compare` (`previous` or `last_year`). It SHALL return totals and rows sorted by amount (time dimensions by key), each with label, colour where the dimension has one, amount (net of refunds), refund, count, average, and splits when `split_by` is set.
+`GET /reports/breakdown` SHALL take `date_from`, `date_to`, `metric` (`expense`, `income`, `net`, `count`), `group_by`, an optional `split_by` different from `group_by`, the `/entries` filters plus repeated `weekday` and `project_id`, and optional `compare` (`previous`, `last_year`). It SHALL return totals and rows sorted by amount (time dimensions by key), each with label, colour where the dimension has one, amount (net of refunds), refund, count, average, and splits when `split_by` is set.
 
 #### Scenario: Group by merchant with no merchant
 - **WHEN** October expense is grouped by merchant and nine entries have no merchant
@@ -138,7 +138,7 @@ When `group_by` or `split_by` is `tag`, an entry with several tags SHALL count o
 
 #### Scenario: Span caps
 - **WHEN** a `day` trend spans more than 400 days, a `week` trend more than 1,100 days or a `month` trend more than 10 years
-- **THEN** the endpoint SHALL answer 422 with a detail starting `span exceeds`
+- **THEN** the endpoint SHALL answer 422 with the service's error body `{code, message, trace_id}` whose `message` starts `span exceeds` (request validation 422s keep FastAPI's `detail` list)
 
 ### Requirement: Project report exclusion
 
