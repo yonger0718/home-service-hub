@@ -502,7 +502,7 @@ describe('AccountingReportsComponent', () => {
 
       const cards = Array.from(el.querySelectorAll('.pl-project'));
       expect(cards.map(c => c.querySelector('.pl-project-title b')?.textContent?.trim())).toEqual(['東京旅行', '客廳整理']);
-      expect(cards[0].querySelector('.pl-project-title small')?.textContent?.trim()).toBe('10/10 – 10/15 · 6 天 · 日均 4,143 · 不計入月報');
+      expect(cards[0].querySelector('.pl-project-title small')?.textContent?.trim()).toBe('10/10 – 10/15 · 6 天 · 日均 4,143 · 不計入報表');
       expect(cards[0].querySelector('.pl-tag')?.textContent?.trim()).toBe('已結束');
       expect(cards[0].querySelector('.pl-project-total')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('$24,860 預算 25,000 · 用了 99.4%');
       expect(texts(cards[0], '.pl-legend > span')).toEqual(['機票 9,800', '住宿 8,400', '餐飲 3,960', '交通 1,420', '購物 1,280']);
@@ -524,7 +524,7 @@ describe('AccountingReportsComponent', () => {
 
       const cards = Array.from(el.querySelectorAll('.pl-project'));
       expect(cards.map(c => c.querySelector('.pl-project-title b')?.textContent?.trim())).toEqual(['東京旅行', '客廳整理']);
-      expect(cards[0].querySelector('.pl-project-title small')?.textContent?.trim()).toBe('不計入月報');
+      expect(cards[0].querySelector('.pl-project-title small')?.textContent?.trim()).toBe('不計入報表');
       expect(cards[0].querySelector('.pl-tag')?.textContent?.trim()).toBe('已結束');
       expect(cards[1].querySelector('.pl-project-title small')?.textContent?.trim()).toBe('');
       expect(cards[1].querySelector('.pl-tag')?.textContent?.trim()).toBe('進行中');
