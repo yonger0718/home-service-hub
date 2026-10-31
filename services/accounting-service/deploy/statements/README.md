@@ -564,7 +564,11 @@ reconciles the statements it chose after its job. So drain first, in this order:
          AND database = (SELECT oid FROM pg_database WHERE datname = current_database());
        SELECT id, trigger, status FROM ingest_run WHERE status IN ('claimed', 'running');
 
-   Both must return no rows; re-run them until they do.
+   Both must return no rows; re-run them until they do. Those two checks do not see a direct
+   `POST /accounts/{id}/statements/{id}/reconcile` or the reconcile phase of an ad-hoc `/reconciliation/settlements/run`
+   (neither holds the job lock or an ingest lease once past its job): send no reconcile requests by hand or from the SPA
+   from step 1 on, and let every request already in flight return its full response before step 3 (queued ingest hooks
+   included). A reconcile that evaluated `applies()` before the source is cleared can still retire an owner-twin pair.
 3. Disable the switches (`policy.actions.book_settlement.enabled = false`, `settlement.stand_in_enabled = false`, one
    whole-document settings PUT) if the rollback above has not already done it; GET it back and check both read `false`.
 4. Clear the source: owner SQL `UPDATE account SET settlement_source = NULL WHERE id = 67;` (or the admin
