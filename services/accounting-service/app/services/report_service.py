@@ -62,9 +62,11 @@ def _key_column(dimension: Dimension, root_parent, tag_column):
     }[dimension]
 
 
-def _grouped_select(where: list, dimensions: tuple[Dimension, ...], *, untagged: bool = False):
+def _grouped_select(where: list, dimensions: tuple[Dimension, ...], *, untagged: bool = False,
+                    per_row: bool = False):
     """One grouped select of (k0…, currency, spend, refund, income, count). With a `tag` dimension it unnests the
-    tags, or — `untagged` — takes the rows without tags (`cardinality(tags) = 0`) with a NULL tag key."""
+    tags, or — `untagged` — takes the rows without tags (`cardinality(tags) = 0`) with a NULL tag key. `per_row`
+    selects (k0…, currency, amount, entry_date) of every row instead of the grouped sums (row statistics)."""
     parent = aliased(Category)
     tags = None
     if "tag" in dimensions and not untagged:
@@ -77,14 +79,18 @@ def _grouped_select(where: list, dimensions: tuple[Dimension, ...], *, untagged:
         column = _key_column(dimension, parent, tags.c.tag if tags is not None else None)
         keys.append(column.label(f"k{index}"))
         group_keys.append(column)
-    stmt = select(
-        *keys,
-        LedgerEntry.currency,
-        func.coalesce(func.sum(LedgerEntry.amount).filter(spend_filter()), 0),
-        func.coalesce(func.sum(LedgerEntry.amount).filter(LedgerEntry.kind == "refund"), 0),
-        func.coalesce(func.sum(LedgerEntry.amount).filter(income_filter()), 0),
-        func.count(LedgerEntry.id),
-    ).select_from(LedgerEntry)
+    if per_row:
+        stmt = select(*keys, LedgerEntry.currency, LedgerEntry.amount, LedgerEntry.entry_date)
+    else:
+        stmt = select(
+            *keys,
+            LedgerEntry.currency,
+            func.coalesce(func.sum(LedgerEntry.amount).filter(spend_filter()), 0),
+            func.coalesce(func.sum(LedgerEntry.amount).filter(LedgerEntry.kind == "refund"), 0),
+            func.coalesce(func.sum(LedgerEntry.amount).filter(income_filter()), 0),
+            func.count(LedgerEntry.id),
+        )
+    stmt = stmt.select_from(LedgerEntry)
     if "category" in dimensions:
         stmt = stmt.outerjoin(Category, Category.id == LedgerEntry.category_id).outerjoin(
             parent, parent.id == Category.parent_id
@@ -93,7 +99,8 @@ def _grouped_select(where: list, dimensions: tuple[Dimension, ...], *, untagged:
         stmt = stmt.join(tags, true())
     if untagged:
         where = [*where, func.cardinality(LedgerEntry.tags) == 0]
-    return stmt.where(*where).group_by(*group_keys, LedgerEntry.currency)
+    stmt = stmt.where(*where)
+    return stmt if per_row else stmt.group_by(*group_keys, LedgerEntry.currency)
 
 
 def _key_text(value) -> str | None:
@@ -164,38 +171,19 @@ def row_statistics(amounts_dates: list[tuple[Decimal, date]]) -> dict:
     }
 
 
-def _stat_rows(db: Session, where: list, dimension: Dimension, metric: Metric) -> list[tuple]:
-    """(key text, currency, signed amount, entry_date) per counted row; `tag` unnests, the empty-tags rows form the
-    null-key bucket."""
-    def select_rows(untagged: bool):
-        parent = aliased(Category)
-        tags = None
-        if dimension == "tag" and not untagged:
-            tags = func.unnest(LedgerEntry.tags).table_valued("tag").render_derived(name="entry_tag")
-        key = literal(None, Text) if untagged else _key_column(dimension, parent, tags.c.tag if tags is not None else None)
-        stmt = select(key, LedgerEntry.currency, LedgerEntry.amount, LedgerEntry.entry_date).select_from(LedgerEntry)
-        if dimension == "category":
-            stmt = stmt.outerjoin(Category, Category.id == LedgerEntry.category_id).outerjoin(
-                parent, parent.id == Category.parent_id
-            )
-        if tags is not None:
-            stmt = stmt.join(tags, true())
-        if untagged:
-            where_ = [*where, func.cardinality(LedgerEntry.tags) == 0]
-        else:
-            where_ = where
-        return stmt.where(*where_)
-
-    stmt = select_rows(False)
+def _stat_rows(db: Session, where: list, dimension: Dimension) -> list[tuple]:
+    """(key text, currency, signed amount, entry_date) per counted row, built on the same select as the groups;
+    `tag` unnests, the empty-tags rows form the null-key bucket."""
+    stmt = _grouped_select(where, (dimension,), per_row=True)
     if dimension == "tag":
-        stmt = union_all(stmt, select_rows(True))
-    return [(_key_text(row[0]), row[1], row[2], row[3]) for row in db.execute(stmt).all()]
+        stmt = union_all(stmt, _grouped_select(where, (dimension,), untagged=True, per_row=True))
+    return [(_key_text(row[0]), *row[1:]) for row in db.execute(stmt).all()]
 
 
 def _statistics(db: Session, where: list, dimension: Dimension, metric: Metric,
                 rates: dict[str, Decimal]) -> dict[str | None, dict]:
     buckets: dict[str | None, list[tuple[Decimal, date]]] = {}
-    for key, currency, amount, entry_date in _stat_rows(db, where, dimension, metric):
+    for key, currency, amount, entry_date in _stat_rows(db, where, dimension):
         rate = rates.get(currency)
         if rate is None:
             continue
