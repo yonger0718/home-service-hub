@@ -167,7 +167,7 @@ def _settlement_outcome(kind: str, hint: str | None) -> str | None:
 def settlements_listing(dump: dict, stand_ins: dict | None, baseline: dict | None = None) -> dict:
     """R7 Phase 1 dry run: one row per settlement line (stand-in claim, owner match, or a settlement case) of every statement
     in the dump that has at least one, plus the stand-ins the job would book. Ids, dates and codes only: candidate keys are
-    entry ids / "g<id>" / settlement fingerprints. `baseline` (optional) adds `supersedes`: the case the line carried before.
+    entry ids / "g<id>" / settlement fingerprints. `baseline` (optional) adds `supersedes`: the case the line carried before, and a `dismissed` row for a settlement case that vanished without a replacement row.
     `stand_ins` is a `run_stand_ins(dry_run=True)` report (`booking_id` is None in a dry run) or None."""
     before = _index(baseline) if baseline else {}
     lines = []
@@ -182,6 +182,10 @@ def settlements_listing(dump: dict, stand_ins: dict | None, baseline: dict | Non
             if outcome is not None and event_id is not None:
                 rows.append({"statement_id": sid, "event_id": event_id, "outcome": outcome, "kind": kind, "hint": hint,
                              "candidates": list(cands)})
+        present = {r["event_id"] for r in rows} | {c[0] for c in st["cases"]} | {c[0] for c in st["claims"]}
+        for (bsid, event_id), prior in before.items():  # a settlement case that is gone and left no row: the candidate dismisses it
+            if bsid == sid and event_id not in present and prior[0] == "case" and _settlement_outcome(prior[1], prior[2]):
+                rows.append({"statement_id": sid, "event_id": event_id, "outcome": "dismissed", "supersedes": {"kind": prior[1], "hint": prior[2]}})
         if not any(r["outcome"] not in ("owner_match",) for r in rows):  # an owner match alone is not a settlement line
             continue
         for row in sorted(rows, key=lambda r: r["event_id"] or 0):

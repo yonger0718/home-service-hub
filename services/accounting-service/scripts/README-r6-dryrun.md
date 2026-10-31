@@ -86,7 +86,9 @@ is attributed `R6c.1 transfer_delta`; a `transfer_delta` case back to `needs_pee
 Writes `settlements-listing.json` (mode 600) and exits 0 (evidence, not a gate). One row per settlement line of the candidate
 dump: `statement_id, event_id, outcome` with outcome one of `stand_in_claim`, `owner_match`, `book_settlement`, `pending`,
 `ambiguous`, `mismatch`, `drift`, `orphaned_stand_in`; case rows carry `kind`, `hint` and `candidates` (entry ids, `g<id>`, or a
-settlement fingerprint), and `supersedes` when the baseline had a different case on that line. A statement with no
+settlement fingerprint), and `supersedes` when the baseline had a different case on that line. `owner_match` rows cover every claimed line of a listed statement (the dump cannot tell which lines are settlement lines), including
+ordinary `exact` claims on unrelated lines, so "one row per settlement line" is an upper bound for that outcome. A baseline settlement
+case that vanished without a replacement row is listed as `dismissed`. A statement with no
 settlement-flavoured row is not listed (the dump does not say which accounts are `settlement_source`). `--stand-ins` is a
 `run_stand_ins(engine, dry_run=True)` report as JSON; its would-book days are listed as `stand_ins` (`account_id`,
 `settlement_date`, `booking_id`, null in a dry run), with `skipped` and `previewed_settings`. No amounts, merchants or names.

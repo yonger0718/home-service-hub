@@ -685,7 +685,6 @@ two overlapping transactions per case (`tests.helpers.race`): the first holds it
 complete once the first commits. These tests serialize whole operations; they are not a proof of deadlock freedom
 under arbitrary interleavings.
 
-
 Portfolio settlement integration (R7 Phase 1)
 ---------------------------------------------
 
