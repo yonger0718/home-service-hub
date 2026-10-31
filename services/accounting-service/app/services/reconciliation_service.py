@@ -17,7 +17,9 @@ statements' coverage rows and on those statements' rows (`needs_recheck`). A ban
 account printing a settlement line (portfolio integration spec §4.3, §4.7) first reads the settlement feed once
 (before any pair or group/entry lock), then does the same for its `settlement_booking` rows at the same point
 (`trade_settlement_service.housekeep` tombstones owner-deleted / owner-edited bookings, then
-`retire_twins_for_statement`; booking row → legs NOWAIT, never the account row), and after its coverage is written
+`retire_twins_for_statement`; booking row → legs NOWAIT, never the account row; a statement printing a dividend line
+does the same for its `kind='dividend'` bookings through `dividend_service.housekeep` / `retire_twins_for_statement`
+after the dividend read), and after its coverage is written
 links a claimed stand-in to its line's event (the booking row try-locked NOWAIT) and derives the settlement cases
 (`trade_settlement_service.settle`). Otherwise a reconcile emits no dirty events of its own.
 
@@ -69,7 +71,7 @@ from app.models import (
     ScheduleInstance, StatementCoverage, StatementLine, StatementRevision,
 )
 from app.services import auto_pay_service, coverage_service, portfolio_client, settings_service, stand_ins
-from app.services import trade_settlement_service
+from app.services import dividend_service, trade_settlement_service
 from app.services.entry_write_service import lock_group, proposed_fx_fee
 from app.services.errors import CodedConflictError, NotFoundError
 from app.services.ledger_service import account_balance
@@ -98,7 +100,9 @@ class ReconcileResult:
     skipped: str | None = None  # "no_current_revision" | "parse_review" | "retired"
     # portfolio integration spec §4.3, §9: the settlement feed could not be read completely (every settlement line
     # stayed `settlement_pending`); `settlements` counts the outcomes (`trade_settlement_service.COUNT_KEYS` +
-    # `unavailable_code`), empty when the statement takes no settlement step
+    # `unavailable_code`), empty when the statement takes no settlement step; a statement taking the dividend step
+    # (dividends R3) adds `dividend_service.COUNT_KEYS` + `dividend_unavailable_code`, and its unreadable feed sets
+    # `settlement_source_unavailable` too
     settlement_source_unavailable: bool = False
     settlements: dict[str, int | str | None] = field(default_factory=dict)
 
@@ -786,10 +790,15 @@ def _owner_deferred_entries(db: Session, statement: AccountStatement) -> set[int
 def _settlement_family(kind: str, context: Mapping | None) -> bool:
     """A settlement line case about whether to book (portfolio integration final review I1): kind `settlement` other
     than the `source_drift` hint, or a line case whose hint is `settlement_pending` / `settlement_ambiguous` /
-    `settlement_mismatch`. `source_drift` (a booked pair's facts moved) and `orphaned_stand_in` are not."""
+    `settlement_mismatch`. `source_drift` (a booked pair's facts moved) and `orphaned_stand_in` are not. The dividend
+    family belongs too (dividends R7): kind `dividend`, or a hint in `dividend_service.FAMILY_HINTS`."""
     hint = (context or {}).get("hint")
     return (kind == trade_settlement_service.KIND and hint != "source_drift") or (
-        hint in trade_settlement_service.SETTLEMENT_CASE_HINTS)
+        hint in trade_settlement_service.SETTLEMENT_CASE_HINTS) or _dividend_family(kind, context)
+
+
+def _dividend_family(kind: str, context: Mapping | None) -> bool:
+    return kind == dividend_service.KIND or (context or {}).get("hint") in dividend_service.FAMILY_HINTS
 
 
 def _dismissed(dismissed: list[ReconciliationCase], want: dict) -> bool:
@@ -799,10 +808,25 @@ def _dismissed(dismissed: list[ReconciliationCase], want: dict) -> bool:
     A settlement-family line case (`_settlement_family`) matches any dismissed settlement-family case on the same
     event whatever its kind: a revert reopens a `settlement` case as `settlement_pending`, a pending line becomes
     `settlement` once the feed answers, an ambiguity narrows to one — the owner's dismissal holds across each (owner
-    ruling A: the bank path re-books on the next reconcile unless dismissed; R7 final review I1)."""
+    ruling A: the bank path re-books on the next reconcile unless dismissed; R7 final review I1). The dividend family
+    and the line's plain case hide each other both ways (dividends R6/R7; plain = `line_unmatched` with a hint in
+    `dividend_service.PLAIN_HINTS`: none, or `stand_in_deleted`, final review M1): a dividend-family want is hidden by
+    a dismissed plain case on the event — the owner dismissed the line before its receipt was confirmed, or after
+    deleting its booked receipt while the feed was down — and a plain want by a dismissed dividend-family case on the
+    event — the feed is down, the receipt left the feed or is no longer confirmed, or the owner deleted the booked
+    receipt while the feed is down."""
+    plain_want = (want["kind"] == "line_unmatched"
+                  and (want["context"] or {}).get("hint") in dividend_service.PLAIN_HINTS)
+    if want["event_id"] is not None and plain_want and any(
+            case.event_id == want["event_id"] and _dividend_family(case.kind, case.context) for case in dismissed):
+        return True
     if want["event_id"] is not None and _settlement_family(want["kind"], want["context"]):
-        return any(case.event_id == want["event_id"] and _settlement_family(case.kind, case.context)
-                   for case in dismissed)
+        dividend = _dividend_family(want["kind"], want["context"])
+        return any(case.event_id == want["event_id"] and (
+            _settlement_family(case.kind, case.context)
+            or (dividend and case.kind == "line_unmatched"
+                and (case.context or {}).get("hint") in dividend_service.PLAIN_HINTS))
+            for case in dismissed)
     for case in dismissed:
         if case.kind != want["kind"]:
             continue
@@ -1024,13 +1048,17 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     rules = rules_for(settings_service.reconciliation_rules(db), statement.period_end)
     all_lines = _current_lines(db, statement)
     settles = trade_settlement_service.applies(account, statement, all_lines, rules)
-    # one cached client for the settlement step: the window read below and the drift re-reads (M3)
-    with portfolio_client.cached(portfolio_client.client_for()) if settles else nullcontext() as client:
-        # spec §4.3: the one window read (an HTTP call, ≤ the client timeout) comes before any pair or candidate row
-        # lock of this reconcile, and before the twin retirements' leg deletes hold the dirty barrier; the feed does
-        # not depend on them (housekeeping changes only the reservations `settle` reads later)
+    divides = dividend_service.applies(account, statement, all_lines, rules)
+    # one cached client for the settlement and dividend steps: both window reads below and the drift re-reads (M3)
+    with portfolio_client.cached(portfolio_client.client_for()) if settles or divides else nullcontext() as client:
+        # spec §4.3 (dividends R3): the settlement window read and the dividend window read (HTTP calls, each ≤ the
+        # client timeout) come before any pair or candidate row lock of this reconcile, and before the twin
+        # retirements' leg deletes hold the dirty barrier; neither feed depends on them (housekeeping changes only the
+        # reservations `settle` and the dividend outcomes read later)
         feed, unavailable_code = (trade_settlement_service.fetch_for(db, account, statement, client=client)
                                   if settles else (None, None))
+        dividends, dividend_code = (dividend_service.fetch_for(db, account, statement, client=client)
+                                    if divides else (None, None))
         # auto-pay §4.5: a pair whose owner twin has arrived is retired before the population is read, so the line
         # meets only the twin (the deleted legs are absent from `load_candidates`)
         auto_pay_service.retire_twins_for_statement(db, statement, accounts)
@@ -1040,18 +1068,28 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
             # retires its pair as the auto-pay twin does — both under this statement row, row → legs NOWAIT
             trade_settlement_service.housekeep(db, statement.account_id)
             trade_settlement_service.retire_twins_for_statement(db, statement, accounts)
+        if divides:
+            # spec §4.7 (dividends R6, single leg): an owner delete / structural edit of a booked dividend's income
+            # entry tombstones its row before the dividend reservations are read, then an owner income twin retires
+            # the booking — the same point and the same row → entry NOWAIT order as the settlement block above
+            dividend_service.housekeep(db, statement.account_id)
+            dividend_service.retire_twins_for_statement(db, statement, accounts)
         return _match_and_record(db, statement, accounts, accounts_by_id, rules, all_lines, run_id=run_id, live=live,
-                                 settles=settles, client=client, feed=feed, unavailable_code=unavailable_code)
+                                 settles=settles, client=client, feed=feed, unavailable_code=unavailable_code,
+                                 divides=divides, dividends=dividends, dividend_code=dividend_code)
 
 
 def _match_and_record(db: Session, statement: AccountStatement, accounts: list[int], accounts_by_id: dict[int, Account],
                       rules: matching.Rules, all_lines: list[StatementLine], *, run_id: int | None, live: bool,
-                      settles: bool, client, feed, unavailable_code: str | None) -> ReconcileResult:
+                      settles: bool, client, feed, unavailable_code: str | None, divides: bool = False,
+                      dividends=None, dividend_code: str | None = None) -> ReconcileResult:
     """`reconcile` after the sweep, the settlement window read and the stand-in retirements: population, locks,
     match, coverage, cases, counts. With `settles` (spec §4.3) `feed` is the window read `reconcile` made before any
     row lock (None with `unavailable_code` on a failure: every settlement line `settlement_pending`, the rest
     reconciled as usual), and the settlement outcomes replace the matcher's `settlement_line` placeholders after the
-    coverage is written (`trade_settlement_service.settle`)."""
+    coverage is written (`trade_settlement_service.settle`). With `divides` (dividends R3) `dividends` is the dividend
+    window read (None with `dividend_code` on a failure: the lines keep their ordinary cases) and the dividend
+    outcomes replace the plain cases of the dividend lines after that (`dividend_service.outcomes`)."""
     account = accounts_by_id[statement.account_id]
     include_reward = any(line.line_kind == "reward" for line in all_lines)
     manual, owned = owned_coverage(db, statement)  # owner coverage: kept as is (ruling 16)
@@ -1089,6 +1127,10 @@ def _match_and_record(db: Session, statement: AccountStatement, accounts: list[i
         settled = trade_settlement_service.settle(db, statement, account, result, all_lines, rules, feed,
                                                   unavailable_code, client=client)
         result = replace(result, cases=settled.cases)
+    divided = (dividend_service.outcomes(db, statement, account, result.cases, all_lines, rules, dividends,
+                                         dividend_code) if divides else None)
+    if divided is not None:
+        result = replace(result, cases=divided.cases)
     deferred = [entry_id for entry_id in result.unmatched_entry_ids if result.explained.get(entry_id) == DEFERRED]
     created: list[int] = []
     if live:
@@ -1107,8 +1149,10 @@ def _match_and_record(db: Session, statement: AccountStatement, accounts: list[i
     db.flush()
     return ReconcileResult(claims=len(result.claims), cases_opened=created, explained=len(deferred),
                            unmatched_entries=len(result.unmatched_entry_ids) - len(deferred),
-                           settlement_source_unavailable=bool(settled and settled.unavailable),
-                           settlements={} if settled is None else settled.counts)
+                           settlement_source_unavailable=bool(settled and settled.unavailable)
+                           or bool(divided and divided.unavailable),
+                           settlements={**({} if settled is None else settled.counts),
+                                        **({} if divided is None else divided.counts)})
 
 
 def _survivors(entries: list[matching.Entry], locked_rows: Mapping[int, LedgerEntry],

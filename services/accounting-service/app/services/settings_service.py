@@ -132,7 +132,9 @@ POLICY_DEFAULTS = {
                 "pair_transfer": {"enabled": False, "max_amount": "50000"},
                 # portfolio integration spec §4.4 (owner ruling Q4 (b)): on by default, zero-charged and cap-exempt
                 # (`policy_service.CAP_EXEMPT`): the bank already moved the money
-                "book_settlement": {"enabled": True, "max_amount": "0"}},
+                "book_settlement": {"enabled": True, "max_amount": "0"},
+                # spec §4.6 / §8: on by default, zero-charged and cap-exempt (`CAP_EXEMPT`)
+                "book_dividend": {"enabled": True, "max_amount": "0"}},
     "per_currency_enabled": ["TWD"],
 }
 

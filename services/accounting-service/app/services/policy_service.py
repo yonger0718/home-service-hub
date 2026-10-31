@@ -364,16 +364,27 @@ def _settlement_candidate(db: Session, case: ReconciliationCase, statement: Acco
                      SETTLEMENT_AMOUNT)
 
 
+def _dividend_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
+    """Dividends R7: an open `dividend` case without a hint → book its one receipt; amount 0 (cap-exempt). An
+    `ambiguous` + `dividend_ambiguous` case is never a candidate: only the owner picks a receipt (owner ruling
+    2026-10-31)."""
+    context = case.context or {}
+    if case.kind != "dividend" or context.get("hint") is not None or not context.get("fingerprint"):
+        return None
+    return Candidate(case.id, case.kind, case.status, "book_dividend", {"fingerprint": context["fingerprint"]},
+                     SETTLEMENT_AMOUNT)
+
+
 OWNER_DELETED_GUARDED = frozenset({"create_system_entry", "backfill_entry", "pair_transfer",
-                                   "book_settlement"})  # R6b.0: never re-book an owner delete
-# R7 spec §4.7 / §9: an owner-deleted settlement is proposed, not dropped: these are kept by `collect_candidates`
-# (the policy never APPLIES them: `_prefilter` proposes and `_unchanged` refuses)
-PROPOSED_WHEN_OWNER_DELETED = frozenset({"book_settlement"})
+                                   "book_settlement", "book_dividend"})  # R6b.0: never re-book an owner delete
+# R7 spec §4.7 / §9: an owner-deleted settlement or dividend (dividends R6/R7) is proposed, not dropped: these are kept
+# by `collect_candidates` (the policy never APPLIES them: `_prefilter` proposes and `_unchanged` refuses)
+PROPOSED_WHEN_OWNER_DELETED = frozenset({"book_settlement", "book_dividend"})
 
 POLICY_ACTIONS = {"create_system_entry": _system_entry_candidate, "attach_fee": _attach_fee_candidate,
                   "backfill_entry": _backfill_candidate, "anchor_opening": _anchor_candidate,
                   "replace_stand_in": _replace_candidate, "pair_transfer": _pair_transfer_candidate,
-                  "book_settlement": _settlement_candidate}
+                  "book_settlement": _settlement_candidate, "book_dividend": _dividend_candidate}
 
 
 def _agent_authors(authors: Iterable[str]) -> set[str]:
@@ -418,7 +429,8 @@ def collect_candidates(db: Session, statement: AccountStatement, policy: dict) -
     neither applied nor proposed even when the sweep reopened its case with the old context (final review I3)."""
     cases = db.execute(select(ReconciliationCase).where(
         ReconciliationCase.statement_id == statement.id, ReconciliationCase.status == "open",
-        ReconciliationCase.kind.in_(("line_unmatched", "amount_delta", "balance_gap", "entry_unmatched", "settlement")))
+        ReconciliationCase.kind.in_(("line_unmatched", "amount_delta", "balance_gap", "entry_unmatched", "settlement",
+                                     "dividend")))
         .order_by(ReconciliationCase.id)).scalars().all()
     deleted = stand_ins.owner_deleted_events(db, statement)
     out = [c for case in cases for make in POLICY_ACTIONS.values() if (c := make(db, case, statement)) is not None
@@ -551,6 +563,8 @@ def _unchanged(ctx: Context, candidate: Candidate) -> bool:
             and registry.backfill_eligibility(case) == candidate.params.get("kind") \
             and not _owner_may_record(ctx.db, ctx.statement, case, ctx.line, ctx.rules)
     if candidate.action == "book_settlement":  # still the unhinted settlement case of the collected fingerprint
+        return context.get("hint") is None and context.get("fingerprint") == candidate.params.get("fingerprint")
+    if candidate.action == "book_dividend":  # still the unhinted dividend case of the collected fingerprint
         return context.get("hint") is None and context.get("fingerprint") == candidate.params.get("fingerprint")
     if candidate.action == "pair_transfer":  # still a needs_peer line whose single peer candidate is the collected one
         peer = _single_peer(ctx.db, case)

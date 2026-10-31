@@ -730,3 +730,40 @@ is available, with `balance_kind` `"valuation"` and a `valuation` object; a ledg
   (see `scripts/README-r6-dryrun.md`).
 - The 國泰 worker (`homehub-portfolio-cathay.service`) calls the settlement run after each plain commit run; see
   `deploy/statements/README.md`.
+
+Dividends (portfolio integration §4.6) follow the same path. A deposit line of a settlement-source bank statement whose
+merchant names a label in the `rules.dividend_labels` rules key (default `股利`, `股息`, `現金股利`; a settlement label wins) is
+matched against the portfolio's confirmed 國泰 dividend receipts (`GET /api/portfolio/ledger-feed/dividends`). A receipt is
+a candidate when its `receipt_date` is within 3 days of the line and its `amount`, already net of 匯費 / 補充保費, equals the
+line exactly. The outcomes:
+- one receipt, which no other line could take: kind `dividend`, a bookable candidate;
+- several candidates, or a receipt two lines could take: `ambiguous` with hint `dividend_ambiguous`. The owner may book it by
+  picking one receipt (owner override). The policy never books one;
+- no candidate, but exactly one near receipt of another amount: the line keeps its `line_unmatched` case with hint
+  `dividend_mismatch` and `nearest` (the receipt and its signed `delta` = line − receipt). Fix the receipt's fee in the
+  portfolio, or dismiss the case; it is never booked as it stands;
+- otherwise the ordinary `line_unmatched` case.
+
+The reconcile reads the dividend feed once (statement period ± 3 days), next to the settlement read and only when the
+statement prints a dividend line. An unreadable, incomplete or other-currency answer leaves the lines in their ordinary case
+and is reported as `settlement_source_unavailable` with `settlements.dividend_unavailable_code`; `settlements` also counts
+`dividend`, `dividend_ambiguous` and `dividend_mismatch`. Action `book_dividend` books one `income` entry named
+`股利 <symbol>`, with the category from `settlement.dividend_category_id` (an income category) or else `needs_review`. Policy
+action `book_dividend` is enabled by default with `max_amount` "0" and is cap-exempt. Reverting it deletes the entry and
+reopens the case as `line_unmatched`. A dismissal of the line's plain case, or of a dividend-family case, holds across
+these kinds. `POST /reconciliation/settlements/run` and the daily sweep re-check every statement that holds an open
+`dividend`, `dividend_ambiguous` or `dividend_mismatch` case, or a plain case on a dividend line, so the next run sees a
+receipt the portfolio has confirmed or corrected since.
+
+The owner wins over a booked dividend (§4.7, one leg; each reconcile of a statement printing a dividend line checks the
+account's bookings first, under the same row → entry NOWAIT locks as settlements):
+- the owner deletes the income entry: the booking becomes `owner_deleted` and the receipt is freed. The next reconcile
+  offers it again as a `dividend` case with `owner_deleted: true`; the policy proposes it but never books it, and the
+  owner's answer to the proposal books it again;
+- a structural edit (amount, a date, the account or kind — a `coverage_service.STRUCTURAL_KEYS` change — or a fee /
+  discount child, so the entry is no longer `source='statement'`): the booking becomes `owner_edited` and the receipt
+  stays reserved: the edited entry records it, so it is never offered or proposed again;
+- a cosmetic edit (category, name, merchant, tags and the like) keeps the booking `booked`;
+- an owner `income` entry of the same amount on the account within `settlement.twin_window_days` of the booked entry
+  retires the booking (`retired`, reason `twin`): the system entry and its coverage go, and the line meets the owner's
+  entry.

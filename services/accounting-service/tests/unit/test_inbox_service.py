@@ -30,6 +30,11 @@ def test_pattern_only_digits_is_empty():
     ("balance_gap", "open", "bank", None, None, ["anchor_opening", "dismiss"], "balance_gap"),
     ("duplicate_claim", "open", "card", None, "全聯", ["unmatch", "dismiss"], "other"),
     ("dividend", "open", "bank", None, "現金股利", ["dismiss"], "other"),  # until its follow-up plan gives it a card
+    ("ambiguous", "open", "bank", "dividend_ambiguous", "現金股利", ["match", "book_dividend", "dismiss"], "other"),
+    ("line_unmatched", "open", "bank", "dividend_mismatch", "現金股利", ["match", "create_entry", "dismiss"], "other"),
+    # final review M5: the policy's proposal (an owner-deleted re-book) is a `proposed` question, never folded `other`
+    ("dividend", "proposed", "bank", None, "現金股利", ["book_dividend", "match", "dismiss"], "proposed"),
+    ("settlement", "proposed", "bank", None, "交割股款", ["book_settlement", "match", "dismiss"], "settlement"),
 ])
 def test_classify(kind, status, skind, hint, merchant, allowed, expected):
     assert ib.classify(kind=kind, status=status, statement_kind=skind, hint=hint, merchant_norm=merchant,

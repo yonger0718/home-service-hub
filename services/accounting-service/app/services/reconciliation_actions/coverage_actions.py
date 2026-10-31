@@ -70,7 +70,7 @@ class MatchParams(ActionParams):
 class MatchAction(ActionBase):
     name = "match"
     Params = MatchParams
-    case_kinds = frozenset({"line_unmatched", "ambiguous", "amount_delta", "recheck"})
+    case_kinds = frozenset({"line_unmatched", "ambiguous", "amount_delta", "recheck", "dividend"})
     actors = frozenset({OWNER, POLICY})  # coverage only: effect slot c<case.id>v<version> (rulings 31, 36)
 
     def lock_targets(self, ctx: Context, params: MatchParams) -> LockSet:
