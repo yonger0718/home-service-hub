@@ -294,6 +294,7 @@
           }
         </tbody>
       </table>
+      @if (overlapping()) { <p class="cr-note cr-overlap">一筆可有多個標籤，合計會大於支出</p> }
     </div>
   }
 </ng-template>

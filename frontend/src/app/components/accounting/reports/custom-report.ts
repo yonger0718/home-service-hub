@@ -8,6 +8,7 @@ import { CategoryNode, LedgerAccount, Project } from '../../../models/accounting
 import {
   BreakdownResponse,
   BreakdownRow,
+  BreakdownTotals,
   PeriodPreset,
   ReportChart,
   ReportCompare,
@@ -72,6 +73,11 @@ interface ChartLayout {
 const DESKTOP: ChartLayout = { width: 760, height: 280, plot: { left: 52, width: 700, top: 30, height: 210 }, labelY: 270, ticks: true };
 const PHONE: ChartLayout = { width: 358, height: 210, plot: { left: 0, width: 358, top: 20, height: 166 }, labelY: 204, ticks: false };
 const MAX_SERIES = 7;
+
+/** The metric's figure in a response's `totals` (`count` → the entry count). */
+function totalOf(totals: Partial<BreakdownTotals> | undefined, metric: ReportMetric): number {
+  return metric === 'count' ? num(totals?.count) : num(totals?.[metric]);
+}
 
 interface Figure {
   label: string;
@@ -219,9 +225,19 @@ export class CustomReportComponent {
   protected readonly viewBox = computed(() => `0 0 ${this.layout().width} ${this.layout().height}`);
 
   private readonly rows = computed<BreakdownRow[]>(() => this.preview()?.rows ?? []);
+  /** The rows added up (the table's 合計 row and the donut shares); above the period when tag rows overlap. */
   private readonly metricTotal = computed(() => this.rows().reduce((sum, row) => sum + num(row.amount), 0));
-  private readonly count = computed(() => this.rows().reduce((sum, row) => sum + row.count, 0));
-  private readonly compareTotal = computed(() => (this.config().compare ? this.rows().reduce((sum, row) => sum + num(row.compare_amount), 0) : null));
+  private readonly rowCount = computed(() => this.rows().reduce((sum, row) => sum + row.count, 0));
+  private readonly compareRowTotal = computed(() => (this.config().compare ? this.rows().reduce((sum, row) => sum + num(row.compare_amount), 0) : null));
+  /** The period's own figures from `totals` / `compare.totals` (each entry once, whatever the grouping). */
+  private readonly periodTotal = computed(() => totalOf(this.preview()?.totals, this.config().metric));
+  private readonly count = computed(() => this.preview()?.totals.count ?? 0);
+  private readonly compareTotal = computed(() => {
+    const compare = this.preview()?.compare;
+    return this.config().compare && compare ? totalOf(compare.totals, this.config().metric) : null;
+  });
+  /** `group_by` / `split_by` 標籤: an entry counts once per tag, so the rows add up to more than the period. */
+  readonly overlapping = computed(() => !!this.preview()?.overlapping);
   readonly groupLabel = computed(() => DIMENSION_LABELS[this.config().group_by]);
   readonly compareLabel = computed(() => (this.config().compare ? COMPARE_LABELS[this.config().compare!] : ''));
 
@@ -254,7 +270,7 @@ export class CustomReportComponent {
   readonly figures = computed<Figure[]>(() => {
     const rows = this.rows();
     if (!rows.length) return [];
-    const total = this.metricTotal();
+    const total = this.periodTotal();
     const count = this.count();
     const compareTotal = this.compareTotal();
     const money = (value: number) => (this.config().metric === 'count' ? n0(value) : `$${n0(value)}`);
@@ -378,7 +394,7 @@ export class CustomReportComponent {
     };
     const body = rows.map(row => ({ label: this.rowLabel(row), total: false, cells: cells(this.seriesValues(row), num(row.amount), row.count, compare ? num(row.compare_amount) : null) }));
     const seriesTotals = keys.map((_, k) => rows.reduce((sum, row) => sum + this.seriesValues(row)[k], 0));
-    return [...body, { label: '合計', total: true, cells: cells(seriesTotals, this.metricTotal(), this.count(), this.compareTotal()) }];
+    return [...body, { label: '合計', total: true, cells: cells(seriesTotals, this.metricTotal(), this.rowCount(), this.compareRowTotal()) }];
   });
 
   // ---- phone: 編輯條件 sheet -----------------------------------------------------------------------------------

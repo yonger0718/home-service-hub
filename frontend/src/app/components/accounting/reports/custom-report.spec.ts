@@ -251,6 +251,39 @@ describe('CustomReportComponent', () => {
     expect(answerPreview().category_id).toBeUndefined();
   });
 
+  it('takes 合計 and its comparison from totals, and notes overlapping tag rows under the row sum', async () => {
+    const { harness, el } = await open('/accounting/reports/custom/1');
+    answerPreview();
+    harness.detectChanges();
+    expect(el.querySelector('.cr-overlap')).toBeNull();
+
+    const group = el.querySelector<HTMLSelectElement>('.cr-group-by')!;
+    group.value = 'tag';
+    group.dispatchEvent(new Event('change'));
+    harness.detectChanges();
+    const request = http.expectOne(r => r.url === BREAKDOWN);
+    expect(queryOf(request).group_by).toBe('tag');
+    const row = (key: string, amount: string, count: number, compare: string) => ({
+      key, label: key, color: null, amount, refund: '0', count, avg: '300', median: null, min: null, max: null,
+      first_date: null, last_date: null, avg_interval_days: null, compare_amount: compare, splits: [],
+    });
+    // One 600 entry tagged 家用 and 朋友 counts in both rows; the period is 900 over 3 entries (700 last year).
+    request.flush({
+      currency: 'TWD', date_from: '2026-05-01', date_to: '2026-10-31',
+      totals: { expense: '900', income: '0', net: '-900', count: 3, refund: '0' },
+      compare: { date_from: '2025-05-01', date_to: '2025-10-31', totals: { expense: '700', income: '0', net: '-700', count: 2, refund: '0' } },
+      rows: [row('家用', '600', 2, '500'), row('朋友', '600', 2, '300')],
+      overlapping: true,
+      missing_rates: [],
+    });
+    harness.detectChanges();
+
+    expect(texts(el, '.cr-figure')).toEqual(['合計 $900 ▲ 200 (28.6%) 比去年同期', '平均每組 $450 2 組', '每筆平均 $300 3 筆', '最高 家用 $600']);
+    const total = Array.from(el.querySelectorAll('.cr-table tbody tr')).at(-1)!;
+    expect(texts(total, 'td')).toEqual(['1,200', '4', '800', '▲ 400']);
+    expect(el.querySelector('.cr-table-card .cr-overlap')?.textContent?.trim()).toBe('一筆可有多個標籤，合計會大於支出');
+  });
+
   it('says which saved conditions no longer exist', async () => {
     const list = new SampleSavedReportStore().list();
     list[0].stale_refs = ['category:41'];
