@@ -10,9 +10,9 @@ from sqlalchemy.orm import Session
 
 from ..auth import method_scope
 from ..database import get_db
-from ..schemas.reports import BreakdownOut
+from ..schemas.reports import BreakdownOut, TrendOut
 from ..services import report_service
-from ..services.report_rules import Compare, Dimension, Metric, ReportFilters
+from ..services.report_rules import Compare, Dimension, Granularity, Metric, ReportFilters
 
 router = APIRouter(prefix="/reports", tags=["Reports"], dependencies=[Depends(method_scope())])
 
@@ -81,3 +81,28 @@ def get_breakdown(
     if split_by == group_by:
         raise HTTPException(status_code=422, detail="split_by must differ from group_by")
     return report_service.breakdown(db, filters, metric=metric, group_by=group_by, split_by=split_by, compare=compare)
+
+
+def _check_span(f: ReportFilters, granularity: Granularity) -> None:
+    days = (f.date_to - f.date_from).days
+    from_ = f.date_from
+    leap_day = (from_.month, from_.day) == (2, 29)
+    ten_years = from_.replace(year=from_.year + 10, day=28 if leap_day else from_.day)
+    too_long = {"day": days > 400, "week": days > 1100, "month": f.date_to > ten_years}[granularity]
+    if too_long:
+        limit = {"day": "400 days", "week": "1100 days", "month": "10 years"}[granularity]
+        raise HTTPException(status_code=422, detail=f"span exceeds {limit} for {granularity} granularity")
+
+
+@router.get("/trend", response_model=TrendOut)
+def get_trend(
+    granularity: Granularity,
+    metric: Metric = "expense",
+    series: list[int] | None = Query(default=None, description="Top-level category ids, one series each"),
+    filters: ReportFilters = Depends(report_filters),
+    db: Session = Depends(get_db),
+):
+    _check_span(filters, granularity)
+    if series and not report_service.top_level_category_ids(db, series):
+        raise HTTPException(status_code=422, detail="series must be top-level categories")
+    return report_service.trend(db, filters, metric=metric, granularity=granularity, series=series)

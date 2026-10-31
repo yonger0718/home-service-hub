@@ -2,6 +2,7 @@
 magnitudes in the main currency, serialized as decimal strings."""
 from datetime import date
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -54,3 +55,15 @@ class BreakdownOut(BaseModel):
     rows: list[BreakdownRowOut]
     overlapping: bool
     missing_rates: list[str]
+
+
+class TrendBucketOut(BaseModel):
+    start: date
+    values: dict[str, Decimal]
+
+
+class TrendOut(BaseModel):
+    currency: str
+    granularity: Literal["month", "week", "day"]
+    buckets: list[TrendBucketOut]
+    average: dict[str, Decimal]

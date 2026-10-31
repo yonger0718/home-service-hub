@@ -9,7 +9,7 @@ query whose keys include `tag`.
 
 from dataclasses import replace
 from statistics import median
-from datetime import date
+from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import Date, DateTime, Integer, Text, cast, extract, func, literal, select, true, union_all
@@ -21,6 +21,7 @@ from .report_rules import (
     AMOUNT_QUANTUM,
     Compare,
     Dimension,
+    Granularity,
     Metric,
     ReportFilters,
     compare_window,
@@ -29,6 +30,7 @@ from .report_rules import (
     entry_filters,
     income_filter,
     spend_filter,
+    week_start,
 )
 
 MAX_ROWS = 200
@@ -326,4 +328,55 @@ def breakdown(db: Session, f: ReportFilters, *, metric: Metric, group_by: Dimens
         "currency": main, "date_from": f.date_from, "date_to": f.date_to,
         "totals": _totals(totals_raw, rates), "compare": compare_out, "rows": rows,
         "overlapping": group_by == "tag" or split_by == "tag", "missing_rates": missing,
+    }
+
+
+TREND_ALL = "all"
+
+
+def _bucket_starts(granularity: Granularity, date_from: date, date_to: date) -> list[date]:
+    """Every bucket start from the bucket holding `date_from` through `date_to`."""
+    if granularity == "month":
+        current, step = date_from.replace(day=1), None
+    else:
+        current = week_start(date_from) if granularity == "week" else date_from
+        step = timedelta(days=7 if granularity == "week" else 1)
+    starts = []
+    while current <= date_to:
+        starts.append(current)
+        current = current + step if step else (current.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return starts
+
+
+def top_level_category_ids(db: Session, ids: list[int]) -> bool:
+    """True when every id is an existing category without a parent."""
+    found = set(db.scalars(select(Category.id).where(Category.id.in_(ids), Category.parent_id.is_(None))))
+    return found == set(ids)
+
+
+def trend(db: Session, f: ReportFilters, *, metric: Metric, granularity: Granularity,
+          series: list[int] | None) -> dict:
+    """One value per (bucket, series): a grouped query by (bucket, root category when `series`, currency), converted
+    per group; every bucket from `date_from`'s through `date_to` is present, empty ones with 0."""
+    main = ledger_service.main_currency(db)
+    dimensions: tuple[Dimension, ...] = (granularity, "category") if series else (granularity,)
+    raw = _group_rows(db, [*entry_filters(db, f), _ROW_FILTERS[metric]()], dimensions)
+    rates = {c: r for c, r in ledger_service.latest_rates(db, {row[1] for row in raw}, main).items() if r is not None}
+    keys = [str(i) for i in dict.fromkeys(series)] if series else [TREND_ALL]
+    starts = _bucket_starts(granularity, f.date_from, f.date_to)
+    values = {start: {key: Decimal(0) for key in keys} for start in starts}
+    for key_texts, sums in _convert_groups(raw, rates).items():
+        bucket_text = key_texts[0]
+        start = date.fromisoformat(f"{bucket_text}-01" if granularity == "month" else bucket_text)
+        series_key = key_texts[1] if series else TREND_ALL
+        if start in values and series_key in values[start]:
+            values[start][series_key] = _amount(sums, metric)
+    average = {
+        key: (sum((values[start][key] for start in starts), Decimal(0)) / len(starts)).quantize(
+            AMOUNT_QUANTUM, rounding=ROUND_HALF_UP)
+        for key in keys
+    }
+    return {
+        "currency": main, "granularity": granularity,
+        "buckets": [{"start": start, "values": values[start]} for start in starts], "average": average,
     }
