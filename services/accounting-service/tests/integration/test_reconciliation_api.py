@@ -6,7 +6,9 @@ import pytest
 from sqlalchemy import select, text
 
 from app import auth
-from app.models import AccountStatement, LedgerEntry, ReconciliationAudit, ReconciliationCase, StatementCoverage
+from app.models import (
+    AccountStatement, LedgerEntry, ReconciliationAudit, ReconciliationCase, SettlementBooking, StatementCoverage,
+)
 from app.services import coverage_service, settings_service
 from app.services import trade_settlement_service as tss
 from app.services import reconciliation_service as rec
@@ -16,7 +18,7 @@ from tests.integration.settlement_fixtures import (  # noqa: F401  (fixtures)
 )
 from tests.integration.test_settlement_reconcile import _cases as _settlement_cases
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
-    OCT, _card, _cases, _open_beside_gap, _line, _reconcile, _submit, run,
+    OCT, _active, _card, _cases, _open_beside_gap, _line, _reconcile, _submit, run,
 )
 
 TOKENS = "spa:spa-token,hermes:hermes-token,worker:worker-token"
@@ -290,7 +292,46 @@ def test_settlement_run_books_flags_and_reports_counts_only(client, seed, db_ses
     portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-12305", ("ct:5",)))
     res = client.post("/reconciliation/settlements/run", headers=W, json={"source": "portfolio:cathay"})
     assert res.status_code == 200 and (res.json()["status"], res.json()["booked"], res.json()["flagged"]) == ("completed", 1, 1)
-    assert "12305" not in res.text and db_session.get(AccountStatement, sid).needs_recheck is True
+    assert (res.json()["reconciled"], res.json()["busy"], res.json()["errors"]) == (1, 0, [])  # final review I3
+    db_session.expire_all()
+    assert "12305" not in res.text and db_session.get(AccountStatement, sid).needs_recheck is False
+    assert [c.match_rule for c in _active(db_session, sid)] == ["settlement_stand_in"]          # claimed in the call
+
+
+def test_settlement_run_reconciles_what_it_flags_so_the_owner_can_book(client, seed, db_session, run, portfolio_stub):
+    """Final review I3: the worker trigger flags every statement holding an open settlement case and reconciles it in
+    the same call, so the owner's `book_settlement` on a `settlement_ambiguous` case is not 409 `needs_recheck`
+    until the 03:30 sweep."""
+    from tests.integration.test_reconciliation_actions_ledger import _apply
+    bank, _ = settlement_bank(seed, db_session)
+    portfolio_stub.rows = feed(("2026-09-10", "2026-09-14", "-5000", ("ct:1",)), ("2026-09-11", "2026-09-14", "-5000", ("ct:2",)))
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-5000")])
+    (case,) = _settlement_cases(db_session, sid, "open")
+    assert case.context["hint"] == "settlement_ambiguous"
+    res = client.post("/reconciliation/settlements/run", headers=W, json={"source": "portfolio:cathay"})
+    assert res.status_code == 200 and (res.json()["flagged"], res.json()["reconciled"], res.json()["busy"]) == (1, 1, 0)
+    db_session.expire_all()
+    assert db_session.get(AccountStatement, sid).needs_recheck is False
+    (again,) = _settlement_cases(db_session, sid, "open")
+    assert (again.id, again.version) == (case.id, case.version)                                 # unchanged: kept, not superseded
+    _apply(db_session, again.id, "book_settlement", {"fingerprint": portfolio_stub.rows[0]["fingerprint"]})
+    assert db_session.scalar(select(SettlementBooking.status)) == "booked"
+
+
+def test_settlement_run_leaves_a_busy_statement_flagged(client, seed, db_session, run, portfolio_stub, monkeypatch):
+    from app.services.errors import CodedConflictError
+    bank, _ = settlement_bank(seed, db_session)
+    sid = submit_bank(db_session, run, bank, [settle_line(1, date(2026, 9, 14), "-5000")])   # feed empty -> settlement_pending
+
+    def held(*args, **kwargs):  # a candidate row is locked elsewhere
+        raise CodedConflictError("reconcile_busy", "held")
+
+    monkeypatch.setattr(rec, "reconcile", held)
+    res = client.post("/reconciliation/settlements/run", headers=W, json={"source": "portfolio:cathay"})
+    assert res.status_code == 200 and (res.json()["flagged"], res.json()["reconciled"], res.json()["busy"]) == (1, 0, 1)
+    assert res.json()["errors"] == [{"statement_id": sid, "error": "reconcile_busy"}]
+    db_session.expire_all()
+    assert db_session.get(AccountStatement, sid).needs_recheck is True                         # the sweep re-checks it
 
 
 def test_settlement_run_needs_the_ingest_scope(client):

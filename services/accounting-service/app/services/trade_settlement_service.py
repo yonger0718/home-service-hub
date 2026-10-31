@@ -754,8 +754,14 @@ def recheck_statement_ids(db: Session) -> list[int]:
 
 
 def flag_for_recheck(db: Session, report: dict) -> int:
-    """Spec §4.5 item 1: `needs_recheck` on the live, non-retired statements whose period holds a `touched_dates` day
-    of their account, plus `recheck_statement_ids`; returns the number flagged. Flushes; the caller commits."""
+    """Spec §4.5 item 1: `needs_recheck` on `recheck_targets`; returns the number flagged. Flushes; the caller
+    commits."""
+    return flag_statements(db, recheck_targets(db, report))
+
+
+def recheck_targets(db: Session, report: dict) -> set[int]:
+    """The live, non-retired statements whose period holds a `touched_dates` day of their account (a stand-in job
+    report), plus `recheck_statement_ids`. Read only."""
     wanted = set(recheck_statement_ids(db))
     for account_id, days in (report.get("touched_dates") or {}).items():
         spans = [and_(AccountStatement.period_start <= day, AccountStatement.period_end >= day)
@@ -767,6 +773,12 @@ def flag_for_recheck(db: Session, report: dict) -> int:
             .where(AccountStatement.account_id == int(account_id), AccountStatement.mode == "live",
                    AccountStatement.current_revision_id.is_not(None), or_(*spans),
                    ~retired.clause(AccountStatement.id))).scalars())
+    return wanted
+
+
+def flag_statements(db: Session, statement_ids: Iterable[int]) -> int:
+    """`needs_recheck` on these statements (those not flagged yet); returns the number flagged. Flushes."""
+    wanted = set(statement_ids)
     if not wanted:
         return 0
     count = db.execute(

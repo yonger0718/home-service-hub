@@ -483,6 +483,9 @@ class SettlementRunOut(BaseModel):
     skipped: int
     housekeeping: dict[str, int]
     flagged: int
+    reconciled: int  # flagged statements reconciled in the call (their flag cleared)
+    busy: int  # of `errors`, those that yielded `reconcile_busy`: they keep the flag for the sweep
+    errors: list[SweepError]  # statement id + code per statement the call could not reconcile
 
 
 class StandInsOut(BaseModel):

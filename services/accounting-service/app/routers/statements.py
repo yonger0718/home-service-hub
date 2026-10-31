@@ -305,14 +305,30 @@ def reconcile_statement(account_id: int, statement_id: int, db: Session = Depend
 
 @router.post("/reconciliation/settlements/run", response_model=SettlementRunOut, dependencies=INGEST)
 def run_settlements(body: SettlementRunIn, db: Session = Depends(get_db), engine: Engine = Depends(get_engine)):
-    """Spec §4.5 item 1: run the daily stand-in job now (the 國泰 worker calls it after each commit run) and flag the
-    statements it touched, plus those with open settlement cases, for re-check. Counts and codes only."""
+    """Spec §4.5 item 1: run the daily stand-in job now (the 國泰 worker calls it after each commit run), flag the
+    statements it touched, plus those with open settlement cases, for re-check, and reconcile them as the sweep does
+    (one transaction per statement, then the owner rules and the policy), so the flag clears within the call and the
+    owner's `book_settlement` is not refused `needs_recheck` until the next sweep (R7 final review I3). A statement
+    that yields (`reconcile_busy`, ...) keeps its flag for the sweep. Counts, ids and codes only."""
     report = trade_settlement_service.run_stand_ins(engine)  # its own transactions: `db` has none open yet
     with service_errors():
-        flagged = trade_settlement_service.flag_for_recheck(db, report)
+        targets = sorted(trade_settlement_service.recheck_targets(db, report))
+        flagged = trade_settlement_service.flag_statements(db, targets)
     db.commit()
+    reconciled, busy, errors = 0, 0, []
+    for item in recon.reconcile_each(db, targets):
+        if "error" in item:
+            errors.append({"statement_id": item["statement_id"], "error": item["error"]})
+            busy += int(item["error"] == "reconcile_busy")
+        else:
+            reconciled += 1
+        db.commit()  # each statement on its own: the next one's sweep must not run under this one's row locks
+        if "error" not in item:
+            owner_rule_service.run_rules_safe(db, item["statement_id"])
+            policy_service.run_policy_safe(db, item["statement_id"])
     return {"status": report["status"], "booked": len(report["booked"]), "skipped": len(report["skipped"]),
-            "housekeeping": report["housekeeping"], "flagged": flagged}
+            "housekeeping": report["housekeeping"], "flagged": flagged, "reconciled": reconciled, "busy": busy,
+            "errors": errors}
 
 
 @router.post("/reconciliation/sweep", response_model=SweepOut, dependencies=INGEST)
