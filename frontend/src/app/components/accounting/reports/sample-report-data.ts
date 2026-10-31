@@ -6,11 +6,13 @@ import {
   BudgetInput,
   BudgetStatus,
   BudgetStatusResponse,
+  SavedReport,
+  SavedReportInput,
   TREND_ALL,
   TrendQuery,
   TrendResponse,
 } from '../../../models/reports.model';
-import { compareRange, daysInMonth, elapsedDays, monthOf, monthPeriod, shiftMonth } from './report-math';
+import { compareRange, daysInMonth, elapsedDays, monthOf, monthPeriod, num, shiftMonth } from './report-math';
 
 /**
  * The handoff's sample month (`design_handoff_v3/README.md`, "Sample data"), shaped like the `/reports/*` answers.
@@ -173,8 +175,10 @@ export function sampleBreakdown(query: BreakdownQuery): BreakdownResponse {
   const income = metric === 'income';
   const categories = income ? INCOME : EXPENSE;
   const dimension = DIMENSIONS[query.group_by];
-  const rows =
-    query.group_by === 'project'
+  const saved = savedReportRows(query);
+  const rows = saved
+    ? saved
+    : query.group_by === 'project'
       ? [
           ...PROJECTS.filter(p => query.include_excluded_projects || p.id !== 1).map(p => projectRow(p, query)),
           { ...categoryRow({ id: 0, name: '', count: 78, prev: 0, ly: 0, refund: 490, subs: [['（無專案）', 25540, 78]] }, { ...query, split_by: undefined }), key: null, label: '' },
@@ -193,18 +197,22 @@ export function sampleBreakdown(query: BreakdownQuery): BreakdownResponse {
         },
       }
     : null;
+  const rowTotal = saved ? sum(saved.map(row => num(row.amount))) : null;
+  const rowCompare = saved ? sum(saved.map(row => num(row.compare_amount))) : null;
   return {
     currency: 'TWD',
     date_from: query.date_from,
     date_to: query.date_to,
-    totals: {
+    totals: saved
+      ? { expense: text(rowTotal!), income: '0', net: text(-rowTotal!), count: sum(saved.map(row => row.count)), refund: '0' }
+      : {
       expense: text(SAMPLE_EXPENSE),
       income: text(SAMPLE_INCOME),
       net: text(SAMPLE_INCOME - SAMPLE_EXPENSE),
       count: sum(categories.map(c => c.count)),
       refund: text(SAMPLE_REFUND),
     },
-    compare,
+    compare: compare && saved ? { ...compare, totals: { expense: text(rowCompare!) } } : compare,
     rows,
     overlapping: dimension?.overlapping ?? false,
     missing_rates: [],
@@ -363,4 +371,117 @@ export class SampleBudgetStore {
       effective_from: budget.effective_from,
     };
   }
+}
+
+// ---- saved reports ---------------------------------------------------------------------------------------------------
+
+/** The canvas's three saved reports (ReportBuilder): two pinned, one not. */
+const SAVED_SEEDS: SavedReport[] = [
+  {
+    id: 1, name: '週末外食', chart: 'bar', pinned: true, sort_order: 0,
+    config: { v: 1, period: { preset: 'last_6_months' }, metric: 'expense', group_by: 'month', split_by: 'subcategory', filters: { category_id: [2], weekday: [6, 7] }, compare: 'last_year' },
+  },
+  {
+    id: 2, name: '訂閱月費', chart: 'bar', pinned: true, sort_order: 1,
+    config: { v: 1, period: { preset: 'this_year' }, metric: 'expense', group_by: 'merchant', filters: { category_id: [6] }, compare: 'last_year' },
+  },
+  {
+    id: 3, name: '日本旅行比較', chart: 'bar', pinned: false, sort_order: 2,
+    config: { v: 1, period: { preset: 'all' }, metric: 'expense', group_by: 'project', split_by: 'category', filters: { project_id: [3, 4, 1] } },
+  },
+];
+
+/** `/reports/saved` on the sample: the three reports, writes kept in memory for the session. */
+export class SampleSavedReportStore {
+  private reports: SavedReport[] = SAVED_SEEDS.map(r => ({ ...r, config: structuredClone(r.config) }));
+  private nextId = SAVED_SEEDS.length + 1;
+
+  list(): SavedReport[] {
+    return [...this.reports].sort((a, b) => a.sort_order - b.sort_order).map(r => structuredClone(r));
+  }
+
+  get(id: number): SavedReport {
+    const report = this.reports.find(r => r.id === id);
+    if (!report) throw new Error(`no sample saved report ${id}`);
+    return structuredClone(report);
+  }
+
+  create(input: SavedReportInput): SavedReport {
+    const report: SavedReport = { id: this.nextId++, sort_order: this.reports.length, ...input, config: structuredClone(input.config) };
+    this.reports.push(report);
+    return structuredClone(report);
+  }
+
+  update(id: number, input: SavedReportInput): SavedReport {
+    const report = this.get(id);
+    const next = { ...report, ...input, config: structuredClone(input.config) };
+    this.reports = this.reports.map(r => (r.id === id ? next : r));
+    return structuredClone(next);
+  }
+
+  remove(id: number): void {
+    this.reports = this.reports.filter(r => r.id !== id);
+  }
+}
+
+// ---- breakdowns the saved reports ask for -----------------------------------------------------------------------------
+
+/** 週末外食: six months of 晚餐 / 午餐 / 宵夜 on weekends, and last year's totals. */
+const WEEKEND = {
+  keys: ['晚餐', '午餐', '宵夜'],
+  data: [[1820, 980, 320], [1690, 870, 300], [2140, 1050, 350], [1760, 920, 300], [1410, 780, 220], [1880, 910, 260]],
+  compare: [2610, 2930, 3380, 3120, 2550, 3290],
+  counts: [9, 8, 11, 9, 7, 9],
+};
+/** 訂閱月費: the year's subscriptions by merchant, with last year's. */
+const SUBSCRIPTIONS: [string, number, number][] = [['Netflix', 3900, 3900], ['Notion', 2500, 0], ['YouTube', 1990, 1990], ['Spotify', 1490, 1490], ['iCloud', 900, 900]];
+/** 日本旅行比較: three trips split by category. */
+const JAPAN: { id: number; name: string; count: number; first: string; last: string; segments: [string, number][] }[] = [
+  { id: 3, name: '京都 2024', count: 31, first: '2024-11-02', last: '2024-11-07', segments: [['機票', 8900], ['住宿', 7200], ['餐飲', 3100], ['交通', 1100], ['購物', 2600]] },
+  { id: 4, name: '大阪 2025', count: 36, first: '2025-04-12', last: '2025-04-18', segments: [['機票', 9400], ['住宿', 6800], ['餐飲', 3700], ['交通', 1300], ['購物', 3900]] },
+  { id: 1, name: '東京旅行', count: 38, first: '2026-10-10', last: '2026-10-15', segments: [['機票', 9800], ['住宿', 8400], ['餐飲', 3960], ['交通', 1420], ['購物', 1280]] },
+];
+
+function plainRow(key: string | null, label: string, amount: number, count: number, query: BreakdownQuery, extra: Partial<BreakdownRow> = {}): BreakdownRow {
+  return {
+    key, label, color: null, amount: text(amount), refund: '0', count, avg: text(count ? amount / count : 0),
+    median: null, min: null, max: null, first_date: query.date_from, last_date: query.date_to, avg_interval_days: null, ...extra,
+  };
+}
+
+/**
+ * The breakdowns behind the three sample saved reports (and any custom report grouped by month): months carry the
+ * weekend meal data, a merchant breakdown filtered to 訂閱 the subscriptions, a project breakdown filtered to
+ * projects the three trips. Returns null for anything else, so `sampleBreakdown` falls through to its own rows.
+ */
+function savedReportRows(query: BreakdownQuery): BreakdownRow[] | null {
+  if (query.group_by === 'month') {
+    const last = monthOf(query.date_to);
+    const first = monthOf(query.date_from);
+    const months: string[] = [];
+    for (let month = first; month <= last && months.length < 24; month = shiftMonth(month, 1)) months.push(month);
+    const tail = months.slice(-WEEKEND.data.length);
+    return months.map(month => {
+      const index = tail.indexOf(month);
+      const data = index === -1 ? [0, 0, 0] : WEEKEND.data[index];
+      const amount = sum(data);
+      return plainRow(`${month}-01`, `${Number(month.slice(5, 7))}月`, amount, index === -1 ? 0 : WEEKEND.counts[index], query, {
+        first_date: `${month}-01`, last_date: monthPeriod(month).to,
+        compare_amount: query.compare ? text(index === -1 ? 0 : WEEKEND.compare[index]) : undefined,
+        splits: query.split_by ? WEEKEND.keys.map((label, k) => ({ key: String(200 + k), label, amount: text(data[k]), count: Math.round((index === -1 ? 0 : WEEKEND.counts[index]) / 3) })) : undefined,
+      });
+    });
+  }
+  if (query.group_by === 'merchant' && query.category_id?.includes(6)) {
+    return SUBSCRIPTIONS.map(([name, amount, lastYear]) => plainRow(name, name, amount, 10, query, { compare_amount: query.compare ? text(lastYear) : undefined }));
+  }
+  if (query.group_by === 'project' && query.project_id?.length) {
+    return JAPAN.filter(p => query.project_id!.includes(p.id)).map(p =>
+      plainRow(String(p.id), p.name, sum(p.segments.map(([, amount]) => amount)), p.count, query, {
+        first_date: p.first, last_date: p.last,
+        splits: query.split_by ? p.segments.map(([label, amount], index) => ({ key: String(index + 1), label, amount: text(amount), count: Math.round(p.count / 5) })) : undefined,
+      }),
+    );
+  }
+  return null;
 }

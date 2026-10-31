@@ -136,6 +136,30 @@
     }
   }
 
+  .rp-tabs-sep {
+    align-self: center;
+    background: var(--app-border);
+    flex: none;
+    height: 20px;
+    margin: 0 6px;
+    width: 1px;
+  }
+
+  a.rp-tab {
+    align-items: center;
+    color: var(--app-text-muted);
+    display: inline-flex;
+    gap: 6px;
+    text-decoration: none;
+
+    .pi { font-size: 0.75rem; }
+  }
+
+  .rp-tab--new {
+    color: var(--app-primary);
+    font-weight: 700;
+  }
+
   /* Phones: a four-up segmented control, as the canvas draws it. */
   @media (max-width: 759.98px) {
     background: var(--app-surface-soft);
@@ -236,4 +260,35 @@
   margin-left: 8px;
   min-height: 32px;
   padding: 0 12px;
+}
+
+/* Phones: the pinned saved reports as a chip row under the tabs. */
+.rp-saved {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  margin: -4px -16px 0;
+  overflow-x: auto;
+  padding: 0 16px;
+
+  small {
+    color: var(--app-text-muted);
+    flex: none;
+    font-size: var(--fs-label);
+    font-weight: 700;
+  }
+}
+
+.rp-saved-chip {
+  align-items: center;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  color: var(--app-text);
+  display: inline-flex;
+  flex: none;
+  font-size: var(--fs-sm);
+  min-height: 34px;
+  padding: 0 12px;
+  text-decoration: none;
 }

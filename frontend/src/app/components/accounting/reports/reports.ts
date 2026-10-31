@@ -1,11 +1,12 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { ActivatedRoute, Router } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Observable, forkJoin } from 'rxjs';
 
 import { CategoryNode, Project } from '../../../models/accounting.model';
-import { BreakdownResponse, BreakdownRow, BudgetInput, BudgetStatusResponse, TrendQuery, TrendResponse } from '../../../models/reports.model';
+import { BreakdownResponse, BreakdownRow, BudgetInput, BudgetStatusResponse, SavedReport, TrendQuery, TrendResponse } from '../../../models/reports.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import { ReportsService } from '../../../services/reports.service';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
@@ -60,7 +61,7 @@ const CURRENCY_NAMES: Record<string, string> = { TWD: '台幣', JPY: '日圓', U
  */
 @Component({
   selector: 'app-accounting-reports',
-  imports: [PageHeaderComponent, SegToggleComponent, ReportOverviewComponent, ReportTrendComponent, ReportRankComponent, ReportPlanComponent],
+  imports: [RouterLink, PageHeaderComponent, SegToggleComponent, ReportOverviewComponent, ReportTrendComponent, ReportRankComponent, ReportPlanComponent],
   templateUrl: './reports.html',
   styleUrl: './reports.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -70,6 +71,7 @@ export class AccountingReportsComponent {
   private readonly router = inject(Router);
   private readonly reports = inject(ReportsService);
   private readonly accounting = inject(AccountingService);
+  private readonly layoutMode = inject(LayoutModeService);
   private requestId = 0;
   private trendRequestId = 0;
   private rankRequestId = 0;
@@ -124,6 +126,10 @@ export class AccountingReportsComponent {
   readonly expenseRoots = signal<CategoryNode[]>([]);
   readonly planBusy = signal(false);
   readonly planError = signal<string | null>(null);
+  /** Saved reports (design D4): the pinned ones follow the four tabs on desktop and line up as chips on phones. */
+  readonly savedReports = signal<SavedReport[]>([]);
+  readonly pinnedReports = computed(() => this.savedReports().filter(report => report.pinned));
+  readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
   /** The figures are the handoff's sample month (no report API yet). */
   readonly sample = this.reports.sample;
 
@@ -178,6 +184,7 @@ export class AccountingReportsComponent {
   });
 
   constructor() {
+    this.reports.listSaved().subscribe({ next: list => this.savedReports.set(list), error: () => undefined });
     effect(() => {
       const period = this.period();
       untracked(() => this.load(period));

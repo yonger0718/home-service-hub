@@ -32,6 +32,8 @@ const PAGES: [string, string][] = [
   ['/accounting/entries/9/edit', 'app-entry-form'],
   ['/accounting/settings', 'app-accounting-settings'],
   ['/accounting/reports', 'app-accounting-reports'],
+  ['/accounting/reports/custom/new', 'app-custom-report'],
+  ['/accounting/reports/custom/1', 'app-custom-report'],
   ['/accounting/reminders', 'app-accounting-reminders'],
 ];
 
@@ -133,7 +135,7 @@ describe('accounting routes per viewport', () => {
             return;
           }
           const list = url.startsWith('/accounting/accounts') ? LISTS['accounts'] : LISTS['timeline'];
-          if (url === '/accounting/settings' || url === '/accounting/reports') {
+          if (url === '/accounting/settings' || url.startsWith('/accounting/reports')) {
             // Whole-page routes: no list beside them.
             expect(root.querySelector('.dbody')).toBeNull();
           } else if (selector === list) {
@@ -201,6 +203,8 @@ const DRILL_DOWN: [string, string][] = [
   ['/accounting/entries/9/group', '多類別'],
   ['/accounting/entries/9/edit', '編輯記錄'],
   ['/accounting/reminders', '提醒中心'],
+  ['/accounting/reports/custom/new', '新報表'],
+  ['/accounting/reports/custom/1', '自訂報表'],
 ];
 
 async function open(url: string, finalUrl = url): Promise<HTMLElement> {

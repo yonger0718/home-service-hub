@@ -11,7 +11,7 @@ import { LayoutMode, LayoutModeService, MATCH_MEDIA } from '../../../services/la
 import { NavBadgeService } from '../../../services/nav-badge.service';
 import { ReportsService } from '../../../services/reports.service';
 import { AccountingReportsComponent } from './reports';
-import { SampleBudgetStore, sampleBreakdown, sampleTrend } from './sample-report-data';
+import { SampleBudgetStore, SampleSavedReportStore, sampleBreakdown, sampleTrend } from './sample-report-data';
 
 @Component({ template: '' })
 class BlankPage {}
@@ -98,6 +98,8 @@ describe('AccountingReportsComponent', () => {
     TestBed.inject(LayoutModeService).set(mode);
     const harness = await RouterTestingHarness.create();
     await harness.navigateByUrl(url);
+    harness.detectChanges();
+    http.expectOne(r => r.url === '/api/accounting/reports/saved').flush(new SampleSavedReportStore().list());
     harness.detectChanges();
     return { harness, el: harness.routeNativeElement as HTMLElement };
   }
@@ -534,6 +536,36 @@ describe('AccountingReportsComponent', () => {
       expect(el.querySelector('.pl-editor')).not.toBeNull();
       http.expectNone(r => r.url === `${BUDGETS}/status`);
     });
+  });
+
+  it('lists the pinned saved reports after the four tabs on desktop, as chips on phones', async () => {
+    const desktop = await open('/accounting/reports?month=2026-10');
+    flushSample();
+    desktop.harness.detectChanges();
+    const tabs = Array.from(desktop.el.querySelectorAll<HTMLElement>('.rp-tabs .rp-tab'));
+    expect(tabs.map(tab => tab.textContent?.trim())).toEqual(['總覽', '趨勢與比較', '排行', '專案與預算', '週末外食', '訂閱月費', '＋ 自訂報表']);
+    expect(tabs[4].getAttribute('href')).toBe('/accounting/reports/custom/1');
+    expect(tabs[6].getAttribute('href')).toBe('/accounting/reports/custom/new');
+    expect(desktop.el.querySelector('.rp-saved')).toBeNull();
+    http.verify({ ignoreCancelled: true });
+    TestBed.resetTestingModule();
+
+    TestBed.configureTestingModule({
+      providers: [
+        provideRouter([{ path: 'accounting/reports', component: AccountingReportsComponent }, { path: '**', component: BlankPage }]),
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: MATCH_MEDIA, useValue: null },
+        { provide: NavBadgeService, useValue: { badges: signal({}) } },
+      ],
+    });
+    http = TestBed.inject(HttpTestingController);
+    const phone = await open('/accounting/reports?month=2026-10', 'phone');
+    flushSample();
+    phone.harness.detectChanges();
+    expect(texts(phone.el, '.rp-tabs .rp-tab')).toEqual(['總覽', '趨勢與比較', '排行', '專案與預算']);
+    expect(texts(phone.el, '.rp-saved .rp-saved-chip')).toEqual(['週末外食', '訂閱月費']);
+    expect(phone.el.querySelector('.rp-saved-chip')?.getAttribute('href')).toBe('/accounting/reports/custom/1');
   });
 
   it('falls back to the sample month when the report API is not there yet, and says so', async () => {

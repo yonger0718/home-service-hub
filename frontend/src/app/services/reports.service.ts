@@ -8,10 +8,12 @@ import {
   BudgetInput,
   BudgetStatus,
   BudgetStatusResponse,
+  SavedReport,
+  SavedReportInput,
   TrendQuery,
   TrendResponse,
 } from '../models/reports.model';
-import { SampleBudgetStore, sampleBreakdown, sampleTrend } from '../components/accounting/reports/sample-report-data';
+import { SampleBudgetStore, SampleSavedReportStore, sampleBreakdown, sampleTrend } from '../components/accounting/reports/sample-report-data';
 import { todayIso } from '../components/accounting/dates';
 import { toParams } from './accounting.service';
 
@@ -26,6 +28,7 @@ export class ReportsService {
   private readonly http = inject(HttpClient);
   private readonly apiUrl = '/api/accounting/reports';
   private readonly sampleBudgets = new SampleBudgetStore();
+  private readonly sampleSaved = new SampleSavedReportStore();
 
   /** A report request met a 404: the figures on screen are the sample data, not the ledger. */
   readonly sample = signal(false);
@@ -61,6 +64,28 @@ export class ReportsService {
 
   deleteBudget(id: number): Observable<void> {
     return this.http.delete<void>(`${this.apiUrl}/budgets/${id}`).pipe(this.sampleOn404(() => this.sampleBudgets.remove(id)));
+  }
+
+  // ---- saved reports (design D4) ----------------------------------------------------------------------------------
+
+  listSaved(): Observable<SavedReport[]> {
+    return this.http.get<SavedReport[]>(`${this.apiUrl}/saved`).pipe(this.sampleOn404(() => this.sampleSaved.list()));
+  }
+
+  getSaved(id: number): Observable<SavedReport> {
+    return this.http.get<SavedReport>(`${this.apiUrl}/saved/${id}`).pipe(this.sampleOn404(() => this.sampleSaved.get(id)));
+  }
+
+  createSaved(input: SavedReportInput): Observable<SavedReport> {
+    return this.http.post<SavedReport>(`${this.apiUrl}/saved`, input).pipe(this.sampleOn404(() => this.sampleSaved.create(input)));
+  }
+
+  updateSaved(id: number, input: SavedReportInput): Observable<SavedReport> {
+    return this.http.put<SavedReport>(`${this.apiUrl}/saved/${id}`, input).pipe(this.sampleOn404(() => this.sampleSaved.update(id, input)));
+  }
+
+  deleteSaved(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.apiUrl}/saved/${id}`).pipe(this.sampleOn404(() => this.sampleSaved.remove(id)));
   }
 
   private sampleOn404<T>(make: () => T): OperatorFunction<T, T> {

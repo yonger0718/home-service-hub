@@ -1,0 +1,299 @@
+<section class="cr" [class.cr--phone]="phone()">
+  @if (phone()) {
+    <!-- ===== phone: the saved report, read only, with 編輯條件 ===== -->
+    <header class="cr-phone-head">
+      <button type="button" class="cr-back" aria-label="返回報表" (click)="back()">‹</button>
+      <h1>{{ isNew() ? '新報表' : (report()?.name ?? '自訂報表') }}</h1>
+      @if (report()) {
+        <button type="button" class="cr-edit" (click)="openSheet()">編輯條件</button>
+      }
+    </header>
+    @if (isNew()) {
+      <p class="cr-note">建立自訂報表請用電腦版（寬度 760 px 以上）；手機上可以看已存的報表，也能暫時改條件。</p>
+      <a class="cr-link" routerLink="/accounting/reports">回報表</a>
+    } @else if (missing()) {
+      <p class="cr-note">找不到這份報表，可能已被刪除。</p>
+      <a class="cr-link" routerLink="/accounting/reports">回報表</a>
+    } @else if (report()) {
+      <p class="cr-sentence">{{ sentence() }}</p>
+      @if (staleRefs().length) { <p class="cr-stale" role="status">部分條件已失效（{{ staleRefs().join('、') }}），已自動略過。</p> }
+      <ng-container *ngTemplateOutlet="previewBlock" />
+    } @else {
+      <p class="cr-note">讀取中</p>
+    }
+
+    @if (sheetOpen()) {
+      <div class="overlay" (click)="closeSheet()">
+        <div class="sheet cr-sheet" role="dialog" aria-modal="true" aria-label="編輯條件" (click)="$event.stopPropagation()">
+          <div class="grab" aria-hidden="true"></div>
+          <div class="cr-sheet-head">
+            <b>編輯條件</b>
+            <button type="button" class="cr-apply" (click)="applySheet()">套用</button>
+          </div>
+          <label class="cr-field"><span>期間</span>
+            <select [value]="draftPresetValue()" (change)="draftPreset($any($event.target).value)">
+              @for (preset of presets; track preset) { <option [value]="preset">{{ presetLabels[preset] }}</option> }
+              <option value="custom">自訂</option>
+            </select>
+          </label>
+          @if (draftPresetValue() === 'custom') {
+            <div class="cr-field cr-field--range">
+              <input type="date" aria-label="起日" [value]="$any(sheetDraft().period).from ?? ''" (change)="draftPatch({ period: { from: $any($event.target).value, to: $any(sheetDraft().period).to } })" />
+              <span aria-hidden="true">–</span>
+              <input type="date" aria-label="迄日" [value]="$any(sheetDraft().period).to ?? ''" (change)="draftPatch({ period: { from: $any(sheetDraft().period).from, to: $any($event.target).value } })" />
+            </div>
+          }
+          <label class="cr-field"><span>看什麼</span>
+            <select [value]="sheetDraft().metric" (change)="draftPatch({ metric: $any($event.target).value })">
+              @for (metric of metrics; track metric[0]) { <option [value]="metric[0]">{{ metric[1] }}</option> }
+            </select>
+          </label>
+          <label class="cr-field"><span>依什麼分組</span>
+            <select [value]="sheetDraft().group_by" (change)="draftPatch({ group_by: $any($event.target).value })">
+              @for (dimension of dimensions; track dimension[0]) { <option [value]="dimension[0]">{{ dimension[1] }}</option> }
+            </select>
+          </label>
+          <label class="cr-field"><span>再細分</span>
+            <select [value]="sheetDraft().split_by ?? ''" (change)="draftPatch({ split_by: $any($event.target).value || undefined })">
+              <option value="">無</option>
+              @for (dimension of dimensions; track dimension[0]) { @if (dimension[0] !== sheetDraft().group_by) { <option [value]="dimension[0]">{{ dimension[1] }}</option> } }
+            </select>
+          </label>
+          <div class="cr-field cr-field--chips"><span>篩選</span>
+            <div class="cr-chips">
+              @for (chip of draftChips(); track chip.key) {
+                <span class="cr-chip"><span class="cr-chip-k">{{ chip.label }}：</span><b>{{ chip.value }}</b><button type="button" [attr.aria-label]="'移除條件 ' + chip.label" (click)="draftRemoveFilter(chip.key)">✕</button></span>
+              } @empty { <small>沒有篩選</small> }
+            </div>
+          </div>
+          <label class="cr-field"><span>比較</span>
+            <select [value]="sheetDraft().compare ?? ''" (change)="draftPatch({ compare: $any($event.target).value || undefined })">
+              <option value="">不比較</option>
+              @for (compare of compares; track compare[0]) { <option [value]="compare[0]">{{ compare[1] }}</option> }
+            </select>
+          </label>
+          <button type="button" class="cr-cancel" (click)="closeSheet()">取消</button>
+        </div>
+      </div>
+    }
+  } @else {
+    <!-- ===== desktop: the editor ===== -->
+    <nav class="cr-nav" aria-label="我的報表">
+      <a class="cr-nav-back" routerLink="/accounting/reports">‹ 報表</a>
+      <span class="cr-nav-sep" aria-hidden="true"></span>
+      <small>我的報表</small>
+      @for (item of saved(); track item.id) {
+        <a class="cr-saved" [class.on]="item.id === id()" [attr.aria-current]="item.id === id() ? 'page' : null" [routerLink]="['/accounting/reports/custom', item.id]">
+          @if (item.pinned) { <i class="pi pi-bookmark-fill" role="img" aria-label="已釘選到報表分頁"></i> }
+          {{ item.name }}
+        </a>
+      }
+      <a class="cr-new" [class.on]="isNew()" routerLink="/accounting/reports/custom/new">＋ 新報表</a>
+    </nav>
+
+    @if (missing()) {
+      <p class="cr-note">找不到這份報表，可能已被刪除。</p>
+    } @else {
+      <header class="cr-head">
+        <div class="cr-head-text">
+          <h1 class="cr-sr">{{ isNew() ? (name() || '新報表') : (report()?.name ?? '自訂報表') }}</h1>
+          <input class="cr-name" type="text" placeholder="例如：週末外食" aria-label="報表名稱" [value]="name()" (input)="name.set($any($event.target).value)" />
+          <span class="cr-sentence">{{ sentence() }}</span>
+          @if (staleRefs().length) { <span class="cr-stale" role="status">部分條件已失效（{{ staleRefs().join('、') }}），已自動略過。</span> }
+          @if (message(); as message) { <span class="cr-error" role="alert">{{ message }}</span> }
+        </div>
+        <div class="cr-actions">
+          @if (!isNew()) {
+            <button type="button" class="cr-delete" [class.danger]="confirmingDelete()" [disabled]="saving()" (blur)="confirmingDelete.set(false)" (click)="remove()">{{ confirmingDelete() ? '確定刪除' : '刪除' }}</button>
+            <button type="button" class="cr-save-as" [disabled]="!canSave()" (click)="saveAs()">另存新報表</button>
+          }
+          <button type="button" class="cr-save" [disabled]="!canSave()" (click)="save()">儲存</button>
+        </div>
+      </header>
+
+      <div class="cr-body">
+        <section class="cr-card cr-conditions" aria-label="報表條件">
+          <div class="cr-group">
+            <span class="cr-label">期間</span>
+            <div class="cr-presets" role="radiogroup" aria-label="期間">
+              @for (preset of presets; track preset) {
+                <button type="button" role="radio" [attr.aria-checked]="currentPreset() === preset" (click)="setPreset(preset)">{{ presetLabels[preset] }}</button>
+              }
+              <button type="button" role="radio" [attr.aria-checked]="currentPreset() === 'custom'" (click)="setPreset('custom')">自訂</button>
+            </div>
+            @if (currentPreset() === 'custom') {
+              <div class="cr-range">
+                <input type="date" aria-label="起日" [value]="customFrom()" (change)="setCustomRange($any($event.target).value, customTo())" />
+                <span aria-hidden="true">–</span>
+                <input type="date" aria-label="迄日" [value]="customTo()" (change)="setCustomRange(customFrom(), $any($event.target).value)" />
+              </div>
+            }
+            <small class="cr-hint">{{ periodNote() }}</small>
+          </div>
+
+          <div class="cr-group">
+            <span class="cr-label">看什麼</span>
+            <label class="cr-select"><span>看什麼</span>
+              <select class="cr-metric" [value]="config().metric" (change)="setMetric($any($event.target).value)">
+                @for (metric of metrics; track metric[0]) { <option [value]="metric[0]">{{ metric[1] }}</option> }
+              </select>
+            </label>
+            <label class="cr-select"><span>依什麼分組</span>
+              <select class="cr-group-by" [value]="started() ? config().group_by : ''" (change)="setGroup($any($event.target).value)">
+                @if (!started()) { <option value="" disabled>選一個…</option> }
+                @for (dimension of dimensions; track dimension[0]) { <option [value]="dimension[0]">{{ dimension[1] }}</option> }
+              </select>
+            </label>
+            <label class="cr-select"><span>再細分</span>
+              <select class="cr-split-by" [value]="config().split_by ?? ''" (change)="setSplit($any($event.target).value)">
+                <option value="">無</option>
+                @for (dimension of splitOptions(); track dimension[0]) { <option [value]="dimension[0]">{{ dimension[1] }}</option> }
+              </select>
+            </label>
+          </div>
+
+          <div class="cr-group">
+            <span class="cr-label">篩選（全部符合）</span>
+            <div class="cr-chips">
+              @for (chip of chips(); track chip.key) {
+                <span class="cr-chip"><span class="cr-chip-k">{{ chip.label }}：</span><b>{{ chip.value }}</b><button type="button" [attr.aria-label]="'移除條件 ' + chip.label" (click)="removeFilter(chip.key)">✕</button></span>
+              }
+            </div>
+            <div class="cr-add-filter">
+              <select class="cr-filter-kind" aria-label="條件種類" [value]="filterKind()" (change)="setFilterKind($any($event.target).value)">
+                @for (kind of filterKinds; track kind[0]) { <option [value]="kind[0]">{{ kind[1] }}</option> }
+              </select>
+              @if (filterOptions().length) {
+                <select class="cr-filter-value" aria-label="條件值" [value]="filterValue()" (change)="filterValue.set($any($event.target).value)">
+                  <option value="">選擇…</option>
+                  @for (option of filterOptions(); track option.value) { <option [value]="option.value">{{ option.label }}</option> }
+                </select>
+              } @else {
+                <input class="cr-filter-value" type="text" aria-label="條件值" [placeholder]="filterKind() === 'tag' ? '標籤，空格分隔' : '商家名稱'" [value]="filterValue()" (input)="filterValue.set($any($event.target).value)" (keydown.enter)="addFilter()" />
+              }
+              <button type="button" class="cr-filter-add" [disabled]="!filterValue()" (click)="addFilter()">＋ 條件</button>
+            </div>
+            <small class="cr-hint">可用：類別、帳戶、專案、標籤、商家、星期</small>
+          </div>
+
+          <div class="cr-group">
+            <span class="cr-label">圖表</span>
+            <div class="cr-chart-seg" role="radiogroup" aria-label="圖表類型">
+              @for (option of charts(); track option.chart) {
+                <button type="button" role="radio" [attr.aria-checked]="chart() === option.chart" [attr.aria-disabled]="option.reason ? 'true' : null" [attr.title]="option.reason" [class.disabled]="!!option.reason" (click)="setChart(option.chart)">{{ option.label }}</button>
+              }
+            </div>
+            @if (charts()[2].reason; as reason) { <small class="cr-hint">圓環：{{ reason }}</small> }
+          </div>
+
+          <div class="cr-group cr-switches">
+            <label class="cr-select"><span>比較</span>
+              <select class="cr-compare" [value]="config().compare ?? ''" (change)="setCompare($any($event.target).value)">
+                <option value="">不比較</option>
+                @for (compare of compares; track compare[0]) { <option [value]="compare[0]">和{{ compare[1] }}比較</option> }
+              </select>
+            </label>
+            <div class="cr-switch">
+              <span><span>釘選到報表分頁</span><small>出現在 總覽／趨勢／排行 旁邊，手機也看得到</small></span>
+              <app-switch [checked]="pinned()" ariaLabel="釘選到報表分頁" (checkedChange)="pinned.set($event)" />
+            </div>
+          </div>
+        </section>
+
+        <section class="cr-preview" aria-label="預覽">
+          @if (!started()) {
+            <div class="cr-card cr-empty">
+              <b>從一個問題開始</b>
+              <span>選「看什麼」和「依什麼分組」，加上篩選條件，右邊會即時算出來。也可以從下面的範本開始改。</span>
+              <div class="cr-templates">
+                @for (template of templates; track template.name) {
+                  <button type="button" (click)="useTemplate(template)">{{ template.name }}</button>
+                }
+              </div>
+            </div>
+          } @else if (!showPreview()) {
+            <p class="cr-note">再細分不能和分組相同。</p>
+          } @else {
+            <ng-container *ngTemplateOutlet="previewBlock" />
+          }
+        </section>
+      </div>
+    }
+  }
+</section>
+
+<ng-template #previewBlock>
+  @if (previewState() === 'error') {
+    <p class="cr-note" role="alert">預覽讀取失敗</p>
+  } @else if (!preview()) {
+    <p class="cr-note">計算中</p>
+  } @else if (!figures().length) {
+    <p class="cr-note">這些條件下沒有記錄</p>
+  } @else {
+    <div class="cr-figures">
+      @for (figure of figures(); track figure.label) {
+        <div class="cr-figure"><span class="cr-figure-label">{{ figure.label }}</span>&ngsp;<b>{{ figure.value }}</b>&ngsp;<span [class]="'cr-figure-foot ' + (figure.direction ?? '')">{{ figure.foot }}</span></div>
+      }
+    </div>
+    @if (chart() !== 'table') {
+      <div class="cr-card cr-chart-card">
+        <div class="cr-legend">
+          @for (item of legend(); track item.label) {
+            <span><span class="cr-swatch" [class.outline]="item.outline" aria-hidden="true" [style.background]="item.outline ? null : item.color"></span>{{ item.label }}</span>
+          }
+        </div>
+        @if (chart() === 'donut') {
+          <div class="cr-donut-wrap">
+            <svg class="cr-donut" viewBox="0 0 200 200" role="img" [attr.aria-label]="chartAria()">
+              <circle cx="100" cy="100" r="74" fill="none" stroke="var(--app-surface-soft)" stroke-width="30"></circle>
+              @for (arc of arcs(); track $index) {
+                <circle cx="100" cy="100" r="74" fill="none" [attr.stroke]="arc.color" stroke-width="30" [attr.stroke-dasharray]="arc.dasharray" [attr.stroke-dashoffset]="arc.dashoffset" transform="rotate(-90 100 100)"></circle>
+              }
+              <text class="cr-donut-label" x="100" y="96" text-anchor="middle">合計</text>
+              <text class="cr-donut-total" x="100" y="120" text-anchor="middle">{{ figures()[0].value }}</text>
+            </svg>
+            <span class="cr-hint">圓環只在單一分組、沒有細分時可用。</span>
+          </div>
+        } @else {
+          <svg class="cr-chart" [attr.viewBox]="viewBox()" role="img" [attr.aria-label]="chartAria()">
+            @for (line of grid(); track line.label) {
+              <line class="cr-grid" [attr.x1]="layout().plot.left" [attr.x2]="layout().plot.left + layout().plot.width" [attr.y1]="line.y" [attr.y2]="line.y"></line>
+              <text class="cr-tick" [attr.x]="layout().plot.left - 8" [attr.y]="line.textY" text-anchor="end">{{ line.label }}</text>
+            }
+            @if (chart() === 'bar') {
+              @for (rect of rects(); track $index) {
+                <rect [class.cr-outline]="rect.outline" [attr.x]="rect.x" [attr.y]="rect.y" [attr.width]="rect.width" [attr.height]="rect.height" rx="3" [attr.fill]="rect.fill"></rect>
+              }
+            } @else {
+              @if (comparePoints()) { <polyline class="cr-compare-line" [attr.points]="comparePoints()"></polyline> }
+              <polyline class="cr-line" [attr.points]="linePoints()"></polyline>
+              @for (x of xLabels(); track $index) { <circle class="cr-point" [attr.cx]="x.x" [attr.cy]="x.pointY" r="4"></circle> }
+            }
+            @for (x of xLabels(); track $index) {
+              <text class="cr-x" [attr.x]="x.x" [attr.y]="labelY()" text-anchor="middle">{{ x.label }}</text>
+              <text class="cr-total" [attr.x]="x.x" [attr.y]="x.totalY" text-anchor="middle">{{ x.total }}</text>
+            }
+          </svg>
+        }
+      </div>
+    }
+    <div class="cr-card cr-table-card">
+      <table class="cr-table">
+        <thead>
+          <tr>
+            <th scope="col" class="cr-col-name">{{ groupLabel() }}</th>
+            @for (column of columns(); track column.label) { <th scope="col" [class]="'cr-col-' + column.kind">{{ column.label }}</th> }
+          </tr>
+        </thead>
+        <tbody>
+          @for (row of tableRows(); track row.label) {
+            <tr [class.total]="row.total">
+              <th scope="row" class="cr-col-name">{{ row.label }}</th>
+              @for (cell of row.cells; track $index) { <td [class]="'cr-col-' + cell.kind + ' ' + (cell.direction ?? '')" [class.muted]="cell.muted">{{ cell.text }}</td> }
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  }
+</ng-template>
