@@ -58,6 +58,9 @@ describe('sample budgets and projects', () => {
   it('reports the canvas budgets for October with 購物 over', () => {
     const status = new SampleBudgetStore().status('2026-10', '2026-10-30');
     expect(status.time_progress).toBeCloseTo(30 / 31, 3);
+    // A month not begun has no time gone; a month over has all of it.
+    expect(new SampleBudgetStore().status('2026-11', '2026-10-30').time_progress).toBe(0);
+    expect(new SampleBudgetStore().status('2026-09', '2026-10-30').time_progress).toBe(1);
     const shopping = status.budgets.find(b => b.label === '購物')!;
     expect(shopping).toMatchObject({ scope: 'category', category_id: 4, limit: '3000', used: '3490', remaining: '-490', over: true });
     expect(shopping.ratio).toBeCloseTo(1.1633, 3);

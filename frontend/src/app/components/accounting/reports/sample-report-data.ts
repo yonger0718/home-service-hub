@@ -313,11 +313,12 @@ export class SampleBudgetStore {
 
   status(month: string, today: string): BudgetStatusResponse {
     const period = monthPeriod(month);
-    const elapsed = elapsedDays(period, today);
+    // 0 before the month, 1 once it is over, the share of its days gone (today included) in between.
+    const progress = today < period.from ? 0 : today > period.to ? 1 : elapsedDays(period, today).days / daysInMonth(month);
     return {
       month,
       currency: 'TWD',
-      time_progress: Math.round((elapsed.days / daysInMonth(month)) * 1000) / 1000,
+      time_progress: Math.round(progress * 1000) / 1000,
       budgets: this.budgets.filter(b => b.effective_from <= month).map(b => this.toStatus(b)),
     };
   }
