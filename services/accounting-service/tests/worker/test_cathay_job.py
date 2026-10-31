@@ -64,13 +64,14 @@ class HomeHub:
     def __init__(self):
         self.calls: list[tuple[str, str, dict]] = []
         self.fail: int | None = None
+        self.reply: dict | None = None  # the settlement run's body (None: a clean `completed`)
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.calls.append((request.method, request.url.path, json.loads(request.content)))
         if self.fail:
             return httpx.Response(self.fail, json={"detail": "unavailable"})
-        return httpx.Response(200, json={"status": "completed", "booked": 0, "skipped": 0, "housekeeping": {},
-                                         "flagged": 0})
+        return httpx.Response(200, json=self.reply if self.reply is not None else {
+            "status": "completed", "booked": 0, "skipped": 0, "housekeeping": {}, "flagged": 0})
 
 
 class World:
@@ -145,6 +146,26 @@ def test_plain_commit_run_calls_homehub_after_posting(w):
     summary = w.go()
     assert w.homehub.calls == [("POST", "/reconciliation/settlements/run", {"source": "portfolio:cathay"})]
     assert summary["settlement_run"] == "completed" and summary["codes"] == []
+
+
+@pytest.mark.parametrize("reply, expected", [
+    ({"status": "completed", "busy": 1, "housekeeping": {"failed": 2, "checked": 4},
+      "errors": [{"statement_id": 9071, "error": "reconcile_busy"}, {"statement_id": 9072, "error": "Boom"}]},
+     "completed:errors=2,busy=1,failed=2"),
+    ({"status": "completed", "busy": 0, "housekeeping": {"failed": 0, "currency_mismatch": 1}, "errors": []},
+     "completed:currency_mismatch=1"),
+    ({"status": "disabled", "busy": 0, "housekeeping": {"failed": 1}, "errors": []}, "disabled:failed=1"),
+    ({"status": "completed", "busy": 0, "housekeeping": {"failed": 0}, "errors": []}, "completed"),
+    ({"status": "completed", "busy": True, "housekeeping": {"failed": "3"}, "errors": "x"}, "completed"),  # junk: no count
+])
+def test_settlement_run_summary_keeps_errors_busy_and_failures(w, reply, expected):
+    """PR #234 review finding 2: a `completed` run with reconcile errors, busy statements or failed decisions says so
+    in the summary (counts and codes only, ≤ 64 chars); the run's result is unchanged."""
+    w.add("id-1", "2026-03-09_對帳單.pdf", fx("single.txt"))
+    w.homehub.reply = reply
+    summary = w.go()
+    assert summary["settlement_run"] == expected and len(summary["settlement_run"]) <= 64
+    assert summary["codes"] == [] and summary["counts"] == {"imported": 1} and "907" not in json.dumps(summary)
 
 
 def test_plain_commit_run_without_a_homehub_client_is_skipped(w, tmp_path):

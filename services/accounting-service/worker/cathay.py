@@ -104,14 +104,32 @@ def _report(cfg: WorkerConfig, http: httpx.Client, summary: dict) -> None:
         log.info("cathay: run report not posted (%s)", type(exc).__name__)
 
 
+def _count(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def _settlement_summary(data: dict, status: str) -> str:
+    """`<status>` or, when any is non-zero, `<status>:errors=N,busy=M,failed=K,currency_mismatch=J` (the route's
+    `SettlementRunOut`: `len(errors)`, `busy`, `housekeeping.failed` / `.currency_mismatch`; PR #234 review finding
+    2). Counts only — never a statement id, a ledger id or an amount; ≤ 64 chars."""
+    errors, housekeeping = data.get("errors"), data.get("housekeeping")
+    housekeeping = housekeeping if isinstance(housekeeping, dict) else {}
+    counts = [("errors", len(errors) if isinstance(errors, list) else 0), ("busy", _count(data.get("busy"))),
+              ("failed", _count(housekeeping.get("failed"))),
+              ("currency_mismatch", _count(housekeeping.get("currency_mismatch")))]
+    detail = ",".join(f"{name}={n}" for name, n in counts if n)
+    return (f"{status[:32]}:{detail}" if detail else status[:32])[:64]
+
+
 def _settlement_run(cfg: WorkerConfig, homehub: ApiClient) -> str:
     """Spec §4.5: ask HomeHub to run the settlement stand-in job and flag the touched statements for re-check. The
-    result is a status or `failed:<ExceptionClass>` for the summary only: it never changes the run's result."""
+    result is a status (with its non-zero error / busy / failure counts, `_settlement_summary`) or
+    `failed:<ExceptionClass>` for the summary only: it never changes the run's result."""
     try:
         data = homehub._call("POST", "/reconciliation/settlements/run", json={"source": "portfolio:cathay"},
                              timeout=cfg.cathay_timeout_s)
         status = data.get("status") if isinstance(data, dict) else None
-        return status[:32] if isinstance(status, str) and status else "failed:body"
+        return _settlement_summary(data, status) if isinstance(status, str) and status else "failed:body"
     except Exception as exc:  # noqa: BLE001 — a class name only; the portfolio import already succeeded
         log.info("cathay: settlement run not done (%s)", type(exc).__name__)
         return f"failed:{type(exc).__name__}"[:64]
