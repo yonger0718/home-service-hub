@@ -47,6 +47,9 @@ interface Stat {
 /** The six-month drawing (ReportsDesktop 明細統計): viewBox 300 × 90. */
 const SPARK = { width: 300, height: 90, plot: { left: 4, width: 292, top: 6, height: 66 }, labelY: 88 };
 
+/** The panel statistics the API computes on spend rows only (refunds left out). */
+const SPEND_ONLY = new Set(['中位數', '最大', '最小', '平均間隔']);
+
 /**
  * 排行: spend ranked by 商家 / 標籤 / 對象 / 帳戶 with a bar, count and average per row; rows without the dimension
  * muted; a note on overlapping tag totals. The selected row's panel shows its total, count, average, median, max,
@@ -135,6 +138,11 @@ export class ReportRankComponent {
     if (average !== null) stats.push({ label: `近 ${this.sparkValues().length} 月月均`, value: n0(average) });
     return stats;
   });
+
+  /** The API computes 中位數 / 最大 / 最小 / 平均間隔 on spend rows only; 筆數 and 平均 keep the refunds. */
+  readonly statsNote = computed(() =>
+    this.stats().some(stat => SPEND_ONLY.has(stat.label)) ? '中位數、最大、最小、平均間隔只算支出（退款不計入統計）；筆數、平均含退款' : null,
+  );
 
   private readonly sparkValues = computed(() => (this.spark()?.buckets ?? []).map(bucket => num(Object.values(bucket.values)[0])));
   private readonly sparkAverage = computed(() => {

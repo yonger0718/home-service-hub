@@ -38,6 +38,7 @@
           <span class="rk-stat"><small>{{ stat.label }}</small>&ngsp;<b>{{ stat.value }}</b></span>
         }
       </div>
+      @if (statsNote(); as note) { <small class="rk-stats-note">{{ note }}</small> }
       @if (!selectedMuted()) {
         <div class="rk-spark">
           <small>近 6 個月</small>

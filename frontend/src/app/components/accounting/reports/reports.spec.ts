@@ -364,6 +364,8 @@ describe('AccountingReportsComponent', () => {
       expect(texts(el, '.rk-stat')).toEqual([
         '合計 1,035', '筆數 12', '平均 86', '中位數 85', '最大 120', '最小 65', '平均間隔 2.5 天', '占支出 2.5%', '近 6 月月均 992',
       ]);
+      // The API computes those four on spend rows only; 筆數 and 平均 keep the refunds.
+      expect(el.querySelector('.rk-stats-note')?.textContent?.trim()).toBe('中位數、最大、最小、平均間隔只算支出（退款不計入統計）；筆數、平均含退款');
       expect(el.querySelector('.rk-spark-chart')?.getAttribute('aria-label')).toMatch(/^路易莎 近 6 個月支出：5月 880、/);
       const drill = el.querySelector<HTMLAnchorElement>('.rk-drill')!;
       expect(drill.textContent?.trim()).toBe('在記帳記錄看這 12 筆 ›');
@@ -380,6 +382,7 @@ describe('AccountingReportsComponent', () => {
       http.expectNone(() => true);
       expect(el.querySelector('.rk-panel h2')?.textContent?.trim()).toBe('（無商家）');
       expect(texts(el, '.rk-stat')).toEqual(['合計 1,240', '筆數 9', '平均 138', '占支出 3.0%']);
+      expect(el.querySelector('.rk-stats-note')).toBeNull();
       expect(el.querySelector('.rk-spark')).toBeNull();
       expect(el.querySelector('.rk-drill')).toBeNull();
     });
