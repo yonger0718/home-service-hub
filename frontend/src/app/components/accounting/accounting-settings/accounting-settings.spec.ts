@@ -612,4 +612,34 @@ describe('AccountingSettingsComponent 專案 › 不計入報表', () => {
     put.flush({});
     http.expectOne('/api/accounting/projects').flush([]);
   });
+
+  it('keeps exclude_from_reports on both reorder PUTs and on the rollback of a failed reorder', async () => {
+    await TestBed.configureTestingModule({
+      imports: [AccountingSettingsComponent],
+      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
+    }).compileComponents();
+    const http = TestBed.inject(HttpTestingController);
+    const fixture = TestBed.createComponent(AccountingSettingsComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/preference').flush(PREFERENCE);
+    http.expectOne('/api/accounting/account-groups').flush(GROUPS);
+    for (const req of http.match(r => r.url === '/api/accounting/categories')) req.flush(req.request.params.get('kind') === 'income' ? INCOME_TREE : EXPENSE_TREE);
+    http.expectOne('/api/accounting/projects').flush([{ ...PROJECTS[0], exclude_from_reports: true }, { ...PROJECTS[1], exclude_from_reports: false }]);
+    http.expectOne('/api/accounting/counterparties').flush(COUNTERPARTIES);
+    for (const req of http.match(() => true)) req.flush([]);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+
+    el.querySelectorAll<HTMLButtonElement>('.project-row .move-down')[0].click();
+    const first = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/projects/4');
+    expect(first.request.body).toEqual({ name: '生活', is_archived: false, sort_order: 1, exclude_from_reports: true });
+    first.flush({});
+    const second = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/projects/5');
+    expect(second.request.body).toEqual({ name: '2026 大阪', is_archived: false, sort_order: 0, exclude_from_reports: false });
+    second.flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    const revert = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/projects/4');
+    expect(revert.request.body).toEqual({ name: '生活', is_archived: false, sort_order: 0, exclude_from_reports: true });
+    revert.flush({});
+    http.expectOne('/api/accounting/projects').flush([]);
+  });
 });
