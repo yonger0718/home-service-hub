@@ -27,14 +27,14 @@ from ..models import (
     Project,
     RewardRule,
 )
-from . import valuation_service
+from . import report_rules, valuation_service
 from .moze_import_service import import_locked
 
 LEDGER_TZ = ZoneInfo("Asia/Taipei")  # ledger dates are naive Taipei dates (D8)
 DEFAULT_MAIN_CURRENCY = "TWD"
-AMOUNT_QUANTUM = Decimal("0.0001")
-EXPENSE_KINDS = ("expense", "fee")
-INCOME_KINDS = ("income", "reward", "interest", "discount")
+AMOUNT_QUANTUM = report_rules.AMOUNT_QUANTUM
+EXPENSE_KINDS = report_rules.EXPENSE_KINDS
+INCOME_KINDS = report_rules.INCOME_KINDS
 PERIOD_INCOME_KINDS = ("income", "interest", "discount")  # period_summary reports rewards separately
 
 CANONICAL_ORDER = (LedgerEntry.entry_date, LedgerEntry.entry_time.asc().nulls_first(), LedgerEntry.seq)
@@ -97,10 +97,7 @@ def latest_rates(db: Session, bases: Iterable[str], quote: str) -> dict[str, Dec
     return rates
 
 
-def _convert(amount: Decimal, rate: Decimal | None) -> Decimal | None:
-    if rate is None:
-        return None
-    return (amount * rate).quantize(AMOUNT_QUANTUM, rounding=ROUND_HALF_UP)
+_convert = report_rules.convert
 
 
 def _posted_sum(as_of: date):
@@ -602,19 +599,8 @@ def list_all_entries(
     return total, _entry_rows(db, filters, running_accounts=account_ids, limit=limit, offset=offset)
 
 
-def _spend_filter():
-    """Rows that make up spending: negative expense / fee amounts and every refund (refunds are positive and
-    reduce the spending of the period they are dated / posted in)."""
-    return or_(
-        and_(LedgerEntry.kind.in_(EXPENSE_KINDS), LedgerEntry.amount < 0),
-        LedgerEntry.kind == "refund",
-    )
-
-
-def _month_bounds(month: str) -> tuple[date, date]:
-    """[first day, first day of the next month) for a YYYY-MM month."""
-    year, month_no = (int(part) for part in month.split("-"))
-    return date(year, month_no, 1), date(year + (month_no == 12), month_no % 12 + 1, 1)
+_spend_filter = report_rules.spend_filter
+_month_bounds = report_rules.period_bounds
 
 
 def _converted_totals(
@@ -628,9 +614,8 @@ def _converted_totals(
     but no rate; those rows are left out of the totals; and the resolved rates, covering every rated currency with
     an entry in the month, for callers that convert other slices of the same month)."""
     start, end = _month_bounds(month)
-    income_kinds = tuple(kind for kind in INCOME_KINDS if not (hide_rewards and kind == "reward"))
     spend_rows = _spend_filter()
-    income_rows = and_(LedgerEntry.kind.in_(income_kinds), LedgerEntry.amount > 0)
+    income_rows = report_rules.income_filter(hide_rewards)
     keys = (LedgerEntry.entry_date,) if by_day else ()
     rows = db.execute(
         select(
