@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>自訂報表 · 桌面</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="min-height: 100vh; display: flex; flex-wrap: wrap; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500">
+
+  <!-- 側欄（圖示欄） -->
+  <aside aria-label="主要導覽" style="flex: 0 0 72px; box-sizing: border-box; background: {{t.glass}}; border-right: 1px solid {{t.border}}; padding: 18px 0; display: flex; flex-direction: column; align-items: center; gap: 6px">
+    <a href="Main.dc.html" aria-label="Home Hub 首頁" style="width: 36px; height: 36px; border-radius: 12px; background: {{t.accent}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{t.onAccent}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7 M5 10v10h14V10"></path></svg>
+    </a>
+    <sc-for list="{{rail}}" as="item" hint-placeholder-count="8">
+      <sc-if value="{{item.sep}}" hint-placeholder-val="{{false}}"><div style="width: 32px; height: 1px; background: {{t.border}}; margin: 6px 0"></div></sc-if>
+      <sc-if value="{{item.isLink}}" hint-placeholder-val="{{true}}">
+        <a href="{{item.href}}" aria-label="{{item.label}}" title="{{item.label}}" aria-current="{{item.current}}" style="width: 44px; height: 40px; border-radius: 12px; background: {{item.bg}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{item.fg}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{item.icon}}"></path></svg>
+        </a>
+      </sc-if>
+    </sc-for>
+  </aside>
+
+  <main style="flex: 999 1 720px; min-width: 0; box-sizing: border-box; padding: 20px 28px 40px; display: flex; flex-direction: column; gap: 16px">
+
+    <!-- 已存的報表 -->
+    <nav aria-label="我的報表" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+      <a href="ReportsDesktop.dc.html" style="display: flex; align-items: center; gap: 4px; min-height: 36px; padding: 0 8px 0 2px; color: {{t.muted}}; font-size: 14px; font-weight: 700; text-decoration: none">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"></path></svg>報表
+      </a>
+      <span aria-hidden="true" style="width: 1px; height: 20px; background: {{t.border}}"></span>
+      <small style="font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}; padding: 0 4px">我的報表</small>
+      <sc-for list="{{saved}}" as="s" hint-placeholder-count="3">
+        <button type="button" aria-pressed="{{s.on}}" onClick="{{s.pick}}" style="display: flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid {{s.border}}; background: {{s.bg}}; color: {{s.fg}}; font: inherit; font-size: 14px; font-weight: {{s.weight}}">
+          <sc-if value="{{s.pinned}}" hint-placeholder-val="{{false}}"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" role="img" aria-label="已釘選到報表分頁"><path d="M16 3l5 5-3 1-4 4 1 5-2 2-4-4-5 5-1-1 5-5-4-4 2-2 5 1 4-4z"></path></svg></sc-if>{{s.label}}
+        </button>
+      </sc-for>
+      <button type="button" onClick="{{pickNew}}" style="min-height: 36px; padding: 0 14px; border-radius: 999px; border: 1px dashed {{t.border}}; background: transparent; color: {{t.primary}}; font: inherit; font-size: 14px; font-weight: 700">＋ 新報表</button>
+    </nav>
+
+    <header style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px">
+      <div style="display: flex; flex-direction: column; gap: 3px; min-width: 0">
+        <label style="display: flex; flex-direction: column; gap: 2px">
+          <span style="font-size: 12px; font-weight: 700; color: {{t.muted}}">報表名稱</span>
+          <input type="text" value="{{r.name}}" placeholder="例如：週末外食" style="font: inherit; font-size: 26px; font-weight: 800; letter-spacing: -0.02em; color: {{t.text}}; background: transparent; border: 0; border-bottom: 2px dashed {{t.border}}; padding: 2px 0; width: 360px; max-width: 100%">
+        </label>
+        <span style="font-size: 13px; color: {{t.muted}}">{{r.sentence}}</span>
+      </div>
+      <div style="display: flex; gap: 8px">
+        <button type="button" style="min-height: 40px; padding: 0 14px; border-radius: 12px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; font: inherit; font-size: 14px; font-weight: 700">另存新報表</button>
+        <button type="button" style="min-height: 40px; padding: 0 16px; border-radius: 12px; border: 0; background: {{t.primary}}; color: {{t.onPrimary}}; font: inherit; font-size: 14px; font-weight: 700">儲存</button>
+      </div>
+    </header>
+
+    <div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start">
+
+      <!-- ===== 條件 ===== -->
+      <section aria-label="報表條件" style="flex: 0 1 340px; min-width: 300px; background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 16px 18px; display: flex; flex-direction: column; gap: 16px; box-sizing: border-box">
+
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <span style="font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">期間</span>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px">
+            <sc-for list="{{periodChips}}" as="c" hint-placeholder-count="5">
+              <span style="min-height: 32px; padding: 0 12px; border-radius: 999px; border: 1px solid {{c.border}}; background: {{c.bg}}; color: {{c.fg}}; font-size: 13px; font-weight: {{c.weight}}; display: flex; align-items: center">{{c.label}}</span>
+            </sc-for>
+          </div>
+          <small style="font-size: 12px; color: {{t.muted}}">{{r.periodNote}}</small>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <span style="font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">看什麼</span>
+          <sc-for list="{{fields}}" as="f" hint-placeholder-count="3">
+            <button type="button" aria-haspopup="listbox" style="display: grid; grid-template-columns: 64px minmax(0, 1fr) 16px; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; border-radius: 12px; border: 1px solid {{t.border}}; background: {{t.bg}}; color: {{t.text}}; font: inherit; text-align: left">
+              <span style="font-size: 13px; color: {{t.muted}}">{{f.label}}</span>
+              <b style="font-size: 14px; font-weight: 700; color: {{f.color}}">{{f.value}}</b>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+            </button>
+          </sc-for>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <span style="font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">篩選（全部符合）</span>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px">
+            <sc-for list="{{r.filters}}" as="x" hint-placeholder-count="3">
+              <span style="display: flex; align-items: center; gap: 4px; min-height: 32px; padding: 0 4px 0 10px; border-radius: 10px; background: {{t.primarySoft}}; color: {{t.text}}; font-size: 13px">
+                <span style="color: {{t.muted}}">{{x.k}}</span><b style="font-weight: 700">{{x.v}}</b>
+                <button type="button" aria-label="{{x.aria}}" style="width: 26px; height: 26px; border: 0; background: transparent; color: {{t.muted}}; display: flex; align-items: center; justify-content: center"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12 M18 6L6 18"></path></svg></button>
+              </span>
+            </sc-for>
+            <button type="button" style="min-height: 32px; padding: 0 10px; border-radius: 10px; border: 1px dashed {{t.border}}; background: transparent; color: {{t.primary}}; font: inherit; font-size: 13px; font-weight: 700">＋ 條件</button>
+          </div>
+          <small style="font-size: 12px; color: {{t.muted}}">可用：帳戶、類別、專案、標籤、商家、對象、金額範圍、星期、備註關鍵字</small>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <span style="font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">圖表</span>
+          <div role="radiogroup" aria-label="圖表類型" style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: {{t.soft}}; border-radius: 12px; padding: 3px; gap: 2px">
+            <sc-for list="{{chartSeg}}" as="o" hint-placeholder-count="4">
+              <button type="button" role="radio" aria-checked="{{o.on}}" aria-disabled="{{o.disabled}}" onClick="{{o.pick}}" title="{{o.title}}" style="border: 0; min-height: 34px; border-radius: 9px; background: {{o.bg}}; color: {{o.fg}}; font: inherit; font-size: 13px; font-weight: {{o.weight}}; box-shadow: {{o.shadow}}">{{o.label}}</button>
+            </sc-for>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 2px; border-top: 1px solid {{t.line}}; padding-top: 8px">
+          <sc-for list="{{switches}}" as="w" hint-placeholder-count="2">
+            <div style="display: flex; align-items: center; gap: 12px; min-height: 48px">
+              <span style="flex: 1; display: flex; flex-direction: column; gap: 1px"><span style="font-size: 14px; font-weight: 600">{{w.label}}</span><small style="font-size: 12px; color: {{t.muted}}">{{w.desc}}</small></span>
+              <button type="button" role="switch" aria-checked="{{w.aria}}" aria-label="{{w.label}}" onClick="{{w.toggle}}" style="flex: none; width: 52px; height: 32px; border-radius: 16px; border: 0; background: {{w.bg}}; position: relative; padding: 0">
+                <span style="position: absolute; top: 3px; left: {{w.knob}}; width: 26px; height: 26px; border-radius: 13px; background: #FFFFFF; box-shadow: 0 1px 3px rgba(0,0,0,.25)"></span>
+              </button>
+            </div>
+          </sc-for>
+        </div>
+      </section>
+
+      <!-- ===== 預覽 ===== -->
+      <section aria-label="預覽" style="flex: 1 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+        <sc-if value="{{isEmpty}}" hint-placeholder-val="{{false}}">
+          <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 48px 32px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center">
+            <b style="font-size: 20px; font-weight: 800">從一個問題開始</b>
+            <span style="font-size: 14px; color: {{t.muted}}; max-width: 420px; line-height: 1.6">選「看什麼」和「依什麼分組」，加上篩選條件，右邊會即時算出來。也可以從下面的範本開始改。</span>
+            <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 8px">
+              <sc-for list="{{templates}}" as="tp" hint-placeholder-count="4">
+                <button type="button" onClick="{{tp.pick}}" style="min-height: 40px; padding: 0 14px; border-radius: 12px; border: 1px solid {{t.border}}; background: {{t.bg}}; color: {{t.text}}; font: inherit; font-size: 14px; font-weight: 600">{{tp.label}}</button>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{hasReport}}" hint-placeholder-val="{{true}}">
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px">
+            <sc-for list="{{r.kpis}}" as="k" hint-placeholder-count="4">
+              <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 16px; padding: 12px 14px; display: flex; flex-direction: column; gap: 2px">
+                <span style="font-size: 12px; font-weight: 700; color: {{t.muted}}">{{k.label}}</span>
+                <b style="font-size: 22px; font-weight: 800">{{k.value}}</b>
+                <span style="font-size: 12px; color: {{k.footColor}}">{{k.foot}}</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <sc-if value="{{hasChart}}" hint-placeholder-val="{{true}}">
+          <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 18px 20px; display: flex; flex-direction: column; gap: 10px">
+            <div style="display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px">
+              <sc-for list="{{legend}}" as="l" hint-placeholder-count="3">
+                <span style="display: flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 3px; background: {{l.color}}; border: {{l.border}}"></span>{{l.label}}</span>
+              </sc-for>
+            </div>
+
+            <sc-if value="{{isBar}}" hint-placeholder-val="{{true}}">
+              <svg viewBox="0 0 760 280" width="100%" height="280" role="img" aria-label="{{chartAria}}">
+                <sc-for list="{{grid}}" as="g" hint-placeholder-count="3">
+                  <line x1="52" x2="752" y1="{{g.y}}" y2="{{g.y}}" stroke="{{t.line}}" stroke-width="1"></line>
+                  <text x="44" y="{{g.ty}}" text-anchor="end" font-size="11" fill="{{t.muted}}">{{g.label}}</text>
+                </sc-for>
+                <sc-for list="{{rects}}" as="b" hint-placeholder-count="12">
+                  <rect x="{{b.x}}" y="{{b.y}}" width="{{b.w}}" height="{{b.h}}" rx="3" fill="{{b.fill}}" stroke="{{b.stroke}}" stroke-width="1.5" stroke-dasharray="{{b.dash}}"></rect>
+                </sc-for>
+                <sc-for list="{{xLabels}}" as="x" hint-placeholder-count="6">
+                  <text x="{{x.x}}" y="270" text-anchor="middle" font-size="12" font-weight="600" fill="{{t.muted}}">{{x.label}}</text>
+                  <text x="{{x.x}}" y="{{x.ty}}" text-anchor="middle" font-size="12" font-weight="800" fill="{{t.text}}">{{x.total}}</text>
+                </sc-for>
+              </svg>
+            </sc-if>
+
+            <sc-if value="{{isLine}}" hint-placeholder-val="{{false}}">
+              <svg viewBox="0 0 760 280" width="100%" height="280" role="img" aria-label="{{chartAria}}">
+                <sc-for list="{{grid}}" as="g" hint-placeholder-count="3">
+                  <line x1="52" x2="752" y1="{{g.y}}" y2="{{g.y}}" stroke="{{t.line}}" stroke-width="1"></line>
+                  <text x="44" y="{{g.ty}}" text-anchor="end" font-size="11" fill="{{t.muted}}">{{g.label}}</text>
+                </sc-for>
+                <sc-if value="{{hasCmpLine}}" hint-placeholder-val="{{false}}">
+                  <polyline points="{{cmpPoints}}" fill="none" stroke="{{t.muted}}" stroke-width="2" stroke-dasharray="6 5"></polyline>
+                </sc-if>
+                <polyline points="{{linePoints}}" fill="none" stroke="{{t.primary}}" stroke-width="3" stroke-linejoin="round"></polyline>
+                <sc-for list="{{xLabels}}" as="x" hint-placeholder-count="6">
+                  <circle cx="{{x.x}}" cy="{{x.py}}" r="4" fill="{{t.primary}}"></circle>
+                  <text x="{{x.x}}" y="270" text-anchor="middle" font-size="12" font-weight="600" fill="{{t.muted}}">{{x.label}}</text>
+                  <text x="{{x.x}}" y="{{x.lty}}" text-anchor="middle" font-size="12" font-weight="800" fill="{{t.text}}">{{x.total}}</text>
+                </sc-for>
+              </svg>
+            </sc-if>
+
+            <sc-if value="{{isDonut}}" hint-placeholder-val="{{false}}">
+              <div style="display: flex; align-items: center; gap: 24px; flex-wrap: wrap">
+                <svg width="220" height="220" viewBox="0 0 200 200" role="img" aria-label="{{chartAria}}">
+                  <sc-for list="{{arcs}}" as="a" hint-placeholder-count="5">
+                    <circle cx="100" cy="100" r="74" fill="none" stroke="{{a.color}}" stroke-width="30" stroke-dasharray="{{a.dash}}" stroke-dashoffset="{{a.offset}}" transform="rotate(-90 100 100)"></circle>
+                  </sc-for>
+                  <text x="100" y="96" text-anchor="middle" font-size="12" font-weight="700" fill="{{t.muted}}">合計</text>
+                  <text x="100" y="120" text-anchor="middle" font-size="22" font-weight="800" fill="{{t.text}}">{{totalText}}</text>
+                </svg>
+                <span style="font-size: 13px; color: {{t.muted}}; max-width: 240px; line-height: 1.6">圓環只在單一分組、沒有細分時可用。</span>
+              </div>
+            </sc-if>
+          </div>
+          </sc-if>
+
+          <!-- 表格（一律附上） -->
+          <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 8px 20px 12px; overflow-x: auto">
+            <table style="width: 100%; border-collapse: collapse; font-size: 14px">
+              <thead>
+                <tr style="font-size: 12px; color: {{t.muted}}; text-align: right">
+                  <th scope="col" style="text-align: left; padding: 10px 6px; font-weight: 700">{{r.groupLabel}}</th>
+                  <sc-for list="{{cols}}" as="c" hint-placeholder-count="3">
+                    <th scope="col" style="padding: 10px 6px; font-weight: 700">{{c}}</th>
+                  </sc-for>
+                </tr>
+              </thead>
+              <tbody>
+                <sc-for list="{{tableRows}}" as="row" hint-placeholder-count="6">
+                  <tr style="border-top: 1px solid {{t.line}}; text-align: right; font-weight: {{row.weight}}">
+                    <th scope="row" style="text-align: left; padding: 10px 6px; font-weight: {{row.weight}}">{{row.label}}</th>
+                    <sc-for list="{{row.cells}}" as="cell" hint-placeholder-count="3">
+                      <td style="padding: 10px 6px; color: {{cell.color}}">{{cell.v}}</td>
+                    </sc-for>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </div>
+        </sc-if>
+      </section>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":1440,"height":1180}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const st = this.state || {};
+    const dark = !!(this.props.dark ?? false);
+    const t = dark ? {
+      bg: '#0f1218', surface: '#171c24', glass: 'rgba(23,28,36,0.75)', soft: '#202733', border: '#313a48', line: '#252c38',
+      text: '#f3f6fb', muted: '#99a3b3', accent: '#e6ebf5', onAccent: '#171c24', pillOn: '#2a3241', switchOff: '#3a4352',
+      primary: '#8b7dff', onPrimary: '#14112b', primarySoft: 'rgba(139,125,255,0.16)', more: '#ff8a8e', less: '#7fb5e0', ghost: '#3a4352',
+      shadow: '0 12px 28px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)'
+    } : {
+      bg: '#f1f3f6', surface: '#fafcff', glass: 'rgba(250,252,255,0.8)', soft: '#edf1f6', border: '#d8dee7', line: '#e8ecf2',
+      text: '#151821', muted: '#5f6673', accent: '#1d2433', onAccent: '#ffffff', pillOn: '#fafcff', switchOff: '#c9d0da',
+      primary: '#533afd', onPrimary: '#ffffff', primarySoft: 'rgba(83,58,253,0.10)', more: '#b5323a', less: '#2f6f9f', ghost: '#d3d9e2',
+      shadow: '0 10px 30px rgba(18,26,40,0.045), inset 0 1px 0 rgba(255,255,255,0.62)'
+    };
+    const PAL = dark ? ['#8b7dff', '#6fb3ae', '#d0a06a', '#d38a9c', '#aba6d0']
+                     : ['#533afd', '#4f8f8a', '#b7843f', '#b9687e', '#7e78a8'];
+    const n0 = (v) => Math.round(v).toLocaleString('en-US');
+    const pct1 = (v) => (Math.round(v * 1000) / 10).toFixed(1) + '%';
+
+    const I = {
+      chart: 'M3 17l6-6 4 4 8-8 M15 7h6v6', list: 'M8 6h13 M8 12h13 M8 18h13 M3.5 6h.01 M3.5 12h.01 M3.5 18h.01',
+      percent: 'M19 5L5 19 M6.5 6.5h.01 M17.5 17.5h.01', wallet: 'M3 7v10a2 2 0 0 0 2 2h15V9H5a2 2 0 0 1-2-2zm0 0a2 2 0 0 1 2-2h13v4 M16 14h.01',
+      pie: 'M21 12A9 9 0 1 1 12 3v9z M15 3.5A9 9 0 0 1 20.5 9H15z', sliders: 'M4 6h10 M18 6h2 M4 12h4 M12 12h8 M4 18h12 M16 4v4 M10 10v4 M18 16v4',
+      cog: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M12 2v3 M12 19v3 M4.9 4.9l2.1 2.1 M17 17l2.1 2.1 M2 12h3 M19 12h3 M4.9 19.1L7 17 M17 7l2.1-2.1',
+      bell: 'M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9 M13.7 21a2 2 0 0 1-3.4 0'
+    };
+    const ri = (label, icon, href, on, sep) => ({ label, icon, href: href || '#', isLink: true, sep: !!sep, current: on ? 'page' : 'false', bg: on ? t.primarySoft : 'transparent', fg: on ? t.primary : t.muted });
+    const rail = [ri('通知', I.bell, 'NotifDesktop.dc.html'), ri('投資概覽', I.chart, 'Main.dc.html', false, true), ri('股利', I.percent, 'PfDividends.dc.html'),
+      ri('記帳記錄', I.list, 'AccountingDesktop.dc.html', false, true), ri('帳戶', I.wallet), ri('報表', I.pie, 'ReportsDesktop.dc.html', true), ri('記帳設定', I.sliders), ri('設定', I.cog, 'SettingsDesktop.dc.html', false, true)];
+
+    // ===== 三份已存報表（數字與報表頁示範資料一致）=====
+    const REPORTS = {
+      weekend: {
+        label: '週末外食', name: '週末外食', pinned: true,
+        sentence: '近 6 個月 · 支出 · 依月份 · 細分到子類別 · 餐飲（午餐、晚餐、宵夜）且星期六、日',
+        periodKey: 'last6', periodNote: '2026/05/01 – 2026/10/30 · 相對期間：每次打開都往後滾動',
+        metric: '支出', group: '月份', split: '子類別', groupLabel: '月份',
+        filters: [['類別', '餐飲 › 午餐、晚餐、宵夜'], ['星期', '六、日']],
+        xs: ['5月', '6月', '7月', '8月', '9月', '10月'],
+        keys: ['晚餐', '午餐', '宵夜'],
+        data: [[1820, 980, 320], [1690, 870, 300], [2140, 1050, 350], [1760, 920, 300], [1410, 780, 220], [1880, 910, 260]],
+        cmpLabel: '去年同期', cmp: [2610, 2930, 3380, 3120, 2550, 3290],
+        counts: [9, 8, 11, 9, 7, 9], charts: ['bar', 'line', 'table']
+      },
+      subs: {
+        label: '訂閱月費', name: '訂閱月費', pinned: true,
+        sentence: '今年 · 支出 · 依商家 · 類別是訂閱',
+        periodKey: 'ytd', periodNote: '2026/01/01 – 2026/10/30 · 10 個月',
+        metric: '支出', group: '商家', split: '無', groupLabel: '商家',
+        filters: [['類別', '訂閱']],
+        xs: ['Netflix', 'Notion', 'YouTube', 'Spotify', 'iCloud'],
+        keys: ['支出'],
+        data: [[3900], [2500], [1990], [1490], [900]],
+        cmpLabel: '去年同期', cmp: [3900, 0, 1990, 1490, 900],
+        counts: [10, 10, 10, 10, 10], charts: ['bar', 'donut', 'table']
+      },
+      japan: {
+        label: '日本旅行比較', name: '日本旅行比較', pinned: false,
+        sentence: '全部期間 · 支出 · 依專案 · 細分到類別 · 專案是京都 2024、大阪 2025、東京旅行',
+        periodKey: 'all', periodNote: '專案本身已不計入月報，這份報表照樣算得到',
+        metric: '支出', group: '專案', split: '類別', groupLabel: '專案',
+        filters: [['專案', '京都 2024、大阪 2025、東京旅行'], ['含不計入月報的專案', '是']],
+        xs: ['京都 2024', '大阪 2025', '東京 2026'],
+        keys: ['機票', '住宿', '餐飲', '交通', '購物'],
+        data: [[8900, 7200, 3100, 1100, 2600], [9400, 6800, 3700, 1300, 3900], [9800, 8400, 3960, 1420, 1280]],
+        cmpLabel: '', cmp: null,
+        counts: [31, 36, 38], charts: ['bar', 'table']
+      }
+    };
+    const which = st.which === undefined ? 'weekend' : st.which;
+    const saved = Object.keys(REPORTS).map((id) => {
+      const on = id === which;
+      return { label: REPORTS[id].label, pinned: REPORTS[id].pinned, on: on ? 'true' : 'false', bg: on ? t.text : t.surface, fg: on ? t.bg : t.text,
+        border: on ? t.text : t.border, weight: on ? 700 : 500, pick: () => this.setState({ which: id, chart: null }) };
+    });
+    const templates = [['週末外食', 'weekend'], ['訂閱月費', 'subs'], ['日本旅行比較', 'japan']]
+      .map(([label, id]) => ({ label, pick: () => this.setState({ which: id, chart: null }) }));
+
+    const base = { t, rail, saved, templates, pickNew: () => this.setState({ which: null }) };
+    if (!which) {
+      return { ...base, isEmpty: true, hasReport: false, r: { name: '', sentence: '還沒有條件', periodNote: '', filters: [], groupLabel: '', kpis: [] },
+        periodChips: [], fields: [['看什麼', '支出'], ['依什麼分組', '選一個…'], ['再細分', '無']].map(([label, value]) => ({ label, value, color: value === '選一個…' ? t.muted : t.text })),
+        chartSeg: [], switches: [], legend: [], grid: [], rects: [], xLabels: [], arcs: [], cols: [], tableRows: [],
+        isBar: false, isLine: false, isDonut: false, hasChart: false, hasCmpLine: false, linePoints: '', cmpPoints: '', chartAria: '', totalText: '' };
+    }
+
+    const R = REPORTS[which];
+    const compare = st.compare === undefined ? !!R.cmp : (st.compare && !!R.cmp);
+    const pinned = st.pinned === undefined ? R.pinned : st.pinned;
+    const chart = st.chart && R.charts.includes(st.chart) ? st.chart : R.charts[0];
+
+    const periodChips = [['month', '本月'], ['last6', '近 6 個月'], ['ytd', '今年'], ['lastYear', '去年'], ['all', '全部'], ['custom', '自訂']].map(([id, label]) => {
+      const on = id === R.periodKey;
+      return { label, bg: on ? t.primarySoft : 'transparent', fg: on ? t.primary : t.text, border: on ? t.primary : t.border, weight: on ? 700 : 500 };
+    });
+    const fields = [['看什麼', R.metric], ['依什麼分組', R.group], ['再細分', R.split]].map(([label, value]) => ({ label, value, color: t.text }));
+    const CHART = { bar: '長條', line: '折線', donut: '圓環', table: '只看表格' };
+    const chartSeg = ['bar', 'line', 'donut', 'table'].map((id) => {
+      const ok = R.charts.includes(id), on = id === chart;
+      return { label: CHART[id], on: on ? 'true' : 'false', disabled: ok ? 'false' : 'true', title: ok ? CHART[id] : (id === 'donut' ? '有細分時不能用圓環' : '依專案分組時不適合折線'),
+        bg: on ? t.pillOn : 'transparent', fg: on ? t.text : ok ? t.muted : t.ghost, weight: on ? 700 : 500, shadow: on ? '0 1px 2px rgba(0,0,0,.08)' : 'none',
+        pick: () => { if (ok) this.setState({ chart: id }); } };
+    });
+    const sw = (label, desc, on, toggle) => ({ label, desc, aria: on ? 'true' : 'false', bg: on ? t.primary : t.switchOff, knob: on ? '23px' : '3px', toggle });
+    const switches = [
+      sw('和' + (R.cmpLabel || '上一期') + '比較', R.cmp ? '每組旁邊加一根虛線框長條' : '依專案分組時沒有對應期間', compare, () => { if (R.cmp) this.setState({ compare: !compare }); }),
+      sw('釘選到報表分頁', '出現在 總覽／趨勢／排行 旁邊，手機也看得到', pinned, () => this.setState({ pinned: !pinned }))
+    ];
+
+    const totals = R.data.map((row) => row.reduce((s, v) => s + v, 0));
+    const grand = totals.reduce((s, v) => s + v, 0);
+    const cnt = R.counts.reduce((s, v) => s + v, 0);
+    const cmpTotal = R.cmp ? R.cmp.reduce((s, v) => s + v, 0) : 0;
+    const d = grand - cmpTotal;
+    const kpis = [
+      { label: '合計', value: '$' + n0(grand), foot: R.cmp && compare ? (d >= 0 ? '▲ ' : '▼ ') + n0(Math.abs(d)) + '（' + pct1(Math.abs(d) / cmpTotal) + '）比' + R.cmpLabel : cnt + ' 筆', footColor: R.cmp && compare ? (d > 0 ? t.more : t.less) : t.muted },
+      { label: '平均每' + (R.group === '月份' ? '月' : '組'), value: '$' + n0(grand / R.xs.length), foot: R.xs.length + ' 組', footColor: t.muted },
+      { label: '每筆平均', value: '$' + n0(grand / cnt), foot: cnt + ' 筆', footColor: t.muted },
+      { label: '最高', value: R.xs[totals.indexOf(Math.max(...totals))], foot: '$' + n0(Math.max(...totals)), footColor: t.muted }
+    ];
+
+    const legend = R.keys.length > 1 ? R.keys.map((k, i) => ({ label: k, color: PAL[i], border: 'none' })) : [{ label: R.keys[0], color: PAL[0], border: 'none' }];
+    if (R.cmp && compare) legend.push({ label: R.cmpLabel, color: 'transparent', border: '1.5px dashed ' + t.muted });
+
+    const maxV = Math.max(...totals, ...(R.cmp && compare ? R.cmp : [0]));
+    const top = Math.ceil(maxV / 1000) * 1000 * 1.1;
+    const yOf = (v) => 240 - (v / top) * 210;
+    const grid = [0, 0.5, 1].map((f) => { const v = Math.round(top * f / 100) * 100; return { y: yOf(v).toFixed(1), ty: (yOf(v) + 4).toFixed(1), label: v >= 1000 ? (v / 1000).toFixed(v % 1000 ? 1 : 0) + 'k' : '0' }; });
+    const slot = 700 / R.xs.length;
+    const bw = Math.min(slot * (R.cmp && compare ? 0.36 : 0.5), 90);
+    const rects = [];
+    const xLabels = R.xs.map((label, i) => {
+      const cx = 52 + slot * i + slot / 2;
+      const bx = R.cmp && compare ? cx - bw - 3 : cx - bw / 2;
+      let yAcc = 240;
+      R.data[i].forEach((v, k) => {
+        const h = (v / top) * 210;
+        yAcc -= h;
+        rects.push({ x: bx.toFixed(1), y: yAcc.toFixed(1), w: bw.toFixed(1), h: Math.max(h - 1, 0).toFixed(1), fill: PAL[k], stroke: 'none', dash: '0' });
+      });
+      if (R.cmp && compare) {
+        const v = R.cmp[i];
+        rects.push({ x: (cx + 3).toFixed(1), y: yOf(v).toFixed(1), w: bw.toFixed(1), h: (240 - yOf(v)).toFixed(1), fill: 'transparent', stroke: t.muted, dash: '5 4' });
+      }
+      return { label, x: cx.toFixed(1), total: n0(totals[i]), ty: (yOf(totals[i]) - 8).toFixed(1), py: yOf(totals[i]).toFixed(1), lty: (yOf(totals[i]) - 12).toFixed(1) };
+    });
+    const linePoints = xLabels.map((x, i) => x.x + ',' + yOf(totals[i]).toFixed(1)).join(' ');
+    const cmpPoints = R.cmp ? xLabels.map((x, i) => x.x + ',' + yOf(R.cmp[i]).toFixed(1)).join(' ') : '';
+    const C = 2 * Math.PI * 74;
+    let acc = 0;
+    const arcs = totals.map((v, i) => { const len = v / grand * C; const a = { color: PAL[i % PAL.length], dash: Math.max(len - 2, 0.5).toFixed(1) + ' ' + C.toFixed(1), offset: (-acc).toFixed(1) }; acc += len; return a; });
+    if (chart === 'donut') legend.splice(0, legend.length, ...R.xs.map((x, i) => ({ label: x + ' ' + pct1(totals[i] / grand), color: PAL[i % PAL.length], border: 'none' })));
+
+    const showKeys = R.keys.length > 1;
+    const cols = [...(showKeys ? R.keys : []), '合計', '筆數', ...(R.cmp && compare ? [R.cmpLabel, '增減'] : [])];
+    const cell = (v, color) => ({ v, color: color || t.text });
+    const tableRows = R.xs.map((label, i) => {
+      const dd = R.cmp ? totals[i] - R.cmp[i] : 0;
+      return { label, weight: 500, cells: [...(showKeys ? R.data[i].map((v) => cell(n0(v))) : []), cell(n0(totals[i])), cell(String(R.counts[i]), t.muted),
+        ...(R.cmp && compare ? [cell(n0(R.cmp[i]), t.muted), cell(R.cmp[i] === 0 ? '新增' : dd === 0 ? '—' : (dd > 0 ? '▲ ' : '▼ ') + n0(Math.abs(dd)), dd > 0 ? t.more : dd < 0 ? t.less : t.muted)] : [])] };
+    });
+    tableRows.push({ label: '合計', weight: 800, cells: [...(showKeys ? R.keys.map((_, k) => cell(n0(R.data.reduce((s, row) => s + row[k], 0)))) : []), cell(n0(grand)), cell(String(cnt), t.muted),
+      ...(R.cmp && compare ? [cell(n0(cmpTotal), t.muted), cell((d > 0 ? '▲ ' : '▼ ') + n0(Math.abs(d)), d > 0 ? t.more : t.less)] : [])] });
+
+    return { ...base, isEmpty: false, hasReport: true,
+      r: { name: R.name, sentence: R.sentence, periodNote: R.periodNote, filters: R.filters.map(([k, v]) => ({ k: k + '：', v, aria: '移除條件 ' + k })), groupLabel: R.groupLabel, kpis },
+      periodChips, fields, chartSeg, switches, legend, grid, rects, xLabels, arcs, cols, tableRows,
+      isBar: chart === 'bar', isLine: chart === 'line', isDonut: chart === 'donut', hasChart: chart !== 'table',
+      hasCmpLine: !!(R.cmp && compare), linePoints, cmpPoints, totalText: n0(grand),
+      chartAria: R.name + '：' + R.xs.map((x, i) => x + ' ' + n0(totals[i])).join('、') };
+  }
+}
+</script>
+</body>
+</html>

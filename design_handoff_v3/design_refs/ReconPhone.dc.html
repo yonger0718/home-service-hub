@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>對帳逐筆處理 · 手機</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; position: relative; overflow: hidden; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500; display: flex; flex-direction: column">
+
+  <header style="padding: 12px 16px 0; display: flex; flex-direction: column; gap: 10px">
+    <div style="display: flex; align-items: center; gap: 8px">
+      <a href="NotifPhone.dc.html" aria-label="返回通知" style="width: 44px; height: 44px; margin-left: -10px; border-radius: 22px; color: {{t.text}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"></path></svg>
+      </a>
+      <span style="flex: 1; display: flex; flex-direction: column; gap: 1px">
+        <b style="font-size: 17px; font-weight: 800">對帳 · 國泰 CUBE 卡</b>
+        <small style="font-size: 12px; color: {{t.muted}}">9/06 – 10/05 帳單 · 已自動對上 17 / 28 行</small>
+      </span>
+      <b style="font-size: 13px; font-weight: 800">{{progress}}</b>
+    </div>
+    <span style="display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 4px" aria-hidden="true">
+      <sc-for list="{{steps}}" as="d" hint-placeholder-count="10">
+        <span style="height: 5px; border-radius: 3px; background: {{d.bg}}"></span>
+      </sc-for>
+    </span>
+  </header>
+
+  <sc-if value="{{inCase}}" hint-placeholder-val="{{true}}">
+    <div style="flex: 1; display: flex; flex-direction: column; padding: 16px; gap: 14px; min-height: 0">
+      <div style="display: flex; flex-direction: column; gap: 6px">
+        <span style="align-self: flex-start; font-size: 12px; font-weight: 800; padding: 3px 9px; border-radius: 8px; background: {{t.primarySoft}}; color: {{t.primary}}">{{c.kind}}</span>
+        <b style="font-size: 24px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.25">{{c.headline}}</b>
+      </div>
+
+      <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 16px; overflow: hidden; display: grid; grid-template-columns: 56px minmax(0, 1fr) minmax(0, 1fr); font-size: 14px">
+        <span style="padding: 10px 12px; background: {{t.soft}}"></span>
+        <b style="padding: 10px 10px; background: {{t.soft}}; font-size: 12px; font-weight: 700; color: {{t.muted}}">銀行帳單</b>
+        <b style="padding: 10px 10px; background: {{t.soft}}; font-size: 12px; font-weight: 700; color: {{t.muted}}">你的記錄</b>
+        <sc-for list="{{c.cmp}}" as="x" hint-placeholder-count="3">
+          <span style="padding: 11px 12px; border-top: 1px solid {{t.line}}; font-size: 12px; font-weight: 700; color: {{t.muted}}">{{x.label}}</span>
+          <span style="padding: 11px 10px; border-top: 1px solid {{t.line}}; background: {{x.bankBg}}; font-weight: {{x.bankW}}; overflow-wrap: anywhere">{{x.bank}}</span>
+          <span style="padding: 11px 10px; border-top: 1px solid {{t.line}}; background: {{x.ledgerBg}}; font-weight: {{x.ledgerW}}; color: {{x.ledgerFg}}; overflow-wrap: anywhere">{{x.ledger}}</span>
+        </sc-for>
+      </div>
+
+      <sc-if value="{{c.hasNote}}" hint-placeholder-val="{{false}}">
+        <p style="margin: 0; padding: 10px 12px; border-radius: 12px; background: {{t.soft}}; font-size: 13px; line-height: 1.5">{{c.note}}</p>
+      </sc-if>
+
+      <div style="flex: 1"></div>
+
+      <div style="display: flex; align-items: center; gap: 12px">
+        <span style="flex: 1; font-size: 14px; font-weight: 600; line-height: 1.4">{{c.learn}}</span>
+        <button type="button" role="switch" aria-checked="{{learnAria}}" aria-label="{{c.learn}}" onClick="{{toggleLearn}}" style="flex: none; width: 52px; height: 32px; border-radius: 16px; border: 0; background: {{learnBg}}; position: relative; padding: 0">
+          <span style="position: absolute; top: 3px; left: {{learnKnob}}; width: 26px; height: 26px; border-radius: 13px; background: #FFFFFF; box-shadow: 0 1px 3px rgba(0,0,0,.25)"></span>
+        </button>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 8px">
+        <sc-for list="{{c.actions}}" as="a" hint-placeholder-count="3">
+          <button type="button" onClick="{{next}}" style="min-height: 50px; padding: 0 16px; border-radius: 14px; border: 1px solid {{a.border}}; background: {{a.bg}}; color: {{a.fg}}; font: inherit; font-size: 16px; font-weight: 700">{{a.label}}</button>
+        </sc-for>
+        <button type="button" onClick="{{next}}" style="min-height: 44px; border: 0; background: transparent; color: {{t.muted}}; font: inherit; font-size: 14px; font-weight: 700">略過，稍後再看</button>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{done}}" hint-placeholder-val="{{false}}">
+    <div style="flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 24px; gap: 12px">
+      <span style="width: 56px; height: 56px; border-radius: 18px; background: {{t.primarySoft}}; display: flex; align-items: center; justify-content: center">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="{{t.primary}}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"></path></svg>
+      </span>
+      <b style="font-size: 24px; font-weight: 800">已處理 4 筆，還有 6 筆</b>
+      <span style="font-size: 14px; line-height: 1.6; color: {{t.muted}}">剩下的留在通知裡，帳單對完才會從數字中拿掉。</span>
+      <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 12px">
+        <button type="button" onClick="{{restart}}" style="min-height: 50px; border-radius: 14px; border: 0; background: {{t.primary}}; color: {{t.onPrimary}}; font: inherit; font-size: 16px; font-weight: 700">繼續對帳</button>
+        <a href="NotifPhone.dc.html" style="min-height: 50px; border-radius: 14px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; font-size: 16px; font-weight: 700; display: flex; align-items: center; justify-content: center; text-decoration: none">回到通知</a>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const st = this.state || {};
+    const dark = !!(this.props.dark ?? false);
+    const t = dark ? {
+      bg: '#0f1218', surface: '#171c24', soft: '#202733', border: '#313a48', line: '#252c38',
+      text: '#f3f6fb', muted: '#99a3b3', primary: '#8b7dff', onPrimary: '#14112b', primarySoft: 'rgba(139,125,255,0.16)',
+      hi: 'rgba(139,125,255,0.20)', switchOff: '#3a4352',
+      shadow: '0 12px 28px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)'
+    } : {
+      bg: '#f1f3f6', surface: '#fafcff', soft: '#edf1f6', border: '#d8dee7', line: '#e8ecf2',
+      text: '#151821', muted: '#5f6673', primary: '#533afd', onPrimary: '#ffffff', primarySoft: 'rgba(83,58,253,0.10)',
+      hi: 'rgba(83,58,253,0.10)', switchOff: '#c9d0da',
+      shadow: '0 10px 30px rgba(18,26,40,0.045), inset 0 1px 0 rgba(255,255,255,0.62)'
+    };
+    // 與 NotifDesktop 右側相同的示範資料
+    const CASES = [
+      { kind: '金額不同', headline: '銀行多扣了 $30',
+        cmp: [['日期', '09/17', '09/17'], ['商家', 'UNIQLO', '衣服 · UNIQLO'], ['金額', '−$2,096', '−$2,066', true]],
+        note: '你這筆 −$2,066 也出現在「你記了，銀行沒有」，選了就一起處理。',
+        actions: ['改成銀行的 −$2,096', '對到別筆…', '不是同一筆'], learn: '以後「UNIQLO」金額不同都用銀行的' },
+      { kind: '銀行有，你沒記', headline: 'APPLE.COM/BILL −$90',
+        cmp: [['日期', '09/15', '—'], ['商家', 'APPLE.COM/BILL', '沒有對應記錄', false, true], ['金額', '−$90', '—']],
+        note: '',
+        actions: ['記為支出 · 訂閱', '已記在別處，對到…', '忽略這一行'], learn: '以後「APPLE.COM/BILL」自動記為訂閱' },
+      { kind: '日期不同', headline: '同一筆，晚了 8 天入帳',
+        cmp: [['日期', '09/28', '09/20', true], ['商家', 'NETFLIX.COM', 'Netflix'], ['金額', '−$390', '−$390']],
+        note: '',
+        actions: ['對到 9/20 那筆', '不是同一筆'], learn: '以後「NETFLIX」日期差 10 天內都自動對上' },
+      { kind: '手續費', headline: '國外交易手續費 −$32',
+        cmp: [['日期', '10/03', '10/02'], ['商家', '國外交易手續費', '一蘭 · ¥1,290'], ['金額', '−$32', '−$279', true]],
+        note: '最可能屬於前一天的日圓消費，併入後會記成那筆的手續費。',
+        actions: ['併入 10/02 一蘭', '另記一筆手續費', '忽略這一行'], learn: '以後國外交易手續費自動併入前一筆外幣消費' }
+    ];
+    const idx = st.idx || 0;
+    const inCase = idx < CASES.length;
+    const cur = CASES[Math.min(idx, CASES.length - 1)];
+    const learnOn = !!(st.learn || {})[idx];
+    const c = { kind: cur.kind, headline: cur.headline, note: cur.note, hasNote: !!cur.note, learn: cur.learn,
+      cmp: cur.cmp.map(([label, bank, ledger, diff, missing]) => ({ label, bank, ledger,
+        bankBg: diff ? t.hi : 'transparent', bankW: diff ? 800 : 500,
+        ledgerBg: diff ? t.hi : 'transparent', ledgerW: diff ? 800 : 500, ledgerFg: missing ? t.muted : t.text })),
+      actions: cur.actions.map((label, i) => ({ label,
+        bg: i === 0 ? t.primary : t.surface, fg: i === 0 ? t.onPrimary : t.text, border: i === 0 ? t.primary : t.border })) };
+    const steps = Array.from({ length: 10 }, (_, i) => ({ bg: i < idx ? t.primary : i === idx ? t.text : t.soft }));
+    return { t, c, steps, inCase, done: !inCase,
+      progress: inCase ? (idx + 1) + ' / 10' : '4 / 10',
+      learnAria: learnOn ? 'true' : 'false', learnBg: learnOn ? t.primary : t.switchOff, learnKnob: learnOn ? '23px' : '3px',
+      toggleLearn: () => this.setState({ learn: { ...(st.learn || {}), [idx]: !learnOn } }),
+      next: () => this.setState({ idx: idx + 1 }), restart: () => this.setState({ idx: 0 }) };
+  }
+}
+</script>
+</body>
+</html>
