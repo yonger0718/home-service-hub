@@ -19,7 +19,7 @@ Extract the inclusion rules into `report_rules.py` (filters + kind predicates + 
 | `group_by` | `category` (top level), `subcategory`, `account`, `project`, `merchant`, `tag`, `counterparty`, `month`, `week`, `weekday`, `day` |
 | `split_by` | optional, any `group_by` value except the same one |
 | filters | the `/entries` filters plus `weekday[]` (1 = Monday) and `project_id[]` (several) |
-| `compare` | optional `previous` (same length, immediately before) or `last_year` |
+| `compare` | optional `previous` or `last_year`; `previous` has two branches (whole-calendar-month ranges shift back by their number of months, any other range is the same inclusive day-length ending the day before `from`), `last_year` subtracts one year (Feb 29 → Feb 28) — see the `accounting-reports` spec scenarios "Previous for whole calendar months" / "Previous for any other range" |
 | `include_excluded_projects` | default false; true when the report filters on projects |
 
 Response:
