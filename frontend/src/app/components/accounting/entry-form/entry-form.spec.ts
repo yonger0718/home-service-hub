@@ -193,6 +193,15 @@ describe('EntryFormComponent', () => {
     httpMock.match(r => r.url.startsWith('/api/accounting/categories'));
   });
 
+  it('labels 當前餘額 市值 for a valued valuation account (R7 §5)', async () => {
+    const position = makeAccount({ id: 1, name: '國泰高雄', balance: '514200', balance_main: '514200', balance_kind: 'valuation' });
+    const { el } = await open('/accounting/entry?kind=system', 'phone', [position, ...ACCOUNTS.slice(1)]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ ...position }));
+    expect(text(el.querySelector('.current-balance'))).toBe('當前餘額$514,200市值');
+    expect(text(el.querySelector('.current-balance .kind-hint'))).toBe('市值');
+    httpMock.match(r => r.url.startsWith('/api/accounting/categories'));
+  });
+
   it('creates an expense in three taps: 飲食, 午餐, 170, ✓', async () => {
     const { el, left } = await open('/accounting/entry');
     respond('/api/accounting/categories', [FOOD]);

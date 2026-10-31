@@ -19,7 +19,7 @@ import {
 import { AccountGroup, LedgerAccount } from '../../../models/accounting.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { isHandledKey, trapFocus } from '../accounting-ui';
-import { balanceNegative, balanceText as accountBalanceText } from '../account-balance';
+import { balanceNegative, balanceText as accountBalanceText, valuationHint } from '../account-balance';
 import { formatMoney } from '../format';
 import { pickerGroups, visibleAccounts } from './picker-groups';
 import { readRecentAccounts } from './recent-accounts';
@@ -109,6 +109,7 @@ export class AccountPickerComponent {
   });
 
   readonly balanceNegative = balanceNegative;
+  readonly valuationHint = valuationHint;
 
   balanceText(account: LedgerAccount): string {
     if (account.is_credit && account.available_credit !== null) {

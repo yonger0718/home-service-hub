@@ -107,10 +107,22 @@ describe('AccountPickerComponent', () => {
     const position = makeAccount({ id: 7, name: '國泰高雄', icon: '📈', balance: null, balance_main: null, balance_kind: 'valuation', stale: true, group_name: '投資' });
     const { fixture, el } = render({ value: 7, accounts: [WALLET, position] });
     expect(text(el.querySelector('.acct-trigger-balance'))).toBe('· 市值暫不可得');
+    expect(el.querySelector('.acct-trigger-balance .kind-hint')).toBeNull();
     const panel = openPanel(fixture);
     const option = panel.querySelector('.acct-option[data-account-id="7"]')!;
     expect(text(option.querySelector('.acct-balance'))).toBe('市值暫不可得');
     expect(option.querySelector('.acct-balance')!.classList.contains('neg')).toBe(false);
+  });
+
+  it('labels a valued valuation account 市值 (市值（資料較舊） when stale) on the trigger and in the list (R7 §5)', () => {
+    const fresh = makeAccount({ id: 8, name: '國泰高雄', icon: '📈', balance: '514200', balance_main: '514200', balance_kind: 'valuation', group_name: '投資' });
+    const stale = makeAccount({ id: 9, name: '美股', icon: '📈', balance: '1000', balance_main: '1000', balance_kind: 'valuation', stale: true, group_name: '投資' });
+    const { fixture, el } = render({ value: 8, accounts: [WALLET, fresh, stale] });
+    expect(text(el.querySelector('.acct-trigger-balance'))).toBe('· $514,200市值');
+    const panel = openPanel(fixture);
+    expect(text(panel.querySelector('.acct-option[data-account-id="8"] .acct-balance'))).toBe('$514,200市值');
+    expect(text(panel.querySelector('.acct-option[data-account-id="9"] .acct-balance'))).toBe('$1,000市值（資料較舊）');
+    expect(text(panel.querySelector('.acct-option[data-account-id="1"] .acct-balance'))).toBe('$3,070');
   });
 
   it('lists groups with currency badges and balances, marks the selected row, archived only when allowed', () => {
