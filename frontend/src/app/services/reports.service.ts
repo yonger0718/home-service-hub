@@ -1,6 +1,6 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { Injectable, inject, signal } from '@angular/core';
-import { Observable, OperatorFunction, catchError, of, throwError } from 'rxjs';
+import { Injectable, computed, inject, signal } from '@angular/core';
+import { Observable, OperatorFunction, catchError, of, tap, throwError } from 'rxjs';
 
 import {
   BreakdownQuery,
@@ -22,7 +22,7 @@ import { toParams } from './accounting.service';
  * D1 / D3). Only for a backend that lacks the routes (a
  * 404 whose body is not the app's `{code, message, trace_id}` envelope, e.g. FastAPI's `{"detail": "Not Found"}`),
  * the list/status/breakdown/trend reads and the two creates answer with the handoff's sample month and `sample`
- * turns on, so the page can say it is showing 示範資料. Every other error is the caller's, and so is any 404 on a
+ * turns on, so the page can say it is showing 示範資料, until that route answers for itself again. Every other error is the caller's, and so is any 404 on a
  * request addressed to one id (`/budgets/{id}`, `/saved/{id}`) or carrying the app envelope: a stale id surfaces
  * to the caller and never flips the page into demo mode. Writes on the sample land in in-memory stores.
  */
@@ -33,29 +33,34 @@ export class ReportsService {
   private readonly sampleBudgets = new SampleBudgetStore();
   private readonly sampleSaved = new SampleSavedReportStore();
 
-  /** A report request met a 404: the figures on screen are the sample data, not the ledger. */
-  readonly sample = signal(false);
+  /**
+   * The routes whose latest answer was the sample (a missing backend route): each fallback sets its key, each answer
+   * from the backend clears it, so a later 200 (重試 once the routes exist) takes the banner down again.
+   */
+  private readonly sampled = signal<ReadonlySet<SampleKey>>(new Set());
+  /** Some report call is on the sample: the figures on screen are (partly) the sample data, not the ledger. */
+  readonly sample = computed(() => this.sampled().size > 0);
 
   getBreakdown(query: BreakdownQuery): Observable<BreakdownResponse> {
     return this.http
       .get<BreakdownResponse>(`${this.apiUrl}/breakdown`, { params: toParams(query) })
-      .pipe(this.sampleOn404(() => sampleBreakdown(query)));
+      .pipe(this.sampleOn404('breakdown', () => sampleBreakdown(query)));
   }
 
   getTrend(query: TrendQuery): Observable<TrendResponse> {
     return this.http
       .get<TrendResponse>(`${this.apiUrl}/trend`, { params: toParams(query) })
-      .pipe(this.sampleOn404(() => sampleTrend(query)));
+      .pipe(this.sampleOn404('trend', () => sampleTrend(query)));
   }
 
   getBudgetStatus(month: string): Observable<BudgetStatusResponse> {
     return this.http
       .get<BudgetStatusResponse>(`${this.apiUrl}/budgets/status`, { params: { month } })
-      .pipe(this.sampleOn404(() => this.sampleBudgets.status(month, todayIso())));
+      .pipe(this.sampleOn404('budgets', () => this.sampleBudgets.status(month, todayIso())));
   }
 
   createBudget(input: BudgetInput): Observable<BudgetStatus> {
-    return this.http.post<BudgetStatus>(`${this.apiUrl}/budgets`, input).pipe(this.sampleOn404(() => this.sampleBudgets.create(input)));
+    return this.http.post<BudgetStatus>(`${this.apiUrl}/budgets`, input).pipe(this.sampleOn404('budgets', () => this.sampleBudgets.create(input)));
   }
 
   /** A new amount from `effective_from` on; the server keeps earlier months on the old row. */
@@ -70,7 +75,7 @@ export class ReportsService {
   // ---- saved reports (design D4) ----------------------------------------------------------------------------------
 
   listSaved(): Observable<SavedReport[]> {
-    return this.http.get<SavedReport[]>(`${this.apiUrl}/saved`).pipe(this.sampleOn404(() => this.sampleSaved.list()));
+    return this.http.get<SavedReport[]>(`${this.apiUrl}/saved`).pipe(this.sampleOn404('saved', () => this.sampleSaved.list()));
   }
 
   getSaved(id: number): Observable<SavedReport> {
@@ -78,7 +83,7 @@ export class ReportsService {
   }
 
   createSaved(input: SavedReportInput): Observable<SavedReport> {
-    return this.http.post<SavedReport>(`${this.apiUrl}/saved`, input).pipe(this.sampleOn404(() => this.sampleSaved.create(input)));
+    return this.http.post<SavedReport>(`${this.apiUrl}/saved`, input).pipe(this.sampleOn404('saved', () => this.sampleSaved.create(input)));
   }
 
   updateSaved(id: number, input: SavedReportInput): Observable<SavedReport> {
@@ -89,16 +94,33 @@ export class ReportsService {
     return this.http.delete<void>(`${this.apiUrl}/saved/${id}`);
   }
 
-  private sampleOn404<T>(make: () => T): OperatorFunction<T, T> {
-    return catchError<T, Observable<T>>((error: unknown) => {
-      if (error instanceof HttpErrorResponse && error.status === 404 && !isAppEnvelope(error.error)) {
-        this.sample.set(true);
-        return of(make());
-      }
-      return throwError(() => error);
+  private sampleOn404<T>(key: SampleKey, make: () => T): OperatorFunction<T, T> {
+    return source =>
+      source.pipe(
+        tap(() => this.mark(key, false)),
+        catchError<T, Observable<T>>((error: unknown) => {
+          if (error instanceof HttpErrorResponse && error.status === 404 && !isAppEnvelope(error.error)) {
+            this.mark(key, true);
+            return of(make());
+          }
+          return throwError(() => error);
+        }),
+      );
+  }
+
+  private mark(key: SampleKey, on: boolean): void {
+    if (this.sampled().has(key) === on) return;
+    this.sampled.update(keys => {
+      const next = new Set(keys);
+      if (on) next.add(key);
+      else next.delete(key);
+      return next;
     });
   }
 }
+
+/** One key per route family: a read and the create on the same route share it (the route exists, or it does not). */
+type SampleKey = 'breakdown' | 'trend' | 'budgets' | 'saved';
 
 /** The app's own error body (shared_lib `{code, message, trace_id}`): the route exists, so the 404 is a real answer. */
 function isAppEnvelope(body: unknown): boolean {

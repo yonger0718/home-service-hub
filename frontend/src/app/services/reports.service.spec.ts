@@ -61,6 +61,27 @@ describe('ReportsService 404 handling', () => {
     expect(service.sample()).toBe(false);
   });
 
+  it('turns sample mode off again when a later breakdown is the backend\'s (404, then 200 after 重試)', () => {
+    service.getBreakdown(QUERY).subscribe();
+    http.expectOne((r) => r.url === '/api/accounting/reports/breakdown').flush(MISSING, { status: 404, statusText: 'Not Found' });
+    expect(service.sample()).toBe(true);
+    service.getBreakdown(QUERY).subscribe();
+    http.expectOne((r) => r.url === '/api/accounting/reports/breakdown').flush({ rows: [] });
+    expect(service.sample()).toBe(false);
+  });
+
+  it('stays in sample mode while another call is still on the sample (breakdown 200, saved 404)', () => {
+    service.listSaved().subscribe();
+    http.expectOne('/api/accounting/reports/saved').flush(MISSING, { status: 404, statusText: 'Not Found' });
+    service.getBreakdown(QUERY).subscribe();
+    http.expectOne((r) => r.url === '/api/accounting/reports/breakdown').flush({ rows: [] });
+    expect(service.sample()).toBe(true);
+    // The saved route answering clears its own key, and with it the banner.
+    service.listSaved().subscribe();
+    http.expectOne('/api/accounting/reports/saved').flush([]);
+    expect(service.sample()).toBe(false);
+  });
+
   it('propagates a non-404 error', () => {
     let error: unknown;
     service.getBreakdown(QUERY).subscribe({ error: (e) => (error = e) });
