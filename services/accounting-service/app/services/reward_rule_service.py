@@ -1,11 +1,12 @@
 """Reward rule writes: create and update under /accounts/{id}/reward-rules (reward rules design §5)."""
+import json
 from datetime import date
 from uuid import uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import Account, Project, RewardRule
+from ..models import Account, EntryRewardRule, LedgerEntry, Project, RewardRule
 from ..schemas.writes import RewardRuleIn, ShareCapWith
 from .errors import CodedConflictError, NotFoundError, ValidationError
 
@@ -126,3 +127,24 @@ def update(db: Session, account_id: int, rule_id: int, payload: RewardRuleIn) ->
     if payload.sort_order is not None:
         rule.sort_order = payload.sort_order
     _save(db, rule, payload)
+
+
+def reorder(db: Session, account_id: int, ids: list[int]) -> None:
+    """Write positions 0..n-1; the list must name every rule of the account exactly once."""
+    _get_account(db, account_id)
+    rules = {r.id: r for r in db.execute(select(RewardRule).where(RewardRule.account_id == account_id)).scalars()}
+    if len(ids) != len(set(ids)) or set(ids) != set(rules):
+        raise ValidationError("ids", "must list every rule of the account exactly once")
+    for position, rule_id in enumerate(ids):
+        rules[rule_id].sort_order = position
+    db.flush()
+
+
+def delete(db: Session, account_id: int, rule_id: int) -> None:
+    rule = _get_rule(db, account_id, rule_id)
+    entries = db.scalar(select(func.count()).select_from(EntryRewardRule).where(EntryRewardRule.rule_id == rule.id))
+    rewards = db.scalar(select(func.count()).select_from(LedgerEntry).where(LedgerEntry.reward_rule_id == rule.id))
+    if entries or rewards:
+        raise CodedConflictError(RULE_REFERENCED, json.dumps({"entries": entries, "rewards": rewards}))
+    db.delete(rule)
+    db.flush()

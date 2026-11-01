@@ -1,4 +1,5 @@
 """Reward rule CRUD under /accounts/{id}/reward-rules (reward rules design §5.3)."""
+import json
 from datetime import date
 from decimal import Decimal
 from uuid import UUID
@@ -128,3 +129,40 @@ def test_disabling_a_linked_rule_keeps_the_link(client, db_session, seed):
     edited = client.put(f"/entries/{entry.id}", json={"account_id": card.id, "kind": "expense", "amount": "120",
                                                       "entry_date": "2026-09-01", "reward_rule_ids": [rule.id]})
     assert edited.status_code == 200, edited.text
+
+
+def test_reorder_writes_positions_and_returns_the_list(client, db_session, seed):
+    card = seed.account("華航卡")
+    a, b, c = (seed.rule(card, name=n, sort_order=i) for i, n in enumerate("ABC"))
+    db_session.commit()
+    response = client.put(f"/accounts/{card.id}/reward-rules/order", json={"ids": [c.id, a.id, b.id]})
+    assert response.status_code == 200, response.text
+    assert [(r["name"], r["sort_order"]) for r in response.json()] == [("C", 0), ("A", 1), ("B", 2)]
+
+
+def test_reorder_rejects_missing_or_extra_ids(client, db_session, seed):
+    # Review focus 3: a stale list (a rule Hermes just added is missing) changes nothing.
+    card, other = seed.account("華航卡"), seed.account("玉山卡")
+    a, b = seed.rule(card, name="A", sort_order=0), seed.rule(card, name="B", sort_order=1)
+    foreign = seed.rule(other)
+    db_session.commit()
+    for ids in ([a.id], [a.id, b.id, foreign.id], [a.id, a.id]):
+        response = client.put(f"/accounts/{card.id}/reward-rules/order", json={"ids": ids})
+        assert response.status_code == 422 and response.json()["detail"][0]["loc"][-1] == "ids", ids
+    assert [r["sort_order"] for r in client.get(f"/accounts/{card.id}/reward-rules").json()] == [0, 1]
+
+
+def test_delete_unreferenced_rule_and_refuse_referenced_with_counts(client, db_session, seed):
+    card = seed.account("華航卡")
+    free, used = seed.rule(card, name="free"), seed.rule(card, name="used")
+    purchase = seed.entry(card, "-100")
+    db_session.add(EntryRewardRule(entry_id=purchase.id, rule_id=used.id))
+    seed.entry(card, "5", kind="reward", reward_rule_id=used.id, reward_source_entry_id=purchase.id)
+    seed.entry(card, "7", kind="reward", reward_rule_id=used.id)
+    db_session.commit()
+    assert client.delete(f"/accounts/{card.id}/reward-rules/{free.id}").status_code == 204
+    refused = client.delete(f"/accounts/{card.id}/reward-rules/{used.id}")
+    assert refused.status_code == 409
+    code, _, detail = refused.json()["message"].partition(": ")
+    assert code == "rule_referenced" and json.loads(detail) == {"entries": 1, "rewards": 2}
+    assert client.delete(f"/accounts/{card.id}/reward-rules/{free.id}").status_code == 404

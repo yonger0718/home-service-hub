@@ -15,7 +15,7 @@ from ..schemas.ledger import (
     EntryPage,
     RewardRuleOut,
 )
-from ..schemas.writes import SOURCE_CURRENCIES, AccountIn, AccountSourcesPatch, RewardRuleIn
+from ..schemas.writes import SOURCE_CURRENCIES, AccountIn, AccountSourcesPatch, OrderIn, RewardRuleIn
 from ..services import ledger_service, reward_rule_service, settings_service
 from ..services.errors import CodedValidationError
 from .errors import service_errors
@@ -62,13 +62,29 @@ def create_reward_rule(account_id: int, payload: RewardRuleIn, db: Session = Dep
     return ledger_service.rule_out(db.get(RewardRule, rule_id))
 
 
-# The `PUT .../reward-rules/order` route must be declared above this one, or `order` binds to {rule_id}.
+# Declared above the `{rule_id}` routes, or `order` binds to {rule_id}.
+@router.put("/{account_id}/reward-rules/order", response_model=list[RewardRuleOut])
+def reorder_reward_rules(account_id: int, payload: OrderIn, db: Session = Depends(get_db)):
+    with service_errors():
+        reward_rule_service.reorder(db, account_id, payload.ids)
+    db.commit()
+    return ledger_service.list_reward_rules(db, account_id)
+
+
 @router.put("/{account_id}/reward-rules/{rule_id}", response_model=RewardRuleOut)
 def update_reward_rule(account_id: int, rule_id: int, payload: RewardRuleIn, db: Session = Depends(get_db)):
     with service_errors():
         reward_rule_service.update(db, account_id, rule_id, payload)
     db.commit()
     return ledger_service.rule_out(db.get(RewardRule, rule_id))
+
+
+@router.delete("/{account_id}/reward-rules/{rule_id}", status_code=204)
+def delete_reward_rule(account_id: int, rule_id: int, db: Session = Depends(get_db)):
+    with service_errors():
+        reward_rule_service.delete(db, account_id, rule_id)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/{account_id}/summary", response_model=AccountPeriodSummaryOut)
