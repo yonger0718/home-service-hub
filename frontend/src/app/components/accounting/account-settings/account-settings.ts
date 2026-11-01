@@ -30,8 +30,10 @@ import { DueRule, dueDate, periodLabel, statementPeriod } from '../cycle';
 import { DirtyAware, DirtyFormRegistry } from '../dirty-form.service';
 import { shortDate, todayIso } from '../dates';
 import { balanceNegative, balanceText, valuationHint } from '../account-balance';
-import { formatMoney } from '../format';
+import { decimalText, formatMoney } from '../format';
 import { fieldErrors, writeErrorMessage } from '../http-errors';
+
+export { decimalText } from '../format';
 
 export const ROUNDING_LABELS: Record<RoundingMode, string> = {
   keep: '不處理',
@@ -72,25 +74,6 @@ const EMPTY_FORM: AccountForm = {
   credit_limit: '', combined_account_id: null, credit_sharing_id: null, auto_pay_account_id: null,
   fx_fee_on: false, fx_fee_pct: '', fx_fee_rounding: 'keep', fx_fee_refundable: false,
 };
-
-/**
- * A server decimal as the form shows it (`"-1234567890123.4500"` → `"-1234567890123.45"`), on the text only: no
- * `Number` round-trip, so amounts ≥ 1e12 keep every digit. Anything that is not a plain decimal is shown as sent.
- */
-export function decimalText(value: string | null | undefined): string {
-  if (value === null || value === undefined || value === '') {
-    return '';
-  }
-  const text = value.trim();
-  const match = /^([+-]?)(\d*)(?:\.(\d*))?$/.exec(text);
-  if (!match || (match[2] === '' && !match[3])) {
-    return text;
-  }
-  const whole = match[2].replace(/^0+(?=\d)/, '') || '0';
-  const fraction = (match[3] ?? '').replace(/0+$/, '');
-  const digits = fraction ? `${whole}.${fraction}` : whole;
-  return match[1] === '-' && /[1-9]/.test(digits) ? `-${digits}` : digits;
-}
 
 function intOrNull(value: string): number | null {
   const parsed = Number.parseInt(value, 10);

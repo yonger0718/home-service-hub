@@ -53,6 +53,79 @@ export interface RewardRule {
   moze_id: string | null;
 }
 
+export type ShareCapWith = 'none' | number | null;
+
+/** Writable fields of a reward rule (`POST/PUT /accounts/{id}/reward-rules`). */
+export interface RewardRuleInput {
+  name: string;
+  method: RewardMethod;
+  rate: string | null;
+  fixed_amount: string | null;
+  posting: RewardPosting;
+  delay_days: number;
+  post_month_offset: number;
+  post_day: number;
+  txn_rounding: RoundingMode;
+  total_rounding: RoundingMode;
+  total_cap: string | null;
+  is_basic: boolean;
+  reward_account_id: number | null;
+  reward_project_id: number | null;
+  starts_on: string | null;
+  ends_on: string | null;
+  is_enabled: boolean;
+  description: string | null;
+  sort_order?: number;
+  share_cap_with?: ShareCapWith;
+}
+
+export type RewardRuleState = 'active' | 'disabled' | 'expired' | 'upcoming';
+
+export interface RewardTotal {
+  currency: string;
+  amount: string;
+}
+
+export interface RewardRuleStats {
+  linked_entries: number;
+  linked_entries_12m: number;
+  rewards_count: number;
+  rewards_total: RewardTotal[];
+  rewards_last_date: string | null;
+}
+
+export interface RewardRuleOverviewRule extends RewardRule {
+  state: RewardRuleState;
+  stats: RewardRuleStats;
+}
+
+export interface RewardRuleOverviewAccount {
+  account_id: number;
+  account_name: string;
+  is_credit: boolean;
+  is_archived: boolean;
+  rules: RewardRuleOverviewRule[];
+}
+
+export interface RewardRuleCounts {
+  active: number;
+  disabled: number;
+  expired: number;
+  upcoming: number;
+  enabled_expired: number;
+}
+
+export interface RewardRuleOverview {
+  accounts: RewardRuleOverviewAccount[];
+  counts: RewardRuleCounts;
+}
+
+export interface RewardRuleOverviewQuery {
+  account_id?: number[];
+  state?: RewardRuleState | 'all';
+  include_archived_accounts?: boolean;
+}
+
 /** `AccountOut.valuation`: the portfolio's market total behind a `balance_kind: "valuation"` account (R7 spec §5). */
 export interface AccountValuation {
   value: string;

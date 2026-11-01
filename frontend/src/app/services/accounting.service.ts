@@ -47,6 +47,10 @@ import {
   TransferInput,
   DebtsSummary,
   ScheduleLoanInput,
+  RewardRule,
+  RewardRuleInput,
+  RewardRuleOverview,
+  RewardRuleOverviewQuery,
 } from '../models/accounting.model';
 
 /** Query object → params; skips null / undefined / '' and repeats array values (`account_id=1&account_id=2`). */
@@ -149,6 +153,28 @@ export class AccountingService {
 
   resetSettingsFlag(id: number): Observable<AccountDetail> {
     return this.bumpAccounts(this.http.post<AccountDetail>(`${this.apiUrl}/accounts/${id}/reset-settings-flag`, {}));
+  }
+
+  createRewardRule(accountId: number, input: RewardRuleInput): Observable<RewardRule> {
+    return this.bumpAccounts(this.http.post<RewardRule>(`${this.apiUrl}/accounts/${accountId}/reward-rules`, input));
+  }
+
+  updateRewardRule(accountId: number, ruleId: number, input: RewardRuleInput): Observable<RewardRule> {
+    return this.bumpAccounts(
+      this.http.put<RewardRule>(`${this.apiUrl}/accounts/${accountId}/reward-rules/${ruleId}`, input),
+    );
+  }
+
+  reorderRewardRules(accountId: number, ids: number[]): Observable<RewardRule[]> {
+    return this.bumpAccounts(this.http.put<RewardRule[]>(`${this.apiUrl}/accounts/${accountId}/reward-rules/order`, { ids }));
+  }
+
+  deleteRewardRule(accountId: number, ruleId: number): Observable<void> {
+    return this.bumpAccounts(this.http.delete<void>(`${this.apiUrl}/accounts/${accountId}/reward-rules/${ruleId}`));
+  }
+
+  getRewardRuleOverview(query: RewardRuleOverviewQuery = {}): Observable<RewardRuleOverview> {
+    return this.http.get<RewardRuleOverview>(`${this.apiUrl}/reward-rules`, { params: toParams(query) });
   }
 
   // ---- entries -----------------------------------------------------------
