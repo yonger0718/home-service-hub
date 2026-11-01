@@ -25,8 +25,8 @@
         @if (errors()['rate']; as e) { <small class="err" data-field="rate">{{ e }}</small> }
       } @else {
         <div>
-          <span class="k">金額</span>
-          <span class="v ed"><input class="rule-fixed" type="text" inputmode="decimal" placeholder="0" aria-label="金額" [value]="form().fixed_amount" (input)="set('fixed_amount', $any($event.target).value)" />{{ currency() }}</span>
+          <span class="k">固定金額</span>
+          <span class="v ed"><input class="rule-fixed" type="text" inputmode="decimal" placeholder="0" aria-label="固定金額" [value]="form().fixed_amount" (input)="set('fixed_amount', $any($event.target).value)" />{{ currency() }}</span>
         </div>
         @if (errors()['fixed_amount']; as e) { <small class="err" data-field="fixed_amount">{{ e }}</small> }
       }
@@ -152,7 +152,7 @@
       <div class="discard" role="alert">
         <span>放棄未儲存的內容？</span>
         <button type="button" class="discard-stay" (click)="stay()">留下</button>
-        <button type="button" class="discard-leave" (click)="close()">放棄</button>
+        <button type="button" class="discard-leave" [disabled]="busy()" (click)="close()">放棄</button>
       </div>
     }
 
@@ -160,7 +160,7 @@
       @if (rule()) {
         <button type="button" class="rule-delete" [class.armed]="confirmingDelete()" [disabled]="busy()" (click)="remove()">{{ confirmingDelete() ? '確定刪除？' : '刪除' }}</button>
       }
-      <button type="button" class="sheet-cancel" (click)="cancel()">取消</button>
+      <button type="button" class="sheet-cancel" [disabled]="busy()" (click)="cancel()">取消</button>
       <button type="button" class="pri sheet-confirm" [disabled]="busy()" (click)="save()">儲存</button>
     </div>
   </div>

@@ -47,9 +47,9 @@ function decimalOrNull(text: string): string | null {
   return text.replace(/,/g, '').trim() || null;
 }
 
-function integer(text: string, fallback: number): number {
-  const value = Number(text.trim());
-  return text.trim() !== '' && Number.isInteger(value) ? value : fallback;
+/** Whole numbers only; the range (0–2, 1–31, 0–365) is left to the server's 422. */
+function isInteger(text: string): boolean {
+  return /^[+-]?\d+$/.test(text.trim());
 }
 
 /** Editor sheet for one reward rule (spec §6.1): create (rule = null) or edit, delete, or 停用 a referenced rule. */
@@ -170,7 +170,11 @@ export class RewardRuleSheetComponent implements OnInit {
     return typeof value === 'number' ? String(value) : '';
   }
 
+  /** Ignored while a write is in flight, so its response still reaches `saved` / `deleted`. */
   cancel(): void {
+    if (this.busy()) {
+      return;
+    }
     if (this.isDirty()) {
       this.confirmingDiscard.set(true);
       afterNextRender(() => this.host.nativeElement.querySelector<HTMLElement>('.discard-stay')?.focus(),
@@ -185,6 +189,9 @@ export class RewardRuleSheetComponent implements OnInit {
   }
 
   close(): void {
+    if (this.busy()) {
+      return;
+    }
     restoreOverlayFocus(this.opener, this.host.nativeElement);
     this.closed.emit();
   }
@@ -315,6 +322,14 @@ export class RewardRuleSheetComponent implements OnInit {
     } else if (!(Number(decimalOrNull(form.fixed_amount) ?? NaN) > 0)) {
       errors['fixed_amount'] = '請輸入大於 0 的金額';
     }
+    const integers: ('post_month_offset' | 'post_day' | 'delay_days')[] = form.posting === 'after_window'
+      ? ['post_month_offset', 'post_day']
+      : form.posting === 'after_transaction' ? ['delay_days'] : [];
+    for (const key of integers) {
+      if (!isInteger(form[key])) {
+        errors[key] = '請輸入整數';
+      }
+    }
     if (form.starts_on && form.ends_on && form.starts_on > form.ends_on) {
       errors['ends_on'] = '迄日不可早於起日';
     }
@@ -329,9 +344,9 @@ export class RewardRuleSheetComponent implements OnInit {
       rate: form.method === 'percent' ? decimalOrNull(form.rate) : null,
       fixed_amount: form.method === 'fixed' ? decimalOrNull(form.fixed_amount) : null,
       posting: form.posting,
-      delay_days: form.posting === 'after_transaction' ? integer(form.delay_days, 0) : 0,
-      post_month_offset: form.posting === 'after_window' ? integer(form.post_month_offset, 0) : 0,
-      post_day: form.posting === 'after_window' ? integer(form.post_day, 1) : 1,
+      delay_days: form.posting === 'after_transaction' ? Number(form.delay_days.trim()) : 0,
+      post_month_offset: form.posting === 'after_window' ? Number(form.post_month_offset.trim()) : 0,
+      post_day: form.posting === 'after_window' ? Number(form.post_day.trim()) : 1,
       txn_rounding: form.txn_rounding,
       total_rounding: form.total_rounding,
       total_cap: decimalOrNull(form.total_cap),

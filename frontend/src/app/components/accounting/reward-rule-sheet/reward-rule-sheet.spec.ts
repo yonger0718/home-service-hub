@@ -199,6 +199,32 @@ describe('RewardRuleSheetComponent', () => {
     expect(saved).not.toHaveBeenCalled();
   });
 
+  it('(d2) refuses non-integer 月 / 日 / 天 locally, only for the visible fields', () => {
+    const { q, type, pick, click } = render(OVERSEAS);
+
+    expect(q('.rule-fixed')?.getAttribute('aria-label')).toBe('固定金額');
+    type('.rule-offset', '1.5');
+    type('.rule-day', 'abc');
+    click('.sheet-confirm');
+    expect(q('small.err[data-field="post_month_offset"]')?.textContent?.trim()).toBe('請輸入整數');
+    expect(q('small.err[data-field="post_day"]')?.textContent?.trim()).toBe('請輸入整數');
+    http.expectNone(`${BASE}/3`);
+
+    pick('.rule-posting', 'after_transaction');
+    type('.rule-delay', '');
+    click('.sheet-confirm');
+    expect(q('small.err[data-field="post_month_offset"]')).toBeNull();
+    expect(q('small.err[data-field="post_day"]')).toBeNull();
+    expect(q('small.err[data-field="delay_days"]')?.textContent?.trim()).toBe('請輸入整數');
+    http.expectNone(`${BASE}/3`);
+
+    type('.rule-delay', ' 7 ');
+    click('.sheet-confirm');
+    const req = http.expectOne(`${BASE}/3`);
+    expect(req.request.body).toMatchObject({ posting: 'after_transaction', delay_days: 7, post_month_offset: 0, post_day: 1 });
+    req.flush(OVERSEAS);
+  });
+
   it('(e) names the sibling of a 409 basic_rule_overlap', () => {
     const { fixture, q, click, saved } = render(rule({ id: 4, name: '新基本', rate: '0.5000', is_basic: true }), [BASIC]);
 
@@ -280,6 +306,27 @@ describe('RewardRuleSheetComponent', () => {
     expect(q('.discard')).not.toBeNull();
     (Array.from(el.querySelectorAll<HTMLButtonElement>('.discard button')).find(b => b.textContent?.trim() === '放棄'))!.click();
     expect(closed).toHaveBeenCalledTimes(1);
+  });
+
+  it('(g2) ignores 取消 / Esc / overlay while a save is in flight; the response still emits saved', () => {
+    const { fixture, q, type, click, saved, closed } = render(null);
+
+    type('.rule-name', '一般');
+    type('.rule-rate', '1');
+    click('.sheet-confirm');
+    const req = http.expectOne(BASE);
+    expect(q<HTMLButtonElement>('.sheet-cancel')!.disabled).toBe(true);
+    q('.rule-name')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    (fixture.nativeElement.querySelector('.overlay') as HTMLElement).click();
+    fixture.componentInstance.cancel();
+    fixture.detectChanges();
+    expect(q('.discard')).toBeNull();
+    expect(closed).not.toHaveBeenCalled();
+
+    const created = rule({ id: 9, name: '一般', rate: '1.0000' });
+    req.flush(created);
+    expect(saved).toHaveBeenCalledWith(created);
+    expect(closed).not.toHaveBeenCalled();
   });
 
   it('keeps Tab inside the sheet', () => {
