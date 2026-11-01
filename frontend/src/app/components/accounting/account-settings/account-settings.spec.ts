@@ -932,6 +932,78 @@ describe('AccountSettingsComponent', () => {
     expect(fixture.componentInstance.isDirty()).toBe(false);
   });
 
+  /** Strips the owner can see: the page's .discard-strip and the sheet's .discard. */
+  function strips(fixture: ComponentFixture<AccountSettingsComponent>): Element[] {
+    return Array.from(el(fixture).querySelectorAll('.discard-strip, app-reward-rule-sheet .discard'));
+  }
+
+  it('leaving with a dirty rule sheet asks once, on the sheet; its 放棄 closes it and runs the leave', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const run = vi.fn();
+
+    click(fixture, '.rule-row .rule-edit', 0);
+    typeInto(fixture, '.rule-name', '一般改');
+    registry.requestClose(run);
+    fixture.detectChanges();
+
+    const shown = strips(fixture);
+    expect(shown.length).toBe(1);
+    expect(shown[0].closest('app-reward-rule-sheet')).not.toBeNull();
+    expect(shown[0].textContent).toContain('放棄未儲存的內容？');
+    expect(run).not.toHaveBeenCalled();
+
+    click(fixture, 'app-reward-rule-sheet .discard-leave');
+    expect(sheet(fixture)).toBeNull();
+    expect(fixture.componentInstance.isDirty()).toBe(false);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(registry.promptOpen()).toBe(false);
+    expect(strips(fixture)).toEqual([]);
+  });
+
+  it('留下 on the delegated sheet strip keeps the sheet and its input and forgets the leave', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const run = vi.fn();
+
+    click(fixture, '.rule-row .rule-edit', 0);
+    typeInto(fixture, '.rule-name', '一般改');
+    registry.requestClose(run);
+    fixture.detectChanges();
+    click(fixture, 'app-reward-rule-sheet .discard-stay');
+
+    expect(sheet(fixture)).not.toBeNull();
+    expect(el(fixture).querySelector<HTMLInputElement>('.rule-name')!.value).toBe('一般改');
+    expect(registry.promptOpen()).toBe(false);
+    expect(strips(fixture)).toEqual([]);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('a dirty page form under a dirty sheet: the sheet asks first, then the page asks for its own input', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const run = vi.fn();
+
+    typeInto(fixture, '.name-input', '玉山 Only 2');
+    click(fixture, '.rule-row .rule-edit', 0);
+    typeInto(fixture, '.rule-name', '一般改');
+    registry.requestClose(run);
+    fixture.detectChanges();
+    click(fixture, 'app-reward-rule-sheet .discard-leave');
+
+    expect(sheet(fixture)).toBeNull();
+    expect(run).not.toHaveBeenCalled();
+    const shown = strips(fixture);
+    expect(shown.length).toBe(1);
+    expect(shown[0].classList).toContain('discard-strip');
+
+    click(fixture, '.discard-strip .discard-leave');
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it('?rule=2 opens the sheet for rule 2 once the detail loads and clears the param on the settings page', async () => {
     await setup('11', { rule: '2' });
     const fixture = render(DETAIL);

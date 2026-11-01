@@ -83,6 +83,8 @@ export class RewardRuleSheetComponent implements OnInit {
   readonly saved = output<RewardRule>();
   readonly deleted = output<number>();
   readonly closed = output<void>();
+  /** 留下 on the sheet's 放棄 strip (the page resolves a route-leave prompt it delegated here). */
+  readonly discardStayed = output<void>();
 
   readonly form = signal<RuleForm>(this.blankForm());
   readonly errors = signal<Record<string, string>>({});
@@ -186,6 +188,7 @@ export class RewardRuleSheetComponent implements OnInit {
 
   stay(): void {
     this.confirmingDiscard.set(false);
+    this.discardStayed.emit();
   }
 
   close(): void {

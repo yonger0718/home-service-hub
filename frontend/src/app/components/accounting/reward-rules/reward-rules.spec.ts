@@ -188,12 +188,21 @@ describe('RewardRulesOverviewComponent', () => {
     expect(TestBed.inject(Router).url).toBe('/accounting/reward-rules');
   });
 
-  it('(e) shows 尚無回饋規則 without accounts and 尚無規則 → 新增 on an empty card', async () => {
-    const { el } = await open();
+  it('(e) shows 尚無規則 → 新增 on an empty card under 全部', async () => {
+    const { el } = await open('/accounting/reward-rules?state=all');
     const empty = el.querySelectorAll('.rr-card')[1];
     expect(empty.querySelector('.rr-empty')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('尚無規則 → 新增');
     expect(empty.querySelector('.rr-empty a')?.getAttribute('href')).toBe('/accounting/accounts/12/settings');
     expect(el.textContent).not.toContain('尚無回饋規則');
+  });
+
+  it('(e) under a state filter an empty card says 此狀態下沒有規則, without 新增', async () => {
+    const { el, request } = await open();
+    expect(request.request.params.get('state')).toBe('active');
+    const empty = el.querySelectorAll('.rr-card')[1];
+    expect(empty.querySelector('.rr-empty')?.textContent?.trim()).toBe('此狀態下沒有規則');
+    expect(empty.querySelector('.rr-empty a')).toBeNull();
+    expect(el.textContent).not.toContain('尚無規則');
   });
 
   it('(e) shows 尚無回饋規則 when no account has rules', async () => {

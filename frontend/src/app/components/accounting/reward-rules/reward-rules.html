@@ -47,7 +47,11 @@
               <small class="rr-stats">{{ statsText(r.stats) }}</small>
             </a>
           } @empty {
-            <p class="rr-empty">尚無規則 → <a [routerLink]="['/accounting/accounts', a.account_id, 'settings']">新增</a></p>
+            @if (filter() === 'all') {
+              <p class="rr-empty">尚無規則 → <a [routerLink]="['/accounting/accounts', a.account_id, 'settings']">新增</a></p>
+            } @else {
+              <p class="rr-empty">此狀態下沒有規則</p>
+            }
           }
         </section>
       } @empty {

@@ -341,6 +341,11 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   readonly ruleSheet = signal<{ rule: RewardRule | null } | null>(null);
   /** The open editor sheet; its unsaved input counts as the page's (spec §6.1 dirty-form rules). */
   private readonly ruleSheetRef = viewChild(RewardRuleSheetComponent);
+  /**
+   * A route-leave prompt handed to the open rule sheet: the sheet (position: fixed, above the page) shows its own
+   * 放棄未儲存的內容？ strip and this page's strip stays hidden; the sheet's 放棄 / 留下 resolve the pending close.
+   */
+  readonly sheetHoldsPrompt = signal(false);
   readonly ruleMessage = signal<string | null>(null);
   /** A 啟用 / 上移 / 下移 write is in flight: those controls wait so the next write starts from the saved order. */
   readonly ruleBusy = signal(false);
@@ -374,6 +379,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
         this.message.set(null);
         this.confirmDelete.set(false);
         this.ruleSheet.set(null);
+        this.sheetHoldsPrompt.set(false);
         this.ruleMessage.set(null);
         this.ruleBusy.set(false);
       }),
@@ -485,6 +491,17 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   }
 
   showDiscardPrompt(): void {
+    const sheet = this.ruleSheet() !== null ? this.ruleSheetRef() : undefined;
+    if (sheet?.isDirty()) {
+      if (sheet.busy()) {
+        // The sheet ignores closing while a write is in flight; drop this leave attempt rather than hold it unseen.
+        this.dirty.clearPending();
+        return;
+      }
+      this.sheetHoldsPrompt.set(true);
+      sheet.cancel();
+      return;
+    }
     if (!this.discardOpener) {
       this.discardOpener = this.host.nativeElement.ownerDocument.activeElement as HTMLElement | null;
     }
@@ -544,14 +561,34 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
 
   closeRuleSheet(): void {
     this.ruleSheet.set(null);
+    if (!this.sheetHoldsPrompt()) {
+      return;
+    }
+    // 放棄 on the sheet's strip answered a delegated route-leave prompt.
+    this.sheetHoldsPrompt.set(false);
+    if (this.isDirty()) {
+      this.showDiscardPrompt(); // the page's own form is still dirty: ask here, now that the sheet is gone
+    } else {
+      this.dirty.confirmDiscard();
+    }
+  }
+
+  /** 留下 on the sheet's strip: keep the draft and forget the delegated close (the sheet keeps its focus). */
+  onRuleSheetStayed(): void {
+    if (this.sheetHoldsPrompt()) {
+      this.sheetHoldsPrompt.set(false);
+      this.dirty.clearPending();
+    }
   }
 
   onRuleSaved(): void {
+    this.onRuleSheetStayed(); // saving answers a delegated leave prompt with 留下: the owner chose to keep working
     this.closeRuleSheet();
     this.reloadRules();
   }
 
   onRuleDeleted(): void {
+    this.onRuleSheetStayed();
     this.closeRuleSheet();
     this.reloadRules();
   }
