@@ -19,7 +19,9 @@ import {
   AccountGroup,
   AccountInput,
   LedgerAccount,
+  Project,
   RewardRule,
+  RewardRuleState,
   RoundingMode,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
@@ -32,6 +34,9 @@ import { shortDate, todayIso } from '../dates';
 import { balanceNegative, balanceText, valuationHint } from '../account-balance';
 import { decimalText, formatMoney } from '../format';
 import { fieldErrors, writeErrorMessage } from '../http-errors';
+import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
+import { RULE_STATE_LABELS, periodText, postingSummary, ruleLabel, ruleState, ruleToInput } from '../reward-rule-text';
+import { SwitchComponent } from '../../ui/switch/switch';
 
 export { decimalText } from '../format';
 
@@ -192,7 +197,7 @@ interface LoadedAccount {
 @Component({
   selector: 'app-account-settings',
   standalone: true,
-  imports: [RouterLink, AccountIconComponent],
+  imports: [RouterLink, AccountIconComponent, RewardRuleSheetComponent, SwitchComponent],
   templateUrl: './account-settings.html',
   styleUrl: './account-settings.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -329,7 +334,19 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
       .map(id => this.accounts().find(account => account.id === id)?.name ?? `#${id}`);
     return names.length ? `與 ${names.join('、')} 共用額度` : null;
   });
+  /** 回饋規則 block (spec §6.1): rows in the order the API returns; edits save at once, so not part of isDirty(). */
   readonly rules = computed<RewardRule[]>(() => this.detail()?.reward_rules ?? []);
+  readonly projects = signal<Project[]>([]);
+  readonly ruleSheet = signal<{ rule: RewardRule | null } | null>(null);
+  readonly ruleMessage = signal<string | null>(null);
+  /** A 啟用 / 上移 / 下移 write is in flight: those controls wait so the next write starts from the saved order. */
+  readonly ruleBusy = signal(false);
+  /** `?rule=<id>` (from 回饋規則總覽): opens that rule once its account's detail is shown, then leaves the URL. */
+  private pendingRuleId: number | null = null;
+  readonly ruleLabel = ruleLabel;
+  readonly postingSummary = postingSummary;
+  readonly periodText = periodText;
+  readonly ruleStateLabels = RULE_STATE_LABELS;
 
   ngOnInit(): void {
     this.dirty.register(this);
@@ -353,6 +370,9 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
         this.errors.set({});
         this.message.set(null);
         this.confirmDelete.set(false);
+        this.ruleSheet.set(null);
+        this.ruleMessage.set(null);
+        this.ruleBusy.set(false);
       }),
       map(id => this.fetch(id)),
     );
@@ -368,6 +388,33 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     // Archived accounts too: an archived shared-limit member must be shown so it can be removed.
     this.service.getAccounts(true).subscribe(accounts => this.accounts.set(accounts));
     this.service.getAccountGroups().subscribe(groups => this.groups.set(groups));
+    this.service.getProjects().subscribe(projects => this.projects.set(projects));
+    this.route.queryParamMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(query => {
+      const ruleParam = query.get('rule');
+      if (ruleParam !== null) {
+        this.pendingRuleId = Number(ruleParam);
+        this.openPendingRule();
+      }
+    });
+  }
+
+  /** Acts on `?rule=` once the shown account's detail is in: opens the rule if it is this account's, then clears it. */
+  private openPendingRule(): void {
+    const detail = this.detail();
+    if (this.pendingRuleId === null || detail === null || this.loadedId() !== this.accountId()) {
+      return;
+    }
+    const rule = detail.reward_rules.find(r => r.id === this.pendingRuleId);
+    this.pendingRuleId = null;
+    if (rule) {
+      this.openRule(rule);
+    }
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { rule: null },
+      queryParamsHandling: 'merge',
+      replaceUrl: true,
+    });
   }
 
   /** Starts a load with a new loadId; a new account (`id === null`) completes at once with no detail. */
@@ -422,6 +469,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     this.sharing.set((loaded.detail?.credit_sharing_members ?? []).filter(id => id !== loaded.id));
     this.baseline.set(this.form());
     this.sharingBaseline.set(this.sharing());
+    this.openPendingRule();
   }
 
   isDirty(): boolean {
@@ -477,9 +525,112 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     return this.errors()[field] ?? this.localErrors()[field] ?? null;
   }
 
-  ruleLabel(rule: RewardRule): string {
-    const value = rule.method === 'percent' ? `${Number(rule.rate)}%` : formatMoney(rule.fixed_amount, this.form().currency);
-    return `${rule.name} ${value}${rule.is_enabled ? '' : '（停用）'}`;
+  ruleStateOf(rule: RewardRule): RewardRuleState {
+    return ruleState(rule, this.today());
+  }
+
+  openRule(rule: RewardRule | null): void {
+    this.ruleMessage.set(null);
+    this.ruleSheet.set({ rule });
+  }
+
+  closeRuleSheet(): void {
+    this.ruleSheet.set(null);
+  }
+
+  onRuleSaved(): void {
+    this.closeRuleSheet();
+    this.reloadRules();
+  }
+
+  onRuleDeleted(): void {
+    this.closeRuleSheet();
+    this.reloadRules();
+  }
+
+  /** 啟用 saves at once: the full rule as loaded with `is_enabled` flipped, then the account is re-read. */
+  toggleRule(rule: RewardRule, enabled: boolean): void {
+    const id = this.loadedId();
+    if (id === null || this.ruleBusy()) {
+      return;
+    }
+    this.ruleMessage.set(null);
+    this.ruleBusy.set(true);
+    const loadId = this.loadId;
+    this.service
+      .updateRewardRule(id, rule.id, { ...ruleToInput(rule), is_enabled: enabled })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: () => this.reloadRules(loadId),
+        error: err => this.ruleWriteFailed(loadId, err),
+      });
+  }
+
+  /** 上移 (-1) / 下移 (+1): swaps two neighbours and sends the whole order; the response is the new list. */
+  moveRule(index: number, delta: number): void {
+    const id = this.loadedId();
+    const ids = this.rules().map(rule => rule.id);
+    const target = index + delta;
+    if (id === null || this.ruleBusy() || target < 0 || target >= ids.length) {
+      return;
+    }
+    [ids[index], ids[target]] = [ids[target], ids[index]];
+    this.ruleMessage.set(null);
+    this.ruleBusy.set(true);
+    const loadId = this.loadId;
+    this.service
+      .reorderRewardRules(id, ids)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: rules => {
+          if (loadId !== this.loadId) {
+            return;
+          }
+          this.ruleBusy.set(false);
+          this.detail.update(detail => (detail ? { ...detail, reward_rules: rules } : detail));
+        },
+        error: err => this.ruleWriteFailed(loadId, err),
+      });
+  }
+
+  private ruleWriteFailed(loadId: number, err: unknown): void {
+    if (loadId !== this.loadId) {
+      return;
+    }
+    this.ruleMessage.set(writeErrorMessage(err));
+    this.reloadRules(loadId);
+  }
+
+  /**
+   * Re-reads the shown account so the block (and the entry form's chips, which read the same `AccountDetail`) match
+   * the server. Only the detail is replaced: the form and its baseline keep any unsaved input. Dropped once another
+   * navigation has started.
+   */
+  private reloadRules(loadId = this.loadId): void {
+    const id = this.loadedId();
+    if (id === null || loadId !== this.loadId) {
+      return;
+    }
+    this.ruleBusy.set(true);
+    this.service
+      .getAccount(id)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: detail => {
+          if (loadId !== this.loadId) {
+            return;
+          }
+          this.ruleBusy.set(false);
+          this.detail.set(detail);
+        },
+        error: err => {
+          if (loadId !== this.loadId) {
+            return;
+          }
+          this.ruleBusy.set(false);
+          this.ruleMessage.set(writeErrorMessage(err));
+        },
+      });
   }
 
   save(): void {

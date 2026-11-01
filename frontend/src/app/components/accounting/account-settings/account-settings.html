@@ -167,21 +167,39 @@
     </label>
   }
 
-  <div class="rw rules-row">
-    <span class="k">紅利回饋</span>
-    <span class="v">
-      @if (rules().length) {
-        <span>{{ rules().length }} 組回饋條件</span>
-        <ul class="rule-list">
-          @for (rule of rules(); track rule.id) {
-            <li class="rule-item" [class.disabled]="!rule.is_enabled">{{ ruleLabel(rule) }}</li>
-          }
-        </ul>
-      } @else {
-        <span>無（2b 起可編輯）</span>
+  @if (accountId() === null) {
+    <div class="rw rules-new"><small>儲存帳戶後即可新增回饋規則</small></div>
+  } @else {
+    <div class="rules-block">
+      <div class="rw rules-head">
+        <span class="k">回饋規則 · {{ rules().length }} 條</span>
+        <a class="rules-all" routerLink="/accounting/reward-rules" [queryParams]="{ account_id: accountId() }">全部卡片</a>
+      </div>
+      @for (rule of rules(); track rule.id; let i = $index, last = $last) {
+        @let state = ruleStateOf(rule);
+        <div class="rule-row" [attr.data-rule-id]="rule.id">
+          <div class="rule-text">
+            <span class="rule-title">
+              <span class="rule-label">{{ ruleLabel(rule) }}</span>
+              <span class="badge rule-state" [attr.data-state]="state" [class.warn]="state === 'expired'">{{ ruleStateLabels[state] }}</span>
+              @if (rule.is_basic) { <span class="badge rule-basic">基本</span> }
+              @if (rule.moze_id) { <span class="badge rule-moze">來自 MOZE</span> }
+            </span>
+            <small class="rule-posting">{{ postingSummary(rule) }}</small>
+            <small class="rule-period">{{ periodText(rule) }}</small>
+          </div>
+          <div class="rule-actions">
+            <app-switch class="rule-enabled" [checked]="rule.is_enabled" [disabled]="ruleBusy()" [ariaLabel]="rule.name + ' 啟用'" (checkedChange)="toggleRule(rule, $event)" />
+            <button type="button" class="rule-edit" (click)="openRule(rule)">編輯</button>
+            <button type="button" class="move-up" aria-label="上移" [disabled]="i === 0 || ruleBusy()" (click)="moveRule(i, -1)">↑</button>
+            <button type="button" class="move-down" aria-label="下移" [disabled]="last || ruleBusy()" (click)="moveRule(i, 1)">↓</button>
+          </div>
+        </div>
       }
-    </span>
-  </div>
+      @if (ruleMessage(); as m) { <small class="form-message rule-message" role="alert">{{ m }}</small> }
+      <button type="button" class="rule-add" [disabled]="loadedId() === null" (click)="openRule(null)">新增規則</button>
+    </div>
+  }
 
   <div class="rw">
     <span class="k">國外交易手續費</span>
@@ -228,3 +246,19 @@
     </div>
   }
 </section>
+
+@if (ruleSheet(); as open) {
+  @if (detail(); as d) {
+    <app-reward-rule-sheet
+      [accountId]="d.id"
+      [currency]="d.currency"
+      [rule]="open.rule"
+      [siblings]="rules()"
+      [accounts]="accounts()"
+      [projects]="projects()"
+      (saved)="onRuleSaved()"
+      (deleted)="onRuleDeleted()"
+      (closed)="closeRuleSheet()"
+    />
+  }
+}
