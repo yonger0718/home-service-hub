@@ -269,7 +269,7 @@ account · pattern · amount · answer · applied_count · last_applied_at with 
   在時間軸記一筆轉帳，或對到已記的」; ledger_only 「你記了，銀行沒有」; amount_differs 「銀行 X，你記 Y（差 Z）」;
   date_differs 「你記 M/D，銀行 M/D 扣」; ambiguous 「有 N 筆可能是它」; other 「需要在 API 處理（案件 #id）」.
 - Folded sections under the cards, each a `<details>`: 「系統有提議 N（全部套用）」, 「期初差額 N」(each with 對齊銀行期初
-  when allowed, else 忽略), 「國泰交割款 N — 等證券連動」(no buttons), 「其他 N」.
+  when allowed, else 忽略), 「國泰交割款 N — 等證券連動」(no buttons), 「股利入帳 N — 等證券連動」(no buttons; the dividend family, #264), 「其他 N」.
 - Sheets (reuse `sheet.scss` + the overlay contract): **record** = category picker (inline `CategoryPicker` for the line's
   kind, default from `rule_hint` → last used; optional name; optional project) + the learn tick + 確定; **match_candidate**
   = list of candidates (date · title · amount) + "搜尋這個帳戶的記錄" (14-day window, same sign) + 確定;

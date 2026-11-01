@@ -17,7 +17,7 @@ ACTIVE_DAYS = 90
 
 QUESTION_TEXT: dict[str, str] = {
     "bank_only": "只有銀行有", "ledger_only": "只有帳本有", "transfer": "疑似轉帳", "amount_differs": "金額不同",
-    "date_differs": "日期不同", "ambiguous": "多個候選", "balance_gap": "餘額差", "settlement": "結算",
+    "date_differs": "日期不同", "ambiguous": "多個候選", "balance_gap": "餘額差", "settlement": "結算", "dividend": "股利入帳",
     "proposed": "已提議", "other": "其他",
 }
 
