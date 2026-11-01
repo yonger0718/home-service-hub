@@ -41,6 +41,47 @@ class RewardRuleOut(BaseModel):
     moze_id: str | None
 
 
+RewardRuleState = Literal["active", "disabled", "expired", "upcoming"]
+
+
+class RewardTotalOut(BaseModel):
+    currency: str
+    amount: Decimal
+
+
+class RewardRuleStatsOut(BaseModel):
+    linked_entries: int
+    linked_entries_12m: int
+    rewards_count: int
+    rewards_total: list[RewardTotalOut]
+    rewards_last_date: date | None
+
+
+class RewardRuleOverviewRuleOut(RewardRuleOut):
+    state: RewardRuleState
+    stats: RewardRuleStatsOut
+
+
+class RewardRuleOverviewAccountOut(BaseModel):
+    account_id: int
+    account_name: str
+    is_credit: bool
+    is_archived: bool
+    rules: list[RewardRuleOverviewRuleOut]
+
+
+class RewardRuleCountsOut(BaseModel):
+    active: int
+    disabled: int
+    expired: int
+    upcoming: int
+    enabled_expired: int
+
+
+class RewardRuleOverviewOut(BaseModel):
+    accounts: list[RewardRuleOverviewAccountOut]
+    counts: RewardRuleCountsOut
+
 class ValuationOut(BaseModel):
     value: Decimal
     currency: str
