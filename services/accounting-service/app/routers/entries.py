@@ -29,6 +29,7 @@ def list_entries(
     tag: list[str] | None = Query(default=None, description="Rows carrying ANY of these tags"),
     category_id: list[int] | None = Query(default=None, description="Rows in any of these categories or their sub-categories"),
     project_id: int | None = None,
+    no_project: bool = Query(default=False, description="Only rows without a project (#261); exclusive with project_id"),
     merchant: str | None = Query(default=None, max_length=100, description="Case-insensitive substring of the merchant"),
     amount_min: Decimal | None = Query(default=None, description="Signed lower bound (inclusive) on the entry's amount in its ACCOUNT's currency; no conversion"),
     amount_max: Decimal | None = Query(default=None, description="Signed upper bound (inclusive) on the entry's amount in its ACCOUNT's currency; no conversion"),
@@ -36,11 +37,13 @@ def list_entries(
 ):
     if amount_min is not None and amount_max is not None and amount_min > amount_max:
         raise HTTPException(status_code=422, detail="amount_min must not exceed amount_max")
+    if no_project and project_id is not None:
+        raise HTTPException(status_code=422, detail="no_project and project_id are mutually exclusive")
     total, items = ledger_service.list_all_entries(
         db, limit=limit, offset=offset, kind=kind, date_from=date_from, date_to=date_to, q=q,
         account_ids=account_id or None, hide_rewards=hide_rewards,
         counterparty_id=counterparty_id, open_only=open,
-        tags=tag or None, category_ids=category_id or None, project_id=project_id, merchant=merchant,
+        tags=tag or None, category_ids=category_id or None, project_id=project_id, no_project=no_project, merchant=merchant,
         amount_min=amount_min, amount_max=amount_max,
     )
     return {"items": items, "total": total, "limit": limit, "offset": offset}

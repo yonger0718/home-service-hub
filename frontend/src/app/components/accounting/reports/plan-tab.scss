@@ -48,6 +48,16 @@
 .pl-note,
 .pl-edit-note { font-size: var(--fs-label); font-weight: 600; }
 
+.pl-drill {
+  align-self: flex-start;
+  color: var(--app-primary);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  text-decoration: none;
+
+  &:hover { text-decoration: underline; }
+}
+
 .pl-error {
   color: var(--c-red-ink);
   font-size: var(--fs-sm);

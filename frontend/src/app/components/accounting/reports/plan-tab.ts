@@ -1,4 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, effect, input, output, signal, untracked } from '@angular/core';
+import { Params, RouterLink } from '@angular/router';
 
 import { CategoryNode, Project } from '../../../models/accounting.model';
 import { BreakdownResponse, BudgetInput, BudgetStatus, BudgetStatusResponse } from '../../../models/reports.model';
@@ -50,6 +51,7 @@ export interface BudgetAmount {
  */
 @Component({
   selector: 'app-report-plan',
+  imports: [RouterLink],
   templateUrl: './plan-tab.html',
   styleUrl: './plan-tab.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -75,6 +77,16 @@ export class ReportPlanComponent {
 
   /** The budgets are monthly: a year or custom period shows its first month's. */
   readonly month = computed(() => monthOf(this.period().from));
+  /**
+   * The timeline filtered to the rows without a project (#261), offered when the lifetime breakdown has such spending
+   * active in the period (same date window as the cards). No amount: the breakdown is lifetime, the link opens one month.
+   */
+  readonly noProjectParams = computed<Params | null>(() => {
+    const period = this.period();
+    const row = (this.projects()?.rows ?? []).find(r => r.key === null);
+    const active = !!row && num(row.amount) > 0 && (row.first_date == null || row.first_date <= period.to) && (row.last_date == null || row.last_date >= period.from);
+    return active ? { month: this.month(), no_project: 1 } : null;
+  });
   readonly title = computed(() => `${Number(this.month().slice(5, 7))} 月預算`);
   private readonly days = computed(() => daysInMonth(this.month()));
   private readonly elapsed = computed(() => Math.round((this.status()?.time_progress ?? 0) * this.days()));

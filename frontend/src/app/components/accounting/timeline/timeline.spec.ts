@@ -124,7 +124,7 @@ describe('LedgerTimelineComponent', () => {
     });
     httpMock = TestBed.inject(HttpTestingController);
     TestBed.inject(LayoutModeService).set('phone');
-    await TestBed.inject(Router).navigateByUrl('/accounting?month=2026-09&category_id=5&merchant=全聯&tag=家用&account_id=2');
+    await TestBed.inject(Router).navigateByUrl('/accounting?month=2026-09&category_id=5&merchant=全聯&tag=家用&account_id=2&no_project=1');
     const fixture = TestBed.createComponent(LedgerTimelineComponent);
     fixture.detectChanges();
     httpMock.expectOne('/api/accounting/preference').flush(makePreference());
@@ -139,6 +139,8 @@ describe('LedgerTimelineComponent', () => {
     expect(req.request.params.get('merchant')).toBe('全聯');
     expect(req.request.params.getAll('tag')).toEqual(['家用']);
     expect(req.request.params.getAll('account_id')).toEqual(['2']);
+    expect(req.request.params.get('no_project')).toBe('true'); // 報表 專案與預算 無專案 link (#261)
+    expect(req.request.params.has('project_id')).toBe(false);
     // The category / project options are read at once so the chip can name the category.
     for (const options of httpMock.match(r => r.url === '/api/accounting/categories')) options.flush([]);
     httpMock.expectOne('/api/accounting/projects').flush([]);
@@ -718,10 +720,19 @@ describe('LedgerTimelineComponent', () => {
       fixture.detectChanges();
       expect(timeline.filtersActive()).toBe(true);
 
+      // #261: （無專案） sends no_project=true instead of a project_id and reads 專案：無專案 as a chip.
+      timeline.setProject('none');
+      fixture.detectChanges();
+      const none = flushEntries([], 0);
+      expect(none.request.params.get('no_project')).toBe('true');
+      expect(none.request.params.has('project_id')).toBe(false);
+      expect(timeline.filterChips().map(c => c.label)).toContain('專案：無專案');
+      fixture.detectChanges();
+
       (el.querySelector('.clear-filters') as HTMLButtonElement).click();
       fixture.detectChanges();
       const cleared = flushEntries([]);
-      for (const key of ['category_id', 'project_id', 'tag', 'merchant', 'amount_min', 'amount_max']) {
+      for (const key of ['category_id', 'project_id', 'no_project', 'tag', 'merchant', 'amount_min', 'amount_max']) {
         expect(cleared.request.params.has(key)).toBe(false);
       }
       fixture.detectChanges();
@@ -757,7 +768,7 @@ describe('LedgerTimelineComponent', () => {
       const categories = Array.from(el.querySelectorAll<HTMLOptionElement>('.filter-category option')).map(o => o.textContent?.trim());
       expect(categories).toEqual(['全部類別', '餐飲', '餐飲 › 午餐']);
       const projects = Array.from(el.querySelectorAll<HTMLOptionElement>('.filter-project option')).map(o => o.textContent?.trim());
-      expect(projects).toEqual(['全部專案', '日本']);
+      expect(projects).toEqual(['全部專案', '（無專案）', '日本']);
 
       el.querySelector<HTMLSelectElement>('.filter-project')!.dispatchEvent(new Event('focus'));
       httpMock!.expectNone(r => r.url === '/api/accounting/categories');
@@ -791,7 +802,7 @@ describe('LedgerTimelineComponent', () => {
       httpMock!.expectOne(r => r.url === '/api/accounting/categories' && r.params.get('kind') === 'income').flush([]);
       httpMock!.expectOne('/api/accounting/projects').flush([{ id: 9, name: '日本', is_archived: false, sort_order: 0 }]);
       fixture.detectChanges();
-      expect(el.querySelectorAll('.filter-project option').length).toBe(2);
+      expect(el.querySelectorAll('.filter-project option').length).toBe(3); // 全部專案 + （無專案） + the fetched one
     });
 
     it('keeps the typed merchant and bounds when the sheet is closed and reopened, and 清除全部 empties them', () => {
