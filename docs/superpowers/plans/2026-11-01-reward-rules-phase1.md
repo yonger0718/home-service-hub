@@ -10,11 +10,13 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-31-reward-rules-design.md` (rev 2, `0e1430ce`). Sections cited below as §n.
 
+**Plan rev 2** (2026-11-01) folds the Multica review AGENT-378 (dev-grok, CHANGES-REQUESTED at `845e66c0`): Task 5 covers every test that relied on the import creating rules (`test_backup_replace_and_report.py`, `test_moze_replace_ledger.py`, the split-purchase reward test) and keeps `ROUNDING_MAP` / `POSTING_MAP`; `?rule=` clearing and the overview filter navigate with `relativeTo: this.route`; `fixed_amount` / `total_cap` use `Money`; overlap tests add the both-null pair and the no-op PUT; the stale `.rule-item` assertion in `account-settings.spec.ts` is rewritten; `accountsChanged` is the signal's real name; the 409 body note names `message`.
+
 ## Global Constraints
 
 - No schema change: alembic head stays `c7a2e9f4b1d8`; `tests/integration/test_migration.py` keeps passing unchanged (§3).
 - Rule CRUD lives under the `/accounts` router, whose dependency is `method_scope()` (GET=`read`, writes=`write`); never `admin` (§3). `GET /reward-rules` needs `read`.
-- Error style: `service_errors()` mapping — 404 `account not found` / `rule not found`; 409 `CodedConflictError(code, detail)` → body `detail` = `"<code>: <detail>"`; 422 = pydantic or `ValidationError(field, message)` (§5.3).
+- Error style: `service_errors()` mapping — 404 `account not found` / `rule not found`; 409 `CodedConflictError(code, detail)` → `HTTPException.detail` = `"<code>: <detail>"`, which `shared_lib/errors.py` serialises as JSON `{"code": 409, "message": "<code>: <detail>", "trace_id": …}` — tests and the SPA read `message`; 422 = pydantic or `ValidationError(field, message)` → `{"detail": [{"loc": [field], …}]}` (§5.3).
 - `moze_id` is never writable through the API; `account_id` of a rule never changes (§5.1, §5.3).
 - Backend fixtures and frontend test literals are fictional (card names like 華航卡 / 玉山 Only from existing tests); no owner data anywhere (§2 anti-goals).
 - SPA copy (verbatim, §5.1 / §6): labels 名稱 · 方式 · 比例 % · 固定金額 · 入帳 · 帳單結帳後 · 交易後 · 手動 · 每期上限 · 單筆取整 · 總額取整 · 與…共用上限 · 基本回饋 · 入帳帳戶 · 專案 · 期間 · 啟用 · 說明; rounding labels 不取整 · 四捨五入 · 無條件捨去 · 無條件進位; states 啟用中 · 已停用 · 已到期 · 尚未開始; badges 基本 · 來自 MOZE; buttons 新增規則 · 編輯 · 上移 · 下移 · 刪除 · 停用 · 全部卡片; messages 儲存帳戶後即可新增回饋規則 · 尚無規則 · 尚無回饋規則 · 此規則已有 N 筆交易 / M 筆回饋引用，改為停用？ · N 條規則啟用中但已到期，記帳時不會出現.
@@ -70,10 +72,10 @@ Outside the repo (rollout, Appendix A): `~/.hermes/skills/productivity/homehub-a
 **Interfaces:**
 - Produces `RewardRuleIn(BaseModel)` in `writes.py`, `model_config = ConfigDict(extra="forbid")`. Single-field shape and range checks are pydantic `Field` constraints so every 422 carries the field in `loc` (the SPA's `fieldErrors()` keys on it):
   `name: Annotated[str, BeforeValidator(lambda v: v.strip() if isinstance(v, str) else v), Field(min_length=1, max_length=128)]`,
-  `method: Literal["percent", "fixed"]`, `rate: Annotated[Decimal, Field(gt=0, le=100, decimal_places=4)] | None = None`, `fixed_amount: Annotated[Decimal, Field(gt=0)] | None = None`,
+  `method: Literal["percent", "fixed"]`, `rate: Annotated[Decimal, Field(gt=0, le=100, decimal_places=4)] | None = None`, `fixed_amount: Money | None = None` (`Money` = `Field(gt=0)` + `_four_places`, `writes.py:15–26`, so 5 decimals or ≥ 1e16 is a 422 on the field, not a DB error),
   `window: Literal["statement_cycle"] = "statement_cycle"`, `posting: Literal["after_window", "after_transaction", "manual"]`,
   `delay_days: int = Field(default=0, ge=0, le=365)`, `post_month_offset: int = Field(default=0, ge=0, le=2)`, `post_day: int = Field(default=1, ge=1, le=31)`,
-  `txn_rounding: RoundingMode = "keep"`, `total_rounding: RoundingMode = "keep"`, `total_cap: Annotated[Decimal, Field(gt=0)] | None = None`,
+  `txn_rounding: RoundingMode = "keep"`, `total_rounding: RoundingMode = "keep"`, `total_cap: Money | None = None`,
   `is_basic: bool = False`, `reward_account_id: Int32 | None = None`, `reward_project_id: Int32 | None = None`,
   `starts_on: date | None = None`, `ends_on: date | None = None`, `is_enabled: bool = True`,
   `description: Annotated[str, Field(max_length=2000)] | None = None`, `sort_order: Int32 | None = None`,
@@ -121,7 +123,8 @@ def test_percent_rule_parses_and_strips_name():
 @pytest.mark.parametrize("fields,field", [
     ({"rate": "0"}, "rate"), ({"rate": "100.0001"}, "rate"), ({"rate": "1.12345"}, "rate"),
     ({"method": "fixed", "rate": None, "fixed_amount": "0"}, "fixed_amount"),
-    ({"total_cap": "0"}, "total_cap"),
+    ({"method": "fixed", "rate": None, "fixed_amount": "1.00001"}, "fixed_amount"),
+    ({"total_cap": "0"}, "total_cap"), ({"total_cap": "10000000000000000"}, "total_cap"),
     ({"name": "   "}, "name"), ({"description": "x" * 2001}, "description"), ({"delay_days": 366}, "delay_days"),
     ({"post_month_offset": 3}, "post_month_offset"), ({"post_day": 0}, "post_day"), ({"window": "monthly"}, "window"),
     ({"moze_id": "B-1"}, "moze_id"),
@@ -281,6 +284,17 @@ def test_basic_overlap_open_ended_and_disabled_neighbour(client, db_session, see
     assert client.post(f"/accounts/{card.id}/reward-rules", json=_body(is_basic=True, starts_on="2030-01-01")).status_code == 409
     assert client.post(f"/accounts/{card.id}/reward-rules", json=_body(is_basic=True, is_enabled=False)).status_code == 201
     assert client.post(f"/accounts/{disabled_card.id}/reward-rules", json=_body(is_basic=True)).status_code == 201
+    # both-null pair: the disabled card's new basic rule is open-ended, a second open-ended one clashes
+    assert client.post(f"/accounts/{disabled_card.id}/reward-rules", json=_body(is_basic=True)).status_code == 409
+
+def test_put_of_an_enabled_basic_rule_does_not_clash_with_itself(client, db_session, seed):
+    # Review finding 4: autoflush sees the row being saved; the overlap check must exclude the rule's own id.
+    card = seed.account("華航卡")
+    rule = seed.rule(card, name="基本", is_basic=True, starts_on=date(2026, 1, 1), ends_on=None)
+    db_session.commit()
+    response = client.put(f"/accounts/{card.id}/reward-rules/{rule.id}",
+                          json=_body(name="基本 1.5", is_basic=True, starts_on="2026-01-01", ends_on=None))
+    assert response.status_code == 200, response.text
 
 def test_share_cap_with_joins_leaves_and_refuses_other_accounts(client, db_session, seed):
     card, other = seed.account("華航卡"), seed.account("玉山卡")
@@ -463,6 +477,8 @@ def test_overview_groups_by_account_with_states_and_counts(client, db_session, s
     assert [a["account_name"] for a in with_archived["accounts"]] == ["舊卡", "華航卡", "玉山卡"]
     one = client.get("/reward-rules", params=[("account_id", bare.id)]).json()
     assert [a["account_id"] for a in one["accounts"]] == [bare.id]
+    asked_archived = client.get("/reward-rules", params=[("account_id", gone.id)]).json()
+    assert [a["account_id"] for a in asked_archived["accounts"]] == [gone.id]  # explicit id wins over the archived default
 
 def test_overview_stats_per_currency_and_12m_boundary(client, db_session, seed, monkeypatch):
     # Review focus 4: two currencies on one rule; a link dated exactly one year ago counts in the 12-month figure.
@@ -533,10 +549,10 @@ git commit -m "feat(rewards): GET /reward-rules overview with states and stats"
 - Modify: `services/accounting-service/app/services/moze_backup_import_service.py` (`SettingsResult` L128–145, `_upsert_rules` L413–500, `upsert_settings` L515, report dict ~L1351–1361)
 - Modify: `services/accounting-service/README.md` (backup paragraph L39: "reward rules (by `moze_id`, never recreated)" → "reward rules are only looked up by `moze_id` for the purchase → rule links; the import no longer creates, updates or deletes them (HomeHub is the rules' only writer since 2026-11)")
 - Modify: `frontend/src/app/models/accounting.model.ts:588-589` (`ImportReport`: drop `unsupported_rules` / `orphaned_rules`, add `rules_unknown: number`) — and `components/accounting/accounting-settings/import-report.ts` if it renders either key (grep first; today only the model names them).
-- Test: `services/accounting-service/tests/integration/test_backup_settings_import.py` (L194–281); `tests/integration/test_backup_entries_import.py` (`_reward_data` ~L563 and every test built on it — they relied on the import creating `B-1`/`B-2`; they now seed the card with `moze_id="A-CARD"` and `seed.rule(card, moze_id="B-1")` / `"B-2"` first, and `B-GONE` stays unresolved); `tests/integration/test_backup_replace_and_report.py` (only if it asserts the dropped keys — grep)
+- Test: `services/accounting-service/tests/integration/test_backup_settings_import.py` (L194–281); `tests/integration/test_backup_entries_import.py` (`_reward_data` ~L563 and every test built on it, **and** `test_reward_on_a_split_purchase_links_to_the_primary_member` L593 which builds its own `rules=[backup.rule("B-1")]` — all relied on the import creating `B-1`/`B-2`; they now seed the card with `moze_id="A-CARD"` and `seed.rule(card, moze_id="B-1")` / `"B-2"` first, `B-GONE` stays unresolved, and `needs_review.count == 0` still holds); `tests/integration/test_backup_replace_and_report.py` (`_doc` L44 lists `backup.rule("B-1")`; `test_report_shape_and_balance_comparison_default` L196 expects `rules == 1` and `attachments == 1`; `test_reimport_keeps_manual_entries_attachments_and_rule_ids` L98–109 reads `select(RewardRule.id)` after the first import — seed the card + rule with `moze_id` before the import so both keep passing, and the survival assertion now proves the import left the seeded row alone); `tests/integration/test_moze_replace_ledger.py` (`test_csv_import_replaces_a_backup_import` L180–200, same null-id insert — same seed fix).
 
 **Interfaces:**
-- Produces `_resolve_rules(session, data, result)` replacing `_upsert_rules`: for each `data.rules` record, `select(RewardRule).where(RewardRule.moze_id == record["identifier"])`; found → `result.rules[identifier] = rule.id`; not found → `result.rules_unknown += 1`. No writes, no "gone" sweep. `SettingsResult` gains `rules_unknown: int = 0` and loses `unsupported_rules`, `orphaned_rules`. Report dict: keep `"rules": len(settings.rules)`, add `"rules_unknown": settings.rules_unknown`, drop the two lists. `UNSUPPORTED_RULE_FIELDS`, `REWARD_METHOD_MAP`, `POSTING_MAP`, `REWARD_WINDOW_MAP`, `ROUNDING_MAP` are deleted if nothing else references them (grep).
+- Produces `_resolve_rules(session, data, result)` replacing `_upsert_rules`: for each `data.rules` record, `select(RewardRule).where(RewardRule.moze_id == record["identifier"])`; found → `result.rules[identifier] = rule.id`; not found → `result.rules_unknown += 1`. No writes, no "gone" sweep. `SettingsResult` gains `rules_unknown: int = 0` and loses `unsupported_rules`, `orphaned_rules`. Report dict: keep `"rules": len(settings.rules)`, add `"rules_unknown": settings.rules_unknown`, drop the two lists. Delete `UNSUPPORTED_RULE_FIELDS` and the import of `REWARD_METHOD_MAP` / `REWARD_WINDOW_MAP` from this module **only** — `ROUNDING_MAP` (fee rounding L265, report ~L1376) and `POSTING_MAP` stay where they are defined (`moze_backup_json.py`, pinned by `tests/unit/test_moze_backup_json.py:113-114`); leave the map definitions in `moze_backup_json.py` untouched.
 - `_link_rewards_and_attachments` unchanged: a reward record whose `rewardID` is unresolved already gets `reward_rule_missing`.
 
 - [ ] **Step 1: Rewrite the rule tests**
@@ -596,12 +612,12 @@ def test_reward_record_links_to_the_resolved_rule(db_session, backup, seed):
 
 - [ ] **Step 3: Implement `_resolve_rules`, the `SettingsResult` and report changes, README and the frontend `ImportReport` type**
 
-- [ ] **Step 4: Run to verify pass** — `pytest tests/integration/test_backup_settings_import.py tests/integration/test_backup_replace_and_report.py tests/integration/test_backup_entries_import.py tests/integration/test_backup_imports_api.py tests/unit/test_moze_backup_json.py -q` and `cd frontend && npx vitest run src/app/components/accounting/accounting-settings` — PASS.
+- [ ] **Step 4: Run to verify pass** — `pytest tests/integration/test_backup_settings_import.py tests/integration/test_backup_replace_and_report.py tests/integration/test_backup_entries_import.py tests/integration/test_moze_replace_ledger.py tests/integration/test_backup_imports_api.py tests/unit/test_moze_backup_json.py -q` and `cd frontend && npx vitest run src/app/components/accounting/accounting-settings` — PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add services/accounting-service/app/services/moze_backup_import_service.py services/accounting-service/README.md services/accounting-service/tests/integration/test_backup_settings_import.py services/accounting-service/tests/integration/test_backup_entries_import.py frontend/src/app/models/accounting.model.ts
+git add services/accounting-service/app/services/moze_backup_import_service.py services/accounting-service/README.md services/accounting-service/tests/integration/test_backup_settings_import.py services/accounting-service/tests/integration/test_backup_entries_import.py services/accounting-service/tests/integration/test_backup_replace_and_report.py services/accounting-service/tests/integration/test_moze_replace_ledger.py frontend/src/app/models/accounting.model.ts
 git commit -m "feat(import): backup import resolves reward rules by moze_id, never writes them"
 ```
 
@@ -771,7 +787,7 @@ git commit -m "feat(rewards): reward rule editor sheet"
   `toggleRule(rule: RewardRule, enabled: boolean)` → `updateRewardRule(accountId, rule.id, { ...ruleToInput(rule), is_enabled: enabled })` → re-read; error → `ruleMessage`;
   `moveRule(index: number, delta: number)` → `reorderRewardRules(accountId, swappedIds)` → `detail.update` with the returned list; error → `ruleMessage` + re-read;
   `ruleStateOf(rule)` using `this.today()`;
-  `?rule=<id>` on first load of an account: `route.queryParamMap` → when the detail arrives and a rule with that id exists → `openRule(rule)` once, then the param is cleared with `router.navigate([], { queryParams: { rule: null }, queryParamsHandling: 'merge', replaceUrl: true })`.
+  `?rule=<id>` on first load of an account: `route.queryParamMap` → when the detail arrives and a rule with that id exists → `openRule(rule)` once, then the param is cleared with `router.navigate([], { relativeTo: this.route, queryParams: { rule: null }, queryParamsHandling: 'merge', replaceUrl: true })` (`relativeTo` is required — without it `[]` resolves from the root and leaves `accounts/:id/settings`; `reports.ts:436` and `reminders.ts:658` are the precedents).
 - Template: header row `回饋規則 · N 條` + `<a routerLink="/accounting/reward-rules" [queryParams]="{ account_id: accountId() }">全部卡片</a>`; `accountId() === null` → `<small>儲存帳戶後即可新增回饋規則</small>` and nothing else; rows `.rule-row` with `.rule-label` (`ruleLabel`), `.rule-posting`, `.rule-period`, `.rule-state` (`[attr.data-state]`, class `warn` when `expired`), `.rule-basic` badge, `.rule-moze` badge, `<app-switch class="rule-enabled" ...>`, `.rule-edit`, `.move-up` / `.move-down` (disabled at the ends); `.rule-add` 新增規則 at the end; `@if (ruleSheet(); as open) { <app-reward-rule-sheet ... /> }`.
 - The block does **not** take part in `isDirty()` (rule edits save immediately; the sheet guards its own input).
 - Builder's call (§10 left it open): 上移 / 下移 buttons on every width, no drag and no separate phone reorder mode — the settings page's 分類 / 專案 rows already reorder this way.
@@ -782,7 +798,8 @@ git commit -m "feat(rewards): reward rule editor sheet"
   (c) 啟用 switch off → PUT `/api/accounting/accounts/11/reward-rules/1` with `is_enabled: false` and the full body, then GET `/api/accounting/accounts/11` refreshes the list;
   (d) 下移 on the first row → PUT `/accounts/11/reward-rules/order` `{ ids: [2, 1] }`, rows re-rendered from the response;
   (e) 編輯 opens `app-reward-rule-sheet` with the rule; 新增規則 opens it with `rule === null`;
-  (f) `?rule=2` in the query params opens the sheet for rule 2 after the detail loads and the URL is rewritten without it;
+  (f) `?rule=2` in the query params opens the sheet for rule 2 after the detail loads and `router.navigate` is called with `[]`, `relativeTo` the component's route and `queryParams.rule === null` (the path must stay on the settings page);
+  (h) rewrite the existing assertion at `account-settings.spec.ts:171` (`['一般 1%', '餐飲 5.2%（停用）']` on `.rule-item`): the rows are now `.rule-row` with `.rule-label` 一般 (1%) / 餐飲 (5.2%) and a `.rule-state` badge 啟用中 / 已停用 — the 「（停用）」 suffix and the component's own `ruleLabel` method go away;
   (g) an expired rule (`ends_on` before the frozen 2026-10-02) shows `.rule-state.warn` 已到期.
 
 - [ ] **Step 2: Run to verify failure** — `npx vitest run src/app/components/accounting/account-settings`.
@@ -810,8 +827,8 @@ git commit -m "feat(rewards): 回饋規則 block with editor, 啟用 switch and 
 - Modify: `frontend/src/app/components/accounting/accounting-settings/accounting-settings.spec.ts` (one assertion: the link's `href` is `/accounting/reward-rules`)
 
 **Interfaces:**
-- Consumes `AccountingService.getRewardRuleOverview` (Task 6), helpers (Task 6), `PageHeaderComponent` (`title="回饋規則總覽"`, `[back]="true"`), `accountChanged` signal of `AccountingService` (reload when a rule is edited elsewhere — see how `accounts.ts` reacts to it).
-- Produces `RewardRulesOverviewComponent` (`selector: 'app-reward-rules'`): query params `state` (default `active`), `account_id` (repeatable), `archived` (`1`); signals `overview`, `loading`, `error`, `filter`; computed `callout = counts.enabled_expired > 0`; `setFilter(state)` navigates with `queryParams` merge; the callout button 「N 條規則啟用中但已到期，記帳時不會出現」 calls `setFilter('expired')`.
+- Consumes `AccountingService.getRewardRuleOverview` (Task 6), helpers (Task 6), `PageHeaderComponent` (`title="回饋規則總覽"`, `[back]="true"`), the `accountsChanged` signal of `AccountingService` (`accounting.service.ts:85`; reload inside an `effect` the way `accounts.ts:217` does, so a rule edited on a settings pane refreshes the overview).
+- Produces `RewardRulesOverviewComponent` (`selector: 'app-reward-rules'`): query params `state` (default `active`), `account_id` (repeatable), `archived` (`1`); signals `overview`, `loading`, `error`, `filter`; computed `callout = counts.enabled_expired > 0`; `setFilter(state)` → `router.navigate([], { relativeTo: this.route, queryParams: { state }, queryParamsHandling: 'merge', replaceUrl: true })`; the callout button 「N 條規則啟用中但已到期，記帳時不會出現」 calls `setFilter('expired')`.
   Template: `app-page-header`; `@if (callout)` `<button class="rr-callout" role="status">`; filter chips `.rr-filter` (啟用中 / 已到期 / 尚未開始 / 已停用 / 全部) with `aria-pressed`; 顯示封存 checkbox `.rr-archived`; one `<section class="rr-card">` per account with `<h2>` name (+ 已封存), rows `.rr-rule` → `<a [routerLink]="['/accounting/accounts', a.account_id, 'settings']" [queryParams]="{ rule: r.id }">` wrapping label / posting / period / state badge, and a `.rr-stats` line `綁定 N 筆（近 12 月 M）· 已入帳 K 筆 · 合計 X CUR[, Y CUR] · 最近 yyyy/MM/dd` (`formatMoney(amount, currency)` per entry; omit 合計 / 最近 when empty / null); account without rules → `尚無規則 → <a ... settings>新增</a>`; no accounts → `尚無回饋規則`; loading → `aria-busy`; error → `writeErrorMessage` in `role="alert"`.
 
 - [ ] **Step 1: Write the failing specs** — (a) default GET `/api/accounting/reward-rules?state=active` renders one card per account and a row per rule with 綁定 / 已入帳 text; (b) `counts.enabled_expired = 31` shows the callout with that number and clicking it requests `state=expired`; (c) `counts.enabled_expired = 0` → no callout; (d) 顯示封存 adds `include_archived_accounts=true`; (e) empty `accounts` → 尚無回饋規則; a card with `rules: []` → 尚無規則; (f) the row's link has `href` `/accounting/accounts/11/settings?rule=2`; (g) `accounting-settings.spec.ts`: the 回饋規則 link exists.
