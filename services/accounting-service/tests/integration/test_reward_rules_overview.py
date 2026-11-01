@@ -40,7 +40,8 @@ def test_overview_groups_by_account_with_states_and_counts(client, db_session, s
     assert [a["account_id"] for a in asked_archived["accounts"]] == [gone.id]  # explicit id wins over the archived default
 
 def test_overview_stats_per_currency_and_12m_boundary(client, db_session, seed, monkeypatch):
-    # Review focus 4: two currencies on one rule; a link dated exactly one year ago counts in the 12-month figure.
+    # Review focus 4: two currencies on one rule; a link dated exactly one year ago counts in the 12-month figure,
+    # a future-dated one does not.
     _freeze(monkeypatch)
     card = seed.account("華航卡")
     points = seed.account("點數", currency="PTS")
@@ -48,14 +49,15 @@ def test_overview_stats_per_currency_and_12m_boundary(client, db_session, seed, 
     old = seed.entry(card, "-100", day=TODAY - timedelta(days=400))
     edge = seed.entry(card, "-100", day=date(2025, 11, 1))
     recent = seed.entry(card, "-100", day=TODAY)
-    for purchase in (old, edge, recent):
+    future = seed.entry(card, "-100", day=TODAY + timedelta(days=30))  # a future-dated link is not "last 12 months"
+    for purchase in (old, edge, recent, future):
         db_session.add(EntryRewardRule(entry_id=purchase.id, rule_id=rule.id))
     seed.entry(card, "3", kind="reward", day=date(2026, 3, 15), reward_rule_id=rule.id)
     seed.entry(points, "120", kind="reward", day=date(2026, 9, 15), reward_rule_id=rule.id)
     seed.entry(points, "80", kind="reward", day=date(2026, 10, 15), reward_rule_id=rule.id)
     db_session.commit()
     stats = client.get("/reward-rules").json()["accounts"][0]["rules"][0]["stats"]
-    assert (stats["linked_entries"], stats["linked_entries_12m"], stats["rewards_count"]) == (3, 2, 3)
+    assert (stats["linked_entries"], stats["linked_entries_12m"], stats["rewards_count"]) == (4, 2, 3)
     assert stats["rewards_total"] == [{"currency": "PTS", "amount": "200.0000"}, {"currency": "TWD", "amount": "3.0000"}]
     assert stats["rewards_last_date"] == "2026-10-15"
 

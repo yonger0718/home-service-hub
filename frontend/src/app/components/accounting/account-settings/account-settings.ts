@@ -36,7 +36,9 @@ import { balanceNegative, balanceText, valuationHint } from '../account-balance'
 import { decimalText, formatMoney } from '../format';
 import { fieldErrors, writeErrorMessage } from '../http-errors';
 import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
-import { RULE_STATE_LABELS, periodText, postingSummary, ruleLabel, ruleState, ruleToInput } from '../reward-rule-text';
+import {
+  RULE_STATE_LABELS, basicOverlapRuleId, periodText, postingSummary, ruleLabel, ruleState, ruleToInput,
+} from '../reward-rule-text';
 import { SwitchComponent } from '../../ui/switch/switch';
 
 export { decimalText } from '../format';
@@ -642,8 +644,18 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     if (loadId !== this.loadId) {
       return;
     }
-    this.ruleMessage.set(writeErrorMessage(err));
+    this.ruleMessage.set(this.ruleErrorMessage(err));
     this.reloadRules(loadId);
+  }
+
+  /** A 409 `basic_rule_overlap` names the clashing rule like the sheet does; anything else is the generic message. */
+  private ruleErrorMessage(err: unknown): string {
+    const overlap = basicOverlapRuleId(err);
+    if (overlap === null) {
+      return writeErrorMessage(err);
+    }
+    const name = this.rules().find(rule => rule.id === overlap)?.name ?? `#${overlap}`;
+    return `與「${name}」的基本回饋期間重疊`;
   }
 
   /**
@@ -673,7 +685,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
             return;
           }
           this.ruleBusy.set(false);
-          this.ruleMessage.set(writeErrorMessage(err));
+          this.ruleMessage.set(this.ruleErrorMessage(err));
         },
       });
   }

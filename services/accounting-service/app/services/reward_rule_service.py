@@ -193,7 +193,7 @@ def _rule_stats(db: Session, rule_ids: list[int], today: date) -> dict[int, dict
         select(
             EntryRewardRule.rule_id,
             func.count(),
-            func.count().filter(LedgerEntry.entry_date >= since),
+            func.count().filter(LedgerEntry.entry_date.between(since, today)),
         )
         .join(LedgerEntry, LedgerEntry.id == EntryRewardRule.entry_id)
         .where(EntryRewardRule.rule_id.in_(rule_ids))

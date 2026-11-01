@@ -837,6 +837,19 @@ describe('AccountSettingsComponent', () => {
     expect(texts(fixture, '.rule-row .rule-state')).toEqual(['啟用中', '已停用']);
   });
 
+  it('a 409 basic_rule_overlap on the 啟用 switch names the clashing rule', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+
+    click(fixture, '.rule-row app-switch.rule-enabled button', 1);
+    http.expectOne('/api/accounting/accounts/11/reward-rules/2')
+      .flush({ code: 409, message: 'basic_rule_overlap: rule 1' }, { status: 409, statusText: 'Conflict' });
+    http.expectOne('/api/accounting/accounts/11').flush(DETAIL);
+    fixture.detectChanges();
+
+    expect(el(fixture).querySelector('.rule-message')?.textContent?.trim()).toBe('與「一般」的基本回饋期間重疊');
+  });
+
   it('下移 on the first row sends the swapped order and re-renders from the response', async () => {
     await setup('11');
     const fixture = render(DETAIL);
