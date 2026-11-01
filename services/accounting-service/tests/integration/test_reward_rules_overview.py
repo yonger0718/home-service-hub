@@ -1,7 +1,6 @@
 """GET /reward-rules: every account, rule state, stats (reward rules design §5.3)."""
 import time
 from datetime import date, timedelta
-from decimal import Decimal
 
 from app.models import EntryRewardRule
 from app.services import ledger_service
@@ -20,17 +19,19 @@ def test_overview_groups_by_account_with_states_and_counts(client, db_session, s
     seed.rule(card, name="expired", starts_on=date(2025, 1, 1), ends_on=date(2026, 10, 31))
     seed.rule(card, name="upcoming", starts_on=date(2027, 1, 1), ends_on=None)
     seed.rule(card, name="disabled", enabled=False, ends_on=date(2026, 1, 1))
+    seed.rule(card, name="open", starts_on=None, ends_on=None)  # both bounds blank: always active
     seed.rule(gone, name="archived card rule")
     db_session.commit()
     body = client.get("/reward-rules").json()
     assert [a["account_name"] for a in body["accounts"]] == ["華航卡", "玉山卡"]
     assert [(r["name"], r["state"]) for r in body["accounts"][0]["rules"]] == [
-        ("active", "active"), ("expired", "expired"), ("upcoming", "upcoming"), ("disabled", "disabled")]
+        ("active", "active"), ("expired", "expired"), ("upcoming", "upcoming"), ("disabled", "disabled"),
+        ("open", "active")]
     assert body["accounts"][1]["rules"] == []
-    assert body["counts"] == {"active": 1, "disabled": 1, "expired": 1, "upcoming": 1, "enabled_expired": 1}
+    assert body["counts"] == {"active": 2, "disabled": 1, "expired": 1, "upcoming": 1, "enabled_expired": 1}
     expired_only = client.get("/reward-rules", params={"state": "expired"}).json()
     assert [r["name"] for r in expired_only["accounts"][0]["rules"]] == ["expired"]
-    assert expired_only["counts"]["active"] == 1  # counts ignore the filter
+    assert expired_only["counts"]["active"] == 2  # counts ignore the filter
     with_archived = client.get("/reward-rules", params={"include_archived_accounts": "true"}).json()
     assert [a["account_name"] for a in with_archived["accounts"]] == ["舊卡", "華航卡", "玉山卡"]
     one = client.get("/reward-rules", params=[("account_id", bare.id)]).json()

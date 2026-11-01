@@ -1,7 +1,6 @@
 """Reward rule CRUD under /accounts/{id}/reward-rules (reward rules design §5.3)."""
 import json
 from datetime import date
-from decimal import Decimal
 from uuid import UUID
 
 import pytest
@@ -129,6 +128,42 @@ def test_disabling_a_linked_rule_keeps_the_link(client, db_session, seed):
     edited = client.put(f"/entries/{entry.id}", json={"account_id": card.id, "kind": "expense", "amount": "120",
                                                       "entry_date": "2026-09-01", "reward_rule_ids": [rule.id]})
     assert edited.status_code == 200, edited.text
+
+
+def test_disabling_a_rule_whose_reward_account_was_archived_still_succeeds(client, db_session, seed):
+    # Whole-row PUT (the 啟用 switch / 停用) resends untouched refs; an unchanged archived ref must not block it.
+    card = seed.account("華航卡", is_credit=True)
+    points = seed.account("點數", currency="PTS")
+    project = seed.project("旅遊")
+    rule = seed.rule(card)
+    rule.reward_account_id, rule.reward_project_id = points.id, project.id
+    db_session.flush()
+    points.is_archived = project.is_archived = True
+    db_session.commit()
+    response = client.put(f"/accounts/{card.id}/reward-rules/{rule.id}",
+                          json=_body(reward_account_id=points.id, reward_project_id=project.id, is_enabled=False))
+    assert response.status_code == 200, response.text
+    assert (response.json()["is_enabled"], response.json()["reward_account_id"]) == (False, points.id)
+
+def test_rule_on_an_archived_card_paying_into_the_card_itself_can_be_saved(client, db_session, seed):
+    card = seed.account("舊卡", is_credit=True, is_archived=True)
+    rule = seed.rule(card)  # the import stored the card id explicitly
+    db_session.commit()
+    response = client.put(f"/accounts/{card.id}/reward-rules/{rule.id}",
+                          json=_body(reward_account_id=card.id, is_enabled=False))
+    assert response.status_code == 200, response.text
+    created = client.post(f"/accounts/{card.id}/reward-rules", json=_body(reward_account_id=card.id))
+    assert created.status_code == 201, created.text
+
+def test_switching_to_a_different_archived_reward_account_is_still_422(client, db_session, seed):
+    card = seed.account("華航卡", is_credit=True)
+    points = seed.account("點數", currency="PTS")
+    other = seed.account("舊點數", currency="PTS", is_archived=True)
+    rule = seed.rule(card)
+    rule.reward_account_id = points.id
+    db_session.commit()
+    response = client.put(f"/accounts/{card.id}/reward-rules/{rule.id}", json=_body(reward_account_id=other.id))
+    assert response.status_code == 422 and response.json()["detail"][0]["loc"][-1] == "reward_account_id", response.text
 
 
 def test_reorder_writes_positions_and_returns_the_list(client, db_session, seed):

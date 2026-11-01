@@ -206,6 +206,9 @@ EXPECTED_WRITES = {
     # Reports (openspec add-accounting-reports): budget and saved_report rows only, never ledger rows.
     ("/reports/budgets", "POST"), ("/reports/budgets/{budget_id}", "PUT"), ("/reports/budgets/{budget_id}", "DELETE"),
     ("/reports/saved", "POST"), ("/reports/saved/{report_id}", "PUT"), ("/reports/saved/{report_id}", "DELETE"),
+    # Reward rules (spec 2026-10-31 §5.3): account settings — MOZE-imported rules are editable; never locked_until_cutover.
+    ("/accounts/{account_id}/reward-rules", "POST"), ("/accounts/{account_id}/reward-rules/order", "PUT"),
+    ("/accounts/{account_id}/reward-rules/{rule_id}", "PUT"), ("/accounts/{account_id}/reward-rules/{rule_id}", "DELETE"),
 }
 
 

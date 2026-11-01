@@ -52,13 +52,24 @@ def _check_payload(payload: RewardRuleIn) -> None:
         raise ValidationError("ends_on", "must not be before starts_on")
 
 
-def _check_refs(db: Session, payload: RewardRuleIn) -> None:
+def _check_refs(db: Session, payload: RewardRuleIn, account_id: int, current: RewardRule | None) -> None:
+    """A *new* reference must be live; an unchanged one (whole-row PUT) or the card itself may be archived.
+
+    The SPA's 啟用 switch and 停用 resend the whole row, so a legacy rule pointing at a since-archived points
+    account or project must still save; the card itself is always accepted (spec §5.1: null = the card itself,
+    and the MOZE import stored the card id explicitly).
+    """
     for field, model in (("reward_account_id", Account), ("reward_project_id", Project)):
         ref_id = getattr(payload, field)
         if ref_id is None:
             continue
         ref = db.get(model, ref_id)
-        if ref is None or ref.is_archived:
+        if ref is None:
+            raise ValidationError(field, "must be an existing, non-archived account" if model is Account
+                                  else "must be an existing, non-archived project")
+        unchanged = current is not None and getattr(current, field) == ref_id
+        is_card = model is Account and ref_id == account_id
+        if ref.is_archived and not (unchanged or is_card):
             raise ValidationError(field, "must be an existing, non-archived account" if model is Account
                                   else "must be an existing, non-archived project")
 
@@ -100,9 +111,9 @@ def _apply_share_cap(db: Session, rule: RewardRule, share_cap_with: ShareCapWith
     rule.shared_cap_id = other.shared_cap_id
 
 
-def _save(db: Session, rule: RewardRule, payload: RewardRuleIn) -> None:
+def _save(db: Session, rule: RewardRule, payload: RewardRuleIn, *, is_new: bool) -> None:
     """Shared tail of create and update: refs → write fields → overlap → share cap → flush."""
-    _check_refs(db, payload)
+    _check_refs(db, payload, rule.account_id, None if is_new else rule)
     _write_fields(rule, payload)
     db.flush()  # a new rule needs its id so the overlap query can exclude it
     _check_basic_overlap(db, rule.account_id, rule)
@@ -119,7 +130,7 @@ def create(db: Session, account_id: int, payload: RewardRuleIn) -> int:
         sort_order = 0 if top is None else top + 1
     rule = RewardRule(account_id=account_id, sort_order=sort_order)
     db.add(rule)
-    _save(db, rule, payload)
+    _save(db, rule, payload, is_new=True)
     return rule.id
 
 
@@ -128,7 +139,7 @@ def update(db: Session, account_id: int, rule_id: int, payload: RewardRuleIn) ->
     _check_payload(payload)
     if payload.sort_order is not None:
         rule.sort_order = payload.sort_order
-    _save(db, rule, payload)
+    _save(db, rule, payload, is_new=False)
 
 
 def reorder(db: Session, account_id: int, ids: list[int]) -> None:
@@ -157,7 +168,7 @@ def rule_state(rule: RewardRule, today: date) -> str:
         return "disabled"
     if rule.ends_on is not None and rule.ends_on < today:
         return "expired"
-    if rule.starts_on > today:
+    if rule.starts_on is not None and rule.starts_on > today:
         return "upcoming"
     return "active"
 

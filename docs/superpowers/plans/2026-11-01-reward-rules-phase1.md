@@ -864,6 +864,10 @@ git commit -m "feat(rewards): 回饋規則總覽 page at accounting/reward-rules
 
 1. API deploy from the release checkout (no migration). Smoke with the hermes token, counts only:
    `curl -s -H "Authorization: Bearer $(cat ~/.config/homehub-hermes-token)" localhost:8000/reward-rules | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d["accounts"]), d["counts"])'`.
+   Repeat it with `?state=all&include_archived_accounts=true` (the default scope hides archived cards, so a 500 on an archived card's rule — e.g. a blank `starts_on` — only shows here):
+   `curl -s -H "Authorization: Bearer $(cat ~/.config/homehub-hermes-token)" 'localhost:8000/reward-rules?state=all&include_archived_accounts=true' | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d["accounts"]), d["counts"])'`.
+   Before step 4, a read-only check (counts only; never paste owner data anywhere): legacy rows whose `rate` a whole-row PUT (edit, 啟用 switch, 停用) would refuse with 422 on `rate`:
+   `select id, name, rate from reward_rule where rate is not null and (rate <= 0 or rate > 100)` — report the row count; the owner fixes those rules' rate in the sheet before touching them otherwise.
 2. Caddy: in `~/workspace/vaultwarden/Caddyfile` line 53 add `reward-rules` to the `/accounting/(accounts|…|reports)` alternation → `…|reports|reward-rules)`; `docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile && docker exec caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`.
 3. SPA release per the standing recipe (stop preview 18081 first); probe `/hub/accounting/reward-rules` → 200 and the page renders the callout.
 4. Hermes skill text (outside git; the PR body quotes it):

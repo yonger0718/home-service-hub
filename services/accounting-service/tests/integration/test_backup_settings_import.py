@@ -15,7 +15,6 @@ from app.models import (
     Project,
     RewardRule,
 )
-from app.services import ledger_service
 from app.services.moze_backup_import_service import moze_uuid
 from app.services.moze_csv import MozeImportError
 from tests.helpers import _import_backup
