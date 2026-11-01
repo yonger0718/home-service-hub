@@ -102,6 +102,13 @@ describe('AccountingSettingsComponent', () => {
     return file;
   }
 
+  it('links 回饋規則 › 總覽 to the reward rules overview after 專案', () => {
+    const link = el.querySelector<HTMLAnchorElement>('a.reward-rules-link')!;
+    expect(link.getAttribute('href')).toBe('/accounting/reward-rules');
+    expect(link.textContent?.replace(/\s+/g, '')).toBe('回饋規則總覽');
+    expect(link.previousElementSibling?.classList.contains('projects-section')).toBe(true);
+  });
+
   it('renames a counterparty with PUT /counterparties/{id} and shows open amounts per currency', () => {
     const alan = el.querySelector('.cp-row')!;
     expect(alan.querySelector('.cp-open')?.textContent?.trim()).toBe('$220 · −¥1,000');
