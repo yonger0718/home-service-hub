@@ -177,7 +177,10 @@ def _manual(session, account: Account, amount: str) -> LedgerEntry:
     return entry
 
 
-def test_csv_import_replaces_a_backup_import(db_session, moze, backup):
+def test_csv_import_replaces_a_backup_import(db_session, moze, backup, seed):
+    card = seed.account("華航卡", moze_id="A-CARD")
+    seed.rule(card, moze_id="B-1")
+    db_session.commit()
     _import_backup(db_session, parse_backup_doc(backup.doc(
         accounts=[backup.account("A-CARD", "華航卡", isCreditAccount=True, startDay=15)],
         rules=[backup.rule("B-1", "A-CARD")],

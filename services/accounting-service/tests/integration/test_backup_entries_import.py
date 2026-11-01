@@ -572,7 +572,11 @@ def _reward_data(backup, *, reward_id="B-1", source_id="R-BUY"):
     )
 
 
-def test_reward_links_rule_and_source_and_attachments_are_rows(db_session, backup):
+def test_reward_links_rule_and_source_and_attachments_are_rows(db_session, backup, seed):
+    card = seed.account("華航卡", moze_id="A-CARD")
+    seed.rule(card, moze_id="B-1")
+    seed.rule(card, moze_id="B-2")
+    db_session.commit()
     summary = _import_backup(db_session, _reward_data(backup))
     reward, source = _by_moze_id(db_session, "R-REWARD"), _by_moze_id(db_session, "R-BUY")
     rule_ids = {r.moze_id: r.id for r in db_session.scalars(select(RewardRule))}
@@ -582,7 +586,11 @@ def test_reward_links_rule_and_source_and_attachments_are_rows(db_session, backu
     assert summary["attachments"] == 2
 
 
-def test_reward_with_missing_rule_or_source_needs_review(db_session, backup):
+def test_reward_with_missing_rule_or_source_needs_review(db_session, backup, seed):
+    card = seed.account("華航卡", moze_id="A-CARD")
+    seed.rule(card, moze_id="B-1")
+    seed.rule(card, moze_id="B-2")
+    db_session.commit()
     summary = _import_backup(db_session, _reward_data(backup, reward_id="B-NONE", source_id="R-NONE"))
     reward = _by_moze_id(db_session, "R-REWARD")
     assert (reward.reward_rule_id, reward.reward_source_entry_id, reward.needs_review) == (None, None, True)
@@ -590,7 +598,10 @@ def test_reward_with_missing_rule_or_source_needs_review(db_session, backup):
     assert summary["reward_source_from_package"] == 0
 
 
-def test_reward_on_a_split_purchase_links_to_the_primary_member(db_session, backup):
+def test_reward_on_a_split_purchase_links_to_the_primary_member(db_session, backup, seed):
+    card = seed.account("華航卡", moze_id="A-CARD")
+    seed.rule(card, moze_id="B-1")
+    db_session.commit()
     data = backup.data(
         accounts=[backup.account("A-CARD", "華航卡", isCreditAccount=True)],
         rules=[backup.rule("B-1", "A-CARD")],

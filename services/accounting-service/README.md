@@ -36,7 +36,7 @@ The backup importer converts the archive with the Node tool (`MOZE_REALM_EXPORTE
 `node <repo>/tools/moze-realm-export/index.js`, `node` from `PATH`, 10-minute timeout; one file path, or a command
 line such as `/usr/bin/node /path/to/index.js`), then replaces every
 `moze_import` and `moze_backup` entry and MOZE group in one transaction under the same lock, upserts groups,
-accounts, categories, projects, counterparties, reward rules (by `moze_id`, never recreated) and the preference row,
+accounts, categories, projects, counterparties and the preference row (reward rules are only looked up by `moze_id` for the purchase → rule links; the import no longer creates, updates or deletes them, HomeHub is the rules' only writer since 2026-11),
 and maps future-dated rows, periods and installments to schedule definitions and periods (see Schedules). Manual entries and their rule
 attachments are never touched. Accounts edited locally (`settings_locally_edited`) keep their settings and, when
 the backup no longer names them, are neither archived nor zeroed. Neither importer deletes a category, project or

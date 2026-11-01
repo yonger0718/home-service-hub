@@ -91,7 +91,10 @@ def test_reimport_is_idempotent(db_session, backup):
     assert [a["moze_part"] for a in second["accounts"]] == [a["moze_part"] for a in first["accounts"]]
 
 
-def test_reimport_keeps_manual_entries_attachments_and_rule_ids(db_session, backup):
+def test_reimport_keeps_manual_entries_attachments_and_rule_ids(db_session, backup, seed):
+    card = seed.account("華航卡", moze_id="A-CARD")
+    seed.rule(card, moze_id="B-1")
+    db_session.commit()
     # Review focus 3: manual rows, their attachments and the rule ids survive; nothing is duplicated.
     data = parse_backup_doc(_doc(backup))
     _import_backup(db_session, data)
@@ -180,7 +183,10 @@ def test_reimport_keeps_unused_settings_created_through_the_api(client, db_sessi
     assert db_session.scalar(select(Category.id).where(Category.name == "寵物", Category.kind == "expense")) is not None
 
 
-def test_report_shape_and_balance_comparison_default(db_session, backup):
+def test_report_shape_and_balance_comparison_default(db_session, backup, seed):
+    card = seed.account("華航卡", moze_id="A-CARD")
+    seed.rule(card, moze_id="B-1")
+    db_session.commit()
     summary = _import_backup(db_session, parse_backup_doc(_doc(backup)))
     assert summary["kind"] == "moze_backup"
     assert summary["exported_at"] == "2026-10-01T17:00:37+08:00"

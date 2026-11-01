@@ -585,8 +585,7 @@ export interface BackupImportReport {
   attachments: number;
   counterparties: number;
   needs_review: { count: number; reasons: Record<string, number> };
-  unsupported_rules: unknown[];
-  orphaned_rules: unknown[];
+  rules_unknown: number;
   settings_skipped: unknown[];
   accounts: BackupAccountReport[];
   compared_accounts: { compared: number; total: number };
