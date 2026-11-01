@@ -31,8 +31,8 @@ from app.services.statements import matching
 
 SETTLEMENT_LABELS: tuple[str, ...] = matching.SETTLEMENT_LABELS  # the default; callers pass the rules' labels
 QUESTIONS = ("bank_only", "transfer", "ledger_only", "amount_differs", "date_differs",
-             "ambiguous", "balance_gap", "settlement", "proposed", "other")
-FOLDED = frozenset({"proposed", "balance_gap", "settlement", "other"})
+             "ambiguous", "balance_gap", "settlement", "dividend", "proposed", "other")
+FOLDED = frozenset({"proposed", "balance_gap", "settlement", "dividend", "other"})
 
 BUTTONS_TO_ACTIONS = {
     "record": "create_entry",
@@ -57,9 +57,9 @@ def classify(*, kind: str, status: str, statement_kind: str, hint: str | None,
     questions, as an unmatched bank line naming a settlement label (`settlement_labels`, the rules' list) is; a
     `dividend` case, an `ambiguous` one with hint `dividend_ambiguous` (its candidates are receipts, not entries) and a
     `line_unmatched` one with hint `dividend_mismatch` (answered in the portfolio, by the fee, or by dismissal, never
-    as a bank-only line) are `other` until their follow-up plan gives them a card — unless the policy proposed the
-    case (its owner-deleted re-book): a `proposed` question then, so the one dividend answer the policy leaves to the
-    owner is never folded into `other` (final review M5; the `proposed` check precedes the dividend branch)."""
+    as a bank-only line) are `dividend` questions (a folded card without buttons, as `settlement`; #264) — unless the
+    policy proposed the case (its owner-deleted re-book): a `proposed` question then, so the one dividend answer the
+    policy leaves to the owner is never folded (final review M5; the `proposed` check precedes the dividend branch)."""
     from app.services import dividend_service  # call time only (#247)
 
     if (statement_kind == "bank" and kind == "line_unmatched"
@@ -70,7 +70,7 @@ def classify(*, kind: str, status: str, statement_kind: str, hint: str | None,
     if status == "proposed":
         return "proposed"
     if kind == dividend_service.KIND or hint in dividend_service.FAMILY_HINTS:
-        return "other"
+        return "dividend"
     if hint == "needs_peer":
         return "transfer"
     if kind == "line_unmatched" and hint == "installment_unmapped":  # the registry still allows create_entry here
@@ -109,7 +109,7 @@ def buttons(question: str, allowed: list[str], *, adjustable: bool) -> list[str]
     """Ordered button list for a question, limited to the registry's allowed actions."""
     if question == "proposed":
         return ["apply_proposal", "reject_proposal"]
-    if question == "settlement":
+    if question in ("settlement", "dividend"):
         return []
     out: list[str] = []
 
@@ -392,7 +392,7 @@ def _counts(items: list[dict]) -> dict:
     keys = {i["group_key"] for i in unfolded if i["group_key"] is not None}
     keyless = sum(1 for i in unfolded if i["group_key"] is None)
     counts = {"ask": len(keys) + keyless, "ask_items": len(unfolded)}
-    for question in ("proposed", "balance_gap", "settlement", "other"):
+    for question in ("proposed", "balance_gap", "settlement", "dividend", "other"):
         counts[question] = sum(1 for i in items if i["question"] == question)
     return counts
 

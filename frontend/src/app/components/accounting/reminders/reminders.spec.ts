@@ -77,7 +77,7 @@ const INBOX_URL = '/api/accounting/reconciliation/inbox';
 function inboxOut(items: InboxItem[] = []): InboxOut {
   return {
     generated_at: '2026-10-03T00:00:00Z',
-    counts: { ask: items.length, ask_items: items.length, proposed: 0, balance_gap: 0, settlement: 0, other: 0 },
+    counts: { ask: items.length, ask_items: items.length, proposed: 0, balance_gap: 0, settlement: 0, dividend: 0, other: 0 },
     accounts: items.length > 0 ? [{ id: 1, name: '玉山', currency: 'TWD', is_credit: false, items }] : [],
   };
 }
@@ -1081,10 +1081,22 @@ describe('AccountingRemindersComponent', () => {
       fixture.detectChanges();
       flushLoad([], [], [], [], [], {
         ...inboxOut([folded]),
-        counts: { ask: 0, ask_items: 0, proposed: 0, balance_gap: 0, settlement: 0, other: 1 },
+        counts: { ask: 0, ask_items: 0, proposed: 0, balance_gap: 0, settlement: 0, dividend: 0, other: 1 },
       });
       fixture.detectChanges();
       expect(el.querySelector('app-inbox-panel details.fold')).not.toBeNull();
+      expect(el.querySelector('.empty')).toBeNull();
+
+      // Only dividend cases (#264): the 股利入帳 fold counts as content as well.
+      const dividend: InboxItem = { ...bankOnly(10), kind: 'dividend', question: 'dividend', folded: true, actions: [] };
+      TestBed.inject(AccountingService).markEntriesChanged();
+      fixture.detectChanges();
+      flushLoad([], [], [], [], [], {
+        ...inboxOut([dividend]),
+        counts: { ask: 0, ask_items: 0, proposed: 0, balance_gap: 0, settlement: 0, dividend: 1, other: 0 },
+      });
+      fixture.detectChanges();
+      expect(text(el.querySelector('app-inbox-panel details.fold summary'))).toContain('股利入帳 1');
       expect(el.querySelector('.empty')).toBeNull();
     });
 

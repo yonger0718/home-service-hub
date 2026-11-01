@@ -366,7 +366,7 @@ export class AccountingRemindersComponent {
     const inbox = !counts
       ? 0
       : this.tab() === 'todo'
-        ? counts.ask + counts.proposed + counts.balance_gap + counts.settlement + counts.other
+        ? counts.ask + counts.proposed + counts.balance_gap + counts.settlement + counts.dividend + counts.other
         : this.tab() === 'all'
           ? counts.ask
           : 0;

@@ -10,6 +10,7 @@ export type InboxQuestion =
   | 'other'
   | 'balance_gap'
   | 'settlement'
+  | 'dividend'
   | 'proposed';
 
 export type InboxButton =
@@ -95,6 +96,7 @@ export interface InboxCounts {
   proposed: number;
   balance_gap: number;
   settlement: number;
+  dividend: number;
   other: number;
 }
 

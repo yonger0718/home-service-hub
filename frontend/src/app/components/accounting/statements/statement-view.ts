@@ -86,6 +86,8 @@ const CASE_KIND_LABELS: Record<string, string> = {
   ambiguous: '多筆可能',
   duplicate_claim: '重複認列',
   balance_gap: '餘額差異',
+  settlement: '交割款',
+  dividend: '股利入帳',
   statement_conflict: '版本衝突',
   parse_review: '資料已變更，待確認',
   recheck: '需重新檢查',

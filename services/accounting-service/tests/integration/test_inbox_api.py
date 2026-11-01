@@ -91,6 +91,7 @@ def test_transfer_and_settlement_and_installment(client, seed, db_session, run):
     assert by_q["settlement"]["actions"] == [] and by_q["settlement"]["folded"] is True
     assert by_q["other"]["folded"] is True and by_q["other"]["actions"] == ["dismiss"]
     assert body["counts"]["settlement"] == 1 and body["counts"]["other"] >= 1
+    assert body["counts"]["dividend"] == 0
 
 
 def test_historical_statement_cases_are_absent(client, seed, db_session, run):

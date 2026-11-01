@@ -29,10 +29,37 @@ export interface InboxCards {
   proposed: InboxCard[];
   balanceGap: InboxCard[];
   settlement: InboxCard[];
+  dividend: InboxCard[];
   other: InboxCard[];
 }
 
 export const AMOUNT_ANY_LABEL = '金額不同也算';
+
+/** Policy proposal actions as the card names them; an unknown action shows its raw name. */
+const PROPOSAL_ACTION_LABELS: Record<string, string> = {
+  match: '對到已記的',
+  create_entry: '記一筆',
+  create_system_entry: '系統記錄',
+  adjust_amount: '改成銀行的數',
+  book_settlement: '入帳交割款',
+  book_dividend: '入帳股利',
+};
+
+export function proposalLabel(action: string | undefined): string {
+  return action ? (PROPOSAL_ACTION_LABELS[action] ?? action) : '';
+}
+
+/** The dividend family (#264): a `dividend` case waits for the receipt; the ambiguous and mismatch shapes are answered on the statement page or in the portfolio. */
+function dividendText(kind: string): string {
+  switch (kind) {
+    case 'ambiguous':
+      return '多筆股利收據可能是它 — 到對帳單頁選';
+    case 'line_unmatched':
+      return '股利金額與證券收據不符 — 查證券端手續費，或忽略';
+    default:
+      return '股利入帳，等證券連動';
+  }
+}
 
 export const INBOX_ERRORS: Record<string, string> = {
   stale_case: '對象已變，重新整理',
@@ -112,7 +139,7 @@ function makeCard(account: InboxAccount, key: string, first: InboxItem): InboxCa
 
 /** Unfolded items merge by `group_key` within an account; everything else is one card each. Order is preserved. */
 export function buildCards(accounts: InboxAccount[]): InboxCards {
-  const out: InboxCards = { ask: [], proposed: [], balanceGap: [], settlement: [], other: [] };
+  const out: InboxCards = { ask: [], proposed: [], balanceGap: [], settlement: [], dividend: [], other: [] };
   for (const account of accounts) {
     const grouped = new Map<string, InboxCard>();
     for (const item of account.items) {
@@ -140,6 +167,8 @@ function bucket(cards: InboxCards, question: InboxQuestion): InboxCard[] {
       return cards.balanceGap;
     case 'settlement':
       return cards.settlement;
+    case 'dividend':
+      return cards.dividend;
     case 'other':
       return cards.other;
     default:
@@ -172,8 +201,10 @@ export function questionText(item: InboxItem, currency: string): string {
       return '期初差額';
     case 'settlement':
       return '交割款，等證券連動';
+    case 'dividend':
+      return dividendText(item.kind);
     case 'proposed':
-      return `系統有提議：${item.proposal?.action ?? ''}`;
+      return `系統有提議：${proposalLabel(item.proposal?.action)}`;
   }
 }
 

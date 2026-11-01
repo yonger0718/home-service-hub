@@ -105,7 +105,7 @@ Response `InboxOut`:
 ```
 {
   "generated_at": ISO,
-  "counts": {"ask": n, "ask_items": n, "proposed": n, "balance_gap": n, "settlement": n, "other": n},
+  "counts": {"ask": n, "ask_items": n, "proposed": n, "balance_gap": n, "settlement": n, "dividend": n, "other": n},
                                         // ask = unfolded CARDS after merging (the bell number); ask_items = rows;
                                         // computed server-side over the whole set regardless of limit
   "accounts": [ {"id", "name", "currency", "is_credit", "items": [InboxItem…]} … ]   // accounts with items, by name
@@ -113,8 +113,8 @@ Response `InboxOut`:
 InboxItem = {
   "case_id", "case_version", "kind", "status",
   "question": "bank_only" | "transfer" | "ledger_only" | "amount_differs" | "date_differs" | "ambiguous"
-            | "balance_gap" | "settlement" | "proposed" | "other",
-  "folded": bool,                       // true for proposed / balance_gap / settlement / other
+            | "balance_gap" | "settlement" | "dividend" | "proposed" | "other",
+  "folded": bool,                       // true for proposed / balance_gap / settlement / dividend / other
   "group_key": str | null,              // §4.2; same key = one merged card
   "statement": {"id", "period_end"},
   "line": {"id", "date", "merchant", "amount", "line_kind"} | null,     // date = posted_date, amount = flow_amount
@@ -132,6 +132,7 @@ InboxItem = {
 |---|---|
 | `settlement` | `line_unmatched` (open or proposed) on a bank account whose line merchant contains one of the labels `["交割股款", "申購股款"]` — a module constant until portfolio Phase 1 adds `settlement_labels` to settings and its own case kinds (follow-up: map those kinds here) |
 | `proposed` | status `proposed` (a pending proposal exists) and not `settlement` |
+| `dividend` | kind `dividend`, or `ambiguous` / `line_unmatched` with hint `dividend_ambiguous` / `dividend_mismatch` (R7 dividends, #264) — after `proposed`, so a policy-proposed dividend line still reads as `proposed` |
 | `transfer` | `line_unmatched` with hint `needs_peer` (transfer / payment line; see §1 scope note) |
 | `bank_only` | `line_unmatched` with `create_entry` in `allowed(case)` (bank has it, ledger does not) |
 | `ledger_only` | `entry_unmatched` |
@@ -141,7 +142,7 @@ InboxItem = {
 | `balance_gap` | `balance_gap` |
 | `other` | everything else: `line_unmatched` with hint `installment_unmapped` (needs `link_installment_plan`, API only) or otherwise without `create_entry`, `duplicate_claim`, `recheck`, `parse_review`, `statement_conflict` |
 
-`folded` = question ∈ {proposed, balance_gap, settlement, other} *[call: installment folded — its only button would be 忽略]*.
+`folded` = question ∈ {proposed, balance_gap, settlement, dividend, other} *[call: installment folded — its only button would be 忽略]*.
 `counts.ask` = unfolded cards.
 
 ### 4.2 `group_key` (merged cards)
@@ -269,7 +270,7 @@ account · pattern · amount · answer · applied_count · last_applied_at with 
   在時間軸記一筆轉帳，或對到已記的」; ledger_only 「你記了，銀行沒有」; amount_differs 「銀行 X，你記 Y（差 Z）」;
   date_differs 「你記 M/D，銀行 M/D 扣」; ambiguous 「有 N 筆可能是它」; other 「需要在 API 處理（案件 #id）」.
 - Folded sections under the cards, each a `<details>`: 「系統有提議 N（全部套用）」, 「期初差額 N」(each with 對齊銀行期初
-  when allowed, else 忽略), 「國泰交割款 N — 等證券連動」(no buttons), 「其他 N」.
+  when allowed, else 忽略), 「國泰交割款 N — 等證券連動」(no buttons), 「股利入帳 N — 等證券連動」(no buttons; the dividend family, #264), 「其他 N」.
 - Sheets (reuse `sheet.scss` + the overlay contract): **record** = category picker (inline `CategoryPicker` for the line's
   kind, default from `rule_hint` → last used; optional name; optional project) + the learn tick + 確定; **match_candidate**
   = list of candidates (date · title · amount) + "搜尋這個帳戶的記錄" (14-day window, same sign) + 確定;

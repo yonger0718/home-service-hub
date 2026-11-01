@@ -47,6 +47,7 @@ export function makeInbox(accounts: InboxAccount[], counts: Partial<InboxCounts>
       proposed: 0,
       balance_gap: 0,
       settlement: 0,
+      dividend: 0,
       other: 0,
       ...counts,
     },
