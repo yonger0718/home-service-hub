@@ -1,16 +1,18 @@
 <section class="reward-rules">
   <header class="rr-header">
     @if (isPhone()) {
-      <button type="button" class="rr-back" aria-label="返回" (click)="back()">‹</button>
+      <button type="button" class="rr-back" aria-label="返回設定" (click)="back()">‹</button>
     }
     <h1>回饋規則總覽</h1>
   </header>
 
   @if (callout()) {
-    <button type="button" class="rr-callout" role="status" (click)="setFilter('expired')">
-      <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
-      {{ overview()!.counts.enabled_expired }} 條規則啟用中但已到期，記帳時不會出現
-    </button>
+    <div class="rr-callout-region" role="status">
+      <button type="button" class="rr-callout" (click)="setFilter('expired')">
+        <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
+        {{ overview()!.counts.enabled_expired }} 條規則啟用中但已到期，記帳時不會出現
+      </button>
+    </div>
   }
 
   <div class="rr-toolbar">

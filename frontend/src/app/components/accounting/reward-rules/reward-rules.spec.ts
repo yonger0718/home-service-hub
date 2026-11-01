@@ -138,8 +138,9 @@ describe('RewardRulesOverviewComponent', () => {
 
   it('(b) shows the 已到期 callout and filters to state=expired on click', async () => {
     const { harness, el } = await open('/accounting/reward-rules', { ...OVERVIEW, counts: { ...OVERVIEW.counts, enabled_expired: 31 } });
-    const callout = el.querySelector<HTMLButtonElement>('button.rr-callout')!;
-    expect(callout.getAttribute('role')).toBe('status');
+    const callout = el.querySelector<HTMLButtonElement>('[role="status"] > button.rr-callout')!;
+    expect(callout).not.toBeNull();
+    expect(callout.hasAttribute('role')).toBe(false);
     expect(callout.textContent?.trim()).toBe('31 條規則啟用中但已到期，記帳時不會出現');
 
     callout.click();
@@ -154,6 +155,7 @@ describe('RewardRulesOverviewComponent', () => {
   it('(c) hides the callout when no enabled rule has expired', async () => {
     const { el } = await open();
     expect(el.querySelector('.rr-callout')).toBeNull();
+    expect(el.querySelector('[role="status"]')).toBeNull();
   });
 
   it('a filter chip navigates with state and keeps the other params', async () => {
@@ -236,7 +238,7 @@ describe('RewardRulesOverviewComponent', () => {
     harness.detectChanges();
     const el = harness.routeNativeElement as HTMLElement;
     const back = el.querySelector<HTMLButtonElement>('button.rr-back')!;
-    expect(back.getAttribute('aria-label')).toBe('返回');
+    expect(back.getAttribute('aria-label')).toBe('返回設定');
     back.click();
     await vi.waitFor(() => expect(TestBed.inject(Router).url).toBe('/accounting/settings'));
   });
