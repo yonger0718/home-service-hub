@@ -14,7 +14,7 @@ from app.services import trade_settlement_service as tss
 from app.services import reconciliation_service as rec
 from tests.helpers import set_dirty
 from tests.integration.settlement_fixtures import (  # noqa: F401  (fixtures)
-    feed, portfolio_stub, settle_line, settlement_bank, stand_ins_on, submit_bank,
+    dividend_line, dividend_row, feed, policy_on, portfolio_stub, settle_line, settlement_bank, stand_ins_on, submit_bank,
 )
 from tests.integration.test_settlement_reconcile import _cases as _settlement_cases
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
@@ -332,6 +332,21 @@ def test_settlement_run_leaves_a_busy_statement_flagged(client, seed, db_session
     assert res.json()["errors"] == [{"statement_id": sid, "error": "reconcile_busy"}]
     db_session.expire_all()
     assert db_session.get(AccountStatement, sid).needs_recheck is True                         # the sweep re-checks it
+
+
+def test_settlement_run_flags_and_books_a_dividend_confirmed_later(client, seed, db_session, run, portfolio_stub, policy_on):
+    policy_on()
+    bank, _ = settlement_bank(seed, db_session, target=False)
+    sid = submit_bank(db_session, run, bank, [dividend_line(1, date(2026, 9, 12), "990")])     # receipt still pending
+    assert tss.recheck_targets(db_session, {}) == {sid}                                        # dividend_service's half
+    portfolio_stub.dividends = [dividend_row(7, "2026-09-11", "990")]                          # confirmed since
+    res = client.post("/reconciliation/settlements/run", headers=W, json={"source": "portfolio:cathay"})
+    assert res.status_code == 200 and (res.json()["flagged"], res.json()["reconciled"], res.json()["busy"]) == (1, 1, 0)
+    assert "990" not in res.text                                                               # counts, ids and codes only
+    db_session.expire_all()
+    assert db_session.get(AccountStatement, sid).needs_recheck is False
+    assert db_session.scalar(select(SettlementBooking.status)) == "booked"                     # the run's policy pass
+    assert tss.recheck_targets(db_session, {}) == set()                                        # the line is claimed
 
 
 def test_settlement_run_needs_the_ingest_scope(client):

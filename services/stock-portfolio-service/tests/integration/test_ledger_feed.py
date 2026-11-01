@@ -15,6 +15,7 @@ from app.services import cash_account_service, ledger_feed_service
 
 SETTLEMENTS = "/api/portfolio/ledger-feed/settlements"
 VALUATION = "/api/portfolio/ledger-feed/valuation"
+DIVIDENDS = "/api/portfolio/ledger-feed/dividends"
 
 
 def Q(settle_from, settle_to, trade_from, trade_to, broker="cathay"):
@@ -58,6 +59,24 @@ class _Cathay:
             last_status="held" if held else "imported", last_reason=held,
         ))
         self.db.commit()
+
+    def dividend(self, receipt_date, amount, *, fee="0", tax="0", status="confirmed", account_id=None, symbol="9999", shares=0):
+        self._seq += 1
+        d = _day(receipt_date)
+        fields = {}
+        if status == "confirmed":
+            fields = dict(
+                receipt_date=d, receipt_account_id=account_id or self.account.id,
+                receipt_confirmed_at=datetime(d.year, d.month, d.day, tzinfo=timezone.utc),
+            )
+        row = models.Dividend(
+            symbol=symbol, market="TW", currency="TWD", amount=Decimal(amount), fee=Decimal(fee), tax=Decimal(tax),
+            ex_dividend_date=datetime(d.year, d.month, 1, tzinfo=timezone.utc), stock_dividend_shares=shares,
+            import_fingerprint=f"ledger-feed-div-{self._seq}", receipt_status=status, **fields,
+        )
+        self.db.add(row)
+        self.db.commit()
+        return row
 
     def price(self, symbol, day, close):
         self.db.add(PriceHistory(symbol=symbol, market="TW", date=_day(day), close=Decimal(close), source="test"))
@@ -169,3 +188,40 @@ def test_valuation_nets_sells_and_drops_fully_sold_symbols(client, cathay):
     cathay.price("9999", "2026-09-10", "100")
     body = client.get(VALUATION, params={"broker": "cathay", "as_of": "2026-09-12"}).json()
     assert (body["market_value"], body["complete"], body["missing"]) == ("60000.0000", True, [])
+
+
+def D(date_from, date_to, broker="cathay"):
+    return {"broker": broker, "from": date_from, "to": date_to}
+
+
+def test_dividends_list_confirmed_receipts_on_the_cathay_account_net(client, cathay):
+    paid = cathay.dividend("2026-09-11", "990", fee="10", tax="0")       # amount is stored net: never 980
+    cathay.dividend("2026-09-11", "500", status="pending")
+    cathay.dividend("2026-09-12", "0", shares=50)                         # stock-only: no cash to match
+    body = client.get(DIVIDENDS, params=D("2026-09-01", "2026-09-30")).json()
+    assert body == {"rows": [{"id": paid.id, "symbol": "9999", "receipt_date": "2026-09-11", "amount": "990.0000",
+                              "currency": "TWD", "fingerprint": f"dividend:{paid.id}"}], "complete": True}
+
+
+def test_dividends_range_bounds_the_receipt_date_and_other_accounts_are_left_out(client, cathay, db_session):
+    other = BrokerAccount(broker=BrokerEnum.SINOPAC, nickname="Sinopac TWD", currency="TWD",
+                          opening_balance=Decimal("0"), opening_date=date(2026, 1, 1), is_active=True)
+    db_session.add(other); db_session.commit()
+    inside = [cathay.dividend(day, "100") for day in ("2026-09-10", "2026-09-20")]
+    cathay.dividend("2026-09-09", "100"); cathay.dividend("2026-09-21", "100")
+    cathay.dividend("2026-09-15", "100", account_id=other.id)
+    rows = client.get(DIVIDENDS, params=D("2026-09-10", "2026-09-20")).json()["rows"]
+    assert [r["id"] for r in rows] == [d.id for d in inside]                # (receipt_date, id) order
+
+
+def test_dividends_reuse_the_unknown_broker_404_and_the_row_cap(client, cathay, monkeypatch):
+    response = client.get(DIVIDENDS, params=D("2026-09-01", "2026-09-30", broker="ib"))
+    assert response.status_code == 404 and response.json() == {"detail": "unknown_broker"}
+    monkeypatch.setattr(ledger_feed_service, "ROW_CAP", 1)
+    cathay.dividend("2026-09-10", "100"); cathay.dividend("2026-09-11", "100")
+    body = client.get(DIVIDENDS, params=D("2026-09-01", "2026-09-30")).json()
+    assert body["complete"] is False and len(body["rows"]) == 1
+
+
+def test_dividends_without_a_cathay_account_are_empty_and_complete(client):
+    assert client.get(DIVIDENDS, params=D("2026-09-01", "2026-09-30")).json() == {"rows": [], "complete": True}

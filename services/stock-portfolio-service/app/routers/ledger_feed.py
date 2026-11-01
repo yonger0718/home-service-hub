@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..schemas.ledger_feed import SettlementsOut, ValuationOut
+from ..schemas.ledger_feed import DividendsOut, SettlementsOut, ValuationOut
 from ..services import ledger_feed_service
 
 router = APIRouter(prefix="/api/portfolio/ledger-feed", tags=["ledger-feed"])
@@ -27,6 +27,19 @@ def get_settlements(
         return ledger_feed_service.settlements(
             db, broker, settle_from=settle_from, settle_to=settle_to, trade_from=trade_from, trade_to=trade_to
         )
+    except ledger_feed_service.UnknownBroker:
+        return _UNKNOWN_BROKER
+
+
+@router.get("/dividends", response_model=DividendsOut)
+def get_dividends(
+    broker: str = Query(),
+    date_from: date_type = Query(alias="from"),
+    date_to: date_type = Query(alias="to"),
+    db: Session = Depends(get_db),
+) -> dict[str, object] | JSONResponse:
+    try:
+        return ledger_feed_service.dividends(db, broker, date_from=date_from, date_to=date_to)
     except ledger_feed_service.UnknownBroker:
         return _UNKNOWN_BROKER
 

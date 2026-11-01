@@ -16,6 +16,7 @@ from decimal import Decimal, InvalidOperation
 import httpx
 
 _SETTLEMENTS_PATH = "/api/portfolio/ledger-feed/settlements"
+_DIVIDENDS_PATH = "/api/portfolio/ledger-feed/dividends"
 _VALUATION_PATH = "/api/portfolio/ledger-feed/valuation"
 
 
@@ -80,6 +81,22 @@ class Valuation:
     missing: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class Dividend:
+    id: int
+    symbol: str
+    receipt_date: date
+    amount: Decimal  # net of 匯費 / 補充保費, as the portfolio stores it
+    currency: str
+    fingerprint: str
+
+
+@dataclass(frozen=True)
+class DividendFeed:
+    rows: tuple[Dividend, ...]
+    complete: bool  # always True once the client returns it
+
+
 def _date(value: object) -> date:
     return date.fromisoformat(value)  # type: ignore[arg-type]
 
@@ -125,6 +142,20 @@ def _settlement(raw: dict) -> Settlement:
         reason=raw["reason"],
         items=tuple(_item(i) for i in raw["items"]),
         fingerprint=raw["fingerprint"],
+    )
+
+
+def _dividend(raw: dict) -> Dividend:
+    ident, symbol, currency = raw["id"], raw["symbol"], raw["currency"]
+    if not isinstance(ident, int) or isinstance(ident, bool):
+        raise ValueError("id must be an integer")
+    if not isinstance(symbol, str) or not isinstance(currency, str):
+        raise ValueError("symbol and currency must be strings")
+    if raw["fingerprint"] != f"dividend:{ident}":
+        raise ValueError("fingerprint does not match the id")
+    return Dividend(
+        id=ident, symbol=symbol, receipt_date=_date(raw["receipt_date"]), amount=_dec(raw["amount"]),
+        currency=currency, fingerprint=raw["fingerprint"],
     )
 
 
@@ -202,6 +233,19 @@ class PortfolioClient:
             raise PortfolioUnavailable("incomplete")
         return Feed(rows=rows, bounds=bounds, complete=True)
 
+    def dividends(self, broker: str, *, date_from: date, date_to: date) -> DividendFeed:
+        body = self._get(
+            _DIVIDENDS_PATH, {"broker": broker, "from": date_from.isoformat(), "to": date_to.isoformat()}
+        )
+        try:
+            rows = tuple(_dividend(r) for r in body["rows"])
+            complete = _bool(body["complete"])
+        except (KeyError, TypeError, ValueError, InvalidOperation):
+            raise PortfolioUnavailable("bad_body") from None
+        if not complete:
+            raise PortfolioUnavailable("incomplete")
+        return DividendFeed(rows=rows, complete=True)
+
     def valuation(self, broker: str, as_of: date) -> Valuation:
         body = self._get(_VALUATION_PATH, {"broker": broker, "as_of": as_of.isoformat()})
         try:
@@ -223,6 +267,12 @@ class _CachedClient:
         key = ("settlements", broker, tuple(sorted(window.items())))
         if key not in self._memo:
             self._memo[key] = self._client.settlements(broker, **window)
+        return self._memo[key]  # type: ignore[return-value]
+
+    def dividends(self, broker: str, **window: date) -> DividendFeed:
+        key = ("dividends", broker, tuple(sorted(window.items())))
+        if key not in self._memo:
+            self._memo[key] = self._client.dividends(broker, **window)
         return self._memo[key]  # type: ignore[return-value]
 
     def valuation(self, broker: str, as_of: date) -> Valuation:

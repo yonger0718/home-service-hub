@@ -107,6 +107,7 @@ Read-only routes the accounting service pulls (國泰 only; an unknown `broker` 
 |---|---|---|
 | `GET` | `/api/portfolio/ledger-feed/settlements?broker=&settle_from=&settle_to=&from=&to=` | one row per trade day: `trade_date`, `settlement_date`, `date_source` (`statement` \| `legs`), `net_amount`, `legs_net`, `bookable` / `reason` (`margin_day`, `legs_disagree`), `items`, `fingerprint`; plus `bounds` and `complete`. `settle_*` bound the settlement axis, `from` / `to` the trade axis. |
 | `GET` | `/api/portfolio/ledger-feed/valuation?broker=&as_of=` | `market_value`, `cash`, `total`, `priced_through`, `complete`, `missing` |
+| `GET` | `/api/portfolio/ledger-feed/dividends?broker=&from=&to=` | confirmed receipts on the 國泰 TWD account with `receipt_date` in range: `id`, `symbol`, `receipt_date`, `amount` (net of 匯費 / 補充保費), `currency`, `fingerprint` (`dividend:<id>`); plus `complete` |
 
 The daily statement import persists the statement's facts on `cathay_statement_day` (migration `e9settle`): `settlement_date`,
 `net_amount` (應收付) and `cash_net` (淨收付). The feed prefers them (`date_source: "statement"`) and falls back to the cash legs.

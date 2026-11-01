@@ -134,6 +134,42 @@ def settlements(
     }
 
 
+def dividends(db: Session, broker: str, *, date_from: date, date_to: date) -> dict:
+    """Confirmed cash dividend receipts on the default 國泰 account. `amount` is stored net of 匯費 / 補充保費."""
+    _check_broker(broker)
+    try:
+        account = cash_account_service.resolve_default_cathay_twd_account(db)
+    except cash_account_service.CashAccountNotFound:
+        return {"rows": [], "complete": True}
+    found = list(
+        db.execute(
+            select(models.Dividend)
+            .where(
+                models.Dividend.receipt_status == "confirmed",
+                models.Dividend.receipt_account_id == account.id,
+                models.Dividend.receipt_date.between(date_from, date_to),
+                models.Dividend.amount > 0,
+            )
+            .order_by(models.Dividend.receipt_date, models.Dividend.id)
+            .limit(ROW_CAP + 1)
+        ).scalars()
+    )
+    return {
+        "rows": [
+            {
+                "id": row.id,
+                "symbol": row.symbol,
+                "receipt_date": row.receipt_date.isoformat(),
+                "amount": _amount(Decimal(row.amount)),
+                "currency": row.currency,
+                "fingerprint": f"dividend:{row.id}",
+            }
+            for row in found[:ROW_CAP]
+        ],
+        "complete": len(found) <= ROW_CAP,
+    }
+
+
 def valuation(db: Session, broker: str, as_of: date) -> dict:
     _check_broker(broker)
     end = datetime(as_of.year, as_of.month, as_of.day, tzinfo=timezone.utc) + timedelta(days=1)

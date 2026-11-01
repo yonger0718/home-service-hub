@@ -26,6 +26,7 @@ ENTRY_POINTS = [
     "app.services.reconciliation_actions",
     "app.services.reconciliation_service",
     "app.services.stand_ins",
+    "app.services.dividend_service",
 ]
 
 

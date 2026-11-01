@@ -37,6 +37,20 @@ class SettlementsOut(BaseModel):
     complete: bool
 
 
+class DividendRow(BaseModel):
+    id: int
+    symbol: str
+    receipt_date: str
+    amount: str  # net of 匯費 / 補充保費, as stored
+    currency: str
+    fingerprint: str  # "dividend:<id>"
+
+
+class DividendsOut(BaseModel):
+    rows: list[DividendRow]
+    complete: bool
+
+
 class ValuationOut(BaseModel):
     broker: str
     currency: Literal["TWD"] = "TWD"

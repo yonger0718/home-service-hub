@@ -113,6 +113,16 @@ def _money(value) -> str:
     return f"{Decimal(str(value)).quantize(Decimal('0.0001'))}"
 
 
+def dividend_line(seq, day, flow, merchant="現金股利"):
+    return bank_line(seq, day, merchant, flow)
+
+
+def dividend_row(id: int, receipt_date: str, amount, *, symbol="9999", currency="TWD") -> dict:
+    """A dividend feed row (the portfolio's JSON): a confirmed receipt, `amount` net of 匯費 / 補充保費."""
+    return {"id": id, "symbol": symbol, "receipt_date": receipt_date, "amount": _money(amount), "currency": currency,
+            "fingerprint": f"dividend:{id}"}
+
+
 def _amounts(net, ids, amounts):
     if amounts is not None:
         return [Decimal(str(a)) for a in amounts]
@@ -147,11 +157,20 @@ def portfolio_stub(monkeypatch):
     """`portfolio_client.client_for` → a client over a MockTransport serving `.rows` filtered by the two axes (trade
     date in `from … to`, or a printed `settlement_date` in `settle_from … settle_to`) with the request's bounds
     echoed; `.down = True` → 503; `.fail_after = n` → 503 from the request after the n-th on; `.narrow = True` → the
-    echoed `from` is one day later; `.calls` = each request's query params."""
-    stub = SimpleNamespace(rows=[], down=False, fail_after=None, narrow=False, calls=[])
+    echoed `from` is one day later; `.calls` = each request's query params. The dividends path serves `.dividends`
+    with `receipt_date` in `from … to` and `complete: .dividends_complete`; its params go to `.dividend_calls` only."""
+    stub = SimpleNamespace(rows=[], down=False, fail_after=None, narrow=False, calls=[], dividends=[],
+                           dividends_complete=True, dividend_calls=[])
 
     def handler(request: httpx.Request) -> httpx.Response:
         params = dict(request.url.params)
+        if request.url.path.endswith("/dividends"):
+            stub.dividend_calls.append(params)
+            if stub.down:
+                return httpx.Response(503)
+            return httpx.Response(200, json={
+                "rows": [r for r in stub.dividends if params["from"] <= r["receipt_date"] <= params["to"]],
+                "complete": stub.dividends_complete})
         stub.calls.append(params)
         if stub.down or (stub.fail_after is not None and len(stub.calls) > stub.fail_after):
             return httpx.Response(503)

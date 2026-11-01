@@ -128,6 +128,7 @@ class Group:
 
 
 SETTLEMENT_LABELS = ("交割股款", "申購股款")
+DIVIDEND_LABELS = ("股利", "股息", "現金股利")  # portfolio integration §4.6: a bank deposit naming one is a dividend line
 SETTLEMENT_STAND_IN_RULE = "settlement_stand_in"
 SETTLEMENT_LINE_HINT = "settlement_line"
 
@@ -152,6 +153,7 @@ class Rules:
     settlement_labels: tuple[str, ...] = SETTLEMENT_LABELS  # R7: a bank line naming one of these is a 國泰 settlement line
     settlement_window_days: int = 2  # R7: |settlement date - posted date| a settlement may sit from its line
     settlement_sum_matching: bool = False  # R7 spec §9 gate: a line may equal the sum of several settlements
+    dividend_labels: tuple[str, ...] = DIVIDEND_LABELS  # §4.6: a bank deposit naming one of these is a dividend line
 
 
 def population_window_days(rules: Rules) -> int:
@@ -348,6 +350,13 @@ def _same(a: Decimal, b: Decimal) -> bool:
 def is_settlement_line(line: Line, rules: Rules) -> bool:
     """R7: a bank withdrawal/deposit whose merchant names a settlement label."""
     return line.line_kind in ("withdrawal", "deposit") and any(label in line.merchant_norm for label in rules.settlement_labels)
+
+
+def is_dividend_line(line: Line, rules: Rules) -> bool:
+    """Portfolio integration §4.6: a bank deposit whose merchant names a dividend label and no settlement label (the
+    settlement labels win)."""
+    return line.line_kind == "deposit" and any(label in line.merchant_norm for label in rules.dividend_labels) \
+        and not is_settlement_line(line, rules)
 
 
 def _plan_key(line: Line) -> str:

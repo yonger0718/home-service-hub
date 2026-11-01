@@ -220,17 +220,18 @@ def booked_legs(db: Session, account_id: int) -> dict[int, SettlementBooking]:
             for entry_id in (row.out_entry_id, row.in_entry_id) if entry_id is not None}
 
 
-def reservations(db: Session) -> tuple[set[str], set[str]]:
+def reservations(db: Session, kind: str = KIND) -> tuple[set[str], set[str]]:
     """What the constraints reserve (spec §4.4 item 1): the fingerprints of every `booked` settlement row (the partial
     unique) and every constituent id still held by an item row (`ux_settlement_booking_item_source` is not partial: a
     `booked` row's items, and an `owner_edited` row's, which §4.7 keeps because the edited pair still records the
     event — a booking of them would fail the constraint, so the assignment never offers them). Read after
-    `housekeep`, so an owner-deleted booking (items deleted) no longer reserves."""
+    `housekeep`, so an owner-deleted booking (items deleted) no longer reserves. `kind`: the bookings of that kind
+    (`dividend_service.KIND` for receipts)."""
     fps = set(db.scalars(select(SettlementBooking.fingerprint).where(
-        SettlementBooking.kind == KIND, SettlementBooking.status == "booked")))
+        SettlementBooking.kind == kind, SettlementBooking.status == "booked")))
     ids = set(db.scalars(select(SettlementBookingItem.source_id)
                          .join(SettlementBooking, SettlementBooking.id == SettlementBookingItem.booking_id)
-                         .where(SettlementBooking.kind == KIND)))
+                         .where(SettlementBooking.kind == kind)))
     return fps, ids
 
 
@@ -790,8 +791,10 @@ def flag_for_recheck(db: Session, report: dict) -> int:
 
 def recheck_targets(db: Session, report: dict) -> set[int]:
     """The live, non-retired statements whose period holds a `touched_dates` day of their account (a stand-in job
-    report), plus `recheck_statement_ids`. Read only."""
-    wanted = set(recheck_statement_ids(db))
+    report), plus `recheck_statement_ids` and `dividend_service.recheck_statement_ids` (dividends R11). Read only."""
+    from app.services import dividend_service  # call time: dividend_service imports this module
+
+    wanted = set(recheck_statement_ids(db)) | set(dividend_service.recheck_statement_ids(db))
     for account_id, days in (report.get("touched_dates") or {}).items():
         spans = [and_(AccountStatement.period_start <= day, AccountStatement.period_end >= day)
                  for day in (date.fromisoformat(d) if isinstance(d, str) else d for d in days)]

@@ -142,3 +142,38 @@ def test_cached_client_does_not_share_different_args_and_memoises_valuation():
         c.valuation("cathay", date(2026, 9, 30))
         c.valuation("cathay", date(2026, 9, 29))
     assert [p["broker"] for p in seen].count("other") == 1 and len(seen) == 5
+
+
+DIV = {"id": 7, "symbol": "9999", "receipt_date": "2026-09-11", "amount": "990.0000", "currency": "TWD",
+       "fingerprint": "dividend:7"}
+DIV_WINDOW = dict(date_from=date(2026, 8, 29), date_to=date(2026, 10, 3))
+
+
+def test_dividends_parse_send_the_receipt_window_and_memoise():
+    seen = []
+
+    def handler(request):
+        seen.append((request.url.path, dict(request.url.params)))
+        return httpx.Response(200, json={"rows": [DIV], "complete": True})
+
+    with pc.cached(pc.PortfolioClient("http://p.test", transport=httpx.MockTransport(handler))) as c:
+        feed = c.dividends("cathay", **DIV_WINDOW)
+        c.dividends("cathay", **DIV_WINDOW)
+    assert seen == [("/api/portfolio/ledger-feed/dividends", {"broker": "cathay", "from": "2026-08-29", "to": "2026-10-03"})]
+    assert feed == pc.DividendFeed(rows=(pc.Dividend(7, "9999", date(2026, 9, 11), Decimal("990.0000"), "TWD", "dividend:7"),),
+                                   complete=True)
+
+
+@pytest.mark.parametrize("body,code", [
+    ({"rows": [{**DIV, "amount": 990}], "complete": True}, "bad_body"),
+    ({"rows": [{**DIV, "id": "7"}], "complete": True}, "bad_body"),
+    ({"rows": [{**DIV, "id": True, "fingerprint": "dividend:True"}], "complete": True}, "bad_body"),
+    ({"rows": [{**DIV, "fingerprint": "dividend:8"}], "complete": True}, "bad_body"),
+    ({"complete": True}, "bad_body"),
+    ({"rows": [DIV], "complete": False}, "incomplete"),
+])
+def test_malformed_or_incomplete_dividend_answers_are_unavailable(body, code):
+    client = pc.PortfolioClient("http://p.test", transport=httpx.MockTransport(lambda r: httpx.Response(200, json=body)))
+    with pytest.raises(pc.PortfolioUnavailable) as info:
+        client.dividends("cathay", **DIV_WINDOW)
+    assert info.value.code == code and str(info.value) == code

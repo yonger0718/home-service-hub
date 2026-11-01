@@ -20,7 +20,8 @@ from app.services.statements import matching
 
 BACKFILL_ACTIONS = frozenset({"backfill_entry", "pair_transfer"})
 # the automatic creations an owner twin or a replaced event stops (final production finding 2026-10-17, PR #77 S1)
-OWNER_TWIN_GUARDED = frozenset({"backfill_entry", "create_system_entry", "pair_transfer", "book_settlement"})
+OWNER_TWIN_GUARDED = frozenset({"backfill_entry", "create_system_entry", "pair_transfer", "book_settlement",
+                                "book_dividend"})
 CREATION_SLOT = "create"
 
 
