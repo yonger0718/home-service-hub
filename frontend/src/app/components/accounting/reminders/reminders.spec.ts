@@ -1086,6 +1086,18 @@ describe('AccountingRemindersComponent', () => {
       fixture.detectChanges();
       expect(el.querySelector('app-inbox-panel details.fold')).not.toBeNull();
       expect(el.querySelector('.empty')).toBeNull();
+
+      // Only dividend cases (#264): the 股利入帳 fold counts as content as well.
+      const dividend: InboxItem = { ...bankOnly(10), kind: 'dividend', question: 'dividend', folded: true, actions: [] };
+      TestBed.inject(AccountingService).markEntriesChanged();
+      fixture.detectChanges();
+      flushLoad([], [], [], [], [], {
+        ...inboxOut([dividend]),
+        counts: { ask: 0, ask_items: 0, proposed: 0, balance_gap: 0, settlement: 0, dividend: 1, other: 0 },
+      });
+      fixture.detectChanges();
+      expect(text(el.querySelector('app-inbox-panel details.fold summary'))).toContain('股利入帳 1');
+      expect(el.querySelector('.empty')).toBeNull();
     });
 
     it('load() requests the inbox and renders the panel on 全部', () => {

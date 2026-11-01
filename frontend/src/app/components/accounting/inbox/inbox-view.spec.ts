@@ -113,6 +113,16 @@ describe('questionText', () => {
     expect(
       questionText(makeItem({ question: 'proposed', proposal: { id: 1, action: 'match', params: {}, author: 'x', rationale: '' } }), 'TWD'),
     ).toBe('系統有提議：對到已記的');
+    // Same words as the buttons and the 已處理 list.
+    expect(
+      questionText(makeItem({ question: 'proposed', proposal: { id: 1, action: 'create_system_entry', params: {}, author: 'policy', rationale: '' } }), 'TWD'),
+    ).toBe('系統有提議：系統記錄');
+    expect(
+      questionText(makeItem({ question: 'proposed', proposal: { id: 1, action: 'adjust_amount', params: {}, author: 'policy', rationale: '' } }), 'TWD'),
+    ).toBe('系統有提議：改成銀行的數');
+    expect(
+      questionText(makeItem({ question: 'proposed', proposal: { id: 1, action: 'attach_fee', params: {}, author: 'policy', rationale: '' } }), 'TWD'),
+    ).toBe('系統有提議：attach_fee');
   });
 });
 

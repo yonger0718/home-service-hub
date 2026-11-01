@@ -39,8 +39,8 @@ export const AMOUNT_ANY_LABEL = '金額不同也算';
 const PROPOSAL_ACTION_LABELS: Record<string, string> = {
   match: '對到已記的',
   create_entry: '記一筆',
-  create_system_entry: '記一筆',
-  adjust_amount: '改成銀行金額',
+  create_system_entry: '系統記錄',
+  adjust_amount: '改成銀行的數',
   book_settlement: '入帳交割款',
   book_dividend: '入帳股利',
 };
