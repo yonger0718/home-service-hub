@@ -9,6 +9,7 @@ import {
   computed,
   inject,
   signal,
+  viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
@@ -338,6 +339,8 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   readonly rules = computed<RewardRule[]>(() => this.detail()?.reward_rules ?? []);
   readonly projects = signal<Project[]>([]);
   readonly ruleSheet = signal<{ rule: RewardRule | null } | null>(null);
+  /** The open editor sheet; its unsaved input counts as the page's (spec §6.1 dirty-form rules). */
+  private readonly ruleSheetRef = viewChild(RewardRuleSheetComponent);
   readonly ruleMessage = signal<string | null>(null);
   /** A 啟用 / 上移 / 下移 write is in flight: those controls wait so the next write starts from the saved order. */
   readonly ruleBusy = signal(false);
@@ -472,8 +475,13 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     this.openPendingRule();
   }
 
+  /** The form, 額度共用, or an open rule sheet with unsaved input; the rule rows themselves save at once. */
   isDirty(): boolean {
-    return !sameForm(this.form(), this.baseline()) || !sameMembers(this.sharing(), this.sharingBaseline());
+    return (
+      !sameForm(this.form(), this.baseline()) ||
+      !sameMembers(this.sharing(), this.sharingBaseline()) ||
+      (this.ruleSheet() !== null && (this.ruleSheetRef()?.isDirty() ?? false))
+    );
   }
 
   showDiscardPrompt(): void {

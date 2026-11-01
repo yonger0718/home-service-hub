@@ -34,7 +34,7 @@
         <span class="k">基本回饋</span>
         <button type="button" class="tog rule-basic" role="switch" aria-label="基本回饋" [class.on]="form().is_basic" [attr.aria-checked]="form().is_basic" (click)="set('is_basic', !form().is_basic)"></button>
       </div>
-      <div class="col">
+      <div class="rule-col">
         <span class="k">說明</span>
         <textarea class="rule-description" rows="2" maxlength="2000" aria-label="說明" [value]="form().description" (input)="set('description', $any($event.target).value)"></textarea>
       </div>

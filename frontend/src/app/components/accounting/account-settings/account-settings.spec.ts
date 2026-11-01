@@ -917,6 +917,21 @@ describe('AccountSettingsComponent', () => {
     expect(texts(fixture, '.rules-head .k')).toEqual(['回饋規則 · 2 條']);
   });
 
+  it('an open rule sheet with unsaved input makes the page dirty; closing it does not', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+
+    click(fixture, '.rule-row .rule-edit', 0);
+    expect(fixture.componentInstance.isDirty()).toBe(false);
+    typeInto(fixture, '.rule-name', '一般改');
+    expect(fixture.componentInstance.isDirty()).toBe(true);
+
+    sheet(fixture)!.closed.emit();
+    fixture.detectChanges();
+    expect(sheet(fixture)).toBeNull();
+    expect(fixture.componentInstance.isDirty()).toBe(false);
+  });
+
   it('?rule=2 opens the sheet for rule 2 once the detail loads and clears the param on the settings page', async () => {
     await setup('11', { rule: '2' });
     const fixture = render(DETAIL);
