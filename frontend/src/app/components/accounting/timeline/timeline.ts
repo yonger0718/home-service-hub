@@ -350,6 +350,11 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
   return [...days.values()];
 }
 
+/** The 專案 select's value for 「no project」 (#261); the API takes it as `no_project=true`. */
+export const NO_PROJECT = 'none';
+export const NO_PROJECT_LABEL = '無專案';
+export type ProjectFilter = number | typeof NO_PROJECT | null;
+
 /** `/accounting` home (spec "Timeline home page"); also the left pane of the wide layout. */
 @Component({
   selector: 'app-ledger-timeline',
@@ -417,7 +422,8 @@ export class LedgerTimelineComponent implements OnInit {
   /** Attribute filters (2026-10-21): category (sub-categories included server-side), project, tags (comma-separated),
    *  merchant substring and a signed amount range; all ANDed with the filters above. */
   readonly categoryFilter = signal<number | null>(null);
-  readonly projectFilter = signal<number | null>(null);
+  /** A project id, or `NO_PROJECT` for the rows without one (#261: the set the owner backfills project tags on). */
+  readonly projectFilter = signal<ProjectFilter>(null);
   readonly tagFilter = signal('');
   readonly merchantFilter = signal('');
   readonly amountMin = signal('');
@@ -563,6 +569,7 @@ export class LedgerTimelineComponent implements OnInit {
   );
   readonly kindOptions = TIMELINE_FILTER_KINDS.map(kind => ({ kind, label: ENTRY_KIND_LABELS[kind] }));
   readonly formatSigned = formatSigned;
+  protected readonly NO_PROJECT = NO_PROJECT;
 
   constructor() {
     effect(() => this.overview.month.set(this.month()));
@@ -590,6 +597,10 @@ export class LedgerTimelineComponent implements OnInit {
     }
     this.merchantFilter.set(query.get('merchant')?.trim() ?? '');
     this.tagFilter.set(query.get('tag')?.trim() ?? '');
+    // 報表 專案與預算: the 無專案 line links here with `no_project=1` (#261).
+    if (['1', 'true'].includes(query.get('no_project') ?? '')) {
+      this.projectFilter.set(NO_PROJECT);
+    }
     fromEvent(this.document, 'visibilitychange')
       .pipe(
         filter(() => this.document.visibilityState === 'visible'),
@@ -734,14 +745,15 @@ export class LedgerTimelineComponent implements OnInit {
   }
 
   /** The attribute filters as `/entries` query fields; absent fields are left out by `toParams`. */
-  private extraQuery(): Pick<AllEntriesQuery, 'tag' | 'category_id' | 'project_id' | 'merchant' | 'amount_min' | 'amount_max'> {
+  private extraQuery(): Pick<AllEntriesQuery, 'tag' | 'category_id' | 'project_id' | 'no_project' | 'merchant' | 'amount_min' | 'amount_max'> {
     const tags = parseTags(this.tagFilter()); // the entry form's rule: `#` stripped, split on space / , / ， / 、
     const category = this.categoryFilter();
     const project = this.projectFilter();
     return {
       tag: tags.length ? tags : undefined,
       category_id: category === null ? undefined : [category],
-      project_id: project === null ? undefined : project,
+      project_id: project === null || project === NO_PROJECT ? undefined : project,
+      no_project: project === NO_PROJECT ? true : undefined,
       merchant: this.merchantFilter() || null,
       amount_min: this.amountMin() || null,
       amount_max: this.amountMax() || null,
@@ -1027,7 +1039,7 @@ export class LedgerTimelineComponent implements OnInit {
   }
 
   setProject(value: string): void {
-    this.projectFilter.set(value ? Number(value) : null);
+    this.projectFilter.set(value === NO_PROJECT ? NO_PROJECT : value ? Number(value) : null);
   }
 
   setTag(value: string): void {
@@ -1142,7 +1154,9 @@ export class LedgerTimelineComponent implements OnInit {
       chips.push({ key: 'category', label: name ? `類別：${name}` : '類別' });
     }
     const project = this.projectFilter();
-    if (project !== null) {
+    if (project === NO_PROJECT) {
+      chips.push({ key: 'project', label: `專案：${NO_PROJECT_LABEL}` });
+    } else if (project !== null) {
       const name = this.projectOptions().find(o => o.id === project)?.name;
       chips.push({ key: 'project', label: name ? `專案：${name}` : '專案' });
     }

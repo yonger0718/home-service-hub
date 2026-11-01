@@ -265,6 +265,8 @@ export interface AllEntriesQuery extends EntryQuery {
   /** Rows in any of these categories or their sub-categories. */
   category_id?: number[];
   project_id?: number;
+  /** Only rows without a project (#261); never sent together with `project_id`. */
+  no_project?: boolean;
   /** Case-insensitive substring of the merchant (`%` and `_` are literal). */
   merchant?: string | null;
   /** Signed, inclusive bounds on the entry's amount in its account's currency (no conversion), as decimal strings. */

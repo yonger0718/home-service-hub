@@ -87,6 +87,7 @@
         <span class="field-label">專案</span>
         <select class="filter-project" aria-label="專案" (focus)="ensureOptions()" (change)="setProject($any($event.target).value)">
           <option value="" [selected]="projectFilter() === null">全部專案</option>
+          <option [value]="NO_PROJECT" [selected]="projectFilter() === NO_PROJECT">（無專案）</option>
           @for (option of projectOptions(); track option.id) {
             <option [value]="option.id" [selected]="projectFilter() === option.id">{{ option.name }}</option>
           }

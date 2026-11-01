@@ -118,6 +118,20 @@ def test_listing_filters_by_project_merchant_and_amount_range(client, db_session
     assert _ids(client, amount_min="0") == [rows["salary"].id]
 
 
+def test_listing_filters_rows_without_a_project(client, db_session, seed):
+    """#261: `no_project=true` is the IS NULL filter the owner needs when backfilling project tags; it composes with
+    the other filters and excludes `project_id` (sending both is a 422, not a silent choice)."""
+    rows, ref = _filter_world(db_session, seed)
+    untagged = seed.entry(make_account(db_session, "現金"), "-60", merchant="全聯", tags=["家人"], day=date(2026, 9, 6))
+    db_session.commit()
+    assert _ids(client, no_project="true") == sorted([rows["salary"].id, untagged.id])
+    assert _ids(client, no_project="true", kind="expense") == [untagged.id]
+    assert _ids(client, no_project="true", tag="家人") == [untagged.id]          # the tagged-but-no-project row, not dinner
+    assert client.get("/entries", params={"no_project": "false"}).json()["total"] == 5   # false = no filter, as absent
+    both = client.get("/entries", params={"no_project": "true", "project_id": ref["trip"].id})
+    assert both.status_code == 422 and "no_project" in both.text
+
+
 def test_listing_filters_compose_with_each_other_and_the_old_ones(client, db_session, seed):
     rows, ref = _filter_world(db_session, seed)
     assert _ids(client, tag="公司", project_id=ref["trip"].id, category_id=ref["food"].id) == [rows["lunch"].id]

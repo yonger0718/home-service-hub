@@ -508,6 +508,10 @@ describe('AccountingReportsComponent', () => {
       expect(texts(cards[0], '.pl-legend > span')).toEqual(['機票 9,800', '住宿 8,400', '餐飲 3,960', '交通 1,420', '購物 1,280']);
       expect(cards[1].querySelector('.pl-project-title small')?.textContent?.trim()).toBe('09/01 起 · 進行中');
       expect(cards[1].querySelector('.pl-tag')?.textContent?.trim()).toBe('進行中');
+      // #261: the sample has spending without a project → one link to the month's timeline filtered to 無專案.
+      const drill = el.querySelector<HTMLAnchorElement>('.pl-projects .pl-drill');
+      expect(drill?.textContent?.trim()).toBe('沒掛專案的支出 · 在記帳記錄看 ›');
+      expect(drill?.getAttribute('href')).toBe('/accounting?month=2026-10&no_project=1');
     });
 
     it('keeps the project cards when the API leaves first / last date out (over 50 groups), without inventing dates, and never renders the 其他 fold as a card', async () => {
@@ -516,7 +520,7 @@ describe('AccountingReportsComponent', () => {
       const lifetime = reads.breakdowns.pop()!;
       answer(reads);
       const report = sampleBreakdown(breakdownQuery(lifetime));
-      const undated = report.rows.map(row => ({ ...row, first_date: null, last_date: null }));
+      const undated = report.rows.filter(row => row.key !== null).map(row => ({ ...row, first_date: null, last_date: null }));
       lifetime.flush({ ...report, rows: [...undated, { ...undated[0], key: '__other__', label: '其他', amount: '999' }] });
       flushStatus();
       http.expectOne(r => r.url === '/api/accounting/categories').flush(ROOTS);
@@ -529,6 +533,7 @@ describe('AccountingReportsComponent', () => {
       expect(cards[1].querySelector('.pl-project-title small')?.textContent?.trim()).toBe('');
       expect(cards[1].querySelector('.pl-tag')?.textContent?.trim()).toBe('進行中');
       expect(el.querySelector('.pl-projects .pl-empty')).toBeNull();
+      expect(el.querySelector('.pl-projects .pl-drill')).toBeNull(); // no 無專案 row → no link
     });
 
     it('edits amounts from the month on, adds a budget for a category without one, and removes one', async () => {

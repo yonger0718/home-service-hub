@@ -384,12 +384,13 @@ def _category_closure(db: Session, category_ids: list[int]) -> set[int]:
     return found
 
 
-def _attribute_filters(db: Session, *, tags=None, category_ids=None, project_id=None, merchant=None,
+def _attribute_filters(db: Session, *, tags=None, category_ids=None, project_id=None, no_project=False, merchant=None,
                        amount_min=None, amount_max=None) -> list:
     """The attribute filters of GET /entries (2026-10-21): ANDed with the older ones; `tags` matches rows carrying ANY of
     the given tags, `category_ids` expands to sub-categories, `merchant` is a literal substring, the amount bounds are
     signed, inclusive and compared in each entry's ACCOUNT currency (`LedgerEntry.amount`; no conversion — owner's
-    choice 2026-10-21, conversion comes with the reports work)."""
+    choice 2026-10-21, conversion comes with the reports work). `no_project` (#261) is the IS NULL counterpart of
+    `project_id` — the rows the owner backfills project tags on; the router refuses both together."""
     filters = []
     if tags:
         filters.append(LedgerEntry.tags.overlap(tags))
@@ -397,6 +398,8 @@ def _attribute_filters(db: Session, *, tags=None, category_ids=None, project_id=
         filters.append(LedgerEntry.category_id.in_(_category_closure(db, category_ids)))
     if project_id is not None:
         filters.append(LedgerEntry.project_id == project_id)
+    if no_project:
+        filters.append(LedgerEntry.project_id.is_(None))
     if merchant:
         pattern = _like_pattern(merchant)
         group_merchant = (
@@ -588,12 +591,13 @@ def list_all_entries(
     tags: list[str] | None = None,
     category_ids: list[int] | None = None,
     project_id: int | None = None,
+    no_project: bool = False,
     merchant: str | None = None,
     amount_min: Decimal | None = None,
     amount_max: Decimal | None = None,
 ) -> tuple[int, list[dict]]:
     filters = _filters(kind, date_from, date_to, q, account_ids, hide_rewards, counterparty_id, open_only)
-    filters += _attribute_filters(db, tags=tags, category_ids=category_ids, project_id=project_id, merchant=merchant,
+    filters += _attribute_filters(db, tags=tags, category_ids=category_ids, project_id=project_id, no_project=no_project, merchant=merchant,
                                   amount_min=amount_min, amount_max=amount_max)
     total = db.scalar(select(func.count()).select_from(LedgerEntry).where(*filters))
     return total, _entry_rows(db, filters, running_accounts=account_ids, limit=limit, offset=offset)

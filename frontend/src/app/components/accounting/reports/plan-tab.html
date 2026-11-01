@@ -100,5 +100,8 @@
         </article>
       }
     }
+    @if (noProjectParams(); as params) {
+      <a class="pl-drill" routerLink="/accounting" [queryParams]="params">{{ noProjectLabel() }}</a>
+    }
   </section>
 </div>
