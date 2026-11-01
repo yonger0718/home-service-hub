@@ -21,7 +21,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Callable, Collection, Mapping, Sequence
 
-from sqlalchemy import exists, func, or_, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -55,10 +55,7 @@ from .moze_backup_json import (
     ICON_BY_IMAGE,
     KEYPAD_MAP,
     LOGO_BY_IMAGE,
-    POSTING_MAP,
     PROJECT_NAMES,
-    REWARD_METHOD_MAP,
-    REWARD_WINDOW_MAP,
     ROUNDING_MAP,
     SKIPPED_PROJECT,
     BackupData,
@@ -136,11 +133,10 @@ class SettingsResult:
     projects: dict[str, int] = field(default_factory=dict)
     counterparties: dict[str, int] = field(default_factory=dict)
     rules: dict[str, int] = field(default_factory=dict)
+    rules_unknown: int = 0
     accounts_created: list[str] = field(default_factory=list)
     accounts_renamed: list[dict] = field(default_factory=list)
     settings_skipped: list[dict] = field(default_factory=list)
-    unsupported_rules: list[dict] = field(default_factory=list)
-    orphaned_rules: list[dict] = field(default_factory=list)
     unmapped_category_keys: set[str] = field(default_factory=set)
     kept_moze_ids: dict[str, set[str]] = field(default_factory=dict)  # table -> moze ids present in the backup
 
@@ -407,83 +403,14 @@ def _upsert_counterparties(session: Session, data: BackupData, result: SettingsR
     result.kept_moze_ids["counterparty"] = set(result.counterparties)
 
 
-UNSUPPORTED_RULE_FIELDS = ("rewardLimit", "spendThreshold", "totalSpendThreshold", "minCountThreshold")
-
-
-def _upsert_rules(session: Session, data: BackupData, result: SettingsResult) -> None:
+def _resolve_rules(session: Session, data: BackupData, result: SettingsResult) -> None:
+    """Look the backup's rule records up by moze_id; HomeHub is the rules' only writer, so nothing is written."""
     for record in data.rules:
-        where = f"AHBonusReward '{record['name']}'"
-        account = result.accounts.get(record["accountID"])
-        if account is None:
-            result.unsupported_rules.append({"name": record["name"], "reasons": ["account not in backup"]})
-            continue
-        method = _mapped(REWARD_METHOD_MAP, record["type"], "type", where)
-        unsupported = [name for name in UNSUPPORTED_RULE_FIELDS if record[name]]
-        if unsupported:
-            result.unsupported_rules.append({"name": record["name"], "account": account.name, "reasons": unsupported})
-        reward_account = result.accounts.get(record["rewardAccountID"])
-        posting = _mapped(POSTING_MAP, record["rewardTimeType"], "rewardTimeType", where)
-        post_month_offset, post_day = 0, 1  # unused unless the reward posts after the window
-        if posting == "after_window":
-            post_month_offset, post_day = record["rewardMonth"], record["rewardDay"]
-            if not (0 <= post_month_offset <= 2 and 1 <= post_day <= 31):
-                raise MozeImportError(
-                    f"{where}: rewardMonth/rewardDay out of range "
-                    f"(rewardMonth {post_month_offset}, expected 0-2; rewardDay {post_day}, expected 1-31)"
-                )
-        values = {
-            "account_id": account.id,
-            "name": record["name"],
-            "method": method,
-            # MOZE stores a fraction (0.01 = 1 %); reward_rule.rate is a percent, NUMERIC(8,4)
-            "rate": (record["rewardPercentage"] * 100).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
-            if method == "percent" else None,
-            "fixed_amount": _amount(record["rewardAmount"]) if method == "fixed" else None,
-            "window": _mapped(REWARD_WINDOW_MAP, record["rewardPeriodType"], "rewardPeriodType", where),
-            "posting": posting,
-            "delay_days": record["rewardDelayDays"],
-            "post_month_offset": post_month_offset,
-            "post_day": post_day,
-            "txn_rounding": _mapped(ROUNDING_MAP, record["rewardCalculation"], "rewardCalculation", where),
-            "total_rounding": _mapped(ROUNDING_MAP, record["totalRewardCalculation"], "totalRewardCalculation", where),
-            "total_cap": _amount(record["totalRewardLimit"]) if record["totalRewardLimit"] else None,
-            "shared_cap_id": moze_uuid(record["rewardSharingID"]),
-            "is_basic": record["isBasic"],
-            "reward_account_id": reward_account.id if reward_account is not None else account.id,
-            "reward_project_id": result.projects.get(record["rewardProjectID"]),
-            "starts_on": record["startDate"].date(),
-            "ends_on": record["dueDate"].date(),
-            "is_enabled": record["isEnabled"] and not unsupported,
-            "description": _text(record["desc"]),
-            "sort_order": record["sequence"],
-        }
-        rule = session.scalar(select(RewardRule).where(RewardRule.moze_id == record["identifier"]))
-        if rule is None:
-            rule = RewardRule(moze_id=record["identifier"])
-            session.add(rule)
-        for column, value in values.items():
-            setattr(rule, column, value)
-        session.flush()
-        result.rules[record["identifier"]] = rule.id
-
-    gone = session.scalars(
-        select(RewardRule).where(RewardRule.moze_id.is_not(None), RewardRule.moze_id.not_in(list(result.rules) or [""]))
-    ).all()
-    for rule in gone:
-        referenced = session.scalar(
-            select(
-                or_(
-                    exists().where(EntryRewardRule.rule_id == rule.id),
-                    exists().where(LedgerEntry.reward_rule_id == rule.id),
-                )
-            )
-        )
-        if referenced:
-            rule.is_enabled = False
-            result.orphaned_rules.append({"name": rule.name, "account": session.get(Account, rule.account_id).name})
+        rule_id = session.scalar(select(RewardRule.id).where(RewardRule.moze_id == record["identifier"]))
+        if rule_id is None:
+            result.rules_unknown += 1
         else:
-            session.delete(rule)
-    session.flush()
+            result.rules[record["identifier"]] = rule_id
 
 
 def _upsert_preference(session: Session, data: BackupData, result: SettingsResult) -> None:
@@ -512,7 +439,7 @@ def upsert_settings(session: Session, data: BackupData) -> SettingsResult:
     _upsert_projects(session, data, result)
     _upsert_categories(session, data, result)
     _upsert_counterparties(session, data, result)
-    _upsert_rules(session, data, result)
+    _resolve_rules(session, data, result)
     _upsert_preference(session, data, result)
     return result
 
@@ -1349,6 +1276,7 @@ def replace_ledger_from_backup(
         "transfers": entries.transfers,
         "transfer_rate_mismatches": entries.transfer_rate_mismatches,
         "rules": len(settings.rules),
+        "rules_unknown": settings.rules_unknown,
         "attachments": entries.attachments,
         "counterparties": len(set(settings.counterparties.values())),
         "settlements_linked": dict(entries.settlements_linked),
@@ -1357,8 +1285,6 @@ def replace_ledger_from_backup(
             "count": sum(1 for entry in entries.entries.values() if entry.needs_review),
             "reasons": dict(sorted(entries.needs_review.items())),
         },
-        "unsupported_rules": settings.unsupported_rules,
-        "orphaned_rules": settings.orphaned_rules,
         "unmapped_category_keys": sorted(settings.unmapped_category_keys),
         "settings_skipped": settings.settings_skipped,
         "accounts": accounts,

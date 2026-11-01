@@ -1,0 +1,82 @@
+fieldset {
+  border: 0;
+  margin: 0 0 8px;
+  min-width: 0;
+  padding: 0;
+}
+
+legend {
+  color: var(--app-text-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 8px 0 2px;
+}
+
+.kv {
+  .wide {
+    flex: 1;
+    max-width: 16rem;
+    text-align: left;
+  }
+
+  .num {
+    max-width: 3.5rem;
+  }
+
+  > div.rule-col {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  textarea {
+    background: var(--app-surface-soft);
+    border: 1px solid var(--app-border);
+    border-radius: var(--radius-sm);
+    color: var(--app-text);
+    font: inherit;
+    padding: 4px 8px;
+    resize: vertical;
+  }
+}
+
+.err {
+  color: var(--app-danger);
+  display: block;
+  font-size: 0.8rem;
+  padding: 2px 0 4px;
+  text-align: right;
+}
+
+.rule-message,
+.discard {
+  align-items: center;
+  color: var(--app-danger);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+  gap: 8px;
+  margin: 8px 0 0;
+}
+
+.discard {
+  color: var(--app-text);
+  font-weight: 700;
+}
+
+.rule-message button,
+.discard button {
+  background: var(--app-surface-soft);
+  border: 0;
+  border-radius: var(--radius-md);
+  color: var(--app-text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 6px 12px;
+}
+
+.btnrow .armed {
+  background: var(--app-danger);
+  color: #fff;
+}

@@ -9,6 +9,7 @@ import {
   computed,
   inject,
   signal,
+  viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
@@ -19,7 +20,9 @@ import {
   AccountGroup,
   AccountInput,
   LedgerAccount,
+  Project,
   RewardRule,
+  RewardRuleState,
   RoundingMode,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
@@ -30,8 +33,15 @@ import { DueRule, dueDate, periodLabel, statementPeriod } from '../cycle';
 import { DirtyAware, DirtyFormRegistry } from '../dirty-form.service';
 import { shortDate, todayIso } from '../dates';
 import { balanceNegative, balanceText, valuationHint } from '../account-balance';
-import { formatMoney } from '../format';
+import { decimalText, formatMoney } from '../format';
 import { fieldErrors, writeErrorMessage } from '../http-errors';
+import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
+import {
+  RULE_STATE_LABELS, basicOverlapRuleId, periodText, postingSummary, ruleLabel, ruleState, ruleToInput,
+} from '../reward-rule-text';
+import { SwitchComponent } from '../../ui/switch/switch';
+
+export { decimalText } from '../format';
 
 export const ROUNDING_LABELS: Record<RoundingMode, string> = {
   keep: '不處理',
@@ -72,25 +82,6 @@ const EMPTY_FORM: AccountForm = {
   credit_limit: '', combined_account_id: null, credit_sharing_id: null, auto_pay_account_id: null,
   fx_fee_on: false, fx_fee_pct: '', fx_fee_rounding: 'keep', fx_fee_refundable: false,
 };
-
-/**
- * A server decimal as the form shows it (`"-1234567890123.4500"` → `"-1234567890123.45"`), on the text only: no
- * `Number` round-trip, so amounts ≥ 1e12 keep every digit. Anything that is not a plain decimal is shown as sent.
- */
-export function decimalText(value: string | null | undefined): string {
-  if (value === null || value === undefined || value === '') {
-    return '';
-  }
-  const text = value.trim();
-  const match = /^([+-]?)(\d*)(?:\.(\d*))?$/.exec(text);
-  if (!match || (match[2] === '' && !match[3])) {
-    return text;
-  }
-  const whole = match[2].replace(/^0+(?=\d)/, '') || '0';
-  const fraction = (match[3] ?? '').replace(/0+$/, '');
-  const digits = fraction ? `${whole}.${fraction}` : whole;
-  return match[1] === '-' && /[1-9]/.test(digits) ? `-${digits}` : digits;
-}
 
 function intOrNull(value: string): number | null {
   const parsed = Number.parseInt(value, 10);
@@ -209,7 +200,7 @@ interface LoadedAccount {
 @Component({
   selector: 'app-account-settings',
   standalone: true,
-  imports: [RouterLink, AccountIconComponent],
+  imports: [RouterLink, AccountIconComponent, RewardRuleSheetComponent, SwitchComponent],
   templateUrl: './account-settings.html',
   styleUrl: './account-settings.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -346,7 +337,26 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
       .map(id => this.accounts().find(account => account.id === id)?.name ?? `#${id}`);
     return names.length ? `與 ${names.join('、')} 共用額度` : null;
   });
+  /** 回饋規則 block (spec §6.1): rows in the order the API returns; edits save at once, so not part of isDirty(). */
   readonly rules = computed<RewardRule[]>(() => this.detail()?.reward_rules ?? []);
+  readonly projects = signal<Project[]>([]);
+  readonly ruleSheet = signal<{ rule: RewardRule | null } | null>(null);
+  /** The open editor sheet; its unsaved input counts as the page's (spec §6.1 dirty-form rules). */
+  private readonly ruleSheetRef = viewChild(RewardRuleSheetComponent);
+  /**
+   * A route-leave prompt handed to the open rule sheet: the sheet (position: fixed, above the page) shows its own
+   * 放棄未儲存的內容？ strip and this page's strip stays hidden; the sheet's 放棄 / 留下 resolve the pending close.
+   */
+  readonly sheetHoldsPrompt = signal(false);
+  readonly ruleMessage = signal<string | null>(null);
+  /** A 啟用 / 上移 / 下移 write is in flight: those controls wait so the next write starts from the saved order. */
+  readonly ruleBusy = signal(false);
+  /** `?rule=<id>` (from 回饋規則總覽): opens that rule once its account's detail is shown, then leaves the URL. */
+  private pendingRuleId: number | null = null;
+  readonly ruleLabel = ruleLabel;
+  readonly postingSummary = postingSummary;
+  readonly periodText = periodText;
+  readonly ruleStateLabels = RULE_STATE_LABELS;
 
   ngOnInit(): void {
     this.dirty.register(this);
@@ -370,6 +380,10 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
         this.errors.set({});
         this.message.set(null);
         this.confirmDelete.set(false);
+        this.ruleSheet.set(null);
+        this.sheetHoldsPrompt.set(false);
+        this.ruleMessage.set(null);
+        this.ruleBusy.set(false);
       }),
       map(id => this.fetch(id)),
     );
@@ -385,6 +399,33 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     // Archived accounts too: an archived shared-limit member must be shown so it can be removed.
     this.service.getAccounts(true).subscribe(accounts => this.accounts.set(accounts));
     this.service.getAccountGroups().subscribe(groups => this.groups.set(groups));
+    this.service.getProjects().subscribe(projects => this.projects.set(projects));
+    this.route.queryParamMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(query => {
+      const ruleParam = query.get('rule');
+      if (ruleParam !== null) {
+        this.pendingRuleId = Number(ruleParam);
+        this.openPendingRule();
+      }
+    });
+  }
+
+  /** Acts on `?rule=` once the shown account's detail is in: opens the rule if it is this account's, then clears it. */
+  private openPendingRule(): void {
+    const detail = this.detail();
+    if (this.pendingRuleId === null || detail === null || this.loadedId() !== this.accountId()) {
+      return;
+    }
+    const rule = detail.reward_rules.find(r => r.id === this.pendingRuleId);
+    this.pendingRuleId = null;
+    if (rule) {
+      this.openRule(rule);
+    }
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { rule: null },
+      queryParamsHandling: 'merge',
+      replaceUrl: true,
+    });
   }
 
   /** Starts a load with a new loadId; a new account (`id === null`) completes at once with no detail. */
@@ -439,13 +480,30 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     this.sharing.set((loaded.detail?.credit_sharing_members ?? []).filter(id => id !== loaded.id));
     this.baseline.set(this.form());
     this.sharingBaseline.set(this.sharing());
+    this.openPendingRule();
   }
 
+  /** The form, 額度共用, or an open rule sheet with unsaved input; the rule rows themselves save at once. */
   isDirty(): boolean {
-    return !sameForm(this.form(), this.baseline()) || !sameMembers(this.sharing(), this.sharingBaseline());
+    return (
+      !sameForm(this.form(), this.baseline()) ||
+      !sameMembers(this.sharing(), this.sharingBaseline()) ||
+      (this.ruleSheet() !== null && (this.ruleSheetRef()?.isDirty() ?? false))
+    );
   }
 
   showDiscardPrompt(): void {
+    const sheet = this.ruleSheet() !== null ? this.ruleSheetRef() : undefined;
+    if (sheet?.isDirty()) {
+      if (sheet.busy()) {
+        // The sheet ignores closing while a write is in flight; drop this leave attempt rather than hold it unseen.
+        this.dirty.clearPending();
+        return;
+      }
+      this.sheetHoldsPrompt.set(true);
+      sheet.cancel();
+      return;
+    }
     if (!this.discardOpener) {
       this.discardOpener = this.host.nativeElement.ownerDocument.activeElement as HTMLElement | null;
     }
@@ -494,9 +552,142 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     return this.errors()[field] ?? this.localErrors()[field] ?? null;
   }
 
-  ruleLabel(rule: RewardRule): string {
-    const value = rule.method === 'percent' ? `${Number(rule.rate)}%` : formatMoney(rule.fixed_amount, this.form().currency);
-    return `${rule.name} ${value}${rule.is_enabled ? '' : '（停用）'}`;
+  ruleStateOf(rule: RewardRule): RewardRuleState {
+    return ruleState(rule, this.today());
+  }
+
+  openRule(rule: RewardRule | null): void {
+    this.ruleMessage.set(null);
+    this.ruleSheet.set({ rule });
+  }
+
+  closeRuleSheet(): void {
+    this.ruleSheet.set(null);
+    if (!this.sheetHoldsPrompt()) {
+      return;
+    }
+    // 放棄 on the sheet's strip answered a delegated route-leave prompt.
+    this.sheetHoldsPrompt.set(false);
+    if (this.isDirty()) {
+      this.showDiscardPrompt(); // the page's own form is still dirty: ask here, now that the sheet is gone
+    } else {
+      this.dirty.confirmDiscard();
+    }
+  }
+
+  /** 留下 on the sheet's strip: keep the draft and forget the delegated close (the sheet keeps its focus). */
+  onRuleSheetStayed(): void {
+    if (this.sheetHoldsPrompt()) {
+      this.sheetHoldsPrompt.set(false);
+      this.dirty.clearPending();
+    }
+  }
+
+  onRuleSaved(): void {
+    this.onRuleSheetStayed(); // saving answers a delegated leave prompt with 留下: the owner chose to keep working
+    this.closeRuleSheet();
+    this.reloadRules();
+  }
+
+  onRuleDeleted(): void {
+    this.onRuleSheetStayed();
+    this.closeRuleSheet();
+    this.reloadRules();
+  }
+
+  /** 啟用 saves at once: the full rule as loaded with `is_enabled` flipped, then the account is re-read. */
+  toggleRule(rule: RewardRule, enabled: boolean): void {
+    const id = this.loadedId();
+    if (id === null || this.ruleBusy()) {
+      return;
+    }
+    this.ruleMessage.set(null);
+    this.ruleBusy.set(true);
+    const loadId = this.loadId;
+    this.service
+      .updateRewardRule(id, rule.id, { ...ruleToInput(rule), is_enabled: enabled })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: () => this.reloadRules(loadId),
+        error: err => this.ruleWriteFailed(loadId, err),
+      });
+  }
+
+  /** 上移 (-1) / 下移 (+1): swaps two neighbours and sends the whole order; the response is the new list. */
+  moveRule(index: number, delta: number): void {
+    const id = this.loadedId();
+    const ids = this.rules().map(rule => rule.id);
+    const target = index + delta;
+    if (id === null || this.ruleBusy() || target < 0 || target >= ids.length) {
+      return;
+    }
+    [ids[index], ids[target]] = [ids[target], ids[index]];
+    this.ruleMessage.set(null);
+    this.ruleBusy.set(true);
+    const loadId = this.loadId;
+    this.service
+      .reorderRewardRules(id, ids)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: rules => {
+          if (loadId !== this.loadId) {
+            return;
+          }
+          this.ruleBusy.set(false);
+          this.detail.update(detail => (detail ? { ...detail, reward_rules: rules } : detail));
+        },
+        error: err => this.ruleWriteFailed(loadId, err),
+      });
+  }
+
+  private ruleWriteFailed(loadId: number, err: unknown): void {
+    if (loadId !== this.loadId) {
+      return;
+    }
+    this.ruleMessage.set(this.ruleErrorMessage(err));
+    this.reloadRules(loadId);
+  }
+
+  /** A 409 `basic_rule_overlap` names the clashing rule like the sheet does; anything else is the generic message. */
+  private ruleErrorMessage(err: unknown): string {
+    const overlap = basicOverlapRuleId(err);
+    if (overlap === null) {
+      return writeErrorMessage(err);
+    }
+    const name = this.rules().find(rule => rule.id === overlap)?.name ?? `#${overlap}`;
+    return `與「${name}」的基本回饋期間重疊`;
+  }
+
+  /**
+   * Re-reads the shown account so the block (and the entry form's chips, which read the same `AccountDetail`) match
+   * the server. Only the detail is replaced: the form and its baseline keep any unsaved input. Dropped once another
+   * navigation has started.
+   */
+  private reloadRules(loadId = this.loadId): void {
+    const id = this.loadedId();
+    if (id === null || loadId !== this.loadId) {
+      return;
+    }
+    this.ruleBusy.set(true);
+    this.service
+      .getAccount(id)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: detail => {
+          if (loadId !== this.loadId) {
+            return;
+          }
+          this.ruleBusy.set(false);
+          this.detail.set(detail);
+        },
+        error: err => {
+          if (loadId !== this.loadId) {
+            return;
+          }
+          this.ruleBusy.set(false);
+          this.ruleMessage.set(this.ruleErrorMessage(err));
+        },
+      });
   }
 
   save(): void {

@@ -12,6 +12,7 @@ export type AccountingPage =
   | 'splitGroup'
   | 'settings'
   | 'reports'
+  | 'rewardRules'
   | 'customReport'
   | 'reminders';
 
@@ -36,6 +37,7 @@ export const ACCOUNTING_PAGES: Record<AccountingPage, PageLoader> = {
   splitGroup: () => import('./split-group/split-group').then(m => m.SplitGroupComponent),
   settings: () => import('./accounting-settings/accounting-settings').then(m => m.AccountingSettingsComponent),
   reports: () => import('./reports/reports').then(m => m.AccountingReportsComponent),
+  rewardRules: () => import('./reward-rules/reward-rules').then(m => m.RewardRulesOverviewComponent),
   customReport: () => import('./reports/custom-report').then(m => m.CustomReportComponent),
   reminders: () => import('./reminders/reminders').then(m => m.AccountingRemindersComponent),
 };

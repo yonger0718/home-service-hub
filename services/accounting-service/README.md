@@ -36,7 +36,7 @@ The backup importer converts the archive with the Node tool (`MOZE_REALM_EXPORTE
 `node <repo>/tools/moze-realm-export/index.js`, `node` from `PATH`, 10-minute timeout; one file path, or a command
 line such as `/usr/bin/node /path/to/index.js`), then replaces every
 `moze_import` and `moze_backup` entry and MOZE group in one transaction under the same lock, upserts groups,
-accounts, categories, projects, counterparties, reward rules (by `moze_id`, never recreated) and the preference row,
+accounts, categories, projects, counterparties and the preference row (reward rules are only looked up by `moze_id` for the purchase → rule links; the import no longer creates, updates or deletes them, HomeHub is the rules' only writer since 2026-11),
 and maps future-dated rows, periods and installments to schedule definitions and periods (see Schedules). Manual entries and their rule
 attachments are never touched. Accounts edited locally (`settings_locally_edited`) keep their settings and, when
 the backup no longer names them, are neither archived nor zeroed. Neither importer deletes a category, project or
@@ -78,6 +78,7 @@ Reads
   balances count entries posted on or before it), `GET /accounts/{id}/summary?date_from=&date_to=` (spend with refunds,
   income, rewards, net and count over entries posted in the range, plus the balance as of `date_to`),
   `GET /accounts/{id}/reward-rules`
+- `GET /reward-rules?account_id=(repeatable)&state=active|disabled|expired|upcoming|all&include_archived_accounts=false` (overview: every account in scope with its rules, each carrying `state` and `stats`, plus `counts`; a blank `starts_on` / `ends_on` is open-ended)
 - `GET /accounts/{id}/entries?limit=50&offset=0&kind=&date_from=&date_to=&q=`
 - `GET /entries?limit&offset&kind&date_from&date_to&q&account_id=(repeatable)&hide_rewards&counterparty_id&open&tag=(repeatable, any of)&category_id=(repeatable, sub-categories included)&project_id&merchant=(case-insensitive literal substring of the row's or its group's merchant)&amount_min&amount_max=(signed, inclusive, in the entry's ACCOUNT currency — no conversion; 422 when min > max)` (2026-10-21: the attribute filters AND with the older ones), `GET /entries/summary?month=YYYY-MM`,
   `GET /entries/summary/daily?month=YYYY-MM` (calendar view: the month summary's expense/income rules per `entry_date`,
@@ -99,6 +100,10 @@ Writes (every new row gets `source = 'manual'`, and an edit of a schedule-posted
 - `POST /balance-adjustments` (`target_balance`; stores the delta)
 - `POST /accounts`, `PUT /accounts/{id}`, `DELETE /accounts/{id}` (409 while it has entries; archive instead), `POST /accounts/{id}/reset-settings-flag`
   - `PUT /accounts/{id}` never changes `currency` while the account has entries (422) or while it carries a `settlement_source` / `valuation_source` or is a key or value of `settlement.target_accounts` (409 `currency_locked`; clear the source / mapping first) — the R7 writers re-check these currencies under their locks (PR #234).
+- `POST /accounts/{id}/reward-rules` (appended last unless `sort_order` is given; `reward_account_id` / `reward_project_id` must be live, the card itself always passes; 409 `basic_rule_overlap`)
+- `PUT /accounts/{id}/reward-rules/{rule_id}` (whole row; keeps `moze_id`; an unchanged archived reference is accepted so 停用 always saves, a new one is 422)
+- `PUT /accounts/{id}/reward-rules/order` (`{"ids": [...]}`, every rule of the account exactly once)
+- `DELETE /accounts/{id}/reward-rules/{rule_id}` (409 `rule_referenced` while entries link or reward from it)
 - `POST /account-groups`, `PUT /account-groups/{id}`, `DELETE /account-groups/{id}`, `PUT /account-groups/order` (`{"ids": [...]}`)
 - `POST /categories`, `PUT /categories/{id}`, `DELETE /categories/{id}`, `PUT /categories/order`
 - `POST /projects`, `PUT /projects/{id}`, `DELETE /projects/{id}`

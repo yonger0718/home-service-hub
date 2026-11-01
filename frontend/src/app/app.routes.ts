@@ -7,7 +7,8 @@ import { NavigationPreferencesService } from './services/navigation-preferences.
 
 /**
  * Every deep-linkable accounting path must also match Caddy's `@hub_spa` matcher (docs/deploy). PR-9 adds the 多類別
- * group view: `/accounting/entries/[0-9]+/group` and `/accounting/accounts/[0-9]+/entries/[0-9]+/group`.
+ * group view: `/accounting/entries/[0-9]+/group` and `/accounting/accounts/[0-9]+/entries/[0-9]+/group`. The reward rules
+ * phase 1 adds the 回饋規則總覽 page: `/accounting/reward-rules`.
  */
 
 /**
@@ -38,6 +39,7 @@ const ACCOUNTING_PHONE_ROUTES: Routes = [
   ...PANE_PAGES.map(({ path, page }) => ({ path, loadComponent: ACCOUNTING_PAGES[page] })),
   { path: 'settings', loadComponent: ACCOUNTING_PAGES.settings },
   { path: 'reports', loadComponent: ACCOUNTING_PAGES.reports },
+  { path: 'reward-rules', loadComponent: ACCOUNTING_PAGES.rewardRules },
   { path: 'reports/custom/new', loadComponent: ACCOUNTING_PAGES.customReport },
   { path: 'reports/custom/:id', loadComponent: ACCOUNTING_PAGES.customReport },
 ];
@@ -53,8 +55,9 @@ const ACCOUNTING_WIDE_ROUTES: Routes = [
   { path: 'accounts', pathMatch: 'full', data: { list: 'accounts' }, children: [] },
   ...PANE_PAGES.map(({ path, list, page }) => ({ path, data: { list }, children: pane(page) })),
   { path: 'settings', loadComponent: ACCOUNTING_PAGES.settings },
-  // 報表 and the saved-report editor are whole pages on every width, like 記帳設定 (no list beside them).
+  // 報表, the saved-report editor and 回饋規則總覽 are whole pages on every width, like 記帳設定 (no list beside them).
   { path: 'reports', loadComponent: ACCOUNTING_PAGES.reports },
+  { path: 'reward-rules', loadComponent: ACCOUNTING_PAGES.rewardRules },
   { path: 'reports/custom/new', loadComponent: ACCOUNTING_PAGES.customReport },
   { path: 'reports/custom/:id', loadComponent: ACCOUNTING_PAGES.customReport },
 ];

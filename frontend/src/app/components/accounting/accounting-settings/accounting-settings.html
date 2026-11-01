@@ -106,6 +106,8 @@
     </div>
   </details>
 
+  <a class="srow reward-rules-link" routerLink="/accounting/reward-rules"><span><i class="pi pi-gift" aria-hidden="true"></i></span><span class="t">回饋規則</span><span class="r">總覽</span></a>
+
   <details class="data-section counterparties-section">
     <summary class="srow"><span><i class="pi pi-users" aria-hidden="true"></i></span><span class="t">對象</span><span class="r">{{ counterparties().length }}</span></summary>
     <input class="cp-filter" type="search" placeholder="搜尋對象" [value]="cpFilter()" (input)="cpFilter.set($any($event.target).value)" />

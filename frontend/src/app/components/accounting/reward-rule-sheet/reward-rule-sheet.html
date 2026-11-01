@@ -1,0 +1,167 @@
+<div class="overlay" data-overlay (click)="cancel()">
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="reward-rule-title" (click)="$event.stopPropagation()">
+    <div class="grab"></div>
+    <h3 id="reward-rule-title">{{ rule() ? '編輯回饋規則' : '新增回饋規則' }}</h3>
+
+    <fieldset class="kv">
+      <legend>基本</legend>
+      <div>
+        <span class="k">名稱</span>
+        <input class="rule-name wide" aria-label="名稱" maxlength="128" [value]="form().name" (input)="set('name', $any($event.target).value)" />
+      </div>
+      @if (errors()['name']; as e) { <small class="err" data-field="name">{{ e }}</small> }
+      <div>
+        <span class="k">方式</span>
+        <select class="rule-method" aria-label="方式" (change)="set('method', $any($event.target).value)">
+          <option value="percent" [selected]="form().method === 'percent'">比例 %</option>
+          <option value="fixed" [selected]="form().method === 'fixed'">固定金額</option>
+        </select>
+      </div>
+      @if (form().method === 'percent') {
+        <div>
+          <span class="k">比例</span>
+          <span class="v ed"><input class="rule-rate" type="text" inputmode="decimal" placeholder="0" aria-label="比例" [value]="form().rate" (input)="set('rate', $any($event.target).value)" />%</span>
+        </div>
+        @if (errors()['rate']; as e) { <small class="err" data-field="rate">{{ e }}</small> }
+      } @else {
+        <div>
+          <span class="k">固定金額</span>
+          <span class="v ed"><input class="rule-fixed" type="text" inputmode="decimal" placeholder="0" aria-label="固定金額" [value]="form().fixed_amount" (input)="set('fixed_amount', $any($event.target).value)" />{{ currency() }}</span>
+        </div>
+        @if (errors()['fixed_amount']; as e) { <small class="err" data-field="fixed_amount">{{ e }}</small> }
+      }
+      <div>
+        <span class="k">基本回饋</span>
+        <button type="button" class="tog rule-basic" role="switch" aria-label="基本回饋" [class.on]="form().is_basic" [attr.aria-checked]="form().is_basic" (click)="set('is_basic', !form().is_basic)"></button>
+      </div>
+      <div class="rule-col">
+        <span class="k">說明</span>
+        <textarea class="rule-description" rows="2" maxlength="2000" aria-label="說明" [value]="form().description" (input)="set('description', $any($event.target).value)"></textarea>
+      </div>
+      @if (errors()['description']; as e) { <small class="err" data-field="description">{{ e }}</small> }
+    </fieldset>
+
+    <fieldset class="kv">
+      <legend>入帳</legend>
+      <div>
+        <span class="k">入帳</span>
+        <select class="rule-posting" aria-label="入帳" (change)="set('posting', $any($event.target).value)">
+          <option value="after_window" [selected]="form().posting === 'after_window'">帳單結帳後</option>
+          <option value="after_transaction" [selected]="form().posting === 'after_transaction'">交易後</option>
+          <option value="manual" [selected]="form().posting === 'manual'">手動</option>
+        </select>
+      </div>
+      @if (form().posting === 'after_window') {
+        <div>
+          <span class="k">結帳後</span>
+          <span class="v ed">第<input class="rule-offset num" type="text" inputmode="numeric" aria-label="結帳後第幾月" [value]="form().post_month_offset" (input)="set('post_month_offset', $any($event.target).value)" />月<input class="rule-day num" type="text" inputmode="numeric" aria-label="日" [value]="form().post_day" (input)="set('post_day', $any($event.target).value)" />日</span>
+        </div>
+        @if (errors()['post_month_offset']; as e) { <small class="err" data-field="post_month_offset">{{ e }}</small> }
+        @if (errors()['post_day']; as e) { <small class="err" data-field="post_day">{{ e }}</small> }
+      } @else if (form().posting === 'after_transaction') {
+        <div>
+          <span class="k">交易後</span>
+          <span class="v ed"><input class="rule-delay num" type="text" inputmode="numeric" aria-label="交易後天數" [value]="form().delay_days" (input)="set('delay_days', $any($event.target).value)" />天</span>
+        </div>
+        @if (errors()['delay_days']; as e) { <small class="err" data-field="delay_days">{{ e }}</small> }
+      }
+      <div>
+        <span class="k">入帳帳戶</span>
+        <select class="rule-reward-account" aria-label="入帳帳戶" (change)="set('reward_account_id', idOrNull($any($event.target).value))">
+          @for (account of rewardAccounts(); track account.id) {
+            <option [value]="account.id" [selected]="account.id === form().reward_account_id">{{ account.name }}</option>
+          }
+        </select>
+      </div>
+      @if (errors()['reward_account_id']; as e) { <small class="err" data-field="reward_account_id">{{ e }}</small> }
+      <div>
+        <span class="k">專案</span>
+        <select class="rule-project" aria-label="專案" (change)="set('reward_project_id', idOrNull($any($event.target).value))">
+          <option value="" [selected]="form().reward_project_id === null">無</option>
+          @for (project of projectOptions(); track project.id) {
+            <option [value]="project.id" [selected]="project.id === form().reward_project_id">{{ project.name }}</option>
+          }
+        </select>
+      </div>
+      @if (errors()['reward_project_id']; as e) { <small class="err" data-field="reward_project_id">{{ e }}</small> }
+    </fieldset>
+
+    <fieldset class="kv">
+      <legend>上限</legend>
+      <div>
+        <span class="k">每期上限</span>
+        <input class="rule-cap" type="text" inputmode="decimal" placeholder="無" aria-label="每期上限" [value]="form().total_cap" (input)="set('total_cap', $any($event.target).value)" />
+      </div>
+      @if (errors()['total_cap']; as e) { <small class="err" data-field="total_cap">{{ e }}</small> }
+      <div>
+        <span class="k">單筆取整</span>
+        <select class="rule-txn-rounding" aria-label="單筆取整" (change)="set('txn_rounding', $any($event.target).value)">
+          @for (mode of roundingModes; track mode) {
+            <option [value]="mode" [selected]="mode === form().txn_rounding">{{ roundingLabels[mode] }}</option>
+          }
+        </select>
+      </div>
+      <div>
+        <span class="k">總額取整</span>
+        <select class="rule-total-rounding" aria-label="總額取整" (change)="set('total_rounding', $any($event.target).value)">
+          @for (mode of roundingModes; track mode) {
+            <option [value]="mode" [selected]="mode === form().total_rounding">{{ roundingLabels[mode] }}</option>
+          }
+        </select>
+      </div>
+      <div>
+        <span class="k">與…共用上限</span>
+        <select class="rule-share" aria-label="與…共用上限" (change)="setShare($any($event.target).value)">
+          <option value="" [selected]="shareValue() === ''">無</option>
+          @for (sibling of shareOptions(); track sibling.id) {
+            <option [value]="sibling.id" [selected]="shareValue() === '' + sibling.id">{{ ruleLabel(sibling) }}</option>
+          }
+        </select>
+      </div>
+      @if (errors()['share_cap_with']; as e) { <small class="err" data-field="share_cap_with">{{ e }}</small> }
+    </fieldset>
+
+    <fieldset class="kv">
+      <legend>期間</legend>
+      <div>
+        <span class="k">起</span>
+        <input class="rule-starts" type="date" aria-label="起" [value]="form().starts_on" (input)="set('starts_on', $any($event.target).value)" />
+      </div>
+      @if (errors()['starts_on']; as e) { <small class="err" data-field="starts_on">{{ e }}</small> }
+      <div>
+        <span class="k">迄</span>
+        <input class="rule-ends" type="date" aria-label="迄" [value]="form().ends_on" (input)="set('ends_on', $any($event.target).value)" />
+      </div>
+      @if (errors()['ends_on']; as e) { <small class="err" data-field="ends_on">{{ e }}</small> }
+      <div>
+        <span class="k">啟用</span>
+        <button type="button" class="tog rule-enabled" role="switch" aria-label="啟用" [class.on]="form().is_enabled" [attr.aria-checked]="form().is_enabled" (click)="set('is_enabled', !form().is_enabled)"></button>
+      </div>
+    </fieldset>
+
+    @if (message(); as text) {
+      <p class="rule-message" role="alert">
+        <span>{{ text }}</span>
+        @if (referenced()) {
+          <button type="button" class="rule-disable" [disabled]="busy()" (click)="disable()">停用</button>
+        }
+      </p>
+    }
+
+    @if (confirmingDiscard()) {
+      <div class="discard" role="alert">
+        <span>放棄未儲存的內容？</span>
+        <button type="button" class="discard-stay" (click)="stay()">留下</button>
+        <button type="button" class="discard-leave" [disabled]="busy()" (click)="close()">放棄</button>
+      </div>
+    }
+
+    <div class="btnrow">
+      @if (rule()) {
+        <button type="button" class="rule-delete" [class.armed]="confirmingDelete()" [disabled]="busy()" (click)="remove()">{{ confirmingDelete() ? '確定刪除？' : '刪除' }}</button>
+      }
+      <button type="button" class="sheet-cancel" [disabled]="busy()" (click)="cancel()">取消</button>
+      <button type="button" class="pri sheet-confirm" [disabled]="busy()" (click)="save()">儲存</button>
+    </div>
+  </div>
+</div>

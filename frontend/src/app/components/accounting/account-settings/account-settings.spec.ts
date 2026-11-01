@@ -2,12 +2,14 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, ParamMap, Router, convertToParamMap, provideRouter } from '@angular/router';
+import { By } from '@angular/platform-browser';
 import { BehaviorSubject } from 'rxjs';
 import { MockInstance, afterEach, describe, expect, it, vi } from 'vitest';
 
-import { AccountDetail, LedgerAccount } from '../../../models/accounting.model';
+import { AccountDetail, LedgerAccount, RewardRule } from '../../../models/accounting.model';
 import { ACCOUNT_LOGOS } from '../../../theme/account-logos';
 import { DirtyFormRegistry } from '../dirty-form.service';
+import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
 import { AccountSettingsComponent, accountToInput, decimalText } from './account-settings';
 
 function account(fields: Record<string, unknown>): LedgerAccount {
@@ -20,6 +22,17 @@ function account(fields: Record<string, unknown>): LedgerAccount {
     sort_order: 0, moze_id: null, available_credit: null, rule_summaries: [], settings_locally_edited: false,
     ...fields,
   } as unknown as LedgerAccount;
+}
+
+function rewardRule(fields: Partial<RewardRule>): RewardRule {
+  return {
+    id: 0, account_id: 11, name: '', method: 'percent', rate: null, fixed_amount: null, window: 'statement_cycle',
+    posting: 'after_window', delay_days: 0, post_month_offset: 1, post_day: 15, txn_rounding: 'round',
+    total_rounding: 'keep', total_cap: null, shared_cap_id: null, is_basic: false, reward_account_id: null,
+    reward_project_id: null, starts_on: null, ends_on: null, is_enabled: true, description: null, sort_order: 0,
+    moze_id: null,
+    ...fields,
+  };
 }
 
 const LIST = [
@@ -42,20 +55,28 @@ const DETAIL = {
   note: '主要餐飲卡',
   credit_sharing_members: [],
   reward_rules: [
-    { id: 1, name: '一般', method: 'percent', rate: '1.0000', fixed_amount: null, is_enabled: true },
-    { id: 2, name: '餐飲', method: 'percent', rate: '5.2000', fixed_amount: null, is_enabled: false },
+    rewardRule({ id: 1, name: '一般', rate: '1.0000', is_basic: true, sort_order: 0 }),
+    rewardRule({
+      id: 2, name: '餐飲', rate: '5.2000', is_enabled: false, posting: 'after_transaction', delay_days: 3,
+      starts_on: '2026-01-01', ends_on: '2026-12-31', moze_id: 'B-2', sort_order: 1,
+    }),
   ],
 } as unknown as AccountDetail;
 
 const GROUPS = [{ id: 1, name: '現金', sort_order: 0 }, { id: 3, name: '信用卡', sort_order: 2 }];
+const PROJECTS = [{ id: 7, name: '旅遊', sort_order: 0, is_archived: false, moze_id: null }];
 
 describe('AccountSettingsComponent', () => {
   let http: HttpTestingController;
   let navigate: MockInstance<Router['navigate']>;
   let params: BehaviorSubject<ParamMap>;
+  let queryParams: BehaviorSubject<ParamMap>;
+  let route: Partial<ActivatedRoute>;
 
-  async function setup(id: string | null): Promise<void> {
+  async function setup(id: string | null, query: Record<string, string> = {}): Promise<void> {
     params = new BehaviorSubject(convertToParamMap(id ? { id } : {}));
+    queryParams = new BehaviorSubject(convertToParamMap(query));
+    route = { paramMap: params.asObservable(), queryParamMap: queryParams.asObservable() };
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date(2026, 9, 2, 10, 0));
     await TestBed.configureTestingModule({
@@ -65,7 +86,7 @@ describe('AccountSettingsComponent', () => {
         provideHttpClientTesting(),
         provideRouter([]),
         // Pane components are reused across :id changes (Task 21), so the page reads `paramMap` as an observable.
-        { provide: ActivatedRoute, useValue: { paramMap: params.asObservable() } },
+        { provide: ActivatedRoute, useValue: route },
       ],
     }).compileComponents();
     http = TestBed.inject(HttpTestingController);
@@ -111,12 +132,17 @@ describe('AccountSettingsComponent', () => {
     expect(list.request.params.get('include_archived')).toBe('true');
     list.flush(LIST);
     http.expectOne('/api/accounting/account-groups').flush(GROUPS);
+    http.expectOne('/api/accounting/projects').flush(PROJECTS);
     fixture.detectChanges();
     return fixture;
   }
 
   function el(fixture: ComponentFixture<AccountSettingsComponent>): HTMLElement {
     return fixture.nativeElement as HTMLElement;
+  }
+
+  function texts(fixture: ComponentFixture<AccountSettingsComponent>, selector: string): string[] {
+    return Array.from(el(fixture).querySelectorAll(selector)).map(n => n.textContent?.replace(/\s+/g, ' ').trim() ?? '');
   }
 
   function childLabels(fixture: ComponentFixture<AccountSettingsComponent>): string[] {
@@ -160,15 +186,16 @@ describe('AccountSettingsComponent', () => {
     expect(el(fixture).querySelector<HTMLButtonElement>('.delete-account')!.disabled).toBe(true);
   });
 
-  it('offers only other non-archived credit accounts as 主帳戶 and lists the rules read-only', async () => {
+  it('offers only other non-archived credit accounts as 主帳戶 and lists the rules with a state badge', async () => {
     await setup('11');
     const fixture = render(DETAIL);
 
     const masters = Array.from(el(fixture).querySelectorAll('.master-select option')).map(o => o.textContent?.trim());
     expect(masters).toEqual(['無', '玉山信用卡', '玉山 UNI', '玉山 U Bear']);
     expect(el(fixture).querySelector<HTMLSelectElement>('.master-select')!.value).toBe('10');
-    const rules = Array.from(el(fixture).querySelectorAll('.rule-item')).map(r => r.textContent?.replace(/\s+/g, ' ').trim());
-    expect(rules).toEqual(['一般 1%', '餐飲 5.2%（停用）']);
+    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般 (1%)', '餐飲 (5.2%)']);
+    expect(texts(fixture, '.rule-row .rule-state')).toEqual(['啟用中', '已停用']);
+    expect(el(fixture).textContent).not.toContain('（停用）');
   });
 
   it('keeps an archived 主帳戶 and 自動扣繳 selectable, labelled （已封存）, and saves them unchanged', async () => {
@@ -421,6 +448,7 @@ describe('AccountSettingsComponent', () => {
     const first = http.expectOne('/api/accounting/accounts/3');
     http.expectOne(r => r.url === '/api/accounting/accounts').flush(LIST);
     http.expectOne('/api/accounting/account-groups').flush(GROUPS);
+    http.expectOne('/api/accounting/projects').flush(PROJECTS);
     fixture.detectChanges();
     expect(el(fixture).querySelector<HTMLButtonElement>('.save')!.disabled).toBe(true);
 
@@ -547,6 +575,7 @@ describe('AccountSettingsComponent', () => {
     http.expectOne('/api/accounting/accounts/11').flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
     http.expectOne(r => r.url === '/api/accounting/accounts').flush(LIST);
     http.expectOne('/api/accounting/account-groups').flush(GROUPS);
+    http.expectOne('/api/accounting/projects').flush(PROJECTS);
     fixture.detectChanges();
 
     expect(el(fixture).querySelector<HTMLButtonElement>('.save')!.disabled).toBe(true);
@@ -713,5 +742,313 @@ describe('AccountSettingsComponent', () => {
     http.expectOne('/api/accounting/accounts/11').flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
 
     expect(fixture.componentInstance.isDirty()).toBe(true);
+  });
+
+  // ---- 回饋規則 block (reward rules phase 1, Task 8) --------------------------------------------------------------
+
+  function sheet(fixture: ComponentFixture<AccountSettingsComponent>): RewardRuleSheetComponent | null {
+    const debug = fixture.debugElement.query(By.directive(RewardRuleSheetComponent));
+    return debug ? (debug.componentInstance as RewardRuleSheetComponent) : null;
+  }
+
+  function click(fixture: ComponentFixture<AccountSettingsComponent>, selector: string, index = 0): void {
+    el(fixture).querySelectorAll<HTMLElement>(selector)[index].click();
+    fixture.detectChanges();
+  }
+
+  it('renders one .rule-row per rule with label, state, 基本 and 來自 MOZE badges under 回饋規則 · N 條', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+
+    expect(texts(fixture, '.rules-head .k')).toEqual(['回饋規則 · 2 條']);
+    const all = el(fixture).querySelector<HTMLAnchorElement>('.rules-head a')!;
+    expect(all.textContent?.trim()).toBe('全部卡片');
+    expect(all.getAttribute('href')).toBe('/accounting/reward-rules?account_id=11');
+    expect(el(fixture).querySelectorAll('.rule-row').length).toBe(2);
+    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般 (1%)', '餐飲 (5.2%)']);
+    expect(texts(fixture, '.rule-row .rule-posting')).toEqual(['帳單結帳後第 1 月 15 日', '交易後 3 天']);
+    expect(texts(fixture, '.rule-row .rule-period')).toEqual(['無期限', '2026/01/01 – 2026/12/31']);
+    const states = Array.from(el(fixture).querySelectorAll('.rule-row .rule-state'));
+    expect(states.map(s => [s.getAttribute('data-state'), s.textContent?.trim()])).toEqual([
+      ['active', '啟用中'],
+      ['disabled', '已停用'],
+    ]);
+    const rows = Array.from(el(fixture).querySelectorAll('.rule-row'));
+    expect(rows.map(r => r.querySelector('.rule-basic')?.textContent?.trim() ?? null)).toEqual(['基本', null]);
+    expect(rows.map(r => r.querySelector('.rule-moze')?.textContent?.trim() ?? null)).toEqual([null, '來自 MOZE']);
+    expect(rows.map(r => r.querySelector('app-switch.rule-enabled button')?.getAttribute('aria-checked'))).toEqual(['true', 'false']);
+    expect(texts(fixture, '.rule-row .rule-edit')).toEqual(['編輯', '編輯']);
+    expect(el(fixture).querySelectorAll<HTMLButtonElement>('.rule-row .move-up')[0].disabled).toBe(true);
+    expect(el(fixture).querySelectorAll<HTMLButtonElement>('.rule-row .move-up')[1].disabled).toBe(false);
+    expect(el(fixture).querySelectorAll<HTMLButtonElement>('.rule-row .move-down')[0].disabled).toBe(false);
+    expect(el(fixture).querySelectorAll<HTMLButtonElement>('.rule-row .move-down')[1].disabled).toBe(true);
+    expect(texts(fixture, '.rule-add')).toEqual(['新增規則']);
+  });
+
+  it('new-account mode shows only 儲存帳戶後即可新增回饋規則, without 新增規則', async () => {
+    await setup(null);
+    const fixture = render(null);
+
+    expect(el(fixture).textContent).toContain('儲存帳戶後即可新增回饋規則');
+    expect(el(fixture).querySelector('.rule-add')).toBeNull();
+    expect(el(fixture).querySelector('.rule-row')).toBeNull();
+    expect(el(fixture).querySelector('.rules-head')).toBeNull();
+    expect(el(fixture).textContent).not.toContain('新增規則');
+  });
+
+  it('the 啟用 switch saves the full rule with is_enabled flipped, then re-reads the account', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+
+    click(fixture, '.rule-row app-switch.rule-enabled button', 0);
+    const put = http.expectOne('/api/accounting/accounts/11/reward-rules/1');
+    expect(put.request.method).toBe('PUT');
+    expect(put.request.body).toEqual({
+      name: '一般', method: 'percent', rate: '1', fixed_amount: null, posting: 'after_window', delay_days: 0,
+      post_month_offset: 1, post_day: 15, txn_rounding: 'round', total_rounding: 'keep', total_cap: null,
+      is_basic: true, reward_account_id: null, reward_project_id: null, starts_on: null, ends_on: null,
+      is_enabled: false, description: null,
+    });
+    put.flush({ ...DETAIL.reward_rules[0], is_enabled: false });
+    const reread = http.expectOne('/api/accounting/accounts/11');
+    expect(reread.request.method).toBe('GET');
+    reread.flush({
+      ...DETAIL,
+      reward_rules: [{ ...DETAIL.reward_rules[0], is_enabled: false }, DETAIL.reward_rules[1]],
+    });
+    fixture.detectChanges();
+
+    expect(texts(fixture, '.rule-row .rule-state')).toEqual(['已停用', '已停用']);
+    expect(fixture.componentInstance.isDirty()).toBe(false);
+  });
+
+  it('a failed 啟用 write shows the error and re-reads the account', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+
+    click(fixture, '.rule-row app-switch.rule-enabled button', 1);
+    const put = http.expectOne('/api/accounting/accounts/11/reward-rules/2');
+    expect(put.request.body).toMatchObject({ is_enabled: true, name: '餐飲' });
+    put.flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    http.expectOne('/api/accounting/accounts/11').flush(DETAIL);
+    fixture.detectChanges();
+
+    expect(el(fixture).querySelector('.rule-message')?.textContent?.trim()).toBeTruthy();
+    expect(texts(fixture, '.rule-row .rule-state')).toEqual(['啟用中', '已停用']);
+  });
+
+  it('a 409 basic_rule_overlap on the 啟用 switch names the clashing rule', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+
+    click(fixture, '.rule-row app-switch.rule-enabled button', 1);
+    http.expectOne('/api/accounting/accounts/11/reward-rules/2')
+      .flush({ code: 409, message: 'basic_rule_overlap: rule 1' }, { status: 409, statusText: 'Conflict' });
+    http.expectOne('/api/accounting/accounts/11').flush(DETAIL);
+    fixture.detectChanges();
+
+    expect(el(fixture).querySelector('.rule-message')?.textContent?.trim()).toBe('與「一般」的基本回饋期間重疊');
+  });
+
+  it('下移 on the first row sends the swapped order and re-renders from the response', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+
+    click(fixture, '.rule-row .move-down', 0);
+    const put = http.expectOne('/api/accounting/accounts/11/reward-rules/order');
+    expect(put.request.method).toBe('PUT');
+    expect(put.request.body).toEqual({ ids: [2, 1] });
+    put.flush([
+      { ...DETAIL.reward_rules[1], sort_order: 0 },
+      { ...DETAIL.reward_rules[0], sort_order: 1 },
+    ]);
+    fixture.detectChanges();
+
+    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['餐飲 (5.2%)', '一般 (1%)']);
+    expect(el(fixture).querySelectorAll<HTMLButtonElement>('.rule-row .move-up')[0].disabled).toBe(true);
+    expect(el(fixture).querySelectorAll<HTMLButtonElement>('.rule-row .move-down')[1].disabled).toBe(true);
+  });
+
+  it('a failed reorder shows the error and re-reads the account', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+
+    click(fixture, '.rule-row .move-up', 1);
+    const put = http.expectOne('/api/accounting/accounts/11/reward-rules/order');
+    expect(put.request.body).toEqual({ ids: [2, 1] });
+    put.flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    http.expectOne('/api/accounting/accounts/11').flush(DETAIL);
+    fixture.detectChanges();
+
+    expect(el(fixture).querySelector('.rule-message')?.textContent?.trim()).toBeTruthy();
+    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般 (1%)', '餐飲 (5.2%)']);
+  });
+
+  it('編輯 opens the sheet with the rule; 新增規則 opens it with rule === null', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    expect(sheet(fixture)).toBeNull();
+
+    click(fixture, '.rule-row .rule-edit', 1);
+    const editing = sheet(fixture)!;
+    expect(editing.rule()?.id).toBe(2);
+    expect(editing.accountId()).toBe(11);
+    expect(editing.currency()).toBe('TWD');
+    expect(editing.siblings().map(r => r.id)).toEqual([1, 2]);
+    expect(editing.accounts()).toEqual(LIST);
+    expect(editing.projects()).toEqual(PROJECTS);
+
+    editing.closed.emit();
+    fixture.detectChanges();
+    expect(sheet(fixture)).toBeNull();
+
+    click(fixture, '.rule-add');
+    expect(sheet(fixture)!.rule()).toBeNull();
+  });
+
+  it('a saved or deleted rule closes the sheet and re-reads the account', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+
+    click(fixture, '.rule-add');
+    sheet(fixture)!.saved.emit(rewardRule({ id: 3, name: '網購', rate: '3.0000' }));
+    fixture.detectChanges();
+    expect(sheet(fixture)).toBeNull();
+    http.expectOne('/api/accounting/accounts/11').flush({
+      ...DETAIL,
+      reward_rules: [...DETAIL.reward_rules, rewardRule({ id: 3, name: '網購', rate: '3.0000', sort_order: 2 })],
+    });
+    fixture.detectChanges();
+    expect(texts(fixture, '.rules-head .k')).toEqual(['回饋規則 · 3 條']);
+
+    click(fixture, '.rule-row .rule-edit', 2);
+    sheet(fixture)!.deleted.emit(3);
+    fixture.detectChanges();
+    expect(sheet(fixture)).toBeNull();
+    http.expectOne('/api/accounting/accounts/11').flush(DETAIL);
+    fixture.detectChanges();
+    expect(texts(fixture, '.rules-head .k')).toEqual(['回饋規則 · 2 條']);
+  });
+
+  it('an open rule sheet with unsaved input makes the page dirty; closing it does not', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+
+    click(fixture, '.rule-row .rule-edit', 0);
+    expect(fixture.componentInstance.isDirty()).toBe(false);
+    typeInto(fixture, '.rule-name', '一般改');
+    expect(fixture.componentInstance.isDirty()).toBe(true);
+
+    sheet(fixture)!.closed.emit();
+    fixture.detectChanges();
+    expect(sheet(fixture)).toBeNull();
+    expect(fixture.componentInstance.isDirty()).toBe(false);
+  });
+
+  /** Strips the owner can see: the page's .discard-strip and the sheet's .discard. */
+  function strips(fixture: ComponentFixture<AccountSettingsComponent>): Element[] {
+    return Array.from(el(fixture).querySelectorAll('.discard-strip, app-reward-rule-sheet .discard'));
+  }
+
+  it('leaving with a dirty rule sheet asks once, on the sheet; its 放棄 closes it and runs the leave', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const run = vi.fn();
+
+    click(fixture, '.rule-row .rule-edit', 0);
+    typeInto(fixture, '.rule-name', '一般改');
+    registry.requestClose(run);
+    fixture.detectChanges();
+
+    const shown = strips(fixture);
+    expect(shown.length).toBe(1);
+    expect(shown[0].closest('app-reward-rule-sheet')).not.toBeNull();
+    expect(shown[0].textContent).toContain('放棄未儲存的內容？');
+    expect(run).not.toHaveBeenCalled();
+
+    click(fixture, 'app-reward-rule-sheet .discard-leave');
+    expect(sheet(fixture)).toBeNull();
+    expect(fixture.componentInstance.isDirty()).toBe(false);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(registry.promptOpen()).toBe(false);
+    expect(strips(fixture)).toEqual([]);
+  });
+
+  it('留下 on the delegated sheet strip keeps the sheet and its input and forgets the leave', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const run = vi.fn();
+
+    click(fixture, '.rule-row .rule-edit', 0);
+    typeInto(fixture, '.rule-name', '一般改');
+    registry.requestClose(run);
+    fixture.detectChanges();
+    click(fixture, 'app-reward-rule-sheet .discard-stay');
+
+    expect(sheet(fixture)).not.toBeNull();
+    expect(el(fixture).querySelector<HTMLInputElement>('.rule-name')!.value).toBe('一般改');
+    expect(registry.promptOpen()).toBe(false);
+    expect(strips(fixture)).toEqual([]);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('a dirty page form under a dirty sheet: the sheet asks first, then the page asks for its own input', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const run = vi.fn();
+
+    typeInto(fixture, '.name-input', '玉山 Only 2');
+    click(fixture, '.rule-row .rule-edit', 0);
+    typeInto(fixture, '.rule-name', '一般改');
+    registry.requestClose(run);
+    fixture.detectChanges();
+    click(fixture, 'app-reward-rule-sheet .discard-leave');
+
+    expect(sheet(fixture)).toBeNull();
+    expect(run).not.toHaveBeenCalled();
+    const shown = strips(fixture);
+    expect(shown.length).toBe(1);
+    expect(shown[0].classList).toContain('discard-strip');
+
+    click(fixture, '.discard-strip .discard-leave');
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('?rule=2 opens the sheet for rule 2 once the detail loads and clears the param on the settings page', async () => {
+    await setup('11', { rule: '2' });
+    const fixture = render(DETAIL);
+
+    expect(sheet(fixture)?.rule()?.id).toBe(2);
+    expect(navigate).toHaveBeenCalledTimes(1);
+    const [commands, extras] = navigate.mock.calls[0];
+    expect(commands).toEqual([]);
+    expect(extras?.relativeTo).toBe(TestBed.inject(ActivatedRoute));
+    expect(extras?.queryParams).toEqual({ rule: null });
+    expect(extras?.queryParamsHandling).toBe('merge');
+    expect(extras?.replaceUrl).toBe(true);
+  });
+
+  it('?rule= naming no rule of the account is ignored and cleared', async () => {
+    await setup('11', { rule: '99' });
+    const fixture = render(DETAIL);
+
+    expect(sheet(fixture)).toBeNull();
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(navigate.mock.calls[0][1]?.queryParams).toEqual({ rule: null });
+  });
+
+  it('an expired rule shows the 已到期 badge in the warning colour', async () => {
+    await setup('11');
+    const expired = rewardRule({ id: 3, name: '夏季', rate: '2.0000', starts_on: '2026-06-01', ends_on: '2026-09-30', sort_order: 2 });
+    const fixture = render({ ...DETAIL, reward_rules: [...DETAIL.reward_rules, expired] } as AccountDetail);
+
+    const badge = el(fixture).querySelectorAll('.rule-row .rule-state')[2];
+    expect(badge.textContent?.trim()).toBe('已到期');
+    expect(badge.getAttribute('data-state')).toBe('expired');
+    expect(badge.classList.contains('warn')).toBe(true);
+    expect(el(fixture).querySelectorAll('.rule-row .rule-state.warn').length).toBe(1);
   });
 });

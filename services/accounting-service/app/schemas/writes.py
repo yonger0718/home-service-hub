@@ -250,6 +250,46 @@ class ProjectIn(BaseModel):
     exclude_from_reports: bool = False
 
 
+ShareCapWith = Literal["none"] | Int32 | None
+
+
+class RewardRuleIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: Annotated[str, BeforeValidator(lambda v: v.strip() if isinstance(v, str) else v), Field(min_length=1, max_length=128)]
+    method: Literal["percent", "fixed"]
+    rate: Annotated[Decimal, Field(gt=0, le=100, decimal_places=4)] | None = None
+    fixed_amount: Money | None = None
+    window: Literal["statement_cycle"] = "statement_cycle"
+    posting: Literal["after_window", "after_transaction", "manual"]
+    delay_days: int = Field(default=0, ge=0, le=365)
+    post_month_offset: int = Field(default=0, ge=0, le=2)
+    post_day: int = Field(default=1, ge=1, le=31)
+    txn_rounding: RoundingMode = "keep"
+    total_rounding: RoundingMode = "keep"
+    total_cap: Money | None = None
+    is_basic: bool = False
+    reward_account_id: Int32 | None = None
+    reward_project_id: Int32 | None = None
+    starts_on: date | None = None
+    ends_on: date | None = None
+    is_enabled: bool = True
+    description: Annotated[str, Field(max_length=2000)] | None = None
+    sort_order: Int32 | None = None
+    share_cap_with: ShareCapWith = None
+
+    @model_validator(mode="after")
+    def _reset_unused_posting_fields(self) -> "RewardRuleIn":
+        """Normalise only; cross-field rules raise from the service so `loc` names the field."""
+        if self.posting == "after_window":
+            self.delay_days = 0
+        else:
+            self.post_month_offset, self.post_day = 0, 1
+            if self.posting == "manual":
+                self.delay_days = 0
+        return self
+
+
 class CounterpartyIn(BaseModel):
     name: Annotated[str, Field(min_length=1, max_length=128)]
 

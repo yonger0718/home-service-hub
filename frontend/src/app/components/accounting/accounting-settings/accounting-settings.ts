@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
-import { Router } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { Observable, Subject, catchError, concatMap, finalize, forkJoin, map, of, throwError } from 'rxjs';
 
 import {
@@ -50,7 +50,7 @@ function swap<T>(list: T[], index: number, delta: number): T[] | null {
 @Component({
   selector: 'app-accounting-settings',
   standalone: true,
-  imports: [PageHeaderComponent, SwitchComponent, DatePipe, DecimalPipe],
+  imports: [PageHeaderComponent, RouterLink, SwitchComponent, DatePipe, DecimalPipe],
   templateUrl: './accounting-settings.html',
   styleUrl: './accounting-settings.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

@@ -92,8 +92,73 @@
 .cycle-preview, .due-preview { color: var(--app-text-muted); display: block; }
 .sharing-list { display: flex; flex-direction: column; gap: 2px; }
 .sharing-current { color: var(--app-text-muted); font-size: 0.75rem; }
-.rule-list { color: var(--app-text-muted); font-size: 0.8rem; list-style: none; margin: 0; padding: 0; }
-.rule-item.disabled { text-decoration: line-through; }
+
+/* 回饋規則 (spec §6.1): one card per rule; text and actions sit side by side when wide and wrap on a phone. */
+.rules-new small { color: var(--app-text-muted); font-size: 0.85rem; }
+.rules-block { border-bottom: 1px solid var(--app-border); display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; }
+.rules-head { border-bottom: 0; }
+.rules-all { color: var(--app-primary); font-size: 0.85rem; font-weight: 700; text-decoration: none; }
+.rule-row {
+  align-items: center;
+  background: var(--app-surface-soft);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  justify-content: space-between;
+  padding: 8px 10px;
+}
+.rule-text { display: flex; flex: 1 1 14rem; flex-direction: column; gap: 2px; min-width: 0; }
+.rule-title { align-items: center; display: flex; flex-wrap: wrap; gap: 4px 6px; }
+.rule-label { font-weight: 700; overflow-wrap: anywhere; }
+.rule-posting, .rule-period { color: var(--app-text-muted); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.badge {
+  background: var(--app-primary-soft);
+  border-radius: var(--radius-pill);
+  color: var(--app-primary);
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+.badge.rule-state[data-state='disabled'], .badge.rule-state[data-state='upcoming'], .badge.rule-moze {
+  background: var(--app-surface);
+  color: var(--app-text-muted);
+}
+.badge.warn { background: var(--app-state-warning-bg); color: var(--tone-neg-pill-ink, var(--c-red-pill-ink)); }
+.rule-actions {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+
+  button {
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: var(--radius-pill);
+    color: var(--app-text);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.8rem;
+    min-height: 32px;
+    min-width: 32px;
+    padding: 2px 10px;
+  }
+  button:disabled { cursor: default; opacity: 0.4; }
+}
+.rule-add {
+  align-self: flex-start;
+  background: none;
+  border: 1px dashed var(--app-border);
+  border-radius: var(--radius-pill);
+  color: var(--app-primary);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 4px 14px;
+
+  &:disabled { cursor: default; opacity: 0.5; }
+}
 
 .tog {
   background: var(--app-border);

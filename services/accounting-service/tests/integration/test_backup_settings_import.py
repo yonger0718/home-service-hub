@@ -2,7 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models import (
     Account,
@@ -15,7 +15,6 @@ from app.models import (
     Project,
     RewardRule,
 )
-from app.services import ledger_service
 from app.services.moze_backup_import_service import moze_uuid
 from app.services.moze_csv import MozeImportError
 from tests.helpers import _import_backup
@@ -199,66 +198,55 @@ def _rules_backup(backup, *rules):
     )
 
 
-def test_percent_rule_with_cap(db_session, backup):
-    _import_backup(db_session, _rules_backup(backup, backup.rule(
-        "B-1", rewardPercentage=0.02, rewardTimeType=2, rewardMonth=1, rewardDay=15, totalRewardLimit=150,
-        rewardAccountID="A-PTS", rewardProjectID="P-REWARD", rewardCalculation=4, totalRewardCalculation=2,
-    )))
-    rule = db_session.scalar(select(RewardRule))
-    assert (rule.method, rule.rate, rule.posting, rule.post_month_offset, rule.post_day) == (
-        "percent", Decimal("2.0000"), "after_window", 1, 15)
-    assert (rule.total_cap, rule.shared_cap_id, rule.window) == (Decimal("150.0000"), None, "statement_cycle")
-    assert (rule.txn_rounding, rule.total_rounding) == ("round", "floor")
-    assert rule.reward_account_id == _account(db_session, "點數").id
-    assert db_session.get(Project, rule.reward_project_id).name == "回饋專案"
-    assert (rule.starts_on, rule.ends_on, rule.is_enabled) == (date(2026, 1, 1), date(2026, 12, 31), True)
-    card = next(a for a in ledger_service.list_accounts(db_session) if a["name"] == "華航卡")
-    assert card["rule_summaries"] == ["回饋 2%"]
-
-
-def test_fixed_rule_with_shared_cap(db_session, backup):
-    _import_backup(db_session, _rules_backup(backup, backup.rule(
-        "B-2", type=1, rewardAmount=50, rewardTimeType=0, rewardDelayDays=2, rewardSharingID="S-1")))
-    rule = db_session.scalar(select(RewardRule))
-    assert (rule.method, rule.fixed_amount, rule.rate) == ("fixed", Decimal("50.0000"), None)
-    assert (rule.posting, rule.delay_days, rule.shared_cap_id) == ("after_transaction", 2, moze_uuid("S-1"))
-
-
-def test_unsupported_threshold_disables_the_rule(db_session, backup):
-    summary = _import_backup(db_session, _rules_backup(backup, backup.rule("B-3", totalSpendThreshold=5000)))
-    assert db_session.scalar(select(RewardRule)).is_enabled is False
-    assert summary["unsupported_rules"] == [{"name": "回饋", "account": "華航卡", "reasons": ["totalSpendThreshold"]}]
-
-
-@pytest.mark.parametrize(
-    ("field", "value", "message"),
-    [("rewardPeriodType", 1, "unsupported rewardPeriodType 1"), ("rewardTimeType", 1, "unsupported rewardTimeType 1"),
-     ("rewardCalculation", 5, "unsupported rewardCalculation 5")],
-)
-def test_unknown_rule_codes_fail_the_import(db_session, backup, field, value, message):
-    with pytest.raises(MozeImportError, match=f"AHBonusReward '回饋': {message}"):
-        _import_backup(db_session, _rules_backup(backup, backup.rule("B-1", **{field: value})))
-
-
-def test_reimport_updates_rules_in_place_and_handles_orphans(db_session, backup):
-    _import_backup(db_session, _rules_backup(backup, backup.rule("B-1"), backup.rule("B-2"), backup.rule("B-3")))
-    ids = {r.moze_id: r.id for r in db_session.scalars(select(RewardRule))}
-    card = _account(db_session, "華航卡")
-    manual = LedgerEntry(account_id=card.id, kind="expense", amount=Decimal("-10"), currency="TWD",
-                         entry_date=date(2026, 9, 1), posted_date=date(2026, 9, 1), source="manual")
-    db_session.add(manual)
-    db_session.flush()
-    db_session.add(EntryRewardRule(entry_id=manual.id, rule_id=ids["B-2"]))
+def test_import_resolves_existing_rules_by_moze_id_and_never_writes_them(db_session, backup, seed):
+    card = seed.account("華航卡", moze_id="A-CARD")
+    rule = seed.rule(card, name="HomeHub 名稱", moze_id="B-1")
+    rule.rate = Decimal("3")  # seed.rule fixes rate=1; set the HomeHub value after
     db_session.commit()
+    summary = _import_backup(db_session, _rules_backup(backup, backup.rule("B-1", name="MOZE 名稱", rewardPercentage=0.05)))
+    db_session.refresh(rule)
+    assert (rule.name, rule.rate, rule.is_enabled) == ("HomeHub 名稱", Decimal("3.0000"), True)
+    assert db_session.scalar(select(func.count()).select_from(RewardRule)) == 1
+    assert (summary["rules"], summary["rules_unknown"]) == (1, 0)
+    assert "orphaned_rules" not in summary and "unsupported_rules" not in summary
 
-    summary = _import_backup(db_session, _rules_backup(backup, backup.rule("B-1", rewardPercentage=0.03)))
 
-    rules = {r.moze_id: r for r in db_session.scalars(select(RewardRule))}
-    assert set(rules) == {"B-1", "B-2"}
-    assert (rules["B-1"].id, rules["B-1"].rate) == (ids["B-1"], Decimal("3.0000"))
-    assert (rules["B-2"].id, rules["B-2"].is_enabled) == (ids["B-2"], False)
-    assert summary["orphaned_rules"] == [{"name": "回饋", "account": "華航卡"}]
-    assert db_session.scalar(select(EntryRewardRule)).rule_id == ids["B-2"]
+def test_unknown_rule_records_are_counted_not_created(db_session, backup, seed):
+    # a rule record for an account outside the backup and one HomeHub never had
+    seed.account("華航卡", moze_id="A-CARD")
+    db_session.commit()
+    summary = _import_backup(db_session, _rules_backup(backup,
+        backup.rule("B-NEW"), backup.rule("B-OTHER", account="A-MISSING")))
+    assert db_session.scalar(select(func.count()).select_from(RewardRule)) == 0
+    assert (summary["rules"], summary["rules_unknown"]) == (0, 2)
+
+
+def test_reimport_with_a_rule_gone_from_the_backup_keeps_the_homehub_row(db_session, backup, seed):
+    card = seed.account("華航卡", moze_id="A-CARD")
+    rule = seed.rule(card, moze_id="B-1")
+    db_session.commit()
+    _import_backup(db_session, _rules_backup(backup))  # no rule records at all
+    assert db_session.get(RewardRule, rule.id) is not None
+
+
+def test_reward_record_links_to_the_resolved_rule(db_session, backup, seed):
+    card = seed.account("華航卡", moze_id="A-CARD")
+    rule = seed.rule(card, moze_id="B-1")
+    db_session.commit()
+    data = backup.data(
+        accounts=[backup.account("A-CARD", "華航卡", isCreditAccount=True)],
+        rules=[backup.rule("B-1", "A-CARD", name="MOZE 名稱")],
+        records=[
+            backup.record("R-BUY", "A-CARD", price=-1000, bonusRewards=["B-1", "B-GONE"]),
+            backup.record("R-REWARD", "A-CARD", type_=14, price=10, rewardID="B-1", rewardRecordID="R-BUY",
+                          chargeDate="2026-09-15T00:00:00"),
+        ],
+    )
+    _import_backup(db_session, data)
+    reward = db_session.scalar(select(LedgerEntry).where(LedgerEntry.moze_id == "R-REWARD"))
+    assert reward.reward_rule_id == rule.id
+    assert [a.rule_id for a in db_session.scalars(select(EntryRewardRule))] == [rule.id]
+    assert db_session.get(RewardRule, rule.id).name == "回饋"  # the seeded name, not MOZE's
 
 
 def test_preference_seeded(db_session, backup):
@@ -268,17 +256,6 @@ def test_preference_seeded(db_session, backup):
     preference = db_session.get(Preference, 1)
     assert (preference.expense_income_colors, preference.keypad_layout, preference.week_start) == ("green_red", "phone", 1)
     assert (preference.main_currency, preference.hide_rewards_on_timeline, preference.abbreviate_totals) == ("TWD", True, False)
-
-
-def test_posting_fields_are_normalised_when_the_rule_does_not_post_after_the_window(db_session, backup):
-    _import_backup(db_session, _rules_backup(backup, backup.rule("B-1", rewardTimeType=0, rewardMonth=7, rewardDay=0)))
-    rule = db_session.scalar(select(RewardRule))
-    assert (rule.posting, rule.post_month_offset, rule.post_day) == ("after_transaction", 0, 1)
-
-
-def test_out_of_range_posting_day_fails_naming_the_rule(db_session, backup):
-    with pytest.raises(MozeImportError, match="AHBonusReward '回饋': rewardMonth/rewardDay out of range"):
-        _import_backup(db_session, _rules_backup(backup, backup.rule("B-1", rewardTimeType=2, rewardDay=0)))
 
 
 def test_account_names_swapped_within_one_backup(db_session, backup):
