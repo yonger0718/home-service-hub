@@ -6,7 +6,7 @@ import { BreakdownResponse, BudgetInput, BudgetStatus, BudgetStatusResponse } fr
 import { daysBetween, shortDate } from '../dates';
 import type { LoadState } from './reports';
 import { OTHER_KEY } from './rank-tab';
-import { ReportPeriod, daysInMonth, monthOf, n0, num, pct1, seriesColor } from './report-math';
+import { ReportPeriod, daysInMonth, monthOf, n0, noProjectDrillText, num, pct1, seriesColor } from './report-math';
 
 interface BudgetBar {
   id: number;
@@ -87,6 +87,7 @@ export class ReportPlanComponent {
     const active = !!row && num(row.amount) > 0 && (row.first_date == null || row.first_date <= period.to) && (row.last_date == null || row.last_date >= period.from);
     return active ? { month: this.month(), no_project: 1 } : null;
   });
+  readonly noProjectLabel = computed(() => noProjectDrillText(this.period()));
   readonly title = computed(() => `${Number(this.month().slice(5, 7))} 月預算`);
   private readonly days = computed(() => daysInMonth(this.month()));
   private readonly elapsed = computed(() => Math.round((this.status()?.time_progress ?? 0) * this.days()));

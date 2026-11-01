@@ -101,7 +101,7 @@
       }
     }
     @if (noProjectParams(); as params) {
-      <a class="pl-drill" routerLink="/accounting" [queryParams]="params">沒掛專案的支出 · 在記帳記錄看 ›</a>
+      <a class="pl-drill" routerLink="/accounting" [queryParams]="params">{{ noProjectLabel() }}</a>
     }
   </section>
 </div>

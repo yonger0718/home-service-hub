@@ -161,6 +161,14 @@ export function drillText(period: ReportPeriod, count: number): string {
   return period.unit === 'month' ? `在記帳記錄看這 ${count} 筆 ›` : `在記帳記錄看 ${monthOf(period.from)}（期間第一個月） ›`;
 }
 
+/**
+ * The 專案與預算 link to the rows without a project (#261). It carries no count: the project breakdown behind it is
+ * lifetime, while the link opens one month — named, as in `drillText`, when the period is not a month.
+ */
+export function noProjectDrillText(period: ReportPeriod): string {
+  return period.unit === 'month' ? '沒掛專案的支出 · 在記帳記錄看 ›' : `沒掛專案的支出 · 在記帳記錄看 ${monthOf(period.from)}（期間第一個月） ›`;
+}
+
 /** `YYYY-MM-DD` is the last day of its month. */
 function isMonthEnd(iso: string): boolean {
   return Number(iso.slice(8, 10)) === daysInMonth(monthOf(iso));

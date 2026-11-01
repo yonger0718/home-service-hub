@@ -9,6 +9,7 @@ import {
   compareTitle,
   donutArcs,
   drillText,
+  noProjectDrillText,
   elapsedDays,
   monthPeriod,
   n0,
@@ -88,6 +89,12 @@ describe('report period', () => {
     expect(drillText(monthPeriod('2026-10'), 46)).toBe('在記帳記錄看這 46 筆 ›');
     expect(drillText(yearPeriod(2026), 460)).toBe('在記帳記錄看 2026-01（期間第一個月） ›');
     expect(drillText({ unit: 'custom', from: '2026-09-15', to: '2026-10-14' }, 12)).toBe('在記帳記錄看 2026-09（期間第一個月） ›');
+  });
+
+  it('words the 無專案 link without a count, naming the month that opens outside a month period (#261)', () => {
+    expect(noProjectDrillText(monthPeriod('2026-10'))).toBe('沒掛專案的支出 · 在記帳記錄看 ›');
+    expect(noProjectDrillText(yearPeriod(2026))).toBe('沒掛專案的支出 · 在記帳記錄看 2026-01（期間第一個月） ›');
+    expect(noProjectDrillText({ unit: 'custom', from: '2026-09-15', to: '2026-10-14' })).toBe('沒掛專案的支出 · 在記帳記錄看 2026-09（期間第一個月） ›');
   });
 
   it('computes the comparison windows: whole months before, the same dates a year earlier', () => {
