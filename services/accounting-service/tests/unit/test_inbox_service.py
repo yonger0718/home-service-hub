@@ -29,10 +29,12 @@ def test_pattern_only_digits_is_empty():
     ("ambiguous", "open", "card", None, "全聯", ["match", "dismiss"], "ambiguous"),
     ("balance_gap", "open", "bank", None, None, ["anchor_opening", "dismiss"], "balance_gap"),
     ("duplicate_claim", "open", "card", None, "全聯", ["unmatch", "dismiss"], "other"),
-    ("dividend", "open", "bank", None, "現金股利", ["dismiss"], "other"),  # until its follow-up plan gives it a card
-    ("ambiguous", "open", "bank", "dividend_ambiguous", "現金股利", ["match", "book_dividend", "dismiss"], "other"),
-    ("line_unmatched", "open", "bank", "dividend_mismatch", "現金股利", ["match", "create_entry", "dismiss"], "other"),
-    # final review M5: the policy's proposal (an owner-deleted re-book) is a `proposed` question, never folded `other`
+    ("dividend", "open", "bank", None, "現金股利", ["book_dividend", "match", "dismiss"], "dividend"),
+    ("ambiguous", "open", "bank", "dividend_ambiguous", "現金股利", ["match", "book_dividend", "dismiss"], "dividend"),
+    ("line_unmatched", "open", "bank", "dividend_mismatch", "現金股利", ["match", "create_entry", "dismiss"], "dividend"),
+    # a dividend-labelled bank line with no dividend hint is an ordinary bank-only line
+    ("line_unmatched", "open", "bank", None, "現金股利", ["match", "create_entry", "dismiss"], "bank_only"),
+    # final review M5: the policy's proposal (an owner-deleted re-book) is a `proposed` question, never folded
     ("dividend", "proposed", "bank", None, "現金股利", ["book_dividend", "match", "dismiss"], "proposed"),
     ("settlement", "proposed", "bank", None, "交割股款", ["book_settlement", "match", "dismiss"], "settlement"),
 ])
@@ -42,7 +44,7 @@ def test_classify(kind, status, skind, hint, merchant, allowed, expected):
 
 
 def test_folded_set():
-    assert ib.FOLDED == {"proposed", "balance_gap", "settlement", "other"}
+    assert ib.FOLDED == {"proposed", "balance_gap", "settlement", "dividend", "other"}
 
 
 def test_group_key_merges_same_pattern_and_amount_only():
@@ -71,6 +73,7 @@ def test_group_key_empty_pattern_never_merges():
     ("balance_gap", ["balance_adjustment_asof", "dismiss"], False, ["dismiss"]),
     ("proposed", [], False, ["apply_proposal", "reject_proposal"]),
     ("settlement", ["create_entry", "dismiss"], False, []),
+    ("dividend", ["book_dividend", "match", "dismiss"], False, []),
     ("other", ["unmatch", "dismiss"], False, ["dismiss"]),
 ])
 def test_buttons(question, allowed, adjustable, expected):

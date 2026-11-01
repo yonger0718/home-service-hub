@@ -77,7 +77,7 @@ const INBOX_URL = '/api/accounting/reconciliation/inbox';
 function inboxOut(items: InboxItem[] = []): InboxOut {
   return {
     generated_at: '2026-10-03T00:00:00Z',
-    counts: { ask: items.length, ask_items: items.length, proposed: 0, balance_gap: 0, settlement: 0, other: 0 },
+    counts: { ask: items.length, ask_items: items.length, proposed: 0, balance_gap: 0, settlement: 0, dividend: 0, other: 0 },
     accounts: items.length > 0 ? [{ id: 1, name: '玉山', currency: 'TWD', is_credit: false, items }] : [],
   };
 }
@@ -1081,7 +1081,7 @@ describe('AccountingRemindersComponent', () => {
       fixture.detectChanges();
       flushLoad([], [], [], [], [], {
         ...inboxOut([folded]),
-        counts: { ask: 0, ask_items: 0, proposed: 0, balance_gap: 0, settlement: 0, other: 1 },
+        counts: { ask: 0, ask_items: 0, proposed: 0, balance_gap: 0, settlement: 0, dividend: 0, other: 1 },
       });
       fixture.detectChanges();
       expect(el.querySelector('app-inbox-panel details.fold')).not.toBeNull();

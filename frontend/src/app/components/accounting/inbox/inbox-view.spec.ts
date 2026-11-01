@@ -53,7 +53,8 @@ describe('buildCards', () => {
     const f = makeItem({ case_id: 6, question: 'balance_gap' });
     const g = makeItem({ case_id: 7, question: 'settlement' });
     const h = makeItem({ case_id: 8, question: 'other' });
-    const cards = buildCards([makeAccount([a, b, c, d, e, f, g, h])]);
+    const i = makeItem({ case_id: 9, question: 'dividend', kind: 'dividend', folded: true, actions: [] });
+    const cards = buildCards([makeAccount([a, b, c, d, e, f, g, h, i])]);
     expect(cards.ask.map((card) => card.key)).toEqual(['g1', 'case:3', 'case:4']);
     expect(cards.ask[0].items.map((item) => item.case_id)).toEqual([1, 2]);
     expect(cards.ask[0].actions).toEqual(['record', 'defer', 'dismiss']);
@@ -62,6 +63,7 @@ describe('buildCards', () => {
     expect(cards.balanceGap.map((card) => card.key)).toEqual(['case:6']);
     expect(cards.settlement.map((card) => card.key)).toEqual(['case:7']);
     expect(cards.other.map((card) => card.key)).toEqual(['case:8']);
+    expect(cards.dividend.map((card) => card.key)).toEqual(['case:9']);
   });
 
   it('is learnable for accept_bank_amount on amount_differs, not without a hint', () => {
@@ -102,9 +104,15 @@ describe('questionText', () => {
     expect(questionText(makeItem({ question: 'other', case_id: 42 }), 'TWD')).toBe('需要在 API 處理（案件 #42）');
     expect(questionText(makeItem({ question: 'balance_gap' }), 'TWD')).toBe('期初差額');
     expect(questionText(makeItem({ question: 'settlement' }), 'TWD')).toBe('交割款，等證券連動');
+    expect(questionText(makeItem({ question: 'dividend', kind: 'dividend' }), 'TWD')).toBe('股利入帳，等證券連動');
+    expect(questionText(makeItem({ question: 'dividend', kind: 'ambiguous' }), 'TWD')).toBe('多筆股利收據可能是它 — 到對帳單頁選');
+    expect(questionText(makeItem({ question: 'dividend', kind: 'line_unmatched' }), 'TWD')).toBe('股利金額與證券收據不符 — 查證券端手續費，或忽略');
+    expect(
+      questionText(makeItem({ question: 'proposed', proposal: { id: 1, action: 'book_dividend', params: {}, author: 'policy', rationale: '' } }), 'TWD'),
+    ).toBe('系統有提議：入帳股利');
     expect(
       questionText(makeItem({ question: 'proposed', proposal: { id: 1, action: 'match', params: {}, author: 'x', rationale: '' } }), 'TWD'),
-    ).toBe('系統有提議：match');
+    ).toBe('系統有提議：對到已記的');
   });
 });
 

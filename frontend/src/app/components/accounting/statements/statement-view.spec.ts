@@ -6,6 +6,7 @@ import { StatementDetail, StatementSummary } from './statement.model';
 import {
   actionsAvailable,
   buildSegments,
+  caseKindLabel,
   consistencyLabel,
   consistencyMark,
   confirmBlockedReason,
@@ -420,5 +421,14 @@ describe('segments', () => {
     expect(quarantined?.pills).toContain('資料已變更，待確認');
     expect(plain?.quarantined).toBe(false);
     expect(plain?.pills).not.toContain('資料已變更，待確認');
+  });
+});
+
+describe('caseKindLabel', () => {
+  it('names the settlement and dividend case kinds and falls back to the raw kind', () => {
+    expect(caseKindLabel('settlement')).toBe('交割款');
+    expect(caseKindLabel('dividend')).toBe('股利入帳');
+    expect(caseKindLabel('line_unmatched')).toBe('僅帳單有');
+    expect(caseKindLabel('something_new')).toBe('something_new');
   });
 });

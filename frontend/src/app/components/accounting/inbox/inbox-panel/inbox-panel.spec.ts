@@ -122,15 +122,16 @@ describe('AppInboxPanelComponent', () => {
               actions: ['anchor', 'dismiss'],
             }),
             makeItem({ case_id: 22, question: 'settlement', folded: true, actions: [] }),
+            makeItem({ case_id: 24, question: 'dividend', kind: 'dividend', folded: true, actions: [] }),
             makeItem({ case_id: 23, question: 'other', folded: true, actions: ['dismiss'] }),
           ],
         }),
       ],
-      { ask: 2, ask_items: 3, proposed: 1, balance_gap: 1, settlement: 1, other: 1 },
+      { ask: 2, ask_items: 3, proposed: 1, balance_gap: 1, settlement: 1, dividend: 1, other: 1 },
     );
     const { el } = render(data);
 
-    expect(text(el.querySelector('.inbox-head'))).toBe('要你決定 2 · 其他 4');
+    expect(text(el.querySelector('.inbox-head'))).toBe('要你決定 2 · 其他 5');
     expect(Array.from(el.querySelectorAll('.ask-cards .acct')).map(text)).toEqual(['🏦 玉山']);
     const cards = askCards(el);
     expect(cards.length).toBe(2);
@@ -153,6 +154,7 @@ describe('AppInboxPanelComponent', () => {
       '系統有提議 1（全部套用）',
       '期初差額 1',
       '國泰交割款 1 — 等證券連動',
+      '股利入帳 1 — 等證券連動',
       '其他 1',
     ]);
     expect(button(folds[0], '全部套用')).toBeTruthy();
@@ -166,10 +168,13 @@ describe('AppInboxPanelComponent', () => {
     ]);
     expect(folds[2].querySelectorAll('.inbox-card').length).toBe(1);
     expect(folds[2].querySelectorAll('button').length).toBe(0);
-    expect(Array.from(folds[3].querySelectorAll('.inbox-card .btns button')).map(text)).toEqual([
+    expect(folds[3].querySelectorAll('.inbox-card').length).toBe(1);
+    expect(folds[3].querySelectorAll('button').length).toBe(0);
+    expect(text(folds[3].querySelector('.inbox-card .q'))).toBe('股利入帳，等證券連動');
+    expect(Array.from(folds[4].querySelectorAll('.inbox-card .btns button')).map(text)).toEqual([
       '忽略',
     ]);
-    expect(text(folds[3].querySelector('.q'))).toBe('需要在 API 處理（案件 #23）');
+    expect(text(folds[4].querySelector('.q'))).toBe('需要在 API 處理（案件 #23）');
   });
 
   it('one-tap dismiss posts the apply body with every member and the answer', () => {

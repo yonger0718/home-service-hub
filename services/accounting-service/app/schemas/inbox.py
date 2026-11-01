@@ -126,6 +126,7 @@ class InboxCounts(BaseModel):
     proposed: int
     balance_gap: int
     settlement: int
+    dividend: int
     other: int
 
 
