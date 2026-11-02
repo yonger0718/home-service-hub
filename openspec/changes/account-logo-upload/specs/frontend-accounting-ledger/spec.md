@@ -115,7 +115,7 @@ The SPA SHALL provide `/accounting/accounts/:id/settings` and `/accounting/accou
 
 ### Requirement: Account logo image store
 
-The SPA SHALL fetch uploaded logos with the scoped token and cache one object URL per account, keyed by its current `logo_hash`. The response `ETag` decides the cache key. A load superseded by a newer one SHALL be discarded before the ETag is consulted. A replaced object URL SHALL be revoked on the next macrotask.
+The SPA SHALL fetch uploaded logos with the scoped token and cache one object URL per account, keyed by its current `logo_hash`. The response `ETag` decides the cache key. A load superseded by a newer one SHALL never be published (no object URL, no slot change); its `ETag` MAY still arm the stale-hash guard and refresh the accounts. A replaced object URL SHALL be revoked on the next macrotask.
 
 #### Scenario: Cache hit
 - **GIVEN** a logo already loaded for (account, `logo_hash`)
@@ -129,4 +129,4 @@ The SPA SHALL fetch uploaded logos with the scoped token and cache one object UR
 #### Scenario: Superseded load
 - **GIVEN** a load is in flight
 - **WHEN** a newer load for the same account starts
-- **THEN** the older result SHALL be discarded and its ETag ignored
+- **THEN** the older result SHALL NOT create an object URL or change the image, and its ETag MAY only arm the stale-hash guard and refresh the accounts
