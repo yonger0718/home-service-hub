@@ -11,4 +11,4 @@
 - [x] Task 8: `<app-account-icon>` precedence + all call sites
 - [x] Task 9: account page avatar upload (owner's path)
 - [x] Task 10: account settings Logo block
-- [ ] Task 11: whole-suite verification, build, OpenSpec tasks
+- [x] Task 11: whole-suite verification, build, OpenSpec tasks
