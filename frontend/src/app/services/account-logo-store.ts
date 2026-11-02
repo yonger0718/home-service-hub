@@ -67,7 +67,9 @@ export class AccountLogoStore implements OnDestroy {
 
     let slot = this.signals.get(id);
     if (!slot) {
-      slot = signal<string | null>(null);
+      // Every write notifies, even null -> null: a deferred clear that drops an in-flight load must still
+      // wake the non-null consumers so they refetch (failedHash keeps error paths from re-fetching).
+      slot = signal<string | null>(null, { equal: () => false });
       this.signals.set(id, slot);
     }
     let state = this.states.get(id);

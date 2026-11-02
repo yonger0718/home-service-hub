@@ -252,6 +252,39 @@ describe('AccountLogoStore', () => {
     });
   }
 
+  it('a null consumer mounting while the A load is in flight costs one clear and one refetch, then settles', () => {
+    vi.useFakeTimers();
+    const cA = computed(() => store.url(7, A)());
+    const cN = computed(() => store.url(7, null)());
+    cA();
+    cN();
+    const first = http.expectOne(urlFor(A, 7));
+    vi.runOnlyPendingTimers();
+    flush(first, 'stale-a', A);
+    expect(counter).toBe(0);
+    cA();
+    flush(http.expectOne(urlFor(A, 7)), 'a', A);
+    expect(cA()).toBe('blob:1');
+    expect(cN()).toBeNull();
+    for (let i = 0; i < 3; i++) { cA(); cN(); }
+    vi.runOnlyPendingTimers();
+    for (let i = 0; i < 3; i++) { cN(); cA(); }
+    http.expectNone(r => r.url.startsWith('/api/accounting/accounts/7/logo.png'));
+    expect(counter).toBe(1);
+    expect(revoke).not.toHaveBeenCalled();
+  });
+
+  it('a failed load stays bounded when a null-to-null write notifies the slot', () => {
+    vi.useFakeTimers();
+    const cA = computed(() => store.url(7, A)());
+    cA();
+    http.expectOne(urlFor(A, 7)).flush(new Blob(['nope']), { status: 404, statusText: 'Not Found' });
+    for (let i = 0; i < 3; i++) { expect(cA()).toBeNull(); }
+    vi.runOnlyPendingTimers();
+    cA();
+    http.expectNone(r => r.url.startsWith('/api/accounting/accounts/7/logo.png'));
+  });
+
   it('a null consumer appearing after A is shown costs at most one refetch, then settles', () => {
     vi.useFakeTimers();
     const cA = computed(() => store.url(7, A)());

@@ -456,8 +456,11 @@ Deviations settled during PR 1 execution; each one is covered by a test named in
   `null` while the accounts list says A therefore keeps A (no GET loop); when every consumer is null (a real
   deletion) the clear fires: hash and slot become `null`, the generation is bumped so in-flight loads are
   dropped, and the old URL is revoked on the following macrotask. Residual: a null consumer that appears
-  after A is already shown, while no A consumer re-reads in the same macrotask, clears the slot once; the A
-  consumer then refetches once and the slot settles (the null consumer has no dependency on the slot).
+  while a non-null consumer's load is in flight, or after it is shown, with no non-null re-read in the same
+  macrotask, costs one clear and one refetch, then settles (the null consumer has no dependency on the slot).
+  Slot signals notify on every write (`equal: () => false`), so a clear that drops an in-flight load still
+  wakes the non-null consumers even though the slot was already `null`; `failedHash` keeps error paths from
+  refetching on that wake-up.
 - **Rev 4.4, stale-hash window expiry (§6.1):** the mismatch guard also arms one 30 s timer per account
   (replacing any earlier one). On expiry it clears the mark and, if the account's last requested non-null
   hash differs from the resolved one (and is not marked failed), starts a normal generation-protected fetch,
