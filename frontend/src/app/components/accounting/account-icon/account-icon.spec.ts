@@ -2,7 +2,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Component, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ACCOUNT_LOGOS } from '../../../theme/account-logos';
 import { AccountLogoStore } from '../../../services/account-logo-store';
@@ -37,7 +37,8 @@ class UploadHostComponent {
 }
 
 function uploadSetup(url: string | null) {
-  TestBed.configureTestingModule({ providers: [{ provide: AccountLogoStore, useValue: { url: () => signal(url) } }] });
+  const stub = { slot: () => signal(url), acquire: () => ({ release: () => undefined }) };
+  TestBed.configureTestingModule({ providers: [{ provide: AccountLogoStore, useValue: stub }] });
   const fixture = TestBed.createComponent(UploadHostComponent);
   fixture.detectChanges();
   const host = fixture.nativeElement.querySelector('app-account-icon') as HTMLElement;
@@ -145,25 +146,48 @@ describe('AccountIconComponent', () => {
   });
 });
 
+@Component({
+  imports: [AccountIconComponent],
+  template: `
+    <app-account-icon class="detail" [accountId]="7" [logoHash]="detail()" />
+    <app-account-icon class="list" [accountId]="7" [logoHash]="list()" />
+  `,
+})
+class TwoSlotsHostComponent {
+  detail = signal<string | null>(null);
+  list = signal<string | null>(null);
+}
+
 describe('AccountIconComponent with the real AccountLogoStore', () => {
   // Stubbing `URL` in place would leak the stubs into later specs of the same worker; restore the two methods.
   const originalObjectUrls = { createObjectURL: URL.createObjectURL, revokeObjectURL: URL.revokeObjectURL };
+  const A = 'a'.repeat(16);
+  const B = 'b'.repeat(16);
+  const etag = (h: string) => `"${h}${'0'.repeat(48)}"`;
+  const P = (r: { url: string }) => r.url.startsWith('/api/accounting/accounts/7/logo.png');
+  let http: HttpTestingController;
+  let revoke: ReturnType<typeof vi.fn>;
+  let create: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    let counter = 0;
+    revoke = vi.fn();
+    create = vi.fn(() => `blob:${++counter}`);
+    Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke });
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
+    http = TestBed.inject(HttpTestingController);
+  });
+
   afterEach(() => {
+    http.verify();
     vi.useRealTimers();
     Object.assign(URL, originalObjectUrls);
   });
 
-  it('component + store: hash → null revokes the url and discards a pending response', () => {
-    vi.useFakeTimers();
-    let counter = 0;
-    const revoke = vi.fn();
-    const create = vi.fn(() => `blob:${++counter}`);
-    Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke });
-    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
-    const http = TestBed.inject(HttpTestingController);
-    const A = 'a'.repeat(16);
-    const B = 'b'.repeat(16);
-    const etag = (h: string) => `"${h}${'0'.repeat(48)}"`;
+  const srcOf = (root: HTMLElement, selector: string) => root.querySelector(`${selector} img`)?.getAttribute('src') ?? null;
+
+  it('one icon: hash → null keeps the image until the deferred clear, then revokes it and discards a pending response', () => {
     const fixture = TestBed.createComponent(UploadHostComponent);
     const host = fixture.nativeElement as HTMLElement;
     fixture.componentInstance.hash.set(A);
@@ -177,9 +201,11 @@ describe('AccountIconComponent with the real AccountLogoStore', () => {
     const pending = http.expectOne(r => r.url.includes(`v=${B}`));
     fixture.componentInstance.hash.set(null);
     fixture.detectChanges();
+    expect(host.querySelector('img')!.getAttribute('src')).toBe('blob:1'); // until the clear fires
+    vi.runOnlyPendingTimers(); // deferred clear of the account slot
+    fixture.detectChanges();
     expect(host.querySelector('img')).toBeNull();
     expect(host.querySelector('.emoji')).not.toBeNull();
-    vi.runOnlyPendingTimers(); // deferred clear of the account slot
     vi.runOnlyPendingTimers(); // revoke on the following macrotask
     expect(revoke).toHaveBeenCalledWith('blob:1');
 
@@ -187,6 +213,78 @@ describe('AccountIconComponent with the real AccountLogoStore', () => {
     fixture.detectChanges();
     expect(create).toHaveBeenCalledTimes(1);
     expect(host.querySelector('img')).toBeNull();
-    http.verify();
+    http.expectNone(P);
+  });
+
+  it('two icons of one account: one GET, both show the image; the list moving A → B → A reloads once per move (W1)', () => {
+    const fixture = TestBed.createComponent(TwoSlotsHostComponent);
+    const root = fixture.nativeElement as HTMLElement;
+    fixture.componentInstance.detail.set(A);
+    fixture.componentInstance.list.set(A);
+    fixture.detectChanges();
+    http.expectOne(r => r.url.includes(`v=${A}`)).flush(new Blob(['a']), { headers: { ETag: etag(A) } });
+    fixture.detectChanges();
+    expect(srcOf(root, '.detail')).toBe('blob:1');
+    expect(srcOf(root, '.list')).toBe('blob:1');
+    vi.advanceTimersByTime(1);
+    http.expectNone(P);
+
+    fixture.componentInstance.list.set(B); // the list reloaded; the detail still holds A
+    fixture.detectChanges();
+    http.expectOne(r => r.url.includes(`v=${B}`)).flush(new Blob(['b']), { headers: { ETag: etag(B) } });
+    fixture.detectChanges();
+    expect(srcOf(root, '.detail')).toBe('blob:2');
+    expect(srcOf(root, '.list')).toBe('blob:2');
+    vi.advanceTimersByTime(1);
+    expect(revoke).toHaveBeenCalledWith('blob:1');
+    http.expectNone(P);
+
+    fixture.componentInstance.list.set(A); // the earlier logo uploaded again
+    fixture.detectChanges();
+    http.expectOne(r => r.url.includes(`v=${A}`)).flush(new Blob(['a']), { headers: { ETag: etag(A) } });
+    fixture.detectChanges();
+    expect(srcOf(root, '.detail')).toBe('blob:3');
+    expect(srcOf(root, '.list')).toBe('blob:3');
+    vi.advanceTimersByTime(31_001);
+    fixture.detectChanges();
+    http.expectNone(P);
+    expect(create).toHaveBeenCalledTimes(3);
+  });
+
+  it('two icons: a stale null detail beside the list\'s A clears nothing; both null clears the slot once', () => {
+    const fixture = TestBed.createComponent(TwoSlotsHostComponent);
+    const root = fixture.nativeElement as HTMLElement;
+    fixture.componentInstance.list.set(A); // detail stays null (one-shot payload from before the upload)
+    fixture.detectChanges();
+    http.expectOne(r => r.url.includes(`v=${A}`)).flush(new Blob(['a']), { headers: { ETag: etag(A) } });
+    fixture.detectChanges();
+    expect(srcOf(root, '.detail')).toBe('blob:1');
+    expect(srcOf(root, '.list')).toBe('blob:1');
+    vi.advanceTimersByTime(31_001);
+    fixture.detectChanges();
+    http.expectNone(P);
+    expect(revoke).not.toHaveBeenCalled();
+
+    fixture.componentInstance.list.set(null); // deletion
+    fixture.detectChanges();
+    vi.runOnlyPendingTimers();
+    fixture.detectChanges();
+    expect(root.querySelector('img')).toBeNull();
+    vi.runOnlyPendingTimers();
+    expect(revoke).toHaveBeenCalledWith('blob:1');
+    http.expectNone(P);
+  });
+
+  it('destroying the icons releases their leases: the slot clears and the URL is revoked', () => {
+    const fixture = TestBed.createComponent(TwoSlotsHostComponent);
+    fixture.componentInstance.detail.set(A);
+    fixture.componentInstance.list.set(A);
+    fixture.detectChanges();
+    http.expectOne(r => r.url.includes(`v=${A}`)).flush(new Blob(['a']), { headers: { ETag: etag(A) } });
+    fixture.destroy();
+    vi.advanceTimersByTime(2);
+    expect(TestBed.inject(AccountLogoStore).slot(7)()).toBeNull();
+    expect(revoke).toHaveBeenCalledWith('blob:1');
+    http.expectNone(P);
   });
 });

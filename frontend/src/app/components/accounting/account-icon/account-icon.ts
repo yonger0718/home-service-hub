@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
 
 import { AccountLogoStore } from '../../../services/account-logo-store';
 import { accountLogo } from '../../../theme/account-logos';
@@ -8,7 +8,7 @@ type Fallback = 'folder' | 'bank' | 'card';
 /** Emoji shown when an account has neither a usable logo nor an icon. Kept out of the template (line-icons.spec). */
 const FALLBACK_EMOJI: Record<Fallback, string> = { folder: '📁', bank: '🏦', card: '💳' };
 
-/** An account's icon slot: the bundled institution logo on a white tile, else the emoji. Sized by the slot's `--ico-size`. */
+/** An account's icon slot: the uploaded logo (one store lease per icon), else the bundled institution logo on a white tile, else the emoji. Sized by the slot's `--ico-size`. */
 @Component({
   selector: 'app-account-icon',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -41,13 +41,28 @@ export class AccountIconComponent {
 
   protected readonly FALLBACK_EMOJI = FALLBACK_EMOJI;
   protected readonly failedSlug = signal<string | null>(null);
-  /** Hash forwarded even when null so a deletion reaches the store. Every slot of one account should take `logo_hash` from a source that `refreshAccounts()` reloads; the store bounds the damage otherwise. */
+  /** The account's image from the store's per-account slot; reading it never fetches (the lease below does). */
   protected readonly uploadedUrl = computed(() => {
     const id = this.accountId();
-    return id !== null ? this.store.url(id, this.logoHash() ?? null)() : null;
+    return id !== null ? this.store.slot(id)() : null;
   });
   protected readonly entry = computed(() => {
     const s = this.logo();
     return s && this.failedSlug() !== s ? accountLogo(s) : undefined;
   });
+
+  constructor() {
+    // Every <app-account-icon> holds one lease for its current (accountId, logoHash); the store fetches for the
+    // newest non-null lease of an account only, and a null hash is forwarded so a deletion can clear the slot once
+    // no lease of the account wants an image. Re-evaluation of the computed above never fetches.
+    effect(onCleanup => {
+      const id = this.accountId();
+      const hash = this.logoHash() ?? null;
+      if (id === null) {
+        return;
+      }
+      const lease = untracked(() => this.store.acquire(id, hash));
+      onCleanup(() => lease.release());
+    });
+  }
 }
