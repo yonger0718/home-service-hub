@@ -1,6 +1,10 @@
 # Account logo upload — design
 
-Rev 3, 2026-11-02 (rev 2 → rev 3 folds the Multica spec review AGENT-384, dev-astra FAIL: the upload is a raw
+Rev 4, 2026-11-02 (rev 3 → rev 4 folds the AGENT-384 re-check: both Pillow bomb exceptions are caught at the
+open/load boundary → 422 `logo_dimensions`; the normaliser shrinks first (`thumbnail`) and pastes onto a fresh
+256×256 canvas, with an honest allocation bound and `MAX_LOGO_PIXELS` lowered to 25 M; the SPA store trusts the
+response `ETag`, never the requested `v`, so a mismatch is cached under its real hash; the async PUT does all
+synchronous work — normalise, DB write, detail build — in one `run_in_threadpool` call. Rev 2 → rev 3 folded the Multica spec review AGENT-384, dev-astra FAIL: the upload is a raw
 image body read from the request stream under a byte budget instead of multipart, so nothing is spooled before the
 cap; pixel-count check before decode with the bomb warning promoted to an error; `logo_hash` is unpacked from the
 select row and never added to `ACCOUNT_FIELDS`; `immutable` only when `?v` matches the stored hash, `no-store`
@@ -129,24 +133,44 @@ All three routes live in `routers/accounts.py` under the existing router (`Depen
      `request.stream()` chunk by chunk into a buffer; the moment the running total exceeds 5 MiB it stops
      reading and returns 413 `logo_too_large` (chunked uploads without `Content-Length` included). An empty body
      → 422 `logo_empty`.
-  3. The buffered bytes go to `normalise_logo` through `run_in_threadpool` (Pillow is CPU-bound; the handler is
-     async). The DB write then happens in the normal session.
+  3. After the stream is complete, **everything synchronous runs in one `run_in_threadpool(worker)` call**:
+     `normalise_logo(data)`, the upsert of `account_logo_image`, `commit`, and `ledger_service.get_account` for
+     the response. The SQLAlchemy `Session` from the `get_db` dependency is handed to the worker and used only
+     there, sequentially — never from the event-loop thread, never from two threads at once. The async handler
+     itself touches no ORM object; it only reads the stream and returns the worker's result. Acceptance: with
+     the worker monkeypatched to sleep 1 s (slow DB / slow Pillow), a concurrent `GET /health` on the same app
+     answers in well under that time (async test client, two tasks).
 - Validation (`services/account_logo_service.py`, pure function `normalise_logo(data: bytes) -> NormalisedLogo`),
   **in this order, each step before any pixel is decoded**:
-  1. `Image.open(BytesIO(data))` inside `try`; `UnidentifiedImageError`, `OSError`, `ValueError` → 422
-     `logo_unreadable`. `Image.open` reads only the header; `load()` is not called yet.
+  1. `Image.open(BytesIO(data))` inside the exception boundary. The boundary (one `try` around open **and** the
+     later `load`/transform steps) maps: `Image.DecompressionBombError` and `Image.DecompressionBombWarning`
+     (promoted to an error, see 3) → 422 `logo_dimensions`; `UnidentifiedImageError`, `OSError`, `ValueError`
+     → 422 `logo_unreadable`. `Image.open` reads only the header, but with `Image.MAX_IMAGE_PIXELS` set it already
+     raises `DecompressionBombError` for > 2 × that many pixels — the 9000×9000 fixture takes exactly this path,
+     so the bomb exceptions must be caught **here**, not only after the dimension check.
   2. Sniffed format `im.format` must be one of `PNG`, `JPEG`, `WEBP`; anything else (GIF, BMP, TIFF, SVG as text,
      ICO, PDF…) → 422 `logo_format`. Animated images: first frame only (`im.seek(0)` is the default).
-  3. Dimensions from the header: both sides ≥ 16 px and ≤ 8192 px, **and** `width × height ≤ 40_000_000`
-     (`MAX_LOGO_PIXELS`), else 422 `logo_dimensions`. This is the real bomb gate: Pillow's own
-     `MAX_IMAGE_PIXELS` only warns between 1× and 2× and raises past 2×, so it is not relied on as a threshold.
-     Belt and braces: the module sets `Image.MAX_IMAGE_PIXELS = MAX_LOGO_PIXELS` and the normaliser runs under
-     `warnings.catch_warnings()` with `DecompressionBombWarning` turned into an error, mapped to
-     `logo_dimensions` as well.
-  4. Only now `im.load()`, then `ImageOps.exif_transpose`, convert to `RGBA`, pad the shorter side with
-     transparent pixels so the canvas is square (centre the image), resize to 256×256 with `Image.LANCZOS`
-     (`reducing_gap=3.0`), encode PNG with `optimize=True`; no metadata chunks are written (fresh `Image.new`,
-     no `pnginfo`). Any Pillow error here → 422 `logo_unreadable`.
+  3. Dimensions from the header: both sides ≥ 16 px and ≤ 8192 px, **and** `width × height ≤ 25_000_000`
+     (`MAX_LOGO_PIXELS`, i.e. 5000×5000), else 422 `logo_dimensions`. This is the gate that is relied on:
+     Pillow's own `MAX_IMAGE_PIXELS` only warns between 1× and 2× and raises past 2×, so it is a second line,
+     not the threshold. The module sets `Image.MAX_IMAGE_PIXELS = MAX_LOGO_PIXELS` and the normaliser runs
+     under `warnings.catch_warnings()` with `DecompressionBombWarning` turned into an error; both the warning
+     (25–50 M, e.g. a 6000×6000 fixture) and the error (> 50 M, e.g. 9000×9000) land in the boundary of step 1
+     → `logo_dimensions`.
+  4. Only now the pixels are decoded, **shrink first, square last**: `im.load()`; `im.thumbnail((256, 256),
+     Image.LANCZOS, reducing_gap=3.0)` (in the image's native mode, in place, aspect ratio kept, so an
+     8192×16 strip becomes 256×1 — never an 8192×8192 canvas); then `ImageOps.exif_transpose` and
+     `convert("RGBA")` on the now ≤ 256×256 image; then paste it centred onto a fresh
+     `Image.new("RGBA", (256, 256), (0, 0, 0, 0))`; encode PNG with `optimize=True`; no metadata chunks are
+     written (fresh canvas, no `pnginfo`). Any Pillow error here → 422 `logo_unreadable`.
+     Allocation bound, stated honestly: the decoded original (≤ 25 M px × ≤ 4 B = ≤ 100 MiB) plus the
+     `reduce()` intermediate `thumbnail` creates (≤ ½ of that) are the only large buffers; transpose/convert
+     operate on ≤ 256×256. Peak ≈ 1.5 × the decoded original ≈ 150 MiB worst case, one request at a time per
+     worker thread. For JPEG the normaliser calls `im.draft("RGB", (512, 512))` before `load()` so the decoder
+     itself downscales and the common case never allocates the full original. Acceptance: an 8192×16 PNG and a
+     16×8192 PNG both produce a 256×256 RGBA PNG whose non-transparent pixels form a 256×1 / 1×256 line
+     centred on the canvas, and peak RSS growth measured with `tracemalloc` on a 5000×5000 input stays under
+     the stated bound.
   5. The result is the only thing persisted. Its `sha256` is computed on the PNG bytes.
 - Account must exist → 404 `account not found` otherwise (archived accounts are fine; there is no soft delete —
   `delete_account` hard-deletes and refuses accounts with entries, so the cascade test uses an empty account).
@@ -202,7 +226,7 @@ All three routes live in `routers/accounts.py` under the existing router (`Depen
 | `Content-Length` > 5 MiB, or the stream exceeds 5 MiB | 413 | `logo_too_large` |
 | not an image Pillow can open (header or pixels) | 422 | `logo_unreadable` |
 | image but not PNG/JPEG/WEBP | 422 | `logo_format` |
-| side < 16 px or > 8192 px, or width × height > 40 M, or bomb warning | 422 | `logo_dimensions` |
+| side < 16 px or > 8192 px, or width × height > 25 M, or Pillow bomb warning/error | 422 | `logo_dimensions` |
 | unknown account | 404 | `account not found` (existing wording) |
 | missing `write` scope | 403 | `scope` (existing) |
 
@@ -233,15 +257,28 @@ keep the `detail` list (none of the logo routes rely on it). The SPA's `http-err
   - Generation guard: each account keeps the hash it last asked for; a response whose hash no longer equals the
     account's current hash is discarded (its blob is never turned into a URL), so a slow A cannot overwrite a
     newer B.
-  - Fetch: `GET /api/accounting/accounts/{id}/logo.png?v={hash}` as `blob` through HttpClient (the token
-    interceptor applies). 404 or any error marks `failed` for that (id, hash) so the slot falls back to the slug
-    / emoji and no retry happens until the hash changes.
+  - Fetch: `GET /api/accounting/accounts/{id}/logo.png?v={hash}` as `blob` through HttpClient with
+    `observe: 'response'` (the token interceptor applies; same origin, so the `ETag` header is readable). 404 or
+    any error marks `failed` for that (id, hash) so the slot falls back to the slug / emoji and no retry happens
+    until the hash changes.
+  - **The response `ETag` is the truth, not the requested `v`.** The store derives `actualHash` = the first 16
+    hex chars of the `ETag` value. If `actualHash === requested`, the blob is stored as the resolved entry for
+    (id, requested). If they differ (the server answered `no-store` with newer bytes), the blob is stored as the
+    resolved entry for (id, **actualHash**) and the account's state becomes `{hash: actualHash, url}`; the slot
+    shows the right picture immediately, the stale requested hash is never recorded as resolved, and the store
+    asks `AccountingService` to refresh the accounts (`bumpAccounts`) so the models converge. A missing `ETag`
+    is treated as a mismatch with an unknown hash: show the blob, cache nothing, refresh.
+  - A→B→A end to end: SPA holds A; Hermes uploads B; the slot fetches `?v=A`, gets B/`ETag B`/`no-store` → entry
+    (id, B); Hermes uploads A again; the account reload brings `logo_hash = A` ≠ store's B → refetch `?v=A` →
+    `ETag A` → entry (id, A). Test this sequence against the store with a mocked HttpClient, not only the HTTP
+    headers.
   - Revocation: when a new URL replaces an old one, or the hash becomes `null` (logo deleted), the old object URL
     is revoked **after** the signal has been updated, on the next macrotask, so `<img>` elements swap first; a
     URL that is still the current value of any account is never revoked. Nothing is revoked on component
     destroy (accounts are long-lived in the shell).
   - Tests: out-of-order responses (A slow, B fast → B shown, A dropped), dedupe (N slots → 1 request), delete →
-    `null` + revoke, failure → fallback and no retry, hash change → refetch.
+    `null` + revoke, failure → fallback and no retry, hash change → refetch, ETag mismatch → cached under the
+    actual hash + accounts refresh, missing ETag → shown but not cached, the A→B→A sequence above.
 - Every call site that passes `[logo]` gains `[logoHash]` and `[accountId]`: accounts list rows, account picker
   (trigger, sheet rows, recent chips), 信用卡帳單 reminders, account settings big icon, and the new account page
   avatar. `LedgerAccount` (and so `AccountDetail extends LedgerAccount`) gains `logo_hash: string | null`.
@@ -319,9 +356,12 @@ PR review covers.
 
 - The server never stores or serves uploaded bytes; only Pillow's re-encoded PNG.
 - Resource caps, in order of application: `Content-Length` pre-check → streamed 5 MiB budget (no multipart
-  parsing, nothing spooled before the cap) → header-only `Image.open` → format allow-list → side caps **and**
-  `width × height ≤ 40 M` before `load()` → bomb warning promoted to error as a second line. Only then are pixels
-  decoded, and at most one 40 M-pixel RGBA image plus the 256×256 result are ever allocated per request.
+  parsing, nothing spooled before the cap) → header-only `Image.open` inside the boundary that also catches
+  Pillow's bomb warning/error → format allow-list → side caps **and** `width × height ≤ 25 M` before `load()`
+  → `thumbnail` before any mode conversion or canvas. Peak memory ≈ 1.5 × the decoded original (≤ 150 MiB),
+  see §5 step 4; the 256×256 canvas is the only thing created at full RGBA after that.
+- Event loop: the only async route does no synchronous work itself — stream read, then one worker call for
+  Pillow + DB + response building (§5 limits step 3).
 - Format allow-list is on the **sniffed** format (`im.format`), never on extension or declared type. SVG is text
   and fails `Image.open` → 422.
 - Response headers on the GET: `nosniff`, `inline` disposition, fixed `image/png`. The SPA never injects the
@@ -329,7 +369,9 @@ PR review covers.
 - No token in URLs: the SPA fetches via HttpClient. `GET` requires `read` like every other GET.
 - Pillow pin matches the worker constraints (12.3.0); the release venv gets it through `requirements.txt`.
 - Tests: fixtures are generated in the test (Pillow draws a 300×100 red rectangle; a 1-px image; a valid
-  7000×7000 PNG — 49 M pixels, both sides ≤ 8192 — for the pixel-count gate; a 9000×9000 header for the side cap;
+  6000×6000 PNG — 36 M pixels, inside the side cap, over `MAX_LOGO_PIXELS`, Pillow warning band — and a valid
+  9000×9000 PNG — side cap and Pillow error band — both 422 `logo_dimensions`; 8192×16 and 16×8192 strips for
+  the shrink-first path;
   a `<svg>` text blob; a GIF; a JPEG with EXIF orientation 6); a body of 5 MiB + 1 byte with and without
   `Content-Length` (413 both ways, and the handler stops reading — asserted with a counting stream); an empty
   body (422 `logo_empty`). Assert status codes and `message` tokens, the stored PNG is 256×256 RGBA, padding is
@@ -359,7 +401,9 @@ PR review covers.
 - Where exactly the scalar subquery is attached in `list_accounts` and how the row unpacking is kept readable
   (a small named-tuple or a dict of labelled columns) — the contract in §5 is fixed, the shape of the code is not.
 - Threading: `GET`/`DELETE` logo routes are sync `def` like their neighbours; only the `PUT` is `async def`
-  because it reads the request stream, and it hands the bytes to `normalise_logo` via `run_in_threadpool`.
+  because it reads the request stream, and it hands the bytes **and the session** to one worker
+  (`run_in_threadpool`) that does normalise + write + commit + detail build, per §5. The builder picks the
+  worker's shape (closure vs small function), not whether the DB work is in it.
 - Component placement/styling of the new avatar in the account page header on phone widths; it must not push
   the 對帳 / settings controls off the row.
 - OpenSpec: deltas under `openspec/changes/account-logo-upload/` for `accounting-ledger` (routes, `logo_hash`,
