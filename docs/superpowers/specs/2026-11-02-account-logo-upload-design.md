@@ -460,11 +460,16 @@ Deviations settled during PR 1 execution; each one is covered by a test named in
   macrotask, costs one clear and one refetch, then settles (the null consumer has no dependency on the slot).
   Slot signals notify on every write (`equal: () => false`), so a clear that drops an in-flight load still
   wakes the non-null consumers even though the slot was already `null`; only that clear forces a notify.
-  Failures are recorded per (account, hash) in a `failed` set (current-generation errors only), so consumers
-  holding different failed hashes cannot clear each other's failure; a failed hash returns the constant null
-  signal and fetches nothing until the hash changes. The set is cleared only by a successful load (any hash)
-  or the deferred deletion clear, and the error path writes the slot only when something is shown, so a
-  failure never wakes other consumers. Destroy cancels the timers and in-flight loads (every async callback
+  Failures are recorded per (account, hash) in a `failed` set, so consumers holding different failed hashes
+  cannot clear each other's failure; a superseded load's error counts too, unless a newer load for the same
+  hash is in flight or the load predates the last deletion clear (a same-bytes re-upload must load again). A
+  failed hash returns the constant null signal and fetches nothing: it stays failed until a load resolves
+  under it (requested or `ETag` hash) or the account's logo is removed (the deferred deletion clear empties
+  the set), so a consumer holding it shows the fallback with no GET. A success removes only the hashes it
+  resolved, never the whole set, which keeps a server answering per hash (A 404, B 200) bounded. On a
+  failure the slot keeps what it shows (the account's hash reverts to the shown one) and every consumer is
+  woken: the failed hash's consumers turn inert, the others re-resolve; each wake-up follows a new failure,
+  so it is bounded. Destroy cancels the timers and in-flight loads (every async callback
   checks a `destroyed` flag) and revokes every object URL the store still owns.
 - **Rev 4.4, stale-hash window expiry (§6.1):** the mismatch guard also arms one 30 s timer per account
   (replacing any earlier one). On expiry it clears the mark and, if the account's last requested non-null

@@ -308,13 +308,56 @@ describe('AccountLogoStore', () => {
       cC();
       flush(http.expectOne(urlFor(C, 7)), 'c', C);
       expect(cC()).toBe('blob:1');
-      // A success clears the account's failures: A is fetched again, once.
+      // A failed hash stays failed until the account's logo is removed: no GET for A or B after C resolved.
       store.url(7, A);
-      flush(http.expectOne(urlFor(A, 7)), 'c', C);
-      store.url(7, A);
+      store.url(7, B);
+      cA(); cB(); cC();
       http.expectNone(r => r.url.startsWith('/api/accounting/accounts/7/logo.png'));
+      expect(cA()).toBeNull();
+      expect(cB()).toBeNull();
+      expect(cC()).toBe('blob:1');
     });
   }
+
+  for (const order of ['A first', 'B first']) {
+    it(`a server answering per hash (A 404, B 200) with both consumers alive stays bounded (${order})`, () => {
+      vi.useFakeTimers();
+      const cA = computed(() => store.url(7, A)());
+      const cB = computed(() => store.url(7, B)());
+      if (order === 'A first') { cA(); cB(); } else { cB(); cA(); }
+      let total = 0;
+      for (let round = 0; round < 5; round++) {
+        const reqs = http.match(r => r.url.startsWith('/api/accounting/accounts/7/logo.png'));
+        total += reqs.length;
+        for (const r of reqs) {
+          if (r.request.url.endsWith(`v=${A}`)) {
+            r.flush(new Blob(['nope']), { status: 404, statusText: 'Not Found' });
+          } else {
+            flush(r, 'b', B);
+          }
+        }
+        cA(); cB(); cB(); cA();
+        vi.runOnlyPendingTimers();
+      }
+      expect(total).toBeLessThanOrEqual(3);
+      http.expectNone(r => r.url.startsWith('/api/accounting/accounts/7/logo.png'));
+      expect(cB()).toMatch(/^blob:/);
+      expect(cA()).toBeNull();
+      expect(refresh).not.toHaveBeenCalled();
+    });
+  }
+
+  it('a late 404 from before a deletion clear does not block a same-bytes re-upload', () => {
+    vi.useFakeTimers();
+    store.url(7, A);
+    const late = http.expectOne(urlFor(A, 7));
+    store.url(7, null);
+    vi.runOnlyPendingTimers();
+    late.flush(new Blob(['nope']), { status: 404, statusText: 'Not Found' });
+    const again = store.url(7, A);
+    flush(http.expectOne(urlFor(A, 7)), 'a', A);
+    expect(again()).toBe('blob:1');
+  });
 
   it('destroy cancels in-flight loads, arms nothing and revokes the current URLs', () => {
     vi.useFakeTimers();

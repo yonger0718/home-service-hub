@@ -12,13 +12,17 @@ const NO_LOGO: Signal<string | null> = signal<string | null>(null).asReadonly();
 
 interface LogoState {
   hash: string | null;
+  /** The hash the slot's current object URL was resolved under (null when the slot shows nothing). */
+  shownHash: string | null;
   /**
-   * Hashes whose current-generation load failed. Per (account, hash), so two consumers holding different
-   * failed hashes cannot clear each other's failure; cleared only by a successful load (any hash) or the
-   * deferred deletion clear.
+   * Hashes whose load failed, per (account, hash), so consumers holding different hashes cannot clear each
+   * other's failure. A failed hash stays failed until a load resolves under it (requested or ETag hash) or
+   * the deferred deletion clear empties the set; a consumer holding it shows the fallback with no GET.
    */
   failed: Set<string>;
   generation: number;
+  /** Generation set by the last deferred deletion clear; errors of loads started before it are ignored. */
+  clearedGeneration: number;
   /** In-flight loads (superseded ones included), unsubscribed on destroy. */
   inflight: Set<Subscription>;
   /**
@@ -99,16 +103,15 @@ export class AccountLogoStore implements OnDestroy {
 
     let slot = this.signals.get(id);
     if (!slot) {
-      // Every write notifies, even null -> null, so the deferred clear can wake the non-null consumers.
-      // The error path therefore writes only when something is shown (see onError).
+      // Every write notifies, even null -> null, so the deferred clear and a failure can wake the consumers.
       slot = signal<string | null>(null, { equal: () => false });
       this.signals.set(id, slot);
     }
     let state = this.states.get(id);
     if (!state) {
       state = {
-        hash: null, failed: new Set(), generation: 0, inflight: new Set(), staleRequested: null, staleUntil: 0,
-        staleTimer: null, lastRequested: null, pendingClear: null,
+        hash: null, shownHash: null, failed: new Set(), generation: 0, clearedGeneration: 0, inflight: new Set(),
+        staleRequested: null, staleUntil: 0, staleTimer: null, lastRequested: null, pendingClear: null,
       };
       this.states.set(id, state);
     }
@@ -167,11 +170,13 @@ export class AccountLogoStore implements OnDestroy {
         return;
       }
       state.generation++;
+      state.clearedGeneration = state.generation;
       state.hash = null;
+      state.shownHash = null;
       state.failed.clear();
       state.lastRequested = null;
       // Forced notify (the slot signal never compares equal), even null -> null: a clear that drops an
-      // in-flight load must still wake the non-null consumers so they refetch. Only this path forces it.
+      // in-flight load must still wake the non-null consumers so they refetch.
       this.show(id, null);
     }, 0);
   }
@@ -218,12 +223,18 @@ export class AccountLogoStore implements OnDestroy {
       this.onError(id, requested, generation);
       return;
     }
-    state.failed.clear();
-    this.show(id, URL.createObjectURL(response.body));
+    // Only the hashes this load resolved stop being failed; never clear() (a server answering per hash would
+    // otherwise let one consumer's success re-arm another consumer's failed fetch on every round).
+    state.failed.delete(requested);
+    if (actual !== null) {
+      state.failed.delete(actual);
+    }
     // Missing or unusable ETag: resolved under the requested hash; only a hash change refetches.
     if (mismatch) {
       state.hash = actual;
     }
+    state.shownHash = state.hash;
+    this.show(id, URL.createObjectURL(response.body));
   }
 
   private onError(id: number, hash: string, generation: number): void {
@@ -232,13 +243,20 @@ export class AccountLogoStore implements OnDestroy {
     }
     const state = this.states.get(id)!;
     if (state.generation !== generation) {
+      // A superseded failure is still a fact about (account, hash), unless a newer load for the same hash is
+      // in flight or the load predates the last deletion clear (a same-bytes re-upload must load again).
+      if (generation > state.clearedGeneration && state.hash !== hash) {
+        state.failed.add(hash);
+      }
       return;
     }
     state.failed.add(hash);
-    // No forced notify: write only when something is shown, so a failure never wakes the other consumers.
-    if (untracked(this.signals.get(id)!) !== null) {
-      this.show(id, null);
-    }
+    // Keep whatever is shown for the consumers of that hash and wake every consumer (the slot never compares
+    // equal): the failed hash's consumers turn inert, the others re-resolve. Bounded: each wake-up follows a
+    // new failure, and a failed hash never fetches again until the deletion clear.
+    state.hash = state.shownHash;
+    const slot = this.signals.get(id)!;
+    slot.set(untracked(slot));
   }
 
   private parseEtag(raw: string | null): string | null {
