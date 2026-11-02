@@ -1,6 +1,6 @@
 # Account logo upload — design
 
-Rev 4.4, 2026-11-02 — Multica AGENT-388 fold: null consumers no longer clear a slot another consumer still uses (deferred clear); the stale-hash window re-resolves on expiry. Rev 4.3 — final-review fixes: small inputs are enlarged to fit; 404 copy split; If-None-Match list parsing. Rev 4.2 — implementation notes appended at the end (PR 1 execution: P-mode expansion, store missing-ETag and
+Rev 4.5, 2026-11-02 — unified store failure model (see notes). Rev 4.4 — Multica AGENT-388 fold: null consumers no longer clear a slot another consumer still uses (deferred clear); the stale-hash window re-resolves on expiry. Rev 4.3 — final-review fixes: small inputs are enlarged to fit; 404 copy split; If-None-Match list parsing. Rev 4.2 — implementation notes appended at the end (PR 1 execution: P-mode expansion, store missing-ETag and
 stale-hash guard semantics, icon null coalescing); no contract change. Rev 4.1 — Multica AGENT-384 PASS-with-minor at rev 4 `5cf90e6a`; the two minors are folded here: the
 memory figure is a budget to be measured (OS peak RSS in a subprocess), not a proven bound, and the store's
 late-response guard compares the request generation, never the response hash. Rev 3 → rev 4 folded the AGENT-384 re-check: both Pillow bomb exceptions are caught at the
@@ -450,30 +450,39 @@ Deviations settled during PR 1 execution; each one is covered by a test named in
 - **Rev 4.3, 404 copy split (§6.4):** a 404 whose `message` is `account not found` (account deleted
   elsewhere) shows 「帳戶不存在」; any other 404 keeps 「伺服器尚未支援上傳」. Applies to the PUT and DELETE
   error toasts. `GET logo.png` also parses `If-None-Match` as a list (`W/` and quotes stripped, `*` matches).
-- **Rev 4.4, store null hash (§6.1):** `url(id, null)` returns a constant null signal and never writes the
+- **Rev 4.5, store failure model (§6.1), unified:** every consumer with a non-null hash reads the account's
+  one slot signal — including a consumer whose hash has failed — so any image resolved for the account is
+  shown by every slot and a consumer holding a stale or failed hash is woken by every slot change. The store
+  keeps, per account, the *resolved* hash (what the slot shows, the `ETag` hash when present), the hash of the
+  current-generation load in flight, and a `failed` set keyed by hash. A fetch starts only for a hash that is
+  neither resolved, in flight nor failed; `failed` suppresses fetching only, never display. Only
+  current-generation errors count: a superseded error is ignored entirely (no `failed` entry, no notify),
+  whatever superseded it answers and wakes the consumers. A current-generation error (any HTTP error, or a
+  200 with an empty body) records the hash in `failed`, keeps whatever the slot shows, force-notifies the slot
+  (slots never compare equal) so every consumer re-evaluates, and arms one 30 s failure-expiry timer per
+  account (replacing the previous one) that on expiry empties `failed` without fetching; recovery happens on
+  the next consumer re-evaluation (a model change, a new slot, any slot change). Bound: each wake follows a
+  failure recorded before it, so a woken consumer can fetch only a hash that has not failed yet; between two
+  external changes the GETs are bounded by the number of distinct live hashes plus one wake-up refetch per
+  superseded load (two live hashes that both 404 cost 3 GETs; a server that 404s per hash, A 404 / B 200,
+  costs ≤ 3 and shows B on both slots). A success removes only the hashes it resolved from `failed`
+  (requested and `ETag` hash), sets the resolved hash and the URL, and revokes the previous URL on the next
+  macrotask. Separating the resolved hash from the in-flight hash is what keeps two live consumers with
+  different hashes from superseding each other for ever (the resolved hash never changes while a load is in
+  flight, so the other consumer's hash still compares equal and starts nothing).
+- **Rev 4.5, store null hash (§6.1):** `url(id, null)` returns a constant null signal and never writes the
   account's slot synchronously. It schedules one deferred clear per account (`setTimeout(0)`) that any
   `url(id, hash)` with a non-null hash for the same account cancels. A slot whose detail payload still says
   `null` while the accounts list says A therefore keeps A (no GET loop); when every consumer is null (a real
   deletion) the clear fires: hash and slot become `null`, the generation is bumped so in-flight loads are
-  dropped, and the old URL is revoked on the following macrotask. Residual: a null consumer that appears
-  while a non-null consumer's load is in flight, or after it is shown, with no non-null re-read in the same
-  macrotask, costs one clear and one refetch, then settles (the null consumer has no dependency on the slot).
-  Slot signals notify on every write (`equal: () => false`), so a clear that drops an in-flight load still
-  wakes the non-null consumers even though the slot was already `null`; only that clear forces a notify.
-  Failures are recorded per (account, hash) in a `failed` set, so consumers holding different failed hashes
-  cannot clear each other's failure; a superseded load's error counts too, unless a newer load for the same
-  hash is in flight or the load predates the last deletion clear (a same-bytes re-upload must load again). A
-  failed hash returns the constant null signal and fetches nothing: it stays failed until a load resolves
-  under it (requested or `ETag` hash) or the account's logo is removed (the deferred deletion clear empties
-  the set), so a consumer holding it shows the fallback with no GET. A success removes only the hashes it
-  resolved, never the whole set, which keeps a server answering per hash (A 404, B 200) bounded. On a
-  failure the slot keeps what it shows (the account's hash reverts to the shown one) and every consumer is
-  woken: the failed hash's consumers turn inert, the others re-resolve; each wake-up follows a new failure,
-  so it is bounded. Destroy cancels the timers and in-flight loads (every async callback
-  checks a `destroyed` flag) and revokes every object URL the store still owns.
-- **Rev 4.4, stale-hash window expiry (§6.1):** the mismatch guard also arms one 30 s timer per account
+  dropped, `failed` is emptied (a same-bytes re-upload loads again) and the old URL is revoked on the
+  following macrotask. Residual: a null consumer that appears while a non-null consumer's load is in flight,
+  or after it is shown, with no non-null re-read in the same macrotask, costs one clear and one refetch, then
+  settles (the null consumer has no dependency on the slot). Destroy cancels every timer and in-flight load
+  (every async callback checks a `destroyed` flag) and revokes every object URL the store still owns.
+- **Rev 4.5, stale-hash window expiry (§6.1):** the mismatch guard also arms one 30 s timer per account
   (replacing any earlier one). On expiry it clears the mark and, if the account's last requested non-null
-  hash differs from the resolved one (and is not marked failed), starts a normal generation-protected fetch,
-  so a computed that asked for a re-uploaded hash recovers without any further trigger; the rev 4.2 edge is
-  bounded by the window. The passive `Date.now()` check stays. While a slot keeps reading a stale hash, this
-  costs at most one GET and one accounts refresh per window.
+  hash is neither resolved, in flight nor failed, starts a normal generation-protected fetch, so a computed
+  that asked for a re-uploaded hash recovers without any further trigger; the rev 4.2 edge is bounded by the
+  window. The passive `Date.now()` check stays. While a slot keeps reading a stale hash, this costs at most
+  one GET and one accounts refresh per window.
