@@ -1,6 +1,6 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { computed } from '@angular/core';
+import { computed, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -151,6 +151,38 @@ describe('AccountLogoStore', () => {
     flush(http.expectOne(urlFor(A, 7)), 'a', A);
   });
 
+  it('the stale window re-resolves on expiry: the original computed recovers with no external trigger', () => {
+    vi.useFakeTimers();
+    const c = computed(() => store.url(7, A)());
+    c();
+    flush(http.expectOne(urlFor(A, 7)), 'b', B);
+    expect(c()).toBe('blob:1');
+    expect(refresh).toHaveBeenCalledTimes(1);
+    c();
+    http.expectNone(urlFor(A, 7));
+    vi.advanceTimersByTime(30_001);
+    flush(http.expectOne(urlFor(A, 7)), 'a', A);
+    expect(c()).toBe('blob:2');
+    vi.runOnlyPendingTimers();
+    expect(revoke).toHaveBeenCalledWith('blob:1');
+    expect(refresh).toHaveBeenCalledTimes(1);
+    http.expectNone(r => r.url.startsWith('/api/accounting/accounts/7/logo.png'));
+  });
+
+  it('the stale window expiry makes no GET when the model already moved to the resolved hash', () => {
+    vi.useFakeTimers();
+    const hash = signal<string | null>(A);
+    const c = computed(() => store.url(7, hash())());
+    c();
+    flush(http.expectOne(urlFor(A, 7)), 'b', B);
+    hash.set(B);
+    expect(c()).toBe('blob:1');
+    vi.advanceTimersByTime(30_001);
+    http.expectNone(r => r.url.startsWith('/api/accounting/accounts/7/logo.png'));
+    expect(c()).toBe('blob:1');
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
   for (const order of ['A first', 'B first']) {
     it(`two slots with a stale and a fresh hash do not loop (${order})`, () => {
       const cA = computed(() => store.url(7, A)());
@@ -187,16 +219,84 @@ describe('AccountLogoStore', () => {
     expect(sig()).not.toBeNull();
   });
 
-  it('null hash exposes null and revokes the previous URL on the next macrotask', () => {
+  it('null hash exposes null at once, clears the slot on the next macrotask and revokes on the one after', () => {
     vi.useFakeTimers();
     const sig = store.url(1, A);
     flush(http.expectOne(urlFor(A)), 'a', A);
     expect(sig()).toBe('blob:1');
-    store.url(1, null);
+    expect(store.url(1, null)()).toBeNull();
+    expect(sig()).toBe('blob:1');
+    vi.runOnlyPendingTimers();
     expect(sig()).toBeNull();
     expect(revoke).not.toHaveBeenCalled();
-    vi.runAllTimers();
+    vi.runOnlyPendingTimers();
     expect(revoke).toHaveBeenCalledWith('blob:1');
+  });
+
+  for (const order of ['A first', 'null first']) {
+    it(`a null consumer and an A consumer of one account share one GET and never loop (${order})`, () => {
+      vi.useFakeTimers();
+      const cA = computed(() => store.url(7, A)());
+      const cN = computed(() => store.url(7, null)());
+      if (order === 'A first') { cA(); cN(); } else { cN(); cA(); }
+      flush(http.expectOne(urlFor(A, 7)), 'a', A);
+      for (let i = 0; i < 3; i++) { cA(); cN(); cN(); cA(); }
+      vi.runOnlyPendingTimers();
+      for (let i = 0; i < 3; i++) { cN(); cA(); }
+      vi.runOnlyPendingTimers();
+      http.expectNone(r => r.url.startsWith('/api/accounting/accounts/7/logo.png'));
+      expect(counter).toBe(1);
+      expect(cA()).toBe('blob:1');
+      expect(cN()).toBeNull();
+      expect(revoke).not.toHaveBeenCalled();
+    });
+  }
+
+  it('a null consumer appearing after A is shown costs at most one refetch, then settles', () => {
+    vi.useFakeTimers();
+    const cA = computed(() => store.url(7, A)());
+    cA();
+    flush(http.expectOne(urlFor(A, 7)), 'a', A);
+    expect(cA()).toBe('blob:1');
+    const cN = computed(() => store.url(7, null)());
+    cN();
+    vi.runOnlyPendingTimers();
+    cA();
+    flush(http.expectOne(urlFor(A, 7)), 'a', A);
+    for (let i = 0; i < 3; i++) { cA(); cN(); }
+    vi.runOnlyPendingTimers();
+    for (let i = 0; i < 3; i++) { cA(); cN(); }
+    http.expectNone(r => r.url.startsWith('/api/accounting/accounts/7/logo.png'));
+    expect(cA()).toBe('blob:2');
+    expect(cN()).toBeNull();
+    expect(revoke).toHaveBeenCalledTimes(1);
+    expect(revoke).toHaveBeenCalledWith('blob:1');
+  });
+
+  it('deletion: every consumer turning null clears the slot, revokes the blob and drops a late response', () => {
+    vi.useFakeTimers();
+    const slot = store.url(7, A);
+    const hash = signal<string | null>(A);
+    const c1 = computed(() => store.url(7, hash())());
+    const c2 = computed(() => store.url(7, hash())());
+    c1(); c2();
+    flush(http.expectOne(urlFor(A, 7)), 'a', A);
+    expect(c1()).toBe('blob:1');
+    expect(c2()).toBe('blob:1');
+    hash.set(B);
+    c1(); c2();
+    const late = http.expectOne(urlFor(B, 7));
+    hash.set(null);
+    expect(c1()).toBeNull();
+    expect(c2()).toBeNull();
+    vi.runOnlyPendingTimers();
+    expect(slot()).toBeNull();
+    vi.runOnlyPendingTimers();
+    expect(revoke).toHaveBeenCalledWith('blob:1');
+    flush(late, 'b', B);
+    expect(counter).toBe(1);
+    expect(slot()).toBeNull();
+    expect(c1()).toBeNull();
   });
 
   it('does not revoke a URL that is still current for the account', () => {

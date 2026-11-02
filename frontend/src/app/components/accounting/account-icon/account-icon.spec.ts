@@ -179,7 +179,8 @@ describe('AccountIconComponent with the real AccountLogoStore', () => {
     fixture.detectChanges();
     expect(host.querySelector('img')).toBeNull();
     expect(host.querySelector('.emoji')).not.toBeNull();
-    vi.runOnlyPendingTimers();
+    vi.runOnlyPendingTimers(); // deferred clear of the account slot
+    vi.runOnlyPendingTimers(); // revoke on the following macrotask
     expect(revoke).toHaveBeenCalledWith('blob:1');
 
     pending.flush(new Blob(['b']), { headers: { ETag: etag(B) } });
