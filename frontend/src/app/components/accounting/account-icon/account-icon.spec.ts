@@ -202,7 +202,7 @@ describe('AccountIconComponent with the real AccountLogoStore', () => {
 
   const srcOf = (root: HTMLElement, selector: string) => root.querySelector(`${selector} img`)?.getAttribute('src') ?? null;
 
-  it('one icon: hash → null keeps the image until the deferred clear, then revokes it and discards a pending response', () => {
+  it('one icon: hash → null keeps the image until the deferred clear, then revokes it and cancels the pending load', () => {
     const fixture = TestBed.createComponent(UploadHostComponent);
     const host = fixture.nativeElement as HTMLElement;
     fixture.componentInstance.hash.set(A);
@@ -216,6 +216,7 @@ describe('AccountIconComponent with the real AccountLogoStore', () => {
     const pending = http.expectOne(r => r.url.includes(`v=${B}`));
     fixture.componentInstance.hash.set(null);
     fixture.detectChanges();
+    expect(pending.cancelled).toBe(true); // no live lease wants B
     expect(host.querySelector('img')!.getAttribute('src')).toBe('blob:1'); // until the clear fires
     vi.runOnlyPendingTimers(); // deferred clear of the account slot
     fixture.detectChanges();
@@ -224,7 +225,6 @@ describe('AccountIconComponent with the real AccountLogoStore', () => {
     vi.runOnlyPendingTimers(); // revoke on the following macrotask
     expect(revoke).toHaveBeenCalledWith('blob:1');
 
-    pending.flush(new Blob(['b']), { headers: { ETag: etag(B) } });
     fixture.detectChanges();
     expect(create).toHaveBeenCalledTimes(1);
     expect(host.querySelector('img')).toBeNull();
@@ -298,7 +298,7 @@ describe('AccountIconComponent with the real AccountLogoStore', () => {
     fixture.detectChanges();
     const reqA = http.expectOne(r => r.url.includes(`v=${A}`));
     http.expectOne(r => r.url.includes(`v=${B}`)).flush(new Blob(['b']), { headers: { ETag: etag(B) } });
-    reqA.flush(new Blob(['a']), { headers: { ETag: etag(A) } }); // superseded
+    expect(reqA.cancelled).toBe(true); // superseded by the newer lease
     fixture.detectChanges();
     expect(srcOf(root, '.detail')).toBe('blob:1');
     expect(srcOf(root, '.list')).toBe('blob:1');

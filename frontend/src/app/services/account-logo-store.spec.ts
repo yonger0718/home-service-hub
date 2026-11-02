@@ -120,26 +120,26 @@ describe('AccountLogoStore', () => {
 
   // ---- b. generation guard ---------------------------------------------------------------------------------
 
-  it('(b) A acquired, B acquired before A answers: 2 GETs, the late A 200 is dropped, B shown', () => {
+  it('(b) A acquired, B acquired before A answers: 2 GETs, the superseded A load is cancelled, B shown', () => {
     const leaseA = store.acquire(7, A);
     const slowA = http.expectOne(urlFor(A));
     leaseA.release();
     store.acquire(7, B);
     flush(http.expectOne(urlFor(B)), 'b', B);
     expect(shown()).toBe('b');
-    flush(slowA, 'stale-a', A);
+    expect(slowA.cancelled).toBe(true);
     expect(created).toEqual(['blob:1:b']);
     expect(shown()).toBe('b');
     epilogue();
     expect(revoke).not.toHaveBeenCalled();
   });
 
-  it('(b) a superseded error is ignored entirely: no failed entry, no timer', () => {
+  it('(b) a superseded load is cancelled, not failed: no failed entry, no timer', () => {
     store.acquire(7, A); // stays live
     const slowA = http.expectOne(urlFor(A));
     const leaseB = store.acquire(7, B);
+    expect(slowA.cancelled).toBe(true);
     flush(http.expectOne(urlFor(B)), 'b', B);
-    fail404(slowA);
     expect(vi.getTimerCount()).toBe(0);
     // A is not failed: releasing B makes A the target and it loads at once.
     leaseB.release();
@@ -177,12 +177,26 @@ describe('AccountLogoStore', () => {
     expect(revoke).toHaveBeenCalledWith('blob:1:b'); // same bytes, new URL; the old one goes
     detail.release();
     store.acquire(7, A); // the detail re-mounts with its stale payload: a new lease drops the alias and loads A once
-    flush(http.expectOne(urlFor(A)), 'b', B); // the real server still answers B: alias re-created, one more refresh
+    flush(http.expectOne(urlFor(A)), 'b', B); // the real server still answers B: alias re-created, no further refresh
     expect(shown()).toBe('b');
-    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenCalledTimes(1);
     store.acquire(7, A); // a further lease for A while the first is live: the alias is dropped and A loads again
     flush(http.expectOne(urlFor(A)), 'b', B);
-    expect(refresh).toHaveBeenCalledTimes(3); // once per alias re-creation, bounded by acquires
+    expect(refresh).toHaveBeenCalledTimes(1); // once per (account, requested hash) between deletion clears
+    epilogue();
+  });
+
+  it('(c) five re-mounts of a stale aliased hash cost 5 GETs and 1 refresh in total', () => {
+    store.acquire(7, B);
+    flush(http.expectOne(urlFor(B)), 'b', B);
+    for (let i = 0; i < 5; i++) {
+      const detail = store.acquire(7, A);
+      flush(http.expectOne(urlFor(A)), 'b', B);
+      detail.release();
+      http.expectNone(P);
+    }
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(shown()).toBe('b');
     epilogue();
   });
 
@@ -231,7 +245,7 @@ describe('AccountLogoStore', () => {
 
   // ---- f. deletion -----------------------------------------------------------------------------------------
 
-  it('(f) every lease released or null: slot null after setTimeout(0), URL revoked next macrotask, a late 200 creates no URL, same hash loads again', () => {
+  it('(f) every lease released or null: slot null after setTimeout(0), URL revoked next macrotask, a pending load is cancelled, same hash loads again', () => {
     const l1 = store.acquire(7, A);
     const l2 = store.acquire(7, A);
     flush(http.expectOne(urlFor(A)), 'a', A);
@@ -241,13 +255,13 @@ describe('AccountLogoStore', () => {
     const l3 = store.acquire(7, B);
     const late = http.expectOne(urlFor(B));
     l3.release();
+    expect(late.cancelled).toBe(true); // nothing live wants B any more
     store.acquire(7, null); // the list now says null
     expect(shown()).toBe('a'); // nothing synchronous
     vi.runOnlyPendingTimers();
     expect(shown()).toBeNull();
     vi.runOnlyPendingTimers();
     expect(revoke).toHaveBeenCalledWith('blob:1:a');
-    flush(late, 'b', B);
     expect(created).toEqual(['blob:1:a']);
     expect(shown()).toBeNull();
     epilogue();
@@ -322,11 +336,11 @@ describe('AccountLogoStore', () => {
     expect(refresh).toHaveBeenCalledTimes(1);
     epilogue();
     // The refreshed list may move to B (0 GETs) or keep A: a new lease for the aliased A drops the alias and asks
-    // once more (the server answers B again: alias re-created, one more refresh), bounded by acquires.
+    // once more (the server answers B again: alias re-created, no further refresh), bounded by acquires.
     lease.release();
     store.acquire(7, A);
     flush(http.expectOne(urlFor(A)), 'b', B);
-    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenCalledTimes(1);
     store.acquire(7, B);
     http.expectNone(P);
     epilogue();
@@ -349,12 +363,12 @@ describe('AccountLogoStore', () => {
 
   // ---- i. stale detail + list (per-hash server) ------------------------------------------------------------
 
-  it('(i) detail A acquired, then list B: 2 GETs (A then B), B shown, the A lease never refetches', () => {
+  it('(i) detail A acquired, then list B: 2 GETs (A then B), A cancelled, B shown, the A lease never refetches', () => {
     store.acquire(7, A);
     const reqA = http.expectOne(urlFor(A));
     store.acquire(7, B);
     const reqB = http.expectOne(urlFor(B));
-    flush(reqA, 'a', A); // superseded: dropped
+    expect(reqA.cancelled).toBe(true); // superseded
     flush(reqB, 'b', B);
     expect(shown()).toBe('b');
     expect(created).toEqual(['blob:1:b']);
@@ -367,7 +381,7 @@ describe('AccountLogoStore', () => {
     const reqB = http.expectOne(urlFor(B));
     store.acquire(7, A);
     const reqA = http.expectOne(urlFor(A));
-    flush(reqB, 'b', B);
+    expect(reqB.cancelled).toBe(true);
     flush(reqA, 'a', A);
     expect(shown()).toBe('a');
     expect(created).toEqual(['blob:1:a']);
@@ -550,8 +564,8 @@ describe('AccountLogoStore', () => {
     store.acquire(7, A);
     const reqA1 = http.expectOne(urlFor(A));
     let list = store.acquire(7, B);
+    expect(reqA1.cancelled).toBe(true); // superseded
     flush(http.expectOne(urlFor(B)), 'b', B);
-    flush(reqA1, 'a', A); // superseded
     expect(shown()).toBe('b');
     list.release(); // the list row re-renders: A is the target for a moment
     const reqA2 = http.expectOne(urlFor(A));
@@ -578,6 +592,36 @@ describe('AccountLogoStore', () => {
     epilogue();
   });
 
+  it('(q) N1: B shown, D 404, C acquired and released before it answers (target D, failed): the C load is cancelled, B stays', () => {
+    store.acquire(7, B);
+    flush(http.expectOne(urlFor(B)), 'b', B);
+    store.acquire(7, D);
+    fail404(http.expectOne(urlFor(D)));
+    const leaseC = store.acquire(7, C);
+    const reqC = http.expectOne(urlFor(C));
+    leaseC.release();
+    expect(reqC.cancelled).toBe(true);
+    expect(shown()).toBe('b');
+    settle();
+    vi.advanceTimersByTime(31_000); // the window ends: the live target D is asked once more, C never
+    fail404(http.expectOne(urlFor(D)));
+    settle();
+    expect(shown()).toBe('b');
+    expect(created).toEqual(['blob:1:b']);
+  });
+
+  it('(q) a load whose lease is released while nothing else is live is cancelled at once, then the clear runs', () => {
+    const lease = store.acquire(7, C);
+    const reqC = http.expectOne(urlFor(C));
+    lease.release();
+    expect(reqC.cancelled).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(shown()).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    epilogue();
+    expect(created).toEqual([]);
+  });
+
   // ---- r. a new lease for an aliased hash drops the alias ------------------------------------------------------
 
   it('(r) alias A → B, then the original A is uploaded again: 1 GET ?v=A → 200 ETag A → A shown', () => {
@@ -596,7 +640,7 @@ describe('AccountLogoStore', () => {
     expect(revoke).toHaveBeenCalledWith('blob:1:b');
   });
 
-  it('(r) the same against a server still at B: 1 GET per re-acquire of A, B stays, alias restored, one refresh each', () => {
+  it('(r) the same against a server still at B: 1 GET per re-acquire of A, B stays, alias restored, no further refresh', () => {
     const list = store.acquire(7, B);
     flush(http.expectOne(urlFor(B)), 'b', B);
     let detail = store.acquire(7, A);
@@ -606,13 +650,29 @@ describe('AccountLogoStore', () => {
     detail = store.acquire(7, A); // the detail icon re-mounts with its stale payload
     flush(http.expectOne(urlFor(A)), 'b', B);
     expect(shown()).toBe('b');
-    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenCalledTimes(1);
     epilogue(); // no further GET without another acquire
     detail.release(); // the list (B) is the target again: alias A → B is shown
     http.expectNone(P);
     list.release();
     epilogue();
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('(r) the refresh mark is forgotten only by the deletion clear: after it the same stale hash refreshes again', () => {
+    let detail = store.acquire(7, A);
+    flush(http.expectOne(urlFor(A)), 'b', B);
+    detail.release();
+    detail = store.acquire(7, A);
+    flush(http.expectOne(urlFor(A)), 'b', B);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    detail.release();
+    vi.advanceTimersByTime(2); // deletion clear
+    expect(shown()).toBeNull();
+    store.acquire(7, A);
+    flush(http.expectOne(urlFor(A)), 'b', B);
     expect(refresh).toHaveBeenCalledTimes(2);
+    epilogue();
   });
 
   // ---- s. seeded random sequences -------------------------------------------------------------------------------
@@ -671,6 +731,7 @@ describe('AccountLogoStore', () => {
 
       const bound = acquires + retargets + Math.ceil(elapsed / 30_000);
       expect(gets).toBeLessThanOrEqual(bound);
+      expect(refresh.mock.calls.length).toBeLessThanOrEqual(5); // ≤ distinct requested hashes per account between clears
       const want = newest();
       if (kind === 'per-hash') {
         if (want === null) expect(shown()).toBeNull();

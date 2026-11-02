@@ -1,6 +1,6 @@
 # Account logo upload — design
 
-Rev 5.1, 2026-11-02 — store: a return to the shown hash cancels the other in-flight load; a new lease for an aliased hash drops the alias (probe round 7 findings 1 and 2). Rev 5.0 — lease-based logo store (icon acquires/releases; fetch driven by leases only). Rev 4.6 — succeeded-hash set replaces the stale-hash guard; silent interceptor for logo GETs. Rev 4.5 — unified store failure model (see notes). Rev 4.4 — Multica AGENT-388 fold: null consumers no longer clear a slot another consumer still uses (deferred clear); the stale-hash window re-resolves on expiry. Rev 4.3 — final-review fixes: small inputs are enlarged to fit; 404 copy split; If-None-Match list parsing. Rev 4.2 — implementation notes appended at the end (PR 1 execution: P-mode expansion, store missing-ETag and
+Rev 5.2, 2026-11-02 — store: an in-flight load survives only while it is the target's effective hash (probe round 8 N1); the refresh mark is cleared only by the deletion clear. Rev 5.1 — a return to the shown hash cancels the other in-flight load; a new lease for an aliased hash drops the alias (probe round 7 findings 1 and 2). Rev 5.0 — lease-based logo store (icon acquires/releases; fetch driven by leases only). Rev 4.6 — succeeded-hash set replaces the stale-hash guard; silent interceptor for logo GETs. Rev 4.5 — unified store failure model (see notes). Rev 4.4 — Multica AGENT-388 fold: null consumers no longer clear a slot another consumer still uses (deferred clear); the stale-hash window re-resolves on expiry. Rev 4.3 — final-review fixes: small inputs are enlarged to fit; 404 copy split; If-None-Match list parsing. Rev 4.2 — implementation notes appended at the end (PR 1 execution: P-mode expansion, store missing-ETag and
 stale-hash guard semantics, icon null coalescing); no contract change. Rev 4.1 — Multica AGENT-384 PASS-with-minor at rev 4 `5cf90e6a`; the two minors are folded here: the
 memory figure is a budget to be measured (OS peak RSS in a subprocess), not a proven bound, and the store's
 late-response guard compares the request generation, never the response hash. Rev 3 → rev 4 folded the AGENT-384 re-check: both Pillow bomb exceptions are caught at the
@@ -268,23 +268,26 @@ keep the `detail` list (none of the logo routes rely on it). The SPA's `http-err
   - **Target** per account = the hash of the newest non-null lease (null when every lease is null or none
     exists). `evaluate()` runs on acquire, on a release that changes the target, and once when a failure
     window expires; it fetches the target's *effective* hash (`aliases`, below) unless that hash is already
-    shown, in flight, or inside its 30 s failure window. Nothing else ever starts a GET. When the effective
-    hash is the one already shown while a load for another hash is in flight, that load is cancelled
-    (generation bump + unsubscribe), so a flip B → A → B before A answers, or the newest icon being destroyed
-    and recreated beside an older-hash icon, keeps the shown image (rev 5.1).
+    shown, in flight, or inside its 30 s failure window. Nothing else ever starts a GET. An in-flight load is
+    kept only while it is the target's effective hash: whenever `evaluate()` finds the target elsewhere (shown,
+    failed, or null) it cancels the load first (generation bump + unsubscribe), so a flip B → A → B before A
+    answers, the newest icon destroyed and recreated beside an older-hash icon, or a lease released while its
+    load is pending and the new target is failed, all keep the shown image (rev 5.1, 5.2).
   - Generation guard: each fetch bumps a per-account `generation`; only the current generation's response is
-    honoured, success or error — a superseded response is ignored entirely (no object URL, no `failed` entry).
+    honoured, success or error. A superseded load is cancelled (unsubscribed) the moment the target moves away
+    from it (rev 5.2), and a response that still arrives from an older generation is ignored entirely (no object
+    URL, no `failed` entry).
   - Fetch: `GET /api/accounting/accounts/{id}/logo.png?v={hash}` as `blob` with `observe: 'response'` and the
     `SILENT_HTTP_ERRORS` request context (no retry, no toast). A null or 0-byte body is a failure.
   - **The response `ETag` is the truth.** `actual` = first 16 hex of an unquoted strong `ETag`, else the
     requested hash (missing, `W/` or non-hex → requested, no refresh). The slot shows the blob and `shownHash`
     becomes `actual`. When `actual ≠ requested`, `aliases[requested] = actual` (chains are flattened) and the
-    store refreshes the accounts once per alias creation so the models converge; the leases already live for
-    the requested hash are satisfied by the alias and cost no GET. An alias describes the leases that were live
-    when it was learned: a **new** lease for an aliased hash drops the alias (and its refresh mark) before
-    evaluating, so a genuine re-upload of that earlier logo is fetched once more; against a server still
-    answering the newer bytes the alias is simply re-created (one GET and one refresh per such acquire;
-    rev 5.1).
+    store refreshes the accounts once per (account, requested hash) between deletion clears so the models
+    converge; the leases already live for the requested hash are satisfied by the alias and cost no GET. An
+    alias describes the leases that were live when it was learned: a **new** lease for an aliased hash drops
+    the alias before evaluating, so a genuine re-upload of that earlier logo is fetched once more; against a
+    server still answering the newer bytes the alias is simply re-created with one GET and no further refresh,
+    the model already agreeing with the server (rev 5.1, 5.2).
   - Failure: the shown image stays; the hash joins `failed` and one 30 s timer per account (replaced by every
     failure) empties `failed` on expiry and evaluates once. So a live target that keeps failing costs at most
     one GET per 30 s, and nothing happens when no lease wants an unresolved hash.
@@ -299,8 +302,8 @@ keep the `detail` list (none of the logo routes rely on it). The SPA's `http-err
     never while it is any account's current value. `ngOnDestroy` cancels every timer and in-flight load and
     revokes every URL the store still owns.
   - Bounds: GETs per account ≤ non-null acquires + releases that change the target to another non-null hash,
-    plus at most one per 30 s while the live target keeps failing; accounts refreshes ≤ mismatching 200s ≤
-    GETs. A seeded random-sequence spec (200 steps, per-hash and per-account stubs) pins the bound and the final
+    plus at most one per 30 s while the live target keeps failing; accounts refreshes ≤ distinct requested
+    hashes per account between deletion clears. A seeded random-sequence spec (200 steps, per-hash and per-account stubs) pins the bound and the final
     image. Accepted edge: a one-shot stale detail acquired *after* the list (so it is the newest
     lease) whose old bytes the browser cache serves with the old `ETag` shows the old image until the next
     acquire.
@@ -480,6 +483,23 @@ Deviations settled during PR 1 execution; each one is covered by a test named in
   pair ever" because the refresh is what converges a stale one-shot detail, and it is bounded: refreshes ≤
   mismatching 200s ≤ GETs ≤ acquires + target-changing releases + windows). Leases already live for the
   aliased hash keep costing nothing.
+- **Rev 5.2, cancel whenever the load is not the target (§6.1):** probe round 8 N1: with B shown and D failed
+  (404, window open), a lease for C was acquired and released before C answered; the target D made `evaluate()`
+  return at the `failed` check with C still pending, and C's 200 then showed although no live lease held C.
+  `evaluate()` now cancels the pending load at the top whenever `pending !== effective(target)` — target shown,
+  failed, or about to be fetched alike — and `release()` cancels it when no live lease is left (the deferred clear
+  still bumps the generation afterwards), so an in-flight load survives only while it is exactly the target's
+  effective hash. Consequence: a load superseded by a newer lease is cancelled on the wire instead of being left
+  to land and be dropped; the spec's superseded-load scenarios assert `cancelled`. Tests: the `bdcd` sequence under a per-hash stub (C
+  cancelled, B kept, the window re-asks D only) and a release with nothing else live (cancelled at once, then
+  the clear).
+- **Rev 5.2, refresh mark cleared only by the deletion clear (§6.1):** rev 5.1 also deleted `refreshed[h]` on
+  the alias drop, so an icon re-mounted with a stale hash on every `refreshAccounts()` (a list re-rendering
+  without tracking) would cost one GET and one refresh per refresh — a theoretical loop. `refreshed` is now
+  per (account, requested hash) and emptied only by the deletion clear: a re-created alias costs one GET and no
+  refresh, because the model is already consistent with the server. Bound: refreshes per account ≤ distinct
+  requested hashes between deletion clears. Test: five re-mounts of a stale aliased hash → 5 GETs, 1 refresh;
+  after a deletion clear the same stale hash refreshes once again.
 - **Rev 5.0, bounds and accepted edge (§6.1):** GETs per account ≤ acquires + target-changing releases, plus at
   most one per 30 s while the live target keeps failing; the scenario matrix pins the counts (N same leases 1;
   A then B 2; A→B→A 3; stale detail + list 2 in either order; both 404 2 then 1 per window; A 404 / B 200 2, then

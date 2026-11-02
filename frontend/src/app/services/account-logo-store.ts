@@ -6,7 +6,7 @@ import { SILENT_HTTP_ERRORS } from '../interceptors/error-logging.interceptor';
 import { AccountingService } from './accounting.service';
 
 /**
- * Lease model (rev 5.1).
+ * Lease model (rev 5.2).
  *
  * A consumer never asks the store to fetch by reading a signal. It registers a lease for its current
  * (account, hash) with `acquire()` and releases it when that pair changes or the consumer goes away; the per-account
@@ -16,21 +16,25 @@ import { AccountingService } from './accounting.service';
  *
  * Per account, the **target** is the hash of the newest non-null lease (null when every lease is null or none exists).
  * `evaluate()` fetches the target's effective hash (`aliases` maps a requested hash to the ETag hash the server
- * answered with) unless it is already shown, in flight or inside its 30 s failure window. When the target's effective
- * hash is the one already shown while a load for another hash is in flight, that load is cancelled (generation bump,
- * unsubscribe), so a flip B → A → B before A answers keeps B. Only the current-generation response is honoured; a
- * superseded response, success or error, is ignored entirely. A success sets the shown hash to the ETag hash (else the
- * requested one), records the alias and refreshes the accounts once per alias creation when they differ, and replaces
- * the object URL (the old one is revoked on the next macrotask). An alias describes the leases that were live when it
- * was learned: a new lease for an aliased hash drops the alias (and its refresh mark) before evaluating, so a genuine
- * re-upload of that earlier logo is fetched once more (against a server still answering the newer bytes the alias is
- * simply re-created, one GET and one refresh per such acquire). A failure (any HTTP error, a null or 0-byte body) keeps
+ * answered with) unless it is already shown, in flight or inside its 30 s failure window. An in-flight load is kept
+ * only while it is the target's effective hash: whenever the target is something else (shown, failed, or null), the
+ * load is cancelled first (generation bump, unsubscribe) — also when a new fetch supersedes it and when a release
+ * leaves no live lease — so a flip B → A → B before A answers keeps B and a load for a hash no live lease wants can
+ * never land. Only the current-generation response is honoured; a response that still arrives from an older
+ * generation (a synchronous interceptor answer, for instance) is ignored entirely. A success sets the shown hash to the ETag hash (else the requested
+ * one), records the alias and, the first time that requested hash mismatches since the last deletion clear, refreshes
+ * the accounts; it then replaces the object URL (the old one is revoked on the next macrotask). An alias describes
+ * the leases that were live when it was learned: a new lease for an aliased hash drops the alias before evaluating, so
+ * a genuine re-upload of that earlier logo is fetched once more (against a server still answering the newer bytes the
+ * alias is simply re-created: one GET per such acquire and no further refresh, the model being consistent already).
+ * A failure (any HTTP error, a null or 0-byte body) keeps
  * the shown image, records the hash in `failed` and arms one 30 s timer per account that empties `failed` and
  * evaluates once. When the target becomes null a deferred clear (`setTimeout(0)`) runs unless a non-null lease arrives
  * first: it bumps the generation, forgets aliases and failures and blanks the slot.
  *
  * Bounds: GETs per account ≤ non-null acquires + releases that change the target to another non-null hash, plus at
- * most one per 30 s while the live target keeps failing; accounts refreshes ≤ mismatching 200s ≤ GETs. A re-upload of
+ * most one per 30 s while the live target keeps failing; accounts refreshes ≤ distinct requested hashes per account
+ * between deletion clears. A re-upload of
  * an earlier logo (A → B → A) loads A again because the newest lease is the target, aliased or not. Accepted edge: a
  * one-shot stale detail acquired after the list, when the browser cache serves its old bytes with the old ETag, shows
  * the old image until the next acquire.
@@ -69,7 +73,7 @@ interface LogoState {
   leases: Map<number, string | null>;
   /** Requested hash → ETag hash the server answered with. */
   aliases: Map<string, string>;
-  /** Requested hashes whose current alias already refreshed the accounts (one refresh per alias creation). */
+  /** Requested hashes that already refreshed the accounts on a mismatch; emptied only by the deletion clear. */
   refreshed: Set<string>;
   /** Hashes whose current-generation load failed inside the open window. */
   failed: Set<string>;
@@ -111,9 +115,8 @@ export class AccountLogoStore implements OnDestroy {
       if (hash !== null) {
         this.cancelClear(state);
         // A new lease for an aliased hash means that hash may be current again: forget the alias and load it once.
-        if (state.aliases.delete(hash)) {
-          state.refreshed.delete(hash);
-        }
+        // The refresh mark stays: a re-created alias needs no refresh, the model already agrees with the server.
+        state.aliases.delete(hash);
         this.evaluate(accountId);
       } else if (this.target(state) === null) {
         this.scheduleClear(accountId);
@@ -179,6 +182,9 @@ export class AccountLogoStore implements OnDestroy {
       state.leases.delete(seq);
       const after = this.target(state);
       if (after === null) {
+        if (state.pending !== null) {
+          this.cancelPending(state); // nothing live wants it; the clear follows on the next macrotask
+        }
         this.scheduleClear(id);
       } else if (after !== before) {
         this.evaluate(id);
@@ -193,17 +199,15 @@ export class AccountLogoStore implements OnDestroy {
       return;
     }
     const target = this.target(state);
-    if (target === null) {
+    const effective = target === null ? null : (state.aliases.get(target) ?? target);
+    // An in-flight load is kept only while it is the target's effective hash; anything else must never land.
+    if (state.pending !== null && state.pending !== effective) {
+      this.cancelPending(state);
+    }
+    if (effective === null) {
       return; // the deferred clear handles it
     }
-    const effective = state.aliases.get(target) ?? target;
-    if (effective === state.shownHash) {
-      if (state.pending !== null) {
-        this.cancelPending(state); // the target came back to what is shown: the other load must not replace it
-      }
-      return;
-    }
-    if (effective === state.pending || state.failed.has(effective)) {
+    if (effective === state.shownHash || effective === state.pending || state.failed.has(effective)) {
       return;
     }
     this.fetch(id, state, effective);
