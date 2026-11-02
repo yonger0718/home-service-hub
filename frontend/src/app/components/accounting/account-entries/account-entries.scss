@@ -4,9 +4,21 @@
   align-items: center;
   display: grid;
   gap: 0.5rem;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
 
   h1 { font-size: 1.15rem; font-weight: 800; margin: 0; overflow: hidden; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+}
+
+.avatar {
+  --ico-size: 2.25rem;
+  background: none;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  display: inline-flex;
+  padding: 0;
+
+  &[aria-busy='true'] { opacity: 0.5; }
 }
 
 .back-link, .settings-link { color: var(--app-text-muted); font-size: 1.2rem; padding: 0 0.5rem; text-decoration: none; }

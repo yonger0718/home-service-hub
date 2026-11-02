@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountDetail, AccountPeriodSummary, EntryPage, LedgerEntry } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { AccountingToastService } from '../accounting-toast';
+import { MAX_LOGO_FILE_BYTES } from '../logo-upload-errors';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
 import { AccountingAccountEntriesComponent, PAGE_SIZE } from './account-entries';
 
@@ -517,6 +519,67 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     expectSummary('2026-09-16', '2026-10-15').flush(SUMMARY);
     fixture.detectChanges();
     expect(el.querySelector('.entries-empty')?.textContent?.trim()).toBe('沒有符合條件的記錄');
+  });
+
+  describe('avatar logo upload', () => {
+    const URL = '/api/accounting/accounts/7/logo';
+
+    function setup(): { fixture: ComponentFixture<AccountingAccountEntriesComponent>; el: HTMLElement; input: HTMLInputElement; show: ReturnType<typeof vi.spyOn> } {
+      const fixture = render(page([]));
+      const el = fixture.nativeElement as HTMLElement;
+      const show = vi.spyOn(TestBed.inject(AccountingToastService), 'show');
+      return { fixture, el, input: el.querySelector('input[type=file]') as HTMLInputElement, show };
+    }
+
+    function choose(input: HTMLInputElement, file: File): void {
+      Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+      input.dispatchEvent(new Event('change'));
+    }
+
+    it('wraps the big icon in a button that opens the hidden image input', () => {
+      const { el, input } = setup();
+      const button = el.querySelector('button.avatar[aria-label="更換 logo"]') as HTMLButtonElement;
+      expect(button.querySelector('app-account-icon.big')).not.toBeNull();
+      expect(input.getAttribute('accept')).toBe('image/png,image/jpeg,image/webp');
+      const click = vi.spyOn(input, 'click');
+      button.click();
+      expect(click).toHaveBeenCalledTimes(1);
+    });
+
+    it('PUTs the chosen file, is busy while pending, then replaces the account', () => {
+      const { fixture, el, input } = setup();
+      const button = el.querySelector('button.avatar') as HTMLButtonElement;
+      choose(input, new File([new Uint8Array(1)], 'a.png', { type: 'image/png' }));
+      fixture.detectChanges();
+      expect(button.getAttribute('aria-busy')).toBe('true');
+      expect(input.value).toBe('');
+      const req = http.expectOne(URL);
+      expect(req.request.method).toBe('PUT');
+      req.flush({ ...ACCOUNT, logo_hash: 'abc' });
+      fixture.detectChanges();
+      expect(fixture.componentInstance.account()?.logo_hash).toBe('abc');
+      // The icon now fetches the uploaded image through the logo store.
+      http.expectOne('/api/accounting/accounts/7/logo.png?v=abc').flush(new Blob([new Uint8Array(1)], { type: 'image/png' }));
+      expect(button.hasAttribute('aria-busy')).toBe(false);
+    });
+
+    it('toasts the mapped message on a 422 logo_format and clears the busy state', () => {
+      const { fixture, el, input, show } = setup();
+      choose(input, new File([new Uint8Array(1)], 'a.png', { type: 'image/png' }));
+      http.expectOne(URL).flush({ message: 'logo_format' }, { status: 422, statusText: 'Unprocessable Entity' });
+      fixture.detectChanges();
+      expect(show).toHaveBeenCalledWith('只接受 PNG、JPEG、WebP');
+      expect((el.querySelector('button.avatar') as HTMLElement).hasAttribute('aria-busy')).toBe(false);
+      expect(input.value).toBe('');
+    });
+
+    it('rejects an oversized file without a request', () => {
+      const { input, show } = setup();
+      choose(input, new File([new Uint8Array(MAX_LOGO_FILE_BYTES + 1)], 'big.png', { type: 'image/png' }));
+      http.expectNone(URL);
+      expect(show).toHaveBeenCalledWith('圖片太大（上限 5 MB）');
+      expect(input.value).toBe('');
+    });
   });
 
 });
