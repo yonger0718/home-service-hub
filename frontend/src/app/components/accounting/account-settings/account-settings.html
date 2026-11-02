@@ -15,7 +15,7 @@
   }
 
   <div class="bigicon">
-    <app-account-icon class="ico" size="big" [logo]="form().logo" [icon]="form().icon" fallback="folder" />
+    <app-account-icon class="ico" size="big" [accountId]="loadedId()" [logoHash]="detail()?.logo_hash ?? null" [logo]="form().logo" [icon]="form().icon" fallback="folder" />
     @if (detail(); as d) {
       <b [class.neg]="balanceNegative(d)" [class.unavailable]="d.balance === null">{{ balanceText(d) }}</b>
       @if (valuationHint(d); as hint) {
@@ -62,7 +62,7 @@
     <span class="k">品牌 logo</span>
     <span class="v">
       <button type="button" class="logo-current" [attr.aria-label]="'品牌 logo：' + logoLabel()" [attr.aria-expanded]="logoPickerOpen()" (click)="logoPickerOpen.set(!logoPickerOpen())">
-        <app-account-icon class="ico-sm" [logo]="form().logo" [icon]="form().icon" fallback="folder" /> {{ logoLabel() }}
+        <app-account-icon class="ico-sm" [accountId]="loadedId()" [logoHash]="detail()?.logo_hash ?? null" [logo]="form().logo" [icon]="form().icon" fallback="folder" /> {{ logoLabel() }}
       </button>
     </span>
   </div>

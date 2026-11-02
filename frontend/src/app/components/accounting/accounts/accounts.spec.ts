@@ -19,7 +19,7 @@ function account(fields: Record<string, unknown>): LedgerAccount {
     group_id: 1, group_name: '現金', icon: '👛', color: null, is_archived: false, include_in_total: true,
     is_credit: false, closing_day: null, due_rule: null, due_value: null, credit_limit: null,
     combined_account_id: null, credit_sharing_id: null, auto_pay_account_id: null, fx_fee_pct: null,
-    sort_order: 0, moze_id: null, available_credit: null, rule_summaries: [], settings_locally_edited: false,
+    sort_order: 0, moze_id: null, available_credit: null, rule_summaries: [], settings_locally_edited: false, logo_hash: null,
     ...fields,
   } as unknown as LedgerAccount;
 }
