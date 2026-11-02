@@ -200,6 +200,21 @@ async def put_account_logo(account_id: int, request: Request, db: Session = Depe
     return await run_in_threadpool(_store_logo, db, account_id, data, request.headers.get("content-type"))
 
 
+def _if_none_match_hits(header: str | None, sha256: str) -> bool:
+    """True when If-None-Match (a comma-separated list; W/ and quotes optional; ``*``) names sha256."""
+    if not header:
+        return False
+    for item in header.split(","):
+        tag = item.strip()
+        if tag == "*":
+            return True
+        if tag.startswith("W/"):
+            tag = tag[2:]
+        if tag.strip('"') == sha256:
+            return True
+    return False
+
+
 @router.get("/{account_id}/logo.png")
 def get_account_logo(account_id: int, request: Request, v: str | None = Query(default=None),
                      db: Session = Depends(get_db)):
@@ -208,7 +223,7 @@ def get_account_logo(account_id: int, request: Request, v: str | None = Query(de
     if row is None:
         raise HTTPException(status_code=404, detail="logo not found")
     etag = f'"{row.sha256}"'
-    if request.headers.get("if-none-match") == etag:
+    if _if_none_match_hits(request.headers.get("if-none-match"), row.sha256):
         return Response(status_code=304, headers={"ETag": etag})
     cache = "private, max-age=31536000, immutable" if v == logo_hash(row.sha256) else "no-store"
     return Response(

@@ -151,6 +151,34 @@ def test_get_if_none_match_returns_304(client):
     assert r.status_code == 304 and r.content == b"" and r.headers["etag"] == first.headers["etag"]
 
 
+@pytest.mark.parametrize("header,status", [
+    ('W/"{sha}"', 304),
+    ('"other", "{sha}"', 304),
+    ("*", 304),
+    ('"unrelated"', 200),
+])
+def test_get_if_none_match_list_weak_and_star(client, header, status):
+    acct = _account(client)
+    h = _put(client, acct["id"], _png(300, 100)).json()["logo_hash"]
+    sha = client.get(f"/accounts/{acct['id']}/logo.png?v={h}").headers["etag"].strip('"')
+    r = client.get(f"/accounts/{acct['id']}/logo.png?v={h}", headers={"If-None-Match": header.format(sha=sha)})
+    assert r.status_code == status
+
+
+def test_rejected_upload_leaves_stored_image_unchanged(client):
+    acct = _account(client)
+    a = _put(client, acct["id"], _png(300, 100))
+    assert a.status_code == 200
+    h = a.json()["logo_hash"]
+    before = client.get(f"/accounts/{acct['id']}/logo.png?v={h}")
+    r = _put(client, acct["id"], _gif(), "image/gif")
+    assert r.status_code == 422 and r.json()["message"] == "logo_format"
+    assert client.get(f"/accounts/{acct['id']}").json()["logo_hash"] == h
+    after = client.get(f"/accounts/{acct['id']}/logo.png?v={h}")
+    assert after.status_code == 200
+    assert after.content == before.content and after.headers["etag"] == before.headers["etag"]
+
+
 def test_get_404_without_image_and_for_unknown_account(client):
     acct = _account(client)
     r = client.get(f"/accounts/{acct['id']}/logo.png")
@@ -303,7 +331,6 @@ async def test_slow_worker_does_not_block_health_and_all_sync_work_is_on_one_wor
             return time.perf_counter() - t0, r.status_code
 
         up, (elapsed, status) = await asyncio.gather(upload(), health())
-    print("threads", seen, "loop", loop_thread, "health_elapsed", elapsed)
     assert up.status_code == 200 and status == 200 and elapsed < 0.5
     assert set(seen) == {"normalise", "put", "commit", "detail"}
     assert len(set(seen.values())) == 1 and loop_thread not in seen.values()

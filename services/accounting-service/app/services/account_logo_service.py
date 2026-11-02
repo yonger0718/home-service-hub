@@ -3,6 +3,10 @@
 Uploaded bytes are never stored: ``normalise_logo`` turns arbitrary input into a
 256x256 RGBA PNG or raises ``LogoError``. Validation order is part of the design:
 header-only open -> format allow-list -> side/pixel caps -> only then ``load()``.
+Transform order after ``load()``: palette expansion -> fit into the 256x256 box
+(``thumbnail`` shrink when the longer side is >= 256, ``ImageOps.contain`` LANCZOS
+enlargement when it is smaller) -> EXIF transpose -> RGBA -> centred paste onto a
+transparent 256x256 canvas -> PNG without metadata.
 """
 
 from __future__ import annotations
@@ -58,6 +62,9 @@ def normalise_logo(data: bytes, *, declared_type: str | None = None) -> Normalis
         raise LogoError("logo_too_large")
 
     try:
+        # catch_warnings() mutates the process-global warnings filter, and this runs on
+        # threadpool threads, so concurrent uploads can race on it. The pixel-product gate
+        # below (before load()) is the primary guard; this filter must never become load-bearing.
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(BytesIO(data)) as im:
@@ -79,7 +86,15 @@ def normalise_logo(data: bytes, *, declared_type: str | None = None) -> Normalis
                 if im.mode == "P":
                     # Pillow forces NEAREST resampling on P/1 in resize(); expand first (tRNS is honoured).
                     im = im.convert("RGBA")
-                im.thumbnail((OUTPUT_SIDE, OUTPUT_SIDE), Image.LANCZOS, reducing_gap=3.0)
+                # Fit before transposing on both branches: max(size) and the square box are
+                # orientation-invariant, so the branch choice and the fitted size are the same
+                # either way, and resizing first keeps the transpose on the small image.
+                if max(im.size) < OUTPUT_SIDE:
+                    # Enlarge small inputs (favicons, touch icons) so they fill the tile like
+                    # bundled logos; bounded by the < 256 px input.
+                    im = ImageOps.contain(im, (OUTPUT_SIDE, OUTPUT_SIDE), Image.Resampling.LANCZOS)
+                else:
+                    im.thumbnail((OUTPUT_SIDE, OUTPUT_SIDE), Image.LANCZOS, reducing_gap=3.0)
                 im = ImageOps.exif_transpose(im)
                 im = im.convert("RGBA")
 

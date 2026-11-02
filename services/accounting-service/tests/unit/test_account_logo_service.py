@@ -4,6 +4,8 @@ import subprocess
 import sys
 from io import BytesIO
 
+from unittest import mock
+
 import pytest
 from PIL import Image, ImageOps, JpegImagePlugin
 
@@ -22,9 +24,10 @@ def _img(w, h, fmt="PNG", mode="RGBA", color=None, **save_kw) -> bytes:
     return buf.getvalue()
 
 
-def _jpeg_with_orientation(orientation: int) -> bytes:
-    im = Image.new("RGB", (200, 100), (255, 0, 0))
-    im.paste((0, 0, 255), (100, 0, 200, 100))
+def _jpeg_with_orientation(orientation: int, size=(200, 100)) -> bytes:
+    w, h = size
+    im = Image.new("RGB", (w, h), (255, 0, 0))
+    im.paste((0, 0, 255), (w // 2, 0, w, h))
     exif = Image.Exif()
     exif[0x0112] = orientation
     buf = BytesIO()
@@ -188,8 +191,47 @@ def test_shrink_happens_before_transpose(monkeypatch):
     real_thumb, real_tr = Image.Image.thumbnail, ImageOps.exif_transpose
     monkeypatch.setattr(Image.Image, "thumbnail", lambda self, *a, **k: order.append("thumbnail") or real_thumb(self, *a, **k))
     monkeypatch.setattr(ImageOps, "exif_transpose", lambda im, *a, **k: order.append("transpose") or real_tr(im, *a, **k))
-    normalise_logo(_jpeg_with_orientation(6))
+    normalise_logo(_jpeg_with_orientation(6, size=(600, 300)))
     assert order == ["thumbnail", "transpose"]
+
+
+def _opaque_bbox(png: bytes):
+    return Image.open(BytesIO(png)).getchannel("A").point(lambda a: 255 if a > 0 else 0).getbbox()
+
+
+def test_small_square_input_is_enlarged_to_fill_the_tile():
+    assert _opaque_bbox(normalise_logo(_img(32, 32)).png) == (0, 0, 256, 256)
+
+
+def test_small_wide_input_is_enlarged_to_fit_and_centred():
+    left, top, right, bottom = _opaque_bbox(normalise_logo(_img(180, 60)).png)
+    assert (left, right) == (0, 256)
+    assert bottom - top in (85, 86)
+    assert abs(top - (256 - bottom)) <= 1
+
+
+def test_large_input_uses_thumbnail_shrink_path():
+    with mock.patch.object(Image.Image, "thumbnail", autospec=True, side_effect=Image.Image.thumbnail) as spy:
+        out = normalise_logo(_img(300, 300))
+    assert spy.called
+    assert _opaque_bbox(out.png) == (0, 0, 256, 256)
+
+
+def test_small_input_does_not_call_thumbnail():
+    with mock.patch.object(Image.Image, "thumbnail", autospec=True, side_effect=Image.Image.thumbnail) as spy:
+        normalise_logo(_img(32, 32))
+    assert not spy.called
+
+
+def test_small_input_enlarges_before_transpose(monkeypatch):
+    order = []
+    real_contain, real_tr = ImageOps.contain, ImageOps.exif_transpose
+    monkeypatch.setattr(ImageOps, "contain", lambda im, *a, **k: order.append("contain") or real_contain(im, *a, **k))
+    monkeypatch.setattr(ImageOps, "exif_transpose", lambda im, *a, **k: order.append("transpose") or real_tr(im, *a, **k))
+    out = normalise_logo(_jpeg_with_orientation(6))
+    assert order == ["contain", "transpose"]
+    left, top, right, bottom = _opaque_bbox(out.png)
+    assert (right - left, bottom - top) == (128, 256)
 
 
 def test_peak_rss_budget_for_max_input(tmp_path):
