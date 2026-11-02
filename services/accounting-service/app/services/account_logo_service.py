@@ -72,7 +72,7 @@ def normalise_logo(data: bytes, *, declared_type: str | None = None) -> Normalis
                     im.draft("RGB", (OUTPUT_SIDE * 2, OUTPUT_SIDE * 2))
                 im.load()
                 if im.mode == "P":
-                    # Pillow resizes palette images with NEAREST; expand first (tRNS is honoured).
+                    # Pillow forces NEAREST resampling on P/1 in resize(); expand first (tRNS is honoured).
                     im = im.convert("RGBA")
                 im.thumbnail((OUTPUT_SIDE, OUTPUT_SIDE), Image.LANCZOS, reducing_gap=3.0)
                 im = ImageOps.exif_transpose(im)

@@ -9,7 +9,7 @@ from PIL import Image, ImageOps, JpegImagePlugin
 
 from app.services.account_logo_service import LogoError, normalise_logo
 
-PEAK_RSS_BUDGET_BYTES = 6 * 64 * 1024 * 1024  # measured 264830976 (RGBA) and 264830976 (LA) x1.5 -> next 64 MiB
+PEAK_RSS_BUDGET_BYTES = 6 * 64 * 1024 * 1024  # VmHWM measured RGBA 236519424, LA 236519424, P 258080768; max x1.5 -> next 64 MiB
 
 
 def _img(w, h, fmt="PNG", mode="RGBA", color=None, **save_kw) -> bytes:
@@ -143,6 +143,30 @@ def test_translucent_pixels_keep_their_alpha_and_colour():
     assert px[:3] == (0, 0, 255) and 124 <= px[3] <= 132
 
 
+def test_product_gate_holds_without_pillow_bomb_checks(monkeypatch):
+    big = _img(6000, 6000, mode="L")  # build BEFORE patching
+    calls = []
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", None)
+    monkeypatch.setattr(Image.Image, "load", lambda self: calls.append("load") or None)
+    assert _code(big).code == "logo_dimensions"
+    assert calls == []
+
+
+def test_large_palette_image_is_not_nearest_resampled():
+    im = Image.new("P", (1024, 1024), 0)
+    im.putpalette([0, 0, 0, 255, 0, 0, 0, 0, 255] + [0, 0, 0] * 253)
+    px = im.load()
+    for y in range(1024):
+        for x in range(512, 1024):
+            px[x, y] = 1 + ((x // 4 + y // 4) % 2)
+    buf = BytesIO()
+    im.save(buf, format="PNG", transparency=0)
+    out = Image.open(BytesIO(normalise_logo(buf.getvalue()).png))
+    assert out.getpixel((20, 128))[3] == 0
+    right = [out.getpixel((x, y)) for x in range(140, 250) for y in range(10, 250)]
+    assert any(p[0] not in (0, 255) and p[2] not in (0, 255) for p in right)
+
+
 def test_rejected_inputs_never_decode_pixels(monkeypatch):
     fixtures = [_img(100, 100, fmt="GIF", mode="RGB"), _img(15, 15), _img(6000, 6000, mode="L")]
     calls = []
@@ -169,12 +193,13 @@ def test_shrink_happens_before_transpose(monkeypatch):
 
 
 def test_peak_rss_budget_for_max_input(tmp_path):
-    for mode in ("RGBA", "LA"):
-        (tmp_path / f"{mode}.png").write_bytes(_img(5000, 5000, mode=mode))
-    script = ("import sys, resource; from app.services.account_logo_service import normalise_logo; "
+    for mode in ("RGBA", "LA", "P"):
+        kw = {"transparency": 0} if mode == "P" else {}
+        (tmp_path / f"{mode}.png").write_bytes(_img(5000, 5000, mode=mode, **kw))
+    script = ("import sys; from app.services.account_logo_service import normalise_logo; "
               "normalise_logo(open(sys.argv[1],'rb').read()); "
-              "print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)")
-    for mode in ("RGBA", "LA"):
+              "print(next(int(l.split()[1]) for l in open('/proc/self/status') if l.startswith('VmHWM')))")
+    for mode in ("RGBA", "LA", "P"):
         out = subprocess.run([sys.executable, "-c", script, str(tmp_path / f"{mode}.png")], capture_output=True,
                              text=True, check=True, env={**os.environ, "PYTHONPATH": "../shared-python-lib:."})
         assert int(out.stdout) * 1024 < PEAK_RSS_BUDGET_BYTES, mode
