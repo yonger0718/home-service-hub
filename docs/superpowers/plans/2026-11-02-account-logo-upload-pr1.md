@@ -10,6 +10,15 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-02-account-logo-upload-design.md` rev 4.1 (`c8cf5e94`). Section numbers below (§) refer to it.
 
+**Plan rev 2** (2026-11-02): folds Multica AGENT-386 — null hashes reach the store so deletion invalidates (Task 8);
+RGBA paste without a self-mask (Task 2); no transpose-before-thumbnail fallback, call order asserted (Task 2);
+no-load / corrupt-pixel / envelope / worker-thread / stored-bytes / mismatch-then-reload tests pinned (Tasks 2, 4, 7);
+timestamps `NOT NULL` (Task 1); Pillow and the venv install command precede their first use (Task 1).
+
+**Environment prerequisite (run once before Task 1):**
+`cd services/accounting-service && uv pip install --python .venv/bin/python -r requirements.txt` — this is the
+install command the service README uses; Task 1 step 0 adds `pillow==12.3.0` to `requirements.txt` first.
+
 **Worktree:** `/home/opc/workspace/home-hub-logo-upload` on `feat/account-logo-upload`. Backend tests:
 `cd services/accounting-service && OTEL_SDK_DISABLED=true PYTHONPATH=../shared-python-lib:. .venv/bin/python -m pytest -q <path>`.
 Frontend tests: `cd frontend && ./node_modules/.bin/ng test --watch=false --include='<glob>'` (`npm run config` first, then `git checkout -- angular.json`).
@@ -104,6 +113,7 @@ git commit -m "chore(openspec): archive account-brand-logos (#175 shipped)"
 ### Task 1: `account_logo_image` table — model, migration, cascade test
 
 **Files:**
+- Modify: `services/accounting-service/requirements.txt` (add `pillow==12.3.0` after `python-multipart==0.0.28`)
 - Modify: `services/accounting-service/app/models/ledger.py` (after the `Account` class, line ~145)
 - Modify: `services/accounting-service/app/models/__init__.py` (export)
 - Create: `services/accounting-service/alembic/versions/e9b1c3d7a5f2_account_logo_image.py`
@@ -111,7 +121,11 @@ git commit -m "chore(openspec): archive account-brand-logos (#175 shipped)"
 - Test: `services/accounting-service/tests/integration/test_account_logo_api.py` (new; this task adds the cascade test only)
 
 **Interfaces:**
-- Produces: `class AccountLogoImage(Base, TimestampMixin)` with `__tablename__ = "account_logo_image"`, columns `account_id: Integer PK, ForeignKey("account.id", ondelete="CASCADE")`, `png: LargeBinary not null`, `sha256: String(64) not null`, `source_media_type: String(32) not null`, `source_bytes: Integer not null`; `created_at`/`updated_at` from `TimestampMixin`. Migration revision `e9b1c3d7a5f2`, down `c7a2e9f4b1d8`.
+- Produces: `class AccountLogoImage(Base)` with `__tablename__ = "account_logo_image"`, columns `account_id: Integer PK, ForeignKey("account.id", ondelete="CASCADE")`, `png: LargeBinary not null`, `sha256: String(64) not null`, `source_media_type: String(32) not null`, `source_bytes: Integer not null`, `created_at`/`updated_at: DateTime(timezone=True), nullable=False, server_default=func.now()` (updated_at also `onupdate=func.now()`) — declared explicitly, not via `TimestampMixin`, because the mixin's columns are nullable and §4 says not null. Migration revision `e9b1c3d7a5f2`, down `c7a2e9f4b1d8`.
+
+- [ ] **Step 0: Dependency first**
+
+Add `pillow==12.3.0` to `requirements.txt` and run the environment prerequisite command from the header. Verify: `.venv/bin/python -c "import PIL; print(PIL.__version__)"` prints `12.3.0`.
 
 - [ ] **Step 1: Write the failing migration tests**
 
@@ -129,6 +143,8 @@ def test_account_logo_image_round_trip(database_factory, alembic_config):
     assert {c for c in ("account_id", "png", "sha256", "source_media_type", "source_bytes", "created_at", "updated_at")
             if _column(url, "account_logo_image", c) is not None} == {"account_id", "png", "sha256", "source_media_type", "source_bytes", "created_at", "updated_at"}
     assert _foreign_key_ondelete(url, "account_logo_image") == "CASCADE"   # new helper beside _column: inspect(...).get_foreign_keys(table)[0]["options"].get("ondelete")
+    for c in ("png", "sha256", "source_media_type", "source_bytes", "created_at", "updated_at"):
+        assert _column(url, "account_logo_image", c)["nullable"] is False, c
     command.downgrade(cfg, REPORTS_HEAD)
     assert _version(url) == REPORTS_HEAD and not _table_present(url, "account_logo_image")
     command.upgrade(cfg, "head")
@@ -144,7 +160,7 @@ Expected: FAIL — head is still `c7a2e9f4b1d8`, table missing.
 In `app/models/ledger.py` import `LargeBinary` from `sqlalchemy` and append after `Account`:
 
 ```python
-class AccountLogoImage(Base, TimestampMixin):
+class AccountLogoImage(Base):
     """Uploaded account logo, already normalised to a 256×256 PNG by account_logo_service. One row per account."""
     __tablename__ = "account_logo_image"
     account_id = Column(Integer, ForeignKey("account.id", ondelete="CASCADE"), primary_key=True)
@@ -152,13 +168,15 @@ class AccountLogoImage(Base, TimestampMixin):
     sha256 = Column(String(64), nullable=False)
     source_media_type = Column(String(32), nullable=False)
     source_bytes = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 ```
 
 Export `AccountLogoImage` from `app/models/__init__.py` in the alphabetical position of the existing import list.
 
 - [ ] **Step 4: Write the migration**
 
-`alembic/versions/e9b1c3d7a5f2_account_logo_image.py`, header copied from `b8d4f2a1c6e3_account_logo.py` with `revision = "e9b1c3d7a5f2"`, `down_revision = "c7a2e9f4b1d8"`, docstring "account_logo_image: uploaded, server-normalised account logos (bytea)". `upgrade()` = `op.create_table("account_logo_image", sa.Column("account_id", sa.Integer(), sa.ForeignKey("account.id", ondelete="CASCADE"), primary_key=True), sa.Column("png", sa.LargeBinary(), nullable=False), sa.Column("sha256", sa.String(64), nullable=False), sa.Column("source_media_type", sa.String(32), nullable=False), sa.Column("source_bytes", sa.Integer(), nullable=False), sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()), sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()))`; `downgrade()` = `op.drop_table("account_logo_image")`.
+`alembic/versions/e9b1c3d7a5f2_account_logo_image.py`, header copied from `b8d4f2a1c6e3_account_logo.py` with `revision = "e9b1c3d7a5f2"`, `down_revision = "c7a2e9f4b1d8"`, docstring "account_logo_image: uploaded, server-normalised account logos (bytea)". `upgrade()` = `op.create_table("account_logo_image", sa.Column("account_id", sa.Integer(), sa.ForeignKey("account.id", ondelete="CASCADE"), primary_key=True), sa.Column("png", sa.LargeBinary(), nullable=False), sa.Column("sha256", sa.String(64), nullable=False), sa.Column("source_media_type", sa.String(32), nullable=False), sa.Column("source_bytes", sa.Integer(), nullable=False), sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()), sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()))`; `downgrade()` = `op.drop_table("account_logo_image")`.
 
 - [ ] **Step 5: Run migration tests**
 
@@ -196,7 +214,7 @@ Expected: PASS (an account with no entries hard-deletes; the FK cascade removes 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add app/models alembic/versions/e9b1c3d7a5f2_account_logo_image.py tests/integration/test_migration.py tests/integration/test_account_logo_api.py
+git add requirements.txt app/models alembic/versions/e9b1c3d7a5f2_account_logo_image.py tests/integration/test_migration.py tests/integration/test_account_logo_api.py
 git commit -m "feat(accounting): account_logo_image table and migration e9b1c3d7a5f2"
 ```
 
@@ -206,7 +224,6 @@ git commit -m "feat(accounting): account_logo_image table and migration e9b1c3d7
 
 **Files:**
 - Create: `services/accounting-service/app/services/account_logo_service.py`
-- Modify: `services/accounting-service/requirements.txt` (add `pillow==12.3.0` after `python-multipart`)
 - Test: `services/accounting-service/tests/unit/test_account_logo_service.py`
 
 **Interfaces:**
@@ -243,6 +260,26 @@ def test_palette_transparency_survives():  # mode "P" PNG with transparency inde
 def test_webp_accepted_and_jpeg_draft_used(monkeypatch):  # WEBP 300×300 ok; for a 3000×3000 JPEG, spy Image.Image.draft is called before load
 def test_same_bytes_same_hash():
 def test_declared_type_is_recorded_not_trusted():  # declared "image/svg+xml" with real PNG bytes → ok, source_media_type == "image/png"
+def test_translucent_pixels_keep_their_alpha_and_colour():
+    out = normalise_logo(_img(256, 256, color=(0, 0, 255, 128)))        # half-transparent blue square
+    px = Image.open(BytesIO(out.png)).getpixel((128, 128))
+    assert px[:3] == (0, 0, 255) and 124 <= px[3] <= 132                 # alpha applied once, RGB untouched
+def test_rejected_inputs_never_decode_pixels(monkeypatch):
+    calls = []; monkeypatch.setattr(Image.Image, "load", lambda self: calls.append("load") or None)
+    for bad in (_img(100, 100, fmt="GIF"), _img(15, 15), _img(6000, 6000)):
+        with pytest.raises(LogoError): normalise_logo(bad)
+    assert calls == []                                                   # format/dimension gates run before load()
+def test_corrupt_pixel_data_is_unreadable():
+    good = _img(300, 100); corrupt = good[:len(good) // 2]              # valid header, truncated IDAT
+    with pytest.raises(LogoError) as e: normalise_logo(corrupt)
+    assert e.value.code == "logo_unreadable"
+def test_shrink_happens_before_transpose(monkeypatch):
+    order = []
+    real_thumb, real_tr = Image.Image.thumbnail, ImageOps.exif_transpose
+    monkeypatch.setattr(Image.Image, "thumbnail", lambda self, *a, **k: order.append("thumbnail") or real_thumb(self, *a, **k))
+    monkeypatch.setattr(ImageOps, "exif_transpose", lambda im, *a, **k: order.append("transpose") or real_tr(im, *a, **k))
+    normalise_logo(_jpeg_with_orientation(6))
+    assert order == ["thumbnail", "transpose"]
 ```
 
 - [ ] **Step 2: Run to verify failure**
@@ -252,12 +289,12 @@ Expected: FAIL — `ModuleNotFoundError: app.services.account_logo_service`.
 
 - [ ] **Step 3: Implement the module**
 
-`normalise_logo` follows §5 steps 1–5 exactly: empty → `logo_empty`; `len(data) > MAX_LOGO_UPLOAD_BYTES` → `logo_too_large`; module-level `Image.MAX_IMAGE_PIXELS = MAX_LOGO_PIXELS`; one `try` spanning open **and** the later steps that maps `Image.DecompressionBombError`/`DecompressionBombWarning` (raised as error inside `warnings.catch_warnings()` + `simplefilter("error", Image.DecompressionBombWarning)`) → `logo_dimensions`, `UnidentifiedImageError`/`OSError`/`ValueError` → `logo_unreadable`; after `Image.open`: format check, then header dims check (`MIN_SIDE`, `MAX_SIDE`, product), then for `im.format == "JPEG"` call `im.draft("RGB", (OUTPUT_SIDE * 2, OUTPUT_SIDE * 2))`, `im.load()`, `im.thumbnail((OUTPUT_SIDE, OUTPUT_SIDE), Image.LANCZOS, reducing_gap=3.0)`, `ImageOps.exif_transpose(im)` (note: call `exif_transpose` on the thumbnail — EXIF survives `thumbnail` via `im.info`; assert in the test), `convert("RGBA")`, paste centred on `Image.new("RGBA", (OUTPUT_SIDE, OUTPUT_SIDE), (0, 0, 0, 0))` using the alpha channel as mask, save PNG `optimize=True` into a `BytesIO`. `source_media_type` = `Image.MIME[im.format]`. Palette transparency: convert `P` with `transparency` in `im.info` via `convert("RGBA")` — Pillow honours `tRNS` in that conversion.
+`normalise_logo` follows §5 steps 1–5 exactly: empty → `logo_empty`; `len(data) > MAX_LOGO_UPLOAD_BYTES` → `logo_too_large`; module-level `Image.MAX_IMAGE_PIXELS = MAX_LOGO_PIXELS`; one `try` spanning open **and** the later steps that maps `Image.DecompressionBombError`/`DecompressionBombWarning` (raised as error inside `warnings.catch_warnings()` + `simplefilter("error", Image.DecompressionBombWarning)`) → `logo_dimensions`, `UnidentifiedImageError`/`OSError`/`ValueError` → `logo_unreadable`; after `Image.open`: format check, then header dims check (`MIN_SIDE`, `MAX_SIDE`, product), then for `im.format == "JPEG"` call `im.draft("RGB", (OUTPUT_SIDE * 2, OUTPUT_SIDE * 2))`, `im.load()`, `im.thumbnail((OUTPUT_SIDE, OUTPUT_SIDE), Image.LANCZOS, reducing_gap=3.0)`, then `ImageOps.exif_transpose(im)` **on the thumbnail** (EXIF survives `thumbnail` through `im.info["exif"]`; `test_shrink_happens_before_transpose` pins the order), `convert("RGBA")`, then `canvas = Image.new("RGBA", (OUTPUT_SIDE, OUTPUT_SIDE), (0, 0, 0, 0)); canvas.paste(im, (x, y))` **without a mask** — a mask-less RGBA paste copies the pixels including their alpha, whereas passing the image as its own mask multiplies alpha in twice and darkens translucent edges — save PNG `optimize=True` into a `BytesIO`. `source_media_type` = `Image.MIME[im.format]`. Palette transparency: convert `P` with `transparency` in `im.info` via `convert("RGBA")` — Pillow honours `tRNS` in that conversion.
 
 - [ ] **Step 4: Run tests**
 
 Run: `pytest -q tests/unit/test_account_logo_service.py`
-Expected: PASS. If `test_exif_orientation_is_applied` fails because `thumbnail` drops EXIF in this Pillow version, move `exif_transpose` before `thumbnail` (it then operates on the decoded original; still inside the 25 M cap) and record that in the commit body.
+Expected: PASS. The order thumbnail → transpose is part of the accepted resource contract (§5 step 4) and is not negotiable: if the EXIF test fails because `thumbnail` dropped the metadata, read `im.getexif().get(0x0112)` **before** `thumbnail`, keep the integer, and apply the matching `Image.Transpose` operation to the thumbnail yourself (a small `_apply_orientation(im, orientation)` helper) — never transpose the full-size image.
 
 - [ ] **Step 5: Memory budget test (§5 step 4, measured not claimed)**
 
@@ -281,7 +318,7 @@ Run once with `PEAK_RSS_BUDGET_BYTES = 10**12` and print the two measurements in
 - [ ] **Step 6: Add Pillow to requirements and commit**
 
 ```bash
-git add app/services/account_logo_service.py requirements.txt tests/unit/test_account_logo_service.py
+git add app/services/account_logo_service.py tests/unit/test_account_logo_service.py
 git commit -m "feat(accounting): normalise_logo — Pillow gate and 256px padded PNG"
 ```
 
@@ -401,6 +438,17 @@ def test_put_empty_body_is_422_logo_empty(client):
 @pytest.mark.parametrize("body,token", [(b"<svg/>", "logo_unreadable"), (GIF_BYTES, "logo_format"), (PNG_15x15, "logo_dimensions")])
 def test_put_validation_tokens(client, body, token):         # response.json()["message"] == token, status 422
 def test_put_unknown_account_404(client):                   # message "account not found"
+def test_error_envelope_shape(client):
+    acct = _account(client)
+    r = client.put(f"/accounts/{acct['id']}/logo", content=b"<svg/>", headers={"Content-Type": "image/svg+xml"})
+    assert r.status_code == 422 and set(r.json()) == {"code", "message", "trace_id"}
+    assert r.json()["code"] == 422 and r.json()["message"] == "logo_unreadable"
+def test_stored_and_served_bytes_are_the_normalised_png_not_the_upload(client, db_session):
+    acct = _account(client); upload = _png(300, 100)
+    h = client.put(f"/accounts/{acct['id']}/logo", content=upload, headers={"Content-Type": "image/png"}).json()["logo_hash"]
+    row = db_session.get(AccountLogoImage, acct["id"]); expected = normalise_logo(upload)
+    assert row.png == expected.png and row.sha256 == expected.sha256 and row.png != upload
+    assert client.get(f"/accounts/{acct['id']}/logo.png?v={h}").content == expected.png
 def test_delete_logo_204_twice_and_falls_back_to_slug(client):
     acct = _account(client, logo="cathay-united"); client.put(... logo ...)
     assert client.delete(f"/accounts/{acct['id']}/logo").status_code == 204
@@ -417,11 +465,19 @@ And the event-loop test (§5 limits step 3):
 def anyio_backend(): return "asyncio"
 
 @pytest.mark.anyio
-async def test_slow_normalise_does_not_block_health(client, monkeypatch):
+async def test_slow_worker_does_not_block_health_and_all_sync_work_is_on_one_worker_thread(client, monkeypatch):
     from app.main import app
     import app.routers.accounts as accounts_router
-    def slow(data, **kw): time.sleep(1.0); return normalise_logo(data, **kw)
-    monkeypatch.setattr(accounts_router.account_logo_service, "normalise_logo", slow)
+    seen: dict[str, int] = {}
+    def spy(name, fn):
+        def wrapped(*a, **kw): seen[name] = threading.get_ident(); return fn(*a, **kw)
+        return wrapped
+    svc = accounts_router.account_logo_service
+    monkeypatch.setattr(svc, "normalise_logo", spy("normalise", lambda d, **kw: (time.sleep(1.0), normalise_logo(d, **kw))[1]))
+    monkeypatch.setattr(svc, "put_logo", spy("put", svc.put_logo))
+    monkeypatch.setattr(accounts_router.ledger_service, "get_account", spy("detail", accounts_router.ledger_service.get_account))
+    real_commit = Session.commit; monkeypatch.setattr(Session, "commit", spy("commit", real_commit))
+    loop_thread = threading.get_ident()
     acct = _account(client)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as ac:
         async def upload(): return await ac.put(f"/accounts/{acct['id']}/logo", content=_png(300, 100), headers={"Content-Type": "image/png"})
@@ -429,7 +485,13 @@ async def test_slow_normalise_does_not_block_health(client, monkeypatch):
             await anyio.sleep(0.1); t0 = time.perf_counter(); r = await ac.get("/health"); return time.perf_counter() - t0, r.status_code
         (up, (elapsed, status)) = await asyncio.gather(upload(), health())  # or anyio task group
     assert up.status_code == 200 and status == 200 and elapsed < 0.5
+    assert set(seen) == {"normalise", "put", "commit", "detail"}
+    assert len(set(seen.values())) == 1 and loop_thread not in seen.values()   # one worker thread, never the event loop
 ```
+
+(The `commit` spy is only the final commit of the upload; `_account` runs before the spy is installed. If the
+`Session.commit` patch catches commits from other code paths in the test, narrow it by asserting on the commit
+that happened between the `put` and `detail` spies — the point is that the upload's commit is on the worker thread.)
 
 `test_scope_enforcement` already enumerates the new PUT/DELETE and expects 403 for the read-only `hermes` token with `json={}`; make sure the 403 fires before the body is read (the router-level dependency runs first — verify by running that suite).
 
@@ -551,6 +613,7 @@ it('fetches once for N slots of the same (id, hash) and exposes the object URL')
 it('sends the bearer-safe URL with ?v=<hash> and responseType blob')
 it('drops a late response from a superseded generation even when its hash matches the current one')  // A slow, B fast, then A again: the first A response must not win
 it('etag mismatch is cached under the actual hash and refreshes accounts')  // Review Focus 4
+it('mismatch B then model reload A refetches A (A→B→A end to end)')  // ask ?v=A, answer ETag B (no-store) → url is blob B, refreshAccounts called; then url(id, 'A') again → one new GET ?v=A, answer ETag A → url is blob A, blob B revoked next macrotask
 it('missing etag shows the image but caches nothing')
 it('404 marks the hash failed, exposes null, and does not retry until the hash changes')
 it('null hash exposes null and revokes the previous URL on the next macrotask')  // vi.useFakeTimers
@@ -583,9 +646,9 @@ git commit -m "feat(frontend): AccountLogoStore — blob fetch, generation guard
 
 **Interfaces:**
 - Consumes: `AccountLogoStore.url` (Task 7), `LedgerAccount.logo_hash` (Task 6).
-- Produces: `AccountIconComponent` inputs `accountId = input<number | null>(null)`, `logoHash = input<string | null>(null)`; `protected readonly uploadedUrl = computed(() => { const id = this.accountId(); const h = this.logoHash(); return id !== null && h ? this.store.url(id, h)() : null; })`; template order `@if (uploadedUrl(); as u) { <span class="tile"><img class="logo" [src]="u" alt="" aria-hidden="true" decoding="async" /></span> } @else if (entry(); as e) { …existing… } @else { …emoji… }`; host `[class.has-logo]` true when either path renders. `CardReminder` gains `logoHash: string | null`; `cardReminders(bills, accounts: Pick<LedgerAccount, 'id' | 'icon' | 'logo' | 'logo_hash'>[], today)` fills it.
+- Produces: `AccountIconComponent` inputs `accountId = input<number | null>(null)`, `logoHash = input<string | null>(null)`; `protected readonly uploadedUrl = computed(() => { const id = this.accountId(); return id !== null ? this.store.url(id, this.logoHash())() : null; })` — the hash is forwarded **even when null**, so a deletion reaches the store and runs its reset/revoke/generation invalidation (§6.1); only a missing account id skips the store; template order `@if (uploadedUrl(); as u) { <span class="tile"><img class="logo" [src]="u" alt="" aria-hidden="true" decoding="async" /></span> } @else if (entry(); as e) { …existing… } @else { …emoji… }`; host `[class.has-logo]` true when either path renders. `CardReminder` gains `logoHash: string | null`; `cardReminders(bills, accounts: Pick<LedgerAccount, 'id' | 'icon' | 'logo' | 'logo_hash'>[], today)` fills it.
 
-- [ ] **Step 1: Write failing specs** in `account-icon.spec.ts`: host with `[accountId]="7" [logoHash]="'abc'"` and a stubbed `AccountLogoStore` (`{ url: () => signal('blob:1') }` via `TestBed` provider override) renders `img[src="blob:1"]` and `has-logo`; with the store returning `null` and `[logo]="'cathay-united'"` the bundled image renders; with both null the emoji renders; the settings grid usage `<app-account-icon [logo]="l.slug" />` (no account) still renders the bundled image. In `reminders.spec.ts` (existing) extend the `cardReminders` test: an account with `logo_hash: 'abc'` yields a card with `logoHash: 'abc'`.
+- [ ] **Step 1: Write failing specs** in `account-icon.spec.ts`: host with `[accountId]="7" [logoHash]="'abc'"` and a stubbed `AccountLogoStore` (`{ url: () => signal('blob:1') }` via `TestBed` provider override) renders `img[src="blob:1"]` and `has-logo`; with the store returning `null` and `[logo]="'cathay-united'"` the bundled image renders; with both null the emoji renders; the settings grid usage `<app-account-icon [logo]="l.slug" />` (no account) still renders the bundled image; **and one integration spec with the real `AccountLogoStore` + `HttpTestingController` + stubbed `URL.createObjectURL/revokeObjectURL` + `vi.useFakeTimers()`**: `it('component + store: hash → null revokes the url and discards a pending response')` — host `[accountId]="7" [logoHash]="hash()"`; set `hash('a')`, flush a 200 blob (ETag a) → `img[src="blob:1"]`; set `hash('b')` (request pending), then `hash(null)` before answering → the img is gone (emoji shown), `revokeObjectURL('blob:1')` is called after `vi.runOnlyPendingTimers()`, and flushing the pending `b` response afterwards creates no new object URL. In `reminders.spec.ts` (existing) extend the `cardReminders` test: an account with `logo_hash: 'abc'` yields a card with `logoHash: 'abc'`.
 
 - [ ] **Step 2: Run** `--include='**/account-icon.spec.ts' --include='**/reminders.spec.ts'` → FAIL.
 
