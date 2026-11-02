@@ -549,18 +549,41 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     it('PUTs the chosen file, is busy while pending, then replaces the account', () => {
       const { fixture, el, input } = setup();
       const button = el.querySelector('button.avatar') as HTMLButtonElement;
-      choose(input, new File([new Uint8Array(1)], 'a.png', { type: 'image/png' }));
+      const file = new File([new Uint8Array(1)], 'a.png', { type: 'image/png' });
+      choose(input, file);
       fixture.detectChanges();
       expect(button.getAttribute('aria-busy')).toBe('true');
       expect(input.value).toBe('');
       const req = http.expectOne(URL);
       expect(req.request.method).toBe('PUT');
+      expect(req.request.body).toBe(file);
+      expect(req.request.headers.get('Content-Type')).toBe('image/png');
       req.flush({ ...ACCOUNT, logo_hash: 'abc' });
       fixture.detectChanges();
       expect(fixture.componentInstance.account()?.logo_hash).toBe('abc');
       // The icon now fetches the uploaded image through the logo store.
       http.expectOne('/api/accounting/accounts/7/logo.png?v=abc').flush(new Blob([new Uint8Array(1)], { type: 'image/png' }));
       expect(button.hasAttribute('aria-busy')).toBe(false);
+    });
+
+    it('ignores a response for a different account but clears busy', () => {
+      const { fixture, el, input } = setup();
+      choose(input, new File([new Uint8Array(1)], 'a.png', { type: 'image/png' }));
+      http.expectOne(URL).flush({ ...ACCOUNT, id: 8, logo_hash: 'zzz' });
+      fixture.detectChanges();
+      expect(fixture.componentInstance.account()).toEqual(ACCOUNT);
+      expect((el.querySelector('button.avatar') as HTMLElement).hasAttribute('aria-busy')).toBe(false);
+    });
+
+    it('does not open the picker while an upload is pending', () => {
+      const { fixture, el, input } = setup();
+      choose(input, new File([new Uint8Array(1)], 'a.png', { type: 'image/png' }));
+      fixture.detectChanges();
+      const click = vi.spyOn(input, 'click');
+      (el.querySelector('button.avatar') as HTMLButtonElement).click();
+      fixture.componentInstance.pickLogoFile();
+      expect(click).not.toHaveBeenCalled();
+      http.expectOne(URL).flush({ ...ACCOUNT, logo_hash: null });
     });
 
     it('toasts the mapped message on a 422 logo_format and clears the busy state', () => {

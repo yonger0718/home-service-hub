@@ -85,6 +85,9 @@ export class AccountingAccountEntriesComponent implements OnInit {
   readonly colorOf = colorOf;
 
   pickLogoFile(): void {
+    if (this.uploadingLogo()) {
+      return;
+    }
     this.logoFile().nativeElement.click();
   }
 
@@ -99,16 +102,19 @@ export class AccountingAccountEntriesComponent implements OnInit {
       this.toast.show('圖片太大（上限 5 MB）');
       return;
     }
+    const id = this.accountId();
     this.uploadingLogo.set(true);
-    this.accountingService.uploadAccountLogo(this.accountId(), file).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+    this.accountingService.uploadAccountLogo(id, file).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: detail => {
-        if (detail.id === this.accountId()) {
+        if (detail.id === id && id === this.accountId()) {
           this.account.set(detail);
         }
       },
       error: err => {
         this.uploadingLogo.set(false);
-        this.toast.show(logoUploadErrorMessage(err));
+        if (id === this.accountId()) {
+          this.toast.show(logoUploadErrorMessage(err));
+        }
       },
       complete: () => this.uploadingLogo.set(false),
     });
