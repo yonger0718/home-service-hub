@@ -1,10 +1,13 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, OnInit, computed, effect, inject, signal, untracked, viewChild } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { SkeletonComponent } from '../skeleton/skeleton';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
 import { AccountDetail, AccountPeriodSummary, ENTRY_KIND_LABELS, EntryKind, LedgerEntry } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { AccountIconComponent } from '../account-icon/account-icon';
+import { AccountingToastService } from '../accounting-toast';
+import { LOGO_ACCEPT, logoFileTooLarge, logoUploadErrorMessage } from '../logo-upload-errors';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf } from '../accounting-ui';
 import { Period, periodLabel, shiftPeriod, statementPeriod } from '../cycle';
@@ -18,7 +21,7 @@ export const PAGE_SIZE = 200;
 @Component({
   selector: 'app-accounting-account-entries',
   standalone: true,
-  imports: [RouterLink, SkeletonComponent],
+  imports: [RouterLink, SkeletonComponent, AccountIconComponent],
   templateUrl: './account-entries.html',
   styleUrls: ['../filters.scss', './account-entries.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -27,6 +30,7 @@ export class AccountingAccountEntriesComponent implements OnInit {
   private accountingService = inject(AccountingService);
   private route = inject(ActivatedRoute);
   private destroyRef = inject(DestroyRef);
+  private readonly toast = inject(AccountingToastService);
   private readonly layout = inject(AccountingLayoutComponent, { optional: true });
   private readonly router = inject(Router);
   private requestId = 0;
@@ -35,6 +39,9 @@ export class AccountingAccountEntriesComponent implements OnInit {
   /** From `paramMap` (observable): at ≥ 760 px the pane reuses this component when only `:id` changes (Task 21). */
   readonly accountId = signal(0);
   readonly today = todayIso();
+  readonly uploadingLogo = signal(false);
+  readonly logoFile = viewChild.required<ElementRef<HTMLInputElement>>('logoFile');
+  protected readonly LOGO_ACCEPT = LOGO_ACCEPT;
   readonly account = signal<AccountDetail | null>(null);
   readonly period = signal<Period | null>(null);
   /** Header totals of the whole period from `GET /accounts/{id}/summary`; never derived from the loaded page. */
@@ -76,6 +83,42 @@ export class AccountingAccountEntriesComponent implements OnInit {
   readonly schedulePill = schedulePill;
   readonly iconOf = iconOf;
   readonly colorOf = colorOf;
+
+  pickLogoFile(): void {
+    if (this.uploadingLogo()) {
+      return;
+    }
+    this.logoFile().nativeElement.click();
+  }
+
+  onLogoFile(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) {
+      return;
+    }
+    if (logoFileTooLarge(file)) {
+      this.toast.show('圖片太大（上限 5 MB）');
+      return;
+    }
+    const id = this.accountId();
+    this.uploadingLogo.set(true);
+    this.accountingService.uploadAccountLogo(id, file).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: detail => {
+        if (detail.id === id && id === this.accountId()) {
+          this.account.set(detail);
+        }
+      },
+      error: err => {
+        this.uploadingLogo.set(false);
+        if (id === this.accountId()) {
+          this.toast.show(logoUploadErrorMessage(err));
+        }
+      },
+      complete: () => this.uploadingLogo.set(false),
+    });
+  }
 
   constructor() {
     // Period totals: on every period change (account switch, ‹ ›) and after any entry write.

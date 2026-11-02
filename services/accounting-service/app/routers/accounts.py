@@ -1,7 +1,8 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from ..auth import method_scope, require
 from ..database import get_db
@@ -16,7 +17,8 @@ from ..schemas.ledger import (
     RewardRuleOut,
 )
 from ..schemas.writes import SOURCE_CURRENCIES, AccountIn, AccountSourcesPatch, OrderIn, RewardRuleIn
-from ..services import ledger_service, reward_rule_service, settings_service
+from ..services import account_logo_service, ledger_service, reward_rule_service, settings_service
+from ..services.account_logo_service import MAX_LOGO_UPLOAD_BYTES, LogoError, logo_hash
 from ..services.errors import CodedValidationError
 from .errors import service_errors
 
@@ -155,6 +157,91 @@ def patch_account_sources(account_id: int, payload: AccountSourcesPatch, db: Ses
 def remove_account(account_id: int, db: Session = Depends(get_db)):
     with service_errors():
         settings_service.delete_account(db, account_id)
+    db.commit()
+    return Response(status_code=204)
+
+
+async def _read_body_capped(request: Request, cap: int) -> bytes:
+    """Read the request body, refusing the moment it exceeds `cap` (declared or streamed)."""
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            too_big = int(declared) > cap
+        except ValueError:
+            too_big = False
+        if too_big:
+            raise LogoError("logo_too_large")
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf.extend(chunk)
+        if len(buf) > cap:
+            raise LogoError("logo_too_large")
+    return bytes(buf)
+
+
+def _store_logo(db: Session, account_id: int, data: bytes, declared_type: str | None):
+    """Sync worker run in the threadpool: decode/normalise, store, commit and read back on one thread."""
+    try:
+        logo = account_logo_service.normalise_logo(data, declared_type=declared_type)
+    except LogoError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.code) from exc
+    with service_errors():
+        account_logo_service.put_logo(db, account_id, logo)
+    db.commit()
+    return ledger_service.get_account(db, account_id)
+
+
+@router.put("/{account_id}/logo", response_model=AccountDetailOut)
+async def put_account_logo(account_id: int, request: Request, db: Session = Depends(get_db)):
+    try:
+        data = await _read_body_capped(request, MAX_LOGO_UPLOAD_BYTES)
+    except LogoError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.code) from exc
+    return await run_in_threadpool(_store_logo, db, account_id, data, request.headers.get("content-type"))
+
+
+def _if_none_match_hits(header: str | None, sha256: str) -> bool:
+    """True when If-None-Match (a comma-separated list; W/ and quotes optional; ``*``) names sha256."""
+    if not header:
+        return False
+    for item in header.split(","):
+        tag = item.strip()
+        if tag == "*":
+            return True
+        if tag.startswith("W/"):
+            tag = tag[2:]
+        if tag.strip('"') == sha256:
+            return True
+    return False
+
+
+@router.get("/{account_id}/logo.png")
+def get_account_logo(account_id: int, request: Request, v: str | None = Query(default=None),
+                     db: Session = Depends(get_db)):
+    _require_account(db, account_id)
+    row = account_logo_service.get_logo(db, account_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="logo not found")
+    etag = f'"{row.sha256}"'
+    if _if_none_match_hits(request.headers.get("if-none-match"), row.sha256):
+        return Response(status_code=304, headers={"ETag": etag})
+    cache = "private, max-age=31536000, immutable" if v == logo_hash(row.sha256) else "no-store"
+    return Response(
+        content=bytes(row.png),
+        media_type="image/png",
+        headers={
+            "ETag": etag,
+            "Cache-Control": cache,
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": 'inline; filename="logo.png"',
+        },
+    )
+
+
+@router.delete("/{account_id}/logo", status_code=204)
+def delete_account_logo(account_id: int, db: Session = Depends(get_db)):
+    with service_errors():
+        account_logo_service.delete_logo(db, account_id)
     db.commit()
     return Response(status_code=204)
 

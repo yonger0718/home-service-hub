@@ -15,7 +15,7 @@
   }
 
   <div class="bigicon">
-    <app-account-icon class="ico" size="big" [logo]="form().logo" [icon]="form().icon" fallback="folder" />
+    <app-account-icon class="ico" size="big" [accountId]="loadedId()" [logoHash]="logoHash()" [logo]="form().logo" [icon]="form().icon" fallback="folder" />
     @if (detail(); as d) {
       <b [class.neg]="balanceNegative(d)" [class.unavailable]="d.balance === null">{{ balanceText(d) }}</b>
       @if (valuationHint(d); as hint) {
@@ -58,12 +58,19 @@
     </select>
   </label>
 
-  <div class="rw">
-    <span class="k">品牌 logo</span>
+  <div class="rw logo-block">
+    <span class="k">Logo</span>
     <span class="v">
-      <button type="button" class="logo-current" [attr.aria-label]="'品牌 logo：' + logoLabel()" [attr.aria-expanded]="logoPickerOpen()" (click)="logoPickerOpen.set(!logoPickerOpen())">
-        <app-account-icon class="ico-sm" [logo]="form().logo" [icon]="form().icon" fallback="folder" /> {{ logoLabel() }}
-      </button>
+      <span class="logo-state"><app-account-icon class="ico-sm" [accountId]="loadedId()" [logoHash]="logoHash()" [logo]="form().logo" [icon]="form().icon" fallback="folder" /> {{ logoState() }}</span>
+      <span class="logo-actions">
+        <input #logoFile type="file" class="visually-hidden" tabindex="-1" aria-hidden="true" [accept]="LOGO_ACCEPT" (change)="uploadLogo($event)" />
+        <button type="button" class="logo-upload" [disabled]="accountId() === null || loadedId() === null || uploadingLogo()" [attr.aria-busy]="uploadingLogo() || null" (click)="logoFile.click()">上傳圖片</button>
+        @if (logoHash()) {
+          <button type="button" class="logo-remove" [disabled]="uploadingLogo()" (click)="removeLogo()">移除圖片</button>
+        }
+        <button type="button" class="logo-pick" [attr.aria-expanded]="logoPickerOpen()" (click)="logoPickerOpen.set(!logoPickerOpen())">選擇內建 logo</button>
+      </span>
+      <small class="logo-hint">{{ accountId() === null ? '先建立帳戶，再上傳 logo' : '上傳的圖片優先於內建 logo，上傳後立即生效' }}</small>
     </span>
   </div>
   @if (logoPickerOpen()) {

@@ -16,6 +16,7 @@ The system SHALL persist accounts in an `account` table with these columns:
 - `is_archived` (BOOLEAN, default FALSE)
 - `group_id` (FK → `account_group.id`, nullable)
 - `icon` (VARCHAR(16), nullable; an emoji) and `color` (VARCHAR(9), nullable; `#RRGGBB`)
+- `logo` (VARCHAR(32), nullable; a slug of the SPA's built-in brand-logo set, `^[a-z0-9-]{1,32}$`; the API validates the shape only)
 - `note` (TEXT, nullable)
 - `sort_order` (INTEGER, default 0)
 - `include_in_total` (BOOLEAN, default TRUE)
@@ -57,6 +58,10 @@ An account's balance SHALL be `opening_balance + Σ ledger_entry.amount` over it
 - **GIVEN** a TWD account with 3 entries
 - **WHEN** `PUT /api/accounting/accounts/{id}` sets `currency = JPY`
 - **THEN** the response SHALL be HTTP 422 naming `currency`
+
+#### Scenario: Logo slug shape
+- **WHEN** an account is created or updated with `logo` `"Cathay"`, `"cathay_united"` or 33 characters
+- **THEN** the API SHALL answer 422; `"cathay-united"` SHALL be stored and returned on every account read
 
 ### Requirement: Category and project model
 
@@ -193,7 +198,7 @@ The migration SHALL drop the tables `transactions`, `categories`, `credit_cards`
 
 The service SHALL expose these read endpoints:
 
-- `GET /api/accounting/accounts?as_of=YYYY-MM-DD` (default today; `balance`, `balance_main` and `available_credit` count entries with `posted_date ≤ as_of`): every account with `id`, `name`, `currency`, `opening_balance`, `balance`, `balance_main` (the balance converted to the preference's main currency with the latest cached rate; equal to `balance` for main-currency accounts), `entry_count`, `group_id`, `group_name`, `icon`, `color`, `is_archived`, `include_in_total`, `is_credit`, `closing_day`, `due_rule`, `due_value`, `credit_limit`, `combined_account_id`, `credit_sharing_id`, `auto_pay_account_id`, `fx_fee_pct`, `sort_order` and `moze_id`, sorted by group order, then `sort_order`, then name. `?include_archived=false` (default) SHALL omit archived accounts.
+- `GET /api/accounting/accounts?as_of=YYYY-MM-DD` (default today; `balance`, `balance_main` and `available_credit` count entries with `posted_date ≤ as_of`): every account with `id`, `name`, `currency`, `opening_balance`, `balance`, `balance_main` (the balance converted to the preference's main currency with the latest cached rate; equal to `balance` for main-currency accounts), `entry_count`, `group_id`, `group_name`, `icon`, `logo`, `color`, `is_archived`, `include_in_total`, `is_credit`, `closing_day`, `due_rule`, `due_value`, `credit_limit`, `combined_account_id`, `credit_sharing_id`, `auto_pay_account_id`, `fx_fee_pct`, `sort_order` and `moze_id`, sorted by group order, then `sort_order`, then name. `?include_archived=false` (default) SHALL omit archived accounts.
 - `GET /api/accounting/accounts/{id}?as_of=`: one account with the same fields plus `note` and `reward_rules` (the account's rules, read-only in 2a).
 - `GET /api/accounting/accounts/{id}/entries`: that account's entries, newest first (the reverse of the canonical order). It SHALL be paginated with `limit` (default 50, max 500) and `offset`, filterable by `kind`, `date_from`, `date_to` and `q` (case-insensitive match on name, merchant, description), and SHALL include each entry's category path (`main/sub`), category icon and colour, project name, counterparty name, group summary, attached rule names and a running balance.
 - `GET /api/accounting/entries`: entries across accounts, newest first by canonical order, with the same pagination and filters plus `account_id` (repeatable) and `hide_rewards`. Each item SHALL carry the account name and currency. A month summary endpoint `GET /api/accounting/entries/summary?month=YYYY-MM` SHALL return expense, income and net totals in the main currency, converting foreign-currency accounts with the latest cached rate.

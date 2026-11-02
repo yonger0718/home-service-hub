@@ -69,6 +69,7 @@ export interface CardReminder {
   name: string;
   icon: string | null;
   logo: string | null;
+  logoHash: string | null;
   currency: string;
   /** Billing cycle end, matched to `account_statement.period_end`. */
   periodEnd: string;
@@ -159,11 +160,12 @@ export function debtRemaining(entry: LedgerEntry): DebtRemaining | null {
 /** Cards with something left to pay on their current statement, soonest due first. */
 export function cardReminders(
   bills: BillState[],
-  accounts: Pick<LedgerAccount, 'id' | 'icon' | 'logo'>[],
+  accounts: Pick<LedgerAccount, 'id' | 'icon' | 'logo' | 'logo_hash'>[],
   today: string,
 ): CardReminder[] {
   const icons = new Map(accounts.map(account => [account.id, account.icon]));
   const logos = new Map(accounts.map(account => [account.id, account.logo]));
+  const logoHashes = new Map(accounts.map(account => [account.id, account.logo_hash]));
   return bills
     .filter(bill => bill.remaining > 0)
     .sort((a, b) => a.due.localeCompare(b.due) || a.accountId - b.accountId)
@@ -174,6 +176,7 @@ export function cardReminders(
         name: bill.name,
         icon: icons.get(bill.accountId) ?? null,
         logo: logos.get(bill.accountId) ?? null,
+        logoHash: logoHashes.get(bill.accountId) ?? null,
         currency: bill.currency,
         periodEnd: bill.period.end,
         due: bill.due,

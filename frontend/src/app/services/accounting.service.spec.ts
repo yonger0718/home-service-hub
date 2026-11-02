@@ -411,4 +411,44 @@ describe('AccountingService', () => {
 
     expect(failed).toBe(true);
   });
+
+  describe('account logos', () => {
+    it('PUTs the raw blob with its content type and bumps accountsChanged', () => {
+      const before = service.accountsChanged();
+      const blob = new Blob([new Uint8Array([1])], { type: 'image/png' });
+      service.uploadAccountLogo(7, blob).subscribe();
+      const req = httpMock.expectOne('/api/accounting/accounts/7/logo');
+      expect(req.request.method).toBe('PUT');
+      expect(req.request.headers.get('Content-Type')).toBe('image/png');
+      expect(req.request.body).toBeInstanceOf(Blob);
+      req.flush(makeAccount());
+      expect(service.accountsChanged()).toBe(before + 1);
+    });
+
+    it('falls back to octet-stream for an untyped blob', () => {
+      service.uploadAccountLogo(7, new Blob([new Uint8Array([1])])).subscribe();
+      const req = httpMock.expectOne('/api/accounting/accounts/7/logo');
+      expect(req.request.headers.get('Content-Type')).toBe('application/octet-stream');
+      req.flush(makeAccount());
+    });
+
+    it('DELETEs the logo and bumps accountsChanged', () => {
+      const before = service.accountsChanged();
+      service.deleteAccountLogo(7).subscribe();
+      const req = httpMock.expectOne('/api/accounting/accounts/7/logo');
+      expect(req.request.method).toBe('DELETE');
+      req.flush(null);
+      expect(service.accountsChanged()).toBe(before + 1);
+    });
+
+    it('builds the cache-busted image url', () => {
+      expect(service.logoImageUrl(7, 'abc')).toBe('/api/accounting/accounts/7/logo.png?v=abc');
+    });
+
+    it('refreshAccounts bumps accountsChanged', () => {
+      const before = service.accountsChanged();
+      service.refreshAccounts();
+      expect(service.accountsChanged()).toBe(before + 1);
+    });
+  });
 });

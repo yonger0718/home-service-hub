@@ -17,6 +17,7 @@ from ..models import (
     MOZE_SOURCES,
     Account,
     AccountGroup,
+    AccountLogoImage,
     Category,
     Counterparty,
     EntryGroup,
@@ -28,6 +29,7 @@ from ..models import (
     RewardRule,
 )
 from . import report_rules, valuation_service
+from .account_logo_service import HASH_PREFIX
 from .moze_import_service import import_locked
 
 LEDGER_TZ = ZoneInfo("Asia/Taipei")  # ledger dates are naive Taipei dates (D8)
@@ -148,12 +150,20 @@ def _account_rows(
     conversions are computed over every account; entry_count counts every entry regardless of `as_of`."""
     as_of = as_of or _today()
     entry_count = func.count(LedgerEntry.id).label("entry_count")
+    logo_hash_sq = (
+        select(func.substr(AccountLogoImage.sha256, 1, HASH_PREFIX))
+        .where(AccountLogoImage.account_id == Account.id)
+        .correlate(Account)
+        .scalar_subquery()
+        .label("logo_hash")
+    )
     rows = db.execute(
         select(
             Account,
             AccountGroup.name.label("group_name"),
             (Account.opening_balance + _posted_sum(as_of)).label("balance"),
             entry_count,
+            logo_hash_sq,
         )
         .outerjoin(AccountGroup, AccountGroup.id == Account.group_id)
         .outerjoin(LedgerEntry, LedgerEntry.account_id == Account.id)
@@ -165,22 +175,22 @@ def _account_rows(
             Account.name,
         )
     ).all()
-    balances = {account.id: balance for account, _, balance, _ in rows}
+    balances = {account.id: balance for account, _, balance, _, _ in rows}
     shared_balances: dict = defaultdict(Decimal)
-    for account, _, balance, _ in rows:
+    for account, _, balance, _, _ in rows:
         if account.credit_sharing_id is not None:
             shared_balances[account.credit_sharing_id] += balance
 
     main = main_currency(db)
-    rates = latest_rates(db, {account.currency for account, _, _, _ in rows}, main)
+    rates = latest_rates(db, {account.currency for account, _, _, _, _ in rows}, main)
     visible = [
         row for row in rows
         if (include_archived or not row[0].is_archived) and (account_id is None or row[0].id == account_id)
     ]
-    rules = _rules_by_account(db, [account.id for account, _, _, _ in visible])
+    rules = _rules_by_account(db, [account.id for account, _, _, _, _ in visible])
 
     result = []
-    for account, group_name, balance, count in visible:
+    for account, group_name, balance, count, logo_hash in visible:
         available = None
         if account.is_credit and account.credit_limit is not None:
             used = shared_balances[account.credit_sharing_id] if account.credit_sharing_id else balances[account.id]
@@ -196,6 +206,7 @@ def _account_rows(
         item.update(
             {
                 "group_name": group_name,
+                "logo_hash": logo_hash,
                 "balance": balance,
                 "balance_main": None if balance is None else (
                     balance if account.currency == main else _convert(balance, rates.get(account.currency))

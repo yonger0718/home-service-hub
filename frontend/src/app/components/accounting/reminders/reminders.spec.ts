@@ -108,9 +108,10 @@ describe('cardReminders logo', () => {
       accountId: 10, name: '國泰卡', period: { start: '2026-09-01', end: '2026-09-30' }, due: '2026-10-15', payDate: '2026-10-15',
       currency: 'TWD', statement: 100, paid: 0, remaining: 100,
     } as unknown as BillState;
-    const rows = cardReminders([bill], [{ id: 10, icon: '🏔', logo: 'cathay-united' }], '2026-10-03');
+    const rows = cardReminders([bill], [{ id: 10, icon: '🏔', logo: 'cathay-united', logo_hash: 'abc' }], '2026-10-03');
     expect(rows[0].logo).toBe('cathay-united');
-    expect(cardReminders([bill], [{ id: 10, icon: null, logo: null }], '2026-10-03')[0].logo).toBeNull();
+    expect(rows[0].logoHash).toBe('abc');
+    expect(cardReminders([bill], [{ id: 10, icon: null, logo: null, logo_hash: null }], '2026-10-03')[0].logo).toBeNull();
   });
 });
 
@@ -120,6 +121,7 @@ describe('withImportedStatement', () => {
     name: '玉山 UNI',
     icon: '💳',
     logo: null,
+    logoHash: null,
     currency: 'TWD',
     periodEnd: '2026-09-15',
     due: '2026-10-05',

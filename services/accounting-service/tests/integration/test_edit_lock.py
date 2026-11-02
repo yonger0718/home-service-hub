@@ -209,6 +209,8 @@ EXPECTED_WRITES = {
     # Reward rules (spec 2026-10-31 §5.3): account settings — MOZE-imported rules are editable; never locked_until_cutover.
     ("/accounts/{account_id}/reward-rules", "POST"), ("/accounts/{account_id}/reward-rules/order", "PUT"),
     ("/accounts/{account_id}/reward-rules/{rule_id}", "PUT"), ("/accounts/{account_id}/reward-rules/{rule_id}", "DELETE"),
+    # Account logo image (spec 2026-11-02 §5): account settings — never locked_until_cutover.
+    ("/accounts/{account_id}/logo", "PUT"), ("/accounts/{account_id}/logo", "DELETE"),
 }
 
 

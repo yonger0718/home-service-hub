@@ -1,6 +1,10 @@
 <section class="ledger-entries">
   <header class="entries-header">
     <a routerLink="/accounting/accounts" class="back-link" aria-label="返回帳戶">‹</a>
+    <button type="button" class="avatar" aria-label="更換 logo" [attr.aria-busy]="uploadingLogo() || null" [disabled]="uploadingLogo()" (click)="pickLogoFile()">
+      <app-account-icon size="big" [accountId]="accountId()" [logoHash]="account()?.logo_hash ?? null" [logo]="account()?.logo ?? null" [icon]="account()?.icon ?? null" fallback="folder" />
+    </button>
+    <input #logoFile type="file" class="visually-hidden" tabindex="-1" aria-hidden="true" [accept]="LOGO_ACCEPT" (change)="onLogoFile($event)" />
     <h1>{{ account()?.name ?? '帳戶 #' + accountId() }}</h1>
     <span class="head-actions">
       <a class="statements-link" [routerLink]="['/accounting/accounts', accountId(), 'statements']">對帳</a>

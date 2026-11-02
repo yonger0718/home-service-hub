@@ -125,7 +125,7 @@ KPI and summary values (the dashboard KPI cards; the 交易紀錄, 股利 and �
 
 ### Requirement: Line icons for interface chrome
 
-Buttons, badges, markers and navigation SHALL use the app's line icon set (PrimeIcons). Emoji SHALL appear only in icon slots that show owner-chosen category, account or entry-kind icons; such a slot MAY fall back to a default emoji when the owner chose none, so it stays visually consistent with its neighbours. The text glyphs ✕ ✓ ‹ › remain allowed. A unit test SHALL fail when a template places an emoji outside an interpolation.
+Buttons, badges, markers and navigation SHALL use the app's line icon set (PrimeIcons). Emoji SHALL appear only in icon slots that show owner-chosen category, account or entry-kind icons; such a slot MAY fall back to a default emoji when the owner chose none, so it stays visually consistent with its neighbours. An owner-chosen account logo image from the app's bundled brand-logo set MAY render in the same slots. The text glyphs ✕ ✓ ‹ › remain allowed. A unit test SHALL fail when a template places an emoji outside an interpolation.
 
 #### Scenario: Entry detail actions
 - **WHEN** an entry detail renders its 編輯, 複製, 退款 and 刪除 actions

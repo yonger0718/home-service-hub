@@ -35,6 +35,8 @@ import { shortDate, todayIso } from '../dates';
 import { balanceNegative, balanceText, valuationHint } from '../account-balance';
 import { decimalText, formatMoney } from '../format';
 import { fieldErrors, writeErrorMessage } from '../http-errors';
+import { AccountingToastService } from '../accounting-toast';
+import { LOGO_ACCEPT, logoFileTooLarge, logoUploadErrorMessage } from '../logo-upload-errors';
 import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
 import {
   RULE_STATE_LABELS, basicOverlapRuleId, periodText, postingSummary, ruleLabel, ruleState, ruleToInput,
@@ -208,6 +210,7 @@ interface LoadedAccount {
 })
 export class AccountSettingsComponent implements OnInit, DirtyAware {
   private service = inject(AccountingService);
+  private readonly toast = inject(AccountingToastService);
   private route = inject(ActivatedRoute);
   private router = inject(Router);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
@@ -245,11 +248,16 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
 
   protected readonly logos = ACCOUNT_LOGOS;
   readonly logoPickerOpen = signal(false);
+  protected readonly LOGO_ACCEPT = LOGO_ACCEPT;
+  /** Uploaded image hash. Patched by upload/remove only; apply() never runs for an image write (dirty form stays). */
+  readonly logoHash = signal<string | null>(null);
+  readonly uploadingLogo = signal(false);
   /** 無 for no logo; 未知 logo for a stored slug the bundled set does not know (the form still keeps and re-saves it). */
   readonly logoLabel = computed(() => {
     const slug = this.form().logo;
     return slug === null ? '無' : (accountLogo(slug)?.label ?? '未知 logo');
   });
+  readonly logoState = computed(() => (this.logoHash() ? '已上傳的圖片' : this.form().logo ? `內建：${this.logoLabel()}` : '無'));
 
   readonly roundingOptions = Object.entries(ROUNDING_LABELS) as [RoundingMode, string][];
   readonly formatMoney = formatMoney;
@@ -372,6 +380,8 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
         // A save of the previous account may still be in flight; its answer is dropped (see save()).
         this.saving.set(false);
         this.loadedId.set(null);
+        this.logoHash.set(null);
+        this.uploadingLogo.set(false);
         this.detail.set(null);
         this.form.set(EMPTY_FORM);
         this.sharing.set([]);
@@ -476,6 +486,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     this.loading.set(false);
     this.loadedId.set(loaded.id);
     this.detail.set(loaded.detail);
+    this.logoHash.set(loaded.detail?.logo_hash ?? null);
     this.form.set(loaded.detail ? formFrom(loaded.detail) : EMPTY_FORM);
     this.sharing.set((loaded.detail?.credit_sharing_members ?? []).filter(id => id !== loaded.id));
     this.baseline.set(this.form());
@@ -534,6 +545,66 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   pickLogo(slug: string | null): void {
     this.set('logo', slug);
     this.logoPickerOpen.set(false);
+  }
+
+  /** Immediate image write; patches only logoHash so the dirty form and its baseline are untouched (spec 6.3). */
+  uploadLogo(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    const id = this.loadedId();
+    if (!file || id === null) {
+      return;
+    }
+    if (logoFileTooLarge(file)) {
+      this.toast.show('圖片太大（上限 5 MB）');
+      return;
+    }
+    this.uploadingLogo.set(true);
+    this.service.uploadAccountLogo(id, file).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: detail => {
+        if (id === this.loadedId()) {
+          this.logoHash.set(detail.logo_hash ?? null);
+        }
+      },
+      error: err => {
+        if (id === this.loadedId()) {
+          this.uploadingLogo.set(false);
+          this.toast.show(logoUploadErrorMessage(err));
+        }
+      },
+      complete: () => {
+        if (id === this.loadedId()) {
+          this.uploadingLogo.set(false);
+        }
+      },
+    });
+  }
+
+  removeLogo(): void {
+    const id = this.loadedId();
+    if (id === null) {
+      return;
+    }
+    this.uploadingLogo.set(true);
+    this.service.deleteAccountLogo(id).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: () => {
+        if (id === this.loadedId()) {
+          this.logoHash.set(null);
+        }
+      },
+      error: err => {
+        if (id === this.loadedId()) {
+          this.uploadingLogo.set(false);
+          this.toast.show(logoUploadErrorMessage(err));
+        }
+      },
+      complete: () => {
+        if (id === this.loadedId()) {
+          this.uploadingLogo.set(false);
+        }
+      },
+    });
   }
 
   toggle(key: 'is_credit' | 'include_in_total' | 'is_archived' | 'fx_fee_on' | 'fx_fee_refundable'): void {
