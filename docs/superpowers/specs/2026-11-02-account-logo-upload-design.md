@@ -1,6 +1,6 @@
 # Account logo upload — design
 
-Rev 4.2, 2026-11-02 — implementation notes appended at the end (PR 1 execution: P-mode expansion, store missing-ETag and
+Rev 4.3, 2026-11-02 — final-review fixes: small inputs are enlarged to fit; 404 copy split; If-None-Match list parsing. Rev 4.2 — implementation notes appended at the end (PR 1 execution: P-mode expansion, store missing-ETag and
 stale-hash guard semantics, icon null coalescing); no contract change. Rev 4.1 — Multica AGENT-384 PASS-with-minor at rev 4 `5cf90e6a`; the two minors are folded here: the
 memory figure is a budget to be measured (OS peak RSS in a subprocess), not a proven bound, and the store's
 late-response guard compares the request generation, never the response hash. Rev 3 → rev 4 folded the AGENT-384 re-check: both Pillow bomb exceptions are caught at the
@@ -44,7 +44,7 @@ backups/restores with the rest of the ledger, and a hostile image file cannot do
 ## 2. Goals / non-goals / anti-goals
 
 Goals
-- `PUT /accounts/{id}/logo` (multipart image, `write` scope) stores a normalised PNG for the account;
+- `PUT /accounts/{id}/logo` (raw image body, `write` scope) stores a normalised PNG for the account;
   `DELETE /accounts/{id}/logo` removes it; `GET /accounts/{id}/logo.png` (`read` scope) serves it.
 - The stored image is **re-encoded by the server** (Pillow): never the uploaded bytes. Square (padded, not
   cropped), 256×256, PNG, metadata stripped.
@@ -162,7 +162,9 @@ All three routes live in `routers/accounts.py` under the existing router (`Depen
      → `logo_dimensions`.
   4. Only now the pixels are decoded, **shrink first, square last**: `im.load()`; `im.thumbnail((256, 256),
      Image.LANCZOS, reducing_gap=3.0)` (in the image's native mode, in place, aspect ratio kept, so an
-     8192×16 strip becomes 256×1 — never an 8192×8192 canvas); then `ImageOps.exif_transpose` and
+     8192×16 strip becomes 256×1 — never an 8192×8192 canvas); an input whose longer side is < 256 px is
+     instead enlarged to fit the 256×256 box (`ImageOps.contain(..., Image.Resampling.LANCZOS)`, aspect kept)
+     rather than padded as a speck; then `ImageOps.exif_transpose` and
      `convert("RGBA")` on the now ≤ 256×256 image; then paste it centred onto a fresh
      `Image.new("RGBA", (256, 256), (0, 0, 0, 0))`; encode PNG with `optimize=True`; no metadata chunks are
      written (fresh canvas, no `pnginfo`). Any Pillow error here → 422 `logo_unreadable`.
@@ -441,3 +443,10 @@ Deviations settled during PR 1 execution; each one is covered by a test named in
   window ends or the model's hash changes.
 - **Icon (§6.1):** `uploadedUrl` coalesces an undefined hash to `null` so an untyped payload can never
   request `?v=undefined`.
+- **Rev 4.3, normaliser upscale branch (§5 step 4):** when `max(size) < 256` the image is enlarged with
+  `ImageOps.contain` (LANCZOS) instead of `thumbnail()`, which never enlarges; inputs with a side ≥ 256 keep
+  the `thumbnail` shrink path, so the memory bound is unchanged. Both branches resize before
+  `exif_transpose` (the longer side and the square box are orientation-invariant).
+- **Rev 4.3, 404 copy split (§6.4):** a 404 whose `message` is `account not found` (account deleted
+  elsewhere) shows 「帳戶不存在」; any other 404 keeps 「伺服器尚未支援上傳」. Applies to the PUT and DELETE
+  error toasts. `GET logo.png` also parses `If-None-Match` as a list (`W/` and quotes stripped, `*` matches).

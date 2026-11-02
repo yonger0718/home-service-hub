@@ -52,7 +52,7 @@ The SPA SHALL provide the route `/accounting/accounts/:id`. It SHALL show a peri
 - running balance, shown as a small line above the amount on every viewport (passbook style)
 - project and kind pills (應收, 回饋, 轉帳, 退款)
 
-It SHALL load more entries on demand using the paginated endpoint, SHALL filter by kind, date range and text, SHALL mark entries with `needs_review = true`, SHALL open the entry detail on tap, and SHALL link to the account settings page. Its header avatar SHALL be a button (aria-label 「更換 logo」) that opens a file picker; while uploading it SHALL show a busy state, and on success a toast.
+It SHALL load more entries on demand using the paginated endpoint, SHALL filter by kind, date range and text, SHALL mark entries with `needs_review = true`, SHALL open the entry detail on tap, and SHALL link to the account settings page. Its header avatar SHALL be a button (aria-label 「更換 logo」) that opens a file picker; while uploading it SHALL show a busy state.
 
 #### Scenario: Unpaired transfer is flagged
 - **GIVEN** an account has a transfer leg with `needs_review = true`
@@ -65,11 +65,11 @@ It SHALL load more entries on demand using the paginated endpoint, SHALL filter 
 
 #### Scenario: Upload from the account page
 - **WHEN** the owner taps the header avatar and picks a valid image
-- **THEN** the avatar SHALL show a busy state, then the new image, and a success toast SHALL appear
+- **THEN** the avatar SHALL show a busy state, then the new image (no toast)
 
 #### Scenario: Upload rejected
 - **WHEN** the upload fails
-- **THEN** a toast SHALL show 「圖片太大（上限 5 MB）」 for 413, 「只接受 PNG、JPEG、WebP」 for `logo_format`, 「圖片尺寸不符（每邊 16–8192 px）」 for `logo_dimensions`, 「這個檔案無法當作圖片使用」 for `logo_unreadable` or `logo_empty`, and 「伺服器尚未支援上傳」 for a 404 on the PUT
+- **THEN** a toast SHALL show 「圖片太大（上限 5 MB）」 for 413, 「只接受 PNG、JPEG、WebP」 for `logo_format`, 「圖片尺寸不符（每邊 16–8192 px）」 for `logo_dimensions`, 「這個檔案無法當作圖片使用」 for `logo_unreadable` or `logo_empty`, 「帳戶不存在」 for a 404 `account not found`, and 「伺服器尚未支援上傳」 for any other 404
 - **AND** the previous logo SHALL remain
 
 #### Scenario: Oversized file refused client-side
@@ -115,7 +115,7 @@ The SPA SHALL provide `/accounting/accounts/:id/settings` and `/accounting/accou
 
 ### Requirement: Account logo image store
 
-The SPA SHALL fetch uploaded logos with the scoped token and cache one object URL per (account id, `logo_hash`). The response `ETag` decides the cache key. A load superseded by a newer one SHALL be discarded before the ETag is consulted. A replaced object URL SHALL be revoked on the next macrotask.
+The SPA SHALL fetch uploaded logos with the scoped token and cache one object URL per account, keyed by its current `logo_hash`. The response `ETag` decides the cache key. A load superseded by a newer one SHALL be discarded before the ETag is consulted. A replaced object URL SHALL be revoked on the next macrotask.
 
 #### Scenario: Cache hit
 - **GIVEN** a logo already loaded for (account, `logo_hash`)

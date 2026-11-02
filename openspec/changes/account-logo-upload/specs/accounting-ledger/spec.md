@@ -107,7 +107,7 @@ The service SHALL expose these read endpoints:
 
 ### Requirement: Account logo upload
 
-`PUT /api/accounting/accounts/{id}/logo` (scope `write`) SHALL accept the raw image as the body; `Content-Type` is recorded, not trusted. A `Content-Length` above 5 MiB SHALL be refused before reading, and the body SHALL be streamed against a 5 MiB budget (413 `logo_too_large`). The stored image SHALL be a 256×256 RGBA PNG; the response SHALL be the account detail with `logo_hash`.
+`PUT /api/accounting/accounts/{id}/logo` (scope `write`) SHALL accept the raw image as the body; `Content-Type` is recorded, not trusted. A `Content-Length` above 5 MiB SHALL be refused before reading, and the body SHALL be streamed against a 5 MiB budget (413 `logo_too_large`). The image SHALL be fitted into 256×256 (shrunk when larger, enlarged when smaller), then padded onto a transparent canvas and stored as a 256×256 RGBA PNG; the response SHALL be the account detail with `logo_hash`.
 
 #### Scenario: Valid PNG is normalised
 - **GIVEN** an account and a valid 600×300 PNG
