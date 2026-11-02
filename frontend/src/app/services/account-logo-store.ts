@@ -1,6 +1,5 @@
 import { HttpClient, HttpResponse } from '@angular/common/http';
 import { Injectable, Signal, WritableSignal, inject, signal, untracked } from '@angular/core';
-import { Observable, finalize, shareReplay } from 'rxjs';
 
 import { AccountingService } from './accounting.service';
 
@@ -31,7 +30,7 @@ export class AccountLogoStore {
 
   private readonly signals = new Map<number, WritableSignal<string | null>>();
   private readonly states = new Map<number, LogoState>();
-  private readonly inflight = new Map<string, Observable<HttpResponse<Blob>>>();
+
   url(accountId: number, hash: string | null): Signal<string | null> {
     return untracked(() => this.resolve(accountId, hash));
   }
@@ -57,7 +56,7 @@ export class AccountLogoStore {
         state.generation++;
         state.hash = null;
         state.failedHash = null;
-            this.show(id, null);
+        this.show(id, null);
       }
       return slot;
     }
@@ -65,7 +64,6 @@ export class AccountLogoStore {
     if (state.failedHash === hash) {
       return slot;
     }
-    const key = `${id}:${hash}`;
     if (state.hash === hash) {
       return slot;
     }
@@ -74,33 +72,26 @@ export class AccountLogoStore {
     state.hash = hash;
     state.failedHash = null;
     const generation = state.generation;
-    const request$ = this.startRequest(id, hash, key);
 
-    request$.subscribe({
+    this.http.get(this.accounting.logoImageUrl(id, hash), { responseType: 'blob', observe: 'response' }).subscribe({
       next: response => this.onResponse(id, hash, generation, response),
       error: () => this.onError(id, hash, generation),
     });
     return slot;
   }
 
-  private startRequest(id: number, hash: string, key: string): Observable<HttpResponse<Blob>> {
-    const request$: Observable<HttpResponse<Blob>> = this.http
-      .get(this.accounting.logoImageUrl(id, hash), { responseType: 'blob', observe: 'response' })
-      .pipe(
-        finalize(() => {
-          if (this.inflight.get(key) === request$) {
-            this.inflight.delete(key);
-          }
-        }),
-        shareReplay(1),
-      );
-    this.inflight.set(key, request$);
-    return request$;
-  }
-
   private onResponse(id: number, requested: string, generation: number, response: HttpResponse<Blob>): void {
     const state = this.states.get(id)!;
-    // Generation check comes before the ETag: a superseded response is dropped whatever its hash says.
+    const actual = this.parseEtag(response.headers.get('ETag'));
+    // Record the mismatch guard before the generation check: even a superseded response proves the
+    // requested hash is stale, and skipping it would let a second slot refetch it forever.
+    const mismatch = actual !== null && actual !== requested;
+    if (mismatch && !(state.staleRequested === requested && Date.now() < state.staleUntil)) {
+      state.staleRequested = requested;
+      state.staleUntil = Date.now() + 30_000;
+      this.accounting.refreshAccounts();
+    }
+    // Generation check: a superseded response never becomes an object URL.
     if (state.generation !== generation) {
       return;
     }
@@ -108,14 +99,10 @@ export class AccountLogoStore {
       this.onError(id, requested, generation);
       return;
     }
-    const actual = this.parseEtag(response.headers.get('ETag'));
     this.show(id, URL.createObjectURL(response.body));
     // Missing or unusable ETag: resolved under the requested hash; only a hash change refetches.
-    if (actual !== null && actual !== requested) {
+    if (mismatch) {
       state.hash = actual;
-      state.staleRequested = requested;
-      state.staleUntil = Date.now() + 30_000;
-      this.accounting.refreshAccounts();
     }
   }
 

@@ -149,6 +149,23 @@ describe('AccountLogoStore', () => {
     flush(http.expectOne(urlFor(A, 7)), 'a', A);
   });
 
+  for (const order of ['A first', 'B first']) {
+    it(`two slots with a stale and a fresh hash do not loop (${order})`, () => {
+      const cA = computed(() => store.url(7, A)());
+      const cB = computed(() => store.url(7, B)());
+      if (order === 'A first') { cA(); cB(); } else { cB(); cA(); }
+      const reqs = http.match(r => r.url.startsWith('/api/accounting/accounts/7/logo.png'));
+      expect(reqs.length).toBe(2);
+      for (const r of reqs) { flush(r, 'b', B); }
+      for (let i = 0; i < 3; i++) { cA(); cB(); }
+      const more = http.match(r => r.url.startsWith('/api/accounting/accounts/7/logo.png'));
+      expect(more.length).toBeLessThanOrEqual(0);
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(cA()).toBe(cB());
+      expect(cA()).not.toBeNull();
+    });
+  }
+
   it('a 200 with an empty body is treated as a failure', () => {
     const sig = store.url(7, A);
     http.expectOne(urlFor(A, 7)).flush(null as unknown as Blob);
