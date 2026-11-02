@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-02-account-logo-upload-design.md` rev 4.1 (`c8cf5e94`). Section numbers below (§) refer to it.
 
-**Plan rev 2** (2026-11-02): folds Multica AGENT-386 — null hashes reach the store so deletion invalidates (Task 8);
+**Plan rev 2.1** (2026-11-02; rev 2 folded Multica AGENT-386, rev 2.1 its two re-check minors: fixtures built before the `load` spy, account setup before the thread spies) — null hashes reach the store so deletion invalidates (Task 8);
 RGBA paste without a self-mask (Task 2); no transpose-before-thumbnail fallback, call order asserted (Task 2);
 no-load / corrupt-pixel / envelope / worker-thread / stored-bytes / mismatch-then-reload tests pinned (Tasks 2, 4, 7);
 timestamps `NOT NULL` (Task 1); Pillow and the venv install command precede their first use (Task 1).
@@ -265,8 +265,9 @@ def test_translucent_pixels_keep_their_alpha_and_colour():
     px = Image.open(BytesIO(out.png)).getpixel((128, 128))
     assert px[:3] == (0, 0, 255) and 124 <= px[3] <= 132                 # alpha applied once, RGB untouched
 def test_rejected_inputs_never_decode_pixels(monkeypatch):
+    fixtures = [_img(100, 100, fmt="GIF"), _img(15, 15), _img(6000, 6000)]   # build BEFORE patching: saving needs load()
     calls = []; monkeypatch.setattr(Image.Image, "load", lambda self: calls.append("load") or None)
-    for bad in (_img(100, 100, fmt="GIF"), _img(15, 15), _img(6000, 6000)):
+    for bad in fixtures:
         with pytest.raises(LogoError): normalise_logo(bad)
     assert calls == []                                                   # format/dimension gates run before load()
 def test_corrupt_pixel_data_is_unreadable():
@@ -472,13 +473,13 @@ async def test_slow_worker_does_not_block_health_and_all_sync_work_is_on_one_wor
     def spy(name, fn):
         def wrapped(*a, **kw): seen[name] = threading.get_ident(); return fn(*a, **kw)
         return wrapped
+    acct = _account(client)                       # account setup BEFORE any spy, so only the upload is observed
     svc = accounts_router.account_logo_service
     monkeypatch.setattr(svc, "normalise_logo", spy("normalise", lambda d, **kw: (time.sleep(1.0), normalise_logo(d, **kw))[1]))
     monkeypatch.setattr(svc, "put_logo", spy("put", svc.put_logo))
     monkeypatch.setattr(accounts_router.ledger_service, "get_account", spy("detail", accounts_router.ledger_service.get_account))
     real_commit = Session.commit; monkeypatch.setattr(Session, "commit", spy("commit", real_commit))
     loop_thread = threading.get_ident()
-    acct = _account(client)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as ac:
         async def upload(): return await ac.put(f"/accounts/{acct['id']}/logo", content=_png(300, 100), headers={"Content-Type": "image/png"})
         async def health():
@@ -489,9 +490,9 @@ async def test_slow_worker_does_not_block_health_and_all_sync_work_is_on_one_wor
     assert len(set(seen.values())) == 1 and loop_thread not in seen.values()   # one worker thread, never the event loop
 ```
 
-(The `commit` spy is only the final commit of the upload; `_account` runs before the spy is installed. If the
-`Session.commit` patch catches commits from other code paths in the test, narrow it by asserting on the commit
-that happened between the `put` and `detail` spies — the point is that the upload's commit is on the worker thread.)
+(All spies are installed after `_account`, so the only observed commit is the upload's. The health request does
+not commit. If a conftest fixture commits during the test, record `(name, thread)` pairs in a list instead of a
+dict and assert on the entries recorded between `put` and `detail`.)
 
 `test_scope_enforcement` already enumerates the new PUT/DELETE and expects 403 for the read-only `hermes` token with `json={}`; make sure the 403 fires before the body is read (the router-level dependency runs first — verify by running that suite).
 
