@@ -44,7 +44,7 @@ export class AccountIconComponent {
   /** Hash forwarded even when null so a deletion reaches the store. Every slot of one account should take `logo_hash` from a source that `refreshAccounts()` reloads; the store bounds the damage otherwise. */
   protected readonly uploadedUrl = computed(() => {
     const id = this.accountId();
-    return id !== null ? this.store.url(id, this.logoHash())() : null;
+    return id !== null ? this.store.url(id, this.logoHash() ?? null)() : null;
   });
   protected readonly entry = computed(() => {
     const s = this.logo();

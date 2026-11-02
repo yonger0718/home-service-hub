@@ -13,6 +13,8 @@ const etag = (hash: string) => `"${hash}${'0'.repeat(48)}"`;
 const blobOf = (label: string) => new Blob([label], { type: 'image/png' });
 
 describe('AccountLogoStore', () => {
+  // Stubbing `URL` in place would leak into later specs of the same worker; the two methods are restored after each test.
+  const originalObjectUrls = { createObjectURL: URL.createObjectURL, revokeObjectURL: URL.revokeObjectURL };
   let store: AccountLogoStore;
   let http: HttpTestingController;
   let accounting: AccountingService;
@@ -29,10 +31,10 @@ describe('AccountLogoStore', () => {
     counter = 0;
     created = new Map();
     revoke = vi.fn();
-    vi.stubGlobal('URL', Object.assign(URL, {
+    Object.assign(URL, {
       createObjectURL: (b: Blob) => { const u = `blob:${++counter}`; created.set(b, u); return u; },
       revokeObjectURL: revoke,
-    }));
+    });
     TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
     store = TestBed.inject(AccountLogoStore);
     http = TestBed.inject(HttpTestingController);
@@ -44,7 +46,7 @@ describe('AccountLogoStore', () => {
   afterEach(() => {
     http.verify();
     vi.useRealTimers();
-    vi.unstubAllGlobals();
+    Object.assign(URL, originalObjectUrls);
   });
 
   it('fetches once for N slots of the same (id, hash) and exposes the object URL', () => {

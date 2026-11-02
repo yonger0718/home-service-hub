@@ -146,9 +146,11 @@ describe('AccountIconComponent', () => {
 });
 
 describe('AccountIconComponent with the real AccountLogoStore', () => {
+  // Stubbing `URL` in place would leak the stubs into later specs of the same worker; restore the two methods.
+  const originalObjectUrls = { createObjectURL: URL.createObjectURL, revokeObjectURL: URL.revokeObjectURL };
   afterEach(() => {
     vi.useRealTimers();
-    vi.unstubAllGlobals();
+    Object.assign(URL, originalObjectUrls);
   });
 
   it('component + store: hash → null revokes the url and discards a pending response', () => {
@@ -156,7 +158,7 @@ describe('AccountIconComponent with the real AccountLogoStore', () => {
     let counter = 0;
     const revoke = vi.fn();
     const create = vi.fn(() => `blob:${++counter}`);
-    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke }));
+    Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke });
     TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
     const http = TestBed.inject(HttpTestingController);
     const A = 'a'.repeat(16);
