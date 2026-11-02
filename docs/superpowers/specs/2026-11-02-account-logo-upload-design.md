@@ -1,6 +1,6 @@
 # Account logo upload — design
 
-Rev 4.3, 2026-11-02 — final-review fixes: small inputs are enlarged to fit; 404 copy split; If-None-Match list parsing. Rev 4.2 — implementation notes appended at the end (PR 1 execution: P-mode expansion, store missing-ETag and
+Rev 4.4, 2026-11-02 — Multica AGENT-388 fold: null consumers no longer clear a slot another consumer still uses (deferred clear); the stale-hash window re-resolves on expiry. Rev 4.3 — final-review fixes: small inputs are enlarged to fit; 404 copy split; If-None-Match list parsing. Rev 4.2 — implementation notes appended at the end (PR 1 execution: P-mode expansion, store missing-ETag and
 stale-hash guard semantics, icon null coalescing); no contract change. Rev 4.1 — Multica AGENT-384 PASS-with-minor at rev 4 `5cf90e6a`; the two minors are folded here: the
 memory figure is a budget to be measured (OS peak RSS in a subprocess), not a proven bound, and the store's
 late-response guard compares the request generation, never the response hash. Rev 3 → rev 4 folded the AGENT-384 re-check: both Pillow bomb exceptions are caught at the
@@ -450,3 +450,17 @@ Deviations settled during PR 1 execution; each one is covered by a test named in
 - **Rev 4.3, 404 copy split (§6.4):** a 404 whose `message` is `account not found` (account deleted
   elsewhere) shows 「帳戶不存在」; any other 404 keeps 「伺服器尚未支援上傳」. Applies to the PUT and DELETE
   error toasts. `GET logo.png` also parses `If-None-Match` as a list (`W/` and quotes stripped, `*` matches).
+- **Rev 4.4, store null hash (§6.1):** `url(id, null)` returns a constant null signal and never writes the
+  account's slot synchronously. It schedules one deferred clear per account (`setTimeout(0)`) that any
+  `url(id, hash)` with a non-null hash for the same account cancels. A slot whose detail payload still says
+  `null` while the accounts list says A therefore keeps A (no GET loop); when every consumer is null (a real
+  deletion) the clear fires: hash and slot become `null`, the generation is bumped so in-flight loads are
+  dropped, and the old URL is revoked on the following macrotask. Residual: a null consumer that appears
+  after A is already shown, while no A consumer re-reads in the same macrotask, clears the slot once; the A
+  consumer then refetches once and the slot settles (the null consumer has no dependency on the slot).
+- **Rev 4.4, stale-hash window expiry (§6.1):** the mismatch guard also arms one 30 s timer per account
+  (replacing any earlier one). On expiry it clears the mark and, if the account's last requested non-null
+  hash differs from the resolved one (and is not marked failed), starts a normal generation-protected fetch,
+  so a computed that asked for a re-uploaded hash recovers without any further trigger; the rev 4.2 edge is
+  bounded by the window. The passive `Date.now()` check stays. While a slot keeps reading a stale hash, this
+  costs at most one GET and one accounts refresh per window.
