@@ -14,6 +14,7 @@ from .ledger import (
     SYSTEM_KINDS,
     Account,
     AccountGroup,
+    AccountLogoImage,
     Budget,
     Category,
     Counterparty,

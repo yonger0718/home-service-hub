@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     SmallInteger,
     String,
@@ -143,6 +144,20 @@ class Account(Base, TimestampMixin):
     statement_source_root = Column(
         ENUM(*STATEMENT_SOURCE_ROOTS, name="statement_source_root", create_type=False), nullable=True
     )
+
+
+class AccountLogoImage(Base):
+    """Uploaded account logo, already normalised to a 256×256 PNG by account_logo_service. One row per account."""
+
+    __tablename__ = "account_logo_image"
+
+    account_id = Column(Integer, ForeignKey("account.id", ondelete="CASCADE"), primary_key=True)
+    png = Column(LargeBinary, nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    source_media_type = Column(String(32), nullable=False)
+    source_bytes = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
 class Category(Base):
