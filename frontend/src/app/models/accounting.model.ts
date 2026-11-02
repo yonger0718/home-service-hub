@@ -162,6 +162,8 @@ export interface LedgerAccount {
   icon: string | null;
   /** Bundled institution-logo slug (see theme/account-logos.ts); null = none. */
   logo: string | null;
+  /** sha256 prefix of the uploaded logo image; null = none. Uploaded image beats `logo`. */
+  logo_hash: string | null;
   color: string | null;
   is_archived: boolean;
   include_in_total: boolean;

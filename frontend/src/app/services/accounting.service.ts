@@ -151,6 +151,29 @@ export class AccountingService {
     return this.bumpAccounts(this.http.delete<void>(`${this.apiUrl}/accounts/${id}`));
   }
 
+  /** Uploads the account's logo image (raw body); the server normalises it. */
+  uploadAccountLogo(id: number, file: Blob): Observable<AccountDetail> {
+    return this.bumpAccounts(
+      this.http.put<AccountDetail>(`${this.apiUrl}/accounts/${id}/logo`, file, {
+        headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      }),
+    );
+  }
+
+  deleteAccountLogo(id: number): Observable<void> {
+    return this.bumpAccounts(this.http.delete<void>(`${this.apiUrl}/accounts/${id}/logo`));
+  }
+
+  /** Cache-busted URL of the uploaded logo; `hash` is `LedgerAccount.logo_hash`. */
+  logoImageUrl(id: number, hash: string): string {
+    return `${this.apiUrl}/accounts/${id}/logo.png?v=${encodeURIComponent(hash)}`;
+  }
+
+  /** Bumps `accountsChanged` so account lists reload (used by the logo store on an ETag mismatch). */
+  refreshAccounts(): void {
+    this.accountChangeCount.update(count => count + 1);
+  }
+
   resetSettingsFlag(id: number): Observable<AccountDetail> {
     return this.bumpAccounts(this.http.post<AccountDetail>(`${this.apiUrl}/accounts/${id}/reset-settings-flag`, {}));
   }
