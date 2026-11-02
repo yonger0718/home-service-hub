@@ -11,6 +11,7 @@ import { AccountingService } from './accounting.service';
 const A = 'a'.repeat(16);
 const B = 'b'.repeat(16);
 const C = 'c'.repeat(16);
+const D = 'd'.repeat(16);
 const etag = (hash: string) => `"${hash}${'0'.repeat(48)}"`;
 /** Every logo request of account 7 (the account used by the scenarios). */
 const P = (r: { url: string }) => r.url.startsWith('/api/accounting/accounts/7/logo.png');
@@ -20,7 +21,9 @@ const hashOf = (req: TestRequest) => req.request.url.slice(-16);
  * Scenario matrix (design rev 5.0, lease model). Letters in the test names refer to it:
  * a dedupe · b generation guard · c ETag mismatch (alias) · d missing / weak / non-hex ETag · e stale null lease ·
  * f deletion · g release + re-acquire in one macrotask · h re-upload of an earlier logo (W1) · i stale detail + list ·
- * j both 404 · k A 404 then B 200 · l transient error · m 0-byte body · n destroy · o silent context · p NG0600.
+ * j both 404 · k A 404 then B 200 · l transient error · m 0-byte body · n destroy · o silent context · p NG0600 ·
+ * q return to the shown hash cancels the other load · r a new lease for an aliased hash drops the alias ·
+ * s seeded random sequences (per-hash and per-account stubs).
  * Each scenario ends with the boundedness epilogue: the macrotask queue drained, 31 s advanced with no lease event,
  * and no GET observed (scenarios where a live target keeps failing assert the one allowed GET per 30 s instead).
  */
@@ -173,10 +176,14 @@ describe('AccountLogoStore', () => {
     vi.advanceTimersByTime(1);
     expect(revoke).toHaveBeenCalledWith('blob:1:b'); // same bytes, new URL; the old one goes
     detail.release();
-    store.acquire(7, A); // the detail re-renders with its stale payload: alias A → B is already shown
-    http.expectNone(P);
+    store.acquire(7, A); // the detail re-mounts with its stale payload: a new lease drops the alias and loads A once
+    flush(http.expectOne(urlFor(A)), 'b', B); // the real server still answers B: alias re-created, one more refresh
+    expect(shown()).toBe('b');
+    expect(refresh).toHaveBeenCalledTimes(2);
+    store.acquire(7, A); // a further lease for A while the first is live: the alias is dropped and A loads again
+    flush(http.expectOne(urlFor(A)), 'b', B);
+    expect(refresh).toHaveBeenCalledTimes(3); // once per alias re-creation, bounded by acquires
     epilogue();
-    expect(refresh).toHaveBeenCalledTimes(1);
   });
 
   // ---- d. missing / weak / non-hex ETag --------------------------------------------------------------------
@@ -314,11 +321,14 @@ describe('AccountLogoStore', () => {
     expect(shown()).toBe('b');
     expect(refresh).toHaveBeenCalledTimes(1);
     epilogue();
-    // The refreshed list may keep A (nothing changed server side) or move to B: neither costs a GET.
+    // The refreshed list may move to B (0 GETs) or keep A: a new lease for the aliased A drops the alias and asks
+    // once more (the server answers B again: alias re-created, one more refresh), bounded by acquires.
     lease.release();
     store.acquire(7, A);
-    http.expectNone(P);
+    flush(http.expectOne(urlFor(A)), 'b', B);
+    expect(refresh).toHaveBeenCalledTimes(2);
     store.acquire(7, B);
+    http.expectNone(P);
     epilogue();
     expect(shown()).toBe('b');
   });
@@ -518,6 +528,160 @@ describe('AccountLogoStore', () => {
     flush(req, 'a', A);
     epilogue();
   });
+
+  // ---- q. the target returns to the shown hash while another load is in flight -------------------------------
+
+  it('(q) one lease flips B → A → B before A answers: the A load is cancelled, B stays shown, 2 GETs', () => {
+    let lease = store.acquire(7, B);
+    flush(http.expectOne(urlFor(B)), 'b', B);
+    lease.release();
+    lease = store.acquire(7, A);
+    const reqA = http.expectOne(urlFor(A));
+    lease.release();
+    store.acquire(7, B);
+    expect(reqA.cancelled).toBe(true);
+    expect(shown()).toBe('b');
+    epilogue();
+    expect(created).toEqual(['blob:1:b']);
+    expect(revoke).not.toHaveBeenCalled();
+  });
+
+  it('(q) stale detail A + newest list B: the list releasing and re-acquiring B while A loads keeps B', () => {
+    store.acquire(7, A);
+    const reqA1 = http.expectOne(urlFor(A));
+    let list = store.acquire(7, B);
+    flush(http.expectOne(urlFor(B)), 'b', B);
+    flush(reqA1, 'a', A); // superseded
+    expect(shown()).toBe('b');
+    list.release(); // the list row re-renders: A is the target for a moment
+    const reqA2 = http.expectOne(urlFor(A));
+    list = store.acquire(7, B);
+    expect(reqA2.cancelled).toBe(true);
+    expect(shown()).toBe('b');
+    epilogue();
+    expect(created).toEqual(['blob:1:b']);
+  });
+
+  it('(q) a cancelled load leaves no failed entry and no timer; the hash loads when it becomes the target again', () => {
+    let lease = store.acquire(7, B);
+    flush(http.expectOne(urlFor(B)), 'b', B);
+    lease.release();
+    lease = store.acquire(7, A);
+    http.expectOne(urlFor(A));
+    lease.release();
+    lease = store.acquire(7, B);
+    expect(vi.getTimerCount()).toBe(0);
+    lease.release();
+    store.acquire(7, A);
+    flush(http.expectOne(urlFor(A)), 'a', A);
+    expect(shown()).toBe('a');
+    epilogue();
+  });
+
+  // ---- r. a new lease for an aliased hash drops the alias ------------------------------------------------------
+
+  it('(r) alias A → B, then the original A is uploaded again: 1 GET ?v=A → 200 ETag A → A shown', () => {
+    const stale = store.acquire(7, A); // logo is B; this lease holds the earlier hash
+    flush(http.expectOne(urlFor(A)), 'b', B);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    stale.release();
+    const list = store.acquire(7, B); // the list reloaded to B
+    http.expectNone(P);
+    list.release();
+    store.acquire(7, A); // the owner re-uploads the original A; the list moves back to A
+    flush(http.expectOne(urlFor(A)), 'a', A);
+    expect(shown()).toBe('a');
+    epilogue();
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(revoke).toHaveBeenCalledWith('blob:1:b');
+  });
+
+  it('(r) the same against a server still at B: 1 GET per re-acquire of A, B stays, alias restored, one refresh each', () => {
+    const list = store.acquire(7, B);
+    flush(http.expectOne(urlFor(B)), 'b', B);
+    let detail = store.acquire(7, A);
+    flush(http.expectOne(urlFor(A)), 'b', B);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    detail.release();
+    detail = store.acquire(7, A); // the detail icon re-mounts with its stale payload
+    flush(http.expectOne(urlFor(A)), 'b', B);
+    expect(shown()).toBe('b');
+    expect(refresh).toHaveBeenCalledTimes(2);
+    epilogue(); // no further GET without another acquire
+    detail.release(); // the list (B) is the target again: alias A → B is shown
+    http.expectNone(P);
+    list.release();
+    epilogue();
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
+  // ---- s. seeded random sequences -------------------------------------------------------------------------------
+
+  for (const kind of ['per-hash', 'per-account'] as const) {
+    it(`(s) 200 seeded acquire/release/response steps (${kind} stub): GETs within the bound, the newest lease's image shows`, () => {
+      const E = 'e'.repeat(16); // never served by the per-hash stub
+      const hashes: (string | null)[] = [A, B, C, D, E, null];
+      let seed = kind === 'per-hash' ? 20261102 : 7;
+      const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+      const pick = <T,>(arr: T[]): T => arr[Math.floor(rnd() * arr.length)];
+      let current: string | null = A; // per-account server state
+      const serve = (req: TestRequest) => {
+        if (req.cancelled) return;
+        const requested = hashOf(req);
+        if (kind === 'per-hash') {
+          if (requested === E) fail404(req); else flush(req, requested[0], requested);
+        } else if (current === null) {
+          fail404(req);
+        } else {
+          flush(req, current[0], current);
+        }
+      };
+      const live: { hash: string | null; lease: LogoLease }[] = [];
+      const newest = () => { for (let i = live.length - 1; i >= 0; i--) if (live[i].hash !== null) return live[i].hash; return null; };
+      let acquires = 0; let retargets = 0; let gets = 0; let elapsed = 0;
+      const acquire = (hash: string | null) => { live.push({ hash, lease: store.acquire(7, hash) }); if (hash !== null) acquires++; };
+      const release = (i: number) => {
+        const before = newest();
+        const [entry] = live.splice(i, 1);
+        entry.lease.release();
+        const after = newest();
+        if (after !== null && after !== before) retargets++;
+      };
+      const pump = () => { const reqs = http.match(P); gets += reqs.length; reqs.forEach(serve); };
+      const advance = (ms: number) => { vi.advanceTimersByTime(ms); elapsed += ms; };
+      const drain = () => { for (let i = 0; i < 10; i++) { pump(); advance(1); } };
+
+      for (let step = 0; step < 200; step++) {
+        const r = rnd();
+        if (r < 0.25) acquire(pick(hashes));
+        else if (r < 0.5 && live.length) { release(Math.floor(rnd() * live.length)); acquire(pick(hashes)); }
+        else if (r < 0.65 && live.length) release(Math.floor(rnd() * live.length));
+        else if (r < 0.85) { const reqs = http.match(req => P(req) && rnd() < 0.8); gets += reqs.length; reqs.sort(() => rnd() - 0.5).forEach(serve); } // some answers, out of order; the rest stay open
+        else if (r < 0.95) advance(pick([1, 15_000, 31_000]));
+        else if (kind === 'per-account') current = pick([A, B, C, D, null]);
+      }
+      // Final sync, as a list reload would do: every live lease moves to the server's current hash.
+      if (kind === 'per-account' && current !== null) {
+        for (let i = live.length - 1; i >= 0; i--) { release(i); acquire(current); }
+      }
+      drain();
+      advance(31_000); // let one failure window end
+      drain();
+      http.expectNone(P);
+
+      const bound = acquires + retargets + Math.ceil(elapsed / 30_000);
+      expect(gets).toBeLessThanOrEqual(bound);
+      const want = newest();
+      if (kind === 'per-hash') {
+        if (want === null) expect(shown()).toBeNull();
+        else if (want !== E) expect(shown()).toBe(want[0]);
+      } else if (current !== null && want !== null) {
+        expect(shown()).toBe(current[0]);
+      }
+      // Leftover requests of the final window stay unanswered for http.verify(); serve them now.
+      pump();
+    });
+  }
 
   // ---- p. reactive contexts --------------------------------------------------------------------------------
 

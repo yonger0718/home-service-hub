@@ -158,6 +158,21 @@ class TwoSlotsHostComponent {
   list = signal<string | null>(null);
 }
 
+@Component({
+  imports: [AccountIconComponent],
+  template: `
+    <app-account-icon class="detail" [accountId]="7" [logoHash]="detail()" />
+    @if (showList()) {
+      <app-account-icon class="list" [accountId]="7" [logoHash]="list()" />
+    }
+  `,
+})
+class ToggledHostComponent {
+  detail = signal<string | null>(null);
+  list = signal<string | null>(null);
+  showList = signal(true);
+}
+
 describe('AccountIconComponent with the real AccountLogoStore', () => {
   // Stubbing `URL` in place would leak the stubs into later specs of the same worker; restore the two methods.
   const originalObjectUrls = { createObjectURL: URL.createObjectURL, revokeObjectURL: URL.revokeObjectURL };
@@ -273,6 +288,34 @@ describe('AccountIconComponent with the real AccountLogoStore', () => {
     vi.runOnlyPendingTimers();
     expect(revoke).toHaveBeenCalledWith('blob:1');
     http.expectNone(P);
+  });
+
+  it('an @if-toggled icon destroyed and recreated with the same hash beside an older-hash icon keeps the newest image', () => {
+    const fixture = TestBed.createComponent(ToggledHostComponent);
+    const root = fixture.nativeElement as HTMLElement;
+    fixture.componentInstance.detail.set(A); // stale one-shot payload
+    fixture.componentInstance.list.set(B);
+    fixture.detectChanges();
+    const reqA = http.expectOne(r => r.url.includes(`v=${A}`));
+    http.expectOne(r => r.url.includes(`v=${B}`)).flush(new Blob(['b']), { headers: { ETag: etag(B) } });
+    reqA.flush(new Blob(['a']), { headers: { ETag: etag(A) } }); // superseded
+    fixture.detectChanges();
+    expect(srcOf(root, '.detail')).toBe('blob:1');
+    expect(srcOf(root, '.list')).toBe('blob:1');
+
+    fixture.componentInstance.showList.set(false); // the list icon is destroyed: A becomes the target
+    fixture.detectChanges();
+    const reqA2 = http.expectOne(r => r.url.includes(`v=${A}`));
+    fixture.componentInstance.showList.set(true); // and recreated with B: the A load is cancelled
+    fixture.detectChanges();
+    expect(reqA2.cancelled).toBe(true);
+    expect(srcOf(root, '.detail')).toBe('blob:1');
+    expect(srcOf(root, '.list')).toBe('blob:1');
+    vi.advanceTimersByTime(31_001);
+    fixture.detectChanges();
+    http.expectNone(P);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(revoke).not.toHaveBeenCalled();
   });
 
   it('destroying the icons releases their leases: the slot clears and the URL is revoked', () => {

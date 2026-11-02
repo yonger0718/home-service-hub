@@ -6,7 +6,7 @@ import { SILENT_HTTP_ERRORS } from '../interceptors/error-logging.interceptor';
 import { AccountingService } from './accounting.service';
 
 /**
- * Lease model (rev 5.0).
+ * Lease model (rev 5.1).
  *
  * A consumer never asks the store to fetch by reading a signal. It registers a lease for its current
  * (account, hash) with `acquire()` and releases it when that pair changes or the consumer goes away; the per-account
@@ -16,18 +16,24 @@ import { AccountingService } from './accounting.service';
  *
  * Per account, the **target** is the hash of the newest non-null lease (null when every lease is null or none exists).
  * `evaluate()` fetches the target's effective hash (`aliases` maps a requested hash to the ETag hash the server
- * answered with) unless it is already shown, in flight or inside its 30 s failure window. Only the current-generation
- * response is honoured; a superseded response, success or error, is ignored entirely. A success sets the shown hash to
- * the ETag hash (else the requested one), records the alias and refreshes the accounts once per (account, requested
- * hash) when they differ, and replaces the object URL (the old one is revoked on the next macrotask). A failure (any
- * HTTP error, a null or 0-byte body) keeps the shown image, records the hash in `failed` and arms one 30 s timer per
- * account that empties `failed` and evaluates once. When the target becomes null a deferred clear (`setTimeout(0)`)
- * runs unless a non-null lease arrives first: it bumps the generation, forgets aliases and failures and blanks the slot.
+ * answered with) unless it is already shown, in flight or inside its 30 s failure window. When the target's effective
+ * hash is the one already shown while a load for another hash is in flight, that load is cancelled (generation bump,
+ * unsubscribe), so a flip B → A → B before A answers keeps B. Only the current-generation response is honoured; a
+ * superseded response, success or error, is ignored entirely. A success sets the shown hash to the ETag hash (else the
+ * requested one), records the alias and refreshes the accounts once per alias creation when they differ, and replaces
+ * the object URL (the old one is revoked on the next macrotask). An alias describes the leases that were live when it
+ * was learned: a new lease for an aliased hash drops the alias (and its refresh mark) before evaluating, so a genuine
+ * re-upload of that earlier logo is fetched once more (against a server still answering the newer bytes the alias is
+ * simply re-created, one GET and one refresh per such acquire). A failure (any HTTP error, a null or 0-byte body) keeps
+ * the shown image, records the hash in `failed` and arms one 30 s timer per account that empties `failed` and
+ * evaluates once. When the target becomes null a deferred clear (`setTimeout(0)`) runs unless a non-null lease arrives
+ * first: it bumps the generation, forgets aliases and failures and blanks the slot.
  *
- * Bounds: GETs per account ≤ acquires + releases that change the target, plus at most one per 30 s while the live
- * target keeps failing. A re-upload of an earlier logo (A → B → A) loads A again because the newest lease is the target.
- * Accepted edge: a one-shot stale detail acquired after the list, when the browser cache serves its old bytes with
- * the old ETag, shows the old image until the next acquire.
+ * Bounds: GETs per account ≤ non-null acquires + releases that change the target to another non-null hash, plus at
+ * most one per 30 s while the live target keeps failing; accounts refreshes ≤ mismatching 200s ≤ GETs. A re-upload of
+ * an earlier logo (A → B → A) loads A again because the newest lease is the target, aliased or not. Accepted edge: a
+ * one-shot stale detail acquired after the list, when the browser cache serves its old bytes with the old ETag, shows
+ * the old image until the next acquire.
  *
  * `acquire()` may run inside an effect and `slot()` inside a computed: every synchronous signal write is untracked.
  */
@@ -53,6 +59,8 @@ interface LogoState {
   shownHash: string | null;
   /** Requested hash of the current-generation load in flight; null when none. */
   pending: string | null;
+  /** Subscription of that load, so a return to the shown hash can cancel it. */
+  pendingSub: Subscription | null;
   /** Bumped by every fetch and by the deferred clear; a response from an older generation is ignored entirely. */
   generation: number;
   /** Every in-flight subscription, unsubscribed on destroy. */
@@ -61,7 +69,7 @@ interface LogoState {
   leases: Map<number, string | null>;
   /** Requested hash → ETag hash the server answered with. */
   aliases: Map<string, string>;
-  /** Requested hashes the account has refreshed the accounts for (one refresh per pair). */
+  /** Requested hashes whose current alias already refreshed the accounts (one refresh per alias creation). */
   refreshed: Set<string>;
   /** Hashes whose current-generation load failed inside the open window. */
   failed: Set<string>;
@@ -102,6 +110,10 @@ export class AccountLogoStore implements OnDestroy {
       state.leases.set(seq, hash);
       if (hash !== null) {
         this.cancelClear(state);
+        // A new lease for an aliased hash means that hash may be current again: forget the alias and load it once.
+        if (state.aliases.delete(hash)) {
+          state.refreshed.delete(hash);
+        }
         this.evaluate(accountId);
       } else if (this.target(state) === null) {
         this.scheduleClear(accountId);
@@ -140,7 +152,7 @@ export class AccountLogoStore implements OnDestroy {
     if (!state) {
       const slot = signal<string | null>(null);
       state = {
-        slot, readonlySlot: slot.asReadonly(), shownHash: null, pending: null, generation: 0, inflight: new Set(),
+        slot, readonlySlot: slot.asReadonly(), shownHash: null, pending: null, pendingSub: null, generation: 0, inflight: new Set(),
         leases: new Map(), aliases: new Map(), refreshed: new Set(), failed: new Set(), failTimer: null, clearTimer: null,
       };
       this.states.set(id, state);
@@ -185,10 +197,27 @@ export class AccountLogoStore implements OnDestroy {
       return; // the deferred clear handles it
     }
     const effective = state.aliases.get(target) ?? target;
-    if (effective === state.shownHash || effective === state.pending || state.failed.has(effective)) {
+    if (effective === state.shownHash) {
+      if (state.pending !== null) {
+        this.cancelPending(state); // the target came back to what is shown: the other load must not replace it
+      }
+      return;
+    }
+    if (effective === state.pending || state.failed.has(effective)) {
       return;
     }
     this.fetch(id, state, effective);
+  }
+
+  /** Drops the current-generation load: its response, success or error, is never seen. */
+  private cancelPending(state: LogoState): void {
+    state.generation++;
+    if (state.pendingSub !== null) {
+      state.pendingSub.unsubscribe();
+      state.inflight.delete(state.pendingSub);
+      state.pendingSub = null;
+    }
+    state.pending = null;
   }
 
   /** Starts a generation-protected load of `hash`; any earlier in-flight load for the account is superseded. */
@@ -201,6 +230,7 @@ export class AccountLogoStore implements OnDestroy {
     const holder: { sub?: Subscription } = {};
     const done = () => {
       if (holder.sub) state.inflight.delete(holder.sub);
+      if (holder.sub && state.pendingSub === holder.sub) state.pendingSub = null;
     };
     const options = {
       responseType: 'blob', observe: 'response',
@@ -212,6 +242,7 @@ export class AccountLogoStore implements OnDestroy {
     });
     if (!holder.sub.closed) {
       state.inflight.add(holder.sub);
+      if (state.generation === generation) state.pendingSub = holder.sub;
     }
   }
 
@@ -244,6 +275,7 @@ export class AccountLogoStore implements OnDestroy {
       state.failed.delete(requested);
       state.failed.delete(actual);
       state.pending = null;
+      state.pendingSub = null;
       this.show(state, URL.createObjectURL(response.body!));
     });
   }
@@ -257,6 +289,7 @@ export class AccountLogoStore implements OnDestroy {
       return; // superseded: ignored entirely
     }
     state.pending = null;
+    state.pendingSub = null;
     state.failed.add(requested);
     if (state.failTimer !== null) {
       clearTimeout(state.failTimer);
@@ -289,6 +322,7 @@ export class AccountLogoStore implements OnDestroy {
       }
       state.generation++; // drops every in-flight response
       state.pending = null;
+      state.pendingSub = null;
       state.shownHash = null;
       state.aliases.clear();
       state.refreshed.clear();

@@ -124,7 +124,7 @@ The SPA SHALL fetch uploaded logos with the scoped token and keep one object URL
 
 #### Scenario: ETag mismatch
 - **WHEN** the response ETag differs from the requested `logo_hash`
-- **THEN** the image SHALL be shown under the actual hash, the accounts list SHALL be refreshed once, and a lease for the requested hash SHALL make no further request
+- **THEN** the image SHALL be shown under the actual hash, the accounts list SHALL be refreshed once, and the leases already live for the requested hash SHALL make no further request; a new lease for that hash SHALL request it once more
 
 #### Scenario: Failed load
 - **WHEN** a logo request fails (any HTTP error, or an empty body)
@@ -134,6 +134,11 @@ The SPA SHALL fetch uploaded logos with the scoped token and keep one object URL
 - **GIVEN** a load is in flight
 - **WHEN** a newer load for the same account starts
 - **THEN** the older result SHALL NOT create an object URL, change the image or count as a failure
+
+#### Scenario: Newest lease returns to the shown hash
+- **GIVEN** an account showing hash B while a load for hash A is in flight
+- **WHEN** a lease for B becomes the newest lease of the account
+- **THEN** the A load SHALL be cancelled and B SHALL stay shown
 
 #### Scenario: Earlier logo uploaded again
 - **GIVEN** an account whose icons showed hash A, then hash B
