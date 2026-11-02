@@ -106,6 +106,7 @@ class AccountOut(BaseModel):
     group_name: str | None
     icon: str | None
     logo: str | None
+    logo_hash: str | None
     color: str | None
     is_archived: bool
     include_in_total: bool

@@ -13,6 +13,11 @@ from dataclasses import dataclass
 from io import BytesIO
 
 from PIL import Image, ImageOps, UnidentifiedImageError
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from ..models import Account, AccountLogoImage
+from .errors import NotFoundError
 
 MAX_LOGO_UPLOAD_BYTES = 5 * 1024 * 1024
 MAX_LOGO_PIXELS = 25_000_000
@@ -96,3 +101,46 @@ def normalise_logo(data: bytes, *, declared_type: str | None = None) -> Normalis
         source_media_type=media_type,
         source_bytes=len(data),
     )
+
+
+def _require_account(db: Session, account_id: int) -> None:
+    if db.get(Account, account_id) is None:
+        raise NotFoundError("account not found")
+
+
+def get_logo(db: Session, account_id: int) -> AccountLogoImage | None:
+    return db.get(AccountLogoImage, account_id)
+
+
+def put_logo(db: Session, account_id: int, logo: NormalisedLogo) -> None:
+    """Insert or replace the account's logo row. Does not commit."""
+    _require_account(db, account_id)
+    row = db.get(AccountLogoImage, account_id)
+    if row is None:
+        db.add(
+            AccountLogoImage(
+                account_id=account_id,
+                png=logo.png,
+                sha256=logo.sha256,
+                source_media_type=logo.source_media_type,
+                source_bytes=logo.source_bytes,
+            )
+        )
+    else:
+        row.png = logo.png
+        row.sha256 = logo.sha256
+        row.source_media_type = logo.source_media_type
+        row.source_bytes = logo.source_bytes
+        row.updated_at = func.now()
+    db.flush()
+
+
+def delete_logo(db: Session, account_id: int) -> bool:
+    """Remove the account's logo row; True when one existed. Does not commit."""
+    _require_account(db, account_id)
+    row = db.get(AccountLogoImage, account_id)
+    if row is None:
+        return False
+    db.delete(row)
+    db.flush()
+    return True
