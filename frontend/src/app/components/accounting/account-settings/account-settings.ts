@@ -381,6 +381,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
         this.saving.set(false);
         this.loadedId.set(null);
         this.logoHash.set(null);
+        this.uploadingLogo.set(false);
         this.detail.set(null);
         this.form.set(EMPTY_FORM);
         this.sharing.set([]);
@@ -567,12 +568,16 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
         }
       },
       error: err => {
-        this.uploadingLogo.set(false);
         if (id === this.loadedId()) {
+          this.uploadingLogo.set(false);
           this.toast.show(logoUploadErrorMessage(err));
         }
       },
-      complete: () => this.uploadingLogo.set(false),
+      complete: () => {
+        if (id === this.loadedId()) {
+          this.uploadingLogo.set(false);
+        }
+      },
     });
   }
 
@@ -589,12 +594,16 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
         }
       },
       error: err => {
-        this.uploadingLogo.set(false);
         if (id === this.loadedId()) {
+          this.uploadingLogo.set(false);
           this.toast.show(logoUploadErrorMessage(err));
         }
       },
-      complete: () => this.uploadingLogo.set(false),
+      complete: () => {
+        if (id === this.loadedId()) {
+          this.uploadingLogo.set(false);
+        }
+      },
     });
   }
 

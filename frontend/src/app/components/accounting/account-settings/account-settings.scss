@@ -188,7 +188,6 @@
 .logo-actions button { background: var(--app-surface-soft); border: 1px solid transparent; border-radius: 8px; color: var(--app-text); cursor: pointer; font: inherit; font-size: 0.85rem; padding: 4px 10px; }
 .logo-actions button:disabled { cursor: not-allowed; opacity: 0.5; }
 .logo-hint { color: var(--app-text-muted); font-size: 0.75rem; }
-.logo-current { align-items: center; background: none; border: 0; color: var(--app-text); cursor: pointer; display: inline-flex; font: inherit; gap: 6px; }
 .logo-grid { display: grid; gap: 0.5rem; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); padding: 0.5rem 0; }
 .logo-opt {
   align-items: center;

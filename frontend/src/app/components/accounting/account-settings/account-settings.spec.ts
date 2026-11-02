@@ -1107,6 +1107,7 @@ describe('AccountSettingsComponent', () => {
       fixture.detectChanges();
       http.expectOne('/api/accounting/accounts/11/logo.png?v=abc').flush(new Blob([new Uint8Array(1)], { type: 'image/png' }));
       expect(fixture.componentInstance.logoState()).toBe('已上傳的圖片');
+      expect(fixture.componentInstance.isDirty()).toBe(true);
       expect(el(fixture).querySelector<HTMLInputElement>('.name-input')!.value).toBe('改過的名稱');
       expect(el(fixture).querySelector<HTMLButtonElement>('.save')!.disabled).toBe(false);
     });
@@ -1126,6 +1127,7 @@ describe('AccountSettingsComponent', () => {
       fixture.detectChanges();
       expect(fixture.componentInstance.logoHash()).toBeNull();
       expect(fixture.componentInstance.logoState()).toBe('內建：國泰世華');
+      expect(fixture.componentInstance.isDirty()).toBe(true);
       expect(el(fixture).querySelector<HTMLInputElement>('.name-input')!.value).toBe('改過的名稱');
       expect(el(fixture).querySelector<HTMLButtonElement>('.save')!.disabled).toBe(false);
     });
@@ -1135,8 +1137,26 @@ describe('AccountSettingsComponent', () => {
       const fixture = render(DETAIL);
       const show = vi.spyOn(TestBed.inject(AccountingToastService), 'show');
       choose(fixture, { size: 6 * 1024 * 1024, type: 'image/png' } as unknown as File);
+      expect(el(fixture).querySelector<HTMLInputElement>('input[type=file]')!.value).toBe('');
       http.expectNone(URL);
       expect(show).toHaveBeenCalledWith('圖片太大（上限 5 MB）');
+    });
+
+    it('navigating away clears logoHash and the busy flag before the next account loads', async () => {
+      await setup('11');
+      const fixture = render({ ...DETAIL, logo_hash: 'h1' } as AccountDetail);
+      http.expectOne('/api/accounting/accounts/11/logo.png?v=h1').flush(new Blob([new Uint8Array(1)], { type: 'image/png' }));
+      choose(fixture, file());
+      const pending = http.expectOne(URL);
+      expect(fixture.componentInstance.uploadingLogo()).toBe(true);
+      navigateTo('12');
+      fixture.detectChanges();
+      expect(fixture.componentInstance.logoHash()).toBeNull();
+      expect(fixture.componentInstance.logoState()).not.toBe('已上傳的圖片');
+      expect(fixture.componentInstance.uploadingLogo()).toBe(false);
+      pending.flush({ ...DETAIL, logo_hash: 'late' });
+      expect(fixture.componentInstance.logoHash()).toBeNull();
+      http.match(() => true);
     });
 
     it('toasts the mapped message on a 422 and clears the busy state', async () => {
