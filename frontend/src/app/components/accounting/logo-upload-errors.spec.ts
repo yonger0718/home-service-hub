@@ -26,6 +26,12 @@ describe('logoUploadErrorMessage', () => {
   it('maps 404 to unsupported', () => {
     expect(logoUploadErrorMessage(fail(404, 'not_found'))).toBe('伺服器尚未支援上傳');
   });
+  it('maps 404 account not found to the missing-account copy', () => {
+    expect(logoUploadErrorMessage(fail(404, 'account not found'))).toBe('帳戶不存在');
+  });
+  it('keeps the unsupported copy for any other 404', () => {
+    expect(logoUploadErrorMessage(fail(404, 'Not Found'))).toBe('伺服器尚未支援上傳');
+  });
   it('falls back to the generic write message', () => {
     expect(logoUploadErrorMessage(new HttpErrorResponse({ status: 0 }))).toBe('無法連線到伺服器');
     expect(logoUploadErrorMessage(new Error('x'))).toBe('儲存失敗，請稍後再試');

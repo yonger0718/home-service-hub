@@ -19,6 +19,8 @@
   padding: 0;
 
   &[aria-busy='true'] { opacity: 0.5; }
+
+  app-account-icon { border-radius: 50%; }
 }
 
 .back-link, .settings-link { color: var(--app-text-muted); font-size: 1.2rem; padding: 0 0.5rem; text-decoration: none; }

@@ -33,7 +33,8 @@ export function logoUploadErrorMessage(err: unknown): string {
       }
     }
     if (err.status === 404) {
-      return '伺服器尚未支援上傳';
+      // The account was deleted elsewhere vs. a backend without the logo routes.
+      return token === 'account not found' ? '帳戶不存在' : '伺服器尚未支援上傳';
     }
   }
   return writeErrorMessage(err);
