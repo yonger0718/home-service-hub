@@ -8,6 +8,13 @@ interface LogoState {
   hash: string | null;
   failedHash: string | null;
   generation: number;
+  /**
+   * Loop guard, set on an ETag mismatch to the hash that was requested (the model's stale value).
+   * While the model still says that hash, url() neither refetches nor refreshes again; the model's hash
+   * moving off it is the signal that the post-mismatch reload landed. Accepted edge: a second upload of
+   * the same hash landing before that reload completes shows the newer bytes only on the next hash change.
+   */
+  staleRequested: string | null;
 }
 
 /**
@@ -37,8 +44,15 @@ export class AccountLogoStore {
     }
     let state = this.states.get(id);
     if (!state) {
-      state = { hash: null, failedHash: null, generation: 0 };
+      state = { hash: null, failedHash: null, generation: 0, staleRequested: null };
       this.states.set(id, state);
+    }
+
+    if (state.staleRequested !== null) {
+      if (hash === state.staleRequested) {
+        return slot;
+      }
+      state.staleRequested = null;
     }
 
     if (hash === null) {
@@ -105,6 +119,7 @@ export class AccountLogoStore {
     this.show(id, URL.createObjectURL(response.body));
     if (actual !== requested) {
       state.hash = actual;
+      state.staleRequested = requested;
       this.accounting.refreshAccounts();
     }
   }

@@ -94,16 +94,24 @@ describe('AccountLogoStore', () => {
 
   it('mismatch B then model reload A refetches A (A→B→A end to end)', () => {
     vi.useFakeTimers();
-    const sig = store.url(1, A);
-    flush(http.expectOne(urlFor(A)), 'b', B);
+    const sig = store.url(7, A);
+    flush(http.expectOne(urlFor(A, 7)), 'b', B);
     expect(sig()).toBe('blob:1');
     expect(refresh).toHaveBeenCalledTimes(1);
 
-    store.url(1, A);
-    flush(http.expectOne(urlFor(A)), 'a', A);
+    store.url(7, A);
+    http.expectNone(urlFor(A, 7));
+    expect(sig()).toBe('blob:1');
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    store.url(7, B);
+    http.expectNone(urlFor(B, 7));
+    expect(sig()).toBe('blob:1');
+
+    store.url(7, A);
+    flush(http.expectOne(urlFor(A, 7)), 'a', A);
     expect(sig()).toBe('blob:2');
-    expect(revoke).not.toHaveBeenCalled();
-    vi.runAllTimers();
+    vi.runOnlyPendingTimers();
     expect(revoke).toHaveBeenCalledWith('blob:1');
     expect(refresh).toHaveBeenCalledTimes(1);
   });
