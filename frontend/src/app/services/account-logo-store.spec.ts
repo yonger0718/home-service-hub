@@ -108,6 +108,7 @@ describe('AccountLogoStore', () => {
     http.expectNone(urlFor(B, 7));
     expect(sig()).toBe('blob:1');
 
+    vi.advanceTimersByTime(30_001);
     store.url(7, A);
     flush(http.expectOne(urlFor(A, 7)), 'a', A);
     expect(sig()).toBe('blob:2');
@@ -116,15 +117,44 @@ describe('AccountLogoStore', () => {
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
-  it('missing etag shows the image but caches nothing', () => {
-    const sig = store.url(1, A);
-    flush(http.expectOne(urlFor(A)), 'a', null);
+  it('missing etag shows the image and is resolved under the requested hash', () => {
+    const sig = store.url(7, A);
+    flush(http.expectOne(urlFor(A, 7)), 'a', null);
     expect(sig()).toBe('blob:1');
     expect(refresh).not.toHaveBeenCalled();
-    store.url(1, A);
-    flush(http.expectOne(urlFor(A)), 'a2', null);
-    expect(sig()).toBe('blob:2');
-    expect(refresh).not.toHaveBeenCalled();
+    store.url(7, A);
+    http.expectNone(urlFor(A, 7));
+    expect(sig()).toBe('blob:1');
+  });
+
+  it('a computed re-reading a no-ETag slot fetches exactly once', () => {
+    const c = computed(() => store.url(7, A)());
+    expect(c()).toBeNull();
+    flush(http.expectOne(urlFor(A, 7)), 'a', null);
+    expect(c()).toBe('blob:1');
+    expect(c()).toBe('blob:1');
+    http.expectNone(urlFor(A, 7));
+  });
+
+  it('a stale hash stays suppressed for 30 s even after a fresher hash was seen', () => {
+    vi.useFakeTimers();
+    store.url(7, A);
+    flush(http.expectOne(urlFor(A, 7)), 'b', B);
+    store.url(7, B);
+    store.url(7, A);
+    http.expectNone(urlFor(A, 7));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(30_001);
+    store.url(7, A);
+    flush(http.expectOne(urlFor(A, 7)), 'a', A);
+  });
+
+  it('a 200 with an empty body is treated as a failure', () => {
+    const sig = store.url(7, A);
+    http.expectOne(urlFor(A, 7)).flush(null as unknown as Blob);
+    expect(sig()).toBeNull();
+    store.url(7, A);
+    http.expectNone(urlFor(A, 7));
   });
 
   it('404 marks the hash failed, exposes null, and does not retry until the hash changes', () => {

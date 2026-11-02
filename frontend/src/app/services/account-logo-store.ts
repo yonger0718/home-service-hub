@@ -10,11 +10,14 @@ interface LogoState {
   generation: number;
   /**
    * Loop guard, set on an ETag mismatch to the hash that was requested (the model's stale value).
-   * While the model still says that hash, url() neither refetches nor refreshes again; the model's hash
-   * moving off it is the signal that the post-mismatch reload landed. Accepted edge: a second upload of
-   * the same hash landing before that reload completes shows the newer bytes only on the next hash change.
+   * Until `staleUntil`, url() neither refetches nor refreshes again for that hash, even if another hash
+   * was seen in between (two slots of one account may read different sources). Task 8 rule: every slot
+   * should read `logo_hash` from a source that `refreshAccounts()` reloads; the 30 s bound only limits
+   * the damage when one does not. Accepted edge: a second upload of the same hash landing before the
+   * reload completes shows the newer bytes only after the window or on the next hash change.
    */
   staleRequested: string | null;
+  staleUntil: number;
 }
 
 /**
@@ -29,9 +32,6 @@ export class AccountLogoStore {
   private readonly signals = new Map<number, WritableSignal<string | null>>();
   private readonly states = new Map<number, LogoState>();
   private readonly inflight = new Map<string, Observable<HttpResponse<Blob>>>();
-  /** Accounts whose current image came without an ETag: shown, but a later call refetches. */
-  private readonly uncached = new Set<number>();
-
   url(accountId: number, hash: string | null): Signal<string | null> {
     return untracked(() => this.resolve(accountId, hash));
   }
@@ -44,15 +44,12 @@ export class AccountLogoStore {
     }
     let state = this.states.get(id);
     if (!state) {
-      state = { hash: null, failedHash: null, generation: 0, staleRequested: null };
+      state = { hash: null, failedHash: null, generation: 0, staleRequested: null, staleUntil: 0 };
       this.states.set(id, state);
     }
 
-    if (state.staleRequested !== null) {
-      if (hash === state.staleRequested) {
-        return slot;
-      }
-      state.staleRequested = null;
+    if (hash !== null && hash === state.staleRequested && Date.now() < state.staleUntil) {
+      return slot;
     }
 
     if (hash === null) {
@@ -60,8 +57,7 @@ export class AccountLogoStore {
         state.generation++;
         state.hash = null;
         state.failedHash = null;
-        this.uncached.delete(id);
-        this.show(id, null);
+            this.show(id, null);
       }
       return slot;
     }
@@ -70,17 +66,15 @@ export class AccountLogoStore {
       return slot;
     }
     const key = `${id}:${hash}`;
-    if (state.hash === hash && (this.inflight.has(key) || !this.uncached.has(id))) {
+    if (state.hash === hash) {
       return slot;
     }
 
-    const shared = state.hash === hash && this.inflight.has(key);
     state.generation++;
     state.hash = hash;
     state.failedHash = null;
-    this.uncached.delete(id);
     const generation = state.generation;
-    const request$ = shared ? this.inflight.get(key)! : this.startRequest(id, hash, key);
+    const request$ = this.startRequest(id, hash, key);
 
     request$.subscribe({
       next: response => this.onResponse(id, hash, generation, response),
@@ -107,19 +101,20 @@ export class AccountLogoStore {
   private onResponse(id: number, requested: string, generation: number, response: HttpResponse<Blob>): void {
     const state = this.states.get(id)!;
     // Generation check comes before the ETag: a superseded response is dropped whatever its hash says.
-    if (state.generation !== generation || !response.body) {
+    if (state.generation !== generation) {
+      return;
+    }
+    if (!response.body) {
+      this.onError(id, requested, generation);
       return;
     }
     const actual = this.parseEtag(response.headers.get('ETag'));
-    if (actual === null) {
-      this.uncached.add(id);
-      this.show(id, URL.createObjectURL(response.body));
-      return;
-    }
     this.show(id, URL.createObjectURL(response.body));
-    if (actual !== requested) {
+    // Missing or unusable ETag: resolved under the requested hash; only a hash change refetches.
+    if (actual !== null && actual !== requested) {
       state.hash = actual;
       state.staleRequested = requested;
+      state.staleUntil = Date.now() + 30_000;
       this.accounting.refreshAccounts();
     }
   }
