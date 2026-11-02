@@ -4,6 +4,7 @@ import { Signal, computed, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { SILENT_HTTP_ERRORS } from '../interceptors/error-logging.interceptor';
 import { AccountLogoStore } from './account-logo-store';
 import { AccountingService } from './accounting.service';
 
@@ -17,10 +18,12 @@ const P = (r: { url: string }) => r.url.startsWith('/api/accounting/accounts/7/l
 const hashOf = (req: TestRequest) => req.request.url.slice(-16);
 
 /**
- * Scenario matrix (design rev 4.5, unified failure model). Letters in the test names refer to it:
- * a dedupe · b generation guard · c ETag mismatch + stale window · d missing ETag · e null/A alive ·
+ * Scenario matrix (design rev 4.6, unified failure model). Letters in the test names refer to it:
+ * a dedupe · b generation guard · c ETag mismatch (succeeded hashes) · d missing ETag · e null/A alive ·
  * f null consumer after A · g deletion · h same-bytes re-upload · i both 404 (per-account server) ·
- * j per-hash server · k stuck-blank regression · l transient error + expiry · m destroy · n NG0600.
+ * j per-hash server · k stuck-blank regression · l transient error + expiry · m destroy · n NG0600 ·
+ * o two live hashes both 200 (per-hash / weak-ETag server) · p shown A, list moves to a 404 hash ·
+ * q 0-byte body · r silent interceptor context.
  * Consumers are real computed()s wherever re-evaluation matters; "settle" re-reads every live computed for
  * three rounds (letting setTimeout(0) work run between them) and proves that no GET follows.
  */
@@ -74,7 +77,9 @@ describe('AccountLogoStore', () => {
 
   it('(a) fetches once for N slots of the same (id, hash) and exposes the object URL', () => {
     const slots = Array.from({ length: 5 }, () => store.url(1, A));
-    flush(http.expectOne(urlFor(A)), 'a', A);
+    const req = http.expectOne(urlFor(A));
+    expect(req.request.context.get(SILENT_HTTP_ERRORS)).toBe(true); // (r) no retry, no toast on the prod chain
+    flush(req, 'a', A);
     expect(refresh).not.toHaveBeenCalled();
     expect(slots[0]()).toBe('blob:1');
     expect(slots.every(s => s === slots[0])).toBe(true);
@@ -134,9 +139,9 @@ describe('AccountLogoStore', () => {
     expect(counter).toBe(1);
   });
 
-  // ---- c. ETag mismatch + stale window ---------------------------------------------------------------------
+  // ---- c. ETag mismatch: cached under the real hash, both hashes succeeded ---------------------------------
 
-  it('(c) etag mismatch is cached under the actual hash, refreshes once, and re-reads make no GET', () => {
+  it('(c) etag mismatch A→B: cached under B, 1 refresh; re-reads no GET; 30 s later still no GET; consumer shows B', () => {
     vi.useFakeTimers();
     const c = computed(() => store.url(7, A)());
     c();
@@ -146,94 +151,40 @@ describe('AccountLogoStore', () => {
     store.url(7, B);
     http.expectNone(urlFor(B, 7));
     settle(c);
-    expect(refresh).toHaveBeenCalledTimes(1);
-  });
-
-  it('(c) after 30 s the stale hash is re-resolved: GET ?v=A → ETag A → blob A, B revoked, no second refresh', () => {
-    vi.useFakeTimers();
-    const c = computed(() => store.url(7, A)());
+    vi.advanceTimersByTime(30_001);
     c();
-    flush(http.expectOne(urlFor(A, 7)), 'b', B);
+    http.expectNone(P);
+    settle(c);
     expect(c()).toBe('blob:1');
-    settle(c);
-    vi.advanceTimersByTime(30_001);
-    flush(http.expectOne(urlFor(A, 7)), 'a', A);
-    expect(c()).toBe('blob:2');
-    vi.advanceTimersByTime(1);
-    expect(revoke).toHaveBeenCalledWith('blob:1');
     expect(refresh).toHaveBeenCalledTimes(1);
-    settle(c);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('(c) mismatch B then model reload A refetches A (A→B→A end to end, direct url() calls)', () => {
-    vi.useFakeTimers();
-    const sig = store.url(7, A);
-    flush(http.expectOne(urlFor(A, 7)), 'b', B);
-    expect(sig()).toBe('blob:1');
-    store.url(7, A);
-    http.expectNone(urlFor(A, 7));
-    store.url(7, B);
-    http.expectNone(urlFor(B, 7));
-    vi.advanceTimersByTime(30_001);
-    store.url(7, A);
-    flush(http.expectOne(urlFor(A, 7)), 'a', A);
-    expect(sig()).toBe('blob:2');
-    vi.advanceTimersByTime(1);
-    expect(revoke).toHaveBeenCalledWith('blob:1');
-    expect(refresh).toHaveBeenCalledTimes(1);
-  });
-
-  it('(c) a second mismatch replaces the stale timer instead of adding one', () => {
+  it('(c) A→B→A: after a mismatch the model moving to B and back to A makes no GET (A is a succeeded hash)', () => {
     vi.useFakeTimers();
     const hash = signal(A);
-    const c = computed(() => store.url(7, hash())());
-    c();
-    flush(http.expectOne(urlFor(A, 7)), 'b', B); // stale A, timer due at 30 s
-    vi.advanceTimersByTime(10_000);
-    hash.set(C);
-    c();
-    flush(http.expectOne(urlFor(C, 7)), 'b2', B); // stale C, timer replaced: due at 40 s
-    vi.advanceTimersByTime(1); // revoke of blob:1
-    expect(refresh).toHaveBeenCalledTimes(2);
-    expect(vi.getTimerCount()).toBe(1);
-    vi.advanceTimersByTime(20_001); // the first timer's due time: replaced, nothing fires
-    http.expectNone(P);
-    vi.advanceTimersByTime(10_000); // the second timer: lastRequested C differs from the resolved B
-    flush(http.expectOne(urlFor(C, 7)), 'c', C);
-    expect(c()).toBe('blob:3');
-    settle(c);
-    expect(refresh).toHaveBeenCalledTimes(2);
-  });
-
-  it('(c) the stale window expiry makes no GET when the model already moved to the resolved hash', () => {
-    vi.useFakeTimers();
-    const hash = signal<string | null>(A);
     const c = computed(() => store.url(7, hash())());
     c();
     flush(http.expectOne(urlFor(A, 7)), 'b', B);
     hash.set(B);
     expect(c()).toBe('blob:1');
-    vi.advanceTimersByTime(30_001);
     http.expectNone(P);
+    hash.set(A);
     expect(c()).toBe('blob:1');
-    expect(refresh).toHaveBeenCalledTimes(1);
-  });
-
-  it('(c) a stale hash stays suppressed for 30 s even after a fresher hash was seen', () => {
-    vi.useFakeTimers();
-    store.url(7, A);
-    flush(http.expectOne(urlFor(A, 7)), 'b', B);
-    store.url(7, B);
-    store.url(7, A);
-    http.expectNone(urlFor(A, 7));
-    expect(refresh).toHaveBeenCalledTimes(1);
+    http.expectNone(P);
     vi.advanceTimersByTime(30_001);
-    store.url(7, A);
-    flush(http.expectOne(urlFor(A, 7)), 'a', A);
+    settle(c);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    // A fresh hash still loads.
+    hash.set(C);
+    c();
+    flush(http.expectOne(urlFor(C, 7)), 'c', C);
+    expect(c()).toBe('blob:2');
+    settle(c);
   });
 
   for (const order of ['A first', 'B first']) {
-    it(`(c) two slots with a stale and a fresh hash, server answers B for both, do not loop (${order})`, () => {
+    it(`(c) two slots with a stale and a fresh hash, server answers B for both: 2 GETs, 1 refresh, no loop (${order})`, () => {
       vi.useFakeTimers();
       const cA = computed(() => store.url(7, A)());
       const cB = computed(() => store.url(7, B)());
@@ -241,6 +192,8 @@ describe('AccountLogoStore', () => {
       const reqs = http.match(P);
       expect(reqs.length).toBe(2);
       for (const r of reqs) flush(r, 'b', B);
+      settle(cA, cB);
+      vi.advanceTimersByTime(30_001);
       settle(cA, cB);
       expect(refresh).toHaveBeenCalledTimes(1);
       expect(cA()).toBe(cB());
@@ -635,11 +588,11 @@ describe('AccountLogoStore', () => {
     store.url(2, A);
     fail404(http.expectOne(urlFor(A, 2))); // arms the failure-expiry timer
     store.url(3, A);
-    flush(http.expectOne(urlFor(A, 3)), 'b', B); // arms the stale timer (+ refresh)
+    flush(http.expectOne(urlFor(A, 3)), 'b', B); // mismatch: refresh, no timer
     store.url(7, A);
     const pending = http.expectOne(urlFor(A, 7));
     store.url(1, null); // arms a deferred clear
-    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    expect(vi.getTimerCount()).toBe(2);
     store.ngOnDestroy();
     expect(pending.cancelled).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
@@ -653,10 +606,10 @@ describe('AccountLogoStore', () => {
     expect(counter).toBe(2);
   });
 
-  it('(m) destroy clears an armed stale-window timer', () => {
+  it('(m) destroy clears an armed failure-expiry timer', () => {
     vi.useFakeTimers();
     store.url(7, A);
-    flush(http.expectOne(urlFor(A, 7)), 'b', B);
+    fail404(http.expectOne(urlFor(A, 7)));
     expect(vi.getTimerCount()).toBe(1);
     store.ngOnDestroy();
     expect(vi.getTimerCount()).toBe(0);
@@ -675,6 +628,77 @@ describe('AccountLogoStore', () => {
     expect(revoke).toHaveBeenCalledTimes(1);
     expect(revoke).toHaveBeenCalledWith('blob:1');
     expect(revoke).not.toHaveBeenCalledWith('blob:2');
+  });
+
+  // ---- o. two live hashes that both answer 200 ------------------------------------------------------------
+
+  for (const weak of [false, true]) {
+    for (const order of ['detail first', 'list first']) {
+      it(`(o${weak ? '2, W/ ETags' : ''}) detail A + list B both 200: exactly 2 GETs, both show the last-resolved image (${order})`, () => {
+        vi.useFakeTimers();
+        const cD = computed(() => store.url(7, A)());
+        const cL = computed(() => store.url(7, B)());
+        if (order === 'detail first') read(cD, cL); else read(cL, cD);
+        const reqs = http.match(P);
+        expect(reqs.length).toBe(2);
+        for (const r of reqs) {
+          const h = hashOf(r);
+          r.flush(blobOf(h), { headers: { ETag: weak ? `W/${etag(h)}` : etag(h) } });
+        }
+        settle(cD, cL);
+        vi.advanceTimersByTime(31_000);
+        settle(cD, cL);
+        expect(counter).toBe(1); // the superseded 200 never became a URL
+        expect(cD()).toBe('blob:1');
+        expect(cL()).toBe('blob:1');
+        expect(refresh).not.toHaveBeenCalled();
+        expect(revoke).not.toHaveBeenCalled();
+      });
+    }
+  }
+
+  // ---- p. shown A, list moves to a hash that 404s --------------------------------------------------------
+
+  it('(p) A shown, then the list moves to B which 404s: exactly 1 extra GET, both consumers keep A', () => {
+    vi.useFakeTimers();
+    const list = signal(A);
+    const cD = computed(() => store.url(7, A)());
+    const cL = computed(() => store.url(7, list())());
+    read(cD, cL);
+    flush(http.expectOne(urlFor(A, 7)), 'a', A);
+    settle(cD, cL);
+    list.set(B);
+    read(cL, cD);
+    fail404(http.expectOne(urlFor(B, 7)));
+    settle(cD, cL);
+    vi.advanceTimersByTime(31_000);
+    settle(cD, cL);
+    expect(cD()).toBe('blob:1');
+    expect(cL()).toBe('blob:1');
+    expect(revoke).not.toHaveBeenCalled();
+  });
+
+  // ---- q. 0-byte body --------------------------------------------------------------------------------------
+
+  it('(q) a 200 with a 0-byte body is a failure: no URL, slot unchanged, no refetch', () => {
+    vi.useFakeTimers();
+    const hash = signal(A);
+    const c = computed(() => store.url(7, hash())());
+    c();
+    flush(http.expectOne(urlFor(A, 7)), 'a', A);
+    hash.set(B);
+    c();
+    http.expectOne(urlFor(B, 7)).flush(new Blob([]), { headers: { ETag: etag(B) } });
+    expect(c()).toBe('blob:1');
+    settle(c);
+    expect(counter).toBe(1);
+    expect(revoke).not.toHaveBeenCalled();
+    const fresh = computed(() => store.url(8, A)());
+    fresh();
+    http.expectOne(urlFor(A, 8)).flush(new Blob([]), { headers: { ETag: etag(A) } });
+    expect(fresh()).toBeNull();
+    fresh();
+    http.expectNone(urlFor(A, 8));
   });
 
   // ---- n. NG0600 -------------------------------------------------------------------------------------------

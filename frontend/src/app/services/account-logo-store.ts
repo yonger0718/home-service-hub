@@ -1,30 +1,30 @@
-import { HttpClient, HttpResponse } from '@angular/common/http';
+import { HttpClient, HttpContext, HttpResponse } from '@angular/common/http';
 import { Injectable, OnDestroy, Signal, WritableSignal, inject, signal, untracked } from '@angular/core';
 import { Subscription } from 'rxjs';
 
+import { SILENT_HTTP_ERRORS } from '../interceptors/error-logging.interceptor';
 import { AccountingService } from './accounting.service';
 
 /**
- * Unified failure model (rev 4.5).
+ * Unified failure model (rev 4.6).
  *
  * One slot signal per account; every consumer with a non-null hash reads that slot, whatever its hash and
  * whether or not that hash has failed, so any image resolved for the account is shown by every consumer and a
- * consumer holding a stale or failed hash is woken by every slot change. `failed` (per account, per hash) only
- * suppresses re-fetching, never display. Errors count only when they belong to the current generation; a
- * superseded error is ignored entirely. A current-generation failure keeps whatever the slot shows and
- * force-notifies it; each woken consumer can start a fetch only for a hash that is neither resolved, in flight
- * nor failed, so the GETs between two external changes are bounded by the number of distinct live hashes
- * (a failure is recorded before the wake that follows it). A 30 s per-account timer empties `failed` without
- * fetching; recovery happens on the next consumer re-evaluation. Deletion (every consumer null) clears the
- * account on the next macrotask; an ETag mismatch is cached under the real hash and the requested hash is
- * marked stale for 30 s, re-resolved on expiry.
+ * consumer holding a stale or failed hash is woken by every slot change. Two per-account, per-hash sets only
+ * suppress fetching, never display: `succeeded` (every post-clear 200 records the requested and the ETag hash;
+ * a hash is content-addressed, so a 200 for it is a durable fact) and `failed` (current-generation errors only,
+ * emptied by a 30 s timer without fetching). A fetch starts only for a hash that is neither resolved, in
+ * flight, succeeded nor failed, so between two deletion clears the GETs of an account are bounded by the
+ * number of distinct hashes seen (plus one wake-up refetch per hash when a current failure leaves the account
+ * blank, which also empties `succeeded`; such a failure adds a `failed` entry, so that happens at most once per
+ * live hash per window). Responses from before the last deletion clear are ignored entirely; a superseded
+ * error is ignored entirely; a superseded 200 is recorded but never shown. An ETag mismatch is cached under
+ * the real hash and refreshes the accounts once per requested hash. Logo GETs run with `SILENT_HTTP_ERRORS`
+ * (no retry, no toast); the fallback is the slug / emoji.
  *
  * `url()` may be called inside a `computed()`: every synchronous signal write runs inside `untracked()`, and
  * a null hash never writes synchronously at all.
  */
-
-/** Mismatch guard window; on expiry the account re-resolves its last requested hash (see `armStale`). */
-const STALE_WINDOW_MS = 30_000;
 
 /** How long a (account, hash) failure suppresses re-fetching before `failed` is emptied (no fetch on expiry). */
 const FAILURE_WINDOW_MS = 30_000;
@@ -37,24 +37,18 @@ interface LogoState {
   hash: string | null;
   /** Hash of the current-generation load in flight; null when none. Superseded loads are not current. */
   pending: string | null;
-  /** Hashes whose load failed, per (account, hash). Suppresses fetching only; emptied by `failTimer` or a deletion clear. */
+  /** Hashes a post-clear 200 resolved (requested and ETag hash). Suppresses fetching only; emptied by the deletion clear, or by a current failure that leaves the account blank. */
+  succeeded: Set<string>;
+  /** Hashes whose current-generation load failed. Suppresses fetching only; emptied by `failTimer` or the deletion clear. */
   failed: Set<string>;
   /** One per account, armed/replaced by every current-generation failure; on expiry empties `failed` without fetching. */
   failTimer: ReturnType<typeof setTimeout> | null;
   /** Bumped by every fetch and by the deletion clear; a response from an older generation is never shown. */
   generation: number;
+  /** Generation set by the last deletion clear; responses of loads started before it are ignored entirely. */
+  clearedGeneration: number;
   /** Every in-flight subscription (superseded ones included), unsubscribed on destroy. */
   inflight: Set<Subscription>;
-  /**
-   * Loop guard, set on an ETag mismatch to the hash that was requested (the model's stale value). Until
-   * `staleUntil`, url() neither refetches nor refreshes again for that hash. `staleTimer` ends the window
-   * actively: on expiry the account refetches `lastRequested` if it differs from the resolved hash.
-   */
-  staleRequested: string | null;
-  staleUntil: number;
-  staleTimer: ReturnType<typeof setTimeout> | null;
-  /** The hash of the latest non-null url() call for this account. */
-  lastRequested: string | null;
   /**
    * Deferred clear scheduled by a null-hash url() call. Any non-null url() call for the account cancels it,
    * so a consumer holding a stale null (one-shot detail payload) never clears a slot another consumer uses.
@@ -83,10 +77,10 @@ export class AccountLogoStore implements OnDestroy {
     this.destroyed = true;
     const owned = new Set<string>();
     for (const state of this.states.values()) {
-      for (const timer of [state.pendingClear, state.staleTimer, state.failTimer]) {
+      for (const timer of [state.pendingClear, state.failTimer]) {
         if (timer !== null) clearTimeout(timer);
       }
-      state.pendingClear = state.staleTimer = state.failTimer = null;
+      state.pendingClear = state.failTimer = null;
       for (const sub of state.inflight) sub.unsubscribe();
       state.inflight.clear();
     }
@@ -123,8 +117,8 @@ export class AccountLogoStore implements OnDestroy {
     let state = this.states.get(id);
     if (!state) {
       state = {
-        hash: null, pending: null, failed: new Set(), failTimer: null, generation: 0, inflight: new Set(),
-        staleRequested: null, staleUntil: 0, staleTimer: null, lastRequested: null, pendingClear: null,
+        hash: null, pending: null, succeeded: new Set(), failed: new Set(), failTimer: null,
+        generation: 0, clearedGeneration: 0, inflight: new Set(), pendingClear: null,
       };
       this.states.set(id, state);
     }
@@ -133,11 +127,6 @@ export class AccountLogoStore implements OnDestroy {
       clearTimeout(state.pendingClear);
       state.pendingClear = null;
     }
-    state.lastRequested = hash;
-
-    if (hash === state.staleRequested && Date.now() < state.staleUntil) {
-      return slot;
-    }
     if (this.wanted(state, hash)) {
       this.fetch(id, state, hash);
     }
@@ -145,9 +134,9 @@ export class AccountLogoStore implements OnDestroy {
     return slot;
   }
 
-  /** True when `hash` is neither resolved, in flight (current generation) nor failed. */
+  /** True when `hash` is neither resolved, in flight (current generation), succeeded nor failed. */
   private wanted(state: LogoState, hash: string): boolean {
-    return hash !== state.hash && hash !== state.pending && !state.failed.has(hash);
+    return hash !== state.hash && hash !== state.pending && !state.succeeded.has(hash) && !state.failed.has(hash);
   }
 
   /** Starts a generation-protected load of `hash`; any earlier in-flight load for the account is superseded. */
@@ -162,7 +151,11 @@ export class AccountLogoStore implements OnDestroy {
       if (holder.sub) state.inflight.delete(holder.sub);
       if (state.generation === generation) state.pending = null;
     };
-    holder.sub = this.http.get(this.accounting.logoImageUrl(id, hash), { responseType: 'blob', observe: 'response' }).subscribe({
+    const options = {
+      responseType: 'blob', observe: 'response',
+      context: new HttpContext().set(SILENT_HTTP_ERRORS, true),
+    } as const;
+    holder.sub = this.http.get(this.accounting.logoImageUrl(id, hash), options).subscribe({
       next: response => { done(); this.onResponse(id, hash, generation, response); },
       error: () => { done(); this.onError(id, hash, generation); },
     });
@@ -177,7 +170,8 @@ export class AccountLogoStore implements OnDestroy {
     if (!state || state.pendingClear !== null) {
       return;
     }
-    if (state.hash === null && state.pending === null && state.failed.size === 0 && this.signals.get(id)?.() == null) {
+    const idle = state.hash === null && state.pending === null && state.failed.size === 0 && state.succeeded.size === 0;
+    if (idle && this.signals.get(id)?.() == null) {
       return;
     }
     state.pendingClear = setTimeout(() => {
@@ -186,35 +180,15 @@ export class AccountLogoStore implements OnDestroy {
         return;
       }
       state.generation++;
+      state.clearedGeneration = state.generation;
       state.pending = null;
       state.hash = null;
-      state.lastRequested = null;
+      state.succeeded.clear();
       this.clearFailed(state);
       // Forced notify (the slot signal never compares equal), even null -> null: a clear that drops an
       // in-flight load must still wake the non-null consumers so they refetch.
       this.show(id, null);
     }, 0);
-  }
-
-  /** Arms the mismatch guard for `requested` and the one expiry timer of the account (replacing any earlier one). */
-  private armStale(id: number, state: LogoState, requested: string): void {
-    state.staleRequested = requested;
-    state.staleUntil = Date.now() + STALE_WINDOW_MS;
-    if (state.staleTimer !== null) {
-      clearTimeout(state.staleTimer);
-    }
-    state.staleTimer = setTimeout(() => {
-      state.staleTimer = null;
-      if (this.destroyed) {
-        return;
-      }
-      state.staleRequested = null;
-      state.staleUntil = 0;
-      const last = state.lastRequested;
-      if (last !== null && this.wanted(state, last)) {
-        this.fetch(id, state, last);
-      }
-    }, STALE_WINDOW_MS);
   }
 
   /** Arms (replacing) the account's failure-expiry timer; on expiry `failed` is emptied and nothing is fetched. */
@@ -243,27 +217,34 @@ export class AccountLogoStore implements OnDestroy {
       return;
     }
     const state = this.states.get(id)!;
+    if (generation <= state.clearedGeneration) {
+      return; // a load from before the last deletion: ignored entirely (a same-bytes re-upload must load again)
+    }
+    if (!response.body || response.body.size === 0) {
+      if (state.generation === generation) {
+        this.onError(id, requested, generation);
+      }
+      return;
+    }
     const actual = this.parseEtag(response.headers.get('ETag'));
-    // Record the mismatch guard before the generation check: even a superseded response proves the
-    // requested hash is stale, and skipping it would let a second slot refetch it forever.
-    const mismatch = actual !== null && actual !== requested;
-    if (mismatch && !(state.staleRequested === requested && Date.now() < state.staleUntil)) {
-      this.armStale(id, state, requested);
+    // A 200 is a durable fact about its hashes: recorded even when superseded, so no consumer fetches them again
+    // (the account shows whatever its newest load resolves). The refresh runs once per requested hash because
+    // a succeeded hash is never requested again.
+    const first = !state.succeeded.has(requested);
+    state.succeeded.add(requested);
+    state.failed.delete(requested);
+    if (actual !== null) {
+      state.succeeded.add(actual);
+      state.failed.delete(actual);
+    }
+    if (actual !== null && actual !== requested && first) {
       this.accounting.refreshAccounts();
     }
-    // Generation check: a superseded response never becomes an object URL.
+    // Generation check: a superseded response never becomes an object URL and never sets the resolved hash.
     if (state.generation !== generation) {
       return;
     }
-    if (!response.body) {
-      this.onError(id, requested, generation);
-      return;
-    }
-    state.failed.delete(requested);
-    if (actual !== null) {
-      state.failed.delete(actual);
-    }
-    // Missing or unusable ETag: resolved under the requested hash; only a hash change refetches.
+    // Missing or unusable ETag: resolved under the requested hash.
     state.hash = actual ?? requested;
     this.show(id, URL.createObjectURL(response.body));
   }
@@ -274,13 +255,17 @@ export class AccountLogoStore implements OnDestroy {
     }
     const state = this.states.get(id)!;
     if (state.generation !== generation) {
-      // Superseded: ignored entirely. Whatever superseded it answers (and notifies) for the account.
+      // Superseded (or pre-clear): ignored entirely. Whatever superseded it answers and wakes the consumers.
       return;
     }
     state.failed.add(requested);
     this.armFailureExpiry(state);
+    if (state.hash === null) {
+      // Nothing is shown: a 200 recorded while superseded was never displayed, so let its consumer fetch again.
+      // Bounded: this failure added a `failed` entry, so each live hash can cause it at most once per window.
+      state.succeeded.clear();
+    }
     // Keep whatever the slot shows; wake every consumer (the slot never compares equal) so each re-resolves.
-    // Bounded: the failure is recorded before the wake, so no woken consumer fetches this hash again.
     const slot = this.signals.get(id)!;
     slot.set(untracked(slot));
   }
