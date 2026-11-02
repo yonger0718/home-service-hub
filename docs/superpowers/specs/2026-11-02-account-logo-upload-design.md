@@ -1,6 +1,7 @@
 # Account logo upload — design
 
-Rev 4.1, 2026-11-02 — Multica AGENT-384 PASS-with-minor at rev 4 `5cf90e6a`; the two minors are folded here: the
+Rev 4.2, 2026-11-02 — implementation notes appended at the end (PR 1 execution: P-mode expansion, store missing-ETag and
+stale-hash guard semantics, icon null coalescing); no contract change. Rev 4.1 — Multica AGENT-384 PASS-with-minor at rev 4 `5cf90e6a`; the two minors are folded here: the
 memory figure is a budget to be measured (OS peak RSS in a subprocess), not a proven bound, and the store's
 late-response guard compares the request generation, never the response hash. Rev 3 → rev 4 folded the AGENT-384 re-check: both Pillow bomb exceptions are caught at the
 open/load boundary → 422 `logo_dimensions`; the normaliser shrinks first (`thumbnail`) and pastes onto a fresh
@@ -422,3 +423,21 @@ PR review covers.
   `frontend-ui-primitives` (the account-icon slot requirement currently says "bundled brand-logo set"; it must
   allow the uploaded image in the same slots with the same tile/fallback rules), written against the spec text
   **after** `account-brand-logos` is archived; strict validation with the current CLI.
+
+## Implementation notes (rev 4.2, 2026-11-02)
+
+Deviations settled during PR 1 execution; each one is covered by a test named in the plan ledger.
+
+- **Normaliser (§5):** palette (`P`) images are expanded to RGBA *before* `thumbnail()`, because Pillow's
+  reducing path cannot resample palette images; the measured peak RSS stays inside the 384 MiB budget.
+- **Store, missing `ETag` (§6.1):** a 200 without a usable `ETag` (missing, `W/`-prefixed or non-hex) is
+  recorded as resolved under the *requested* hash and shown; no accounts refresh. The prose said "show,
+  cache nothing, refresh" — a refresh there loops against a server that never sends `ETag`, and so does
+  "cache nothing" once the icon's `computed` re-calls the store on every slot change.
+- **Store, mismatch guard (§6.1):** after an `ETag` mismatch the requested hash is marked stale for 30 s
+  (`staleRequested`/`staleUntil`), recorded *before* the generation check so a superseded response still
+  arms it; a repeat request for the stale hash inside the window starts no fetch and no second refresh.
+  Accepted edge: a re-upload of the same hash within 30 s of a mismatch shows the older bytes until the
+  window ends or the model's hash changes.
+- **Icon (§6.1):** `uploadedUrl` coalesces an undefined hash to `null` so an untyped payload can never
+  request `?v=undefined`.
