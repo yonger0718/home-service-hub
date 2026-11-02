@@ -115,18 +115,32 @@ The SPA SHALL provide `/accounting/accounts/:id/settings` and `/accounting/accou
 
 ### Requirement: Account logo image store
 
-The SPA SHALL fetch uploaded logos with the scoped token and cache one object URL per account, keyed by its current `logo_hash`. The response `ETag` decides the cache key. A load superseded by a newer one SHALL never be published (no object URL, no slot change); its hashes MAY still be recorded as resolved so they are not requested again, and a mismatching `ETag` MAY refresh the accounts. A replaced object URL SHALL be revoked on the next macrotask.
+The SPA SHALL fetch uploaded logos with the scoped token and keep one object URL per account. Each account icon SHALL hold a lease for its current (account, `logo_hash`), released when the pair changes or the icon is destroyed; the store SHALL fetch only for the newest non-null lease of an account, never because a consumer re-read its signal. The response `ETag` decides the hash shown. A superseded load SHALL never be published and a replaced object URL SHALL be revoked on the next macrotask.
 
 #### Scenario: Cache hit
 - **GIVEN** a logo already loaded for (account, `logo_hash`)
-- **WHEN** another view needs it
+- **WHEN** another view acquires a lease for the same pair
 - **THEN** the cached object URL SHALL be reused with no request
 
 #### Scenario: ETag mismatch
 - **WHEN** the response ETag differs from the requested `logo_hash`
-- **THEN** the image SHALL be cached under the actual hash and the accounts list SHALL be refreshed
+- **THEN** the image SHALL be shown under the actual hash, the accounts list SHALL be refreshed once, and a lease for the requested hash SHALL make no further request
+
+#### Scenario: Failed load
+- **WHEN** a logo request fails (any HTTP error, or an empty body)
+- **THEN** the image already shown SHALL stay, that hash SHALL NOT be requested again for 30 s, and after the window the store SHALL request the newest lease's hash once if it is still unresolved
 
 #### Scenario: Superseded load
 - **GIVEN** a load is in flight
 - **WHEN** a newer load for the same account starts
-- **THEN** the older result SHALL NOT create an object URL or change the image; its hashes MAY be recorded as resolved and a mismatching ETag MAY refresh the accounts
+- **THEN** the older result SHALL NOT create an object URL, change the image or count as a failure
+
+#### Scenario: Earlier logo uploaded again
+- **GIVEN** an account whose icons showed hash A, then hash B
+- **WHEN** the account's `logo_hash` becomes A again and the icons acquire A
+- **THEN** the store SHALL request A once more and show it
+
+#### Scenario: Logo deleted
+- **GIVEN** an account whose icons show an uploaded image
+- **WHEN** every lease of the account is released or holds a null hash
+- **THEN** the image SHALL be cleared on the next macrotask, its object URL revoked on the one after, and a response that arrives later SHALL NOT be shown

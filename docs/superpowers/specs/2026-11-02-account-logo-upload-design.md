@@ -1,6 +1,6 @@
 # Account logo upload — design
 
-Rev 4.6, 2026-11-02 — succeeded-hash set replaces the stale-hash guard; silent interceptor for logo GETs. Rev 4.5 — unified store failure model (see notes). Rev 4.4 — Multica AGENT-388 fold: null consumers no longer clear a slot another consumer still uses (deferred clear); the stale-hash window re-resolves on expiry. Rev 4.3 — final-review fixes: small inputs are enlarged to fit; 404 copy split; If-None-Match list parsing. Rev 4.2 — implementation notes appended at the end (PR 1 execution: P-mode expansion, store missing-ETag and
+Rev 5.0, 2026-11-02 — lease-based logo store (icon acquires/releases; fetch driven by leases only). Rev 4.6 — succeeded-hash set replaces the stale-hash guard; silent interceptor for logo GETs. Rev 4.5 — unified store failure model (see notes). Rev 4.4 — Multica AGENT-388 fold: null consumers no longer clear a slot another consumer still uses (deferred clear); the stale-hash window re-resolves on expiry. Rev 4.3 — final-review fixes: small inputs are enlarged to fit; 404 copy split; If-None-Match list parsing. Rev 4.2 — implementation notes appended at the end (PR 1 execution: P-mode expansion, store missing-ETag and
 stale-hash guard semantics, icon null coalescing); no contract change. Rev 4.1 — Multica AGENT-384 PASS-with-minor at rev 4 `5cf90e6a`; the two minors are folded here: the
 memory figure is a budget to be measured (OS peak RSS in a subprocess), not a proven bound, and the store's
 late-response guard compares the request generation, never the response hash. Rev 3 → rev 4 folded the AGENT-384 re-check: both Pillow bomb exceptions are caught at the
@@ -252,51 +252,54 @@ keep the `detail` list (none of the logo routes rely on it). The SPA's `http-err
 - New optional inputs `logoHash = input<string | null>(null)` and `accountId = input<number | null>(null)`
   (both optional: the settings-page logo grid renders `<app-account-icon [logo]="l.slug">` with no account).
   The uploaded path is taken only when both are set. Precedence inside `entry()`:
-  1. `logoHash` set and the blob fetch has not failed → uploaded image (object URL);
+  1. the store's slot for `accountId` holds an image → uploaded image (object URL);
   2. else bundled slug as today;
   3. else emoji / fallback.
-- A new injectable `AccountLogoStore` (`services/account-logo-store.ts`, `providedIn: 'root'`):
-  `url(accountId, hash): Signal<string | null>`. Contract:
-  - State per account: `{hash, objectUrl, failed}` in a `Map<accountId, …>`, exposed through one signal per
-    account id so every slot showing that account reads the same value.
-  - Keyed by **(id, hash)**: a request is started only when the account's current hash differs from the one
-    already resolved or in flight. In-flight requests are deduplicated in a `Map<"id:hash", Observable>` so ten
-    slots of the same account trigger one fetch.
-  - Generation guard, checked **before** the ETag is looked at: each request captures a per-account increasing
-    `generation` number (and the `requestedHash` it was sent with). When a response arrives, it is discarded —
-    blob never turned into a URL — if its `generation` is not the account's current one. The guard never looks
-    at the response's own hash: a legitimate request for A that comes back as B (mismatch, below) must not be
-    dropped by mistake, and an old A response from a superseded generation must not pass itself off as a newer
-    A. Only responses that survive the generation check go on to the ETag step.
-  - Fetch: `GET /api/accounting/accounts/{id}/logo.png?v={hash}` as `blob` through HttpClient with
-    `observe: 'response'` (the token interceptor applies; same origin, so the `ETag` header is readable), with
-    the `SILENT_HTTP_ERRORS` request context so the error-logging interceptor neither retries nor toasts. 404 or
-    any error marks `failed` for that (id, hash) so the slot falls back to the slug / emoji and no retry happens
-    for 30 s (implementation notes).
-  - **The response `ETag` is the truth, not the requested `v`.** The store derives `actualHash` = the first 16
-    hex chars of the `ETag` value. If `actualHash === requested`, the blob is stored as the resolved entry for
-    (id, requested). If they differ (the server answered `no-store` with newer bytes), the blob is stored as the
-    resolved entry for (id, **actualHash**) and the account's state becomes `{hash: actualHash, url}`; the slot
-    shows the right picture immediately, both hashes are recorded as `succeeded` (so neither is requested
-    again for that account until its logo is deleted), and the store asks `AccountingService` to refresh the
-    accounts (`bumpAccounts`) once so the models converge. A missing `ETag` resolves under the requested hash
-    with no refresh (implementation notes).
-  - A→B→A end to end: SPA holds A; Hermes uploads B; the slot fetches `?v=A`, gets B/`ETag B`/`no-store` → entry
-    (id, B), A and B both `succeeded`; Hermes uploads A again; the account reload brings `logo_hash = A`, which
-    is a succeeded hash → no fetch, the slot keeps showing B until the logo is deleted or the SPA reloads.
-    Accepted edge (rev 4.6): re-uploading bytes the session already saw under a mismatch is rare, and the
-    alternative (re-fetching a hash the server already answered) was the unbounded ping-pong between two live
-    slots with different hashes. Test this sequence against the store with a mocked HttpClient.
-  - Revocation: when a new URL replaces an old one, or the hash becomes `null` (logo deleted), the old object URL
-    is revoked **after** the signal has been updated, on the next macrotask, so `<img>` elements swap first; a
-    URL that is still the current value of any account is never revoked. Nothing is revoked on component
-    destroy (accounts are long-lived in the shell).
-  - Tests: out-of-order responses (A slow, B fast → B shown, A dropped), a superseded-generation A response
-    arriving during an A→B→A sequence is dropped even though its hash matches the current A, dedupe (N slots →
-    1 request), delete →
-    `null` + revoke, failure → fallback and no retry, hash change → refetch, ETag mismatch → cached under the
-    actual hash + accounts refresh, missing ETag → shown under the requested hash, the A→B→A sequence above,
-    two live slots with different hashes that both answer 200 → exactly two requests.
+- A new injectable `AccountLogoStore` (`services/account-logo-store.ts`, `providedIn: 'root'`), lease model
+  (rev 5.0). API:
+  `slot(accountId): Signal<string | null>` — the account's read-only image signal (object URL or null), created
+  lazily; reading it never fetches. `acquire(accountId, hash): LogoLease` — registers a live consumer binding and
+  may start a fetch; `lease.release()` (idempotent) removes it. Contract:
+  - **Leases drive fetching, not reads.** Every `<app-account-icon>` holds one lease for its current
+    (`accountId`, `logoHash`), taken in an `effect` and released by its cleanup (the pair changed or the icon was
+    destroyed); `uploadedUrl` is a `computed` over `slot(id)` only. The store therefore knows which hashes are
+    live and never confuses "the model moved to X" (a new lease) with "the same consumer re-read X" (nothing),
+    which is what made the pull model loop or show the wrong image.
+  - **Target** per account = the hash of the newest non-null lease (null when every lease is null or none
+    exists). `evaluate()` runs on acquire, on a release that changes the target, and once when a failure
+    window expires; it fetches the target's *effective* hash (`aliases`, below) unless that hash is already
+    shown, in flight, or inside its 30 s failure window. Nothing else ever starts a GET.
+  - Generation guard: each fetch bumps a per-account `generation`; only the current generation's response is
+    honoured, success or error — a superseded response is ignored entirely (no object URL, no `failed` entry).
+  - Fetch: `GET /api/accounting/accounts/{id}/logo.png?v={hash}` as `blob` with `observe: 'response'` and the
+    `SILENT_HTTP_ERRORS` request context (no retry, no toast). A null or 0-byte body is a failure.
+  - **The response `ETag` is the truth.** `actual` = first 16 hex of an unquoted strong `ETag`, else the
+    requested hash (missing, `W/` or non-hex → requested, no refresh). The slot shows the blob and `shownHash`
+    becomes `actual`. When `actual ≠ requested`, `aliases[requested] = actual` (chains are flattened) and the
+    store refreshes the accounts once per (account, requested hash) so the models converge; a stale lease for
+    the requested hash is then satisfied by the alias and costs no GET.
+  - Failure: the shown image stays; the hash joins `failed` and one 30 s timer per account (replaced by every
+    failure) empties `failed` on expiry and evaluates once. So a live target that keeps failing costs at most
+    one GET per 30 s, and nothing happens when no lease wants an unresolved hash.
+  - Deletion: when the target becomes null (every lease null or released) a deferred clear runs on the next
+    macrotask unless a non-null lease arrives first; it bumps the generation (in-flight responses dropped),
+    forgets `aliases` and `failed`, blanks the slot and revokes the URL on the following macrotask. Null leases
+    stay registered and do nothing; a release + re-acquire of the same hash in one macrotask costs nothing.
+  - A→B→A end to end: SPA holds A → GET A → shows A; the owner (or Hermes) uploads B → the list reloads, the icon
+    releases A and acquires B → GET B → shows B; A is uploaded again → acquire A → A is the newest lease → GET A
+    → shows A. Three GETs, the right image every time (the rev 4.6 "succeeded" edge is gone).
+  - Revocation: the old object URL is revoked **after** the signal has been updated, on the next macrotask, and
+    never while it is any account's current value. `ngOnDestroy` cancels every timer and in-flight load and
+    revokes every URL the store still owns.
+  - Bounds: GETs per account ≤ acquires + target-changing releases, plus at most one per 30 s while the live
+    target keeps failing. Accepted edge: a one-shot stale detail acquired *after* the list (so it is the newest
+    lease) whose old bytes the browser cache serves with the old `ETag` shows the old image until the next
+    acquire.
+  - Tests (`account-logo-store.spec.ts`, scenario matrix a–p; `account-icon.spec.ts` end to end through a host
+    with two icons): dedupe, generation guard, ETag mismatch alias + one refresh, missing / weak / non-hex ETag,
+    stale null lease, deletion, release + re-acquire in one macrotask, A→B→A (real server, server answering B,
+    browser-cache variant), stale detail + list in both orders, both 404 (one GET per window), A 404 then B 200,
+    transient error, 0-byte body, destroy, silent context, NG0600 (slot in a computed, acquire in an effect).
 - Every call site that passes `[logo]` gains `[logoHash]` and `[accountId]`: accounts list rows, account picker
   (trigger, sheet rows, recent chips), 信用卡帳單 reminders, account settings big icon, and the new account page
   avatar. `LedgerAccount` (and so `AccountDetail extends LedgerAccount`) gains `logo_hash: string | null`.
@@ -437,15 +440,31 @@ Deviations settled during PR 1 execution; each one is covered by a test named in
 
 - **Normaliser (§5):** palette (`P`) images are expanded to RGBA *before* `thumbnail()`, because Pillow's
   reducing path cannot resample palette images; the measured peak RSS stays inside the 384 MiB budget.
-- **Store, missing `ETag` (§6.1):** a 200 without a usable `ETag` (missing, `W/`-prefixed or non-hex) is
-  recorded as resolved under the *requested* hash and shown; no accounts refresh. The prose said "show,
-  cache nothing, refresh" — a refresh there loops against a server that never sends `ETag`, and so does
-  "cache nothing" once the icon's `computed` re-calls the store on every slot change.
-- **Store, mismatch guard (§6.1):** superseded in rev 4.6 by the `succeeded` set (below): after an `ETag`
-  mismatch both the requested and the actual hash are recorded as succeeded, so a repeat request for the
-  stale hash starts no fetch and no second refresh, with no timer.
-- **Icon (§6.1):** `uploadedUrl` coalesces an undefined hash to `null` so an untyped payload can never
-  request `?v=undefined`.
+- **Rev 5.0, store lease model (§6.1):** replaces every store bullet of rev 4.2–4.6 (missing-`ETag` rule,
+  mismatch guard, `succeeded` set, unified failure model, null-hash deferred clear). The icon holds one lease per
+  (`accountId`, `logoHash`) through an `effect` with `onCleanup(() => lease.release())`; `uploadedUrl` reads
+  `store.slot(id)` only, and an undefined hash is coalesced to `null` before `acquire()`. Store rules: (1) target =
+  hash of the newest non-null lease, `effective(h) = aliases.get(h) ?? h`; (2) `acquire(id, h)` records the lease;
+  a non-null `h` cancels a pending clear and evaluates, a null `h` with a null target schedules the deferred clear;
+  `release()` removes the lease and schedules the clear when the target is now null, or evaluates when the target
+  changed to another non-null hash; (3) `evaluate()` fetches `effective(target)` unless it equals `shownHash`, is
+  `pending`, or is in `failed`; (4) only the current generation's response counts; success sets `shownHash` to the
+  `ETag` hash (else the requested one), records the alias and refreshes the accounts once per (account, requested)
+  when they differ, swaps the URL and revokes the old one on the next macrotask; `evaluate()` is not called after a
+  success; (5) a current failure (HTTP error, null or 0-byte body) keeps the image, adds the hash to `failed` and
+  arms/replaces one 30 s timer per account that empties `failed` and evaluates once; (6) the deferred clear fires
+  only while the target is still null: generation bump, `pending`/`aliases`/`failed`/`refreshed` reset, fail timer
+  cleared, slot null, URL revoked next macrotask; (7) `ngOnDestroy` cancels every timer and in-flight load and
+  revokes every held URL, and every async callback checks the destroyed flag; (8) every synchronous signal write
+  runs inside `untracked()` (acquire from an effect, slot from a computed). Slot signals use plain equality — no
+  force-notify anywhere.
+- **Rev 5.0, bounds and accepted edge (§6.1):** GETs per account ≤ acquires + target-changing releases, plus at
+  most one per 30 s while the live target keeps failing; the scenario matrix pins the counts (N same leases 1;
+  A then B 2; A→B→A 3; stale detail + list 2 in either order; both 404 2 then 1 per window; A 404 / B 200 2, then
+  1 when the window ends with A the target again). Accepted edge: a one-shot stale detail acquired after the list
+  is the newest lease; when the browser cache serves its old bytes with the old `ETag` the old image shows until
+  the next acquire (a real server answers the current bytes with their `ETag`, which the alias handles with one
+  refresh). Stale detail acquired *before* the list costs nothing.
 - **Rev 4.3, normaliser upscale branch (§5 step 4):** when `max(size) < 256` the image is enlarged with
   `ImageOps.contain` (LANCZOS) instead of `thumbnail()`, which never enlarges; inputs with a side ≥ 256 keep
   the `thumbnail` shrink path, so the memory bound is unchanged. Both branches resize before
@@ -453,43 +472,6 @@ Deviations settled during PR 1 execution; each one is covered by a test named in
 - **Rev 4.3, 404 copy split (§6.4):** a 404 whose `message` is `account not found` (account deleted
   elsewhere) shows 「帳戶不存在」; any other 404 keeps 「伺服器尚未支援上傳」. Applies to the PUT and DELETE
   error toasts. `GET logo.png` also parses `If-None-Match` as a list (`W/` and quotes stripped, `*` matches).
-- **Rev 4.6, store failure model (§6.1), unified:** every consumer with a non-null hash reads the account's
-  one slot signal — including a consumer whose hash has failed — so any image resolved for the account is
-  shown by every slot and a consumer holding a stale or failed hash is woken by every slot change. The store
-  keeps, per account, the *resolved* hash (what the slot shows, the `ETag` hash when present), the hash of the
-  current-generation load in flight, and two per-hash sets that only suppress fetching, never display:
-  `succeeded` and `failed`. A fetch starts only for a hash that is neither resolved, in flight, succeeded nor
-  failed. **`succeeded`:** every 200 from a load started after the last deletion clear adds the requested hash
-  and the `ETag` hash, whether or not the load was superseded (a hash is content-addressed, so a 200 for it is a
-  durable fact); it is emptied only by the deletion clear — and by a current-generation failure that leaves
-  the account blank, so that a 200 recorded while superseded (never displayed) can be fetched again by its
-  consumer instead of leaving every slot empty. **`failed`:** current-generation errors only (any HTTP error,
-  a null body or a 0-byte body); a superseded error is ignored entirely; a failure keeps whatever the slot
-  shows, force-notifies the slot (slots never compare equal) so every consumer re-evaluates, and arms one
-  30 s failure-expiry timer per account (replacing the previous one) that on expiry empties `failed` without
-  fetching; recovery happens on the next consumer re-evaluation. Responses of loads started before the last
-  deletion clear are ignored entirely (`clearedGeneration`), so a same-bytes re-upload loads again. **Bound:**
-  between two deletion clears every GET is for a hash in none of the four categories and every post-clear
-  response puts its hash into `succeeded` (200) or, when current, `failed` (error); so the GETs of an account
-  are at most the number of distinct hashes seen, plus one wake-up refetch per hash for a superseded error
-  (two live hashes that both 404 cost 3 GETs; A 404 / B 200 cost ≤ 3 and show B on both slots; A 200 / B 200
-  cost exactly 2 and show the last-resolved image on both slots — the rev 4.5 ping-pong is gone), plus the
-  per-window repeats the failure expiry allows. **Mismatch:** cached under the actual hash, resolved hash set
-  to it, both hashes succeeded, `refreshAccounts()` once per requested hash (automatic: a succeeded hash is
-  never requested again). Missing / `W/` / non-hex `ETag`: resolved under the requested hash, no refresh.
-  Separating the resolved hash from the in-flight hash keeps two live consumers with different hashes from
-  superseding each other for ever. The round-5 30 s stale-hash guard and its re-resolve timer are removed.
-- **Rev 4.6, store null hash (§6.1):** `url(id, null)` returns a constant null signal and never writes the
-  account's slot synchronously. It schedules one deferred clear per account (`setTimeout(0)`) that any
-  `url(id, hash)` with a non-null hash for the same account cancels. A slot whose detail payload still says
-  `null` while the accounts list says A therefore keeps A (no GET loop); when every consumer is null (a real
-  deletion) the clear fires: hash and slot become `null`, the generation is bumped so in-flight loads are
-  dropped, `succeeded` and `failed` are emptied (a same-bytes re-upload loads again) and the old URL is
-  revoked on the following macrotask. Residual: a null consumer that appears while a non-null consumer's load
-  is in flight, or after it is shown, with no non-null re-read in the same macrotask, costs one clear and one
-  refetch, then settles (the null consumer has no dependency on the slot). Destroy cancels every timer and
-  in-flight load (every async callback checks a `destroyed` flag) and revokes every object URL the store
-  still owns.
 - **Rev 4.6, silent interceptor (§6.1):** `error-logging.interceptor.ts` exports the request context token
   `SILENT_HTTP_ERRORS`; a request carrying it bypasses the interceptor (no `retry(1)`, no console group, no
   toast; the error still reaches the subscriber). The store's logo GET sets it; the PUT / DELETE upload calls
