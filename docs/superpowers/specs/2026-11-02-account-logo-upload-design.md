@@ -1,6 +1,11 @@
 # Account logo upload — design
 
-Rev 2, 2026-11-02 (rev 1 same day; rev 2 folds the builder check: error bodies use the shared `{code, message,
+Rev 3, 2026-11-02 (rev 2 → rev 3 folds the Multica spec review AGENT-384, dev-astra FAIL: the upload is a raw
+image body read from the request stream under a byte budget instead of multipart, so nothing is spooled before the
+cap; pixel-count check before decode with the bomb warning promoted to an error; `logo_hash` is unpacked from the
+select row and never added to `ACCOUNT_FIELDS`; `immutable` only when `?v` matches the stored hash, `no-store`
+otherwise; the SPA logo store gets an in-flight/generation contract; the settings page keeps the dirty form across
+image writes; `frontend-ui-primitives` joins the OpenSpec deltas. Rev 1 same day; rev 2 folded the builder check: error bodies use the shared `{code, message,
 trace_id}` shape, the GET URL carries `?v=<logo_hash>` so `immutable` caching is safe, routes are sync `def` like
 their neighbours, `logo_hash` is a labelled scalar subquery on the existing account select, `AccountDetailOut`
 is the PUT response, the `account-brand-logos` OpenSpec change is archived first, the proxy has no CSP so
@@ -95,8 +100,8 @@ New table `account_logo_image` (one row per account, optional):
 | `created_at` / `updated_at` | timestamptz, not null | server time |
 
 Why a separate table and not a column on `account`: `GET /accounts` and every join that loads `Account` must
-not drag 72 PNGs along; a side table keeps the hot row small and lets `logo_hash` be a cheap scalar subquery or
-a `selectinload`. Why `bytea` and not the filesystem: see anti-goals — the pg_dump backup and the release-checkout
+not drag 72 PNGs along; a side table keeps the hot row small and lets `logo_hash` be a cheap scalar subquery.
+Why `bytea` and not the filesystem: see anti-goals — the pg_dump backup and the release-checkout
 deploys cover the database and nothing else.
 
 `Account.logo` (bundled slug) is unchanged and independent: an account may have both. Deleting the uploaded
@@ -111,18 +116,37 @@ All three routes live in `routers/accounts.py` under the existing router (`Depen
 
 ### `PUT /accounts/{account_id}/logo`
 
-- Body: `multipart/form-data`, one field `file` (`UploadFile`). Any filename, any declared content type — both
-  are ignored except for diagnostics.
-- Limits: read at most `MAX_LOGO_UPLOAD_BYTES = 5 MiB` (413 beyond, same pattern as `imports.py`).
-- Validation (`services/account_logo_service.py`, pure function `normalise_logo(data: bytes) -> NormalisedLogo`):
-  1. `Image.MAX_IMAGE_PIXELS = 40_000_000` module-level and `Image.open` inside `try` → `UnidentifiedImageError`,
-     `DecompressionBombError`, `OSError`, `ValueError` all → 422 `{"detail": "logo_unreadable"}`.
-  2. Sniffed format must be one of `PNG`, `JPEG`, `WEBP`; anything else (GIF, BMP, TIFF, SVG as text, ICO, PDF…)
-     → 422 `{"detail": "logo_format"}`. Animated images: first frame only (`im.seek(0)` is the default).
-  3. Dimensions: both sides ≥ 16 px and ≤ 8192 px, else 422 `{"detail": "logo_dimensions"}`.
-  4. Normalise: `ImageOps.exif_transpose`, convert to `RGBA`, pad the shorter side with transparent pixels so the
-     canvas is square (centre the image), resize to 256×256 with `Image.LANCZOS` (`reducing_gap=3.0`), encode
-     PNG with `optimize=True`; no metadata chunks are written (fresh `Image.new`, no `pnginfo`).
+- Body: the **raw image bytes** (`Content-Type: image/png`, `image/jpeg` or `image/webp` — declared type is
+  recorded for diagnostics and otherwise ignored). **Not multipart.** Starlette parses a multipart body before
+  the handler runs and spools every file part to a temp file, so a `file.file.read(MAX + 1)` check inside the
+  handler cannot stop a 2 GiB upload from hitting the disk first. A raw body read from `request.stream()` under
+  a byte budget has no such pre-parse step; it also makes the Hermes call a one-liner (`--data-binary`) and the
+  SPA call a `Blob` body.
+- Limits, in order:
+  1. If `Content-Length` is present and > `MAX_LOGO_UPLOAD_BYTES = 5 MiB` → 413 `logo_too_large` before reading
+     any body byte.
+  2. The route is `async def` (the only one in `accounts.py` — the stream read needs `await`) and reads
+     `request.stream()` chunk by chunk into a buffer; the moment the running total exceeds 5 MiB it stops
+     reading and returns 413 `logo_too_large` (chunked uploads without `Content-Length` included). An empty body
+     → 422 `logo_empty`.
+  3. The buffered bytes go to `normalise_logo` through `run_in_threadpool` (Pillow is CPU-bound; the handler is
+     async). The DB write then happens in the normal session.
+- Validation (`services/account_logo_service.py`, pure function `normalise_logo(data: bytes) -> NormalisedLogo`),
+  **in this order, each step before any pixel is decoded**:
+  1. `Image.open(BytesIO(data))` inside `try`; `UnidentifiedImageError`, `OSError`, `ValueError` → 422
+     `logo_unreadable`. `Image.open` reads only the header; `load()` is not called yet.
+  2. Sniffed format `im.format` must be one of `PNG`, `JPEG`, `WEBP`; anything else (GIF, BMP, TIFF, SVG as text,
+     ICO, PDF…) → 422 `logo_format`. Animated images: first frame only (`im.seek(0)` is the default).
+  3. Dimensions from the header: both sides ≥ 16 px and ≤ 8192 px, **and** `width × height ≤ 40_000_000`
+     (`MAX_LOGO_PIXELS`), else 422 `logo_dimensions`. This is the real bomb gate: Pillow's own
+     `MAX_IMAGE_PIXELS` only warns between 1× and 2× and raises past 2×, so it is not relied on as a threshold.
+     Belt and braces: the module sets `Image.MAX_IMAGE_PIXELS = MAX_LOGO_PIXELS` and the normaliser runs under
+     `warnings.catch_warnings()` with `DecompressionBombWarning` turned into an error, mapped to
+     `logo_dimensions` as well.
+  4. Only now `im.load()`, then `ImageOps.exif_transpose`, convert to `RGBA`, pad the shorter side with
+     transparent pixels so the canvas is square (centre the image), resize to 256×256 with `Image.LANCZOS`
+     (`reducing_gap=3.0`), encode PNG with `optimize=True`; no metadata chunks are written (fresh `Image.new`,
+     no `pnginfo`). Any Pillow error here → 422 `logo_unreadable`.
   5. The result is the only thing persisted. Its `sha256` is computed on the PNG bytes.
 - Account must exist → 404 `account not found` otherwise (archived accounts are fine; there is no soft delete —
   `delete_account` hard-deletes and refuses accounts with entries, so the cascade test uses an empty account).
@@ -138,12 +162,19 @@ All three routes live in `routers/accounts.py` under the existing router (`Depen
 
 ### `GET /accounts/{account_id}/logo.png`
 
-- 200 `image/png` with the stored bytes; headers `Cache-Control: private, max-age=31536000, immutable`,
-  `ETag: "<sha256>"`, `X-Content-Type-Options: nosniff`, `Content-Disposition: inline; filename="logo.png"`.
-  `If-None-Match` matching the ETag → 304.
-- Clients MUST append `?v=<logo_hash>` (the server ignores the query): the URL changes with the content, which is
-  what makes `immutable` correct and lets a re-upload show on the next fetch instead of after a year. The SPA
-  store does this; the Hermes text shows it too.
+- 200 `image/png` with the stored bytes; always `ETag: "<sha256>"`, `X-Content-Type-Options: nosniff`,
+  `Content-Disposition: inline; filename="logo.png"`. `If-None-Match` matching the ETag → 304.
+- Query `v` (optional) selects the cache policy, never the content — the server always serves the current image:
+  - `v` present **and equal to the current `logo_hash`** (the 16-char prefix) → `Cache-Control: private,
+    max-age=31536000, immutable`. The URL now names exactly these bytes, so a one-year cache is correct.
+  - `v` missing or **not** equal to the current hash → `Cache-Control: no-store`. The client is holding a stale
+    hash (the list was read before a re-upload); it gets the right picture but nothing is cached under a
+    mismatching URL. The SPA refreshes its hashes through the normal account reload (`bumpAccounts` after any
+    write) and the next fetch carries the right `v`.
+  - This closes the A→B→A trap: a stale `?v=A` request never caches B under A's URL. Tests cover A→B→A and the
+    list-read-then-PUT-then-GET interleaving.
+- Clients SHOULD send `?v=<logo_hash>` from the account response they are rendering. The SPA store does; the
+  Hermes text shows it too.
 - 404 when the account does not exist or has no uploaded logo (the SPA falls back; it never shows a broken tile).
 - `read` scope (a GET under `method_scope()`); the SPA fetches it through HttpClient so the interceptor adds the
   token.
@@ -153,8 +184,13 @@ All three routes live in `routers/accounts.py` under the existing router (`Depen
 - `str | None`: first 16 hex chars of `sha256`, `None` when no uploaded image. Present on every `AccountOut`
   (list and detail) — it is a 16-char string, not an image. `AccountOut` is assembled from a dict built in
   `ledger_service.list_accounts` (`select(Account, …)` with labelled columns, no `from_attributes`), so
-  `logo_hash` is one more labelled column: a correlated scalar subquery `substr(sha256, 1, 16)` on
-  `account_logo_image`, added to that select and to `ACCOUNT_FIELDS`. No per-account query.
+  `logo_hash` is one more labelled column on that select: a correlated scalar subquery `substr(sha256, 1, 16)`
+  on `account_logo_image`. The value is taken from the unpacked row and written as `item["logo_hash"]` next to
+  the other labelled values; it is **not** added to `ACCOUNT_FIELDS`, which is read through `getattr(account,
+  field)` on the ORM object and has no such attribute. Every place that unpacks that select's row tuple is
+  updated for the extra column. `get_account` (the detail and the write responses) goes through the same
+  builder, so list, detail, `PUT /accounts/{id}` and `PUT /accounts/{id}/logo` all carry it; `None` when no
+  image. No per-account query, and the PNG column is never selected outside the GET image route.
 - `AccountIn` is unchanged: `logo_hash` is read-only; a client that sends it gets it ignored (schema ignores
   unknown fields as today).
 
@@ -162,17 +198,18 @@ All three routes live in `routers/accounts.py` under the existing router (`Depen
 
 | case | status | detail |
 |---|---|---|
-| no `file` field / empty file | 422 | FastAPI validation / `logo_empty` |
-| > 5 MiB | 413 | `logo_too_large` |
-| not an image Pillow can open, or decompression bomb | 422 | `logo_unreadable` |
+| empty body | 422 | `logo_empty` |
+| `Content-Length` > 5 MiB, or the stream exceeds 5 MiB | 413 | `logo_too_large` |
+| not an image Pillow can open (header or pixels) | 422 | `logo_unreadable` |
 | image but not PNG/JPEG/WEBP | 422 | `logo_format` |
-| side < 16 px or > 8192 px | 422 | `logo_dimensions` |
+| side < 16 px or > 8192 px, or width × height > 40 M, or bomb warning | 422 | `logo_dimensions` |
 | unknown account | 404 | `account not found` (existing wording) |
 | missing `write` scope | 403 | `scope` (existing) |
 
-Body shape: the shared error handler rewrites every `HTTPException` into `{"code": <status>, "message": <detail>,
-"trace_id": …}` (`shared_lib/errors.py`), so the tokens above arrive in `message`, not `detail`; only FastAPI's own
-validation errors keep the `detail` list. The SPA's `http-errors.ts` already reads both. Tests assert `message`.
+Wire shape, everywhere in this document: the shared error handler rewrites every `HTTPException` into
+`{"code": <status>, "message": "<token>", "trace_id": …}` (`shared_lib/errors.py`), so the tokens above arrive in
+`message`, e.g. `{"code": 422, "message": "logo_format", "trace_id": "…"}`; only FastAPI's own validation errors
+keep the `detail` list (none of the logo routes rely on it). The SPA's `http-errors.ts` already reads both. Tests assert `message`.
 `test_scope_enforcement` enumerates mutation routes automatically, so the new PUT/DELETE get the hermes-read-only
 403 case for free.
 
@@ -186,12 +223,25 @@ validation errors keep the `detail` list. The SPA's `http-errors.ts` already rea
   1. `logoHash` set and the blob fetch has not failed → uploaded image (object URL);
   2. else bundled slug as today;
   3. else emoji / fallback.
-- A new injectable `AccountLogoStore` (`services/account-logo-store.ts`): `url(accountId, hash): Signal<string |
-  null>`; keeps `Map<accountId, {hash, objectUrl}>`; on a hash change it fetches
-  `GET /api/accounting/accounts/{id}/logo.png?v={hash}` as `blob` through HttpClient (token interceptor applies), revokes
-  the previous object URL, stores the new one; on 404/any error it records the failure for that hash so the slot
-  falls back and does not retry until the hash changes. Store is `providedIn: 'root'`; object URLs are revoked
-  when replaced (not on destroy — accounts are long-lived in the shell).
+- A new injectable `AccountLogoStore` (`services/account-logo-store.ts`, `providedIn: 'root'`):
+  `url(accountId, hash): Signal<string | null>`. Contract:
+  - State per account: `{hash, objectUrl, failed}` in a `Map<accountId, …>`, exposed through one signal per
+    account id so every slot showing that account reads the same value.
+  - Keyed by **(id, hash)**: a request is started only when the account's current hash differs from the one
+    already resolved or in flight. In-flight requests are deduplicated in a `Map<"id:hash", Observable>` so ten
+    slots of the same account trigger one fetch.
+  - Generation guard: each account keeps the hash it last asked for; a response whose hash no longer equals the
+    account's current hash is discarded (its blob is never turned into a URL), so a slow A cannot overwrite a
+    newer B.
+  - Fetch: `GET /api/accounting/accounts/{id}/logo.png?v={hash}` as `blob` through HttpClient (the token
+    interceptor applies). 404 or any error marks `failed` for that (id, hash) so the slot falls back to the slug
+    / emoji and no retry happens until the hash changes.
+  - Revocation: when a new URL replaces an old one, or the hash becomes `null` (logo deleted), the old object URL
+    is revoked **after** the signal has been updated, on the next macrotask, so `<img>` elements swap first; a
+    URL that is still the current value of any account is never revoked. Nothing is revoked on component
+    destroy (accounts are long-lived in the shell).
+  - Tests: out-of-order responses (A slow, B fast → B shown, A dropped), dedupe (N slots → 1 request), delete →
+    `null` + revoke, failure → fallback and no retry, hash change → refetch.
 - Every call site that passes `[logo]` gains `[logoHash]` and `[accountId]`: accounts list rows, account picker
   (trigger, sheet rows, recent chips), 信用卡帳單 reminders, account settings big icon, and the new account page
   avatar. `LedgerAccount` (and so `AccountDetail extends LedgerAccount`) gains `logo_hash: string | null`.
@@ -213,21 +263,29 @@ settings page.
 The 品牌 logo row (`account-settings.html` 61–78) becomes a 「Logo」 block:
 - Current state line: 「已上傳的圖片」 when `logo_hash` is set (with the image), else 「內建：<label>」 when a slug is
   chosen, else 「無」.
-- Buttons: 上傳圖片 (file input, same accept list), 移除圖片 (only when an uploaded image exists; calls DELETE,
-  then refreshes), and the existing 選擇內建 logo toggle for the grid picker. The grid picker and `pickLogo()`
-  are unchanged; the hint under the block says the uploaded image takes precedence over the bundled choice.
+- Buttons: 上傳圖片 (file input, same accept list), 移除圖片 (only when an uploaded image exists; calls DELETE),
+  and the existing 選擇內建 logo toggle for the grid picker. The grid picker and `pickLogo()` are unchanged; the
+  hint under the block says the uploaded image takes precedence over the bundled choice.
 - Upload here happens immediately (not deferred to 儲存), because the image is a separate resource from the
   `AccountIn` document; the copy says so (「上傳後立即生效」). On the `accounts/new` route the upload button is
   disabled with the hint 「先建立帳戶，再上傳 logo」.
+- **The form is not reset by an image write.** `apply()` on this page rebuilds the form, the baseline and the
+  credit-sharing state from a fresh detail; running it after an upload or a delete would silently drop whatever
+  the owner had typed. The upload/delete handlers only patch the page's `logo_hash` (a dedicated signal read by
+  the big icon and the state line) from the PUT response (or to `null` after DELETE); the dirty form, its
+  baseline (so the 儲存 button's enabled state is unchanged) and the sharing members stay as they were. Test:
+  edit the name → upload → the name field still holds the edit and 儲存 is still enabled; same for 移除.
 
 ### 6.4 Service + copy
 
-- `AccountingService.uploadAccountLogo(id, file): Observable<AccountDetail>` — `FormData` with `file`, `PUT`
-  `${apiUrl}/accounts/${id}/logo`, inside `bumpAccounts` like `updateAccount`.
+- `AccountingService.uploadAccountLogo(id, file: Blob): Observable<AccountDetail>` — `PUT`
+  `${apiUrl}/accounts/${id}/logo` with the `Blob` as the body and `Content-Type: <file.type || 'application/octet-
+  stream'>`, inside `bumpAccounts` like `updateAccount`. No `FormData`.
 - `AccountingService.deleteAccountLogo(id): Observable<void>` — `DELETE`, inside `bumpAccounts`.
 - Error copy (toast): 413 → 「圖片太大（上限 5 MB）」; 422 `logo_format` → 「只接受 PNG、JPEG、WebP」; 422
-  `logo_unreadable`/`logo_dimensions` → 「這個檔案無法當作圖片使用」; 404 on the PUT route → 「伺服器尚未支援上傳」;
-  other → generic existing error toast.
+  `logo_dimensions` → 「圖片尺寸不符（每邊 16–8192 px）」; 422 `logo_unreadable`/`logo_empty` → 「這個檔案無法當作圖片
+  使用」; 404 on the PUT route → 「伺服器尚未支援上傳」; other → generic existing error toast. The client also
+  refuses files > 5 MiB before sending (same message as 413) so the common case never leaves the browser.
 - Line-icons gate: no new emoji in templates; the camera/upload glyph uses the existing line-icon set.
 
 ### 6.5 PR 2 — crop box
@@ -247,30 +305,38 @@ The 品牌 logo row (`account-settings.html` 61–78) becomes a 「Logo」 block
   file, convert SVG → PNG at ≥ 256 px locally (e.g. `rsvg-convert` or `cairosvg` on the agent host — not on the
   API), then:
   ```
-  curl -fsS -X PUT -H "Authorization: Bearer $TOKEN" -F "file=@logo.png" \
-    http://127.0.0.1:8000/accounts/<id>/logo
+  curl -fsS -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: image/png" \
+    --data-binary @logo.png http://127.0.0.1:8000/accounts/<id>/logo
   ```
 - to view what is stored: `GET /accounts/<id>/logo.png?v=<logo_hash>` (binary; save to a file, do not print).
 - list accounts without any logo: `GET /accounts` rows with `logo_hash == null and logo == null`.
 - never put the token or the owner's account names in chat artefacts; report the account id and the source URL.
-The skill file lives outside the repo; the change is made on the host as part of the rollout, like the reward
-rules skill text.
+The skill file lives outside the repo; the change is made on the host by the operator as part of the rollout,
+like the reward rules skill text. It is rollout documentation, not part of the repository implementation that the
+PR review covers.
 
 ## 8. Security review points (for the builder and the reviewer)
 
-- The server never stores or serves uploaded bytes; only Pillow's re-encoded PNG. Decompression bomb guard via
-  `MAX_IMAGE_PIXELS` + 8192 px side cap + 5 MiB body cap. `Image.open` + full `load()` happen inside the
-  exception boundary.
+- The server never stores or serves uploaded bytes; only Pillow's re-encoded PNG.
+- Resource caps, in order of application: `Content-Length` pre-check → streamed 5 MiB budget (no multipart
+  parsing, nothing spooled before the cap) → header-only `Image.open` → format allow-list → side caps **and**
+  `width × height ≤ 40 M` before `load()` → bomb warning promoted to error as a second line. Only then are pixels
+  decoded, and at most one 40 M-pixel RGBA image plus the 256×256 result are ever allocated per request.
 - Format allow-list is on the **sniffed** format (`im.format`), never on extension or declared type. SVG is text
   and fails `Image.open` → 422.
 - Response headers on the GET: `nosniff`, `inline` disposition, fixed `image/png`. The SPA never injects the
   bytes anywhere but an `<img src="blob:…">`.
 - No token in URLs: the SPA fetches via HttpClient. `GET` requires `read` like every other GET.
 - Pillow pin matches the worker constraints (12.3.0); the release venv gets it through `requirements.txt`.
-- Tests: fixtures are generated in the test (Pillow draws a 300×100 red rectangle, a 1-px image, a 9000×9000
-  PNG header without data for the bomb case, a `<svg>` text blob, a GIF); assert status codes, the stored PNG is
-  256×256 RGBA, padding is transparent, EXIF orientation is honoured, ETag/304 path, scope 403 for a read-only
-  token, `logo_hash` on list and detail, cascade on account delete.
+- Tests: fixtures are generated in the test (Pillow draws a 300×100 red rectangle; a 1-px image; a valid
+  7000×7000 PNG — 49 M pixels, both sides ≤ 8192 — for the pixel-count gate; a 9000×9000 header for the side cap;
+  a `<svg>` text blob; a GIF; a JPEG with EXIF orientation 6); a body of 5 MiB + 1 byte with and without
+  `Content-Length` (413 both ways, and the handler stops reading — asserted with a counting stream); an empty
+  body (422 `logo_empty`). Assert status codes and `message` tokens, the stored PNG is 256×256 RGBA, padding is
+  transparent, EXIF orientation is honoured, `ETag`/304, `immutable` only when `v` matches and `no-store`
+  otherwise (A→B→A), scope 403 for a read-only token (auto-enumerated by `test_scope_enforcement`), `logo_hash`
+  on list, detail and both PUT responses, `None` without an image, no PNG column in the list query, cascade on
+  account delete.
 
 ## 9. Rollout
 
@@ -290,12 +356,14 @@ rules skill text.
 
 ## 10. Left to the builder
 
-- Exact SQLAlchemy loading strategy for `logo_hash` (selectinload vs scalar subquery) — measured against the
-  existing `list_accounts` query count test if one exists.
-- Nothing about threading: the account routes are sync `def` (FastAPI runs them in its threadpool), the logo
-  routes are sync too, and the 413 pattern is `file.file.read(MAX + 1)` as in `imports.py`.
+- Where exactly the scalar subquery is attached in `list_accounts` and how the row unpacking is kept readable
+  (a small named-tuple or a dict of labelled columns) — the contract in §5 is fixed, the shape of the code is not.
+- Threading: `GET`/`DELETE` logo routes are sync `def` like their neighbours; only the `PUT` is `async def`
+  because it reads the request stream, and it hands the bytes to `normalise_logo` via `run_in_threadpool`.
 - Component placement/styling of the new avatar in the account page header on phone widths; it must not push
   the 對帳 / settings controls off the row.
 - OpenSpec: deltas under `openspec/changes/account-logo-upload/` for `accounting-ledger` (routes, `logo_hash`,
-  normalisation requirements) and `frontend-accounting-ledger` (precedence, entry points, error copy), written
-  against the spec text **after** `account-brand-logos` is archived; strict validation with the current CLI.
+  normalisation requirements), `frontend-accounting-ledger` (precedence, entry points, error copy) **and**
+  `frontend-ui-primitives` (the account-icon slot requirement currently says "bundled brand-logo set"; it must
+  allow the uploaded image in the same slots with the same tile/fallback rules), written against the spec text
+  **after** `account-brand-logos` is archived; strict validation with the current CLI.
