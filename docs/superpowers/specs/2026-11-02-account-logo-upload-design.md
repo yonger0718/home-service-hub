@@ -1,6 +1,8 @@
 # Account logo upload — design
 
-Rev 4, 2026-11-02 (rev 3 → rev 4 folds the AGENT-384 re-check: both Pillow bomb exceptions are caught at the
+Rev 4.1, 2026-11-02 — Multica AGENT-384 PASS-with-minor at rev 4 `5cf90e6a`; the two minors are folded here: the
+memory figure is a budget to be measured (OS peak RSS in a subprocess), not a proven bound, and the store's
+late-response guard compares the request generation, never the response hash. Rev 3 → rev 4 folded the AGENT-384 re-check: both Pillow bomb exceptions are caught at the
 open/load boundary → 422 `logo_dimensions`; the normaliser shrinks first (`thumbnail`) and pastes onto a fresh
 256×256 canvas, with an honest allocation bound and `MAX_LOGO_PIXELS` lowered to 25 M; the SPA store trusts the
 response `ETag`, never the requested `v`, so a mismatch is cached under its real hash; the async PUT does all
@@ -163,14 +165,17 @@ All three routes live in `routers/accounts.py` under the existing router (`Depen
      `convert("RGBA")` on the now ≤ 256×256 image; then paste it centred onto a fresh
      `Image.new("RGBA", (256, 256), (0, 0, 0, 0))`; encode PNG with `optimize=True`; no metadata chunks are
      written (fresh canvas, no `pnginfo`). Any Pillow error here → 422 `logo_unreadable`.
-     Allocation bound, stated honestly: the decoded original (≤ 25 M px × ≤ 4 B = ≤ 100 MiB) plus the
-     `reduce()` intermediate `thumbnail` creates (≤ ½ of that) are the only large buffers; transpose/convert
-     operate on ≤ 256×256. Peak ≈ 1.5 × the decoded original ≈ 150 MiB worst case, one request at a time per
-     worker thread. For JPEG the normaliser calls `im.draft("RGB", (512, 512))` before `load()` so the decoder
-     itself downscales and the common case never allocates the full original. Acceptance: an 8192×16 PNG and a
-     16×8192 PNG both produce a 256×256 RGBA PNG whose non-transparent pixels form a 256×1 / 1×256 line
-     centred on the canvas, and peak RSS growth measured with `tracemalloc` on a 5000×5000 input stays under
-     the stated bound.
+     Memory: the decoded original is ≤ 25 M px × ≤ 4 B = ≤ 100 MiB; `thumbnail` adds a `reduce()` intermediate
+     and, for RGBA/LA inputs, Pillow's resize also makes a premultiplied-alpha copy of what it resizes, so the
+     peak is a small multiple of the decoded original, **not** "original plus a little". No fixed figure is
+     promised here. The plan measures it: a subprocess normalises a 5000×5000 RGBA and a 5000×5000 LA fixture
+     (fixture creation in a separate step so it is not counted) and records OS peak RSS
+     (`resource.getrusage(RUSAGE_CHILDREN).ru_maxrss`), and the test pins a conservative budget derived from that
+     measurement with headroom; `tracemalloc` is not used (it counts traced Python allocations, not process
+     memory). Transpose/convert operate on ≤ 256×256. One request at a time per worker thread. For JPEG the
+     normaliser calls `im.draft("RGB", (512, 512))` before `load()` so the decoder itself downscales and the
+     common case never allocates the full original. Acceptance: an 8192×16 PNG and a 16×8192 PNG both produce a
+     256×256 RGBA PNG whose non-transparent pixels form a 256×1 / 1×256 line centred on the canvas.
   5. The result is the only thing persisted. Its `sha256` is computed on the PNG bytes.
 - Account must exist → 404 `account not found` otherwise (archived accounts are fine; there is no soft delete —
   `delete_account` hard-deletes and refuses accounts with entries, so the cascade test uses an empty account).
@@ -254,9 +259,12 @@ keep the `detail` list (none of the logo routes rely on it). The SPA's `http-err
   - Keyed by **(id, hash)**: a request is started only when the account's current hash differs from the one
     already resolved or in flight. In-flight requests are deduplicated in a `Map<"id:hash", Observable>` so ten
     slots of the same account trigger one fetch.
-  - Generation guard: each account keeps the hash it last asked for; a response whose hash no longer equals the
-    account's current hash is discarded (its blob is never turned into a URL), so a slow A cannot overwrite a
-    newer B.
+  - Generation guard, checked **before** the ETag is looked at: each request captures a per-account increasing
+    `generation` number (and the `requestedHash` it was sent with). When a response arrives, it is discarded —
+    blob never turned into a URL — if its `generation` is not the account's current one. The guard never looks
+    at the response's own hash: a legitimate request for A that comes back as B (mismatch, below) must not be
+    dropped by mistake, and an old A response from a superseded generation must not pass itself off as a newer
+    A. Only responses that survive the generation check go on to the ETag step.
   - Fetch: `GET /api/accounting/accounts/{id}/logo.png?v={hash}` as `blob` through HttpClient with
     `observe: 'response'` (the token interceptor applies; same origin, so the `ETag` header is readable). 404 or
     any error marks `failed` for that (id, hash) so the slot falls back to the slug / emoji and no retry happens
@@ -276,7 +284,9 @@ keep the `detail` list (none of the logo routes rely on it). The SPA's `http-err
     is revoked **after** the signal has been updated, on the next macrotask, so `<img>` elements swap first; a
     URL that is still the current value of any account is never revoked. Nothing is revoked on component
     destroy (accounts are long-lived in the shell).
-  - Tests: out-of-order responses (A slow, B fast → B shown, A dropped), dedupe (N slots → 1 request), delete →
+  - Tests: out-of-order responses (A slow, B fast → B shown, A dropped), a superseded-generation A response
+    arriving during an A→B→A sequence is dropped even though its hash matches the current A, dedupe (N slots →
+    1 request), delete →
     `null` + revoke, failure → fallback and no retry, hash change → refetch, ETag mismatch → cached under the
     actual hash + accounts refresh, missing ETag → shown but not cached, the A→B→A sequence above.
 - Every call site that passes `[logo]` gains `[logoHash]` and `[accountId]`: accounts list rows, account picker
@@ -358,8 +368,9 @@ PR review covers.
 - Resource caps, in order of application: `Content-Length` pre-check → streamed 5 MiB budget (no multipart
   parsing, nothing spooled before the cap) → header-only `Image.open` inside the boundary that also catches
   Pillow's bomb warning/error → format allow-list → side caps **and** `width × height ≤ 25 M` before `load()`
-  → `thumbnail` before any mode conversion or canvas. Peak memory ≈ 1.5 × the decoded original (≤ 150 MiB),
-  see §5 step 4; the 256×256 canvas is the only thing created at full RGBA after that.
+  → `thumbnail` before any mode conversion or canvas. Peak memory is a small multiple of the decoded original
+  (≤ 100 MiB), measured and budgeted in the plan per §5 step 4; the 256×256 canvas is the only full-RGBA
+  object created after the shrink.
 - Event loop: the only async route does no synchronous work itself — stream read, then one worker call for
   Pillow + DB + response building (§5 limits step 3).
 - Format allow-list is on the **sniffed** format (`im.format`), never on extension or declared type. SVG is text
