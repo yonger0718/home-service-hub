@@ -9,6 +9,7 @@ import { AccountingService } from './accounting.service';
 
 const A = 'a'.repeat(16);
 const B = 'b'.repeat(16);
+const C = 'c'.repeat(16);
 const etag = (hash: string) => `"${hash}${'0'.repeat(48)}"`;
 const blobOf = (label: string) => new Blob([label], { type: 'image/png' });
 
@@ -274,7 +275,7 @@ describe('AccountLogoStore', () => {
     expect(revoke).not.toHaveBeenCalled();
   });
 
-  it('a failed load stays bounded when a null-to-null write notifies the slot', () => {
+  it('a failed load stays bounded across re-reads and timers', () => {
     vi.useFakeTimers();
     const cA = computed(() => store.url(7, A)());
     cA();
@@ -282,6 +283,66 @@ describe('AccountLogoStore', () => {
     for (let i = 0; i < 3; i++) { expect(cA()).toBeNull(); }
     vi.runOnlyPendingTimers();
     cA();
+    http.expectNone(r => r.url.startsWith('/api/accounting/accounts/7/logo.png'));
+  });
+
+  for (const order of ['A first', 'B first']) {
+    it(`two consumers whose different hashes both 404 make exactly 2 GETs and never loop (${order})`, () => {
+      vi.useFakeTimers();
+      const cA = computed(() => store.url(7, A)());
+      const cB = computed(() => store.url(7, B)());
+      if (order === 'A first') { cA(); cB(); } else { cB(); cA(); }
+      const reqs = http.match(r => r.url.startsWith('/api/accounting/accounts/7/logo.png'));
+      expect(reqs.length).toBe(2);
+      for (const r of reqs) { r.flush(new Blob(['nope']), { status: 404, statusText: 'Not Found' }); }
+      for (let i = 0; i < 3; i++) {
+        cA(); cB(); cB(); cA();
+        vi.runOnlyPendingTimers();
+        http.expectNone(r => r.url.startsWith('/api/accounting/accounts/7/logo.png'));
+      }
+      expect(cA()).toBeNull();
+      expect(cB()).toBeNull();
+      expect(counter).toBe(0);
+
+      const cC = computed(() => store.url(7, C)());
+      cC();
+      flush(http.expectOne(urlFor(C, 7)), 'c', C);
+      expect(cC()).toBe('blob:1');
+      // A success clears the account's failures: A is fetched again, once.
+      store.url(7, A);
+      flush(http.expectOne(urlFor(A, 7)), 'c', C);
+      store.url(7, A);
+      http.expectNone(r => r.url.startsWith('/api/accounting/accounts/7/logo.png'));
+    });
+  }
+
+  it('destroy cancels in-flight loads, arms nothing and revokes the current URLs', () => {
+    vi.useFakeTimers();
+    const shown = store.url(1, A);
+    flush(http.expectOne(urlFor(A)), 'a', A);
+    expect(shown()).toBe('blob:1');
+    store.url(7, A);
+    const pending = http.expectOne(urlFor(A, 7));
+    store.url(1, null);
+    store.ngOnDestroy();
+    expect(pending.cancelled).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(revoke).toHaveBeenCalledWith('blob:1');
+    expect(store.url(7, B)()).toBeNull();
+    http.expectNone(urlFor(B, 7));
+    expect(refresh).not.toHaveBeenCalled();
+    expect(counter).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('destroy clears an armed stale-window timer', () => {
+    vi.useFakeTimers();
+    store.url(7, A);
+    flush(http.expectOne(urlFor(A, 7)), 'b', B);
+    expect(vi.getTimerCount()).toBe(1);
+    store.ngOnDestroy();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(30_001);
     http.expectNone(r => r.url.startsWith('/api/accounting/accounts/7/logo.png'));
   });
 

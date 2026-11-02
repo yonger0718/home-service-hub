@@ -459,8 +459,13 @@ Deviations settled during PR 1 execution; each one is covered by a test named in
   while a non-null consumer's load is in flight, or after it is shown, with no non-null re-read in the same
   macrotask, costs one clear and one refetch, then settles (the null consumer has no dependency on the slot).
   Slot signals notify on every write (`equal: () => false`), so a clear that drops an in-flight load still
-  wakes the non-null consumers even though the slot was already `null`; `failedHash` keeps error paths from
-  refetching on that wake-up.
+  wakes the non-null consumers even though the slot was already `null`; only that clear forces a notify.
+  Failures are recorded per (account, hash) in a `failed` set (current-generation errors only), so consumers
+  holding different failed hashes cannot clear each other's failure; a failed hash returns the constant null
+  signal and fetches nothing until the hash changes. The set is cleared only by a successful load (any hash)
+  or the deferred deletion clear, and the error path writes the slot only when something is shown, so a
+  failure never wakes other consumers. Destroy cancels the timers and in-flight loads (every async callback
+  checks a `destroyed` flag) and revokes every object URL the store still owns.
 - **Rev 4.4, stale-hash window expiry (§6.1):** the mismatch guard also arms one 30 s timer per account
   (replacing any earlier one). On expiry it clears the mark and, if the account's last requested non-null
   hash differs from the resolved one (and is not marked failed), starts a normal generation-protected fetch,
