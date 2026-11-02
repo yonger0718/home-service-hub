@@ -1,6 +1,6 @@
 # Account logo upload — design
 
-Rev 5.2, 2026-11-02 — store: an in-flight load survives only while it is the target's effective hash (probe round 8 N1); the refresh mark is cleared only by the deletion clear. Rev 5.1 — a return to the shown hash cancels the other in-flight load; a new lease for an aliased hash drops the alias (probe round 7 findings 1 and 2). Rev 5.0 — lease-based logo store (icon acquires/releases; fetch driven by leases only). Rev 4.6 — succeeded-hash set replaces the stale-hash guard; silent interceptor for logo GETs. Rev 4.5 — unified store failure model (see notes). Rev 4.4 — Multica AGENT-388 fold: null consumers no longer clear a slot another consumer still uses (deferred clear); the stale-hash window re-resolves on expiry. Rev 4.3 — final-review fixes: small inputs are enlarged to fit; 404 copy split; If-None-Match list parsing. Rev 4.2 — implementation notes appended at the end (PR 1 execution: P-mode expansion, store missing-ETag and
+Rev 5.3, 2026-11-02 — wording: release + re-acquire in one macrotask is free only as a cache hit (dev-astra AGENT-388 minor). Rev 5.2 — store: an in-flight load survives only while it is the target's effective hash (probe round 8 N1); the refresh mark is cleared only by the deletion clear. Rev 5.1 — a return to the shown hash cancels the other in-flight load; a new lease for an aliased hash drops the alias (probe round 7 findings 1 and 2). Rev 5.0 — lease-based logo store (icon acquires/releases; fetch driven by leases only). Rev 4.6 — succeeded-hash set replaces the stale-hash guard; silent interceptor for logo GETs. Rev 4.5 — unified store failure model (see notes). Rev 4.4 — Multica AGENT-388 fold: null consumers no longer clear a slot another consumer still uses (deferred clear); the stale-hash window re-resolves on expiry. Rev 4.3 — final-review fixes: small inputs are enlarged to fit; 404 copy split; If-None-Match list parsing. Rev 4.2 — implementation notes appended at the end (PR 1 execution: P-mode expansion, store missing-ETag and
 stale-hash guard semantics, icon null coalescing); no contract change. Rev 4.1 — Multica AGENT-384 PASS-with-minor at rev 4 `5cf90e6a`; the two minors are folded here: the
 memory figure is a budget to be measured (OS peak RSS in a subprocess), not a proven bound, and the store's
 late-response guard compares the request generation, never the response hash. Rev 3 → rev 4 folded the AGENT-384 re-check: both Pillow bomb exceptions are caught at the
@@ -294,7 +294,10 @@ keep the `detail` list (none of the logo routes rely on it). The SPA's `http-err
   - Deletion: when the target becomes null (every lease null or released) a deferred clear runs on the next
     macrotask unless a non-null lease arrives first; it bumps the generation (in-flight responses dropped),
     forgets `aliases` and `failed`, blanks the slot and revokes the URL on the following macrotask. Null leases
-    stay registered and do nothing; a release + re-acquire of the same hash in one macrotask costs nothing.
+    stay registered and do nothing. A release + re-acquire of the same hash in one macrotask is free only as a
+    cache hit: the hash already resolves (directly, not via an alias that the new lease drops) to the current
+    `shownHash` and no other target change happened in between. If the released lease's load was still in
+    flight, `release()` cancelled it and the re-acquire issues a second GET — still inside the stated bound.
   - A→B→A end to end: SPA holds A → GET A → shows A; the owner (or Hermes) uploads B → the list reloads, the icon
     releases A and acquires B → GET B → shows B; A is uploaded again → acquire A → A is the newest lease → GET A
     → shows A. Three GETs, the right image every time (the rev 4.6 "succeeded" edge is gone).
