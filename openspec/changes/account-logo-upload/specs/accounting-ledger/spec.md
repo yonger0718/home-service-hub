@@ -122,9 +122,13 @@ The service SHALL expose these read endpoints:
 - **WHEN** a request declares a `Content-Length` above 5 MiB
 - **THEN** the response SHALL be 413 `logo_too_large` before the body is read
 
+#### Scenario: Unknown account on upload
+- **WHEN** a client PUTs a valid image to the logo of an account id that does not exist
+- **THEN** the response SHALL be 404 with `account not found` in the shared envelope
+
 ### Requirement: Account logo upload validation
 
-The upload SHALL be validated in this order, each failure answering 422: empty body `logo_empty`; sniffed format not PNG, JPEG or WEBP `logo_format`; a side outside 16–8192 px or over 25 million pixels `logo_dimensions`; undecodable `logo_unreadable`. A rejected upload SHALL leave the stored image unchanged.
+The upload SHALL be validated in this order, each failure answering 422: empty body `logo_empty`; undecodable bytes (including SVG text) `logo_unreadable`; decoded format not PNG, JPEG or WEBP `logo_format`; a side outside 16–8192 px or over 25 million pixels `logo_dimensions`. A rejected upload SHALL leave the stored image unchanged.
 
 #### Scenario: Pixel budget exceeded
 - **WHEN** a client uploads a valid 6000×6000 PNG

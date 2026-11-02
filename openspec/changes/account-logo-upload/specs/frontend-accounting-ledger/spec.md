@@ -69,12 +69,16 @@ It SHALL load more entries on demand using the paginated endpoint, SHALL filter 
 
 #### Scenario: Upload rejected
 - **WHEN** the upload fails
-- **THEN** the page SHALL show 「圖片太大（上限 5 MB）」 for 413, 「只接受 PNG、JPEG、WebP」 for `logo_format`, 「圖片尺寸不符（每邊 16–8192 px）」 for `logo_dimensions`, 「這個檔案無法當作圖片使用」 for `logo_unreadable` or `logo_empty`, and 「伺服器尚未支援上傳」 for a 404 on the PUT
+- **THEN** a toast SHALL show 「圖片太大（上限 5 MB）」 for 413, 「只接受 PNG、JPEG、WebP」 for `logo_format`, 「圖片尺寸不符（每邊 16–8192 px）」 for `logo_dimensions`, 「這個檔案無法當作圖片使用」 for `logo_unreadable` or `logo_empty`, and 「伺服器尚未支援上傳」 for a 404 on the PUT
 - **AND** the previous logo SHALL remain
+
+#### Scenario: Oversized file refused client-side
+- **WHEN** the owner picks a file over 5 MiB
+- **THEN** no request SHALL be sent and a toast SHALL show 「圖片太大（上限 5 MB）」
 
 ### Requirement: Account settings page
 
-The SPA SHALL provide `/accounting/accounts/:id/settings` and `/accounting/accounts/new` as a settings-style list: the account's logo (uploaded image, else bundled brand logo, else its icon), and live balance at the top; rows 名稱, 主幣種, 帳戶分組, Logo (a block with a state line 「已上傳的圖片」, 「內建：<label>」 or 「無」, buttons 「上傳圖片」, 「移除圖片」 and 「選擇內建 logo」 that opens a grid of the bundled logo set with `無` first, and the hint 「上傳的圖片優先於內建 logo，上傳後立即生效」; on `/accounting/accounts/new` the upload is disabled with 「先建立帳戶，再上傳 logo」), 圖示, 初始金額, 帳單週期 (closing day with the computed current cycle), 信用帳戶 toggle revealing 繳款期限 (fixed day or days after closing, showing the computed due date), 信用額度, 額度共用 (multi-select of credit accounts), 主帳戶 (picker), 自動扣繳 (account picker); 紅利回饋 (read-only list of the account's rules in 2a); 國外交易手續費 toggle revealing %, rounding, refund flag; 納入總餘額; 封存帳戶; 刪除帳戶 (enabled only with no entries). 主幣種 SHALL be read-only once the account has entries. Saving calls the account write endpoints and validation errors SHALL be shown beside the field. An imported account whose settings were edited locally SHALL show a note "已自訂，匯入不再覆寫" with a 還原 MOZE 設定 action that clears the flag.
+The SPA SHALL provide `/accounting/accounts/:id/settings` and `/accounting/accounts/new` as a settings-style list: the account's logo (uploaded image, else bundled brand logo, else its icon), and live balance at the top; rows 名稱, 主幣種, 帳戶分組, Logo (a block with a state line 「已上傳的圖片」, 「內建：<label>」 or 「無」, buttons 「上傳圖片」, 「移除圖片」 (only when an uploaded image exists) and 「選擇內建 logo」 that opens a grid of the bundled logo set with `無` first, and the hint 「上傳的圖片優先於內建 logo，上傳後立即生效」; on `/accounting/accounts/new` the upload is disabled with 「先建立帳戶，再上傳 logo」), 圖示, 初始金額, 帳單週期 (closing day with the computed current cycle), 信用帳戶 toggle revealing 繳款期限 (fixed day or days after closing, showing the computed due date), 信用額度, 額度共用 (multi-select of credit accounts), 主帳戶 (picker), 自動扣繳 (account picker); 紅利回饋 (read-only list of the account's rules in 2a); 國外交易手續費 toggle revealing %, rounding, refund flag; 納入總餘額; 封存帳戶; 刪除帳戶 (enabled only with no entries). 主幣種 SHALL be read-only once the account has entries. Saving calls the account write endpoints and validation errors SHALL be shown beside the field. An imported account whose settings were edited locally SHALL show a note "已自訂，匯入不再覆寫" with a 還原 MOZE 設定 action that clears the flag.
 
 #### Scenario: Credit toggle reveals card fields
 - **WHEN** 信用帳戶 is switched on
@@ -86,13 +90,17 @@ The SPA SHALL provide `/accounting/accounts/:id/settings` and `/accounting/accou
 - **THEN** it SHALL show the current cycle `09/16 – 10/15` and the due date `11/04`
 
 #### Scenario: Pick a logo
-- **WHEN** the owner opens the 品牌 logo grid and taps a logo
+- **WHEN** the owner opens the 內建 logo grid (opened by 選擇內建 logo) and taps a logo
 - **THEN** the grid SHALL close, the header SHALL show that logo's image, and saving SHALL send its slug as `logo`
 
 #### Scenario: Clear the logo
 - **GIVEN** an account with a logo and the emoji `💳`
-- **WHEN** the owner taps `無` in the 品牌 logo grid and saves
+- **WHEN** the owner taps `無` in the 內建 logo grid (opened by 選擇內建 logo) and saves
 - **THEN** `logo` SHALL be null, the header SHALL show the emoji, and `icon` SHALL be unchanged
+
+#### Scenario: Remove button only with an uploaded image
+- **GIVEN** an account without an uploaded image
+- **THEN** 「移除圖片」 SHALL NOT be shown
 
 #### Scenario: Image write keeps the dirty form
 - **GIVEN** the owner has edited fields but not saved
@@ -102,3 +110,23 @@ The SPA SHALL provide `/accounting/accounts/:id/settings` and `/accounting/accou
 #### Scenario: Upload on a new account
 - **WHEN** the form is `/accounting/accounts/new`
 - **THEN** 「上傳圖片」 SHALL be disabled and the hint 「先建立帳戶，再上傳 logo」 SHALL show
+
+## ADDED Requirements
+
+### Requirement: Account logo image store
+
+The SPA SHALL fetch uploaded logos with the scoped token and cache one object URL per (account id, `logo_hash`). The response `ETag` decides the cache key. A load superseded by a newer one SHALL be discarded before the ETag is consulted. A replaced object URL SHALL be revoked on the next macrotask.
+
+#### Scenario: Cache hit
+- **GIVEN** a logo already loaded for (account, `logo_hash`)
+- **WHEN** another view needs it
+- **THEN** the cached object URL SHALL be reused with no request
+
+#### Scenario: ETag mismatch
+- **WHEN** the response ETag differs from the requested `logo_hash`
+- **THEN** the image SHALL be cached under the actual hash and the accounts list SHALL be refreshed
+
+#### Scenario: Superseded load
+- **GIVEN** a load is in flight
+- **WHEN** a newer load for the same account starts
+- **THEN** the older result SHALL be discarded and its ETag ignored
