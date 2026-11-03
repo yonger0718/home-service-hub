@@ -1,3 +1,4 @@
+import re
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -125,7 +126,7 @@ def test_changed_card_prints_period_line(fx):
 def test_unknown_field_falls_back_to_raw_name(fx):
     c = card(101, "changed", findings=(finding(field="weird_field"),))
     (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_findings=True)})
-    assert "Overseas 3%：weird_field 官網 2027-03-31 — <" + ON + ">" in msg  # not a rule-row key: no 系統 part
+    assert "Overseas 3%：weird\\_field 官網 2027-03-31 — <" + ON + ">" in msg  # not a rule-row key: no 系統 part
 
 
 def test_defang_model_text(fx):
@@ -251,3 +252,37 @@ def test_unknown_rule_unverified_reason(fx):
     c = card(101, "changed", unverified=(finding(rule_id=99, reason="未知規則"),))
     (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_unverified=True)})
     assert "· 未驗證（未知規則）：結束日 2027-03-31 — www.example-bank.com" in msg
+
+
+# --- final fix A6: Discord markdown escaped in model text ----------------------------------------------------------
+
+def test_markdown_and_angle_tokens_escaped(fx):
+    evil = "**bold** __u__ ~~s~~ ||spoiler|| `code` back\\slash <#123> <t:1:R> <a:x:1>"
+    c = card(101, "changed", findings=(finding(quote=evil, site=evil),), notes=evil)
+    (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_findings=True, show_signal=True)})
+    body = msg.split("\n", 3)[3].split("\n", 1)[1]  # drop the card head (its <url> is ours)
+    assert not re.search(r"(?<!\\)[*_~|`]", body.replace("\\\\", ""))  # every markdown char escaped
+    for raw in ("<#", "<t:", "<a:"):
+        assert raw not in body, raw
+    assert "\\*\\*bold\\*\\*" in body and "back\\\\slash" in body and "<\u200b#123>" in body
+
+
+def test_failed_suffix_goes_through_safe_text(fx):
+    log = {"failed": [ON + " (read_timeout)"], "truncated": []}
+    (msg,) = run(fx, [entry(101, "A")], [card(101, "not_found")], {101: show(show_not_found=True)}, log=log)
+    assert f"　- <{ON}> (read\\_timeout)" in msg
+
+
+def test_overlong_verified_url_line_never_exceeds_limit(fx):
+    long_url = ON + "/" + "p" * 1990
+    c = card(101, "changed", findings=(finding(source=long_url),))
+    out = run(fx, [entry(101, "A")], [c], {101: show(show_findings=True)})
+    assert all(len(m) <= 2000 for m in out)
+
+
+def test_has_items_predicate():
+    from notify.terms_render import has_items
+    assert not has_items(NO) and not has_items(show(is_new=True))
+    for name in ("show_findings", "show_announced", "show_signal", "show_not_found", "show_unverified",
+                 "show_period_only", "show_period", "show_truncated"):
+        assert has_items(show(**{name: True})), name

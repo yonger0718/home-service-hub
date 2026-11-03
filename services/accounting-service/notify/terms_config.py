@@ -10,6 +10,10 @@ from notify.config import ConfigError
 DEFAULT_TERMS_STATE_FILE = "~/.local/state/homehub-notify/terms-state.json"
 _TIERS = ("precise", "signal")
 _BCP47 = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
+_CARD_KEY = re.compile(r"[1-9][0-9]*")
+_LDH = r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
+_HOSTNAME = re.compile(rf"{_LDH}(\.{_LDH})+")  # LDH labels, at least one dot
+MAX_HERMES_TIMEOUT = 1840  # the units' TimeoutStartSec=1900 must outlast Hermes by 60 s
 
 
 @dataclass(frozen=True)
@@ -75,11 +79,10 @@ def _bool(raw: dict, key: str, path: str, default: bool) -> bool:
 
 
 def _card(key: str, raw: object) -> CardEntry:
-    try:
-        account_id = int(key)
-    except ValueError:
-        raise ConfigError(f"terms.cards.{key}") from None
     p = f"terms.cards.{key}"
+    if not isinstance(key, str) or not _CARD_KEY.fullmatch(key):
+        raise ConfigError(p)
+    account_id = int(key)
     if not isinstance(raw, dict):
         raise ConfigError(p)
     tier = raw.get("tier")
@@ -89,11 +92,13 @@ def _card(key: str, raw: object) -> CardEntry:
     language = raw.get("language", "zh-TW")
     if not isinstance(language, str) or not _BCP47.fullmatch(language):
         raise ConfigError(f"{p}.language")
-    domains = _str_list(raw, "bank_domains", f"{p}.bank_domains", non_empty=True)
+    domains = [d.lower().rstrip(".") for d in _str_list(raw, "bank_domains", f"{p}.bank_domains", non_empty=True)]
+    if not all(_HOSTNAME.fullmatch(d) for d in domains):
+        raise ConfigError(f"{p}.bank_domains")
     return CardEntry(
         account_id=account_id,
         official=_str(raw, "official", f"{p}.official"),
-        bank_domains=tuple(d.lower().rstrip(".") for d in domains),
+        bank_domains=tuple(domains),
         tier=tier,
         country=country,
         language=language,
@@ -120,15 +125,24 @@ def load_terms(raw: dict) -> TermsConfig | None:
     cards_raw = t.get("cards", {})
     if not isinstance(cards_raw, dict):
         raise ConfigError("terms.cards")
+    cards: list[CardEntry] = []
+    for key, value in cards_raw.items():
+        card = _card(key, value)
+        if any(c.account_id == card.account_id for c in cards):
+            raise ConfigError(f"terms.cards.{key}")
+        cards.append(card)
+    timeout = _int(t, "hermes_timeout_seconds", "terms.hermes_timeout_seconds", 1800)
+    if timeout > MAX_HERMES_TIMEOUT:
+        raise ConfigError("terms.hermes_timeout_seconds")
     return TermsConfig(
         report_dir=Path(_str(t, "report_dir", "terms.report_dir")).expanduser(),
         hermes_model=_str(t, "hermes_model", "terms.hermes_model"),
         hermes_toolsets="web",
         max_output_bytes=_int(t, "max_output_bytes", "terms.max_output_bytes", 4194304),
-        hermes_timeout_seconds=_int(t, "hermes_timeout_seconds", "terms.hermes_timeout_seconds", 1800),
+        hermes_timeout_seconds=timeout,
         hermes_provider=_str(t, "hermes_provider", "terms.hermes_provider", "anthropic"),
         ignore_accounts=frozenset(ignore),
         terms_state_file=Path(_str(t, "terms_state_file", "terms.terms_state_file",
                                    DEFAULT_TERMS_STATE_FILE)).expanduser(),
-        cards=tuple(_card(k, v) for k, v in cards_raw.items()),
+        cards=tuple(cards),
     )

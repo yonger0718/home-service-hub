@@ -326,7 +326,7 @@ Business days come from `GET /calendar/business-days`; a due date past its `last
          #   or: ~/.local/share/uv/python/cpython-3.13.13-linux-aarch64-gnu/bin/python3.13 -m venv ~/releases/home-hub-notify/venv
          ~/releases/home-hub-notify/venv/bin/pip install -r ~/releases/home-hub-notify/current/services/accounting-service/requirements-notify.txt
 
-  4. First run by hand, BEFORE installing the units (`install.sh` enables the timers with `--now`):
+  4. First run by hand, BEFORE installing the units (`install.sh` enables the daily and weekly timers with `--now`):
      `cd ~/releases/home-hub-notify/current/services/accounting-service`, then
      `~/releases/home-hub-notify/venv/bin/python -m notify daily --dry-run`, then `--send`; the same for `weekly`; the
      owner confirms both messages in the channel.
@@ -357,13 +357,18 @@ Business days come from `GET /calendar/business-days`; a due date past its `last
   `hermes_model` 為必填（設定繞過後沒有預設模型），`hermes_provider` 預設 `anthropic`；另有 `report_dir`、`hermes_toolsets`（必須是 `web`）、
   `hermes_timeout_seconds`、`max_output_bytes`、`terms_state_file`、`ignore_accounts`。每張卡需 `official`、`bank_domains`、
   `tier`（`precise` 或 `signal`），可選 `country`、`language`、`currency`、`aliases`、`year_end_window`。
+  卡的 key 必須是不含前導零的十進位帳號 id（`"101"`）；`bank_domains` 必須是至少含一個點的主機名稱（不含 scheme、路徑）。
+  `hermes_timeout_seconds` 只能是 1–1840：兩個 terms service 的 `TimeoutStartSec=1900`，systemd 要比 Hermes 晚 60 秒才中止，
+  要調高就得同時改 unit。
 - CLI：
 
-      python -m notify terms --cause {monthly,year-end} [--dry-run | --send] [--config PATH]
+      python -m notify terms --cause {monthly,year-end} [--as-of YYYY-MM-DD] [--dry-run | --send] [--config PATH]
 
   Exit code：0 完成或無事可報；1 失敗（寫 `last_failure.txt`，`failed@` 單元發通知）；2 參數錯誤或缺少/無效的 `[terms]`。
-  每次執行在 `report_dir/<UTC 時間戳>/` 留存封存（目錄 0700、檔案 0600：`input.json`、`prompt.md`、`result.json` 含各卡 `fetch_log`、`message.md`）；
-  只有 `--send` 成功送出後才儲存 state。
+  每次執行在 `report_dir/<UTC 時間戳>/` 留存封存（目錄 0700、檔案 0600：`input.json`、`prompt.md`、`hermes.out`、`hermes.err`、`result.json` 含各卡 `fetch_log`、`message.md`）；
+  只有 `--send` 成功送出後才儲存 state。封存目錄已存在（時間戳碰撞）時以 `TermsArchiveError archive <dir>` 失敗，不覆寫。
+- 訊息：完整網址只印通過來源規則（銀行網域、僅 RFC 3986 可列印字元、無 `@`）的，並以 `<url>` 形式呈現（Discord 不展開預覽）；
+  其餘只印主機名稱。發現的「系統」值取自 HomeHub 的規則列，不採用模型自述；`rule_id` 不是該卡現行規則的發現列為「未驗證（未知規則）」。
 - 隔離：Hermes 以固定參數呼叫（`hermes -z … -t web --ignore-user-config --ignore-rules --provider … -m …`），
   不給 HomeHub token，環境變數只有 PATH/HOME/LANG/TZ。**不得上線規則**：Hermes 升級後若
   `deploy/notify/terms-isolation-probe.md` 的隔離探測有任何一項失敗，就不要啟用計時器。
@@ -376,7 +381,8 @@ Business days come from `GET /calendar/business-days`; a due date past its `last
   2. 在 TOML 加入 `[terms]` 與要維護的卡（帳號 id 取自帳戶清單；CUBE 用 `signal`），不再使用的卡不要列入。
   3. 手動執行一次 `python -m notify terms --dry-run --cause monthly`，讀封存：每張卡看 `fetch_log`（`tool_calls`、`failed`、`truncated`），
      確認各銀行文件實際讀了多少。注意：`--ignore-user-config` 會丟掉 Hermes 設定檔中的 web backend 設定，搜尋/擷取 backend 改由
-     Hermes 自己的環境金鑰自動偵測，可能與 spike 時不同，所以第一次 dry-run 一定要檢查 `result.json` 的 `fetch_log`，再執行
+     Hermes 自己的環境金鑰自動偵測，可能與 spike 時不同，所以第一次 dry-run 一定要檢查 `result.json` 的 `fetch_log`；
+     也要讀 `message.md`，確認沒有奇怪的網址或 Markdown 格式（粗體、刪除線、提及等），再執行
      `systemctl --user enable --now homehub-notify-terms-monthly.timer homehub-notify-terms-year-end.timer`。
   4. 第一次正式發送後，由 owner 手動套用接受的發現（或請助理代辦），並比照 2026-11-02 在 data-pass log 記錄套用內容。
 

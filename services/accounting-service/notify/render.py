@@ -160,10 +160,18 @@ def render_failure(reason: str) -> str:
 
 
 def _split_lines(block: str, limit: int) -> list[str]:
-    """Break an oversized block on line boundaries (a single over-long line stays whole)."""
+    """Break an oversized block on line boundaries; a single line longer than `limit` is cut hard."""
     out: list[str] = []
     cur = ""
     for line in block.split("\n"):
+        while len(line) > limit:
+            if cur:
+                out.append(cur)
+                cur = ""
+            out.append(line[:limit])
+            line = line[limit:]
+        if not line and out and not cur:
+            continue  # the remainder of a hard-cut line was exactly `limit` long
         if cur and len(cur) + 1 + len(line) > limit:
             out.append(cur)
             cur = line

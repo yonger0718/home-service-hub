@@ -30,6 +30,10 @@ class CappedRead(ApiError):
     """A capped list came back full and may hide rows the run needs."""
 
 
+def _list_of_dicts(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(v, dict) for v in value)
+
+
 class ReadClient:
     def __init__(self, client: httpx.Client, token: str):
         self._client = client
@@ -51,11 +55,19 @@ class ReadClient:
         return self._get("/settings/reconciliation")
 
     def reward_rules_active(self) -> dict:
-        return self._get("/reward-rules", {"state": "active"})
+        path = "/reward-rules"
+        data = self._get(path, {"state": "active"})
+        if not isinstance(data, dict) or not _list_of_dicts(data.get("accounts")):
+            raise ApiError(None, path, "unexpected shape")
+        return data
 
     def account_reward_rules(self, account_id: int) -> list[dict]:
-        data = self._get(f"/accounts/{account_id}/reward-rules")
-        return data["rules"] if isinstance(data, dict) else data
+        path = f"/accounts/{account_id}/reward-rules"
+        data = self._get(path)
+        rules = data.get("rules") if isinstance(data, dict) else data
+        if not _list_of_dicts(rules):
+            raise ApiError(None, path, "unexpected shape")
+        return rules
 
     def calendar(self, date_from: date, date_to: date) -> Calendar:
         data = self._get("/calendar/business-days", {"from": date_from.isoformat(), "to": date_to.isoformat()})

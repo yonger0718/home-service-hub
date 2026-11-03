@@ -95,3 +95,45 @@ def test_api_error_propagates():
     client, _ = make_client({"/reward-rules": {"accounts": []}})
     with pytest.raises(ApiError):
         build_input(ReadClient(client, "t"), _cfg(_card(101)), TODAY, "scheduled")
+
+
+# --- final fix B1: unexpected API shapes are ApiError --------------------------------------------------------------
+
+@pytest.mark.parametrize("body", [{"items": []}, {"rules": {"a": 1}}, "rules", 5, [1, 2], {"rules": ["x"]}])
+def test_account_reward_rules_unexpected_shape(body):
+    client, _ = make_client({"/reward-rules": {"accounts": []}, "/accounts/101/reward-rules": body})
+    with pytest.raises(ApiError) as ei:
+        build_input(ReadClient(client, "t"), _cfg(_card(101)), TODAY, "scheduled")
+    assert ei.value.reason == "unexpected shape" and ei.value.path == "/accounts/101/reward-rules"
+
+
+@pytest.mark.parametrize("body", [[], "x", {"accounts": {"a": 1}}, {"other": []}])
+def test_reward_rules_active_unexpected_shape(body):
+    client, _ = make_client({"/reward-rules": body, "/accounts/101/reward-rules": []})
+    with pytest.raises(ApiError) as ei:
+        build_input(ReadClient(client, "t"), _cfg(_card(101)), TODAY, "scheduled")
+    assert ei.value.reason == "unexpected shape" and ei.value.path == "/reward-rules"
+
+
+@pytest.mark.parametrize("ends_on", ["2026-13-01", "soon", 20261231])
+def test_malformed_ends_on_is_api_error(ends_on):
+    client, _ = make_client({"/reward-rules": {"accounts": []},
+                             "/accounts/101/reward-rules": [_rule(1, ends_on=ends_on)]})
+    with pytest.raises(ApiError) as ei:
+        build_input(ReadClient(client, "t"), _cfg(_card(101)), TODAY, "scheduled")
+    assert ei.value.reason == "unexpected shape" and ei.value.path == "/accounts/101/reward-rules"
+
+
+def test_missing_is_enabled_is_not_live():
+    rule = _rule(1)
+    del rule["is_enabled"]
+    client, _ = make_client({"/reward-rules": {"accounts": []}, "/accounts/101/reward-rules": [rule, _rule(2)]})
+    inp = build_input(ReadClient(client, "t"), _cfg(_card(101)), TODAY, "scheduled")
+    assert [r["id"] for r in inp.cards[0].rules] == [2]
+
+
+def test_unregistered_without_account_name():
+    active = {"accounts": [{"account_id": 205, "rules": [_rule(9)]}]}
+    client, _ = make_client({"/reward-rules": active, "/accounts/101/reward-rules": []})
+    inp = build_input(ReadClient(client, "t"), _cfg(_card(101)), TODAY, "scheduled")
+    assert inp.unregistered == ((205, ""),)

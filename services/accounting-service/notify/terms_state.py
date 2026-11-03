@@ -66,14 +66,16 @@ def load_terms_state(path: Path) -> TermsState:
         raise TermsStateError() from None
     try:
         raw = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         raise TermsStateError() from None
     return _parse(raw)
 
 
 def save_terms_state(path: Path, state: TermsState) -> None:
-    """Atomic write, mode 0600. Takes no lock; the caller holds ``terms_lock``."""
+    """Atomic write, mode 0600. Takes no lock; the caller holds ``terms_lock``. A naive ``seen_at`` is refused."""
     path = Path(path)
+    if any(c.seen_at.tzinfo is None or c.seen_at.utcoffset() is None for c in state.cards.values()):
+        raise TermsStateError()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     data = {str(i): {"digest": c.digest, "seen_at": c.seen_at.isoformat()} for i, c in state.cards.items()}
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
@@ -100,9 +102,12 @@ def terms_lock(path: Path):
     fd = os.open(path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
-        os.close(fd)  # closing releases the flock
+        os.close(fd)
 
 
 @dataclass(frozen=True)

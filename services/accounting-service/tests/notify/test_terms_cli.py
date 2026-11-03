@@ -222,7 +222,15 @@ def test_duplicate_stamp_dir_fails_and_is_not_overwritten(tenv):
     (existing / "keep").write_text("x")
     assert tenv.run("--cause", "monthly", "--send") == 1
     assert (existing / "keep").read_text() == "x" and list(existing.iterdir()) == [existing / "keep"]
-    assert tenv.hermes_calls == [] and "ConfigError" in tenv.failure.read_text()
+    assert tenv.hermes_calls == []
+    assert tenv.failure.read_text() == f"❌ 帳務通知失敗：terms 2026-11-03 TermsArchiveError archive {existing}"
+
+
+def test_archive_error_shape():
+    exc = terms.TermsArchiveError(Path("/r/x"))
+    assert str(exc) == "archive /r/x" and exc.reason == "archive" and exc.archive == Path("/r/x")
+    assert terms.TermsArchiveError in cli.FAILURES
+    assert cli._short(exc) == "TermsArchiveError archive /r/x"
 
 
 def test_corrupt_terms_state_fails_run(tenv):
@@ -265,6 +273,15 @@ def test_findings_joined_to_frozen_input(tenv, monkeypatch):
     data = json.loads((tenv.archives[-1] / "result.json").read_text())["cards"][0]
     assert data["findings"] == [] and "未知規則" in [u["reason"] for u in data["unverified"]]
     assert "R162" not in (tenv.archives[-1] / "message.md").read_text()
+
+
+def test_summary_count_uses_render_predicate(tenv, capsys, monkeypatch):
+    from notify import terms_render
+    assert tenv.run("--cause", "monthly") == 0
+    (arch,) = tenv.archives
+    blocks = (arch / "message.md").read_text().count("【")
+    assert f"terms: 3 cards, {blocks} with items," in capsys.readouterr().err
+    assert terms.has_items is terms_render.has_items  # one shared predicate (final fix B4)
 
 
 def test_cause_required(tenv):

@@ -18,9 +18,19 @@ from .hermes_run import HERMES_ENV_KEYS, run_hermes
 from .terms_input import build_input, select_cards, to_json
 from .terms_parse import TermsParseError, digest, join_rules, parse_result
 from .terms_prompt import build_prompt
-from .terms_render import render_terms
+from .terms_render import has_items, render_terms
 from .terms_state import (CardSeen, TermsStateError, decide, load_terms_state, save_terms_state,
                           terms_lock)
+
+
+class TermsArchiveError(Exception):
+    """The run's archive dir already exists (timestamp collision); carries the path only."""
+
+    reason = "archive"
+
+    def __init__(self, archive: Path):
+        super().__init__(f"archive {archive}")
+        self.archive = archive
 
 
 def _utcnow() -> datetime:
@@ -39,13 +49,12 @@ def _make_archive(report_dir: Path, now: datetime) -> Path:
     try:
         archive.mkdir(mode=0o700)
     except FileExistsError:
-        raise ConfigError("archive exists") from None  # never reuse or overwrite a run
+        raise TermsArchiveError(archive) from None  # never reuse or overwrite a run
     return archive
 
 
 def _summary(inp, decisions, sent: int) -> None:
-    shown = sum(any(getattr(d, f.name) for f in dataclasses.fields(d) if f.name.startswith("show_"))
-                for d in decisions.values())
+    shown = sum(has_items(d) for d in decisions.values())
     print(f"terms: {len(inp.cards)} cards, {shown} with items, sent {sent} messages", file=sys.stderr)
 
 

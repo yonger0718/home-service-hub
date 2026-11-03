@@ -380,3 +380,45 @@ def test_join_keeps_unverified_and_other_fields():
     off = dict(_f(), source="https://evil.com/x")
     r = _joined(off, _f())
     assert [u.reason for u in r.unverified] == [""] and r.findings[0].site == "4" and r.status == "changed"
+
+
+# --- final fix A4 / A5 / B2 ----------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("aid", [[101], {"a": 1}, True, "101", None, 101.0])
+def test_truncated_account_id_must_be_int(aid):
+    log = {"truncated": [{"account_id": aid, "url": ON, "read": "r"}, {"account_id": 101, "url": ON, "read": "k"}]}
+    r = parse_result(fx.one_card({"account_id": 101, "status": "unchanged"}, fetch_log=log), ONE)
+    assert r.cards[0].truncated == (TruncatedSource(ON, True, "k"),)
+    assert [e["read"] for e in r.fetch_log["truncated"]] == ["k"]
+
+
+def test_next_terms_unverified_url_only_when_announced():
+    def run(announced):
+        card = _announced(1, None)
+        card["next_terms"].update(announced=announced, source="https://evil.com/a")
+        card["status"] = "announced" if announced else "unchanged"
+        return parse_result(fx.one_card(card), CARDS[2:3]).cards[0]
+    assert run(True).next_terms_unverified_url == "https://evil.com/a"
+    r = run(False)
+    assert r.next_terms_unverified_url is None and r.next_terms is None
+
+
+def _read(value):
+    log = {"truncated": [{"account_id": 101, "url": ON, "read": value}]}
+    return parse_result(fx.one_card({"account_id": 101, "status": "unchanged"}, fetch_log=log), ONE).cards[0].truncated[0].read
+
+
+def test_read_text_length_and_anchoring():
+    assert _read("a" * 80) == "a" * 80
+    assert _read("a" * 81) == ""
+    assert _read("first 40k\n") == "" and _read("first 40k\n\n") == ""
+    assert _read("١٢k") == "" and _read("４０k") == ""  # Arabic-Indic / fullwidth digits
+    assert _read("前 4 萬字") == "前 4 萬字"
+
+
+@pytest.mark.parametrize("suffix,kept", [(" (\u0664\u0660\u0663)", ""), (" (" + "a" * 41 + ")", ""),
+                                         (" (403)\n", " (403)"), (" (403)\n(x)", ""), (" (a\nb)", "")])
+def test_failed_suffix_fullmatch_ascii(suffix, kept):
+    log = {"failed": [ON + suffix]}
+    r = parse_result(fx.one_card({"account_id": 101, "status": "unchanged"}, fetch_log=log), ONE)
+    assert r.fetch_log["failed"] == [ON + kept]  # the entry is stripped first; a trailing newline is whitespace

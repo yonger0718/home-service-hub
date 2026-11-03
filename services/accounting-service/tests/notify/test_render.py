@@ -114,6 +114,17 @@ def test_oversized_block_is_split_on_lines():
     assert len(out) == 2 and all(len(m) <= 2000 for m in out) and "\n".join(out) == block
 
 
+def test_single_line_over_limit_is_hard_split():
+    # a terms finding line can carry a 2048-char URL (final fix A6): no message may exceed the limit
+    block = "head\n" + "y" * 4500 + "\ntail"
+    out = split_blocks([block], limit=2000)
+    assert all(0 < len(m) <= 2000 for m in out)
+    assert "".join(m.replace("\n", "") for m in out) == block.replace("\n", "")
+    assert out[0] == "head" and out[-1].endswith("\ntail")
+    exact = split_blocks(["z" * 4000], limit=2000)
+    assert exact == ["z" * 2000, "z" * 2000]
+
+
 def _cathay_weekly(lines, **kw):
     from dataclasses import replace
     from notify.cathay import CathayLine

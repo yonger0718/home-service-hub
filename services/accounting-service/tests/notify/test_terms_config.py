@@ -104,3 +104,69 @@ def test_broken_terms_block_loads_without_with_terms(tmp_path):
     assert load_config(p).terms is None
     with pytest.raises(ConfigError):
         load_config(p, with_terms=True)
+
+
+# --- final fix A7 / A8 ---------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("key", ["1_01", "+101", " 101", "-5", "0", "0101", "101 ", "１０１"])
+def test_card_key_must_be_canonical_digits(tmp_path, key):
+    with pytest.raises(ConfigError) as exc:
+        _load(tmp_path, TERMS + CARD.replace('"101"', f'"{key}"'))
+    assert str(exc.value) == f"terms.cards.{key}"
+
+
+def test_duplicate_account_id_rejected():
+    from notify.terms_config import load_terms
+
+    class Twice(dict):  # TOML keys are unique; this is the defensive duplicate check
+        def items(self):
+            card = {"official": "A", "bank_domains": ["a.com"], "tier": "precise"}
+            return [("101", card), ("101", card)]
+    with pytest.raises(ConfigError) as exc:
+        load_terms({"terms": {"report_dir": "~/r", "hermes_model": "m", "cards": Twice(x=1)}})
+    assert str(exc.value) == "terms.cards.101"
+
+
+@pytest.mark.parametrize("bad", ["[]", '["com"]', '["a..com"]', '["-a.com"]', '["a_b.com"]', '["https://a.com"]',
+                                 '["a.com/x"]', '["a .com"]', '[""]', '["a.com", 5]', '"a.com"'])
+def test_bank_domains_must_be_ldh_hostnames(tmp_path, bad):
+    assert _card_err(tmp_path, '["a.com"]', bad) == "terms.cards.101.bank_domains"
+
+
+def test_bank_domains_accepts_hostnames(tmp_path):
+    body = TERMS + CARD.replace('["a.com"]', '["Bank-1.example.com.tw", "x.co"]')
+    assert _load(tmp_path, body).terms.cards[0].bank_domains == ("bank-1.example.com.tw", "x.co")
+
+
+@pytest.mark.parametrize("bad", ['"yes"', "1"])
+def test_year_end_window_must_be_bool(tmp_path, bad):
+    assert _card_err(tmp_path, "", f"year_end_window = {bad}") == "terms.cards.101.year_end_window"
+
+
+def test_ignore_accounts_string_rejected(tmp_path):
+    with pytest.raises(ConfigError) as exc:
+        _load(tmp_path, TERMS.replace("[terms]\n", '[terms]\nignore_accounts = "a"\n') + CARD)
+    assert str(exc.value) == "terms.ignore_accounts"
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "true", '"9"'])
+def test_max_output_bytes_positive_int(tmp_path, bad):
+    with pytest.raises(ConfigError) as exc:
+        _load(tmp_path, TERMS.replace("[terms]\n", f"[terms]\nmax_output_bytes = {bad}\n") + CARD)
+    assert str(exc.value) == "terms.max_output_bytes"
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "1841", "true"])
+def test_hermes_timeout_within_unit_timeout(tmp_path, bad):
+    with pytest.raises(ConfigError) as exc:
+        _load(tmp_path, TERMS.replace("[terms]\n", f"[terms]\nhermes_timeout_seconds = {bad}\n") + CARD)
+    assert str(exc.value) == "terms.hermes_timeout_seconds"
+    for ok in (1, 1840):
+        cfg = _load(tmp_path, TERMS.replace("[terms]\n", f"[terms]\nhermes_timeout_seconds = {ok}\n") + CARD)
+        assert cfg.terms.hermes_timeout_seconds == ok
+
+
+def test_defaults_for_provider_and_state_file(tmp_path):
+    t = _load(tmp_path, TERMS + CARD).terms
+    assert t.hermes_provider == "anthropic" and t.terms_state_file.name == "terms-state.json"
+    assert t.hermes_timeout_seconds == 1800 and t.max_output_bytes == 4194304

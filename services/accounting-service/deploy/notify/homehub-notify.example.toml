@@ -20,7 +20,7 @@ cathay_run_grace_minutes = 15                      # a run later than this after
 report_dir = "~/reports/home-hub-terms"      # archive root, created 0700
 hermes_toolsets = "web"                       # passed to `hermes -t`; must be exactly "web" (§3)
 max_output_bytes = 4194304                    # cap on archived hermes stdout/stderr; past it the run fails
-hermes_timeout_seconds = 1800
+hermes_timeout_seconds = 1800                 # 1..1840: the units' TimeoutStartSec=1900 must outlast Hermes by 60 s
 hermes_model = "claude-sonnet-5-5"            # required: config bypass has no model default
 # hermes_provider = "anthropic"                # default anthropic
 ignore_accounts = []                          # active-rule cards the owner chose not to maintain; never reported as 未登錄

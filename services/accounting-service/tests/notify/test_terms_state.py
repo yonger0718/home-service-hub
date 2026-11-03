@@ -96,7 +96,7 @@ def test_error_archive_read_at_call_time():
 def test_save_is_atomic_0600_and_locked(tmp_path):
     p = tmp_path / "sub" / "t.json"
     with terms_lock(p):
-        assert (tmp_path / "sub" / "t.lock").exists() or p.with_suffix(".lock").exists()
+        assert (tmp_path / "sub" / "t.lock").exists()
         fd = os.open(p.with_suffix(".lock"), os.O_RDWR)
         try:
             with pytest.raises(BlockingIOError):
@@ -180,3 +180,47 @@ def test_decide_changed_card_shows_period_line():
 def test_decide_quiet_card_shows_nothing():
     d = decide(_card("unchanged"), ENTRY, CardSeen("h", NOW), "h")
     assert not any(_flags(d).values())
+
+
+# --- final fix B3 --------------------------------------------------------------------------------------------------
+
+def test_deeply_nested_state_is_state_error(tmp_path):
+    p = tmp_path / "t.json"
+    p.write_text("[" * 100000)
+    with pytest.raises(TermsStateError) as ei:
+        load_terms_state(p)
+    assert ei.value.__cause__ is None
+
+
+def test_save_rejects_naive_seen_at_and_leaves_no_tmp(tmp_path):
+    p = tmp_path / "t.json"
+    with pytest.raises(TermsStateError):
+        save_terms_state(p, TermsState(cards={101: CardSeen("d", datetime(2026, 11, 3, 1, 0))}))
+    assert not p.exists() and list(tmp_path.iterdir()) == []
+
+
+def test_failed_save_removes_tmp_file(tmp_path, monkeypatch):
+    p = tmp_path / "t.json"
+    monkeypatch.setattr(os, "replace", lambda a, b: (_ for _ in ()).throw(OSError("boom")))
+    with pytest.raises(OSError):
+        save_terms_state(p, TermsState(cards={101: CardSeen("d", NOW)}))
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_lock_released_and_fd_closed_on_exception(tmp_path, monkeypatch):
+    p = tmp_path / "t.json"
+    calls, closed, real_close = [], [], os.close
+    real_flock = fcntl.flock
+    monkeypatch.setattr(fcntl, "flock", lambda fd, op: (calls.append(op), real_flock(fd, op))[1])
+    monkeypatch.setattr(os, "close", lambda fd: (closed.append(fd), real_close(fd))[1])
+    with pytest.raises(RuntimeError):
+        with terms_lock(p):
+            raise RuntimeError("inside")
+    assert calls == [fcntl.LOCK_EX, fcntl.LOCK_UN] and len(closed) == 1
+    with pytest.raises(OSError):
+        os.fstat(closed[0])
+    fd = os.open(p.with_suffix(".lock"), os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # free again
+    finally:
+        os.close(fd)

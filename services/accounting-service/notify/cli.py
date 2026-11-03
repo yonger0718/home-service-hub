@@ -31,7 +31,7 @@ from .terms_state import TermsStateError
 
 DEFAULT_CONFIG = "~/.config/homehub-notify.toml"
 FAILURES = (ApiError, CalendarExhausted, ConfigError, httpx.HTTPError, send.SendError,
-            HermesError, TermsParseError, TermsStateError)
+            HermesError, TermsParseError, TermsStateError, terms_cmd.TermsArchiveError)
 
 
 def failure_path(cfg: NotifyConfig) -> Path:
@@ -64,7 +64,7 @@ def _parser() -> argparse.ArgumentParser:
 def _short(exc: Exception) -> str:
     """Exception class plus the safe detail: the HTTP status / reason, or for ConfigError (names the key or the
     config path, never a value) and CalendarExhausted (names the dates) the message itself."""
-    if isinstance(exc, (HermesError, TermsParseError, TermsStateError)):
+    if isinstance(exc, (HermesError, TermsParseError, TermsStateError, terms_cmd.TermsArchiveError)):
         return f"{type(exc).__name__} {exc.reason} {exc.archive}"  # stage + archive dir only, never output text
     if isinstance(exc, (ConfigError, CalendarExhausted)):
         detail = str(exc)

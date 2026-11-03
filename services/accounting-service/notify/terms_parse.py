@@ -258,16 +258,16 @@ def _next_terms(raw: object, domains: tuple[str, ...]) -> tuple[NextTerms | None
                    src.strip() if src else None, quote)
     if src and quote and quote.strip() and source_ok(src, domains):
         return nt, None
-    return None, (_safe_url(src) or None if src else None)
+    return None, (_safe_url(src) or None if src and announced else None)  # an unannounced block shows nothing
 
 
 _UNVERIFIED = "[unverified source]"
-_FAILED_SUFFIX = re.compile(r"^ ?\((\d{3}|[A-Za-z0-9 _-]{1,40})\)$")
-_READ = re.compile(r"^[\w ~%,+\-]{0,80}$")
+_FAILED_SUFFIX = re.compile(r" ?\(([0-9]{3}|[A-Za-z0-9 _-]{1,40})\)")  # fullmatch; ASCII digits only
+_READ = re.compile(r"(?:[^\W\d]|[0-9 ~%,+\-]){0,80}")  # fullmatch; letters of any script, ASCII digits only
 
 
 def _read_text(value: object) -> str:
-    return value if isinstance(value, str) and _READ.match(value) else ""
+    return value if isinstance(value, str) and _READ.fullmatch(value) else ""
 
 
 def _clean_log(log: dict, cards: tuple[CardEntry, ...]) -> tuple[dict, dict[int, tuple[TruncatedSource, ...]]]:
@@ -311,7 +311,7 @@ def _clean_failed(entry: object, allowed: tuple[str, ...]) -> str:
     rest = entry.strip()[len(url):]
     if not source_ok(url, allowed):
         return ""
-    return url + rest if _FAILED_SUFFIX.match(rest) else url
+    return url + rest if _FAILED_SUFFIX.fullmatch(rest) else url
 
 
 def _card(raw: object, entry: CardEntry, trunc: tuple[TruncatedSource, ...]) -> CardResult:

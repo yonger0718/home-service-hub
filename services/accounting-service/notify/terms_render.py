@@ -3,6 +3,7 @@ every full URL prints as ``<url>`` (one Discord token, no embed) and has passed 
 from __future__ import annotations
 
 import re
+from dataclasses import fields
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -17,14 +18,23 @@ FIELD_ZH = {"ends_on": "結束日", "starts_on": "開始日", "rate": "回饋率
             "missing_rule": "缺規則"}
 _ZW = "​"
 _QUOTE_MAX = 80
-_SHOW = ("show_findings", "show_announced", "show_signal", "show_not_found", "show_unverified",
-         "show_period_only", "show_period", "show_truncated")
+_SHOW = tuple(f.name for f in fields(ShowDecision) if f.name.startswith("show_"))
+
+
+def has_items(d: ShowDecision | None) -> bool:
+    """A card has something to show (and gets its own block); the CLI summary counts with this too."""
+    return d is not None and any(getattr(d, name) for name in _SHOW)
+
+
+_MARKDOWN = re.compile(r"([\\*_~|`])")
 
 
 def _safe_text(s: object) -> str:
-    """Defang model text: one line, no live URL scheme separator, mention or markdown link."""
-    out = " ".join(str(s if s is not None else "").split())
-    return out.replace("://", ":/" + _ZW + "/").replace("@", "@" + _ZW).replace("](", "]" + _ZW + "(")
+    """Defang model text: one line, Discord markdown escaped, no live URL scheme separator, mention, markdown link
+    or ``<…>`` token (channel, timestamp, emoji)."""
+    out = _MARKDOWN.sub(r"\\\1", " ".join(str(s if s is not None else "").split()))
+    return (out.replace("://", ":/" + _ZW + "/").replace("@", "@" + _ZW).replace("](", "]" + _ZW + "(")
+            .replace("<", "<" + _ZW))
 
 
 def _link(url: str) -> str:
@@ -130,7 +140,7 @@ def render_terms(inp: TermsInput, result: TermsResult, decisions: dict[int, Show
     quiet: list[str] = []
     for ci in inp.cards:
         aid, d, card = ci.card.account_id, decisions.get(ci.card.account_id), by_id.get(ci.card.account_id)
-        if d is None or card is None or not any(getattr(d, f) for f in _SHOW):
+        if card is None or not has_items(d):
             quiet.append(ci.card.official)
             continue
         rows = {r.get("id"): r for r in ci.rules}

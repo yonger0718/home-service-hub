@@ -7,7 +7,7 @@ archive: /reports/20261103T000000Z
 · 缺規則：dining +1% cap 200 — <https://www.example-bank.com/cards/terms>
 　「xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…」
 · 條款期間至 2027-03-31
-· 來源文件過長，僅讀到前段（<https://www.example-bank.com/cards/terms> (first ~40k chars)）
+· 來源文件過長，僅讀到前段（<https://www.example-bank.com/cards/terms> (first \~40k chars)）
 · 未驗證（來源不在銀行網域）：結束日 2027-03-31 — evil-example-bank.com
 
 【範例 Points】 → <https://example.invalid/hub/accounting/accounts/102/settings>
