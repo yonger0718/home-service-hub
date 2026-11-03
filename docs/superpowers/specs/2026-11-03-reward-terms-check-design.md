@@ -135,7 +135,10 @@ aliases = ["Freedom Flex", "Chase Freedom Flex Mastercard"]
 Validation: `official` non-empty, `bank_domains` non-empty list of hostnames, `tier` in
 {precise, signal}, `country` two upper-case letters, `language` a BCP-47 tag, `currency`
 three upper-case letters, `aliases` list of strings, `year_end_window` bool (default derived
-from `country`); account ids must be ints. Loader errors name the key only.
+from `country`); account ids must be ints. Card keys must be canonical decimal ids
+(`[1-9][0-9]*`, a duplicate id is refused), each `bank_domains` entry an LDH hostname with at
+least one dot, and `hermes_timeout_seconds` within 1..1840 so the units' `TimeoutStartSec=1900`
+outlasts Hermes (SDD final review). Loader errors name the key only.
 
 At run time the command reads, for each registered card, `GET /accounts/{id}/reward-rules`
 through the notifier's existing token (read scope). It keeps rules that are enabled and not
@@ -294,10 +297,19 @@ The final fenced JSON block:
   requires its own `source` + `quote` in the schema). A source passes when it is `https`,
   has no userinfo, and its hostname (lower-cased, one trailing dot stripped) equals a listed
   `bank_domains` entry or ends with `"." + domain`. Path/query matches and look-alike
-  suffixes fail. `quote` must be
+  suffixes fail. The whole URL must also fullmatch `[A-Za-z0-9\-._~:/?#!$&+,;=%()]+` (no
+  `@ < > " ' * [ ] { } | \ ^`, backtick or space), so no path, query or fragment can carry a
+  Discord link or mention; `fetch_log` URLs pass the same rule — a failing `failed` entry is
+  dropped, a failing `truncated` entry keeps its card's truncation line with the host only
+  (SDD final review). `quote` must be
   non-empty. A failing finding moves to `unverified`; a failing `next_terms` is dropped from
   the rule-ready block and reported as `· 下期條款：來源未驗證` with its URL; a failing
   `current_period_end` is nulled and the line omitted.
+- **Input join** (SDD final review): verified findings are joined to the frozen input rules
+  of their card. A non-null `rule_id` that is not one of them, or a null `rule_id` with a
+  `field` other than `missing_rule`, moves to `unverified` (reason `未知規則`). For a field of
+  the rule row, `system` is taken from the input rule, not the model; for any other field it
+  is omitted. 「缺規則」 is used only for `field == "missing_rule"`.
 - Any parse failure ⇒ the run fails (see 6); nothing is inferred.
 
 Residual, stated: the notifier does not re-fetch the page, so an on-domain URL paired with
@@ -365,6 +377,8 @@ Message (`render_terms(result, state, cfg, today) -> list[str]`):
   always send one line rather than stay silent, so a dead timer is noticeable. Owner may
   flip this to silent later via a config flag.)
 - Chunked with `split_blocks`, delivered with `send.deliver` to `discord_target`.
+- Every printed full URL, the settings link included, renders as `<url>` (one Discord token,
+  no embed); model text has its Discord markdown escaped (SDD final review).
 
 The state is updated only after a successful send (same rule as the daily reminder). A send
 that succeeds and a save that then fails means the next run re-sends the same news; accepted,
