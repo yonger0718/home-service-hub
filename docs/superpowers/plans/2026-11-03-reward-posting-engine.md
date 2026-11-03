@@ -399,9 +399,10 @@ the P5 gap (a dismiss-only early case would leave a bank-paid reward at 0). Mapp
     `review_reason == "reward_posted"`, accrual amount unchanged.
   - `test_project_change_moves_old_project_reward` (finding 9): a reward row whose project equals the purchase's old
     project moves to the new one; the same through a split `keep_full` member edit (`_apply_meta`).
-  - `test_engine_reward_delete_lock_order` (P12, re-check 5): record every `FOR UPDATE` statement with a SQLAlchemy
-    `before_cursor_execute` listener during DELETE of an engine reward row → the first is the accrual-window
-    `SELECT … ORDER BY id`, the `ledger_entry` locks come after it, and no accrual lock follows a ledger lock. The
+  - `test_engine_reward_delete_lock_order` (P12, re-check 5; lead carry): record every `FOR UPDATE` statement with a
+    SQLAlchemy `before_cursor_execute` listener during DELETE of an engine reward row → order is schedule locks,
+    `lock_group` (`entry_group`), then the accrual-window `SELECT … ORDER BY id` (placed after `lock_group`, before
+    `locked_with_legs`), the `ledger_entry` locks come after it, and no accrual lock follows a ledger lock. The
     same listener over `post_accrual` (daily-job path) and bank wins `prepare` → accrual locks are one statement, in
     id order, before any reward-row update.
   - `reward_posting.post_accrual(db, accrual_id: int, *, on: date | None = None) -> str`. It returns `"posted"`,
@@ -571,6 +572,8 @@ the P5 gap (a dismiss-only early case would leave a bank-paid reward at 0). Mapp
     transaction the accrual is `posted` with `post_on` = the line's `posted_date`, then `bank_confirmed` at the bank
     figure; the line is claimed `reward_engine`; the case is resolved by the action (status restored, not left
     superseded); one reward row. A later daily job run posts nothing more.
+  - `test_accept_rerun_keeps_claim` (lead carry, AGENT-395): after the accept, a second `reconcile` of the
+    statement keeps the same `reward_engine` coverage row ids, posts nothing new and changes no ledger amount.
   - `test_accept_names_one_of_two` (re-check A): two next-cycle accruals, one line; accept the default id → that one
     is `bank_confirmed`; the other stays `estimated` at its formula `post_on` and is a candidate (a) on the next
     statement. Neither statement gets `create_system_entry` or a `bank_only` case.
@@ -761,4 +764,10 @@ the P5 gap (a dismiss-only early case would leave a bank-paid reward at 0). Mapp
 Deviation, noted for the lead: re-check A asked to hold the reconcile until every `reward_early` line on the statement
 is decided. Rev 3 instead pins each accepted line to its own named ids (the accepted map) and leaves the other lines on
 the normal §7 path, so one accept cannot claim or close another line, with no hold state.
+
+**Lead ruling (AGENT-395, 2026-11-03):** rev 3 `7b95c550` accepted for 「照計畫」, deviation accepted. Carry items are
+folded above as tests: delete-path order group → accrual window → ledger; accepted-map re-run keeps the claim. The
+implementation PR says in one line that P12 places `entry_group` locks before the accrual tier. The PR review goes to
+dev-astra (non-Claude, one round). Its mandatory focus: P12 on every path, the `accept_early_reward` transaction, the
+accepted-map pairing, and the inbox/SPA wiring.
 
