@@ -1,6 +1,6 @@
 # Reward terms check (回饋條款查核) — design
 
-Date: 2026-11-03. Rev 2.1 (folds Multica AGENT-390 review + re-check minors). Status: draft for owner review. Follows the reward-rules phase 1 design
+Date: 2026-11-03. Rev 2.2 (folds Multica AGENT-390 review + re-check minors). Status: approved by owner 2026-11-03. Follows the reward-rules phase 1 design
 (`2026-10-31-reward-rules-design.md`) and the notifier design (`openspec/.../accounting-notifications`).
 
 ## Intent
@@ -110,14 +110,15 @@ official = "國泰世華 CUBE 卡"
 bank_domains = ["cathaybk.com.tw", "cathay-cube.com.tw"]
 tier = "signal"
 
-[terms.cards."301"]                           # an overseas card (fictional example)
-official = "Example Bank Everyday Cash Card"
-bank_domains = ["examplebank.com"]
-tier = "precise"
+[terms.cards."301"]                           # an overseas card — illustrative product, fictional id
+official = "Chase Freedom Flex"
+bank_domains = ["chase.com", "creditcards.chase.com"]
+tier = "precise"                              # 5% rotating quarterly categories (cap per quarter) fit the rule model
 country = "US"
 language = "en"
 currency = "USD"
-aliases = ["Everyday Cash Visa"]
+aliases = ["Freedom Flex", "Chase Freedom Flex Mastercard"]
+# year_end_window defaults to false for country != TW; the monthly run catches each quarter's categories
 ```
 
 Validation: `official` non-empty, `bank_domains` non-empty list of hostnames, `tier` in
