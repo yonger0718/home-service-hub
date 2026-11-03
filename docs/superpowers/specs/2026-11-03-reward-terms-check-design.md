@@ -1,6 +1,6 @@
 # Reward terms check (回饋條款查核) — design
 
-Date: 2026-11-03. Rev 2 (folds Multica AGENT-390 review). Status: draft for owner review. Follows the reward-rules phase 1 design
+Date: 2026-11-03. Rev 2.1 (folds Multica AGENT-390 review + re-check minors). Status: draft for owner review. Follows the reward-rules phase 1 design
 (`2026-10-31-reward-rules-design.md`) and the notifier design (`openspec/.../accounting-notifications`).
 
 ## Intent
@@ -21,8 +21,9 @@ This feature makes that run periodic, deterministic at the edges, archived, and 
 ## Goals
 
 - Once a month (weekly in the new-year window) compare each maintained card's **current
-  rules in HomeHub** against the **bank's own published terms**, and tell the owner only what
-  differs or is newly announced, with a source URL and a quote for every claim.
+  rules in HomeHub** against the **bank's own published terms**, and tell the owner what
+  differs, is newly announced, or could not be verified — repeated until acted on, per the
+  suppression rules in §5 — with a source URL and a quote for every claim.
 - Produce proposals in a shape the owner (or an assistant) can turn into rule rows by hand.
 - Keep a full archive of every run (input, prompt, raw model output, parsed result, message).
 - Fail loudly and visibly; never fill a value the page did not say.
@@ -138,7 +139,7 @@ The input is frozen to `input.json` in the run's archive dir before Hermes start
 
 A template file in the package, `notify/terms_prompt.md`, filled with today's date, the
 card list (official name, domains, tier, live rules as compact JSON with
-`id,name,rate,fixed_amount,is_basic,total_cap,window,starts_on,ends_on,description`) and the
+`id,name,method,rate,fixed_amount,is_basic,total_cap,window,starts_on,ends_on,description`) and the
 contract below. The template is the spike prompt, generalised:
 
 - Two stages per card, **in the card's `language`** (search terms, page reading): **signal**
@@ -188,14 +189,24 @@ hermes -z --query-file <archive>/prompt.md -t web --safe-mode [-m <hermes_model>
 - `hermes.out`/`hermes.err` are capped (`max_output_bytes`, default 4 MiB): the archive copy
   is truncated with a marker and the run fails past the ceiling, so a page cannot fill the
   disk.
+- Known coverage loss vs the spike: without a shell Hermes cannot page through a long PDF
+  from its local cache (the spike read the middle of a 130k-character card handbook that
+  way), so exclusion lists buried deep in long documents may go unread. The agent must
+  report such documents in `fetch_log.truncated` (§4) and the message shows them per card,
+  so a gap reads as "unread", never as "unchanged". Adding `browser` later is the recorded
+  remedy if the first dry-runs show it matters.
 
 **Blocking first task of the plan — pass bar**, run on the installed Hermes with a fixture
-prompt that asks the agent to list its tools and to run a shell command: (1) the tool list
-the agent reports is exactly `web_search`, `web_extract`; (2) the shell request is refused
+prompt: (1) the tools Hermes **registers** for that process (the bound tool schema list, read
+from the run's debug/usage output or the toolset resolver — not the model's description of
+itself) are exactly `web_search`, `web_extract`; (2) a shell request in the prompt is refused
 for lack of a tool, not approved; (3) no new row appears in the Hermes session DB and no
 memory/skill file changes; (4) `--safe-mode` is visibly honoured (no user rules in the
-system prompt, as far as the run exposes it); (5) `--query-file` works. If any of (1)–(3)
-fails, the feature does not ship until it does — no fallback to a looser toolset.
+system prompt, as far as the run exposes it); (5) `--query-file` actually supplies the prompt
+(the fixture asks for a token only the file contains); (6) the loopback probe
+`http://127.0.0.1:8000/reward-rules` returns 401 with no rule body in the output. **All six
+are the no-ship list**; if any fails, the feature does not ship until it does — no fallback
+to a looser toolset.
 
 Residual risk, stated: `web_extract` fetches arbitrary URLs including loopback. HomeHub
 routes need a bearer token the agent does not have; the other loopback listeners (18080
@@ -227,13 +238,14 @@ The final fenced JSON block:
          "source": "https://…", "quote": "…"}
       ],
       "next_terms": {"announced": true, "period": ["2027-01-01", "2027-03-31"],
-                     "rules": [{"name": "…", "rate": "0.88", "cap": null, "notes": "…"}],
+                     "rules": [{"name": "…", "rate": "1.5", "cap": null, "notes": "…"}],
                      "source": "https://…", "quote": "…"},
       "sources": ["https://…"],
       "notes": "free text, ≤ 500 chars"
     }
   ],
-  "fetch_log": {"tool_calls": 15, "failed": ["https://… (403)"]}
+  "fetch_log": {"tool_calls": 15, "failed": ["https://… (403)"],
+                "truncated": [{"account_id": 94, "url": "https://…", "read": "first ~40k chars of ~130k"}]}
 }
 ```
 
@@ -244,14 +256,17 @@ The final fenced JSON block:
   per-status required fields: `changed` needs `findings`, `announced` needs `next_terms`,
   `not_found`/`unchanged`/`signal` may omit both (absent = empty/null). `rate`/`cap` accept a
   JSON number or string and are stored as canonical decimal strings; dates ISO strings or
-  null; unknown status ⇒ parse error. The set of `account_id`s must equal the input set,
+  null; `current_period_end` may be absent or null on any status; decimals are stored as
+  `Decimal(...).normalize()` strings without exponent; unknown status ⇒ parse error. The
+  set of `account_id`s must equal the input set,
   each once; a foreign id ⇒ parse error. A card in the input and missing from the JSON ⇒
   synthetic `not_found`.
 - **Source rule** (the anti-fabrication gate), applied to **every URL the message can
   print**: `findings[].source`, `next_terms.source`, and `current_period_end` (which now
   requires its own `source` + `quote` in the schema). A source passes when it is `https`,
-  has no userinfo, and its hostname equals a listed `bank_domains` entry or ends with
-  `"." + domain`. Path/query matches and look-alike suffixes fail. `quote` must be
+  has no userinfo, and its hostname (lower-cased, one trailing dot stripped) equals a listed
+  `bank_domains` entry or ends with `"." + domain`. Path/query matches and look-alike
+  suffixes fail. `quote` must be
   non-empty. A failing finding moves to `unverified`; a failing `next_terms` is dropped from
   the rule-ready block and reported as `· 下期條款：來源未驗證` with its URL; a failing
   `current_period_end` is nulled and the line omitted.
@@ -311,10 +326,13 @@ Message (`render_terms(result, state, cfg, today) -> list[str]`):
   - announced: `· 下期條款已公告 2027-01-01～03-31：` then rule-ready lines.
   - signal: the ≤ 3-line summary.
   - not found: `· 找不到官網來源`（with the fetch_log failures for that card if any）.
+  - truncated sources (from `fetch_log.truncated`, every run they appear):
+    `· 來源文件過長，僅讀到前段（<url>）` — a gap, not a no-change.
   - unverified: `· 未驗證（來源不在銀行網域）：…`.
 - 「未登錄」 line listing active-rule cards missing from the registry.
 - Cards with nothing to show are folded into one line: `無變動：A、B、C`.
-- Nothing to show at all ⇒ a single line `📋 回饋條款查核 2026-11-03：M 張卡無變動`. (My call:
+- Nothing to show at all (and 「未登錄」 empty) ⇒ a single line
+  `📋 回饋條款查核 2026-11-03：M 張卡無變動`. (My call:
   always send one line rather than stay silent, so a dead timer is noticeable. Owner may
   flip this to silent later via a config flag.)
 - Chunked with `split_blocks`, delivered with `send.deliver` to `discord_target`.
@@ -327,8 +345,8 @@ the message is informational.
 
 Each run creates `<report_dir>/<YYYYMMDDTHHMMSSZ>/` (0700) with `input.json`, `prompt.md`,
 `hermes.out`, `hermes.err`, `result.json`, `message.md` (0600). The CLI mirrors the other
-commands: `terms [--as-of D] [--dry-run | --send] [--config P]`, `--dry-run` the default when
-neither is given; `--dry-run` writes the archive and prints the message, sends nothing,
+commands: `terms --cause {monthly,year-end} [--as-of D] [--dry-run | --send] [--config P]`,
+`--cause` required, `--dry-run` the default when neither mode flag is given; `--dry-run` writes the archive and prints the message, sends nothing,
 updates no state. If Hermes succeeds and the send fails, the archive is kept and the state
 untouched. `HermesError` and the parse error (`TermsParseError`) join `FAILURES`; both carry only
 `reason` (`hermes` / `parse`) and the archive dir, so `_short` can never receive stdout or
@@ -352,9 +370,13 @@ homehub-notify-terms-year-end.timer   OnCalendar=Mon *-11,12-* 09:00:00 Asia/Tai
 
 `--cause monthly` checks every registered card; `--cause year-end` only cards with
 `year_end_window = true` (default from `country`: `TW` ⇒ true, else false), and exits 0
-with no run when that set is empty. Both `Persistent=true`. A 1st that is also a Monday may
-run twice; the second run is the one-line message once state is saved. Services:
-`TimeoutStartSec` ≥ `hermes_timeout_seconds` + 60 s, `OnFailure=homehub-notify-failed@%n.service`.
+with no run when that set is empty. Both `Persistent=true`. A 1st that is also a Monday (or
+a double catch-up) runs twice; the second run sends whatever §5 still has to show (open
+`not_found`, unapplied findings, announced blocks) and the one-line message only when §5 has
+nothing. The two services carry `Conflicts=` on each other so a year-end save cannot land
+on top of an in-flight monthly save (and the terms-state load/save is wrapped in an
+`flock` on the state file as belt and braces). Services: `TimeoutStartSec` ≥
+`hermes_timeout_seconds` + 60 s, `OnFailure=homehub-notify-failed@%n.service`.
 `install.sh` installs both units but does **not** `enable --now` them (today it enables every
 unit it installs — the terms units are excluded); rollout step 3 enables them after the
 dry-run.
@@ -393,8 +415,9 @@ exists.
 2. Owner adds `[terms]` + the 7 maintained cards to the TOML (ids from the account list;
    CUBE as `signal`). Cards the owner no longer uses (ruled 2026-11-02: 星展 eco, Daway) are
    left out even though they have rules.
-3. `python -m notify terms --dry-run --cause monthly` once by hand; read the archive; then
-   enable both timers.
+3. `python -m notify terms --dry-run --cause monthly` once by hand; read the archive — per
+   card, check `fetch_log.truncated` and `failed` to see how much of each bank's document
+   was actually read; then enable both timers.
 4. First real send: the owner applies accepted findings by hand (or asks); the assistant
    records what was applied in the data-pass log as on 2026-11-02.
 
