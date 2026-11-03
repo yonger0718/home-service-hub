@@ -97,6 +97,7 @@ export const ACTION_LABELS: Record<string, string> = {
   create_system_entry: '系統記錄',
   backfill_entry: '系統補記',
   replace_stand_in: '取代系統記錄',
+  accept_early_reward: '接受提早入帳',
   revert: '撤銷',
 };
 
@@ -242,6 +243,8 @@ export function buttonLabel(button: InboxButton, item: InboxItem, currency: stri
       return ['amount_differs', 'date_differs', 'ambiguous'].includes(item.question) ? '不是同一筆' : '忽略';
     case 'anchor':
       return '對齊銀行期初';
+    case 'accept_early':
+      return '接受提早入帳';
     case 'apply_proposal':
       return '套用';
     case 'reject_proposal':

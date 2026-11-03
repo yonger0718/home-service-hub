@@ -48,7 +48,7 @@ import { AccountingService } from '../../../../services/accounting.service';
 export const INBOX_PREVIEW_CARDS = 3;
 
 /** Buttons the panel applies at once (no sheet). */
-type OneTap = 'dismiss' | 'accept_bank_amount' | 'defer' | 'anchor';
+type OneTap = 'dismiss' | 'accept_bank_amount' | 'defer' | 'anchor' | 'accept_early';
 
 type FoldKey = 'proposed' | 'balanceGap' | 'settlement' | 'dividend' | 'other';
 
@@ -58,7 +58,7 @@ const FOLD_BUTTONS: Record<FoldKey, readonly InboxButton[]> = {
   balanceGap: ['anchor', 'dismiss'],
   settlement: [],
   dividend: [],
-  other: ['dismiss'],
+  other: ['accept_early', 'dismiss'],
 };
 
 /** Kept here for callers of the Task 9 surface; the formula lives in `inbox-view` so the sheets share it. */
@@ -114,6 +114,8 @@ export interface InboxCardView {
   card: InboxCard;
   title: string;
   question: string;
+  /** The first member's note, shown under the line (a bank-early reward line says how to answer it). */
+  note: string | null;
   /** Merged cards: `2026/09/03 −$120` per member. */
   members: string[];
   buttons: { action: InboxButton; label: string }[];
@@ -504,6 +506,7 @@ export class AppInboxPanelComponent {
       card,
       title: cardTitle(card, currency),
       question: questionText(first, currency),
+      note: first.note ?? null,
       members: merged
         ? card.items.map((item) => {
             const source = item.line ?? item.entry;

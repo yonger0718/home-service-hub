@@ -525,6 +525,62 @@ describe('AppInboxPanelComponent', () => {
     expect(el.querySelector('details.fold')).toBeNull();
   });
 
+  /** A bank-early reward line (reward engine P5): folded under 其他 with 接受提早入帳 and the case's note. */
+  const EARLY_NOTE = '銀行提早入帳：請修正規則的入帳日，或按「接受提早入帳」';
+  const EARLY = makeItem({
+    case_id: 60,
+    case_version: 2,
+    question: 'other',
+    folded: true,
+    line: { id: 61, date: '2026-11-14', merchant: '回饋入帳', amount: '9.0000', line_kind: 'reward' },
+    rule_hint: null,
+    actions: ['accept_early', 'dismiss'],
+    note: EARLY_NOTE,
+  });
+
+  it('folded other card with accept_early renders 接受提早入帳 and 忽略, and shows the note', () => {
+    const { el } = render(
+      makeInbox([makeInboxAccount({ name: '測試卡', is_credit: true, items: [EARLY] })], { other: 1 }),
+    );
+    const fold = el.querySelector<HTMLElement>('details.fold[data-fold="other"]')!;
+    const card = fold.querySelector<HTMLElement>('.inbox-card')!;
+    expect(Array.from(card.querySelectorAll('.btns button')).map(text)).toEqual([
+      '接受提早入帳',
+      '忽略',
+    ]);
+    expect(text(card.querySelector('.title'))).toBe('2026/11/14 回饋入帳 +$9');
+    expect(text(card.querySelector('.note'))).toBe(EARLY_NOTE);
+    // a card without a note renders none
+    const { el: plain } = render(
+      makeInbox(
+        [makeInboxAccount({ items: [makeItem({ case_id: 23, question: 'other', folded: true, actions: ['dismiss'] })] })],
+        { other: 1 },
+      ),
+    );
+    expect(plain.querySelector('.inbox-card .note')).toBeNull();
+  });
+
+  it('accept_early applies one-tap', () => {
+    const { fixture, el, changed } = render(
+      makeInbox([makeInboxAccount({ name: '測試卡', is_credit: true, items: [EARLY] })], { other: 1 }),
+    );
+    button(el.querySelector('details.fold[data-fold="other"]')!, '接受提早入帳').click();
+    fixture.detectChanges();
+
+    const req = expectApply();
+    expect(req.request.body as InboxApplyBody).toEqual({
+      cases: [{ case_id: 60, case_version: 2 }],
+      action: 'accept_early',
+      params: {},
+      answer: '接受提早入帳',
+      learn: null,
+    });
+    req.flush(applied(60));
+    fixture.detectChanges();
+    expect(el.querySelector('details.fold[data-fold="other"]')).toBeNull();
+    expect(changed).toHaveBeenCalledTimes(1);
+  });
+
   it('applies proposals one by one and keeps going after a 409', () => {
     const proposal = (caseId: number, id: number, merchant: string) =>
       makeItem({
