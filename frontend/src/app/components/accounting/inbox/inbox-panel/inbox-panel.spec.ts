@@ -538,7 +538,7 @@ describe('AppInboxPanelComponent', () => {
     note: EARLY_NOTE,
   });
 
-  it('folded other card with accept_early renders 接受提早入帳 and 忽略, and shows the note', () => {
+  it('folded other card with accept_early renders 接受提早入帳 and 忽略, and shows the note as its question', () => {
     const { el } = render(
       makeInbox([makeInboxAccount({ name: '測試卡', is_credit: true, items: [EARLY] })], { other: 1 }),
     );
@@ -549,15 +549,27 @@ describe('AppInboxPanelComponent', () => {
       '忽略',
     ]);
     expect(text(card.querySelector('.title'))).toBe('2026/11/14 回饋入帳 +$9');
-    expect(text(card.querySelector('.note'))).toBe(EARLY_NOTE);
-    // a card without a note renders none
-    const { el: plain } = render(
-      makeInbox(
-        [makeInboxAccount({ items: [makeItem({ case_id: 23, question: 'other', folded: true, actions: ['dismiss'] })] })],
-        { other: 1 },
-      ),
+    // the note is the question, under the line; never 需要在 API 處理
+    expect(text(card.querySelector('.q'))).toBe(EARLY_NOTE);
+    expect(text(card)).not.toContain('需要在 API 處理');
+  });
+
+  it('a reward_surplus card (no note) keeps the API question text', () => {
+    const surplus = makeItem({
+      case_id: 62,
+      question: 'other',
+      folded: true,
+      line: { id: 63, date: '2026-11-10', merchant: '回饋入帳', amount: '5.0000', line_kind: 'reward' },
+      rule_hint: null,
+      actions: ['dismiss'],
+      note: null,
+    });
+    const { el } = render(
+      makeInbox([makeInboxAccount({ name: '測試卡', is_credit: true, items: [surplus] })], { other: 1 }),
     );
-    expect(plain.querySelector('.inbox-card .note')).toBeNull();
+    const card = el.querySelector<HTMLElement>('details.fold[data-fold="other"] .inbox-card')!;
+    expect(text(card.querySelector('.q'))).toBe('需要在 API 處理（案件 #62）');
+    expect(Array.from(card.querySelectorAll('.btns button')).map(text)).toEqual(['忽略']);
   });
 
   it('accept_early applies one-tap', () => {

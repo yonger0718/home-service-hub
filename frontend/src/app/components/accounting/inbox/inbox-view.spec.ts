@@ -214,6 +214,16 @@ describe('inboxErrorMessage', () => {
     expect(inboxErrorMessage('entry 12 is gone')).toBe('沒成功，請重新整理再試');
   });
 
+  it('maps the accept_early_reward refusals', () => {
+    expect(inboxErrorMessage('accrual_not_estimated')).toBe('這筆回饋已變動，請重新整理');
+    expect(inboxErrorMessage('line_outside_period')).toBe('這筆入帳日不在本期帳單內');
+    const err = new HttpErrorResponse({
+      status: 409,
+      error: { detail: 'accrual_not_estimated: accrual 3 is not an unconfirmed early accrual of case 1' },
+    });
+    expect(inboxErrorMessage(err)).toBe('這筆回饋已變動，請重新整理');
+  });
+
   it('maps a 409 business code', () => {
     const err = new HttpErrorResponse({ status: 409, error: { detail: 'stale_case: case 1 is at version 3' } });
     expect(inboxErrorMessage(err)).toBe('對象已變，重新整理');

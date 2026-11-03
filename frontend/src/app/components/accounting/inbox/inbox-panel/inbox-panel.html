@@ -72,9 +72,6 @@
 <ng-template #cardTpl let-view>
   <div class="inbox-card" [attr.data-card-key]="view.card.key" [attr.aria-busy]="view.busy">
     <p class="title">{{ view.title }}</p>
-    @if (view.note) {
-      <p class="note">{{ view.note }}</p>
-    }
     <p class="q">{{ view.question }}</p>
     @if (view.members.length > 0) {
       <p class="members">

@@ -114,8 +114,6 @@ export interface InboxCardView {
   card: InboxCard;
   title: string;
   question: string;
-  /** The first member's note, shown under the line (a bank-early reward line says how to answer it). */
-  note: string | null;
   /** Merged cards: `2026/09/03 −$120` per member. */
   members: string[];
   buttons: { action: InboxButton; label: string }[];
@@ -506,7 +504,6 @@ export class AppInboxPanelComponent {
       card,
       title: cardTitle(card, currency),
       question: questionText(first, currency),
-      note: first.note ?? null,
       members: merged
         ? card.items.map((item) => {
             const source = item.line ?? item.entry;

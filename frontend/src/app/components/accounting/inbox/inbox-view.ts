@@ -78,6 +78,8 @@ export const INBOX_ERRORS: Record<string, string> = {
   case_moved: '對象已變，重新整理',
   entry_claimed: '這筆記錄已對到別行',
   entry_in_group: '這筆是分期或回饋群組的成員，不能直接對',
+  accrual_not_estimated: '這筆回饋已變動，請重新整理',
+  line_outside_period: '這筆入帳日不在本期帳單內',
 };
 
 /** The fallback for a failure whose text is not a business code (a type name, a sentence). */
@@ -197,7 +199,8 @@ export function questionText(item: InboxItem, currency: string): string {
     case 'ambiguous':
       return `有 ${item.candidates.length} 筆可能是它`;
     case 'other':
-      return `需要在 API 處理（案件 #${item.case_id}）`;
+      // A bank-early reward card carries its own question (how to fix the rule or accept the credit).
+      return item.note || `需要在 API 處理（案件 #${item.case_id}）`;
     case 'balance_gap':
       return '期初差額';
     case 'settlement':
