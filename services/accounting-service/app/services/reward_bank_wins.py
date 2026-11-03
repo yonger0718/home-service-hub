@@ -11,7 +11,9 @@ whose claims the reconcile writes through `_write_coverage`.
    (c) confirmed or forfeited by this statement (a re-run). None → `prepare` returns None (7.2).
 2. **Pulled lines** (7.3, `pulled_filter`): the statement's reward lines without owner coverage, except a line with
    exactly one equal no-accrual (MOZE-era) reward row in the population. When there are reward lines and every one
-   stayed in the matcher, the step stops (an empty plan).
+   stayed in the matcher, the step stops: no early post, no pairing, no claim; only the accruals this statement
+   confirmed or forfeited on an earlier run (c) take the assigned-0 outcome of step 6 (fix round 1 ruling), under
+   the same locks.
 3. **Locks** (P12, controller ruling): the statement row is the reconcile's; then the candidates' source purchases
    `SELECT ... ORDER BY id FOR UPDATE`, then the union of the candidates' windows in ONE `lock_windows`, then the
    reward ledger rows. All three are NOWAIT, as the reconcile's population locks: a held row raises
@@ -133,9 +135,10 @@ def pulled_filter(db: Session, statement: AccountStatement, accounts: Collection
                   lines: Iterable[StatementLine]) -> set[int]:
     """The reward lines among `lines` that leave the matcher (7.3), read only; reconcile and the policy validator
     pass the statement's lines without owner coverage. Empty when the candidate set is empty (7.2). A line stays in
-    the matcher when exactly one no-accrual reward row in the population has an equal flow."""
+    the matcher when exactly one no-accrual reward row in the population has an equal flow. Empty for a statement
+    that is not live: bank wins runs on live statements only (fix round 1 ruling)."""
     reward = [line for line in lines if line.line_kind == "reward"]
-    if not reward or not _has_candidates(db, statement, accounts):
+    if statement.mode != "live" or not reward or not _has_candidates(db, statement, accounts):
         return set()
     flows = _moze_flows(db, statement, accounts)
     return {line.id for line in reward if flows.get(Decimal(line.flow_amount).quantize(_Q), 0) != 1}
@@ -222,21 +225,27 @@ def prepare(db: Session, statement: AccountStatement, accounts: list[int], lines
     """The bank-wins step (module docstring). `lines`: the statement's current lines; `manual_line_ids`: those with
     owner coverage (never pulled). None when the candidate set is empty (7.2). Raises `reconcile_busy` when a
     purchase, window or reward row is held by another write. Never commits."""
-    if not candidates(db, statement, accounts):
+    first = candidates(db, statement, accounts)
+    if not first:
         return None
     claimable = [line for line in lines if line.id not in manual_line_ids]
     plan = BankWinsPlan(pulled_line_ids=pulled_filter(db, statement, accounts, claimable))
-    if any(line.line_kind == "reward" for line in claimable) and not plan.pulled_line_ids:
-        return plan  # every reward line stayed in the matcher (7.3)
+    # 7.3: every reward line stayed in the matcher → only this statement's earlier outcomes are revisited (assigned 0)
+    stopped = any(line.line_kind == "reward" for line in claimable) and not plan.pulled_line_ids
+    if stopped:
+        first = [a for a in first if a.confirmed_statement_id == statement.id]
+        if not first:
+            return plan
 
-    purchases = _lock_tiers(db, candidates(db, statement, accounts))
+    purchases = _lock_tiers(db, first)
     held = reward_engine.held_windows(db)
     accruals = [a for a in candidates(db, statement, accounts)
                 if (a.rule_id, a.window_start) in held
-                and (a.source_entry_id is None or a.source_entry_id in purchases)]
+                and (a.source_entry_id is None or a.source_entry_id in purchases)
+                and (not stopped or a.confirmed_statement_id == statement.id)]
     pairs = {(a.rule_id, a.window_start) for a in accruals}
 
-    for accrual in accruals:  # 7.4: early post, on this session
+    for accrual in accruals if not stopped else ():  # 7.4: early post, on this session
         if accrual.state == ESTIMATED:
             reward_posting.post_accrual(db, accrual.id, locked=True)
 

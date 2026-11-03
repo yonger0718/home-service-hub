@@ -2,15 +2,18 @@
 
 The per-accrual step, shared by the daily job (`post_due_accrual`), the manual endpoint (`post_manual`) and bank
 wins (Task 8, `post_accrual(..., locked=True)`):
-1. read the accrual's (rule, window) unlocked; lock that window (its whole shared-cap group) in ONE
-   `SELECT ... ORDER BY id FOR UPDATE` (`reward_engine.lock_windows`, P12 tier 2), or, with `locked=True`, assert
-   the caller already holds it and take no lock;
+1. read the accrual's (rule, window, source purchase) unlocked; lock the source purchase `SELECT ... FOR UPDATE`
+   (P12 tier 1: the reward row's FK check share-locks it, and an owner PUT holds it before it waits on the window),
+   then that window (its whole shared-cap group) in ONE `SELECT ... ORDER BY id FOR UPDATE`
+   (`reward_engine.lock_windows`, P12 tier 2); or, with `locked=True`, assert the caller already holds the window
+   (and the purchase: bank wins locks it first) and take no lock;
 2. re-read the accrual under the lock and recompute the window (`recompute_window(locked=True)`), so the amount
    that freezes is the current allotment;
 3. skip unless the accrual is still `estimated` with no reward row;
 4. an allotment of 0 (past the cap) is `forfeited` without a row; otherwise insert the reward row (P11) and set
-   `posted` and `ledger_entry_id`.
-The purchase row is only read (its project), never locked or updated. Nothing here commits.
+   `posted` and `ledger_entry_id`. A post `on` a given date records it as the accrual's `post_on` (a manual post,
+   an accepted early credit), so bank wins finds the row on the statement whose period holds that date.
+The purchase row is locked (unlocked path) and read (its project), never updated. Nothing here commits.
 """
 
 from __future__ import annotations
@@ -35,24 +38,27 @@ _Q = Decimal("0.0001")
 _NAME_LENGTH = 128  # ledger_entry.name
 
 
-def _window_of(db: Session, accrual_id: int) -> tuple[int, date]:
+def _window_of(db: Session, accrual_id: int) -> tuple[int, date, int | None]:
     found = db.execute(
-        select(RewardAccrual.rule_id, RewardAccrual.window_start).where(RewardAccrual.id == accrual_id)
+        select(RewardAccrual.rule_id, RewardAccrual.window_start, RewardAccrual.source_entry_id)
+        .where(RewardAccrual.id == accrual_id)
     ).first()
     if found is None:
         raise NotFoundError(f"reward accrual {accrual_id} not found")
-    return found.rule_id, found.window_start
+    return found.rule_id, found.window_start, found.source_entry_id
 
 
 def _lock(db: Session, accrual_id: int, *, locked: bool) -> RewardAccrual | None:
     """Steps 1-2: the accrual, reloaded under its window lock, with the window recomputed. None when it left the
     window between the unlocked read and the lock (deleted or re-bucketed by a concurrent write)."""
     db.flush()
-    rule_id, window_start = _window_of(db, accrual_id)
+    rule_id, window_start, source_id = _window_of(db, accrual_id)
     if locked:
         reward_engine.require_window_locked(db, rule_id, window_start)
         accrual = db.get(RewardAccrual, accrual_id, populate_existing=True)
     else:
+        if source_id is not None:  # P12 tier 1 before the window (tier 2)
+            db.execute(select(LedgerEntry.id).where(LedgerEntry.id == source_id).with_for_update())
         rows = reward_engine.lock_windows(db, [(rule_id, window_start)])
         accrual = next((row for row in rows if row.id == accrual_id), None)
     if accrual is None or (accrual.rule_id, accrual.window_start) != (rule_id, window_start):
@@ -78,6 +84,8 @@ def _book(db: Session, accrual: RewardAccrual, on: date | None) -> str:
     """Steps 3-4 on a locked, recomputed accrual."""
     if not _postable(accrual) or _has_reward_row(db, accrual.source_entry_id, accrual.rule_id):
         return SKIPPED
+    if on is not None:
+        accrual.post_on = on  # the date it posted on: bank wins pairs it with that statement (spec 7.1 (a))
     amount = Decimal(accrual.amount).quantize(_Q)
     if amount == 0:
         accrual.state = FORFEITED  # no 0 rows for purchases past a cap (5.1)

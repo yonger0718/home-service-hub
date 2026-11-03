@@ -1119,8 +1119,10 @@ def _match_and_record(db: Session, statement: AccountStatement, accounts: list[i
                                       include_reward=include_reward, exclude=owned)
     entries = _survivors(entries, locked_rows, first_groups)
     # reward engine spec §7: bank wins, after the population locks and before pass 1 (its own lock order: purchases →
-    # accrual windows → reward rows, P12); its pulled reward lines leave the matcher input, its claims join pass 2's
-    bank_wins = reward_bank_wins.prepare(db, statement, accounts, all_lines, set(manual))
+    # accrual windows → reward rows, P12); its pulled reward lines leave the matcher input, its claims join pass 2's.
+    # Live statements only (fix round 1 ruling, the flag that gates case writing): a historical statement never posts
+    # early nor changes a reward amount or accrual state; its reward lines meet the matcher (engine rows stay out)
+    bank_wins = reward_bank_wins.prepare(db, statement, accounts, all_lines, set(manual)) if live else None
     pulled = bank_wins.pulled_line_ids if bank_wins is not None else set()
     # two passes (holders spec §3): `pass_two_holders` runs pass 1; pass 2 below is the run's result
     claimable_lines = [_as_line(row) for row in line_rows if row.id not in pulled]

@@ -115,29 +115,31 @@ def test_bank_amount_replaces_engine_amount(seed, db_session, run):
 
 
 def test_flag_clears_on_bank_confirm(seed, db_session, run):
-    """The purchase's `reward_posted` flag clears on a confirm (statement 2's line) and on a forfeit (a carried row
-    with no line); a flag set for another reason stays."""
+    """The purchases' `reward_posted` flags clear on a confirm (three carried rows, one line on statement 2); a flag
+    set for another reason stays. The forfeit case is `test_flag_clears_on_forfeit`."""
     card = _test_card(seed, db_session)
     rule = _rule(db_session, card)
-    confirmed = _spend(db_session, card, 1000, date(2026, 10, 1), rule)
-    forfeited = _spend(db_session, card, 2000, date(2026, 10, 2), rule)
+    first = _spend(db_session, card, 1000, date(2026, 10, 1), rule)
+    second = _spend(db_session, card, 2000, date(2026, 10, 2), rule)
     other = _spend(db_session, card, 3000, date(2026, 10, 3), rule)
     db_session.commit()
-    for purchase in (confirmed, forfeited, other):
+    for purchase in (first, second, other):
         _post(db_session, purchase)
     _submit(db_session, run, card, [], period=PREVIOUS)  # no reward line: every row stays posted, carried
-    for purchase, reason in ((confirmed, "reward_posted"), (forfeited, "reward_posted"), (other, "duplicate")):
+    for purchase, reason in ((first, "reward_posted"), (second, "reward_posted"), (other, "duplicate")):
         entry = db_session.get(LedgerEntry, purchase.id)
         entry.needs_review, entry.review_reason = True, reason
     db_session.commit()
 
     # one line, three carried rows (10, 20, 30): the line is spread 1:2:3 over the rows
-    stmt, _, _ = _submit(db_session, run, card, [_reward_line(1, 60)], period=PERIOD)
-    assert {_accrual_of(db_session, p).state for p in (confirmed, forfeited, other)} == {"bank_confirmed"}
+    _submit(db_session, run, card, [_reward_line(1, 60)], period=PERIOD)
+    assert {_accrual_of(db_session, p).state for p in (first, second, other)} == {"bank_confirmed"}
     db_session.expire_all()
-    assert (db_session.get(LedgerEntry, confirmed.id).needs_review,
-            db_session.get(LedgerEntry, confirmed.id).review_reason) == (False, None)
-    assert db_session.get(LedgerEntry, other.id).review_reason == "duplicate"
+    for purchase in (first, second):
+        entry = db_session.get(LedgerEntry, purchase.id)
+        assert (entry.needs_review, entry.review_reason) == (False, None)
+    entry = db_session.get(LedgerEntry, other.id)
+    assert (entry.needs_review, entry.review_reason) == (True, "duplicate")
 
 
 def test_flag_clears_on_forfeit(seed, db_session, run):
@@ -420,6 +422,58 @@ def test_policy_validator_agrees(seed, db_session, run, monkeypatch):
     assert len(seen) == 2  # refused before any matcher pass
 
 
+def test_rerun_after_lines_move_to_matcher_reverts_confirmations(seed, db_session, run):
+    """Ruling (fix round 1): when the step stops (every reward line stays in the matcher), this statement's earlier
+    outcomes get the assigned-0 outcome of §7.6: an in-period row goes back to `posted` at its accrual amount with
+    `confirmed_statement_id` cleared, a carried row is `forfeited` (ledger 0). No post, no claim."""
+    card = _test_card(seed, db_session)
+    rule = _rule(db_session, card)
+    carried = _spend(db_session, card, 1000, date(2026, 10, 5), rule)  # posts 10-10, previous period
+    current = _spend(db_session, card, 2000, date(2026, 10, 20), rule)  # posts 10-25
+    db_session.commit()
+    carried_row, current_row = _post(db_session, carried), _post(db_session, current)
+    _submit(db_session, run, card, [], period=PREVIOUS)
+    stmt, (line,), _ = _submit(db_session, run, card, [_reward_line(1, 9)], period=PERIOD)
+    assert {_accrual_of(db_session, p).state for p in (carried, current)} == {"bank_confirmed"}
+    assert [db_session.get(LedgerEntry, r.id).amount for r in (carried_row, current_row)] == [Decimal("3.0000"),
+                                                                                           Decimal("6.0000")]
+
+    moze = seed.entry(card, "9", kind="reward", day=date(2026, 11, 10), merchant="回饋入帳", source="moze_import")
+    db_session.commit()
+    assert reward_bank_wins.pulled_filter(db_session, stmt, [card.id], [line]) == set()
+    _reconcile(db_session, stmt.id)
+
+    db_session.expire_all()
+    back = _accrual_of(db_session, current)
+    assert (back.state, back.confirmed_statement_id, back.amount) == ("posted", None, Decimal("20.0000"))
+    assert db_session.get(LedgerEntry, current_row.id).amount == Decimal("20.0000")
+    lost = _accrual_of(db_session, carried)
+    assert (lost.state, lost.confirmed_statement_id, lost.amount) == ("forfeited", stmt.id, Decimal("10.0000"))
+    assert db_session.get(LedgerEntry, carried_row.id).amount == Decimal("0.0000")
+    (held,) = _by_line(db_session, stmt.id)[line.id]
+    assert held.entry_id == moze.id and held.match_rule != "reward_engine"
+    assert len(_rewards(db_session)) == 3  # the two engine rows (kept) and the MOZE row; nothing posted
+
+
+def test_non_live_statement_no_bank_wins(seed, db_session, run):
+    """Ruling (fix round 1): bank wins runs for live statements only; a historical statement posts nothing early and
+    changes no reward amount or accrual state."""
+    card = _card(seed, db_session, "測試卡", closing_day=15, live=False)
+    rule = _rule(db_session, card)
+    posted = _spend(db_session, card, 1000, date(2026, 10, 18), rule)
+    estimated = _spend(db_session, card, 2000, date(2026, 10, 20), rule)
+    db_session.commit()
+    row = _post(db_session, posted)
+
+    stmt, (line,), _ = _submit(db_session, run, card, [_reward_line(1, 25)], period=PERIOD)
+    assert stmt.mode != "live"
+    assert (_accrual_of(db_session, posted).state, _accrual_of(db_session, estimated).state) == ("posted",
+                                                                                                "estimated")
+    assert _accrual_of(db_session, posted).confirmed_statement_id is None
+    assert [(r.id, r.amount) for r in _rewards(db_session)] == [(row.id, Decimal("10.0000"))]
+    assert row.id not in {r.entry_id for r in _active(db_session, stmt.id)}
+
+
 # --- locks -------------------------------------------------------------------------------------------------------
 
 _LOCK = re.compile(r"FOR (UPDATE|SHARE|NO KEY UPDATE)")
@@ -437,9 +491,11 @@ def test_prepare_lock_order(seed, db_session, run, no_hook):
     stmt, _, _ = _submit(db_session, run, card, [_reward_line(1, 25)], period=PERIOD)
 
     captured: list[str] = []
+    params: list[object] = []
 
     def capture(conn, cursor, statement, parameters, context, executemany):
         captured.append(" ".join(statement.split()))
+        params.append(parameters)
 
     bind = db_session.connection().engine
     event.listen(bind, "before_cursor_execute", capture)
@@ -457,8 +513,13 @@ def test_prepare_lock_order(seed, db_session, run, no_hook):
     (accrual_lock,) = locks("reward_accrual")
     assert " IN (" in captured[accrual_lock] and "ORDER BY reward_accrual.id" in captured[accrual_lock]
     ledger_locks = locks("ledger_entry")
-    purchase_locks = [i for i in ledger_locks if statement_lock < i < accrual_lock]
-    assert purchase_locks, captured
+    # bank wins' own tier-1 lock: the candidates' purchases, ids only, in id order (the population lock reads rows)
+    purchase_locks = [i for i in ledger_locks
+                      if captured[i].startswith("SELECT ledger_entry.id FROM ledger_entry WHERE ledger_entry.id IN (")
+                      and "ORDER BY ledger_entry.id FOR UPDATE" in captured[i]]
+    assert len(purchase_locks) == 1, captured
+    assert set(_values(params[purchase_locks[0]])) == {posted.id, estimated.id}
+    assert statement_lock < purchase_locks[0] < accrual_lock
     assert not [i for i in ledger_locks if i < statement_lock]
     writes = [i for i, s in enumerate(captured) if s.startswith(("UPDATE ledger_entry", "INSERT INTO ledger_entry"))]
     reward_locks = [i for i in ledger_locks if i > accrual_lock]
@@ -486,6 +547,10 @@ def test_window_lock_record_survives_savepoint_release(seed, db_session):
     reward_engine.lock_windows(db_session, [key])
     db_session.commit()
     assert reward_engine.held_windows(db_session) == frozenset()
+
+
+def _values(parameters) -> list:
+    return list(parameters.values()) if isinstance(parameters, dict) else list(parameters or ())
 
 
 @pytest.mark.parametrize("job_first", [True, False])

@@ -502,8 +502,8 @@ def lock_reward_accrual(db: Session, reward_entry_id: int) -> RewardAccrual | No
 
 def clear_reward_flag(db: Session, entry_ids: Collection[int]) -> None:
     """Clear `needs_review` on these purchases only where its reason is `reward_posted` (an owner forfeit here,
-    a bank-wins confirm or forfeit in Task 8); a flag set for another reason stays. Callers must already hold
-    these purchase rows (P12 tier 1) and call it before taking any accrual lock."""
+    a bank-wins confirm or forfeit); a flag set for another reason stays. The caller already holds these purchase
+    rows (P12 tier 1); it issues no new lock."""
     ids = sorted({i for i in entry_ids if i is not None})
     if not ids:
         return
