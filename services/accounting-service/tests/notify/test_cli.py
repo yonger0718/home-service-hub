@@ -452,3 +452,10 @@ def test_portfolio_cleanup_failure_still_delivers_the_debit_message(cli_env, mon
     text = "\n\n".join(t for _, t in cli_env.sent)
     assert UNREADABLE_LINE in text and "旅遊卡" in text
     assert text.replace(f"\n\n**國泰對帳單**\n• {UNREADABLE_LINE}", "") == base
+
+
+def test_daily_ignores_a_broken_terms_block(cli_env, capsys):
+    with open(cli_env.cfg, "a") as fh:
+        fh.write('\n[terms]\nreport_dir = "/r"\nhermes_model = "m"\nhermes_toolsets = "all"\n')
+    rc = main(["daily", "--as-of", "2026-11-03", "--dry-run", "--config", cli_env.cfg])
+    assert rc == 0 and "旅遊卡" in capsys.readouterr().out

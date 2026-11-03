@@ -1,0 +1,10 @@
+[Unit]
+Description=HomeHub accounting notifier: reward terms check, year-end window Mondays in Nov-Dec 09:00 Taipei
+
+[Timer]
+OnCalendar=Mon *-11,12-* 09:00:00 Asia/Taipei
+Persistent=true
+Unit=homehub-notify-terms-year-end.service
+
+[Install]
+WantedBy=timers.target

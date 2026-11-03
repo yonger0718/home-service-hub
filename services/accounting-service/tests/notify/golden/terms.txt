@@ -1,0 +1,23 @@
+📋 回饋條款查核 2026-11-03（5 張卡，3 張有事項）
+archive: /reports/20261103T000000Z
+
+【範例 Live+】 → <https://example.invalid/hub/accounting/accounts/101/settings>
+· Overseas 3%：結束日 官網 2027-03-31 / 系統 2026-12-31 — <https://www.example-bank.com/cards/terms>
+　「valid until」
+· 缺規則：dining +1% cap 200 — <https://www.example-bank.com/cards/terms>
+　「xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…」
+· 條款期間至 2027-03-31
+· 來源文件過長，僅讀到前段（<https://www.example-bank.com/cards/terms> (first \~40k chars)）
+· 未驗證（來源不在銀行網域）：結束日 2027-03-31 — evil-example-bank.com
+
+【範例 Points】 → <https://example.invalid/hub/accounting/accounts/102/settings>
+· points programme looks the same
+· second line
+
+【Example Global】 → <https://example.invalid/hub/accounting/accounts/301/settings>
+· 下期條款已公告 2027-01-01～2027-03-31：
+　- Overseas dining 1.5% 上限 3000
+
+未登錄：範例 Orphan（555）
+
+無變動：範例 Quiet、範例 Calm

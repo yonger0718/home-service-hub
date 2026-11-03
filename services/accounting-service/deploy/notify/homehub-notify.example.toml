@@ -15,3 +15,38 @@ cathay_run_grace_minutes = 15                      # a run later than this after
 
 [lead_overrides]                                   # per account id, e.g. a US card
 # "123" = 4
+
+[terms]
+report_dir = "~/reports/home-hub-terms"      # archive root, created 0700
+hermes_toolsets = "web"                       # passed to `hermes -t`; must be exactly "web" (§3)
+max_output_bytes = 4194304                    # cap on archived hermes stdout/stderr; past it the run fails
+hermes_timeout_seconds = 1800                 # 1..1840: the units' TimeoutStartSec=1900 must outlast Hermes by 60 s
+hermes_model = "claude-sonnet-5-5"            # required: config bypass has no model default
+# hermes_provider = "anthropic"                # default anthropic
+ignore_accounts = []                          # active-rule cards the owner chose not to maintain; never reported as 未登錄
+terms_state_file = "~/.local/state/homehub-notify/terms-state.json"
+
+[terms.cards."101"]                            # key = HomeHub account id (string, TOML table key)
+official = "滙豐 Live+ 現金回饋卡"
+bank_domains = ["hsbc.com.tw"]
+tier = "precise"                              # precise | signal
+# country = "TW"                              # default TW; ISO 3166-1 alpha-2
+# language = "zh-TW"                          # default zh-TW; language to search and read in
+# currency = "TWD"                            # default TWD; unit of caps/amounts in the terms
+# aliases = []                                # extra names to search (old names, English names)
+# year_end_window = true                      # default: true when country is TW, false otherwise
+
+[terms.cards."102"]
+official = "國泰世華 CUBE 卡"
+bank_domains = ["cathaybk.com.tw", "cathay-cube.com.tw"]
+tier = "signal"
+
+[terms.cards."301"]                           # an overseas card — illustrative product, fictional id
+official = "Chase Freedom Flex"
+bank_domains = ["chase.com", "creditcards.chase.com"]
+tier = "precise"                              # 5% rotating quarterly categories (cap per quarter) fit the rule model
+country = "US"
+language = "en"
+currency = "USD"
+aliases = ["Freedom Flex", "Chase Freedom Flex Mastercard"]
+# year_end_window defaults to false for country != TW; the monthly run catches each quarter's categories

@@ -6,6 +6,10 @@ from dataclasses import dataclass, field
 from datetime import time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from notify.terms_config import TermsConfig
 
 DEFAULT_STATE_FILE = "~/.local/state/homehub-notify/state.json"
 _REQUIRED = ("api_base", "token_file", "hub_base_url", "discord_target")
@@ -30,6 +34,7 @@ class NotifyConfig:
     portfolio_base: str | None = None
     cathay_run_time: time = time(6, 40)
     cathay_run_grace_minutes: int = 15
+    terms: TermsConfig | None = None
 
 
 def _int(raw: dict, key: str, default: int) -> int:
@@ -68,7 +73,10 @@ def _optional_str(raw: dict, key: str) -> str | None:
     return value.strip().rstrip("/")
 
 
-def load_config(path: Path) -> NotifyConfig:
+def load_config(path: Path, *, with_terms: bool = False) -> NotifyConfig:
+    """``[terms]`` is parsed only for the terms command, so a bad block cannot break daily/weekly."""
+    from notify.terms_config import load_terms  # lazy: terms_config imports ConfigError from here
+
     try:
         with open(path, "rb") as fh:
             raw = tomllib.load(fh)
@@ -102,6 +110,7 @@ def load_config(path: Path) -> NotifyConfig:
         portfolio_base=_optional_str(raw, "portfolio_base"),
         cathay_run_time=_hhmm(raw, "cathay_run_time", time(6, 40)),
         cathay_run_grace_minutes=_grace(raw, "cathay_run_grace_minutes", 15),
+        terms=load_terms(raw) if with_terms else None,
     )
 
 

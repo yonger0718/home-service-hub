@@ -1,0 +1,10 @@
+[Unit]
+Description=HomeHub accounting notifier: reward terms check, monthly on the 1st 09:00 Taipei
+
+[Timer]
+OnCalendar=*-*-01 09:00:00 Asia/Taipei
+Persistent=true
+Unit=homehub-notify-terms-monthly.service
+
+[Install]
+WantedBy=timers.target
