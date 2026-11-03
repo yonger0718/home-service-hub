@@ -177,6 +177,12 @@ def create(db: Session, account_id: int, payload: RewardRuleIn) -> int:
     rule = RewardRule(account_id=account_id, sort_order=sort_order)
     db.add(rule)
     _save(db, rule, payload, is_new=True)
+    if rule.shared_cap_id is not None:
+        # Joining a shared cap can lower the group cap: recompute the group's estimates as a PUT does (spec 5.1).
+        from . import reward_engine  # reward_engine imports this module
+
+        reward_engine.mark_early_rechecks(db, account_id)
+        reward_engine.recompute_rules(db, group_rule_ids(db, rule))
     return rule.id
 
 

@@ -262,6 +262,35 @@ def test_delete_engine_reward_row_forfeits(client, db_session):
     assert _one(db_session, source_entry_id=second_id).amount == Decimal("10.0000")
 
 
+def test_owner_reward_delete_clears_purchase_flag(client, db_session):
+    card = _card(db_session)
+    rule = _rule(db_session, card)
+    db_session.commit()
+    purchase_id = client.post("/entries", json=_payload(card, reward_rule_ids=[rule.id])).json()["id"]
+    reward_id = _post(db_session, _one(db_session)).id
+    db_session.commit()
+    client.put(f"/entries/{purchase_id}", json=_payload(card, amount="2000", reward_rule_ids=[rule.id]))
+    purchase = _entry(db_session, purchase_id)
+    assert (purchase.needs_review, purchase.review_reason) == (True, "reward_posted")
+
+    assert client.delete(f"/entries/{reward_id}").status_code == 204
+    purchase = _entry(db_session, purchase_id)
+    assert (purchase.needs_review, purchase.review_reason) == (False, None)
+
+
+def test_owner_reward_delete_keeps_other_review_flag(client, db_session):
+    card = _card(db_session)
+    rule = _rule(db_session, card)
+    purchase = _spend(db_session, card, 1000, rules=[rule])
+    reward = _post(db_session, _one(db_session))
+    purchase.needs_review = True  # flagged for some other reason (no review_reason)
+    purchase_id, reward_id = purchase.id, reward.id
+    db_session.commit()
+    assert client.delete(f"/entries/{reward_id}").status_code == 204
+    purchase = _entry(db_session, purchase_id)
+    assert (purchase.needs_review, purchase.review_reason) == (True, None)
+
+
 def test_delete_moze_reward_row_still_refused(client, db_session):
     card = _card(db_session)
     rule = _rule(db_session, card)
@@ -467,6 +496,21 @@ def test_rule_put_recomputes_estimated(client, db_session):
     assert (row.estimate, row.amount) == (Decimal("20.0000"), Decimal("20.0000"))
     assert _needs_recheck(db_session, early_id) is True  # P6
     assert _needs_recheck(db_session, quiet_id) is False
+
+
+def test_rule_create_joining_group_recomputes(client, db_session):
+    card = _card(db_session)
+    rule = _rule(db_session, card)
+    _spend(db_session, card, 1000, rules=[rule])
+    card_id, rule_id = card.id, rule.id
+    db_session.commit()
+    assert _one(db_session).amount == Decimal("10.0000")
+
+    response = client.post(f"/accounts/{card_id}/reward-rules",
+                           json=_rule_body(name="測試規則B", total_cap="4", share_cap_with=rule_id))
+    assert response.status_code == 201, response.text
+    row = _one(db_session)
+    assert (row.estimate, row.amount) == (Decimal("10.0000"), Decimal("4.0000"))  # the group cap is now 4
 
 
 def _account_body(card, **fields) -> dict:

@@ -457,10 +457,26 @@ def lock_reward_accrual(db: Session, reward_entry_id: int) -> RewardAccrual | No
     return next((row for row in rows if row.ledger_entry_id == reward_entry_id), None)
 
 
+def clear_reward_flag(db: Session, entry_ids: Collection[int]) -> None:
+    """Clear `needs_review` on these purchases only where its reason is `reward_posted` (an owner forfeit here,
+    a bank-wins confirm or forfeit in Task 8); a flag set for another reason stays."""
+    ids = sorted({i for i in entry_ids if i is not None})
+    if not ids:
+        return
+    db.execute(
+        update(LedgerEntry)
+        .where(LedgerEntry.id.in_(ids), LedgerEntry.review_reason == REVIEW_REASON)
+        .values(needs_review=False, review_reason=None)
+        .execution_options(synchronize_session="fetch")
+    )
+
+
 def forfeit_for_delete(db: Session, accrual: RewardAccrual) -> Pair:
     """The owner deleted the accrual's reward row (5.4, P1): `forfeited`, amount kept for the record, no ledger row
-    (so it uses 0 of the cap). The caller holds the window lock (`lock_reward_accrual`); returns the window to
+    (so it uses 0 of the cap), and the purchase's `reward_posted` flag cleared (controller ruling: as a bank-wins
+    forfeit). The caller holds the window lock (`lock_reward_accrual`) and the ledger locks; returns the window to
     `recompute_locked` after the row is gone."""
     accrual.state, accrual.ledger_entry_id = "forfeited", None
     db.flush()
+    clear_reward_flag(db, [accrual.source_entry_id])
     return accrual.rule_id, accrual.window_start
