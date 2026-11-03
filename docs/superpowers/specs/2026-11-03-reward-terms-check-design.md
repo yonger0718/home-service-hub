@@ -227,8 +227,12 @@ to a looser toolset.
 Isolation check round 1, 2026-11-03 (hermes v0.22.2+1692.g22063fc, `hermes chat … --safe-mode`): FAIL - observation 4 (literal
 `RULES-ABSENT` not produced; PROBE-RULE did not leak) and observation 6 (agent had no web/fetch
 tool bound, so neither 401 nor the private-network block appeared). Observations 2, 3, 5 pass.
-Details: `services/accounting-service/deploy/notify/terms-isolation-probe.md`. Round 2 runs the
-invocation above; its result is appended there and here.
+Details: `services/accounting-service/deploy/notify/terms-isolation-probe.md`. 
+
+Isolation check round 2, 2026-11-03 (hermes v0.22.2+1692.g22063fc, `hermes -z "$(cat prompt.md)" -t web
+--ignore-user-config --ignore-rules --provider anthropic -m claude-sonnet-5-5`): PASS - all six observations
+(tools `mcp__web_search`/`mcp__web_extract` only, no shell, hashes unchanged and one oneshot session row,
+scratch run `RULES-ABSENT` without `PROBE-RULE`, token echoed, loopback blocked as private network).
 
 Residual risk, stated: `web_extract` fetches arbitrary URLs including loopback. HomeHub
 routes need a bearer token the agent does not have; the other loopback listeners (18080
