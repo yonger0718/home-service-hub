@@ -151,6 +151,18 @@ def lock_windows(db: Session, pairs: Iterable[Pair]) -> list[RewardAccrual]:
     return _window_rows(db, pairs, lock=True)
 
 
+def require_window_locked(db: Session, rule_id: int, window_start: date, *, group: list[int] | None = None) -> None:
+    """Raise RuntimeError unless `lock_windows` covered this window of the rule's whole shared-cap group in this
+    transaction (the `locked=True` contract, P12)."""
+    if group is None:
+        group = _group_ids(db, rule_id)
+    missing = {(member, window_start) for member in group} - db.info.get(_LOCKED_KEY, set())
+    if missing:
+        raise RuntimeError(
+            f"locked=True for rule {rule_id} window {window_start}: this transaction holds no lock_windows lock on "
+            f"{sorted(missing)}")
+
+
 def _frozen_amounts(db: Session, rows: list[RewardAccrual]) -> dict[int, Decimal]:
     """Cap use of frozen accruals (5.2.2): posted -> its amount; bank_confirmed / forfeited -> the ledger row's
     amount, 0 without a row."""
@@ -193,11 +205,7 @@ def recompute_window(db: Session, rule_id: int, window_start: date, *, locked: b
         return
     group = reward_rule_service.group_rule_ids(db, rule)
     if locked:
-        missing = {(member, window_start) for member in group} - db.info.get(_LOCKED_KEY, set())
-        if missing:
-            raise RuntimeError(
-                f"recompute_window(locked=True) for rule {rule_id} window {window_start}: this transaction holds no "
-                f"lock_windows lock on {sorted(missing)}")
+        require_window_locked(db, rule_id, window_start, group=group)
     rows = _window_rows(db, [(rule_id, window_start)], lock=not locked)
     estimated = [r for r in rows if r.state == "estimated"]
     if not estimated:

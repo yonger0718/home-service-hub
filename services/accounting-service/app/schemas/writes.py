@@ -340,3 +340,16 @@ class SplitOut(BaseModel):
     group_id: int | None
     member_ids: list[int]
     members: list[SplitMemberRefOut]
+
+
+class RewardAccrualPostIn(BaseModel):
+    """POST /reward-accruals/{id}/post: the reward row's date; null posts today (Asia/Taipei)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    on: date | None = None
+
+
+class RewardAccrualPostOut(BaseModel):
+    result: Literal["posted", "forfeited"]
+    ledger_entry_id: int | None
