@@ -4,9 +4,12 @@ from datetime import date
 from uuid import UUID
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
+
+from decimal import Decimal
 
 from app.models import EntryRewardRule, RewardRule
+from app.services import reward_rule_service
 
 def _body(**fields) -> dict:
     body = {"name": "國內", "method": "percent", "rate": "1.5", "posting": "after_window",
@@ -201,3 +204,108 @@ def test_delete_unreferenced_rule_and_refuse_referenced_with_counts(client, db_s
     code, _, detail = refused.json()["message"].partition(": ")
     assert code == "rule_referenced" and json.loads(detail) == {"entries": 1, "rewards": 2}
     assert client.delete(f"/accounts/{card.id}/reward-rules/{free.id}").status_code == 404
+
+
+def _fields(response) -> set[str]:
+    return {e["loc"][-1] for e in response.json()["detail"]}
+
+
+def test_per_unit_requires_unit_spend_and_forbids_rate(client, db_session, seed):
+    card = seed.account("測試卡", is_credit=True)
+    db_session.commit()
+    url = f"/accounts/{card.id}/reward-rules"
+    base = dict(method="per_unit", rate=None)
+    r = client.post(url, json=_body(**base))
+    assert r.status_code == 422 and "unit_spend" in _fields(r)
+    r = client.post(url, json=_body(method="per_unit", unit_spend="20", rate="1"))
+    assert r.status_code == 422 and "rate" in _fields(r)
+    r = client.post(url, json=_body(**base, unit_spend="20"))
+    assert r.status_code == 201, r.text
+    assert r.json()["unit_spend"] == "20.0000"
+
+
+def test_percent_forbids_unit_spend(client, db_session, seed):
+    card = seed.account("測試卡", is_credit=True)
+    db_session.commit()
+    r = client.post(f"/accounts/{card.id}/reward-rules", json=_body(unit_spend="20"))
+    assert r.status_code == 422 and "unit_spend" in _fields(r)
+
+
+def test_calendar_month_window_round_trip(client, db_session, seed):
+    card = seed.account("測試卡", is_credit=True)
+    db_session.commit()
+    assert _post(client, card.id, window="calendar_month")["window"] == "calendar_month"
+
+
+def test_put_keeps_stored_zero_fixed_amount(client, db_session, seed):
+    card = seed.account("測試卡", is_credit=True)
+    rule = seed.rule(card, name="佔位")
+    db_session.flush()
+    db_session.execute(text("UPDATE reward_rule SET method='fixed', rate=NULL, fixed_amount=0 WHERE id=:i"), {"i": rule.id})
+    db_session.commit()
+    url = f"/accounts/{card.id}/reward-rules/{rule.id}"
+    body = _body(name="佔位", method="fixed", rate=None, fixed_amount="0", description="新說明")
+    r = client.put(url, json=body)
+    assert r.status_code == 200, r.text
+    assert r.json()["description"] == "新說明"
+    r = client.put(url, json=_body(name="佔位", method="percent", rate="1", fixed_amount="0"))
+    assert r.status_code == 422 and "fixed_amount" in _fields(r)
+
+
+def test_post_refuses_zero_fixed_amount(client, db_session, seed):
+    card = seed.account("測試卡", is_credit=True)
+    db_session.commit()
+    r = client.post(f"/accounts/{card.id}/reward-rules", json=_body(method="fixed", rate=None, fixed_amount="0"))
+    assert r.status_code == 422 and "fixed_amount" in _fields(r)
+
+
+def test_put_zero_fixed_amount_on_nonzero_rule_refused(client, db_session, seed):
+    card = seed.account("測試卡", is_credit=True)
+    rule = seed.rule(card, name="固定")
+    db_session.flush()
+    db_session.execute(text("UPDATE reward_rule SET method='fixed', rate=NULL, fixed_amount=5 WHERE id=:i"), {"i": rule.id})
+    db_session.commit()
+    r = client.put(f"/accounts/{card.id}/reward-rules/{rule.id}",
+                   json=_body(name="固定", method="fixed", rate=None, fixed_amount="0"))
+    assert r.status_code == 422
+    assert any(e["loc"][-1] == "fixed_amount" and "must be greater than 0" in e["msg"] for e in r.json()["detail"])
+
+
+def test_shared_cap_requires_same_window(client, db_session, seed):
+    card = seed.account("測試卡", is_credit=True)
+    a = seed.rule(card, name="A")
+    b = seed.rule(card, name="B", window="calendar_month")
+    db_session.commit()
+    copy = "rules sharing a cap must use the same window"
+    r = client.put(f"/accounts/{card.id}/reward-rules/{b.id}",
+                   json=_body(name="B", window="calendar_month", share_cap_with=a.id))
+    assert r.status_code == 422
+    assert any(e["loc"][-1] == "share_cap_with" and copy in e["msg"] for e in r.json()["detail"])
+    r = client.post(f"/accounts/{card.id}/reward-rules",
+                    json=_body(name="C", window="calendar_month", share_cap_with=a.id))
+    assert r.status_code == 422 and "share_cap_with" in _fields(r)
+    db_session.rollback()
+    ok = client.put(f"/accounts/{card.id}/reward-rules/{b.id}", json=_body(name="B", share_cap_with=a.id))
+    assert ok.status_code == 200, ok.text
+    r = client.put(f"/accounts/{card.id}/reward-rules/{a.id}", json=_body(name="A", window="calendar_month"))
+    assert r.status_code == 422
+    assert any(e["loc"][-1] == "window" and copy in e["msg"] for e in r.json()["detail"])
+
+
+def test_group_cap_is_minimum(client, db_session, seed):
+    card = seed.account("測試卡", is_credit=True)
+    a = seed.rule(card, name="A", total_cap=Decimal("300"))
+    b = seed.rule(card, name="B", total_cap=Decimal("200"))
+    c = seed.rule(card, name="C")
+    solo = seed.rule(card, name="S", total_cap=Decimal("50"))
+    db_session.commit()
+    assert reward_rule_service.group_cap(db_session, solo) == Decimal("50")
+    assert reward_rule_service.group_rule_ids(db_session, solo) == [solo.id]
+    for r in (a, b, c):
+        r.shared_cap_id = UUID(int=7)
+    db_session.commit()
+    assert reward_rule_service.group_cap(db_session, c) == Decimal("200")
+    assert reward_rule_service.group_rule_ids(db_session, c) == sorted([a.id, b.id, c.id])
+    a.total_cap = b.total_cap = None
+    db_session.commit()
+    assert reward_rule_service.group_cap(db_session, a) is None

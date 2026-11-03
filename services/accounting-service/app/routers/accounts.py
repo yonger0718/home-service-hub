@@ -16,7 +16,7 @@ from ..schemas.ledger import (
     EntryPage,
     RewardRuleOut,
 )
-from ..schemas.writes import SOURCE_CURRENCIES, AccountIn, AccountSourcesPatch, OrderIn, RewardRuleIn
+from ..schemas.writes import SOURCE_CURRENCIES, AccountIn, AccountSourcesPatch, OrderIn, RewardRuleIn, RewardRuleUpdateIn
 from ..services import account_logo_service, ledger_service, reward_rule_service, settings_service
 from ..services.account_logo_service import MAX_LOGO_UPLOAD_BYTES, LogoError, logo_hash
 from ..services.errors import CodedValidationError
@@ -74,7 +74,7 @@ def reorder_reward_rules(account_id: int, payload: OrderIn, db: Session = Depend
 
 
 @router.put("/{account_id}/reward-rules/{rule_id}", response_model=RewardRuleOut)
-def update_reward_rule(account_id: int, rule_id: int, payload: RewardRuleIn, db: Session = Depends(get_db)):
+def update_reward_rule(account_id: int, rule_id: int, payload: RewardRuleUpdateIn, db: Session = Depends(get_db)):
     with service_errors():
         reward_rule_service.update(db, account_id, rule_id, payload)
     db.commit()

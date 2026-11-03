@@ -257,10 +257,11 @@ class RewardRuleIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: Annotated[str, BeforeValidator(lambda v: v.strip() if isinstance(v, str) else v), Field(min_length=1, max_length=128)]
-    method: Literal["percent", "fixed"]
+    method: Literal["percent", "fixed", "per_unit"]
     rate: Annotated[Decimal, Field(gt=0, le=100, decimal_places=4)] | None = None
     fixed_amount: Money | None = None
-    window: Literal["statement_cycle"] = "statement_cycle"
+    unit_spend: Money | None = None
+    window: Literal["statement_cycle", "calendar_month"] = "statement_cycle"
     posting: Literal["after_window", "after_transaction", "manual"]
     delay_days: int = Field(default=0, ge=0, le=365)
     post_month_offset: int = Field(default=0, ge=0, le=2)
@@ -288,6 +289,12 @@ class RewardRuleIn(BaseModel):
             if self.posting == "manual":
                 self.delay_days = 0
         return self
+
+
+class RewardRuleUpdateIn(RewardRuleIn):
+    """PUT body: a stored MOZE placeholder (fixed, amount 0) must stay editable; the service gates the 0 (#289)."""
+
+    fixed_amount: NonNegativeMoney | None = None
 
 
 class CounterpartyIn(BaseModel):

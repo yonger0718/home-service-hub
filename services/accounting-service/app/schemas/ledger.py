@@ -18,10 +18,11 @@ class RewardRuleOut(BaseModel):
     id: int
     account_id: int
     name: str
-    method: Literal["percent", "fixed"]
+    method: Literal["percent", "fixed", "per_unit"]
     rate: Decimal | None
     fixed_amount: Decimal | None
-    window: Literal["statement_cycle"]
+    unit_spend: Decimal | None
+    window: Literal["statement_cycle", "calendar_month"]
     posting: Literal["after_window", "after_transaction", "manual"]
     delay_days: int
     post_month_offset: int

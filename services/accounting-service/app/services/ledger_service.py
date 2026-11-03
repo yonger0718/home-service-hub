@@ -43,7 +43,7 @@ CANONICAL_ORDER = (LedgerEntry.entry_date, LedgerEntry.entry_time.asc().nulls_fi
 NEWEST_FIRST = (LedgerEntry.entry_date.desc(), LedgerEntry.entry_time.desc().nulls_last(), LedgerEntry.seq.desc())
 
 REWARD_RULE_FIELDS = (
-    "id", "account_id", "name", "method", "rate", "fixed_amount", "window", "posting", "delay_days",
+    "id", "account_id", "name", "method", "rate", "fixed_amount", "unit_spend", "window", "posting", "delay_days",
     "post_month_offset", "post_day", "txn_rounding", "total_rounding", "total_cap", "shared_cap_id", "is_basic",
     "reward_account_id", "reward_project_id", "starts_on", "ends_on", "is_enabled", "description", "sort_order",
     "moze_id",
