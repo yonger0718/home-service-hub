@@ -41,7 +41,9 @@ BUTTONS_TO_ACTIONS = {
     "defer": "defer_next_period",
     "dismiss": "dismiss",
     "anchor": "anchor_opening",
+    "accept_early": "accept_early_reward",
 }
+REWARD_HINTS = frozenset({"reward_surplus", "reward_early"})  # bank wins' owner cases (reward engine spec 7.5)
 
 
 def pattern(merchant_norm: str) -> str:
@@ -74,6 +76,8 @@ def classify(*, kind: str, status: str, statement_kind: str, hint: str | None,
     if hint == "needs_peer":
         return "transfer"
     if kind == "line_unmatched" and hint == "installment_unmapped":  # the registry still allows create_entry here
+        return "other"
+    if kind == "line_unmatched" and hint in REWARD_HINTS:  # never bank_only: no learned record rule books them
         return "other"
     if kind == "line_unmatched" and "create_entry" in allowed:
         return "bank_only"
@@ -135,6 +139,7 @@ def buttons(question: str, allowed: list[str], *, adjustable: bool) -> list[str]
         add("anchor", "anchor_opening")
         add("dismiss")
     else:
+        add("accept_early", "accept_early_reward")
         add("dismiss", "dismiss")
     return out
 
@@ -383,6 +388,7 @@ def _item(db: Session, case: ReconciliationCase, statement: AccountStatement, li
         "actions": actions,
         "rule_hint": _rule_hint(db, statement, line, hint_cache) if learn else None,
         "transfer": _transfer_out(db, case, allowed),
+        "note": (case.context or {}).get("note"),
     }
 
 
@@ -472,6 +478,11 @@ def translate(button: str, params: dict, case: ReconciliationCase, line: Stateme
         return action, {"entry_id": case.entry_id}
     if button == "dismiss":
         return action, {"note": f"inbox: {answer}"}
+    if button == "accept_early":  # reward engine plan P5: the case's default early accrual
+        ids = (case.context or {}).get("default_accrual_ids")
+        if not ids:
+            raise ValidationError("params", "accrual_ids required")
+        return action, {"accrual_ids": list(ids)}
     return action, {}  # anchor
 
 

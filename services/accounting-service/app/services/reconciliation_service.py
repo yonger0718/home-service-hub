@@ -666,7 +666,14 @@ def _sibling_candidates(db: Session, statement: AccountStatement, siblings: list
 
 def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int], result: matching.MatchResult,
                    lines: dict[int, StatementLine], entries: dict[int, matching.Entry],
-                   rules: matching.Rules) -> list[dict]:
+                   rules: matching.Rules, bank_wins: reward_bank_wins.BankWinsPlan | None = None) -> list[dict]:
+    """The cases this run wants. Reward engine spec 7.2/7.5/7.8 (`bank_wins`: the step's plan, None when its
+    candidate set was empty): a pulled reward line left without a row is a `line_unmatched` case with hint
+    `reward_surplus`; with no general candidate, an unmatched `bank_only` reward line takes hint `reward_early` when
+    the card has early candidates; a card `balance_gap` names the engine rows awaiting the bank
+    (`carried_accrual_ids`)."""
+    early: list[int] | None = None  # the card's early candidates, read once on the first reward line that needs them
+    early_possible = bank_wins is None or bank_wins.general_empty
     siblings = settings_service.account_siblings(db, statement.account_id)
     claimed = coverage_service.claimed_entry_ids(db) if siblings else set()
     owner_deferred = _owner_deferred_entries(db, statement)
@@ -683,6 +690,12 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
     out = []
     for c in result.cases:
         context = c.context
+        if early_possible and c.kind == "line_unmatched" and (context or {}).get("hint") == "bank_only" \
+                and lines[c.line_id].line_kind == "reward":
+            if early is None:
+                early = reward_bank_wins.early_candidates(db, statement, accounts)
+            if early:  # 7.2: the bank credited before the rule's posting date; the owner decides (P5)
+                context = reward_bank_wins.early_context(db, early, lines[c.line_id])
         if siblings and c.kind == "line_unmatched":
             found = _sibling_candidates(db, statement, siblings, lines[c.line_id], rules.exact_window_days, claimed)
             if found:
@@ -696,6 +709,9 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
             context = {**context, "owner_deleted": True}
         out.append(_case(c.kind, event_id=event_id, line_id=c.line_id, entry_id=c.entry_id,
                          candidates=c.candidates, context=context))
+    for line_id in bank_wins.surplus_line_ids if bank_wins is not None else ():  # 7.5: never bank_only
+        out.append(_case("line_unmatched", event_id=lines[line_id].event_id, line_id=line_id,
+                         context={"hint": reward_bank_wins.SURPLUS_HINT}))
     for entry_id in result.unmatched_entry_ids:
         if entry_id in shadow_by_entry or entry_id in orphan_by_entry:  # the hinted case below replaces the plain one
             continue
@@ -724,8 +740,11 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
                          context=context))
     gap = balance_gap(db, statement, accounts)
     if gap != 0:
-        out.append(_case("balance_gap", context={"gap": str(gap)} if statement.kind == "bank"
-                         else {"gap": str(gap), "card": True}))
+        context = {"gap": str(gap)} if statement.kind == "bank" else {"gap": str(gap), "card": True}
+        carried = reward_bank_wins.carried_ids(db, statement, accounts) if statement.kind != "bank" else []
+        if carried:  # 7.8: dismiss only (reconciliation_actions.CONDITIONS), no automatic answer
+            context["carried_accrual_ids"] = carried
+        out.append(_case("balance_gap", context=context))
     return out
 
 
@@ -1157,7 +1176,7 @@ def _match_and_record(db: Session, statement: AccountStatement, accounts: list[i
         evaluated = set(by_id) | {c.id for e in entries if e.claimable for c in e.children}
         # deferrals first: the balance gap of `_desired_cases` reads them (`held_balance`)
         _write_deferrals(db, statement, accounts_by_id[statement.account_id], deferred, evaluated)
-        desired = _desired_cases(db, statement, accounts, result, lines, by_id, rules)
+        desired = _desired_cases(db, statement, accounts, result, lines, by_id, rules, bank_wins)
         if settled is not None:  # `source_drift` sits on a claimed line, possibly owner-covered: not in `lines`
             desired += settled.drift
         created = _write_cases(db, statement, desired)

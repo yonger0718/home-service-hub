@@ -108,6 +108,7 @@ class InboxItem(BaseModel):
     actions: list[str]
     rule_hint: InboxRuleHint | None
     transfer: InboxTransfer | None = None
+    note: str | None = None  # the case context's note (reward engine plan P5: a `reward_early` line)
 
 
 class InboxAccount(BaseModel):
@@ -153,7 +154,7 @@ class InboxLearnIn(BaseModel):
 class InboxApplyIn(BaseModel):
     model_config = Strict
     cases: list[InboxCaseRef] = Field(min_length=1, max_length=50)
-    action: Literal["record", "match_candidate", "accept_bank_amount", "defer", "dismiss", "anchor"]
+    action: Literal["record", "match_candidate", "accept_bank_amount", "defer", "dismiss", "anchor", "accept_early"]
     params: dict = Field(default_factory=dict)
     answer: str = Field(min_length=1, max_length=80)
     learn: InboxLearnIn | None = None
