@@ -6,8 +6,9 @@ FOR UPDATE → flush → `coverage_service.sweep` (briefly takes the dirty barri
 ledger_entry lock, because a writer holding the shared barrier may be waiting on a row this transaction would hold)
 → entry_group rows ascending → the candidate entries, their
 children and their transfer legs in ONE ordered SELECT … FOR UPDATE → re-read the population under those locks →
-match → coverage → cases → counts. The only ledger rows a reconcile writes are the auto-pay retirement's (auto-pay
-spec §4.5, `auto_pay_service.retire_twins_for_statement`, after the sweep and before the group/entry locks): it
+match → coverage → cases → counts. The only ledger rows a reconcile writes are bank wins' (below) and the auto-pay
+retirement's (auto-pay spec §4.5, `auto_pay_service.retire_twins_for_statement`, after the sweep and before the
+group/entry locks): it
 locks a twinned pair's `statement_auto_pay` row and then its legs NOWAIT (a held row or leg skips the pair),
 re-checks the row, the legs and the twin under those locks (a failed re-check skips the pair), releases their
 coverage on any statement, deletes them — so their dirty triggers hold the shared dirty barrier until this
@@ -21,7 +22,12 @@ account printing a settlement line (portfolio integration spec §4.3, §4.7) fir
 does the same for its `kind='dividend'` bookings through `dividend_service.housekeep` / `retire_twins_for_statement`
 after the dividend read), and after its coverage is written
 links a claimed stand-in to its line's event (the booking row try-locked NOWAIT) and derives the settlement cases
-(`trade_settlement_service.settle`). Otherwise a reconcile emits no dirty events of its own.
+(`trade_settlement_service.settle`). Bank wins (reward engine spec §7, `reward_bank_wins.prepare`, after the
+group/entry locks and before pass 1) also writes ledger rows: it locks its candidates' purchases, then their accrual
+windows in one `lock_windows`, then their reward rows (all NOWAIT, plan P12: `reconcile_busy` when held), posts the
+estimated candidates, sets the reward rows to the bank's figures and clears the purchases' `reward_posted` flags; its
+claims are written with the matcher's. Those dirty events predate its claims and equal their snapshots, so the next
+sweep keeps them. Otherwise a reconcile emits no dirty events of its own.
 
 Reconcile yields on lock conflicts: the sweep (and, in the revision hook, the coverage transfer) has already written
 coverage/case rows when the group/entry locks are taken, while a ledger delete locks the entry/group first and then
@@ -67,10 +73,11 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, aliased
 
 from app.models import (
-    Account, AccountStatement, EntryGroup, InstallmentPlanMap, LedgerEntry, ReconciliationCase, ScheduleDefinition,
-    ScheduleInstance, StatementCoverage, StatementLine, StatementRevision,
+    Account, AccountStatement, EntryGroup, InstallmentPlanMap, LedgerEntry, ReconciliationCase, RewardAccrual,
+    ScheduleDefinition, ScheduleInstance, StatementCoverage, StatementLine, StatementRevision,
 )
-from app.services import auto_pay_service, coverage_service, portfolio_client, settings_service, stand_ins
+from app.services import auto_pay_service, coverage_service, portfolio_client, reward_bank_wins, settings_service
+from app.services import stand_ins
 from app.services import dividend_service, trade_settlement_service
 from app.services.entry_write_service import lock_group, proposed_fx_fee
 from app.services.errors import CodedConflictError, NotFoundError
@@ -274,7 +281,9 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
     `in_reverse=False`, no instance, all its children in both views) for the printed-whole guard only. Every row and
     child carries its own `currency` (a structural row in another currency makes its group whole by fail-closed).
     Covered parents that still have a claimable child follow the drifted instances as carrier rows (`_carriers`,
-    fee-child spec 2026-10-24 §5.1): order parents, drifted instances, carriers, structural rows."""
+    fee-child spec 2026-10-24 §5.1): order parents, drifted instances, carriers, structural rows. Engine reward rows
+    (a reward row with an accrual, reward engine spec §7) are never in the population: they meet statements only
+    through bank wins (`reward_bank_wins.prepare`); MOZE-era reward rows (no accrual) stay."""
     if include_reward is None:
         include_reward = any(line.line_kind == "reward" for line in _current_lines(db, statement))
     lo = statement.period_start - timedelta(days=window_days)
@@ -285,7 +294,8 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
     rows = list(db.execute(
         select(LedgerEntry)
         .where(LedgerEntry.account_id.in_(accounts), LedgerEntry.currency == statement.currency,
-               LedgerEntry.parent_entry_id.is_(None), day >= lo, day <= hi, LedgerEntry.kind.not_in(kinds_out))
+               LedgerEntry.parent_entry_id.is_(None), day >= lo, day <= hi, LedgerEntry.kind.not_in(kinds_out),
+               ~exists().where(RewardAccrual.ledger_entry_id == LedgerEntry.id))
         .order_by(LedgerEntry.id)).scalars())
     parents = [e for e in rows if e.id not in claimed]
     covered = [e for e in rows if e.id in claimed and e.group_id is None]  # the carrier population, id order
@@ -1108,8 +1118,12 @@ def _match_and_record(db: Session, statement: AccountStatement, accounts: list[i
     entries, groups = load_candidates(db, statement, accounts, window_days=matching.population_window_days(rules),
                                       include_reward=include_reward, exclude=owned)
     entries = _survivors(entries, locked_rows, first_groups)
+    # reward engine spec §7: bank wins, after the population locks and before pass 1 (its own lock order: purchases →
+    # accrual windows → reward rows, P12); its pulled reward lines leave the matcher input, its claims join pass 2's
+    bank_wins = reward_bank_wins.prepare(db, statement, accounts, all_lines, set(manual))
+    pulled = bank_wins.pulled_line_ids if bank_wins is not None else set()
     # two passes (holders spec §3): `pass_two_holders` runs pass 1; pass 2 below is the run's result
-    claimable_lines = [_as_line(row) for row in line_rows]
+    claimable_lines = [_as_line(row) for row in line_rows if row.id not in pulled]
     plans = plan_map(db, statement.account_id)
     settlement_account = bool(account.settlement_source)  # R7: settlement lines take the stand-in / assignment path
 
@@ -1120,6 +1134,9 @@ def _match_and_record(db: Session, statement: AccountStatement, accounts: list[i
                                           plans, fee, settlement_account=settlement_account)
     result = matching.match(statement.kind, claimable_lines, entries, groups, plans, fee, rules, statement.currency,
                             lines_all=lines_all, holders=holders, settlement_account=settlement_account)
+    if bank_wins is not None and bank_wins.claims:
+        result.claims.extend(bank_wins.claims)
+        locked_rows = {**locked_rows, **bank_wins.locked_rows}  # `_claim_unchanged` / `write_claim` read them
     lines = {row.id: row for row in line_rows}
     _write_coverage(db, statement, result, lines, locked_rows, run_id, keep_lines=manual)
     settled = None

@@ -116,16 +116,25 @@ def _forget_locks(session: Session, *_args) -> None:
     session.info.pop(_LOCKED_KEY, None)
 
 
+def _forget_at_end(session: Session, transaction) -> None:
+    """The outermost transaction ended (commit or rollback). Not a savepoint release: SQLAlchemy fires
+    `after_commit` for a released savepoint too, and the rows locked before it stay locked."""
+    if transaction.parent is None:
+        _forget_locks(session)
+
+
 def _remember_locks(db: Session, keys: set[Pair]) -> None:
-    """Record the window keys this transaction holds; commit and rollback (any level) forget them."""
+    """Record the window keys this transaction holds; the end of the transaction and any rollback (a savepoint's
+    too) forget them. A released savepoint keeps them (its locks stay held)."""
     if not db.info.get(_HOOKED_KEY):
-        for name in ("after_commit", "after_rollback", "after_soft_rollback"):
+        event.listen(db, "after_transaction_end", _forget_at_end)
+        for name in ("after_rollback", "after_soft_rollback"):
             event.listen(db, name, _forget_locks)
         db.info[_HOOKED_KEY] = True
     db.info.setdefault(_LOCKED_KEY, set()).update(keys)
 
 
-def _window_rows(db: Session, pairs: Iterable[Pair], *, lock: bool) -> list[RewardAccrual]:
+def _window_rows(db: Session, pairs: Iterable[Pair], *, lock: bool, nowait: bool = False) -> list[RewardAccrual]:
     db.flush()  # populate_existing below must not discard pending changes
     keys = _group_keys(db, pairs)
     if not keys:
@@ -138,17 +147,23 @@ def _window_rows(db: Session, pairs: Iterable[Pair], *, lock: bool) -> list[Rewa
     )
     if not lock:
         return list(db.scalars(query))
-    rows = list(db.scalars(query.with_for_update()))
+    rows = list(db.scalars(query.with_for_update(nowait=nowait)))
     _remember_locks(db, keys)  # recorded even for windows with no rows yet
     return rows
 
 
-def lock_windows(db: Session, pairs: Iterable[Pair]) -> list[RewardAccrual]:
+def lock_windows(db: Session, pairs: Iterable[Pair], *, nowait: bool = False) -> list[RewardAccrual]:
     """Lock every accrual of these windows (each rule's whole shared-cap group) in one
     `SELECT ... ORDER BY id FOR UPDATE` and return them, freshly loaded, in id order (P12 step 2). The
     group-expanded (rule_id, window_start) keys are recorded in `db.info` until the transaction ends, so
-    `recompute_window(locked=True)` can check that its window is held."""
-    return _window_rows(db, pairs, lock=True)
+    `recompute_window(locked=True)` can check that its window is held. `nowait=True` (reconcile, which never
+    waits on a row while it holds ledger rows: bank wins) raises the driver's LockNotAvailable on a held row."""
+    return _window_rows(db, pairs, lock=True, nowait=nowait)
+
+
+def held_windows(db: Session) -> frozenset[Pair]:
+    """The (rule_id, window_start) keys `lock_windows` holds in this transaction (group-expanded)."""
+    return frozenset(db.info.get(_LOCKED_KEY, ()))
 
 
 def require_window_locked(db: Session, rule_id: int, window_start: date, *, group: list[int] | None = None) -> None:

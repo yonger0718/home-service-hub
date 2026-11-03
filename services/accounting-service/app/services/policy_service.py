@@ -37,7 +37,8 @@ from app.models import (
     ReconciliationProposal, StatementLine,
 )
 from app.schemas.reconciliation import ProposalIn
-from app.services import coverage_service, ledger_service, proposal_service, settings_service, stand_ins
+from app.services import coverage_service, ledger_service, proposal_service, reward_bank_wins, settings_service
+from app.services import stand_ins
 from app.services import reconciliation_actions as registry
 from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, ConflictError, NotFoundError, ValidationError
@@ -620,7 +621,9 @@ def _single_admissible(ctx: Context, candidate: Candidate) -> None:
     claimed) is refused. The guard holders are reconcile's too (holders spec §4.3, `rec.pass_two_holders`): the stable
     ones and a recomputed pass 1's own claims, so the context is reconcile's pass-2 context on unchanged state; this
     statement's stored `auto` rows are never read as holders — they are pass-2 output, and a member claim among them
-    would release a group reconcile kept whole (shape 13)."""
+    would release a group reconcile kept whole (shape 13). Bank wins' pulled reward lines (reward engine spec §7.3,
+    `reward_bank_wins.pulled_filter`) leave the claimable lines as in reconcile, and a case on a pulled line is
+    refused."""
     db, statement, line = ctx.db, ctx.statement, ctx.line
     if line is None:
         raise CodedConflictError("not_single_admissible", "the line is no longer printed")
@@ -628,10 +631,13 @@ def _single_admissible(ctx: Context, candidate: Candidate) -> None:
     current = rec._current_lines(db, statement)
     include_reward = any(row.line_kind == "reward" for row in current)
     manual, owned = rec.owned_coverage(db, statement)
+    pulled = reward_bank_wins.pulled_filter(db, statement, accounts, [r for r in current if r.id not in manual])
+    if line.id in pulled:
+        raise CodedConflictError("not_single_admissible", "the line is a reward line bank wins claims")
     entries, groups = rec.load_candidates(db, statement, accounts, window_days=matching.population_window_days(ctx.rules),
                                           include_reward=include_reward, exclude=owned)
     accounts_by_id = {a.id: a for a in db.execute(select(Account).where(Account.id.in_(accounts))).scalars()}
-    claimable_lines = [rec._as_line(r) for r in current if r.id not in manual]
+    claimable_lines = [rec._as_line(r) for r in current if r.id not in manual and r.id not in pulled]
     plans = rec.plan_map(db, statement.account_id)
     lines_all, holders = rec.pass_two_holders(
         db, statement, accounts, ctx.rules, current, claimable_lines, entries, groups, plans,
