@@ -68,7 +68,8 @@ This feature makes that run periodic, deterministic at the edges, archived, and 
   `AIAgent` in-process (`hermes_cli/oneshot.py`), takes the prompt as its argument (no
   `--query-file`), honours an explicit `-t` list (`_validate_explicit_toolsets`; `all` is
   rejected, unknown names dropped), and with `--ignore-user-config --ignore-rules` the model
-  sees exactly `mcp__web_extract` + `mcp__web_search` (the Anthropic OAuth wire alias of the
+  sees exactly `mcp__web_extract` + `mcp__web_search` (model self-report in the probe; the resolver proof is
+  `resolve_toolset('web')`) (the Anthropic OAuth wire alias of the
   built-in `web_extract`/`web_search`, `agent/anthropic_adapter.py`) and no bridge: config
   bypass drops the config-defined MCP servers, plugins and hooks, and `HERMES_IGNORE_RULES`
   is honoured by `agent/system_prompt.py` (rules/skills) — whether the built-in memory file
@@ -216,11 +217,12 @@ prompt: (1) the tools Hermes **registers** for that process (the bound tool sche
 from the run's debug/usage output or the toolset resolver — not the model's description of
 itself) are exactly `web_search`, `web_extract` — the model may report them under the OAuth alias
 `mcp__web_search`/`mcp__web_extract`, and must report no `tool_search`/`tool_describe`/`tool_call`; (2) a shell request in the prompt is refused
-for lack of a tool, not approved; (3) no new row appears in the Hermes session DB and no
-memory/skill file changes; (4) `--ignore-rules` is visibly honoured (no persona/SOUL/user-rule/memory text and no
+for lack of a tool, not approved; (3) exactly one new row in the Hermes session DB, the probe's own `source=oneshot` row (rows
+the live gateway adds with another source are listed, not failed), and no memory/skill file changes; (4) `--ignore-rules` is visibly honoured (no persona/SOUL/user-rule/memory text and no
 scratch-home sentinel in the output); (5) the argument actually supplies the prompt
 (the fixture asks for a token only the file contains); (6) the loopback probe
-`http://127.0.0.1:8000/reward-rules` returns 401 with no rule body in the output. **All six
+`http://127.0.0.1:8000/reward-rules` returns HTTP 401 **or** the tool's private-network block
+(`Blocked: URL targets a private or internal network address`), with no rule body in the output. **All six
 are the no-ship list**; if any fails, the feature does not ship until it does — no fallback
 to a looser toolset.
 
@@ -242,7 +244,7 @@ confirms a 401 in the output.
 
 `notify/hermes_run.py`: `run_hermes(prompt_path: Path, toolsets: str, timeout_s: int,
 model: str, provider: str, env: dict[str, str], cwd: Path, max_output_bytes: int,
-runner=subprocess.run) -> HermesResult(stdout, stderr, returncode, seconds, truncated)`.
+archive: Path, runner=None, kill=os.killpg) -> HermesResult(stdout, stderr, returncode, seconds, truncated)`.
 Non-zero exit, timeout or truncation ⇒ `HermesError(reason="hermes", archive=<dir>)`
 (never the prompt or output).
 

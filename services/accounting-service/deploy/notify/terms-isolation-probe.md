@@ -1,4 +1,8 @@
-# Terms-check isolation probe (Task 1) - result: FAIL
+# Terms-check isolation probe (Task 1) - Round 1 FAIL (chat/--safe-mode), Round 2 PASS
+
+Deliverable: `HERMES_ENV_KEYS = ("PATH", "HOME", "LANG", "TZ")`. HERMES_HOME is scratch-only and never passed in production; no provider vars, because credentials come from `~/.hermes/auth.json` via HOME.
+
+(Round 1 below is history; Round 2 is the final verdict.)
 
 Date 2026-11-03. `hermes --version`: Hermes Agent v0.22.2+1692.g22063fc (2026.9.24).
 `resolve_toolset('web')` (hermes venv python, from ~/.hermes/hermes-agent): `['web_extract', 'web_search']` (set equality with {web_search, web_extract}: True).
@@ -67,3 +71,7 @@ PROBE-TOKEN-<12 hex>
 6. PASS. Loopback fetch: "Blocked: URL targets a private or internal network address"; no HTTP status, no rule body.
 
 Overall: PASS. Task 5 argv: `hermes -z <prompt> -t web --ignore-user-config --ignore-rules --provider anthropic -m <model>`.
+
+## Round 2 evidence addenda
+- Before/after digests (file hashes, no contents): SOUL.md sha256 36c1f5a2e92cd1d018311eaf4c8f1e8886672eae78212e033c681d0e3d5d506f; sorted `sha256sum` listing of memories/ + skills/ (484 files) hashed to 9e7b54914f99a6f4362a46684840d057268afaaa2f9a24a76a9f7b319a058496. Before and after the real-home run the SOUL + memories/skills listings compared byte-identical (`cmp`).
+- Cleanup: the scratch `auth.json` copy was `shred -u`'d and the scratch dirs under ~/backups/home-hub-static/ were removed (none remain).

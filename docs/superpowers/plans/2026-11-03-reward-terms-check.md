@@ -144,7 +144,7 @@ Template content, generalised from the spike prompt `~/reports/home-hub-reward-t
 **Interfaces:**
 - Produces:
   ```python
-  HERMES_ENV_KEYS: tuple[str, ...]   # from Task 1: PATH, HOME, LANG, TZ + provider var names
+  HERMES_ENV_KEYS: tuple[str, ...]   # from Task 1: ("PATH", "HOME", "LANG", "TZ")
   class HermesError(Exception): reason: str  # "hermes"; archive: Path; str(exc) == f"hermes {archive}"
   @dataclass(frozen=True)
   class HermesResult: stdout: str; stderr: str; returncode: int; seconds: float; truncated: bool
