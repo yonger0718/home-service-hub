@@ -16,6 +16,9 @@ the accruals on entry detail.
 **Spec:** `docs/superpowers/specs/2026-11-03-reward-posting-engine-design.md`, rev 2.2 `32f5a656` (owner approved
 2026-11-03; Multica AGENT-393/394 accepted). Section references (§) below point into it.
 
+**Plan rev 2** folds the Multica plan review AGENT-396 (dev-grok, CHANGES at `4cf7dec4`, findings 1–9 + nits) and
+the P5 gap (a dismiss-only early case would leave a bank-paid reward at 0). Mapping at the end.
+
 ## Global Constraints
 
 - Worktree `~/workspace/home-hub-reward-engine`, branch `feat/reward-posting-engine`, base `origin/main` `99ddee79`.
@@ -55,12 +58,13 @@ the accruals on entry detail.
 | P2 | A `fixed` rule on a partial refund: estimate = −`fixed_amount` × refund / purchase amount, then `txn_rounding`. `percent` / `per_unit` use the refund amount. | Proportional claw-back; a full refund gives back exactly the purchase's estimate. |
 | P3 | Refund `post_on` = `post_on_for(rule, purchase window, refund.entry_date)`. A date already past posts on the next daily run. | Same window as the purchase (§5.1); simplest posting rule. |
 | P4 | Rounding modes act on whole units: `round` = ROUND_HALF_UP to 0 places, `floor`, `ceil`; `keep` = 4 places. After `total_rounding`, the window sum is clamped to `≤ cap`. The delta never takes a positive-estimate slot below 0; any leftover delta is dropped. | §5.2.4, P4 fills the edge. |
-| P5 | Lead carry 1: a `reward_early` case offers **`dismiss` only** (no `create_entry` / `create_system_entry`). Its context lists `early_accrual_ids` and `rule_ids`. The inbox text steers to fixing the rule's posting fields. | The lead offered this option or a forfeit-on-book option. Dismiss-only can never double count. |
+| P5 | Lead carry 1: a `reward_early` case offers **`accept_early_reward` and `dismiss` only**; `create_entry` and `create_system_entry` are not offered. Its context holds `early_accrual_ids`, `rule_ids` and `note` = 「銀行提早入帳：請修正規則的入帳日，或按「接受提早入帳」」. `accept_early_reward` checks that every listed accrual is still `estimated`, else 409 `accrual_not_estimated`. It then sets their `post_on` to the reward line's `posted_date` (inside this statement period) and sets the statement's `needs_recheck`. The re-run finds them in (a): they are pulled, posted early, get the bank figure and are claimed `reward_engine`, and the case is superseded. | The reward is booked once, through the accrual, never as a system entry, and a bank-paid reward is never left at 0. Fixing the rule (P6) stays the path for later months. |
 | P6 | Lead carry 2: a rule PUT or a `closing_day` change sets `needs_recheck = true` on the card's statements that hold an open `reward_early` case. The re-run then supersedes the case (`_write_cases`), because the line is now pulled and claimed. | Reuses the existing recheck flag (`models/statements.py:167`). |
 | P7 | Daily job `CronTrigger(hour=6, minute=15, timezone="Asia/Taipei")`, id `reward_post_daily`. Startup run after 30 s. Retry every 10 min on `busy`/`crashed`. Lock key `REWARD_POST_JOB_LOCK_KEY = 0x52574450` ("RWDP") in `schedule_locks.py`. Gated by `schedule_job.is_enabled()`. | Runs after auto-pay (06:00) and follows its pattern (§5.1). |
-| P8 | Shared cycle helpers live in `app/services/cycles.py`, which imports only the stdlib. `notify/cycles.py` re-imports `Period`, `statement_period` and `shift_period` from it and keeps the rest. | `app/` and `app/services/` are namespace packages, so notify can import the module without pulling in SQLAlchemy. |
+| P8 | Shared cycle helpers live in `app/services/cycles.py`, which imports only the stdlib. `notify/cycles.py` re-imports `Period`, `statement_period` and `shift_period` from it and keeps the rest. Do not add `app/services/__init__.py`. | `app/__init__.py` is empty and `app/services/` is a namespace package, so notify can import the module without pulling in SQLAlchemy. |
 | P9 | `RewardRuleIn` stays for POST. A new `RewardRuleUpdateIn(RewardRuleIn)` overrides `fixed_amount: NonNegativeMoney \| None` and is used by the PUT route. | Spec §11 leaves the split to the builder. |
 | P10 | `review_reason` is a free `String(32)`, not an enum. | One value today; no enum migration for future reasons. |
+| P12 | **Lock order** (finding 5), on every path: (1) purchase / candidate ledger rows, as today; (2) accrual rows, all that the path needs, in one `SELECT … WHERE id IN (…) ORDER BY id FOR UPDATE`; (3) reward ledger rows (update or delete). `recompute_window` takes the window's (group's) accrual locks itself, and `post_accrual` calls it before touching its accrual, with no earlier lock. Bank wins collects every candidate's window accruals and locks the union once, before posting. An engine reward delete locks its accrual and forfeits it before `locked_with_legs` (`entry_write_service.py:642`), then recomputes the window. | One global order, so the daily job, reconcile and deletes cannot deadlock. |
 | P11 | Engine reward rows get `source = "rule"` (existing `ENTRY_SOURCES` value, `models/ledger.py:45`; no enum change), name = the rule name, category = `system_category_id(db, "reward")`. "Has an accrual" is what marks an engine row (§4.1), not the source. | Rule-generated rows; avoids an enum migration. |
 
 ## Review Focus
@@ -260,6 +264,11 @@ the accruals on entry detail.
   - `test_allot_total_rounding_never_exceeds_cap`: cap 10, estimates 6.6, 3.3 (keep), total ceil → sum stays
     `≤ 10` (allotted 6.6, 3.3 → sum 9.9 → ceil 10, fits → last 3.4).
   - `test_allot_no_estimated_no_adjustment`: frozen only → `{}`.
+  - `test_allot_negative_delta_stops_at_zero`: estimates 0.3, 0.3 (keep), total floor → sum 0.6 → 0. The delta −0.6
+    takes the last slot to 0 (not −0.3); the leftover −0.3 is dropped → 0.3, 0.
+  - `test_allot_rounding_clamped_to_cap`: cap 10, frozen 9.6, estimate 0.4 (keep), total ceil → 10 fits → 0.4.
+    Cap 10, frozen 9.7, estimate 0.2, total round → sum 9.9 → 10, so 0.3 lands on the last slot. Cap 9.8 with the
+    same input → the rounded sum is clamped to 9.8 → 0.1.
 - [ ] **Step 2:** `$PYTEST tests/unit/test_reward_math.py -v` → FAIL.
 - [ ] **Step 3:** Implement with `decimal` only (ROUND_HALF_UP, ROUND_FLOOR, ROUND_CEILING). Quantize results to 4
   places.
@@ -283,7 +292,8 @@ the accruals on entry detail.
     rules and (purchase, rule) pairs that already have a no-accrual reward row, §5.3). For a `refund` with
     `refunds_entry_id`, one per rule linked to the purchase (P2/P3). Estimated accruals of unlinked rules are
     deleted; estimated ones are re-bucketed. Every touched window (old and new) is recomputed. Frozen accruals are
-    never changed.
+    never changed. For a purchase, it ends by calling `sync_entry` on each row with `refunds_entry_id` = the
+    purchase, so refunds follow its links, date and amount (§5.1, P2's base).
   - `recompute_window(db, rule_id: int, window_start: date) -> None`: group-aware (`group_rule_ids`). It reads
     frozen amounts per §5.2.2 (ledger amount for `bank_confirmed`/`forfeited`, 0 without a row) and the external
     no-accrual rows of the group whose source purchase `entry_date` is in the window. It writes `amount` on
@@ -317,6 +327,12 @@ the accruals on entry detail.
     rule `window="calendar_month"` (via `recompute_rules`) → posted keeps the old window, estimated moves, and the
     old window's estimated remainder is recomputed.
   - `test_combined_card_uses_parent_closing_day`.
+  - `test_refund_follows_purchase_relink` (finding 2): purchase + refund on rule A; relink the purchase to rule B →
+    the refund's estimated accrual moves to B, A's is gone. A purchase date move into the next cycle moves the refund
+    accrual's window with it.
+  - `test_bank_confirmed_and_forfeited_count_ledger_amount` (finding 9): cap 20, a `bank_confirmed` accrual whose
+    ledger row is 8 (accrual amount 10) and a `forfeited` one with no row → a new 1,500 spend gets 12. The posted
+    engine row is not also counted as external `used`.
 - [ ] **Step 2:** `$PYTEST tests/integration/test_reward_engine.py -v` → FAIL.
 - [ ] **Step 3:** Implement. Sort slots by the source row's `entry_date`, then id. Orphan frozen accruals (null
   source) count as frozen. Lock order: take accrual rows `FOR UPDATE` in id order inside the caller's transaction.
@@ -334,7 +350,13 @@ the accruals on entry detail.
   (`refund` :94); `app/services/split_service.py` (`_apply_meta` :319, `_apply_keep` :326, only for flag
   restoration)
 - Modify: `app/services/reward_rule_service.py` (`update` :137 → `reward_engine.recompute_rules` + P6);
-  `app/services/settings_service.py` (`update_account` :719 → `recompute_account` when `closing_day` changes, + P6)
+  `app/services/settings_service.py` (`update_account` :719: when `closing_day` changes, `recompute_account` on
+  the account **and on every child whose `card_closing_day` resolves through it** (`combined_account_id`, own
+  `closing_day` null), + P6 for each)
+- Modify: `app/services/transfer_service.py` `update_transfer` :178: capture `before_key`, `before_project_id` and
+  `before_flag` per leg **before** the setattr loop (:191-193), and pass them to `after_write`
+- Modify: `app/services/split_service.py` `_apply_meta` :319: a project change there also moves reward projects
+  (§5.1)
 - Modify: `app/schemas/ledger.py` (`EntryOut` += `review_reason: str | None`)
 - Test: `tests/integration/test_reward_engine_hooks.py`
 
@@ -357,8 +379,8 @@ the accruals on entry detail.
   - `test_put_after_post_flags_and_keeps_amount` (Review Focus 1): accrual set `posted` with a reward row. PUT
     amount → accrual amount unchanged, entry `needs_review is True`, `review_reason == "reward_posted"`. Then PUT
     with only `description` changed → still flagged.
-  - `test_flag_clears_on_bank_confirm`: covered in Task 8; here only `test_flag_clears_when_reward_row_edited`
-    (PUT the reward row → the purchase flag clears).
+  - `test_flag_clears_when_reward_row_edited` (PUT the reward row → the purchase flag clears). The bank-wins clear
+    is `test_flag_clears_on_bank_confirm` in Task 8.
   - `test_transfer_leg_rules_accrue`.
   - `test_refund_route_creates_negative_accrual` (POST `/entries/{id}/refund`).
   - `test_delete_purchase_drops_estimated_keeps_posted`: one estimated (rule A), one posted (rule B). DELETE
@@ -371,6 +393,15 @@ the accruals on entry detail.
   - `test_rule_put_recomputes_estimated`: rate 1 → 2 → estimate doubles.
   - `test_closing_day_change_rebuckets`.
   - `test_split_paths_accrue`: create_split with a member linked to a rule → accrual for the member.
+  - `test_parent_closing_day_change_rebuckets_children` (finding 3): child card with `closing_day` null and
+    `combined_account_id` = parent; PUT the parent's `closing_day` → the child's estimated accruals move.
+  - `test_transfer_update_after_post_flags` (finding 4): a posted accrual on a transfer leg; PUT the transfer amount →
+    `review_reason == "reward_posted"`, accrual amount unchanged.
+  - `test_project_change_moves_old_project_reward` (finding 9): a reward row whose project equals the purchase's old
+    project moves to the new one; the same through a split `keep_full` member edit (`_apply_meta`).
+  - `test_engine_reward_delete_forfeits_before_ledger_lock` (P12): with `tests/helpers.advisory_locks`-style
+    ordering, run a delete of the reward row and a `recompute_window` of its window concurrently (`tests/helpers.race`)
+    → both finish, no deadlock, accrual `forfeited`.
 - [ ] **Step 2:** `$PYTEST tests/integration/test_reward_engine_hooks.py -v` → FAIL.
 - [ ] **Step 3:** Implement the hooks. `insert_prepared` / `apply_prepared_update` call `after_write` after
   `write_rule_links`. Capture `before_*` at the start of `apply_prepared_update`. `delete_entries_cascade` calls
@@ -393,7 +424,8 @@ the accruals on entry detail.
 - Produces:
   - `reward_posting.post_accrual(db, accrual_id: int, *, on: date | None = None) -> str`. It returns `"posted"`,
     `"forfeited"` (amount 0, no row) or `"skipped"` (not `estimated`, or `ledger_entry_id` set).
-    - Locks the accrual `FOR UPDATE`, recomputes its window, then inserts the reward row per §5.1: account =
+    - Calls `recompute_window` first (it takes the window's accrual locks in id order, P12), re-reads the accrual
+      under that lock, skips per the guard, then inserts the reward row per §5.1: account =
       `reward_account_id` or the rule's card; currency = that account's; `entry_date = posted_date = on or post_on`;
       `reward_source_entry_id`, `reward_rule_id`; project = rule `reward_project_id` else the purchase's; P11 fields.
     - Sets `ledger_entry_id` and `posted`. Never commits.
@@ -416,6 +448,9 @@ the accruals on entry detail.
     `status == "busy"`, nothing posted.
   - `test_manual_endpoint_posts_manual_rule` and `test_manual_endpoint_refuses_non_manual` (409).
   - `test_post_project_inheritance`: rule project wins over the purchase's; else the purchase's.
+  - `test_job_and_reconcile_same_window_no_deadlock` (P12): `tests/helpers.race` the job's `post_accrual` and a
+    reconcile of a statement whose candidates share that window → both commit or one returns `skipped`; no deadlock
+    error.
   - `test_scheduler_triggers` (unit): job id `reward_post_daily`, hour 6, minute 15, tz Asia/Taipei;
     `start()` returns without scheduling when `is_enabled()` is false.
 - [ ] **Step 2:** `$PYTEST tests/integration/test_reward_posting.py tests/unit/test_reward_post_job_scheduler.py -v` → FAIL.
@@ -443,12 +478,18 @@ the accruals on entry detail.
     - `claims: list[matching.Claim]`
     - `surplus_line_ids: list[int]`
     - `early: dict[int, list[int]]` (line id → early accrual ids; filled in Task 9)
+    - `locked_rows: dict[int, LedgerEntry]` (claimed reward rows, locked)
   - `reward_bank_wins.prepare(db, statement: AccountStatement, accounts: list[int], lines: list[StatementLine], manual_line_ids: set[int]) -> BankWinsPlan | None`.
     It returns None when the candidate set is empty (§7.2). Otherwise it does, in this order:
     - posts estimated candidates via `reward_posting.post_accrual` on the same session (no commit, no advisory
       lock, §7.4);
     - pairs and spreads (§7.5);
-    - updates ledger amounts;
+    - updates ledger amounts (the bank figure goes **only** on the ledger row; `reward_accrual.amount` keeps the
+      pre-bank allotment, spec §4.1);
+    - re-selects the claimed reward rows `FOR UPDATE` in id order and returns them as `BankWinsPlan.locked_rows`.
+      `_match_and_record` merges them into the `locked` dict passed to `_write_coverage`
+      (`reconciliation_service.py:588`). Without that, `_claim_unchanged` (`:477-478`) and `write_claim` cannot see
+      the rows (finding 1);
     - sets states and `confirmed_statement_id`, or clears it per §7.6;
     - clears the `reward_posted` flag on the purchases it confirms or forfeits;
     - builds claims with `Representation(kind="reward_engine", rows=(Row(entry_id, "principal", flow), ...), score=Decimal(1), rule="reward_engine", reasons=())`.
@@ -457,9 +498,13 @@ the accruals on entry detail.
     row in the population has an equal flow (§7.3).
 
 - [ ] **Step 1: Failing tests** (fictional card; statement period 10-16..11-15; rule posts in period):
-  - `test_bank_amount_replaces_engine_amount`: engine row 10, statement reward line 9 → row amount 9,
-    `bank_confirmed`, coverage active with `match_rule == "reward_engine"`, no `bank_only` case, no new reward
-    row.
+  - `test_bank_amount_replaces_engine_amount`: engine row 10, statement reward line 9 → ledger row amount 9,
+    accrual `amount` still 10, `bank_confirmed`, coverage active with `match_rule == "reward_engine"`, no
+    `bank_only` case, no new reward row.
+  - `test_flag_clears_on_bank_confirm`: the purchase had `reward_posted` → cleared after confirm; same for a forfeit.
+  - `test_reward_engine_claim_survives_sweep` (finding 9, §7.7): after the first reconcile, run
+    `coverage_service.sweep` for the statement → the `reward_engine` coverage rows stay active (the dirty events of
+    the amount update predate the claim and equal its snapshot).
   - `test_estimated_candidate_posted_early_in_reconcile`: accrual still estimated with `post_on` in period → posted
     inside reconcile; a forced rollback (raise after `prepare`) leaves it estimated and no row.
   - `test_two_lines_two_rows_pair_in_order`: lines 5 and 7 (ids ascending); rows by `post_on`, id → each line's
@@ -491,13 +536,22 @@ the accruals on entry detail.
 
 **Files:**
 - Modify: `app/services/reward_bank_wins.py` (surplus, early detection), `app/services/reconciliation_service.py`
-  (`_desired_cases` :657: `line_unmatched` cases for surplus lines with hint `reward_surplus`; hint override to
-  `reward_early` for unmatched reward lines when early candidates exist; `balance_gap` :715-718 context gains
-  `carried_accrual_ids`)
-- Modify: `app/services/inbox_service.py:76-77` (`reward_surplus`, `reward_early` → `"other"`),
-  `app/services/reconciliation_actions/__init__.py` (`CONDITIONS` :130-153: on `reward_early` cases every action
-  except `dismiss` is false (P5); `balance_gap` with `carried_accrual_ids` → `dismiss` only)
-- Modify: `app/services/policy_service.py` (`balance_gap` policy :315 skips cases with `carried_accrual_ids`)
+  (`_desired_cases` :657: `line_unmatched` cases for surplus lines with hint `reward_surplus`; hint `reward_early`
+  on unmatched reward lines **only when `prepare` returned None** and early candidates exist (finding 7; surplus
+  lines keep `reward_surplus`); `balance_gap` :715-718 context gains `carried_accrual_ids`)
+- Modify: `app/services/inbox_service.py`: `classify` :76-77 (`reward_surplus`, `reward_early` → `"other"`);
+  `BUTTONS_TO_ACTIONS` :37 += `"accept_early": "accept_early_reward"`; `buttons` :108 for `other` adds
+  `accept_early` (needs `accept_early_reward`) before `dismiss`
+- Modify: `app/services/reconciliation_actions/__init__.py`: `KIND_ACTIONS["line_unmatched"]` :27-28 +=
+  `accept_early_reward`; `CONDITIONS` :130-153: on `reward_early` cases only `accept_early_reward` and `dismiss`
+  are true (P5), and `accept_early_reward` is false on any other hint; `balance_gap` with `carried_accrual_ids` →
+  `dismiss` only (:138-139). There is no `policy_service` edit (finding 6: `:315` is `_anchor_candidate`, already
+  None for card statements).
+- Create: `AcceptEarlyRewardAction` (name `accept_early_reward`, `case_kinds={"line_unmatched"}`) in
+  `app/services/reconciliation_actions/ledger_actions.py`, registered like `CreateSystemEntryAction` (:206), per P5
+- Modify (SPA, small): `frontend/src/app/components/accounting/inbox/inbox.model.ts` and `inbox-view.ts` /
+  `inbox-panel/inbox-panel.ts`: button `accept_early` label 「接受提早入帳」, and the case `note` shown under the line
+  (pinned with their existing spec files)
 - Test: `tests/integration/test_reward_bank_wins_cases.py`, `tests/unit/test_inbox_service.py`
 
 **Interfaces:**
@@ -513,8 +567,16 @@ the accruals on entry detail.
     with hint `reward_surplus`. `inbox_service.classify` → `"other"`. `owner_rule_service.apply_rules` with a learned
     `record` rule for that merchant books nothing.
   - `test_early_credit_is_owner_case_not_bank_only`: no in-period candidates, an estimated accrual with `post_on`
-    next cycle, statement reward line → case hint `reward_early`. Policy run books nothing. `actions.allowed(case)
-    == ["dismiss"]`.
+    next cycle, statement reward line → case hint `reward_early`, context `early_accrual_ids`, `rule_ids` and the
+    exact P5 `note`. Policy run books nothing. `actions.allowed(case) == ["accept_early_reward", "dismiss"]` (registry
+    order). The inbox buttons are `["accept_early", "dismiss"]`.
+  - `test_accept_early_reward_books_once` (P5): apply `accept_early_reward` → the accruals' `post_on` equals the
+    line's `posted_date` and the statement has `needs_recheck`. Reconcile → the case is superseded, the line is
+    claimed `reward_engine`, there is exactly one reward row per accrual, and its ledger amount is the bank figure.
+    A later daily job run posts nothing more for them.
+  - `test_accept_early_reward_refuses_moved_accrual`: an accrual already posted → 409 `accrual_not_estimated`.
+  - `test_extra_line_with_candidates_stays_surplus` (finding 7): in-period candidates plus early candidates, two
+    lines and one row → the extra line has hint `reward_surplus`, not `reward_early`.
   - `test_early_case_superseded_after_posting_fix` (lead carry 2): PUT the rule's posting fields so `post_on` falls
     in the period → the statement has `needs_recheck` → reconcile → case `superseded`, line claimed `reward_engine`.
   - `test_no_early_candidates_still_bank_only`: unchanged behaviour.
@@ -577,7 +639,8 @@ the accruals on entry detail.
   - window selector 帳單週期 / 自然月
   - method option 每 NT$X 一單位, with a `unit_spend` input shown only for `per_unit`
 - Modify: `components/accounting/reward-rule-text.ts` (`postingSummary` / summary text for `per_unit`: 「每 NT${unit_spend} 一單位」; window label)
-- Modify: `components/accounting/account-settings/account-settings.{ts,html}` (:182 block):
+- Modify: `components/accounting/account-settings/account-settings.{ts,html}` (`account-settings.html:182`
+  回饋規則 head; `rules` signal at `account-settings.ts:348`):
   - per in-date rule: 「本期 {used+estimated}／{cap}」, or 「本期 {used+estimated}」 when uncapped, plus the window
     dates, from `getRewardUsage`
   - a shared group shows once, on its first rule
@@ -658,3 +721,20 @@ the accruals on entry detail.
    `reward_engine.sync_entry` over linked spends since 2026-10-01 that have no reward row.
 6. Hermes `homehub-api` skill update (§8), with text drafted in the PR body and applied on the owner's go.
 7. SPA release (stop preview 18081 first; never touch 18080), using the pins in the memory file.
+
+## Plan review mapping (AGENT-396, dev-grok, CHANGES at `4cf7dec4`)
+
+| # | finding | where folded |
+|---|---|---|
+| 1 | reward rows missing from `locked` → `_write_coverage` KeyError, re-run releases | Task 8 `locked_rows`; accrual amount stays pre-bank; tests |
+| 2 | refunds not re-derived on purchase edits | Task 5 `sync_entry` tail + `test_refund_follows_purchase_relink` |
+| 3 | parent `closing_day` edit leaves combined children | Task 6 `update_account` children + test |
+| 4 | `update_transfer` writes before the helper sees the old key | Task 6 capture before setattr + test |
+| 5 | lock-order deadlocks (job vs reconcile, delete vs bank wins) | P12; Task 7 / Task 6 race tests |
+| 6 | wrong policy cite for balance gap | Task 9: no policy edit; gate in `CONDITIONS` |
+| 7 | `reward_early` override too broad | Task 9: only when `prepare` is None + test |
+| 8 | P5 copy never written | P5 `note` in the case context; asserted |
+| 9 | weak tests | Task 4 (negative delta, cap clamp), Task 5 (ledger amount used), Task 6 (old-project move, split), Task 8 (flag clear, sweep pin) |
+| nits | P8 wording; Task 11 anchor | P8; Task 11 |
+| author | P5 dismiss-only leaves a bank-paid reward at 0 | P5 `accept_early_reward`; Task 9 action + tests + SPA button |
+
