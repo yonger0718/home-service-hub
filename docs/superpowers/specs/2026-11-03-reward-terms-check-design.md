@@ -402,9 +402,11 @@ homehub-notify-terms-year-end.timer   OnCalendar=Mon *-11,12-* 09:00:00 Asia/Tai
 with no run when that set is empty. Both `Persistent=true`. A 1st that is also a Monday (or
 a double catch-up) runs twice; the second run sends whatever §5 still has to show (open
 `not_found`, unapplied findings, announced blocks) and the one-line message only when §5 has
-nothing. The two services carry `Conflicts=` on each other so a year-end save cannot land
-on top of an in-flight monthly save (and the terms-state load/save is wrapped in an
-`flock` on the state file as belt and braces). Services: `TimeoutStartSec` ≥
+nothing. The two services are ordered, not conflicting: the year-end service carries
+`After=homehub-notify-terms-monthly.service`, so a simultaneous start runs monthly first and
+then year-end, and neither stops the other (`Conflicts=` would stop an in-flight run instead
+of queuing it — SDD final review I1); the terms-state load/save is wrapped in an `flock` on
+the state file, so two runs cannot clobber each other's state. Services: `TimeoutStartSec` ≥
 `hermes_timeout_seconds` + 60 s, `OnFailure=homehub-notify-failed@%n.service`.
 `install.sh` installs both units but does **not** `enable --now` them (today it enables every
 unit it installs — the terms units are excluded); rollout step 3 enables them after the

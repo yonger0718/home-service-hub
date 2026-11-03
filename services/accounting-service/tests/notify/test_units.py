@@ -44,9 +44,12 @@ def test_terms_units_exist_and_pin_cause():
         assert "Persistent=true" in timer and f"Unit=homehub-notify-terms-{cause}.service" in timer
 
 
-def test_terms_services_conflict_each_other():
-    assert "Conflicts=homehub-notify-terms-year-end.service" in _terms("monthly").splitlines()
-    assert "Conflicts=homehub-notify-terms-monthly.service" in _terms("year-end").splitlines()
+def test_terms_services_are_ordered_not_conflicting():
+    # Conflicts= would stop an in-flight run when the other slot starts (final review I1); both must run
+    for cause in ("monthly", "year-end"):
+        assert not [l for l in _terms(cause).splitlines() if l.startswith("Conflicts=")], cause
+    assert "After=homehub-notify-terms-monthly.service" in _terms("year-end").splitlines()
+    assert not [l for l in _terms("monthly").splitlines() if l.startswith("After=")]
 
 
 def test_terms_timeout_covers_hermes_timeout():

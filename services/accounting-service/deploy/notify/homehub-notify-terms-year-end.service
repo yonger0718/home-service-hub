@@ -1,6 +1,6 @@
 [Unit]
 Description=HomeHub accounting notifier: reward terms check (year-end)
-Conflicts=homehub-notify-terms-monthly.service
+After=homehub-notify-terms-monthly.service
 OnFailure=homehub-notify-failed@%n.service
 
 [Service]

@@ -368,7 +368,8 @@ Business days come from `GET /calendar/business-days`; a due date past its `last
   不給 HomeHub token，環境變數只有 PATH/HOME/LANG/TZ。**不得上線規則**：Hermes 升級後若
   `deploy/notify/terms-isolation-probe.md` 的隔離探測有任何一項失敗，就不要啟用計時器。
 - 單元：`homehub-notify-terms-monthly.timer`（每月 1 日 09:00 Asia/Taipei）與 `homehub-notify-terms-year-end.timer`
-  （11、12 月每個週一 09:00），兩個 service 以 `Conflicts=` 互斥、`TimeoutStartSec=1900`（大於 Hermes 的 1800 秒）。
+  （11、12 月每個週一 09:00），兩個 service 有先後順序、不互斥：year-end service 帶 `After=homehub-notify-terms-monthly.service`，同時啟動時先跑 monthly 再跑 year-end，
+  兩次都會執行；state 由 `flock` 保護（SDD final review：原本的 `Conflicts=` 會中止進行中的那一次）。`TimeoutStartSec=1900`（大於 Hermes 的 1800 秒）。
   `install.sh` 只安裝、**不會啟用**這兩個計時器。
 - 上線步驟（spec §Rollout）：
   1. 合併，照常部署 notifier release checkout。
