@@ -2,9 +2,11 @@ from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from notify.terms_config import CardEntry
 from notify.terms_input import CardInput, TermsInput
-from notify.terms_parse import CardResult, Finding, NextTerms, PeriodEnd, TermsResult
+from notify.terms_parse import CardResult, Finding, NextTerms, PeriodEnd, TermsResult, TruncatedSource
 from notify.terms_render import render_terms
 from notify.terms_state import ShowDecision
 
@@ -57,7 +59,7 @@ def full_world(fx):
         card(101, "changed", current_period_end=PeriodEnd("2027-03-31", ON, "q"),
              findings=(finding(), finding(rule_id=None, field="missing_rule", site="dining +1% cap 200",
                                           system=None, quote="x" * 100)),
-             unverified=(finding(source=OFF),), truncated=(ON + " (first ~40k chars)",)),
+             unverified=(finding(source=OFF),), truncated=(TruncatedSource(ON, True, "first ~40k chars"),)),
         card(102, "signal", notes="points programme looks the same\nsecond line"),
         card(301, "announced", next_terms=NextTerms(True, ("2027-01-01", "2027-03-31"),
                                                     ({"name": "Overseas dining", "rate": "1.5", "cap": "3000",
@@ -105,9 +107,9 @@ def test_quote_truncated_at_80(fx):
 
 
 def test_truncated_sources_rendered_every_run(fx):
-    c = card(101, truncated=(ON + " (first ~40k)",))
+    c = card(101, truncated=(TruncatedSource(ON, True, "first 40k"),))
     (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_truncated=True)})
-    assert f"· 來源文件過長，僅讀到前段（{ON} (first ~40k)）" in msg
+    assert f"· 來源文件過長，僅讀到前段（<{ON}> (first 40k)）" in msg
     assert "無變動" not in msg and "（1 張卡，1 張有事項）" in msg
 
 
@@ -123,7 +125,7 @@ def test_changed_card_prints_period_line(fx):
 def test_unknown_field_falls_back_to_raw_name(fx):
     c = card(101, "changed", findings=(finding(field="weird_field"),))
     (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_findings=True)})
-    assert "Overseas 3%：weird_field 官網 2027-03-31 / 系統 2026-12-31 — " + ON in msg
+    assert "Overseas 3%：weird_field 官網 2027-03-31 / 系統 2026-12-31 — <" + ON + ">" in msg
 
 
 def test_defang_model_text(fx):
@@ -152,7 +154,7 @@ def test_not_found_count_without_detail_when_digest_matches(fx):
     c = card(101, "not_found", unverified=(finding(source=OFF), finding(source=OFF, field="rate")))
     log = {"failed": [ON + " (403)"], "truncated": []}
     (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_not_found=True)}, log=log)
-    assert "· 找不到官網來源（2 項未驗證）" in msg and f"　- {ON} (403)" in msg
+    assert "· 找不到官網來源（2 項未驗證）" in msg and f"　- <{ON}> (403)" in msg
     assert "未驗證（來源不在銀行網域）" not in msg
     (m2,) = run(fx, [entry(101, "A")], [card(101, "not_found")], {101: show(show_not_found=True)})
     assert "· 找不到官網來源\n" in m2 + "\n"
@@ -183,5 +185,46 @@ def test_failures_are_per_card(fx):
     d = {101: show(show_not_found=True), 102: show(show_not_found=True)}
     (msg,) = run(fx, [entry(101, "A"), other], [card(101, "not_found"), card(102, "not_found")], d, log=log)
     first, second = msg.split("【O】")
-    assert f"　- {a} (403)" in first and b not in first
-    assert f"　- {b} (500)" in second and a not in second and "[unverified" not in msg
+    assert f"　- <{a}> (403)" in first and b not in first
+    assert f"　- <{b}> (500)" in second and a not in second and "[unverified" not in msg
+
+
+# --- C1: no smuggled link or mention on any print path (final fix A1) ------------------------------------------
+
+SMUGGLE = ["#<https://evil.example/x>", "/<@&1>", "/@everyone", "/a`b`", "/a*b*", "/[x](y)"]
+BAD_OUT = ("<https://evil", "evil.example", "<@&", "@everyone", "`", "*", "[x]", "](")
+
+
+def _parsed_world(tail):
+    from notify.terms_parse import parse_result
+    from tests.notify import terms_fixtures as tfx
+    src = ON + tail
+    raw = {"account_id": 101, "status": "changed",
+           "findings": [{"rule_id": 7, "field": "ends_on", "site": "2027-03-31", "system": "2026-12-31",
+                         "source": src, "quote": "q"}]}
+    log = {"failed": [src + " (403)"], "truncated": [{"account_id": 101, "url": src, "read": "r"}]}
+    return parse_result(tfx.one_card(raw, fetch_log=log), (entry(101, "A"),))
+
+
+@pytest.mark.parametrize("tail", SMUGGLE)
+def test_smuggled_urls_never_print_on_any_path(fx, tail):
+    res = _parsed_world(tail)
+    d = {101: show(show_findings=True, show_not_found=True, show_truncated=True, show_unverified=True)}
+    (msg,) = render_terms(inp([entry(101, "A")], (), RULES), res, d, fx.cfg(), ARCHIVE)
+    body = msg.split("\n", 3)[3]  # drop the header, archive path and the card head
+    for bad in BAD_OUT:
+        assert bad not in body, (tail, bad)
+    assert "· 來源文件過長，僅讀到前段（www.example-bank.com (r)）" in body
+    assert "· 未驗證（來源不在銀行網域）：結束日 2027-03-31 — www.example-bank.com" in body
+    assert "　- " not in body  # the failed entry is dropped
+
+
+def test_verified_urls_print_in_angle_brackets(fx):
+    from notify.terms_parse import TruncatedSource
+    c = card(101, "not_found", findings=(finding(),), truncated=(TruncatedSource(ON, True, "r"),))
+    log = {"failed": [ON + " (403)"], "truncated": []}
+    (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_findings=True, show_not_found=True,
+                                                           show_truncated=True)}, log=log)
+    assert f"— <{ON}>" in msg and f"（<{ON}> (r)）" in msg and f"　- <{ON}> (403)" in msg
+    assert "→ <https://example.invalid/hub/accounting/accounts/101/settings>" in msg
+    assert f" {ON}" not in msg.replace(f"<{ON}>", "")

@@ -57,6 +57,16 @@ class NextTerms:
 
 
 @dataclass(frozen=True)
+class TruncatedSource:
+    """A ``fetch_log.truncated`` entry for one card. ``url`` is the verified URL, or (``verified`` False) the
+    cleaned raw text whose host alone may be printed."""
+
+    url: str
+    verified: bool
+    read: str
+
+
+@dataclass(frozen=True)
 class CardResult:
     account_id: int
     status: str
@@ -67,7 +77,7 @@ class CardResult:
     next_terms_unverified_url: str | None
     sources: tuple[str, ...]
     notes: str
-    truncated: tuple[str, ...]
+    truncated: tuple[TruncatedSource, ...]
 
 
 @dataclass(frozen=True)
@@ -89,6 +99,8 @@ def _norm_domain(d: str) -> str:
 
 
 _BAD_CHARS = re.compile(r"[\s\x00-\x1f\x7f\\]")
+# Printable-URL rule: RFC 3986 characters minus @ ' * and everything Discord can turn into a link or mention.
+_PRINTABLE = re.compile(r"[A-Za-z0-9\-._~:/?#!$&+,;=%()]+")
 _LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 _URL_MAX = 2048
 
@@ -103,11 +115,12 @@ def _safe_url(value: str) -> str:
 
 
 def source_ok(url: str, domains: tuple[str, ...]) -> bool:
-    """https, clean text, no userinfo, no non-443 port, valid labels, host equal to / under a bank domain."""
+    """https, printable URL characters only, no userinfo, no non-443 port, valid labels, host equal to / under a
+    bank domain. Every URL the message prints in full passes this."""
     if not isinstance(url, str):
         return False
     url = url.strip()
-    if not _clean_url(url):
+    if not _clean_url(url) or not _PRINTABLE.fullmatch(url):
         return False
     try:
         parts = urlsplit(url)
@@ -253,19 +266,8 @@ def _read_text(value: object) -> str:
     return value if isinstance(value, str) and _READ.match(value) else ""
 
 
-def _truncated(raw: object, account_id: int, domains: tuple[str, ...]) -> tuple[str, ...]:
-    if not isinstance(raw, list):
-        return ()
-    out = []
-    for e in raw:
-        if isinstance(e, dict) and e.get("account_id") == account_id and isinstance(e.get("url"), str):
-            read = _read_text(e.get("read"))
-            url = e["url"].strip() if source_ok(e["url"], domains) else _UNVERIFIED
-            out.append(f"{url} ({read})" if read else url)
-    return tuple(out)
-
-
-def _clean_log(log: dict, cards: tuple[CardEntry, ...]) -> dict:
+def _clean_log(log: dict, cards: tuple[CardEntry, ...]) -> tuple[dict, dict[int, tuple[TruncatedSource, ...]]]:
+    """The archived log (allowlisted keys, failing URLs replaced or dropped) and each card's truncated sources."""
     allowed = tuple(d for c in cards for d in c.bank_domains)
     by_id = {c.account_id: c.bank_domains for c in cards}
     out = {k: v for k, v in log.items() if k in ("tool_calls", "failed", "truncated")}
@@ -275,35 +277,40 @@ def _clean_log(log: dict, cards: tuple[CardEntry, ...]) -> dict:
     failed = log.get("failed", [])
     if not isinstance(failed, list):
         raise _bad()
-    out["failed"] = [_clean_failed(x, allowed) for x in failed]
+    out["failed"] = [u for u in (_clean_failed(x, allowed) for x in failed) if u]
     trunc = log.get("truncated", [])
     if not isinstance(trunc, list):
         raise _bad()
-    clean = []
+    clean, per_card = [], {}
     for e in trunc:
         if not isinstance(e, dict):
             raise _bad()
-        doms = by_id.get(e.get("account_id"), ())
-        url = e.get("url")
-        ok = isinstance(url, str) and source_ok(url, doms)
-        clean.append({"account_id": e.get("account_id") if e.get("account_id") in by_id else None,
-                      "url": url.strip() if ok else _UNVERIFIED,
-                      "read": _read_text(e.get("read"))})
+        aid, url = e.get("account_id"), e.get("url")
+        if isinstance(aid, bool) or not isinstance(aid, int):
+            continue  # unattributable entry: dropped
+        ok = aid in by_id and source_ok(url, by_id[aid])
+        read = _read_text(e.get("read"))
+        clean.append({"account_id": aid if aid in by_id else None,
+                      "url": url.strip() if ok else _UNVERIFIED, "read": read})
+        if aid in by_id:
+            shown = url.strip() if ok else (_safe_url(url) if isinstance(url, str) else "")
+            per_card.setdefault(aid, []).append(TruncatedSource(shown, ok, read))
     out["truncated"] = clean
-    return out
+    return out, {k: tuple(v) for k, v in per_card.items()}
 
 
 def _clean_failed(entry: object, allowed: tuple[str, ...]) -> str:
+    """The entry when its URL passes the source rule (suffix kept only when allowlisted), else "" (dropped)."""
     if not isinstance(entry, str):
-        return _UNVERIFIED
+        return ""
     url = entry.strip().split(" ", 1)[0]  # "https://... (403)"
     rest = entry.strip()[len(url):]
     if not source_ok(url, allowed):
-        return _UNVERIFIED
+        return ""
     return url + rest if _FAILED_SUFFIX.match(rest) else url
 
 
-def _card(raw: object, entry: CardEntry, trunc: object) -> CardResult:
+def _card(raw: object, entry: CardEntry, trunc: tuple[TruncatedSource, ...]) -> CardResult:
     if not isinstance(raw, dict):
         raise _bad()
     status = raw.get("status")
@@ -334,12 +341,11 @@ def _card(raw: object, entry: CardEntry, trunc: object) -> CardResult:
     return CardResult(entry.account_id, status, _period_end(raw.get("current_period_end"), doms),
                       tuple(ok), tuple(bad), nt, nt_url,
                       tuple(s.strip() for s in srcs if isinstance(s, str) and source_ok(s, doms)),
-                      notes, _truncated(trunc, entry.account_id, doms))
+                      notes, trunc)
 
 
-def _empty(entry: CardEntry, trunc: object) -> CardResult:
-    return CardResult(entry.account_id, "not_found", None, (), (), None, None, (), "",
-                      _truncated(trunc, entry.account_id, entry.bank_domains))
+def _empty(entry: CardEntry, trunc: tuple[TruncatedSource, ...]) -> CardResult:
+    return CardResult(entry.account_id, "not_found", None, (), (), None, None, (), "", trunc)
 
 
 def parse_result(stdout: str, cards: tuple[CardEntry, ...]) -> TermsResult:
@@ -351,8 +357,7 @@ def parse_result(stdout: str, cards: tuple[CardEntry, ...]) -> TermsResult:
     if not isinstance(data, dict) or not isinstance(data.get("cards"), list):
         raise _bad()
     log = data.get("fetch_log")
-    log = _clean_log(log if isinstance(log, dict) else {}, cards)
-    trunc = log["truncated"]
+    log, trunc = _clean_log(log if isinstance(log, dict) else {}, cards)
     entries = {c.account_id: c for c in cards}
     seen: dict[int, object] = {}
     for raw in data["cards"]:
@@ -360,8 +365,8 @@ def parse_result(stdout: str, cards: tuple[CardEntry, ...]) -> TermsResult:
         if isinstance(aid, bool) or not isinstance(aid, int) or aid not in entries or aid in seen:
             raise _bad()
         seen[aid] = raw
-    return TermsResult(tuple(_card(seen[c.account_id], c, trunc) if c.account_id in seen
-                             else _empty(c, trunc) for c in cards), log)
+    return TermsResult(tuple(_card(seen[c.account_id], c, trunc.get(c.account_id, ())) if c.account_id in seen
+                             else _empty(c, trunc.get(c.account_id, ())) for c in cards), log)
 
 
 def _q(text: str) -> str:

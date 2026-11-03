@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import pytest
 
 from notify.terms_config import CardEntry
-from notify.terms_parse import CardResult, Finding, NextTerms, PeriodEnd
+from notify.terms_parse import CardResult, Finding, NextTerms, PeriodEnd, TruncatedSource
 from notify.terms_state import (
     CardSeen,
     TermsState,
@@ -167,7 +167,7 @@ def test_decide_period_only_line():
 
 
 def test_decide_truncated_only_card_is_shown_on_digest_match():
-    d = decide(_card("unchanged", truncated=("https://bank.example/x",)), ENTRY, CardSeen("h", NOW), "h")
+    d = decide(_card("unchanged", truncated=(TruncatedSource("https://bank.example/x", True, ""),)), ENTRY, CardSeen("h", NOW), "h")
     assert d.show_truncated and any(v for k, v in _flags(d).items())
 
 

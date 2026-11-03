@@ -1,4 +1,5 @@
-"""Discord rendering of the reward-terms verdict (spec §5). Model text is defanged; unverified URLs print host only."""
+"""Discord rendering of the reward-terms verdict (spec §5). Model text is defanged; unverified URLs print host only;
+every full URL prints as ``<url>`` (one Discord token, no embed) and has passed ``source_ok``."""
 from __future__ import annotations
 
 import re
@@ -8,7 +9,7 @@ from urllib.parse import urlsplit
 from notify.config import NotifyConfig
 from notify.render import _settings_link, split_blocks
 from notify.terms_input import TermsInput
-from notify.terms_parse import CardResult, TermsResult, source_ok
+from notify.terms_parse import CardResult, TermsResult, TruncatedSource, source_ok
 from notify.terms_state import ShowDecision
 
 FIELD_ZH = {"ends_on": "結束日", "starts_on": "開始日", "rate": "回饋率", "total_cap": "上限", "is_basic": "基本",
@@ -24,6 +25,10 @@ def _safe_text(s: object) -> str:
     """Defang model text: one line, no live URL scheme separator, mention or markdown link."""
     out = " ".join(str(s if s is not None else "").split())
     return out.replace("://", ":/" + _ZW + "/").replace("@", "@" + _ZW).replace("](", "]" + _ZW + "(")
+
+
+def _link(url: str) -> str:
+    return f"<{url}>"
 
 
 def _host(url: str | None) -> str:
@@ -48,10 +53,10 @@ def _finding_lines(card: CardResult, names: dict, verified: bool) -> list[str]:
             out.append(f"· 未驗證（來源不在銀行網域）：{zh} {site} — {_host(f.source)}")
             continue
         if f.field == "missing_rule":
-            out.append(f"· 缺規則：{site} — {f.source}")
+            out.append(f"· 缺規則：{site} — {_link(f.source)}")
         else:
             name = _safe_text(names.get(f.rule_id)) or "缺規則"
-            out.append(f"· {name}：{zh} 官網 {site} / 系統 {system} — {f.source}")
+            out.append(f"· {name}：{zh} 官網 {site} / 系統 {system} — {_link(f.source)}")
         out.append(_quote(f.quote))
     return out
 
@@ -74,10 +79,17 @@ def _card_failures(failed: list, domains: tuple[str, ...]) -> list[str]:
     """fetch_log failures whose URL passes this card's own source rule (parser keeps a ' (NNN)' suffix)."""
     out = []
     for entry in failed:
-        url = str(entry).strip().split(" ", 1)[0]
-        if url != "[unverified" and source_ok(url, domains):
-            out.append(str(entry).strip())
+        url, _, rest = str(entry).strip().partition(" ")
+        if source_ok(url, domains):
+            suffix = _safe_text(rest)
+            out.append(f"{_link(url)} {suffix}" if suffix else _link(url))
     return out
+
+
+def _truncated(t: TruncatedSource) -> str:
+    where = _link(t.url) if t.verified else _host(t.url)
+    read = _safe_text(t.read)
+    return f"{where} ({read})" if read else where
 
 
 def _block(card: CardResult, d: ShowDecision, head: str, names: dict, failed: list) -> str:
@@ -96,7 +108,7 @@ def _block(card: CardResult, d: ShowDecision, head: str, names: dict, failed: li
         lines.append("· 找不到官網來源" + (f"（{n} 項未驗證）" if n else ""))
         lines += [f"　- {u}" for u in failed]
     if d.show_truncated:
-        lines += [f"· 來源文件過長，僅讀到前段（{u}）" for u in card.truncated]
+        lines += [f"· 來源文件過長，僅讀到前段（{_truncated(t)}）" for t in card.truncated]
     if d.show_unverified:
         lines += _finding_lines(card, names, False)
         if card.next_terms_unverified_url:
@@ -118,7 +130,7 @@ def render_terms(inp: TermsInput, result: TermsResult, decisions: dict[int, Show
             quiet.append(ci.card.official)
             continue
         names = {r.get("id"): r.get("name") for r in ci.rules}
-        head = f"【{ci.card.official}】 → {_settings_link(cfg, aid)}"
+        head = f"【{ci.card.official}】 → {_link(_settings_link(cfg, aid))}"
         blocks.append(_block(card, d, head, names, _card_failures(failed, ci.card.bank_domains)))
     m = len(inp.cards)
     if not blocks and not inp.unregistered:

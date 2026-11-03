@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 from notify.terms_config import CardEntry
-from notify.terms_parse import (CardResult, TermsParseError, digest, last_json_block, parse_result,
-                                source_ok)
+from notify.terms_parse import (CardResult, TermsParseError, TruncatedSource, digest, last_json_block,
+                                parse_result, source_ok)
 from tests.notify import terms_fixtures as fx
 
 ON = "https://www.example-bank.com/cards/terms"
@@ -179,7 +179,7 @@ def test_signal_digest_hashes_notes_only():
 
 def test_truncated_entries_attached_to_card():
     r = parse_result(fx.FULL_STDOUT, CARDS)
-    assert len(by_id(r, 101).truncated) == 1 and ON in by_id(r, 101).truncated[0]
+    assert by_id(r, 101).truncated == (TruncatedSource(ON, True, "first ~40k chars of ~130k"),)
     assert by_id(r, 102).truncated == ()
     assert isinstance(r.fetch_log, dict) and r.fetch_log["tool_calls"] == 15
     assert isinstance(by_id(r, 101), CardResult)
@@ -241,8 +241,10 @@ def test_fetch_log_sanitised():
                          {"account_id": 101, "url": ON, "read": "r2"}]}
     r = parse_result(fx.one_card({"account_id": 101, "status": "unchanged"}, fetch_log=log), ONE)
     assert r.fetch_log["tool_calls"] == 3
-    assert r.fetch_log["failed"] == [ON + " (403)", "[unverified source]", "[unverified source]"]
-    assert r.cards[0].truncated == ("[unverified source] (r1)", ON + " (r2)")
+    assert r.fetch_log["failed"] == [ON + " (403)"]  # failing entries are dropped (final fix A1)
+    assert r.cards[0].truncated == (TruncatedSource("https://us-example.com/x", False, "r1"),
+                                    TruncatedSource(ON, True, "r2"))
+    assert [e["url"] for e in r.fetch_log["truncated"]] == ["[unverified source]", ON]
     bad = fx.one_card({"account_id": 101, "status": "unchanged"}, fetch_log={"tool_calls": "3"})
     with pytest.raises(TermsParseError):
         parse_result(bad, ONE)
@@ -291,9 +293,9 @@ def test_truncated_read_whitelisted_and_log_keys_dropped():
         r = parse_result(fx.one_card({"account_id": 101, "status": "unchanged"}, fetch_log=log), ONE)
         assert "note" not in r.fetch_log
         return r.fetch_log["truncated"][0]["read"], r.cards[0].truncated[0]
-    assert run("x https://evil.com y") == ("", ON)
+    assert run("x https://evil.com y") == ("", TruncatedSource(ON, True, ""))
     assert run("first ~40k chars of ~130k") == ("first ~40k chars of ~130k",
-                                                ON + " (first ~40k chars of ~130k)")
+                                                TruncatedSource(ON, True, "first ~40k chars of ~130k"))
     assert run("前 4 萬字")[0] == "前 4 萬字"
 
 
@@ -301,3 +303,42 @@ def test_truncated_read_whitelisted_and_log_keys_dropped():
 def test_numeric_strings_ascii_only(bad):
     with pytest.raises(TermsParseError):
         parse_result(fx.one_card(_announced(bad, None)), CARDS[2:3])
+
+
+# --- C1: printable-URL rule (final fix A1) ---------------------------------------------------------------------
+
+SMUGGLE = ["#<https://evil.example/x>", "/<@&1>", "/@everyone", "/a`b`", "/a*b*", "/[x](y)", "/a'b", "/a\"b",
+           "/a{b}", "/a|b", "/a^b", "/a[b]"]
+
+
+@pytest.mark.parametrize("tail", SMUGGLE)
+def test_source_rule_rejects_unprintable_url_chars(tail):
+    assert not source_ok(ON + tail, ("example-bank.com",))
+
+
+def test_source_rule_accepts_rfc3986_printables():
+    assert source_ok(ON + "/a-b._~:/?q=1&r=(2)!$+,;%20#frag", ("example-bank.com",))
+
+
+@pytest.mark.parametrize("tail", SMUGGLE)
+def test_smuggled_finding_source_is_unverified(tail):
+    f = {"rule_id": 1, "field": "rate", "site": "1", "system": "2", "source": ON + tail, "quote": "q"}
+    r = parse_result(fx.one_card({"account_id": 101, "status": "changed", "findings": [f],
+                                  "sources": [ON + tail]}), ONE).cards[0]
+    assert r.findings == () and len(r.unverified) == 1 and r.sources == ()
+
+
+@pytest.mark.parametrize("tail", SMUGGLE)
+def test_smuggled_truncated_url_keeps_flag_unverified(tail):
+    log = {"truncated": [{"account_id": 101, "url": ON + tail, "read": "r1"}]}
+    r = parse_result(fx.one_card({"account_id": 101, "status": "unchanged"}, fetch_log=log), ONE)
+    (t,) = r.cards[0].truncated
+    assert t.verified is False and t.read == "r1"
+    assert r.fetch_log["truncated"][0]["url"] == "[unverified source]"
+
+
+@pytest.mark.parametrize("tail", SMUGGLE)
+def test_smuggled_failed_url_dropped(tail):
+    log = {"failed": [ON + tail + " (403)", ON + " (500)"]}
+    r = parse_result(fx.one_card({"account_id": 101, "status": "unchanged"}, fetch_log=log), ONE)
+    assert r.fetch_log["failed"] == [ON + " (500)"]
