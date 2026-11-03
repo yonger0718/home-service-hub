@@ -18,7 +18,7 @@ from app.models import (
 from app.schemas.writes import RewardRuleUpdateIn
 from app.services import inbox_service, owner_rule_service, policy_service, reconciliation_actions
 from app.services import reward_bank_wins, reward_post_job, reward_rule_service, settings_service
-from app.services.errors import CodedConflictError
+from app.services.errors import CodedConflictError, ValidationError
 from app.services.reconciliation_actions import engine
 from tests.integration.statement_fixtures import _cases, _line, _reconcile, _submit, run  # noqa: F401
 from tests.integration.test_reward_bank_wins import (
@@ -207,6 +207,12 @@ def test_early_candidates_window(seed, db_session, run):
     stmt, _, _ = _submit(db_session, run, card, [], period=PERIOD)
     statement = db_session.get(AccountStatement, stmt.id)
     assert _accrual_of(db_session, in_period).post_on == date(2026, 11, 15)
+    # fix round 1 ruling: a posted, unconfirmed early accrual is still early (the job posted it on its formula date)
+    assert reward_bank_wins.early_candidates(db_session, statement, [card.id]) == [
+        _accrual_of(db_session, early).id, _accrual_of(db_session, last).id, _accrual_of(db_session, posted).id]
+    confirmed = _accrual_of(db_session, posted)
+    confirmed.state, confirmed.confirmed_statement_id = "bank_confirmed", stmt.id
+    db_session.commit()
     assert reward_bank_wins.early_candidates(db_session, statement, [card.id]) == [
         _accrual_of(db_session, early).id, _accrual_of(db_session, last).id]
 
@@ -402,6 +408,54 @@ def test_accept_first_of_two_lines(seed, db_session, run):
     assert [c for c in _cases(db_session, stmt.id, "open") if c.kind == "line_unmatched"] == []
 
 
+def test_accept_after_job_posted_confirms_once(seed, db_session, run, pg_engine):
+    """Fix round 1 ruling: the formula `post_on` passed before the owner tapped, so the daily job posted the early
+    accrual (row dated 11-17). Accepting it still confirms it once at the bank figure, its row moved to the line's
+    date; neither statement gets a `bank_only` case."""
+    card = _test_card(seed, db_session)
+    _, buy, stmt, line = _early_statement(db_session, run, card)
+    case = _one_open(db_session, stmt.id, line)
+    report = reward_post_job.run(pg_engine, "manual", today=date(2026, 11, 20))
+    assert report["posted"] == 1
+    (posted_row,) = _rewards(db_session)
+    assert posted_row.posted_date == date(2026, 11, 17)
+
+    _accept(db_session, db_session.get(ReconciliationCase, case.id))
+    db_session.commit()
+    accrual = _accrual_of(db_session, buy)
+    assert (accrual.state, accrual.post_on, accrual.confirmed_statement_id) == ("bank_confirmed", REWARD_DAY,
+                                                                                stmt.id)
+    (row,) = _rewards(db_session)
+    assert (row.id, row.amount, row.entry_date, row.posted_date) == (posted_row.id, Decimal("9.0000"), REWARD_DAY,
+                                                                     REWARD_DAY)
+    assert [c.entry_id for c in _by_line(db_session, stmt.id)[line.id]] == [row.id]
+    assert db_session.get(ReconciliationCase, case.id).status == "resolved"
+
+    nxt, _, _ = _submit(db_session, run, card, [], period=NEXT)
+    for statement_id in (stmt.id, nxt.id):
+        hints = {(c.context or {}).get("hint") for c in _cases(db_session, statement_id, "open")}
+        assert "bank_only" not in hints
+    assert _accrual_of(db_session, buy).confirmed_statement_id == stmt.id
+    assert [r.id for r in _rewards(db_session)] == [row.id]
+
+
+def test_posted_early_accrual_keeps_case_after_recheck(seed, db_session, run, pg_engine):
+    """Fix round 1 ruling: once the job posted the early accrual, a re-run keeps the line's `reward_early` case with
+    that id (not `bank_only`, not superseded into a booking)."""
+    card = _test_card(seed, db_session)
+    _, buy, stmt, line = _early_statement(db_session, run, card)
+    case = _one_open(db_session, stmt.id, line)
+    assert reward_post_job.run(pg_engine, "manual", today=date(2026, 11, 20))["posted"] == 1
+    accrual_id = _accrual_of(db_session, buy).id
+
+    _reconcile(db_session, stmt.id)
+    kept = _one_open(db_session, stmt.id, line)
+    assert kept.id == case.id
+    assert (kept.context["hint"], kept.context["early_accrual_ids"]) == ("reward_early", [accrual_id])
+    assert reconciliation_actions.allowed(kept) == ["accept_early_reward", "dismiss"]
+    assert _accrual_of(db_session, buy).state == "posted"
+
+
 def test_accept_then_rate_put_keeps_line_date(seed, db_session, run):
     """Re-check A: a rate PUT after the accept leaves the posted accrual frozen at the line's date and amount."""
     card = _test_card(seed, db_session)
@@ -418,13 +472,23 @@ def test_accept_then_rate_put_keeps_line_date(seed, db_session, run):
     assert db_session.get(LedgerEntry, row_id).amount == Decimal("9.0000")
 
 
-def test_accept_refuses_line_outside_period(seed, db_session, run):
+def test_accept_refuses_line_outside_period(seed, db_session, run, monkeypatch):
     card = _test_card(seed, db_session)
     _, buy, stmt, line = _early_statement(db_session, run, card, day=date(2026, 11, 16))
     case = _one_open(db_session, stmt.id, line)
     assert case.context["hint"] == "reward_early"
-    with pytest.raises(CodedConflictError) as info:
+    # the registry no longer offers it (fix round 1, minor 3): only dismiss, and no inbox button
+    assert reconciliation_actions.allowed(case) == ["dismiss"]
+    assert _inbox_item(db_session, case.id)["actions"] == ["dismiss"]
+    with pytest.raises(ValidationError) as refused:
         _accept(db_session, case)
+    assert refused.value.field == "action"
+    db_session.rollback()
+    # the action's own 409 stays as the race guard behind the condition
+    monkeypatch.setitem(reconciliation_actions.CONDITIONS, ("line_unmatched", "accept_early_reward"),
+                        lambda case: True)
+    with pytest.raises(CodedConflictError) as info:
+        _accept(db_session, db_session.get(ReconciliationCase, case.id))
     assert info.value.code == "line_outside_period"
     db_session.rollback()
     accrual = _accrual_of(db_session, buy)
@@ -433,8 +497,8 @@ def test_accept_refuses_line_outside_period(seed, db_session, run):
 
 
 def test_accept_early_reward_refuses_moved_accrual(seed, db_session, run):
-    """A named accrual already posted, or one not in the case's list → 409 `accrual_not_estimated`, nothing
-    changed."""
+    """A named accrual not in the case's list, or already confirmed by a statement → 409 `accrual_not_estimated`,
+    nothing changed (a posted, unconfirmed one is accepted: `test_accept_after_job_posted_confirms_once`)."""
     card = _test_card(seed, db_session)
     rule, buy, stmt, line = _early_statement(db_session, run, card)
     case = _one_open(db_session, stmt.id, line)
@@ -446,7 +510,10 @@ def test_accept_early_reward_refuses_moved_accrual(seed, db_session, run):
     assert info.value.code == "accrual_not_estimated"
     db_session.rollback()
 
-    row = _post(db_session, buy)  # the named accrual moved on (posted by the job)
+    row = _post(db_session, buy)  # posted by the job, then confirmed elsewhere: no longer early
+    moved = _accrual_of(db_session, buy)
+    moved.state, moved.confirmed_statement_id = "bank_confirmed", stmt.id
+    db_session.commit()
     with pytest.raises(CodedConflictError) as info:
         _accept(db_session, db_session.get(ReconciliationCase, case.id))
     assert info.value.code == "accrual_not_estimated"
@@ -484,10 +551,10 @@ def test_accept_refused_for_policy_actor(seed, db_session, run):
     card = _test_card(seed, db_session)
     _, _, stmt, line = _early_statement(db_session, run, card)
     case = _one_open(db_session, stmt.id, line)
-    with pytest.raises(Exception) as info:
+    with pytest.raises(ValidationError) as info:
         engine.apply_action(db_session, case_id=case.id, action="accept_early_reward", params={}, actor="policy",
                             label="policy", budget=(date(2026, 11, 1), "TWD", Decimal("9")))
-    assert getattr(info.value, "field", None) == "actor"
+    assert type(info.value) is ValidationError and info.value.field == "actor"
     db_session.rollback()
 
 

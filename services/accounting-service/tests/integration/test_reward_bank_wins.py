@@ -378,7 +378,10 @@ def test_engine_rows_never_matcher_candidates(seed, db_session, run):
     stmt, (line,), _ = _submit(db_session, run, card, [_reward_line(1, 10)], period=PERIOD)
     assert row.id not in {r.entry_id for r in _active(db_session, stmt.id)}
     (case,) = _line_cases(db_session, stmt.id, line.id)
-    assert (case.kind, case.context.get("hint")) == ("line_unmatched", "bank_only")
+    # Task 9 fix round 1 ruling: a posted, unconfirmed row posting in the next cycle is an early candidate, so the
+    # unmatched line is the owner's `reward_early` case, never `bank_only`
+    assert (case.kind, case.context.get("hint")) == ("line_unmatched", "reward_early")
+    assert case.context["early_accrual_ids"] == [_accrual_of(db_session, buy).id]
     entries, _ = rec.load_candidates(db_session, stmt, [card.id], window_days=10, include_reward=True)
     assert row.id not in {e.id for e in entries}
 

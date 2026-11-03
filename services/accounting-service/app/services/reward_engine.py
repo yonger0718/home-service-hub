@@ -24,6 +24,7 @@ from .reward_windows import post_on_for, window_for
 FROZEN = ("posted", "bank_confirmed", "forfeited")
 REVIEW_REASON = "reward_posted"  # ledger_entry.review_reason (P10): an edit changed a purchase with a frozen accrual
 EARLY_HINT = "reward_early"  # the case hint of a reward line credited before the rule's posting date (P5, P6)
+SURPLUS_HINT = "reward_surplus"  # the case hint of a reward line bank wins left without an engine row (spec 7.5)
 _OPEN_CASE = ("open", "proposed")
 _Q = Decimal("0.0001")
 _ZERO = Decimal("0")

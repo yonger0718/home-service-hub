@@ -18,7 +18,7 @@ from app.models import (
 )
 from app.schemas.inbox import InboxApplyIn, InboxCaseRef
 from app.services import (
-    coverage_service, proposal_service, reconciliation_actions, settings_service, split_protection,
+    coverage_service, proposal_service, reconciliation_actions, reward_engine, settings_service, split_protection,
 )
 from app.services import entry_write_service as ews
 from app.services.edit_lock import EditLockedError
@@ -43,7 +43,8 @@ BUTTONS_TO_ACTIONS = {
     "anchor": "anchor_opening",
     "accept_early": "accept_early_reward",
 }
-REWARD_HINTS = frozenset({"reward_surplus", "reward_early"})  # bank wins' owner cases (reward engine spec 7.5)
+# bank wins' owner cases (reward engine spec 7.5)
+REWARD_HINTS = frozenset({reward_engine.SURPLUS_HINT, reward_engine.EARLY_HINT})
 
 
 def pattern(merchant_norm: str) -> str:

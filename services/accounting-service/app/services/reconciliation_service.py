@@ -76,7 +76,8 @@ from app.models import (
     Account, AccountStatement, EntryGroup, InstallmentPlanMap, LedgerEntry, ReconciliationCase, RewardAccrual,
     ScheduleDefinition, ScheduleInstance, StatementCoverage, StatementLine, StatementRevision,
 )
-from app.services import auto_pay_service, coverage_service, portfolio_client, reward_bank_wins, settings_service
+from app.services import auto_pay_service, coverage_service, portfolio_client, reward_bank_wins, reward_engine
+from app.services import settings_service
 from app.services import stand_ins
 from app.services import dividend_service, trade_settlement_service
 from app.services.entry_write_service import lock_group, proposed_fx_fee
@@ -711,7 +712,7 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
                          candidates=c.candidates, context=context))
     for line_id in bank_wins.surplus_line_ids if bank_wins is not None else ():  # 7.5: never bank_only
         out.append(_case("line_unmatched", event_id=lines[line_id].event_id, line_id=line_id,
-                         context={"hint": reward_bank_wins.SURPLUS_HINT}))
+                         context={"hint": reward_engine.SURPLUS_HINT}))
     for entry_id in result.unmatched_entry_ids:
         if entry_id in shadow_by_entry or entry_id in orphan_by_entry:  # the hinted case below replaces the plain one
             continue

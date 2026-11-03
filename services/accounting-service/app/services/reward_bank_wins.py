@@ -40,9 +40,13 @@ with its own ids, which are posted with `on = line.posted_date` (their purchases
 and tier-2 locks); the accepted ids leave the general candidate set, and the other reward lines follow steps 1-7 on
 what remains. With no general candidate left (`general_empty`), the other reward lines stay in the matcher (7.2).
 
+An accepted id still `estimated` is posted on the line's date; one the daily job already posted (formula date,
+unconfirmed) has its `post_on` and its reward row's dates moved to the line's date once that row is locked (tier 3).
+
 **Owner cases** (Task 9, written by `reconciliation_service._desired_cases`): `surplus_line_ids` → `line_unmatched`
 with hint `reward_surplus`; with no general candidate, an unmatched `bank_only` reward line takes hint `reward_early`
-when the card has `early_candidates` (`early_context`); a card `balance_gap` names `carried_ids` (7.8).
+when the card has `early_candidates` (`estimated`, or `posted` and unconfirmed: `unconfirmed_early`;
+`early_context`); a card `balance_gap` names `carried_ids` (7.8). The hint literals live in `reward_engine`.
 """
 
 from __future__ import annotations
@@ -70,7 +74,6 @@ MATCH_RULE = "reward_engine"  # coverage `match_rule` and representation kind of
 RECONCILE_BUSY = "reconcile_busy"  # reconciliation_service.RECONCILE_BUSY (not imported: it imports this module)
 ESTIMATED, POSTED, CONFIRMED, FORFEITED = "estimated", "posted", "bank_confirmed", "forfeited"
 ACCEPT_ACTION = "accept_early_reward"
-SURPLUS_HINT, EARLY_HINT = "reward_surplus", "reward_early"
 EARLY_NOTE = "銀行提早入帳：請修正規則的入帳日，或按「接受提早入帳」"
 _Q = Decimal("0.0001")
 _ZERO = Decimal("0")
@@ -135,14 +138,29 @@ def _has_candidates(db: Session, statement: AccountStatement, accounts: Collecti
     return db.scalar(query) is not None
 
 
+def unconfirmed_early():
+    """SQL: an accrual the bank may have paid ahead of the engine (fix round 1 ruling): still `estimated`, or
+    `posted` (e.g. by the daily job once its formula `post_on` passed) and confirmed by no statement."""
+    return or_(RewardAccrual.state == ESTIMATED,
+               and_(RewardAccrual.state == POSTED, RewardAccrual.confirmed_statement_id.is_(None)))
+
+
+def is_unconfirmed_early(accrual: RewardAccrual) -> bool:
+    """`unconfirmed_early` on a loaded row (an estimated one has no reward row yet)."""
+    if accrual.state == ESTIMATED:
+        return accrual.ledger_entry_id is None
+    return accrual.state == POSTED and accrual.confirmed_statement_id is None and accrual.ledger_entry_id is not None
+
+
 def early_candidates(db: Session, statement: AccountStatement, accounts: Collection[int]) -> list[int]:
-    """7.2: the `estimated` accruals whose reward account is one of `accounts` and whose `post_on` falls after the
-    period, up to the end of the next cycle (`cycles.shift_period` on the card's closing day); id order."""
+    """7.2: the early accruals (`unconfirmed_early`: `estimated`, or `posted` and unconfirmed) whose reward account is
+    one of `accounts` and whose `post_on` falls after the period, up to the end of the next cycle
+    (`cycles.shift_period` on the card's closing day); id order."""
     closing_day = reward_engine.card_closing_day(db, db.get(Account, statement.account_id))
     _, next_end = cycles.shift_period(closing_day, (statement.period_start, statement.period_end), 1)
     return list(db.scalars(
         select(RewardAccrual.id).join(RewardRule, RewardRule.id == RewardAccrual.rule_id)
-        .where(_reward_account().in_(list(accounts)), RewardAccrual.state == ESTIMATED,
+        .where(_reward_account().in_(list(accounts)), unconfirmed_early(),
                RewardAccrual.post_on > statement.period_end, RewardAccrual.post_on <= next_end)
         .order_by(RewardAccrual.id)))
 
@@ -153,7 +171,7 @@ def early_context(db: Session, early_ids: list[int], line: StatementLine) -> dic
     rows = list(db.scalars(select(RewardAccrual).where(RewardAccrual.id.in_(early_ids)).order_by(RewardAccrual.id)))
     flow = Decimal(line.flow_amount)
     default = min(rows, key=lambda a: (abs(Decimal(a.estimate) - flow), a.post_on, a.id))
-    return {"hint": EARLY_HINT, "early_accrual_ids": [a.id for a in rows],
+    return {"hint": reward_engine.EARLY_HINT, "early_accrual_ids": [a.id for a in rows],
             "rule_ids": sorted({a.rule_id for a in rows}), "default_accrual_ids": [default.id], "note": EARLY_NOTE}
 
 
@@ -370,6 +388,7 @@ def prepare(db: Session, statement: AccountStatement, accounts: list[int], lines
 
     lines_by_id = {line.id: line for line in claimable}
     owned: dict[int, list[RewardAccrual]] = {}  # accepted line → its accruals (an id goes to its first line only)
+    redate: set[int] = set()  # accepted accruals the job already posted on their formula date: moved to the line's
     for line_id in sorted(accepted):
         owned[line_id] = []
         for accrual_id in accepted[line_id]:
@@ -378,6 +397,8 @@ def prepare(db: Session, statement: AccountStatement, accounts: list[int], lines
                 continue
             if accrual.state == ESTIMATED:  # P5: posted on the line's date
                 reward_posting.post_accrual(db, accrual.id, on=lines_by_id[line_id].posted_date, locked=True)
+            elif accrual.state == POSTED and accrual.confirmed_statement_id is None:
+                redate.add(accrual.id)  # its reward row is tier 3: moved once locked, below
             owned[line_id].append(accrual)
     for accrual in accruals if not stopped else ():  # 7.4: early post, on this session
         if accrual.state == ESTIMATED:
@@ -398,6 +419,14 @@ def prepare(db: Session, statement: AccountStatement, accounts: list[int], lines
     ledger = _lock_rows(db, [a.ledger_entry_id for a in [*rows, *(a for g in owned.values() for a in g)]])
     rows = [a for a in rows if a.ledger_entry_id in ledger]
     owned = {line_id: [a for a in group if a.ledger_entry_id in ledger] for line_id, group in owned.items()}
+    for line_id, group in owned.items():  # a posted early accrual takes the line's date, as a fresh post would
+        day = lines_by_id[line_id].posted_date
+        for accrual in group:
+            if accrual.id in redate:
+                row = ledger[accrual.ledger_entry_id]
+                accrual.post_on = day
+                if (row.entry_date, row.posted_date) != (day, day):
+                    row.entry_date, row.posted_date = day, day
 
     pulled = sorted((line for line in claimable if line.id in plan.pulled_line_ids and line.id not in accepted),
                     key=lambda line: line.id)

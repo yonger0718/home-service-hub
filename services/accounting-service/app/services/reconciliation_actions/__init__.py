@@ -11,6 +11,7 @@ from sqlalchemy.orm import object_session
 
 from app.models import AccountStatement, LedgerEntry, ReconciliationCase, StatementLine
 from app.services import reconciliation_service as rec
+from app.services import reward_engine
 from app.services.coverage_service import participating_accounts
 
 from .base import Action
@@ -128,14 +129,25 @@ def _lists_transfer_leg(case: ReconciliationCase) -> bool:
     return any(_transfer_leg(case, c.get("entry_id")) for c in case.candidates or ())
 
 
-REWARD_EARLY_HINT = "reward_early"
 # Reward engine plan P5: a `reward_early` line offers these and nothing else (not even create_entry /
 # create_system_entry, which `_system_line` would allow on any reward line: booking it would count the reward twice)
 REWARD_EARLY_ACTIONS = frozenset({"accept_early_reward", "dismiss"})
 
 
 def _reward_early(case: ReconciliationCase) -> bool:
-    return case.kind == "line_unmatched" and _context(case).get("hint") == REWARD_EARLY_HINT
+    return case.kind == "line_unmatched" and _context(case).get("hint") == reward_engine.EARLY_HINT
+
+
+def _acceptable_early(case: ReconciliationCase) -> bool:
+    """`accept_early_reward`: a `reward_early` line printed inside the statement period (the action's 409
+    `line_outside_period` stays as the race guard)."""
+    if not _reward_early(case):
+        return False
+    db = object_session(case)
+    statement = None if db is None else db.get(AccountStatement, case.statement_id)
+    line = None if db is None or case.line_id is None else db.get(StatementLine, case.line_id)
+    return statement is not None and line is not None \
+        and statement.period_start <= line.posted_date <= statement.period_end
 
 
 def _no_carried_rows(case: ReconciliationCase) -> bool:
@@ -152,7 +164,7 @@ CONDITIONS: dict[tuple[str, str], Callable[[ReconciliationCase], bool]] = {
     ("line_unmatched", "link_installment_plan"): lambda case: _context(case).get("hint") == "installment_unmapped",
     ("line_unmatched", "split_entry"): _names_an_entry,
     ("line_unmatched", "pair_transfer"): lambda case: _context(case).get("hint") == PEER_HINT and not case.candidates,
-    ("line_unmatched", "accept_early_reward"): _reward_early,
+    ("line_unmatched", "accept_early_reward"): _acceptable_early,
     ("balance_gap", "balance_adjustment_asof"): lambda case: _no_carried_rows(case) and _single_account_gap(case),
     ("balance_gap", "anchor_opening"):
         lambda case: _no_carried_rows(case) and _bank_statement(case) and not _anchored(case),

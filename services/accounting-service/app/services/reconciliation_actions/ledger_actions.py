@@ -29,6 +29,8 @@ from app.schemas.writes import ChildIn, Int32, RefundIn, ShortText
 from app.services import coverage_service, settings_service, settlement_service, stand_ins
 from app.services import entry_write_service as ews
 from app.services import reconciliation_service as rec
+from app.services import reward_bank_wins
+from app.services.reward_posting import ACCRUAL_NOT_ESTIMATED
 from app.services.errors import CodedConflictError, CodedValidationError
 from app.services.split_protection import protected_reason
 from app.services.statements import matching
@@ -229,7 +231,6 @@ class AcceptEarlyRewardParams(ActionParams):
     accrual_ids: list[Int32] | None = Field(default=None, min_length=1)  # None: the case's `default_accrual_ids`
 
 
-ACCRUAL_NOT_ESTIMATED = "accrual_not_estimated"
 LINE_OUTSIDE_PERIOD = "line_outside_period"
 NOT_REVERTIBLE = "not_revertible"
 
@@ -237,11 +238,13 @@ NOT_REVERTIBLE = "not_revertible"
 class AcceptEarlyRewardAction(ActionBase):
     """Reward engine plan P5: the owner accepts that the bank credited a reward before the rule's posting date. The
     named early accruals (default: the case's `default_accrual_ids`) must be listed in the case's
-    `early_accrual_ids` and still `estimated` (409 `accrual_not_estimated`), and the line must print inside the
-    period (409 `line_outside_period`). The resolved ids are recorded on the action row (`params.accrual_ids`, never
-    on the case), which makes them part of bank wins' accepted map; the action then reconciles the statement in its
-    own transaction (as `link_installment_plan`): bank wins posts the ids on the line's date, pairs the line with
-    them only, confirms them at the bank figure and claims the line (`reward_engine`). A `reconcile_busy` from that
+    `early_accrual_ids` and still early: `estimated`, or `posted` (by the daily job on its formula date) and confirmed
+    by no statement (fix round 1 ruling; otherwise 409 `accrual_not_estimated`, the code name kept), and the line
+    must print inside the period (409 `line_outside_period`, the race guard behind the registry condition). The
+    resolved ids are recorded on the action row (`params.accrual_ids`, never on the case), which makes them part of
+    bank wins' accepted map; the action then reconciles the statement in its own transaction (as
+    `link_installment_plan`): bank wins posts the ids on the line's date (a posted one is moved to it), pairs the line
+    with them only, confirms them at the bank figure and claims the line (`reward_engine`). A `reconcile_busy` from that
     reconcile refuses the whole action. Owner only; never reverted (409 `not_revertible`)."""
     name = "accept_early_reward"
     Params = AcceptEarlyRewardParams
@@ -266,10 +269,10 @@ class AcceptEarlyRewardAction(ActionBase):
         line = _open_line(ctx)
         listed = set((ctx.case.context or {}).get("early_accrual_ids") or ())
         found = self._accruals(ctx, ids)
-        moved = [i for i in ids if i not in listed or i not in found or found[i].state != "estimated"
-                 or found[i].ledger_entry_id is not None]
+        moved = [i for i in ids if i not in listed or i not in found
+                 or not reward_bank_wins.is_unconfirmed_early(found[i])]
         if moved:
-            raise CodedConflictError(ACCRUAL_NOT_ESTIMATED, f"accrual {moved[0]} is not an estimated early accrual "
+            raise CodedConflictError(ACCRUAL_NOT_ESTIMATED, f"accrual {moved[0]} is not an unconfirmed early accrual "
                                                             f"of case {ctx.case.id}")
         if not ctx.statement.period_start <= line.posted_date <= ctx.statement.period_end:
             raise CodedConflictError(LINE_OUTSIDE_PERIOD, f"line {line.id} prints outside the statement period")
