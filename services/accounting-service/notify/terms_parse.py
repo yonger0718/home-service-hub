@@ -134,13 +134,16 @@ def _bad() -> TermsParseError:
     return TermsParseError()
 
 
+_NUM = re.compile(r"^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$")
+
+
 def _dec(value: object) -> str | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float, str, Decimal)):
         raise _bad()
     text = str(value).strip()
-    if len(text) > 40:
+    if len(text) > 40 or (isinstance(value, str) and not _NUM.match(text)):
         raise _bad()
     try:
         d = Decimal(text)
@@ -242,6 +245,12 @@ def _next_terms(raw: object, domains: tuple[str, ...]) -> tuple[NextTerms | None
 
 
 _UNVERIFIED = "[unverified source]"
+_FAILED_SUFFIX = re.compile(r"^ ?\((\d{3}|[A-Za-z0-9 _-]{1,40})\)$")
+_READ = re.compile(r"^[\w ~%,+\-]{0,80}$")
+
+
+def _read_text(value: object) -> str:
+    return value if isinstance(value, str) and _READ.match(value) else ""
 
 
 def _truncated(raw: object, account_id: int, domains: tuple[str, ...]) -> tuple[str, ...]:
@@ -250,7 +259,7 @@ def _truncated(raw: object, account_id: int, domains: tuple[str, ...]) -> tuple[
     out = []
     for e in raw:
         if isinstance(e, dict) and e.get("account_id") == account_id and isinstance(e.get("url"), str):
-            read = e.get("read") if isinstance(e.get("read"), str) else ""
+            read = _read_text(e.get("read"))
             url = e["url"].strip() if source_ok(e["url"], domains) else _UNVERIFIED
             out.append(f"{url} ({read})" if read else url)
     return tuple(out)
@@ -259,7 +268,7 @@ def _truncated(raw: object, account_id: int, domains: tuple[str, ...]) -> tuple[
 def _clean_log(log: dict, cards: tuple[CardEntry, ...]) -> dict:
     allowed = tuple(d for c in cards for d in c.bank_domains)
     by_id = {c.account_id: c.bank_domains for c in cards}
-    out = dict(log)
+    out = {k: v for k, v in log.items() if k in ("tool_calls", "failed", "truncated")}
     calls = log.get("tool_calls")
     if calls is not None and (isinstance(calls, bool) or not isinstance(calls, int)):
         raise _bad()
@@ -279,7 +288,7 @@ def _clean_log(log: dict, cards: tuple[CardEntry, ...]) -> dict:
         ok = isinstance(url, str) and source_ok(url, doms)
         clean.append({"account_id": e.get("account_id") if e.get("account_id") in by_id else None,
                       "url": url.strip() if ok else _UNVERIFIED,
-                      "read": e["read"] if isinstance(e.get("read"), str) else ""})
+                      "read": _read_text(e.get("read"))})
     out["truncated"] = clean
     return out
 
@@ -289,8 +298,9 @@ def _clean_failed(entry: object, allowed: tuple[str, ...]) -> str:
         return _UNVERIFIED
     url = entry.strip().split(" ", 1)[0]  # "https://... (403)"
     rest = entry.strip()[len(url):]
-    return entry.strip() if source_ok(url, allowed) and len(rest) <= 100 \
-        and not re.search(r"[\x00-\x1f\x7f\\]", rest) else _UNVERIFIED
+    if not source_ok(url, allowed):
+        return _UNVERIFIED
+    return url + rest if _FAILED_SUFFIX.match(rest) else url
 
 
 def _card(raw: object, entry: CardEntry, trunc: object) -> CardResult:

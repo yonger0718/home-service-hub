@@ -274,3 +274,30 @@ def test_unverified_url_filtered_and_blank_is_none():
     assert run("https://evil.com/a") == "https://evil.com/a"
     assert run("https://evil.com/a b") is None
     assert run("   ") is None
+
+
+@pytest.mark.parametrize("suffix", [" (403) https://evil.com", " https://evil.com", " <https://evil.com>",
+                                    " (see evil.com/x)"])
+def test_failed_entry_hostile_suffix_dropped(suffix):
+    log = {"failed": [ON + suffix, ON + " (403)", ON + " (timeout)"]}
+    r = parse_result(fx.one_card({"account_id": 101, "status": "unchanged"}, fetch_log=log), ONE)
+    assert r.fetch_log["failed"] == [ON, ON + " (403)", ON + " (timeout)"]
+
+
+def test_truncated_read_whitelisted_and_log_keys_dropped():
+    def run(read):
+        log = {"note": "https://evil.com",
+               "truncated": [{"account_id": 101, "url": ON, "read": read}]}
+        r = parse_result(fx.one_card({"account_id": 101, "status": "unchanged"}, fetch_log=log), ONE)
+        assert "note" not in r.fetch_log
+        return r.fetch_log["truncated"][0]["read"], r.cards[0].truncated[0]
+    assert run("x https://evil.com y") == ("", ON)
+    assert run("first ~40k chars of ~130k") == ("first ~40k chars of ~130k",
+                                                ON + " (first ~40k chars of ~130k)")
+    assert run("前 4 萬字")[0] == "前 4 萬字"
+
+
+@pytest.mark.parametrize("bad", ["1_0", "\u0661\u0662", "1 0", "0x10"])
+def test_numeric_strings_ascii_only(bad):
+    with pytest.raises(TermsParseError):
+        parse_result(fx.one_card(_announced(bad, None)), CARDS[2:3])
