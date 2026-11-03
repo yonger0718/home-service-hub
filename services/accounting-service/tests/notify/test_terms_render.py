@@ -1,0 +1,168 @@
+from dataclasses import replace
+from datetime import date
+from pathlib import Path
+
+from notify.terms_config import CardEntry
+from notify.terms_input import CardInput, TermsInput
+from notify.terms_parse import CardResult, Finding, NextTerms, PeriodEnd, TermsResult
+from notify.terms_render import render_terms
+from notify.terms_state import ShowDecision
+
+GOLDEN = Path(__file__).parent / "golden"
+ARCHIVE = Path("/reports/20261103T000000Z")
+ON = "https://www.example-bank.com/cards/terms"
+OFF = "https://evil-example-bank.com/terms?x=1"
+NO = ShowDecision(*([False] * 9))
+
+
+def golden(name: str) -> str:
+    return (GOLDEN / name).read_text(encoding="utf-8").rstrip("\n")
+
+
+def entry(aid, official, tier="precise"):
+    return CardEntry(account_id=aid, official=official, bank_domains=("example-bank.com",), tier=tier)
+
+
+def card(aid, status="unchanged", **kw):
+    base = dict(account_id=aid, status=status, current_period_end=None, findings=(), unverified=(),
+                next_terms=None, next_terms_unverified_url=None, sources=(), notes="", truncated=())
+    return CardResult(**{**base, **kw})
+
+
+def show(**kw):
+    return replace(NO, **kw)
+
+
+def finding(**kw):
+    base = dict(rule_id=7, field="ends_on", site="2027-03-31", system="2026-12-31", source=ON, quote="valid until")
+    return Finding(**{**base, **kw})
+
+
+def inp(entries, unregistered=(), rules=()):
+    return TermsInput(date(2026, 11, 3), "weekly", tuple(CardInput(e, tuple(rules)) for e in entries), unregistered)
+
+
+RULES = ({"id": 7, "name": "Overseas 3%"},)
+
+
+def run(fx, entries, cards, decisions, unregistered=(), log=None, rules=RULES):
+    res = TermsResult(tuple(cards), log or {"failed": [], "truncated": []})
+    return render_terms(inp(entries, unregistered, rules), res, decisions, fx.cfg(), ARCHIVE)
+
+
+def full_world(fx):
+    entries = [entry(101, "範例 Live+"), entry(102, "範例 Points", "signal"), entry(301, "Example Global"),
+               entry(401, "範例 Quiet"), entry(402, "範例 Calm")]
+    cards = [
+        card(101, "changed", current_period_end=PeriodEnd("2027-03-31", ON, "q"),
+             findings=(finding(), finding(rule_id=None, field="missing_rule", site="dining +1% cap 200",
+                                          system=None, quote="x" * 100)),
+             unverified=(finding(source=OFF),), truncated=(ON + " (first ~40k chars)",)),
+        card(102, "signal", notes="points programme looks the same\nsecond line"),
+        card(301, "announced", next_terms=NextTerms(True, ("2027-01-01", "2027-03-31"),
+                                                    ({"name": "Overseas dining", "rate": "1.5", "cap": "3000",
+                                                      "notes": None},), ON, "q")),
+        card(401), card(402)]
+    dec = {101: show(show_findings=True, show_period=True, show_unverified=True, show_truncated=True),
+           102: show(show_signal=True), 301: show(show_announced=True), 401: NO, 402: NO}
+    return entries, cards, dec
+
+
+def test_terms_matches_golden(fx):
+    entries, cards, dec = full_world(fx)
+    out = run(fx, entries, cards, dec, unregistered=((555, "範例 Orphan"),))
+    assert out == [golden("terms.txt")]
+
+
+def test_quiet_golden(fx):
+    out = run(fx, [entry(401, "A"), entry(402, "B")], [card(401), card(402)], {401: NO, 402: NO})
+    assert out == [golden("terms_quiet.txt")]
+
+
+def test_quiet_single_line_only_when_nothing_and_no_unregistered(fx):
+    (msg,) = run(fx, [entry(401, "A")], [card(401)], {401: NO})
+    assert msg == "📋 回饋條款查核 2026-11-03：1 張卡無變動"
+
+
+def test_unregistered_disables_single_line(fx):
+    (msg,) = run(fx, [entry(401, "A")], [card(401)], {401: NO}, unregistered=((9, "Foo"), (8, "Bar")))
+    assert "（1 張卡，0 張有事項）" in msg and "未登錄：Foo（9）、Bar（8）" in msg and "無變動：A" in msg
+
+
+def test_block_order_findings_announced_signal(fx):
+    nt = NextTerms(True, ("2027-01-01", None), ({"name": "R", "rate": "2", "cap": None, "notes": "n"},), ON, "q")
+    c = card(101, "changed", findings=(finding(),), next_terms=nt, notes="sig note")
+    (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_findings=True, show_announced=True, show_signal=True)})
+    assert msg.index("官網") < msg.index("下期條款已公告") < msg.index("· sig note")
+    assert "　- R 2% 上限 無 n" in msg and "2027-01-01～?" in msg
+
+
+def test_quote_truncated_at_80(fx):
+    c = card(101, "changed", findings=(finding(quote="y" * 80), finding(field="rate", quote="z" * 81)))
+    (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_findings=True)})
+    assert "　「" + "y" * 80 + "」" in msg
+    assert "　「" + "z" * 80 + "…」" in msg and "z" * 81 not in msg
+
+
+def test_truncated_sources_rendered_every_run(fx):
+    c = card(101, truncated=(ON + " (first ~40k)",))
+    (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_truncated=True)})
+    assert f"· 來源文件過長，僅讀到前段（{ON} (first ~40k)）" in msg
+    assert "無變動" not in msg and "（1 張卡，1 張有事項）" in msg
+
+
+def test_changed_card_prints_period_line(fx):
+    c = card(101, "changed", current_period_end=PeriodEnd("2027-03-31", ON, "q"), findings=(finding(),))
+    (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_findings=True, show_period=True)})
+    assert "· 條款期間至 2027-03-31" in msg
+    c2 = card(101, current_period_end=PeriodEnd("2027-03-31", ON, "q"))
+    (msg2,) = run(fx, [entry(101, "A")], [c2], {101: show(show_period_only=True)})
+    assert "· 無差異，條款期間至 2027-03-31" in msg2
+
+
+def test_unknown_field_falls_back_to_raw_name(fx):
+    c = card(101, "changed", findings=(finding(field="weird_field"),))
+    (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_findings=True)})
+    assert "Overseas 3%：weird_field 官網 2027-03-31 / 系統 2026-12-31 — " + ON in msg
+
+
+def test_defang_model_text(fx):
+    evil = "see https://evil.com @everyone [x](https://evil.com)"
+    c = card(101, "changed", findings=(finding(quote=evil, site="a\n@here"),), notes="https://evil.com\n@everyone")
+    (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_findings=True, show_signal=True)})
+    for bad in ("https://evil.com", "@everyone", "@here", "](", "\n@"):
+        assert bad not in msg
+
+
+def test_unverified_prints_host_only(fx):
+    c = card(101, "changed", unverified=(finding(source="http://User:pw@Evil.Example.com:99/secret/path?q=1"),),
+             next_terms_unverified_url="https://sub.evil.example.org/p/a/t/h")
+    (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_unverified=True)})
+    assert "· 未驗證（來源不在銀行網域）：結束日 2027-03-31 — evil.example.com" in msg
+    assert "· 下期條款：來源未驗證（sub.evil.example.org）" in msg
+    body = "\n".join(ln for ln in msg.splitlines() if not ln.startswith("【"))  # drop the settings-link head
+    for bad in ("http", "secret", "pw", "/p/a/t/h"):
+        assert bad not in body
+    c2 = card(101, "changed", unverified=(finding(source="not a url"),))
+    (m2,) = run(fx, [entry(101, "A")], [c2], {101: show(show_unverified=True)})
+    assert "— ?" in m2
+
+
+def test_not_found_count_without_detail_when_digest_matches(fx):
+    c = card(101, "not_found", unverified=(finding(source=OFF), finding(source=OFF, field="rate")))
+    log = {"failed": [ON + " (403)"], "truncated": []}
+    (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_not_found=True)}, log=log)
+    assert "· 找不到官網來源（2 項未驗證）" in msg and f"　- {ON} (403)" in msg
+    assert "未驗證（來源不在銀行網域）" not in msg
+    (m2,) = run(fx, [entry(101, "A")], [card(101, "not_found")], {101: show(show_not_found=True)})
+    assert "· 找不到官網來源\n" in m2 + "\n"
+    (m3,) = run(fx, [entry(101, "A")], [c], {101: show(show_not_found=True, show_unverified=True)}, log=log)
+    assert "未驗證（來源不在銀行網域）：結束日" in m3
+
+
+def test_long_output_is_chunked(fx):
+    entries = [entry(1000 + i, f"Card {i}") for i in range(80)]
+    cards = [card(1000 + i, "changed", findings=(finding(quote="q" * 80),)) for i in range(80)]
+    dec = {1000 + i: show(show_findings=True) for i in range(80)}
+    out = run(fx, entries, cards, dec)
+    assert len(out) > 1 and all(len(m) <= 2000 for m in out)
