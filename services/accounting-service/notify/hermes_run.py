@@ -1,6 +1,7 @@
 """Pinned Hermes one-shot runner: exact argv, capped file output, no message text in errors."""
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import subprocess
@@ -30,7 +31,7 @@ class HermesResult:
     stderr: str
     returncode: int
     seconds: float
-    truncated: bool
+    truncated: bool  # always False in a returned result; overflow raises HermesError — kept for the interface
 
 
 def hermes_argv(prompt: str, toolsets: str, model: str, provider: str) -> list[str]:
@@ -42,6 +43,7 @@ def hermes_argv(prompt: str, toolsets: str, model: str, provider: str) -> list[s
             "--provider", provider, "-m", model]
 
 
+# no RLIMIT_FSIZE; the timeout bounds a runaway writer
 def _default_runner(argv, env, cwd, out_fd, err_fd):
     return subprocess.Popen(argv, env=env, cwd=cwd, stdin=subprocess.DEVNULL, stdout=out_fd,
                             stderr=err_fd, start_new_session=True)
@@ -61,7 +63,11 @@ def _read_capped(path: Path, limit: int) -> tuple[str, bool]:
 def run_hermes(prompt_path: Path, toolsets: str, timeout_s: int, model: str, provider: str,
                env: dict[str, str], cwd: Path, max_output_bytes: int, archive: Path,
                runner: Callable | None = None, kill: Callable = os.killpg) -> HermesResult:
-    argv = hermes_argv(Path(prompt_path).read_text(encoding="utf-8"), toolsets, model, provider)
+    try:
+        prompt = Path(prompt_path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        raise HermesError(archive) from None
+    argv = hermes_argv(prompt, toolsets, model, provider)
     out_path, err_path = archive / "hermes.out", archive / "hermes.err"
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     out_fd = os.open(out_path, flags, 0o600)
@@ -69,7 +75,10 @@ def run_hermes(prompt_path: Path, toolsets: str, timeout_s: int, model: str, pro
         err_fd = os.open(err_path, flags, 0o600)
         try:
             start = time.monotonic()
-            handle = (runner or _default_runner)(argv, env, cwd, out_fd, err_fd)
+            try:
+                handle = (runner or _default_runner)(argv, env, cwd, out_fd, err_fd)
+            except OSError:
+                raise HermesError(archive) from None
         finally:
             os.close(err_fd)
     finally:
@@ -77,7 +86,8 @@ def run_hermes(prompt_path: Path, toolsets: str, timeout_s: int, model: str, pro
     try:
         handle.wait(timeout=timeout_s)
     except subprocess.TimeoutExpired:
-        kill(os.getpgid(handle.pid), signal.SIGKILL)
+        with contextlib.suppress(ProcessLookupError):
+            kill(os.getpgid(handle.pid), signal.SIGKILL)
         try:
             handle.wait(timeout=5)
         except subprocess.TimeoutExpired:

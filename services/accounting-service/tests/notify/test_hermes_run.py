@@ -135,3 +135,50 @@ def test_default_runner_builds_popen_with_new_session(tmp_path, monkeypatch):
     assert kw["start_new_session"] is True and kw["stdin"] == subprocess.DEVNULL
     assert kw["env"] == {"A": "1"} and kw["cwd"] == tmp_path
     assert kw["stdout"] == out and kw["stderr"] == err
+
+
+def test_failed_start_is_hermes_error_and_fds_closed(tmp_path):
+    fds = []
+
+    def runner(argv, env, cwd, out_fd, err_fd):
+        fds.extend([out_fd, err_fd])
+        raise FileNotFoundError("hermes")
+
+    with pytest.raises(HermesError) as ei:
+        _run(tmp_path, runner)
+    assert str(ei.value) == f"hermes {tmp_path}"
+    assert len(fds) == 2
+    for fd in fds:
+        with pytest.raises(OSError):
+            os.fstat(fd)
+
+
+def test_unreadable_prompt_is_hermes_error(tmp_path):
+    bad = tmp_path / "bad.txt"
+    bad.write_bytes(b"\xff\xfe\xfa")
+    with pytest.raises(HermesError) as ei:
+        _run(tmp_path, make_runner(), prompt_path=bad)
+    assert str(ei.value) == f"hermes {tmp_path}"
+    with pytest.raises(HermesError):
+        _run(tmp_path, make_runner(), prompt_path=tmp_path / "missing.txt")
+
+
+def test_timeout_with_vanished_group_still_hermes_error(tmp_path, monkeypatch):
+    def gone(pid):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(os, "getpgid", gone)
+    with pytest.raises(HermesError):
+        _run(tmp_path, make_runner(timeout=True), kill=lambda pg, sig: None)
+
+
+def test_stderr_overflow_truncated_and_fails(tmp_path):
+    with pytest.raises(HermesError):
+        _run(tmp_path, make_runner(err=b"y" * 11), max_output_bytes=10)
+    assert (tmp_path / "hermes.err").read_bytes() == b"y" * 10 + b"\n[truncated]\n"
+
+
+def test_invalid_utf8_replaced_and_empty_stdout(tmp_path):
+    res = _run(tmp_path, make_runner(out=b"a\xffb"))
+    assert res.stdout == "a�b"
+    assert _run(tmp_path, make_runner()).stdout == ""
