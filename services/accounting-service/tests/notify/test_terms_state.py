@@ -153,6 +153,12 @@ def test_decide_unverified_and_signal_suppressed_on_match():
         assert d.show_unverified and d.show_signal and d.is_new
 
 
+def test_decide_next_terms_unverified_url_alone_is_news_once():
+    c = _card(next_terms_unverified_url="https://evil.example/n")
+    assert decide(c, ENTRY, None, "h").show_unverified
+    assert not decide(c, ENTRY, CardSeen("h", NOW), "h").show_unverified
+
+
 def test_decide_period_only_line():
     c = _card("unchanged", current_period_end=_period())
     assert decide(c, ENTRY, None, "h").show_period_only

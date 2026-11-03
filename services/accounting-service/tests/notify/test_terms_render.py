@@ -166,3 +166,22 @@ def test_long_output_is_chunked(fx):
     dec = {1000 + i: show(show_findings=True) for i in range(80)}
     out = run(fx, entries, cards, dec)
     assert len(out) > 1 and all(len(m) <= 2000 for m in out)
+
+
+def test_next_terms_unverified_only_card_gets_block(fx):
+    c = card(101, next_terms_unverified_url="https://evil.example.org/x/y")
+    (msg,) = run(fx, [entry(101, "A"), entry(401, "B")], [c, card(401)],
+                 {101: show(show_unverified=True), 401: NO})
+    assert "【A】" in msg and "· 下期條款：來源未驗證（evil.example.org）" in msg
+    assert "無變動：B" in msg and "無變動：A" not in msg and "/x/y" not in msg
+
+
+def test_failures_are_per_card(fx):
+    other = CardEntry(account_id=102, official="O", bank_domains=("other-bank.com",), tier="precise")
+    a, b = "https://www.example-bank.com/a", "https://www.other-bank.com/b"
+    log = {"failed": [a + " (403)", b + " (500)", "[unverified source]"], "truncated": []}
+    d = {101: show(show_not_found=True), 102: show(show_not_found=True)}
+    (msg,) = run(fx, [entry(101, "A"), other], [card(101, "not_found"), card(102, "not_found")], d, log=log)
+    first, second = msg.split("【O】")
+    assert f"　- {a} (403)" in first and b not in first
+    assert f"　- {b} (500)" in second and a not in second and "[unverified" not in msg

@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from notify.config import NotifyConfig
 from notify.render import _settings_link, split_blocks
 from notify.terms_input import TermsInput
-from notify.terms_parse import CardResult, TermsResult
+from notify.terms_parse import CardResult, TermsResult, source_ok
 from notify.terms_state import ShowDecision
 
 FIELD_ZH = {"ends_on": "結束日", "starts_on": "開始日", "rate": "回饋率", "total_cap": "上限", "is_basic": "基本",
@@ -70,6 +70,16 @@ def _announced(card: CardResult) -> list[str]:
     return out
 
 
+def _card_failures(failed: list, domains: tuple[str, ...]) -> list[str]:
+    """fetch_log failures whose URL passes this card's own source rule (parser keeps a ' (NNN)' suffix)."""
+    out = []
+    for entry in failed:
+        url = str(entry).strip().split(" ", 1)[0]
+        if url != "[unverified" and source_ok(url, domains):
+            out.append(str(entry).strip())
+    return out
+
+
 def _block(card: CardResult, d: ShowDecision, head: str, names: dict, failed: list) -> str:
     lines = [head]
     if d.show_findings:
@@ -109,7 +119,7 @@ def render_terms(inp: TermsInput, result: TermsResult, decisions: dict[int, Show
             continue
         names = {r.get("id"): r.get("name") for r in ci.rules}
         head = f"【{ci.card.official}】 → {_settings_link(cfg, aid)}"
-        blocks.append(_block(card, d, head, names, failed))
+        blocks.append(_block(card, d, head, names, _card_failures(failed, ci.card.bank_domains)))
     m = len(inp.cards)
     if not blocks and not inp.unregistered:
         return [f"📋 回饋條款查核 {inp.today}：{m} 張卡無變動"]

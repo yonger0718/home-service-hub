@@ -126,7 +126,7 @@ def decide(card: CardResult, entry: CardEntry, prev: CardSeen | None, now_digest
         show_announced=bool(card.next_terms and card.next_terms.announced),
         show_signal=card.status == "signal" and is_new,
         show_not_found=card.status == "not_found" or (card.status == "changed" and not card.findings),
-        show_unverified=bool(card.unverified) and is_new,
+        show_unverified=(bool(card.unverified) or bool(card.next_terms_unverified_url)) and is_new,
         show_period_only=card.status == "unchanged" and has_period and is_new,
         show_period=card.status in ("changed", "announced") and has_period,
         show_truncated=bool(card.truncated),
