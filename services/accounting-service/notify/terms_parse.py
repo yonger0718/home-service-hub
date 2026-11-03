@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -38,6 +38,10 @@ class Finding:
     system: str | None
     source: str
     quote: str
+    reason: str = ""  # why an unverified item is unverified; "" = source rule
+
+
+UNKNOWN_RULE = "未知規則"
 
 
 @dataclass(frozen=True)
@@ -369,13 +373,40 @@ def parse_result(stdout: str, cards: tuple[CardEntry, ...]) -> TermsResult:
                              else _empty(c, trunc.get(c.account_id, ())) for c in cards), log)
 
 
+def _system_value(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _join_card(card: CardResult, rules: tuple[dict, ...]) -> CardResult:
+    rows = {r.get("id"): r for r in rules}
+    ok, bad = [], list(card.unverified)
+    for f in card.findings:
+        if (f.rule_id is not None and f.rule_id not in rows) or (f.rule_id is None and f.field != "missing_rule"):
+            bad.append(replace(f, reason=UNKNOWN_RULE))
+            continue
+        row = rows.get(f.rule_id, {})
+        ok.append(replace(f, system=_system_value(row[f.field]) if f.field in row else None))
+    return replace(card, findings=tuple(ok), unverified=tuple(bad))
+
+
+def join_rules(result: TermsResult, rules: dict[int, tuple[dict, ...]]) -> TermsResult:
+    """Join verified findings to the frozen input: a finding naming no live rule of its card (or a null rule_id
+    outside ``missing_rule``) becomes unverified (``未知規則``); the ``system`` side is the input rule's value for a
+    rule-row field and None otherwise — the model's ``system`` claim is never kept for a verified finding."""
+    return replace(result, cards=tuple(_join_card(c, rules.get(c.account_id, ())) for c in result.cards))
+
+
 def _q(text: str) -> str:
     return " ".join(text.split())
 
 
 def _f(f: Finding) -> dict:
     return {"rule_id": f.rule_id, "field": f.field, "site": f.site, "system": f.system,
-            "source": f.source, "quote": _q(f.quote)}
+            "source": f.source, "quote": _q(f.quote), "reason": f.reason}
 
 
 def _sorted(fs: tuple[Finding, ...]) -> list[dict]:

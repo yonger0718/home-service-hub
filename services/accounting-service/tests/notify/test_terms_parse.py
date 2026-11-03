@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 from notify.terms_config import CardEntry
-from notify.terms_parse import (CardResult, TermsParseError, TruncatedSource, digest, last_json_block,
-                                parse_result, source_ok)
+from notify.terms_parse import (CardResult, TermsParseError, TruncatedSource, digest, join_rules,
+                                last_json_block, parse_result, source_ok)
 from tests.notify import terms_fixtures as fx
 
 ON = "https://www.example-bank.com/cards/terms"
@@ -342,3 +342,41 @@ def test_smuggled_failed_url_dropped(tail):
     log = {"failed": [ON + tail + " (403)", ON + " (500)"]}
     r = parse_result(fx.one_card({"account_id": 101, "status": "unchanged"}, fetch_log=log), ONE)
     assert r.fetch_log["failed"] == [ON + " (500)"]
+
+
+# --- I2: findings joined to the frozen input (final fix A3) ------------------------------------------------------
+
+ROWS = {101: ({"id": 1, "name": "R1", "rate": "3", "ends_on": None, "total_cap": "200"},)}
+
+
+def _joined(*findings, rows=ROWS):
+    card = {"account_id": 101, "status": "changed", "findings": list(findings)}
+    return join_rules(parse_result(fx.one_card(card), ONE), rows).cards[0]
+
+
+def _f(rule_id=1, field="rate", site="4", system="2"):
+    return {"rule_id": rule_id, "field": field, "site": site, "system": system, "source": ON, "quote": "q"}
+
+
+def test_join_unknown_rule_id_is_unverified():
+    r = _joined(_f(rule_id=99))
+    assert r.findings == () and [(u.rule_id, u.reason) for u in r.unverified] == [(99, "未知規則")]
+
+
+def test_join_null_rule_id_needs_missing_rule_field():
+    r = _joined(_f(rule_id=None, field="rate"), _f(rule_id=None, field="missing_rule", site="new", system="x"))
+    assert [f.field for f in r.findings] == ["missing_rule"] and r.findings[0].system is None
+    assert [(u.field, u.reason) for u in r.unverified] == [("rate", "未知規則")]
+
+
+def test_join_system_value_comes_from_input_rule():
+    r = _joined(_f(system="999"), _f(field="ends_on", site="2027-03-31", system="2026-01-01"),
+                _f(field="cap", system="7"))
+    assert [(f.field, f.system) for f in r.findings] == [("rate", "3"), ("ends_on", None), ("cap", None)]
+    assert digest(_joined(_f(system="999")), "precise") == digest(_joined(_f(system="1")), "precise")
+
+
+def test_join_keeps_unverified_and_other_fields():
+    off = dict(_f(), source="https://evil.com/x")
+    r = _joined(off, _f())
+    assert [u.reason for u in r.unverified] == [""] and r.findings[0].site == "4" and r.status == "changed"

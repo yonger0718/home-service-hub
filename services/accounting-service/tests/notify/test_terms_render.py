@@ -44,7 +44,7 @@ def inp(entries, unregistered=(), rules=()):
     return TermsInput(date(2026, 11, 3), "weekly", tuple(CardInput(e, tuple(rules)) for e in entries), unregistered)
 
 
-RULES = ({"id": 7, "name": "Overseas 3%"},)
+RULES = ({"id": 7, "name": "Overseas 3%", "ends_on": "2026-12-31", "rate": "3", "total_cap": None},)
 
 
 def run(fx, entries, cards, decisions, unregistered=(), log=None, rules=RULES):
@@ -125,7 +125,7 @@ def test_changed_card_prints_period_line(fx):
 def test_unknown_field_falls_back_to_raw_name(fx):
     c = card(101, "changed", findings=(finding(field="weird_field"),))
     (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_findings=True)})
-    assert "Overseas 3%：weird_field 官網 2027-03-31 / 系統 2026-12-31 — <" + ON + ">" in msg
+    assert "Overseas 3%：weird_field 官網 2027-03-31 — <" + ON + ">" in msg  # not a rule-row key: no 系統 part
 
 
 def test_defang_model_text(fx):
@@ -228,3 +228,26 @@ def test_verified_urls_print_in_angle_brackets(fx):
     assert f"— <{ON}>" in msg and f"（<{ON}> (r)）" in msg and f"　- <{ON}> (403)" in msg
     assert "→ <https://example.invalid/hub/accounting/accounts/101/settings>" in msg
     assert f" {ON}" not in msg.replace(f"<{ON}>", "")
+
+
+# --- I2: system side and labels come from HomeHub (final fix A3) -------------------------------------------------
+
+def test_missing_rule_label_only_for_missing_rule_field(fx):
+    c = card(101, "changed", findings=(finding(rule_id=8, field="rate"), finding(field="missing_rule", site="new")))
+    (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_findings=True)})
+    assert msg.count("缺規則") == 1 and "· 缺規則：new — <" in msg
+    assert "· ?：回饋率 官網 2027-03-31" in msg
+
+
+def test_system_part_follows_rule_row(fx):
+    c = card(101, "changed", findings=(finding(field="total_cap", site="300", system=None),
+                                       finding(field="window", site="m", system="x")))
+    (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_findings=True)})
+    assert "· Overseas 3%：上限 官網 300 / 系統 無 — <" in msg
+    assert "· Overseas 3%：期間 官網 m — <" in msg
+
+
+def test_unknown_rule_unverified_reason(fx):
+    c = card(101, "changed", unverified=(finding(rule_id=99, reason="未知規則"),))
+    (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_unverified=True)})
+    assert "· 未驗證（未知規則）：結束日 2027-03-31 — www.example-bank.com" in msg

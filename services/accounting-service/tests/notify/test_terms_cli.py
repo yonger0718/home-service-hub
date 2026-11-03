@@ -64,6 +64,7 @@ class TermsEnv:
         rules = {"/reward-rules": {"accounts": []}}
         for aid in (101, 102, 301):
             rules[f"/accounts/{aid}/reward-rules"] = []
+        self.routes = rules
         real = httpx.Client
         client, _ = make_client(rules)
         transport = client._transport
@@ -247,6 +248,23 @@ def test_result_json_is_parsed_result(tenv):
     data = json.loads((arch / "result.json").read_text())
     assert [c["account_id"] for c in data["cards"]] == [101, 102, 301] and "fetch_log" in data
     assert isinstance(data["cards"][0]["findings"], list)
+
+
+def test_findings_joined_to_frozen_input(tenv, monkeypatch):
+    # FULL_STDOUT: rule 162 ends_on, the model claims system 2026-12-31; HomeHub holds 2027-01-31 (final fix A3)
+    tenv.routes["/accounts/101/reward-rules"] = [{"id": 162, "name": "R162", "is_enabled": True,
+                                                  "ends_on": "2027-01-31", "rate": "3"}]
+    assert tenv.run("--cause", "monthly") == 0
+    (arch,) = tenv.archives
+    (f,) = json.loads((arch / "result.json").read_text())["cards"][0]["findings"]
+    assert f["rule_id"] == 162 and f["system"] == "2027-01-31"
+    assert "· R162：結束日 官網 2027-03-31 / 系統 2027-01-31" in (arch / "message.md").read_text()
+    tenv.routes["/accounts/101/reward-rules"] = []  # rule 162 unknown to HomeHub: never verified
+    monkeypatch.setattr(terms, "_utcnow", lambda: datetime(2026, 11, 3, 23, 31, 5, tzinfo=timezone.utc))
+    assert tenv.run("--cause", "monthly") == 0
+    data = json.loads((tenv.archives[-1] / "result.json").read_text())["cards"][0]
+    assert data["findings"] == [] and "未知規則" in [u["reason"] for u in data["unverified"]]
+    assert "R162" not in (tenv.archives[-1] / "message.md").read_text()
 
 
 def test_cause_required(tenv):

@@ -16,7 +16,7 @@ from .api import ReadClient
 from .config import ConfigError, NotifyConfig, read_token
 from .hermes_run import HERMES_ENV_KEYS, run_hermes
 from .terms_input import build_input, select_cards, to_json
-from .terms_parse import TermsParseError, digest, parse_result
+from .terms_parse import TermsParseError, digest, join_rules, parse_result
 from .terms_prompt import build_prompt
 from .terms_render import render_terms
 from .terms_state import (CardSeen, TermsStateError, decide, load_terms_state, save_terms_state,
@@ -73,6 +73,7 @@ def run_terms(args: argparse.Namespace, cfg: NotifyConfig, today: date) -> list[
     except TermsParseError as exc:
         exc.archive = archive
         raise
+    result = join_rules(result, {c.card.account_id: c.rules for c in inp.cards})  # system side = HomeHub rows
     _write(archive / "result.json", json.dumps(dataclasses.asdict(result), ensure_ascii=False, indent=2))
     tiers = {c.card.account_id: c.card for c in inp.cards}
     digests = {c.account_id: digest(c, tiers[c.account_id].tier) for c in result.cards}

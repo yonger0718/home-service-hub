@@ -44,19 +44,23 @@ def _quote(text: str) -> str:
     return f"　「{q[:_QUOTE_MAX]}{'…' if len(q) > _QUOTE_MAX else ''}」"
 
 
-def _finding_lines(card: CardResult, names: dict, verified: bool) -> list[str]:
+def _finding_lines(card: CardResult, rows: dict, verified: bool) -> list[str]:
+    """``rows`` maps rule id → the frozen input rule row; the 系統 side prints only for a field of that row."""
     out = []
     for f in (card.findings if verified else card.unverified):
-        site, system = _safe_text(f.site), _safe_text(f.system)
+        site = _safe_text(f.site)
         zh = FIELD_ZH.get(f.field, _safe_text(f.field))
         if not verified:
-            out.append(f"· 未驗證（來源不在銀行網域）：{zh} {site} — {_host(f.source)}")
+            why = _safe_text(f.reason) or "來源不在銀行網域"
+            out.append(f"· 未驗證（{why}）：{zh} {site} — {_host(f.source)}")
             continue
         if f.field == "missing_rule":
             out.append(f"· 缺規則：{site} — {_link(f.source)}")
         else:
-            name = _safe_text(names.get(f.rule_id)) or "缺規則"
-            out.append(f"· {name}：{zh} 官網 {site} / 系統 {system} — {_link(f.source)}")
+            row = rows.get(f.rule_id) or {}
+            name = _safe_text(row.get("name")) or "?"
+            system = f" / 系統 {_safe_text(f.system) or '無'}" if f.field in row else ""
+            out.append(f"· {name}：{zh} 官網 {site}{system} — {_link(f.source)}")
         out.append(_quote(f.quote))
     return out
 
@@ -92,10 +96,10 @@ def _truncated(t: TruncatedSource) -> str:
     return f"{where} ({read})" if read else where
 
 
-def _block(card: CardResult, d: ShowDecision, head: str, names: dict, failed: list) -> str:
+def _block(card: CardResult, d: ShowDecision, head: str, rows: dict, failed: list) -> str:
     lines = [head]
     if d.show_findings:
-        lines += _finding_lines(card, names, True)
+        lines += _finding_lines(card, rows, True)
     if d.show_period and card.current_period_end:
         lines.append(f"· 條款期間至 {card.current_period_end.date}")
     if d.show_announced:
@@ -110,7 +114,7 @@ def _block(card: CardResult, d: ShowDecision, head: str, names: dict, failed: li
     if d.show_truncated:
         lines += [f"· 來源文件過長，僅讀到前段（{_truncated(t)}）" for t in card.truncated]
     if d.show_unverified:
-        lines += _finding_lines(card, names, False)
+        lines += _finding_lines(card, rows, False)
         if card.next_terms_unverified_url:
             lines.append(f"· 下期條款：來源未驗證（{_host(card.next_terms_unverified_url)}）")
     if d.show_period_only and card.current_period_end:
@@ -129,9 +133,9 @@ def render_terms(inp: TermsInput, result: TermsResult, decisions: dict[int, Show
         if d is None or card is None or not any(getattr(d, f) for f in _SHOW):
             quiet.append(ci.card.official)
             continue
-        names = {r.get("id"): r.get("name") for r in ci.rules}
+        rows = {r.get("id"): r for r in ci.rules}
         head = f"【{ci.card.official}】 → {_link(_settings_link(cfg, aid))}"
-        blocks.append(_block(card, d, head, names, _card_failures(failed, ci.card.bank_domains)))
+        blocks.append(_block(card, d, head, rows, _card_failures(failed, ci.card.bank_domains)))
     m = len(inp.cards)
     if not blocks and not inp.unregistered:
         return [f"📋 回饋條款查核 {inp.today}：{m} 張卡無變動"]
