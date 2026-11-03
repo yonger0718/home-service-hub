@@ -256,7 +256,7 @@ The final fenced JSON block:
 {
   "cards": [
     {
-      "account_id": 94,
+      "account_id": 101,
       "status": "unchanged | changed | announced | not_found | signal",
       "current_period_end": {"date": "2027-03-31", "source": "https://…", "quote": "…"},
       "findings": [
@@ -273,7 +273,7 @@ The final fenced JSON block:
     }
   ],
   "fetch_log": {"tool_calls": 15, "failed": ["https://… (403)"],
-                "truncated": [{"account_id": 94, "url": "https://…", "read": "first ~40k chars of ~130k"}]}
+                "truncated": [{"account_id": 101, "url": "https://…", "read": "first ~40k chars of ~130k"}]}
 }
 ```
 

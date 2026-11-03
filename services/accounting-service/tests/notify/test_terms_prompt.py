@@ -20,19 +20,19 @@ def _inp(*cards):
     return TermsInput(TODAY, "scheduled", tuple(cards), ())
 
 
-TW = CardInput(CardEntry(101, "https://example-bank.com/card", ("example-bank.com", "cards.example-bank.com"),
+TW = CardInput(CardEntry(101, "Example Alpha Card", ("example-bank.com", "cards.example-bank.com"),
                          "precise", aliases=("Alpha",)), (_rule(11), _rule(12)))
-US = CardInput(CardEntry(102, "https://example-us.com/c", ("example-us.com",), "precise",
+US = CardInput(CardEntry(102, "Example Beta Card", ("example-us.com",), "precise",
                          country="US", language="en", currency="USD"), ())
-SIG = CardInput(CardEntry(301, "https://example-sig.com/c", ("example-sig.com",), "signal"),
+SIG = CardInput(CardEntry(301, "Example Travel Rewards Card", ("example-sig.com",), "signal"),
                 (_rule(31, name="SIGRULE"),))
 
 
 def test_prompt_contains_each_card_block():
     p = build_prompt(_inp(TW, US))
-    for s in ("https://example-bank.com/card", "example-bank.com", "cards.example-bank.com",
+    for s in ("Example Alpha Card", "example-bank.com", "cards.example-bank.com",
               "tier: precise", "language: zh-TW", "currency: TWD", "Alpha", "2026-11-03",
-              "https://example-us.com/c", "language: en", "currency: USD", "country: US"):
+              "Example Beta Card", "language: en", "currency: USD", "country: US"):
         assert s in p
 
 
@@ -55,11 +55,14 @@ def test_zero_rule_precise_card_says_missing_rule():
 
 
 def test_signal_card_has_no_rule_comparison_instruction():
-    p = build_prompt(_inp(SIG))
-    assert "Tier: signal" in p and "3 lines" in p
+    p = build_prompt(_inp(TW, SIG))
+    start = p.index("### Card (account_id 301)")
+    block = p[start:p.index("\n## ", start)]
+    assert "Tier: signal" in block and "3 lines" in block
     assert "SIGRULE" not in p
-    assert "compare each live rule" not in p
-    assert "missing_rule" not in p.split("## Next period")[0]
+    for s in ("compare", "missing_rule", "Live rules"):
+        assert s not in block
+    assert "aliases: []" in block
 
 
 def test_contract_block_present_once():
@@ -81,3 +84,22 @@ def test_rule_text_is_not_treated_as_placeholder():
     p = build_prompt(_inp(CardInput(TW.card, (r,))))
     assert "{contract} {today} {cards}" in p
     assert p.count(CONTRACT_JSON) == 1
+
+
+def test_schema_sample_is_illustrative_and_ids_constrained():
+    p = build_prompt(_inp(TW))
+    assert "illustrative only" in p
+    assert "exactly one `cards[]` entry for each `account_id` listed in the card blocks" in p
+    assert "94" not in CONTRACT_JSON
+
+
+def test_stage_one_mentions_official_name_and_aliases():
+    p = build_prompt(_inp(TW))
+    assert "product name" in p and "`aliases`" in p
+    assert 'aliases: ["Alpha"]' in p
+
+
+def test_multiple_domains_listed_and_empty_aliases_pinned():
+    p = build_prompt(_inp(TW, US))
+    assert 'bank_domains: ["example-bank.com","cards.example-bank.com"]' in p
+    assert "aliases: []" in p

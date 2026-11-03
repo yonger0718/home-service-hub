@@ -11,7 +11,7 @@ from notify.terms_input import RULE_FIELDS, CardInput, TermsInput
 CONTRACT_JSON = """{
   "cards": [
     {
-      "account_id": 94,
+      "account_id": 101,
       "status": "unchanged | changed | announced | not_found | signal",
       "current_period_end": {"date": "2027-03-31", "source": "https://…", "quote": "…"},
       "findings": [
@@ -28,7 +28,7 @@ CONTRACT_JSON = """{
     }
   ],
   "fetch_log": {"tool_calls": 15, "failed": ["https://… (403)"],
-                "truncated": [{"account_id": 94, "url": "https://…", "read": "first ~40k chars of ~130k"}]}
+                "truncated": [{"account_id": 101, "url": "https://…", "read": "first ~40k chars of ~130k"}]}
 }"""
 
 _COMPARE_FIELDS = ", ".join(f"`{f}`" for f in RULE_FIELDS if f != "id")
