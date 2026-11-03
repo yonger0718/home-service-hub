@@ -338,7 +338,7 @@ Business days come from `GET /calendar/business-days`; a due date past its `last
      hand run left `last_failure.txt`). `failed` always exits 0, so check the channel, then
      `journalctl --user -u 'homehub-notify-*'`: a `failed: SendError` line means `hermes` could not be started or failed
      under the unit environment.
-  6. `deploy/notify/install.sh` copies the five units, reloads and enables both timers with `--now` (safe to repeat).
+  6. `deploy/notify/install.sh` copies the nine units (including the four terms units), reloads and enables only the daily and weekly timers with `--now` (safe to repeat; the terms timers stay disabled).
   7. Follow-ups: a Loki/Grafana heartbeat alert (#200), a periodic Hermes review of the digest.
 
   First-run note (historical data): expect 「⚠ 逾期未繳 N 天」 lines for last cycle's hand-paid bills whose payment is not
@@ -349,6 +349,35 @@ Business days come from `GET /calendar/business-days`; a due date past its `last
   Quiet cycles (spec §5.1, rev 3.2): a card whose last statement owed nothing and that has no entry since (payments,
   refunds and fees count; balance adjustments do not) gets no 帳單未到 and no 該來沒來的帳單 line, since the bank
   sends no statement for such a cycle. A purchase missing from the ledger makes the cycle look quiet.
+
+回饋條款查核 (reward terms check; spec `docs/superpowers/specs/2026-11-03-reward-terms-check-design.md`)
+: 每月與年底視窗各一次，讓 Hermes 上網讀各銀行官方條款，與 HomeHub 的回饋規則比對，把差異以 Discord 訊息回報。唯讀：只發 GET，不改任何規則。
+
+- 設定：`[terms]` 區塊與 `[terms.cards."<account id>"]` 於 `~/.config/homehub-notify.toml`，範例見 `deploy/notify/homehub-notify.example.toml`（不在此重複）。
+  `hermes_model` 為必填（設定繞過後沒有預設模型），`hermes_provider` 預設 `anthropic`；另有 `report_dir`、`hermes_toolsets`（必須是 `web`）、
+  `hermes_timeout_seconds`、`max_output_bytes`、`terms_state_file`、`ignore_accounts`。每張卡需 `official`、`bank_domains`、
+  `tier`（`precise` 或 `signal`），可選 `country`、`language`、`currency`、`aliases`、`year_end_window`。
+- CLI：
+
+      python -m notify terms --cause {monthly,year-end} [--dry-run | --send] [--config PATH]
+
+  Exit code：0 完成或無事可報；1 失敗（寫 `last_failure.txt`，`failed@` 單元發通知）；2 參數錯誤或缺少/無效的 `[terms]`。
+  每次執行在 `report_dir/<UTC 時間戳>/` 留存封存（目錄 0700、檔案 0600：`input.json`、`prompt.md`、`result.json` 含各卡 `fetch_log`、`message.md`）；
+  只有 `--send` 成功送出後才儲存 state。
+- 隔離：Hermes 以固定參數呼叫（`hermes -z … -t web --ignore-user-config --ignore-rules --provider … -m …`），
+  不給 HomeHub token，環境變數只有 PATH/HOME/LANG/TZ。**不得上線規則**：Hermes 升級後若
+  `deploy/notify/terms-isolation-probe.md` 的隔離探測有任何一項失敗，就不要啟用計時器。
+- 單元：`homehub-notify-terms-monthly.timer`（每月 1 日 09:00 Asia/Taipei）與 `homehub-notify-terms-year-end.timer`
+  （11、12 月每個週一 09:00），兩個 service 以 `Conflicts=` 互斥、`TimeoutStartSec=1900`（大於 Hermes 的 1800 秒）。
+  `install.sh` 只安裝、**不會啟用**這兩個計時器。
+- 上線步驟（spec §Rollout）：
+  1. 合併，照常部署 notifier release checkout。
+  2. 在 TOML 加入 `[terms]` 與要維護的卡（帳號 id 取自帳戶清單；CUBE 用 `signal`），不再使用的卡不要列入。
+  3. 手動執行一次 `python -m notify terms --dry-run --cause monthly`，讀封存：每張卡看 `fetch_log`（`tool_calls`、`failed`、`truncated`），
+     確認各銀行文件實際讀了多少。注意：`--ignore-user-config` 會丟掉 Hermes 設定檔中的 web backend 設定，搜尋/擷取 backend 改由
+     Hermes 自己的環境金鑰自動偵測，可能與 spike 時不同，所以第一次 dry-run 一定要檢查 `result.json` 的 `fetch_log`，再執行
+     `systemctl --user enable --now homehub-notify-terms-monthly.timer homehub-notify-terms-year-end.timer`。
+  4. 第一次正式發送後，由 owner 手動套用接受的發現（或請助理代辦），並比照 2026-11-02 在 data-pass log 記錄套用內容。
 
 Enabling the policy (it does nothing until every step is done): (0) deploy R1d first (the policy's claims, budget, skip audit, supersede order and plan-revert fixes are not in R1c); (1) keep `dirty_enabled` on and reconcile working;
 (2) set `per_currency_enabled` and the caps first, `PUT /settings/reconciliation` with the full body and a `policy` that
