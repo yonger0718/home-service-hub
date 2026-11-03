@@ -212,6 +212,11 @@ system prompt, as far as the run exposes it); (5) `--query-file` actually suppli
 are the no-ship list**; if any fails, the feature does not ship until it does — no fallback
 to a looser toolset.
 
+Isolation check 2026-11-03 (hermes v0.22.2+1692.g22063fc): FAIL - observation 4 (literal
+`RULES-ABSENT` not produced; PROBE-RULE did not leak) and observation 6 (agent had no web/fetch
+tool bound, so neither 401 nor the private-network block appeared). Observations 2, 3, 5 pass.
+Details: `services/accounting-service/deploy/notify/terms-isolation-probe.md`.
+
 Residual risk, stated: `web_extract` fetches arbitrary URLs including loopback. HomeHub
 routes need a bearer token the agent does not have; the other loopback listeners (18080
 demo, 18081 preview) hold fictional data. This is accepted and the builder's isolation task
