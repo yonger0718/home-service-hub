@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import delete, exists, func, select, tuple_
+from sqlalchemy import delete, event, exists, func, select, tuple_
 from sqlalchemy.orm import Session
 
 from ..models import Account, EntryRewardRule, LedgerEntry, RewardAccrual, RewardRule
@@ -25,6 +25,8 @@ _Q = Decimal("0.0001")
 _ZERO = Decimal("0")
 
 Pair = tuple[int, date]  # (rule_id, window_start)
+_LOCKED_KEY = "reward_engine.locked_windows"  # db.info: the (rule_id, window_start) keys this transaction locked
+_HOOKED_KEY = "reward_engine.lock_hooks"
 
 
 def card_closing_day(db: Session, account: Account) -> int | None:
@@ -102,12 +104,26 @@ def _group_ids(db: Session, rule_id: int) -> list[int]:
     return reward_rule_service.group_rule_ids(db, rule) if rule is not None else [rule_id]
 
 
+def _group_keys(db: Session, pairs: Iterable[Pair]) -> set[Pair]:
+    return {(member, start) for rule_id, start in pairs for member in _group_ids(db, rule_id)}
+
+
+def _forget_locks(session: Session, *_args) -> None:
+    session.info.pop(_LOCKED_KEY, None)
+
+
+def _remember_locks(db: Session, keys: set[Pair]) -> None:
+    """Record the window keys this transaction holds; commit and rollback (any level) forget them."""
+    if not db.info.get(_HOOKED_KEY):
+        for name in ("after_commit", "after_rollback", "after_soft_rollback"):
+            event.listen(db, name, _forget_locks)
+        db.info[_HOOKED_KEY] = True
+    db.info.setdefault(_LOCKED_KEY, set()).update(keys)
+
+
 def _window_rows(db: Session, pairs: Iterable[Pair], *, lock: bool) -> list[RewardAccrual]:
     db.flush()  # populate_existing below must not discard pending changes
-    keys = set()
-    for rule_id, start in pairs:
-        for member in _group_ids(db, rule_id):
-            keys.add((member, start))
+    keys = _group_keys(db, pairs)
     if not keys:
         return []
     query = (
@@ -116,14 +132,18 @@ def _window_rows(db: Session, pairs: Iterable[Pair], *, lock: bool) -> list[Rewa
         .order_by(RewardAccrual.id)
         .execution_options(populate_existing=True)
     )
-    if lock:
-        query = query.with_for_update()
-    return list(db.scalars(query))
+    if not lock:
+        return list(db.scalars(query))
+    rows = list(db.scalars(query.with_for_update()))
+    _remember_locks(db, keys)  # recorded even for windows with no rows yet
+    return rows
 
 
 def lock_windows(db: Session, pairs: Iterable[Pair]) -> list[RewardAccrual]:
     """Lock every accrual of these windows (each rule's whole shared-cap group) in one
-    `SELECT ... ORDER BY id FOR UPDATE` and return them, freshly loaded, in id order (P12 step 2)."""
+    `SELECT ... ORDER BY id FOR UPDATE` and return them, freshly loaded, in id order (P12 step 2). The
+    group-expanded (rule_id, window_start) keys are recorded in `db.info` until the transaction ends, so
+    `recompute_window(locked=True)` can check that its window is held."""
     return _window_rows(db, pairs, lock=True)
 
 
@@ -164,12 +184,16 @@ def recompute_window(db: Session, rule_id: int, window_start: date, *, locked: b
 
     `locked=False` locks the window's accruals itself (`lock_windows`); `locked=True` takes no locks, the caller
     already holds them (P12)."""
-    if locked:
-        assert db.in_transaction(), "locked=True needs the caller's transaction holding the window locks"
     rule = db.get(RewardRule, rule_id)
     if rule is None:
         return
     group = reward_rule_service.group_rule_ids(db, rule)
+    if locked:
+        missing = {(member, window_start) for member in group} - db.info.get(_LOCKED_KEY, set())
+        if missing:
+            raise RuntimeError(
+                f"recompute_window(locked=True) for rule {rule_id} window {window_start}: this transaction holds no "
+                f"lock_windows lock on {sorted(missing)}")
     rows = _window_rows(db, [(rule_id, window_start)], lock=not locked)
     estimated = [r for r in rows if r.state == "estimated"]
     if not estimated:
@@ -208,40 +232,44 @@ def _set(row: RewardAccrual, window, post_on, value: Decimal) -> None:
 def sync_entry(db: Session, entry_id: int) -> None:
     """Create, re-bucket or delete `entry_id`'s estimated accruals to match its rule links (a refund: its
     purchase's links, in the purchase's window), then recompute every window touched, old and new. Frozen
-    accruals are never changed. A purchase then re-syncs its refunds."""
+    accruals are never changed. A purchase brings its refunds along (same links, date and amount base); the
+    purchase's and its refunds' windows are locked in one `lock_windows` (P12)."""
     entry = db.get(LedgerEntry, entry_id)
     if entry is None:
         return
-    desired = _desired(db, entry)
-    current = _accruals_of(db, [entry_id])
+    entries = [entry]
+    if not _is_refund(entry):
+        entries += list(db.scalars(
+            select(LedgerEntry).where(LedgerEntry.refunds_entry_id == entry_id).order_by(LedgerEntry.id)))
+    desired = {e.id: _desired(db, e) for e in entries}
+    current = _accruals_of(db, desired)
     pairs = {(a.rule_id, a.window_start) for a in current}
-    pairs |= {(rule_id, target[0][0]) for rule_id, target in desired.items()}
-    locked = {a.id: a for a in lock_windows(db, pairs) if a.source_entry_id == entry_id}
-    current = [locked.get(a.id, a) for a in current]
-    have = set()
-    for accrual in current:
-        have.add(accrual.rule_id)
+    pairs |= {(rule_id, target[0][0]) for wanted in desired.values() for rule_id, target in wanted.items()}
+    locked = {a.id: a for a in lock_windows(db, pairs)}
+    have: set[tuple[int, int]] = set()
+    for accrual in (locked.get(a.id, a) for a in current):
+        if accrual.source_entry_id not in desired:
+            continue  # defensive: populate_existing reloaded a row whose source is no longer one of ours
+        wanted = desired[accrual.source_entry_id]
+        have.add((accrual.source_entry_id, accrual.rule_id))
         if accrual.state in FROZEN:
             continue
-        if accrual.rule_id not in desired:
+        if accrual.rule_id not in wanted:
             db.delete(accrual)
         else:
-            _set(accrual, *desired[accrual.rule_id])
-    for rule_id, (window, post_on, value) in desired.items():
-        if rule_id in have:
-            continue
-        db.add(RewardAccrual(source_entry_id=entry_id, rule_id=rule_id, window_start=window[0],
-                             window_end=window[1], post_on=post_on, estimate=value, amount=value))
+            _set(accrual, *wanted[accrual.rule_id])
+    for source_id, wanted in desired.items():
+        for rule_id, (window, post_on, value) in wanted.items():
+            if (source_id, rule_id) in have:
+                continue
+            db.add(RewardAccrual(source_entry_id=source_id, rule_id=rule_id, window_start=window[0],
+                                 window_end=window[1], post_on=post_on, estimate=value, amount=value))
     db.flush()
     _recompute_all(db, pairs)
-    if not _is_refund(entry):
-        refunds = db.scalars(
-            select(LedgerEntry.id).where(LedgerEntry.refunds_entry_id == entry_id).order_by(LedgerEntry.id))
-        for refund_id in list(refunds):
-            sync_entry(db, refund_id)
 
 
 def _accruals_of(db: Session, entry_ids: Iterable[int]) -> list[RewardAccrual]:
+    db.flush()  # populate_existing below must not discard pending changes (sessions run autoflush=False)
     ids = list(entry_ids)
     if not ids:
         return []
@@ -257,6 +285,7 @@ def recompute_rules(db: Session, rule_ids: Iterable[int]) -> None:
     ids = sorted(set(rule_ids))
     if not ids:
         return
+    db.flush()
     estimated = list(db.scalars(
         select(RewardAccrual)
         .where(RewardAccrual.rule_id.in_(ids), RewardAccrual.state == "estimated")

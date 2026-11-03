@@ -4,6 +4,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import event, select
 
 from app.models import RewardAccrual, RewardRule
@@ -166,6 +167,20 @@ def test_frozen_accrual_untouched_by_sync(db_session):
     assert (row.window_start, row.window_end) == NOV_WINDOW
 
 
+def test_unflushed_frozen_state_survives_sync(db_session):
+    card = _card(db_session)
+    rule = _rule(db_session, card)
+    spend = _spend(db_session, card, 1000, date(2026, 11, 20), [rule])
+    reward_engine.sync_entry(db_session, spend.id)
+    _one(db_session).state = "posted"  # not flushed (sessions run autoflush=False)
+    spend.amount = Decimal("-3000")
+    spend.entry_date = date(2026, 12, 20)
+    reward_engine.sync_entry(db_session, spend.id)
+    row = _one(db_session)
+    assert (row.state, row.estimate, row.amount) == ("posted", Decimal("10.0000"), Decimal("10.0000"))
+    assert (row.window_start, row.window_end) == NOV_WINDOW
+
+
 def test_unlink_keeps_frozen_accrual(db_session):
     card = _card(db_session)
     rule = _rule(db_session, card)
@@ -222,7 +237,7 @@ def test_foreign_spend_uses_account_amount(db_session):
     assert _one(db_session).estimate == Decimal("32.0000")
 
 
-def test_rule_window_change_moves_estimated_only(db_session):
+def test_rule_window_change_moves_estimated_only(db_session, monkeypatch):
     card = _card(db_session)
     rule = _rule(db_session, card, total_cap=Decimal("15"))
     posted = _spend(db_session, card, 1000, date(2026, 11, 18), [rule])
@@ -232,10 +247,25 @@ def test_rule_window_change_moves_estimated_only(db_session):
     _one(db_session, source_entry_id=posted.id).state = "posted"
     db_session.flush()
     assert _one(db_session, source_entry_id=estimated.id).amount == Decimal("5.0000")
+    # Every estimated accrual with a source moves with the rule. One the engine cannot re-derive (null source; it
+    # sorts last) stays in the old window, capped to 0 behind the other two.
+    stays = RewardAccrual(source_entry_id=None, rule_id=rule.id, window_start=NOV_WINDOW[0],
+                          window_end=NOV_WINDOW[1], estimate=Decimal("10"), amount=Decimal("10"))
+    db_session.add(stays)
+    db_session.flush()
+    reward_engine.recompute_window(db_session, rule.id, NOV_WINDOW[0])
+    assert _one(db_session, id=stays.id).amount == Decimal("0.0000")
 
+    calls = []
+    real = reward_engine.recompute_window
+    monkeypatch.setattr(reward_engine, "recompute_window",
+                        lambda db, rule_id, start, **kw: (calls.append((rule_id, start)), real(db, rule_id, start, **kw)))
     rule.window = "calendar_month"
     db_session.flush()
     reward_engine.recompute_rules(db_session, [rule.id])
+    assert (rule.id, NOV_WINDOW[0]) in calls and (rule.id, date(2026, 11, 1)) in calls
+    # The old window's remainder is recomputed: with the moved accrual gone, it gets the cap left after the posted 10.
+    assert _one(db_session, id=stays.id).amount == Decimal("5.0000")
 
     frozen = _one(db_session, source_entry_id=posted.id)
     moved = _one(db_session, source_entry_id=estimated.id)
@@ -442,3 +472,53 @@ def test_lock_windows_locks_whole_group_in_one_statement(db_session):
     assert len(statements) == 1
     assert [r.id for r in rows] == sorted(r.id for r in rows)
     assert {r.rule_id for r in rows} == {rule_a.id, rule_b.id}
+
+
+def test_purchase_sync_with_refunds_takes_one_accrual_lock(db_session):
+    card = _card(db_session)
+    rule = _rule(db_session, card)
+    spend = _spend(db_session, card, 1000, date(2026, 11, 20), [rule])
+    refunds = [make_entry(db_session, card, amount, kind="refund", entry_date=day, refunds_entry_id=spend.id)
+               for amount, day in (("100", date(2026, 11, 25)), ("200", date(2026, 12, 20)))]
+    reward_engine.sync_entry(db_session, spend.id)
+
+    statements, capture = _capture_for_update(db_session)
+    bind = db_session.connection().engine
+    event.listen(bind, "before_cursor_execute", capture)
+    try:
+        spend.entry_date = date(2026, 12, 20)
+        db_session.flush()
+        reward_engine.sync_entry(db_session, spend.id)
+    finally:
+        event.remove(bind, "before_cursor_execute", capture)
+    assert len([s for s in statements if "reward_accrual" in s]) == 1
+    for refund, value in zip(refunds, ("-1.0000", "-2.0000")):
+        row = _one(db_session, source_entry_id=refund.id)
+        assert (row.window_start, row.estimate) == (date(2026, 12, 16), Decimal(value))
+
+
+def test_locked_recompute_requires_held_window_locks(db_session):
+    card = _card(db_session)
+    group = uuid.uuid4()
+    rule_a = _rule(db_session, card, name="測試規則A", shared_cap_id=group)
+    rule_b = _rule(db_session, card, name="測試規則B", shared_cap_id=group)
+    spend = _spend(db_session, card, 1000, date(2026, 11, 20), [rule_a])
+    reward_engine.sync_entry(db_session, spend.id)
+    db_session.commit()
+
+    with pytest.raises(RuntimeError, match="holds no lock_windows lock"):
+        reward_engine.recompute_window(db_session, rule_a.id, NOV_WINDOW[0], locked=True)
+    reward_engine.lock_windows(db_session, [(rule_b.id, NOV_WINDOW[0])])  # group-expanded: covers rule A too
+    reward_engine.recompute_window(db_session, rule_a.id, NOV_WINDOW[0], locked=True)
+
+    db_session.commit()
+    with pytest.raises(RuntimeError):
+        reward_engine.recompute_window(db_session, rule_a.id, NOV_WINDOW[0], locked=True)
+    reward_engine.lock_windows(db_session, [(rule_a.id, NOV_WINDOW[0])])
+    db_session.rollback()
+    with pytest.raises(RuntimeError):
+        reward_engine.recompute_window(db_session, rule_a.id, NOV_WINDOW[0], locked=True)
+    # Another window is not covered by this one's lock.
+    reward_engine.lock_windows(db_session, [(rule_a.id, NOV_WINDOW[0])])
+    with pytest.raises(RuntimeError):
+        reward_engine.recompute_window(db_session, rule_a.id, date(2026, 12, 16), locked=True)
