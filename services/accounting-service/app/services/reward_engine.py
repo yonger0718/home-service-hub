@@ -356,8 +356,11 @@ def _linked_rule_ids(db: Session, entry_id: int) -> list[int]:
 
 
 def _has_frozen(db: Session, entry_id: int) -> bool:
+    """A frozen accrual with a reward row: only that row can be reviewed (a forfeited accrual without one has
+    nothing the flag could point at, and nothing could clear it)."""
     return bool(db.scalar(select(exists().where(
-        RewardAccrual.source_entry_id == entry_id, RewardAccrual.state.in_(FROZEN)))))
+        RewardAccrual.source_entry_id == entry_id, RewardAccrual.state.in_(FROZEN),
+        RewardAccrual.ledger_entry_id.is_not(None)))))
 
 
 def _settle_flag(db: Session, entry: LedgerEntry, *, changed: bool, before_flag: tuple[bool, str | None]) -> None:
@@ -444,6 +447,23 @@ def drop_for_delete(db: Session, entry_ids: Collection[int]) -> set[Pair]:
     return pairs
 
 
+def prepare_reward_delete(db: Session, reward_entry_id: int) -> RewardAccrual | None:
+    """The owner deletes an engine reward row (5.4, P1), in the P12 order, after `lock_group` and before
+    `locked_with_legs`: the source purchase `SELECT ... FOR UPDATE` (tier 1) and its `reward_posted` flag cleared
+    (controller ruling: as a bank-wins forfeit), then the accrual window (tier 2, `lock_reward_accrual`). The
+    caller forfeits the returned accrual later; any refusal after this point rolls the clear back with the
+    transaction. None for a reward row without an accrual (MOZE era)."""
+    found = db.execute(
+        select(RewardAccrual.source_entry_id).where(RewardAccrual.ledger_entry_id == reward_entry_id)
+    ).first()
+    if found is None:
+        return None
+    if found.source_entry_id is not None:
+        db.execute(select(LedgerEntry.id).where(LedgerEntry.id == found.source_entry_id).with_for_update())
+        clear_reward_flag(db, [found.source_entry_id])
+    return lock_reward_accrual(db, reward_entry_id)
+
+
 def lock_reward_accrual(db: Session, reward_entry_id: int) -> RewardAccrual | None:
     """An engine reward row's accrual, its window (group) locked in ONE `SELECT ... ORDER BY id FOR UPDATE` (P12:
     after the group lock, before the ledger rows). None for a reward row without an accrual (MOZE era)."""
@@ -459,7 +479,8 @@ def lock_reward_accrual(db: Session, reward_entry_id: int) -> RewardAccrual | No
 
 def clear_reward_flag(db: Session, entry_ids: Collection[int]) -> None:
     """Clear `needs_review` on these purchases only where its reason is `reward_posted` (an owner forfeit here,
-    a bank-wins confirm or forfeit in Task 8); a flag set for another reason stays."""
+    a bank-wins confirm or forfeit in Task 8); a flag set for another reason stays. Callers must already hold
+    these purchase rows (P12 tier 1) and call it before taking any accrual lock."""
     ids = sorted({i for i in entry_ids if i is not None})
     if not ids:
         return
@@ -473,10 +494,8 @@ def clear_reward_flag(db: Session, entry_ids: Collection[int]) -> None:
 
 def forfeit_for_delete(db: Session, accrual: RewardAccrual) -> Pair:
     """The owner deleted the accrual's reward row (5.4, P1): `forfeited`, amount kept for the record, no ledger row
-    (so it uses 0 of the cap), and the purchase's `reward_posted` flag cleared (controller ruling: as a bank-wins
-    forfeit). The caller holds the window lock (`lock_reward_accrual`) and the ledger locks; returns the window to
-    `recompute_locked` after the row is gone."""
+    (so it uses 0 of the cap). The caller took the purchase and the window locks and cleared the purchase's flag
+    (`prepare_reward_delete`); returns the window to `recompute_locked` after the row is gone."""
     accrual.state, accrual.ledger_entry_id = "forfeited", None
     db.flush()
-    clear_reward_flag(db, [accrual.source_entry_id])
     return accrual.rule_id, accrual.window_start

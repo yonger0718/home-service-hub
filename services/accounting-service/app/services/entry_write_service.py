@@ -637,8 +637,8 @@ def affected_set(db: Session, entry: LedgerEntry) -> AffectedSet:
 def delete_entry(db: Session, entry_id: int) -> None:
     """Deleting needs no FX, so the locks are taken straight away, in the shared order (D32, split rework §1.7):
     the period's schedule rows (lock_for_entry_delete) → every affected entry_group row (lock_group, ascending id)
-    → for an engine reward row, its accrual window in ONE SELECT … ORDER BY id FOR UPDATE
-    (reward_engine.lock_reward_accrual, P12) → the targets, their transfer legs and every member of an affected split
+    → for an engine reward row, its source purchase FOR UPDATE (its `reward_posted` flag cleared) and then its
+    accrual window in ONE SELECT … ORDER BY id FOR UPDATE (reward_engine.prepare_reward_delete, P12) → the targets, their transfer legs and every member of an affected split
     group in ONE statement by ascending id (locked_with_legs) → nothing else (delete_entries_cascade then nulls
     reward_source_entry_id / settles_entry_id / refunds_entry_id on dependant rows outside this lock set; safe, as
     no path locks those rows before a group or member row). The affected set is read before the locks and again
@@ -655,8 +655,9 @@ def delete_entry(db: Session, entry_id: int) -> None:
     before = affected_set(db, target)
     for group_id in before.group_ids:
         lock_group(db, group_id)
-    # P1 / P12: an engine reward row's accrual window is locked here, after the groups and before the ledger rows.
-    accrual = reward_engine.lock_reward_accrual(db, entry_id) if target.kind == "reward" else None
+    # P1 / P12: for an engine reward row, its purchase (tier 1, flag cleared) and then its accrual window (tier 2)
+    # are locked here, after the groups and before the reward row's own ledger locks.
+    accrual = reward_engine.prepare_reward_delete(db, entry_id) if target.kind == "reward" else None
     locked = locked_with_legs(db, entry_id, before.transfer_group_id, before.lock_ids())
     entry = next((row for row in locked if row.id == entry_id), None)
     if entry is None:

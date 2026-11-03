@@ -269,7 +269,8 @@ def test_owner_reward_delete_clears_purchase_flag(client, db_session):
     purchase_id = client.post("/entries", json=_payload(card, reward_rule_ids=[rule.id])).json()["id"]
     reward_id = _post(db_session, _one(db_session)).id
     db_session.commit()
-    client.put(f"/entries/{purchase_id}", json=_payload(card, amount="2000", reward_rule_ids=[rule.id]))
+    setup = client.put(f"/entries/{purchase_id}", json=_payload(card, amount="2000", reward_rule_ids=[rule.id]))
+    assert setup.status_code == 200, setup.text
     purchase = _entry(db_session, purchase_id)
     assert (purchase.needs_review, purchase.review_reason) == (True, "reward_posted")
 
@@ -309,14 +310,31 @@ _LOCK = re.compile(r"FOR (UPDATE|SHARE|NO KEY UPDATE)")
 
 
 def _lock_kind(statement: str) -> str:
+    if statement.lstrip().startswith("UPDATE ledger_entry"):
+        return "ledger_entry_update"
     match = re.search(r"\bFROM (\w+)", statement)
     return match.group(1) if match else statement
 
 
+def _ints(parameters) -> set[int]:
+    """Every int bound in a statement's parameters (lists flattened; bools are not ids)."""
+    values = parameters.values() if isinstance(parameters, dict) else (parameters or ())
+    out: set[int] = set()
+    for value in values:
+        for item in value if isinstance(value, (list, tuple)) else (value,):
+            if type(item) is int:
+                out.add(item)
+    return out
+
+
 def test_engine_reward_delete_lock_order(db_session):
-    """P12: schedule rows → entry_group → the accrual window (ONE statement, by id) → ledger rows; no accrual lock
-    after a ledger lock."""
+    """P12: schedule rows → entry_group → the purchase row FOR UPDATE (tier 1, its flag cleared) → the accrual
+    window (ONE statement, by id, tier 2) → the reward row's ledger locks and updates; nothing touches the purchase
+    and no accrual is locked after the accrual window lock."""
     card = _card(db_session)
+    filler = make_account(db_session, "測試錢包")
+    for _ in range(5):  # keep the purchase id apart from small ints the statements also bind
+        make_entry(db_session, filler, "-1", entry_date=DAY)
     rule = _rule(db_session, card, total_cap=Decimal("15"))
     first = _spend(db_session, card, 1000, date(2026, 11, 18), [rule])
     _spend(db_session, card, 1000, date(2026, 11, 20), [rule])
@@ -325,16 +343,17 @@ def test_engine_reward_delete_lock_order(db_session):
     db_session.flush()
     reward = _post(db_session, _one(db_session, source_entry_id=first.id))
     reward.group_id = group.id
+    first.needs_review, first.review_reason = True, "reward_posted"
     definition = make_definition(db_session, [schedule_line("income", card, "10")])
     make_instance(db_session, definition, 1, date(2027, 1, 5), status="posted", entries=[reward])
-    reward_id = reward.id
+    purchase_id, reward_id = first.id, reward.id
     db_session.commit()
 
-    statements: list[str] = []
+    captured: list[tuple[str, set[int]]] = []
 
     def capture(conn, cursor, statement, parameters, context, executemany):
-        if _LOCK.search(statement):
-            statements.append(statement)
+        if _LOCK.search(statement) or statement.lstrip().startswith("UPDATE ledger_entry"):
+            captured.append((statement, _ints(parameters)))
 
     bind = db_session.connection().engine
     event.listen(bind, "before_cursor_execute", capture)
@@ -344,16 +363,35 @@ def test_engine_reward_delete_lock_order(db_session):
         event.remove(bind, "before_cursor_execute", capture)
     db_session.commit()
 
-    kinds = [_lock_kind(s) for s in statements]
+    kinds = [_lock_kind(statement) for statement, _ in captured]
+    on_purchase = [i for i, (_, ids) in enumerate(captured) if purchase_id in ids and kinds[i].startswith("ledger_entry")]
     assert kinds.count("reward_accrual") == 1, kinds
     accrual_at = kinds.index("reward_accrual")
-    assert "ORDER BY reward_accrual.id" in statements[accrual_at]
+    assert "ORDER BY reward_accrual.id" in captured[accrual_at][0]
     schedule_at = [i for i, k in enumerate(kinds) if k.startswith("schedule_")]
     group_at = [i for i, k in enumerate(kinds) if k == "entry_group"]
-    ledger_at = [i for i, k in enumerate(kinds) if k == "ledger_entry"]
-    assert schedule_at and group_at and ledger_at, kinds
-    assert max(schedule_at) < min(group_at) < accrual_at < min(ledger_at), kinds
-    assert _one(db_session, ledger_entry_id=None, source_entry_id=first.id).state == "forfeited"
+    purchase_lock = [i for i in on_purchase if kinds[i] == "ledger_entry"]
+    reward_rows = [i for i, (_, ids) in enumerate(captured) if reward_id in ids and kinds[i].startswith("ledger_entry")]
+    assert schedule_at and group_at and purchase_lock and reward_rows, kinds
+    assert max(schedule_at) < min(group_at) < purchase_lock[0] < accrual_at < min(reward_rows), kinds
+    assert all(i < accrual_at for i in on_purchase), (kinds, on_purchase)  # nothing on the purchase after tier 2
+    db_session.expire_all()
+    assert _one(db_session, ledger_entry_id=None, source_entry_id=purchase_id).state == "forfeited"
+    purchase = db_session.get(LedgerEntry, purchase_id)
+    assert (purchase.needs_review, purchase.review_reason) == (False, None)
+
+
+def test_forfeited_accrual_without_reward_row_sets_no_flag(client, db_session):
+    card = _card(db_session)
+    rule = _rule(db_session, card)
+    db_session.commit()
+    purchase_id = client.post("/entries", json=_payload(card, reward_rule_ids=[rule.id])).json()["id"]
+    accrual = _one(db_session)
+    accrual.state = "forfeited"  # e.g. a 0 allotment at posting: no ledger row (5.1)
+    db_session.commit()
+    response = client.put(f"/entries/{purchase_id}", json=_payload(card, amount="2000", reward_rule_ids=[rule.id]))
+    assert response.status_code == 200, response.text
+    assert (response.json()["needs_review"], response.json()["review_reason"]) == (False, None)
 
 
 # --- project moves -------------------------------------------------------------------------------------------
