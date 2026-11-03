@@ -404,7 +404,28 @@ the P5 gap (a dismiss-only early case would leave a bank-paid reward at 0). Mapp
     `lock_group` (`entry_group`), then the accrual-window `SELECT … ORDER BY id` (placed after `lock_group`, before
     `locked_with_legs`), the `ledger_entry` locks come after it, and no accrual lock follows a ledger lock. The
     same listener over `post_accrual` (daily-job path) and bank wins `prepare` → accrual locks are one statement, in
-    id order, before any reward-row update.
+    id order, before any reward-row update. Those two halves land with their code: `test_post_accrual_lock_order`
+    in Task 7 and `test_prepare_lock_order` in Task 8.
+- [ ] **Step 2:** `$PYTEST tests/integration/test_reward_engine_hooks.py -v` → FAIL.
+- [ ] **Step 3:** Implement the hooks. `insert_prepared` / `apply_prepared_update` call `after_write` after
+  `write_rule_links`. Capture `before_*` at the start of `apply_prepared_update`. `delete_entries_cascade` calls
+  `delete_estimated_for` before deleting, flags the surviving frozen accruals' reward rows, and recomputes after.
+  `refund()` calls `sync_entry(db, entry.id)` after its flush.
+- [ ] **Step 4:** Step 2's command, then the regression suites
+  `$PYTEST tests/integration/test_entry_writes.py tests/integration/test_entries_api.py tests/integration/test_settlements.py tests/integration/test_splits.py tests/integration/test_reward_rules_api.py -q`
+  → PASS.
+- [ ] **Step 5:** commit `feat(accounting): run the reward engine on entry, rule and account writes`.
+
+### Task 7: Posting: per-accrual post, daily job, manual endpoint
+
+**Files:**
+- Create: `app/services/reward_posting.py`, `app/services/reward_post_job.py`, `app/routers/reward_accruals.py`
+- Modify: `app/services/schedule_locks.py:18-20` (`REWARD_POST_JOB_LOCK_KEY = 0x52574450`), `app/main.py:13,22-25,40-57`
+  (router + start/stop)
+- Test: `tests/integration/test_reward_posting.py`, `tests/unit/test_reward_post_job_scheduler.py`
+
+**Interfaces:**
+- Produces:
   - `reward_posting.post_accrual(db, accrual_id: int, *, on: date | None = None) -> str`. It returns `"posted"`,
     `"forfeited"` (amount 0, no row) or `"skipped"` (not `estimated`, or `ledger_entry_id` set).
     - Calls `recompute_window` first (it takes the window's accrual locks in id order, P12), re-reads the accrual
@@ -424,6 +445,8 @@ the P5 gap (a dismiss-only early case would leave a bank-paid reward at 0). Mapp
     posting is not `manual`.
 
 - [ ] **Step 1: Failing tests:**
+  - `test_post_accrual_lock_order` (P12, lead carry): a `before_cursor_execute` listener over `post_accrual` → the
+    accrual locks are one `SELECT … WHERE id IN (…) ORDER BY id FOR UPDATE`, before any reward-row insert or update.
   - `test_post_creates_reward_row`: fields as above, accrual `posted`, `ledger_entry_id` set, row currency = reward
     account currency (a points account in `PTS`).
   - `test_post_zero_amount_forfeits_without_row` (past cap).
@@ -509,6 +532,9 @@ the P5 gap (a dismiss-only early case would leave a bank-paid reward at 0). Mapp
   - `test_engine_rows_never_matcher_candidates`: an engine row outside the period with an equal amount is not
     claimed by the matcher.
   - `test_policy_validator_agrees`: `_single_admissible` sees the same claimable lines (no pulled line).
+  - `test_prepare_lock_order` (P12, lead carry): a `before_cursor_execute` listener over a reconcile with candidates
+    → the statement row lock first, then the candidates' window accruals in one `SELECT … WHERE id IN (…) ORDER BY id
+    FOR UPDATE`, then reward ledger row locks/updates; no accrual lock follows a ledger lock.
 - [ ] **Step 2:** `$PYTEST tests/integration/test_reward_bank_wins.py -v` → FAIL.
 - [ ] **Step 3:** Implement. Candidate sets (a)/(b)/(c) follow §7.1. "Previous statement" = the account's latest
   non-retired statement with `period_end < this.period_start`.
