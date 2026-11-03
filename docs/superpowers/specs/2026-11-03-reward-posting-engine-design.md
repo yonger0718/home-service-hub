@@ -1,6 +1,6 @@
 # Reward posting engine (回饋規則 phase 2) — design
 
-Status: draft rev 2, 2026-11-03 (builder check folded, §13; Multica design review AGENT-394 folded, §14). Issues: #288 (calendar-month window), #289 (MOZE miles rules cannot be edited).
+Status: draft rev 2.1, 2026-11-03 (builder check folded, §13; Multica design review AGENT-394 and its re-check folded, §14). Issues: #288 (calendar-month window), #289 (MOZE miles rules cannot be edited).
 Builds on `docs/superpowers/specs/2026-10-31-reward-rules-design.md` §9.1. Its owner rulings of 2026-10-31 stay in
 force, and this document extends them.
 
@@ -224,39 +224,58 @@ validated as today (`check_rules`: rule of the same account, enabled on `entry_d
 
 Scope: card statements, and the rules whose reward account is the card (or null, meaning the card). Engine reward
 rows (rows with an accrual) are **never matcher candidates**: `load_candidates` leaves them out, and they meet
-statements only through this step. MOZE-era reward rows stay candidates as today.
+statements only through this step. MOZE-era reward rows (no accrual) stay candidates as today.
 
-**The step** (findings 1 and 2) runs in `_match_and_record` before `pass_two_holders` and `matching.match`
-(`reconciliation_service.py:568`, `:1121`), in the reconcile transaction:
+**The step** (findings 1 and 2, re-check N1–N3) runs in `_match_and_record`, in the reconcile transaction, before
+`pass_two_holders` (`reconciliation_service.py:553`, called at `:1119`) and the pass-2 `matching.match` (`:1121`).
+It never commits and never writes coverage itself.
 1. **Candidates** = the accruals whose reward account is one of the statement's participating accounts and that are
    - (a) `estimated` or `posted`, with `post_on` in `[period_start, period_end]`; or
    - (b) **carried**: `posted`, `confirmed_statement_id` null, `post_on` before `period_start` and on or after the
-     previous statement's `period_start`; or
+     `period_start` of the account's previous statement. With no earlier statement, (b) is empty; or
    - (c) already confirmed or forfeited by this statement (`confirmed_statement_id` = this one: a re-run).
 2. **Empty candidate set:** the statement's reward lines go to the matcher exactly as today (`bank_only` →
    `create_system_entry` when nothing matches). This is the only way a reward line reaches `bank_only`.
-3. **Otherwise** the statement's `reward` lines, except those with owner coverage, are taken out of the claimable
-   lines. The policy validator builds pass 2 through the same `pass_two_holders`, so it applies the same filter and
-   both agree.
-4. Candidates still `estimated` are posted first (the §5.1 per-accrual step).
-5. **Distribution:** the bank total B = the sum of the pulled lines (0 when the statement prints none, so a statement
-   with no reward line still runs this step). B is distributed over all candidates in proportion to their accrual
-   `amount`, with the remainder on the last by `post_on`, id; when every amount is 0 the whole of B goes on the last.
-   - A candidate assigned more than 0: its ledger row takes the assigned amount, the accrual becomes
-     `bank_confirmed`, `confirmed_statement_id` = this statement.
-   - A **carried** candidate (b) assigned 0: `forfeited`, ledger amount 0, kept and visible as 未獲得,
+3. **Pulled lines.** Otherwise the statement's `reward` lines are taken out of the claimable lines, except
+   - lines with owner coverage (they already leave the matcher input), and
+   - a line with exactly one amount-for-amount match among the no-accrual (MOZE-era) reward rows in the population:
+     it stays in the matcher, so a MOZE row keeps explaining its own line.
+
+   The policy validator builds pass 2 through the same `pass_two_holders`, so it applies the same filter and both
+   agree. If every reward line stayed in the matcher, the step stops here.
+4. **Early post** (N2): candidates still `estimated` are posted on the reconcile session, inside the reconcile
+   transaction: row lock `FOR UPDATE`, skip when `ledger_entry_id` is set, insert the reward row (§5.1 shape), set
+   `posted`. No commit and no advisory lock here. A reconcile rollback undoes the post with everything else. The daily
+   job and the manual post endpoint keep their advisory lock and per-accrual transaction (§5.1).
+5. **Pairing** (N1): pulled lines in line id order, candidate rows in `post_on`, id order. Line k (k < L, L = number
+   of pulled lines) gets row k; the last line gets all remaining rows. Within a line, the line's amount is spread over
+   its rows in proportion to their accrual `amount`, with the remainder on the line's last row; when all of them are
+   0, the whole line goes on the last row. So each line's rows sum to that line, and the existing per-line
+   conservation (`coverage_service.py:88-94`, `:163-180`) holds unchanged.
+   - **More lines than rows** (my call, instead of a group-sum conservation rule): the lines left without a row are
+     not covered. Each one becomes a `line_unmatched` case with the hint `reward_surplus` (never `bank_only`), so no
+     policy books it (`policy_service.py:154` requires `bank_only`). The owner decides it. Rare: it needs more reward
+     lines on one statement than engine rows behind them.
+   - **No pulled line** (the statement prints no reward line; B = 0): every candidate is assigned 0.
+6. **Outcome per row:**
+   - assigned more than 0: the ledger row takes the assigned amount (updated **before** the claims are built), the
+     accrual becomes `bank_confirmed`, `confirmed_statement_id` = this statement;
+   - assigned 0 (N3), judged by the row's own `post_on`, on a first run and on a re-run alike: `post_on` inside this
+     period → stays `posted` (`confirmed_statement_id` cleared on a re-run), the bank may credit it one cycle late;
+     `post_on` before this period (carried) → `forfeited`, ledger amount 0, kept and visible as 未獲得,
      `confirmed_statement_id` = this statement.
-   - A current-period candidate (a) assigned 0 stays `posted`: the bank may credit it one cycle late, and the next
-     statement carries it.
-6. **Coverage:** every pulled line ends covered, never an open case. Coverage rows use `match_kind = auto` and a new
-   `match_rule` `reward_engine`; the active-entry unique index (`ux_statement_coverage_active_entry`) means each
-   paid row is covered by one line. How lines are paired with rows, and how a statement with more reward lines than
-   rows covers them, is the builder's call inside the existing coverage model, with a test.
-7. **The one-cycle balance gap** (finding 2): a reward the bank credits one cycle late is in the ledger (posted on
+7. **Coverage** (N1): the step appends one claim per paired line to the `MatchResult` that `_write_coverage` persists
+   (`reconciliation_service.py:573-589`): `match_kind = auto`, `match_rule = reward_engine`, the line's rows as
+   principals. Written through `_write_coverage`, the claims are not released by the same reconcile, and a re-run
+   rebuilds the same claims, so `_claim_unchanged` (`reconciliation_service.py:472-481`) keeps them. The builder
+   pins with a test that the next sweep keeps these claims (the dirty rows from the amount updates predate the claims
+   and equal their snapshots).
+8. **The one-cycle balance gap** (finding 2, N4): a reward the bank credits one cycle late is in the ledger (posted on
    `post_on`) but not on the first statement, so that statement's balance check is off by the carried rows until the
-   next statement settles them. The `balance_gap` case it raises names the carried accruals in its context. **No
-   automatic action** (policy, owner rule, auto-pay) books a reward or a balance adjustment for it; the owner
-   dismisses it once the next statement has confirmed or forfeited the rows.
+   next statement settles them. The `balance_gap` case it raises names the carried accruals in its context. Such a
+   case offers **`dismiss` only** (not `balance_adjustment_asof` or `anchor_opening`, which would book the reward a
+   second time), and no automatic action (policy, owner rule, auto-pay) books anything for it. The owner dismisses
+   it once the next statement has confirmed or forfeited the rows.
 
 Engine rows on points or miles accounts never meet a card statement: they stay `posted`. The 「leave the case open
 until the daily job」 option of rev 1 is gone: step 4 posts early.
@@ -316,7 +335,6 @@ Differences explained by known MOZE quirks are recorded in the release notes.
 - The shape of the shared cycle helper and how notify imports it.
 - Whether recompute-on-write runs inline or via a small deferred queue in the same transaction.
 - The PUT schema split for #289 (a separate update schema or a validator on the shared one).
-- How the §7 step pairs reward lines with paid rows in coverage (§7.6).
 - Test fixtures: fictional cards with a percent rule, a capped rule, a shared cap, a `per_unit` rule, a
   calendar-month rule, a refund, a `manual` rule, a late (carried) bank credit and a re-run.
 
@@ -337,8 +355,10 @@ Differences explained by known MOZE quirks are recorded in the release notes.
 - Rules sharing a cap must share a window; the group cap is the smallest member cap (§4.2).
 - A purchase past the cap at posting gets no reward row (accrual `forfeited`) (§5.1).
 - A reward the bank credits one cycle late stays `posted` for one statement; that statement's balance gap is left to
-  the owner, never booked (§7.7).
-- The bank figure is spread over carried and current rows in proportion to the engine amounts (§7.5).
+  the owner, never booked (§7.8).
+- Bank lines are paired with rows in order; each line is spread over its rows in proportion to the engine amounts
+  (§7.5). Lines beyond the row count go to the owner as cases (§7.5).
+- A carry-gap `balance_gap` case offers dismiss only (§7.8).
 - An owner-deleted reward row forfeits its accrual (§5.4).
 
 ## 13. Builder check (2026-11-03): questions and how they were settled
@@ -361,7 +381,7 @@ Differences explained by known MOZE quirks are recorded in the release notes.
    are taken out before matching whenever the statement has engine candidates; engine rows are never matcher
    candidates (§7).
 2. Late credits: carried `posted` rows of the previous period are candidates; forfeit only when the next pass assigns
-   0; a statement with no reward line still runs the step; the one-cycle balance gap is named (§7.1, §7.5, §7.7).
+   0; a statement with no reward line still runs the step; the one-cycle balance gap is named (§7.1, §7.6, §7.8).
 3. Rounding under freeze: frozen amounts keep `txn_rounding` only; the `total_rounding` delta goes on the latest
    estimated accrual (§5.2.4).
 4. Refunds: built in `refund()` from the purchase's links, in the purchase's window; ordering by source `entry_date`,
@@ -377,3 +397,12 @@ Differences explained by known MOZE quirks are recorded in the release notes.
 9. Schema: 0 accepted on PUT only for a stored 0 placeholder; `per_unit` validation; posted row currency (§4.2,
    §5.1).
 10. Review flag: one reason `reward_posted`, set after `_apply`; non-financial edits keep it (§5.1).
+
+Re-check on rev 2 (`d7743c79`): findings 1–10 resolved; four new items, folded in rev 2.1:
+- N1 (blocker) coverage written inside the step would be released by `_write_coverage` and could not conserve per
+  line: claims go through the `MatchResult`; lines pair with rows in order and each line sums to itself; a line with
+  one exact MOZE-row match stays in the matcher; surplus lines become owner cases (§7.3, §7.5, §7.7).
+- N2 (major) the early post committed on its own: it runs on the reconcile session without a commit (§7.4).
+- N3 (minor) zero assignment on a re-run and the missing predecessor: judged by the row's `post_on`; (b) empty with
+  no earlier statement (§7.1, §7.6).
+- N4 (minor) the carry gap offered `balance_adjustment_asof`: dismiss only (§7.8).
