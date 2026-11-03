@@ -1,6 +1,6 @@
 # Reward posting engine (回饋規則 phase 2) — design
 
-Status: draft rev 1.1, 2026-11-03 (builder check folded, §13). Issues: #288 (calendar-month window), #289 (MOZE miles rules cannot be edited).
+Status: draft rev 2, 2026-11-03 (builder check folded, §13; Multica design review AGENT-394 folded, §14). Issues: #288 (calendar-month window), #289 (MOZE miles rules cannot be edited).
 Builds on `docs/superpowers/specs/2026-10-31-reward-rules-design.md` §9.1. Its owner rulings of 2026-10-31 stay in
 force, and this document extends them.
 
@@ -63,17 +63,24 @@ New table `reward_accrual`, one row per (source entry, rule):
 | column | meaning |
 |---|---|
 | `id` | |
-| `source_entry_id` | the purchase or refund; FK `ledger_entry`, `ON DELETE CASCADE` |
+| `source_entry_id` | the purchase or refund; FK `ledger_entry`, **nullable, `ON DELETE SET NULL`**. The entry delete path deletes the entry's `estimated` accruals itself before the row goes; `posted`, `bank_confirmed` and `forfeited` accruals survive with a null source (§5.4) |
 | `rule_id` | FK `reward_rule` (RESTRICT, matching `entry_reward_rule`) |
 | `window_start`, `window_end` | the window this accrual counts in (dates, inclusive) |
 | `post_on` | the computed posting date (null for `manual` posting) |
 | `estimate` | per-transaction amount after `txn_rounding`, before the window cap; signed (refunds negative) |
-| `amount` | the amount the window allots to this row after cap / shared cap / `total_rounding`; recomputed |
-| `state` | `estimated` → `posted` → `bank_confirmed` or `forfeited` (未獲得) |
+| `amount` | the amount the window allots to this row (§5.2). Recomputed while `estimated`; fixed from `posted` on. Bank wins (§7) changes the ledger row, never this column, so a re-run distributes the same way |
+| `state` | `estimated` → `posted` → `bank_confirmed` or `forfeited` (未獲得); `estimated` → `forfeited` directly for a 0 allotment at posting (§5.1) or a deleted reward row (§5.4) |
 | `ledger_entry_id` | the reward row once posted; FK `ledger_entry`, unique, `ON DELETE SET NULL` |
+| `confirmed_statement_id` | the statement whose reconcile set `bank_confirmed` / `forfeited`; FK `account_statement`, `ON DELETE SET NULL`. A re-run of that statement reads these rows again (§7) |
 | `updated_at` | |
 
-Unique (`source_entry_id`, `rule_id`).
+Unique (`source_entry_id`, `rule_id`) (Postgres treats null sources as distinct, so surviving accruals of deleted
+purchases never collide).
+
+Ledger index (dev-grok finding 7): a partial unique index on `ledger_entry (reward_source_entry_id, reward_rule_id)`
+`WHERE reward_source_entry_id IS NOT NULL AND reward_rule_id IS NOT NULL`. The migration first counts duplicate
+pairs. With none it creates the index; with any it skips the index, logs the count and the entry ids, and the
+release notes carry them for the owner. The engine's own duplicate guard (§5.1) does not depend on the index.
 
 Why a table rather than a state column on `ledger_entry`: the 10-31 ruling says balances and reports ignore 預估
 rows. Keeping estimates off the ledger meets that without touching every balance, report and reconciliation query.
@@ -84,11 +91,20 @@ The ledger only ever holds posted rewards, exactly as it held MOZE's. MOZE-era r
 
 - `window`: enum adds `calendar_month` (alembic enum migration; `REWARD_WINDOWS`, `schemas/writes.py`,
   `schemas/ledger.py`, the SPA editor).
-- `method`: adds **`per_unit`**. One unit is earned per `unit_spend` of spend (`unit_spend` Numeric(20,4) > 0,
-  new column), e.g. `unit_spend = 20` for "NT$20 = 1 mile". `txn_rounding` applies to the units (banks usually floor).
-  `percent` and `fixed` keep their meaning.
-- Validation (#289): an update that leaves a stored `fixed_amount = 0` unchanged is accepted, so the owner can still
-  edit a MOZE placeholder's description before migrating it. New writes keep `fixed_amount > 0`.
+- `method`: adds **`per_unit`**. One unit is earned per `unit_spend` of spend (`unit_spend` Numeric(20,4), new
+  nullable column), e.g. `unit_spend = 20` for "NT$20 = 1 mile". `txn_rounding` applies to the units (banks usually
+  floor). `percent` and `fixed` keep their meaning.
+- Method validation (finding 9), 422 per field: `per_unit` requires `unit_spend > 0` and forbids `rate` and
+  `fixed_amount`; `percent` and `fixed` forbid `unit_spend`.
+- #289 (finding 9): the PUT body takes `fixed_amount ≥ 0` (`NonNegativeMoney`); POST keeps `Money` (> 0). The
+  service accepts 0 on PUT only when the stored rule is `method = fixed` with `fixed_amount = 0` and the payload keeps
+  `method = fixed`; any other 0 is 422 `fixed_amount` "must be greater than 0". The owner can then edit a MOZE
+  placeholder's description before migrating it.
+- Shared caps (finding 6): rules sharing a cap must use the same `window`. A PUT that joins a cap
+  (`share_cap_with`) or changes the `window` of a group member, leaving the group with two window values, is 422
+  `share_cap_with` / `window` "rules sharing a cap must use the same window". Groups are already one account's rules
+  (`reward_rule_service.py:108`), so one window value means the same window dates. The group's cap is the smallest
+  non-null `total_cap` of its rules; all null means uncapped (my call; today each rule stores its own `total_cap`).
 - Rollout (§10) migrates the known MOZE miles placeholders to `per_unit`, rule by rule, with the owner.
 
 ### 4.3 Windows
@@ -115,86 +131,141 @@ As specified in the 10-31 design table:
 
 ### 5.1 When it runs
 
-- **On entry write** (POST / PUT / DELETE `/entries`, split, refund, transfer create/update, every path that calls
+- **On entry write** (POST / PUT / DELETE `/entries`, split, transfer create/update, every path that calls
   `write_rule_links`): within the same transaction, the touched entry's accruals are created, updated or deleted,
   and every window it touches (old and new) is recomputed.
+- **Refunds** (finding 4): `settlement_service.refund` (`settlement_service.py:94`) writes no rule links, and refund
+  rows carry none. `refund()` itself creates the refund's accruals, one per rule linked to the refunded purchase,
+  in the **purchase's** window, and recomputes those windows. A change to the purchase's links re-derives its
+  refunds' `estimated` accruals the same way.
 - **On rule or account write** (§13 Q5): a reward rule PUT (rate, cap, method, `unit_spend`, window, posting, dates,
   shared cap) or a card's `closing_day` change re-buckets and recomputes that rule's / card's `estimated` accruals.
-  Posted accruals are never repriced.
-- **Daily job**, in the API process like `auto_pay_job` / `schedule_job` (`app/main.py`), Asia/Taipei. For every
-  `estimated` accrual with `post_on <= today`, it recomputes the window, creates the reward ledger row (kind
-  `reward`, account = the rule's `reward_account_id` or the card, `entry_date = posted_date = post_on`, project per
-  #262 inheritance: the rule's `reward_project_id`, else the purchase's project), links it, and sets `posted`.
+  Frozen accruals (`posted` and later) are never repriced or moved.
+- **Daily job**, in the API process like `auto_pay_job` / `schedule_job` (`app/main.py`), Asia/Taipei (finding 7):
+  - one `pg_try_advisory_lock` on a new key per run, skipping the run when busy, as `auto_pay_job.py:213` does;
+  - each `estimated` accrual with `post_on <= today` is posted in its own transaction: lock the accrual row
+    `FOR UPDATE`; skip it unless it is still `estimated` with `ledger_entry_id` null; recompute its window; insert
+    the reward row and set `ledger_entry_id` and `posted` in that same transaction;
+  - the reward row: kind `reward`, account = the rule's `reward_account_id` or the card, **currency = that
+    account's currency**, amount = the accrual's `amount`, `entry_date = posted_date = post_on`,
+    `reward_source_entry_id`, `reward_rule_id`, the system reward category, and the project per #262 inheritance
+    (the rule's `reward_project_id`, else the purchase's project);
+  - an accrual whose allotted `amount` is 0 at posting (past the cap) becomes `forfeited` without a ledger row (my
+    call: no 0 rows for purchases past a cap).
+  - The manual post endpoint (§6) runs the same per-accrual step.
 - **Freezing is per accrual, not per window** (§13 Q1). A posted accrual's amount is fixed. While a window still has
-  `estimated` accruals (later purchases, `after_transaction` or `manual` rules, shared-cap members with other
-  posting), they are allotted the cap left after the posted amounts. An edit that changes a posted accrual's purchase
-  (amount, rules, date) does not reprice it. The edit sets the purchase's `needs_review` and records the reason
-  `reward_posted` in a new nullable `review_reason` column (my call; today `needs_review` has no reason storage).
+  `estimated` accruals (later purchases, `after_transaction` or `manual` rules, refunds), they are allotted the cap
+  left after the frozen amounts. An edit that changes a frozen accrual's purchase does not reprice it.
+- **Review flag** (finding 10): `_apply` clears `needs_review` on every entry PUT (`entry_write_service.py:227`), and
+  the split paths do the same (`split_service.py:323`, `:332`). A new nullable `review_reason` column holds one
+  reason name, `reward_posted`. It is set, with `needs_review = true`, **after** `_apply` in the same transaction,
+  when an edit changes the amount, date, account or rule links of a purchase that has a frozen accrual. A later
+  purchase PUT that changes none of those keeps the flag and the reason (they are restored after `_apply`). The flag
+  clears when the accrual's reward row is edited, or when bank wins confirms or forfeits the accrual.
 - **Project changes** (10-31 ruling, in scope): a PUT that changes a purchase's project moves the project of its
   rewards, estimated and posted, when the reward's project is null or equal to the old one. A project is not a price,
-  so freezing does not block it.
+  so freezing does not block it and it does not set the review flag.
 
 ### 5.2 Computing a window
 
-For one rule (or one shared-cap group) and one window, in `entry_date`, `id` order:
-1. Each accrual's `estimate`: `percent` → |amount| × rate / 100; `fixed` → `fixed_amount`; `per_unit` →
-   |amount| / `unit_spend` units. Apply `txn_rounding`. Refunds (`kind = refund` with `refunds_entry_id`) carry the
-   refunded purchase's rules and produce negative estimates in the window of the **purchase** (my call; banks claw
-   back from the original window when they can).
-2. Allot in order against `total_cap` (or the shared cap's remaining amount across the group's rules). An accrual's
-   `amount` is the part that still fits. Past the cap it is 0.
-3. `total_rounding` applies to the window total. The rounding difference goes on the window's last accrual (my
-   call; it keeps rows summing to the rounded total).
-4. Amounts use the source entry's account-currency `amount` (TWD for TWD cards; the ledger already stores the
+For one rule (or one shared-cap group) and one window:
+1. **Estimates.** `percent` → |amount| × rate / 100; `fixed` → `fixed_amount`; `per_unit` → |amount| / `unit_spend`
+   units. Apply `txn_rounding`. A refund's estimate uses the refunded purchase's rule and is negative.
+2. **Used cap.** The cap is the rule's `total_cap`, or the group's cap (§4.2). `used` = the amounts of the frozen
+   accruals of the group's rules in the window (for `bank_confirmed` and `forfeited`, the ledger row's amount, 0 when
+   it has none) + the no-accrual reward rows of the group's rules whose source purchase is in the window (§5.3).
+3. **Allotment** (finding 4), `estimated` accruals only, sorted by the source row's `entry_date`, then id:
+   `remaining = cap − used`. A negative estimate is allotted in full and raises `remaining`. A positive estimate is
+   allotted `min(estimate, max(remaining, 0))`, and `remaining` drops by that amount. Uncapped: `amount = estimate`.
+4. **Rounding under freeze** (finding 3): frozen amounts keep `txn_rounding` only and are never rewritten.
+   `total_rounding` applies to the window sum (frozen + estimated, clamped so it never exceeds the cap). The difference
+   between the rounded sum and the raw sum is added to the **latest still-estimated accrual** in the sort above;
+   with `after_window` or `after_transaction` posting that row is also the last to post. A window with no estimated
+   accrual left gets no adjustment.
+5. Amounts use the source entry's account-currency `amount` (TWD for TWD cards; the ledger already stores the
    converted amount for foreign spends).
 
 ### 5.3 Which entries accrue
 
-Only entries with `entry_reward_rule` links. The engine never picks rules. Links are validated as today
-(`check_rules`: rule of the same account, enabled on `entry_date`).
+Only entries with `entry_reward_rule` links, and refunds of them (§5.1). The engine never picks rules. Links are
+validated as today (`check_rules`: rule of the same account, enabled on `entry_date`).
 
 - **No double booking** (§13 Q4): a (purchase, rule) that already has a reward row with that `reward_source_entry_id`
   and `reward_rule_id` (MOZE era) gets no accrual, whatever the edit.
-- **Straddling windows:** existing reward rows of a rule (MOZE era, no accrual) whose source purchase falls in an open
-  window count as already-used cap in that window, read-only.
+- **Straddling windows** (finding 5): only reward rows **without** an accrual (MOZE era) are read this way. Those of
+  the group's rules whose source purchase falls in the window count as used cap, read-only. Engine rows count through
+  their accruals.
 - Rules still in the MOZE placeholder shape (`method = fixed`, `fixed_amount = 0`) produce no accrual until they are
   migrated (§10.3).
 
+### 5.4 Deletes (finding 5)
+
+- **Purchase or refund deleted:** the delete path deletes its `estimated` accruals and recomputes their windows.
+  Frozen accruals survive with `source_entry_id` null and keep counting in their window; their reward row stays
+  (its `reward_source_entry_id` is already `ON DELETE SET NULL`) and gets `needs_review` with `reward_posted`.
+- **Reward row deleted by the owner:** the delete path sets its accrual to `forfeited` (amount kept, for the record;
+  `used` reads 0 for it, §5.2.2). The owner deleting a reward means they did not get it.
+- Cap use is always the surviving accruals plus the no-accrual reward rows, so a delete never lets a window exceed
+  the cap twice.
+
 ## 6. API
 
-- `GET /accounts/{id}/reward-usage?date=YYYY-MM-DD` (read scope): for each in-date rule of the card, gives the
-  window containing `date`, the estimated total, the cap, the remaining amount, and the shared-cap group. Default
-  `date` = today (Asia/Taipei).
+- `GET /accounts/{id}/reward-usage?date=YYYY-MM-DD` (read scope): one item per in-date rule, a shared-cap group once
+  (finding 6), with the window containing `date` (`window_start`, `window_end`), `used` (frozen, §5.2.2),
+  `estimated` (the `estimated` amounts), `cap` (null when uncapped), `remaining` = `cap − used − estimated` (null
+  when uncapped), `shared_cap_id` and the member rule ids. Default `date` = today (Asia/Taipei).
 - `GET /entries/{id}` and list endpoints expose an entry's accruals (rule, estimate, amount, state, post_on) so the
   SPA and Hermes can show 「預估回饋」.
-- `POST /reward-accruals/{id}/post` (write scope): posts a `manual` accrual today or on a given date.
-- Reward rule API: `calendar_month`, `per_unit` + `unit_spend`, and the #289 relaxation.
+- `POST /reward-accruals/{id}/post` (write scope): posts a `manual` accrual today or on a given date, through the
+  daily job's per-accrual step (§5.1); 409 when the accrual is not `estimated`.
+- Reward rule API: `calendar_month`, `per_unit` + `unit_spend`, the method, shared-cap and #289 validation (§4.2).
 
 ## 7. Bank wins (statement reconciliation)
 
-Scope: a card whose statement prints reward lines (cash back credited to the card). These are rules whose reward
-account is the card itself.
-- **Which statement pays which rows** (§13 Q2): a reward is credited to the card on its `post_on`, so it belongs to
-  the statement whose period contains `post_on`. The candidates for a statement's reward lines are that card's
-  engine rows (posted, or posted early, below) with `post_on` in the statement period. Match by account and period,
-  not by exact amount.
-- **Several lines, several rules** (§13 Q3): all of the statement's `reward` lines are summed, and so are all the
-  candidate rows. The bank total is distributed over the rows in proportion to their amounts, with the remainder on
-  the last row by `post_on`, `id`. Each row's ledger amount is updated, its accrual set to `bank_confirmed`, and the
-  lines close as matched. Rows that come out at 0 become `forfeited` (ledger amount 0, kept, visible as 未獲得).
-- **No reward line at all:** a statement whose period contains `post_on` but which prints no reward line leaves
-  the rows `posted`. When the **next** statement is reconciled and still shows no matching line, they become
-  `forfeited` (my call: banks sometimes credit one cycle late).
-- A statement reward line with no engine rows behind it is booked as today (`create_system_entry`).
-- Engine rows on points or miles accounts never meet a card statement: they stay `posted`.
-- Statements whose posting runs ahead of the engine (line arrives before `post_on`): the reconciler may post the
-  window early (run §5.1's posting step for it) and then match. It is the builder's call whether to do this or to
-  leave the case open until the daily job runs; pick whichever keeps the reconciliation code smallest.
+Scope: card statements, and the rules whose reward account is the card (or null, meaning the card). Engine reward
+rows (rows with an accrual) are **never matcher candidates**: `load_candidates` leaves them out, and they meet
+statements only through this step. MOZE-era reward rows stay candidates as today.
+
+**The step** (findings 1 and 2) runs in `_match_and_record` before `pass_two_holders` and `matching.match`
+(`reconciliation_service.py:568`, `:1121`), in the reconcile transaction:
+1. **Candidates** = the accruals whose reward account is one of the statement's participating accounts and that are
+   - (a) `estimated` or `posted`, with `post_on` in `[period_start, period_end]`; or
+   - (b) **carried**: `posted`, `confirmed_statement_id` null, `post_on` before `period_start` and on or after the
+     previous statement's `period_start`; or
+   - (c) already confirmed or forfeited by this statement (`confirmed_statement_id` = this one: a re-run).
+2. **Empty candidate set:** the statement's reward lines go to the matcher exactly as today (`bank_only` →
+   `create_system_entry` when nothing matches). This is the only way a reward line reaches `bank_only`.
+3. **Otherwise** the statement's `reward` lines, except those with owner coverage, are taken out of the claimable
+   lines. The policy validator builds pass 2 through the same `pass_two_holders`, so it applies the same filter and
+   both agree.
+4. Candidates still `estimated` are posted first (the §5.1 per-accrual step).
+5. **Distribution:** the bank total B = the sum of the pulled lines (0 when the statement prints none, so a statement
+   with no reward line still runs this step). B is distributed over all candidates in proportion to their accrual
+   `amount`, with the remainder on the last by `post_on`, id; when every amount is 0 the whole of B goes on the last.
+   - A candidate assigned more than 0: its ledger row takes the assigned amount, the accrual becomes
+     `bank_confirmed`, `confirmed_statement_id` = this statement.
+   - A **carried** candidate (b) assigned 0: `forfeited`, ledger amount 0, kept and visible as 未獲得,
+     `confirmed_statement_id` = this statement.
+   - A current-period candidate (a) assigned 0 stays `posted`: the bank may credit it one cycle late, and the next
+     statement carries it.
+6. **Coverage:** every pulled line ends covered, never an open case. Coverage rows use `match_kind = auto` and a new
+   `match_rule` `reward_engine`; the active-entry unique index (`ux_statement_coverage_active_entry`) means each
+   paid row is covered by one line. How lines are paired with rows, and how a statement with more reward lines than
+   rows covers them, is the builder's call inside the existing coverage model, with a test.
+7. **The one-cycle balance gap** (finding 2): a reward the bank credits one cycle late is in the ledger (posted on
+   `post_on`) but not on the first statement, so that statement's balance check is off by the carried rows until the
+   next statement settles them. The `balance_gap` case it raises names the carried accruals in its context. **No
+   automatic action** (policy, owner rule, auto-pay) books a reward or a balance adjustment for it; the owner
+   dismisses it once the next statement has confirmed or forfeited the rows.
+
+Engine rows on points or miles accounts never meet a card statement: they stay `posted`. The 「leave the case open
+until the daily job」 option of rev 1 is gone: step 4 posts early.
 
 ## 8. SPA and Hermes
 
 - **Account settings 回饋規則 block:** each in-date rule row shows 「本期 {used}／{cap}」 (or 「本期 {used}」 when
-  uncapped) and the window dates. A shared cap shows once, on the first rule of the group.
+  uncapped) and the window dates, from `/reward-usage` (`used` + `estimated`). A shared cap shows once, on the first
+  rule of the group.
 - **Rule editor:** window selector (帳單週期 / 自然月); method gets 每 NT$X 一單位 (`per_unit`) with `unit_spend`.
 - **Entry detail:** the 預估回饋 lines with their state (預估 / 已入帳 / 銀行確認 / 未獲得).
 - **Hermes `homehub-api` skill** (outside the repo, `~/.hermes/skills/productivity/homehub-api/`):
@@ -206,16 +277,26 @@ account is the card itself.
 
 ## 9. Oracle check (acceptance)
 
-Before rollout, run the engine read-only (a script, no writes) over the MOZE era: every linked purchase with a
-MOZE reward row of the same (purchase, rule). Report per rule how many rows match within NT$1 (or 1 unit), how many
-differ, and the largest differences. This decides the ambiguous MOZE mappings (rounding codes, posting codes noted
-as provisional in `moze_backup_json.py:302-308`). The bar: ≥ 95 % of rows within tolerance for percent rules.
-Differences explained by known MOZE quirks are recorded in the release notes. The engine does not have to match
-the placeholder miles rules until they are migrated.
+Before rollout, run the engine read-only (a script, no writes) over the MOZE era (finding 8):
+1. **Lock the maps first.** The MOZE code maps used for import (`ROUNDING_MAP` / `POSTING_MAP`,
+   `moze_backup_json.py:302-305`, codes 2–4 provisional) are fixed for the run and printed in the report header. A
+   different mapping is a new run, never a mid-run change.
+2. **Amount check (the bar):** uncapped `percent` rules only, over the (purchase, rule) pairs whose MOZE reward row
+   has both `reward_source_entry_id` and `reward_rule_id` set. The engine's frozen-time amount vs MOZE's, within
+   NT$1. Rows flagged `needs_review`, and purchases with a refund, are excluded and counted. The report gives the
+   numerator, the denominator and the excluded count. **Bar: ≥ 95 % of the denominator.**
+3. **Capped and shared-cap rules:** scored on the window total (engine sum vs MOZE sum per window), reported, no bar.
+4. **Posting check:** predicted `post_on` vs MOZE's `posted_date`, both as exact dates and as the same statement
+   period; reported separately, no bar.
+5. Placeholder miles rules are excluded and counted; after their migration (§10.3) the run can be repeated for them.
+
+Differences explained by known MOZE quirks are recorded in the release notes.
 
 ## 10. Rollout
 
-1. Merge; deploy API + worker; migration adds the table, enums and column. No engine output yet for existing data.
+1. Merge; deploy API + worker; migration adds the table, enums and columns, and the ledger partial unique index
+   when the duplicate preflight finds none (§4.1; otherwise the counts go in the release notes). No engine output
+   yet for existing data.
 2. Oracle check (§9) on production data; owner reads the summary.
 3. Data pass with the owner, card by card (owner ruling 2026-10-26: one case per question):
    - migrate the MOZE miles placeholders to `per_unit` (3 cards, found by the 2026-11-03 data pass);
@@ -234,18 +315,18 @@ the placeholder miles rules until they are migrated.
 
 - The shape of the shared cycle helper and how notify imports it.
 - Whether recompute-on-write runs inline or via a small deferred queue in the same transaction.
-- Review-flag plumbing for `reward_window_posted`.
-- The reconciliation change's exact place (candidate builder vs a pre-match step).
+- The PUT schema split for #289 (a separate update schema or a validator on the shared one).
+- How the §7 step pairs reward lines with paid rows in coverage (§7.6).
 - Test fixtures: fictional cards with a percent rule, a capped rule, a shared cap, a `per_unit` rule, a
-  calendar-month rule, a refund and a `manual` rule.
+  calendar-month rule, a refund, a `manual` rule, a late (carried) bank credit and a re-run.
 
 ## 12. Decisions made in this document (owner can veto)
 
 - Accruals in their own table; the ledger holds only posted rewards (§4.1).
 - `per_unit` method added in this phase, which also closes #289 (§4.2).
-- Refunds claw back in the purchase's window (§5.2.1).
-- The rounding remainder goes on the window's last row (§5.2.3).
-- Posted windows are frozen, and later edits raise a review flag (§5.1).
+- Refunds claw back in the purchase's window (§5.1, §5.2).
+- The `total_rounding` difference goes on the latest still-estimated accrual (§5.2.4).
+- Posted accruals are frozen, and later financial edits raise the `reward_posted` review flag (§5.1).
 - Hermes warns at 80 % of a cap (§8).
 - The weekly digest line is deferred (§3).
 - Freezing per accrual; new purchases get the cap left after posted amounts (§5.1, §13 Q1).
@@ -253,6 +334,12 @@ the placeholder miles rules until they are migrated.
   forfeits only after the next statement (§7).
 - Rule and closing-day edits recompute estimated accruals (§5.1).
 - `post_on` is raised to the window end, not rejected (§4.4).
+- Rules sharing a cap must share a window; the group cap is the smallest member cap (§4.2).
+- A purchase past the cap at posting gets no reward row (accrual `forfeited`) (§5.1).
+- A reward the bank credits one cycle late stays `posted` for one statement; that statement's balance gap is left to
+  the owner, never booked (§7.7).
+- The bank figure is spread over carried and current rows in proportion to the engine amounts (§7.5).
+- An owner-deleted reward row forfeits its accrual (§5.4).
 
 ## 13. Builder check (2026-11-03): questions and how they were settled
 
@@ -267,3 +354,26 @@ the placeholder miles rules until they are migrated.
 5. Rule and closing-day edits recompute estimated accruals (§5.1).
 6. A `post_on` earlier than the window end is raised to it (§4.4). Project propagation is in scope (§5.1). The daily
    job runs in the API process like the existing jobs, not on a worker timer.
+
+## 14. Multica design review (AGENT-394, dev-grok, on rev 1.1 5cc4cb54): findings and where they landed
+
+1. Exact-amount matching would send mismatched reward lines to `create_system_entry` (double booking): reward lines
+   are taken out before matching whenever the statement has engine candidates; engine rows are never matcher
+   candidates (§7).
+2. Late credits: carried `posted` rows of the previous period are candidates; forfeit only when the next pass assigns
+   0; a statement with no reward line still runs the step; the one-cycle balance gap is named (§7.1, §7.5, §7.7).
+3. Rounding under freeze: frozen amounts keep `txn_rounding` only; the `total_rounding` delta goes on the latest
+   estimated accrual (§5.2.4).
+4. Refunds: built in `refund()` from the purchase's links, in the purchase's window; ordering by source `entry_date`,
+   id; negative estimates allotted in full (§5.1, §5.2.3).
+5. Deletes: estimated accruals go, frozen ones survive with a null source; the straddle read covers no-accrual rows
+   only (§4.1, §5.3, §5.4).
+6. Shared caps: same window required (422), group cap = smallest member cap, group-wide `used`, usage returns
+   used / estimated / cap / remaining (§4.2, §5.2.2, §6).
+7. Duplicate posts: advisory lock, per-accrual transaction with a row lock and a `ledger_entry_id` guard, partial
+   unique index after a duplicate preflight (§4.1, §5.1, §10.1).
+8. Oracle: maps locked first; the bar applies to uncapped percent pairs only, with denominator and exclusions;
+   capped rules by window total; posting scored separately (§9).
+9. Schema: 0 accepted on PUT only for a stored 0 placeholder; `per_unit` validation; posted row currency (§4.2,
+   §5.1).
+10. Review flag: one reason `reward_posted`, set after `_apply`; non-financial edits keep it (§5.1).
