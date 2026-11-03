@@ -1,6 +1,6 @@
 # Reward posting engine (回饋規則 phase 2) — design
 
-Status: draft rev 2.1, 2026-11-03 (builder check folded, §13; Multica design review AGENT-394 and its re-check folded, §14). Issues: #288 (calendar-month window), #289 (MOZE miles rules cannot be edited).
+Status: draft rev 2.2, 2026-11-03 (builder check folded, §13; Multica design review AGENT-394, its re-check and confirm folded, §14). Issues: #288 (calendar-month window), #289 (MOZE miles rules cannot be edited).
 Builds on `docs/superpowers/specs/2026-10-31-reward-rules-design.md` §9.1. Its owner rulings of 2026-10-31 stay in
 force, and this document extends them.
 
@@ -234,8 +234,14 @@ It never commits and never writes coverage itself.
    - (b) **carried**: `posted`, `confirmed_statement_id` null, `post_on` before `period_start` and on or after the
      `period_start` of the account's previous statement. With no earlier statement, (b) is empty; or
    - (c) already confirmed or forfeited by this statement (`confirmed_statement_id` = this one: a re-run).
-2. **Empty candidate set:** the statement's reward lines go to the matcher exactly as today (`bank_only` →
-   `create_system_entry` when nothing matches). This is the only way a reward line reaches `bank_only`.
+2. **Empty candidate set:** the statement's reward lines go to the matcher as today. A reward line it leaves
+   unmatched becomes `bank_only` (→ `create_system_entry`) **unless the card has early candidates**: `estimated`
+   accruals with the card as reward account and `post_on` after `period_end`, up to the end of the next cycle
+   (`shift_period`). Then the line's case gets the hint `reward_early` instead: the bank credited before the rule's
+   posting date, and booking the line would count the reward a second time when the engine posts it. The owner
+   decides; the usual fix is the rule's posting fields, after which the estimated accruals move (§5.1) and a re-run
+   of the statement finds them in (a). So a reward line reaches `bank_only` only with an empty candidate set and no
+   early candidates.
 3. **Pulled lines.** Otherwise the statement's `reward` lines are taken out of the claimable lines, except
    - lines with owner coverage (they already leave the matcher input), and
    - a line with exactly one amount-for-amount match among the no-accrual (MOZE-era) reward rows in the population:
@@ -257,6 +263,9 @@ It never commits and never writes coverage itself.
      policy books it (`policy_service.py:154` requires `bank_only`). The owner decides it. Rare: it needs more reward
      lines on one statement than engine rows behind them.
    - **No pulled line** (the statement prints no reward line; B = 0): every candidate is assigned 0.
+   - **Inbox** (confirm minor, my call): cases with the hints `reward_surplus` and `reward_early` (§7.2) are
+     classed as question `other`, as `installment_unmapped` is (`inbox_service.py:76-77`), not `bank_only`. A learned
+     owner `record` rule therefore never books them on its own; the owner's manual buttons stay.
 6. **Outcome per row:**
    - assigned more than 0: the ledger row takes the assigned amount (updated **before** the claims are built), the
      accrual becomes `bank_confirmed`, `confirmed_statement_id` = this statement;
@@ -306,7 +315,9 @@ Before rollout, run the engine read-only (a script, no writes) over the MOZE era
    numerator, the denominator and the excluded count. **Bar: ≥ 95 % of the denominator.**
 3. **Capped and shared-cap rules:** scored on the window total (engine sum vs MOZE sum per window), reported, no bar.
 4. **Posting check:** predicted `post_on` vs MOZE's `posted_date`, both as exact dates and as the same statement
-   period; reported separately, no bar.
+   period; reported separately and per card, no bar. A card whose predictions land in a different statement period
+   than MOZE's is a rollout gate (§10.3): its rules' posting fields are fixed before its backfill (§7.2 explains the
+   double count a wrong posting date would cause).
 5. Placeholder miles rules are excluded and counted; after their migration (§10.3) the run can be repeated for them.
 
 Differences explained by known MOZE quirks are recorded in the release notes.
@@ -318,6 +329,8 @@ Differences explained by known MOZE quirks are recorded in the release notes.
    yet for existing data.
 2. Oracle check (§9) on production data; owner reads the summary.
 3. Data pass with the owner, card by card (owner ruling 2026-10-26: one case per question):
+   - first, the cards the posting check (§9.4) flags: fix their rules' posting fields, then re-run the check for
+     them; a card stays out of step 4 until its posting periods agree;
    - migrate the MOZE miles placeholders to `per_unit` (3 cards, found by the 2026-11-03 data pass);
    - switch the calendar-month programmes the 2026-11-03 terms check found (2 cards, 4 rules) to `calendar_month`;
    - card names, rule ids and rates live in the owner's data-pass log under `~/reports/`, not in the repo.
@@ -348,8 +361,8 @@ Differences explained by known MOZE quirks are recorded in the release notes.
 - Hermes warns at 80 % of a cap (§8).
 - The weekly digest line is deferred (§3).
 - Freezing per accrual; new purchases get the cap left after posted amounts (§5.1, §13 Q1).
-- A statement pays the rows whose `post_on` is in its period; lines and rows are matched as totals; a missing line
-  forfeits only after the next statement (§7).
+- A statement pays the rows whose `post_on` is in its period; each pulled line is paired with its own rows (§7.5);
+  a missing line forfeits only after the next statement (§7).
 - Rule and closing-day edits recompute estimated accruals (§5.1).
 - `post_on` is raised to the window end, not rejected (§4.4).
 - Rules sharing a cap must share a window; the group cap is the smallest member cap (§4.2).
@@ -359,6 +372,7 @@ Differences explained by known MOZE quirks are recorded in the release notes.
 - Bank lines are paired with rows in order; each line is spread over its rows in proportion to the engine amounts
   (§7.5). Lines beyond the row count go to the owner as cases (§7.5).
 - A carry-gap `balance_gap` case offers dismiss only (§7.8).
+- A reward line credited before the rule's posting date is an owner case (`reward_early`), never auto-booked (§7.2).
 - An owner-deleted reward row forfeits its accrual (§5.4).
 
 ## 13. Builder check (2026-11-03): questions and how they were settled
@@ -367,7 +381,8 @@ Differences explained by known MOZE quirks are recorded in the release notes.
    rest of the window is allotted the cap left after posted amounts (§5.1).
 2. Which statement pays a window: the one whose period contains `post_on`. A missing line forfeits after the next
    statement (§7).
-3. Several reward lines or rules: match statement totals to row totals and distribute proportionally (§7).
+3. Several reward lines or rules: pair lines to rows in line-id order and `post_on`, id order; each line's rows sum
+   to that line; lines past the row count are owner cases (§7.5).
 4. MOZE-era purchases and straddling windows: no accrual where a reward row already exists for the (purchase,
    rule); existing rows count as used cap; seed run for linked spends since 10-01; double-booked statement lines
    decided case by case (§5.3, §10.4).
@@ -378,8 +393,9 @@ Differences explained by known MOZE quirks are recorded in the release notes.
 ## 14. Multica design review (AGENT-394, dev-grok, on rev 1.1 5cc4cb54): findings and where they landed
 
 1. Exact-amount matching would send mismatched reward lines to `create_system_entry` (double booking): reward lines
-   are taken out before matching whenever the statement has engine candidates; engine rows are never matcher
-   candidates (§7).
+   are taken out before matching when the statement has engine candidates, except a line with exactly one amount
+   match to a no-accrual reward row, which stays in the matcher (§7.3); engine rows are never matcher candidates
+   (§7).
 2. Late credits: carried `posted` rows of the previous period are candidates; forfeit only when the next pass assigns
    0; a statement with no reward line still runs the step; the one-cycle balance gap is named (§7.1, §7.6, §7.8).
 3. Rounding under freeze: frozen amounts keep `txn_rounding` only; the `total_rounding` delta goes on the latest
@@ -406,3 +422,11 @@ Re-check on rev 2 (`d7743c79`): findings 1–10 resolved; four new items, folded
 - N3 (minor) zero assignment on a re-run and the missing predecessor: judged by the row's `post_on`; (b) empty with
   no earlier statement (§7.1, §7.6).
 - N4 (minor) the carry gap offered `balance_adjustment_asof`: dismiss only (§7.8).
+
+Confirm on rev 2.1 (`8fa8f152`): PASS-with-minor, N1–N4 resolved. Folded in rev 2.2:
+- the three summary sentences that still described the rev 2 total spread (§12, §13 Q3, §14 item 1);
+- the inbox classing of `reward_surplus` so a learned owner rule cannot book it (the confirm noted the inbox would
+  class it `bank_only`) (§7.5);
+- not from the review: a reward line credited before the rule's posting date would reach `bank_only` and be booked
+  again when the engine posts. Early candidates now give the hint `reward_early` (§7.2), and the posting check is a
+  per-card rollout gate (§9.4, §10.3).
