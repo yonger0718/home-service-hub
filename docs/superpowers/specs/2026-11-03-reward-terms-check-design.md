@@ -1,6 +1,6 @@
 # Reward terms check (回饋條款查核) — design
 
-Date: 2026-11-03. Status: draft for owner review. Follows the reward-rules phase 1 design
+Date: 2026-11-03. Rev 2 (folds Multica AGENT-390 review). Status: draft for owner review. Follows the reward-rules phase 1 design
 (`2026-10-31-reward-rules-design.md`) and the notifier design (`openspec/.../accounting-notifications`).
 
 ## Intent
@@ -54,10 +54,18 @@ This feature makes that run periodic, deterministic at the edges, archived, and 
   `render.split_blocks` chunking. Deployed the same way: release checkout under
   `~/releases/home-hub-notify/<sha>`, user units from `deploy/notify/`, config at
   `~/.config/homehub-notify.toml` (0600).
-- Hermes is invoked as `hermes -z "<prompt>" -t web,browser` (allowlist toolset: web search +
-  extract + browser; **no `terminal`**), with a wall-clock timeout. The builder verifies that
-  `-t` is an allowlist on the installed Hermes (the spike passed `web,browser,terminal`
-  explicitly, and Hermes used all three).
+- Hermes is invoked as a one-shot subprocess with the isolation contract in §3. The toolset
+  is exactly `web` (= `web_search` + `web_extract` on the installed Hermes; the spike needed
+  nothing else — its only other tool use was reading a cached PDF, which this design gives
+  up). `browser` is not enabled in v1: it carries `browser_vault` (saved logins) and reaches
+  loopback; adding it later needs its own review.
+- Hermes facts verified on the installed binary (v0.22.2+1692, 2026-11-03): `-z` honours an
+  explicit `-t` list (`hermes_cli/oneshot.py` `_validate_explicit_toolsets`; `all` is
+  rejected, unknown names are dropped with a warning), `--safe-mode` sets
+  `HERMES_SAFE_MODE/IGNORE_USER_CONFIG/IGNORE_RULES` before the one-shot path runs,
+  `--query-file` reads the prompt from a file, and the `web` toolset resolves to
+  `["web_search", "web_extract"]` only. The one-shot path sets `HERMES_YOLO_MODE=1` and
+  `HERMES_ACCEPT_HOOKS=1` itself, so the agent must have nothing dangerous to approve.
 - Python 3.13; the notifier's existing runtime deps (httpx) and nothing new. Tests under
   `tests/notify/`, fictional data only.
 - The notifier token already reaches both routes (`GET /reward-rules?state=active`,
@@ -79,7 +87,8 @@ This feature makes that run periodic, deterministic at the edges, archived, and 
 ```toml
 [terms]
 report_dir = "~/reports/home-hub-terms"      # archive root, created 0700
-hermes_toolsets = "web,browser"               # passed to `hermes -t`; never contains "terminal"
+hermes_toolsets = "web"                       # passed to `hermes -t`; must be exactly "web" (§3)
+max_output_bytes = 4194304                    # cap on archived hermes stdout/stderr; past it the run fails
 hermes_timeout_seconds = 1800
 # hermes_model = ""                           # optional `-m`; empty = Hermes default
 ignore_accounts = []                          # active-rule cards the owner chose not to maintain; never reported as 未登錄
@@ -93,7 +102,7 @@ tier = "precise"                              # precise | signal
 # language = "zh-TW"                          # default zh-TW; language to search and read in
 # currency = "TWD"                            # default TWD; unit of caps/amounts in the terms
 # aliases = []                                # extra names to search (old names, English names)
-# year_end_window = true                      # default true: also check on the Nov–Dec weekly runs
+# year_end_window = true                      # default: true when country is TW, false otherwise
 
 [terms.cards."102"]
 official = "國泰世華 CUBE 卡"
@@ -112,8 +121,8 @@ aliases = ["Everyday Cash Visa"]
 
 Validation: `official` non-empty, `bank_domains` non-empty list of hostnames, `tier` in
 {precise, signal}, `country` two upper-case letters, `language` a BCP-47 tag, `currency`
-three upper-case letters, `aliases` list of strings; account ids must be ints. Loader errors
-name the key only.
+three upper-case letters, `aliases` list of strings, `year_end_window` bool (default derived
+from `country`); account ids must be ints. Loader errors name the key only.
 
 At run time the command reads, for each registered card, `GET /accounts/{id}/reward-rules`
 through the notifier's existing token (read scope). It keeps rules that are enabled and not
@@ -136,8 +145,15 @@ contract below. The template is the spike prompt, generalised:
   (search news/aggregators/forums for「<card> <next year> 回饋」,「權益調整」; for an `en` card
   "<card> rewards changes <year>", "terms update") then **verify** (find the bank's own page or PDF on the listed domains, read it,
   extract rate / cap / period / main conditions). Aggregators are signal only, never a source.
-- precise tier: compare each live rule field by field. signal tier: do stage 1 only and
-  summarise in ≤ 3 lines; no rule comparison.
+- precise tier: compare each live rule on exactly these fields: `name`, `method`, `rate`
+  (a percent, `0 < rate ≤ 100`, 4 dp — never a fraction), `fixed_amount`, `is_basic`,
+  `total_cap`, `window`, `starts_on`, `ends_on`, `description`. Posting fields
+  (`posting`, `delay_days`, `post_month_offset`, `post_day`, roundings) and `shared_cap_id` are
+  **out of scope** in this version and are not sent. A programme on the official page with
+  no matching live rule is a `missing_rule` finding — including when the card has zero live
+  rules because its rows all expired (the prompt says so explicitly, so a zero-rule card
+  cannot come back `unchanged`). signal tier: stage 1 only, summarise in ≤ 3 lines in
+  `notes`; no rule comparison.
 - If the next period's terms are announced, list them as rule-ready rows.
 - The report prose and the message are always Traditional Chinese; `quote` stays in the
   page's original language; amounts carry the card's `currency`.
@@ -148,21 +164,50 @@ contract below. The template is the spike prompt, generalised:
 
 ### 3. Hermes runner
 
-**Isolation is the first, blocking task of the plan**: on the installed Hermes, confirm that
-`-t web,browser` is an allowlist (no terminal / file tools appear in the run), decide which of
-`--safe-mode`, `--ignore-rules`, `--ignore-user-config`, `--skills` are needed so the
-`homehub-api` skill (which documents the token path) is not loaded, and record the exact
-flags in the unit file and in this document. If the allowlist cannot be made to hold, the
-feature does not ship. The browser toolset can reach loopback URLs; that is accepted because
-every HomeHub route needs a bearer token Hermes does not have, and the other loopback
-listeners (Multica demo 18080, preview 18081) hold fictional data only.
+**Isolation contract.** A subprocess of the same user cannot be sandboxed by the notifier;
+what it can do is pin the Hermes invocation so that the agent has no tool that touches the
+host, no skill text that names the token, and no persistent trace. The exact invocation:
 
-`notify/hermes_run.py`: `run_hermes(prompt: str, toolsets: str, timeout_s: int, model: str | None,
-runner=subprocess.run) -> HermesResult(stdout, stderr, returncode, seconds)`. Refuses
-(`ValueError`) if `toolsets` contains `terminal`. Passes the prompt via argv (as the spike
-did); if argv length is a problem on this host the builder may switch to `--usage-file`/stdin
-— same contract. Non-zero exit or timeout ⇒ `HermesError` (message = exit code / timeout,
-never the prompt).
+```
+hermes -z --query-file <archive>/prompt.md -t web --safe-mode [-m <hermes_model>]
+```
+
+- `-t web` and nothing else. `run_hermes` validates `hermes_toolsets` by **exact set
+  equality** with `{"web"}` (not a substring ban): `all`, `*`, composites (`debugging`,
+  `coding`, `safe`), `file`, `code_execution`, `browser`, any `mcp-*` name ⇒ `ValueError`.
+- `--safe-mode` (user config, rules, memory, plugins, MCP, shell hooks, skill preload off).
+  Never `-s`/`--skills` — that flag *injects* skills, and `homehub-api` documents the token
+  path.
+- Explicit `env` (PATH, HOME, LANG, TZ and the provider variables Hermes needs — the builder
+  lists them from the working spike environment) and `cwd` = the run's archive directory,
+  never the release checkout.
+- `start_new_session=True`; on timeout the whole process group is killed. The unit's
+  `TimeoutStartSec` ≥ `hermes_timeout_seconds` + 60.
+- Prompt via `--query-file` on a 0600 file in the archive (argv is visible in
+  `/proc/*/cmdline` and would hit `ARG_MAX` with several cards' JSON inlined).
+- `hermes.out`/`hermes.err` are capped (`max_output_bytes`, default 4 MiB): the archive copy
+  is truncated with a marker and the run fails past the ceiling, so a page cannot fill the
+  disk.
+
+**Blocking first task of the plan — pass bar**, run on the installed Hermes with a fixture
+prompt that asks the agent to list its tools and to run a shell command: (1) the tool list
+the agent reports is exactly `web_search`, `web_extract`; (2) the shell request is refused
+for lack of a tool, not approved; (3) no new row appears in the Hermes session DB and no
+memory/skill file changes; (4) `--safe-mode` is visibly honoured (no user rules in the
+system prompt, as far as the run exposes it); (5) `--query-file` works. If any of (1)–(3)
+fails, the feature does not ship until it does — no fallback to a looser toolset.
+
+Residual risk, stated: `web_extract` fetches arbitrary URLs including loopback. HomeHub
+routes need a bearer token the agent does not have; the other loopback listeners (18080
+demo, 18081 preview) hold fictional data. This is accepted and the builder's isolation task
+includes one probe that asks the agent to read `http://127.0.0.1:8000/reward-rules` and
+confirms a 401 in the output.
+
+`notify/hermes_run.py`: `run_hermes(prompt_path: Path, toolsets: str, timeout_s: int,
+model: str | None, env: dict[str, str], cwd: Path, max_output_bytes: int,
+runner=subprocess.run) -> HermesResult(stdout, stderr, returncode, seconds, truncated)`.
+Non-zero exit, timeout or truncation ⇒ `HermesError(reason="hermes", archive=<dir>)`
+(never the prompt or output).
 
 ### 4. Output contract and parsing
 
@@ -174,7 +219,7 @@ The final fenced JSON block:
     {
       "account_id": 94,
       "status": "unchanged | changed | announced | not_found | signal",
-      "current_period_end": "2027-03-31",
+      "current_period_end": {"date": "2027-03-31", "source": "https://…", "quote": "…"},
       "findings": [
         {"rule_id": 162, "field": "ends_on", "site": "2027-03-31", "system": "2026-12-31",
          "source": "https://…", "quote": "…"},
@@ -183,7 +228,7 @@ The final fenced JSON block:
       ],
       "next_terms": {"announced": true, "period": ["2027-01-01", "2027-03-31"],
                      "rules": [{"name": "…", "rate": "0.88", "cap": null, "notes": "…"}],
-                     "source": "https://…"},
+                     "source": "https://…", "quote": "…"},
       "sources": ["https://…"],
       "notes": "free text, ≤ 500 chars"
     }
@@ -192,43 +237,84 @@ The final fenced JSON block:
 }
 ```
 
-`notify/terms.py` → `parse_result(stdout: str) -> TermsResult`: takes the **last** fenced json
-block; strict types; unknown status ⇒ parse error; `findings[].source` must be an `https://`
-URL on one of the card's `bank_domains` (otherwise the finding is downgraded to
-`unverified` and listed separately — this is the anti-fabrication check the model cannot
-talk its way around); `quote` non-empty. A card present in input but absent from the JSON
-⇒ synthetic `not_found`. Any parse failure ⇒ the run fails (see 6); nothing is inferred.
+`notify/terms.py` → `parse_result(stdout: str, cards: Registry) -> TermsResult`: takes the
+**last** fenced json block. Rules, in order:
+
+- **Shape**: strict on the fields it uses, lenient elsewhere — unknown keys ignored;
+  per-status required fields: `changed` needs `findings`, `announced` needs `next_terms`,
+  `not_found`/`unchanged`/`signal` may omit both (absent = empty/null). `rate`/`cap` accept a
+  JSON number or string and are stored as canonical decimal strings; dates ISO strings or
+  null; unknown status ⇒ parse error. The set of `account_id`s must equal the input set,
+  each once; a foreign id ⇒ parse error. A card in the input and missing from the JSON ⇒
+  synthetic `not_found`.
+- **Source rule** (the anti-fabrication gate), applied to **every URL the message can
+  print**: `findings[].source`, `next_terms.source`, and `current_period_end` (which now
+  requires its own `source` + `quote` in the schema). A source passes when it is `https`,
+  has no userinfo, and its hostname equals a listed `bank_domains` entry or ends with
+  `"." + domain`. Path/query matches and look-alike suffixes fail. `quote` must be
+  non-empty. A failing finding moves to `unverified`; a failing `next_terms` is dropped from
+  the rule-ready block and reported as `· 下期條款：來源未驗證` with its URL; a failing
+  `current_period_end` is nulled and the line omitted.
+- Any parse failure ⇒ the run fails (see 6); nothing is inferred.
+
+Residual, stated: the notifier does not re-fetch the page, so an on-domain URL paired with
+a sentence the page never contained still passes. Nothing is written automatically, and the
+owner sees the URL next to the quote. A later tightening is a whitespace-normalised
+substring check of each `quote` against the archived `web_extract` bodies (PDF whitespace
+normalised) — recorded as a follow-up, not built in v1.
 
 Downgrade semantics: a card keeps the status the model gave it; its findings are split into
-`findings` (on-domain) and `unverified` (off-domain). A `changed` card whose verified list is
-empty is rendered like `not_found` with the line `· 找不到官網來源（N 項未驗證）` and the
-unverified items under it. `current_period_end` is shown on every `changed`/`announced`
-card line (`條款期間至 2027-03-31`) and is part of the digest; the digest also covers the
-`unverified` list so the same off-domain claim does not re-alert every month.
+`findings` (verified) and `unverified`. A `changed` card whose verified list is empty is
+rendered like `not_found` with the line `· 找不到官網來源（N 項未驗證）` and the unverified
+items under it. A verified `current_period_end` is shown on `changed`/`announced` card
+lines (`條款期間至 2027-03-31`).
 
 ### 5. Change detection and message
 
 State: its own file `terms_state_file` (my call: the daily and weekly timers rewrite the
 shared `state.json` whole, and `State` is a typed dataclass; a separate file avoids both
 clobbering and a schema migration) —
-`{"<account_id>": {"digest": sha256 of canonical (status, current_period_end, findings,
-unverified, next_terms), "seen_at": iso}}`; a missing file is an empty state. A card is **new news** when its digest differs from the stored
+`{"<account_id>": {"digest": …, "seen_at": iso}}`. The digest is sha256 of canonical JSON
+(UTF-8, `sort_keys`, compact separators) of: `status`, `current_period_end`, `findings`
+sorted by `(rule_id, field, source)`, `unverified` sorted the same, `next_terms`, with
+quotes whitespace-collapsed and decimals normalised; for `signal` cards the normalised
+`notes` text is hashed instead. A missing file is an empty state. An unreadable or corrupt
+file **fails the run** and is not replaced (unlike `load_state`'s empty-on-error path, which
+would silently reset the baseline). A card is **new news** when its digest differs from the stored
 one or has no stored one.
 
-Message (`render_terms(result, cfg, today) -> list[str]`):
+What the digest suppresses and what it does not (the owner must keep seeing open items):
 
-- Header: `📋 回饋條款查核 2026-11-03（M 張卡，N 張有更新）` and the archive path.
-- One block per card with new news, in registry order:
-  - `changed`: `【滙豐 Live+】` then one line per finding
-    `· 3%：結束日 官網 2027-03-31 / 系統 2027-12-31 — <source>`; missing rules as
-    `· 缺規則：精選國家餐飲 +1% cap 200 — <source>`.
-  - `announced`: `· 下期條款已公告 2027-01-01～03-31：` then rule-ready lines.
-  - `signal`: the ≤ 3-line summary.
-  - `not_found`: `· 找不到官網來源`（with the fetch_log failures for that card if any）.
-  - `unverified` findings: `· 未驗證（來源不在銀行網域）：…`.
+- **Rendered every run regardless of digest**: `not_found` cards (a terms page that has
+  failed for months must not look like "no change"); `changed` cards with empty verified
+  findings; verified `changed` findings and `announced` blocks — these repeat on every run
+  until the system side of the comparison changes (the owner applied the rule, or the
+  site moved), because one missed Discord message must not be the only notice; the
+  「未登錄」 line whenever the set is non-empty.
+- **Suppressed by digest match**: repeat `unverified` items and unchanged `signal` text.
+- `unchanged` with a digest change (first run, or only `current_period_end` moved) renders
+  as `· 無差異，條款期間至 <date>`.
+
+Rendering is driven by payloads, not by a switch on `status`: finding lines print when
+verified findings exist, the announced block when `next_terms.announced`, the signal lines
+when status is `signal`, in that order, all of them when more than one applies.
+
+Message (`render_terms(result, state, cfg, today) -> list[str]`):
+
+- Header: `📋 回饋條款查核 2026-11-03（M 張卡，N 張有事項）` and the archive path.
+- One block per card with something to show, in registry order, headed
+  `【滙豐 Live+】` + the account settings link (`render._settings_link`) so it is actionable
+  from Discord:
+  - findings: `· 3%：結束日 官網 2027-03-31 / 系統 2027-12-31 — <source>`; missing rules as
+    `· 缺規則：精選國家餐飲 +1% cap 200 — <source>`; the quote shown truncated to 80 chars
+    (full text in `result.json`).
+  - announced: `· 下期條款已公告 2027-01-01～03-31：` then rule-ready lines.
+  - signal: the ≤ 3-line summary.
+  - not found: `· 找不到官網來源`（with the fetch_log failures for that card if any）.
+  - unverified: `· 未驗證（來源不在銀行網域）：…`.
 - 「未登錄」 line listing active-rule cards missing from the registry.
-- Cards with no new news are folded into one line: `無變動：A、B、C`.
-- Nothing new at all ⇒ a single line `📋 回饋條款查核 2026-11-03：M 張卡無變動`. (My call:
+- Cards with nothing to show are folded into one line: `無變動：A、B、C`.
+- Nothing to show at all ⇒ a single line `📋 回饋條款查核 2026-11-03：M 張卡無變動`. (My call:
   always send one line rather than stay silent, so a dead timer is noticeable. Owner may
   flip this to silent later via a config flag.)
 - Chunked with `split_blocks`, delivered with `send.deliver` to `discord_target`.
@@ -244,8 +330,9 @@ Each run creates `<report_dir>/<YYYYMMDDTHHMMSSZ>/` (0700) with `input.json`, `p
 commands: `terms [--as-of D] [--dry-run | --send] [--config P]`, `--dry-run` the default when
 neither is given; `--dry-run` writes the archive and prints the message, sends nothing,
 updates no state. If Hermes succeeds and the send fails, the archive is kept and the state
-untouched. `HermesError` and the parse error (`TermsParseError`) join `FAILURES`; `_short`
-renders them as stage + archive dir only.
+untouched. `HermesError` and the parse error (`TermsParseError`) join `FAILURES`; both carry only
+`reason` (`hermes` / `parse`) and the archive dir, so `_short` can never receive stdout or
+the prompt.
 
 Failures (config, API, Hermes exit/timeout, parse) go through the notifier's existing failure
 path: `failed@` unit sends `render_failure(reason)` — reason names the stage and the archive
@@ -254,19 +341,23 @@ re-reports.
 
 ### 7. Schedule
 
-`deploy/notify/homehub-notify-terms.{service,timer}`, installed by the existing `install.sh`:
+Two timers, two services, one binary — the runner cannot tell the slots apart from the wall
+clock (a `Persistent` catch-up fires on whatever weekday the host comes back), so the slot
+is an explicit argument:
 
 ```
-OnCalendar=*-*-01 09:00:00 Asia/Taipei
-OnCalendar=Mon *-11,12-* 09:00:00 Asia/Taipei
-Persistent=true
+homehub-notify-terms-monthly.timer    OnCalendar=*-*-01 09:00:00 Asia/Taipei      → terms --send --cause monthly
+homehub-notify-terms-year-end.timer   OnCalendar=Mon *-11,12-* 09:00:00 Asia/Taipei → terms --send --cause year-end
 ```
 
-(1st of every month; every Monday in Nov–Dec when new-year terms land. Two `OnCalendar`
-lines that resolve to the same instant are one activation; `Persistent=true` fires at most
-one catch-up run after downtime. A repeated run is harmless: the digest turns it into the
-one-line no-change message.) Service: `python -m notify terms --send`, `TimeoutStartSec` ≥ hermes timeout + 60 s,
-`OnFailure=homehub-notify-failed@%n.service`.
+`--cause monthly` checks every registered card; `--cause year-end` only cards with
+`year_end_window = true` (default from `country`: `TW` ⇒ true, else false), and exits 0
+with no run when that set is empty. Both `Persistent=true`. A 1st that is also a Monday may
+run twice; the second run is the one-line message once state is saved. Services:
+`TimeoutStartSec` ≥ `hermes_timeout_seconds` + 60 s, `OnFailure=homehub-notify-failed@%n.service`.
+`install.sh` installs both units but does **not** `enable --now` them (today it enables every
+unit it installs — the terms units are excluded); rollout step 3 enables them after the
+dry-run.
 
 Expected cost: ~1–2 min and ~5 tool calls per precise card on the Hermes default model;
 7 cards ≈ 10–15 min, once a month.
@@ -281,8 +372,8 @@ entry, not a code change:
 - `bank_domains` is already any hostname list; the on-domain source check works the same.
 - `aliases` covers cards whose marketing name differs from the issuer's legal product name
   or that were renamed.
-- `year_end_window = false` lets a card skip the Nov–Dec weekly runs when its programme does
-  not follow the Taiwan calendar; the monthly run still covers it. Cards with rotating
+- `year_end_window` (default from `country`) keeps non-Taiwan cards out of the Nov–Dec
+  weekly runs; the monthly run still covers them. Cards with rotating
   categories (quarterly schemes) are caught by the monthly run; a per-card `extra_calendar`
   is a possible later addition, not built now.
 - Rule rows already carry `rate` as a percent and `total_cap` as an amount in the card's
@@ -302,7 +393,8 @@ exists.
 2. Owner adds `[terms]` + the 7 maintained cards to the TOML (ids from the account list;
    CUBE as `signal`). Cards the owner no longer uses (ruled 2026-11-02: 星展 eco, Daway) are
    left out even though they have rules.
-3. `python -m notify terms --dry-run` once by hand; read the archive; then enable the timer.
+3. `python -m notify terms --dry-run --cause monthly` once by hand; read the archive; then
+   enable both timers.
 4. First real send: the owner applies accepted findings by hand (or asks); the assistant
    records what was applied in the data-pass log as on 2026-11-02.
 
@@ -310,9 +402,8 @@ exists.
 
 - Exact prompt wording (start from the spike's `prompt.md`); keep the contract section
   verbatim from §4.
-- Whether to pass the prompt via argv or a file; whether `--safe-mode` / `--ignore-rules`
-  are needed to keep Hermes from loading the `homehub-api` skill (which documents the token
-  path) — verify on the installed version and record the chosen flags in the unit file.
+- The provider environment variables the explicit `env` must carry (take them from the
+  working spike environment; never the HomeHub token).
 - Test fixtures: a fictional two-card registry, a canned Hermes stdout with one `changed`, one
   `signal`, one off-domain source, and one card missing from the JSON.
 
@@ -320,4 +411,5 @@ exists.
 
 None blocking. Later: whether the registry should move into HomeHub (an account field)
 once more than one consumer needs it; whether signal-tier summaries should go to a separate
-channel.
+channel; the quote-vs-archived-page substring check (§4 residual); whether to add `browser`
+for pages `web_extract` cannot read (its own review: vault off, empty profile, no `file:`).
