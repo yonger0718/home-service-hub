@@ -58,13 +58,13 @@ the P5 gap (a dismiss-only early case would leave a bank-paid reward at 0). Mapp
 | P2 | A `fixed` rule on a partial refund: estimate = −`fixed_amount` × refund / purchase amount, then `txn_rounding`. `percent` / `per_unit` use the refund amount. | Proportional claw-back; a full refund gives back exactly the purchase's estimate. |
 | P3 | Refund `post_on` = `post_on_for(rule, purchase window, refund.entry_date)`. A date already past posts on the next daily run. | Same window as the purchase (§5.1); simplest posting rule. |
 | P4 | Rounding modes act on whole units: `round` = ROUND_HALF_UP to 0 places, `floor`, `ceil`; `keep` = 4 places. After `total_rounding`, the window sum is clamped to `≤ cap`. The delta never takes a positive-estimate slot below 0; any leftover delta is dropped. | §5.2.4, P4 fills the edge. |
-| P5 | Lead carry 1: a `reward_early` case offers **`accept_early_reward` and `dismiss` only**; `create_entry` and `create_system_entry` are not offered. Its context holds `early_accrual_ids`, `rule_ids` and `note` = 「銀行提早入帳：請修正規則的入帳日，或按「接受提早入帳」」. `accept_early_reward` checks that every listed accrual is still `estimated`, else 409 `accrual_not_estimated`. It then sets their `post_on` to the reward line's `posted_date` (inside this statement period) and sets the statement's `needs_recheck`. The re-run finds them in (a): they are pulled, posted early, get the bank figure and are claimed `reward_engine`, and the case is superseded. | The reward is booked once, through the accrual, never as a system entry, and a bank-paid reward is never left at 0. Fixing the rule (P6) stays the path for later months. |
+| P5 | Lead carry 1 (rev 3 after AGENT-396 re-check A/B). A `reward_early` case offers **`accept_early_reward` and `dismiss` only**; `create_entry` and `create_system_entry` stay off even though `_system_line` is true for reward lines (`reconciliation_actions/__init__.py:63-64`). Context: `early_accrual_ids`, `rule_ids`, `default_accrual_ids` (the one early accrual whose `estimate` is closest to the line flow, then `post_on`, id) and `note` = 「銀行提早入帳：請修正規則的入帳日，或按「接受提早入帳」」. **The action** (owner actor only; params `accrual_ids`, default `default_accrual_ids`):<br>(1) 409 `accrual_not_estimated` when any named id is not in the case's `early_accrual_ids` or is no longer `estimated`, so the whole action is refused;<br>(2) 409 `line_outside_period` unless `period_start <= line.posted_date <= period_end`;<br>(3) the params are recorded on the `reconciliation_action` row (`models/statements.py:351`), never on the case (`_write_cases` keys on context);<br>(4) `rec.reconcile(db, statement.id, locked=True, barrier_wait=False)` runs in the same transaction, and the case's status and version are restored if that reconcile superseded it, as `link_installment_plan` does (`case_actions.py:149-156`).<br>Bank wins (Task 9) reads the applied, unreverted `accept_early_reward` rows of the statement as an **accepted map** `line_id → accrual_ids`. Each accepted line is paired only with its named ids, which are posted on the reconcile session with `on = line.posted_date`. Accepted ids are then left out of the general candidate set, and the statement's other reward lines follow §7 on what remains, so an untouched `reward_early` line keeps its case. Other early accruals keep their formula `post_on`. Revert of the action → 409 `not_revertible`. | The reward is booked once, through the accrual, and never left at 0. Posting happens inside reconcile, in reconcile's own lock order (P12), so a later rate PUT cannot move it back. Pairing by the accepted map replaces the reviewer's "hold until every early line is decided": each line is pinned to its own ids, so one accept cannot claim another line. |
 | P6 | Lead carry 2: a rule PUT or a `closing_day` change sets `needs_recheck = true` on the card's statements that hold an open `reward_early` case. The re-run then supersedes the case (`_write_cases`), because the line is now pulled and claimed. | Reuses the existing recheck flag (`models/statements.py:167`). |
 | P7 | Daily job `CronTrigger(hour=6, minute=15, timezone="Asia/Taipei")`, id `reward_post_daily`. Startup run after 30 s. Retry every 10 min on `busy`/`crashed`. Lock key `REWARD_POST_JOB_LOCK_KEY = 0x52574450` ("RWDP") in `schedule_locks.py`. Gated by `schedule_job.is_enabled()`. | Runs after auto-pay (06:00) and follows its pattern (§5.1). |
 | P8 | Shared cycle helpers live in `app/services/cycles.py`, which imports only the stdlib. `notify/cycles.py` re-imports `Period`, `statement_period` and `shift_period` from it and keeps the rest. Do not add `app/services/__init__.py`. | `app/__init__.py` is empty and `app/services/` is a namespace package, so notify can import the module without pulling in SQLAlchemy. |
 | P9 | `RewardRuleIn` stays for POST. A new `RewardRuleUpdateIn(RewardRuleIn)` overrides `fixed_amount: NonNegativeMoney \| None` and is used by the PUT route. | Spec §11 leaves the split to the builder. |
 | P10 | `review_reason` is a free `String(32)`, not an enum. | One value today; no enum migration for future reasons. |
-| P12 | **Lock order** (finding 5), on every path: (1) purchase / candidate ledger rows, as today; (2) accrual rows, all that the path needs, in one `SELECT … WHERE id IN (…) ORDER BY id FOR UPDATE`; (3) reward ledger rows (update or delete). `recompute_window` takes the window's (group's) accrual locks itself, and `post_accrual` calls it before touching its accrual, with no earlier lock. Bank wins collects every candidate's window accruals and locks the union once, before posting. An engine reward delete locks its accrual and forfeits it before `locked_with_legs` (`entry_write_service.py:642`), then recomputes the window. | One global order, so the daily job, reconcile and deletes cannot deadlock. |
+| P12 | **Lock order**, on every path: (1) the statement row (reconcile and actions) or the purchase / candidate ledger rows, as today; (2) accrual rows, every one the path needs, in **one** `SELECT … WHERE id IN (…) ORDER BY id FOR UPDATE`; (3) reward ledger rows (update or delete). `recompute_window(db, rule_id, window_start, *, locked=False)` takes the window's (group's) accrual locks itself; with `locked=True` it locks nothing and asserts that the caller holds them. `post_accrual(..., locked=False)` calls `recompute_window` before touching its accrual. Bank wins locks the union of its candidates' window accruals once, then calls `post_accrual(..., locked=True)`. An engine reward delete (re-check finding 5) does one window `SELECT … ORDER BY id FOR UPDATE` of the accrual's window (group), forfeits, then calls `locked_with_legs` (`entry_write_service.py:642`), then `recompute_window(..., locked=True)`. | One global order, so the daily job, reconcile and deletes cannot deadlock. |
 | P11 | Engine reward rows get `source = "rule"` (existing `ENTRY_SOURCES` value, `models/ledger.py:45`; no enum change), name = the rule name, category = `system_category_id(db, "reward")`. "Has an accrual" is what marks an engine row (§4.1), not the source. | Rule-generated rows; avoids an enum migration. |
 
 ## Review Focus
@@ -294,7 +294,7 @@ the P5 gap (a dismiss-only early case would leave a bank-paid reward at 0). Mapp
     deleted; estimated ones are re-bucketed. Every touched window (old and new) is recomputed. Frozen accruals are
     never changed. For a purchase, it ends by calling `sync_entry` on each row with `refunds_entry_id` = the
     purchase, so refunds follow its links, date and amount (§5.1, P2's base).
-  - `recompute_window(db, rule_id: int, window_start: date) -> None`: group-aware (`group_rule_ids`). It reads
+  - `recompute_window(db, rule_id: int, window_start: date, *, locked: bool = False) -> None` (P12): group-aware (`group_rule_ids`). It reads
     frozen amounts per §5.2.2 (ledger amount for `bank_confirmed`/`forfeited`, 0 without a row) and the external
     no-accrual rows of the group whose source purchase `entry_date` is in the window. It writes `amount` on
     estimated accruals.
@@ -399,33 +399,17 @@ the P5 gap (a dismiss-only early case would leave a bank-paid reward at 0). Mapp
     `review_reason == "reward_posted"`, accrual amount unchanged.
   - `test_project_change_moves_old_project_reward` (finding 9): a reward row whose project equals the purchase's old
     project moves to the new one; the same through a split `keep_full` member edit (`_apply_meta`).
-  - `test_engine_reward_delete_forfeits_before_ledger_lock` (P12): with `tests/helpers.advisory_locks`-style
-    ordering, run a delete of the reward row and a `recompute_window` of its window concurrently (`tests/helpers.race`)
-    → both finish, no deadlock, accrual `forfeited`.
-- [ ] **Step 2:** `$PYTEST tests/integration/test_reward_engine_hooks.py -v` → FAIL.
-- [ ] **Step 3:** Implement the hooks. `insert_prepared` / `apply_prepared_update` call `after_write` after
-  `write_rule_links`. Capture `before_*` at the start of `apply_prepared_update`. `delete_entries_cascade` calls
-  `delete_estimated_for` before deleting, flags the surviving frozen accruals' reward rows, and recomputes after.
-  `refund()` calls `sync_entry(db, entry.id)` after its flush.
-- [ ] **Step 4:** Step 2's command, then the regression suites
-  `$PYTEST tests/integration/test_entry_writes.py tests/integration/test_entries_api.py tests/integration/test_settlements.py tests/integration/test_splits.py tests/integration/test_reward_rules_api.py -q`
-  → PASS.
-- [ ] **Step 5:** commit `feat(accounting): run the reward engine on entry, rule and account writes`.
-
-### Task 7: Posting: per-accrual post, daily job, manual endpoint
-
-**Files:**
-- Create: `app/services/reward_posting.py`, `app/services/reward_post_job.py`, `app/routers/reward_accruals.py`
-- Modify: `app/services/schedule_locks.py:18-20` (`REWARD_POST_JOB_LOCK_KEY = 0x52574450`), `app/main.py:13,22-25,40-57`
-  (router + start/stop)
-- Test: `tests/integration/test_reward_posting.py`, `tests/unit/test_reward_post_job_scheduler.py`
-
-**Interfaces:**
-- Produces:
+  - `test_engine_reward_delete_lock_order` (P12, re-check 5): record every `FOR UPDATE` statement with a SQLAlchemy
+    `before_cursor_execute` listener during DELETE of an engine reward row → the first is the accrual-window
+    `SELECT … ORDER BY id`, the `ledger_entry` locks come after it, and no accrual lock follows a ledger lock. The
+    same listener over `post_accrual` (daily-job path) and bank wins `prepare` → accrual locks are one statement, in
+    id order, before any reward-row update.
   - `reward_posting.post_accrual(db, accrual_id: int, *, on: date | None = None) -> str`. It returns `"posted"`,
     `"forfeited"` (amount 0, no row) or `"skipped"` (not `estimated`, or `ledger_entry_id` set).
     - Calls `recompute_window` first (it takes the window's accrual locks in id order, P12), re-reads the accrual
-      under that lock, skips per the guard, then inserts the reward row per §5.1: account =
+      under that lock, skips per the guard, then inserts the reward row per §5.1. Signature
+      `post_accrual(db, accrual_id, *, on=None, locked=False)`; with `locked=True` it skips the recompute's locking
+      (bank wins already holds the window, P12): account =
       `reward_account_id` or the rule's card; currency = that account's; `entry_date = posted_date = on or post_on`;
       `reward_source_entry_id`, `reward_rule_id`; project = rule `reward_project_id` else the purchase's; P11 fields.
     - Sets `ledger_entry_id` and `posted`. Never commits.
@@ -539,19 +523,30 @@ the P5 gap (a dismiss-only early case would leave a bank-paid reward at 0). Mapp
   (`_desired_cases` :657: `line_unmatched` cases for surplus lines with hint `reward_surplus`; hint `reward_early`
   on unmatched reward lines **only when `prepare` returned None** and early candidates exist (finding 7; surplus
   lines keep `reward_surplus`); `balance_gap` :715-718 context gains `carried_accrual_ids`)
-- Modify: `app/services/inbox_service.py`: `classify` :76-77 (`reward_surplus`, `reward_early` → `"other"`);
-  `BUTTONS_TO_ACTIONS` :37 += `"accept_early": "accept_early_reward"`; `buttons` :108 for `other` adds
-  `accept_early` (needs `accept_early_reward`) before `dismiss`
+- Modify: `app/services/inbox_service.py`: `classify` :76-77 (`reward_surplus`, `reward_early` → `"other"`; this
+  branch stays ahead of the `create_entry` → `bank_only` check at :78-79); `BUTTONS_TO_ACTIONS` :37-44 +=
+  `"accept_early": "accept_early_reward"`; `buttons` :108 for `other` adds `accept_early` (needs
+  `accept_early_reward`) before `dismiss`; `translate` :450 maps `accept_early` to params
+  `{"accrual_ids": context.default_accrual_ids}`; the inbox item carries `note` (from the case context)
+- Modify: `app/schemas/inbox.py:94-110` (`InboxItem.note: str | None = None`)
+- Not touched (re-check A): `POLICY_ACTIONS` (`policy_service.py:384`), `QUESTION_ACTIONS`
+  (`owner_rule_service.py:31`); `learnable()` stays false for `accept_early`
 - Modify: `app/services/reconciliation_actions/__init__.py`: `KIND_ACTIONS["line_unmatched"]` :27-28 +=
   `accept_early_reward`; `CONDITIONS` :130-153: on `reward_early` cases only `accept_early_reward` and `dismiss`
   are true (P5), and `accept_early_reward` is false on any other hint; `balance_gap` with `carried_accrual_ids` →
   `dismiss` only (:138-139). There is no `policy_service` edit (finding 6: `:315` is `_anchor_candidate`, already
   None for card statements).
-- Create: `AcceptEarlyRewardAction` (name `accept_early_reward`, `case_kinds={"line_unmatched"}`) in
-  `app/services/reconciliation_actions/ledger_actions.py`, registered like `CreateSystemEntryAction` (:206), per P5
-- Modify (SPA, small): `frontend/src/app/components/accounting/inbox/inbox.model.ts` and `inbox-view.ts` /
-  `inbox-panel/inbox-panel.ts`: button `accept_early` label 「接受提早入帳」, and the case `note` shown under the line
-  (pinned with their existing spec files)
+- Create: `AcceptEarlyRewardAction` (name `accept_early_reward`, `case_kinds={"line_unmatched"}`, owner actor
+  only, not revertible) in `app/services/reconciliation_actions/ledger_actions.py`, registered like
+  `CreateSystemEntryAction` (:206); behaviour per P5, reconcile call as `case_actions.py:149-156`
+- Modify: `app/services/reward_bank_wins.py` `prepare`: the accepted map (P5) is paired first; accepted ids leave
+  the general candidate set
+- Modify (SPA, re-check B): `frontend/src/app/components/accounting/inbox/inbox.model.ts` (`InboxButton` :16-24 +=
+  `'accept_early'`; `InboxItem.note?: string | null`), `inbox-panel/inbox-panel.ts` (`OneTap` :51 +=
+  `'accept_early'`; `FOLD_BUTTONS.other` :56-61 → `['accept_early', 'dismiss']`; label 「接受提早入帳」; the `note`
+  rendered under the line in the folded card), `inbox-view.ts` label map; specs `inbox-panel.spec.ts`
+  (`folded other card with accept_early renders 接受提早入帳 and 略過, and shows the note`;
+  `accept_early applies one-tap`)
 - Test: `tests/integration/test_reward_bank_wins_cases.py`, `tests/unit/test_inbox_service.py`
 
 **Interfaces:**
@@ -560,7 +555,9 @@ the P5 gap (a dismiss-only early case would leave a bank-paid reward at 0). Mapp
   - `reward_bank_wins.early_candidates(db, statement, accounts) -> list[int]`: estimated accrual ids, reward account
     in `accounts`, with `post_on` in `(period_end, shift_period(closing_day, period, 1)[1]]`.
   - Case contexts: `{"hint": "reward_surplus"}`; `{"hint": "reward_early", "early_accrual_ids": [...], "rule_ids":
-    [...]}`; balance gap `{"gap": ..., "card": True, "carried_accrual_ids": [...]}`.
+    [...], "default_accrual_ids": [...], "note": ...}`; balance gap `{"gap": ..., "card": True,
+    "carried_accrual_ids": [...]}`.
+  - `reward_bank_wins.accepted_map(db, statement) -> dict[int, list[int]]` (P5).
 
 - [ ] **Step 1: Failing tests:**
   - `test_surplus_line_becomes_owner_case` (Review Focus 3): two lines, one row → one claim, one `line_unmatched`
@@ -570,11 +567,24 @@ the P5 gap (a dismiss-only early case would leave a bank-paid reward at 0). Mapp
     next cycle, statement reward line → case hint `reward_early`, context `early_accrual_ids`, `rule_ids` and the
     exact P5 `note`. Policy run books nothing. `actions.allowed(case) == ["accept_early_reward", "dismiss"]` (registry
     order). The inbox buttons are `["accept_early", "dismiss"]`.
-  - `test_accept_early_reward_books_once` (P5): apply `accept_early_reward` → the accruals' `post_on` equals the
-    line's `posted_date` and the statement has `needs_recheck`. Reconcile → the case is superseded, the line is
-    claimed `reward_engine`, there is exactly one reward row per accrual, and its ledger amount is the bank figure.
-    A later daily job run posts nothing more for them.
-  - `test_accept_early_reward_refuses_moved_accrual`: an accrual already posted → 409 `accrual_not_estimated`.
+  - `test_accept_early_reward_books_once` (P5): one early accrual, one line. Apply `accept_early_reward` → in that
+    transaction the accrual is `posted` with `post_on` = the line's `posted_date`, then `bank_confirmed` at the bank
+    figure; the line is claimed `reward_engine`; the case is resolved by the action (status restored, not left
+    superseded); one reward row. A later daily job run posts nothing more.
+  - `test_accept_names_one_of_two` (re-check A): two next-cycle accruals, one line; accept the default id → that one
+    is `bank_confirmed`; the other stays `estimated` at its formula `post_on` and is a candidate (a) on the next
+    statement. Neither statement gets `create_system_entry` or a `bank_only` case.
+  - `test_accept_first_of_two_lines` (re-check A): two `reward_early` lines; accept the first → only its line is
+    claimed; the second case stays `reward_early` and still offers `accept_early_reward`; accepting it claims its
+    own ids.
+  - `test_accept_then_rate_put_keeps_line_date` (re-check A): accept, then PUT the rule's rate → the posted
+    accrual keeps `post_on` = line date and its amount (frozen).
+  - `test_accept_refuses_line_outside_period`: `posted_date = period_end + 1 day` → 409 `line_outside_period`,
+    accrual unchanged.
+  - `test_accept_early_reward_refuses_moved_accrual`: a named accrual already posted, or not in the case list → 409
+    `accrual_not_estimated`, nothing changed.
+  - `test_accept_not_policy_or_rule_learnable`: a policy run and `owner_rule_service.apply_rules` never apply it;
+    `inbox_service.learnable` is false; dismiss writes no ledger row.
   - `test_extra_line_with_candidates_stays_surplus` (finding 7): in-period candidates plus early candidates, two
     lines and one row → the extra line has hint `reward_surplus`, not `reward_early`.
   - `test_early_case_superseded_after_posting_fix` (lead carry 2): PUT the rule's posting fields so `post_on` falls
@@ -737,4 +747,18 @@ the P5 gap (a dismiss-only early case would leave a bank-paid reward at 0). Mapp
 | 9 | weak tests | Task 4 (negative delta, cap clamp), Task 5 (ledger amount used), Task 6 (old-project move, split), Task 8 (flag clear, sweep pin) |
 | nits | P8 wording; Task 11 anchor | P8; Task 11 |
 | author | P5 dismiss-only leaves a bank-paid reward at 0 | P5 `accept_early_reward`; Task 9 action + tests + SPA button |
+
+## Re-check mapping (AGENT-396, dev-grok, CHANGES at `27ffa2c6`) → rev 3
+
+| item | finding | where folded |
+|---|---|---|
+| 1–4, 6–9 | resolved at `27ffa2c6` | unchanged |
+| 5 | delete path locks one accrual then the reward row, then the rest of the window | P12 rewritten: window `SELECT … ORDER BY id` first, `recompute_window(locked=True)`; `test_engine_reward_delete_lock_order` (statement listener; the race helper cannot see order) |
+| A | accept moved every early id; date could be re-bucketed before the re-run; line date unchecked | P5 rewritten: named ids (default closest), 409s, params on the action row, reconcile in the action transaction, accepted map pairing; five tests |
+| B | inbox panel fold filter drops the button; note never reaches the card | Task 9 SPA: `InboxButton`, `OneTap`, `FOLD_BUTTONS.other`, `InboxItem.note`; panel spec |
+| steer reply | same as A/B, plus no policy / owner-rule path | Task 9 "Not touched" + `test_accept_not_policy_or_rule_learnable` |
+
+Deviation, noted for the lead: re-check A asked to hold the reconcile until every `reward_early` line on the statement
+is decided. Rev 3 instead pins each accepted line to its own named ids (the accepted map) and leaves the other lines on
+the normal §7 path, so one accept cannot claim or close another line, with no hold state.
 
