@@ -15,6 +15,7 @@ from pathlib import Path
 import httpx
 
 from . import send
+from . import terms as terms_cmd
 from .api import TZ, ApiError, ReadClient, fetch_daily, fetch_weekly
 from .cathay import cathay_lines
 from .config import ConfigError, NotifyConfig, load_config, read_token
@@ -22,11 +23,15 @@ from .cycles import CalendarExhausted
 from .debits import build_daily
 from .dedupe import apply
 from .digest import build_weekly
+from .hermes_run import HermesError
 from .render import render_daily, render_failure, render_weekly
 from .state import LastSend, load_state, save_state
+from .terms_parse import TermsParseError
+from .terms_state import TermsStateError
 
 DEFAULT_CONFIG = "~/.config/homehub-notify.toml"
-FAILURES = (ApiError, CalendarExhausted, ConfigError, httpx.HTTPError, send.SendError)
+FAILURES = (ApiError, CalendarExhausted, ConfigError, httpx.HTTPError, send.SendError,
+            HermesError, TermsParseError, TermsStateError)
 
 
 def failure_path(cfg: NotifyConfig) -> Path:
@@ -43,6 +48,13 @@ def _parser() -> argparse.ArgumentParser:
         mode.add_argument("--dry-run", action="store_true")
         mode.add_argument("--send", action="store_true")
         s.add_argument("--config", default=DEFAULT_CONFIG)
+    t = sub.add_parser("terms")
+    t.add_argument("--cause", required=True, choices=("monthly", "year-end"))
+    t.add_argument("--as-of", type=date.fromisoformat, default=None)
+    tmode = t.add_mutually_exclusive_group()
+    tmode.add_argument("--dry-run", action="store_true")
+    tmode.add_argument("--send", action="store_true")
+    t.add_argument("--config", default=DEFAULT_CONFIG)
     f = sub.add_parser("failed")
     f.add_argument("unit")
     f.add_argument("--config", default=DEFAULT_CONFIG)
@@ -52,6 +64,8 @@ def _parser() -> argparse.ArgumentParser:
 def _short(exc: Exception) -> str:
     """Exception class plus the safe detail: the HTTP status / reason, or for ConfigError (names the key or the
     config path, never a value) and CalendarExhausted (names the dates) the message itself."""
+    if isinstance(exc, (HermesError, TermsParseError, TermsStateError)):
+        return f"{type(exc).__name__} {exc.reason} {exc.archive}"  # stage + archive dir only, never output text
     if isinstance(exc, (ConfigError, CalendarExhausted)):
         detail = str(exc)
     else:
@@ -124,6 +138,15 @@ def _failed(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fail(args: argparse.Namespace, cfg: NotifyConfig | None, today: date, exc: Exception) -> int:
+    # command + as-of date first, so a stale file from a hand run is identifiable
+    line = render_failure(f"{args.command} {today.isoformat()} {_short(exc)}")
+    print(line, file=sys.stderr)
+    if args.send and cfg is not None:
+        _write_failure(cfg, line)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
@@ -134,13 +157,16 @@ def main(argv: list[str] | None = None) -> int:
     cfg = None
     today = args.as_of or datetime.now(TZ).date()
     try:
-        cfg = load_config(Path(args.config).expanduser())
-        _run(args, cfg, today)
+        cfg = load_config(Path(args.config).expanduser(), with_terms=args.command == "terms")
+        if args.command == "terms":
+            terms_cmd.run_terms(args, cfg, today)
+        else:
+            _run(args, cfg, today)
+    except ConfigError as exc:
+        if args.command == "terms" and (str(exc) == "terms" or str(exc).startswith("terms.")):
+            print(f"terms: config {exc}", file=sys.stderr)  # a setup problem, not a run failure: no failure file
+            return 2
+        return _fail(args, cfg, today, exc)
     except FAILURES as exc:
-        # command + as-of date first, so a stale file from a hand run is identifiable
-        line = render_failure(f"{args.command} {today.isoformat()} {_short(exc)}")
-        print(line, file=sys.stderr)
-        if args.send and cfg is not None:
-            _write_failure(cfg, line)
-        return 1
+        return _fail(args, cfg, today, exc)
     return 0

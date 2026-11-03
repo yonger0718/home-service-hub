@@ -73,7 +73,8 @@ def _optional_str(raw: dict, key: str) -> str | None:
     return value.strip().rstrip("/")
 
 
-def load_config(path: Path) -> NotifyConfig:
+def load_config(path: Path, *, with_terms: bool = False) -> NotifyConfig:
+    """``[terms]`` is parsed only for the terms command, so a bad block cannot break daily/weekly."""
     from notify.terms_config import load_terms  # lazy: terms_config imports ConfigError from here
 
     try:
@@ -109,7 +110,7 @@ def load_config(path: Path) -> NotifyConfig:
         portfolio_base=_optional_str(raw, "portfolio_base"),
         cathay_run_time=_hhmm(raw, "cathay_run_time", time(6, 40)),
         cathay_run_grace_minutes=_grace(raw, "cathay_run_grace_minutes", 15),
-        terms=load_terms(raw),
+        terms=load_terms(raw) if with_terms else None,
     )
 
 

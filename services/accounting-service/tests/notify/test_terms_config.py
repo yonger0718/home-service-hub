@@ -22,7 +22,7 @@ CARD = (
 def _load(tmp_path, body):
     p = tmp_path / "c.toml"
     p.write_text(MINIMAL + body)
-    return load_config(p)
+    return load_config(p, with_terms=True)
 
 
 def _card_err(tmp_path, old, new):
@@ -33,7 +33,7 @@ def _card_err(tmp_path, old, new):
 
 
 def test_example_toml_loads_three_cards():
-    terms = load_config(EXAMPLE_FILE).terms
+    terms = load_config(EXAMPLE_FILE, with_terms=True).terms
     cards = {c.account_id: c for c in terms.cards}
     assert list(cards) == [101, 102, 301]
     assert cards[301].year_end_window is False and cards[301].currency == "USD"
@@ -96,3 +96,11 @@ def test_card_key_must_be_int(tmp_path):
     with pytest.raises(ConfigError) as exc:
         _load(tmp_path, TERMS + CARD.replace('"101"', '"abc"'))
     assert str(exc.value) == "terms.cards.abc"
+
+
+def test_broken_terms_block_loads_without_with_terms(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text(MINIMAL + '\n[terms]\nreport_dir = "~/r"\nhermes_model = "m"\nhermes_toolsets = "all"\n')
+    assert load_config(p).terms is None
+    with pytest.raises(ConfigError):
+        load_config(p, with_terms=True)
