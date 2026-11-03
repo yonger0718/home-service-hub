@@ -525,3 +525,40 @@ def forfeit_for_delete(db: Session, accrual: RewardAccrual) -> Pair:
     accrual.state, accrual.ledger_entry_id = "forfeited", None
     db.flush()
     return accrual.rule_id, accrual.window_start
+
+
+def usage(db: Session, account_id: int, on: date) -> list[dict]:
+    """Cap use of each in-date enabled rule's window containing `on` (spec 6); a shared-cap group appears once.
+
+    Read-only: `used` and the cap come from the same helpers `recompute_window` allots with."""
+    account = db.get(Account, account_id)
+    if account is None:
+        return []
+    closing_day = card_closing_day(db, account)
+    rules = db.scalars(
+        select(RewardRule)
+        .where(RewardRule.account_id == account_id, RewardRule.is_enabled.is_(True),
+               or_(RewardRule.starts_on.is_(None), RewardRule.starts_on <= on),
+               or_(RewardRule.ends_on.is_(None), RewardRule.ends_on >= on))
+        .order_by(RewardRule.sort_order, RewardRule.id)
+    ).all()
+    out, seen = [], set()
+    for rule in rules:
+        if rule.shared_cap_id is not None:
+            if rule.shared_cap_id in seen:
+                continue
+            seen.add(rule.shared_cap_id)
+        group = reward_rule_service.group_rule_ids(db, rule)
+        start, end = window_for(rule.window, closing_day, on)
+        rows = _window_rows(db, [(rule.id, start)], lock=False)
+        frozen = _frozen_amounts(db, rows)
+        used = sum(frozen.values(), _ZERO) + _external_used(db, group, start, end)
+        estimated = sum((Decimal(r.amount) for r in rows if r.state == "estimated"), _ZERO)
+        cap = reward_rule_service.group_cap(db, rule)
+        out.append({
+            "rule_ids": group, "shared_cap_id": rule.shared_cap_id, "name": rule.name,
+            "window_start": start, "window_end": end,
+            "used": used.quantize(_Q), "estimated": estimated.quantize(_Q),
+            "cap": cap, "remaining": None if cap is None else max(_ZERO, Decimal(cap) - used - estimated).quantize(_Q),
+        })
+    return out

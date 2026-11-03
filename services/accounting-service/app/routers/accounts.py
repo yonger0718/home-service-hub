@@ -15,9 +15,10 @@ from ..schemas.ledger import (
     EntryKind,
     EntryPage,
     RewardRuleOut,
+    RewardUsageOut,
 )
 from ..schemas.writes import SOURCE_CURRENCIES, AccountIn, AccountSourcesPatch, OrderIn, RewardRuleIn, RewardRuleUpdateIn
-from ..services import account_logo_service, ledger_service, reward_rule_service, settings_service
+from ..services import account_logo_service, reward_engine, ledger_service, reward_rule_service, settings_service
 from ..services.account_logo_service import MAX_LOGO_UPLOAD_BYTES, LogoError, logo_hash
 from ..services.errors import CodedValidationError
 from .errors import service_errors
@@ -54,6 +55,12 @@ def get_account(account_id: int, as_of: date | None = None, db: Session = Depend
 def list_reward_rules(account_id: int, db: Session = Depends(get_db)):
     _require_account(db, account_id)
     return ledger_service.list_reward_rules(db, account_id)
+
+
+@router.get("/{account_id}/reward-usage", response_model=list[RewardUsageOut])
+def reward_usage(account_id: int, on: date | None = Query(default=None, alias="date"), db: Session = Depends(get_db)):
+    _require_account(db, account_id)
+    return reward_engine.usage(db, account_id, on or ledger_service._today())
 
 
 @router.post("/{account_id}/reward-rules", response_model=RewardRuleOut, status_code=201)

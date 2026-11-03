@@ -26,6 +26,7 @@ from ..models import (
     LedgerEntry,
     Preference,
     Project,
+    RewardAccrual,
     RewardRule,
 )
 from . import report_rules, valuation_service
@@ -472,6 +473,24 @@ def _rule_names(db: Session, entry_ids: list[int]) -> dict[int, list[str]]:
     return names
 
 
+def _accrual_rows(db: Session, entry_ids: list[int]) -> dict[int, list[dict]]:
+    """Reward accruals of the source entries, one query for the page (spec 6)."""
+    out: dict[int, list[dict]] = defaultdict(list)
+    if not entry_ids:
+        return out
+    for row, rule_name in db.execute(
+        select(RewardAccrual, RewardRule.name)
+        .join(RewardRule, RewardRule.id == RewardAccrual.rule_id)
+        .where(RewardAccrual.source_entry_id.in_(entry_ids))
+        .order_by(RewardAccrual.source_entry_id, RewardRule.sort_order, RewardAccrual.id)
+    ):
+        out[row.source_entry_id].append({
+            "id": row.id, "rule_id": row.rule_id, "rule_name": rule_name, "estimate": row.estimate,
+            "amount": row.amount, "state": row.state, "post_on": row.post_on,
+            "ledger_entry_id": row.ledger_entry_id})
+    return out
+
+
 def _entry_rows(db: Session, filters: list, *, running_accounts: list[int] | None, limit=None, offset=0) -> list[dict]:
     """EntryOut dicts newest first for the entries matching `filters`."""
     running = _running_subquery(running_accounts)
@@ -504,6 +523,7 @@ def _entry_rows(db: Session, filters: list, *, running_accounts: list[int] | Non
     rows = db.execute(stmt).all()
     groups = _group_summaries(db, {row.LedgerEntry.group_id for row in rows if row.LedgerEntry.group_id})
     rule_names = _rule_names(db, [row.LedgerEntry.id for row in rows])
+    accruals = _accrual_rows(db, [row.LedgerEntry.id for row in rows])
 
     page = []
     for row in rows:
@@ -551,6 +571,7 @@ def _entry_rows(db: Session, filters: list, *, running_accounts: list[int] | Non
                 "invoice_random": entry.invoice_random,
                 "needs_review": entry.needs_review,
                 "review_reason": entry.review_reason,
+                "accruals": accruals[entry.id],
                 "source": entry.source,
                 "moze_id": entry.moze_id,
                 "locked": is_locked(entry.source, entry.moze_id),
