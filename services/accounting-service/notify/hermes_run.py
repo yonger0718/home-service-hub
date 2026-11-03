@@ -67,7 +67,10 @@ def run_hermes(prompt_path: Path, toolsets: str, timeout_s: int, model: str, pro
         prompt = Path(prompt_path).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         raise HermesError(archive) from None
-    argv = hermes_argv(prompt, toolsets, model, provider)
+    try:
+        argv = hermes_argv(prompt, toolsets, model, provider)
+    except ValueError:
+        raise HermesError(archive) from None
     out_path, err_path = archive / "hermes.out", archive / "hermes.err"
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     out_fd = os.open(out_path, flags, 0o600)

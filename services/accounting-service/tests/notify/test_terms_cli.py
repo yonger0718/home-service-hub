@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from notify import cli, send, terms
+from notify import cli, hermes_run, send, terms
 from notify.hermes_run import HermesError, HermesResult
 from notify.terms_state import load_terms_state
 from tests.notify.notify_fakes import make_client
@@ -59,7 +59,7 @@ class TermsEnv:
         self.fail_send = False
         self.hermes_calls: list[dict] = []
         self.hermes_stdout = stdout
-        self.hermes_error: Exception | None = None
+        self.hermes_fails = False
         self.auth: list[str] = []
         rules = {"/reward-rules": {"accounts": []}}
         for aid in (101, 102, 301):
@@ -83,9 +83,10 @@ class TermsEnv:
 
     def _hermes(self, **kw):
         self.hermes_calls.append(kw)
-        if self.hermes_error is not None:
-            raise self.hermes_error
         archive = kw["archive"]
+        if self.hermes_fails:
+            (archive / "hermes.out").write_text("SECRET MODEL TEXT")
+            raise HermesError(archive)
         for name, text in (("hermes.out", self.hermes_stdout), ("hermes.err", "")):  # as run_hermes: 0600
             with os.fdopen(os.open(archive / name, os.O_WRONLY | os.O_CREAT, 0o600), "w") as fh:
                 fh.write(text)
@@ -109,9 +110,11 @@ def test_dry_run_writes_archive_prints_and_saves_nothing(tenv, capsys):
     (arch,) = tenv.archives
     for name in ("input.json", "prompt.md", "hermes.out", "hermes.err", "result.json", "message.md"):
         assert (arch / name).exists()
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
+    out = captured.out
     assert "回饋條款查核" in out and out.strip() == (arch / "message.md").read_text().replace("\n\n---\n\n", "\n---\n").strip()
     assert tenv.sent == [] and not tenv.tstate.exists() and not tenv.failure.exists()
+    assert "terms: 3 cards," in captured.err and "sent 0 messages" in captured.err
 
 
 def test_no_mode_flag_is_dry_run(tenv):
@@ -173,23 +176,25 @@ def test_send_failure_keeps_archive_and_state(tenv):
 
 
 def test_hermes_failure_reason_has_no_output_text(tenv, capsys):
-    tenv.hermes_stdout = "SECRET MODEL TEXT"
-
-    def boom(**kw):
-        (kw["archive"] / "hermes.out").write_text("SECRET MODEL TEXT")
-        raise HermesError(kw["archive"])
-
-    terms_run = terms.run_hermes
-    try:
-        terms.run_hermes = boom
-        assert tenv.run("--cause", "monthly", "--send") == 1
-    finally:
-        terms.run_hermes = terms_run
+    tenv.hermes_fails = True
+    assert tenv.run("--cause", "monthly", "--send") == 1
     (arch,) = tenv.archives
     text = tenv.failure.read_text()
     assert text == f"❌ 帳務通知失敗：terms 2026-11-03 HermesError hermes {arch}"
     assert "SECRET" not in text and "SECRET" not in capsys.readouterr().err
     assert tenv.sent == [] and not tenv.tstate.exists()
+
+
+def test_oversized_prompt_fails_cleanly_through_real_run_hermes(tenv, monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(terms, "build_prompt", lambda inp: "x" * 120_001)
+    monkeypatch.setattr(terms, "run_hermes", lambda **kw: hermes_run.run_hermes(
+        **kw, runner=lambda *a: calls.append(a)))
+    assert tenv.run("--cause", "monthly", "--send") == 1
+    (arch,) = tenv.archives
+    assert calls == []
+    assert tenv.failure.read_text() == f"❌ 帳務通知失敗：terms 2026-11-03 HermesError hermes {arch}"
+    assert "Traceback" not in capsys.readouterr().err and tenv.sent == []
 
 
 def test_missing_terms_section_exits_2_without_failure_file(tmp_path, monkeypatch, capsys):

@@ -43,6 +43,12 @@ def _make_archive(report_dir: Path, now: datetime) -> Path:
     return archive
 
 
+def _summary(inp, decisions, sent: int) -> None:
+    shown = sum(any(getattr(d, f.name) for f in dataclasses.fields(d) if f.name.startswith("show_"))
+                for d in decisions.values())
+    print(f"terms: {len(inp.cards)} cards, {shown} with items, sent {sent} messages", file=sys.stderr)
+
+
 def run_terms(args: argparse.Namespace, cfg: NotifyConfig, today: date) -> list[str]:
     t = cfg.terms
     if t is None:
@@ -79,6 +85,7 @@ def run_terms(args: argparse.Namespace, cfg: NotifyConfig, today: date) -> list[
             _write(archive / "message.md", "\n\n---\n\n".join(messages))
             if not args.send:
                 print("\n---\n".join(messages))
+                _summary(inp, decisions, 0)
                 return messages
             send.deliver(messages, cfg.discord_target)
             for c in result.cards:
@@ -88,7 +95,5 @@ def run_terms(args: argparse.Namespace, cfg: NotifyConfig, today: date) -> list[
         exc.archive = archive
         raise
     (cfg.state_file.with_name("last_failure.txt")).unlink(missing_ok=True)
-    shown = sum(any(getattr(d, f.name) for f in dataclasses.fields(d) if f.name.startswith("show_"))
-                for d in decisions.values())
-    print(f"terms: {len(inp.cards)} cards, {shown} with items, sent {len(messages)} messages", file=sys.stderr)
+    _summary(inp, decisions, len(messages))
     return messages

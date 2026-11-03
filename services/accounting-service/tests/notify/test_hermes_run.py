@@ -182,3 +182,12 @@ def test_invalid_utf8_replaced_and_empty_stdout(tmp_path):
     res = _run(tmp_path, make_runner(out=b"a\xffb"))
     assert res.stdout == "a�b"
     assert _run(tmp_path, make_runner()).stdout == ""
+
+
+def test_oversized_prompt_is_hermes_error_and_runner_never_called(tmp_path):
+    calls = []
+    p = tmp_path / "big.txt"
+    p.write_bytes(b"x" * 120_001)
+    with pytest.raises(HermesError):
+        _run(tmp_path, make_runner(calls=calls), prompt_path=p)
+    assert calls == []
