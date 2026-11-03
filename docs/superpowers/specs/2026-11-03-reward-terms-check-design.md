@@ -319,7 +319,8 @@ shared `state.json` whole, and `State` is a typed dataclass; a separate file avo
 clobbering and a schema migration) —
 `{"<account_id>": {"digest": …, "seen_at": iso}}`. The digest is sha256 of canonical JSON
 (UTF-8, `sort_keys`, compact separators) of: `status`, `current_period_end`, `findings`
-sorted by `(rule_id, field, source)`, `unverified` sorted the same, `next_terms`, with
+sorted by `(rule_id, field, source)`, `unverified` sorted the same, `next_terms`,
+`next_terms_unverified_url` (normalised), with
 quotes whitespace-collapsed and decimals normalised; for `signal` cards the normalised
 `notes` text is hashed instead. A missing file is an empty state. An unreadable or corrupt
 file **fails the run** and is not replaced (unlike `load_state`'s empty-on-error path, which

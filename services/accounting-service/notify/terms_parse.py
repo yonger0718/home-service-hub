@@ -88,10 +88,31 @@ def _norm_domain(d: str) -> str:
     return d[:-1] if d.endswith(".") else d
 
 
+_BAD_CHARS = re.compile(r"[\s\x00-\x1f\x7f\\]")
+_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+_URL_MAX = 2048
+
+
+def _clean_url(url: str) -> bool:
+    return len(url) <= _URL_MAX and not _BAD_CHARS.search(url)
+
+
+def _safe_url(value: str) -> str:
+    value = value.strip()
+    return value if _clean_url(value) else ""
+
+
 def source_ok(url: str, domains: tuple[str, ...]) -> bool:
-    """https, no userinfo, no non-443 port, host equal to / a subdomain of a bank domain."""
+    """https, clean text, no userinfo, no non-443 port, valid labels, host equal to / under a bank domain."""
+    if not isinstance(url, str):
+        return False
+    url = url.strip()
+    if not _clean_url(url):
+        return False
     try:
-        parts = urlsplit(url.strip())
+        parts = urlsplit(url)
+        if "%" in parts.netloc:
+            return False
         scheme, user, pw = parts.scheme.lower(), parts.username, parts.password
         host, port = parts.hostname, parts.port
     except (ValueError, AttributeError):
@@ -101,7 +122,7 @@ def source_ok(url: str, domains: tuple[str, ...]) -> bool:
     if port not in (None, 443):
         return False
     host = _norm_domain(host)
-    if not host:
+    if not host or not all(_LABEL.match(lb) for lb in host.split(".")):
         return False
     for d in map(_norm_domain, domains):
         if d and (host == d or host.endswith("." + d)):
@@ -118,13 +139,17 @@ def _dec(value: object) -> str | None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float, str, Decimal)):
         raise _bad()
-    try:
-        d = Decimal(str(value).strip())
-    except InvalidOperation:
-        raise _bad() from None
-    if not d.is_finite():
+    text = str(value).strip()
+    if len(text) > 40:
         raise _bad()
-    return "{:f}".format(d.normalize())
+    try:
+        d = Decimal(text)
+        if not d.is_finite() or abs(d.adjusted()) > 30:
+            raise _bad()
+        out = "{:f}".format(d.normalize())
+    except (ArithmeticError, ValueError):
+        raise _bad() from None
+    return "0" if out in ("-0", "0") else out
 
 
 def _iso(value: object) -> str | None:
@@ -133,10 +158,9 @@ def _iso(value: object) -> str | None:
     if not isinstance(value, str):
         raise _bad()
     try:
-        date.fromisoformat(value)
+        return date.fromisoformat(value).isoformat()
     except ValueError:
         raise _bad() from None
-    return value
 
 
 def _opt_str(value: object) -> str | None:
@@ -168,13 +192,19 @@ def _finding(raw: object) -> Finding:
                    _text(raw.get("source")).strip(), _text(raw.get("quote")))
 
 
+def _demote(f: Finding) -> Finding:
+    return Finding(f.rule_id, f.field, f.site, f.system, _safe_url(f.source), f.quote)
+
+
 def _period_end(raw: object, domains: tuple[str, ...]) -> PeriodEnd | None:
     if raw is None:
         return None
     if not isinstance(raw, dict):
         raise _bad()
     d, src, quote = raw.get("date"), raw.get("source"), raw.get("quote")
-    if not (isinstance(d, str) and isinstance(src, str) and isinstance(quote, str)):
+    if any(v is not None and not isinstance(v, str) for v in (d, src, quote)):
+        raise _bad()
+    if not (d and src and quote):
         return None
     if not quote.strip() or not source_ok(src, domains):
         return None
@@ -208,7 +238,10 @@ def _next_terms(raw: object, domains: tuple[str, ...]) -> tuple[NextTerms | None
                    src.strip() if src else None, quote)
     if src and quote and quote.strip() and source_ok(src, domains):
         return nt, None
-    return None, (src.strip() if src else None)
+    return None, (_safe_url(src) or None if src else None)
+
+
+_UNVERIFIED = "[unverified source]"
 
 
 def _truncated(raw: object, account_id: int, domains: tuple[str, ...]) -> tuple[str, ...]:
@@ -218,9 +251,46 @@ def _truncated(raw: object, account_id: int, domains: tuple[str, ...]) -> tuple[
     for e in raw:
         if isinstance(e, dict) and e.get("account_id") == account_id and isinstance(e.get("url"), str):
             read = e.get("read") if isinstance(e.get("read"), str) else ""
-            url = e["url"].strip() if source_ok(e["url"], domains) else "[unverified source]"
+            url = e["url"].strip() if source_ok(e["url"], domains) else _UNVERIFIED
             out.append(f"{url} ({read})" if read else url)
     return tuple(out)
+
+
+def _clean_log(log: dict, cards: tuple[CardEntry, ...]) -> dict:
+    allowed = tuple(d for c in cards for d in c.bank_domains)
+    by_id = {c.account_id: c.bank_domains for c in cards}
+    out = dict(log)
+    calls = log.get("tool_calls")
+    if calls is not None and (isinstance(calls, bool) or not isinstance(calls, int)):
+        raise _bad()
+    failed = log.get("failed", [])
+    if not isinstance(failed, list):
+        raise _bad()
+    out["failed"] = [_clean_failed(x, allowed) for x in failed]
+    trunc = log.get("truncated", [])
+    if not isinstance(trunc, list):
+        raise _bad()
+    clean = []
+    for e in trunc:
+        if not isinstance(e, dict):
+            raise _bad()
+        doms = by_id.get(e.get("account_id"), ())
+        url = e.get("url")
+        ok = isinstance(url, str) and source_ok(url, doms)
+        clean.append({"account_id": e.get("account_id") if e.get("account_id") in by_id else None,
+                      "url": url.strip() if ok else _UNVERIFIED,
+                      "read": e["read"] if isinstance(e.get("read"), str) else ""})
+    out["truncated"] = clean
+    return out
+
+
+def _clean_failed(entry: object, allowed: tuple[str, ...]) -> str:
+    if not isinstance(entry, str):
+        return _UNVERIFIED
+    url = entry.strip().split(" ", 1)[0]  # "https://... (403)"
+    rest = entry.strip()[len(url):]
+    return entry.strip() if source_ok(url, allowed) and len(rest) <= 100 \
+        and not re.search(r"[\x00-\x1f\x7f\\]", rest) else _UNVERIFIED
 
 
 def _card(raw: object, entry: CardEntry, trunc: object) -> CardResult:
@@ -239,7 +309,10 @@ def _card(raw: object, entry: CardEntry, trunc: object) -> CardResult:
         raise _bad()
     ok, bad = [], []
     for f in map(_finding, fl):
-        (ok if f.quote.strip() and source_ok(f.source, doms) else bad).append(f)
+        if f.quote.strip() and source_ok(f.source, doms):
+            ok.append(f)
+        else:
+            bad.append(_demote(f))
     nt, nt_url = (None, None)
     if raw.get("next_terms") is not None:
         nt, nt_url = _next_terms(raw["next_terms"], doms)
@@ -263,13 +336,13 @@ def parse_result(stdout: str, cards: tuple[CardEntry, ...]) -> TermsResult:
     block = last_json_block(stdout)
     try:
         data = json.loads(block)
-    except ValueError:
+    except (ValueError, RecursionError):
         data = None  # raised below, outside the except: no chained model text
     if not isinstance(data, dict) or not isinstance(data.get("cards"), list):
         raise _bad()
     log = data.get("fetch_log")
-    log = log if isinstance(log, dict) else {}
-    trunc = log.get("truncated")
+    log = _clean_log(log if isinstance(log, dict) else {}, cards)
+    trunc = log["truncated"]
     entries = {c.account_id: c for c in cards}
     seen: dict[int, object] = {}
     for raw in data["cards"]:
@@ -317,5 +390,6 @@ def digest(card: CardResult, tier: str) -> str:
                                   "cap": _dec(r.get("cap")), "notes": _q(r["notes"]) if r.get("notes") else None}
                                  for r in nt.rules), key=_canon),
                 "source": nt.source, "quote": None if nt.quote is None else _q(nt.quote)},
+            "next_terms_unverified_url": (card.next_terms_unverified_url or "").strip() or None,
         }
     return hashlib.sha256(_canon(obj).encode("utf-8")).hexdigest()

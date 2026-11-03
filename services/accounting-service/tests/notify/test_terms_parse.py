@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -182,3 +183,94 @@ def test_truncated_entries_attached_to_card():
     assert by_id(r, 102).truncated == ()
     assert isinstance(r.fetch_log, dict) and r.fetch_log["tool_calls"] == 15
     assert isinstance(by_id(r, 101), CardResult)
+
+
+HOSTILE = [
+    "https://evil.com\\.example-bank.com/",
+    "https://evil.com%2f.example-bank.com/",
+    "https://evil.com\x00.example-bank.com/",
+    "https://exam\tple-bank.com/",
+    "https://example-bank.com/x https://evil.com",
+    "https://example-bank.com/x\nhttps://evil.com",
+    "https://.example-bank.com/",
+    "https://example-bank.com/" + "a" * 2100,
+]
+
+
+@pytest.mark.parametrize("url", HOSTILE)
+def test_source_rule_rejects_hostile_urls(url):
+    assert not source_ok(url, ("example-bank.com",))
+
+
+def test_source_rule_accepts_good_urls():
+    d = ("example-bank.com",)
+    assert source_ok("https://www.example-bank.com/x", d)
+    assert source_ok("HTTPS://Www.Example-Bank.com./terms", d)
+    assert source_ok("https://EXAMPLE-BANK.COM:443/x", d)
+
+
+def test_deeply_nested_json_is_parse_error():
+    text = "```json\n" + "[" * 100000 + "\n```"
+    with pytest.raises(TermsParseError):
+        parse_result(text, ONE)
+
+
+def test_decimal_bounds():
+    def rate(v):
+        return parse_result(fx.one_card(_announced(v, None)), CARDS[2:3]).cards[0].next_terms.rules[0]["rate"]
+    assert rate("1E+1") == "10" and rate("-0") == "0"
+    for bad in ("1e50000000", "1" * 41, "1e31", "NaN"):
+        with pytest.raises(TermsParseError):
+            rate(bad)
+
+
+def test_unverified_finding_source_is_sanitised():
+    def run(src):
+        f = {"rule_id": 1, "field": "rate", "site": "1", "system": "2", "source": src, "quote": "q"}
+        return parse_result(fx.one_card({"account_id": 101, "status": "changed", "findings": [f]}),
+                            ONE).cards[0].unverified[0].source
+    assert run("https://evil.com/p") == "https://evil.com/p"
+    assert run("https://evil.com/p x\nhttps://a") == ""
+    assert run("https://evil.com\\x") == ""
+
+
+def test_fetch_log_sanitised():
+    log = {"tool_calls": 3,
+           "failed": [ON + " (403)", "https://evil.com/x (403)", "junk url"],
+           "truncated": [{"account_id": 101, "url": "https://us-example.com/x", "read": "r1"},
+                         {"account_id": 101, "url": ON, "read": "r2"}]}
+    r = parse_result(fx.one_card({"account_id": 101, "status": "unchanged"}, fetch_log=log), ONE)
+    assert r.fetch_log["tool_calls"] == 3
+    assert r.fetch_log["failed"] == [ON + " (403)", "[unverified source]", "[unverified source]"]
+    assert r.cards[0].truncated == ("[unverified source] (r1)", ON + " (r2)")
+    bad = fx.one_card({"account_id": 101, "status": "unchanged"}, fetch_log={"tool_calls": "3"})
+    with pytest.raises(TermsParseError):
+        parse_result(bad, ONE)
+
+
+def test_iso_date_normalised_and_period_end_type_errors():
+    nt = _announced(1, None)
+    nt["next_terms"]["period"] = ["20270331", None]
+    assert parse_result(fx.one_card(nt), CARDS[2:3]).cards[0].next_terms.period == ("2027-03-31", None)
+    pe = {"date": "2027-03-31", "source": 5, "quote": "q"}
+    with pytest.raises(TermsParseError):
+        parse_result(fx.one_card({"account_id": 101, "status": "unchanged", "current_period_end": pe}), ONE)
+
+
+def test_digest_covers_unverified_and_unverified_url():
+    base = _prec()
+    assert digest(replace(base, next_terms_unverified_url="https://evil.com/a"), "precise") != digest(base, "precise")
+    assert digest(replace(base, next_terms_unverified_url="  "), "precise") == digest(base, "precise")
+    extra = replace(base, unverified=base.unverified + (replace(base.findings[0], source="https://evil.com"),))
+    assert digest(extra, "precise") != digest(base, "precise")
+
+
+def test_unverified_url_filtered_and_blank_is_none():
+    def run(src):
+        card = _announced(1, None)
+        card["next_terms"]["source"] = src
+        card["next_terms"]["quote"] = ""
+        return parse_result(fx.one_card(card), CARDS[2:3]).cards[0].next_terms_unverified_url
+    assert run("https://evil.com/a") == "https://evil.com/a"
+    assert run("https://evil.com/a b") is None
+    assert run("   ") is None
