@@ -50,6 +50,13 @@ class ReadClient:
     def settings(self) -> dict:
         return self._get("/settings/reconciliation")
 
+    def reward_rules_active(self) -> dict:
+        return self._get("/reward-rules", {"state": "active"})
+
+    def account_reward_rules(self, account_id: int) -> list[dict]:
+        data = self._get(f"/accounts/{account_id}/reward-rules")
+        return data["rules"] if isinstance(data, dict) else data
+
     def calendar(self, date_from: date, date_to: date) -> Calendar:
         data = self._get("/calendar/business-days", {"from": date_from.isoformat(), "to": date_to.isoformat()})
         return Calendar(
