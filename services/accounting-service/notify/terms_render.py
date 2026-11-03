@@ -27,14 +27,17 @@ def has_items(d: ShowDecision | None) -> bool:
 
 
 _MARKDOWN = re.compile(r"([\\*_~|`])")
+_DISCORD = re.compile(r"(?i)(disc)(ord)")
 
 
 def _safe_text(s: object) -> str:
     """Defang model text: one line, Discord markdown escaped, no live URL scheme separator, mention, markdown link
-    or ``<…>`` token (channel, timestamp, emoji)."""
+    or ``<…>`` token (channel, timestamp, emoji); the word ``discord`` is broken so no invite form (``discord.gg/x``,
+    ``discordapp.com/invite/x``, …) survives."""
     out = _MARKDOWN.sub(r"\\\1", " ".join(str(s if s is not None else "").split()))
-    return (out.replace("://", ":/" + _ZW + "/").replace("@", "@" + _ZW).replace("](", "]" + _ZW + "(")
-            .replace("<", "<" + _ZW))
+    out = (out.replace("://", ":/" + _ZW + "/").replace("@", "@" + _ZW).replace("](", "]" + _ZW + "(")
+           .replace("<", "<" + _ZW))
+    return _DISCORD.sub("\\1" + _ZW + "\\2", out)
 
 
 def _link(url: str) -> str:

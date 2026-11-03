@@ -299,7 +299,8 @@ The final fenced JSON block:
   `bank_domains` entry or ends with `"." + domain`. Path/query matches and look-alike
   suffixes fail. The whole URL must also fullmatch `[A-Za-z0-9\-._~:/?#!$&+,;=%()]+` (no
   `@ < > " ' * [ ] { } | \ ^`, backtick or space), so no path, query or fragment can carry a
-  Discord link or mention; `fetch_log` URLs pass the same rule — a failing `failed` entry is
+  Discord link or mention, and must not contain `discord` (case-insensitive; invite hosts render without a
+  scheme) (PR review); `fetch_log` URLs pass the same rule — a failing `failed` entry is
   dropped, a failing `truncated` entry keeps its card's truncation line with the host only
   (SDD final review). `quote` must be
   non-empty. A failing finding moves to `unverified`; a failing `next_terms` is dropped from
@@ -378,7 +379,8 @@ Message (`render_terms(result, state, cfg, today) -> list[str]`):
   flip this to silent later via a config flag.)
 - Chunked with `split_blocks`, delivered with `send.deliver` to `discord_target`.
 - Every printed full URL, the settings link included, renders as `<url>` (one Discord token,
-  no embed); model text has its Discord markdown escaped (SDD final review).
+  no embed); model text has its Discord markdown escaped (SDD final review); `discord` is broken with
+  U+200B in model text so no invite form survives (PR review).
 
 The state is updated only after a successful send (same rule as the daily reminder). A send
 that succeeds and a save that then fails means the next run re-sends the same news; accepted,

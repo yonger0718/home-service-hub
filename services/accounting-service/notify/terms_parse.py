@@ -105,6 +105,7 @@ def _norm_domain(d: str) -> str:
 _BAD_CHARS = re.compile(r"[\s\x00-\x1f\x7f\\]")
 # Printable-URL rule: RFC 3986 characters minus @ ' * and everything Discord can turn into a link or mention.
 _PRINTABLE = re.compile(r"[A-Za-z0-9\-._~:/?#!$&+,;=%()]+")
+_DISCORD = re.compile(r"discord", re.IGNORECASE)  # invite hosts Discord renders without a scheme; no bank URL has it
 _LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 _URL_MAX = 2048
 
@@ -119,12 +120,12 @@ def _safe_url(value: str) -> str:
 
 
 def source_ok(url: str, domains: tuple[str, ...]) -> bool:
-    """https, printable URL characters only, no userinfo, no non-443 port, valid labels, host equal to / under a
+    """https, printable URL characters only, no userinfo, no ``discord`` substring, no non-443 port, valid labels, host equal to / under a
     bank domain. Every URL the message prints in full passes this."""
     if not isinstance(url, str):
         return False
     url = url.strip()
-    if not _clean_url(url) or not _PRINTABLE.fullmatch(url):
+    if not _clean_url(url) or not _PRINTABLE.fullmatch(url) or _DISCORD.search(url):
         return False
     try:
         parts = urlsplit(url)

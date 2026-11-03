@@ -286,3 +286,25 @@ def test_has_items_predicate():
     for name in ("show_findings", "show_announced", "show_signal", "show_not_found", "show_unverified",
                  "show_period_only", "show_period", "show_truncated"):
         assert has_items(show(**{name: True})), name
+
+
+INVITES = ("discord.gg/abc", "DISCORD.COM/invite/abc", "www.discordapp.com/invite/abc", "discord.me/abc")
+INVITE_RE = re.compile(r"(?i)discord(app)?\.(gg|io|me|li|com)/")
+
+
+@pytest.mark.parametrize("inv", INVITES)
+def test_discord_invites_defanged_in_every_model_field(fx, inv):
+    nt = NextTerms(True, ("2027-01-01", None), ({"name": inv, "rate": "2", "cap": None, "notes": inv},), ON, "q")
+    c = card(101, "changed", findings=(finding(quote=inv, site=inv, field=inv),),
+             unverified=(finding(source=OFF, reason=inv, site=inv, field=inv),), next_terms=nt, notes=inv)
+    d = show(show_findings=True, show_unverified=True, show_announced=True, show_signal=True)
+    msgs = run(fx, [entry(101, "A")], [c], {101: d})
+    assert msgs and all(not INVITE_RE.search(m) for m in msgs)
+    assert any("disc\u200bord" in m.lower() for m in msgs)
+
+
+def test_discord_invite_straddling_quote_cut(fx):
+    for pad in range(70, 82):
+        c = card(101, "changed", findings=(finding(quote="y" * pad + "discord.gg/abc"),))
+        (msg,) = run(fx, [entry(101, "A")], [c], {101: show(show_findings=True)})
+        assert not INVITE_RE.search(msg) and "discord" not in msg.lower()

@@ -422,3 +422,19 @@ def test_failed_suffix_fullmatch_ascii(suffix, kept):
     log = {"failed": [ON + suffix]}
     r = parse_result(fx.one_card({"account_id": 101, "status": "unchanged"}, fetch_log=log), ONE)
     assert r.fetch_log["failed"] == [ON + kept]  # the entry is stripped first; a trailing newline is whitespace
+
+
+def test_source_ok_rejects_discord_substring():
+    doms = ("example-bank.com",)
+    assert not source_ok("https://www.example-bank.com/x/discord.gg/abc", doms)
+    assert not source_ok("https://www.example-bank.com/x/DiscordApp.com/invite/abc", doms)
+
+
+def test_discord_failed_dropped_truncated_unverified():
+    bad = ON + "/x/discord.gg/abc"
+    log = {"failed": [bad + " (403)", ON + " (500)"], "truncated": [{"account_id": 101, "url": bad, "read": "r1"}]}
+    r = parse_result(fx.one_card({"account_id": 101, "status": "unchanged"}, fetch_log=log), ONE)
+    assert r.fetch_log["failed"] == [ON + " (500)"]
+    (t,) = r.cards[0].truncated
+    assert t.verified is False and t.read == "r1"
+    assert r.fetch_log["truncated"][0]["url"] == "[unverified source]"
