@@ -448,15 +448,17 @@ def mark_early_rechecks(db: Session, account_id: int) -> None:
 
 
 def drop_for_delete(db: Session, entry_ids: Collection[int]) -> set[Pair]:
-    """The delete path's engine step (5.4), before the entries go: delete the estimated accruals of the entries and
-    of the refunds that point at them (refunds are kept, unlinked, and accrue nothing without their purchase), then
-    flag the surviving frozen accruals' reward rows `reward_posted`. Returns the windows to `recompute_locked` once
-    the rows are deleted."""
+    """The delete path's engine step (5.4), before the entries go: lock the refunds that point at the entries
+    (`SELECT ... ORDER BY id FOR UPDATE`, P12 tier 1, before any accrual lock: the reward job locks a refund, its
+    accrual's source, before the window, and the cascade nulls their `refunds_entry_id`; already held when the caller
+    folded them into its own tier-1 lock), delete the estimated accruals of the entries and of those refunds
+    (refunds are kept, unlinked, and accrue nothing without their purchase), then flag the surviving frozen
+    accruals' reward rows `reward_posted`. Returns the windows to `recompute_locked` once the rows are deleted."""
     ids = sorted(set(entry_ids))
     if not ids:
         return set()
     refunds = list(db.scalars(select(LedgerEntry.id).where(
-        LedgerEntry.refunds_entry_id.in_(ids), LedgerEntry.id.not_in(ids))))
+        LedgerEntry.refunds_entry_id.in_(ids), LedgerEntry.id.not_in(ids)).order_by(LedgerEntry.id).with_for_update()))
     pairs = delete_estimated_for(db, ids + refunds)
     rewards = select(RewardAccrual.ledger_entry_id).where(
         RewardAccrual.source_entry_id.in_(ids), RewardAccrual.state.in_(FROZEN),

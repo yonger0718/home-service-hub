@@ -638,10 +638,12 @@ def delete_entry(db: Session, entry_id: int) -> None:
     """Deleting needs no FX, so the locks are taken straight away, in the shared order (D32, split rework §1.7):
     the period's schedule rows (lock_for_entry_delete) → every affected entry_group row (lock_group, ascending id)
     → for an engine reward row, its source purchase FOR UPDATE (its `reward_posted` flag cleared) and then its
-    accrual window in ONE SELECT … ORDER BY id FOR UPDATE (reward_engine.prepare_reward_delete, P12) → the targets, their transfer legs and every member of an affected split
-    group in ONE statement by ascending id (locked_with_legs) → nothing else (delete_entries_cascade then nulls
-    reward_source_entry_id / settles_entry_id / refunds_entry_id on dependant rows outside this lock set; safe, as
-    no path locks those rows before a group or member row). The affected set is read before the locks and again
+    accrual window in ONE SELECT … ORDER BY id FOR UPDATE (reward_engine.prepare_reward_delete, P12) → the targets, their transfer legs, every member of an affected split
+    group and the refunds of the targets in ONE statement by ascending id (locked_with_legs; the refunds are tier-1
+    rows because the reward job locks a refund before its accrual window, and the cascade below nulls their
+    `refunds_entry_id` after taking that window; `reward_engine.drop_for_delete` locks a refund that appeared after
+    the read) → nothing else (delete_entries_cascade then nulls reward_source_entry_id / settles_entry_id on
+    dependant rows outside this lock set; safe, as no path locks those rows before a group or member row). The affected set is read before the locks and again
     under them; any difference (a member added or dropped by a split PUT, a convert that grouped the entry, a group
     dissolved by a concurrent delete) is a 409 retry; a target already gone is a 404. Today's refusals stay
     (referenced loan, reward rows without an accrual, cutover lock); an engine reward row is deleted, its accrual
@@ -658,7 +660,8 @@ def delete_entry(db: Session, entry_id: int) -> None:
     # P1 / P12: for an engine reward row, its purchase (tier 1, flag cleared) and then its accrual window (tier 2)
     # are locked here, after the groups and before the reward row's own ledger locks.
     accrual = reward_engine.prepare_reward_delete(db, entry_id) if target.kind == "reward" else None
-    locked = locked_with_legs(db, entry_id, before.transfer_group_id, before.lock_ids())
+    refund_ids = list(db.scalars(select(LedgerEntry.id).where(LedgerEntry.refunds_entry_id.in_(before.target_ids))))
+    locked = locked_with_legs(db, entry_id, before.transfer_group_id, [*before.lock_ids(), *refund_ids])
     entry = next((row for row in locked if row.id == entry_id), None)
     if entry is None:
         raise NotFoundError(f"entry {entry_id} not found")

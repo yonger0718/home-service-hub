@@ -10,9 +10,9 @@ import pytest
 from sqlalchemy import event, select
 
 from app.models import Account, LedgerEntry, Project, RewardAccrual, RewardRule
-from app.schemas.writes import EntryUpdateIn
+from app.schemas.writes import EntryUpdateIn, RefundIn
 from app.services import entry_write_service as ews
-from app.services import reward_bank_wins, reward_engine, reward_post_job, reward_posting
+from app.services import reward_bank_wins, reward_engine, reward_post_job, reward_posting, settlement_service
 from app.services.entry_write_service import system_category_id, write_rule_links
 from app.services.schedule_locks import REWARD_POST_JOB_LOCK_KEY
 from tests.helpers import make_account, make_entry, race
@@ -133,6 +133,7 @@ def test_post_accrual_locked_requires_held_window(db_session):
     finally:
         event.remove(bind, "before_cursor_execute", capture)
     assert not any(_LOCK.search(s) for s in captured), captured
+    assert not any(_LOCK.search(s) and "FROM ledger_entry" in s for s in captured), captured  # no purchase lock
     db_session.commit()
 
 
@@ -511,3 +512,44 @@ def test_job_paused_before_insert_and_owner_put_no_deadlock(pg_engine, db_sessio
                       paused, go)
     assert out == {"first": "committed", "second": "committed"}, out
     assert _accrual(db_session, id=accrual_id).state == "posted"
+
+
+def test_job_refund_post_vs_purchase_delete_no_deadlock(pg_engine, db_session, monkeypatch):
+    """A refund's accrual has the refund row as its source: the job locks the refund, then the window. Deleting the
+    purchase holds the purchase, takes the window (its refunds' estimated accruals go) and nulls the refund's
+    `refunds_entry_id`. The refunds of the doomed purchases are tier-1 rows of the delete, locked before any window,
+    so the delete waits on the refund the paused job holds and both commit (fix round 2; was 40P01)."""
+    card = _card(db_session)
+    rule = _rule(db_session, card)
+    buy = _spend(db_session, card, 1000, date(2026, 11, 18), [rule])
+    db_session.commit()
+    refund_id = settlement_service.refund(db_session, buy.id, RefundIn(amount=Decimal("200"),
+                                                                        entry_date=date(2026, 11, 20)))
+    db_session.commit()
+    accrual = _accrual(db_session, source_entry_id=refund_id)
+    accrual_id, buy_id = accrual.id, buy.id
+    assert (accrual.state, accrual.amount) == ("estimated", Decimal("-2.0000"))
+
+    paused, go = threading.Event(), threading.Event()
+    real = reward_engine.lock_windows
+    calls = {"n": 0}
+
+    def lock_windows(db, pairs, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:  # the job: after its source (refund) row lock, before the window
+            paused.set()
+            assert go.wait(15)
+        return real(db, pairs, **kwargs)
+
+    monkeypatch.setattr(reward_engine, "lock_windows", lock_windows)
+
+    def post(db):
+        assert reward_posting.post_due_accrual(db, accrual_id, date(2027, 1, 10)) == "posted"
+
+    out = _interleave(pg_engine, post, lambda db: ews.delete_entry(db, buy_id), paused, go)
+    assert out == {"first": "committed", "second": "committed"}, out
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, buy_id) is None
+    refund = db_session.get(LedgerEntry, refund_id)
+    assert refund is not None and refund.refunds_entry_id is None
+    assert _accrual(db_session, id=accrual_id).state == "posted"  # frozen before the delete; it survives
