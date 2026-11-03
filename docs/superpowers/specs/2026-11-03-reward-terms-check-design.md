@@ -64,7 +64,10 @@ This feature makes that run periodic, deterministic at the edges, archived, and 
   explicit `-t` list (`hermes_cli/oneshot.py` `_validate_explicit_toolsets`; `all` is
   rejected, unknown names are dropped with a warning), `--safe-mode` sets
   `HERMES_SAFE_MODE/IGNORE_USER_CONFIG/IGNORE_RULES` before the one-shot path runs,
-  `--query-file` reads the prompt from a file, and the `web` toolset resolves to
+  `--query-file` reads the prompt from a file **on the `hermes chat` path only** (the `-z`
+  one-shot takes the prompt as its argument — Task 1 found this on 2026-11-03), and on the chat
+  path `--safe-mode` sets `ignore_rules`, which `cli_agent_setup_mixin.py` passes to the agent
+  as `skip_context_files=skip_memory=True`; the `web` toolset resolves to
   `["web_search", "web_extract"]` only. The one-shot path sets `HERMES_YOLO_MODE=1` and
   `HERMES_ACCEPT_HOOKS=1` itself, so the agent must have nothing dangerous to approve.
 - Python 3.13; the notifier's existing runtime deps (httpx) and nothing new. Tests under
@@ -171,7 +174,7 @@ what it can do is pin the Hermes invocation so that the agent has no tool that t
 host, no skill text that names the token, and no persistent trace. The exact invocation:
 
 ```
-hermes -z --query-file <archive>/prompt.md -t web --safe-mode [-m <hermes_model>]
+hermes chat --query-file <archive>/prompt.md -Q -t web --safe-mode [-m <hermes_model>]
 ```
 
 - `-t web` and nothing else. `run_hermes` validates `hermes_toolsets` by **exact set
@@ -185,7 +188,7 @@ hermes -z --query-file <archive>/prompt.md -t web --safe-mode [-m <hermes_model>
   never the release checkout.
 - `start_new_session=True`; on timeout the whole process group is killed. The unit's
   `TimeoutStartSec` ≥ `hermes_timeout_seconds` + 60.
-- Prompt via `--query-file` on a 0600 file in the archive (argv is visible in
+- Prompt via `hermes chat --query-file` (single-query, `-Q` quiet) on a 0600 file in the archive — not `-z`, which only takes the prompt as an argument (argv is visible in
   `/proc/*/cmdline` and would hit `ARG_MAX` with several cards' JSON inlined).
 - `hermes.out`/`hermes.err` are capped (`max_output_bytes`, default 4 MiB): the archive copy
   is truncated with a marker and the run fails past the ceiling, so a page cannot fill the
