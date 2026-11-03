@@ -8,19 +8,23 @@ Lock contract (P12): the caller locks its ledger rows first; the engine then tak
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import delete, event, exists, func, select, tuple_
+from sqlalchemy import delete, event, exists, func, or_, select, tuple_, update
 from sqlalchemy.orm import Session
 
 from ..models import Account, EntryRewardRule, LedgerEntry, RewardAccrual, RewardRule
+from ..models.statements import AccountStatement, ReconciliationCase
 from . import reward_rule_service
 from .reward_math import Slot, allot, estimate
 from .reward_windows import post_on_for, window_for
 
 FROZEN = ("posted", "bank_confirmed", "forfeited")
+REVIEW_REASON = "reward_posted"  # ledger_entry.review_reason (P10): an edit changed a purchase with a frozen accrual
+EARLY_HINT = "reward_early"  # the case hint of a reward line credited before the rule's posting date (P5, P6)
+_OPEN_CASE = ("open", "proposed")
 _Q = Decimal("0.0001")
 _ZERO = Decimal("0")
 
@@ -223,6 +227,12 @@ def _recompute_all(db: Session, pairs: Iterable[Pair]) -> None:
         recompute_window(db, rule_id, start, locked=True)
 
 
+def recompute_locked(db: Session, pairs: Iterable[Pair]) -> None:
+    """`recompute_window(..., locked=True)` over these windows; the caller took them with `lock_windows` (or
+    `delete_estimated_for`) earlier in this transaction."""
+    _recompute_all(db, pairs)
+
+
 def _set(row: RewardAccrual, window, post_on, value: Decimal) -> None:
     row.window_start, row.window_end = window
     row.post_on = post_on
@@ -331,3 +341,126 @@ def delete_estimated_for(db: Session, entry_ids: Iterable[int]) -> set[Pair]:
             synchronize_session="fetch"))
     db.flush()
     return pairs
+
+
+# --- write-path hooks (Task 6: spec 5.1, 5.4; plan P1, P6, P10, P12) ---------------------------------------------
+
+
+def financial_key(entry: LedgerEntry, rule_ids: Collection[int]) -> tuple:
+    """What a frozen accrual was priced on (5.1): (amount, entry_date, account_id, sorted rule ids)."""
+    return (Decimal(entry.amount), entry.entry_date, entry.account_id, tuple(sorted(set(rule_ids))))
+
+
+def _linked_rule_ids(db: Session, entry_id: int) -> list[int]:
+    return list(db.scalars(select(EntryRewardRule.rule_id).where(EntryRewardRule.entry_id == entry_id)))
+
+
+def _has_frozen(db: Session, entry_id: int) -> bool:
+    return bool(db.scalar(select(exists().where(
+        RewardAccrual.source_entry_id == entry_id, RewardAccrual.state.in_(FROZEN)))))
+
+
+def _settle_flag(db: Session, entry: LedgerEntry, *, changed: bool, before_flag: tuple[bool, str | None]) -> None:
+    """After `_apply` cleared the flag: set it when a financial edit hit a frozen accrual; otherwise restore a prior
+    `reward_posted` flag (a non-financial edit keeps it, 5.1)."""
+    if changed and _has_frozen(db, entry.id):
+        entry.needs_review, entry.review_reason = True, REVIEW_REASON
+    elif not changed and before_flag[1] == REVIEW_REASON:
+        entry.needs_review, entry.review_reason = before_flag
+
+
+def move_reward_projects(db: Session, entry: LedgerEntry, before_project_id: int | None) -> None:
+    """A purchase's project change moves its engine reward rows whose project is null or the old one (5.1).
+    Estimated rewards follow by themselves (the posting reads the purchase's project); MOZE rows stay history."""
+    if entry.project_id == before_project_id:
+        return
+    reward_ids = select(RewardAccrual.ledger_entry_id).where(
+        RewardAccrual.source_entry_id == entry.id, RewardAccrual.ledger_entry_id.is_not(None))
+    db.execute(
+        update(LedgerEntry)
+        .where(LedgerEntry.id.in_(reward_ids),
+               or_(LedgerEntry.project_id.is_(None), LedgerEntry.project_id == before_project_id))
+        .values(project_id=entry.project_id)
+        .execution_options(synchronize_session="fetch")
+    )
+
+
+def after_write(db: Session, entry: LedgerEntry, *, before_key: tuple | None, before_project_id: int | None,
+                before_flag: tuple[bool, str | None]) -> None:
+    """Called after `_apply` and `write_rule_links` (insert: `before_key=None`). Syncs the entry's accruals, then
+    sets or restores the `reward_posted` flag and moves reward projects (5.1)."""
+    sync_entry(db, entry.id)
+    if before_key is None:
+        return
+    changed = financial_key(entry, _linked_rule_ids(db, entry.id)) != before_key
+    _settle_flag(db, entry, changed=changed, before_flag=before_flag)
+    move_reward_projects(db, entry, before_project_id)
+    db.flush()
+
+
+def after_meta_write(db: Session, entry: LedgerEntry, *, before_project_id: int | None,
+                     before_flag: tuple[bool, str | None]) -> None:
+    """A metadata-only edit (split keep_full meta, keep_meta): nothing to sync; restore the flag, move projects."""
+    _settle_flag(db, entry, changed=False, before_flag=before_flag)
+    move_reward_projects(db, entry, before_project_id)
+    db.flush()
+
+
+def mark_early_rechecks(db: Session, account_id: int) -> None:
+    """P6: the card's statements holding an open `reward_early` case get `needs_recheck`, so the re-run supersedes
+    the case. Call it before any accrual lock (the statement row comes first in the P12 order)."""
+    db.execute(
+        update(AccountStatement)
+        .where(AccountStatement.account_id == account_id, exists().where(
+            ReconciliationCase.statement_id == AccountStatement.id,
+            ReconciliationCase.status.in_(_OPEN_CASE),
+            ReconciliationCase.context["hint"].astext == EARLY_HINT,
+        ))
+        .values(needs_recheck=True)
+        .execution_options(synchronize_session=False)
+    )
+
+
+def drop_for_delete(db: Session, entry_ids: Collection[int]) -> set[Pair]:
+    """The delete path's engine step (5.4), before the entries go: delete the estimated accruals of the entries and
+    of the refunds that point at them (refunds are kept, unlinked, and accrue nothing without their purchase), then
+    flag the surviving frozen accruals' reward rows `reward_posted`. Returns the windows to `recompute_locked` once
+    the rows are deleted."""
+    ids = sorted(set(entry_ids))
+    if not ids:
+        return set()
+    refunds = list(db.scalars(select(LedgerEntry.id).where(
+        LedgerEntry.refunds_entry_id.in_(ids), LedgerEntry.id.not_in(ids))))
+    pairs = delete_estimated_for(db, ids + refunds)
+    rewards = select(RewardAccrual.ledger_entry_id).where(
+        RewardAccrual.source_entry_id.in_(ids), RewardAccrual.state.in_(FROZEN),
+        RewardAccrual.ledger_entry_id.is_not(None))
+    db.execute(
+        update(LedgerEntry)
+        .where(LedgerEntry.id.in_(rewards), LedgerEntry.id.not_in(ids))
+        .values(needs_review=True, review_reason=REVIEW_REASON)
+        .execution_options(synchronize_session=False)
+    )
+    return pairs
+
+
+def lock_reward_accrual(db: Session, reward_entry_id: int) -> RewardAccrual | None:
+    """An engine reward row's accrual, its window (group) locked in ONE `SELECT ... ORDER BY id FOR UPDATE` (P12:
+    after the group lock, before the ledger rows). None for a reward row without an accrual (MOZE era)."""
+    found = db.execute(
+        select(RewardAccrual.rule_id, RewardAccrual.window_start)
+        .where(RewardAccrual.ledger_entry_id == reward_entry_id)
+    ).first()
+    if found is None:
+        return None
+    rows = lock_windows(db, [(found.rule_id, found.window_start)])
+    return next((row for row in rows if row.ledger_entry_id == reward_entry_id), None)
+
+
+def forfeit_for_delete(db: Session, accrual: RewardAccrual) -> Pair:
+    """The owner deleted the accrual's reward row (5.4, P1): `forfeited`, amount kept for the record, no ledger row
+    (so it uses 0 of the cap). The caller holds the window lock (`lock_reward_accrual`); returns the window to
+    `recompute_locked` after the row is gone."""
+    accrual.state, accrual.ledger_entry_id = "forfeited", None
+    db.flush()
+    return accrual.rule_id, accrual.window_start

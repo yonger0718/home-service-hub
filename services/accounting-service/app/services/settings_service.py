@@ -31,7 +31,7 @@ from .statements import matching
 from ..schemas.writes import (
     SOURCE_CURRENCIES, AccountGroupIn, AccountIn, CategoryIn, CounterpartyIn, PreferenceIn, ProjectIn,
 )
-from . import schedule_entry_hooks
+from . import reward_engine, schedule_entry_hooks
 from .errors import CodedConflictError, ConflictError, NotFoundError, ValidationError  # noqa: F401  (re-exported)
 from .ledger_service import open_debt_filter
 
@@ -733,12 +733,33 @@ def update_account(db: Session, account_id: int, payload: AccountIn) -> None:
             .values(auto_pay_account_id=None, settings_locally_edited=True)
         )
     previous_sharing_id = account.credit_sharing_id
+    before_own, before_closing = account.closing_day, reward_engine.card_closing_day(db, account)
     for field, value in payload.model_dump(exclude=ACCOUNT_COLUMNS_EXCLUDE).items():
         setattr(account, field, value)
     account.settings_locally_edited = True
     db.flush()
     if payload.credit_sharing_members is not None:
         _apply_sharing(db, account, previous_sharing_id, payload.credit_sharing_members)
+    _rebucket_rewards(db, account, before_own, before_closing)
+
+
+def _rebucket_rewards(db: Session, account: Account, before_own: int | None, before_closing: int | None) -> None:
+    """Reward engine spec 5.1: a card whose effective closing day changed re-buckets its estimated accruals, and so
+    does every child card whose closing day resolves through it (combined_account_id, own closing_day null). P6
+    first for each card: statement rows before accrual locks (P12)."""
+    cards = []
+    if reward_engine.card_closing_day(db, account) != before_closing:
+        cards.append(account.id)
+    if account.closing_day != before_own:
+        cards += list(db.scalars(
+            select(Account.id)
+            .where(Account.combined_account_id == account.id, Account.closing_day.is_(None), Account.id != account.id)
+            .order_by(Account.id)
+        ))
+    for card_id in cards:
+        reward_engine.mark_early_rechecks(db, card_id)
+    for card_id in cards:
+        reward_engine.recompute_account(db, card_id)
 
 
 def delete_account(db: Session, account_id: int) -> None:

@@ -227,6 +227,7 @@ class EntryOut(BaseModel):
     rule_names: list[str]
     invoice_number: str | None
     needs_review: bool
+    review_reason: str | None  # why needs_review is set; today only `reward_posted` (reward engine, P10)
     source: EntrySource
     moze_id: str | None
     locked: bool

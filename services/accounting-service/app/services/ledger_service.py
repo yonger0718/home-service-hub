@@ -550,6 +550,7 @@ def _entry_rows(db: Session, filters: list, *, running_accounts: list[int] | Non
                 "invoice_number": entry.invoice_number,
                 "invoice_random": entry.invoice_random,
                 "needs_review": entry.needs_review,
+                "review_reason": entry.review_reason,
                 "source": entry.source,
                 "moze_id": entry.moze_id,
                 "locked": is_locked(entry.source, entry.moze_id),

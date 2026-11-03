@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..models import Account, LedgerEntry
 from ..schemas.writes import RefundIn, SettleIn
+from . import reward_engine
 from .entry_write_service import assert_entry_editable, locked_entry
 from .errors import ValidationError
 
@@ -122,4 +123,5 @@ def refund(db: Session, entry_id: int, payload: RefundIn, *, source: str = "manu
     )
     db.add(entry)
     db.flush()
+    reward_engine.sync_entry(db, entry.id)  # spec 5.1: one accrual per rule of the purchase, in its window
     return entry.id

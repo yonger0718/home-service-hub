@@ -181,11 +181,20 @@ def create(db: Session, account_id: int, payload: RewardRuleIn) -> int:
 
 
 def update(db: Session, account_id: int, rule_id: int, payload: RewardRuleIn) -> None:
+    """Rewrite the rule, then re-bucket and recompute the estimated accruals of every rule whose window or cap it
+    may have moved: the rule and its shared-cap group before and after (reward engine spec 5.1). The card's open
+    `reward_early` cases get a recheck first (P6; statement rows before accrual locks, P12)."""
+    from . import reward_engine  # reward_engine imports this module
+
     rule = _get_rule(db, account_id, rule_id)
+    touched = set(group_rule_ids(db, rule))
     _check_payload(payload, rule)
     if payload.sort_order is not None:
         rule.sort_order = payload.sort_order
     _save(db, rule, payload, is_new=False)
+    touched |= set(group_rule_ids(db, rule))
+    reward_engine.mark_early_rechecks(db, account_id)
+    reward_engine.recompute_rules(db, touched)
 
 
 def reorder(db: Session, account_id: int, ids: list[int]) -> None:
