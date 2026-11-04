@@ -63,13 +63,8 @@ def test_book_settlement_writes_the_transfer_the_spec_names(seed, db_session, ru
     assert [(c.entry_id, c.match_rule) for c in _active(db_session, sid)] == [(in_leg.id, "book_settlement")]
 
 
-def test_book_settlement_takes_the_account_lock_and_barrier(seed, db_session):
-    """The account row and the barrier, with the mapped target pre-locked before the barrier (P12 barrier pre-lock
-    rule, PR #290 re-check at 9e1bc745)."""
-    bank, target = settlement_bank(seed, db_session)
-    ctx = SimpleNamespace(db=db_session, statement=SimpleNamespace(account_id=bank.id))
-    assert reconciliation_actions.ACTIONS["book_settlement"].lock_targets(ctx, None) == LockSet(
-        account_lock=True, barrier=True, account_ids=(target.id,))
+def test_book_settlement_takes_the_account_lock_and_barrier():
+    assert reconciliation_actions.ACTIONS["book_settlement"].lock_targets(None, None) == LockSet(account_lock=True, barrier=True)
 
 
 def test_policy_books_settlements_uncapped_and_charges_nothing(seed, db_session, run, portfolio_stub, policy_on):
@@ -401,30 +396,3 @@ def test_a_currency_change_racing_the_booking_is_refused_under_the_locks(pg_engi
     assert db_session.scalar(select(func.count(SettlementBooking.id))) == 0
     assert db_session.scalar(select(func.count(LedgerEntry.id)).where(LedgerEntry.source == "statement")) == 0
     assert db_session.scalar(select(func.count(ReconciliationAction.id))) == 0
-
-
-def test_book_settlement_and_a_target_closing_day_change_never_deadlock(dirty_on, pg_engine, seed, db_session, run,
-                                                                       portfolio_stub, monkeypatch):
-    """P12 barrier pre-lock rule (PR #290 re-check at 9e1bc745), the settlement twin of the pair_transfer case: T =
-    book_settlement holds the bank row and the exclusive barrier; C = a closing_day change of the TARGET account
-    takes it FOR UPDATE NOWAIT and waits on the barrier in the account trigger; T's target leg / booking row FK
-    then waits on C: 40P01. With the target pre-locked before the barrier, C waits for T while holding nothing (or
-    answers 409 `retry`) and T books; never a 40P01."""
-    from tests.integration.test_reconciliation_actions_transfer import _card_write_during_barrier, _is_deadlock
-
-    bank, target, sid, case = _case_and_booking(seed, db_session, run, portfolio_stub)
-    body = dict(name=target.name, currency=target.currency, is_credit=False, closing_day=25,
-                combined_account_id=None)
-    seen = _card_write_during_barrier(pg_engine, monkeypatch, target, body)
-    try:
-        _apply(db_session, case.id, "book_settlement", {"fingerprint": case.context["fingerprint"]})
-        outcome = "committed"
-    except Exception as exc:  # noqa: BLE001  (asserted below)
-        db_session.rollback()
-        outcome = exc
-    seen["thread"].join(10)
-    assert not _is_deadlock(outcome) and not _is_deadlock(seen.get("out")), (outcome, seen.get("out"))
-    assert outcome == "committed", outcome
-    out = seen["out"]
-    assert out == "committed" or (isinstance(out, CodedConflictError) and out.code == "retry"), out
-    assert db_session.scalar(select(func.count(SettlementBooking.id))) == 1

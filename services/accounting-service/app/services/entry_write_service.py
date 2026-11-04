@@ -538,15 +538,6 @@ def delete_entries_cascade(db: Session, entry_ids: Iterable[int]) -> None:
         return
     children = list(db.scalars(select(LedgerEntry.id).where(LedgerEntry.parent_entry_id.in_(parents))))
     doomed = parents + children
-    if reward_engine.barrier_held(db):
-        # P12 barrier pre-lock rule: the dependants whose links are cleared below are rows the caller may not have
-        # locked; a barrier holder takes them NOWAIT (409 `retry`) instead of waiting on a writer that may itself be
-        # waiting on the barrier in the dirty trigger.
-        dependants = select(LedgerEntry.id).where(or_(*(column.in_(doomed) for column in (
-            LedgerEntry.settles_entry_id, LedgerEntry.refunds_entry_id, LedgerEntry.reward_source_entry_id))),
-            LedgerEntry.id.not_in(doomed)).order_by(LedgerEntry.id)
-        with reward_engine.no_wait(db, "an entry linked to a deleted one is being written; try again"):
-            db.execute(dependants.with_for_update(nowait=True)).all()
     windows = reward_engine.drop_for_delete(db, doomed)
     for column in (LedgerEntry.settles_entry_id, LedgerEntry.refunds_entry_id, LedgerEntry.reward_source_entry_id):
         db.execute(
