@@ -1,19 +1,21 @@
 """Posting an instance (spec "Posting an instance", design D31)."""
 
+import re
 from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import event, func, select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
-from app.models import EntryGroup, LedgerEntry, ScheduleInstance
+from app.models import EntryGroup, LedgerEntry, RewardAccrual, ScheduleInstance
 from app.services import entry_write_service as ews
 from app.services import ledger_service, settlement_service
 from app.services import schedule_locks as locks
 from app.services import schedule_posting as posting
+from app.services.schedule_templates import LINE_KEYS
 from app.services.edit_lock import EditLockedError
 from app.services.errors import ConflictError, ValidationError
 from app.services.moze_import_service import IMPORT_LOCK_KEY
@@ -346,3 +348,38 @@ def locks_now():
     from datetime import datetime, timezone
 
     return datetime(2026, 10, 2, tzinfo=timezone.utc)
+
+
+def test_multi_line_post_takes_no_reward_window_lock(db_session, seed, today):
+    """PR #290 fix round (one window lock per multi-entry write): a template line carries no reward rule links
+    (LINE_KEYS has no rule field; `_write_line` builds EntryIn / TransferIn without `reward_rule_ids`), so a
+    multi-line post on cards that have rules accrues nothing and issues no `reward_accrual` lock at all: there is no
+    per-line window lock for two posts to take in opposite order. A template that ever gains rule links must take
+    the split / transfer treatment (`reward_engine.lock_entry_windows`); this test then fails."""
+    assert not any("rule" in key for key in LINE_KEYS)
+    today(date(2026, 11, 20))
+    card_a = seed.account("測試卡", is_credit=True, closing_day=15)
+    card_b = seed.account("測試卡B", is_credit=True, closing_day=15)
+    bank = seed.account("測試銀行", opening="50000")
+    seed.rule(card_a), seed.rule(card_b, name="回饋B")
+    definition = seed.definition([seed.line("expense", card_a, "300"), seed.line("expense", card_b, "200"),
+                                  seed.line("transfer", bank, "500", to_account_id=card_a.id)],
+                                 anchor=date(2026, 11, 20))
+    instance = seed.instance(definition, 1, date(2026, 11, 20))
+    db_session.commit()
+    locks: list[str] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        if re.search(r"FROM reward_accrual\b.*FOR UPDATE", statement, re.S):
+            locks.append(statement)
+
+    bind = db_session.connection().engine
+    event.listen(bind, "before_cursor_execute", capture)
+    try:
+        result = posting.post_instance(db_session, instance.id, actor="owner")
+    finally:
+        event.remove(bind, "before_cursor_execute", capture)
+    db_session.commit()
+    assert result.outcome == "posted" and len(result.entry_ids) == 4
+    assert locks == []
+    assert db_session.scalar(select(func.count()).select_from(RewardAccrual)) == 0
