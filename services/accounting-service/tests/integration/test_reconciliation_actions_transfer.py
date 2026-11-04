@@ -9,15 +9,16 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from app.models import (
-    LedgerEntry, ReconciliationAction, ReconciliationCase, ReconciliationProposal, StatementCoverage,
+    EntryRewardRule, LedgerEntry, ReconciliationAction, ReconciliationCase, ReconciliationProposal,
+    RewardAccrual, StatementCoverage,
 )
 from app.schemas.reconciliation import ProposalIn
 from app.services import coverage_service, policy_service, proposal_service, settings_service, stand_ins
 from app.services import entry_write_service as ews
-from app.services import reconciliation_actions
+from app.services import reconciliation_actions, reward_engine
 from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError
 from app.services.reconciliation_actions import transfer_actions
@@ -126,6 +127,27 @@ def test_adjust_transfer_revert_restores_both_legs_and_reopens_both_lines(pair, 
     assert _active(db_session, pair.cstmt.id) == [] and _active(db_session, pair.bstmt.id) == []
     assert _fresh(db_session, ReconciliationCase, case.id).status == "open"
     assert _delta(db_session, pair.bstmt) is not None  # the peer line has an open case again
+
+
+def test_adjust_transfer_and_its_revert_re_estimate_the_out_legs_accrual(pair, seed, db_session):
+    """Reward posting engine, spec 5.1: the amount (and date) change re-prices the out leg's estimated accrual."""
+    rule = seed.rule(pair.bank, name="測試回饋")
+    rule.posting = "manual"  # never due in the test
+    db_session.commit()
+    db_session.add(EntryRewardRule(entry_id=pair.out_leg.id, rule_id=rule.id))
+    db_session.flush()
+    reward_engine.sync_entry(db_session, pair.out_leg.id)
+    db_session.commit()
+
+    def estimate():
+        db_session.expire_all()
+        return db_session.scalar(select(RewardAccrual.estimate).where(RewardAccrual.source_entry_id == pair.out_leg.id))
+
+    assert estimate() == Decimal("195")
+    row = _apply(db_session, _delta(db_session, pair.cstmt), "adjust_transfer", _adjust(pair))
+    assert estimate() == Decimal("200")
+    _revert(db_session, row.id)
+    assert estimate() == Decimal("195")
 
 
 def test_adjust_transfer_supersedes_a_pending_peer_proposal(pair, db_session):

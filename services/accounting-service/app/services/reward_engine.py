@@ -425,6 +425,16 @@ def after_write(db: Session, entry: LedgerEntry, *, before_key: tuple | None, be
     db.flush()
 
 
+def capture(db: Session, entry: LedgerEntry) -> dict:
+    """The before-state `after_write` needs, read before an action rewrites the row's amount, date or account."""
+    return {"before_key": financial_key(entry, _linked_rule_ids(db, entry.id)),
+            "before_project_id": entry.project_id, "before_flag": (entry.needs_review, entry.review_reason)}
+
+
+def after_write_captured(db: Session, entry: LedgerEntry, before: dict) -> None:
+    after_write(db, entry, **before)
+
+
 def after_meta_write(db: Session, entry: LedgerEntry, *, before_project_id: int | None,
                      before_flag: tuple[bool, str | None]) -> None:
     """A metadata-only edit (split keep_full meta, keep_meta): nothing to sync; restore the flag, move projects."""

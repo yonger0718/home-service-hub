@@ -29,7 +29,7 @@ from app.schemas.writes import ChildIn, Int32, RefundIn, ShortText
 from app.services import coverage_service, settings_service, settlement_service, stand_ins
 from app.services import entry_write_service as ews
 from app.services import reconciliation_service as rec
-from app.services import reward_bank_wins
+from app.services import reward_bank_wins, reward_engine
 from app.services.reward_posting import ACCRUAL_NOT_ESTIMATED
 from app.services.errors import CodedConflictError, CodedValidationError
 from app.services.split_protection import protected_reason
@@ -304,9 +304,9 @@ class AcceptEarlyRewardAction(ActionBase):
             case.status, case.version = status, version
             db.flush()
         accruals = self._accruals(ctx, ids)
-        missed = [i for i in ids if accruals[i].state != "bank_confirmed"
+        missed = [i for i in ids if accruals.get(i) is None or accruals[i].state != "bank_confirmed"
                   or accruals[i].confirmed_statement_id != ctx.statement.id]
-        if missed:  # moved between the check and bank wins' locks (e.g. posted by the daily job)
+        if missed:  # re-bucketed or forfeited under bank wins' locks, or gone
             raise CodedConflictError(ACCRUAL_NOT_ESTIMATED, f"accrual {missed[0]} was not confirmed by this statement")
         effect.coverage_ids = sorted(self._event_coverage(ctx) - had)  # the reward rows are touched through them
         effect.after = {"accrual_ids": ids}
@@ -582,11 +582,13 @@ class AdjustAmountAction(ActionBase):
     def apply(self, ctx: Context, params: AdjustAmountParams, prepared: Prepared, effect: Effect) -> None:
         line, entry, new, members = self._plan(ctx, params)
         restore = {key: getattr(entry, key) for key in RESTORED}
+        before = reward_engine.capture(ctx.db, entry)
         note = f"對帳調整 原金額 {ews._plain(entry.amount)}"
         for key, value in new.items():
             setattr(entry, key, value)
         entry.description = note if not entry.description else f"{entry.description}\n{note}"
         ctx.db.flush()
+        reward_engine.after_write_captured(ctx.db, entry, before)  # re-estimate / flag `reward_posted` (spec 5.1)
         if members:
             effect.coverage_ids = _claim(ctx, line, [(m, "member") for m in members], self.name, group_id=params.group_id)
             effect.touched_group_ids = [params.group_id]
@@ -602,9 +604,11 @@ class AdjustAmountAction(ActionBase):
         if entry is None:
             raise NotRevertable(f"entry {action.params['entry_id']} is gone")
         _release(ctx, action)
+        before = reward_engine.capture(ctx.db, entry)
         for key, value in action.inverse["restore"].items():
             setattr(entry, key, Decimal(value) if key in _DECIMALS and value is not None else value)
         ctx.db.flush()
+        reward_engine.after_write_captured(ctx.db, entry, before)
         return Effect(touched_entry_ids=[entry.id])
 
 

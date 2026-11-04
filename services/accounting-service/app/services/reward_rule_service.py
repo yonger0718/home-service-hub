@@ -7,7 +7,7 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import Account, EntryRewardRule, LedgerEntry, Project, RewardRule
+from ..models import Account, EntryRewardRule, LedgerEntry, Project, RewardAccrual, RewardRule
 from ..schemas.writes import RewardRuleIn, ShareCapWith
 from . import ledger_service
 from .errors import CodedConflictError, NotFoundError, ValidationError
@@ -218,8 +218,10 @@ def delete(db: Session, account_id: int, rule_id: int) -> None:
     rule = _get_rule(db, account_id, rule_id)
     entries = db.scalar(select(func.count()).select_from(EntryRewardRule).where(EntryRewardRule.rule_id == rule.id))
     rewards = db.scalar(select(func.count()).select_from(LedgerEntry).where(LedgerEntry.reward_rule_id == rule.id))
-    if entries or rewards:
-        raise CodedConflictError(RULE_REFERENCED, json.dumps({"entries": entries, "rewards": rewards}))
+    accruals = db.scalar(select(func.count()).select_from(RewardAccrual).where(RewardAccrual.rule_id == rule.id))
+    if entries or rewards or accruals:  # reward_accrual.rule_id is RESTRICT: count it here, not as a 500 at flush
+        raise CodedConflictError(RULE_REFERENCED,
+                                 json.dumps({"entries": entries, "rewards": rewards, "accruals": accruals}))
     db.delete(rule)
     db.flush()
 

@@ -26,6 +26,7 @@ from app.models import (
 from app.schemas.writes import Int32, TransferIn
 from app.services import coverage_service, settings_service, stand_ins, transfer_service
 from app.services import entry_write_service as ews
+from app.services import reward_engine
 from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError
 from app.services.statements import matching, retired
@@ -193,6 +194,7 @@ class AdjustTransferAction(ActionBase):
         plan = self._plan(ctx, params, self._verified(ctx))
         magnitude = abs(Decimal(plan.line.flow_amount))
         restore = {}
+        befores = {entry.id: reward_engine.capture(db, entry) for entry in (plan.leg, plan.peer)}
         for entry, source in ((plan.leg, plan.line), (plan.peer, plan.peer_line)):
             restore[str(entry.id)] = {"amount": str(entry.amount), "entry_date": entry.entry_date.isoformat(),
                                       "posted_date": entry.posted_date.isoformat(), "description": entry.description}
@@ -202,6 +204,8 @@ class AdjustTransferAction(ActionBase):
                 entry.posted_date, entry.entry_date = source.posted_date, source.txn_date or source.posted_date
             entry.description = note if not entry.description else f"{entry.description}\n{note}"
         db.flush()
+        for entry in (plan.leg, plan.peer):  # amount and date moved: re-estimate / flag `reward_posted` (spec 5.1)
+            reward_engine.after_write_captured(db, entry, befores[entry.id])
         coverage = claim_on(db, ctx, ctx.statement, plan.line, plan.leg, ADJUST)
         peer_case_id = None
         if plan.peer_line is not None:
@@ -224,13 +228,17 @@ class AdjustTransferAction(ActionBase):
         order is fixed here: the engine releases and reopens only the primary case after `invert` returns."""
         db = ctx.db
         touched = []
+        restored = []
         for entry_id, fields in action.inverse["restore"].items():
             entry = db.get(LedgerEntry, int(entry_id))
+            restored.append((entry, reward_engine.capture(db, entry)))
             entry.amount, entry.description = Decimal(fields["amount"]), fields["description"]
             entry.entry_date = date.fromisoformat(fields["entry_date"])
             entry.posted_date = date.fromisoformat(fields["posted_date"])
             touched.append(entry.id)
         db.flush()
+        for entry, before in restored:
+            reward_engine.after_write_captured(db, entry, before)
         _release(ctx, action)
         reopen_peer_case(db, action)
         _reopen(ctx.case)  # so the case statement's reconcile keeps this case instead of opening a twin

@@ -8,7 +8,7 @@ from sqlalchemy import select, text
 
 from decimal import Decimal
 
-from app.models import EntryRewardRule, RewardRule
+from app.models import EntryRewardRule, RewardAccrual, RewardRule
 from app.services import reward_rule_service
 
 def _body(**fields) -> dict:
@@ -202,8 +202,21 @@ def test_delete_unreferenced_rule_and_refuse_referenced_with_counts(client, db_s
     refused = client.delete(f"/accounts/{card.id}/reward-rules/{used.id}")
     assert refused.status_code == 409
     code, _, detail = refused.json()["message"].partition(": ")
-    assert code == "rule_referenced" and json.loads(detail) == {"entries": 1, "rewards": 2}
+    assert code == "rule_referenced" and json.loads(detail) == {"entries": 1, "rewards": 2, "accruals": 0}
     assert client.delete(f"/accounts/{card.id}/reward-rules/{free.id}").status_code == 404
+
+
+def test_delete_refuses_a_rule_referenced_only_by_an_accrual(client, db_session, seed):
+    card = seed.account("華航卡")
+    rule = seed.rule(card, name="forfeited")
+    db_session.add(RewardAccrual(source_entry_id=None, rule_id=rule.id, window_start=date(2026, 9, 1),
+                                 window_end=date(2026, 9, 30), estimate=Decimal("5"), amount=Decimal("0"),
+                                 state="forfeited"))
+    db_session.commit()
+    refused = client.delete(f"/accounts/{card.id}/reward-rules/{rule.id}")
+    assert refused.status_code == 409
+    code, _, detail = refused.json()["message"].partition(": ")
+    assert code == "rule_referenced" and json.loads(detail) == {"entries": 0, "rewards": 0, "accruals": 1}
 
 
 def _fields(response) -> set[str]:

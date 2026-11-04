@@ -14,11 +14,11 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models import (
     DIRTY_BARRIER_KEY, AccountStatement, CoverageDirty, EntryGroup, EntryRewardRule, LedgerEntry, ReconciliationAction,
-    ReconciliationCase,
+    ReconciliationCase, RewardAccrual,
 )
 from app.services import coverage_service as cov
 from app.services import entry_write_service as ews
-from app.services import ledger_service, policy_service
+from app.services import ledger_service, policy_service, reward_engine
 from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, ValidationError
 from app.services import reconciliation_actions as registry
@@ -170,6 +170,42 @@ def test_move_account_re_reconciles_both_statements_and_reverts(dirty_on, move, 
     assert [c.id for c in open_entry_cases] == [s.case.id]
     assert _fresh(db_session, ReconciliationAction, row.id).status == "reverted"
     assert revert.action == "revert"
+
+
+def test_move_account_resyncs_accruals_and_flags_a_posted_one(dirty_on, move, seed, db_session):
+    """Reward posting engine, spec 5.1: the move re-syncs the purchase's accruals; a frozen one raises the flag."""
+    s = move
+    rule = seed.rule(s.a, name="測試回饋")
+    db_session.commit()
+    db_session.add(EntryRewardRule(entry_id=s.entry.id, rule_id=rule.id))
+    db_session.flush()
+    reward_engine.sync_entry(db_session, s.entry.id)
+    paid = seed.entry(s.a, "5", kind="reward", reward_source_entry_id=s.entry.id, reward_rule_id=rule.id,
+                      day=date(2026, 11, 5))
+    accrual = db_session.scalar(select(RewardAccrual).where(RewardAccrual.source_entry_id == s.entry.id))
+    accrual.state, accrual.ledger_entry_id = "posted", paid.id
+    db_session.commit()
+    row, _ = _apply(db_session, s.case, "move_account", {"entry_id": s.entry.id, "account_id": s.b.id})
+    entry = _fresh(db_session, LedgerEntry, s.entry.id)
+    assert (entry.needs_review, entry.review_reason) == (True, reward_engine.REVIEW_REASON)
+    _revert(db_session, row.id)
+    assert _fresh(db_session, LedgerEntry, s.entry.id).account_id == s.a.id
+
+
+def test_move_account_re_syncs_an_estimated_accrual_without_flagging(dirty_on, move, seed, db_session):
+    s = move
+    rule = seed.rule(s.a, name="測試回饋")
+    rule.posting = "manual"  # never due in the test
+    db_session.commit()
+    db_session.add(EntryRewardRule(entry_id=s.entry.id, rule_id=rule.id))
+    db_session.flush()
+    reward_engine.sync_entry(db_session, s.entry.id)
+    db_session.commit()
+    _apply(db_session, s.case, "move_account", {"entry_id": s.entry.id, "account_id": s.b.id})
+    db_session.expire_all()
+    rows = db_session.scalars(select(RewardAccrual).where(RewardAccrual.source_entry_id == s.entry.id)).all()
+    assert [r.state for r in rows] == ["estimated"]  # re-synced on the purchase's links, nothing frozen
+    assert _fresh(db_session, LedgerEntry, s.entry.id).needs_review is False
 
 
 def test_move_account_refuses_a_participating_account_of_the_case_statement(move, seed, db_session):

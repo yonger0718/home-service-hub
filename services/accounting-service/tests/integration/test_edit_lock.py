@@ -211,6 +211,9 @@ EXPECTED_WRITES = {
     ("/accounts/{account_id}/reward-rules/{rule_id}", "PUT"), ("/accounts/{account_id}/reward-rules/{rule_id}", "DELETE"),
     # Account logo image (spec 2026-11-02 §5): account settings — never locked_until_cutover.
     ("/accounts/{account_id}/logo", "PUT"), ("/accounts/{account_id}/logo", "DELETE"),
+    # Reward engine (spec 2026-11-03 §6): posts a manual rule's accrual by INSERTing a new engine reward row
+    # (source 'rule'); it edits no imported row, so it is never locked_until_cutover.
+    ("/reward-accruals/{accrual_id}/post", "POST"),
 }
 
 

@@ -27,6 +27,7 @@ from app.models import (
 from app.schemas.writes import MAX_SPLIT_MEMBERS, Int32, Money, ShortText, SplitIn, SplitMemberIn
 from app.services import coverage_service, ledger_service, settings_service, split_service
 from app.services import entry_write_service as ews
+from app.services import reward_engine
 from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, CodedValidationError, ValidationError
 from app.services.split_protection import protected_reason
@@ -159,8 +160,10 @@ class MoveAccountAction(ActionBase):
         entry, target = self._plan(ctx, params)
         targets = self.target_statements(db, entry, target.id)
         old = entry.account_id
+        before = reward_engine.capture(db, entry)
         entry.account_id = target.id
         db.flush()
+        reward_engine.after_write_captured(db, entry, before)  # the new account's rules / windows, or drop (spec 5.1)
         _reconcile_keeping_case(db, ctx.case, [ctx.statement.id, *targets])
         effect.coverage_ids = sorted(_active_coverage_on(db, [entry.id]))
         effect.touched_entry_ids = [entry.id]
@@ -183,8 +186,10 @@ class MoveAccountAction(ActionBase):
         if old is None or old.is_archived:
             raise NotRevertable(f"account {action.inverse['account_id']} is gone or archived")
         _release(ctx, action)  # the target's claim goes first: the move back must not reach it as a dirty edit
+        before = reward_engine.capture(db, entry)
         entry.account_id = old.id
         db.flush()
+        reward_engine.after_write_captured(db, entry, before)
         _reopen(ctx.case)  # so the case statement's reconcile keeps this case instead of opening a twin
         stored = [sid for sid in action.inverse.get("statement_ids", [])
                   if db.get(AccountStatement, sid) is not None]
@@ -363,8 +368,10 @@ class SplitEntryAction(ActionBase):
         dissolve = db.get(LedgerEntry, anchor_id)
         ews.dissolve_group(db, gid, dissolve, name=name, merchant=merchant, description=description)
         anchor = db.get(LedgerEntry, anchor_id)
+        before = reward_engine.capture(db, anchor)
         _restore_columns(anchor, snap)
         db.flush()
+        reward_engine.after_write_captured(db, anchor, before)
         context = dict(ctx.case.context or {})
         if context.pop("split_group_id", None) is not None:
             ctx.case.context = context
