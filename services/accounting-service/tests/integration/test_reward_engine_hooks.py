@@ -12,10 +12,11 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models import Account, EntryGroup, LedgerEntry, Project, RewardAccrual, RewardRule
 from app.models.statements import AccountStatement, ReconciliationCase, StatementRevision
-from app.schemas.writes import AccountIn, EntryUpdateIn, RefundIn, RewardRuleIn, SplitIn, TransferIn
+from app.schemas.writes import AccountIn, BalanceAdjustmentIn, EntryUpdateIn, RefundIn, RewardRuleIn, SplitIn, TransferIn
 from app.services import entry_write_service as ews
 from app.services import (
-    reward_engine, reward_rule_service, settings_service, settlement_service, split_service, transfer_service,
+    reward_engine, reward_posting, reward_rule_service, settings_service, settlement_service, split_service,
+    transfer_service,
 )
 from app.services.entry_write_service import write_rule_links
 from app.services.errors import RETRY, CodedConflictError
@@ -315,7 +316,7 @@ def test_delete_moze_reward_row_still_refused(client, db_session):
     assert _entry(db_session, reward_id) is not None
 
 
-_LOCK = re.compile(r"FOR (UPDATE|SHARE|NO KEY UPDATE)")
+_LOCK = re.compile(r"FOR (UPDATE|SHARE|NO KEY UPDATE|KEY SHARE)")
 
 
 def _lock_kind(statement: str) -> str:
@@ -1021,15 +1022,333 @@ def test_writer_and_rule_writer_lock_orders(db_session):
     source = next(i for i, (_, ids) in enumerate(writer) if kinds[i] == "ledger_entry" and spend_id in ids)
     shared = kinds.index("reward_rule")
     assert "FOR SHARE" in writer[shared][0]
-    assert source < shared < kinds.index("reward_accrual"), kinds
+    assert source < kinds.index("account") < shared < kinds.index("reward_accrual"), kinds
 
     rule_writer = _capture_locks(db_session, lambda: reward_rule_service.update(
         db_session, card_id, rule_id, RewardRuleIn(**_rule_body(rate="2"))))
     db_session.commit()
     kinds = [_lock_kind(statement) for statement, _ in rule_writer]
-    assert kinds[0] == "reward_rule" and "FOR UPDATE" in rule_writer[0][0], kinds
+    assert kinds[0] == "account" and "FOR KEY SHARE" in rule_writer[0][0], kinds  # card tier (re-check 81f88597)
+    assert kinds[1] == "reward_rule" and "FOR UPDATE" in rule_writer[1][0], kinds
     assert all("NOWAIT" in statement for statement, _ in rule_writer), [st for st, _ in rule_writer]
     assert not any("FOR SHARE" in statement for statement, _ in rule_writer)
     source = next(i for i, (_, ids) in enumerate(rule_writer) if kinds[i] == "ledger_entry" and spend_id in ids)
     assert 0 < source < kinds.index("reward_accrual"), kinds
     assert _one(db_session).estimate == Decimal("4.0000")
+
+
+# --- the card tier (PR #290 re-check at 81f88597: closing_day vs a new rule / accrual pricing) ------------------
+
+CLOSING_25 = (date(2026, 10, 26), date(2026, 11, 25))  # the 11/20 purchase's window once closing_day is 25
+
+
+def _attempt(pg_engine, fn, wait: float = 3.0) -> dict:
+    """fn(session) in its own transaction on another connection, committed; waits `wait` s. Returns
+    {"done": answered within `wait`, "out": "committed" | the exception | None, "thread": ...}."""
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    result: dict = {"out": None}
+
+    def run():
+        with factory() as db:
+            try:
+                fn(db)
+                db.commit()
+                result["out"] = "committed"
+            except Exception as exc:  # noqa: BLE001  (asserted by the caller)
+                db.rollback()
+                result["out"] = exc
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(wait)
+    result.update(done=not thread.is_alive(), thread=thread)
+    return result
+
+
+def _is_retry(out) -> bool:
+    return isinstance(out, CodedConflictError) and out.code == RETRY
+
+
+def _new_rule(card_id, **fields):
+    def create(db):
+        reward_rule_service.create(db, card_id, RewardRuleIn(**_rule_body(name="測試新規則", **fields)))
+    return create
+
+
+def _new_purchase(card_id, amount=1000):
+    def buy(db):
+        rule = db.scalar(select(RewardRule).where(RewardRule.account_id == card_id, RewardRule.name == "測試新規則"))
+        _spend(db, db.get(Account, card_id), amount, rules=[rule])
+    return buy
+
+
+def _manual_post(card_id):
+    def post(db):
+        rule_id = db.scalar(select(RewardRule.id).where(RewardRule.account_id == card_id))
+        accrual_id = db.scalar(select(RewardAccrual.id).where(RewardAccrual.rule_id == rule_id))
+        reward_posting.post_manual(db, accrual_id, date(2026, 12, 1))
+    return post
+
+
+def _phantom_interleave(pg_engine, db_session, writer_card_id, body, rule_card_id, steps):
+    """dev-astra's 81f88597 interleave: a card write C (closing_day / parent) is flushed but not committed while a
+    NEW rule N (no shared cap) is created on `rule_card_id` and then each of `steps` (a purchase, a manual post) runs,
+    each in its own transaction while C is open. The card tier makes N answer 409 `retry` at once (or a step wait
+    for C); every step refused or waiting is run again after C commits. Returns the first attempt's outcomes."""
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    seen: list = []
+    with factory() as card_write:
+        settings_service.update_account(card_write, writer_card_id, AccountIn(**body))
+        card_write.flush()
+        for fn in [_new_rule(rule_card_id, **({"posting": "manual"} if len(steps) > 1 else {})), *steps]:
+            attempt = _attempt(pg_engine, fn)
+            seen.append(attempt)
+            if attempt["out"] != "committed":
+                break
+        card_write.commit()
+    for attempt in seen:
+        attempt["thread"].join(10)
+    redo = [_new_rule(rule_card_id, **({"posting": "manual"} if len(steps) > 1 else {})), *steps][
+        sum(1 for a in seen if a["out"] == "committed"):]
+    for fn in redo:
+        again = _attempt(pg_engine, fn, wait=10)
+        assert again["out"] == "committed", again
+    return seen
+
+
+def _assert_card_tier_held(seen):
+    """N answered 409 `retry` at once, or the step after it waited on C (never priced on C's uncommitted card)."""
+    first = seen[0]
+    assert first["done"], "the rule POST waited on the card write"
+    assert _is_retry(first["out"]) or any(not a["done"] for a in seen[1:]), [a["out"] for a in seen]
+
+
+def test_closing_day_change_then_new_rule_then_purchase_prices_on_the_new_closing_day(pg_engine, db_session):
+    """81f88597 P1: C changes closing_day 15 -> 25 on a card with no rules (flushed, not committed); N creates a rule
+    on it; P buys on 11/20 under that rule. With the card tier N gets 409 `retry` at once (C holds the card FOR
+    UPDATE) and P is priced after C commits: window 10/26-11/25. (Before: N and P committed while C was open and P
+    was priced on closing_day 15, window 11/16-12/15, which C's finished recompute never revisited.)"""
+    card = _card(db_session)
+    card_id, body = card.id, _account_body(card, closing_day=25)
+    db_session.commit()
+    seen = _phantom_interleave(pg_engine, db_session, card_id, body, card_id, [_new_purchase(card_id)])
+    row = _one(db_session)
+    assert (row.window_start, row.window_end) == CLOSING_25
+    _assert_card_tier_held(seen)
+
+
+def test_closing_day_change_then_new_manual_rule_then_manual_post_freezes_the_new_window(pg_engine, db_session):
+    """The same interleave with a manual post after the purchase: the posted (frozen) accrual is in the closing_day
+    25 window. (Before: the post ran while C was open and froze the 11/16-12/15 window for good.)"""
+    card = _card(db_session)
+    card_id, body = card.id, _account_body(card, closing_day=25)
+    db_session.commit()
+    seen = _phantom_interleave(pg_engine, db_session, card_id, body, card_id,
+                               [_new_purchase(card_id), _manual_post(card_id)])
+    row = _one(db_session)
+    assert (row.state, row.window_start, row.window_end) == ("posted", *CLOSING_25)
+    _assert_card_tier_held(seen)
+
+
+def test_new_rule_on_a_child_card_during_parent_closing_day_change(pg_engine, db_session):
+    """Contract 2 (re-check 81f88597): the parent's closing_day 15 -> 25 is in flight; a NEW rule on its combined
+    child (no own closing_day) and a purchase under it. The rule writer takes the child and its effective parent FOR
+    KEY SHARE NOWAIT: 409 `retry` at once; the purchase is then priced on the parent's 25. (Before: priced on 15.)"""
+    parent = _card(db_session, "測試主卡", closing_day=15)
+    child = _card(db_session, "測試附卡", closing_day=None, combined_account_id=parent.id)
+    parent_id, child_id, body = parent.id, child.id, _account_body(parent, closing_day=25)
+    db_session.commit()
+    seen = _phantom_interleave(pg_engine, db_session, parent_id, body, child_id, [_new_purchase(child_id)])
+    row = _one(db_session)
+    assert (row.window_start, row.window_end) == CLOSING_25
+    _assert_card_tier_held(seen)
+
+
+def _held_purchase(pg_engine, card_id, rule_id, spend_id):
+    """A purchase PUT on the card (100 -> 200) that holds its locks (not committed): the session, to commit."""
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    purchase = factory()
+    ews.update_entry(purchase, spend_id, EntryUpdateIn(account_id=card_id, kind="expense", amount=Decimal("200"),
+                                                       entry_date=DAY, posted_date=DAY, reward_rule_ids=[rule_id]))
+    return purchase
+
+
+def test_closing_day_change_while_a_purchase_holds_its_card_gets_retry_at_the_card_tier(pg_engine, db_session):
+    """A purchase PUT holds its row, the card FOR KEY SHARE, the rule FOR SHARE and the window; a closing_day change
+    of that card answers 409 `retry` at once, refused by its FIRST engine lock (the card rows FOR UPDATE NOWAIT),
+    never a wait. (Before: no card lock; the refusal came later, from the rule row.) After the purchase commits the
+    retried change re-buckets it."""
+    card = _card(db_session)
+    rule = _rule(db_session, card)
+    spend = _spend(db_session, card, 100, rules=[rule])
+    card_id, rule_id, spend_id, body = card.id, rule.id, spend.id, _account_body(card, closing_day=25)
+    db_session.commit()
+    refused_at: list[str] = []
+
+    def change(db):
+        def capture(conn, cursor, statement, parameters, context, executemany):
+            if "NOWAIT" in statement:
+                refused_at.append(_lock_kind(statement) + (" FOR UPDATE" if "FOR UPDATE" in statement else ""))
+        bind = db.connection().engine
+        event.listen(bind, "before_cursor_execute", capture)
+        try:
+            settings_service.update_account(db, card_id, AccountIn(**body))
+        finally:
+            event.remove(bind, "before_cursor_execute", capture)
+
+    purchase = _held_purchase(pg_engine, card_id, rule_id, spend_id)
+    try:
+        attempt = _attempt(pg_engine, change)
+    finally:
+        purchase.commit()
+        purchase.close()
+    attempt["thread"].join(10)
+    assert attempt["done"], "the closing_day change waited on the purchase"
+    assert _is_retry(attempt["out"]), attempt["out"]
+    assert refused_at and refused_at[-1] == "account FOR UPDATE", refused_at  # the card tier refused it
+    assert _attempt(pg_engine, lambda db: settings_service.update_account(db, card_id, AccountIn(**body)),
+                    wait=10)["out"] == "committed"
+    row = _one(db_session)
+    assert (row.window_start, row.window_end, row.estimate) == (*CLOSING_25, Decimal("2.0000"))
+
+
+def test_purchase_in_flight_on_a_parent_while_another_card_is_re_parented_onto_it(pg_engine, db_session):
+    """Contract 1 / tests (re-check 81f88597): a purchase PUT on card A holds A FOR KEY SHARE; card X is re-parented
+    onto A. A re-parent is a card write on the new parent too (A's set of children is stable only under A's lock),
+    so it answers 409 `retry` at once; once the purchase commits it succeeds and X's accruals take A's closing_day.
+    (Before: the re-parent took no lock on A.)"""
+    a = _card(db_session, "測試主卡", closing_day=25)
+    x = _card(db_session, "測試附卡", closing_day=None)
+    rule_a, rule_x = _rule(db_session, a), _rule(db_session, x, name="測試附卡規則")
+    spend_a = _spend(db_session, a, 100, rules=[rule_a])
+    _spend(db_session, x, 1000, rules=[rule_x])
+    a_id, x_id, rule_a_id, spend_a_id = a.id, x.id, rule_a.id, spend_a.id
+    body = _account_body(x, combined_account_id=a.id)
+    db_session.commit()
+    assert (_one(db_session, rule_id=rule_x.id).window_start, _one(db_session, rule_id=rule_x.id).window_end) == (
+        date(2026, 11, 1), date(2026, 11, 30))  # calendar month: no closing_day anywhere
+
+    purchase = _held_purchase(pg_engine, a_id, rule_a_id, spend_a_id)
+    try:
+        attempt = _attempt(pg_engine, lambda db: settings_service.update_account(db, x_id, AccountIn(**body)))
+    finally:
+        purchase.commit()
+        purchase.close()
+    attempt["thread"].join(10)
+    assert attempt["done"] and _is_retry(attempt["out"]), attempt["out"]
+    again = _attempt(pg_engine, lambda db: settings_service.update_account(db, x_id, AccountIn(**body)), wait=10)
+    assert again["out"] == "committed", again
+    row = _one(db_session, rule_id=rule_x.id)
+    assert (row.window_start, row.window_end) == CLOSING_25
+
+
+def test_ordinary_account_writes_beside_a_purchase_in_flight(pg_engine, db_session):
+    """Contract 4: ordinary writes of the account row while a purchase PUT holds the card FOR KEY SHARE.
+    - a note edit (NO KEY UPDATE: no unique column changes) neither waits nor gets 409;
+    - a rename (PostgreSQL takes FOR UPDATE for an UPDATE of a unique column, `account_name_key`) waits for the
+      purchase, as it already did for any FK check of a new row on the card, then commits;
+    - a balance adjustment (its account row FOR UPDATE, no accrual) waits for the purchase, then commits.
+    No deadlock and no 409 on any of them."""
+    card = _card(db_session)
+    rule = _rule(db_session, card)
+    spend = _spend(db_session, card, 100, rules=[rule])
+    card_id, rule_id, spend_id = card.id, rule.id, spend.id
+    note, rename = _account_body(card, note="測試備註"), _account_body(card, name="測試卡改名", note="測試備註")
+    db_session.commit()
+
+    purchase = _held_purchase(pg_engine, card_id, rule_id, spend_id)
+    try:
+        noted = _attempt(pg_engine, lambda db: settings_service.update_account(db, card_id, AccountIn(**note)))
+        renamed = _attempt(pg_engine, lambda db: settings_service.update_account(db, card_id, AccountIn(**rename)),
+                           wait=0.5)
+        rename_waited = not renamed["done"]
+        renamed["thread"].join(0.1)
+    finally:
+        purchase.commit()
+        purchase.close()
+    renamed["thread"].join(10)
+    assert noted["done"] and noted["out"] == "committed", noted["out"]
+    assert rename_waited and renamed["out"] == "committed", renamed["out"]
+
+    purchase = _held_purchase(pg_engine, card_id, rule_id, spend_id)
+    try:
+        adjusted = _attempt(pg_engine, lambda db: ews.create_balance_adjustment(db, BalanceAdjustmentIn(
+            account_id=card_id, target_balance=Decimal("-500"), entry_date=DAY)), wait=0.5)
+        adjust_waited = not adjusted["done"]
+    finally:
+        purchase.commit()
+        purchase.close()
+    adjusted["thread"].join(10)
+    assert adjust_waited and adjusted["out"] == "committed", adjusted["out"]
+    assert _one(db_session).estimate == Decimal("2.0000")
+
+
+def test_card_and_card_writer_lock_orders(db_session):
+    """P12 card tier, listener: an accrual writer (purchase PUT) takes its row (tier 1), then the card FOR KEY SHARE,
+    then the rule FOR SHARE, then the window. A card writer (closing_day PUT) takes its own account row (FOR NO KEY
+    UPDATE, before anything else), then the card rows FOR UPDATE NOWAIT before any rule, statement, source or window
+    lock (all NOWAIT), holds no ledger row before its card lock, and never takes a card FOR KEY SHARE before it."""
+    card = _card(db_session)
+    _fillers(db_session)
+    rule = _rule(db_session, card)
+    spend = _spend(db_session, card, 100, rules=[rule])
+    card_id, rule_id, spend_id = card.id, rule.id, spend.id
+    body = _account_body(card, closing_day=25)
+    db_session.commit()
+
+    writer = _capture_locks(db_session, lambda: ews.update_entry(db_session, spend_id, EntryUpdateIn(
+        account_id=card_id, kind="expense", amount=Decimal("200"), entry_date=DAY, posted_date=DAY,
+        reward_rule_ids=[rule_id])))
+    db_session.commit()
+    kinds = [_lock_kind(statement) for statement, _ in writer]
+    source = next(i for i, (_, ids) in enumerate(writer) if kinds[i] == "ledger_entry" and spend_id in ids)
+    card_lock = next(i for i, (st, ids) in enumerate(writer) if kinds[i] == "account" and card_id in ids)
+    assert "FOR KEY SHARE" in writer[card_lock][0]
+    assert source < card_lock < kinds.index("reward_rule") < kinds.index("reward_accrual"), kinds
+
+    card_writer = _capture_locks(db_session, lambda: settings_service.update_account(
+        db_session, card_id, AccountIn(**body)))
+    db_session.commit()
+    kinds = [_lock_kind(statement) for statement, _ in card_writer]
+    assert kinds[0] == "account" and "FOR NO KEY UPDATE" in card_writer[0][0], kinds
+    card_lock = next(i for i, (st, _) in enumerate(card_writer)
+                     if kinds[i] == "account" and re.search(r"FOR UPDATE NOWAIT", st))
+    engine = [i for i, kind in enumerate(kinds) if kind in ("reward_rule", "account_statement", "ledger_entry",
+                                                            "reward_accrual")]
+    assert engine and card_lock < min(engine), kinds
+    assert all("NOWAIT" in card_writer[i][0] for i in engine), [card_writer[i][0] for i in engine]
+    assert not any("KEY SHARE" in card_writer[i][0] for i in range(card_lock)), kinds
+    row = _one(db_session)
+    assert (row.window_start, row.window_end) == CLOSING_25
+
+
+def test_card_share_then_card_write_in_one_transaction_fails_closed(db_session):
+    """P12 no-upgrade guard on card rows: FOR KEY SHARE (an accrual path) then FOR UPDATE (a card write) in one
+    transaction raises RuntimeError instead of risking an upgrade deadlock."""
+    card = _card(db_session)
+    rule = _rule(db_session, card)
+    db_session.commit()
+    reward_engine.share_rules(db_session, [rule.id])
+    with pytest.raises(RuntimeError, match="never upgraded"):
+        reward_engine.lock_cards_for_write(db_session, [card.id])
+    db_session.rollback()
+
+
+
+def test_deleting_a_parent_rebuckets_its_combined_children(client, db_session):
+    """Contract 1 (re-check 81f88597): deleting a parent clears its children's combined_account_id, so a child
+    without its own closing_day moves from the parent's closing_day 15 to the calendar month: a card write (the
+    parent and children FOR UPDATE NOWAIT, the child's rules FOR UPDATE NOWAIT) that re-buckets the child's estimates.
+    (Before: the delete left the accrual in the 11/16-12/15 window.)"""
+    parent = _card(db_session, "測試主卡", closing_day=15)
+    child = _card(db_session, "測試附卡", closing_day=None, combined_account_id=parent.id)
+    rule = _rule(db_session, child)
+    _spend(db_session, child, 1000, rules=[rule])
+    parent_id = parent.id
+    db_session.commit()
+    assert (_one(db_session).window_start, _one(db_session).window_end) == NOV_WINDOW
+
+    response = client.delete(f"/accounts/{parent_id}")
+    assert response.status_code == 204, response.text
+    row = _one(db_session)
+    assert (row.window_start, row.window_end) == (date(2026, 11, 1), date(2026, 11, 30))

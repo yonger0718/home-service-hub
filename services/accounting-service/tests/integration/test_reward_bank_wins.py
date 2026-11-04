@@ -15,7 +15,7 @@ from sqlalchemy.orm import sessionmaker
 from app.models import AccountStatement, LedgerEntry, RewardAccrual, RewardRule, StatementCoverage
 from app.services import coverage_service, policy_service, reward_bank_wins, reward_engine, reward_posting
 from app.services import reconciliation_service as rec
-from app.schemas.writes import RewardRuleIn
+from app.schemas.writes import AccountIn, RewardRuleIn
 from app.services import reward_rule_service, settings_service
 from app.services import statement_revision_service as revs
 from app.services.entry_write_service import write_rule_links
@@ -609,3 +609,26 @@ def test_reconcile_is_busy_while_a_rule_write_holds_the_rule(seed, db_session, r
         db_session.rollback()
         rule_write.rollback()
     assert info.value.code == "reconcile_busy"
+
+
+def test_reconcile_is_busy_while_a_card_write_holds_the_card(seed, db_session, run, pg_engine):
+    """P12 card tier (re-check 81f88597): another card is being re-parented onto this card (a card write on the new
+    parent: this card FOR UPDATE, none of its rules). The bank-wins step's FOR KEY SHARE on the candidates' card is
+    NOWAIT: `reconcile_busy`, nothing waits, nothing re-derived on a card whose children are changing. (Before: the
+    re-parent locked nothing of this card.)"""
+    card = _test_card(seed, db_session)
+    other = _card(seed, db_session, "測試附卡", closing_day=None)
+    rule = _rule(db_session, card)
+    _spend(db_session, card, 1000, date(2026, 10, 20), rule)
+    other_id, body = other.id, dict(name=other.name, currency=other.currency, is_credit=True, closing_day=None,
+                                    combined_account_id=card.id)
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_reward_line(1, 9)], period=PERIOD)
+    with sessionmaker(bind=pg_engine, autoflush=False)() as card_write:
+        settings_service.update_account(card_write, other_id, AccountIn(**body))
+        with pytest.raises(CodedConflictError) as info:
+            rec.reconcile(db_session, stmt.id)
+        db_session.rollback()
+        card_write.rollback()
+    assert info.value.code == "reconcile_busy"
+

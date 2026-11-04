@@ -179,9 +179,10 @@ def create(db: Session, account_id: int, payload: RewardRuleIn) -> int:
     from . import reward_engine  # reward_engine imports this module
 
     _get_account(db, account_id)
-    # P12 rule tier: joining a cap changes the cap of every existing member, so they are locked FOR UPDATE (NOWAIT)
-    # before anything is written (cap membership is never a phantom).
-    reward_engine.lock_rules_for_write(db, _cap_target_ids(db, payload.share_cap_with))
+    # P12 card + rule tiers: the new rule's card (and its effective parent) FOR KEY SHARE NOWAIT, so no rule appears
+    # on a card while a closing_day / re-parent write of it is in flight (a rule set is never a phantom to a card
+    # writer); joining a cap changes the cap of every existing member, so they are locked FOR UPDATE NOWAIT too.
+    reward_engine.lock_rules_for_write(db, _cap_target_ids(db, payload.share_cap_with), card_ids=[account_id])
     _check_payload(payload, None)
     sort_order = payload.sort_order
     if sort_order is None:

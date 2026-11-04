@@ -122,6 +122,7 @@ def _group_keys(db: Session, pairs: Iterable[Pair]) -> set[Pair]:
 def _forget_locks(session: Session, *_args) -> None:
     session.info.pop(_LOCKED_KEY, None)
     session.info.pop(_RULES_KEY, None)
+    session.info.pop(_CARDS_KEY, None)
 
 
 def _forget_at_end(session: Session, transaction) -> None:
@@ -147,23 +148,36 @@ def _remember_locks(db: Session, keys: set[Pair]) -> None:
     db.info.setdefault(_LOCKED_KEY, set()).update(keys)
 
 
-# --- the rule-row tier (PR #290 re-check: rule writes serialised against accrual creation) ----------------------
+# --- the card and rule tiers (PR #290 re-checks: rule and card writes serialised against accrual pricing) --------
 #
-# Lock order (plan P12):
-#   accrual writers:  tier 1 (source rows) -> rule rows FOR SHARE -> tier 2 (windows) -> tier 3 (reward rows)
-#   rule writers:     rule rows FOR UPDATE NOWAIT -> statement rows NOWAIT -> tier 1 NOWAIT -> tier 2 NOWAIT
+# Lock order (plan P12), stated as WHO CAN WAIT, AND ON WHAT:
+#   accrual paths:  tier 1 (source rows) -> card rows FOR KEY SHARE (id order) -> rule rows FOR SHARE (id order)
+#                   -> tier 2 (ONE window lock) -> tier 3 (reward rows)
+#   rule writers:   card rows FOR KEY SHARE NOWAIT -> rule rows FOR UPDATE NOWAIT -> statement rows NOWAIT
+#                   -> tier 1 NOWAIT -> tier 2 NOWAIT
+#   card writers:   [own account row FOR NO KEY UPDATE, holding nothing else; credit-sharing rows NOWAIT]
+#                   -> card rows FOR UPDATE NOWAIT (the card, its old and new parent, the combined children whose
+#                   effective closing_day changes) -> then the rule-writer order above (its cards already held)
 # Every path that prices an accrual (`sync_entry`, the multi-entry union locks, the post's re-derivation, bank wins)
-# first takes FOR SHARE on the rules it prices under (and their shared-cap groups), in id order, and re-reads them
-# (and their cards) under that lock. A rule write (PUT, a POST joining a shared cap, delete, reorder, a card's
-# closing_day) first takes FOR UPDATE on every rule it changes or whose window it moves, then does its work. So an
-# accrual is always priced on one committed rule version: a writer that comes second waits on the rule row and
-# re-reads it; a rule writer that comes second sees the committed accrual.
-# No cycle: a rule writer NEVER waits on a lock. Its rule, statement, source and window locks are all NOWAIT and a
-# held row raises the retryable 409 `retry` (its transaction rolls back), so it can never be one edge of a cycle;
-# FOR SHARE locks do not conflict with each other, and nothing else locks rule rows (FK checks take KEY SHARE).
-# Bank wins takes its FOR SHARE NOWAIT too, as every reconcile lock (`reconcile_busy`).
+# takes the cards it prices under (the rules' cards and, for a card without its own closing_day, its effective
+# parent) and then the rules (with their shared-cap groups), and re-reads both under the lock before it computes a
+# window or an estimate. A card's closing_day / parent and a card's rule set therefore change only under FOR UPDATE
+# on that card (closing_day, re-parenting) or under a share lock a card writer's FOR UPDATE conflicts with (a rule
+# write), so an accrual is priced on one committed card and rule version and no rule appears on a card while a
+# closing_day change of that card is in flight.
+# Card rows are taken FOR KEY SHARE: it conflicts with FOR UPDATE (the card writer's explicit lock, a balance
+# adjustment's and a reconciliation account-locker's) but not with an ordinary UPDATE of the row (NO KEY UPDATE)
+# or an FK check (KEY SHARE), so ordinary account writes neither wait on accrual paths nor make them wait.
+# No cycle: card writers and rule writers never wait on a card, rule, statement, source or window lock (all NOWAIT,
+# a held row is the retryable 409 `retry`). Accrual paths are the only waiters on these tiers, and they take them in
+# the one fixed order above; an accrual path that already holds a window takes cards and rules NOWAIT (`retry`), and
+# bank wins takes them NOWAIT (`reconcile_busy`). So every wait edge on these tiers runs from an accrual path to a
+# transaction that holds an earlier tier, or to a writer that never waits on one. Waits outside these tiers (FK
+# checks, ordinary DML, the dirty-barrier shared lock in the ledger triggers) are not covered by this argument.
+# No transaction takes a card or a rule FOR (KEY) SHARE and later FOR UPDATE: that fails closed (RuntimeError).
 
 _RULES_KEY = "reward_engine.locked_rules"  # db.info: rule id -> "update" | "share" held in this transaction
+_CARDS_KEY = "reward_engine.locked_cards"  # db.info: account id -> "update" | "share" held in this transaction
 
 
 def _group_closure(db: Session, rule_ids: Iterable[int]) -> set[int]:
@@ -177,21 +191,69 @@ def _group_closure(db: Session, rule_ids: Iterable[int]) -> set[int]:
     return ids
 
 
-def _lock_rules(db: Session, rule_ids: Iterable[int], *, share: bool, nowait: bool) -> None:
-    """The rules and their shared-cap groups, in id order, reloaded under the lock; repeats while the group closure
-    grows (a group the lock waited on changed). Rows already held in a strong enough mode are skipped. A rule an
-    accrual prices under must exist (links and accruals reference rules by RESTRICT foreign keys, so a missing one
-    means a concurrent delete): it fails closed with `retry`. A rule writer's missing ids are left to its own
-    validation (an unknown `share_cap_with` stays a 422)."""
-    db.flush()  # populate_existing below must not discard pending changes
+def _held(db: Session, key: str) -> dict[int, str]:
     _hook(db)
-    held: dict[int, str] = db.info.setdefault(_RULES_KEY, {})
-    wanted = set(rule_ids)
+    return db.info.setdefault(key, {})
+
+
+def _lock_cards(db: Session, card_ids: Iterable[int], *, share: bool, nowait: bool) -> list[Account]:
+    """These account rows, id order, re-read under the lock (`populate_existing`): FOR KEY SHARE (`share`) or
+    FOR UPDATE. Rows already held in a strong enough mode are skipped; FOR UPDATE over a row this transaction holds
+    FOR KEY SHARE fails closed (P12: no upgrade)."""
+    held = _held(db, _CARDS_KEY)
+    need = sorted({c for c in card_ids if c is not None and held.get(c) not in (
+        ("update", "share") if share else ("update",))})
+    if not need:
+        return []
+    if not share and any(held.get(c) == "share" for c in need):
+        raise RuntimeError(f"card rows {need}: FOR KEY SHARE held in this transaction is never upgraded (P12)")
+    query = select(Account).where(Account.id.in_(need)).order_by(Account.id).execution_options(populate_existing=True)
+    rows = list(db.scalars(query.with_for_update(read=share, key_share=share, nowait=nowait)))
+    for card_id in need:
+        held[card_id] = "share" if share else "update"
+    return rows
+
+
+def _share_cards(db: Session, card_ids: Iterable[int], *, nowait: bool) -> None:
+    """The cards an accrual is priced under, FOR KEY SHARE in id order: these cards and, for a card without its own
+    closing_day, its combined parent (whose closing_day applies, `card_closing_day`). The effective parent is read
+    again under the card's lock; one that changed while the lock waited (a card writer committed) is locked too."""
+    db.flush()  # populate_existing below must not discard pending changes
+    cards = set(card_ids) - {None}
+    wanted = cards | set(db.scalars(select(Account.combined_account_id).where(
+        Account.id.in_(sorted(cards)), Account.closing_day.is_(None), Account.combined_account_id.is_not(None))))
     while True:
-        wanted = _group_closure(db, wanted)
+        _lock_cards(db, wanted, share=True, nowait=nowait)
+        parents = {card.combined_account_id for card in db.scalars(select(Account).where(
+            Account.id.in_(sorted(cards)))) if card.closing_day is None and card.combined_account_id is not None}
+        if parents <= wanted:
+            return
+        wanted |= parents
+
+
+def _cards_of_rules(db: Session, rule_ids: Iterable[int]) -> set[int]:
+    ids = sorted(set(rule_ids))
+    return set(db.scalars(select(RewardRule.account_id).where(RewardRule.id.in_(ids)))) if ids else set()
+
+
+def _lock_rules(db: Session, rule_ids: Iterable[int], *, share: bool, nowait: bool,
+                card_ids: Iterable[int] = ()) -> None:
+    """The cards first (`_share_cards`: the rules' cards, `card_ids` and their effective parents, FOR KEY SHARE),
+    then the rules and their shared-cap groups, in id order, reloaded under the lock; repeats while the group
+    closure grows (a group the lock waited on changed). Rows already held in a strong enough mode are skipped. A
+    rule an accrual prices under must exist (links and accruals reference rules by RESTRICT foreign keys, so a
+    missing one means a concurrent delete): it fails closed with `retry`. A rule writer's missing ids are left to
+    its own validation (an unknown `share_cap_with` stays a 422)."""
+    db.flush()  # populate_existing below must not discard pending changes
+    held = _held(db, _RULES_KEY)
+    wanted = _group_closure(db, rule_ids)
+    cards = set(card_ids)
+    while True:
+        cards |= _cards_of_rules(db, wanted)
+        _share_cards(db, cards, nowait=nowait)
         need = sorted(r for r in wanted if held.get(r) not in (("update", "share") if share else ("update",)))
         if not need:
-            break
+            return
         if not share and any(held.get(r) == "share" for r in need):
             raise RuntimeError(f"rule rows {need}: FOR SHARE held in this transaction is never upgraded (P12)")
         query = select(RewardRule).where(RewardRule.id.in_(need)).order_by(RewardRule.id).execution_options(
@@ -202,33 +264,49 @@ def _lock_rules(db: Session, rule_ids: Iterable[int], *, share: bool, nowait: bo
             raise CodedConflictError(RETRY, f"reward rules {sorted(set(need) - found)} no longer exist; try again")
         for rule_id in need:
             held[rule_id] = "share" if share else "update"
-        wanted |= found
-    if share and wanted:  # the cards (and combined parents) whose closing_day the windows read, re-read too
-        cards = set(db.scalars(select(RewardRule.account_id).where(RewardRule.id.in_(sorted(wanted)))))
-        parents = set(db.scalars(select(Account.combined_account_id).where(
-            Account.id.in_(sorted(cards)), Account.combined_account_id.is_not(None))))
-        db.scalars(select(Account).where(Account.id.in_(sorted(cards | parents))).execution_options(
-            populate_existing=True)).all()
+        wanted = _group_closure(db, wanted | found)
 
 
-def lock_rules_for_write(db: Session, rule_ids: Iterable[int]) -> None:
-    """A rule writer's first lock (see the lock-order note above): these rules and their shared-cap groups FOR UPDATE
-    NOWAIT in id order, before the rule rows change and before any other engine lock. A held row (an accrual write
-    pricing under it, another rule write) raises the retryable 409 `retry`; it never waits."""
+def lock_cards_for_write(db: Session, card_ids: Iterable[int]) -> None:
+    """A card writer's first engine lock (see the lock-order note above): these account rows FOR UPDATE NOWAIT in
+    id order, before the rows change. A card an accrual path or a rule write holds (FOR KEY SHARE), or another card
+    write, raises the retryable 409 `retry`; it never waits."""
+    db.flush()
+    with _no_wait(db, "this card is being used by another write; try again"):
+        _lock_cards(db, card_ids, share=False, nowait=True)
+
+
+def lock_other_accounts_nowait(db: Session, account_ids: Iterable[int]) -> None:
+    """Account rows a card writer will also UPDATE (credit sharing), FOR NO KEY UPDATE NOWAIT in id order, before
+    its card lock: so the card writer's later ordinary DML on them cannot wait while it holds a card. FOR NO KEY
+    UPDATE does not conflict with an accrual path's FOR KEY SHARE. A held row is the retryable 409 `retry`."""
+    ids = sorted(set(account_ids) - {None})
+    if ids:
+        with _no_wait(db, "an account of this write is being written; try again"):
+            db.execute(select(Account.id).where(Account.id.in_(ids)).order_by(Account.id)
+                       .with_for_update(key_share=True, nowait=True)).all()
+
+
+def lock_rules_for_write(db: Session, rule_ids: Iterable[int], *, card_ids: Iterable[int] = ()) -> None:
+    """A rule writer's first locks (see the lock-order note above): the rules' cards and `card_ids` (a POST: the
+    new rule's card) with their effective parents FOR KEY SHARE NOWAIT, then these rules and their shared-cap groups
+    FOR UPDATE NOWAIT in id order, before the rule rows change and before any other engine lock. A held row (a card
+    write in flight, an accrual write pricing under the rule, another rule write) raises the retryable 409 `retry`;
+    it never waits."""
     with _no_wait(db, "a reward rule is being used by another write; try again"):
-        _lock_rules(db, rule_ids, share=False, nowait=True)
+        _lock_rules(db, rule_ids, share=False, nowait=True, card_ids=card_ids)
 
 
 def share_rules(db: Session, rule_ids: Iterable[int], *, nowait: bool = False) -> None:
-    """An accrual writer's rule tier (see the note above): these rules and their groups FOR SHARE in id order, after
-    its tier-1 rows and before it prices or locks a window; the rules and their cards are re-read under the lock.
-    Never waits on a rule while this transaction holds a window: then the lock is NOWAIT and a held rule raises the
-    retryable 409 `retry`. `nowait=True` (bank wins) raises the driver's LockNotAvailable for the caller's
-    `reconcile_busy`."""
+    """An accrual writer's card and rule tiers (see the note above): the rules' cards (with their effective parents)
+    FOR KEY SHARE, then the rules and their groups FOR SHARE, in id order, after its tier-1 rows and before it prices
+    or locks a window; cards and rules are re-read under the lock. Never waits on a card or a rule while this
+    transaction holds a window: then the locks are NOWAIT and a held row raises the retryable 409 `retry`.
+    `nowait=True` (bank wins) raises the driver's LockNotAvailable for the caller's `reconcile_busy`."""
     if nowait:
         _lock_rules(db, rule_ids, share=True, nowait=True)
     elif held_windows(db):
-        with _no_wait(db, "a reward rule is being written; try again"):
+        with _no_wait(db, "a reward rule or card is being written; try again"):
             _lock_rules(db, rule_ids, share=True, nowait=True)
     else:
         _lock_rules(db, rule_ids, share=True, nowait=False)
@@ -561,6 +639,7 @@ def recompute_accounts(db: Session, account_ids: Iterable[int]) -> None:
     ids = sorted(set(account_ids))
     if not ids:
         return
+    lock_cards_for_write(db, ids)  # a card write: held already when the caller locked its card set (P12 card tier)
     recompute_rules(db, db.scalars(select(RewardRule.id).where(RewardRule.account_id.in_(ids))))
 
 

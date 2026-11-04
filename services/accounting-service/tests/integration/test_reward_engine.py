@@ -293,6 +293,7 @@ def test_recompute_account_rebuckets_on_closing_day_change(db_session):
     rule = _rule(db_session, card)
     spend = _spend(db_session, card, 1000, date(2026, 11, 20), [rule])
     reward_engine.sync_entry(db_session, spend.id)
+    db_session.commit()  # a fresh transaction: the sync above holds the card FOR KEY SHARE (no upgrade, P12)
     card.closing_day = 25
     db_session.flush()
     reward_engine.recompute_account(db_session, card.id)
