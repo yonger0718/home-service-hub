@@ -78,6 +78,9 @@ class LockSet:
     exclusive_definition_ids: tuple[int, ...] = ()
     account_lock: bool = False  # balance_adjustment_asof, anchor_opening, backfill_entry, create_system_entry
     barrier: bool = False  # the same actions (ruling 15; the owner-twin re-check, PR #77 M1)
+    # P12 barrier pre-lock: accounts the action will write beyond the ones `engine_locks.barrier_accounts` derives
+    # (the statements', the entries', their combined children / parents and reward accounts): book_settlement's target
+    account_ids: tuple[int, ...] = ()
 
 
 @dataclass

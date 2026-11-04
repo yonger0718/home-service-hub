@@ -716,3 +716,77 @@ def test_engine_revert_of_a_pair_does_not_block_a_later_pairing(orphan_pair, db_
     assert "owner_deleted" not in _needs_peer(db_session, p.cstmt).context
     again = _apply(db_session, _needs_peer(db_session, p.cstmt), "pair_transfer", _pair_params(p.bline), **POLICY_RUN)
     assert again.status == "applied"
+
+
+# --- P12 barrier pre-lock rule (PR #290 re-check at 9e1bc745) --------------------------------------------------
+
+
+def _card_write_during_barrier(pg_engine, monkeypatch, account, body):
+    """Patch the engine's account/barrier step: right after it returns (the action T holds its account rows and the
+    exclusive dirty barrier), a card write C (closing_day change of `account`) runs in another transaction. Returns
+    the dict C's outcome lands in ({"done": answered within 1 s, "out": "committed" | exception})."""
+    import threading
+
+    from sqlalchemy.orm import sessionmaker
+
+    from app.schemas.writes import AccountIn
+    from app.services.reconciliation_actions import engine
+
+    original = engine.locks.lock_account_and_barrier
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    seen: dict = {}
+
+    def card_write():
+        with factory() as db:
+            try:
+                settings_service.update_account(db, account.id, AccountIn(**body))
+                db.commit()
+                seen["out"] = "committed"
+            except Exception as exc:  # noqa: BLE001  (asserted by the caller)
+                db.rollback()
+                seen["out"] = exc
+
+    def racing(db, targets, statement):
+        original(db, targets, statement)
+        thread = threading.Thread(target=card_write, daemon=True)
+        thread.start()
+        thread.join(1.0)  # on 9e1bc745: C holds the peer FOR UPDATE and waits on T's barrier in the dirty trigger
+        seen.update(done=not thread.is_alive(), thread=thread)
+
+    monkeypatch.setattr(engine.locks, "lock_account_and_barrier", racing)
+    return seen
+
+
+def _is_deadlock(exc) -> bool:
+    return exc is not None and not isinstance(exc, str) and "40P01" in repr(exc) + repr(getattr(exc, "orig", None)) \
+        or type(getattr(exc, "orig", None)).__name__ == "DeadlockDetected"
+
+
+def test_pair_transfer_and_a_peer_closing_day_change_never_deadlock(orphan_pair, pg_engine, db_session, monkeypatch):
+    """dev-astra P1 at 9e1bc745 (dirty_enabled on): T = pair_transfer on the bank statement holds the bank row and
+    the exclusive barrier; C = a closing_day change of the PEER card takes the card FOR UPDATE NOWAIT and waits on
+    the barrier in the account trigger; T then inserts the card leg (FK KEY SHARE on the card) and waits on C: 40P01.
+    With the barrier pre-lock rule T takes the peer card FOR UPDATE before the barrier, so C waits for T before it
+    holds anything (or answers 409 `retry`), T books the pair and C commits after it; never a 40P01."""
+    p = orphan_pair
+    case = _needs_peer(db_session, p.bstmt)
+    body = dict(name=p.card.name, currency=p.card.currency, is_credit=True, closing_day=25,
+                combined_account_id=None, statement_live_from=p.card.statement_live_from)
+    seen = _card_write_during_barrier(pg_engine, monkeypatch, p.card, body)
+    outcome = None
+    try:
+        row = _apply(db_session, case, "pair_transfer", _pair_params(p.cline))
+        outcome = "committed"
+    except Exception as exc:  # noqa: BLE001  (asserted below)
+        db_session.rollback()
+        outcome = exc
+    seen["thread"].join(10)
+    assert not _is_deadlock(outcome) and not _is_deadlock(seen.get("out")), (outcome, seen.get("out"))
+    assert outcome == "committed", outcome
+    # C serialises behind T: its first lock (its own row, FOR NO KEY UPDATE, taken while it holds nothing) waits on
+    # T's pre-lock, and it commits after T (or, had it got further, its NOWAIT card lock answers `retry`)
+    out = seen["out"]
+    assert out == "committed" or (isinstance(out, CodedConflictError) and out.code == "retry"), out
+    assert {leg.account_id for leg in _legs(db_session, row)} == {p.bank.id, p.card.id}
+    db_session.expire_all()
+    assert db_session.get(type(p.card), p.card.id).closing_day == (25 if out == "committed" else 30)
