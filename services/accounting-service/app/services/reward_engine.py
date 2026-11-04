@@ -90,11 +90,14 @@ def _desired(db: Session, entry: LedgerEntry) -> dict[int, tuple]:
     purchase = _purchase_of(db, entry)
     if purchase is None:
         return {}
+    # populate_existing: a rule loaded before this transaction waited on the purchase row (prepare_entry's
+    # check_rules) must not price the accrual on its pre-wait values; a rule PUT that held the row has committed.
     rules = db.scalars(
         select(RewardRule)
         .join(EntryRewardRule, EntryRewardRule.rule_id == RewardRule.id)
         .where(EntryRewardRule.entry_id == purchase.id)
         .order_by(RewardRule.id)
+        .execution_options(populate_existing=True)
     ).all()
     out = {}
     for rule in rules:
@@ -146,7 +149,9 @@ def _window_rows(db: Session, pairs: Iterable[Pair], *, lock: bool, nowait: bool
         .order_by(RewardAccrual.id)
         .execution_options(populate_existing=True)
     )
-    if not lock:
+    if not lock or keys <= db.info.get(_LOCKED_KEY, set()):
+        # A window this transaction already holds is read, not locked again: a multi-entry write takes its whole
+        # union in one `lock_windows` first (P12), and the per-entry calls after it must issue no second lock.
         return list(db.scalars(query))
     rows = list(db.scalars(query.with_for_update(nowait=nowait)))
     _remember_locks(db, keys)  # recorded even for windows with no rows yet
@@ -157,7 +162,8 @@ def lock_windows(db: Session, pairs: Iterable[Pair], *, nowait: bool = False) ->
     """Lock every accrual of these windows (each rule's whole shared-cap group) in one
     `SELECT ... ORDER BY id FOR UPDATE` and return them, freshly loaded, in id order (P12 step 2). The
     group-expanded (rule_id, window_start) keys are recorded in `db.info` until the transaction ends, so
-    `recompute_window(locked=True)` can check that its window is held. `nowait=True` (reconcile, which never
+    `recompute_window(locked=True)` can check that its window is held. Keys all held already issue no lock
+    statement (the rows are read fresh). `nowait=True` (reconcile, which never
     waits on a row while it holds ledger rows: bank wins) raises the driver's LockNotAvailable on a held row."""
     return _window_rows(db, pairs, lock=True, nowait=nowait)
 
@@ -268,6 +274,7 @@ def sync_entry(db: Session, entry_id: int) -> None:
     purchase's links, in the purchase's window), then recompute every window touched, old and new. Frozen
     accruals are never changed. A purchase brings its refunds along (same links, date and amount base); the
     purchase's and its refunds' windows are locked in one `lock_windows` (P12)."""
+    db.flush()  # _desired reloads rule rows (populate_existing) and must not discard pending changes
     entry = db.get(LedgerEntry, entry_id)
     if entry is None:
         return
@@ -313,18 +320,48 @@ def _accruals_of(db: Session, entry_ids: Iterable[int]) -> list[RewardAccrual]:
     ))
 
 
+def _estimated_of_rules(db: Session, rule_ids: list[int]) -> list[RewardAccrual]:
+    db.flush()  # populate_existing below must not discard pending changes
+    return list(db.scalars(
+        select(RewardAccrual)
+        .where(RewardAccrual.rule_id.in_(rule_ids), RewardAccrual.state == "estimated")
+        .order_by(RewardAccrual.id)
+        .execution_options(populate_existing=True)
+    ))
+
+
+def _lock_sources(db: Session, rule_ids: list[int]) -> list[RewardAccrual]:
+    """P12 tier 1 of a rule or card write: every source row of the rules' estimated accruals, and for a refund also
+    the purchase it refunds (its window and amount base), `SELECT ... ORDER BY id FOR UPDATE`, reloaded. A purchase
+    write in flight holds its row until it commits, so the accruals re-read after the lock are the committed ones
+    and nothing is priced on a value read before the wait. Repeats (each batch in id order) until the source set no
+    longer grows (an accrual or a refund link that appeared while it waited). Returns the re-read accruals."""
+    held: set[int] = set()
+    while True:
+        estimated = _estimated_of_rules(db, rule_ids)
+        sources = {a.source_entry_id for a in estimated if a.source_entry_id is not None}
+        refunded = set(db.scalars(select(LedgerEntry.refunds_entry_id).where(
+            LedgerEntry.id.in_(sorted(sources)), LedgerEntry.kind == "refund",
+            LedgerEntry.refunds_entry_id.is_not(None)))) if sources else set()
+        need = sorted((sources | refunded) - held)
+        if not need:
+            return estimated
+        db.execute(select(LedgerEntry).where(LedgerEntry.id.in_(need)).order_by(LedgerEntry.id)
+                   .with_for_update().execution_options(populate_existing=True)).all()
+        held.update(need)
+
+
 def recompute_rules(db: Session, rule_ids: Iterable[int]) -> None:
     """After a rule or card write: re-bucket and re-estimate every estimated accrual of these rules, then
-    recompute their old and new windows. Frozen accruals keep their window and amount (5.1)."""
+    recompute their old and new windows. Frozen accruals keep their window and amount (5.1).
+
+    P12: the accruals' source rows first (tier 1, `_lock_sources`), the plans built from their values re-read under
+    those locks, then ONE `lock_windows` over the old and new windows (tier 2). The caller holds no window lock yet;
+    a write that touches several cards passes all their rules in one call (`recompute_accounts`)."""
     ids = sorted(set(rule_ids))
     if not ids:
         return
-    db.flush()
-    estimated = list(db.scalars(
-        select(RewardAccrual)
-        .where(RewardAccrual.rule_id.in_(ids), RewardAccrual.state == "estimated")
-        .order_by(RewardAccrual.id)
-    ))
+    estimated = _lock_sources(db, ids)
     plans: dict[int, tuple] = {}
     for accrual in estimated:
         if accrual.source_entry_id is None:
@@ -346,9 +383,56 @@ def recompute_rules(db: Session, rule_ids: Iterable[int]) -> None:
 
 
 def recompute_account(db: Session, account_id: int) -> None:
-    """`recompute_rules` over the card's own rules (a closing_day change). Children whose closing day resolves
-    through this card are the caller's to name."""
-    recompute_rules(db, db.scalars(select(RewardRule.id).where(RewardRule.account_id == account_id)))
+    """`recompute_accounts` of one card."""
+    recompute_accounts(db, [account_id])
+
+
+def recompute_accounts(db: Session, account_ids: Iterable[int]) -> None:
+    """`recompute_rules` over these cards' rules in ONE call (a closing_day change: the card and the children whose
+    closing day resolves through it), so the sources of every card are locked before any window (P12)."""
+    ids = sorted(set(account_ids))
+    if not ids:
+        return
+    recompute_rules(db, db.scalars(select(RewardRule.id).where(RewardRule.account_id.in_(ids))))
+
+
+def planned_windows(db: Session, rule_ids: Iterable[int], entry_date: date) -> set[Pair]:
+    """The (rule_id, window_start) keys an entry dated `entry_date` and linked to these rules accrues in: the new
+    windows `sync_entry` will lock for a prepared insert or update (a superset: placeholders included)."""
+    ids = sorted(set(rule_ids))
+    if not ids:
+        return set()
+    out = set()
+    for rule in db.scalars(select(RewardRule).where(RewardRule.id.in_(ids)).order_by(RewardRule.id)):
+        card = db.get(Account, rule.account_id)
+        out.add((rule.id, window_for(rule.window, card_closing_day(db, card), entry_date)[0]))
+    return out
+
+
+def lock_entry_windows(db: Session, entry_ids: Iterable[int], planned: Iterable[Pair] = ()) -> None:
+    """P12 tier 2 of a multi-entry write (a split): ONE `lock_windows` over the current windows of these entries'
+    accruals, of their fee / discount children's and of their refunds' (any state), plus the `planned` new windows.
+    Every `sync_entry` / `drop_for_delete` the write runs afterwards then finds its windows held and issues no
+    further lock; two writes on one card can no longer each hold one window and wait on the other. The caller
+    holds its tier-1 rows (entries, and the refunds of entries it deletes: `lock_refunds_of`) already."""
+    ids = sorted(set(entry_ids))
+    pairs = set(planned)
+    if ids:
+        related = set(db.scalars(select(LedgerEntry.id).where(or_(
+            LedgerEntry.parent_entry_id.in_(ids), LedgerEntry.refunds_entry_id.in_(ids)))))
+        pairs |= {(a.rule_id, a.window_start) for a in _accruals_of(db, sorted(set(ids) | related))}
+    if pairs:
+        lock_windows(db, pairs)
+
+
+def lock_refunds_of(db: Session, entry_ids: Collection[int]) -> list[int]:
+    """The refunds that point at these entries (and are not among them), `SELECT ... ORDER BY id FOR UPDATE`
+    (P12 tier 1 of a delete, before any accrual lock)."""
+    ids = sorted(set(entry_ids))
+    if not ids:
+        return []
+    return list(db.scalars(select(LedgerEntry.id).where(
+        LedgerEntry.refunds_entry_id.in_(ids), LedgerEntry.id.not_in(ids)).order_by(LedgerEntry.id).with_for_update()))
 
 
 def delete_estimated_for(db: Session, entry_ids: Iterable[int]) -> set[Pair]:
@@ -468,8 +552,7 @@ def drop_for_delete(db: Session, entry_ids: Collection[int]) -> set[Pair]:
     ids = sorted(set(entry_ids))
     if not ids:
         return set()
-    refunds = list(db.scalars(select(LedgerEntry.id).where(
-        LedgerEntry.refunds_entry_id.in_(ids), LedgerEntry.id.not_in(ids)).order_by(LedgerEntry.id).with_for_update()))
+    refunds = lock_refunds_of(db, ids)
     pairs = delete_estimated_for(db, ids + refunds)
     rewards = select(RewardAccrual.ledger_entry_id).where(
         RewardAccrual.source_entry_id.in_(ids), RewardAccrual.state.in_(FROZEN),

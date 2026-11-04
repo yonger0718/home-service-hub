@@ -2,17 +2,21 @@
 review flag (spec 4.1, 5.1, 5.3, 5.4; plan P1, P6, P10, P11, P12)."""
 
 import re
+import threading
 from datetime import date
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import event, select
+from sqlalchemy.orm import sessionmaker
 
 from app.models import Account, EntryGroup, LedgerEntry, Project, RewardAccrual, RewardRule
 from app.models.statements import AccountStatement, ReconciliationCase, StatementRevision
+from app.schemas.writes import AccountIn, EntryUpdateIn, RefundIn, RewardRuleIn, SplitIn
 from app.services import entry_write_service as ews
-from app.services import reward_engine
+from app.services import reward_engine, reward_rule_service, settings_service, settlement_service, split_service
 from app.services.entry_write_service import write_rule_links
-from tests.helpers import make_account, make_definition, make_entry, make_instance, schedule_line
+from tests.helpers import make_account, make_definition, make_entry, make_instance, race, schedule_line
 
 DAY = date(2026, 11, 20)
 NOV_WINDOW = (date(2026, 11, 16), date(2026, 12, 15))
@@ -600,3 +604,226 @@ def test_account_put_without_closing_day_change_leaves_accruals(client, db_sessi
     assert client.put(f"/accounts/{card_id}", json=body).status_code == 200
     assert (_one(db_session).window_start, _one(db_session).window_end) == NOV_WINDOW
     assert _needs_recheck(db_session, early_id) is False
+
+
+# --- concurrency: rule recompute and split writes (PR #290 review, P12) ----------------------------------------
+
+
+def _capture_locks(db, fn) -> list[tuple[str, set[int]]]:
+    """Run fn() and return every row-locking statement it issued (with the ints it bound), in order."""
+    captured: list[tuple[str, set[int]]] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        if _LOCK.search(statement):
+            captured.append((statement, _ints(parameters)))
+
+    bind = db.connection().engine
+    event.listen(bind, "before_cursor_execute", capture)
+    try:
+        fn()
+    finally:
+        event.remove(bind, "before_cursor_execute", capture)
+    return captured
+
+
+def _fillers(db, count=5):
+    """Ledger rows that keep the tested ids apart from the small ints the statements also bind."""
+    filler = make_account(db, "測試錢包")
+    for _ in range(count):
+        make_entry(db, filler, "-1", entry_date=DAY)
+
+
+@pytest.mark.parametrize("purchase_first", [True, False])
+def test_rule_put_and_purchase_put_race_price_on_committed_values(pg_engine, db_session, purchase_first):
+    """Finding 1: a purchase PUT (100 -> 200) and a rule PUT (1% -> 2%) on one accrual. Whichever runs second waits
+    on the purchase row and then prices on the other's committed values: 200 x 2% = 4, never 2 (100 x 2% or
+    200 x 1%)."""
+    card = _card(db_session)
+    rule = _rule(db_session, card)
+    spend = _spend(db_session, card, 100, rules=[rule])
+    card_id, rule_id, spend_id = card.id, rule.id, spend.id
+    db_session.commit()
+    assert _one(db_session).amount == Decimal("1.0000")
+    payload = EntryUpdateIn(account_id=card_id, kind="expense", amount=Decimal("200"), entry_date=DAY,
+                            posted_date=DAY, reward_rule_ids=[rule_id])
+
+    def put_purchase(db):
+        ews.update_entry(db, spend_id, payload)
+
+    def put_rule(db):
+        reward_rule_service.update(db, card_id, rule_id, RewardRuleIn(**_rule_body(rate="2")))
+
+    first, second = (put_purchase, put_rule) if purchase_first else (put_rule, put_purchase)
+    assert race(pg_engine, first, second) == "committed"
+    row = _one(db_session)
+    assert (row.estimate, row.amount) == (Decimal("4.0000"), Decimal("4.0000"))
+
+
+def test_rule_recompute_locks_sources_before_windows(db_session):
+    """P12 in recompute_rules: the accruals' sources (a refund and the purchase it refunds) FOR UPDATE in id order
+    (tier 1) before ONE window lock (tier 2); no ledger row is locked after it."""
+    card = _card(db_session)
+    _fillers(db_session)
+    rule = _rule(db_session, card)
+    buy = _spend(db_session, card, 1000, rules=[rule])
+    db_session.commit()
+    refund_id = settlement_service.refund(db_session, buy.id, RefundIn(amount=Decimal("200"), entry_date=DAY))
+    buy_id, rule_id, card_id = buy.id, rule.id, card.id
+    db_session.commit()
+
+    captured = _capture_locks(db_session, lambda: reward_rule_service.update(
+        db_session, card_id, rule_id, RewardRuleIn(**_rule_body(rate="2"))))
+    db_session.commit()
+
+    kinds = [_lock_kind(statement) for statement, _ in captured]
+    assert kinds.count("reward_accrual") == 1, kinds
+    accrual_at = kinds.index("reward_accrual")
+    sources = [i for i, (_, ids) in enumerate(captured) if kinds[i] == "ledger_entry" and {buy_id, refund_id} & ids]
+    assert sources and max(sources) < accrual_at, kinds
+    assert {buy_id, refund_id} <= set().union(*(captured[i][1] for i in sources))
+    assert "ORDER BY ledger_entry.id" in captured[sources[0]][0]
+    assert all(k != "ledger_entry" for k in kinds[accrual_at + 1:]), kinds
+    assert _one(db_session, source_entry_id=buy_id).amount == Decimal("20.0000")
+    assert _one(db_session, source_entry_id=refund_id).amount == Decimal("-4.0000")
+
+
+def test_parent_closing_day_change_takes_one_window_lock(db_session):
+    """A closing_day change on a card with a combined child recomputes both cards in one pass: both cards'
+    purchases are locked before ONE window lock (was one `lock_windows` per card)."""
+    _fillers(db_session)
+    parent = _card(db_session, "測試主卡", closing_day=15)
+    child = _card(db_session, "測試附卡", closing_day=None, combined_account_id=parent.id)
+    own = _spend(db_session, parent, 1000, rules=[_rule(db_session, parent)])
+    theirs = _spend(db_session, child, 500, rules=[_rule(db_session, child, name="測試規則B")])
+    parent_id, own_id, theirs_id = parent.id, own.id, theirs.id
+    body = AccountIn(**_account_body(parent, closing_day=25))
+    db_session.commit()
+
+    captured = _capture_locks(db_session, lambda: settings_service.update_account(db_session, parent_id, body))
+    db_session.commit()
+
+    kinds = [_lock_kind(statement) for statement, _ in captured]
+    assert kinds.count("reward_accrual") == 1, kinds
+    accrual_at = kinds.index("reward_accrual")
+    sources = [i for i, (_, ids) in enumerate(captured) if kinds[i] == "ledger_entry" and {own_id, theirs_id} & ids]
+    assert sources and max(sources) < accrual_at, kinds
+    for source_id in (own_id, theirs_id):
+        row = _one(db_session, source_entry_id=source_id)
+        assert (row.window_start, row.window_end) == (date(2026, 10, 26), date(2026, 11, 25))
+
+
+DEC_DAY = date(2026, 12, 20)  # the Dec window (12-16..01-15) of a closing-day-15 card
+
+
+def _split_in(members, **group) -> SplitIn:
+    return SplitIn(**{"entry_date": DAY, **group, "members": members})
+
+
+def _member(card, rule, amount, day, **fields) -> dict:
+    return {"account_id": card.id, "kind": "expense", "amount": amount, "entry_date": day,
+            "reward_rule_ids": [rule.id], **fields}
+
+
+def test_split_writes_take_one_window_lock(db_session):
+    """Finding 2: every split write locks the union of its windows in ONE statement, before any member write: a
+    create, a convert, and a PUT that drops one member, re-prices one into another window and adds a new one."""
+    card = _card(db_session)
+    _fillers(db_session)
+    rule = _rule(db_session, card)
+    _spend(db_session, card, 300, rules=[rule])  # a row in the Nov window: its lock is a real row lock
+    _spend(db_session, card, 300, DEC_DAY, rules=[rule])
+    db_session.commit()
+
+    def window_locks(fn):
+        captured = _capture_locks(db_session, fn)
+        db_session.commit()
+        return [_lock_kind(statement) for statement, _ in captured].count("reward_accrual")
+
+    created = {}
+
+    def create():
+        created["result"] = split_service.create_split_result(db_session, _split_in(
+            [_member(card, rule, "100", DAY), _member(card, rule, "200", DEC_DAY)]))
+
+    assert window_locks(create) == 1
+    first_id, second_id = (entry_id for entry_id, _ in created["result"].members)
+
+    def put():
+        split_service.update_split(db_session, created["result"].group_id, _split_in(
+            [_member(card, rule, "400", DAY, id=second_id), _member(card, rule, "50", DEC_DAY)]))
+
+    assert window_locks(put) == 1
+    assert _accruals(db_session, source_entry_id=first_id) == []
+    moved = _one(db_session, source_entry_id=second_id)
+    assert (moved.window_start, moved.amount) == (NOV_WINDOW[0], Decimal("4.0000"))
+
+    anchor = _spend(db_session, card, 600, DEC_DAY, rules=[rule])
+    anchor_id = anchor.id
+    db_session.commit()
+
+    def convert():
+        split_service.convert_to_split(db_session, anchor_id, _split_in(
+            [_member(card, rule, "500", DAY, id=anchor_id), _member(card, rule, "100", DEC_DAY)]))
+
+    assert window_locks(convert) == 1
+    converted = _one(db_session, source_entry_id=anchor_id)
+    assert (converted.window_start, converted.amount) == (NOV_WINDOW[0], Decimal("5.0000"))
+
+
+def test_two_splits_on_one_card_opposite_window_order_no_deadlock(pg_engine, db_session, monkeypatch):
+    """Finding 2: split X re-prices its Nov member then its Dec member, split Y (same card, same rule) its Dec
+    member then its Nov member. Each transaction pauses after its first window lock until the other has one too
+    (or 2 s pass). With one window lock per member write the two each held one window and waited on the other
+    (40P01); with one union lock per split the second waits on the first and both commit."""
+    card = _card(db_session)
+    rule = _rule(db_session, card)
+    groups = {}
+    for key in ("x", "y"):
+        result = split_service.create_split_result(db_session, _split_in(
+            [_member(card, rule, "100", DAY), _member(card, rule, "200", DEC_DAY)]))
+        groups[key] = (result.group_id, [entry_id for entry_id, _ in result.members])
+    db_session.commit()
+
+    def payload(key, order):
+        nov_id, dec_id = groups[key][1]
+        members = {"nov": _member(card, rule, "1000", DAY, id=nov_id),
+                   "dec": _member(card, rule, "2000", DEC_DAY, id=dec_id)}
+        return _split_in([members[name] for name in order])
+
+    plans = {"x": payload("x", ("nov", "dec")), "y": payload("y", ("dec", "nov"))}
+    arrived = {"x": threading.Event(), "y": threading.Event()}
+    real = reward_engine.lock_windows
+
+    def lock_windows(db, pairs, **kwargs):
+        rows = real(db, pairs, **kwargs)
+        me = threading.current_thread().name
+        if me in arrived and not arrived[me].is_set():
+            arrived[me].set()
+            arrived["y" if me == "x" else "x"].wait(2)
+        return rows
+
+    monkeypatch.setattr(reward_engine, "lock_windows", lock_windows)
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    out: dict = {}
+
+    def runner(key):
+        session = factory()
+        try:
+            split_service.update_split(session, groups[key][0], plans[key])
+            session.commit()
+            out[key] = "committed"
+        except Exception as exc:  # noqa: BLE001  (asserted below)
+            session.rollback()
+            out[key] = exc
+        finally:
+            session.close()
+
+    threads = [threading.Thread(target=runner, args=(key,), name=key, daemon=True) for key in ("x", "y")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(20)
+    assert not any(thread.is_alive() for thread in threads), out
+    assert out == {"x": "committed", "y": "committed"}, out
+    amounts = sorted(row.amount for row in _accruals(db_session))
+    assert amounts == [Decimal("10.0000")] * 2 + [Decimal("20.0000")] * 2

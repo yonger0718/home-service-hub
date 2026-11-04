@@ -746,7 +746,8 @@ def update_account(db: Session, account_id: int, payload: AccountIn) -> None:
 def _rebucket_rewards(db: Session, account: Account, before_own: int | None, before_closing: int | None) -> None:
     """Reward engine spec 5.1: a card whose effective closing day changed re-buckets its estimated accruals, and so
     does every child card whose closing day resolves through it (combined_account_id, own closing_day null). P6
-    first for each card: statement rows before accrual locks (P12)."""
+    first for each card: statement rows before accrual locks (P12); then every card's rules in ONE recompute, so the
+    sources of all the cards are locked before any window (P12 tiers 1-2)."""
     cards = []
     if reward_engine.card_closing_day(db, account) != before_closing:
         cards.append(account.id)
@@ -758,8 +759,7 @@ def _rebucket_rewards(db: Session, account: Account, before_own: int | None, bef
         ))
     for card_id in cards:
         reward_engine.mark_early_rechecks(db, card_id)
-    for card_id in cards:
-        reward_engine.recompute_account(db, card_id)
+    reward_engine.recompute_accounts(db, cards)
 
 
 def delete_account(db: Session, account_id: int) -> None:

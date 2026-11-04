@@ -121,6 +121,21 @@ def _prepare(db: Session, members: list[_Member], http_get) -> None:
             raise ValidationError(f"members.{member.index}.{exc.field}", exc.message) from exc
 
 
+def _lock_reward_windows(db: Session, members: list[_Member], entry_ids: list[int], drop_ids: list[int] = ()) -> None:
+    """P12 for a split write, after its group and member locks and before any member write: the refunds of the members
+    it deletes (tier 1), then ONE `lock_windows` over the union of every window the write touches (tier 2): the
+    current windows of every existing member (dropped ones included) and of their refunds, and the target windows of
+    every prepared member. Each member's `sync_entry` / the delete's `drop_for_delete` then finds its windows held
+    and locks nothing more, so two splits on one card cannot each hold one window and wait on the other."""
+    reward_engine.lock_refunds_of(db, drop_ids)
+    planned = set()
+    for member in members:
+        if member.prepared is not None:
+            payload = member.prepared.payload
+            planned |= reward_engine.planned_windows(db, payload.reward_rule_ids, payload.entry_date)
+    reward_engine.lock_entry_windows(db, entry_ids, planned)
+
+
 def _check_create_cardinality(payload: SplitIn) -> None:
     """POST /splits: 2 to MAX_SPLIT_MEMBERS members, none of them existing (§1.3)."""
     if not 2 <= len(payload.members) <= MAX_SPLIT_MEMBERS:
@@ -143,6 +158,7 @@ def create_split_result(db: Session, payload: SplitIn, *, http_get=None) -> Spli
     group = EntryGroup(kind="split", name=payload.name, merchant=payload.merchant, description=payload.description)
     db.add(group)
     db.flush()
+    _lock_reward_windows(db, members, [])
     for member in members:
         member.entry_id = insert_prepared(db, member.prepared, group_id=group.id, remember=False)
     remember_all_defaults(db, [member.prepared for member in members])
@@ -367,6 +383,7 @@ def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None)
     # 5. write: no helper below commits
     for entry_id in drop_ids:  # §1.5: the same refusal as a single delete; not kind-gated like SCHEDULED_LOAN
         schedule_entry_hooks.assert_not_referenced(db, loan_entry_id=entry_id)
+    _lock_reward_windows(db, members, before_ids, drop_ids)
     delete_entries_cascade(db, drop_ids)  # expires the session; rows are re-read below under the held locks
     for member in members:
         if member.action == "new":
@@ -451,6 +468,7 @@ def convert_to_split(db: Session, entry_id: int, payload: SplitIn, *, http_get=N
     except NotFoundError as exc:
         raise CodedConflictError(RETRY, f"entry {entry_id} was deleted concurrently") from exc
     _refuse_anchor(db, anchor)
+    _lock_reward_windows(db, members, [entry_id])
     # 5. write
     group = EntryGroup(kind="split", name=payload.name, merchant=payload.merchant, description=payload.description)
     db.add(group)

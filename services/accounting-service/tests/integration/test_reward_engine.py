@@ -437,6 +437,7 @@ def test_recompute_window_lock_contract(db_session):
     spend_b = _spend(db_session, card, 1000, date(2026, 11, 19), [rule_b])
     reward_engine.sync_entry(db_session, spend_a.id)
     reward_engine.sync_entry(db_session, spend_b.id)
+    db_session.commit()  # a fresh transaction: the syncs above already hold the window
 
     statements, capture = _capture_for_update(db_session)
     bind = db_session.connection().engine
@@ -461,6 +462,7 @@ def test_lock_windows_locks_whole_group_in_one_statement(db_session):
     spend_b = _spend(db_session, card, 1000, date(2026, 11, 19), [rule_b])
     reward_engine.sync_entry(db_session, spend_a.id)
     reward_engine.sync_entry(db_session, spend_b.id)
+    db_session.commit()  # a fresh transaction: the syncs above already hold the window
 
     statements, capture = _capture_for_update(db_session)
     bind = db_session.connection().engine
@@ -472,6 +474,15 @@ def test_lock_windows_locks_whole_group_in_one_statement(db_session):
     assert len(statements) == 1
     assert [r.id for r in rows] == sorted(r.id for r in rows)
     assert {r.rule_id for r in rows} == {rule_a.id, rule_b.id}
+
+    statements.clear()  # the window is held now: a second lock_windows reads it fresh and locks nothing again
+    event.listen(bind, "before_cursor_execute", capture)
+    try:
+        again = reward_engine.lock_windows(db_session, [(rule_b.id, NOV_WINDOW[0])])
+    finally:
+        event.remove(bind, "before_cursor_execute", capture)
+    assert statements == []
+    assert [r.id for r in again] == [r.id for r in rows]
 
 
 def test_purchase_sync_with_refunds_takes_one_accrual_lock(db_session):
