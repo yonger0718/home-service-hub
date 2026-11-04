@@ -7,7 +7,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import event, select, text
+from sqlalchemy import event, select
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Account, EntryGroup, LedgerEntry, Project, RewardAccrual, RewardRule
@@ -20,7 +20,7 @@ from app.services import (
 from app.services.entry_write_service import write_rule_links
 from app.services.errors import RETRY, CodedConflictError
 from tests.helpers import (
-    make_account, make_definition, make_entry, make_instance, race, schedule_line, wait_until_blocked,
+    make_account, make_definition, make_entry, make_instance, race, schedule_line,
 )
 
 DAY = date(2026, 11, 20)
@@ -638,11 +638,10 @@ def _fillers(db, count=5):
         make_entry(db, filler, "-1", entry_date=DAY)
 
 
-@pytest.mark.parametrize("purchase_first", [True, False])
-def test_rule_put_and_purchase_put_race_price_on_committed_values(pg_engine, db_session, purchase_first):
-    """Finding 1: a purchase PUT (100 -> 200) and a rule PUT (1% -> 2%) on one accrual. Whichever runs second waits
-    on the purchase row and then prices on the other's committed values: 200 x 2% = 4, never 2 (100 x 2% or
-    200 x 1%)."""
+def test_rule_put_first_then_purchase_put_prices_on_committed_values(pg_engine, db_session):
+    """Finding 1, rule first: a rule PUT (1% -> 2%) holds the rule rows and the purchase (its NOWAIT source lock);
+    a purchase PUT (100 -> 200) waits and then prices on the committed rule: 200 x 2% = 4. (The purchase-first
+    order is `test_rule_put_while_purchase_put_holds_the_purchase_gets_retry`.)"""
     card = _card(db_session)
     rule = _rule(db_session, card)
     spend = _spend(db_session, card, 100, rules=[rule])
@@ -658,8 +657,7 @@ def test_rule_put_and_purchase_put_race_price_on_committed_values(pg_engine, db_
     def put_rule(db):
         reward_rule_service.update(db, card_id, rule_id, RewardRuleIn(**_rule_body(rate="2")))
 
-    first, second = (put_purchase, put_rule) if purchase_first else (put_rule, put_purchase)
-    assert race(pg_engine, first, second) == "committed"
+    assert race(pg_engine, put_rule, put_purchase) == "committed"
     row = _one(db_session)
     assert (row.estimate, row.amount) == (Decimal("4.0000"), Decimal("4.0000"))
 
@@ -939,73 +937,99 @@ def test_two_transfers_opposite_leg_window_order_no_deadlock(pg_engine, db_sessi
     assert sorted(row.amount for row in _accruals(db_session)) == [Decimal("30.0000")] * 2  # in-leg accruals gone
 
 
-def test_rule_put_source_set_growth_fails_closed_instead_of_deadlocking(pg_engine, db_session, monkeypatch):
-    """PR #290 re-check P1-B: rule PUT R locks its sources (purchase `high`) in its first batch. Meanwhile purchase
-    `low` (a lower id) gets linked to the rule and commits, and writer W locks `low` and then waits on `high` (two
-    rows in id order, as a split over both takes them). R's second batch finds `low`: waiting on it would close the
-    cycle (40P01); it is locked NOWAIT and R fails with the retryable 409 `retry` instead, and W commits."""
+
+# --- the rule-row tier (PR #290 re-check at c6ad92e7) ----------------------------------------------------------
+
+
+def test_rule_put_while_purchase_put_holds_the_purchase_gets_retry(pg_engine, db_session):
+    """Purchase first: a purchase PUT holds its row, the rule FOR SHARE and the window (not committed). A rule PUT
+    then never waits: its rule lock (or source lock) is NOWAIT and it answers the retryable 409 `retry` at once, no
+    40P01; the purchase commits. (Before: the rule PUT waited on the purchase row.)"""
     card = _card(db_session)
     rule = _rule(db_session, card)
-    low = make_entry(db_session, card, "-100", entry_date=DAY)  # lower id, not linked yet
-    high = _spend(db_session, card, 300, rules=[rule])
-    card_id, rule_id, low_id, high_id = card.id, rule.id, low.id, high.id
-    payload = RewardRuleIn(**_rule_body(rate="2"))
+    spend = _spend(db_session, card, 100, rules=[rule])
+    card_id, rule_id, spend_id = card.id, rule.id, spend.id
     db_session.commit()
-
-    paused, go = threading.Event(), threading.Event()
-    real = reward_engine._estimated_of_rules
-    calls = {"n": 0}
-
-    def estimated_of_rules(db, rule_ids):
-        if threading.current_thread().name == "r":
-            calls["n"] += 1
-            if calls["n"] == 2:  # R holds its first batch (`high`)
-                paused.set()
-                assert go.wait(15)
-        return real(db, rule_ids)
-
-    monkeypatch.setattr(reward_engine, "_estimated_of_rules", estimated_of_rules)
     factory = sessionmaker(bind=pg_engine, autoflush=False)
-    sessions = {"r": factory(), "w": factory()}
-    # the transactions stay open so each session keeps this connection (and pid) for its function
-    pids = {key: session.execute(text("SELECT pg_backend_pid()")).scalar_one() for key, session in sessions.items()}
     out: dict = {}
 
-    def rule_put(db):
-        reward_rule_service.update(db, card_id, rule_id, payload)
+    def put_rule():
+        with factory() as db:
+            try:
+                reward_rule_service.update(db, card_id, rule_id, RewardRuleIn(**_rule_body(rate="2")))
+                db.commit()
+                out["rule"] = "committed"
+            except Exception as exc:  # noqa: BLE001  (asserted below)
+                db.rollback()
+                out["rule"] = exc
 
-    def writer(db):
-        for entry_id in (low_id, high_id):
-            db.execute(select(LedgerEntry.id).where(LedgerEntry.id == entry_id).with_for_update())
+    with factory() as purchase:
+        ews.update_entry(purchase, spend_id, EntryUpdateIn(account_id=card_id, kind="expense", amount=Decimal("200"),
+                                                           entry_date=DAY, posted_date=DAY, reward_rule_ids=[rule_id]))
+        thread = threading.Thread(target=put_rule, daemon=True)
+        thread.start()
+        thread.join(3)
+        answered_at_once = not thread.is_alive()
+        purchase.commit()
+    thread.join(10)
+    assert answered_at_once, "the rule PUT waited on the purchase write"
+    assert isinstance(out["rule"], CodedConflictError) and out["rule"].code == RETRY, out
+    row = _one(db_session)
+    assert (row.estimate, db_session.get(RewardRule, rule_id).rate) == (Decimal("2.0000"), Decimal("1"))
 
-    def runner(key, fn):
-        session = sessions[key]
-        try:
-            fn(session)
-            session.commit()
-            out[key] = "committed"
-        except Exception as exc:  # noqa: BLE001  (asserted below)
-            session.rollback()
-            out[key] = exc
 
-    r = threading.Thread(target=runner, args=("r", rule_put), name="r", daemon=True)
-    w = threading.Thread(target=runner, args=("w", writer), name="w", daemon=True)
-    r.start()
+def test_new_purchase_waits_on_rule_put_and_prices_on_the_new_rate(pg_engine, db_session):
+    """Rule first: a rule PUT (1% -> 2%) holds the rule row; a NEW purchase linked to the rule (nothing the PUT could
+    lock) waits on the rule row (FOR SHARE) and prices on the committed 2%: estimate 4. (Before: it priced on the old
+    1% without waiting, estimate 2.)"""
+    card = _card(db_session)
+    rule = _rule(db_session, card)
+    card_id, rule_id = card.id, rule.id
+    db_session.commit()
+
+    def put_rule(db):
+        reward_rule_service.update(db, card_id, rule_id, RewardRuleIn(**_rule_body(rate="2")))
+
+    def new_purchase(db):
+        _spend(db, db.get(Account, card_id), 200, rules=[db.get(RewardRule, rule_id)])
+
+    outcome = None
     try:
-        assert paused.wait(10)
-        with factory() as link:  # the source set grows: `low` joins the rule and commits
-            write_rule_links(link, low_id, [rule_id])
-            reward_engine.sync_entry(link, low_id)
-            link.commit()
-        w.start()
-        wait_until_blocked(pg_engine, pids["w"], blocker_pid=pids["r"])  # W holds `low`, waits on `high`
+        outcome = race(pg_engine, put_rule, new_purchase)
     finally:
-        go.set()
-        for thread in (r, w):
-            thread.join(20)
-        for session in sessions.values():
-            session.close()
-    assert not r.is_alive() and not w.is_alive(), out
-    assert out["w"] == "committed", out
-    assert isinstance(out["r"], CodedConflictError) and out["r"].code == RETRY, out
-    assert _one(db_session, source_entry_id=high_id).estimate == Decimal("3.0000")  # R rolled back: still 1%
+        row = _one(db_session)
+        assert row.estimate == Decimal("4.0000")
+    assert outcome == "committed"
+
+
+def test_writer_and_rule_writer_lock_orders(db_session):
+    """P12 (rule-row tier): an accrual writer (purchase PUT) takes its row, then the rule FOR SHARE, then the window;
+    a rule writer (rule PUT) takes the rules FOR UPDATE NOWAIT first, then sources and windows, every lock NOWAIT,
+    and never a FOR SHARE on a rule."""
+    card = _card(db_session)
+    _fillers(db_session)
+    rule = _rule(db_session, card)
+    spend = _spend(db_session, card, 100, rules=[rule])
+    card_id, rule_id, spend_id = card.id, rule.id, spend.id
+    db_session.commit()
+
+    writer = _capture_locks(db_session, lambda: ews.update_entry(db_session, spend_id, EntryUpdateIn(
+        account_id=card_id, kind="expense", amount=Decimal("200"), entry_date=DAY, posted_date=DAY,
+        reward_rule_ids=[rule_id])))
+    db_session.commit()
+    kinds = [_lock_kind(statement) for statement, _ in writer]
+    source = next(i for i, (_, ids) in enumerate(writer) if kinds[i] == "ledger_entry" and spend_id in ids)
+    shared = kinds.index("reward_rule")
+    assert "FOR SHARE" in writer[shared][0]
+    assert source < shared < kinds.index("reward_accrual"), kinds
+
+    rule_writer = _capture_locks(db_session, lambda: reward_rule_service.update(
+        db_session, card_id, rule_id, RewardRuleIn(**_rule_body(rate="2"))))
+    db_session.commit()
+    kinds = [_lock_kind(statement) for statement, _ in rule_writer]
+    assert kinds[0] == "reward_rule" and "FOR UPDATE" in rule_writer[0][0], kinds
+    assert all("NOWAIT" in statement for statement, _ in rule_writer), [st for st, _ in rule_writer]
+    assert not any("FOR SHARE" in statement for statement, _ in rule_writer)
+    source = next(i for i, (_, ids) in enumerate(rule_writer) if kinds[i] == "ledger_entry" and spend_id in ids)
+    assert 0 < source < kinds.index("reward_accrual"), kinds
+    assert _one(db_session).estimate == Decimal("4.0000")

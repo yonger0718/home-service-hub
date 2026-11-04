@@ -123,16 +123,18 @@ def _prepare(db: Session, members: list[_Member], http_get) -> None:
 
 def _lock_reward_windows(db: Session, members: list[_Member], entry_ids: list[int], drop_ids: list[int] = ()) -> None:
     """P12 for a split write, after its group and member locks and before any member write: the refunds of the members
-    it deletes (tier 1), then ONE `lock_windows` over the union of every window the write touches (tier 2): the
-    current windows of every existing member (dropped ones included) and of their refunds, and the target windows of
-    every prepared member. Each member's `sync_entry` / the delete's `drop_for_delete` then finds its windows held
+    it deletes (tier 1), the rule tier (`share_entry_rules`), then ONE `lock_windows` over the union of every window
+    the write touches (tier 2): the current windows of every existing member (dropped ones included) and of their
+    refunds, and the target windows of every prepared member. Each member's `sync_entry` / the delete's `drop_for_delete` then finds its windows held
     and locks nothing more, so two splits on one card cannot each hold one window and wait on the other."""
     reward_engine.lock_refunds_of(db, drop_ids)
+    prepared = [member.prepared.payload for member in members if member.prepared is not None]
+    # the rule tier: every rule the write prices under (current and new links), FOR SHARE and re-read (P12)
+    reward_engine.share_entry_rules(
+        db, entry_ids, {rule_id for payload in prepared for rule_id in payload.reward_rule_ids})
     planned = set()
-    for member in members:
-        if member.prepared is not None:
-            payload = member.prepared.payload
-            planned |= reward_engine.planned_windows(db, payload.reward_rule_ids, payload.entry_date)
+    for payload in prepared:
+        planned |= reward_engine.planned_windows(db, payload.reward_rule_ids, payload.entry_date)
     reward_engine.lock_entry_windows(db, entry_ids, planned)
 
 

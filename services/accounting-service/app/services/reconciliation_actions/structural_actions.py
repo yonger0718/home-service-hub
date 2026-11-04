@@ -372,6 +372,7 @@ class SplitEntryAction(ActionBase):
         # windows on its restored date (a member may have gained rule links since the split; the snapshot gate does
         # not compare links), so the delete and the anchor's sync take no second window lock.
         restored_on = _from_json(LedgerEntry.__table__.c.entry_date.type, snap["entry_date"])
+        reward_engine.share_entry_rules(db, current)  # the rule tier before pricing (P12)
         reward_engine.lock_entry_windows(
             db, current, reward_engine.planned_windows(db, ews.attached_rule_ids(db, anchor_id), restored_on))
         ews.delete_entries_cascade(db, others)

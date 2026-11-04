@@ -7,7 +7,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import event, select, update
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Account, LedgerEntry, Project, RewardAccrual, RewardRule
@@ -568,22 +568,19 @@ def _rule_in(rule, **fields) -> RewardRuleIn:
     return RewardRuleIn(**body)
 
 
-def _stale_purchase(pg_engine, db, *, posting="after_window", **put):
-    """The P1-A interleaving: a rule PUT (1% -> 2%, plus `put`) runs on a window with no accrual to lock and stays
-    open; a new 200 purchase linked to the rule commits meanwhile, priced on the committed 1% (estimate 2); then the
-    PUT commits. Returns the purchase's accrual (still estimate 2: nothing re-priced it)."""
+def _stale_purchase(pg_engine, db, *, posting="after_window", **changed):
+    """A stale estimate as the pre-serialisation race left it (a purchase priced on the rule a concurrent rule PUT was
+    rewriting): a 200 purchase priced at 1% (estimate 2), then the rule row rewritten to 2% (plus `changed`) behind
+    the engine's back. With the rule-row tier that race can no longer happen (see the rule-write tests in
+    test_reward_engine_hooks); the post's re-derivation stays as defence in depth and is tested on this shape."""
     card = _card(db)
     rule = _rule(db, card, posting=posting)
-    card_id, rule_id, payload = card.id, rule.id, _rule_in(rule, rate="2", **put)
+    _spend(db, card, 200, date(2026, 11, 20), [rule])
     db.commit()
-    factory = sessionmaker(bind=pg_engine, autoflush=False)
-    with factory() as rule_put, factory() as purchase:
-        reward_rule_service.update(rule_put, card_id, rule_id, payload)  # not committed: holds the rule row only
-        _spend(purchase, purchase.get(Account, card_id), 200, date(2026, 11, 20), [purchase.get(RewardRule, rule_id)])
-        purchase.commit()  # never waited: the PUT held no accrual of this window
-        rule_put.commit()
-    accrual = _accrual(db, rule_id=rule_id)
-    assert accrual.estimate == Decimal("2.0000")  # the race: priced on the rule the PUT was rewriting
+    db.execute(update(RewardRule).where(RewardRule.id == rule.id).values(rate=Decimal("2"), **changed))
+    db.commit()
+    accrual = _accrual(db, rule_id=rule.id)
+    assert accrual.estimate == Decimal("2.0000")  # priced on the old rule
     return accrual
 
 
@@ -622,7 +619,91 @@ def test_locked_post_re_derives_under_the_callers_locks(pg_engine, db_session):
     place (no lock taken) before the allotment freezes."""
     accrual = _stale_purchase(pg_engine, db_session)
     db_session.execute(select(LedgerEntry.id).where(LedgerEntry.id == accrual.source_entry_id).with_for_update())
+    reward_engine.share_rules(db_session, [accrual.rule_id], nowait=True)  # bank wins' rule tier
     reward_engine.lock_windows(db_session, [(accrual.rule_id, accrual.window_start)])
     assert reward_posting.post_accrual(db_session, accrual.id, locked=True) == "posted"
     db_session.commit()
     assert [row.amount for row in _rewards(db_session)] == [Decimal("4.0000")]
+
+
+# --- the rule-row tier (PR #290 re-check, c6ad92e7 findings 1 and 2) -------------------------------------------
+
+
+def _purchases_during_rule_put(pg_engine, card_id, rule_id, payload, purchases) -> bool:
+    """A rule PUT holds its rule rows (not committed) while `purchases(session)` runs in another transaction; the PUT
+    then commits. Returns whether the purchases were still waiting 0.5 s in (on the rule row, FOR SHARE)."""
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    out: dict = {}
+
+    def run():
+        with factory() as session:
+            try:
+                purchases(session)
+                session.commit()
+                out["purchases"] = "committed"
+            except Exception as exc:  # noqa: BLE001  (asserted below)
+                session.rollback()
+                out["purchases"] = exc
+
+    with factory() as rule_put:
+        reward_rule_service.update(rule_put, card_id, rule_id, payload)
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join(0.5)
+        waited = thread.is_alive()
+        rule_put.commit()
+    thread.join(10)
+    assert out.get("purchases") == "committed", out
+    return waited
+
+
+def _buy(card_id, rule_id, *amounts_days):
+    def purchases(db):
+        card, rule = db.get(Account, card_id), db.get(RewardRule, rule_id)
+        for amount, day in amounts_days:
+            _spend(db, card, amount, day, [rule])
+    return purchases
+
+
+def test_new_purchase_during_manual_to_after_window_put_is_posted_by_the_job(pg_engine, db_session):
+    """c6ad92e7 finding 1: a rule PUT manual -> after_window while a new purchase is linked. The purchase waits on
+    the rule row and accrues under after_window (post_on 2027-01-05), so the daily job posts it. (Before: it accrued
+    as manual, post_on NULL, which the job never selects and the manual endpoint refuses.)"""
+    card = _card(db_session)
+    rule = _rule(db_session, card, posting="manual")
+    card_id, rule_id = card.id, rule.id
+    payload = _rule_in(rule, posting="after_window", post_month_offset=1, post_day=5)
+    db_session.commit()
+    waited = _purchases_during_rule_put(pg_engine, card_id, rule_id, payload,
+                                        _buy(card_id, rule_id, (200, date(2026, 11, 20))))
+    report = reward_post_job.run(pg_engine, "manual", today=date(2027, 1, 10))
+    assert report["posted"] == 1, report
+    assert [row.amount for row in _rewards(db_session)] == [Decimal("2.0000")]
+    assert waited
+
+
+def test_two_purchases_during_rate_put_allot_in_date_order_whatever_the_post_order(pg_engine, db_session):
+    """c6ad92e7 finding 2: a capped window (cap 6) and a rule PUT 1% -> 2% while purchases A (11-18) and B (11-20),
+    200 each, are linked. Both wait on the rule row and price at 2% (4 each); the cap goes in date order, A 4 then
+    B 2, and posting B before A keeps that. (Before: both priced at 1%, B posted first re-derived only itself
+    against A's stale 2 and froze 4; A ended at 2.)"""
+    card = _card(db_session)
+    rule = _rule(db_session, card, total_cap=Decimal("6"))
+    card_id, rule_id = card.id, rule.id
+    payload = _rule_in(rule, rate="2", total_cap="6")
+    db_session.commit()
+    waited = _purchases_during_rule_put(pg_engine, card_id, rule_id, payload, _buy(
+        card_id, rule_id, (200, date(2026, 11, 18)), (200, date(2026, 11, 20))))
+    a, b = sorted(_all_accruals(db_session), key=lambda row: row.id)
+    for accrual in (b, a):  # reverse order: B first
+        with sessionmaker(bind=pg_engine, autoflush=False)() as db:
+            assert reward_posting.post_due_accrual(db, accrual.id, date(2027, 1, 10)) == "posted"
+            db.commit()
+    final = {row.id: row.amount for row in _all_accruals(db_session)}
+    assert (final[a.id], final[b.id]) == (Decimal("4.0000"), Decimal("2.0000"))
+    assert waited
+
+
+def _all_accruals(db) -> list[RewardAccrual]:
+    db.expire_all()
+    return list(db.scalars(select(RewardAccrual).order_by(RewardAccrual.id)))

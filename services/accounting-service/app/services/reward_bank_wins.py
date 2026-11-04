@@ -270,14 +270,17 @@ def _busy() -> CodedConflictError:
 
 
 def _lock_tiers(db: Session, accruals: list[RewardAccrual]) -> set[int]:
-    """P12 tiers 1-2: the source purchases, then the candidates' windows in ONE `lock_windows`, NOWAIT inside a
-    savepoint. Returns the locked purchase ids."""
+    """P12 tiers 1-2: the source purchases, then the candidates' rules FOR SHARE (with their cap groups, re-read),
+    then the candidates' windows in ONE `lock_windows`, all NOWAIT inside a savepoint (`reconcile_busy`). Returns the
+    locked purchase ids."""
     purchases = sorted({a.source_entry_id for a in accruals if a.source_entry_id is not None})
     pairs = {(a.rule_id, a.window_start) for a in accruals}
     try:
         with db.begin_nested():
             locked = set(db.scalars(select(LedgerEntry.id).where(LedgerEntry.id.in_(purchases))
                                     .order_by(LedgerEntry.id).with_for_update(nowait=True))) if purchases else set()
+            # the rule tier: the early post re-derives estimates (`rederive`) on these rules and their cap groups
+            reward_engine.share_rules(db, {a.rule_id for a in accruals}, nowait=True)
             reward_engine.lock_windows(db, pairs, nowait=True)
     except OperationalError as exc:
         if isinstance(exc.orig, LockNotAvailable):

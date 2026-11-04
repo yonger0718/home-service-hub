@@ -733,6 +733,7 @@ def update_account(db: Session, account_id: int, payload: AccountIn) -> None:
             .values(auto_pay_account_id=None, settings_locally_edited=True)
         )
     previous_sharing_id = account.credit_sharing_id
+    _lock_rebucketed_rules(db, account, payload)
     before_own, before_closing = account.closing_day, reward_engine.card_closing_day(db, account)
     for field, value in payload.model_dump(exclude=ACCOUNT_COLUMNS_EXCLUDE).items():
         setattr(account, field, value)
@@ -741,6 +742,23 @@ def update_account(db: Session, account_id: int, payload: AccountIn) -> None:
     if payload.credit_sharing_members is not None:
         _apply_sharing(db, account, previous_sharing_id, payload.credit_sharing_members)
     _rebucket_rewards(db, account, before_own, before_closing)
+
+
+def _lock_rebucketed_rules(db: Session, account: Account, payload: AccountIn) -> None:
+    """P12 rule tier of a closing_day change, before the account row changes: the rules of every card whose window
+    may move (the card when its own closing_day or its combined parent changes; its children without their own
+    closing_day when its own changes) FOR UPDATE NOWAIT. This path then follows the rule-writer order (rule rows ->
+    statements NOWAIT -> sources NOWAIT -> windows NOWAIT); it re-derives estimates, but under FOR UPDATE on every
+    rule it prices under, which an accrual writer's FOR SHARE waits on."""
+    cards = set()
+    if payload.closing_day != account.closing_day or payload.combined_account_id != account.combined_account_id:
+        cards.add(account.id)
+    if payload.closing_day != account.closing_day:
+        cards |= set(db.scalars(select(Account.id).where(
+            Account.combined_account_id == account.id, Account.closing_day.is_(None), Account.id != account.id)))
+    if cards:
+        reward_engine.lock_rules_for_write(
+            db, db.scalars(select(RewardRule.id).where(RewardRule.account_id.in_(sorted(cards)))))
 
 
 def _rebucket_rewards(db: Session, account: Account, before_own: int | None, before_closing: int | None) -> None:

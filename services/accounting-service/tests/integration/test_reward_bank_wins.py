@@ -10,11 +10,13 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import event, select
+from sqlalchemy.orm import sessionmaker
 
 from app.models import AccountStatement, LedgerEntry, RewardAccrual, RewardRule, StatementCoverage
 from app.services import coverage_service, policy_service, reward_bank_wins, reward_engine, reward_posting
 from app.services import reconciliation_service as rec
-from app.services import settings_service
+from app.schemas.writes import RewardRuleIn
+from app.services import reward_rule_service, settings_service
 from app.services import statement_revision_service as revs
 from app.services.entry_write_service import write_rule_links
 from app.services.errors import CodedConflictError
@@ -583,3 +585,27 @@ def test_job_and_reconcile_same_window_no_deadlock(pg_engine, seed, db_session, 
     assert states == {"bank_confirmed"}
     assert len(_rewards(db_session)) == 2
     assert sum(r.amount for r in _rewards(db_session)) == Decimal("27.0000")
+
+
+@pytest.mark.parametrize("write", ["put", "reorder"])
+def test_reconcile_is_busy_while_a_rule_write_holds_the_rule(seed, db_session, run, pg_engine, write):
+    """P12 rule-row tier: a rule write in flight (a PUT, which also holds the purchase; a reorder, which holds only
+    the rule rows) makes the reconcile's bank-wins step answer `reconcile_busy` (its FOR SHARE on the candidates'
+    rules is NOWAIT) instead of re-deriving an estimate on a rule that is being rewritten; nothing waits."""
+    card = _test_card(seed, db_session)
+    rule = _rule(db_session, card)
+    _spend(db_session, card, 1000, date(2026, 10, 20), rule)
+    card_id, rule_id = card.id, rule.id
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_reward_line(1, 9)], period=PERIOD)
+    with sessionmaker(bind=pg_engine, autoflush=False)() as rule_write:
+        if write == "put":
+            reward_rule_service.update(rule_write, card_id, rule_id, RewardRuleIn(
+                name="測試回饋", method="percent", rate="2", posting="after_transaction", delay_days=5))
+        else:
+            reward_rule_service.reorder(rule_write, card_id, [rule_id])
+        with pytest.raises(CodedConflictError) as info:
+            rec.reconcile(db_session, stmt.id)
+        db_session.rollback()
+        rule_write.rollback()
+    assert info.value.code == "reconcile_busy"

@@ -167,8 +167,21 @@ def _save(db: Session, rule: RewardRule, payload: RewardRuleIn, *, is_new: bool)
     _check_group_window(db, rule, payload)
 
 
+def _cap_target_ids(db: Session, share_cap_with: ShareCapWith) -> set[int]:
+    """The rule a payload's `share_cap_with` names and its current cap group (unknown ids: the validation's 422)."""
+    if not isinstance(share_cap_with, int) or isinstance(share_cap_with, bool):
+        return set()
+    other = db.get(RewardRule, share_cap_with)
+    return {share_cap_with} if other is None else set(group_rule_ids(db, other))
+
+
 def create(db: Session, account_id: int, payload: RewardRuleIn) -> int:
+    from . import reward_engine  # reward_engine imports this module
+
     _get_account(db, account_id)
+    # P12 rule tier: joining a cap changes the cap of every existing member, so they are locked FOR UPDATE (NOWAIT)
+    # before anything is written (cap membership is never a phantom).
+    reward_engine.lock_rules_for_write(db, _cap_target_ids(db, payload.share_cap_with))
     _check_payload(payload, None)
     sort_order = payload.sort_order
     if sort_order is None:
@@ -179,8 +192,6 @@ def create(db: Session, account_id: int, payload: RewardRuleIn) -> int:
     _save(db, rule, payload, is_new=True)
     if rule.shared_cap_id is not None:
         # Joining a shared cap can lower the group cap: recompute the group's estimates as a PUT does (spec 5.1).
-        from . import reward_engine  # reward_engine imports this module
-
         reward_engine.mark_early_rechecks(db, account_id)
         reward_engine.recompute_rules(db, group_rule_ids(db, rule))
     return rule.id
@@ -189,10 +200,15 @@ def create(db: Session, account_id: int, payload: RewardRuleIn) -> int:
 def update(db: Session, account_id: int, rule_id: int, payload: RewardRuleIn) -> None:
     """Rewrite the rule, then re-bucket and recompute the estimated accruals of every rule whose window or cap it
     may have moved: the rule and its shared-cap group before and after (reward engine spec 5.1). The card's open
-    `reward_early` cases get a recheck first (P6; statement rows before accrual locks, P12)."""
+    `reward_early` cases get a recheck first (P6; statement rows before accrual locks, P12). Lock order: rule rows
+    FOR UPDATE NOWAIT -> statement rows NOWAIT -> sources NOWAIT -> windows NOWAIT (a rule writer never waits)."""
     from . import reward_engine  # reward_engine imports this module
 
     rule = _get_rule(db, account_id, rule_id)
+    # P12 rule tier first: the rule, its current cap group and the group it may join, FOR UPDATE NOWAIT in id order
+    # (re-read under the lock), before the row changes and before any source, statement or window lock.
+    reward_engine.lock_rules_for_write(db, {rule_id, *group_rule_ids(db, rule), *_cap_target_ids(
+        db, payload.share_cap_with)})
     touched = set(group_rule_ids(db, rule))
     _check_payload(payload, rule)
     if payload.sort_order is not None:
@@ -204,8 +220,12 @@ def update(db: Session, account_id: int, rule_id: int, payload: RewardRuleIn) ->
 
 
 def reorder(db: Session, account_id: int, ids: list[int]) -> None:
-    """Write positions 0..n-1; the list must name every rule of the account exactly once."""
+    """Write positions 0..n-1; the list must name every rule of the account exactly once. A rule write: the
+    account's rules FOR UPDATE NOWAIT first (P12 rule tier), though sort_order moves no accrual."""
+    from . import reward_engine  # reward_engine imports this module
+
     _get_account(db, account_id)
+    reward_engine.lock_rules_for_write(db, db.scalars(select(RewardRule.id).where(RewardRule.account_id == account_id)))
     rules = {r.id: r for r in db.execute(select(RewardRule).where(RewardRule.account_id == account_id)).scalars()}
     if len(ids) != len(set(ids)) or set(ids) != set(rules):
         raise ValidationError("ids", "must list every rule of the account exactly once")
@@ -215,7 +235,12 @@ def reorder(db: Session, account_id: int, ids: list[int]) -> None:
 
 
 def delete(db: Session, account_id: int, rule_id: int) -> None:
+    from . import reward_engine  # reward_engine imports this module
+
     rule = _get_rule(db, account_id, rule_id)
+    # P12 rule tier: the rule and its cap group (whose cap it leaves) FOR UPDATE NOWAIT before the reference counts,
+    # so no link or accrual can appear between the count and the delete.
+    reward_engine.lock_rules_for_write(db, group_rule_ids(db, rule))
     entries = db.scalar(select(func.count()).select_from(EntryRewardRule).where(EntryRewardRule.rule_id == rule.id))
     rewards = db.scalar(select(func.count()).select_from(LedgerEntry).where(LedgerEntry.reward_rule_id == rule.id))
     accruals = db.scalar(select(func.count()).select_from(RewardAccrual).where(RewardAccrual.rule_id == rule.id))
