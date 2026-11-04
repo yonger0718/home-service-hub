@@ -7,7 +7,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import event, select, text
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Account, EntryGroup, LedgerEntry, Project, RewardAccrual, RewardRule
@@ -18,7 +18,10 @@ from app.services import (
     reward_engine, reward_rule_service, settings_service, settlement_service, split_service, transfer_service,
 )
 from app.services.entry_write_service import write_rule_links
-from tests.helpers import make_account, make_definition, make_entry, make_instance, race, schedule_line
+from app.services.errors import RETRY, CodedConflictError
+from tests.helpers import (
+    make_account, make_definition, make_entry, make_instance, race, schedule_line, wait_until_blocked,
+)
 
 DAY = date(2026, 11, 20)
 NOV_WINDOW = (date(2026, 11, 16), date(2026, 12, 15))
@@ -934,3 +937,75 @@ def test_two_transfers_opposite_leg_window_order_no_deadlock(pg_engine, db_sessi
     assert not any(thread.is_alive() for thread in threads), out
     assert out == {"x": "committed", "y": "committed"}, out
     assert sorted(row.amount for row in _accruals(db_session)) == [Decimal("30.0000")] * 2  # in-leg accruals gone
+
+
+def test_rule_put_source_set_growth_fails_closed_instead_of_deadlocking(pg_engine, db_session, monkeypatch):
+    """PR #290 re-check P1-B: rule PUT R locks its sources (purchase `high`) in its first batch. Meanwhile purchase
+    `low` (a lower id) gets linked to the rule and commits, and writer W locks `low` and then waits on `high` (two
+    rows in id order, as a split over both takes them). R's second batch finds `low`: waiting on it would close the
+    cycle (40P01); it is locked NOWAIT and R fails with the retryable 409 `retry` instead, and W commits."""
+    card = _card(db_session)
+    rule = _rule(db_session, card)
+    low = make_entry(db_session, card, "-100", entry_date=DAY)  # lower id, not linked yet
+    high = _spend(db_session, card, 300, rules=[rule])
+    card_id, rule_id, low_id, high_id = card.id, rule.id, low.id, high.id
+    payload = RewardRuleIn(**_rule_body(rate="2"))
+    db_session.commit()
+
+    paused, go = threading.Event(), threading.Event()
+    real = reward_engine._estimated_of_rules
+    calls = {"n": 0}
+
+    def estimated_of_rules(db, rule_ids):
+        if threading.current_thread().name == "r":
+            calls["n"] += 1
+            if calls["n"] == 2:  # R holds its first batch (`high`)
+                paused.set()
+                assert go.wait(15)
+        return real(db, rule_ids)
+
+    monkeypatch.setattr(reward_engine, "_estimated_of_rules", estimated_of_rules)
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    sessions = {"r": factory(), "w": factory()}
+    # the transactions stay open so each session keeps this connection (and pid) for its function
+    pids = {key: session.execute(text("SELECT pg_backend_pid()")).scalar_one() for key, session in sessions.items()}
+    out: dict = {}
+
+    def rule_put(db):
+        reward_rule_service.update(db, card_id, rule_id, payload)
+
+    def writer(db):
+        for entry_id in (low_id, high_id):
+            db.execute(select(LedgerEntry.id).where(LedgerEntry.id == entry_id).with_for_update())
+
+    def runner(key, fn):
+        session = sessions[key]
+        try:
+            fn(session)
+            session.commit()
+            out[key] = "committed"
+        except Exception as exc:  # noqa: BLE001  (asserted below)
+            session.rollback()
+            out[key] = exc
+
+    r = threading.Thread(target=runner, args=("r", rule_put), name="r", daemon=True)
+    w = threading.Thread(target=runner, args=("w", writer), name="w", daemon=True)
+    r.start()
+    try:
+        assert paused.wait(10)
+        with factory() as link:  # the source set grows: `low` joins the rule and commits
+            write_rule_links(link, low_id, [rule_id])
+            reward_engine.sync_entry(link, low_id)
+            link.commit()
+        w.start()
+        wait_until_blocked(pg_engine, pids["w"], blocker_pid=pids["r"])  # W holds `low`, waits on `high`
+    finally:
+        go.set()
+        for thread in (r, w):
+            thread.join(20)
+        for session in sessions.values():
+            session.close()
+    assert not r.is_alive() and not w.is_alive(), out
+    assert out["w"] == "committed", out
+    assert isinstance(out["r"], CodedConflictError) and out["r"].code == RETRY, out
+    assert _one(db_session, source_entry_id=high_id).estimate == Decimal("3.0000")  # R rolled back: still 1%

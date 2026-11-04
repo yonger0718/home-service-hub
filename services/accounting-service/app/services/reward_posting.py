@@ -4,11 +4,12 @@ The per-accrual step, shared by the daily job (`post_due_accrual`), the manual e
 wins (Task 8, `post_accrual(..., locked=True)`):
 1. read the accrual's (rule, window, source purchase) unlocked; lock the source purchase `SELECT ... FOR UPDATE`
    (P12 tier 1: the reward row's FK check share-locks it, and an owner PUT holds it before it waits on the window),
-   then that window (its whole shared-cap group) in ONE `SELECT ... ORDER BY id FOR UPDATE`
-   (`reward_engine.lock_windows`, P12 tier 2); or, with `locked=True`, assert the caller already holds the window
-   (and the purchase: bank wins locks it first) and take no lock;
+   then re-sync that source (`reward_engine.sync_entry`), whose ONE `SELECT ... ORDER BY id FOR UPDATE` takes the
+   accrual's windows (each rule's whole shared-cap group, P12 tier 2) and re-derives its window, post_on and
+   estimate from the committed rule and purchase; or, with `locked=True`, assert the caller already holds the window
+   (and the purchase: bank wins locks it first), take no lock and re-derive in place (`reward_engine.rederive`);
 2. re-read the accrual under the lock and recompute the window (`recompute_window(locked=True)`), so the amount
-   that freezes is the current allotment;
+   that freezes is the current allotment of a current estimate (`_lock` says when a moved accrual is skipped);
 3. skip unless the accrual is still `estimated` with no reward row;
 4. an allotment of 0 (past the cap) is `forfeited` without a row; otherwise insert the reward row (P11) and set
    `posted` and `ledger_entry_id`. A post `on` a given date records it as the accrual's `post_on` (a manual post,
@@ -48,22 +49,49 @@ def _window_of(db: Session, accrual_id: int) -> tuple[int, date, int | None]:
     return found.rule_id, found.window_start, found.source_entry_id
 
 
-def _lock(db: Session, accrual_id: int, *, locked: bool) -> RewardAccrual | None:
-    """Steps 1-2: the accrual, reloaded under its window lock, with the window recomputed. None when it left the
-    window between the unlocked read and the lock (deleted or re-bucketed by a concurrent write)."""
+def _place(accrual: RewardAccrual) -> tuple:
+    return accrual.rule_id, accrual.window_start, accrual.window_end, accrual.post_on
+
+
+def _lock(db: Session, accrual_id: int, *, locked: bool, moved_ok: bool = False) -> RewardAccrual | None:
+    """Steps 1-2: the accrual, reloaded under its window lock, re-derived from its committed rule and source, with
+    the window recomputed. None when it is gone or not postable as it stands.
+
+    Re-derivation (PR #290 re-check P1-A: an estimate priced on a rule a concurrent rule PUT was rewriting, when the
+    window held no row for the PUT to lock, must not freeze):
+    - unlocked (the job, the manual endpoint): the source row FOR UPDATE (tier 1), then `sync_entry` of that source,
+      whose ONE `lock_windows` takes the accrual's current and re-derived windows (tier 2) and rewrites its window,
+      post_on and estimate. When that moved the accrual (another window or post_on) it is not posted now
+      (`moved_ok=False`, the job: the re-sync is kept, the next run posts it on its re-derived date); the manual
+      post (`moved_ok=True`) books it, its new window being held too.
+    - locked (bank wins, which holds the source and the window): `reward_engine.rederive`, no lock; an accrual
+      whose re-derived window or post_on differs is not posted (its new window is not held); the next job run or
+      write re-syncs it."""
     db.flush()
     rule_id, window_start, source_id = _window_of(db, accrual_id)
     if locked:
         reward_engine.require_window_locked(db, rule_id, window_start)
         accrual = db.get(RewardAccrual, accrual_id, populate_existing=True)
+        if accrual is None or (accrual.rule_id, accrual.window_start) != (rule_id, window_start):
+            return None
+        if not reward_engine.rederive(db, accrual):
+            return None
+    elif source_id is not None:  # P12 tier 1 before the window (tier 2)
+        db.execute(select(LedgerEntry.id).where(LedgerEntry.id == source_id).with_for_update())
+        before = db.get(RewardAccrual, accrual_id, populate_existing=True)
+        if before is None or before.source_entry_id != source_id:
+            return None
+        place = _place(before)
+        reward_engine.sync_entry(db, source_id)
+        accrual = db.get(RewardAccrual, accrual_id, populate_existing=True)
+        if accrual is None or (_place(accrual) != place and not moved_ok):
+            return None
     else:
-        if source_id is not None:  # P12 tier 1 before the window (tier 2)
-            db.execute(select(LedgerEntry.id).where(LedgerEntry.id == source_id).with_for_update())
         rows = reward_engine.lock_windows(db, [(rule_id, window_start)])
         accrual = next((row for row in rows if row.id == accrual_id), None)
-    if accrual is None or (accrual.rule_id, accrual.window_start) != (rule_id, window_start):
-        return None
-    reward_engine.recompute_window(db, rule_id, window_start, locked=True)
+        if accrual is None or (accrual.rule_id, accrual.window_start) != (rule_id, window_start):
+            return None
+    reward_engine.recompute_window(db, accrual.rule_id, accrual.window_start, locked=True)
     return accrual
 
 
@@ -114,7 +142,7 @@ def post_accrual(db: Session, accrual_id: int, *, on: date | None = None, locked
     already has a row, or left its window under a concurrent write). The row is dated `on`, else the accrual's
     `post_on`, else today (a `manual` rule). `locked=True`: the caller holds the window (`lock_windows`, bank
     wins), so no lock is taken and RuntimeError is raised when it does not. NotFoundError for a missing id."""
-    return _book(db, _lock(db, accrual_id, locked=locked), on)
+    return _book(db, _lock(db, accrual_id, locked=locked, moved_ok=not locked), on)
 
 
 def post_due_accrual(db: Session, accrual_id: int, today: date) -> str:

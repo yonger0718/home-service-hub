@@ -8,11 +8,14 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import event, select
+from sqlalchemy.orm import sessionmaker
 
 from app.models import Account, LedgerEntry, Project, RewardAccrual, RewardRule
-from app.schemas.writes import EntryUpdateIn, RefundIn
+from app.schemas.writes import EntryUpdateIn, RefundIn, RewardRuleIn
 from app.services import entry_write_service as ews
-from app.services import reward_bank_wins, reward_engine, reward_post_job, reward_posting, settlement_service
+from app.services import (
+    reward_bank_wins, reward_engine, reward_post_job, reward_posting, reward_rule_service, settlement_service,
+)
 from app.services.entry_write_service import system_category_id, write_rule_links
 from app.services.schedule_locks import REWARD_POST_JOB_LOCK_KEY
 from tests.helpers import make_account, make_entry, race
@@ -553,3 +556,73 @@ def test_job_refund_post_vs_purchase_delete_no_deadlock(pg_engine, db_session, m
     refund = db_session.get(LedgerEntry, refund_id)
     assert refund is not None and refund.refunds_entry_id is None
     assert _accrual(db_session, id=accrual_id).state == "posted"  # frozen before the delete; it survives
+
+
+# --- re-derivation at post (PR #290 re-check P1-A) ------------------------------------------------------------
+
+
+def _rule_in(rule, **fields) -> RewardRuleIn:
+    body = {"name": rule.name, "method": "percent", "rate": str(rule.rate), "posting": rule.posting,
+            "post_month_offset": rule.post_month_offset, "post_day": rule.post_day}
+    body.update(fields)
+    return RewardRuleIn(**body)
+
+
+def _stale_purchase(pg_engine, db, *, posting="after_window", **put):
+    """The P1-A interleaving: a rule PUT (1% -> 2%, plus `put`) runs on a window with no accrual to lock and stays
+    open; a new 200 purchase linked to the rule commits meanwhile, priced on the committed 1% (estimate 2); then the
+    PUT commits. Returns the purchase's accrual (still estimate 2: nothing re-priced it)."""
+    card = _card(db)
+    rule = _rule(db, card, posting=posting)
+    card_id, rule_id, payload = card.id, rule.id, _rule_in(rule, rate="2", **put)
+    db.commit()
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    with factory() as rule_put, factory() as purchase:
+        reward_rule_service.update(rule_put, card_id, rule_id, payload)  # not committed: holds the rule row only
+        _spend(purchase, purchase.get(Account, card_id), 200, date(2026, 11, 20), [purchase.get(RewardRule, rule_id)])
+        purchase.commit()  # never waited: the PUT held no accrual of this window
+        rule_put.commit()
+    accrual = _accrual(db, rule_id=rule_id)
+    assert accrual.estimate == Decimal("2.0000")  # the race: priced on the rule the PUT was rewriting
+    return accrual
+
+
+def test_job_post_re_derives_a_stale_estimate(pg_engine, db_session):
+    accrual = _stale_purchase(pg_engine, db_session)
+    report = reward_post_job.run(pg_engine, "manual", today=date(2027, 1, 10))
+    assert report["posted"] == 1, report
+    [row] = _rewards(db_session)
+    assert row.amount == Decimal("4.0000")  # 200 x 2%, never the stale 2
+    assert _accrual(db_session, id=accrual.id).estimate == Decimal("4.0000")
+
+
+def test_manual_post_re_derives_a_stale_estimate(pg_engine, db_session):
+    accrual = _stale_purchase(pg_engine, db_session, posting="manual")
+    out = reward_posting.post_manual(db_session, accrual.id, date(2026, 12, 1))
+    db_session.commit()
+    assert out["result"] == "posted"
+    assert db_session.get(LedgerEntry, out["ledger_entry_id"]).amount == Decimal("4.0000")
+
+
+def test_job_skips_and_re_syncs_an_accrual_whose_re_derived_post_on_moved(pg_engine, db_session):
+    """The PUT also moved post_day 5 -> 10: the stale accrual says 2027-01-05. The run on 01-06 re-syncs it (post_on
+    2027-01-10, estimate 4) and does not post it; the run on 01-10 posts 4."""
+    accrual = _stale_purchase(pg_engine, db_session, post_day=10)
+    assert accrual.post_on == NOV_POST_ON
+    report = reward_post_job.run(pg_engine, "manual", today=date(2027, 1, 6))
+    assert (report["posted"], report["skipped"]) == (0, 1), report
+    moved = _accrual(db_session, id=accrual.id)
+    assert (moved.state, moved.post_on, moved.estimate) == ("estimated", date(2027, 1, 10), Decimal("4.0000"))
+    assert reward_post_job.run(pg_engine, "manual", today=date(2027, 1, 10))["posted"] == 1
+    assert [row.amount for row in _rewards(db_session)] == [Decimal("4.0000")]
+
+
+def test_locked_post_re_derives_under_the_callers_locks(pg_engine, db_session):
+    """Bank wins posts with `locked=True` under its own source and window locks: the estimate is re-derived in
+    place (no lock taken) before the allotment freezes."""
+    accrual = _stale_purchase(pg_engine, db_session)
+    db_session.execute(select(LedgerEntry.id).where(LedgerEntry.id == accrual.source_entry_id).with_for_update())
+    reward_engine.lock_windows(db_session, [(accrual.rule_id, accrual.window_start)])
+    assert reward_posting.post_accrual(db_session, accrual.id, locked=True) == "posted"
+    db_session.commit()
+    assert [row.amount for row in _rewards(db_session)] == [Decimal("4.0000")]

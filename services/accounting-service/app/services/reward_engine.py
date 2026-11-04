@@ -12,12 +12,15 @@ from collections.abc import Collection, Iterable
 from datetime import date
 from decimal import Decimal
 
+from psycopg2.errors import LockNotAvailable
 from sqlalchemy import delete, event, exists, func, or_, select, tuple_, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from ..models import Account, EntryRewardRule, LedgerEntry, RewardAccrual, RewardRule
 from ..models.statements import AccountStatement, ReconciliationCase
 from . import reward_rule_service
+from .errors import RETRY, CodedConflictError
 from .reward_math import Slot, allot, estimate
 from .reward_windows import post_on_for, window_for
 
@@ -334,8 +337,12 @@ def _lock_sources(db: Session, rule_ids: list[int]) -> list[RewardAccrual]:
     """P12 tier 1 of a rule or card write: every source row of the rules' estimated accruals, and for a refund also
     the purchase it refunds (its window and amount base), `SELECT ... ORDER BY id FOR UPDATE`, reloaded. A purchase
     write in flight holds its row until it commits, so the accruals re-read after the lock are the committed ones
-    and nothing is priced on a value read before the wait. Repeats (each batch in id order) until the source set no
-    longer grows (an accrual or a refund link that appeared while it waited). Returns the re-read accruals."""
+    and nothing is priced on a value read before the wait. Returns the re-read accruals.
+
+    The first batch waits (id order). The source set can grow while it waits (an accrual or a refund link that
+    appeared); a later batch is locked NOWAIT, because its ids may sort below the rows already held and a writer
+    holding one of them while it waits on ours would close a cycle. A held row raises the retryable 409 `retry`
+    (the caller's transaction rolls back), never a wait."""
     held: set[int] = set()
     while True:
         estimated = _estimated_of_rules(db, rule_ids)
@@ -346,8 +353,19 @@ def _lock_sources(db: Session, rule_ids: list[int]) -> list[RewardAccrual]:
         need = sorted((sources | refunded) - held)
         if not need:
             return estimated
-        db.execute(select(LedgerEntry).where(LedgerEntry.id.in_(need)).order_by(LedgerEntry.id)
-                   .with_for_update().execution_options(populate_existing=True)).all()
+        query = (select(LedgerEntry).where(LedgerEntry.id.in_(need)).order_by(LedgerEntry.id)
+                 .execution_options(populate_existing=True))
+        if not held:
+            db.execute(query.with_for_update()).all()
+        else:
+            try:
+                with db.begin_nested():
+                    db.execute(query.with_for_update(nowait=True)).all()
+            except OperationalError as exc:
+                if isinstance(exc.orig, LockNotAvailable):
+                    raise CodedConflictError(
+                        RETRY, "a reward purchase linked to this rule is being written; try again") from exc
+                raise
         held.update(need)
 
 
@@ -380,6 +398,32 @@ def recompute_rules(db: Session, rule_ids: Iterable[int]) -> None:
             _set(row, *plan)
     db.flush()
     _recompute_all(db, pairs)
+
+
+def rederive(db: Session, accrual: RewardAccrual) -> bool:
+    """Re-price an estimated accrual on the committed rule and purchase, under locks the caller holds (its source
+    row, P12 tier 1, and its window, tier 2): the posting step's guard against an estimate priced on a value that
+    changed after it was computed (a new purchase priced on a rule a concurrent rule PUT was rewriting). True: same
+    window and post_on, the estimate refreshed (the caller recomputes the window). False: the accrual no longer
+    matches its source (another window or post_on, or the link is gone): not postable under these locks."""
+    if accrual.state != "estimated" or accrual.source_entry_id is None:
+        return True
+    db.flush()  # populate_existing below must not discard pending changes
+    entry = db.get(LedgerEntry, accrual.source_entry_id, populate_existing=True)
+    if entry is None:
+        return False
+    if _is_refund(entry) and entry.refunds_entry_id is not None:
+        db.get(LedgerEntry, entry.refunds_entry_id, populate_existing=True)
+    target = _desired(db, entry).get(accrual.rule_id)
+    if target is None:
+        return False
+    window, post_on, value = target
+    if tuple(window) != (accrual.window_start, accrual.window_end) or post_on != accrual.post_on:
+        return False
+    if Decimal(accrual.estimate) != value:
+        accrual.estimate = value
+        db.flush()
+    return True
 
 
 def recompute_account(db: Session, account_id: int) -> None:
