@@ -12,9 +12,11 @@ from sqlalchemy.orm import sessionmaker
 
 from app.models import Account, EntryGroup, LedgerEntry, Project, RewardAccrual, RewardRule
 from app.models.statements import AccountStatement, ReconciliationCase, StatementRevision
-from app.schemas.writes import AccountIn, EntryUpdateIn, RefundIn, RewardRuleIn, SplitIn
+from app.schemas.writes import AccountIn, EntryUpdateIn, RefundIn, RewardRuleIn, SplitIn, TransferIn
 from app.services import entry_write_service as ews
-from app.services import reward_engine, reward_rule_service, settings_service, settlement_service, split_service
+from app.services import (
+    reward_engine, reward_rule_service, settings_service, settlement_service, split_service, transfer_service,
+)
 from app.services.entry_write_service import write_rule_links
 from tests.helpers import make_account, make_definition, make_entry, make_instance, race, schedule_line
 
@@ -827,3 +829,108 @@ def test_two_splits_on_one_card_opposite_window_order_no_deadlock(pg_engine, db_
     assert out == {"x": "committed", "y": "committed"}, out
     amounts = sorted(row.amount for row in _accruals(db_session))
     assert amounts == [Decimal("10.0000")] * 2 + [Decimal("20.0000")] * 2
+
+
+def _transfer_in(source, target, rule, amount, day) -> TransferIn:
+    return TransferIn(from_account_id=source.id, to_account_id=target.id, out_amount=Decimal(amount), entry_date=day,
+                      reward_rule_ids=[rule.id])
+
+
+def _link_in_leg(db, group_id, rule):
+    """Only the out leg takes rule links through the API; an imported in leg may carry one. Seed that shape so both
+    legs of the transfer have accruals (in windows of two different rules)."""
+    _, in_leg = transfer_service.transfer_legs(db, group_id)
+    write_rule_links(db, in_leg.id, [rule.id])
+    reward_engine.sync_entry(db, in_leg.id)
+    return in_leg
+
+
+def _window_lock_count(db, fn) -> int:
+    captured = _capture_locks(db, fn)
+    db.commit()
+    return [_lock_kind(statement) for statement, _ in captured].count("reward_accrual")
+
+
+def test_transfer_writes_take_one_window_lock(db_session):
+    """Concern 2 of the fix round: a transfer write locks both legs' old and new windows in ONE statement (create,
+    an update that moves the out leg to another window and drops the in leg's accrual, and a delete)."""
+    card_a, card_b = _card(db_session, "測試卡"), _card(db_session, "測試卡B")
+    _fillers(db_session)
+    rule_a, rule_b = _rule(db_session, card_a), _rule(db_session, card_b, name="測試規則B")
+    _spend(db_session, card_a, 300, rules=[rule_a])
+    _spend(db_session, card_b, 300, rules=[rule_b])
+    db_session.commit()
+
+    made = {}
+
+    def create():
+        made["group"] = transfer_service.create_transfer(db_session, _transfer_in(card_a, card_b, rule_a, "1000", DAY))
+
+    assert _window_lock_count(db_session, create) == 1
+    in_leg_id = _link_in_leg(db_session, made["group"], rule_b).id
+    db_session.commit()
+    assert len(_accruals(db_session, source_entry_id=in_leg_id)) == 1
+
+    def put():
+        transfer_service.update_transfer(db_session, made["group"], _transfer_in(card_a, card_b, rule_a, "2000", DEC_DAY))
+
+    assert _window_lock_count(db_session, put) == 1
+    out_leg, _ = transfer_service.transfer_legs(db_session, made["group"])
+    out_id = out_leg.id
+    moved = _one(db_session, source_entry_id=out_id)
+    assert (moved.window_start, moved.amount) == (date(2026, 12, 16), Decimal("20.0000"))
+    assert _accruals(db_session, source_entry_id=in_leg_id) == []
+
+    assert _window_lock_count(db_session, lambda: ews.delete_entry(db_session, out_id)) == 1
+    assert _accruals(db_session, source_entry_id=out_id) == []
+
+
+def test_two_transfers_opposite_leg_window_order_no_deadlock(pg_engine, db_session, monkeypatch):
+    """Concern 2: transfer X (A -> B) syncs its out leg in rule A's window, then its in leg in rule B's; transfer Y
+    (B -> A) the other way round. Each transaction pauses after its first window lock until the other has one too
+    (or 2 s pass). With one window lock per leg the two each held one window and waited on the other (40P01); with
+    one union lock per transfer the second waits on the first and both commit."""
+    card_a, card_b = _card(db_session, "測試卡"), _card(db_session, "測試卡B")
+    rule_a, rule_b = _rule(db_session, card_a), _rule(db_session, card_b, name="測試規則B")
+    x = transfer_service.create_transfer(db_session, _transfer_in(card_a, card_b, rule_a, "1000", DAY))
+    _link_in_leg(db_session, x, rule_b)
+    y = transfer_service.create_transfer(db_session, _transfer_in(card_b, card_a, rule_b, "1000", DAY))
+    _link_in_leg(db_session, y, rule_a)
+    db_session.commit()
+    plans = {"x": (x, _transfer_in(card_a, card_b, rule_a, "3000", DAY)),
+             "y": (y, _transfer_in(card_b, card_a, rule_b, "3000", DAY))}
+    arrived = {"x": threading.Event(), "y": threading.Event()}
+    real = reward_engine.lock_windows
+
+    def lock_windows(db, pairs, **kwargs):
+        rows = real(db, pairs, **kwargs)
+        me = threading.current_thread().name
+        if me in arrived and not arrived[me].is_set():
+            arrived[me].set()
+            arrived["y" if me == "x" else "x"].wait(2)
+        return rows
+
+    monkeypatch.setattr(reward_engine, "lock_windows", lock_windows)
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    out: dict = {}
+
+    def runner(key):
+        session = factory()
+        try:
+            transfer_service.update_transfer(session, *plans[key])
+            session.commit()
+            out[key] = "committed"
+        except Exception as exc:  # noqa: BLE001  (asserted below)
+            session.rollback()
+            out[key] = exc
+        finally:
+            session.close()
+
+    threads = [threading.Thread(target=runner, args=(key,), name=key, daemon=True) for key in ("x", "y")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(20)
+    assert not any(thread.is_alive() for thread in threads), out
+    assert out == {"x": "committed", "y": "committed"}, out
+    assert sorted(row.amount for row in _accruals(db_session)) == [Decimal("30.0000")] * 2  # in-leg accruals gone

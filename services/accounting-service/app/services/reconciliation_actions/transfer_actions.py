@@ -204,6 +204,7 @@ class AdjustTransferAction(ActionBase):
                 entry.posted_date, entry.entry_date = source.posted_date, source.txn_date or source.posted_date
             entry.description = note if not entry.description else f"{entry.description}\n{note}"
         db.flush()
+        reward_engine.lock_written_entries(db, (plan.leg, plan.peer))  # both legs' windows in ONE lock (P12)
         for entry in (plan.leg, plan.peer):  # amount and date moved: re-estimate / flag `reward_posted` (spec 5.1)
             reward_engine.after_write_captured(db, entry, befores[entry.id])
         coverage = claim_on(db, ctx, ctx.statement, plan.line, plan.leg, ADJUST)
@@ -237,6 +238,7 @@ class AdjustTransferAction(ActionBase):
             entry.posted_date = date.fromisoformat(fields["posted_date"])
             touched.append(entry.id)
         db.flush()
+        reward_engine.lock_written_entries(db, [entry for entry, _ in restored])  # both legs' windows in ONE lock
         for entry, before in restored:
             reward_engine.after_write_captured(db, entry, before)
         _release(ctx, action)

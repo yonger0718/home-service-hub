@@ -136,6 +136,9 @@ def _write_leg_extras(
     write_children(db, in_leg, payload.in_fee, payload.in_discount, source=source)
     write_rule_links(db, out_leg.id, payload.reward_rule_ids)
     write_rule_links(db, in_leg.id, [])
+    # P12 tier 2: both legs' old and new windows in ONE lock_windows before either leg syncs, so two transfers whose
+    # legs touch the same windows in opposite order cannot each hold one and wait on the other.
+    reward_engine.lock_written_entries(db, (out_leg, in_leg))
     for leg in (out_leg, in_leg):
         key, project_id, flag = (before or {}).get(leg.id, (None, None, (False, None)))
         reward_engine.after_write(db, leg, before_key=key, before_project_id=project_id, before_flag=flag)

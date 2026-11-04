@@ -4,12 +4,13 @@ the peer line's case resolved by the same action row, four cases closed per tran
 reopens both lines. `pair_transfer` (spec §5.1, §5.3): two complementary needs_peer lines and no owner transfer — one
 transfer booked from the statement figures, both lines claimed, both cases closed; the transfer-twin and occupancy
 guards bind the policy and its proposals, never the owner's own action. Synthetic data only."""
+import re
 from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import event, select, update
 
 from app.models import (
     EntryRewardRule, LedgerEntry, ReconciliationAction, ReconciliationCase, ReconciliationProposal,
@@ -148,6 +149,42 @@ def test_adjust_transfer_and_its_revert_re_estimate_the_out_legs_accrual(pair, s
     assert estimate() == Decimal("200")
     _revert(db_session, row.id)
     assert estimate() == Decimal("195")
+
+
+def test_adjust_transfer_and_its_revert_take_one_window_lock_for_both_legs(pair, seed, db_session):
+    """P12 (PR #290 fix round): both legs carry an accrual (the in leg's link seeded as an import could leave it);
+    the action and its revert lock both legs' windows in ONE plain `FOR UPDATE` (the reconcile's NOWAIT bank-wins
+    lock that follows is not counted)."""
+    bank_rule, card_rule = seed.rule(pair.bank, name="測試回饋"), seed.rule(pair.card, name="測試回饋B")
+    bank_rule.posting = card_rule.posting = "manual"  # never due in the test
+    db_session.commit()
+    db_session.add_all([EntryRewardRule(entry_id=pair.out_leg.id, rule_id=bank_rule.id),
+                        EntryRewardRule(entry_id=pair.in_leg.id, rule_id=card_rule.id)])
+    db_session.flush()
+    for leg in (pair.out_leg, pair.in_leg):
+        reward_engine.sync_entry(db_session, leg.id)
+    db_session.commit()
+    plain = re.compile(r"FROM reward_accrual\b.*FOR UPDATE(?! NOWAIT)", re.S)
+    captured: list[str] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        if plain.search(statement):
+            captured.append(statement)
+
+    bind = db_session.connection().engine
+    event.listen(bind, "before_cursor_execute", capture)
+    try:
+        row = _apply(db_session, _delta(db_session, pair.cstmt), "adjust_transfer", _adjust(pair))
+        applied = len(captured)
+        captured.clear()
+        _revert(db_session, row.id)
+        reverted = len(captured)
+    finally:
+        event.remove(bind, "before_cursor_execute", capture)
+    assert (applied, reverted) == (1, 1)
+    db_session.expire_all()
+    estimates = dict(db_session.execute(select(RewardAccrual.source_entry_id, RewardAccrual.estimate)).all())
+    assert estimates == {pair.out_leg.id: Decimal("195"), pair.in_leg.id: Decimal("195")}
 
 
 def test_adjust_transfer_supersedes_a_pending_peer_proposal(pair, db_session):

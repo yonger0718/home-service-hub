@@ -425,6 +425,16 @@ def lock_entry_windows(db: Session, entry_ids: Iterable[int], planned: Iterable[
         lock_windows(db, pairs)
 
 
+def lock_written_entries(db: Session, entries: Iterable[LedgerEntry]) -> None:
+    """`lock_entry_windows` for a multi-entry write whose rows and rule links are already written (flushed or about
+    to be) but not yet synced (both legs of a transfer): the new windows are the ones `sync_entry` will want
+    (`_desired`; a purchase's refunds share its windows). Call it before the first `after_write` of the write."""
+    rows = [entry for entry in entries if entry is not None]
+    db.flush()
+    planned = {(rule_id, target[0][0]) for entry in rows for rule_id, target in _desired(db, entry).items()}
+    lock_entry_windows(db, [entry.id for entry in rows], planned)
+
+
 def lock_refunds_of(db: Session, entry_ids: Collection[int]) -> list[int]:
     """The refunds that point at these entries (and are not among them), `SELECT ... ORDER BY id FOR UPDATE`
     (P12 tier 1 of a delete, before any accrual lock)."""
