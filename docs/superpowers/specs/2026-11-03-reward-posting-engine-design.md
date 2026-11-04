@@ -140,9 +140,10 @@ As specified in the 10-31 design table:
   refunds' `estimated` accruals the same way.
 - **On rule or account write** (§13 Q5): a reward rule PUT (rate, cap, method, `unit_spend`, window, posting, dates,
   shared cap) or a card's `closing_day` change re-buckets and recomputes that rule's / card's `estimated` accruals.
-  Frozen accruals (`posted` and later) are never repriced or moved. A rule or closing_day write locks its rules
-  `FOR UPDATE` (never waiting) before it changes them, and every accrual write reads its rules under `FOR SHARE`, so an
-  accrual is always priced on one committed rule version (plan P12).
+  Frozen accruals (`posted` and later) are never repriced or moved. A closing_day or parent change locks its cards
+  `FOR UPDATE` and a rule write locks its rules `FOR UPDATE` (never waiting) before they change them, and every
+  accrual write reads its cards and rules under `FOR KEY SHARE` / `FOR SHARE`, so an accrual is always priced on one
+  committed card and rule version (plan P12).
 - **Daily job**, in the API process like `auto_pay_job` / `schedule_job` (`app/main.py`), Asia/Taipei (finding 7):
   - one `pg_try_advisory_lock` on a new key per run, skipping the run when busy, as `auto_pay_job.py:213` does;
   - each `estimated` accrual with `post_on <= today` is posted in its own transaction: lock the accrual row
