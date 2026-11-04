@@ -236,8 +236,9 @@ It never commits and never writes coverage itself.
    - (c) already confirmed or forfeited by this statement (`confirmed_statement_id` = this one: a re-run).
 2. **Empty candidate set:** the statement's reward lines go to the matcher as today. A reward line it leaves
    unmatched becomes `bank_only` (→ `create_system_entry`) **unless the card has early candidates**: `estimated`
-   accruals with the card as reward account and `post_on` after `period_end`, up to the end of the next cycle
-   (`shift_period`). Then the line's case gets the hint `reward_early` instead: the bank credited before the rule's
+   or `posted`-but-unconfirmed accruals (the daily job may already have posted them) with the card as reward account
+   and `post_on` after `period_end`, up to the end of the next cycle (`shift_period`). Accepting an early accrual
+   pairs it with the line and moves its reward row's date to the line's `posted_date`. Then the line's case gets the hint `reward_early` instead: the bank credited before the rule's
    posting date, and booking the line would count the reward a second time when the engine posts it. The owner
    decides; the usual fix is the rule's posting fields, after which the estimated accruals move (§5.1) and a re-run
    of the statement finds them in (a). So a reward line reaches `bank_only` only with an empty candidate set and no
