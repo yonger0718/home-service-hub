@@ -175,6 +175,9 @@ export function ruleLabel(rule: RewardRule): string {
   if (rule.method === 'fixed' && rule.fixed_amount !== null) {
     return `${rule.name} ($${Number(rule.fixed_amount)})`;
   }
+  if (rule.method === 'per_unit' && rule.unit_spend !== null) {
+    return `${rule.name} (每 NT$${Number(rule.unit_spend)} 一單位)`;
+  }
   return rule.name;
 }
 

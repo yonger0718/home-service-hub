@@ -23,6 +23,7 @@ import {
   Project,
   RewardRule,
   RewardRuleState,
+  RewardUsage,
   RoundingMode,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
@@ -31,7 +32,7 @@ import { AccountIconComponent } from '../account-icon/account-icon';
 import { accountLabel, isHandledKey, restoreOverlayFocus } from '../accounting-ui';
 import { DueRule, dueDate, periodLabel, statementPeriod } from '../cycle';
 import { DirtyAware, DirtyFormRegistry } from '../dirty-form.service';
-import { shortDate, todayIso } from '../dates';
+import { shortDate, slashDate, todayIso } from '../dates';
 import { balanceNegative, balanceText, valuationHint } from '../account-balance';
 import { decimalText, formatMoney } from '../format';
 import { fieldErrors, writeErrorMessage } from '../http-errors';
@@ -39,7 +40,7 @@ import { AccountingToastService } from '../accounting-toast';
 import { LOGO_ACCEPT, logoFileTooLarge, logoUploadErrorMessage } from '../logo-upload-errors';
 import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
 import {
-  RULE_STATE_LABELS, basicOverlapRuleId, periodText, postingSummary, ruleLabel, ruleState, ruleToInput,
+  REWARD_WINDOW_LABELS, RULE_STATE_LABELS, basicOverlapRuleId, periodText, postingSummary, ruleLabel, ruleState, ruleToInput,
 } from '../reward-rule-text';
 import { SwitchComponent } from '../../ui/switch/switch';
 
@@ -347,6 +348,23 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   });
   /** 回饋規則 block (spec §6.1): rows in the order the API returns; edits save at once, so not part of isDirty(). */
   readonly rules = computed<RewardRule[]>(() => this.detail()?.reward_rules ?? []);
+  /** `GET /reward-usage`: 本期 usage per in-date rule or shared-cap group; empty until loaded (or when it fails). */
+  readonly usage = signal<RewardUsage[]>([]);
+  /**
+   * The usage line a rule row shows. A shared group appears once in `usage`, but its `rule_ids` may list members
+   * the rules list does not show, so it goes on the first listed rule that is a member.
+   */
+  readonly usageByRule = computed(() => {
+    const byRule = new Map<number, RewardUsage>();
+    const ids = this.rules().map(rule => rule.id);
+    for (const item of this.usage()) {
+      const first = ids.find(id => item.rule_ids.includes(id));
+      if (first !== undefined) {
+        byRule.set(first, item);
+      }
+    }
+    return byRule;
+  });
   readonly projects = signal<Project[]>([]);
   readonly ruleSheet = signal<{ rule: RewardRule | null } | null>(null);
   /** The open editor sheet; its unsaved input counts as the page's (spec §6.1 dirty-form rules). */
@@ -362,6 +380,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   /** `?rule=<id>` (from 回饋規則總覽): opens that rule once its account's detail is shown, then leaves the URL. */
   private pendingRuleId: number | null = null;
   readonly ruleLabel = ruleLabel;
+  readonly windowLabels = REWARD_WINDOW_LABELS;
   readonly postingSummary = postingSummary;
   readonly periodText = periodText;
   readonly ruleStateLabels = RULE_STATE_LABELS;
@@ -491,7 +510,43 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     this.sharing.set((loaded.detail?.credit_sharing_members ?? []).filter(id => id !== loaded.id));
     this.baseline.set(this.form());
     this.sharingBaseline.set(this.sharing());
+    if (loaded.id !== null) {
+      this.loadUsage(loaded.loadId, loaded.id, loaded.detail);
+    }
     this.openPendingRule();
+  }
+
+  /** 本期 usage for the shown account; a failure only hides the lines. Dropped once another navigation has started. */
+  private loadUsage(loadId: number, id: number, detail: AccountDetail | null): void {
+    if (!detail || detail.reward_rules.length === 0) {
+      this.usage.set([]);
+      return;
+    }
+    this.service
+      .getRewardUsage(id)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: usage => {
+          if (loadId === this.loadId) {
+            this.usage.set(usage);
+          }
+        },
+        error: () => {
+          if (loadId === this.loadId) {
+            this.usage.set([]);
+          }
+        },
+      });
+  }
+
+  /** 「本期 {used+estimated}／{cap}」, or 「本期 {used+estimated}」 when uncapped. */
+  usageText(item: RewardUsage): string {
+    const total = decimalText((Number(item.used) + Number(item.estimated)).toFixed(4));
+    return item.cap === null ? `本期 ${total}` : `本期 ${total}／${decimalText(item.cap)}`;
+  }
+
+  usageWindow(item: RewardUsage): string {
+    return `${slashDate(item.window_start)} – ${slashDate(item.window_end)}`;
   }
 
   /** The form, 額度共用, or an open rule sheet with unsaved input; the rule rows themselves save at once. */
@@ -750,6 +805,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
           }
           this.ruleBusy.set(false);
           this.detail.set(detail);
+          this.loadUsage(loadId, id, detail);
         },
         error: err => {
           if (loadId !== this.loadId) {

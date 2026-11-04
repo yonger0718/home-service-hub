@@ -1,7 +1,7 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { describe, expect, it } from 'vitest';
 import { makeRule } from './testing/fixtures';
-import { basicOverlapRuleId, parseReferenced, periodText, postingSummary, ruleState, ruleToInput } from './reward-rule-text';
+import { REWARD_WINDOW_LABELS, basicOverlapRuleId, methodSummary, parseReferenced, periodText, postingSummary, ruleState, ruleToInput } from './reward-rule-text';
 
 describe('ruleState', () => {
   it('orders disabled > expired > upcoming > active', () => {
@@ -32,6 +32,19 @@ describe('text', () => {
     expect(input).not.toHaveProperty('shared_cap_id');
     expect(input.total_cap).toBe('150');
     expect(input.rate).toBe('1.5');
+  });
+});
+
+describe('per_unit', () => {
+  it('per_unit summary', () => {
+    expect(methodSummary(makeRule({ method: 'per_unit', rate: null, unit_spend: '30.0000' }))).toBe('每 NT$30 一單位');
+    expect(methodSummary(makeRule({ rate: '1.5000' }))).toBe('1.5%');
+    expect(REWARD_WINDOW_LABELS).toEqual({ statement_cycle: '帳單週期', calendar_month: '自然月' });
+  });
+  it('carries unit_spend and window into the input', () => {
+    const input = ruleToInput(makeRule({ method: 'per_unit', rate: null, unit_spend: '30.0000', window: 'calendar_month' }));
+    expect(input.unit_spend).toBe('30');
+    expect(input.window).toBe('calendar_month');
   });
 });
 

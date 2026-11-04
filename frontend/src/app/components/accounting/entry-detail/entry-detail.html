@@ -106,6 +106,15 @@
       }
     }
 
+    @if (d.accruals?.length) {
+      <div class="dsec">預估回饋</div>
+      @for (accrual of d.accruals; track accrual.id) {
+        <div class="dline accrual-line" [attr.data-state]="accrual.state">
+          <span>{{ accrual.rule_name }} {{ formatMoney(accrual.amount, d.currency) }} · {{ accrualStateLabels[accrual.state] }}</span>
+        </div>
+      }
+    }
+
     @if (related().length) {
       <div class="dsec">關聯記錄</div>
       <div class="related">

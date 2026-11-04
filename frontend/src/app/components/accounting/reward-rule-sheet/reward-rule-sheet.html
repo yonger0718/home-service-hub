@@ -15,6 +15,7 @@
         <select class="rule-method" aria-label="方式" (change)="set('method', $any($event.target).value)">
           <option value="percent" [selected]="form().method === 'percent'">比例 %</option>
           <option value="fixed" [selected]="form().method === 'fixed'">固定金額</option>
+          <option value="per_unit" [selected]="form().method === 'per_unit'">每 NT$X 一單位</option>
         </select>
       </div>
       @if (form().method === 'percent') {
@@ -23,6 +24,12 @@
           <span class="v ed"><input class="rule-rate" type="text" inputmode="decimal" placeholder="0" aria-label="比例" [value]="form().rate" (input)="set('rate', $any($event.target).value)" />%</span>
         </div>
         @if (errors()['rate']; as e) { <small class="err" data-field="rate">{{ e }}</small> }
+      } @else if (form().method === 'per_unit') {
+        <div>
+          <span class="k">每滿</span>
+          <span class="v ed">NT$<input class="rule-unit-spend" type="text" inputmode="decimal" placeholder="0" aria-label="每滿金額" [value]="form().unit_spend" (input)="set('unit_spend', $any($event.target).value)" />一單位</span>
+        </div>
+        @if (errors()['unit_spend']; as e) { <small class="err" data-field="unit_spend">{{ e }}</small> }
       } @else {
         <div>
           <span class="k">固定金額</span>
@@ -93,6 +100,14 @@
         <input class="rule-cap" type="text" inputmode="decimal" placeholder="無" aria-label="每期上限" [value]="form().total_cap" (input)="set('total_cap', $any($event.target).value)" />
       </div>
       @if (errors()['total_cap']; as e) { <small class="err" data-field="total_cap">{{ e }}</small> }
+      <div>
+        <span class="k">計算週期</span>
+        <select class="rule-window" aria-label="計算週期" (change)="set('window', $any($event.target).value)">
+          @for (window of windows; track window) {
+            <option [value]="window" [selected]="window === form().window">{{ windowLabels[window] }}</option>
+          }
+        </select>
+      </div>
       <div>
         <span class="k">單筆取整</span>
         <select class="rule-txn-rounding" aria-label="單筆取整" (change)="set('txn_rounding', $any($event.target).value)">

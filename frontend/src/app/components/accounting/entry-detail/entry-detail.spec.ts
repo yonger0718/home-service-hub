@@ -100,6 +100,29 @@ describe('EntryDetailComponent', () => {
     }
   });
 
+  it('lists accruals with state labels', () => {
+    const accrual = (id: number, state: string, amount: string) => ({
+      id, rule_id: 100 + id, rule_name: `測試規則${id}`, estimate: amount, amount, state, post_on: null, ledger_entry_id: null,
+    });
+    const fixture = render(detail({
+      id: 42, amount: '-500.0000', name: '外套',
+      accruals: [
+        accrual(1, 'estimated', '10.0000'), accrual(2, 'posted', '20.0000'),
+        accrual(3, 'bank_confirmed', '30.0000'), accrual(4, 'forfeited', '0.0000'),
+      ],
+    }));
+    const lines = Array.from(el(fixture).querySelectorAll('.accrual-line')).map(l => l.textContent?.replace(/\s+/g, ' ').trim());
+    expect(lines).toEqual([
+      '測試規則1 $10 · 預估', '測試規則2 $20 · 已入帳', '測試規則3 $30 · 銀行確認', '測試規則4 $0 · 未獲得',
+    ]);
+    expect(el(fixture).textContent).toContain('預估回饋');
+  });
+
+  it('hides 預估回饋 when there are no accruals', () => {
+    const fixture = render(detail({ id: 42, amount: '-500.0000', name: '外套', accruals: [] }));
+    expect(el(fixture).textContent).not.toContain('預估回饋');
+  });
+
   it('shows the open amount, the collection and an enabled 新增收款 on a receivable', () => {
     const fixture = render(RECEIVABLE);
 

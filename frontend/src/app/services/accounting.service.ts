@@ -48,6 +48,7 @@ import {
   DebtsSummary,
   ScheduleLoanInput,
   RewardRule,
+  RewardUsage,
   RewardRuleInput,
   RewardRuleOverview,
   RewardRuleOverviewQuery,
@@ -194,6 +195,12 @@ export class AccountingService {
 
   deleteRewardRule(accountId: number, ruleId: number): Observable<void> {
     return this.bumpAccounts(this.http.delete<void>(`${this.apiUrl}/accounts/${accountId}/reward-rules/${ruleId}`));
+  }
+
+  getRewardUsage(accountId: number, date?: string): Observable<RewardUsage[]> {
+    return this.http.get<RewardUsage[]>(`${this.apiUrl}/accounts/${accountId}/reward-usage`, {
+      params: toParams(date ? { date } : {}),
+    });
   }
 
   getRewardRuleOverview(query: RewardRuleOverviewQuery = {}): Observable<RewardRuleOverview> {

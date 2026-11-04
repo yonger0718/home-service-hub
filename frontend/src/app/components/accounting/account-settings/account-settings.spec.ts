@@ -7,7 +7,7 @@ import { BehaviorSubject } from 'rxjs';
 import { AccountingToastService } from '../accounting-toast';
 import { MockInstance, afterEach, describe, expect, it, vi } from 'vitest';
 
-import { AccountDetail, LedgerAccount, RewardRule } from '../../../models/accounting.model';
+import { AccountDetail, LedgerAccount, RewardRule, RewardUsage } from '../../../models/accounting.model';
 import { ACCOUNT_LOGOS } from '../../../theme/account-logos';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
@@ -27,7 +27,7 @@ function account(fields: Record<string, unknown>): LedgerAccount {
 
 function rewardRule(fields: Partial<RewardRule>): RewardRule {
   return {
-    id: 0, account_id: 11, name: '', method: 'percent', rate: null, fixed_amount: null, window: 'statement_cycle',
+    id: 0, account_id: 11, name: '', method: 'percent', rate: null, fixed_amount: null, unit_spend: null, window: 'statement_cycle',
     posting: 'after_window', delay_days: 0, post_month_offset: 1, post_day: 15, txn_rounding: 'round',
     total_rounding: 'keep', total_cap: null, shared_cap_id: null, is_basic: false, reward_account_id: null,
     reward_project_id: null, starts_on: null, ends_on: null, is_enabled: true, description: null, sort_order: 0,
@@ -100,6 +100,10 @@ describe('AccountSettingsComponent', () => {
   }
 
   afterEach(() => {
+    // The usage lines are secondary to what these specs assert; settle any still-open usage request.
+    for (const req of http.match(r => r.url.endsWith('/reward-usage'))) {
+      req.flush([]);
+    }
     http.verify();
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -122,11 +126,14 @@ describe('AccountSettingsComponent', () => {
     expect(el(fixture).querySelector('.bigicon .kind-hint')).toBeNull();
   });
 
-  function render(detail: AccountDetail | null): ComponentFixture<AccountSettingsComponent> {
+  function render(detail: AccountDetail | null, usage: RewardUsage[] = []): ComponentFixture<AccountSettingsComponent> {
     const fixture = TestBed.createComponent(AccountSettingsComponent);
     fixture.detectChanges();
     if (detail) {
       http.expectOne(`/api/accounting/accounts/${detail.id}`).flush(detail);
+      if (detail.reward_rules.length > 0) {
+        http.expectOne(`/api/accounting/accounts/${detail.id}/reward-usage`).flush(usage);
+      }
     }
     const list = http.expectOne(r => r.url === '/api/accounting/accounts');
     // Archived accounts too, so an archived shared-limit member can be shown and removed.
@@ -803,7 +810,7 @@ describe('AccountSettingsComponent', () => {
     const put = http.expectOne('/api/accounting/accounts/11/reward-rules/1');
     expect(put.request.method).toBe('PUT');
     expect(put.request.body).toEqual({
-      name: '一般', method: 'percent', rate: '1', fixed_amount: null, posting: 'after_window', delay_days: 0,
+      name: '一般', method: 'percent', rate: '1', fixed_amount: null, unit_spend: null, window: 'statement_cycle', posting: 'after_window', delay_days: 0,
       post_month_offset: 1, post_day: 15, txn_rounding: 'round', total_rounding: 'keep', total_cap: null,
       is_basic: true, reward_account_id: null, reward_project_id: null, starts_on: null, ends_on: null,
       is_enabled: false, description: null,
@@ -903,6 +910,47 @@ describe('AccountSettingsComponent', () => {
 
     click(fixture, '.rule-add');
     expect(sheet(fixture)!.rule()).toBeNull();
+  });
+
+  describe('本期 usage', () => {
+    const usage = (fields: Partial<RewardUsage>): RewardUsage => ({
+      rule_ids: [1], shared_cap_id: null, name: '一般', window_start: '2026-09-16', window_end: '2026-10-15',
+      used: '30.0000', estimated: '20.0000', cap: '100.0000', remaining: '50.0000', ...fields,
+    });
+
+    it('shows 本期 used/cap from reward usage', async () => {
+      await setup('11');
+      const fixture = render(DETAIL, [usage({})]);
+      expect(texts(fixture, '.rule-row .rule-usage .usage-total')).toEqual(['本期 50／100']);
+      expect(texts(fixture, '.rule-row .rule-usage .usage-window')).toEqual(['2026/09/16 – 2026/10/15']);
+    });
+
+    it('uncapped shows 本期 only', async () => {
+      await setup('11');
+      const fixture = render(DETAIL, [usage({ cap: null, remaining: null })]);
+      expect(texts(fixture, '.rule-row .rule-usage .usage-total')).toEqual(['本期 50']);
+    });
+
+    it('shared group shown once, on the first listed rule it covers', async () => {
+      await setup('11');
+      const fixture = render(DETAIL, [usage({ rule_ids: [2, 1, 99], shared_cap_id: 'cap-a', name: '共用' })]);
+      const rows = Array.from(el(fixture).querySelectorAll('.rule-row'));
+      expect(rows.map(r => r.querySelector('.rule-usage .usage-total')?.textContent?.trim() ?? null)).toEqual(['本期 50／100', null]);
+    });
+
+    it('a failed usage request hides the lines only', async () => {
+      await setup('11');
+      const fixture = TestBed.createComponent(AccountSettingsComponent);
+      fixture.detectChanges();
+      http.expectOne('/api/accounting/accounts/11').flush(DETAIL);
+      http.expectOne('/api/accounting/accounts/11/reward-usage').flush(null, { status: 500, statusText: 'x' });
+      http.expectOne(r => r.url === '/api/accounting/accounts').flush(LIST);
+      http.expectOne('/api/accounting/account-groups').flush(GROUPS);
+      http.expectOne('/api/accounting/projects').flush(PROJECTS);
+      fixture.detectChanges();
+      expect(el(fixture).querySelectorAll('.rule-usage').length).toBe(0);
+      expect(el(fixture).querySelectorAll('.rule-row').length).toBe(2);
+    });
   });
 
   it('a saved or deleted rule closes the sheet and re-reads the account', async () => {
