@@ -15,6 +15,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+from app.services.cycles import statement_period
 from app.services.moze_backup_json import POSTING_MAP, ROUNDING_MAP
 from app.services.reward_math import Slot, allot, estimate
 from app.services.reward_windows import post_on_for
@@ -38,6 +39,7 @@ class Pair:
     total_rounding: str
     total_cap: Decimal | None
     shared_cap_id: str | None
+    closing_day: int | None
     window_start: date
     window_end: date
     posting: str
@@ -63,6 +65,8 @@ class Report:
     posting_total: int = 0
     posting_mismatch_by_card: dict = field(default_factory=dict)  # account_id -> count
     placeholders_excluded: int = 0
+    other_methods: int = 0      # uncapped non-placeholder fixed / per_unit pairs (not in the amount bar)
+    posting_manual: int = 0
 
 
 def _maps_header() -> str:
@@ -91,17 +95,22 @@ def score(pairs: Sequence[Pair], *, tolerance: Decimal = Decimal("1")) -> Report
             continue
         window = (p.window_start, p.window_end)
         engine_on = post_on_for(p.posting, p.delay_days, p.post_month_offset, p.post_day, window, p.purchase_date)
-        if engine_on is not None:
+        if engine_on is None:
+            rep.posting_manual += 1
+        else:
             rep.posting_total += 1
             if engine_on == p.moze_date:
                 rep.posting_exact += 1
             else:
-                if (engine_on.year, engine_on.month) == (p.moze_date.year, p.moze_date.month):
+                if statement_period(p.closing_day, engine_on) == statement_period(p.closing_day, p.moze_date):
                     rep.posting_same_period += 1
                 else:
                     rep.posting_mismatch_by_card[p.account_id] = rep.posting_mismatch_by_card.get(p.account_id, 0) + 1
         if p.total_cap is not None or p.shared_cap_id is not None:
-            capped[(p.shared_cap_id or p.rule_id, p.window_start)].append(p)
+            capped[(('s', p.shared_cap_id) if p.shared_cap_id else ('r', p.rule_id), p.window_start)].append(p)
+            continue
+        if p.method != 'percent':
+            rep.other_methods += 1
             continue
         eng = _one(p)
         rep.amount_total += 1
@@ -109,9 +118,9 @@ def score(pairs: Sequence[Pair], *, tolerance: Decimal = Decimal("1")) -> Report
             rep.amount_ok += 1
         else:
             diffs.append((abs(eng - p.moze_amount), p.key, eng, p.moze_amount))
-    for (_, start), group in sorted(capped.items(), key=lambda kv: (str(kv[0][0]), kv[0][1])):
+    for (_, start), group in sorted(capped.items(), key=lambda kv: (kv[0][0][0], str(kv[0][0][1]), kv[0][1])):
         group.sort(key=lambda p: (p.purchase_date, p.key))
-        first = group[0]
+        first = min(group, key=lambda p: p.rule_id)  # lowest rule id leads, as the engine does
         out = allot([Slot(p.key, _one(p), None) for p in group], cap=first.total_cap, external_used=_ZERO,
                     total_rounding=first.total_rounding)
         eng = sum(out.values(), _ZERO)
@@ -127,13 +136,14 @@ def render(rep: Report) -> str:
     lines = ["# Reward oracle", "", "```", rep.maps, "```", "",
              f"amount (uncapped percent): {rep.amount_ok}/{rep.amount_total} ok ({pct(rep.amount_ok, rep.amount_total)})",
              f"excluded (flagged/refunded): {rep.excluded}",
-             f"placeholders excluded: {rep.placeholders_excluded}", "", "## Largest differences (key, engine, moze)"]
+             f"placeholders excluded: {rep.placeholders_excluded}",
+             f"other methods (uncapped fixed/per_unit, not in the bar): {rep.other_methods}", "", "## Largest differences (key, engine, moze)"]
     lines += [f"- {k}: {e} vs {m}" for k, e, m in rep.largest] or ["- none"]
     lines += ["", "## Capped / shared window totals (rule, window_start, engine, moze, ok)"]
     lines += [f"- {r}, {s}, {e}, {m}, {'ok' if ok else 'DIFF'}" for r, s, e, m, ok in rep.window_totals] or ["- none"]
     lines += ["", "## Posting date",
               f"exact: {rep.posting_exact}/{rep.posting_total} ({pct(rep.posting_exact, rep.posting_total)})",
-              f"same period, different day: {rep.posting_same_period}", "mismatch by card (account id: count):"]
+              f"same statement period, different day: {rep.posting_same_period}", f"manual posting (no engine date): {rep.posting_manual}", "mismatch by card (account id: count):"]
     lines += [f"- {a}: {n}" for a, n in sorted(rep.posting_mismatch_by_card.items())] or ["- none"]
     return "\n".join(lines) + "\n"
 
@@ -151,19 +161,22 @@ def load_pairs(db) -> list[Pair]:
          .join(src, src.id == LedgerEntry.reward_source_entry_id)
          .join(RewardRule, RewardRule.id == LedgerEntry.reward_rule_id)
          .where(LedgerEntry.kind == "reward", LedgerEntry.moze_id.is_not(None)))
+    rows = db.execute(q).all()
+    refunded_ids = set(db.scalars(select(LedgerEntry.refunds_entry_id).where(
+        LedgerEntry.refunds_entry_id.in_({purchase.id for _, purchase, _ in rows}))))
     out: list[Pair] = []
     closing: dict[int, int | None] = {}
-    for reward, purchase, rule in db.execute(q):
+    for reward, purchase, rule in rows:
         if rule.account_id not in closing:
             closing[rule.account_id] = db.get(Account, rule.account_id).closing_day
         w = window_for(rule.window, closing[rule.account_id], purchase.entry_date)
-        refunded = db.scalar(select(LedgerEntry.id).where(LedgerEntry.refunds_entry_id == purchase.id).limit(1)) is not None
+        refunded = purchase.id in refunded_ids
         out.append(Pair(
             key=reward.id, rule_id=rule.id, account_id=rule.account_id, purchase_amount=Decimal(purchase.amount),
             purchase_date=purchase.entry_date, method=rule.method, rate=rule.rate, fixed_amount=rule.fixed_amount,
             unit_spend=rule.unit_spend, txn_rounding=rule.txn_rounding, total_rounding=rule.total_rounding,
             total_cap=rule.total_cap, shared_cap_id=str(rule.shared_cap_id) if rule.shared_cap_id else None,
-            window_start=w[0], window_end=w[1], posting=rule.posting, delay_days=rule.delay_days,
+            closing_day=closing[rule.account_id], window_start=w[0], window_end=w[1], posting=rule.posting, delay_days=rule.delay_days,
             post_month_offset=rule.post_month_offset, post_day=rule.post_day,
             moze_amount=Decimal(reward.amount), moze_date=reward.entry_date,
             refunded=refunded, flagged=bool(reward.needs_review or purchase.needs_review)))

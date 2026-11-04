@@ -1,7 +1,7 @@
 # Reward oracle (read-only)
 
-Scores the reward engine against historical MOZE reward rows: amount (uncapped percent rules, within 1 dollar),
-capped / shared window totals, and posting date (exact day, then same month). Flagged and refunded purchases and
+Scores the reward engine against historical MOZE reward rows: amount (uncapped percent rules only, within 1 dollar; other uncapped methods are counted apart),
+capped / shared window totals, and posting date (exact day, then same statement period). Flagged and refunded purchases and
 placeholder rules are excluded and counted.
 
 Run (one read-only transaction, rolled back; no `-I`/`-E`, which drop PYTHONPATH; no `.env` copying):
