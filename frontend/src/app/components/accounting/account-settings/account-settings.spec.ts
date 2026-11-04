@@ -101,7 +101,9 @@ describe('AccountSettingsComponent', () => {
 
   afterEach(() => {
     // The usage lines are secondary to what these specs assert; settle any still-open usage request.
-    for (const req of http.match(r => r.url.endsWith('/reward-usage'))) {
+    const stray = http.match(r => r.url.endsWith('/reward-usage'));
+    expect(stray.length).toBeLessThanOrEqual(1);
+    for (const req of stray) {
       req.flush([]);
     }
     http.verify();
@@ -822,6 +824,9 @@ describe('AccountSettingsComponent', () => {
       ...DETAIL,
       reward_rules: [{ ...DETAIL.reward_rules[0], is_enabled: false }, DETAIL.reward_rules[1]],
     });
+    const usage = http.expectOne('/api/accounting/accounts/11/reward-usage');
+    expect(usage.request.method).toBe('GET');
+    usage.flush([]);
     fixture.detectChanges();
 
     expect(texts(fixture, '.rule-row .rule-state')).toEqual(['已停用', '已停用']);
@@ -965,6 +970,7 @@ describe('AccountSettingsComponent', () => {
       ...DETAIL,
       reward_rules: [...DETAIL.reward_rules, rewardRule({ id: 3, name: '網購', rate: '3.0000', sort_order: 2 })],
     });
+    http.expectOne('/api/accounting/accounts/11/reward-usage').flush([]);
     fixture.detectChanges();
     expect(texts(fixture, '.rules-head .k')).toEqual(['回饋規則 · 3 條']);
 

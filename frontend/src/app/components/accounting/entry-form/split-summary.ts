@@ -83,12 +83,15 @@ export function rewardEstimates(children: readonly ChildDraft[], accounts: reado
       return child.availableRules
         .filter(rule => child.ruleIds.includes(rule.id))
         .map(rule => {
+          // per_unit depends on the window's running total, so the form cannot estimate it: unknown.
           let reward =
-            rule.method === 'fixed'
-              ? Number(rule.fixed_amount ?? 0)
-              : amount === null
-                ? null
-                : (Math.abs(amount) * Number(rule.rate ?? 0)) / 100;
+            rule.method === 'per_unit'
+              ? null
+              : rule.method === 'fixed'
+                ? Number(rule.fixed_amount ?? 0)
+                : amount === null
+                  ? null
+                  : (Math.abs(amount) * Number(rule.rate ?? 0)) / 100;
           if (reward !== null) {
             if (rule.txn_rounding === 'floor') reward = Math.floor(reward);
             if (rule.txn_rounding === 'ceil') reward = Math.ceil(reward);

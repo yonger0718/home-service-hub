@@ -37,6 +37,14 @@ describe('split summary', () => {
       .toEqual([{ currency: 'TWD', amount: null }]);
   });
 
+  it('keeps a per_unit rule estimate unknown', () => {
+    const c: ChildDraft = {
+      ...newChild('expense', 1), amountExpr: '100', ruleIds: [5],
+      availableRules: [makeRule({ id: 5, method: 'per_unit', rate: null, unit_spend: '30.0000' })],
+    };
+    expect(rewardEstimates([c], [makeAccount()])).toEqual([{ currency: 'TWD', amount: null }]);
+  });
+
   it('counts a blank child as 0 but an invalid expression as unknown', () => {
     const typed = { ...newChild('expense', 1), amountExpr: '100' };
     const blank = newChild('expense', 1);

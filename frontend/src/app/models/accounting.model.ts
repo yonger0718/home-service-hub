@@ -335,7 +335,7 @@ export interface EntryDetail extends LedgerEntry {
   refunded_by: LedgerEntry[];
   rules: RewardRule[];
   rewards: LedgerEntry[];
-  accruals?: RewardAccrual[];
+  accruals: RewardAccrual[];
   is_settled: boolean | null;
   refunded_amount: string;
   /** Write responses only: the foreign-transaction fee the account proposes, for the client to add. */

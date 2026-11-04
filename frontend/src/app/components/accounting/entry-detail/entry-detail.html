@@ -106,7 +106,7 @@
       }
     }
 
-    @if (d.accruals?.length) {
+    @if (d.accruals.length) {
       <div class="dsec">預估回饋</div>
       @for (accrual of d.accruals; track accrual.id) {
         <div class="dline accrual-line" [attr.data-state]="accrual.state">

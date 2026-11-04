@@ -28,7 +28,7 @@ function detail(fields: Record<string, unknown>): EntryDetail {
   return {
     ...entry({}),
     children: [], group_members: [], transfer_counterpart: null, settles: null, settled_by: [], refunds: null,
-    refunded_by: [], rules: [], rewards: [], open_amount: null, is_settled: null, refunded_amount: '0',
+    refunded_by: [], rules: [], rewards: [], accruals: [], open_amount: null, is_settled: null, refunded_amount: '0',
     ...fields,
   } as unknown as EntryDetail;
 }
