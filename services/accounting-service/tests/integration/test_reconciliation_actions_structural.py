@@ -172,40 +172,37 @@ def test_move_account_re_reconciles_both_statements_and_reverts(dirty_on, move, 
     assert revert.action == "revert"
 
 
-def test_move_account_resyncs_accruals_and_flags_a_posted_one(dirty_on, move, seed, db_session):
-    """Reward posting engine, spec 5.1: the move re-syncs the purchase's accruals; a frozen one raises the flag."""
+def test_move_account_refuses_an_entry_with_reward_rule_links(dirty_on, move, seed, db_session):
+    """A link belongs to the old card's rules (check_rules), so the move is refused and nothing accrues elsewhere."""
     s = move
     rule = seed.rule(s.a, name="測試回饋")
+    rule.posting = "manual"
     db_session.commit()
     db_session.add(EntryRewardRule(entry_id=s.entry.id, rule_id=rule.id))
     db_session.flush()
     reward_engine.sync_entry(db_session, s.entry.id)
-    paid = seed.entry(s.a, "5", kind="reward", reward_source_entry_id=s.entry.id, reward_rule_id=rule.id,
-                      day=date(2026, 11, 5))
-    accrual = db_session.scalar(select(RewardAccrual).where(RewardAccrual.source_entry_id == s.entry.id))
-    accrual.state, accrual.ledger_entry_id = "posted", paid.id
     db_session.commit()
-    row, _ = _apply(db_session, s.case, "move_account", {"entry_id": s.entry.id, "account_id": s.b.id})
-    entry = _fresh(db_session, LedgerEntry, s.entry.id)
-    assert (entry.needs_review, entry.review_reason) == (True, reward_engine.REVIEW_REASON)
-    _revert(db_session, row.id)
+    exc = _refuse(db_session, lambda: _apply(db_session, s.case, "move_account",
+                                             {"entry_id": s.entry.id, "account_id": s.b.id}))
+    assert (_code(exc), exc.field) == ("not_movable", "entry_id")
+    assert "reward_link" in str(exc.detail if hasattr(exc, "detail") else exc)
+    assert _actions(db_session) == []
     assert _fresh(db_session, LedgerEntry, s.entry.id).account_id == s.a.id
 
 
-def test_move_account_re_syncs_an_estimated_accrual_without_flagging(dirty_on, move, seed, db_session):
+def test_move_account_refuses_an_entry_with_a_posted_reward_row(dirty_on, move, seed, db_session):
+    """Replaces the posted-accrual flag test: a purchase with a reward row can no longer be moved at all."""
     s = move
     rule = seed.rule(s.a, name="測試回饋")
-    rule.posting = "manual"  # never due in the test
     db_session.commit()
-    db_session.add(EntryRewardRule(entry_id=s.entry.id, rule_id=rule.id))
-    db_session.flush()
-    reward_engine.sync_entry(db_session, s.entry.id)
+    seed.entry(s.a, "5", kind="reward", reward_source_entry_id=s.entry.id, reward_rule_id=rule.id,
+               day=date(2026, 11, 5))
     db_session.commit()
-    _apply(db_session, s.case, "move_account", {"entry_id": s.entry.id, "account_id": s.b.id})
-    db_session.expire_all()
-    rows = db_session.scalars(select(RewardAccrual).where(RewardAccrual.source_entry_id == s.entry.id)).all()
-    assert [r.state for r in rows] == ["estimated"]  # re-synced on the purchase's links, nothing frozen
-    assert _fresh(db_session, LedgerEntry, s.entry.id).needs_review is False
+    exc = _refuse(db_session, lambda: _apply(db_session, s.case, "move_account",
+                                             {"entry_id": s.entry.id, "account_id": s.b.id}))
+    assert (_code(exc), exc.field) == ("not_movable", "entry_id")
+    assert _actions(db_session) == []
+    assert _fresh(db_session, LedgerEntry, s.entry.id).account_id == s.a.id
 
 
 def test_move_account_refuses_a_participating_account_of_the_case_statement(move, seed, db_session):

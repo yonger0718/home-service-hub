@@ -147,6 +147,10 @@ class MoveAccountAction(ActionBase):
         if (entry.group_id is not None or entry.parent_entry_id is not None or entry.transfer_group_id is not None
                 or has_children or any(schedule_rows(db, [entry.id]))):
             raise _refuse("entry_id", "not_movable", f"entry {entry.id}")
+        if (db.execute(select(exists().where(EntryRewardRule.entry_id == entry.id))).scalar_one()
+                or db.execute(select(exists().where(LedgerEntry.reward_source_entry_id == entry.id))).scalar_one()):
+            # the links belong to the old account's rules; the owner re-records the purchase instead
+            raise _refuse("entry_id", "not_movable", f"entry {entry.id}: reward_link")
         if entry.id in coverage_service.claimed_entry_ids(db):
             raise _refuse("entry_id", "entry_claimed", f"entry {entry.id}")
         ews.assert_entry_editable(db, entry)
@@ -163,7 +167,7 @@ class MoveAccountAction(ActionBase):
         before = reward_engine.capture(db, entry)
         entry.account_id = target.id
         db.flush()
-        reward_engine.after_write_captured(db, entry, before)  # the new account's rules / windows, or drop (spec 5.1)
+        reward_engine.after_write_captured(db, entry, before)  # no-op for the unlinked entries a move allows (reward links are refused in _plan)
         _reconcile_keeping_case(db, ctx.case, [ctx.statement.id, *targets])
         effect.coverage_ids = sorted(_active_coverage_on(db, [entry.id]))
         effect.touched_entry_ids = [entry.id]
