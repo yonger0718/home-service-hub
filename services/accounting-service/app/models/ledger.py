@@ -48,8 +48,9 @@ FX_SOURCES = ("fx_api", "moze_backup", "manual")
 DUE_RULES = ("fixed_day", "days_after_closing")
 ROUNDING_MODES = ("keep", "round", "floor", "ceil")
 ENTRY_GROUP_KINDS = ("split", "reward_claim", "installment")
-REWARD_METHODS = ("percent", "fixed")
-REWARD_WINDOWS = ("statement_cycle",)
+REWARD_METHODS = ("percent", "fixed", "per_unit")
+REWARD_WINDOWS = ("statement_cycle", "calendar_month")
+REWARD_ACCRUAL_STATES = ("estimated", "posted", "bank_confirmed", "forfeited")
 REWARD_POSTINGS = ("after_window", "after_transaction", "manual")
 COLOR_CONVENTIONS = ("red_green", "green_red")
 KEYPAD_LAYOUTS = ("calculator", "phone")
@@ -64,6 +65,7 @@ rounding_mode_enum = Enum(*ROUNDING_MODES, name="rounding_mode")
 entry_group_kind_enum = Enum(*ENTRY_GROUP_KINDS, name="entry_group_kind")
 reward_method_enum = Enum(*REWARD_METHODS, name="reward_method")
 reward_window_enum = Enum(*REWARD_WINDOWS, name="reward_window")
+reward_accrual_state_enum = Enum(*REWARD_ACCRUAL_STATES, name="reward_accrual_state")
 reward_posting_enum = Enum(*REWARD_POSTINGS, name="reward_posting")
 color_convention_enum = Enum(*COLOR_CONVENTIONS, name="color_convention")
 keypad_layout_enum = Enum(*KEYPAD_LAYOUTS, name="keypad_layout")
@@ -238,6 +240,7 @@ class RewardRule(Base):
     txn_rounding = Column(rounding_mode_enum, nullable=False, server_default=text("'keep'"))
     total_rounding = Column(rounding_mode_enum, nullable=False, server_default=text("'keep'"))
     total_cap = Column(Numeric(20, 4), nullable=True)
+    unit_spend = Column(Numeric(20, 4), nullable=True)
     shared_cap_id = Column(Uuid, nullable=True)
     is_basic = Column(Boolean, nullable=False, server_default=text("false"))
     reward_account_id = Column(Integer, ForeignKey("account.id"), nullable=True)
@@ -248,6 +251,28 @@ class RewardRule(Base):
     description = Column(Text, nullable=True)
     sort_order = Column(Integer, nullable=False, server_default=text("0"))
     moze_id = Column(String(64), nullable=True, unique=True)
+
+
+class RewardAccrual(Base):
+    __tablename__ = "reward_accrual"
+    __table_args__ = (
+        UniqueConstraint("source_entry_id", "rule_id", name="ux_reward_accrual_source_rule"),
+        Index("ix_reward_accrual_rule_window", "rule_id", "window_start"),
+        Index("ix_reward_accrual_state_post_on", "state", "post_on"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    source_entry_id = Column(Integer, ForeignKey("ledger_entry.id", ondelete="SET NULL"), nullable=True)
+    rule_id = Column(Integer, ForeignKey("reward_rule.id", ondelete="RESTRICT"), nullable=False)
+    window_start = Column(Date, nullable=False)
+    window_end = Column(Date, nullable=False)
+    post_on = Column(Date, nullable=True)
+    estimate = Column(Numeric(20, 4), nullable=False)
+    amount = Column(Numeric(20, 4), nullable=False)
+    state = Column(reward_accrual_state_enum, nullable=False, server_default=text("'estimated'"))
+    ledger_entry_id = Column(Integer, ForeignKey("ledger_entry.id", ondelete="SET NULL"), nullable=True, unique=True)
+    confirmed_statement_id = Column(Integer, ForeignKey("account_statement.id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
 class LedgerEntry(Base):
@@ -264,6 +289,13 @@ class LedgerEntry(Base):
         Index("ix_ledger_entry_refunds_entry_id", "refunds_entry_id"),
         Index("ix_ledger_entry_parent_entry_id", "parent_entry_id"),
         Index("ix_ledger_entry_source", "source"),
+        Index(
+            "ux_ledger_entry_reward_source_rule",
+            "reward_source_entry_id",
+            "reward_rule_id",
+            unique=True,
+            postgresql_where=text("reward_source_entry_id IS NOT NULL AND reward_rule_id IS NOT NULL"),
+        ),
         CheckConstraint(SETTLEMENT_SIGN_SQL, name="ck_ledger_entry_settlement_sign"),
     )
 
@@ -301,6 +333,7 @@ class LedgerEntry(Base):
     invoice_number = Column(String(16), nullable=True)
     invoice_random = Column(String(8), nullable=True)
     needs_review = Column(Boolean, nullable=False, server_default=text("false"))
+    review_reason = Column(String(32), nullable=True)
     source = Column(entry_source_enum, nullable=False)
     import_run_id = Column(Integer, ForeignKey("import_run.id"), nullable=True)
     moze_id = Column(String(64), nullable=True, unique=True)

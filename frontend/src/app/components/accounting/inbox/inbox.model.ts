@@ -20,6 +20,7 @@ export type InboxButton =
   | 'defer'
   | 'dismiss'
   | 'anchor'
+  | 'accept_early'
   | 'apply_proposal'
   | 'reject_proposal';
 
@@ -80,6 +81,8 @@ export interface InboxItem {
   proposal: InboxProposal | null;
   actions: InboxButton[];
   rule_hint: InboxRuleHint | null;
+  /** The case's note (a bank-early reward line: how to fix the rule or accept the credit). */
+  note?: string | null;
 }
 
 export interface InboxAccount {

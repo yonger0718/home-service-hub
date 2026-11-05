@@ -21,6 +21,7 @@ import {
   EntryKind,
   LedgerAccount,
   LedgerEntry,
+  RewardAccrualState,
   ScheduleDefinitionDetail,
   ScheduleLineKind,
 } from '../../../models/accounting.model';
@@ -182,6 +183,9 @@ export class EntryDetailComponent implements OnInit {
   readonly today = todayIso();
   readonly kindLabels = ENTRY_KIND_LABELS;
   readonly formatMoney = formatMoney;
+  readonly accrualStateLabels: Record<RewardAccrualState, string> = {
+    estimated: '預估', posted: '已入帳', bank_confirmed: '銀行確認', forfeited: '未獲得',
+  };
   readonly slashDate = slashDate;
 
   readonly locked = computed(() => this.detail()?.locked ?? false);

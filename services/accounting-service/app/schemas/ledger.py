@@ -18,10 +18,11 @@ class RewardRuleOut(BaseModel):
     id: int
     account_id: int
     name: str
-    method: Literal["percent", "fixed"]
+    method: Literal["percent", "fixed", "per_unit"]
     rate: Decimal | None
     fixed_amount: Decimal | None
-    window: Literal["statement_cycle"]
+    unit_spend: Decimal | None
+    window: Literal["statement_cycle", "calendar_month"]
     posting: Literal["after_window", "after_transaction", "manual"]
     delay_days: int
     post_month_offset: int
@@ -192,6 +193,29 @@ class LoanScheduleOut(BaseModel):
     needs_check: bool
 
 
+class AccrualOut(BaseModel):
+    id: int
+    rule_id: int
+    rule_name: str
+    estimate: Decimal
+    amount: Decimal
+    state: Literal["estimated", "posted", "bank_confirmed", "forfeited"]
+    post_on: date | None
+    ledger_entry_id: int | None
+
+
+class RewardUsageOut(BaseModel):
+    rule_ids: list[int]
+    shared_cap_id: UUID | None
+    name: str
+    window_start: date
+    window_end: date
+    used: Decimal
+    estimated: Decimal
+    cap: Decimal | None
+    remaining: Decimal | None
+
+
 class EntryOut(BaseModel):
     id: int
     kind: EntryKind
@@ -226,6 +250,8 @@ class EntryOut(BaseModel):
     rule_names: list[str]
     invoice_number: str | None
     needs_review: bool
+    accruals: list[AccrualOut] = []
+    review_reason: str | None  # why needs_review is set; today only `reward_posted` (reward engine, P10)
     source: EntrySource
     moze_id: str | None
     locked: bool

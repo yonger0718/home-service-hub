@@ -10,7 +10,7 @@ const BASE = '/api/accounting/accounts/11/reward-rules';
 
 function rule(fields: Partial<RewardRule>): RewardRule {
   return {
-    id: 0, account_id: 11, name: '', method: 'percent', rate: null, fixed_amount: null, window: 'statement_cycle',
+    id: 0, account_id: 11, name: '', method: 'percent', rate: null, fixed_amount: null, unit_spend: null, window: 'statement_cycle',
     posting: 'after_window', delay_days: 0, post_month_offset: 0, post_day: 1, txn_rounding: 'keep',
     total_rounding: 'keep', total_cap: null, shared_cap_id: null, is_basic: false, reward_account_id: null,
     reward_project_id: null, starts_on: null, ends_on: null, is_enabled: true, description: null, sort_order: 0,
@@ -104,7 +104,7 @@ describe('RewardRuleSheetComponent', () => {
     const req = http.expectOne(BASE);
     expect(req.request.method).toBe('POST');
     expect(req.request.body).toEqual({
-      name: '一般', method: 'percent', rate: '1.5', fixed_amount: null, posting: 'after_window', delay_days: 0,
+      name: '一般', method: 'percent', rate: '1.5', fixed_amount: null, unit_spend: null, window: 'statement_cycle', posting: 'after_window', delay_days: 0,
       post_month_offset: 0, post_day: 1, txn_rounding: 'keep', total_rounding: 'keep', total_cap: null,
       is_basic: false, reward_account_id: 11, reward_project_id: null, starts_on: null, ends_on: null,
       is_enabled: true, description: null,
@@ -261,7 +261,7 @@ describe('RewardRuleSheetComponent', () => {
     const put = http.expectOne(`${BASE}/1`);
     expect(put.request.method).toBe('PUT');
     expect(put.request.body).toEqual({
-      name: '一般', method: 'percent', rate: '1', fixed_amount: null, posting: 'after_window', delay_days: 0,
+      name: '一般', method: 'percent', rate: '1', fixed_amount: null, unit_spend: null, window: 'statement_cycle', posting: 'after_window', delay_days: 0,
       post_month_offset: 1, post_day: 15, txn_rounding: 'floor', total_rounding: 'keep', total_cap: '300',
       is_basic: true, reward_account_id: null, reward_project_id: null, starts_on: '2026-01-01', ends_on: null,
       is_enabled: false, description: null,
@@ -269,6 +269,45 @@ describe('RewardRuleSheetComponent', () => {
     const disabled = { ...BASIC, is_enabled: false };
     put.flush(disabled);
     expect(saved).toHaveBeenCalledWith(disabled);
+  });
+
+  it('per_unit shows unit_spend and submits it', () => {
+    const { q, pick, type, click, fixture } = render(null);
+    expect(q('.rule-unit-spend')).toBeNull();
+    pick('.rule-method', 'per_unit');
+    expect(q('.rule-unit-spend')).not.toBeNull();
+    expect(q('.rule-rate')).toBeNull();
+    expect(q('.rule-fixed')).toBeNull();
+    type('.rule-name', '測試卡點數');
+    type('.rule-unit-spend', '30');
+    click('.sheet-confirm');
+    const req = http.expectOne(BASE);
+    expect(req.request.body).toMatchObject({ method: 'per_unit', unit_spend: '30', rate: null, fixed_amount: null });
+    req.flush(rule({ id: 9, method: 'per_unit', unit_spend: '30.0000' }));
+    fixture.detectChanges();
+  });
+
+  it('per_unit requires a positive unit_spend and other methods send none', () => {
+    const { q, pick, type, click } = render(null);
+    pick('.rule-method', 'per_unit');
+    type('.rule-name', '測試卡點數');
+    click('.sheet-confirm');
+    expect(q('[data-field="unit_spend"]')).not.toBeNull();
+    pick('.rule-method', 'percent');
+    type('.rule-rate', '2');
+    click('.sheet-confirm');
+    expect(http.expectOne(BASE).request.body.unit_spend).toBeNull();
+  });
+
+  it('calendar_month window round-trips', () => {
+    const { q, pick, click } = render(rule({ id: 4, name: '月回饋', rate: '2.0000', window: 'calendar_month' }));
+    expect(q<HTMLSelectElement>('.rule-window')!.value).toBe('calendar_month');
+    expect(Array.from(q<HTMLSelectElement>('.rule-window')!.options).map(o => o.textContent?.trim())).toEqual(['帳單週期', '自然月']);
+    click('.sheet-confirm');
+    const put = http.expectOne(`${BASE}/4`);
+    expect(put.request.body.window).toBe('calendar_month');
+    put.flush(rule({ id: 4, window: 'calendar_month' }));
+    pick('.rule-window', 'statement_cycle');
   });
 
   it('(f2) deletes an unreferenced rule', () => {

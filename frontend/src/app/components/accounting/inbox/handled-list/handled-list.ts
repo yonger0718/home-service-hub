@@ -21,7 +21,10 @@ import { InboxService } from '../inbox.service';
 /** Rows the list shows (spec §7.3: the last 50 actions). */
 export const HANDLED_LIMIT = 50;
 
-const NOT_REVERTABLE = 'not_revertable';
+/** The engine's 422 code, and the 409 of an action that is never reverted (`accept_early_reward`). */
+const NOT_REVERTABLE = new Set(['not_revertable', 'not_revertible']);
+/** Applied actions the engine never reverts: no 撤銷 on their rows. */
+const NEVER_REVERTED = new Set(['revert', 'accept_early_reward']);
 const RULE_PREFIX = 'rule:';
 
 export interface HandledRow {
@@ -67,26 +70,28 @@ export function handledRow(action: ReconciliationAction): HandledRow {
     action,
     text: `${who} · ${answer} · ${lineText(action.line)}${slashDate(action.created_at)}`,
     ruleId,
-    // A `revert` row is never revertable (the engine always refuses it).
+    // A `revert` or `accept_early_reward` row is never revertable (the engine always refuses it).
     revertable:
-      action.reverted_by_action_id === null && action.status === 'applied' && action.action !== 'revert',
+      action.reverted_by_action_id === null &&
+      action.status === 'applied' &&
+      !NEVER_REVERTED.has(action.action),
   };
 }
 
-/** A 422 whose code is `not_revertable` (a string detail, or FastAPI's `detail[].msg`). */
+/** A refusal whose code is `not_revertable` / `not_revertible` (a string detail, or FastAPI's `detail[].msg`). */
 function isNotRevertable(err: unknown): boolean {
   if (!(err instanceof HttpErrorResponse)) {
     return false;
   }
   const text = apiErrorText(err);
   if (text) {
-    return splitApiCode(text).code === NOT_REVERTABLE;
+    return NOT_REVERTABLE.has(splitApiCode(text).code);
   }
   const detail = (err.error as { detail?: unknown } | null)?.detail;
   return (
     Array.isArray(detail) &&
     (detail as { msg?: unknown }[]).some(
-      (item) => typeof item?.msg === 'string' && splitApiCode(item.msg).code === NOT_REVERTABLE,
+      (item) => typeof item?.msg === 'string' && NOT_REVERTABLE.has(splitApiCode(item.msg).code),
     )
   );
 }

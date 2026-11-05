@@ -11,6 +11,7 @@ from sqlalchemy.orm import object_session
 
 from app.models import AccountStatement, LedgerEntry, ReconciliationCase, StatementLine
 from app.services import reconciliation_service as rec
+from app.services import reward_engine
 from app.services.coverage_service import participating_accounts
 
 from .base import Action
@@ -23,8 +24,9 @@ COVERAGE_ACTIONS = frozenset({"match", "unmatch"})  # allowed on historical stat
 # The order is the order `allowed` lists them in.
 KIND_ACTIONS: dict[str, tuple[str, ...]] = {
     # pair_transfer on a needs_peer line (R6c)
+    # accept_early_reward on a reward_early line (reward engine plan P5)
     "line_unmatched": ("match", "create_entry", "create_system_entry", "backfill_entry", "pair_transfer", "create_refund",
-                       "link_installment_plan", "split_entry", "dismiss"),
+                       "link_installment_plan", "split_entry", "accept_early_reward", "dismiss"),
     # adjust_amount on a listed entry candidate (2026-10-24); adjust_transfer on a listed transfer leg (R6c)
     "ambiguous": ("match", "adjust_amount", "adjust_transfer", "book_settlement", "book_dividend", "dismiss"),
     "amount_delta": ("match", "adjust_amount", "adjust_transfer", "attach_fee", "split_entry", "dismiss"),
@@ -127,6 +129,33 @@ def _lists_transfer_leg(case: ReconciliationCase) -> bool:
     return any(_transfer_leg(case, c.get("entry_id")) for c in case.candidates or ())
 
 
+# Reward engine plan P5: a `reward_early` line offers these and nothing else (not even create_entry /
+# create_system_entry, which `_system_line` would allow on any reward line: booking it would count the reward twice)
+REWARD_EARLY_ACTIONS = frozenset({"accept_early_reward", "dismiss"})
+
+
+def _reward_early(case: ReconciliationCase) -> bool:
+    return case.kind == "line_unmatched" and _context(case).get("hint") == reward_engine.EARLY_HINT
+
+
+def _acceptable_early(case: ReconciliationCase) -> bool:
+    """`accept_early_reward`: a `reward_early` line printed inside the statement period (the action's 409
+    `line_outside_period` stays as the race guard)."""
+    if not _reward_early(case):
+        return False
+    db = object_session(case)
+    statement = None if db is None else db.get(AccountStatement, case.statement_id)
+    line = None if db is None or case.line_id is None else db.get(StatementLine, case.line_id)
+    return statement is not None and line is not None \
+        and statement.period_start <= line.posted_date <= statement.period_end
+
+
+def _no_carried_rows(case: ReconciliationCase) -> bool:
+    """Reward engine spec 7.8: a card gap naming engine rows the bank credits one cycle late offers `dismiss` only
+    (an adjustment or an anchor would book the reward a second time)."""
+    return not _context(case).get("carried_accrual_ids")
+
+
 CONDITIONS: dict[tuple[str, str], Callable[[ReconciliationCase], bool]] = {
     ("line_unmatched", "create_entry"): _no_peer_hint,
     ("line_unmatched", "create_system_entry"): _system_line,
@@ -135,8 +164,10 @@ CONDITIONS: dict[tuple[str, str], Callable[[ReconciliationCase], bool]] = {
     ("line_unmatched", "link_installment_plan"): lambda case: _context(case).get("hint") == "installment_unmapped",
     ("line_unmatched", "split_entry"): _names_an_entry,
     ("line_unmatched", "pair_transfer"): lambda case: _context(case).get("hint") == PEER_HINT and not case.candidates,
-    ("balance_gap", "balance_adjustment_asof"): _single_account_gap,
-    ("balance_gap", "anchor_opening"): lambda case: _bank_statement(case) and not _anchored(case),
+    ("line_unmatched", "accept_early_reward"): _acceptable_early,
+    ("balance_gap", "balance_adjustment_asof"): lambda case: _no_carried_rows(case) and _single_account_gap(case),
+    ("balance_gap", "anchor_opening"):
+        lambda case: _no_carried_rows(case) and _bank_statement(case) and not _anchored(case),
     ("amount_delta", "attach_fee"): lambda case: _context(case).get("fee_matches") is True,
     ("amount_delta", "adjust_transfer"): _designates_transfer_leg,
     ("ambiguous", "adjust_transfer"): _lists_transfer_leg,
@@ -159,13 +190,15 @@ def register(action: Action) -> Action:
 
 
 def allowed(case: ReconciliationCase) -> list[str]:
-    """Registered actions the case offers now: [] unless open/proposed; by kind, narrowed by context."""
+    """Registered actions the case offers now: [] unless open/proposed; by kind, narrowed by context (a
+    `reward_early` line: `REWARD_EARLY_ACTIONS` only)."""
     if case.status not in OPEN_STATUSES:
         return []
+    early = _reward_early(case)
     out = []
     for name in KIND_ACTIONS.get(case.kind, ()):
         action = ACTIONS.get(name)
-        if action is None or case.kind not in action.case_kinds:
+        if action is None or case.kind not in action.case_kinds or (early and name not in REWARD_EARLY_ACTIONS):
             continue
         condition = CONDITIONS.get((case.kind, name))
         if condition is None or condition(case):

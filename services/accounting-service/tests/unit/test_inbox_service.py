@@ -98,3 +98,28 @@ def test_fingerprint_candidates_are_skipped_not_raised():
     case = ReconciliationCase(kind="settlement", status="open", candidates=[
         {"fingerprint": "cathay:2026-09-10:aa", "net_amount": "-12305.0000", "items": []}], context={})
     assert ib._single_candidate(case) is None and ib._listed_candidates(case, {}, {}) == []
+
+
+@pytest.mark.parametrize("hint", ["reward_surplus", "reward_early"])
+def test_classify_reward_hints_other(hint):
+    """Reward engine spec 7.5: the bank-wins owner cases are `other` questions, never `bank_only` (even while the
+    registry would allow create_entry), so no learned record rule books them."""
+    allowed = ["match", "create_entry", "create_system_entry", "dismiss"]
+    assert ib.classify(kind="line_unmatched", status="open", statement_kind="card", hint=hint, merchant_norm="回饋",
+                       allowed=allowed) == "other"
+
+
+def test_other_buttons_offer_accept_early_only_when_allowed():
+    assert ib.buttons("other", ["accept_early_reward", "dismiss"], adjustable=False) == ["accept_early", "dismiss"]
+    assert ib.buttons("other", ["match", "dismiss"], adjustable=False) == ["dismiss"]
+    assert ib.BUTTONS_TO_ACTIONS["accept_early"] == "accept_early_reward"
+    assert not ib.learnable("other", "accept_early")
+
+
+def test_translate_accept_early_uses_the_default_ids():
+    case = ReconciliationCase(kind="line_unmatched", status="open", context={
+        "hint": "reward_early", "early_accrual_ids": [3, 4], "default_accrual_ids": [4]})
+    assert ib.translate("accept_early", {}, case, None, "接受提早入帳") == ("accept_early_reward", {"accrual_ids": [4]})
+    with pytest.raises(ib.ValidationError):
+        ib.translate("accept_early", {}, ReconciliationCase(kind="line_unmatched", status="open", context={}), None,
+                     "接受提早入帳")

@@ -31,7 +31,7 @@ from .statements import matching
 from ..schemas.writes import (
     SOURCE_CURRENCIES, AccountGroupIn, AccountIn, CategoryIn, CounterpartyIn, PreferenceIn, ProjectIn,
 )
-from . import schedule_entry_hooks
+from . import reward_engine, schedule_entry_hooks
 from .errors import CodedConflictError, ConflictError, NotFoundError, ValidationError  # noqa: F401  (re-exported)
 from .ledger_service import open_debt_filter
 
@@ -722,7 +722,12 @@ def update_account(db: Session, account_id: int, payload: AccountIn) -> None:
     With `credit_sharing_members` present, the sharing set is rebuilt from it (the sent `credit_sharing_id` is
     ignored); without it, `credit_sharing_id` is written as sent, as before.
     """
-    account = _get(db, Account, account_id, "account")
+    # The account row first (FOR NO KEY UPDATE, the lock its own UPDATE takes; it does not conflict with an accrual
+    # path's FOR KEY SHARE): its closing_day / parent are read stable, before this write holds any other lock.
+    account = db.scalars(select(Account).where(Account.id == account_id).with_for_update(key_share=True)
+                         .execution_options(populate_existing=True)).one_or_none()
+    if account is None:
+        raise NotFoundError(f"account {account_id} not found")
     _validate_account(db, payload, account)
     if payload.is_archived and not account.is_archived:
         schedule_entry_hooks.assert_not_referenced(db, account_id=account_id)
@@ -733,16 +738,97 @@ def update_account(db: Session, account_id: int, payload: AccountIn) -> None:
             .values(auto_pay_account_id=None, settings_locally_edited=True)
         )
     previous_sharing_id = account.credit_sharing_id
+    _lock_rebucketed_rules(db, account, payload)
+    before_own, before_closing = account.closing_day, reward_engine.card_closing_day(db, account)
     for field, value in payload.model_dump(exclude=ACCOUNT_COLUMNS_EXCLUDE).items():
         setattr(account, field, value)
     account.settings_locally_edited = True
     db.flush()
     if payload.credit_sharing_members is not None:
         _apply_sharing(db, account, previous_sharing_id, payload.credit_sharing_members)
+    _rebucket_rewards(db, account, before_own, before_closing)
+
+
+def _lock_rebucketed_rules(db: Session, account: Account, payload: AccountIn) -> None:
+    """P12 card tier, then rule tier, of a write that changes what a card's reward windows resolve to (its own
+    closing_day or its combined parent), before the account row changes and before any other engine lock:
+
+    1. the card rows FOR UPDATE NOWAIT in id order (`lock_cards_for_write`): the card, its old and new parent (a
+       re-parent is a card write on both parents, so a parent's set of children only changes under its lock), and,
+       when its own closing_day changes, its combined children without their own closing_day (their effective
+       closing_day changes). The children are listed again under the lock until the set is stable.
+    2. the rules of every card whose windows move, FOR UPDATE NOWAIT (`lock_rules_for_write`).
+
+    Then the rule-writer order (statement rows NOWAIT -> sources NOWAIT -> windows NOWAIT). This transaction holds
+    no tier-1 row before step 1: only its own account row (FOR NO KEY UPDATE, `update_account`), the archive's
+    auto-pay clear (an UPDATE of other account rows) and, NOWAIT, the account rows its credit-sharing rebuild will
+    UPDATE. It takes no card or rule FOR KEY SHARE / FOR SHARE before step 1 (no upgrade), and from step 1 on it
+    never waits on a card, rule, statement, source or window lock: a held row is the retryable 409 `retry`."""
+    own = payload.closing_day != account.closing_day
+    parent = payload.combined_account_id != account.combined_account_id
+    if not own and not parent:
+        return
+    cards = {account.id}
+    if parent:
+        cards |= {account.combined_account_id, payload.combined_account_id} - {None}
+
+    def children() -> set[int]:
+        if not own:
+            return set()
+        return set(db.scalars(select(Account.id).where(
+            Account.combined_account_id == account.id, Account.closing_day.is_(None), Account.id != account.id)))
+
+    if payload.credit_sharing_members is not None:  # `_apply_sharing` UPDATEs these after the card lock
+        sharing = set(payload.credit_sharing_members)
+        if account.credit_sharing_id is not None:
+            sharing |= set(db.scalars(select(Account.id).where(Account.credit_sharing_id == account.credit_sharing_id)))
+        reward_engine.lock_other_accounts_nowait(db, sharing - {account.id})
+    while True:
+        reward_engine.lock_cards_for_write(db, cards)
+        more = children() - cards
+        if not more:
+            break
+        cards |= more
+    moved = {account.id} | children()
+    reward_engine.lock_rules_for_write(
+        db, db.scalars(select(RewardRule.id).where(RewardRule.account_id.in_(sorted(moved)))))
+
+
+def _rebucket_rewards(db: Session, account: Account, before_own: int | None, before_closing: int | None) -> None:
+    """Reward engine spec 5.1: a card whose effective closing day changed re-buckets its estimated accruals, and so
+    does every child card whose closing day resolves through it (combined_account_id, own closing_day null). P6
+    first for each card: statement rows before accrual locks (P12); then every card's rules in ONE recompute, so the
+    sources of all the cards are locked before any window (P12 tiers 1-2)."""
+    cards = []
+    if reward_engine.card_closing_day(db, account) != before_closing:
+        cards.append(account.id)
+    if account.closing_day != before_own:
+        cards += list(db.scalars(
+            select(Account.id)
+            .where(Account.combined_account_id == account.id, Account.closing_day.is_(None), Account.id != account.id)
+            .order_by(Account.id)
+        ))
+    for card_id in cards:
+        reward_engine.mark_early_rechecks(db, card_id)
+    reward_engine.recompute_accounts(db, cards)
 
 
 def delete_account(db: Session, account_id: int) -> None:
     account = _get(db, Account, account_id, "account")
+    # P12 card tier: deleting a parent re-parents its combined children (combined_account_id -> NULL), so the
+    # children without their own closing_day get a new effective closing_day: a card write. The account and its
+    # children FOR UPDATE NOWAIT first (before the reference counts, so no rule or entry appears on them meanwhile),
+    # then the moved children's rules FOR UPDATE NOWAIT; their estimates are re-bucketed after the update.
+    cards: set[int] = {account_id}
+    while True:  # the children listed again under the lock until stable (a re-parent onto it commits meanwhile)
+        reward_engine.lock_cards_for_write(db, cards)
+        children = set(db.scalars(select(Account.id).where(Account.combined_account_id == account_id)))
+        if children <= cards:
+            break
+        cards |= children
+    moved = sorted(db.scalars(select(Account.id).where(
+        Account.combined_account_id == account_id, Account.closing_day.is_(None))))
+    reward_engine.lock_rules_for_write(db, db.scalars(select(RewardRule.id).where(RewardRule.account_id.in_(moved))))
     schedule_entry_hooks.assert_not_referenced(db, account_id=account_id)
     entries = _count(db, LedgerEntry.account_id == account_id)
     if entries:
@@ -775,6 +861,9 @@ def delete_account(db: Session, account_id: int) -> None:
     db.execute(update(Category).where(Category.default_account_id == account_id).values(default_account_id=None))
     db.delete(account)
     db.flush()
+    for card_id in moved:  # P6 first (statement rows before accrual locks), then one recompute (P12)
+        reward_engine.mark_early_rechecks(db, card_id)
+    reward_engine.recompute_accounts(db, moved)
 
 
 def reset_settings_flag(db: Session, account_id: int) -> None:

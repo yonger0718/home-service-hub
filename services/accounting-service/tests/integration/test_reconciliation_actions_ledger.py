@@ -15,7 +15,8 @@ from sqlalchemy.orm import sessionmaker
 from app.models import (
     AccountStatement, Category, CoverageDirty, LedgerEntry, ReconciliationAction, ReconciliationCase, StatementLine,
 )
-from app.services import coverage_service
+from app.models import EntryRewardRule, RewardAccrual
+from app.services import coverage_service, reward_engine
 from app.services.statements import matching
 from app.services import entry_write_service as ews
 from app.services import policy_service
@@ -478,6 +479,56 @@ def test_adjust_amount_rewrites_the_pair_claims_and_reverts(near_pair, db_sessio
     exc = _refuse(db_session, lambda: _revert(db_session, again.id))
     assert isinstance(exc, CodedConflictError) and exc.code == "snapshot_conflict"
     assert _fresh(db_session, LedgerEntry, s.entry.id).amount == Decimal("-1015")
+
+
+@pytest.fixture
+def linked(near_pair, seed, db_session):
+    def build(*, posted: bool = False, **kw):
+        s = near_pair(**kw)
+        rule = seed.rule(s.card, name="測試回饋")
+        db_session.commit()
+        db_session.add(EntryRewardRule(entry_id=s.entry.id, rule_id=rule.id))
+        db_session.flush()
+        reward_engine.sync_entry(db_session, s.entry.id)
+        accrual = db_session.scalar(select(RewardAccrual).where(RewardAccrual.source_entry_id == s.entry.id))
+        if posted:
+            row = seed.entry(s.card, "10", kind="reward", reward_source_entry_id=s.entry.id, reward_rule_id=rule.id,
+                             day=date(2026, 11, 5))
+            accrual.state, accrual.ledger_entry_id = "posted", row.id
+        db_session.commit()
+        s.rule, s.accrual_id = rule, accrual.id
+        return s
+    return build
+
+
+def _accrual(db, accrual_id) -> RewardAccrual:
+    db.expire_all()
+    return db.get(RewardAccrual, accrual_id)
+
+
+def test_adjust_amount_re_estimates_an_estimated_accrual_and_its_revert_restores_it(linked, db_session):
+    s = linked()
+    assert _accrual(db_session, s.accrual_id).estimate == Decimal("10")
+    row = _apply(db_session, s.case, "adjust_amount", _adjust(s))
+    accrual = _accrual(db_session, s.accrual_id)
+    assert (accrual.state, accrual.estimate) == ("estimated", Decimal("10.15"))
+    assert _fresh(db_session, LedgerEntry, s.entry.id).needs_review is False  # nothing frozen: no flag
+
+    _revert(db_session, row.id)
+    accrual = _accrual(db_session, s.accrual_id)
+    assert (accrual.state, accrual.estimate) == ("estimated", Decimal("10"))
+
+
+def test_adjust_amount_on_a_posted_accrual_sets_reward_posted_and_the_revert_keeps_it(linked, db_session):
+    s = linked(posted=True)
+    row = _apply(db_session, s.case, "adjust_amount", _adjust(s))
+    entry = _fresh(db_session, LedgerEntry, s.entry.id)
+    assert (entry.needs_review, entry.review_reason) == (True, reward_engine.REVIEW_REASON)
+    assert _accrual(db_session, s.accrual_id).state == "posted"  # frozen: never re-estimated
+
+    _revert(db_session, row.id)
+    entry = _fresh(db_session, LedgerEntry, s.entry.id)
+    assert (entry.needs_review, entry.review_reason) == (True, reward_engine.REVIEW_REASON)
 
 
 @pytest.fixture

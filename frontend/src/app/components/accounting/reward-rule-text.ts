@@ -1,4 +1,4 @@
-import { RewardRule, RewardRuleInput, RewardRuleState, RoundingMode } from '../../models/accounting.model';
+import { RewardRule, RewardRuleInput, RewardRuleState, RewardWindow, RoundingMode } from '../../models/accounting.model';
 import { slashDate } from './dates';
 import { decimalText } from './format';
 
@@ -32,6 +32,23 @@ export function ruleState(rule: Pick<RewardRule, 'is_enabled' | 'starts_on' | 'e
   return 'active';
 }
 
+export const REWARD_WINDOW_LABELS: Record<RewardWindow, string> = {
+  statement_cycle: '帳單週期',
+  calendar_month: '自然月',
+};
+
+/** How the reward is earned: 「每 NT$X 一單位」 for per_unit, otherwise the rule's rate / fixed amount. */
+export function methodSummary(rule: Pick<RewardRule, 'method' | 'rate' | 'fixed_amount' | 'unit_spend'>): string {
+  switch (rule.method) {
+    case 'per_unit':
+      return rule.unit_spend === null ? '每單位' : `每 NT$${decimalText(rule.unit_spend)} 一單位`;
+    case 'fixed':
+      return rule.fixed_amount === null ? '固定金額' : `固定 $${decimalText(rule.fixed_amount)}`;
+    default:
+      return rule.rate === null ? '比例' : `${decimalText(rule.rate)}%`;
+  }
+}
+
 export function postingSummary(
   rule: Pick<RewardRule, 'posting' | 'post_month_offset' | 'post_day' | 'delay_days'>,
 ): string {
@@ -59,7 +76,7 @@ export function periodText(rule: Pick<RewardRule, 'starts_on' | 'ends_on'>): str
   return '無期限';
 }
 
-/** The writable fields of a loaded rule (drops id, account, moze_id, shared cap, window and ordering). */
+/** The writable fields of a loaded rule (drops id, account, moze_id, shared cap and ordering). */
 export function ruleToInput(rule: RewardRule): RewardRuleInput {
   const decimal = (value: string | null): string | null => decimalText(value) || null;
   return {
@@ -67,6 +84,8 @@ export function ruleToInput(rule: RewardRule): RewardRuleInput {
     method: rule.method,
     rate: decimal(rule.rate),
     fixed_amount: decimal(rule.fixed_amount),
+    unit_spend: decimal(rule.unit_spend),
+    window: rule.window,
     posting: rule.posting,
     delay_days: rule.delay_days,
     post_month_offset: rule.post_month_offset,

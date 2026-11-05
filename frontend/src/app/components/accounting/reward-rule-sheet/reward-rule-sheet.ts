@@ -6,13 +6,13 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Observable } from 'rxjs';
 
 import {
-  LedgerAccount, Project, RewardMethod, RewardPosting, RewardRule, RewardRuleInput, RoundingMode, ShareCapWith,
+  LedgerAccount, Project, RewardMethod, RewardPosting, RewardRule, RewardRuleInput, RewardWindow, RoundingMode, ShareCapWith,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { focusables, isHandledKey, restoreOverlayFocus, trapFocus } from '../accounting-ui';
 import { decimalText } from '../format';
 import { fieldErrors, writeErrorMessage } from '../http-errors';
-import { REWARD_ROUNDING_LABELS, basicOverlapRuleId, parseReferenced, ruleLabel, ruleToInput } from '../reward-rule-text';
+import { REWARD_ROUNDING_LABELS, REWARD_WINDOW_LABELS, basicOverlapRuleId, parseReferenced, ruleLabel, ruleToInput } from '../reward-rule-text';
 
 /** The sheet's editable state; numbers stay text until `toInput()`. */
 export interface RuleForm {
@@ -20,6 +20,8 @@ export interface RuleForm {
   method: RewardMethod;
   rate: string;
   fixed_amount: string;
+  unit_spend: string;
+  window: RewardWindow;
   posting: RewardPosting;
   delay_days: string;
   post_month_offset: string;
@@ -38,7 +40,7 @@ export interface RuleForm {
 }
 
 /** Fields that render their own `small.err[data-field]`; any other 422 key goes to the message line. */
-const FIELD_KEYS = new Set(['name', 'rate', 'fixed_amount', 'delay_days', 'post_month_offset', 'post_day', 'total_cap',
+const FIELD_KEYS = new Set(['name', 'rate', 'fixed_amount', 'unit_spend', 'delay_days', 'post_month_offset', 'post_day', 'total_cap',
   'share_cap_with', 'reward_account_id', 'reward_project_id', 'starts_on', 'ends_on', 'description']);
 
 const ROUNDING_ORDER: RoundingMode[] = ['round', 'floor', 'ceil', 'keep'];
@@ -96,6 +98,8 @@ export class RewardRuleSheetComponent implements OnInit {
 
   readonly roundingModes = ROUNDING_ORDER;
   readonly roundingLabels = REWARD_ROUNDING_LABELS;
+  readonly windows: RewardWindow[] = ['statement_cycle', 'calendar_month'];
+  readonly windowLabels = REWARD_WINDOW_LABELS;
   readonly ruleLabel = ruleLabel;
 
   readonly isDirty = computed(() => JSON.stringify(this.form()) !== this.initial);
@@ -127,6 +131,8 @@ export class RewardRuleSheetComponent implements OnInit {
         method: rule.method,
         rate: decimalText(rule.rate),
         fixed_amount: decimalText(rule.fixed_amount),
+        unit_spend: decimalText(rule.unit_spend),
+        window: rule.window,
         posting: rule.posting,
         delay_days: String(rule.delay_days),
         post_month_offset: String(rule.post_month_offset),
@@ -322,6 +328,10 @@ export class RewardRuleSheetComponent implements OnInit {
       if (!(rate > 0 && rate <= 100)) {
         errors['rate'] = '比例須大於 0 且不超過 100';
       }
+    } else if (form.method === 'per_unit') {
+      if (!(Number(decimalOrNull(form.unit_spend) ?? NaN) > 0)) {
+        errors['unit_spend'] = '請輸入大於 0 的金額';
+      }
     } else if (!(Number(decimalOrNull(form.fixed_amount) ?? NaN) > 0)) {
       errors['fixed_amount'] = '請輸入大於 0 的金額';
     }
@@ -346,6 +356,8 @@ export class RewardRuleSheetComponent implements OnInit {
       method: form.method,
       rate: form.method === 'percent' ? decimalOrNull(form.rate) : null,
       fixed_amount: form.method === 'fixed' ? decimalOrNull(form.fixed_amount) : null,
+      unit_spend: form.method === 'per_unit' ? decimalOrNull(form.unit_spend) : null,
+      window: form.window,
       posting: form.posting,
       delay_days: form.posting === 'after_transaction' ? Number(form.delay_days.trim()) : 0,
       post_month_offset: form.posting === 'after_window' ? Number(form.post_month_offset.trim()) : 0,
@@ -369,7 +381,7 @@ export class RewardRuleSheetComponent implements OnInit {
 
   private blankForm(): RuleForm {
     return {
-      name: '', method: 'percent', rate: '', fixed_amount: '', posting: 'after_window', delay_days: '0',
+      name: '', method: 'percent', rate: '', fixed_amount: '', unit_spend: '', window: 'statement_cycle', posting: 'after_window', delay_days: '0',
       post_month_offset: '0', post_day: '1', txn_rounding: 'keep', total_rounding: 'keep', total_cap: '',
       share_cap_with: null, is_basic: false, reward_account_id: null, reward_project_id: null, starts_on: '',
       ends_on: '', is_enabled: true, description: '',

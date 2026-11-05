@@ -19,7 +19,9 @@ export type FxSource = 'fx_api' | 'moze_backup' | 'manual';
 export type DueRule = 'fixed_day' | 'days_after_closing';
 export type RoundingMode = 'keep' | 'round' | 'floor' | 'ceil';
 export type EntryGroupKind = 'split' | 'reward_claim' | 'installment';
-export type RewardMethod = 'percent' | 'fixed';
+export type RewardMethod = 'percent' | 'fixed' | 'per_unit';
+export type RewardWindow = 'statement_cycle' | 'calendar_month';
+export type RewardAccrualState = 'estimated' | 'posted' | 'bank_confirmed' | 'forfeited';
 export type RewardPosting = 'after_window' | 'after_transaction' | 'manual';
 export type ColorConvention = 'red_green' | 'green_red';
 export type KeypadLayout = 'calculator' | 'phone';
@@ -33,7 +35,8 @@ export interface RewardRule {
   method: RewardMethod;
   rate: string | null;
   fixed_amount: string | null;
-  window: 'statement_cycle';
+  unit_spend: string | null;
+  window: RewardWindow;
   posting: RewardPosting;
   delay_days: number;
   post_month_offset: number;
@@ -53,6 +56,31 @@ export interface RewardRule {
   moze_id: string | null;
 }
 
+/** `GET /accounts/{id}/reward-usage`: one item per in-date rule, a shared-cap group once (`rule_ids` lists every member). */
+export interface RewardUsage {
+  rule_ids: number[];
+  shared_cap_id: string | null;
+  name: string;
+  window_start: string;
+  window_end: string;
+  used: string;
+  estimated: string;
+  cap: string | null;
+  remaining: string | null;
+}
+
+/** One reward accrual on an entry (`EntryOut.accruals`). */
+export interface RewardAccrual {
+  id: number;
+  rule_id: number;
+  rule_name: string;
+  estimate: string;
+  amount: string;
+  state: RewardAccrualState;
+  post_on: string | null;
+  ledger_entry_id: number | null;
+}
+
 export type ShareCapWith = 'none' | number | null;
 
 /** Writable fields of a reward rule (`POST/PUT /accounts/{id}/reward-rules`). */
@@ -61,6 +89,8 @@ export interface RewardRuleInput {
   method: RewardMethod;
   rate: string | null;
   fixed_amount: string | null;
+  unit_spend: string | null;
+  window: RewardWindow;
   posting: RewardPosting;
   delay_days: number;
   post_month_offset: number;
@@ -305,6 +335,7 @@ export interface EntryDetail extends LedgerEntry {
   refunded_by: LedgerEntry[];
   rules: RewardRule[];
   rewards: LedgerEntry[];
+  accruals: RewardAccrual[];
   is_settled: boolean | null;
   refunded_amount: string;
   /** Write responses only: the foreign-transaction fee the account proposes, for the client to add. */

@@ -4,6 +4,9 @@ creation per event whichever action made it), `attach_fee` books the foreign-tra
 carries as a child of the purchase (slot `fee`), `adjust_amount` rewrites a near entry to the printed amount (slot
 `amount`). Each claims the line on what it wrote (`match_kind` manual, or `agent` for every policy apply — R1d;
 `match_rule` = the action name) and reverts only while its rows equal the action's `after` (the engine checks).
+`accept_early_reward` (reward engine plan P5, slot `early`) lets bank wins book a `reward_early` line through the
+engine's own accruals: it re-reconciles in the action's transaction, so the line is claimed by `reward_engine`
+coverage, and it cannot be reverted.
 
 Created rows carry `source='statement'`, the statement's account and currency, `entry_date` = the line's
 transaction date (else its posting date), `posted_date` = the line's posting date, a description starting
@@ -15,14 +18,19 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Literal
 
+from pydantic import Field
 from sqlalchemy import select
 
 from app.models import (
-    Account, EntryGroup, LedgerEntry, ReconciliationAction, ReconciliationCase, ReconciliationProposal, StatementLine,
+    Account, EntryGroup, LedgerEntry, ReconciliationAction, ReconciliationCase, ReconciliationProposal, RewardAccrual,
+    StatementCoverage, StatementLine,
 )
 from app.schemas.writes import ChildIn, Int32, RefundIn, ShortText
 from app.services import coverage_service, settings_service, settlement_service, stand_ins
 from app.services import entry_write_service as ews
+from app.services import reconciliation_service as rec
+from app.services import reward_bank_wins, reward_engine
+from app.services.reward_posting import ACCRUAL_NOT_ESTIMATED
 from app.services.errors import CodedConflictError, CodedValidationError
 from app.services.split_protection import protected_reason
 from app.services.statements import matching
@@ -36,7 +44,7 @@ from .coverage_actions import _line_claimed as line_claimed
 from .coverage_actions import _locked_group as locked_group
 from .coverage_actions import case_line
 
-CREATE, FEE, AMOUNT = "create", "fee", "amount"
+CREATE, FEE, AMOUNT, EARLY = "create", "fee", "amount", "early"
 STATEMENT_SOURCE = "statement"
 FEE_CAP = Decimal("0.05")  # an attached fee is at most 5 % of the purchase
 # `fx_source` has no 'statement' value and R1c adds no migration: a rate derived from the printed pair is recorded
@@ -217,6 +225,97 @@ class CreateSystemEntryAction(_TwinGuarded):
         line = _open_line(ctx)
         self._book(ctx, line, effect, kind=params.kind, category_id=ews.system_category_id(ctx.db, params.kind),
                    needs_review=True)
+
+
+class AcceptEarlyRewardParams(ActionParams):
+    accrual_ids: list[Int32] | None = Field(default=None, min_length=1)  # None: the case's `default_accrual_ids`
+
+
+LINE_OUTSIDE_PERIOD = "line_outside_period"
+NOT_REVERTIBLE = "not_revertible"
+
+
+class AcceptEarlyRewardAction(ActionBase):
+    """Reward engine plan P5: the owner accepts that the bank credited a reward before the rule's posting date. The
+    named early accruals (default: the case's `default_accrual_ids`) must be listed in the case's
+    `early_accrual_ids` and still early: `estimated`, or `posted` (by the daily job on its formula date) and confirmed
+    by no statement (fix round 1 ruling; otherwise 409 `accrual_not_estimated`, the code name kept), and the line
+    must print inside the period (409 `line_outside_period`, the race guard behind the registry condition). The
+    resolved ids are recorded on the action row (`params.accrual_ids`, never on the case), which makes them part of
+    bank wins' accepted map; the action then reconciles the statement in its own transaction (as
+    `link_installment_plan`): bank wins posts the ids on the line's date (a posted one is moved to it), pairs the line
+    with them only, confirms them at the bank figure and claims the line (`reward_engine`). A `reconcile_busy` from that
+    reconcile refuses the whole action. Owner only; never reverted (409 `not_revertible`)."""
+    name = "accept_early_reward"
+    Params = AcceptEarlyRewardParams
+    case_kinds = frozenset({"line_unmatched"})
+    slot = EARLY
+
+    @staticmethod
+    def _ids(ctx: Context, params: AcceptEarlyRewardParams) -> list[int]:
+        named = params.accrual_ids if params.accrual_ids is not None else (ctx.case.context or {}).get(
+            "default_accrual_ids") or []
+        return sorted({int(i) for i in named})
+
+    @staticmethod
+    def _accruals(ctx: Context, ids: list[int]) -> dict[int, RewardAccrual]:
+        ctx.db.flush()
+        return {a.id: a for a in ctx.db.scalars(select(RewardAccrual).where(RewardAccrual.id.in_(ids))
+                                                .execution_options(populate_existing=True))}
+
+    def _check(self, ctx: Context, ids: list[int]) -> StatementLine:
+        if not ids:
+            raise _refuse("accrual_ids", "required", "the case names no default accrual")
+        line = _open_line(ctx)
+        listed = set((ctx.case.context or {}).get("early_accrual_ids") or ())
+        found = self._accruals(ctx, ids)
+        moved = [i for i in ids if i not in listed or i not in found
+                 or not reward_bank_wins.is_unconfirmed_early(found[i])]
+        if moved:
+            raise CodedConflictError(ACCRUAL_NOT_ESTIMATED, f"accrual {moved[0]} is not an unconfirmed early accrual "
+                                                            f"of case {ctx.case.id}")
+        if not ctx.statement.period_start <= line.posted_date <= ctx.statement.period_end:
+            raise CodedConflictError(LINE_OUTSIDE_PERIOD, f"line {line.id} prints outside the statement period")
+        return line
+
+    def validate_before(self, ctx: Context, params: AcceptEarlyRewardParams, prepared: Prepared,
+                        before: dict) -> None:
+        self._check(ctx, self._ids(ctx, params))
+
+    def _event_coverage(self, ctx: Context) -> set[int]:
+        return set(ctx.db.execute(select(StatementCoverage.id).where(
+            StatementCoverage.statement_id == ctx.statement.id, StatementCoverage.event_id == ctx.case.event_id,
+            StatementCoverage.status == "active")).scalars())
+
+    def apply(self, ctx: Context, params: AcceptEarlyRewardParams, prepared: Prepared, effect: Effect) -> None:
+        db, case = ctx.db, ctx.case
+        ids = self._ids(ctx, params)
+        self._check(ctx, ids)
+        row = db.get(ReconciliationAction, ctx.action_id)
+        if row.params != {"accrual_ids": ids}:  # the default resolved: the row is what bank wins reads (P5 (3))
+            row.params = {"accrual_ids": ids}
+            db.flush()
+        status, version = case.status, case.version
+        had = self._event_coverage(ctx)
+        # bank wins pairs the line with its accepted ids (posting them on the line's date) in this transaction; the
+        # action holds row locks, so the sweep never waits at the writer barrier (busy → 409 sweep_barrier_busy)
+        rec.reconcile(db, ctx.statement.id, locked=True, barrier_wait=False)
+        if case.status == "superseded":  # the reconcile retired the case it answered; the engine resolves it
+            case.status, case.version = status, version
+            db.flush()
+        accruals = self._accruals(ctx, ids)
+        missed = [i for i in ids if accruals.get(i) is None or accruals[i].state != "bank_confirmed"
+                  or accruals[i].confirmed_statement_id != ctx.statement.id]
+        if missed:  # re-bucketed or forfeited under bank wins' locks, or gone
+            raise CodedConflictError(ACCRUAL_NOT_ESTIMATED, f"accrual {missed[0]} was not confirmed by this statement")
+        effect.coverage_ids = sorted(self._event_coverage(ctx) - had)  # the reward rows are touched through them
+        effect.after = {"accrual_ids": ids}
+
+    def revert_lock_targets(self, ctx: Context, action: ReconciliationAction) -> LockSet:
+        raise CodedConflictError(NOT_REVERTIBLE, f"{self.name} cannot be reverted")
+
+    def invert(self, ctx: Context, action: ReconciliationAction) -> Effect:
+        raise CodedConflictError(NOT_REVERTIBLE, f"{self.name} cannot be reverted")
 
 
 class CreateRefundParams(ActionParams):
@@ -483,11 +582,13 @@ class AdjustAmountAction(ActionBase):
     def apply(self, ctx: Context, params: AdjustAmountParams, prepared: Prepared, effect: Effect) -> None:
         line, entry, new, members = self._plan(ctx, params)
         restore = {key: getattr(entry, key) for key in RESTORED}
+        before = reward_engine.capture(ctx.db, entry)
         note = f"對帳調整 原金額 {ews._plain(entry.amount)}"
         for key, value in new.items():
             setattr(entry, key, value)
         entry.description = note if not entry.description else f"{entry.description}\n{note}"
         ctx.db.flush()
+        reward_engine.after_write_captured(ctx.db, entry, before)  # re-estimate / flag `reward_posted` (spec 5.1)
         if members:
             effect.coverage_ids = _claim(ctx, line, [(m, "member") for m in members], self.name, group_id=params.group_id)
             effect.touched_group_ids = [params.group_id]
@@ -503,9 +604,11 @@ class AdjustAmountAction(ActionBase):
         if entry is None:
             raise NotRevertable(f"entry {action.params['entry_id']} is gone")
         _release(ctx, action)
+        before = reward_engine.capture(ctx.db, entry)
         for key, value in action.inverse["restore"].items():
             setattr(entry, key, Decimal(value) if key in _DECIMALS and value is not None else value)
         ctx.db.flush()
+        reward_engine.after_write_captured(ctx.db, entry, before)
         return Effect(touched_entry_ids=[entry.id])
 
 
@@ -708,3 +811,4 @@ register(AttachFeeAction())
 register(AdjustAmountAction())
 register(BackfillEntryAction())
 register(ReplaceStandInAction())
+register(AcceptEarlyRewardAction())

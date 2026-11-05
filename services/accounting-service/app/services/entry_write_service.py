@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from ..models import Account, Category, Counterparty, EntryGroup, EntryRewardRule, LedgerEntry, Project, RewardRule
 from ..schemas.writes import MAX_ABS_AMOUNT, BalanceAdjustmentIn, ChildIn, EditableKind, EntryIn, EntryUpdateIn
-from . import coverage_service, fx_rate_service, ledger_service
+from . import coverage_service, fx_rate_service, ledger_service, reward_engine
 from . import schedule_entry_hooks
 from .edit_lock import assert_editable
 from .errors import RETRY, CodedConflictError, ConflictError, NotFoundError, ValidationError  # noqa: F401  (ValidationError re-exported)
@@ -225,6 +225,7 @@ def _apply(entry: LedgerEntry, prepared: PreparedEntry, source: str = "manual") 
     entry.invoice_number = payload.invoice_number
     entry.invoice_random = payload.invoice_random
     entry.needs_review = False
+    entry.review_reason = None  # reward_engine.after_write sets or restores `reward_posted` (spec 5.1)
     entry.source = source
 
 
@@ -334,6 +335,7 @@ def insert_prepared(
     db.flush()
     write_children(db, entry, prepared.payload.fee, prepared.payload.discount, source=source)
     write_rule_links(db, entry.id, prepared.payload.reward_rule_ids)
+    reward_engine.after_write(db, entry, before_key=None, before_project_id=None, before_flag=(False, None))
     if remember:
         remember_defaults(db, prepared.payload.category_id, prepared.account.id, prepared.payload.project_id)
     return entry.id
@@ -359,6 +361,8 @@ def apply_prepared_update(db: Session, entry: LedgerEntry, prepared: PreparedEnt
     before or after, it keeps `source='statement'`, so a categorised stand-in stays replaceable. A structural edit
     still flips it to `manual` (the replacement then refuses `stand_in_changed`)."""
     payload = prepared.payload
+    before_key = reward_engine.financial_key(entry, attached_rule_ids(db, entry.id))
+    before_project_id, before_flag = entry.project_id, (entry.needs_review, entry.review_reason)
     statement_booked = entry.source == STATEMENT_SOURCE
     before = _stored_snapshot(entry) if statement_booked else None
     had_children = statement_booked and db.scalar(
@@ -372,6 +376,8 @@ def apply_prepared_update(db: Session, entry: LedgerEntry, prepared: PreparedEnt
     db.flush()
     write_children(db, entry, payload.fee, payload.discount, source=source)
     write_rule_links(db, entry.id, payload.reward_rule_ids)
+    reward_engine.after_write(db, entry, before_key=before_key, before_project_id=before_project_id,
+                              before_flag=before_flag)
 
 
 def create_entry(db: Session, payload: EntryIn, *, http_get=None) -> int:
@@ -522,12 +528,17 @@ def update_entry(db: Session, entry_id: int, payload: EntryUpdateIn, *, http_get
 
 
 def delete_entries_cascade(db: Session, entry_ids: Iterable[int]) -> None:
-    """Delete entries and their fee/discount children; dependants keep existing with their links cleared."""
+    """Delete entries and their fee/discount children; dependants keep existing with their links cleared.
+
+    Reward engine (spec 5.4): the estimated accruals of the doomed rows and of their refunds go first (their windows
+    locked after the caller's ledger locks, P12), the surviving frozen accruals' reward rows get `reward_posted`, and
+    the windows are recomputed once the rows are gone."""
     parents = list(dict.fromkeys(entry_ids))
     if not parents:
         return
     children = list(db.scalars(select(LedgerEntry.id).where(LedgerEntry.parent_entry_id.in_(parents))))
     doomed = parents + children
+    windows = reward_engine.drop_for_delete(db, doomed)
     for column in (LedgerEntry.settles_entry_id, LedgerEntry.refunds_entry_id, LedgerEntry.reward_source_entry_id):
         db.execute(
             update(LedgerEntry)
@@ -539,6 +550,7 @@ def delete_entries_cascade(db: Session, entry_ids: Iterable[int]) -> None:
         db.execute(delete(LedgerEntry).where(LedgerEntry.id.in_(children)).execution_options(synchronize_session=False))
     db.execute(delete(LedgerEntry).where(LedgerEntry.id.in_(parents)).execution_options(synchronize_session=False))
     db.expire_all()
+    reward_engine.recompute_locked(db, windows)
 
 
 def is_blank(value: str | None) -> bool:
@@ -625,33 +637,46 @@ def affected_set(db: Session, entry: LedgerEntry) -> AffectedSet:
 def delete_entry(db: Session, entry_id: int) -> None:
     """Deleting needs no FX, so the locks are taken straight away, in the shared order (D32, split rework §1.7):
     the period's schedule rows (lock_for_entry_delete) → every affected entry_group row (lock_group, ascending id)
-    → the targets, their transfer legs and every member of an affected split group in ONE statement by ascending id
-    (locked_with_legs) → nothing else (delete_entries_cascade then nulls reward_source_entry_id / settles_entry_id /
-    refunds_entry_id on dependant rows outside this lock set; safe, as no path locks those rows before a group or
-    member row). The affected set is read before the locks and again under them; any
-    difference (a member added or dropped by a split PUT, a convert that grouped the entry, a group dissolved by a
-    concurrent delete) is a 409 retry; a target already gone is a 404. Today's refusals stay (referenced loan,
-    reward rows, cutover lock). After the delete every affected group of any kind left empty is removed, and a
-    split group left with exactly one member is dissolved into it (installment / reward groups are not)."""
+    → for an engine reward row, its source purchase FOR UPDATE (its `reward_posted` flag cleared) and then its
+    accrual window in ONE SELECT … ORDER BY id FOR UPDATE (reward_engine.prepare_reward_delete, P12) → the targets, their transfer legs, every member of an affected split
+    group and the refunds of the targets in ONE statement by ascending id (locked_with_legs; the refunds are tier-1
+    rows because the reward job locks a refund before its accrual window, and the cascade below nulls their
+    `refunds_entry_id` after taking that window; `reward_engine.drop_for_delete` locks a refund that appeared after
+    the read) → nothing else (delete_entries_cascade then nulls reward_source_entry_id / settles_entry_id on
+    dependant rows outside this lock set; safe, as no path locks those rows before a group or member row). The affected set is read before the locks and again
+    under them; any difference (a member added or dropped by a split PUT, a convert that grouped the entry, a group
+    dissolved by a concurrent delete) is a 409 retry; a target already gone is a 404. Today's refusals stay
+    (referenced loan, reward rows without an accrual, cutover lock); an engine reward row is deleted, its accrual
+    forfeited and its window recomputed (spec 5.4, P1). After the delete every affected group of any kind left
+    empty is removed, and a split group left with exactly one member is dissolved into it (installment / reward
+    groups are not)."""
     # D29: a loan a live schedule repays cannot be deleted; D32/D33: the period's schedule rows are locked first.
     schedule_entry_hooks.assert_not_referenced(db, loan_entry_id=entry_id)
     instance = schedule_entry_hooks.lock_for_entry_delete(db, [entry_id])
-    before = affected_set(db, get_entry(db, entry_id))
+    target = get_entry(db, entry_id)
+    before = affected_set(db, target)
     for group_id in before.group_ids:
         lock_group(db, group_id)
-    locked = locked_with_legs(db, entry_id, before.transfer_group_id, before.lock_ids())
+    # P1 / P12: for an engine reward row, its purchase (tier 1, flag cleared) and then its accrual window (tier 2)
+    # are locked here, after the groups and before the reward row's own ledger locks.
+    accrual = reward_engine.prepare_reward_delete(db, entry_id) if target.kind == "reward" else None
+    refund_ids = list(db.scalars(select(LedgerEntry.id).where(LedgerEntry.refunds_entry_id.in_(before.target_ids))))
+    locked = locked_with_legs(db, entry_id, before.transfer_group_id, [*before.lock_ids(), *refund_ids])
     entry = next((row for row in locked if row.id == entry_id), None)
     if entry is None:
         raise NotFoundError(f"entry {entry_id} not found")
     if affected_set(db, entry) != before:
         raise CodedConflictError(RETRY, f"entry {entry_id} changed concurrently; retry the delete")
-    if entry.kind == "reward":
+    if entry.kind == "reward" and accrual is None:  # P1: MOZE-era reward rows (no accrual) stay history
         raise ConflictError("reward entries cannot be deleted in phase 2a")
     by_id = {row.id: row for row in locked}
     for target_id in before.target_ids:
         assert_entry_editable(db, by_id[target_id])
     target_ids = list(before.target_ids)  # read before the cascade expires (and deletes) the rows
+    forfeited = reward_engine.forfeit_for_delete(db, accrual) if accrual is not None else None
     delete_entries_cascade(db, target_ids)
+    if forfeited is not None:
+        reward_engine.recompute_locked(db, [forfeited])
     for group_id in before.group_ids:  # every kind: an emptied group goes (unchanged)
         remaining = db.scalar(select(func.count()).select_from(LedgerEntry).where(LedgerEntry.group_id == group_id))
         if remaining == 0:

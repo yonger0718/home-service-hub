@@ -7,7 +7,7 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import Account, EntryRewardRule, LedgerEntry, Project, RewardRule
+from ..models import Account, EntryRewardRule, LedgerEntry, Project, RewardAccrual, RewardRule
 from ..schemas.writes import RewardRuleIn, ShareCapWith
 from . import ledger_service
 from .errors import CodedConflictError, NotFoundError, ValidationError
@@ -17,7 +17,7 @@ RULE_REFERENCED = "rule_referenced"
 
 # Columns copied from the payload verbatim; sort_order and share_cap_with have their own handling.
 _WRITE_FIELDS = (
-    "name", "method", "rate", "fixed_amount", "window", "posting", "delay_days", "post_month_offset", "post_day",
+    "name", "method", "rate", "fixed_amount", "unit_spend", "window", "posting", "delay_days", "post_month_offset", "post_day",
     "txn_rounding", "total_rounding", "total_cap", "is_basic", "reward_account_id", "reward_project_id",
     "starts_on", "ends_on", "is_enabled", "description",
 )
@@ -37,17 +37,36 @@ def _get_rule(db: Session, account_id: int, rule_id: int) -> RewardRule:
     return rule
 
 
-def _check_payload(payload: RewardRuleIn) -> None:
-    if payload.method == "percent":
+def _check_payload(payload: RewardRuleIn, current: RewardRule | None) -> None:
+    method = payload.method
+    if method == "percent":
         if payload.rate is None:
             raise ValidationError("rate", "required for percent rules")
         if payload.fixed_amount is not None:
             raise ValidationError("fixed_amount", "only fixed rules have an amount")
-    else:
+        if payload.unit_spend is not None:
+            raise ValidationError("unit_spend", "only per_unit rules have a unit spend")
+    elif method == "fixed":
         if payload.fixed_amount is None:
             raise ValidationError("fixed_amount", "required for fixed rules")
         if payload.rate is not None:
             raise ValidationError("rate", "only percent rules have a rate")
+        if payload.unit_spend is not None:
+            raise ValidationError("unit_spend", "only per_unit rules have a unit spend")
+    else:
+        if payload.unit_spend is None:
+            raise ValidationError("unit_spend", "required for per_unit rules")
+        if payload.rate is not None:
+            raise ValidationError("rate", "only percent rules have a rate")
+        if payload.fixed_amount is not None:
+            raise ValidationError("fixed_amount", "only fixed rules have an amount")
+    if payload.fixed_amount is not None and payload.fixed_amount <= 0:
+        # #289: a stored MOZE placeholder (fixed, 0) may be re-saved as such; nothing else may be 0.
+        keeps_placeholder = (
+            current is not None and current.method == "fixed" and current.fixed_amount == 0 and method == "fixed"
+        )
+        if not keeps_placeholder:
+            raise ValidationError("fixed_amount", "must be greater than 0")
     if payload.starts_on and payload.ends_on and payload.starts_on > payload.ends_on:
         raise ValidationError("ends_on", "must not be before starts_on")
 
@@ -111,6 +130,32 @@ def _apply_share_cap(db: Session, rule: RewardRule, share_cap_with: ShareCapWith
     rule.shared_cap_id = other.shared_cap_id
 
 
+def _group_rules(db: Session, rule: RewardRule) -> list[RewardRule]:
+    if rule.shared_cap_id is None:
+        return [rule]
+    return list(db.scalars(
+        select(RewardRule).where(RewardRule.shared_cap_id == rule.shared_cap_id).order_by(RewardRule.id)))
+
+
+def group_rule_ids(db: Session, rule: RewardRule) -> list[int]:
+    """The ids of the rules sharing this rule's cap, or just this rule when ungrouped."""
+    return [r.id for r in _group_rules(db, rule)]
+
+
+def group_cap(db: Session, rule: RewardRule) -> Decimal | None:
+    """The smallest non-null total_cap in the rule's group; None when every rule is uncapped."""
+    caps = [r.total_cap for r in _group_rules(db, rule) if r.total_cap is not None]
+    return min(caps) if caps else None
+
+
+def _check_group_window(db: Session, rule: RewardRule, payload: RewardRuleIn) -> None:
+    if rule.shared_cap_id is None:
+        return
+    if len({r.window for r in _group_rules(db, rule)}) > 1:
+        field = "share_cap_with" if isinstance(payload.share_cap_with, int) else "window"
+        raise ValidationError(field, "rules sharing a cap must use the same window")
+
+
 def _save(db: Session, rule: RewardRule, payload: RewardRuleIn, *, is_new: bool) -> None:
     """Shared tail of create and update: refs → write fields → overlap → share cap → flush."""
     _check_refs(db, payload, rule.account_id, None if is_new else rule)
@@ -119,11 +164,26 @@ def _save(db: Session, rule: RewardRule, payload: RewardRuleIn, *, is_new: bool)
     _check_basic_overlap(db, rule.account_id, rule)
     _apply_share_cap(db, rule, payload.share_cap_with)
     db.flush()
+    _check_group_window(db, rule, payload)
+
+
+def _cap_target_ids(db: Session, share_cap_with: ShareCapWith) -> set[int]:
+    """The rule a payload's `share_cap_with` names and its current cap group (unknown ids: the validation's 422)."""
+    if not isinstance(share_cap_with, int) or isinstance(share_cap_with, bool):
+        return set()
+    other = db.get(RewardRule, share_cap_with)
+    return {share_cap_with} if other is None else set(group_rule_ids(db, other))
 
 
 def create(db: Session, account_id: int, payload: RewardRuleIn) -> int:
+    from . import reward_engine  # reward_engine imports this module
+
     _get_account(db, account_id)
-    _check_payload(payload)
+    # P12 card + rule tiers: the new rule's card (and its effective parent) FOR KEY SHARE NOWAIT, so no rule appears
+    # on a card while a closing_day / re-parent write of it is in flight (a rule set is never a phantom to a card
+    # writer); joining a cap changes the cap of every existing member, so they are locked FOR UPDATE NOWAIT too.
+    reward_engine.lock_rules_for_write(db, _cap_target_ids(db, payload.share_cap_with), card_ids=[account_id])
+    _check_payload(payload, None)
     sort_order = payload.sort_order
     if sort_order is None:
         top = db.scalar(select(func.max(RewardRule.sort_order)).where(RewardRule.account_id == account_id))
@@ -131,20 +191,42 @@ def create(db: Session, account_id: int, payload: RewardRuleIn) -> int:
     rule = RewardRule(account_id=account_id, sort_order=sort_order)
     db.add(rule)
     _save(db, rule, payload, is_new=True)
+    if rule.shared_cap_id is not None:
+        # Joining a shared cap can lower the group cap: recompute the group's estimates as a PUT does (spec 5.1).
+        reward_engine.mark_early_rechecks(db, account_id)
+        reward_engine.recompute_rules(db, group_rule_ids(db, rule))
     return rule.id
 
 
 def update(db: Session, account_id: int, rule_id: int, payload: RewardRuleIn) -> None:
+    """Rewrite the rule, then re-bucket and recompute the estimated accruals of every rule whose window or cap it
+    may have moved: the rule and its shared-cap group before and after (reward engine spec 5.1). The card's open
+    `reward_early` cases get a recheck first (P6; statement rows before accrual locks, P12). Lock order: rule rows
+    FOR UPDATE NOWAIT -> statement rows NOWAIT -> sources NOWAIT -> windows NOWAIT (a rule writer never waits)."""
+    from . import reward_engine  # reward_engine imports this module
+
     rule = _get_rule(db, account_id, rule_id)
-    _check_payload(payload)
+    # P12 rule tier first: the rule, its current cap group and the group it may join, FOR UPDATE NOWAIT in id order
+    # (re-read under the lock), before the row changes and before any source, statement or window lock.
+    reward_engine.lock_rules_for_write(db, {rule_id, *group_rule_ids(db, rule), *_cap_target_ids(
+        db, payload.share_cap_with)})
+    touched = set(group_rule_ids(db, rule))
+    _check_payload(payload, rule)
     if payload.sort_order is not None:
         rule.sort_order = payload.sort_order
     _save(db, rule, payload, is_new=False)
+    touched |= set(group_rule_ids(db, rule))
+    reward_engine.mark_early_rechecks(db, account_id)
+    reward_engine.recompute_rules(db, touched)
 
 
 def reorder(db: Session, account_id: int, ids: list[int]) -> None:
-    """Write positions 0..n-1; the list must name every rule of the account exactly once."""
+    """Write positions 0..n-1; the list must name every rule of the account exactly once. A rule write: the
+    account's rules FOR UPDATE NOWAIT first (P12 rule tier), though sort_order moves no accrual."""
+    from . import reward_engine  # reward_engine imports this module
+
     _get_account(db, account_id)
+    reward_engine.lock_rules_for_write(db, db.scalars(select(RewardRule.id).where(RewardRule.account_id == account_id)))
     rules = {r.id: r for r in db.execute(select(RewardRule).where(RewardRule.account_id == account_id)).scalars()}
     if len(ids) != len(set(ids)) or set(ids) != set(rules):
         raise ValidationError("ids", "must list every rule of the account exactly once")
@@ -154,11 +236,18 @@ def reorder(db: Session, account_id: int, ids: list[int]) -> None:
 
 
 def delete(db: Session, account_id: int, rule_id: int) -> None:
+    from . import reward_engine  # reward_engine imports this module
+
     rule = _get_rule(db, account_id, rule_id)
+    # P12 rule tier: the rule and its cap group (whose cap it leaves) FOR UPDATE NOWAIT before the reference counts,
+    # so no link or accrual can appear between the count and the delete.
+    reward_engine.lock_rules_for_write(db, group_rule_ids(db, rule))
     entries = db.scalar(select(func.count()).select_from(EntryRewardRule).where(EntryRewardRule.rule_id == rule.id))
     rewards = db.scalar(select(func.count()).select_from(LedgerEntry).where(LedgerEntry.reward_rule_id == rule.id))
-    if entries or rewards:
-        raise CodedConflictError(RULE_REFERENCED, json.dumps({"entries": entries, "rewards": rewards}))
+    accruals = db.scalar(select(func.count()).select_from(RewardAccrual).where(RewardAccrual.rule_id == rule.id))
+    if entries or rewards or accruals:  # reward_accrual.rule_id is RESTRICT: count it here, not as a 500 at flush
+        raise CodedConflictError(RULE_REFERENCED,
+                                 json.dumps({"entries": entries, "rewards": rewards, "accruals": accruals}))
     db.delete(rule)
     db.flush()
 

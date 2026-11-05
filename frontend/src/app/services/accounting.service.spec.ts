@@ -278,6 +278,18 @@ describe('AccountingService', () => {
     detail.flush({});
   });
 
+  it('reads reward usage, sending date only when given', () => {
+    service.getRewardUsage(11).subscribe();
+    const bare = httpMock.expectOne(r => r.url === '/api/accounting/accounts/11/reward-usage');
+    expect(bare.request.method).toBe('GET');
+    expect(bare.request.params.has('date')).toBe(false);
+    bare.flush([]);
+    service.getRewardUsage(11, '2026-10-15').subscribe();
+    const dated = httpMock.expectOne(r => r.url === '/api/accounting/accounts/11/reward-usage');
+    expect(dated.request.params.get('date')).toBe('2026-10-15');
+    dated.flush([]);
+  });
+
   it('sends only the set entry query parameters', () => {
     service.getEntries(7, { limit: 50, offset: 100, kind: 'expense', date_from: null }).subscribe();
 

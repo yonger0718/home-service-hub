@@ -2,6 +2,7 @@
 re-homes an unmatched entry and re-reconciles both statements, `split_entry` converts a near entry into a split
 and claims the line on the member that equals it, `balance_adjustment_asof` books the gap as of the period end
 under the transaction-scoped writer barrier. Refusals write nothing; each revert is exact. Synthetic data only."""
+import re
 import threading
 import time
 from datetime import date
@@ -9,16 +10,16 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select, text, update
+from sqlalchemy import event, select, text, update
 from sqlalchemy.orm import sessionmaker
 
 from app.models import (
     DIRTY_BARRIER_KEY, AccountStatement, CoverageDirty, EntryGroup, EntryRewardRule, LedgerEntry, ReconciliationAction,
-    ReconciliationCase,
+    ReconciliationCase, RewardAccrual,
 )
 from app.services import coverage_service as cov
 from app.services import entry_write_service as ews
-from app.services import ledger_service, policy_service
+from app.services import ledger_service, policy_service, reward_engine
 from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, ValidationError
 from app.services import reconciliation_actions as registry
@@ -172,6 +173,39 @@ def test_move_account_re_reconciles_both_statements_and_reverts(dirty_on, move, 
     assert revert.action == "revert"
 
 
+def test_move_account_refuses_an_entry_with_reward_rule_links(dirty_on, move, seed, db_session):
+    """A link belongs to the old card's rules (check_rules), so the move is refused and nothing accrues elsewhere."""
+    s = move
+    rule = seed.rule(s.a, name="測試回饋")
+    rule.posting = "manual"
+    db_session.commit()
+    db_session.add(EntryRewardRule(entry_id=s.entry.id, rule_id=rule.id))
+    db_session.flush()
+    reward_engine.sync_entry(db_session, s.entry.id)
+    db_session.commit()
+    exc = _refuse(db_session, lambda: _apply(db_session, s.case, "move_account",
+                                             {"entry_id": s.entry.id, "account_id": s.b.id}))
+    assert (_code(exc), exc.field) == ("not_movable", "entry_id")
+    assert "reward_link" in str(exc.detail if hasattr(exc, "detail") else exc)
+    assert _actions(db_session) == []
+    assert _fresh(db_session, LedgerEntry, s.entry.id).account_id == s.a.id
+
+
+def test_move_account_refuses_an_entry_with_a_posted_reward_row(dirty_on, move, seed, db_session):
+    """Replaces the posted-accrual flag test: a purchase with a reward row can no longer be moved at all."""
+    s = move
+    rule = seed.rule(s.a, name="測試回饋")
+    db_session.commit()
+    seed.entry(s.a, "5", kind="reward", reward_source_entry_id=s.entry.id, reward_rule_id=rule.id,
+               day=date(2026, 11, 5))
+    db_session.commit()
+    exc = _refuse(db_session, lambda: _apply(db_session, s.case, "move_account",
+                                             {"entry_id": s.entry.id, "account_id": s.b.id}))
+    assert (_code(exc), exc.field) == ("not_movable", "entry_id")
+    assert _actions(db_session) == []
+    assert _fresh(db_session, LedgerEntry, s.entry.id).account_id == s.a.id
+
+
 def test_move_account_refuses_a_participating_account_of_the_case_statement(move, seed, db_session):
     """A move inside the statement's own population would resolve the case only until the next reconcile."""
     child = seed.account("附卡", combined_account_id=move.a.id)
@@ -304,6 +338,42 @@ def test_split_refuses_an_anchor_it_cannot_invert(split, seed, db_session, shape
     assert (_code(exc), exc.field) == ("not_splittable", "entry_id")
     assert _actions(db_session) == []
     assert _fresh(db_session, LedgerEntry, anchor.id).group_id is None
+
+
+def test_split_revert_takes_one_window_lock_for_the_delete_and_the_anchor(split, seed, db_session):
+    """PR #290 fix round: after the split, the anchor and a new member gain rule links (two rules: two windows; the
+    snapshot gate does not compare links). The revert deletes the member and re-syncs the anchor under ONE plain
+    window lock taken before either (the reconcile's NOWAIT bank-wins lock that follows is not counted)."""
+    s = split
+    row, _ = _apply(db_session, s.case, "split_entry", {"entry_id": s.entry.id, "parts": _parts(s, 500, 500)})
+    anchor_id, new_id = row.inverse["anchor_id"], row.inverse["member_ids"][1]
+    first, second = seed.rule(s.card, name="測試回饋"), seed.rule(s.card, name="測試回饋B")
+    first.posting = second.posting = "manual"
+    db_session.commit()
+    db_session.add_all([EntryRewardRule(entry_id=anchor_id, rule_id=first.id),
+                        EntryRewardRule(entry_id=new_id, rule_id=second.id)])
+    db_session.flush()
+    for entry_id in (anchor_id, new_id):
+        reward_engine.sync_entry(db_session, entry_id)
+    db_session.commit()
+    plain = re.compile(r"FROM reward_accrual\b.*FOR UPDATE(?! NOWAIT)", re.S)
+    locks: list[str] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        if plain.search(statement):
+            locks.append(statement)
+
+    bind = db_session.connection().engine
+    event.listen(bind, "before_cursor_execute", capture)
+    try:
+        _revert(db_session, row.id)
+    finally:
+        event.remove(bind, "before_cursor_execute", capture)
+    assert len(locks) == 1, locks
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, new_id) is None
+    accruals = list(db_session.scalars(select(RewardAccrual)))
+    assert [(a.source_entry_id, a.rule_id, a.estimate) for a in accruals] == [(anchor_id, first.id, Decimal("10"))]
 
 
 def test_split_revert_refuses_an_edited_member_and_otherwise_restores_the_anchor(split, db_session):

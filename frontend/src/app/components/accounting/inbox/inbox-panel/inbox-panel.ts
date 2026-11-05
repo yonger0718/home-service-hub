@@ -48,7 +48,7 @@ import { AccountingService } from '../../../../services/accounting.service';
 export const INBOX_PREVIEW_CARDS = 3;
 
 /** Buttons the panel applies at once (no sheet). */
-type OneTap = 'dismiss' | 'accept_bank_amount' | 'defer' | 'anchor';
+type OneTap = 'dismiss' | 'accept_bank_amount' | 'defer' | 'anchor' | 'accept_early';
 
 type FoldKey = 'proposed' | 'balanceGap' | 'settlement' | 'dividend' | 'other';
 
@@ -58,7 +58,7 @@ const FOLD_BUTTONS: Record<FoldKey, readonly InboxButton[]> = {
   balanceGap: ['anchor', 'dismiss'],
   settlement: [],
   dividend: [],
-  other: ['dismiss'],
+  other: ['accept_early', 'dismiss'],
 };
 
 /** Kept here for callers of the Task 9 surface; the formula lives in `inbox-view` so the sheets share it. */

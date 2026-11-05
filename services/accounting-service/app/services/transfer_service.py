@@ -25,6 +25,7 @@ from .entry_write_service import (
     write_children,
     write_rule_links,
 )
+from . import reward_engine
 from .errors import NotFoundError, ValidationError
 
 NO_FX = {"original_amount": None, "original_currency": None, "fx_rate": None, "fx_source": None}
@@ -111,6 +112,7 @@ def _leg_values(
         "tags": list(payload.tags),
         "counterparty_id": None,
         "needs_review": False,
+        "review_reason": None,  # reward_engine.after_write sets or restores `reward_posted`
         "source": entry_source,
     }
     out_values = {
@@ -126,12 +128,20 @@ def _leg_values(
 
 def _write_leg_extras(
     db: Session, out_leg: LedgerEntry, in_leg: LedgerEntry, payload: TransferIn, *, source: str = "manual",
-    remember: bool = True,
+    remember: bool = True, before: dict[int, tuple] | None = None,
 ) -> None:
+    """`before`: leg id -> (financial key, project id, (needs_review, review_reason)) read before the update
+    rewrote the legs (update_transfer); None for a new transfer."""
     write_children(db, out_leg, payload.out_fee, payload.out_discount, source=source)
     write_children(db, in_leg, payload.in_fee, payload.in_discount, source=source)
     write_rule_links(db, out_leg.id, payload.reward_rule_ids)
     write_rule_links(db, in_leg.id, [])
+    # P12 tier 2: both legs' old and new windows in ONE lock_windows before either leg syncs, so two transfers whose
+    # legs touch the same windows in opposite order cannot each hold one and wait on the other.
+    reward_engine.lock_written_entries(db, (out_leg, in_leg))
+    for leg in (out_leg, in_leg):
+        key, project_id, flag = (before or {}).get(leg.id, (None, None, (False, None)))
+        reward_engine.after_write(db, leg, before_key=key, before_project_id=project_id, before_flag=flag)
     if remember:
         remember_defaults(db, payload.category_id, payload.from_account_id, payload.project_id)
 
@@ -188,9 +198,14 @@ def update_transfer(db: Session, group_id: UUID, payload: TransferIn) -> None:
     out_values, in_values = _leg_values(
         db, payload, frozenset(attached_rule_ids(db, out_leg.id)), entry_source=source
     )
+    before = {
+        leg.id: (reward_engine.financial_key(leg, attached_rule_ids(db, leg.id)), leg.project_id,
+                 (leg.needs_review, leg.review_reason))
+        for leg in (out_leg, in_leg)
+    }
     for leg, values in ((out_leg, out_values), (in_leg, in_values)):
         for column, value in values.items():
             setattr(leg, column, value)
     db.execute(delete(LedgerEntry).where(LedgerEntry.parent_entry_id.in_([out_leg.id, in_leg.id])))
     db.flush()
-    _write_leg_extras(db, out_leg, in_leg, payload, source=source)
+    _write_leg_extras(db, out_leg, in_leg, payload, source=source, before=before)

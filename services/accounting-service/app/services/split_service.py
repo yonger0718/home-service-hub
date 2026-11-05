@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from ..models import EntryGroup, LedgerEntry
 from ..schemas.writes import MAX_SPLIT_MEMBERS, EntryIn, SplitIn, SplitKeepIn, SplitMemberIn
-from . import schedule_entry_hooks
+from . import reward_engine, schedule_entry_hooks
 from .edit_lock import assert_editable
 from .entry_write_service import (
     EDITABLE_KINDS,
@@ -121,6 +121,23 @@ def _prepare(db: Session, members: list[_Member], http_get) -> None:
             raise ValidationError(f"members.{member.index}.{exc.field}", exc.message) from exc
 
 
+def _lock_reward_windows(db: Session, members: list[_Member], entry_ids: list[int], drop_ids: list[int] = ()) -> None:
+    """P12 for a split write, after its group and member locks and before any member write: the refunds of the members
+    it deletes (tier 1), the rule tier (`share_entry_rules`), then ONE `lock_windows` over the union of every window
+    the write touches (tier 2): the current windows of every existing member (dropped ones included) and of their
+    refunds, and the target windows of every prepared member. Each member's `sync_entry` / the delete's `drop_for_delete` then finds its windows held
+    and locks nothing more, so two splits on one card cannot each hold one window and wait on the other."""
+    reward_engine.lock_refunds_of(db, drop_ids)
+    prepared = [member.prepared.payload for member in members if member.prepared is not None]
+    # the rule tier: every rule the write prices under (current and new links), FOR SHARE and re-read (P12)
+    reward_engine.share_entry_rules(
+        db, entry_ids, {rule_id for payload in prepared for rule_id in payload.reward_rule_ids})
+    planned = set()
+    for payload in prepared:
+        planned |= reward_engine.planned_windows(db, payload.reward_rule_ids, payload.entry_date)
+    reward_engine.lock_entry_windows(db, entry_ids, planned)
+
+
 def _check_create_cardinality(payload: SplitIn) -> None:
     """POST /splits: 2 to MAX_SPLIT_MEMBERS members, none of them existing (§1.3)."""
     if not 2 <= len(payload.members) <= MAX_SPLIT_MEMBERS:
@@ -143,6 +160,7 @@ def create_split_result(db: Session, payload: SplitIn, *, http_get=None) -> Spli
     group = EntryGroup(kind="split", name=payload.name, merchant=payload.merchant, description=payload.description)
     db.add(group)
     db.flush()
+    _lock_reward_windows(db, members, [])
     for member in members:
         member.entry_id = insert_prepared(db, member.prepared, group_id=group.id, remember=False)
     remember_all_defaults(db, [member.prepared for member in members])
@@ -316,20 +334,26 @@ def _revalidate(
             raise CodedConflictError(RETRY, f"member {member.entry_id} changed concurrently")
 
 
-def _apply_meta(entry: LedgerEntry, payload: EntryIn) -> None:
-    """A financially unchanged keep_full member: metadata only (no FX, no child or rule-link rebuild)."""
+def _apply_meta(db: Session, entry: LedgerEntry, payload: EntryIn) -> None:
+    """A financially unchanged keep_full member: metadata only (no FX, no child or rule-link rebuild). A prior
+    `reward_posted` flag is restored and a project change moves the reward rows (reward engine, spec 5.1)."""
+    before_project_id, before_flag = entry.project_id, (entry.needs_review, entry.review_reason)
     entry.name, entry.merchant, entry.project_id = payload.name, payload.merchant, payload.project_id
     entry.tags, entry.description = list(payload.tags), payload.description
-    entry.needs_review = False  # as _apply on every financial / single edit
+    entry.needs_review, entry.review_reason = False, None  # as _apply on every financial / single edit
+    reward_engine.after_meta_write(db, entry, before_project_id=before_project_id, before_flag=before_flag)
 
 
-def _apply_keep(entry: LedgerEntry, item: SplitKeepIn) -> None:
-    """A keep_meta member: only the fields the request sent (null and [] included)."""
+def _apply_keep(db: Session, entry: LedgerEntry, item: SplitKeepIn) -> None:
+    """A keep_meta member: only the fields the request sent (null and [] included); flag and reward projects as
+    `_apply_meta`."""
+    before_project_id, before_flag = entry.project_id, (entry.needs_review, entry.review_reason)
     for field in KEEP_FIELDS:
         if field in item.model_fields_set:
             value = getattr(item, field)
             setattr(entry, field, list(value or []) if field == "tags" else value)
-    entry.needs_review = False  # as _apply on every financial / single edit
+    entry.needs_review, entry.review_reason = False, None  # as _apply on every financial / single edit
+    reward_engine.after_meta_write(db, entry, before_project_id=before_project_id, before_flag=before_flag)
 
 
 def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None) -> SplitResult:
@@ -337,7 +361,8 @@ def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None)
     changed), get a metadata-only update (financially unchanged) or are skipped (fully unchanged); keep_meta
     members get the sent metadata; new members are inserted; current members absent from the payload are deleted.
     Protected members (split_protection) only take the keep form and are never dropped. Reward ledger rows are
-    never touched. Errors in phase order: see _readable_split, _check_put_cardinality, _plan_members,
+    never deleted here; a member's project change moves its engine reward rows (reward engine spec 5.1). Errors in
+    phase order: see _readable_split, _check_put_cardinality, _plan_members,
     _refuse_locked, _prepare, _revalidate."""
     # 1. preliminary read and classification: no lock, no FX
     _readable_split(db, group_id)
@@ -360,16 +385,17 @@ def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None)
     # 5. write: no helper below commits
     for entry_id in drop_ids:  # §1.5: the same refusal as a single delete; not kind-gated like SCHEDULED_LOAN
         schedule_entry_hooks.assert_not_referenced(db, loan_entry_id=entry_id)
+    _lock_reward_windows(db, members, before_ids, drop_ids)
     delete_entries_cascade(db, drop_ids)  # expires the session; rows are re-read below under the held locks
     for member in members:
         if member.action == "new":
             member.entry_id = insert_prepared(db, member.prepared, group_id=group_id, remember=False)
         elif member.action == "keep":
-            _apply_keep(db.get(LedgerEntry, member.entry_id), member.item)
+            _apply_keep(db, db.get(LedgerEntry, member.entry_id), member.item)
         elif member.change == "financial":
             apply_prepared_update(db, db.get(LedgerEntry, member.entry_id), member.prepared)
         elif member.change == "meta":
-            _apply_meta(db.get(LedgerEntry, member.entry_id), member.payload)
+            _apply_meta(db, db.get(LedgerEntry, member.entry_id), member.payload)
     db.flush()
     result = [(member.entry_id, member.item.client_key) for member in members]
     if len(members) == 1:
@@ -444,6 +470,7 @@ def convert_to_split(db: Session, entry_id: int, payload: SplitIn, *, http_get=N
     except NotFoundError as exc:
         raise CodedConflictError(RETRY, f"entry {entry_id} was deleted concurrently") from exc
     _refuse_anchor(db, anchor)
+    _lock_reward_windows(db, members, [entry_id])
     # 5. write
     group = EntryGroup(kind="split", name=payload.name, merchant=payload.merchant, description=payload.description)
     db.add(group)

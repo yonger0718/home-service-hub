@@ -194,6 +194,10 @@
             </span>
             <small class="rule-posting">{{ postingSummary(rule) }}</small>
             <small class="rule-period">{{ periodText(rule) }}</small>
+            <small class="rule-window">{{ windowLabels[rule.window] }}</small>
+            @if (usageByRule().get(rule.id); as use) {
+              <small class="rule-usage"><span class="usage-total">{{ usageText(use) }}</span> · <span class="usage-window">{{ usageWindow(use) }}</span></small>
+            }
           </div>
           <div class="rule-actions">
             <app-switch class="rule-enabled" [checked]="rule.is_enabled" [disabled]="ruleBusy()" [ariaLabel]="rule.name + ' 啟用'" (checkedChange)="toggleRule(rule, $event)" />

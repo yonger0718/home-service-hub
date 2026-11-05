@@ -170,6 +170,27 @@ describe('AppInboxHandledListComponent', () => {
     expect(text(row(el, 1))).not.toContain('同時停用這條規則');
   });
 
+  it('an accept_early_reward row offers no 撤銷', () => {
+    const accepted = makeAction({ id: 6, action: 'accept_early_reward', answer: '接受提早入帳' });
+    const { el } = render([accepted, OWNER_ROW]);
+    expect(text(row(el, 6).querySelector('.what'))).toBe('你 · 接受提早入帳 · 2026/10/20');
+    expect(button(row(el, 6), '撤銷')).toBeUndefined();
+    expect(button(row(el, 3), '撤銷')).toBeDefined();
+  });
+
+  it('a 409 not_revertible also shows 不能撤銷', () => {
+    const { fixture, el } = render([OWNER_ROW]);
+    button(row(el, 3), '撤銷').click();
+    http
+      .expectOne((r) => r.method === 'POST' && r.url === `${ACTIONS_URL}/3/revert`)
+      .flush(
+        { detail: 'not_revertible: accept_early_reward cannot be reverted' },
+        { status: 409, statusText: 'Conflict' },
+      );
+    fixture.detectChanges();
+    expect(text(row(el, 3).querySelector('.handled-error'))).toBe('不能撤銷');
+  });
+
   it('not_revertable shows 不能撤銷', () => {
     const { fixture, el, changed, entriesChanged } = render([OWNER_ROW, POLICY_ROW]);
     button(row(el, 3), '撤銷').click();

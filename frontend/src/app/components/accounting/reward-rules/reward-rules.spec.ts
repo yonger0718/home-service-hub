@@ -21,7 +21,7 @@ const NO_STATS: RewardRuleStats = { linked_entries: 0, linked_entries_12m: 0, re
 
 function rule(id: number, name: string, overrides: Partial<RewardRuleOverviewRule> = {}): RewardRuleOverviewRule {
   return {
-    id, account_id: 11, name, method: 'percent', rate: '1.5000', fixed_amount: null, window: 'statement_cycle',
+    id, account_id: 11, name, method: 'percent', rate: '1.5000', fixed_amount: null, unit_spend: null, window: 'statement_cycle',
     posting: 'after_window', delay_days: 0, post_month_offset: 1, post_day: 15, txn_rounding: 'keep', total_rounding: 'round',
     total_cap: null, shared_cap_id: null, is_basic: true, reward_account_id: null, reward_project_id: null,
     starts_on: null, ends_on: null, is_enabled: true, description: null, sort_order: 0, moze_id: null,

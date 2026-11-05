@@ -7,10 +7,10 @@ from .auth import ApiTokenMiddleware, api_auth_status, docs_paths, validate_auth
 from .database import engine, get_db
 from .logging_setup import configure_logging
 from .routers import (
-    accounts, balance_adjustments, calendar, entries, imports, reconciliation, reports, reward_rules, schedules,
-    settings, splits, statements, transfers,
+    accounts, balance_adjustments, calendar, entries, imports, reconciliation, reports, reward_accruals, reward_rules,
+    schedules, settings, splits, statements, transfers,
 )
-from .services import auto_pay_job, schedule_job
+from .services import auto_pay_job, reward_post_job, schedule_job
 
 configure_logging()  # #190: app.* loggers (job run summaries) to stderr → journal, level from ACCOUNTING_LOG_LEVEL
 
@@ -22,6 +22,7 @@ app = create_app(
         accounts.router, entries.router, imports.router, settings.router,
         transfers.router, splits.router, balance_adjustments.router, schedules.router,
         statements.router, reconciliation.router, calendar.router, reports.router, reward_rules.router,
+        reward_accruals.router,
     ],
     get_db=get_db,
     engine=engine,
@@ -55,3 +56,13 @@ def _start_auto_pay_job() -> None:
 @app.on_event("shutdown")
 def _stop_auto_pay_job() -> None:
     auto_pay_job.stop()
+
+
+@app.on_event("startup")
+def _start_reward_post_job() -> None:
+    reward_post_job.start(engine)
+
+
+@app.on_event("shutdown")
+def _stop_reward_post_job() -> None:
+    reward_post_job.stop()
