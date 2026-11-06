@@ -41,6 +41,7 @@ class EinvoiceMatchOut(BaseModel):
     near: int
     unmatched: int
     unchanged: int
+    retry_later: int  # a link insert lost to a concurrent ledger write; state left as is (R6)
 
 
 class EinvoiceImportOut(BaseModel):

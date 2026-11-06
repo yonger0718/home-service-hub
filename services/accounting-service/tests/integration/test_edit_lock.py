@@ -216,6 +216,8 @@ EXPECTED_WRITES = {
     ("/reward-accruals/{accrual_id}/post", "POST"),
     # E-invoice import (worker, ingest scope): writes only einvoice tables, never an imported ledger row.
     ("/einvoices/import", "POST"),
+    # E-invoice matcher run (worker, ingest scope): writes einvoice tables and stamps a NULL invoice_number only.
+    ("/einvoices/match", "POST"),
 }
 
 

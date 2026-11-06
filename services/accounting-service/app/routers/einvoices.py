@@ -1,11 +1,12 @@
-"""E-invoice import (spec §6). Behind `require_feature()`; the worker's `ingest` scope posts the parsed CSV."""
+"""E-invoice import and matcher run (spec §6, §7). Behind `require_feature()`; the worker's `ingest` scope posts
+the parsed CSV and triggers `/match`."""
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from ..auth import require, require_feature
 from ..database import get_db
 from ..schemas.einvoices import EinvoiceImportIn, EinvoiceImportOut, EinvoiceMatchOut
-from ..services import einvoice_service
+from ..services import einvoice_matcher, einvoice_service
 from .errors import service_errors
 
 router = APIRouter(prefix="/einvoices", tags=["E-invoices"], dependencies=[Depends(require_feature())])
@@ -18,6 +19,14 @@ def ingest(body: EinvoiceImportIn, db: Session = Depends(get_db)):
     with service_errors():
         einvoice_service.lock(db)
         counts = einvoice_service.import_invoices(db, body)
-        match = EinvoiceMatchOut(ran=False, processed=0, linked=0, ambiguous=0, near=0, unmatched=0, unchanged=0)
+        match = einvoice_matcher.run_matcher(db)  # same transaction as the import
     db.commit()
     return {**counts, "match": match}
+
+
+@router.post("/match", response_model=EinvoiceMatchOut, dependencies=INGEST)
+def match(db: Session = Depends(get_db)):
+    with service_errors():
+        out = einvoice_matcher.run_matcher(db)
+    db.commit()
+    return out
