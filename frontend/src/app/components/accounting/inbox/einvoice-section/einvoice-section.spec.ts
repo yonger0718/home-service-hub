@@ -146,6 +146,25 @@ describe('AppEinvoiceSectionComponent', () => {
     expect(changed).not.toHaveBeenCalled();
   });
 
+  it('shows a fractional invoice total as a plain number, not rounded TWD', () => {
+    const { el } = render([invoice({ total_amount: '20.9900', items: [{ name: '糖果', subtotal: '20.9900' }] })]);
+    expect(el.textContent).toContain('20.99');
+    expect(el.textContent).not.toContain('$21');
+  });
+
+  it('clears a stale refusal when a retry starts', () => {
+    const { el, fixture } = render([invoice()]);
+    const tap = () => (el.querySelector('.candidate') as HTMLButtonElement).click();
+    tap();
+    http.expectOne(`${API}/7/link`).flush({ detail: 'retry' }, { status: 409, statusText: 'Conflict' });
+    fixture.detectChanges();
+    expect(el.querySelector('.refused')).not.toBeNull();
+    tap();
+    fixture.detectChanges();
+    expect(el.querySelector('.refused')).toBeNull();
+    http.expectOne(`${API}/7/link`);
+  });
+
   it('preview hides unmatched reminders', () => {
     const { el } = render(
       [invoice(), invoice({ id: 9, state: 'unmatched', candidates: [] })],

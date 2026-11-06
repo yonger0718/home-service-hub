@@ -13,6 +13,7 @@ import { Observable } from 'rxjs';
 import { slashDate } from '../../dates';
 import { formatMoney } from '../../format';
 import { apiErrorText, splitApiCode } from '../../statements/statement-view';
+import { invoiceAmount } from '../einvoice-format';
 import { AppEinvoiceTargetSheetComponent, candidateLabel, targetBody } from '../einvoice-target-sheet/einvoice-target-sheet';
 import { EinvoiceLinkTarget, EinvoiceTarget, InboxEinvoice } from '../einvoice.model';
 import { EinvoiceService } from '../einvoice.service';
@@ -67,7 +68,7 @@ export class AppEinvoiceSectionComponent {
       .map((item) => ({
         item,
         date: slashDate(item.issue_date),
-        total: formatMoney(item.total_amount, 'TWD'),
+        total: invoiceAmount(item.total_amount),
         question:
           item.state === 'ambiguous'
             ? '哪一筆是這張發票？'
@@ -75,7 +76,7 @@ export class AppEinvoiceSectionComponent {
               ? '金額或商家相近，是這筆嗎？'
               : null,
         candidates: item.candidates.map((target) => ({ target, label: candidateLabel(target) })),
-        lines: item.items.map((line) => ({ name: line.name, subtotal: formatMoney(line.subtotal, 'TWD') })),
+        lines: item.items.map((line) => ({ name: line.name, subtotal: invoiceAmount(line.subtotal) })),
         refused: this.refused().get(item.id) ?? null,
         busy: this.busy().has(item.id),
       }));
@@ -99,6 +100,11 @@ export class AppEinvoiceSectionComponent {
       return;
     }
     this.setBusy(item.id, true);
+    this.refused.update((map) => {
+      const next = new Map(map);
+      next.delete(item.id);
+      return next;
+    });
     call.subscribe({
       next: () => {
         this.setBusy(item.id, false);
