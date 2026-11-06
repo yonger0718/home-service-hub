@@ -144,14 +144,30 @@ def test_link_refuses_ineligible_target(client, db_session, seed):
     assert _state(db_session) == ("unmatched", None) and _links(db_session) == 2
 
 
+def _link_tuples(db) -> tuple[int, int, int]:
+    """(inserted, updated, deleted) rows of einvoice_link as this backend counts them, pending stats included."""
+    row = db.execute(text("SELECT n_tup_ins, n_tup_upd, n_tup_del FROM pg_stat_xact_user_tables "
+                          "WHERE relname = 'einvoice_link'")).one()
+    return tuple(row)
+
+
 def test_relink_in_place_keeps_linked_and_next_run_leaves_it(client, db_session, seed):
     a_entry = _auto_linked(client, db_session, seed)
     b_entry = seed.entry(seed.account("B"), "-500", day=date(2026, 9, 2))
     db_session.commit()
+    linked_at = _link(db_session).linked_at
 
-    out = _post(client, "AB00000001", "link", {"entry_id": b_entry.id}, db=db_session)
+    invoice_id = _row(db_session).id
+    # The service runs in this test's transaction; a backend flushes pending table stats only between transactions,
+    # so the delta of the einvoice_link counters inside one transaction is exactly what link() did.
+    before, out = _link_tuples(db_session), einvoice_service.link(db_session, invoice_id, entry_id=b_entry.id,
+                                                                  group_id=None)
+    after = _link_tuples(db_session)
+    assert tuple(a - b for a, b in zip(after, before)) == (0, 1, 0)  # one UPDATE in place, never delete + insert
+    db_session.commit()
     assert (out["state"], out["linked_by"], out["entry_id"], out["group_id"]) == ("linked", "owner", b_entry.id, None)
     link = _link(db_session)
+    assert link.linked_at >= linked_at  # a move to another target sets linked_at = now()
     assert (link.entry_id, link.linked_by) == (b_entry.id, "owner")
     assert _links(db_session) == 1 and _state(db_session) == ("linked", None)
     assert _stamp(db_session, a_entry.id) is None and _stamp(db_session, b_entry.id) == "AB00000001"
@@ -165,8 +181,10 @@ def test_relink_in_place_keeps_linked_and_next_run_leaves_it(client, db_session,
 
 def test_relink_onto_own_target_is_accepted(client, db_session, seed):
     entry = _auto_linked(client, db_session, seed)
+    linked_at = _link(db_session).linked_at
     out = _post(client, "AB00000001", "link", {"entry_id": entry.id}, db=db_session)
     assert (out["state"], out["linked_by"], out["entry_id"]) == ("linked", "owner", entry.id)
+    assert _link(db_session).linked_at == linked_at  # same target: only linked_by changes
     assert _stamp(db_session, entry.id) == "AB00000001"
 
 
@@ -324,14 +342,29 @@ def test_undismiss_rejected_while_seller_muted(client, db_session):
 
 # --- mutes ----------------------------------------------------------------------------------------------------
 
-def test_mute_converts_unmatched_and_removal_restores(client, db_session):
+def _keeps_questions_and_links(db, linked_entry_id):
+    """§8: a mute (or its removal) touches `unmatched` / `seller_muted` only; questions and links stay."""
+    assert _state(db, "AB00000005") == ("ambiguous", None)
+    assert _state(db, "AB00000006") == ("linked", None)
+    assert _link(db, "AB00000006").entry_id == linked_entry_id and _stamp(db, linked_entry_id) == "AB00000006"
+
+
+def test_mute_converts_unmatched_and_removal_restores(client, db_session, seed):
     import_(client, invoice(), invoice(number="AB00000002", issue_date="2026-10-08", seller_name="測試商店新名"),
-            invoice(number="AB00000003"), invoice(number="AB00000004", seller_tax_id="00000002"))
+            invoice(number="AB00000003"), invoice(number="AB00000004", seller_tax_id="00000002"),
+            invoice(number="AB00000005", issue_date="2026-10-01"), invoice(number="AB00000006", issue_date="2026-10-01"))
+    _set_state(db_session, "AB00000005", "ambiguous")
+    linked = seed.entry(seed.account("A"), "-120", day=date(2026, 10, 1), invoice_number="AB00000006")
+    db_session.add(EinvoiceLink(invoice_id=_row(db_session, "AB00000006").id, entry_id=linked.id, linked_by="auto"))
+    db_session.commit()
+    _set_state(db_session, "AB00000006", "linked")
+
     out = _post(client, "AB00000003", "dismiss", {"mute_seller": True}, db=db_session)
     assert (out["state"], out["dismiss_reason"]) == ("dismissed", "owner")
     assert _state(db_session, "AB00000001") == ("dismissed", "seller_muted")
     assert _state(db_session, "AB00000002") == ("dismissed", "seller_muted")
     assert _state(db_session, "AB00000004") == ("unmatched", None)
+    _keeps_questions_and_links(db_session, linked.id)
 
     mutes = client.get("/einvoices/mutes")
     assert mutes.status_code == 200, mutes.text
@@ -346,6 +379,7 @@ def test_mute_converts_unmatched_and_removal_restores(client, db_session):
     assert _state(db_session, "AB00000001") == ("unmatched", None)
     assert _state(db_session, "AB00000002") == ("unmatched", None)
     assert _state(db_session, "AB00000003") == ("dismissed", "owner")
+    _keeps_questions_and_links(db_session, linked.id)
     assert client.get("/einvoices/mutes").json() == []
     assert client.delete("/einvoices/mutes/00000001").status_code == 404
 
@@ -415,7 +449,7 @@ def test_owner_routes_need_write(client, monkeypatch, db_session):
     hermes = {"Authorization": "Bearer hermes-token"}
     for method, path, body in (("POST", "/einvoices/1/link", {"entry_id": 1}),
                                ("PATCH", "/einvoices/preferences", {"remind_unmatched": False}),
-                               ("GET", "/einvoices/mutes", None)):
+                               ("GET", "/einvoices/mutes", None), ("GET", "/einvoices/preferences", None)):
         res = client.request(method, path, headers=hermes, json=body)
         assert res.status_code == 403, (method, path, res.text)
     assert client.get("/einvoices/mutes", headers={"Authorization": "Bearer spa-token"}).status_code == 200
