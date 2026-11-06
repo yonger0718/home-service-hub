@@ -26,6 +26,7 @@ import { AccountIconComponent } from '../account-icon/account-icon';
 import { BillState, BillingService } from '../billing/billing.service';
 import { AppInboxHandledListComponent } from '../inbox/handled-list/handled-list';
 import { AppInboxPanelComponent } from '../inbox/inbox-panel/inbox-panel';
+import { inboxBellCount } from '../inbox/inbox-view';
 import { InboxOut } from '../inbox/inbox.model';
 import { InboxService } from '../inbox/inbox.service';
 import { StatementSummary } from '../statements/statement.model';
@@ -369,9 +370,9 @@ export class AccountingRemindersComponent {
     const inbox = !counts
       ? 0
       : this.tab() === 'todo'
-        ? counts.ask + counts.proposed + counts.balance_gap + counts.settlement + counts.dividend + counts.other
+        ? inboxBellCount(counts) + counts.proposed + counts.balance_gap + counts.settlement + counts.dividend + counts.other
         : this.tab() === 'all'
-          ? counts.ask
+          ? inboxBellCount(counts)
           : 0;
     const failed =
       (this.showCards() && this.billsFailed()) || (this.showQueue() && this.queueFailed()) || (this.tab() === 'todo' && this.inboxFailed());
@@ -528,6 +529,11 @@ export class AccountingRemindersComponent {
     for (const event of this.failedDues()) {
       this.bills.retry(event, today);
     }
+  }
+
+  /** 全部's 待處理 preview gate: ask cards plus e-invoice questions. */
+  protected bellCount(data: InboxOut): number {
+    return inboxBellCount(data.counts);
   }
 
   setTab(tab: ReminderTab): void {

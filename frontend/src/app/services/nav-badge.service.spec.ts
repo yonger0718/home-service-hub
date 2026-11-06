@@ -432,6 +432,14 @@ describe('NavBadgeService', () => {
     expect(svc.badges()['accounting-timeline']).toEqual({ count: 3, label: '提醒中心 3 項' });
   });
 
+  it('counts e-invoice questions with the inbox asks', () => {
+    getInbox.mockImplementation(() => of(makeInbox([], { ask: 1, einvoice_ask: 2 })));
+    const svc = service();
+    svc.refresh();
+    answer(0, { counterparties: [counterparty(1, 1)] });
+    expect(svc.badges()['accounting-timeline']).toEqual({ count: 4, label: '提醒中心 4 項' });
+  });
+
   it('a failed inbox read counts 0 and keeps the other reminders', () => {
     getInbox.mockImplementation(() => throwError(() => new Error('boom')));
     const svc = service();

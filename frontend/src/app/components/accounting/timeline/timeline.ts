@@ -44,6 +44,7 @@ import { SkeletonComponent } from '../skeleton/skeleton';
 import { FolderIcon, SplitFolderComponent } from '../split-folder/split-folder';
 import { groupCommands, listOpenState } from '../split-group/group-nav';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
+import { inboxBellCount } from '../inbox/inbox-view';
 import { InboxService } from '../inbox/inbox.service';
 import { parseTags } from '../entry-form/entry-draft';
 import { currentMonth, monthLabel, todayIso } from '../dates';
@@ -967,7 +968,7 @@ export class LedgerTimelineComponent implements OnInit {
     this.inbox.get({ limit: 1 }).subscribe({
       next: data => {
         if (id === this.inboxRequestId) {
-          this.inboxAsk.set(data.counts.ask);
+          this.inboxAsk.set(inboxBellCount(data.counts));
         }
       },
       // Swallowed like the queue: the reminder centre reports its own inbox load error.

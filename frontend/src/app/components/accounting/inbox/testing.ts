@@ -49,9 +49,11 @@ export function makeInbox(accounts: InboxAccount[], counts: Partial<InboxCounts>
       settlement: 0,
       dividend: 0,
       other: 0,
+      einvoice_ask: 0,
       ...counts,
     },
     accounts,
+    einvoices: [],
   };
 }
 

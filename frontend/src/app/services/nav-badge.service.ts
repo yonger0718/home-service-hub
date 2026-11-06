@@ -8,6 +8,7 @@ import { BillingService } from '../components/accounting/billing/billing.service
 import { countReminders } from '../components/accounting/billing/reminder-count';
 import { todayIso } from '../components/accounting/dates';
 import { importReviewCount } from '../components/accounting/import-review-count';
+import { inboxBellCount } from '../components/accounting/inbox/inbox-view';
 import { InboxService } from '../components/accounting/inbox/inbox.service';
 import { NavBadge } from '../components/shell/navigation';
 import { Counterparty, ImportRun, LedgerAccount, ScheduleInstance } from '../models/accounting.model';
@@ -180,7 +181,7 @@ export class NavBadgeService {
         queue: this.accounting.getScheduleInstances({ queue: true }),
         // A failed inbox read counts 0 rather than hiding the other reminders (the 🔔 swallows it the same way).
         inboxAsk: this.inbox.get({ limit: 1 }).pipe(
-          map(data => data.counts.ask),
+          map(data => inboxBellCount(data.counts)),
           catchError(() => of(0)),
         ),
       }),

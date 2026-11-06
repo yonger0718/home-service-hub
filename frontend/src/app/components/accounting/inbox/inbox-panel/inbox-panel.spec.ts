@@ -97,6 +97,11 @@ describe('AppInboxPanelComponent', () => {
     fixture.detectChanges();
   }
 
+  it('adds e-invoice questions to 要你決定', () => {
+    const { el } = render(makeInbox([], { ask: 1, einvoice_ask: 2 }));
+    expect(text(el.querySelector('.inbox-head'))).toBe('要你決定 3 · 其他 0');
+  });
+
   it('renders one card per group_key with ×N and the question text', () => {
     const data = makeInbox(
       [

@@ -1102,6 +1102,12 @@ describe('AccountingRemindersComponent', () => {
       expect(el.querySelector('.empty')).toBeNull();
     });
 
+    it('an inbox whose only questions are e-invoices still shows 待處理 on 全部 and is not empty', () => {
+      const { el } = render([], [], [], [], [], { ...inboxOut(), counts: { ...inboxOut().counts, einvoice_ask: 1 } });
+      expect(sections(el)).toEqual(['待處理']);
+      expect(el.querySelector('.empty')).toBeNull();
+    });
+
     it('load() requests the inbox and renders the panel on 全部', () => {
       const { fixture, el } = render([], [ALAN], ALAN_OPEN, [], [], inboxOut([bankOnly(1), bankOnly(2), bankOnly(3), bankOnly(4)]));
       expect(sections(el)).toEqual(['待處理', '借還款追蹤']);

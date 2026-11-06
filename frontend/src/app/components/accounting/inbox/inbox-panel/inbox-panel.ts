@@ -22,6 +22,7 @@ import {
   cardTitle,
   INBOX_GENERIC_ERROR,
   inboxErrorMessage,
+  inboxBellCount,
   inboxLearn,
   learnLabel,
   learnableAnswer,
@@ -199,7 +200,7 @@ export class AppInboxPanelComponent {
   });
   readonly headText = computed(() => {
     const counts = this.data().counts;
-    return `要你決定 ${counts.ask} · 其他 ${counts.proposed + counts.balance_gap + counts.settlement + counts.dividend + counts.other}`;
+    return `要你決定 ${inboxBellCount(counts)} · 其他 ${counts.proposed + counts.balance_gap + counts.settlement + counts.dividend + counts.other}`;
   });
   private readonly shownAsk = computed(() =>
     this.mode() === 'preview' ? this.cards().ask.slice(0, INBOX_PREVIEW_CARDS) : this.cards().ask,
