@@ -1,0 +1,10 @@
+[Unit]
+Description=HomeHub accounting: import the 財政部 e-invoice CSV exports from Drive at 04:10 Taipei
+
+[Timer]
+OnCalendar=*-*-* 04:10:00 Asia/Taipei
+Persistent=true
+Unit=homehub-einvoice.service
+
+[Install]
+WantedBy=timers.target

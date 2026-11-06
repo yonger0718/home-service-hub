@@ -125,6 +125,12 @@ class ApiClient:
     def sweep(self, lease: Lease) -> dict:
         return self._call("POST", "/reconciliation/sweep", json=lease.body(), lease_route=True, timeout=600)
 
+    def import_einvoices(self, invoices: list[dict], *, timeout: float) -> dict:
+        return self._call("POST", "/einvoices/import", json={"invoices": invoices}, timeout=timeout)
+
+    def match_einvoices(self, *, timeout: float) -> dict:
+        return self._call("POST", "/einvoices/match", json={}, timeout=timeout)
+
     def submit_revision(self, lease: Lease, body: dict) -> dict:
         return self._call("POST", "/statements/revisions", json=lease.body(**body), lease_route=True)
 

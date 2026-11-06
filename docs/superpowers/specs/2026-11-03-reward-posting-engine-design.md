@@ -265,11 +265,20 @@ It never commits and never writes coverage itself.
    - **More lines than rows** (my call, instead of a group-sum conservation rule): the lines left without a row are
      not covered. Each one becomes a `line_unmatched` case with the hint `reward_surplus` (never `bank_only`), so no
      policy books it (`policy_service.py:154` requires `bank_only`). The owner decides it. Rare: it needs more reward
-     lines on one statement than engine rows behind them.
+     lines on one statement than engine rows behind them. **#295 (M13):** when the card also has early candidates
+     (§7.2), such a line gets the `reward_early` case instead (accept offered), since the extra line may be the bank
+     paying ahead.
    - **No pulled line** (the statement prints no reward line; B = 0): every candidate is assigned 0.
    - **Inbox** (confirm minor, my call): cases with the hints `reward_surplus` and `reward_early` (§7.2) are
      classed as question `other`, as `installment_unmapped` is (`inbox_service.py:76-77`), not `bank_only`. A learned
      owner `record` rule therefore never books them on its own; the owner's manual buttons stay.
+   - **Promo credit** (#295, owner 2026-11-06): both hints offer the inbox button `record_reward` (記成另一筆回饋),
+     which applies `create_system_entry` kind `reward`: the line becomes a reward entry of its own and the engine's
+     accruals are untouched. On a `reward_early` line this counts the reward twice if the line was in fact the early
+     payout; the case note says so. Never learnable, never a policy action on these hints.
+   - **Case identity** (#295, M11): a `reward_early` case is keyed on its hint, line and `default_accrual_ids` (what
+     the one-tap applies); `early_accrual_ids` and `rule_ids` change with every new early purchase and are refreshed
+     in place, so the case keeps its id and version until the default itself changes.
 6. **Outcome per row:**
    - assigned more than 0: the ledger row takes the assigned amount (updated **before** the claims are built), the
      accrual becomes `bank_confirmed`, `confirmed_statement_id` = this statement;

@@ -626,8 +626,11 @@ SWEEP_NOTE = "sweep"  # context key carrying the dirty event that released the l
 
 
 def _key(kind, event_id, entry_id, candidates, context) -> tuple:
-    """A case's identity for the keep-or-supersede diff; the carried sweep note is not part of it."""
-    context = {k: v for k, v in (context or {}).items() if k != SWEEP_NOTE}
+    """A case's identity for the keep-or-supersede diff; the carried sweep note is not part of it, nor are the
+    volatile keys of a `reward_early` case (#295 M11: refreshed in place by `_write_cases`)."""
+    volatile = reward_bank_wins.EARLY_VOLATILE_KEYS if (context or {}).get("hint") == reward_engine.EARLY_HINT \
+        else frozenset()
+    context = {k: v for k, v in (context or {}).items() if k != SWEEP_NOTE and k not in volatile}
     return (kind, event_id, entry_id, json.dumps(candidates, sort_keys=True, default=str),
             json.dumps(context, sort_keys=True, default=str))
 
@@ -711,8 +714,12 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
         out.append(_case(c.kind, event_id=event_id, line_id=c.line_id, entry_id=c.entry_id,
                          candidates=c.candidates, context=context))
     for line_id in bank_wins.surplus_line_ids if bank_wins is not None else ():  # 7.5: never bank_only
-        out.append(_case("line_unmatched", event_id=lines[line_id].event_id, line_id=line_id,
-                         context={"hint": reward_engine.SURPLUS_HINT}))
+        if early is None:
+            early = reward_bank_wins.early_candidates(db, statement, accounts)
+        # #295 (M13): with early candidates on the card the extra line may be the bank paying ahead → offer accept
+        context = reward_bank_wins.early_context(db, early, lines[line_id]) if early else {
+            "hint": reward_engine.SURPLUS_HINT, "note": reward_bank_wins.SURPLUS_NOTE}
+        out.append(_case("line_unmatched", event_id=lines[line_id].event_id, line_id=line_id, context=context))
     for entry_id in result.unmatched_entry_ids:
         if entry_id in shadow_by_entry or entry_id in orphan_by_entry:  # the hinted case below replaces the plain one
             continue
@@ -893,6 +900,10 @@ def _write_cases(db: Session, statement: AccountStatement, desired: list[dict]) 
             kept.add(case.id)
             if case.line_id != want["line_id"]:  # an identical re-parse moved the event to a new line
                 case.line_id, case.revision_id = want["line_id"], statement.current_revision_id
+            fresh_context = {**(want["context"] or {}), **({SWEEP_NOTE: case.context[SWEEP_NOTE]}
+                                                          if SWEEP_NOTE in (case.context or {}) else {})}
+            if want["context"] is not None and case.context != fresh_context:  # #295 M11: the volatile keys
+                case.context = fresh_context
         elif not _dismissed(dismissed, want):
             fresh.append(want)
     leaving = [c for c in existing if c.status in OPEN and c.id not in kept]

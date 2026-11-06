@@ -154,3 +154,12 @@ def test_download_is_killed_when_the_file_outgrows_the_cap(tmp_path, monkeypatch
     with pytest.raises(drive.DownloadError, match="too_large"):
         drive.Drive(cfg, SubprocessRunner()).download(item, dest, max_bytes=250_000, timeout_s=20)
     assert not dest.exists()
+
+
+def test_drive_extension_filter(tmp_path):
+    cfg = config.load({"STATEMENT_STATE_DIR": str(tmp_path)})
+    rows = [{"Path": "a.pdf", "Name": "a.pdf", "Size": 1, "ModTime": "", "Hashes": {"md5": "ab" * 16}, "ID": "p"},
+            {"Path": "b.CSV", "Name": "b.CSV", "Size": 1, "ModTime": "", "Hashes": {"md5": "cd" * 16}, "ID": "c"}]
+    d = drive.Drive(cfg, FakeRunner({"rclone": lambda a, s: Result(0, json.dumps(rows).encode(), b"")}))
+    assert [i.drive_file_id for i in d._list_root("x", "p")] == ["p"]
+    assert [i.drive_file_id for i in d._list_root("x", "p", extensions=(".csv",))] == ["c"]
