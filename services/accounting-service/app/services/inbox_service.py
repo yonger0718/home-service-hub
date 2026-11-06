@@ -42,6 +42,7 @@ BUTTONS_TO_ACTIONS = {
     "dismiss": "dismiss",
     "anchor": "anchor_opening",
     "accept_early": "accept_early_reward",
+    "record_reward": "create_system_entry",  # #295: a reward line as a promo credit of its own
 }
 # bank wins' owner cases (reward engine spec 7.5)
 REWARD_HINTS = frozenset({reward_engine.SURPLUS_HINT, reward_engine.EARLY_HINT})
@@ -141,6 +142,7 @@ def buttons(question: str, allowed: list[str], *, adjustable: bool) -> list[str]
         add("dismiss")
     else:
         add("accept_early", "accept_early_reward")
+        add("record_reward", "create_system_entry")
         add("dismiss", "dismiss")
     return out
 
@@ -479,6 +481,8 @@ def translate(button: str, params: dict, case: ReconciliationCase, line: Stateme
         return action, {"entry_id": case.entry_id}
     if button == "dismiss":
         return action, {"note": f"inbox: {answer}"}
+    if button == "record_reward":  # #295: the line booked as its own reward entry
+        return action, {"kind": "reward"}
     if button == "accept_early":  # reward engine plan P5: the case's default early accrual
         ids = (case.context or {}).get("default_accrual_ids")
         if not ids:
