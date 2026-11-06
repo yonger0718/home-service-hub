@@ -19,9 +19,9 @@ def ingest(body: EinvoiceImportIn, db: Session = Depends(get_db)):
     with service_errors():
         einvoice_service.lock(db)
         counts = einvoice_service.import_invoices(db, body)
-        match = einvoice_matcher.run_matcher(db)  # same transaction as the import
+        match_out = einvoice_matcher.run_matcher(db)  # same transaction as the import
     db.commit()
-    return {**counts, "match": match}
+    return {**counts, "match": match_out}
 
 
 @router.post("/match", response_model=EinvoiceMatchOut, dependencies=INGEST)

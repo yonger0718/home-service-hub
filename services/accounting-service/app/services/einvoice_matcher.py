@@ -255,6 +255,7 @@ def run_matcher(db: Session) -> dict:
         decision, key = decisions[inv.id]
         before = (inv.state, inv.dismiss_reason)
         if decision == "link":
+            db.flush()  # earlier invoices' writes: a failure there is not this invoice's retry_later
             try:
                 with db.begin_nested():
                     _insert_link(db, inv, key)

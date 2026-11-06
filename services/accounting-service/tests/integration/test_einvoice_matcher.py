@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from app import auth
 from app.models import Einvoice, EinvoiceLink, EinvoiceSellerMute, LedgerEntry
 from app.services import coverage_service
+from app.services.einvoice_matcher import group_target
 from tests.integration.einvoice_fixtures import enable, import_, invoice
 
 
@@ -71,11 +72,21 @@ def test_fee_and_discount_children_count_in_net(client, db_session, seed):
     assert _link(db_session).entry_id == parent.id
 
 
+def test_non_net_child_kind_ignored(client, db_session, seed):
+    enable(client)
+    a = seed.account("A")
+    parent = seed.entry(a, "-120", day=D)
+    seed.entry(a, "-10", kind="reward", day=D, parent_entry_id=parent.id)  # not a fee/discount: net stays -120
+    db_session.commit()
+    import_(client, invoice())
+    assert _link(db_session).entry_id == parent.id
+
+
 def test_outside_window_or_wrong_kind_never_links(client, db_session, seed):
     enable(client)
     a = seed.account("A")
     seed.entry(a, "-120", day=date(2026, 10, 9))
-    seed.entry(a, "120", kind="income", day=D)
+    seed.entry(a, "-120", kind="transfer_out", day=D)
     parent = seed.entry(a, "-999", day=D)
     seed.entry(a, "-120", day=D, parent_entry_id=parent.id)
     db_session.commit()
@@ -108,6 +119,23 @@ def test_two_invoices_one_entry_both_ambiguous(client, db_session, seed):
     assert out["match"]["ambiguous"] == 2
     assert {_row(db_session).state, _row(db_session, "AB00000002").state} == {"ambiguous"}
     assert _links(db_session) == 0
+
+
+def test_unique_group_auto_links(client, db_session, seed):
+    enable(client)
+    a = seed.account("A")
+    g = seed.group()
+    m1 = seed.entry(a, "-150", day=D, group_id=g.id)
+    m2 = seed.entry(a, "-50", day=D, group_id=g.id)
+    db_session.commit()
+    out = import_(client, invoice(total="200", items=(("品項", "200"),)))
+    assert out["match"]["linked"] == 1 and _row(db_session).state == "linked"
+    link = _link(db_session)
+    assert link.group_id == g.id and link.entry_id is None and link.linked_by == "auto"
+    assert db_session.get(LedgerEntry, m1.id).invoice_number is None
+    assert db_session.get(LedgerEntry, m2.id).invoice_number is None
+    assert db_session.scalar(select(func.count()).select_from(LedgerEntry)
+                             .where(LedgerEntry.invoice_number == "AB00000001")) == 0
 
 
 def test_group_and_single_entry_same_amount_ambiguous(client, db_session, seed):
@@ -211,6 +239,14 @@ def test_whole_number_against_usd_original_never_auto_links(client, db_session, 
     assert _row(db_session).state in ("near", "unmatched") and _links(db_session) == 0
 
 
+def test_twd_rule_needs_no_original_currency(client, db_session, seed):
+    enable(client)
+    seed.entry(seed.account("A"), "-120", day=D, original_currency="USD", original_amount=Decimal("-4"))
+    db_session.commit()
+    import_(client, invoice())
+    assert _row(db_session).state != "linked" and _links(db_session) == 0
+
+
 def test_twd_invoice_against_usd_account_never_auto_links(client, db_session, seed):
     enable(client)
     seed.entry(seed.account("美元帳戶", currency="USD"), "-120", day=D)
@@ -305,6 +341,7 @@ def test_mixed_currency_group_ineligible(client, db_session, seed):
     db_session.commit()
     import_(client, invoice())
     assert _row(db_session).state != "linked" and _links(db_session) == 0
+    assert group_target(db_session, g.id) is None
 
 
 def test_skips_linked_void_and_owner_dismissed(client, db_session, seed):
