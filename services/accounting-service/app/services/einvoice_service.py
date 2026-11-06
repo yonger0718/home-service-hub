@@ -83,6 +83,7 @@ def _upsert(db: Session, inv: EinvoiceIn, counts: dict) -> None:
     if same and inv.status != VOID_STATUS:
         counts["unchanged"] += 1  # R3: touch nothing, not even updated_at or source_drive_id
         return
+    row.issue_date = inv.issue_date
     row.seller_tax_id, row.seller_name = inv.seller_tax_id, inv.seller_name
     row.total_amount, row.status_raw, row.source_drive_id = inv.total_amount, inv.status, inv.source_drive_id
     if old_items != new_items:

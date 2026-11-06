@@ -127,3 +127,28 @@ def test_import_needs_ingest_scope(client, monkeypatch):
     monkeypatch.setenv(auth.SCOPES_ENV, SCOPES)
     res = client.post("/einvoices/import", headers={"Authorization": "Bearer hermes-token"}, json={"invoices": []})
     assert res.status_code == 403
+
+
+def test_issue_date_change_same_period_updates_once(client, db_session):
+    import_(client, invoice(issue_date="2026-10-05"))
+    out = import_(client, invoice(issue_date="2026-10-07"))
+    assert out["updated"] == 1
+    assert str(_row(db_session).issue_date) == "2026-10-07"
+    assert import_(client, invoice(issue_date="2026-10-07"))["unchanged"] == 1
+
+
+def test_unknown_status_keeps_link(client, db_session, seed):
+    import_(client, invoice())
+    entry_id = _link(db_session, seed, _row(db_session))
+    out = import_(client, invoice(status="未知"))
+    assert out["unknown_status"] == 1
+    assert _row(db_session).state == "linked"
+    assert db_session.scalar(select(func.count()).select_from(EinvoiceLink)) == 1
+    assert db_session.get(LedgerEntry, entry_id).invoice_number == "AB00000001"
+
+
+def test_void_twice_counts_once(client, db_session):
+    import_(client, invoice())
+    assert import_(client, invoice(status="作廢"))["voided"] == 1
+    out = import_(client, invoice(status="作廢"))
+    assert out["voided"] == 0 and out["unchanged"] == 1
