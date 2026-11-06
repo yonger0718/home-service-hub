@@ -67,7 +67,7 @@ const DISMISSED = [
     status_raw: '', state: 'dismissed', dismiss_reason: 'runbook', items: [],
   },
 ];
-/** What the three 發票 reads answer at page start; a body, or 'error' for a 500. Reset after each test. */
+/** What the three 發票 reads answer at page start; a body, 'error' for a 500 or 'notfound' for a 404. Reset after each test. */
 let einvoiceInit: { prefs: unknown; mutes: unknown; dismissed: unknown } = { prefs: { ...EINVOICE_PREFS, enabled: false }, mutes: [], dismissed: [] };
 const DEFAULT_EINVOICE_INIT = einvoiceInit;
 
@@ -75,6 +75,8 @@ function answer(http: HttpTestingController, url: string, body: unknown): void {
   const req = http.expectOne(r => r.method === 'GET' && r.url === url);
   if (body === 'error') {
     req.flush({ detail: 'x' }, { status: 500, statusText: 'Server Error' });
+  } else if (body === 'notfound') {
+    req.flush({ detail: 'Not Found' }, { status: 404, statusText: 'Not Found' });
   } else {
     req.flush(body as object);
   }
@@ -743,6 +745,22 @@ describe('AccountingSettingsComponent', () => {
     it('shows 發票設定讀取失敗 and no lists', () => {
       expect(el.querySelector('.einvoice-error')!.textContent).toContain('發票設定讀取失敗');
       expect(el.querySelector('.pref-remind-unmatched')).toBeNull();
+    });
+  });
+
+  describe('發票 preferences 404 (reconciliation flag off)', () => {
+    beforeAll(() => {
+      einvoiceInit = { prefs: 'notfound', mutes: [], dismissed: [] };
+    });
+    afterAll(() => {
+      einvoiceInit = DEFAULT_EINVOICE_INIT;
+    });
+
+    it('treats it as disabled: no block, no 發票設定讀取失敗', () => {
+      expect(el.querySelector('.einvoice-error')).toBeNull();
+      expect(el.querySelector('.einvoice-section')).toBeNull();
+      expect(Array.from(el.querySelectorAll('.lbl')).some(node => node.textContent?.trim() === '發票')).toBe(false);
+      expect(el.textContent).not.toContain('發票設定讀取失敗');
     });
   });
 

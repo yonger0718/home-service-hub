@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
+import { HttpErrorResponse } from '@angular/common/http';
 import { Router, RouterLink } from '@angular/router';
 import { Observable, Subject, catchError, concatMap, finalize, forkJoin, map, of, throwError } from 'rxjs';
 
@@ -198,7 +199,8 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
           this.loadDismissed();
         }
       },
-      error: () => this.einvoiceError.set(true),
+      // 404: the reconciliation feature flag is off, so there is no 發票 block (not a failed read).
+      error: (err: unknown) => this.einvoiceError.set(!(err instanceof HttpErrorResponse && err.status === 404)),
     });
   }
 

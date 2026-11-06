@@ -365,12 +365,14 @@ export class AccountingRemindersComponent {
     const cards = this.showCards() ? this.cardRows().length : 0;
     const debts = this.showDebts() ? this.debtCounterparties().length : 0;
     const queue = this.tab() === 'pending' ? groups.due.length + groups.upcoming.length : this.tab() === 'all' ? groups.due.length : 0;
-    // 待處理 lists the folded sections too; 全部 previews the ask cards only.
+    // 待處理 lists the folded sections and every 發票待對帳 card (unmatched reminders too, which never ring the
+    // bell); 全部 previews the ask cards only.
     const counts = this.inbox()?.counts;
     const inbox = !counts
       ? 0
       : this.tab() === 'todo'
-        ? inboxBellCount(counts) + counts.proposed + counts.balance_gap + counts.settlement + counts.dividend + counts.other
+        ? inboxBellCount(counts) + counts.proposed + counts.balance_gap + counts.settlement + counts.dividend + counts.other +
+          (this.inbox()?.einvoices?.length ?? 0)
         : this.tab() === 'all'
           ? inboxBellCount(counts)
           : 0;

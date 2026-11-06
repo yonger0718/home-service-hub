@@ -13,6 +13,9 @@ const LINKED: EntryEinvoice = {
   items: [{ name: '牛奶', subtotal: '90' }, { name: '麵包', subtotal: '140' }],
 };
 
+/** A top-level expense: the shape that may be a link target. */
+const PLAIN = { kind: 'expense', parent_entry_id: null, group: null };
+
 function invoice(id: number, seller: string): EinvoiceSummary {
   return {
     id, number: `CD-0000000${id}`, issue_date: '2026-10-02', seller_name: seller, seller_tax_id: '12345678',
@@ -38,7 +41,7 @@ describe('AppEntryEinvoiceCardComponent', () => {
 
   function render(fields: Record<string, unknown>): HTMLElement {
     fixture = TestBed.createComponent(AppEntryEinvoiceCardComponent);
-    fixture.componentRef.setInput('detail', { id: 42, ...fields } as unknown as EntryDetail);
+    fixture.componentRef.setInput('detail', { ...PLAIN, id: 42, ...fields } as unknown as EntryDetail);
     fixture.componentInstance.changed.subscribe(() => changed++);
     fixture.detectChanges();
     return fixture.nativeElement as HTMLElement;
@@ -182,7 +185,7 @@ describe('AppEntryEinvoiceCardComponent', () => {
     const root = render({ einvoice: LINKED });
     button(root, '解除連結').click();
     http.expectOne('/api/accounting/einvoices/7/unlink').flush({ id: 7, state: 'unmatched' });
-    fixture.componentRef.setInput('detail', { id: 42 } as unknown as EntryDetail);
+    fixture.componentRef.setInput('detail', { ...PLAIN, id: 42 } as unknown as EntryDetail);
     fixture.detectChanges();
     expect(button(root, '連結發票…')).toBeTruthy();
     expect(root.textContent).not.toContain('AB-12345678');
@@ -191,7 +194,7 @@ describe('AppEntryEinvoiceCardComponent', () => {
   it('a stale picker list is cleared when the detail reloads', () => {
     const root = render({});
     open(root, { entry_eligible: true, group_id: null, group_eligible: false, invoices: [invoice(1, '甲店')] });
-    fixture.componentRef.setInput('detail', { id: 43 } as unknown as EntryDetail);
+    fixture.componentRef.setInput('detail', { ...PLAIN, id: 43 } as unknown as EntryDetail);
     fixture.detectChanges();
     expect(root.querySelector('.einvoice-pick')).toBeNull();
     expect(button(root, '連結發票…')).toBeTruthy();
@@ -201,7 +204,7 @@ describe('AppEntryEinvoiceCardComponent', () => {
     const root = render({});
     button(root, '連結發票…').click();
     const stale = http.expectOne('/api/accounting/einvoices/picker?entry_id=42');
-    fixture.componentRef.setInput('detail', { id: 43 } as unknown as EntryDetail);
+    fixture.componentRef.setInput('detail', { ...PLAIN, id: 43 } as unknown as EntryDetail);
     fixture.detectChanges();
     expect(stale.cancelled).toBe(true);
     expect(button(root, '連結發票…')).toBeTruthy();
@@ -225,6 +228,36 @@ describe('AppEntryEinvoiceCardComponent', () => {
     open.click();
     http.expectOne('/api/accounting/einvoices/picker?entry_id=42').flush({
       entry_eligible: true, group_id: null, group_eligible: false, invoices: [],
+    });
+  });
+
+  describe('unlinked: only where the entry may be a target', () => {
+    it('an income entry shows no card', () => {
+      const root = render({ kind: 'income' });
+      expect(root.textContent).not.toContain('發票');
+      expect(root.querySelector('.einvoice-open')).toBeNull();
+    });
+
+    it('a transfer or a child entry shows no card', () => {
+      expect(render({ kind: 'transfer_out' }).querySelector('.einvoice-open')).toBeNull();
+      expect(render({ parent_entry_id: 9 }).querySelector('.einvoice-open')).toBeNull();
+    });
+
+    it('a split-group member that is not an expense still shows 連結發票…', () => {
+      const root = render({ kind: 'receivable', group: { id: 5, kind: 'split', name: null, merchant: null, description: null, count: 2, total: '120', currency: 'TWD' } });
+      expect(root.textContent).toContain('發票');
+      open(root, { entry_eligible: false, group_id: 5, group_eligible: true, invoices: [invoice(1, '甲店')] });
+      expect(root.textContent).toContain('甲店');
+    });
+
+    it('a member of a non-split group that is not an expense shows no card', () => {
+      const root = render({ kind: 'income', group: { id: 5, kind: 'installment', name: null, merchant: null, description: null, count: 2, total: '120', currency: 'TWD' } });
+      expect(root.querySelector('.einvoice-open')).toBeNull();
+    });
+
+    it('a linked invoice shows on any entry', () => {
+      const root = render({ kind: 'income', einvoice: LINKED });
+      expect(root.textContent).toContain('AB-12345678');
     });
   });
 });

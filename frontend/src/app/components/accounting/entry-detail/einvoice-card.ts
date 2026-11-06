@@ -40,10 +40,19 @@ export class AppEntryEinvoiceCardComponent {
   readonly busy = signal(false);
   readonly error = signal<string | null>(null);
 
-  /** The card shows nothing once the picker says the entry is not eligible (spec §10). */
+  /**
+   * A linked invoice always shows. Unlinked, the card shows only for an entry that may be a link target: a top-level
+   * expense, or a split-group member (its group may be one). The picker stays the final check: the card hides once
+   * it says neither the entry nor its group is eligible (spec §10).
+   */
   readonly visible = computed(() => {
+    const detail = this.detail();
+    if (detail.einvoice) {
+      return true;
+    }
+    const maybe = (detail.kind === 'expense' && detail.parent_entry_id == null) || detail.group?.kind === 'split';
     const state = this.pickerState();
-    return !(state.status === 'ready' && !this.eligible(state.picker));
+    return maybe && !(state.status === 'ready' && !this.eligible(state.picker));
   });
 
   private pickerSub?: Subscription;

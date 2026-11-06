@@ -11,7 +11,6 @@ import {
 import { Observable } from 'rxjs';
 
 import { slashDate } from '../../dates';
-import { formatMoney } from '../../format';
 import { apiErrorText, splitApiCode } from '../../statements/statement-view';
 import { invoiceAmount } from '../einvoice-format';
 import { AppEinvoiceTargetSheetComponent, candidateLabel, targetBody } from '../einvoice-target-sheet/einvoice-target-sheet';

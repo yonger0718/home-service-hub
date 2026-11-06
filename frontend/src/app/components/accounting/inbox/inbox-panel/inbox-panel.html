@@ -24,7 +24,7 @@
   }
 
   @if (hasEinvoices()) {
-    <app-einvoice-section [items]="data().einvoices ?? []" [mode]="mode()" (changed)="changed.emit()" />
+    <app-einvoice-section [items]="shownEinvoices()" [mode]="mode()" (changed)="changed.emit()" />
   }
 
   @if (mode() === 'full') {
