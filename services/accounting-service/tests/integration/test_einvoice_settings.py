@@ -33,12 +33,19 @@ def test_put_stores_block_and_bumps_version(client, db_session):
     assert settings_service.read_einvoice_settings(db_session)["enabled"] is True
 
 
-@pytest.mark.parametrize("einvoice", [
-    {"date_window_days": 8}, {"date_window_days": -1}, {"mute_prompt_after": 0}, {"mute_prompt_after": 11},
-    {"enabled": "yes"}, {"bogus": 1}])
-def test_refusals(client, einvoice):
+@pytest.mark.parametrize("einvoice, fragment", [
+    ({"date_window_days": 8}, "must be an integer in 0..7"),
+    ({"date_window_days": -1}, "must be an integer in 0..7"),
+    ({"date_window_days": True}, "must be an integer in 0..7"),
+    ({"mute_prompt_after": 0}, "must be an integer in 1..10"),
+    ({"mute_prompt_after": 11}, "must be an integer in 1..10"),
+    ({"mute_prompt_after": True}, "must be an integer in 1..10"),
+    ({"enabled": "yes"}, "must be a boolean"),
+    ({"bogus": 1}, "unknown key")])
+def test_refusals(client, einvoice, fragment):
     res = client.put("/settings/reconciliation", json=_body(client, einvoice))
-    assert res.status_code == 422 and "einvoice" in str(res.json()["detail"])
+    detail = str(res.json()["detail"])
+    assert res.status_code == 422 and "einvoice" in detail and fragment in detail
 
 
 def test_put_without_block_reverts_to_defaults(client):
