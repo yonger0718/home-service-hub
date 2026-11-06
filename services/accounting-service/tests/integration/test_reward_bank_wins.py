@@ -351,10 +351,18 @@ def test_rerun_restores_row_forfeited_without_reward_line(seed, db_session, run)
     db_session.get(LedgerEntry, row.id).amount = Decimal("0")
     db_session.commit()
 
+    entry = db_session.get(LedgerEntry, buy.id)
+    entry.needs_review, entry.review_reason = True, "duplicate"  # another reason: the restore leaves it alone
+    db_session.commit()
+
     _reconcile(db_session, second.id)
     accrual = _accrual_of(db_session, buy)
     assert (accrual.state, accrual.confirmed_statement_id, accrual.amount) == ("posted", None, Decimal("10.0000"))
     assert db_session.get(LedgerEntry, row.id).amount == Decimal("10.0000")
+    (window,) = reward_engine.usage(db_session, card.id, date(2026, 10, 5))
+    assert window["used"] == Decimal("10.0000")  # the restored row counts toward its window again
+    entry = db_session.get(LedgerEntry, buy.id)
+    assert (entry.needs_review, entry.review_reason) == (True, "duplicate")
 
 
 def test_first_statement_has_no_carry(seed, db_session, run):

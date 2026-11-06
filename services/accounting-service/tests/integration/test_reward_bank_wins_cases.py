@@ -623,7 +623,7 @@ def test_carry_gap_offers_dismiss_only(seed, db_session, run, dirty_on, today):
 def test_uncredited_carry_keeps_gap_on_next_statement(seed, db_session, run, today):
     """#292: a carried row the next statement does not credit either (no reward line at all) stays `posted`, so
     that statement's card balance gap stays open and names it: a withheld reward surfaces as a gap, not a forfeit."""
-    today(date(2026, 12, 20))
+    today(date(2027, 1, 20))
     card = _test_card(seed, db_session)
     rule = _rule(db_session, card)
     buy = _spend(db_session, card, 1000, date(2026, 10, 20), rule)  # posts 10-25, inside PERIOD
@@ -636,6 +636,15 @@ def test_uncredited_carry_keeps_gap_on_next_statement(seed, db_session, run, tod
     assert (accrual.state, accrual.confirmed_statement_id) == ("posted", None)
     (gap,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap"]
     assert gap.context["carried_accrual_ids"] == [accrual.id] and Decimal(gap.context["gap"]) != 0
+    assert reconciliation_actions.allowed(gap) == ["dismiss"]
+
+    # a third statement: the row left the carried window; the gap stays, without the ids, with the usual actions
+    third, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 12, 20), SHOP, 300)],
+                          period=(date(2026, 12, 16), date(2027, 1, 15)))
+    assert _accrual_of(db_session, buy).state == "posted"
+    (gap,) = [c for c in _cases(db_session, third.id, "open") if c.kind == "balance_gap"]
+    assert "carried_accrual_ids" not in gap.context and Decimal(gap.context["gap"]) != 0
+    assert reconciliation_actions.allowed(gap) == ["balance_adjustment_asof", "dismiss"]
 
 
 def test_card_gap_without_engine_rows_unchanged(seed, db_session, run):
