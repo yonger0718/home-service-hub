@@ -20,6 +20,8 @@ from ..models import (
     AccountLogoImage,
     Category,
     Counterparty,
+    EinvoiceItem,
+    EinvoiceLink,
     EntryGroup,
     EntryRewardRule,
     FxRate,
@@ -275,9 +277,8 @@ def _running_subquery(account_ids: list[int] | None):
     return stmt.subquery()
 
 
-def _text_filter(q: str):
-    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    pattern = f"%{escaped}%"
+def _text_filter(q: str, *, include_invoice_items: bool = False):
+    pattern = _like_pattern(q)
     group_match = (
         select(EntryGroup.id)
         .where(
@@ -291,12 +292,25 @@ def _text_filter(q: str):
         .correlate(LedgerEntry)
         .exists()
     )
-    return or_(
+    clauses = [
         LedgerEntry.name.ilike(pattern, escape="\\"),
         LedgerEntry.merchant.ilike(pattern, escape="\\"),
         LedgerEntry.description.ilike(pattern, escape="\\"),
         group_match,  # rows are titled by their group's name, so group-level fields are searchable too
-    )
+    ]
+    if include_invoice_items:  # linked invoices only (entry link or group link); an unlinked invoice never matches
+        clauses.append(
+            select(EinvoiceLink.invoice_id)
+            .join(EinvoiceItem, EinvoiceItem.invoice_id == EinvoiceLink.invoice_id)
+            .where(
+                or_(EinvoiceLink.entry_id == LedgerEntry.id,
+                    and_(LedgerEntry.group_id.is_not(None), EinvoiceLink.group_id == LedgerEntry.group_id)),
+                EinvoiceItem.name.ilike(pattern, escape="\\"),
+            )
+            .correlate(LedgerEntry)
+            .exists()
+        )
+    return or_(*clauses)
 
 
 def _settled_sum():
@@ -358,7 +372,8 @@ def debts_summary(db: Session) -> dict:
     return result
 
 
-def _filters(kind, date_from, date_to, q, account_ids, hide_rewards, counterparty_id=None, open_only=False) -> list:
+def _filters(kind, date_from, date_to, q, account_ids, hide_rewards, counterparty_id=None, open_only=False,
+             include_invoice_items=False) -> list:
     filters = []
     if counterparty_id is not None:
         filters.append(LedgerEntry.counterparty_id == counterparty_id)
@@ -373,7 +388,7 @@ def _filters(kind, date_from, date_to, q, account_ids, hide_rewards, counterpart
     if date_to is not None:
         filters.append(LedgerEntry.entry_date <= date_to)
     if q:
-        filters.append(_text_filter(q))
+        filters.append(_text_filter(q, include_invoice_items=include_invoice_items))
     if hide_rewards:
         filters.append(LedgerEntry.kind != "reward")
     return filters
@@ -498,7 +513,39 @@ def _accrual_rows(db: Session, entry_ids: list[int]) -> dict[int, list[dict]]:
     return out
 
 
-def _entry_rows(db: Session, filters: list, *, running_accounts: list[int] | None, limit=None, offset=0) -> list[dict]:
+INVOICE_ITEM_HIT_CAP = 3
+
+
+def _invoice_item_hits(db: Session, entries: list[LedgerEntry], q: str) -> dict[int, list[str]]:
+    """Up to `INVOICE_ITEM_HIT_CAP` distinct item names matching `q` per entry, from the invoice linked to the entry
+    (first) or to its group, in invoice id / `seq` order. One query for the whole page."""
+    if not entries:
+        return {}
+    ids = [e.id for e in entries]
+    group_ids = {e.group_id for e in entries if e.group_id is not None}
+    link_match = EinvoiceLink.entry_id.in_(ids)
+    if group_ids:
+        link_match = or_(link_match, EinvoiceLink.group_id.in_(group_ids))
+    rows = db.execute(
+        select(EinvoiceLink.entry_id, EinvoiceLink.group_id, EinvoiceItem.name)
+        .join(EinvoiceItem, EinvoiceItem.invoice_id == EinvoiceLink.invoice_id)
+        .where(link_match, EinvoiceItem.name.ilike(_like_pattern(q), escape="\\"))
+        .order_by(EinvoiceLink.invoice_id, EinvoiceItem.seq)
+    ).all()
+    by_entry: dict[int, list[str]] = defaultdict(list)
+    by_group: dict[int, list[str]] = defaultdict(list)
+    for entry_id, group_id, name in rows:
+        (by_entry[entry_id] if entry_id is not None else by_group[group_id]).append(name)
+    out = {}
+    for e in entries:
+        names = list(dict.fromkeys(by_entry.get(e.id, []) + by_group.get(e.group_id, [])))
+        if names:
+            out[e.id] = names[:INVOICE_ITEM_HIT_CAP]
+    return out
+
+
+def _entry_rows(db: Session, filters: list, *, running_accounts: list[int] | None, limit=None, offset=0,
+                item_hits_q: str | None = None) -> list[dict]:
     """EntryOut dicts newest first for the entries matching `filters`."""
     running = _running_subquery(running_accounts)
     parent_category = aliased(Category)
@@ -531,6 +578,7 @@ def _entry_rows(db: Session, filters: list, *, running_accounts: list[int] | Non
     groups = _group_summaries(db, {row.LedgerEntry.group_id for row in rows if row.LedgerEntry.group_id})
     rule_names = _rule_names(db, [row.LedgerEntry.id for row in rows])
     accruals = _accrual_rows(db, [row.LedgerEntry.id for row in rows])
+    item_hits = _invoice_item_hits(db, [row.LedgerEntry for row in rows], item_hits_q) if item_hits_q else {}
 
     page = []
     for row in rows:
@@ -579,6 +627,7 @@ def _entry_rows(db: Session, filters: list, *, running_accounts: list[int] | Non
                 "needs_review": entry.needs_review,
                 "review_reason": entry.review_reason,
                 "accruals": accruals[entry.id],
+                "invoice_item_hits": item_hits.get(entry.id, []),
                 "source": entry.source,
                 "moze_id": entry.moze_id,
                 "locked": is_locked(entry.source, entry.moze_id),
@@ -635,12 +684,15 @@ def list_all_entries(
     merchant: str | None = None,
     amount_min: Decimal | None = None,
     amount_max: Decimal | None = None,
+    include_invoice_items: bool = False,
 ) -> tuple[int, list[dict]]:
-    filters = _filters(kind, date_from, date_to, q, account_ids, hide_rewards, counterparty_id, open_only)
+    filters = _filters(kind, date_from, date_to, q, account_ids, hide_rewards, counterparty_id, open_only,
+                       include_invoice_items)
     filters += _attribute_filters(db, tags=tags, category_ids=category_ids, project_id=project_id, no_project=no_project, merchant=merchant,
                                   amount_min=amount_min, amount_max=amount_max)
     total = db.scalar(select(func.count()).select_from(LedgerEntry).where(*filters))
-    return total, _entry_rows(db, filters, running_accounts=account_ids, limit=limit, offset=offset)
+    return total, _entry_rows(db, filters, running_accounts=account_ids, limit=limit, offset=offset,
+                              item_hits_q=q if include_invoice_items and q else None)
 
 
 _spend_filter = report_rules.spend_filter
@@ -860,4 +912,7 @@ def get_entry_detail(db: Session, entry_id: int) -> dict | None:
 
     # Only receivable / payable originals carry open_amount; only they can be a schedule's loan.
     detail["loan_schedule"] = loan_schedule_for(db, entry.id) if detail["open_amount"] is not None else None
+    from .einvoice_read import entry_einvoice  # lazy: einvoice_read imports this module
+
+    detail["einvoice"] = entry_einvoice(db, entry)
     return detail

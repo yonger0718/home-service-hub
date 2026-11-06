@@ -14,6 +14,11 @@ FxSource = Literal["fx_api", "moze_backup", "manual"]
 RoundingMode = Literal["keep", "round", "floor", "ceil"]
 
 
+class EinvoiceItemOut(BaseModel):
+    name: str
+    subtotal: Decimal
+
+
 class RewardRuleOut(BaseModel):
     id: int
     account_id: int
@@ -219,6 +224,19 @@ class RewardUsageOut(BaseModel):
     remaining: Decimal | None
 
 
+class EntryEinvoiceOut(BaseModel):
+    """The e-invoice linked to an entry directly, or through its split group (spec §7.6)."""
+
+    id: int
+    number: str
+    issue_date: date
+    seller_name: str
+    total_amount: Decimal
+    linked_by: Literal["auto", "owner"]
+    linked_to: Literal["entry", "group"]
+    items: list[EinvoiceItemOut]
+
+
 class EntryOut(BaseModel):
     id: int
     kind: EntryKind
@@ -262,6 +280,7 @@ class EntryOut(BaseModel):
     # Receivable / payable originals: |amount + Σ linked settlements| (0 when closed); null for every other row.
     open_amount: Decimal | None
     schedule: EntryScheduleOut | None = None
+    invoice_item_hits: list[str] = []  # linked-invoice item names matching `q` (GET /entries include_invoice_items)
 
 
 class EntryPage(BaseModel):
@@ -296,6 +315,7 @@ class EntryDetailOut(EntryOut):
     is_settled: bool | None
     refunded_amount: Decimal
     loan_schedule: LoanScheduleOut | None = None
+    einvoice: EntryEinvoiceOut | None = None
 
 
 class CategoryExpenseOut(BaseModel):

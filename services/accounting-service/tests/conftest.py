@@ -44,6 +44,7 @@ LEDGER_TABLES = (
     "reconciliation_audit, reconciliation_action, reconciliation_proposal, reconciliation_case, statement_coverage, "
     "line_lineage, statement_line, statement_event, statement_revision, account_statement, statement_source, "
     "statement_file, ingest_run, coverage_dirty, policy_budget, installment_plan_map, reconciliation_settings, "
+    "einvoice_link, einvoice_item, einvoice_seller_mute, einvoice, "
     "entry_reward_rule, reward_accrual, schedule_instance, schedule_definition, ledger_entry, reward_rule, entry_group, counterparty, "
     "import_run, saved_report, budget, category, project, account, account_group, fx_rate, preference"
 )

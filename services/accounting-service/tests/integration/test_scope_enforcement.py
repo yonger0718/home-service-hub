@@ -26,7 +26,7 @@ def _mutation_routes():
 def _fill(path: str) -> str:
     out = path
     for name in ("account_id", "entry_id", "group_id", "category_id", "project_id", "counterparty_id",
-                 "rule_id", "definition_id", "instance_id", "run_id", "file_id", "statement_id", "sid", "case_id", "proposal_id", "action_id", "accrual_id"):
+                 "rule_id", "definition_id", "instance_id", "run_id", "file_id", "statement_id", "sid", "case_id", "proposal_id", "action_id", "accrual_id", "invoice_id", "tax_id"):
         out = out.replace("{" + name + "}", "1")
     return out
 

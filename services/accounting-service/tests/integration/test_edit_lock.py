@@ -214,6 +214,16 @@ EXPECTED_WRITES = {
     # Reward engine (spec 2026-11-03 §6): posts a manual rule's accrual by INSERTing a new engine reward row
     # (source 'rule'); it edits no imported row, so it is never locked_until_cutover.
     ("/reward-accruals/{accrual_id}/post", "POST"),
+    # E-invoice import (worker, ingest scope): writes only einvoice tables, never an imported ledger row.
+    ("/einvoices/import", "POST"),
+    # E-invoice matcher run (worker, ingest scope): writes einvoice tables and stamps a NULL invoice_number only.
+    ("/einvoices/match", "POST"),
+    # E-invoice owner actions (write scope, spec §7.5): einvoice tables plus a NULL-only invoice_number stamp / its
+    # clear; mutes and the runbook dismiss write einvoice tables only; preferences merge one settings key.
+    ("/einvoices/{invoice_id}/link", "POST"), ("/einvoices/{invoice_id}/unlink", "POST"),
+    ("/einvoices/{invoice_id}/dismiss", "POST"), ("/einvoices/{invoice_id}/undismiss", "POST"),
+    ("/einvoices/mutes/{tax_id}", "DELETE"), ("/einvoices/preferences", "PATCH"),
+    ("/einvoices/runbook-dismiss", "POST"),
 }
 
 

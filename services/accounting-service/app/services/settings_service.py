@@ -157,6 +157,8 @@ AUTO_PAY_DEFAULTS = {"enabled": False, "enabled_from": None, "max_amount": "2000
 # portfolio integration spec §8: the brokerage settlement block (stand-ins §4.7, targets §4.4, dividends §4.6)
 SETTLEMENT_DEFAULTS = {"stand_in_enabled": False, "enabled_from": None, "target_accounts": {}, "twin_window_days": 3,
                        "dividend_category_id": None}
+# e-invoice link (einvoice-link spec §8, §11): the feature switch, reminders and the date window
+EINVOICE_DEFAULTS = {"enabled": False, "remind_unmatched": True, "date_window_days": 3, "mute_prompt_after": 3}
 
 
 def _reconciliation_dict(row: ReconciliationSettings) -> dict:
@@ -171,6 +173,7 @@ def _reconciliation_dict(row: ReconciliationSettings) -> dict:
             "policy": _effective_policy(data.get("policy")),
             "auto_pay": {**AUTO_PAY_DEFAULTS, **(data.get("auto_pay") or {})},
             "settlement": copy.deepcopy({**SETTLEMENT_DEFAULTS, **(data.get("settlement") or {})}),
+            "einvoice": {**EINVOICE_DEFAULTS, **(data.get("einvoice") or {})},
             "policy_version": data.get("policy_version") or f"{POLICY_VERSION_PREFIX}-1",
             "account_siblings": data.get("account_siblings") or {}}
 
@@ -370,6 +373,25 @@ def _check_auto_pay(auto_pay) -> dict:
     return out
 
 
+def _check_einvoice(einvoice) -> dict:
+    """The e-invoice settings block, validated and returned as given (defaults are overlaid on read)."""
+    if not isinstance(einvoice, dict):
+        raise ValidationError("einvoice", "must be an object")
+    bounds = {"date_window_days": (0, 7), "mute_prompt_after": (1, 10)}
+    out = {}
+    for key, value in einvoice.items():
+        if key not in EINVOICE_DEFAULTS:
+            raise ValidationError("einvoice", f"unknown key {key!r}")
+        if key in bounds:
+            low, high = bounds[key]
+            if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                raise ValidationError("einvoice", f"{key!r} must be an integer in {low}..{high}")
+        elif not isinstance(value, bool):  # enabled / remind_unmatched
+            raise ValidationError("einvoice", f"{key!r} must be a boolean")
+        out[key] = value
+    return out
+
+
 def _account_id(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -511,6 +533,24 @@ def read_settlement_settings(db: Session) -> dict:
     return {**settings["settlement"], "version": settings["version"]}
 
 
+def read_einvoice_settings(db: Session) -> dict:
+    """The effective `einvoice` block plus the settings `version` (SELECT-only)."""
+    settings = read_reconciliation_settings(db)
+    return {**settings["einvoice"], "version": settings["version"]}
+
+
+def merge_einvoice_preferences(db: Session, *, remind_unmatched: bool) -> dict:
+    """Set only `einvoice.remind_unmatched`, keeping every other key of the document, and bump `version`.
+    Deliberately not `update_reconciliation_settings` (which replaces the whole document)."""
+    row = _reconciliation_row(db, lock=True)
+    data = dict(row.data or {})
+    data["einvoice"] = {**(data.get("einvoice") or {}), "remind_unmatched": remind_unmatched}
+    row.data = data
+    row.version = row.version + 1
+    db.flush()
+    return read_einvoice_settings(db)
+
+
 def read_reconciliation_rules(db: Session) -> dict:
     settings = read_reconciliation_settings(db)
     row = db.get(ReconciliationSettings, 1)
@@ -539,11 +579,12 @@ def update_reconciliation_settings(db: Session, data: dict) -> dict:
     policy = _check_policy(data.get("policy", {}))
     auto_pay = _check_auto_pay(data.get("auto_pay", {}))
     settlement = _check_settlement(db, data.get("settlement", {}))
+    einvoice = _check_einvoice(data.get("einvoice", {}))
     siblings = _check_siblings(db, data.get("account_siblings", {}))
     row = _reconciliation_row(db, lock=True)
     before = _reconciliation_dict(row)
     row.data = {**data, "composite_map": composite, "rules": rules, "policy": policy, "auto_pay": auto_pay,
-                "settlement": settlement, "account_siblings": siblings}
+                "settlement": settlement, "einvoice": einvoice, "account_siblings": siblings}
     row.version = row.version + 1
     if _effective_policy(policy) != before["policy"]:
         row.data = {**row.data, "policy_version": f"{POLICY_VERSION_PREFIX}-{row.version}"}

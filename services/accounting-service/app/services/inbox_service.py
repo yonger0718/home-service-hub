@@ -20,6 +20,7 @@ from app.schemas.inbox import InboxApplyIn, InboxCaseRef
 from app.services import (
     coverage_service, proposal_service, reconciliation_actions, reward_engine, settings_service, split_protection,
 )
+from app.services import einvoice_read
 from app.services import entry_write_service as ews
 from app.services.edit_lock import EditLockedError
 from app.services.errors import (
@@ -440,7 +441,9 @@ def build_inbox(db: Session, *, statuses: tuple[str, ...] = ("open", "proposed")
             accounts.append({"id": account.id, "name": account.name, "currency": account.currency,
                              "is_credit": bool(account.is_credit), "items": []})
         accounts[-1]["items"].append(item)
-    return {"generated_at": datetime.now(timezone.utc), "counts": counts, "accounts": accounts}
+    einvoices, counts["einvoice_ask"] = einvoice_read.inbox_section(db, limit=limit) if account_id is None else ([], 0)
+    return {"generated_at": datetime.now(timezone.utc), "counts": counts, "accounts": accounts,
+            "einvoices": einvoices}
 
 
 # --- batch apply (spec §5) --------------------------------------------------------------------------------------

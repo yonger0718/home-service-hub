@@ -7,7 +7,7 @@ from .auth import ApiTokenMiddleware, api_auth_status, docs_paths, validate_auth
 from .database import engine, get_db
 from .logging_setup import configure_logging
 from .routers import (
-    accounts, balance_adjustments, calendar, entries, imports, reconciliation, reports, reward_accruals, reward_rules,
+    accounts, balance_adjustments, calendar, einvoices, entries, imports, reconciliation, reports, reward_accruals, reward_rules,
     schedules, settings, splits, statements, transfers,
 )
 from .services import auto_pay_job, reward_post_job, schedule_job
@@ -22,7 +22,7 @@ app = create_app(
         accounts.router, entries.router, imports.router, settings.router,
         transfers.router, splits.router, balance_adjustments.router, schedules.router,
         statements.router, reconciliation.router, calendar.router, reports.router, reward_rules.router,
-        reward_accruals.router,
+        reward_accruals.router, einvoices.router,
     ],
     get_db=get_db,
     engine=engine,
