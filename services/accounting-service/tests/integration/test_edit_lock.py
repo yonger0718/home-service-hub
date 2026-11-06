@@ -214,6 +214,8 @@ EXPECTED_WRITES = {
     # Reward engine (spec 2026-11-03 §6): posts a manual rule's accrual by INSERTing a new engine reward row
     # (source 'rule'); it edits no imported row, so it is never locked_until_cutover.
     ("/reward-accruals/{accrual_id}/post", "POST"),
+    # E-invoice import (worker, ingest scope): writes only einvoice tables, never an imported ledger row.
+    ("/einvoices/import", "POST"),
 }
 
 
