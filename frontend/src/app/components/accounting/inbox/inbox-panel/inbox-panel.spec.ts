@@ -526,7 +526,7 @@ describe('AppInboxPanelComponent', () => {
   });
 
   /** A bank-early reward line (reward engine P5): folded under 其他 with 接受提早入帳 and the case's note. */
-  const EARLY_NOTE = '銀行提早入帳：請修正規則的入帳日，或按「接受提早入帳」；若是促銷等另一筆回饋，按「記成另一筆回饋」';
+  const EARLY_NOTE = '銀行提早入帳：請修正規則的入帳日，或按「接受提早入帳」；若是促銷等另一筆回饋，按「記成另一筆回饋」（不會扣掉原本的預估回饋，若其實是提早入帳會重複計算）';
   const EARLY = makeItem({
     case_id: 60,
     case_version: 2,

@@ -77,7 +77,7 @@ MATCH_RULE = "reward_engine"  # coverage `match_rule` and representation kind of
 RECONCILE_BUSY = "reconcile_busy"  # reconciliation_service.RECONCILE_BUSY (not imported: it imports this module)
 ESTIMATED, POSTED, CONFIRMED, FORFEITED = "estimated", "posted", "bank_confirmed", "forfeited"
 ACCEPT_ACTION = "accept_early_reward"
-EARLY_NOTE = "銀行提早入帳：請修正規則的入帳日，或按「接受提早入帳」；若是促銷等另一筆回饋，按「記成另一筆回饋」"
+EARLY_NOTE = "銀行提早入帳：請修正規則的入帳日，或按「接受提早入帳」；若是促銷等另一筆回饋，按「記成另一筆回饋」（不會扣掉原本的預估回饋，若其實是提早入帳會重複計算）"
 SURPLUS_NOTE = "銀行多給了一筆回饋：若是促銷等另一筆回饋，按「記成另一筆回饋」"  # #295
 # #295 (M11): context keys of a `reward_early` case that change with every new early purchase; they are refreshed in
 # place and are not part of the case identity (the default the one-tap applies is)

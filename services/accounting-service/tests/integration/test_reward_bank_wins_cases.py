@@ -28,7 +28,7 @@ from tests.integration.test_reward_bank_wins import (
 NEXT = (date(2026, 11, 16), date(2026, 12, 15))
 EARLY_DAY = date(2026, 11, 12)  # posts 11-17: after this period, inside the next cycle
 REWARD_DAY = date(2026, 11, 14)
-NOTE = "銀行提早入帳：請修正規則的入帳日，或按「接受提早入帳」；若是促銷等另一筆回饋，按「記成另一筆回饋」"
+NOTE = "銀行提早入帳：請修正規則的入帳日，或按「接受提早入帳」；若是促銷等另一筆回饋，按「記成另一筆回饋」（不會扣掉原本的預估回饋，若其實是提早入帳會重複計算）"
 SURPLUS_NOTE = "銀行多給了一筆回饋：若是促銷等另一筆回饋，按「記成另一筆回饋」"
 SYSTEM_ON = {"enabled": True, "actions": {"create_system_entry": {"enabled": True}}}
 
