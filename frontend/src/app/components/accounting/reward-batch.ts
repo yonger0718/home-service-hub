@@ -43,10 +43,11 @@ export type PassbookItem =
 /**
  * The passbook's rows newest first with batches folded at their newest member. A day that folds a batch shows its
  * balances recomputed from the day's newest balance down (each folded row moves it by the batch total), so the column
- * still reads row by row; with any balance unknown that day, each row keeps the server's figure.
+ * still reads row by row; with any balance unknown that day, each row keeps the server's figure. `fold` false (a
+ * filter that may keep only some of a batch's rows) lists every row as it is.
  */
-export function foldPassbook(entries: LedgerEntry[]): PassbookItem[] {
-  const batches = loadedBatches(entries);
+export function foldPassbook(entries: LedgerEntry[], fold = true): PassbookItem[] {
+  const batches = fold ? loadedBatches(entries) : new Map<string, LedgerEntry[]>();
   const items: PassbookItem[] = [];
   const seen = new Set<string>();
   for (const entry of entries) {

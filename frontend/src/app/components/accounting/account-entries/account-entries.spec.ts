@@ -636,5 +636,11 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     head.click();
     fixture.detectChanges();
     expect(el.querySelectorAll('.entry.batch-member').length).toBe(0);
+
+    // A search may keep only some of a batch's rows: the passbook lists them unfolded then.
+    fixture.componentInstance.q.set('回饋');
+    fixture.detectChanges();
+    expect(el.querySelector('.entry-batch')).toBeNull();
+    expect(el.querySelectorAll('.entry').length).toBe(4);
   });
 });

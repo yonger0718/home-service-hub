@@ -2404,6 +2404,12 @@ describe('buildDays', () => {
       expect(days[0].net).toBe(-40);
     });
 
+    it('does not fold under a filter that may cut a batch, so the day net counts only the rows shown', () => {
+      const days = buildDays([reward(1, '2.0000'), reward(2, '3.0000')], 'TWD', false, false);
+      expect(days[0].rows.map(row => row.key)).toEqual(['e1', 'e2']);
+      expect(days[0].net).toBe(5);
+    });
+
     it('keeps a lone member a plain row and hides the whole batch with the rewards', () => {
       const lone = { ...batch, rule_id: 302 };
       expect(buildDays([reward(1, '2.0000'), reward(3, '4.0000', lone), reward(2, '3.0000')], 'TWD', false)[0].rows

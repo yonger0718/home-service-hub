@@ -84,7 +84,11 @@ export class AccountingAccountEntriesComponent implements OnInit {
   readonly formatMoney = formatMoney;
   readonly batchSub = batchSub;
   /** #304: the rows newest first with each engine reward batch folded at its newest member. */
-  readonly items = computed<PassbookItem[]>(() => foldPassbook(this.entries()));
+  readonly items = computed<PassbookItem[]>(() => {
+    // A search or a kind filter other than 回饋 may keep only some rows of a batch: list them unfolded then.
+    const kind = this.kind();
+    return foldPassbook(this.entries(), !this.q() && (kind === null || kind === 'reward'));
+  });
   /** #304: keys of the batch rows expanded in place (a session-only view state). */
   readonly expandedBatches = signal<ReadonlySet<string>>(new Set());
 

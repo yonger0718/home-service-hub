@@ -322,6 +322,8 @@ until the daily job」 option of rev 1 is gone: step 4 posts early.
   in place (tap again to collapse); a member opens its detail. A batch of one stays a plain row; 隱藏回饋 hides the
   whole batch. In the passbook, a day that folds a batch shows its balances recomputed from the day's newest balance
   down (a folded row moves it by the batch total); expanded members show their own balances.
+  A filter that may keep only some rows of a batch (search, category, project, tag, merchant, amount, a kind other
+  than 回饋) turns folding off, so a row's and the day's totals never count rows the filter dropped.
 - **Hermes `homehub-api` skill** (outside the repo, `~/.hermes/skills/productivity/homehub-api/`):
   - recording a card spend reads the card's in-date rules (GET `/accounts/{id}/reward-rules`) and picks the
     applicable ones, always including the basic rule;

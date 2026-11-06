@@ -268,9 +268,15 @@ function plainRow(entry: LedgerEntry): TimelineRow {
 }
 
 /** Group the newest-first entries by day; one row per split group, per transfer pair and per reward batch (#304). */
-export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewards: boolean): TimelineDay[] {
+export function buildDays(
+  entries: LedgerEntry[],
+  mainCurrency: string,
+  hideRewards: boolean,
+  foldBatches = true,
+): TimelineDay[] {
   const transferLegs = new Map<string, LedgerEntry[]>();
-  const batches = loadedBatches(hideRewards ? entries.filter(entry => entry.kind !== 'reward') : entries);
+  // #304: a filter that can drop some of a batch's rows turns folding off, so a row's and the day's totals stay true.
+  const batches = foldBatches ? loadedBatches(hideRewards ? entries.filter(entry => entry.kind !== 'reward') : entries) : new Map<string, LedgerEntry[]>();
   // Only the members loaded so far: the folder draws these and counts the rest of `group.count` as `+N`.
   const splitIcons = new Map<number, FolderIcon[]>();
   const groupMembers = new Map<number, number[]>();
@@ -497,6 +503,10 @@ export class LedgerTimelineComponent implements OnInit {
   readonly extraKey = computed(() =>
     [this.categoryFilter(), this.projectFilter(), this.tagFilter(), this.merchantFilter(), this.amountMin(), this.amountMax()].join('|'),
   );
+  /** #304: a filter that may keep only some rows of a reward batch (an account or 回饋 kind filter keeps them all). */
+  readonly batchCutting = computed(
+    () => this.query() !== '' || this.extraKey() !== '|||||' || (this.kindFilter() !== null && this.kindFilter() !== 'reward'),
+  );
   readonly filtersActive = computed(
     () =>
       this.accountFilter() !== null ||
@@ -507,7 +517,7 @@ export class LedgerTimelineComponent implements OnInit {
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
   readonly mainCurrency = computed(() => this.preference()?.main_currency ?? DEFAULT_PREFERENCE.main_currency);
   readonly hideRewards = computed(() => this.preference()?.hide_rewards_on_timeline ?? false);
-  readonly days = computed(() => buildDays(this.entries(), this.mainCurrency(), this.hideRewards()));
+  readonly days = computed(() => buildDays(this.entries(), this.mainCurrency(), this.hideRewards(), !this.batchCutting()));
   readonly hasMore = computed(() => this.entries().length < (this.total() ?? 0));
   readonly selectedId = computed(() => this.layout?.selectedEntryId() ?? null);
 
@@ -537,7 +547,7 @@ export class LedgerTimelineComponent implements OnInit {
   readonly today = signal(todayIso());
   /** The selected day's rows as the list groups them (`buildDays`), so filters apply to rows and net alike. */
   private readonly dayGroup = computed(
-    () => buildDays(this.dayEntries(), this.mainCurrency(), this.hideRewards())[0] ?? null,
+    () => buildDays(this.dayEntries(), this.mainCurrency(), this.hideRewards(), !this.batchCutting())[0] ?? null,
   );
   readonly dayRows = computed(() => this.dayGroup()?.rows ?? []);
   /** Net of the rows shown (main-currency rows only, the list's per-day rule); the grid keeps the summary figures. */

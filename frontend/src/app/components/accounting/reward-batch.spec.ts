@@ -54,6 +54,11 @@ describe('reward batches (#304)', () => {
     expect(items.map(i => [i.kind, i.balance])).toEqual([['entry', '12.0000'], ['entry', '10.0000']]);
   });
 
+  it('lists every row unfolded with server balances when told not to fold (a filter may cut a batch)', () => {
+    const items = foldPassbook([reward(1, '2.0000', '12.0000'), reward(2, '3.0000', '10.0000')], false);
+    expect(items.map(i => [i.kind, i.balance])).toEqual([['entry', '12.0000'], ['entry', '10.0000']]);
+  });
+
   it('falls back to server balances when a folded day has an unknown balance', () => {
     const items = foldPassbook([reward(1, '2.0000', null), reward(2, '3.0000', '8.0000')]);
     expect(items.map(i => [i.kind, i.balance])).toEqual([['batch', null]]);
