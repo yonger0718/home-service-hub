@@ -793,4 +793,35 @@ describe('AppInboxPanelComponent', () => {
     expect(el.querySelector('app-inbox-match-sheet')).toBeNull();
     http.expectNone(APPLY_URL);
   });
+
+  describe('e-invoice section', () => {
+    const einvoice = (state: 'ambiguous' | 'unmatched') =>
+      ({
+        id: 7,
+        number: 'AB12345678',
+        issue_date: '2026-09-03',
+        seller_name: '示範早餐店',
+        seller_tax_id: '12345678',
+        total_amount: '120.0000',
+        status_raw: '開立',
+        state,
+        items: [],
+        candidates: [],
+        offer_mute: false,
+      }) as NonNullable<InboxOut['einvoices']>[number];
+
+    it('renders the section when einvoices exist, not when missing or empty', () => {
+      const withOne = render({ ...makeInbox([]), einvoices: [einvoice('ambiguous')] });
+      expect(withOne.el.querySelector('app-einvoice-section')).not.toBeNull();
+      expect(render(makeInbox([])).el.querySelector('app-einvoice-section')).toBeNull();
+      expect(
+        render({ ...makeInbox([]), einvoices: [] }).el.querySelector('app-einvoice-section'),
+      ).toBeNull();
+    });
+
+    it('preview renders nothing when only unmatched reminders exist', () => {
+      const { el } = render({ ...makeInbox([]), einvoices: [einvoice('unmatched')] }, 'preview');
+      expect(el.querySelector('app-einvoice-section')).toBeNull();
+    });
+  });
 });

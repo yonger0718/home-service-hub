@@ -1,0 +1,32 @@
+<div class="overlay" data-overlay (click)="cancel()">
+  <div
+    class="sheet"
+    tabindex="-1"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="einvoice-target-title"
+    (click)="$event.stopPropagation()"
+  >
+    <div class="grab"></div>
+    <h3 id="einvoice-target-title">這張發票對到哪一筆</h3>
+    <p class="invoice-line">{{ invoice().seller_name }}</p>
+
+    @if (state().status === 'loading') {
+      <p class="muted" role="status">讀取中</p>
+    } @else if (state().status === 'error') {
+      <p class="muted" role="alert">讀取失敗</p>
+    } @else {
+      <div class="targets">
+        @for (row of rows(); track row.target.kind + row.target.id) {
+          <button type="button" class="target-row" (click)="pick(row.target)">{{ row.label }}</button>
+        } @empty {
+          <p class="muted">沒有可連結的帳</p>
+        }
+      </div>
+    }
+
+    <div class="btnrow">
+      <button type="button" class="sheet-cancel" (click)="cancel()">取消</button>
+    </div>
+  </div>
+</div>

@@ -43,6 +43,7 @@ import {
 import { InboxService } from '../inbox.service';
 import { AppInboxMatchSheetComponent, InboxMatchResult } from '../match-sheet/match-sheet';
 import { AppInboxRecordSheetComponent, InboxRecordResult } from '../record-sheet/record-sheet';
+import { AppEinvoiceSectionComponent } from '../einvoice-section/einvoice-section';
 import { AccountingService } from '../../../../services/accounting.service';
 
 /** Ask cards shown on 全部 before the 還有 N 張 → link. */
@@ -141,6 +142,7 @@ export interface InboxFoldView {
     RouterLink,
     AppInboxRecordSheetComponent,
     AppInboxMatchSheetComponent,
+    AppEinvoiceSectionComponent,
   ],
   templateUrl: './inbox-panel.html',
   styleUrls: ['./inbox-panel.scss'],
@@ -205,6 +207,12 @@ export class AppInboxPanelComponent {
   private readonly shownAsk = computed(() =>
     this.mode() === 'preview' ? this.cards().ask.slice(0, INBOX_PREVIEW_CARDS) : this.cards().ask,
   );
+  /** Preview shows only the invoices that ask a question; with none, the section is not rendered. */
+  readonly hasEinvoices = computed(() => {
+    const items = this.data().einvoices ?? [];
+    return this.mode() === 'preview' ? items.some((item) => item.state !== 'unmatched') : items.length > 0;
+  });
+
   openMore(event: MouseEvent): void {
     if (event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
       this.more.emit();
