@@ -2,13 +2,22 @@
 
 Privacy: the carrier name/number columns are discarded as each row is split and exist on no type. ParseError
 messages are the code only, never row content. Nothing is logged.
+
+Fail closed: the worker sends one merged import per run, and the API rejects the whole batch (422) if any invoice
+violates EinvoiceIn, so the parser mirrors those bounds and a bad file fails alone. Seller name (1..128), status
+(1..16), tax id (^[0-9A-Za-z]{0,16}$), item name (1..256) and more than 500 items raise row_shape (a bad tax id is
+row_shape too). Amounts must match ^-?[0-9]+(\.[0-9]+)?$ with at most 16 integer and 4 fraction digits (Numeric(20,4))
+or raise amount.
 """
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 import re
 
 _NUMBER = re.compile(r"^[A-Z]{2}[0-9]{8}$")
+_AMOUNT = re.compile(r"-?([0-9]+)(?:\.([0-9]+))?")
+_TAX_ID = re.compile(r"[0-9A-Za-z]{0,16}")
+_MAX_ITEMS = 500
 
 
 class ParseError(ValueError):
@@ -43,13 +52,10 @@ def _fields(line: str) -> list[str]:
 
 
 def _amount(text: str) -> Decimal:
-    try:
-        value = Decimal(text.strip())
-    except InvalidOperation:
-        raise ParseError("amount") from None
-    if not value.is_finite():
+    m = _AMOUNT.fullmatch(text.strip())
+    if not m or len(m.group(1)) > 16 or len(m.group(2) or "") > 4:
         raise ParseError("amount")
-    return value
+    return Decimal(m.group(0))
 
 
 def _date(text: str) -> date:
@@ -83,6 +89,8 @@ def parse(data: bytes) -> list[ParsedInvoice]:
             if not _NUMBER.match(number):
                 raise ParseError("number")
             inv = ParsedInvoice(number, _date(d), tax, name, _amount(total), status, ())
+            if not 1 <= len(name) <= 128 or not 1 <= len(status) <= 16 or not _TAX_ID.fullmatch(tax):
+                raise ParseError("row_shape")
             cur_key = (number, inv.issue_date)
             out.pop(cur_key, None)
             cur = (inv, [])
@@ -94,7 +102,10 @@ def parse(data: bytes) -> list[ParsedInvoice]:
                 raise ParseError("row_shape")
             if f[1] != cur[0].number:
                 raise ParseError("item_number")
-            cur[1].append(ParsedItem(len(cur[1]) + 1, "|".join(f[3:]), _amount(f[2])))
+            item_name = "|".join(f[3:])
+            if not 1 <= len(item_name) <= 256 or len(cur[1]) >= _MAX_ITEMS:
+                raise ParseError("row_shape")
+            cur[1].append(ParsedItem(len(cur[1]) + 1, item_name, _amount(f[2])))
         else:
             raise ParseError("row_shape")
     return [ParsedInvoice(i.number, i.issue_date, i.seller_tax_id, i.seller_name, i.total_amount, i.status,

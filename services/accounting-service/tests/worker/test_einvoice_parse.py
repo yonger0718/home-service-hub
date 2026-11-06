@@ -95,3 +95,29 @@ def test_repeat_in_one_file_last_wins():
     r = parse(csv_bytes(M1, D1, M2, D3, M1, D2))
     assert [i.number for i in r] == ["CD00000002", "AB00000001"]
     assert [x.name for x in r[1].items] == ["測試品B"]
+
+
+@pytest.mark.parametrize("bad", ["1,200", "1e5", "Infinity", "NaN", "１２０", "12.34567", "12345678901234567"])
+def test_amount_forms_refused(bad):
+    assert code(csv_bytes(M1.replace("|150|", f"|{bad}|"))) == "amount"
+
+
+def test_amount_limits_accepted():
+    r = parse(csv_bytes(M1.replace("|150|", "|-1234567890123456.1234|")))
+    assert r[0].total_amount == Decimal("-1234567890123456.1234")
+
+
+def test_api_bounds_enforced():
+    assert code(csv_bytes(M1, "D|AB00000001|5||")) == "row_shape"
+    assert code(csv_bytes(M1, "D|AB00000001|5|" + "x" * 257 + "|")) == "row_shape"
+    assert code(csv_bytes(M1.replace("測試商店", ""))) == "row_shape"
+    assert code(csv_bytes(M1.replace("測試商店", "x" * 129))) == "row_shape"
+    assert code(csv_bytes(M1.replace("|開立|", "|" + "s" * 17 + "|"))) == "row_shape"
+    assert code(csv_bytes(M1.replace("|開立|", "||"))) == "row_shape"
+    assert code(csv_bytes(M1.replace("12345678", "12-45678"))) == "row_shape"
+    assert code(csv_bytes(M1.replace("12345678", "1" * 17))) == "row_shape"
+
+
+def test_too_many_items():
+    assert len(parse(csv_bytes(M1, *[D1] * 500))[0].items) == 500
+    assert code(csv_bytes(M1, *[D1] * 501)) == "row_shape"
