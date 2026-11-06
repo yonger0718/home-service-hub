@@ -1108,6 +1108,21 @@ describe('AccountingRemindersComponent', () => {
       expect(el.querySelector('.empty')).toBeNull();
     });
 
+    it('on 待處理 an inbox with only e-invoice questions counts them and is not empty', async () => {
+      await TestBed.inject(Router).navigateByUrl('/?tab=todo');
+      const { el } = render([], [], [], [], [], { ...inboxOut(), counts: { ...inboxOut().counts, einvoice_ask: 1 } });
+      http.expectOne(r => r.url === '/api/accounting/reconciliation/actions').flush([]);
+      expect(text(el.querySelector('app-inbox-panel .inbox-head'))).toBe('要你決定 1 · 其他 0');
+      expect(el.querySelector('.empty')).toBeNull();
+    });
+
+    it('on 待處理 an inbox whose only cards are proposed is not empty', async () => {
+      await TestBed.inject(Router).navigateByUrl('/?tab=todo');
+      const { el } = render([], [], [], [], [], { ...inboxOut(), counts: { ...inboxOut().counts, proposed: 1 } });
+      http.expectOne(r => r.url === '/api/accounting/reconciliation/actions').flush([]);
+      expect(el.querySelector('.empty')).toBeNull();
+    });
+
     it('load() requests the inbox and renders the panel on 全部', () => {
       const { fixture, el } = render([], [ALAN], ALAN_OPEN, [], [], inboxOut([bankOnly(1), bankOnly(2), bankOnly(3), bankOnly(4)]));
       expect(sections(el)).toEqual(['待處理', '借還款追蹤']);
