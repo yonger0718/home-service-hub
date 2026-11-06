@@ -532,6 +532,7 @@ are in `deploy/statements/README.md`.
     python -m worker verify [--limit N]
     python -m worker flex [--dry-run] [--query-id ID] [--from-file XML] [--legacy-until DATE] [--unlatch]   # IB Flex statement -> portfolio
     python -m worker cathay [--dry-run] [--file ID] [--since DATE] [--until DATE] [--retry DATE] [--ack DATE] [--unlatch] [--validate-history]   # 國泰證券 daily statements -> portfolio
+    python -m worker einvoice                          # 財政部 e-invoice CSVs (Drive) -> accounting API; exit 0 / 1 / 2 / 3, see deploy/statements/README.md
 
 Exit codes: `0` success (a `done` run with transient codes in `errors` is still 0; `already running` is 0 for `run`/`poll` so timers never
 fail on overlap, and 3 for `gate`, `verify` and `export-masked`, which operators must notice); `1` a run `failed` or `aborted`, `parser_disabled`, any verify/export error (`verify` also exits 1 on `parse_failed > 0` or `verify_errors > 0`), a failed gate;

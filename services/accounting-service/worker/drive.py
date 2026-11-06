@@ -47,7 +47,7 @@ class Drive:
     def __init__(self, cfg: WorkerConfig, runner: Runner):
         self.cfg, self.runner = cfg, runner
 
-    def _list_root(self, root: str, drive_path: str) -> list[Listed]:
+    def _list_root(self, root: str, drive_path: str, *, extensions: tuple[str, ...] = (".pdf",)) -> list[Listed]:
         args = ["rclone", "lsjson", "--hash", "--recursive", "--files-only", f"{self.cfg.rclone_remote}{drive_path}"]
         result = self.runner.run(args, timeout=300)
         if result.returncode != 0:
@@ -58,11 +58,11 @@ class Drive:
                 raise ListingError("rclone lsjson output is not a list")
             out = []
             for row in rows:
-                if not str(row.get("Path", "")).lower().endswith(".pdf"):
+                if not str(row.get("Path", "")).lower().endswith(extensions):
                     continue
                 md5 = (row.get("Hashes") or {}).get("md5")
                 if not md5 or "ID" not in row:
-                    raise ListingError(f"listing row without md5 or ID: {row.get('Path')}")
+                    raise ListingError("listing row without md5 or ID")
                 out.append(Listed(row["ID"], row["Path"], row.get("Name", ""), int(row.get("Size", 0)),
                                   md5.lower(), row.get("ModTime", ""), root))
         except (UnicodeDecodeError, json.JSONDecodeError, AttributeError, TypeError, ValueError) as exc:
