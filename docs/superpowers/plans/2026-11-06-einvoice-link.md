@@ -16,7 +16,7 @@ posts one import per run. The SPA adds an inbox section, an entry-detail card, a
 **Tech Stack:** Python 3.13 / FastAPI / SQLAlchemy / Alembic / PostgreSQL; worker on httpx + rclone; Angular 21 +
 Vitest.
 
-**Spec:** `docs/superpowers/specs/2026-11-06-einvoice-link-design.md`, rev 3.3 (Multica PASS-with-minors). Section
+**Spec:** `docs/superpowers/specs/2026-11-06-einvoice-link-design.md`, rev 3.4 (Multica PASS-with-minors). Plan rev 1.1 folds plan review AGENT-404 (PASS-with-minors). Section
 references (§) point into it. The spec is binding; owner rulings marked **(owner)** there are not reopened here.
 
 **Shipping:** three PRs, stacked in this order. Deploy in this order too: the worker posts to the new API.
@@ -86,7 +86,7 @@ references (§) point into it. The spec is binding; owner rulings marked **(owne
 | R5 | `einvoice_link` has `invoice_id` as its primary key (the spec's "unique"). | One link per invoice; no surrogate id needed. |
 | R6 | All einvoice writes (import, matcher, owner actions, mutes, runbook) first take `pg_advisory_xact_lock(EINVOICE_LOCK_KEY)`, with `EINVOICE_LOCK_KEY = 0x45494E56` ("EINV"). An `IntegrityError` on the link indexes (a concurrent ledger write) becomes 409 `retry`. | Tens of invoices a month: one serialising key is enough, and the matcher's one-pass decision stays consistent. |
 | R7 | **Family conflict in the one pass.** Two invoices whose unique candidates are a group and one of its members (or two members' group and the group) would break §7.6 "never both inside the same group". The decision treats them as contested: both `ambiguous`. | §7.4 decides all invoices before writing; §7.6 is an invariant. |
-| R8 | The `invoice_number` stamp is skipped when the entry is MOZE-locked (`ledger_service.is_locked(source, moze_id)`). The link is still written. | Locked rows are read-only until cutover; the link table is the source of truth (§5). |
+| R8 | `stamp` and `clear_stamp` ignore `ledger_service.is_locked`: the stamp is link metadata written by the einvoice service, not an owner edit, so locked and unlocked rows behave the same (§5). | Keeps the exact-number rule consistent; after cutover `is_locked` is false anyway. |
 | R9 | `offer_mute` is set on `unmatched` cards only, when `seller_tax_id` is non-empty, the seller is not muted, and the count of `dismissed(owner)` invoices of that seller is ≥ `mute_prompt_after`. The mute is created through `POST /einvoices/{id}/dismiss {"mute_seller": true}`. | §8 "the next dismiss card for that seller also offers"; one tap dismisses and mutes. |
 | R10 | `GET /reconciliation/inbox?account_id=…` returns `einvoices = []` and `einvoice_ask = 0` (invoices have no account). With `einvoice.enabled = false` the section is empty and the count 0 (§11). The `einvoices` list is sliced to `limit` separately; `einvoice_ask` is counted before the slice. | §9. |
 | R11 | Search opt-in is an explicit query parameter `include_invoice_items` on `GET /entries` (default false). Only the SPA timeline sends it. `invoice_item_hits` is filled only when `q` is set and the flag is on. | §10 "Only the entries list behind the timeline search sets the flag"; Hermes and other callers keep today's results. |
@@ -221,14 +221,19 @@ references (§) point into it. The spec is binding; owner rulings marked **(owne
   ```
   only = {inv: c[0] for inv, c in candidates.items() if len(c) == 1}
   holders = Counter(only.values())
-  fam_holders = defaultdict(set)            # group id -> invoices whose single target is that group or a member
+  group_holders = defaultdict(set)   # group id -> invoices whose single target is that group
+  member_holders = defaultdict(set)  # group id -> invoices whose single target is a member of it
   for inv, key in only.items():
-      if family.get(key) is not None: fam_holders[family[key]].add(inv)
+      if key[0] == "group": group_holders[key[1]].add(inv)
+      elif family.get(key) is not None: member_holders[family[key]].add(inv)
   for inv, c in candidates.items():
       if len(c) >= 2: out[inv] = ("ambiguous", None)
       elif len(c) == 1:
-          key = c[0]; g = family.get(key)
-          contested = holders[key] > 1 or (g is not None and len(fam_holders[g]) > 1)
+          key = c[0]
+          # R7: only group-vs-own-member is a family contest; two different members of one group are not
+          family_contest = (member_holders[key[1]] if key[0] == "group"
+                            else group_holders.get(family.get(key), set()))
+          contested = holders[key] > 1 or bool(family_contest)
           out[inv] = ("ambiguous", None) if contested else ("link", key)
       else: out[inv] = ("near", None) if near.get(inv) else ("nothing", None)
   ```
@@ -337,7 +342,7 @@ references (§) point into it. The spec is binding; owner rulings marked **(owne
   - `remove_link(db: Session, invoice: Einvoice) -> None`: deletes the link row (if any) **after** the caller set the
     new state, and clears the linked entry's `invoice_number` only when it equals `invoice.number` (§5).
   - `clear_stamp(db: Session, entry_id: int, number: str) -> None`, `stamp(db: Session, entry_id: int, number: str)
-    -> None` (sets `invoice_number` only when NULL and the entry is not `is_locked`, R8).
+    -> None` (sets `invoice_number` only when NULL; ignores `is_locked`, R8).
 - Produces (router): `POST /einvoices/import` (`ingest`) → `EinvoiceImportOut`: `lock`, `import_invoices`, then
   `einvoice_matcher.run_matcher(db)` (Task 5; until then the handler returns `match` with `ran=False` and zero
   counts), commit.
@@ -416,14 +421,18 @@ references (§) point into it. The spec is binding; owner rulings marked **(owne
     need the `invoice_number` condition.
   - `order_by_closeness(targets, amount: Decimal, day: date) -> list[Target]`: by `abs(abs(net) - amount)`, then
     `abs((t.day - day).days)`, then key.
-  - `candidates_for(db: Session, invoice: Einvoice) -> tuple[list[Target], bool]`: `(rule candidates, False)` or
-    `(near candidates, True)`; read side of Task 7.
+  - `candidates_for(db: Session, invoice: Einvoice) -> tuple[list[Target], bool]`: `rule = rule_candidates(...)`;
+    return `(rule, False)` when `rule` is non-empty, else `(near_candidates(...), True)`. Spell it as an explicit
+    `if`, never `(a, False) or (b, True)` (a tuple is always truthy). Read side of Task 7; near cards get their
+    candidates from the second branch.
   - `run_matcher(db: Session) -> dict` (`EinvoiceMatchOut` fields). Returns `ran=False` with zeros when
     `einvoice.enabled` is false. Otherwise: `lock`; processed set = states `unmatched`, `ambiguous`, `near`, and
     `dismissed` with `dismiss_reason = 'seller_muted'` (§7.1), `FOR UPDATE`; one `eligible_targets` call over the
     union of all windows and periods; `decide`; then write:
     - `link`: state `linked`, `dismiss_reason = None`, insert `EinvoiceLink(linked_by="auto")`, `stamp` for an
-      entry target;
+      entry target. Each link insert runs in a savepoint (`db.begin_nested()`): an `IntegrityError` (a concurrent
+      ledger write took the target) rolls back that invoice only, leaves its state unchanged and counts
+      `retry_later`; the import and the rest of the pass commit (R6);
     - `ambiguous` / `near`: that state, `dismiss_reason = None`;
     - `nothing`: `dismissed`/`seller_muted` when the seller has a mute row, else `unmatched`.
     An invoice whose state does not change counts `unchanged`.
@@ -446,6 +455,13 @@ references (§) point into it. The spec is binding; owner rulings marked **(owne
     −200) and an ungrouped expense −200 in the window; invoice 200 → `ambiguous`, no link.
   - `test_group_members_same_amount_ambiguous` (§14): split group G with expense members −100 and −100 (net −200);
     invoice 100 → both members are candidates (G is not) → `ambiguous`, no link to a member.
+  - `test_group_and_own_member_same_amount_ambiguous` (§14, one invoice): split group G with an expense member
+    −200 and an income member +50 (G's expense+receivable net −200); invoice 200 → candidates G and its member →
+    `ambiguous`, no link.
+  - `test_two_members_of_one_group_both_link` (R7 narrow): invoice X 150 whose only candidate is member M1 (−150) of
+    G, invoice Y 70 whose only candidate is member M2 (−70) of G → both `linked` to their members.
+  - `test_matcher_integrity_error_is_retry_later` (R6): a link insert that raises `IntegrityError` leaves that
+    invoice's state unchanged, counts `retry_later`, and the import still commits.
   - `test_family_conflict_both_ambiguous` (Review Focus 1, R7): invoice X 200 whose only candidate is group G (net
     −200); invoice Y 150 whose only candidate is member M (−150) of G (G's other member −50) → both `ambiguous`; no
     link row.
@@ -503,8 +519,9 @@ references (§) point into it. The spec is binding; owner rulings marked **(owne
   - `link(db, invoice_id: int, *, entry_id: int | None, group_id: int | None) -> dict` — 409 `einvoice_void` on a
     void invoice; 409 `target_ineligible` unless `entry_target`/`group_target` returns a target or it is the
     invoice's current target; an entry target also needs `invoice_number` NULL or equal. Existing link: update the
-    row in place (`entry_id`/`group_id`, `linked_by="owner"`, `linked_at=now()`), `clear_stamp` the previous entry,
-    then `stamp` the new entry. New link: insert. Always `state="linked"`, `dismiss_reason=None`. `IntegrityError` on
+    row in place (`entry_id`/`group_id`, `linked_by="owner"`, `linked_at=now()`), `clear_stamp` the previous entry
+    (when the previous target was an entry), then `stamp` the new target only when it is an entry. Group targets
+    are never stamped (§5). New link: insert. Always `state="linked"`, `dismiss_reason=None`. `IntegrityError` on
     flush → `CodedConflictError("retry")` (R6).
   - `unlink(db, invoice_id: int) -> dict` — 409 `not_linked` when no link row; sets `dismissed`/`owner`, flushes,
     then `remove_link`.
@@ -873,8 +890,10 @@ references (§) point into it. The spec is binding; owner rulings marked **(owne
   (einvoice_ask ?? 0)`.
 - Bell sites use it: `nav-badge` maps `data => inboxBellCount(data.counts)`; `timeline.inboxAsk.set(inboxBellCount(
   data.counts))`; `headText` = `要你決定 ${inboxBellCount(counts)} · 其他 …`; `reminders.html` gate
-  `inboxBellCount(data.counts) > 0` (via a component method or computed); `reminders.ts` empty-state uses it for
-  both the `todo` and `all` branches.
+  `inboxBellCount(data.counts) > 0` (via a component method or computed); in `reminders.ts:369-375` the helper
+  replaces only the `counts.ask` term: `todo` = `inboxBellCount(counts) + proposed + balance_gap + settlement +
+  dividend + other`, `all` branch likewise. Test: a page whose only cards are `proposed` is not empty; a page whose
+  only questions are invoices is not empty.
 
 - [ ] **Step 1: Failing tests:**
   - `einvoice.service.spec.ts`: each method hits the right URL and verb (e.g. `link(7, {entry_id: 3})` → `POST
@@ -963,7 +982,7 @@ references (§) point into it. The spec is binding; owner rulings marked **(owne
     invoices (seller · date · total · first items); a tap → `link(id, {entry_id} | {group_id})` → `changed`.
   - Errors use `einvoiceErrorText` (Task 12).
 - `entry-detail.html`: `<app-entry-einvoice-card [detail]="d" (changed)="load(d.id, true)" />`. It shows on
-  MOZE-locked rows too: a link never edits the entry (R8 skips the stamp).
+  MOZE-locked rows too: a link never edits the entry's owner fields (R8: the stamp is link metadata).
 
 - [ ] **Step 1: Failing tests** (`einvoice-card.spec.ts`; one wiring test in `entry-detail.spec.ts`):
   - `shows the linked invoice and unlinks`: detail with `einvoice` → 「發票」, items, 「自動連結」; 「解除連結」 →
