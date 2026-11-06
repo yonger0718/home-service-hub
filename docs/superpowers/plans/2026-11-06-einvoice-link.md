@@ -619,6 +619,11 @@ references (§) point into it. The spec is binding; owner rulings marked **(owne
     the list sliced to `limit`.
   - `invoice_targets(db: Session, invoice_id: int, *, days: int) -> list[dict]` (R12; 404 missing, 409
     `einvoice_void`).
+  - `dismissed_invoices(db: Session, *, limit: int = 100) -> list[dict]` (owner ruling 2026-11-06, spec §8):
+    `state = 'dismissed'` with `dismiss_reason` in (`owner`, `runbook`), ordered `updated_at` desc then id desc,
+    up to `limit`; each as `EinvoiceSummaryOut` plus `dismiss_reason`. Route `GET /einvoices/dismissed`
+    (`read`, declared before `/{invoice_id}` routes) → `list[EinvoiceDismissedOut]` (`EinvoiceSummaryOut` fields +
+    `dismiss_reason`; define `EinvoiceSummaryOut` here, Task 8 reuses it).
 - `build_inbox(...)` sets `counts["einvoice_ask"]` and `einvoices` from `inbox_section(db, limit=limit)` when
   `account_id is None`, else 0 and `[]` (R10).
 
@@ -637,6 +642,9 @@ references (§) point into it. The spec is binding; owner rulings marked **(owne
     `offer_mute is True`; with `mute_prompt_after=4` → False; an empty tax id → False.
   - `test_disabled_hides_section`: `enabled` false → `einvoices == []`, `einvoice_ask == 0`.
   - `test_account_filter_has_no_invoices`: `?account_id=<id>` → `einvoices == []`, `einvoice_ask == 0`.
+  - `test_dismissed_list_owner_and_runbook_only`: one `dismissed(owner)`, one `dismissed(runbook)`, one
+    `dismissed(seller_muted)`, one `unmatched` → `GET /einvoices/dismissed` lists the first two (newest first) with
+    items and `dismiss_reason`; after `undismiss` on one it is gone from the list.
   - `test_targets_lists_eligible_in_days`: invoice 120 on 10-05; eligible entries −500 (10-10), −118 (10-04), and
     an ineligible income → `GET /einvoices/{id}/targets?days=14` → `[−118 entry, −500 entry]`.
 - [ ] **Step 2:** `$PYTEST tests/integration/test_einvoice_inbox.py -v` → FAIL.
@@ -882,7 +890,8 @@ references (§) point into it. The spec is binding; owner rulings marked **(owne
 - Produces (`EinvoiceService`, `providedIn: 'root'`, base `/api/accounting/einvoices`): `link(id, target:
   EinvoiceLinkTarget)`, `unlink(id)`, `dismiss(id, muteSeller = false)` (body `{mute_seller}`), `undismiss(id)` →
   `Observable<EinvoiceStateOut>`; `targets(id, days = 14): Observable<EinvoiceTarget[]>`; `picker(entryId):
-  Observable<EinvoicePicker>`; `mutes(): Observable<EinvoiceMute[]>`; `deleteMute(taxId): Observable<void>`
+  Observable<EinvoicePicker>`; `dismissed(): Observable<EinvoiceDismissed[]>` (`GET …/dismissed`; `EinvoiceDismissed` =
+  `EinvoiceSummary` + `dismiss_reason`); `mutes(): Observable<EinvoiceMute[]>`; `deleteMute(taxId): Observable<void>`
   (path-encoded); `preferences(): Observable<EinvoicePreferences>`; `setRemindUnmatched(on: boolean)` (PATCH). Every
   write pipes `tap(() => accounting.markEntriesChanged())` (`accounting.service.ts:95-97`), so the reminders page,
   timeline and nav badge re-read.
@@ -1016,13 +1025,16 @@ references (§) point into it. The spec is binding; owner rulings marked **(owne
     提醒」 (`role="switch"`, class `tog`, as `pref-hide-rewards`) → `setRemindUnmatched(!on)`; list 「不提醒的商家」
     with seller name (or tax id) and 「移除」 (two-tap confirm like `row-delete`) → `deleteMute(taxId)` → reload the
     list. A failed load shows 「發票設定讀取失敗」.
+  - List 「已忽略的發票」 (owner ruling 2026-11-06): `dismissed()` rows with seller · date · amount and the item
+    names; 「復原」 → `undismiss(id)` → reload the list. Empty → 「沒有已忽略的發票」.
   - Timeline: `invoiceHits = entry.invoice_item_hits?.length ? '發票：' + hits.join('、') : null`; rendered under
     the title only when set.
 
 - [ ] **Step 1: Failing tests:**
   - `accounting-settings.spec.ts`: `einvoice section hidden while disabled`; `switch toggles remind_unmatched` →
     `PATCH …/preferences` `{remind_unmatched: false}`; `removes a mute after confirm` → `DELETE …/mutes/00000001`,
-    then a reloaded list without it.
+    then a reloaded list without it; `lists dismissed invoices and restores one` → 「復原」 posts `…/{id}/undismiss`,
+    then a reloaded list without it; empty list → 「沒有已忽略的發票」.
   - `timeline.spec.ts`: a search sends `include_invoice_items=true` with `q`; without `q` it is not sent; a row
     with `invoice_item_hits: ['衛生紙', '牙膏']` shows 「發票：衛生紙、牙膏」; a row without hits shows nothing.
 - [ ] **Step 2:** the specs → FAIL.
