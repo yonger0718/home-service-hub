@@ -14,6 +14,11 @@ FxSource = Literal["fx_api", "moze_backup", "manual"]
 RoundingMode = Literal["keep", "round", "floor", "ceil"]
 
 
+class EinvoiceItemOut(BaseModel):
+    name: str
+    subtotal: Decimal
+
+
 class RewardRuleOut(BaseModel):
     id: int
     account_id: int

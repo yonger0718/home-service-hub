@@ -2,9 +2,11 @@
 (carrier name/number) is a 422 and nothing is written (privacy)."""
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from .ledger import EinvoiceItemOut
 from .statements import Strict
 from .writes import Int32
 
@@ -120,3 +122,39 @@ class RunbookDismissOut(BaseModel):
     model_config = Strict
     dismissed: int
     not_found: list[int]  # indexes into `invoices`: no such invoice, or void
+
+
+# --- reads: inbox cards, target list, dismissed list (spec §8, §9) --------------------------------------------------
+
+class EinvoiceSummaryOut(BaseModel):
+    model_config = Strict
+    id: int
+    number: str
+    issue_date: date
+    seller_name: str
+    seller_tax_id: str
+    total_amount: Decimal
+    status_raw: str
+    items: list[EinvoiceItemOut]
+
+
+class EinvoiceDismissedOut(EinvoiceSummaryOut):
+    dismiss_reason: Literal["owner", "runbook"]
+
+
+class EinvoiceTargetOut(BaseModel):
+    model_config = Strict
+    kind: Literal["entry", "group"]
+    id: int
+    account_name: str
+    date: date
+    amount: Decimal  # the net (entry plus fee / discount children; a group's expense / receivable members)
+    currency: str
+    category: str | None
+    name: str | None
+
+
+class InboxEinvoice(EinvoiceSummaryOut):
+    state: Literal["ambiguous", "near", "unmatched"]
+    candidates: list[EinvoiceTargetOut]
+    offer_mute: bool

@@ -1,21 +1,23 @@
 """E-invoice import and matcher run (spec §6, §7), owner actions, mutes and preferences (§7.5, §8). Behind
 `require_feature()`; the worker's `ingest` scope posts the parsed CSV and triggers `/match`; every owner route
 needs `write`, the rollout runbook dismiss `admin`. Static paths are declared before the `/{invoice_id}` routes."""
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
 from ..auth import require, require_feature
 from ..database import get_db
 from ..schemas.einvoices import (
-    EinvoiceDismissIn, EinvoiceImportIn, EinvoiceImportOut, EinvoiceLinkIn, EinvoiceMatchOut, EinvoiceMuteOut,
-    EinvoicePreferencesIn, EinvoicePreferencesOut, EinvoiceStateOut, RunbookDismissIn, RunbookDismissOut,
+    EinvoiceDismissedOut, EinvoiceDismissIn, EinvoiceImportIn, EinvoiceImportOut, EinvoiceLinkIn, EinvoiceMatchOut, EinvoiceMuteOut,
+    EinvoicePreferencesIn, EinvoicePreferencesOut, EinvoiceStateOut, EinvoiceTargetOut, RunbookDismissIn,
+    RunbookDismissOut,
 )
-from ..services import einvoice_matcher, einvoice_service, settings_service
+from ..services import einvoice_matcher, einvoice_read, einvoice_service, settings_service
 from .errors import service_errors
 
 router = APIRouter(prefix="/einvoices", tags=["E-invoices"], dependencies=[Depends(require_feature())])
 
 INGEST = [Depends(require("ingest"))]
+READ = [Depends(require("read"))]
 WRITE = [Depends(require("write"))]
 ADMIN = [Depends(require("admin"))]
 
@@ -74,6 +76,17 @@ def runbook_dismiss(body: RunbookDismissIn, db: Session = Depends(get_db)):
         out = einvoice_service.runbook_dismiss(db, body.invoices)
     db.commit()
     return out
+
+
+@router.get("/dismissed", response_model=list[EinvoiceDismissedOut], dependencies=READ)
+def dismissed(db: Session = Depends(get_db)):
+    return einvoice_read.dismissed_invoices(db)
+
+
+@router.get("/{invoice_id}/targets", response_model=list[EinvoiceTargetOut], dependencies=READ)
+def targets(invoice_id: int, days: int = Query(14, ge=1, le=60), db: Session = Depends(get_db)):
+    with service_errors():
+        return einvoice_read.invoice_targets(db, invoice_id, days=days)
 
 
 @router.post("/{invoice_id}/link", response_model=EinvoiceStateOut, dependencies=WRITE)

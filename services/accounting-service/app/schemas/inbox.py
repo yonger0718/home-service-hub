@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .einvoices import InboxEinvoice
 from .statements import Strict
 from .writes import Int32
 
@@ -129,6 +130,7 @@ class InboxCounts(BaseModel):
     settlement: int
     dividend: int
     other: int
+    einvoice_ask: int = 0  # ambiguous + near invoices; separate from `ask` (spec §9)
 
 
 class InboxOut(BaseModel):
@@ -136,6 +138,7 @@ class InboxOut(BaseModel):
     generated_at: datetime
     counts: InboxCounts
     accounts: list[InboxAccount]
+    einvoices: list[InboxEinvoice] = []
 
 
 # --- POST /reconciliation/inbox/apply (spec §5) ---------------------------------------------------------------------
