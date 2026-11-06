@@ -218,6 +218,12 @@ EXPECTED_WRITES = {
     ("/einvoices/import", "POST"),
     # E-invoice matcher run (worker, ingest scope): writes einvoice tables and stamps a NULL invoice_number only.
     ("/einvoices/match", "POST"),
+    # E-invoice owner actions (write scope, spec §7.5): einvoice tables plus a NULL-only invoice_number stamp / its
+    # clear; mutes and the runbook dismiss write einvoice tables only; preferences merge one settings key.
+    ("/einvoices/{invoice_id}/link", "POST"), ("/einvoices/{invoice_id}/unlink", "POST"),
+    ("/einvoices/{invoice_id}/dismiss", "POST"), ("/einvoices/{invoice_id}/undismiss", "POST"),
+    ("/einvoices/mutes/{tax_id}", "DELETE"), ("/einvoices/preferences", "PATCH"),
+    ("/einvoices/runbook-dismiss", "POST"),
 }
 
 
