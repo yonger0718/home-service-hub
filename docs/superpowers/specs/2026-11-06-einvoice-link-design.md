@@ -1,6 +1,6 @@
 # E-invoice link (電子發票連結) — design
 
-Status: draft rev 3, 2026-11-06 (builder check + Multica AGENT-400 round 1 folded). Owner decisions are marked **(owner)**; calls made by the author
+Status: draft rev 3.1, 2026-11-06 (builder check + Multica AGENT-400 round 1 and re-check folded). Owner decisions are marked **(owner)**; calls made by the author
 are marked **(author)** and can be overridden in review.
 
 ## 1. Why
@@ -73,12 +73,13 @@ errors and API payloads name files by Drive id only (§6).
   - Partial unique indexes on `entry_id` and on `group_id`: one invoice per entry and per group.
   - `linked_by` (`auto | owner`), `linked_at`.
   - FK to `ledger_entry` / `entry_group` with ON DELETE CASCADE.
-  - An AFTER DELETE trigger on `einvoice_link` sets the invoice back to `state = unmatched`, unless
-    the invoice is `void` or is `dismissed` with reason `owner` or `runbook`. This covers every
-    path that deletes the target: entry delete (`delete_entries_cascade`), group dissolve
-    (`dissolve_group`) and the MOZE full replace.
-  - Code paths that delete a link on purpose (unlink, void, re-link) set the invoice's new state
-    first, so the trigger leaves it alone.
+  - An AFTER DELETE trigger on `einvoice_link` sets the invoice to `state = unmatched` **only when
+    its `state` is still `linked`**. That is exactly the cascade case: entry delete
+    (`delete_entries_cascade`), group dissolve (`dissolve_group`) and the MOZE full replace.
+  - Code paths that remove a link on purpose (unlink, dismiss of a linked invoice, void) set the
+    invoice's new state first, then delete the row, so the trigger leaves it alone.
+  - Re-link never deletes: it updates the existing `einvoice_link` row in place (`entry_id` /
+    `group_id`, `linked_by`, `linked_at`).
 - `einvoice_seller_mute`: `seller_tax_id` primary key (non-empty), `created_at`.
 
 On a link to a single entry whose `invoice_number` is NULL, the API sets `invoice_number` to the
@@ -171,19 +172,22 @@ candidates win over amount candidates for that invoice.
   - its `merchant` or `name` shares a seller token with `seller_name`. Tokens are maximal
     Latin-letter or digit runs (case-insensitive) and, for CJK text, any substring of length ≥ 2
     **(author)**.
-- Nothing at all: `state = unmatched`, or stays `dismissed (seller_muted)` for a muted seller, with
-  a reminder card unless suppressed (§8).
+- Nothing at all:
+  - An invoice not under a mute becomes `state = unmatched`, with a reminder card unless the global
+    switch is off (§8).
+  - A muted seller's invoice stays `dismissed (seller_muted)`, with no card.
 
 ### 7.5 Owner actions (write scope)
 
 - `POST /einvoices/{id}/link {entry_id | group_id}`
   - Allowed in any state except void. The target must pass the eligibility rules of §7.2, or
     already be this invoice's own target.
-  - Replaces an existing link.
+  - Replaces an existing link by updating that link row in place (§5).
 - `POST /einvoices/{id}/unlink` sets `state = dismissed` and `dismiss_reason = owner`, overwriting
   `seller_muted`. Without this, the next run would re-link the same wrong candidate.
 - `POST /einvoices/{id}/dismiss` (「都不是」, 「不用記帳」) sets `state = dismissed` and
-  `dismiss_reason = owner`.
+  `dismiss_reason = owner`. If the invoice is linked, the link row is deleted after the state is
+  set, as for unlink, and `invoice_number` is cleared as in §5.
 - `POST /einvoices/{id}/undismiss` returns the invoice to `unmatched` for the next run. It is
   rejected (409) while the seller's mute exists: removing the mute is the way back for those rows.
 
@@ -210,10 +214,10 @@ A link targets either one entry or one group, never both inside the same group.
 | match: near only | same | `near` |
 | match: nothing | unmatched / ambiguous / near | `unmatched` |
 | match: nothing | dismissed(seller_muted) | unchanged |
-| owner link | any but void | `linked` (owner) |
-| owner unlink / dismiss | any but void | `dismissed(owner)` |
+| owner link / re-link | any but void | `linked` (owner); an existing link row is updated in place |
+| owner unlink / dismiss | any but void | `dismissed(owner)`, then the link row is deleted |
 | undismiss | dismissed(owner / runbook), seller not muted | `unmatched` |
-| link row deleted by cascade | linked | `unmatched` (trigger) |
+| link row deleted while state is still `linked` (cascade) | linked | `unmatched` (trigger) |
 | `作廢` seen | any | `void` (link deleted after) |
 | mute created | unmatched | `dismissed(seller_muted)` |
 | mute removed | dismissed(seller_muted) | `unmatched` |
@@ -342,6 +346,9 @@ einvoice: {
   same number in the next period.
 - Deleting a linked entry, dissolving a linked group and a MOZE full replace each return the invoice
   to `unmatched` (trigger). Void then cascade leaves it `void`.
+- Owner re-link of a linked invoice keeps `state = linked` with `linked_by = owner`, and the next
+  matcher run leaves it alone. Dismiss of a linked invoice removes the link and the entry detail no
+  longer shows it.
 - The bell count includes ambiguous + near invoices with `limit: 1`. Unmatched reminders do not.
 - Carrier fields never appear in API payloads, DB rows or log lines. Use a fixture with fake
   carrier values and assert their absence.
