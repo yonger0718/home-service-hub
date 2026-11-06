@@ -1,6 +1,6 @@
 # E-invoice link (電子發票連結) — design
 
-Status: draft rev 2, 2026-11-06 (builder check folded). Owner decisions are marked **(owner)**; calls made by the author
+Status: draft rev 3, 2026-11-06 (builder check + Multica AGENT-400 round 1 folded). Owner decisions are marked **(owner)**; calls made by the author
 are marked **(author)** and can be overridden in review.
 
 ## 1. Why
@@ -53,8 +53,8 @@ A wrong link must be undoable in one click.
 - Volume: tens of invoices per month.
 
 **Privacy (author):** carrier name and carrier number are dropped by the worker while parsing. They
-never reach the API, the database or a log line. The file name also carries identifiers, so logs
-name files by Drive id only.
+never reach the API, the database or a log line. The file name also carries identifiers, so logs,
+errors and API payloads name files by Drive id only (§6).
 
 ## 5. Data model (accounting_db)
 
@@ -62,35 +62,53 @@ name files by Drive id only.
   - `id`, `number` (VARCHAR 10), `issue_date` (DATE), `period` (CHAR 5, `YYYMM` ROC year plus the
     odd month that starts the two-month period).
   - Unique key: `(number, period)`, because invoice numbers repeat across periods **(author)**.
-  - `seller_tax_id`, `seller_name`, `total_amount` (NUMERIC(20,4), as printed), `status_raw`, and
-    `is_void` (true when the status is `作廢`).
+  - `seller_tax_id` (may be empty), `seller_name`, `total_amount` (NUMERIC(20,4), as printed),
+    `status_raw`, and `is_void` (true once a `作廢` status is seen; never cleared).
   - `state`: `unmatched | ambiguous | near | linked | dismissed | void`.
-  - `dismiss_reason`: `owner | seller_muted | runbook`, nullable.
+  - `dismiss_reason`: `owner | seller_muted | runbook`, nullable, set only with `state = dismissed`.
   - `first_seen_at`, `updated_at`, `source_drive_id`.
 - `einvoice_item`: `(invoice_id, seq)` primary key, `name`, `subtotal`.
 - `einvoice_link`
   - `invoice_id` (unique), plus exactly one of `entry_id` / `group_id`.
+  - Partial unique indexes on `entry_id` and on `group_id`: one invoice per entry and per group.
   - `linked_by` (`auto | owner`), `linked_at`.
-  - FK to `ledger_entry` / `entry_group` with ON DELETE CASCADE. Deleting the entry deletes the
-    link and the invoice returns to matching.
-- `einvoice_seller_mute`: `seller_tax_id` primary key, `created_at`.
+  - FK to `ledger_entry` / `entry_group` with ON DELETE CASCADE.
+  - An AFTER DELETE trigger on `einvoice_link` sets the invoice back to `state = unmatched`, unless
+    the invoice is `void` or is `dismissed` with reason `owner` or `runbook`. This covers every
+    path that deletes the target: entry delete (`delete_entries_cascade`), group dissolve
+    (`dissolve_group`) and the MOZE full replace.
+  - Code paths that delete a link on purpose (unlink, void, re-link) set the invoice's new state
+    first, so the trigger leaves it alone.
+- `einvoice_seller_mute`: `seller_tax_id` primary key (non-empty), `created_at`.
 
 On a link to a single entry whose `invoice_number` is NULL, the API sets `invoice_number` to the
-invoice number. On unlink it clears the field only if it still holds that number. Group links do
-not write the column **(author)**. The link table is the source of truth.
+invoice number. When the link goes away (unlink, void or re-link), the API clears the field only if
+it still holds that number. Group links do not write the column **(author)**. The link table is the
+source of truth.
 
 ## 6. Ingest
 
-- New worker subcommand `einvoice`, modelled on `cathay`.
+- New worker subcommand `einvoice`, using the cathay job's structure (Drive listing, `copyid`
+  download with its size and time limits, `ApiClient`).
   - It lists `<drive_root>/電子發票/財政部` with an allowed extension of `.csv`. `_list_root` keeps
     `.pdf` only today, so it needs an extension parameter.
-  - It downloads files with the existing `copyid` path and its size and time limits.
-  - It parses the file and posts JSON to a new `POST /einvoices/import` (`ingest` scope).
-- Own user timer `homehub-einvoice.timer`, daily at 04:10 Asia/Taipei, after statements-daily **(author)**.
-- Import is idempotent:
-  - Upsert by `(number, period)`. Items are replaced when the set differs.
-  - A void status sets `is_void` and `state = void` and deletes any link (setting
-    `invoice_number` back as in §5).
+  - **Privacy:** unlike the cathay helpers, the einvoice path never puts a file name or path on the
+    wire or in a log or error. `ListingError` messages built from `row["Path"]` (`drive.py:65`)
+    and the cathay `file_name` fields (`cathay.py:198`, `cathay.py:279`) are not copied. Files are
+    named by Drive id only.
+  - It parses the file and posts JSON to a new `POST /einvoices/import` (`ingest` scope). The
+    import schema forbids extra fields, so a carrier column cannot be stored even if the worker
+    slips.
+- Own user timer `homehub-einvoice.timer`, daily at 04:10 Asia/Taipei, after statements-daily
+  (03:30) **(author)**.
+- Import is idempotent. Upsert by `(number, period)`:
+  - A new invoice is inserted as `unmatched`.
+  - On conflict, update `seller_tax_id`, `seller_name`, `total_amount`, `status_raw`,
+    `issue_date` and `source_drive_id`. Replace the items when the set differs.
+  - State and links change only on the void transition: a `作廢` status sets `is_void`, sets
+    `state = void`, then deletes any link (clearing `invoice_number` as in §5).
+  - Any other status keeps state and link. A later `折讓` therefore shows the new total and keeps the
+    link (§4). `is_void` is never cleared, so file order cannot resurrect a voided invoice.
   - Re-importing an unchanged file changes nothing.
 - Parse failures are counted per file and reported in the job's summary log line. One bad file
   never stops the others.
@@ -99,94 +117,151 @@ not write the column **(author)**. The link table is the source of truth.
 
 ## 7. Matching
 
-Candidates for an invoice with date `d` and amount `A`, within a window of ±3 days of `d` (setting):
+### 7.1 Which invoices the matcher looks at
 
-1. A single entry with `kind = expense` (top-level, `parent_entry_id IS NULL`; any account),
-   `entry_date` in the window, not linked, not a member of a linked group, and whose
-   `invoice_number` is NULL or equals this invoice's number. Its amount is the **net** amount:
-   the parent plus its fee and discount children **(author)**. It matches when either:
-   - the net amount `= −A` and `A` is a whole number (TWD rule), or
-   - `original_amount` absolute value `= A` with a non-TWD `original_currency` (foreign rule).
+- Processes `unmatched`, `ambiguous`, `near`, and `dismissed` with reason `seller_muted`.
+- Skips `linked`, `void`, and `dismissed` with reason `owner` or `runbook`.
 
-   Both rules run on every invoice, and the candidates are the union. A decimal `A` can only match
-   via the foreign rule, because TWD invoices are whole numbers **(author)**.
-2. A split group whose `expense + receivable` members (net of their fee/discount children) sum to
-   `−A`, with the earliest member date in the window. The group must be unlinked and have no linked
-   member. A group counts as one candidate.
+### 7.2 Eligible targets
 
-Before the amount rules, an **exact number match** wins: an entry whose `invoice_number` equals the
-invoice number (a manual entry or an old MOZE scan) is linked directly when exactly one such entry
-exists **(author)**.
+- An **entry** is eligible when all of these hold:
+  - `kind = expense`, top level (`parent_entry_id IS NULL`), any account.
+  - Not linked, and not a member of a linked group.
+  - Its `invoice_number` is NULL or equals this invoice's number.
+- A **group** is eligible when all of these hold:
+  - `entry_group.kind = 'split'`. Installment and `reward_claim` groups are out of this phase.
+  - Unlinked, with no linked member.
+  - Every `expense` / `receivable` member shares one currency.
+- The **net amount** of an entry is the parent plus its fee and discount children. Fees are stored
+  negative and discounts positive, so a plain sum is right. A group's net is the sum of its
+  expense and receivable members' nets.
 
-Outcomes:
+The same eligibility applies to auto-link candidates, near candidates, the candidate lists on
+ambiguous and near cards, and the entry-detail picker (§10).
 
-- Exactly one candidate: auto-link (`linked_by = auto`, `state = linked`).
-- Two or more candidates: `state = ambiguous`, plus an inbox card listing them.
-- None, but a near candidate exists: `state = near`, plus an inbox card. Near means a same-window
-  expense whose amount differs from `A` by at most `max(50, 20 % of A)`, or, for an invoice with a
-  decimal amount, any same-window expense whose `merchant`/`name` shares a token with
-  `seller_name` (author).
-- Nothing at all: `state = unmatched`, plus a reminder card, unless reminders are off or the seller
-  is muted (§8).
+### 7.3 Candidate rules
 
-The matcher never touches `linked`, `dismissed` or `void` invoices. An entry or group already
-linked is not a candidate. Two invoices that would both auto-link to the same single candidate
-both become `ambiguous`: no first-come wins.
+Let `d` be the invoice date and `A` its amount. The window is ±`date_window_days` (default 3)
+around `d`. "Integral" means `A == A.to_integral_value()`, so `100.00` counts **(author)**.
 
-Owner actions, all write scope:
+1. **Exact number:** an eligible entry whose `invoice_number` equals the invoice number, and whose
+   `entry_date` falls inside the invoice's two-month period.
+2. **TWD rule (integral `A` only):** an eligible entry in the window whose `currency` is the main
+   currency (TWD), with `original_currency IS NULL` and net amount `= −A`. Also an eligible group
+   in the window (earliest member date), in TWD, with net `= −A`.
+3. **Foreign rule (non-integral `A` only):** an eligible entry in the window with a non-TWD
+   `original_currency` and `abs(original_amount) = A`.
 
-- `POST /einvoices/{id}/link {entry_id | group_id}` — any state except void; replaces an existing link.
-- `POST /einvoices/{id}/unlink` — the invoice goes to `dismissed`, not back to matching. Otherwise
-  the next run would re-link the same wrong candidate.
-- `POST /einvoices/{id}/dismiss` and `/undismiss`. Undismiss returns the invoice to matching.
+There is no union across currencies: an integral `A` never uses the foreign rule. A whole-number
+foreign invoice (JPY, KRW) therefore never auto-links. It ends up `near` or `unmatched`.
+
+### 7.4 Outcomes, decided in one pass
+
+The matcher computes candidates for every processed invoice first, then decides. Exact-number
+candidates win over amount candidates for that invoice.
+
+- An invoice with exactly one candidate, where no other processed invoice has that same target as
+  its only candidate, is auto-linked (`linked_by = auto`, `state = linked`). This holds for
+  entries and groups alike, and for exact-number matches too.
+- Two or more candidates, or one candidate contested by another invoice in the same pass:
+  `state = ambiguous`, plus an inbox card. No first-come wins.
+- No candidates, but a near candidate exists: `state = near`, plus an inbox card. A near candidate
+  is an eligible target in the window that meets either condition:
+  - its net differs from `−A` by at most `max(50, 20 % of A)`, or
+  - its `merchant` or `name` shares a seller token with `seller_name`. Tokens are maximal
+    Latin-letter or digit runs (case-insensitive) and, for CJK text, any substring of length ≥ 2
+    **(author)**.
+- Nothing at all: `state = unmatched`, or stays `dismissed (seller_muted)` for a muted seller, with
+  a reminder card unless suppressed (§8).
+
+### 7.5 Owner actions (write scope)
+
+- `POST /einvoices/{id}/link {entry_id | group_id}`
+  - Allowed in any state except void. The target must pass the eligibility rules of §7.2, or
+    already be this invoice's own target.
+  - Replaces an existing link.
+- `POST /einvoices/{id}/unlink` sets `state = dismissed` and `dismiss_reason = owner`, overwriting
+  `seller_muted`. Without this, the next run would re-link the same wrong candidate.
+- `POST /einvoices/{id}/dismiss` (「都不是」, 「不用記帳」) sets `state = dismissed` and
+  `dismiss_reason = owner`.
+- `POST /einvoices/{id}/undismiss` returns the invoice to `unmatched` for the next run. It is
+  rejected (409) while the seller's mute exists: removing the mute is the way back for those rows.
 
 Edits to a linked entry never unlink it **(author)**.
 
-Splits **(author)**: a link targets either one entry or one group, never both inside the same group.
-- Converting a linked entry into a split keeps the link on that entry. The new group is then not a
-  candidate, because it has a linked member.
-- Dissolving or deleting a linked group cascades the link away, and the invoice returns to matching.
+### 7.6 Splits (author)
+
+A link targets either one entry or one group, never both inside the same group.
+
+- Converting a linked entry into a split keeps the link on that entry. The new group is then not
+  eligible, because it has a linked member.
+- Dissolving or deleting a linked group cascades the link away. The trigger in §5 returns the
+  invoice to `unmatched`.
 - Entry detail shows the entry's own invoice. If the entry has none, it shows the group's invoice.
 - On a split member, 「連結發票…」 asks whether to link 「這筆」 or 「整組」.
+
+### 7.7 State table
+
+| Event | From | To |
+|---|---|---|
+| import (new) | — | `unmatched` |
+| match: unique uncontested | unmatched / ambiguous / near / dismissed(seller_muted) | `linked` (auto) |
+| match: contested or several | same | `ambiguous` |
+| match: near only | same | `near` |
+| match: nothing | unmatched / ambiguous / near | `unmatched` |
+| match: nothing | dismissed(seller_muted) | unchanged |
+| owner link | any but void | `linked` (owner) |
+| owner unlink / dismiss | any but void | `dismissed(owner)` |
+| undismiss | dismissed(owner / runbook), seller not muted | `unmatched` |
+| link row deleted by cascade | linked | `unmatched` (trigger) |
+| `作廢` seen | any | `void` (link deleted after) |
+| mute created | unmatched | `dismissed(seller_muted)` |
+| mute removed | dismissed(seller_muted) | `unmatched` |
 
 ## 8. Reminders and mutes
 
 - An `unmatched` invoice shows as a reminder card in the inbox: 「有發票沒有帳」, with seller, date,
   amount and items. Buttons: 「不用記帳」 (dismiss) and 「選帳…」 (manual link).
-- When the owner has dismissed 3 invoices from the same `seller_tax_id`, the next dismiss card for
+- The mute prompt counts `dismiss_reason = owner` invoices only, and only for a non-empty
+  `seller_tax_id`. When a seller reaches `mute_prompt_after` (default 3), the next dismiss card for
   that seller also offers 「這家以後都不提醒」, which creates a seller mute **(author)**.
 - A mute suppresses `unmatched` reminder cards only. `ambiguous` and `near` cards still show.
-- A muted seller's unmatched invoices are stored as `dismissed (seller_muted)` with no card. Creating
-  a mute converts the seller's existing `unmatched` invoices the same way.
-- The matcher still processes `seller_muted` invoices, so they still auto-link when a unique
-  candidate appears. Owner dismissals (`dismiss_reason = owner`) stay untouched.
-- Removing a mute turns that seller's `seller_muted` invoices back into `unmatched`.
+- A muted seller's unmatched invoices are `dismissed (seller_muted)` with no card. Creating a mute
+  converts the seller's existing `unmatched` invoices the same way. The matcher still processes them
+  (§7.1), so they still auto-link when a unique candidate appears.
+- Removing a mute turns that seller's `dismissed (seller_muted)` invoices back into `unmatched`.
 - Global switch: `einvoice.remind_unmatched` hides every reminder card. Matching and the ambiguous
   and near cards stay.
 - Management UI **(author)**: a 「發票」 section on the existing accounting settings page, with the
   global switch and the mute list (remove only).
   - It is backed by write-scope endpoints `GET/DELETE /einvoices/mutes[/{tax_id}]` and
     `PATCH /einvoices/preferences {remind_unmatched}`.
-  - The PATCH updates only that field of the settings document and bumps its version, so the SPA
-    never needs the admin-scope settings PUT.
+  - The PATCH merges `remind_unmatched` into the stored settings JSON and bumps `version` itself.
+    It must not call `update_reconciliation_settings`, which replaces the whole document
+    (`settings_service.py:545`). The SPA therefore never needs the admin-scope settings PUT.
 
 ## 9. Inbox integration
 
 - The inbox is built from statement cases today, and every item needs a `statement_id`. Invoices
   have none.
 - Add a separate list `einvoices` to the inbox response, with its own item schema, and render it as
-  its own 「發票」 section in the SPA inbox panel **(author)**. The case engine and
+  its own section in the SPA inbox panel **(author)**. The case engine and
   `/reconciliation/inbox/apply` are not touched.
 - The section is titled 「發票待對帳」 **(owner)**. This phase ships a minimal, functional layout that
   reuses the existing card styles. A dedicated UI design pass comes later **(owner)**.
 - Counts **(author, owner agreed to a notification-center section)**:
-  - `ambiguous` and `near` cards add to `InboxCounts` and therefore to the 🔔 nav badge.
+  - Add `einvoice_ask` to `InboxCounts`, beside `ask`: the number of `ambiguous` + `near`
+    invoices. `ask` stays the reconciliation count.
+  - Compute it over the full set, before the `limit` slice (the bell calls the inbox with
+    `limit: 1`).
+  - The bell is `ask + einvoice_ask` at all three call sites: `nav-badge.service.ts:183`,
+    `timeline.ts:970`, and the 「要你決定」 head text in `inbox-panel.ts:200-203`.
   - `unmatched` reminders are listed in the section but not counted, so monthly small-receipt
     reminders do not keep the badge lit.
   - The weekly digest is unchanged in this phase.
 - Cards are `ambiguous`, `near` and `unmatched`, each with the invoice summary and items.
-  - `ambiguous` and `near` cards list the candidates with account, date, amount, category and
-    name. Buttons: one-tap link per candidate, 「都不是」 (dismiss) and 「選其他帳…」.
+  - `ambiguous` and `near` cards list the eligible candidates (§7.2) with account, date, amount,
+    category and name. Buttons: one-tap link per candidate, 「都不是」 (dismiss) and 「選其他帳…」.
   - `unmatched` cards: see §8.
 
 ## 10. Entry detail and search
@@ -195,7 +270,7 @@ Splits **(author)**: a link targets either one entry or one group, never both in
   and items as name and subtotal. An entry that belongs to a linked group shows the group's invoice.
 - SPA `entry-detail` shows a 「發票」 section with the items and an 「解除連結」 button. When nothing
   is linked, it shows 「連結發票…」, a picker of non-void, unlinked invoices within ±7 days of the
-  entry date, sorted by amount closeness.
+  entry date, sorted by amount closeness. It is offered only when the entry is eligible (§7.2).
 - Search: `_text_filter` in `ledger_service` gains an opt-in flag `include_invoice_items`. When it
   is set, an `EXISTS` over `einvoice_link` → `einvoice_item.name ILIKE` is added, for the entry and
   for its group.
@@ -258,7 +333,16 @@ einvoice: {
   both `ambiguous`.
 - A split group whose members sum to the invoice, alongside a single member with the same amount
   as the invoice → `ambiguous`, not an auto-link to the member.
-- An unlinked invoice must not be re-linked by the next run. Undismiss returns it to matching.
+- An unlinked invoice must not be re-linked by the next run, including a muted seller's invoice.
+  Undismiss returns it to matching. Undismiss while the seller is muted is rejected.
+- A whole-number invoice against a same-window USD charge whose `original_amount` equals it → no
+  auto-link. A TWD invoice against an expense on a non-TWD account with the same amount → no
+  auto-link.
+- Invoice number reuse: an entry stamped with a number in one period is not an exact match for the
+  same number in the next period.
+- Deleting a linked entry, dissolving a linked group and a MOZE full replace each return the invoice
+  to `unmatched` (trigger). Void then cascade leaves it `void`.
+- The bell count includes ambiguous + near invoices with `limit: 1`. Unmatched reminders do not.
 - Carrier fields never appear in API payloads, DB rows or log lines. Use a fixture with fake
   carrier values and assert their absence.
 
