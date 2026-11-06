@@ -1,6 +1,6 @@
 # E-invoice link (電子發票連結) — design
 
-Status: draft rev 3.1, 2026-11-06 (builder check + Multica AGENT-400 round 1 and re-check folded). Owner decisions are marked **(owner)**; calls made by the author
+Status: draft rev 3.2, 2026-11-06 (builder check + Multica AGENT-400 round 1 and re-check folded). Owner decisions are marked **(owner)**; calls made by the author
 are marked **(author)** and can be overridden in review.
 
 ## 1. Why
@@ -83,9 +83,14 @@ errors and API payloads name files by Drive id only (§6).
 - `einvoice_seller_mute`: `seller_tax_id` primary key (non-empty), `created_at`.
 
 On a link to a single entry whose `invoice_number` is NULL, the API sets `invoice_number` to the
-invoice number. When the link goes away (unlink, void or re-link), the API clears the field only if
-it still holds that number. Group links do not write the column **(author)**. The link table is the
-source of truth.
+invoice number. Group links do not write the column **(author)**. Clearing:
+- When the link goes away (unlink, dismiss of a linked invoice, void), the API clears the linked
+  entry's field only if it still holds that number.
+- On a re-link, the API first clears the previous entry's field (only if it still holds that
+  number), then stamps the new entry if its field is NULL. Without this, a later cascade or undismiss
+  would let the exact-number rule pull the invoice back to the old entry.
+
+The link table is the source of truth.
 
 ## 6. Ingest
 
@@ -347,7 +352,8 @@ einvoice: {
 - Deleting a linked entry, dissolving a linked group and a MOZE full replace each return the invoice
   to `unmatched` (trigger). Void then cascade leaves it `void`.
 - Owner re-link of a linked invoice keeps `state = linked` with `linked_by = owner`, and the next
-  matcher run leaves it alone. Dismiss of a linked invoice removes the link and the entry detail no
+  matcher run leaves it alone. Re-link from entry A to entry B (or a group), then delete B → the
+  invoice returns to `unmatched` and does not auto-link back to A (A's stamp was cleared). Dismiss of a linked invoice removes the link and the entry detail no
   longer shows it.
 - The bell count includes ambiguous + near invoices with `limit: 1`. Unmatched reminders do not.
 - Carrier fields never appear in API payloads, DB rows or log lines. Use a fixture with fake
