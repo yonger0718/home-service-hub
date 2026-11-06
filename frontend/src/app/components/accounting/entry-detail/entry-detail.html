@@ -101,7 +101,7 @@
       @for (reward of d.rewards; track reward.id) {
         <a class="dline reward-line" [routerLink]="['/accounting/entries', reward.id]">
           <span>◉ {{ reward.name || '紅利回饋' }} · {{ rewardWhen(reward) }}</span>
-          <span class="pos">{{ formatMoney(reward.amount, reward.currency, { sign: true }) }}</span>
+          <span class="pos">{{ rewardAmount(reward.amount, reward.account_id, reward.account_name, reward.currency, true) }}</span>
         </a>
       }
     }
@@ -110,7 +110,7 @@
       <div class="dsec">預估回饋</div>
       @for (accrual of d.accruals; track accrual.id) {
         <div class="dline accrual-line" [attr.data-state]="accrual.state">
-          <span>{{ accrual.rule_name }} {{ formatMoney(accrual.amount, d.currency) }} · {{ accrualStateLabels[accrual.state] }}</span>
+          <span>{{ accrual.rule_name }} {{ rewardAmount(accrualValue(accrual), accrual.reward_account_id, accrual.reward_account_name, d.currency) }} · {{ accrualStateLabels[accrual.state] }}</span>
         </div>
       }
     }

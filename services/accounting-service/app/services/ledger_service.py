@@ -474,20 +474,27 @@ def _rule_names(db: Session, entry_ids: list[int]) -> dict[int, list[str]]:
 
 
 def _accrual_rows(db: Session, entry_ids: list[int]) -> dict[int, list[dict]]:
-    """Reward accruals of the source entries, one query for the page (spec 6)."""
+    """Reward accruals of the source entries, one query for the page (spec 6). Each carries its reward row's amount
+    (`ledger_amount`, the bank's figure once `bank_confirmed`; null without a row) and the rule's reward account
+    (`reward_account_id` / `_name`, the rule's card when unset) so the SPA prints the right figure and unit (#294)."""
     out: dict[int, list[dict]] = defaultdict(list)
     if not entry_ids:
         return out
-    for row, rule_name in db.execute(
-        select(RewardAccrual, RewardRule.name)
+    reward_row, reward_account = aliased(LedgerEntry), aliased(Account)
+    reward_account_id = func.coalesce(RewardRule.reward_account_id, RewardRule.account_id)
+    for row, rule_name, ledger_amount, account_id, account_name in db.execute(
+        select(RewardAccrual, RewardRule.name, reward_row.amount, reward_account.id, reward_account.name)
         .join(RewardRule, RewardRule.id == RewardAccrual.rule_id)
+        .join(reward_account, reward_account.id == reward_account_id)
+        .outerjoin(reward_row, reward_row.id == RewardAccrual.ledger_entry_id)
         .where(RewardAccrual.source_entry_id.in_(entry_ids))
         .order_by(RewardAccrual.source_entry_id, RewardRule.sort_order, RewardAccrual.id)
     ):
         out[row.source_entry_id].append({
             "id": row.id, "rule_id": row.rule_id, "rule_name": rule_name, "estimate": row.estimate,
             "amount": row.amount, "state": row.state, "post_on": row.post_on,
-            "ledger_entry_id": row.ledger_entry_id})
+            "ledger_entry_id": row.ledger_entry_id, "ledger_amount": ledger_amount,
+            "reward_account_id": account_id, "reward_account_name": account_name})
     return out
 
 

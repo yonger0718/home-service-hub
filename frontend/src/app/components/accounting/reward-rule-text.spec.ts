@@ -1,7 +1,7 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { describe, expect, it } from 'vitest';
 import { makeRule } from './testing/fixtures';
-import { REWARD_WINDOW_LABELS, basicOverlapRuleId, methodSummary, parseReferenced, periodText, postingSummary, ruleState, ruleToInput } from './reward-rule-text';
+import { REWARD_WINDOW_LABELS, basicOverlapRuleId, methodSummary, parseReferenced, periodText, referencedText, postingSummary, ruleState, ruleToInput } from './reward-rule-text';
 
 describe('ruleState', () => {
   it('orders disabled > expired > upcoming > active', () => {
@@ -51,8 +51,15 @@ describe('per_unit', () => {
 describe('409 parsing', () => {
   const conflict = (message: string) => new HttpErrorResponse({ status: 409, error: { code: 'conflict', message } });
   it('reads rule_referenced counts', () => {
-    expect(parseReferenced(conflict('rule_referenced: {"entries": 3, "rewards": 2}'))).toEqual({ entries: 3, rewards: 2 });
+    expect(parseReferenced(conflict('rule_referenced: {"entries": 3, "rewards": 2}'))).toEqual({ entries: 3, rewards: 2, accruals: 0 });
+    expect(parseReferenced(conflict('rule_referenced: {"entries": 0, "rewards": 0, "accruals": 4}')))
+      .toEqual({ entries: 0, rewards: 0, accruals: 4 });
     expect(parseReferenced(conflict('basic_rule_overlap: rule 9'))).toBeNull();
+  });
+  it('words only the non-zero references (#294)', () => {
+    expect(referencedText({ entries: 3, rewards: 2, accruals: 0 })).toBe('3 筆交易 / 2 筆回饋');
+    expect(referencedText({ entries: 0, rewards: 0, accruals: 4 })).toBe('4 筆預估回饋');
+    expect(referencedText({ entries: 1, rewards: 0, accruals: 2 })).toBe('1 筆交易 / 2 筆預估回饋');
   });
   it('reads the clashing basic rule id', () => {
     expect(basicOverlapRuleId(conflict('basic_rule_overlap: rule 9'))).toBe(9);

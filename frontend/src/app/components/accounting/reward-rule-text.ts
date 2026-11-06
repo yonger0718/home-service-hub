@@ -112,21 +112,36 @@ function conflictMessage(err: unknown): string | null {
   return typeof text === 'string' ? text : null;
 }
 
-/** A 409 `rule_referenced: {"entries": n, "rewards": m}` → the counts; anything else → null. */
-export function parseReferenced(err: unknown): { entries: number; rewards: number } | null {
+export interface RuleReferences {
+  entries: number;
+  rewards: number;
+  accruals: number;
+}
+
+/** A 409 `rule_referenced: {"entries": n, "rewards": m, "accruals": k}` → the counts (`accruals` 0 when an older API
+ * omits it); anything else → null. */
+export function parseReferenced(err: unknown): RuleReferences | null {
   const text = conflictMessage(err);
   const prefix = 'rule_referenced: ';
   if (text === null || !text.startsWith(prefix)) {
     return null;
   }
   try {
-    const parsed = JSON.parse(text.slice(prefix.length)) as { entries?: unknown; rewards?: unknown };
-    return typeof parsed.entries === 'number' && typeof parsed.rewards === 'number'
-      ? { entries: parsed.entries, rewards: parsed.rewards }
+    const parsed = JSON.parse(text.slice(prefix.length)) as { entries?: unknown; rewards?: unknown; accruals?: unknown };
+    const accruals = parsed.accruals === undefined ? 0 : parsed.accruals;
+    return typeof parsed.entries === 'number' && typeof parsed.rewards === 'number' && typeof accruals === 'number'
+      ? { entries: parsed.entries, rewards: parsed.rewards, accruals }
       : null;
   } catch {
     return null;
   }
+}
+
+/** `3 筆交易 / 2 筆回饋 / 1 筆預估回饋`, naming only the non-zero references (#294: no `0 筆交易 / 0 筆回饋`). */
+export function referencedText(counts: RuleReferences): string {
+  const parts: [number, string][] = [[counts.entries, '筆交易'], [counts.rewards, '筆回饋'], [counts.accruals, '筆預估回饋']];
+  const named = parts.filter(([n]) => n > 0);
+  return (named.length ? named : parts).map(([n, label]) => `${n} ${label}`).join(' / ');
 }
 
 /** A 409 `basic_rule_overlap: rule <id>` → the clashing rule's id; anything else → null. */

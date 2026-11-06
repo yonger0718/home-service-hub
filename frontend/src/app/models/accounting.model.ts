@@ -79,6 +79,11 @@ export interface RewardAccrual {
   state: RewardAccrualState;
   post_on: string | null;
   ledger_entry_id: number | null;
+  /** The reward row's amount (the bank's figure once `bank_confirmed`); null without a row (#294). */
+  ledger_amount: string | null;
+  /** The rule's reward account (its card when unset). */
+  reward_account_id: number;
+  reward_account_name: string;
 }
 
 export type ShareCapWith = 'none' | number | null;

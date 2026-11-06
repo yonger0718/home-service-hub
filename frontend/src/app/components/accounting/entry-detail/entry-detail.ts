@@ -21,6 +21,7 @@ import {
   EntryKind,
   LedgerAccount,
   LedgerEntry,
+  RewardAccrual,
   RewardAccrualState,
   ScheduleDefinitionDetail,
   ScheduleLineKind,
@@ -31,7 +32,7 @@ import { AccountingToastService, scheduleActionError } from '../accounting-toast
 import { NO_ENTER_SAVE_TAGS, textOn, colorOf, fxConversionLine, iconOf, isHandledKey, leavePage } from '../accounting-ui';
 import { amountString, parseAmountFields, parseAmountText } from '../amount-text';
 import { shortDate, slashDate, todayIso } from '../dates';
-import { formatMoney } from '../format';
+import { formatMoney, formatNumber } from '../format';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
 import { alignedRepostAmounts, schedulePill } from '../schedule-math';
 import { GroupNavState, closeGroupPage, groupCommands, inPlaceState, readGroupNavState } from '../split-group/group-nav';
@@ -187,6 +188,22 @@ export class EntryDetailComponent implements OnInit {
     estimated: '預估', posted: '已入帳', bank_confirmed: '銀行確認', forfeited: '未獲得',
   };
   readonly slashDate = slashDate;
+
+  /** A reward figure in its unit (#294): money when it pays into this entry's account or a card, else the number
+   * followed by the reward account's name (points / miles accounts carry TWD as currency but are no money). */
+  rewardAmount(value: string, accountId: number, accountName: string, currency: string, sign = false): string {
+    const account = this.accounts().find(candidate => candidate.id === accountId);
+    if (accountId === this.detail()?.account_id || account === undefined || account.is_credit) {
+      return formatMoney(value, currency, { sign });
+    }
+    const body = formatNumber(value, currency);
+    return `${sign && Number(value) > 0 && body !== '0' ? '+' : ''}${body} ${accountName}`;
+  }
+
+  /** The bank's figure once confirmed (the reward row's amount), else the engine's allotted amount. */
+  accrualValue(accrual: RewardAccrual): string {
+    return accrual.state === 'bank_confirmed' && accrual.ledger_amount != null ? accrual.ledger_amount : accrual.amount;
+  }
 
   readonly locked = computed(() => this.detail()?.locked ?? false);
   readonly children = computed(() => this.detail()?.children ?? []);
