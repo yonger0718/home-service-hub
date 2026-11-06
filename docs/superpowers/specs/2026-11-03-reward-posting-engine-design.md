@@ -320,8 +320,9 @@ until the daily job」 option of rev 1 is gone: step 4 posts early.
 - **Reward batch folding** (#304): the timeline and the account passbook fold a batch with two or more loaded members
   into one row, at its newest member: rule name, 「N 筆 · window」 and the batch total. Tapping it expands its members
   in place (tap again to collapse); a member opens its detail. A batch of one stays a plain row; 隱藏回饋 hides the
-  whole batch. In the passbook, a day that folds a batch shows its balances recomputed from the day's newest balance
-  down (a folded row moves it by the batch total); expanded members show their own balances.
+  whole batch. In the passbook every balance shown is real: a folded row shows the balance right after its newest
+  member, plain and expanded rows their own (when rules interleave, the gap between two folded rows can differ from a
+  batch total; a recomputed balance the account never had is not printed, #305 review).
   A filter that may keep only some rows of a batch (search, category, project, tag, merchant, amount, a kind other
   than 回饋) turns folding off, so a row's and the day's totals never count rows the filter dropped.
 - **Hermes `homehub-api` skill** (outside the repo, `~/.hermes/skills/productivity/homehub-api/`):

@@ -32,7 +32,7 @@ describe('reward batches (#304)', () => {
     expect(batchSub(batch({ window_start: '2026-12-25', window_end: '2027-01-24' }))).toBe('3 筆 · 12/25–1/24');
   });
 
-  it('folds a passbook day and recomputes the shown balances from the day top', () => {
+  it('folds a passbook day showing only real balances: each folded row the balance after its newest member', () => {
     const other = batch({ rule_id: 302, total: '20.0000', count: 2 });
     const items = foldPassbook([
       reward(1, '2.0000', '130.0000'),
@@ -44,7 +44,7 @@ describe('reward batches (#304)', () => {
     ]);
     expect(items.map(i => [i.kind, i.kind === 'batch' ? i.members.map(m => m.id) : i.entry.id, i.balance])).toEqual([
       ['batch', [1, 3, 5], '130.0000'],
-      ['batch', [2, 4], '120.0000'],
+      ['batch', [2, 4], '128.0000'],
       ['entry', 6, '100.0000'],
     ]);
   });
@@ -59,7 +59,7 @@ describe('reward batches (#304)', () => {
     expect(items.map(i => [i.kind, i.balance])).toEqual([['entry', '12.0000'], ['entry', '10.0000']]);
   });
 
-  it('falls back to server balances when a folded day has an unknown balance', () => {
+  it('shows no balance on a folded row whose newest member has none', () => {
     const items = foldPassbook([reward(1, '2.0000', null), reward(2, '3.0000', '8.0000')]);
     expect(items.map(i => [i.kind, i.balance])).toEqual([['batch', null]]);
   });

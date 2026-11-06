@@ -41,10 +41,11 @@ export type PassbookItem =
   | { kind: 'batch'; key: string; batch: RewardBatch; members: LedgerEntry[]; balance: string | null };
 
 /**
- * The passbook's rows newest first with batches folded at their newest member. A day that folds a batch shows its
- * balances recomputed from the day's newest balance down (each folded row moves it by the batch total), so the column
- * still reads row by row; with any balance unknown that day, each row keeps the server's figure. `fold` false (a
- * filter that may keep only some of a batch's rows) lists every row as it is.
+ * The passbook's rows newest first with batches folded at their newest member. Every balance shown is a real one: a
+ * folded row shows the balance right after its newest member (the server's running balance there), a plain row its
+ * own. When rules interleave in canonical order the gap between two folded rows can differ from a batch total; that
+ * is the cost of never printing a balance the account did not have (#304 review). `fold` false (a filter that may
+ * keep only some of a batch's rows) lists every row as it is.
  */
 export function foldPassbook(entries: LedgerEntry[], fold = true): PassbookItem[] {
   const batches = fold ? loadedBatches(entries) : new Map<string, LedgerEntry[]>();
@@ -60,22 +61,6 @@ export function foldPassbook(entries: LedgerEntry[], fold = true): PassbookItem[
       }
     } else {
       items.push({ kind: 'entry', key: `e${entry.id}`, entry, balance: entry.running_balance });
-    }
-  }
-  const byDay = new Map<string, PassbookItem[]>();
-  for (const item of items) {
-    const day = item.kind === 'batch' ? item.batch.entry_date : item.entry.entry_date;
-    byDay.set(day, [...(byDay.get(day) ?? []), item]);
-  }
-  for (const [day, dayItems] of byDay) {
-    const dayEntries = entries.filter(e => e.entry_date === day);
-    if (!dayItems.some(i => i.kind === 'batch') || dayEntries.some(e => e.running_balance === null)) {
-      continue;
-    }
-    let balance = Number(dayEntries[0].running_balance);
-    for (const item of dayItems) {
-      item.balance = balance.toFixed(4);
-      balance -= Number(item.kind === 'batch' ? item.batch.total : item.entry.amount);
     }
   }
   return items;
