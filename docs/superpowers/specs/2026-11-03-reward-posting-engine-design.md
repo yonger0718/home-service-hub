@@ -276,7 +276,11 @@ It never commits and never writes coverage itself.
    - assigned 0 (N3), judged by the row's own `post_on`, on a first run and on a re-run alike: `post_on` inside this
      period → stays `posted` (`confirmed_statement_id` cleared on a re-run), the bank may credit it one cycle late;
      `post_on` before this period (carried) → `forfeited`, ledger amount 0, kept and visible as 未獲得,
-     `confirmed_statement_id` = this statement.
+     `confirmed_statement_id` = this statement — **only when the statement prints at least one reward line** (any
+     line of kind `reward`, owner-covered or not). On a statement with no reward line at all a carried row stays
+     `posted`, unconfirmed, at its accrual amount, as an in-period row does (#292, owner ruling 2026-11-06 option A:
+     a late credit or a parser/OCR gap is not a withheld reward; no owner case is raised); a re-run restores a row an
+     earlier run forfeited on such a statement.
 7. **Coverage** (N1): the step appends one claim per paired line to the `MatchResult` that `_write_coverage` persists
    (`reconciliation_service.py:573-589`): `match_kind = auto`, `match_rule = reward_engine`, the line's rows as
    principals. Written through `_write_coverage`, the claims are not released by the same reconcile, and a re-run

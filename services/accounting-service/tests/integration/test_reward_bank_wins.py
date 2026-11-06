@@ -144,20 +144,10 @@ def test_flag_clears_on_bank_confirm(seed, db_session, run):
     assert (entry.needs_review, entry.review_reason) == (True, "duplicate")
 
 
-def test_flag_clears_on_forfeit(seed, db_session, run):
-    card = _test_card(seed, db_session)
-    rule = _rule(db_session, card)
-    buy = _spend(db_session, card, 1000, date(2026, 10, 1), rule)
-    db_session.commit()
-    _post(db_session, buy)
-    _submit(db_session, run, card, [], period=PREVIOUS)
-    entry = db_session.get(LedgerEntry, buy.id)
-    entry.needs_review, entry.review_reason = True, "reward_posted"
-    db_session.commit()
-
-    _submit(db_session, run, card, [], period=PERIOD)
-    assert _accrual_of(db_session, buy).state == "forfeited"
-    entry = db_session.get(LedgerEntry, buy.id)
+def test_flag_clears_on_forfeit(seed, db_session, run, monkeypatch):
+    t = _carried_and_credited_current(seed, db_session, run, monkeypatch)
+    assert _accrual_of(db_session, t.carried).state == "forfeited"
+    entry = db_session.get(LedgerEntry, t.carried.id)
     assert (entry.needs_review, entry.review_reason) == (False, None)
 
 
@@ -284,7 +274,71 @@ def test_carried_row_confirmed_next_statement(seed, db_session, run):
     assert [r.entry_id for r in _by_line(db_session, second.id)[line.id]] == [row.id]
 
 
-def test_carried_row_forfeited_when_assigned_zero(seed, db_session, run):
+def test_carried_row_stays_posted_without_reward_line(seed, db_session, run):
+    """#292: a statement with no reward line at all is no evidence the bank withheld the reward (a late credit, a
+    parser or OCR gap): the carried row stays `posted`, unconfirmed, at its accrual amount."""
+    card = _test_card(seed, db_session)
+    rule = _rule(db_session, card)
+    buy = _spend(db_session, card, 1000, date(2026, 10, 5), rule)
+    db_session.commit()
+    row = _post(db_session, buy)
+    _submit(db_session, run, card, [], period=PREVIOUS)
+    _submit(db_session, run, card, [_line(1, date(2026, 10, 20), SHOP, 500)], period=PERIOD)
+
+    accrual = _accrual_of(db_session, buy)
+    assert (accrual.state, accrual.confirmed_statement_id, accrual.amount) == ("posted", None, Decimal("10.0000"))
+    assert db_session.get(LedgerEntry, row.id).amount == Decimal("10.0000")
+
+
+class _EveryLine(dict):
+    """An accepted map naming the same accrual ids for every reward line (`_accepted` keeps the reward lines)."""
+
+    def __init__(self, ids):
+        super().__init__()
+        self.ids = ids
+
+    def __contains__(self, line_id):
+        return True
+
+    def __getitem__(self, line_id):
+        return self.ids
+
+
+def _carried_and_credited_current(seed, db, run, monkeypatch):
+    """A carried row (posted 10-10) and an in-period row (posted 10-25); the second statement's one reward line is
+    accepted for the in-period accrual only (the accepted map, as an applied `accept_early_reward` would name it),
+    so pairing leaves the carried row assigned 0 while the statement does print a reward line."""
+    card = _test_card(seed, db)
+    rule = _rule(db, card)
+    carried = _spend(db, card, 1000, date(2026, 10, 5), rule)
+    current = _spend(db, card, 2000, date(2026, 10, 20), rule)
+    db.commit()
+    carried_row = _post(db, carried)
+    _post(db, current)
+    _submit(db, run, card, [], period=PREVIOUS)
+    entry = db.get(LedgerEntry, carried.id)
+    entry.needs_review, entry.review_reason = True, "reward_posted"
+    db.commit()
+    current_id = _accrual_of(db, current).id
+    monkeypatch.setattr(reward_bank_wins, "accepted_map", lambda db, s: _EveryLine([current_id]))
+    stmt, _, _ = _submit(db, run, card, [_reward_line(1, 20)], period=PERIOD)
+    return SimpleNamespace(stmt=stmt, carried=carried, current=current, carried_row=carried_row)
+
+
+def test_carried_row_forfeited_when_reward_line_credits_others(seed, db_session, run, monkeypatch):
+    """The statement prints a reward line but pairing leaves the carried row assigned 0: forfeited (unchanged)."""
+    t = _carried_and_credited_current(seed, db_session, run, monkeypatch)
+    accrual = _accrual_of(db_session, t.carried)
+    assert (accrual.state, accrual.confirmed_statement_id, accrual.amount) == ("forfeited", t.stmt.id,
+                                                                               Decimal("10.0000"))
+    assert db_session.get(LedgerEntry, t.carried_row.id).amount == Decimal("0.0000")
+    assert accrual.ledger_entry_id == t.carried_row.id  # kept, visible as 未獲得
+    assert _accrual_of(db_session, t.current).state == "bank_confirmed"
+
+
+def test_rerun_restores_row_forfeited_without_reward_line(seed, db_session, run):
+    """#292: a row an earlier run forfeited on a statement with no reward line (the old rule) goes back to `posted`
+    at its accrual amount on the next reconcile of that statement."""
     card = _test_card(seed, db_session)
     rule = _rule(db_session, card)
     buy = _spend(db_session, card, 1000, date(2026, 10, 5), rule)
@@ -292,12 +346,15 @@ def test_carried_row_forfeited_when_assigned_zero(seed, db_session, run):
     row = _post(db_session, buy)
     _submit(db_session, run, card, [], period=PREVIOUS)
     second, _, _ = _submit(db_session, run, card, [], period=PERIOD)
-
     accrual = _accrual_of(db_session, buy)
-    assert (accrual.state, accrual.confirmed_statement_id, accrual.amount) == ("forfeited", second.id,
-                                                                               Decimal("10.0000"))
-    assert db_session.get(LedgerEntry, row.id).amount == Decimal("0.0000")
-    assert accrual.ledger_entry_id == row.id  # kept, visible as 未獲得
+    accrual.state, accrual.confirmed_statement_id = "forfeited", second.id  # as the old rule left it
+    db_session.get(LedgerEntry, row.id).amount = Decimal("0")
+    db_session.commit()
+
+    _reconcile(db_session, second.id)
+    accrual = _accrual_of(db_session, buy)
+    assert (accrual.state, accrual.confirmed_statement_id, accrual.amount) == ("posted", None, Decimal("10.0000"))
+    assert db_session.get(LedgerEntry, row.id).amount == Decimal("10.0000")
 
 
 def test_first_statement_has_no_carry(seed, db_session, run):

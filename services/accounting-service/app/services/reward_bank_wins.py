@@ -28,7 +28,10 @@ whose claims the reconcile writes through `_write_coverage`.
    `surplus_line_ids` (Task 9 gives them their case).
 6. **Outcome** (7.6): a row assigned a non-zero amount takes it on its ledger row and becomes `bank_confirmed` by
    this statement; assigned 0, a row whose `post_on` is in or after this period stays `posted` (its ledger amount back
-   at the accrual's `amount`, `confirmed_statement_id` cleared), a carried one is `forfeited` with ledger amount 0.
+   at the accrual's `amount`, `confirmed_statement_id` cleared), a carried one is `forfeited` with ledger amount 0
+   when the statement prints at least one reward line (any line of kind `reward`, owner-covered or not); on a
+   statement with no reward line at all a carried row stays `posted` like an in-period one (#292: a late credit or a
+   parser/OCR gap is not a withheld reward), and a re-run restores a row an earlier run forfeited there.
    `reward_accrual.amount` is never changed (4.1). Confirmed and forfeited purchases lose their `reward_posted` flag.
    The windows are then recomputed (a confirmed row uses its ledger amount of the cap, 5.2.2).
 7. **Claims** (7.7): one per paired line, `match_rule = reward_engine`, the line's non-zero rows as principals; the
@@ -442,13 +445,16 @@ def prepare(db: Session, statement: AccountStatement, accounts: list[int], lines
     plan.surplus_line_ids.sort()
     assigned = {a.id: value for group in paired.values() for a, value in group}
     settled: list[int] = []  # purchases of the rows confirmed or forfeited
+    # #292: a statement printing no reward line at all is no evidence the bank withheld a carried reward
+    printed_reward = any(line.line_kind == "reward" for line in lines)
     for accrual in [*rows, *(a for group in owned.values() for a in group)]:
         row, value = ledger[accrual.ledger_entry_id], assigned.get(accrual.id, _ZERO)
         if value != 0:
             _set_amount(row, value)
             accrual.state, accrual.confirmed_statement_id = CONFIRMED, statement.id
             settled.append(accrual.source_entry_id)
-        elif accrual.post_on is not None and accrual.post_on < statement.period_start:  # carried, not credited
+        elif printed_reward and accrual.post_on is not None and accrual.post_on < statement.period_start:
+            # carried, not credited by a statement that does print a reward line
             _set_amount(row, _ZERO)
             accrual.state, accrual.confirmed_statement_id = FORFEITED, statement.id
             settled.append(accrual.source_entry_id)
