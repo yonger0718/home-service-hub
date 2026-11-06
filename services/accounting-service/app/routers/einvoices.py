@@ -8,7 +8,7 @@ from ..auth import require, require_feature
 from ..database import get_db
 from ..schemas.einvoices import (
     EinvoiceDismissedOut, EinvoiceDismissIn, EinvoiceImportIn, EinvoiceImportOut, EinvoiceLinkIn, EinvoiceMatchOut, EinvoiceMuteOut,
-    EinvoicePreferencesIn, EinvoicePreferencesOut, EinvoiceStateOut, EinvoiceTargetOut, RunbookDismissIn,
+    EinvoicePickerOut, EinvoicePreferencesIn, EinvoicePreferencesOut, EinvoiceStateOut, EinvoiceTargetOut, RunbookDismissIn,
     RunbookDismissOut,
 )
 from ..services import einvoice_matcher, einvoice_read, einvoice_service, settings_service
@@ -81,6 +81,12 @@ def runbook_dismiss(body: RunbookDismissIn, db: Session = Depends(get_db)):
 @router.get("/dismissed", response_model=list[EinvoiceDismissedOut], dependencies=READ)
 def dismissed(db: Session = Depends(get_db)):
     return einvoice_read.dismissed_invoices(db)
+
+
+@router.get("/picker", response_model=EinvoicePickerOut, dependencies=READ)
+def picker(entry_id: int = Query(), db: Session = Depends(get_db)):
+    with service_errors():
+        return einvoice_read.picker(db, entry_id)
 
 
 @router.get("/{invoice_id}/targets", response_model=list[EinvoiceTargetOut], dependencies=READ)

@@ -33,6 +33,7 @@ def list_entries(
     merchant: str | None = Query(default=None, max_length=100, description="Case-insensitive substring of the merchant"),
     amount_min: Decimal | None = Query(default=None, description="Signed lower bound (inclusive) on the entry's amount in its ACCOUNT's currency; no conversion"),
     amount_max: Decimal | None = Query(default=None, description="Signed upper bound (inclusive) on the entry's amount in its ACCOUNT's currency; no conversion"),
+    include_invoice_items: bool = Query(default=False, description="Also match `q` against the item names of the invoice linked to the entry or its group"),
     db: Session = Depends(get_db),
 ):
     if amount_min is not None and amount_max is not None and amount_min > amount_max:
@@ -44,7 +45,7 @@ def list_entries(
         account_ids=account_id or None, hide_rewards=hide_rewards,
         counterparty_id=counterparty_id, open_only=open,
         tags=tag or None, category_ids=category_id or None, project_id=project_id, no_project=no_project, merchant=merchant,
-        amount_min=amount_min, amount_max=amount_max,
+        amount_min=amount_min, amount_max=amount_max, include_invoice_items=include_invoice_items,
     )
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 

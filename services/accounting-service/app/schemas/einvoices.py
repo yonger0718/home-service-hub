@@ -135,6 +135,7 @@ class EinvoiceSummaryOut(BaseModel):
     seller_tax_id: str
     total_amount: Decimal
     status_raw: str
+    state: str
     items: list[EinvoiceItemOut]
 
 
@@ -158,3 +159,11 @@ class InboxEinvoice(EinvoiceSummaryOut):
     state: Literal["ambiguous", "near", "unmatched"]
     candidates: list[EinvoiceTargetOut]
     offer_mute: bool
+
+
+class EinvoicePickerOut(BaseModel):
+    model_config = Strict
+    entry_eligible: bool
+    group_id: int | None
+    group_eligible: bool
+    invoices: list[EinvoiceSummaryOut]

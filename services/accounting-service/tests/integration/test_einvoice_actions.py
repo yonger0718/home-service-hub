@@ -307,7 +307,7 @@ def test_dismiss_linked_removes_link_and_detail(client, db_session, seed):
     out = _post(client, "AB00000001", "dismiss", db=db_session)
     assert (out["state"], out["dismiss_reason"], out["entry_id"]) == ("dismissed", "owner", None)
     assert _link(db_session) is None and _stamp(db_session, entry.id) is None
-    # Task 8 adds: GET /entries/{entry.id} -> einvoice is None.
+    assert client.get(f"/entries/{entry.id}").json()["einvoice"] is None
 
 
 def test_dismiss_void_is_409(client, db_session):

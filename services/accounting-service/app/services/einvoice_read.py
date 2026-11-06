@@ -4,11 +4,13 @@ from collections import defaultdict
 from datetime import timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
-from ..models import Category, Einvoice, EinvoiceItem, EinvoiceSellerMute
-from .einvoice_matcher import Target, _candidates, _span, eligible_targets, order_by_closeness
+from ..models import Category, Einvoice, EinvoiceItem, EinvoiceLink, EinvoiceSellerMute, LedgerEntry
+from .einvoice_matcher import (
+    Target, _candidates, _span, eligible_targets, entry_target, group_target, order_by_closeness,
+)
 from .errors import CodedConflictError, NotFoundError
 from .ledger_service import main_currency
 from .settings_service import read_einvoice_settings
@@ -56,7 +58,7 @@ def _items_by_invoice(db: Session, invoice_ids) -> dict[int, list[dict]]:
 def _summary(inv: Einvoice, items: dict[int, list[dict]]) -> dict:
     return {"id": inv.id, "number": inv.number, "issue_date": inv.issue_date, "seller_name": inv.seller_name,
             "seller_tax_id": inv.seller_tax_id, "total_amount": inv.total_amount, "status_raw": inv.status_raw,
-            "items": items.get(inv.id, [])}
+            "state": inv.state, "items": items.get(inv.id, [])}
 
 
 def inbox_section(db: Session, *, limit: int) -> tuple[list[dict], int]:
@@ -101,7 +103,7 @@ def inbox_section(db: Session, *, limit: int) -> tuple[list[dict], int]:
         cards = [_target_dict(t, names) for t in candidates.get(inv.id, [])]
         offer = (inv.state == "unmatched" and bool(inv.seller_tax_id) and inv.seller_tax_id not in muted
                  and dismissed_count.get(inv.seller_tax_id, 0) >= settings["mute_prompt_after"])
-        out.append({**_summary(inv, items), "state": inv.state, "candidates": cards, "offer_mute": offer})
+        out.append({**_summary(inv, items), "candidates": cards, "offer_mute": offer})
     return out, ask
 
 
@@ -123,3 +125,41 @@ def dismissed_invoices(db: Session, *, limit: int = 100) -> list[dict]:
         .order_by(Einvoice.updated_at.desc(), Einvoice.id.desc()).limit(limit)))
     items = _items_by_invoice(db, [i.id for i in rows])
     return [{**_summary(i, items), "dismiss_reason": i.dismiss_reason} for i in rows]
+
+
+PICKER_DAYS = 7
+
+
+def entry_einvoice(db: Session, entry: LedgerEntry) -> dict | None:
+    """The entry's own link, else the link of its split group (spec §7.6, §10)."""
+    link = db.scalar(select(EinvoiceLink).where(EinvoiceLink.entry_id == entry.id))
+    linked_to = "entry"
+    if link is None and entry.group_id is not None:
+        link = db.scalar(select(EinvoiceLink).where(EinvoiceLink.group_id == entry.group_id))
+        linked_to = "group"
+    if link is None:
+        return None
+    inv = db.get(Einvoice, link.invoice_id)
+    return {"id": inv.id, "number": inv.number, "issue_date": inv.issue_date, "seller_name": inv.seller_name,
+            "total_amount": inv.total_amount, "linked_by": link.linked_by, "linked_to": linked_to,
+            "items": _items_by_invoice(db, [inv.id]).get(inv.id, [])}
+
+
+def picker(db: Session, entry_id: int) -> dict:
+    """Invoices the owner can link to this entry (or its split group): non-void, no link row, issued within
+    `PICKER_DAYS` of the entry date, closest total first."""
+    entry = db.get(LedgerEntry, entry_id)
+    if entry is None:
+        raise NotFoundError(f"entry {entry_id} not found")
+    own = entry_target(db, entry_id)
+    group = group_target(db, entry.group_id) if entry.group_id is not None else None
+    window = timedelta(days=PICKER_DAYS)
+    rows = list(db.scalars(
+        select(Einvoice).where(
+            Einvoice.state != "void", ~exists().where(EinvoiceLink.invoice_id == Einvoice.id),
+            Einvoice.issue_date.between(entry.entry_date - window, entry.entry_date + window))))
+    net = abs(Decimal(own.net)) if own is not None else abs(Decimal(entry.amount))
+    rows.sort(key=lambda i: (abs(Decimal(i.total_amount) - net), abs((i.issue_date - entry.entry_date).days), i.id))
+    items = _items_by_invoice(db, [i.id for i in rows])
+    return {"entry_eligible": own is not None, "group_id": entry.group_id, "group_eligible": group is not None,
+            "invoices": [_summary(i, items) for i in rows]}
