@@ -138,8 +138,7 @@ describe('AppEntryEinvoiceCardComponent', () => {
   it('not eligible hides the picker', () => {
     const root = render({});
     open(root, { entry_eligible: false, group_id: null, group_eligible: false, invoices: [invoice(1, '甲店')] });
-    expect(root.querySelector('.einvoice-pick')).toBeNull();
-    expect(root.textContent).not.toContain('連結發票…');
+    expect(root.textContent?.trim()).toBe('');
   });
 
   it('says so when no invoice can be linked', () => {
@@ -170,5 +169,62 @@ describe('AppEntryEinvoiceCardComponent', () => {
     const root = render({ einvoice: { ...LINKED, total_amount: '12.50' } });
     expect(root.textContent).toContain('12.50');
     expect(root.textContent).not.toContain('NT$12.50');
+  });
+
+  it('split member with no invoices sees the empty text, not the choice', () => {
+    const root = render({});
+    open(root, { entry_eligible: true, group_id: 9, group_eligible: true, invoices: [] });
+    expect(root.textContent).toContain('沒有可連結的發票');
+    expect(root.textContent).not.toContain('這筆');
+  });
+
+  it('after an unlink the reloaded detail shows the idle button', () => {
+    const root = render({ einvoice: LINKED });
+    button(root, '解除連結').click();
+    http.expectOne('/api/accounting/einvoices/7/unlink').flush({ id: 7, state: 'unmatched' });
+    fixture.componentRef.setInput('detail', { id: 42 } as unknown as EntryDetail);
+    fixture.detectChanges();
+    expect(button(root, '連結發票…')).toBeTruthy();
+    expect(root.textContent).not.toContain('AB-12345678');
+  });
+
+  it('a stale picker list is cleared when the detail reloads', () => {
+    const root = render({});
+    open(root, { entry_eligible: true, group_id: null, group_eligible: false, invoices: [invoice(1, '甲店')] });
+    fixture.componentRef.setInput('detail', { id: 43 } as unknown as EntryDetail);
+    fixture.detectChanges();
+    expect(root.querySelector('.einvoice-pick')).toBeNull();
+    expect(button(root, '連結發票…')).toBeTruthy();
+  });
+
+  it('drops an in-flight picker response from an older entry', () => {
+    const root = render({});
+    button(root, '連結發票…').click();
+    const stale = http.expectOne('/api/accounting/einvoices/picker?entry_id=42');
+    fixture.componentRef.setInput('detail', { id: 43 } as unknown as EntryDetail);
+    fixture.detectChanges();
+    expect(stale.cancelled).toBe(true);
+    expect(button(root, '連結發票…')).toBeTruthy();
+  });
+
+  it('a double tap on 解除連結 sends one request', () => {
+    const root = render({ einvoice: LINKED });
+    const unlink = button(root, '解除連結');
+    unlink.click();
+    unlink.click();
+    http.expectOne('/api/accounting/einvoices/7/unlink').flush({ id: 7, state: 'unmatched' });
+    unlink.click();
+    http.expectNone('/api/accounting/einvoices/7/unlink');
+    expect(changed).toBe(1);
+  });
+
+  it('a double tap on 連結發票… sends one picker request', () => {
+    const root = render({});
+    const open = button(root, '連結發票…');
+    open.click();
+    open.click();
+    http.expectOne('/api/accounting/einvoices/picker?entry_id=42').flush({
+      entry_eligible: true, group_id: null, group_eligible: false, invoices: [],
+    });
   });
 });

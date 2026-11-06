@@ -1,3 +1,4 @@
+@if (visible()) {
 <div class="dsec">發票</div>
 @if (detail().einvoice; as inv) {
   <div class="dline">
@@ -36,13 +37,13 @@
   @if (pickerState(); as state) {
     @if (state.status === 'ready') {
       @if (eligible(state.picker)) {
-        @if (askScope(state.picker)) {
+        @if (!state.picker.invoices.length) {
+          <div class="einvoice-sub">沒有可連結的發票</div>
+        } @else if (askScope(state.picker)) {
           <div class="einvoice-actions">
             <button type="button" (click)="choose('entry')">這筆</button>
             <button type="button" (click)="choose('group')">整組</button>
           </div>
-        } @else if (!state.picker.invoices.length) {
-          <div class="einvoice-sub">沒有可連結的發票</div>
         } @else {
           @for (inv of state.picker.invoices; track inv.id) {
             <button type="button" class="einvoice-pick" [disabled]="busy()" (click)="link(inv.id, state.picker)">
@@ -57,4 +58,5 @@
 }
 @if (error(); as message) {
   <p class="einvoice-error" role="alert">{{ message }}</p>
+}
 }

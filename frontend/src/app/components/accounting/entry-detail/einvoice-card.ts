@@ -1,6 +1,6 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, inject, input, output, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, computed, effect, inject, input, output, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { Observable } from 'rxjs';
+import { Observable, Subscription } from 'rxjs';
 
 import { EntryDetail } from '../../../models/accounting.model';
 import { slashDate } from '../dates';
@@ -40,14 +40,38 @@ export class AppEntryEinvoiceCardComponent {
   readonly busy = signal(false);
   readonly error = signal<string | null>(null);
 
+  /** The card shows nothing once the picker says the entry is not eligible (spec §10). */
+  readonly visible = computed(() => {
+    const state = this.pickerState();
+    return !(state.status === 'ready' && !this.eligible(state.picker));
+  });
+
+  private pickerSub?: Subscription;
+
+  constructor() {
+    const key = computed(() => `${this.detail().id}:${this.detail().einvoice?.id ?? ''}`);
+    effect(() => {
+      key();
+      this.pickerSub?.unsubscribe();
+      this.pickerState.set({ status: 'idle' });
+      this.scope.set(null);
+      this.busy.set(false);
+      this.error.set(null);
+    });
+  }
+
   unlink(id: number): void {
     this.write(this.service.unlink(id));
   }
 
   openPicker(): void {
+    if (this.pickerState().status === 'loading') {
+      return;
+    }
     this.error.set(null);
     this.pickerState.set({ status: 'loading' });
-    this.service.picker(this.detail().id).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+    this.pickerSub?.unsubscribe();
+    this.pickerSub = this.service.picker(this.detail().id).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: (picker) => {
         this.scope.set(picker.entry_eligible && picker.group_eligible ? null : picker.group_eligible ? 'group' : 'entry');
         this.pickerState.set({ status: 'ready', picker });
@@ -85,7 +109,7 @@ export class AppEntryEinvoiceCardComponent {
     this.error.set(null);
     call.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: () => {
-        this.busy.set(false);
+        // busy stays on until the reloaded detail resets the card, so a second tap cannot send another write.
         this.changed.emit();
       },
       error: (err: unknown) => {
