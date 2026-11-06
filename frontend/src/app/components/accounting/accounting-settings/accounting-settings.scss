@@ -127,3 +127,6 @@ summary.srow::-webkit-details-marker { display: none; }
     .project-exclude-label { display: none; }
   }
 }
+
+.dismissed-text { overflow: hidden; white-space: normal; }
+.dismissed-items { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

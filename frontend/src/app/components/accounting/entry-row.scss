@@ -136,3 +136,14 @@
     color: var(--app-text);
   }
 }
+
+/* Under the title: invoice item names a search matched. */
+.invoice-hits {
+  color: var(--app-text-muted);
+  font-size: 0.72rem;
+  grid-column: 2 / -1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

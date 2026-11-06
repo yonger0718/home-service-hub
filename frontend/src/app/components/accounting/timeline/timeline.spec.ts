@@ -1005,6 +1005,34 @@ describe('LedgerTimelineComponent', () => {
       expectNoEntryPage();
     });
 
+    it('asks for invoice item hits only with a search', () => {
+      const { fixture } = render('sheet');
+      flushSummary('2026-10');
+      expect(flushEntries([]).request.params.has('include_invoice_items')).toBe(false);
+      fixture.detectChanges();
+      fixture.componentInstance.setQuery('衛生紙');
+      fixture.detectChanges();
+      expect(flushEntries([]).request.params.get('include_invoice_items')).toBe('true');
+      fixture.componentInstance.setQuery('');
+      fixture.detectChanges();
+      expect(flushEntries([]).request.params.has('include_invoice_items')).toBe(false);
+    });
+
+    it('shows the matched invoice item names under the title, and nothing without hits', () => {
+      const { fixture, el } = render('sheet');
+      flushSummary('2026-10');
+      flushEntries([
+        makeEntry({ id: 41, name: '全聯', invoice_item_hits: ['衛生紙', '牙膏'] }),
+        makeEntry({ id: 42, name: '午餐' }),
+        makeEntry({ id: 43, name: '早餐', invoice_item_hits: [] }),
+      ]);
+      fixture.detectChanges();
+      const row = (id: number) => el.querySelector(`.entry-row[data-entry-id="${id}"]`)!;
+      expect(text(row(41).querySelector('.invoice-hits'))).toBe('發票：衛生紙、牙膏');
+      expect(row(42).querySelector('.invoice-hits')).toBeNull();
+      expect(row(43).querySelector('.invoice-hits')).toBeNull();
+    });
+
     it('clears a typed search on Esc without letting the key reach the page, and lets Esc through when empty', () => {
       const { fixture, el } = render('sheet');
       flushSummary('2026-10');

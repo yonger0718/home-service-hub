@@ -2,7 +2,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { OwnerRule } from '../inbox/inbox.model';
 import { AccountingService } from '../../../services/accounting.service';
@@ -51,6 +51,35 @@ const RULES: OwnerRule[] = [
   },
 ];
 
+const EINVOICE_URL = '/api/accounting/einvoices';
+const EINVOICE_PREFS = { enabled: true, remind_unmatched: true, version: 3 };
+const MUTES = [
+  { seller_tax_id: '00000001', seller_name: '測試超市', created_at: '2026-11-01T00:00:00Z' },
+  { seller_tax_id: '00000002', seller_name: null, created_at: '2026-11-02T00:00:00Z' },
+];
+const DISMISSED = [
+  {
+    id: 71, number: 'AB12345678', issue_date: '2026-11-03', seller_name: '測試書店', seller_tax_id: '00000003', total_amount: '350',
+    status_raw: '', state: 'dismissed', dismiss_reason: 'owner', items: [{ name: '筆記本', subtotal: '200' }, { name: '原子筆', subtotal: '150' }],
+  },
+  {
+    id: 72, number: 'CD87654321', issue_date: '2026-11-04', seller_name: '測試咖啡', seller_tax_id: '00000004', total_amount: '12.50',
+    status_raw: '', state: 'dismissed', dismiss_reason: 'runbook', items: [],
+  },
+];
+/** What the three 發票 reads answer at page start; a body, or 'error' for a 500. Reset after each test. */
+let einvoiceInit: { prefs: unknown; mutes: unknown; dismissed: unknown } = { prefs: { ...EINVOICE_PREFS, enabled: false }, mutes: [], dismissed: [] };
+const DEFAULT_EINVOICE_INIT = einvoiceInit;
+
+function answer(http: HttpTestingController, url: string, body: unknown): void {
+  const req = http.expectOne(r => r.method === 'GET' && r.url === url);
+  if (body === 'error') {
+    req.flush({ detail: 'x' }, { status: 500, statusText: 'Server Error' });
+  } else {
+    req.flush(body as object);
+  }
+}
+
 describe('AccountingSettingsComponent', () => {
   let http: HttpTestingController;
   let fixture: ComponentFixture<AccountingSettingsComponent>;
@@ -75,11 +104,18 @@ describe('AccountingSettingsComponent', () => {
     http.expectOne('/api/accounting/counterparties').flush(COUNTERPARTIES);
     http.expectOne('/api/accounting/imports/latest').flush({ detail: 'none' }, { status: 404, statusText: 'Not Found' });
     flushAccountsAndRules();
+    answer(http, `${EINVOICE_URL}/preferences`, einvoiceInit.prefs);
+    if ((einvoiceInit.prefs as { enabled?: boolean }).enabled) {
+      answer(http, `${EINVOICE_URL}/mutes`, einvoiceInit.mutes);
+      answer(http, `${EINVOICE_URL}/dismissed`, einvoiceInit.dismissed);
+    }
     fixture.detectChanges();
     el = fixture.nativeElement as HTMLElement;
   });
 
-  afterEach(() => http.verify());
+  afterEach(() => {
+    http.verify();
+  });
 
   function flushAccountsAndRules(rules: OwnerRule[] = RULES): void {
     http.expectOne(r => r.method === 'GET' && r.url === '/api/accounting/accounts').flush(ACCOUNTS);
@@ -590,6 +626,130 @@ describe('AccountingSettingsComponent', () => {
       expect(Array.from(el.querySelectorAll('.rule-toggle')).map(button => button.textContent?.trim())).toEqual(['停用', '停用']);
     });
   });
+  describe('發票', () => {
+    beforeAll(() => {
+      einvoiceInit = { prefs: EINVOICE_PREFS, mutes: MUTES, dismissed: DISMISSED };
+    });
+    afterAll(() => {
+      einvoiceInit = DEFAULT_EINVOICE_INIT;
+    });
+
+    const block = () => el.querySelector('.einvoice-section')!;
+    const texts = (selector: string) => Array.from(el.querySelectorAll(selector)).map(node => node.textContent?.replace(/\s+/g, ' ').trim());
+
+    it('shows the block between 顯示 and 匯入 when enabled', () => {
+      const labels = Array.from(el.querySelectorAll('.lbl')).map(node => node.textContent?.trim());
+      expect(labels.indexOf('發票')).toBe(labels.indexOf('顯示') + 1);
+      expect(labels.indexOf('匯入')).toBe(labels.indexOf('發票') + 1);
+      expect(block()).not.toBeNull();
+    });
+
+    it('switch toggles remind_unmatched', () => {
+      const toggle = el.querySelector<HTMLButtonElement>('.pref-remind-unmatched')!;
+      expect(toggle.getAttribute('role')).toBe('switch');
+      expect(toggle.getAttribute('aria-checked')).toBe('true');
+      expect(el.textContent).toContain('沒有帳的發票提醒');
+      toggle.click();
+      const req = http.expectOne(r => r.method === 'PATCH' && r.url === `${EINVOICE_URL}/preferences`);
+      expect(req.request.body).toEqual({ remind_unmatched: false });
+      req.flush({ ...EINVOICE_PREFS, remind_unmatched: false, version: 4 });
+      fixture.detectChanges();
+      expect(el.querySelector('.pref-remind-unmatched')!.getAttribute('aria-checked')).toBe('false');
+    });
+
+    it('lists muted sellers by name, else by tax id', () => {
+      expect(el.textContent).toContain('不提醒的商家');
+      expect(texts('.mute-row .mute-name')).toEqual(['測試超市', '00000002']);
+    });
+
+    it('removes a mute after confirm', () => {
+      const button = () => el.querySelector<HTMLButtonElement>('.mute-row .row-delete')!;
+      expect(button().textContent).toContain('移除');
+      button().click();
+      fixture.detectChanges();
+      http.expectNone(r => r.method === 'DELETE');
+      button().click();
+      http.expectOne(r => r.method === 'DELETE' && r.url === `${EINVOICE_URL}/mutes/00000001`).flush(null, { status: 204, statusText: 'No Content' });
+      answer(http, `${EINVOICE_URL}/mutes`, [MUTES[1]]);
+      fixture.detectChanges();
+      expect(texts('.mute-row .mute-name')).toEqual(['00000002']);
+    });
+
+    it('lists dismissed invoices and restores one', () => {
+      expect(el.textContent).toContain('已忽略的發票');
+      const rows = texts('.dismissed-row');
+      expect(rows[0]).toContain('測試書店');
+      expect(rows[0]).toContain('2026/11/03');
+      expect(rows[0]).toContain('$350');
+      expect(rows[0]).toContain('筆記本、原子筆');
+      expect(rows[1]).toContain('12.50');
+      expect(rows[1]).not.toContain('$');
+      const restore = el.querySelector<HTMLButtonElement>('.dismissed-row .restore')!;
+      expect(restore.textContent).toContain('復原');
+      restore.click();
+      http.expectOne(r => r.method === 'POST' && r.url === `${EINVOICE_URL}/71/undismiss`).flush({ id: 71, state: 'unmatched', dismiss_reason: null, linked_by: null });
+      answer(http, `${EINVOICE_URL}/dismissed`, [DISMISSED[1]]);
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.dismissed-row').length).toBe(1);
+      expect(el.textContent).not.toContain('測試書店');
+    });
+
+    it('shows the server reason when 復原 is refused', () => {
+      el.querySelector<HTMLButtonElement>('.dismissed-row .restore')!.click();
+      http.expectOne(r => r.url === `${EINVOICE_URL}/71/undismiss`).flush({ detail: 'seller_muted' }, { status: 409, statusText: 'Conflict' });
+      fixture.detectChanges();
+      expect(el.querySelector('.einvoice-message')!.textContent).toContain('沒成功：這家已設為不提醒');
+      expect(el.querySelectorAll('.dismissed-row').length).toBe(2);
+    });
+  });
+
+  describe('發票 without data', () => {
+    beforeAll(() => {
+      einvoiceInit = { prefs: EINVOICE_PREFS, mutes: [], dismissed: [] };
+    });
+    afterAll(() => {
+      einvoiceInit = DEFAULT_EINVOICE_INIT;
+    });
+
+    it('says 沒有已忽略的發票 for an empty list', () => {
+      expect(el.querySelector('.dismissed-empty')!.textContent).toContain('沒有已忽略的發票');
+      expect(el.querySelectorAll('.dismissed-row').length).toBe(0);
+    });
+  });
+
+  describe('發票 loads failing', () => {
+    beforeAll(() => {
+      einvoiceInit = { prefs: EINVOICE_PREFS, mutes: 'error', dismissed: [] };
+    });
+    afterAll(() => {
+      einvoiceInit = DEFAULT_EINVOICE_INIT;
+    });
+
+    it('shows 發票設定讀取失敗 for the failed list only', () => {
+      expect(el.querySelector('.mutes-error')!.textContent).toContain('發票設定讀取失敗');
+      expect(el.querySelector('.dismissed-error')).toBeNull();
+      expect(el.querySelector('.dismissed-empty')).not.toBeNull();
+    });
+  });
+
+  describe('發票 preferences failing', () => {
+    beforeAll(() => {
+      einvoiceInit = { prefs: 'error', mutes: [], dismissed: [] };
+    });
+    afterAll(() => {
+      einvoiceInit = DEFAULT_EINVOICE_INIT;
+    });
+
+    it('shows 發票設定讀取失敗 and no lists', () => {
+      expect(el.querySelector('.einvoice-error')!.textContent).toContain('發票設定讀取失敗');
+      expect(el.querySelector('.pref-remind-unmatched')).toBeNull();
+    });
+  });
+
+  it('hides the 發票 block while disabled', () => {
+    expect(el.querySelector('.einvoice-section')).toBeNull();
+    expect(Array.from(el.querySelectorAll('.lbl')).some(node => node.textContent?.trim() === '發票')).toBe(false);
+  });
 });
 
 describe('AccountingSettingsComponent 專案 › 不計入報表', () => {
@@ -649,4 +809,5 @@ describe('AccountingSettingsComponent 專案 › 不計入報表', () => {
     revert.flush({});
     http.expectOne('/api/accounting/projects').flush([]);
   });
+
 });

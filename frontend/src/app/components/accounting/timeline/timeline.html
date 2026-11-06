@@ -155,6 +155,9 @@
           <span class="pill" [class.rw]="pill.tone === 'rw'" [class.rv]="pill.tone === 'rv'" [class.review]="pill.tone === 'review'">{{ pill.label }}</span>
         }
       </span>
+      @if (row.invoiceHits) {
+        <small class="invoice-hits">{{ row.invoiceHits }}</small>
+      }
     </button>
   </ng-template>
 

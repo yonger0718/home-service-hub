@@ -16,6 +16,10 @@ import {
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { InboxService } from '../inbox/inbox.service';
+import { invoiceAmount } from '../inbox/einvoice-format';
+import { EinvoiceDismissed, EinvoiceMute, EinvoicePreferences } from '../inbox/einvoice.model';
+import { EinvoiceService } from '../inbox/einvoice.service';
+import { einvoiceErrorText } from '../inbox/einvoice-section/einvoice-section';
 import { OwnerRule } from '../inbox/inbox.model';
 import { isHandledKey } from '../accounting-ui';
 import { slashDate } from '../dates';
@@ -60,6 +64,7 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
   private service = inject(AccountingService);
   private readonly router = inject(Router);
   private readonly inbox = inject(InboxService);
+  private readonly einvoice = inject(EinvoiceService);
 
   readonly preference = signal<Preference | null>(null);
   readonly groups = signal<AccountGroup[]>([]);
@@ -97,6 +102,17 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
   readonly categoryTabs = CATEGORY_TABS;
   readonly weekdays = WEEKDAYS;
   readonly formatMoney = formatMoney;
+  readonly slashDate = slashDate;
+  readonly invoiceAmount = invoiceAmount;
+
+  /** 發票 block: null until read; the block shows only when `enabled`. */
+  readonly einvoicePrefs = signal<EinvoicePreferences | null>(null);
+  readonly einvoiceError = signal(false);
+  readonly mutes = signal<EinvoiceMute[] | null>(null);
+  readonly mutesError = signal(false);
+  readonly dismissed = signal<EinvoiceDismissed[] | null>(null);
+  readonly dismissedError = signal(false);
+  readonly einvoiceMessage = signal<string | null>(null);
 
   readonly visibleCounterparties = computed(() => {
     const filter = this.cpFilter().trim().toLowerCase();
@@ -170,6 +186,70 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
     this.loadProjects();
     this.loadCounterparties();
     this.loadImportState();
+    this.loadEinvoice();
+  }
+
+  private loadEinvoice(): void {
+    this.einvoice.preferences().subscribe({
+      next: prefs => {
+        this.einvoicePrefs.set(prefs);
+        if (prefs.enabled) {
+          this.loadMutes();
+          this.loadDismissed();
+        }
+      },
+      error: () => this.einvoiceError.set(true),
+    });
+  }
+
+  private loadMutes(): void {
+    this.einvoice.mutes().subscribe({
+      next: list => {
+        this.mutes.set(list);
+        this.mutesError.set(false);
+      },
+      error: () => this.mutesError.set(true),
+    });
+  }
+
+  private loadDismissed(): void {
+    this.einvoice.dismissed().subscribe({
+      next: list => {
+        this.dismissed.set(list);
+        this.dismissedError.set(false);
+      },
+      error: () => this.dismissedError.set(true),
+    });
+  }
+
+  toggleRemindUnmatched(prefs: EinvoicePreferences): void {
+    this.einvoiceMessage.set(null);
+    this.einvoice.setRemindUnmatched(!prefs.remind_unmatched).subscribe({
+      next: saved => this.einvoicePrefs.set(saved),
+      error: err => this.einvoiceMessage.set(einvoiceErrorText(err)),
+    });
+  }
+
+  removeMute(taxId: string): void {
+    this.einvoiceMessage.set(null);
+    this.einvoice.deleteMute(taxId).subscribe({
+      next: () => this.loadMutes(),
+      error: err => this.einvoiceMessage.set(einvoiceErrorText(err)),
+    });
+  }
+
+  /** One tap: 復原 is reversible. */
+  restoreInvoice(id: number): void {
+    this.einvoiceMessage.set(null);
+    this.einvoice.undismiss(id).subscribe({
+      next: () => this.loadDismissed(),
+      error: err => this.einvoiceMessage.set(einvoiceErrorText(err)),
+    });
+  }
+
+  /** Item names for a dismissed row, joined with 、 (the row's CSS truncates the line). */
+  itemNames(invoice: EinvoiceDismissed): string {
+    return invoice.items.map(item => item.name).join('、');
   }
 
   private loadGroups(): void {
