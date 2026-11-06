@@ -36,6 +36,7 @@ import { formatMoney, formatNumber } from '../format';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
 import { alignedRepostAmounts, schedulePill } from '../schedule-math';
 import { GroupNavState, closeGroupPage, groupCommands, inPlaceState, readGroupNavState } from '../split-group/group-nav';
+import { AppEntryEinvoiceCardComponent } from './einvoice-card';
 import { storedGroupNet } from './split-card';
 
 const FX_SOURCE_LABELS: Record<string, string> = {
@@ -67,7 +68,7 @@ interface Chip {
 @Component({
   selector: 'app-entry-detail',
   standalone: true,
-  imports: [RouterLink, LockBannerComponent],
+  imports: [RouterLink, LockBannerComponent, AppEntryEinvoiceCardComponent],
   templateUrl: './entry-detail.html',
   styleUrl: './entry-detail.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

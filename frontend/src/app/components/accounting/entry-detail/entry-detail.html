@@ -115,6 +115,8 @@
       }
     }
 
+    <app-entry-einvoice-card [detail]="d" (changed)="load(d.id, true)" />
+
     @if (related().length) {
       <div class="dsec">關聯記錄</div>
       <div class="related">
