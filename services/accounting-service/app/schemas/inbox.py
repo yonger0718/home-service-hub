@@ -157,7 +157,8 @@ class InboxLearnIn(BaseModel):
 class InboxApplyIn(BaseModel):
     model_config = Strict
     cases: list[InboxCaseRef] = Field(min_length=1, max_length=50)
-    action: Literal["record", "match_candidate", "accept_bank_amount", "defer", "dismiss", "anchor", "accept_early"]
+    action: Literal["record", "match_candidate", "accept_bank_amount", "defer", "dismiss", "anchor", "accept_early",
+                    "record_reward"]
     params: dict = Field(default_factory=dict)
     answer: str = Field(min_length=1, max_length=80)
     learn: InboxLearnIn | None = None

@@ -21,6 +21,7 @@ export type InboxButton =
   | 'dismiss'
   | 'anchor'
   | 'accept_early'
+  | 'record_reward'
   | 'apply_proposal'
   | 'reject_proposal';
 
