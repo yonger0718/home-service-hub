@@ -1,6 +1,6 @@
 # E-invoice link (電子發票連結) — design
 
-Status: rev 3.3 (Multica PASS-with-minors), 2026-11-06 (builder check + Multica AGENT-400 round 1 and re-check folded). Owner decisions are marked **(owner)**; calls made by the author
+Status: rev 3.4 (Multica PASS-with-minors; plan-time clarifications R2/R3/R7/R15), 2026-11-06 (builder check + Multica AGENT-400 round 1 and re-check folded). Owner decisions are marked **(owner)**; calls made by the author
 are marked **(author)** and can be overridden in review.
 
 ## 1. Why
@@ -115,7 +115,9 @@ The link table is the source of truth.
     `state = void`, then deletes any link (clearing `invoice_number` as in §5).
   - Any other status keeps state and link. A later `折讓` therefore shows the new total and keeps the
     link (§4). `is_void` is never cleared, so file order cannot resurrect a voided invoice.
-  - Re-importing an unchanged file changes nothing.
+  - Re-importing an unchanged file changes nothing. The worker parses every listed file each run,
+    merges overlapping invoices (the later file wins) and posts one import per run, so overlapping
+    files never flip a row back and forth. An identical row is not touched (plan R2/R3).
 - Parse failures are counted per file and reported in the job's summary log line. One bad file
   never stops the others.
 - After the import, the API runs the matcher (§7). The same matcher also runs at the end of the
@@ -170,7 +172,8 @@ candidates win over amount candidates for that invoice.
   its only candidate, is auto-linked (`linked_by = auto`, `state = linked`). This holds for
   entries and groups alike, and for exact-number matches too.
 - Two or more candidates, or one candidate contested by another invoice in the same pass:
-  `state = ambiguous`, plus an inbox card. No first-come wins.
+  `state = ambiguous`, plus an inbox card. No first-come wins. A group and one of its members
+  that are each some invoice's only candidate also count as contested (§7.6 invariant, plan R7).
 - No candidates, but a near candidate exists: `state = near`, plus an inbox card. A near candidate
   is an eligible target in the window that meets either condition:
   - its net differs from `−A` by at most `max(50, 20 % of A)`, or
@@ -264,7 +267,8 @@ A link targets either one entry or one group, never both inside the same group.
   - Compute it over the full set, before the `limit` slice (the bell calls the inbox with
     `limit: 1`).
   - The bell is `ask + einvoice_ask` at all three call sites: `nav-badge.service.ts:183`,
-    `timeline.ts:970`, and the 「要你決定」 head text in `inbox-panel.ts:200-203`.
+    `timeline.ts:970`, and the 「要你決定」 head text in `inbox-panel.ts:200-203`. The reminders
+    page reads `counts.ask` too (`reminders.html:31`, `reminders.ts:369-375`) and uses the same sum.
   - `unmatched` reminders are listed in the section but not counted, so monthly small-receipt
     reminders do not keep the badge lit.
   - The weekly digest is unchanged in this phase.
