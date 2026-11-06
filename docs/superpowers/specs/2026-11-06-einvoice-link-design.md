@@ -1,6 +1,6 @@
 # E-invoice link (電子發票連結) — design
 
-Status: draft rev 3.2, 2026-11-06 (builder check + Multica AGENT-400 round 1 and re-check folded). Owner decisions are marked **(owner)**; calls made by the author
+Status: rev 3.3 (Multica PASS-with-minors), 2026-11-06 (builder check + Multica AGENT-400 round 1 and re-check folded). Owner decisions are marked **(owner)**; calls made by the author
 are marked **(author)** and can be overridden in review.
 
 ## 1. Why
@@ -353,7 +353,9 @@ einvoice: {
   to `unmatched` (trigger). Void then cascade leaves it `void`.
 - Owner re-link of a linked invoice keeps `state = linked` with `linked_by = owner`, and the next
   matcher run leaves it alone. Re-link from entry A to entry B (or a group), then delete B → the
-  invoice returns to `unmatched` and does not auto-link back to A (A's stamp was cleared). Dismiss of a linked invoice removes the link and the entry detail no
+  invoice returns to `unmatched`, A's `invoice_number` is clear, and the exact-number rule does not
+  select A. The fixture puts A's date inside the invoice period but outside the date window. An
+  in-window unique amount match may still auto-link, which is ordinary matching. Dismiss of a linked invoice removes the link and the entry detail no
   longer shows it.
 - The bell count includes ambiguous + near invoices with `limit: 1`. Unmatched reminders do not.
 - Carrier fields never appear in API payloads, DB rows or log lines. Use a fixture with fake
