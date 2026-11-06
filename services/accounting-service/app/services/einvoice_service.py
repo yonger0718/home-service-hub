@@ -1,10 +1,12 @@
 """E-invoice import, link bookkeeping and owner actions (spec §5-§8). Never log invoice payloads (privacy)."""
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from decimal import Decimal
 
+from psycopg2.errors import DeadlockDetected, SerializationFailure
 from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from ..models import Einvoice, EinvoiceItem, EinvoiceLink, EinvoiceSellerMute, LedgerEntry
@@ -15,6 +17,19 @@ from .errors import RETRY, CodedConflictError, NotFoundError, ValidationError
 EINVOICE_LOCK_KEY = 0x45494E56
 KNOWN_STATUSES = ("開立", "作廢", "折讓")
 VOID_STATUS = "作廢"
+
+
+@contextmanager
+def lock_conflicts_as_retry() -> Iterator[None]:
+    """A deadlock (or serialization failure) becomes the 409 `retry`. An owner action locks the invoice row, then
+    the link row; a ledger delete cascades the other way (link row, then the trigger's `UPDATE einvoice`), so
+    PostgreSQL may abort one of them. The transaction is lost either way, and a 409 beats a 500."""
+    try:
+        yield
+    except OperationalError as exc:
+        if isinstance(exc.orig, (DeadlockDetected, SerializationFailure)):
+            raise CodedConflictError(RETRY, "a concurrent ledger write; try again") from exc
+        raise
 
 
 def lock(db: Session) -> None:

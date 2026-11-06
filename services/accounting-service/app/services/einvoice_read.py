@@ -114,7 +114,8 @@ def invoice_targets(db: Session, invoice_id: int, *, days: int) -> list[dict]:
     if invoice.state == "void":
         raise CodedConflictError("einvoice_void")
     window = timedelta(days=days)
-    targets = eligible_targets(db, invoice.issue_date - window, invoice.issue_date + window)
+    targets = [t for t in eligible_targets(db, invoice.issue_date - window, invoice.issue_date + window)
+               if t.invoice_number in (None, invoice.number)]  # the link's own rule (`einvoice_service._eligible`)
     ordered = order_by_closeness(targets, abs(Decimal(invoice.total_amount)), invoice.issue_date)
     return _targets_out(db, ordered)
 
@@ -147,7 +148,8 @@ def entry_einvoice(db: Session, entry: LedgerEntry) -> dict | None:
 
 def picker(db: Session, entry_id: int) -> dict:
     """Invoices the owner can link to this entry (or its split group): non-void, no link row, issued within
-    `PICKER_DAYS` of the entry date, closest total first."""
+    `PICKER_DAYS` of the entry date, closest total first. An entry stamped with an invoice number only gets that
+    number offered (the link's own rule, `einvoice_service._eligible`)."""
     entry = db.get(LedgerEntry, entry_id)
     if entry is None:
         raise NotFoundError(f"entry {entry_id} not found")
@@ -157,7 +159,8 @@ def picker(db: Session, entry_id: int) -> dict:
     rows = list(db.scalars(
         select(Einvoice).where(
             Einvoice.state != "void", ~exists().where(EinvoiceLink.invoice_id == Einvoice.id),
-            Einvoice.issue_date.between(entry.entry_date - window, entry.entry_date + window))))
+            Einvoice.issue_date.between(entry.entry_date - window, entry.entry_date + window),
+            *([Einvoice.number == entry.invoice_number] if entry.invoice_number is not None else []))))
     net = abs(Decimal(own.net)) if own is not None else abs(Decimal(entry.amount))
     rows.sort(key=lambda i: (abs(Decimal(i.total_amount) - net), abs((i.issue_date - entry.entry_date).days), i.id))
     items = _items_by_invoice(db, [i.id for i in rows])

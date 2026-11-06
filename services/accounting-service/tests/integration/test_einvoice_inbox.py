@@ -188,3 +188,19 @@ def test_section_runs_one_eligible_targets_query(client, db_session, seed, monke
     monkeypatch.setattr(einvoice_read, "eligible_targets", lambda *a, **k: calls.append(1) or real(*a, **k))
     assert len(_inbox(client)["einvoices"]) == 3
     assert len(calls) == 1
+
+
+def test_targets_leave_out_entries_stamped_with_another_number(client, db_session, seed):
+    # matcher off, so the entry stamped AB00000001 is not auto-linked by the import
+    a = seed.account("A")
+    own = seed.entry(a, "-120", day=D, invoice_number="AB00000001")
+    other = seed.entry(a, "-120", day=D, invoice_number="AB00000009")
+    plain = seed.entry(a, "-119", day=D)
+    db_session.commit()
+    import_(client, invoice(total="120"))
+    inv_id = _row(db_session, "AB00000001").id
+    ids = [t["id"] for t in client.get(f"/einvoices/{inv_id}/targets").json()]
+    assert own.id in ids and plain.id in ids and other.id not in ids
+    # what the list offers, the link takes
+    res = client.post(f"/einvoices/{inv_id}/link", json={"entry_id": own.id})
+    assert res.status_code == 200, res.text

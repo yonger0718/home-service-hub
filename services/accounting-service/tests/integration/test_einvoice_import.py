@@ -152,3 +152,29 @@ def test_void_twice_counts_once(client, db_session):
     assert import_(client, invoice(status="作廢"))["voided"] == 1
     out = import_(client, invoice(status="作廢"))
     assert out["voided"] == 0 and out["unchanged"] == 1
+
+
+@pytest.mark.parametrize("bad", [
+    {"total": "120.00001"},  # 5 fraction digits
+    {"total": "12345678901234567"},  # 17 integer digits: numeric(20, 4) holds 16
+    {"items": (("品項", "120.00001"),)},
+    {"items": (("品項", "12345678901234567"),)},
+])
+def test_amounts_outside_numeric_20_4_are_422(client, db_session, bad):
+    res = client.post("/einvoices/import", json={"invoices": [invoice(**bad)]})
+    assert res.status_code == 422, res.text
+    assert db_session.scalar(text("SELECT count(*) FROM einvoice")) == 0
+
+
+def test_amount_at_numeric_20_4_bounds_is_accepted(client, db_session):
+    big = "1234567890123456.1234"
+    import_(client, invoice(total=big, items=(("品項", big),)))
+    assert _row(db_session).total_amount == Decimal(big)
+
+
+def test_duplicate_item_seq_is_422(client, db_session):
+    body = invoice(items=(("甲", "70"), ("乙", "50")))
+    body["items"][1]["seq"] = 1
+    res = client.post("/einvoices/import", json={"invoices": [body]})
+    assert res.status_code == 422 and "seq" in res.text, res.text
+    assert db_session.scalar(text("SELECT count(*) FROM einvoice")) == 0

@@ -494,3 +494,39 @@ def test_void_then_cascade_stays_void(client, db_session, seed):
     delete_entries_cascade(db_session, [entry.id])
     db_session.commit()
     assert _state(db_session) == ("void", None)
+
+
+# --- a deadlock is the 409 `retry` (final review A1) ------------------------------------------------------------
+
+def _retry(res):
+    assert res.status_code == 409, res.text
+    assert res.json()["message"].split(":")[0] == "retry", res.text
+
+
+def _deadlock(*_args, **_kwargs):
+    from psycopg2.errors import DeadlockDetected
+    from sqlalchemy.exc import OperationalError
+    raise OperationalError("UPDATE einvoice ...", {}, DeadlockDetected("deadlock detected"))
+
+
+def test_deadlock_in_unlink_is_409_retry(client, db_session, seed, monkeypatch):
+    entry = _auto_linked(client, db_session, seed)
+    monkeypatch.setattr(einvoice_service, "remove_link", _deadlock)
+    _retry(client.post(f"/einvoices/{_row(db_session).id}/unlink"))
+    monkeypatch.undo()
+    assert _state(db_session) == ("linked", None) and _link(db_session).entry_id == entry.id
+
+
+def test_deadlock_in_link_is_409_retry(client, db_session, seed, monkeypatch):
+    import_(client, invoice())
+    entry = seed.entry(seed.account("A"), "-999", day=D)
+    db_session.commit()
+    monkeypatch.setattr(einvoice_service, "stamp", _deadlock)
+    _retry(client.post(f"/einvoices/{_row(db_session).id}/link", json={"entry_id": entry.id}))
+    assert _links(db_session) == 0 and _state(db_session) == ("unmatched", None)
+
+
+def test_deadlock_in_import_is_409_retry(client, db_session, monkeypatch):
+    monkeypatch.setattr(einvoice_service, "void_invoice", _deadlock)
+    _retry(client.post("/einvoices/import", json={"invoices": [invoice(status="作廢")]}))
+    assert db_session.scalar(select(func.count()).select_from(Einvoice)) == 0

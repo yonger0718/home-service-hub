@@ -17,7 +17,7 @@ class EinvoiceItemIn(BaseModel):
     model_config = Strict
     seq: int = Field(ge=1, le=1000)
     name: str = Field(min_length=1, max_length=256)
-    subtotal: Decimal
+    subtotal: Decimal = Field(max_digits=20, decimal_places=4)  # the column's numeric(20, 4)
 
 
 class EinvoiceIn(BaseModel):
@@ -26,10 +26,17 @@ class EinvoiceIn(BaseModel):
     issue_date: date
     seller_tax_id: str = Field(pattern=r"^[0-9A-Za-z]{0,16}$")
     seller_name: str = Field(min_length=1, max_length=128)
-    total_amount: Decimal
+    total_amount: Decimal = Field(max_digits=20, decimal_places=4)  # the column's numeric(20, 4)
     status: str = Field(min_length=1, max_length=16)
     source_drive_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
     items: list[EinvoiceItemIn] = Field(max_length=500)
+
+    @model_validator(mode="after")
+    def _unique_seq(self) -> "EinvoiceIn":
+        seqs = [i.seq for i in self.items]
+        if len(seqs) != len(set(seqs)):
+            raise ValueError("items: seq must be unique within an invoice")
+        return self
 
 
 class EinvoiceImportIn(BaseModel):

@@ -175,3 +175,16 @@ def test_picker_split_member(client, db_session, seed):
     _link(db_session, "AB00000001", group=g)
     out = _picker(client, m1.id)
     assert out["group_id"] == g.id and out["group_eligible"] is False and out["entry_eligible"] is False
+
+
+def test_picker_of_stamped_entry_offers_only_that_number(client, db_session, seed):
+    a = seed.account("A")
+    stamped = seed.entry(a, "-120", day=D, invoice_number="AB00000002")
+    plain = seed.entry(a, "-120", day=D)
+    db_session.commit()
+    import_(client, invoice(number="AB00000001"), invoice(number="AB00000002"))
+    out = _picker(client, stamped.id)
+    assert out["entry_eligible"] is True and [i["number"] for i in out["invoices"]] == ["AB00000002"]
+    assert [i["number"] for i in _picker(client, plain.id)["invoices"]] == ["AB00000001", "AB00000002"]
+    res = client.post(f"/einvoices/{out['invoices'][0]['id']}/link", json={"entry_id": stamped.id})
+    assert res.status_code == 200, res.text
