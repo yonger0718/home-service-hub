@@ -421,6 +421,18 @@ def test_owner_routes_need_write(client, monkeypatch, db_session):
     assert client.get("/einvoices/mutes", headers={"Authorization": "Bearer spa-token"}).status_code == 200
 
 
+def test_runbook_dismiss_needs_admin(client, monkeypatch, db_session):
+    import_(client, invoice())
+    monkeypatch.setenv(auth.TOKENS_ENV, "adm:adm-token,wr:wr-token")
+    monkeypatch.setenv(auth.SCOPES_ENV, "adm=read,write,admin; wr=read,write")  # wr: write without admin
+    body = {"invoices": [{"number": "AB00000001", "issue_date": "2026-10-05"}]}
+    res = client.post("/einvoices/runbook-dismiss", headers={"Authorization": "Bearer wr-token"}, json=body)
+    assert res.status_code == 403 and res.json()["message"] == "scope", res.text
+    assert _state(db_session) == ("unmatched", None)
+    res = client.post("/einvoices/runbook-dismiss", headers={"Authorization": "Bearer adm-token"}, json=body)
+    assert res.status_code == 200 and res.json() == {"dismissed": 1, "not_found": []}, res.text
+
+
 # --- cascades -------------------------------------------------------------------------------------------------
 
 def test_moze_full_replace_unmatches(client, db_session, moze):

@@ -1,6 +1,6 @@
 """E-invoice import and matcher run (spec §6, §7), owner actions, mutes and preferences (§7.5, §8). Behind
 `require_feature()`; the worker's `ingest` scope posts the parsed CSV and triggers `/match`; every owner route
-needs `write`. Static paths are declared before the `/{invoice_id}` routes."""
+needs `write`, the rollout runbook dismiss `admin`. Static paths are declared before the `/{invoice_id}` routes."""
 from fastapi import APIRouter, Depends, Response
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,7 @@ router = APIRouter(prefix="/einvoices", tags=["E-invoices"], dependencies=[Depen
 
 INGEST = [Depends(require("ingest"))]
 WRITE = [Depends(require("write"))]
+ADMIN = [Depends(require("admin"))]
 
 
 @router.post("/import", response_model=EinvoiceImportOut, dependencies=INGEST)
@@ -67,7 +68,7 @@ def patch_preferences(body: EinvoicePreferencesIn, db: Session = Depends(get_db)
     return _preferences(settings)
 
 
-@router.post("/runbook-dismiss", response_model=RunbookDismissOut, dependencies=WRITE)
+@router.post("/runbook-dismiss", response_model=RunbookDismissOut, dependencies=ADMIN)  # rollout step (R1)
 def runbook_dismiss(body: RunbookDismissIn, db: Session = Depends(get_db)):
     with service_errors():
         out = einvoice_service.runbook_dismiss(db, body.invoices)
