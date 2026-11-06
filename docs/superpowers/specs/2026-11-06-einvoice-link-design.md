@@ -1,6 +1,6 @@
 # E-invoice link (電子發票連結) — design
 
-Status: rev 3.4 (Multica PASS-with-minors; plan-time clarifications R2/R3/R7/R15), 2026-11-06 (builder check + Multica AGENT-400 round 1 and re-check folded). Owner decisions are marked **(owner)**; calls made by the author
+Status: rev 3.5 (owner: dismissed list with 復原; Multica PASS-with-minors; plan-time clarifications R2/R3/R7/R15), 2026-11-06 (builder check + Multica AGENT-400 round 1 and re-check folded). Owner decisions are marked **(owner)**; calls made by the author
 are marked **(author)** and can be overridden in review.
 
 ## 1. Why
@@ -246,6 +246,10 @@ A link targets either one entry or one group, never both inside the same group.
   and near cards stay.
 - Management UI **(author)**: a 「發票」 section on the existing accounting settings page, with the
   global switch and the mute list (remove only).
+- 「已忽略的發票」 list with 「復原」 **(owner, 2026-11-06)**: the same section lists `dismissed`
+  invoices with reason `owner` or `runbook` (newest first, up to 100), each with seller, date, amount
+  and items. 「復原」 calls undismiss, so the invoice returns to matching. `seller_muted` invoices
+  are not listed: removing the mute restores them.
   - It is backed by write-scope endpoints `GET/DELETE /einvoices/mutes[/{tax_id}]` and
     `PATCH /einvoices/preferences {remind_unmatched}`.
   - The PATCH merges `remind_unmatched` into the stored settings JSON and bumps `version` itself.
