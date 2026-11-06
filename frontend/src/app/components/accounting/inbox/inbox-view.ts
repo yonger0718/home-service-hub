@@ -248,6 +248,8 @@ export function buttonLabel(button: InboxButton, item: InboxItem, currency: stri
       return '對齊銀行期初';
     case 'accept_early':
       return '接受提早入帳';
+    case 'record_reward':
+      return '記成另一筆回饋';
     case 'apply_proposal':
       return '套用';
     case 'reject_proposal':

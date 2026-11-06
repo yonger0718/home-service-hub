@@ -129,9 +129,10 @@ def _lists_transfer_leg(case: ReconciliationCase) -> bool:
     return any(_transfer_leg(case, c.get("entry_id")) for c in case.candidates or ())
 
 
-# Reward engine plan P5: a `reward_early` line offers these and nothing else (not even create_entry /
-# create_system_entry, which `_system_line` would allow on any reward line: booking it would count the reward twice)
-REWARD_EARLY_ACTIONS = frozenset({"accept_early_reward", "dismiss"})
+# Reward engine plan P5: a `reward_early` line offers these and nothing else (not create_entry). #295 (owner
+# 2026-11-06): `create_system_entry` (the inbox's 記成另一筆回饋) books the line as a promo credit of its own; it would
+# count the reward twice if the line was in fact the early payout, which the case note warns about
+REWARD_EARLY_ACTIONS = frozenset({"accept_early_reward", "create_system_entry", "dismiss"})
 
 
 def _reward_early(case: ReconciliationCase) -> bool:

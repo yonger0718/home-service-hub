@@ -28,7 +28,8 @@ from tests.integration.test_reward_bank_wins import (
 NEXT = (date(2026, 11, 16), date(2026, 12, 15))
 EARLY_DAY = date(2026, 11, 12)  # posts 11-17: after this period, inside the next cycle
 REWARD_DAY = date(2026, 11, 14)
-NOTE = "銀行提早入帳：請修正規則的入帳日，或按「接受提早入帳」"
+NOTE = "銀行提早入帳：請修正規則的入帳日，或按「接受提早入帳」；若是促銷等另一筆回饋，按「記成另一筆回饋」"
+SURPLUS_NOTE = "銀行多給了一筆回饋：若是促銷等另一筆回饋，按「記成另一筆回饋」"
 SYSTEM_ON = {"enabled": True, "actions": {"create_system_entry": {"enabled": True}}}
 
 
@@ -112,8 +113,9 @@ def test_surplus_line_becomes_owner_case(seed, db_session, run, dirty_on, today)
     claims = _by_line(db_session, stmt.id)
     assert [c.entry_id for c in claims[first.id]] == [row.id] and second.id not in claims
     case = _one_open(db_session, stmt.id, second)
-    assert (case.kind, case.context) == ("line_unmatched", {"hint": "reward_surplus"})
-    assert _inbox_item(db_session, case.id)["question"] == "other"
+    assert (case.kind, case.context) == ("line_unmatched", {"hint": "reward_surplus", "note": SURPLUS_NOTE})
+    item = _inbox_item(db_session, case.id)
+    assert (item["question"], item["actions"]) == ("other", ["record_reward", "dismiss"])
 
     _learned_record_rule(seed, db_session, card, second)
     owner_rule_service.apply_rules(db_session, stmt.id)
@@ -124,13 +126,13 @@ def test_surplus_line_becomes_owner_case(seed, db_session, run, dirty_on, today)
     assert [r.id for r in _rewards(db_session)] == [row.id]
 
 
-def test_extra_line_with_candidates_stays_surplus(seed, db_session, run):
-    """Finding 7: with in-period candidates, an extra reward line is `reward_surplus` even when the card also has
-    early candidates."""
+def test_extra_line_offers_early_when_early_candidates_exist(seed, db_session, run):
+    """#295 (M13): with in-period candidates, an extra reward line becomes a `reward_early` case (accept offered) when
+    the card also has early candidates, instead of a `reward_surplus` case without accept."""
     card = _test_card(seed, db_session)
     rule = _rule(db_session, card)
     _spend(db_session, card, 1000, date(2026, 10, 20), rule)  # posts 10-25: in the period (posted early)
-    _spend(db_session, card, 2000, EARLY_DAY, rule)  # posts 11-17: an early candidate
+    _early_buy = _spend(db_session, card, 2000, EARLY_DAY, rule)  # posts 11-17: an early candidate
     db_session.commit()
     stmt, (_, _, first, second), _ = _submit(db_session, run, card, [
         _line(1, date(2026, 10, 20), SHOP, 1000), _line(2, EARLY_DAY, SHOP, 2000),
@@ -138,7 +140,13 @@ def test_extra_line_with_candidates_stays_surplus(seed, db_session, run):
 
     assert first.id in _by_line(db_session, stmt.id)
     case = _one_open(db_session, stmt.id, second)
-    assert case.context == {"hint": "reward_surplus"}
+    early = _accrual_of(db_session, _early_buy)
+    assert case.context["hint"] == "reward_early" and case.context["default_accrual_ids"] == [early.id]
+    assert "accept_early_reward" in reconciliation_actions.allowed(case)
+
+    _accept(db_session, db_session.get(ReconciliationCase, case.id))
+    assert _accrual_of(db_session, _early_buy).state == "bank_confirmed"
+    assert _open_on(db_session, stmt.id, second) == []
 
 
 # --- early -------------------------------------------------------------------------------------------------------
@@ -154,9 +162,10 @@ def test_early_credit_is_owner_case_not_bank_only(seed, db_session, run, dirty_o
     assert (case.kind, case.context) == ("line_unmatched", {
         "hint": "reward_early", "early_accrual_ids": [accrual.id], "rule_ids": [rule.id],
         "default_accrual_ids": [accrual.id], "note": NOTE})
-    assert reconciliation_actions.allowed(case) == ["accept_early_reward", "dismiss"]
+    assert reconciliation_actions.allowed(case) == ["create_system_entry", "accept_early_reward", "dismiss"]
     item = _inbox_item(db_session, case.id)
-    assert (item["question"], item["actions"], item["note"]) == ("other", ["accept_early", "dismiss"], NOTE)
+    assert (item["question"], item["actions"], item["note"]) == ("other", ["accept_early", "record_reward", "dismiss"],
+                                                                   NOTE)
 
     _set_policy(db_session, SYSTEM_ON)
     assert case.id not in _policy_case_ids(db_session, stmt.id)
@@ -272,7 +281,7 @@ def test_accept_locks_accepted_window_in_the_single_call(seed, db_session, run, 
         _line(1, date(2026, 10, 20), SHOP, 1000), _line(2, EARLY_DAY, SHOP, 3000), _reward_line(3, 10),
         _reward_line(4, 30)], period=PERIOD)
     case = _one_open(db_session, stmt.id, line)
-    assert case.context == {"hint": "reward_surplus"}  # with in-period candidates the extra line is surplus
+    assert case.context["hint"] == "reward_early"  # #295 (M13): the card has an early candidate
 
     # the accepted map naming the early accrual for the second line (as an applied accept_early_reward would)
     calls: list[set] = []
@@ -452,7 +461,7 @@ def test_posted_early_accrual_keeps_case_after_recheck(seed, db_session, run, pg
     kept = _one_open(db_session, stmt.id, line)
     assert kept.id == case.id
     assert (kept.context["hint"], kept.context["early_accrual_ids"]) == ("reward_early", [accrual_id])
-    assert reconciliation_actions.allowed(kept) == ["accept_early_reward", "dismiss"]
+    assert reconciliation_actions.allowed(kept) == ["create_system_entry", "accept_early_reward", "dismiss"]
     assert _accrual_of(db_session, buy).state == "posted"
 
 
@@ -477,9 +486,10 @@ def test_accept_refuses_line_outside_period(seed, db_session, run, monkeypatch):
     _, buy, stmt, line = _early_statement(db_session, run, card, day=date(2026, 11, 16))
     case = _one_open(db_session, stmt.id, line)
     assert case.context["hint"] == "reward_early"
-    # the registry no longer offers it (fix round 1, minor 3): only dismiss, and no inbox button
-    assert reconciliation_actions.allowed(case) == ["dismiss"]
-    assert _inbox_item(db_session, case.id)["actions"] == ["dismiss"]
+    # the registry no longer offers it (fix round 1, minor 3): no accept, and no accept button (#295: the promo
+    # booking stays)
+    assert reconciliation_actions.allowed(case) == ["create_system_entry", "dismiss"]
+    assert _inbox_item(db_session, case.id)["actions"] == ["record_reward", "dismiss"]
     with pytest.raises(ValidationError) as refused:
         _accept(db_session, case)
     assert refused.value.field == "action"
@@ -570,6 +580,65 @@ def test_accept_via_inbox_one_tap(seed, db_session, run):
     (action,) = _actions(db_session)
     assert (action.action, action.params) == ("accept_early_reward", {"accrual_ids": [_accrual_of(db_session, buy).id]})
     assert _accrual_of(db_session, buy).state == "bank_confirmed"
+
+
+def test_early_case_keeps_version_when_a_new_purchase_joins(seed, db_session, run):
+    """#295 (M11): a new early purchase on the card that does not change the default refreshes the case's context in
+    place; the case keeps its id and version (no flicker, no `case_moved` for an in-flight tap)."""
+    card = _test_card(seed, db_session)
+    rule, buy, stmt, line = _early_statement(db_session, run, card)
+    case = _one_open(db_session, stmt.id, line)
+    version, first = case.version, _accrual_of(db_session, buy)
+
+    other = _spend(db_session, card, 5000, date(2026, 11, 13), rule)  # estimate 50: further from the line's 9
+    db_session.commit()
+    _reconcile(db_session, stmt.id)
+    db_session.expire_all()
+    kept = _one_open(db_session, stmt.id, line)
+    assert (kept.id, kept.version) == (case.id, version)
+    assert kept.context["early_accrual_ids"] == sorted([first.id, _accrual_of(db_session, other).id])
+    assert kept.context["default_accrual_ids"] == [first.id]
+
+
+def test_early_case_reversioned_when_the_default_changes(seed, db_session, run):
+    """#295 (M11): a new early purchase whose estimate is closer to the line changes the default the one-tap
+    applies, so the case is superseded and reopened (an in-flight tap gets `stale_case`)."""
+    card = _test_card(seed, db_session)
+    rule, buy, stmt, line = _early_statement(db_session, run, card, reward=Decimal("20"))
+    case = _one_open(db_session, stmt.id, line)
+
+    closer = _spend(db_session, card, 2000, date(2026, 11, 13), rule)  # estimate 20 == the line
+    db_session.commit()
+    _reconcile(db_session, stmt.id)
+    db_session.expire_all()
+    assert db_session.get(ReconciliationCase, case.id).status == "superseded"
+    assert _one_open(db_session, stmt.id, line).context["default_accrual_ids"] == [_accrual_of(db_session, closer).id]
+
+
+@pytest.mark.parametrize("early", [True, False])
+def test_record_reward_books_a_promo_credit(seed, db_session, run, early):
+    """#295: the inbox button `record_reward` books the reward line as its own reward entry (`create_system_entry`
+    kind `reward`) from a `reward_early` or a `reward_surplus` case; the engine's accruals are untouched."""
+    card = _test_card(seed, db_session)
+    if early:
+        _, buy, stmt, line = _early_statement(db_session, run, card)
+    else:
+        rule = _rule(db_session, card)
+        buy = _spend(db_session, card, 1000, date(2026, 10, 20), rule)
+        db_session.commit()
+        _post(db_session, buy)
+        stmt, (_, _, line), _ = _submit(db_session, run, card, [
+            _line(1, date(2026, 10, 20), SHOP, 1000), _reward_line(2, 9), _reward_line(3, 5)], period=PERIOD)
+    state = _accrual_of(db_session, buy).state
+    case = _one_open(db_session, stmt.id, line)
+    body = inbox_service.InboxApplyIn(cases=[{"case_id": case.id, "case_version": case.version}],
+                                      action="record_reward", params={}, answer="記成另一筆回饋")
+    out = inbox_service.apply_batch(db_session, body=body, label="spa", request_id=None)
+    assert [r["status"] for r in out["results"]] == ["applied"]
+    (action,) = _actions(db_session)
+    assert (action.action, action.params) == ("create_system_entry", {"kind": "reward"})
+    assert _accrual_of(db_session, buy).state == state
+    assert not inbox_service.learnable("other", "record_reward")
 
 
 def test_early_case_superseded_after_posting_fix(seed, db_session, run):

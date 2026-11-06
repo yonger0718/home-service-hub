@@ -526,7 +526,7 @@ describe('AppInboxPanelComponent', () => {
   });
 
   /** A bank-early reward line (reward engine P5): folded under 其他 with 接受提早入帳 and the case's note. */
-  const EARLY_NOTE = '銀行提早入帳：請修正規則的入帳日，或按「接受提早入帳」';
+  const EARLY_NOTE = '銀行提早入帳：請修正規則的入帳日，或按「接受提早入帳」；若是促銷等另一筆回饋，按「記成另一筆回饋」';
   const EARLY = makeItem({
     case_id: 60,
     case_version: 2,
@@ -534,7 +534,7 @@ describe('AppInboxPanelComponent', () => {
     folded: true,
     line: { id: 61, date: '2026-11-14', merchant: '回饋入帳', amount: '9.0000', line_kind: 'reward' },
     rule_hint: null,
-    actions: ['accept_early', 'dismiss'],
+    actions: ['accept_early', 'record_reward', 'dismiss'],
     note: EARLY_NOTE,
   });
 
@@ -546,6 +546,7 @@ describe('AppInboxPanelComponent', () => {
     const card = fold.querySelector<HTMLElement>('.inbox-card')!;
     expect(Array.from(card.querySelectorAll('.btns button')).map(text)).toEqual([
       '接受提早入帳',
+      '記成另一筆回饋',
       '忽略',
     ]);
     expect(text(card.querySelector('.title'))).toBe('2026/11/14 回饋入帳 +$9');
@@ -570,6 +571,26 @@ describe('AppInboxPanelComponent', () => {
     const card = el.querySelector<HTMLElement>('details.fold[data-fold="other"] .inbox-card')!;
     expect(text(card.querySelector('.q'))).toBe('需要在 API 處理（案件 #62）');
     expect(Array.from(card.querySelectorAll('.btns button')).map(text)).toEqual(['忽略']);
+  });
+
+  it('record_reward books the line as its own reward in one tap (#295)', () => {
+    const { fixture, el, changed } = render(
+      makeInbox([makeInboxAccount({ name: '測試卡', is_credit: true, items: [EARLY] })], { other: 1 }),
+    );
+    button(el.querySelector('details.fold[data-fold="other"]')!, '記成另一筆回饋').click();
+    fixture.detectChanges();
+
+    const req = expectApply();
+    expect(req.request.body as InboxApplyBody).toEqual({
+      cases: [{ case_id: 60, case_version: 2 }],
+      action: 'record_reward',
+      params: {},
+      answer: '記成另一筆回饋',
+      learn: null,
+    });
+    req.flush(applied(60));
+    fixture.detectChanges();
+    expect(changed).toHaveBeenCalledTimes(1);
   });
 
   it('accept_early applies one-tap', () => {
