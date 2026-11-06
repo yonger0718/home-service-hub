@@ -134,3 +134,27 @@
   font-weight: 700;
   padding: 3px 10px;
 }
+
+/* #304: a reward batch folded into one row (a button) and its members expanded in place. */
+.entry-batch {
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  width: 100%;
+}
+
+.entry-row + .entry-batch,
+.entry-batch + .entry-row { border-top: 1px solid var(--app-border); }
+
+.batch-chev {
+  color: var(--app-text-muted);
+  font-size: 0.7em;
+  margin-right: 0.35em;
+}
+
+.entry-row.batch-member {
+  background: var(--app-surface-soft);
+  padding-left: 2.25rem;
+}

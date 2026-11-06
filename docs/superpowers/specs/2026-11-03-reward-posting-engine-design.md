@@ -222,6 +222,10 @@ validated as today (`check_rules`: rule of the same account, enabled on `entry_d
 - `POST /reward-accruals/{id}/post` (write scope): posts a `manual` accrual today or on a given date, through the
   daily job's per-accrual step (§5.1); 409 when the accrual is not `estimated`.
 - Reward rule API: `calendar_month`, `per_unit` + `unit_spend`, the method, shared-cap and #289 validation (§4.2).
+- **Reward batches** (#304, owner 2026-11-06): list and detail rows of an engine reward row (a `reward_accrual` points
+  at it) carry `reward_batch` = `{rule_id, rule_name, window_start, window_end, entry_date, count, total, currency}`:
+  the rows of the same rule, window and `entry_date`. `count` / `total` are over the whole batch, not the page; other
+  rows carry `null`. Display only: every accrual keeps its own ledger row.
 
 ## 7. Bank wins (statement reconciliation)
 
@@ -313,6 +317,14 @@ until the daily job」 option of rev 1 is gone: step 4 posts early.
   rule of the group.
 - **Rule editor:** window selector (帳單週期 / 自然月); method gets 每 NT$X 一單位 (`per_unit`) with `unit_spend`.
 - **Entry detail:** the 預估回饋 lines with their state (預估 / 已入帳 / 銀行確認 / 未獲得).
+- **Reward batch folding** (#304): the timeline and the account passbook fold a batch with two or more loaded members
+  into one row, at its newest member: rule name, 「N 筆 · window」 and the batch total. Tapping it expands its members
+  in place (tap again to collapse); a member opens its detail. A batch of one stays a plain row; 隱藏回饋 hides the
+  whole batch. In the passbook every balance shown is real: a folded row shows the balance right after its newest
+  member, plain and expanded rows their own (when rules interleave, the gap between two folded rows can differ from a
+  batch total; a recomputed balance the account never had is not printed, #305 review).
+  A filter that may keep only some rows of a batch (search, category, project, tag, merchant, amount, a kind other
+  than 回饋) turns folding off, so a row's and the day's totals never count rows the filter dropped.
 - **Hermes `homehub-api` skill** (outside the repo, `~/.hermes/skills/productivity/homehub-api/`):
   - recording a card spend reads the card's in-date rules (GET `/accounts/{id}/reward-rules`) and picks the
     applicable ones, always including the basic rule;

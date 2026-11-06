@@ -513,6 +513,38 @@ def _accrual_rows(db: Session, entry_ids: list[int]) -> dict[int, list[dict]]:
     return out
 
 
+def _reward_batches(db: Session, entry_ids: list[int]) -> dict[int, dict]:
+    """#304: the posting batch of each engine reward row on the page (a `reward_accrual` points at it): rows of the
+    same rule, window and entry_date. `count` / `total` are over every row of the batch, loaded or not."""
+    if not entry_ids:
+        return {}
+    keys = db.execute(
+        select(RewardAccrual.ledger_entry_id, RewardAccrual.rule_id, RewardAccrual.window_start,
+               RewardAccrual.window_end, LedgerEntry.entry_date)
+        .join(LedgerEntry, LedgerEntry.id == RewardAccrual.ledger_entry_id)
+        .where(RewardAccrual.ledger_entry_id.in_(entry_ids))
+    ).all()
+    if not keys:
+        return {}
+    wanted = {(k.rule_id, k.window_start, k.window_end, k.entry_date) for k in keys}
+    totals = {}
+    for rule_id, rule_name, start, end, day, count, total, currency in db.execute(
+        select(RewardAccrual.rule_id, RewardRule.name, RewardAccrual.window_start, RewardAccrual.window_end,
+               LedgerEntry.entry_date, func.count(), func.sum(LedgerEntry.amount), func.min(LedgerEntry.currency))
+        .join(LedgerEntry, LedgerEntry.id == RewardAccrual.ledger_entry_id)
+        .join(RewardRule, RewardRule.id == RewardAccrual.rule_id)
+        .where(RewardAccrual.rule_id.in_({k[0] for k in wanted}),
+               LedgerEntry.entry_date.in_({k[3] for k in wanted}))
+        .group_by(RewardAccrual.rule_id, RewardRule.name, RewardAccrual.window_start, RewardAccrual.window_end,
+                  LedgerEntry.entry_date)
+    ):
+        if (rule_id, start, end, day) in wanted:
+            totals[(rule_id, start, end, day)] = {
+                "rule_id": rule_id, "rule_name": rule_name, "window_start": start, "window_end": end,
+                "entry_date": day, "count": count, "total": total, "currency": currency}
+    return {k.ledger_entry_id: totals[(k.rule_id, k.window_start, k.window_end, k.entry_date)] for k in keys}
+
+
 INVOICE_ITEM_HIT_CAP = 3
 
 
@@ -578,6 +610,7 @@ def _entry_rows(db: Session, filters: list, *, running_accounts: list[int] | Non
     groups = _group_summaries(db, {row.LedgerEntry.group_id for row in rows if row.LedgerEntry.group_id})
     rule_names = _rule_names(db, [row.LedgerEntry.id for row in rows])
     accruals = _accrual_rows(db, [row.LedgerEntry.id for row in rows])
+    reward_batches = _reward_batches(db, [row.LedgerEntry.id for row in rows])
     item_hits = _invoice_item_hits(db, [row.LedgerEntry for row in rows], item_hits_q) if item_hits_q else {}
 
     page = []
@@ -627,6 +660,7 @@ def _entry_rows(db: Session, filters: list, *, running_accounts: list[int] | Non
                 "needs_review": entry.needs_review,
                 "review_reason": entry.review_reason,
                 "accruals": accruals[entry.id],
+                "reward_batch": reward_batches.get(entry.id),
                 "invoice_item_hits": item_hits.get(entry.id, []),
                 "source": entry.source,
                 "moze_id": entry.moze_id,

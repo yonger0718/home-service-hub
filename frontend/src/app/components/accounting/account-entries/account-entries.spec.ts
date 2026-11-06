@@ -605,4 +605,42 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     });
   });
 
+
+  it('folds a reward batch into one row with the balance after it, and expands its members in place (#304)', () => {
+    const batch = {
+      rule_id: 301, rule_name: '測試規則', window_start: '2026-09-16', window_end: '2026-10-15', entry_date: '2026-10-01',
+      count: 3, total: '10.0000', currency: 'TWD',
+    };
+    const reward = (id: number, amount: string, running: string) =>
+      entry(id, { kind: 'reward', name: `回饋 ${id}`, amount, running_balance: running, reward_batch: batch });
+    const fixture = render(page([
+      reward(1, '2.0000', '30.0000'), reward(2, '3.0000', '28.0000'), reward(3, '5.0000', '25.0000'),
+      entry(4, { entry_date: '2026-09-30', amount: '-80.0000', running_balance: '20.0000' }),
+    ]));
+    const el = fixture.nativeElement as HTMLElement;
+
+    const head = el.querySelector<HTMLButtonElement>('.entry-batch')!;
+    expect(head.getAttribute('aria-expanded')).toBe('false');
+    expect(head.querySelector('.name')?.textContent?.trim()).toBe('測試規則');
+    expect(head.querySelector('.sub')?.textContent?.trim()).toBe('3 筆 · 9/16–10/15');
+    expect(head.querySelector('.passbook')?.textContent?.trim()).toBe('$30');
+    expect(head.querySelector('.amount-value')?.textContent?.trim()).toBe('+$10');
+    expect(Array.from(el.querySelectorAll('.entry')).map(row => row.getAttribute('data-entry-id'))).toEqual(['4']);
+
+    head.click();
+    fixture.detectChanges();
+    expect(head.getAttribute('aria-expanded')).toBe('true');
+    const members = Array.from(el.querySelectorAll<HTMLElement>('.entry.batch-member'));
+    expect(members.map(row => [row.querySelector('.name')?.textContent?.trim(), row.querySelector('.passbook')?.textContent?.trim()]))
+      .toEqual([['回饋 1', '$30'], ['回饋 2', '$28'], ['回饋 3', '$25']]);
+    head.click();
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.entry.batch-member').length).toBe(0);
+
+    // A search may keep only some of a batch's rows: the passbook lists them unfolded then.
+    fixture.componentInstance.q.set('回饋');
+    fixture.detectChanges();
+    expect(el.querySelector('.entry-batch')).toBeNull();
+    expect(el.querySelectorAll('.entry').length).toBe(4);
+  });
 });

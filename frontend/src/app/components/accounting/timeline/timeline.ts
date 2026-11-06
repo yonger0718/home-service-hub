@@ -54,6 +54,7 @@ import { schedulePill } from '../schedule-math';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, isHandledKey, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
 import { displayTitle, formatMoney, formatSigned } from '../format';
 import { FilterBarComponent, FilterChip } from '../../ui/filter-bar/filter-bar';
+import { batchKey, batchSub, loadedBatches } from '../reward-batch';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { barSegments, categoryDistribution, distributionAriaText } from './category-distribution';
 
@@ -153,6 +154,10 @@ export interface TimelineRow {
   folder: { icons: FolderIcon[]; count: number } | null;
   /** `發票：` + the linked-invoice item names a search matched; null when none. */
   invoiceHits: string | null;
+  /** #304: an engine reward batch folded into this row; its loaded members, shown in place when expanded. */
+  batch?: { members: TimelineRow[] } | null;
+  /** #304: a batch member drawn under its expanded batch row. */
+  nested?: boolean;
 }
 
 /** One 繳費提醒 line in the 日曆 day panel (only statements with a remaining balance). */
@@ -241,9 +246,37 @@ function invoiceHitsOf(entry: LedgerEntry): string | null {
   return entry.invoice_item_hits?.length ? `發票：${entry.invoice_item_hits.join('、')}` : null;
 }
 
-/** Group the newest-first entries by day; one row per split group and per transfer pair. */
-export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewards: boolean): TimelineDay[] {
+function plainRow(entry: LedgerEntry): TimelineRow {
+  const amount = Number(entry.amount);
+  const tone = toneOf(amount, entry.kind);
+  return {
+    key: `e${entry.id}`,
+    entryId: entry.id,
+    memberIds: [entry.id],
+    icon: iconOf(entry),
+    color: colorOf(entry),
+    title: displayTitle(entry),
+    sub: subLine(entry),
+    amountText: tone === 'neutral' ? formatMoney(Math.abs(amount), entry.currency) : formatSigned(amount, entry.currency),
+    tone,
+    fx: fxLine(entry),
+    pills: pillsOf(entry),
+    groupCount: null,
+    folder: null,
+    invoiceHits: invoiceHitsOf(entry),
+  };
+}
+
+/** Group the newest-first entries by day; one row per split group, per transfer pair and per reward batch (#304). */
+export function buildDays(
+  entries: LedgerEntry[],
+  mainCurrency: string,
+  hideRewards: boolean,
+  foldBatches = true,
+): TimelineDay[] {
   const transferLegs = new Map<string, LedgerEntry[]>();
+  // #304: a filter that can drop some of a batch's rows turns folding off, so a row's and the day's totals stay true.
+  const batches = foldBatches ? loadedBatches(hideRewards ? entries.filter(entry => entry.kind !== 'reward') : entries) : new Map<string, LedgerEntry[]>();
   // Only the members loaded so far: the folder draws these and counts the rest of `group.count` as `+N`.
   const splitIcons = new Map<number, FolderIcon[]>();
   const groupMembers = new Map<number, number[]>();
@@ -321,26 +354,39 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
         folder: null,
         invoiceHits: invoiceHitsOf(entry),
       };
-    } else {
-      const amount = Number(entry.amount);
-      const tone = toneOf(amount, entry.kind);
+    } else if (batches.has(batchKey(entry) ?? '')) {
+      // #304: one row per engine reward batch, at its newest loaded member; the server's count / total cover it all.
+      const key = batchKey(entry)!;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      const batch = entry.reward_batch!;
+      const members = batches.get(key)!;
+      const total = Number(batch.total);
+      const kindPill = KIND_PILLS[entry.kind];
       row = {
-        key: `e${entry.id}`,
+        key,
         entryId: entry.id,
-        memberIds: [entry.id],
+        memberIds: members.map(member => member.id),
         icon: iconOf(entry),
         color: colorOf(entry),
-        title: displayTitle(entry),
-        sub: subLine(entry),
-        amountText: tone === 'neutral' ? formatMoney(Math.abs(amount), entry.currency) : formatSigned(amount, entry.currency),
-        tone,
-        fx: fxLine(entry),
-        pills: pillsOf(entry),
+        title: batch.rule_name,
+        sub: batchSub(batch),
+        amountText: formatSigned(total, batch.currency),
+        tone: total === 0 ? 'neutral' : total < 0 ? 'out' : 'in',
+        fx: null,
+        pills: [...(kindPill ? [kindPill] : []), { label: entry.account_name, tone: '' }],
         groupCount: null,
         folder: null,
-        invoiceHits: invoiceHitsOf(entry),
+        invoiceHits: null,
+        batch: { members: members.map(member => ({ ...plainRow(member), nested: true })) },
       };
-      net = TRANSFER_KINDS.has(entry.kind) ? 0 : amount;
+      net = total;
+      netCurrency = batch.currency;
+    } else {
+      row = plainRow(entry);
+      net = TRANSFER_KINDS.has(entry.kind) ? 0 : Number(entry.amount);
     }
 
     let day = days.get(entry.entry_date);
@@ -457,6 +503,10 @@ export class LedgerTimelineComponent implements OnInit {
   readonly extraKey = computed(() =>
     [this.categoryFilter(), this.projectFilter(), this.tagFilter(), this.merchantFilter(), this.amountMin(), this.amountMax()].join('|'),
   );
+  /** #304: a filter that may keep only some rows of a reward batch (an account or 回饋 kind filter keeps them all). */
+  readonly batchCutting = computed(
+    () => this.query() !== '' || this.extraKey() !== '|||||' || (this.kindFilter() !== null && this.kindFilter() !== 'reward'),
+  );
   readonly filtersActive = computed(
     () =>
       this.accountFilter() !== null ||
@@ -467,9 +517,24 @@ export class LedgerTimelineComponent implements OnInit {
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
   readonly mainCurrency = computed(() => this.preference()?.main_currency ?? DEFAULT_PREFERENCE.main_currency);
   readonly hideRewards = computed(() => this.preference()?.hide_rewards_on_timeline ?? false);
-  readonly days = computed(() => buildDays(this.entries(), this.mainCurrency(), this.hideRewards()));
+  readonly days = computed(() => buildDays(this.entries(), this.mainCurrency(), this.hideRewards(), !this.batchCutting()));
   readonly hasMore = computed(() => this.entries().length < (this.total() ?? 0));
   readonly selectedId = computed(() => this.layout?.selectedEntryId() ?? null);
+
+  /** #304: keys of the reward batch rows expanded in place (a session-only view state). */
+  readonly expandedBatches = signal<ReadonlySet<string>>(new Set());
+
+  isExpanded(row: TimelineRow): boolean {
+    return this.expandedBatches().has(row.key);
+  }
+
+  toggleBatch(key: string): void {
+    const next = new Set(this.expandedBatches());
+    if (!next.delete(key)) {
+      next.add(key);
+    }
+    this.expandedBatches.set(next);
+  }
 
   /** The routed entry is this row's entry or, for a group row, any of its members on this page. */
   isCurrent(row: TimelineRow): boolean {
@@ -482,7 +547,7 @@ export class LedgerTimelineComponent implements OnInit {
   readonly today = signal(todayIso());
   /** The selected day's rows as the list groups them (`buildDays`), so filters apply to rows and net alike. */
   private readonly dayGroup = computed(
-    () => buildDays(this.dayEntries(), this.mainCurrency(), this.hideRewards())[0] ?? null,
+    () => buildDays(this.dayEntries(), this.mainCurrency(), this.hideRewards(), !this.batchCutting())[0] ?? null,
   );
   readonly dayRows = computed(() => this.dayGroup()?.rows ?? []);
   /** Net of the rows shown (main-currency rows only, the list's per-day rule); the grid keeps the summary figures. */
@@ -1215,6 +1280,10 @@ export class LedgerTimelineComponent implements OnInit {
    * The list counts as the history entry below the group view only while it is the page on screen (`listOpenState`).
    */
   open(row: TimelineRow): void {
+    if (row.batch) {
+      this.toggleBatch(row.key);
+      return;
+    }
     if (row.folder) {
       const state = listOpenState(this.router.url, '/accounting');
       void this.router.navigate(groupCommands(row.entryId, null), state ? { state } : {});

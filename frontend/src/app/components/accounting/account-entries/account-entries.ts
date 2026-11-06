@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, OnInit, com
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { SkeletonComponent } from '../skeleton/skeleton';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { NgTemplateOutlet } from '@angular/common';
 
 import { AccountDetail, AccountPeriodSummary, ENTRY_KIND_LABELS, EntryKind, LedgerEntry } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
@@ -15,13 +16,14 @@ import { todayIso } from '../dates';
 import { schedulePill } from '../schedule-math';
 import { GroupNavState, entryCommands, groupCommands, listOpenState } from '../split-group/group-nav';
 import { formatMoney } from '../format';
+import { PassbookItem, batchSub, foldPassbook } from '../reward-batch';
 
 export const PAGE_SIZE = 200;
 
 @Component({
   selector: 'app-accounting-account-entries',
   standalone: true,
-  imports: [RouterLink, SkeletonComponent, AccountIconComponent],
+  imports: [RouterLink, NgTemplateOutlet, SkeletonComponent, AccountIconComponent],
   templateUrl: './account-entries.html',
   styleUrls: ['../filters.scss', './account-entries.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -80,6 +82,32 @@ export class AccountingAccountEntriesComponent implements OnInit {
 
   readonly kindOptions = Object.entries(ENTRY_KIND_LABELS) as [EntryKind, string][];
   readonly formatMoney = formatMoney;
+  readonly batchSub = batchSub;
+  /** #304: the rows newest first with each engine reward batch folded at its newest member. */
+  readonly items = computed<PassbookItem[]>(() => {
+    // A search or a kind filter other than 回饋 may keep only some rows of a batch: list them unfolded then.
+    const kind = this.kind();
+    return foldPassbook(this.entries(), !this.q() && (kind === null || kind === 'reward'));
+  });
+  /** #304: keys of the batch rows expanded in place (a session-only view state). */
+  readonly expandedBatches = signal<ReadonlySet<string>>(new Set());
+
+  isExpanded(key: string): boolean {
+    return this.expandedBatches().has(key);
+  }
+
+  /** A collapsed batch row stands for its members: it is marked while one of them is open in the pane. */
+  batchSelected(item: PassbookItem): boolean {
+    return item.kind === 'batch' && !this.isExpanded(item.key) && item.members.some(member => this.isSelected(member));
+  }
+
+  toggleBatch(key: string): void {
+    const next = new Set(this.expandedBatches());
+    if (!next.delete(key)) {
+      next.add(key);
+    }
+    this.expandedBatches.set(next);
+  }
   readonly schedulePill = schedulePill;
   readonly iconOf = iconOf;
   readonly colorOf = colorOf;

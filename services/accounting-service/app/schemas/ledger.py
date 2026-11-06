@@ -237,6 +237,20 @@ class EntryEinvoiceOut(BaseModel):
     items: list[EinvoiceItemOut]
 
 
+class RewardBatchOut(BaseModel):
+    """#304: the posting batch of an engine reward row: same rule, same window, same entry_date. Display only (the
+    SPA folds a batch into one row); `count` / `total` cover the whole batch, not the loaded page."""
+
+    rule_id: int
+    rule_name: str
+    window_start: date
+    window_end: date
+    entry_date: date
+    count: int
+    total: Decimal
+    currency: str
+
+
 class EntryOut(BaseModel):
     id: int
     kind: EntryKind
@@ -272,6 +286,7 @@ class EntryOut(BaseModel):
     invoice_number: str | None
     needs_review: bool
     accruals: list[AccrualOut] = []
+    reward_batch: RewardBatchOut | None = None  # #304: engine reward rows only
     review_reason: str | None  # why needs_review is set; today only `reward_posted` (reward engine, P10)
     source: EntrySource
     moze_id: str | None

@@ -271,6 +271,21 @@ export interface EntryGroupSummary {
   currency: string;
 }
 
+/**
+ * `EntryOut.reward_batch` (#304): the posting batch of an engine reward row (same rule, window and entry_date). Display
+ * only: the timeline and passbook fold a batch into one row. `count` / `total` cover the whole batch, not the page.
+ */
+export interface RewardBatch {
+  rule_id: number;
+  rule_name: string;
+  window_start: string;
+  window_end: string;
+  entry_date: string;
+  count: number;
+  total: string;
+  currency: string;
+}
+
 /** List row (`EntryOut`). */
 export interface LedgerEntry {
   id: number;
@@ -329,6 +344,8 @@ export interface LedgerEntry {
   locked: boolean;
   /** `EntryOut.schedule`: the posted schedule period that wrote this entry (週期 #k/N, 分期 #k/N pill); optional for older literals. */
   schedule?: EntryScheduleLink | null;
+  /** `EntryOut.reward_batch` (#304); optional for older literals and payloads. */
+  reward_batch?: RewardBatch | null;
 }
 
 /** `GET /entries/{id}` and every entry write response (`EntryDetailOut`). */
