@@ -24,7 +24,7 @@ During the interim deviation (rulings 3/11: `opc`, scope `export-masked` and `ve
 installed but the timers are NOT enabled:
 
     mkdir -p ~/.config/systemd/user
-    ln -sf ~/workspace/home-hub/services/accounting-service/deploy/statements/homehub-{statements,portfolio-flex,portfolio-cathay}*.{service,timer} ~/.config/systemd/user/
+    ln -sf ~/workspace/home-hub/services/accounting-service/deploy/statements/homehub-{statements,portfolio-flex,portfolio-cathay,einvoice}*.{service,timer} ~/.config/systemd/user/
     systemctl --user daemon-reload
 
 Today's hard guard is the feature flag: with `ACCOUNTING_RECONCILIATION_ENABLED` off the statement routes answer 404, so a
@@ -194,6 +194,72 @@ Deploy order (the portfolio side is already live):
        journalctl --user -u homehub-portfolio-cathay.service
 
 In Loki `{job="homehub", unit="homehub-portfolio-cathay.service"} |~ "\"codes\": \\[\"|cathay disabled"` shows a run that fails every day, including runs refused while latched (those print `cathay disabled`).
+
+## 電子發票 (`homehub-einvoice`)
+
+`homehub-einvoice.service` / `.timer` run `python -m worker einvoice` daily at 04:10 Asia/Taipei (`Persistent=true`).
+The worker lists the Drive folder `電子發票/財政部` (`STATEMENT_EINVOICE_FOLDER`, relative to the Drive root; `.csv` files only),
+downloads and parses every 財政部 e-invoice CSV export, merges the invoices of all files (key: invoice number + issue date;
+a later file wins), and then either posts ONE import to the accounting API (`POST /einvoices/import`) when there is at least
+one invoice, or, when the folder yields none, only asks the API to run the matcher. With `einvoice.enabled = false`
+(the settings default) the import is stored but no matching runs (`import.match.ran == false`).
+
+Privacy: the summary, the log and any error carry Drive ids, counts and codes only, never a file name, a path or a CSV value
+(`failures[].file` is the Drive id, for example `drive-fake-1`). The carrier columns of the export are dropped by the parser and
+never reach the API. Fictional example of an invoice key in tests and docs: `AB00000001`.
+
+State: only `<state_dir>/.einvoice.lock` (0600, directory 0700; a second run prints `already running`, exit 3). Each downloaded
+file is staged as `<staging_dir>/einvoice-<pid>-<n>.csv` and removed right after parsing; stale `einvoice-*.csv` staging files
+of a crashed run are deleted at the next start.
+
+The summary is one JSON line (`STATEMENT_EINVOICE_TIMEOUT_S`, default 60, bounds each API call):
+
+    {"files_seen": 1, "files_parsed": 1, "parse_failed": 0, "invoices": 12, "import": {...}, "match": null, "failures": [], "codes": []}
+
+| Field | Meaning |
+|---|---|
+| `files_seen` / `files_parsed` / `parse_failed` | CSV files listed, parsed, and rejected by the parser |
+| `invoices` | distinct invoices after the merge |
+| `import` | the API's import answer (`inserted`, `updated`, `unchanged`, `voided`, `unknown_status` and the nested `match`), `null` when nothing was posted |
+| `match` | the matcher answer (`ran`), only set when the folder yielded no invoice; after an import the matcher answer is `import.match` |
+| `failures` | `[{"file": "<drive id>", "code": "parse:<code>"}]` or `"drive:<ExceptionClass>"`; a failed file does not stop the others |
+| `codes` | run-level errors: `drive_listing`, `api:<http status>`, `api:<ExceptionClass>`, `internal:<ExceptionClass>` |
+
+Exit codes: 0 = clean; 1 = `codes` or `failures` non-empty, or an unexpected error (`einvoice failed: <ExceptionClass>` on
+stderr, no summary); 2 = the API token file (`STATEMENT_API_TOKEN_FILE`) is missing; 3 = another run holds the lock.
+
+In Loki `{job="homehub", unit="homehub-einvoice.service"} |~ "\"codes\": \\[\"|\"failures\": \\[\\{"` shows a run that reported
+a code or a failed file.
+
+Rollout runbook:
+
+1. Merge PR A. Deploy the API by the existing API release procedure: alembic upgrade to `b6e2c8f4a9d1` on the host checkout
+   (never from a worktree), then restart the API. Settings keep `einvoice.enabled = false` (the default).
+2. Merge PR B. Update the worker checkout. Link and install the units, and add `_SYSTEMD_USER_UNIT=homehub-einvoice.service`
+   to the Alloy journal matcher in `/home/opc/workspace/monitoring/alloy/config.alloy` (outside this repo):
+
+       ln -sf ~/workspace/home-hub/services/accounting-service/deploy/statements/homehub-einvoice.{service,timer} ~/.config/systemd/user/
+       systemctl --user daemon-reload
+
+   Run once as the worker user; expect `import.inserted` > 0, `import.match.ran == false`, `failures == []`:
+
+       sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker einvoice'
+
+3. Runbook dismiss: the owner's list of already-ruled invoices (number + issue date) is kept in the release record, never in the
+   repo. `POST /einvoices/runbook-dismiss` with the admin token and that list; expect `not_found == []` (any index listed there
+   is checked with the owner).
+4. `PUT` the settings from the current document with `einvoice.enabled = true` (admin; start from the current version, the PUT
+   replaces the whole document). Run `worker einvoice` again; expect `import.match.ran == true` (the top-level `match` stays `null` when invoices were posted). Review the inbox section with the
+   owner. Then enable the timer and check it:
+
+       systemctl --user enable --now homehub-einvoice.timer
+       systemctl --user list-timers 'homehub-*'
+
+5. Merge PR C and publish the SPA by the existing SPA release procedure (no new SPA route, so the Caddy SPA allowlist is
+   unchanged; `/api/accounting/einvoices` sits under the existing API proxy).
+
+Rollback: stop the timer (`systemctl --user disable --now homehub-einvoice.timer`); settings `einvoice.enabled = false` hides
+the section and stops matching; the API and SPA roll back by release; the migration's downgrade drops the four tables.
 
 ## Read-only database role for `verify` (ruling 11)
 
