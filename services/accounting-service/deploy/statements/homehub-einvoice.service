@@ -1,0 +1,10 @@
+[Unit]
+Description=HomeHub accounting: import the 財政部 e-invoice CSV exports from Drive
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/home-hub/services/accounting-service
+EnvironmentFile=-%h/.config/homehub-statements.env
+UMask=0077
+ExecStart=%h/workspace/home-hub/services/accounting-service/.venv/bin/python -m worker einvoice
+Nice=10

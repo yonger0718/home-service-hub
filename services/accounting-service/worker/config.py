@@ -62,6 +62,8 @@ class WorkerConfig:
     cathay_folder: str = "投資/國泰證券/日對帳單"  # Drive folder under drive_root, also the password-file key
     cathay_cutover: date = date(2026, 10, 16)
     cathay_timeout_s: int = 60
+    einvoice_folder: str = "電子發票/財政部"  # Drive folder under drive_root
+    einvoice_timeout_s: int = 60
 
     @property
     def mail_root(self) -> str:
@@ -144,4 +146,6 @@ def load(env: Mapping[str, str] = os.environ) -> WorkerConfig:
         cathay_folder=_str(env, "STATEMENT_CATHAY_FOLDER", "投資/國泰證券/日對帳單").strip("/"),
         cathay_cutover=_date(env, "STATEMENT_CATHAY_CUTOVER", "2026-10-16"),
         cathay_timeout_s=int(_str(env, "STATEMENT_CATHAY_TIMEOUT_S", "60")),
+        einvoice_folder=_str(env, "STATEMENT_EINVOICE_FOLDER", "電子發票/財政部").strip("/"),
+        einvoice_timeout_s=int(_str(env, "STATEMENT_EINVOICE_TIMEOUT_S", "60")),
     )

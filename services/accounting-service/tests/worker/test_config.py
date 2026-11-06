@@ -77,3 +77,9 @@ def test_flex_defaults():
     assert cfg.flex_base_url == "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService"
     assert cfg.portfolio_api_url == "http://127.0.0.1:8001" and cfg.flex_poll_attempts == 12 and cfg.flex_poll_interval_s == 10
     assert cfg.flex_credentials_file == Path("~/.config/homehub-portfolio-flex.env").expanduser() and cfg.flex_timeout_s == 60
+
+
+def test_config_einvoice_defaults():
+    cfg = config.load({})
+    assert cfg.einvoice_folder == "電子發票/財政部" and cfg.einvoice_timeout_s == 60
+    assert config.load({"STATEMENT_EINVOICE_FOLDER": "/a/b/"}).einvoice_folder == "a/b"

@@ -1,4 +1,4 @@
-"""python -m worker <command>: run | poll | backfill | gate | export-masked | verify | flex | cathay."""
+"""python -m worker <command>: run | poll | backfill | gate | export-masked | verify | flex | cathay | einvoice."""
 from __future__ import annotations
 
 import argparse
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import httpx
 
-from worker import cathay, config, flex, pipeline
+from worker import cathay, config, einvoice, flex, pipeline
 from worker.api import ApiClient
 from worker.runner import SubprocessRunner
 
@@ -98,6 +98,26 @@ def _cathay(cfg: config.WorkerConfig, args: argparse.Namespace) -> int:
     return 1 if summary["codes"] else 0
 
 
+def _einvoice(cfg: config.WorkerConfig, args: argparse.Namespace) -> int:
+    from worker.drive import Drive
+
+    if not cfg.api_token_file.is_file():
+        print("API token file is missing or not a file", file=sys.stderr)
+        return 2
+    try:
+        token = cfg.api_token_file.read_text(encoding="utf-8").strip()
+        with httpx.Client(base_url=cfg.api_url, timeout=cfg.einvoice_timeout_s) as http:
+            summary = einvoice.run(cfg, drive=Drive(cfg, SubprocessRunner()), api=ApiClient(http, token))
+    except einvoice.AlreadyRunning:
+        print("already running")
+        return 3
+    except Exception as exc:  # the CLI is the output boundary: a class name, never text or a traceback
+        print(f"einvoice failed: {type(exc).__name__}", file=sys.stderr)
+        return 1
+    print(json.dumps(summary, ensure_ascii=False))
+    return 1 if summary["codes"] or summary["failures"] else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="worker")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -128,6 +148,7 @@ def main(argv: list[str] | None = None) -> int:
     p_ct.add_argument("--ack", type=date.fromisoformat, default=None)
     p_ct.add_argument("--unlatch", action="store_true")
     p_ct.add_argument("--validate-history", action="store_true")
+    sub.add_parser("einvoice")
     args = ap.parse_args(argv)
     os.umask(0o077)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -144,6 +165,8 @@ def main(argv: list[str] | None = None) -> int:
         return _flex(cfg, args)
     if args.cmd == "cathay":
         return _cathay(cfg, args)
+    if args.cmd == "einvoice":
+        return _einvoice(cfg, args)
     runner = SubprocessRunner()
     if args.cmd == "gate":
         from worker.parser import Gate, Parser
