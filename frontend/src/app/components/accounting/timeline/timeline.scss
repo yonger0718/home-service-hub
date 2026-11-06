@@ -397,3 +397,15 @@ app-split-folder {
   flex-direction: column;
   gap: 0.75rem;
 }
+
+/* #304: a reward batch row and its members expanded in place. */
+.batch-chev {
+  font-size: 0.7em;
+  margin-right: 0.35em;
+  color: var(--app-text-muted);
+}
+
+.entry-row.batch-member {
+  padding-left: 2.25rem;
+  background: var(--app-surface-soft);
+}

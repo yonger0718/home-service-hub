@@ -2254,6 +2254,36 @@ describe('LedgerTimelineComponent', () => {
       flushEntries([]);
     });
   });
+
+  // #304: an engine reward batch folds into one row that expands in place.
+  const batchReward = (id: number, amount: string) => makeEntry({
+    id, kind: 'reward', amount, name: `回饋 ${id}`, reward_batch: {
+      rule_id: 301, rule_name: '測試規則', window_start: '2026-09-07', window_end: '2026-10-06', entry_date: '2026-10-02',
+      count: 2, total: '5.0000', currency: 'TWD' } });
+
+  it('expands a batch in place and opens a member\'s detail', () => {
+    localStorage.setItem(VIEW_KEY, 'list');
+    const { fixture, el } = render();
+    flushSummary('2026-10');
+    flushEntries([batchReward(1, '2.0000'), batchReward(2, '3.0000')]);
+    fixture.detectChanges();
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+
+    const head = el.querySelector<HTMLButtonElement>('.entry-row[data-batch]')!;
+    expect(head.getAttribute('aria-expanded')).toBe('false');
+    expect(el.querySelectorAll('.entry-row.batch-member').length).toBe(0);
+    head.click();
+    fixture.detectChanges();
+    expect(head.getAttribute('aria-expanded')).toBe('true');
+    const members = Array.from(el.querySelectorAll<HTMLButtonElement>('.entry-row.batch-member'));
+    expect(members.map(member => text(member.querySelector('.name')))).toEqual(['回饋 1', '回饋 2']);
+    expect(navigate).not.toHaveBeenCalled();
+    members[1].click();
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 2]);
+    head.click();
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.entry-row.batch-member').length).toBe(0);
+  });
 });
 
 describe('buildDays', () => {
@@ -2354,5 +2384,33 @@ describe('buildDays', () => {
     expect(buildDays(entries, 'TWD', true)[0].rows.map(row => row.entryId)).toEqual([2]);
     expect(buildDays(entries, 'TWD', false)[0].rows.map(row => row.entryId)).toEqual([1, 2]);
     expect(buildDays(entries, 'TWD', true)[0].net).toBe(-80);
+  });
+
+  describe('reward batches (#304)', () => {
+    const batch = {
+      rule_id: 301, rule_name: '測試規則', window_start: '2026-09-07', window_end: '2026-10-06', entry_date: '2026-10-02',
+      count: 3, total: '10.0000', currency: 'TWD',
+    };
+    const reward = (id: number, amount: string, b: typeof batch | null = batch) =>
+      makeEntry({ id, kind: 'reward', amount, name: `回饋 ${id}`, account_name: '測試點數', reward_batch: b });
+
+    it('folds a batch into one row with its whole count, window and total', () => {
+      const days = buildDays([reward(1, '2.0000'), makeEntry({ id: 9, amount: '-50.0000' }), reward(2, '3.0000')], 'TWD', false);
+      const [row, plain] = days[0].rows;
+      expect([row.title, row.sub, row.amountText, row.tone]).toEqual(['測試規則', '3 筆 · 9/07–10/06', '+$10', 'in']);
+      expect(row.memberIds).toEqual([1, 2]);
+      expect(row.batch!.members.map(member => [member.entryId, member.title])).toEqual([[1, '回饋 1'], [2, '回饋 2']]);
+      expect(plain.entryId).toBe(9);
+      expect(days[0].net).toBe(-40);
+    });
+
+    it('keeps a lone member a plain row and hides the whole batch with the rewards', () => {
+      const lone = { ...batch, rule_id: 302 };
+      expect(buildDays([reward(1, '2.0000'), reward(3, '4.0000', lone), reward(2, '3.0000')], 'TWD', false)[0].rows
+        .map(row => [row.key, row.batch ? row.batch.members.length : null]))
+        .toEqual([['b301|2026-09-07|2026-10-06|2026-10-02', 2], ['e3', null]]);
+      expect(buildDays([reward(1, '2.0000'), reward(2, '3.0000')], 'TWD', true)).toEqual([]);
+    });
+
   });
 });

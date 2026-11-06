@@ -131,15 +131,16 @@
   }
 
   <ng-template #rowTemplate let-row>
-    <button type="button" class="entry-row" [class.sel]="isCurrent(row)" [attr.data-entry-id]="row.entryId" [attr.data-member-ids]="row.memberIds.join(' ')" [attr.data-split]="row.folder ? '' : null"
-      [attr.aria-current]="isCurrent(row) ? 'true' : null"
+    <button type="button" class="entry-row" [class.sel]="isCurrent(row) && !(row.batch && isExpanded(row))" [class.batch-member]="row.nested" [attr.data-entry-id]="row.entryId" [attr.data-member-ids]="row.memberIds.join(' ')" [attr.data-split]="row.folder ? '' : null"
+      [attr.data-batch]="row.batch ? '' : null" [attr.aria-expanded]="row.batch ? isExpanded(row) : null"
+      [attr.aria-current]="isCurrent(row) && !(row.batch && isExpanded(row)) ? 'true' : null"
       (click)="open(row)">
       @if (row.folder; as folder) {
         <app-split-folder size="row" [icons]="folder.icons" [count]="folder.count" />
       } @else {
         <span class="ico" [style.background]="row.color">{{ row.icon }}</span>
       }
-      <span class="name">{{ row.title }}@if (row.groupCount && !row.folder) {<span class="badge">{{ row.groupCount }}</span>}</span>
+      <span class="name">@if (row.batch) {<i class="pi batch-chev" [class.pi-chevron-right]="!isExpanded(row)" [class.pi-chevron-down]="isExpanded(row)" aria-hidden="true"></i>}{{ row.title }}@if (row.groupCount && !row.folder) {<span class="badge">{{ row.groupCount }}</span>}</span>
       @if (row.folder; as folder) {
         <span class="sr-only">共 {{ folder.count }} 項</span>
       }
@@ -159,6 +160,11 @@
         <small class="invoice-hits">{{ row.invoiceHits }}</small>
       }
     </button>
+    @if (row.batch && isExpanded(row)) {
+      @for (member of row.batch.members; track member.key) {
+        <ng-container *ngTemplateOutlet="rowTemplate; context: { $implicit: member }" />
+      }
+    }
   </ng-template>
 
   @if (view() === 'calendar') {

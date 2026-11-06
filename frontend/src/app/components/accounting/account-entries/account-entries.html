@@ -1,3 +1,35 @@
+<ng-template #entryRow let-entry let-balance="balance" let-nested="nested">
+      <a class="entry-row entry" [class.batch-member]="nested" [class.entry--review]="entry.needs_review" [class.sel]="isSelected(entry)" [routerLink]="rowCommands(entry)" [state]="rowState(entry)" [attr.data-entry-id]="entry.id" [attr.data-split]="entry.group?.kind === 'split' ? '' : null" [attr.aria-current]="isSelected(entry) ? 'true' : null">
+        <span class="ico" [style.background]="colorOf(entry)">{{ iconOf(entry) }}</span>
+        <span class="name">{{ title(entry) }}</span>
+        <span class="sub">{{ subtitle(entry) }}</span>
+        <span class="amt" [class.neg]="+entry.amount < 0" [class.pos]="+entry.amount > 0">
+          <span class="passbook">{{ formatMoney(balance, entry.currency) }}</span>
+          <span class="amount-value">{{ formatMoney(entry.amount, entry.currency, { sign: true }) }}</span>
+          @if (originalLine(entry); as original) {
+            <small class="orig">{{ original }}</small>
+          }
+        </span>
+        <span class="pills">
+          @if (entry.schedule; as link) {
+            <span class="pill schedule-pill">{{ schedulePill(link) }}</span>
+            @if (link.is_partial) {
+              <span class="pill review-marker">部分</span>
+            }
+          }
+          @if (entry.needs_review) {
+            <span class="pill review-marker" title="請確認這筆記錄">待確認</span>
+          }
+          @if (entry.project) {
+            <span class="pill">{{ entry.project }}</span>
+          }
+          @if (kindPill(entry); as pill) {
+            <span class="pill kind-pill" [class.rv]="pill.tone === 'rv'" [class.rw]="pill.tone === 'rw'">{{ pill.label }}</span>
+          }
+        </span>
+      </a>
+</ng-template>
+
 <section class="ledger-entries">
   <header class="entries-header">
     <a routerLink="/accounting/accounts" class="back-link" aria-label="返回帳戶">‹</a>
@@ -53,36 +85,30 @@
     } @else if (loading() && entries().length === 0) {
       <app-skeleton rows="3" />
     } @else {
-      @for (entry of entries(); track entry.id) {
-      <a class="entry-row entry" [class.entry--review]="entry.needs_review" [class.sel]="isSelected(entry)" [routerLink]="rowCommands(entry)" [state]="rowState(entry)" [attr.data-entry-id]="entry.id" [attr.data-split]="entry.group?.kind === 'split' ? '' : null" [attr.aria-current]="isSelected(entry) ? 'true' : null">
-        <span class="ico" [style.background]="colorOf(entry)">{{ iconOf(entry) }}</span>
-        <span class="name">{{ title(entry) }}</span>
-        <span class="sub">{{ subtitle(entry) }}</span>
-        <span class="amt" [class.neg]="+entry.amount < 0" [class.pos]="+entry.amount > 0">
-          <span class="passbook">{{ formatMoney(entry.running_balance, entry.currency) }}</span>
-          <span class="amount-value">{{ formatMoney(entry.amount, entry.currency, { sign: true }) }}</span>
-          @if (originalLine(entry); as original) {
-            <small class="orig">{{ original }}</small>
-          }
-        </span>
-        <span class="pills">
-          @if (entry.schedule; as link) {
-            <span class="pill schedule-pill">{{ schedulePill(link) }}</span>
-            @if (link.is_partial) {
-              <span class="pill review-marker">部分</span>
+      @for (item of items(); track item.key) {
+        @if (item.kind === 'batch') {
+          <button type="button" class="entry-row entry-batch" data-batch [class.sel]="batchSelected(item)" [attr.aria-current]="batchSelected(item) ? 'true' : null" [attr.aria-expanded]="isExpanded(item.key)" (click)="toggleBatch(item.key)">
+            <span class="ico" [style.background]="colorOf(item.members[0])">{{ iconOf(item.members[0]) }}</span>
+            <span class="name"><i class="pi batch-chev" [class.pi-chevron-right]="!isExpanded(item.key)" [class.pi-chevron-down]="isExpanded(item.key)" aria-hidden="true"></i>{{ item.batch.rule_name }}</span>
+            <span class="sub">{{ batchSub(item.batch) }}</span>
+            <span class="amt" [class.neg]="+item.batch.total < 0" [class.pos]="+item.batch.total > 0">
+              <span class="passbook">{{ formatMoney(item.balance, item.batch.currency) }}</span>
+              <span class="amount-value">{{ formatMoney(item.batch.total, item.batch.currency, { sign: true }) }}</span>
+            </span>
+            <span class="pills">
+              @if (kindPill(item.members[0]); as pill) {
+                <span class="pill kind-pill" [class.rv]="pill.tone === 'rv'" [class.rw]="pill.tone === 'rw'">{{ pill.label }}</span>
+              }
+            </span>
+          </button>
+          @if (isExpanded(item.key)) {
+            @for (member of item.members; track member.id) {
+              <ng-container *ngTemplateOutlet="entryRow; context: { $implicit: member, balance: member.running_balance, nested: true }" />
             }
           }
-          @if (entry.needs_review) {
-            <span class="pill review-marker" title="請確認這筆記錄">待確認</span>
-          }
-          @if (entry.project) {
-            <span class="pill">{{ entry.project }}</span>
-          }
-          @if (kindPill(entry); as pill) {
-            <span class="pill kind-pill" [class.rv]="pill.tone === 'rv'" [class.rw]="pill.tone === 'rw'">{{ pill.label }}</span>
-          }
-        </span>
-      </a>
+        } @else {
+          <ng-container *ngTemplateOutlet="entryRow; context: { $implicit: item.entry, balance: item.balance, nested: false }" />
+        }
       } @empty {
         <p class="entries-empty">沒有符合條件的記錄</p>
       }
