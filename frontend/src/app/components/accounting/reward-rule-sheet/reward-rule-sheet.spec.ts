@@ -239,6 +239,18 @@ describe('RewardRuleSheetComponent', () => {
     expect(saved).not.toHaveBeenCalled();
   });
 
+  it('words an accrual-only rule_referenced without 0 counts (#294)', () => {
+    const { fixture, q, click } = render(BASIC, [DINING]);
+    click('.rule-delete');
+    click('.rule-delete');
+    http.expectOne(`${BASE}/1`).flush(
+      { code: 409, message: 'rule_referenced: {"entries": 0, "rewards": 0, "accruals": 4}', trace_id: 't' },
+      { status: 409, statusText: 'Conflict' },
+    );
+    fixture.detectChanges();
+    expect(q('.rule-message span')?.textContent?.trim()).toBe('此規則已有 4 筆預估回饋引用，改為停用？');
+  });
+
   it('(f) offers 停用 when delete hits rule_referenced', () => {
     const { fixture, q, click, saved, deleted } = render(BASIC, [DINING]);
 

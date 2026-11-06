@@ -34,7 +34,7 @@ function detail(fields: Record<string, unknown>): EntryDetail {
 }
 
 const ACCOUNTS = [
-  { id: 3, name: '玉山 UNI', currency: 'TWD', is_archived: false },
+  { id: 3, name: '玉山 UNI', currency: 'TWD', is_archived: false, is_credit: true },
   { id: 7, name: '錢包', currency: 'TWD', is_archived: false },
   { id: 9, name: '日幣現金', currency: 'JPY', is_archived: false },
 ] as unknown as LedgerAccount[];
@@ -66,11 +66,11 @@ describe('EntryDetailComponent', () => {
 
   afterEach(() => http.verify());
 
-  function render(body: EntryDetail): ComponentFixture<EntryDetailComponent> {
+  function render(body: EntryDetail, accounts: LedgerAccount[] = ACCOUNTS): ComponentFixture<EntryDetailComponent> {
     const fixture = TestBed.createComponent(EntryDetailComponent);
     fixture.detectChanges();
     http.expectOne('/api/accounting/entries/42').flush(body);
-    http.expectOne(r => r.url === '/api/accounting/accounts').flush(ACCOUNTS);
+    http.expectOne(r => r.url === '/api/accounting/accounts').flush(accounts);
     fixture.detectChanges();
     return fixture;
   }
@@ -103,6 +103,7 @@ describe('EntryDetailComponent', () => {
   it('lists accruals with state labels', () => {
     const accrual = (id: number, state: string, amount: string) => ({
       id, rule_id: 100 + id, rule_name: `測試規則${id}`, estimate: amount, amount, state, post_on: null, ledger_entry_id: null,
+      ledger_amount: null, reward_account_id: 3, reward_account_name: '玉山 UNI',
     });
     const fixture = render(detail({
       id: 42, amount: '-500.0000', name: '外套',
@@ -116,6 +117,40 @@ describe('EntryDetailComponent', () => {
       '測試規則1 $10 · 預估', '測試規則2 $20 · 已入帳', '測試規則3 $30 · 銀行確認', '測試規則4 $0 · 未獲得',
     ]);
     expect(el(fixture).textContent).toContain('預估回饋');
+  });
+
+  it('shows the bank figure for a confirmed accrual (#294)', () => {
+    const fixture = render(detail({
+      id: 42, amount: '-500.0000', name: '外套',
+      accruals: [{
+        id: 1, rule_id: 101, rule_name: '測試規則', estimate: '10.0000', amount: '10.0000', state: 'bank_confirmed',
+        post_on: '2026-11-24', ledger_entry_id: 60, ledger_amount: '9.0000', reward_account_id: 3, reward_account_name: '玉山 UNI',
+      }],
+    }));
+    expect(el(fixture).querySelector('.accrual-line')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('測試規則 $9 · 銀行確認');
+  });
+
+  it('keeps the old figure when an older API sends no reward-row fields (#294)', () => {
+    const fixture = render(detail({
+      id: 42, amount: '-500.0000', name: '外套',
+      accruals: [{ id: 1, rule_id: 101, rule_name: '測試規則', estimate: '10.0000', amount: '10.0000', state: 'bank_confirmed',
+        post_on: '2026-11-24', ledger_entry_id: 60 }],
+    }));
+    expect(el(fixture).querySelector('.accrual-line')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('測試規則 $10 · 銀行確認');
+  });
+
+  it('prints points and miles with the reward account name, not $ (#294)', () => {
+    const fixture = render(detail({
+      id: 42, amount: '-500.0000', name: '外套',
+      rewards: [entry({ id: 60, kind: 'reward', amount: '35.0000', name: '測試哩程回饋', account_id: 11, account_name: '測試哩程' })],
+      accruals: [{
+        id: 1, rule_id: 101, rule_name: '測試規則', estimate: '35.0000', amount: '35.0000', state: 'posted',
+        post_on: '2026-11-24', ledger_entry_id: 60, ledger_amount: '35.0000', reward_account_id: 11, reward_account_name: '測試哩程',
+      }],
+    }), [...ACCOUNTS, { id: 11, name: '測試哩程', currency: 'TWD', is_archived: false, is_credit: false } as unknown as LedgerAccount]);
+    const text = (selector: string) => el(fixture).querySelector(selector)?.textContent?.replace(/\s+/g, ' ').trim();
+    expect(text('.accrual-line')).toBe('測試規則 35 測試哩程 · 已入帳');
+    expect(text('.reward-line .pos')).toBe('+35 測試哩程');
   });
 
   it('hides 預估回饋 when there are no accruals', () => {

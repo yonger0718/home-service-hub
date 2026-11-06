@@ -202,6 +202,9 @@ class AccrualOut(BaseModel):
     state: Literal["estimated", "posted", "bank_confirmed", "forfeited"]
     post_on: date | None
     ledger_entry_id: int | None
+    ledger_amount: Decimal | None  # the reward row's amount (the bank's figure once bank_confirmed); null without one
+    reward_account_id: int  # the rule's reward account (its card when unset)
+    reward_account_name: str
 
 
 class RewardUsageOut(BaseModel):

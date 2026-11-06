@@ -12,7 +12,7 @@ import { AccountingService } from '../../../services/accounting.service';
 import { focusables, isHandledKey, restoreOverlayFocus, trapFocus } from '../accounting-ui';
 import { decimalText } from '../format';
 import { fieldErrors, writeErrorMessage } from '../http-errors';
-import { REWARD_ROUNDING_LABELS, REWARD_WINDOW_LABELS, basicOverlapRuleId, parseReferenced, ruleLabel, ruleToInput } from '../reward-rule-text';
+import { REWARD_ROUNDING_LABELS, REWARD_WINDOW_LABELS, basicOverlapRuleId, parseReferenced, referencedText, ruleLabel, ruleToInput } from '../reward-rule-text';
 
 /** The sheet's editable state; numbers stay text until `toInput()`. */
 export interface RuleForm {
@@ -261,7 +261,7 @@ export class RewardRuleSheetComponent implements OnInit {
         const counts = parseReferenced(err);
         this.referenced.set(counts !== null);
         this.message.set(counts
-          ? `此規則已有 ${counts.entries} 筆交易 / ${counts.rewards} 筆回饋引用，改為停用？`
+          ? `此規則已有 ${referencedText(counts)}引用，改為停用？`
           : writeErrorMessage(err));
       },
     });

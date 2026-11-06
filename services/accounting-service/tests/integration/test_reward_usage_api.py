@@ -139,8 +139,24 @@ def test_entry_detail_lists_accruals(client, db_session, seed):
     body = client.get(f"/entries/{a.id}").json()
     assert body["accruals"] == [{
         "id": row.id, "rule_id": rule.id, "rule_name": "乙規則", "estimate": "10.0000", "amount": "10.0000",
-        "state": "estimated", "post_on": "2026-12-05", "ledger_entry_id": None}]
+        "state": "estimated", "post_on": "2026-12-05", "ledger_entry_id": None, "ledger_amount": None,
+        "reward_account_id": card.id, "reward_account_name": "測試卡"}]
     assert client.get(f"/entries/{b.id}").json()["accruals"] == []
+
+
+def test_entry_detail_accrual_carries_reward_row_and_account(client, db_session, seed):
+    """#294: a confirmed accrual shows the bank's figure (its reward row's amount, not the estimate) and names the
+    rule's reward account (a points account here), so the SPA can print the right unit."""
+    card, (a, _) = _card_with_spends(seed, db_session)
+    points = seed.account("測試點數")
+    rule = _rule(seed, card, name="點數規則")
+    rule.reward_account_id = points.id
+    reward = seed.entry(points, "9", kind="reward", day=date(2026, 12, 5))
+    _accrual(db_session, rule, a, "10", state="bank_confirmed", ledger_entry_id=reward.id)
+    db_session.commit()
+    (accrual,) = client.get(f"/entries/{a.id}").json()["accruals"]
+    assert (accrual["amount"], accrual["ledger_amount"]) == ("10.0000", "9.0000")
+    assert (accrual["reward_account_id"], accrual["reward_account_name"]) == (points.id, "測試點數")
 
 
 def test_entry_list_includes_accruals(client, db_session, seed):
