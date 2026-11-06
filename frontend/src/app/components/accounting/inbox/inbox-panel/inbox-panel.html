@@ -23,6 +23,10 @@
     >
   }
 
+  @if (hasEinvoices()) {
+    <app-einvoice-section [items]="shownEinvoices()" [mode]="mode()" (changed)="changed.emit()" />
+  }
+
   @if (mode() === 'full') {
     @for (fold of folds(); track fold.key) {
       <details class="fold" [attr.data-fold]="fold.key">

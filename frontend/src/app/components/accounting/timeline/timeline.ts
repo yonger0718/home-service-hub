@@ -44,6 +44,7 @@ import { SkeletonComponent } from '../skeleton/skeleton';
 import { FolderIcon, SplitFolderComponent } from '../split-folder/split-folder';
 import { groupCommands, listOpenState } from '../split-group/group-nav';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
+import { inboxBellCount } from '../inbox/inbox-view';
 import { InboxService } from '../inbox/inbox.service';
 import { parseTags } from '../entry-form/entry-draft';
 import { currentMonth, monthLabel, todayIso } from '../dates';
@@ -150,6 +151,8 @@ export interface TimelineRow {
   groupCount: number | null;
   /** A split group's folder tile: the icons of its members on this page and the group's full count; null otherwise. */
   folder: { icons: FolderIcon[]; count: number } | null;
+  /** `發票：` + the linked-invoice item names a search matched; null when none. */
+  invoiceHits: string | null;
 }
 
 /** One 繳費提醒 line in the 日曆 day panel (only statements with a remaining balance). */
@@ -234,6 +237,10 @@ function pillsOf(entry: LedgerEntry): TimelinePill[] {
   return pills;
 }
 
+function invoiceHitsOf(entry: LedgerEntry): string | null {
+  return entry.invoice_item_hits?.length ? `發票：${entry.invoice_item_hits.join('、')}` : null;
+}
+
 /** Group the newest-first entries by day; one row per split group and per transfer pair. */
 export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewards: boolean): TimelineDay[] {
   const transferLegs = new Map<string, LedgerEntry[]>();
@@ -284,6 +291,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
         pills: pillsOf(entry).filter(pill => pill.tone !== 'rv'),
         groupCount: entry.group.count,
         folder: entry.group.kind === 'split' ? { icons: splitIcons.get(entry.group.id) ?? [], count: entry.group.count } : null,
+        invoiceHits: invoiceHitsOf(entry),
       };
       net = total ?? 0;
       netCurrency = entry.group.currency;
@@ -311,6 +319,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
         pills: [...schedulePills(out), { label: '轉帳', tone: '' }],
         groupCount: null,
         folder: null,
+        invoiceHits: invoiceHitsOf(entry),
       };
     } else {
       const amount = Number(entry.amount);
@@ -329,6 +338,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
         pills: pillsOf(entry),
         groupCount: null,
         folder: null,
+        invoiceHits: invoiceHitsOf(entry),
       };
       net = TRANSFER_KINDS.has(entry.kind) ? 0 : amount;
     }
@@ -785,6 +795,7 @@ export class LedgerTimelineComponent implements OnInit {
         date_to: to,
         kind: this.kindFilter(),
         q: this.query() || null,
+        include_invoice_items: this.query() ? true : undefined,
         account_id: account === null ? undefined : [account],
         hide_rewards: this.hideRewards(),
         ...this.extraQuery(),
@@ -907,6 +918,7 @@ export class LedgerTimelineComponent implements OnInit {
         date_to: date,
         kind: this.kindFilter(),
         q: this.query() || null,
+        include_invoice_items: this.query() ? true : undefined,
         account_id: account === null ? undefined : [account],
         hide_rewards: this.hideRewards(),
         ...this.extraQuery(),
@@ -967,7 +979,7 @@ export class LedgerTimelineComponent implements OnInit {
     this.inbox.get({ limit: 1 }).subscribe({
       next: data => {
         if (id === this.inboxRequestId) {
-          this.inboxAsk.set(data.counts.ask);
+          this.inboxAsk.set(inboxBellCount(data.counts));
         }
       },
       // Swallowed like the queue: the reminder centre reports its own inbox load error.

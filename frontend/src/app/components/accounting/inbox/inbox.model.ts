@@ -1,5 +1,7 @@
 /** Mirrors the reconciliation inbox JSON (accounting-service `schemas/inbox.py`); amounts are decimal strings. */
 
+import { InboxEinvoice } from './einvoice.model';
+
 export type InboxQuestion =
   | 'bank_only'
   | 'transfer'
@@ -102,12 +104,15 @@ export interface InboxCounts {
   settlement: number;
   dividend: number;
   other: number;
+  /** Ambiguous + near e-invoices; separate from `ask` (the bell adds them with `inboxBellCount`). */
+  einvoice_ask?: number;
 }
 
 export interface InboxOut {
   generated_at: string;
   counts: InboxCounts;
   accounts: InboxAccount[];
+  einvoices?: InboxEinvoice[];
 }
 
 export type InboxLearn = { amount_exact: boolean } | null;

@@ -1,0 +1,61 @@
+<h3 class="einvoice-title">發票待對帳</h3>
+@for (card of cards(); track card.item.id) {
+  <div class="inbox-card" [attr.data-einvoice-id]="card.item.id" [attr.aria-busy]="card.busy">
+    <p class="title">{{ card.item.seller_name }} · {{ card.date }} · {{ card.total }}</p>
+    @if (card.lines.length > 0) {
+      <ul class="lines">
+        @for (line of card.lines; track $index) {
+          <li>{{ line.name }} {{ line.subtotal }}</li>
+        }
+      </ul>
+    }
+    @if (card.question) {
+      <p class="q">{{ card.question }}</p>
+    } @else {
+      <p class="q">有發票沒有帳</p>
+    }
+    <div class="btns">
+      @for (candidate of card.candidates; track $index) {
+        <button
+          type="button"
+          class="candidate"
+          [class.primary]="$first"
+          [disabled]="card.busy"
+          (click)="linkCandidate(card.item, candidate.target)"
+        >
+          {{ candidate.label }}
+        </button>
+      }
+      @if (card.item.state === 'unmatched') {
+        <button type="button" class="dismiss" [disabled]="card.busy" (click)="dismiss(card.item)">
+          不用記帳
+        </button>
+        <button type="button" class="pick" [disabled]="card.busy" (click)="sheetFor.set(card.item)">
+          選帳…
+        </button>
+        @if (card.item.offer_mute) {
+          <button type="button" class="mute" [disabled]="card.busy" (click)="dismiss(card.item, true)">
+            這家以後都不提醒
+          </button>
+        }
+      } @else {
+        <button type="button" class="dismiss" [disabled]="card.busy" (click)="dismiss(card.item)">
+          都不是
+        </button>
+        <button type="button" class="pick" [disabled]="card.busy" (click)="sheetFor.set(card.item)">
+          選其他帳…
+        </button>
+      }
+    </div>
+    @if (card.refused; as message) {
+      <p class="refused" role="alert">{{ message }}</p>
+    }
+  </div>
+}
+@if (sheetFor(); as invoice) {
+  <app-einvoice-target-sheet
+    [invoice]="invoice"
+    (picked)="link(invoice, $event)"
+    (closed)="sheetFor.set(null)"
+  />
+}

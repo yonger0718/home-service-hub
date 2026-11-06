@@ -1,3 +1,5 @@
+import { EntryEinvoice } from '../components/accounting/inbox/einvoice.model';
+
 export type EntryKind =
   | 'expense'
   | 'income'
@@ -272,6 +274,8 @@ export interface EntryGroupSummary {
 /** List row (`EntryOut`). */
 export interface LedgerEntry {
   id: number;
+  /** Linked-invoice item names matching `q` (only with `include_invoice_items`). */
+  invoice_item_hits?: string[];
   kind: EntryKind;
   amount: string;
   currency: string;
@@ -329,6 +333,7 @@ export interface LedgerEntry {
 
 /** `GET /entries/{id}` and every entry write response (`EntryDetailOut`). */
 export interface EntryDetail extends LedgerEntry {
+  einvoice?: EntryEinvoice | null;
   invoice_random: string | null;
   children: LedgerEntry[];
   /** Split members carry the server's protection flag (one predicate for the read flag and the write guard). */
@@ -366,6 +371,8 @@ export interface EntryQuery {
 }
 
 export interface AllEntriesQuery extends EntryQuery {
+  /** Also match `q` against linked e-invoice item names. */
+  include_invoice_items?: boolean;
   account_id?: number[];
   hide_rewards?: boolean;
   counterparty_id?: number;

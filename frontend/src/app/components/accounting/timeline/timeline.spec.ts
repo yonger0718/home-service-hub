@@ -46,6 +46,7 @@ describe('LedgerTimelineComponent', () => {
     counterparties: Counterparty[] = [],
     queue: ScheduleInstance[] = [],
     inboxAsk = 0,
+    einvoiceAsk = 0,
   ) {
     TestBed.configureTestingModule({
       imports: [LedgerTimelineComponent],
@@ -57,7 +58,7 @@ describe('LedgerTimelineComponent', () => {
     fixture.detectChanges();
     httpMock.expectOne('/api/accounting/preference').flush(preference);
     httpMock.expectOne('/api/accounting/accounts').flush(accounts);
-    flushCounterparties(counterparties, queue, inboxAsk);
+    flushCounterparties(counterparties, queue, inboxAsk, einvoiceAsk);
     fixture.detectChanges();
     return { fixture, el: fixture.nativeElement as HTMLElement };
   }
@@ -66,14 +67,14 @@ describe('LedgerTimelineComponent', () => {
    * The 🔔's counterparties, 待完成交易 queue and inbox ask count: read on init and again after every entry or account
    * write.
    */
-  function flushCounterparties(body: Counterparty[] = [], queue: ScheduleInstance[] = [], inboxAsk = 0): void {
+  function flushCounterparties(body: Counterparty[] = [], queue: ScheduleInstance[] = [], inboxAsk = 0, einvoiceAsk = 0): void {
     httpMock!.expectOne('/api/accounting/counterparties').flush(body);
     const req = httpMock!.expectOne(r => r.url === '/api/accounting/schedules/instances');
     expect(req.request.params.get('queue')).toBe('true');
     req.flush(queue);
     const inbox = httpMock!.expectOne(r => r.url === '/api/accounting/reconciliation/inbox');
     expect(inbox.request.params.get('limit')).toBe('1');
-    inbox.flush(makeInbox([], { ask: inboxAsk }));
+    inbox.flush(makeInbox([], { ask: inboxAsk, einvoice_ask: einvoiceAsk }));
   }
 
   function flushSummary(month: string, body?: Partial<MonthSummary>): void {
@@ -1004,6 +1005,34 @@ describe('LedgerTimelineComponent', () => {
       expectNoEntryPage();
     });
 
+    it('asks for invoice item hits only with a search', () => {
+      const { fixture } = render('sheet');
+      flushSummary('2026-10');
+      expect(flushEntries([]).request.params.has('include_invoice_items')).toBe(false);
+      fixture.detectChanges();
+      fixture.componentInstance.setQuery('衛生紙');
+      fixture.detectChanges();
+      expect(flushEntries([]).request.params.get('include_invoice_items')).toBe('true');
+      fixture.componentInstance.setQuery('');
+      fixture.detectChanges();
+      expect(flushEntries([]).request.params.has('include_invoice_items')).toBe(false);
+    });
+
+    it('shows the matched invoice item names under the title, and nothing without hits', () => {
+      const { fixture, el } = render('sheet');
+      flushSummary('2026-10');
+      flushEntries([
+        makeEntry({ id: 41, name: '全聯', invoice_item_hits: ['衛生紙', '牙膏'] }),
+        makeEntry({ id: 42, name: '午餐' }),
+        makeEntry({ id: 43, name: '早餐', invoice_item_hits: [] }),
+      ]);
+      fixture.detectChanges();
+      const row = (id: number) => el.querySelector(`.entry-row[data-entry-id="${id}"]`)!;
+      expect(text(row(41).querySelector('.invoice-hits'))).toBe('發票：衛生紙、牙膏');
+      expect(row(42).querySelector('.invoice-hits')).toBeNull();
+      expect(row(43).querySelector('.invoice-hits')).toBeNull();
+    });
+
     it('clears a typed search on Esc without letting the key reach the page, and lets Esc through when empty', () => {
       const { fixture, el } = render('sheet');
       flushSummary('2026-10');
@@ -1704,6 +1733,14 @@ describe('LedgerTimelineComponent', () => {
     const ALAN: Counterparty = { id: 1, name: 'Alan', open_amounts: [{ currency: 'TWD', amount: '220.0000' }], open_count: 2 };
     const SETTLED: Counterparty = { id: 2, name: 'Bea', open_amounts: [], open_count: 0 };
     const bell = (el: HTMLElement) => el.querySelector<HTMLButtonElement>('.bell')!;
+
+    it('counts e-invoice questions in the bell with the inbox asks', () => {
+      const rendered = render('phone', makePreference(), [], ACCOUNTS, [], [], 1, 2);
+      flushSummary('2026-10');
+      flushEntries([]);
+      rendered.fixture.detectChanges();
+      expect(bell(rendered.el).getAttribute('aria-label')).toBe('提醒中心，3 項');
+    });
 
     it('shows the bell icon without a count when nothing is pending, in both views', () => {
       const { fixture, el } = renderListWith(ACCOUNTS);

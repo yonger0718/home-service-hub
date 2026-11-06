@@ -1,0 +1,62 @@
+@if (visible()) {
+<div class="dsec">發票</div>
+@if (detail().einvoice; as inv) {
+  <div class="dline">
+    <span>{{ inv.number }} · {{ slashDate(inv.issue_date) }} · {{ inv.seller_name }}</span>
+    <span>{{ amount(inv.total_amount) }}</span>
+  </div>
+  <div class="einvoice-sub">
+    {{ inv.linked_by === 'auto' ? '自動連結' : '手動連結' }}@if (inv.linked_to === 'group') { · 整組 }
+  </div>
+  @for (item of inv.items; track $index) {
+    <div class="dline">
+      <span>{{ item.name }}</span>
+      <span>{{ amount(item.subtotal) }}</span>
+    </div>
+  }
+  <div class="einvoice-actions">
+    <button type="button" class="einvoice-unlink" [disabled]="busy()" (click)="unlink(inv.id)">解除連結</button>
+  </div>
+} @else {
+  @switch (pickerState().status) {
+    @case ('idle') {
+      <div class="einvoice-actions">
+        <button type="button" class="einvoice-open" (click)="openPicker()">連結發票…</button>
+      </div>
+    }
+    @case ('loading') {
+      <div class="einvoice-sub" role="status" aria-busy="true">讀取中</div>
+    }
+    @case ('failed') {
+      <div class="einvoice-sub" role="status">讀取失敗</div>
+      <div class="einvoice-actions">
+        <button type="button" class="einvoice-open" (click)="openPicker()">連結發票…</button>
+      </div>
+    }
+  }
+  @if (pickerState(); as state) {
+    @if (state.status === 'ready') {
+      @if (eligible(state.picker)) {
+        @if (!state.picker.invoices.length) {
+          <div class="einvoice-sub">沒有可連結的發票</div>
+        } @else if (askScope(state.picker)) {
+          <div class="einvoice-actions">
+            <button type="button" (click)="choose('entry')">這筆</button>
+            <button type="button" (click)="choose('group')">整組</button>
+          </div>
+        } @else {
+          @for (inv of state.picker.invoices; track inv.id) {
+            <button type="button" class="einvoice-pick" [disabled]="busy()" (click)="link(inv.id, state.picker)">
+              <span>{{ inv.seller_name }} · {{ slashDate(inv.issue_date) }} · {{ amount(inv.total_amount) }}</span>
+              <span class="einvoice-sub">{{ inv.number }}@for (item of inv.items.slice(0, 3); track $index) { · {{ item.name }} }</span>
+            </button>
+          }
+        }
+      }
+    }
+  }
+}
+@if (error(); as message) {
+  <p class="einvoice-error" role="alert">{{ message }}</p>
+}
+}

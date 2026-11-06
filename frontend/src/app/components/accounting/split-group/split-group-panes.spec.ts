@@ -30,7 +30,7 @@ function detail(id: number): EntryDetail {
 function splitRow(entryId: number): TimelineRow {
   return {
     key: `g${entryId}`, entryId, memberIds: [entryId], icon: '', color: '', title: '多類別', sub: '', amountText: '',
-    tone: 'out', fx: null, pills: [], groupCount: 2, folder: { icons: [], count: 2 },
+    tone: 'out', fx: null, pills: [], groupCount: 2, folder: { icons: [], count: 2 }, invoiceHits: null,
   };
 }
 

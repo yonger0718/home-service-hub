@@ -7,6 +7,7 @@ import {
   buildCards,
   buttonLabel,
   cardTitle,
+  inboxBellCount,
   inboxErrorMessage,
   learnLabel,
   learnableAnswer,
@@ -232,5 +233,12 @@ describe('inboxErrorMessage', () => {
   it('maps a 422 detail message', () => {
     const err = new HttpErrorResponse({ status: 422, error: { detail: [{ msg: 'rule_pattern_mismatch' }] } });
     expect(inboxErrorMessage(err)).toBe('這幾筆描述不同，不能一起學');
+  });
+});
+
+describe('inboxBellCount', () => {
+  it('adds the e-invoice questions to the ask count, treating a missing count as 0', () => {
+    expect(inboxBellCount({ ask: 2, einvoice_ask: 3 })).toBe(5);
+    expect(inboxBellCount({ ask: 2 })).toBe(2);
   });
 });

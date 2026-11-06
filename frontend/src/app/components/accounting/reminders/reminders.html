@@ -28,7 +28,7 @@
           <app-inbox-handled-list />
         </details>
       } @else if (inbox(); as data) {
-        @if (data.counts.ask > 0) {
+        @if (bellCount(data) > 0) {
           <h3 class="section">待處理</h3>
           <app-inbox-panel [data]="data" mode="preview" (more)="setTab('todo')" />
         }

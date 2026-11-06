@@ -9,6 +9,7 @@ import {
   InboxItem,
   InboxLearn,
   InboxQuestion,
+  InboxCounts,
   InboxRuleHint,
 } from './inbox.model';
 
@@ -31,6 +32,11 @@ export interface InboxCards {
   settlement: InboxCard[];
   dividend: InboxCard[];
   other: InboxCard[];
+}
+
+/** The bell's inbox term: the ask cards plus the e-invoice questions (`einvoice_ask` is absent on an older API). */
+export function inboxBellCount(counts: Pick<InboxCounts, 'ask' | 'einvoice_ask'>): number {
+  return counts.ask + (counts.einvoice_ask ?? 0);
 }
 
 export const AMOUNT_ANY_LABEL = '金額不同也算';

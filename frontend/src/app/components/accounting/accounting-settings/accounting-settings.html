@@ -159,6 +159,53 @@
     <div class="srow"><span><i class="pi pi-money-bill" aria-hidden="true"></i></span><span class="t">主幣種</span><span class="r">{{ pref.main_currency }}</span></div>
   }
 
+  @if (einvoicePrefs()?.enabled || einvoiceError()) {
+    <div class="lbl">發票</div>
+    @if (einvoiceError()) {
+      <p class="einvoice-error muted" role="alert">發票設定讀取失敗</p>
+    } @else if (einvoicePrefs(); as prefs) {
+      <div class="einvoice-section">
+        <div class="srow">
+          <span><i class="pi pi-bell" aria-hidden="true"></i></span><span class="t">沒有帳的發票提醒</span>
+          <button type="button" class="tog pref-remind-unmatched" role="switch" aria-label="沒有帳的發票提醒" [attr.aria-checked]="prefs.remind_unmatched" [class.on]="prefs.remind_unmatched" (click)="toggleRemindUnmatched(prefs)"></button>
+        </div>
+        @if (einvoiceMessage(); as message) {
+          <p class="einvoice-message muted" role="alert">{{ message }}</p>
+        }
+        <div class="srow"><span><i class="pi pi-volume-off" aria-hidden="true"></i></span><span class="t">不提醒的商家</span></div>
+        @if (mutesError()) {
+          <p class="mutes-error muted" role="alert">發票設定讀取失敗</p>
+        }
+        @for (mute of mutes() ?? []; track mute.seller_tax_id) {
+          <div class="data-row mute-row">
+            <span class="row-name mute-name">{{ mute.seller_name || mute.seller_tax_id }}</span>
+            <button type="button" class="row-delete" [class.danger]="confirming() === 'mute:' + mute.seller_tax_id" [attr.aria-label]="confirming() === 'mute:' + mute.seller_tax_id ? '確定移除' : '移除'" (blur)="confirming() === 'mute:' + mute.seller_tax_id && confirming.set(null)" (click)="confirmTap('mute:' + mute.seller_tax_id) && removeMute(mute.seller_tax_id)">{{ confirming() === 'mute:' + mute.seller_tax_id ? '確定移除' : '移除' }}</button>
+            @if (confirming() === 'mute:' + mute.seller_tax_id) {
+              <button type="button" class="row-cancel" (click)="confirming.set(null)">取消</button>
+            }
+          </div>
+        }
+        <div class="srow"><span><i class="pi pi-ban" aria-hidden="true"></i></span><span class="t">已忽略的發票</span></div>
+        @if (dismissedError()) {
+          <p class="dismissed-error muted" role="alert">發票設定讀取失敗</p>
+        } @else if (dismissed()?.length === 0) {
+          <p class="dismissed-empty muted">沒有已忽略的發票</p>
+        }
+        @for (invoice of dismissed() ?? []; track invoice.id) {
+          <div class="data-row dismissed-row">
+            <span class="row-name dismissed-text">
+              {{ invoice.seller_name }} · {{ slashDate(invoice.issue_date) }} · {{ invoiceAmount(invoice.total_amount) }}
+              @if (itemNames(invoice)) {
+                <small class="muted dismissed-items">{{ itemNames(invoice) }}</small>
+              }
+            </span>
+            <button type="button" class="restore" (click)="restoreInvoice(invoice.id)">復原</button>
+          </div>
+        }
+      </div>
+    }
+  }
+
   <div class="lbl">匯入</div>
   <div class="import-box">
     <p class="srow latest-import">

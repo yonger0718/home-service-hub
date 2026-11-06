@@ -97,6 +97,11 @@ describe('AppInboxPanelComponent', () => {
     fixture.detectChanges();
   }
 
+  it('adds e-invoice questions to 要你決定', () => {
+    const { el } = render(makeInbox([], { ask: 1, einvoice_ask: 2 }));
+    expect(text(el.querySelector('.inbox-head'))).toBe('要你決定 3 · 其他 0');
+  });
+
   it('renders one card per group_key with ×N and the question text', () => {
     const data = makeInbox(
       [
@@ -808,5 +813,55 @@ describe('AppInboxPanelComponent', () => {
     fixture.detectChanges();
     expect(el.querySelector('app-inbox-match-sheet')).toBeNull();
     http.expectNone(APPLY_URL);
+  });
+
+  describe('e-invoice section', () => {
+    const einvoice = (state: 'ambiguous' | 'unmatched') =>
+      ({
+        id: 7,
+        number: 'AB12345678',
+        issue_date: '2026-09-03',
+        seller_name: '示範早餐店',
+        seller_tax_id: '12345678',
+        total_amount: '120.0000',
+        status_raw: '開立',
+        state,
+        items: [],
+        candidates: [],
+        offer_mute: false,
+      }) as NonNullable<InboxOut['einvoices']>[number];
+
+    it('renders the section when einvoices exist, not when missing or empty', () => {
+      const withOne = render({ ...makeInbox([]), einvoices: [einvoice('ambiguous')] });
+      expect(withOne.el.querySelector('app-einvoice-section')).not.toBeNull();
+      expect(render(makeInbox([])).el.querySelector('app-einvoice-section')).toBeNull();
+      expect(
+        render({ ...makeInbox([]), einvoices: [] }).el.querySelector('app-einvoice-section'),
+      ).toBeNull();
+    });
+
+    it('preview caps the invoice questions at INBOX_PREVIEW_CARDS and counts the rest in 還有 N 張', () => {
+      const asks = [1, 2, 3, 4, 5].map((id) => ({ ...einvoice('ambiguous'), id, number: `AB0000000${id}` }));
+      const reminder = { ...einvoice('unmatched'), id: 6, number: 'AB00000006' };
+      const data = { ...makeInbox([], { einvoice_ask: 5 }), einvoices: [...asks, reminder] };
+      const preview = render(data, 'preview').el;
+      expect([...preview.querySelectorAll('[data-einvoice-id]')].map((n) => n.getAttribute('data-einvoice-id'))).toEqual(['1', '2', '3']);
+      expect(text(preview.querySelector('a.more'))).toBe('還有 2 張 →');
+      const full = render(data, 'full').el;
+      expect(full.querySelectorAll('[data-einvoice-id]').length).toBe(6);
+      expect(full.querySelector('a.more')).toBeNull();
+    });
+
+    it('preview 還有 N 張 adds both overflows', () => {
+      const asks = [1, 2, 3, 4].map((id) => ({ ...einvoice('ambiguous'), id, number: `AB0000000${id}` }));
+      const items = [11, 12, 13, 14].map((id) => makeItem({ case_id: id }));
+      const data = { ...makeInbox([makeInboxAccount({ items })], { ask: 4, ask_items: 4, einvoice_ask: 4 }), einvoices: asks };
+      expect(text(render(data, 'preview').el.querySelector('a.more'))).toBe('還有 2 張 →');
+    });
+
+    it('preview renders nothing when only unmatched reminders exist', () => {
+      const { el } = render({ ...makeInbox([]), einvoices: [einvoice('unmatched')] }, 'preview');
+      expect(el.querySelector('app-einvoice-section')).toBeNull();
+    });
   });
 });

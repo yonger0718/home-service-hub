@@ -1102,6 +1102,52 @@ describe('AccountingRemindersComponent', () => {
       expect(el.querySelector('.empty')).toBeNull();
     });
 
+    it('an inbox whose only questions are e-invoices still shows 待處理 on 全部 and is not empty', () => {
+      const { el } = render([], [], [], [], [], { ...inboxOut(), counts: { ...inboxOut().counts, einvoice_ask: 1 } });
+      expect(sections(el)).toEqual(['待處理']);
+      expect(el.querySelector('.empty')).toBeNull();
+    });
+
+    it('on 待處理 an inbox with only e-invoice questions counts them and is not empty', async () => {
+      await TestBed.inject(Router).navigateByUrl('/?tab=todo');
+      const { el } = render([], [], [], [], [], { ...inboxOut(), counts: { ...inboxOut().counts, einvoice_ask: 1 } });
+      http.expectOne(r => r.url === '/api/accounting/reconciliation/actions').flush([]);
+      expect(text(el.querySelector('app-inbox-panel .inbox-head'))).toBe('要你決定 1 · 其他 0');
+      expect(el.querySelector('.empty')).toBeNull();
+    });
+
+    it('on 待處理 an inbox whose only cards are unmatched e-invoice reminders is not empty', async () => {
+      await TestBed.inject(Router).navigateByUrl('/?tab=todo');
+      const reminder = {
+        id: 7, number: 'AB00000001', issue_date: '2026-09-03', seller_name: '範例超商', seller_tax_id: '00000001',
+        total_amount: '120.0000', status_raw: '開立', state: 'unmatched', items: [], candidates: [], offer_mute: false,
+      } as NonNullable<InboxOut['einvoices']>[number];
+      const { el } = render([], [], [], [], [], {
+        ...inboxOut(), counts: { ...inboxOut().counts, ask: 0, einvoice_ask: 0 }, einvoices: [reminder],
+      });
+      http.expectOne(r => r.url === '/api/accounting/reconciliation/actions').flush([]);
+      expect(el.querySelector('app-einvoice-section')).not.toBeNull();
+      expect(el.querySelector('.empty')).toBeNull();
+    });
+
+    it('on 全部 unmatched e-invoice reminders alone do not open 待處理 (they never ring the bell)', () => {
+      const reminder = {
+        id: 7, number: 'AB00000001', issue_date: '2026-09-03', seller_name: '範例超商', seller_tax_id: '00000001',
+        total_amount: '120.0000', status_raw: '開立', state: 'unmatched', items: [], candidates: [], offer_mute: false,
+      } as NonNullable<InboxOut['einvoices']>[number];
+      const { el } = render([], [], [], [], [], {
+        ...inboxOut(), counts: { ...inboxOut().counts, ask: 0, einvoice_ask: 0 }, einvoices: [reminder],
+      });
+      expect(sections(el)).toEqual([]);
+    });
+
+    it('on 待處理 an inbox whose only cards are proposed is not empty', async () => {
+      await TestBed.inject(Router).navigateByUrl('/?tab=todo');
+      const { el } = render([], [], [], [], [], { ...inboxOut(), counts: { ...inboxOut().counts, proposed: 1 } });
+      http.expectOne(r => r.url === '/api/accounting/reconciliation/actions').flush([]);
+      expect(el.querySelector('.empty')).toBeNull();
+    });
+
     it('load() requests the inbox and renders the panel on 全部', () => {
       const { fixture, el } = render([], [ALAN], ALAN_OPEN, [], [], inboxOut([bankOnly(1), bankOnly(2), bankOnly(3), bankOnly(4)]));
       expect(sections(el)).toEqual(['待處理', '借還款追蹤']);

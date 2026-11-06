@@ -1,0 +1,32 @@
+.invoice-line {
+  margin: 0 0 6px;
+  text-align: center;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.targets {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+}
+
+.target-row {
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--app-border);
+  color: var(--app-text);
+  cursor: pointer;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  min-height: 46px;
+  overflow-wrap: anywhere;
+  padding: 6px 0;
+  text-align: left;
+}
+
+.muted {
+  color: var(--app-text-muted);
+  font-size: 0.85rem;
+  margin: 8px 0;
+}

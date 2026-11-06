@@ -704,4 +704,16 @@ describe('EntryDetailComponent', () => {
     expect(fixture.componentInstance.canEdit()).toBe(false);
     expect(el(fixture).querySelector('.group-back')).not.toBeNull();
   });
+
+  it('mounts the einvoice card and reloads on changed', () => {
+    const fixture = render(detail({ id: 42, einvoice: {
+      id: 7, number: 'AB-12345678', issue_date: '2026-10-03', seller_name: '範例超市', total_amount: '230',
+      linked_by: 'auto', linked_to: 'entry', items: [],
+    } }));
+    expect(el(fixture).querySelector('app-entry-einvoice-card')).not.toBeNull();
+    const unlink = [...el(fixture).querySelectorAll('app-entry-einvoice-card button')].find((b) => b.textContent?.includes('解除連結')) as HTMLButtonElement;
+    unlink.click();
+    http.expectOne('/api/accounting/einvoices/7/unlink').flush({ id: 7, state: 'unmatched' });
+    http.expectOne((r) => r.url === '/api/accounting/entries/42').flush(detail({ id: 42 }));
+  });
 });

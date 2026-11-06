@@ -22,6 +22,7 @@ import {
   cardTitle,
   INBOX_GENERIC_ERROR,
   inboxErrorMessage,
+  inboxBellCount,
   inboxLearn,
   learnLabel,
   learnableAnswer,
@@ -42,6 +43,7 @@ import {
 import { InboxService } from '../inbox.service';
 import { AppInboxMatchSheetComponent, InboxMatchResult } from '../match-sheet/match-sheet';
 import { AppInboxRecordSheetComponent, InboxRecordResult } from '../record-sheet/record-sheet';
+import { AppEinvoiceSectionComponent } from '../einvoice-section/einvoice-section';
 import { AccountingService } from '../../../../services/accounting.service';
 
 /** Ask cards shown on 全部 before the 還有 N 張 → link. */
@@ -140,6 +142,7 @@ export interface InboxFoldView {
     RouterLink,
     AppInboxRecordSheetComponent,
     AppInboxMatchSheetComponent,
+    AppEinvoiceSectionComponent,
   ],
   templateUrl: './inbox-panel.html',
   styleUrls: ['./inbox-panel.scss'],
@@ -199,19 +202,34 @@ export class AppInboxPanelComponent {
   });
   readonly headText = computed(() => {
     const counts = this.data().counts;
-    return `要你決定 ${counts.ask} · 其他 ${counts.proposed + counts.balance_gap + counts.settlement + counts.dividend + counts.other}`;
+    return `要你決定 ${inboxBellCount(counts)} · 其他 ${counts.proposed + counts.balance_gap + counts.settlement + counts.dividend + counts.other}`;
   });
   private readonly shownAsk = computed(() =>
     this.mode() === 'preview' ? this.cards().ask.slice(0, INBOX_PREVIEW_CARDS) : this.cards().ask,
   );
+  /** Preview: the invoices that ask a question (never the unmatched reminders). Full: every invoice. */
+  private readonly einvoiceAsk = computed(() => {
+    const items = this.data().einvoices ?? [];
+    return this.mode() === 'preview' ? items.filter((item) => item.state !== 'unmatched') : items;
+  });
+  /** What the section renders; preview caps it at INBOX_PREVIEW_CARDS, like the ask cards. */
+  readonly shownEinvoices = computed(() =>
+    this.mode() === 'preview' ? this.einvoiceAsk().slice(0, INBOX_PREVIEW_CARDS) : this.einvoiceAsk(),
+  );
+  /** With nothing to show, the section is not rendered. */
+  readonly hasEinvoices = computed(() => this.shownEinvoices().length > 0);
+
   openMore(event: MouseEvent): void {
     if (event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
       this.more.emit();
     }
   }
 
+  /** Preview's 「還有 N 張」: the ask cards and the e-invoice questions left out by their caps. */
   readonly moreCount = computed(() =>
-    this.mode() === 'preview' ? Math.max(0, this.cards().ask.length - INBOX_PREVIEW_CARDS) : 0,
+    this.mode() === 'preview'
+      ? Math.max(0, this.cards().ask.length - INBOX_PREVIEW_CARDS) + Math.max(0, this.einvoiceAsk().length - INBOX_PREVIEW_CARDS)
+      : 0,
   );
   /** Ask cards per account, in the server's order. */
   readonly askGroups = computed(() => {

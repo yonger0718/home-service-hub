@@ -1,0 +1,17 @@
+:host {
+  display: block;
+}
+
+.einvoice-title {
+  margin: 16px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-text-muted);
+}
+
+.lines {
+  margin: 0 0 6px;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
