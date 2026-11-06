@@ -50,7 +50,7 @@ def test_invoice_round_trip(db_session):
 
 def test_number_unique_per_period(db_session):
     _add(db_session, _invoice())
-    with pytest.raises(IntegrityError):
+    with pytest.raises(IntegrityError, match="ux_einvoice_number_period"):
         _add(db_session, _invoice())
     db_session.rollback()
     _add(db_session, _invoice(period="11511"), _invoice(period="11601"))
@@ -87,22 +87,24 @@ def test_one_invoice_per_entry_and_per_group(db_session, seed):
 
 
 def test_dismiss_reason_only_with_dismissed(db_session):
-    with pytest.raises(IntegrityError):
+    with pytest.raises(IntegrityError, match="ck_einvoice_dismiss_reason"):
         _add(db_session, _invoice(state="unmatched", dismiss_reason="owner"))
     db_session.rollback()
-    with pytest.raises(IntegrityError):
+    with pytest.raises(IntegrityError, match="ck_einvoice_dismiss_reason"):
         _add(db_session, _invoice(state="dismissed", dismiss_reason=None))
 
 
 def test_void_flag_needs_void_state(db_session):
-    with pytest.raises(IntegrityError):
+    with pytest.raises(IntegrityError, match="ck_einvoice_void_state"):
         _add(db_session, _invoice(is_void=True, state="unmatched"))
 
 
-def _linked(db_session, target):
+def _linked(db_session, *, entry=None, group=None):
     invoice = _add(db_session, _invoice(state="linked"))
-    kwargs = {"entry_id": target.id} if hasattr(target, "amount") else {"group_id": target.id}
-    _add(db_session, EinvoiceLink(invoice_id=invoice.id, linked_by="auto", **kwargs))
+    _add(db_session, EinvoiceLink(
+        invoice_id=invoice.id, entry_id=entry.id if entry else None, group_id=group.id if group else None,
+        linked_by="auto",
+    ))
     db_session.commit()
     return invoice.id
 
@@ -113,7 +115,7 @@ def _link_count(db_session):
 
 def test_entry_delete_cascades_and_trigger_unmatches(db_session, seed):
     entry = seed.entry(seed.account(), "-120")
-    invoice_id = _linked(db_session, entry)
+    invoice_id = _linked(db_session, entry=entry)
     db_session.execute(text("DELETE FROM ledger_entry"))
     db_session.commit()
     assert _link_count(db_session) == 0
@@ -122,7 +124,7 @@ def test_entry_delete_cascades_and_trigger_unmatches(db_session, seed):
 
 def test_group_delete_cascades_and_trigger_unmatches(db_session, seed):
     group = seed.group()
-    invoice_id = _linked(db_session, group)
+    invoice_id = _linked(db_session, group=group)
     db_session.execute(text("DELETE FROM entry_group"))
     db_session.commit()
     assert _link_count(db_session) == 0
@@ -132,7 +134,7 @@ def test_group_delete_cascades_and_trigger_unmatches(db_session, seed):
 @pytest.mark.parametrize("kwargs", [{"is_void": True, "state": "void"}, {"state": "dismissed", "dismiss_reason": "owner"}])
 def test_trigger_leaves_non_linked_states(db_session, seed, kwargs):
     entry = seed.entry(seed.account(), "-120")
-    invoice_id = _linked(db_session, entry)
+    invoice_id = _linked(db_session, entry=entry)
     db_session.expire_all()
     invoice = db_session.get(Einvoice, invoice_id)
     for key, value in kwargs.items():
@@ -145,5 +147,5 @@ def test_trigger_leaves_non_linked_states(db_session, seed, kwargs):
 
 
 def test_mute_tax_id_not_empty(db_session):
-    with pytest.raises(IntegrityError):
+    with pytest.raises(IntegrityError, match="ck_einvoice_seller_mute_tax_id"):
         _add(db_session, EinvoiceSellerMute(seller_tax_id=""))
