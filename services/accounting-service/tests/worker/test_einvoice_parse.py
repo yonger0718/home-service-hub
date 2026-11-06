@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from worker.einvoice_csv import ParseError, parse, to_payload
+from worker.einvoice_csv import ParseError, parse, period_of, to_payload
 
 H1 = "表頭=M|載具名稱|載具號碼|發票日期|商店統編|商店店名|發票號碼|總金額|發票狀態|"
 H2 = "明細=D|發票號碼|小計|品項名稱|"
@@ -95,6 +95,32 @@ def test_repeat_in_one_file_last_wins():
     r = parse(csv_bytes(M1, D1, M2, D3, M1, D2))
     assert [i.number for i in r] == ["CD00000002", "AB00000001"]
     assert [x.name for x in r[1].items] == ["測試品B"]
+
+
+def test_repeat_in_one_file_with_another_date_in_the_period_is_one_invoice():
+    # the API's identity is (number, period): 10-05 and 09-28 are both period 11509 (Sep-Oct)
+    later = "M|測試載具|/FAKE+01|20260928|12345678|測試商店|AB00000001|99|開立|"
+    r = parse(csv_bytes(M1, D1, later, "D|AB00000001|99|測試品C|"))
+    assert len(r) == 1
+    assert (r[0].issue_date, r[0].total_amount, [x.name for x in r[0].items]) == (date(2026, 9, 28), Decimal("99"), ["測試品C"])
+
+
+def test_same_number_in_another_period_stays_apart():
+    other = "M|測試載具|/FAKE+01|20261205|12345678|測試商店|AB00000001|99|開立|"
+    r = parse(csv_bytes(M1, D1, other, "D|AB00000001|99|測試品C|"))
+    assert [i.issue_date for i in r] == [date(2026, 10, 5), date(2026, 12, 5)]
+
+
+def test_period_of_matches_the_api():
+    from datetime import timedelta
+
+    from app.services.einvoice_rules import period_of as api_period_of
+    day = date(2024, 1, 1)
+    while day <= date(2027, 12, 31):
+        assert period_of(day) == api_period_of(day), day
+        day += timedelta(days=1)
+    for day in (date(1912, 1, 1), date(2011, 12, 31), date(2111, 2, 28)):
+        assert period_of(day) == api_period_of(day), day
 
 
 @pytest.mark.parametrize("bad", ["1,200", "1e5", "Infinity", "NaN", "１２０", "12.34567", "12345678901234567"])

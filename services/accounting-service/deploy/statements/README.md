@@ -199,7 +199,7 @@ In Loki `{job="homehub", unit="homehub-portfolio-cathay.service"} |~ "\"codes\":
 
 `homehub-einvoice.service` / `.timer` run `python -m worker einvoice` daily at 04:10 Asia/Taipei (`Persistent=true`).
 The worker lists the Drive folder `電子發票/財政部` (`STATEMENT_EINVOICE_FOLDER`, relative to the Drive root; `.csv` files only),
-downloads and parses every 財政部 e-invoice CSV export, merges the invoices of all files (key: invoice number + issue date;
+downloads and parses every 財政部 e-invoice CSV export, merges the invoices of all files (key: invoice number + two-month period, the API's identity;
 a later file wins), and then either posts ONE import to the accounting API (`POST /einvoices/import`) when there is at least
 one invoice, or, when the folder yields none, only asks the API to run the matcher. With `einvoice.enabled = false`
 (the settings default) the import is stored but no matching runs (`import.match.ran == false`).

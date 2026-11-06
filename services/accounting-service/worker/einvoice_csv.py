@@ -1,4 +1,4 @@
-"""Parse the owner's monthly e-invoice CSV export (stdlib only).
+r"""Parse the owner's monthly e-invoice CSV export (stdlib only).
 
 Privacy: the carrier name/number columns are discarded as each row is split and exist on no type. ParseError
 messages are the code only, never row content. Nothing is logged.
@@ -18,6 +18,13 @@ _NUMBER = re.compile(r"^[A-Z]{2}[0-9]{8}$")
 _AMOUNT = re.compile(r"-?([0-9]+)(?:\.([0-9]+))?")
 _TAX_ID = re.compile(r"[0-9A-Za-z]{0,16}")
 _MAX_ITEMS = 500
+
+
+def period_of(day: date) -> str:
+    """The invoice's two-month period, `YYYMM` (ROC year, odd month): the API's identity is (number, period).
+    A verbatim copy of `app.services.einvoice_rules.period_of` (the worker stays stdlib only); a parity test pins it."""
+    odd = day.month if day.month % 2 else day.month - 1
+    return f"{day.year - 1911:03d}{odd:02d}"
 
 
 class ParseError(ValueError):
@@ -75,10 +82,10 @@ def parse(data: bytes) -> list[ParsedInvoice]:
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if len(lines) < 2 or not lines[0].startswith("表頭=M|") or not lines[1].startswith("明細=D|"):
         raise ParseError("header")
-    # keyed by (number, date); dict order: a replaced invoice moves to the end
-    out: dict[tuple[str, date], tuple[ParsedInvoice, list[ParsedItem]]] = {}
+    # keyed by (number, period), the API's identity; dict order: a replaced invoice moves to the end
+    out: dict[tuple[str, str], tuple[ParsedInvoice, list[ParsedItem]]] = {}
     cur: tuple[ParsedInvoice, list[ParsedItem]] | None = None
-    cur_key: tuple[str, date] | None = None
+    cur_key: tuple[str, str] | None = None
     for line in lines[2:]:
         f = _fields(line)
         kind = f[0]
@@ -91,7 +98,7 @@ def parse(data: bytes) -> list[ParsedInvoice]:
             inv = ParsedInvoice(number, _date(d), tax, name, _amount(total), status, ())
             if not 1 <= len(name) <= 128 or not 1 <= len(status) <= 16 or not _TAX_ID.fullmatch(tax):
                 raise ParseError("row_shape")
-            cur_key = (number, inv.issue_date)
+            cur_key = (number, period_of(inv.issue_date))
             out.pop(cur_key, None)
             cur = (inv, [])
             out[cur_key] = cur

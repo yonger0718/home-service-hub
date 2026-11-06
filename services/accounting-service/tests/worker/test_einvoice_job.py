@@ -112,6 +112,26 @@ def test_later_path_wins_regardless_of_listing_order(w):
     assert invs["AB00000001"]["source_drive_id"] == "drive-fake-2"
 
 
+def test_repeat_with_another_date_in_the_period_merges_and_later_file_wins(w):
+    # the API's identity is (number, period): 10-05 and 09-28 are both period 11509 (Sep-Oct)
+    w.add("drive-fake-1", csv(m("AB00000001", "150", day="20261005"), d("AB00000001", "150")), path="a.csv")
+    w.add("drive-fake-2", csv(m("AB00000001", "99", day="20260928"), d("AB00000001", "99")), path="b.csv")
+    s = w.go()
+    invs = w.posts("/einvoices/import")[0][2]["invoices"]
+    assert len(invs) == 1 and s["invoices"] == 1
+    assert (invs[0]["issue_date"], invs[0]["total_amount"], invs[0]["source_drive_id"]) == (
+        "2026-09-28", "99", "drive-fake-2")
+    assert invs[0]["items"] == [{"seq": 1, "name": "測試品", "subtotal": "99"}]
+
+
+def test_same_number_in_another_period_posts_both(w):
+    w.add("drive-fake-1", csv(m("AB00000001", "150", day="20261005"), d("AB00000001", "150")), path="a.csv")
+    w.add("drive-fake-2", csv(m("AB00000001", "99", day="20261205"), d("AB00000001", "99")), path="b.csv")
+    w.go()
+    invs = w.posts("/einvoices/import")[0][2]["invoices"]
+    assert sorted(i["issue_date"] for i in invs) == ["2026-10-05", "2026-12-05"]
+
+
 def test_bad_file_does_not_stop_others(w, tmp_path, monkeypatch, capsys):
     w.add("drive-fake-1", csv(d("AB00000001", "5")), path="a.csv")
     w.add("drive-fake-2", F2, path="b.csv")

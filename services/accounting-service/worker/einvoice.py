@@ -18,7 +18,7 @@ from worker import inbox
 from worker.api import ApiClient, ApiError
 from worker.config import WorkerConfig
 from worker.drive import Drive, DownloadError, ListingError, Listed
-from worker.einvoice_csv import ParseError, ParsedInvoice, parse, to_payload
+from worker.einvoice_csv import ParseError, ParsedInvoice, parse, period_of, to_payload
 
 log = logging.getLogger("worker")
 
@@ -99,8 +99,8 @@ def _run(cfg: WorkerConfig, drive: Drive, api: ApiClient, summary: dict) -> None
             summary["failures"].append({"file": item.drive_file_id, "code": f"drive:{type(exc).__name__}"})
             continue
         summary["files_parsed"] += 1
-        for inv in invoices:  # later file wins
-            merged[(inv.number, inv.issue_date)] = to_payload(inv, source_drive_id=item.drive_file_id)
+        for inv in invoices:  # later file wins; keyed by (number, period), the API's identity
+            merged[(inv.number, period_of(inv.issue_date))] = to_payload(inv, source_drive_id=item.drive_file_id)
     summary["invoices"] = len(merged)
     timeout = cfg.einvoice_timeout_s
     if merged:
