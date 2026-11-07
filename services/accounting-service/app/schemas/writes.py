@@ -358,3 +358,30 @@ class RewardAccrualPostIn(BaseModel):
 class RewardAccrualPostOut(BaseModel):
     result: Literal["posted", "forfeited"]
     ledger_entry_id: int | None
+
+
+class RewardRepriceIn(BaseModel):
+    """POST /entries/{id}/reward-reprice (issue #306): `keep=false` reprices the purchase's posted rewards on its
+    current figures and clears the `reward_posted` flag unless a rule_unlinked / window_moved / zero row remains;
+    `keep=true` keeps them (保持原樣) and always clears it."""
+    keep: bool = False
+
+
+RepriceStatus = Literal["reprice", "same", "confirmed", "rule_unlinked", "window_moved", "row_edited", "zero"]
+
+
+class RewardRepriceItemOut(BaseModel):
+    accrual_id: int
+    rule_id: int
+    rule_name: str
+    reward_entry_id: int | None
+    booked: Decimal
+    new: Decimal | None
+    status: RepriceStatus
+
+
+class RewardRepriceOut(BaseModel):
+    entry_id: int
+    flagged: bool
+    items: list[RewardRepriceItemOut]
+    applied: list[int]

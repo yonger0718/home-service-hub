@@ -96,6 +96,8 @@
       </div>
     }
 
+    <app-entry-reward-reprice-card [detail]="d" [amountText]="repriceAmount" (changed)="load(d.id, true)" />
+
     @if (d.rewards.length) {
       <div class="dsec">紅利回饋</div>
       @for (reward of d.rewards; track reward.id) {

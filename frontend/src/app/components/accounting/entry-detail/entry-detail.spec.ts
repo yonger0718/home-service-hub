@@ -153,6 +153,29 @@ describe('EntryDetailComponent', () => {
     expect(text('.reward-line .pos')).toBe('+35 測試哩程');
   });
 
+  it('shows the reprice card for a reward_posted purchase, in the reward account unit, and reloads after 重算 (#306)', () => {
+    const fixture = render(detail({
+      id: 42, amount: '-2000.0000', name: '外套', needs_review: true, review_reason: 'reward_posted',
+      accruals: [{
+        id: 1, rule_id: 101, rule_name: '測試規則', estimate: '10.0000', amount: '10.0000', state: 'posted',
+        post_on: '2026-11-24', ledger_entry_id: 60, ledger_amount: '10.0000', reward_account_id: 11, reward_account_name: '測試點數',
+      }],
+    }), [...ACCOUNTS, { id: 11, name: '測試點數', currency: 'TWD', is_archived: false, is_credit: false } as unknown as LedgerAccount]);
+    http.expectOne('/api/accounting/entries/42/reward-reprice').flush({
+      entry_id: 42, flagged: true, applied: [],
+      items: [{ accrual_id: 1, rule_id: 101, rule_name: '測試規則', reward_entry_id: 60, booked: '10.0000', new: '20.0000', status: 'reprice' }],
+    });
+    fixture.detectChanges();
+    const card = el(fixture).querySelector('app-entry-reward-reprice-card')!;
+    expect(card.textContent?.replace(/\s+/g, ' ')).toContain('已入帳 10 測試點數 → 新算 20 測試點數');
+    (card.querySelector('.reprice-apply') as HTMLButtonElement).click();
+    http.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries/42/reward-reprice')
+      .flush({ entry_id: 42, flagged: false, applied: [1], items: [] });
+    http.expectOne('/api/accounting/entries/42').flush(detail({ id: 42, amount: '-2000.0000', name: '外套', review_reason: null }));
+    fixture.detectChanges();
+    expect(el(fixture).querySelector('.reprice-card')).toBeNull();
+  });
+
   it('hides 預估回饋 when there are no accruals', () => {
     const fixture = render(detail({ id: 42, amount: '-500.0000', name: '外套', accruals: [] }));
     expect(el(fixture).textContent).not.toContain('預估回饋');

@@ -134,7 +134,7 @@
                 }
                 <span class="pills">
                   @for (pill of row.pills; track $index) {
-                    <span class="pill" [class.rw]="pill.tone === 'rw'" [class.rv]="pill.tone === 'rv'" [class.review]="pill.tone === 'review'">{{ pill.label }}</span>
+                    <span class="pill" [class.rw]="pill.tone === 'rw'" [class.rv]="pill.tone === 'rv'" [class.review]="pill.tone === 'review'" [attr.title]="pill.title ?? null">{{ pill.label }}</span>
                   }
                 </span>
               </button>
