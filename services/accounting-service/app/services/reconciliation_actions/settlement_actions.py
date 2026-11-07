@@ -61,7 +61,7 @@ from app.services import trade_settlement_service as tss
 from app.services.errors import CodedConflictError
 from app.services.portfolio_client import PortfolioUnavailable
 
-from . import audit, register
+from . import audit, engine_locks, register
 from .base import OWNER, POLICY, ActionParams, Context, Effect, LockSet, NotRevertable, Prepared, Replay
 from .ledger_actions import STATEMENT_SOURCE, _claim, _open_line, _refuse, _release, _TwinGuarded
 
@@ -148,6 +148,14 @@ class BookSettlementAction(_TwinGuarded):
 
     # --- unlocked ---------------------------------------------------------------------------------------------------
 
+    def lock_targets(self, ctx: Context, params: BookSettlementParams) -> LockSet:
+        """The account row and the barrier (`_TwinGuarded`), with the settlement target the legs and the booking row
+        will reference pre-locked before the barrier (#291; read unlocked here, re-read under the barrier in `_plan`,
+        where a target changed since is locked NOWAIT)."""
+        target_id = _target_id(ctx)
+        return dataclasses.replace(super().lock_targets(ctx, params),
+                                   account_ids=() if target_id is None else (target_id,))
+
     def prepare(self, ctx: Context, params: BookSettlementParams) -> Prepared:
         prepared = super().prepare(ctx, params)
         candidate = _candidate(ctx, params.fingerprint)
@@ -206,7 +214,10 @@ class BookSettlementAction(_TwinGuarded):
         if not ctx.account.settlement_source or target_id is None:
             raise CodedConflictError("no_target", f"account {ctx.statement.account_id} has no settlement target")
         # PR #234 re-check finding 1: `prepare` checked the currencies unlocked; the engine's account lock refreshed
-        # `ctx.account`, and the target is re-read here — a concurrent currency change is refused, never booked
+        # `ctx.account`, and the target is re-read here — a concurrent currency change is refused, never booked.
+        # Pre-locked before the barrier unless the mapping changed since `lock_targets`: then NOWAIT (409 `retry`),
+        # never a wait while the barrier is held (#291)
+        engine_locks.lock_late_accounts(ctx.db, [target_id])
         target = ctx.db.get(Account, target_id, populate_existing=True)
         if not tss.pair_currency_ok(ctx.account, target):
             raise CodedConflictError("currency_mismatch", f"account {ctx.statement.account_id} or its target "

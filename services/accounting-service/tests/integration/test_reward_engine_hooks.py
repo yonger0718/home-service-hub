@@ -3,6 +3,7 @@ review flag (spec 4.1, 5.1, 5.3, 5.4; plan P1, P6, P10, P11, P12)."""
 
 import re
 import threading
+import time
 from datetime import date
 from decimal import Decimal
 
@@ -18,8 +19,8 @@ from app.models.statements import AccountStatement, ReconciliationCase, Statemen
 from app.schemas.writes import AccountIn, BalanceAdjustmentIn, EntryUpdateIn, RefundIn, RewardRuleIn, SplitIn, TransferIn
 from app.services import entry_write_service as ews
 from app.services import (
-    reward_engine, reward_posting, reward_rule_service, settings_service, settlement_service, split_service,
-    transfer_service,
+    coverage_service, reward_engine, reward_posting, reward_rule_service, settings_service, settlement_service,
+    split_service, transfer_service,
 )
 from app.services.entry_write_service import write_rule_links
 from app.services.errors import RETRY, CodedConflictError
@@ -1408,3 +1409,47 @@ def test_lock_cascade_nowait_never_waits(pg_engine, db_session, held):
     ews.lock_cascade_nowait(db_session, doomed)  # free again: takes everything
     assert window in reward_engine.held_windows(db_session)
     db_session.rollback()
+
+
+BARRIER_HELD = {"rule": "reward_rule", "window": "reward_accrual", "refund": "ledger_entry", "delete": "ledger_entry"}
+
+
+@pytest.mark.parametrize("held", sorted(BARRIER_HELD))
+def test_engine_locks_never_wait_while_holding_the_barrier(pg_engine, db_session, held):
+    """#291: once a reconciliation action holds the exclusive dirty barrier (`note_barrier`), every engine lock is
+    NOWAIT: a writer holding the row may be waiting on the barrier (a ledger write's dirty trigger), so a wait would
+    be a 40P01. A held rule (`share_rules`), window (`lock_windows`), refund (`lock_refunds_of`) or a delete's
+    dependant (`delete_entries_cascade` pre-locks through `lock_cascade_nowait`; a settling row here) answers 409
+    `retry` at once, never a wait."""
+    card = _card(db_session)
+    rule = _rule(db_session, card)
+    spend = _spend(db_session, card, 100, rules=[rule])
+    refund = make_entry(db_session, card, "20", kind="refund", entry_date=DAY, refunds_entry_id=spend.id)
+    settler = make_entry(db_session, card, "30", kind="income", entry_date=DAY, settles_entry_id=spend.id)
+    accrual = _one(db_session, source_entry_id=spend.id)
+    target = {"rule": rule.id, "window": accrual.id, "refund": refund.id, "delete": settler.id}[held]
+    window = (rule.id, accrual.window_start)
+    calls = {"rule": lambda: reward_engine.share_rules(db_session, [rule.id]),
+             "window": lambda: reward_engine.lock_windows(db_session, [window]),
+             "refund": lambda: reward_engine.lock_refunds_of(db_session, [spend.id]),
+             "delete": lambda: ews.delete_entries_cascade(db_session, [spend.id])}
+    db_session.commit()
+    holder = pg_engine.connect()
+    try:
+        holder.begin()
+        holder.execute(text(f"SELECT id FROM {BARRIER_HELD[held]} WHERE id = :id FOR UPDATE"), {"id": target})
+        db_session.execute(text("SET lock_timeout = '3s'"))
+        coverage_service.take_barrier_xact(db_session)
+        reward_engine.note_barrier(db_session)
+        started = time.monotonic()
+        with pytest.raises(CodedConflictError) as caught:
+            calls[held]()
+        assert caught.value.code == RETRY
+        assert time.monotonic() - started < 1.5
+        assert "lock timeout" not in str(caught.value.__cause__)  # NOWAIT, not a wait cut short
+        db_session.rollback()
+    finally:
+        holder.rollback()
+        holder.close()
+        db_session.execute(text("SET lock_timeout = 0"))
+    assert not reward_engine.barrier_held(db_session)  # the flag ends with the transaction

@@ -664,6 +664,12 @@ def delete_entries_cascade(db: Session, entry_ids: Iterable[int], *, nowait: boo
     parents = list(dict.fromkeys(entry_ids))
     if not parents:
         return
+    if reward_engine.barrier_held(db) and not nowait:
+        # #291: a barrier holder (a reconciliation action's revert) never waits on a row: every row the delete locks
+        # or writes is taken NOWAIT first (409 `retry`), since its holder may be waiting on the barrier
+        with reward_engine.no_wait(db, "a row linked to a deleted entry is being written; try again"):
+            lock_cascade_nowait(db, parents)
+        nowait = True
     children = list(db.scalars(select(LedgerEntry.id).where(LedgerEntry.parent_entry_id.in_(parents))))
     doomed = parents + children
     windows = reward_engine.drop_for_delete(db, doomed, nowait=nowait)
