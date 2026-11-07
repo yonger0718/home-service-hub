@@ -832,12 +832,19 @@ def _pid(db) -> int:
 
 
 def _apply_outcome(db, case, params):
+    """The pair_transfer outcome. No rollback on a failure: a 409 must leave the session usable (AGENT-430)."""
     try:
         _apply(db, case, "pair_transfer", params)
         return "committed"
     except Exception as exc:  # noqa: BLE001  (asserted by the caller)
-        db.rollback()
         return exc
+
+
+def _books_on_retry(db, p, case):
+    """The same session, with no rollback after the 409, books the pair once the other transaction is gone."""
+    row = _apply(db, case, "pair_transfer", _pair_params(p.cline))
+    assert {leg.account_id for leg in _legs(db, row)} == {p.bank.id, p.card.id}
+    assert _needs_peer(db, p.bstmt) is None
 
 
 def test_account_pre_lock_never_waits_on_an_account_set_that_grew(orphan_pair, seed, pg_engine, db_session,
@@ -873,6 +880,7 @@ def test_account_pre_lock_never_waits_on_an_account_set_that_grew(orphan_pair, s
     assert isinstance(outcome, CodedConflictError) and outcome.code == "retry", outcome
     assert state["seen"]["out"] == "done"
     assert _needs_peer(db_session, p.bstmt) is not None  # nothing was booked
+    _books_on_retry(db_session, p, case)
 
 
 def test_account_pre_lock_never_waits_while_holding_the_case_row(orphan_pair, pg_engine, db_session, monkeypatch):
@@ -889,9 +897,10 @@ def test_account_pre_lock_never_waits_while_holding_the_case_row(orphan_pair, pg
     state: dict = {}
 
     def contended(db, targets, statement):
-        state["thread"], state["seen"] = _other(
-            pg_engine, "SELECT id FROM account WHERE id = :b FOR KEY SHARE", {"b": p.bank.id},
-            "UPDATE reconciliation_case SET entry_id = NULL WHERE id = :c", {"c": case.id}, _pid(db))
+        if "thread" not in state:  # the first attempt only
+            state["thread"], state["seen"] = _other(
+                pg_engine, "SELECT id FROM account WHERE id = :b FOR KEY SHARE", {"b": p.bank.id},
+                "UPDATE reconciliation_case SET entry_id = NULL WHERE id = :c", {"c": case.id}, _pid(db))
         original(db, targets, statement)
 
     monkeypatch.setattr(engine.locks, "lock_account_and_barrier", contended)
@@ -900,3 +909,4 @@ def test_account_pre_lock_never_waits_while_holding_the_case_row(orphan_pair, pg
     assert not _is_deadlock(outcome) and not _is_deadlock(state["seen"].get("out")), (outcome, state["seen"])
     assert isinstance(outcome, CodedConflictError) and outcome.code == "retry", outcome
     assert state["seen"]["out"] == "done"
+    _books_on_retry(db_session, p, case)

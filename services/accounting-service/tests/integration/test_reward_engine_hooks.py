@@ -1447,6 +1447,8 @@ def test_engine_locks_never_wait_while_holding_the_barrier(pg_engine, db_session
         assert caught.value.code == RETRY
         assert time.monotonic() - started < 1.5
         assert "lock timeout" not in str(caught.value.__cause__)  # NOWAIT, not a wait cut short
+        holder.rollback()
+        calls[held]()  # the same transaction, still under the barrier, takes it once it is free (AGENT-430)
         db_session.rollback()
     finally:
         holder.rollback()

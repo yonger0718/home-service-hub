@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from ..models import Account, Category, Counterparty, EntryGroup, EntryRewardRule, LedgerEntry, Project, RewardRule
 from ..models.einvoice import Einvoice, EinvoiceLink
 from ..schemas.writes import MAX_ABS_AMOUNT, BalanceAdjustmentIn, ChildIn, EditableKind, EntryIn, EntryUpdateIn
-from . import coverage_service, fx_rate_service, ledger_service, reward_engine
+from . import category_keys, coverage_service, fx_rate_service, ledger_service, reward_engine
 from . import schedule_entry_hooks
 from .edit_lock import assert_editable
 from .errors import RETRY, CodedConflictError, ConflictError, NotFoundError, ValidationError  # noqa: F401  (ValidationError re-exported)
@@ -232,10 +232,17 @@ def _apply(entry: LedgerEntry, prepared: PreparedEntry, source: str = "manual") 
 
 def system_category_id(db: Session, kind: str) -> int:
     """The single fixed category of a system kind (fee, discount, reward, interest, balance_adjustment)."""
-    name = SYSTEM_CATEGORY_NAMES[kind]
-    category_id = db.scalar(
-        select(Category.id).where(Category.kind == kind, Category.parent_id.is_(None), Category.name == name)
-    )
+    return _fixed_category_id(db, kind, SYSTEM_CATEGORY_NAMES[kind])
+
+
+def _fixed_category_id(db: Session, kind: str, name: str) -> int:
+    """The top-level category (kind, name), created on demand under its key lock (`category_keys`, #291): a
+    barrier holder never waits on another transaction creating it (409 `retry`)."""
+    query = select(Category.id).where(Category.kind == kind, Category.parent_id.is_(None), Category.name == name)
+    category_id = db.scalar(query)
+    if category_id is None:
+        category_keys.lock_category_key(db, kind, None, name)
+        category_id = db.scalar(query)  # committed by the writer the lock waited for
     if category_id is None:
         category = Category(kind=kind, name=name)
         db.add(category)
@@ -253,15 +260,7 @@ def backfill_category_id(db: Session, kind: str) -> int:
     """R6b.1: the fixed top-level category a backfilled stand-in is booked under, one per kind, created on demand."""
     if kind not in BACKFILL_KINDS:
         raise KeyError(kind)
-    category_id = db.scalar(
-        select(Category.id).where(Category.kind == kind, Category.parent_id.is_(None), Category.name == BACKFILL_CATEGORY_NAME)
-    )
-    if category_id is None:
-        category = Category(kind=kind, name=BACKFILL_CATEGORY_NAME)
-        db.add(category)
-        db.flush()
-        category_id = category.id
-    return category_id
+    return _fixed_category_id(db, kind, BACKFILL_CATEGORY_NAME)
 
 
 def write_children(

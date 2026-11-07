@@ -25,7 +25,7 @@ from app.models import Account, AccountStatement, LedgerEntry, ReconciliationAct
 from app.services import coverage_service, reward_engine
 from app.services import reconciliation_service as rec
 from app.services.entry_write_service import lock_group
-from app.services.errors import CodedConflictError, NotFoundError
+from app.services.errors import RETRY, CodedConflictError, NotFoundError
 from app.services.schedule_locks import lock_definition, lock_instance
 
 from .base import LockSet
@@ -103,9 +103,17 @@ def lock_account_and_barrier(db: Session, targets: LockSet, statement: AccountSt
             need = barrier_accounts(db, targets, statement) - held
             if not need:
                 break
-            with reward_engine.no_wait(db, "an account this action writes is being changed; try again"):
+            # no inner savepoint (AGENT-430): a row lock taken in a released savepoint makes a waiter that queues
+            # after the release wait for this whole transaction (PostgreSQL waits on the topmost xid), so a rolled
+            # back attempt would keep it blocked; taken here, the attempt savepoint's rollback releases it
+            try:
                 db.execute(select(Account).where(Account.id.in_(sorted(need))).order_by(Account.id)
                            .with_for_update(nowait=True).execution_options(populate_existing=True)).all()
+            except OperationalError as exc:
+                if isinstance(exc.orig, LockNotAvailable):
+                    raise CodedConflictError(RETRY, "an account this action writes is being changed; try again") \
+                        from exc
+                raise
             held |= need
         reward_engine.note_cards_locked(db, held)
     if targets.barrier:
