@@ -13,6 +13,7 @@ from sqlalchemy import and_, delete, func, inspect, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..models import Account, Category, Counterparty, EntryGroup, EntryRewardRule, LedgerEntry, Project, RewardRule
+from ..models.einvoice import Einvoice, EinvoiceLink
 from ..schemas.writes import MAX_ABS_AMOUNT, BalanceAdjustmentIn, ChildIn, EditableKind, EntryIn, EntryUpdateIn
 from . import coverage_service, fx_rate_service, ledger_service, reward_engine
 from . import schedule_entry_hooks
@@ -620,18 +621,52 @@ def update_reward_rules(db: Session, entry_id: int, rule_ids: Iterable[int]) -> 
     reward_engine.after_write_captured(db, entry, before)
 
 
-def delete_entries_cascade(db: Session, entry_ids: Iterable[int]) -> None:
+def lock_cascade_nowait(db: Session, entry_ids: Iterable[int]) -> None:
+    """Every row a later `delete_entries_cascade(entry_ids, nowait=True)` locks or writes, all NOWAIT (#296 M10),
+    for a delete that runs inside reconcile (auto-pay, settlement and dividend retirement), which never waits. The
+    caller holds the entries. In order: their fee / discount children (FOR UPDATE, deleted with them); the engine's
+    rows (`reward_engine.lock_delete_nowait`: refunds, accrual windows, frozen accruals' reward rows); the rows whose
+    `settles_entry_id` / `reward_source_entry_id` point at a doomed row (UPDATEd to NULL); the e-invoices linked to a
+    doomed row and their link rows (the link CASCADE fires `trg_einvoice_link_deleted`, which UPDATEs the invoice).
+    A held row raises the driver's LockNotAvailable for the caller's busy code. Once this returns the delete waits on
+    nothing in these tables: a new child, refund, accrual, linked row or e-invoice link of a held row needs that row's
+    lock first. The ON DELETE SET NULL rows of the statement tables (coverage, cases, the caller's own auto-pay /
+    booking row) are reconcile's own documented order, not covered here."""
+    ids = sorted(set(entry_ids))
+    if not ids:
+        return
+    children = list(db.scalars(select(LedgerEntry.id).where(LedgerEntry.parent_entry_id.in_(ids))
+                               .order_by(LedgerEntry.id).with_for_update(nowait=True)))
+    doomed = sorted(set(ids) | set(children))
+    reward_engine.lock_delete_nowait(db, doomed)
+    db.execute(select(LedgerEntry.id).where(
+        LedgerEntry.id.not_in(doomed),
+        or_(LedgerEntry.settles_entry_id.in_(doomed), LedgerEntry.reward_source_entry_id.in_(doomed)),
+    ).order_by(LedgerEntry.id).with_for_update(nowait=True)).all()
+    linked = select(EinvoiceLink.invoice_id).where(EinvoiceLink.entry_id.in_(doomed))
+    db.execute(select(Einvoice.id).where(Einvoice.id.in_(linked)).order_by(Einvoice.id)
+               .with_for_update(nowait=True)).all()
+    db.execute(select(EinvoiceLink.invoice_id).where(EinvoiceLink.entry_id.in_(doomed))
+               .order_by(EinvoiceLink.invoice_id).with_for_update(nowait=True)).all()
+
+
+def delete_entries_cascade(db: Session, entry_ids: Iterable[int], *, nowait: bool = False) -> None:
     """Delete entries and their fee/discount children; dependants keep existing with their links cleared.
 
     Reward engine (spec 5.4): the estimated accruals of the doomed rows and of their refunds go first (their windows
     locked after the caller's ledger locks, P12), the surviving frozen accruals' reward rows get `reward_posted`, and
-    the windows are recomputed once the rows are gone."""
+    the windows are recomputed once the rows are gone. `nowait=True` (inside reconcile, after
+    `pair_locks.lock_delete` → `lock_cascade_nowait` took every row it locks or writes NOWAIT in the caller's
+    savepoint): the engine's refund and window locks raise LockNotAvailable instead of waiting, and the plain UPDATEs,
+    DELETEs and the ledger / e-invoice FK actions find their rows held (#296 M10). Not covered: the ON DELETE SET NULL
+    actions on the statement tables (`statement_coverage`, `reconciliation_case`, the caller's own auto-pay / booking
+    row), which keep reconcile's documented order."""
     parents = list(dict.fromkeys(entry_ids))
     if not parents:
         return
     children = list(db.scalars(select(LedgerEntry.id).where(LedgerEntry.parent_entry_id.in_(parents))))
     doomed = parents + children
-    windows = reward_engine.drop_for_delete(db, doomed)
+    windows = reward_engine.drop_for_delete(db, doomed, nowait=nowait)
     for column in (LedgerEntry.settles_entry_id, LedgerEntry.refunds_entry_id, LedgerEntry.reward_source_entry_id):
         db.execute(
             update(LedgerEntry)

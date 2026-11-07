@@ -40,7 +40,7 @@ from app.models import (
     StatementLine,
 )
 from app.schemas.writes import SETTLEMENT_SOURCES
-from app.services import coverage_service, entry_write_service, portfolio_client, settings_service
+from app.services import coverage_service, entry_write_service, pair_locks, portfolio_client, settings_service
 from app.services import trade_settlement_service as tss
 from app.services.entry_write_service import STATEMENT_SOURCE
 from app.services.errors import CodedConflictError
@@ -387,6 +387,8 @@ def retire_twin(db: Session, row: SettlementBooking) -> set[int] | None:
         if row.status != "booked" or not _system(entry) or not _twins(db, row, entry, tss.twin_window_days(db)):
             locks.rollback()
             return None
+        # the delete's engine locks, NOWAIT, before anything is written (#296 M10: reconcile never waits)
+        pair_locks.lock_delete(db, [entry.id], busy_code=tss.SETTLEMENT_BUSY, label=f"dividend booking {row.id}")
     except BaseException:
         if locks.is_active:
             locks.rollback()
@@ -395,7 +397,7 @@ def retire_twin(db: Session, row: SettlementBooking) -> set[int] | None:
     # delete_entries_cascade ends with expire_all and `in_entry_id` is ON DELETE SET NULL: copy everything first
     row_id, figures, entry_id = row.id, {**_figures(row), "origin": row.origin}, entry.id
     released = coverage_service.release_entries(db, [entry_id], reason="dividend:twin")
-    entry_write_service.delete_entries_cascade(db, [entry_id])
+    entry_write_service.delete_entries_cascade(db, [entry_id], nowait=True)
     row = db.get(SettlementBooking, row_id)
     row.status, row.reason = "retired", "twin"
     row.items.clear()

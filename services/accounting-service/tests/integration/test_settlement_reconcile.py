@@ -2,6 +2,7 @@
 by settlement window, the global assignment's cases, the stand-in claim and its link, mismatches and orphans,
 drift over claimed lines, twin retirement, owner-delete housekeeping and the neighbour re-check. Fictional amounts;
 the fixture's own accounts only."""
+import time
 from datetime import date
 from decimal import Decimal
 
@@ -18,6 +19,7 @@ from app.services import reconciliation_service as rec
 from app.services import statement_retire_service
 from app.services import trade_settlement_service as tss
 from app.services.errors import CodedConflictError
+from tests.helpers import make_entry
 from tests.integration import statement_fixtures
 from tests.integration.settlement_fixtures import (  # noqa: F401  (portfolio_stub, policy_on are fixtures)
     AUG, bank_line, feed, policy_on, portfolio_stub, seed_stand_in, settle_line, settlement_bank, submit_bank,
@@ -121,6 +123,54 @@ def test_owner_twin_retires_an_unclaimed_stand_in_at_reconcile(seed, db_session,
     db_session.refresh(booking)
     assert (booking.status, booking.reason, booking.out_entry_id) == ("retired", "twin", None)
 
+
+
+def test_retire_pair_is_settlement_busy_when_a_refund_of_a_leg_is_held(pg_engine, seed, db_session, run,
+                                                                        portfolio_stub):
+    """#296 M10: the retirement runs inside reconcile, which never waits. The delete's engine locks (refunds of the
+    legs, their accrual windows) are taken NOWAIT inside the retire savepoint: a held refund is `settlement_busy` at
+    once and nothing changes; once the refund is free the retire goes through."""
+    bank, target = settlement_bank(seed, db_session)
+    booking = seed_stand_in(db_session, bank, target, settlement_date=date(2026, 9, 14), net="-12305",
+                            fingerprint="cathay:2026-09-10:aa", ids=("ct:5",))
+    _transfer(seed, bank, target, Decimal("12305"), date(2026, 9, 14))
+    out_id = booking.out_entry_id
+    refund_id = make_entry(db_session, bank, "10", kind="refund", entry_date=date(2026, 9, 15),
+                           refunds_entry_id=out_id).id
+    db_session.commit()
+
+    holder = pg_engine.connect()
+    try:
+        holder.begin()
+        holder.execute(text("SELECT id FROM ledger_entry WHERE id = :id FOR UPDATE"), {"id": refund_id})
+        db_session.execute(text("SET lock_timeout = '3s'"))  # a regression waits; fail it instead of hanging
+        booking_id, leg_ids = booking.id, [booking.out_entry_id, booking.in_entry_id]
+        started = time.monotonic()
+        with pytest.raises(CodedConflictError) as caught:
+            tss.retire_pair(db_session, booking, reason="twin")
+        assert caught.value.code == "settlement_busy"
+        assert time.monotonic() - started < 1.5 and "lock timeout" not in str(caught.value.__cause__), \
+            "the retire waited (lock timeout), it did not refuse at once"
+        prober = pg_engine.connect()  # the busy result left the booking row and its legs unlocked
+        try:
+            prober.begin()
+            prober.execute(text("SELECT id FROM settlement_booking WHERE id = :id FOR UPDATE NOWAIT"),
+                           {"id": booking_id})
+            prober.execute(text("SELECT id FROM ledger_entry WHERE id = ANY(:ids) FOR UPDATE NOWAIT"),
+                           {"ids": [i for i in leg_ids if i is not None]})
+        finally:
+            prober.rollback()
+            prober.close()
+        db_session.rollback()
+    finally:
+        holder.rollback()
+        holder.close()
+        db_session.execute(text("SET lock_timeout = 0"))
+    db_session.refresh(booking)
+    assert (booking.status, booking.out_entry_id) == ("booked", out_id)
+    assert tss.retire_pair(db_session, booking, reason="twin") is not None
+    db_session.commit()
+    assert db_session.get(LedgerEntry, refund_id).refunds_entry_id is None
 
 def test_a_new_statement_flags_its_live_neighbour_for_recheck(seed, db_session, run, portfolio_stub):
     bank, _ = settlement_bank(seed, db_session)
