@@ -37,6 +37,7 @@ import { LockBannerComponent } from '../lock-banner/lock-banner';
 import { alignedRepostAmounts, schedulePill } from '../schedule-math';
 import { GroupNavState, closeGroupPage, groupCommands, inPlaceState, readGroupNavState } from '../split-group/group-nav';
 import { AppEntryEinvoiceCardComponent } from './einvoice-card';
+import { AppEntryRewardRepriceCardComponent } from './reward-reprice-card';
 import { storedGroupNet } from './split-card';
 
 const FX_SOURCE_LABELS: Record<string, string> = {
@@ -68,7 +69,7 @@ interface Chip {
 @Component({
   selector: 'app-entry-detail',
   standalone: true,
-  imports: [RouterLink, LockBannerComponent, AppEntryEinvoiceCardComponent],
+  imports: [RouterLink, LockBannerComponent, AppEntryEinvoiceCardComponent, AppEntryRewardRepriceCardComponent],
   templateUrl: './entry-detail.html',
   styleUrl: './entry-detail.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -200,6 +201,15 @@ export class EntryDetailComponent implements OnInit {
     const body = formatNumber(value, currency);
     return `${sign && Number(value) > 0 && body !== '0' ? '+' : ''}${body} ${accountName}`;
   }
+
+  /** A reprice-card figure (#306) in the unit of the accrual's reward account. */
+  readonly repriceAmount = (accrualId: number, value: string): string => {
+    const detail = this.detail();
+    const accrual = detail?.accruals.find(candidate => candidate.id === accrualId);
+    return accrual && detail
+      ? this.rewardAmount(value, accrual.reward_account_id, accrual.reward_account_name, detail.currency)
+      : formatMoney(value, detail?.currency ?? 'TWD');
+  };
 
   /** The bank's figure once confirmed (the reward row's amount), else the engine's allotted amount. */
   accrualValue(accrual: RewardAccrual): string {

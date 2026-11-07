@@ -165,6 +165,18 @@ As specified in the 10-31 design table:
   when an edit changes the amount, date, account or rule links of a purchase that has a frozen accrual. A later
   purchase PUT that changes none of those keeps the flag and the reason (they are restored after `_apply`). The flag
   clears when the accrual's reward row is edited, or when bank wins confirms or forfeits the accrual.
+- **Reprice** (#306, owner 2026-11-07): the owner answers the flag on the entry detail. `GET
+  /entries/{id}/reward-reprice` lists each `posted` / `bank_confirmed` accrual with a reward row: its booked amount,
+  what it would be now, and a status. Repriceable (`reprice`, or `same` / `zero`): `posted`, its rule still linked,
+  its window unchanged, its reward row present and still at the accrual's amount. Not repriceable, shown only:
+  `confirmed` (bank wins, §7), `rule_unlinked`, `window_moved` (the owner's to sort out), `row_edited` (the owner
+  already decided). The new amount is the window allotment (§5.2) with the purchase's repriceable accruals priced on
+  their current estimates and every other frozen accrual keeping its cap use; `zero` (new allotment 0) is not
+  written. `POST` with `{keep: false}` (依新金額重算回饋) writes each `reprice` accrual's `estimate` and `amount` and its
+  reward row's `amount`, re-allots the windows' `estimated` accruals, and clears the flag unless a `rule_unlinked`,
+  `window_moved` or `zero` accrual remains (those are the owner's to delete or edit; the card stays); `{keep: true}`
+  (保持原樣) only clears it. Nothing changes until POST. Lock order P12: purchase row → rules shared → windows → reward rows by
+  ascending id.
 - **Project changes** (10-31 ruling, in scope): a PUT that changes a purchase's project moves the project of its
   rewards, estimated and posted, when the reward's project is null or equal to the old one. A project is not a price,
   so freezing does not block it and it does not set the review flag.
@@ -233,6 +245,10 @@ validated as today (`check_rules`: rule of the same account, enabled on `entry_d
   transfer legs → 422 `kind`) and rule checks (`reward_rule_ids`: the card's own rules; a new link enabled on the
   entry date, an existing link kept) as PUT `/entries/{id}`; the engine then re-syncs the accruals and sets
   `reward_posted` when a frozen accrual's link changed (§5.1). Answers the entry detail.
+- **Reward reprice** (#306): `GET /entries/{id}/reward-reprice` (read scope) → `{entry_id, flagged, items: [{accrual_id,
+  rule_id, rule_name, reward_entry_id, booked, new, status}], applied: []}`; `POST` (write scope) `{keep}` → the same
+  shape after the write, `applied` = the repriced accrual ids. 404 unknown entry; the edit lock applies to the purchase
+  and the repriced reward rows (§5.1 "Reprice").
 
 ## 7. Bank wins (statement reconciliation)
 
@@ -333,6 +349,10 @@ superseded, and its accruals keep the early posting date. The locks are bank win
   rule of the group.
 - **Rule editor:** window selector (帳單週期 / 自然月); method gets 每 NT$X 一單位 (`per_unit`) with `unit_spend`.
 - **Entry detail:** the 預估回饋 lines with their state (預估 / 已入帳 / 銀行確認 / 未獲得).
+- **Entry detail, reprice card** (#306): when `review_reason` is `reward_posted`, a card 「回饋已入帳，消費金額已改」
+  lists each rule's 已入帳 → 新算 (non-repriceable rows say why) with [依新金額重算回饋] (shown when a row would change)
+  and [保持原樣]. 保持原樣 clears 待確認; 重算 clears it unless a row is left for the owner (rule unlinked, moved window,
+  new 0), which the card marks 「請刪除或修改回饋記錄」. The 待確認 pill's title names the reason.
 - **Reward batch folding** (#304): the timeline and the account passbook fold a batch with two or more loaded members
   into one row, at its newest member: rule name, 「N 筆 · window」 and the batch total. Tapping it expands its members
   in place (tap again to collapse); a member opens its detail. A batch of one stays a plain row; 隱藏回饋 hides the
