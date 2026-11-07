@@ -5,8 +5,8 @@
 
 ## 1. API (PR A)
 
-- [ ] 1.1 `compare_window`: ranges starting on the 1st that end mid-month move back by the number of months they touch, with the end day clipped (D2)
-- [ ] 1.2 Tests: the three new scenarios plus a leap-year clip (2028-03-01..2028-03-30 → 2028-02-01..2028-02-29); the whole-month and other-range scenarios unchanged
+- [x] 1.1 `compare_window`: ranges starting on the 1st that end mid-month move back by the number of months they touch, with the end day clipped (D2)
+- [x] 1.2 Tests: the three new scenarios plus a leap-year clip (2028-03-01..2028-03-30 → 2028-02-01..2028-02-29); the whole-month and other-range scenarios unchanged
 
 ## 2. Math and labels (PR B)
 
