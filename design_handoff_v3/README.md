@@ -2,7 +2,7 @@
 
 Design reference for two OpenSpec changes:
 
-- `openspec/changes/add-notification-center/` — one site-wide 通知 page, a quieter count, a one-case-at-a-time reconciliation flow, one toast and one banner style.
+- `openspec/changes/add-notification-center/` — one site-wide 通知 page, a quieter count, a one-case-at-a-time reconciliation flow, one toast and one banner style; e-invoice flow, page, entry card and settings added 2026-11-07 (D10–D12).
 - `openspec/changes/add-accounting-reports/` — 財務 › 報表 (總覽, 趨勢與比較, 排行, 專案與預算) and saved custom reports.
 
 Read each change's `design.md` for the decisions and `specs/` for the requirements. Drawn on the design canvas on 2026-10-24 (notifications) and 2026-10-30 (reports, custom reports); the owner asked for this handoff on 2026-10-31. **Nothing in this folder is production code.**
@@ -21,6 +21,9 @@ The visual system is the one in `frontend/src/styles.scss` (v2 handoff plus the 
 | `NotifPhone.dc.html` | 通知中心 | `/notifications` | 390 | 來源 chips |
 | `ReconPhone.dc.html` | 對帳逐筆處理 | `/notifications/recon/:statementId` | 390 | answers advance; end state after four sample cases |
 | `FeedbackSpec.dc.html` | Entry points and count, toast, banner, empty state | — | 1280 | — |
+| `InvoiceDesktop.dc.html` | 通知 with the 電子發票 flow open: one invoice at a time, candidates as answers | `/notifications/einvoices` | 1440 fluid | 連結, 都不是, 跳過, 上一張; end state |
+| `InvoiceUnmatchedPhone.dc.html` | 有發票沒有帳, grouped by seller | `/notifications/einvoices?state=unmatched` | 390 | 不用記帳, 這 N 張都不用記帳, 這家以後都不提醒, 復原 |
+| `InvoiceSpec.dc.html` | Entry detail 發票 card (three states) and 記帳設定 › 發票 | `/accounting/entries/:id`, `/accounting/settings` | 1280 | reminder switch, two steppers |
 | `ReportsDesktop.dc.html` | 報表 · 總覽 / 趨勢與比較 / 排行 / 專案與預算 | `/accounting/reports` | 1440 fluid | tabs, 支出/收入, category drill-in, trend category, ranking dimension and row |
 | `ReportsPhone.dc.html` | 報表 | `/accounting/reports` | 390 | tabs, category expand, ranking dimension |
 | `ReportBuilder.dc.html` | 自訂報表 editor with three saved reports and the empty state | `/accounting/reports/custom/:id`, `/accounting/reports/custom/new` | 1440 fluid | saved report chips, 新報表, chart type, 比較, 釘選 |

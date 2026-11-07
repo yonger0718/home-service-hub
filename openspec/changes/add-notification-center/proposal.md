@@ -14,23 +14,30 @@ The owner reviewed a redesign on the design canvas (`design_handoff_v3/`) and as
 - **One toast** (shell-level service replacing `p-toast` and `AccountingToastService`) and **one banner** primitive (錯誤 / 注意 / 資訊).
 - **Auto-pay visibility**: the bill pill says 自動扣繳 MM/DD for linked cards when auto-pay is on; 記帳設定 gets the auto-pay switch and start date (existing `PUT /settings/reconciliation`).
 - **匯入** gets a 國泰每日對帳單 status card (last run, dates that need the owner, 確認).
+- **電子發票** (added 2026-11-07, after the e-invoice link shipped):
+  - Invoices that need a decision (`ambiguous` + `near`) are one task in 要你確認, 「電子發票 · N 張要確認」. It opens a one-invoice-at-a-time flow at `/notifications/einvoices`.
+  - Invoices without a ledger entry (`unmatched`) are one 追蹤中 row, 「有發票沒有帳 · N 張」. It opens a page grouped by seller, with 這 N 張都不用記帳 and 這家以後都不提醒.
+  - The entry detail's 發票 section gets a designed card.
+  - 記帳設定 › 發票 gets the date window and the mute-prompt threshold beside the existing reminder switch.
+  - The count adds 1 for the invoice task, not one per invoice. `einvoice_ask` leaves the timeline and the reminders page together with `ask`.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `frontend-notification-center`: the 通知 page, task model and count, snooze, the reconciliation review flow, the new task sources.
+- `frontend-notification-center`: the 通知 page, task model and count, snooze, the reconciliation review flow, the e-invoice flow and page, the new task sources.
 
 ### Modified Capabilities
 
 - `frontend-app-shell`: Navigation badges become dots except on 通知.
 - `frontend-ui-primitives`: Toast service and Banner primitive.
-- `frontend-accounting-ledger`: the timeline bell count is removed; auto-pay in the bill pill and settings.
+- `frontend-accounting-ledger`: the timeline bell count is removed; auto-pay in the bill pill and settings; the entry detail's invoice card and the 發票 settings section.
+- `accounting-einvoices` (new capability): `PATCH /einvoices/preferences` also accepts `date_window_days` and `mute_prompt_after`.
 - `frontend-csv-import`: 國泰每日對帳單 status card on the import page.
 
 ## Non-goals
 
-- No backend change. Every source and action already has an endpoint; the weekly-digest checks that live only in `notify/` (missing statements, cards without an auto-pay link, statements without a due date) stay in Discord and are a follow-up that needs an API.
+- No backend change except one: the e-invoice preferences PATCH (write scope) learns two more fields, so the owner can change them without the admin-scope settings PUT. Every other source and action already has an endpoint; the weekly-digest checks that live only in `notify/` (missing statements, cards without an auto-pay link, statements without a due date) stay in Discord and are a follow-up that needs an API.
 - No push or e-mail notifications; Discord delivery (`accounting-notifications`) is unchanged.
 - 提醒中心 (`/accounting/reminders`) keeps its pages for managing 借還款 and 週期／分期; it is no longer the entry point for pending work.
 
@@ -38,4 +45,4 @@ The owner reviewed a redesign on the design canvas (`design_handoff_v3/`) and as
 
 - Frontend: new `components/notifications/*`, `services/notification-center.service.ts`, `services/toast.service.ts`, `components/ui/banner`; shell, sidebar, mobile header, timeline header, accounting settings, billing pill, import page. `NavBadgeService` folds into the notification service.
 - Portfolio routes have no auth today (#117); the Cathay ack is a write without auth, as every portfolio route is.
-- Design reference: `design_handoff_v3/` (NotifDesktop, NotifPhone, ReconPhone, FeedbackSpec).
+- Design reference: `design_handoff_v3/` (NotifDesktop, NotifPhone, ReconPhone, FeedbackSpec; for e-invoices InvoiceDesktop, InvoiceUnmatchedPhone, InvoiceSpec).
