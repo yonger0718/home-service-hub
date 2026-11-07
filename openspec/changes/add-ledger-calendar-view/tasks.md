@@ -2,7 +2,7 @@
 
 - [x] 0.1 Design canvas (CalendarDesktop, CalendarPhone) and `design_handoff_v3/design_refs/`
 - [x] 0.2 Proposal, design (D1–D8), spec delta
-- [ ] 0.3 `openspec validate add-ledger-calendar-view --strict` (not run in the authoring session)
+- [x] 0.3 `openspec validate add-ledger-calendar-view --strict`
 
 ## 1. State and data (PR A)
 
