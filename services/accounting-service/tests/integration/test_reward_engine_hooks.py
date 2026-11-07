@@ -1377,6 +1377,9 @@ def test_lock_cascade_nowait_never_waits(pg_engine, db_session, held):
     settler = make_entry(db_session, card, "30", kind="income", entry_date=DAY, settles_entry_id=spend.id)
     accrual = _one(db_session, source_entry_id=spend.id)
     reward = _post(db_session, accrual) if held in ("reward_row", "doomed_reward_row") else None
+    if held == "reward_row":  # no reward-source link: only the engine's tier-3 lock can catch it (AGENT-425)
+        reward.reward_source_entry_id = None
+        db_session.flush()
     invoice = Einvoice(number="AB00000001", issue_date=DAY, period="11511", seller_tax_id="00000001",
                        seller_name="測試商店", total_amount=Decimal("100"), status_raw="開立", source_drive_id="fake")
     db_session.add(invoice)

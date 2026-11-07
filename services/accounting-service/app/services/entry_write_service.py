@@ -584,7 +584,9 @@ def delete_entries_cascade(db: Session, entry_ids: Iterable[int], *, nowait: boo
     the windows are recomputed once the rows are gone. `nowait=True` (inside reconcile, after
     `pair_locks.lock_delete` → `lock_cascade_nowait` took every row it locks or writes NOWAIT in the caller's
     savepoint): the engine's refund and window locks raise LockNotAvailable instead of waiting, and the plain UPDATEs,
-    DELETEs and FK actions find their rows held (#296 M10)."""
+    DELETEs and the ledger / e-invoice FK actions find their rows held (#296 M10). Not covered: the ON DELETE SET NULL
+    actions on the statement tables (`statement_coverage`, `reconciliation_case`, the caller's own auto-pay / booking
+    row), which keep reconcile's documented order."""
     parents = list(dict.fromkeys(entry_ids))
     if not parents:
         return

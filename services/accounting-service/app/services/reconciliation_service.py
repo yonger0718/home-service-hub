@@ -16,7 +16,9 @@ and settling rows, linked e-invoices; held → skips the pair, #296), releases t
 coverage on any statement, deletes them — so their dirty triggers hold the shared dirty barrier until this
 transaction ends, and the events land past this sweep's cap for the next sweep — and flags the released statements
 `needs_recheck`. The release and the flag are plain UPDATEs: they take blocking (non-NOWAIT) row locks on the other
-statements' coverage rows and on those statements' rows (`needs_recheck`). A bank statement of a `settlement_source`
+statements' coverage rows and on those statements' rows (`needs_recheck`); the leg delete's ON DELETE SET NULL on
+`statement_coverage.entry_id` and `reconciliation_case.entry_id` takes the same kind of blocking lock on those rows
+(not covered by the NOWAIT pre-lock). A bank statement of a `settlement_source`
 account printing a settlement line (portfolio integration spec §4.3, §4.7) first reads the settlement feed once
 (before any pair or group/entry lock), then does the same for its `settlement_booking` rows at the same point
 (`trade_settlement_service.housekeep` tombstones owner-deleted / owner-edited bookings, then
