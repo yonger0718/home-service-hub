@@ -104,23 +104,52 @@ The SPA SHALL provide `/accounting/entries/:id` showing: a header in the categor
 
 **Header.** A summary line: cards, rules, and the period's reward total with estimates. State chips with counts (全部, 生效中, 已停用, 已過期, 未開始), and 含已封存帳戶.
 
-**Cards.** Accounts with rules SHALL be cards, two columns from 1024 px. Each card shows:
+#### Scenario: Current navigation item
+- **WHEN** the overview is open
+- **THEN** the 記帳設定 navigation item SHALL be current and 記帳記錄 SHALL NOT be
+
+### Requirement: Reward overview cards
+
+Accounts with rules SHALL be cards, two columns from 1024 px. Each card shows:
 
 - the account's icon, name, and its window line (closing day and the current period, or the calendar month);
 - the period's reward total, the sum of used and estimated over the account's usage;
-- one row per rule:
-  - the name and a rate chip, never the rate repeated in the label;
-  - a state tag only when the rule is not active, or is 基本;
-  - the posting summary;
-  - for an active rule with a cap, the cap bar;
-  - for any other rule, one muted line instead of the bar;
+- one row per rule, as specified by 「Reward overview rule lines」;
 - the 12-month stats and 「＋ 新增規則」.
+
+#### Scenario: Two-column card grid
+- **GIVEN** 玉山 Pi 卡's 全聯・家樂福加碼 5% has a $200 cap, $180 posted and $13 estimated this period
+- **WHEN** the overview renders at 1440 px
+- **THEN** the card SHALL be in a two-column grid
+
+### Requirement: Reward overview rule lines
+
+Each rule row on an overview card SHALL show:
+
+- the name and a rate chip, never the rate repeated in the label;
+- a state tag only when the rule is not active, or is 基本;
+- the posting summary;
+- for an active rule with a cap, the cap bar;
+- for any other rule, one muted line instead of the bar.
+
+#### Scenario: Rate chip beside the label
+- **GIVEN** 玉山 Pi 卡's 全聯・家樂福加碼 5% has a $200 cap, $180 posted and $13 estimated this period
+- **WHEN** the overview renders at 1440 px
+- **THEN** the label SHALL read 全聯・家樂福加碼 with a separate 5% chip
+
+### Requirement: Reward overview empty and expired states
 
 **Without rules.** Accounts without rules SHALL be chips in one row, 「沒有規則的卡片」, each opening the account's settings at 新增規則.
 
 **Expired callout.** Enabled-but-expired rules SHALL raise a warning banner with 只看已過期.
 
-**Cap bar** (shared with the account settings rows):
+#### Scenario: Accounts without rules
+- **GIVEN** 匯豐 現金回饋卡 has no rules
+- **THEN** it SHALL appear as a chip under 沒有規則的卡片, not as a card
+
+### Requirement: Reward cap bar
+
+The cap bar, shared by the overview cards and the account settings rows, SHALL show:
 
 - posted and estimated parts in the primary colour (the estimate lighter);
 - text 「$used+est / $cap · 剩 $N」;
@@ -130,15 +159,7 @@ The SPA SHALL provide `/accounting/entries/:id` showing: a header in the categor
 #### Scenario: Card with a near cap
 - **GIVEN** 玉山 Pi 卡's 全聯・家樂福加碼 5% has a $200 cap, $180 posted and $13 estimated this period
 - **WHEN** the overview renders at 1440 px
-- **THEN** its row SHALL read 「$193 / $200 · 快到上限」 in the warning ink, the label SHALL read 全聯・家樂福加碼 with a separate 5% chip, and the card SHALL be in a two-column grid
-
-#### Scenario: Accounts without rules
-- **GIVEN** 匯豐 現金回饋卡 has no rules
-- **THEN** it SHALL appear as a chip under 沒有規則的卡片, not as a card
-
-#### Scenario: Current navigation item
-- **WHEN** the overview is open
-- **THEN** the 記帳設定 navigation item SHALL be current and 記帳記錄 SHALL NOT be
+- **THEN** its row SHALL read 「$193 / $200 · 快到上限」 in the warning ink
 
 ### Requirement: Reward rule rows
 
@@ -164,30 +185,37 @@ Tapping the row SHALL open the rule sheet. Dropping a dragged row SHALL save the
 
 ### Requirement: Entry reward section
 
-The entry detail SHALL show one 回饋 section, after the tags and debt state and before the e-invoice card, with one card per reward accrual in rule order. Each card shows:
+The entry detail SHALL show one 回饋 section, after the tags and debt state and before the e-invoice card, with one card per reward accrual in rule order. Reward rows generated from the entry without an accrual SHALL show as 已入帳 cards. The section SHALL be absent when the entry has neither.
+
+#### Scenario: Imported reward without an accrual
+- **GIVEN** an entry with a reward row imported from MOZE and no accrual
+- **THEN** the 回饋 section SHALL show one 已入帳 card with that row's amount and date
+
+### Requirement: Entry reward card
+
+Each card of the 回饋 section SHALL show:
 
 - the rule name and the reward state tag;
 - the amount: the posted reward row's amount when present, else the estimate. It is struck through for 未獲得. When a cap or the bank changed it, the original estimate is struck through beside it;
-- a line by state:
-  - 預估: the expected posting date and account, plus 「本期 $used / $cap」 for capped rules, or 「算出 $X，本期上限只剩 $Y」 when capped down;
-  - 已入帳: the posting date and account, with a link 「看回饋記錄 ›」 to the reward row;
-  - 銀行確認: whether it matched the statement;
-  - 未獲得: the reason when known.
-
-Reward rows generated from the entry without an accrual SHALL show as 已入帳 cards. The section SHALL be absent when the entry has neither.
+- a line by state, as specified by 「Entry reward state lines」.
 
 #### Scenario: Estimated with a cap
 - **GIVEN** 全聯 採買 −1,286 on 玉山 Pi 卡 with 一般消費 1% ($13 estimated, $300 of $500 used) and 全聯・家樂福加碼 5% ($64 computed, $20 left in the cap)
 - **WHEN** its detail opens on 11/21
 - **THEN** the 回饋 section SHALL show two 預估 cards: +$13 with 「預計 12/15 入帳到 玉山 Pi 卡 · 本期 $300 / $500」, and +$20 with $64 struck through and 「算出 $64，本期上限只剩 $20」
 
+### Requirement: Entry reward state lines
+
+The line on an entry reward card SHALL read by state:
+
+- 預估: the expected posting date and account, plus 「本期 $used / $cap」 for capped rules, or 「算出 $X，本期上限只剩 $Y」 when capped down;
+- 已入帳: the posting date and account, with a link 「看回饋記錄 ›」 to the reward row;
+- 銀行確認: whether it matched the statement;
+- 未獲得: the reason when known.
+
 #### Scenario: Posted
 - **WHEN** the same entry is opened after 12/15
 - **THEN** both cards SHALL show 已入帳 and link to their reward rows, and no separate 紅利回饋 heading SHALL appear
-
-#### Scenario: Imported reward without an accrual
-- **GIVEN** an entry with a reward row imported from MOZE and no accrual
-- **THEN** the 回饋 section SHALL show one 已入帳 card with that row's amount and date
 
 ### Requirement: Reward state tag
 
