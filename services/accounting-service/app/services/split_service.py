@@ -31,6 +31,7 @@ from .entry_write_service import (
     locked_entry,
     prepare_entry,
     remember_all_defaults,
+    stored_child_names,
 )
 from .errors import (
     ALREADY_GROUPED,
@@ -305,7 +306,8 @@ def _classify_full(db: Session, members: list[_Member], by_id: dict[int, LedgerE
         if member.action == "full":
             entry = by_id[member.entry_id]
             member.stored = stored_signature(db, entry)
-            member.change = classify(member.stored, payload_signature(member.payload, entry.currency))
+            member.change = classify(member.stored, payload_signature(member.payload, entry.currency,
+                                                                      stored_child_names(db, entry.id)))
 
 
 def _revalidate(

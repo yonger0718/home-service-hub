@@ -174,6 +174,22 @@ def test_two_fee_children_sent_back_as_their_sum_are_left_alone(client, seed, db
     assert not {c[0] for c in children} & set(ids)
 
 
+def test_replacing_several_children_with_a_nameless_fee_keeps_the_first_stored_name(client, seed, db_session):
+    """#313 review: the replace branch resolves the name like the in-place ones (a nameless payload keeps it)."""
+    card = seed.account("卡")
+    parent = seed.entry(card, "-1200", day=DAY, merchant="海外店")
+    seed.entry(card, "-30", kind="fee", day=DAY, parent_entry_id=parent.id, name="國外交易手續費")
+    seed.entry(card, "-15", kind="fee", day=DAY, parent_entry_id=parent.id, name="運費")
+    db_session.commit()
+
+    response = client.put(f"/entries/{parent.id}", json=_payload(card, fee={"amount": "50"}))
+
+    assert response.status_code == 200, response.text
+    children = _children(db_session, parent.id)
+    assert [(kind, amount, name) for _, kind, amount, name in children] == [
+        ("fee", Decimal("-50.0000"), "國外交易手續費")]
+
+
 def _transfer_legs(db, group_id):
     db.expire_all()
     legs = {leg.kind: leg.id for leg in db.scalars(select(LedgerEntry).where(

@@ -291,6 +291,22 @@ def write_children(
 _CHILD_FOLLOWS_PARENT = ("account_id", "currency", "entry_date", "entry_time", "posted_date")
 
 
+def child_name(kind: str, child: ChildIn, stored_name: str | None = None) -> str:
+    """The name a payload child ends up with: its own, else the stored child's (a nameless edit keeps it — 國外交易手續費
+    is how attach_fee and the fee proposal recognise the FX fee child), else the kind's default. `stored_name`: the
+    lowest-id stored child of that kind, None when there is none."""
+    return child.name or stored_name or CHILD_DEFAULT_NAMES[kind]
+
+
+def stored_child_names(db: Session, parent_id: int) -> dict[str, str | None]:
+    """kind → the name of the lowest-id child of that kind (`child_name`'s `stored_name`)."""
+    names: dict[str, str | None] = {}
+    for kind, name in db.execute(select(LedgerEntry.kind, LedgerEntry.name)
+                                 .where(LedgerEntry.parent_entry_id == parent_id).order_by(LedgerEntry.id)):
+        names.setdefault(kind, name)
+    return names
+
+
 def sync_children(
     db: Session, parent: LedgerEntry, fee: ChildIn | None, discount: ChildIn | None, *, source: str = "manual"
 ) -> None:
@@ -316,11 +332,12 @@ def sync_children(
             new_fee, new_discount = (child, new_discount) if kind == "fee" else (new_fee, child)
             continue
         amount = -child.amount if kind == "fee" else child.amount
-        name = child.name or rows[0].name or CHILD_DEFAULT_NAMES[kind]  # no name: keep it (國外交易手續費 is an identity)
+        name = child_name(kind, child, rows[0].name)
         if len(rows) > 1:
             if sum((c.amount for c in rows), Decimal(0)) != amount:
                 doomed += [c.id for c in rows]
-                new_fee, new_discount = (child, new_discount) if kind == "fee" else (new_fee, child)
+                named = child.model_copy(update={"name": name})
+                new_fee, new_discount = (named, new_discount) if kind == "fee" else (new_fee, named)
                 continue
             changes = {"name": name}
             targets = rows[:1]

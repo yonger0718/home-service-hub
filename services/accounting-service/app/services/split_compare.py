@@ -8,14 +8,14 @@ skipped; "meta" → name / merchant / project / tags / description applied with 
 
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Literal
+from typing import Literal, Mapping
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import LedgerEntry
 from ..schemas.writes import EntryIn
-from .entry_write_service import AMOUNT_QUANTUM, CHILD_DEFAULT_NAMES, RATE_QUANTUM, attached_rule_ids
+from .entry_write_service import AMOUNT_QUANTUM, RATE_QUANTUM, attached_rule_ids, child_name
 
 Change = Literal["unchanged", "meta", "financial"]
 ONLINE_FX_SOURCE = "fx_api"
@@ -73,10 +73,14 @@ def stored_signature(db: Session, entry: LedgerEntry) -> MemberSignature:
     return MemberSignature(financial, meta)
 
 
-def payload_signature(payload: EntryIn, account_currency: str) -> MemberSignature:
-    """`account_currency`: the stored row's currency (when the account differs the verdict is financial anyway)."""
+def payload_signature(payload: EntryIn, account_currency: str,
+                      stored_names: Mapping[str, str | None] | None = None) -> MemberSignature:
+    """`account_currency`: the stored row's currency (when the account differs the verdict is financial anyway).
+    `stored_names`: `stored_child_names` of the stored row; a nameless payload child keeps that name, exactly as
+    `sync_children` writes it (#313 review), so echoing a 國外交易手續費 fee without its name is no financial change."""
+    names = stored_names or {}
     children = [
-        (kind, child.amount, child.name or CHILD_DEFAULT_NAMES[kind])
+        (kind, child.amount, child_name(kind, child, names.get(kind)))
         for kind, child in (("fee", payload.fee), ("discount", payload.discount))
         if child is not None
     ]
