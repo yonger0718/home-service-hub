@@ -546,18 +546,20 @@ def update_reward_rules(db: Session, entry_id: int, rule_ids: Iterable[int]) -> 
     reward_engine.after_write_captured(db, entry, before)
 
 
-def delete_entries_cascade(db: Session, entry_ids: Iterable[int]) -> None:
+def delete_entries_cascade(db: Session, entry_ids: Iterable[int], *, nowait: bool = False) -> None:
     """Delete entries and their fee/discount children; dependants keep existing with their links cleared.
 
     Reward engine (spec 5.4): the estimated accruals of the doomed rows and of their refunds go first (their windows
     locked after the caller's ledger locks, P12), the surviving frozen accruals' reward rows get `reward_posted`, and
-    the windows are recomputed once the rows are gone."""
+    the windows are recomputed once the rows are gone. `nowait=True` (inside reconcile, after
+    `pair_locks.lock_delete` took the engine locks NOWAIT in the caller's savepoint): an engine lock not held already
+    raises LockNotAvailable instead of waiting (#296 M10)."""
     parents = list(dict.fromkeys(entry_ids))
     if not parents:
         return
     children = list(db.scalars(select(LedgerEntry.id).where(LedgerEntry.parent_entry_id.in_(parents))))
     doomed = parents + children
-    windows = reward_engine.drop_for_delete(db, doomed)
+    windows = reward_engine.drop_for_delete(db, doomed, nowait=nowait)
     for column in (LedgerEntry.settles_entry_id, LedgerEntry.refunds_entry_id, LedgerEntry.reward_source_entry_id):
         db.execute(
             update(LedgerEntry)

@@ -7,7 +7,9 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import event, select
+from psycopg2.errors import LockNotAvailable
+from sqlalchemy import event, select, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Account, EntryGroup, LedgerEntry, Project, RewardAccrual, RewardRule
@@ -1352,3 +1354,35 @@ def test_deleting_a_parent_rebuckets_its_combined_children(client, db_session):
     assert response.status_code == 204, response.text
     row = _one(db_session)
     assert (row.window_start, row.window_end) == (date(2026, 11, 1), date(2026, 11, 30))
+
+
+@pytest.mark.parametrize("held", ["child", "refund", "window"])
+def test_lock_delete_nowait_never_waits(pg_engine, db_session, held):
+    """#296 M10: `lock_delete_nowait` takes every engine lock a delete inside reconcile needs, NOWAIT: a held fee
+    child, refund or accrual window raises LockNotAvailable at once (the caller's busy code), never a wait."""
+    card = _card(db_session)
+    rule = _rule(db_session, card)
+    spend = _spend(db_session, card, 100, rules=[rule])
+    child = make_entry(db_session, card, "-5", kind="fee", entry_date=DAY, parent_entry_id=spend.id)
+    refund = make_entry(db_session, card, "20", kind="refund", entry_date=DAY, refunds_entry_id=spend.id)
+    target = {"child": child.id, "refund": refund.id, "window": _one(db_session).id}[held]
+    table = "reward_accrual" if held == "window" else "ledger_entry"
+    spend_id = spend.id
+    db_session.commit()
+    holder = pg_engine.connect()
+    try:
+        holder.begin()
+        holder.execute(text(f"SELECT id FROM {table} WHERE id = :id FOR UPDATE"), {"id": target})
+        db_session.execute(text("SET lock_timeout = '3s'"))
+        with pytest.raises(OperationalError) as caught:
+            reward_engine.lock_delete_nowait(db_session, [spend_id])
+        assert isinstance(caught.value.orig, LockNotAvailable)
+        assert "lock timeout" not in str(caught.value.orig)  # NOWAIT, not a wait cut short
+        db_session.rollback()
+    finally:
+        holder.rollback()
+        holder.close()
+        db_session.execute(text("SET lock_timeout = 0"))
+    reward_engine.lock_delete_nowait(db_session, [spend_id])  # free again: takes everything
+    assert reward_engine.held_windows(db_session) >= {(rule.id, _one(db_session).window_start)}
+    db_session.rollback()

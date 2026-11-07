@@ -10,7 +10,9 @@ match → coverage → cases → counts. The only ledger rows a reconcile writes
 retirement's (auto-pay spec §4.5, `auto_pay_service.retire_twins_for_statement`, after the sweep and before the
 group/entry locks): it
 locks a twinned pair's `statement_auto_pay` row and then its legs NOWAIT (a held row or leg skips the pair),
-re-checks the row, the legs and the twin under those locks (a failed re-check skips the pair), releases their
+re-checks the row, the legs and the twin under those locks (a failed re-check skips the pair), takes the delete's
+engine locks NOWAIT in the same savepoint (`pair_locks.lock_delete`: fee children, refunds, accrual windows; held →
+skips the pair, #296), releases their
 coverage on any statement, deletes them — so their dirty triggers hold the shared dirty barrier until this
 transaction ends, and the events land past this sweep's cap for the next sweep — and flags the released statements
 `needs_recheck`. The release and the flag are plain UPDATEs: they take blocking (non-NOWAIT) row locks on the other
@@ -18,7 +20,7 @@ statements' coverage rows and on those statements' rows (`needs_recheck`). A ban
 account printing a settlement line (portfolio integration spec §4.3, §4.7) first reads the settlement feed once
 (before any pair or group/entry lock), then does the same for its `settlement_booking` rows at the same point
 (`trade_settlement_service.housekeep` tombstones owner-deleted / owner-edited bookings, then
-`retire_twins_for_statement`; booking row → legs NOWAIT, never the account row; a statement printing a dividend line
+`retire_twins_for_statement`; booking row → legs → the delete's engine locks NOWAIT, never the account row; a statement printing a dividend line
 does the same for its `kind='dividend'` bookings through `dividend_service.housekeep` / `retire_twins_for_statement`
 after the dividend read), and after its coverage is written
 links a claimed stand-in to its line's event (the booking row try-locked NOWAIT) and derives the settlement cases

@@ -5,20 +5,21 @@ Fictional card 「測試卡」 closing on the 15th; the statement under test cov
 5 days after each purchase, so a purchase on 11-12 posts on 11-17, in the next cycle (an early candidate).
 Synthetic data only."""
 
+import time
 from datetime import date
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.models import (
-    AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationCase, ReconciliationOwnerRule, RewardAccrual,
-    StatementCoverage,
+    Account, AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationCase, ReconciliationOwnerRule,
+    RewardAccrual, StatementCoverage,
 )
-from app.schemas.writes import RewardRuleUpdateIn
+from app.schemas.writes import AccountIn, RewardRuleUpdateIn
 from app.services import inbox_service, owner_rule_service, policy_service, reconciliation_actions
 from app.services import reward_bank_wins, reward_post_job, reward_rule_service, settings_service
-from app.services.errors import CodedConflictError, ValidationError
+from app.services.errors import RETRY, CodedConflictError, ValidationError
 from app.services.reconciliation_actions import engine
 from tests.integration.statement_fixtures import _cases, _line, _reconcile, _submit, run  # noqa: F401
 from tests.integration.test_reward_bank_wins import (
@@ -723,3 +724,34 @@ def test_card_gap_without_engine_rows_unchanged(seed, db_session, run):
     (gap,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap"]
     assert set(gap.context) == {"gap", "card"}
     assert reconciliation_actions.allowed(gap) == ["balance_adjustment_asof", "dismiss"]
+
+
+def test_closing_day_change_while_an_inbox_action_holds_an_early_statement_is_retry(pg_engine, seed, db_session, run):
+    """#296 M2: an inbox action with `account_lock` takes the statement row and then the account row. A closing_day
+    change holds the account row and then flags the card's statements with an open `reward_early` case
+    (`mark_early_rechecks`): that statement lock is NOWAIT, so the change answers 409 `retry` at once and never waits
+    on the statement while it holds the account (no statement <-> account cycle). Nothing changes."""
+    card = _test_card(seed, db_session)
+    _, _, stmt, line = _early_statement(db_session, run, card)
+    assert _one_open(db_session, stmt.id, line).context["hint"] == "reward_early"
+    card_id, stmt_id = card.id, stmt.id
+    body = AccountIn(name=card.name, currency=card.currency, is_credit=True, closing_day=20, combined_account_id=None)
+    db_session.commit()
+    holder = pg_engine.connect()
+    try:
+        holder.begin()
+        holder.execute(text("SELECT id FROM account_statement WHERE id = :id FOR UPDATE"), {"id": stmt_id})
+        db_session.execute(text("SET lock_timeout = '3s'"))
+        started = time.monotonic()
+        with pytest.raises(CodedConflictError) as caught:
+            settings_service.update_account(db_session, card_id, body)
+        assert caught.value.code == RETRY and time.monotonic() - started < 1.5, "the change waited on the statement"
+        db_session.rollback()
+        # the inbox action's next lock, the account row, is free again
+        holder.execute(text("SELECT id FROM account WHERE id = :id FOR UPDATE NOWAIT"), {"id": card_id})
+    finally:
+        holder.rollback()
+        holder.close()
+        db_session.execute(text("SET lock_timeout = 0"))
+    db_session.expire_all()
+    assert db_session.get(Account, card_id).closing_day == 15

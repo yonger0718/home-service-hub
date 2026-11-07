@@ -377,6 +377,8 @@ def retire_pair(db: Session, row: StatementAutoPay, *, reason: str, run_id: int 
             if not row_twins(db, row, window_days=window_days, exclude=(out_leg.id, in_leg.id)):
                 locks.rollback()
                 return None
+        # the delete's engine locks, NOWAIT, before anything is written (#296 M10: reconcile never waits)
+        pair_locks.lock_delete(db, [out_leg.id, in_leg.id], busy_code=PAIR_BUSY, label=f"auto-pay row {row.id}")
     except BaseException:
         if locks.is_active:
             locks.rollback()
@@ -387,7 +389,7 @@ def retire_pair(db: Session, row: StatementAutoPay, *, reason: str, run_id: int 
     out_id, in_id = out_leg.id, in_leg.id
     legs = [out_id, in_id]
     released = coverage_service.release_entries(db, legs, reason=f"auto_pay:{reason}")
-    entry_write_service.delete_entries_cascade(db, legs)
+    entry_write_service.delete_entries_cascade(db, legs, nowait=True)
     row = db.get(StatementAutoPay, row_id)
     row.status, row.reason = "retired", reason
     for sid in released:

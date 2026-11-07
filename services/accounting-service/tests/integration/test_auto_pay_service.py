@@ -16,6 +16,7 @@ from app.services import reconciliation_service as rec
 from app.services import transfer_service
 from app.services.errors import CodedConflictError
 from app.services.settings_service import AUTO_PAY_DEFAULTS
+from tests.helpers import make_entry
 from tests.integration.statement_fixtures import OCT, SEP, _card, _line, _submit, _transfer, run  # noqa: F401
 
 DAY = date(2026, 9, 3)
@@ -636,6 +637,47 @@ def test_retire_pair_busy_when_a_leg_is_locked(pg_engine, db_session, world):
     assert db.get(LedgerEntry, out_id) is not None and db.get(LedgerEntry, in_id) is not None
     assert _events(db, stmt.id)[-1] == "auto_pay_booked"
 
+
+
+def test_retire_pair_busy_when_a_refund_of_a_leg_is_held_never_a_wait(pg_engine, seed, db_session, world):
+    """#296 M10: the retirement runs inside reconcile, which never waits. Its delete's engine locks (the refunds that
+    point at the legs, their accrual windows) are taken NOWAIT inside the retire savepoint: a held refund is
+    `auto_pay_busy` at once, nothing is written and no lock is left behind."""
+    db, (bank, card, stmt) = db_session, world
+    row, out_leg, in_leg = _book(db, stmt)
+    out_id, in_id = out_leg.id, in_leg.id
+    _transfer(seed, bank, card, 580, PAY)
+    refund = make_entry(db, card, "10", kind="refund", entry_date=PAY, refunds_entry_id=in_id)
+    refund_id = refund.id
+    db.commit()
+    holder = pg_engine.connect()
+    try:
+        holder.begin()
+        holder.execute(text("SELECT id FROM ledger_entry WHERE id = :id FOR UPDATE"), {"id": refund_id})
+        db.execute(text("SET lock_timeout = '3s'"))  # a regression waits; fail it instead of hanging the suite
+        with pytest.raises(CodedConflictError) as caught:
+            aps.retire_pair(db, row, reason="twin")
+        assert caught.value.code == "auto_pay_busy"
+        prober = pg_engine.connect()
+        try:
+            prober.begin()
+            prober.execute(text("SELECT id FROM statement_auto_pay WHERE id = :id FOR UPDATE NOWAIT"), {"id": row.id})
+            prober.execute(text("SELECT id FROM ledger_entry WHERE id IN (:a, :b) FOR UPDATE NOWAIT"),
+                           {"a": out_id, "b": in_id})
+        finally:
+            prober.rollback()
+            prober.close()
+        db.rollback()
+    finally:
+        holder.rollback()
+        holder.close()
+        db.execute(text("SET lock_timeout = 0"))
+    db.refresh(row)
+    assert (row.status, row.out_entry_id, row.in_entry_id) == ("booked", out_id, in_id)
+    assert db.get(LedgerEntry, refund_id).refunds_entry_id == in_id
+    assert aps.retire_pair(db, row, reason="twin") == set()  # once the refund is free the retire goes through
+    db.commit()
+    assert db.get(LedgerEntry, refund_id).refunds_entry_id is None
 
 # --- final fix wave: duplicate gate over final rows, transfer_out twin peers, retire under the row lock ---------------
 
