@@ -285,12 +285,6 @@ describe('month average and bucket labels (D4, D7)', () => {
     expect(monthAverage(series, '2026-11-30')).toEqual({ months: 4, average: Math.round((31200 + 39608 + 41890 + 4233) / 4) });
   });
 
-  it('counts a month on its last day as completed', () => {
-    const series = ['2025-12', '2026-01', '2026-02', '2026-03', '2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10', '2026-11']
-      .map((m, i) => ({ start: `${m}-01`, value: [0, 0, 0, 0, 0, 0, 0, 0, 31200, 39608, 41890, 4233][i] }));
-    expect(monthAverage(series, '2026-11-30')).toEqual({ months: 4, average: Math.round((31200 + 39608 + 41890 + 4233) / 4) });
-  });
-
   it('has no average when every month is zero', () =>
     expect(monthAverage([{ start: '2026-09-01', value: 0 }, { start: '2026-10-01', value: 0 }], '2026-11-07')).toBeNull());
 

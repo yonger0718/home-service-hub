@@ -241,8 +241,9 @@ export function asOfText(today: string): string {
 }
 
 /**
- * The cut range's previous and last-year windows are one window (a running year; twelve whole months cut at `today`).
- * The period itself is also checked: whichever coincides makes the screen show one comparison.
+ * The cut range's previous and last-year windows are one window: the cut range covers twelve whole months (a custom
+ * 2025-11-01..2026-11-30 on 2026-10-31). The period itself is also checked (a running year): whichever coincides makes
+ * the screen show one comparison.
  */
 function cutCoincides(period: ReportPeriod, today: string): boolean {
   if (comparesCoincide(period)) return true;
