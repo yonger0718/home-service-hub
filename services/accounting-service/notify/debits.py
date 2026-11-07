@@ -158,10 +158,13 @@ class _Run:
         return sum((Decimal(e["amount"]) for e in self.transfers_in(card)
                     if period_end <= _day(e["entry_date"]) <= end), Decimal(0))
 
-    def has_twin(self, card: dict, amount: Decimal, debit_day: date) -> bool:
-        """The debit already exists as the job's `find_twins` would see it (shapes a, b, c)."""
+    def has_twin(self, card: dict, amount: Decimal, debit_day: date, period_end: date) -> bool:
+        """The debit already exists as the job's `find_twins` would see it (shapes a, b, c): dated from the day after
+        the statement closed through `debit_day + twin_days` (#311)."""
+        earliest, latest = period_end + timedelta(days=1), debit_day + timedelta(days=self.twin_days)
+
         def near(e: dict) -> bool:
-            return abs((_day(e["entry_date"]) - debit_day).days) <= self.twin_days
+            return earliest <= _day(e["entry_date"]) <= latest
 
         ins = self.transfers_in(card)
         if any(near(e) and Decimal(e["amount"]) == amount for e in ins):
@@ -229,7 +232,7 @@ class _Run:
         overdue, unpaid_reason = 0, None
         if self.is_auto(card, debit_day):
             cls = "auto"
-            if (self.has_twin(card, amount, debit_day) or (past and paid >= amount)
+            if (self.has_twin(card, amount, debit_day, _day(stmt["period_end"])) or (past and paid >= amount)
                     or self.overdue_days(due, debit_day) is None):
                 return None
             if past:
@@ -249,7 +252,11 @@ class _Run:
         last = last_closed_period(closing, self.today)
         cycles = [shift_period(closing, last, -1), last]
         older_end = shift_period(closing, last, -2)[1]
-        live = [s for s in self.snap.statements.get(card["id"], []) if s.get("mode") == "live" and not s.get("retired")]
+        kept = [s for s in self.snap.statements.get(card["id"], []) if not s.get("retired")]
+        live = [s for s in kept if s.get("mode") == "live"]
+        # A cycle that closed before the card's first statement (any mode) predates its history — a new card has no
+        # bill for it: no 帳單未到 (#311). A card with no statement at all keeps its 帳單未到 lines.
+        first_end = min((_day(s["period_end"]) for s in kept), default=None)
         matched = {cycle: _match(live, cycle[1]) for cycle in cycles}
         # A dated statement ages out through the 30-day overdue horizon; an undated one has none, so it stays only
         # while newer than the older cycle's match zone (C−1 end + 3, the analogue of the C−2 end + 3 bound below):
@@ -270,7 +277,7 @@ class _Run:
                 if stmt.get("due_date") is None and _day(stmt["period_end"]) <= no_due_horizon:
                     continue
                 items.append(self.statement_item(card, stmt))
-            else:
+            elif first_end is None or cycle[1] >= first_end:
                 # A surviving off-cycle bill newer than the previous cycle's match zone (its end + 3) is this
                 # cycle's bill: no 帳單未到 next to it. One that only covers an older cycle does not clear this one.
                 bound = shift_period(closing, cycle, -1)[1] + timedelta(days=MATCH_DAYS)

@@ -356,3 +356,31 @@ def test_valuation_source_without_a_value_lists_debits_but_projects_nothing(fx):
     rep = build_daily(fx.snapshot(source_overrides={76: {"balance": None, "balance_kind": "valuation", "stale": True}}), fx.cfg())
     blk = fx.block(rep, "薪轉戶 A")
     assert blk.balance is None and blk.projected is None and blk.shortfall is None and blk.items
+
+
+def test_early_payment_after_closing_is_a_twin(fx):
+    # #311: 旅遊卡 closes 10-15 and debits 11-06; the owner paid it in full on 10-20 (17 days early) → the job's
+    # find_twins sees it, so the auto item is dropped. A payment on the closing day pays the previous bill.
+    early = fx.entry(account_id=100, kind="transfer_in", amount="48200", entry_date=date(2026, 10, 20))
+    assert fx.find(build_daily(fx.snapshot(payments={100: [early]}), fx.cfg()), "旅遊卡") is None
+    on_close = fx.entry(account_id=100, kind="transfer_in", amount="48200", entry_date=date(2026, 10, 15))
+    assert fx.find(build_daily(fx.snapshot(payments={100: [on_close]}), fx.cfg()), "旅遊卡") is not None
+    # source side (shape b): a peerless transfer_out of the amount from 薪轉戶 A on 10-16
+    out = fx.entry(account_id=76, kind="transfer_out", amount="-48200", entry_date=date(2026, 10, 16))
+    assert fx.find(build_daily(fx.snapshot(source_entries={76: [out]}), fx.cfg()), "旅遊卡") is None
+
+
+def test_cycle_before_the_first_statement_has_no_missing_line(fx):
+    # #311: a new card whose first statement is the 10-25 cycle has no bill for the 09-25 cycle → no 帳單未到 (rule
+    # due 10-07, 29 days overdue on Thu 11-05); with no statement at all the card keeps its 帳單未到 lines
+    first = fx.statement_default("超市卡")
+    rep = build_daily(fx.snapshot(today=date(2026, 11, 5), statements_for={"超市卡": [first]}), fx.cfg())
+    assert not any(i.from_rule for i in _card(rep, "超市卡"))
+    assert [i.statement_id for i in _card(rep, "超市卡")] == [first["id"]]
+    # a retired statement is not history; a backfill one is
+    retired = fx.statement(account_id=98, period_end=date(2026, 8, 25), retired=True)
+    rep = build_daily(fx.snapshot(today=date(2026, 11, 5), statements_for={"超市卡": [first, retired]}), fx.cfg())
+    assert not any(i.from_rule for i in _card(rep, "超市卡"))
+    backfill = fx.statement(account_id=98, period_end=date(2026, 8, 25), mode="backfill")
+    rep = build_daily(fx.snapshot(today=date(2026, 11, 5), statements_for={"超市卡": [first, backfill]}), fx.cfg())
+    assert [i.due for i in _card(rep, "超市卡") if i.from_rule] == [date(2026, 10, 7)]

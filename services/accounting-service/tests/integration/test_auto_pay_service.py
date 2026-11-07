@@ -96,7 +96,8 @@ def test_books_the_pair_with_two_posting_dates_and_the_row(db_session, world):
                             "pay_date": "2026-10-27", "out_entry_id": out_leg.id, "in_entry_id": in_leg.id}
     assert aps.candidates(db, TODAY, _settings()) == []  # booked: never a candidate again
     # the row's own legs are twins of themselves; excluded, nothing else is
-    common = dict(card_account_id=card.id, pay_account_id=bank.id, amount=Decimal("580"), pay_date=PAY, window_days=7)
+    common = dict(card_account_id=card.id, pay_account_id=bank.id, amount=Decimal("580"), pay_date=PAY, window_days=7,
+                  period_end=SEP[1])
     assert aps.find_twins(db, **common) == sorted([out_leg.id, in_leg.id])
     assert aps.find_twins(db, **common, exclude=[out_leg.id, in_leg.id]) == []
 
@@ -403,6 +404,50 @@ def test_twin_window_upper_edge(seed, db_session, world):
     assert _reason(db, stmt.id) == "twin"  # +7 is inside (inclusive)
 
 
+
+def test_an_early_payment_after_closing_is_a_twin(seed, db_session, world):
+    """#311: the owner pays the bill early, after the statement closed but weeks before the pay date. A payment
+    dated after `period_end` and up to `pay_date + twin_window_days` is this bill's twin; one on or before the
+    closing day pays the previous bill."""
+    db, (bank, card, stmt) = db_session, world  # SEP closes 09-30, pays 10-27
+    for day, want in [(SEP[1], None), (SEP[1] + timedelta(days=1), "twin"), (PAY - timedelta(days=8), "twin")]:
+        _transfer(seed, bank, card, 580, day)
+        db.flush()
+        assert _reason(db, stmt.id) == want, day
+        db.rollback()
+    common = dict(card_account_id=card.id, pay_account_id=bank.id, amount=Decimal("580"), pay_date=PAY,
+                  window_days=7, period_end=SEP[1])
+    owner = _transfer(seed, bank, card, 580, date(2026, 10, 5))
+    db.flush()
+    assert aps.find_twins(db, **common) == sorted(e.id for e in owner)
+    db.rollback()
+
+
+
+def test_a_closing_day_payment_is_never_a_twin_even_when_the_debit_is_near_the_close(seed, db_session, run):
+    """#311: the window starts the day after closing, also for a card that debits within twin_window_days of it."""
+    db = db_session
+    bank = seed.account("薪轉")
+    card = _card(seed, db, "近卡", auto_pay_account_id=bank.id)
+    stmt, _, _ = _submit(db, run, card, [_line(1, DAY, "全聯", 580)], period=SEP, due_date=date(2026, 10, 2))
+    db.commit()
+    today = date(2026, 10, 2)
+    for day, want in [(SEP[1], None), (SEP[1] + timedelta(days=1), "twin")]:
+        _transfer(seed, bank, card, 580, day)
+        db.flush()
+        assert _reason(db, stmt.id, today) == want, day
+        db.rollback()
+
+def test_an_early_payment_recorded_after_booking_retires_the_pair(seed, db_session, world):
+    """#311: the job booked the pair, then the owner records the payment they made early (after closing)."""
+    db, (bank, card, stmt) = db_session, world
+    row, out_leg, in_leg = _book(db, stmt)
+    _transfer(seed, bank, card, 580, date(2026, 10, 6))
+    db.commit()
+    assert aps.check_row(db, row, TODAY, _settings()) == "retired"
+    db.commit()
+    assert (row.status, row.reason) == ("retired", "twin")
+
 # --- housekeeping (Task 5) ------------------------------------------------------------------------------------------
 
 
@@ -631,8 +676,9 @@ def test_duplicate_gate_sees_a_retired_pair_when_the_twin_is_outside_the_duplica
                       period=(date(2026, 9, 6), date(2026, 10, 5)), due_date=late_due)
     cand = _cand(db, b.id, late_due)
     assert cand.pay_date == late_due
+    # the owner's payment is after B's closing day, so it is B's twin too (#311); duplicate_statement decides first
     assert aps.find_twins(db, card_account_id=card.id, pay_account_id=bank.id, amount=cand.amount,
-                          pay_date=cand.pay_date, window_days=7) == []
+                          pay_date=cand.pay_date, window_days=7, period_end=cand.period_end) != []
     entries = _entry_count(db)
     out = aps.decide(db, cand, late_due, _settings())
     db.commit()

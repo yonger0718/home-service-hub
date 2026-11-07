@@ -156,6 +156,9 @@ The app's reminders page already derives dues from the card's rule without a sta
   entries are read once per card group, every kind, over the read window. No such statement, a statement outside
   the window, or unread activity (no list at all, or none for the card group) → not quiet (the reminder stays). The check trusts the ledger: a purchase
   missing from HomeHub makes a cycle look quiet.
+- **Before the first statement (issue #311, 2026-11-07).** A cycle whose end is before the card's earliest
+  non-retired statement (any mode) predates the card's statement history — a new card has no bill for it — so it
+  gets no 帳單未到. A card with no statement at all keeps its 帳單未到 lines.
 - Debit day = first business day on or after the due date (the API calendar; same as auto-pay `pay_date_for` and the
   app's `payDateOf`).
 - In window when `debit_day >= today` **and** `business_days_between(today, debit_day) <= lead` where
@@ -173,7 +176,8 @@ The app's reminders page already derives dues from the card's rule without a sta
   is the next cycle's end — the app's `paymentWindowEnd` — so a later cycle's payment never clears this one.
   `paid` = Σ `transfer_in` on the master + non-archived 副卡 with `entry_date` in that window.
 - **Auto item** is dropped only when the debit already exists as the job would see it (`find_twins` rule), i.e.
-  an entry with `entry_date` within `auto_pay.twin_window_days` of the debit day in any of the three shapes the
+  an entry with `entry_date` from `period_end + 1` (issue #311: an early payment after closing counts; one on the
+  closing day pays the previous bill) through `debit_day + auto_pay.twin_window_days` in any of the three shapes the
   job matches: (a) a `transfer_in` on the master + 副卡 of exactly `statement_total`; (b) a `transfer_out` on the
   source account of exactly `−statement_total` whose `transfer_group_id` is null or matches a `transfer_in` on the
   master + 副卡 (the job also accepts a peerless `transfer_out`; the notifier cannot see peers on other accounts

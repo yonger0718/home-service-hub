@@ -416,9 +416,8 @@ def _auto_pay_orphans(db: Session, statement: AccountStatement, accounts: list[i
     out = []
     for entry_id in sorted(in_period):
         row = db.get(StatementAutoPay, legs[entry_id])
-        if auto_pay_service.find_twins(
-                db, card_account_id=row.card_account_id, pay_account_id=row.pay_account_id, amount=row.amount,
-                pay_date=row.pay_date, window_days=window,
+        if auto_pay_service.row_twins(
+                db, row, window_days=window,
                 exclude=[i for i in (row.out_entry_id, row.in_entry_id) if i is not None]):
             continue
         out.append({"entry_id": entry_id, "event_id": None, "line_id": None, "backfill_action_id": None,
