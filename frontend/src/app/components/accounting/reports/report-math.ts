@@ -240,21 +240,38 @@ export function asOfText(today: string): string {
   return `截至 ${md(today, today)}`;
 }
 
-/** The column names while a period runs: `本月至今（11/1–11/7）` / `上月同期` / `去年同期` (one `去年同期` when the windows coincide). */
+/**
+ * The cut range's previous and last-year windows are one window (a running year; twelve whole months cut at `today`).
+ * The period itself is also checked: whichever coincides makes the screen show one comparison.
+ */
+function cutCoincides(period: ReportPeriod, today: string): boolean {
+  if (comparesCoincide(period)) return true;
+  const to = isRunning(period, today) ? today : period.to;
+  const previous = compareRange(period.from, to, 'previous');
+  const lastYear = compareRange(period.from, to, 'last_year');
+  return previous.from === lastYear.from && previous.to === lastYear.to;
+}
+
+/**
+ * The column names while a period runs: `本月至今（11/1–11/7）` / `上月同期` / `去年同期` (one `去年同期` when the windows coincide).
+ * `single` means the screen shows one comparison and reads it from the `compare=last_year` response.
+ */
 export function toDateNouns(period: ReportPeriod, today: string): { current: string; previous: string; lastYear: string; single: boolean } {
   const month = period.unit === 'month';
   const current = `${month ? '本月' : '本期'}至今（${md(period.from, today)}–${md(today, today)}）`;
-  if (comparesCoincide(period)) return { current, previous: '去年同期', lastYear: '去年同期', single: true };
+  if (cutCoincides(period, today)) return { current, previous: '去年同期', lastYear: '去年同期', single: true };
   return { current, previous: month ? '上月同期' : '上期同期', lastYear: '去年同期', single: false };
 }
 
-/** The header comparison labels while a period runs: `比 10 月同期` / `比去年同期`; a year (or coinciding windows) has one. */
-export function runningCompareLabels(period: ReportPeriod): { previous: string; lastYear: string; single: boolean } {
+/** The header comparison labels while a period runs: `比 10 月同期` / `比去年同期`; a year (or coinciding windows) has one.
+ * `single` means the screen shows one comparison and reads it from the `compare=last_year` response.
+ */
+export function runningCompareLabels(period: ReportPeriod, today: string): { previous: string; lastYear: string; single: boolean } {
   if (period.unit === 'month') {
     const month = monthOf(period.from);
     return { previous: `比 ${shortMonth(shiftMonth(month, -1), month)}同期`, lastYear: '比去年同期', single: false };
   }
-  if (period.unit === 'year' || comparesCoincide(period)) return { previous: '比去年同期', lastYear: '比去年同期', single: true };
+  if (period.unit === 'year' || cutCoincides(period, today)) return { previous: '比去年同期', lastYear: '比去年同期', single: true };
   return { previous: '比前一期同期', lastYear: '比去年同期', single: false };
 }
 
@@ -314,8 +331,8 @@ export function change(current: number, base: number, withPct = false): Change {
  */
 export function baseChange(current: number, base: number, windowEmpty: boolean, emptyText: '上期無資料' | '去年無資料', withPct = false): Change {
   if (windowEmpty) return { text: emptyText, direction: 'same', kind: 'none' };
-  if (Math.round(base) === 0 && current > 0) return { text: '新增', direction: 'same', kind: 'new' };
-  if (Math.round(current) === 0 && base > 0) return { text: '— 停止', direction: 'same', kind: 'gone' };
+  if (Math.round(base) === 0 && Math.round(current) > 0) return { text: '新增', direction: 'same', kind: 'new' };
+  if (Math.round(current) === 0 && Math.round(base) > 0) return { text: '— 停止', direction: 'same', kind: 'gone' };
   return change(current, base, withPct);
 }
 
@@ -430,8 +447,7 @@ export type BucketGranularity = 'month' | 'week' | 'day';
 export function monthAverage(buckets: readonly { start: string; value: number }[], today: string): { months: number; average: number } | null {
   const first = buckets.findIndex(bucket => bucket.value !== 0);
   if (first < 0) return null;
-  const current = monthOf(today);
-  const counted = buckets.slice(first).filter(bucket => monthOf(bucket.start) < current);
+  const counted = buckets.slice(first).filter(bucket => monthPeriod(monthOf(bucket.start)).to <= today);
   if (counted.length === 0) return null;
   const total = counted.reduce((sum, bucket) => sum + bucket.value, 0);
   return { months: counted.length, average: Math.round(total / counted.length) };
@@ -456,7 +472,10 @@ export function axisParts(start: string, index: number): { month: string; year: 
   return { month: bucketText(start, 'month', false), year: index === 0 || start.slice(5, 7) === '01' ? start.slice(0, 4) : null };
 }
 
-/** The bucket has started and ends after `today` (a month: its last day; a week: start + 6). A day never runs. */
+/**
+ * The bucket has started and ends after `today` (a month: its last day; a week: start + 6). A day never runs. It ignores
+ * the period's end: callers gate on `isRunning(period, today)`.
+ */
 export function runningBucket(key: string, granularity: BucketGranularity, today: string): boolean {
   if (granularity === 'day') return false;
   const start = granularity === 'month' ? `${key.slice(0, 7)}-01` : key;

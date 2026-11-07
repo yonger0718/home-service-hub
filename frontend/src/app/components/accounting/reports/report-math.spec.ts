@@ -121,6 +121,9 @@ describe('report period', () => {
     expect(compareRange('2024-02-01', '2024-02-29', 'last_year')).toEqual({ from: '2023-02-01', to: '2023-02-28' });
   });
 
+  it('clips the previous window of a one-day running range', () =>
+    expect(compareRange('2026-11-01', '2026-11-01', 'previous')).toEqual({ from: '2026-10-01', to: '2026-10-01' }));
+
   it('compares a running month with the same days of the previous month', () =>
     expect(compareRange('2026-11-01', '2026-11-07', 'previous')).toEqual({ from: '2026-10-01', to: '2026-10-07' }));
   it('clips a 1st-anchored range to the shorter month', () =>
@@ -142,6 +145,8 @@ describe('report period', () => {
     expect(baseChange(4233, 0, true, '上期無資料')).toEqual({ text: '上期無資料', direction: 'same', kind: 'none' }));
   it('marks a key new to a non-empty window as 新增, muted', () =>
     expect(baseChange(1200, 0, false, '上期無資料')).toEqual({ text: '新增', direction: 'same', kind: 'new' }));
+  it('does not mark a key new when its current figure rounds to 0', () =>
+    expect(baseChange(0.3, 0, false, '上期無資料').kind).not.toBe('new'));
   it('marks a key gone from the current window as — 停止', () =>
     expect(baseChange(0, 800, false, '去年無資料')).toEqual({ text: '— 停止', direction: 'same', kind: 'gone' }));
   it('falls back to the arrow change', () =>
@@ -241,11 +246,23 @@ describe('running periods', () => {
     expect(toDateNouns({ unit: 'custom', from: '2026-06-01', to: '2026-12-31' }, '2026-11-07')).toMatchObject({ previous: '上期同期', lastYear: '去年同期', single: false });
     expect(toDateNouns(yearPeriod(2026), '2026-11-07')).toEqual({ current: '本期至今（1/1–11/7）', previous: '去年同期', lastYear: '去年同期', single: true });
   });
+  it('is single when the cut range windows coincide, though the whole period does not', () => {
+    const year = yearPeriod(2026);
+    expect(toDateNouns(year, '2026-11-07')).toMatchObject({ lastYear: '去年同期', single: true });
+    expect(runningCompareLabels(year, '2026-11-07')).toEqual({ previous: '比去年同期', lastYear: '比去年同期', single: true });
+    const custom = customPeriod('2025-11-01', '2026-11-30');
+    expect(toDateNouns(custom, '2026-10-31')).toMatchObject({ previous: '去年同期', single: true });
+    expect(runningCompareLabels(custom, '2026-10-31')).toEqual({ previous: '比去年同期', lastYear: '比去年同期', single: true });
+  });
+  it('is not single for a running month', () => {
+    expect(toDateNouns(nov, '2026-11-07').single).toBe(false);
+    expect(runningCompareLabels(nov, '2026-11-07').single).toBe(false);
+  });
   it('labels the header comparisons of a running month', () =>
-    expect(runningCompareLabels(nov)).toEqual({ previous: '比 10 月同期', lastYear: '比去年同期', single: false }));
+    expect(runningCompareLabels(nov, '2026-11-07')).toEqual({ previous: '比 10 月同期', lastYear: '比去年同期', single: false }));
   it('labels the header comparisons of a running year and custom range', () => {
-    expect(runningCompareLabels(yearPeriod(2026))).toEqual({ previous: '比去年同期', lastYear: '比去年同期', single: true });
-    expect(runningCompareLabels(customPeriod('2026-06-01', '2026-12-31'))).toEqual({ previous: '比前一期同期', lastYear: '比去年同期', single: false });
+    expect(runningCompareLabels(yearPeriod(2026), '2026-11-07')).toEqual({ previous: '比去年同期', lastYear: '比去年同期', single: true });
+    expect(runningCompareLabels(customPeriod('2026-06-01', '2026-12-31'), '2026-11-07')).toEqual({ previous: '比前一期同期', lastYear: '比去年同期', single: false });
   });
   it('words the rows-after-today line', () => {
     expect(asOfText('2026-11-07')).toBe('截至 11/7');
@@ -260,6 +277,18 @@ describe('month average and bucket labels (D4, D7)', () => {
     const series = ['2025-12', '2026-01', '2026-02', '2026-03', '2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10', '2026-11']
       .map((m, i) => ({ start: `${m}-01`, value: [0, 0, 0, 0, 0, 0, 0, 0, 31200, 39608, 41890, 4233][i] }));
     expect(monthAverage(series, '2026-11-07')).toEqual({ months: 3, average: 37566 });
+  });
+
+  it('counts a month on its last day as completed', () => {
+    const series = ['2025-12', '2026-01', '2026-02', '2026-03', '2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10', '2026-11']
+      .map((m, i) => ({ start: `${m}-01`, value: [0, 0, 0, 0, 0, 0, 0, 0, 31200, 39608, 41890, 4233][i] }));
+    expect(monthAverage(series, '2026-11-30')).toEqual({ months: 4, average: Math.round((31200 + 39608 + 41890 + 4233) / 4) });
+  });
+
+  it('counts a month on its last day as completed', () => {
+    const series = ['2025-12', '2026-01', '2026-02', '2026-03', '2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10', '2026-11']
+      .map((m, i) => ({ start: `${m}-01`, value: [0, 0, 0, 0, 0, 0, 0, 0, 31200, 39608, 41890, 4233][i] }));
+    expect(monthAverage(series, '2026-11-30')).toEqual({ months: 4, average: Math.round((31200 + 39608 + 41890 + 4233) / 4) });
   });
 
   it('has no average when every month is zero', () =>
