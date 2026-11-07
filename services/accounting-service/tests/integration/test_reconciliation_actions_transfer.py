@@ -716,3 +716,197 @@ def test_engine_revert_of_a_pair_does_not_block_a_later_pairing(orphan_pair, db_
     assert "owner_deleted" not in _needs_peer(db_session, p.cstmt).context
     again = _apply(db_session, _needs_peer(db_session, p.cstmt), "pair_transfer", _pair_params(p.bline), **POLICY_RUN)
     assert again.status == "applied"
+
+
+# --- #291: barrier holders vs card writers (P12 barrier pre-lock rule) -----------------------------------------------
+
+
+def _card_write_during_barrier(pg_engine, monkeypatch, account, body):
+    """Patch the engine's account/barrier step: right after it returns (the action T holds its account rows and the
+    exclusive dirty barrier), a card write C (closing_day change of `account`) runs in another transaction. Returns
+    the dict C's outcome lands in ({"done": answered within 1 s, "out": "committed" | exception})."""
+    import threading
+
+    from sqlalchemy.orm import sessionmaker
+
+    from app.schemas.writes import AccountIn
+    from app.services.reconciliation_actions import engine
+
+    original = engine.locks.lock_account_and_barrier
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    seen: dict = {}
+
+    def card_write():
+        with factory() as db:
+            try:
+                settings_service.update_account(db, account.id, AccountIn(**body))
+                db.commit()
+                seen["out"] = "committed"
+            except Exception as exc:  # noqa: BLE001  (asserted by the caller)
+                db.rollback()
+                seen["out"] = exc
+
+    def racing(db, targets, statement):
+        original(db, targets, statement)
+        thread = threading.Thread(target=card_write, daemon=True)
+        thread.start()
+        thread.join(1.0)  # before the fix: C holds the peer FOR UPDATE and waits on T's barrier in the dirty trigger
+        seen.update(done=not thread.is_alive(), thread=thread)
+
+    monkeypatch.setattr(engine.locks, "lock_account_and_barrier", racing)
+    return seen
+
+
+def _is_deadlock(exc) -> bool:
+    if exc is None or isinstance(exc, str):
+        return False
+    return "40P01" in repr(exc) + repr(getattr(exc, "orig", None)) \
+        or type(getattr(exc, "orig", None)).__name__ == "DeadlockDetected"
+
+
+def test_pair_transfer_and_a_peer_closing_day_change_never_deadlock(orphan_pair, pg_engine, db_session, monkeypatch):
+    """#291 interleave 1 (dev-astra AGENT-398, dirty tracking on): T = pair_transfer on the bank statement holds the
+    bank row and the exclusive barrier; C = a closing_day change of the PEER card takes the card FOR UPDATE NOWAIT and
+    waits on the barrier in the account trigger; T then inserts the card leg (FK KEY SHARE on the card) and waits on
+    C: 40P01. With the barrier pre-lock T holds the peer card FOR UPDATE before the barrier, so C waits for T while it
+    holds nothing but its own row request (or answers 409 `retry`); T books the pair; never a 40P01 or a 500."""
+    p = orphan_pair
+    case = _needs_peer(db_session, p.bstmt)
+    body = dict(name=p.card.name, currency=p.card.currency, is_credit=True, closing_day=25,
+                combined_account_id=None, statement_live_from=p.card.statement_live_from)
+    seen = _card_write_during_barrier(pg_engine, monkeypatch, p.card, body)
+    outcome = None
+    try:
+        row = _apply(db_session, case, "pair_transfer", _pair_params(p.cline))
+        outcome = "committed"
+    except Exception as exc:  # noqa: BLE001  (asserted below)
+        db_session.rollback()
+        outcome = exc
+    seen["thread"].join(10)
+    assert not _is_deadlock(outcome) and not _is_deadlock(seen.get("out")), (outcome, seen.get("out"))
+    assert outcome == "committed", outcome
+    out = seen["out"]
+    assert out == "committed" or (isinstance(out, CodedConflictError) and out.code == "retry"), out
+    assert {leg.account_id for leg in _legs(db_session, row)} == {p.bank.id, p.card.id}
+
+
+def _other(pg_engine, hold_sql, hold_params, wait_sql, wait_params, waits_on_pid):
+    """Another transaction O, in a thread: `hold_sql` (keeps its row lock), then `wait_sql`, which must block on
+    backend `waits_on_pid` (the action's). Returns (thread, seen); seen["out"] is "done" or the exception, and O
+    always rolls back (it writes nothing that stays)."""
+    import threading
+
+    from sqlalchemy import text
+
+    from tests.helpers import wait_until_blocked
+
+    seen: dict = {}
+    ready = threading.Event()
+
+    def run_other():
+        with pg_engine.connect() as conn:
+            try:
+                conn.execute(text("SET lock_timeout = '10s'"))
+                seen["pid"] = conn.execute(text("SELECT pg_backend_pid()")).scalar_one()
+                conn.execute(text(hold_sql), hold_params)
+                ready.set()
+                conn.execute(text(wait_sql), wait_params)
+                seen["out"] = "done"
+            except Exception as exc:  # noqa: BLE001  (asserted by the caller)
+                seen["out"] = exc
+            finally:
+                ready.set()
+                conn.rollback()
+
+    thread = threading.Thread(target=run_other, daemon=True)
+    thread.start()
+    assert ready.wait(5)
+    wait_until_blocked(pg_engine, seen["pid"], blocker_pid=waits_on_pid)
+    return thread, seen
+
+
+def _pid(db) -> int:
+    from sqlalchemy import text
+
+    return db.execute(text("SELECT pg_backend_pid()")).scalar_one()
+
+
+def _apply_outcome(db, case, params):
+    """The pair_transfer outcome. No rollback on a failure: a 409 must leave the session usable (AGENT-430)."""
+    try:
+        _apply(db, case, "pair_transfer", params)
+        return "committed"
+    except Exception as exc:  # noqa: BLE001  (asserted by the caller)
+        return exc
+
+
+def _books_on_retry(db, p, case):
+    """The same session, with no rollback after the 409, books the pair once the other transaction is gone."""
+    row = _apply(db, case, "pair_transfer", _pair_params(p.cline))
+    assert {leg.account_id for leg in _legs(db, row)} == {p.bank.id, p.card.id}
+    assert _needs_peer(db, p.bstmt) is None
+
+
+def test_account_pre_lock_never_waits_on_an_account_set_that_grew(orphan_pair, seed, pg_engine, db_session,
+                                                                  monkeypatch):
+    """#291 interleave 2 (dev-astra AGENT-398 cycle 1): the pre-lock set grows between batches (a rule PUT moved a
+    rule's reward account meanwhile). T holds its first batch (the bank and the card); O holds the new account X and
+    waits on T's bank row. A blocking second batch would wait on O: an account -> account cycle (40P01). Every batch
+    is NOWAIT, so T answers 409 `retry` at once and O then goes through."""
+    from app.services.reconciliation_actions import engine
+
+    p = orphan_pair
+    case = _needs_peer(db_session, p.bstmt)
+    extra = seed.account("測試回饋帳戶")
+    db_session.commit()
+    original = engine.locks.barrier_accounts
+    calls: dict = {"n": 0}
+    state: dict = {}
+
+    def growing(db, targets, statement):
+        found = original(db, targets, statement)
+        calls["n"] += 1
+        if calls["n"] == 2:  # the first batch is held: O takes X, then waits on T's bank row
+            state["thread"], state["seen"] = _other(
+                pg_engine, "SELECT id FROM account WHERE id = :x FOR UPDATE", {"x": extra.id},
+                "SELECT id FROM account WHERE id = :b FOR UPDATE", {"b": p.bank.id}, _pid(db))
+            found = found | {extra.id}
+        return found
+
+    monkeypatch.setattr(engine.locks, "barrier_accounts", growing)
+    outcome = _apply_outcome(db_session, case, _pair_params(p.cline))
+    state["thread"].join(10)
+    assert not _is_deadlock(outcome) and not _is_deadlock(state["seen"].get("out")), (outcome, state["seen"])
+    assert isinstance(outcome, CodedConflictError) and outcome.code == "retry", outcome
+    assert state["seen"]["out"] == "done"
+    assert _needs_peer(db_session, p.bstmt) is not None  # nothing was booked
+    _books_on_retry(db_session, p, case)
+
+
+def test_account_pre_lock_never_waits_while_holding_the_case_row(orphan_pair, pg_engine, db_session, monkeypatch):
+    """#291 interleave 3 (dev-astra AGENT-398 cycle 2): T already holds its statement, sweep and case rows when it
+    takes its account rows. O (a split PUT deleting a member) holds the account FOR KEY SHARE and waits on T's case
+    row through the ON DELETE SET NULL of `reconciliation_case.entry_id` (simulated by the UPDATE it runs). A blocking
+    account lock would wait on O's KEY SHARE (40P01). The pre-lock is NOWAIT: T answers 409 `retry` at once and O
+    then goes through."""
+    from app.services.reconciliation_actions import engine
+
+    p = orphan_pair
+    case = _needs_peer(db_session, p.bstmt)
+    original = engine.locks.lock_account_and_barrier
+    state: dict = {}
+
+    def contended(db, targets, statement):
+        if "thread" not in state:  # the first attempt only
+            state["thread"], state["seen"] = _other(
+                pg_engine, "SELECT id FROM account WHERE id = :b FOR KEY SHARE", {"b": p.bank.id},
+                "UPDATE reconciliation_case SET entry_id = NULL WHERE id = :c", {"c": case.id}, _pid(db))
+        original(db, targets, statement)
+
+    monkeypatch.setattr(engine.locks, "lock_account_and_barrier", contended)
+    outcome = _apply_outcome(db_session, case, _pair_params(p.cline))
+    state["thread"].join(10)
+    assert not _is_deadlock(outcome) and not _is_deadlock(state["seen"].get("out")), (outcome, state["seen"])
+    assert isinstance(outcome, CodedConflictError) and outcome.code == "retry", outcome
+    assert state["seen"]["out"] == "done"
+    _books_on_retry(db_session, p, case)

@@ -17,6 +17,7 @@ import { schedulePill } from '../schedule-math';
 import { GroupNavState, entryCommands, groupCommands, listOpenState } from '../split-group/group-nav';
 import { formatMoney } from '../format';
 import { PassbookItem, batchSub, foldPassbook } from '../reward-batch';
+import { reviewTitle } from '../review-reason';
 
 export const PAGE_SIZE = 200;
 
@@ -82,6 +83,7 @@ export class AccountingAccountEntriesComponent implements OnInit {
 
   readonly kindOptions = Object.entries(ENTRY_KIND_LABELS) as [EntryKind, string][];
   readonly formatMoney = formatMoney;
+  readonly reviewTitle = reviewTitle;
   readonly batchSub = batchSub;
   /** #304: the rows newest first with each engine reward batch folded at its newest member. */
   readonly items = computed<PassbookItem[]>(() => {

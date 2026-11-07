@@ -1,0 +1,40 @@
+@if (visible()) {
+<div class="reprice-card" role="group" aria-label="回饋已入帳，消費金額已改">
+  <p class="reprice-title">回饋已入帳，消費金額已改</p>
+  @switch (state().status) {
+    @case ('loading') {
+      <div class="reprice-sub" role="status" aria-busy="true">讀取中</div>
+    }
+    @case ('failed') {
+      <div class="reprice-sub" role="status">讀取失敗</div>
+      <div class="reprice-actions">
+        <button type="button" class="reprice-retry" (click)="load()">重新讀取</button>
+      </div>
+    }
+  }
+  @if (state(); as current) {
+    @if (current.status === 'ready') {
+      @for (item of current.preview.items; track item.accrual_id) {
+        <div class="reprice-line" [attr.data-status]="item.status">
+          <span>{{ item.rule_name || '回饋' }}</span>
+          <span class="reprice-sub">{{ lineText(item) }}</span>
+        </div>
+      }
+      @if (needsOwner()) {
+        <p class="reprice-sub reprice-hint">標「請刪除該筆回饋或保持原樣」的不會自動重算：刪除該筆回饋，或按保持原樣留著舊金額。</p>
+      }
+      @if (!detail().locked) {
+        <div class="reprice-actions">
+          @if (canReprice()) {
+            <button type="button" class="reprice-apply" [disabled]="busy()" (click)="apply(false)">依新金額重算回饋</button>
+          }
+          <button type="button" class="reprice-keep" [disabled]="busy()" (click)="apply(true)">保持原樣</button>
+        </div>
+      }
+    }
+  }
+  @if (error(); as message) {
+    <p class="reprice-error" role="alert">{{ message }}</p>
+  }
+</div>
+}

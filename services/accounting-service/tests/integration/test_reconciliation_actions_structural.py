@@ -659,6 +659,65 @@ def test_a_failing_apply_after_the_barrier_rolls_back_and_leaves_no_holder(dirty
     assert _actions(db_session) == [] and _adjustments(db_session) == []
 
 
+def test_balance_adjustment_never_waits_on_a_writer_creating_its_system_category(dirty_on, gap, db_session, pg_engine,
+                                                                                monkeypatch):
+    """#291 (dev-astra AGENT-430 P1): the balance_adjustment category does not exist yet. W, a manual balance
+    adjustment on ANOTHER account (so the account pre-lock is not in its way), creates the category and then waits on
+    T's barrier in the dirty trigger. T, holding the barrier, needs the same category: an INSERT of that key would wait
+    on W's uncommitted row (unique check), 40P01. The category key lock makes T answer 409 `retry` at once; the
+    attempt rolls back in full (its barrier with it), W commits, and the SAME session (no outer rollback) books the
+    gap on retry, under W's category."""
+    from app.models import Category
+    from app.schemas.writes import BalanceAdjustmentIn
+
+    assert db_session.scalar(select(Category.id).where(Category.kind == "balance_adjustment")) is None
+    action_pid = _pid(db_session)
+    writer = sessionmaker(bind=pg_engine, autoflush=False)()
+    writer_pid = _pid(writer)
+    original = engine.locks.lock_account_and_barrier
+    state: dict = {}
+
+    def write():
+        try:
+            ews.create_balance_adjustment(writer, BalanceAdjustmentIn(
+                account_id=gap.other.id, target_balance=Decimal("7"), entry_date=DAY))
+            writer.commit()
+            state["out"] = "committed"
+        except Exception as exc:  # noqa: BLE001  (asserted below)
+            writer.rollback()
+            state["out"] = exc
+
+    def racing(db, targets, statement):
+        original(db, targets, statement)
+        if "thread" not in state:  # first attempt only: W creates the category, then waits on T's barrier
+            state["thread"] = threading.Thread(target=write, daemon=True)
+            state["thread"].start()
+            wait_until_blocked(pg_engine, writer_pid, blocker_pid=action_pid)
+
+    monkeypatch.setattr(engine.locks, "lock_account_and_barrier", racing)
+    try:
+        started = time.monotonic()
+        try:
+            _apply(db_session, gap.case, "balance_adjustment_asof", commit=False)
+            outcome = "applied"
+        except Exception as exc:  # noqa: BLE001  (asserted below; no rollback: the session must stay usable)
+            outcome = exc
+        elapsed = time.monotonic() - started
+        state["thread"].join(15)
+    finally:
+        writer.close()
+    assert "DeadlockDetected" not in repr(outcome) + repr(state.get("out")), (outcome, state.get("out"))
+    assert isinstance(outcome, CodedConflictError) and outcome.code == "retry", outcome
+    assert elapsed < 5
+    assert state["out"] == "committed", state["out"]  # the rolled-back attempt released the barrier
+    row, _ = _apply(db_session, gap.case, "balance_adjustment_asof")  # same session, no rollback in between
+    adjustments = _adjustments(db_session)
+    assert sorted(a.account_id for a in adjustments) == sorted([gap.bank.id, gap.other.id])
+    assert len({a.category_id for a in adjustments}) == 1
+    assert row.created_entry_ids == [a.id for a in adjustments if a.account_id == gap.bank.id]
+    assert _barrier_holders(pg_engine) == []
+
+
 def test_a_barrier_wait_beyond_the_timeout_is_409_with_no_row(dirty_on, gap, db_session, pg_engine, monkeypatch):
     """A writer takes the shared barrier after the action's sweep and before its exclusive barrier and keeps it past
     the (shortened) lock timeout: 409 `sweep_barrier_busy`, nothing written, nothing held."""

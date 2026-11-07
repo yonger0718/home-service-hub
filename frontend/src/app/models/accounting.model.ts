@@ -88,6 +88,28 @@ export interface RewardAccrual {
   reward_account_name: string;
 }
 
+/** `RewardRepriceItemOut.status` (#306): `reprice` / `same` / `zero` are repriceable, the rest are shown only. */
+export type RewardRepriceStatus = 'reprice' | 'same' | 'zero' | 'confirmed' | 'rule_unlinked' | 'window_moved' | 'row_edited';
+
+/** One posted / bank-confirmed accrual of a purchase: booked amount vs what it would be now (#306). */
+export interface RewardRepriceItem {
+  accrual_id: number;
+  rule_id: number;
+  rule_name: string;
+  reward_entry_id: number | null;
+  booked: string;
+  new: string | null;
+  status: RewardRepriceStatus;
+}
+
+/** `GET / POST /entries/{id}/reward-reprice` (#306). */
+export interface RewardReprice {
+  entry_id: number;
+  flagged: boolean;
+  items: RewardRepriceItem[];
+  applied: number[];
+}
+
 export type ShareCapWith = 'none' | number | null;
 
 /** Writable fields of a reward rule (`POST/PUT /accounts/{id}/reward-rules`). */
@@ -322,6 +344,8 @@ export interface LedgerEntry {
   rule_names: string[];
   invoice_number: string | null;
   needs_review: boolean;
+  /** `EntryOut.review_reason`: why `needs_review` is set (`reward_posted`, #306); optional for older literals. */
+  review_reason?: string | null;
   /**
    * `EntryOut.is_settlement` (plan-review round 2): true for 收款 / 還款 rows written by `settle` or imported from
    * MOZE types 5 / 6, with or without a `settles_entry_id` link. Such rows cannot be edited (`PUT` answers 422 `kind`).

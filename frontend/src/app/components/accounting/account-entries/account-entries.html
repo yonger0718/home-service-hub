@@ -18,7 +18,7 @@
             }
           }
           @if (entry.needs_review) {
-            <span class="pill review-marker" title="請確認這筆記錄">待確認</span>
+            <span class="pill review-marker" [attr.title]="reviewTitle(entry)">待確認</span>
           }
           @if (entry.project) {
             <span class="pill">{{ entry.project }}</span>
