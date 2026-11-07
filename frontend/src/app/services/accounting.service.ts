@@ -47,6 +47,7 @@ import {
   TransferInput,
   DebtsSummary,
   ScheduleLoanInput,
+  RewardReprice,
   RewardRule,
   RewardUsage,
   RewardRuleInput,
@@ -236,6 +237,16 @@ export class AccountingService {
   /** Replace only the entry's reward rule links; the row and its fee / discount children stay as they are (#293). */
   updateEntryRewardRules(id: number, ruleIds: number[]): Observable<EntryDetail> {
     return this.bump(this.http.put<EntryDetail>(`${this.apiUrl}/entries/${id}/reward-rules`, { reward_rule_ids: ruleIds }));
+  }
+
+  /** A purchase's posted rewards: booked vs repriced on its current figures (#306). */
+  getRewardReprice(id: number): Observable<RewardReprice> {
+    return this.http.get<RewardReprice>(`${this.apiUrl}/entries/${id}/reward-reprice`);
+  }
+
+  /** 依新金額重算回饋 (`keep` false) or 保持原樣 (`keep` true); either clears the `reward_posted` flag (#306). */
+  applyRewardReprice(id: number, keep: boolean): Observable<RewardReprice> {
+    return this.bump(this.http.post<RewardReprice>(`${this.apiUrl}/entries/${id}/reward-reprice`, { keep }));
   }
 
   deleteEntry(id: number): Observable<void> {

@@ -8,9 +8,10 @@ from ..auth import method_scope
 from ..database import get_db
 from ..schemas.ledger import DailySummaryOut, EntryDetailOut, EntryKind, EntryPage, MonthSummaryOut
 from ..schemas.writes import (
-    EntryIn, EntryUpdateIn, EntryWriteOut, RefundIn, RewardRulesIn, SettleIn, SplitIn, SplitOut,
+    EntryIn, EntryUpdateIn, EntryWriteOut, RefundIn, RewardRepriceIn, RewardRepriceOut, RewardRulesIn, SettleIn, SplitIn,
+    SplitOut,
 )
-from ..services import entry_write_service, ledger_service, settlement_service, split_service
+from ..services import entry_write_service, ledger_service, reward_reprice, settlement_service, split_service
 from .errors import service_errors
 
 router = APIRouter(prefix="/entries", tags=["Entries"], dependencies=[Depends(method_scope())])
@@ -111,6 +112,27 @@ def put_entry_reward_rules(entry_id: int, payload: RewardRulesIn, db: Session = 
         entry_write_service.update_reward_rules(db, entry_id, payload.reward_rule_ids)
     db.commit()
     return ledger_service.get_entry_detail(db, entry_id)
+
+
+def _reprice_out(plan: reward_reprice.Plan) -> RewardRepriceOut:
+    return RewardRepriceOut(entry_id=plan.entry_id, flagged=plan.flagged, applied=plan.applied,
+                            items=[vars(item) for item in plan.items])
+
+
+@router.get("/{entry_id}/reward-reprice", response_model=RewardRepriceOut)
+def get_reward_reprice(entry_id: int, db: Session = Depends(get_db)):
+    """The purchase's posted rewards: booked amount vs. what they would be on its current figures (issue #306)."""
+    with service_errors():
+        return _reprice_out(reward_reprice.preview(db, entry_id))
+
+
+@router.post("/{entry_id}/reward-reprice", response_model=RewardRepriceOut)
+def post_reward_reprice(entry_id: int, payload: RewardRepriceIn, db: Session = Depends(get_db)):
+    """Reprice the purchase's posted rewards on its current figures, or keep them (`keep`); clears `reward_posted`."""
+    with service_errors():
+        plan = reward_reprice.apply(db, entry_id, keep=payload.keep)
+    db.commit()
+    return _reprice_out(plan)
 
 
 @router.put("/{entry_id}/split", response_model=SplitOut)

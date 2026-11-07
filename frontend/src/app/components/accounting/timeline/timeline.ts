@@ -57,6 +57,7 @@ import { FilterBarComponent, FilterChip } from '../../ui/filter-bar/filter-bar';
 import { batchKey, batchSub, loadedBatches } from '../reward-batch';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { barSegments, categoryDistribution, distributionAriaText } from './category-distribution';
+import { reviewTitle } from '../review-reason';
 
 export const TIMELINE_PAGE_SIZE = 50;
 /** One day's entries in the 日曆 view are read in a single request. */
@@ -131,6 +132,8 @@ export const TIMELINE_FILTER_KINDS: EntryKind[] = [
 export interface TimelinePill {
   label: string;
   tone: KindPill['tone'] | 'review';
+  /** Hover text (the 待確認 reason, #306). */
+  title?: string;
 }
 
 export interface TimelineRow {
@@ -237,7 +240,7 @@ function pillsOf(entry: LedgerEntry): TimelinePill[] {
     pills.push({ label: entry.account_name, tone: '' });
   }
   if (entry.needs_review) {
-    pills.push({ label: '待確認', tone: 'review' });
+    pills.push({ label: '待確認', tone: 'review', title: reviewTitle(entry) });
   }
   return pills;
 }

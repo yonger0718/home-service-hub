@@ -8,7 +8,7 @@ Lock contract (P12): the caller locks its ledger rows first; the engine then tak
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Mapping
 from datetime import date
 from decimal import Decimal
 
@@ -370,6 +370,17 @@ def _window_rows(db: Session, pairs: Iterable[Pair], *, lock: bool, nowait: bool
     return rows
 
 
+def window_rows(db: Session, rule_id: int, window_start: date) -> list[RewardAccrual]:
+    """Every accrual of one window of the rule's shared-cap group, read without locks (the caller holds them, or only
+    previews)."""
+    return _window_rows(db, [(rule_id, window_start)], lock=False)
+
+
+def desired_accruals(db: Session, entry: LedgerEntry) -> dict[int, tuple]:
+    """rule_id -> (window, post_on, estimate) for the accruals `entry` should have on its current figures."""
+    return _desired(db, entry)
+
+
 def lock_windows(db: Session, pairs: Iterable[Pair], *, nowait: bool = False) -> list[RewardAccrual]:
     """Lock every accrual of these windows (each rule's whole shared-cap group) in one
     `SELECT ... ORDER BY id FOR UPDATE` and return them, freshly loaded, in id order (P12 step 2). The
@@ -444,24 +455,39 @@ def recompute_window(db: Session, rule_id: int, window_start: date, *, locked: b
     estimated = [r for r in rows if r.state == "estimated"]
     if not estimated:
         return  # frozen amounts are never rewritten; no estimated row, no adjustment (5.2.4)
-    window_end = max(r.window_end for r in estimated)
+    amounts = window_amounts(db, rule, group, window_start, rows)
+    for r in estimated:
+        value = amounts[r.id]
+        if Decimal(r.amount) != value:
+            r.amount = value
+    db.flush()
+
+
+def window_amounts(db: Session, rule: RewardRule, group: list[int], window_start: date, rows: list[RewardAccrual],
+                   unfreeze: Mapping[int, Decimal] | None = None) -> dict[int, Decimal]:
+    """The allotment (5.2) of one window's accrual `rows` (all of them, the caller holds the window locks): accrual
+    id -> amount, quantized, for every estimated row and every row in `unfreeze`. `unfreeze` (reprice, issue #306):
+    frozen accrual id -> the estimate to price it on, allotted as if it were still estimated; other frozen rows keep
+    their cap use. Writes nothing."""
+    unfreeze = unfreeze or {}
+    open_rows = [r for r in rows if r.state == "estimated" or r.id in unfreeze]
+    if not open_rows:
+        return {}
+    window_end = max(r.window_end for r in open_rows)
     dates = dict(db.execute(
         select(LedgerEntry.id, LedgerEntry.entry_date)
         .where(LedgerEntry.id.in_(sorted({r.source_entry_id for r in rows if r.source_entry_id is not None})))
     ).all())
-    frozen = _frozen_amounts(db, rows)
+    frozen = {k: v for k, v in _frozen_amounts(db, rows).items() if k not in unfreeze}
     ordered = sorted(rows, key=lambda r: (dates.get(r.source_entry_id, date.max), r.id))
-    slots = [Slot(key=r.id, estimate=Decimal(r.estimate), frozen=frozen.get(r.id)) for r in ordered]
+    slots = [Slot(key=r.id, estimate=Decimal(unfreeze.get(r.id, r.estimate)), frozen=frozen.get(r.id))
+             for r in ordered]
     # The group's lowest-id rule carries the window's total_rounding, so every member computes the same split.
     lead = db.get(RewardRule, group[0])
     amounts = allot(slots, cap=reward_rule_service.group_cap(db, rule),
                     external_used=_external_used(db, group, window_start, window_end),
                     total_rounding=lead.total_rounding)
-    for r in estimated:
-        value = amounts[r.id].quantize(_Q)
-        if Decimal(r.amount) != value:
-            r.amount = value
-    db.flush()
+    return {r.id: amounts[r.id].quantize(_Q) for r in open_rows}
 
 
 def _recompute_all(db: Session, pairs: Iterable[Pair]) -> None:
