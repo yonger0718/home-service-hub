@@ -304,6 +304,10 @@ D8 header: `.rp-period` is projected into `<app-page-header>`. From 1024 px it s
     - moving `‹` resets `wholeView` to false;
     - a stale response for the old period is ignored.
   - `it('projects the period control into the page header', …)`: `.page-actions .rp-period` exists.
+  - `it('keeps the header on one row from 1024 px and wraps the period control below', …)`. This reads `reports.scss` as text, like `accounting-layout.spec.ts:924` does with `readFileSync(join(process.cwd(), …))`. It asserts:
+    - a `@media (max-width: 1023.98px)` block makes `.page-actions` wrap under the title (`flex-basis: 100%` or `width: 100%`);
+    - no rule outside such a block hides or moves `.rp-period`.
+  - `it('leaves the 記一筆 clearance to the shell', …)`: `reports.scss` and `custom-report.scss` contain neither `--fab-clear` nor a negative `margin-bottom` on the page root. This keeps the shell's `.hub-page` padding (`shell.scss:105-108`) in force, which is what keeps the button off the last 增減 cell at the scrolled end (spec "Last column visible"). The screenshot step at release confirms it visually.
 - [ ] **Step 2: Run** `--include='src/app/components/accounting/reports/reports.spec.ts'`. Expected: FAIL.
 - [ ] **Step 3: Implement** as above. Pass `[expenseWhole]`, `[incomeWhole]`, `[whole]`, `[today]` and `(toggleWhole)` to 總覽 and 趨勢 (tasks 7 and 8 define those inputs). Land those template bindings together with tasks 7 and 8 if the build needs it; this task's tests cover the page.
 - [ ] **Step 4: Run.** Expected: PASS.
@@ -362,6 +366,11 @@ New output: `toggleWhole = output<void>()`. It injects `ReportsService`.
   - `it('hatches the running month', …)`: the last `rect` has class `running`.
   - `it('heads the table 本月至今（11/1–11/7） / 上月同期 / 去年同期 while running', …)`.
   - `it('hides an empty last-year column with a note', …)`: last year count 0 → no `去年同期` heading, and the note text is present.
+  - `it('names rows after today under the table and switches to the whole month', …)`:
+    - expense to-date and whole responses differ by 2 rows / 13,420;
+    - the line under the table reads `另有 11/7 之後已記的 2 筆 $13,420 未計入`;
+    - pressing it emits `toggleWhole`;
+    - with `whole` set, the table has only the current column and the line reads `改回截至 11/7`.
 - [ ] **Step 2: Run.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run.** Expected: PASS.
@@ -420,6 +429,11 @@ Columns:
     - its change is against the short-range total;
     - the total row's base is `compare.totals`;
     - 平均每月 averages June–October.
+  - `it('uses the previous bucket's same days for the running bucket against last year too (R2)', …)`:
+    - same report with `compare: 'last_year'`;
+    - the third request is `2026-10-01..2026-10-07`;
+    - the November row's change is against that total, not against `compare_amount`;
+    - the total row's base is still `compare.totals` (last year's window).
   - `it('reads 9 月 under 最高', …)`: September is highest → `9 月` with `$367`.
   - `it('hides empty last-year columns with a note and marks no 新增', …)`: the spec scenario "Ledger younger than a year".
   - `it('does not run a week whose last day is today', …)`:
