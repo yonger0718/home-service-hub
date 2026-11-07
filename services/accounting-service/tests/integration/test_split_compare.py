@@ -25,7 +25,8 @@ def _body(account, **fields) -> dict:
 def _verdict(db, entry_id: int, payload: EntryIn) -> str:
     db.expire_all()
     entry = db.get(LedgerEntry, entry_id)
-    return classify(stored_signature(db, entry), payload_signature(payload, entry.currency))
+    return classify(stored_signature(db, entry),
+                    payload_signature(payload, entry.currency, ews.stored_child_names(db, entry.id)))
 
 
 @pytest.fixture()
@@ -107,3 +108,16 @@ def test_online_fx_echo_is_unchanged_only_against_an_online_row(db_session, seed
     assert _verdict(db_session, online.id, EntryIn(**{**echo, "original_amount": "1900"})) == "financial"
     assert _verdict(db_session, manual.id, EntryIn(**{**echo, "fx_rate": "0.2163"})) == "unchanged"
     assert _verdict(db_session, manual.id, EntryIn(**{**echo, "amount": "389.34"})) == "unchanged"
+
+
+def test_a_nameless_fee_echo_keeps_the_stored_name(db_session, seed):
+    """#313 review: sync_children keeps a stored child name the payload omits, so the comparison does too — a split
+    member whose fee is 國外交易手續費, echoed as {"amount": ...}, is not a financial change."""
+    card = seed.account("卡")
+    entry_id = ews.create_entry(db_session, EntryIn(**_body(card, fee={"amount": "5", "name": "國外交易手續費"})))
+    db_session.commit()
+
+    assert _verdict(db_session, entry_id, EntryIn(**_body(card))) == "unchanged"
+    assert _verdict(db_session, entry_id, EntryIn(**_body(card, description="備註"))) == "meta"
+    renamed = EntryIn(**_body(card, fee={"amount": "5", "name": "手續費"}))
+    assert _verdict(db_session, entry_id, renamed) == "financial"

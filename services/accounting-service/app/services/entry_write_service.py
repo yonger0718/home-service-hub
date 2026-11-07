@@ -288,6 +288,81 @@ def write_children(
     db.flush()
 
 
+_CHILD_FOLLOWS_PARENT = ("account_id", "currency", "entry_date", "entry_time", "posted_date")
+
+
+def child_name(kind: str, child: ChildIn, stored_name: str | None = None) -> str:
+    """The name a payload child ends up with: its own, else the stored child's (a nameless edit keeps it — 國外交易手續費
+    is how attach_fee and the fee proposal recognise the FX fee child), else the kind's default. `stored_name`: the
+    lowest-id stored child of that kind, None when there is none."""
+    return child.name or stored_name or CHILD_DEFAULT_NAMES[kind]
+
+
+def stored_child_names(db: Session, parent_id: int) -> dict[str, str | None]:
+    """kind → the name of the lowest-id child of that kind (`child_name`'s `stored_name`)."""
+    names: dict[str, str | None] = {}
+    for kind, name in db.execute(select(LedgerEntry.kind, LedgerEntry.name)
+                                 .where(LedgerEntry.parent_entry_id == parent_id).order_by(LedgerEntry.id)):
+        names.setdefault(kind, name)
+    return names
+
+
+def sync_children(
+    db: Session, parent: LedgerEntry, fee: ChildIn | None, discount: ChildIn | None, *, source: str = "manual"
+) -> None:
+    """Reconcile the parent's fee / discount children with the payload by kind instead of delete + insert (issue
+    #313), so a statement claim on an unchanged child survives an edit of the parent. Per kind: no payload → delete
+    the stored children; none stored → `write_children`; one stored → update it in place (amount, name — a payload
+    without a name keeps the stored one — and the parent's account / currency / dates); several stored (the SPA
+    sends them back as one value: their total and the first one's name) → leave them alone when the total matches,
+    renaming the first if the name differs, else replace them with one row. A child row is written, and takes
+    `source`, only when a column changes; a structural change (amount, date, account) then releases its claim at the
+    next sweep like any edited covered entry. Any other child kind is deleted, as before. Flushes, never commits."""
+    stored = list(db.scalars(select(LedgerEntry).where(LedgerEntry.parent_entry_id == parent.id)
+                             .order_by(LedgerEntry.id)))
+    wanted = {"fee": fee, "discount": discount}
+    doomed = [c.id for c in stored if c.kind not in wanted]
+    new_fee = new_discount = None
+    for kind, child in wanted.items():
+        rows = [c for c in stored if c.kind == kind]
+        if child is None:
+            doomed += [c.id for c in rows]
+            continue
+        if not rows:
+            new_fee, new_discount = (child, new_discount) if kind == "fee" else (new_fee, child)
+            continue
+        amount = -child.amount if kind == "fee" else child.amount
+        name = child_name(kind, child, rows[0].name)
+        if len(rows) > 1:
+            if sum((c.amount for c in rows), Decimal(0)) != amount:
+                doomed += [c.id for c in rows]
+                named = child.model_copy(update={"name": name})
+                new_fee, new_discount = (named, new_discount) if kind == "fee" else (new_fee, named)
+                continue
+            changes = {"name": name}
+            targets = rows[:1]
+        else:
+            changes = {"amount": amount, "name": name}
+            targets = rows
+        for row in rows:
+            for attr in _CHILD_FOLLOWS_PARENT:
+                _set_if_changed(row, attr, getattr(parent, attr), source)
+        for row in targets:
+            for attr, value in changes.items():
+                _set_if_changed(row, attr, value, source)
+    if doomed:
+        db.execute(delete(LedgerEntry).where(LedgerEntry.id.in_(doomed)))
+    db.flush()
+    if new_fee is not None or new_discount is not None:
+        write_children(db, parent, new_fee, new_discount, source=source)
+
+
+def _set_if_changed(row: LedgerEntry, attr: str, value, source: str) -> None:
+    if getattr(row, attr) != value:
+        setattr(row, attr, value)
+        row.source = source
+
+
 def write_rule_links(db: Session, entry_id: int, rule_ids: Iterable[int]) -> None:
     db.execute(delete(EntryRewardRule).where(EntryRewardRule.entry_id == entry_id))
     for rule_id in dict.fromkeys(rule_ids):
@@ -353,7 +428,8 @@ def _stored_snapshot(entry: LedgerEntry) -> dict:
 
 
 def apply_prepared_update(db: Session, entry: LedgerEntry, prepared: PreparedEntry) -> None:
-    """Rewrite an editable entry the caller holds FOR UPDATE: columns, fee / discount children and rule links.
+    """Rewrite an editable entry the caller holds FOR UPDATE: columns, fee / discount children (`sync_children`:
+    unchanged children keep their row and statement claim, #313) and rule links.
     Reward ledger rows point at the entry through reward_source_entry_id, not parent_entry_id, so they stay. A
     posted period's entry stays a schedule row; any other edit makes the entry the owner's (`manual`), except a
     cosmetic edit of a statement-booked entry (a stand-in, R6b.0/R6b.5, PR #76 review M1): when the stored row and
@@ -372,9 +448,7 @@ def apply_prepared_update(db: Session, entry: LedgerEntry, prepared: PreparedEnt
     if statement_booked and not had_children and payload.fee is None and payload.discount is None \
             and not coverage_service.structurally_changed(before, entry):
         source = entry.source = STATEMENT_SOURCE
-    db.execute(delete(LedgerEntry).where(LedgerEntry.parent_entry_id == entry.id))
-    db.flush()
-    write_children(db, entry, payload.fee, payload.discount, source=source)
+    sync_children(db, entry, payload.fee, payload.discount, source=source)
     write_rule_links(db, entry.id, payload.reward_rule_ids)
     reward_engine.after_write(db, entry, before_key=before_key, before_project_id=before_project_id,
                               before_flag=before_flag)

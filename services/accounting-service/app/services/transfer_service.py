@@ -8,7 +8,7 @@ The two amounts are the source of truth; `fx_consistent` is the only allowed con
 from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import Account, Category, LedgerEntry
@@ -22,6 +22,7 @@ from .entry_write_service import (
     display_quantum,
     locked_with_legs,
     remember_defaults,
+    sync_children,
     write_children,
     write_rule_links,
 )
@@ -131,9 +132,11 @@ def _write_leg_extras(
     remember: bool = True, before: dict[int, tuple] | None = None,
 ) -> None:
     """`before`: leg id -> (financial key, project id, (needs_review, review_reason)) read before the update
-    rewrote the legs (update_transfer); None for a new transfer."""
-    write_children(db, out_leg, payload.out_fee, payload.out_discount, source=source)
-    write_children(db, in_leg, payload.in_fee, payload.in_discount, source=source)
+    rewrote the legs (update_transfer); None for a new transfer. An update reconciles each leg's fee / discount
+    children in place (`sync_children`, issue #313) so a statement claim on an unchanged child survives."""
+    children = write_children if before is None else sync_children
+    children(db, out_leg, payload.out_fee, payload.out_discount, source=source)
+    children(db, in_leg, payload.in_fee, payload.in_discount, source=source)
     write_rule_links(db, out_leg.id, payload.reward_rule_ids)
     write_rule_links(db, in_leg.id, [])
     # P12 tier 2: both legs' old and new windows in ONE lock_windows before either leg syncs, so two transfers whose
@@ -206,6 +209,5 @@ def update_transfer(db: Session, group_id: UUID, payload: TransferIn) -> None:
     for leg, values in ((out_leg, out_values), (in_leg, in_values)):
         for column, value in values.items():
             setattr(leg, column, value)
-    db.execute(delete(LedgerEntry).where(LedgerEntry.parent_entry_id.in_([out_leg.id, in_leg.id])))
     db.flush()
     _write_leg_extras(db, out_leg, in_leg, payload, source=source, before=before)
