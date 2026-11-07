@@ -1,22 +1,22 @@
 <section class="rp">
-  <app-page-header [subtitle]="rules()"></app-page-header>
-
-  <div class="rp-period">
-    <app-seg-toggle [options]="units" [value]="period().unit" ariaLabel="期間單位" (change)="setUnit($event)" />
-    @if (period().unit === 'custom') {
-      <div class="rp-range" role="group" aria-label="自訂期間">
-        <input class="rp-from" type="date" aria-label="起日" [value]="period().from" [max]="period().to" (change)="setCustom($any($event.target).value, period().to)" />
-        <span aria-hidden="true">–</span>
-        <input class="rp-to" type="date" aria-label="迄日" [value]="period().to" [min]="period().from" (change)="setCustom(period().from, $any($event.target).value)" />
-      </div>
-    } @else {
-      <div class="rp-stepper">
-        <button type="button" class="rp-prev" [attr.aria-label]="stepLabels()[0]" (click)="move(-1)">‹</button>
-        <b class="rp-period-label" aria-live="polite">{{ periodText() }}</b>
-        <button type="button" class="rp-next" [attr.aria-label]="stepLabels()[1]" (click)="move(1)">›</button>
-      </div>
-    }
-  </div>
+  <app-page-header [subtitle]="rules()">
+    <div class="rp-period">
+      <app-seg-toggle [options]="units" [value]="period().unit" ariaLabel="期間單位" (change)="setUnit($event)" />
+      @if (period().unit === 'custom') {
+        <div class="rp-range" role="group" aria-label="自訂期間">
+          <input class="rp-from" type="date" aria-label="起日" [value]="period().from" [max]="period().to" (change)="setCustom($any($event.target).value, period().to)" />
+          <span aria-hidden="true">–</span>
+          <input class="rp-to" type="date" aria-label="迄日" [value]="period().to" [min]="period().from" (change)="setCustom(period().from, $any($event.target).value)" />
+        </div>
+      } @else {
+        <div class="rp-stepper">
+          <button type="button" class="rp-prev" [attr.aria-label]="stepLabels()[0]" (click)="move(-1)">‹</button>
+          <b class="rp-period-label" aria-live="polite">{{ periodText() }}</b>
+          <button type="button" class="rp-next" [attr.aria-label]="stepLabels()[1]" (click)="move(1)">›</button>
+        </div>
+      }
+    </div>
+  </app-page-header>
 
   @if (sample()) {
     <p class="rp-sample" role="status">報表 API 尚未就緒，目前顯示的是示範資料（手稿的 2026 年 10 月範例），不是帳本。</p>

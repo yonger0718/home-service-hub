@@ -1,13 +1,15 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, TestRequest, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Component, signal } from '@angular/core';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Project } from '../../../models/accounting.model';
-import { BreakdownQuery, ReportCompare, ReportDimension, ReportMetric, TrendQuery } from '../../../models/reports.model';
+import { BreakdownQuery, BreakdownResponse, BreakdownRow, ReportCompare, ReportDimension, ReportMetric, TrendQuery } from '../../../models/reports.model';
 import { LayoutMode, LayoutModeService, MATCH_MEDIA } from '../../../services/layout-mode.service';
 import { NavBadgeService } from '../../../services/nav-badge.service';
 import { ReportsService } from '../../../services/reports.service';
@@ -268,6 +270,8 @@ describe('AccountingReportsComponent', () => {
   });
 
   it('moves the month with ‹ › and the unit with 月 / 年, keeping the tab in the URL', async () => {
+    // Both periods are over, so the year keeps the three finished-period reads (a running year is covered below).
+    vi.setSystemTime(new Date(2027, 0, 15, 10, 0));
     const { harness, el } = await open('/accounting/reports?month=2026-10&tab=trend');
     flushSample();
     harness.detectChanges();
@@ -662,5 +666,194 @@ describe('AccountingReportsComponent', () => {
     harness.detectChanges();
     expect(el.querySelector('.rp-error')).toBeNull();
     expect(texts(el, '.rp-figure-value')[0]).toBe('$41,890');
+  });
+  describe('running periods (polish D1, D8)', () => {
+    interface Fixture {
+      from: string;
+      to: string;
+      metric?: ReportMetric;
+      /** One row; the totals follow it. */
+      amount?: number;
+      count?: number;
+      compare?: { amount: number; count: number };
+    }
+
+    function response(fixture: Fixture): BreakdownResponse {
+      const metric = fixture.metric ?? 'expense';
+      const amount = fixture.amount ?? 0;
+      const count = fixture.count ?? 0;
+      const rows: BreakdownRow[] = count
+        ? [{ key: '1', label: '餐飲', color: null, amount: String(amount), refund: '0', count, avg: '0', median: null, min: null, max: null, first_date: null, last_date: null, avg_interval_days: null }]
+        : [];
+      const totals = (a: number, c: number) => ({ expense: metric === 'expense' ? String(a) : '0', income: metric === 'income' ? String(a) : '0', net: '0', count: c, refund: '0' });
+      return {
+        currency: 'TWD',
+        date_from: fixture.from,
+        date_to: fixture.to,
+        totals: totals(amount, count),
+        compare: fixture.compare ? { date_from: '2026-10-01', date_to: '2026-10-07', totals: totals(fixture.compare.amount, fixture.compare.count) } : undefined,
+        rows,
+        overlapping: false,
+        missing_rates: [],
+      };
+    }
+
+    const queryOf = (request: TestRequest) => breakdownQuery(request);
+
+    /** Answers the page's reads by range: the to-date ones carry the compare figures, the whole ones none. */
+    function answerBy(
+      reads: Pending,
+      today: string,
+      figures: { toDate?: Partial<Fixture>; whole?: Partial<Fixture>; previous?: number; lastYear?: number; previousCount?: number; lastYearCount?: number; income?: number },
+    ): void {
+      for (const request of reads.breakdowns) {
+        const query = queryOf(request);
+        const cut = query.date_to === today;
+        const base = { from: query.date_from, to: query.date_to, metric: query.metric };
+        if (query.compare === 'previous' || query.compare === 'last_year') {
+          const isPrevious = query.compare === 'previous';
+          const compare = query.metric === 'income' ? undefined : { amount: (isPrevious ? figures.previous : figures.lastYear) ?? 0, count: (isPrevious ? figures.previousCount : figures.lastYearCount) ?? 1 };
+          request.flush(response({ ...base, ...(query.metric === 'income' ? { amount: figures.income ?? 0, count: 1 } : figures.toDate), compare }));
+        } else {
+          request.flush(response({ ...base, ...(query.metric === 'income' ? { amount: figures.income ?? 0, count: 1 } : cut ? figures.toDate : figures.whole) }));
+        }
+      }
+      for (const request of reads.trends) request.flush(sampleTrend(trendQuery(request)));
+    }
+
+    async function openOn(url: string, day: [number, number, number]) {
+      vi.setSystemTime(new Date(day[0], day[1] - 1, day[2], 10, 0));
+      return open(url);
+    }
+
+    it('loads a running month to date plus two whole-month breakdowns', async () => {
+      const { harness, el } = await openOn('/accounting/reports?month=2026-11', [2026, 11, 7]);
+      const reads = pending();
+      const queries = reads.breakdowns.map(queryOf);
+      expect(queries).toHaveLength(5);
+      expect(queries.filter(q => q.date_to === '2026-11-07')).toHaveLength(3);
+      const whole = queries.filter(q => q.date_to === '2026-11-30');
+      expect(whole).toHaveLength(2);
+      expect(whole.every(q => q.date_from === '2026-11-01' && q.compare === undefined && q.split_by === 'subcategory')).toBe(true);
+      expect(whole.map(q => q.metric).sort()).toEqual(['expense', 'income']);
+      expect(reads.trends.map(trendQuery)[0]).toMatchObject({ date_from: '2025-12-01', date_to: '2026-11-07' });
+
+      answerBy(reads, '2026-11-07', { toDate: { amount: 4233, count: 9 }, whole: { amount: 9000, count: 12 }, previous: 6910, lastYear: 5120, income: 1000 });
+      harness.detectChanges();
+      expect(texts(el, '.rp-figure-value')[0]).toBe('$4,233');
+      expect(texts(el, '.rp-figure-foot')[0]).toBe('比 10 月同期 ▼ 2,677 · 比去年同期 ▼ 887 · 截至 11/7');
+    });
+
+    it('shows one last-year segment for a running year, read from the last-year response', async () => {
+      const { harness, el } = await openOn('/accounting/reports?year=2026', [2026, 11, 7]);
+      answerBy(pending(), '2026-11-07', { toDate: { amount: 4233, count: 9 }, whole: { amount: 4233, count: 9 }, previous: 1, lastYear: 5120, income: 1000 });
+      harness.detectChanges();
+      expect(texts(el, '.rp-figure-foot')[0]).toBe('比去年同期 ▼ 887 · 截至 11/7');
+    });
+
+    it('loads a month on its last day as a finished month', async () => {
+      const { harness, el } = await openOn('/accounting/reports?month=2026-11', [2026, 11, 30]);
+      const reads = pending();
+      expect(reads.breakdowns.map(queryOf).map(q => q.date_to)).toEqual(['2026-11-30', '2026-11-30', '2026-11-30']);
+      answerBy(reads, '2026-11-30', { toDate: { amount: 4233, count: 9 }, previous: 6910, lastYear: 5120, income: 1000 });
+      harness.detectChanges();
+      expect(texts(el, '.rp-figure-foot')[0]).not.toContain('截至');
+      expect(texts(el, '.rp-figure-foot')[0]).toContain('比 10 月 ▼ 2,677');
+    });
+
+    it('reads 上期無資料 when the previous window counts nothing', async () => {
+      const { harness, el } = await openOn('/accounting/reports?month=2026-11', [2026, 11, 7]);
+      answerBy(pending(), '2026-11-07', { toDate: { amount: 4233, count: 9 }, whole: { amount: 4233, count: 9 }, previous: 0, previousCount: 0, lastYear: 5120, income: 1000 });
+      harness.detectChanges();
+      const foot = texts(el, '.rp-figure-foot')[0]!;
+      expect(foot).toContain('上期無資料');
+      expect(foot).toContain('比去年同期 ▼ 887');
+      expect(foot).not.toContain('▲');
+      expect(foot).not.toContain('比 10 月同期 上期無資料');
+    });
+
+    it('keeps a to-date view with no rows yet and still names the later rows', async () => {
+      const { harness, el } = await openOn('/accounting/reports?month=2026-11', [2026, 11, 1]);
+      answerBy(pending(), '2026-11-01', { toDate: { amount: 0, count: 0 }, whole: { amount: 13420, count: 2 }, previous: 500, lastYear: 500, income: 0 });
+      harness.detectChanges();
+      expect(texts(el, '.rp-figure-value')[0]).toBe('$0');
+      const page = harness.routeDebugElement!.componentInstance as AccountingReportsComponent;
+      expect(page.expenseWhole()?.rows.map(row => row.count)).toEqual([2]);
+      expect(page.expenseWhole()?.totals.expense).toBe('13420');
+      expect(page.expense()?.rows).toEqual([]);
+      // The line itself is 總覽's (task 7); the page hands it the whole response and today.
+      expect(page.today()).toBe('2026-11-01');
+    });
+
+    it('switches to the whole month and back, and resets on another month', async () => {
+      const { harness, el } = await openOn('/accounting/reports?month=2026-11', [2026, 11, 7]);
+      const figures = { toDate: { amount: 4233, count: 9 }, whole: { amount: 9000, count: 12 }, previous: 6910, lastYear: 5120, income: 1000 };
+      answerBy(pending(), '2026-11-07', figures);
+      harness.detectChanges();
+      const page = harness.routeDebugElement!.componentInstance as AccountingReportsComponent;
+      expect(page.running()).toBe(true);
+      expect(page.showCompare()).toBe(true);
+
+      page.toggleWhole();
+      harness.detectChanges();
+      const reads = pending();
+      expect(reads.breakdowns).toHaveLength(0);
+      expect(page.wholeView()).toBe(true);
+      expect(page.showCompare()).toBe(false);
+      expect(page.viewRange()).toEqual({ from: '2026-11-01', to: '2026-11-30' });
+      expect(reads.trends.map(trendQuery)[0]).toMatchObject({ date_to: '2026-11-30' });
+      for (const request of reads.trends) request.flush(sampleTrend(trendQuery(request)));
+      expect(texts(el, '.rp-figure-value')[0]).toBe('$9,000');
+      expect(texts(el, '.rp-figure-foot')[0]).toBe('12 筆');
+
+      // A stale response for the old period is ignored; the new month resets the view.
+      el.querySelector<HTMLButtonElement>('.rp-prev')!.click();
+      await harness.fixture.whenStable();
+      harness.detectChanges();
+      const old = pending();
+      expect(page.wholeView()).toBe(false);
+      expect(old.breakdowns.map(queryOf).every(q => q.date_from === '2026-10-01')).toBe(true);
+      el.querySelector<HTMLButtonElement>('.rp-next')!.click();
+      await harness.fixture.whenStable();
+      harness.detectChanges();
+      const fresh = pending();
+      expect(fresh.breakdowns).toHaveLength(5);
+      answerBy(fresh, '2026-11-07', figures);
+      harness.detectChanges();
+      // The October answers arrive late.
+      answerBy({ breakdowns: old.breakdowns, trends: [] }, '2026-10-31', { toDate: { amount: 1, count: 1 }, previous: 1, lastYear: 1 });
+      for (const request of old.trends) request.flush(sampleTrend(trendQuery(request)));
+      harness.detectChanges();
+      expect(texts(el, '.rp-figure-value')[0]).toBe('$4,233');
+    });
+
+    it('projects the period control into the page header', async () => {
+      const { el } = await open('/accounting/reports?month=2026-10');
+      flushSample();
+      expect(el.querySelector('.page-actions .rp-period')).not.toBeNull();
+      expect(el.querySelectorAll('.rp-period')).toHaveLength(1);
+    });
+
+    const scss = (name: string) => readFileSync(join(process.cwd(), 'src/app/components/accounting/reports', name), 'utf8');
+
+    it('keeps the header on one row from 1024 px and wraps the period control below', () => {
+      const css = scss('reports.scss');
+      const media = /@media \(max-width: 1023\.98px\) \{([\s\S]*?)\n  \}\n\}|@media \(max-width: 1023\.98px\) \{([\s\S]*?)\n\}/.exec(css);
+      const block = media?.[1] ?? media?.[2] ?? '';
+      expect(block).toContain('.page-actions');
+      expect(block).toMatch(/flex(-basis)?:\s*(1 1 )?100%|width:\s*100%/);
+      const outside = css.replace(/@media[^{]*\{(?:[^{}]|\{[^{}]*\})*\}/g, '');
+      for (const rule of outside.match(/[^{}]*\.rp-period\b[^{}]*\{[^}]*\}/g) ?? []) {
+        expect(rule).not.toMatch(/display:\s*none|order:|position:|transform|margin-top/);
+      }
+    });
+
+    it('leaves the 記一筆 clearance to the shell', () => {
+      for (const name of ['reports.scss', 'custom-report.scss']) {
+        const css = scss(name);
+        expect(css).not.toContain('--fab-clear');
+        expect(css).not.toMatch(/\n\.(rp|cr) \{[^}]*margin-bottom:\s*-/);
+      }
+    });
   });
 });
