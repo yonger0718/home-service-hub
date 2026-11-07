@@ -125,6 +125,22 @@ def test_compare_previous_whole_month(client, ledger):
     assert Decimal(_rows(body)[str(ledger.transport)]["compare_amount"]) == Decimal("-200")
 
 
+def test_compare_previous_first_anchored_partial_range_uses_the_same_days(client, db_session, ledger):
+    """polish-accounting-reports D2: 3/1–3/10 compares 2/1–2/10, not the 10 days before 3/1."""
+    wallet = db_session.get(Account, ledger.wallet)
+    make_entry(db_session, wallet, "-100", entry_date=date(2026, 2, 5))  # inside 2/1–2/10
+    make_entry(db_session, wallet, "-999", entry_date=date(2026, 2, 25))  # inside the old day-count window 2/19–2/28
+    make_entry(db_session, wallet, "-50", entry_date=date(2026, 3, 3))
+    db_session.commit()
+
+    body = _breakdown(client, date_from="2026-03-01", date_to="2026-03-10", group_by="category", compare="previous")
+
+    assert (body["compare"]["date_from"], body["compare"]["date_to"]) == ("2026-02-01", "2026-02-10")
+    assert Decimal(body["compare"]["totals"]["expense"]) == Decimal("100")
+    assert body["compare"]["totals"]["count"] == 1
+    assert Decimal(body["totals"]["expense"]) == Decimal("50")
+
+
 def test_compare_months_pair_by_position(client, db_session, ledger):
     wallet = db_session.get(Account, ledger.wallet)
     make_entry(db_session, wallet, "-1000", entry_date=date(2026, 7, 10))

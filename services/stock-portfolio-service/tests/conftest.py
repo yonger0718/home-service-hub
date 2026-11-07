@@ -45,6 +45,14 @@ def _never_reach_the_configured_database(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _cash_legs_off_unless_a_test_opts_in(monkeypatch):
+    """The same .env load turns on production's CASH_LEG_ENABLED=true, so on a host with a root .env every TWD write
+    needed a Cathay TWD cash account the fixtures never create (#327: 69 failures that vanished without the file).
+    Pin the code default (off); the cash-leg tests set it to true themselves."""
+    monkeypatch.setenv("CASH_LEG_ENABLED", "false")
+
+
+@pytest.fixture(autouse=True)
 def _api_auth_off_unless_a_test_opts_in(monkeypatch):
     """The same .env load would carry PORTFOLIO_API_TOKENS onto every request of the suite (#117); keep auth off. The
     auth tests set the variables themselves."""
