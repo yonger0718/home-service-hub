@@ -151,7 +151,7 @@ def test_manual_rows_stay_writable_while_unlocked(client, db_session, books):
 
 EXPECTED_WRITES = {
     ("/entries", "POST"), ("/entries/{entry_id}", "PUT"), ("/entries/{entry_id}", "DELETE"),
-    ("/entries/{entry_id}/split", "PUT"),
+    ("/entries/{entry_id}/split", "PUT"), ("/entries/{entry_id}/reward-rules", "PUT"),
     ("/entries/{entry_id}/settle", "POST"), ("/entries/{entry_id}/refund", "POST"),
     ("/transfers", "POST"), ("/transfers/{group_id}", "PUT"),
     ("/splits", "POST"), ("/splits/{group_id}", "PUT"), ("/splits/{group_id}", "DELETE"),
