@@ -29,7 +29,7 @@ Measured on seeded data on 2026-11-07:
 
 ### D1. "Running" is decided by today, not by the period type
 
-A period is *running* when `from ≤ today < to`. The rule covers every unit: the current month, the current year, a custom range ending in the future, and a saved report's relative period.
+A period is *running* when `from ≤ today < to`, where `to` is the period's inclusive last day (as in `report-math.ts` and the API). A period whose last day is today is not running: its to-date range is the whole period, so it compares as a whole period, without 「截至」 and with a single request. This matches `elapsedDays`, which treats `today >= to` as finished. The rule covers every unit: the current month, the current year, a custom range ending in the future, and a saved report's relative period.
 
 For a running period, the comparisons use the *to-date range* `from..today`.
 

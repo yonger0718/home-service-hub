@@ -2,7 +2,7 @@
 
 ### Requirement: Running period comparisons
 
-A report period SHALL be *running* while `from ≤ today < to`. For a running period:
+A report period (`to` being its inclusive last day) SHALL be *running* while `from ≤ today < to`. For a running period:
 
 - **Comparisons** SHALL use the range from the period's start through today. This covers the header's 支出 changes, the 總覽 detail card's change, the 趨勢與比較 table and a saved report's 比較. Each SHALL be marked 「截至 M/D」.
 - **The amounts shown and the charts** SHALL keep the whole period.
@@ -16,6 +16,10 @@ A report period SHALL be *running* while `from ≤ today < to`. For a running pe
 #### Scenario: A month that has not started
 - **WHEN** 2026-12 is selected on 2026-11-07
 - **THEN** the period SHALL not be running, and its comparisons SHALL cover the whole of December without 「截至」
+
+#### Scenario: A range ending today
+- **WHEN** the custom range 2026-11-01 to 2026-11-07 is selected on 2026-11-07
+- **THEN** the period SHALL not be running, its to-date range being the whole range, and its comparisons SHALL read without 「截至」
 
 #### Scenario: A finished month
 - **WHEN** 2026-10 is selected on 2026-11-07

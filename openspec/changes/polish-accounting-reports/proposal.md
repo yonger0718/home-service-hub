@@ -15,7 +15,7 @@
 ## What Changes
 
 - **API (accounting-service):** `compare=previous` for a range that starts on the 1st but does not end on a month's last day now compares with the same days of the earlier month(s). For example, `2026-11-01..2026-11-07` compares with `2026-10-01..2026-10-07`. Whole-month ranges and other ranges are unchanged.
-- **Running periods.** While the selected period contains today, the comparisons cover only up to today: the header figures, the 總覽 detail card's change, the 趨勢與比較 table and saved reports. Each such comparison reads 「截至 11/7」. Charts keep the whole period.
+- **Running periods.** While the selected period has started and ends after today, the comparisons cover only up to today: the header figures, the 總覽 detail card's change, the 趨勢與比較 table and saved reports. Each such comparison reads 「截至 11/7」. Charts keep the whole period.
 - **No base, no arrow.**
   - When the comparison window has no counted rows at all, the change reads 「上期無資料」 or 「去年無資料」, muted.
   - A table column that is empty throughout is left out, with a note.
