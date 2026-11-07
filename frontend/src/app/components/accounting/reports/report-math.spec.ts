@@ -3,6 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   afterTodayText,
   asOfText,
+  axisText,
+  bucketText,
+  monthAverage,
+  runningBucket,
+  runningSuffix,
   barGeometry,
   baseChange,
   change,
@@ -247,5 +252,38 @@ describe('running periods', () => {
     expect(afterTodayText('2026-11-07', 2, 13420, false)).toBe('另有 11/7 之後已記的 2 筆 $13,420 未計入');
     expect(afterTodayText('2026-11-07', 3, null, false)).toBe('另有 11/7 之後已記的 3 筆未計入');
     expect(afterTodayText('2026-11-07', 2, 13420, true)).toBe('改回截至 11/7');
+  });
+});
+
+describe('month average and bucket labels (D4, D7)', () => {
+  it('averages the months with data through the last completed month', () => {
+    const series = ['2025-12', '2026-01', '2026-02', '2026-03', '2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10', '2026-11']
+      .map((m, i) => ({ start: `${m}-01`, value: [0, 0, 0, 0, 0, 0, 0, 0, 31200, 39608, 41890, 4233][i] }));
+    expect(monthAverage(series, '2026-11-07')).toEqual({ months: 3, average: 37566 });
+  });
+
+  it('has no average for a ledger younger than one completed month', () =>
+    expect(monthAverage([{ start: '2026-11-01', value: 4233 }], '2026-11-07')).toBeNull());
+
+  it('formats bucket keys', () => {
+    expect(bucketText('2026-09', 'month', false)).toBe('9 月');
+    expect(bucketText('2025-09-01', 'month', true)).toBe('2025 年 9 月');
+    expect(bucketText('2026-10-05', 'week', false)).toBe('10/5 週');
+    expect(bucketText('2025-10-05', 'day', true)).toBe('2025/10/5');
+  });
+
+  it('puts the year on the first axis label and each January only (R1)', () => {
+    expect(axisText('2025-11-01', 0)).toBe('2025 年 11 月');
+    expect(axisText('2025-12-01', 1)).toBe('12 月');
+    expect(axisText('2026-01-01', 2)).toBe('2026 年 1 月');
+  });
+
+  it('marks only a bucket that has started and ends after today as running', () => {
+    expect(runningBucket('2026-11', 'month', '2026-11-07')).toBe(true);
+    expect(runningBucket('2026-11', 'month', '2026-11-30')).toBe(false);
+    expect(runningBucket('2026-11-02', 'week', '2026-11-07')).toBe(true);
+    expect(runningBucket('2026-11-02', 'week', '2026-11-08')).toBe(false);
+    expect(runningBucket('2026-11-07', 'day', '2026-11-07')).toBe(false);
+    expect(`11 月 ${runningSuffix('2026-11-07')}`).toBe('11 月 進行中（至 11/7）');
   });
 });

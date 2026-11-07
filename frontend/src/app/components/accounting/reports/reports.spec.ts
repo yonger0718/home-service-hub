@@ -207,9 +207,9 @@ describe('AccountingReportsComponent', () => {
     expect(el.querySelector('app-report-overview')).toBeNull();
     expect(el.querySelectorAll('.tr-bar')).toHaveLength(12);
     expect(el.querySelector('.tr-bar.last')).not.toBeNull();
-    expect(texts(el, '.tr-label')).toEqual(['11月', '12月', '1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月']);
+    expect(texts(el, '.tr-label')).toEqual(['2025 年 11 月', '12 月', '2026 年 1 月', '2 月', '3 月', '4 月', '5 月', '6 月', '7 月', '8 月', '9 月', '10 月']);
     expect(el.querySelector('.tr-average-label')?.textContent).toBe('12 個月平均 40,608');
-    expect(el.querySelector('.tr-chart')?.getAttribute('aria-label')).toMatch(/^全部支出近 12 個月：11月 38,900、/);
+    expect(el.querySelector('.tr-chart')?.getAttribute('aria-label')).toMatch(/^全部支出近 12 個月：2025 年 11 月 38,900、/);
     expect(texts(el, '.tr-tick')).toEqual(['0', '25k', '50k']);
 
     expect(el.querySelector('.tr-card:nth-of-type(2) h2')?.textContent?.trim()).toBe('比較 · 10 月 對 9 月、對去年 10 月');
@@ -353,7 +353,7 @@ describe('AccountingReportsComponent', () => {
       expect(el.querySelector('.rk-panel h2')?.textContent?.trim()).toBe('房東');
       expect(el.querySelector('.rk-panel-head small')?.textContent?.trim()).toBe('商家 · 2026 年 10 月');
       expect(el.querySelectorAll('.rk-spark-bar')).toHaveLength(6);
-      expect(texts(el, '.rk-spark-label')).toEqual(['5月', '6月', '7月', '8月', '9月', '10月']);
+      expect(texts(el, '.rk-spark-label')).toEqual(['2026 年 5 月', '6 月', '7 月', '8 月', '9 月', '10 月']);
     });
 
     it('shows 路易莎 statistics on selection: 12 筆, 平均 86, 中位數 85, 最大 120, 最小 65, 平均間隔 2.5 天', async () => {
@@ -375,7 +375,7 @@ describe('AccountingReportsComponent', () => {
       ]);
       // The API computes those four on spend rows only; 筆數 and 平均 keep the refunds.
       expect(el.querySelector('.rk-stats-note')?.textContent?.trim()).toBe('中位數、最大、最小、平均間隔只算支出（退款不計入統計）；筆數、平均含退款');
-      expect(el.querySelector('.rk-spark-chart')?.getAttribute('aria-label')).toMatch(/^路易莎 近 6 個月支出：5月 880、/);
+      expect(el.querySelector('.rk-spark-chart')?.getAttribute('aria-label')).toMatch(/^路易莎 近 6 個月支出：2026 年 5 月 880、/);
       const drill = el.querySelector<HTMLAnchorElement>('.rk-drill')!;
       expect(drill.textContent?.trim()).toBe('在記帳記錄看這 12 筆 ›');
       expect(drill.getAttribute('href')).toBe('/accounting?month=2026-10&merchant=%E8%B7%AF%E6%98%93%E8%8E%8E');

@@ -8,7 +8,7 @@ import {
   Change,
   ReportPeriod,
   barGeometry,
-  bucketLabel,
+  axisText,
   change,
   compareLabels,
   compareTitle,
@@ -111,7 +111,7 @@ export class ReportTrendComponent {
   readonly bars = computed<Bar[]>(() => {
     const buckets = this.trend()?.buckets ?? [];
     const geometry = barGeometry(this.values(), this.layout().plot, this.max());
-    return geometry.map((bar, index) => ({ ...bar, label: bucketLabel(buckets[index].start), last: index === geometry.length - 1 }));
+    return geometry.map((bar, index) => ({ ...bar, label: axisText(buckets[index].start, index), last: index === geometry.length - 1 }));
   });
   readonly grid = computed(() => {
     if (!this.layout().ticks) return [];
@@ -127,7 +127,7 @@ export class ReportTrendComponent {
   readonly chartAria = computed(() => {
     const buckets = this.trend()?.buckets ?? [];
     const values = this.values();
-    return `${this.seriesName()}近 ${buckets.length} 個月：${buckets.map((bucket, index) => `${bucketLabel(bucket.start)} ${n0(values[index])}`).join('、')}`;
+    return `${this.seriesName()}近 ${buckets.length} 個月：${buckets.map((bucket, index) => `${axisText(bucket.start, index)} ${n0(values[index])}`).join('、')}`;
   });
 
   readonly nouns = computed(() => periodNouns(this.period()));

@@ -421,8 +421,47 @@ export function yOf(value: number, plot: { top: number; height: number }, max: n
   return max > 0 ? bottom - (Math.max(value, 0) / max) * plot.height : bottom;
 }
 
-/** `11月`, `1月` for a bucket start; the year is added when the bucket is a January and the chart spans two years. */
-export function bucketLabel(start: string): string {
-  const [, m] = start.split('-').map(Number);
-  return `${m}月`;
+export type BucketGranularity = 'month' | 'week' | 'day';
+
+/**
+ * The average month (design D4): from the first bucket with data through the last month that is over. `null` when that
+ * leaves no month (a ledger younger than one completed month).
+ */
+export function monthAverage(buckets: readonly { start: string; value: number }[], today: string): { months: number; average: number } | null {
+  const first = buckets.findIndex(bucket => bucket.value !== 0);
+  if (first < 0) return null;
+  const current = monthOf(today);
+  const counted = buckets.slice(first).filter(bucket => monthOf(bucket.start) < current);
+  if (counted.length === 0) return null;
+  const total = counted.reduce((sum, bucket) => sum + bucket.value, 0);
+  return { months: counted.length, average: Math.round(total / counted.length) };
+}
+
+/** A bucket key as text (design D7): `9 月` / `2025 年 9 月`, `10/5 週` / `2025/10/5 週`, `10/5` / `2025/10/5`. */
+export function bucketText(key: string, granularity: BucketGranularity, spansYears: boolean): string {
+  if (granularity === 'month') {
+    const [year, month] = key.slice(0, 7).split('-').map(Number);
+    return spansYears ? `${year} 年 ${month} 月` : `${month} 月`;
+  }
+  const [year, month, day] = key.split('-').map(Number);
+  const date = spansYears ? `${year}/${month}/${day}` : `${month}/${day}`;
+  return granularity === 'week' ? `${date} 週` : date;
+}
+
+/** A trend / rank axis label (R1): the year only on the first bar and on each January. */
+export function axisText(start: string, index: number): string {
+  return bucketText(start, 'month', index === 0 || start.slice(5, 7) === '01');
+}
+
+/** The bucket has started and ends after `today` (a month: its last day; a week: start + 6). A day never runs. */
+export function runningBucket(key: string, granularity: BucketGranularity, today: string): boolean {
+  if (granularity === 'day') return false;
+  const start = granularity === 'month' ? `${key.slice(0, 7)}-01` : key;
+  const end = granularity === 'month' ? `${key.slice(0, 7)}-${pad(daysInMonth(key.slice(0, 7)))}` : addDays(key, 6);
+  return start <= today && today < end;
+}
+
+/** `進行中（至 11/7）`. */
+export function runningSuffix(today: string): string {
+  return `進行中（至 ${md(today, today)}）`;
 }

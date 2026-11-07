@@ -4,7 +4,7 @@ import { Params, RouterLink } from '@angular/router';
 import { BreakdownResponse, BreakdownRow, ReportDimension, TrendResponse } from '../../../models/reports.model';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import type { LoadState } from './reports';
-import { ReportPeriod, barGeometry, bucketLabel, drillText, n0, num, pct1, periodLabel } from './report-math';
+import { ReportPeriod, axisText, barGeometry, drillText, n0, num, pct1, periodLabel } from './report-math';
 
 /** The four ranking dimensions (spec: 商家, 標籤, 對象, 帳戶). */
 export type RankDimension = Extract<ReportDimension, 'merchant' | 'tag' | 'counterparty' | 'account'>;
@@ -155,12 +155,12 @@ export class ReportRankComponent {
     const buckets = this.spark()?.buckets ?? [];
     const values = this.sparkValues();
     const geometry = barGeometry(values, SPARK.plot, Math.max(...values, 0));
-    return geometry.map((bar, index) => ({ ...bar, label: bucketLabel(buckets[index].start), last: index === geometry.length - 1 }));
+    return geometry.map((bar, index) => ({ ...bar, label: axisText(buckets[index].start, index), last: index === geometry.length - 1 }));
   });
   readonly sparkAria = computed(() => {
     const buckets = this.spark()?.buckets ?? [];
     const values = this.sparkValues();
-    return `${this.selectedLabel()} 近 ${buckets.length} 個月支出：${buckets.map((bucket, index) => `${bucketLabel(bucket.start)} ${n0(values[index])}`).join('、')}`;
+    return `${this.selectedLabel()} 近 ${buckets.length} 個月支出：${buckets.map((bucket, index) => `${axisText(bucket.start, index)} ${n0(values[index])}`).join('、')}`;
   });
 
   /** The timeline filtered to the selected row; none for 對象 (the timeline has no such filter) or the muted rows. */
