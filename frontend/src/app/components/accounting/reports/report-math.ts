@@ -217,6 +217,54 @@ export function trendRange(period: ReportPeriod, months = 12): { from: string; t
   return { from: `${shiftMonth(last, -(months - 1))}-01`, to: lastPeriod.to };
 }
 
+// ---- running periods (polish D1) ---------------------------------------------------------------------------------
+
+/** Running: it has started and its last day (`to`, inclusive) is still ahead; on the last day it counts as finished. */
+export function isRunning(period: ReportPeriod, today: string): boolean {
+  return period.from <= today && today < period.to;
+}
+
+/** The range the figures cover: cut at `today` while the period runs, unless the whole period is asked for. */
+export function viewRange(period: ReportPeriod, today: string, whole: boolean): { from: string; to: string } {
+  return { from: period.from, to: isRunning(period, today) && !whole ? today : period.to };
+}
+
+/** `11/7`; `2025/12/1` when the year differs from `today`'s. */
+export function md(iso: string, today: string): string {
+  const [year, month, day] = iso.split('-').map(Number);
+  return year === Number(today.slice(0, 4)) ? `${month}/${day}` : `${year}/${month}/${day}`;
+}
+
+/** `截至 11/7`. */
+export function asOfText(today: string): string {
+  return `截至 ${md(today, today)}`;
+}
+
+/** The column names while a period runs: `本月至今（11/1–11/7）` / `上月同期` / `去年同期` (one `去年同期` when the windows coincide). */
+export function toDateNouns(period: ReportPeriod, today: string): { current: string; previous: string; lastYear: string; single: boolean } {
+  const month = period.unit === 'month';
+  const current = `${month ? '本月' : '本期'}至今（${md(period.from, today)}–${md(today, today)}）`;
+  if (comparesCoincide(period)) return { current, previous: '去年同期', lastYear: '去年同期', single: true };
+  return { current, previous: month ? '上月同期' : '上期同期', lastYear: '去年同期', single: false };
+}
+
+/** The header comparison labels while a period runs: `比 10 月同期` / `比去年同期`; a year (or coinciding windows) has one. */
+export function runningCompareLabels(period: ReportPeriod): { previous: string; lastYear: string; single: boolean } {
+  if (period.unit === 'month') {
+    const month = monthOf(period.from);
+    return { previous: `比 ${shortMonth(shiftMonth(month, -1), month)}同期`, lastYear: '比去年同期', single: false };
+  }
+  if (period.unit === 'year' || comparesCoincide(period)) return { previous: '比去年同期', lastYear: '比去年同期', single: true };
+  return { previous: '比前一期同期', lastYear: '比去年同期', single: false };
+}
+
+/** The line about rows dated after today: `改回截至 11/7` once the whole period shows, else how many (and how much) are left out. */
+export function afterTodayText(today: string, count: number, amount: number | null, whole: boolean): string {
+  const date = md(today, today);
+  if (whole) return `改回截至 ${date}`;
+  return amount === null ? `另有 ${date} 之後已記的 ${count} 筆未計入` : `另有 ${date} 之後已記的 ${count} 筆 $${n0(amount)} 未計入`;
+}
+
 // ---- figures --------------------------------------------------------------------------------------------------
 
 export function num(value: string | number | null | undefined): number {

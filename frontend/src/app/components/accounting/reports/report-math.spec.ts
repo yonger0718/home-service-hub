@@ -1,20 +1,26 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  afterTodayText,
+  asOfText,
   barGeometry,
   change,
   compareLabels,
   compareRange,
   comparesCoincide,
   compareTitle,
+  customPeriod,
   donutArcs,
   drillText,
   noProjectDrillText,
   elapsedDays,
+  isRunning,
+  md,
   monthPeriod,
   n0,
   niceCeiling,
   pct1,
+  runningCompareLabels,
   periodFromParams,
   periodLabel,
   periodNouns,
@@ -23,7 +29,9 @@ import {
   seriesColor,
   shiftPeriod,
   tickLabel,
+  toDateNouns,
   trendRange,
+  viewRange,
   yearPeriod,
 } from './report-math';
 
@@ -180,5 +188,46 @@ describe('report charts', () => {
     expect(seriesColor(0)).toBe('var(--app-series-1)');
     expect(seriesColor(6)).toBe('var(--app-series-7)');
     expect(seriesColor(7)).toBe('var(--app-category-other)');
+  });
+});
+
+describe('running periods', () => {
+  const nov = monthPeriod('2026-11');
+  it('runs from the first day until the day before the last', () => {
+    expect(isRunning(nov, '2026-11-01')).toBe(true);
+    expect(isRunning(nov, '2026-11-07')).toBe(true);
+    expect(isRunning(nov, '2026-11-30')).toBe(false); // last day = finished
+    expect(isRunning(nov, '2026-10-31')).toBe(false); // not started
+    expect(isRunning(customPeriod('2026-11-01', '2026-11-07'), '2026-11-07')).toBe(false);
+  });
+  it('cuts the view at today only while running and not whole', () => {
+    expect(viewRange(nov, '2026-11-07', false)).toEqual({ from: '2026-11-01', to: '2026-11-07' });
+    expect(viewRange(nov, '2026-11-07', true)).toEqual({ from: '2026-11-01', to: '2026-11-30' });
+    expect(viewRange(nov, '2026-11-30', false)).toEqual({ from: '2026-11-01', to: '2026-11-30' });
+  });
+  it('writes dates as M/D, with the year when it differs from today', () => {
+    expect(md('2026-11-07', '2026-11-07')).toBe('11/7');
+    expect(md('2025-12-01', '2026-11-07')).toBe('2025/12/1');
+  });
+  it('names the to-date columns', () => {
+    expect(toDateNouns(nov, '2026-11-07')).toEqual({ current: '本月至今（11/1–11/7）', previous: '上月同期', lastYear: '去年同期', single: false });
+    expect(toDateNouns(nov, '2026-11-01').current).toBe('本月至今（11/1–11/1）');
+    expect(toDateNouns({ unit: 'custom', from: '2025-12-01', to: '2026-05-31' }, '2026-03-04').current).toBe('本期至今（2025/12/1–3/4）');
+  });
+  it('names the to-date columns of other units, and one column when the windows coincide', () => {
+    expect(toDateNouns({ unit: 'custom', from: '2026-06-01', to: '2026-12-31' }, '2026-11-07')).toMatchObject({ previous: '上期同期', lastYear: '去年同期', single: false });
+    expect(toDateNouns(yearPeriod(2026), '2026-11-07')).toEqual({ current: '本期至今（1/1–11/7）', previous: '去年同期', lastYear: '去年同期', single: true });
+  });
+  it('labels the header comparisons of a running month', () =>
+    expect(runningCompareLabels(nov)).toEqual({ previous: '比 10 月同期', lastYear: '比去年同期', single: false }));
+  it('labels the header comparisons of a running year and custom range', () => {
+    expect(runningCompareLabels(yearPeriod(2026))).toEqual({ previous: '比去年同期', lastYear: '比去年同期', single: true });
+    expect(runningCompareLabels(customPeriod('2026-06-01', '2026-12-31'))).toEqual({ previous: '比前一期同期', lastYear: '比去年同期', single: false });
+  });
+  it('words the rows-after-today line', () => {
+    expect(asOfText('2026-11-07')).toBe('截至 11/7');
+    expect(afterTodayText('2026-11-07', 2, 13420, false)).toBe('另有 11/7 之後已記的 2 筆 $13,420 未計入');
+    expect(afterTodayText('2026-11-07', 3, null, false)).toBe('另有 11/7 之後已記的 3 筆未計入');
+    expect(afterTodayText('2026-11-07', 2, 13420, true)).toBe('改回截至 11/7');
   });
 });
