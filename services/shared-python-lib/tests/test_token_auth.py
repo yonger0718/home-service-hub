@@ -161,3 +161,58 @@ def test_token_never_reaches_the_log(env, caplog):
     client.get("/api/things", headers=_auth("spa-secret"))
     client.get("/api/things", headers=_auth("wrong-secret"))
     assert "secret" not in caplog.text
+
+
+def _cors_client() -> TestClient:
+    from fastapi.middleware.cors import CORSMiddleware
+
+    app = _app()
+    app.add_middleware(CORSMiddleware, allow_origins=["http://ui.test"], allow_methods=["*"], allow_headers=["*"])
+    install_token_auth(app, "DEMO")
+    return TestClient(app)
+
+
+def test_auth_is_installed_inside_cors(env):
+    from fastapi.middleware.cors import CORSMiddleware
+
+    from shared_lib.token_auth import TokenAuthMiddleware
+
+    app = _app()
+    app.add_middleware(CORSMiddleware, allow_origins=["http://ui.test"])
+    install_token_auth(app, "DEMO")
+    classes = [m.cls for m in app.user_middleware]
+    assert classes.index(CORSMiddleware) < classes.index(TokenAuthMiddleware)
+
+
+def test_preflight_is_answered_by_cors_and_401_403_keep_cors_headers(env):
+    env()
+    client = _cors_client()
+    preflight = client.options("/api/things", headers={
+        "Origin": "http://ui.test", "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "authorization"})
+    assert preflight.status_code == 200
+    assert preflight.headers["access-control-allow-origin"] == "http://ui.test"
+    unauthorized = client.get("/api/things", headers={"Origin": "http://ui.test"})
+    assert unauthorized.status_code == 401
+    assert unauthorized.headers["access-control-allow-origin"] == "http://ui.test"
+    forbidden = client.post("/api/things", headers={"Origin": "http://ui.test", **_auth("feed-secret")})
+    assert forbidden.status_code == 403
+    assert forbidden.headers["access-control-allow-origin"] == "http://ui.test"
+
+
+def test_install_after_a_request_still_takes_effect(env):
+    env()
+    app = _app()
+    client = TestClient(app)
+    assert client.get("/api/things").status_code == 200  # builds the middleware stack without auth
+    install_token_auth(app, "DEMO")
+    assert client.get("/api/things").status_code == 401
+
+
+def test_runtime_misconfiguration_is_logged_without_a_token(env, monkeypatch, caplog):
+    client = _client()
+    monkeypatch.setenv("DEMO_API_TOKENS", "spa:runtime-secret")  # no scopes
+    caplog.set_level(logging.ERROR, logger="shared_lib.token_auth")
+    assert client.get("/api/things").status_code == 500
+    assert "token auth misconfigured: DEMO_API_TOKENS is set: DEMO_TOKEN_SCOPES is required" in caplog.text
+    assert "runtime-secret" not in caplog.text

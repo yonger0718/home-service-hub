@@ -32,6 +32,7 @@ def test_every_portfolio_route_needs_a_token(client, auth_on):
 
 def test_health_stays_open(client, auth_on):
     assert client.get("/health").status_code != 401
+    assert client.get("/health/ready").status_code != 401
 
 
 def test_read_only_label_reads_the_feed_but_cannot_write(client, auth_on, monkeypatch):
@@ -47,3 +48,33 @@ def test_write_only_label_cannot_read(client, auth_on):
 def test_spa_label_passes_auth_for_both(client, auth_on):
     assert client.get(FEED, headers=_auth("spa-test")).status_code not in (401, 403)
     assert client.get("/api/portfolio/transactions", headers=_auth("spa-test")).status_code == 200
+    assert client.post(WRITE, headers=_auth("spa-test")).status_code not in (401, 403)
+
+
+def test_auth_sits_inside_cors():
+    from fastapi.middleware.cors import CORSMiddleware
+
+    from app.main import app
+    from shared_lib.token_auth import TokenAuthMiddleware
+
+    classes = [m.cls for m in app.user_middleware]
+    assert classes.index(CORSMiddleware) < classes.index(TokenAuthMiddleware)
+
+
+def test_preflight_is_answered_and_401_keeps_cors_headers(client, auth_on):
+    from fastapi.middleware.cors import CORSMiddleware
+
+    from app.main import app
+
+    cors = next(m for m in app.user_middleware if m.cls is CORSMiddleware)
+    origins = [o for o in cors.kwargs.get("allow_origins", []) if o != "*"]
+    if not origins:
+        pytest.skip("no explicit CORS origin configured")
+    origin = origins[0]
+    preflight = client.options("/api/portfolio/transactions", headers={
+        "Origin": origin, "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "authorization"})
+    assert preflight.status_code == 200
+    assert preflight.headers["access-control-allow-origin"] == origin
+    response = client.get("/api/portfolio/transactions", headers={"Origin": origin})
+    assert response.status_code == 401
+    assert response.headers["access-control-allow-origin"] == origin

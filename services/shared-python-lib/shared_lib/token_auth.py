@@ -18,14 +18,18 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 
 from fastapi import FastAPI
+from starlette.middleware import Middleware
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
+
+logger = logging.getLogger(__name__)
 
 ALWAYS_PUBLIC = frozenset({"/health", "/health/ready"})
 READ_METHODS = frozenset({"GET", "HEAD"})
@@ -172,7 +176,8 @@ class TokenAuthMiddleware:
             return
         try:
             config = load_config(self.names)
-        except ValueError:
+        except ValueError as exc:  # the message names variables and labels, never a token value
+            logger.error("token auth misconfigured: %s", exc)
             await _json(500, "auth misconfigured")(scope, receive, send)
             return
         if not config.enabled or self._exempt(scope):
@@ -208,11 +213,14 @@ def docs_paths(app: FastAPI) -> frozenset[str]:
 
 
 def install_token_auth(app: FastAPI, prefix: str) -> str:
-    """Validate the configuration now (a malformed one stops startup) and add the middleware as the outermost layer.
+    """Validate the configuration now (a malformed one stops startup) and add the middleware as the innermost user
+    middleware: appended, not `add_middleware`'s insert-at-0, so CORS stays outside it, answers preflights and puts its
+    headers on a 401/403 (as accounting-service's main.py does). Call it after `create_app`.
 
     Returns the startup log line (`auth_status`).
     """
     names = EnvNames.for_prefix(prefix)
     status = auth_status(names)
-    app.add_middleware(TokenAuthMiddleware, names=names, docs_paths=docs_paths(app))
+    app.user_middleware.append(Middleware(TokenAuthMiddleware, names=names, docs_paths=docs_paths(app)))
+    app.middleware_stack = None  # rebuilt on the first request with the new entry
     return status

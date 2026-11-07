@@ -76,3 +76,20 @@ def test_missing_or_empty_token_file_stops_the_job(run, tmp_path, capsys, job, c
     assert run(job, token) == 2
     assert _Client.made == []
     assert "portfolio token file is missing, unreadable or empty" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("job", ["flex", "cathay"])
+@pytest.mark.parametrize("kind", ["not_utf8", "no_permission"])
+def test_unreadable_token_file_stops_the_job(run, tmp_path, capsys, job, kind):
+    token = tmp_path / "portfolio-token"
+    if kind == "not_utf8":
+        token.write_bytes(b"\xff\xfe\x00bad")
+    else:
+        token.write_text("worker-test-token\n")
+        token.chmod(0)
+    try:
+        assert run(job, token) == 2
+    finally:
+        token.chmod(0o600)
+    assert _Client.made == []
+    assert "portfolio token file is missing, unreadable or empty" in capsys.readouterr().err
