@@ -16,7 +16,7 @@
 
 - **API (accounting-service):** `compare=previous` for a range that starts on the 1st but does not end on a month's last day now compares with the same days of the earlier month(s). For example, `2026-11-01..2026-11-07` compares with `2026-10-01..2026-10-07`. Whole-month ranges and other ranges are unchanged.
 - **Running periods show 「至今」.** While the selected period has started and ends after today, the amounts, charts, tables and comparisons all cover the period's start through today. The current column reads 「本月至今（11/1–11/7）」 against 上月同期 / 去年同期, and changes read 「截至 11/7」.
-  - Rows dated after today are left out and named in a muted line: 「另有 11/7 之後已記的 N 筆 $X 未計入」. Pressing it switches to the whole period, without comparisons.
+  - Rows dated after today are left out and named in a muted line: 「另有 11/7 之後已記的 N 筆 $X 未計入」 (no amount for a count report). Pressing it switches to the whole period, without comparisons.
   - In a report over months, only the last bucket is running. It reads 「11 月 進行中（至 11/7）」 and compares with the same days of the month before.
 - **No base, no arrow.**
   - When the comparison window has no counted rows at all, the change reads 「上期無資料」 or 「去年無資料」, muted.

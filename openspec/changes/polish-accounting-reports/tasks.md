@@ -22,6 +22,8 @@
   - 新增 and 停止
   - average 37,566 over 3 months
   - 9 月 and 2025 年 9 月
+  - running bucket labels 「11 月 進行中（至 11/7）」 and 「11/2 週 進行中（至 11/7）」; a month or week ending today is not running
+  - running bucket comparison clipped: 2028-03-01..03-30 against 2028-02-01..02-29
 
 ## 3. Screens (PR B)
 
@@ -39,5 +41,5 @@
   - empty compare column hidden
   - muted 新增
 - [ ] 3.6 Requests while running (D1 table): the header's three breakdowns over the to-date range plus two whole-period ones; a saved report to-date plus whole period, and the previous bucket's same days for a time dimension
-- [ ] 3.7 Rows after today: the muted 「另有 M/D 之後已記的 N 筆 $X 未計入」 line under the 總覽 list, the 趨勢與比較 table and the saved-report table; pressing it switches to the whole-period view without comparisons and back (「改回截至 M/D」); absent without such rows
+- [ ] 3.7 Rows after today: the muted 「另有 M/D 之後已記的 N 筆 $X 未計入」 line (「…N 筆未計入」 for the count metric) under the 總覽 list, the 趨勢與比較 table and the saved-report table; pressing it switches to the whole-period view without comparisons and back (「改回截至 M/D」); absent without such rows
 - [ ] 3.8 Screens at 1440 / 1100 / 390, light and dark, on the seeded ledger (11/7 and October)
