@@ -2,7 +2,16 @@
 
 `reward_window` gains `calendar_month` and `reward_method` gains `per_unit`; PostgreSQL cannot drop enum values, so the
 downgrade leaves them. `ux_ledger_entry_reward_source_rule` is created only when no duplicate (source, rule) pair
-exists; otherwise the duplicates are printed and the index is skipped.
+exists; otherwise the duplicates are printed and the index is skipped. The skip leaves the schema behind the models
+(which declare the index; a later autogenerate would emit it): a deploy must capture the `alembic upgrade` output and
+check `pg_indexes` for the index. After resolving the printed duplicates, create it by hand with the same statement
+(`CREATE UNIQUE INDEX ux_ledger_entry_reward_source_rule ON ledger_entry (reward_source_entry_id, reward_rule_id)
+WHERE reward_source_entry_id IS NOT NULL AND reward_rule_id IS NOT NULL`).
+
+The downgrade refuses (#297 M8) while it would lose data the old schema cannot hold: a frozen accrual (any state
+but `estimated`: dropping `reward_accrual` would turn its reward row into a no-accrual, MOZE-looking row: not
+deletable, a matcher candidate, counted as external cap use), a `per_unit` rule (its `unit_spend` is dropped) or a
+`calendar_month` rule (the old models do not know the window). `estimated` accruals are re-derivable and are dropped.
 
 Revision ID: a3d9e5c1f7b2
 Revises: e9b1c3d7a5f2
@@ -75,9 +84,27 @@ def upgrade() -> None:
             print(f"  source={source_id} rule={rule_id} entry ids={list(ids)}")
 
 
+DOWNGRADE_GUARDS = {
+    "frozen reward accruals": "SELECT count(*) FROM reward_accrual WHERE state <> 'estimated'",
+    "per_unit reward rules": "SELECT count(*) FROM reward_rule WHERE method = 'per_unit'",
+    "calendar_month reward rules": "SELECT count(*) FROM reward_rule WHERE \"window\" = 'calendar_month'",
+}
+
+
+def _assert_downgradable(connection: sa.Connection) -> None:
+    blockers = []
+    for label, sql in DOWNGRADE_GUARDS.items():
+        count = connection.execute(sa.text(sql)).scalar_one()
+        if count:
+            blockers.append(f"{count} {label}")
+    if blockers:
+        raise RuntimeError("refusing to downgrade a3d9e5c1f7b2: " + "; ".join(blockers))
+
+
 def downgrade() -> None:
+    _assert_downgradable(op.get_bind())
     op.execute(f"DROP INDEX IF EXISTS {INDEX}")
     op.drop_table("reward_accrual")
-    op.execute("DROP TYPE reward_accrual_state")
+    op.execute("DROP TYPE IF EXISTS reward_accrual_state")
     op.drop_column("ledger_entry", "review_reason")
     op.drop_column("reward_rule", "unit_spend")

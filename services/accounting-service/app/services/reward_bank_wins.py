@@ -313,6 +313,62 @@ def _lock_rows(db: Session, ids: Iterable[int]) -> dict[int, LedgerEntry]:
         raise
 
 
+def release_for_retire(db: Session, statement: AccountStatement) -> list[RewardAccrual]:
+    """Retiring `statement` (#297 M9, owner ruling 2026-11-07): every accrual it confirmed or forfeited goes back to
+    `posted`, unconfirmed, its reward row at the accrual's `amount` (step 6's assigned-0 outcome on a statement that
+    prints no reward line), so another statement can pair it; the windows are recomputed. Same P12 tiers as
+    `prepare` (purchases, rules, windows, then the reward rows), all NOWAIT (`reconcile_busy`); the caller holds the
+    statement row. Returns the reset accruals. Never commits."""
+    held = select(RewardAccrual.id).where(RewardAccrual.confirmed_statement_id == statement.id)
+    first = _load(db, list(db.scalars(held)))
+    if not first:
+        return []
+    _lock_tiers(db, first)
+    accruals = _load(db, list(db.scalars(held)))  # re-read under the locks
+    rows = _lock_rows(db, [a.ledger_entry_id for a in accruals if a.ledger_entry_id is not None])
+    for accrual in accruals:
+        row = rows.get(accrual.ledger_entry_id)
+        if row is not None:
+            _set_amount(row, accrual.amount)
+        accrual.state, accrual.confirmed_statement_id = POSTED, None
+    db.flush()
+    reward_engine.recompute_locked(db, {(a.rule_id, a.window_start) for a in accruals})
+    return accruals
+
+
+def flag_rechecks(db: Session, statement: AccountStatement, accruals: Collection[RewardAccrual]) -> list[int]:
+    """The other live statements of the reset accruals' reward accounts (the rule's `reward_account_id`, else its
+    card, and that account's combined parent) whose period holds one of their posting dates get `needs_recheck`, so
+    their next reconcile pairs the accruals again (a reset whose amount did not change leaves no dirty event).
+    Locked NOWAIT after the accrual tiers (`reconcile_busy`): the caller already holds its own statement row and
+    never waits on another. Returns the flagged ids."""
+    if not accruals:
+        return []
+    rules = {r.id: r for r in db.scalars(select(RewardRule).where(RewardRule.id.in_({a.rule_id for a in accruals})))}
+    accounts = {rules[a.rule_id].reward_account_id or rules[a.rule_id].account_id for a in accruals}
+    parents = set(db.scalars(select(Account.combined_account_id).where(
+        Account.id.in_(accounts), Account.combined_account_id.is_not(None))))
+    days = sorted({a.post_on for a in accruals if a.post_on is not None})
+    if not days:
+        return []
+    s = AccountStatement
+    query = (select(s.id).where(s.account_id.in_(accounts | parents), s.id != statement.id, s.mode == "live",
+                                ~retired.clause(s.id), or_(*(and_(s.period_start <= d, d <= s.period_end)
+                                                            for d in days)))
+             .order_by(s.id))
+    try:
+        with db.begin_nested():
+            ids = list(db.scalars(query.with_for_update(nowait=True)))
+    except OperationalError as exc:
+        if isinstance(exc.orig, LockNotAvailable):
+            raise _busy() from exc
+        raise
+    for row in db.scalars(select(s).where(s.id.in_(ids))):
+        row.needs_recheck = True
+    db.flush()
+    return ids
+
+
 # --- pairing -----------------------------------------------------------------------------------------------------
 
 def spread(total: Decimal, weights: list[Decimal]) -> list[Decimal]:

@@ -6,9 +6,15 @@ the shared import key → the statement FOR UPDATE and swept (`engine_locks.lock
 applied actions a ledger delete left fully stranded; a busy writer barrier is 409 `sweep_barrier_busy`, retry), the
 statements holding an applied `anchor_opening` that rests on it locked with it in ascending id order → refused with 409
 `anchor_depends` while such an anchor stays applied, and with 409 `actions_applied` while any action on its cases is
-`applied` — the `revert` rows themselves excepted: they are `applied` but carry no effect (the owner reverts what the engine can revert; a statement with an irreversible — `replace_stand_in` —,
-snapshot-refused or partially stranded applied action has no supported retire path and goes to the owner / Lead; no
-shortcut edits the applied marker) → its active coverage released (`retired`) → every
+`applied` — the `revert` rows themselves excepted: they are `applied` but carry no effect, and so is
+`accept_early_reward` (#297, owner 2026-11-07), retired with the statement below (the owner reverts what the engine
+can revert; a statement with an irreversible — `replace_stand_in` —, snapshot-refused or partially stranded applied
+action has no supported retire path and goes to the owner / Lead; no shortcut edits the applied marker) → the reward
+outcomes it decided handed back (#297 M9, `reward_bank_wins.release_for_retire`: every accrual it confirmed or
+forfeited is `posted` again at its engine amount, unconfirmed, NOWAIT locks → 409 `reconcile_busy`), its applied
+`accept_early_reward` actions `reverted` with `inverse.retired_with_statement` (audit `action_retired`; their
+accruals keep the early posting date), the other live statements holding those posting dates flagged
+`needs_recheck` (`reward_bank_wins.flag_rechecks`) → its active coverage released (`retired`) → every
 non-retired event `retired` → every open/proposed case and every resolved `deferred_next_period` deferral of it
 superseded (version bumped) and their pending proposals superseded → the deferrals of other statements linked to it
 unlinked (`deferred_to_statement_id` NULL; the linkers never pick a retired statement as source or target, so none is
@@ -27,7 +33,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     AccountStatement, ReconciliationAction, ReconciliationCase, ReconciliationProposal, StatementAutoPay, StatementEvent,
 )
-from app.services import coverage_service
+from app.services import coverage_service, reward_bank_wins
 from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, NotFoundError
 from app.services.reconciliation_actions import audit
@@ -65,6 +71,26 @@ class RetireResult:
     superseded_cases: int = 0
 
 
+RETIRED_WITH_STATEMENT = "accept_early_reward"  # applied, never revertible: retired with its statement (#297)
+
+
+def _retire_accepted(db: Session, statement: AccountStatement, label: str, request_id: str | None) -> list[int]:
+    """Owner ruling 2026-11-07: the statement's applied `accept_early_reward` actions are retired with it (status
+    `reverted`, `inverse.retired_with_statement`, audit `action_retired`); their accruals were reset by
+    `reward_bank_wins.release_for_retire` (they keep the early posting date). Returns the action ids."""
+    rows = db.execute(
+        select(ReconciliationAction).join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationAction.status == "applied",
+               ReconciliationAction.action == RETIRED_WITH_STATEMENT)
+        .order_by(ReconciliationAction.id).with_for_update(of=ReconciliationAction)).scalars().all()
+    for row in rows:
+        row.status = "reverted"
+        row.inverse = {**(row.inverse or {}), "retired_with_statement": statement.id}
+        audit.record(db, event="action_retired", actor=label, statement_id=statement.id, case_id=row.case_id,
+                     action_id=row.id, request_id=request_id, detail={"by": "retire", "action": row.action})
+    return [row.id for row in rows]
+
+
 def retire_statement(db: Session, *, account_id: int, statement_id: int, note: str, label: str,
                      request_id: str | None) -> RetireResult:
     """Retire the account's statement (module docstring). Raises NotFoundError (not the account's statement),
@@ -92,10 +118,14 @@ def retire_statement(db: Session, *, account_id: int, statement_id: int, note: s
     applied = db.execute(  # a `revert` row is itself `applied` but has no effect of its own (engine._refuse_later)
         select(ReconciliationAction.id).join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
         .where(ReconciliationCase.statement_id == statement.id, ReconciliationAction.status == "applied",
-               ReconciliationAction.action != "revert")
+               ReconciliationAction.action.not_in(("revert", RETIRED_WITH_STATEMENT)))
         .order_by(ReconciliationAction.id)).scalars().all()
     if applied:
         raise CodedConflictError("actions_applied", f"actions {applied} are applied")
+    # #297 M9: the reward outcomes this statement decided go back to the engine (NOWAIT locks, reconcile_busy)
+    reset = reward_bank_wins.release_for_retire(db, statement)
+    accepted = _retire_accepted(db, statement, label, request_id)
+    rechecked = reward_bank_wins.flag_rechecks(db, statement, reset)
     previous_mode = statement.mode
     released = coverage_service.release_statement(db, statement, reason="retired")
     events = db.execute(
@@ -133,7 +163,8 @@ def retire_statement(db: Session, *, account_id: int, statement_id: int, note: s
     audit.record(db, event=retired.EVENT, actor=label, statement_id=statement.id, request_id=request_id, detail={
         "note": note, "previous_mode": previous_mode, "released_coverage": released, "retired_events": sorted(events),
         "superseded_cases": [c.id for c in cases], "superseded_proposals": sorted(p for p, _ in proposals),
-        "unlinked_deferrals": sorted(unlinked)})
+        "unlinked_deferrals": sorted(unlinked), "reset_accruals": sorted(a.id for a in reset),
+        "retired_actions": accepted, "rechecked_statements": rechecked})
     booked = db.execute(select(StatementAutoPay).where(StatementAutoPay.statement_id == statement.id,
                                                        StatementAutoPay.status == "booked")).scalar_one_or_none()
     if booked is not None:  # the pair stays (it is real money moved); only the audit trail notes it
