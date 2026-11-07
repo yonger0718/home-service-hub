@@ -262,6 +262,9 @@ describe('month average and bucket labels (D4, D7)', () => {
     expect(monthAverage(series, '2026-11-07')).toEqual({ months: 3, average: 37566 });
   });
 
+  it('has no average when every month is zero', () =>
+    expect(monthAverage([{ start: '2026-09-01', value: 0 }, { start: '2026-10-01', value: 0 }], '2026-11-07')).toBeNull());
+
   it('has no average for a ledger younger than one completed month', () =>
     expect(monthAverage([{ start: '2026-11-01', value: 4233 }], '2026-11-07')).toBeNull());
 
@@ -270,6 +273,8 @@ describe('month average and bucket labels (D4, D7)', () => {
     expect(bucketText('2025-09-01', 'month', true)).toBe('2025 年 9 月');
     expect(bucketText('2026-10-05', 'week', false)).toBe('10/5 週');
     expect(bucketText('2025-10-05', 'day', true)).toBe('2025/10/5');
+    expect(bucketText('2025-10-05', 'week', true)).toBe('2025/10/5 週');
+    expect(bucketText('2026-10-05', 'day', false)).toBe('10/5');
   });
 
   it('puts the year on the first axis label and each January only (R1)', () => {

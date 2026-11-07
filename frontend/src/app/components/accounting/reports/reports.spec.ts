@@ -375,7 +375,7 @@ describe('AccountingReportsComponent', () => {
       ]);
       // The API computes those four on spend rows only; 筆數 and 平均 keep the refunds.
       expect(el.querySelector('.rk-stats-note')?.textContent?.trim()).toBe('中位數、最大、最小、平均間隔只算支出（退款不計入統計）；筆數、平均含退款');
-      expect(el.querySelector('.rk-spark-chart')?.getAttribute('aria-label')).toMatch(/^路易莎 近 6 個月支出：2026 年 5 月 880、/);
+      expect(el.querySelector('.rk-spark-chart')?.getAttribute('aria-label')).toMatch(/^路易莎 近 6 個月支出：5 月 880、/);
       const drill = el.querySelector<HTMLAnchorElement>('.rk-drill')!;
       expect(drill.textContent?.trim()).toBe('在記帳記錄看這 12 筆 ›');
       expect(drill.getAttribute('href')).toBe('/accounting?month=2026-10&merchant=%E8%B7%AF%E6%98%93%E8%8E%8E');

@@ -9,6 +9,7 @@ import {
   ReportPeriod,
   barGeometry,
   axisText,
+  bucketText,
   change,
   compareLabels,
   compareTitle,
@@ -127,7 +128,8 @@ export class ReportTrendComponent {
   readonly chartAria = computed(() => {
     const buckets = this.trend()?.buckets ?? [];
     const values = this.values();
-    return `${this.seriesName()}近 ${buckets.length} 個月：${buckets.map((bucket, index) => `${axisText(bucket.start, index)} ${n0(values[index])}`).join('、')}`;
+    const spansYears = buckets.length > 0 && buckets[0].start.slice(0, 4) !== buckets[buckets.length - 1].start.slice(0, 4);
+    return `${this.seriesName()}近 ${buckets.length} 個月：${buckets.map((bucket, index) => `${bucketText(bucket.start, 'month', spansYears)} ${n0(values[index])}`).join('、')}`;
   });
 
   readonly nouns = computed(() => periodNouns(this.period()));
