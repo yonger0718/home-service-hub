@@ -140,15 +140,15 @@ def no_due_date(db: Session) -> list[int]:
 def find_twins(db: Session, *, card_account_id: int, pay_account_id: int, amount: Decimal, pay_date: date,
                period_end: date, window_days: int, exclude: Iterable[int] = ()) -> list[int]:
     """Top-level entries that already represent this payment (§4.1), whatever their source, with `entry_date` from
-    the day after the statement closed (`period_end + 1`, or `pay_date - window_days` if that is earlier) through
-    `pay_date + window_days` — an owner who pays early, any time after the bill closed, already paid it (§8 errata
-    #311): a `transfer_in` of `amount` on the card family, or on the pay account a
+    the day after the statement closed (`period_end + 1`) through `pay_date + window_days` — an owner who pays early,
+    any time after the bill closed, already paid it, and one paid on or before the closing day paid the previous
+    bill (§8 errata #311): a `transfer_in` of `amount` on the card family, or on the pay account a
     `transfer_out` of `-amount` whose peer leg (the same `transfer_group_id`'s `transfer_in`) is on the card family
     or that has no peer leg at all, or a statement-booked `expense` of `-amount` (a `backfill_entry` stand-in). A
     `transfer_out` to another account (savings, another card's payment) is not a twin (§8 errata)."""
     family = coverage_service.participating_accounts(db, card_account_id)
     window = timedelta(days=window_days)
-    earliest = min(pay_date - window, period_end + timedelta(days=1))
+    earliest = period_end + timedelta(days=1)
     peer = aliased(LedgerEntry)
     peer_leg = and_(peer.transfer_group_id == LedgerEntry.transfer_group_id, peer.id != LedgerEntry.id,
                     peer.kind == "transfer_in")

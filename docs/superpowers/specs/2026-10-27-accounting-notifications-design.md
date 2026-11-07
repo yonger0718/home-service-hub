@@ -176,8 +176,8 @@ The app's reminders page already derives dues from the card's rule without a sta
   is the next cycle's end — the app's `paymentWindowEnd` — so a later cycle's payment never clears this one.
   `paid` = Σ `transfer_in` on the master + non-archived 副卡 with `entry_date` in that window.
 - **Auto item** is dropped only when the debit already exists as the job would see it (`find_twins` rule), i.e.
-  an entry with `entry_date` from `min(debit_day − auto_pay.twin_window_days, period_end + 1)` (issue #311: an early
-  payment after closing counts) through `debit_day + auto_pay.twin_window_days` in any of the three shapes the
+  an entry with `entry_date` from `period_end + 1` (issue #311: an early payment after closing counts; one on the
+  closing day pays the previous bill) through `debit_day + auto_pay.twin_window_days` in any of the three shapes the
   job matches: (a) a `transfer_in` on the master + 副卡 of exactly `statement_total`; (b) a `transfer_out` on the
   source account of exactly `−statement_total` whose `transfer_group_id` is null or matches a `transfer_in` on the
   master + 副卡 (the job also accepts a peerless `transfer_out`; the notifier cannot see peers on other accounts

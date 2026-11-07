@@ -160,12 +160,11 @@ class _Run:
 
     def has_twin(self, card: dict, amount: Decimal, debit_day: date, period_end: date) -> bool:
         """The debit already exists as the job's `find_twins` would see it (shapes a, b, c): dated from the day after
-        the statement closed (or `debit_day − twin_days` if earlier) through `debit_day + twin_days` (#311)."""
-        window = timedelta(days=self.twin_days)
-        earliest = min(debit_day - window, period_end + timedelta(days=1))
+        the statement closed through `debit_day + twin_days` (#311)."""
+        earliest, latest = period_end + timedelta(days=1), debit_day + timedelta(days=self.twin_days)
 
         def near(e: dict) -> bool:
-            return earliest <= _day(e["entry_date"]) <= debit_day + window
+            return earliest <= _day(e["entry_date"]) <= latest
 
         ins = self.transfers_in(card)
         if any(near(e) and Decimal(e["amount"]) == amount for e in ins):

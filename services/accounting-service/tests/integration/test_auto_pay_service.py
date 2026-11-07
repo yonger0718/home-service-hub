@@ -423,6 +423,21 @@ def test_an_early_payment_after_closing_is_a_twin(seed, db_session, world):
     db.rollback()
 
 
+
+def test_a_closing_day_payment_is_never_a_twin_even_when_the_debit_is_near_the_close(seed, db_session, run):
+    """#311: the window starts the day after closing, also for a card that debits within twin_window_days of it."""
+    db = db_session
+    bank = seed.account("薪轉")
+    card = _card(seed, db, "近卡", auto_pay_account_id=bank.id)
+    stmt, _, _ = _submit(db, run, card, [_line(1, DAY, "全聯", 580)], period=SEP, due_date=date(2026, 10, 2))
+    db.commit()
+    today = date(2026, 10, 2)
+    for day, want in [(SEP[1], None), (SEP[1] + timedelta(days=1), "twin")]:
+        _transfer(seed, bank, card, 580, day)
+        db.flush()
+        assert _reason(db, stmt.id, today) == want, day
+        db.rollback()
+
 def test_an_early_payment_recorded_after_booking_retires_the_pair(seed, db_session, world):
     """#311: the job booked the pair, then the owner records the payment they made early (after closing)."""
     db, (bank, card, stmt) = db_session, world
