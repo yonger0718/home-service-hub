@@ -15,7 +15,9 @@
 ## What Changes
 
 - **API (accounting-service):** `compare=previous` for a range that starts on the 1st but does not end on a month's last day now compares with the same days of the earlier month(s). For example, `2026-11-01..2026-11-07` compares with `2026-10-01..2026-10-07`. Whole-month ranges and other ranges are unchanged.
-- **Running periods.** While the selected period has started and ends after today, the comparisons cover only up to today: the header figures, the 總覽 detail card's change, the 趨勢與比較 table and saved reports. Each such comparison reads 「截至 11/7」. Charts keep the whole period.
+- **Running periods show 「至今」.** While the selected period has started and ends after today, the amounts, charts, tables and comparisons all cover the period's start through today. The current column reads 「本月至今（11/1–11/7）」 against 上月同期 / 去年同期, and changes read 「截至 11/7」.
+  - Rows dated after today are left out and named in a muted line: 「另有 11/7 之後已記的 N 筆 $X 未計入」. Pressing it switches to the whole period, without comparisons.
+  - In a report over months, only the last bucket is running. It reads 「11 月 進行中（至 11/7）」 and compares with the same days of the month before.
 - **No base, no arrow.**
   - When the comparison window has no counted rows at all, the change reads 「上期無資料」 or 「去年無資料」, muted.
   - A table column that is empty throughout is left out, with a note.
@@ -57,6 +59,6 @@ The deltas modify requirements that `add-accounting-reports` introduces. Archive
   - `reports.ts` and `.html`: header;
   - `overview-tab`, `trend-tab`, `rank-tab`, `custom-report`;
 - **Extra requests:**
-  - while the period is running, two more header breakdowns (to-date expense and income; design D1);
-  - a running saved report with a comparison, one more (to-date);
+  - while the period is running, two whole-period header breakdowns next to the three to-date ones (design D1);
+  - a running saved report, one whole-period request, plus the previous bucket's same days for a time dimension;
   - a merchant breakdown filtered to the category, only when a category without subcategories is selected in 總覽.

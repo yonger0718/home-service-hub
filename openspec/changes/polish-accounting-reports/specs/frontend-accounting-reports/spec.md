@@ -4,9 +4,8 @@
 
 A report period (`to` being its inclusive last day) SHALL be *running* while `from ≤ today < to`. For a running period:
 
-- **Comparisons** SHALL use the range from the period's start through today. This covers the header's 支出 changes, the 總覽 detail card's change, the 趨勢與比較 table and a saved report's 比較. Each SHALL be marked 「截至 M/D」.
-- **The amounts shown and the charts** SHALL keep the whole period.
-- **The 趨勢與比較 table's columns** SHALL read 本月至今, 上月同期 and 去年同期 for a running month.
+- **The amounts, the charts and the comparisons** SHALL all use the range from the period's start through today. Changes SHALL be marked 「截至 M/D」.
+- **The current column** SHALL read 「本月至今（M/D–M/D）」 (「本期至今」 for other periods), and the comparison columns 上月同期 (上期同期) and 去年同期.
 
 #### Scenario: Header on the 7th
 - **GIVEN** today is 2026-11-07, November's expense so far is 4,233, October 1–7 is 6,910 and November 1–7 2025 is 5,120
@@ -25,14 +24,28 @@ A report period (`to` being its inclusive last day) SHALL be *running* while `fr
 - **WHEN** 2026-10 is selected on 2026-11-07
 - **THEN** the comparisons SHALL cover the whole of October against the whole of September and October 2025, without 「截至」
 
-### Requirement: Running saved report comparisons
+### Requirement: Rows after today in a running period
 
-When a saved report with a comparison is opened in a running period, its table SHALL keep the whole-period current column, and its comparison columns SHALL read 本期至今, 上期同期 (or 去年同期) and 增減, all covering the period's start through today, headed 「截至 M/D」.
+When a running period holds rows dated after today, a muted line under the table SHALL read 「另有 M/D 之後已記的 N 筆 $X 未計入」, counting those rows in the table's metric. Pressing it SHALL switch to the whole-period view, which hides every comparison column and change; pressing it again SHALL return to the to-date view. Without such rows the line SHALL be absent.
 
-#### Scenario: Saved report on the 7th
-- **GIVEN** today is 2026-11-07 and a saved report covers 本月 by category with 和上期比較
+#### Scenario: Scheduled rows later in the month
+- **GIVEN** today is 2026-11-07 and November holds 2 expense rows totalling 13,420 dated after 11/7
+- **WHEN** 2026-11 is opened
+- **THEN** the figures SHALL leave those rows out, a muted line SHALL read 「另有 11/7 之後已記的 2 筆 $13,420 未計入」, and pressing it SHALL show the whole month without comparison columns
+
+#### Scenario: No rows after today
+- **GIVEN** today is 2026-11-07 and November holds no rows after 11/7
+- **WHEN** 2026-11 is opened
+- **THEN** no 「另有」 line SHALL appear
+
+### Requirement: Running bucket in multi-bucket reports
+
+In a report over time buckets, only the last bucket SHALL be running. Its row SHALL read 「M 月 進行中（至 M/D）」 with its to-date amount, and its change SHALL compare with the same number of days of the bucket before it. The total row SHALL hold the to-date total and compare with the comparison window of the to-date range.
+
+#### Scenario: November in 近 6 個月
+- **GIVEN** today is 2026-11-07 and a saved report 近 6 個月 by month with 和上期比較
 - **WHEN** it is opened
-- **THEN** the table SHALL show the whole-month 本期 column, then 本期至今, 上期同期 and 增減 for November 1–7 against October 1–7, headed 「截至 11/7」
+- **THEN** November's row SHALL read 「11 月 進行中（至 11/7）」 with November 1–7's amount and a change against October 1–7, June to October SHALL show whole months, and the total row SHALL compare 2026-06-01..2026-11-07 with 2025-12-01..2026-05-07
 
 ### Requirement: Comparisons without a base
 
@@ -100,7 +113,7 @@ Wherever a time-dimension key is shown as text (figures, table rows, chart axes,
 - **week:** 10/5 週;
 - **day:** 10/5.
 
-The year SHALL be prefixed (2025 年 9 月, 2025/10/5) when the report spans more than one calendar year. A running bucket SHALL be suffixed 進行中, and excluded from 平均每月 and 平均每組.
+The year SHALL be prefixed (2025 年 9 月, 2025/10/5) when the report spans more than one calendar year. A running bucket SHALL be suffixed 「進行中（至 M/D）」, and excluded from 平均每月 and 平均每組.
 
 #### Scenario: Highest month in a saved report
 - **GIVEN** 週末外食 by month, September 2026 being the highest at 367
@@ -108,7 +121,7 @@ The year SHALL be prefixed (2025 年 9 月, 2025/10/5) when the report spans mor
 
 #### Scenario: Running bucket
 - **GIVEN** a saved report 近 6 個月 by month opened on 2026-11-07
-- **THEN** November's row SHALL read 「11 月 進行中」 and 平均每月 SHALL average June to October
+- **THEN** November's row SHALL read 「11 月 進行中（至 11/7）」 and 平均每月 SHALL average June to October
 
 ### Requirement: Reports header and button clearance
 

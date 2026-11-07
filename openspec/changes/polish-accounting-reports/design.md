@@ -31,32 +31,54 @@ Measured on seeded data on 2026-11-07:
 
 A period is *running* when `from ≤ today < to`, where `to` is the period's inclusive last day (as in `report-math.ts` and the API). A period whose last day is today is not running: its to-date range is the whole period, so it compares as a whole period, without 「截至」 and with the requests of a finished period (the header's three; a saved report's one). This matches `elapsedDays`, which treats `today >= to` as finished. The rule covers every unit: the current month, the current year, a custom range ending in the future, and a saved report's relative period.
 
-For a running period, the comparisons use the *to-date range* `from..today`.
-
-- The figures themselves keep the whole period: the KPI amounts, the charts and the tables' current column. The future days of the month hold only scheduled rows, and those show as they do today.
-- What changes is the comparison.
+For a running period, everything uses the *to-date range* `from..today`: the amounts, the charts, the tables and the comparisons. Rows dated after today stay out of the figures and are named in a note instead (below).
 
 | Figure | Running period | Otherwise |
 |---|---|---|
-| Header 支出 change (two lines) | to-date range with `previous` and `last_year`, plus 「截至 11/7」 | unchanged |
-| Header 結餘 rate, 日均支出 | unchanged (日均 already divides by elapsed days) | unchanged |
-| 總覽 detail card 「比上期」 | the category's to-date amount against its to-date base | unchanged |
-| 趨勢與比較 table | columns read 本月至今 / 上月同期 / 去年同期, with to-date amounts | unchanged |
-| Saved report 比較 | the current column keeps the whole period; the comparison columns become 本期至今 / 上期同期 (or 去年同期) / 增減, all to-date, headed 「截至 11/7」 | unchanged |
+| Header 支出, 收入, 結餘 | to-date amounts | whole period |
+| Header 支出 change (two lines) | to-date against `previous` and `last_year`, plus 「截至 11/7」 | whole period |
+| Header 結餘 rate, 日均支出 | from the to-date amounts (日均 already divides by elapsed days) | unchanged |
+| 總覽 donut, list, detail card | to-date amounts; the change is to-date against the to-date base | whole period |
+| 趨勢與比較 table | the current column reads 「本月至今（11/1–11/7）」, the comparison columns 上月同期 / 去年同期 | 本月 / 上月 / 去年同月 |
+| 排行 | to-date rows | whole period |
+| Saved report | to-date amounts, chart and table; the current column reads 「本期至今（11/1–11/7）」, the comparison columns 上期同期 (or 去年同期) | whole period |
 
-Requests while running. The header makes three `group_by=category` breakdowns today (`reports.ts` `load`); while running it makes five, two more:
+**Rows after today.** When the period holds rows dated after today (scheduled or future-dated entries), a muted line under the table reads 「另有 11/7 之後已記的 N 筆 $X 未計入」. N and $X are the rows between tomorrow and `to` in the metric the table shows. Where the line goes:
+
+- on the reports page, under the 總覽 list and the 趨勢與比較 table;
+- on a saved report, under its table.
+
+Pressing the line switches the page to the whole-period view:
+
+- the figures, charts and tables cover `from..to`, and every comparison column and change is hidden;
+- the line then reads 「改回截至 11/7」 and switches back.
+
+The view is not kept in the URL, so a reload returns to the to-date view. Without such rows, the line is absent and there is nothing to switch.
+
+**Multi-bucket reports** (time dimensions, e.g. a saved report 近 6 個月 by month). Only the last bucket is running; the earlier buckets are whole.
+
+- The running bucket's row reads 「11 月 進行中（至 11/7）」 and holds its to-date amount.
+- Its change compares with the same number of days of the bucket before it: 11/1–11/7 against 10/1–10/7.
+- The total row holds the to-date total, and compares with the comparison window of the to-date range (D2: `2026-06-01..2026-11-07` → `2025-12-01..2026-05-07`).
+
+**Requests while running.** The header makes three `group_by=category` breakdowns today (`reports.ts` `load`). While running, those three use the to-date range, and two whole-period breakdowns without `compare` are added. The added two feed the 「另有」 line (whole totals minus to-date totals) and the whole-period view.
 
 | Breakdown | Range | Used for |
 |---|---|---|
-| expense, `split_by=subcategory`, no `compare` | whole period | 支出 figure, donut, 總覽 list and splits |
-| expense, `compare=previous` | to-date | header 支出 change, 總覽 detail change (支出), 趨勢與比較 本月至今 / 上月同期 |
+| expense, `split_by=subcategory`, `compare=previous` | to-date | 支出, donut, 總覽 list and detail, header change, 趨勢與比較 本月至今 / 上月同期 |
 | expense, `compare=last_year` | to-date | header 去年同期 change, 趨勢與比較 去年同期 |
-| income, `split_by=subcategory`, no `compare` | whole period | 收入 and 結餘 figures, 總覽 income list |
-| income, `compare=previous` | to-date | 總覽 detail change (收入) |
+| income, `split_by=subcategory`, `compare=previous` | to-date | 收入, 結餘, 總覽 income |
+| expense, `split_by=subcategory`, no `compare` | whole period | 「另有」 line (支出), whole-period view |
+| income, `split_by=subcategory`, no `compare` | whole period | 「另有」 line (收入), whole-period view |
 
-A period that is not running keeps today's three requests. A saved report that is running and has a comparison makes two requests: the whole period without `compare` (figures, chart, current column) and the to-date range with `compare` (the comparison columns).
+A period that is not running keeps today's three requests over the whole period. A running saved report makes two:
 
-`elapsedDays` reports a period that has not started (today before `from`) as running. D1's rule governs comparisons: such a period is not running and compares as a whole period.
+- the to-date range, with `compare` when it has one;
+- the whole period without `compare`, for the line and the whole-period view.
+
+For the running bucket's change, the saved report also reads the previous bucket's same days (one more breakdown over that short range, only for a time dimension).
+
+`elapsedDays` reports a period that has not started (today before `from`) as running. D1's rule governs: such a period is not running and shows the whole period.
 
 ### D2. API: "previous" for ranges that start on the 1st
 
@@ -92,7 +114,7 @@ A comparison window is *empty* when its `totals.count` is 0. In that case:
   - when N is 0 (a ledger younger than one complete month), there is no line and no label.
 
   The API's `average` stays in the contract for other clients.
-- **Saved reports, 平均每月 and 平均每組 over time dimensions.** These exclude the running bucket. The running bucket's bar is drawn hatched, and its table row label is suffixed 「進行中」.
+- **Saved reports, 平均每月 and 平均每組 over time dimensions.** These exclude the running bucket. The running bucket's bar is drawn hatched, and its table row label is suffixed 「進行中（至 11/7）」 (D1).
 
 ### D5. Category detail without subcategories
 

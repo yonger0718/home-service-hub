@@ -25,18 +25,19 @@
 
 ## 3. Screens (PR B)
 
-- [ ] 3.1 Header: to-date comparisons with 「截至 M/D」; one-row layout at ≥ 1024 px
+- [ ] 3.1 Header: to-date amounts and comparisons with 「截至 M/D」; one-row layout at ≥ 1024 px
 - [ ] 3.2 總覽 detail: running-period change; 常去商家 for categories without subcategories, with a per period and category cache (D5)
 - [ ] 3.3 趨勢與比較
   - N 個月平均
   - running month hatched
-  - table columns 本月至今 / 上月同期 / 去年同期
+  - table columns 本月至今（M/D–M/D） / 上月同期 / 去年同期
   - hidden empty columns with the note
 - [ ] 3.4 排行: single-entry panel; interval hidden for same-day ranges (D6)
 - [ ] 3.5 自訂報表
   - 最高 label
-  - running bucket 進行中, excluded from averages
+  - running bucket 「進行中（至 M/D）」 with its change against the previous bucket's same days; to-date total row; excluded from averages
   - empty compare column hidden
   - muted 新增
-- [ ] 3.6 Header and saved-report requests while running (D1 table): two extra header breakdowns; a saved report with a comparison makes a second, to-date request
-- [ ] 3.7 Screens at 1440 / 1100 / 390, light and dark, on the seeded ledger (11/7 and October)
+- [ ] 3.6 Requests while running (D1 table): the header's three breakdowns over the to-date range plus two whole-period ones; a saved report to-date plus whole period, and the previous bucket's same days for a time dimension
+- [ ] 3.7 Rows after today: the muted 「另有 M/D 之後已記的 N 筆 $X 未計入」 line under the 總覽 list, the 趨勢與比較 table and the saved-report table; pressing it switches to the whole-period view without comparisons and back (「改回截至 M/D」); absent without such rows
+- [ ] 3.8 Screens at 1440 / 1100 / 390, light and dark, on the seeded ledger (11/7 and October)
