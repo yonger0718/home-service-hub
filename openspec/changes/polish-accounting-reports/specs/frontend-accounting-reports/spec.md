@@ -26,7 +26,7 @@ A report period (`to` being its inclusive last day) SHALL be *running* while `fr
 
 ### Requirement: Rows after today in a running period
 
-When a running period holds rows dated after today, a muted line under the table SHALL read 「另有 M/D 之後已記的 N 筆 $X 未計入」, counting those rows in the table's metric. Pressing it SHALL switch to the whole-period view, which hides every comparison column and change; pressing it again SHALL return to the to-date view. Without such rows the line SHALL be absent.
+When a running period holds rows dated after today, a muted line under the table SHALL read 「另有 M/D 之後已記的 N 筆 $X 未計入」, $X being their amount in the table's metric (「另有 M/D 之後已記的 N 筆未計入」 for the count metric). Pressing it SHALL switch to the whole-period view, which hides every comparison column and change; pressing it again SHALL return to the to-date view. Without such rows the line SHALL be absent.
 
 #### Scenario: Scheduled rows later in the month
 - **GIVEN** today is 2026-11-07 and November holds 2 expense rows totalling 13,420 dated after 11/7
@@ -40,7 +40,12 @@ When a running period holds rows dated after today, a muted line under the table
 
 ### Requirement: Running bucket in multi-bucket reports
 
-In a report over time buckets, only the last bucket SHALL be running. Its row SHALL read 「M 月 進行中（至 M/D）」 with its to-date amount, and its change SHALL compare with the same number of days of the bucket before it. The total row SHALL hold the to-date total and compare with the comparison window of the to-date range.
+In a report over time buckets, only the last bucket SHALL be running. Its row SHALL read its bucket label suffixed 「進行中（至 M/D）」 (「11 月 進行中（至 11/7）」, 「11/2 週 進行中（至 11/7）」) with its to-date amount. Its change SHALL compare with the same number of days of the bucket before it, clipped to that bucket's last day. The total row SHALL hold the to-date total and compare with the comparison window of the to-date range.
+
+#### Scenario: Previous bucket shorter than the elapsed days
+- **GIVEN** today is 2028-03-30 and a report by month ends with March 2028
+- **WHEN** it is opened
+- **THEN** March's row SHALL read 「3 月 進行中（至 3/30）」 and compare 2028-03-01..2028-03-30 with 2028-02-01..2028-02-29
 
 #### Scenario: November in 近 6 個月
 - **GIVEN** today is 2026-11-07 and a saved report 近 6 個月 by month with 和上期比較

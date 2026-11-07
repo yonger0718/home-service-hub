@@ -43,7 +43,7 @@ For a running period, everything uses the *to-date range* `from..today`: the amo
 | 排行 | to-date rows | whole period |
 | Saved report | to-date amounts, chart and table; the current column reads 「本期至今（11/1–11/7）」, the comparison columns 上期同期 (or 去年同期) | whole period |
 
-**Rows after today.** When the period holds rows dated after today (scheduled or future-dated entries), a muted line under the table reads 「另有 11/7 之後已記的 N 筆 $X 未計入」. N and $X are the rows between tomorrow and `to` in the metric the table shows. Where the line goes:
+**Rows after today.** When the period holds rows dated after today (scheduled or future-dated entries), a muted line under the table reads 「另有 11/7 之後已記的 N 筆 $X 未計入」. N and $X are the rows between tomorrow and `to`, $X in the metric the table shows. For the count metric there is no amount: the line reads 「另有 11/7 之後已記的 N 筆未計入」. Where the line goes:
 
 - on the reports page, under the 總覽 list and the 趨勢與比較 table;
 - on a saved report, under its table.
@@ -57,8 +57,8 @@ The view is not kept in the URL, so a reload returns to the to-date view. Withou
 
 **Multi-bucket reports** (time dimensions, e.g. a saved report 近 6 個月 by month). Only the last bucket is running; the earlier buckets are whole.
 
-- The running bucket's row reads 「11 月 進行中（至 11/7）」 and holds its to-date amount.
-- Its change compares with the same number of days of the bucket before it: 11/1–11/7 against 10/1–10/7.
+- The running bucket's row reads its `bucketText` label (D7) suffixed 「進行中（至 11/7）」: 「11 月 進行中（至 11/7）」, 「11/2 週 進行中（至 11/7）」. A day bucket is never running: a day that is today ends today.
+- Its change compares with the same number of days of the bucket before it, clipped to that bucket's last day like D2: 11/1–11/7 against 10/1–10/7; 2028-03-01..03-30 against 2028-02-01..02-29.
 - The total row holds the to-date total, and compares with the comparison window of the to-date range (D2: `2026-06-01..2026-11-07` → `2025-12-01..2026-05-07`).
 
 **Requests while running.** The header makes three `group_by=category` breakdowns today (`reports.ts` `load`). While running, those three use the to-date range, and two whole-period breakdowns without `compare` are added. The added two feed the 「另有」 line (whole totals minus to-date totals) and the whole-period view.
