@@ -178,3 +178,55 @@ describe('split save contract', () => {
     http.verify();
   });
 });
+
+describe('rules-only save (#293)', () => {
+  const oldRule = makeRule({ id: 5 });
+  const newRule = makeRule({ id: 6, name: '新規則' });
+
+  function loaded() {
+    const d = makeEntryDetail({ id: 7, rules: [oldRule] });
+    const c = childFromDetail(d, { protected: false, protected_reason: null }, 'TWD');
+    c.availableRules = [oldRule, newRule];
+    const p = {
+      ...parent(), entryDate: d.entry_date, entryTime: d.entry_time,
+      postedDate: normalizePosted(d.entry_date, d.posted_date),
+    };
+    return { c, p, saved: { child: structuredClone(c), parent: structuredClone(p) } };
+  }
+
+  it('plans a rules-only change as a link-only save', () => {
+    const { c, p, saved } = loaded();
+    c.ruleIds = [6];
+    expect(planEntrySave([c], p, accounts, parties, { entryId: 7, groupId: null, saved }))
+      .toMatchObject({ kind: 'rules', id: 7, input: { reward_rule_ids: [6] } });
+  });
+
+  it('keeps the full update when any other field changed, nothing changed, or nothing was loaded', () => {
+    const renamed = loaded();
+    renamed.c.ruleIds = [6];
+    renamed.c.name = '改名';
+    expect(planEntrySave([renamed.c], renamed.p, accounts, parties, { entryId: 7, groupId: null, saved: renamed.saved }).kind)
+      .toBe('update');
+    const same = loaded();
+    expect(planEntrySave([same.c], same.p, accounts, parties, { entryId: 7, groupId: null, saved: same.saved }).kind)
+      .toBe('update');
+    const unsaved = loaded();
+    unsaved.c.ruleIds = [6];
+    expect(planEntrySave([unsaved.c], unsaved.p, accounts, parties, { entryId: 7, groupId: null }).kind).toBe('update');
+  });
+
+  it('sends a link-only save to PUT /entries/{id}/reward-rules', () => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
+    const http = TestBed.inject(HttpTestingController);
+    const { c, p, saved } = loaded();
+    c.ruleIds = [];
+    const plan = planEntrySave([c], p, accounts, parties, { entryId: 7, groupId: null, saved });
+    expect(plan.kind).toBe('rules');
+    executeEntrySave(TestBed.inject(AccountingService), plan).subscribe();
+    const req = http.expectOne('/api/accounting/entries/7/reward-rules');
+    expect(req.request.method).toBe('PUT');
+    expect(req.request.body).toEqual({ reward_rule_ids: [] });
+    req.flush({});
+    http.verify();
+  });
+});

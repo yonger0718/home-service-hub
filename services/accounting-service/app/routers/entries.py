@@ -7,7 +7,9 @@ from sqlalchemy.orm import Session
 from ..auth import method_scope
 from ..database import get_db
 from ..schemas.ledger import DailySummaryOut, EntryDetailOut, EntryKind, EntryPage, MonthSummaryOut
-from ..schemas.writes import EntryIn, EntryUpdateIn, EntryWriteOut, RefundIn, SettleIn, SplitIn, SplitOut
+from ..schemas.writes import (
+    EntryIn, EntryUpdateIn, EntryWriteOut, RefundIn, RewardRulesIn, SettleIn, SplitIn, SplitOut,
+)
 from ..services import entry_write_service, ledger_service, settlement_service, split_service
 from .errors import service_errors
 
@@ -99,6 +101,16 @@ def remove_entry(entry_id: int, db: Session = Depends(get_db)):
         entry_write_service.delete_entry(db, entry_id)
     db.commit()
     return Response(status_code=204)
+
+
+@router.put("/{entry_id}/reward-rules", response_model=EntryDetailOut)
+def put_entry_reward_rules(entry_id: int, payload: RewardRulesIn, db: Session = Depends(get_db)):
+    """Replace only the entry's reward rule links: the row, its source and its fee / discount children (and their
+    statement coverage) stay untouched (issue #293)."""
+    with service_errors():
+        entry_write_service.update_reward_rules(db, entry_id, payload.reward_rule_ids)
+    db.commit()
+    return ledger_service.get_entry_detail(db, entry_id)
 
 
 @router.put("/{entry_id}/split", response_model=SplitOut)

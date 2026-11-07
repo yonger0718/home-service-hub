@@ -498,6 +498,16 @@ def _check_linked_original(db: Session, entry: LedgerEntry, prepared: PreparedEn
             )
 
 
+def _assert_form_kind(entry: LedgerEntry) -> None:
+    """The entry is one the entry form owns: not a refund, not a settlement, an editable kind, not a child."""
+    if entry.kind == "refund":
+        raise ValidationError("kind", "refund entries are edited by deleting and re-refunding")
+    if entry.is_settlement:
+        raise ValidationError("kind", "settlement entries are edited by deleting and re-settling")
+    if entry.kind not in EDITABLE_KINDS or entry.parent_entry_id is not None:
+        raise ValidationError("kind", f"{entry.kind} entries are not edited through this endpoint")
+
+
 def update_entry(db: Session, entry_id: int, payload: EntryUpdateIn, *, http_get=None) -> None:
     """Settlement entries (`is_settlement`, with or without a settles_entry_id: the link is NULL after the
     original was deleted and imported collections may never have had one) and refund entries are never re-signed
@@ -516,15 +526,24 @@ def update_entry(db: Session, entry_id: int, payload: EntryUpdateIn, *, http_get
     if entry.transfer_group_id is not None and (payload.kind != entry.kind or payload.account_id != entry.account_id):
         field = "kind" if payload.kind != entry.kind else "account_id"
         raise ValidationError(field, "transfer legs keep kind and account; edit them with PUT /transfers/{transfer_group_id}")
-    if entry.kind == "refund":
-        raise ValidationError("kind", "refund entries are edited by deleting and re-refunding")
-    if entry.is_settlement:
-        raise ValidationError("kind", "settlement entries are edited by deleting and re-settling")
-    if entry.kind not in EDITABLE_KINDS or entry.parent_entry_id is not None:
-        raise ValidationError("kind", f"{entry.kind} entries are not edited through this endpoint")
+    _assert_form_kind(entry)
     _check_linked_original(db, entry, prepared)
     apply_prepared_update(db, entry, prepared)
     remember_defaults(db, payload.category_id, prepared.account.id, payload.project_id)
+
+
+def update_reward_rules(db: Session, entry_id: int, rule_ids: Iterable[int]) -> None:
+    """Replace the entry's reward rule links and nothing else (issue #293). Unlike `update_entry` the row, its
+    `source` and its fee / discount children stay as they are, so the children's statement coverage survives. Same
+    edit lock, kind guards and rule checks as `update_entry`; the reward engine then re-syncs the entry's accruals
+    and sets the `reward_posted` flag when a frozen accrual's link changed."""
+    entry = locked_entry(db, entry_id)
+    assert_entry_editable(db, entry)
+    _assert_form_kind(entry)
+    unique = check_rules(db, rule_ids, entry.account_id, entry.entry_date, attached_rule_ids(db, entry.id))
+    before = reward_engine.capture(db, entry)
+    write_rule_links(db, entry.id, unique)
+    reward_engine.after_write_captured(db, entry, before)
 
 
 def delete_entries_cascade(db: Session, entry_ids: Iterable[int]) -> None:

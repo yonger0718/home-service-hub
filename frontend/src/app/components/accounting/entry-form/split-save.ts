@@ -14,16 +14,24 @@ import { evalOrNull, isWritableKind, rulesForDate } from './entry-draft';
 import { buildEntryInput } from './entry-save';
 import { ChildDraft, ParentDraft, normalizePosted } from './split-draft';
 
+/** The loaded single entry's draft as it was before the owner edited anything (a rules-only save compares to it). */
+export interface SavedDraft {
+  child: ChildDraft;
+  parent: ParentDraft;
+}
+
 /** What the form was opened on: the single entry it updates / converts, the split group it upserts. */
 export interface SaveContext {
   entryId: number | null;
   groupId: number | null;
+  saved?: SavedDraft | null;
 }
 
-/** The five save routes (spec §2.7). */
+/** The five save routes (spec §2.7), plus `rules`: a loaded single entry whose only change is its reward rules (#293). */
 export type EntrySavePlan =
   | { kind: 'create'; input: EntryInput }
   | { kind: 'update'; id: number; input: EntryInput }
+  | { kind: 'rules'; id: number; input: EntryInput }
   | { kind: 'create-split'; input: SplitInput }
   | { kind: 'convert-split'; id: number; input: SplitInput }
   | { kind: 'update-split'; groupId: number; input: SplitInput };
@@ -189,7 +197,12 @@ export function planEntrySave(
   if (children.length === 1) {
     const child = children[0];
     const input = fullChild(child, parent, accounts, partyIds.get(child.key) ?? child.counterpartyId, true);
-    return context.entryId === null ? { kind: 'create', input } : { kind: 'update', id: context.entryId, input };
+    if (context.entryId === null) {
+      return { kind: 'create', input };
+    }
+    return onlyRulesChanged(input, context.saved ?? null, accounts)
+      ? { kind: 'rules', id: context.entryId, input }
+      : { kind: 'update', id: context.entryId, input };
   }
   const input = toSplitInput(children, parent, accounts, partyIds);
   if (context.entryId !== null) {
@@ -207,12 +220,36 @@ export function planEntrySave(
   return { kind: 'create-split', input };
 }
 
+/**
+ * True when `input` differs from the loaded entry's own payload only in `reward_rule_ids`. Such a save goes to
+ * PUT /entries/{id}/reward-rules, which leaves the row and its fee / discount children (and their statement coverage)
+ * alone; PUT /entries/{id} would recreate the children (#293). Anything else, or no loaded draft, keeps the full update.
+ */
+function onlyRulesChanged(input: EntryInput, saved: SavedDraft | null, accounts: readonly LedgerAccount[]): boolean {
+  if (!saved) {
+    return false;
+  }
+  let before: EntryInput;
+  try {
+    before = fullChild(saved.child, saved.parent, accounts, saved.child.counterpartyId, true);
+  } catch {
+    return false;
+  }
+  const rules = (ids: readonly number[]) => JSON.stringify([...ids].sort((a, b) => a - b));
+  if (rules(input.reward_rule_ids) === rules(before.reward_rule_ids)) {
+    return false;
+  }
+  return JSON.stringify({ ...input, reward_rule_ids: [] }) === JSON.stringify({ ...before, reward_rule_ids: [] });
+}
+
 export function executeEntrySave(service: AccountingService, plan: EntrySavePlan): Observable<EntryDetail | SplitResult> {
   switch (plan.kind) {
     case 'create':
       return service.createEntry(plan.input);
     case 'update':
       return service.updateEntry(plan.id, plan.input);
+    case 'rules':
+      return service.updateEntryRewardRules(plan.id, plan.input.reward_rule_ids);
     case 'create-split':
       return service.createSplit(plan.input);
     case 'update-split':

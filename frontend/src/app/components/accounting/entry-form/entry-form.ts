@@ -126,7 +126,7 @@ import {
 } from './split-draft';
 import { addAvailability, childFromDetail, splitFromDetails } from './split-load';
 import { memberError, resultIds } from './split-result';
-import { executeEntrySave, fullChild, planEntrySave } from './split-save';
+import { SavedDraft, executeEntrySave, fullChild, planEntrySave } from './split-save';
 import { CurrencyNet, accountAmount, dissolveNotices, netByCurrency, rewardEstimates } from './split-summary';
 import { TransferEdit, transferCommonFrom, transferEditFrom } from './transfer-math';
 
@@ -379,6 +379,8 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   private readonly baseline = signal<string | null>(null);
   /** The copied child whose first resource load still belongs to loading the copy (see `loadChildResources`). */
   private copyBaselineKey: string | null = null;
+  /** The opened single entry's draft before any edit: a save that changes only its reward rules goes link-only (#293). */
+  private savedDraft: SavedDraft | null = null;
   /** The draft differs from what was loaded (spec §4.3). */
   readonly isDirty = computed(() => {
     const baseline = this.baseline();
@@ -844,6 +846,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     this.unsupported.set(null);
     this.error.set(null);
     this.entryId.set(null);
+    this.savedDraft = null;
     this.originalAccountId.set(null);
     this.editing.set(id !== null);
     ++this.definitionRequest;
@@ -943,6 +946,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     }
     const detail = loaded.detail;
     this.entryId.set(loaded.copy ? null : detail.id);
+    this.savedDraft = null;
     this.related.set(loaded.related);
     this.rememberCategories([detail, ...loaded.related.members]);
     this.transferEdit.set(null);
@@ -1018,6 +1022,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     });
     this.singleKind.set(child.kind as FormKind);
     this.showChildCaches();
+    this.savedDraft = copy ? null : { child: structuredClone(child), parent: structuredClone(this.parent()) };
     this.locked.set(!copy && detail.locked);
     this.unsupported.set(null);
     if (copy && this.accounts().find(account => account.id === child.accountId)?.is_archived) {
@@ -1938,7 +1943,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     const parent = structuredClone(this.parent());
     const selected = this.selected();
     const loadId = this.loadId;
-    const context = { entryId: this.entryId(), groupId: this.groupId() };
+    const context = { entryId: this.entryId(), groupId: this.groupId(), saved: this.savedDraft };
     const owners = submitted.map(child => ({ key: child.key, generation: child.generation }));
     const keepGoing = continuous && context.entryId === null && context.groupId === null;
     const single = submitted.length === 1 && context.groupId === null;
@@ -2020,7 +2025,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
           }
           this.saving.set(false);
           rememberRecentAccounts(submitted.map(child => child.accountId));
-          if (plan.kind === 'create' || plan.kind === 'update') {
+          if (plan.kind === 'create' || plan.kind === 'update' || plan.kind === 'rules') {
             const detail = result as EntryDetail;
             rememberEntryUse(
               plan.input,

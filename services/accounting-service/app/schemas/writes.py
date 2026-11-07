@@ -69,6 +69,11 @@ class EntryUpdateIn(EntryIn):
     pass
 
 
+class RewardRulesIn(BaseModel):
+    """PUT /entries/{id}/reward-rules: the entry's full rule link list (replaces the current links)."""
+    reward_rule_ids: list[Int32]
+
+
 MAX_SPLIT_MEMBERS = 50  # POST /splits and convert; PUT /splits/{id} allows max(50, the group's current member count)
 ClientKey = Annotated[str, Field(min_length=1, max_length=64)]
 
