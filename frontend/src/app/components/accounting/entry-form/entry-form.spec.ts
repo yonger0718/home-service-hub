@@ -1822,6 +1822,27 @@ describe('EntryFormComponent', () => {
     expect(form.isDirty()).toBe(false);
   });
 
+  it('saves a rules-only edit link-only, leaving the fee child alone (#293)', async () => {
+    const rules = [makeRule({ id: 11, account_id: 2, name: '規則 A' }), makeRule({ id: 12, account_id: 2, name: '規則 B' })];
+    const fee = makeEntry({ id: 10, kind: 'fee', account_id: 2, amount: '-5.0000', parent_entry_id: 9 });
+    const { el, left } = await open('/accounting/entries/9/edit');
+    respond('/api/accounting/entries/9', makeEntryDetail({ id: 9, account_id: 2, amount: '-170.0000', rules, children: [fee] }));
+    respond('/api/accounting/categories', [FOOD]); respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2, reward_rules: rules }));
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    tap(el, '.rule-chip', '規則 A');
+    form.save(false);
+    settle();
+
+    httpMock.expectNone(r => r.method === 'PUT' && r.url === '/api/accounting/entries/9');
+    const cleared = pendingClose();
+    const put = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/entries/9/reward-rules');
+    expect(put.request.body).toEqual({ reward_rule_ids: [12] });
+    put.flush(makeEntryDetail({ id: 9, account_id: 2, rules: [rules[1]], children: [fee] }));
+    settle();
+    cleared();
+    expect(left()).toBe(true);
+  });
+
   it('preserves the new-form distinction between automatic basic rules and a manual selection', async () => {
     const rules = [makeRule({ id: 11, name: '規則 A', is_basic: true }), makeRule({ id: 12, name: '規則 B', is_basic: true })];
     const { el } = await open('/accounting/entry');

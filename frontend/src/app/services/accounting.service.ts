@@ -233,6 +233,11 @@ export class AccountingService {
     return this.bump(this.http.put<EntryDetail>(`${this.apiUrl}/entries/${id}`, input));
   }
 
+  /** Replace only the entry's reward rule links; the row and its fee / discount children stay as they are (#293). */
+  updateEntryRewardRules(id: number, ruleIds: number[]): Observable<EntryDetail> {
+    return this.bump(this.http.put<EntryDetail>(`${this.apiUrl}/entries/${id}/reward-rules`, { reward_rule_ids: ruleIds }));
+  }
+
   deleteEntry(id: number): Observable<void> {
     return this.bump(this.http.delete<void>(`${this.apiUrl}/entries/${id}`));
   }

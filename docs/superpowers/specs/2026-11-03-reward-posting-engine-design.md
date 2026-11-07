@@ -226,6 +226,13 @@ validated as today (`check_rules`: rule of the same account, enabled on `entry_d
   at it) carry `reward_batch` = `{rule_id, rule_name, window_start, window_end, entry_date, count, total, currency}`:
   the rows of the same rule, window and `entry_date`. `count` / `total` are over the whole batch, not the page; other
   rows carry `null`. Display only: every accrual keeps its own ledger row.
+- **Link-only rule change** (#293, owner 2026-11-06): `PUT /entries/{id}/reward-rules` (write scope) with
+  `{reward_rule_ids: [...]}` replaces only the entry's rule links. The row, its `source` and its fee / discount
+  children stay as they are, so a child's statement coverage survives (PUT `/entries/{id}` deletes and recreates the
+  children). Same edit lock (`locked_until_cutover`), kind guards (refund, settlement, child, non-form kinds such as
+  transfer legs → 422 `kind`) and rule checks (`reward_rule_ids`: the card's own rules; a new link enabled on the
+  entry date, an existing link kept) as PUT `/entries/{id}`; the engine then re-syncs the accruals and sets
+  `reward_posted` when a frozen accrual's link changed (§5.1). Answers the entry detail.
 
 ## 7. Bank wins (statement reconciliation)
 
@@ -325,6 +332,8 @@ until the daily job」 option of rev 1 is gone: step 4 posts early.
   batch total; a recomputed balance the account never had is not printed, #305 review).
   A filter that may keep only some rows of a batch (search, category, project, tag, merchant, amount, a kind other
   than 回饋) turns folding off, so a row's and the day's totals never count rows the filter dropped.
+- **Entry form, rules-only save** (#293): editing a single entry where the only change is its reward rules saves
+  through `PUT /entries/{id}/reward-rules`; any other change, a split or a transfer keeps its usual route.
 - **Hermes `homehub-api` skill** (outside the repo, `~/.hermes/skills/productivity/homehub-api/`):
   - recording a card spend reads the card's in-date rules (GET `/accounts/{id}/reward-rules`) and picks the
     applicable ones, always including the basic rule;
