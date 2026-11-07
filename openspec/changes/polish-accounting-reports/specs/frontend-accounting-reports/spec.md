@@ -21,16 +21,18 @@ A report period SHALL be *running* while `from ≤ today < to`. For a running pe
 
 A comparison window SHALL be *empty* when its totals count no rows. A change against an empty window SHALL read 「上期無資料」 or 「去年無資料」 in the muted text colour, without an arrow. A table comparison column whose window is empty SHALL be left out, with a muted note under the table naming the hidden column.
 
-Against a non-empty window:
-
-- a key absent from the comparison window SHALL read 新增 in the muted text colour;
-- a key absent from the current window SHALL read 「— 停止」 in the muted text colour;
-- neither case SHALL use the spend-more or spend-less colours.
-
 #### Scenario: Ledger younger than a year
 - **GIVEN** the ledger starts in 2026-08
 - **WHEN** 週末外食 (近 6 個月, 和去年同期比較) is opened
 - **THEN** the table SHALL have no 去年同期 or 增減 column, a note SHALL read 「去年同期沒有記錄，已隱藏比較欄」, and no row SHALL read 新增
+
+### Requirement: New and stopped keys in comparisons
+
+Against a non-empty comparison window:
+
+- a key absent from the comparison window SHALL read 新增 in the muted text colour;
+- a key absent from the current window SHALL read 「— 停止」 in the muted text colour;
+- neither case SHALL use the spend-more or spend-less colours.
 
 #### Scenario: New category this month
 - **GIVEN** September holds rows but none in 寵物, and October holds 寵物 1,200
