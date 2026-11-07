@@ -7,7 +7,7 @@ from scripts.reward_oracle import Pair, score
 def mk(key=1, **kw):
     base = dict(key=key, rule_id=101, account_id=301, purchase_amount=D("600"), purchase_date=date(2026, 9, 10),
                 method="percent", rate=D("1"), fixed_amount=None, unit_spend=None, txn_rounding="keep",
-                total_rounding="keep", total_cap=None, shared_cap_id=None, closing_day=None, window_start=date(2026, 9, 1),
+                total_rounding="keep", total_cap=None, group_cap=None, shared_cap_id=None, closing_day=None, window_start=date(2026, 9, 1),
                 window_end=date(2026, 9, 30), posting="after_transaction", delay_days=0, post_month_offset=0,
                 post_day=1, moze_amount=D("6"), moze_date=date(2026, 9, 10))
     base.update(kw)
@@ -15,7 +15,7 @@ def mk(key=1, **kw):
 
 
 def test_amount_bar_counts_uncapped_percent_only():
-    r = score([mk(1), mk(2, total_cap=D("3"), moze_amount=D("3"))])
+    r = score([mk(1), mk(2, total_cap=D("3"), group_cap=D("3"), moze_amount=D("3"))])
     assert (r.amount_ok, r.amount_total) == (1, 1)
     assert len(r.window_totals) == 1 and r.window_totals[0][4] is True
 
@@ -65,12 +65,20 @@ def test_other_methods_outside_amount_bar():
 
 
 def test_shared_cap_lowest_rule_leads():
-    kw = dict(shared_cap_id="x", total_cap=D("100"), purchase_amount=D("125"), moze_amount=D("1.25"))
+    kw = dict(shared_cap_id="x", total_cap=D("100"), group_cap=D("100"), purchase_amount=D("125"), moze_amount=D("1.25"))
     r = score([mk(1, rule_id=102, total_rounding="keep", **kw),
                mk(2, rule_id=101, total_rounding="ceil", purchase_date=date(2026, 9, 11), **kw)])
     assert len(r.window_totals) == 1
     rule, _, eng, _, _ = r.window_totals[0]
     assert rule == 101 and eng == D("3")  # 1.25 + 1.25 = 2.5 -> ceil by the lowest rule (keep would give 2.5)
+
+
+def test_capped_window_uses_the_group_cap_not_the_lead_rule_cap():
+    """M12: the engine caps a shared group at its smallest non-null cap (`group_cap`), whichever rule leads."""
+    kw = dict(shared_cap_id="x", group_cap=D("2"), purchase_amount=D("125"), moze_amount=D("1.25"))
+    r = score([mk(1, rule_id=101, total_cap=None, **kw), mk(2, rule_id=102, total_cap=D("2"), **kw)])
+    rule, _, eng, _, _ = r.window_totals[0]
+    assert (rule, eng) == (101, D("2"))  # the lead rule 101 has no cap of its own
 
 
 def test_manual_posting_counted():

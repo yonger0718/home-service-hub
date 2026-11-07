@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -23,7 +24,6 @@ def _seed(session):
 
 
 def _accrual(entry, rule, **columns):
-    from datetime import date
     values = dict(source_entry_id=entry.id if entry else None, rule_id=rule.id, window_start=date(2026, 10, 1),
                   window_end=date(2026, 10, 31), estimate=Decimal("10"), amount=Decimal("10"))
     values.update(columns)
@@ -73,6 +73,9 @@ def test_ledger_reward_pair_unique(db_session):
     db_session.rollback()
     make_entry(db_session, card, "1", kind="reward", reward_source_entry_id=entry.id, reward_rule_id=None)
     make_entry(db_session, card, "1", kind="reward", reward_source_entry_id=entry.id, reward_rule_id=None)
+    # the partial index ignores a row with no source as well (e.g. a hand-booked reward naming only its rule)
+    make_entry(db_session, card, "1", kind="reward", reward_source_entry_id=None, reward_rule_id=rule.id)
+    make_entry(db_session, card, "1", kind="reward", reward_source_entry_id=None, reward_rule_id=rule.id)
     db_session.commit()
 
 

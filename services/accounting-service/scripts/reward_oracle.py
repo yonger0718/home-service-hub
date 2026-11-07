@@ -38,6 +38,7 @@ class Pair:
     txn_rounding: str
     total_rounding: str
     total_cap: Decimal | None
+    group_cap: Decimal | None  # the engine's cap for the rule's group (reward_rule_service.group_cap)
     shared_cap_id: str | None
     closing_day: int | None
     window_start: date
@@ -121,7 +122,7 @@ def score(pairs: Sequence[Pair], *, tolerance: Decimal = Decimal("1")) -> Report
     for (_, start), group in sorted(capped.items(), key=lambda kv: (kv[0][0][0], str(kv[0][0][1]), kv[0][1])):
         group.sort(key=lambda p: (p.purchase_date, p.key))
         first = min(group, key=lambda p: p.rule_id)  # lowest rule id leads, as the engine does
-        out = allot([Slot(p.key, _one(p), None) for p in group], cap=first.total_cap, external_used=_ZERO,
+        out = allot([Slot(p.key, _one(p), None) for p in group], cap=first.group_cap, external_used=_ZERO,
                     total_rounding=first.total_rounding)
         eng = sum(out.values(), _ZERO)
         moze = sum((p.moze_amount for p in group), _ZERO)
@@ -154,6 +155,8 @@ def load_pairs(db) -> list[Pair]:
     from sqlalchemy.orm import aliased
 
     from app.models import Account, LedgerEntry, RewardRule
+    from app.services.reward_engine import card_closing_day
+    from app.services.reward_rule_service import group_cap
     from app.services.reward_windows import window_for
 
     src = aliased(LedgerEntry)
@@ -166,16 +169,20 @@ def load_pairs(db) -> list[Pair]:
         LedgerEntry.refunds_entry_id.in_({purchase.id for _, purchase, _ in rows}))))
     out: list[Pair] = []
     closing: dict[int, int | None] = {}
+    caps: dict[int, Decimal | None] = {}
     for reward, purchase, rule in rows:
         if rule.account_id not in closing:
-            closing[rule.account_id] = db.get(Account, rule.account_id).closing_day
+            closing[rule.account_id] = card_closing_day(db, db.get(Account, rule.account_id))  # combined parent too
+        if rule.id not in caps:
+            caps[rule.id] = group_cap(db, rule)  # smallest non-null cap of the shared group, as the engine
         w = window_for(rule.window, closing[rule.account_id], purchase.entry_date)
         refunded = purchase.id in refunded_ids
         out.append(Pair(
             key=reward.id, rule_id=rule.id, account_id=rule.account_id, purchase_amount=Decimal(purchase.amount),
             purchase_date=purchase.entry_date, method=rule.method, rate=rule.rate, fixed_amount=rule.fixed_amount,
             unit_spend=rule.unit_spend, txn_rounding=rule.txn_rounding, total_rounding=rule.total_rounding,
-            total_cap=rule.total_cap, shared_cap_id=str(rule.shared_cap_id) if rule.shared_cap_id else None,
+            total_cap=rule.total_cap, group_cap=caps[rule.id],
+            shared_cap_id=str(rule.shared_cap_id) if rule.shared_cap_id else None,
             closing_day=closing[rule.account_id], window_start=w[0], window_end=w[1], posting=rule.posting, delay_days=rule.delay_days,
             post_month_offset=rule.post_month_offset, post_day=rule.post_day,
             moze_amount=Decimal(reward.amount), moze_date=reward.entry_date,

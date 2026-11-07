@@ -860,6 +860,57 @@ def test_reward_accrual_round_trip(database_factory, alembic_config):
     assert _table_present(url, "reward_accrual")
 
 
+def _reward_rows(url, *, state: str, method: str = "percent", window: str = "statement_cycle") -> None:
+    engine = create_engine(url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO account (id, name, currency, opening_balance) VALUES (101, '測試卡', 'TWD', 0)"))
+            conn.execute(text(
+                "INSERT INTO reward_rule (id, account_id, name, method, rate, unit_spend, \"window\", posting) "
+                f"VALUES (301, 101, '測試規則', '{method}', 1, {100 if method == 'per_unit' else 'NULL'}, "
+                f"'{window}', 'after_window')"))
+            conn.execute(text(
+                "INSERT INTO ledger_entry (id, account_id, kind, amount, currency, entry_date, source) "
+                "VALUES (1, 101, 'expense', -100, 'TWD', '2026-10-01', 'manual')"))
+            conn.execute(text(
+                "INSERT INTO reward_accrual (source_entry_id, rule_id, window_start, window_end, estimate, amount, "
+                f"state) VALUES (1, 301, '2026-10-01', '2026-10-31', 1, 1, '{state}')"))
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize(("rows", "blockers"), [
+    (dict(state="posted"), "1 frozen reward accruals"),
+    (dict(state="estimated", method="per_unit"), "1 per_unit reward rules"),
+    (dict(state="estimated", window="calendar_month"), "1 calendar_month reward rules"),
+    (dict(state="bank_confirmed", method="per_unit", window="calendar_month"),
+     "1 frozen reward accruals; 1 per_unit reward rules; 1 calendar_month reward rules"),
+], ids=["frozen", "per_unit", "calendar_month", "all"])
+def test_reward_accrual_downgrade_refuses_lossy_data(database_factory, alembic_config, rows, blockers):
+    """#297 M8: dropping reward_accrual would turn posted engine rows into MOZE-looking rows, and the old schema has
+    no unit_spend / calendar_month: the downgrade refuses and names every blocker."""
+    url = database_factory()
+    cfg = alembic_config(url)
+    command.upgrade(cfg, "head")
+    _reward_rows(url, **rows)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        command.downgrade(cfg, ACCOUNT_LOGO_IMAGE_HEAD)
+
+    assert str(excinfo.value) == f"refusing to downgrade a3d9e5c1f7b2: {blockers}"
+    assert _table_present(url, "reward_accrual")
+
+
+def test_reward_accrual_downgrade_drops_estimated_accruals(database_factory, alembic_config):
+    """Estimated accruals are derivable from the links: they do not block the downgrade."""
+    url = database_factory()
+    cfg = alembic_config(url)
+    command.upgrade(cfg, "head")
+    _reward_rows(url, state="estimated")
+    command.downgrade(cfg, ACCOUNT_LOGO_IMAGE_HEAD)
+    assert _version(url) == ACCOUNT_LOGO_IMAGE_HEAD and not _table_present(url, "reward_accrual")
+
+
 def test_reward_pair_index_is_skipped_when_duplicates_exist(database_factory, alembic_config, capsys):
     url = database_factory()
     cfg = alembic_config(url)
