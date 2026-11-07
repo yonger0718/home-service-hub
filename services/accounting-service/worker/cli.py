@@ -36,13 +36,32 @@ def _bad(summary: dict) -> bool:
     return bool(summary.get("bad_runs", 0)) or any(code in summary.get("errors", []) for code in DEGRADED_CODES)
 
 
+def _portfolio_headers(cfg: config.WorkerConfig) -> dict[str, str] | None:
+    """Issue #117: the portfolio API bearer header from STATEMENT_PORTFOLIO_TOKEN_FILE; {} when unset.
+
+    None when the file is set but missing, unreadable or empty: the job stops (exit 2) instead of posting without a
+    token and failing every request once the portfolio API enforces auth.
+    """
+    if cfg.portfolio_token_file is None:
+        return {}
+    try:
+        token = cfg.portfolio_token_file.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return {"Authorization": f"Bearer {token}"} if token else None
+
+
 def _flex(cfg: config.WorkerConfig, args: argparse.Namespace) -> int:
     if not args.from_file and not cfg.flex_credentials_file.is_file():
         print("flex credentials file is missing or not a file", file=sys.stderr)
         return 2
+    headers = _portfolio_headers(cfg)
+    if headers is None:
+        print("portfolio token file is missing, unreadable or empty", file=sys.stderr)
+        return 2
     try:
         with (httpx.Client(timeout=cfg.flex_timeout_s) as flex_http,
-              httpx.Client(base_url=cfg.portfolio_api_url, timeout=cfg.flex_timeout_s) as portfolio_http):
+              httpx.Client(base_url=cfg.portfolio_api_url, timeout=cfg.flex_timeout_s, headers=headers) as portfolio_http):
             summary = flex.run(cfg, flex_http=flex_http, portfolio_http=portfolio_http, dry_run=args.dry_run,
                                query_id=args.query_id, from_file=args.from_file, legacy_until=args.legacy_until,
                                unlatch=args.unlatch)
@@ -69,13 +88,17 @@ def _cathay(cfg: config.WorkerConfig, args: argparse.Namespace) -> int:
     if args.ack and any(others):
         print("--ack cannot be combined with other flags", file=sys.stderr)
         return 2
+    headers = _portfolio_headers(cfg)
+    if headers is None:
+        print("portfolio token file is missing, unreadable or empty", file=sys.stderr)
+        return 2
     try:
         plain = not (args.ack or any(others))  # only a plain commit run asks HomeHub for the settlement run
         try:
             token = cfg.api_token_file.read_text(encoding="utf-8").strip() if plain else ""
         except OSError:  # no token: the run still imports; its summary says `skipped:no_token`
             token = ""
-        with (httpx.Client(base_url=cfg.portfolio_api_url, timeout=cfg.cathay_timeout_s) as portfolio_http,
+        with (httpx.Client(base_url=cfg.portfolio_api_url, timeout=cfg.cathay_timeout_s, headers=headers) as portfolio_http,
               httpx.Client(base_url=cfg.api_url, timeout=cfg.cathay_timeout_s) as homehub_http):
             summary = cathay.run(cfg, portfolio_http=portfolio_http, drive=Drive(cfg, SubprocessRunner()),
                                  homehub=ApiClient(homehub_http, token) if token else None,

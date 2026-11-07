@@ -32,6 +32,7 @@ class NotifyConfig:
     min_buffer: Decimal = Decimal("0")
     state_file: Path = Path(DEFAULT_STATE_FILE).expanduser()
     portfolio_base: str | None = None
+    portfolio_token_file: Path | None = None  # issue #117: bearer token for the portfolio API; absent = no header
     cathay_run_time: time = time(6, 40)
     cathay_run_grace_minutes: int = 15
     terms: TermsConfig | None = None
@@ -62,6 +63,15 @@ def _hhmm(raw: dict, key: str, default: time) -> time:
         return time(int(value[:2]), int(value[3:]))
     except ValueError:
         raise ConfigError(key) from None
+
+
+def _optional_path(raw: dict, key: str) -> Path | None:
+    if key not in raw:
+        return None
+    value = raw[key]
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(key)
+    return Path(value.strip()).expanduser()
 
 
 def _optional_str(raw: dict, key: str) -> str | None:
@@ -108,6 +118,7 @@ def load_config(path: Path, *, with_terms: bool = False) -> NotifyConfig:
         min_buffer=min_buffer,
         state_file=Path(raw.get("state_file", DEFAULT_STATE_FILE)).expanduser(),
         portfolio_base=_optional_str(raw, "portfolio_base"),
+        portfolio_token_file=_optional_path(raw, "portfolio_token_file"),
         cathay_run_time=_hhmm(raw, "cathay_run_time", time(6, 40)),
         cathay_run_grace_minutes=_grace(raw, "cathay_run_grace_minutes", 15),
         terms=load_terms(raw) if with_terms else None,

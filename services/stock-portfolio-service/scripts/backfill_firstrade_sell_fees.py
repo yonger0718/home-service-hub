@@ -6,6 +6,7 @@ price and day, and only a stored fee of 0 is changed. Dry run by default.
 
 After --apply, rebuild snapshots and realized P&L from the printed date:
     curl -X POST http://127.0.0.1:8001/api/portfolio/imports/recalc \\
+         -H "Authorization: Bearer $PORTFOLIO_TOKEN" \\
          -H 'Content-Type: application/json' -d '{"start_date": "<date>"}'
 """
 

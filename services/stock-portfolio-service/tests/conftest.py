@@ -53,6 +53,14 @@ def _cash_legs_off_unless_a_test_opts_in(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _api_auth_off_unless_a_test_opts_in(monkeypatch):
+    """The same .env load would carry PORTFOLIO_API_TOKENS onto every request of the suite (#117); keep auth off. The
+    auth tests set the variables themselves."""
+    for name in ("PORTFOLIO_API_TOKENS", "PORTFOLIO_TOKEN_SCOPES", "PORTFOLIO_DOCS_PUBLIC"):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_fx_history_fetch_on_import(monkeypatch):
     """A broker import with missing FX rates fetches history from yfinance; keep every test off the network. Tests
     that exercise the backfill patch ``import_service._fetch_fx_history`` themselves."""

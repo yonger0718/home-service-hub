@@ -81,7 +81,7 @@ def test_cathay_defaults(tmp_path):
     p = tmp_path / "c.toml"
     p.write_text(MINIMAL)
     cfg = load_config(p)
-    assert cfg.portfolio_base is None
+    assert cfg.portfolio_base is None and cfg.portfolio_token_file is None
     assert (cfg.cathay_run_time.hour, cfg.cathay_run_time.minute) == (6, 40)
     assert cfg.cathay_run_grace_minutes == 15
 
@@ -98,11 +98,19 @@ def test_cathay_values(tmp_path):
     assert cfg.cathay_run_grace_minutes == 20
 
 
+def test_portfolio_token_file_expands_tilde(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text('portfolio_token_file = "~/.config/portfolio-token"\n' + MINIMAL)
+    assert load_config(p).portfolio_token_file == Path("~/.config/portfolio-token").expanduser()
+
+
 @pytest.mark.parametrize(
     "line,key",
     [
         ('portfolio_base = ""', "portfolio_base"),
         ("portfolio_base = 5", "portfolio_base"),
+        ('portfolio_token_file = ""', "portfolio_token_file"),
+        ("portfolio_token_file = 5", "portfolio_token_file"),
         ('cathay_run_time = "6:40"', "cathay_run_time"),
         ('cathay_run_time = "25:00"', "cathay_run_time"),
         ("cathay_run_time = 640", "cathay_run_time"),
