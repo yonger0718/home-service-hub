@@ -2,12 +2,16 @@
 sweeps, then the action row (revert) and the case row, then — after the case checks — the account row and the
 writer barrier when asked, then schedule rows, groups and entries NOWAIT. Ledger writers lock an entry first and
 then need coverage/case rows the action already holds (ON DELETE SET NULL), so the schedule, group and entry locks
-are NOWAIT: a held row raises 409 `action_busy` instead of closing a cycle. The case, action and account locks
-wait by design: no ledger writer locks a case or action row, and the account lockers (`balance_adjustment_asof`,
-`anchor_opening`, `backfill_entry`, `create_system_entry`) take no entry or group lock, so those waits cannot close a
-cycle. R7 `book_settlement` takes the account row and the barrier too; the settlement booking rows and legs it then
-needs (and its revert's booking row, taken after the legs) are try-locked NOWAIT (409 `settlement_busy`), never
-waited for. The barrier waits at most BARRIER_LOCK_TIMEOUT (409 `sweep_barrier_busy`)."""
+are NOWAIT: a held row raises 409 `action_busy` instead of closing a cycle. The case and action locks wait by
+design: no ledger writer locks a case or action row. The account lockers (`balance_adjustment_asof`,
+`anchor_opening`, `backfill_entry`, `create_system_entry`, `pair_transfer`, `book_settlement` / `book_dividend` and
+the reverts that take the barrier) lock EVERY account they will write FOR UPDATE NOWAIT before the barrier
+(`lock_account_and_barrier`, #291): they already hold statement, coverage and case rows a ledger writer may wait on
+(ON DELETE SET NULL), and an account writer may wait on the barrier, so any wait here could close a cycle; a held
+account row is 409 `retry`. After the barrier the engine's card, rule, window and refund locks are NOWAIT too
+(`reward_engine.note_barrier`). R7 `book_settlement` takes the account rows and the barrier; the settlement booking
+rows and legs it then needs (and its revert's booking row, taken after the legs) are try-locked NOWAIT (409
+`settlement_busy`), never waited for. The barrier waits at most BARRIER_LOCK_TIMEOUT (409 `sweep_barrier_busy`)."""
 from __future__ import annotations
 
 from typing import Iterable
@@ -17,11 +21,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app.models import Account, AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationCase
-from app.services import coverage_service
+from app.models import Account, AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationCase, RewardRule
+from app.services import coverage_service, reward_engine
 from app.services import reconciliation_service as rec
 from app.services.entry_write_service import lock_group
-from app.services.errors import CodedConflictError, NotFoundError
+from app.services.errors import RETRY, CodedConflictError, NotFoundError
 from app.services.schedule_locks import lock_definition, lock_instance
 
 from .base import LockSet
@@ -58,14 +62,69 @@ def lock_action(db: Session, action_id: int) -> ReconciliationAction:
     return row
 
 
+def barrier_accounts(db: Session, targets: LockSet, statement: AccountStatement) -> set[int]:
+    """Every account row a barrier holder may write or lock (#291), read without locks: the accounts of its statements
+    (the action's and `targets.statement_ids`: a pair_transfer peer, anchor_opening's live statements) with the
+    accounts combined into them (a reconcile covers them: `participating_accounts`), the accounts of its target
+    entries (a revert's legs), `targets.account_ids` (book_settlement's target), then the combined parents of all of
+    them (a card is priced under its parent's closing_day) and the reward accounts of their rules (an early post
+    books its reward row there)."""
+    statements = sorted({statement.id, *targets.statement_ids})
+    owners = set(db.scalars(select(AccountStatement.account_id).where(AccountStatement.id.in_(statements))))
+    ids = {statement.account_id, *targets.account_ids}
+    for owner in owners | {statement.account_id}:
+        ids |= set(coverage_service.participating_accounts(db, owner))
+    if targets.entry_ids:
+        ids |= set(db.scalars(select(LedgerEntry.account_id).where(LedgerEntry.id.in_(sorted(targets.entry_ids)))))
+    ids |= set(db.scalars(select(Account.combined_account_id).where(
+        Account.id.in_(sorted(ids)), Account.combined_account_id.is_not(None))))
+    ids |= set(db.scalars(select(RewardRule.reward_account_id).where(
+        RewardRule.account_id.in_(sorted(ids)), RewardRule.reward_account_id.is_not(None))))
+    return ids
+
+
 def lock_account_and_barrier(db: Session, targets: LockSet, statement: AccountStatement) -> None:
-    """The account lockers (they lock no entry or group; engine docstring): the statement's account row FOR
-    UPDATE, then the exclusive writer barrier until the transaction ends (409 `sweep_barrier_busy` on timeout)."""
-    if targets.account_lock:
-        db.execute(select(Account).where(Account.id == statement.account_id).with_for_update()
-                   .execution_options(populate_existing=True))
+    """The account lockers (engine docstring): every account `barrier_accounts` names, FOR UPDATE NOWAIT in id order,
+    then the exclusive writer barrier until the transaction ends (409 `sweep_barrier_busy` on timeout).
+
+    #291 (P12 barrier rule): this runs after the statement locks, the sweeps and the case lock, so the action already
+    holds statement, coverage and case rows that a ledger writer may need (ON DELETE SET NULL), and once it holds the
+    barrier every ledger / account writer may be waiting on it in a dirty trigger. So it never waits on an account:
+    every batch is NOWAIT and a held row is the retryable 409 `retry` (the attempt savepoint rolls everything back).
+    The set is re-derived under the locks until it is stable (a child combined in, a rule's reward account changed
+    meanwhile); each later batch is NOWAIT too. Holding these rows FOR UPDATE excludes every accrual path, rule writer
+    and card writer of these cards (their first lock on them conflicts), so the engine's card shares on them are
+    no-ops (`reward_engine.note_cards_locked`) and its FK checks (KEY SHARE) never wait. An account found only after
+    the barrier (book_settlement's re-read target) is locked NOWAIT (`lock_late_accounts`), and after the barrier
+    every engine card / rule / window / refund lock is NOWAIT (`reward_engine.note_barrier`)."""
+    if targets.account_lock or targets.barrier:
+        held: set[int] = set()
+        while True:
+            need = barrier_accounts(db, targets, statement) - held
+            if not need:
+                break
+            # no inner savepoint (AGENT-430): a row lock taken in a released savepoint makes a waiter that queues
+            # after the release wait for this whole transaction (PostgreSQL waits on the topmost xid), so a rolled
+            # back attempt would keep it blocked; taken here, the attempt savepoint's rollback releases it
+            try:
+                db.execute(select(Account).where(Account.id.in_(sorted(need))).order_by(Account.id)
+                           .with_for_update(nowait=True).execution_options(populate_existing=True)).all()
+            except OperationalError as exc:
+                if isinstance(exc.orig, LockNotAvailable):
+                    raise CodedConflictError(RETRY, "an account this action writes is being changed; try again") \
+                        from exc
+                raise
+            held |= need
+        reward_engine.note_cards_locked(db, held)
     if targets.barrier:
         coverage_service.take_barrier_xact(db)
+        reward_engine.note_barrier(db)
+
+
+def lock_late_accounts(db: Session, account_ids: Iterable[int]) -> None:
+    """An account a barrier holder discovers only after the barrier (book_settlement re-reads its target): FOR
+    UPDATE NOWAIT unless already held, so it never waits while holding the barrier (409 `retry`, #291)."""
+    reward_engine.lock_cards_for_write(db, account_ids)
 
 
 def lock_rows(db: Session, targets: LockSet, expected: dict) -> dict[int, LedgerEntry]:

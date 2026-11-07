@@ -130,6 +130,7 @@ def _forget_at_end(session: Session, transaction) -> None:
     `after_commit` for a released savepoint too, and the rows locked before it stay locked."""
     if transaction.parent is None:
         _forget_locks(session)
+        session.info.pop(_BARRIER_KEY, None)
 
 
 def _hook(db: Session) -> None:
@@ -176,6 +177,13 @@ def _remember_locks(db: Session, keys: set[Pair]) -> None:
 # checks, ordinary DML, the dirty-barrier shared lock in the ledger triggers) are not covered by this argument.
 # No transaction takes a card or a rule FOR (KEY) SHARE and later FOR UPDATE: that fails closed (RuntimeError).
 
+# #291 (P12 barrier rule): a reconciliation action holding the exclusive dirty barrier must never wait on a row,
+# because a ledger / account writer holding that row may itself be waiting on the barrier in a dirty trigger. The
+# action pre-locks every account it will write FOR UPDATE NOWAIT before the barrier
+# (`engine_locks.lock_account_and_barrier`); once it holds the barrier (`note_barrier`) every card, rule, window and
+# refund lock taken here is NOWAIT (409 `retry`). Kept until the OUTERMOST transaction ends: a savepoint rollback may
+# release the barrier, and keeping the flag then only makes later locks NOWAIT.
+_BARRIER_KEY = "reward_engine.barrier_held"
 _RULES_KEY = "reward_engine.locked_rules"  # db.info: rule id -> "update" | "share" held in this transaction
 _CARDS_KEY = "reward_engine.locked_cards"  # db.info: account id -> "update" | "share" held in this transaction
 
@@ -297,6 +305,25 @@ def lock_rules_for_write(db: Session, rule_ids: Iterable[int], *, card_ids: Iter
         _lock_rules(db, rule_ids, share=False, nowait=True, card_ids=card_ids)
 
 
+def note_cards_locked(db: Session, account_ids: Iterable[int]) -> None:
+    """The caller locked these account rows FOR UPDATE itself (a barrier holder's pre-lock): record them as held, so
+    the engine's card tier takes no second lock on them."""
+    held = _held(db, _CARDS_KEY)
+    for account_id in account_ids:
+        held[account_id] = "update"
+
+
+def note_barrier(db: Session) -> None:
+    """This transaction holds the exclusive dirty barrier: from now on every card, rule, window and refund lock the
+    engine takes is NOWAIT (409 `retry`; #291, see `_BARRIER_KEY`)."""
+    _hook(db)
+    db.info[_BARRIER_KEY] = True
+
+
+def barrier_held(db: Session) -> bool:
+    return bool(db.info.get(_BARRIER_KEY))
+
+
 def share_rules(db: Session, rule_ids: Iterable[int], *, nowait: bool = False) -> None:
     """An accrual writer's card and rule tiers (see the note above): the rules' cards (with their effective parents)
     FOR KEY SHARE, then the rules and their groups FOR SHARE, in id order, after its tier-1 rows and before it prices
@@ -305,7 +332,7 @@ def share_rules(db: Session, rule_ids: Iterable[int], *, nowait: bool = False) -
     `nowait=True` (bank wins) raises the driver's LockNotAvailable for the caller's `reconcile_busy`."""
     if nowait:
         _lock_rules(db, rule_ids, share=True, nowait=True)
-    elif held_windows(db):
+    elif held_windows(db) or barrier_held(db):
         with _no_wait(db, "a reward rule or card is being written; try again"):
             _lock_rules(db, rule_ids, share=True, nowait=True)
     else:
@@ -350,6 +377,9 @@ class _no_wait:
         return False
 
 
+no_wait = _no_wait  # public name for other services: a NOWAIT savepoint mapping LockNotAvailable to 409 `retry`
+
+
 def _window_rows(db: Session, pairs: Iterable[Pair], *, lock: bool, nowait: bool = False) -> list[RewardAccrual]:
     db.flush()  # populate_existing below must not discard pending changes
     keys = _group_keys(db, pairs)
@@ -365,7 +395,11 @@ def _window_rows(db: Session, pairs: Iterable[Pair], *, lock: bool, nowait: bool
         # A window this transaction already holds is read, not locked again: a multi-entry write takes its whole
         # union in one `lock_windows` first (P12), and the per-entry calls after it must issue no second lock.
         return list(db.scalars(query))
-    rows = list(db.scalars(query.with_for_update(nowait=nowait)))
+    if not nowait and barrier_held(db):  # never a blocking lock while holding the dirty barrier (#291)
+        with _no_wait(db, "a reward window is being written; try again"):
+            rows = list(db.scalars(query.with_for_update(nowait=True)))
+    else:
+        rows = list(db.scalars(query.with_for_update(nowait=nowait)))
     _remember_locks(db, keys)  # recorded even for windows with no rows yet
     return rows
 
@@ -689,9 +723,12 @@ def lock_refunds_of(db: Session, entry_ids: Collection[int], *, nowait: bool = F
     ids = sorted(set(entry_ids))
     if not ids:
         return []
-    return list(db.scalars(select(LedgerEntry.id).where(
+    query = select(LedgerEntry.id).where(
         LedgerEntry.refunds_entry_id.in_(ids), LedgerEntry.id.not_in(ids)).order_by(LedgerEntry.id)
-        .with_for_update(nowait=nowait)))
+    if not nowait and barrier_held(db):  # never a blocking lock while holding the dirty barrier (#291)
+        with _no_wait(db, "a refund of this entry is being written; try again"):
+            return list(db.scalars(query.with_for_update(nowait=True)))
+    return list(db.scalars(query.with_for_update(nowait=nowait)))
 
 
 def lock_delete_nowait(db: Session, doomed: Collection[int]) -> None:

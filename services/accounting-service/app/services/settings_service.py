@@ -31,7 +31,7 @@ from .statements import matching
 from ..schemas.writes import (
     SOURCE_CURRENCIES, AccountGroupIn, AccountIn, CategoryIn, CounterpartyIn, PreferenceIn, ProjectIn,
 )
-from . import reward_engine, schedule_entry_hooks
+from . import category_keys, reward_engine, schedule_entry_hooks
 from .errors import CodedConflictError, ConflictError, NotFoundError, ValidationError  # noqa: F401  (re-exported)
 from .ledger_service import open_debt_filter
 
@@ -1018,6 +1018,9 @@ def _validate_category(db: Session, payload: CategoryIn, category: Category | No
         if category is not None and db.scalar(select(Category.id).where(Category.parent_id == category.id).limit(1)):
             raise ValidationError("parent_id", "a main category with sub-categories cannot become a sub-category")
     parent_filter = Category.parent_id.is_(None) if payload.parent_id is None else Category.parent_id == payload.parent_id
+    # the key lock first (#291): the duplicate check then sees any concurrent creator's commit, and the INSERT or rename
+    # never waits on another transaction's uncommitted row of this key
+    category_keys.lock_category_key(db, payload.kind, payload.parent_id, payload.name)
     duplicate = db.scalar(
         select(Category.id).where(Category.kind == payload.kind, parent_filter, Category.name == payload.name)
     )

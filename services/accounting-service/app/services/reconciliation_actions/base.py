@@ -77,6 +77,7 @@ class LockSet:
     # definitions FOR UPDATE instead of FOR SHARE (R1d: a plan revert freezes the posted set)
     exclusive_definition_ids: tuple[int, ...] = ()
     account_lock: bool = False  # balance_adjustment_asof, anchor_opening, backfill_entry, create_system_entry
+    account_ids: tuple[int, ...] = ()  # #291: further accounts a barrier holder writes (book_settlement's target)
     barrier: bool = False  # the same actions (ruling 15; the owner-twin re-check, PR #77 M1)
 
 
