@@ -141,12 +141,15 @@ def test_an_owner_edited_reward_row_is_not_repriced(client, db_session):
 def test_a_bank_confirmed_reward_is_listed_and_left_alone(client, db_session):
     card, rule, purchase_id = _flagged_purchase(client, db_session)
     accrual = _one(db_session, source_entry_id=purchase_id)
+    reward = _reward_row(db_session, accrual)
     accrual.state = "bank_confirmed"
+    reward.amount = Decimal("9")  # bank wins wrote the bank's figure on the row
     db_session.commit()
 
     body = client.post(f"/entries/{purchase_id}/reward-reprice", json={}).json()
 
-    assert [i["status"] for i in body["items"]] == ["confirmed"] and body["applied"] == []
+    assert [(i["status"], Decimal(i["booked"])) for i in body["items"]] == [("confirmed", Decimal("9"))]
+    assert body["applied"] == []
     assert _one(db_session, source_entry_id=purchase_id).amount == Decimal("10.0000")
 
 

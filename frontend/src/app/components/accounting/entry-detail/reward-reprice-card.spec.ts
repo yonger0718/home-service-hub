@@ -86,7 +86,7 @@ describe('AppEntryRewardRepriceCardComponent', () => {
     expect(button(root, '依新金額重算回饋')).toBeUndefined();
     expect(root.textContent).toContain('回饋記錄已手動修改，不改');
     expect(root.textContent).toContain('銀行確認 10 點，以銀行為準');
-    expect(root.textContent).toContain('消費已改到別期，請刪除或修改回饋記錄');
+    expect(root.textContent).toContain('消費已改到別期，請刪除該筆回饋或保持原樣');
     expect(root.textContent).toContain('這筆已不套用此規則');
     expect(root.textContent).toContain('已超過上限');
     expect(root.querySelector('.reprice-hint')).not.toBeNull();
@@ -104,7 +104,7 @@ describe('AppEntryRewardRepriceCardComponent', () => {
     fixture.detectChanges();
     http.expectOne(URL).flush(preview([item({ status: 'window_moved', new: null })]));
     fixture.detectChanges();
-    expect(root.textContent).toContain('消費已改到別期，請刪除或修改回饋記錄');
+    expect(root.textContent).toContain('消費已改到別期，請刪除該筆回饋或保持原樣');
     expect(root.querySelector('.reprice-hint')).not.toBeNull();
   });
 

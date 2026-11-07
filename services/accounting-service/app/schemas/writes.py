@@ -362,7 +362,8 @@ class RewardAccrualPostOut(BaseModel):
 
 class RewardRepriceIn(BaseModel):
     """POST /entries/{id}/reward-reprice (issue #306): `keep=false` reprices the purchase's posted rewards on its
-    current figures; `keep=true` keeps them (保持原樣). Either way the `reward_posted` flag clears."""
+    current figures and clears the `reward_posted` flag unless a rule_unlinked / window_moved / zero row remains;
+    `keep=true` keeps them (保持原樣) and always clears it."""
     keep: bool = False
 
 

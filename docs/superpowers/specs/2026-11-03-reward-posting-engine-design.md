@@ -174,7 +174,7 @@ As specified in the 10-31 design table:
   their current estimates and every other frozen accrual keeping its cap use; `zero` (new allotment 0) is not
   written. `POST` with `{keep: false}` (依新金額重算回饋) writes each `reprice` accrual's `estimate` and `amount` and its
   reward row's `amount`, re-allots the windows' `estimated` accruals, and clears the flag unless a `rule_unlinked`,
-  `window_moved` or `zero` accrual remains (those are the owner's to delete or edit; the card stays); `{keep: true}`
+  `window_moved` or `zero` accrual remains (the owner deletes that reward row or keeps it with 保持原樣; the card stays); `{keep: true}`
   (保持原樣) only clears it. Nothing changes until POST. Lock order P12: purchase row → rules shared → windows → reward rows by
   ascending id.
 - **Project changes** (10-31 ruling, in scope): a PUT that changes a purchase's project moves the project of its
@@ -352,7 +352,8 @@ superseded, and its accruals keep the early posting date. The locks are bank win
 - **Entry detail, reprice card** (#306): when `review_reason` is `reward_posted`, a card 「回饋已入帳，消費金額已改」
   lists each rule's 已入帳 → 新算 (non-repriceable rows say why) with [依新金額重算回饋] (shown when a row would change)
   and [保持原樣]. 保持原樣 clears 待確認; 重算 clears it unless a row is left for the owner (rule unlinked, moved window,
-  new 0), which the card marks 「請刪除或修改回饋記錄」. The 待確認 pill's title names the reason.
+  new 0), which the card marks 「請刪除該筆回饋或保持原樣」. A `confirmed` row's booked figure is its reward row's (the
+  bank's). The 待確認 pill's title names the reason.
 - **Reward batch folding** (#304): the timeline and the account passbook fold a batch with two or more loaded members
   into one row, at its newest member: rule name, 「N 筆 · window」 and the batch total. Tapping it expands its members
   in place (tap again to collapse); a member opens its detail. A batch of one stays a plain row; 隱藏回饋 hides the

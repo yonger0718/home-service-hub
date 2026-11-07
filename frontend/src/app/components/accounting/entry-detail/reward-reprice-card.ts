@@ -92,13 +92,13 @@ export class AppEntryRewardRepriceCardComponent {
       case 'same':
         return `已入帳 ${booked}，金額不變`;
       case 'zero':
-        return `已入帳 ${booked}，新算 0（已超過上限），請刪除或修改回饋記錄`;
+        return `已入帳 ${booked}，新算 0（已超過上限），請刪除該筆回饋或保持原樣`;
       case 'confirmed':
         return `銀行確認 ${booked}，以銀行為準`;
       case 'rule_unlinked':
-        return `已入帳 ${booked}，這筆已不套用此規則，請刪除或修改回饋記錄`;
+        return `已入帳 ${booked}，這筆已不套用此規則，請刪除該筆回饋或保持原樣`;
       case 'window_moved':
-        return `已入帳 ${booked}，消費已改到別期，請刪除或修改回饋記錄`;
+        return `已入帳 ${booked}，消費已改到別期，請刪除該筆回饋或保持原樣`;
       case 'row_edited':
         return `已入帳 ${booked}，回饋記錄已手動修改，不改`;
     }

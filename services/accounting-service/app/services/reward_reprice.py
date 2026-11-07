@@ -33,7 +33,7 @@ from .errors import NotFoundError
 
 REPRICE, SAME, CONFIRMED, RULE_UNLINKED, WINDOW_MOVED, ROW_EDITED, ZERO = (
     "reprice", "same", "confirmed", "rule_unlinked", "window_moved", "row_edited", "zero")
-# Left for the owner to sort out (delete or edit the reward row): a reprice keeps the flag while one remains.
+# Left for the owner to sort out (delete the reward row, or 保持原樣): a reprice keeps the flag while one remains.
 ATTENTION = (RULE_UNLINKED, WINDOW_MOVED, ZERO)
 
 
@@ -104,8 +104,11 @@ def _plan(db: Session, entry: LedgerEntry, *, lock: bool) -> tuple[Plan, dict[in
         value = new.get(row.id)
         if row.id in estimates:
             status[row.id] = ZERO if value == 0 else SAME if value == Decimal(row.amount) else REPRICE
+        # A confirmed row's booked figure is the bank's, on its reward row (7); its accrual keeps the engine's.
+        reward = ledger.get(row.ledger_entry_id)
+        booked = Decimal(reward.amount) if row.state != "posted" and reward is not None else Decimal(row.amount)
         items.append(Item(accrual_id=row.id, rule_id=row.rule_id, rule_name=names.get(row.rule_id, ""),
-                          reward_entry_id=row.ledger_entry_id, booked=Decimal(row.amount), new=value,
+                          reward_entry_id=row.ledger_entry_id, booked=booked, new=value,
                           status=status[row.id]))
     flagged = entry.needs_review and entry.review_reason == reward_engine.REVIEW_REASON
     return Plan(entry.id, flagged, items), estimates, pairs
