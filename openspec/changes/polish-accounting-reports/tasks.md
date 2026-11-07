@@ -12,10 +12,10 @@
 
 - [ ] 2.1 `report-math.ts`
   - `isRunning(period, today)` and `toDateRange(period, today)`
-  - `compareRange` parity with D2
+  - `compareRange` follows D2; the new cases in both `report-math.spec.ts` and the API's `test_report_rules.py`
 - [ ] 2.2 `change()` returns `kind` (`none` / `new` / `gone` / `delta`); empty window detection from `totals.count`
 - [ ] 2.3 `monthAverage(buckets, today)` over months with data, through the last completed month (D4)
-- [ ] 2.4 `bucketText(key, granularity, spansYears)`; use it in `rowLabel`, axes and `aria-label`s (D7)
+- [ ] 2.4 `bucketText(key, granularity, spansYears)` replacing `bucketLabel`; use it in `rowLabel`, axes and `aria-label`s (D7)
 - [ ] 2.5 Tests
   - 11/7 header case
   - empty window
@@ -38,5 +38,5 @@
   - running bucket 進行中, excluded from averages
   - empty compare column hidden
   - muted 新增
-- [ ] 3.6 FAB clearance on the reports and saved-report pages
+- [ ] 3.6 Header and saved-report requests while running (D1 table): two extra header breakdowns; a saved report with a comparison makes a second, to-date request
 - [ ] 3.7 Screens at 1440 / 1100 / 390, light and dark, on the seeded ledger (11/7 and October)

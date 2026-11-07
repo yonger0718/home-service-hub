@@ -13,9 +13,22 @@ A report period SHALL be *running* while `from ≤ today < to`. For a running pe
 - **WHEN** 2026-11 is selected
 - **THEN** 支出 SHALL read `$4,233` with 「比 10 月同期 ▼ 2,677 · 比去年同期 ▼ 887 · 截至 11/7」
 
+#### Scenario: A month that has not started
+- **WHEN** 2026-12 is selected on 2026-11-07
+- **THEN** the period SHALL not be running, and its comparisons SHALL cover the whole of December without 「截至」
+
 #### Scenario: A finished month
 - **WHEN** 2026-10 is selected on 2026-11-07
 - **THEN** the comparisons SHALL cover the whole of October against the whole of September and October 2025, without 「截至」
+
+### Requirement: Running saved report comparisons
+
+When a saved report with a comparison is opened in a running period, its table SHALL keep the whole-period current column, and its comparison columns SHALL read 本期至今, 上期同期 (or 去年同期) and 增減, all covering the period's start through today, headed 「截至 M/D」.
+
+#### Scenario: Saved report on the 7th
+- **GIVEN** today is 2026-11-07 and a saved report covers 本月 by category with 和上期比較
+- **WHEN** it is opened
+- **THEN** the table SHALL show the whole-month 本期 column, then 本期至今, 上期同期 and 增減 for November 1–7 against October 1–7, headed 「截至 11/7」
 
 ### Requirement: Comparisons without a base
 
@@ -68,7 +81,7 @@ If they cannot be read, the card SHALL show its figures and the drill-through li
 
 ### Requirement: Single-entry statistics
 
-When a ranking row counts one entry, the 排行 statistics panel SHALL show 只有 1 筆 with that entry's date and amount, in place of 平均, 中位數, 最大, 最小 and 平均間隔. For more entries, 平均間隔 SHALL be hidden when the first and last dates are the same day.
+When a ranking row counts one entry, the 排行 statistics panel SHALL show 只有 1 筆 with that entry's amount and, when the API returns it, its date, in place of 平均, 中位數, 最大, 最小 and 平均間隔. For more entries, 平均間隔 SHALL be hidden when the first and last dates are the same day.
 
 #### Scenario: One visit
 - **GIVEN** 饗食天堂 has one 1,250 entry on 2026-10-03
@@ -97,7 +110,7 @@ The year SHALL be prefixed (2025 年 9 月, 2025/10/5) when the report spans mor
 
 From 1024 px the reports page header SHALL be one row: the title with the statistics rules line on the left, and the period control on the right. Below 1024 px the period control SHALL stay under the title.
 
-The reports page and the saved-report page SHALL reserve the shell's floating-button clearance under their last card, so the 記一筆 button covers no figure at rest.
+The reports page and the saved-report page SHALL keep ending with the shell's floating-button clearance, so the 記一筆 button covers no figure once the page is scrolled to its end.
 
 #### Scenario: Desktop header
 - **WHEN** `/accounting/reports` opens at 1440 px

@@ -8,7 +8,7 @@
 - **A category without subcategories repeats itself** in the detail card (居家 → 居家).
 - **A one-entry merchant** shows the same median, maximum and minimum, and 平均間隔 0 天.
 - **The saved-report 最高 figure** reads a raw bucket key (2026-09). Relative periods include the running month in 平均每月 without saying so.
-- **Layout.** The period control takes a row of its own under the title. The 記一筆 button covers the last column of the tables on desktop.
+- **Layout.** The period control takes a row of its own under the title.
 
 **This PR contains no code.**
 
@@ -26,7 +26,7 @@
 - **Labels.** Month buckets read 9 月 (or 2025 年 9 月 across years) wherever a bucket key is shown as a label.
 - **Layout.**
   - From 1024 px the period control moves into the title row.
-  - Pages with wide tables (報表, 自訂報表) reserve the 記一筆 clearance at the bottom of the last card, so the button never covers a figure.
+  - The 記一筆 clearance stays as it is: the shell already ends these pages with it, so scrolled to the end the button covers nothing (checked on the screens).
 
 ## Capabilities
 
@@ -56,5 +56,7 @@ The deltas modify requirements that `add-accounting-reports` introduces. Archive
   - `report-math.ts`: a running-period range, change with no base, average over months with data, bucket labels;
   - `reports.ts` and `.html`: header;
   - `overview-tab`, `trend-tab`, `rank-tab`, `custom-report`;
-  - the page-level FAB clearance.
-- **One extra request:** a merchant breakdown filtered to the category, made only when a category without subcategories is selected in 總覽.
+- **Extra requests:**
+  - while the period is running, two more header breakdowns (to-date expense and income; design D1);
+  - a running saved report with a comparison, one more (to-date);
+  - a merchant breakdown filtered to the category, only when a category without subcategories is selected in 總覽.
