@@ -22,6 +22,27 @@ All routes are prefixed `/api/portfolio` (Angular dev proxies `/api/portfolio` h
 | `POST` | `/corporate-actions/backfill?year=YYYY` | scrape TWSE TWTB8U and persist for one year |
 | `GET`  | `/symbol-map`, `POST` `/symbol-map/refresh`, `POST` `/symbol-map/backfill` | name→ticker map |
 
+## API auth (#117)
+
+Bearer tokens with per-label scopes, from `shared_lib.token_auth` (installed in `app/main.py`; the configuration is
+read per request and checked at startup, where a malformed one stops the service).
+
+| Variable | Meaning |
+|---|---|
+| `PORTFOLIO_API_TOKENS` | `label:token` items, comma-separated. Unset or empty: no auth, every request passes. |
+| `PORTFOLIO_TOKEN_SCOPES` | Required with tokens: `label=read,write; label=read`. `read` covers `GET`/`HEAD`, `write` every other method. Every label needs an entry and every entry a token. |
+| `PORTFOLIO_DOCS_PUBLIC` | `true` keeps `/docs`, `/redoc` and `/openapi.json` open without a token. |
+
+`GET`/`HEAD` `/health` and `/health/ready` are always open. Missing or unknown token: 401 `{"detail": "unauthorized"}`;
+a known token without the method's scope: 403 `{"detail": "scope"}`. Tokens never appear in logs or errors; the
+startup line names labels and scopes only.
+
+Clients and their settings: the SPA (`PORTFOLIO_SPA_TOKEN`, baked in at build time by `frontend/set-env.js`), the
+accounting API ledger feed (`PORTFOLIO_READ_TOKEN`), the statement worker's `flex` and `cathay` jobs
+(`STATEMENT_PORTFOLIO_TOKEN_FILE`), the notifier (`portfolio_token_file` in its TOML), and scripts or agents
+(`Authorization: Bearer <token>`). Turn auth on only after every client sends its token; clearing
+`PORTFOLIO_API_TOKENS` and restarting turns it off again.
+
 ## Scheduler
 
 In-process APScheduler (`BackgroundScheduler`, `Asia/Taipei`) boots on FastAPI startup when `SCHEDULER_ENABLED` is truthy. Phase 2 foreign-market jobs use `yfinance` for Yahoo Finance quote/FX snapshots; no Yahoo API key is required, but outbound network access to Yahoo Finance must be available.

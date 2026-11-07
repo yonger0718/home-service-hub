@@ -2,8 +2,7 @@ import { HttpInterceptorFn } from '@angular/common/http';
 import { InjectionToken, inject } from '@angular/core';
 
 import { environment } from '../../environments/environment';
-
-const ACCOUNTING_PREFIX = '/api/accounting';
+import { bearerTokenInterceptor } from './bearer-token';
 
 /** The part of the generated environment this interceptor reads; a token so specs inject a fake instead. */
 export interface AccountingTokenEnvironment {
@@ -25,19 +24,5 @@ export const ACCOUNTING_API_TOKEN = new InjectionToken<string>('ACCOUNTING_API_T
   factory: () => inject(ACCOUNTING_ENVIRONMENT).accountingToken ?? '',
 });
 
-function isAccountingUrl(url: string): boolean {
-  if (!url.startsWith(ACCOUNTING_PREFIX)) {
-    return false;
-  }
-  const next = url.charAt(ACCOUNTING_PREFIX.length);
-  return next === '' || next === '/' || next === '?';
-}
-
 /** Adds `Authorization: Bearer <token>` to `/api/accounting` requests only, and only when a token is configured. */
-export const accountingTokenInterceptor: HttpInterceptorFn = (req, next) => {
-  const token = inject(ACCOUNTING_API_TOKEN);
-  if (!token || !isAccountingUrl(req.url) || req.headers.has('Authorization')) {
-    return next(req);
-  }
-  return next(req.clone({ setHeaders: { Authorization: `Bearer ${token}` } }));
-};
+export const accountingTokenInterceptor: HttpInterceptorFn = bearerTokenInterceptor('/api/accounting', ACCOUNTING_API_TOKEN);

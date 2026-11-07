@@ -292,6 +292,8 @@ Business days come from `GET /calendar/business-days`; a due date past its `last
   `lead_business_days`, `weekly_open_case_limit`, `expected_statement_grace_days`, `min_buffer`, `state_file`
   (default `~/.local/state/homehub-notify/state.json`) and a `[lead_overrides]` table per account id.
   The 國泰證券 daily-statement status section is off unless `portfolio_base` is set (the portfolio API, e.g. `http://127.0.0.1:8001`);
+  `portfolio_token_file` (optional) holds the portfolio API bearer token (#117; an unreadable or empty file makes the section's
+  unreadable line);
   `cathay_run_time` (default `"06:40"`, Asia/Taipei) is the worker's daily run and `cathay_run_grace_minutes` (default 15, 0 to 1439)
   how long after it a missing run counts as stale. With `--as-of D` the section is evaluated at D 07:00 Asia/Taipei.
 - CLI (run from `services/accounting-service` with the notifier venv):
@@ -583,6 +585,7 @@ Configuration (all optional; empty means default):
 | `STATEMENT_FLEX_POLL_ATTEMPTS` | `12` | `flex`: GetStatement attempts while IB reports the statement pending |
 | `STATEMENT_FLEX_POLL_INTERVAL` | `10` | `flex`: seconds between those attempts |
 | `STATEMENT_PORTFOLIO_API_URL` | `http://127.0.0.1:8001` | `flex`, `cathay`: portfolio service base URL |
+| `STATEMENT_PORTFOLIO_TOKEN_FILE` | unset | `flex`, `cathay`: file holding the portfolio API bearer token (#117, a write label); set but missing or empty = exit 2 |
 | `STATEMENT_CATHAY_FOLDER` | `投資/國泰證券/日對帳單` | `cathay`: Drive folder under the Drive root; also the password-file key |
 | `STATEMENT_CATHAY_CUTOVER` | `2026-10-16` | `cathay`: statements dated before this day are never committed (`pre_cutover`) |
 | `STATEMENT_CATHAY_TIMEOUT_S` | `60` | `cathay`: portfolio HTTP timeout in seconds |

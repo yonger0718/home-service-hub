@@ -16,7 +16,7 @@ from datetime import date, datetime, time, timedelta
 import httpx
 
 from .api import TZ
-from .config import NotifyConfig
+from .config import NotifyConfig, read_token
 
 PENDING_PATH = "/api/portfolio/imports/cathay-statement/pending"
 LATEST_PATH = "/api/portfolio/imports/cathay-statement/runs/latest"
@@ -187,7 +187,10 @@ def cathay_lines(
     client = None
     abandoned = False
     try:
-        client = factory(base_url=cfg.portfolio_base, timeout=10)
+        options: dict = {"base_url": cfg.portfolio_base, "timeout": 10}
+        if cfg.portfolio_token_file is not None:  # issue #117; an unreadable file is the unreadable line, never a raise
+            options["headers"] = {"Authorization": f"Bearer {read_token(cfg.portfolio_token_file)}"}
+        client = factory(**options)
         try:
             pending = _get_bounded(client, PENDING_PATH)
             items = _check_pending(pending)

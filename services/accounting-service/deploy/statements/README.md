@@ -93,7 +93,7 @@ and CashTransaction fields as the daily query:
 Read `candidates`, `legacy_duplicates` and `error_codes` in the JSON line (`created` is 0 on a dry run by design). The
 pairing evidence (row ids that would adopt a Flex fingerprint) is in the API response, not in the summary:
 
-    sudo -u homehub-worker -H curl -s -F file=@<state_dir>/flex/flex-<ts>-<pid>.xml 'http://127.0.0.1:8001/api/portfolio/imports/ib-flex?dry_run=true&legacy_until=2026-06-30' | jq .legacy_pairs
+    sudo -u homehub-worker -H sh -c 'curl -s -H "Authorization: Bearer $(cat ~/.config/homehub-worker-portfolio-token)" -F file=@<state_dir>/flex/flex-<ts>-<pid>.xml "http://127.0.0.1:8001/api/portfolio/imports/ib-flex?dry_run=true&legacy_until=2026-06-30"' | jq .legacy_pairs
 
 If the numbers are as expected run the same worker command without `--dry-run`:
 

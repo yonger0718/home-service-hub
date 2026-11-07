@@ -8,6 +8,7 @@ import { MessageService } from 'primeng/api';
 
 import { routes } from './app.routes';
 import { accountingTokenInterceptor } from './interceptors/accounting-token.interceptor';
+import { portfolioTokenInterceptor } from './interceptors/portfolio-token.interceptor';
 import { errorLoggingInterceptor } from './interceptors/error-logging.interceptor';
 import { AppearanceService } from './services/appearance.service';
 
@@ -15,7 +16,7 @@ export const appConfig: ApplicationConfig = {
   providers: [
     provideBrowserGlobalErrorListeners(),
     provideHttpClient(
-      withInterceptors([accountingTokenInterceptor, errorLoggingInterceptor])
+      withInterceptors([accountingTokenInterceptor, portfolioTokenInterceptor, errorLoggingInterceptor])
     ),
     provideRouter(routes, withViewTransitions()),
     provideAnimationsAsync(),
