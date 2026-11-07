@@ -683,25 +683,51 @@ def lock_written_entries(db: Session, entries: Iterable[LedgerEntry]) -> None:
     lock_entry_windows(db, [entry.id for entry in rows], planned)
 
 
-def lock_refunds_of(db: Session, entry_ids: Collection[int]) -> list[int]:
+def lock_refunds_of(db: Session, entry_ids: Collection[int], *, nowait: bool = False) -> list[int]:
     """The refunds that point at these entries (and are not among them), `SELECT ... ORDER BY id FOR UPDATE`
-    (P12 tier 1 of a delete, before any accrual lock)."""
+    (P12 tier 1 of a delete, before any accrual lock). `nowait=True` raises the driver's LockNotAvailable."""
     ids = sorted(set(entry_ids))
     if not ids:
         return []
     return list(db.scalars(select(LedgerEntry.id).where(
-        LedgerEntry.refunds_entry_id.in_(ids), LedgerEntry.id.not_in(ids)).order_by(LedgerEntry.id).with_for_update()))
+        LedgerEntry.refunds_entry_id.in_(ids), LedgerEntry.id.not_in(ids)).order_by(LedgerEntry.id)
+        .with_for_update(nowait=nowait)))
 
 
-def delete_estimated_for(db: Session, entry_ids: Iterable[int]) -> set[Pair]:
+def lock_delete_nowait(db: Session, doomed: Collection[int]) -> None:
+    """The engine's part of `entry_write_service.lock_cascade_nowait` (#296 M10): every engine row a later
+    `drop_for_delete(doomed)` and the delete itself lock or write, all NOWAIT, in the P12 tiers: the refunds that
+    point at the doomed rows (tier 1); ONE `lock_windows` over the windows of their accruals and of any accrual whose
+    reward row is a doomed row (its `ledger_entry_id` goes NULL; tier 2); then the reward rows of the doomed rows'
+    frozen accruals, which `drop_for_delete` flags `reward_posted` (tier 3, AGENT-425). `doomed` already includes the
+    fee / discount children, and the caller holds them. A held row raises the driver's LockNotAvailable."""
+    ids = sorted(set(doomed))
+    if not ids:
+        return
+    refunds = lock_refunds_of(db, ids, nowait=True)
+    db.flush()
+    reward_of = db.scalars(select(RewardAccrual).where(RewardAccrual.ledger_entry_id.in_(ids))
+                           .execution_options(populate_existing=True))
+    pairs = {(a.rule_id, a.window_start) for a in [*_accruals_of(db, ids + refunds), *reward_of]}
+    if pairs:
+        lock_windows(db, pairs, nowait=True)
+    rewards = select(RewardAccrual.ledger_entry_id).where(
+        RewardAccrual.source_entry_id.in_(ids), RewardAccrual.state.in_(FROZEN),
+        RewardAccrual.ledger_entry_id.is_not(None))
+    db.execute(select(LedgerEntry.id).where(LedgerEntry.id.in_(rewards), LedgerEntry.id.not_in(ids))
+               .order_by(LedgerEntry.id).with_for_update(nowait=True)).all()
+
+
+def delete_estimated_for(db: Session, entry_ids: Iterable[int], *, nowait: bool = False) -> set[Pair]:
     """Delete the estimated accruals of these source entries (their windows locked first, P12) and return the
-    (rule_id, window_start) pairs to recompute once the entries are gone. Frozen accruals stay."""
+    (rule_id, window_start) pairs to recompute once the entries are gone. Frozen accruals stay. `nowait=True`: the
+    window lock raises the driver's LockNotAvailable instead of waiting."""
     current = _accruals_of(db, entry_ids)
     pairs = {(a.rule_id, a.window_start) for a in current if a.state == "estimated"}
     if not pairs:
         return set()
     ids = {a.id for a in current}
-    doomed = [a.id for a in lock_windows(db, pairs) if a.id in ids and a.state == "estimated"]
+    doomed = [a.id for a in lock_windows(db, pairs, nowait=nowait) if a.id in ids and a.state == "estimated"]
     if doomed:
         db.execute(delete(RewardAccrual).where(RewardAccrual.id.in_(doomed)).execution_options(
             synchronize_session="fetch"))
@@ -800,18 +826,21 @@ def mark_early_rechecks(db: Session, account_id: int) -> None:
                    .execution_options(synchronize_session=False))
 
 
-def drop_for_delete(db: Session, entry_ids: Collection[int]) -> set[Pair]:
+def drop_for_delete(db: Session, entry_ids: Collection[int], *, nowait: bool = False) -> set[Pair]:
     """The delete path's engine step (5.4), before the entries go: lock the refunds that point at the entries
     (`SELECT ... ORDER BY id FOR UPDATE`, P12 tier 1, before any accrual lock: the reward job locks a refund, its
     accrual's source, before the window, and the cascade nulls their `refunds_entry_id`; already held when the caller
     folded them into its own tier-1 lock), delete the estimated accruals of the entries and of those refunds
     (refunds are kept, unlinked, and accrue nothing without their purchase), then flag the surviving frozen
-    accruals' reward rows `reward_posted`. Returns the windows to `recompute_locked` once the rows are deleted."""
+    accruals' reward rows `reward_posted`. Returns the windows to `recompute_locked` once the rows are deleted.
+    `nowait=True` (a delete inside reconcile, after `entry_write_service.lock_cascade_nowait`): the refund and window
+    locks raise the driver's LockNotAvailable instead of waiting; the reward-row UPDATE below finds its rows held by
+    that pre-lock."""
     ids = sorted(set(entry_ids))
     if not ids:
         return set()
-    refunds = lock_refunds_of(db, ids)
-    pairs = delete_estimated_for(db, ids + refunds)
+    refunds = lock_refunds_of(db, ids, nowait=nowait)
+    pairs = delete_estimated_for(db, ids + refunds, nowait=nowait)
     rewards = select(RewardAccrual.ledger_entry_id).where(
         RewardAccrual.source_entry_id.in_(ids), RewardAccrual.state.in_(FROZEN),
         RewardAccrual.ledger_entry_id.is_not(None))

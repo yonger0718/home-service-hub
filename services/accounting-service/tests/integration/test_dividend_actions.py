@@ -3,12 +3,13 @@
 lines, `book_dividend` (one income entry under a `kind='dividend'` booking row), its refusals, the policy wiring
 (zero-charged, cap-exempt, never from an ambiguity) and its revert. Fictional amounts; the fixture's own accounts
 only."""
+import time
 from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -16,6 +17,7 @@ from app.models import (
     ReconciliationProposal, SettlementBooking, StatementLine,
 )
 from app.services import dividend_service as ds
+from app.services.errors import CodedConflictError
 from app.services import entry_write_service as ews
 from app.services import (
     pair_locks, policy_service, portfolio_client, proposal_service, reconciliation_actions, settings_service,
@@ -25,6 +27,7 @@ from app.services import trade_settlement_service as tss
 from app.services.reconciliation_actions import engine, engine_locks
 from app.services.reconciliation_actions.base import LockSet
 from tests.conftest import Seed
+from tests.helpers import make_entry
 from tests.integration.settlement_fixtures import (  # noqa: F401  (portfolio_stub, policy_on are fixtures)
     bank_line, dividend_line, dividend_row, feed, policy_on, portfolio_stub, put_settings, seed_stand_in, settle_line,
     settlement_bank, submit_bank,
@@ -587,6 +590,54 @@ def test_dividend_housekeeping_locks_come_after_the_dividend_read(seed, db_sessi
     assert {"lock_row", "_lock_candidates"} <= {name for name, _ in seen}
     assert {calls for _, calls in seen} == {before + 1}
 
+
+
+def test_retire_twin_is_settlement_busy_when_a_refund_of_the_entry_is_held(pg_engine, seed, db_session, run,
+                                                                           portfolio_stub):
+    """#296 M10: the dividend retirement runs inside reconcile, which never waits. The delete's engine locks are taken
+    NOWAIT inside the retire savepoint: a held refund of the income entry is `settlement_busy` at once and nothing
+    changes; once the refund is free the retire goes through."""
+    bank, sid, (case,) = _dividend_case(seed, db_session, run, portfolio_stub)
+    _apply(db_session, case.id, "book_dividend", {"fingerprint": "dividend:7"})
+    booking = db_session.scalar(select(SettlementBooking))
+    system_id = booking.in_entry_id
+    seed.entry(bank, "990", kind="income", day=date(2026, 9, 13))
+    refund_id = make_entry(db_session, bank, "10", kind="refund", entry_date=date(2026, 9, 14),
+                           refunds_entry_id=system_id).id
+    db_session.commit()
+
+    holder = pg_engine.connect()
+    try:
+        holder.begin()
+        holder.execute(text("SELECT id FROM ledger_entry WHERE id = :id FOR UPDATE"), {"id": refund_id})
+        db_session.execute(text("SET lock_timeout = '3s'"))  # a regression waits; fail it instead of hanging
+        booking_id, leg_ids = booking.id, [system_id]
+        started = time.monotonic()
+        with pytest.raises(CodedConflictError) as caught:
+            ds.retire_twin(db_session, booking)
+        assert caught.value.code == "settlement_busy"
+        assert time.monotonic() - started < 1.5 and "lock timeout" not in str(caught.value.__cause__), \
+            "the retire waited (lock timeout), it did not refuse at once"
+        prober = pg_engine.connect()  # the busy result left the booking row and its legs unlocked
+        try:
+            prober.begin()
+            prober.execute(text("SELECT id FROM settlement_booking WHERE id = :id FOR UPDATE NOWAIT"),
+                           {"id": booking_id})
+            prober.execute(text("SELECT id FROM ledger_entry WHERE id = ANY(:ids) FOR UPDATE NOWAIT"),
+                           {"ids": [i for i in leg_ids if i is not None]})
+        finally:
+            prober.rollback()
+            prober.close()
+        db_session.rollback()
+    finally:
+        holder.rollback()
+        holder.close()
+        db_session.execute(text("SET lock_timeout = 0"))
+    db_session.refresh(booking)
+    assert (booking.status, booking.in_entry_id) == ("booked", system_id)
+    assert ds.retire_twin(db_session, booking) is not None
+    db_session.commit()
+    assert db_session.get(LedgerEntry, refund_id).refunds_entry_id is None
 
 def test_an_owner_income_entry_arriving_later_retires_the_booking(seed, db_session, run, portfolio_stub):
     bank, sid, (case,) = _dividend_case(seed, db_session, run, portfolio_stub)

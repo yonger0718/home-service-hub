@@ -351,6 +351,8 @@ def retire_pair(db: Session, row: SettlementBooking, *, reason: str) -> set[int]
         elif _active_on(db, legs):  # claimed: never retired for a source reason (coverage re-read under the locks)
             locks.rollback()
             return None
+        # the delete's engine locks, NOWAIT, before anything is written (#296 M10: reconcile never waits)
+        pair_locks.lock_delete(db, legs, busy_code=SETTLEMENT_BUSY, label=f"settlement booking {row.id}")
     except BaseException:
         if locks.is_active:
             locks.rollback()
@@ -359,7 +361,7 @@ def retire_pair(db: Session, row: SettlementBooking, *, reason: str) -> set[int]
     # delete_entries_cascade ends with expire_all and the leg FKs are ON DELETE SET NULL: copy everything first
     row_id, figures = row.id, _figures(row)
     released = coverage_service.release_entries(db, legs, reason=f"settlement:{reason}") if reason == "twin" else set()
-    entry_write_service.delete_entries_cascade(db, legs)
+    entry_write_service.delete_entries_cascade(db, legs, nowait=True)
     row = db.get(SettlementBooking, row_id)
     row.status, row.reason = ("replaced" if reason == "replaced" else "retired"), reason
     row.items.clear()

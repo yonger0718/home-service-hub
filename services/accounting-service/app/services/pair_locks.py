@@ -14,6 +14,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.models import LedgerEntry
+from app.services import entry_write_service
 from app.services.errors import CodedConflictError
 
 
@@ -66,3 +67,17 @@ def lock_row_and_legs(db: Session, row, *, leg_ids: tuple[int | None, int | None
         raise
     locks.commit()  # release the savepoint; the row and leg locks stay until the caller commits
     return legs
+
+
+def lock_delete(db: Session, entry_ids: list[int], *, busy_code: str, label: str) -> None:
+    """Every row the coming `delete_entries_cascade(entry_ids, nowait=True)` locks or writes
+    (`entry_write_service.lock_cascade_nowait`), NOWAIT in a savepoint, inside the caller's retire savepoint so a busy
+    result rolls the row and leg locks back with it (#296 M10: reconcile never waits). Held → `busy_code`."""
+    try:
+        with db.begin_nested():
+            entry_write_service.lock_cascade_nowait(db, entry_ids)
+    except OperationalError as exc:
+        if isinstance(exc.orig, LockNotAvailable):
+            raise CodedConflictError(busy_code, f"a row the delete of {label} needs is locked by another write") \
+                from exc
+        raise
