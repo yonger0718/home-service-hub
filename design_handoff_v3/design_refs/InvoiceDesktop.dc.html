@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>通知 · 發票逐張處理 · 桌面</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="min-height: 100vh; display: flex; flex-wrap: wrap; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500">
+
+  <aside aria-label="主要導覽" style="flex: 0 0 72px; box-sizing: border-box; background: {{t.glass}}; border-right: 1px solid {{t.border}}; padding: 18px 0; display: flex; flex-direction: column; align-items: center; gap: 6px">
+    <a href="#" aria-label="Home Hub 首頁" style="width: 36px; height: 36px; border-radius: 12px; background: {{t.accent}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{t.onAccent}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7 M5 10v10h14V10"></path></svg>
+    </a>
+    <a href="NotifDesktop.dc.html" aria-label="{{bellAria}}" aria-current="page" style="position: relative; margin-top: 8px; width: 44px; height: 40px; border-radius: 12px; background: {{t.primarySoft}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{t.primary}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9 M13.7 21a2 2 0 0 1-3.4 0"></path></svg>
+      <span aria-hidden="true" style="position: absolute; top: 1px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 8px; background: {{t.redInk}}; color: #FFFFFF; font-size: 10px; font-weight: 800; display: flex; align-items: center; justify-content: center">{{count}}</span>
+    </a>
+    <div style="width: 32px; height: 1px; background: {{t.border}}; margin: 6px 0"></div>
+    <sc-for list="{{rail}}" as="item" hint-placeholder-count="6">
+      <a href="{{item.href}}" aria-label="{{item.label}}" title="{{item.label}}" style="width: 44px; height: 40px; border-radius: 12px; display: flex; align-items: center; justify-content: center; text-decoration: none">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{item.icon}}"></path></svg>
+      </a>
+    </sc-for>
+  </aside>
+
+  <main style="flex: 999 1 640px; min-width: 0; box-sizing: border-box; padding: 24px 28px 40px; display: flex; flex-direction: column; gap: 18px">
+    <header style="display: flex; flex-direction: column; gap: 4px">
+      <h1 style="margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.03em">通知</h1>
+      <span style="font-size: 13px; color: {{t.muted}}"><b style="color: {{t.text}}">{{countText}}</b> · 數字只算要你動手的事</span>
+    </header>
+
+    <div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start">
+
+      <!-- 清單欄 -->
+      <section aria-label="待處理清單" style="flex: 5 1 400px; min-width: 0; display: flex; flex-direction: column; gap: 14px">
+        <sc-for list="{{sections}}" as="s" hint-placeholder-count="2">
+          <div style="display: flex; flex-direction: column; gap: 6px">
+            <h2 style="margin: 0; padding: 0 6px; display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{s.color}}">
+              <span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 4px; background: {{s.color}}"></span>{{s.title}}
+            </h2>
+            <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 18px; overflow: hidden">
+              <sc-for list="{{s.rows}}" as="r" hint-placeholder-count="2">
+                <div style="display: flex; align-items: center; gap: 12px; padding: 12px 14px; min-height: 68px; box-sizing: border-box; border-top: 1px solid {{t.line}}; background: {{r.bg}}">
+                  <span style="width: 40px; height: 40px; border-radius: 12px; background: {{r.iconBg}}; display: flex; align-items: center; justify-content: center; flex: none">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{r.iconFg}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{r.icon}}"></path></svg>
+                  </span>
+                  <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px">
+                    <b style="font-size: 15px; font-weight: 700">{{r.title}}</b>
+                    <span style="font-size: 12px; color: {{t.muted}}">{{r.meta}}</span>
+                  </span>
+                  <button type="button" style="flex: none; min-height: 36px; padding: 0 12px; border-radius: 10px; border: 0; background: {{t.primarySoft}}; color: {{t.primary}}; font: inherit; font-size: 13px; font-weight: 700">{{r.action}}</button>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-for>
+
+        <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 18px; overflow: hidden">
+          <div style="display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 0 16px; font-size: 14px; font-weight: 700">
+            <span style="flex: 1">追蹤中 <span style="font-weight: 500; color: {{t.muted}}">· 不計入數字</span></span>
+          </div>
+          <a href="InvoiceUnmatchedPhone.dc.html" style="display: flex; align-items: center; gap: 12px; padding: 10px 16px; min-height: 60px; box-sizing: border-box; border-top: 1px solid {{t.line}}; color: {{t.text}}; text-decoration: none">
+            <span style="width: 36px; height: 36px; border-radius: 11px; background: {{t.soft}}; display: flex; align-items: center; justify-content: center; flex: none">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3z M9 8h6 M9 12h6"></path></svg>
+            </span>
+            <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+              <b style="font-size: 14px; font-weight: 700">有發票沒有帳 · 7 張</b>
+              <small style="font-size: 12px; color: {{t.muted}}">博客來 3 · 全聯 2 · 中油 1 · 麥當勞 1</small>
+            </span>
+            <span style="font-size: 13px; font-weight: 700; color: {{t.primary}}">整理 ›</span>
+          </a>
+          <div style="display: flex; align-items: center; gap: 12px; padding: 10px 16px; min-height: 60px; box-sizing: border-box; border-top: 1px solid {{t.line}}">
+            <span style="width: 36px; height: 36px; border-radius: 11px; background: {{t.soft}}; display: flex; align-items: center; justify-content: center; flex: none">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2 M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"></path></svg>
+            </span>
+            <span style="flex: 1; display: flex; flex-direction: column; gap: 2px">
+              <b style="font-size: 14px; font-weight: 700">借還款 3 位</b>
+              <small style="font-size: 12px; color: {{t.muted}}">Alan 剩 $220 · 媽媽 剩 $3,000 · …</small>
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 右：發票逐張處理 -->
+      <section aria-label="發票逐張處理" style="flex: 6 1 500px; min-width: 0; background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 18px 20px 20px; box-sizing: border-box; display: flex; flex-direction: column; gap: 14px">
+        <header style="display: flex; align-items: flex-start; gap: 12px">
+          <span style="flex: 1; display: flex; flex-direction: column; gap: 3px">
+            <small style="font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">電子發票 · 要你確認</small>
+            <b style="font-size: 20px; font-weight: 800; letter-spacing: -0.02em">{{headTitle}}</b>
+            <span style="font-size: 13px; color: {{t.muted}}">已自動連結 42 張 · 這次要你決定 3 張</span>
+          </span>
+          <button type="button" aria-label="關閉" style="width: 36px; height: 36px; border-radius: 18px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.muted}}; display: flex; align-items: center; justify-content: center">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18 M6 6l12 12"></path></svg>
+          </button>
+        </header>
+        <div role="progressbar" aria-valuemin="0" aria-valuemax="3" aria-valuenow="{{done}}" aria-label="處理進度" style="height: 6px; border-radius: 3px; background: {{t.soft}}; overflow: hidden">
+          <div style="height: 6px; width: {{progressW}}; background: {{t.primary}}"></div>
+        </div>
+
+        <sc-if value="{{inCase}}" hint-placeholder-val="{{true}}">
+          <div style="display: flex; align-items: center; gap: 8px">
+            <span style="font-size: 12px; font-weight: 800; padding: 3px 9px; border-radius: 999px; background: {{c.kindBg}}; color: {{c.kindFg}}">{{c.kind}}</span>
+            <span style="font-size: 13px; color: {{t.muted}}">{{c.why}}</span>
+          </div>
+
+          <!-- 發票本身 -->
+          <div style="border: 1px solid {{t.border}}; border-radius: 16px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+            <div style="display: flex; align-items: flex-start; gap: 12px">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3z M9 8h6 M9 12h6"></path></svg>
+              <span style="flex: 1; display: flex; flex-direction: column; gap: 2px">
+                <b style="font-size: 16px; font-weight: 800">{{c.seller}}</b>
+                <small style="font-size: 12px; color: {{t.muted}}">{{c.meta}}</small>
+              </span>
+              <b style="font-size: 20px; font-weight: 800">{{c.total}}</b>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 2px; padding-left: 34px">
+              <sc-for list="{{c.items}}" as="it" hint-placeholder-count="2">
+                <span style="display: flex; justify-content: space-between; font-size: 13px"><span style="color: {{t.muted}}">{{it.name}}</span><span>{{it.amt}}</span></span>
+              </sc-for>
+            </div>
+          </div>
+
+          <small style="font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">{{c.candTitle}}</small>
+          <div style="display: flex; flex-direction: column; gap: 8px">
+            <sc-for list="{{c.cands}}" as="k" hint-placeholder-count="2">
+              <button type="button" onClick="{{k.pick}}" style="display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 10px 14px; border-radius: 14px; border: {{k.border}}; background: {{k.bg}}; color: {{k.fg}}; font: inherit; text-align: left; cursor: pointer">
+                <kbd style="flex: none; width: 24px; height: 24px; border-radius: 7px; border: 1px solid {{k.keyLine}}; font: inherit; font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center">{{k.key}}</kbd>
+                <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px">
+                  <b style="font-size: 15px; font-weight: 700">連結 {{k.name}}</b>
+                  <small style="font-size: 12px; opacity: 0.85">{{k.meta}}</small>
+                </span>
+                <span style="display: flex; flex-direction: column; align-items: flex-end; gap: 2px">
+                  <b style="font-size: 15px; font-weight: 800">{{k.amt}}</b>
+                  <sc-if value="{{k.hasDiff}}" hint-placeholder-val="{{false}}">
+                    <small style="font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 6px; background: {{k.diffBg}}; color: {{k.diffFg}}">{{k.diff}}</small>
+                  </sc-if>
+                </span>
+              </button>
+            </sc-for>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px">
+              <button type="button" onClick="{{c.none}}" style="flex: 1 1 140px; min-height: 46px; border-radius: 12px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer"><kbd style="font: inherit; font-size: 12px; color: {{t.muted}}">{{c.noneKey}}</kbd> 都不是</button>
+              <button type="button" onClick="{{c.none}}" style="flex: 1 1 140px; min-height: 46px; border-radius: 12px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer">選其他帳…</button>
+              <button type="button" onClick="{{c.none}}" style="flex: 1 1 140px; min-height: 46px; border-radius: 12px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer">記成新的一筆</button>
+            </div>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; padding-top: 4px; font-size: 12px; color: {{t.muted}}">
+            <button type="button" onClick="{{prev}}" style="min-height: 34px; padding: 0 10px; border-radius: 9px; border: 0; background: transparent; color: {{t.muted}}; font: inherit; font-size: 13px; cursor: pointer">← 上一張</button>
+            <span>1–3 選答案 · S 跳過 · ← → 換張</span>
+            <button type="button" onClick="{{skip}}" style="min-height: 34px; padding: 0 10px; border-radius: 9px; border: 0; background: transparent; color: {{t.muted}}; font: inherit; font-size: 13px; cursor: pointer">跳過 →</button>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{finished}}" hint-placeholder-val="{{false}}">
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 36px 12px; text-align: center">
+            <span style="width: 56px; height: 56px; border-radius: 28px; background: {{t.okSoft}}; display: flex; align-items: center; justify-content: center">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="{{t.okInk}}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l4 4 10-10"></path></svg>
+            </span>
+            <b style="font-size: 18px; font-weight: 800">要確認的發票都處理完了</b>
+            <span style="font-size: 14px; color: {{t.muted}}">{{summary}}</span>
+            <a href="InvoiceUnmatchedPhone.dc.html" style="min-height: 42px; padding: 0 16px; border-radius: 12px; background: {{t.primarySoft}}; color: {{t.primary}}; font-size: 14px; font-weight: 700; display: flex; align-items: center; text-decoration: none">還有 7 張發票沒有帳 · 整理 ›</a>
+            <button type="button" onClick="{{restart}}" style="min-height: 36px; padding: 0 12px; border-radius: 10px; border: 0; background: transparent; color: {{t.muted}}; font: inherit; font-size: 13px; cursor: pointer">重新播放示範</button>
+          </div>
+        </sc-if>
+      </section>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { i: 0, answers: [] };
+  }
+  renderVals() {
+    const dark = !!(this.props.dark ?? false);
+    const t = dark ? {
+      bg: '#0f1218', surface: '#171c24', glass: 'rgba(23,28,36,0.75)', soft: '#202733', border: '#313a48', line: '#252c38',
+      text: '#f3f6fb', muted: '#99a3b3', accent: '#e6ebf5', onAccent: '#171c24', primary: '#8b7dff', primarySoft: 'rgba(139,125,255,0.16)',
+      primaryInkBg: '#5b4ee0', redInk: '#c9373c', red: '#ff6369', warnSoft: 'rgba(208,160,106,0.14)', warnInk: '#d0a06a',
+      okSoft: 'rgba(67,201,138,0.15)', okInk: '#43c98a', neutralSoft: 'rgba(150,165,197,0.15)',
+      shadow: '0 12px 28px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)'
+    } : {
+      bg: '#f1f3f6', surface: '#fafcff', glass: 'rgba(250,252,255,0.8)', soft: '#edf1f6', border: '#d8dee7', line: '#e8ecf2',
+      text: '#151821', muted: '#5f6673', accent: '#1d2433', onAccent: '#ffffff', primary: '#533afd', primarySoft: 'rgba(83,58,253,0.10)',
+      primaryInkBg: '#533afd', redInk: '#c9373c', red: '#e5484d', warnSoft: 'rgba(138,99,39,0.10)', warnInk: '#8a6327',
+      okSoft: 'rgba(31,157,107,0.12)', okInk: '#17784f', neutralSoft: 'rgba(123,135,168,0.14)',
+      shadow: '0 10px 30px rgba(18,26,40,0.045), inset 0 1px 0 rgba(255,255,255,0.62)'
+    };
+    const I = {
+      chart: 'M3 17l6-6 4 4 8-8 M15 7h6v6', list: 'M8 6h13 M8 12h13 M8 18h13 M3.5 6h.01 M3.5 12h.01 M3.5 18h.01',
+      wallet: 'M3 7v10a2 2 0 0 0 2 2h15V9H5a2 2 0 0 1-2-2zm0 0a2 2 0 0 1 2-2h13v4 M16 14h.01', pie: 'M12 3v9h9 M21 12a9 9 0 1 1-9-9',
+      sliders: 'M4 6h10 M18 6h2 M4 12h4 M12 12h8 M4 18h12 M16 4v4 M10 10v4 M18 16v4',
+      cog: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M12 2v3 M12 19v3 M4.9 4.9l2.1 2.1 M17 17l2.1 2.1 M2 12h3 M19 12h3 M4.9 19.1L7 17 M17 7l2.1-2.1',
+      card: 'M3 6h18v12H3z M3 10h18 M7 15h3', recon: 'M9 11l3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11',
+      receipt: 'M6 3h12v18l-3-2-3 2-3-2-3 2V3z M9 8h6 M9 12h6'
+    };
+    const rail = [['投資概覽', I.chart, 'Main.dc.html'], ['記帳記錄', I.list, 'CalendarDesktop.dc.html'], ['帳戶', I.wallet, '#'], ['報表', I.pie, 'ReportsDesktop.dc.html'], ['記帳設定', I.sliders, 'RewardRulesDesktop.dc.html'], ['設定', I.cog, 'SettingsDesktop.dc.html']]
+      .map(([label, icon, href]) => ({ label, icon, href }));
+
+    const CASES = [
+      { seller: '路易莎咖啡 南京店', meta: '10/22 15:11 · AB-40518822 · 統編 53018462', total: '$85',
+        items: [['拿鐵（中）', '$85']], kind: '有兩筆都像', kindBg: t.warnSoft, kindFg: t.warnInk, why: '同一天、同金額的帳有 2 筆',
+        candTitle: '要連到哪一筆？',
+        cands: [
+          { name: '咖啡', meta: '玉山 Pi 卡 · 10/22 15:10 · 飲品 · 路易莎', amt: '−$85' },
+          { name: '咖啡', meta: '現金 · 10/22 09:05 · 飲品', amt: '−$85', diff: '時間差 6 小時' }
+        ] },
+      { seller: '全家便利商店 民生店', meta: '10/24 08:12 · AB-40733105 · 統編 23060248', total: '$132',
+        items: [['御飯糰 鮭魚', '$42'], ['鮮奶茶', '$55'], ['茶葉蛋 ×2', '$35']], kind: '差一點', kindBg: t.neutralSoft, kindFg: t.muted, why: '沒有金額完全相同的帳，這筆最接近',
+        candTitle: '是這筆嗎？',
+        cands: [
+          { name: '早餐', meta: '現金 · 10/24 08:15 · 餐飲', amt: '−$129', diff: '金額差 $3' }
+        ] },
+      { seller: '台灣中油 民權站', meta: '10/25 19:40 · AB-40810267 · 統編 03707901', total: '$1,180',
+        items: [['95 無鉛汽油 35.2L', '$1,180']], kind: '差一點', kindBg: t.neutralSoft, kindFg: t.muted, why: '商家名稱對得上，金額不同',
+        candTitle: '是這筆嗎？',
+        cands: [
+          { name: '加油', meta: '國泰 CUBE 卡 · 10/25 19:41 · 交通 · 中油', amt: '−$1,200', diff: '金額差 $20' }
+        ] }
+    ];
+    const i = this.state.i;
+    const answer = (label) => this.setState({ i: this.state.i + 1, answers: [...this.state.answers, label] });
+    const cur = CASES[Math.min(i, CASES.length - 1)];
+    const c = {
+      ...cur,
+      items: cur.items.map(([name, amt]) => ({ name, amt })),
+      noneKey: String(cur.cands.length + 1),
+      none: () => answer('none'),
+      cands: cur.cands.map((k, n) => ({
+        ...k, key: String(n + 1), pick: () => answer('link'),
+        border: n === 0 ? '0' : '1px solid ' + t.border,
+        bg: n === 0 ? t.primaryInkBg : t.surface, fg: n === 0 ? '#FFFFFF' : t.text, keyLine: n === 0 ? 'rgba(255,255,255,0.5)' : t.border,
+        hasDiff: !!k.diff, diff: k.diff || '',
+        diffBg: n === 0 ? 'rgba(255,255,255,0.18)' : t.primarySoft, diffFg: n === 0 ? '#FFFFFF' : t.primary
+      }))
+    };
+    const done = Math.min(i, CASES.length);
+    const left = CASES.length - done;
+    const linked = this.state.answers.filter((a) => a === 'link').length;
+    const count = 6 + (left > 0 ? 1 : 0);
+    const sections = [
+      { title: '已逾期', color: t.redInk, rows: [
+        { title: '玉山 Pi 卡 帳單 $12,860', meta: '11/05 到期 · 還沒繳', action: '去繳費', icon: I.card, iconBg: t.neutralSoft, iconFg: t.redInk, bg: 'transparent' }
+      ] },
+      { title: '要你確認', color: t.primary, rows: [
+        { title: '國泰 CUBE 卡 10 月對帳單', meta: '已對上 17 / 28 行 · 10 筆要你決定', action: '逐筆處理', icon: I.recon, iconBg: t.primarySoft, iconFg: t.primary, bg: 'transparent' },
+        { title: left > 0 ? '電子發票 · ' + left + ' 張要確認' : '電子發票 · 都處理完了', meta: '路易莎、全家、中油 · 金額或時間對不太上', action: left > 0 ? '逐張處理' : '已完成', icon: I.receipt, iconBg: t.primarySoft, iconFg: t.primary, bg: t.primarySoft }
+      ] }
+    ];
+    return {
+      t, rail, sections, c, count,
+      bellAria: '通知，' + count + ' 件要處理',
+      countText: count + ' 件要處理（電子發票算 1 件）',
+      headTitle: left > 0 ? '第 ' + (done + 1) + ' / ' + CASES.length + ' 張' : '完成',
+      done, progressW: Math.round((done / CASES.length) * 100) + '%',
+      inCase: i < CASES.length, finished: i >= CASES.length,
+      summary: '連結 ' + linked + ' 張 · 都不是 ' + this.state.answers.filter((a) => a === 'none').length + ' 張 · 跳過 ' + this.state.answers.filter((a) => a === 'skip').length + ' 張',
+      prev: () => this.setState({ i: Math.max(0, this.state.i - 1), answers: this.state.answers.slice(0, -1) }),
+      skip: () => answer('skip'),
+      restart: () => this.setState({ i: 0, answers: [] })
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -132,3 +132,63 @@ When no task is counted, the page SHALL show 都處理好了, the next upcoming 
 - **GIVEN** only tracking items exist
 - **WHEN** the page renders
 - **THEN** it SHALL show 都處理好了 and the nearest upcoming bill
+
+### Requirement: E-invoice task and flow
+
+E-invoices awaiting a decision (inbox `einvoices` in state `ambiguous` or `near`) SHALL form one 要你確認 task, 「電子發票 · N 張要確認」, counting 1 in the notification count, and naming up to three sellers.
+
+The task SHALL open `/notifications/einvoices`: in the right pane at ≥ 1024 px, full screen below.
+
+#### Scenario: One task in the count
+- **GIVEN** 3 invoices to decide and 6 other counted tasks
+- **THEN** 通知 SHALL show 7
+
+### Requirement: E-invoice flow screen
+
+The e-invoice flow SHALL show one invoice at a time with progress `n / N`:
+
+- a kind chip with its reason;
+- the invoice: seller, date and time, number, tax id, items and total;
+- one answer button per candidate, 「連結 <name>」, with account, date and time, category and amount, and a chip naming the field that differs from the invoice;
+- 都不是, 選其他帳… and 記成新的一筆.
+
+#### Scenario: Two candidates
+- **GIVEN** an `ambiguous` invoice 路易莎咖啡 $85 on 10/22 15:11 with candidates 咖啡 −$85 on 玉山 Pi 卡 at 15:10 and 咖啡 −$85 in 現金 at 09:05
+- **WHEN** the flow shows it
+- **THEN** it SHALL read 有兩筆都像, list both candidates with keys 1 and 2, mark the second 「時間差 6 小時」, and offer 3 都不是
+
+### Requirement: E-invoice flow answers
+
+Keys 1–N SHALL pick candidates and N+1 都不是. S, ← → and Esc SHALL work as in the reconciliation flow. 連結 SHALL call `POST /einvoices/{id}/link` and 都不是 `POST /einvoices/{id}/dismiss`. 記成新的一筆 SHALL open the entry form prefilled with the invoice's date, time, amount, seller as merchant and number. The end state SHALL count linked, 都不是 and skipped invoices, and link to the invoices without an entry.
+
+#### Scenario: Linking moves on
+- **WHEN** the owner presses 1
+- **THEN** `POST /einvoices/{id}/link` SHALL be sent with the first candidate's entry id and the next invoice SHALL show with progress `2 / 3`
+
+### Requirement: Invoices without an entry
+
+When `remind_unmatched` is on, `unmatched` invoices SHALL form one 追蹤中 row, 「有發票沒有帳 · N 張」, with the top sellers and their counts. The row SHALL never count. It SHALL open `/notifications/einvoices?state=unmatched`, which groups the invoices by seller, ordered by count, then by total.
+
+- **Group header:** the seller, the count, the tax id or 沒有統編, the number of earlier 不用記帳 when there were any, and the total.
+- **Rows:** date, items and amount, with 記一筆, 選帳… and 不用記帳.
+
+#### Scenario: Reminders off
+- **GIVEN** `remind_unmatched` is false
+- **THEN** no 有發票沒有帳 row SHALL appear, and the e-invoice task for invoices to decide SHALL still appear
+
+### Requirement: Unmatched invoice bulk dismiss, seller mute and undo
+
+On the page for invoices without an entry:
+
+- **Groups of two or more:** 「這 N 張都不用記帳」.
+- **Seller mute:** when the seller has a tax id and an invoice carries `offer_mute`, 「這家以後都不提醒」 SHALL dismiss with `mute_seller: true`.
+- **Undo:** every dismissal and mute SHALL show one toast with 復原.
+
+#### Scenario: Mute a seller
+- **GIVEN** 博客來 (統編 96922355) has 3 unmatched invoices and was marked 不用記帳 3 times before
+- **WHEN** the owner taps 這家以後都不提醒
+- **THEN** one dismiss request with `mute_seller: true` SHALL be sent, the 博客來 group SHALL disappear, and a toast 「以後不再提醒 博客來」 with 復原 SHALL show
+
+#### Scenario: No tax id
+- **GIVEN** 麥當勞 南京店 has no tax id
+- **THEN** its group SHALL offer no mute and SHALL read 「沒有統編的商家無法設定不提醒」
