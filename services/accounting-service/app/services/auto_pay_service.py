@@ -138,14 +138,17 @@ def no_due_date(db: Session) -> list[int]:
 
 
 def find_twins(db: Session, *, card_account_id: int, pay_account_id: int, amount: Decimal, pay_date: date,
-               window_days: int, exclude: Iterable[int] = ()) -> list[int]:
-    """Top-level entries that already represent this payment (§4.1), whatever their source, with `entry_date` within
-    `window_days` of the pay date: a `transfer_in` of `amount` on the card family, or on the pay account a
+               period_end: date, window_days: int, exclude: Iterable[int] = ()) -> list[int]:
+    """Top-level entries that already represent this payment (§4.1), whatever their source, with `entry_date` from
+    the day after the statement closed (`period_end + 1`, or `pay_date - window_days` if that is earlier) through
+    `pay_date + window_days` — an owner who pays early, any time after the bill closed, already paid it (§8 errata
+    #311): a `transfer_in` of `amount` on the card family, or on the pay account a
     `transfer_out` of `-amount` whose peer leg (the same `transfer_group_id`'s `transfer_in`) is on the card family
     or that has no peer leg at all, or a statement-booked `expense` of `-amount` (a `backfill_entry` stand-in). A
     `transfer_out` to another account (savings, another card's payment) is not a twin (§8 errata)."""
     family = coverage_service.participating_accounts(db, card_account_id)
     window = timedelta(days=window_days)
+    earliest = min(pay_date - window, period_end + timedelta(days=1))
     peer = aliased(LedgerEntry)
     peer_leg = and_(peer.transfer_group_id == LedgerEntry.transfer_group_id, peer.id != LedgerEntry.id,
                     peer.kind == "transfer_in")
@@ -154,7 +157,7 @@ def find_twins(db: Session, *, card_account_id: int, pay_account_id: int, amount
                                      exists().where(peer_leg, peer.account_id.in_(family)))
     query = select(LedgerEntry.id).where(
         LedgerEntry.parent_entry_id.is_(None),
-        LedgerEntry.entry_date.between(pay_date - window, pay_date + window),
+        LedgerEntry.entry_date.between(earliest, pay_date + window),
         or_(and_(LedgerEntry.account_id.in_(family), LedgerEntry.kind == "transfer_in",
                  LedgerEntry.amount == amount),
             and_(LedgerEntry.account_id == pay_account_id, LedgerEntry.amount == -amount,
@@ -164,6 +167,13 @@ def find_twins(db: Session, *, card_account_id: int, pay_account_id: int, amount
     if excluded:
         query = query.where(LedgerEntry.id.not_in(excluded))
     return list(db.scalars(query.order_by(LedgerEntry.id)))
+
+
+def row_twins(db: Session, row: StatementAutoPay, *, window_days: int, exclude: Iterable[int] = ()) -> list[int]:
+    """`find_twins` for a booked row: its figures and its statement's `period_end`."""
+    period_end = db.get(AccountStatement, row.statement_id).period_end
+    return find_twins(db, card_account_id=row.card_account_id, pay_account_id=row.pay_account_id, amount=row.amount,
+                      pay_date=row.pay_date, period_end=period_end, window_days=window_days, exclude=exclude)
 
 
 # --- gates ----------------------------------------------------------------------------------------------------------
@@ -215,7 +225,7 @@ def _first_failing_gate(db: Session, cand: Candidate, settings: dict) -> str | N
     if _link_ineligible(db, cand):
         return "link_ineligible"
     if find_twins(db, card_account_id=cand.card_account_id, pay_account_id=cand.pay_account_id, amount=cand.amount,
-                  pay_date=cand.pay_date, window_days=int(settings["twin_window_days"])):
+                  pay_date=cand.pay_date, period_end=cand.period_end, window_days=int(settings["twin_window_days"])):
         return "twin"
     if cand.amount > Decimal(settings["max_amount"]):
         return "over_cap"
@@ -339,9 +349,10 @@ def _lock_row(db: Session, row_id: int) -> StatementAutoPay | None:
 def retire_pair(db: Session, row: StatementAutoPay, *, reason: str, run_id: int | None = None,
                 window_days: int | None = None) -> set[int] | None:
     """Delete the row's pair and mark it `retired`: lock the row, then both legs, and re-validate under the locks —
-    the row still `booked`, both legs present and `source='statement'`, and for `reason="twin"` a twin still within
-    `window_days` (default: the settings' `twin_window_days`) of the pay date. If any check fails (another retirer,
-    an owner delete or PUT /transfers landed after the caller's unlocked check) return None and write nothing.
+    the row still `booked`, both legs present and `source='statement'`, and for `reason="twin"` a twin still in the
+    `find_twins` window (`window_days` defaults to the settings' `twin_window_days`). If any check fails (another
+    retirer, an owner delete or PUT /transfers landed after the caller's unlocked check) return None and write
+    nothing.
     Otherwise release the coverage the legs hold (reason `auto_pay:<reason>`), delete them, flag the released
     statements `needs_recheck`, audit `auto_pay_retired`, and return the released statement ids (possibly empty).
     A row or leg another transaction holds raises `auto_pay_busy`; a busy result or a failed re-check leaves no
@@ -363,9 +374,7 @@ def retire_pair(db: Session, row: StatementAutoPay, *, reason: str, run_id: int 
         if reason == "twin":
             if window_days is None:
                 window_days = int(settings_service.read_auto_pay_settings(db)["twin_window_days"])
-            if not find_twins(db, card_account_id=row.card_account_id, pay_account_id=row.pay_account_id,
-                              amount=row.amount, pay_date=row.pay_date, window_days=window_days,
-                              exclude=(out_leg.id, in_leg.id)):
+            if not row_twins(db, row, window_days=window_days, exclude=(out_leg.id, in_leg.id)):
                 locks.rollback()
                 return None
     except BaseException:
@@ -404,7 +413,7 @@ def _final(db: Session, row: StatementAutoPay, status: str, detail: dict) -> str
 def check_row(db: Session, row: StatementAutoPay, today: date, settings: dict) -> str | None:
     """One housekeeping pass over a booked row (§4.4 step 0); returns the transition applied, or None. In order:
     both legs gone → `owner_deleted`; a leg gone or not `source='statement'` (an owner edit, PUT /transfers) →
-    `owner_edited` (figures untouched); a twin within `twin_window_days` of the pay date, looked for until
+    `owner_edited` (figures untouched); a twin in the `find_twins` window, looked for until
     `pay_date + twin_window_days + 7` → the pair is retired → `retired` (None when `retire_pair`'s locked
     re-check fails: another write got there first); the legs' amount / date / accounts differ
     from the row → copied onto it (no audit) → `updated`; the statement's total or due date differs from the row →
@@ -420,9 +429,8 @@ def check_row(db: Session, row: StatementAutoPay, today: date, settings: dict) -
     if out_leg is None or in_leg is None or STATEMENT_SOURCE != out_leg.source or STATEMENT_SOURCE != in_leg.source:
         return _final(db, row, "owner_edited", {**_figures(row), "out_entry_id": out_id, "in_entry_id": in_id})
     window = int(settings["twin_window_days"])
-    if today <= row.pay_date + timedelta(days=window + TWIN_LOOKOUT_EXTRA_DAYS) and find_twins(
-            db, card_account_id=row.card_account_id, pay_account_id=row.pay_account_id, amount=row.amount,
-            pay_date=row.pay_date, window_days=window, exclude=(out_id, in_id)):
+    if today <= row.pay_date + timedelta(days=window + TWIN_LOOKOUT_EXTRA_DAYS) and row_twins(
+            db, row, window_days=window, exclude=(out_id, in_id)):
         if retire_pair(db, row, reason="twin", window_days=window) is None:
             return None  # the locked re-check failed: another write got there first; the next run looks again
         return "retired"
@@ -452,10 +460,10 @@ def check_row(db: Session, row: StatementAutoPay, today: date, settings: dict) -
 def retire_twins_for_statement(db: Session, statement: AccountStatement, accounts: list[int]) -> list[int]:
     """The sweep's half of owner-wins (§4.5), run by `reconcile` before it loads the population: every booked row
     with a leg on `accounts` whose pay date lies within the period ± `matching.population_window_days`, both legs
-    still the system's (`source='statement'`; anything else is housekeeping's `owner_edited`), and a twin within
-    the settings' `twin_window_days` → `retire_pair(reason="twin")`. A pair another transaction holds
-    (`auto_pay_busy`) is logged and left for the next sweep or the job; a row whose locked re-check fails
-    (`retire_pair` returns None) is skipped. Returns the retired row ids. Flushes, never commits."""
+    still the system's (`source='statement'`; anything else is housekeeping's `owner_edited`), and a twin in the
+    `find_twins` window (the settings' `twin_window_days`) → `retire_pair(reason="twin")`. A pair another
+    transaction holds (`auto_pay_busy`) is logged and left for the next sweep or the job; a row whose locked
+    re-check fails (`retire_pair` returns None) is skipped. Returns the retired row ids. Flushes, never commits."""
     from .reconciliation_service import rules_for  # local: the reconciler calls this function
 
     rules = rules_for(settings_service.reconciliation_rules(db), statement.period_end)
@@ -473,9 +481,7 @@ def retire_twins_for_statement(db: Session, statement: AccountStatement, account
         legs = [_leg(db, i) for i in (row.out_entry_id, row.in_entry_id)]
         if any(leg is None or leg.source != STATEMENT_SOURCE for leg in legs):
             continue
-        if not find_twins(db, card_account_id=row.card_account_id, pay_account_id=row.pay_account_id,
-                          amount=row.amount, pay_date=row.pay_date, window_days=window,
-                          exclude=[leg.id for leg in legs]):
+        if not row_twins(db, row, window_days=window, exclude=[leg.id for leg in legs]):
             continue
         try:
             released = retire_pair(db, row, reason="twin", window_days=window)
