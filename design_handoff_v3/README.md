@@ -4,6 +4,7 @@ Design reference for two OpenSpec changes:
 
 - `openspec/changes/add-notification-center/` — one site-wide 通知 page, a quieter count, a one-case-at-a-time reconciliation flow, one toast and one banner style.
 - `openspec/changes/add-accounting-reports/` — 財務 › 報表 (總覽, 趨勢與比較, 排行, 專案與預算) and saved custom reports.
+- `openspec/changes/add-ledger-calendar-view/` — the timeline's 日曆 view, calendar first: richer day cells, 本月摘要 or the picked day beside the grid, the entry as a drawer (added 2026-11-07).
 
 Read each change's `design.md` for the decisions and `specs/` for the requirements. Drawn on the design canvas on 2026-10-24 (notifications) and 2026-10-30 (reports, custom reports); the owner asked for this handoff on 2026-10-31. **Nothing in this folder is production code.**
 
@@ -25,6 +26,8 @@ The visual system is the one in `frontend/src/styles.scss` (v2 handoff plus the 
 | `ReportsPhone.dc.html` | 報表 | `/accounting/reports` | 390 | tabs, category expand, ranking dimension |
 | `ReportBuilder.dc.html` | 自訂報表 editor with three saved reports and the empty state | `/accounting/reports/custom/:id`, `/accounting/reports/custom/new` | 1440 fluid | saved report chips, 新報表, chart type, 比較, 釘選 |
 | `ReportSavedPhone.dc.html` | One saved report, 編輯條件 sheet | `/accounting/reports/custom/:id` | 390 | 編輯條件 |
+| `CalendarDesktop.dc.html` | 記帳 日曆 view: grid on the left, 本月摘要 or the picked day on the right, entry drawer | `/accounting?month=&day=`, `/accounting/entries/:id?month=&day=` | 1440 fluid | day, 本月摘要, ‹ › day, entry → drawer, ↑ ↓, 今天, 這個月要處理 rows |
+| `CalendarPhone.dc.html` | 記帳 日曆 view on a phone: month grid + 今天 bar, week strip + day rows | `/accounting?month=&day=` | 390 | day, 展開整月, ‹ › day, 今天; entry detail drawn inline (implementation keeps the existing route, see the change's D6) |
 
 Not clickable on the canvas (drawn only): the period controls, the field pickers in the builder, ⋯ menus, 稍後提醒, every link into other pages.
 
@@ -59,5 +62,6 @@ All numbers are invented and internally consistent so reviewers can check sums:
 - Notifications: 7 tasks (3 overdue), 10 open cases on a 17 / 28 matched statement, 2 pending dividends = 14,600.
 - Reports, October 2026: gross expense 42,380, refund 490, expense 41,890; income 68,126; September 39,608; October 2025 44,050. Accounts, payees and categories each sum to the month's expense. The 東京旅行 project (24,860) is excluded from the month and appears only in 專案與預算 and the 日本旅行比較 saved report.
 - Saved reports: 週末外食 17,960 over May–Oct (last year 17,880); 訂閱月費 10,780 for Jan–Oct; 日本旅行比較 72,860 across three projects.
+- Calendar: October 2026 with today 10/22, 40 rows; expense 29,626 (rent 12,000 on 10/19 is the heaviest day), income 72,000, net +42,374. One unmatched invoice (路易莎 $85, 10/22) and bills on 10/15 (paid) and 10/25.
 
 Budgets, saved reports and the project 不計入報表 flag do not exist in the app yet; all three are specified in `add-accounting-reports`. The canvas's period controls are drawn, not wired.
