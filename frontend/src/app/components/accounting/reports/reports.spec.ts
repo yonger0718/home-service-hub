@@ -207,7 +207,12 @@ describe('AccountingReportsComponent', () => {
     expect(el.querySelector('app-report-overview')).toBeNull();
     expect(el.querySelectorAll('.tr-bar')).toHaveLength(12);
     expect(el.querySelector('.tr-bar.last')).not.toBeNull();
-    expect(texts(el, '.tr-label')).toEqual(['2025 年 11 月', '12 月', '2026 年 1 月', '2 月', '3 月', '4 月', '5 月', '6 月', '7 月', '8 月', '9 月', '10 月']);
+    expect(texts(el, '.tr-label .tr-month')).toEqual(['11 月', '12 月', '1 月', '2 月', '3 月', '4 月', '5 月', '6 月', '7 月', '8 月', '9 月', '10 月']);
+    expect(texts(el, '.tr-label .tr-year')).toEqual(['2025', '2026']);
+    const labels = Array.from(el.querySelectorAll('.tr-label'));
+    expect(labels[0].querySelector('.tr-year')).not.toBeNull();
+    expect(labels[2].querySelector('.tr-year')).not.toBeNull();
+    expect(labels[5].querySelector('.tr-year')).toBeNull();
     expect(el.querySelector('.tr-average-label')?.textContent).toBe('12 個月平均 40,608');
     expect(el.querySelector('.tr-chart')?.getAttribute('aria-label')).toMatch(/^全部支出近 12 個月：2025 年 11 月 38,900、/);
     expect(texts(el, '.tr-tick')).toEqual(['0', '25k', '50k']);
@@ -235,7 +240,7 @@ describe('AccountingReportsComponent', () => {
     harness.detectChanges();
 
     const chart = el.querySelector('.tr-chart')!;
-    expect(chart.getAttribute('viewBox')).toBe('0 0 358 200');
+    expect(chart.getAttribute('viewBox')).toBe('0 0 358 212');
     expect(chart.classList.contains('compact')).toBe(true);
     expect(el.querySelectorAll('.tr-tick')).toHaveLength(0);
     expect(el.querySelectorAll('.tr-bar')).toHaveLength(12);
@@ -353,7 +358,8 @@ describe('AccountingReportsComponent', () => {
       expect(el.querySelector('.rk-panel h2')?.textContent?.trim()).toBe('房東');
       expect(el.querySelector('.rk-panel-head small')?.textContent?.trim()).toBe('商家 · 2026 年 10 月');
       expect(el.querySelectorAll('.rk-spark-bar')).toHaveLength(6);
-      expect(texts(el, '.rk-spark-label')).toEqual(['2026 年 5 月', '6 月', '7 月', '8 月', '9 月', '10 月']);
+      expect(texts(el, '.rk-spark-label .rk-month')).toEqual(['5 月', '6 月', '7 月', '8 月', '9 月', '10 月']);
+      expect(texts(el, '.rk-spark-label .rk-year')).toEqual(['2026']);
     });
 
     it('shows 路易莎 statistics on selection: 12 筆, 平均 86, 中位數 85, 最大 120, 最小 65, 平均間隔 2.5 天', async () => {

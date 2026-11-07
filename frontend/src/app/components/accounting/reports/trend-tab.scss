@@ -31,7 +31,7 @@
   @include rc.pill-radios;
 }
 
-/* The viewBox sets the aspect ratio (960 × 260 desktop, 358 × 200 phone); the card's width sets the size. */
+/* The viewBox sets the aspect ratio (960 × 274 desktop, 358 × 212 phone); the card's width sets the size. */
 .tr-chart {
   display: block;
   height: auto;
@@ -39,6 +39,7 @@
 
   &.compact {
     .tr-label { font-size: 10px; }
+    .tr-year { font-size: 9px; }
     .tr-average-label { font-size: 11px; }
   }
 }
@@ -60,6 +61,11 @@
     fill: var(--app-text);
     font-weight: 800;
   }
+}
+
+.tr-year {
+  font-size: 10px;
+  font-weight: 400;
 }
 
 .tr-average {

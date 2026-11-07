@@ -50,7 +50,7 @@
             <svg class="rk-spark-chart" [attr.viewBox]="'0 0 ' + sparkWidth + ' ' + sparkHeight" role="img" [attr.aria-label]="sparkAria()">
               @for (bar of sparkBars(); track $index) {
                 <rect class="rk-spark-bar" [class.last]="bar.last" [attr.x]="bar.x" [attr.y]="bar.y" [attr.width]="bar.width" [attr.height]="bar.height" rx="5"></rect>
-                <text class="rk-spark-label" [attr.x]="bar.cx" [attr.y]="sparkLabelY" text-anchor="middle">{{ bar.label }}</text>
+                <text class="rk-spark-label" [attr.x]="bar.cx" [attr.y]="sparkLabelY" text-anchor="middle"><tspan class="rk-month">{{ bar.label.month }}</tspan>@if (bar.label.year) {<tspan class="rk-year" [attr.x]="bar.cx" dy="12">{{ bar.label.year }}</tspan>}</text>
               }
             </svg>
           }

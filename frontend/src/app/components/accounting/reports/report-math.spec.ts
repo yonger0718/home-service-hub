@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   afterTodayText,
   asOfText,
-  axisText,
+  axisParts,
   bucketText,
   monthAverage,
   runningBucket,
@@ -278,9 +278,10 @@ describe('month average and bucket labels (D4, D7)', () => {
   });
 
   it('puts the year on the first axis label and each January only (R1)', () => {
-    expect(axisText('2025-11-01', 0)).toBe('2025 年 11 月');
-    expect(axisText('2025-12-01', 1)).toBe('12 月');
-    expect(axisText('2026-01-01', 2)).toBe('2026 年 1 月');
+    expect(axisParts('2025-11-01', 0)).toEqual({ month: '11 月', year: '2025' });
+    expect(axisParts('2025-12-01', 1)).toEqual({ month: '12 月', year: null });
+    expect(axisParts('2026-01-01', 2)).toEqual({ month: '1 月', year: '2026' });
+    expect(axisParts('2026-09-01', 10)).toEqual({ month: '9 月', year: null });
   });
 
   it('marks only a bucket that has started and ends after today as running', () => {

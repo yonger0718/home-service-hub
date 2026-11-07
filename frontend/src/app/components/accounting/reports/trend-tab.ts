@@ -8,7 +8,7 @@ import {
   Change,
   ReportPeriod,
   barGeometry,
-  axisText,
+  axisParts,
   bucketText,
   change,
   compareLabels,
@@ -32,8 +32,8 @@ interface ChartLayout {
   ticks: boolean;
 }
 
-const DESKTOP: ChartLayout = { width: 960, height: 260, plot: { left: 48, width: 904, top: 20, height: 200 }, labelY: 248, ticks: true };
-const PHONE: ChartLayout = { width: 358, height: 200, plot: { left: 0, width: 358, top: 14, height: 166 }, labelY: 196, ticks: false };
+const DESKTOP: ChartLayout = { width: 960, height: 274, plot: { left: 48, width: 904, top: 20, height: 200 }, labelY: 242, ticks: true };
+const PHONE: ChartLayout = { width: 358, height: 212, plot: { left: 0, width: 358, top: 14, height: 166 }, labelY: 193, ticks: false };
 
 interface Chip {
   id: number | null;
@@ -41,7 +41,7 @@ interface Chip {
 }
 
 interface Bar extends BarGeometry {
-  label: string;
+  label: { month: string; year: string | null };
   last: boolean;
 }
 
@@ -112,7 +112,7 @@ export class ReportTrendComponent {
   readonly bars = computed<Bar[]>(() => {
     const buckets = this.trend()?.buckets ?? [];
     const geometry = barGeometry(this.values(), this.layout().plot, this.max());
-    return geometry.map((bar, index) => ({ ...bar, label: axisText(buckets[index].start, index), last: index === geometry.length - 1 }));
+    return geometry.map((bar, index) => ({ ...bar, label: axisParts(buckets[index].start, index), last: index === geometry.length - 1 }));
   });
   readonly grid = computed(() => {
     if (!this.layout().ticks) return [];

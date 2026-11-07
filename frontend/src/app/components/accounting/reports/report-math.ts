@@ -448,9 +448,12 @@ export function bucketText(key: string, granularity: BucketGranularity, spansYea
   return granularity === 'week' ? `${date} 週` : date;
 }
 
-/** A trend / rank axis label (R1): the year only on the first bar and on each January. */
-export function axisText(start: string, index: number): string {
-  return bucketText(start, 'month', index === 0 || start.slice(5, 7) === '01');
+/**
+ * A trend / rank axis label (R1) in two lines: the month (`9 月`) and, only on the first bar and each January, the year
+ * (`2025`) as a second, smaller line. Accessible names use `bucketText` in full.
+ */
+export function axisParts(start: string, index: number): { month: string; year: string | null } {
+  return { month: bucketText(start, 'month', false), year: index === 0 || start.slice(5, 7) === '01' ? start.slice(0, 4) : null };
 }
 
 /** The bucket has started and ends after `today` (a month: its last day; a week: start + 6). A day never runs. */
