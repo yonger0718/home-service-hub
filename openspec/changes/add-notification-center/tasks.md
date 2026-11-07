@@ -3,7 +3,7 @@
 - [x] 0.1 Design canvas (NotifDesktop, NotifPhone, ReconPhone, FeedbackSpec) and `design_handoff_v3/`
 - [x] 0.2 Proposal, design (D1–D9), spec deltas; `openspec validate add-notification-center --strict`
 - [x] 0.3 E-invoice addendum (2026-11-07): canvas (InvoiceDesktop, InvoiceUnmatchedPhone, InvoiceSpec), design D10–D12, spec additions, `accounting-einvoices` delta
-- [ ] 0.4 Re-run `openspec validate add-notification-center --strict` after the addendum (not run in the authoring session)
+- [x] 0.4 Re-run `openspec validate add-notification-center --strict` after the addendum
 
 ## 1. Feedback primitives (PR A)
 

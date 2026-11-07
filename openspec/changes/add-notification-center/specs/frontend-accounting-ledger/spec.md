@@ -29,7 +29,13 @@ The entry detail SHALL show its invoice (the entry's own, else its group's) as a
 - 自動連結 or 手動連結;
 - a ⋯ menu with 換一張發票 and 解除連結, explained as 「之後不會再自動連回」.
 
-The body SHALL show the seller, date and time, number, and the items: the first three, then 「… 另外 N 項」, and a total row. A group invoice SHALL be titled 發票 · 整組.
+#### Scenario: Group invoice off by a little
+- **GIVEN** a split group of 2,460 manually linked to a 2,463 invoice
+- **THEN** the card SHALL be titled 發票 · 整組 and show 差 $3 and 手動連結
+
+### Requirement: Entry invoice card body
+
+The body of the entry invoice card SHALL show the seller, date and time, number, and the items: the first three, then 「… 另外 N 項」, and a total row. A group invoice SHALL be titled 發票 · 整組.
 
 An eligible entry without an invoice SHALL show a dashed 「連結發票…」 row with the number of invoices within ±7 days.
 
@@ -37,10 +43,6 @@ An eligible entry without an invoice SHALL show a dashed 「連結發票…」 r
 - **GIVEN** 全聯 採買 −1,286 auto-linked to AB-12345678 with 7 items totalling 1,286
 - **WHEN** its detail opens
 - **THEN** the card SHALL show ✓ 金額相符, 自動連結, three items, 「… 另外 4 項」 and 合計 $1,286
-
-#### Scenario: Group invoice off by a little
-- **GIVEN** a split group of 2,460 manually linked to a 2,463 invoice
-- **THEN** the card SHALL be titled 發票 · 整組 and show 差 $3 and 手動連結
 
 ### Requirement: E-invoice settings section
 
