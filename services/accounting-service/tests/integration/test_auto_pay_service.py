@@ -1,4 +1,5 @@
 """auto_pay_service: candidates, gates (in order), twins, booking (auto-pay spec §4.1–§4.4). Fictional amounts only."""
+import time
 import uuid
 from datetime import date, timedelta
 from decimal import Decimal
@@ -639,25 +640,35 @@ def test_retire_pair_busy_when_a_leg_is_locked(pg_engine, db_session, world):
 
 
 
-def test_retire_pair_busy_when_a_refund_of_a_leg_is_held_never_a_wait(pg_engine, seed, db_session, world):
-    """#296 M10: the retirement runs inside reconcile, which never waits. Its delete's engine locks (the refunds that
-    point at the legs, their accrual windows) are taken NOWAIT inside the retire savepoint: a held refund is
-    `auto_pay_busy` at once, nothing is written and no lock is left behind."""
+DEPENDANT_LINK = {"refund": ("refund", "refunds_entry_id"), "reward_row": ("reward", "reward_source_entry_id"),
+                  "settler": ("income", "settles_entry_id")}
+
+
+@pytest.mark.parametrize("held", sorted(DEPENDANT_LINK))
+def test_retire_pair_busy_when_a_dependant_of_a_leg_is_held_never_a_wait(pg_engine, seed, db_session, world, held):
+    """#296 M10: the retirement runs inside reconcile, which never waits. Every row its delete locks or UPDATEs (the
+    refunds, reward rows and settling rows that point at the legs, the accrual windows) is locked NOWAIT inside the
+    retire savepoint: a held one is `auto_pay_busy` at once (not a lock timeout), nothing is written and no lock is
+    left behind (AGENT-425)."""
     db, (bank, card, stmt) = db_session, world
     row, out_leg, in_leg = _book(db, stmt)
     out_id, in_id = out_leg.id, in_leg.id
     _transfer(seed, bank, card, 580, PAY)
-    refund = make_entry(db, card, "10", kind="refund", entry_date=PAY, refunds_entry_id=in_id)
-    refund_id = refund.id
+    kind, column = DEPENDANT_LINK[held]
+    dependant = make_entry(db, card, "10", kind=kind, entry_date=PAY, **{column: in_id})
+    dependant_id = dependant.id
     db.commit()
     holder = pg_engine.connect()
     try:
         holder.begin()
-        holder.execute(text("SELECT id FROM ledger_entry WHERE id = :id FOR UPDATE"), {"id": refund_id})
+        holder.execute(text("SELECT id FROM ledger_entry WHERE id = :id FOR UPDATE"), {"id": dependant_id})
         db.execute(text("SET lock_timeout = '3s'"))  # a regression waits; fail it instead of hanging the suite
+        started = time.monotonic()
         with pytest.raises(CodedConflictError) as caught:
             aps.retire_pair(db, row, reason="twin")
         assert caught.value.code == "auto_pay_busy"
+        assert time.monotonic() - started < 1.5 and "lock timeout" not in str(caught.value.__cause__), \
+            "the retire waited (lock timeout), it did not refuse at once"
         prober = pg_engine.connect()
         try:
             prober.begin()
@@ -674,10 +685,10 @@ def test_retire_pair_busy_when_a_refund_of_a_leg_is_held_never_a_wait(pg_engine,
         db.execute(text("SET lock_timeout = 0"))
     db.refresh(row)
     assert (row.status, row.out_entry_id, row.in_entry_id) == ("booked", out_id, in_id)
-    assert db.get(LedgerEntry, refund_id).refunds_entry_id == in_id
-    assert aps.retire_pair(db, row, reason="twin") == set()  # once the refund is free the retire goes through
+    assert getattr(db.get(LedgerEntry, dependant_id), column) == in_id
+    assert aps.retire_pair(db, row, reason="twin") == set()  # once the row is free the retire goes through
     db.commit()
-    assert db.get(LedgerEntry, refund_id).refunds_entry_id is None
+    assert getattr(db.get(LedgerEntry, dependant_id), column) is None
 
 # --- final fix wave: duplicate gate over final rows, transfer_out twin peers, retire under the row lock ---------------
 

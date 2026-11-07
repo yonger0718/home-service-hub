@@ -694,23 +694,28 @@ def lock_refunds_of(db: Session, entry_ids: Collection[int], *, nowait: bool = F
         .with_for_update(nowait=nowait)))
 
 
-def lock_delete_nowait(db: Session, entry_ids: Collection[int]) -> None:
-    """Every engine lock a later `delete_entries_cascade(entry_ids)` takes, all NOWAIT (#296 M10), for a delete that
-    runs inside reconcile (auto-pay, settlement and dividend retirement), which never waits: the fee / discount
-    children (FOR UPDATE), the refunds that point at the doomed rows (tier 1), then ONE `lock_windows` over the
-    windows of their accruals (tier 2). The caller holds the entries already. A held row raises the driver's
-    LockNotAvailable for the caller's busy code; once this returns, the delete finds its rows and windows held and
-    waits on nothing: a new refund or accrual of a held row needs that row's lock first."""
-    ids = sorted(set(entry_ids))
+def lock_delete_nowait(db: Session, doomed: Collection[int]) -> None:
+    """The engine's part of `entry_write_service.lock_cascade_nowait` (#296 M10): every engine row a later
+    `drop_for_delete(doomed)` and the delete itself lock or write, all NOWAIT, in the P12 tiers: the refunds that
+    point at the doomed rows (tier 1); ONE `lock_windows` over the windows of their accruals and of any accrual whose
+    reward row is a doomed row (its `ledger_entry_id` goes NULL; tier 2); then the reward rows of the doomed rows'
+    frozen accruals, which `drop_for_delete` flags `reward_posted` (tier 3, AGENT-425). `doomed` already includes the
+    fee / discount children, and the caller holds them. A held row raises the driver's LockNotAvailable."""
+    ids = sorted(set(doomed))
     if not ids:
         return
-    children = list(db.scalars(select(LedgerEntry.id).where(LedgerEntry.parent_entry_id.in_(ids))
-                               .order_by(LedgerEntry.id).with_for_update(nowait=True)))
-    doomed = sorted(set(ids) | set(children))
-    refunds = lock_refunds_of(db, doomed, nowait=True)
-    pairs = {(a.rule_id, a.window_start) for a in _accruals_of(db, doomed + refunds)}
+    refunds = lock_refunds_of(db, ids, nowait=True)
+    db.flush()
+    reward_of = db.scalars(select(RewardAccrual).where(RewardAccrual.ledger_entry_id.in_(ids))
+                           .execution_options(populate_existing=True))
+    pairs = {(a.rule_id, a.window_start) for a in [*_accruals_of(db, ids + refunds), *reward_of]}
     if pairs:
         lock_windows(db, pairs, nowait=True)
+    rewards = select(RewardAccrual.ledger_entry_id).where(
+        RewardAccrual.source_entry_id.in_(ids), RewardAccrual.state.in_(FROZEN),
+        RewardAccrual.ledger_entry_id.is_not(None))
+    db.execute(select(LedgerEntry.id).where(LedgerEntry.id.in_(rewards), LedgerEntry.id.not_in(ids))
+               .order_by(LedgerEntry.id).with_for_update(nowait=True)).all()
 
 
 def delete_estimated_for(db: Session, entry_ids: Iterable[int], *, nowait: bool = False) -> set[Pair]:
@@ -828,8 +833,9 @@ def drop_for_delete(db: Session, entry_ids: Collection[int], *, nowait: bool = F
     folded them into its own tier-1 lock), delete the estimated accruals of the entries and of those refunds
     (refunds are kept, unlinked, and accrue nothing without their purchase), then flag the surviving frozen
     accruals' reward rows `reward_posted`. Returns the windows to `recompute_locked` once the rows are deleted.
-    `nowait=True` (a delete inside reconcile, after `lock_delete_nowait`): any lock not held already raises the
-    driver's LockNotAvailable instead of waiting."""
+    `nowait=True` (a delete inside reconcile, after `entry_write_service.lock_cascade_nowait`): the refund and window
+    locks raise the driver's LockNotAvailable instead of waiting; the reward-row UPDATE below finds its rows held by
+    that pre-lock."""
     ids = sorted(set(entry_ids))
     if not ids:
         return set()

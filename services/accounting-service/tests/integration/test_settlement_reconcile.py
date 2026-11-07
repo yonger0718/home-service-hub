@@ -2,6 +2,7 @@
 by settlement window, the global assignment's cases, the stand-in claim and its link, mismatches and orphans,
 drift over claimed lines, twin retirement, owner-delete housekeeping and the neighbour re-check. Fictional amounts;
 the fixture's own accounts only."""
+import time
 from datetime import date
 from decimal import Decimal
 
@@ -143,9 +144,23 @@ def test_retire_pair_is_settlement_busy_when_a_refund_of_a_leg_is_held(pg_engine
         holder.begin()
         holder.execute(text("SELECT id FROM ledger_entry WHERE id = :id FOR UPDATE"), {"id": refund_id})
         db_session.execute(text("SET lock_timeout = '3s'"))  # a regression waits; fail it instead of hanging
+        booking_id, leg_ids = booking.id, [booking.out_entry_id, booking.in_entry_id]
+        started = time.monotonic()
         with pytest.raises(CodedConflictError) as caught:
             tss.retire_pair(db_session, booking, reason="twin")
         assert caught.value.code == "settlement_busy"
+        assert time.monotonic() - started < 1.5 and "lock timeout" not in str(caught.value.__cause__), \
+            "the retire waited (lock timeout), it did not refuse at once"
+        prober = pg_engine.connect()  # the busy result left the booking row and its legs unlocked
+        try:
+            prober.begin()
+            prober.execute(text("SELECT id FROM settlement_booking WHERE id = :id FOR UPDATE NOWAIT"),
+                           {"id": booking_id})
+            prober.execute(text("SELECT id FROM ledger_entry WHERE id = ANY(:ids) FOR UPDATE NOWAIT"),
+                           {"ids": [i for i in leg_ids if i is not None]})
+        finally:
+            prober.rollback()
+            prober.close()
         db_session.rollback()
     finally:
         holder.rollback()

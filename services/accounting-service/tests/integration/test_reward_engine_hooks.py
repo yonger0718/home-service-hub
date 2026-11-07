@@ -13,6 +13,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Account, EntryGroup, LedgerEntry, Project, RewardAccrual, RewardRule
+from app.models.einvoice import Einvoice, EinvoiceLink
 from app.models.statements import AccountStatement, ReconciliationCase, StatementRevision
 from app.schemas.writes import AccountIn, BalanceAdjustmentIn, EntryUpdateIn, RefundIn, RewardRuleIn, SplitIn, TransferIn
 from app.services import entry_write_service as ews
@@ -1356,26 +1357,44 @@ def test_deleting_a_parent_rebuckets_its_combined_children(client, db_session):
     assert (row.window_start, row.window_end) == (date(2026, 11, 1), date(2026, 11, 30))
 
 
-@pytest.mark.parametrize("held", ["child", "refund", "window"])
-def test_lock_delete_nowait_never_waits(pg_engine, db_session, held):
-    """#296 M10: `lock_delete_nowait` takes every engine lock a delete inside reconcile needs, NOWAIT: a held fee
-    child, refund or accrual window raises LockNotAvailable at once (the caller's busy code), never a wait."""
+HELD_TABLE = {"child": "ledger_entry", "refund": "ledger_entry", "window": "reward_accrual",
+              "reward_row": "ledger_entry", "settler": "ledger_entry", "einvoice": "einvoice",
+              "doomed_reward_row": "reward_accrual"}
+
+
+@pytest.mark.parametrize("held", sorted(HELD_TABLE))
+def test_lock_cascade_nowait_never_waits(pg_engine, db_session, held):
+    """#296 M10: `entry_write_service.lock_cascade_nowait` takes every row a delete inside reconcile locks or writes,
+    NOWAIT (AGENT-425: the plain UPDATEs and FK actions of the delete must find their rows held). A held fee child,
+    refund, accrual window, frozen accrual's reward row (flagged `reward_posted`), settling row (link cleared),
+    linked e-invoice (the unlink trigger UPDATEs it) or the accrual of a doomed reward row (its `ledger_entry_id`
+    goes NULL) raises LockNotAvailable at once (the caller's busy code), never a wait."""
     card = _card(db_session)
     rule = _rule(db_session, card)
     spend = _spend(db_session, card, 100, rules=[rule])
     child = make_entry(db_session, card, "-5", kind="fee", entry_date=DAY, parent_entry_id=spend.id)
     refund = make_entry(db_session, card, "20", kind="refund", entry_date=DAY, refunds_entry_id=spend.id)
-    target = {"child": child.id, "refund": refund.id, "window": _one(db_session).id}[held]
-    table = "reward_accrual" if held == "window" else "ledger_entry"
-    spend_id = spend.id
+    settler = make_entry(db_session, card, "30", kind="income", entry_date=DAY, settles_entry_id=spend.id)
+    accrual = _one(db_session, source_entry_id=spend.id)
+    reward = _post(db_session, accrual) if held in ("reward_row", "doomed_reward_row") else None
+    invoice = Einvoice(number="AB00000001", issue_date=DAY, period="11511", seller_tax_id="00000001",
+                       seller_name="測試商店", total_amount=Decimal("100"), status_raw="開立", source_drive_id="fake")
+    db_session.add(invoice)
+    db_session.flush()
+    db_session.add(EinvoiceLink(invoice_id=invoice.id, entry_id=spend.id, linked_by="owner"))
+    db_session.flush()
+    target = {"child": child.id, "refund": refund.id, "window": accrual.id, "settler": settler.id,
+              "reward_row": reward and reward.id, "einvoice": invoice.id, "doomed_reward_row": accrual.id}[held]
+    doomed = [reward.id] if held == "doomed_reward_row" else [spend.id]
+    window = (rule.id, accrual.window_start)
     db_session.commit()
     holder = pg_engine.connect()
     try:
         holder.begin()
-        holder.execute(text(f"SELECT id FROM {table} WHERE id = :id FOR UPDATE"), {"id": target})
+        holder.execute(text(f"SELECT id FROM {HELD_TABLE[held]} WHERE id = :id FOR UPDATE"), {"id": target})
         db_session.execute(text("SET lock_timeout = '3s'"))
         with pytest.raises(OperationalError) as caught:
-            reward_engine.lock_delete_nowait(db_session, [spend_id])
+            ews.lock_cascade_nowait(db_session, doomed)
         assert isinstance(caught.value.orig, LockNotAvailable)
         assert "lock timeout" not in str(caught.value.orig)  # NOWAIT, not a wait cut short
         db_session.rollback()
@@ -1383,6 +1402,6 @@ def test_lock_delete_nowait_never_waits(pg_engine, db_session, held):
         holder.rollback()
         holder.close()
         db_session.execute(text("SET lock_timeout = 0"))
-    reward_engine.lock_delete_nowait(db_session, [spend_id])  # free again: takes everything
-    assert reward_engine.held_windows(db_session) >= {(rule.id, _one(db_session).window_start)}
+    ews.lock_cascade_nowait(db_session, doomed)  # free again: takes everything
+    assert window in reward_engine.held_windows(db_session)
     db_session.rollback()
