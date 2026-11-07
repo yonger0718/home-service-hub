@@ -320,9 +320,11 @@ until the daily job」 option of rev 1 is gone: step 4 posts early.
 **Retiring a statement** (#297 M9, owner 2026-11-07): the accruals it confirmed or forfeited go back to `posted`
 at their `amount`, unconfirmed (its reward rows back at that amount), and the windows are recomputed; the other
 live statements of those reward accounts whose period holds one of their posting dates get `needs_recheck`, so a
-kept twin pairs them. An applied `accept_early_reward` no longer blocks the retire: it is retired with the
-statement (`reverted`, `inverse.retired_with_statement`, audit `action_retired`) and its accruals keep the early
-posting date. The locks are bank wins' (P12 tiers, NOWAIT, 409 `reconcile_busy`).
+kept twin pairs them. An accrual whose reward row the owner deleted (forfeited, no row) only loses the statement's
+mark and stays forfeited. An applied `accept_early_reward` no longer blocks the retire: it is retired with the
+statement (`reverted`, `inverse.retired_with_statement`, audit `action_retired`), the case it resolved is
+superseded, and its accruals keep the early posting date. The locks are bank wins' (P12 tiers, NOWAIT, 409
+`reconcile_busy`).
 
 ## 8. SPA and Hermes
 

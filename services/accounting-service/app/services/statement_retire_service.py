@@ -76,19 +76,24 @@ RETIRED_WITH_STATEMENT = "accept_early_reward"  # applied, never revertible: ret
 
 def _retire_accepted(db: Session, statement: AccountStatement, label: str, request_id: str | None) -> list[int]:
     """Owner ruling 2026-11-07: the statement's applied `accept_early_reward` actions are retired with it (status
-    `reverted`, `inverse.retired_with_statement`, audit `action_retired`); their accruals were reset by
+    `reverted`, `inverse.retired_with_statement`, audit `action_retired`) and the cases they resolved are superseded
+    (version bumped) like the statement's open ones (AGENT-420 F2); their accruals were reset by
     `reward_bank_wins.release_for_retire` (they keep the early posting date). Returns the action ids."""
     rows = db.execute(
-        select(ReconciliationAction).join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
+        select(ReconciliationAction, ReconciliationCase)
+        .join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
         .where(ReconciliationCase.statement_id == statement.id, ReconciliationAction.status == "applied",
                ReconciliationAction.action == RETIRED_WITH_STATEMENT)
-        .order_by(ReconciliationAction.id).with_for_update(of=ReconciliationAction)).scalars().all()
-    for row in rows:
+        .order_by(ReconciliationAction.id).with_for_update(of=(ReconciliationAction, ReconciliationCase))
+        .execution_options(populate_existing=True)).all()
+    for row, case in rows:
+        if case.status == "resolved" and case.resolved_action_id == row.id:
+            case.status, case.version = "superseded", case.version + 1
         row.status = "reverted"
         row.inverse = {**(row.inverse or {}), "retired_with_statement": statement.id}
         audit.record(db, event="action_retired", actor=label, statement_id=statement.id, case_id=row.case_id,
                      action_id=row.id, request_id=request_id, detail={"by": "retire", "action": row.action})
-    return [row.id for row in rows]
+    return [row.id for row, _ in rows]
 
 
 def retire_statement(db: Session, *, account_id: int, statement_id: int, note: str, label: str,

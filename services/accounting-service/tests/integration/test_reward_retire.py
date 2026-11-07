@@ -7,7 +7,8 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
-from app.models import AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationAudit
+from app.models import AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationAudit, ReconciliationCase
+from app.services import entry_write_service as ews
 from app.services import statement_retire_service as retire_svc
 from app.services.errors import CodedConflictError
 from sqlalchemy.orm import sessionmaker
@@ -76,6 +77,32 @@ def test_retire_returns_a_forfeited_accrual_to_posted(seed, db_session, run, mon
     assert _state(db_session, t.current) == ("posted", None, Decimal("20.0000"))
 
 
+def test_retire_keeps_a_deleted_reward_row_forfeited(seed, db_session, run):
+    """AGENT-420 F1: the owner deleted the confirmed accrual's reward row (forfeit_for_delete: `forfeited`, no ledger
+    row, 0 of the cap). The retire only drops the statement's mark: it stays forfeited, uses no cap and is no
+    candidate anywhere, and no statement is flagged for it."""
+    card = _card(seed, db_session, "測試卡", closing_day=None)
+    rule = _rule(db_session, card)
+    buy = _spend(db_session, card, 1000, BUY_DAY, rule)
+    db_session.commit()
+    _post(db_session, buy)
+    lines = lambda: [_line(1, BUY_DAY, SHOP, 1000), _reward_line(2, 9, date(2026, 10, 28))]  # noqa: E731
+    stmt, _, _ = _submit(db_session, run, card, lines(), period=(date(2026, 10, 1), date(2026, 10, 31)))
+    twin, _, _ = _submit(db_session, run, card, lines(), period=(date(2026, 10, 1), date(2026, 10, 30)))
+    ews.delete_entry(db_session, _accrual_of(db_session, buy).ledger_entry_id)
+    db_session.commit()
+    gone = _accrual_of(db_session, buy)
+    assert (gone.state, gone.ledger_entry_id, gone.confirmed_statement_id) == ("forfeited", None, stmt.id)
+    db_session.get(AccountStatement, twin.id).needs_recheck = False
+    db_session.commit()
+
+    _retire(db_session, stmt)
+
+    accrual = _accrual_of(db_session, buy)
+    assert (accrual.state, accrual.ledger_entry_id, accrual.confirmed_statement_id) == ("forfeited", None, None)
+    assert db_session.get(AccountStatement, twin.id).needs_recheck is False
+
+
 def test_retire_leaves_accruals_of_other_statements_alone(seed, db_session, run):
     card, rule, buy, stmt = _confirmed(seed, db_session, run)
     other = _spend(db_session, card, 500, date(2026, 11, 20), rule)
@@ -111,6 +138,8 @@ def test_retire_with_an_accepted_early_reward(seed, db_session, run):
     audits = db_session.scalars(select(ReconciliationAudit).where(ReconciliationAudit.action_id == action.id,
                                                                   ReconciliationAudit.event == "action_retired")).all()
     assert [a.detail for a in audits] == [{"by": "retire", "action": "accept_early_reward"}]
+    case = db_session.get(ReconciliationCase, row.case_id)  # AGENT-420 F2: its resolved case goes with it
+    assert (case.status, case.version) == ("superseded", 2)
 
 
 def test_retire_is_busy_while_a_reward_row_is_locked(pg_engine, seed, db_session, run):

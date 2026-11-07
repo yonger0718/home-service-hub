@@ -316,9 +316,11 @@ def _lock_rows(db: Session, ids: Iterable[int]) -> dict[int, LedgerEntry]:
 def release_for_retire(db: Session, statement: AccountStatement) -> list[RewardAccrual]:
     """Retiring `statement` (#297 M9, owner ruling 2026-11-07): every accrual it confirmed or forfeited goes back to
     `posted`, unconfirmed, its reward row at the accrual's `amount` (step 6's assigned-0 outcome on a statement that
-    prints no reward line), so another statement can pair it; the windows are recomputed. Same P12 tiers as
-    `prepare` (purchases, rules, windows, then the reward rows), all NOWAIT (`reconcile_busy`); the caller holds the
-    statement row. Returns the reset accruals. Never commits."""
+    prints no reward line), so another statement can pair it; the windows are recomputed. An accrual whose reward
+    row the owner deleted since (`forfeit_for_delete`: `forfeited`, no ledger row, 0 of the cap) only loses the
+    statement's mark and stays forfeited (AGENT-420 F1). Same P12 tiers as `prepare` (purchases, rules, windows,
+    then the reward rows), all NOWAIT (`reconcile_busy`); the caller holds the statement row. Returns the accruals
+    set back to `posted`. Never commits."""
     held = select(RewardAccrual.id).where(RewardAccrual.confirmed_statement_id == statement.id)
     first = _load(db, list(db.scalars(held)))
     if not first:
@@ -326,14 +328,18 @@ def release_for_retire(db: Session, statement: AccountStatement) -> list[RewardA
     _lock_tiers(db, first)
     accruals = _load(db, list(db.scalars(held)))  # re-read under the locks
     rows = _lock_rows(db, [a.ledger_entry_id for a in accruals if a.ledger_entry_id is not None])
+    reset = []
     for accrual in accruals:
-        row = rows.get(accrual.ledger_entry_id)
-        if row is not None:
-            _set_amount(row, accrual.amount)
-        accrual.state, accrual.confirmed_statement_id = POSTED, None
+        accrual.confirmed_statement_id = None
+        row = rows.get(accrual.ledger_entry_id) if accrual.ledger_entry_id is not None else None
+        if row is None:  # the owner deleted the reward row: a forfeit of its own, kept
+            continue
+        _set_amount(row, accrual.amount)
+        accrual.state = POSTED
+        reset.append(accrual)
     db.flush()
-    reward_engine.recompute_locked(db, {(a.rule_id, a.window_start) for a in accruals})
-    return accruals
+    reward_engine.recompute_locked(db, {(a.rule_id, a.window_start) for a in reset})
+    return reset
 
 
 def flag_rechecks(db: Session, statement: AccountStatement, accruals: Collection[RewardAccrual]) -> list[int]:
