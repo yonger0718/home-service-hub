@@ -4,6 +4,7 @@ import {
   afterTodayText,
   asOfText,
   barGeometry,
+  baseChange,
   change,
   compareLabels,
   compareRange,
@@ -32,8 +33,10 @@ import {
   toDateNouns,
   trendRange,
   viewRange,
+  windowEmpty,
   yearPeriod,
 } from './report-math';
+import { BreakdownResponse } from '../../../models/reports.model';
 
 const params = (record: Record<string, string>) => ({ get: (name: string) => record[name] ?? null });
 
@@ -130,6 +133,21 @@ describe('report period', () => {
     expect(elapsedDays(monthPeriod('2026-10'), '2026-09-02')).toEqual({ days: 1, running: true });
   });
 
+  it('reads 上期無資料 without an arrow against an empty window', () =>
+    expect(baseChange(4233, 0, true, '上期無資料')).toEqual({ text: '上期無資料', direction: 'same', kind: 'none' }));
+  it('marks a key new to a non-empty window as 新增, muted', () =>
+    expect(baseChange(1200, 0, false, '上期無資料')).toEqual({ text: '新增', direction: 'same', kind: 'new' }));
+  it('marks a key gone from the current window as — 停止', () =>
+    expect(baseChange(0, 800, false, '去年無資料')).toEqual({ text: '— 停止', direction: 'same', kind: 'gone' }));
+  it('falls back to the arrow change', () =>
+    expect(baseChange(4233, 6910, false, '上期無資料')).toEqual({ text: '▼ 2,677', direction: 'less', kind: 'delta' }));
+  it('detects an empty comparison window from its count', () => {
+    expect(windowEmpty({ compare: { totals: { count: 0 } } } as BreakdownResponse)).toBe(true);
+    expect(windowEmpty({ compare: { totals: { count: 4 } } } as BreakdownResponse)).toBe(false);
+    expect(windowEmpty({ compare: null } as BreakdownResponse)).toBe(false);
+    expect(windowEmpty(null)).toBe(false);
+  });
+
   it('spans the trend over the twelve months ending at the period', () => {
     expect(trendRange(monthPeriod('2026-10'))).toEqual({ from: '2025-11-01', to: '2026-10-31' });
     expect(trendRange(yearPeriod(2026))).toEqual({ from: '2026-01-01', to: '2026-12-31' });
@@ -145,11 +163,11 @@ describe('report figures', () => {
   });
 
   it('marks more / less spending with ▲ / ▼ and an equal figure with —', () => {
-    expect(change(41890, 39608)).toEqual({ text: '▲ 2,282', direction: 'more' });
-    expect(change(41890, 44050)).toEqual({ text: '▼ 2,160', direction: 'less' });
-    expect(change(1078, 1078)).toEqual({ text: '—', direction: 'same' });
-    expect(change(9860, 8640, true)).toEqual({ text: '▲ 1,220 (14.1%)', direction: 'more' });
-    expect(change(500, 0, true)).toEqual({ text: '▲ 500', direction: 'more' });
+    expect(change(41890, 39608)).toEqual({ text: '▲ 2,282', direction: 'more', kind: 'delta' });
+    expect(change(41890, 44050)).toEqual({ text: '▼ 2,160', direction: 'less', kind: 'delta' });
+    expect(change(1078, 1078)).toEqual({ text: '—', direction: 'same', kind: 'delta' });
+    expect(change(9860, 8640, true)).toEqual({ text: '▲ 1,220 (14.1%)', direction: 'more', kind: 'delta' });
+    expect(change(500, 0, true)).toEqual({ text: '▲ 500', direction: 'more', kind: 'delta' });
   });
 });
 

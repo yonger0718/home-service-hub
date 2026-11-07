@@ -1,4 +1,4 @@
-import { BreakdownRow, ReportCompare } from '../../../models/reports.model';
+import { BreakdownResponse, BreakdownRow, ReportCompare } from '../../../models/reports.model';
 import { pad } from '../accounting-ui';
 import { addDays, daysBetween } from '../dates';
 
@@ -292,6 +292,8 @@ export interface Change {
   /** `▲ 2,282`, `▼ 2,160 (4.9%)`, `—` when equal. */
   text: string;
   direction: ChangeDirection;
+  /** `none`: the base window is empty; `new` / `gone`: the key has no base / no current figure; `delta`: a plain change. */
+  kind: 'none' | 'new' | 'gone' | 'delta';
 }
 
 /**
@@ -300,10 +302,26 @@ export interface Change {
  */
 export function change(current: number, base: number, withPct = false): Change {
   const diff = Math.round(current) - Math.round(base);
-  if (diff === 0) return { text: '—', direction: 'same' };
+  if (diff === 0) return { text: '—', direction: 'same', kind: 'delta' };
   const arrow = diff > 0 ? '▲' : '▼';
   const pct = withPct && Math.round(base) !== 0 ? ` (${pct1(Math.abs(diff), Math.abs(base))})` : '';
-  return { text: `${arrow} ${n0(Math.abs(diff))}${pct}`, direction: diff > 0 ? 'more' : 'less' };
+  return { text: `${arrow} ${n0(Math.abs(diff))}${pct}`, direction: diff > 0 ? 'more' : 'less', kind: 'delta' };
+}
+
+/**
+ * A change that knows its base (design D3): an empty comparison window reads `上期無資料` / `去年無資料` (no arrow), a key
+ * with no base is `新增`, a key with no current figure is `— 停止`; otherwise the arrow change. The first three are muted.
+ */
+export function baseChange(current: number, base: number, windowEmpty: boolean, emptyText: '上期無資料' | '去年無資料', withPct = false): Change {
+  if (windowEmpty) return { text: emptyText, direction: 'same', kind: 'none' };
+  if (Math.round(base) === 0 && current > 0) return { text: '新增', direction: 'same', kind: 'new' };
+  if (Math.round(current) === 0 && base > 0) return { text: '— 停止', direction: 'same', kind: 'gone' };
+  return change(current, base, withPct);
+}
+
+/** The comparison window has no entries at all (`compare.totals.count` is 0). */
+export function windowEmpty(response: BreakdownResponse | null | undefined): boolean {
+  return response?.compare?.totals.count === 0;
 }
 
 /** Gross spend of an expense row: the amount before the refunds inside it. */
