@@ -174,23 +174,26 @@ function isMonthEnd(iso: string): boolean {
   return Number(iso.slice(8, 10)) === daysInMonth(monthOf(iso));
 }
 
+/** `iso` moved by `months` (negative = back), the day clipped to the target month (29 Feb − 12 → 28 Feb; 30 Mar − 1 → 28 Feb). */
+export function shiftDate(iso: string, months: number): string {
+  const target = shiftMonth(monthOf(iso), months);
+  return `${target}-${pad(Math.min(Number(iso.slice(8, 10)), daysInMonth(target)))}`;
+}
+
 /**
- * The comparison window of a range (design D1): `previous` is the same length immediately before — whole months when
- * the range is whole months — and `last_year` the same dates a year earlier (29 Feb → 28 Feb).
+ * The comparison window of a range (design D2, same as the API's `compare_window`): `last_year` is the same dates a
+ * year earlier (29 Feb → 28 Feb). `previous` is, for a range starting on the 1st, the months it touches moved back
+ * (whole months before a whole-month range; the same days of the previous month for a running one, the day clipped
+ * to the shorter month); any other range moves back by its own length in days.
  */
 export function compareRange(from: string, to: string, compare: ReportCompare): { from: string; to: string } {
-  if (compare === 'last_year') {
-    const back = (iso: string) => {
-      const [year, month, day] = iso.split('-').map(Number);
-      const target = `${year - 1}-${pad(month)}`;
-      return `${target}-${pad(Math.min(day, daysInMonth(target)))}`;
-    };
-    return { from: back(from), to: back(to) };
-  }
-  if (from.endsWith('-01') && isMonthEnd(to)) {
+  if (compare === 'last_year') return { from: shiftDate(from, -12), to: shiftDate(to, -12) };
+  if (from.endsWith('-01')) {
     const months = (Number(to.slice(0, 4)) - Number(from.slice(0, 4))) * 12 + Number(to.slice(5, 7)) - Number(from.slice(5, 7)) + 1;
-    const first = shiftMonth(monthOf(from), -months);
-    return { from: `${first}-01`, to: monthPeriod(shiftMonth(monthOf(from), -1)).to };
+    if (isMonthEnd(to)) {
+      return { from: `${shiftMonth(monthOf(from), -months)}-01`, to: monthPeriod(shiftMonth(monthOf(from), -1)).to };
+    }
+    return { from: shiftDate(from, -months), to: shiftDate(to, -months) };
   }
   const length = daysBetween(from, to) + 1;
   return { from: addDays(from, -length), to: addDays(to, -length) };

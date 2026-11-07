@@ -105,6 +105,17 @@ describe('report period', () => {
     expect(compareRange('2024-02-01', '2024-02-29', 'last_year')).toEqual({ from: '2023-02-01', to: '2023-02-28' });
   });
 
+  it('compares a running month with the same days of the previous month', () =>
+    expect(compareRange('2026-11-01', '2026-11-07', 'previous')).toEqual({ from: '2026-10-01', to: '2026-10-07' }));
+  it('clips a 1st-anchored range to the shorter month', () =>
+    expect(compareRange('2026-03-01', '2026-03-30', 'previous')).toEqual({ from: '2026-02-01', to: '2026-02-28' }));
+  it('clips to 29 February in a leap year', () =>
+    expect(compareRange('2028-03-01', '2028-03-30', 'previous')).toEqual({ from: '2028-02-01', to: '2028-02-29' }));
+  it('moves a multi-month running range back by the months it touches', () =>
+    expect(compareRange('2026-06-01', '2026-11-07', 'previous')).toEqual({ from: '2025-12-01', to: '2026-05-07' }));
+  it('keeps the day-count rule for a range not starting on the 1st', () =>
+    expect(compareRange('2026-11-02', '2026-11-07', 'previous')).toEqual({ from: '2026-10-27', to: '2026-11-01' }));
+
   it('counts elapsed days for 日均支出', () => {
     expect(elapsedDays(monthPeriod('2026-10'), '2026-10-30')).toEqual({ days: 30, running: true });
     expect(elapsedDays(monthPeriod('2026-10'), '2026-11-02')).toEqual({ days: 31, running: false });
