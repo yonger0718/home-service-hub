@@ -482,7 +482,7 @@ class Component extends DCLogic {
         isBlank: false, isDay: true, day: d,
         pick: () => pickDay(d),
         pressed: isSel ? 'true' : 'false',
-        aria: '10 月 ' + d + ' 日 ' + WD[wdOf(d)] + (has ? '，' + list.length + ' 筆，支出 ' + money(out) : '，沒有記錄') + (isToday ? '，今天' : ''),
+        aria: '10 月 ' + d + ' 日 ' + WD[wdOf(d)] + (has ? '，' + list.length + ' 筆，支出 ' + money(out) : '，沒有記錄') + (isToday ? '，今天' : '') + (bills[d] ? '，' + bills[d] : '') + (list.some((e) => e.ask) ? '，發票待對帳' : ''),
         bg: isSel ? t.primarySoft : (future ? 'transparent' : t.soft),
         border: isSel ? t.primary : 'transparent',
         numBg: isToday ? t.primary : 'transparent',

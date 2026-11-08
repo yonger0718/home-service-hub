@@ -43,23 +43,27 @@ Add a `day=YYYY-MM-DD` query parameter beside `month`, so that back, reload, a s
 - `month` follows `day`, and a `day` outside `month` wins.
 - ‹ › and swipes step one calendar day, across month edges, and move `month` with them.
 - Moving the month with the navigator drops `day`.
-- Entry routes opened from the calendar carry `month` and `day` along (`/accounting/entries/:id?month=…&day=…`), so ✕ and back restore the selection. Every exit listed in Context keeps them, and so does the return after deleting the entry.
+- Every `month` / `day` write merges into the current query, so the 報表 drill-through filters (`category_id`, `account_id`, `merchant`, `tag`, `no_project`) survive a pick.
+- `day` forces 日曆 only while it is in the URL. Choosing 清單 removes `day` and stores 清單.
+- 近 7 天 (`openUpcoming`) writes `month` and `day` (the first due day) under the same history rules, and still stores 日曆 as the view, as it does today.
+- Entry routes opened from the calendar carry `month` and `day` along (`/accounting/entries/:id?month=…&day=…`), so ✕ and back restore the selection. Every exit listed in Context keeps them, and so do the return after deleting the entry and the entry form's exits: `leave()`'s fallback to `/accounting` when there is no in-app previous page, and the fallback after an unmappable split save.
+- 「＋ 在這天記一筆」 opens `/accounting/entry?date=YYYY-MM-DD&month=…&day=…`. `date` is a new prefill parameter the entry form reads beside `kind`, `copy`, `schedule` and `select`.
 
 ### D3. Data: no new endpoint
 
 | Cell or panel part | Source | When |
 |---|---|---|
 | Net, count, heat bar | `/entries/summary/daily` (existing) | month shown |
-| Category dots | `GET /reports/breakdown?group_by=day&split_by=category&metric=expense&date_from&date_to` | month shown in 日曆, once |
+| Category dots | `GET /reports/breakdown?group_by=day&split_by=category&metric=expense&include_excluded_projects=true&date_from={month}-01&date_to={last day}`; each split's `key` (category id) is joined to the category list for its colour | month shown in 日曆, once |
 | Bill mark, bill line | billing due events (existing) | as today |
-| Invoice marker | inbox `einvoices` by `issue_date` (existing `InboxService`) | as today |
-| 花最多的商家 | `GET /reports/breakdown?group_by=merchant&metric=expense` (first five rows, rows with a null key dropped) | month shown, wide 本月摘要 only |
+| Invoice marker | inbox `einvoices` by `issue_date` (`InboxService.get()`; today the timeline only reads the bell count with `limit: 1`) | month shown; refreshed on `InboxService.changed` and `entriesChanged` |
+| 花最多的商家 | `GET /reports/breakdown?group_by=merchant&metric=expense&include_excluded_projects=true&date_from={month}-01&date_to={last day}` (first five rows, rows with a null key dropped) | month shown, wide 本月摘要 only |
 | Category distribution, due items | `MonthOverviewComponent` inputs (existing) | as today |
 | Day rows | `GET /entries?date_from=d&date_to=d` (existing `loadDay`) | day picked |
 
 A `CalendarDataService` caches the two breakdown reads per month and drops the cache on `entriesChanged`. If a breakdown read fails, only its part is left out: no dots, or no merchant card. The grid and the summary still render, with no error toast; a muted 「商家排行讀取失敗」 line replaces the merchant card.
 
-The dots come from the reports' rules, not from the daily summary. The two agree on what counts as expense (refunds reduce it; transfers, debts and adjustments are excluded) because add-accounting-reports moved the month summary onto those shared rules.
+The dots come from the reports' rules, not from the daily summary. Both use the same spend filter (refunds reduce it; transfers, debts and adjustments are excluded). They differ on projects: report endpoints drop `exclude_from_reports` projects unless `include_excluded_projects=true`, while the daily and month summaries keep them. Both breakdown reads therefore pass `include_excluded_projects=true`, so the dots, the merchants, the net, the heat bar and the category distribution count the same expense.
 
 ### D4. Day cells
 
@@ -67,6 +71,7 @@ Each cell holds, top to bottom:
 
 - **Date.** Today sits on a `--app-primary` disc. Weekend numbers are muted.
 - **Net.**
+  - The net is `income + expense` from the daily summary (`expense` is a negative string). The heat bar uses |expense| only when `expense` is below 0, so a refund-heavy day draws no bar.
   - ≥ 1024 px: thousands separators, for example −3,096.
   - < 1024 px: compact form, for example −3.1k or +71.7k, one decimal with a trailing .0 dropped.
   - A past day with no rows shows — on wide screens and nothing on narrow ones. Future days show no figure and are dimmed.
@@ -91,15 +96,15 @@ A small legend under the wide grid explains the bar, the dots and the card mark.
     2. A 今天 card (count, names, net). It selects today, and is shown only when the month is the current month.
     3. The category distribution, with a 看報表 › link to `/accounting/reports?month=…`.
     4. 花最多的商家: top five, with count and amount, from D3.
-    5. 這個月要處理: inbox invoices dated in the month, and unpaid card bills due in the month. A row selects its day. An invoice row also opens its target when the matcher proposed exactly one candidate: an entry opens `/accounting/entries/:id`, a split group its group page.
+    5. 這個月要處理: inbox invoices dated in the month, and unpaid card bills due in the month. A row selects its day. An invoice row also opens its target when the matcher proposed exactly one candidate, keeping `month` and `day`: an entry opens `/accounting/entries/:id`; a split group opens `/accounting/entries/{memberId}/group`, where `memberId` is a member of that group found in the invoice day's `GET /entries` rows, because the group page is routed by a member entry and the candidate carries only the group id.
   - **Base, day picked: the day panel** (new `CalendarDayPanelComponent`). It contains:
     - ‹ day label › with count and net under the label, and a 本月摘要 button that clears `day`;
     - the bill line for that day, if any;
     - the day's rows (time · category · merchant · account, the existing pills);
     - an empty state: 這天沒有記錄, or 還沒到這天 for a future day, with 「＋ 在這天記一筆」. That button opens the entry form with the date filled.
   - **Overlay: the entry detail.** The `pane` outlet renders the detail as a drawer covering the right pane, using the sheet styles of the 760–1023 mode and a raised shadow. The day panel stays mounted under it, so closing the drawer is instant and keeps the scroll position.
-    - ✕ or Esc navigates back to `/accounting?month&day`.
-    - ↑ ↓ move through the month's entries in list order (newest first). The selected day follows the entry.
+    - ✕ or Esc navigates back to `/accounting?month&day` and returns focus to the opening row. Today Esc and the focus trap run only while `sheetOpen` (the 760–1023 sheet); the drawer gets its own handlers, and `sheetOpen` stays the 760–1023 sheet, so the grid is not made inert.
+    - ↑ ↓ move through the month's entries in list order (newest first). The selected day follows the entry. Today's `moveSelection` walks `[data-entry-id]` nodes in the DOM from a document-level listener and drops the query; in calendar mode it stands down and the drawer steps through the month's entry list instead.
     - The entry form opened from 編輯 uses the same drawer, widened to 560 px.
 
 The calendar keeps the same cell contents at 1024–1279. Only the right pane narrows, and the merchant card wraps its amounts below the names.
@@ -107,11 +112,11 @@ The calendar keeps the same cell contents at 1024–1279. Only the right pane na
 ### D6. Narrow layout (< 1024 px, 日曆 view)
 
 - **The month card** becomes one line under the navigator: 支出 $… 收入 $… 結餘 $….
-- **No day picked.** The grid fills the screen's width with cells about 76 px tall. Under it sits a 今天 bar: a date disc, 今天 · N 筆, the names, the net and a › chevron. When the month shown is not the current month, the bar reads 回到今天 and moves to today's month and day.
+- **No day picked.** The grid fills the screen's width with cells about 76 px tall. Under it sits a 今天 bar: a date disc, 今天 · N 筆, the names, the net and a › chevron. When the month shown is not the current month, the bar reads 回到今天 and sets `month` and `day` to today, which collapses the grid to today's week.
 - **Day picked.**
   - The grid collapses to the week that contains the day, with cells about 52 px tall and no dots. A 展開整月 handle under the week clears `day`.
   - Below the week sit the day header (‹ label ›, count and net) and the day's rows.
-  - A horizontal swipe on the day area moves one day. A swipe on the week strip moves one week. Both update `day`.
+  - A horizontal swipe on the day area moves one day. A swipe on the week strip moves seven days, keeping the weekday. Both update `day`, and `month` follows. A gesture counts as a swipe only when its horizontal movement dominates; vertical movement scrolls the day list. The week follows `Preference.week_start` (Sunday or Monday).
 - **Entry detail.** Tapping a row opens the detail as today:
   - below 760 px, its own route (full screen);
   - at 760–1023 px, the right-hand sheet.

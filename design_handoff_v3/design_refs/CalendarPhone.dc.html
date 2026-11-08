@@ -368,7 +368,7 @@ class Component extends DCLogic {
     const pickDay = (d) => this.setState({ sel: Math.max(1, Math.min(31, d)), open: null });
 
     // 日曆格；右上小點：橘＝發票待對帳，灰＝帳單到期
-    const bills = { 15: true, 25: true };
+    const bills = { 15: '已繳', 25: '帳單' };
     const billLines = { 15: '台新 @GoGo 卡帳單 $8,420 · 已繳清', 25: '國泰 CUBE 卡帳單 $6,320 · 這天到期' };
     const all = [];
     for (let i = 0; i < 4; i++) all.push({ isBlank: true, isDay: false });
@@ -386,7 +386,7 @@ class Component extends DCLogic {
         isBlank: false, isDay: true, day: d,
         pick: () => pickDay(d),
         pressed: isSel ? 'true' : 'false',
-        aria: '10 月 ' + d + ' 日 星期' + WD[wdOf(d)] + (list.length ? '，' + list.length + ' 筆，支出 ' + money(out) : '，沒有記錄') + (ask ? '，發票待對帳' : '') + (bills[d] ? '，帳單到期' : ''),
+        aria: '10 月 ' + d + ' 日 星期' + WD[wdOf(d)] + (list.length ? '，' + list.length + ' 筆，支出 ' + money(out) : '，沒有記錄') + (bills[d] ? '，' + bills[d] : '') + (ask ? '，發票待對帳' : ''),
         bg: isSel ? t.primarySoft : (future ? 'transparent' : t.soft),
         border: isSel ? t.primary : 'transparent',
         numBg: isToday ? t.primary : 'transparent',
