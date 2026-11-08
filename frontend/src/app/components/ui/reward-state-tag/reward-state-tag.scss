@@ -1,0 +1,40 @@
+.rst {
+  align-items: center;
+  border: 1.5px solid transparent;
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-bold);
+  gap: 4px;
+  padding: 0.15rem 0.55rem;
+  white-space: nowrap;
+
+  svg {
+    flex: none;
+    height: 12px;
+    width: 12px;
+  }
+}
+
+.rst[data-state='estimated'] {
+  background: transparent;
+  border-color: var(--app-primary);
+  border-style: dashed;
+  color: var(--app-primary);
+}
+
+.rst[data-state='posted'] {
+  background: var(--app-primary-soft);
+  color: var(--app-primary);
+}
+
+.rst[data-state='bank_confirmed'] {
+  background: var(--app-state-success-bg);
+  color: var(--app-success);
+}
+
+.rst[data-state='forfeited'] {
+  background: var(--app-surface-soft);
+  border-color: var(--app-border);
+  color: var(--app-text-muted);
+}

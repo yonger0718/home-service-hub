@@ -18,8 +18,10 @@
 ## 2. Shared pieces (PR B)
 
 - [ ] 2.1 `RewardStateTag` (D8) and `CapBar` (D2) in `components/ui`, light and dark, with accessible names
+  - the `RewardStateTag` half shipped in PR D (#323); `CapBar` stays with PR B
 - [ ] 2.2 Stepper and amount field; picker (sheet below 760 px), if `components/ui` lacks them
 - [ ] 2.3 Tests: tag styles per state; bar at 89 % and 90 %; no-cap text; points unit text (no `$`)
+  - the tag-style tests shipped in PR D; the bar tests stay with PR B
 
 ## 3. 回饋規則總覽 (PR B)
 
@@ -48,11 +50,11 @@
 
 ## 5. Entry detail (PR D)
 
-- [ ] 5.1 回饋 section replacing 紅利回饋 and 預估回饋 (D7)
+- [x] 5.1 回饋 section replacing 紅利回饋 and 預估回饋 (D7)
   - cards per accrual
   - imported reward rows as posted cards
-- [ ] 5.2 Per-state lines; struck-through estimate when capped or changed by the bank; link to the reward row
-- [ ] 5.3 Tests: the four states; the three 未獲得 lines; capped estimate; points reward unit; imported reward without accrual; reprice card inside the section; section absent without either
+- [x] 5.2 Per-state lines; struck-through estimate when capped or changed by the bank; link to the reward row
+- [x] 5.3 Tests: the four states; the three 未獲得 lines; capped estimate; points reward unit; imported reward without accrual; reprice card inside the section; section absent without either
 
 ## 6. Wrap-up
 

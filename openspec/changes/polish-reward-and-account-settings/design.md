@@ -115,8 +115,9 @@ One section, 回饋, sits where 紅利回饋 and 預估回饋 are now: after tag
     - `ledger_entry_id` set (the statement printed a reward line without this one; the row is kept at 0): 「帳單上沒有這筆回饋」;
     - no row and `amount` 0 (posted past the cap): 「本期上限已用完」;
     - no row and `amount` > 0 (the owner deleted the reward row): 「回饋記錄已刪除，不會入帳」.
+  - 「看回饋記錄 ›」 also appears on 銀行確認 and statement-forfeited cards, linking to their reward row (`ledger_entry_id`).
 
-The #306 reward-reprice card (`app-entry-reward-reprice-card`, today just above 紅利回饋) moves into the 回饋 section as its last item, with its own visibility rules unchanged.
+The #306 reward-reprice card (`app-entry-reward-reprice-card`, today just above 紅利回饋) moves into the 回饋 section as its last item, with its own visibility rules unchanged. The section therefore also shows for an entry in `review_reason` `reward_posted` that has no cards, so the reprice card keeps its host.
 
 Reward rows in `d.rewards` that no accrual points to (imported, or entered by hand) render as 已入帳 cards with their posting date and link. The 紅利回饋 heading goes away.
 

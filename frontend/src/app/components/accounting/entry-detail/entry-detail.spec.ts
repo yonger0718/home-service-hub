@@ -100,72 +100,122 @@ describe('EntryDetailComponent', () => {
     }
   });
 
-  it('lists accruals with state labels', () => {
-    const accrual = (id: number, state: string, amount: string) => ({
-      id, rule_id: 100 + id, rule_name: `測試規則${id}`, estimate: amount, amount, state, post_on: null, ledger_entry_id: null,
-      ledger_amount: null, reward_account_id: 3, reward_account_name: '玉山 UNI',
-    });
+  const accrual = (fields: Record<string, unknown>) => ({
+    id: 1, rule_id: 101, rule_name: '測試規則', estimate: '10.0000', amount: '10.0000', state: 'estimated', post_on: null,
+    ledger_entry_id: null, ledger_amount: null, reward_account_id: 3, reward_account_name: '玉山 UNI', ...fields,
+  });
+  const text = (node: Element | null | undefined) => node?.textContent?.replace(/\s+/g, ' ').trim();
+  const pointsAccount = (extra: Record<string, unknown> = {}) =>
+    [...ACCOUNTS, { id: 11, name: '亞洲萬里通', currency: 'TWD', is_archived: false, is_credit: false, ...extra } as unknown as LedgerAccount];
+  const pointsDetail = () => detail({
+    id: 42, amount: '-500.0000', name: '外套',
+    rewards: [entry({ id: 60, kind: 'reward', amount: '120.0000', name: '點數回饋', account_id: 11, account_name: '亞洲萬里通' })],
+    accruals: [accrual({
+      estimate: '120.0000', amount: '120.0000', state: 'posted', post_on: '2026-11-24', ledger_entry_id: 60,
+      ledger_amount: '120.0000', reward_account_id: 11, reward_account_name: '亞洲萬里通',
+    })],
+  });
+
+  it('shows one 回饋 section with a tagged card per accrual', () => {
     const fixture = render(detail({
       id: 42, amount: '-500.0000', name: '外套',
       accruals: [
-        accrual(1, 'estimated', '10.0000'), accrual(2, 'posted', '20.0000'),
-        accrual(3, 'bank_confirmed', '30.0000'), accrual(4, 'forfeited', '0.0000'),
+        accrual({ id: 1, rule_name: '全聯回饋', estimate: '13.0000', amount: '13.0000', post_on: '2026-12-15', reward_account_name: '玉山 Pi 卡' }),
+        accrual({ id: 2, rule_name: '上限規則', estimate: '64.0000', amount: '20.0000' }),
       ],
     }));
-    const lines = Array.from(el(fixture).querySelectorAll('.accrual-line')).map(l => l.textContent?.replace(/\s+/g, ' ').trim());
-    expect(lines).toEqual([
-      '測試規則1 $10 · 預估', '測試規則2 $20 · 已入帳', '測試規則3 $30 · 銀行確認', '測試規則4 $0 · 未獲得',
-    ]);
-    expect(el(fixture).textContent).toContain('預估回饋');
+    const root = el(fixture);
+    const section = root.querySelector('app-entry-reward-section')!;
+    expect(Array.from(section.querySelectorAll('.dsec')).map(h => text(h))).toEqual(['回饋']);
+    const cards = Array.from(section.querySelectorAll('.reward-card'));
+    expect(cards.length).toBe(2);
+    for (const card of cards) {
+      expect(text(card.querySelector('app-reward-state-tag'))).toBe('預估');
+    }
+    expect(text(cards[0])).toContain('+$13');
+    expect(text(cards[0])).toContain('預計 12/15 入帳到 玉山 Pi 卡');
+    expect(text(cards[1])).toContain('+$20');
+    expect(text(cards[1].querySelector('.reward-was'))).toBe('$64');
+    expect(text(cards[1])).toContain('算出 $64，本期上限只剩 $20');
+    expect(root.textContent).not.toContain('紅利回饋');
+    expect(root.textContent).not.toContain('預估回饋');
   });
 
-  it('shows the bank figure for a confirmed accrual (#294)', () => {
+  it('links posted cards to their reward rows without a second list', () => {
     const fixture = render(detail({
       id: 42, amount: '-500.0000', name: '外套',
-      accruals: [{
-        id: 1, rule_id: 101, rule_name: '測試規則', estimate: '10.0000', amount: '10.0000', state: 'bank_confirmed',
-        post_on: '2026-11-24', ledger_entry_id: 60, ledger_amount: '9.0000', reward_account_id: 3, reward_account_name: '玉山 UNI',
-      }],
+      rewards: [
+        entry({ id: 501, kind: 'reward', amount: '10.0000', name: '回饋甲' }),
+        entry({ id: 502, kind: 'reward', amount: '20.0000', name: '回饋乙' }),
+      ],
+      accruals: [
+        accrual({ id: 1, state: 'posted', ledger_entry_id: 501, ledger_amount: '10.0000' }),
+        accrual({ id: 2, estimate: '20.0000', amount: '20.0000', state: 'posted', ledger_entry_id: 502, ledger_amount: '20.0000' }),
+      ],
     }));
-    expect(el(fixture).querySelector('.accrual-line')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('測試規則 $9 · 銀行確認');
+    const root = el(fixture);
+    expect(root.querySelectorAll('.reward-card').length).toBe(2);
+    const links = Array.from(root.querySelectorAll<HTMLAnchorElement>('.reward-link'));
+    expect(links.length).toBe(2);
+    expect(links[0].getAttribute('href')).toMatch(/\/accounting\/entries\/501$/);
+    expect(links[1].getAttribute('href')).toMatch(/\/accounting\/entries\/502$/);
+    expect(root.textContent).not.toContain('紅利回饋');
   });
 
-  it('keeps the old figure when an older API sends no reward-row fields (#294)', () => {
+  it('links a bank_confirmed card to its reward row', () => {
     const fixture = render(detail({
       id: 42, amount: '-500.0000', name: '外套',
-      accruals: [{ id: 1, rule_id: 101, rule_name: '測試規則', estimate: '10.0000', amount: '10.0000', state: 'bank_confirmed',
-        post_on: '2026-11-24', ledger_entry_id: 60 }],
+      rewards: [entry({ id: 501, kind: 'reward', amount: '10.0000', name: '回饋甲' })],
+      accruals: [accrual({ id: 1, state: 'bank_confirmed', ledger_entry_id: 501, ledger_amount: '10.0000' })],
     }));
-    expect(el(fixture).querySelector('.accrual-line')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('測試規則 $10 · 銀行確認');
+    const link = el(fixture).querySelector<HTMLAnchorElement>('.reward-card .reward-link')!;
+    expect(link.getAttribute('href')).toMatch(/\/accounting\/entries\/501$/);
   });
 
-  it('prints points and miles with the reward account name, not $ (#294)', () => {
+  it('prints points with the reward account name, never $', () => {
+    const fixture = render(pointsDetail(), pointsAccount());
+    const card = text(el(fixture).querySelector('.reward-card'))!;
+    expect(card).toContain('120 亞洲萬里通');
+    expect(card).not.toContain('$120');
+  });
+
+  it('prints a cash-equivalent points reward as money', () => {
+    const fixture = render(pointsDetail(), pointsAccount({ cash_equivalent: true }));
+    const card = text(el(fixture).querySelector('.reward-card'))!;
+    expect(card).toContain('+$120');
+    expect(card).not.toContain('120 亞洲萬里通');
+  });
+
+  it('keeps points when the API sends no cash_equivalent', () => {
+    const fixture = render(pointsDetail(), pointsAccount());
+    expect(text(el(fixture).querySelector('.reward-amount'))).toBe('+120 亞洲萬里通');
+  });
+
+  it('shows an imported reward row as a posted card', () => {
     const fixture = render(detail({
       id: 42, amount: '-500.0000', name: '外套',
-      rewards: [entry({ id: 60, kind: 'reward', amount: '35.0000', name: '測試哩程回饋', account_id: 11, account_name: '測試哩程' })],
-      accruals: [{
-        id: 1, rule_id: 101, rule_name: '測試規則', estimate: '35.0000', amount: '35.0000', state: 'posted',
-        post_on: '2026-11-24', ledger_entry_id: 60, ledger_amount: '35.0000', reward_account_id: 11, reward_account_name: '測試哩程',
-      }],
-    }), [...ACCOUNTS, { id: 11, name: '測試哩程', currency: 'TWD', is_archived: false, is_credit: false } as unknown as LedgerAccount]);
-    const text = (selector: string) => el(fixture).querySelector(selector)?.textContent?.replace(/\s+/g, ' ').trim();
-    expect(text('.accrual-line')).toBe('測試規則 35 測試哩程 · 已入帳');
-    expect(text('.reward-line .pos')).toBe('+35 測試哩程');
+      rewards: [entry({ id: 60, kind: 'reward', amount: '35.0000', name: '匯入回饋', posted_date: '2020-01-05' })],
+    }));
+    const cards = el(fixture).querySelectorAll('.reward-card');
+    expect(cards.length).toBe(1);
+    expect(text(cards[0].querySelector('app-reward-state-tag'))).toBe('已入帳');
+    expect(text(cards[0])).toContain('+$35');
+    expect(text(cards[0])).toContain('01/05');
   });
 
-  it('shows the reprice card for a reward_posted purchase, in the reward account unit, and reloads after 重算 (#306)', () => {
+  it('keeps the reprice card as the section\'s last item and reloads after 重算 (#306)', () => {
     const fixture = render(detail({
       id: 42, amount: '-2000.0000', name: '外套', needs_review: true, review_reason: 'reward_posted',
-      accruals: [{
-        id: 1, rule_id: 101, rule_name: '測試規則', estimate: '10.0000', amount: '10.0000', state: 'posted',
-        post_on: '2026-11-24', ledger_entry_id: 60, ledger_amount: '10.0000', reward_account_id: 11, reward_account_name: '測試點數',
-      }],
+      accruals: [accrual({ state: 'posted', post_on: '2026-11-24', ledger_entry_id: 60, ledger_amount: '10.0000', reward_account_id: 11, reward_account_name: '測試點數' })],
     }), [...ACCOUNTS, { id: 11, name: '測試點數', currency: 'TWD', is_archived: false, is_credit: false } as unknown as LedgerAccount]);
     http.expectOne('/api/accounting/entries/42/reward-reprice').flush({
       entry_id: 42, flagged: true, applied: [],
       items: [{ accrual_id: 1, rule_id: 101, rule_name: '測試規則', reward_entry_id: 60, booked: '10.0000', new: '20.0000', status: 'reprice' }],
     });
     fixture.detectChanges();
+    const section = el(fixture).querySelector('app-entry-reward-section')!;
+    const last = section.lastElementChild!;
+    expect(last.matches('app-entry-reward-reprice-card') || last.querySelector('app-entry-reward-reprice-card') !== null).toBe(true);
     const card = el(fixture).querySelector('app-entry-reward-reprice-card')!;
     expect(card.textContent?.replace(/\s+/g, ' ')).toContain('已入帳 10 測試點數 → 新算 20 測試點數');
     (card.querySelector('.reprice-apply') as HTMLButtonElement).click();
@@ -176,9 +226,47 @@ describe('EntryDetailComponent', () => {
     expect(el(fixture).querySelector('.reprice-card')).toBeNull();
   });
 
-  it('hides 預估回饋 when there are no accruals', () => {
-    const fixture = render(detail({ id: 42, amount: '-500.0000', name: '外套', accruals: [] }));
-    expect(el(fixture).textContent).not.toContain('預估回饋');
+  it('keeps the reprice card for a reward_posted entry without accruals or rows', () => {
+    const fixture = render(detail({ id: 42, amount: '-2000.0000', name: '外套', needs_review: true, review_reason: 'reward_posted' }));
+    http.expectOne('/api/accounting/entries/42/reward-reprice').flush({
+      entry_id: 42, flagged: true, applied: [],
+      items: [{ accrual_id: 1, rule_id: 101, rule_name: '測試規則', reward_entry_id: 60, booked: '10.0000', new: '20.0000', status: 'reprice' }],
+    });
+    fixture.detectChanges();
+    const section = el(fixture).querySelector('app-entry-reward-section')!;
+    expect(section.querySelector('app-entry-reward-reprice-card')).not.toBeNull();
+    expect(section.querySelectorAll('.reward-card').length).toBe(0);
+  });
+
+  it('strikes the expected figure on a forfeited card', () => {
+    const fixture = render(detail({
+      id: 42, amount: '-500.0000', name: '外套',
+      accruals: [accrual({ state: 'forfeited', estimate: '13.0000', amount: '13.0000' })],
+    }));
+    const amount = el(fixture).querySelector('.reward-card .reward-amount')!;
+    expect(amount.tagName).toBe('S');
+    expect(text(amount)).toBe('$13');
+    expect(text(el(fixture).querySelector('.reward-card'))).toContain('回饋記錄已刪除，不會入帳');
+  });
+
+  it('has no 回饋 section without accruals, reward rows or a reward_posted review', () => {
+    const fixture = render(detail({ id: 42, amount: '-500.0000', name: '外套' }));
+    const section = el(fixture).querySelector('app-entry-reward-section')!;
+    expect(section.querySelector('.dsec')).toBeNull();
+    expect(section.querySelector('.reward-card')).toBeNull();
+  });
+
+  it('places the section after the debt state and before the e-invoice card', () => {
+    const fixture = render(detail({
+      ...RECEIVABLE, accruals: [accrual({})],
+      einvoice: { id: 1, number: 'AB12345678', issue_date: '2026-10-01', seller_name: '測試商店', total_amount: '500', linked_by: 'owner', linked_to: 'entry', items: [] },
+    }));
+    const root = el(fixture);
+    const debt = root.querySelector('.open-state')!;
+    const section = root.querySelector('app-entry-reward-section')!;
+    const invoice = root.querySelector('app-entry-einvoice-card')!;
+    expect(debt.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(section.compareDocumentPosition(invoice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('shows the open amount, the collection and an enabled 新增收款 on a receivable', () => {
