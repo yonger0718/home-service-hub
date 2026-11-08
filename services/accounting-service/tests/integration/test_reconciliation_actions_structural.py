@@ -25,7 +25,7 @@ from app.services.errors import CodedConflictError, ValidationError
 from app.services import reconciliation_actions as registry
 from app.services.reconciliation_actions import engine, snapshots
 from app.services.reconciliation_actions import structural_actions as structural
-from tests.helpers import set_dirty, wait_until_blocked
+from tests.helpers import THIS_DATABASE, set_dirty, wait_until_blocked
 from tests.integration.test_reconciliation_policy import ANCHOR_ON, _budget, _set_policy
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
     _active, _card, _cases, _line, _open_beside_gap, _submit, run,
@@ -85,7 +85,7 @@ def _hand_case(db, stmt, kind, *, line=None, **fields) -> ReconciliationCase:
 def _barrier_holders(engine_) -> list[tuple[int, str]]:
     with engine_.connect() as conn:
         return [tuple(r) for r in conn.execute(text(
-            "SELECT pid, mode FROM pg_locks WHERE locktype = 'advisory' AND objid = :k AND granted"),
+            f"SELECT pid, mode FROM pg_locks WHERE locktype = 'advisory' AND objid = :k AND granted AND {THIS_DATABASE}"),
             {"k": DIRTY_BARRIER_KEY}).all()]
 
 
