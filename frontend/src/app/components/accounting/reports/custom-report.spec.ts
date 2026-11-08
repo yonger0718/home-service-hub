@@ -505,7 +505,8 @@ describe('CustomReportComponent', () => {
   it('keeps the compare.totals base for a month report split by tag', async () => {
     const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ split_by: 'tag', compare: 'last_year' }));
     const request = http.expectOne(r => r.url === BREAKDOWN);
-    request.flush(answer([row('2026-09-01', 300, 3, 200), row('2026-10-01', 400, 4, 300)], 700, 7, { total: 700, count: 6 }));
+    // Tag-split rows overlap (`overlapping`), yet the grouping is time: the row compare amounts add up to 800, compare.totals say 700.
+    request.flush({ ...answer([row('2026-09-01', 300, 3, 500), row('2026-10-01', 400, 4, 300)], 700, 7, { total: 700, count: 6 }), overlapping: true });
     harness.detectChanges();
     const total = Array.from(el.querySelectorAll('.cr-table tbody tr')).at(-1)!;
     expect(texts(total, 'td').slice(-2)).toEqual(['700', '—']);
