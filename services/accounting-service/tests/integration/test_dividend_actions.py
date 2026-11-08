@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Account, AccountStatement, LedgerEntry, PolicyBudget, ReconciliationAction, ReconciliationAudit, ReconciliationCase,
-    ReconciliationProposal, SettlementBooking, StatementLine,
+    ReconciliationProposal, ReconciliationSettings, SettlementBooking, StatementLine,
 )
 from app.services import dividend_service as ds
 from app.services.errors import CodedConflictError
@@ -432,8 +432,14 @@ def test_the_dividend_category_must_be_an_existing_income_category(seed, db_sess
     category_id = 999999 if kind == "missing" else seed.category("股利收入", kind).id
     db_session.commit()
     block = settings_service.read_settlement_settings(db_session)
-    put_settings(db_session, settlement={**{k: v for k, v in block.items() if k in settings_service.SETTLEMENT_DEFAULTS},
-                                         "dividend_category_id": category_id})
+    block = {k: v for k, v in block.items() if k in settings_service.SETTLEMENT_DEFAULTS}
+    if kind == "income":
+        put_settings(db_session, settlement={**block, "dividend_category_id": category_id})
+    else:  # #267: a PUT refuses these, so store the id the way a later category delete / kind change leaves it
+        put_settings(db_session, settlement=block)
+        row = db_session.get(ReconciliationSettings, 1)
+        row.data = {**row.data, "settlement": {**row.data["settlement"], "dividend_category_id": category_id}}
+        db_session.commit()
     _, _, (case,) = _dividend_case(seed, db_session, run, portfolio_stub)
     _apply(db_session, case.id, "book_dividend", {"fingerprint": "dividend:7"})
     entry = db_session.get(LedgerEntry, db_session.scalar(select(SettlementBooking.in_entry_id)))
