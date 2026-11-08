@@ -417,6 +417,11 @@ describe('AccountingReportsComponent', () => {
       expect(el.querySelector('.rk-stats-note')).toBeNull();
     });
 
+    it('signs a negative single entry before the dollar sign', async () => {
+      const { el } = await openRankWith({ amount: '-50', refund: '100', avg: '-50' });
+      expect(texts(el, '.rk-stat')[0]).toBe('只有 1 筆 · 10/3 · −$50');
+    });
+
     it('omits the date when the API has no statistics', async () => {
       const { el } = await openRankWith({ first_date: null, last_date: null, median: null, max: null, min: null });
       expect(texts(el, '.rk-stat')[0]).toBe('只有 1 筆 · $1,250');
@@ -815,6 +820,8 @@ describe('AccountingReportsComponent', () => {
       answerBy(pending(), '2026-11-01', { toDate: { amount: 0, count: 0 }, whole: { amount: 13420, count: 2 }, previous: 500, lastYear: 500, income: 0 });
       harness.detectChanges();
       expect(texts(el, '.rp-figure-value')[0]).toBe('$0');
+      // F4: a total is never 停止; 0 against 500 is the delta.
+      expect(texts(el, '.rp-figure-foot')[0]).toBe('比 10 月同期 ▼ 500 · 比去年同期 ▼ 500 · 截至 11/1');
       const page = harness.routeDebugElement!.componentInstance as AccountingReportsComponent;
       expect(page.expenseWhole()?.rows.map(row => row.count)).toEqual([2]);
       expect(page.expenseWhole()?.totals.expense).toBe('13420');
@@ -830,14 +837,12 @@ describe('AccountingReportsComponent', () => {
       harness.detectChanges();
       const page = harness.routeDebugElement!.componentInstance as AccountingReportsComponent;
       expect(page.running()).toBe(true);
-      expect(page.showCompare()).toBe(true);
 
       page.toggleWhole();
       harness.detectChanges();
       const reads = pending();
       expect(reads.breakdowns).toHaveLength(0);
       expect(page.wholeView()).toBe(true);
-      expect(page.showCompare()).toBe(false);
       expect(page.viewRange()).toEqual({ from: '2026-11-01', to: '2026-11-30' });
       expect(reads.trends.map(trendQuery)[0]).toMatchObject({ date_to: '2026-11-30' });
       for (const request of reads.trends) request.flush(sampleTrend(trendQuery(request)));
@@ -880,6 +885,8 @@ describe('AccountingReportsComponent', () => {
       const block = media?.[1] ?? media?.[2] ?? '';
       expect(block).toContain('.page-actions');
       expect(block).toMatch(/flex(-basis)?:\s*(1 1 )?100%|width:\s*100%/);
+      // M2: the actions go after the title and the gear, so the period control stays under them (and under the sub-nav).
+      expect(block).toMatch(/\.page-actions\s*\{[^}]*order:\s*1\b/);
       const outside = css.replace(/@media[^{]*\{(?:[^{}]|\{[^{}]*\})*\}/g, '');
       for (const rule of outside.match(/[^{}]*\.rp-period\b[^{}]*\{[^}]*\}/g) ?? []) {
         expect(rule).not.toMatch(/display:\s*none|order:|position:|transform|margin-top/);
@@ -892,6 +899,51 @@ describe('AccountingReportsComponent', () => {
         expect(css).not.toContain('--fab-clear');
         expect(css).not.toMatch(/\n\.(rp|cr) \{[^}]*margin-bottom:\s*-/);
       }
+    });
+
+    it('gives the hatch fills a fallback paint (M3)', () => {
+      expect(scss('trend-tab.scss')).toMatch(/&\.running\s*\{\s*fill:\s*url\(#tr-hatch\)\s+var\(--app-primary\);/);
+      expect(scss('custom-report.scss')).toMatch(/\.cr-hatch\s*\{\s*fill:\s*url\(#cr-hatch\)\s+none;/);
+      expect(scss('custom-report.html')).not.toContain('fill="url(#cr-hatch)"');
+    });
+
+    it('renders the to-date figures when a whole-period read fails (M4)', async () => {
+      const { harness, el } = await openOn('/accounting/reports?month=2026-11', [2026, 11, 7]);
+      const reads = pending();
+      const whole = reads.breakdowns.filter(request => queryOf(request).date_to === '2026-11-30');
+      expect(whole).toHaveLength(2);
+      whole[0].flush({ code: 'x', message: 'x', trace_id: 'x' }, { status: 500, statusText: 'Server Error' });
+      answerBy({ breakdowns: reads.breakdowns.filter(request => request !== whole[0]), trends: reads.trends }, '2026-11-07', {
+        toDate: { amount: 4233, count: 9 }, whole: { amount: 9000, count: 12 }, previous: 6910, lastYear: 5120, income: 1000,
+      });
+      harness.detectChanges();
+      for (const request of http.match(r => r.url === BREAKDOWN && r.params.get('group_by') === 'merchant')) request.flush(sampleBreakdown(breakdownQuery(request)));
+      expect(el.querySelector('.rp-error')).toBeNull();
+      expect(texts(el, '.rp-figure-value')[0]).toBe('$4,233');
+      expect(texts(el, '.rp-figure-foot')[0]).toBe('比 10 月同期 ▼ 2,677 · 比去年同期 ▼ 887 · 截至 11/7');
+      expect(el.querySelector('.ov-after')).toBeNull();
+    });
+
+    it('names the currencies left out of the whole period in the whole view (M6)', async () => {
+      const { harness, el } = await openOn('/accounting/reports?month=2026-11', [2026, 11, 7]);
+      const reads = pending();
+      answerBy({ breakdowns: reads.breakdowns.filter(request => queryOf(request).date_to !== '2026-11-30'), trends: reads.trends }, '2026-11-07', {
+        toDate: { amount: 4233, count: 9 }, previous: 6910, lastYear: 5120, income: 1000,
+      });
+      for (const request of reads.breakdowns.filter(r => queryOf(r).date_to === '2026-11-30')) {
+        const query = queryOf(request);
+        request.flush({ ...response({ from: query.date_from, to: query.date_to, metric: query.metric, amount: 9000, count: 12 }), missing_rates: query.metric === 'expense' ? ['JPY'] : [] });
+      }
+      harness.detectChanges();
+      for (const request of http.match(r => r.url === BREAKDOWN && r.params.get('group_by') === 'merchant')) request.flush(sampleBreakdown(breakdownQuery(request)));
+      expect(el.querySelector('.page-subtitle')?.textContent).not.toContain('未換算');
+      const page = harness.routeDebugElement!.componentInstance as AccountingReportsComponent;
+      page.toggleWhole();
+      harness.detectChanges();
+      for (const request of pending().trends) request.flush(sampleTrend(trendQuery(request)));
+      for (const request of http.match(r => r.url === BREAKDOWN && r.params.get('group_by') === 'merchant')) request.flush(sampleBreakdown(breakdownQuery(request)));
+      harness.detectChanges();
+      expect(el.querySelector('.page-subtitle')?.textContent).toContain('未換算：JPY');
     });
   });
 
@@ -1075,6 +1127,60 @@ describe('AccountingReportsComponent', () => {
         expect(el.querySelector('.ov-after')?.textContent?.trim()).toBe('另有 11/1 之後已記的 2 筆 $13,420 未計入');
         for (const request of http.match(MERCHANT_HOST)) request.flush(reply(breakdownQuery(request), []));
       });
+
+      const kindButton = (el: HTMLElement, label: string) =>
+        Array.from(el.querySelectorAll<HTMLButtonElement>('.ov-share app-seg-toggle button')).find(b => b.textContent?.trim() === label)!;
+      const salary = (amount: number, count: number) => cat('9', '薪資', amount, count, { splits: [{ key: '91', label: '月薪', amount: String(amount), count }] });
+
+      it('reads a running year against last year from the last-year response (F1)', async () => {
+        vi.setSystemTime(new Date(2026, 10, 7, 10, 0));
+        const { harness, el } = await open('/accounting/reports?year=2026');
+        for (const request of pending().breakdowns) {
+          const query = breakdownQuery(request);
+          if (query.metric === 'income') request.flush(reply(query, [salary(68000, 1)], 5));
+          // The previous window (Feb 1–Dec 7 2025) and the last-year one differ: only the last-year figure may show.
+          else if (query.compare === 'last_year') request.flush(reply(query, [food()].map(row => ({ ...row, compare_amount: '6000' })), 5));
+          else request.flush(reply(query, [food()], 5));
+        }
+        for (const request of pending().trends) request.flush(sampleTrend(trendQuery(request)));
+        harness.detectChanges();
+        expect(texts(el, '.ov-stat')[0]).toBe('比去年同期 ▼ 1,000');
+
+        kindButton(el, '收入').click();
+        harness.detectChanges();
+        expect(el.querySelector('.ov-detail h2')?.textContent).toContain('薪資');
+        expect(texts(el, '.ov-stat').map(text => text?.split(' ')[0])).toEqual(['每筆平均', '占收入']);
+      });
+
+      it('keeps 改回截至 on screen after switching to a kind with no later rows (I2)', async () => {
+        vi.setSystemTime(new Date(2026, 10, 7, 10, 0));
+        const { harness, el } = await open('/accounting/reports?month=2026-11');
+        const page = harness.routeDebugElement!.componentInstance as AccountingReportsComponent;
+        for (const request of pending().breakdowns) {
+          const query = breakdownQuery(request);
+          const whole = query.date_to === '2026-11-30';
+          request.flush(reply(query, query.metric === 'income' ? [salary(68000, whole ? 2 : 1)] : [food()], 5));
+        }
+        for (const request of pending().trends) request.flush(sampleTrend(trendQuery(request)));
+        harness.detectChanges();
+        expect(el.querySelector('.ov-after')).toBeNull();
+
+        kindButton(el, '收入').click();
+        harness.detectChanges();
+        el.querySelector<HTMLButtonElement>('button.ov-after')!.click();
+        harness.detectChanges();
+        expect(page.wholeView()).toBe(true);
+        for (const request of pending().trends) request.flush(sampleTrend(trendQuery(request)));
+
+        kindButton(el, '支出').click();
+        harness.detectChanges();
+        expect(el.querySelector('button.ov-after')?.textContent?.trim()).toBe('改回截至 11/7');
+        el.querySelector<HTMLButtonElement>('button.ov-after')!.click();
+        harness.detectChanges();
+        expect(page.wholeView()).toBe(false);
+        for (const request of pending().trends) request.flush(sampleTrend(trendQuery(request)));
+        for (const request of http.match(MERCHANT_HOST)) request.flush(reply(breakdownQuery(request), []));
+      });
     });
   });
 
@@ -1084,7 +1190,7 @@ describe('AccountingReportsComponent', () => {
       first_date: null, last_date: null, avg_interval_days: null, ...(compare === undefined ? {} : { compare_amount: String(compare) }),
     });
 
-    function breakdown(query: BreakdownQuery, rows: BreakdownRow[], windowCount?: number): BreakdownResponse {
+    function breakdown(query: BreakdownQuery, rows: BreakdownRow[], windowCount?: number, windowAmount = 0): BreakdownResponse {
       const metric = query.metric ?? 'expense';
       const sum = rows.reduce((total, r) => total + Number(r.amount), 0);
       const count = rows.reduce((total, r) => total + r.count, 0);
@@ -1094,7 +1200,7 @@ describe('AccountingReportsComponent', () => {
         date_from: query.date_from,
         date_to: query.date_to,
         totals: totals(sum, count),
-        compare: query.compare && windowCount !== undefined ? { date_from: '2026-10-01', date_to: '2026-10-07', totals: totals(0, windowCount) } : undefined,
+        compare: query.compare && windowCount !== undefined ? { date_from: '2026-10-01', date_to: '2026-10-07', totals: totals(windowAmount, windowCount) } : undefined,
         rows: metric === 'income' ? [] : rows,
         overlapping: false,
         missing_rates: [],
@@ -1116,14 +1222,16 @@ describe('AccountingReportsComponent', () => {
       previousCount?: number;
       lastYearCount?: number;
       lastYearRows?: BreakdownRow[];
+      previousTotal?: number;
+      lastYearTotal?: number;
       trend?: TrendResponse;
     }
 
     function answerTrend(reads: Pending, today: string, figures: Figures): void {
       for (const request of reads.breakdowns) {
         const query = breakdownQuery(request);
-        if (query.compare === 'previous') request.flush(breakdown(query, figures.toDate, figures.previousCount ?? 5));
-        else if (query.compare === 'last_year') request.flush(breakdown(query, figures.lastYearRows ?? figures.toDate, figures.lastYearCount ?? 5));
+        if (query.compare === 'previous') request.flush(breakdown(query, figures.toDate, figures.previousCount ?? 5, figures.previousTotal));
+        else if (query.compare === 'last_year') request.flush(breakdown(query, figures.lastYearRows ?? figures.toDate, figures.lastYearCount ?? 5, figures.lastYearTotal));
         else request.flush(breakdown(query, query.date_to === today ? figures.toDate : (figures.whole ?? figures.toDate)));
       }
       for (const request of reads.trends) request.flush(figures.trend ?? trendOf(SERIES));
@@ -1224,6 +1332,39 @@ describe('AccountingReportsComponent', () => {
     it('has no 「另有」 line when nothing is dated after today', async () => {
       const { el } = await openTrend([2026, 11, 7], { toDate: FOOD, whole: FOOD });
       expect(el.querySelector('.tr-after')).toBeNull();
+    });
+
+    it('reads the 合計 row as a delta on a first day with no entries (F4)', async () => {
+      const { el } = await openTrend([2026, 11, 1], { toDate: [], whole: [row('2', '餐飲', 500, 1)], previousTotal: 500, lastYearTotal: 800 });
+      const total = Array.from(el.querySelectorAll('.tr-table tbody tr')).at(-1)!;
+      expect(texts(total, 'td')).toEqual(['0', '500', '▼ 500 (100.0%)', '800', '▼ 800 (100.0%)']);
+      expect(total.textContent).not.toContain('停止');
+    });
+
+    it('titles the comparison after the to-date columns, and drops the comparison wording in the whole view (M5)', async () => {
+      const { harness, el } = await openTrend([2026, 11, 7], { toDate: FOOD, whole: [row('2', '餐飲', 17653, 11)] });
+      expect(el.querySelector('section[aria-label="比較"] h2')?.textContent?.trim()).toBe('比較 · 本月至今 對 上月同期、對 去年同期');
+      el.querySelector<HTMLButtonElement>('button.tr-after')!.click();
+      harness.detectChanges();
+      for (const request of pending().trends) request.flush(trendOf(SERIES));
+      harness.detectChanges();
+      const title = el.querySelector('section[aria-label="比較"] h2')?.textContent?.trim();
+      expect(title).toBe('類別支出 · 2026 年 11 月');
+    });
+
+    it('titles a running year 本期至今 對 去年同期', async () => {
+      const { el } = await openTrend([2026, 11, 7], { toDate: FOOD }, '/accounting/reports?year=2026&tab=trend');
+      expect(el.querySelector('section[aria-label="比較"] h2')?.textContent?.trim()).toBe('比較 · 本期至今 對 去年同期');
+    });
+
+    it('offers 改回截至 in the whole view though no expense is dated after today (I2)', async () => {
+      const { harness, el } = await openTrend([2026, 11, 7], { toDate: FOOD, whole: FOOD });
+      const page = harness.routeDebugElement!.componentInstance as AccountingReportsComponent;
+      page.toggleWhole();
+      harness.detectChanges();
+      for (const request of pending().trends) request.flush(trendOf(SERIES));
+      harness.detectChanges();
+      expect(el.querySelector('button.tr-after')?.textContent?.trim()).toBe('改回截至 11/7');
     });
   });
 });

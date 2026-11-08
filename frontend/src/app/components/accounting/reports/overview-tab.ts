@@ -5,7 +5,7 @@ import { Subscription } from 'rxjs';
 import { BreakdownResponse, BreakdownRow } from '../../../models/reports.model';
 import { ReportsService } from '../../../services/reports.service';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
-import { Change, ReportPeriod, afterTodayText, baseChange, donutArcs, drillText, gross, isRunning, n0, num, pct1, runningCompareLabels, seriesColor, windowEmpty } from './report-math';
+import { Change, ReportPeriod, afterTodayLine, baseChange, donutArcs, drillText, gross, isRunning, n0, num, pct1, runningCompareLabels, seriesColor, windowEmpty } from './report-math';
 
 type Kind = 'expense' | 'income';
 
@@ -60,6 +60,11 @@ export class ReportOverviewComponent {
   readonly expense = input.required<BreakdownResponse>();
   /** Income by category, split by subcategory, compared with the previous period (to date while the period runs). */
   readonly income = input.required<BreakdownResponse>();
+  /**
+   * Expense by category against the same dates last year. A running period whose comparisons coincide (`single`, a
+   * running year) reads its one 去年同期 comparison from here: the previous response covers another window then.
+   */
+  readonly expenseLastYear = input<BreakdownResponse | null>(null);
   /** While a period runs: the same over the whole period, no comparison. Shown when `whole` is on, and counted for the 「另有」 line. */
   readonly expenseWhole = input<BreakdownResponse | null>(null);
   readonly incomeWhole = input<BreakdownResponse | null>(null);
@@ -146,11 +151,17 @@ export class ReportOverviewComponent {
     const row = this.selected();
     if (!row) return [];
     const stats: Stat[] = [];
-    if (!this.whole()) {
-      const previous = baseChange(num(row.amount), num(row.compare_amount), windowEmpty(this.response()), '上期無資料');
-      const noBase = row.compare_amount == null;
+    const running = isRunning(this.period(), this.today());
+    const labels = running ? runningCompareLabels(this.period(), this.today()) : null;
+    // F1: a running `single` period compares with last year's same dates; 收入 has no last-year read, so no stat.
+    const single = !!labels?.single;
+    if (!this.whole() && !(single && this.kind() === 'income')) {
+      const source = single ? this.expenseLastYear() : this.response();
+      const base = single ? source?.rows.find(r => r.key === row.key)?.compare_amount : row.compare_amount;
+      const previous = baseChange(num(row.amount), num(base), windowEmpty(source), single ? '去年無資料' : '上期無資料');
+      const noBase = base == null;
       stats.push({
-        label: isRunning(this.period(), this.today()) ? runningCompareLabels(this.period(), this.today()).previous : this.labels().previous,
+        label: labels ? labels.previous : this.labels().previous,
         value: noBase ? '—' : previous.text,
         direction: noBase || previous.kind !== 'delta' ? null : previous.direction,
         muted: !noBase && previous.kind !== 'delta',
@@ -163,17 +174,8 @@ export class ReportOverviewComponent {
     return stats;
   });
 
-  /** R3: the rows dated after today for the shown kind, as rows(whole) − rows(to date); the line shows only when there are some. */
-  readonly afterToday = computed(() => {
-    const whole = this.wholeResponse();
-    if (!whole) return null;
-    const count = (response: BreakdownResponse) => response.rows.reduce((sum, row) => sum + row.count, 0);
-    const later = count(whole) - count(this.cutResponse());
-    if (!(later > 0)) return null;
-    const metric = this.kind();
-    const amount = num(whole.totals[metric]) - num(this.cutResponse().totals[metric]);
-    return afterTodayText(this.today(), later, amount, this.whole());
-  });
+  /** R3 for the shown kind; 改回截至 whenever the whole view is on. */
+  readonly afterToday = computed(() => afterTodayLine(this.cutResponse(), this.wholeResponse(), this.kind(), this.today(), this.whole()));
 
   /** D5: a category whose only split is itself has nothing to list, so the card shows its 常去商家 instead. */
   readonly merchantMode = computed(() => {

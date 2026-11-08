@@ -4,7 +4,7 @@ import { Params, RouterLink } from '@angular/router';
 import { BreakdownResponse, BreakdownRow, ReportDimension, TrendResponse } from '../../../models/reports.model';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import type { LoadState } from './reports';
-import { ReportPeriod, axisParts, barGeometry, bucketText, drillText, md, n0, num, pct1, periodLabel } from './report-math';
+import { ReportPeriod, axisParts, barGeometry, bucketText, dollars, drillText, md, n0, num, pct1, periodLabel } from './report-math';
 
 /** The four ranking dimensions (spec: 商家, 標籤, 對象, 帳戶). */
 export type RankDimension = Extract<ReportDimension, 'merchant' | 'tag' | 'counterparty' | 'account'>;
@@ -129,7 +129,7 @@ export class ReportRankComponent {
       // One entry has no median, range or interval to speak of: one line with its date and amount.
       const parts = ['只有 1 筆'];
       if (row.first_date) parts.push(md(row.first_date, this.today()));
-      parts.push(`$${n0(row.amount)}`);
+      parts.push(dollars(row.amount));
       stats.push({ label: '', value: parts.join(' · ') });
     } else {
       stats.push({ label: '合計', value: n0(row.amount) }, { label: '筆數', value: String(row.count) }, { label: '平均', value: n0(row.avg) });

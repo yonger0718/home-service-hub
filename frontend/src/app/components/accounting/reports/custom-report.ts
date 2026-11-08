@@ -2,13 +2,12 @@ import { Location, NgTemplateOutlet } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
-import { forkJoin, of } from 'rxjs';
+import { catchError, forkJoin, of } from 'rxjs';
 
 import { CategoryNode, LedgerAccount, Project } from '../../../models/accounting.model';
 import {
   BreakdownResponse,
   BreakdownRow,
-  BreakdownTotals,
   PeriodPreset,
   ReportChart,
   ReportCompare,
@@ -50,22 +49,25 @@ import {
 import {
   BucketGranularity,
   Change,
-  afterTodayText,
+  ReportPeriod,
+  afterTodayLine,
   baseChange,
   bucketText,
-  change,
   donutArcs,
   isRunning,
+  metricTotal as totalOf,
   n0,
   niceCeiling,
   num,
   pct1,
   runningBucket,
+  runningCompareLabels,
   shiftDate,
   runningSuffix,
   seriesColor,
   tickLabel,
   toDateNouns,
+  totalChange,
   windowEmpty,
   yOf,
 } from './report-math';
@@ -109,9 +111,12 @@ function bucketStart(key: string, group: ReportDimension): string {
   return group === 'month' ? `${key.slice(0, 7)}-01` : key;
 }
 
-/** The metric's figure in a response's `totals` (`count` → the entry count). */
-function totalOf(totals: Partial<BreakdownTotals> | undefined, metric: ReportMetric): number {
-  return metric === 'count' ? num(totals?.count) : num(totals?.[metric]);
+/**
+ * F2: the comparison the to-date read asks for. A running period whose windows coincide (`single`, a running year) is
+ * labelled 去年同期 either way, so `previous` asks for `last_year`: the API's previous window is another range then.
+ */
+function toDateCompare(compare: ReportCompare | undefined, period: ReportPeriod, today: string): ReportCompare | undefined {
+  return compare === 'previous' && runningCompareLabels(period, today).single ? 'last_year' : compare;
 }
 
 interface Figure {
@@ -262,7 +267,7 @@ export class CustomReportComponent {
   readonly previewWhole = signal<BreakdownResponse | null>(null);
   /** R4: the whole-period view; reset when the conditions or the report change, and not kept in the URL. */
   readonly wholeView = signal(false);
-  /** The running bucket's figure over the previous bucket's same days (R2); null when there is none. */
+  /** The running bucket's figure over the previous bucket's same days (R2); null when there is none or its read failed. */
   readonly runningBase = signal<number | null>(null);
   private readonly runningBaseEmpty = signal(false);
   private readonly period = computed(() => resolvePeriod(this.config().period, this.today()));
@@ -289,7 +294,7 @@ export class CustomReportComponent {
   /** The rows added up (the table's 合計 row and the donut shares); above the period when tag rows overlap. */
   private readonly metricTotal = computed(() => this.rows().reduce((sum, row) => sum + num(row.amount), 0));
   private readonly rowCount = computed(() => this.rows().reduce((sum, row) => sum + row.count, 0));
-  private readonly compareRowTotal = computed(() => (this.compareOn() ? this.rows().reduce((sum, row) => sum + this.baseOf(row), 0) : null));
+  private readonly compareRowTotal = computed(() => (this.compareOn() ? this.rows().reduce((sum, row) => sum + (this.baseOf(row) ?? 0), 0) : null));
   /** The period's own figures from `totals` / `compare.totals` (each entry once, whatever the grouping). */
   private readonly periodTotal = computed(() => totalOf(this.view()?.totals, this.config().metric));
   private readonly count = computed(() => this.view()?.totals.count ?? 0);
@@ -314,9 +319,18 @@ export class CustomReportComponent {
     return start !== null && row.key !== null && row.key !== '__other__' && bucketStart(row.key, this.config().group_by) === start;
   }
 
-  /** A row's comparison figure: the running bucket's is the previous bucket's same days (R2). */
-  private baseOf(row: BreakdownRow): number {
-    return this.isRunningRow(row) ? (this.runningBase() ?? 0) : num(row.compare_amount);
+  /** A row's comparison figure: the running bucket's is the previous bucket's same days (R2); null when that read failed (M4). */
+  private baseOf(row: BreakdownRow): number | null {
+    return this.isRunningRow(row) ? this.runningBase() : num(row.compare_amount);
+  }
+
+  /**
+   * F4: the base of a total. `compare.totals` (each entry once), else the rows' bases added up; the 合計 row of a tag
+   * grouping adds up overlapping rows, so it takes the rows' bases (`rowSum`). The figure and the row share this path.
+   */
+  private totalBase(rowSum: boolean): number | null {
+    if (!this.compareOn()) return null;
+    return rowSum && this.config().group_by === 'tag' ? this.compareRowTotal() : (this.compareTotal() ?? this.compareRowTotal());
   }
 
   /** The running bucket's comparison window has no entries. */
@@ -363,11 +377,12 @@ export class CustomReportComponent {
     if (!rows.length) return [];
     const total = this.periodTotal();
     const count = this.count();
-    const compareTotal = this.compareTotal();
+    const base = this.totalBase(false);
     const money = (value: number) => (this.config().metric === 'count' ? n0(value) : `$${n0(value)}`);
     const max = rows.reduce((best, row) => (num(row.amount) > num(best.amount) ? row : best), rows[0]);
     const byMonth = this.config().group_by === 'month';
-    const diff = compareTotal !== null ? change(total, compareTotal, true) : null;
+    // F4: a total is a delta, never 新增 / 停止 (an empty window has no comparison column at all).
+    const diff = base !== null ? totalChange(total, base, false, '上期無資料', true) : null;
     // 平均每月 / 平均每組 leave the running bucket out of the sum and the count.
     const skip = this.running() ? runningBucketStart(this.config().group_by, this.today()) : null;
     const running = skip ? rows.find(row => row.key !== null && row.key !== '__other__' && bucketStart(row.key, this.config().group_by) === skip) : undefined;
@@ -400,7 +415,7 @@ export class CustomReportComponent {
   private readonly max = computed(() => {
     const rows = this.rows();
     const values = rows.map(row => num(row.amount));
-    if (this.compareOn()) values.push(...rows.map(row => this.baseOf(row)));
+    if (this.compareOn()) values.push(...rows.map(row => this.baseOf(row) ?? 0));
     return niceCeiling(Math.max(...values, 0));
   });
 
@@ -433,8 +448,9 @@ export class CustomReportComponent {
         y -= height;
         if (height > 0) rects.push({ x: x.toFixed(1), y: y.toFixed(1), width: width.toFixed(1), height: Math.max(height - 1, 0).toFixed(1), fill: seriesColor(k), outline: false, running: this.isRunningRow(row) });
       });
-      if (compare) {
-        const top = yOf(this.baseOf(row), plot, max);
+      const base = this.baseOf(row);
+      if (compare && base !== null) {
+        const top = yOf(base, plot, max);
         rects.push({ x: (cx + 3).toFixed(1), y: top.toFixed(1), width: width.toFixed(1), height: (bottom - top).toFixed(1), fill: 'transparent', outline: true, running: false });
       }
     });
@@ -447,7 +463,7 @@ export class CustomReportComponent {
     const slot = plot.width / Math.max(rows.length, 1);
     return rows.map((row, index) => {
       const total = num(row.amount);
-      const y = yOf(Math.max(total, this.compareOn() ? this.baseOf(row) : 0), plot, this.max());
+      const y = yOf(Math.max(total, this.compareOn() ? (this.baseOf(row) ?? 0) : 0), plot, this.max());
       return { x: (plot.left + slot * index + slot / 2).toFixed(1), label: this.bucketLabel(row), total: n0(total), totalY: (y - 8).toFixed(1), pointY: yOf(total, plot, this.max()).toFixed(1) };
     });
   });
@@ -456,7 +472,7 @@ export class CustomReportComponent {
   readonly comparePoints = computed(() => {
     if (!this.compareOn()) return '';
     const { plot } = this.layout();
-    return this.rows().map((row, index) => `${this.xLabels()[index].x},${yOf(this.baseOf(row), plot, this.max()).toFixed(1)}`).join(' ');
+    return this.rows().map((row, index) => `${this.xLabels()[index].x},${yOf(this.baseOf(row) ?? 0, plot, this.max()).toFixed(1)}`).join(' ');
   });
   readonly arcs = computed(() => donutArcs(this.rows().map((row, index) => ({ value: num(row.amount), color: seriesColor(index) }))));
   readonly chartAria = computed(() => `${this.name() || '報表'}：${this.rows().map(row => `${this.rowLabel(row)} ${n0(row.amount)}`).join('、')}`);
@@ -470,33 +486,28 @@ export class CustomReportComponent {
   /** D3: muted notes naming the comparison column left out because its window has no entries. */
   readonly hiddenNotes = computed(() => {
     if (!this.compareEmpty()) return [];
-    return [this.config().compare === 'previous' ? '上一期沒有記錄，已隱藏比較欄' : '去年同期沒有記錄，已隱藏比較欄'];
+    const compare = this.toDate() ? toDateCompare(this.config().compare, this.period(), this.today()) : this.config().compare;
+    return [compare === 'previous' ? '上一期沒有記錄，已隱藏比較欄' : '去年同期沒有記錄，已隱藏比較欄'];
   });
-  /** R3: the rows dated after today, as rows(whole) − rows(to date); the line shows only when there are some. */
-  readonly afterToday = computed(() => {
-    const whole = this.previewWhole();
-    const cut = this.preview();
-    if (!whole || !cut) return null;
-    const count = (response: BreakdownResponse) => response.rows.reduce((sum, r) => sum + r.count, 0);
-    const later = count(whole) - count(cut);
-    if (!(later > 0)) return null;
-    const metric = this.config().metric;
-    const amount = metric === 'count' ? null : totalOf(whole.totals, metric) - totalOf(cut.totals, metric);
-    return afterTodayText(this.today(), later, amount, this.isWhole());
-  });
+  /** R3 on the report's metric; 改回截至 whenever the whole view is on. */
+  readonly afterToday = computed(() => afterTodayLine(this.preview(), this.previewWhole(), this.config().metric, this.today(), this.isWhole()));
   readonly tableRows = computed<TableRow[]>(() => {
     const rows = this.rows();
     if (!rows.length) return [];
     const keys = this.seriesKeys();
     const compare = this.compareOn();
-    const cells = (values: number[], total: number, count: number, base: number | null, empty = false): TableCell[] => {
+    const cells = (values: number[], total: number, count: number, base: number | null, empty = false, isTotal = false): TableCell[] => {
       const list: TableCell[] = [
         ...values.map(value => ({ text: n0(value), kind: 'series' as const })),
         { text: n0(total), kind: 'total' },
         { text: String(count), kind: 'count', muted: true },
       ];
-      if (compare) {
-        const diff = baseChange(total, base ?? 0, empty, '上期無資料', false);
+      if (compare && base === null) {
+        // M4: the running bucket's base read failed, so the row shows no change.
+        list.push({ text: '—', kind: 'base', muted: true }, { text: '—', kind: 'change', muted: true });
+      } else if (compare) {
+        // F4: a key may be 新增 / 停止; the 合計 row is a delta.
+        const diff = (isTotal ? totalChange : baseChange)(total, base ?? 0, empty, '上期無資料', false);
         list.push(
           { text: n0(base ?? 0), kind: 'base', muted: true },
           { text: diff.text, kind: 'change', direction: diff.direction, muted: diff.kind !== 'delta' },
@@ -506,7 +517,7 @@ export class CustomReportComponent {
     };
     const body = rows.map(row => ({ label: this.rowLabel(row), total: false, cells: cells(this.seriesValues(row), num(row.amount), row.count, compare ? this.baseOf(row) : null, this.emptyBase(row)), running: this.isRunningRow(row) }));
     const seriesTotals = keys.map((_, k) => rows.reduce((sum, row) => sum + this.seriesValues(row)[k], 0));
-    return [...body, { label: '合計', total: true, cells: cells(seriesTotals, this.metricTotal(), this.rowCount(), this.config().group_by === 'tag' ? this.compareRowTotal() : (this.compareTotal() ?? this.compareRowTotal())) }];
+    return [...body, { label: '合計', total: true, cells: cells(seriesTotals, this.metricTotal(), this.rowCount(), this.totalBase(true), false, true) }];
   });
 
   // ---- phone: 編輯條件 sheet -----------------------------------------------------------------------------------
@@ -604,10 +615,13 @@ export class CustomReportComponent {
     const bucket = config.compare ? runningBucketStart(config.group_by, today) : null;
     const s = bucket && bucket < period.from ? period.from : bucket;
     const baseWindow = s ? (config.group_by === 'month' ? { from: shiftDate(s, -1), to: shiftDate(today, -1) } : { from: addDays(s, -7), to: addDays(today, -7) }) : null;
+    // M4: the whole and the base reads are auxiliary; a failure drops the 「另有」 line or the running bucket's change only.
     forkJoin({
-      toDate: this.reports.getBreakdown({ ...query, date_to: today }),
-      whole: this.reports.getBreakdown({ ...query, compare: undefined }),
-      base: baseWindow ? this.reports.getBreakdown({ ...query, date_from: baseWindow.from, date_to: baseWindow.to, split_by: undefined, compare: undefined }) : of(null),
+      toDate: this.reports.getBreakdown({ ...query, date_to: today, compare: toDateCompare(config.compare, period, today) }),
+      whole: this.reports.getBreakdown({ ...query, compare: undefined }).pipe(catchError(() => of(null))),
+      base: baseWindow
+        ? this.reports.getBreakdown({ ...query, date_from: baseWindow.from, date_to: baseWindow.to, split_by: undefined, compare: undefined }).pipe(catchError(() => of(null)))
+        : of(null),
     }).subscribe({
       next: ({ toDate, whole, base }) => {
         if (id !== this.previewRequestId) return;

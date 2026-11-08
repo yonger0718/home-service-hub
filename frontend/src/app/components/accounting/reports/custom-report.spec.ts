@@ -528,6 +528,70 @@ describe('CustomReportComponent', () => {
     expect(texts(el, '.cr-table tbody th')[0]).toBe('11 月');
   });
 
+  // ---- B2 final fix wave ---------------------------------------------------------------------------------------------
+
+  it('asks a running year compared with the previous period for last year, the window its label names (F2)', async () => {
+    vi.setSystemTime(NOV7);
+    const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ period: { preset: 'this_year' }, compare: 'previous' }));
+    const requests = http.match(r => r.url === BREAKDOWN);
+    const queries = requests.map(queryOf);
+    expect(queries[0]).toMatchObject({ date_from: '2026-01-01', date_to: '2026-11-07', compare: 'last_year' });
+    expect(queries[1]).toMatchObject({ date_from: '2026-01-01', date_to: '2026-12-31', compare: undefined });
+    requests.forEach((request, index) => request.flush(queries[index].compare ? answer(wholeMonths([120, 2]), 2137, 21, { total: 2000, count: 15 }) : answer(wholeMonths([120, 2]), 2137, 21)));
+    harness.detectChanges();
+    expect(texts(el, '.cr-table thead th')).toEqual(['月份', '本期至今（1/1–11/7）', '筆數', '去年同期', '增減']);
+  });
+
+  it('reads the 合計 row and figure as a delta against a window with entries but a 0 total (F4)', async () => {
+    const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ compare: 'last_year' }));
+    http.expectOne(r => r.url === BREAKDOWN).flush(
+      answer([row('2026-08-01', 300, 3, 0), row('2026-09-01', 367, 4, 0), row('2026-10-01', 250, 3, 0)], 917, 10, { total: 0, count: 3 }),
+    );
+    harness.detectChanges();
+    const total = Array.from(el.querySelectorAll('.cr-table tbody tr')).at(-1)!;
+    expect(texts(total, 'td')).toEqual(['917', '10', '0', '▲ 917']);
+    expect(total.querySelector('td.cr-col-change')?.classList.contains('more')).toBe(true);
+    expect(texts(el, '.cr-figure-foot')[0]).toBe('▲ 917 比去年同期');
+  });
+
+  it('previews the to-date figures when the whole read fails, without the 另有 line (M4)', async () => {
+    vi.setSystemTime(NOV7);
+    const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ compare: 'previous' }));
+    const requests = http.match(r => r.url === BREAKDOWN);
+    const queries = requests.map(queryOf);
+    requests.forEach((request, index) => {
+      const query = queries[index];
+      if (query.compare) request.flush(answer(wholeMonths([120, 2]), 2137, 21, { total: 2000, count: 15 }));
+      else if (query.date_to === '2026-11-30') request.flush({ code: 'x', message: 'x', trace_id: 'x' }, { status: 500, statusText: 'Server Error' });
+      else request.flush(answer([row('2026-10-01', 90, 2)], 90, 2));
+    });
+    harness.detectChanges();
+    expect(el.querySelector('.cr-preview [role="alert"]')).toBeNull();
+    expect(texts(el, '.cr-table tbody tr:last-child td')).toEqual(['2,137', '21', '2,000', '▲ 137']);
+    expect(el.querySelector('.cr-after')).toBeNull();
+  });
+
+  it('shows no change on the running bucket when its base read fails (M4)', async () => {
+    vi.setSystemTime(NOV7);
+    const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ compare: 'previous' }));
+    const requests = http.match(r => r.url === BREAKDOWN);
+    const queries = requests.map(queryOf);
+    requests.forEach((request, index) => {
+      const query = queries[index];
+      if (query.compare) request.flush(answer(wholeMonths([120, 2]), 2137, 21, { total: 2000, count: 15 }));
+      else if (query.date_to === '2026-11-30') request.flush(answer(wholeMonths([180, 3]), 2197, 22));
+      else request.flush({ code: 'x', message: 'x', trace_id: 'x' }, { status: 500, statusText: 'Server Error' });
+    });
+    harness.detectChanges();
+    expect(el.querySelector('.cr-preview [role="alert"]')).toBeNull();
+    const rows = Array.from(el.querySelectorAll('.cr-table tbody tr'));
+    expect(texts(rows[5], 'th')).toEqual(['11 月 進行中（至 11/7）']);
+    expect(texts(rows[5], 'td')).toEqual(['120', '2', '—', '—']);
+    expect(rows[5].querySelector('td.cr-col-change')?.classList.contains('muted')).toBe(true);
+    expect(texts(rows[0], 'td')).toEqual(['300', '3', '250', '▲ 50']);
+    expect(el.querySelector('.cr-after')?.textContent?.trim()).toBe('另有 11/7 之後已記的 1 筆 $60 未計入');
+  });
+
   it('leaves the running bucket out of 平均 in the whole view too', async () => {
     const { harness, el } = await openRunning('previous');
     el.querySelector<HTMLButtonElement>('.cr-after')!.click();

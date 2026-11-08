@@ -19,9 +19,11 @@
   .rp app-page-header ::ng-deep {
     .page-header-row { flex-wrap: wrap; }
 
+    /* After the title and the gear: they share the first row, and the period control stays under them. */
     .page-actions {
       flex: 1 1 100%;
       justify-content: flex-start;
+      order: 1;
     }
   }
 }

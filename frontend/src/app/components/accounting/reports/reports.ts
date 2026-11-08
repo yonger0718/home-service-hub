@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
-import { Observable, forkJoin, of } from 'rxjs';
+import { Observable, catchError, forkJoin, of } from 'rxjs';
 
 import { CategoryNode, Project } from '../../../models/accounting.model';
 import { BreakdownResponse, BreakdownRow, BudgetInput, BudgetStatusResponse, SavedReport, TrendQuery, TrendResponse } from '../../../models/reports.model';
@@ -20,7 +20,6 @@ import {
   PeriodUnit,
   ReportPeriod,
   asOfText,
-  baseChange,
   compareLabels,
   elapsedDays,
   isRunning,
@@ -34,6 +33,7 @@ import {
   periodWithUnit,
   runningCompareLabels,
   shiftPeriod,
+  totalChange,
   trendRange,
   viewRange,
   windowEmpty,
@@ -121,7 +121,6 @@ export class AccountingReportsComponent {
   readonly viewRange = computed(() => viewRange(this.period(), this.today(), this.wholeView()));
   readonly viewExpense = computed(() => (this.wholeView() ? (this.expenseWhole() ?? this.expense()) : this.expense()));
   readonly viewIncome = computed(() => (this.wholeView() ? (this.incomeWhole() ?? this.income()) : this.income()));
-  readonly showCompare = computed(() => !this.wholeView());
   readonly state = signal<LoadState>('loading');
   readonly trend = signal<TrendResponse | null>(null);
   readonly trendState = signal<LoadState>('loading');
@@ -159,11 +158,14 @@ export class AccountingReportsComponent {
   /** The month the timeline opens on from 在記帳記錄看這 N 筆 (the timeline shows one month). */
   readonly drillMonth = computed(() => monthOf(this.period().from));
 
-  /** The statistics rules under the title; the 不計入報表 projects and the currencies left out follow when there are any. */
+  /**
+   * The statistics rules under the title; the 不計入報表 projects and the currencies left out follow when there are any
+   * (those of the responses on screen: the whole period's in the whole view).
+   */
   readonly rules = computed(() => {
     const currency = this.currency();
     const parts = [`以${CURRENCY_NAMES[currency] ?? currency}計`, '退款抵減支出', '轉帳不計入'];
-    const missing = new Set([...(this.expense()?.missing_rates ?? []), ...(this.income()?.missing_rates ?? [])]);
+    const missing = new Set([...(this.viewExpense()?.missing_rates ?? []), ...(this.viewIncome()?.missing_rates ?? [])]);
     const excluded = this.projectList().filter(project => project.exclude_from_reports).map(project => project.name);
     if (excluded.length) parts.push(`不計入：${excluded.join('、')}`);
     if (missing.size) parts.push(`未換算：${[...missing].join('、')}`);
@@ -202,13 +204,16 @@ export class AccountingReportsComponent {
     ];
   });
 
-  /** The 支出 foot: the whole view counts entries; a running period compares the to-date range; otherwise the whole period. */
+  /**
+   * The 支出 foot: the whole view counts entries; a running period compares the to-date range; otherwise the whole period.
+   * A total reads as a delta (never 新增 / 停止), or 上期無資料 / 去年無資料 when the window is empty.
+   */
   private spendFoot(expense: BreakdownResponse, lastYear: BreakdownResponse | null, spent: number, running: boolean, whole: boolean): string {
     if (whole) return `${expense.rows.reduce((sum, row) => sum + row.count, 0)} 筆`;
     const labels = running ? runningCompareLabels(this.period(), this.today()) : this.labels();
     const segment = (label: string, source: BreakdownResponse | null | undefined, emptyText: '上期無資料' | '去年無資料'): string => {
       if (!source?.compare) return `${label} —`;
-      const result = baseChange(spent, num(source.compare.totals.expense), windowEmpty(source), emptyText);
+      const result = totalChange(spent, num(source.compare.totals.expense), windowEmpty(source), emptyText);
       return result.kind === 'none' ? result.text : `${label} ${result.text}`;
     };
     // One window (a calendar year, or windows that coincide): said once, from the last-year response when running.
@@ -404,12 +409,15 @@ export class AccountingReportsComponent {
     // While running, the header's three reads cover the to-date range; two whole-period reads (no `compare`) follow.
     const range = { date_from: period.from, date_to: running ? this.today() : period.to };
     const whole = { date_from: period.from, date_to: period.to, group_by: 'category', split_by: 'subcategory' } as const;
+    // A failed whole read only drops the 「另有」 line: the to-date figures still show.
+    const wholeRead = (metric: 'expense' | 'income') =>
+      running ? this.reports.getBreakdown({ ...whole, metric }).pipe(catchError(() => of(null))) : of(null);
     forkJoin({
       expense: this.reports.getBreakdown({ ...range, metric: 'expense', group_by: 'category', split_by: 'subcategory', compare: 'previous' }),
       lastYear: this.reports.getBreakdown({ ...range, metric: 'expense', group_by: 'category', compare: 'last_year' }),
       income: this.reports.getBreakdown({ ...range, metric: 'income', group_by: 'category', split_by: 'subcategory', compare: 'previous' }),
-      expenseWhole: running ? this.reports.getBreakdown({ ...whole, metric: 'expense' }) : of(null),
-      incomeWhole: running ? this.reports.getBreakdown({ ...whole, metric: 'income' }) : of(null),
+      expenseWhole: wholeRead('expense'),
+      incomeWhole: wholeRead('income'),
     }).subscribe({
       next: ({ expense, lastYear, income, expenseWhole, incomeWhole }) => {
         if (id !== this.requestId) return;

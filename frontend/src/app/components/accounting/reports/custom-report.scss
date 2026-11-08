@@ -522,6 +522,9 @@
 
 .cr-grid { stroke: var(--app-border); stroke-width: 1; }
 .cr-tick { fill: var(--app-text-muted); font-size: 11px; }
+/* The running stack's hatch overlay: `none` is the paint fallback, so an engine that cannot resolve #cr-hatch (WebKit
+   under <base href>) leaves the solid bar beneath visible instead of painting over it. */
+.cr-hatch { fill: url(#cr-hatch) none; }
 .cr-hatch-gap { fill: var(--app-surface); }
 .cr-after {
   align-self: flex-start;

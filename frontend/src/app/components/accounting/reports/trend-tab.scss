@@ -51,8 +51,9 @@
   fill: var(--app-border);
 
   &.last { fill: var(--app-primary); }
-  /* The month still running: a hatched fill (light and dark follow the surface and primary tokens). */
-  &.running { fill: url(#tr-hatch); }
+  /* The month still running: a hatched fill (light and dark follow the surface and primary tokens). The colour after
+     the url is the paint fallback: an engine that cannot resolve #tr-hatch (WebKit under <base href>) draws it solid. */
+  &.running { fill: url(#tr-hatch) var(--app-primary); }
 }
 
 .tr-hatch-fill { fill: var(--app-primary); }

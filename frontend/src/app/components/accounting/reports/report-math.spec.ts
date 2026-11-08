@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  afterTodayLine,
   afterTodayText,
+  dollars,
+  runningCompareTitle,
+  totalChange,
   asOfText,
   axisParts,
   bucketText,
@@ -269,6 +273,56 @@ describe('running periods', () => {
     expect(afterTodayText('2026-11-07', 2, 13420, false)).toBe('另有 11/7 之後已記的 2 筆 $13,420 未計入');
     expect(afterTodayText('2026-11-07', 3, null, false)).toBe('另有 11/7 之後已記的 3 筆未計入');
     expect(afterTodayText('2026-11-07', 2, 13420, true)).toBe('改回截至 11/7');
+  });
+  it('signs a negative amount before the dollar sign', () => {
+    expect(dollars(-50)).toBe('−$50');
+    expect(dollars(1250)).toBe('$1,250');
+    expect(dollars(-0.4)).toBe('$0');
+    expect(afterTodayText('2026-11-07', 1, -300, false)).toBe('另有 11/7 之後已記的 1 筆 −$300 未計入');
+  });
+
+  describe('afterTodayLine (R3)', () => {
+    const row = (count: number) => ({ key: '1', label: '餐飲', color: null, amount: '0', refund: '0', count, avg: '0', median: null, min: null, max: null, first_date: null, last_date: null, avg_interval_days: null });
+    const resp = (counts: number[], totals: Partial<{ expense: string; income: string; net: string; count: number }>): BreakdownResponse => ({
+      currency: 'TWD', date_from: '2026-11-01', date_to: '2026-11-30',
+      totals: { expense: '0', income: '0', net: '0', count: 0, refund: '0', ...totals },
+      rows: counts.map(row), overlapping: false, missing_rates: [],
+    });
+    const cut = resp([9], { expense: '4233', income: '500', count: 10 });
+    const whole = resp([9, 2], { expense: '17653', income: '500', count: 99 });
+
+    it('counts rows(whole) − rows(to date) and the metric total difference', () => {
+      expect(afterTodayLine(cut, whole, 'expense', '2026-11-07', false)).toBe('另有 11/7 之後已記的 2 筆 $13,420 未計入');
+    });
+    it('leaves the amount out for the count metric', () => {
+      expect(afterTodayLine(cut, whole, 'count', '2026-11-07', false)).toBe('另有 11/7 之後已記的 2 筆未計入');
+    });
+    it('signs a negative difference', () => {
+      expect(afterTodayLine(cut, resp([9, 1], { expense: '4000' }), 'expense', '2026-11-07', false)).toBe('另有 11/7 之後已記的 1 筆 −$233 未計入');
+    });
+    it('shows nothing without later rows or without the whole read', () => {
+      expect(afterTodayLine(cut, cut, 'expense', '2026-11-07', false)).toBeNull();
+      expect(afterTodayLine(cut, null, 'expense', '2026-11-07', false)).toBeNull();
+      expect(afterTodayLine(null, whole, 'expense', '2026-11-07', false)).toBeNull();
+    });
+    it('offers 改回截至 in the whole view whatever N is', () => {
+      expect(afterTodayLine(cut, whole, 'expense', '2026-11-07', true)).toBe('改回截至 11/7');
+      expect(afterTodayLine(cut, cut, 'income', '2026-11-07', true)).toBe('改回截至 11/7');
+      expect(afterTodayLine(null, null, 'expense', '2026-11-07', true)).toBe('改回截至 11/7');
+    });
+  });
+
+  it('compares totals as a delta, never 新增 / 停止', () => {
+    expect(totalChange(0, 500, false, '上期無資料')).toEqual({ text: '▼ 500', direction: 'less', kind: 'delta' });
+    expect(totalChange(0, 500, false, '上期無資料', true)).toEqual({ text: '▼ 500 (100.0%)', direction: 'less', kind: 'delta' });
+    expect(totalChange(300, 0, false, '去年無資料')).toEqual({ text: '▲ 300', direction: 'more', kind: 'delta' });
+    expect(totalChange(0, 0, true, '去年無資料')).toEqual({ text: '去年無資料', direction: 'same', kind: 'none' });
+  });
+
+  it('titles the to-date comparison card after the columns', () => {
+    expect(runningCompareTitle(nov, '2026-11-07')).toBe('本月至今 對 上月同期、對 去年同期');
+    expect(runningCompareTitle(yearPeriod(2026), '2026-11-07')).toBe('本期至今 對 去年同期');
+    expect(runningCompareTitle(customPeriod('2026-06-01', '2026-12-31'), '2026-11-07')).toBe('本期至今 對 上期同期、對 去年同期');
   });
 });
 

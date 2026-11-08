@@ -270,7 +270,7 @@
               @for (rect of rects(); track $index) {
                 <rect [class.cr-outline]="rect.outline" [attr.x]="rect.x" [attr.y]="rect.y" [attr.width]="rect.width" [attr.height]="rect.height" rx="3" [attr.fill]="rect.fill"></rect>
                 @if (rect.running) {
-                  <rect class="cr-hatch" [attr.x]="rect.x" [attr.y]="rect.y" [attr.width]="rect.width" [attr.height]="rect.height" rx="3" fill="url(#cr-hatch)"></rect>
+                  <rect class="cr-hatch" [attr.x]="rect.x" [attr.y]="rect.y" [attr.width]="rect.width" [attr.height]="rect.height" rx="3"></rect>
                 }
               }
             } @else {

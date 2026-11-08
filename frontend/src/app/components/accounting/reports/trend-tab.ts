@@ -8,7 +8,7 @@ import {
   Change,
   ReportPeriod,
   barGeometry,
-  afterTodayText,
+  afterTodayLine,
   axisParts,
   baseChange,
   bucketText,
@@ -19,13 +19,16 @@ import {
   n0,
   niceCeiling,
   num,
+  periodLabel,
   periodNouns,
   runningBucket,
   runningCompareLabels,
+  runningCompareTitle,
   runningSuffix,
   seriesColor,
   toDateNouns,
   tickLabel,
+  totalChange,
   windowEmpty,
   yOf,
 } from './report-math';
@@ -174,7 +177,14 @@ export class ReportTrendComponent {
   /** D1: the to-date columns while the period runs (and not in the whole view). */
   private readonly toDate = computed(() => isRunning(this.period(), this.today()) && !this.whole());
 
-  readonly compareTitle = computed(() => `比較 · ${compareTitle(this.period())}`);
+  /**
+   * The card title follows the columns: the to-date nouns while the period runs, the period's own words once it is over;
+   * the whole view has no comparison columns, so it names the period only.
+   */
+  readonly compareTitle = computed(() => {
+    if (this.whole()) return `類別支出 · ${periodLabel(this.period())}`;
+    return `比較 · ${this.toDate() ? runningCompareTitle(this.period(), this.today()) : compareTitle(this.period())}`;
+  });
 
   /**
    * The comparison columns. A running period shows `本月至今（…） / 上月同期 / 去年同期`; one comparison (`single`) is read
@@ -214,16 +224,8 @@ export class ReportTrendComponent {
   /** The one comparison of a `single` screen: last year's response while a period runs, else the previous one (the same window). */
   private readonly singleSource = computed(() => (this.toDate() ? this.lastYear() : this.expense()));
 
-  /** R3: the rows dated after today, as rows(whole) − rows(to date); the line shows only when there are some. */
-  readonly afterToday = computed(() => {
-    const whole = this.expenseWhole();
-    const cut = this.expense();
-    if (!whole || !cut) return null;
-    const count = (response: BreakdownResponse) => response.rows.reduce((sum, r) => sum + r.count, 0);
-    const later = count(whole) - count(cut);
-    if (!(later > 0)) return null;
-    return afterTodayText(this.today(), later, num(whole.totals.expense) - num(cut.totals.expense), this.whole());
-  });
+  /** R3 on expense; 改回截至 whenever the whole view is on. */
+  readonly afterToday = computed(() => afterTodayLine(this.expense(), this.expenseWhole(), 'expense', this.today(), this.whole()));
 
   readonly compareRows = computed<CompareRow[]>(() => {
     const expense = this.shown();
@@ -266,8 +268,9 @@ export class ReportTrendComponent {
         current: n0(current),
         previous: n0(previous),
         lastYear: n0(yearAgo),
-        monthChange: baseChange(current, previous, previousEmpty, previousText, true),
-        yearChange: baseChange(current, yearAgo, lastYearEmpty, '去年無資料', true),
+        // F4: the total is a delta (never 新增 / 停止), or the empty-window note.
+        monthChange: totalChange(current, previous, previousEmpty, previousText, true),
+        yearChange: totalChange(current, yearAgo, lastYearEmpty, '去年無資料', true),
       },
     ];
   });
