@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - No API change: every card field derives from today's `RewardAccrualOut` / `EntryDetail` (D7). PR D does not depend on PR A (#342).
-- Reward figures use `EntryDetail.rewardAmount` unchanged (D1a): money when the reward account is the entry's account, unknown, or a credit account; else `N 帳戶名` (points / miles). Never `$` for points.
+- Reward figures use `EntryDetail.rewardAmount` (D1a): money when the reward account is the entry's account, unknown, a credit account, or (owner ruling 2026-11-08, PR A2 / AGENT-462) a `cash_equivalent` account (「1 點 = 1 元」); else `N 帳戶名` (points / miles). Never `$` for non-cash points. The only change to `rewardAmount` is that `cash_equivalent` clause (Task 3).
 - `ledger_amount` may be `undefined` (older API); treat as `null`.
 - Tag labels exactly 預估 / 已入帳 / 銀行確認 / 未獲得; states never differ by colour alone (D8).
 - Line icons only: no emoji in templates (`theme/line-icons.spec.ts`); icons are inline SVG paths, stroked, `aria-hidden="true"`; no `url(#id)` paint references (WebKit under `<base href="/hub/">`).
@@ -38,6 +38,7 @@
 | `frontend/src/app/components/ui/reward-state-tag/reward-state-tag.ts` (+ `.scss`, `.spec.ts`) | Create. The D8 pill. |
 | `frontend/src/app/components/accounting/entry-detail/reward-cards.ts` (+ `.spec.ts`) | Create. Pure `rewardCards()` view model. |
 | `frontend/src/app/components/accounting/entry-detail/reward-section.ts` (+ `.html`) | Create. Renders the section; projects the reprice card. Inline `styles` like its siblings `einvoice-card.ts` / `reward-reprice-card.ts`. |
+| `frontend/src/app/models/accounting.model.ts` | Modify. `LedgerAccount` gains `cash_equivalent?: boolean` (optional: absent from the API until PR A2 deploys). |
 | `frontend/src/app/components/accounting/entry-detail/entry-detail.{ts,html,scss}` | Modify. Swap the two old blocks (`entry-detail.html:99-118`) for the section; drop now-unused helpers. |
 | `frontend/src/app/components/accounting/entry-detail/entry-detail.spec.ts` | Modify. Rewrite the reward tests at `:103-180`. |
 
@@ -145,7 +146,7 @@ Fake formatter for the tests: `const text: RewardAmountText = (v, id, name, _c, 
 
 **Files:**
 - Create: `frontend/src/app/components/accounting/entry-detail/reward-section.ts` (inline `styles`), `reward-section.html`
-- Modify: `entry-detail.html:99-118`, `entry-detail.ts` (imports; `accrualStateLabels`, `accrualValue`, `rewardWhen` removed when unused), `entry-detail.scss` (drop `.reward-line`/`.accrual-line` rules if only these used them)
+- Modify: `frontend/src/app/models/accounting.model.ts` (`LedgerAccount.cash_equivalent?: boolean`), `entry-detail.html:99-118`, `entry-detail.ts` (`rewardAmount` money test gains `|| account.cash_equivalent === true`; imports; `accrualStateLabels`, `accrualValue`, `rewardWhen` removed when unused), `entry-detail.scss` (drop `.reward-line`/`.accrual-line` rules if only these used them)
 - Test: `entry-detail.spec.ts` (replace the six reward tests at `:103-180`)
 
 **Interfaces:**
@@ -174,6 +175,8 @@ Ruling (spec gap): the section also shows for a `reward_posted` entry with no ca
   - `shows one 回饋 section with a tagged card per accrual`: two estimated accruals (the spec's 全聯 example: `+$13` / `預計 12/15 入帳到 玉山 Pi 卡`, and `+$20`, `$64` struck, `算出 $64，本期上限只剩 $20`) → one `.dsec` with text `回饋`; two `.reward-card`; each has `app-reward-state-tag` with text `預估`; no element with text `紅利回饋` or `預估回饋`.
   - `links posted cards to their reward rows without a second list`: two posted accruals with rows 501/502 in `rewards` → two cards, two `.reward-link` with `href` ending `/accounting/entries/501` and `/502`, no `紅利回饋` heading.
   - `prints points with the reward account name, never $` (moved from the #294 test): `120 亞洲萬里通` in the card and no `$120`.
+  - `prints a cash-equivalent points reward as money`: the same fixture with the reward account `cash_equivalent: true` → `+$120` in the card and no `亞洲萬里通` figure.
+  - `keeps points when the API sends no cash_equivalent`: the reward account without the field → `120 亞洲萬里通`.
   - `shows an imported reward row as a posted card`: no accruals, one reward row → one card tagged `已入帳` with its amount and date.
   - `keeps the reprice card as the section's last item and reloads after 重算 (#306)`: the existing #306 test, plus `section.lastElementChild` is (or contains) `app-entry-reward-reprice-card`.
   - `keeps the reprice card for a reward_posted entry without accruals or rows`: `review_reason: 'reward_posted'`, empty lists → section present, reprice card rendered.
