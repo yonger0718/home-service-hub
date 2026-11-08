@@ -33,16 +33,22 @@
 ### Task 1: Unit fields on usage rows
 
 **Files:**
-- Modify: `app/services/reward_engine.py` (`usage`, ~line 936)
+- Modify: `app/services/reward_engine.py` (`usage`, ~line 973)
 - Modify: `app/schemas/ledger.py` (`RewardUsageOut`, ~line 215)
 - Test: `tests/integration/test_reward_usage_api.py`
 
 **Interfaces:**
 - Produces: each dict from `reward_engine.usage(db, account_id, on)` gains `"reward_account_id": int`, `"reward_account_name": str`, `"reward_is_money": bool`; `RewardUsageOut` gains `reward_account_id: int`, `reward_account_name: str`, `reward_is_money: bool`.
 
-- [ ] **Step 1: Write the failing tests** (reuse the file's `_rule`, `_usage`, `_card_with_spends`; all rules `calendar_month`, `date="2026-11-10"`)
+- [ ] **Step 1: Write the failing tests** (reuse the file's `_rule`, `_usage`, `_card_with_spends`; all rules `calendar_month`, `date="2026-11-10"`). `seed.rule` always passes `reward_account_id=account.id`, so a test never passes `reward_account_id` as a keyword; it sets it on the returned rule with `_pay_into` (as `test_reward_usage_api.py` already does by assignment).
 
 ```python
+def _pay_into(db, rule, account):
+    rule.reward_account_id = account.id if account is not None else None
+    db.flush()
+    return rule
+
+
 def _unit(item):
     return item["reward_account_id"], item["reward_account_name"], item["reward_is_money"]
 
@@ -50,7 +56,7 @@ def _unit(item):
 def test_usage_unit_card_itself_and_unset(client, db_session, seed):
     card, _ = _card_with_spends(seed, db_session)
     _rule(seed, card, name="A")                                   # seed default: reward_account_id = card
-    _rule(seed, card, name="B", reward_account_id=None)
+    _pay_into(db_session, _rule(seed, card, name="B"), None)
     db_session.commit()
     assert [_unit(i) for i in _usage(client, card, date="2026-11-10")] == [(card.id, "測試卡", True)] * 2
 
@@ -58,7 +64,7 @@ def test_usage_unit_card_itself_and_unset(client, db_session, seed):
 def test_usage_unit_other_credit_card_is_money(client, db_session, seed):
     card, _ = _card_with_spends(seed, db_session)
     other = seed.account("另一張卡", is_credit=True)
-    _rule(seed, card, reward_account_id=other.id)
+    _pay_into(db_session, _rule(seed, card), other)
     db_session.commit()
     assert [_unit(i) for i in _usage(client, card, date="2026-11-10")] == [(other.id, "另一張卡", True)]
 
@@ -66,7 +72,7 @@ def test_usage_unit_other_credit_card_is_money(client, db_session, seed):
 def test_usage_unit_archived_points_account(client, db_session, seed):
     card, _ = _card_with_spends(seed, db_session)
     miles = seed.account("測試里程", is_archived=True)
-    _rule(seed, card, reward_account_id=miles.id)
+    _pay_into(db_session, _rule(seed, card), miles)
     db_session.commit()
     assert [_unit(i) for i in _usage(client, card, date="2026-11-10")] == [(miles.id, "測試里程", False)]
 
@@ -75,14 +81,14 @@ def test_usage_unit_comes_from_the_groups_first_rule(client, db_session, seed):
     card, _ = _card_with_spends(seed, db_session)
     miles = seed.account("測試里程")
     group = uuid4()
-    _rule(seed, card, name="先", shared_cap_id=group, total_cap=Decimal("100"), sort_order=0, reward_account_id=miles.id)
+    _pay_into(db_session, _rule(seed, card, name="先", shared_cap_id=group, total_cap=Decimal("100"), sort_order=0), miles)
     _rule(seed, card, name="後", shared_cap_id=group, total_cap=Decimal("100"), sort_order=1)
     db_session.commit()
     [item] = _usage(client, card, date="2026-11-10")
     assert _unit(item) == (miles.id, "測試里程", False)
 ```
 
-- [ ] **Step 2: Run them, expect FAIL** (`KeyError: 'reward_account_id'`)
+- [ ] **Step 2: Run them, expect FAIL** with `KeyError: 'reward_account_id'` at the `_unit` call (not a `TypeError` while seeding)
 
 Run: `… pytest tests/integration/test_reward_usage_api.py -k unit`
 
@@ -131,7 +137,7 @@ def test_overview_usage_ignores_filters(client, db_session, seed, monkeypatch):
     _freeze(monkeypatch)
     card = seed.account("測試卡", is_credit=True)
     miles = seed.account("測試里程")
-    seed.rule(card, name="生效", window="calendar_month", reward_account_id=miles.id)
+    seed.rule(card, name="生效", window="calendar_month").reward_account_id = miles.id
     seed.rule(card, name="過期", starts_on=date(2025, 1, 1), ends_on=date(2026, 10, 31))
     db_session.commit()
     full = client.get("/reward-rules").json()["accounts"]
@@ -188,7 +194,7 @@ Run: `… pytest tests/integration/test_reward_rules_overview.py`
 
 - [ ] **Step 4: Run the file, expect PASS, including the perf gate**
 
-Run: `… pytest tests/integration/test_reward_rules_overview.py` — all pass; `test_overview_is_grouped_not_per_rule` median < 0.5 s. If the gate fails, do not loosen it: batch the per-account `usage` work (one `_window_rows` call for all `(rule_id, window_start)` pairs) and report what changed.
+Run: `… pytest tests/integration/test_reward_rules_overview.py` — all pass; `test_overview_is_grouped_not_per_rule` median < 0.5 s. If the gate fails, do not loosen it. The fixture has no accruals, so the cost is the per-rule `_external_used` aggregate over the reward rows (`reward_engine.py:462`), not `_window_rows`: batch both — one `_external_used`-style aggregate grouped by rule id over all listed rules' windows, and one `_window_rows` call for all `(rule_id, window_start)` pairs, attributed back per shared-cap group (`_window_rows` expands groups via `_group_keys`) — keep `reward_engine.usage` itself as the per-account function `/reward-usage` uses, and add a parity test that the batched overview equals it. Report what changed.
 
 - [ ] **Step 5: Run the reward suites**
 
@@ -207,5 +213,5 @@ Run: `… pytest tests/integration/test_reward_usage_api.py tests/integration/te
 
 ## Rollout notes (outside the repo, after merge)
 
-- Hermes skill `references/accounting-api.md`: add the new fields to the `/reward-rules` and `/reward-usage` descriptions (one line each).
+- Hermes skill `~/.hermes/skills/productivity/homehub-api/references/accounting-api.md`: add the new fields to the `/reward-rules` and `/reward-usage` descriptions (one line each).
 - SPA unchanged until PR B; it ignores unknown fields.
