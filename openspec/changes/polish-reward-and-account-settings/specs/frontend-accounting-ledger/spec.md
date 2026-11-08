@@ -209,7 +209,10 @@ Tapping the row SHALL open the rule sheet. Dropping a dragged row SHALL save the
 
 ### Requirement: Entry reward section
 
-The entry detail SHALL show one 回饋 section, after the tags and debt state and before the e-invoice card, with one card per reward accrual in rule order. Reward rows generated from the entry without an accrual SHALL show as 已入帳 cards. The #306 reward-reprice card SHALL be the section's last item, with its own visibility unchanged. The section SHALL be absent when the entry has neither accruals nor reward rows.
+The entry detail SHALL show one 回饋 section with one card per reward accrual in rule order. Reward rows generated from the entry without an accrual SHALL show as 已入帳 cards. The #306 reward-reprice card SHALL be the section's last item, with its own visibility unchanged. The section SHALL be absent when the entry has neither accruals nor reward rows and is not awaiting a reward reprice (`review_reason` `reward_posted`); in that case the section holds only the reprice card.
+
+#### Scenario: Placement
+- **THEN** the 回饋 section SHALL sit after the tags and debt state and before the e-invoice card
 
 #### Scenario: Imported reward without an accrual
 - **GIVEN** an entry with a reward row imported from MOZE and no accrual
