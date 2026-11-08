@@ -545,7 +545,37 @@
 .cr-outline { stroke: var(--app-text-muted); stroke-dasharray: 5 4; stroke-width: 1.5; }
 /* The running bucket's 預估: a dashed box from the solid stack's top up to the forecast (stroke only, no url() paint). */
 .cr-forecast { fill: none; pointer-events: none; stroke: var(--app-primary); stroke-dasharray: 4 3; stroke-width: 1.5; }
-.cr-forecast-note { color: var(--app-text-muted); font-size: var(--fs-sm); margin: 6px 0 0; }
+/* The chart and its tap tip: the tip is placed in % of the drawing, which scales with the card. */
+.cr-plot { position: relative; }
+/* One transparent tap target per bucket column; the picked column is tinted. */
+.cr-hit { cursor: pointer; fill: transparent; }
+.cr-hit.picked { fill: var(--app-text); fill-opacity: 0.06; }
+.cr-hit:focus-visible { outline: none; stroke: var(--app-primary); stroke-width: 2; }
+.cr-tip {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 14%);
+  display: flex;
+  flex-direction: column;
+  font-size: var(--fs-sm);
+  gap: 2px;
+  /* tipHeight() in report-math mirrors these: 18px lines, 2px gaps, 6px vertical padding, 1px border. */
+  line-height: 18px;
+  padding: 6px 10px;
+  pointer-events: none;
+  position: absolute;
+  transform: translate(var(--tip-x, -50%), var(--tip-y, calc(-100% - 6px)));
+  white-space: nowrap;
+  z-index: 1;
+
+  &.start { --tip-x: -12px; }
+  &.end { --tip-x: calc(-100% + 12px); }
+  /* Too close to the top of the chart for the lines: hang below the anchor so the card does not clip it. */
+  &.below { --tip-y: 6px; }
+}
+.cr-tip-title { color: var(--app-text); font-weight: 700; }
+.cr-tip-key { color: var(--app-text-muted); }
 .cr-line { fill: none; stroke: var(--app-primary); stroke-linejoin: round; stroke-width: 3; }
 .cr-compare-line { fill: none; stroke: var(--app-text-muted); stroke-dasharray: 6 5; stroke-width: 2; }
 .cr-point { fill: var(--app-primary); }

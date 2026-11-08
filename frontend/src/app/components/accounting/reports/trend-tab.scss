@@ -65,11 +65,44 @@
   stroke-width: 1.5;
 }
 
-.tr-forecast-note {
-  color: var(--app-text-muted);
-  font-size: var(--fs-sm);
-  margin: 6px 0 0;
+/* The chart and its tap tip: the tip is placed in % of the drawing, which scales with the card. */
+.tr-plot { position: relative; }
+
+/* One transparent tap target per month column; the picked column is tinted. */
+.tr-hit {
+  cursor: pointer;
+  fill: transparent;
+
+  &.picked { fill: var(--app-text); fill-opacity: 0.06; }
+  &:focus-visible { outline: none; stroke: var(--app-primary); stroke-width: 2; }
 }
+
+.tr-tip {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 14%);
+  display: flex;
+  flex-direction: column;
+  font-size: var(--fs-sm);
+  gap: 2px;
+  /* tipHeight() in report-math mirrors these: 18px lines, 2px gaps, 6px vertical padding, 1px border. */
+  line-height: 18px;
+  padding: 6px 10px;
+  pointer-events: none;
+  position: absolute;
+  transform: translate(var(--tip-x, -50%), var(--tip-y, calc(-100% - 6px)));
+  white-space: nowrap;
+  z-index: 1;
+
+  &.start { --tip-x: -12px; }
+  &.end { --tip-x: calc(-100% + 12px); }
+  /* Too close to the top of the chart for the lines: hang below the anchor so the card does not clip it. */
+  &.below { --tip-y: 6px; }
+}
+
+.tr-tip-title { color: var(--app-text); font-weight: 700; }
+.tr-tip-key { color: var(--app-text-muted); }
 
 .tr-hatch line { stroke: var(--app-surface); stroke-width: 2; pointer-events: none; }
 

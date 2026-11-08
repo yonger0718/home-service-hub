@@ -51,16 +51,17 @@ import {
   BucketGranularity,
   Change,
   ReportPeriod,
+  BarTip,
   RunningForecast,
   afterTodayLine,
   baseChange,
   axisParts,
   bucketText,
   daysInMonth,
-  forecastNote,
   hatchLines,
   donutArcs,
   isRunning,
+  md,
   metricTotal as totalOf,
   n0,
   niceCeiling,
@@ -73,6 +74,8 @@ import {
   runningSuffix,
   seriesColor,
   tickLabel,
+  tipLabel,
+  tipPlacement,
   toDateNouns,
   totalChange,
   windowEmpty,
@@ -427,13 +430,61 @@ export class CustomReportComponent {
       recorded: whole ? num(whole.amount) : null,
     });
   });
-  readonly forecastNote = computed(() => {
-    const forecast = this.forecast();
-    const row = this.rows().find(candidate => this.isRunningRow(candidate));
-    if (!forecast || !row) return null;
-    const format = (value: number) => (this.config().metric === 'count' ? `${n0(value)} 筆` : dollars(value));
-    return forecastNote(this.bucketLabel(row), forecast, this.today(), format);
+
+  /** The tapped bucket (its row key); null shows no tip. A new config or period closes it. */
+  readonly picked = signal<string | null>(null);
+  /** One tap target per bucket: the whole column, so a thin phone bar is easy to hit. */
+  readonly hits = computed(() => {
+    const rows = this.rows();
+    const { plot } = this.layout();
+    const slot = plot.width / Math.max(rows.length, 1);
+    return rows.map((row, index) => ({
+      key: row.key ?? '__none__',
+      label: tipLabel(this.tipAt(index)),
+      x: (plot.left + slot * index).toFixed(1),
+      y: plot.top.toFixed(1),
+      width: slot.toFixed(1),
+      height: plot.height.toFixed(1),
+    }));
   });
+  /** The tapped bucket's figure and comparison; the running bucket shows 實際 and, on bars, 預估. */
+  readonly tip = computed<BarTip | null>(() => {
+    const key = this.picked();
+    const index = this.rows().findIndex(row => (row.key ?? '__none__') === key);
+    return index < 0 ? null : this.tipAt(index);
+  });
+
+  private tipAt(index: number): BarTip {
+    const rows = this.rows();
+    const row = rows[index];
+    const format = (value: number) => (this.config().metric === 'count' ? `${n0(value)} 筆` : dollars(value));
+    const running = this.isRunningRow(row);
+    const forecast = running && this.chart() === 'bar' ? this.forecast() : null;
+    const title = running ? `${this.bucketLabel(row)}（至 ${md(this.today(), this.today())}）` : this.bucketLabel(row);
+    const tipRows: BarTip['rows'] = running
+      ? [{ label: '實際', value: format(num(row.amount)) }]
+      : [{ label: METRIC_LABELS[this.config().metric], value: format(num(row.amount)) }];
+    if (forecast) tipRows.push({ label: '預估', value: format(forecast.value) });
+    const base = this.compareOn() ? this.baseOf(row) : null;
+    if (base !== null) tipRows.push({ label: this.compareLabel(), value: format(base) });
+    const { plot, width, height } = this.layout();
+    const slot = plot.width / Math.max(rows.length, 1);
+    // Above the bucket's total label, which sits over its highest mark (bar, comparison or 預估 box).
+    const top = Number(this.xLabels()[index].totalY) - 12;
+    return { title, rows: tipRows, ...tipPlacement(plot.left + slot * index + slot / 2, top, width, height, tipRows.length, this.scale()) };
+  }
+
+  /** The chart's rendered px per viewBox unit, read at the tap (1 where it cannot be measured). */
+  private readonly scale = signal(1);
+
+  /** A tap (or Enter / Space) on a bucket toggles its tip; a tap elsewhere on the chart closes it. */
+  pickBar(key: string, event: Event): void {
+    event.stopPropagation();
+    event.preventDefault();
+    const svg = (event.target as Element | null)?.closest?.('svg');
+    this.scale.set(svg && svg.clientWidth > 0 ? svg.clientWidth / this.layout().width : 1);
+    this.picked.update(current => (current === key ? null : key));
+  }
 
   readonly figures = computed<Figure[]>(() => {
     const rows = this.rows();
@@ -658,6 +709,7 @@ export class CustomReportComponent {
       const today = this.today();
       untracked(() => {
         this.wholeView.set(false);
+        this.picked.set(null);
         if (show) this.loadPreview(config, today);
         else this.preview.set(null);
       });

@@ -8,9 +8,10 @@ import {
   totalChange,
   asOfText,
   axisParts,
-  forecastNote,
   hatchLines,
   runningForecast,
+  tipHeight,
+  tipPlacement,
   bucketText,
   monthAverage,
   runningBucket,
@@ -426,12 +427,20 @@ describe('running forecast (solid to date, dashed 預估)', () => {
     expect(runningForecast({ toDate: 100, typical: 400, ...NOV, today: '2026-11-30' })).toBeNull();
   });
 
-  it('explains the forecast in one muted line', () => {
-    const paced = runningForecast({ toDate: 12300, typical: 36000, ...NOV, today: '2026-11-08' })!;
-    expect(forecastNote('11 月', paced, '2026-11-08', dollars)).toBe('11 月預估 $38,700 ＝ 至 11/8 $12,300 ＋ 平均 $36,000 × 剩 22/30 天');
-    const floored = runningForecast({ toDate: 12300, typical: 36000, ...NOV, today: '2026-11-08', recorded: 45000 })!;
-    expect(forecastNote('11 月', floored, '2026-11-08', dollars)).toBe('11 月預估 $45,000（含 11/8 之後已記的帳）');
-    const counted = runningForecast({ toDate: 12, typical: 30, ...NOV, today: '2026-11-08' })!;
-    expect(forecastNote('11 月', counted, '2026-11-08', (n: number) => `${n0(n)} 筆`)).toBe('11 月預估 34 筆 ＝ 至 11/8 12 筆 ＋ 平均 30 筆 × 剩 22/30 天');
+});
+
+describe('tap tip placement', () => {
+  it('hangs above the bar, and flips below when the bar reaches too close to the top for its rows', () => {
+    expect(tipPlacement(180, 120, 358, 212, 2)).toEqual({ left: 50.3, top: 56.6, align: 'center', below: false });
+    // Two rows: 3 lines × 18 + 2 gaps × 2 + padding 12 + border 2 = 72, plus the 6 it hangs off the anchor = 78.
+    expect(tipHeight(2)).toBe(72);
+    expect(tipPlacement(180, 30, 358, 212, 2)).toMatchObject({ top: 14.2, below: true });
+    expect(tipPlacement(180, 77.9, 358, 212, 2)).toMatchObject({ below: true });
+    expect(tipPlacement(180, 78, 358, 212, 2)).toMatchObject({ below: false });
+    // The threshold is in CSS px: a chart drawn at 0.7× its viewBox needs 78 / 0.7 ≈ 111 units above the anchor.
+    expect(tipPlacement(480, 100, 960, 274, 2, 0.7)).toMatchObject({ below: true });
+    expect(tipPlacement(480, 112, 960, 274, 2, 0.7)).toMatchObject({ below: false });
+    expect(tipPlacement(20, 120, 358, 212, 1)).toMatchObject({ align: 'start' });
+    expect(tipPlacement(340, 120, 358, 212, 1)).toMatchObject({ align: 'end' });
   });
 });

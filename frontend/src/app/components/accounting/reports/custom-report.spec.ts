@@ -133,7 +133,7 @@ describe('CustomReportComponent', () => {
     expect(el.querySelector('.cr-figure-foot')?.classList.contains('more')).toBe(true);
     expect(texts(el, '.cr-legend > span')).toEqual(['晚餐', '午餐', '宵夜', '去年同期']);
     // Six stacked bars of three segments plus six comparison outlines.
-    expect(el.querySelectorAll('.cr-chart rect')).toHaveLength(24);
+    expect(el.querySelectorAll('.cr-chart rect:not(.cr-hit)')).toHaveLength(24);
     expect(el.querySelectorAll('.cr-chart rect.cr-outline')).toHaveLength(6);
     expect(texts(el, '.cr-table thead th')).toEqual(['月份', '晚餐', '午餐', '宵夜', '合計', '筆數', '去年同期', '增減']);
     const rows = Array.from(el.querySelectorAll('.cr-table tbody tr'));
@@ -416,24 +416,76 @@ describe('CustomReportComponent', () => {
       expect(el.querySelector('.cr-chart .cr-x-year')).toBeNull();
     });
 
-    it('draws the running bucket solid with a dashed 預估 box on its stack, explained under the chart', async () => {
+    it('draws the running bucket solid with a dashed 預估 box on its stack, without a formula line', async () => {
       const { el } = await openRunning('previous');
       const boxes = el.querySelectorAll('.cr-chart .cr-forecast');
       expect(boxes).toHaveLength(1);
-      const bars = Array.from(el.querySelectorAll('.cr-chart rect:not(.cr-outline):not(.cr-forecast)'));
+      const bars = Array.from(el.querySelectorAll('.cr-chart rect:not(.cr-outline):not(.cr-forecast):not(.cr-hit)'));
       const november = bars.at(-1)!;
       expect(boxes[0].getAttribute('x')).toBe(november.getAttribute('x'));
       expect(Number(boxes[0].getAttribute('y')) + Number(boxes[0].getAttribute('height'))).toBeCloseTo(Number(november.getAttribute('y')), 0);
       expect(el.querySelector('.cr-chart .cr-hatch')).toBeNull();
-      // 120 + (2,137 − 120) / 5 × 23/30 = 429; the whole November read holds 180, below it.
-      expect(el.querySelector('.cr-forecast-note')?.textContent?.trim()).toBe('11 月預估 $429 ＝ 至 11/7 $120 ＋ 平均 $403 × 剩 23/30 天');
+      expect(el.querySelector('.cr-forecast-note')).toBeNull();
+      expect(el.querySelector('.cr-tip')).toBeNull();
       expect(texts(el, '.cr-legend > span')).toContain('預估');
       expect(el.querySelector('.cr-chart')?.getAttribute('aria-label')).toContain('預估 429');
     });
 
-    it('counts the forecast in 筆 for the count metric', async () => {
-      const { el } = await openRunning('previous', 'count');
-      expect(el.querySelector('.cr-forecast-note')?.textContent?.trim()).toMatch(/^11 月預估 \d+ 筆 ＝ 至 11\/7 \d+ 筆 ＋ 平均 \d+ 筆 × 剩 23\/30 天$/);
+    describe('tapping a bucket', () => {
+      const tipText = (el: HTMLElement) => Array.from(el.querySelector('.cr-tip')?.children ?? []).map(child => child.textContent!.replace(/\s+/g, ' ').trim());
+      const hit = (el: HTMLElement, index: number) => el.querySelectorAll('.cr-chart .cr-hit')[index];
+      const tap = (harness: { detectChanges(): void }, target: Element) => {
+        target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        harness.detectChanges();
+      };
+
+      it('shows the running bucket to date, its 預估 and its comparison', async () => {
+        const { harness, el } = await openRunning('previous');
+        expect(el.querySelectorAll('.cr-chart .cr-hit')).toHaveLength(6);
+        tap(harness, hit(el, 5));
+        // 120 + (2,137 − 120) / 5 × 23/30 = 429; the whole November read holds 180, below it.
+        expect(tipText(el)).toEqual(['11 月（至 11/7）', '實際 $120', '預估 $429', '上期同期 $90']);
+        expect(el.querySelector('.cr-tip')!.classList.contains('end')).toBe(true);
+      });
+
+      it('shows a finished bucket figure with its comparison, and closes on a second tap or on the background', async () => {
+        const { harness, el } = await openRunning('previous');
+        tap(harness, hit(el, 0));
+        expect(tipText(el)).toEqual(['6 月', '支出 $300', '上期同期 $250']);
+        tap(harness, hit(el, 0));
+        expect(el.querySelector('.cr-tip')).toBeNull();
+        tap(harness, hit(el, 2));
+        expect(el.querySelector('.cr-tip')).not.toBeNull();
+        tap(harness, el.querySelector('.cr-chart')!);
+        expect(el.querySelector('.cr-tip')).toBeNull();
+      });
+
+      it('names each bucket button for the keyboard and opens it with Enter', async () => {
+        const { harness, el } = await openRunning('previous');
+        expect(el.querySelector('.cr-chart')?.getAttribute('role')).toBe('group');
+        const target = hit(el, 0);
+        expect(target.getAttribute('tabindex')).toBe('0');
+        expect(target.getAttribute('aria-label')).toBe('6 月 支出 $300 上期同期 $250');
+        target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        harness.detectChanges();
+        expect(tipText(el)).toEqual(['6 月', '支出 $300', '上期同期 $250']);
+      });
+
+      it('counts in 筆 for the count metric', async () => {
+        const { harness, el } = await openRunning('previous', 'count');
+        tap(harness, hit(el, 5));
+        expect(tipText(el).slice(1, 3)).toEqual(['實際 120 筆', '預估 429 筆']);
+      });
+
+      it('has no 預估 in the whole-period view', async () => {
+        const { harness, el } = await openRunning('previous');
+        el.querySelector<HTMLButtonElement>('button.cr-after')!.click();
+        harness.detectChanges();
+        for (const request of http.match(r => r.url === BREAKDOWN)) request.flush(answer(wholeMonths([180, 3]), 2197, 22));
+        harness.detectChanges();
+        tap(harness, hit(el, 5));
+        expect(tipText(el)).toEqual(['11 月', '支出 $180']);
+      });
     });
 
     it('drops the forecast in the whole-period view', async () => {

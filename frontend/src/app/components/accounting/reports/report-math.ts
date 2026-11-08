@@ -567,12 +567,40 @@ export function runningForecast(input: { toDate: number; typical: number | null;
   return { value: Math.round(floored ? recorded : paced), toDate, typical: Math.round(typical), after, days, floored };
 }
 
-/** `11 月預估 $38,700 ＝ 至 11/8 $12,300 ＋ 平均 $36,000 × 剩 22/30 天`; `11 月預估 $45,000（含 11/8 之後已記的帳）` when floored. */
-export function forecastNote(label: string, forecast: RunningForecast, today: string, format: (value: number) => string): string {
-  const head = `${label}預估 ${format(forecast.value)}`;
-  const day = md(today, today);
-  if (forecast.floored) return `${head}（含 ${day} 之後已記的帳）`;
-  return `${head} ＝ 至 ${day} ${format(forecast.toDate)} ＋ 平均 ${format(forecast.typical)} × 剩 ${forecast.after}/${forecast.days} 天`;
+/** A tapped bar's figures, floated over the chart: anchored at `left` / `top` (% of the drawing), hanging off its anchor. */
+export interface BarTip {
+  title: string;
+  rows: { label: string | null; value: string }[];
+  left: number;
+  top: number;
+  /** `start`: the tip's left edge sits on the anchor (first bars); `end`: its right edge (last bars); else centred. */
+  align: 'start' | 'center' | 'end';
+  /** Too little room above the anchor for the tip's lines: it hangs below the anchor instead. */
+  below: boolean;
+}
+
+/**
+ * Where a tip with a title and `rows` lines sits over a `width` × `height` drawing for a bar centred at `cx` whose
+ * highest mark is at `top`: above the mark, or below it when the lines would not fit above. `scale` is the drawing's
+ * rendered px per viewBox unit (the tip's height is in px).
+ */
+export function tipPlacement(cx: number, top: number, width: number, height: number, rows: number, scale = 1): Pick<BarTip, 'left' | 'top' | 'align' | 'below'> {
+  const align = cx < width * 0.2 ? 'start' : cx > width * 0.8 ? 'end' : 'center';
+  const anchor = Math.max(top, 0);
+  // The tip's box, pinned by its CSS: (title + rows) lines of 18px, 2px gaps between them, 6px padding and 1px border
+  // on each side, plus the 6px it hangs off the anchor.
+  const needed = tipHeight(rows) + 6;
+  return { left: Math.round((cx / width) * 1000) / 10, top: Math.round((anchor / height) * 1000) / 10, align, below: anchor * scale < needed };
+}
+
+/** The rendered height of a tip with a title and `rows` lines; the `.tr-tip` / `.cr-tip` CSS pins each term. */
+export function tipHeight(rows: number): number {
+  return (rows + 1) * 18 + rows * 2 + 2 * 6 + 2 * 1;
+}
+
+/** A tip read as one accessible name: `2026 年 11 月（至 11/7） 實際 $4,233 預估 $33,034`. */
+export function tipLabel(tip: Pick<BarTip, 'title' | 'rows'>): string {
+  return [tip.title, ...tip.rows.map(row => (row.label ? `${row.label} ${row.value}` : row.value))].join(' ');
 }
 
 /**
