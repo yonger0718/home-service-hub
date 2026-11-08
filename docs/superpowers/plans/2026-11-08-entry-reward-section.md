@@ -68,10 +68,10 @@ Styles (on `.rst[data-state=…]`, pill shape like `.tag`: inline-flex, gap 4px,
 
 - [ ] **Step 1: Write the failing tests** (host component pattern as in `ui/tag/tag.spec.ts`)
   - `renders the label and data-state for each state`: for each of the four states, `.rst` text is the label above and `getAttribute('data-state')` is the state.
-  - `gives every state its own icon`: the four `svg path` `d` attributes are the four paths above (all distinct); the `svg` has `aria-hidden="true"`.
+  - `gives every state its own icon`: the four `svg path` `d` attributes are the four paths above (all distinct); the `svg` has `aria-hidden="true"`, `fill="none"` and `stroke="currentColor"` (a line icon, not a filled shape).
   - `is announced by its label only`: the tag's accessible text (`textContent.trim()`) equals the label (the icon adds no text).
 - [ ] **Step 2: Run** `npx ng test --watch=false --include='src/app/components/ui/reward-state-tag/*.spec.ts'` — FAIL (module missing).
-- [ ] **Step 3: Implement** the component (template: `<span class="rst" [attr.data-state]="state()"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path [attr.d]="path()" /></svg>{{ label() }}</span>`, `OnPush`).
+- [ ] **Step 3: Implement** the component (template: `<span class="rst" [attr.data-state]="state()"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path [attr.d]="path()" /></svg>{{ label() }}</span>`, `OnPush`).
 - [ ] **Step 4: Run** the same command — PASS.
 - [ ] **Step 5: Commit** `feat(spa): RewardStateTag for accrual states (#323)`
 
@@ -128,6 +128,7 @@ Fake formatter for the tests: `const text: RewardAmountText = (v, id, name, _c, 
   - `bank_confirmed with another figure` (amount `'13'`, estimate `'13'`, ledger_amount `'12'`) → amount `+$12`, was `$13`, line `銀行實際給 $12`.
   - `bank_confirmed from an older API without ledger_amount` (field deleted from the fixture) → amount `+$13`, line `與帳單相符`.
   - `forfeited by the statement` (amount `'10'`, estimate `'10'`, ledger_entry_id 502, ledger_amount `'0'`) → amount `$10`, was null, line `帳單上沒有這筆回饋`.
+  - `forfeited by the statement prints the capped amount, not the estimate` (estimate `'64'`, amount `'20'`, ledger_entry_id 503, ledger_amount `'0'`) → amount `$20`, line `帳單上沒有這筆回饋`.
   - `forfeited past the cap` (estimate `'8'`, amount `'0'`, no row) → amount `$8`, line `本期上限已用完`.
   - `forfeited after the row was deleted` (amount `'13'`, no row) → amount `$13`, line `回饋記錄已刪除，不會入帳`.
   - `points in every figure` (reward_account_id 99, name `亞洲萬里通`, estimate `'150'`, amount `'120'`) → amount `+120 亞洲萬里通`, was `150 亞洲萬里通`, line `算出 150 亞洲萬里通，本期上限只剩 120 亞洲萬里通`.
@@ -155,7 +156,7 @@ Styles are view-encapsulated, so the section declares its own `.dsec` rule, copi
 
 Section markup: `@if (visible())` where `visible = cards().length > 0 || detail().review_reason === REWARD_POSTED`; `<div class="dsec">回饋</div>`, then one `<article class="reward-card" [attr.data-state]="card.state">` per card:
 - line 1: `<b class="reward-name">` + `<app-reward-state-tag [state]="card.state" />`;
-- line 2: `<span class="reward-amount">` (forfeited: `--app-text-muted` + `text-decoration: line-through`; else `var(--tone-pos, var(--c-green))`, the old `.pos` colour), and `<s class="reward-was">` when `was`;
+- line 2: the amount — for forfeited an `<s class="reward-amount">` (semantic strike; `--app-text-muted`), else `<span class="reward-amount">` in `var(--tone-pos, var(--c-green))`, the old `.pos` colour — and `<s class="reward-was">` when `was`;
 - line 3: `<p class="reward-note">{{ card.line }}</p>`, and for `link` a `<a class="reward-link" [routerLink]="['/accounting/entries', card.link]">看回饋記錄 ›</a>`;
 then `<ng-content />`.
 
@@ -176,6 +177,7 @@ Ruling (spec gap): the section also shows for a `reward_posted` entry with no ca
   - `shows an imported reward row as a posted card`: no accruals, one reward row → one card tagged `已入帳` with its amount and date.
   - `keeps the reprice card as the section's last item and reloads after 重算 (#306)`: the existing #306 test, plus `section.lastElementChild` is (or contains) `app-entry-reward-reprice-card`.
   - `keeps the reprice card for a reward_posted entry without accruals or rows`: `review_reason: 'reward_posted'`, empty lists → section present, reprice card rendered.
+  - `strikes the expected figure on a forfeited card`: one forfeited accrual (amount `'13'`, no row) → the card's amount element is an `S` element (`tagName === 'S'`) with text `$13`, and the line `回饋記錄已刪除，不會入帳`.
   - `has no 回饋 section without accruals, reward rows or a reward_posted review`.
   - `places the section after the debt state and before the e-invoice card`: in DOM order, `app-entry-reward-section` follows the debt block and precedes `app-entry-einvoice-card`.
 - [ ] **Step 2: Run** `npx ng test --watch=false --include='src/app/components/accounting/entry-detail/*.spec.ts'` — new tests FAIL.
@@ -189,8 +191,9 @@ Ruling (spec gap): the section also shows for a `reward_posted` entry with no ca
 
 **Files:**
 - Modify: `openspec/changes/polish-reward-and-account-settings/tasks.md` (tick 5.1–5.3; under 2.1/2.3 note the tag half done in PR D)
+- Modify: `openspec/changes/polish-reward-and-account-settings/specs/frontend-accounting-ledger/spec.md` — requirement "Entry reward section": the absence sentence becomes 「The section SHALL be absent when the entry has neither accruals nor reward rows and is not awaiting a reward reprice (`review_reason` `reward_posted`); in that case the section holds only the reprice card.」 Also note the ruling in design D7 (one sentence after the reprice-card paragraph).
 - Evidence: `~/reports/home-hub-entry-reward-section-<TS>/` (700/600), not in the repo
 
 - [ ] **Step 1:** Dev build (`npx ng build --configuration development`), rsync `dist/inventory-ui/browser/` to the preview dir, start the 18081 preview, and capture with the Playwright container at 390 / 820 / 1440, light and dark, an entry with the four states (stub data: fictional names/amounts). Check by eye against `RewardStatesSpec.dc.html`: dashed 預估 border visible, icons visible in a greyscale copy (`convert -colorspace Gray`), struck figures, link row.
 - [ ] **Step 2:** Stop the preview (by PID). `openspec validate polish-reward-and-account-settings --strict` — valid.
-- [ ] **Step 3: Commit** `docs(openspec): tick #323 PR D tasks`
+- [ ] **Step 3: Commit** `docs(openspec): tick #323 PR D tasks, reprice host exception`
