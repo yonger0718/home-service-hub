@@ -313,3 +313,14 @@ def test_refund_larger_than_spend_stays_signed(client, ledger):
     assert transport["amount"] == "-200.0000"
     assert Decimal(transport["refund"]) == Decimal("300")
     assert transport["count"] == 2
+
+
+def test_inverted_amount_range_422(client, ledger):
+    """#254: amount_min > amount_max is refused instead of answering an empty report; equal bounds stay valid."""
+    inverted = client.get("/reports/breakdown", params={**OCTOBER, "group_by": "category",
+                                                        "amount_min": "-100", "amount_max": "-500"})
+    assert inverted.status_code == 422
+    assert "amount_min must not exceed amount_max" in inverted.text
+    equal = client.get("/reports/breakdown", params={**OCTOBER, "group_by": "category",
+                                                     "amount_min": "-100", "amount_max": "-100"})
+    assert equal.status_code == 200
