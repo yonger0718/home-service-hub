@@ -95,12 +95,15 @@ describe('CustomReportComponent', () => {
   }
 
   /** Answers every pending breakdown read (a running period asks for several) and returns the first one's query. */
-  function answerPreview(): BreakdownQuery {
+  function answerPreviews(expected: number): BreakdownQuery[] {
     const requests = http.match(r => r.url === BREAKDOWN);
-    expect(requests.length).toBeGreaterThan(0);
+    expect(requests).toHaveLength(expected);
     const queries = requests.map(queryOf);
     requests.forEach((request, index) => request.flush(sampleBreakdown(queries[index])));
-    return queries[0];
+    return queries;
+  }
+  function answerPreview(expected = 1): BreakdownQuery {
+    return answerPreviews(expected)[0];
   }
 
   it('opens 週末外食 with its config resolved as of today, and previews figures, chart and table', async () => {
@@ -143,10 +146,14 @@ describe('CustomReportComponent', () => {
   it('rolls the relative period forward: opened on 2026-12-02 it covers July to December', async () => {
     vi.setSystemTime(new Date(2026, 11, 2, 9, 0));
     const { harness } = await open('/accounting/reports/custom/1');
-    const query = answerPreview();
+    const queries = answerPreviews(3);
     harness.detectChanges();
-    // The period runs (July 1 – December 31): the first read is cut at today, the second one covers it all.
-    expect([query.date_from, query.date_to]).toEqual(['2026-07-01', '2026-12-02']);
+    // The period runs (July 1 – December 31): the first read is cut at today, the second one covers it all, the third is December 1–2's base.
+    expect(queries.map(q => [q.date_from, q.date_to, q.compare])).toEqual([
+      ['2026-07-01', '2026-12-02', 'last_year'],
+      ['2026-07-01', '2026-12-31', undefined],
+      ['2026-11-01', '2026-11-02', undefined],
+    ]);
   });
 
   it('saves with PUT, saves a copy with POST and opens it, deletes after a second tap', async () => {
@@ -228,7 +235,7 @@ describe('CustomReportComponent', () => {
 
   it('offers 圓環 for a single dimension and re-runs the preview when a condition changes', async () => {
     const { harness, el } = await open('/accounting/reports/custom/2');
-    answerPreview();
+    answerPreview(2);
     harness.detectChanges();
     const charts = Array.from(el.querySelectorAll<HTMLButtonElement>('.cr-chart-seg button'));
     expect(charts[2].getAttribute('aria-disabled')).toBeNull();
@@ -242,7 +249,7 @@ describe('CustomReportComponent', () => {
     split.value = 'category';
     split.dispatchEvent(new Event('change'));
     harness.detectChanges();
-    const query = answerPreview();
+    const query = answerPreview(2);
     harness.detectChanges();
     expect(query.split_by).toBe('category');
     // The donut no longer fits: the chart falls back to bars.
@@ -251,7 +258,7 @@ describe('CustomReportComponent', () => {
 
     button(el, '.cr-chip button', '✕').click();
     harness.detectChanges();
-    expect(answerPreview().category_id).toBeUndefined();
+    expect(answerPreview(2).category_id).toBeUndefined();
   });
 
   it('takes 合計 and its comparison from totals, and notes overlapping tag rows under the row sum', async () => {
@@ -457,5 +464,73 @@ describe('CustomReportComponent', () => {
   it('words the 另有 line without an amount for the count metric', async () => {
     const { el } = await openRunning('previous', 'count');
     expect(el.querySelector('.cr-after')?.textContent?.trim()).toBe('另有 11/7 之後已記的 1 筆未計入');
+  });
+
+  // ---- fix round 1 ---------------------------------------------------------------------------------------------------
+
+  const thirdRead = (queries: BreakdownQuery[]) => queries.filter(q => !q.compare)[1] ?? null;
+
+  it('clips the running base to the period: this month by week on a Thursday reads 11/24–11/26', async () => {
+    vi.setSystemTime(new Date(2026, 11, 3, 10, 0));
+    const { harness } = await open('/accounting/reports/custom/1', 'panes', reportWith({ period: { preset: 'this_month' }, group_by: 'week', compare: 'previous' }));
+    const queries = answerPreviews(3);
+    harness.detectChanges();
+    expect([thirdRead(queries)!.date_from, thirdRead(queries)!.date_to, thirdRead(queries)!.split_by]).toEqual(['2026-11-24', '2026-11-26', undefined]);
+  });
+
+  it('reads a running week against the 7 days before it, and labels it', async () => {
+    vi.setSystemTime(NOV7);
+    const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ period: { preset: 'this_month' }, group_by: 'week', compare: 'previous' }));
+    const requests = http.match(r => r.url === BREAKDOWN);
+    const queries = requests.map(queryOf);
+    expect(queries).toHaveLength(3);
+    expect([queries[2].date_from, queries[2].date_to]).toEqual(['2026-10-26', '2026-10-31']);
+    requests[0].flush(answer([row('2026-10-26', 80, 1, 70), row('2026-11-02', 120, 2, 999)], 200, 3, { total: 170, count: 3 }));
+    requests[1].flush(answer([row('2026-10-26', 80, 1), row('2026-11-02', 120, 2)], 200, 3));
+    requests[2].flush(answer([row('2026-10-26', 100, 2)], 100, 2));
+    harness.detectChanges();
+    const rows = Array.from(el.querySelectorAll('.cr-table tbody tr'));
+    expect(texts(rows[1], 'th')).toEqual(['11/2 週 進行中（至 11/7）']);
+    expect(texts(rows[1], 'td')).toEqual(['120', '2', '100', '▲ 20']);
+  });
+
+  it('clips a custom range that starts mid-month: 11/5–11/30 on 11/7 reads against 10/5–10/7', async () => {
+    vi.setSystemTime(NOV7);
+    const { harness } = await open('/accounting/reports/custom/1', 'panes', reportWith({ period: { from: '2026-11-05', to: '2026-11-30' }, group_by: 'month', compare: 'previous' }));
+    const queries = answerPreviews(3);
+    harness.detectChanges();
+    expect([thirdRead(queries)!.date_from, thirdRead(queries)!.date_to]).toEqual(['2026-10-05', '2026-10-07']);
+  });
+
+  it('keeps the compare.totals base for a month report split by tag', async () => {
+    const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ split_by: 'tag', compare: 'last_year' }));
+    const request = http.expectOne(r => r.url === BREAKDOWN);
+    request.flush(answer([row('2026-09-01', 300, 3, 200), row('2026-10-01', 400, 4, 300)], 700, 7, { total: 700, count: 6 }));
+    harness.detectChanges();
+    const total = Array.from(el.querySelectorAll('.cr-table tbody tr')).at(-1)!;
+    expect(texts(total, 'td').slice(-2)).toEqual(['700', '—']);
+  });
+
+  it('keeps 另有 reachable when nothing is dated up to today', async () => {
+    vi.setSystemTime(NOV7);
+    const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ compare: undefined }));
+    const requests = http.match(r => r.url === BREAKDOWN);
+    expect(requests).toHaveLength(2);
+    requests[0].flush(answer([], 0, 0));
+    requests[1].flush(answer([row('2026-11-01', 180, 2)], 180, 2));
+    harness.detectChanges();
+    expect(el.querySelector('.cr-preview .cr-note')?.textContent?.trim()).toBe('這些條件下沒有記錄');
+    const after = el.querySelector<HTMLButtonElement>('.cr-after')!;
+    expect(after.textContent?.trim()).toBe('另有 11/7 之後已記的 2 筆 $180 未計入');
+    after.click();
+    harness.detectChanges();
+    expect(texts(el, '.cr-table tbody th')[0]).toBe('11 月');
+  });
+
+  it('leaves the running bucket out of 平均 in the whole view too', async () => {
+    const { harness, el } = await openRunning('previous');
+    el.querySelector<HTMLButtonElement>('.cr-after')!.click();
+    harness.detectChanges();
+    expect(texts(el, '.cr-figure')[1]).toBe('平均每月 $403 5 組');
   });
 });

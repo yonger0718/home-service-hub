@@ -229,6 +229,7 @@
     <p class="cr-note">計算中</p>
   } @else if (!figures().length) {
     <p class="cr-note">這些條件下沒有記錄</p>
+    @if (afterToday(); as after) { <button type="button" class="cr-after" (click)="wholeView.set(!wholeView())">{{ after }}</button> }
   } @else {
     <div class="cr-figures">
       @for (figure of figures(); track figure.label) {

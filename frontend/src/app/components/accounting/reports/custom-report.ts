@@ -54,7 +54,6 @@ import {
   baseChange,
   bucketText,
   change,
-  compareRange,
   donutArcs,
   isRunning,
   n0,
@@ -62,6 +61,7 @@ import {
   num,
   pct1,
   runningBucket,
+  shiftDate,
   runningSuffix,
   seriesColor,
   tickLabel,
@@ -369,7 +369,8 @@ export class CustomReportComponent {
     const byMonth = this.config().group_by === 'month';
     const diff = compareTotal !== null ? change(total, compareTotal, true) : null;
     // 平均每月 / 平均每組 leave the running bucket out of the sum and the count.
-    const running = rows.find(row => this.isRunningRow(row));
+    const skip = this.running() ? runningBucketStart(this.config().group_by, this.today()) : null;
+    const running = skip ? rows.find(row => row.key !== null && row.key !== '__other__' && bucketStart(row.key, this.config().group_by) === skip) : undefined;
     const averaged = rows.length - (running ? 1 : 0);
     const averagedTotal = running ? total - num(running.amount) : total;
     return [
@@ -505,7 +506,7 @@ export class CustomReportComponent {
     };
     const body = rows.map(row => ({ label: this.rowLabel(row), total: false, cells: cells(this.seriesValues(row), num(row.amount), row.count, compare ? this.baseOf(row) : null, this.emptyBase(row)), running: this.isRunningRow(row) }));
     const seriesTotals = keys.map((_, k) => rows.reduce((sum, row) => sum + this.seriesValues(row)[k], 0));
-    return [...body, { label: '合計', total: true, cells: cells(seriesTotals, this.metricTotal(), this.rowCount(), this.overlapping() ? this.compareRowTotal() : (this.compareTotal() ?? this.compareRowTotal())) }];
+    return [...body, { label: '合計', total: true, cells: cells(seriesTotals, this.metricTotal(), this.rowCount(), this.config().group_by === 'tag' ? this.compareRowTotal() : (this.compareTotal() ?? this.compareRowTotal())) }];
   });
 
   // ---- phone: 編輯條件 sheet -----------------------------------------------------------------------------------
@@ -574,6 +575,7 @@ export class CustomReportComponent {
     const id = ++this.previewRequestId;
     this.previewState.set('loading');
     const query = configQuery(config, today);
+    const period = resolvePeriod(config.period, today);
     const fail = () => {
       if (id !== this.previewRequestId) return;
       this.preview.set(null);
@@ -581,7 +583,7 @@ export class CustomReportComponent {
       this.runningBase.set(null);
       this.previewState.set('error');
     };
-    if (!isRunning(resolvePeriod(config.period, today), today)) {
+    if (!isRunning(period, today)) {
       this.reports.getBreakdown(query).subscribe({
         next: preview => {
           if (id !== this.previewRequestId) return;
@@ -597,12 +599,15 @@ export class CustomReportComponent {
     }
     // D1: the to-date read, the whole period (no comparison) for 「另有…」, and with a comparison on a month or week
     // report the previous bucket's same days (R2) for the running bucket's change.
-    const start = config.compare ? runningBucketStart(config.group_by, today) : null;
-    const baseWindow = start ? (config.group_by === 'month' ? compareRange(start, today, 'previous') : { from: addDays(start, -7), to: addDays(today, -7) }) : null;
+    // The base covers the same days as the running bucket's visible part: s = max(bucket start, period start), moved
+    // back one calendar month (day clipped) or seven days.
+    const bucket = config.compare ? runningBucketStart(config.group_by, today) : null;
+    const s = bucket && bucket < period.from ? period.from : bucket;
+    const baseWindow = s ? (config.group_by === 'month' ? { from: shiftDate(s, -1), to: shiftDate(today, -1) } : { from: addDays(s, -7), to: addDays(today, -7) }) : null;
     forkJoin({
       toDate: this.reports.getBreakdown({ ...query, date_to: today }),
       whole: this.reports.getBreakdown({ ...query, compare: undefined }),
-      base: baseWindow ? this.reports.getBreakdown({ ...query, date_from: baseWindow.from, date_to: baseWindow.to, group_by: config.group_by, compare: undefined }) : of(null),
+      base: baseWindow ? this.reports.getBreakdown({ ...query, date_from: baseWindow.from, date_to: baseWindow.to, split_by: undefined, compare: undefined }) : of(null),
     }).subscribe({
       next: ({ toDate, whole, base }) => {
         if (id !== this.previewRequestId) return;
