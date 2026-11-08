@@ -6,7 +6,7 @@
 
 **Architecture:** SPA only (the API shipped in #342: `usage`, `icon`, `logo`, `logo_hash`, `closing_day` on each overview account; `reward_account_id` / `reward_account_name` / `reward_is_money` on each usage row). A reusable `CapBar` goes to `components/ui/cap-bar` (PR C reuses it in account settings). Pure text helpers go to `reward-rule-text.ts`; the overview component builds view models from the one `GET /reward-rules` response.
 
-**Depends on:** PR A2 (`docs/superpowers/plans/2026-11-08-reward-cash-equivalent.md`, branch `feat/reward-cash-equivalent`) for the amended spec copy; no API dependency (the field set is unchanged).
+**Depends on:** PR A2 (`docs/superpowers/plans/2026-11-08-reward-cash-equivalent.md`, branch `feat/reward-cash-equivalent`) for the amended spec copy (header `＋ N 種點數`, upcoming line); rebase onto main after A2 merges; no API dependency (the field set is unchanged).
 
 **Tech Stack:** Angular 21 standalone components with signals, vitest via `ng test`, SCSS tokens from `src/styles.scss`.
 
@@ -20,9 +20,9 @@
   - chips `全部 N` `生效中 N` `已停用 N` `已過期 N` `未開始 N`, checkbox `含已封存帳戶`, back link `‹ 記帳設定`, title `回饋規則`;
   - summary `N 張卡 · M 條規則 · 本期回饋合計 $X（含預估）`, then ` ＋ N 種點數` where N = distinct `reward_account_id`s among the shown cards' non-money usage rows (omitted when 0; owner ruling 2026-11-08, spec amended by PR A2);
   - window line `結帳日 25 號 · 本期 10/26–11/25`; calendar `每月 1 日起算 · 本月 11/1–11/30`; mixed windows: `結帳日 25 號` only and each rule row gets `本期 11/1–11/30`;
-  - card total label `本期回饋（含預估）`; footer `近 12 個月 N 筆 · 已入帳 M 筆` and link `＋ 新增規則`;
+  - card total label `本期回饋（含預估）`; footer `近 12 個月 N 筆` and link `＋ 新增規則`;
   - bar `$193 / $200 · 快到上限`, `$64 / $500 · 剩 $436`; no cap `無上限 · 本期 $X 已入帳 + $Y 預估`; aria `本期已入帳 $X，預估 $Y，上限 $Z`;
-  - inactive lines `停用中，不估算回饋` (disabled), `已結束，不再估算` (expired), `2027/1/1 開始` (upcoming: `fullDate(starts_on)` + ` 開始`; `slashDate` zero-pads, so not that);
+  - inactive lines `停用中，不估算回饋` (disabled), `已結束，不再估算` (expired), `2027/1/1 起才估算` (upcoming: `fullDate(starts_on)` + ` 起才估算`; `slashDate` zero-pads, so not that) — the upcoming line is written into the spec by PR A2 (AGENT-465 finding 1: D3 named only the first two; the artboard's 停用中 would call an enabled rule disabled);
   - banner `N 條規則已過期但仍啟用，之後的消費不會再估算回饋` with button `只看已過期`;
   - bare chips row label `沒有規則的卡片`.
 - **State labels:** `RULE_STATE_LABELS` becomes `生效中 / 已停用 / 已過期 / 未開始` (the spec's words; account settings shows the same map).
@@ -94,7 +94,7 @@ describe('overview text helpers', () => {
 
 - [ ] **Step 2: Run** `npx ng test --watch=false --include='src/app/components/accounting/reward-rule-text.spec.ts'` — FAIL (missing exports).
 - [ ] **Step 3: Implement** the Interfaces above. Update the account-settings spec assertions from `啟用中 / 已到期 / 尚未開始` to `生效中 / 已過期 / 未開始` (badge behaviour unchanged).
-- [ ] **Step 4: Run** the two spec files (`reward-rule-text.spec.ts`, `account-settings/account-settings.spec.ts`) — PASS.
+- [ ] **Step 4: Run** the three spec files (`reward-rule-text.spec.ts`, `account-settings/account-settings.spec.ts`, `reward-rules/reward-rules.spec.ts` — its badge assertion ~127 reads the constant; update it here so the Task 1 commit is green) — PASS.
 - [ ] **Step 5: Commit** `feat(reward-rules-spa): usage unit and overview text helpers (#323 D1a)`
 
 ---
@@ -147,10 +147,11 @@ Behaviour (spec + D3; decisions marked *ruling*):
 - Header: `‹ 記帳設定` link (`leavePage` to `/accounting/settings`, at every width — replaces the phone-only ‹ button), `<h1>回饋規則</h1>`, headline. `N 張卡` = cards shown; `M 條規則` = `counts` total; money total = Σ `used + estimated` over money usage rows of the shown cards; then ` ＋ N 種點數` (distinct non-money `reward_account_id`s). Units come only from `reward_is_money`, which PR A2 widens to `cash_equivalent` accounts — no SPA logic for it here.
 - Banner when `counts.enabled_expired > 0 && filter !== 'expired'`: `role="status"`, copy above, `只看已過期` → `setFilter('expired')`.
 - Grid: `display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr))`.
-- A card per account with ≥ 1 listed rule, in response order: icon, name (+ `（已封存）`), window line (Global Constraints; built from `closing_day` and the usage rows — calendar when every usage row's rule is `calendar_month`, mixed when the rows' `window_start`s differ; no usage rows → `結帳日 N 號` or nothing), right side the card total per unit (money part, then each points part; `$0` when there are no usage rows) over `本期回饋（含預估）`.
+- A card per account with ≥ 1 listed rule, in response order: icon, name (+ `（已封存）`), window line (Global Constraints; built from `closing_day` and the usage rows — mixed when the rows' `(window_start, window_end)` pairs differ (a statement cycle and a calendar month can share a start, AGENT-465 finding 2); otherwise calendar when every usage row is calendar — its first listed rule (`rule_ids`) has `calendar_month`, or, when none of its rules is listed (a `?state=` filter hides active rules, while `usage` ignores the filter), its window is a whole calendar month (*ruling*: the row carries no `calendar_month`; a 月底 statement cycle reads as calendar, which shows the same dates); no usage rows → `結帳日 N 號` or nothing), right side the card total per unit (money part, then each points part; `$0` when there are no usage rows) over `本期回饋（含預估）`.
 - Rule row (`<a>` to settings `?rule=<id>`, as today): `ruleTitle`, rate chip `rateChip`, state tag only when `state !== 'active'` or `is_basic` (`基本`), posting summary right-aligned; then for an active rule with a usage row (`usage.find(u => u.rule_ids.includes(rule.id))`): `<app-cap-bar>` with that row's figures and `usageUnit` (cap null → CapBar's no-cap line); active rule without a usage row: nothing; inactive: the muted line (Global Constraints) and the row at `opacity: .7`; mixed windows: the row's own `本期 M/D–M/D` under it.
-- Footer: `近 12 個月 N 筆 · 已入帳 M 筆` (*ruling*: Σ `stats.linked_entries_12m` and Σ `stats.rewards_count` over the listed rules — the artboard's `回饋 $X` is dropped because `stats.rewards_total` is all-time and in the reward account's currency, so it is neither 12-month nor unit-safe) and `＋ 新增規則` → settings `?rule=new`.
+- Footer: `近 12 個月 N 筆` (*ruling*: Σ `stats.linked_entries_12m` over the listed rules; `stats.rewards_count` is all-time like `rewards_total`, AGENT-465 finding 3, so neither is shown — the artboard's `回饋 $X` is dropped because `stats.rewards_total` is all-time and in the reward account's currency, so it is neither 12-month nor unit-safe) and `＋ 新增規則` → settings `?rule=new`.
 - Bare chips (filter `all` only): accounts with `is_credit && rules.length === 0`, one dashed row labelled `沒有規則的卡片`, each chip `<a>` to settings `?rule=new` with `name ＋`.
+- 含已封存帳戶: a checkbox after the chips, bound to `?archived=1` → `include_archived_accounts=true` on the request, as today (`reward-rules.ts` ~67–103; AGENT-465 finding 4).
 - Loading / error: keep `aria-busy` and the `role="alert"` error line.
 
 - [ ] **Step 1: Failing tests** (one `it` each; fixtures via the existing HTTP mock, fictional cards):
@@ -164,7 +165,11 @@ Behaviour (spec + D3; decisions marked *ruling*):
   - `mixed units`: card total `$64 ＋ 300 測試里程`, headline money total excludes points and ends with `＋ 1 種點數`; two points accounts → `＋ 2 種點數`;
   - `bare chips`: only under 全部, only credit accounts with no rules, link `?rule=new`;
   - `expired banner`: shown with count, hidden under `state=expired`, button sets `state=expired`;
-  - `footer`: `近 12 個月 N 筆 · 已入帳 M 筆`, `＋ 新增規則` → `?rule=new`;
+  - `footer`: `近 12 個月 N 筆`, `＋ 新增規則` → `?rule=new`;
+  - `upcoming rule`: row dimmed, `2027/1/1 起才估算`, no bar;
+  - `same start, different end` (statement 3/1–3/30 and calendar 3/1–3/31 on one card): header `結帳日 30 號`, each row its own `本期`;
+  - `calendar rows hidden by the filter` (`?state=expired`, the active calendar rule not listed, its usage row 11/1–11/30): window line `每月 1 日起算 · 本月 11/1–11/30`;
+  - `archived checkbox`: ticking it re-requests with `include_archived_accounts=true` and sets `?archived=1` (kept from today's spec);
   - `back link` `‹ 記帳設定` at desktop width.
 - [ ] **Step 2: Run** `--include='src/app/components/accounting/reward-rules/reward-rules.spec.ts'` — FAIL.
 - [ ] **Step 3: Implement** (component signals `cards`, `bare`, `headline`, `chipCounts`; template per the artboard; SCSS from tokens, light and dark via existing variables only).
