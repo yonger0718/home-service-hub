@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>回饋規則總覽 · 桌面</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="min-height: 100vh; display: flex; flex-wrap: wrap; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500">
+
+  <aside aria-label="主要導覽" style="flex: 0 0 72px; box-sizing: border-box; background: {{t.glass}}; border-right: 1px solid {{t.border}}; padding: 18px 0; display: flex; flex-direction: column; align-items: center; gap: 6px">
+    <a href="#" aria-label="Home Hub 首頁" style="width: 36px; height: 36px; border-radius: 12px; background: {{t.accent}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{t.onAccent}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7 M5 10v10h14V10"></path></svg>
+    </a>
+    <nav style="display: flex; flex-direction: column; align-items: center; gap: 4px">
+      <sc-for list="{{railGroups}}" as="g" hint-placeholder-count="3">
+        <div style="width: 32px; height: 1px; background: {{t.border}}; margin: 6px 0"></div>
+        <sc-for list="{{g.items}}" as="item" hint-placeholder-count="3">
+          <a href="{{item.href}}" aria-label="{{item.label}}" title="{{item.label}}" aria-current="{{item.current}}" style="width: 44px; height: 40px; border-radius: 12px; background: {{item.bg}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{item.fg}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{item.icon}}"></path></svg>
+          </a>
+        </sc-for>
+      </sc-for>
+    </nav>
+  </aside>
+
+  <main style="flex: 999 1 560px; min-width: 0; box-sizing: border-box; padding: 24px 32px 48px">
+    <div style="max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px">
+
+      <header style="display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px">
+        <div style="display: flex; flex-direction: column; gap: 4px">
+          <a href="#" style="font-size: 13px; font-weight: 700; color: {{t.muted}}; text-decoration: none">‹ 記帳設定</a>
+          <h1 style="margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.03em">回饋規則</h1>
+          <span style="font-size: 13px; color: {{t.muted}}">{{headline}}</span>
+        </div>
+        <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px">
+          <div role="group" aria-label="規則狀態" style="display: flex; flex-wrap: wrap; gap: 6px">
+            <sc-for list="{{filters}}" as="f" hint-placeholder-count="5">
+              <button type="button" aria-pressed="{{f.pressed}}" onClick="{{f.pick}}" style="min-height: 36px; padding: 0 12px; border-radius: 999px; border: 1px solid {{f.border}}; background: {{f.bg}}; color: {{f.fg}}; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer">{{f.label}}</button>
+            </sc-for>
+          </div>
+          <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: {{t.muted}}">
+            <input type="checkbox" style="width: 16px; height: 16px; accent-color: {{t.primary}}">
+            含已封存帳戶
+          </label>
+        </div>
+      </header>
+
+      <sc-if value="{{showCallout}}" hint-placeholder-val="{{true}}">
+        <div role="status" style="display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 14px; background: {{t.warnSoft}}; color: {{t.text}}">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{t.warnInk}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l10 18H2L12 3z M12 10v5 M12 18h.01"></path></svg>
+          <span style="flex: 1; font-size: 14px"><b style="color: {{t.warnInk}}">1 條規則已過期但仍啟用</b> · 台新 @GoGo 卡「2025 新戶加碼」在 2025/12/31 結束，之後的消費不會再估算回饋。</span>
+          <button type="button" onClick="{{showExpired}}" style="min-height: 34px; padding: 0 12px; border-radius: 10px; border: 0; background: {{t.surface}}; color: {{t.text}}; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer">只看已過期</button>
+        </div>
+      </sc-if>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 16px; align-items: start">
+        <sc-for list="{{cards}}" as="c" hint-placeholder-count="4">
+          <section aria-label="{{c.name}}" style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 16px 18px 10px; display: flex; flex-direction: column; gap: 6px">
+            <div style="display: flex; align-items: center; gap: 12px; padding-bottom: 6px">
+              <span style="width: 40px; height: 40px; border-radius: 12px; background: {{c.color}}; color: #FFFFFF; font-size: 13px; font-weight: 800; display: flex; align-items: center; justify-content: center; flex: none">{{c.short}}</span>
+              <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+                <b style="font-size: 16px; font-weight: 800">{{c.name}}</b>
+                <small style="font-size: 12px; color: {{t.muted}}">{{c.cycle}}</small>
+              </span>
+              <span style="display: flex; flex-direction: column; align-items: flex-end; gap: 2px">
+                <b style="font-size: 16px; font-weight: 800; color: {{t.primary}}">{{c.periodTotal}}</b>
+                <small style="font-size: 11px; color: {{t.muted}}">本期回饋（含預估）</small>
+              </span>
+            </div>
+            <sc-for list="{{c.rules}}" as="r" hint-placeholder-count="2">
+              <a href="AccountSettingsDesktop.dc.html" style="display: flex; flex-direction: column; gap: 6px; padding: 10px 2px 12px; border-top: 1px solid {{t.line}}; color: {{t.text}}; text-decoration: none; opacity: {{r.opacity}}">
+                <span style="display: flex; align-items: center; gap: 8px">
+                  <b style="font-size: 15px; font-weight: 700">{{r.name}}</b>
+                  <span style="font-size: 12px; font-weight: 800; padding: 2px 8px; border-radius: 8px; background: {{t.primarySoft}}; color: {{t.primary}}">{{r.rate}}</span>
+                  <sc-if value="{{r.hasState}}" hint-placeholder-val="{{false}}">
+                    <span style="font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 8px; background: {{r.stateBg}}; color: {{r.stateFg}}">{{r.state}}</span>
+                  </sc-if>
+                  <span style="flex: 1"></span>
+                  <small style="font-size: 12px; color: {{t.muted}}">{{r.posting}}</small>
+                </span>
+                <sc-if value="{{r.hasCap}}" hint-placeholder-val="{{true}}">
+                  <span style="display: flex; align-items: center; gap: 10px">
+                    <span role="img" aria-label="{{r.capAria}}" style="flex: 1; height: 8px; border-radius: 999px; background: {{t.soft}}; overflow: hidden; display: flex">
+                      <span style="width: {{r.usedW}}; background: {{r.barColor}}"></span>
+                      <span style="width: {{r.estW}}; background: {{r.barSoft}}"></span>
+                    </span>
+                    <small style="font-size: 12px; font-weight: 700; color: {{r.capFg}}; white-space: nowrap">{{r.capText}}</small>
+                  </span>
+                </sc-if>
+                <sc-if value="{{r.noCap}}" hint-placeholder-val="{{false}}">
+                  <small style="font-size: 12px; color: {{t.muted}}">{{r.noCapText}}</small>
+                </sc-if>
+              </a>
+            </sc-for>
+            <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid {{t.line}}; padding-top: 8px">
+              <small style="font-size: 12px; color: {{t.muted}}">{{c.stats}}</small>
+              <a href="AccountSettingsDesktop.dc.html" style="min-height: 34px; display: flex; align-items: center; font-size: 13px; font-weight: 700; color: {{t.primary}}; text-decoration: none">＋ 新增規則</a>
+            </div>
+          </section>
+        </sc-for>
+      </div>
+
+      <section aria-label="沒有回饋規則的帳戶" style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px; border-radius: 16px; border: 1px dashed {{t.border}}">
+        <span style="font-size: 13px; color: {{t.muted}}; margin-right: 4px">沒有規則的卡片</span>
+        <sc-for list="{{bare}}" as="b" hint-placeholder-count="3">
+          <a href="AccountSettingsDesktop.dc.html" style="display: flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 12px; border-radius: 999px; background: {{t.surface}}; border: 1px solid {{t.border}}; color: {{t.text}}; font-size: 13px; font-weight: 600; text-decoration: none">{{b}} <span style="color: {{t.primary}}">＋</span></a>
+        </sc-for>
+      </section>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":1440,"height":1040}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { filter: 'all' };
+  }
+  renderVals() {
+    const dark = !!(this.props.dark ?? false);
+    const t = dark ? {
+      bg: '#0f1218', surface: '#171c24', glass: 'rgba(23,28,36,0.75)', soft: '#202733', border: '#313a48', line: '#252c38',
+      text: '#f3f6fb', muted: '#99a3b3', accent: '#e6ebf5', onAccent: '#171c24',
+      primary: '#8b7dff', primarySoft: 'rgba(139,125,255,0.16)', primaryBar: '#8b7dff', primaryBarSoft: 'rgba(139,125,255,0.38)',
+      warnSoft: 'rgba(208,160,106,0.14)', warnInk: '#d0a06a', warnBar: '#d0a06a', warnBarSoft: 'rgba(208,160,106,0.4)',
+      neutralSoft: 'rgba(150,165,197,0.15)',
+      shadow: '0 12px 28px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)'
+    } : {
+      bg: '#f1f3f6', surface: '#fafcff', glass: 'rgba(250,252,255,0.8)', soft: '#edf1f6', border: '#d8dee7', line: '#e8ecf2',
+      text: '#151821', muted: '#5f6673', accent: '#1d2433', onAccent: '#ffffff',
+      primary: '#533afd', primarySoft: 'rgba(83,58,253,0.10)', primaryBar: '#533afd', primaryBarSoft: 'rgba(83,58,253,0.3)',
+      warnSoft: 'rgba(138,99,39,0.10)', warnInk: '#8a6327', warnBar: '#a87a32', warnBarSoft: 'rgba(168,122,50,0.35)',
+      neutralSoft: 'rgba(123,135,168,0.14)',
+      shadow: '0 10px 30px rgba(18,26,40,0.045), inset 0 1px 0 rgba(255,255,255,0.62)'
+    };
+    const I = {
+      chart: 'M3 17l6-6 4 4 8-8 M15 7h6v6',
+      list: 'M8 6h13 M8 12h13 M8 18h13 M3.5 6h.01 M3.5 12h.01 M3.5 18h.01',
+      wallet: 'M3 7v10a2 2 0 0 0 2 2h15V9H5a2 2 0 0 1-2-2zm0 0a2 2 0 0 1 2-2h13v4 M16 14h.01',
+      pie: 'M12 3v9h9 M21 12a9 9 0 1 1-9-9',
+      sliders: 'M4 6h10 M18 6h2 M4 12h4 M12 12h8 M4 18h12 M16 4v4 M10 10v4 M18 16v4',
+      bell: 'M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9 M13.7 21a2 2 0 0 1-3.4 0',
+      cog: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M12 2v3 M12 19v3 M4.9 4.9l2.1 2.1 M17 17l2.1 2.1 M2 12h3 M19 12h3 M4.9 19.1L7 17 M17 7l2.1-2.1'
+    };
+    const NAV = [
+      [['portfolio', '投資概覽', I.chart, 'Main.dc.html'], ['transactions', '交易紀錄', I.list, 'PfTransactions.dc.html']],
+      [['ledger', '記帳記錄', I.list, 'CalendarDesktop.dc.html'], ['accounts', '帳戶', I.wallet, '#'], ['reports', '報表', I.pie, 'ReportsDesktop.dc.html'], ['ledger-settings', '記帳設定', I.sliders, '#']],
+      [['notif', '通知', I.bell, 'NotifDesktop.dc.html'], ['settings', '設定', I.cog, 'SettingsDesktop.dc.html']]
+    ];
+    const railGroups = NAV.map((items) => ({ items: items.map(([id, label, icon, href]) => {
+      const on = id === 'ledger-settings';
+      return { label, icon, href, current: on ? 'page' : 'false', bg: on ? t.primarySoft : 'transparent', fg: on ? t.primary : t.muted };
+    }) }));
+
+    // 今天 2026-11-07。used＝已入帳＋已確認；est＝本期尚未入帳的預估。
+    const R = (name, rate, o) => ({ name, rate, ...o });
+    const data = [
+      { name: '玉山 Pi 卡', short: 'Pi', color: '#3f8f6b', cycle: '結帳日 25 號 · 本期 10/26–11/25', stats: '近 12 個月 214 筆 · 回饋 $3,862', rules: [
+        R('一般消費', '1%', { state: 'active', cap: 500, used: 236, est: 64, posting: '次期 15 號入帳' }),
+        R('全聯・家樂福加碼', '5%', { state: 'active', cap: 200, used: 180, est: 13, posting: '次期 15 號入帳' })
+      ] },
+      { name: '國泰 CUBE 卡', short: 'CU', color: '#3d7f8a', cycle: '結帳日 5 號 · 本期 11/6–12/5', stats: '近 12 個月 96 筆 · 回饋 $1,604', rules: [
+        R('玩數位', '3%', { state: 'active', cap: null, used: 0, est: 28, posting: '交易後 3 天入帳' }),
+        R('基本回饋', '0.3%', { state: 'active', cap: null, used: 0, est: 2, posting: '交易後 3 天入帳', basic: true })
+      ] },
+      { name: '台新 @GoGo 卡', short: 'Go', color: '#c4553a', cycle: '每月 1 日起算 · 本月 11/1–11/30', stats: '近 12 個月 61 筆 · 回饋 $1,240', rules: [
+        R('精選通路', '3.8%', { state: 'active', cap: 300, used: 120, est: 46, posting: '次月 20 號入帳' }),
+        R('2025 新戶加碼', '5%', { state: 'expired', cap: 500, used: 0, est: 0, posting: '2025/12/31 結束' })
+      ] },
+      { name: '永豐 DAWHO 卡', short: 'DA', color: '#7b5ea8', cycle: '結帳日 10 號 · 本期 10/11–11/10', stats: '近 12 個月 12 筆 · 回饋 $186', rules: [
+        R('大戶等級加碼', '2.5%', { state: 'disabled', cap: 400, used: 0, est: 0, posting: '手動入帳' })
+      ] }
+    ];
+    const STATE = {
+      active: null,
+      disabled: { label: '已停用', bg: t.neutralSoft, fg: t.muted },
+      expired: { label: '已過期', bg: t.warnSoft, fg: t.warnInk },
+      upcoming: { label: '未開始', bg: t.primarySoft, fg: t.primary }
+    };
+    const filter = this.state.filter;
+    const FILTERS = [['all', '全部'], ['active', '生效中'], ['disabled', '已停用'], ['expired', '已過期'], ['upcoming', '未開始']];
+    const counts = { all: 0, active: 0, disabled: 0, expired: 0, upcoming: 0 };
+    data.forEach((c) => c.rules.forEach((r) => { counts.all += 1; counts[r.state] += 1; }));
+    const filters = FILTERS.map(([key, label]) => {
+      const on = key === filter;
+      return { label: label + ' ' + counts[key], pressed: on ? 'true' : 'false', pick: () => this.setState({ filter: key }),
+        bg: on ? t.primarySoft : t.surface, fg: on ? t.primary : t.text, border: on ? t.primary : t.border };
+    });
+    const money = (n) => '$' + Math.round(n).toLocaleString('en-US');
+    const cards = data.map((c) => {
+      const rules = c.rules.filter((r) => filter === 'all' || r.state === filter).map((r) => {
+        const st = STATE[r.state];
+        const live = r.state === 'active';
+        const total = r.used + r.est;
+        const near = r.cap && total / r.cap >= 0.9;
+        return {
+          name: r.name, rate: r.rate, posting: r.posting,
+          hasState: !!st || !!r.basic, state: st ? st.label : '基本', stateBg: st ? st.bg : t.neutralSoft, stateFg: st ? st.fg : t.muted,
+          opacity: live ? '1' : '0.7',
+          hasCap: !!r.cap && live, noCap: !r.cap || !live,
+          noCapText: !live ? (r.state === 'expired' ? '已結束，不再估算' : '停用中，不估算回饋') : '無上限 · 本期 ' + money(r.used) + ' 已入帳 + ' + money(r.est) + ' 預估',
+          usedW: r.cap ? Math.min(100, (r.used / r.cap) * 100).toFixed(1) + '%' : '0%',
+          estW: r.cap ? Math.min(100 - (r.used / r.cap) * 100, (r.est / r.cap) * 100).toFixed(1) + '%' : '0%',
+          barColor: near ? t.warnBar : t.primaryBar, barSoft: near ? t.warnBarSoft : t.primaryBarSoft,
+          capFg: near ? t.warnInk : t.muted,
+          capText: money(total) + ' / ' + money(r.cap || 0) + (near ? ' · 快到上限' : ' · 剩 ' + money((r.cap || 0) - total)),
+          capAria: '本期已入帳 ' + money(r.used) + '，預估 ' + money(r.est) + '，上限 ' + money(r.cap || 0)
+        };
+      });
+      const periodTotal = c.rules.filter((r) => r.state === 'active').reduce((s, r) => s + r.used + r.est, 0);
+      return { name: c.name, short: c.short, color: c.color, cycle: c.cycle, stats: c.stats, rules, periodTotal: money(periodTotal), show: rules.length > 0 };
+    }).filter((c) => c.show);
+    const activeTotal = data.reduce((s, c) => s + c.rules.filter((r) => r.state === 'active').reduce((a, r) => a + r.used + r.est, 0), 0);
+
+    return {
+      t, railGroups, filters, cards,
+      headline: '4 張卡 · ' + counts.all + ' 條規則 · 本期回饋合計 ' + money(activeTotal) + '（含預估）',
+      showCallout: filter !== 'expired',
+      showExpired: () => this.setState({ filter: 'expired' }),
+      bare: ['匯豐 現金回饋卡', '中信 LINE Pay 卡', '台新 Richart 簽帳卡']
+    };
+  }
+}
+</script>
+</body>
+</html>

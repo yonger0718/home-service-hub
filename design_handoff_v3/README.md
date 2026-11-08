@@ -4,6 +4,7 @@ Design reference for two OpenSpec changes:
 
 - `openspec/changes/add-notification-center/` — one site-wide 通知 page, a quieter count, a one-case-at-a-time reconciliation flow, one toast and one banner style.
 - `openspec/changes/add-accounting-reports/` — 財務 › 報表 (總覽, 趨勢與比較, 排行, 專案與預算) and saved custom reports.
+- `openspec/changes/polish-reward-and-account-settings/` — 回饋規則總覽 cards with cap bars, sectioned 帳戶設定, one 回饋 section in entry detail (added 2026-11-07).
 
 Read each change's `design.md` for the decisions and `specs/` for the requirements. Drawn on the design canvas on 2026-10-24 (notifications) and 2026-10-30 (reports, custom reports); the owner asked for this handoff on 2026-10-31. **Nothing in this folder is production code.**
 
@@ -25,6 +26,10 @@ The visual system is the one in `frontend/src/styles.scss` (v2 handoff plus the 
 | `ReportsPhone.dc.html` | 報表 | `/accounting/reports` | 390 | tabs, category expand, ranking dimension |
 | `ReportBuilder.dc.html` | 自訂報表 editor with three saved reports and the empty state | `/accounting/reports/custom/:id`, `/accounting/reports/custom/new` | 1440 fluid | saved report chips, 新報表, chart type, 比較, 釘選 |
 | `ReportSavedPhone.dc.html` | One saved report, 編輯條件 sheet | `/accounting/reports/custom/:id` | 390 | 編輯條件 |
+| `RewardRulesDesktop.dc.html` | 回饋規則總覽: card grid, cap bars, rules-less chips, expired banner | `/accounting/reward-rules` | 1440 fluid | state chips, 只看已過期 |
+| `AccountSettingsDesktop.dc.html` | 帳戶設定 in sections beside the accounts list | `/accounting/accounts/:id/settings` | 1440 fluid | section chips, 外觀 source, 信用帳戶 switch, 結帳日 ± |
+| `AccountSettingsPhone.dc.html` | 帳戶設定 as grouped lists with the 放棄 / 儲存 bar | `/accounting/accounts/:id/settings` | 390 | — |
+| `RewardStatesSpec.dc.html` | Reward state tags and the entry detail 回饋 section over time | `/accounting/entries/:id` | 1280 | — |
 
 Not clickable on the canvas (drawn only): the period controls, the field pickers in the builder, ⋯ menus, 稍後提醒, every link into other pages.
 

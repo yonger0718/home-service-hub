@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>帳戶設定 · 手機</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 390px; height: 1640px; position: relative; overflow: hidden; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500">
+
+  <header style="display: flex; align-items: center; gap: 8px; padding: 12px 12px 8px">
+    <a href="AccountsPhone.dc.html" aria-label="返回" style="width: 42px; height: 42px; border-radius: 21px; background: {{t.surface}}; border: 1px solid {{t.border}}; box-sizing: border-box; color: {{t.text}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"></path></svg>
+    </a>
+    <h1 style="margin: 0; flex: 1; font-size: 20px; font-weight: 800">帳戶設定</h1>
+  </header>
+
+  <div style="display: flex; align-items: center; gap: 12px; padding: 4px 16px 12px">
+    <span style="width: 52px; height: 52px; border-radius: 16px; background: #3f8f6b; color: #FFFFFF; font-size: 17px; font-weight: 800; display: flex; align-items: center; justify-content: center">Pi</span>
+    <span style="display: flex; flex-direction: column; gap: 2px">
+      <b style="font-size: 18px; font-weight: 800">玉山 Pi 卡</b>
+      <small style="font-size: 12px; color: {{t.muted}}">信用卡 · 本期應繳 $12,860</small>
+    </span>
+  </div>
+
+  <nav aria-label="設定區段" style="display: flex; gap: 6px; padding: 0 12px 10px; overflow-x: auto">
+    <sc-for list="{{chips}}" as="c" hint-placeholder-count="6">
+      <a href="#" style="flex: none; min-height: 34px; padding: 0 12px; border-radius: 999px; background: {{c.bg}}; color: {{c.fg}}; font-size: 13px; font-weight: 700; display: flex; align-items: center; text-decoration: none">{{c.label}}</a>
+    </sc-for>
+  </nav>
+
+  <div style="padding: 0 12px 120px; display: flex; flex-direction: column; gap: 14px">
+    <sc-for list="{{groups}}" as="g" hint-placeholder-count="4">
+      <section aria-label="{{g.title}}" style="display: flex; flex-direction: column; gap: 6px">
+        <h2 style="margin: 4px 6px 0; font-size: 12px; font-weight: 800; letter-spacing: 0.08em; color: {{t.muted}}">{{g.title}}</h2>
+        <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 16px; overflow: hidden">
+          <sc-for list="{{g.rows}}" as="r" hint-placeholder-count="4">
+            <button type="button" aria-label="{{r.aria}}" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 8px 14px; border: 0; border-bottom: 1px solid {{t.line}}; background: transparent; color: {{t.text}}; font: inherit; text-align: left">
+              <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+                <span style="font-size: 15px">{{r.k}}</span>
+                <sc-if value="{{r.hasHint}}" hint-placeholder-val="{{false}}"><small style="font-size: 12px; color: {{t.muted}}">{{r.hint}}</small></sc-if>
+              </span>
+              <sc-if value="{{r.isValue}}" hint-placeholder-val="{{true}}">
+                <span style="font-size: 15px; color: {{r.vColor}}">{{r.v}}</span>
+                <sc-if value="{{r.chev}}" hint-placeholder-val="{{true}}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 18l6-6-6-6"></path></svg></sc-if>
+              </sc-if>
+              <sc-if value="{{r.isSwitch}}" hint-placeholder-val="{{false}}">
+                <span role="switch" aria-checked="{{r.checked}}" style="width: 46px; height: 28px; border-radius: 14px; background: {{r.track}}; padding: 3px; box-sizing: border-box; display: flex; justify-content: {{r.knob}}"><span style="width: 22px; height: 22px; border-radius: 11px; background: #FFFFFF"></span></span>
+              </sc-if>
+            </button>
+          </sc-for>
+        </div>
+      </section>
+    </sc-for>
+
+    <section aria-label="回饋規則" style="display: flex; flex-direction: column; gap: 6px">
+      <div style="display: flex; justify-content: space-between; align-items: baseline; margin: 4px 6px 0">
+        <h2 style="margin: 0; font-size: 12px; font-weight: 800; letter-spacing: 0.08em; color: {{t.muted}}">回饋規則 · 本期 10/26–11/25</h2>
+        <a href="#" style="font-size: 12px; font-weight: 700; color: {{t.primary}}; text-decoration: none">所有卡片 ›</a>
+      </div>
+      <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 16px; overflow: hidden">
+        <sc-for list="{{rules}}" as="r" hint-placeholder-count="3">
+          <button type="button" style="width: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: 6px; padding: 11px 14px; border: 0; border-bottom: 1px solid {{t.line}}; background: transparent; color: {{t.text}}; font: inherit; text-align: left; opacity: {{r.opacity}}">
+            <span style="display: flex; align-items: center; gap: 8px; width: 100%">
+              <b style="font-size: 15px; font-weight: 700">{{r.name}}</b>
+              <span style="font-size: 12px; font-weight: 800; padding: 2px 7px; border-radius: 8px; background: {{t.primarySoft}}; color: {{t.primary}}">{{r.rate}}</span>
+              <sc-if value="{{r.hasTag}}" hint-placeholder-val="{{false}}"><span style="font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 8px; background: {{t.neutralSoft}}; color: {{t.muted}}">{{r.tag}}</span></sc-if>
+              <span style="flex: 1"></span>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 18l6-6-6-6"></path></svg>
+            </span>
+            <sc-if value="{{r.hasCap}}" hint-placeholder-val="{{true}}">
+              <span style="display: flex; align-items: center; gap: 8px; width: 100%">
+                <span role="img" aria-label="{{r.capAria}}" style="flex: 1; height: 6px; border-radius: 999px; background: {{t.soft}}; overflow: hidden; display: flex">
+                  <span style="width: {{r.usedW}}; background: {{r.bar}}"></span>
+                  <span style="width: {{r.estW}}; background: {{r.barSoft}}"></span>
+                </span>
+                <small style="font-size: 12px; font-weight: 700; color: {{r.capFg}}">{{r.capText}}</small>
+              </span>
+            </sc-if>
+            <small style="font-size: 12px; color: {{t.muted}}">{{r.posting}}</small>
+          </button>
+        </sc-for>
+        <button type="button" style="width: 100%; min-height: 48px; border: 0; background: transparent; color: {{t.primary}}; font: inherit; font-size: 15px; font-weight: 700; text-align: left; padding: 0 14px">＋ 新增規則</button>
+      </div>
+    </section>
+
+    <sc-for list="{{groupsB}}" as="g" hint-placeholder-count="4">
+      <section aria-label="{{g.title}}" style="display: flex; flex-direction: column; gap: 6px">
+        <h2 style="margin: 4px 6px 0; font-size: 12px; font-weight: 800; letter-spacing: 0.08em; color: {{t.muted}}">{{g.title}}</h2>
+        <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 16px; overflow: hidden">
+          <sc-for list="{{g.rows}}" as="r" hint-placeholder-count="4">
+            <button type="button" aria-label="{{r.aria}}" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 8px 14px; border: 0; border-bottom: 1px solid {{t.line}}; background: transparent; color: {{t.text}}; font: inherit; text-align: left">
+              <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+                <span style="font-size: 15px">{{r.k}}</span>
+                <sc-if value="{{r.hasHint}}" hint-placeholder-val="{{false}}"><small style="font-size: 12px; color: {{t.muted}}">{{r.hint}}</small></sc-if>
+              </span>
+              <sc-if value="{{r.isValue}}" hint-placeholder-val="{{true}}">
+                <span style="font-size: 15px; color: {{r.vColor}}">{{r.v}}</span>
+                <sc-if value="{{r.chev}}" hint-placeholder-val="{{true}}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 18l6-6-6-6"></path></svg></sc-if>
+              </sc-if>
+              <sc-if value="{{r.isSwitch}}" hint-placeholder-val="{{false}}">
+                <span role="switch" aria-checked="{{r.checked}}" style="width: 46px; height: 28px; border-radius: 14px; background: {{r.track}}; padding: 3px; box-sizing: border-box; display: flex; justify-content: {{r.knob}}"><span style="width: 22px; height: 22px; border-radius: 11px; background: #FFFFFF"></span></span>
+              </sc-if>
+            </button>
+          </sc-for>
+        </div>
+      </section>
+    </sc-for>
+
+    <section aria-label="其他" style="display: flex; flex-direction: column; gap: 6px">
+      <h2 style="margin: 4px 6px 0; font-size: 12px; font-weight: 800; letter-spacing: 0.08em; color: {{t.muted}}">其他</h2>
+      <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 16px; overflow: hidden">
+        <button type="button" style="width: 100%; min-height: 52px; border: 0; border-bottom: 1px solid {{t.line}}; background: transparent; color: {{t.text}}; font: inherit; font-size: 15px; text-align: left; padding: 0 14px">還原 MOZE 設定</button>
+        <button type="button" style="width: 100%; min-height: 52px; border: 0; background: transparent; color: {{t.dangerInk}}; font: inherit; font-size: 15px; font-weight: 700; text-align: left; padding: 0 14px">封存帳戶</button>
+      </div>
+    </section>
+  </div>
+
+  <!-- 有變更時的儲存列：取代浮動記一筆 -->
+  <div style="position: absolute; left: 0; right: 0; bottom: 0; padding: 10px 12px 26px; background: {{t.glass}}; border-top: 1px solid {{t.border}}; display: flex; align-items: center; gap: 10px">
+    <span style="flex: 1; font-size: 13px; font-weight: 700; color: {{t.warnInk}}">有 1 項未儲存</span>
+    <button type="button" style="min-height: 46px; padding: 0 16px; border-radius: 13px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; font: inherit; font-size: 15px; font-weight: 600">放棄</button>
+    <button type="button" style="min-height: 46px; padding: 0 22px; border-radius: 13px; border: 0; background: {{t.primary}}; color: #FFFFFF; font: inherit; font-size: 15px; font-weight: 700">儲存</button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":390,"height":1640}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const dark = !!(this.props.dark ?? false);
+    const t = dark ? {
+      bg: '#0f1218', surface: '#171c24', glass: 'rgba(23,28,36,0.94)', soft: '#202733', border: '#313a48', line: '#252c38',
+      text: '#f3f6fb', muted: '#99a3b3', primary: '#8b7dff', primarySoft: 'rgba(139,125,255,0.16)', primaryBarSoft: 'rgba(139,125,255,0.38)',
+      warnInk: '#d0a06a', warnBar: '#d0a06a', warnBarSoft: 'rgba(208,160,106,0.4)', neutralSoft: 'rgba(150,165,197,0.15)', dangerInk: '#ff6369',
+      shadow: '0 12px 28px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)'
+    } : {
+      bg: '#f1f3f6', surface: '#fafcff', glass: 'rgba(250,252,255,0.94)', soft: '#edf1f6', border: '#d8dee7', line: '#e8ecf2',
+      text: '#151821', muted: '#5f6673', primary: '#533afd', primarySoft: 'rgba(83,58,253,0.10)', primaryBarSoft: 'rgba(83,58,253,0.3)',
+      warnInk: '#8a6327', warnBar: '#a87a32', warnBarSoft: 'rgba(168,122,50,0.35)', neutralSoft: 'rgba(123,135,168,0.14)', dangerInk: '#c9373c',
+      shadow: '0 10px 30px rgba(18,26,40,0.045), inset 0 1px 0 rgba(255,255,255,0.62)'
+    };
+    const chips = ['基本', '外觀', '信用卡', '回饋 3', '國外交易', '其他'].map((label, i) => ({ label, bg: i === 0 ? t.primarySoft : t.surface, fg: i === 0 ? t.primary : t.text }));
+    const V = (k, v, o) => ({ k, v, isValue: true, isSwitch: false, vColor: (o && o.muted) ? t.muted : t.text, hasHint: !!(o && o.hint), hint: (o && o.hint) || '', chev: !(o && o.muted), aria: k + '：' + v, checked: 'false', track: t.border, knob: 'flex-start' });
+    const S = (k, on, o) => ({ k, v: '', isValue: false, isSwitch: true, vColor: t.text, hasHint: !!(o && o.hint), hint: (o && o.hint) || '', chev: false, aria: k, checked: on ? 'true' : 'false', track: on ? t.primary : t.border, knob: on ? 'flex-end' : 'flex-start' });
+    const groups = [
+      { title: '基本', rows: [V('名稱', '玉山 Pi 卡'), V('主幣種', 'TWD', { muted: true, hint: '已有記錄，無法變更' }), V('帳戶分組', '信用卡'), V('初始金額', '$0'), S('納入總餘額', true)] },
+      { title: '外觀', rows: [V('圖示', '內建 logo · 玉山 Pi', { hint: '上傳圖片、內建 logo 或文字＋顏色' })] },
+      { title: '信用卡', rows: [S('信用帳戶', true), V('結帳日', '25 號', { hint: '本期 10/26–11/25' }), V('繳款期限', '結帳後 15 天', { hint: '11/25 結帳 → 12/10 截止' }), V('信用額度', '$200,000'), V('額度共用', '不共用'), V('主帳戶', '無'), V('自動扣繳', '台新 Richart')] }
+    ];
+    const groupsB = [
+      { title: '國外交易手續費', rows: [S('收手續費', true), V('費率', '1.5%'), V('計算方式', '另記一筆'), S('退款時退回', false)] }
+    ];
+    const money = (n) => '$' + n.toLocaleString('en-US');
+    const rules = [
+      { name: '一般消費', rate: '1%', posting: '次期 15 號入帳', cap: 500, used: 236, est: 64, on: true },
+      { name: '全聯・家樂福加碼', rate: '5%', posting: '次期 15 號入帳', cap: 200, used: 180, est: 13, on: true },
+      { name: '海外消費', rate: '2.5%', posting: '停用中，不估算回饋', cap: null, used: 0, est: 0, on: false, tag: '已停用' }
+    ].map((r) => {
+      const total = r.used + r.est;
+      const near = r.cap && total / r.cap >= 0.9;
+      return {
+        name: r.name, rate: r.rate, posting: r.posting, opacity: r.on ? '1' : '0.65', hasTag: !!r.tag, tag: r.tag || '',
+        hasCap: !!r.cap && r.on,
+        usedW: r.cap ? ((r.used / r.cap) * 100).toFixed(1) + '%' : '0%', estW: r.cap ? ((r.est / r.cap) * 100).toFixed(1) + '%' : '0%',
+        bar: near ? t.warnBar : t.primary, barSoft: near ? t.warnBarSoft : t.primaryBarSoft, capFg: near ? t.warnInk : t.muted,
+        capText: money(total) + ' / ' + money(r.cap || 0),
+        capAria: '本期已入帳 ' + money(r.used) + '，預估 ' + money(r.est) + '，上限 ' + money(r.cap || 0)
+      };
+    });
+    return { t, chips, groups, groupsB, rules };
+  }
+}
+</script>
+</body>
+</html>
