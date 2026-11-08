@@ -7,13 +7,13 @@
 
 ## 1. API (PR A)
 
-- [ ] 1.1 `usage` on each overview account (D1)
+- [x] 1.1 `usage` on each overview account (D1)
   - plus `icon`, `logo`, `logo_hash`, effective `closing_day` (`card_closing_day`)
-- [ ] 1.1a Usage unit on every usage row: `reward_account_id`, `reward_account_name`, `reward_is_money` (D1a)
+- [x] 1.1a Usage unit on every usage row: `reward_account_id`, `reward_account_name`, `reward_is_money` (D1a)
   - same computation as `/reward-usage`
   - unaffected by the filters
   - `[]` without active rules
-- [ ] 1.2 Tests: parity with `/accounts/{id}/reward-usage`; shared cap row; `state=expired` keeps usage; combined card inherits its parent's `closing_day`; `icon`/`logo`/`logo_hash` equal `/accounts`; usage unit for a points account, archived, and for the card itself
+- [x] 1.2 Tests: parity with `/accounts/{id}/reward-usage`; shared cap row; `state=expired` keeps usage; combined card inherits its parent's `closing_day`; `icon`/`logo`/`logo_hash` equal `/accounts`; usage unit for a points account, archived, and for the card itself
 
 ## 2. Shared pieces (PR B)
 

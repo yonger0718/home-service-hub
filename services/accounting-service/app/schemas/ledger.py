@@ -68,11 +68,31 @@ class RewardRuleOverviewRuleOut(RewardRuleOut):
     stats: RewardRuleStatsOut
 
 
+class RewardUsageOut(BaseModel):
+    rule_ids: list[int]
+    shared_cap_id: UUID | None
+    name: str
+    window_start: date
+    window_end: date
+    used: Decimal
+    estimated: Decimal
+    cap: Decimal | None
+    remaining: Decimal | None
+    reward_account_id: int
+    reward_account_name: str
+    reward_is_money: bool
+
+
 class RewardRuleOverviewAccountOut(BaseModel):
     account_id: int
     account_name: str
     is_credit: bool
     is_archived: bool
+    icon: str | None
+    logo: str | None
+    logo_hash: str | None
+    closing_day: int | None  # the closing day reward windows use: own, else the combined parent's, else None
+    usage: list[RewardUsageOut]
     rules: list[RewardRuleOverviewRuleOut]
 
 
@@ -210,21 +230,6 @@ class AccrualOut(BaseModel):
     ledger_amount: Decimal | None  # the reward row's amount (the bank's figure once bank_confirmed); null without one
     reward_account_id: int  # the rule's reward account (its card when unset)
     reward_account_name: str
-
-
-class RewardUsageOut(BaseModel):
-    rule_ids: list[int]
-    shared_cap_id: UUID | None
-    name: str
-    window_start: date
-    window_end: date
-    used: Decimal
-    estimated: Decimal
-    cap: Decimal | None
-    remaining: Decimal | None
-    reward_account_id: int
-    reward_account_name: str
-    reward_is_money: bool
 
 
 class EntryEinvoiceOut(BaseModel):
