@@ -615,6 +615,11 @@
 
     .cr-col-series,
     .cr-col-base { display: none; }
+
+    /* The to-date heading (本期至今（6/1–11/7）) and the running row label (11 月 進行中（至 11/7）) would push 增減 out of
+       a 358 px card; let them wrap, figures stay on one line. */
+    thead th,
+    .cr-col-name { white-space: normal; }
   }
 }
 

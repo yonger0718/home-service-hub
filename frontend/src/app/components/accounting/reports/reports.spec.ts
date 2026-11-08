@@ -924,6 +924,12 @@ describe('AccountingReportsComponent', () => {
       expect(scss('custom-report.html')).not.toContain('fill="url(#cr-hatch)"');
     });
 
+    it('lets the saved table headings and row labels wrap on phones so 增減 stays in view', () => {
+      const css = scss('custom-report.scss');
+      const phone = css.match(/\/\* Phones \(ReportSavedPhone\)[\s\S]*?\.cr--phone & \{([\s\S]*?)\n  \}/)?.[1] ?? '';
+      expect(phone).toMatch(/thead th,\s*\.cr-col-name\s*\{[^}]*white-space:\s*normal/);
+    });
+
     it('renders the to-date figures when a whole-period read fails (M4)', async () => {
       const { harness, el } = await openOn('/accounting/reports?month=2026-11', [2026, 11, 7]);
       const reads = pending();
