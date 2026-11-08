@@ -52,7 +52,9 @@ import {
   ReportPeriod,
   afterTodayLine,
   baseChange,
+  axisParts,
   bucketText,
+  hatchLines,
   donutArcs,
   isRunning,
   metricTotal as totalOf,
@@ -94,9 +96,14 @@ interface ChartLayout {
   ticks: boolean;
 }
 
-const DESKTOP: ChartLayout = { width: 760, height: 280, plot: { left: 52, width: 700, top: 30, height: 210 }, labelY: 270, ticks: true };
-const PHONE: ChartLayout = { width: 358, height: 210, plot: { left: 0, width: 358, top: 20, height: 166 }, labelY: 204, ticks: false };
+const DESKTOP: ChartLayout = { width: 760, height: 290, plot: { left: 52, width: 700, top: 30, height: 210 }, labelY: 262, ticks: true };
+const PHONE: ChartLayout = { width: 358, height: 226, plot: { left: 0, width: 358, top: 20, height: 166 }, labelY: 204, ticks: false };
 const MAX_SERIES = 7;
+
+/** The hatch over a running stack: stripe segments for the bar's rectangle, in the SVG's one-decimal strings. */
+function stripes(x: number, y: number, width: number, height: number): Rect['hatch'] {
+  return hatchLines(x, y, width, height).map(l => ({ x1: l.x1.toFixed(1), y1: l.y1.toFixed(1), x2: l.x2.toFixed(1), y2: l.y2.toFixed(1) }));
+}
 
 /** The start of the bucket `today` falls in, when it is still running (a month, or a Monday-based week); null for other groupings. */
 function runningBucketStart(group: ReportDimension, today: string): string | null {
@@ -136,11 +143,14 @@ interface Rect {
   outline: boolean;
   /** The running bucket's stack: a hatch is drawn over it. */
   running: boolean;
+  hatch: { x1: string; y1: string; x2: string; y2: string }[];
 }
 
 interface XLabel {
   x: string;
   label: string;
+  /** `group_by: month`: the axis draws the month and, on the first bar and each January, the year as a second line. */
+  parts: { month: string; year: string | null } | null;
   total: string;
   totalY: string;
   pointY: string;
@@ -359,6 +369,10 @@ export class CustomReportComponent {
     return values;
   }
 
+  private axisParts(row: BreakdownRow, index: number): { month: string; year: string | null } | null {
+    return this.config().group_by === 'month' && row.key !== null && row.key !== '__other__' ? axisParts(row.key, index) : null;
+  }
+
   /** A row's name; time dimensions read as D7 words (`9 月`, `10/5 週`), without the running suffix. */
   protected bucketLabel(row: BreakdownRow): string {
     const group = this.config().group_by;
@@ -447,12 +461,12 @@ export class CustomReportComponent {
       values.forEach((value, k) => {
         const height = max > 0 ? (value / max) * plot.height : 0;
         y -= height;
-        if (height > 0) rects.push({ x: x.toFixed(1), y: y.toFixed(1), width: width.toFixed(1), height: Math.max(height - 1, 0).toFixed(1), fill: seriesColor(k), outline: false, running: this.isRunningRow(row) });
+        if (height > 0) rects.push({ x: x.toFixed(1), y: y.toFixed(1), width: width.toFixed(1), height: Math.max(height - 1, 0).toFixed(1), fill: seriesColor(k), outline: false, running: this.isRunningRow(row), hatch: this.isRunningRow(row) ? stripes(x, y, width, Math.max(height - 1, 0)) : [] });
       });
       const base = this.baseOf(row);
       if (compare && base !== null) {
         const top = yOf(base, plot, max);
-        rects.push({ x: (cx + 3).toFixed(1), y: top.toFixed(1), width: width.toFixed(1), height: (bottom - top).toFixed(1), fill: 'transparent', outline: true, running: false });
+        rects.push({ x: (cx + 3).toFixed(1), y: top.toFixed(1), width: width.toFixed(1), height: (bottom - top).toFixed(1), fill: 'transparent', outline: true, running: false, hatch: [] });
       }
     });
     return rects;
@@ -465,7 +479,7 @@ export class CustomReportComponent {
     return rows.map((row, index) => {
       const total = num(row.amount);
       const y = yOf(Math.max(total, this.compareOn() ? (this.baseOf(row) ?? 0) : 0), plot, this.max());
-      return { x: (plot.left + slot * index + slot / 2).toFixed(1), label: this.bucketLabel(row), total: n0(total), totalY: (y - 8).toFixed(1), pointY: yOf(total, plot, this.max()).toFixed(1) };
+      return { x: (plot.left + slot * index + slot / 2).toFixed(1), label: this.bucketLabel(row), parts: this.axisParts(row, index), total: n0(total), totalY: (y - 8).toFixed(1), pointY: yOf(total, plot, this.max()).toFixed(1) };
     });
   });
   protected readonly labelY = computed(() => this.layout().labelY);

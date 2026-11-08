@@ -10,6 +10,7 @@ import {
   barGeometry,
   afterTodayLine,
   axisParts,
+  hatchLines,
   baseChange,
   bucketText,
   compareLabels,
@@ -55,6 +56,7 @@ interface Bar extends BarGeometry {
   label: { month: string; year: string | null };
   last: boolean;
   running: boolean;
+  hatch: { x1: number; y1: number; x2: number; y2: number }[];
 }
 
 interface CompareRow {
@@ -149,7 +151,8 @@ export class ReportTrendComponent {
     const geometry = barGeometry(this.values(), this.layout().plot, this.max());
     return geometry.map((bar, index) => {
       const last = index === geometry.length - 1;
-      return { ...bar, label: axisParts(buckets[index].start, index), last, running: last && runningBucket(buckets[index].start.slice(0, 7), 'month', this.today()) };
+      const running = last && runningBucket(buckets[index].start.slice(0, 7), 'month', this.today());
+      return { ...bar, label: axisParts(buckets[index].start, index), last, running, hatch: running ? hatchLines(Number(bar.x), Number(bar.y), Number(bar.width), Number(bar.height)) : [] };
     });
   });
   readonly grid = computed(() => {

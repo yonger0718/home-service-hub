@@ -8,6 +8,7 @@ import {
   totalChange,
   asOfText,
   axisParts,
+  hatchLines,
   bucketText,
   monthAverage,
   runningBucket,
@@ -368,5 +369,31 @@ describe('month average and bucket labels (D4, D7)', () => {
     expect(runningBucket('2026-11-02', 'week', '2026-11-08')).toBe(false);
     expect(runningBucket('2026-11-07', 'day', '2026-11-07')).toBe(false);
     expect(`11 月 ${runningSuffix('2026-11-07')}`).toBe('11 月 進行中（至 11/7）');
+  });
+});
+
+describe('hatch stripes (no url(#id) paint under <base href>)', () => {
+  it('returns nothing for an empty rectangle', () => {
+    expect(hatchLines(10, 10, 0, 50)).toEqual([]);
+    expect(hatchLines(10, 10, 20, 0)).toEqual([]);
+  });
+
+  it('clips every stripe to the rectangle and spaces the stripes gap apart', () => {
+    const lines = hatchLines(20, 30, 12, 100);
+    expect(lines).toHaveLength(19); // multiples of 6 strictly inside (-110, 2)
+    for (const l of lines) {
+      for (const [px, py] of [[l.x1, l.y1], [l.x2, l.y2]]) {
+        expect(px).toBeGreaterThanOrEqual(20 - 1e-9);
+        expect(px).toBeLessThanOrEqual(32 + 1e-9);
+        expect(py).toBeGreaterThanOrEqual(30 - 1e-9);
+        expect(py).toBeLessThanOrEqual(130 + 1e-9);
+      }
+      expect(l.x2 - l.x1).toBeCloseTo(l.y2 - l.y1, 9);
+      expect(l.x2).toBeGreaterThan(l.x1);
+    }
+    const offsets = lines.map(l => l.x1 - l.y1);
+    for (let i = 1; i < offsets.length; i++) expect(offsets[i] - offsets[i - 1]).toBeCloseTo(6, 9);
+    expect(hatchLines(0, 0, 12, 100)).toHaveLength(18);
+    expect(hatchLines(0, 0, 12, 100, 12)).toHaveLength(9);
   });
 });

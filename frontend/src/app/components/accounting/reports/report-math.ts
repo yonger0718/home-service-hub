@@ -522,6 +522,23 @@ export function axisParts(start: string, index: number): { month: string; year: 
 }
 
 /**
+ * 45° stripes (running-bucket hatch) clipped to a rectangle, as plain segments: each lies on a line x - y = c, with c
+ * a multiple of `gap` so neighbouring bars share one stripe grid. Drawn as `<line>`s because a `url(#pattern)` paint
+ * does not resolve under `<base href>` in WebKit. An empty rectangle has none.
+ */
+export function hatchLines(x: number, y: number, width: number, height: number, gap = 6): { x1: number; y1: number; x2: number; y2: number }[] {
+  if (!(width > 0) || !(height > 0) || !(gap > 0)) return [];
+  const lines: { x1: number; y1: number; x2: number; y2: number }[] = [];
+  const first = Math.floor((x - (y + height)) / gap) * gap;
+  for (let c = first; c <= x + width - y; c += gap) {
+    const lo = Math.max(x, y + c);
+    const hi = Math.min(x + width, y + height + c);
+    if (hi - lo > 1e-9) lines.push({ x1: lo, y1: lo - c, x2: hi, y2: hi - c });
+  }
+  return lines;
+}
+
+/**
  * The bucket has started and ends after `today` (a month: its last day; a week: start + 6). A day never runs. It ignores
  * the period's end: callers gate on `isRunning(period, today)`.
  */
