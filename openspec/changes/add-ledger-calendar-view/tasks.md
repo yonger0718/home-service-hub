@@ -10,13 +10,15 @@
   - read it into `selectedDay`, write it on pick, clear and ‹ ›
   - month edges; navigator clears it
   - `day` implies 日曆 without overwriting the stored view
+  - write `month` and `day` with `replaceUrl`; follow query changes (Back, Forward) instead of the construction snapshot
 - [ ] 1.2 Carry `month` and `day` on entry links opened from the calendar; restore them on ✕, back and delete
+  - every exit: layout close, `EntryDetail.close()` / `parentUrl()`, row open, next-entry navigation, after delete
 - [ ] 1.3 `CalendarDataService`
   - per-month cache of breakdown day × category and breakdown by merchant
   - invalidate on `entriesChanged`
   - per-part failure flags
 - [ ] 1.4 Invoice markers: inbox `einvoices` grouped by `issue_date` (later from `NotificationCenterService`, D7)
-- [ ] 1.5 Tests: URL round-trip, month crossing, navigator clears, cache invalidation, a failing read leaves the other parts
+- [ ] 1.5 Tests: URL round-trip, month crossing, navigator clears, Back leaves the calendar (replaced history), cache invalidation, a failing read leaves the other parts
 
 ## 2. Day cells (PR A)
 
@@ -24,7 +26,7 @@
   - dots per day, heat ratio, invoice days
   - `compact` (narrow figures)
   - `weekOf` (week mode)
-- [ ] 2.2 Cell layout: date disc, net, dots and +N, heat bar, bill and invoice marks; dimmed future; wide legend
+- [ ] 2.2 Cell layout: date disc, net, dots and +N, heat bar, bill mark (帳單 / 已繳 replaces the card icon badge; `paid` from the timeline's statement data) and invoice mark (`--app-warning` until `--app-banner-warn` lands); dimmed future; wide legend
 - [ ] 2.3 Accessible names; roving tabindex with ← → ↑ ↓ Home End
 - [ ] 2.4 Tests
   - the heaviest day spans the full width
@@ -35,6 +37,7 @@
 ## 3. Wide layout (PR B)
 
 - [ ] 3.1 Calendar mode in `AccountingLayoutComponent` (timeline, 日曆, panes)
+  - the timeline publishes its view via `AccountingOverviewService.calendar`
   - calendar-only list pane with its own flex basis
   - 支出 / 收入 / 結餘 in the header
 - [ ] 3.2 本月摘要

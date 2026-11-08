@@ -14,7 +14,11 @@ Today's pieces:
   - `≥ 1024`: list pane plus `pane` outlet.
   - At ≥ 1280 with nothing selected, the right pane shows `MonthOverviewComponent` (category amounts, next three due items).
 - `GET /reports/breakdown` (add-accounting-reports) groups by `day`, `merchant`, `category`, … with an optional `split_by`, using the reports' inclusion rules.
-- The reconciliation inbox returns `einvoices` (ambiguous, near and unmatched invoices, each with an `issue_date`).
+- The reconciliation inbox returns `einvoices` (ambiguous, near and unmatched invoices, each with an `issue_date` and a `candidates` list whose items are an entry or a split group).
+- The timeline reads `month` from the URL once, at construction (the 報表 drill-through), and never writes it back; `month` otherwise lives in a signal.
+- The layout knows only `listKey === 'timeline'`, not which view the timeline shows. The timeline publishes state for the layout through `AccountingOverviewService` (month, summary, due items).
+- A day cell today shows the day number, a credit-card icon badge on due days (with a count above one), a top border on closing days, and separate compact expense and income figures. It has no paid state.
+- Every exit from an entry drops the query: the layout's close action (`navigateByUrl('/accounting')`), `EntryDetail.close()` / `parentUrl()`, the row-open navigation and the next-entry navigation.
 
 The canvas artboards are `design_handoff_v3/design_refs/CalendarDesktop.dc.html` and `CalendarPhone.dc.html`. They are interactive (day, entry, ↑ ↓, ‹ ›, 展開整月) and use invented October 2026 data: expense 29,626, income 72,000, today 10/22.
 
@@ -33,11 +37,13 @@ Picking a day shows only that day's rows. Owners who want a scrolling list keep 
 
 Add a `day=YYYY-MM-DD` query parameter beside `month`, so that back, reload, a shared link and the return from an entry all land on the same day. This is the reason for D2: today a return from an entry loses the day, because `selectedDay` is not in the URL.
 
+- The timeline starts writing `month` and `day` to the URL, and reacts to query changes (Back, Forward, links) instead of reading the URL only at construction.
+- Picking a day, ‹ ›, swipes and the month navigator replace the current history entry rather than push one, so Back leaves the 日曆 view instead of stepping through days.
 - `day` implies the 日曆 view for that visit; the stored view is not overwritten.
 - `month` follows `day`, and a `day` outside `month` wins.
 - ‹ › and swipes step one calendar day, across month edges, and move `month` with them.
 - Moving the month with the navigator drops `day`.
-- Entry routes opened from the calendar carry `month` and `day` along (`/accounting/entries/:id?month=…&day=…`), so ✕ and back restore the selection.
+- Entry routes opened from the calendar carry `month` and `day` along (`/accounting/entries/:id?month=…&day=…`), so ✕ and back restore the selection. Every exit listed in Context keeps them, and so does the return after deleting the entry.
 
 ### D3. Data: no new endpoint
 
@@ -67,8 +73,8 @@ Each cell holds, top to bottom:
 - **Category dots.** Up to three, from the day's largest expense categories, in the owner's category colours. A +N follows when there are more. Narrow screens hide the dots once a day is picked (week mode, D6).
 - **Heat bar.** A 4 px bar (3 px under 1024) along the bottom. Its length is the day's |expense| divided by the month's largest daily |expense|, drawn in a translucent `--tone-neg`. Income-only days have no bar.
 - **Marks.**
-  - The existing card mark for bill due days: 帳單, or 已繳 once paid, on wide screens; a muted dot on narrow ones.
-  - A warning-ink marker (`--app-banner-warn`, from the notifications handoff) when an inbox invoice is dated that day: 發票待對帳 on wide screens, a dot on narrow ones.
+  - A card mark on bill due days, replacing today's card icon badge: 帳單, or 已繳 when the due event's resolved statement (`BillState`, the figures behind the 繳費提醒 line) has nothing left to pay, on wide screens. Today the grid drops paid due days (`billing` keeps only open statements), so paid ones must be passed to the grid as well; a muted dot on narrow ones. Closing days keep their top border.
+  - A warning-ink marker when an inbox invoice is dated that day: 發票待對帳 on wide screens, a dot on narrow ones. The ink is `--app-banner-warn` once add-notification-center lands; until then it is `--app-warning`.
 
 The cell's `aria-label` reads everything, for example 「10 月 21 日 週三，3 筆，支出 $3,096，發票待對帳」. The heat scale and the dots are decoration and are `aria-hidden`.
 
@@ -76,7 +82,7 @@ A small legend under the wide grid explains the bar, the dots and the card mark.
 
 ### D5. Wide layout (≥ 1024 px, 日曆 view)
 
-`AccountingLayoutComponent` gains a calendar mode. It is active when `list` is `timeline`, the view is `calendar`, and the mode is `panes`. In calendar mode:
+`AccountingLayoutComponent` gains a calendar mode. It is active when `list` is `timeline`, the view is `calendar`, and the mode is `panes`. The timeline publishes its view through `AccountingOverviewService` (a new `calendar` signal), because the layout cannot see it otherwise. In calendar mode:
 
 - **The list pane is the calendar alone.** It is wider than in the list view, about 2 : 1 against the right pane. The month card collapses into the page header: 支出 / 收入 / 結餘 between the month navigator and 清單 / 日曆.
 - **The right pane** has a base layer and an overlay layer.
@@ -85,7 +91,7 @@ A small legend under the wide grid explains the bar, the dots and the card mark.
     2. A 今天 card (count, names, net). It selects today, and is shown only when the month is the current month.
     3. The category distribution, with a 看報表 › link to `/accounting/reports?month=…`.
     4. 花最多的商家: top five, with count and amount, from D3.
-    5. 這個月要處理: inbox invoices dated in the month, and unpaid card bills due in the month. A row selects its day, and an invoice row also opens its entry when the matcher proposed exactly one candidate.
+    5. 這個月要處理: inbox invoices dated in the month, and unpaid card bills due in the month. A row selects its day. An invoice row also opens its target when the matcher proposed exactly one candidate: an entry opens `/accounting/entries/:id`, a split group its group page.
   - **Base, day picked: the day panel** (new `CalendarDayPanelComponent`). It contains:
     - ‹ day label › with count and net under the label, and a 本月摘要 button that clears `day`;
     - the bill line for that day, if any;
@@ -114,7 +120,7 @@ The calendar keeps the same cell contents at 1024–1279. Only the right pane na
 
 ### D7. Notification center
 
-The invoice marker and 這個月要處理 read the inbox. When `add-notification-center` lands, both read `NotificationCenterService` instead. They show only items dated in the shown month, and they never add to the 通知 count.
+The invoice marker and 這個月要處理 read the inbox. `add-notification-center` is still an open change with no `NotificationCenterService` on main. When it lands, both read `NotificationCenterService` instead. They show only items dated in the shown month, and they never add to the 通知 count.
 
 ### D8. Keyboard and focus
 

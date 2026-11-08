@@ -22,9 +22,18 @@ Picking a day SHALL set `day`. Picking the selected day again, 本月摘要 (≥
 - **WHEN** the month navigator moves to November
 - **THEN** `day` SHALL be removed and no day SHALL be selected
 
+### Requirement: Calendar selection history
+
+Picking a day, ‹ and ›, the swipes and the month navigator SHALL replace the current browser history entry rather than add one, so that Back leaves the 日曆 view instead of stepping through the days picked. The 日曆 view SHALL follow `month` and `day` when they change in the URL (Back, Forward or a link), not only when the page is first opened.
+
+#### Scenario: Back after picking days
+- **GIVEN** the owner opened `/accounting` from 報表 and picked 10/20, then 10/21
+- **WHEN** Back is pressed
+- **THEN** the browser SHALL return to 報表
+
 ### Requirement: Calendar selection survives opening an entry
 
-An entry opened from the calendar SHALL keep `month` and `day` in its URL, so that closing it or going back restores the selection.
+An entry opened from the calendar SHALL keep `month` and `day` in its URL, so that closing it, going back or deleting it restores the selection.
 
 #### Scenario: Back from an entry
 - **GIVEN** 10/21 is selected on a 390 px screen
@@ -58,7 +67,7 @@ Each day cell of the 日曆 view SHALL show up to three category dots for the da
 
 Each day cell of the 日曆 view SHALL show:
 
-- the card mark on bill due days (帳單, or 已繳 once paid, at ≥ 1024 px; a muted dot below);
+- the card mark on bill due days (帳單, or 已繳 once the statement is fully paid, at ≥ 1024 px; a muted dot below);
 - a warning-ink marker when an inbox e-invoice awaiting a match has that day as its `issue_date` (發票待對帳 at ≥ 1024 px; a dot below).
 
 The cell's accessible name SHALL include the date, the weekday, the row count, the day's expense and any bill or invoice mark; the bar and the dots SHALL be hidden from assistive technology.
