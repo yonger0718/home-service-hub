@@ -162,6 +162,16 @@ describe('EntryDetailComponent', () => {
     expect(root.textContent).not.toContain('紅利回饋');
   });
 
+  it('links a bank_confirmed card to its reward row', () => {
+    const fixture = render(detail({
+      id: 42, amount: '-500.0000', name: '外套',
+      rewards: [entry({ id: 501, kind: 'reward', amount: '10.0000', name: '回饋甲' })],
+      accruals: [accrual({ id: 1, state: 'bank_confirmed', ledger_entry_id: 501, ledger_amount: '10.0000' })],
+    }));
+    const link = el(fixture).querySelector<HTMLAnchorElement>('.reward-card .reward-link')!;
+    expect(link.getAttribute('href')).toMatch(/\/accounting\/entries\/501$/);
+  });
+
   it('prints points with the reward account name, never $', () => {
     const fixture = render(pointsDetail(), pointsAccount());
     const card = text(el(fixture).querySelector('.reward-card'))!;
@@ -241,8 +251,9 @@ describe('EntryDetailComponent', () => {
 
   it('has no 回饋 section without accruals, reward rows or a reward_posted review', () => {
     const fixture = render(detail({ id: 42, amount: '-500.0000', name: '外套' }));
-    expect(el(fixture).querySelector('.dsec')?.textContent ?? '').not.toContain('回饋');
-    expect(el(fixture).textContent).not.toContain('回饋');
+    const section = el(fixture).querySelector('app-entry-reward-section')!;
+    expect(section.querySelector('.dsec')).toBeNull();
+    expect(section.querySelector('.reward-card')).toBeNull();
   });
 
   it('places the section after the debt state and before the e-invoice card', () => {

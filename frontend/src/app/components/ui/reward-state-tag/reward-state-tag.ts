@@ -12,7 +12,7 @@ export const REWARD_STATE_LABELS: Record<RewardAccrualState, string> = {
 const REWARD_STATE_ICON_PATHS: Record<RewardAccrualState, string> = {
   estimated: 'M12 7v5l3 2 M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z',
   posted: 'M5 12l4 4 10-10',
-  bank_confirmed: 'M4 12l4 4 6-6 M10 16l1 1 9-9',
+  bank_confirmed: 'M18 6 7 17l-5-5 M22 10l-7.5 7.5L13 16',
   forfeited: 'M18 6L6 18 M6 6l12 12',
 };
 

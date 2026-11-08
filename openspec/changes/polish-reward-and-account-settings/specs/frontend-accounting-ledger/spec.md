@@ -209,9 +209,10 @@ Tapping the row SHALL open the rule sheet. Dropping a dragged row SHALL save the
 
 ### Requirement: Entry reward section
 
-The entry detail SHALL show one 回饋 section with one card per reward accrual in rule order. Reward rows generated from the entry without an accrual SHALL show as 已入帳 cards. The #306 reward-reprice card SHALL be the section's last item, with its own visibility unchanged. The section SHALL be absent when the entry has neither accruals nor reward rows and is not awaiting a reward reprice (`review_reason` `reward_posted`); in that case the section holds only the reprice card.
+The entry detail SHALL show one 回饋 section with one card per reward accrual in rule order. Reward rows generated from the entry without an accrual SHALL show as 已入帳 cards. The #306 reward-reprice card SHALL be the section's last item, visibility unchanged. The section SHALL be absent when the entry has neither accruals nor reward rows and is not awaiting a reward reprice (`review_reason` `reward_posted`); an entry awaiting a reprice with neither shows the section holding only the reprice card.
 
 #### Scenario: Placement
+- **GIVEN** an entry with an accrual, a debt state and an e-invoice
 - **THEN** the 回饋 section SHALL sit after the tags and debt state and before the e-invoice card
 
 #### Scenario: Imported reward without an accrual
@@ -240,9 +241,11 @@ Each card of the 回饋 section SHALL show:
 The line on an entry reward card SHALL read by state:
 
 - 預估: the expected posting date and account, or 「算出 $X，本期上限只剩 $Y」 when the cap cut the estimate;
-- 已入帳: the posting date and account, with a link 「看回饋記錄 ›」 to the reward row;
+- 已入帳: the posting date and account;
 - 銀行確認: 「與帳單相符」, or 「銀行實際給 $N」 when the reward row differs from the accrual;
 - 未獲得: 「帳單上沒有這筆回饋」 when a reward row was kept at 0 by the statement, 「本期上限已用完」 when there is no row and the amount is 0, else 「回饋記錄已刪除，不會入帳」.
+
+Every card whose reward row exists SHALL link 「看回饋記錄 ›」 to it.
 
 #### Scenario: Forfeited after the reward row was deleted
 - **GIVEN** an accrual of $13 whose reward row the owner deleted

@@ -20,7 +20,10 @@ import { RewardAmountText, rewardCards } from './reward-cards';
     s.reward-amount { color: var(--app-text-muted); }
     .reward-was { color: var(--app-text-muted); font-size: 0.8rem; margin-left: 6px; }
     .reward-note { color: var(--app-text-muted); font-size: 0.8rem; margin: 0; }
-    .reward-link { align-items: center; display: inline-flex; font-size: 0.85rem; min-height: 44px; }
+    .reward-link {
+      align-items: center; align-self: flex-start; color: var(--app-primary); display: inline-flex;
+      font-size: 0.85rem; font-weight: 700; min-height: 44px; text-decoration: none;
+    }
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,
 })

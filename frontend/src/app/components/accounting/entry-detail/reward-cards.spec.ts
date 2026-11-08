@@ -60,6 +60,11 @@ describe('rewardCards', () => {
     expect(card).toMatchObject({ line: '11/15 已入帳到 玉山 Pi 卡', link: 501 });
   });
 
+  it('posted whose row is missing from rewards reads 已入帳 without a date', () => {
+    const card = one(accrual({ state: 'posted', post_on: null, ledger_entry_id: 999, ledger_amount: '13' }));
+    expect(card.line).toBe('已入帳到 玉山 Pi 卡');
+  });
+
   it('posted to a future date reads 將於', () => {
     const card = one(accrual({ state: 'posted', ledger_entry_id: 501, ledger_amount: '13' }),
       [reward({ posted_date: '2026-12-15' })]);
@@ -68,39 +73,39 @@ describe('rewardCards', () => {
 
   it('bank_confirmed matching', () => {
     const card = one(accrual({ state: 'bank_confirmed', ledger_entry_id: 501, ledger_amount: '13' }), [reward()]);
-    expect(card).toMatchObject({ line: '與帳單相符', was: null });
+    expect(card).toMatchObject({ line: '與帳單相符', was: null, link: 501 });
   });
 
   it('bank_confirmed with another figure', () => {
     const card = one(accrual({ state: 'bank_confirmed', ledger_entry_id: 501, ledger_amount: '12' }),
       [reward({ amount: '12' })]);
-    expect(card).toMatchObject({ amount: '+$12', was: '$13', line: '銀行實際給 $12' });
+    expect(card).toMatchObject({ amount: '+$12', was: '$13', line: '銀行實際給 $12', link: 501 });
   });
 
   it('bank_confirmed from an older API without ledger_amount', () => {
     const a = accrual({ state: 'bank_confirmed', ledger_entry_id: 501 });
     delete (a as unknown as Record<string, unknown>)['ledger_amount'];
-    expect(one(a, [reward()])).toMatchObject({ amount: '+$13', line: '與帳單相符' });
+    expect(one(a, [reward()])).toMatchObject({ amount: '+$13', line: '與帳單相符', link: 501 });
   });
 
   it('forfeited by the statement', () => {
     const card = one(accrual({ state: 'forfeited', amount: '10', estimate: '10', ledger_entry_id: 502, ledger_amount: '0' }));
-    expect(card).toMatchObject({ amount: '$10', was: null, line: '帳單上沒有這筆回饋' });
+    expect(card).toMatchObject({ amount: '$10', was: null, line: '帳單上沒有這筆回饋', link: 502 });
   });
 
   it('forfeited by the statement prints the capped amount, not the estimate', () => {
     const card = one(accrual({ state: 'forfeited', estimate: '64', amount: '20', ledger_entry_id: 503, ledger_amount: '0' }));
-    expect(card).toMatchObject({ amount: '$20', was: null, line: '帳單上沒有這筆回饋' });
+    expect(card).toMatchObject({ amount: '$20', was: null, line: '帳單上沒有這筆回饋', link: 503 });
   });
 
   it('forfeited past the cap', () => {
     const card = one(accrual({ state: 'forfeited', estimate: '8', amount: '0' }));
-    expect(card).toMatchObject({ amount: '$8', line: '本期上限已用完' });
+    expect(card).toMatchObject({ amount: '$8', line: '本期上限已用完', link: null });
   });
 
   it('forfeited after the row was deleted', () => {
     const card = one(accrual({ state: 'forfeited', amount: '13' }));
-    expect(card).toMatchObject({ amount: '$13', line: '回饋記錄已刪除，不會入帳' });
+    expect(card).toMatchObject({ amount: '$13', line: '回饋記錄已刪除，不會入帳', link: null });
   });
 
   it('points in every figure', () => {

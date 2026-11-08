@@ -18,7 +18,7 @@ export interface RewardCard {
   was: string | null;
   /** The state line. */
   line: string;
-  /** Reward row id for 「看回饋記錄 ›」 (posted cards only). */
+  /** Reward row id for 「看回饋記錄 ›」 (every card whose row exists). */
   link: number | null;
 }
 
@@ -48,14 +48,14 @@ function accrualCard(detail: EntryDetail, accrual: RewardAccrual, today: string,
   }
 
   let line: string;
-  let link: number | null = null;
+  // Every accrual whose reward row exists links to it, whatever the state.
+  const link = accrual.ledger_entry_id;
   if (state === 'estimated') {
     line = Number(amount) < Number(estimate)
       ? `算出 ${unit(estimate)}，本期上限只剩 ${unit(amount)}`
       : accrual.post_on ? `預計 ${shortDate(accrual.post_on)} 入帳到 ${account}` : '手動入帳';
   } else if (state === 'posted') {
     line = postedLine(row?.posted_date ?? accrual.post_on, account, today);
-    link = accrual.ledger_entry_id;
   } else if (state === 'bank_confirmed') {
     line = ledger === null || Number(ledger) === Number(amount) ? '與帳單相符' : `銀行實際給 ${unit(ledger)}`;
   } else if (accrual.ledger_entry_id !== null) {
