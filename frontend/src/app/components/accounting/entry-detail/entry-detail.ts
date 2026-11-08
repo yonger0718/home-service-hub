@@ -21,8 +21,6 @@ import {
   EntryKind,
   LedgerAccount,
   LedgerEntry,
-  RewardAccrual,
-  RewardAccrualState,
   ScheduleDefinitionDetail,
   ScheduleLineKind,
 } from '../../../models/accounting.model';
@@ -38,6 +36,8 @@ import { alignedRepostAmounts, schedulePill } from '../schedule-math';
 import { GroupNavState, closeGroupPage, groupCommands, inPlaceState, readGroupNavState } from '../split-group/group-nav';
 import { AppEntryEinvoiceCardComponent } from './einvoice-card';
 import { AppEntryRewardRepriceCardComponent } from './reward-reprice-card';
+import { RewardAmountText } from './reward-cards';
+import { AppEntryRewardSectionComponent } from './reward-section';
 import { storedGroupNet } from './split-card';
 
 const FX_SOURCE_LABELS: Record<string, string> = {
@@ -69,7 +69,7 @@ interface Chip {
 @Component({
   selector: 'app-entry-detail',
   standalone: true,
-  imports: [RouterLink, LockBannerComponent, AppEntryEinvoiceCardComponent, AppEntryRewardRepriceCardComponent],
+  imports: [RouterLink, LockBannerComponent, AppEntryEinvoiceCardComponent, AppEntryRewardRepriceCardComponent, AppEntryRewardSectionComponent],
   templateUrl: './entry-detail.html',
   styleUrl: './entry-detail.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -186,21 +186,22 @@ export class EntryDetailComponent implements OnInit {
   readonly today = todayIso();
   readonly kindLabels = ENTRY_KIND_LABELS;
   readonly formatMoney = formatMoney;
-  readonly accrualStateLabels: Record<RewardAccrualState, string> = {
-    estimated: '預估', posted: '已入帳', bank_confirmed: '銀行確認', forfeited: '未獲得',
-  };
   readonly slashDate = slashDate;
 
   /** A reward figure in its unit (#294): money when it pays into this entry's account or a card, else the number
    * followed by the reward account's name (points / miles accounts carry TWD as currency but are no money). */
   rewardAmount(value: string, accountId: number, accountName: string, currency: string, sign = false): string {
     const account = this.accounts().find(candidate => candidate.id === accountId);
-    if (accountId === this.detail()?.account_id || account === undefined || account.is_credit) {
+    if (accountId === this.detail()?.account_id || account === undefined || account.is_credit || account.cash_equivalent === true) {
       return formatMoney(value, currency, { sign });
     }
     const body = formatNumber(value, currency);
     return `${sign && Number(value) > 0 && body !== '0' ? '+' : ''}${body} ${accountName}`;
   }
+
+  /** The 回饋 section's figure formatter; an arrow so it keeps `this` when passed as an input. */
+  readonly rewardText: RewardAmountText = (value, accountId, accountName, currency, sign) =>
+    this.rewardAmount(value, accountId, accountName, currency, sign);
 
   /** A reprice-card figure (#306) in the unit of the accrual's reward account. */
   readonly repriceAmount = (accrualId: number, value: string): string => {
@@ -210,11 +211,6 @@ export class EntryDetailComponent implements OnInit {
       ? this.rewardAmount(value, accrual.reward_account_id, accrual.reward_account_name, detail.currency)
       : formatMoney(value, detail?.currency ?? 'TWD');
   };
-
-  /** The bank's figure once confirmed (the reward row's amount), else the engine's allotted amount. */
-  accrualValue(accrual: RewardAccrual): string {
-    return accrual.state === 'bank_confirmed' && accrual.ledger_amount != null ? accrual.ledger_amount : accrual.amount;
-  }
 
   readonly locked = computed(() => this.detail()?.locked ?? false);
   readonly children = computed(() => this.detail()?.children ?? []);
@@ -513,10 +509,6 @@ export class EntryDetailComponent implements OnInit {
           }
         },
       });
-  }
-
-  rewardWhen(reward: LedgerEntry): string {
-    return reward.posted_date > this.today ? `將於 ${shortDate(reward.posted_date)} 入帳` : `${shortDate(reward.posted_date)} 入帳`;
   }
 
   kindLabel(kind: EntryKind): string {

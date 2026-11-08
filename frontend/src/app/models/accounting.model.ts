@@ -227,6 +227,8 @@ export interface LedgerAccount {
   is_archived: boolean;
   include_in_total: boolean;
   is_credit: boolean;
+  /** 「1 點 = 1 元」 points account counted as money (#323 A2); absent from older APIs. */
+  cash_equivalent?: boolean;
   closing_day: number | null;
   due_rule: DueRule | null;
   due_value: number | null;

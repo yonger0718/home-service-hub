@@ -1,0 +1,26 @@
+@if (visible()) {
+  <div class="dsec">回饋</div>
+  @for (card of cards(); track card.key) {
+    <article class="reward-card" [attr.data-state]="card.state">
+      <div class="reward-head">
+        <b class="reward-name">{{ card.name }}</b>
+        <app-reward-state-tag [state]="card.state" />
+      </div>
+      <div>
+        @if (card.state === 'forfeited') {
+          <s class="reward-amount">{{ card.amount }}</s>
+        } @else {
+          <span class="reward-amount">{{ card.amount }}</span>
+          @if (card.was) {
+            <s class="reward-was">{{ card.was }}</s>
+          }
+        }
+      </div>
+      <p class="reward-note">{{ card.line }}</p>
+      @if (card.link !== null) {
+        <a class="reward-link" [routerLink]="['/accounting/entries', card.link]">看回饋記錄 ›</a>
+      }
+    </article>
+  }
+  <ng-content />
+}

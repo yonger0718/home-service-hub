@@ -96,26 +96,9 @@
       </div>
     }
 
-    <app-entry-reward-reprice-card [detail]="d" [amountText]="repriceAmount" (changed)="load(d.id, true)" />
-
-    @if (d.rewards.length) {
-      <div class="dsec">紅利回饋</div>
-      @for (reward of d.rewards; track reward.id) {
-        <a class="dline reward-line" [routerLink]="['/accounting/entries', reward.id]">
-          <span>◉ {{ reward.name || '紅利回饋' }} · {{ rewardWhen(reward) }}</span>
-          <span class="pos">{{ rewardAmount(reward.amount, reward.account_id, reward.account_name, reward.currency, true) }}</span>
-        </a>
-      }
-    }
-
-    @if (d.accruals.length) {
-      <div class="dsec">預估回饋</div>
-      @for (accrual of d.accruals; track accrual.id) {
-        <div class="dline accrual-line" [attr.data-state]="accrual.state">
-          <span>{{ accrual.rule_name }} {{ rewardAmount(accrualValue(accrual), accrual.reward_account_id, accrual.reward_account_name, d.currency) }} · {{ accrualStateLabels[accrual.state] }}</span>
-        </div>
-      }
-    }
+    <app-entry-reward-section [detail]="d" [amountText]="rewardText" [today]="today">
+      <app-entry-reward-reprice-card [detail]="d" [amountText]="repriceAmount" (changed)="load(d.id, true)" />
+    </app-entry-reward-section>
 
     <app-entry-einvoice-card [detail]="d" (changed)="load(d.id, true)" />
 
