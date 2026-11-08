@@ -8,7 +8,6 @@ import {
   totalChange,
   asOfText,
   axisParts,
-  forecastNote,
   hatchLines,
   runningForecast,
   bucketText,
@@ -426,12 +425,4 @@ describe('running forecast (solid to date, dashed 預估)', () => {
     expect(runningForecast({ toDate: 100, typical: 400, ...NOV, today: '2026-11-30' })).toBeNull();
   });
 
-  it('explains the forecast in one muted line', () => {
-    const paced = runningForecast({ toDate: 12300, typical: 36000, ...NOV, today: '2026-11-08' })!;
-    expect(forecastNote('11 月', paced, '2026-11-08', dollars)).toBe('11 月預估 $38,700 ＝ 至 11/8 $12,300 ＋ 平均 $36,000 × 剩 22/30 天');
-    const floored = runningForecast({ toDate: 12300, typical: 36000, ...NOV, today: '2026-11-08', recorded: 45000 })!;
-    expect(forecastNote('11 月', floored, '2026-11-08', dollars)).toBe('11 月預估 $45,000（含 11/8 之後已記的帳）');
-    const counted = runningForecast({ toDate: 12, typical: 30, ...NOV, today: '2026-11-08' })!;
-    expect(forecastNote('11 月', counted, '2026-11-08', (n: number) => `${n0(n)} 筆`)).toBe('11 月預估 34 筆 ＝ 至 11/8 12 筆 ＋ 平均 30 筆 × 剩 22/30 天');
-  });
 });

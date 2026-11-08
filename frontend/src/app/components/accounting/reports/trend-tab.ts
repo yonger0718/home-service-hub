@@ -1,10 +1,11 @@
-import { ChangeDetectionStrategy, Component, computed, inject, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, input, output, signal } from '@angular/core';
 
 import { BreakdownResponse, TREND_ALL, TrendResponse } from '../../../models/reports.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import type { LoadState } from './reports';
 import {
   BarGeometry,
+  BarTip,
   Change,
   ReportPeriod,
   RunningForecast,
@@ -18,8 +19,8 @@ import {
   compareTitle,
   daysInMonth,
   dollars,
-  forecastNote,
   isRunning,
+  md,
   metricTotal,
   monthAverage,
   n0,
@@ -35,6 +36,7 @@ import {
   seriesColor,
   toDateNouns,
   tickLabel,
+  tipPlacement,
   totalChange,
   windowEmpty,
   yOf,
@@ -179,11 +181,51 @@ export class ReportTrendComponent {
     }
     return runningForecast({ toDate, typical: this.average(), start, end, today: this.today(), recorded });
   });
-  readonly forecastNote = computed(() => {
-    const forecast = this.forecast();
-    const buckets = this.trend()?.buckets ?? [];
-    return forecast && buckets.length ? forecastNote(bucketText(buckets[buckets.length - 1].start, 'month', false), forecast, this.today(), dollars) : null;
+
+  /** The tapped month (its bucket start); null shows no tip. A new category closes it. */
+  readonly picked = signal<string | null>(null);
+  private readonly closeOnSeries = effect(() => {
+    this.series();
+    this.picked.set(null);
   });
+  /** One tap target per month: the whole column, so a thin phone bar is easy to hit. */
+  readonly hits = computed(() => {
+    const buckets = this.trend()?.buckets ?? [];
+    const { plot } = this.layout();
+    const slot = plot.width / Math.max(buckets.length, 1);
+    return buckets.map((bucket, index) => ({
+      key: bucket.start,
+      x: (plot.left + slot * index).toFixed(1),
+      y: plot.top.toFixed(1),
+      width: slot.toFixed(1),
+      height: plot.height.toFixed(1),
+    }));
+  });
+  /** The tapped month's figure; the running month shows 實際 and 預估. */
+  readonly tip = computed<BarTip | null>(() => {
+    const key = this.picked();
+    const buckets = this.trend()?.buckets ?? [];
+    const index = buckets.findIndex(bucket => bucket.start === key);
+    if (index < 0) return null;
+    const bar = this.bars()[index];
+    const spansYears = buckets[0].start.slice(0, 4) !== buckets[buckets.length - 1].start.slice(0, 4);
+    const name = bucketText(buckets[index].start, 'month', spansYears);
+    const value = this.values()[index];
+    const forecast = bar.running ? this.forecast() : null;
+    const title = bar.running && !this.whole() ? `${name}（至 ${md(this.today(), this.today())}）` : name;
+    const rows = forecast
+      ? [{ label: '實際', value: dollars(value) }, { label: '預估', value: dollars(forecast.value) }]
+      : [{ label: null, value: dollars(value) }];
+    const top = Math.min(Number(bar.y), bar.forecast ? Number(bar.forecast.y) : Infinity);
+    const { width, height } = this.layout();
+    return { title, rows, ...tipPlacement(Number(bar.cx), top, width, height) };
+  });
+
+  /** A tap on a month toggles its tip; a tap elsewhere on the chart closes it. */
+  pickBar(key: string, event: Event): void {
+    event.stopPropagation();
+    this.picked.update(current => (current === key ? null : key));
+  }
   private readonly max = computed(() => niceCeiling(Math.max(...this.values(), this.average() ?? 0, this.forecast()?.value ?? 0, 0)));
 
   readonly bars = computed<Bar[]>(() => {

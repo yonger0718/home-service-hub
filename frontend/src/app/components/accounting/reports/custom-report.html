@@ -256,7 +256,8 @@
             <span class="cr-hint">圓環只在單一分組、沒有細分時可用。</span>
           </div>
         } @else {
-          <svg class="cr-chart" [attr.viewBox]="viewBox()" role="img" [attr.aria-label]="chartAria()">
+          <div class="cr-plot">
+          <svg class="cr-chart" [attr.viewBox]="viewBox()" role="img" [attr.aria-label]="chartAria()" (click)="picked.set(null)">
             @for (line of grid(); track line.label) {
               <line class="cr-grid" [attr.x1]="layout().plot.left" [attr.x2]="layout().plot.left + layout().plot.width" [attr.y1]="line.y" [attr.y2]="line.y"></line>
               <text class="cr-tick" [attr.x]="layout().plot.left - 8" [attr.y]="line.textY" text-anchor="end">{{ line.label }}</text>
@@ -279,8 +280,19 @@
               <text class="cr-x" [attr.x]="x.x" [attr.y]="labelY()" text-anchor="middle">@if (x.parts; as parts) {<tspan class="cr-x-month">{{ parts.month }}</tspan>@if (parts.year) {<tspan class="cr-x-year" [attr.x]="x.x" dy="13">{{ parts.year }}</tspan>}} @else {{{ x.label }}}</text>
               <text class="cr-total" [attr.x]="x.x" [attr.y]="x.totalY" text-anchor="middle">{{ x.total }}</text>
             }
+            @for (target of hits(); track target.key) {
+              <rect class="cr-hit" [class.picked]="target.key === picked()" [attr.x]="target.x" [attr.y]="target.y" [attr.width]="target.width" [attr.height]="target.height" (click)="pickBar(target.key, $event)"></rect>
+            }
           </svg>
-          @if (chart() === 'bar' && forecastNote(); as note) { <p class="cr-forecast-note">{{ note }}</p> }
+          @if (tip(); as t) {
+            <div class="cr-tip" [class.start]="t.align === 'start'" [class.end]="t.align === 'end'" [style.left.%]="t.left" [style.top.%]="t.top">
+              <b class="cr-tip-title">{{ t.title }}</b>
+              @for (row of t.rows; track $index) {
+                <span class="cr-tip-row">@if (row.label) {<span class="cr-tip-key">{{ row.label }}</span>&ngsp;}<b>{{ row.value }}</b></span>
+              }
+            </div>
+          }
+          </div>
         }
       </div>
     }

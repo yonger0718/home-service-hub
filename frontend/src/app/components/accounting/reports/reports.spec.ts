@@ -1288,7 +1288,7 @@ describe('AccountingReportsComponent', () => {
       expect(el.querySelector('.tr-average-label')).toBeNull();
     });
 
-    it('draws the running month solid with a dashed 預估 box on top, and explains it under the chart', async () => {
+    it('draws the running month solid with a dashed 預估 box on top, without a formula line', async () => {
       const { el } = await openTrend([2026, 11, 7], { toDate: FOOD });
       const bar = Array.from(el.querySelectorAll('.tr-bar')).at(-1)!;
       const box = el.querySelector('.tr-chart .tr-forecast')!;
@@ -1298,14 +1298,61 @@ describe('AccountingReportsComponent', () => {
       expect(box.getAttribute('x')).toBe(bar.getAttribute('x'));
       expect(el.querySelector('.tr-chart .tr-hatch')).toBeNull();
       expect(bar.classList.contains('hatched')).toBe(false);
+      expect(el.querySelector('.tr-forecast-note')).toBeNull();
+      expect(el.querySelector('.tr-tip')).toBeNull();
       // 4,233 + 37,566 × 23/30 = 33,034.
-      expect(el.querySelector('.tr-forecast-note')?.textContent?.trim()).toBe('11 月預估 $33,034 ＝ 至 11/7 $4,233 ＋ 平均 $37,566 × 剩 23/30 天');
       expect(el.querySelector('.tr-chart')?.getAttribute('aria-label')).toContain('11 月 進行中（至 11/7） 4,233，預估 33,034');
     });
 
-    it('keeps the forecast at what is already recorded for the month when that is higher', async () => {
-      const { el } = await openTrend([2026, 11, 7], { toDate: FOOD, whole: [row('2', '餐飲', 50000, 12)] });
-      expect(el.querySelector('.tr-forecast-note')?.textContent?.trim()).toBe('11 月預估 $50,000（含 11/7 之後已記的帳）');
+    describe('tapping a month', () => {
+      const tip = (el: HTMLElement) => el.querySelector('.tr-tip');
+      const tipText = (el: HTMLElement) => Array.from(tip(el)?.children ?? []).map(child => child.textContent!.replace(/\s+/g, ' ').trim());
+      const hit = (el: HTMLElement, index: number) => el.querySelectorAll<SVGRectElement>('.tr-chart .tr-hit')[index];
+      const tap = (harness: { detectChanges(): void }, target: Element) => {
+        target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        harness.detectChanges();
+      };
+
+      it('shows a finished month figure and hides it on a second tap', async () => {
+        const { harness, el } = await openTrend([2026, 11, 7], { toDate: FOOD });
+        expect(el.querySelectorAll('.tr-chart .tr-hit')).toHaveLength(12);
+        tap(harness, hit(el, 10));
+        expect(tipText(el)).toEqual(['2026 年 10 月', '$41,890']);
+        tap(harness, hit(el, 10));
+        expect(tip(el)).toBeNull();
+      });
+
+      it('shows the running month to date and its 預估', async () => {
+        const { harness, el } = await openTrend([2026, 11, 7], { toDate: FOOD });
+        tap(harness, hit(el, 11));
+        expect(tipText(el)).toEqual(['2026 年 11 月（至 11/7）', '實際 $4,233', '預估 $33,034']);
+        expect(tip(el)!.classList.contains('end')).toBe(true);
+      });
+
+      it('shows the 預估 at what the month already holds when that is higher', async () => {
+        const { harness, el } = await openTrend([2026, 11, 7], { toDate: FOOD, whole: [row('2', '餐飲', 50000, 12)] });
+        tap(harness, hit(el, 11));
+        expect(tipText(el)).toEqual(['2026 年 11 月（至 11/7）', '實際 $4,233', '預估 $50,000']);
+      });
+
+      it('anchors the first month to the left and closes on a tap on the chart background', async () => {
+        const { harness, el } = await openTrend([2026, 11, 7], { toDate: FOOD });
+        tap(harness, hit(el, 0));
+        expect(tip(el)!.classList.contains('start')).toBe(true);
+        tap(harness, el.querySelector('.tr-chart')!);
+        expect(tip(el)).toBeNull();
+      });
+
+      it('closes when another category is picked', async () => {
+        const { harness, el, today } = await openTrend([2026, 11, 7], { toDate: FOOD });
+        tap(harness, hit(el, 10));
+        expect(tip(el)).not.toBeNull();
+        el.querySelectorAll<HTMLButtonElement>('.tr-chips button')[1].click();
+        harness.detectChanges();
+        answerTrend(pending(), today, { toDate: FOOD });
+        harness.detectChanges();
+        expect(tip(el)).toBeNull();
+      });
     });
 
     it('hatches the running month instead when there is no average to forecast from', async () => {
