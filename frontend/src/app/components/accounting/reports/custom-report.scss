@@ -560,6 +560,8 @@
   flex-direction: column;
   font-size: var(--fs-sm);
   gap: 2px;
+  /* tipHeight() in report-math mirrors these: 18px lines, 2px gaps, 6px vertical padding, 1px border. */
+  line-height: 18px;
   padding: 6px 10px;
   pointer-events: none;
   position: absolute;

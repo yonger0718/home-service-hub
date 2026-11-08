@@ -586,8 +586,15 @@ export interface BarTip {
 export function tipPlacement(cx: number, top: number, width: number, height: number, rows: number): Pick<BarTip, 'left' | 'top' | 'align' | 'below'> {
   const align = cx < width * 0.2 ? 'start' : cx > width * 0.8 ? 'end' : 'center';
   const anchor = Math.max(top, 0);
-  const needed = (rows + 1) * 18 + 12;
+  // The tip's box, pinned by its CSS: (title + rows) lines of 18px, 2px gaps between them, 6px padding and 1px border
+  // on each side, plus the 6px it hangs off the anchor.
+  const needed = tipHeight(rows) + 6;
   return { left: Math.round((cx / width) * 1000) / 10, top: Math.round((anchor / height) * 1000) / 10, align, below: anchor < needed };
+}
+
+/** The rendered height of a tip with a title and `rows` lines; the `.tr-tip` / `.cr-tip` CSS pins each term. */
+export function tipHeight(rows: number): number {
+  return (rows + 1) * 18 + rows * 2 + 2 * 6 + 2 * 1;
 }
 
 /** A tip read as one accessible name: `2026 年 11 月（至 11/7） 實際 $4,233 預估 $33,034`. */

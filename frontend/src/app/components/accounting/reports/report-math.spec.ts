@@ -10,6 +10,7 @@ import {
   axisParts,
   hatchLines,
   runningForecast,
+  tipHeight,
   tipPlacement,
   bucketText,
   monthAverage,
@@ -431,8 +432,11 @@ describe('running forecast (solid to date, dashed 預估)', () => {
 describe('tap tip placement', () => {
   it('hangs above the bar, and flips below when the bar reaches too close to the top for its rows', () => {
     expect(tipPlacement(180, 120, 358, 212, 2)).toEqual({ left: 50.3, top: 56.6, align: 'center', below: false });
-    // Two rows need about 66 units above the anchor; a bar topping out at 30 leaves no room.
+    // Two rows: 3 lines × 18 + 2 gaps × 2 + padding 12 + border 2 = 72, plus the 6 it hangs off the anchor = 78.
+    expect(tipHeight(2)).toBe(72);
     expect(tipPlacement(180, 30, 358, 212, 2)).toMatchObject({ top: 14.2, below: true });
+    expect(tipPlacement(180, 77.9, 358, 212, 2)).toMatchObject({ below: true });
+    expect(tipPlacement(180, 78, 358, 212, 2)).toMatchObject({ below: false });
     expect(tipPlacement(20, 120, 358, 212, 1)).toMatchObject({ align: 'start' });
     expect(tipPlacement(340, 120, 358, 212, 1)).toMatchObject({ align: 'end' });
   });
