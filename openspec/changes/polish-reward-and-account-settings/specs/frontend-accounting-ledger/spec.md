@@ -4,7 +4,7 @@
 
 The SPA SHALL provide `/accounting/accounts/:id/settings` and `/accounting/accounts/new`.
 
-**Header.** At the top: the account's logo (uploaded image, else bundled brand logo, else its icon), its name and a status line (kind, and for cards the amount due and its debit date).
+**Header.** At the top: the account's logo (uploaded image, else bundled brand logo, else its icon), its name and a status line (kind and current balance, and for cards the amount due and its debit date).
 
 **Sections.** The form SHALL be in sections, in this order:
 
@@ -12,14 +12,14 @@ The SPA SHALL provide `/accounting/accounts/:id/settings` and `/accounting/accou
 - **外觀:** a preview and a three-way switch 上傳圖片 / 內建 logo / 文字＋顏色.
   - 上傳圖片: 選擇檔案 (and drop) with the limits line; 「移除圖片」 only when an uploaded image exists. On `/accounting/accounts/new`, upload is disabled with 「先建立帳戶，再上傳 logo」.
   - 內建 logo: the bundled logo grid with `無` first.
-  - 文字＋顏色: the icon text and a colour swatch row.
+  - 文字＋顏色: the icon text (up to 16 characters, as today) and a colour swatch row.
   - A line saying which source is shown. The upload > logo > icon precedence is unchanged.
 - **信用卡:** a 信用帳戶 switch in the section header. When on, it reveals:
-  - 繳款期限, fixed day or days after closing, with a stepper and the computed due date;
+  - 繳款期限: 未設定, fixed day or days after closing, with a stepper and the computed due date when set;
   - 信用額度;
   - 額度共用, a multi-select of credit accounts;
   - 主帳戶 and 自動扣繳, pickers.
-- **回饋規則:** the current window in the header, the account's rules as rows (requirement "Reward rule rows"), and ＋ 新增規則.
+- **回饋規則:** the current window and 「所有卡片的規則 ›」 in the header, the account's rules as rows (requirement "Reward rule rows"), and ＋ 新增規則.
 - **國外交易:** a switch in the header revealing 費率 (%), 計算方式 and 退款時退回.
 - **其他:** 備註, 還原 MOZE 設定, 封存帳戶, and 刪除帳戶 (enabled only with no entries).
 
@@ -133,6 +133,14 @@ Overview figures SHALL use the rule's reward unit: money, or the number and the 
 - **GIVEN** a card with a money rule and a rule paying points into 亞洲萬里通
 - **THEN** the card SHALL show a money total and a separate 亞洲萬里通 total, and the header's money total SHALL exclude the points
 
+#### Scenario: Points unit survives a filter
+- **GIVEN** the overview opened with `?account_id=<that card>` only
+- **THEN** the points rule's figures SHALL still read in 亞洲萬里通, taken from the usage row's unit
+
+#### Scenario: Mixed windows on one card
+- **GIVEN** a card with a statement-cycle rule and a calendar-month rule
+- **THEN** the card header SHALL show only 「結帳日 N 號」 and each rule row its own 「本期 …」
+
 ### Requirement: Reward overview rule lines
 
 Each rule row on an overview card SHALL show:
@@ -141,7 +149,7 @@ Each rule row on an overview card SHALL show:
 - a state tag only when the rule is not active, or is 基本;
 - the posting summary;
 - for an active rule with a cap, the cap bar;
-- for any other rule, one muted line instead of the bar.
+- for an active rule without a cap, 「無上限 · 本期 … 已入帳 + … 預估」; for any other rule, one muted line instead of the bar.
 
 #### Scenario: Rate chip beside the label
 - **GIVEN** 玉山 Pi 卡's 全聯・家樂福加碼 5% has a $200 cap, $180 posted and $13 estimated this period
@@ -157,6 +165,11 @@ Each rule row on an overview card SHALL show:
 #### Scenario: Accounts without rules
 - **GIVEN** 匯豐 現金回饋卡 has no rules
 - **THEN** it SHALL appear as a chip under 沒有規則的卡片, not as a card
+
+#### Scenario: Expired rules banner
+- **GIVEN** an enabled rule whose end date has passed
+- **WHEN** the overview renders under 全部
+- **THEN** a warning banner SHALL show with 只看已過期, which selects the 已過期 chip
 
 ### Requirement: Reward cap bar
 
@@ -207,7 +220,7 @@ The entry detail SHALL show one 回饋 section, after the tags and debt state an
 Each card of the 回饋 section SHALL show:
 
 - the rule name and the reward state tag;
-- the amount in the reward's unit (money, or the number and the points account's name): the reward row's amount when present, else the accrual's capped amount, with the raw estimate struck through beside it when they differ. For 未獲得 the accrual's amount is struck through;
+- the amount in the reward's unit (money, or the number and the points account's name): the reward row's amount when present, else the accrual's capped amount, with the raw estimate struck through beside it when they differ. For 未獲得 the expected figure is struck through: the accrual's amount when above 0, else its estimate;
 - a line by state, as specified by 「Entry reward state lines」.
 
 #### Scenario: Points reward
@@ -232,7 +245,16 @@ The line on an entry reward card SHALL read by state:
 - **GIVEN** an accrual of $13 whose reward row the owner deleted
 - **THEN** its card SHALL show 未獲得, $13 struck through and 「回饋記錄已刪除，不會入帳」
 
+#### Scenario: Forfeited by the statement
+- **GIVEN** an accrual of $10 whose reward row a statement set to 0
+- **THEN** its card SHALL show 未獲得, $10 struck through and 「帳單上沒有這筆回饋」
+
+#### Scenario: Forfeited past the cap
+- **GIVEN** an accrual estimated at $8 that posted with amount 0 because the cap was used up
+- **THEN** its card SHALL show 未獲得, $8 struck through and 「本期上限已用完」
+
 #### Scenario: Posted
+- **GIVEN** 全聯 採買 on 玉山 Pi 卡 with two accruals whose reward rows posted on 12/15
 - **WHEN** the same entry is opened after 12/15
 - **THEN** both cards SHALL show 已入帳 and link to their reward rows, and no separate 紅利回饋 heading SHALL appear
 

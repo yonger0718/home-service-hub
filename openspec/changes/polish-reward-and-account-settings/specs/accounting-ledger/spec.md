@@ -21,3 +21,16 @@ Each account in `GET /reward-rules` SHALL also carry `icon`, `logo` and `logo_ha
 - **GIVEN** a card without its own closing day whose combined parent closes on the 25th
 - **WHEN** `GET /reward-rules` is read
 - **THEN** that card's `closing_day` SHALL be 25
+
+#### Scenario: Header fields match the accounts list
+- **GIVEN** a card with an uploaded logo, the slug `esun` and the icon 💳
+- **WHEN** `GET /reward-rules` is read
+- **THEN** its `icon`, `logo` and `logo_hash` SHALL equal that account's values in `GET /accounts`
+
+### Requirement: Reward usage unit
+
+Each usage row (`GET /accounts/{id}/reward-usage` and the overview's `usage`) SHALL carry `reward_account_id`, `reward_account_name` and `reward_is_money` for the reward account of the row's first rule in rule order. `reward_is_money` SHALL be true when that account is the card itself or unset, or is a credit account, archived or not.
+
+#### Scenario: Points account
+- **GIVEN** a rule paying into the archived non-credit account 亞洲萬里通
+- **THEN** its usage row SHALL have `reward_account_name` 亞洲萬里通 and `reward_is_money` false

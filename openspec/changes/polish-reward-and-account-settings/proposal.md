@@ -22,7 +22,7 @@ The owner reviewed the redesign on the canvas (`design_handoff_v3/design_refs/Re
 
 ## What Changes
 
-- **API (accounting-service):** `GET /reward-rules` adds to each account `usage` (the same rows as `GET /accounts/{id}/reward-usage` for the current window) and the header fields `icon`, `logo`, `logo_hash` and the effective `closing_day`. The overview stays one request instead of one per account plus `/accounts`.
+- **API (accounting-service):** `GET /reward-rules` adds to each account `usage` (the same rows as `GET /accounts/{id}/reward-usage` for the current window) and the header fields `icon`, `logo`, `logo_hash` and the effective `closing_day`; every usage row (also on `/reward-usage`) carries its reward unit (`reward_account_id`, `reward_account_name`, `reward_is_money`). The overview stays one request instead of one per account plus `/accounts`.
 - **回饋規則總覽**
   - The 記帳設定 item is current, with a 「‹ 記帳設定」 back link.
   - Accounts show as a two-column card grid at ≥ 1024 px.
@@ -67,7 +67,7 @@ None.
 
 ## Impact
 
-- **API:** `reward_rule_service.overview` and `RewardRuleOverviewAccountOut` (add `usage`, `icon`, `logo`, `logo_hash`, `closing_day`), plus tests.
+- **API:** `reward_rule_service.overview` and `RewardRuleOverviewAccountOut` (add `usage`, `icon`, `logo`, `logo_hash`, `closing_day`), `reward_engine.usage` / `RewardUsageOut` (unit fields), plus tests.
 - **SPA:**
   - `components/accounting/reward-rules/*`;
   - `components/accounting/account-settings/*`, split into section components;

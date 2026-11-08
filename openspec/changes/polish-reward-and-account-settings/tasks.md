@@ -9,10 +9,11 @@
 
 - [ ] 1.1 `usage` on each overview account (D1)
   - plus `icon`, `logo`, `logo_hash`, effective `closing_day` (`card_closing_day`)
+- [ ] 1.1a Usage unit on every usage row: `reward_account_id`, `reward_account_name`, `reward_is_money` (D1a)
   - same computation as `/reward-usage`
   - unaffected by the filters
   - `[]` without active rules
-- [ ] 1.2 Tests: parity with `/accounts/{id}/reward-usage`; shared cap row; `state=expired` keeps usage; combined card inherits its parent's `closing_day`
+- [ ] 1.2 Tests: parity with `/accounts/{id}/reward-usage`; shared cap row; `state=expired` keeps usage; combined card inherits its parent's `closing_day`; `icon`/`logo`/`logo_hash` equal `/accounts`; usage unit for a points account, archived, and for the card itself
 
 ## 2. Shared pieces (PR B)
 
@@ -31,7 +32,8 @@
   - near-cap row
   - chips for rules-less accounts
   - one request for the page
-  - points rule's bar and card total in points; header money total excludes points
+  - points rule's bar and card total in points; header money total excludes points; unit kept under `?account_id=`
+  - expired banner and 只看已過期
   - mixed windows on one card: per-row 本期 line
 
 ## 4. 帳戶設定 (PR C)
@@ -42,7 +44,7 @@
 - [ ] 4.4 Rule rows (D6): one line, bar, switch, ⋯ menu, drag reorder with one order call
 - [ ] 4.5 Phone: grouped list, sheet controls, 放棄 / 儲存 bar replacing the floating button
 - [ ] 4.6 Save with errors scrolls to the first invalid section and marks its chip
-- [ ] 4.7 Tests: the scenarios of "Account settings page" and "Reward rule rows"
+- [ ] 4.7 Tests: the scenarios of "Account settings page" and "Reward rule rows"; 繳款期限 未設定 saves `due_rule` null; icon accepts 16 characters; 「來自 MOZE」 tag kept
 
 ## 5. Entry detail (PR D)
 

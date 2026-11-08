@@ -23,9 +23,11 @@ Each account also gains the fields the card header needs, so the page stays one 
 
 ### D1a. Reward units
 
-Rewards are not always money. A rule whose reward account is neither the card itself nor another credit account (points, miles) pays in that account's units; the entry detail already shows those as the number followed by the account name (#294, `EntryDetail.rewardAmount`). Every reward figure in this change follows the same rule:
+Rewards are not always money. A rule whose reward account is neither the card itself nor another credit account (points, miles) pays in that account's units; the entry detail already shows those as the number followed by the account name (#294, `EntryDetail.rewardAmount`). Every reward figure in this change follows the same rule.
 
-- the cap bar text and accessible name, the card's period total and the rule-sheet header use the unit of the rule's reward account (resolved through the overview's own `accounts`, which list every non-archived account; an account not found falls back to money, as `rewardAmount` does);
+The server decides the unit, so no filter can hide it: each usage row (`RewardUsageOut`, so both `/reward-rules` and `/accounts/{id}/reward-usage`) gains `reward_account_id`, `reward_account_name` and `reward_is_money` — the reward account of the row's first rule in rule order (a shared-cap group pays into one account in practice); `reward_is_money` is true when that account is the card itself (or unset) or a credit account, archived or not. The SPA never resolves units through the overview's `accounts` (a `?account_id=` filter or an archived points account would drop it and count points as money).
+
+- the cap bar text and accessible name and the card's period total use the usage row's unit;
 - a card whose usage rows mix units shows one total per unit;
 - the header's 「本期回饋合計」 sums money only, followed by one 「＋ N 點數帳戶名」 part per non-money unit;
 - the entry reward cards use `rewardAmount` unchanged.
@@ -41,7 +43,7 @@ One `CapBar` component is used on the overview and in account settings. The rule
 - **Estimated part:** `--app-primary` at 30 % opacity.
 - **At (used + estimated) / cap ≥ 0.9,** both parts and the text switch to the warning banner ink (`--app-banner-warn` from the notification change; until that lands, the current warning ink).
 - **Text:** 「$300 / $500 · 剩 $200」, or 「… · 快到上限」 at ≥ 90 %, in the rule's reward unit (D1a).
-- **Without a cap:** no bar, only 「無上限 · 本期 $X 已入帳 + $Y 預估」.
+- **Without a cap:** no bar, only 「無上限 · 本期 $X 已入帳 + $Y 預估」 (the overview's and the settings rows' muted line for an active uncapped rule).
 - **Accessible name:** 「本期已入帳 $236，預估 $64，上限 $500」.
 
 ### D3. Overview layout
@@ -62,7 +64,7 @@ The page is split into section components. Each section keeps the fields' existi
 |---|---|
 | 基本 | 名稱, 主幣種 (read-only note when locked), 帳戶分組, 初始金額, 帳單週期 (結帳日 stepper with an empty 月底 state and the cycle preview, for every account as today), 納入總餘額 |
 | 外觀 | preview, plus a switch 上傳圖片 / 內建 logo / 文字＋顏色 (D5) |
-| 信用卡 | 信用帳戶 switch in the section header. When on: 繳款期限 (結帳後 / 每月固定日 switch, stepper, preview), 信用額度, 額度共用, 主帳戶, 自動扣繳 |
+| 信用卡 | 信用帳戶 switch in the section header. When on: 繳款期限 (未設定 / 結帳後 / 每月固定日, a three-way switch keeping today's 未設定 → `due_rule` null; stepper and preview when set), 信用額度, 額度共用, 主帳戶, 自動扣繳 |
 | 回饋規則 | the period in the header and 「所有卡片的規則 ›」; rule rows (D6); ＋ 新增規則 |
 | 國外交易 | switch in the header; 費率 (with a % suffix), 計算方式 switch, 退款時退回 |
 | 其他 | 備註; 還原 MOZE 設定 (when applicable); 封存帳戶 (switch, as today); 刪除帳戶 (danger outline, only without entries) |
@@ -89,7 +91,7 @@ Switching tabs does not clear the other sources. The precedence stays upload > l
 Each rule row has:
 
 - a drag handle;
-- the name, a rate chip, and a state tag only when the rule is not active (已停用 / 已過期 / 未開始) or is 基本;
+- the name, a rate chip, a state tag only when the rule is not active (已停用 / 已過期 / 未開始) or is 基本, and the 「來自 MOZE」 tag as today;
 - 「· 次期 15 號入帳」;
 - the `CapBar` underneath;
 - an enable switch;
@@ -104,7 +106,7 @@ One section, 回饋, sits where 紅利回饋 and 預估回饋 are now: after tag
 - **Line 1:** the rule name and the `RewardStateTag`.
 - **Line 2:** the amount, in the reward's unit (`rewardAmount`, D1a):
   - 預估 / 已入帳 / 銀行確認: `ledger_amount` when present, else `amount` (the capped allotment). When `estimate` differs from it (a cap cut it, or the bank paid another figure), `estimate` is struck through beside it.
-  - 未獲得: `amount` struck through and muted (a bank forfeit sets the row to 0; the struck figure is what was expected).
+  - 未獲得: the expected figure struck through and muted — `amount` when it is above 0 (a bank forfeit keeps it while the row goes to 0; a deleted row keeps it), else `estimate` (posted past the cap).
 - **Line 3, depending on the state** (every case is derivable from today's `RewardAccrualOut` fields; no API change):
   - 預估: 「預計 12/15 入帳到 玉山 Pi 卡」 (`post_on`, `reward_account_name`; 「手動入帳」 when `post_on` is null), or 「算出 $64，本期上限只剩 $20」 when `amount` < `estimate`. The entry detail does not load cap usage, so no 「本期 $x / $y」 here.
   - 已入帳: 「12/15 已入帳到 …」 and 「看回饋記錄 ›」, linking to `ledger_entry_id`.
