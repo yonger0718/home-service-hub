@@ -8,17 +8,25 @@ import {
   Change,
   ReportPeriod,
   barGeometry,
+  afterTodayText,
   axisParts,
+  baseChange,
   bucketText,
-  change,
   compareLabels,
   compareTitle,
+  isRunning,
+  monthAverage,
   n0,
   niceCeiling,
   num,
   periodNouns,
+  runningBucket,
+  runningCompareLabels,
+  runningSuffix,
   seriesColor,
+  toDateNouns,
   tickLabel,
+  windowEmpty,
   yOf,
 } from './report-math';
 
@@ -43,6 +51,7 @@ interface Chip {
 interface Bar extends BarGeometry {
   label: { month: string; year: string | null };
   last: boolean;
+  running: boolean;
 }
 
 interface CompareRow {
@@ -55,6 +64,17 @@ interface CompareRow {
   lastYear: string;
   monthChange: Change;
   yearChange: Change;
+}
+
+/** Which comparison columns the table shows, and how they read. */
+interface CompareColumns {
+  current: string;
+  previous: string | null;
+  lastYear: string | null;
+  monthChangeHead: string;
+  labels: { previous: string; lastYear: string };
+  /** The muted note naming a column left out because its window has no entries. */
+  hiddenNote: string | null;
 }
 
 /**
@@ -74,10 +94,16 @@ export class ReportTrendComponent {
   readonly expense = input<BreakdownResponse | null>(null);
   /** Expense by category compared with the same period last year. */
   readonly lastYear = input<BreakdownResponse | null>(null);
+  /** Expense by category over the whole period (no comparison); only while the period runs. */
+  readonly expenseWhole = input<BreakdownResponse | null>(null);
+  /** The whole-period view: only the current column, from `expenseWhole`. */
+  readonly whole = input(false);
+  readonly today = input.required<string>();
   readonly period = input.required<ReportPeriod>();
   /** The selected category id; null = everything. */
   readonly series = input<number | null>(null);
   readonly seriesChange = output<number | null>();
+  readonly toggleWhole = output<void>();
 
   private readonly layoutMode = inject(LayoutModeService);
   /** The phone drawing below 760 px, the desktop one from there (the SVG scales to the card either way). */
@@ -86,7 +112,9 @@ export class ReportTrendComponent {
   protected readonly plotLeft = computed(() => this.layout().plot.left);
   protected readonly plotRight = computed(() => this.layout().plot.left + this.layout().plot.width);
 
-  private readonly categoryRows = computed(() => (this.expense()?.rows ?? []).filter(row => row.key !== null && /^\d+$/.test(row.key)));
+  /** The response the table and the chips show: the whole period in the whole view, else the to-date one. */
+  private readonly shown = computed(() => (this.whole() ? (this.expenseWhole() ?? this.expense()) : this.expense()));
+  private readonly categoryRows = computed(() => (this.shown()?.rows ?? []).filter(row => row.key !== null && /^\d+$/.test(row.key)));
 
   readonly chips = computed<Chip[]>(() => [
     { id: null, label: '全部支出' },
@@ -106,13 +134,20 @@ export class ReportTrendComponent {
 
   private readonly seriesKey = computed(() => (this.series() === null ? TREND_ALL : String(this.series())));
   private readonly values = computed(() => (this.trend()?.buckets ?? []).map(bucket => num(bucket.values[this.seriesKey()])));
-  readonly average = computed(() => num(this.trend()?.average[this.seriesKey()]));
-  private readonly max = computed(() => niceCeiling(Math.max(...this.values(), this.average(), 0)));
+  /** D4: the average of the months with data through the last finished one; null draws no line. */
+  private readonly monthMean = computed(() =>
+    monthAverage((this.trend()?.buckets ?? []).map((bucket, index) => ({ start: bucket.start, value: this.values()[index] })), this.today()),
+  );
+  readonly average = computed(() => this.monthMean()?.average ?? null);
+  private readonly max = computed(() => niceCeiling(Math.max(...this.values(), this.average() ?? 0, 0)));
 
   readonly bars = computed<Bar[]>(() => {
     const buckets = this.trend()?.buckets ?? [];
     const geometry = barGeometry(this.values(), this.layout().plot, this.max());
-    return geometry.map((bar, index) => ({ ...bar, label: axisParts(buckets[index].start, index), last: index === geometry.length - 1 }));
+    return geometry.map((bar, index) => {
+      const last = index === geometry.length - 1;
+      return { ...bar, label: axisParts(buckets[index].start, index), last, running: last && runningBucket(buckets[index].start.slice(0, 7), 'month', this.today()) };
+    });
   });
   readonly grid = computed(() => {
     if (!this.layout().ticks) return [];
@@ -122,29 +157,87 @@ export class ReportTrendComponent {
       return { y: y.toFixed(1), textY: (y + 4).toFixed(1), label: tickLabel(value) };
     });
   });
-  readonly averageY = computed(() => yOf(this.average(), this.layout().plot, this.max()).toFixed(1));
-  readonly averageTextY = computed(() => (yOf(this.average(), this.layout().plot, this.max()) - 6).toFixed(1));
-  readonly averageLabel = computed(() => `${this.trend()?.buckets.length ?? 12} 個月平均 ${n0(this.average())}`);
+  readonly averageY = computed(() => yOf(this.average() ?? 0, this.layout().plot, this.max()).toFixed(1));
+  readonly averageTextY = computed(() => (yOf(this.average() ?? 0, this.layout().plot, this.max()) - 6).toFixed(1));
+  readonly averageLabel = computed(() => `${this.monthMean()?.months ?? 0} 個月平均 ${n0(this.average())}`);
   readonly chartAria = computed(() => {
     const buckets = this.trend()?.buckets ?? [];
     const values = this.values();
     const spansYears = buckets.length > 0 && buckets[0].start.slice(0, 4) !== buckets[buckets.length - 1].start.slice(0, 4);
-    return `${this.seriesName()}近 ${buckets.length} 個月：${buckets.map((bucket, index) => `${bucketText(bucket.start, 'month', spansYears)} ${n0(values[index])}`).join('、')}`;
+    const name = (bucket: { start: string }, index: number) => {
+      const text = bucketText(bucket.start, 'month', spansYears);
+      return index === buckets.length - 1 && runningBucket(bucket.start.slice(0, 7), 'month', this.today()) ? `${text} ${runningSuffix(this.today())}` : text;
+    };
+    return `${this.seriesName()}近 ${buckets.length} 個月：${buckets.map((bucket, index) => `${name(bucket, index)} ${n0(values[index])}`).join('、')}`;
   });
 
-  readonly nouns = computed(() => periodNouns(this.period()));
-  /** Phones fold the table to two lines per category; the changes then carry `比 9 月` / `比去年 10 月` themselves. */
-  readonly labels = computed(() => compareLabels(this.period()));
+  /** D1: the to-date columns while the period runs (and not in the whole view). */
+  private readonly toDate = computed(() => isRunning(this.period(), this.today()) && !this.whole());
+
   readonly compareTitle = computed(() => `比較 · ${compareTitle(this.period())}`);
 
+  /**
+   * The comparison columns. A running period shows `本月至今（…） / 上月同期 / 去年同期`; one comparison (`single`) is read
+   * from the `compare=last_year` response. A column whose window has no entries is dropped with its change column (D3);
+   * the whole view keeps the current column only.
+   */
+  readonly columns = computed<CompareColumns>(() => {
+    const period = this.period();
+    const running = this.toDate();
+    const nouns = running ? toDateNouns(period, this.today()) : periodNouns(period);
+    const labels = running ? runningCompareLabels(period, this.today()) : compareLabels(period);
+    const monthChangeHead = period.unit === 'month' && !nouns.single ? '月增減' : '增減';
+    if (this.whole()) return { current: periodNouns(period).current, previous: null, lastYear: null, monthChangeHead, labels, hiddenNote: null };
+    if (nouns.single) {
+      const empty = windowEmpty(this.singleSource());
+      return {
+        current: nouns.current,
+        previous: empty ? null : nouns.previous,
+        lastYear: null,
+        monthChangeHead,
+        labels,
+        hiddenNote: empty ? '去年同期沒有記錄，已隱藏比較欄' : null,
+      };
+    }
+    const previousEmpty = windowEmpty(this.expense());
+    const lastYearEmpty = windowEmpty(this.lastYear());
+    return {
+      current: nouns.current,
+      previous: previousEmpty ? null : nouns.previous,
+      lastYear: lastYearEmpty ? null : nouns.lastYear,
+      monthChangeHead,
+      labels,
+      hiddenNote: lastYearEmpty ? '去年同期沒有記錄，已隱藏比較欄' : previousEmpty ? '上一期沒有記錄，已隱藏比較欄' : null,
+    };
+  });
+
+  /** The one comparison of a `single` screen: last year's response while a period runs, else the previous one (the same window). */
+  private readonly singleSource = computed(() => (this.toDate() ? this.lastYear() : this.expense()));
+
+  /** R3: the rows dated after today, as rows(whole) − rows(to date); the line shows only when there are some. */
+  readonly afterToday = computed(() => {
+    const whole = this.expenseWhole();
+    const cut = this.expense();
+    if (!whole || !cut) return null;
+    const count = (response: BreakdownResponse) => response.rows.reduce((sum, r) => sum + r.count, 0);
+    const later = count(whole) - count(cut);
+    if (!(later > 0)) return null;
+    return afterTodayText(this.today(), later, num(whole.totals.expense) - num(cut.totals.expense), this.whole());
+  });
+
   readonly compareRows = computed<CompareRow[]>(() => {
-    const expense = this.expense();
+    const expense = this.shown();
     if (!expense) return [];
+    const single = this.toDate() ? toDateNouns(this.period(), this.today()).single : periodNouns(this.period()).single;
+    const previousEmpty = windowEmpty(single ? this.singleSource() : expense);
+    const lastYearEmpty = windowEmpty(this.lastYear());
+    const previousText = single ? '去年無資料' : '上期無資料';
+    const previousOf = new Map((single ? this.singleSource() : expense)?.rows.map(row => [row.key, num(row.compare_amount)]));
     const lastYearByKey = new Map((this.lastYear()?.rows ?? []).map(row => [row.key, num(row.compare_amount)]));
     const rows = this.categoryRows()
       .map((row, index) => {
         const current = num(row.amount);
-        const previous = num(row.compare_amount);
+        const previous = previousOf.get(row.key) ?? 0;
         const yearAgo = lastYearByKey.get(row.key) ?? 0;
         return {
           key: row.key!,
@@ -154,14 +247,14 @@ export class ReportTrendComponent {
           current: n0(current),
           previous: n0(previous),
           lastYear: n0(yearAgo),
-          monthChange: change(current, previous, true),
-          yearChange: change(current, yearAgo, true),
+          monthChange: baseChange(current, previous, previousEmpty, previousText, true),
+          yearChange: baseChange(current, yearAgo, lastYearEmpty, '去年無資料', true),
           sort: current,
         };
       })
       .sort((a, b) => b.sort - a.sort);
     const current = num(expense.totals.expense);
-    const previous = num(expense.compare?.totals.expense);
+    const previous = num((single ? this.singleSource() : expense)?.compare?.totals.expense);
     const yearAgo = num(this.lastYear()?.compare?.totals.expense);
     return [
       ...rows,
@@ -173,8 +266,8 @@ export class ReportTrendComponent {
         current: n0(current),
         previous: n0(previous),
         lastYear: n0(yearAgo),
-        monthChange: change(current, previous, true),
-        yearChange: change(current, yearAgo, true),
+        monthChange: baseChange(current, previous, previousEmpty, previousText, true),
+        yearChange: baseChange(current, yearAgo, lastYearEmpty, '去年無資料', true),
       },
     ];
   });

@@ -9,7 +9,7 @@ import { RouterTestingHarness } from '@angular/router/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Project } from '../../../models/accounting.model';
-import { BreakdownQuery, BreakdownResponse, BreakdownRow, ReportCompare, ReportDimension, ReportMetric, TrendQuery } from '../../../models/reports.model';
+import { BreakdownQuery, BreakdownResponse, BreakdownRow, ReportCompare, ReportDimension, ReportMetric, TREND_ALL, TrendQuery, TrendResponse } from '../../../models/reports.model';
 import { LayoutMode, LayoutModeService, MATCH_MEDIA } from '../../../services/layout-mode.service';
 import { NavBadgeService } from '../../../services/nav-badge.service';
 import { ReportsService } from '../../../services/reports.service';
@@ -1037,6 +1037,128 @@ describe('AccountingReportsComponent', () => {
         expect(el.querySelector('.ov-after')?.textContent?.trim()).toBe('另有 11/1 之後已記的 2 筆 $13,420 未計入');
         for (const request of http.match(MERCHANT_HOST)) request.flush(reply(breakdownQuery(request), []));
       });
+    });
+  });
+
+  describe('趨勢與比較 (polish D1, D3, D4)', () => {
+    const row = (key: string, label: string, amount: number, count: number, compare?: number): BreakdownRow => ({
+      key, label, color: null, amount: String(amount), refund: '0', count, avg: '0', median: null, min: null, max: null,
+      first_date: null, last_date: null, avg_interval_days: null, ...(compare === undefined ? {} : { compare_amount: String(compare) }),
+    });
+
+    function breakdown(query: BreakdownQuery, rows: BreakdownRow[], windowCount?: number): BreakdownResponse {
+      const metric = query.metric ?? 'expense';
+      const sum = rows.reduce((total, r) => total + Number(r.amount), 0);
+      const count = rows.reduce((total, r) => total + r.count, 0);
+      const totals = (a: number, c: number) => ({ expense: metric === 'expense' ? String(a) : '0', income: metric === 'income' ? String(a) : '0', net: '0', count: c, refund: '0' });
+      return {
+        currency: 'TWD',
+        date_from: query.date_from,
+        date_to: query.date_to,
+        totals: totals(sum, count),
+        compare: query.compare && windowCount !== undefined ? { date_from: '2026-10-01', date_to: '2026-10-07', totals: totals(0, windowCount) } : undefined,
+        rows: metric === 'income' ? [] : rows,
+        overlapping: false,
+        missing_rates: [],
+      };
+    }
+
+    const SERIES = [0, 0, 0, 0, 0, 0, 0, 0, 31200, 39608, 41890, 4233];
+    const MONTHS = ['2025-12', '2026-01', '2026-02', '2026-03', '2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10', '2026-11'];
+    const trendOf = (values: number[]): TrendResponse => ({
+      currency: 'TWD',
+      granularity: 'month',
+      buckets: MONTHS.slice(MONTHS.length - values.length).map((m, i) => ({ start: `${m}-01`, values: { [TREND_ALL]: String(values[i]) } })),
+      average: {},
+    });
+
+    interface Figures {
+      toDate: BreakdownRow[];
+      whole?: BreakdownRow[];
+      previousCount?: number;
+      lastYearCount?: number;
+      trend?: TrendResponse;
+    }
+
+    function answerTrend(reads: Pending, today: string, figures: Figures): void {
+      for (const request of reads.breakdowns) {
+        const query = breakdownQuery(request);
+        if (query.compare === 'previous') request.flush(breakdown(query, figures.toDate, figures.previousCount ?? 5));
+        else if (query.compare === 'last_year') request.flush(breakdown(query, figures.toDate, figures.lastYearCount ?? 5));
+        else request.flush(breakdown(query, query.date_to === today ? figures.toDate : (figures.whole ?? figures.toDate)));
+      }
+      for (const request of reads.trends) request.flush(figures.trend ?? trendOf(SERIES));
+    }
+
+    async function openTrend(day: [number, number, number], figures: Figures) {
+      vi.setSystemTime(new Date(day[0], day[1] - 1, day[2], 10, 0));
+      const { harness, el } = await open('/accounting/reports?month=2026-11&tab=trend');
+      const today = `${day[0]}-${String(day[1]).padStart(2, '0')}-${String(day[2]).padStart(2, '0')}`;
+      answerTrend(pending(), today, figures);
+      harness.detectChanges();
+      return { harness, el, today };
+    }
+
+    const FOOD = [row('2', '餐飲', 4233, 9, 3000)];
+
+    it('averages the months with data and labels 3 個月平均 37,566', async () => {
+      const { el } = await openTrend([2026, 11, 7], { toDate: FOOD });
+      expect(el.querySelector('.tr-average-label')?.textContent).toBe('3 個月平均 37,566');
+      expect(el.querySelector('.tr-average')).not.toBeNull();
+    });
+
+    it('draws no average for a ledger younger than a month', async () => {
+      const { el } = await openTrend([2026, 11, 7], { toDate: FOOD, trend: trendOf([4233]) });
+      expect(el.querySelector('.tr-average')).toBeNull();
+      expect(el.querySelector('.tr-average-label')).toBeNull();
+    });
+
+    it('hatches the running month', async () => {
+      const { el } = await openTrend([2026, 11, 7], { toDate: FOOD });
+      const bars = Array.from(el.querySelectorAll('.tr-bar'));
+      expect(bars.at(-1)!.classList.contains('running')).toBe(true);
+      expect(bars.filter(bar => bar.classList.contains('running'))).toHaveLength(1);
+      expect(el.querySelector('.tr-chart')?.getAttribute('aria-label')).toContain('11 月 進行中（至 11/7） 4,233');
+      expect(texts(el, '.tr-label .tr-year')).toEqual(['2025', '2026']);
+    });
+
+    it('heads the table 本月至今（11/1–11/7） / 上月同期 / 去年同期 while running', async () => {
+      const { el } = await openTrend([2026, 11, 7], { toDate: FOOD });
+      expect(texts(el, '.tr-table thead th')).toEqual(['類別', '本月至今（11/1–11/7）', '上月同期', '月增減', '去年同期', '年增減']);
+    });
+
+    it('hides an empty last-year column with a note', async () => {
+      const { el } = await openTrend([2026, 11, 7], { toDate: FOOD, lastYearCount: 0 });
+      expect(texts(el, '.tr-table thead th')).toEqual(['類別', '本月至今（11/1–11/7）', '上月同期', '月增減']);
+      expect(el.querySelector('.tr-hidden-note')?.textContent?.trim()).toBe('去年同期沒有記錄，已隱藏比較欄');
+    });
+
+    it('hides an empty previous column with a note', async () => {
+      const { el } = await openTrend([2026, 11, 7], { toDate: FOOD, previousCount: 0 });
+      expect(texts(el, '.tr-table thead th')).toEqual(['類別', '本月至今（11/1–11/7）', '去年同期', '年增減']);
+      expect(el.querySelector('.tr-hidden-note')?.textContent?.trim()).toBe('上一期沒有記錄，已隱藏比較欄');
+    });
+
+    it('names rows after today under the table and switches to the whole month', async () => {
+      const { harness, el } = await openTrend([2026, 11, 7], { toDate: [row('2', '餐飲', 4233, 9, 3000)], whole: [row('2', '餐飲', 17653, 11)] });
+      const page = harness.routeDebugElement!.componentInstance as AccountingReportsComponent;
+      const after = el.querySelector<HTMLButtonElement>('button.tr-after')!;
+      expect(after.textContent?.trim()).toBe('另有 11/7 之後已記的 2 筆 $13,420 未計入');
+
+      after.click();
+      await harness.fixture.whenStable();
+      harness.detectChanges();
+      expect(page.wholeView()).toBe(true);
+      for (const request of pending().trends) request.flush(trendOf(SERIES));
+      harness.detectChanges();
+      expect(texts(el, '.tr-table thead th')).toEqual(['類別', '本月']);
+      expect(texts(el, '.tr-table tbody tr:last-child td')).toEqual(['17,653']);
+      expect(el.querySelector('button.tr-after')?.textContent?.trim()).toBe('改回截至 11/7');
+    });
+
+    it('has no 「另有」 line when nothing is dated after today', async () => {
+      const { el } = await openTrend([2026, 11, 7], { toDate: FOOD, whole: FOOD });
+      expect(el.querySelector('.tr-after')).toBeNull();
     });
   });
 });

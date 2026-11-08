@@ -84,8 +84,12 @@
           [trendState]="trendState()"
           [expense]="expense()"
           [lastYear]="expenseLastYear()"
+          [expenseWhole]="expenseWhole()"
+          [whole]="wholeView()"
+          [today]="today()"
           [period]="period()"
           [series]="trendSeries()"
+          (toggleWhole)="toggleWhole()"
           (seriesChange)="trendSeries.set($event)"
         />
       }
