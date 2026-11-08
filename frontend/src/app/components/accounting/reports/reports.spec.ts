@@ -391,6 +391,44 @@ describe('AccountingReportsComponent', () => {
       expect(drill.getAttribute('href')).toBe('/accounting?month=2026-10&merchant=%E8%B7%AF%E6%98%93%E8%8E%8E');
     });
 
+    /** Opens 排行 with the ranking answered by one custom 饗食天堂 row, selected, and its six months answered. */
+    async function openRankWith(extra: Partial<BreakdownRow>) {
+      const opened = await open('/accounting/reports?month=2026-10&tab=rank');
+      const first = pending();
+      const ranking = first.breakdowns[3];
+      const report = sampleBreakdown(breakdownQuery(ranking));
+      const row: BreakdownRow = { ...report.rows[0], key: '饗食天堂', label: '饗食天堂', amount: '1250', refund: '0', count: 1, avg: '1250', median: '1250', max: '1250', min: '1250', first_date: '2026-10-03', last_date: '2026-10-03', avg_interval_days: null, ...extra };
+      const others = { ...first, breakdowns: first.breakdowns.filter(r => r !== ranking) };
+      answer(others);
+      ranking.flush({ ...report, rows: [row] });
+      opened.harness.detectChanges();
+      answer(pending());
+      opened.harness.detectChanges();
+      return opened;
+    }
+
+    it('shows 只有 1 筆 with the date and amount for one visit', async () => {
+      const { el } = await openRankWith({});
+      const stats = texts(el, '.rk-stat');
+      expect(stats[0]).toBe('只有 1 筆 · 10/3 · $1,250');
+      expect(stats.slice(1).map(s => s?.split(' ')[0])).toEqual(['占支出', ...(stats.length > 2 ? ['近'] : [])]);
+      const text = el.querySelector('.rk-panel')!.textContent!;
+      for (const word of ['中位數', '最大', '最小', '平均間隔', '合計', '筆數']) expect(text).not.toContain(word);
+      expect(el.querySelector('.rk-stats-note')).toBeNull();
+    });
+
+    it('omits the date when the API has no statistics', async () => {
+      const { el } = await openRankWith({ first_date: null, last_date: null, median: null, max: null, min: null });
+      expect(texts(el, '.rk-stat')[0]).toBe('只有 1 筆 · $1,250');
+    });
+
+    it('hides 平均間隔 for entries on one day', async () => {
+      const { el } = await openRankWith({ count: 3, amount: '900', avg: '300', first_date: '2026-10-03', last_date: '2026-10-03', avg_interval_days: 0 });
+      const labels = texts(el, '.rk-stat').map(s => s?.split(' ')[0]);
+      expect(labels).toContain('筆數');
+      expect(labels).not.toContain('平均間隔');
+    });
+
     it('keeps （無商家） to the plain figures: no six months, no drill link', async () => {
       const { harness, el } = await openRank();
       answer(pending());

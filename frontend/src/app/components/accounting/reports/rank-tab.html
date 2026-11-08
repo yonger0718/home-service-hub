@@ -35,7 +35,7 @@
       </div>
       <div class="rk-stats">
         @for (stat of stats(); track stat.label) {
-          <span class="rk-stat"><small>{{ stat.label }}</small>&ngsp;<b>{{ stat.value }}</b></span>
+          <span class="rk-stat">@if (stat.label) {<small>{{ stat.label }}</small>&ngsp;}<b>{{ stat.value }}</b></span>
         }
       </div>
       @if (statsNote(); as note) { <small class="rk-stats-note">{{ note }}</small> }
