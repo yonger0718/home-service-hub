@@ -41,7 +41,7 @@ Add a `day=YYYY-MM-DD` query parameter beside `month`, so that back, reload, a s
 - Picking a day, ‹ ›, swipes and the month navigator replace the current history entry rather than push one, so Back leaves the 日曆 view instead of stepping through days.
 - `day` implies the 日曆 view for that visit; the stored view is not overwritten.
 - `month` follows `day`, and a `day` outside `month` wins.
-- ‹ › and swipes step one calendar day, across month edges, and move `month` with them.
+- ‹ › and a day-area swipe step one calendar day; a week-strip swipe steps seven days on the same weekday. All cross month edges and move `month` with them.
 - Moving the month with the navigator drops `day`.
 - Every `month` / `day` write merges into the current query, so the 報表 drill-through filters (`category_id`, `account_id`, `merchant`, `tag`, `no_project`) survive a pick.
 - `day` forces 日曆 only while it is in the URL. Choosing 清單 removes `day` and stores 清單.
@@ -76,7 +76,7 @@ Each cell holds, top to bottom:
   - < 1024 px: compact form, for example −3.1k or +71.7k, one decimal with a trailing .0 dropped.
   - A past day with no rows shows — on wide screens and nothing on narrow ones. Future days show no figure and are dimmed.
 - **Category dots.** Up to three, from the day's largest expense categories, in the owner's category colours. A +N follows when there are more. Narrow screens hide the dots once a day is picked (week mode, D6).
-- **Heat bar.** A 4 px bar (3 px under 1024) along the bottom. Its length is the day's |expense| divided by the month's largest daily |expense|, drawn in a translucent `--tone-neg`. Income-only days have no bar.
+- **Heat bar.** A 4 px bar (3 px under 1024) along the bottom. Its length is the day's |expense| divided by the month's largest daily |expense|, drawn in a translucent `--tone-neg`. Days whose `expense` is not below 0 (income-only or refund-heavy) have no bar.
 - **Marks.**
   - A card mark on bill due days, replacing today's card icon badge: 帳單, or 已繳 when the due event's resolved statement (`BillState`, the figures behind the 繳費提醒 line) has nothing left to pay, on wide screens. Today the grid drops paid due days (`billing` keeps only open statements), so paid ones must be passed to the grid as well; a muted dot on narrow ones. Closing days keep their top border.
   - A warning-ink marker when an inbox invoice is dated that day: 發票待對帳 on wide screens, a dot on narrow ones. The ink is `--app-banner-warn` once add-notification-center lands; until then it is `--app-warning`.

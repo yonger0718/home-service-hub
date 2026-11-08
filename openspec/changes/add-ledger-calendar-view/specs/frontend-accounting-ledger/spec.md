@@ -63,7 +63,7 @@ Each day cell of the 日曆 view SHALL show:
 - a bottom bar whose length is the day's |expense| over the month's largest daily |expense|, only on days whose expense is below 0.
 
 #### Scenario: Heaviest day
-- **GIVEN** October's largest daily expense is 12,120 on 10/19 and 10/21's expense is 3,096
+- **GIVEN** the daily summary gives October's largest expense as −12,120 on 10/19 and 10/21's expense as −3,096
 - **THEN** 10/19's bar SHALL span the full cell width and 10/21's about a quarter of it
 
 ### Requirement: Calendar day cell empty and future days
@@ -76,7 +76,7 @@ Future days SHALL be dimmed and show no figure. A past day without counted rows 
 
 ### Requirement: Calendar day cell category dots
 
-Each day cell of the 日曆 view SHALL show up to three dots for the day's largest expense categories, coloured by joining each split's `key` to the owner's category list, then `+N` when there are more. They SHALL be read once per month from `GET /reports/breakdown?group_by=day&split_by=category&metric=expense&include_excluded_projects=true` over the month's first to last day. If that read fails, the dots SHALL be left out and the cell SHALL render without an error.
+Each day cell of the 日曆 view SHALL show up to three dots for the day's largest expense categories, coloured by joining each split's `key` to the owner's category list, then `+N` when there are more. They SHALL be read once per month from `GET /reports/breakdown?group_by=day&split_by=category&metric=expense&include_excluded_projects=true&date_from={month}-01&date_to={last day}`. If that read fails, the dots SHALL be left out and the cell SHALL render without an error.
 
 #### Scenario: Breakdown unavailable
 - **GIVEN** `GET /reports/breakdown` fails
@@ -177,7 +177,7 @@ From 1024 px, with the calendar's entry drawer open, ↑ and ↓ SHALL move to t
 
 ### Requirement: Calendar grid keyboard
 
-The 日曆 grid SHALL be one tab stop with a roving focus: ← and → move one day, ↑ and ↓ one week, Home and End go to the month's first and last day, and Enter or Space picks the focused day. With the day panel open and focus outside the drawer, `[` and `]` SHALL move one day. These keys SHALL be bound to the grid and the panel only.
+The 日曆 grid SHALL be one tab stop with a roving focus: ← and → move one day, ↑ and ↓ one week, Home and End go to the month's first and last day, and Enter or Space picks the focused day. With the day panel open and focus outside the drawer, `[` and `]` SHALL set `day` one day earlier or later, as ‹ › do. These handlers SHALL be bound to the grid and the panel, not the document; while the drawer is open, ↑ and ↓ belong to the drawer.
 
 #### Scenario: Arrow keys in the grid
 - **GIVEN** focus is on 10/21 in the grid
@@ -212,7 +212,7 @@ A row SHALL open the entry detail as it does today: its own screen below 760 px,
 
 ### Requirement: Calendar swipes on narrow screens
 
-Below 1024 px with a day selected, a swipe on the day area SHALL move one day, and a swipe on the week strip seven days (same weekday), with `month` following `day`. A gesture SHALL count as a swipe only when its horizontal movement dominates; vertical movement SHALL scroll the page.
+Below 1024 px with a day selected, a swipe on the day area SHALL move one day, and a swipe on the week strip seven days (same weekday); right to left moves later, left to right earlier, and `month` follows `day`. A gesture SHALL count as a swipe only when its horizontal movement dominates; vertical movement SHALL scroll the page.
 
 #### Scenario: Swiping to the next day
 - **GIVEN** 10/21 is selected at 390 px
