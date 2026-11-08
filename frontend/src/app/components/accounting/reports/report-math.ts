@@ -538,6 +538,43 @@ export function hatchLines(x: number, y: number, width: number, height: number, 
   return lines;
 }
 
+/** A running bucket's 預估: the figure to date plus the typical bucket's share of the days still ahead. */
+export interface RunningForecast {
+  value: number;
+  toDate: number;
+  typical: number;
+  /** Days after `today` in the bucket, and the bucket's days (both ends inclusive, clipped to the period). */
+  after: number;
+  days: number;
+  /** The entries already recorded for the whole bucket (dated after today too) came out above the paced figure. */
+  floored: boolean;
+}
+
+/**
+ * 預估 for the running bucket `start..end` (inclusive, already clipped to the period): `toDate + typical × after / days`,
+ * never below `recorded` (what the bucket holds with entries dated after today). Null without a positive typical figure
+ * (a young ledger, a net metric) or without days ahead.
+ */
+export function runningForecast(input: { toDate: number; typical: number | null; start: string; end: string; today: string; recorded?: number | null }): RunningForecast | null {
+  const { toDate, typical, start, end, today } = input;
+  if (typical === null || !(typical > 0)) return null;
+  const days = daysBetween(start, end) + 1;
+  const after = Math.min(daysBetween(today, end), days);
+  if (!(days > 0) || !(after > 0)) return null;
+  const paced = toDate + (typical * after) / days;
+  const recorded = input.recorded ?? 0;
+  const floored = recorded > paced;
+  return { value: Math.round(floored ? recorded : paced), toDate, typical: Math.round(typical), after, days, floored };
+}
+
+/** `11 月預估 $38,700 ＝ 至 11/8 $12,300 ＋ 平均 $36,000 × 剩 22/30 天`; `11 月預估 $45,000（含 11/8 之後已記的帳）` when floored. */
+export function forecastNote(label: string, forecast: RunningForecast, today: string, format: (value: number) => string): string {
+  const head = `${label}預估 ${format(forecast.value)}`;
+  const day = md(today, today);
+  if (forecast.floored) return `${head}（含 ${day} 之後已記的帳）`;
+  return `${head} ＝ 至 ${day} ${format(forecast.toDate)} ＋ 平均 ${format(forecast.typical)} × 剩 ${forecast.after}/${forecast.days} 天`;
+}
+
 /**
  * The bucket has started and ends after `today` (a month: its last day; a week: start + 6). A day never runs. It ignores
  * the period's end: callers gate on `isRunning(period, today)`.

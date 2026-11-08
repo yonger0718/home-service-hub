@@ -7,6 +7,7 @@ import {
   BarGeometry,
   Change,
   ReportPeriod,
+  RunningForecast,
   barGeometry,
   afterTodayLine,
   axisParts,
@@ -15,7 +16,11 @@ import {
   bucketText,
   compareLabels,
   compareTitle,
+  daysInMonth,
+  dollars,
+  forecastNote,
   isRunning,
+  metricTotal,
   monthAverage,
   n0,
   niceCeiling,
@@ -24,6 +29,7 @@ import {
   periodNouns,
   runningBucket,
   runningCompareLabels,
+  runningForecast,
   runningCompareTitle,
   runningSuffix,
   seriesColor,
@@ -56,7 +62,11 @@ interface Bar extends BarGeometry {
   label: { month: string; year: string | null };
   last: boolean;
   running: boolean;
+  /** The running month without a forecast: stripes say the bar is still filling. */
+  hatched: boolean;
   hatch: { x1: number; y1: number; x2: number; y2: number }[];
+  /** The running month's dashed 預估 box, from the bar's top up to the forecast. */
+  forecast: { x: string; y: string; width: string; height: string } | null;
 }
 
 interface CompareRow {
@@ -144,7 +154,37 @@ export class ReportTrendComponent {
     monthAverage((this.trend()?.buckets ?? []).map((bucket, index) => ({ start: bucket.start, value: this.values()[index] })), this.today()),
   );
   readonly average = computed(() => this.monthMean()?.average ?? null);
-  private readonly max = computed(() => niceCeiling(Math.max(...this.values(), this.average() ?? 0, 0)));
+
+  /**
+   * 預估 for the running month (to-date view only): its figure so far plus the average month's share of the days left,
+   * never below what the month already holds when the period is that month (the whole-period read covers it then).
+   */
+  readonly forecast = computed<RunningForecast | null>(() => {
+    const buckets = this.trend()?.buckets ?? [];
+    if (this.whole() || buckets.length === 0) return null;
+    const start = buckets[buckets.length - 1].start.slice(0, 10);
+    if (!runningBucket(start.slice(0, 7), 'month', this.today())) return null;
+    const month = start.slice(0, 7);
+    const end = `${month}-${String(daysInMonth(month)).padStart(2, '0')}`;
+    const toDate = this.values()[buckets.length - 1];
+    const period = this.period();
+    let recorded: number | null = null;
+    const cut = this.expense();
+    const whole = this.expenseWhole();
+    if (cut && whole && period.from >= start && period.to <= end) {
+      const id = this.series();
+      const amount = (response: BreakdownResponse) =>
+        id === null ? metricTotal(response.totals, 'expense') : num(response.rows.find(row => row.key === String(id))?.amount);
+      recorded = toDate + amount(whole) - amount(cut);
+    }
+    return runningForecast({ toDate, typical: this.average(), start, end, today: this.today(), recorded });
+  });
+  readonly forecastNote = computed(() => {
+    const forecast = this.forecast();
+    const buckets = this.trend()?.buckets ?? [];
+    return forecast && buckets.length ? forecastNote(bucketText(buckets[buckets.length - 1].start, 'month', false), forecast, this.today(), dollars) : null;
+  });
+  private readonly max = computed(() => niceCeiling(Math.max(...this.values(), this.average() ?? 0, this.forecast()?.value ?? 0, 0)));
 
   readonly bars = computed<Bar[]>(() => {
     const buckets = this.trend()?.buckets ?? [];
@@ -152,7 +192,18 @@ export class ReportTrendComponent {
     return geometry.map((bar, index) => {
       const last = index === geometry.length - 1;
       const running = last && runningBucket(buckets[index].start.slice(0, 7), 'month', this.today());
-      return { ...bar, label: axisParts(buckets[index].start, index), last, running, hatch: running ? hatchLines(Number(bar.x), Number(bar.y), Number(bar.width), Number(bar.height)) : [] };
+      const forecast = running ? this.forecast() : null;
+      const hatched = running && !forecast;
+      const top = forecast ? yOf(forecast.value, this.layout().plot, this.max()) : 0;
+      return {
+        ...bar,
+        label: axisParts(buckets[index].start, index),
+        last,
+        running,
+        hatched,
+        hatch: hatched ? hatchLines(Number(bar.x), Number(bar.y), Number(bar.width), Number(bar.height)) : [],
+        forecast: forecast ? { x: bar.x, y: top.toFixed(1), width: bar.width, height: Math.max(Number(bar.y) - top, 0).toFixed(1) } : null,
+      };
     });
   });
   readonly grid = computed(() => {
@@ -174,7 +225,9 @@ export class ReportTrendComponent {
       const text = bucketText(bucket.start, 'month', spansYears);
       return index === buckets.length - 1 && runningBucket(bucket.start.slice(0, 7), 'month', this.today()) ? `${text} ${runningSuffix(this.today())}` : text;
     };
-    return `${this.seriesName()}近 ${buckets.length} 個月：${buckets.map((bucket, index) => `${name(bucket, index)} ${n0(values[index])}`).join('、')}`;
+    const forecast = this.forecast();
+    const value = (index: number) => (index === buckets.length - 1 && forecast ? `${n0(values[index])}，預估 ${n0(forecast.value)}` : n0(values[index]));
+    return `${this.seriesName()}近 ${buckets.length} 個月：${buckets.map((bucket, index) => `${name(bucket, index)} ${value(index)}`).join('、')}`;
   });
 
   /** D1: the to-date columns while the period runs (and not in the whole view). */

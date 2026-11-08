@@ -1288,8 +1288,31 @@ describe('AccountingReportsComponent', () => {
       expect(el.querySelector('.tr-average-label')).toBeNull();
     });
 
-    it('draws the running month hatch as stripe lines without url(#...)', async () => {
+    it('draws the running month solid with a dashed 預估 box on top, and explains it under the chart', async () => {
       const { el } = await openTrend([2026, 11, 7], { toDate: FOOD });
+      const bar = Array.from(el.querySelectorAll('.tr-bar')).at(-1)!;
+      const box = el.querySelector('.tr-chart .tr-forecast')!;
+      expect(box).not.toBeNull();
+      expect(el.querySelectorAll('.tr-chart .tr-forecast')).toHaveLength(1);
+      expect(Number(box.getAttribute('y')) + Number(box.getAttribute('height'))).toBeCloseTo(Number(bar.getAttribute('y')), 0);
+      expect(box.getAttribute('x')).toBe(bar.getAttribute('x'));
+      expect(el.querySelector('.tr-chart .tr-hatch')).toBeNull();
+      expect(bar.classList.contains('hatched')).toBe(false);
+      // 4,233 + 37,566 × 23/30 = 33,034.
+      expect(el.querySelector('.tr-forecast-note')?.textContent?.trim()).toBe('11 月預估 $33,034 ＝ 至 11/7 $4,233 ＋ 平均 $37,566 × 剩 23/30 天');
+      expect(el.querySelector('.tr-chart')?.getAttribute('aria-label')).toContain('11 月 進行中（至 11/7） 4,233，預估 33,034');
+    });
+
+    it('keeps the forecast at what is already recorded for the month when that is higher', async () => {
+      const { el } = await openTrend([2026, 11, 7], { toDate: FOOD, whole: [row('2', '餐飲', 50000, 12)] });
+      expect(el.querySelector('.tr-forecast-note')?.textContent?.trim()).toBe('11 月預估 $50,000（含 11/7 之後已記的帳）');
+    });
+
+    it('hatches the running month instead when there is no average to forecast from', async () => {
+      const { el } = await openTrend([2026, 11, 7], { toDate: FOOD, trend: trendOf([4233]) });
+      expect(el.querySelector('.tr-chart .tr-forecast')).toBeNull();
+      expect(el.querySelector('.tr-forecast-note')).toBeNull();
+      expect(Array.from(el.querySelectorAll('.tr-bar')).at(-1)!.classList.contains('hatched')).toBe(true);
       expect(el.querySelectorAll('.tr-chart .tr-hatch line').length).toBeGreaterThan(3);
       expect(el.querySelector('.tr-chart pattern')).toBeNull();
       expect(el.querySelector('.tr-chart')!.outerHTML).not.toContain('url(#');

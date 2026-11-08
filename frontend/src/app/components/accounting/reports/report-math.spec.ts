@@ -8,7 +8,9 @@ import {
   totalChange,
   asOfText,
   axisParts,
+  forecastNote,
   hatchLines,
+  runningForecast,
   bucketText,
   monthAverage,
   runningBucket,
@@ -395,5 +397,41 @@ describe('hatch stripes (no url(#id) paint under <base href>)', () => {
     for (let i = 1; i < offsets.length; i++) expect(offsets[i] - offsets[i - 1]).toBeCloseTo(6, 9);
     expect(hatchLines(0, 0, 12, 100)).toHaveLength(18);
     expect(hatchLines(0, 0, 12, 100, 12)).toHaveLength(9);
+  });
+});
+
+describe('running forecast (solid to date, dashed 預估)', () => {
+  const NOV = { start: '2026-11-01', end: '2026-11-30' };
+
+  it('adds the typical figure times the share of days still ahead', () => {
+    const forecast = runningForecast({ toDate: 12300, typical: 36000, ...NOV, today: '2026-11-08' });
+    expect(forecast).toEqual({ value: 38700, toDate: 12300, typical: 36000, after: 22, days: 30, floored: false });
+  });
+
+  it('never drops below what is already recorded for the bucket (entries dated after today)', () => {
+    const forecast = runningForecast({ toDate: 12300, typical: 36000, ...NOV, today: '2026-11-08', recorded: 45000 });
+    expect(forecast).toMatchObject({ value: 45000, floored: true });
+    expect(runningForecast({ toDate: 12300, typical: 36000, ...NOV, today: '2026-11-08', recorded: 20000 })).toMatchObject({ value: 38700, floored: false });
+  });
+
+  it('counts the days of a bucket clipped to the period', () => {
+    // A week 11/2–11/8 cut at a period ending 11/5: on 11/3, 2 of 4 days are ahead.
+    expect(runningForecast({ toDate: 100, typical: 400, start: '2026-11-02', end: '2026-11-05', today: '2026-11-03' })).toMatchObject({ value: 300, after: 2, days: 4 });
+  });
+
+  it('has no forecast without a positive typical figure or without days ahead', () => {
+    expect(runningForecast({ toDate: 100, typical: null, ...NOV, today: '2026-11-08' })).toBeNull();
+    expect(runningForecast({ toDate: 100, typical: 0, ...NOV, today: '2026-11-08' })).toBeNull();
+    expect(runningForecast({ toDate: 100, typical: -50, ...NOV, today: '2026-11-08' })).toBeNull();
+    expect(runningForecast({ toDate: 100, typical: 400, ...NOV, today: '2026-11-30' })).toBeNull();
+  });
+
+  it('explains the forecast in one muted line', () => {
+    const paced = runningForecast({ toDate: 12300, typical: 36000, ...NOV, today: '2026-11-08' })!;
+    expect(forecastNote('11 月', paced, '2026-11-08', dollars)).toBe('11 月預估 $38,700 ＝ 至 11/8 $12,300 ＋ 平均 $36,000 × 剩 22/30 天');
+    const floored = runningForecast({ toDate: 12300, typical: 36000, ...NOV, today: '2026-11-08', recorded: 45000 })!;
+    expect(forecastNote('11 月', floored, '2026-11-08', dollars)).toBe('11 月預估 $45,000（含 11/8 之後已記的帳）');
+    const counted = runningForecast({ toDate: 12, typical: 30, ...NOV, today: '2026-11-08' })!;
+    expect(forecastNote('11 月', counted, '2026-11-08', (n: number) => `${n0(n)} 筆`)).toBe('11 月預估 34 筆 ＝ 至 11/8 12 筆 ＋ 平均 30 筆 × 剩 22/30 天');
   });
 });

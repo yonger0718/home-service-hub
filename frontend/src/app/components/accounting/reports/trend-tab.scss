@@ -51,9 +51,24 @@
   fill: var(--app-border);
 
   &.last { fill: var(--app-primary); }
-  /* The month still running: the bar colour, lighter, with stripe <line>s over it (.tr-hatch). No fragment-URL paint:
-     WebKit resolves it against <base href> and falls back to solid. */
-  &.running { fill-opacity: 0.55; }
+  /* The month still running without a forecast: the bar colour, lighter, with stripe <line>s over it (.tr-hatch). No
+     fragment-URL paint: WebKit resolves it against <base href> and falls back to solid. */
+  &.hatched { fill-opacity: 0.55; }
+}
+
+/* The running month's 預估: a dashed box from the solid bar's top up to the forecast (stroke only, no url() paint). */
+.tr-forecast {
+  fill: none;
+  pointer-events: none;
+  stroke: var(--app-primary);
+  stroke-dasharray: 4 3;
+  stroke-width: 1.5;
+}
+
+.tr-forecast-note {
+  color: var(--app-text-muted);
+  font-size: var(--fs-sm);
+  margin: 6px 0 0;
 }
 
 .tr-hatch line { stroke: var(--app-surface); stroke-width: 2; pointer-events: none; }

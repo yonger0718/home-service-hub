@@ -19,8 +19,11 @@
           <text class="tr-tick" [attr.x]="plotLeft() - 8" [attr.y]="line.textY" text-anchor="end">{{ line.label }}</text>
         }
         @for (bar of bars(); track $index) {
-          <rect class="tr-bar" [class.last]="bar.last" [class.running]="bar.running" [attr.x]="bar.x" [attr.y]="bar.y" [attr.width]="bar.width" [attr.height]="bar.height" [attr.rx]="layout().ticks ? 6 : 4"></rect>
-          @if (bar.running) {
+          <rect class="tr-bar" [class.last]="bar.last" [class.running]="bar.running" [class.hatched]="bar.hatched" [attr.x]="bar.x" [attr.y]="bar.y" [attr.width]="bar.width" [attr.height]="bar.height" [attr.rx]="layout().ticks ? 6 : 4"></rect>
+          @if (bar.forecast; as box) {
+            <rect class="tr-forecast" [attr.x]="box.x" [attr.y]="box.y" [attr.width]="box.width" [attr.height]="box.height" [attr.rx]="layout().ticks ? 6 : 4"></rect>
+          }
+          @if (bar.hatched) {
             <g class="tr-hatch">
               @for (stripe of bar.hatch; track $index) { <line [attr.x1]="stripe.x1" [attr.y1]="stripe.y1" [attr.x2]="stripe.x2" [attr.y2]="stripe.y2"></line> }
             </g>
@@ -32,6 +35,7 @@
           <text class="tr-average-label" [attr.x]="plotRight()" [attr.y]="averageTextY()" text-anchor="end">{{ averageLabel() }}</text>
         }
       </svg>
+      @if (forecastNote(); as note) { <p class="tr-forecast-note">{{ note }}</p> }
     }
   </section>
 
