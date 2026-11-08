@@ -10,13 +10,13 @@
 
 ## 2. Math and labels (PR B)
 
-- [ ] 2.1 `report-math.ts`
+- [x] 2.1 `report-math.ts`
   - `isRunning(period, today)` and `toDateRange(period, today)`
   - `compareRange` follows D2; the new cases in both `report-math.spec.ts` and the API's `test_report_rules.py`
-- [ ] 2.2 `change()` returns `kind` (`none` / `new` / `gone` / `delta`); empty window detection from `totals.count`
-- [ ] 2.3 `monthAverage(buckets, today)` over months with data, through the last completed month (D4)
-- [ ] 2.4 `bucketText(key, granularity, spansYears)` replacing `bucketLabel`; use it in `rowLabel`, axes and `aria-label`s (D7)
-- [ ] 2.5 Tests
+- [x] 2.2 `change()` returns `kind` (`none` / `new` / `gone` / `delta`); empty window detection from `totals.count`
+- [x] 2.3 `monthAverage(buckets, today)` over months with data, through the last completed month (D4)
+- [x] 2.4 `bucketText(key, granularity, spansYears)` replacing `bucketLabel`; use it in `rowLabel`, axes and `aria-label`s (D7)
+- [x] 2.5 Tests
   - 11/7 header case
   - empty window
   - 新增 and 停止

@@ -1,20 +1,32 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  afterTodayText,
+  asOfText,
+  axisParts,
+  bucketText,
+  monthAverage,
+  runningBucket,
+  runningSuffix,
   barGeometry,
+  baseChange,
   change,
   compareLabels,
   compareRange,
   comparesCoincide,
   compareTitle,
+  customPeriod,
   donutArcs,
   drillText,
   noProjectDrillText,
   elapsedDays,
+  isRunning,
+  md,
   monthPeriod,
   n0,
   niceCeiling,
   pct1,
+  runningCompareLabels,
   periodFromParams,
   periodLabel,
   periodNouns,
@@ -23,9 +35,13 @@ import {
   seriesColor,
   shiftPeriod,
   tickLabel,
+  toDateNouns,
   trendRange,
+  viewRange,
+  windowEmpty,
   yearPeriod,
 } from './report-math';
+import { BreakdownResponse } from '../../../models/reports.model';
 
 const params = (record: Record<string, string>) => ({ get: (name: string) => record[name] ?? null });
 
@@ -105,10 +121,41 @@ describe('report period', () => {
     expect(compareRange('2024-02-01', '2024-02-29', 'last_year')).toEqual({ from: '2023-02-01', to: '2023-02-28' });
   });
 
+  it('clips the previous window of a one-day running range', () =>
+    expect(compareRange('2026-11-01', '2026-11-01', 'previous')).toEqual({ from: '2026-10-01', to: '2026-10-01' }));
+
+  it('compares a running month with the same days of the previous month', () =>
+    expect(compareRange('2026-11-01', '2026-11-07', 'previous')).toEqual({ from: '2026-10-01', to: '2026-10-07' }));
+  it('clips a 1st-anchored range to the shorter month', () =>
+    expect(compareRange('2026-03-01', '2026-03-30', 'previous')).toEqual({ from: '2026-02-01', to: '2026-02-28' }));
+  it('clips to 29 February in a leap year', () =>
+    expect(compareRange('2028-03-01', '2028-03-30', 'previous')).toEqual({ from: '2028-02-01', to: '2028-02-29' }));
+  it('moves a multi-month running range back by the months it touches', () =>
+    expect(compareRange('2026-06-01', '2026-11-07', 'previous')).toEqual({ from: '2025-12-01', to: '2026-05-07' }));
+  it('keeps the day-count rule for a range not starting on the 1st', () =>
+    expect(compareRange('2026-11-02', '2026-11-07', 'previous')).toEqual({ from: '2026-10-27', to: '2026-11-01' }));
+
   it('counts elapsed days for 日均支出', () => {
     expect(elapsedDays(monthPeriod('2026-10'), '2026-10-30')).toEqual({ days: 30, running: true });
     expect(elapsedDays(monthPeriod('2026-10'), '2026-11-02')).toEqual({ days: 31, running: false });
     expect(elapsedDays(monthPeriod('2026-10'), '2026-09-02')).toEqual({ days: 1, running: true });
+  });
+
+  it('reads 上期無資料 without an arrow against an empty window', () =>
+    expect(baseChange(4233, 0, true, '上期無資料')).toEqual({ text: '上期無資料', direction: 'same', kind: 'none' }));
+  it('marks a key new to a non-empty window as 新增, muted', () =>
+    expect(baseChange(1200, 0, false, '上期無資料')).toEqual({ text: '新增', direction: 'same', kind: 'new' }));
+  it('does not mark a key new when its current figure rounds to 0', () =>
+    expect(baseChange(0.3, 0, false, '上期無資料').kind).not.toBe('new'));
+  it('marks a key gone from the current window as — 停止', () =>
+    expect(baseChange(0, 800, false, '去年無資料')).toEqual({ text: '— 停止', direction: 'same', kind: 'gone' }));
+  it('falls back to the arrow change', () =>
+    expect(baseChange(4233, 6910, false, '上期無資料')).toEqual({ text: '▼ 2,677', direction: 'less', kind: 'delta' }));
+  it('detects an empty comparison window from its count', () => {
+    expect(windowEmpty({ compare: { totals: { count: 0 } } } as BreakdownResponse)).toBe(true);
+    expect(windowEmpty({ compare: { totals: { count: 4 } } } as BreakdownResponse)).toBe(false);
+    expect(windowEmpty({ compare: null } as BreakdownResponse)).toBe(false);
+    expect(windowEmpty(null)).toBe(false);
   });
 
   it('spans the trend over the twelve months ending at the period', () => {
@@ -126,11 +173,11 @@ describe('report figures', () => {
   });
 
   it('marks more / less spending with ▲ / ▼ and an equal figure with —', () => {
-    expect(change(41890, 39608)).toEqual({ text: '▲ 2,282', direction: 'more' });
-    expect(change(41890, 44050)).toEqual({ text: '▼ 2,160', direction: 'less' });
-    expect(change(1078, 1078)).toEqual({ text: '—', direction: 'same' });
-    expect(change(9860, 8640, true)).toEqual({ text: '▲ 1,220 (14.1%)', direction: 'more' });
-    expect(change(500, 0, true)).toEqual({ text: '▲ 500', direction: 'more' });
+    expect(change(41890, 39608)).toEqual({ text: '▲ 2,282', direction: 'more', kind: 'delta' });
+    expect(change(41890, 44050)).toEqual({ text: '▼ 2,160', direction: 'less', kind: 'delta' });
+    expect(change(1078, 1078)).toEqual({ text: '—', direction: 'same', kind: 'delta' });
+    expect(change(9860, 8640, true)).toEqual({ text: '▲ 1,220 (14.1%)', direction: 'more', kind: 'delta' });
+    expect(change(500, 0, true)).toEqual({ text: '▲ 500', direction: 'more', kind: 'delta' });
   });
 });
 
@@ -169,5 +216,103 @@ describe('report charts', () => {
     expect(seriesColor(0)).toBe('var(--app-series-1)');
     expect(seriesColor(6)).toBe('var(--app-series-7)');
     expect(seriesColor(7)).toBe('var(--app-category-other)');
+  });
+});
+
+describe('running periods', () => {
+  const nov = monthPeriod('2026-11');
+  it('runs from the first day until the day before the last', () => {
+    expect(isRunning(nov, '2026-11-01')).toBe(true);
+    expect(isRunning(nov, '2026-11-07')).toBe(true);
+    expect(isRunning(nov, '2026-11-30')).toBe(false); // last day = finished
+    expect(isRunning(nov, '2026-10-31')).toBe(false); // not started
+    expect(isRunning(customPeriod('2026-11-01', '2026-11-07'), '2026-11-07')).toBe(false);
+  });
+  it('cuts the view at today only while running and not whole', () => {
+    expect(viewRange(nov, '2026-11-07', false)).toEqual({ from: '2026-11-01', to: '2026-11-07' });
+    expect(viewRange(nov, '2026-11-07', true)).toEqual({ from: '2026-11-01', to: '2026-11-30' });
+    expect(viewRange(nov, '2026-11-30', false)).toEqual({ from: '2026-11-01', to: '2026-11-30' });
+  });
+  it('writes dates as M/D, with the year when it differs from today', () => {
+    expect(md('2026-11-07', '2026-11-07')).toBe('11/7');
+    expect(md('2025-12-01', '2026-11-07')).toBe('2025/12/1');
+  });
+  it('names the to-date columns', () => {
+    expect(toDateNouns(nov, '2026-11-07')).toEqual({ current: '本月至今（11/1–11/7）', previous: '上月同期', lastYear: '去年同期', single: false });
+    expect(toDateNouns(nov, '2026-11-01').current).toBe('本月至今（11/1–11/1）');
+    expect(toDateNouns({ unit: 'custom', from: '2025-12-01', to: '2026-05-31' }, '2026-03-04').current).toBe('本期至今（2025/12/1–3/4）');
+  });
+  it('names the to-date columns of other units, and one column when the windows coincide', () => {
+    expect(toDateNouns({ unit: 'custom', from: '2026-06-01', to: '2026-12-31' }, '2026-11-07')).toMatchObject({ previous: '上期同期', lastYear: '去年同期', single: false });
+    expect(toDateNouns(yearPeriod(2026), '2026-11-07')).toEqual({ current: '本期至今（1/1–11/7）', previous: '去年同期', lastYear: '去年同期', single: true });
+  });
+  it('is single when the cut range windows coincide, though the whole period does not', () => {
+    const year = yearPeriod(2026);
+    expect(toDateNouns(year, '2026-11-07')).toMatchObject({ lastYear: '去年同期', single: true });
+    expect(runningCompareLabels(year, '2026-11-07')).toEqual({ previous: '比去年同期', lastYear: '比去年同期', single: true });
+    const custom = customPeriod('2025-11-01', '2026-11-30');
+    expect(toDateNouns(custom, '2026-10-31')).toMatchObject({ previous: '去年同期', single: true });
+    expect(runningCompareLabels(custom, '2026-10-31')).toEqual({ previous: '比去年同期', lastYear: '比去年同期', single: true });
+  });
+  it('is not single for a running month', () => {
+    expect(toDateNouns(nov, '2026-11-07').single).toBe(false);
+    expect(runningCompareLabels(nov, '2026-11-07').single).toBe(false);
+  });
+  it('labels the header comparisons of a running month', () =>
+    expect(runningCompareLabels(nov, '2026-11-07')).toEqual({ previous: '比 10 月同期', lastYear: '比去年同期', single: false }));
+  it('labels the header comparisons of a running year and custom range', () => {
+    expect(runningCompareLabels(yearPeriod(2026), '2026-11-07')).toEqual({ previous: '比去年同期', lastYear: '比去年同期', single: true });
+    expect(runningCompareLabels(customPeriod('2026-06-01', '2026-12-31'), '2026-11-07')).toEqual({ previous: '比前一期同期', lastYear: '比去年同期', single: false });
+  });
+  it('words the rows-after-today line', () => {
+    expect(asOfText('2026-11-07')).toBe('截至 11/7');
+    expect(afterTodayText('2026-11-07', 2, 13420, false)).toBe('另有 11/7 之後已記的 2 筆 $13,420 未計入');
+    expect(afterTodayText('2026-11-07', 3, null, false)).toBe('另有 11/7 之後已記的 3 筆未計入');
+    expect(afterTodayText('2026-11-07', 2, 13420, true)).toBe('改回截至 11/7');
+  });
+});
+
+describe('month average and bucket labels (D4, D7)', () => {
+  it('averages the months with data through the last completed month', () => {
+    const series = ['2025-12', '2026-01', '2026-02', '2026-03', '2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10', '2026-11']
+      .map((m, i) => ({ start: `${m}-01`, value: [0, 0, 0, 0, 0, 0, 0, 0, 31200, 39608, 41890, 4233][i] }));
+    expect(monthAverage(series, '2026-11-07')).toEqual({ months: 3, average: 37566 });
+  });
+
+  it('counts a month on its last day as completed', () => {
+    const series = ['2025-12', '2026-01', '2026-02', '2026-03', '2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10', '2026-11']
+      .map((m, i) => ({ start: `${m}-01`, value: [0, 0, 0, 0, 0, 0, 0, 0, 31200, 39608, 41890, 4233][i] }));
+    expect(monthAverage(series, '2026-11-30')).toEqual({ months: 4, average: Math.round((31200 + 39608 + 41890 + 4233) / 4) });
+  });
+
+  it('has no average when every month is zero', () =>
+    expect(monthAverage([{ start: '2026-09-01', value: 0 }, { start: '2026-10-01', value: 0 }], '2026-11-07')).toBeNull());
+
+  it('has no average for a ledger younger than one completed month', () =>
+    expect(monthAverage([{ start: '2026-11-01', value: 4233 }], '2026-11-07')).toBeNull());
+
+  it('formats bucket keys', () => {
+    expect(bucketText('2026-09', 'month', false)).toBe('9 月');
+    expect(bucketText('2025-09-01', 'month', true)).toBe('2025 年 9 月');
+    expect(bucketText('2026-10-05', 'week', false)).toBe('10/5 週');
+    expect(bucketText('2025-10-05', 'day', true)).toBe('2025/10/5');
+    expect(bucketText('2025-10-05', 'week', true)).toBe('2025/10/5 週');
+    expect(bucketText('2026-10-05', 'day', false)).toBe('10/5');
+  });
+
+  it('puts the year on the first axis label and each January only (R1)', () => {
+    expect(axisParts('2025-11-01', 0)).toEqual({ month: '11 月', year: '2025' });
+    expect(axisParts('2025-12-01', 1)).toEqual({ month: '12 月', year: null });
+    expect(axisParts('2026-01-01', 2)).toEqual({ month: '1 月', year: '2026' });
+    expect(axisParts('2026-09-01', 10)).toEqual({ month: '9 月', year: null });
+  });
+
+  it('marks only a bucket that has started and ends after today as running', () => {
+    expect(runningBucket('2026-11', 'month', '2026-11-07')).toBe(true);
+    expect(runningBucket('2026-11', 'month', '2026-11-30')).toBe(false);
+    expect(runningBucket('2026-11-02', 'week', '2026-11-07')).toBe(true);
+    expect(runningBucket('2026-11-02', 'week', '2026-11-08')).toBe(false);
+    expect(runningBucket('2026-11-07', 'day', '2026-11-07')).toBe(false);
+    expect(`11 月 ${runningSuffix('2026-11-07')}`).toBe('11 月 進行中（至 11/7）');
   });
 });

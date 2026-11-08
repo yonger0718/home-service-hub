@@ -1,4 +1,4 @@
-import { BreakdownRow, ReportCompare } from '../../../models/reports.model';
+import { BreakdownResponse, BreakdownRow, ReportCompare } from '../../../models/reports.model';
 import { pad } from '../accounting-ui';
 import { addDays, daysBetween } from '../dates';
 
@@ -174,23 +174,26 @@ function isMonthEnd(iso: string): boolean {
   return Number(iso.slice(8, 10)) === daysInMonth(monthOf(iso));
 }
 
+/** `iso` moved by `months` (negative = back), the day clipped to the target month (29 Feb − 12 → 28 Feb; 30 Mar − 1 → 28 Feb). */
+export function shiftDate(iso: string, months: number): string {
+  const target = shiftMonth(monthOf(iso), months);
+  return `${target}-${pad(Math.min(Number(iso.slice(8, 10)), daysInMonth(target)))}`;
+}
+
 /**
- * The comparison window of a range (design D1): `previous` is the same length immediately before — whole months when
- * the range is whole months — and `last_year` the same dates a year earlier (29 Feb → 28 Feb).
+ * The comparison window of a range (design D2, same as the API's `compare_window`): `last_year` is the same dates a
+ * year earlier (29 Feb → 28 Feb). `previous` is, for a range starting on the 1st, the months it touches moved back
+ * (whole months before a whole-month range; the same days of the previous month for a running one, the day clipped
+ * to the shorter month); any other range moves back by its own length in days.
  */
 export function compareRange(from: string, to: string, compare: ReportCompare): { from: string; to: string } {
-  if (compare === 'last_year') {
-    const back = (iso: string) => {
-      const [year, month, day] = iso.split('-').map(Number);
-      const target = `${year - 1}-${pad(month)}`;
-      return `${target}-${pad(Math.min(day, daysInMonth(target)))}`;
-    };
-    return { from: back(from), to: back(to) };
-  }
-  if (from.endsWith('-01') && isMonthEnd(to)) {
+  if (compare === 'last_year') return { from: shiftDate(from, -12), to: shiftDate(to, -12) };
+  if (from.endsWith('-01')) {
     const months = (Number(to.slice(0, 4)) - Number(from.slice(0, 4))) * 12 + Number(to.slice(5, 7)) - Number(from.slice(5, 7)) + 1;
-    const first = shiftMonth(monthOf(from), -months);
-    return { from: `${first}-01`, to: monthPeriod(shiftMonth(monthOf(from), -1)).to };
+    if (isMonthEnd(to)) {
+      return { from: `${shiftMonth(monthOf(from), -months)}-01`, to: monthPeriod(shiftMonth(monthOf(from), -1)).to };
+    }
+    return { from: shiftDate(from, -months), to: shiftDate(to, -months) };
   }
   const length = daysBetween(from, to) + 1;
   return { from: addDays(from, -length), to: addDays(to, -length) };
@@ -212,6 +215,72 @@ export function trendRange(period: ReportPeriod, months = 12): { from: string; t
   const last = monthOf(period.to);
   const lastPeriod = monthPeriod(last);
   return { from: `${shiftMonth(last, -(months - 1))}-01`, to: lastPeriod.to };
+}
+
+// ---- running periods (polish D1) ---------------------------------------------------------------------------------
+
+/** Running: it has started and its last day (`to`, inclusive) is still ahead; on the last day it counts as finished. */
+export function isRunning(period: ReportPeriod, today: string): boolean {
+  return period.from <= today && today < period.to;
+}
+
+/** The range the figures cover: cut at `today` while the period runs, unless the whole period is asked for. */
+export function viewRange(period: ReportPeriod, today: string, whole: boolean): { from: string; to: string } {
+  return { from: period.from, to: isRunning(period, today) && !whole ? today : period.to };
+}
+
+/** `11/7`; `2025/12/1` when the year differs from `today`'s. */
+export function md(iso: string, today: string): string {
+  const [year, month, day] = iso.split('-').map(Number);
+  return year === Number(today.slice(0, 4)) ? `${month}/${day}` : `${year}/${month}/${day}`;
+}
+
+/** `截至 11/7`. */
+export function asOfText(today: string): string {
+  return `截至 ${md(today, today)}`;
+}
+
+/**
+ * The cut range's previous and last-year windows are one window: the cut range covers twelve whole months (a custom
+ * 2025-11-01..2026-11-30 on 2026-10-31). The period itself is also checked (a running year): whichever coincides makes
+ * the screen show one comparison.
+ */
+function cutCoincides(period: ReportPeriod, today: string): boolean {
+  if (comparesCoincide(period)) return true;
+  const to = isRunning(period, today) ? today : period.to;
+  const previous = compareRange(period.from, to, 'previous');
+  const lastYear = compareRange(period.from, to, 'last_year');
+  return previous.from === lastYear.from && previous.to === lastYear.to;
+}
+
+/**
+ * The column names while a period runs: `本月至今（11/1–11/7）` / `上月同期` / `去年同期` (one `去年同期` when the windows coincide).
+ * `single` means the screen shows one comparison and reads it from the `compare=last_year` response.
+ */
+export function toDateNouns(period: ReportPeriod, today: string): { current: string; previous: string; lastYear: string; single: boolean } {
+  const month = period.unit === 'month';
+  const current = `${month ? '本月' : '本期'}至今（${md(period.from, today)}–${md(today, today)}）`;
+  if (cutCoincides(period, today)) return { current, previous: '去年同期', lastYear: '去年同期', single: true };
+  return { current, previous: month ? '上月同期' : '上期同期', lastYear: '去年同期', single: false };
+}
+
+/** The header comparison labels while a period runs: `比 10 月同期` / `比去年同期`; a year (or coinciding windows) has one.
+ * `single` means the screen shows one comparison and reads it from the `compare=last_year` response.
+ */
+export function runningCompareLabels(period: ReportPeriod, today: string): { previous: string; lastYear: string; single: boolean } {
+  if (period.unit === 'month') {
+    const month = monthOf(period.from);
+    return { previous: `比 ${shortMonth(shiftMonth(month, -1), month)}同期`, lastYear: '比去年同期', single: false };
+  }
+  if (period.unit === 'year' || cutCoincides(period, today)) return { previous: '比去年同期', lastYear: '比去年同期', single: true };
+  return { previous: '比前一期同期', lastYear: '比去年同期', single: false };
+}
+
+/** The line about rows dated after today: `改回截至 11/7` once the whole period shows, else how many (and how much) are left out. */
+export function afterTodayText(today: string, count: number, amount: number | null, whole: boolean): string {
+  const date = md(today, today);
+  if (whole) return `改回截至 ${date}`;
+  return amount === null ? `另有 ${date} 之後已記的 ${count} 筆未計入` : `另有 ${date} 之後已記的 ${count} 筆 $${n0(amount)} 未計入`;
 }
 
 // ---- figures --------------------------------------------------------------------------------------------------
@@ -241,6 +310,8 @@ export interface Change {
   /** `▲ 2,282`, `▼ 2,160 (4.9%)`, `—` when equal. */
   text: string;
   direction: ChangeDirection;
+  /** `none`: the base window is empty; `new` / `gone`: the key has no base / no current figure; `delta`: a plain change. */
+  kind: 'none' | 'new' | 'gone' | 'delta';
 }
 
 /**
@@ -249,10 +320,26 @@ export interface Change {
  */
 export function change(current: number, base: number, withPct = false): Change {
   const diff = Math.round(current) - Math.round(base);
-  if (diff === 0) return { text: '—', direction: 'same' };
+  if (diff === 0) return { text: '—', direction: 'same', kind: 'delta' };
   const arrow = diff > 0 ? '▲' : '▼';
   const pct = withPct && Math.round(base) !== 0 ? ` (${pct1(Math.abs(diff), Math.abs(base))})` : '';
-  return { text: `${arrow} ${n0(Math.abs(diff))}${pct}`, direction: diff > 0 ? 'more' : 'less' };
+  return { text: `${arrow} ${n0(Math.abs(diff))}${pct}`, direction: diff > 0 ? 'more' : 'less', kind: 'delta' };
+}
+
+/**
+ * A change that knows its base (design D3): an empty comparison window reads `上期無資料` / `去年無資料` (no arrow), a key
+ * with no base is `新增`, a key with no current figure is `— 停止`; otherwise the arrow change. The first three are muted.
+ */
+export function baseChange(current: number, base: number, windowEmpty: boolean, emptyText: '上期無資料' | '去年無資料', withPct = false): Change {
+  if (windowEmpty) return { text: emptyText, direction: 'same', kind: 'none' };
+  if (Math.round(base) === 0 && Math.round(current) > 0) return { text: '新增', direction: 'same', kind: 'new' };
+  if (Math.round(current) === 0 && Math.round(base) > 0) return { text: '— 停止', direction: 'same', kind: 'gone' };
+  return change(current, base, withPct);
+}
+
+/** The comparison window has no entries at all (`compare.totals.count` is 0). */
+export function windowEmpty(response: BreakdownResponse | null | undefined): boolean {
+  return response?.compare?.totals.count === 0;
 }
 
 /** Gross spend of an expense row: the amount before the refunds inside it. */
@@ -352,8 +439,52 @@ export function yOf(value: number, plot: { top: number; height: number }, max: n
   return max > 0 ? bottom - (Math.max(value, 0) / max) * plot.height : bottom;
 }
 
-/** `11月`, `1月` for a bucket start; the year is added when the bucket is a January and the chart spans two years. */
-export function bucketLabel(start: string): string {
-  const [, m] = start.split('-').map(Number);
-  return `${m}月`;
+export type BucketGranularity = 'month' | 'week' | 'day';
+
+/**
+ * The average month (design D4): from the first bucket with data through the last month that is over. `null` when that
+ * leaves no month (a ledger younger than one completed month).
+ */
+export function monthAverage(buckets: readonly { start: string; value: number }[], today: string): { months: number; average: number } | null {
+  const first = buckets.findIndex(bucket => bucket.value !== 0);
+  if (first < 0) return null;
+  const counted = buckets.slice(first).filter(bucket => monthPeriod(monthOf(bucket.start)).to <= today);
+  if (counted.length === 0) return null;
+  const total = counted.reduce((sum, bucket) => sum + bucket.value, 0);
+  return { months: counted.length, average: Math.round(total / counted.length) };
+}
+
+/** A bucket key as text (design D7): `9 月` / `2025 年 9 月`, `10/5 週` / `2025/10/5 週`, `10/5` / `2025/10/5`. */
+export function bucketText(key: string, granularity: BucketGranularity, spansYears: boolean): string {
+  if (granularity === 'month') {
+    const [year, month] = key.slice(0, 7).split('-').map(Number);
+    return spansYears ? `${year} 年 ${month} 月` : `${month} 月`;
+  }
+  const [year, month, day] = key.split('-').map(Number);
+  const date = spansYears ? `${year}/${month}/${day}` : `${month}/${day}`;
+  return granularity === 'week' ? `${date} 週` : date;
+}
+
+/**
+ * A trend / rank axis label (R1) in two lines: the month (`9 月`) and, only on the first bar and each January, the year
+ * (`2025`) as a second, smaller line. Accessible names use `bucketText` in full.
+ */
+export function axisParts(start: string, index: number): { month: string; year: string | null } {
+  return { month: bucketText(start, 'month', false), year: index === 0 || start.slice(5, 7) === '01' ? start.slice(0, 4) : null };
+}
+
+/**
+ * The bucket has started and ends after `today` (a month: its last day; a week: start + 6). A day never runs. It ignores
+ * the period's end: callers gate on `isRunning(period, today)`.
+ */
+export function runningBucket(key: string, granularity: BucketGranularity, today: string): boolean {
+  if (granularity === 'day') return false;
+  const start = granularity === 'month' ? `${key.slice(0, 7)}-01` : key;
+  const end = granularity === 'month' ? `${key.slice(0, 7)}-${pad(daysInMonth(key.slice(0, 7)))}` : addDays(key, 6);
+  return start <= today && today < end;
+}
+
+/** `進行中（至 11/7）`. */
+export function runningSuffix(today: string): string {
+  return `進行中（至 ${md(today, today)}）`;
 }

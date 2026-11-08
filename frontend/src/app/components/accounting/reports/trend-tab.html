@@ -20,7 +20,7 @@
         }
         @for (bar of bars(); track $index) {
           <rect class="tr-bar" [class.last]="bar.last" [attr.x]="bar.x" [attr.y]="bar.y" [attr.width]="bar.width" [attr.height]="bar.height" [attr.rx]="layout().ticks ? 6 : 4"></rect>
-          <text class="tr-label" [class.last]="bar.last" [attr.x]="bar.cx" [attr.y]="layout().labelY" text-anchor="middle">{{ bar.label }}</text>
+          <text class="tr-label" [class.last]="bar.last" [attr.x]="bar.cx" [attr.y]="layout().labelY" text-anchor="middle"><tspan class="tr-month">{{ bar.label.month }}</tspan>@if (bar.label.year) {<tspan class="tr-year" [attr.x]="bar.cx" dy="13">{{ bar.label.year }}</tspan>}</text>
         }
         <line class="tr-average" [attr.x1]="plotLeft()" [attr.x2]="plotRight()" [attr.y1]="averageY()" [attr.y2]="averageY()"></line>
         <text class="tr-average-label" [attr.x]="plotRight()" [attr.y]="averageTextY()" text-anchor="end">{{ averageLabel() }}</text>

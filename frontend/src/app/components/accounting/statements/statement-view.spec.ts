@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { makeEntry } from '../testing/fixtures';
 import { StatementDetail, StatementSummary } from './statement.model';
 import {
+  actionErrorMessage,
   actionsAvailable,
   buildSegments,
   caseKindLabel,
@@ -174,6 +175,20 @@ describe('confirm refusal', () => {
     const err = new HttpErrorResponse({ status: 409, error: { detail: 'confirm_retry' } });
     expect(splitApiCode('confirm_retry')).toEqual({ code: 'confirm_retry', detail: null });
     expect(confirmRefusal(err)).toBeNull();
+  });
+});
+
+describe('action 409 copy', () => {
+  it.each([
+    ['retry: an account this action writes is being changed; try again', '帳戶正在更新，請再按一次'],
+    ['action_busy', '其他作業進行中，請稍後再試'],
+    ['settlement_busy', '其他作業進行中，請稍後再試'],
+    ['auto_pay_busy', '其他作業進行中，請稍後再試'],
+    ['peer_statement_busy', '其他作業進行中，請稍後再試'],
+  ])('words %s in Chinese', (detail, text) => {
+    expect(actionErrorMessage(new HttpErrorResponse({ status: 409, error: { detail } }))).toBe(
+      text,
+    );
   });
 });
 
