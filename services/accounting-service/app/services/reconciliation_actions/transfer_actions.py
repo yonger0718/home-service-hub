@@ -29,6 +29,7 @@ from app.services import entry_write_service as ews
 from app.services import reward_engine
 from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError
+from app.services.reconciliation_hints import PEER_HINT  # noqa: F401  (transfer_actions.PEER_HINT: policy_service)
 from app.services.statements import matching, retired
 
 from . import OPEN_STATUSES, register, snapshots
@@ -254,7 +255,6 @@ register(AdjustTransferAction())
 # --- pair_transfer (§5.3) -------------------------------------------------------------------------------------------
 
 PAIR_NAME = "對帳配對轉帳"
-PEER_HINT = "needs_peer"
 _PAIR_FROZEN = ("peer_line_id", "peer_statement_ids", "in_scope")
 
 

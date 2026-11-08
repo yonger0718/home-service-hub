@@ -28,6 +28,7 @@ from app.services.errors import (
 )
 from app.services.reconciliation_actions import OPEN_STATUSES, audit, base, engine
 from app.services.reconciliation_actions.base import Context
+from app.services.reconciliation_hints import PEER_HINT
 from app.services.statements import matching
 
 SETTLEMENT_LABELS: tuple[str, ...] = matching.SETTLEMENT_LABELS  # the default; callers pass the rules' labels
@@ -76,7 +77,7 @@ def classify(*, kind: str, status: str, statement_kind: str, hint: str | None,
         return "proposed"
     if kind == dividend_service.KIND or hint in dividend_service.FAMILY_HINTS:
         return "dividend"
-    if hint == "needs_peer":
+    if hint == PEER_HINT:
         return "transfer"
     if kind == "line_unmatched" and hint == "installment_unmapped":  # the registry still allows create_entry here
         return "other"

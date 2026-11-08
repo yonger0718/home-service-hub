@@ -13,6 +13,7 @@ from app.models import AccountStatement, LedgerEntry, ReconciliationCase, Statem
 from app.services import reconciliation_service as rec
 from app.services import reward_engine
 from app.services.coverage_service import participating_accounts
+from app.services.reconciliation_hints import PEER_HINT, STAND_IN_DELETED_HINT  # noqa: F401  (re-exported)
 
 from .base import Action
 
@@ -70,14 +71,8 @@ def _names_an_entry(case: ReconciliationCase) -> bool:  # ruling 19: split on li
     return bool(case.candidates) or _context(case).get("entry_id") is not None
 
 
-PEER_HINT = "needs_peer"
-
-
 def _no_peer_hint(case: ReconciliationCase) -> bool:  # R6b: a transfer/payment line gets no single-leg entry
     return _context(case).get("hint") != PEER_HINT
-
-
-STAND_IN_DELETED_HINT = "stand_in_deleted"
 
 
 def backfill_eligibility(case: ReconciliationCase) -> str | None:
