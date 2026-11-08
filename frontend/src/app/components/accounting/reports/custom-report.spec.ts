@@ -94,11 +94,13 @@ describe('CustomReportComponent', () => {
     return { harness, el: harness.routeNativeElement as HTMLElement };
   }
 
+  /** Answers every pending breakdown read (a running period asks for several) and returns the first one's query. */
   function answerPreview(): BreakdownQuery {
-    const request = http.expectOne(r => r.url === BREAKDOWN);
-    const query = queryOf(request);
-    request.flush(sampleBreakdown(query));
-    return query;
+    const requests = http.match(r => r.url === BREAKDOWN);
+    expect(requests.length).toBeGreaterThan(0);
+    const queries = requests.map(queryOf);
+    requests.forEach((request, index) => request.flush(sampleBreakdown(queries[index])));
+    return queries[0];
   }
 
   it('opens 週末外食 with its config resolved as of today, and previews figures, chart and table', async () => {
@@ -124,7 +126,7 @@ describe('CustomReportComponent', () => {
     expect(charts[2].getAttribute('title')).toBe('有細分時不能用圓環');
     expect(charts[1].getAttribute('aria-disabled')).toBeNull();
 
-    expect(texts(el, '.cr-figure')).toEqual(['合計 $17,960 ▲ 80 (0.4%) 比去年同期', '平均每月 $2,993 6 組', '每筆平均 $339 53 筆', '最高 7月 $3,540']);
+    expect(texts(el, '.cr-figure')).toEqual(['合計 $17,960 ▲ 80 (0.4%) 比去年同期', '平均每月 $2,993 6 組', '每筆平均 $339 53 筆', '最高 7 月 $3,540']);
     expect(el.querySelector('.cr-figure-foot')?.classList.contains('more')).toBe(true);
     expect(texts(el, '.cr-legend > span')).toEqual(['晚餐', '午餐', '宵夜', '去年同期']);
     // Six stacked bars of three segments plus six comparison outlines.
@@ -132,7 +134,7 @@ describe('CustomReportComponent', () => {
     expect(el.querySelectorAll('.cr-chart rect.cr-outline')).toHaveLength(6);
     expect(texts(el, '.cr-table thead th')).toEqual(['月份', '晚餐', '午餐', '宵夜', '合計', '筆數', '去年同期', '增減']);
     const rows = Array.from(el.querySelectorAll('.cr-table tbody tr'));
-    expect(rows.map(row => row.querySelector('th')?.textContent?.trim())).toEqual(['5月', '6月', '7月', '8月', '9月', '10月', '合計']);
+    expect(rows.map(row => row.querySelector('th')?.textContent?.trim())).toEqual(['5 月', '6 月', '7 月', '8 月', '9 月', '10 月', '合計']);
     expect(texts(rows[0], 'td')).toEqual(['1,820', '980', '320', '3,120', '9', '2,610', '▲ 510']);
     expect(texts(rows[6], 'td')).toEqual(['10,700', '5,510', '1,750', '17,960', '53', '17,880', '▲ 80']);
     expect(rows[6].classList.contains('total')).toBe(true);
@@ -143,7 +145,8 @@ describe('CustomReportComponent', () => {
     const { harness } = await open('/accounting/reports/custom/1');
     const query = answerPreview();
     harness.detectChanges();
-    expect([query.date_from, query.date_to]).toEqual(['2026-07-01', '2026-12-31']);
+    // The period runs (July 1 – December 31): the first read is cut at today, the second one covers it all.
+    expect([query.date_from, query.date_to]).toEqual(['2026-07-01', '2026-12-02']);
   });
 
   it('saves with PUT, saves a copy with POST and opens it, deletes after a second tap', async () => {
@@ -325,5 +328,134 @@ describe('CustomReportComponent', () => {
     expect(el.querySelector('h1')?.textContent?.trim()).toBe('新報表');
     expect(el.querySelector('.cr-note')?.textContent).toContain('電腦版');
     http.expectNone(r => r.url === BREAKDOWN);
+  });
+
+  // ---- to date, running bucket, labels, empty columns (polish D1, D3, D4, D7) ----------------------------------------
+
+  const NOV7 = new Date(2026, 10, 7, 10, 0);
+  const row = (key: string, amount: number, count: number, compare?: number) => ({
+    key, label: key, color: null, amount: String(amount), refund: '0', count, avg: '0', median: null, min: null, max: null,
+    first_date: null, last_date: null, avg_interval_days: null, compare_amount: compare === undefined ? undefined : String(compare), splits: [],
+  });
+  const answer = (rows: ReturnType<typeof row>[], total: number, count: number, compare?: { total: number; count: number }) => ({
+    currency: 'TWD', date_from: '', date_to: '',
+    totals: { expense: String(total), income: '0', net: '0', count, refund: '0' },
+    compare: compare ? { date_from: '', date_to: '', totals: { expense: String(compare.total), income: '0', net: '0', count: compare.count, refund: '0' } } : null,
+    rows, overlapping: false, missing_rates: [],
+  });
+  const reportWith = (patch: Record<string, unknown>): SavedReport[] => {
+    const list = new SampleSavedReportStore().list();
+    list[0].config = { ...list[0].config, split_by: undefined, ...patch } as SavedReport['config'];
+    return list;
+  };
+  const wholeMonths = (november: [number, number]) => [
+    row('2026-06-01', 300, 3, 250), row('2026-07-01', 400, 4, 300), row('2026-08-01', 500, 5, 350), row('2026-09-01', 367, 3, 400), row('2026-10-01', 450, 4, 400),
+    row('2026-11-01', november[0], november[1], 999),
+  ];
+
+  /** Opens 週末外食 on 2026-11-07 with a comparison and answers its three reads; returns the queries in request order. */
+  async function openRunning(compare: ReportCompare, metric: ReportMetric = 'expense') {
+    vi.setSystemTime(NOV7);
+    const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ compare, metric }));
+    const requests = http.match(r => r.url === BREAKDOWN);
+    const queries = requests.map(queryOf);
+    requests.forEach((request, index) => {
+      const query = queries[index];
+      if (query.compare) request.flush(answer(wholeMonths([120, 2]), 2137, 21, { total: 2000, count: 15 }));
+      else if (query.date_to === '2026-11-30') request.flush(answer(wholeMonths([180, 3]), 2197, 22));
+      else request.flush(answer([row('2026-10-01', 90, 2)], 90, 2));
+    });
+    harness.detectChanges();
+    return { harness, el, queries };
+  }
+
+  it('reads November 1–7 against October 1–7 in 近 6 個月 by month', async () => {
+    const { el, queries } = await openRunning('previous');
+
+    expect(queries).toHaveLength(3);
+    expect(queries[0]).toMatchObject({ date_from: '2026-06-01', date_to: '2026-11-07', compare: 'previous', group_by: 'month' });
+    expect(queries[1]).toMatchObject({ date_from: '2026-06-01', date_to: '2026-11-30', compare: undefined });
+    expect(queries[2]).toMatchObject({ date_from: '2026-10-01', date_to: '2026-10-07', compare: undefined, group_by: 'month' });
+    expect(texts(el, '.cr-table thead th')).toEqual(['月份', '本期至今（6/1–11/7）', '筆數', '上期同期', '增減']);
+    const rows = Array.from(el.querySelectorAll('.cr-table tbody tr'));
+    expect(rows.map(r => r.querySelector('th')?.textContent?.trim())).toEqual(['6 月', '7 月', '8 月', '9 月', '10 月', '11 月 進行中（至 11/7）', '合計']);
+    // November's change is against the short range (90), not against its compare_amount (999).
+    expect(texts(rows[5], 'td')).toEqual(['120', '2', '90', '▲ 30']);
+    expect(texts(rows[0], 'td')).toEqual(['300', '3', '250', '▲ 50']);
+    expect(texts(rows[6], 'td')).toEqual(['2,137', '21', '2,000', '▲ 137']);
+    expect(texts(el, '.cr-figure')[1]).toBe('平均每月 $403 5 組');
+    expect(el.querySelectorAll('.cr-chart .cr-hatch')).toHaveLength(1);
+  });
+
+  it("uses the previous bucket's same days for the running bucket against last year too (R2)", async () => {
+    const { el, queries } = await openRunning('last_year');
+
+    expect(queries[0]).toMatchObject({ date_to: '2026-11-07', compare: 'last_year' });
+    expect(queries[2]).toMatchObject({ date_from: '2026-10-01', date_to: '2026-10-07', compare: undefined });
+    expect(texts(el, '.cr-table thead th')).toEqual(['月份', '本期至今（6/1–11/7）', '筆數', '去年同期', '增減']);
+    const rows = Array.from(el.querySelectorAll('.cr-table tbody tr'));
+    expect(texts(rows[5], 'td')).toEqual(['120', '2', '90', '▲ 30']);
+    expect(texts(rows[6], 'td')).toEqual(['2,137', '21', '2,000', '▲ 137']);
+  });
+
+  it('reads 9 月 under 最高', async () => {
+    const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ compare: undefined }));
+    const request = http.expectOne(r => r.url === BREAKDOWN);
+    request.flush(answer([row('2026-05-01', 100, 1), row('2026-06-01', 300, 3), row('2026-07-01', 200, 2), row('2026-08-01', 150, 2), row('2026-09-01', 367, 4), row('2026-10-01', 250, 3)], 1367, 15));
+    harness.detectChanges();
+    expect(texts(el, '.cr-figure')[3]).toBe('最高 9 月 $367');
+  });
+
+  it('hides empty last-year columns with a note and marks no 新增', async () => {
+    const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ compare: 'last_year' }));
+    http.expectOne(r => r.url === BREAKDOWN).flush(
+      answer([row('2026-08-01', 300, 3, 0), row('2026-09-01', 367, 4, 0), row('2026-10-01', 250, 3, 0)], 917, 10, { total: 0, count: 0 }),
+    );
+    harness.detectChanges();
+    expect(texts(el, '.cr-table thead th')).toEqual(['月份', '合計', '筆數']);
+    expect(texts(el, '.cr-hidden-note')).toEqual(['去年同期沒有記錄，已隱藏比較欄']);
+    expect(el.querySelector('.cr-table')?.textContent).not.toContain('新增');
+    expect(el.querySelector('.cr-table-card')?.textContent).not.toContain('上期無資料');
+  });
+
+  it('does not run a week whose last day is today', async () => {
+    vi.setSystemTime(new Date(2026, 10, 8, 10, 0));
+    const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ period: { preset: 'this_month' }, group_by: 'week', compare: 'previous' }));
+    const requests = http.match(r => r.url === BREAKDOWN);
+    const queries = requests.map(queryOf);
+    // The month runs (11/8 < 11/30) but the week of 11/2 ends today: the to-date and whole reads only.
+    expect(queries.map(q => [q.date_from, q.date_to, q.compare])).toEqual([
+      ['2026-11-01', '2026-11-08', 'previous'],
+      ['2026-11-01', '2026-11-30', undefined],
+    ]);
+    requests[0].flush(answer([row('2026-10-26', 80, 1, 70), row('2026-11-02', 120, 2, 100)], 200, 3, { total: 170, count: 3 }));
+    requests[1].flush(answer([row('2026-10-26', 80, 1), row('2026-11-02', 120, 2)], 200, 3));
+    harness.detectChanges();
+    expect(texts(el, '.cr-table tbody th')).toEqual(['10/26 週', '11/2 週', '合計']);
+    expect(el.querySelector('.cr-table-card')?.textContent).not.toContain('進行中');
+    expect(el.querySelector('.cr-after')).toBeNull();
+  });
+
+  it('names rows after today and switches to the whole period', async () => {
+    const { harness, el } = await openRunning('previous');
+    const after = el.querySelector<HTMLButtonElement>('.cr-after')!;
+    expect(after.textContent?.trim()).toBe('另有 11/7 之後已記的 1 筆 $60 未計入');
+    after.click();
+    harness.detectChanges();
+    expect(el.querySelector('.cr-after')?.textContent?.trim()).toBe('改回截至 11/7');
+    expect(texts(el, '.cr-table thead th')).toEqual(['月份', '合計', '筆數']);
+    const rows = Array.from(el.querySelectorAll('.cr-table tbody tr'));
+    expect(texts(rows[5], 'th')).toEqual(['11 月']);
+    expect(texts(rows[5], 'td')).toEqual(['180', '3']);
+    expect(texts(rows[6], 'td')).toEqual(['2,197', '22']);
+    el.querySelector<HTMLButtonElement>('.cr-after')!.click();
+    harness.detectChanges();
+    expect(el.querySelector('.cr-after')?.textContent?.trim()).toBe('另有 11/7 之後已記的 1 筆 $60 未計入');
+    expect(texts(el, '.cr-table tbody th')[5]).toBe('11 月 進行中（至 11/7）');
+  });
+
+  it('words the 另有 line without an amount for the count metric', async () => {
+    const { el } = await openRunning('previous', 'count');
+    expect(el.querySelector('.cr-after')?.textContent?.trim()).toBe('另有 11/7 之後已記的 1 筆未計入');
   });
 });

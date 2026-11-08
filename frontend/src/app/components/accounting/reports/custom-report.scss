@@ -522,6 +522,24 @@
 
 .cr-grid { stroke: var(--app-border); stroke-width: 1; }
 .cr-tick { fill: var(--app-text-muted); font-size: 11px; }
+.cr-hatch-gap { fill: var(--app-surface); }
+.cr-after {
+  align-self: flex-start;
+  background: transparent;
+  border: 0;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-sm);
+  padding: 4px 0;
+  text-align: left;
+  text-decoration: underline;
+
+  &:focus-visible {
+    box-shadow: 0 0 0 3px var(--app-focus-ring);
+    outline: none;
+  }
+}
 .cr-outline { stroke: var(--app-text-muted); stroke-dasharray: 5 4; stroke-width: 1.5; }
 .cr-line { fill: none; stroke: var(--app-primary); stroke-linejoin: round; stroke-width: 3; }
 .cr-compare-line { fill: none; stroke: var(--app-text-muted); stroke-dasharray: 6 5; stroke-width: 2; }
