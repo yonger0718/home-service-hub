@@ -2,21 +2,23 @@
 
 - [x] 0.1 Design canvas (RewardRulesDesktop, AccountSettingsDesktop, AccountSettingsPhone, RewardStatesSpec) and `design_handoff_v3/design_refs/`
 - [x] 0.2 Proposal, design (D1–D8), spec deltas
-- [ ] 0.3 Archive `account-logo-upload` first, then run `openspec validate polish-reward-and-account-settings --strict` (not run in the authoring session)
+- [x] 0.3 Archive `account-logo-upload` first, then run `openspec validate polish-reward-and-account-settings --strict`
+- [x] 0.4 Self-check against the code (2026-11-08): reward units (D1a), 結帳日 stays in 基本, forfeit lines from accrual fields, reprice card placement, overview header fields
 
 ## 1. API (PR A)
 
 - [ ] 1.1 `usage` on each overview account (D1)
+  - plus `icon`, `logo`, `logo_hash`, effective `closing_day` (`card_closing_day`)
   - same computation as `/reward-usage`
   - unaffected by the filters
   - `[]` without active rules
-- [ ] 1.2 Tests: parity with `/accounts/{id}/reward-usage`; shared cap row; `state=expired` keeps usage
+- [ ] 1.2 Tests: parity with `/accounts/{id}/reward-usage`; shared cap row; `state=expired` keeps usage; combined card inherits its parent's `closing_day`
 
 ## 2. Shared pieces (PR B)
 
 - [ ] 2.1 `RewardStateTag` (D8) and `CapBar` (D2) in `components/ui`, light and dark, with accessible names
 - [ ] 2.2 Stepper and amount field; picker (sheet below 760 px), if `components/ui` lacks them
-- [ ] 2.3 Tests: tag styles per state; bar at 89 % and 90 %; no-cap text
+- [ ] 2.3 Tests: tag styles per state; bar at 89 % and 90 %; no-cap text; points unit text (no `$`)
 
 ## 3. 回饋規則總覽 (PR B)
 
@@ -29,12 +31,14 @@
   - near-cap row
   - chips for rules-less accounts
   - one request for the page
+  - points rule's bar and card total in points; header money total excludes points
+  - mixed windows on one card: per-row 本期 line
 
 ## 4. 帳戶設定 (PR C)
 
 - [ ] 4.1 Split into section components; sticky chips with scroll-spy (≥ 760 px)
 - [ ] 4.2 外觀: preview, three-way switch, upload / grid / text and colour, 「目前顯示」 line (D5)
-- [ ] 4.3 信用卡: steppers and previews, pickers
+- [ ] 4.3 信用卡: steppers and previews, pickers; 帳單週期 (結帳日 stepper, empty = 月底) stays in 基本 for every account
 - [ ] 4.4 Rule rows (D6): one line, bar, switch, ⋯ menu, drag reorder with one order call
 - [ ] 4.5 Phone: grouped list, sheet controls, 放棄 / 儲存 bar replacing the floating button
 - [ ] 4.6 Save with errors scrolls to the first invalid section and marks its chip
@@ -46,7 +50,7 @@
   - cards per accrual
   - imported reward rows as posted cards
 - [ ] 5.2 Per-state lines; struck-through estimate when capped or changed by the bank; link to the reward row
-- [ ] 5.3 Tests: the four states; capped estimate; imported reward without accrual; section absent without either
+- [ ] 5.3 Tests: the four states; the three 未獲得 lines; capped estimate; points reward unit; imported reward without accrual; reprice card inside the section; section absent without either
 
 ## 6. Wrap-up
 

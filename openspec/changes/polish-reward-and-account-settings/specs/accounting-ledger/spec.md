@@ -12,3 +12,12 @@
 #### Scenario: Filter does not hide usage
 - **WHEN** `GET /reward-rules?state=expired` is read
 - **THEN** each listed account's `usage` SHALL still describe its active rules
+
+### Requirement: Reward overview account header fields
+
+Each account in `GET /reward-rules` SHALL also carry `icon`, `logo` and `logo_hash` (as `GET /accounts` returns them) and `closing_day`: the closing day its reward windows use, which is the account's own, else its combined parent's, else null (calendar months).
+
+#### Scenario: Combined card inherits the closing day
+- **GIVEN** a card without its own closing day whose combined parent closes on the 25th
+- **WHEN** `GET /reward-rules` is read
+- **THEN** that card's `closing_day` SHALL be 25

@@ -22,7 +22,7 @@ The owner reviewed the redesign on the canvas (`design_handoff_v3/design_refs/Re
 
 ## What Changes
 
-- **API (accounting-service):** `GET /reward-rules` adds `usage` to each account: the same rows as `GET /accounts/{id}/reward-usage` for the current window. The overview needs one request instead of one per account.
+- **API (accounting-service):** `GET /reward-rules` adds to each account `usage` (the same rows as `GET /accounts/{id}/reward-usage` for the current window) and the header fields `icon`, `logo`, `logo_hash` and the effective `closing_day`. The overview stays one request instead of one per account plus `/accounts`.
 - **回饋規則總覽**
   - The 記帳設定 item is current, with a 「‹ 記帳設定」 back link.
   - Accounts show as a two-column card grid at ≥ 1024 px.
@@ -32,12 +32,13 @@ The owner reviewed the redesign on the canvas (`design_handoff_v3/design_refs/Re
 - **帳戶設定**
   - Sections 基本 · 外觀 · 信用卡 · 回饋規則 · 國外交易 · 其他, with a chip row that scrolls to each.
   - One 外觀 control with a preview and a 上傳圖片 / 內建 logo / 文字＋顏色 switch. It replaces the Logo and 圖示 rows.
-  - Steppers for 結帳日 and the 繳款期限 value, and app-styled pickers and amount fields.
+  - Steppers for 結帳日 (still under 基本, for every account) and the 繳款期限 value, and app-styled pickers and amount fields.
   - Rule rows in one line plus the cap bar, an enable switch and ⋯ (編輯, 刪除), reordered by drag.
   - Save in the header with 「有 N 項未儲存」 at ≥ 760 px.
   - Below 760 px, a grouped list and a bottom bar 放棄 / 儲存 that replaces the floating button on this page.
 - **Entry detail:** one 回饋 section replaces 紅利回饋 and 預估回饋.
-  - One card per accrual: rule, state tag, amount, and a line saying when and where it posts, or why it did not.
+  - One card per accrual: rule, state tag, amount, and a line saying when and where it posts, or why it did not (derived from today's accrual fields).
+  - The #306 reward-reprice card moves into the section.
   - Posted cards link to the reward row.
   - Reward rows without an accrual (imported) show as posted cards.
   - The state tag is one shared component: 預估 dashed, 已入帳 primary, 銀行確認 success with a check, 未獲得 muted with the amount struck through.
@@ -55,17 +56,18 @@ None.
 
 ## Dependencies
 
-`account-logo-upload` modifies "Account settings page" and has all tasks done. Archive it first; this change's delta builds on its text.
+`account-logo-upload` modified "Account settings page"; it is archived in this PR (first commit), and this change's delta builds on its text.
 
 ## Non-goals
 
-- No change to reward computation, posting, caps or the rule editor sheet's fields. The sheet keeps its content, and only the rows that open it change.
+- No change to reward computation, posting, caps or the rule editor sheet. The sheet keeps its content (no cap bar, no accrual list), and only the rows that open it change.
+- Reward units stay as #294 shows them: points rewards are never shown as money.
 - No reward marker on timeline rows. That can be a follow-up if the detail section proves too hidden.
 - The image crop step (logo upload PR 2) is separate. 外觀 shows the uploaded image as stored.
 
 ## Impact
 
-- **API:** `reward_rule_service.overview` and `RewardRuleOverviewAccountOut` (add `usage`), plus tests.
+- **API:** `reward_rule_service.overview` and `RewardRuleOverviewAccountOut` (add `usage`, `icon`, `logo`, `logo_hash`, `closing_day`), plus tests.
 - **SPA:**
   - `components/accounting/reward-rules/*`;
   - `components/accounting/account-settings/*`, split into section components;
