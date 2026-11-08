@@ -973,35 +973,91 @@ def forfeit_for_delete(db: Session, accrual: RewardAccrual) -> Pair:
 def usage(db: Session, account_id: int, on: date) -> list[dict]:
     """Cap use of each in-date enabled rule's window containing `on` (spec 6); a shared-cap group appears once.
 
-    Read-only: `used` and the cap come from the same helpers `recompute_window` allots with."""
+    Read-only: `used` and the cap come from the same helpers `recompute_window` allots with. Each row also names the
+    account the reward pays into (the row's first rule's; unset = the card) and whether that is money: the card itself
+    or a credit account, archived or not; any other account (points, miles) pays in its own units."""
     account = db.get(Account, account_id)
     if account is None:
         return []
-    closing_day = card_closing_day(db, account)
+    return usage_by_account(db, [account], on)[account_id]
+
+
+def usage_by_account(db: Session, accounts: Collection[Account], on: date) -> dict[int, list[dict]]:
+    """`usage` of every account in `accounts`, keyed by account id, in a fixed number of queries (the /reward-rules
+    overview lists every card, polish-reward-and-account-settings D1)."""
+    out: dict[int, list[dict]] = {a.id: [] for a in accounts}
+    if not out:
+        return out
     rules = db.scalars(
         select(RewardRule)
-        .where(RewardRule.account_id == account_id, RewardRule.is_enabled.is_(True),
+        .where(RewardRule.account_id.in_(list(out)), RewardRule.is_enabled.is_(True),
                or_(RewardRule.starts_on.is_(None), RewardRule.starts_on <= on),
                or_(RewardRule.ends_on.is_(None), RewardRule.ends_on >= on))
         .order_by(RewardRule.sort_order, RewardRule.id)
     ).all()
-    out, seen = [], set()
+    shared: dict = {}  # shared_cap_id -> every rule of the group, any state (reward_rule_service._group_rules)
+    if caps := {r.shared_cap_id for r in rules if r.shared_cap_id is not None}:
+        for member in db.scalars(select(RewardRule).where(RewardRule.shared_cap_id.in_(caps)).order_by(RewardRule.id)):
+            shared.setdefault(member.shared_cap_id, []).append(member)
+    closing = {a.id: card_closing_day(db, a) for a in accounts}
+    heads, seen = [], set()  # (first rule, its group, window start, window end), one per usage row
     for rule in rules:
         if rule.shared_cap_id is not None:
             if rule.shared_cap_id in seen:
                 continue
             seen.add(rule.shared_cap_id)
-        group = reward_rule_service.group_rule_ids(db, rule)
-        start, end = window_for(rule.window, closing_day, on)
-        rows = _window_rows(db, [(rule.id, start)], lock=False)
-        frozen = _frozen_amounts(db, rows)
-        used = sum(frozen.values(), _ZERO) + _external_used(db, group, start, end)
+        group = shared[rule.shared_cap_id] if rule.shared_cap_id is not None else [rule]
+        start, end = window_for(rule.window, closing[rule.account_id], on)
+        heads.append((rule, group, start, end))
+    if not heads:
+        return out
+    head_of = {(member.id, start): index for index, (_, group, start, _) in enumerate(heads) for member in group}
+    db.flush()
+    accruals = list(db.scalars(
+        select(RewardAccrual)
+        .where(tuple_(RewardAccrual.rule_id, RewardAccrual.window_start).in_(sorted(head_of)))
+        .order_by(RewardAccrual.id)
+        .execution_options(populate_existing=True)
+    ))
+    frozen = _frozen_amounts(db, accruals)
+    rows_of: dict[int, list[RewardAccrual]] = {}
+    for accrual in accruals:
+        rows_of.setdefault(head_of[(accrual.rule_id, accrual.window_start)], []).append(accrual)
+    external = _external_used_by_day(db, [m.id for _, group, _, _ in heads for m in group],
+                                     min(h[2] for h in heads), max(h[3] for h in heads))
+    for index, (rule, group, start, end) in enumerate(heads):
+        rows = rows_of.get(index, [])
+        members = {m.id for m in group}
+        outside = sum((amount for (rule_id, day), amount in external.items()
+                       if rule_id in members and start <= day <= end), _ZERO)
+        used = sum((frozen[r.id] for r in rows if r.id in frozen), _ZERO) + outside
         estimated = sum((Decimal(r.amount) for r in rows if r.state == "estimated"), _ZERO)
-        cap = reward_rule_service.group_cap(db, rule)
-        out.append({
-            "rule_ids": group, "shared_cap_id": rule.shared_cap_id, "name": rule.name,
+        caps_in_group = [m.total_cap for m in group if m.total_cap is not None]
+        cap = min(caps_in_group) if caps_in_group else None
+        payee = db.get(Account, rule.reward_account_id or rule.account_id)
+        out[rule.account_id].append({
+            "rule_ids": [m.id for m in group], "shared_cap_id": rule.shared_cap_id, "name": rule.name,
             "window_start": start, "window_end": end,
             "used": used.quantize(_Q), "estimated": estimated.quantize(_Q),
             "cap": cap, "remaining": None if cap is None else max(_ZERO, Decimal(cap) - used - estimated).quantize(_Q),
+            "reward_account_id": payee.id, "reward_account_name": payee.name,
+            "reward_is_money": payee.id == rule.account_id or bool(payee.is_credit),
         })
     return out
+
+
+def _external_used_by_day(db: Session, rule_ids: list[int], start: date, end: date) -> dict[tuple[int, date], Decimal]:
+    """`_external_used` for many rules at once: (rule id, source purchase date) -> sum of the no-accrual reward rows,
+    for purchases in [start, end]; callers add up the days of each window."""
+    source = LedgerEntry.__table__.alias("source")
+    rows = db.execute(
+        select(LedgerEntry.reward_rule_id, source.c.entry_date, func.sum(LedgerEntry.amount))
+        .join(source, source.c.id == LedgerEntry.reward_source_entry_id)
+        .where(
+            LedgerEntry.reward_rule_id.in_(rule_ids),
+            source.c.entry_date.between(start, end),
+            ~exists().where(RewardAccrual.ledger_entry_id == LedgerEntry.id),
+        )
+        .group_by(LedgerEntry.reward_rule_id, source.c.entry_date)
+    ).all()
+    return {(rule_id, day): Decimal(total) for rule_id, day, total in rows}

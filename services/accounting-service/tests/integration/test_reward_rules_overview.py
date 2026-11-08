@@ -1,8 +1,9 @@
 """GET /reward-rules: every account, rule state, stats (reward rules design §5.3)."""
 import time
 from datetime import date, timedelta
+from decimal import Decimal
 
-from app.models import EntryRewardRule
+from app.models import AccountLogoImage, EntryRewardRule, RewardAccrual
 from app.services import ledger_service
 
 TODAY = date(2026, 11, 1)
@@ -86,3 +87,88 @@ def test_overview_is_grouped_not_per_rule(client, db_session, seed):
         assert client.get("/reward-rules").status_code == 200
         timings.append(time.perf_counter() - started)
     assert sorted(timings)[2] < 0.5, timings
+
+
+# polish-reward-and-account-settings D1: usage and the card header fields ride on the overview.
+def test_overview_usage_matches_reward_usage(client, db_session, seed, monkeypatch):
+    _freeze(monkeypatch)
+    card = seed.account("測試卡", is_credit=True)
+    rule = seed.rule(card, name="一般", window="calendar_month", total_cap=Decimal("500"))
+    spend = seed.entry(card, "-1000", day=date(2026, 11, 1))
+    db_session.add(RewardAccrual(source_entry_id=spend.id, rule_id=rule.id, window_start=date(2026, 11, 1),
+                                 window_end=date(2026, 11, 30), post_on=date(2026, 12, 5), estimate=Decimal("64"),
+                                 amount=Decimal("64"), state="estimated"))
+    db_session.commit()
+    [account] = client.get("/reward-rules").json()["accounts"]
+    assert account["usage"] == client.get(f"/accounts/{card.id}/reward-usage").json()
+    assert [Decimal(account["usage"][0][k]) for k in ("estimated", "cap", "remaining")] == [64, 500, 436]
+
+
+def test_overview_usage_ignores_filters(client, db_session, seed, monkeypatch):
+    _freeze(monkeypatch)
+    card = seed.account("測試卡", is_credit=True)
+    miles = seed.account("測試里程")
+    seed.rule(card, name="生效", window="calendar_month").reward_account_id = miles.id
+    seed.rule(card, name="過期", starts_on=date(2025, 1, 1), ends_on=date(2026, 10, 31))
+    db_session.commit()
+    full = client.get("/reward-rules").json()["accounts"]
+    expected = next(a for a in full if a["account_id"] == card.id)["usage"]
+    assert [u["name"] for u in expected] == ["生效"] and expected[0]["reward_is_money"] is False
+    for params in ({"state": "expired"}, [("account_id", card.id)]):
+        [account] = [a for a in client.get("/reward-rules", params=params).json()["accounts"]
+                     if a["account_id"] == card.id]
+        assert account["usage"] == expected
+
+
+def test_overview_usage_empty_without_active_rules(client, db_session, seed, monkeypatch):
+    _freeze(monkeypatch)
+    card = seed.account("測試卡", is_credit=True)
+    seed.account("空卡", is_credit=True)
+    seed.rule(card, name="停用", enabled=False)
+    db_session.commit()
+    body = client.get("/reward-rules").json()
+    assert [a["usage"] for a in body["accounts"]] == [[], []]
+
+
+def test_overview_header_fields_match_accounts(client, db_session, seed):
+    card = seed.account("測試卡", is_credit=True, icon="💳", logo="esun")
+    plain = seed.account("錢包")
+    db_session.add(AccountLogoImage(account_id=card.id, png=b"\x89PNG", sha256="ab" * 32,
+                                    source_media_type="image/png", source_bytes=4))
+    db_session.commit()
+    listed = {a["id"]: a for a in client.get("/accounts").json()}
+    for account in client.get("/reward-rules").json()["accounts"]:
+        mine = listed[account["account_id"]]
+        fields = ("icon", "logo", "logo_hash")
+        assert [account[f] for f in fields] == [mine[f] for f in fields]
+    assert listed[card.id]["logo_hash"] == "ab" * 8 and listed[plain.id]["logo_hash"] is None
+
+
+def test_overview_closing_day_is_effective(client, db_session, seed):
+    parent = seed.account("主卡", is_credit=True, closing_day=25)
+    child = seed.account("附卡", is_credit=True, combined_account_id=parent.id)
+    plain = seed.account("錢包")
+    db_session.commit()
+    days = {a["account_id"]: a["closing_day"] for a in client.get("/reward-rules").json()["accounts"]}
+    assert (days[parent.id], days[child.id], days[plain.id]) == (25, 25, None)
+
+
+def test_overview_usage_batches_windows_per_account(client, db_session, seed, monkeypatch):
+    # One batched read for every card: each row counts only its own group's rows inside its own window.
+    _freeze(monkeypatch)
+    cycle = seed.account("帳單卡", is_credit=True, closing_day=15)  # window 10/16–11/15
+    month = seed.account("月曆卡", is_credit=True)                    # window 11/01–11/30
+    rules = {cycle.id: seed.rule(cycle, name="帳單"), month.id: seed.rule(month, name="月曆", window="calendar_month")}
+    for card, day, amount in ((cycle, date(2026, 10, 20), "5"), (cycle, date(2026, 11, 20), "7"),
+                              (month, date(2026, 10, 20), "3"), (month, date(2026, 11, 20), "4")):
+        purchase = seed.entry(card, "-100", day=day)
+        seed.entry(card, amount, kind="reward", day=day, reward_source_entry_id=purchase.id,
+                   reward_rule_id=rules[card.id].id)
+    db_session.commit()
+    accounts = {a["account_id"]: a for a in client.get("/reward-rules").json()["accounts"]}
+    for card, used in ((cycle, 5), (month, 4)):
+        assert accounts[card.id]["usage"] == client.get(f"/accounts/{card.id}/reward-usage").json()
+        [row] = accounts[card.id]["usage"]
+        assert Decimal(row["used"]) == used
+    assert (accounts[cycle.id]["usage"][0]["window_start"], accounts[month.id]["usage"][0]["window_start"]) == (
+        "2026-10-16", "2026-11-01")

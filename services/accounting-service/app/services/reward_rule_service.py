@@ -7,9 +7,10 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import Account, EntryRewardRule, LedgerEntry, Project, RewardAccrual, RewardRule
+from ..models import Account, AccountLogoImage, EntryRewardRule, LedgerEntry, Project, RewardAccrual, RewardRule
 from ..schemas.writes import RewardRuleIn, ShareCapWith
 from . import ledger_service
+from .account_logo_service import HASH_PREFIX
 from .errors import CodedConflictError, NotFoundError, ValidationError
 
 BASIC_RULE_OVERLAP = "basic_rule_overlap"
@@ -312,6 +313,8 @@ def _rule_stats(db: Session, rule_ids: list[int], today: date) -> dict[int, dict
 
 
 def overview(db: Session, *, account_ids: list[int] | None, state: str, include_archived_accounts: bool) -> dict:
+    from . import reward_engine  # lazy: reward_engine imports this module
+
     today = ledger_service._today()
     query = select(Account).order_by(Account.sort_order, Account.name)
     if account_ids:
@@ -336,9 +339,17 @@ def overview(db: Session, *, account_ids: list[int] | None, state: str, include_
     for rule in shown:
         by_account[rule.account_id].append({**ledger_service.rule_out(rule), "state": states[rule.id],
                                             "stats": stats[rule.id]})
+    # The card header (polish-reward-and-account-settings D1): usage ignores the filters, like /reward-usage.
+    usage = reward_engine.usage_by_account(db, accounts, today)
+    logo_hashes = dict(db.execute(
+        select(AccountLogoImage.account_id, func.substr(AccountLogoImage.sha256, 1, HASH_PREFIX))
+        .where(AccountLogoImage.account_id.in_([a.id for a in accounts]))
+    ).all()) if accounts else {}
     return {
         "accounts": [
             {"account_id": a.id, "account_name": a.name, "is_credit": a.is_credit, "is_archived": a.is_archived,
+             "icon": a.icon, "logo": a.logo, "logo_hash": logo_hashes.get(a.id),
+             "closing_day": reward_engine.card_closing_day(db, a), "usage": usage[a.id],
              "rules": by_account[a.id]}
             for a in accounts
         ],
