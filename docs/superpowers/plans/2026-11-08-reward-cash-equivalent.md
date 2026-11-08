@@ -40,14 +40,14 @@
 
 ### Task 2: Column, reads and writes
 
-**Files:** `app/models/ledger.py` (Account), new `alembic/versions/<rev>_account_cash_equivalent.py`, `app/schemas/writes.py` (`AccountIn`), `app/schemas/ledger.py` (account out), `app/services/ledger_service.py` (`ACCOUNT_FIELDS`), `app/services/settings_service.py` (`create_account`, `update_account`, `ACCOUNT_COLUMNS_EXCLUDE`); tests `tests/integration/test_accounts_api.py`, `tests/integration/test_models_schema.py` (column default), the MOZE backup import test module.
+**Files:** `app/models/ledger.py` (Account), new `alembic/versions/<rev>_account_cash_equivalent.py`, `app/schemas/writes.py` (`AccountIn`), `app/schemas/ledger.py` (`AccountOut`, inherited by `AccountDetailOut`), `app/services/ledger_service.py` (`ACCOUNT_FIELDS`), `app/services/settings_service.py` (`create_account`, `update_account`, `ACCOUNT_COLUMNS_EXCLUDE`); tests `tests/integration/test_accounts_api.py`, `tests/integration/test_models_schema.py` (column default), `tests/integration/test_moze_replace_ledger.py` (fixtures `moze`, `backup`).
 
 **Interfaces:** Produces `Account.cash_equivalent: bool`; `AccountOut.cash_equivalent: bool` (list and detail); `AccountIn.cash_equivalent: bool | None`.
 
-- [ ] **Step 1: Failing tests** (`test_accounts_api.py`): `test_cash_equivalent_defaults_false_and_is_listed` (POST without it → detail and list `false`); `test_put_sets_cash_equivalent` (PUT `true` → `true`, PUT `false` → `false`); `test_put_without_the_field_keeps_it` (set `true`, PUT body from the detail minus `cash_equivalent` → still `true`); MOZE backup import module: `test_moze_import_keeps_cash_equivalent` (flagged account matched by `moze_id` → still `true` after import). Extend the `set(body[0]) >= {...}` key list with `cash_equivalent`.
-- [ ] **Step 2: Run** `PYTHONPATH=.:../shared-python-lib .venv/bin/python -m pytest -q -p no:cacheprovider tests/integration/test_accounts_api.py <moze module>` → FAIL.
+- [ ] **Step 1: Failing tests** (`test_accounts_api.py`): `test_cash_equivalent_defaults_false_and_is_listed` (POST without it → detail and list `false`); `test_put_sets_cash_equivalent` (PUT `true` → `true`, PUT `false` → `false`); `test_put_without_the_field_keeps_it` (set `true`, PUT body from the detail minus `cash_equivalent` → still `true`); `test_moze_replace_ledger.py`: `test_moze_imports_keep_cash_equivalent` (an imported account flagged `true` with `settings_locally_edited` false → still `true` after a backup import and after a CSV re-import; the backup importer rewrites only `moze_backup_import_service` lines 92–94's field list). Extend the `set(body[0]) >= {...}` key list with `cash_equivalent`.
+- [ ] **Step 2: Run** `PYTHONPATH=.:../shared-python-lib .venv/bin/python -m pytest -q -p no:cacheprovider tests/integration/test_accounts_api.py tests/integration/test_moze_replace_ledger.py` → FAIL.
 - [ ] **Step 3: Implement.** `cash_equivalent` joins `ACCOUNT_COLUMNS_EXCLUDE`; `create_account` writes `bool(payload.cash_equivalent)`; `update_account` writes it only when not `None`. Migration: `op.add_column("account", sa.Column("cash_equivalent", sa.Boolean(), nullable=False, server_default=sa.text("false")))`.
-- [ ] **Step 4: Run** → PASS; also `tests/integration/test_models_schema.py` and the alembic upgrade/downgrade test module if one exists for heads.
+- [ ] **Step 4: Run** → PASS; also `tests/integration/test_models_schema.py` and `tests/integration/test_migration.py` (upgrade to head, downgrade one step).
 - [ ] **Step 5: Commit** `feat(accounting): account cash_equivalent flag (1 點 = 1 元) (#323 PR A2)`
 
 ### Task 3: Usage unit
