@@ -437,6 +437,9 @@ describe('tap tip placement', () => {
     expect(tipPlacement(180, 30, 358, 212, 2)).toMatchObject({ top: 14.2, below: true });
     expect(tipPlacement(180, 77.9, 358, 212, 2)).toMatchObject({ below: true });
     expect(tipPlacement(180, 78, 358, 212, 2)).toMatchObject({ below: false });
+    // The threshold is in CSS px: a chart drawn at 0.7× its viewBox needs 78 / 0.7 ≈ 111 units above the anchor.
+    expect(tipPlacement(480, 100, 960, 274, 2, 0.7)).toMatchObject({ below: true });
+    expect(tipPlacement(480, 112, 960, 274, 2, 0.7)).toMatchObject({ below: false });
     expect(tipPlacement(20, 120, 358, 212, 1)).toMatchObject({ align: 'start' });
     expect(tipPlacement(340, 120, 358, 212, 1)).toMatchObject({ align: 'end' });
   });

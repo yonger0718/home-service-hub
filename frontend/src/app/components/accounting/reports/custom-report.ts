@@ -471,13 +471,18 @@ export class CustomReportComponent {
     const slot = plot.width / Math.max(rows.length, 1);
     // Above the bucket's total label, which sits over its highest mark (bar, comparison or 預估 box).
     const top = Number(this.xLabels()[index].totalY) - 12;
-    return { title, rows: tipRows, ...tipPlacement(plot.left + slot * index + slot / 2, top, width, height, tipRows.length) };
+    return { title, rows: tipRows, ...tipPlacement(plot.left + slot * index + slot / 2, top, width, height, tipRows.length, this.scale()) };
   }
+
+  /** The chart's rendered px per viewBox unit, read at the tap (1 where it cannot be measured). */
+  private readonly scale = signal(1);
 
   /** A tap (or Enter / Space) on a bucket toggles its tip; a tap elsewhere on the chart closes it. */
   pickBar(key: string, event: Event): void {
     event.stopPropagation();
     event.preventDefault();
+    const svg = (event.target as Element | null)?.closest?.('svg');
+    this.scale.set(svg && svg.clientWidth > 0 ? svg.clientWidth / this.layout().width : 1);
     this.picked.update(current => (current === key ? null : key));
   }
 

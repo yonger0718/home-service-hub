@@ -223,13 +223,18 @@ export class ReportTrendComponent {
       : [{ label: null, value: dollars(value) }];
     const top = Math.min(Number(bar.y), bar.forecast ? Number(bar.forecast.y) : Infinity);
     const { width, height } = this.layout();
-    return { title, rows, ...tipPlacement(Number(bar.cx), top, width, height, rows.length) };
+    return { title, rows, ...tipPlacement(Number(bar.cx), top, width, height, rows.length, this.scale()) };
   }
+
+  /** The chart's rendered px per viewBox unit, read at the tap (1 where it cannot be measured). */
+  private readonly scale = signal(1);
 
   /** A tap (or Enter / Space) on a month toggles its tip; a tap elsewhere on the chart closes it. */
   pickBar(key: string, event: Event): void {
     event.stopPropagation();
     event.preventDefault();
+    const svg = (event.target as Element | null)?.closest?.('svg');
+    this.scale.set(svg && svg.clientWidth > 0 ? svg.clientWidth / this.layout().width : 1);
     this.picked.update(current => (current === key ? null : key));
   }
   private readonly max = computed(() => niceCeiling(Math.max(...this.values(), this.average() ?? 0, this.forecast()?.value ?? 0, 0)));

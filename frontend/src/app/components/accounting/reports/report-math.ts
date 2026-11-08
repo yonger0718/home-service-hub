@@ -580,16 +580,17 @@ export interface BarTip {
 }
 
 /**
- * Where a tip with a title and `rows` lines sits over a `width` × `height` drawing (drawn about 1:1 in CSS px) for a bar
- * centred at `cx` whose highest mark is at `top`: above the mark, or below it when the lines would not fit above.
+ * Where a tip with a title and `rows` lines sits over a `width` × `height` drawing for a bar centred at `cx` whose
+ * highest mark is at `top`: above the mark, or below it when the lines would not fit above. `scale` is the drawing's
+ * rendered px per viewBox unit (the tip's height is in px).
  */
-export function tipPlacement(cx: number, top: number, width: number, height: number, rows: number): Pick<BarTip, 'left' | 'top' | 'align' | 'below'> {
+export function tipPlacement(cx: number, top: number, width: number, height: number, rows: number, scale = 1): Pick<BarTip, 'left' | 'top' | 'align' | 'below'> {
   const align = cx < width * 0.2 ? 'start' : cx > width * 0.8 ? 'end' : 'center';
   const anchor = Math.max(top, 0);
   // The tip's box, pinned by its CSS: (title + rows) lines of 18px, 2px gaps between them, 6px padding and 1px border
   // on each side, plus the 6px it hangs off the anchor.
   const needed = tipHeight(rows) + 6;
-  return { left: Math.round((cx / width) * 1000) / 10, top: Math.round((anchor / height) * 1000) / 10, align, below: anchor < needed };
+  return { left: Math.round((cx / width) * 1000) / 10, top: Math.round((anchor / height) * 1000) / 10, align, below: anchor * scale < needed };
 }
 
 /** The rendered height of a tip with a title and `rows` lines; the `.tr-tip` / `.cr-tip` CSS pins each term. */
