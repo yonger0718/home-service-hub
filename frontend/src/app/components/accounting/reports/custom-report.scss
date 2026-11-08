@@ -512,6 +512,7 @@
   width: 12px;
 
   &.outline { border: 1.5px dashed var(--app-text-muted); }
+  &.forecast { border: 1.5px dashed var(--app-primary); }
 }
 
 .cr-chart {
@@ -542,6 +543,9 @@
   }
 }
 .cr-outline { stroke: var(--app-text-muted); stroke-dasharray: 5 4; stroke-width: 1.5; }
+/* The running bucket's 預估: a dashed box from the solid stack's top up to the forecast (stroke only, no url() paint). */
+.cr-forecast { fill: none; pointer-events: none; stroke: var(--app-primary); stroke-dasharray: 4 3; stroke-width: 1.5; }
+.cr-forecast-note { color: var(--app-text-muted); font-size: var(--fs-sm); margin: 6px 0 0; }
 .cr-line { fill: none; stroke: var(--app-primary); stroke-linejoin: round; stroke-width: 3; }
 .cr-compare-line { fill: none; stroke: var(--app-text-muted); stroke-dasharray: 6 5; stroke-width: 2; }
 .cr-point { fill: var(--app-primary); }

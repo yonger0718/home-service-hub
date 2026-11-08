@@ -240,7 +240,7 @@
       <div class="cr-card cr-chart-card">
         <div class="cr-legend">
           @for (item of legend(); track item.label) {
-            <span><span class="cr-swatch" [class.outline]="item.outline" aria-hidden="true" [style.background]="item.outline ? null : item.color"></span>{{ item.label }}</span>
+            <span><span class="cr-swatch" [class.outline]="item.outline" [class.forecast]="item.forecast" aria-hidden="true" [style.background]="item.outline || item.forecast ? null : item.color"></span>{{ item.label }}</span>
           }
         </div>
         @if (chart() === 'donut') {
@@ -263,7 +263,7 @@
             }
             @if (chart() === 'bar') {
               @for (rect of rects(); track $index) {
-                <rect [class.cr-outline]="rect.outline" [attr.x]="rect.x" [attr.y]="rect.y" [attr.width]="rect.width" [attr.height]="rect.height" rx="3" [attr.fill]="rect.fill"></rect>
+                <rect [class.cr-outline]="rect.outline" [class.cr-forecast]="rect.forecast" [attr.x]="rect.x" [attr.y]="rect.y" [attr.width]="rect.width" [attr.height]="rect.height" rx="3" [attr.fill]="rect.fill"></rect>
                 @if (rect.running) {
                   <g class="cr-hatch">
                     @for (stripe of rect.hatch; track $index) { <line class="cr-hatch-line" [attr.x1]="stripe.x1" [attr.y1]="stripe.y1" [attr.x2]="stripe.x2" [attr.y2]="stripe.y2"></line> }
@@ -280,6 +280,7 @@
               <text class="cr-total" [attr.x]="x.x" [attr.y]="x.totalY" text-anchor="middle">{{ x.total }}</text>
             }
           </svg>
+          @if (chart() === 'bar' && forecastNote(); as note) { <p class="cr-forecast-note">{{ note }}</p> }
         }
       </div>
     }
