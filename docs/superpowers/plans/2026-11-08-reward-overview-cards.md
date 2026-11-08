@@ -15,14 +15,14 @@
 ## Global Constraints
 
 - **Out of scope here:** `RewardStateTag` (PR D, another session, `components/ui/reward-state-tag/`), entry detail, account-settings layout (PR C). Steppers / pickers (task 2.2) move to PR C, their only user (ruling, noted in tasks.md).
-- **Units (D1a):** a usage row's unit comes only from its own `reward_is_money` / `reward_account_name`; never resolve units through `accounts`. Money is formatted with `formatMoney(v, 'TWD')`; points as `n0(v) + ' ' + reward_account_name` (e.g. `120 測試里程`).
+- **Units (D1a):** a usage row's unit comes only from its own `reward_is_money` / `reward_account_name`; never resolve units through `accounts`. Money is formatted with `formatMoney(v, 'TWD')`; points as `formatNumber(v, 'TWD') + ' ' + reward_account_name` (e.g. `120 測試里程`).
 - **Copy (exact):**
   - chips `全部 N` `生效中 N` `已停用 N` `已過期 N` `未開始 N`, checkbox `含已封存帳戶`, back link `‹ 記帳設定`, title `回饋規則`;
   - summary `N 張卡 · M 條規則 · 本期回饋合計 $X（含預估）`, then ` ＋ N 種點數` where N = distinct `reward_account_id`s among the shown cards' non-money usage rows (omitted when 0; owner ruling 2026-11-08, spec amended by PR A2);
   - window line `結帳日 25 號 · 本期 10/26–11/25`; calendar `每月 1 日起算 · 本月 11/1–11/30`; mixed windows: `結帳日 25 號` only and each rule row gets `本期 11/1–11/30`;
   - card total label `本期回饋（含預估）`; footer `近 12 個月 N 筆 · 已入帳 M 筆` and link `＋ 新增規則`;
   - bar `$193 / $200 · 快到上限`, `$64 / $500 · 剩 $436`; no cap `無上限 · 本期 $X 已入帳 + $Y 預估`; aria `本期已入帳 $X，預估 $Y，上限 $Z`;
-  - inactive lines `停用中，不估算回饋` (disabled), `已結束，不再估算` (expired), `2027/1/1 開始` (upcoming: `slashDate(starts_on)` + ` 開始`);
+  - inactive lines `停用中，不估算回饋` (disabled), `已結束，不再估算` (expired), `2027/1/1 開始` (upcoming: `fullDate(starts_on)` + ` 開始`; `slashDate` zero-pads, so not that);
   - banner `N 條規則已過期但仍啟用，之後的消費不會再估算回饋` with button `只看已過期`;
   - bare chips row label `沒有規則的卡片`.
 - **State labels:** `RULE_STATE_LABELS` becomes `生效中 / 已停用 / 已過期 / 未開始` (the spec's words; account settings shows the same map).
@@ -54,7 +54,8 @@
   - `RewardRuleOverviewAccount` + `icon: string | null; logo: string | null; logo_hash: string | null; closing_day: number | null; usage: RewardUsage[]`.
   - `export type RewardUnit = { money: true } | { money: false; name: string }`.
   - `export function usageUnit(usage: RewardUsage): RewardUnit`.
-  - `export function rewardFigure(value: string | number, unit: RewardUnit): string` — money `formatMoney(v, 'TWD')`, points `${n0(v)} ${name}`.
+  - `export function rewardFigure(value: string | number, unit: RewardUnit): string` — money `formatMoney(v, 'TWD')`, points `${formatNumber(v, 'TWD')} ${name}` (both from `components/accounting/format.ts`).
+  - `export function fullDate(iso: string): string` — `2027-01-01` → `2027/1/1`.
   - `export function rateChip(rule): string` — `methodSummary(rule)`.
   - `export function ruleTitle(rule): string` — `rule.name` with a trailing ` ${rateChip(rule)}` (or `(${rateChip})`) removed, trimmed.
   - `export function monthDay(iso: string): string` — `2026-10-26` → `10/26`.
@@ -80,9 +81,10 @@ describe('overview text helpers', () => {
     expect(ruleTitle({ ...rule, name: '全聯・家樂福加碼' })).toBe('全聯・家樂福加碼');
     expect(ruleTitle({ ...rule, name: '海外 (3%)' })).toBe('海外');
   });
-  it('monthDay / windowText', () => {
+  it('monthDay / windowText / fullDate', () => {
     expect(monthDay('2026-11-06')).toBe('11/6');
     expect(windowText(usage())).toBe('10/26–11/25');
+    expect(fullDate('2027-01-01')).toBe('2027/1/1');
   });
   it('state labels use the spec words', () => {
     expect(RULE_STATE_LABELS).toEqual({ active: '生效中', disabled: '已停用', expired: '已過期', upcoming: '未開始' });
@@ -137,7 +139,7 @@ Rules: `total = used + estimated`; `near = cap > 0 && total / cap >= 0.9`; `used
 - Rewrite: `frontend/src/app/components/accounting/reward-rules/reward-rules.spec.ts` (keep its HTTP-testing setup; replace assertions on the old list layout)
 
 **Interfaces:**
-- Consumes: Task 1 helpers and types, Task 2 `CapBarComponent`, `AccountIconComponent` (`[logo] [accountId] [logoHash] [icon] fallback="card" size="big"`).
+- Consumes: Task 1 helpers and types, Task 2 `CapBarComponent`, `AccountIconComponent` (`components/accounting/account-icon/account-icon.ts`; `[logo] [accountId] [logoHash] [icon] fallback="card" size="big"`).
 - Produces (component, for tests): `cards: Signal<OverviewCard[]>`, `bare: Signal<RewardRuleOverviewAccount[]>`, `headline: Signal<string>`, `chipCounts: Signal<Record<RewardRuleFilter, number>>`.
 
 Behaviour (spec + D3; decisions marked *ruling*):
