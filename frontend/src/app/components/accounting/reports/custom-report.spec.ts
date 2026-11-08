@@ -592,6 +592,41 @@ describe('CustomReportComponent', () => {
     expect(el.querySelector('.cr-after')?.textContent?.trim()).toBe('另有 11/7 之後已記的 1 筆 $60 未計入');
   });
 
+  it('ends the comparison line before a running bucket whose base read failed (N2)', async () => {
+    vi.setSystemTime(NOV7);
+    const list = reportWith({ compare: 'previous' });
+    list[0].chart = 'line';
+    const { harness, el } = await open('/accounting/reports/custom/1', 'panes', list);
+    const requests = http.match(r => r.url === BREAKDOWN);
+    const queries = requests.map(queryOf);
+    requests.forEach((request, index) => {
+      const query = queries[index];
+      if (query.compare) request.flush(answer(wholeMonths([120, 2]), 2137, 21, { total: 2000, count: 15 }));
+      else if (query.date_to === '2026-11-30') request.flush(answer(wholeMonths([180, 3]), 2197, 22));
+      else request.flush({ code: 'x', message: 'x', trace_id: 'x' }, { status: 500, statusText: 'Server Error' });
+    });
+    harness.detectChanges();
+    const points = el.querySelector('.cr-compare-line')?.getAttribute('points')?.trim().split(' ') ?? [];
+    expect(points).toHaveLength(5);
+    expect(el.querySelectorAll('.cr-line')).toHaveLength(1);
+  });
+
+  it('signs negative saved figures as −$N, not $−N', async () => {
+    const list = reportWith({ metric: 'net', compare: undefined });
+    const { harness, el } = await open('/accounting/reports/custom/1', 'panes', list);
+    const [request] = http.match(r => r.url === BREAKDOWN);
+    request.flush({
+      currency: 'TWD', date_from: '', date_to: '',
+      totals: { expense: '900', income: '0', net: '-900', count: 3, refund: '0' }, compare: null,
+      rows: [row('2026-09-01', -300, 1), row('2026-10-01', -600, 2)], overlapping: false, missing_rates: [],
+    });
+    harness.detectChanges();
+    const figures = texts(el, '.cr-figure');
+    expect(figures[0]).toContain('−$900');
+    expect(figures.join(' ')).not.toContain('$−');
+    expect(figures[1]).toContain('−$450');
+  });
+
   it('leaves the running bucket out of 平均 in the whole view too', async () => {
     const { harness, el } = await openRunning('previous');
     el.querySelector<HTMLButtonElement>('.cr-after')!.click();

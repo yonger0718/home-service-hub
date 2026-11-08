@@ -70,6 +70,7 @@ import {
   totalChange,
   windowEmpty,
   yOf,
+  dollars,
 } from './report-math';
 import type { LoadState } from './reports';
 
@@ -378,7 +379,7 @@ export class CustomReportComponent {
     const total = this.periodTotal();
     const count = this.count();
     const base = this.totalBase(false);
-    const money = (value: number) => (this.config().metric === 'count' ? n0(value) : `$${n0(value)}`);
+    const money = (value: number) => (this.config().metric === 'count' ? n0(value) : dollars(value));
     const max = rows.reduce((best, row) => (num(row.amount) > num(best.amount) ? row : best), rows[0]);
     const byMonth = this.config().group_by === 'month';
     // F4: a total is a delta, never 新增 / 停止 (an empty window has no comparison column at all).
@@ -472,7 +473,13 @@ export class CustomReportComponent {
   readonly comparePoints = computed(() => {
     if (!this.compareOn()) return '';
     const { plot } = this.layout();
-    return this.rows().map((row, index) => `${this.xLabels()[index].x},${yOf(this.baseOf(row) ?? 0, plot, this.max()).toFixed(1)}`).join(' ');
+    // N2: a bucket without a base (the running one when its base read failed) has no point; the line skips it.
+    const points: string[] = [];
+    this.rows().forEach((row, index) => {
+      const base = this.baseOf(row);
+      if (base !== null) points.push(`${this.xLabels()[index].x},${yOf(base, plot, this.max()).toFixed(1)}`);
+    });
+    return points.join(' ');
   });
   readonly arcs = computed(() => donutArcs(this.rows().map((row, index) => ({ value: num(row.amount), color: seriesColor(index) }))));
   readonly chartAria = computed(() => `${this.name() || '報表'}：${this.rows().map(row => `${this.rowLabel(row)} ${n0(row.amount)}`).join('、')}`);

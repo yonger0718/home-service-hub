@@ -877,6 +877,23 @@ describe('AccountingReportsComponent', () => {
       expect(el.querySelectorAll('.rp-period')).toHaveLength(1);
     });
 
+    it('on a phone renders the period control after the page header, under the sub-nav (N1)', async () => {
+      const { el } = await open('/accounting/reports?month=2026-10', 'phone');
+      flushSample();
+      const header = el.querySelector('app-page-header')!;
+      const period = el.querySelector('.rp-period')!;
+      expect(el.querySelectorAll('.rp-period')).toHaveLength(1);
+      expect(header.contains(period)).toBe(false);
+      expect(header.nextElementSibling).toBe(period);
+    });
+
+    it('outside a phone keeps the period control in the header actions (N1)', async () => {
+      const { el } = await open('/accounting/reports?month=2026-10', 'sheet');
+      flushSample();
+      expect(el.querySelector('app-page-header .page-actions .rp-period')).not.toBeNull();
+      expect(el.querySelectorAll('.rp-period')).toHaveLength(1);
+    });
+
     const scss = (name: string) => readFileSync(join(process.cwd(), 'src/app/components/accounting/reports', name), 'utf8');
 
     it('keeps the header on one row from 1024 px and wraps the period control below', () => {
@@ -885,7 +902,7 @@ describe('AccountingReportsComponent', () => {
       const block = media?.[1] ?? media?.[2] ?? '';
       expect(block).toContain('.page-actions');
       expect(block).toMatch(/flex(-basis)?:\s*(1 1 )?100%|width:\s*100%/);
-      // M2: the actions go after the title and the gear, so the period control stays under them (and under the sub-nav).
+      // M2: the actions go after the title and the gear, so the period control stays under them (the phone sub-nav is handled by the template, see the next test).
       expect(block).toMatch(/\.page-actions\s*\{[^}]*order:\s*1\b/);
       const outside = css.replace(/@media[^{]*\{(?:[^{}]|\{[^{}]*\})*\}/g, '');
       for (const rule of outside.match(/[^{}]*\.rp-period\b[^{}]*\{[^}]*\}/g) ?? []) {

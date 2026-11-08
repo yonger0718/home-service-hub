@@ -6,6 +6,7 @@ import { Observable, catchError, forkJoin, of } from 'rxjs';
 import { CategoryNode, Project } from '../../../models/accounting.model';
 import { BreakdownResponse, BreakdownRow, BudgetInput, BudgetStatusResponse, SavedReport, TrendQuery, TrendResponse } from '../../../models/reports.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { NgTemplateOutlet } from '@angular/common';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { ReportsService } from '../../../services/reports.service';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
@@ -66,7 +67,7 @@ const CURRENCY_NAMES: Record<string, string> = { TWD: '台幣', JPY: '日圓', U
  */
 @Component({
   selector: 'app-accounting-reports',
-  imports: [RouterLink, PageHeaderComponent, SegToggleComponent, ReportOverviewComponent, ReportTrendComponent, ReportRankComponent, ReportPlanComponent],
+  imports: [NgTemplateOutlet, RouterLink, PageHeaderComponent, SegToggleComponent, ReportOverviewComponent, ReportTrendComponent, ReportRankComponent, ReportPlanComponent],
   templateUrl: './reports.html',
   styleUrl: './reports.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
