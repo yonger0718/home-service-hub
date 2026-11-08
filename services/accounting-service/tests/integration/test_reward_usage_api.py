@@ -168,7 +168,8 @@ def test_entry_list_includes_accruals(client, db_session, seed):
     assert items[a.id]["accruals"] == [] and [x["amount"] for x in items[b.id]["accruals"]] == ["12.0000"]
 
 
-# polish-reward-and-account-settings D1a: every usage row names the account the reward pays into and whether it is money.
+# polish-reward-and-account-settings D1a: every usage row names the account the reward pays into and whether
+# it is money.
 def _pay_into(db, rule, account):
     rule.reward_account_id = account.id if account is not None else None
     db.flush()
@@ -207,7 +208,8 @@ def test_usage_unit_comes_from_the_groups_first_rule(client, db_session, seed):
     card, _ = _card_with_spends(seed, db_session)
     miles = seed.account("測試里程")
     group = uuid4()
-    _pay_into(db_session, _rule(seed, card, name="先", shared_cap_id=group, total_cap=Decimal("100"), sort_order=0), miles)
+    first = _rule(seed, card, name="先", shared_cap_id=group, total_cap=Decimal("100"), sort_order=0)
+    _pay_into(db_session, first, miles)
     _rule(seed, card, name="後", shared_cap_id=group, total_cap=Decimal("100"), sort_order=1)
     db_session.commit()
     [item] = _usage(client, card, date="2026-11-10")
