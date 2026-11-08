@@ -973,7 +973,9 @@ def forfeit_for_delete(db: Session, accrual: RewardAccrual) -> Pair:
 def usage(db: Session, account_id: int, on: date) -> list[dict]:
     """Cap use of each in-date enabled rule's window containing `on` (spec 6); a shared-cap group appears once.
 
-    Read-only: `used` and the cap come from the same helpers `recompute_window` allots with."""
+    Read-only: `used` and the cap come from the same helpers `recompute_window` allots with. Each row also names the
+    account the reward pays into (the row's first rule's; unset = the card) and whether that is money: the card itself
+    or a credit account, archived or not; any other account (points, miles) pays in its own units."""
     account = db.get(Account, account_id)
     if account is None:
         return []
@@ -998,10 +1000,13 @@ def usage(db: Session, account_id: int, on: date) -> list[dict]:
         used = sum(frozen.values(), _ZERO) + _external_used(db, group, start, end)
         estimated = sum((Decimal(r.amount) for r in rows if r.state == "estimated"), _ZERO)
         cap = reward_rule_service.group_cap(db, rule)
+        payee = db.get(Account, rule.reward_account_id or account_id)
         out.append({
             "rule_ids": group, "shared_cap_id": rule.shared_cap_id, "name": rule.name,
             "window_start": start, "window_end": end,
             "used": used.quantize(_Q), "estimated": estimated.quantize(_Q),
             "cap": cap, "remaining": None if cap is None else max(_ZERO, Decimal(cap) - used - estimated).quantize(_Q),
+            "reward_account_id": payee.id, "reward_account_name": payee.name,
+            "reward_is_money": payee.id == account_id or bool(payee.is_credit),
         })
     return out

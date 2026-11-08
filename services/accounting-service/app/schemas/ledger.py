@@ -222,6 +222,9 @@ class RewardUsageOut(BaseModel):
     estimated: Decimal
     cap: Decimal | None
     remaining: Decimal | None
+    reward_account_id: int
+    reward_account_name: str
+    reward_is_money: bool
 
 
 class EntryEinvoiceOut(BaseModel):
