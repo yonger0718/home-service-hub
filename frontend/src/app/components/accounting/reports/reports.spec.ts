@@ -1,4 +1,4 @@
-import { provideHttpClient } from '@angular/common/http';
+import { HttpRequest, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, TestRequest, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Component, signal } from '@angular/core';
 import { readFileSync } from 'node:fs';
@@ -854,6 +854,189 @@ describe('AccountingReportsComponent', () => {
         expect(css).not.toContain('--fab-clear');
         expect(css).not.toMatch(/\n\.(rp|cr) \{[^}]*margin-bottom:\s*-/);
       }
+    });
+  });
+
+  describe('總覽 detail (polish D1, D3, D5)', () => {
+    const MERCHANT_HOST = (request: HttpRequest<unknown>) => request.url === BREAKDOWN && request.params.get('group_by') === 'merchant';
+
+    function cat(key: string, label: string, amount: number, count: number, extra: Partial<BreakdownRow> = {}): BreakdownRow {
+      return { key, label, color: null, amount: String(amount), refund: '0', count, avg: '0', median: null, min: null, max: null, first_date: null, last_date: null, avg_interval_days: null, ...extra };
+    }
+
+    function reply(query: BreakdownQuery, rows: BreakdownRow[], windowCount?: number): BreakdownResponse {
+      const metric = query.metric ?? 'expense';
+      const sum = rows.reduce((total, row) => total + Number(row.amount), 0);
+      const count = rows.reduce((total, row) => total + row.count, 0);
+      const totals = (a: number, c: number) => ({ expense: metric === 'expense' ? String(a) : '0', income: metric === 'income' ? String(a) : '0', net: '0', count: c, refund: '0' });
+      return {
+        currency: 'TWD',
+        date_from: query.date_from,
+        date_to: query.date_to,
+        totals: totals(sum, count),
+        compare: query.compare && windowCount !== undefined ? { date_from: '2026-09-01', date_to: '2026-09-30', totals: totals(0, windowCount) } : undefined,
+        rows,
+        overlapping: false,
+        missing_rates: [],
+      };
+    }
+
+    /** Answers the category reads: `expenseRows` for 支出 (whichever window), nothing for 收入; trends with the sample. */
+    function answerCategories(reads: Pending, expenseRows: BreakdownRow[], windowCount = 5): void {
+      for (const request of reads.breakdowns) {
+        const query = breakdownQuery(request);
+        request.flush(reply(query, query.metric === 'income' ? [] : expenseRows, windowCount));
+      }
+      for (const request of reads.trends) request.flush(sampleTrend(trendQuery(request)));
+    }
+
+    const housing = (extra: Partial<BreakdownRow> = {}) =>
+      cat('7', '居家', 13420, 2, { compare_amount: '12000', splits: [{ key: '70', label: '居家', amount: '13420', count: 2 }], ...extra });
+    const food = () => cat('2', '餐飲', 5000, 9, { compare_amount: '4000', splits: [{ key: '21', label: '午餐', amount: '5000', count: 9 }] });
+
+    it('lists 常去商家 for a category without subcategories', async () => {
+      const { harness, el } = await open('/accounting/reports?month=2026-10');
+      answerCategories(pending(), [housing(), food()]);
+      harness.detectChanges();
+
+      const request = http.expectOne(MERCHANT_HOST);
+      const params = request.request.params;
+      expect([params.get('date_from'), params.get('date_to'), params.get('metric'), params.getAll('category_id')]).toEqual(['2026-10-01', '2026-10-31', 'expense', ['7']]);
+      request.flush(reply({ date_from: '2026-10-01', date_to: '2026-10-31', metric: 'expense', group_by: 'merchant' }, [cat('房東', '房東', 12000, 1), cat('台電', '台電', 1420, 1)]));
+      harness.detectChanges();
+
+      const card = el.querySelector('.ov-detail')!;
+      expect(card.textContent).toContain('常去商家');
+      expect(texts(card, '.ov-merchant-name')).toEqual(['房東', '台電']);
+      expect(texts(card, '.ov-merchant-amount')).toEqual(['12,000', '1,420']);
+      expect(card.querySelector('.ov-split')).toBeNull();
+      expect(card.textContent).not.toContain('沒有子類別');
+    });
+
+    it('shows at most five merchants and names the entries without one （無商家）', async () => {
+      const { harness, el } = await open('/accounting/reports?month=2026-10');
+      answerCategories(pending(), [housing()]);
+      harness.detectChanges();
+      const rows = ['甲', '乙', '丙', '丁', '戊', '己'].map((name, i) => cat(name, name, 100 - i, 1));
+      http.expectOne(MERCHANT_HOST).flush(reply({ date_from: '2026-10-01', date_to: '2026-10-31', metric: 'expense', group_by: 'merchant' }, [...rows, { ...cat('x', '', 50, 1), key: null }]));
+      harness.detectChanges();
+      expect(texts(el, '.ov-merchant-name')).toEqual(['甲', '乙', '丙', '丁', '戊', '（無商家）']);
+    });
+
+    it('reads the merchants once per period and category', async () => {
+      const { harness, el } = await open('/accounting/reports?month=2026-10');
+      answerCategories(pending(), [housing(), food()]);
+      harness.detectChanges();
+      http.expectOne(MERCHANT_HOST).flush(reply({ date_from: '2026-10-01', date_to: '2026-10-31', metric: 'expense', group_by: 'merchant' }, [cat('房東', '房東', 12000, 1)]));
+      harness.detectChanges();
+
+      const click = (name: string) => Array.from(el.querySelectorAll<HTMLButtonElement>('.ov-row')).find(row => row.textContent?.includes(name))!.click();
+      click('餐飲');
+      harness.detectChanges();
+      click('居家');
+      harness.detectChanges();
+      http.expectNone(MERCHANT_HOST);
+      expect(texts(el, '.ov-merchant-name')).toEqual(['房東']);
+    });
+
+    it('shows figures and the drill link only when the merchants fail', async () => {
+      const { harness, el } = await open('/accounting/reports?month=2026-10');
+      answerCategories(pending(), [housing()]);
+      harness.detectChanges();
+      http.expectOne(MERCHANT_HOST).flush({ code: 'x', message: 'x', trace_id: 'x' }, { status: 500, statusText: 'Server Error' });
+      harness.detectChanges();
+      const card = el.querySelector('.ov-detail')!;
+      expect(card.querySelector('.ov-merchant')).toBeNull();
+      expect(card.querySelector('.ov-stat')).not.toBeNull();
+      expect(card.querySelector('.ov-drill')).not.toBeNull();
+    });
+
+    it('mutes 新增 when the category had nothing last period', async () => {
+      const { harness, el } = await open('/accounting/reports?month=2026-10');
+      answerCategories(pending(), [cat('2', '餐飲', 5000, 9, { compare_amount: '0', splits: [{ key: '21', label: '午餐', amount: '5000', count: 9 }] })]);
+      harness.detectChanges();
+      const stat = el.querySelector('.ov-stat b')!;
+      expect(stat.textContent?.trim()).toBe('新增');
+      expect(stat.classList.contains('more')).toBe(false);
+      expect(stat.classList.contains('less')).toBe(false);
+      expect(stat.classList.contains('muted')).toBe(true);
+    });
+
+    it('reads 上期無資料, muted, when the previous window counts nothing', async () => {
+      const { harness, el } = await open('/accounting/reports?month=2026-10');
+      answerCategories(pending(), [food()], 0);
+      harness.detectChanges();
+      const stat = el.querySelector('.ov-stat b')!;
+      expect(stat.textContent?.trim()).toBe('上期無資料');
+      expect(stat.classList.contains('muted')).toBe(true);
+    });
+
+    describe('while the period runs', () => {
+      const cutReply = (query: BreakdownQuery, today: string, toDate: BreakdownRow[], whole: BreakdownRow[]) =>
+        reply(query, query.metric === 'income' ? [] : query.date_to === today ? toDate : whole, 5);
+
+      function answerCut(reads: Pending, today: string, toDate: BreakdownRow[], whole: BreakdownRow[]): void {
+        for (const request of reads.breakdowns) {
+          const query = breakdownQuery(request);
+          request.flush(cutReply(query, today, toDate, whole));
+        }
+        for (const request of reads.trends) request.flush(sampleTrend(trendQuery(request)));
+      }
+
+      it('names rows after today under the list and emits the switch', async () => {
+        vi.setSystemTime(new Date(2026, 10, 7, 10, 0));
+        const { harness, el } = await open('/accounting/reports?month=2026-11');
+        const page = harness.routeDebugElement!.componentInstance as AccountingReportsComponent;
+        answerCut(pending(), '2026-11-07', [cat('2', '餐飲', 4233, 9, { compare_amount: '3000' })], [cat('2', '餐飲', 17653, 11)]);
+        harness.detectChanges();
+
+        const after = el.querySelector<HTMLButtonElement>('button.ov-after')!;
+        expect(after.textContent?.trim()).toBe('另有 11/7 之後已記的 2 筆 $13,420 未計入');
+        expect(texts(el, '.ov-row .ov-amount')).toEqual(['4,233']);
+        expect(texts(el, '.ov-stat')).toHaveLength(3);
+
+        after.click();
+        await harness.fixture.whenStable();
+        harness.detectChanges();
+        expect(page.wholeView()).toBe(true);
+        for (const request of pending().trends) request.flush(sampleTrend(trendQuery(request)));
+        harness.detectChanges();
+        expect(el.querySelector('button.ov-after')?.textContent?.trim()).toBe('改回截至 11/7');
+        expect(texts(el, '.ov-row .ov-amount')).toEqual(['17,653']);
+        // The whole view hides the change stat.
+        expect(texts(el, '.ov-stat').some(text => text?.includes('比 '))).toBe(false);
+
+        el.querySelector<HTMLButtonElement>('button.ov-after')!.click();
+        harness.detectChanges();
+        expect(page.wholeView()).toBe(false);
+        expect(el.querySelector('button.ov-after')?.textContent?.trim()).toBe('另有 11/7 之後已記的 2 筆 $13,420 未計入');
+        for (const request of pending().trends) request.flush(sampleTrend(trendQuery(request)));
+      });
+
+      it('has no 「另有」 line when nothing is dated after today', async () => {
+        vi.setSystemTime(new Date(2026, 10, 7, 10, 0));
+        const { harness, el } = await open('/accounting/reports?month=2026-11');
+        answerCut(pending(), '2026-11-07', [cat('2', '餐飲', 4233, 9)], [cat('2', '餐飲', 4233, 9)]);
+        harness.detectChanges();
+        expect(el.querySelector('.ov-after')).toBeNull();
+      });
+
+      it('labels the change against the same days of the previous month', async () => {
+        vi.setSystemTime(new Date(2026, 10, 7, 10, 0));
+        const { harness, el } = await open('/accounting/reports?month=2026-11');
+        answerCut(pending(), '2026-11-07', [cat('2', '餐飲', 4233, 9, { compare_amount: '3000' })], [cat('2', '餐飲', 4233, 9)]);
+        harness.detectChanges();
+        expect(texts(el, '.ov-stat')[0]).toBe('比 10 月同期 ▲ 1,233');
+      });
+
+      it('names the later rows even when nothing is dated up to today', async () => {
+        vi.setSystemTime(new Date(2026, 10, 1, 10, 0));
+        const { harness, el } = await open('/accounting/reports?month=2026-11');
+        answerCut(pending(), '2026-11-01', [], [cat('7', '居家', 13420, 2)]);
+        harness.detectChanges();
+        expect(el.querySelector('.ov-after')?.textContent?.trim()).toBe('另有 11/1 之後已記的 2 筆 $13,420 未計入');
+        for (const request of http.match(MERCHANT_HOST)) request.flush(reply(breakdownQuery(request), []));
+      });
     });
   });
 });
