@@ -22,6 +22,7 @@ import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { ReportsService } from '../../../services/reports.service';
 import { SwitchComponent } from '../../ui/switch/switch';
+import { pad } from '../accounting-ui';
 import { addDays, todayIso } from '../dates';
 import { writeErrorMessage } from '../http-errors';
 import {
@@ -50,10 +51,13 @@ import {
   BucketGranularity,
   Change,
   ReportPeriod,
+  RunningForecast,
   afterTodayLine,
   baseChange,
   axisParts,
   bucketText,
+  daysInMonth,
+  forecastNote,
   hatchLines,
   donutArcs,
   isRunning,
@@ -64,6 +68,7 @@ import {
   pct1,
   runningBucket,
   runningCompareLabels,
+  runningForecast,
   shiftDate,
   runningSuffix,
   seriesColor,
@@ -141,9 +146,19 @@ interface Rect {
   height: string;
   fill: string;
   outline: boolean;
-  /** The running bucket's stack: a hatch is drawn over it. */
+  /** The running bucket's stack: a hatch is drawn over it when it has no forecast. */
   running: boolean;
   hatch: { x1: string; y1: string; x2: string; y2: string }[];
+  /** The running bucket's dashed 預估 box, from the stack's top up to the forecast. */
+  forecast?: boolean;
+}
+
+/** A legend entry: a filled swatch, the comparison's dashed outline, or the 預估 box's dashed primary outline. */
+interface LegendItem {
+  label: string;
+  color: string;
+  outline: boolean;
+  forecast?: boolean;
 }
 
 interface XLabel {
@@ -387,6 +402,39 @@ export class CustomReportComponent {
     return this.isRunningRow(row) ? `${label} ${runningSuffix(this.today())}` : label;
   }
 
+  /**
+   * 預估 for the running bucket (to-date view of a month or week report): its figure so far plus the other buckets'
+   * average for the share of days left, never below what the whole-period read holds for it. 支出 and 筆數 only: 收入
+   * lands in lumps early in the month (a salary), so the pace would count it twice, and 結餘 can go below zero.
+   */
+  readonly forecast = computed<RunningForecast | null>(() => {
+    const metric = this.config().metric;
+    const start = this.runningStart();
+    const row = this.rows().find(candidate => this.isRunningRow(candidate));
+    if (!start || !row || (metric !== 'expense' && metric !== 'count')) return null;
+    const others = this.rows().filter(other => other !== row && other.key !== null && other.key !== '__other__');
+    const typical = others.length ? others.reduce((sum, other) => sum + num(other.amount), 0) / others.length : null;
+    const month = start.slice(0, 7);
+    const last = this.config().group_by === 'month' ? `${month}-${pad(daysInMonth(month))}` : addDays(start, 6);
+    const period = this.period();
+    const whole = this.previewWhole()?.rows.find(candidate => candidate.key === row.key);
+    return runningForecast({
+      toDate: num(row.amount),
+      typical,
+      start: start < period.from ? period.from : start,
+      end: last > period.to ? period.to : last,
+      today: this.today(),
+      recorded: whole ? num(whole.amount) : null,
+    });
+  });
+  readonly forecastNote = computed(() => {
+    const forecast = this.forecast();
+    const row = this.rows().find(candidate => this.isRunningRow(candidate));
+    if (!forecast || !row) return null;
+    const format = (value: number) => (this.config().metric === 'count' ? `${n0(value)} 筆` : dollars(value));
+    return forecastNote(this.bucketLabel(row), forecast, this.today(), format);
+  });
+
   readonly figures = computed<Figure[]>(() => {
     const rows = this.rows();
     if (!rows.length) return [];
@@ -416,14 +464,15 @@ export class CustomReportComponent {
     ];
   });
 
-  readonly legend = computed<{ label: string; color: string; outline: boolean }[]>(() => {
+  readonly legend = computed<LegendItem[]>(() => {
     if (this.chart() === 'donut') {
       const total = this.metricTotal();
       return this.rows().map((row, index) => ({ label: `${this.rowLabel(row)} ${pct1(num(row.amount), total)}`, color: seriesColor(index), outline: false }));
     }
     const keys = this.seriesKeys();
-    const legend = keys.length ? keys.map((label, index) => ({ label, color: seriesColor(index), outline: false })) : [{ label: METRIC_LABELS[this.config().metric], color: seriesColor(0), outline: false }];
+    const legend: LegendItem[] = keys.length ? keys.map((label, index) => ({ label, color: seriesColor(index), outline: false })) : [{ label: METRIC_LABELS[this.config().metric], color: seriesColor(0), outline: false }];
     if (this.cmp()) legend.push({ label: this.compareLabel(), color: 'transparent', outline: true });
+    if (this.chart() === 'bar' && this.forecast()) legend.push({ label: '預估', color: 'transparent', outline: false, forecast: true });
     return legend;
   });
 
@@ -431,7 +480,8 @@ export class CustomReportComponent {
     const rows = this.rows();
     const values = rows.map(row => num(row.amount));
     if (this.compareOn()) values.push(...rows.map(row => this.baseOf(row) ?? 0));
-    return niceCeiling(Math.max(...values, 0));
+    const forecast = this.chart() === 'bar' ? (this.forecast()?.value ?? 0) : 0;
+    return niceCeiling(Math.max(...values, forecast, 0));
   });
 
   readonly grid = computed(() => {
@@ -452,6 +502,7 @@ export class CustomReportComponent {
     const width = Math.min(slot * (compare ? 0.36 : 0.5), 90);
     const bottom = plot.top + plot.height;
     const max = this.max();
+    const forecast = this.forecast();
     const rects: Rect[] = [];
     rows.forEach((row, index) => {
       const cx = plot.left + slot * index + slot / 2;
@@ -461,8 +512,13 @@ export class CustomReportComponent {
       values.forEach((value, k) => {
         const height = max > 0 ? (value / max) * plot.height : 0;
         y -= height;
-        if (height > 0) rects.push({ x: x.toFixed(1), y: y.toFixed(1), width: width.toFixed(1), height: Math.max(height - 1, 0).toFixed(1), fill: seriesColor(k), outline: false, running: this.isRunningRow(row), hatch: this.isRunningRow(row) ? stripes(x, y, width, Math.max(height - 1, 0)) : [] });
+        const hatched = this.isRunningRow(row) && !forecast;
+        if (height > 0) rects.push({ x: x.toFixed(1), y: y.toFixed(1), width: width.toFixed(1), height: Math.max(height - 1, 0).toFixed(1), fill: seriesColor(k), outline: false, running: hatched, hatch: hatched ? stripes(x, y, width, Math.max(height - 1, 0)) : [] });
       });
+      if (forecast && this.isRunningRow(row)) {
+        const top = yOf(forecast.value, plot, max);
+        rects.push({ x: x.toFixed(1), y: top.toFixed(1), width: width.toFixed(1), height: Math.max(y - top, 0).toFixed(1), fill: 'none', outline: false, running: false, hatch: [], forecast: true });
+      }
       const base = this.baseOf(row);
       if (compare && base !== null) {
         const top = yOf(base, plot, max);
@@ -478,7 +534,8 @@ export class CustomReportComponent {
     const slot = plot.width / Math.max(rows.length, 1);
     return rows.map((row, index) => {
       const total = num(row.amount);
-      const y = yOf(Math.max(total, this.compareOn() ? (this.baseOf(row) ?? 0) : 0), plot, this.max());
+      const forecast = this.isRunningRow(row) && this.chart() === 'bar' ? (this.forecast()?.value ?? 0) : 0;
+      const y = yOf(Math.max(total, this.compareOn() ? (this.baseOf(row) ?? 0) : 0, forecast), plot, this.max());
       return { x: (plot.left + slot * index + slot / 2).toFixed(1), label: this.bucketLabel(row), parts: this.axisParts(row, index), total: n0(total), totalY: (y - 8).toFixed(1), pointY: yOf(total, plot, this.max()).toFixed(1) };
     });
   });
@@ -496,7 +553,11 @@ export class CustomReportComponent {
     return points.join(' ');
   });
   readonly arcs = computed(() => donutArcs(this.rows().map((row, index) => ({ value: num(row.amount), color: seriesColor(index) }))));
-  readonly chartAria = computed(() => `${this.name() || '報表'}：${this.rows().map(row => `${this.rowLabel(row)} ${n0(row.amount)}`).join('、')}`);
+  readonly chartAria = computed(() => {
+    const forecast = this.chart() === 'bar' ? this.forecast() : null;
+    const value = (row: BreakdownRow) => (forecast && this.isRunningRow(row) ? `${n0(row.amount)}，預估 ${n0(forecast.value)}` : n0(row.amount));
+    return `${this.name() || '報表'}：${this.rows().map(row => `${this.rowLabel(row)} ${value(row)}`).join('、')}`;
+  });
 
   readonly columns = computed<{ label: string; kind: ColumnKind }[]>(() => [
     ...this.seriesKeys().map(label => ({ label, kind: 'series' as const })),

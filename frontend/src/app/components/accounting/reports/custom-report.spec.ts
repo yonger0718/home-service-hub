@@ -416,8 +416,46 @@ describe('CustomReportComponent', () => {
       expect(el.querySelector('.cr-chart .cr-x-year')).toBeNull();
     });
 
-    it('draws the running bucket as stripe lines, with no url(#...) reference anywhere', async () => {
+    it('draws the running bucket solid with a dashed 預估 box on its stack, explained under the chart', async () => {
       const { el } = await openRunning('previous');
+      const boxes = el.querySelectorAll('.cr-chart .cr-forecast');
+      expect(boxes).toHaveLength(1);
+      const bars = Array.from(el.querySelectorAll('.cr-chart rect:not(.cr-outline):not(.cr-forecast)'));
+      const november = bars.at(-1)!;
+      expect(boxes[0].getAttribute('x')).toBe(november.getAttribute('x'));
+      expect(Number(boxes[0].getAttribute('y')) + Number(boxes[0].getAttribute('height'))).toBeCloseTo(Number(november.getAttribute('y')), 0);
+      expect(el.querySelector('.cr-chart .cr-hatch')).toBeNull();
+      // 120 + (2,137 − 120) / 5 × 23/30 = 429; the whole November read holds 180, below it.
+      expect(el.querySelector('.cr-forecast-note')?.textContent?.trim()).toBe('11 月預估 $429 ＝ 至 11/7 $120 ＋ 平均 $403 × 剩 23/30 天');
+      expect(texts(el, '.cr-legend > span')).toContain('預估');
+      expect(el.querySelector('.cr-chart')?.getAttribute('aria-label')).toContain('預估 429');
+    });
+
+    it('counts the forecast in 筆 for the count metric', async () => {
+      const { el } = await openRunning('previous', 'count');
+      expect(el.querySelector('.cr-forecast-note')?.textContent?.trim()).toMatch(/^11 月預估 \d+ 筆 ＝ 至 11\/7 \d+ 筆 ＋ 平均 \d+ 筆 × 剩 23\/30 天$/);
+    });
+
+    it('drops the forecast in the whole-period view', async () => {
+      const { harness, el } = await openRunning('previous');
+      el.querySelector<HTMLButtonElement>('button.cr-after')!.click();
+      harness.detectChanges();
+      for (const request of http.match(r => r.url === BREAKDOWN)) request.flush(answer(wholeMonths([180, 3]), 2197, 22));
+      harness.detectChanges();
+      expect(el.querySelector('.cr-chart .cr-forecast')).toBeNull();
+      expect(el.querySelector('.cr-forecast-note')).toBeNull();
+    });
+
+    it('leaves 收入 without a forecast: a salary lands once early in the month, so the pace would count it twice', async () => {
+      const { el } = await openRunning('previous', 'income');
+      expect(el.querySelector('.cr-chart .cr-forecast')).toBeNull();
+      expect(el.querySelector('.cr-forecast-note')).toBeNull();
+      expect(el.querySelectorAll('.cr-chart .cr-hatch')).toHaveLength(1);
+    });
+
+    it('hatches the running bucket instead when there is nothing to forecast from (結餘), with no url(#...) reference anywhere', async () => {
+      const { el } = await openRunning('previous', 'net');
+      expect(el.querySelector('.cr-chart .cr-forecast')).toBeNull();
       const stripes = el.querySelectorAll('.cr-chart .cr-hatch line');
       expect(stripes.length).toBeGreaterThan(3);
       expect(el.querySelectorAll('.cr-chart .cr-hatch')).toHaveLength(1);
@@ -441,7 +479,7 @@ describe('CustomReportComponent', () => {
     expect(texts(rows[0], 'td')).toEqual(['300', '3', '250', '▲ 50']);
     expect(texts(rows[6], 'td')).toEqual(['2,137', '21', '2,000', '▲ 137']);
     expect(texts(el, '.cr-figure')[1]).toBe('平均每月 $403 5 組');
-    expect(el.querySelectorAll('.cr-chart .cr-hatch')).toHaveLength(1);
+    expect(el.querySelectorAll('.cr-chart .cr-forecast')).toHaveLength(1);
   });
 
   it("uses the previous bucket's same days for the running bucket against last year too (R2)", async () => {
