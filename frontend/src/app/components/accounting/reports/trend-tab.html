@@ -14,7 +14,7 @@
       <p class="tr-empty">讀取中</p>
     } @else {
       <div class="tr-plot">
-      <svg class="tr-chart" [class.compact]="!layout().ticks" [attr.viewBox]="viewBox()" role="img" [attr.aria-label]="chartAria()" (click)="picked.set(null)">
+      <svg class="tr-chart" [class.compact]="!layout().ticks" [attr.viewBox]="viewBox()" role="group" [attr.aria-label]="chartAria()" (click)="picked.set(null)">
         @for (line of grid(); track line.label) {
           <line class="tr-grid" [attr.x1]="plotLeft()" [attr.x2]="plotRight()" [attr.y1]="line.y" [attr.y2]="line.y"></line>
           <text class="tr-tick" [attr.x]="plotLeft() - 8" [attr.y]="line.textY" text-anchor="end">{{ line.label }}</text>
@@ -36,11 +36,11 @@
           <text class="tr-average-label" [attr.x]="plotRight()" [attr.y]="averageTextY()" text-anchor="end">{{ averageLabel() }}</text>
         }
         @for (target of hits(); track target.key) {
-          <rect class="tr-hit" [class.picked]="target.key === picked()" [attr.x]="target.x" [attr.y]="target.y" [attr.width]="target.width" [attr.height]="target.height" (click)="pickBar(target.key, $event)"></rect>
+          <rect class="tr-hit" [class.picked]="target.key === picked()" tabindex="0" role="button" [attr.aria-label]="target.label" [attr.aria-pressed]="target.key === picked()" (keydown.enter)="pickBar(target.key, $event)" (keydown.space)="pickBar(target.key, $event)" [attr.x]="target.x" [attr.y]="target.y" [attr.width]="target.width" [attr.height]="target.height" (click)="pickBar(target.key, $event)"></rect>
         }
       </svg>
       @if (tip(); as t) {
-        <div class="tr-tip" [class.start]="t.align === 'start'" [class.end]="t.align === 'end'" [style.left.%]="t.left" [style.top.%]="t.top">
+        <div class="tr-tip" [class.below]="t.below" [class.start]="t.align === 'start'" [class.end]="t.align === 'end'" [style.left.%]="t.left" [style.top.%]="t.top">
           <b class="tr-tip-title">{{ t.title }}</b>
           @for (row of t.rows; track $index) {
             <span class="tr-tip-row">@if (row.label) {<span class="tr-tip-key">{{ row.label }}</span>&ngsp;}<b>{{ row.value }}</b></span>

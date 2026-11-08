@@ -36,6 +36,7 @@ import {
   seriesColor,
   toDateNouns,
   tickLabel,
+  tipLabel,
   tipPlacement,
   totalChange,
   windowEmpty,
@@ -195,6 +196,7 @@ export class ReportTrendComponent {
     const slot = plot.width / Math.max(buckets.length, 1);
     return buckets.map((bucket, index) => ({
       key: bucket.start,
+      label: tipLabel(this.tipAt(index)),
       x: (plot.left + slot * index).toFixed(1),
       y: plot.top.toFixed(1),
       width: slot.toFixed(1),
@@ -204,9 +206,12 @@ export class ReportTrendComponent {
   /** The tapped month's figure; the running month shows 實際 and 預估. */
   readonly tip = computed<BarTip | null>(() => {
     const key = this.picked();
-    const buckets = this.trend()?.buckets ?? [];
-    const index = buckets.findIndex(bucket => bucket.start === key);
-    if (index < 0) return null;
+    const index = (this.trend()?.buckets ?? []).findIndex(bucket => bucket.start === key);
+    return index < 0 ? null : this.tipAt(index);
+  });
+
+  private tipAt(index: number): BarTip {
+    const buckets = this.trend()!.buckets;
     const bar = this.bars()[index];
     const spansYears = buckets[0].start.slice(0, 4) !== buckets[buckets.length - 1].start.slice(0, 4);
     const name = bucketText(buckets[index].start, 'month', spansYears);
@@ -218,12 +223,13 @@ export class ReportTrendComponent {
       : [{ label: null, value: dollars(value) }];
     const top = Math.min(Number(bar.y), bar.forecast ? Number(bar.forecast.y) : Infinity);
     const { width, height } = this.layout();
-    return { title, rows, ...tipPlacement(Number(bar.cx), top, width, height) };
-  });
+    return { title, rows, ...tipPlacement(Number(bar.cx), top, width, height, rows.length) };
+  }
 
-  /** A tap on a month toggles its tip; a tap elsewhere on the chart closes it. */
+  /** A tap (or Enter / Space) on a month toggles its tip; a tap elsewhere on the chart closes it. */
   pickBar(key: string, event: Event): void {
     event.stopPropagation();
+    event.preventDefault();
     this.picked.update(current => (current === key ? null : key));
   }
   private readonly max = computed(() => niceCeiling(Math.max(...this.values(), this.average() ?? 0, this.forecast()?.value ?? 0, 0)));

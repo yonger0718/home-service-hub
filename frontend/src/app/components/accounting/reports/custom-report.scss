@@ -550,6 +550,7 @@
 /* One transparent tap target per bucket column; the picked column is tinted. */
 .cr-hit { cursor: pointer; fill: transparent; }
 .cr-hit.picked { fill: var(--app-text); fill-opacity: 0.06; }
+.cr-hit:focus-visible { outline: none; stroke: var(--app-primary); stroke-width: 2; }
 .cr-tip {
   background: var(--app-surface);
   border: 1px solid var(--app-border);
@@ -562,12 +563,14 @@
   padding: 6px 10px;
   pointer-events: none;
   position: absolute;
-  transform: translate(-50%, calc(-100% - 6px));
+  transform: translate(var(--tip-x, -50%), var(--tip-y, calc(-100% - 6px)));
   white-space: nowrap;
   z-index: 1;
 
-  &.start { transform: translate(-12px, calc(-100% - 6px)); }
-  &.end { transform: translate(calc(-100% + 12px), calc(-100% - 6px)); }
+  &.start { --tip-x: -12px; }
+  &.end { --tip-x: calc(-100% + 12px); }
+  /* Too close to the top of the chart for the lines: hang below the anchor so the card does not clip it. */
+  &.below { --tip-y: 6px; }
 }
 .cr-tip-title { color: var(--app-text); font-weight: 700; }
 .cr-tip-key { color: var(--app-text-muted); }

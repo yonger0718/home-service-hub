@@ -10,6 +10,7 @@ import {
   axisParts,
   hatchLines,
   runningForecast,
+  tipPlacement,
   bucketText,
   monthAverage,
   runningBucket,
@@ -425,4 +426,14 @@ describe('running forecast (solid to date, dashed 預估)', () => {
     expect(runningForecast({ toDate: 100, typical: 400, ...NOV, today: '2026-11-30' })).toBeNull();
   });
 
+});
+
+describe('tap tip placement', () => {
+  it('hangs above the bar, and flips below when the bar reaches too close to the top for its rows', () => {
+    expect(tipPlacement(180, 120, 358, 212, 2)).toEqual({ left: 50.3, top: 56.6, align: 'center', below: false });
+    // Two rows need about 66 units above the anchor; a bar topping out at 30 leaves no room.
+    expect(tipPlacement(180, 30, 358, 212, 2)).toMatchObject({ top: 14.2, below: true });
+    expect(tipPlacement(20, 120, 358, 212, 1)).toMatchObject({ align: 'start' });
+    expect(tipPlacement(340, 120, 358, 212, 1)).toMatchObject({ align: 'end' });
+  });
 });

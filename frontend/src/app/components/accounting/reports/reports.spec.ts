@@ -1343,6 +1343,23 @@ describe('AccountingReportsComponent', () => {
         expect(tip(el)).toBeNull();
       });
 
+      it('reaches every month from the keyboard: a named, focusable button per column, opened with Enter', async () => {
+        const { harness, el } = await openTrend([2026, 11, 7], { toDate: FOOD });
+        expect(el.querySelector('.tr-chart')?.getAttribute('role')).toBe('group');
+        const target = hit(el, 11);
+        expect(target.getAttribute('tabindex')).toBe('0');
+        expect(target.getAttribute('role')).toBe('button');
+        expect(target.getAttribute('aria-label')).toBe('2026 年 11 月（至 11/7） 實際 $4,233 預估 $33,034');
+        expect(hit(el, 10).getAttribute('aria-label')).toBe('2026 年 10 月 $41,890');
+        target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        harness.detectChanges();
+        expect(tipText(el)[0]).toBe('2026 年 11 月（至 11/7）');
+        expect(target.getAttribute('aria-pressed')).toBe('true');
+        target.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+        harness.detectChanges();
+        expect(tip(el)).toBeNull();
+      });
+
       it('closes when another category is picked', async () => {
         const { harness, el, today } = await openTrend([2026, 11, 7], { toDate: FOOD });
         tap(harness, hit(el, 10));

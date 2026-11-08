@@ -460,6 +460,17 @@ describe('CustomReportComponent', () => {
         expect(el.querySelector('.cr-tip')).toBeNull();
       });
 
+      it('names each bucket button for the keyboard and opens it with Enter', async () => {
+        const { harness, el } = await openRunning('previous');
+        expect(el.querySelector('.cr-chart')?.getAttribute('role')).toBe('group');
+        const target = hit(el, 0);
+        expect(target.getAttribute('tabindex')).toBe('0');
+        expect(target.getAttribute('aria-label')).toBe('6 月 支出 $300 上期同期 $250');
+        target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        harness.detectChanges();
+        expect(tipText(el)).toEqual(['6 月', '支出 $300', '上期同期 $250']);
+      });
+
       it('counts in 筆 for the count metric', async () => {
         const { harness, el } = await openRunning('previous', 'count');
         tap(harness, hit(el, 5));

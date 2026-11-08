@@ -74,6 +74,7 @@ import {
   runningSuffix,
   seriesColor,
   tickLabel,
+  tipLabel,
   tipPlacement,
   toDateNouns,
   totalChange,
@@ -439,6 +440,7 @@ export class CustomReportComponent {
     const slot = plot.width / Math.max(rows.length, 1);
     return rows.map((row, index) => ({
       key: row.key ?? '__none__',
+      label: tipLabel(this.tipAt(index)),
       x: (plot.left + slot * index).toFixed(1),
       y: plot.top.toFixed(1),
       width: slot.toFixed(1),
@@ -448,9 +450,12 @@ export class CustomReportComponent {
   /** The tapped bucket's figure and comparison; the running bucket shows 實際 and, on bars, 預估. */
   readonly tip = computed<BarTip | null>(() => {
     const key = this.picked();
+    const index = this.rows().findIndex(row => (row.key ?? '__none__') === key);
+    return index < 0 ? null : this.tipAt(index);
+  });
+
+  private tipAt(index: number): BarTip {
     const rows = this.rows();
-    const index = rows.findIndex(row => (row.key ?? '__none__') === key);
-    if (index < 0) return null;
     const row = rows[index];
     const format = (value: number) => (this.config().metric === 'count' ? `${n0(value)} 筆` : dollars(value));
     const running = this.isRunningRow(row);
@@ -466,12 +471,13 @@ export class CustomReportComponent {
     const slot = plot.width / Math.max(rows.length, 1);
     // Above the bucket's total label, which sits over its highest mark (bar, comparison or 預估 box).
     const top = Number(this.xLabels()[index].totalY) - 12;
-    return { title, rows: tipRows, ...tipPlacement(plot.left + slot * index + slot / 2, top, width, height) };
-  });
+    return { title, rows: tipRows, ...tipPlacement(plot.left + slot * index + slot / 2, top, width, height, tipRows.length) };
+  }
 
-  /** A tap on a bucket toggles its tip; a tap elsewhere on the chart closes it. */
+  /** A tap (or Enter / Space) on a bucket toggles its tip; a tap elsewhere on the chart closes it. */
   pickBar(key: string, event: Event): void {
     event.stopPropagation();
+    event.preventDefault();
     this.picked.update(current => (current === key ? null : key));
   }
 

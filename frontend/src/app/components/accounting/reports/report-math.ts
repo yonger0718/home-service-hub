@@ -575,12 +575,24 @@ export interface BarTip {
   top: number;
   /** `start`: the tip's left edge sits on the anchor (first bars); `end`: its right edge (last bars); else centred. */
   align: 'start' | 'center' | 'end';
+  /** Too little room above the anchor for the tip's lines: it hangs below the anchor instead. */
+  below: boolean;
 }
 
-/** Where a tip sits over a `width` × `height` drawing for a bar centred at `cx` whose highest mark is at `top`. */
-export function tipPlacement(cx: number, top: number, width: number, height: number): Pick<BarTip, 'left' | 'top' | 'align'> {
+/**
+ * Where a tip with a title and `rows` lines sits over a `width` × `height` drawing (drawn about 1:1 in CSS px) for a bar
+ * centred at `cx` whose highest mark is at `top`: above the mark, or below it when the lines would not fit above.
+ */
+export function tipPlacement(cx: number, top: number, width: number, height: number, rows: number): Pick<BarTip, 'left' | 'top' | 'align' | 'below'> {
   const align = cx < width * 0.2 ? 'start' : cx > width * 0.8 ? 'end' : 'center';
-  return { left: Math.round((cx / width) * 1000) / 10, top: Math.round((Math.max(top, 0) / height) * 1000) / 10, align };
+  const anchor = Math.max(top, 0);
+  const needed = (rows + 1) * 18 + 12;
+  return { left: Math.round((cx / width) * 1000) / 10, top: Math.round((anchor / height) * 1000) / 10, align, below: anchor < needed };
+}
+
+/** A tip read as one accessible name: `2026 年 11 月（至 11/7） 實際 $4,233 預估 $33,034`. */
+export function tipLabel(tip: Pick<BarTip, 'title' | 'rows'>): string {
+  return [tip.title, ...tip.rows.map(row => (row.label ? `${row.label} ${row.value}` : row.value))].join(' ');
 }
 
 /**
