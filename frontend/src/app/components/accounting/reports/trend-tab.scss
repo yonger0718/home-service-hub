@@ -51,7 +51,13 @@
   fill: var(--app-border);
 
   &.last { fill: var(--app-primary); }
+  /* The month still running: a hatched fill (light and dark follow the surface and primary tokens). The colour after
+     the url is the paint fallback: an engine that cannot resolve #tr-hatch (WebKit under <base href>) draws it solid. */
+  &.running { fill: url(#tr-hatch) var(--app-primary); }
 }
+
+.tr-hatch-fill { fill: var(--app-primary); }
+.tr-hatch-gap { fill: var(--app-surface); }
 
 .tr-label {
   fill: var(--app-text-muted);
@@ -119,6 +125,9 @@
 
   @include rc.change-colours;
 
+  /* 新增, — 停止 and the 無資料 texts are not spend colours. */
+  .tr-quiet { color: var(--app-text-muted); }
+
   /* Phones (ReportsPhone): two lines per category — name and figure, then `比 9 月 ▲ … · 比去年 ▼ …`; the base
      columns and the header row go. */
   @media (max-width: 759.98px) {
@@ -167,4 +176,22 @@
 .tr-note {
   color: var(--app-text-muted);
   font-size: var(--fs-label);
+}
+
+.tr-after {
+  align-self: flex-start;
+  background: transparent;
+  border: 0;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-sm);
+  padding: 4px 0;
+  text-align: left;
+  text-decoration: underline;
+
+  &:focus-visible {
+    box-shadow: 0 0 0 3px var(--app-focus-ring);
+    outline: none;
+  }
 }

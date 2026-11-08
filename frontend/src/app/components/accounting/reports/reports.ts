@@ -1,11 +1,12 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
-import { Observable, forkJoin } from 'rxjs';
+import { Observable, catchError, forkJoin, of } from 'rxjs';
 
 import { CategoryNode, Project } from '../../../models/accounting.model';
 import { BreakdownResponse, BreakdownRow, BudgetInput, BudgetStatusResponse, SavedReport, TrendQuery, TrendResponse } from '../../../models/reports.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { NgTemplateOutlet } from '@angular/common';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { ReportsService } from '../../../services/reports.service';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
@@ -19,9 +20,10 @@ import { OTHER_KEY, RANK_DIMENSIONS, RankDimension, ReportRankComponent } from '
 import {
   PeriodUnit,
   ReportPeriod,
-  change,
+  asOfText,
   compareLabels,
   elapsedDays,
+  isRunning,
   monthOf,
   n0,
   num,
@@ -30,8 +32,12 @@ import {
   periodLabel,
   periodParams,
   periodWithUnit,
+  runningCompareLabels,
   shiftPeriod,
+  totalChange,
   trendRange,
+  viewRange,
+  windowEmpty,
 } from './report-math';
 import { ReportTrendComponent } from './trend-tab';
 
@@ -61,7 +67,7 @@ const CURRENCY_NAMES: Record<string, string> = { TWD: '台幣', JPY: '日圓', U
  */
 @Component({
   selector: 'app-accounting-reports',
-  imports: [RouterLink, PageHeaderComponent, SegToggleComponent, ReportOverviewComponent, ReportTrendComponent, ReportRankComponent, ReportPlanComponent],
+  imports: [NgTemplateOutlet, RouterLink, PageHeaderComponent, SegToggleComponent, ReportOverviewComponent, ReportTrendComponent, ReportRankComponent, ReportPlanComponent],
   templateUrl: './reports.html',
   styleUrl: './reports.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -107,6 +113,15 @@ export class AccountingReportsComponent {
   readonly expense = signal<BreakdownResponse | null>(null);
   readonly expenseLastYear = signal<BreakdownResponse | null>(null);
   readonly income = signal<BreakdownResponse | null>(null);
+  /** While a period runs: the same two breakdowns over the whole period, no comparison (the 「另有」 line, the whole view). */
+  readonly expenseWhole = signal<BreakdownResponse | null>(null);
+  readonly incomeWhole = signal<BreakdownResponse | null>(null);
+  /** The whole-period view (design D1): one signal for the page, reset with the period, not kept in the URL. */
+  readonly wholeView = signal(false);
+  readonly running = computed(() => isRunning(this.period(), this.today()));
+  readonly viewRange = computed(() => viewRange(this.period(), this.today(), this.wholeView()));
+  readonly viewExpense = computed(() => (this.wholeView() ? (this.expenseWhole() ?? this.expense()) : this.expense()));
+  readonly viewIncome = computed(() => (this.wholeView() ? (this.incomeWhole() ?? this.income()) : this.income()));
   readonly state = signal<LoadState>('loading');
   readonly trend = signal<TrendResponse | null>(null);
   readonly trendState = signal<LoadState>('loading');
@@ -144,11 +159,14 @@ export class AccountingReportsComponent {
   /** The month the timeline opens on from 在記帳記錄看這 N 筆 (the timeline shows one month). */
   readonly drillMonth = computed(() => monthOf(this.period().from));
 
-  /** The statistics rules under the title; the 不計入報表 projects and the currencies left out follow when there are any. */
+  /**
+   * The statistics rules under the title; the 不計入報表 projects and the currencies left out follow when there are any
+   * (those of the responses on screen: the whole period's in the whole view).
+   */
   readonly rules = computed(() => {
     const currency = this.currency();
     const parts = [`以${CURRENCY_NAMES[currency] ?? currency}計`, '退款抵減支出', '轉帳不計入'];
-    const missing = new Set([...(this.expense()?.missing_rates ?? []), ...(this.income()?.missing_rates ?? [])]);
+    const missing = new Set([...(this.viewExpense()?.missing_rates ?? []), ...(this.viewIncome()?.missing_rates ?? [])]);
     const excluded = this.projectList().filter(project => project.exclude_from_reports).map(project => project.name);
     if (excluded.length) parts.push(`不計入：${excluded.join('、')}`);
     if (missing.size) parts.push(`未換算：${[...missing].join('、')}`);
@@ -156,8 +174,8 @@ export class AccountingReportsComponent {
   });
 
   readonly figures = computed<Figure[]>(() => {
-    const expense = this.expense();
-    const income = this.income();
+    const expense = this.viewExpense();
+    const income = this.viewIncome();
     const lastYear = this.expenseLastYear();
     if (!expense || !income) {
       return [
@@ -168,52 +186,73 @@ export class AccountingReportsComponent {
       ];
     }
     const currency = expense.currency;
-    const labels = this.labels();
+    const period = this.period();
+    const today = this.today();
+    const whole = this.wholeView();
+    const running = this.running() && !whole;
     const spent = num(expense.totals.expense);
     const earned = num(income.totals.income);
-    const previous = expense.compare ? change(spent, num(expense.compare.totals.expense)).text : '—';
-    const yearAgo = lastYear?.compare ? change(spent, num(lastYear.compare.totals.expense)).text : '—';
     const topIncome = income.rows
       .filter(row => num(row.amount) > 0)
       .slice(0, 2)
       .map(row => `${row.label} ${n0(row.amount)}`);
-    const elapsed = elapsedDays(this.period(), this.today());
+    const elapsed = whole ? elapsedDays(period, period.to) : elapsedDays(period, today);
     return [
-      {
-        label: '支出',
-        value: formatMoney(spent, currency),
-        // One window (a calendar year): the previous period is last year, so it is said once.
-        foot: labels.single ? `${labels.previous} ${previous}` : `${labels.previous} ${previous} · ${labels.lastYear} ${yearAgo}`,
-      },
+      { label: '支出', value: formatMoney(spent, currency), foot: this.spendFoot(expense, lastYear, spent, running, whole) },
       { label: '收入', value: formatMoney(earned, currency), foot: topIncome.length ? topIncome.join(' · ') : '本期沒有收入' },
       { label: '結餘', value: formatSigned(earned - spent, currency), foot: earned > 0 ? `儲蓄率 ${pct1(earned - spent, earned)}` : '儲蓄率 —' },
       { label: '日均支出', value: formatMoney(spent / elapsed.days, currency), foot: elapsed.running ? `已過 ${elapsed.days} 天` : `共 ${elapsed.days} 天` },
     ];
   });
 
+  /**
+   * The 支出 foot: the whole view counts entries; a running period compares the to-date range; otherwise the whole period.
+   * A total reads as a delta (never 新增 / 停止), or 上期無資料 / 去年無資料 when the window is empty.
+   */
+  private spendFoot(expense: BreakdownResponse, lastYear: BreakdownResponse | null, spent: number, running: boolean, whole: boolean): string {
+    if (whole) return `${expense.rows.reduce((sum, row) => sum + row.count, 0)} 筆`;
+    const labels = running ? runningCompareLabels(this.period(), this.today()) : this.labels();
+    const segment = (label: string, source: BreakdownResponse | null | undefined, emptyText: '上期無資料' | '去年無資料'): string => {
+      if (!source?.compare) return `${label} —`;
+      const result = totalChange(spent, num(source.compare.totals.expense), windowEmpty(source), emptyText);
+      return result.kind === 'none' ? result.text : `${label} ${result.text}`;
+    };
+    // One window (a calendar year, or windows that coincide): said once, from the last-year response when running.
+    const text = labels.single
+      ? segment(labels.previous, running ? lastYear : expense, running ? '去年無資料' : '上期無資料')
+      : `${segment(labels.previous, expense, '上期無資料')} · ${segment(labels.lastYear, lastYear, '去年無資料')}`;
+    return running ? `${text} · ${asOfText(this.today())}` : text;
+  }
+
   constructor() {
     this.reports.listSaved().subscribe({ next: list => this.savedReports.set(list), error: () => undefined });
     this.loadProjects();
     effect(() => {
       const period = this.period();
-      untracked(() => this.load(period));
+      untracked(() => {
+        this.wholeView.set(false);
+        this.load(period);
+      });
     });
     effect(() => {
       const period = this.period();
       const series = this.trendSeries();
-      untracked(() => this.loadTrend(period, series));
+      const whole = this.wholeView();
+      untracked(() => this.loadTrend(period, series, whole));
     });
     effect(() => {
       if (this.tab() !== 'rank') return;
       const period = this.period();
       const dimension = this.dimension();
-      untracked(() => this.loadRank(period, dimension));
+      const whole = this.wholeView();
+      untracked(() => this.loadRank(period, dimension, whole));
     });
     effect(() => {
       const row = this.rankRow();
       const period = this.period();
       const dimension = this.dimension();
-      untracked(() => this.loadSpark(row, period, dimension));
+      const whole = this.wholeView();
+      untracked(() => this.loadSpark(row, period, dimension, whole));
     });
     effect(() => {
       if (this.tab() !== 'plan') return;
@@ -310,16 +349,17 @@ export class AccountingReportsComponent {
 
   reload(): void {
     this.load(this.period());
-    this.loadTrend(this.period(), this.trendSeries());
-    if (this.tab() === 'rank') this.loadRank(this.period(), this.dimension());
+    this.loadTrend(this.period(), this.trendSeries(), this.wholeView());
+    if (this.tab() === 'rank') this.loadRank(this.period(), this.dimension(), this.wholeView());
     if (this.tab() === 'plan') this.loadPlan(this.period());
   }
 
-  private loadRank(period: ReportPeriod, dimension: RankDimension): void {
+  private loadRank(period: ReportPeriod, dimension: RankDimension, whole: boolean): void {
     const id = ++this.rankRequestId;
     this.rankState.set('loading');
     this.rankSelected.set(undefined);
-    this.reports.getBreakdown({ date_from: period.from, date_to: period.to, metric: 'expense', group_by: dimension }).subscribe({
+    const view = viewRange(period, this.today(), whole);
+    this.reports.getBreakdown({ date_from: view.from, date_to: view.to, metric: 'expense', group_by: dimension }).subscribe({
       next: rank => {
         if (id !== this.rankRequestId) return;
         this.rank.set(rank);
@@ -336,12 +376,12 @@ export class AccountingReportsComponent {
   }
 
   /** Six monthly buckets of the selected row: the trend filtered to that merchant / tag / counterparty / account. */
-  private loadSpark(row: BreakdownRow | null, period: ReportPeriod, dimension: RankDimension): void {
+  private loadSpark(row: BreakdownRow | null, period: ReportPeriod, dimension: RankDimension, whole: boolean): void {
     const id = ++this.sparkRequestId;
     this.spark.set(null);
     if (!row || row.key === null) return;
     this.sparkState.set('loading');
-    const range = trendRange(period, 6);
+    const range = trendRange({ ...period, to: viewRange(period, this.today(), whole).to }, 6);
     const filter: Partial<TrendQuery> =
       dimension === 'merchant'
         ? { merchant: row.label }
@@ -366,17 +406,27 @@ export class AccountingReportsComponent {
   private load(period: ReportPeriod): void {
     const id = ++this.requestId;
     this.state.set('loading');
-    const range = { date_from: period.from, date_to: period.to };
+    const running = isRunning(period, this.today());
+    // While running, the header's three reads cover the to-date range; two whole-period reads (no `compare`) follow.
+    const range = { date_from: period.from, date_to: running ? this.today() : period.to };
+    const whole = { date_from: period.from, date_to: period.to, group_by: 'category', split_by: 'subcategory' } as const;
+    // A failed whole read only drops the 「另有」 line: the to-date figures still show.
+    const wholeRead = (metric: 'expense' | 'income') =>
+      running ? this.reports.getBreakdown({ ...whole, metric }).pipe(catchError(() => of(null))) : of(null);
     forkJoin({
       expense: this.reports.getBreakdown({ ...range, metric: 'expense', group_by: 'category', split_by: 'subcategory', compare: 'previous' }),
       lastYear: this.reports.getBreakdown({ ...range, metric: 'expense', group_by: 'category', compare: 'last_year' }),
       income: this.reports.getBreakdown({ ...range, metric: 'income', group_by: 'category', split_by: 'subcategory', compare: 'previous' }),
+      expenseWhole: wholeRead('expense'),
+      incomeWhole: wholeRead('income'),
     }).subscribe({
-      next: ({ expense, lastYear, income }) => {
+      next: ({ expense, lastYear, income, expenseWhole, incomeWhole }) => {
         if (id !== this.requestId) return;
         this.expense.set(expense);
         this.expenseLastYear.set(lastYear);
         this.income.set(income);
+        this.expenseWhole.set(expenseWhole);
+        this.incomeWhole.set(incomeWhole);
         this.state.set('ready');
       },
       error: () => {
@@ -384,15 +434,20 @@ export class AccountingReportsComponent {
         this.expense.set(null);
         this.expenseLastYear.set(null);
         this.income.set(null);
+        this.expenseWhole.set(null);
+        this.incomeWhole.set(null);
         this.state.set('error');
       },
     });
   }
 
-  private loadTrend(period: ReportPeriod, series: number | null): void {
+  private loadTrend(period: ReportPeriod, series: number | null, whole: boolean): void {
     const id = ++this.trendRequestId;
     this.trendState.set('loading');
-    const range = trendRange(period);
+    // Twelve months ending at the view's end: today while the period runs, its last day in the whole view.
+    const view = viewRange(period, this.today(), whole);
+    const range = trendRange({ ...period, to: view.to });
+    if (isRunning(period, this.today())) range.to = view.to;
     this.reports
       .getTrend({ date_from: range.from, date_to: range.to, metric: 'expense', granularity: 'month', series: series === null ? undefined : [series] })
       .subscribe({
@@ -410,6 +465,11 @@ export class AccountingReportsComponent {
   }
 
   // ---- URL state ------------------------------------------------------------------------------------------------
+
+  /** 「另有…未計入」 / 「改回截至」: the page switches between the to-date and the whole-period view. */
+  toggleWhole(): void {
+    this.wholeView.update(whole => !whole);
+  }
 
   setTab(tab: ReportTab): void {
     this.navigate({ tab: tab === 'overview' ? null : tab });

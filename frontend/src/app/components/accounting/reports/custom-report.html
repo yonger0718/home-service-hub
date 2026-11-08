@@ -229,6 +229,7 @@
     <p class="cr-note">計算中</p>
   } @else if (!figures().length) {
     <p class="cr-note">這些條件下沒有記錄</p>
+    @if (afterToday(); as after) { <button type="button" class="cr-after" (click)="wholeView.set(!wholeView())">{{ after }}</button> }
   } @else {
     <div class="cr-figures">
       @for (figure of figures(); track figure.label) {
@@ -256,6 +257,11 @@
           </div>
         } @else {
           <svg class="cr-chart" [attr.viewBox]="viewBox()" role="img" [attr.aria-label]="chartAria()">
+            <defs>
+              <pattern id="cr-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                <path class="cr-hatch-gap" d="M0 0H2.5V6H0Z"></path>
+              </pattern>
+            </defs>
             @for (line of grid(); track line.label) {
               <line class="cr-grid" [attr.x1]="layout().plot.left" [attr.x2]="layout().plot.left + layout().plot.width" [attr.y1]="line.y" [attr.y2]="line.y"></line>
               <text class="cr-tick" [attr.x]="layout().plot.left - 8" [attr.y]="line.textY" text-anchor="end">{{ line.label }}</text>
@@ -263,6 +269,9 @@
             @if (chart() === 'bar') {
               @for (rect of rects(); track $index) {
                 <rect [class.cr-outline]="rect.outline" [attr.x]="rect.x" [attr.y]="rect.y" [attr.width]="rect.width" [attr.height]="rect.height" rx="3" [attr.fill]="rect.fill"></rect>
+                @if (rect.running) {
+                  <rect class="cr-hatch" [attr.x]="rect.x" [attr.y]="rect.y" [attr.width]="rect.width" [attr.height]="rect.height" rx="3"></rect>
+                }
               }
             } @else {
               @if (comparePoints()) { <polyline class="cr-compare-line" [attr.points]="comparePoints()"></polyline> }
@@ -287,7 +296,7 @@
         </thead>
         <tbody>
           @for (row of tableRows(); track row.label) {
-            <tr [class.total]="row.total">
+            <tr [class.total]="row.total" [class.running]="row.running">
               <th scope="row" class="cr-col-name">{{ row.label }}</th>
               @for (cell of row.cells; track $index) { <td [class]="'cr-col-' + cell.kind + ' ' + (cell.direction ?? '')" [class.muted]="cell.muted">{{ cell.text }}</td> }
             </tr>
@@ -295,6 +304,8 @@
         </tbody>
       </table>
       @if (overlapping()) { <p class="cr-note cr-overlap">一筆可有多個標籤，合計會大於支出</p> }
+      @for (note of hiddenNotes(); track note) { <small class="cr-note cr-hidden-note">{{ note }}</small> }
+      @if (afterToday(); as after) { <button type="button" class="cr-after" (click)="wholeView.set(!wholeView())">{{ after }}</button> }
     </div>
   }
 </ng-template>

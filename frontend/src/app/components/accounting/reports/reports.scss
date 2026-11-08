@@ -13,6 +13,21 @@
 
 /* ---- period control ------------------------------------------------------------------------------------------- */
 
+/* D8: the period control sits in the header's actions (one DOM instance). From 1024 px it shares the title row; below,
+   the actions wrap to a row of their own under the title. */
+@media (max-width: 1023.98px) {
+  .rp app-page-header ::ng-deep {
+    .page-header-row { flex-wrap: wrap; }
+
+    /* After the title and the gear: they share the first row, and the period control stays under them. */
+    .page-actions {
+      flex: 1 1 100%;
+      justify-content: flex-start;
+      order: 1;
+    }
+  }
+}
+
 .rp-period {
   align-items: center;
   display: flex;

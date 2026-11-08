@@ -1,6 +1,4 @@
-<section class="rp">
-  <app-page-header [subtitle]="rules()"></app-page-header>
-
+<ng-template #periodControl>
   <div class="rp-period">
     <app-seg-toggle [options]="units" [value]="period().unit" ariaLabel="期間單位" (change)="setUnit($event)" />
     @if (period().unit === 'custom') {
@@ -17,6 +15,13 @@
       </div>
     }
   </div>
+</ng-template>
+
+<section class="rp">
+  <app-page-header [subtitle]="rules()">
+    @if (!isPhone()) { <ng-container [ngTemplateOutlet]="periodControl" /> }
+  </app-page-header>
+  @if (isPhone()) { <ng-container [ngTemplateOutlet]="periodControl" /> }
 
   @if (sample()) {
     <p class="rp-sample" role="status">報表 API 尚未就緒，目前顯示的是示範資料（手稿的 2026 年 10 月範例），不是帳本。</p>
@@ -60,7 +65,20 @@
       @case ('overview') {
         @if (expense(); as expense) {
           @if (income(); as income) {
-            <app-report-overview [expense]="expense" [income]="income" [labels]="labels()" [drillMonth]="drillMonth()" [period]="period()" />
+            <app-report-overview
+              [expense]="expense"
+              [income]="income"
+              [expenseLastYear]="expenseLastYear()"
+              [expenseWhole]="expenseWhole()"
+              [incomeWhole]="incomeWhole()"
+              [whole]="wholeView()"
+              [today]="today()"
+              [range]="viewRange()"
+              [labels]="labels()"
+              [drillMonth]="drillMonth()"
+              [period]="period()"
+              (toggleWhole)="toggleWhole()"
+            />
           }
         } @else {
           <p class="rp-loading">讀取中</p>
@@ -72,8 +90,12 @@
           [trendState]="trendState()"
           [expense]="expense()"
           [lastYear]="expenseLastYear()"
+          [expenseWhole]="expenseWhole()"
+          [whole]="wholeView()"
+          [today]="today()"
           [period]="period()"
           [series]="trendSeries()"
+          (toggleWhole)="toggleWhole()"
           (seriesChange)="trendSeries.set($event)"
         />
       }
@@ -87,6 +109,7 @@
           [spark]="spark()"
           [sparkState]="sparkState()"
           [drillMonth]="drillMonth()"
+          [today]="today()"
           (dimensionChange)="setDimension($event)"
           (select)="rankSelected.set($event)"
         />

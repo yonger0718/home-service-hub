@@ -4,7 +4,7 @@ import { Params, RouterLink } from '@angular/router';
 import { BreakdownResponse, BreakdownRow, ReportDimension, TrendResponse } from '../../../models/reports.model';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import type { LoadState } from './reports';
-import { ReportPeriod, axisParts, barGeometry, bucketText, drillText, n0, num, pct1, periodLabel } from './report-math';
+import { ReportPeriod, axisParts, barGeometry, bucketText, dollars, drillText, md, n0, num, pct1, periodLabel } from './report-math';
 
 /** The four ranking dimensions (spec: 商家, 標籤, 對象, 帳戶). */
 export type RankDimension = Extract<ReportDimension, 'merchant' | 'tag' | 'counterparty' | 'account'>;
@@ -74,6 +74,8 @@ export class ReportRankComponent {
   readonly sparkState = input<LoadState>('loading');
   /** `YYYY-MM` the timeline opens on. */
   readonly drillMonth = input.required<string>();
+  /** `YYYY-MM-DD`: the year `md` leaves out of a date. */
+  readonly today = input.required<string>();
 
   readonly dimensionChange = output<RankDimension>();
   readonly select = output<string | null>();
@@ -122,16 +124,21 @@ export class ReportRankComponent {
     const row = this.selected();
     if (!row) return [];
     const total = num(this.rank()?.totals.expense);
-    const stats: Stat[] = [
-      { label: '合計', value: n0(row.amount) },
-      { label: '筆數', value: String(row.count) },
-      { label: '平均', value: n0(row.avg) },
-    ];
-    if (!this.selectedMuted()) {
-      if (row.median !== null) stats.push({ label: '中位數', value: n0(row.median) });
-      if (row.max !== null) stats.push({ label: '最大', value: n0(row.max) });
-      if (row.min !== null) stats.push({ label: '最小', value: n0(row.min) });
-      if (row.avg_interval_days !== null) stats.push({ label: '平均間隔', value: `${row.avg_interval_days} 天` });
+    const stats: Stat[] = [];
+    if (row.count === 1) {
+      // One entry has no median, range or interval to speak of: one line with its date and amount.
+      const parts = ['只有 1 筆'];
+      if (row.first_date) parts.push(md(row.first_date, this.today()));
+      parts.push(dollars(row.amount));
+      stats.push({ label: '', value: parts.join(' · ') });
+    } else {
+      stats.push({ label: '合計', value: n0(row.amount) }, { label: '筆數', value: String(row.count) }, { label: '平均', value: n0(row.avg) });
+      if (!this.selectedMuted()) {
+        if (row.median !== null) stats.push({ label: '中位數', value: n0(row.median) });
+        if (row.max !== null) stats.push({ label: '最大', value: n0(row.max) });
+        if (row.min !== null) stats.push({ label: '最小', value: n0(row.min) });
+        if (row.avg_interval_days !== null && row.first_date !== row.last_date) stats.push({ label: '平均間隔', value: `${row.avg_interval_days} 天` });
+      }
     }
     stats.push({ label: '占支出', value: pct1(num(row.amount), total) });
     const average = this.sparkAverage();

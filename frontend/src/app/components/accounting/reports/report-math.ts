@@ -1,4 +1,4 @@
-import { BreakdownResponse, BreakdownRow, ReportCompare } from '../../../models/reports.model';
+import { BreakdownResponse, BreakdownRow, BreakdownTotals, ReportCompare, ReportMetric } from '../../../models/reports.model';
 import { pad } from '../accounting-ui';
 import { addDays, daysBetween } from '../dates';
 
@@ -280,7 +280,40 @@ export function runningCompareLabels(period: ReportPeriod, today: string): { pre
 export function afterTodayText(today: string, count: number, amount: number | null, whole: boolean): string {
   const date = md(today, today);
   if (whole) return `改回截至 ${date}`;
-  return amount === null ? `另有 ${date} 之後已記的 ${count} 筆未計入` : `另有 ${date} 之後已記的 ${count} 筆 $${n0(amount)} 未計入`;
+  return amount === null ? `另有 ${date} 之後已記的 ${count} 筆未計入` : `另有 ${date} 之後已記的 ${count} 筆 ${dollars(amount)} 未計入`;
+}
+
+/** The comparison card title while a period runs, after its columns: `本月至今 對 上月同期、對 去年同期` (`本期至今 對 去年同期` when single). */
+export function runningCompareTitle(period: ReportPeriod, today: string): string {
+  const nouns = toDateNouns(period, today);
+  const current = `${period.unit === 'month' ? '本月' : '本期'}至今`;
+  return nouns.single ? `${current} 對 ${nouns.lastYear}` : `${current} 對 ${nouns.previous}、對 ${nouns.lastYear}`;
+}
+
+/** A metric's figure in a response's `totals` (`count` → the entry count). */
+export function metricTotal(totals: Partial<BreakdownTotals> | undefined, metric: ReportMetric): number {
+  return metric === 'count' ? num(totals?.count) : num(totals?.[metric]);
+}
+
+/**
+ * R3, the one 「另有」 / 「改回」 line of every screen: `改回截至 11/7` whenever the whole view is on (whatever N is, so the
+ * view can always be left); else, with both reads, N = Σ rows.count (whole) − Σ rows.count (to date) and $X the metric
+ * total difference (no amount for `count`); null when N is not above 0 or a read is missing.
+ */
+export function afterTodayLine(
+  cut: BreakdownResponse | null | undefined,
+  whole: BreakdownResponse | null | undefined,
+  metric: ReportMetric,
+  today: string,
+  wholeOn: boolean,
+): string | null {
+  if (wholeOn) return afterTodayText(today, 0, null, true);
+  if (!cut || !whole) return null;
+  const rows = (response: BreakdownResponse) => response.rows.reduce((sum, row) => sum + row.count, 0);
+  const later = rows(whole) - rows(cut);
+  if (!(later > 0)) return null;
+  const amount = metric === 'count' ? null : metricTotal(whole.totals, metric) - metricTotal(cut.totals, metric);
+  return afterTodayText(today, later, amount, false);
 }
 
 // ---- figures --------------------------------------------------------------------------------------------------
@@ -296,6 +329,12 @@ const GROUPED = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 export function n0(value: string | number | null | undefined): string {
   const n = Math.round(num(value));
   return n < 0 ? `−${GROUPED.format(-n)}` : GROUPED.format(n);
+}
+
+/** `$1,250`, `−$50`: whole units with the dollar sign, the minus before it. */
+export function dollars(value: string | number | null | undefined): string {
+  const n = Math.round(num(value)) || 0;
+  return n < 0 ? `−$${GROUPED.format(-n)}` : `$${GROUPED.format(n)}`;
 }
 
 /** `23.5%`: one decimal; `—` when the base is 0. */
@@ -334,6 +373,15 @@ export function baseChange(current: number, base: number, windowEmpty: boolean, 
   if (windowEmpty) return { text: emptyText, direction: 'same', kind: 'none' };
   if (Math.round(base) === 0 && Math.round(current) > 0) return { text: '新增', direction: 'same', kind: 'new' };
   if (Math.round(current) === 0 && Math.round(base) > 0) return { text: '— 停止', direction: 'same', kind: 'gone' };
+  return change(current, base, withPct);
+}
+
+/**
+ * A period total against its base (polish F4): an empty comparison window reads `上期無資料` / `去年無資料`; otherwise the
+ * arrow change, even from or to 0. A total is never 新增 or 停止: those are for keys (D3).
+ */
+export function totalChange(current: number, base: number, windowEmpty: boolean, emptyText: '上期無資料' | '去年無資料', withPct = false): Change {
+  if (windowEmpty) return { text: emptyText, direction: 'same', kind: 'none' };
   return change(current, base, withPct);
 }
 
