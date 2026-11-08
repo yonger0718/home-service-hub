@@ -918,10 +918,15 @@ describe('AccountingReportsComponent', () => {
       }
     });
 
-    it('gives the hatch fills a fallback paint (M3)', () => {
-      expect(scss('trend-tab.scss')).toMatch(/&\.running\s*\{\s*fill:\s*url\(#tr-hatch\)\s+var\(--app-primary\);/);
-      expect(scss('custom-report.scss')).toMatch(/\.cr-hatch\s*\{\s*fill:\s*url\(#cr-hatch\)\s+none;/);
-      expect(scss('custom-report.html')).not.toContain('fill="url(#cr-hatch)"');
+    it('paints the running hatch with stripe lines, never a url(#id) reference (WebKit <base href>)', () => {
+      for (const file of ['trend-tab.scss', 'custom-report.scss', 'trend-tab.html', 'custom-report.html']) {
+        expect(scss(file)).not.toContain('url(#');
+        expect(scss(file)).not.toContain('<pattern');
+      }
+      expect(scss('trend-tab.html')).toContain('<line');
+      expect(scss('trend-tab.html')).toMatch(/class="tr-hatch"/);
+      expect(scss('custom-report.html')).toMatch(/class="cr-hatch"/);
+      expect(scss('custom-report.html')).toMatch(/<line[^>]*class="cr-hatch-line"/);
     });
 
     it('lets the saved table headings and row labels wrap on phones so 增減 stays in view', () => {
@@ -1281,6 +1286,13 @@ describe('AccountingReportsComponent', () => {
       const { el } = await openTrend([2026, 11, 7], { toDate: FOOD, trend: trendOf([4233]) });
       expect(el.querySelector('.tr-average')).toBeNull();
       expect(el.querySelector('.tr-average-label')).toBeNull();
+    });
+
+    it('draws the running month hatch as stripe lines without url(#...)', async () => {
+      const { el } = await openTrend([2026, 11, 7], { toDate: FOOD });
+      expect(el.querySelectorAll('.tr-chart .tr-hatch line').length).toBeGreaterThan(3);
+      expect(el.querySelector('.tr-chart pattern')).toBeNull();
+      expect(el.querySelector('.tr-chart')!.outerHTML).not.toContain('url(#');
     });
 
     it('hatches the running month', async () => {

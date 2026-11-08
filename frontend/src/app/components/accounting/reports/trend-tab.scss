@@ -51,13 +51,12 @@
   fill: var(--app-border);
 
   &.last { fill: var(--app-primary); }
-  /* The month still running: a hatched fill (light and dark follow the surface and primary tokens). The colour after
-     the url is the paint fallback: an engine that cannot resolve #tr-hatch (WebKit under <base href>) draws it solid. */
-  &.running { fill: url(#tr-hatch) var(--app-primary); }
+  /* The month still running: the bar colour, lighter, with stripe <line>s over it (.tr-hatch). No fragment-URL paint:
+     WebKit resolves it against <base href> and falls back to solid. */
+  &.running { fill-opacity: 0.55; }
 }
 
-.tr-hatch-fill { fill: var(--app-primary); }
-.tr-hatch-gap { fill: var(--app-surface); }
+.tr-hatch line { stroke: var(--app-surface); stroke-width: 2; pointer-events: none; }
 
 .tr-label {
   fill: var(--app-text-muted);

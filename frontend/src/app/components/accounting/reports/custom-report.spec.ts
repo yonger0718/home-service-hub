@@ -312,7 +312,7 @@ describe('CustomReportComponent', () => {
     expect(el.querySelector('.cr-save')).toBeNull();
     expect(el.querySelector('.cr-name')).toBeNull();
     expect(texts(el, '.cr-figure')).toHaveLength(4);
-    expect(el.querySelector('.cr-chart')?.getAttribute('viewBox')).toBe('0 0 358 210');
+    expect(el.querySelector('.cr-chart')?.getAttribute('viewBox')).toBe('0 0 358 226');
 
     button(el, 'button', '編輯條件').click();
     harness.detectChanges();
@@ -375,6 +375,56 @@ describe('CustomReportComponent', () => {
     harness.detectChanges();
     return { harness, el, queries };
   }
+
+  describe('axis labels and the running hatch (WebKit)', () => {
+    const axis = (el: Element) => Array.from(el.querySelectorAll('.cr-chart .cr-x'));
+
+    it('draws a two-line month axis over two years: the year only on the first bar and each January', async () => {
+      const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ period: { preset: 'last_12_months' }, compare: undefined }));
+      answerPreview();
+      harness.detectChanges();
+
+      expect(axis(el)).toHaveLength(12);
+      expect(texts(el, '.cr-chart .cr-x .cr-x-month')).toEqual(['11 月', '12 月', '1 月', '2 月', '3 月', '4 月', '5 月', '6 月', '7 月', '8 月', '9 月', '10 月']);
+      expect(texts(el, '.cr-chart .cr-x .cr-x-year')).toEqual(['2025', '2026']);
+      const labels = axis(el);
+      expect(labels[0].querySelector('.cr-x-year')).not.toBeNull();
+      expect(labels[2].querySelector('.cr-x-year')).not.toBeNull();
+      expect(labels[5].querySelector('.cr-x-year')).toBeNull();
+      // The year tspan restarts at the label's x and drops a line.
+      const year = labels[0].querySelector('.cr-x-year')!;
+      expect(year.getAttribute('x')).toBe(labels[0].getAttribute('x'));
+      expect(year.getAttribute('dy')).not.toBeNull();
+      // The table keeps the full form.
+      expect(texts(el, '.cr-table tbody th')[0]).toBe('2025 年 11 月');
+    });
+
+    it('shows the year on the first bar only when the report stays in one year', async () => {
+      const { harness, el } = await open('/accounting/reports/custom/1');
+      answerPreview();
+      harness.detectChanges();
+      expect(texts(el, '.cr-chart .cr-x .cr-x-month')).toEqual(['5 月', '6 月', '7 月', '8 月', '9 月', '10 月']);
+      expect(texts(el, '.cr-chart .cr-x .cr-x-year')).toEqual(['2026']);
+    });
+
+    it('keeps the one-line short form for weeks, without a year line', async () => {
+      const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ period: { preset: 'last_6_months' }, group_by: 'week', compare: undefined }));
+      const request = http.match(r => r.url === BREAKDOWN)[0];
+      request.flush(answer([row('2026-10-05', 100, 1), row('2026-10-12', 200, 2)], 300, 3));
+      harness.detectChanges();
+      expect(texts(el, '.cr-chart .cr-x')).toEqual(['10/5 週', '10/12 週']);
+      expect(el.querySelector('.cr-chart .cr-x-year')).toBeNull();
+    });
+
+    it('draws the running bucket as stripe lines, with no url(#...) reference anywhere', async () => {
+      const { el } = await openRunning('previous');
+      const stripes = el.querySelectorAll('.cr-chart .cr-hatch line');
+      expect(stripes.length).toBeGreaterThan(3);
+      expect(el.querySelectorAll('.cr-chart .cr-hatch')).toHaveLength(1);
+      expect(el.querySelector('.cr-chart pattern')).toBeNull();
+      expect(el.querySelector('.cr-chart')!.outerHTML).not.toContain('url(#');
+    });
+  });
 
   it('reads November 1–7 against October 1–7 in 近 6 個月 by month', async () => {
     const { el, queries } = await openRunning('previous');

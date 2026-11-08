@@ -14,18 +14,17 @@
       <p class="tr-empty">讀取中</p>
     } @else {
       <svg class="tr-chart" [class.compact]="!layout().ticks" [attr.viewBox]="viewBox()" role="img" [attr.aria-label]="chartAria()">
-        <defs>
-          <pattern id="tr-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-            <rect class="tr-hatch-fill" width="6" height="6"></rect>
-            <rect class="tr-hatch-gap" width="2.5" height="6"></rect>
-          </pattern>
-        </defs>
         @for (line of grid(); track line.label) {
           <line class="tr-grid" [attr.x1]="plotLeft()" [attr.x2]="plotRight()" [attr.y1]="line.y" [attr.y2]="line.y"></line>
           <text class="tr-tick" [attr.x]="plotLeft() - 8" [attr.y]="line.textY" text-anchor="end">{{ line.label }}</text>
         }
         @for (bar of bars(); track $index) {
           <rect class="tr-bar" [class.last]="bar.last" [class.running]="bar.running" [attr.x]="bar.x" [attr.y]="bar.y" [attr.width]="bar.width" [attr.height]="bar.height" [attr.rx]="layout().ticks ? 6 : 4"></rect>
+          @if (bar.running) {
+            <g class="tr-hatch">
+              @for (stripe of bar.hatch; track $index) { <line [attr.x1]="stripe.x1" [attr.y1]="stripe.y1" [attr.x2]="stripe.x2" [attr.y2]="stripe.y2"></line> }
+            </g>
+          }
           <text class="tr-label" [class.last]="bar.last" [attr.x]="bar.cx" [attr.y]="layout().labelY" text-anchor="middle"><tspan class="tr-month">{{ bar.label.month }}</tspan>@if (bar.label.year) {<tspan class="tr-year" [attr.x]="bar.cx" dy="13">{{ bar.label.year }}</tspan>}</text>
         }
         @if (average() !== null) {

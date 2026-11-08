@@ -257,11 +257,6 @@
           </div>
         } @else {
           <svg class="cr-chart" [attr.viewBox]="viewBox()" role="img" [attr.aria-label]="chartAria()">
-            <defs>
-              <pattern id="cr-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-                <path class="cr-hatch-gap" d="M0 0H2.5V6H0Z"></path>
-              </pattern>
-            </defs>
             @for (line of grid(); track line.label) {
               <line class="cr-grid" [attr.x1]="layout().plot.left" [attr.x2]="layout().plot.left + layout().plot.width" [attr.y1]="line.y" [attr.y2]="line.y"></line>
               <text class="cr-tick" [attr.x]="layout().plot.left - 8" [attr.y]="line.textY" text-anchor="end">{{ line.label }}</text>
@@ -270,7 +265,9 @@
               @for (rect of rects(); track $index) {
                 <rect [class.cr-outline]="rect.outline" [attr.x]="rect.x" [attr.y]="rect.y" [attr.width]="rect.width" [attr.height]="rect.height" rx="3" [attr.fill]="rect.fill"></rect>
                 @if (rect.running) {
-                  <rect class="cr-hatch" [attr.x]="rect.x" [attr.y]="rect.y" [attr.width]="rect.width" [attr.height]="rect.height" rx="3"></rect>
+                  <g class="cr-hatch">
+                    @for (stripe of rect.hatch; track $index) { <line class="cr-hatch-line" [attr.x1]="stripe.x1" [attr.y1]="stripe.y1" [attr.x2]="stripe.x2" [attr.y2]="stripe.y2"></line> }
+                  </g>
                 }
               }
             } @else {
@@ -279,7 +276,7 @@
               @for (x of xLabels(); track $index) { <circle class="cr-point" [attr.cx]="x.x" [attr.cy]="x.pointY" r="4"></circle> }
             }
             @for (x of xLabels(); track $index) {
-              <text class="cr-x" [attr.x]="x.x" [attr.y]="labelY()" text-anchor="middle">{{ x.label }}</text>
+              <text class="cr-x" [attr.x]="x.x" [attr.y]="labelY()" text-anchor="middle">@if (x.parts; as parts) {<tspan class="cr-x-month">{{ parts.month }}</tspan>@if (parts.year) {<tspan class="cr-x-year" [attr.x]="x.x" dy="13">{{ parts.year }}</tspan>}} @else {{{ x.label }}}</text>
               <text class="cr-total" [attr.x]="x.x" [attr.y]="x.totalY" text-anchor="middle">{{ x.total }}</text>
             }
           </svg>
