@@ -18,7 +18,7 @@ from app.services import coverage_service as cov
 from app.services import entry_write_service as ews
 from app.services import split_service as ss
 from app.services.statements import matching
-from tests.helpers import set_dirty, wait_until_blocked
+from tests.helpers import THIS_DATABASE, set_dirty, wait_until_blocked
 from tests.integration.statement_fixtures import OCT, SEP, _card, _line, run  # noqa: F401  (run is a fixture)
 from tests.integration.statement_fixtures import _submit as submit_revision
 
@@ -585,8 +585,26 @@ def test_sweep_waits_for_uncommitted_writers_so_no_event_is_skipped(claimed, see
 
 def _barrier_holders(engine) -> int:
     with engine.connect() as conn:
-        return conn.execute(text("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = :key"),
+        return conn.execute(text(f"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = :key "
+                                 f"AND {THIS_DATABASE}"),
                             {"key": cov.DIRTY_BARRIER_KEY}).scalar_one()
+
+
+def test_barrier_counts_ignore_the_same_key_in_another_database(pg_engine):
+    """#277: the test database sits on the shared server, where the live services take DIRTY_BARRIER_KEY in their own
+    database; pg_locks lists the whole server, so a holder elsewhere must not count as a holder here."""
+    from sqlalchemy import create_engine
+
+    other = create_engine(pg_engine.url.set(database="postgres"), hide_parameters=True)
+    try:
+        with other.connect() as conn:
+            assert conn.execute(select(func.pg_try_advisory_lock(cov.DIRTY_BARRIER_KEY))).scalar_one()
+            try:
+                assert _barrier_holders(pg_engine) == 0
+            finally:
+                conn.execute(select(func.pg_advisory_unlock(cov.DIRTY_BARRIER_KEY)))
+    finally:
+        other.dispose()
 
 
 @pytest.mark.parametrize("failure", ["raises", "returns_false"])

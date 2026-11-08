@@ -401,7 +401,8 @@ def _check_settlement(db: Session, settlement) -> dict:
     int strings (defaults are overlaid on read): unknown keys are refused; `enabled_from` is an ISO date, required
     when `stand_in_enabled`; `target_accounts` maps a bank account id to another existing account of the same
     currency, one the bank's settlement source answers in (`SOURCE_CURRENCIES`); `twin_window_days` is an integer
-    in 0..15; `dividend_category_id` an id or null."""
+    in 0..15; `dividend_category_id` null or an existing income category (the one `dividend_service.category_for`
+    books into)."""
     if not isinstance(settlement, dict):
         raise ValidationError("settlement", "must be an object")
     out = {}
@@ -419,8 +420,10 @@ def _check_settlement(db: Session, settlement) -> dict:
         elif key == "twin_window_days":
             if not _account_id(value) or not 0 <= value <= 15:
                 raise ValidationError("settlement", f"{key!r} must be an integer in 0..15")
-        elif value is not None and not _account_id(value):  # dividend_category_id
-            raise ValidationError("settlement", f"{key!r} must be null or a category id")
+        elif value is not None:  # dividend_category_id (#267: checked here, not first at booking time)
+            category = db.get(Category, value) if _account_id(value) else None
+            if category is None or category.kind != "income":
+                raise ValidationError("settlement", f"{key!r} must be null or an existing income category id")
         out[key] = value
     effective = {**SETTLEMENT_DEFAULTS, **out}
     if effective["stand_in_enabled"] and effective["enabled_from"] is None:

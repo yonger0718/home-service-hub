@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..auth import method_scope
 from ..database import get_db
-from ..schemas.reports import MONTH_PATTERN, BreakdownOut, BudgetAmendIn, BudgetIn, BudgetStatusListOut, BudgetStatusOut, SavedReportIn, SavedReportOut, TrendOut
+from ..schemas.reports import AMOUNT_RANGE_MESSAGE, MONTH_PATTERN, BreakdownOut, BudgetAmendIn, BudgetIn, BudgetStatusListOut, BudgetStatusOut, SavedReportIn, SavedReportOut, TrendOut
 from ..services import budget_service, report_service, saved_report_service
 from .errors import service_errors
 from ..services.report_rules import Compare, Dimension, Granularity, Metric, ReportFilters
@@ -63,6 +63,8 @@ def report_filters(
     """The query parameters every /reports read shares (dates inclusive, by entry_date)."""
     if date_from > date_to:
         raise HTTPException(status_code=422, detail="date_from must not follow date_to")
+    if amount_min is not None and amount_max is not None and amount_min > amount_max:
+        raise HTTPException(status_code=422, detail=AMOUNT_RANGE_MESSAGE)
     return filters_from_wire(
         date_from, date_to, account_id=account_id, category_id=category_id, project_id=project_id, tag=tag,
         merchant=merchant, counterparty_id=counterparty_id, amount_min=amount_min, amount_max=amount_max, q=q,
