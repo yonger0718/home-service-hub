@@ -1077,6 +1077,7 @@ describe('AccountingReportsComponent', () => {
       whole?: BreakdownRow[];
       previousCount?: number;
       lastYearCount?: number;
+      lastYearRows?: BreakdownRow[];
       trend?: TrendResponse;
     }
 
@@ -1084,15 +1085,15 @@ describe('AccountingReportsComponent', () => {
       for (const request of reads.breakdowns) {
         const query = breakdownQuery(request);
         if (query.compare === 'previous') request.flush(breakdown(query, figures.toDate, figures.previousCount ?? 5));
-        else if (query.compare === 'last_year') request.flush(breakdown(query, figures.toDate, figures.lastYearCount ?? 5));
+        else if (query.compare === 'last_year') request.flush(breakdown(query, figures.lastYearRows ?? figures.toDate, figures.lastYearCount ?? 5));
         else request.flush(breakdown(query, query.date_to === today ? figures.toDate : (figures.whole ?? figures.toDate)));
       }
       for (const request of reads.trends) request.flush(figures.trend ?? trendOf(SERIES));
     }
 
-    async function openTrend(day: [number, number, number], figures: Figures) {
+    async function openTrend(day: [number, number, number], figures: Figures, url = '/accounting/reports?month=2026-11&tab=trend') {
       vi.setSystemTime(new Date(day[0], day[1] - 1, day[2], 10, 0));
-      const { harness, el } = await open('/accounting/reports?month=2026-11&tab=trend');
+      const { harness, el } = await open(url);
       const today = `${day[0]}-${String(day[1]).padStart(2, '0')}-${String(day[2]).padStart(2, '0')}`;
       answerTrend(pending(), today, figures);
       harness.detectChanges();
@@ -1137,6 +1138,32 @@ describe('AccountingReportsComponent', () => {
       const { el } = await openTrend([2026, 11, 7], { toDate: FOOD, previousCount: 0 });
       expect(texts(el, '.tr-table thead th')).toEqual(['類別', '本月至今（11/1–11/7）', '去年同期', '年增減']);
       expect(el.querySelector('.tr-hidden-note')?.textContent?.trim()).toBe('上一期沒有記錄，已隱藏比較欄');
+    });
+
+    it('names both empty windows when neither comparison has records', async () => {
+      const { el } = await openTrend([2026, 11, 7], { toDate: FOOD, previousCount: 0, lastYearCount: 0 });
+      expect(texts(el, '.tr-table thead th')).toEqual(['類別', '本月至今（11/1–11/7）']);
+      expect(texts(el, '.tr-hidden-note')).toEqual(['上一期沒有記錄，已隱藏比較欄', '去年同期沒有記錄，已隱藏比較欄']);
+    });
+
+    describe('a running year', () => {
+      const YEAR = '/accounting/reports?year=2026&tab=trend';
+
+      it('shows one 去年同期 column read from the last-year response', async () => {
+        const { el } = await openTrend([2026, 11, 7], { toDate: [row('2', '餐飲', 4233, 9, 3000)], lastYearRows: [row('2', '餐飲', 4233, 9, 7777)] }, YEAR);
+        const heads = texts(el, '.tr-table thead th');
+        expect(heads).toHaveLength(4);
+        expect(heads.slice(2)).toEqual(['去年同期', '增減']);
+        expect(texts(el, '.tr-table tbody tr:first-child td')).toEqual(['4,233', '7,777', '▼ 3,544 (45.6%)']);
+        expect(el.querySelector('.tr-table tbody tr td.tr-change')?.getAttribute('data-label')).toBe('比去年同期');
+        expect(el.querySelector('.tr-hidden-note')).toBeNull();
+      });
+
+      it('drops the column with the 去年同期 note when last year has no records', async () => {
+        const { el } = await openTrend([2026, 11, 7], { toDate: FOOD, lastYearCount: 0 }, YEAR);
+        expect(texts(el, '.tr-table thead th')).toHaveLength(2);
+        expect(el.querySelector('.tr-hidden-note')?.textContent?.trim()).toBe('去年同期沒有記錄，已隱藏比較欄');
+      });
     });
 
     it('names rows after today under the table and switches to the whole month', async () => {

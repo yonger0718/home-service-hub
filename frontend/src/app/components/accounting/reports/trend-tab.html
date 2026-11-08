@@ -79,8 +79,8 @@
     } @else {
       <p class="tr-empty">讀取中</p>
     }
-    @if (columns().hiddenNote; as hidden) {
-      <small class="tr-note tr-hidden-note">{{ hidden }}</small>
+    @for (note of columns().hiddenNotes; track note) {
+      <small class="tr-note tr-hidden-note">{{ note }}</small>
     }
     @if (afterToday(); as after) {
       <button type="button" class="tr-after" (click)="toggleWhole.emit()">{{ after }}</button>

@@ -73,8 +73,8 @@ interface CompareColumns {
   lastYear: string | null;
   monthChangeHead: string;
   labels: { previous: string; lastYear: string };
-  /** The muted note naming a column left out because its window has no entries. */
-  hiddenNote: string | null;
+  /** The muted notes naming each column left out because its window has no entries. */
+  hiddenNotes: string[];
 }
 
 /**
@@ -187,7 +187,7 @@ export class ReportTrendComponent {
     const nouns = running ? toDateNouns(period, this.today()) : periodNouns(period);
     const labels = running ? runningCompareLabels(period, this.today()) : compareLabels(period);
     const monthChangeHead = period.unit === 'month' && !nouns.single ? '月增減' : '增減';
-    if (this.whole()) return { current: periodNouns(period).current, previous: null, lastYear: null, monthChangeHead, labels, hiddenNote: null };
+    if (this.whole()) return { current: periodNouns(period).current, previous: null, lastYear: null, monthChangeHead, labels, hiddenNotes: [] };
     if (nouns.single) {
       const empty = windowEmpty(this.singleSource());
       return {
@@ -196,7 +196,7 @@ export class ReportTrendComponent {
         lastYear: null,
         monthChangeHead,
         labels,
-        hiddenNote: empty ? '去年同期沒有記錄，已隱藏比較欄' : null,
+        hiddenNotes: empty ? ['去年同期沒有記錄，已隱藏比較欄'] : [],
       };
     }
     const previousEmpty = windowEmpty(this.expense());
@@ -207,7 +207,7 @@ export class ReportTrendComponent {
       lastYear: lastYearEmpty ? null : nouns.lastYear,
       monthChangeHead,
       labels,
-      hiddenNote: lastYearEmpty ? '去年同期沒有記錄，已隱藏比較欄' : previousEmpty ? '上一期沒有記錄，已隱藏比較欄' : null,
+      hiddenNotes: [...(previousEmpty ? ['上一期沒有記錄，已隱藏比較欄'] : []), ...(lastYearEmpty ? ['去年同期沒有記錄，已隱藏比較欄'] : [])],
     };
   });
 
