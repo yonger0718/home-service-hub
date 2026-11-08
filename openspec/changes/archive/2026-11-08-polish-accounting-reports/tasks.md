@@ -42,4 +42,4 @@
   - muted 新增
 - [x] 3.6 Requests while running (D1 table): the header's three breakdowns over the to-date range plus two whole-period ones; a saved report to-date plus whole period, and the previous bucket's same days for a time dimension
 - [x] 3.7 Rows after today: the muted 「另有 M/D 之後已記的 N 筆 $X 未計入」 line (「…N 筆未計入」 for the count metric) under the 總覽 list, the 趨勢與比較 table and the saved-report table; pressing it switches to the whole-period view without comparisons and back (「改回截至 M/D」); absent without such rows
-- [ ] 3.8 Screens at 1440 / 1100 / 390, light and dark, on the seeded ledger (11/7 and October)
+- [x] 3.8 Screens at 1440 / 1100 / 390, light and dark, on the seeded ledger (11/7 and October)

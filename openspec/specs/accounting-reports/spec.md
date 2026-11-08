@@ -207,11 +207,15 @@ Report `totals` and `compare.totals` SHALL be one sum per currency converted onc
 
 ### Requirement: Comparison windows
 
-With `compare`, the breakdown SHALL return `compare` with the comparison window's dates and its five totals, and each row's `compare_amount` SHALL be the same key's amount there (for `month`, `week` and `day`, the bucket at the same position) or null when there is none. `previous` and `last_year` SHALL resolve the window as the scenarios below state.
+With `compare`, the breakdown SHALL return `compare` with the comparison window's dates and its five totals, and each row's `compare_amount` SHALL be the same key's amount there (for `month`, `week` and `day`, the bucket at the same position) or null when there is none. `previous` and `last_year` SHALL resolve the window as the scenarios below state; a `previous` range that starts on the 1st but does not end on a month's last day SHALL compare with the same days of the earlier month or months.
 
 #### Scenario: Previous for whole calendar months
 - **WHEN** `compare=previous` is sent with a range starting on the 1st and ending on the last day of a month
 - **THEN** the window SHALL move back by the range's number of calendar months and end the day before `date_from`: `2026-10-01..2026-10-31` → `2026-09-01..2026-09-30`, `2026-05-01..2026-10-31` → `2025-11-01..2026-04-30`
+
+#### Scenario: Previous for a range starting on the 1st
+- **WHEN** `compare=previous` is sent with a range starting on the 1st and ending before its month's last day
+- **THEN** both dates SHALL move back by the number of calendar months the range touches, with the end day clipped to the target month's length: `2026-11-01..2026-11-07` → `2026-10-01..2026-10-07`, `2026-03-01..2026-03-30` → `2026-02-01..2026-02-28`, `2026-06-01..2026-11-07` → `2025-12-01..2026-05-07`
 
 #### Scenario: Previous for any other range
 - **WHEN** `compare=previous` is sent with `2026-10-05..2026-10-14`
