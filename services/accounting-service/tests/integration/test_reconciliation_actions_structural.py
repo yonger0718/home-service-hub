@@ -85,7 +85,8 @@ def _hand_case(db, stmt, kind, *, line=None, **fields) -> ReconciliationCase:
 def _barrier_holders(engine_) -> list[tuple[int, str]]:
     with engine_.connect() as conn:
         return [tuple(r) for r in conn.execute(text(
-            f"SELECT pid, mode FROM pg_locks WHERE locktype = 'advisory' AND objid = :k AND granted AND {THIS_DATABASE}"),
+            f"SELECT pid, mode FROM pg_locks WHERE locktype = 'advisory' AND objid = :k AND granted "
+            f"AND {THIS_DATABASE}"),
             {"k": DIRTY_BARRIER_KEY}).all()]
 
 
