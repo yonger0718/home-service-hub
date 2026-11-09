@@ -2,6 +2,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, TestRequest, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Provider, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
+import { Location } from '@angular/common';
 import { Router, provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -3131,8 +3132,8 @@ describe('LedgerTimelineComponent', () => {
       const isProbe = (r: { url: string; params: { get(name: string): string | null } }) =>
         r.url === '/api/accounting/entries' && r.params.get('date_from') !== r.params.get('date_to');
 
-      /** Calendar at panes width with `date` selected (rows 5, 4, 3) and entry `selected` open in the drawer. */
-      async function stepSetup(selected: number, date = '2026-10-21', preference = makePreference()) {
+      /** Calendar at panes width with `date` selected (rows 5, 4, 3 unless `rows`) and entry `selected` open in the drawer. */
+      async function stepSetup(selected: number, date = '2026-10-21', preference = makePreference(), rows?: LedgerEntry[]) {
         localStorage.setItem(VIEW_KEY, 'calendar');
         const layout = { selectedEntryId: signal<number | null>(selected) };
         const rendered = render('panes', preference, [{ provide: AccountingLayoutComponent, useValue: layout }], ACCOUNTS);
@@ -3142,19 +3143,56 @@ describe('LedgerTimelineComponent', () => {
         rendered.el.querySelector<HTMLButtonElement>(`button.cell[data-date="${date}"]`)!.click();
         rendered.fixture.detectChanges();
         await rendered.fixture.whenStable();
-        flushEntries([entry(5, date), entry(4, date), entry(3, date)]);
+        flushEntries(rows ?? [entry(5, date), entry(4, date), entry(3, date)]);
         rendered.fixture.detectChanges();
         // Calls through, so the day write lands in the URL; callers mock the entry navigation once the day write is done.
         const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
         return { ...rendered, navigate };
       }
-      const withDay = (day: string) => ({ queryParams: { month: '2026-10', day } });
+      /** A step opens in place of the drawer's page (history unchanged), with the state `stepState` derives from it. */
+      const withDay = (day: string, state: object = {}) => ({ queryParams: { month: '2026-10', day }, state, replaceUrl: true });
+      /** The drawer's page state as history holds it (a child of a group view opened from the list). */
+      const CHILD = { groupDepth: 2, viaGroup: true };
 
       it('stepEntry(1) opens the next row of the day', async () => {
         const { navigate } = await stepSetup(5);
         navigate.mockResolvedValue(true);
         pane().commands()!.stepEntry(1);
         expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 4], withDay('2026-10-21'));
+      });
+
+      it('stepEntry(1) onto a split row opens its group view in place, one entry above the list', async () => {
+        const split = { id: 9, kind: 'split' as const, name: null, merchant: null, description: null, count: 2, total: '-400.0000', currency: 'TWD' };
+        const day = '2026-10-21';
+        const { navigate } = await stepSetup(5, day, makePreference(), [
+          entry(5, day), entry(4, day, { group: split }), entry(6, day, { group: split }), entry(3, day),
+        ]);
+        navigate.mockResolvedValue(true);
+        pane().commands()!.stepEntry(1);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 4, 'group'], withDay(day, { groupDepth: 1 }));
+      });
+
+      it('a step from a child of a group view keeps its depth, so ✕ on the stepped page still goes back to the list', async () => {
+        const { navigate } = await stepSetup(5);
+        vi.spyOn(TestBed.inject(Location), 'getState').mockReturnValue({ navigationId: 4, ...CHILD });
+        navigate.mockResolvedValue(true);
+        pane().commands()!.stepEntry(1);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 4], withDay('2026-10-21', CHILD));
+      });
+
+      it("a step across days keeps the depth read before the day write (that write drops the history entry's state)", async () => {
+        const { fixture, navigate } = await stepSetup(3);
+        const getState = vi.spyOn(TestBed.inject(Location), 'getState').mockReturnValue({ navigationId: 4, ...CHILD });
+        pane().commands()!.stepEntry(1);
+        httpMock!.expectOne(isProbe).flush(page([entry(2, '2026-10-19')], 1));
+        await fixture.whenStable();
+        getState.mockReturnValue({ navigationId: 5 });
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush(page([entry(2, '2026-10-19'), entry(1, '2026-10-19')]));
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 2], withDay('2026-10-19', CHILD));
       });
 
       it('stepEntry(-1) opens the previous row of the day', async () => {

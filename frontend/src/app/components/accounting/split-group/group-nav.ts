@@ -104,6 +104,24 @@ export function childState(state: GroupNavState): GroupNavState {
 }
 
 /**
+ * The state a drawer step (↑ / ↓ on the calendar) opens a neighbouring row's page with, in place of the page on screen
+ * (`replaceUrl`), given that page's state `current`: the new page closes where the replaced one would. `closeTo` and the
+ * depth above the list are kept. A group view (`groupView`) without a depth sits one entry above the list, as a detail
+ * opened from it does; a detail deeper than one entry goes back that far as a group view's child does (`viaGroup`).
+ */
+export function stepState(current: GroupNavState, groupView: boolean): GroupNavState {
+  const next = carriedState(current);
+  if (groupView) {
+    next.groupDepth ??= 1;
+  } else if ((next.groupDepth ?? 0) > 1) {
+    next.viaGroup = true;
+  } else {
+    delete next.groupDepth;
+  }
+  return next;
+}
+
+/**
  * ✕ on a group view or a child opened from it: `closeTo` → that page; opened from a list → back exactly to that list
  * (history not grown, never through a child or a second group view); else (deep link) → the parent list.
  */

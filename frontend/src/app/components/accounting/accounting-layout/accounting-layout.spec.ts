@@ -1,7 +1,9 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { Provider } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Location } from '@angular/common';
+import { SpyLocation, provideLocationMocks } from '@angular/common/testing';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Router, provideRouter } from '@angular/router';
@@ -11,7 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { routes } from '../../../app.routes';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService, MATCH_MEDIA } from '../../../services/layout-mode.service';
-import { makeEntry, makeEntryDetail, makePreference } from '../testing/fixtures';
+import { EntryGroupSummary, LedgerEntry } from '../../../models/accounting.model';
+import { makeEntry, makeEntryDetail, makeGroupMember, makePreference } from '../testing/fixtures';
 import { PaneStateService } from '../../../services/pane-state.service';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { AccountingOverviewService } from '../month-overview/overview.service';
@@ -35,13 +38,14 @@ function matchMediaAt(width: number) {
   };
 }
 
-async function start(mode: LayoutMode, url: string, width?: number): Promise<RouterTestingHarness> {
+async function start(mode: LayoutMode, url: string, width?: number, providers: Provider[] = []): Promise<RouterTestingHarness> {
   TestBed.configureTestingModule({
     providers: [
       provideRouter(routes),
       provideHttpClient(),
       provideHttpClientTesting(),
       ...(width ? [{ provide: MATCH_MEDIA, useValue: matchMediaAt(width) }] : []),
+      ...providers,
     ],
   });
   TestBed.inject(LayoutModeService).set(mode);
@@ -598,6 +602,134 @@ describe('AccountingLayoutComponent', () => {
             const cell = harness.routeNativeElement!.querySelector('.list-pane .cell.sel');
             expect(cell?.getAttribute('data-date')).toBe('2026-10-23');
             expect(document.activeElement).toBe(cell);
+          });
+        });
+
+        describe('↑ ↓ steps over real history (router over a SpyLocation driven by popstate)', () => {
+          const DAY_21 = '/accounting?month=2026-10&day=2026-10-21';
+          const DAY_19 = '/accounting?month=2026-10&day=2026-10-19';
+          const at = (id: number, day: string) => `/accounting/entries/${id}?month=2026-10&day=${day}`;
+          /** 10/21: rows 7, 8, 9; 10/19: rows 11, 12 (newest first, as the API orders them). */
+          const ENTRIES: LedgerEntry[] = [
+            ...[7, 8, 9].map(id => makeEntry({ id, entry_date: '2026-10-21', posted_date: '2026-10-21' })),
+            ...[11, 12].map(id => makeEntry({ id, entry_date: '2026-10-19', posted_date: '2026-10-19' })),
+          ];
+          /** The entries the reads answer with (a test may swap in a split). */
+          let entries = ENTRIES;
+          beforeEach(() => (entries = ENTRIES));
+
+          /** Answers the timeline's reads (preference, accounts, a day's rows, the neighbour-day probe) and the drawer's detail reads. */
+          function serve(): void {
+            const http = TestBed.inject(HttpTestingController);
+            http.match('/api/accounting/preference').forEach(req => req.flush(makePreference()));
+            http.match('/api/accounting/accounts').forEach(req => req.flush([]));
+            http.match(req => req.url === '/api/accounting/entries').forEach(req => {
+              const from = req.request.params.get('date_from') ?? '0000-00-00';
+              const to = req.request.params.get('date_to') ?? '9999-99-99';
+              const limit = Number(req.request.params.get('limit') ?? 50);
+              const items = entries.filter(entry => entry.entry_date >= from && entry.entry_date <= to).slice(0, limit);
+              req.flush({ items, total: items.length, limit, offset: 0 });
+            });
+            http.match(req => /^\/api\/accounting\/entries\/\d+$/.test(req.url)).forEach(req => {
+              const entry = entries.find(item => item.id === Number(req.request.url.split('/').pop()))!;
+              const members = entry.group ? entries.filter(item => item.group?.id === entry.group!.id).map(item => makeGroupMember(item)) : [];
+              req.flush(makeEntryDetail({ ...entry, group_members: members }));
+            });
+          }
+
+          /** Polls (serving the reads each time) until `check` passes. */
+          function serving<T>(harness: RouterTestingHarness, check: () => T): Promise<T> {
+            return vi.waitFor(
+              () => {
+                serve();
+                harness.detectChanges();
+                return check();
+              },
+              { timeout: 3000, interval: 10 },
+            );
+          }
+
+          function present(harness: RouterTestingHarness, selector: string): Promise<HTMLElement> {
+            return serving(harness, () => {
+              const found = harness.routeNativeElement?.querySelector<HTMLElement>(selector);
+              if (!found) {
+                throw new Error(`no ${selector} yet`);
+              }
+              return found;
+            });
+          }
+
+          /** The browser history entries after SpyLocation's initial blank one, and the current index among them. */
+          function history(): { paths: string[]; index: number } {
+            const stack = TestBed.inject(Location) as unknown as { _history: { path: string }[]; _historyIndex: number };
+            return { paths: stack._history.slice(1).map(state => state.path), index: stack._historyIndex - 1 };
+          }
+
+          const CLOSE = '.pane-host.drawer .close[aria-label="關閉"]';
+
+          /** 日曆 on 10/21 at 1100 px; the day panel's row `id` clicked, the drawer open on it (a push, as every row open). */
+          async function openRow(id: number): Promise<{ harness: RouterTestingHarness; router: Router }> {
+            const harness = await start('panes', DAY_21, 1100, [provideLocationMocks()]);
+            const router = TestBed.inject(Router);
+            router.setUpLocationChangeListener();
+            expect(TestBed.inject(Location)).toBeInstanceOf(SpyLocation);
+            (await present(harness, `app-calendar-day-panel .dp-row[data-entry-id="${id}"]`)).click();
+            await serving(harness, () => expect(router.url).toBe(at(id, '2026-10-21')));
+            expect(history()).toEqual({ paths: [DAY_21, at(id, '2026-10-21')], index: 1 });
+            return { harness, router };
+          }
+
+          it('↓ twice then ✕: each step replaced the entry, so ✕ closes back to the day and the next Back leaves 日曆', async () => {
+            const { harness, router } = await openRow(7);
+            for (const next of [8, 9]) {
+              key(await present(harness, CLOSE), 'ArrowDown');
+              await serving(harness, () => expect(router.url).toBe(at(next, '2026-10-21')));
+            }
+            expect(history()).toEqual({ paths: [DAY_21, at(9, '2026-10-21')], index: 1 });
+
+            (await present(harness, CLOSE)).click();
+            await serving(harness, () => {
+              expect(router.url).toBe(DAY_21);
+              expect(harness.routeNativeElement!.querySelector('.pane-host.drawer')).toBeNull();
+            });
+            // One entry back from the opened entry: the calendar is the current entry, nothing ahead of it but the page.
+            expect(history()).toEqual({ paths: [DAY_21, at(9, '2026-10-21')], index: 0 });
+          });
+
+          it('↓ onto a split row opens its group view in place; its ✕ closes back to the day and the next Back leaves 日曆', async () => {
+            const split: EntryGroupSummary = {
+              id: 4, kind: 'split', name: null, merchant: null, description: null, count: 2, total: '-200.0000', currency: 'TWD',
+            };
+            entries = [
+              ENTRIES[0],
+              ...[8, 10].map(id => makeEntry({ id, entry_date: '2026-10-21', posted_date: '2026-10-21', amount: '-100.0000', group: split })),
+              ENTRIES[2],
+            ];
+            const { harness, router } = await openRow(7);
+            key(await present(harness, CLOSE), 'ArrowDown');
+            await serving(harness, () => expect(router.url).toBe('/accounting/entries/8/group?month=2026-10&day=2026-10-21'));
+            expect(history()).toEqual({ paths: [DAY_21, '/accounting/entries/8/group?month=2026-10&day=2026-10-21'], index: 1 });
+
+            (await present(harness, '.pane-host.drawer .split-group .close[aria-label="關閉"]')).click();
+            await serving(harness, () => {
+              expect(router.url).toBe(DAY_21);
+              expect(harness.routeNativeElement!.querySelector('.pane-host.drawer')).toBeNull();
+            });
+            expect(history()).toEqual({ paths: [DAY_21, '/accounting/entries/8/group?month=2026-10&day=2026-10-21'], index: 0 });
+          });
+
+          it('↓ past the last row crosses to the earlier day; ✕ closes onto that new day and the next Back leaves 日曆', async () => {
+            const { harness, router } = await openRow(9);
+            key(await present(harness, CLOSE), 'ArrowDown');
+            await serving(harness, () => expect(router.url).toBe(at(11, '2026-10-19')));
+            expect(history()).toEqual({ paths: [DAY_21, at(11, '2026-10-19')], index: 1 });
+
+            (await present(harness, CLOSE)).click();
+            await serving(harness, () => {
+              expect(router.url).toBe(DAY_19);
+              expect(harness.routeNativeElement!.querySelector('.pane-host.drawer')).toBeNull();
+            });
+            expect(history()).toEqual({ paths: [DAY_19, at(11, '2026-10-19')], index: 0 });
           });
         });
 

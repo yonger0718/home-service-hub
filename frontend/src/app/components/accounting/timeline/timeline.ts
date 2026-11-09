@@ -12,7 +12,7 @@ import {
   untracked,
   viewChild,
 } from '@angular/core';
-import { DOCUMENT, NgTemplateOutlet } from '@angular/common';
+import { DOCUMENT, Location, NgTemplateOutlet } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { NavigationEnd, Params, Router } from '@angular/router';
 import { filter, forkJoin, fromEvent } from 'rxjs';
@@ -42,7 +42,7 @@ import { BillState, BillingService, billKey } from '../billing/billing.service';
 import { countReminders } from '../billing/reminder-count';
 import { SkeletonComponent } from '../skeleton/skeleton';
 import { FolderIcon, SplitFolderComponent } from '../split-folder/split-folder';
-import { groupCommands, listOpenState } from '../split-group/group-nav';
+import { GroupNavState, groupCommands, listOpenState, readGroupNavState, stepState } from '../split-group/group-nav';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
 import { CalendarDataService } from '../calendar-month/calendar-data.service';
 import { CalendarPaneService, MonthDue, TodayCard } from '../calendar-month/calendar-pane.service';
@@ -444,6 +444,7 @@ export class LedgerTimelineComponent implements OnInit {
   readonly embedded = input(false);
   private readonly accounting = inject(AccountingService);
   private readonly router = inject(Router);
+  private readonly location = inject(Location);
   protected readonly layoutMode = inject(LayoutModeService);
   private readonly calendarData = inject(CalendarDataService);
   private readonly layout = inject(AccountingLayoutComponent, { optional: true });
@@ -454,8 +455,11 @@ export class LedgerTimelineComponent implements OnInit {
   private dayRequestId = 0;
   /** An invoice whose issue day was just selected; resolved when that day's entries arrive (`openInvoice`). */
   private pendingInvoice: InboxEinvoice | null = null;
-  /** `stepEntry` crossed a day edge: once `date`'s rows arrive, open its first (↓) / last (↑) row. */
-  private pendingOpen: { at: 'first' | 'last'; date: string } | null = null;
+  /**
+   * `stepEntry` crossed a day edge: once `date`'s rows arrive, open its first (↓) / last (↑) row. `from`: the drawer
+   * page's state when ↑ / ↓ was pressed (read before the day write, which drops it from history).
+   */
+  private pendingOpen: { at: 'first' | 'last'; date: string; from: GroupNavState } | null = null;
   /** `stepEntry`'s neighbour-day read; a newer step, a dropped day or destroy invalidates the one in flight. */
   private probeRequestId = 0;
   /** Filters of the rows on screen; a reset load for another key clears them (skeleton), the same key keeps them. */
@@ -1293,8 +1297,8 @@ export class LedgerTimelineComponent implements OnInit {
    * ↓ / ↑ with the drawer open: the next / previous entry of the month in list order (newest first). Inside the selected
    * day: the neighbouring row of the day panel (unfolded, one row per entry). At the day's edge: the nearest earlier (↓) /
    * later (↑) day with an entry the list's filters keep (`probeNeighbourDay`); that day is written to the URL and, once
-   * its rows arrive, its first (↓) / last (↑) row opens. At the month's edge, or when the open entry is not on the panel:
-   * nothing.
+   * its rows arrive, its first (↓) / last (↑) row opens. Every step opens in place of the drawer's page (`stepOpen`), so
+   * history does not grow. At the month's edge, or when the open entry is not on the panel: nothing.
    */
   private stepEntry(delta: 1 | -1): void {
     const rows = this.paneDayGroup()?.rows ?? [];
@@ -1304,21 +1308,33 @@ export class LedgerTimelineComponent implements OnInit {
     if (index < 0 || !day) {
       return;
     }
+    const from = readGroupNavState(this.router, this.location);
     const neighbour = rows[index + delta];
     if (neighbour) {
-      this.open(neighbour);
+      this.stepOpen(neighbour, from);
       return;
     }
-    this.probeNeighbourDay(day, delta);
+    this.probeNeighbourDay(day, delta, from);
+  }
+
+  /**
+   * A drawer step opens `row` in place of the page on screen (`replaceUrl`), with the state `stepState` derives from
+   * that page's (`from`): history stays as it was when the drawer opened, so ✕ / Esc close back to the day in one step.
+   * Row clicks (the list, the day panel) stay a push.
+   */
+  private stepOpen(row: TimelineRow, from: GroupNavState): void {
+    const commands = row.folder ? groupCommands(row.entryId, null) : ['/accounting/entries', row.entryId];
+    void this.router.navigate(commands, { ...this.calendarExtras(), state: stepState(from, row.folder !== null), replaceUrl: true });
   }
 
   /**
    * The day `stepEntry` crosses to, read from the entries themselves (the daily summary counts neither transfers nor
    * filters): the rest of the month before (↓) / after (↑) `day`, with the list's filters, newest first. ↓ takes the
    * first item's day (limit 1); ↑ the last item's (the API has no ascending order: that side of the month is read up to
-   * `CALENDAR_DAY_LIMIT` entries). No entry there, a failed read, or another day picked meanwhile: nothing.
+   * `CALENDAR_DAY_LIMIT` entries). No entry there, a failed read, or another day picked meanwhile: nothing. `origin` (the
+   * drawer page's state) waits in `pendingOpen` for that day's rows.
    */
-  private probeNeighbourDay(day: string, delta: 1 | -1): void {
+  private probeNeighbourDay(day: string, delta: 1 | -1, origin: GroupNavState): void {
     const id = ++this.probeRequestId;
     const { from, to } = monthRange(day.slice(0, 7));
     const range = delta === 1 ? { date_from: from, date_to: addDays(day, -1) } : { date_from: addDays(day, 1), date_to: to };
@@ -1334,7 +1350,7 @@ export class LedgerTimelineComponent implements OnInit {
           }
           const target = (delta === 1 ? page.items[0] : page.items[page.items.length - 1])?.entry_date;
           if (target) {
-            this.pendingOpen = { at: delta === 1 ? 'first' : 'last', date: target };
+            this.pendingOpen = { at: delta === 1 ? 'first' : 'last', date: target, from: origin };
             this.writeCalendar(target.slice(0, 7), target);
           }
         },
@@ -1357,7 +1373,7 @@ export class LedgerTimelineComponent implements OnInit {
     const rows = this.paneDayGroup()?.rows ?? [];
     const row = pending.at === 'first' ? rows[0] : rows[rows.length - 1];
     if (row) {
-      this.open(row);
+      this.stepOpen(row, pending.from);
     }
   }
 

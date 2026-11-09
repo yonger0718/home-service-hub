@@ -4,7 +4,7 @@ import { TestBed } from '@angular/core/testing';
 import { Router, convertToParamMap, provideRouter } from '@angular/router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { closeKeepingDay, groupParentUrl } from './group-nav';
+import { closeKeepingDay, groupParentUrl, stepState } from './group-nav';
 
 describe('groupParentUrl', () => {
   let router: Router;
@@ -29,6 +29,28 @@ describe('groupParentUrl', () => {
     const query = convertToParamMap({ month: '2026-10', day: '2026-10-21' });
     expect(groupParentUrl(router, {}, 3, query)).toBe('/accounting/accounts/3');
     expect(groupParentUrl(router, { closeTo: 'reminders' }, null, query)).toBe('/accounting/reminders');
+  });
+});
+
+describe('stepState', () => {
+  it('a detail opened from the list: a stepped detail needs nothing, a stepped group view sits one entry above the list', () => {
+    expect(stepState({}, false)).toEqual({});
+    expect(stepState({}, true)).toEqual({ groupDepth: 1 });
+  });
+
+  it('a group view opened from the list (depth 1): the same depth for either page', () => {
+    expect(stepState({ groupDepth: 1 }, false)).toEqual({});
+    expect(stepState({ groupDepth: 1 }, true)).toEqual({ groupDepth: 1 });
+  });
+
+  it('a child of a group view (depth 2): a stepped detail goes back that far as a child does, a group view counts it', () => {
+    expect(stepState({ groupDepth: 2, viaGroup: true }, false)).toEqual({ groupDepth: 2, viaGroup: true });
+    expect(stepState({ groupDepth: 2, viaGroup: true }, true)).toEqual({ groupDepth: 2 });
+  });
+
+  it('keeps closeTo', () => {
+    expect(stepState({ closeTo: 'list' }, false)).toEqual({ closeTo: 'list' });
+    expect(stepState({ closeTo: 'list' }, true)).toEqual({ closeTo: 'list', groupDepth: 1 });
   });
 });
 
