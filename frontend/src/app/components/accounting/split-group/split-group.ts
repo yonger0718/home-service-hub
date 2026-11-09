@@ -22,7 +22,7 @@ import { AccountingToastService, scheduleActionError } from '../accounting-toast
 import { colorOf, iconOf, isHandledKey } from '../accounting-ui';
 import { slashDate } from '../dates';
 import { storedGroupNet } from '../entry-detail/split-card';
-import { calendarParams } from '../timeline/calendar-url';
+import { calendarParams, readCalendarQuery } from '../timeline/calendar-url';
 import { formatMoney } from '../format';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
 import { SplitFolderComponent } from '../split-folder/split-folder';
@@ -30,7 +30,7 @@ import {
   GroupNavState,
   carriedState,
   childState,
-  closeGroupPage,
+  closeKeepingDay,
   entryCommands,
   groupParentUrl,
   readGroupNavState,
@@ -172,17 +172,14 @@ export class SplitGroupComponent implements OnInit {
 
   /**
    * ✕ and after 刪除整組: opened from a list row, back to that list (nothing added to history); with `closeTo` that
-   * fixed page; else (deep link, ↑ ↓) the parent list. On the calendar (the timeline parent, month / day in the URL)
-   * it goes to the day the URL shows now, replacing this entry: the grid may have moved the day since the page opened.
+   * fixed page; else (deep link, ↑ ↓) the parent list. On the calendar (a `day` in the URL) the list it lands on then
+   * shows the day the URL shows now, in place: the grid may have moved the day since the page opened (`closeKeepingDay`).
    */
   close(): void {
     const state = this.navState();
-    const parentUrl = groupParentUrl(this.router, state, this.passbookId(), this.route.snapshot.queryParamMap);
-    if (!state.closeTo && this.passbookId() === null && Object.keys(this.calendarQuery()).length > 0) {
-      void this.router.navigateByUrl(parentUrl, { replaceUrl: true });
-      return;
-    }
-    closeGroupPage(this.router, this.location, state, parentUrl);
+    const query = this.route.snapshot.queryParamMap;
+    const parentUrl = groupParentUrl(this.router, state, this.passbookId(), query);
+    closeKeepingDay(this.router, this.location, state, parentUrl, readCalendarQuery(query), true);
   }
 
   /** 編輯: the entry form for this split with the parent (多類別) bubble selected, keeping the calendar month / day. */

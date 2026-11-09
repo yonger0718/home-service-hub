@@ -32,6 +32,17 @@ export function calendarParams(query: ParamMap): Params {
   return params;
 }
 
+/**
+ * `/accounting` and the pages the timeline opens beside it (an entry, its group view or edit form, the new-entry form,
+ * the reminder centre): the only URLs whose `month` / `day` are the calendar's (a 報表 `?month` is not).
+ */
+const TIMELINE_PATH = /^\/accounting(?:\/(?:entry|reminders|entries\/\d+(?:\/(?:group|edit))?))?$/;
+
+/** `url` (path, query and fragment) is the timeline or a page it opens beside it. */
+export function isTimelineUrl(url: string): boolean {
+  return TIMELINE_PATH.test(url.split(/[?#]/)[0]);
+}
+
 export function calendarWrite(month: string, day: string | null): Params {
   return { month, day };
 }

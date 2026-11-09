@@ -576,17 +576,34 @@ describe('EntryDetailComponent', () => {
     expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 42, 'edit'], { queryParamsHandling: 'preserve' });
   });
 
-  it('✕ on the calendar goes to the day in the URL (history replaced), never back to the day it was opened from', () => {
+  it('✕ on the calendar goes back (history not grown), then the list it lands on shows the day in the URL', async () => {
     const router = TestBed.inject(Router);
-    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    router.resetConfig([{ path: '**', children: [] }]);
     const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
     Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
     // The grid moved the day while the detail was open: the route's query is the day now shown.
     query = convertToParamMap({ month: '2026-10', day: '2026-10-22' });
     const fixture = render(RECEIVABLE);
+    const navigate = vi.spyOn(router, 'navigateByUrl');
     el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
-    expect(navigate).toHaveBeenCalledWith('/accounting?month=2026-10&day=2026-10-22', { replaceUrl: true });
-    expect(back).not.toHaveBeenCalled();
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
+
+    // The browser lands on the day the detail was opened from; the day shown now replaces it in place.
+    await router.navigateByUrl('/accounting?month=2026-10&day=2026-10-21');
+    await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-22'));
+  });
+
+  it('✕ on a detail reached from 清單 with only ?month goes back as before', () => {
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    query = convertToParamMap({ month: '2026-10' });
+    const fixture = render(RECEIVABLE);
+    el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it('✕ off the calendar still goes back in history', () => {
@@ -913,19 +930,19 @@ describe('EntryDetailComponent', () => {
     expect(go).not.toHaveBeenCalled();
   });
 
-  it('✕ on a child on the calendar goes to the day in the URL (history replaced), not back past the group view', () => {
+  it('✕ on a child on the calendar goes back past the group view (history not grown), not to the day by a new entry', () => {
     openedWith({ groupDepth: 2, viaGroup: true });
     const router = TestBed.inject(Router);
     Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
     const location = TestBed.inject(Location);
-    const go = vi.spyOn(location, 'historyGo');
+    const go = vi.spyOn(location, 'historyGo').mockImplementation(() => undefined);
     const back = vi.spyOn(location, 'back');
     const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
     query = convertToParamMap({ month: '2026-10', day: '2026-10-22' });
     const fixture = render(splitChild());
     el(fixture).querySelector<HTMLButtonElement>('.dhead .close')!.click();
-    expect(navigate).toHaveBeenCalledWith('/accounting?month=2026-10&day=2026-10-22', { replaceUrl: true });
-    expect(go).not.toHaveBeenCalled();
+    expect(go).toHaveBeenCalledExactlyOnceWith(-2);
+    expect(navigate).not.toHaveBeenCalled();
     expect(back).not.toHaveBeenCalled();
   });
 

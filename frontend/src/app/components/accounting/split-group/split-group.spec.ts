@@ -271,37 +271,37 @@ describe('SplitGroupComponent (多類別 group view)', () => {
     const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
     const fixture = render();
     el(fixture).querySelector<HTMLButtonElement>('.dhead .close')!.click();
-    expect(navigate).toHaveBeenCalledWith('/accounting?month=2026-10&day=2026-10-21', { replaceUrl: true });
+    expect(navigate).toHaveBeenCalledExactlyOnceWith('/accounting?month=2026-10&day=2026-10-21');
     expect(go).not.toHaveBeenCalled();
   });
 
-  it('✕ on the calendar goes to the day in the URL (history replaced), never back to the day it was opened from', () => {
+  it('✕ on the calendar goes back to the list (history not grown), not to the day by a new entry', () => {
     openedWith({ groupDepth: 1 });
     Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
     query = convertToParamMap({ month: '2026-10', day: '2026-10-22' });
-    const go = vi.spyOn(location, 'historyGo');
+    const go = vi.spyOn(location, 'historyGo').mockImplementation(() => undefined);
     const back = vi.spyOn(location, 'back');
     const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
     const fixture = render();
     el(fixture).querySelector<HTMLButtonElement>('.dhead .close')!.click();
-    expect(navigate).toHaveBeenCalledWith('/accounting?month=2026-10&day=2026-10-22', { replaceUrl: true });
-    expect(go).not.toHaveBeenCalled();
+    expect(go).toHaveBeenCalledExactlyOnceWith(-1);
+    expect(navigate).not.toHaveBeenCalled();
     expect(back).not.toHaveBeenCalled();
   });
 
-  it('刪除整組 on the calendar closes to the day in the URL', () => {
+  it('刪除整組 on the calendar goes back to the list like ✕', () => {
     openedWith({ groupDepth: 1 });
     Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
     query = convertToParamMap({ month: '2026-10', day: '2026-10-22' });
-    const go = vi.spyOn(location, 'historyGo');
+    const go = vi.spyOn(location, 'historyGo').mockImplementation(() => undefined);
     const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
     const fixture = render();
     el(fixture).querySelector<HTMLButtonElement>('.action-delete')!.click();
     fixture.detectChanges();
     el(fixture).querySelector<HTMLButtonElement>('.delete-confirm .delete-group')!.click();
     http.expectOne('/api/accounting/splits/4').flush(null);
-    expect(navigate).toHaveBeenCalledWith('/accounting?month=2026-10&day=2026-10-22', { replaceUrl: true });
-    expect(go).not.toHaveBeenCalled();
+    expect(go).toHaveBeenCalledExactlyOnceWith(-1);
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it('✕ follows the entry-detail closeTo rule: the reminder centre, and the passbook it was opened from', () => {

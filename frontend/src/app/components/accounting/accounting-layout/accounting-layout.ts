@@ -79,6 +79,8 @@ const SWIPE_CLOSE_PX = 80;
 const SWIPE_MAX_DY = 40;
 /** Pointers starting on a control never begin a swipe (✕ itself may). */
 const SWIPE_IGNORE = 'input, textarea, select, button:not(.sheet-close), [contenteditable], .keypad';
+/** A routed page's own ✕: the detail / group view 關閉, the entry form's data-pane-close. */
+const PAGE_CLOSE = '.close[aria-label="關閉"], [data-pane-close]';
 
 
 /**
@@ -354,9 +356,10 @@ export class AccountingLayoutComponent {
   }
 
   /**
-   * Keys inside the drawer: Esc closes it (marked handled; an Esc already handled — the entry form cancels itself —
-   * or an IME commit is left alone), Tab / Shift+Tab wrap inside it, ↑ ↓ step the entry (`stepEntry`) unless a field
-   * has focus (the reminder centre leaves them to the document's walk over its own rows).
+   * Keys inside the drawer: Esc presses the page's own ✕ (`closeDrawer`; marked handled; an Esc already handled — the
+   * entry form cancels itself — or an IME commit is left alone), Tab / Shift+Tab wrap inside it, ↑ ↓ step the entry
+   * (`stepEntry`) unless a field has focus. The entry form keeps ↑ ↓ (stepping would drop its unsaved edits), and the
+   * reminder centre leaves them to the document's walk over its own rows.
    */
   onDrawerKeydown(event: KeyboardEvent): void {
     if (!this.drawerOpen() || isHandledKey(event)) {
@@ -365,12 +368,12 @@ export class AccountingLayoutComponent {
     const drawer = this.drawer()?.nativeElement;
     if (event.key === 'Escape') {
       event.preventDefault();
-      this.close();
+      this.closeDrawer();
     } else if (event.key === 'Tab') {
       if (drawer && !(event.target as Element | null)?.closest?.(`[${OVERLAY_ATTR}]`)) {
         trapFocus(drawer, event);
       }
-    } else if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && !this.onReminders()) {
+    } else if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && !this.onReminders() && !this.formOpen()) {
       const target = event.target as HTMLElement | null;
       if (event.ctrlKey || event.metaKey || event.altKey || target?.isContentEditable || target?.closest?.('input, textarea, select')) {
         return;
@@ -398,6 +401,19 @@ export class AccountingLayoutComponent {
   /** Close the pane / sheet (✕, backdrop, swipe, Esc): a dirty entry form first asks 放棄未儲存的內容？. */
   close(): void {
     this.registry.requestClose(() => this.navigateClose());
+  }
+
+  /**
+   * Esc in the drawer: the page's own ✕, so Esc and ✕ make the same history move (`closeKeepingDay`; the form's ✕ asks
+   * about unsaved edits itself). A page with no ✕ yet (still loading) closes through `close`.
+   */
+  private closeDrawer(): void {
+    const pageClose = this.drawer()?.nativeElement.querySelector<HTMLElement>(PAGE_CLOSE);
+    if (pageClose) {
+      pageClose.click();
+    } else {
+      this.close();
+    }
   }
 
   private calendarQuery(): Params {
@@ -452,7 +468,7 @@ export class AccountingLayoutComponent {
     const input = event.target as HTMLInputElement;
     if (event.type === 'keydown') {
       const key = (event as KeyboardEvent).key;
-      if ((event as KeyboardEvent).isComposing || (key !== 'Enter' && key !== 'Escape')) {
+      if (isHandledKey(event as KeyboardEvent) || (key !== 'Enter' && key !== 'Escape')) {
         return;
       }
       if (key === 'Escape' && input.value === '') {
@@ -545,12 +561,12 @@ export class AccountingLayoutComponent {
   }
 
   /**
-   * Entry rows ↑ / ↓ walk. On the reminder centre only its own rows count (in the wide layout it sits in the pane,
-   * beside the timeline's rows on the left).
+   * Entry rows ↑ / ↓ walk. On the reminder centre only its own rows count (in the wide layout it sits in the pane host,
+   * beside the timeline's rows on the left and, in 日曆, over the inert day panel of the right pane).
    */
   private rows(): HTMLElement[] {
     const host = this.host.nativeElement;
-    const scope = this.onReminders() ? (host.querySelector<HTMLElement>('.detail-pane') ?? host) : host;
+    const scope = this.onReminders() ? (host.querySelector<HTMLElement>('.pane-host') ?? host) : host;
     return Array.from(scope.querySelectorAll<HTMLElement>('[data-entry-id]'));
   }
 
@@ -601,7 +617,7 @@ export class AccountingLayoutComponent {
           if (drawer) {
             // The page's own ✕ (detail / group 關閉, the form's data-pane-close), else its first control, else the
             // dialog itself (a page still loading).
-            (drawer.querySelector<HTMLElement>('.close[aria-label="關閉"], [data-pane-close]') ?? focusables(drawer)[0] ?? drawer).focus();
+            (drawer.querySelector<HTMLElement>(PAGE_CLOSE) ?? focusables(drawer)[0] ?? drawer).focus();
             return;
           }
           // The grip's ✕, else the page's own ✕ (`data-pane-close`, the entry form's header).

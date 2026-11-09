@@ -243,6 +243,19 @@ describe('AccountingLayoutComponent', () => {
           expect(input(root).value).toBe('x');
         });
 
+        it('leaves an Enter of a WebKit IME commit (keyCode 229, no isComposing) to the composition', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          await find(harness, '.cal-base .cal-search');
+          const el = input(harness.routeNativeElement!);
+          const setQuery = vi.spyOn(pane().commands()!, 'setQuery');
+          el.value = '全聯';
+          const enter = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 229, bubbles: true, cancelable: true } as KeyboardEventInit);
+          el.dispatchEvent(enter);
+          expect(enter.defaultPrevented).toBe(false);
+          expect(setQuery).not.toHaveBeenCalled();
+        });
+
         it('Esc in an empty lifted box is left alone; with text it empties and commits', async () => {
           localStorage.setItem('hh.accounting.timelineView', 'calendar');
           const harness = await start('panes', '/accounting?month=2026-10', 1100);
@@ -423,17 +436,18 @@ describe('AccountingLayoutComponent', () => {
           });
         });
 
-        it('✕ and Esc close the drawer back to the day and return focus to the day-panel row that opened it', async () => {
+        it('✕ and Esc close the drawer back to the day with the same history move and return focus to the day-panel row that opened it', async () => {
           const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
           const router = TestBed.inject(Router);
+          // As the app's initial navigation does: popstate (Back, historyGo) drives the router.
+          router.setUpLocationChangeListener();
+          const back = vi.spyOn(TestBed.inject(Location), 'back');
           let { row } = await openFromRow(harness);
           expect(calBase(harness).hasAttribute('inert')).toBe(true);
 
-          // The page's own ✕ (entry detail 關閉) on the calendar goes to the day in the URL (history replaced), never
-          // back in history.
-          const back = vi.spyOn(TestBed.inject(Location), 'back');
+          // The page's own ✕ (entry detail 關閉): back to the day it was opened from, history not grown.
           (await answerDetail(harness, 7)).click();
-          expect(back).not.toHaveBeenCalled();
+          expect(back).toHaveBeenCalledTimes(1);
           await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-21'));
           await vi.waitFor(() => {
             harness.detectChanges();
@@ -442,9 +456,12 @@ describe('AccountingLayoutComponent', () => {
             expect(document.activeElement).toBe(row);
           });
 
+          // Esc presses that same ✕: the same history move.
           ({ row } = await openFromRow(harness));
+          await answerDetail(harness, 7);
           const escape = key(document.activeElement!, 'Escape');
           expect(escape.defaultPrevented).toBe(true);
+          expect(back).toHaveBeenCalledTimes(2);
           await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-21'));
           await vi.waitFor(() => {
             harness.detectChanges();
@@ -453,7 +470,34 @@ describe('AccountingLayoutComponent', () => {
           });
         });
 
-        it('Esc after a grid click changed the day goes to the new day and focuses the selected grid cell', async () => {
+        it('Esc after a grid click changed the day: the same back as ✕, the new day written in place, the selected grid cell focused', async () => {
+          const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+          const router = TestBed.inject(Router);
+          router.setUpLocationChangeListener();
+          const back = vi.spyOn(TestBed.inject(Location), 'back');
+          const { drawer } = await openFromRow(harness);
+          await answerDetail(harness, 7);
+          ((await find(harness, '.list-pane button.cell[data-date="2026-10-23"]')) as HTMLButtonElement).click();
+          await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/7?month=2026-10&day=2026-10-23'));
+          pane().dayRows.set([]);
+          harness.detectChanges();
+          const navigate = vi.spyOn(router, 'navigate');
+
+          expect(key(drawer, 'Escape').defaultPrevented).toBe(true);
+          expect(back).toHaveBeenCalledTimes(1);
+          await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-23'));
+          expect(navigate).toHaveBeenCalledWith([], {
+            queryParams: { month: '2026-10', day: '2026-10-23' }, queryParamsHandling: 'merge', replaceUrl: true,
+          });
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            const cell = harness.routeNativeElement!.querySelector('.list-pane .cell.sel');
+            expect(cell?.getAttribute('data-date')).toBe('2026-10-23');
+            expect(document.activeElement).toBe(cell);
+          });
+        });
+
+        it('Esc while the page is still loading (no ✕ yet) closes to the day shown now and focuses the selected grid cell', async () => {
           const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
           const router = TestBed.inject(Router);
           const { row, drawer } = await openFromRow(harness);
@@ -477,9 +521,10 @@ describe('AccountingLayoutComponent', () => {
           });
         });
 
-        it("the page's ✕ after a grid click changed the day closes to the new day (not back) and focuses the selected grid cell", async () => {
+        it("the page's ✕ after a grid click changed the day goes back once, writes the new day in place and focuses the selected grid cell", async () => {
           const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
           const router = TestBed.inject(Router);
+          router.setUpLocationChangeListener();
           const back = vi.spyOn(TestBed.inject(Location), 'back');
           await openFromRow(harness);
           const close = await answerDetail(harness, 7);
@@ -487,10 +532,15 @@ describe('AccountingLayoutComponent', () => {
           await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/7?month=2026-10&day=2026-10-23'));
           pane().dayRows.set([]);
           harness.detectChanges();
+          const navigate = vi.spyOn(router, 'navigate');
 
           close.click();
+          // Back lands on 10/21 (history not grown); the day shown now then replaces it, so the next Back leaves 日曆.
+          expect(back).toHaveBeenCalledTimes(1);
           await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-23'));
-          expect(back).not.toHaveBeenCalled();
+          expect(navigate).toHaveBeenCalledWith([], {
+            queryParams: { month: '2026-10', day: '2026-10-23' }, queryParamsHandling: 'merge', replaceUrl: true,
+          });
           await vi.waitFor(() => {
             harness.detectChanges();
             const cell = harness.routeNativeElement!.querySelector('.list-pane .cell.sel');
@@ -574,6 +624,43 @@ describe('AccountingLayoutComponent', () => {
           expect(navigate).not.toHaveBeenCalled();
           expect(router.url).toBe(ENTRY);
           expect(stepEntry).toHaveBeenCalledTimes(2);
+        });
+
+        it('↑ ↓ on a button of the entry form in the drawer neither step nor navigate (unsaved edits stay)', async () => {
+          const FORM = '/accounting/entries/5/edit?month=2026-10&day=2026-10-21';
+          const harness = await start('panes', FORM, 1100);
+          const router = TestBed.inject(Router);
+          const button = await find(harness, '.pane-host.drawer--form .entry-form .topbar .cancel');
+          const stepEntry = vi.fn();
+          pane().commands.set({ ...pane().commands()!, stepEntry });
+          const navigate = vi.spyOn(router, 'navigate');
+
+          expect(key(button, 'ArrowDown').defaultPrevented).toBe(false);
+          expect(key(button, 'ArrowUp').defaultPrevented).toBe(false);
+          expect(stepEntry).not.toHaveBeenCalled();
+          expect(navigate).not.toHaveBeenCalled();
+          expect(router.url).toBe(FORM);
+        });
+
+        it('↓ in the reminder centre over the calendar opens a reminder row, never a row of the inert day panel under it', async () => {
+          const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+          const router = TestBed.inject(Router);
+          await find(harness, 'app-calendar-day-panel .dp-label');
+          await router.navigateByUrl('/accounting/reminders');
+          const page = await find(harness, '.pane-host.drawer app-accounting-reminders');
+          pane().dayRows.set(buildDays([makeEntry({ id: 7, entry_date: '2026-10-21' })], 'TWD', false)[0].rows);
+          await find(harness, '.cal-base[inert] app-calendar-day-panel .dp-row[data-entry-id="7"]');
+          const expanded = document.createElement('div');
+          for (const id of [72, 74]) {
+            const row = document.createElement('button');
+            row.dataset['entryId'] = String(id);
+            expanded.appendChild(row);
+          }
+          page.appendChild(expanded);
+
+          expect(press('ArrowDown').defaultPrevented).toBe(true);
+          await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/72'));
+          expect((TestBed.inject(Location).getState() as Record<string, unknown>)['closeTo']).toBe('reminders');
         });
 
         it("moves focus from the removed detail ✕ to the form ✕ when the drawer switches from a detail to the form", async () => {
@@ -1506,6 +1593,12 @@ describe('AccountingLayoutComponent', () => {
       const block = (name: string) => css.match(new RegExp(`\\n${name.replace('.', '\\.')} \\{([^}]*)\\}`))?.[1] ?? '';
       expect(block('.dwrap')).toContain('margin-bottom: calc(-1 * var(--fab-clear, 0px))');
       expect(block('.dbody')).not.toContain('margin-bottom: calc(-1');
+    });
+
+    it("lets the calendar's right-pane base scroll its last line clear of the 記一筆 button", () => {
+      const css = readFileSync(join(process.cwd(), 'src/app/components/accounting/accounting-layout/accounting-layout.scss'), 'utf8');
+      const block = css.match(/\n\.cal-base \{([^}]*)\}/)?.[1] ?? '';
+      expect(block).toContain('padding-bottom: calc(14px + var(--fab-clear, 0px))');
     });
   });
 });

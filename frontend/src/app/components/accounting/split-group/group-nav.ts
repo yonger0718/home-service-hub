@@ -1,7 +1,9 @@
 import { Location } from '@angular/common';
-import { ParamMap, Router } from '@angular/router';
+import { NavigationCancel, NavigationEnd, NavigationError, NavigationSkipped, ParamMap, Router } from '@angular/router';
+import { filter, take } from 'rxjs';
 
-import { calendarParams } from '../timeline/calendar-url';
+import { leavePage } from '../accounting-ui';
+import { CalendarQuery, calendarParams, isTimelineUrl, readCalendarQuery, writeCalendarQuery } from '../timeline/calendar-url';
 
 /**
  * History state carried between a list, the 多類別 group view and its child details (PR-9, no page stacking):
@@ -111,4 +113,60 @@ export function closeGroupPage(router: Router, location: Location, state: GroupN
     return;
   }
   void router.navigateByUrl(parentUrl);
+}
+
+/**
+ * ✕ on an entry detail, a group view (`groupPage`) or a child of one, at every width. First the history move as before:
+ * a group view or a child → `closeGroupPage`; `closeTo` → that page; else `leavePage` (back, else `parentUrl`). Then,
+ * when the closing page's URL carries a calendar `day` (`target`, the day it shows now: a grid click may have moved it
+ * while the page was open) and no `closeTo`, the timeline page it lands on gets that month / day written in place
+ * (`writeCalendarQuery`, history replaced) unless it already shows them. History stays as it was before the page
+ * opened, so the next Back leaves the calendar in one step. Without a `day` (清單, a `?month` from elsewhere) nothing is
+ * written.
+ */
+export function closeKeepingDay(
+  router: Router,
+  location: Location,
+  state: GroupNavState,
+  parentUrl: string,
+  target: CalendarQuery,
+  groupPage: boolean,
+): void {
+  if (target.day !== null && !state.closeTo) {
+    writeDayOnLanding(router, target.day);
+  }
+  if (groupPage || state.viaGroup) {
+    closeGroupPage(router, location, state, parentUrl);
+  } else if (state.closeTo) {
+    void router.navigateByUrl(parentUrl);
+  } else {
+    leavePage(router, location, parentUrl);
+  }
+}
+
+/**
+ * Once the close navigation settles (popstate or `navigateByUrl`), writes `day` onto the timeline page it landed on.
+ * Not tied to the closing page's lifetime: that page is destroyed by the very navigation this waits for.
+ */
+function writeDayOnLanding(router: Router, day: string): void {
+  router.events
+    .pipe(
+      filter(
+        event =>
+          event instanceof NavigationEnd ||
+          event instanceof NavigationCancel ||
+          event instanceof NavigationError ||
+          event instanceof NavigationSkipped,
+      ),
+      take(1),
+    )
+    .subscribe(event => {
+      if (!(event instanceof NavigationEnd) || !isTimelineUrl(event.urlAfterRedirects)) {
+        return;
+      }
+      const landed = readCalendarQuery(router.parseUrl(event.urlAfterRedirects).queryParamMap);
+      if (landed.day !== day) {
+        void writeCalendarQuery(router, day.slice(0, 7), day);
+      }
+    });
 }

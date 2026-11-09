@@ -93,6 +93,8 @@
   height: 100%;
   overflow-y: auto;
   padding: var(--pane-pad-top) 14px 14px;
+  /* With no drawer open the 記一筆 button floats over this pane: the last line scrolls clear of it, as in .list-pane. */
+  padding-bottom: calc(14px + var(--fab-clear, 0px));
 }
 
 /* The routed page over the right pane's base (≥ 1024 px, 日曆); the entry form is a wider drawer anchored right. */
