@@ -6,10 +6,9 @@ import { MonthSummary } from '../../../models/accounting.model';
 import { BreakdownRow } from '../../../models/reports.model';
 import type { CalendarPartState } from '../calendar-month/calendar-data.service';
 import type { MonthDue, TodayCard } from '../calendar-month/calendar-pane.service';
-import { monthLabel, slashDate } from '../dates';
+import { monthLabel, slashDate, weekdayLabel } from '../dates';
 import { formatMoney } from '../format';
 import type { InboxEinvoice } from '../inbox/einvoice.model';
-import { dayLabel } from '../timeline/timeline';
 import { barSegments, categoryDistribution, distributionAriaText } from '../timeline/category-distribution';
 import { DueItem } from './due-items';
 import type { OverviewState } from './overview.service';
@@ -61,10 +60,7 @@ export class MonthOverviewComponent {
   protected readonly sortedInvoices = computed(() => [...this.invoices()].sort((a, b) => a.issue_date.localeCompare(b.issue_date)));
   protected readonly sortedDues = computed(() => [...this.dues()].sort((a, b) => a.date.localeCompare(b.date)));
 
-  /** `週X` of an ISO date (the timeline's `dayLabel` is `MM/DD 週X`). */
-  protected weekday(date: string): string {
-    return dayLabel(date).split(' ')[1];
-  }
+  protected readonly weekday = weekdayLabel;
 
   protected abs(value: string): number {
     return Math.abs(Number(value));

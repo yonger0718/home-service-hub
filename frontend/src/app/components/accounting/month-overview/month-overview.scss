@@ -76,9 +76,9 @@
 
 .today-disc {
   align-items: center;
-  background: var(--app-accent, #2563eb);
+  background: var(--app-accent-soft-strong);
   border-radius: 50%;
-  color: #fff;
+  color: var(--app-accent);
   display: inline-flex;
   flex: none;
   font-size: var(--fs-sm);

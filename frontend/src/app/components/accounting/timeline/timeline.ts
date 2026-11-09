@@ -50,7 +50,7 @@ import { categoryColorMap } from '../calendar-month/calendar-math';
 import { inboxBellCount } from '../inbox/inbox-view';
 import { InboxService } from '../inbox/inbox.service';
 import { parseTags } from '../entry-form/entry-draft';
-import { addDays, currentMonth, monthLabel, monthRange, todayIso } from '../dates';
+import { addDays, currentMonth, monthLabel, monthRange, todayIso, weekdayLabel } from '../dates';
 import { calendarParams, readCalendarQuery, writeCalendarQuery } from './calendar-url';
 import { nextDueItems } from '../month-overview/due-items';
 import { AccountingOverviewService, OverviewState } from '../month-overview/overview.service';
@@ -115,7 +115,6 @@ function storeView(view: TimelineView): void {
   }
 }
 
-const WEEKDAYS = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
 const TRANSFER_KINDS = new Set<EntryKind>(['transfer_out', 'transfer_in']);
 
 export const TIMELINE_FILTER_KINDS: EntryKind[] = [
@@ -205,8 +204,8 @@ export function shiftMonth(month: string, delta: number): string {
 }
 
 export function dayLabel(date: string): string {
-  const [year, month, day] = date.split('-').map(Number);
-  return `${pad(month)}/${pad(day)} ${WEEKDAYS[new Date(year, month - 1, day).getDay()]}`;
+  const [, month, day] = date.split('-').map(Number);
+  return `${pad(month)}/${pad(day)} ${weekdayLabel(date)}`;
 }
 
 function toneOf(amount: number, kind: EntryKind): TimelineRow['tone'] {

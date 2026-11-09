@@ -13,26 +13,26 @@
   }
 
   <h3 class="ov-title">支出類別</h3>
-@if (summaryState() === 'loading') {
-  <p class="ov-empty">讀取中</p>
-} @else if (summaryState() === 'error') {
-  <p class="ov-empty">摘要讀取失敗</p>
-} @else if (distribution().length) {
-  <div class="dist">
-    <div class="dist-bar" role="img" [attr.aria-label]="aria()">
-      @for (seg of bar(); track $index) {
-        <span [style.flex-grow]="seg.amount" [style.background]="seg.color"></span>
-      }
+  @if (summaryState() === 'loading') {
+    <p class="ov-empty">讀取中</p>
+  } @else if (summaryState() === 'error') {
+    <p class="ov-empty">摘要讀取失敗</p>
+  } @else if (distribution().length) {
+    <div class="dist">
+      <div class="dist-bar" role="img" [attr.aria-label]="aria()">
+        @for (seg of bar(); track $index) {
+          <span [style.flex-grow]="seg.amount" [style.background]="seg.color"></span>
+        }
+      </div>
+      <div class="dist-list">
+        @for (seg of distribution(); track $index) {
+          <span class="dist-row">@if (seg.kind !== 'refund') {<span class="dist-swatch" aria-hidden="true" [style.background]="seg.color"></span>}<span class="dist-name">{{ seg.name }}</span>&ngsp;<b>{{ seg.label }}</b></span>
+        }
+      </div>
     </div>
-    <div class="dist-list">
-      @for (seg of distribution(); track $index) {
-        <span class="dist-row">@if (seg.kind !== 'refund') {<span class="dist-swatch" aria-hidden="true" [style.background]="seg.color"></span>}<span class="dist-name">{{ seg.name }}</span>&ngsp;<b>{{ seg.label }}</b></span>
-      }
-    </div>
-  </div>
-} @else {
-  <p class="ov-empty">本月尚無支出</p>
-}
+  } @else {
+    <p class="ov-empty">本月尚無支出</p>
+  }
 
   <a class="ov-reports" [routerLink]="'/accounting/reports'" [queryParams]="{ month: month() }">看報表 ›</a>
 
