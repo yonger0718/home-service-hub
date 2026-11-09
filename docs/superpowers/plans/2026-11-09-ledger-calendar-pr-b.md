@@ -73,7 +73,7 @@
   // calendar-pane.service.ts
   export interface TodayCard { date: string; count: number; names: string; netText: string; net: number }
   export interface MonthDue { key: string; accountId: number; name: string; date: string; amountText: string }
-  export interface CalendarCommands { stepEntry(delta: 1 | -1): void; openInvoice(invoice: InboxEinvoice): void }
+  export interface CalendarCommands { stepEntry(delta: 1 | -1): void; openInvoice(invoice: InboxEinvoice): void; setQuery(text: string): void }
   @Injectable({ providedIn: 'root' })
   export class CalendarPaneService {
     readonly month = signal(currentMonth());
@@ -91,7 +91,7 @@
     readonly merchantsState = signal<CalendarPartState>('loading');
     readonly invoices = signal<InboxEinvoice[]>([]);
     readonly monthDues = signal<MonthDue[]>([]);
-    /** 本月摘要's search text (the right pane writes it, the timeline reads it). */
+    /** Mirror of the timeline's `query` (the filter bar's text); the right pane changes it through `commands.setQuery`. */
     readonly search = signal('');
     readonly searchDays = signal<TimelineDay[]>([]);
     readonly searchState = signal<OverviewState>('ready');
@@ -319,7 +319,7 @@ it('results mode lists day groups with labels and nets and 沒有符合的記錄
   onClearDay(): void                 // writeCalendarQuery(router, pane.month(), null)
   onOpenRow(row: TimelineRow): void  // split → groupCommands(row.entryId, null); else ['/accounting/entries', row.entryId]; both with { queryParams: this.calendarQuery() }
   onAddEntry(date: string): void     // ['/accounting/entry'], { queryParams: { date, ...this.calendarQuery() } }
-  onSearch(text: string): void       // pane.search.set(text.trim())
+  onSearch(text: string): void       // pane.commands()?.setQuery(text) — one search shared with the filter bar
   onOpenInvoice(invoice: InboxEinvoice): void // pane.commands()?.openInvoice(invoice)
   openCard(accountId: number): void  // router.navigate(['/accounting/accounts', accountId]) — same target as the timeline's openCard
   ```
@@ -417,17 +417,17 @@ Layout: `it('↓ in the drawer crosses a day edge and the calendar selection fol
 - Modify: `frontend/src/app/components/accounting/accounting-layout/accounting-layout.spec.ts`
 
 **Interfaces:**
-- Timeline: `effectiveQuery = computed(() => this.view() === 'calendar' ? this.pane.search() : this.query())`; `load()` / `loadDay()` use `effectiveQuery()` in place of `query()` (the filter bar's search keeps driving the 清單 view and the day rows' `q` when the calendar search is empty — **ruling**: in 日曆 the 本月摘要 search is THE search; the filter bar's text field is hidden in calendar mode at panes (template `@if`), its other filters stay). The list effect: in 日曆, `pane.search()` non-empty → `load(true)` and publish `pane.searchDays.set(days())`, `pane.searchState` from `loading`/`loadError`; empty → `clearList()` and `searchDays []`. `clearFilters()` also empties `pane.search`. `pane.search` resets on month change? **Ruling**: no — the text persists across months (it is a month-scoped list, re-run per month).
+- Timeline: **one search, two boxes** — the filter bar's text field stays visible in calendar mode and the 本月摘要 box edits the same text. `pane.search` is a mirror of the timeline's `query` signal: an effect publishes `pane.search.set(this.query())`; the layout's `onSearch(text)` calls `pane.commands()!.setQuery(text)` (new `CalendarCommands.setQuery(text: string): void` → the timeline's existing debounced `query` path, i.e. `query.set(text.trim())` through the same code `onQueryInput` ends in). `load()` / `loadDay()` keep using `query()` unchanged (the day rows already honour `q`). The list effect: in 日曆, `query()` non-empty → `load(true)` and publish `pane.searchDays.set(days())`, `pane.searchState` from `loading`/`loadError`; empty → `clearList()` and `searchDays []`. `clearFilters()` clears `query` as today, so both boxes empty together. Month change: `query` persists across months exactly as it does in 清單 today (no new rule).
 
 - [ ] **Step 1: Failing tests**
 
 ```ts
 // timeline.spec.ts
-it('a 本月摘要 search loads the month list with q and publishes the result days', () => { /* pane.search.set('全聯') → GET /entries with q=全聯, month range; flush 2 entries → pane.searchDays().length 1 day, searchState 'ready' */ });
-it('clearing the search drops the result list', () => {});
+it('a 本月摘要 search loads the month list with q and publishes the result days', () => { /* type 全聯 in the filter bar (or commands.setQuery('全聯')) → pane.search() '全聯', GET /entries with q=全聯, month range; flush 2 entries → pane.searchDays().length 1 day, searchState 'ready' */ });
+it('clearing the search drops the result list and empties both boxes', () => { /* setQuery('') → searchDays [], pane.search() '', filter-bar input value '' */ });
 it('a selected day's rows use the 本月摘要 search as q (Review Focus 2)', () => {});
 // accounting-layout.spec.ts
-it('typing in 本月摘要 switches the base to the result list; picking a day shows the day panel; clearing the day returns to the results (Review Focus 2)', async () => { /* pane.search.set('x') via service → app-calendar-day-panel[mode results]…; navigate ?day → day mode; navigate without day → results again; the input value is still 'x' */ });
+it('typing in 本月摘要 switches the base to the result list; picking a day shows the day panel; clearing the day returns to the results (Review Focus 2)', async () => { /* type 'x' in the filter bar's search input → pane.search() 'x', app-calendar-day-panel[mode results]…; navigate ?day → day mode; navigate without day → results again; both the filter-bar input and the 本月摘要 box still show 'x' */ });
 ```
 
 - [ ] **Step 2: Run — FAIL.**  - [ ] **Step 3: Implement.**  - [ ] **Step 4: Run — PASS; tsc.**
