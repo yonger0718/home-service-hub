@@ -51,6 +51,7 @@
         </label>
         <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'currency' }" />
         <div class="set-row"><span class="row-k"><span class="row-label">帳戶分組</span></span><ng-container *ngTemplateOutlet="groupCtl" /></div>
+        <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'group_id' }" />
         <ng-container *ngTemplateOutlet="sheetRowButton; context: { $implicit: 'opening_balance', label: rowLabel('opening_balance'), hint: '' }" />
         <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'opening_balance' }" />
         <ng-container *ngTemplateOutlet="sheetRowButton; context: { $implicit: 'closing_day', label: '帳單週期', hint: cycleLabel() }" />
@@ -81,6 +82,7 @@
         <span class="k">帳戶分組</span>
         <ng-container *ngTemplateOutlet="groupCtl" />
       </div>
+      <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'group_id' }" />
 
       <div class="rw">
         <span class="k">初始金額</span>
@@ -170,6 +172,7 @@
           <div class="set-row"><span class="row-k"><span class="row-label">主帳戶</span></span><ng-container *ngTemplateOutlet="masterCtl" /></div>
           <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'combined_account_id' }" />
           <div class="set-row"><span class="row-k"><span class="row-label">自動扣繳</span></span><ng-container *ngTemplateOutlet="autopayCtl" /></div>
+          <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'auto_pay_account_id' }" />
         </div>
       } @else {
         <div class="rw child">
@@ -207,6 +210,7 @@
           <span class="k">自動扣繳</span>
           <ng-container *ngTemplateOutlet="autopayCtl" />
         </div>
+        <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'auto_pay_account_id' }" />
       }
     } @else {
       <p class="card-hint">打開「信用帳戶」才會出現繳款期限、額度與自動扣繳。</p>

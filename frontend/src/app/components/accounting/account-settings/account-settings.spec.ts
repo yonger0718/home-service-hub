@@ -1940,6 +1940,25 @@ describe('AccountSettingsComponent', () => {
       expect(fixture.componentInstance.invalidSections().size).toBe(0);
     });
 
+    it('422 on auto_pay_account_id shows the server text beside 自動扣繳 (desktop)', async () => {
+      await setup('11');
+      TestBed.inject(LayoutModeService).set('panes');
+      const fixture = render(DETAIL);
+      spyScroll();
+
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      http.expectOne('/api/accounting/accounts/11').flush(
+        { detail: [{ loc: ['body', 'auto_pay_account_id'], msg: 'autopay account archived' }] },
+        { status: 422, statusText: 'Unprocessable Entity' },
+      );
+      fixture.detectChanges();
+
+      expect(texts(fixture, '#s-card .field-error[data-field="auto_pay_account_id"]')).toEqual(['autopay account archived']);
+      const chips = Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('nav.sec-chips button'));
+      expect(chips.filter(c => c.classList.contains('invalid')).map(c => c.textContent?.trim())).toEqual(['信用卡']);
+      expect(el(fixture).querySelector('.form-message')).toBeNull();
+    });
+
     it('local 結帳日 error jumps to 基本', async () => {
       await setup('11');
       const fixture = render(DETAIL);
