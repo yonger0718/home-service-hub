@@ -44,9 +44,9 @@
 | `frontend/src/app/components/accounting/timeline/timeline.{ts,html,scss,spec.ts}` | publishes the pane state; `time` on rows; `stepEntry` / `openInvoice` / `setQuery`; month search; monthbar figures; hides `.sum` + `.day-entries` in calendar mode at panes; binds `(dayStep)` |
 | `frontend/src/app/components/accounting/calendar-month/calendar-data.service.ts` (+spec) | keeps the month's `invoices`; merchants read gated on `wide` |
 | `frontend/src/app/components/accounting/calendar-month/calendar-month.{ts,spec.ts}` | `[` `]` → `dayStep` output |
-| `frontend/src/app/components/accounting/month-overview/month-overview.{ts,html,scss,spec.ts}` | calendar mode: search, 今天 card, 看報表 ›, 花最多的商家, 這個月要處理 |
+| `frontend/src/app/components/accounting/month-overview/month-overview.{ts,html,scss,spec.ts}` | calendar mode: 今天 card, 看報表 ›, 花最多的商家, 這個月要處理 |
 | `frontend/src/app/components/accounting/calendar-day-panel/calendar-day-panel.{ts,html,scss,spec.ts}` (new) | day panel and search-result list |
-| `frontend/src/app/components/accounting/accounting-layout/accounting-layout.{ts,html,scss,spec.ts}` | calendar mode, right-pane base, drawer, focus, FAB offset |
+| `frontend/src/app/components/accounting/accounting-layout/accounting-layout.{ts,html,scss,spec.ts}` | calendar mode, lifted search box, right-pane base, drawer, focus, FAB offset |
 | `frontend/src/app/components/accounting/split-group/{group-nav.ts,split-group.ts}` (+specs) | exits keep `month`/`day` |
 | `frontend/src/app/components/shell/shell.ts`, `frontend/src/app/components/mobile-nav/mobile-nav.{ts,html}`, `frontend/src/app/components/accounting/entry-detail/entry-detail.ts` (+specs) | global ＋ / N, 複製, 編輯整個排程 carry `month`/`day` |
 | `openspec/changes/add-ledger-calendar-view/tasks.md` | §3 ticks |
@@ -203,7 +203,7 @@ describe('calendar mode', () => {
 - [ ] **Step 1: Failing tests**
 
 ```ts
-it('keeps the month's invoices beside the invoice days', () => { /* two invoices in month, one outside → data().invoices.length 2, sorted by issue_date, invoiceDays matches */ });
+it("keeps the month's invoices beside the invoice days", () => { /* two invoices in month, one outside → data().invoices.length 2, sorted by issue_date, invoiceDays matches */ });
 it('does not read merchants until wide is set, then reads them once', () => { /* month set, wide false → no /reports/breakdown?group_by=merchant request (expectNone), merchantsState 'loading'; wide.set(true) → one request → 'ready' */ });
 it('a month cached while narrow gets its merchants when wide turns on', () => { /* same as above after a month switch and back */ });
 ```
@@ -229,26 +229,23 @@ it('a month cached while narrow gets its merchants when wide turns on', () => { 
   readonly merchantsState = input<CalendarPartState>('loading');
   readonly invoices = input<InboxEinvoice[]>([]);
   readonly dues = input<MonthDue[]>([]);
-  readonly search = input('');
-  readonly searchChange = output<string>();      // debounced 300 ms like the timeline's filter search; Enter commits at once; Esc empties
   readonly pickDay = output<string>();           // 今天 card, a due row
   readonly openInvoice = output<InboxEinvoice>(); // an invoice row (the layout selects the day and resolves the target)
   ```
-  Template in calendar mode, in order: `<input type="search" class="ov-search" [value]="search()" placeholder="搜尋整月：名稱、商家、備註" aria-label="搜尋名稱、商家或備註">` (controlled from `search`, so a change made in the filter bar shows here); `@if (today())` → `<button class="ov-today">` with date disc, `今天 · {slashDate(date)} {weekday}`, `{count} 筆`, names, net; `<h3 class="ov-title">支出類別</h3>` + existing distribution + `<a class="ov-reports" [routerLink]="'/accounting/reports'" [queryParams]="{ month: month() }">看報表 ›</a>`; `<h3 class="ov-title">花最多的商家</h3>` + `@switch (merchantsState())`: loading `讀取中`, error `<p class="ov-empty ov-merchants-error">商家排行讀取失敗</p>`, ready → `<ol class="ov-merchants">` rows `rank · name · {count} 筆 · formatMoney(|amount|)` or `本月尚無商家支出`; `<h3 class="ov-title">這個月要處理</h3>` + `<ul class="ov-todo">`: invoice rows `<button class="todo-invoice">發票待對帳 · {slashDate(issue_date)} {seller_name} {formatMoney(total_amount)}</button>` then due rows `<button class="todo-bill">{name}帳單 {amountText} · {slashDate(date)} 到期</button>` (invoices then dues, each by date; a due outside the shown month renders the same and `pickDay` emits its full date, so the layout writes the next month), or `沒有要處理的項目`. 近期到期 is NOT rendered in calendar mode.
+  The search box is **not** in this component — the layout renders it above the right-pane base (Task 6), so it stays mounted and focused when the base switches from 本月摘要 to the result list. Template in calendar mode, in order: `@if (today())` → `<button class="ov-today">` with date disc, `今天 · {slashDate(date)} {weekday}`, `{count} 筆`, names, net; `<h3 class="ov-title">支出類別</h3>` + existing distribution + `<a class="ov-reports" [routerLink]="'/accounting/reports'" [queryParams]="{ month: month() }">看報表 ›</a>`; `<h3 class="ov-title">花最多的商家</h3>` + `@switch (merchantsState())`: loading `讀取中`, error `<p class="ov-empty ov-merchants-error">商家排行讀取失敗</p>`, ready → `<ol class="ov-merchants">` rows `rank · name · {count} 筆 · formatMoney(|amount|)` or `本月尚無商家支出`; `<h3 class="ov-title">這個月要處理</h3>` + `<ul class="ov-todo">`: invoice rows `<button class="todo-invoice">發票待對帳 · {slashDate(issue_date)} {seller_name} {formatMoney(total_amount)}</button>` then due rows `<button class="todo-bill">{name}帳單 {amountText} · {slashDate(date)} 到期</button>` (invoices then dues, each by date; a due outside the shown month renders the same and `pickDay` emits its full date, so the layout writes the next month), or `沒有要處理的項目`. 近期到期 is NOT rendered in calendar mode.
 
 - [ ] **Step 1: Failing tests** (`month-overview.spec.ts`, new describe `calendar mode`):
 
 ```ts
-it('renders search, 今天, distribution with 看報表, merchants and 這個月要處理 in that order', () => { /* assert the sequence of .ov-search, .ov-today, h3 texts ['支出類別','花最多的商家','這個月要處理'], a[href*="/accounting/reports?month=2026-10"], no 近期到期 */ });
+it('renders search, 今天, distribution with 看報表, merchants and 這個月要處理 in that order', () => { /* assert the sequence of .ov-today, h3 texts ['支出類別','花最多的商家','這個月要處理'], a[href*="/accounting/reports?month=2026-10"], no 近期到期 */ });
 it('shows no 今天 card without one (another month)', () => { /* today null → .ov-today absent */ });
-it('emits pickDay with today's date from the 今天 card and with the due date from a bill row', () => {});
+it("emits pickDay with today's date from the 今天 card and with the due date from a bill row", () => {});
 it('emits openInvoice for an invoice row and lists invoices before dues', () => {});
 it('replaces the merchant card with 商家排行讀取失敗 on error and lists five rows with count and amount when ready', () => {});
-it('emits searchChange after the debounce, at once on Enter, and empty on Esc', () => { /* vi.useFakeTimers */ });
-it('keeps the 清單 overview unchanged when calendar is false', () => { /* existing sections only; no .ov-search */ });
+it('keeps the 清單 overview unchanged when calendar is false', () => { /* existing sections only; no .ov-today / .ov-merchants / .ov-todo */ });
 ```
 
-- [ ] **Step 2: Run — FAIL.**  - [ ] **Step 3: Implement** (import `RouterLink`; reuse `onQueryInput`-style debounce with `QUERY_DEBOUNCE_MS` imported from the timeline module — or a local `300` constant with a comment pointing at it).  - [ ] **Step 4: Run — PASS.**
+- [ ] **Step 2: Run — FAIL.**  - [ ] **Step 3: Implement** (import `RouterLink`).  - [ ] **Step 4: Run — PASS.**
 
 - [ ] **Step 5: Commit** — `feat(spa): 本月摘要 calendar mode — search, 今天, 看報表, 花最多的商家, 這個月要處理 (#318 D5)`
 
@@ -292,7 +289,7 @@ it('keeps the 清單 overview unchanged when calendar is false', () => { /* exis
 it('shows the day header with count and net, the bill line and rows with time', () => { /* 10/21, 3 rows, time '12:30' → .dp-label '10/21 週三', .dp-sub '3 筆 · −$3,096', .dp-row .sub starts '12:30 · ' */ });
 it('shows 這天沒有記錄 and ＋ 在這天記一筆 for a past day, 還沒到這天 for a future one, and emits add with the date', () => {});
 it('emits step from ‹ › and from [ ] keys, clear from 本月摘要, open from a row, openCard from a bill line', () => {});
-it('marks the open entry's row aria-current and keeps data-entry-id / data-member-ids / data-split', () => {});
+it("marks the open entry's row aria-current and keeps data-entry-id / data-member-ids / data-split", () => {});
 it('shows skeleton while loading and 記錄讀取失敗 on error', () => {});
 it('results mode lists day groups with labels and nets and 沒有符合的記錄 when empty', () => {});
 ```
@@ -323,21 +320,22 @@ it('results mode lists day groups with labels and nets and 沒有符合的記錄
   onOpenRow(row: TimelineRow): void  // split → groupCommands(row.entryId, null) with state = listOpenState(router.url, '/accounting') like timeline.open; else ['/accounting/entries', row.entryId]; both with { queryParams: this.calendarQuery() }
   onAddEntry(date: string): void     // ['/accounting/entry'], { queryParams: { date, ...this.calendarQuery() } }
   onSearch(text: string): void       // pane.commands()?.setQuery(text) — one search shared with the filter bar
+  onSearchInput(event: Event): void  // the lifted box: debounce 300 ms (QUERY_DEBOUNCE_MS from the timeline module) → onSearch; Enter commits at once; Esc empties the box and calls onSearch('')
   onOpenInvoice(invoice: InboxEinvoice): void // pane.commands()?.openInvoice(invoice)
   openCard(accountId: number): void  // router.navigate(['/accounting/accounts', accountId]) — same target as the timeline's openCard
   ```
-  Template (inside `.detail-pane`, before the outlet wrapper): `@if (calendarBase(); as base) { <div class="cal-base" #calendarBase> @switch (base) { @case ('summary') { <app-month-overview [calendar]="true" [month]="overview.month()" [summary]="overview.summary()" [summaryState]="overview.summaryState()" [today]="pane.todayCard()" [merchants]="pane.merchants()" [merchantsState]="pane.merchantsState()" [invoices]="pane.invoices()" [dues]="pane.monthDues()" [search]="pane.search()" (searchChange)="onSearch($event)" (pickDay)="onPickDay($event)" (openInvoice)="onOpenInvoice($event)" /> } @case ('day') { <app-calendar-day-panel mode="day" [day]="pane.selectedDay()" [today]="pane.today()" [rows]="pane.dayRows()" [net]="pane.dayNet()" [state]="pane.dayState()" [billLines]="pane.billLines()" [selectedId]="selectedEntryId()" (step)="onStepDay($event)" (clear)="onClearDay()" (open)="onOpenRow($event)" (add)="onAddEntry($event)" (openCard)="openCard($event)" /> } @case ('results') { <app-calendar-day-panel mode="results" [today]="pane.today()" [days]="pane.searchDays()" [state]="pane.searchState()" [query]="pane.search()" [selectedId]="selectedEntryId()" (clear)="onSearch('')" (open)="onOpenRow($event)" /> } } </div> }`. The existing `showOverview` / `.pane-empty` branches are skipped when `calendarMode()` (`showOverview` gains `&& !this.overview.calendar()`); `overview.visible` stays owned by the layout's existing effect and is not touched. `.cal-base` has **no** `inert` binding in the template: Task 7's overlay effect is the only writer (it must capture `activeElement` first).
+  Template (inside `.detail-pane`, before the outlet wrapper): `@if (calendarBase(); as base) { <div class="cal-base" #calendarBase> @if (base !== 'day') { <input type="search" class="cal-search" [value]="pane.search()" placeholder="搜尋整月：名稱、商家、備註" aria-label="搜尋名稱、商家或備註" (input)="onSearchInput($event)" (keydown)="onSearchInput($event)" /> } @switch (base) { @case ('summary') { <app-month-overview [calendar]="true" [month]="overview.month()" [summary]="overview.summary()" [summaryState]="overview.summaryState()" [today]="pane.todayCard()" [merchants]="pane.merchants()" [merchantsState]="pane.merchantsState()" [invoices]="pane.invoices()" [dues]="pane.monthDues()" (pickDay)="onPickDay($event)" (openInvoice)="onOpenInvoice($event)" /> } @case ('day') { <app-calendar-day-panel mode="day" [day]="pane.selectedDay()" [today]="pane.today()" [rows]="pane.dayRows()" [net]="pane.dayNet()" [state]="pane.dayState()" [billLines]="pane.billLines()" [selectedId]="selectedEntryId()" (step)="onStepDay($event)" (clear)="onClearDay()" (open)="onOpenRow($event)" (add)="onAddEntry($event)" (openCard)="openCard($event)" /> } @case ('results') { <app-calendar-day-panel mode="results" [today]="pane.today()" [days]="pane.searchDays()" [state]="pane.searchState()" [query]="pane.search()" [selectedId]="selectedEntryId()" (clear)="onSearch('')" (open)="onOpenRow($event)" /> } } </div> }`. The `.cal-search` box is rendered once, above the `@switch`, for `summary` and `results` (not `day`): typing flips the base to results without unmounting the input, so focus stays in it. The existing `showOverview` / `.pane-empty` branches are skipped when `calendarMode()` (`showOverview` gains `&& !this.overview.calendar()`); `overview.visible` stays owned by the layout's existing effect and is not touched. `.cal-base` has **no** `inert` binding in the template: Task 7's overlay effect is the only writer (it must capture `activeElement` first).
   - Timeline: `dayGroup` builds with `foldBatches = false` so the panel gets one row per entry (**ruling**: no batch folding in the day panel; the list keeps folding); `commands.openInvoice(invoice)`: writes `day = invoice.issue_date`, remembers `pendingInvoice = invoice`; when `dayEntries` for that day arrive, with exactly one candidate: `kind === 'entry'` → navigate `['/accounting/entries', id]`; `kind === 'group'` → the first entry whose `group?.id === id` → `groupCommands(entry.id, null)`; none found or ≠ 1 candidate → only the day stays selected. Both navigations carry `{ queryParams: calendarParams(snapshot) }`.
 
 - [ ] **Step 1: Failing layout tests** (calendar describe; URLs with `?month=2026-10&day=…` select a day; storage key for no-day cases):
 
 ```ts
-it('shows 本月摘要 in calendar mode at 1100px with no day', async () => { /* app-month-overview.ov-search present; .pane-empty absent */ });
+it('shows 本月摘要 in calendar mode at 1100px with no day', async () => { /* .cal-base .cal-search and app-month-overview present; .pane-empty absent */ });
 it('shows the day panel when the URL carries a day', async () => { /* /accounting?month=2026-10&day=2026-10-21 → app-calendar-day-panel .dp-label '10/21 週三' */ });
 it('‹ › and 本月摘要 write the URL with replaceUrl', async () => { /* click .dp-head [aria-label=後一天] → url ?month=2026-10&day=2026-10-22 ; click .dp-summary → ?month=2026-10 */ });
 it('› on the last day of the month moves to the next month', async () => { /* day=2026-10-31 → click 後一天 → url ?month=2026-11&day=2026-11-01 */ });
 it('a next-month due row in 這個月要處理 writes the next month and its day', async () => { /* today 2026-10-28 (fake today in the timeline), seed pane.monthDues with { date: '2026-11-03' } via the service at month 2026-10 → click .todo-bill → url ?month=2026-11&day=2026-11-03 */ });
-it('shows exactly one 本月摘要 and no 近期到期 at 1440px in 日曆 (showOverview stands down)', async () => { /* storage calendar; start panes /accounting?month=2026-10 1440 → querySelectorAll('app-month-overview').length 1, .ov-search present, no text 近期到期 */ });
+it('shows exactly one 本月摘要 and no 近期到期 at 1440px in 日曆 (showOverview stands down)', async () => { /* storage calendar; start panes /accounting?month=2026-10 1440 → querySelectorAll('app-month-overview').length 1, .cal-search present, no text 近期到期 */ });
 it('＋ 在這天記一筆 opens the form with date, month and day', async () => { /* url /accounting/entry?date=2026-10-21&month=2026-10&day=2026-10-21 */ });
 it('a day-panel row opens the entry with month and day kept', async () => { /* set pane.dayRows via the service → click → /accounting/entries/7?month=2026-10&day=2026-10-21 */ });
 ```
@@ -406,9 +404,9 @@ it('the month navigator ‹ › keeps the drawer open and drops the day (Review 
 
 ```ts
 it('stepEntry(1) opens the next row of the day', () => {});
-it('stepEntry(1) at the day's last row moves to the previous day with rows and opens its newest row', () => { /* daily: 10/21 count 3, 10/20 count 0, 10/19 count 2 → url ?month=2026-10&day=2026-10-19 written, GET /entries date 10/19 answered → navigate ['/accounting/entries', <first id>] with month/day */ });
+it("stepEntry(1) at the day's last row moves to the previous day with rows and opens its newest row", () => { /* daily: 10/21 count 3, 10/20 count 0, 10/19 count 2 → url ?month=2026-10&day=2026-10-19 written, GET /entries date 10/19 answered → navigate ['/accounting/entries', <first id>] with month/day */ });
 it('stepEntry(-1) at the first row opens the last row of the next later day with rows', () => {});
-it('stepEntry does nothing at the month's edge (Review Focus 4)', () => { /* no navigate call */ });
+it("stepEntry does nothing at the month's edge (Review Focus 4)", () => { /* no navigate call */ });
 ```
 Layout: `it('↓ in the drawer crosses a day edge and the calendar selection follows', …)` — with the real timeline: seed daily via HTTP flushes is heavy; instead assert that pressing ↓ on the drawer calls the registered command (fake) — already in Task 7 — and keep the cross-day behaviour pinned in the timeline spec.
 
@@ -425,7 +423,7 @@ Layout: `it('↓ in the drawer crosses a day edge and the calendar selection fol
 - Modify: `frontend/src/app/components/accounting/accounting-layout/accounting-layout.spec.ts`
 
 **Interfaces:**
-- Timeline: **one search, two boxes** — the filter bar's text field stays visible in calendar mode and the 本月摘要 box edits the same text. `pane.search` is a mirror of the timeline's `query` signal: an effect publishes `pane.search.set(this.query())`; the layout's `onSearch(text)` calls `pane.commands()!.setQuery(text)` (new `CalendarCommands.setQuery(text: string): void` → the timeline's existing debounced `query` path, i.e. `query.set(text.trim())` through the same code `onQueryInput` ends in). `load()` / `loadDay()` keep using `query()` unchanged (the day rows already honour `q`). The filter bar's `#queryInput` is uncontrolled today: add an effect — when `query()` changes and `queryInput.nativeElement.value !== query()`, write the value, **skipped while that input is `document.activeElement`** (an IME composition is left alone); `.ov-search` is controlled via `[value]="search()"` (Task 4), so both boxes show the same text whichever one was typed in. The list effect: in 日曆, `query()` non-empty → `load(true)` and publish `pane.searchDays` built with `foldBatches = false` (`buildDays(entries, currency, hideRewards, false)` — the panel has no batch expander, same ruling as the day rows), `pane.searchState` from `loading`/`loadError`; empty → `clearList()` and `searchDays []`. `clearFilters()` clears `query` as today, so both boxes empty together. Month change: `query` persists across months exactly as it does in 清單 today (no new rule).
+- Timeline: **one search, two boxes** — the filter bar's text field stays visible in calendar mode and the 本月摘要 box edits the same text. `pane.search` is a mirror of the timeline's `query` signal: an effect publishes `pane.search.set(this.query())`; the layout's `onSearch(text)` calls `pane.commands()!.setQuery(text)` (new `CalendarCommands.setQuery(text: string): void` → the timeline's existing debounced `query` path, i.e. `query.set(text.trim())` through the same code `onQueryInput` ends in). `load()` / `loadDay()` keep using `query()` unchanged (the day rows already honour `q`). The filter bar's `#queryInput` is uncontrolled today: add an effect — when `query()` changes and `queryInput.nativeElement.value !== query()`, write the value, **skipped while that input is `document.activeElement`** (an IME composition is left alone); the lifted `.cal-search` box is controlled via `[value]="pane.search()"` (Task 6), so both boxes show the same text whichever one was typed in. The list effect: in 日曆, `query()` non-empty → `load(true)` and publish `pane.searchDays` built with `foldBatches = false` (`buildDays(entries, currency, hideRewards, false)` — the panel has no batch expander, same ruling as the day rows), `pane.searchState` from `loading`/`loadError`; empty → `clearList()` and `searchDays []`. `clearFilters()` clears `query` as today, so both boxes empty together. Month change: `query` persists across months exactly as it does in 清單 today (no new rule).
 
 - [ ] **Step 1: Failing tests**
 
@@ -434,10 +432,11 @@ Layout: `it('↓ in the drawer crosses a day edge and the calendar selection fol
 it('a 本月摘要 search loads the month list with q and publishes the result days', () => { /* type 全聯 in the filter bar (or commands.setQuery('全聯')) → pane.search() '全聯', GET /entries with q=全聯, month range; flush 2 entries → pane.searchDays().length 1 day, searchState 'ready' */ });
 it('clearing the search drops the result list and empties both boxes', () => { /* setQuery('') → searchDays [], pane.search() '', filter-bar input value '' */ });
 it('typing in the 本月摘要 box updates the filter-bar input (and not while the filter bar is focused)', () => { /* commands.setQuery('全聯') with focus elsewhere → #queryInput value '全聯'; focus #queryInput, setQuery('x') → value unchanged, query() 'x' */ });
-it('a selected day's rows use the 本月摘要 search as q (Review Focus 2)', () => {});
+it("a selected day's rows use the 本月摘要 search as q (Review Focus 2)", () => {});
 // accounting-layout.spec.ts
-it('typing in the filter bar updates the 本月摘要 box', async () => { /* storage calendar, 1100px, no day; type '全聯' in .list-pane input[type=search] + debounce → .ov-search value '全聯' (summary base) */ });
-it('typing in 本月摘要 switches the base to the result list; picking a day shows the day panel; clearing the day returns to the results (Review Focus 2)', async () => { /* type 'x' in the filter bar's search input → pane.search() 'x', app-calendar-day-panel[mode results]…; navigate ?day → day mode; navigate without day → results again; pane.search() is still 'x', the results header shows 「x」 and the filter-bar input value is 'x' (the .ov-search box is unmounted in results mode) */ });
+it('typing in the lifted search box keeps focus in it while the base switches to results', async () => { /* storage calendar, 1100px, no day; focus .cal-search, type '全聯' + debounce → calendarBase 'results' (app-calendar-day-panel[mode results]), document.activeElement === .cal-search, its value '全聯' */ });
+it('typing in the filter bar shows the text in the lifted box; clearing it returns the summary and empties the box', async () => { /* type '全聯' in .list-pane input[type=search] + debounce → .cal-search value '全聯' in results mode; clear the filter bar → app-month-overview back, .cal-search value '' */ });
+it('typing in 本月摘要 switches the base to the result list; picking a day shows the day panel; clearing the day returns to the results (Review Focus 2)', async () => { /* type 'x' in the filter bar's search input → pane.search() 'x', app-calendar-day-panel[mode results]…; navigate ?day → day mode; navigate without day → results again; pane.search() is still 'x', the results header shows 「x」, the filter-bar input value is 'x' and .cal-search shows 'x' */ });
 ```
 
 - [ ] **Step 2: Run — FAIL.**  - [ ] **Step 3: Implement.**  - [ ] **Step 4: Run — PASS; tsc.**
