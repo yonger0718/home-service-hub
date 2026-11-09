@@ -160,6 +160,10 @@ export class AccountingLayoutComponent {
     !this.calendarMode() ? null : this.pane.selectedDay() ? 'day' : this.pane.search() ? 'results' : 'summary',
   );
   private readonly calSearch = viewChild<ElementRef<HTMLInputElement>>('calSearch');
+  /** The right pane's base (本月摘要 / day panel / results): inert while the drawer covers it. */
+  private readonly calBase = viewChild<ElementRef<HTMLElement>>('calBase');
+  /** Host of the `pane` outlet: the drawer in calendar mode. */
+  private readonly drawer = viewChild<ElementRef<HTMLElement>>('drawer');
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
   readonly emptyCopy = computed(() =>
     this.listKey() === 'accounts' ? '選擇帳戶查看明細，或按 ＋ 新增' : '選擇一筆記錄查看明細，或按 ＋ 新增',
@@ -186,14 +190,19 @@ export class AccountingLayoutComponent {
   /** The entry form (new / edit) is on screen; it carries its own ✕. */
   readonly formOpen = computed(() => FORM_URL.test(this.url()));
 
+  /** 日曆 at ≥ 1024 px with a page in the pane: a modal drawer over the right pane only (the grid stays live). */
+  readonly drawerOpen = computed(() => this.calendarMode() && this.paneOpen());
+  /** The sheet or the drawer: either owes focus to its opener when it closes. */
+  private readonly overlayOpen = computed(() => this.sheetOpen() || this.drawerOpen());
+
   private wasPhone: boolean | null = null;
   /** `selection`: the document's selected text at pointerdown, so only a selection made by this gesture blocks it. */
   private swipe: { x: number; y: number; selection: string } | null = null;
 
-  /** Element focused before the sheet opened; focus returns there when it closes. */
-  private focusBeforeSheet: HTMLElement | null = null;
-  /** The sheet was open (focus moved into it), so its closing owes focus somewhere other than `<body>`. */
-  private sheetWasOpen = false;
+  /** Element focused before the sheet / drawer opened; focus returns there when it closes. */
+  private focusBeforeOverlay: HTMLElement | null = null;
+  /** The sheet / drawer was open (focus moved into it), so its closing owes focus somewhere other than `<body>`. */
+  private overlayWasOpen = false;
 
   constructor() {
     effect(() => this.overview.visible.set(this.showOverview()));
@@ -253,19 +262,28 @@ export class AccountingLayoutComponent {
     });
 
     effect(() => {
-      const open = this.sheetOpen();
+      const open = this.overlayOpen();
+      const sheet = this.sheetOpen();
+      const drawer = this.drawerOpen();
       const list = this.listPane()?.nativeElement;
       const header = this.pageHeader()?.nativeElement as HTMLElement | undefined;
+      const base = this.calBase()?.nativeElement;
       untracked(() => {
-        // Remove inert before returning focus to a list/sidebar opener.
-        this.setOutsideInert(open, list, header);
-        open ? this.focusSheet() : this.restoreFocus();
+        // Remember the opener before anything turns inert (an inert focused element drops focus to <body>).
+        if (open) {
+          this.rememberOpener();
+        }
+        // The sheet inerts everything outside it; the drawer only the right pane's base, never the grid. Remove inert
+        // before returning focus to an opener.
+        this.setOutsideInert(sheet, list, header);
+        this.setBaseInert(drawer, base);
+        open ? this.focusOverlay() : this.restoreFocus();
       });
     });
-    // Detail → form inside an open sheet removes the focused grip ✕: move focus to the form's own ✕ so it stays in the
-    // dialog (the opener saved by focusSheet is kept).
+    // Detail → form inside an open sheet / drawer removes the focused ✕: move focus to the form's own ✕ so it stays in
+    // the dialog (the opener saved by rememberOpener is kept).
     effect(() => {
-      if (this.sheetOpen() && this.formOpen()) {
+      if (this.overlayOpen() && this.formOpen()) {
         afterNextRender(
           {
             write: () => {
@@ -289,6 +307,7 @@ export class AccountingLayoutComponent {
     inject(DestroyRef).onDestroy(() => {
       this.clearSearchTimer();
       this.setOutsideInert(false);
+      this.setBaseInert(false);
       this.overview.visible.set(false);
       this.paneState.paneOpen.set(false);
       this.paneState.formOpen.set(false);
@@ -320,6 +339,44 @@ export class AccountingLayoutComponent {
       this.inertHeader = null;
       this.inertList = null;
       this.inertSidebar = null;
+    }
+  }
+
+  private inertBase: HTMLElement | null = null;
+
+  /** `inert` on the right pane's base while the drawer covers it (the node is remembered, as in setOutsideInert). */
+  private setBaseInert(inert: boolean, base?: HTMLElement): void {
+    if (this.inertBase && (!inert || this.inertBase !== base)) {
+      this.inertBase.removeAttribute('inert');
+    }
+    this.inertBase = inert ? (base ?? null) : null;
+    this.inertBase?.toggleAttribute('inert', true);
+  }
+
+  /**
+   * Keys inside the drawer: Esc closes it (marked handled; an Esc already handled — the entry form cancels itself —
+   * or an IME commit is left alone), Tab / Shift+Tab wrap inside it, ↑ ↓ step the entry (`stepEntry`) unless a field
+   * has focus (the reminder centre leaves them to the document's walk over its own rows).
+   */
+  onDrawerKeydown(event: KeyboardEvent): void {
+    if (!this.drawerOpen() || isHandledKey(event)) {
+      return;
+    }
+    const drawer = this.drawer()?.nativeElement;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.close();
+    } else if (event.key === 'Tab') {
+      if (drawer && !(event.target as Element | null)?.closest?.(`[${OVERLAY_ATTR}]`)) {
+        trapFocus(drawer, event);
+      }
+    } else if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && !this.onReminders()) {
+      const target = event.target as HTMLElement | null;
+      if (event.ctrlKey || event.metaKey || event.altKey || target?.isContentEditable || target?.closest?.('input, textarea, select')) {
+        return;
+      }
+      event.preventDefault();
+      this.pane.commands()?.stepEntry(event.key === 'ArrowDown' ? 1 : -1);
     }
   }
 
@@ -498,6 +555,11 @@ export class AccountingLayoutComponent {
   }
 
   private moveSelection(delta: 1 | -1): void {
+    // The drawer's own ↑ ↓ step its entry (onDrawerKeydown); the document's row walk stands down. The reminder
+    // centre in the drawer keeps walking its own rows.
+    if (this.drawerOpen() && !this.onReminders()) {
+      return;
+    }
     const rows = this.rows();
     if (rows.length === 0) {
       return;
@@ -524,19 +586,22 @@ export class AccountingLayoutComponent {
     });
   }
 
-  private focusSheet(): void {
-    this.sheetWasOpen = true;
+  private rememberOpener(): void {
     const active = this.document.activeElement;
-    if (!this.focusBeforeSheet && active instanceof HTMLElement && active !== this.document.body) {
-      this.focusBeforeSheet = active;
+    if (!this.focusBeforeOverlay && active instanceof HTMLElement && active !== this.document.body) {
+      this.focusBeforeOverlay = active;
     }
-    // The grip's ✕, else the page's own ✕ (`data-pane-close`, the entry form's header).
+  }
+
+  private focusOverlay(): void {
+    this.overlayWasOpen = true;
+    // The grip's ✕ (sheet) or the drawer's ✕, else the page's own ✕ (`data-pane-close`, the entry form's header).
     afterNextRender(
       {
         write: () =>
           (
             this.closeButton()?.nativeElement ??
-            this.detailPane()?.nativeElement.querySelector<HTMLElement>('[data-pane-close]')
+            this.detailPane()?.nativeElement.querySelector<HTMLElement>('.drawer-close, [data-pane-close]')
           )?.focus(),
       },
       { injector: this.injector },
@@ -544,10 +609,10 @@ export class AccountingLayoutComponent {
   }
 
   private restoreFocus(): void {
-    const previous = this.focusBeforeSheet;
-    const wasOpen = this.sheetWasOpen;
-    this.focusBeforeSheet = null;
-    this.sheetWasOpen = false;
+    const previous = this.focusBeforeOverlay;
+    const wasOpen = this.overlayWasOpen;
+    this.focusBeforeOverlay = null;
+    this.overlayWasOpen = false;
     if (previous?.isConnected) {
       previous.focus();
       return;
@@ -559,7 +624,9 @@ export class AccountingLayoutComponent {
       return;
     }
     const list = this.listPane()?.nativeElement;
-    (list?.querySelector<HTMLElement>('.sel, [aria-current]:not([aria-current="false"])') ?? list)?.focus();
+    // 日曆: the grid's selected day (a grid click under the drawer may have removed the day-panel opener).
+    const cell = this.calendarMode() ? list?.querySelector<HTMLElement>('.cell.sel') : null;
+    (cell ?? list?.querySelector<HTMLElement>('.sel, [aria-current]:not([aria-current="false"])') ?? list)?.focus();
   }
 
   /** Swipe-to-close starts only on the grip, only in the 760–1023 px sheet (spec §4.1). */

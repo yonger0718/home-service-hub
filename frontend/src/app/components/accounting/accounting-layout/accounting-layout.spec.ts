@@ -211,6 +211,223 @@ describe('AccountingLayoutComponent', () => {
         click(await find(harness, 'app-calendar-day-panel .dp-row[data-entry-id="7"]'));
         await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/7?month=2026-10&day=2026-10-21'));
       });
+
+      describe('entry drawer', () => {
+        const ENTRY = '/accounting/entries/5?month=2026-10&day=2026-10-21';
+
+        function key(target: Element, name: string, init: KeyboardEventInit = {}): KeyboardEvent {
+          const event = new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true, ...init });
+          target.dispatchEvent(event);
+          return event;
+        }
+
+        function calBase(harness: RouterTestingHarness): HTMLElement {
+          return harness.routeNativeElement!.querySelector<HTMLElement>('.cal-base')!;
+        }
+
+        /** The day panel of 10/21 with one row (id 7); clicking it (focused, as a real click leaves it) opens the drawer. */
+        async function openFromRow(harness: RouterTestingHarness): Promise<{ row: HTMLElement; drawer: Element }> {
+          await find(harness, 'app-calendar-day-panel .dp-label');
+          pane().dayRows.set(buildDays([makeEntry({ id: 7, entry_date: '2026-10-21' })], 'TWD', false)[0].rows);
+          const row = (await find(harness, 'app-calendar-day-panel .dp-row[data-entry-id="7"]')) as HTMLElement;
+          row.focus();
+          row.click();
+          const router = TestBed.inject(Router);
+          await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/7?month=2026-10&day=2026-10-21'));
+          const drawer = await find(harness, '.pane-host.drawer');
+          const close = await find(harness, '.drawer-close');
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(document.activeElement).toBe(close);
+          });
+          return { row, drawer };
+        }
+
+        beforeEach(() => localStorage.setItem('hh.accounting.timelineView', 'calendar'));
+
+        it('renders the entry as a drawer over the day panel at 1100px, day panel still mounted and inert', async () => {
+          const harness = await start('panes', ENTRY, 1100);
+          const drawer = await find(harness, '.pane-host.drawer');
+          expect(drawer.getAttribute('role')).toBe('dialog');
+          expect(drawer.getAttribute('aria-modal')).toBe('true');
+          expect(drawer.getAttribute('aria-label')).toBe('記錄詳情');
+          await find(harness, '.cal-base app-calendar-day-panel');
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(calBase(harness).hasAttribute('inert')).toBe(true);
+          });
+          const root = harness.routeNativeElement!;
+          expect(root.querySelector('.sheet-grip--active')).toBeNull();
+          expect(root.querySelector('.list-pane')!.hasAttribute('inert')).toBe(false);
+          // One dialog: the pane itself carries no role / aria-modal outside the 760–1023 px sheet.
+          const detail = root.querySelector('.detail-pane')!;
+          expect(detail.getAttribute('role')).toBeNull();
+          expect(detail.getAttribute('aria-modal')).toBeNull();
+          expect(root.querySelectorAll('[aria-modal="true"]').length).toBe(1);
+        });
+
+        it('✕ and Esc close the drawer back to the day and return focus to the day-panel row that opened it', async () => {
+          const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+          const router = TestBed.inject(Router);
+          let { row } = await openFromRow(harness);
+          expect(calBase(harness).hasAttribute('inert')).toBe(true);
+
+          ((await find(harness, '.drawer-close')) as HTMLButtonElement).click();
+          await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-21'));
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(harness.routeNativeElement!.querySelector('.pane-host.drawer')).toBeNull();
+            expect(calBase(harness).hasAttribute('inert')).toBe(false);
+            expect(document.activeElement).toBe(row);
+          });
+
+          ({ row } = await openFromRow(harness));
+          const escape = key(document.activeElement!, 'Escape');
+          expect(escape.defaultPrevented).toBe(true);
+          await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-21'));
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(calBase(harness).hasAttribute('inert')).toBe(false);
+            expect(document.activeElement).toBe(row);
+          });
+        });
+
+        it('Esc after a grid click changed the day goes to the new day and focuses the selected grid cell', async () => {
+          const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+          const router = TestBed.inject(Router);
+          const { row, drawer } = await openFromRow(harness);
+          ((await find(harness, '.list-pane button.cell[data-date="2026-10-23"]')) as HTMLButtonElement).click();
+          await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/7?month=2026-10&day=2026-10-23'));
+          // The new day's rows (its read is not answered here) replace 10/21's: the opener row goes.
+          pane().dayRows.set([]);
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(row.isConnected).toBe(false);
+          });
+          expect(harness.routeNativeElement!.querySelector('.pane-host.drawer')).toBe(drawer);
+
+          key(drawer, 'Escape');
+          await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-23'));
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            const cell = harness.routeNativeElement!.querySelector('.list-pane .cell.sel');
+            expect(cell?.getAttribute('data-date')).toBe('2026-10-23');
+            expect(document.activeElement).toBe(cell);
+          });
+        });
+
+        it('keeps N working inside the drawer (data-global-shortcuts) and does not trap a pointer click on the grid', async () => {
+          const harness = await start('panes', ENTRY, 1100);
+          const router = TestBed.inject(Router);
+          const drawer = await find(harness, '.pane-host.drawer');
+          expect(drawer.hasAttribute('data-global-shortcuts')).toBe(true);
+          // The shell's OPEN_MODAL: a modal without data-global-shortcuts would swallow N.
+          expect(document.querySelector('[aria-modal="true"]:not([data-global-shortcuts])')).toBeNull();
+          ((await find(harness, '.list-pane button.cell[data-date="2026-10-23"]')) as HTMLButtonElement).click();
+          await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/5?month=2026-10&day=2026-10-23'));
+          harness.detectChanges();
+          expect(harness.routeNativeElement!.querySelector('.pane-host.drawer')).not.toBeNull();
+          expect(harness.routeNativeElement!.querySelector('.list-pane')!.hasAttribute('inert')).toBe(false);
+        });
+
+        it('wraps Tab inside the drawer', async () => {
+          const harness = await start('panes', ENTRY, 1100);
+          const drawer = await find(harness, '.pane-host.drawer');
+          const close = (await find(harness, '.drawer-close')) as HTMLButtonElement;
+          const last = document.createElement('button');
+          last.textContent = '最後';
+          drawer.appendChild(last);
+
+          last.focus();
+          const tab = key(last, 'Tab');
+          expect(tab.defaultPrevented).toBe(true);
+          expect(document.activeElement).toBe(close);
+          const back = key(close, 'Tab', { shiftKey: true });
+          expect(back.defaultPrevented).toBe(true);
+          expect(document.activeElement).toBe(last);
+          last.remove();
+        });
+
+        it('widens the drawer for the entry form', async () => {
+          const harness = await start('panes', '/accounting/entry?date=2026-10-21&month=2026-10&day=2026-10-21', 1100);
+          await find(harness, '.pane-host.drawer.drawer--form');
+          expect(harness.routeNativeElement!.querySelector('.drawer-close')).toBeNull();
+        });
+
+        it('↑ ↓ inside the drawer call stepEntry and the document-level row stepping stands down', async () => {
+          const harness = await start('panes', ENTRY, 1100);
+          const router = TestBed.inject(Router);
+          await find(harness, '.list-pane button.cell[data-date="2026-10-21"]');
+          const close = await find(harness, '.drawer-close');
+          const stepEntry = vi.fn();
+          pane().commands.set({ stepEntry, openInvoice: vi.fn(), setQuery: vi.fn() });
+
+          expect(key(close, 'ArrowDown').defaultPrevented).toBe(true);
+          expect(stepEntry).toHaveBeenLastCalledWith(1);
+          expect(key(close, 'ArrowUp').defaultPrevented).toBe(true);
+          expect(stepEntry).toHaveBeenLastCalledWith(-1);
+
+          // A field inside the drawer keeps its own arrows.
+          const field = document.createElement('input');
+          close.parentElement!.appendChild(field);
+          expect(key(field, 'ArrowDown').defaultPrevented).toBe(false);
+          field.remove();
+          expect(stepEntry).toHaveBeenCalledTimes(2);
+
+          const navigate = vi.spyOn(router, 'navigate');
+          const rows = addRows(harness, [5, 6, 7]);
+          press('ArrowDown');
+          press('ArrowUp');
+          rows.remove();
+          expect(navigate).not.toHaveBeenCalled();
+          expect(router.url).toBe(ENTRY);
+          expect(stepEntry).toHaveBeenCalledTimes(2);
+        });
+
+        it('moves focus from the removed drawer ✕ to the form ✕ when the drawer switches from a detail to the form', async () => {
+          const harness = await start('panes', ENTRY, 1100);
+          const close = await find(harness, '.drawer-close');
+          await vi.waitFor(() => expect(document.activeElement).toBe(close));
+          await TestBed.inject(Router).navigateByUrl('/accounting/entries/5/edit?month=2026-10&day=2026-10-21');
+          const formClose = await find(harness, '.pane-host.drawer--form .entry-form .topbar .cancel');
+          expect(harness.routeNativeElement!.querySelector('.drawer-close')).toBeNull();
+          await vi.waitFor(() => expect(document.activeElement).toBe(formClose));
+        });
+
+        it('keeps the 820px sheet behaviour untouched in 日曆', async () => {
+          const harness = await start('sheet', ENTRY, 820);
+          const sheet = await find(harness, '.detail-pane.open');
+          expect(sheet.getAttribute('role')).toBe('dialog');
+          expect(sheet.getAttribute('aria-modal')).toBe('true');
+          const root = harness.routeNativeElement!;
+          expect(root.querySelector('.sheet-grip--active')).not.toBeNull();
+          expect(root.querySelector('.drawer')).toBeNull();
+          expect(root.querySelector('.drawer-close')).toBeNull();
+          expect(root.querySelector('.pane-host')!.getAttribute('aria-modal')).toBeNull();
+        });
+
+        it('the month navigator ‹ › keeps the drawer open and drops the day (Review Focus 1)', async () => {
+          const harness = await start('panes', ENTRY, 1100);
+          const router = TestBed.inject(Router);
+          const drawer = await find(harness, '.pane-host.drawer');
+          await find(harness, '.cal-base app-calendar-day-panel');
+          await vi.waitFor(() => expect(document.activeElement).toBe(harness.routeNativeElement!.querySelector('.drawer-close')));
+          const prev = (await find(harness, '.list-pane .month-prev')) as HTMLButtonElement;
+          // A pointer click leaves focus on the navigator; the drawer never pulls it back.
+          prev.focus();
+          prev.click();
+          await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/5?month=2026-09'));
+          await find(harness, '.cal-base app-month-overview');
+          expect(harness.routeNativeElement!.querySelector('.pane-host.drawer')).toBe(drawer);
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(calBase(harness).hasAttribute('inert')).toBe(true);
+          });
+          await new Promise(resolve => setTimeout(resolve, 20));
+          harness.detectChanges();
+          expect(document.activeElement).toBe(prev);
+        });
+      });
     });
 
     it('publishes the calendar FAB offset while a pane is open in calendar mode', async () => {

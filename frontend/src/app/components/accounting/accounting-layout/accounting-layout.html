@@ -48,7 +48,8 @@
           }
         </div>
         @if (calendarBase(); as base) {
-          <div class="cal-base" #calendarBase>
+          <!-- inert while the drawer covers it: set by the overlay effect (after the opener is remembered), not bound. -->
+          <div class="cal-base" #calBase>
             @if (base !== 'day') {
               <!-- Value written by an effect (never while focused), not bound: see onSearchInput. -->
               <input
@@ -110,7 +111,24 @@
             }
           </div>
         }
-        <router-outlet name="pane" />
+        <!-- ≥ 1024 px in 日曆: the routed page is a drawer over the right pane's base; N still works in it. -->
+        <div
+          #drawer
+          class="pane-host"
+          data-global-shortcuts
+          [class.drawer]="drawerOpen()"
+          [class.drawer--form]="drawerOpen() && formOpen()"
+          [attr.role]="drawerOpen() ? 'dialog' : null"
+          [attr.aria-modal]="drawerOpen() ? 'true' : null"
+          [attr.aria-label]="drawerOpen() ? '記錄詳情' : null"
+          (keydown)="onDrawerKeydown($event)"
+        >
+          <!-- The entry form draws its own ✕ in its header. -->
+          @if (drawerOpen() && !formOpen()) {
+            <button type="button" class="drawer-close" aria-label="關閉" (click)="close()">✕</button>
+          }
+          <router-outlet name="pane" />
+        </div>
         @if (showOverview()) {
           <app-month-overview [month]="overview.month()" [summary]="overview.summary()" [dueItems]="overview.dueItems()" [summaryState]="overview.summaryState()" [dueState]="overview.dueState()" />
         } @else if (!paneOpen() && !calendarMode()) {
