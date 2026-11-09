@@ -54,9 +54,9 @@ export function buildCalendar(month: string, days: DailySummaryDay[], weekStart:
 
 /** `0`, `−250`, `+71`, `−3.1k`, `+71.7k`, `−12k` (one decimal for |v| ≥ 1000, trailing `.0` dropped). */
 export function compactNet(value: number): string {
-  if (value === 0) return '0';
+  const magnitude = Math.round(Math.abs(value));
+  if (magnitude === 0) return '0';
   const sign = value < 0 ? MINUS : '+';
-  const magnitude = Math.abs(value);
   if (magnitude < 1000) return `${sign}${magnitude}`;
   const thousands = (magnitude / 1000).toFixed(1).replace(/\.0$/, '');
   return `${sign}${thousands}k`;
@@ -64,9 +64,10 @@ export function compactNet(value: number): string {
 
 /** `0`, `−3,096`, `+71,700`: signed, grouped (en-US), no decimals. */
 export function wideNet(value: number): string {
-  if (value === 0) return '0';
+  const magnitude = Math.round(Math.abs(value));
+  if (magnitude === 0) return '0';
   const sign = value < 0 ? MINUS : '+';
-  return `${sign}${Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+  return `${sign}${magnitude.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 }
 
 /** Spend intensity of a day against the month's largest spend, 0 when there is nothing to scale. */
@@ -98,7 +99,7 @@ export function categoryColorMap(roots: CategoryNode[]): ReadonlyMap<number, str
   return colors;
 }
 
-/** Screen-reader name of a month cell, e.g. `「10 月 21 日 週三」，3 筆，支出 $3,096，發票待對帳`. */
+/** Screen-reader name of a month cell, e.g. `10 月 21 日 週三，3 筆，支出 $3,096，發票待對帳`. */
 export function cellAriaLabel(parts: {
   date: string;
   count: number;
@@ -111,7 +112,7 @@ export function cellAriaLabel(parts: {
 }): string {
   const [year, month, day] = parts.date.split('-').map(Number);
   const weekday = WEEKDAYS[new Date(Date.UTC(year, month - 1, day)).getUTCDay()];
-  const items = [`「${month} 月 ${day} 日 ${weekday}」`];
+  const items = [`${month} 月 ${day} 日 ${weekday}`];
   if (parts.count > 0) items.push(`${parts.count} 筆`);
   if (parts.expense < 0) items.push(`支出 ${formatMoney(-parts.expense, parts.currency)}`);
   if (parts.income > 0) items.push(`收入 ${formatMoney(parts.income, parts.currency)}`);

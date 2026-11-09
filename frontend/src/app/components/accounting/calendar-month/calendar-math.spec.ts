@@ -97,6 +97,14 @@ describe('compactNet', () => {
     expect(compactNet(71)).toBe('+71');
     expect(compactNet(0)).toBe('0');
   });
+
+  it('rounds the magnitude to an integer before picking the branch', () => {
+    expect(compactNet(-999.5)).toBe('−1k');
+    expect(compactNet(-250.4)).toBe('−250');
+    expect(compactNet(0.4)).toBe('0');
+    expect(compactNet(-1000)).toBe('−1k');
+    expect(compactNet(-99950)).toBe('−100k');
+  });
 });
 
 describe('wideNet', () => {
@@ -104,6 +112,12 @@ describe('wideNet', () => {
     expect(wideNet(-3096)).toBe('−3,096');
     expect(wideNet(71700)).toBe('+71,700');
     expect(wideNet(0)).toBe('0');
+  });
+
+  it('rounds to an integer first and never prints a signed zero', () => {
+    expect(wideNet(-0.4)).toBe('0');
+    expect(wideNet(0.4)).toBe('0');
+    expect(wideNet(-0.6)).toBe('−1');
   });
 });
 
@@ -159,7 +173,7 @@ describe('cellAriaLabel', () => {
   };
 
   it('names the date with weekday and joins the parts', () => {
-    expect(cellAriaLabel(base)).toBe('「10 月 21 日 週三」，3 筆，支出 $3,096，發票待對帳');
+    expect(cellAriaLabel(base)).toBe('10 月 21 日 週三，3 筆，支出 $3,096，發票待對帳');
   });
 
   it('ends with 已繳 for a paid bill', () => {
@@ -168,9 +182,17 @@ describe('cellAriaLabel', () => {
     expect(label).not.toContain('繳費到期');
   });
 
+  it('names a Sunday as 週日', () => {
+    expect(cellAriaLabel({ ...base, date: '2026-10-25', count: 0, expense: 0, invoices: 0 })).toBe('10 月 25 日 週日');
+  });
+
+  it('contains no quotation brackets', () => {
+    expect(cellAriaLabel(base)).not.toMatch(/[「」]/);
+  });
+
   it('adds income and omits empty parts', () => {
     expect(cellAriaLabel({ ...base, count: 0, expense: 0, income: 50042, invoices: 0, bill: 'due', dueCount: 1 })).toBe(
-      '「10 月 21 日 週三」，收入 $50,042，1 張卡繳費到期',
+      '10 月 21 日 週三，收入 $50,042，1 張卡繳費到期',
     );
   });
 });
