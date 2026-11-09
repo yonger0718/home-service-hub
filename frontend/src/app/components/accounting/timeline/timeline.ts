@@ -45,12 +45,13 @@ import { FolderIcon, SplitFolderComponent } from '../split-folder/split-folder';
 import { groupCommands, listOpenState } from '../split-group/group-nav';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
 import { CalendarDataService } from '../calendar-month/calendar-data.service';
+import { CalendarPaneService, MonthDue, TodayCard } from '../calendar-month/calendar-pane.service';
 import { categoryColorMap } from '../calendar-month/calendar-math';
 import { inboxBellCount } from '../inbox/inbox-view';
 import { InboxService } from '../inbox/inbox.service';
 import { parseTags } from '../entry-form/entry-draft';
 import { addDays, currentMonth, monthLabel, monthRange, todayIso } from '../dates';
-import { calendarParams, calendarWrite, readCalendarQuery } from './calendar-url';
+import { calendarParams, readCalendarQuery, writeCalendarQuery } from './calendar-url';
 import { nextDueItems } from '../month-overview/due-items';
 import { AccountingOverviewService, OverviewState } from '../month-overview/overview.service';
 import { schedulePill } from '../schedule-math';
@@ -164,6 +165,15 @@ export interface TimelineRow {
   batch?: { members: TimelineRow[] } | null;
   /** #304: a batch member drawn under its expanded batch row. */
   nested?: boolean;
+  /** `HH:MM` from `entry_time`, null without one. */
+  time: string | null;
+}
+
+/** The selected day's net as the list groups it (main-currency rows only). */
+export interface DayNet {
+  net: number;
+  text: string;
+  excluded: boolean;
 }
 
 /** One 繳費提醒 line in the 日曆 day panel (only statements with a remaining balance). */
@@ -246,6 +256,10 @@ function invoiceHitsOf(entry: LedgerEntry): string | null {
   return entry.invoice_item_hits?.length ? `發票：${entry.invoice_item_hits.join('、')}` : null;
 }
 
+function timeOf(entry: Pick<LedgerEntry, 'entry_time'>): string | null {
+  return entry.entry_time?.slice(0, 5) ?? null;
+}
+
 function plainRow(entry: LedgerEntry): TimelineRow {
   const amount = Number(entry.amount);
   const tone = toneOf(amount, entry.kind);
@@ -264,6 +278,7 @@ function plainRow(entry: LedgerEntry): TimelineRow {
     groupCount: null,
     folder: null,
     invoiceHits: invoiceHitsOf(entry),
+    time: timeOf(entry),
   };
 }
 
@@ -325,6 +340,7 @@ export function buildDays(
         groupCount: entry.group.count,
         folder: entry.group.kind === 'split' ? { icons: splitIcons.get(entry.group.id) ?? [], count: entry.group.count } : null,
         invoiceHits: invoiceHitsOf(entry),
+        time: timeOf(entry),
       };
       net = total ?? 0;
       netCurrency = entry.group.currency;
@@ -353,6 +369,7 @@ export function buildDays(
         groupCount: null,
         folder: null,
         invoiceHits: invoiceHitsOf(entry),
+        time: timeOf(out),
       };
     } else if (batches.has(batchKey(entry) ?? '')) {
       // #304: one row per engine reward batch, at its newest loaded member; the server's count / total cover it all.
@@ -380,6 +397,7 @@ export function buildDays(
         groupCount: null,
         folder: null,
         invoiceHits: null,
+        time: timeOf(entry),
         batch: { members: members.map(member => ({ ...plainRow(member), nested: true })) },
       };
       net = total;
@@ -444,6 +462,7 @@ export class LedgerTimelineComponent implements OnInit {
   private readonly calendar = inject(BusinessCalendarService);
   private readonly inbox = inject(InboxService);
   protected readonly overview = inject(AccountingOverviewService);
+  private readonly pane = inject(CalendarPaneService);
 
   readonly preference = signal<Preference | null>(null);
   readonly accounts = signal<LedgerAccount[]>([]);
@@ -504,6 +523,9 @@ export class LedgerTimelineComponent implements OnInit {
   readonly dayEntries = signal<LedgerEntry[]>([]);
   readonly dayLoading = signal(false);
   readonly dayError = signal(false);
+  /** Up to three of today's entries, for the 今天 card (current month in 日曆 view only). */
+  private readonly todayEntries = signal<LedgerEntry[]>([]);
+  private todayRequestId = 0;
   readonly sentinel = viewChild<ElementRef<HTMLElement>>('sentinel');
 
   /** Any list filter set: the month totals are then labelled as unfiltered (spec §1.1). */
@@ -558,7 +580,7 @@ export class LedgerTimelineComponent implements OnInit {
   );
   readonly dayRows = computed(() => this.dayGroup()?.rows ?? []);
   /** Net of the rows shown (main-currency rows only, the list's per-day rule); the grid keeps the summary figures. */
-  readonly dayNet = computed(() => {
+  readonly dayNet = computed<DayNet | null>(() => {
     const group = this.dayGroup();
     return group ? { net: group.net, text: formatSigned(group.net, this.mainCurrency()), excluded: group.excluded } : null;
   });
@@ -703,6 +725,7 @@ export class LedgerTimelineComponent implements OnInit {
       }
     });
     inject(DestroyRef).onDestroy(() => this.calendarData.month.set(null));
+    this.publishToPane();
     // 報表 drill-through (add-accounting-reports D7): `/accounting?month=2026-10&category_id=12` opens that month
     // filtered to the category. Read once at construction: the list is created afresh when the URL comes from 報表.
     const query = this.router.routerState.snapshot.root.queryParamMap;
@@ -863,6 +886,110 @@ export class LedgerTimelineComponent implements OnInit {
       onCleanup(() => observer.disconnect());
     });
     inject(DestroyRef).onDestroy(() => this.clearQueryTimer());
+  }
+
+  /** What the 日曆 view's right pane reads: the timeline owns every read and publishes the results. */
+  private publishToPane(): void {
+    const pane = this.pane;
+    effect(() => this.overview.calendar.set(this.view() === 'calendar'));
+    effect(() => pane.month.set(this.month()));
+    effect(() => pane.today.set(this.today()));
+    effect(() => pane.selectedDay.set(this.selectedDay()));
+    effect(() => pane.dayRows.set(this.dayRows()));
+    effect(() => pane.dayNet.set(this.dayNet()));
+    effect(() => pane.dayState.set(this.dayError() ? 'error' : this.dayLoading() && this.dayEntries().length === 0 ? 'loading' : 'ready'));
+    effect(() => pane.billLines.set(this.billLines()));
+    effect(() => pane.merchants.set(this.calendarData.data().merchants));
+    effect(() => pane.merchantsState.set(this.calendarData.data().merchantsState));
+    effect(() => pane.search.set(this.query()));
+    effect(() => pane.monthDues.set(this.monthDues()));
+    effect(() => pane.todayCard.set(this.todayCard()));
+    // The 今天 card's three titles: only in 日曆 view of the current month, and only where the right pane exists.
+    effect(() => {
+      if (!this.preference()) {
+        return;
+      }
+      const show = this.layoutMode.mode() === 'panes' && this.view() === 'calendar' && this.month() === this.today().slice(0, 7);
+      const today = this.today();
+      this.hideRewards();
+      this.accounting.entriesChanged();
+      untracked(() => (show ? this.loadToday(today) : this.dropToday()));
+    });
+    pane.commands.set({
+      stepEntry: () => undefined, // Task 8
+      openInvoice: () => undefined, // Task 6
+      setQuery: text => {
+        this.clearQueryTimer();
+        this.setQuery(text);
+      },
+    });
+    inject(DestroyRef).onDestroy(() => {
+      pane.clear();
+      this.overview.calendar.set(false);
+    });
+  }
+
+  /** 這個月要處理: the shown month's open statements, plus (current month only) dues of the next 7 days that fall next month. */
+  private readonly monthDues = computed<MonthDue[]>(() => {
+    const events = this.monthBilling().filter(event => event.kind === 'due');
+    if (this.month() === this.today().slice(0, 7)) {
+      const last = monthRange(this.month()).to;
+      events.push(...this.upcomingBills().filter(event => event.date > last));
+    }
+    const dues = new Map<string, MonthDue>();
+    for (const event of events) {
+      const bill = this.openBill(event);
+      if (bill) {
+        dues.set(billKey(event), {
+          key: billKey(event),
+          accountId: event.accountId,
+          name: event.name,
+          date: event.date,
+          amountText: formatMoney(bill.statement, bill.currency),
+        });
+      }
+    }
+    return [...dues.values()].sort((a, b) => a.date.localeCompare(b.date));
+  });
+
+  private readonly todayCard = computed<TodayCard | null>(() => {
+    const today = this.today();
+    if (this.view() !== 'calendar' || this.month() !== today.slice(0, 7)) {
+      return null;
+    }
+    const daily = this.daily();
+    const day = daily?.days.find(item => item.date === today);
+    const net = day ? Number(day.expense) + Number(day.income) : 0;
+    return {
+      date: today,
+      count: day?.count ?? 0,
+      names: this.todayEntries().map(displayTitle).join('、'),
+      netText: formatSigned(net, daily?.currency ?? this.mainCurrency()),
+      net,
+    };
+  });
+
+  private loadToday(date: string): void {
+    const id = ++this.todayRequestId;
+    this.accounting
+      .getAllEntries({ limit: 3, offset: 0, date_from: date, date_to: date, hide_rewards: this.hideRewards() })
+      .subscribe({
+        next: page => {
+          if (id === this.todayRequestId) {
+            this.todayEntries.set(page.items);
+          }
+        },
+        error: () => {
+          if (id === this.todayRequestId) {
+            this.todayEntries.set([]);
+          }
+        },
+      });
+  }
+
+  private dropToday(): void {
+    ++this.todayRequestId;
+    this.todayEntries.set([]);
   }
 
   ngOnInit(): void {
@@ -1152,16 +1279,14 @@ export class LedgerTimelineComponent implements OnInit {
   }
 
   /** Writes month / day into the URL (merged with the other query keys) and applies them at once. */
-  private writeCalendar(params: Params): void {
-    void this.router.navigate([], { queryParams: params, queryParamsHandling: 'merge', replaceUrl: true });
-    if (typeof params['month'] === 'string') {
-      this.month.set(params['month']);
-    }
-    this.urlDay.set(typeof params['day'] === 'string' ? params['day'] : null);
+  private writeCalendar(month: string, day: string | null): void {
+    void writeCalendarQuery(this.router, month, day);
+    this.month.set(month);
+    this.urlDay.set(day);
   }
 
   clearDay(): void {
-    this.writeCalendar({ month: this.month(), day: null });
+    this.writeCalendar(this.month(), null);
   }
 
   /** ‹ › : the previous / next day, crossing month edges. */
@@ -1171,7 +1296,7 @@ export class LedgerTimelineComponent implements OnInit {
       return;
     }
     const next = addDays(day, delta);
-    this.writeCalendar(calendarWrite(next.slice(0, 7), next));
+    this.writeCalendar(next.slice(0, 7), next);
   }
 
   /** Tapping the selected day again closes it. */
@@ -1179,7 +1304,7 @@ export class LedgerTimelineComponent implements OnInit {
     if (date === this.selectedDay()) {
       this.clearDay();
     } else {
-      this.writeCalendar(calendarWrite(date.slice(0, 7), date));
+      this.writeCalendar(date.slice(0, 7), date);
     }
   }
 
@@ -1191,7 +1316,7 @@ export class LedgerTimelineComponent implements OnInit {
     }
     this.chosenView.set('calendar');
     storeView('calendar');
-    this.writeCalendar(calendarWrite(first.date.slice(0, 7), first.date));
+    this.writeCalendar(first.date.slice(0, 7), first.date);
   }
 
   openCard(accountId: number): void {
@@ -1200,7 +1325,7 @@ export class LedgerTimelineComponent implements OnInit {
 
   moveMonth(delta: number): void {
     this.today.set(todayIso());
-    this.writeCalendar(calendarWrite(shiftMonth(this.month(), delta), null));
+    this.writeCalendar(shiftMonth(this.month(), delta), null);
   }
 
   setAccount(value: string): void {

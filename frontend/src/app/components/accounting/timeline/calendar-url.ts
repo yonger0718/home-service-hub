@@ -1,4 +1,4 @@
-import { ParamMap, Params } from '@angular/router';
+import { ParamMap, Params, Router } from '@angular/router';
 
 import { addDays } from '../dates';
 
@@ -34,4 +34,9 @@ export function calendarParams(query: ParamMap): Params {
 
 export function calendarWrite(month: string, day: string | null): Params {
   return { month, day };
+}
+
+/** Writes month / day into the URL (merged with the other query keys, history replaced); the one writer for every calendar surface. */
+export function writeCalendarQuery(router: Router, month: string, day: string | null): Promise<boolean> {
+  return router.navigate([], { queryParams: calendarWrite(month, day), queryParamsHandling: 'merge', replaceUrl: true });
 }

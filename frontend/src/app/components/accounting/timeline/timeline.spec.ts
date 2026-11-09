@@ -15,6 +15,7 @@ import { makeInbox } from '../inbox/testing';
 import { EMPTY_CALENDAR_DATA, CalendarDataService, CalendarMonthData } from '../calendar-month/calendar-data.service';
 import { makeAccount, makeCategory, makeEntry, makeInstance, makePreference } from '../testing/fixtures';
 import { FALLBACK_COLOR } from './category-distribution';
+import { CalendarPaneService } from '../calendar-month/calendar-pane.service';
 import { LedgerTimelineComponent, buildDays, schedulePills } from './timeline';
 
 const VIEW_KEY = 'hh.accounting.timelineView';
@@ -24,9 +25,12 @@ const ACCOUNTS = [makeAccount({ id: 1, name: '玉山 UNI' }), makeAccount({ id: 
 describe('LedgerTimelineComponent', () => {
   let httpMock: HttpTestingController | null = null;
   // The calendar's breakdown/inbox reads are CalendarDataService's own concern; the timeline tests drive its `data`.
+  /** What `render` answers the 今天 read with. */
+  let todayItems: LedgerEntry[] = [];
   let fakeCalendarData = { month: signal<string | null>(null), data: signal<CalendarMonthData>(EMPTY_CALENDAR_DATA) };
 
   beforeEach(() => {
+    todayItems = [];
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date(2026, 9, 2, 12, 0, 0));
     fakeCalendarData = { month: signal<string | null>(null), data: signal<CalendarMonthData>(EMPTY_CALENDAR_DATA) };
@@ -45,6 +49,7 @@ describe('LedgerTimelineComponent', () => {
     for (const request of httpMock?.match(r => r.url === '/api/accounting/projects') ?? []) {
       request.flush([]);
     }
+    flushTodayRead();
     httpMock?.verify();
     httpMock = null;
     vi.useRealTimers();
@@ -78,7 +83,22 @@ describe('LedgerTimelineComponent', () => {
     httpMock.expectOne('/api/accounting/accounts').flush(accounts);
     flushCounterparties(counterparties, queue, inboxAsk, einvoiceAsk);
     fixture.detectChanges();
+    flushTodayRead(todayItems);
     return { fixture, el: fixture.nativeElement as HTMLElement };
+  }
+
+  /** The 今天 card's read (the two-pane 日曆 of the current month only): up to three of one day's entries. */
+  function isTodayRead(r: { url: string; params: { get(name: string): string | null } }): boolean {
+    return r.url === '/api/accounting/entries' && r.params.get('limit') === '3' && r.params.get('date_from') === r.params.get('date_to');
+  }
+
+  /** Answer the pending 今天 reads (any number) with these entries; tests that do not care leave them empty. */
+  function flushTodayRead(items: LedgerEntry[] = []): number {
+    const requests = httpMock?.match(isTodayRead) ?? [];
+    for (const request of requests) {
+      request.flush({ items, total: items.length, limit: 3, offset: 0 });
+    }
+    return requests.length;
   }
 
   /**
@@ -2635,6 +2655,168 @@ describe('LedgerTimelineComponent', () => {
     head.click();
     fixture.detectChanges();
     expect(el.querySelectorAll('.entry-row.batch-member').length).toBe(0);
+  });
+  describe('calendar pane publishing', () => {
+    const CARD = makeAccount({ id: 9, name: '玉山 UNI', is_credit: true, closing_day: 15, due_rule: 'days_after_closing', due_value: 20 });
+
+    const pane = () => TestBed.inject(CalendarPaneService);
+
+    function renderPanes(accounts = ACCOUNTS) {
+      localStorage.setItem(VIEW_KEY, 'calendar');
+      const rendered = render('panes', makePreference(), [], accounts);
+      flushSummary('2026-10');
+      flushDaily('2026-10', { days: [{ date: '2026-10-02', expense: '-734.0000', income: '0.0000', count: 2 }] });
+      rendered.fixture.detectChanges();
+      return rendered;
+    }
+
+    function pickDay(fixture: { detectChanges(): void }, el: HTMLElement, date: string, items: LedgerEntry[] = []): void {
+      el.querySelector<HTMLButtonElement>(`button.cell[data-date="${date}"]`)!.click();
+      fixture.detectChanges();
+      flushEntries(items);
+      fixture.detectChanges();
+    }
+
+    it('publishes the 日曆 view and the month to the pane services', () => {
+      const { fixture, el } = renderPanes();
+      expect(TestBed.inject(AccountingOverviewService).calendar()).toBe(true);
+      expect(pane().month()).toBe('2026-10');
+      expect(pane().today()).toBe('2026-10-02');
+      viewButton(el, '清單').click();
+      fixture.detectChanges();
+      flushEntries([]);
+      expect(TestBed.inject(AccountingOverviewService).calendar()).toBe(false);
+    });
+
+    it('publishes the selected day, its rows with time, net and bill lines', () => {
+      const { fixture, el } = renderPanes();
+      el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-21"]')!.click();
+      fixture.detectChanges();
+      expect(pane().selectedDay()).toBe('2026-10-21');
+      expect(pane().dayState()).toBe('loading');
+      flushEntries([makeEntry({ id: 5, entry_date: '2026-10-21', entry_time: '12:30:00', amount: '-120.0000' })]);
+      fixture.detectChanges();
+      expect(pane().dayRows().length).toBe(1);
+      expect(pane().dayRows()[0].time).toBe('12:30');
+      expect(pane().dayNet()!.text).toBe('−$120');
+      expect(pane().dayState()).toBe('ready');
+      expect(pane().billLines()).toEqual([]);
+
+      el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-22"]')!.click();
+      fixture.detectChanges();
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(pane().dayState()).toBe('error');
+    });
+
+    it('gives a row without a time a null time', () => {
+      const { fixture, el } = renderPanes();
+      pickDay(fixture, el, '2026-10-21', [makeEntry({ id: 5, entry_date: '2026-10-21', entry_time: null })]);
+      expect(pane().dayRows()[0].time).toBeNull();
+    });
+
+    it('publishes the month dues', () => {
+      const { fixture } = renderPanes([...ACCOUNTS, CARD]);
+      // Closing day 15 + 20 days: the 08/16 - 09/15 statement is due 10/05.
+      const summary = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/summary' && r.params.get('date_to') === '2026-09-15');
+      const payments = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/entries' && r.params.get('date_from') === '2026-09-15');
+      summary.flush({ account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '-12345.0000', income: '0', rewards: '0', net: '-12345.0000', end_balance: '-12345.0000', count: 4 });
+      payments.flush({ items: [], total: 0, limit: 100, offset: 0 });
+      fixture.detectChanges();
+      expect(pane().monthDues()).toEqual([{ key: expect.any(String), accountId: 9, name: '玉山 UNI', date: '2026-10-05', amountText: '$12,345' }]);
+    });
+
+    it('publishes no month due for a fully paid statement', () => {
+      const { fixture } = renderPanes([...ACCOUNTS, CARD]);
+      const summary = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/summary' && r.params.get('date_to') === '2026-09-15');
+      const payments = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/entries' && r.params.get('date_from') === '2026-09-15');
+      summary.flush({ account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '-500.0000', income: '0', rewards: '0', net: '-500.0000', end_balance: '-500.0000', count: 1 });
+      payments.flush({ items: [makeEntry({ id: 40, kind: 'transfer_in', account_id: 9, amount: '500.0000' })], total: 1, limit: 100, offset: 0 });
+      fixture.detectChanges();
+      expect(pane().monthDues()).toEqual([]);
+    });
+
+    describe('near the end of the month', () => {
+      // Closing day 15, due 20 days later: the 10/15 statement is due 11/04 — inside today + 6 when today is 10/29.
+      beforeEach(() => vi.setSystemTime(new Date(2026, 9, 29, 12, 0, 0)));
+
+      function answerCycle(end: string, start: string, paidTo: string, spend: string): void {
+        httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/summary' && r.params.get('date_to') === end)
+          .flush({ account_id: 9, currency: 'TWD', date_from: start, date_to: end, spend, income: '0', rewards: '0', net: spend, end_balance: spend, count: 2 });
+        httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/entries' && r.params.get('date_from') === end && r.params.get('date_to') === paidTo)
+          .flush({ items: [], total: 0, limit: 100, offset: 0 });
+      }
+
+      it('adds near-term dues from next month in the current month only', () => {
+        localStorage.setItem(VIEW_KEY, 'calendar');
+        const { fixture } = render('panes', makePreference(), [], [...ACCOUNTS, CARD]);
+        flushSummary('2026-10');
+        flushDaily('2026-10');
+        answerCycle('2026-10-15', '2026-09-16', '2026-10-29', '-800.0000');
+        fixture.detectChanges();
+        expect(pane().monthDues().map(due => due.date)).toContain('2026-11-04');
+
+        fixture.componentInstance.moveMonth(-1);
+        fixture.detectChanges();
+        flushSummary('2026-09');
+        flushDaily('2026-09');
+        for (const request of httpMock!.match(r => r.url.startsWith('/api/accounting/accounts/9/'))) {
+          request.flush(request.request.url.endsWith('/summary')
+            ? { account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '0', income: '0', rewards: '0', net: '0', end_balance: '0', count: 0 }
+            : { items: [], total: 0, limit: 100, offset: 0 });
+        }
+        fixture.detectChanges();
+        expect(pane().monthDues().map(due => due.date)).not.toContain('2026-11-04');
+      });
+
+      it('never adds a due outside today + 6', () => {
+        const card = makeAccount({ id: 9, name: '玉山 UNI', is_credit: true, closing_day: 21, due_rule: 'days_after_closing', due_value: 20 });
+        localStorage.setItem(VIEW_KEY, 'calendar');
+        const { fixture } = render('panes', makePreference(), [], [...ACCOUNTS, card]);
+        flushSummary('2026-10');
+        flushDaily('2026-10');
+        // closing 10/21 + 20 days = 11/10, beyond 11/04: no statement is read for the near-term window.
+        for (const request of httpMock!.match(r => r.url.startsWith('/api/accounting/accounts/9/'))) {
+          request.flush(request.request.url.endsWith('/summary')
+            ? { account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '-900.0000', income: '0', rewards: '0', net: '-900.0000', end_balance: '-900.0000', count: 1 }
+            : { items: [], total: 0, limit: 100, offset: 0 });
+        }
+        fixture.detectChanges();
+        expect(pane().monthDues().map(due => due.date)).not.toContain('2026-11-10');
+      });
+    });
+
+    it('publishes a 今天 card for the current month only', () => {
+      todayItems = [makeEntry({ id: 1, name: '早餐' }), makeEntry({ id: 2, name: '捷運' })];
+      const { fixture } = renderPanes();
+      expect(pane().todayCard()).toEqual({ date: '2026-10-02', count: 2, names: '早餐、捷運', netText: '−$734', net: -734 });
+
+      fixture.componentInstance.moveMonth(-1);
+      fixture.detectChanges();
+      flushSummary('2026-09');
+      flushDaily('2026-09');
+      expect(pane().todayCard()).toBeNull();
+      expect(flushTodayRead()).toBe(0);
+    });
+
+    it('registers setQuery, which sets the filter-bar query like the debounce does', () => {
+      const { fixture } = renderPanes();
+      pane().commands()!.setQuery('  咖啡 ');
+      expect(fixture.componentInstance.query()).toBe('咖啡');
+      fixture.detectChanges();
+      expect(pane().search()).toBe('咖啡');
+    });
+
+    it('clears the pane services when destroyed', () => {
+      const { fixture, el } = renderPanes();
+      pickDay(fixture, el, '2026-10-21', [makeEntry({ id: 5, entry_date: '2026-10-21' })]);
+      expect(pane().selectedDay()).toBe('2026-10-21');
+      fixture.destroy();
+      expect(pane().selectedDay()).toBeNull();
+      expect(pane().dayRows()).toEqual([]);
+      expect(pane().commands()).toBeNull();
+      expect(TestBed.inject(AccountingOverviewService).calendar()).toBe(false);
+    });
   });
 });
 
