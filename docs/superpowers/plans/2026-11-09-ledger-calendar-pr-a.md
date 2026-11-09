@@ -359,7 +359,9 @@ it('colours the dots from the category list and falls back for an unknown key')
 it('passes invoice days to the grid') // fake invoiceDays {'2026-10-22': 1} → cell 10/22 has .inv-mark (panes) / .inv-dot (phone)
 it('renders the grid without dots when the breakdown failed') // dotsState 'error', dots empty → no .dot, no .load-error, no toast element text
 it('passes paid due days: a fully paid statement reads 已繳, a day with one open card reads 帳單')
-   // reuse billRequests() from the billing describe at 1566+: two cards due 10/05, one statement paid in full (transfer_in == statement), other open → 10/05 .bill-mark '帳單'; a single paid card due 10/12 → '已繳'; zero statement → no mark (existing test 1598 still passes)
+   // reuse billRequests() from the billing describe at 1566+: two cards due 10/05, one statement paid in full (transfer_in == statement), other open → 10/05 .bill-mark '帳單'; a single paid card due 10/12 → '已繳';
+   // a zero statement and a refund-heavy statement (spend 0 / spend > 0) → no .bill-mark and no .bill-dot on their due day; a zero-statement card beside a fully paid card → that day reads '已繳'
+   // (test 1598 "hides a zero statement everywhere" still passes; update its `.due-badge` assertion to `.bill-mark, .bill-dot` since Task 6 removes the badge)
 ```
 
 - [ ] **Step 2: Run to verify failure** → FAIL.
