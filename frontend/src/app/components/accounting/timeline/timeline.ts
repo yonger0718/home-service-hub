@@ -49,6 +49,7 @@ import { CalendarPaneService, MonthDue, TodayCard } from '../calendar-month/cale
 import { categoryColorMap } from '../calendar-month/calendar-math';
 import { inboxBellCount } from '../inbox/inbox-view';
 import { InboxService } from '../inbox/inbox.service';
+import type { InboxEinvoice } from '../inbox/einvoice.model';
 import { parseTags } from '../entry-form/entry-draft';
 import { addDays, currentMonth, monthLabel, monthRange, todayIso, weekdayLabel } from '../dates';
 import { calendarParams, readCalendarQuery, writeCalendarQuery } from './calendar-url';
@@ -201,6 +202,11 @@ export function shiftMonth(month: string, delta: number): string {
   const [year, monthNumber] = month.split('-').map(Number);
   const [nextYear, nextMonth] = shiftYearMonth(year, monthNumber, delta);
   return `${nextYear}-${pad(nextMonth)}`;
+}
+
+/** A day group's net (main-currency rows only) as the day header shows it. */
+function dayNetOf(group: TimelineDay | null, currency: string): DayNet | null {
+  return group ? { net: group.net, text: formatSigned(group.net, currency), excluded: group.excluded } : null;
 }
 
 export function dayLabel(date: string): string {
@@ -450,6 +456,8 @@ export class LedgerTimelineComponent implements OnInit {
   private summaryRequestId = 0;
   private dailyRequestId = 0;
   private dayRequestId = 0;
+  /** An invoice whose issue day was just selected; resolved when that day's entries arrive (`openInvoice`). */
+  private pendingInvoice: InboxEinvoice | null = null;
   /** Filters of the rows on screen; a reset load for another key clears them (skeleton), the same key keeps them. */
   private listKey: string | null = null;
   private dayKey: string | null = null;
@@ -581,10 +589,11 @@ export class LedgerTimelineComponent implements OnInit {
   );
   readonly dayRows = computed(() => this.dayGroup()?.rows ?? []);
   /** Net of the rows shown (main-currency rows only, the list's per-day rule); the grid keeps the summary figures. */
-  readonly dayNet = computed<DayNet | null>(() => {
-    const group = this.dayGroup();
-    return group ? { net: group.net, text: formatSigned(group.net, this.mainCurrency()), excluded: group.excluded } : null;
-  });
+  readonly dayNet = computed<DayNet | null>(() => dayNetOf(this.dayGroup(), this.mainCurrency()));
+  /** The wide calendar's day panel: the same day without batch folding (one row per entry; the list keeps folding). */
+  private readonly paneDayGroup = computed(
+    () => buildDays(this.dayEntries(), this.mainCurrency(), this.hideRewards(), false)[0] ?? null,
+  );
   readonly selectedDayText = computed(() => {
     const date = this.selectedDay();
     return date ? dayLabel(date) : '';
@@ -896,8 +905,8 @@ export class LedgerTimelineComponent implements OnInit {
     effect(() => pane.month.set(this.month()));
     effect(() => pane.today.set(this.today()));
     effect(() => pane.selectedDay.set(this.selectedDay()));
-    effect(() => pane.dayRows.set(this.dayRows()));
-    effect(() => pane.dayNet.set(this.dayNet()));
+    effect(() => pane.dayRows.set(this.paneDayGroup()?.rows ?? []));
+    effect(() => pane.dayNet.set(dayNetOf(this.paneDayGroup(), this.mainCurrency())));
     effect(() => pane.dayState.set(this.dayError() ? 'error' : this.dayLoading() && this.dayEntries().length === 0 ? 'loading' : 'ready'));
     effect(() => pane.billLines.set(this.billLines()));
     effect(() => pane.invoices.set(this.calendarData.data().invoices));
@@ -920,13 +929,14 @@ export class LedgerTimelineComponent implements OnInit {
     });
     pane.commands.set({
       stepEntry: () => undefined, // Task 8
-      openInvoice: () => undefined, // Task 6
+      openInvoice: invoice => this.openInvoice(invoice),
       setQuery: text => {
         this.clearQueryTimer();
         this.setQuery(text);
       },
     });
     inject(DestroyRef).onDestroy(() => {
+      this.pendingInvoice = null;
       pane.clear();
       this.overview.calendar.set(false);
     });
@@ -1186,10 +1196,12 @@ export class LedgerTimelineComponent implements OnInit {
           if (id === this.dayRequestId) {
             this.dayEntries.set(page.items);
             this.dayLoading.set(false);
+            this.settleInvoice(date, page.items);
           }
         },
         error: () => {
           if (id === this.dayRequestId) {
+            this.pendingInvoice = null;
             this.dayEntries.set([]);
             this.dayError.set(true);
             this.dayLoading.set(false);
@@ -1198,7 +1210,42 @@ export class LedgerTimelineComponent implements OnInit {
       });
   }
 
+  /**
+   * 這個月要處理's invoice line: select its issue day; once that day's entries arrive, open the invoice's only
+   * candidate (an entry, or a split group through a member row of that day). Otherwise only the day stays selected.
+   */
+  private openInvoice(invoice: InboxEinvoice): void {
+    const date = invoice.issue_date;
+    const loaded = this.selectedDay() === date && !this.dayLoading() && !this.dayError();
+    this.pendingInvoice = invoice;
+    this.writeCalendar(date.slice(0, 7), date);
+    if (loaded) {
+      // The day is already on screen: no read follows, its entries are the ones loaded.
+      this.settleInvoice(date, this.dayEntries());
+    }
+  }
+
+  /** Resolves the pending invoice against `date`'s entries; cleared in every path. */
+  private settleInvoice(date: string, entries: LedgerEntry[]): void {
+    const invoice = this.pendingInvoice;
+    this.pendingInvoice = null;
+    if (!invoice || invoice.issue_date !== date || invoice.candidates.length !== 1) {
+      return;
+    }
+    const [candidate] = invoice.candidates;
+    const extras = { queryParams: calendarParams(this.router.routerState.snapshot.root.queryParamMap) };
+    if (candidate.kind === 'entry') {
+      void this.router.navigate(['/accounting/entries', candidate.id], extras);
+      return;
+    }
+    const member = entries.find(entry => entry.group?.id === candidate.id);
+    if (member) {
+      void this.router.navigate(groupCommands(member.id, null), extras);
+    }
+  }
+
   private dropDayEntries(): void {
+    this.pendingInvoice = null;
     this.dayKey = null;
     ++this.dayRequestId;
     this.dayEntries.set([]);
@@ -1327,6 +1374,7 @@ export class LedgerTimelineComponent implements OnInit {
   }
 
   moveMonth(delta: number): void {
+    this.pendingInvoice = null;
     this.today.set(todayIso());
     this.writeCalendar(shiftMonth(this.month(), delta), null);
   }

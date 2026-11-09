@@ -82,6 +82,36 @@
   grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
 }
 
+/* 日曆's right-pane base (本月摘要 / day panel / results) scrolls on its own and carries the pane's padding. */
+.dbody--calendar .detail-pane:has(> .cal-base) {
+  padding: 0;
+}
+
+.cal-base {
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--pane-pad-top) 14px 14px;
+}
+
+/* Mirrors the filter bar's search field (.filter-q). */
+.cal-search {
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  color: inherit;
+  font: inherit;
+  margin-bottom: 10px;
+  min-height: 36px;
+  padding: 0 10px;
+  width: 100%;
+
+  &:focus-visible {
+    border-color: var(--app-primary);
+    box-shadow: 0 0 0 3px var(--app-focus-ring);
+    outline: none;
+  }
+}
+
 .dbody--sheet {
   display: block;
   min-height: 0;

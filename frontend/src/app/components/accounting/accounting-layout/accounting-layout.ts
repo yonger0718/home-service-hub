@@ -15,7 +15,7 @@ import {
   viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { calendarParams } from '../timeline/calendar-url';
+import { calendarParams, writeCalendarQuery } from '../timeline/calendar-url';
 import { ActivatedRouteSnapshot, NavigationEnd, Params, Router, RouterOutlet } from '@angular/router';
 import { filter } from 'rxjs';
 
@@ -28,6 +28,12 @@ import { ACCOUNTING_PAGES, AccountingListKey } from '../accounting-pages';
 import { AccountingToastComponent } from '../accounting-toast';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { MonthOverviewComponent } from '../month-overview/month-overview';
+import { CalendarDayPanelComponent } from '../calendar-day-panel/calendar-day-panel';
+import { CalendarPaneService } from '../calendar-month/calendar-pane.service';
+import { addDays } from '../dates';
+import type { InboxEinvoice } from '../inbox/einvoice.model';
+import { groupCommands, listOpenState } from '../split-group/group-nav';
+import { QUERY_DEBOUNCE_MS, type TimelineRow } from '../timeline/timeline';
 import { AccountingOverviewService } from '../month-overview/overview.service';
 import { isHandledKey, trapFocus, OVERLAY_ATTR } from '../accounting-ui';
 import { AccountingShortcutsService, resolveShortcut } from '../keyboard-shortcuts';
@@ -84,7 +90,15 @@ const SWIPE_IGNORE = 'input, textarea, select, button:not(.sheet-close), [conten
 @Component({
   selector: 'app-accounting-layout',
   standalone: true,
-  imports: [RouterOutlet, NgComponentOutlet, AccountingToastComponent, MonthOverviewComponent, PageHeaderComponent, BtnComponent],
+  imports: [
+    RouterOutlet,
+    NgComponentOutlet,
+    AccountingToastComponent,
+    MonthOverviewComponent,
+    CalendarDayPanelComponent,
+    PageHeaderComponent,
+    BtnComponent,
+  ],
   templateUrl: './accounting-layout.html',
   styleUrl: './accounting-layout.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -130,10 +144,23 @@ export class AccountingLayoutComponent {
   protected readonly overview = inject(AccountingOverviewService);
   /** D7: nothing selected on the timeline at ≥ 1280 px → the month overview instead of the one-line empty state. */
   readonly showOverview = computed(
-    () => this.mode() === 'panes' && this.layoutMode.wideSidebar() && this.listKey() === 'timeline' && !this.paneOpen(),
+    () =>
+      this.mode() === 'panes' &&
+      this.layoutMode.wideSidebar() &&
+      this.listKey() === 'timeline' &&
+      !this.paneOpen() &&
+      !this.overview.calendar(),
   );
   /** 日曆 on the timeline at ≥ 1024 px: the list pane takes 2fr, the day panel and drawer live in the right pane. */
   readonly calendarMode = computed(() => this.mode() === 'panes' && this.listKey() === 'timeline' && this.overview.calendar());
+  /** What the timeline publishes for the calendar's right pane. */
+  protected readonly pane = inject(CalendarPaneService);
+  /** Calendar mode's right-pane base: 'summary' | 'day' | 'results' (day wins over results; results need a search text). */
+  readonly calendarBase = computed<'summary' | 'day' | 'results' | null>(() =>
+    !this.calendarMode() ? null : this.pane.selectedDay() ? 'day' : this.pane.search() ? 'results' : 'summary',
+  );
+  private readonly calSearch = viewChild<ElementRef<HTMLInputElement>>('calSearch');
+  private searchTimer: ReturnType<typeof setTimeout> | null = null;
   readonly emptyCopy = computed(() =>
     this.listKey() === 'accounts' ? '選擇帳戶查看明細，或按 ＋ 新增' : '選擇一筆記錄查看明細，或按 ＋ 新增',
   );
@@ -170,6 +197,15 @@ export class AccountingLayoutComponent {
 
   constructor() {
     effect(() => this.overview.visible.set(this.showOverview()));
+    // The lifted search box follows the shared query, but never while it has focus (an IME composition or a trailing
+    // space the trimmed query would drop survives); no [value] binding for the same reason.
+    effect(() => {
+      const text = this.pane.search();
+      const input = this.calSearch()?.nativeElement;
+      if (input && input !== this.document.activeElement && input.value !== text) {
+        input.value = text;
+      }
+    });
 
     this.router.events
       .pipe(
@@ -251,6 +287,7 @@ export class AccountingLayoutComponent {
       this.paneState.sheetOpen.set(this.sheetOpen());
     });
     inject(DestroyRef).onDestroy(() => {
+      this.clearSearchTimer();
       this.setOutsideInert(false);
       this.overview.visible.set(false);
       this.paneState.paneOpen.set(false);
@@ -308,6 +345,92 @@ export class AccountingLayoutComponent {
 
   private calendarQuery(): Params {
     return calendarParams(this.router.routerState.snapshot.root.queryParamMap);
+  }
+
+  // 日曆 right pane
+
+  /** 今天 or a 這個月要處理 due line: that day (a next-month due moves the month too). */
+  onPickDay(date: string): void {
+    void writeCalendarQuery(this.router, date.slice(0, 7), date);
+  }
+
+  /** ‹ › / `[` `]` in the day panel: the previous / next day, crossing month edges. */
+  onStepDay(delta: 1 | -1): void {
+    const day = this.pane.selectedDay();
+    if (day === null) {
+      return;
+    }
+    const next = addDays(day, delta);
+    void writeCalendarQuery(this.router, next.slice(0, 7), next);
+  }
+
+  /** 本月摘要: back to the month's summary. */
+  onClearDay(): void {
+    void writeCalendarQuery(this.router, this.pane.month(), null);
+  }
+
+  /** A day-panel / results row: a split opens its group view (as `timeline.open`), any other row its detail. */
+  onOpenRow(row: TimelineRow): void {
+    const queryParams = this.calendarQuery();
+    if (row.folder) {
+      const state = listOpenState(this.router.url, '/accounting');
+      void this.router.navigate(groupCommands(row.entryId, null), { ...(state ? { state } : {}), queryParams });
+      return;
+    }
+    void this.router.navigate(['/accounting/entries', row.entryId], { queryParams });
+  }
+
+  /** ＋ 在這天記一筆: the entry form dated that day, keeping the calendar. */
+  onAddEntry(date: string): void {
+    void this.router.navigate(['/accounting/entry'], { queryParams: { date, ...this.calendarQuery() } });
+  }
+
+  /** One search shared with the filter bar: the timeline owns the query. */
+  onSearch(text: string): void {
+    this.pane.commands()?.setQuery(text);
+  }
+
+  /** The lifted box: 300 ms debounce (none during an IME composition), Enter commits at once, Esc empties it. */
+  onSearchInput(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (event.type === 'keydown') {
+      const key = (event as KeyboardEvent).key;
+      if ((event as KeyboardEvent).isComposing || (key !== 'Enter' && key !== 'Escape')) {
+        return;
+      }
+      event.preventDefault();
+      this.clearSearchTimer();
+      if (key === 'Escape') {
+        input.value = '';
+      }
+      this.onSearch(input.value);
+      return;
+    }
+    this.clearSearchTimer();
+    if ((event as InputEvent).isComposing) {
+      return;
+    }
+    const value = input.value;
+    this.searchTimer = setTimeout(() => {
+      this.searchTimer = null;
+      this.onSearch(value);
+    }, QUERY_DEBOUNCE_MS);
+  }
+
+  private clearSearchTimer(): void {
+    if (this.searchTimer !== null) {
+      clearTimeout(this.searchTimer);
+      this.searchTimer = null;
+    }
+  }
+
+  onOpenInvoice(invoice: InboxEinvoice): void {
+    this.pane.commands()?.openInvoice(invoice);
+  }
+
+  /** A bill line: that card's passbook (the timeline's `openCard` target). */
+  openCard(accountId: number): void {
+    void this.router.navigate(['/accounting/accounts', accountId]);
   }
 
   /** Back to the list's own URL. */

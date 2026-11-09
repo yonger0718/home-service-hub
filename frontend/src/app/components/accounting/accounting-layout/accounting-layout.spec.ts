@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { routes } from '../../../app.routes';
 import { AccountingService } from '../../../services/accounting.service';
@@ -15,6 +15,8 @@ import { makeEntry, makeEntryDetail, makePreference } from '../testing/fixtures'
 import { PaneStateService } from '../../../services/pane-state.service';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { AccountingOverviewService } from '../month-overview/overview.service';
+import { CalendarPaneService } from '../calendar-month/calendar-pane.service';
+import { buildDays } from '../timeline/timeline';
 import { AccountingLayoutComponent, FAB_RIGHT_BESIDE_CALENDAR_PANE, FAB_RIGHT_BESIDE_PANE } from './accounting-layout';
 
 /** Evaluates `(min|max)-width: Npx` conditions against a fixed viewport width. */
@@ -118,6 +120,99 @@ describe('AccountingLayoutComponent', () => {
       expect(root.querySelector('.monthbar-figures')).toBeNull();
     });
 
+    describe('right pane', () => {
+      const pane = () => TestBed.inject(CalendarPaneService);
+
+      function click(element: Element): void {
+        (element as HTMLElement).click();
+      }
+
+      it('shows 本月摘要 in calendar mode at 1100px with no day', async () => {
+        localStorage.setItem('hh.accounting.timelineView', 'calendar');
+        const harness = await start('panes', '/accounting?month=2026-10', 1100);
+        await find(harness, '.cal-base app-month-overview');
+        const root = harness.routeNativeElement!;
+        const search = root.querySelector<HTMLInputElement>('.cal-base .cal-search')!;
+        expect(search.placeholder).toBe('搜尋整月：名稱、商家、備註');
+        expect(root.querySelector('.pane-empty')).toBeNull();
+        expect(root.querySelector('app-calendar-day-panel')).toBeNull();
+      });
+
+      it('shows the day panel when the URL carries a day', async () => {
+        const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+        const label = await find(harness, '.cal-base app-calendar-day-panel .dp-label');
+        expect(label.textContent!.trim()).toBe('10/21 週三');
+        const root = harness.routeNativeElement!;
+        expect(root.querySelector('.cal-search')).toBeNull();
+        expect(root.querySelector('app-month-overview')).toBeNull();
+      });
+
+      it('‹ › and 本月摘要 write the URL with replaceUrl', async () => {
+        const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+        const router = TestBed.inject(Router);
+        const navigate = vi.spyOn(router, 'navigate');
+        click(await find(harness, '.dp-head [aria-label=後一天]'));
+        await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-22'));
+        expect(navigate).toHaveBeenLastCalledWith([], expect.objectContaining({ replaceUrl: true, queryParamsHandling: 'merge' }));
+        await vi.waitFor(() => expect(pane().selectedDay()).toBe('2026-10-22'));
+        click(await find(harness, '.dp-head .dp-summary'));
+        await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10'));
+        expect(navigate).toHaveBeenLastCalledWith([], expect.objectContaining({ replaceUrl: true }));
+        await find(harness, '.cal-base app-month-overview');
+      });
+
+      it('› on the last day of the month moves to the next month', async () => {
+        const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-31', 1100);
+        const router = TestBed.inject(Router);
+        click(await find(harness, '.dp-head [aria-label=後一天]'));
+        await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-11&day=2026-11-01'));
+      });
+
+      it('a next-month due row in 這個月要處理 writes the next month and its day', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date(2026, 9, 28, 12, 0, 0));
+        try {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          await find(harness, '.cal-base app-month-overview');
+          expect(pane().today()).toBe('2026-10-28');
+          pane().monthDues.set([{ key: 'due-9', accountId: 9, name: '測試卡', date: '2026-11-03', amountText: '$800' }]);
+          click(await find(harness, '.todo-bill'));
+          const router = TestBed.inject(Router);
+          await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-11&day=2026-11-03'));
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('shows exactly one 本月摘要 and no 近期到期 at 1440px in 日曆 (showOverview stands down)', async () => {
+        localStorage.setItem('hh.accounting.timelineView', 'calendar');
+        const harness = await start('panes', '/accounting?month=2026-10', 1440);
+        await find(harness, '.cal-base app-month-overview');
+        const root = harness.routeNativeElement!;
+        expect(root.querySelectorAll('app-month-overview').length).toBe(1);
+        expect(root.querySelector('.cal-search')).not.toBeNull();
+        expect(root.querySelector('.detail-pane')!.textContent).not.toContain('近期到期');
+        expect(root.querySelector('.pane-empty')).toBeNull();
+      });
+
+      it('＋ 在這天記一筆 opens the form with date, month and day', async () => {
+        const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+        const router = TestBed.inject(Router);
+        click(await find(harness, '.dp-add'));
+        await vi.waitFor(() => expect(router.url).toBe('/accounting/entry?date=2026-10-21&month=2026-10&day=2026-10-21'));
+      });
+
+      it('a day-panel row opens the entry with month and day kept', async () => {
+        const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+        await find(harness, 'app-calendar-day-panel .dp-label');
+        pane().dayRows.set(buildDays([makeEntry({ id: 7, entry_date: '2026-10-21' })], 'TWD', false)[0].rows);
+        const router = TestBed.inject(Router);
+        click(await find(harness, 'app-calendar-day-panel .dp-row[data-entry-id="7"]'));
+        await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/7?month=2026-10&day=2026-10-21'));
+      });
+    });
+
     it('publishes the calendar FAB offset while a pane is open in calendar mode', async () => {
       localStorage.setItem('hh.accounting.timelineView', 'calendar');
       const harness = await start('panes', '/accounting/entries/5?month=2026-10', 1100);
@@ -127,6 +222,9 @@ describe('AccountingLayoutComponent', () => {
   });
 
   describe('empty pane', () => {
+    // 清單: the ≥ 1280 px overview and the one-line empty copy (日曆's right pane is the calendar describe's).
+    beforeEach(() => localStorage.setItem('hh.accounting.timelineView', 'list'));
+
     it('shows the month overview instead of the empty copy at 1440px on /accounting', async () => {
       const harness = await start('panes', '/accounting', 1440);
       await find(harness, 'app-month-overview');
@@ -193,6 +291,7 @@ describe('AccountingLayoutComponent', () => {
   });
 
   it('keeps the list and updates the URL when a row is selected at 1280px', async () => {
+    localStorage.setItem('hh.accounting.timelineView', 'list');
     const harness = await start('panes', '/accounting');
     const list = await find(harness, LIST);
     expect(harness.routeNativeElement!.querySelector('.pane-empty')).not.toBeNull();

@@ -16,6 +16,7 @@ import { EMPTY_CALENDAR_DATA, CalendarDataService, CalendarMonthData } from '../
 import { makeAccount, makeCategory, makeEntry, makeInstance, makePreference } from '../testing/fixtures';
 import { FALLBACK_COLOR } from './category-distribution';
 import { CalendarPaneService } from '../calendar-month/calendar-pane.service';
+import { EinvoiceTarget, InboxEinvoice } from '../inbox/einvoice.model';
 import { LedgerTimelineComponent, buildDays, schedulePills } from './timeline';
 
 const VIEW_KEY = 'hh.accounting.timelineView';
@@ -2865,6 +2866,67 @@ describe('LedgerTimelineComponent', () => {
       expect(fixture.componentInstance.query()).toBe('咖啡');
       fixture.detectChanges();
       expect(pane().search()).toBe('咖啡');
+    });
+
+    it('publishes the day rows with reward batches unfolded (one row per entry)', () => {
+      const { fixture, el } = renderPanes();
+      pickDay(fixture, el, '2026-10-21', [batchReward(1, '2.0000'), batchReward(2, '3.0000')]);
+      expect(pane().dayRows().map(row => [row.entryId, row.batch ?? null])).toEqual([[1, null], [2, null]]);
+    });
+
+    describe('openInvoice', () => {
+      const target = (kind: 'entry' | 'group', id: number): EinvoiceTarget => ({
+        kind, id, account_name: '測試卡', date: '2026-10-21', amount: '-120.0000', currency: 'TWD', category: null, name: null,
+      });
+      const invoice = (candidates: EinvoiceTarget[]): InboxEinvoice => ({
+        id: 3, number: 'AB00000001', issue_date: '2026-10-21', seller_name: '測試商店', seller_tax_id: '00000000',
+        total_amount: '120', status_raw: '', state: 'ambiguous', items: [], candidates, offer_mute: false,
+      });
+      const split = { id: 40, kind: 'split' as const, name: null, merchant: null, description: null, count: 2, total: '-300.0000', currency: 'TWD' };
+
+      /** Opens the invoice, waits for the day write, then answers the day read with `items`. */
+      async function openWith(candidates: EinvoiceTarget[], items: LedgerEntry[]) {
+        const { fixture } = renderPanes();
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
+        pane().commands()!.openInvoice(invoice(candidates));
+        await fixture.whenStable();
+        expect(pane().selectedDay()).toBe('2026-10-21');
+        expect(navigate).toHaveBeenCalledTimes(1);
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        flushEntries(items);
+        fixture.detectChanges();
+        return navigate;
+      }
+
+      it('openInvoice selects the invoice day and opens its single entry candidate', async () => {
+        const navigate = await openWith([target('entry', 5)], [makeEntry({ id: 5, entry_date: '2026-10-21' })]);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 5], { queryParams: { month: '2026-10', day: '2026-10-21' } });
+      });
+
+      it('openInvoice opens the group of a split candidate through a member row', async () => {
+        const navigate = await openWith([target('group', 40)], [
+          makeEntry({ id: 8, entry_date: '2026-10-21' }),
+          makeEntry({ id: 41, entry_date: '2026-10-21', group: split }),
+          makeEntry({ id: 42, entry_date: '2026-10-21', group: split }),
+        ]);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 41, 'group'], { queryParams: { month: '2026-10', day: '2026-10-21' } });
+      });
+
+      it('openInvoice only selects the day when the group has no member row on that day (Review Focus 3)', async () => {
+        const navigate = await openWith([target('group', 40)], [makeEntry({ id: 8, entry_date: '2026-10-21' })]);
+        expect(navigate).not.toHaveBeenCalled();
+        expect(pane().selectedDay()).toBe('2026-10-21');
+      });
+
+      it('openInvoice only selects the day with two candidates', async () => {
+        const navigate = await openWith([target('entry', 5), target('entry', 6)], [
+          makeEntry({ id: 5, entry_date: '2026-10-21' }),
+          makeEntry({ id: 6, entry_date: '2026-10-21' }),
+        ]);
+        expect(navigate).not.toHaveBeenCalled();
+      });
     });
 
     it('clears the pane services when destroyed', () => {

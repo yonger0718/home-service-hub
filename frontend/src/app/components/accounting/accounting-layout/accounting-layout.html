@@ -47,10 +47,73 @@
             }
           }
         </div>
+        @if (calendarBase(); as base) {
+          <div class="cal-base" #calendarBase>
+            @if (base !== 'day') {
+              <!-- Value written by an effect (never while focused), not bound: see onSearchInput. -->
+              <input
+                type="search"
+                class="cal-search"
+                #calSearch
+                placeholder="搜尋整月：名稱、商家、備註"
+                aria-label="搜尋名稱、商家或備註"
+                (input)="onSearchInput($event)"
+                (keydown)="onSearchInput($event)"
+                (compositionend)="onSearchInput($event)"
+              />
+            }
+            @switch (base) {
+              @case ('summary') {
+                <app-month-overview
+                  [calendar]="true"
+                  [month]="overview.month()"
+                  [summary]="overview.summary()"
+                  [summaryState]="overview.summaryState()"
+                  [today]="pane.todayCard()"
+                  [merchants]="pane.merchants()"
+                  [merchantsState]="pane.merchantsState()"
+                  [invoices]="pane.invoices()"
+                  [dues]="pane.monthDues()"
+                  (pickDay)="onPickDay($event)"
+                  (openInvoice)="onOpenInvoice($event)"
+                />
+              }
+              @case ('day') {
+                <app-calendar-day-panel
+                  mode="day"
+                  [day]="pane.selectedDay()"
+                  [today]="pane.today()"
+                  [rows]="pane.dayRows()"
+                  [net]="pane.dayNet()"
+                  [state]="pane.dayState()"
+                  [billLines]="pane.billLines()"
+                  [selectedId]="selectedEntryId()"
+                  (step)="onStepDay($event)"
+                  (clear)="onClearDay()"
+                  (open)="onOpenRow($event)"
+                  (add)="onAddEntry($event)"
+                  (openCard)="openCard($event)"
+                />
+              }
+              @case ('results') {
+                <app-calendar-day-panel
+                  mode="results"
+                  [today]="pane.today()"
+                  [days]="pane.searchDays()"
+                  [state]="pane.searchState()"
+                  [query]="pane.search()"
+                  [selectedId]="selectedEntryId()"
+                  (clear)="onSearch('')"
+                  (open)="onOpenRow($event)"
+                />
+              }
+            }
+          </div>
+        }
         <router-outlet name="pane" />
         @if (showOverview()) {
           <app-month-overview [month]="overview.month()" [summary]="overview.summary()" [dueItems]="overview.dueItems()" [summaryState]="overview.summaryState()" [dueState]="overview.dueState()" />
-        } @else if (!paneOpen()) {
+        } @else if (!paneOpen() && !calendarMode()) {
           <p class="pane-empty">{{ emptyCopy() }}</p>
         }
       </section>
