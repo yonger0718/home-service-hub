@@ -33,6 +33,7 @@ const OVERVIEW: RewardRuleOverview = {
   accounts: [
     {
       account_id: 11, account_name: '華航卡', is_credit: true, is_archived: false,
+      icon: null, logo: null, logo_hash: null, closing_day: null, usage: [],
       rules: [
         rule(2, '國內一般', {
           stats: {
@@ -44,7 +45,10 @@ const OVERVIEW: RewardRuleOverview = {
         rule(3, '海外加碼', { starts_on: '2026-01-01', ends_on: '2026-12-31' }),
       ],
     },
-    { account_id: 12, account_name: '玉山卡', is_credit: true, is_archived: true, rules: [] },
+    {
+      account_id: 12, account_name: '玉山卡', is_credit: true, is_archived: true,
+      icon: null, logo: null, logo_hash: null, closing_day: null, usage: [], rules: [],
+    },
   ],
   counts: { active: 2, disabled: 0, expired: 0, upcoming: 0, enabled_expired: 0 },
 };
@@ -124,7 +128,7 @@ describe('RewardRulesOverviewComponent', () => {
     expect(texts(card, '.rr-label')).toEqual(['國內一般 (1.5%)', '海外加碼 (1.5%)']);
     expect(texts(card, '.rr-posting')[0]).toBe('帳單結帳後第 1 月 15 日');
     expect(texts(card, '.rr-period')).toEqual(['無期限', '2026/01/01 – 2026/12/31']);
-    expect(texts(card, '.rule-state')).toEqual(['啟用中', '啟用中']);
+    expect(texts(card, '.rule-state')).toEqual(['生效中', '生效中']);
     expect(texts(el, '.rr-filter')).toEqual(['啟用中', '已到期', '尚未開始', '已停用', '全部']);
     expect(Array.from(el.querySelectorAll('.rr-filter')).map(b => b.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false', 'false', 'false']);
   });

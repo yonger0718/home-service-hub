@@ -1,7 +1,11 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { describe, expect, it } from 'vitest';
 import { makeRule } from './testing/fixtures';
-import { REWARD_WINDOW_LABELS, basicOverlapRuleId, methodSummary, parseReferenced, periodText, referencedText, postingSummary, ruleState, ruleToInput } from './reward-rule-text';
+import { RewardUsage } from '../../models/accounting.model';
+import {
+  REWARD_WINDOW_LABELS, RULE_STATE_LABELS, basicOverlapRuleId, fullDate, methodSummary, monthDay, parseReferenced, periodText,
+  rateChip, referencedText, rewardFigure, postingSummary, ruleState, ruleTitle, ruleToInput, usageUnit, windowText,
+} from './reward-rule-text';
 
 describe('ruleState', () => {
   it('orders disabled > expired > upcoming > active', () => {
@@ -64,5 +68,40 @@ describe('409 parsing', () => {
   it('reads the clashing basic rule id', () => {
     expect(basicOverlapRuleId(conflict('basic_rule_overlap: rule 9'))).toBe(9);
     expect(basicOverlapRuleId(new HttpErrorResponse({ status: 422 }))).toBeNull();
+  });
+});
+
+// polish-reward-and-account-settings PR B (D1a, D3): overview text helpers.
+describe('overview text helpers', () => {
+  const usage = (over: Partial<RewardUsage> = {}): RewardUsage => ({
+    rule_ids: [1], shared_cap_id: null, name: 'A', window_start: '2026-10-26', window_end: '2026-11-25',
+    used: '236', estimated: '64', cap: '500', remaining: '200',
+    reward_account_id: 9, reward_account_name: '測試卡', reward_is_money: true, ...over,
+  });
+
+  it('usageUnit / rewardFigure: money with $, points as the number and the account name', () => {
+    expect(rewardFigure('1236', usageUnit(usage()))).toBe('$1,236');
+    expect(rewardFigure(0, usageUnit(usage()))).toBe('$0');
+    const points = usageUnit(usage({ reward_is_money: false, reward_account_name: '測試里程' }));
+    expect(points).toEqual({ money: false, name: '測試里程' });
+    expect(rewardFigure('120', points)).toBe('120 測試里程');
+  });
+
+  it('ruleTitle strips a trailing rate; rateChip is the method summary', () => {
+    const rule = makeRule({ name: '玩數位 3%', method: 'percent', rate: '3' });
+    expect([ruleTitle(rule), rateChip(rule)]).toEqual(['玩數位', '3%']);
+    expect(ruleTitle(makeRule({ ...rule, name: '全聯・家樂福加碼' }))).toBe('全聯・家樂福加碼');
+    expect(ruleTitle(makeRule({ ...rule, name: '海外 (3%)' }))).toBe('海外');
+    expect(ruleTitle(makeRule({ ...rule, name: '3%' }))).toBe('3%');
+  });
+
+  it('monthDay / windowText / fullDate drop the zero padding', () => {
+    expect(monthDay('2026-11-06')).toBe('11/6');
+    expect(windowText(usage())).toBe('10/26–11/25');
+    expect(fullDate('2027-01-01')).toBe('2027/1/1');
+  });
+
+  it('state labels use the spec words', () => {
+    expect(RULE_STATE_LABELS).toEqual({ active: '生效中', disabled: '已停用', expired: '已過期', upcoming: '未開始' });
   });
 });

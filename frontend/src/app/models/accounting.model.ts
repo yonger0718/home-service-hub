@@ -69,6 +69,10 @@ export interface RewardUsage {
   estimated: string;
   cap: string | null;
   remaining: string | null;
+  /** The account the row's first rule pays into; `reward_is_money` false → figures read 「N <name>」 (D1a). */
+  reward_account_id: number;
+  reward_account_name: string;
+  reward_is_money: boolean;
 }
 
 /** One reward accrual on an entry (`EntryOut.accruals`). */
@@ -163,6 +167,13 @@ export interface RewardRuleOverviewAccount {
   account_name: string;
   is_credit: boolean;
   is_archived: boolean;
+  icon: string | null;
+  logo: string | null;
+  logo_hash: string | null;
+  /** The effective card closing day (own, else the combined parent's); null for calendar-only accounts. */
+  closing_day: number | null;
+  /** Today's window per in-date rule (a shared-cap group once), whatever the filters (#342). */
+  usage: RewardUsage[];
   rules: RewardRuleOverviewRule[];
 }
 

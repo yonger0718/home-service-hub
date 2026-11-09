@@ -204,7 +204,7 @@ describe('AccountSettingsComponent', () => {
     expect(masters).toEqual(['無', '玉山信用卡', '玉山 UNI', '玉山 U Bear']);
     expect(el(fixture).querySelector<HTMLSelectElement>('.master-select')!.value).toBe('10');
     expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般 (1%)', '餐飲 (5.2%)']);
-    expect(texts(fixture, '.rule-row .rule-state')).toEqual(['啟用中', '已停用']);
+    expect(texts(fixture, '.rule-row .rule-state')).toEqual(['生效中', '已停用']);
     expect(el(fixture).textContent).not.toContain('（停用）');
   });
 
@@ -778,7 +778,7 @@ describe('AccountSettingsComponent', () => {
     expect(texts(fixture, '.rule-row .rule-period')).toEqual(['無期限', '2026/01/01 – 2026/12/31']);
     const states = Array.from(el(fixture).querySelectorAll('.rule-row .rule-state'));
     expect(states.map(s => [s.getAttribute('data-state'), s.textContent?.trim()])).toEqual([
-      ['active', '啟用中'],
+      ['active', '生效中'],
       ['disabled', '已停用'],
     ]);
     const rows = Array.from(el(fixture).querySelectorAll('.rule-row'));
@@ -845,7 +845,7 @@ describe('AccountSettingsComponent', () => {
     fixture.detectChanges();
 
     expect(el(fixture).querySelector('.rule-message')?.textContent?.trim()).toBeTruthy();
-    expect(texts(fixture, '.rule-row .rule-state')).toEqual(['啟用中', '已停用']);
+    expect(texts(fixture, '.rule-row .rule-state')).toEqual(['生效中', '已停用']);
   });
 
   it('a 409 basic_rule_overlap on the 啟用 switch names the clashing rule', async () => {
@@ -920,7 +920,8 @@ describe('AccountSettingsComponent', () => {
   describe('本期 usage', () => {
     const usage = (fields: Partial<RewardUsage>): RewardUsage => ({
       rule_ids: [1], shared_cap_id: null, name: '一般', window_start: '2026-09-16', window_end: '2026-10-15',
-      used: '30.0000', estimated: '20.0000', cap: '100.0000', remaining: '50.0000', ...fields,
+      used: '30.0000', estimated: '20.0000', cap: '100.0000', remaining: '50.0000',
+      reward_account_id: 1, reward_account_name: '測試卡', reward_is_money: true, ...fields,
     });
 
     it('shows 本期 used/cap from reward usage', async () => {
@@ -1093,13 +1094,13 @@ describe('AccountSettingsComponent', () => {
     expect(navigate.mock.calls[0][1]?.queryParams).toEqual({ rule: null });
   });
 
-  it('an expired rule shows the 已到期 badge in the warning colour', async () => {
+  it('an expired rule shows the 已過期 badge in the warning colour', async () => {
     await setup('11');
     const expired = rewardRule({ id: 3, name: '夏季', rate: '2.0000', starts_on: '2026-06-01', ends_on: '2026-09-30', sort_order: 2 });
     const fixture = render({ ...DETAIL, reward_rules: [...DETAIL.reward_rules, expired] } as AccountDetail);
 
     const badge = el(fixture).querySelectorAll('.rule-row .rule-state')[2];
-    expect(badge.textContent?.trim()).toBe('已到期');
+    expect(badge.textContent?.trim()).toBe('已過期');
     expect(badge.getAttribute('data-state')).toBe('expired');
     expect(badge.classList.contains('warn')).toBe(true);
     expect(el(fixture).querySelectorAll('.rule-row .rule-state.warn').length).toBe(1);
