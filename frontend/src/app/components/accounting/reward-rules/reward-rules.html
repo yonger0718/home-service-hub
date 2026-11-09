@@ -108,6 +108,6 @@
   }
 
   @if (overview() && !cards().length && !bare().length) {
-    <p class="rr-none">尚無回饋規則</p>
+    <p class="rr-none">{{ filter() === 'all' ? '尚無回饋規則' : '此狀態下沒有規則' }}</p>
   }
 </section>

@@ -107,7 +107,8 @@ function windowLine(account: RewardRuleOverviewAccount, mixed: boolean): string 
     return closing;
   }
   const period = windowText(row);
-  if (account.usage.every(candidate => rowIsCalendar(candidate, account.rules))) {
+  // Without a closing day the server's statement cycle is the calendar month (cycles.py), so the card is a calendar one.
+  if (account.closing_day === null || account.usage.every(candidate => rowIsCalendar(candidate, account.rules))) {
     return `每月 1 日起算 · 本月 ${period}`;
   }
   return closing ? `${closing} · 本期 ${period}` : `本期 ${period}`;
@@ -155,13 +156,15 @@ export function buildCard(account: RewardRuleOverviewAccount): OverviewCard {
   };
 }
 
-/** `N 張卡 · M 條規則 · 本期回饋合計 $X（含預估）`, then ` ＋ K 種點數` for the distinct non-money units (D1a). */
-export function headlineText(cards: OverviewCard[], counts: RewardRuleCounts): string {
+/** `N 張卡 · M 條規則 · 本期回饋合計 $X（含預估）`, then ` ＋ K 種點數` for the distinct non-money units (D1a).
+ * `N` is the cards shown; the totals and the unit count run over every account's usage, whatever the state chip —
+ * usage ignores the filter, and a total that shrank under 已停用 would read as what disabled rules earned. */
+export function headlineText(shown: number, accounts: RewardRuleOverviewAccount[], counts: RewardRuleCounts): string {
   const rules = counts.active + counts.disabled + counts.expired + counts.upcoming;
   let money = 0;
   const points = new Set<number>();
-  for (const card of cards) {
-    for (const row of card.account.usage) {
+  for (const account of accounts) {
+    for (const row of account.usage) {
       if (row.reward_is_money) {
         money += Number(row.used) + Number(row.estimated);
       } else {
@@ -169,7 +172,7 @@ export function headlineText(cards: OverviewCard[], counts: RewardRuleCounts): s
       }
     }
   }
-  const head = `${cards.length} 張卡 · ${rules} 條規則 · 本期回饋合計 ${formatMoney(money, 'TWD')}（含預估）`;
+  const head = `${shown} 張卡 · ${rules} 條規則 · 本期回饋合計 ${formatMoney(money, 'TWD')}（含預估）`;
   return points.size ? `${head} ＋ ${points.size} 種點數` : head;
 }
 
@@ -208,7 +211,7 @@ export class RewardRulesOverviewComponent {
   );
   readonly headline = computed(() => {
     const data = this.overview();
-    return data ? headlineText(this.cards(), data.counts) : '';
+    return data ? headlineText(this.cards().length, data.accounts, data.counts) : '';
   });
   readonly chipCounts = computed<Record<RewardRuleFilter, number>>(() => {
     const counts = this.overview()?.counts;

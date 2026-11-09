@@ -163,6 +163,31 @@ describe('RewardRulesOverviewComponent', () => {
     expect(text(el.querySelector('.rr-headline'))).toBe('2 張卡 · 7 條規則 · 本期回饋合計 $521（含預估）');
   });
 
+  it('headline under a state chip: shown cards, but the totals over every account (final review I1)', async () => {
+    // What the server returns for ?state=disabled: every account listed, only disabled rules, usage untouched.
+    const filtered = OVERVIEW.accounts.map(a => ({ ...a, rules: a.rules.filter(r => r.state === 'disabled') }));
+    const { el } = await open('/accounting/reward-rules?state=disabled', { ...OVERVIEW, accounts: filtered });
+    expect(texts(el, '.rr-card-name')).toEqual(['測試卡 B']);
+    expect(text(el.querySelector('.rr-headline'))).toBe('1 張卡 · 7 條規則 · 本期回饋合計 $521（含預估） ＋ 1 種點數');
+  });
+
+  it('no closing day: a statement-cycle rule is a calendar month on the server, so the line says so', async () => {
+    const bank = account(29, '無結帳日卡', {
+      usage: [usage({ rule_ids: [96], window_start: '2026-11-01', window_end: '2026-11-30', reward_account_id: 29 })],
+      rules: [rule(96, 29, '一般')],
+    });
+    const { el } = await open('/accounting/reward-rules', { ...OVERVIEW, accounts: [bank] });
+    expect(text(card(el, '無結帳日卡').querySelector('.rr-window'))).toBe('每月 1 日起算 · 本月 11/1–11/30');
+  });
+
+  it('empty under a state chip says 此狀態下沒有規則, not 尚無回饋規則', async () => {
+    const none = OVERVIEW.accounts.map(a => ({ ...a, rules: [] }));
+    const { el } = await open('/accounting/reward-rules?state=expired', { ...OVERVIEW, accounts: none });
+    expect(el.querySelector('.rr-card')).toBeNull();
+    expect(el.querySelector('.rr-bare')).toBeNull();
+    expect(text(el.querySelector('.rr-none'))).toBe('此狀態下沒有規則');
+  });
+
   it('card header: icon, window line from the closing day and the usage rows, the period total', async () => {
     const { el } = await open();
     const a = card(el, '測試卡 A');
