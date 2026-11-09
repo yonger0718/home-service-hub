@@ -361,7 +361,7 @@ describe('LedgerTimelineComponent', () => {
     expect(rows.map(row => row.getAttribute('aria-current'))).toEqual([null, 'true']);
     rows[0].click();
 
-    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 1]);
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 1], {});
   });
 
   it('opens the 多類別 group view from a split row (the list noted as its origin); installment and reward rows open the detail', () => {
@@ -393,9 +393,9 @@ describe('LedgerTimelineComponent', () => {
       expect(navigate).toHaveBeenLastCalledWith(['/accounting/entries', 40, 'group'], {});
     }
     rows[1].click();
-    expect(navigate).toHaveBeenLastCalledWith(['/accounting/entries', 50]);
+    expect(navigate).toHaveBeenLastCalledWith(['/accounting/entries', 50], {});
     rows[2].click();
-    expect(navigate).toHaveBeenLastCalledWith(['/accounting/entries', 60]);
+    expect(navigate).toHaveBeenLastCalledWith(['/accounting/entries', 60], {});
   });
 
   it('marks the first row once its entry is opened, and moves the mark with the routed entry', () => {
@@ -1217,7 +1217,6 @@ describe('LedgerTimelineComponent', () => {
       return rendered;
     }
 
-
     describe('calendar data', () => {
       it('tells CalendarDataService the month in 日曆 and null in 清單 or on destroy', () => {
         const { fixture, el } = renderCalendar();
@@ -1633,6 +1632,30 @@ describe('LedgerTimelineComponent', () => {
       expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 1], { queryParams: { month: '2026-10', day: '2026-10-21' } });
     });
 
+    it('keeps the selected day while a pane route without calendar params is open, and drops it on the list URL', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10&day=2026-10-21');
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
+      fixture.detectChanges();
+      expect(cellAt(el, '2026-10-21').classList).toContain('sel');
+      await router.navigateByUrl('/accounting/entry');
+      await settle(fixture);
+      expect(fixture.componentInstance.selectedDay()).toBe('2026-10-21');
+      expect(cellAt(el, '2026-10-21').classList).toContain('sel');
+      await router.navigateByUrl('/accounting');
+      await settle(fixture);
+      expect(fixture.componentInstance.selectedDay()).toBeNull();
+    });
+
+    it('setView(list) with no day in the URL writes nothing', async () => {
+      const { fixture, router } = await openAt('/accounting?month=2026-10', 'calendar');
+      drain();
+      const navigate = vi.spyOn(router, 'navigate');
+      fixture.componentInstance.setView('list');
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
     it('selects the day named in the URL and forces 日曆 without storing it', async () => {
       const { fixture, el } = await openAt('/accounting?month=2026-10&day=2026-10-21');
       flushSummary('2026-10');
@@ -1805,9 +1828,9 @@ describe('LedgerTimelineComponent', () => {
       httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
     }
 
-    function renderCalendarWith(accounts = [...ACCOUNTS, CARD]) {
+    function renderCalendarWith(accounts = [...ACCOUNTS, CARD], mode: LayoutMode = 'panes') {
       localStorage.setItem(VIEW_KEY, 'calendar');
-      const rendered = render('panes', makePreference(), [], accounts);
+      const rendered = render(mode, makePreference(), [], accounts);
       flushSummary('2026-10');
       flushDaily('2026-10');
       rendered.fixture.detectChanges();
@@ -1853,6 +1876,14 @@ describe('LedgerTimelineComponent', () => {
       expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 9]);
     });
 
+    it('draws the compact bill dot (not the 帳單 word) on a due day on a phone', () => {
+      const { fixture, el } = renderCalendarWith([...ACCOUNTS, CARD], 'phone');
+      answerBill(billRequests(), '-12345.0000');
+      fixture.detectChanges();
+      expect(cell(el, '2026-10-05').querySelector('.bill-dot')).not.toBeNull();
+      expect(cell(el, '2026-10-05').querySelector('.bill-mark')).toBeNull();
+    });
+
     it('hides a zero statement everywhere and keeps it resolved across a view switch', () => {
       const { fixture, el } = renderListWith();
       flushBill('0.0000');
@@ -1879,7 +1910,6 @@ describe('LedgerTimelineComponent', () => {
       selectDay(fixture, el, '2026-10-05');
       expect(el.querySelector('.bill')).toBeNull();
     });
-
 
     it('passes paid due days: a fully paid statement reads 已繳, a day with one open card reads 帳單', () => {
       const CARD2 = makeAccount({ id: 10, name: '富邦 J卡', is_credit: true, closing_day: 15, due_rule: 'days_after_closing', due_value: 20 });
@@ -2581,7 +2611,7 @@ describe('LedgerTimelineComponent', () => {
     expect(members.map(member => text(member.querySelector('.name')))).toEqual(['回饋 1', '回饋 2']);
     expect(navigate).not.toHaveBeenCalled();
     members[1].click();
-    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 2]);
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 2], {});
     head.click();
     fixture.detectChanges();
     expect(el.querySelectorAll('.entry-row.batch-member').length).toBe(0);

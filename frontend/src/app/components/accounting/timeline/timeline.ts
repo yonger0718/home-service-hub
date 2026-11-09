@@ -704,7 +704,17 @@ export class LedgerTimelineComponent implements OnInit {
         filter(event => event instanceof NavigationEnd),
         takeUntilDestroyed(inject(DestroyRef)),
       )
-      .subscribe(() => this.syncFromUrl());
+      .subscribe(() => {
+        // A pane route (/accounting/entry, …/reminders) carries no calendar params: keep month/day until the list URL
+        // (or any URL carrying them) comes back.
+        const url = this.router.url;
+        const path = url.split(/[?#]/)[0];
+        const query = this.router.routerState.snapshot.root.queryParamMap;
+        if (path !== '/accounting' && !query.has('month') && !query.has('day')) {
+          return;
+        }
+        this.syncFromUrl();
+      });
     const category = query.get('category_id');
     if (category && /^\d+$/.test(category)) {
       this.categoryFilter.set(Number(category));
@@ -1116,7 +1126,7 @@ export class LedgerTimelineComponent implements OnInit {
   }
 
   setView(view: TimelineView): void {
-    if (view === 'list') {
+    if (view === 'list' && this.urlDay() !== null) {
       this.clearDay();
     }
     if (view !== this.chosenView()) {
@@ -1378,7 +1388,7 @@ export class LedgerTimelineComponent implements OnInit {
       return;
     }
     const extras = this.calendarExtras();
-    void (extras.queryParams ? this.router.navigate(['/accounting/entries', row.entryId], extras) : this.router.navigate(['/accounting/entries', row.entryId]));
+    void this.router.navigate(['/accounting/entries', row.entryId], extras);
   }
 
   expenseText(summary: MonthSummary): string {
