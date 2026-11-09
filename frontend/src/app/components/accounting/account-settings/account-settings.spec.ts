@@ -1085,6 +1085,16 @@ describe('AccountSettingsComponent', () => {
     expect(extras?.replaceUrl).toBe(true);
   });
 
+  it('?rule=new opens an empty rule sheet once and clears the param (#323 PR B)', async () => {
+    await setup('11', { rule: 'new' });
+    const fixture = render(DETAIL);
+
+    expect(sheet(fixture)).not.toBeNull();
+    expect(sheet(fixture)?.rule()).toBeNull();
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(navigate.mock.calls[0][1]?.queryParams).toEqual({ rule: null });
+  });
+
   it('?rule= naming no rule of the account is ignored and cleared', async () => {
     await setup('11', { rule: '99' });
     const fixture = render(DETAIL);

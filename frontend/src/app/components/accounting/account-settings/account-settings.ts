@@ -378,7 +378,8 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   /** A 啟用 / 上移 / 下移 write is in flight: those controls wait so the next write starts from the saved order. */
   readonly ruleBusy = signal(false);
   /** `?rule=<id>` (from 回饋規則總覽): opens that rule once its account's detail is shown, then leaves the URL. */
-  private pendingRuleId: number | null = null;
+  /** `?rule=<id>` to open that rule once loaded, or `'new'` for an empty sheet (the overview's ＋ links). */
+  private pendingRuleId: number | 'new' | null = null;
   readonly ruleLabel = ruleLabel;
   readonly windowLabels = REWARD_WINDOW_LABELS;
   readonly postingSummary = postingSummary;
@@ -432,22 +433,28 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     this.route.queryParamMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(query => {
       const ruleParam = query.get('rule');
       if (ruleParam !== null) {
-        this.pendingRuleId = Number(ruleParam);
+        this.pendingRuleId = ruleParam === 'new' ? 'new' : Number(ruleParam);
         this.openPendingRule();
       }
     });
   }
 
-  /** Acts on `?rule=` once the shown account's detail is in: opens the rule if it is this account's, then clears it. */
+  /** Acts on `?rule=` once the shown account's detail is in: opens the rule if it is this account's (or an empty sheet
+   * for `new`), then clears it. */
   private openPendingRule(): void {
     const detail = this.detail();
     if (this.pendingRuleId === null || detail === null || this.loadedId() !== this.accountId()) {
       return;
     }
-    const rule = detail.reward_rules.find(r => r.id === this.pendingRuleId);
+    const pending = this.pendingRuleId;
     this.pendingRuleId = null;
-    if (rule) {
-      this.openRule(rule);
+    if (pending === 'new') {
+      this.openRule(null);
+    } else {
+      const rule = detail.reward_rules.find(r => r.id === pending);
+      if (rule) {
+        this.openRule(rule);
+      }
     }
     void this.router.navigate([], {
       relativeTo: this.route,
