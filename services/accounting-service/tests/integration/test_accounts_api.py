@@ -546,7 +546,8 @@ def test_put_refuses_a_currency_change_on_a_settlement_bound_account(client, db_
     assert changed.status_code == 200 and changed.json()["currency"] == "USD"
 
 
-# polish-reward-and-account-settings PR A2: `cash_equivalent` (1 點 = 1 元) on every account read; PUT without it keeps it.
+# polish-reward-and-account-settings PR A2: `cash_equivalent` (1 點 = 1 元) on every account read; a PUT without it
+# keeps it.
 def test_cash_equivalent_defaults_false_and_is_listed(client, db_session):
     created = client.post("/accounts", json={"name": "測試現金點", "currency": "TWD"})
     assert created.status_code == 201, created.text
@@ -558,9 +559,11 @@ def test_cash_equivalent_defaults_false_and_is_listed(client, db_session):
 def test_put_sets_cash_equivalent(client, db_session):
     account_id = client.post("/accounts", json={"name": "測試現金點", "currency": "TWD"}).json()["id"]
     body = {"name": "測試現金點", "currency": "TWD"}
-    assert client.put(f"/accounts/{account_id}", json={**body, "cash_equivalent": True}).json()["cash_equivalent"] is True
+    on = client.put(f"/accounts/{account_id}", json={**body, "cash_equivalent": True}).json()
+    assert on["cash_equivalent"] is True
     assert client.get("/accounts").json()[0]["cash_equivalent"] is True
-    assert client.put(f"/accounts/{account_id}", json={**body, "cash_equivalent": False}).json()["cash_equivalent"] is False
+    off = client.put(f"/accounts/{account_id}", json={**body, "cash_equivalent": False}).json()
+    assert off["cash_equivalent"] is False
 
 
 def test_put_without_the_field_keeps_it(client, db_session):
