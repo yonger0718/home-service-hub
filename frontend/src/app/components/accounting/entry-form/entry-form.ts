@@ -2114,16 +2114,16 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       });
   }
 
-  /**
-   * After a parent-mode save: `back()` when the page before the form is a group view of a member still in the split
-   * (it reloads and keeps its history state, so its ✕ still lands on the list and nothing stacks); else the group view
-   * replaces the form, with ✕ going to the list (`closeTo`, as after any split save).
-   */
   /** The calendar's month / day carried by the URL this form was opened from. */
   private calendarQuery(): Params {
     return calendarParams(this.route.snapshot.queryParamMap);
   }
 
+  /**
+   * After a parent-mode save: `back()` when the page before the form is a group view of a member still in the split
+   * (it reloads and keeps its history state, so its ✕ still lands on the list and nothing stacks); else the group view
+   * replaces the form, with ✕ going to the list (`closeTo`, as after any split save).
+   */
   private leaveToGroup(ids: Map<string, number>, firstId: number): void {
     const previous = this.router.lastSuccessfulNavigation()?.previousNavigation;
     const tree = previous?.finalUrl ?? previous?.initialUrl;

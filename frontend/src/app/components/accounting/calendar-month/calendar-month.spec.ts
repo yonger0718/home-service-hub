@@ -209,7 +209,7 @@ describe('CalendarMonthComponent', () => {
       for (const state of [{ loading: true }, { failed: true }]) {
         const { cell } = render({ ...base, days: [], ...state });
         expect(cell('2026-10-06').querySelector('.net')).toBeNull();
-        expect(cell('2026-10-06').getAttribute('aria-label')).not.toContain('筆');
+        expect(cell('2026-10-06').getAttribute('aria-label')).toBe('10 月 6 日 週二');
       }
     });
 
