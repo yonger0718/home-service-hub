@@ -274,4 +274,29 @@ describe('CalendarDataService', () => {
     breakdown('merchant').flush(body([row('全聯')]));
     expect(service.data().merchants.length).toBe(1);
   });
+
+  it('toggling wide never starts a second merchant read, in flight or after it is ready', () => {
+    service.wide.set(false);
+    service.month.set('2026-10');
+    settle();
+    breakdown('day').flush(body([]));
+    httpMock.expectOne(INBOX).flush(makeInbox([], {}));
+    service.wide.set(true);
+    settle();
+    const first = breakdown('merchant');
+    // (a) toggled again while the read is still open: no duplicate
+    service.wide.set(false);
+    settle();
+    service.wide.set(true);
+    settle();
+    httpMock.expectNone((r) => r.url === BREAKDOWN && r.params.get('group_by') === 'merchant');
+    first.flush(body([row('全聯')]));
+    expect(service.data().merchantsState).toBe('ready');
+    // (b) toggled again once ready: no new read
+    service.wide.set(false);
+    settle();
+    service.wide.set(true);
+    settle();
+    httpMock.expectNone(() => true);
+  });
 });
