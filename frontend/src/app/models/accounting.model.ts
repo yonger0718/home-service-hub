@@ -630,6 +630,8 @@ export interface AccountInput {
    * `{this account} ∪ members` one `credit_sharing_id` and clears it from accounts that left the set.
    */
   credit_sharing_members?: number[];
+  /** Sent only when changed on a non-credit account; omitted keeps the stored value. */
+  cash_equivalent?: boolean;
 }
 
 export interface AccountGroup {

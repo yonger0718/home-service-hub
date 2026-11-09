@@ -11,6 +11,7 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
+import { NgTemplateOutlet } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { EMPTY, Observable, Subject, catchError, map, merge, of, switchMap, tap } from 'rxjs';
@@ -27,10 +28,11 @@ import {
   RoundingMode,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import { ACCOUNT_LOGOS, accountLogo } from '../../../theme/account-logos';
 import { AccountIconComponent } from '../account-icon/account-icon';
-import { accountLabel, isHandledKey, restoreOverlayFocus } from '../accounting-ui';
-import { DueRule, dueDate, periodLabel, statementPeriod } from '../cycle';
+import { accountLabel, isHandledKey, restoreOverlayFocus, trapFocus } from '../accounting-ui';
+import { DueRule, cycleText, dueDate, statementPeriod } from '../cycle';
 import { DirtyAware, DirtyFormRegistry } from '../dirty-form.service';
 import { shortDate, slashDate, todayIso } from '../dates';
 import { balanceNegative, balanceText, valuationHint } from '../account-balance';
@@ -43,6 +45,10 @@ import {
   REWARD_WINDOW_LABELS, RULE_STATE_LABELS, basicOverlapRuleId, periodText, postingSummary, ruleLabel, ruleState, ruleToInput,
 } from '../reward-rule-text';
 import { SwitchComponent } from '../../ui/switch/switch';
+import { StepperComponent } from '../../ui/stepper/stepper';
+import { AmountFieldComponent, groupAmount } from '../../ui/amount-field/amount-field';
+import { PickerComponent, PickerOption } from '../../ui/picker/picker';
+import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 
 export { decimalText } from '../format';
 
@@ -52,6 +58,13 @@ export const ROUNDING_LABELS: Record<RoundingMode, string> = {
   floor: '無條件捨去',
   ceil: '無條件進位',
 };
+
+/** 繳款期限 three-way; `none` stands for the form's empty `due_rule`. */
+export const DUE_RULE_OPTIONS: SegToggleOption[] = [
+  { value: 'none', label: '未設定' },
+  { value: 'fixed_day', label: '每月固定日' },
+  { value: 'days_after_closing', label: '結帳後' },
+];
 
 interface AccountForm {
   name: string;
@@ -64,6 +77,7 @@ interface AccountForm {
   note: string;
   sort_order: number;
   include_in_total: boolean;
+  cash_equivalent: boolean;
   is_archived: boolean;
   is_credit: boolean;
   closing_day: string;
@@ -81,7 +95,7 @@ interface AccountForm {
 
 const EMPTY_FORM: AccountForm = {
   name: '', currency: 'TWD', opening_balance: '0', group_id: null, icon: '', logo: null, color: '', note: '', sort_order: 0,
-  include_in_total: true, is_archived: false, is_credit: false, closing_day: '', due_rule: '', due_value: '',
+  include_in_total: true, cash_equivalent: false, is_archived: false, is_credit: false, closing_day: '', due_rule: '', due_value: '',
   credit_limit: '', combined_account_id: null, credit_sharing_id: null, auto_pay_account_id: null,
   fx_fee_on: false, fx_fee_pct: '', fx_fee_rounding: 'keep', fx_fee_refundable: false,
 };
@@ -140,6 +154,7 @@ function formFrom(account: AccountDetail): AccountForm {
     note: account.note ?? '',
     sort_order: account.sort_order,
     include_in_total: account.include_in_total,
+    cash_equivalent: account.cash_equivalent ?? false,
     is_archived: account.is_archived,
     is_credit: account.is_credit,
     closing_day: account.closing_day === null ? '' : String(account.closing_day),
@@ -157,7 +172,7 @@ function formFrom(account: AccountDetail): AccountForm {
 }
 
 /** `members`: the other cards sharing this account's limit; sent in full, the backend applies the diff (Task 16). */
-function formToInput(form: AccountForm, members: number[]): AccountInput {
+function formToInput(form: AccountForm, members: number[], loaded: AccountDetail | null): AccountInput {
   const credit = form.is_credit;
   return {
     name: form.name.trim(),
@@ -183,6 +198,7 @@ function formToInput(form: AccountForm, members: number[]): AccountInput {
     fx_fee_pct: form.fx_fee_on ? textOrNull(form.fx_fee_pct) : null,
     fx_fee_rounding: form.fx_fee_on ? form.fx_fee_rounding : null,
     fx_fee_refundable: form.fx_fee_on && form.fx_fee_refundable,
+    ...(!credit && form.cash_equivalent !== (loaded?.cash_equivalent ?? false) ? { cash_equivalent: form.cash_equivalent } : {}),
   };
 }
 
@@ -194,6 +210,43 @@ function sameMembers(a: readonly number[], b: readonly number[]): boolean {
   return a.length === b.length && a.every(id => b.includes(id));
 }
 
+/** The nearest scrolling ancestor (the pane at ≥ 760 px), or null for the viewport. */
+function scrollerOf(element: HTMLElement): HTMLElement | null {
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    const overflow = getComputedStyle(node).overflowY;
+    if (overflow === 'auto' || overflow === 'scroll') {
+      return node;
+    }
+  }
+  return null;
+}
+
+/** The page's titled sections, in order; the sticky chips jump to them (C1 Task 5). */
+export type SectionId = 'basic' | 'look' | 'card' | 'reward' | 'fx' | 'more';
+
+export const SECTIONS: readonly { id: SectionId; title: string }[] = [
+  { id: 'basic', title: '基本' },
+  { id: 'look', title: '外觀' },
+  { id: 'card', title: '信用卡' },
+  { id: 'reward', title: '回饋規則' },
+  { id: 'fx', title: '國外交易' },
+  { id: 'more', title: '其他' },
+];
+
+/** The section each saveable field (and API error key) lives in: a save that fails jumps to the first (Task 8). */
+export const FIELD_SECTION: Readonly<Record<string, SectionId>> = {
+  name: 'basic', currency: 'basic', group_id: 'basic', opening_balance: 'basic', closing_day: 'basic',
+  include_in_total: 'basic', cash_equivalent: 'basic', sort_order: 'basic',
+  icon: 'look', color: 'look', logo: 'look',
+  is_credit: 'card', due_rule: 'card', due_value: 'card', credit_limit: 'card', combined_account_id: 'card',
+  credit_sharing_id: 'card', credit_sharing_members: 'card', auto_pay_account_id: 'card',
+  fx_fee_on: 'fx', fx_fee_pct: 'fx', fx_fee_rounding: 'fx', fx_fee_refundable: 'fx',
+  note: 'more', is_archived: 'more',
+};
+
+/** Phone rows whose control (a stepper or an amount field) opens in the page's bottom sheet. */
+export type SheetRow = 'opening_balance' | 'closing_day' | 'due_value' | 'credit_limit' | 'fx_fee_pct';
+
 interface LoadedAccount {
   loadId: number;
   id: number | null;
@@ -203,9 +256,12 @@ interface LoadedAccount {
 @Component({
   selector: 'app-account-settings',
   standalone: true,
-  imports: [RouterLink, AccountIconComponent, RewardRuleSheetComponent, SwitchComponent],
+  imports: [
+    RouterLink, AccountIconComponent, RewardRuleSheetComponent, SwitchComponent, StepperComponent, AmountFieldComponent,
+    PickerComponent, SegToggleComponent, NgTemplateOutlet,
+  ],
   templateUrl: './account-settings.html',
-  styleUrl: './account-settings.scss',
+  styleUrls: ['../sheet.scss', './account-settings.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { '(keydown)': 'onKeydown($event)' },
 })
@@ -216,6 +272,9 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   private router = inject(Router);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly injector = inject(Injector);
+  private readonly layoutMode = inject(LayoutModeService);
+  /** Below 760 px: grouped rows, a bottom sheet for stepper / amount rows and the 放棄 / 儲存 bar. */
+  readonly phone = computed(() => this.layoutMode.mode() === 'phone');
   /** N, 記一筆 and the layout's ✕ / Esc / backdrop ask before unsaved input is dropped (spec §4.3). */
   readonly dirty = inject(DirtyFormRegistry);
   /** Focused element when 放棄未儲存的內容？ opened; 留下 returns focus there. */
@@ -261,6 +320,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   readonly logoState = computed(() => (this.logoHash() ? '已上傳的圖片' : this.form().logo ? `內建：${this.logoLabel()}` : '無'));
 
   readonly roundingOptions = Object.entries(ROUNDING_LABELS) as [RoundingMode, string][];
+  readonly roundingPickerOptions: PickerOption[] = this.roundingOptions.map(([value, label]) => ({ value, label }));
   readonly formatMoney = formatMoney;
   readonly balanceText = balanceText;
   readonly balanceNegative = balanceNegative;
@@ -269,7 +329,10 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   readonly currencyLocked = computed(() => (this.detail()?.entry_count ?? 0) > 0);
   /** Edit mode whose account never loaded: nothing to save or delete (✓ and 刪除 stay disabled). */
   readonly loadFailed = computed(() => this.accountId() !== null && !this.loading() && this.loadedId() !== this.accountId());
-  /** Errors found before sending: closing day 1–31, due value > 0 (a fixed due day also ≤ 31). */
+  /**
+   * Errors found before sending: closing day 1–31; with a due rule, the due value is required — a fixed due day
+   * 1–31, days after closing 1–120 (the stepper's max and the API's `due_value le=120`).
+   */
   readonly localErrors = computed(() => {
     const form = this.form();
     const errors: Record<string, string> = {};
@@ -278,10 +341,12 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
       errors['closing_day'] = '結帳日須為 1–31';
     }
     const due = form.due_value.trim();
-    if (form.is_credit && form.due_rule && due) {
-      if (form.due_rule === 'fixed_day' && !validDay(due, 1, 31)) {
+    if (form.is_credit && form.due_rule) {
+      if (!due) {
+        errors['due_value'] = '請填繳款日或天數';
+      } else if (form.due_rule === 'fixed_day' && !validDay(due, 1, 31)) {
         errors['due_value'] = '繳款日須為 1–31';
-      } else if (form.due_rule === 'days_after_closing' && !validDay(due, 1, 366)) {
+      } else if (form.due_rule === 'days_after_closing' && !validDay(due, 1, 120)) {
         errors['due_value'] = '請輸入大於 0 的天數';
       }
     }
@@ -293,8 +358,10 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     if (this.localErrors()['closing_day']) {
       return '';
     }
-    return this.closingDay() === null ? '每月 1 日 – 月底' : periodLabel(this.period());
+    return this.closingDay() === null ? '每月 1 日 – 月底' : '本期 ' + cycleText(this.period());
   });
+  readonly dueValue = computed(() => intOrNull(this.form().due_value));
+  protected readonly dueRuleOptions = DUE_RULE_OPTIONS;
   readonly dueLabel = computed(() => {
     const form = this.form();
     const value = intOrNull(form.due_value);
@@ -326,6 +393,19 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   ]);
 
   readonly accountLabel = accountLabel;
+  readonly groupOptions = computed<PickerOption[]>(() => [
+    { value: '', label: '未分組' },
+    ...this.groups().map(group => ({ value: String(group.id), label: group.name })),
+  ]);
+  readonly masterPickerOptions = computed(() => this.idOptions(this.masterOptions()));
+  readonly autopayPickerOptions = computed(() => this.idOptions(this.autopayOptions()));
+  private idOptions(accounts: LedgerAccount[]): PickerOption[] {
+    return [{ value: '', label: '無' }, ...accounts.map(account => ({ value: String(account.id), label: accountLabel(account) }))];
+  }
+  /** Picker value of an id field: `''` for none. */
+  idValue(id: number | null): string {
+    return id === null ? '' : String(id);
+  }
   /**
    * 額度共用 options: other non-archived credit accounts plus any saved member (an archived one too, so it can be
    * removed; it stays listed after being unchecked). New members can only be non-archived credit accounts.
@@ -386,6 +466,31 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   readonly periodText = periodText;
   readonly ruleStateLabels = RULE_STATE_LABELS;
 
+  protected readonly SECTIONS = SECTIONS;
+  /** The chip marked current: the last one tapped, or the topmost section the scroll-spy sees. */
+  readonly activeSection = signal<SectionId>('basic');
+  /** The section a failed save jumped to (chip marked invalid); cleared by a successful save or an edit there. */
+  readonly invalidSections = signal<Set<SectionId>>(new Set());
+  /** The phone row whose control is open in the page's bottom sheet. */
+  readonly sheetRow = signal<SheetRow | null>(null);
+  private readonly rowSheet = viewChild<ElementRef<HTMLElement>>('rowSheet');
+  /** 有 N 項未儲存: changed form fields, plus one for 額度共用 and one for an open rule sheet with input; 0 when clean. */
+  readonly dirtyCount = computed(() => {
+    if (!this.isDirty()) {
+      return 0;
+    }
+    const form = this.form();
+    const baseline = this.baseline();
+    const changed = (Object.keys(form) as (keyof AccountForm)[]).filter(key => form[key] !== baseline[key]).length;
+    const sharing = sameMembers(this.sharing(), this.sharingBaseline()) ? 0 : 1;
+    const sheet = this.ruleSheet() !== null && (this.ruleSheetRef()?.isDirty() ?? false) ? 1 : 0;
+    return changed + sharing + sheet;
+  });
+
+  constructor() {
+    afterNextRender(() => this.watchSections(), { injector: this.injector });
+  }
+
   ngOnInit(): void {
     this.dirty.register(this);
     this.destroyRef.onDestroy(() => this.dirty.unregister(this));
@@ -408,6 +513,8 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
         this.baseline.set(EMPTY_FORM);
         this.sharingBaseline.set([]);
         this.errors.set({});
+        this.invalidSections.set(new Set());
+        this.sheetRow.set(null);
         this.message.set(null);
         this.confirmDelete.set(false);
         this.ruleSheet.set(null);
@@ -603,8 +710,215 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     this.dirty.cancelDiscard();
   }
 
+  /**
+   * A chip tap whose smooth scroll may still be running: the chip stays current (the scroll-spy would otherwise mark
+   * the section it passes, or a short last section that never reaches the band) until the owner scrolls again.
+   */
+  private jumpTarget: SectionId | null = null;
+
+  /** A chip: scrolls its section into view and marks it current until the owner's own next scroll. */
+  jumpTo(id: SectionId): void {
+    this.jumpTarget = id;
+    this.activeSection.set(id);
+    this.host.nativeElement.querySelector<HTMLElement>(`#s-${id}`)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+  }
+
+  /**
+   * A save stopped by errors: marks the first section (in page order) holding one of `fields`, scrolls to it and,
+   * once rendered, focuses its first invalid control (a component host marked invalid hands focus to its own input
+   * or value button). Keys no section owns (`_`) jump nowhere.
+   */
+  private jumpToFirstError(fields: Record<string, string>): void {
+    const marked = new Set(Object.keys(fields).map(key => FIELD_SECTION[key]));
+    const first = SECTIONS.find(section => marked.has(section.id));
+    if (!first) {
+      return;
+    }
+    this.invalidSections.set(new Set([first.id]));
+    this.jumpTo(first.id);
+    afterNextRender(() => {
+      const target = this.host.nativeElement.querySelector<HTMLElement>(`#s-${first.id} [aria-invalid="true"]`);
+      const own = target?.matches('input, button, select, textarea') ? target : null;
+      const inner = (selector: string) => target?.querySelector<HTMLElement>(selector) ?? null;
+      (own ?? inner('input') ?? inner('.val') ?? inner('button'))?.focus();
+    }, { injector: this.injector });
+  }
+
+  /** An edit to a field whose section a failed save marked clears that chip. */
+  private clearInvalid(key: string): void {
+    const section = FIELD_SECTION[key];
+    if (section && this.invalidSections().has(section)) {
+      this.invalidSections.update(marked => new Set([...marked].filter(id => id !== section)));
+    }
+  }
+
+  /** Phone: a stepper / amount row opens its control in the page's bottom sheet; focus moves into it. */
+  openSheet(row: SheetRow): void {
+    this.sheetRow.set(row);
+    afterNextRender(() => {
+      const sheet = this.rowSheet()?.nativeElement;
+      (sheet?.querySelector<HTMLElement>('input, .val') ?? sheet)?.focus();
+    }, { injector: this.injector });
+  }
+
+  /** 完成, Esc or a backdrop tap: focus returns to the row that opened the sheet. */
+  closeSheet(): void {
+    const row = this.sheetRow();
+    if (row === null) {
+      return;
+    }
+    this.sheetRow.set(null);
+    restoreOverlayFocus(this.host.nativeElement.querySelector<HTMLElement>(`button.row-${row}`), this.host.nativeElement);
+  }
+
+  /** The sheet's keyboard contract: Esc closes it (marked handled), Tab stays inside. */
+  onSheetKeydown(event: KeyboardEvent): void {
+    if (isHandledKey(event)) {
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.closeSheet();
+      return;
+    }
+    const sheet = this.rowSheet()?.nativeElement;
+    if (sheet) {
+      trapFocus(sheet, event);
+    }
+  }
+
+  /** A phone row's (and its sheet's) title. */
+  rowLabel(row: SheetRow): string {
+    switch (row) {
+      case 'opening_balance':
+        return '初始金額';
+      case 'closing_day':
+        return '結帳日';
+      case 'due_value':
+        return this.form().due_rule === 'fixed_day' ? '繳款日' : '結帳後天數';
+      case 'credit_limit':
+        return '信用額度';
+      case 'fx_fee_pct':
+        return '手續費 %';
+    }
+  }
+
+  /** A phone row's value as typed (decimal strings stay strings; digits are only grouped). */
+  rowValue(row: SheetRow): string {
+    const form = this.form();
+    switch (row) {
+      case 'opening_balance':
+        return groupAmount(form.opening_balance.trim() || '0');
+      case 'closing_day':
+        return form.closing_day.trim() ? `${form.closing_day.trim()} 號` : '月底';
+      case 'due_value':
+        return form.due_value.trim() ? `${form.due_value.trim()} ${form.due_rule === 'fixed_day' ? '號' : '天'}` : '未設定';
+      case 'credit_limit':
+        return form.credit_limit.trim() ? `$${groupAmount(form.credit_limit.trim())}` : '未設定';
+      case 'fx_fee_pct':
+        return form.fx_fee_pct.trim() ? `${form.fx_fee_pct.trim()}%` : '未設定';
+    }
+  }
+
+  /** The phone bar's 放棄: back to the values as loaded (or last saved). */
+  discardChanges(): void {
+    this.form.set(this.baseline());
+    this.sharing.set(this.sharingBaseline());
+    this.errors.set({});
+    this.invalidSections.set(new Set());
+  }
+
+  /**
+   * Scroll-spy: one observer over the six sections, rooted at the page's scroller (the pane, or the viewport). The
+   * band is the scroller's top 40 % below the sticky chips, so a sliver hidden under the chips does not count. A
+   * callback reports only the sections that changed, so the visible set is kept across callbacks and the current
+   * chip is the first visible section in page order (the sections stack, so that is the topmost). While a chip jump
+   * is in flight the spy only tracks, until the target itself is on top of the band (the jump has arrived), the
+   * owner's own scroll input (wheel, touch, keys) or the scroller's `scrollend` (a scrollbar drag fires no input
+   * event) hands control back; an input release re-marks the top section at once, a scrollend keeps the target's
+   * chip while the target is still in view. Plain `scroll` would not do: the programmatic smooth scroll fires it too.
+   */
+  private watchSections(): void {
+    if (typeof IntersectionObserver === 'undefined') {
+      return;
+    }
+    const page = this.host.nativeElement;
+    const chips = page.querySelector<HTMLElement>('nav.sec-chips')?.offsetHeight ?? 0;
+    const visible = new Set<SectionId>();
+    const markTop = () => {
+      const top = SECTIONS.find(section => visible.has(section.id));
+      if (top) {
+        this.activeSection.set(top.id);
+      }
+    };
+    const scroller = scrollerOf(page);
+    const observer = new IntersectionObserver(
+      entries => {
+        for (const entry of entries) {
+          const id = entry.target.id.slice(2) as SectionId;
+          if (entry.isIntersecting) {
+            visible.add(id);
+          } else {
+            visible.delete(id);
+          }
+        }
+        if (this.jumpTarget !== null && SECTIONS.find(section => visible.has(section.id))?.id === this.jumpTarget) {
+          this.jumpTarget = null;
+        }
+        if (this.jumpTarget !== null) {
+          return;
+        }
+        markTop();
+      },
+      { root: scroller, rootMargin: `${-chips}px 0px -60% 0px` },
+    );
+    for (const section of SECTIONS) {
+      const element = page.querySelector(`#s-${section.id}`);
+      if (element) {
+        observer.observe(element);
+      }
+    }
+    const release = () => {
+      if (this.jumpTarget === null) {
+        return;
+      }
+      this.jumpTarget = null;
+      markTop();
+    };
+    const input = ['wheel', 'touchstart', 'keydown'] as const;
+    for (const type of input) {
+      page.addEventListener(type, release, { passive: true });
+    }
+    // The jump's own smooth scroll ends with a scrollend too. A short last section (其他) never reaches the top of
+    // the band, so while the target is still in view its chip stays and only the lock is handed back; a scrollbar
+    // drag that left the target behind re-marks the top section like any other release.
+    const settle = () => {
+      const target = this.jumpTarget;
+      if (target === null) {
+        return;
+      }
+      this.jumpTarget = null;
+      if (visible.has(target)) {
+        this.activeSection.set(target);
+      } else {
+        markTop();
+      }
+    };
+    // The viewport's scrollend fires at the document and bubbles to window; a pane's fires at the pane only.
+    const scrollEnds: EventTarget = scroller ?? window;
+    scrollEnds.addEventListener('scrollend', settle, { passive: true });
+    this.destroyRef.onDestroy(() => {
+      observer.disconnect();
+      for (const type of input) {
+        page.removeEventListener(type, release);
+      }
+      scrollEnds.removeEventListener('scrollend', settle);
+    });
+  }
+
   set<K extends keyof AccountForm>(key: K, value: AccountForm[K]): void {
     this.form.update(form => ({ ...form, [key]: value }));
+    this.clearInvalid(key);
   }
 
   pickLogo(slug: string | null): void {
@@ -672,8 +986,18 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     });
   }
 
-  toggle(key: 'is_credit' | 'include_in_total' | 'is_archived' | 'fx_fee_on' | 'fx_fee_refundable'): void {
+  toggle(key: 'is_credit' | 'include_in_total' | 'cash_equivalent' | 'is_archived' | 'fx_fee_on' | 'fx_fee_refundable'): void {
     this.set(key, !this.form()[key]);
+  }
+
+  /** A stepper value into its text field: `null` (月底) is the empty string. */
+  setDay(key: 'closing_day' | 'due_value', value: number | null): void {
+    this.set(key, value === null ? '' : String(value));
+  }
+
+  /** 繳款期限 three-way: `none` is the empty rule. */
+  setDueRule(value: string): void {
+    this.set('due_rule', value === 'none' ? '' : (value as DueRule));
   }
 
   setIdField(key: 'group_id' | 'combined_account_id' | 'auto_pay_account_id', value: string): void {
@@ -682,6 +1006,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
 
   toggleSharing(id: number, checked: boolean): void {
     this.sharing.update(list => (checked ? [...list.filter(x => x !== id), id] : list.filter(x => x !== id)));
+    this.clearInvalid('credit_sharing_members');
   }
 
   error(field: string): string | null {
@@ -841,12 +1166,14 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     const form = this.form();
     if (!form.name.trim()) {
       this.errors.set({ name: '請輸入名稱' });
+      this.jumpToFirstError(this.errors());
       return;
     }
     if (Object.keys(this.localErrors()).length > 0) {
-      return; // shown inline beside their fields
+      this.jumpToFirstError(this.localErrors()); // shown inline beside their fields
+      return;
     }
-    const input = formToInput(form, this.sharing());
+    const input = formToInput(form, this.sharing(), this.detail());
     const request: Observable<AccountDetail> =
       editingId === null ? this.service.createAccount(input) : this.service.updateAccount(editingId, input);
     this.saving.set(true);
@@ -866,6 +1193,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
           // Saved: nothing is left to discard while the passbook opens.
           this.baseline.set(form);
           this.sharingBaseline.set(this.sharing());
+          this.invalidSections.set(new Set());
           this.dirty.clearPending();
           this.discardOpener = null;
           this.router.navigate(['/accounting/accounts', id]);
@@ -880,6 +1208,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
           if (Object.keys(fields).length === 0) {
             this.message.set(writeErrorMessage(err));
           }
+          this.jumpToFirstError(fields);
         },
       });
   }

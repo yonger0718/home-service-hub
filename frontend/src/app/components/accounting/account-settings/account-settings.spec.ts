@@ -5,10 +5,11 @@ import { ActivatedRoute, ParamMap, Router, convertToParamMap, provideRouter } fr
 import { By } from '@angular/platform-browser';
 import { BehaviorSubject } from 'rxjs';
 import { AccountingToastService } from '../accounting-toast';
-import { MockInstance, afterEach, describe, expect, it, vi } from 'vitest';
+import { MockInstance, afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { AccountDetail, LedgerAccount, RewardRule, RewardUsage } from '../../../models/accounting.model';
 import { ACCOUNT_LOGOS } from '../../../theme/account-logos';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
 import { AccountSettingsComponent, accountToInput, decimalText } from './account-settings';
@@ -109,6 +110,7 @@ describe('AccountSettingsComponent', () => {
     http.verify();
     vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('hero: a valuation balance is labelled 市值 (R7 §5)', async () => {
@@ -159,32 +161,155 @@ describe('AccountSettingsComponent', () => {
     return Array.from(el(fixture).querySelectorAll('.rw.child .k')).map(k => k.textContent?.trim() ?? '');
   }
 
+  /** Clicks the inner button of the `app-switch` carrying `cls`. */
+  function flip(fixture: ComponentFixture<AccountSettingsComponent>, cls: string): void {
+    el(fixture).querySelector<HTMLButtonElement>(`app-switch.${cls} button`)!.click();
+    fixture.detectChanges();
+  }
+
+  /** The value button text of the `app-stepper` carrying `cls` (e.g. `15 號`, `月底`). */
+  function stepperText(fixture: ComponentFixture<AccountSettingsComponent>, cls: string): string {
+    return el(fixture).querySelector(`app-stepper.${cls} .val`)?.textContent?.trim() ?? '';
+  }
+
+  function stepperClick(fixture: ComponentFixture<AccountSettingsComponent>, cls: string, button: 'inc' | 'dec'): void {
+    el(fixture).querySelector<HTMLButtonElement>(`app-stepper.${cls} .${button}`)!.click();
+    fixture.detectChanges();
+  }
+
+  /** Tap-to-type: opens the stepper's input, types `text` and commits with Enter. */
+  function stepperType(fixture: ComponentFixture<AccountSettingsComponent>, cls: string, text: string): void {
+    el(fixture).querySelector<HTMLButtonElement>(`app-stepper.${cls} .val`)!.click();
+    fixture.detectChanges();
+    const input = el(fixture).querySelector<HTMLInputElement>(`app-stepper.${cls} .val-input`)!;
+    input.value = text;
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    fixture.detectChanges();
+  }
+
+  /** Opens the `app-picker` carrying `cls` and returns its options. */
+  function pickerOptions(fixture: ComponentFixture<AccountSettingsComponent>, cls: string): HTMLElement[] {
+    el(fixture).querySelector<HTMLButtonElement>(`app-picker.${cls} .pk-trigger`)!.click();
+    fixture.detectChanges();
+    return Array.from(el(fixture).querySelectorAll<HTMLElement>(`app-picker.${cls} [role=option]`));
+  }
+
+  function pickerTrigger(fixture: ComponentFixture<AccountSettingsComponent>, cls: string): HTMLButtonElement {
+    return el(fixture).querySelector<HTMLButtonElement>(`app-picker.${cls} .pk-trigger`)!;
+  }
+
+  function segPick(fixture: ComponentFixture<AccountSettingsComponent>, cls: string, label: string): void {
+    const radios = Array.from(el(fixture).querySelectorAll<HTMLButtonElement>(`app-seg-toggle.${cls} [role=radio]`));
+    radios.find(r => r.textContent?.trim() === label)!.click();
+    fixture.detectChanges();
+  }
+
+  function amount(fixture: ComponentFixture<AccountSettingsComponent>, cls: string): HTMLInputElement {
+    return el(fixture).querySelector<HTMLInputElement>(`app-amount-field.${cls} .amt`)!;
+  }
+
   it('reveals the card rows when 信用帳戶 is switched on', async () => {
     await setup(null);
     const fixture = render(null);
     expect(childLabels(fixture).filter(label => label !== '手續費 %')).toEqual([]);
 
-    el(fixture).querySelector<HTMLButtonElement>('.credit-toggle')!.click();
-    fixture.detectChanges();
+    flip(fixture, 'credit-toggle');
 
     expect(childLabels(fixture)).toEqual(['繳款期限', '信用額度', '額度共用', '主帳戶', '自動扣繳']);
   });
 
-  it('previews the current cycle and the due date', async () => {
+  it('due preview: cycle 本期 09/16–10/15 and 結帳日後 20 天 → 11/04', async () => {
     await setup('11');
     const fixture = render(DETAIL);
 
-    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('09/16 – 10/15');
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('本期 09/16–10/15');
     expect(el(fixture).querySelector('.due-preview')?.textContent?.trim()).toBe('結帳日後 20 天 → 11/04');
+    expect(texts(fixture, 'app-seg-toggle.due-rule [role=radio]')).toEqual(['未設定', '每月固定日', '結帳後']);
+    expect(texts(fixture, 'app-seg-toggle.due-rule [aria-checked=true]')).toEqual(['結帳後']);
+    expect(stepperText(fixture, 'due-value')).toBe('20 天');
 
-    const rule = el(fixture).querySelector<HTMLSelectElement>('.due-rule')!;
-    rule.value = 'fixed_day';
-    rule.dispatchEvent(new Event('change'));
-    const value = el(fixture).querySelector<HTMLInputElement>('.due-value')!;
-    value.value = '5';
-    value.dispatchEvent(new Event('input'));
-    fixture.detectChanges();
+    segPick(fixture, 'due-rule', '每月固定日');
+    expect(stepperText(fixture, 'due-value')).toBe('20 號');
+    stepperType(fixture, 'due-value', '5');
+    expect(stepperText(fixture, 'due-value')).toBe('5 號');
     expect(el(fixture).querySelector('.due-preview')?.textContent?.trim()).toBe('每月 5 日 → 11/05');
+  });
+
+  it('closing day 25 on 2026-11-07, 加一 → stepper reads 26 號 and cycle line reads 本期 10/27–11/26', async () => {
+    await setup('11');
+    vi.setSystemTime(new Date(2026, 10, 7, 10, 0));
+    const fixture = render({ ...DETAIL, closing_day: 25 } as AccountDetail);
+    expect(stepperText(fixture, 'closing-day')).toBe('25 號');
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('本期 10/26–11/25');
+
+    expect(el(fixture).querySelector('app-stepper.closing-day .inc')?.getAttribute('aria-label')).toBe('加一天');
+    stepperClick(fixture, 'closing-day', 'inc');
+    expect(stepperText(fixture, 'closing-day')).toBe('26 號');
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('本期 10/27–11/26');
+  });
+
+  it('account with closing_day null shows 月底 and 每月 1 日 – 月底, saves closing_day null', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, closing_day: null } as AccountDetail);
+    expect(stepperText(fixture, 'closing-day')).toBe('月底');
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('每月 1 日 – 月底');
+
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body.closing_day).toBeNull();
+    req.flush(DETAIL);
+  });
+
+  it('account with closing_day 31 shows 31 號 and saves 31', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, closing_day: 31 } as AccountDetail);
+    expect(stepperText(fixture, 'closing-day')).toBe('31 號');
+    expect(el(fixture).querySelector<HTMLButtonElement>('app-stepper.closing-day .inc')!.disabled).toBe(true);
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('本期 10/01–10/31');
+
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body.closing_day).toBe(31);
+    req.flush(DETAIL);
+  });
+
+  it('未設定 saves due_rule null and due_value null', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    segPick(fixture, 'due-rule', '未設定');
+    expect(el(fixture).querySelector('app-stepper.due-value')).toBeNull();
+    expect(el(fixture).querySelector('.due-preview')?.textContent?.trim()).toBe('');
+
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body).toMatchObject({ due_rule: null, due_value: null });
+    req.flush(DETAIL);
+  });
+
+  it('結帳後 allows up to 120 days and 每月固定日 up to 31', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, due_value: 119 } as AccountDetail);
+    stepperClick(fixture, 'due-value', 'inc');
+    expect(stepperText(fixture, 'due-value')).toBe('120 天');
+    expect(el(fixture).querySelector<HTMLButtonElement>('app-stepper.due-value .inc')!.disabled).toBe(true);
+
+    segPick(fixture, 'due-rule', '每月固定日');
+    stepperType(fixture, 'due-value', '45');
+    expect(stepperText(fixture, 'due-value')).toBe('31 號');
+  });
+
+  it('信用帳戶 off then on restores 繳款期限 and 信用額度', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    flip(fixture, 'credit-toggle');
+    expect(el(fixture).querySelector('app-seg-toggle.due-rule')).toBeNull();
+    expect(el(fixture).querySelector('app-amount-field.credit-limit')).toBeNull();
+
+    flip(fixture, 'credit-toggle');
+    expect(texts(fixture, 'app-seg-toggle.due-rule [aria-checked=true]')).toEqual(['結帳後']);
+    expect(stepperText(fixture, 'due-value')).toBe('20 天');
+    expect(amount(fixture, 'credit-limit').value).toBe('300,000');
   });
 
   it('makes 主幣種 read-only once the account has entries', async () => {
@@ -200,9 +325,14 @@ describe('AccountSettingsComponent', () => {
     await setup('11');
     const fixture = render(DETAIL);
 
-    const masters = Array.from(el(fixture).querySelectorAll('.master-select option')).map(o => o.textContent?.trim());
-    expect(masters).toEqual(['無', '玉山信用卡', '玉山 UNI', '玉山 U Bear']);
-    expect(el(fixture).querySelector<HTMLSelectElement>('.master-select')!.value).toBe('10');
+    expect(pickerTrigger(fixture, 'master-select').getAttribute('data-value')).toBe('10');
+    const masters = pickerOptions(fixture, 'master-select');
+    expect(masters.map(o => o.textContent?.trim())).toEqual(['無', '玉山信用卡', '玉山 UNI', '玉山 U Bear']);
+    expect(masters.map(o => o.getAttribute('data-value'))).toEqual(['', '10', '12', '13']);
+    masters[2].click();
+    fixture.detectChanges();
+    expect(pickerTrigger(fixture, 'master-select').getAttribute('data-value')).toBe('12');
+    expect(fixture.componentInstance.form().combined_account_id).toBe(12);
     expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般 (1%)', '餐飲 (5.2%)']);
     expect(texts(fixture, '.rule-row .rule-state')).toEqual(['生效中', '已停用']);
     expect(el(fixture).textContent).not.toContain('（停用）');
@@ -212,12 +342,13 @@ describe('AccountSettingsComponent', () => {
     await setup('11');
     const fixture = render({ ...DETAIL, combined_account_id: 30, auto_pay_account_id: 31 } as AccountDetail);
 
-    const master = el(fixture).querySelector<HTMLSelectElement>('.master-select')!;
-    const autopay = el(fixture).querySelector<HTMLSelectElement>('.autopay-select')!;
-    expect(master.value).toBe('30');
-    expect(master.selectedOptions[0].textContent?.trim()).toBe('舊卡（已封存）');
-    expect(autopay.value).toBe('31');
-    expect(autopay.selectedOptions[0].textContent?.trim()).toBe('舊帳戶（已封存）');
+    expect(pickerTrigger(fixture, 'master-select').getAttribute('data-value')).toBe('30');
+    expect(pickerTrigger(fixture, 'master-select').textContent?.trim()).toBe('舊卡（已封存）');
+    expect(pickerTrigger(fixture, 'autopay-select').getAttribute('data-value')).toBe('31');
+    expect(pickerTrigger(fixture, 'autopay-select').textContent?.trim()).toBe('舊帳戶（已封存）');
+    const autopay = pickerOptions(fixture, 'autopay-select');
+    expect(autopay.map(o => o.textContent?.trim())).toEqual(['無', '玉山銀行', '舊帳戶（已封存）']);
+    expect(autopay.find(o => o.getAttribute('aria-selected') === 'true')?.getAttribute('data-value')).toBe('31');
 
     el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
     const req = http.expectOne('/api/accounting/accounts/11');
@@ -225,12 +356,80 @@ describe('AccountSettingsComponent', () => {
     req.flush(DETAIL);
   });
 
+  it('帳戶分組 picker lists 未分組 and the groups, and saves the chosen group', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    expect(pickerTrigger(fixture, 'group-select').getAttribute('data-value')).toBe('3');
+    expect(pickerTrigger(fixture, 'group-select').textContent?.trim()).toBe('信用卡');
+    const groups = pickerOptions(fixture, 'group-select');
+    expect(groups.map(o => o.textContent?.trim())).toEqual(['未分組', '現金', '信用卡']);
+    expect(groups.map(o => o.getAttribute('data-value'))).toEqual(['', '1', '3']);
+    groups[0].click();
+    fixture.detectChanges();
+    expect(pickerTrigger(fixture, 'group-select').getAttribute('data-value')).toBe('');
+
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body.group_id).toBeNull();
+    req.flush(DETAIL);
+  });
+
+  it('fx rows hidden until the fee switch is on', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, fx_fee_pct: null, fx_fee_rounding: null } as AccountDetail);
+    expect(el(fixture).querySelector('app-amount-field.fx-pct')).toBeNull();
+    expect(el(fixture).querySelector('app-picker.fx-rounding')).toBeNull();
+    expect(el(fixture).querySelector('app-switch.fx-refund-toggle')).toBeNull();
+    flip(fixture, 'fx-toggle');
+    expect(el(fixture).querySelector('app-amount-field.fx-pct')).not.toBeNull();
+    expect(el(fixture).querySelector('app-picker.fx-rounding')).not.toBeNull();
+    expect(el(fixture).querySelector('app-switch.fx-refund-toggle')).not.toBeNull();
+    flip(fixture, 'fx-refund-toggle');
+    expect(el(fixture).querySelector('app-switch.fx-refund-toggle button')!.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('fee percent typed 1.5 saves fx_fee_pct \'1.5\'', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, fx_fee_pct: '2.000' } as AccountDetail);
+    expect(amount(fixture, 'fx-pct').value).toBe('2');
+    typeInto(fixture, '.fx-pct .amt', '1.5');
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body.fx_fee_pct).toBe('1.5');
+    req.flush(DETAIL);
+  });
+
+  it('計算方式 picker lists the four rounding labels and saves the chosen mode', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    const options = pickerOptions(fixture, 'fx-rounding');
+    expect(options.map(o => o.textContent?.trim())).toEqual(['不處理', '四捨五入', '無條件捨去', '無條件進位']);
+    options.find(o => o.getAttribute('data-value') === 'ceil')!.click();
+    fixture.detectChanges();
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body.fx_fee_rounding).toBe('ceil');
+    req.flush(DETAIL);
+  });
+
+  it('其他 holds 備註, 還原 MOZE 設定 (when flagged), 封存 switch and 刪除 button', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    expect(el(fixture).querySelector('#s-more input.note-input')).not.toBeNull();
+    expect(el(fixture).querySelector('#s-more .reset-flag')).not.toBeNull();
+    expect(el(fixture).querySelector('#s-more app-switch.archive-toggle')).not.toBeNull();
+    expect(el(fixture).querySelector('#s-more .delete-account')).not.toBeNull();
+    flip(fixture, 'archive-toggle');
+    expect(fixture.componentInstance.form().is_archived).toBe(true);
+    const unflagged = render({ ...DETAIL, settings_locally_edited: false } as AccountDetail);
+    expect(el(unflagged).querySelector('#s-more .reset-flag')).toBeNull();
+  });
+
   it('saves every field with PUT and returns to the passbook', async () => {
     await setup('11');
     const fixture = render(DETAIL);
-    const limit = el(fixture).querySelector<HTMLInputElement>('.credit-limit')!;
-    limit.value = '350000';
-    limit.dispatchEvent(new Event('input'));
+    typeInto(fixture, '.credit-limit .amt', '350,000');
+    expect(amount(fixture, 'credit-limit').value).toBe('350,000');
     el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
 
     const req = http.expectOne('/api/accounting/accounts/11');
@@ -332,8 +531,8 @@ describe('AccountSettingsComponent', () => {
     await setup('11');
     const big = { ...DETAIL, opening_balance: '-1234567890123.4500', credit_limit: '9007199254740993.0000' } as AccountDetail;
     const fixture = render(big);
-    expect(el(fixture).querySelector<HTMLInputElement>('.opening-input')!.value).toBe('-1234567890123.45');
-    expect(el(fixture).querySelector<HTMLInputElement>('.credit-limit')!.value).toBe('9007199254740993');
+    expect(amount(fixture, 'opening-input').value).toBe('-1,234,567,890,123.45');
+    expect(amount(fixture, 'credit-limit').value).toBe('9,007,199,254,740,993');
     el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
     const req = http.expectOne('/api/accounting/accounts/11');
     expect(req.request.body).toMatchObject({ opening_balance: '-1234567890123.45', credit_limit: '9007199254740993' });
@@ -358,21 +557,23 @@ describe('AccountSettingsComponent', () => {
   it('reads today when the page opens, not when the component was built', async () => {
     await setup('11');
     const fixture = render(DETAIL);
-    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('09/16 – 10/15');
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('本期 09/16–10/15');
 
     // The reused pane stays alive across midnight; the next open reads the new date.
     vi.setSystemTime(new Date(2026, 9, 20, 9, 0));
     navigateTo('12');
     http.expectOne('/api/accounting/accounts/12').flush({ ...DETAIL, id: 12 });
     fixture.detectChanges();
-    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('10/16 – 11/15');
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('本期 10/16–11/15');
   });
 
-  it('clears the credit-only fields when 信用帳戶 is switched off', async () => {
+  it('信用帳戶 off keeps 帳單週期 in 基本 and PUTs closing_day 15', async () => {
     await setup('11');
     const fixture = render({ ...DETAIL, entry_count: 0 } as AccountDetail);
-    el(fixture).querySelector<HTMLButtonElement>('.credit-toggle')!.click();
-    fixture.detectChanges();
+    flip(fixture, 'credit-toggle');
+    expect(el(fixture).querySelector('#s-basic app-stepper.closing-day')).not.toBeNull();
+    expect(stepperText(fixture, 'closing-day')).toBe('15 號');
+    expect(el(fixture).querySelector('#s-basic .cycle-preview')?.textContent?.trim()).toBe('本期 09/16–10/15');
     el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
 
     const req = http.expectOne('/api/accounting/accounts/11');
@@ -593,21 +794,33 @@ describe('AccountSettingsComponent', () => {
     http.expectNone(r => r.method === 'PUT' || r.method === 'DELETE' || r.method === 'POST');
   });
 
+  it('a typed 0 in the 結帳日 and 繳款期限 steppers clamps to 1, without an error', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+
+    stepperType(fixture, 'closing-day', '0');
+    expect(stepperText(fixture, 'closing-day')).toBe('1 號');
+    expect(fixture.componentInstance.form().closing_day).toBe('1');
+    stepperType(fixture, 'due-value', '0');
+    expect(stepperText(fixture, 'due-value')).toBe('1 天');
+    expect(fixture.componentInstance.form().due_value).toBe('1');
+    expect(el(fixture).querySelector('.field-error[data-field="closing_day"]')).toBeNull();
+    expect(el(fixture).querySelector('.field-error[data-field="due_value"]')).toBeNull();
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('本期 10/02–11/01');
+  });
+
   it('validates the closing day and the due value inline, without a garbage preview', async () => {
     await setup('11');
     const fixture = render(DETAIL);
-    const type = (selector: string, value: string) => {
-      const input = el(fixture).querySelector<HTMLInputElement>(selector)!;
-      input.value = value;
-      input.dispatchEvent(new Event('input'));
-      fixture.detectChanges();
-    };
+    const component = fixture.componentInstance;
 
-    type('.closing-day', '0');
+    component.set('closing_day', '0');
+    fixture.detectChanges();
     expect(el(fixture).querySelector('.field-error[data-field="closing_day"]')?.textContent?.trim()).toBe('結帳日須為 1–31');
     expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('');
-    type('.closing-day', '15');
-    type('.due-value', '0');
+    component.set('closing_day', '15');
+    component.set('due_value', '0');
+    fixture.detectChanges();
     expect(el(fixture).querySelector('.field-error[data-field="due_value"]')?.textContent?.trim()).toBe('請輸入大於 0 的天數');
     expect(el(fixture).querySelector('.due-preview')?.textContent?.trim()).toBe('');
 
@@ -670,9 +883,9 @@ describe('AccountSettingsComponent', () => {
     typeInto(fixture, '.name-input', '玉山 Only');
     expect(fixture.componentInstance.isDirty()).toBe(false);
 
-    el(fixture).querySelector<HTMLButtonElement>('.include-toggle')!.click();
+    flip(fixture, 'include-toggle');
     expect(fixture.componentInstance.isDirty()).toBe(true);
-    el(fixture).querySelector<HTMLButtonElement>('.include-toggle')!.click();
+    flip(fixture, 'include-toggle');
     expect(fixture.componentInstance.isDirty()).toBe(false);
 
     fixture.componentInstance.toggleSharing(12, true);
@@ -725,7 +938,7 @@ describe('AccountSettingsComponent', () => {
   it('a saved form is no longer dirty, and leaving the page forgets it', async () => {
     await setup('11');
     const fixture = render(DETAIL);
-    typeInto(fixture, '.credit-limit', '350000');
+    typeInto(fixture, '.credit-limit .amt', '350000');
     expect(fixture.componentInstance.isDirty()).toBe(true);
     el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
     http.expectOne('/api/accounting/accounts/11').flush(DETAIL);
@@ -745,7 +958,7 @@ describe('AccountSettingsComponent', () => {
   it('a failed save keeps the form dirty', async () => {
     await setup('11');
     const fixture = render(DETAIL);
-    typeInto(fixture, '.credit-limit', '350000');
+    typeInto(fixture, '.credit-limit .amt', '350000');
     el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
     http.expectOne('/api/accounting/accounts/11').flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
 
@@ -764,13 +977,26 @@ describe('AccountSettingsComponent', () => {
     fixture.detectChanges();
   }
 
-  it('renders one .rule-row per rule with label, state, 基本 and 來自 MOZE badges under 回饋規則 · N 條', async () => {
+  it('回饋規則 header shows the current window', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    expect(texts(fixture, '.rules-head .k')).toEqual(['本期 09/16–10/15']);
+    expect(texts(fixture, '.rules-head .rules-all')).toEqual(['所有卡片的規則 ›']);
+  });
+
+  it('回饋規則 header reads 每月 1 日 – 月底 without a closing day', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, closing_day: null } as AccountDetail);
+    expect(texts(fixture, '.rules-head .k')).toEqual(['每月 1 日 – 月底']);
+  });
+
+  it('renders one .rule-row per rule with label, state, 基本 and 來自 MOZE badges under the 回饋規則 header', async () => {
     await setup('11');
     const fixture = render(DETAIL);
 
-    expect(texts(fixture, '.rules-head .k')).toEqual(['回饋規則 · 2 條']);
+    expect(texts(fixture, '.rules-head .k')).toEqual(['本期 09/16–10/15']);
     const all = el(fixture).querySelector<HTMLAnchorElement>('.rules-head a')!;
-    expect(all.textContent?.trim()).toBe('全部卡片');
+    expect(all.textContent?.trim()).toBe('所有卡片的規則 ›');
     expect(all.getAttribute('href')).toBe('/accounting/reward-rules?account_id=11');
     expect(el(fixture).querySelectorAll('.rule-row').length).toBe(2);
     expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般 (1%)', '餐飲 (5.2%)']);
@@ -973,7 +1199,8 @@ describe('AccountSettingsComponent', () => {
     });
     http.expectOne('/api/accounting/accounts/11/reward-usage').flush([]);
     fixture.detectChanges();
-    expect(texts(fixture, '.rules-head .k')).toEqual(['回饋規則 · 3 條']);
+    expect(el(fixture).querySelectorAll('.rule-row').length).toBe(3);
+    expect(texts(fixture, 'nav.sec-chips button')).toContain('回饋規則 (3)');
 
     click(fixture, '.rule-row .rule-edit', 2);
     sheet(fixture)!.deleted.emit(3);
@@ -981,7 +1208,8 @@ describe('AccountSettingsComponent', () => {
     expect(sheet(fixture)).toBeNull();
     http.expectOne('/api/accounting/accounts/11').flush(DETAIL);
     fixture.detectChanges();
-    expect(texts(fixture, '.rules-head .k')).toEqual(['回饋規則 · 2 條']);
+    expect(el(fixture).querySelectorAll('.rule-row').length).toBe(2);
+    expect(texts(fixture, 'nav.sec-chips button')).toContain('回饋規則 (2)');
   });
 
   it('an open rule sheet with unsaved input makes the page dirty; closing it does not', async () => {
@@ -1254,6 +1482,679 @@ describe('AccountSettingsComponent', () => {
       http.expectOne(URL).flush({ message: 'logo_format' }, { status: 422, statusText: 'Unprocessable Entity' });
       expect(show).toHaveBeenCalledWith('只接受 PNG、JPEG、WebP');
       expect(fixture.componentInstance.uploadingLogo()).toBe(false);
+    });
+  });
+
+  describe('1 點 = 1 元 switch', () => {
+    const CASH = { ...DETAIL, is_credit: false, closing_day: null, due_rule: null, due_value: null, credit_limit: null } as AccountDetail;
+
+    it('shows the 1 點 = 1 元 switch and helper on a non-credit account', async () => {
+      await setup('11');
+      const fixture = render(CASH);
+      const sw = el(fixture).querySelector<HTMLElement>('app-switch.cash-equivalent');
+      expect(sw).not.toBeNull();
+      expect(sw!.querySelector('button')!.getAttribute('aria-label')).toBe('1 點 = 1 元');
+      expect(el(fixture).textContent).toContain('回饋入這個帳戶時當成金額計算');
+    });
+
+    it('hides it on a credit account', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      expect(el(fixture).querySelector('app-switch.cash-equivalent')).toBeNull();
+      expect(el(fixture).textContent).not.toContain('回饋入這個帳戶時當成金額計算');
+    });
+
+    it('toggling it on sends cash_equivalent true', async () => {
+      await setup('11');
+      const fixture = render(CASH);
+      el(fixture).querySelector<HTMLButtonElement>('app-switch.cash-equivalent button')!.click();
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      const req = http.expectOne('/api/accounting/accounts/11');
+      expect(req.request.body.cash_equivalent).toBe(true);
+      req.flush(CASH);
+    });
+
+    it('untouched switch omits cash_equivalent from the PUT body', async () => {
+      await setup('11');
+      const fixture = render(CASH);
+      typeInto(fixture, '.name-input', '玉山 Only 2');
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      const req = http.expectOne('/api/accounting/accounts/11');
+      expect('cash_equivalent' in req.request.body).toBe(false);
+      req.flush(CASH);
+    });
+  });
+
+  describe('sections, chips and save state', () => {
+    /** Captures the scroll-spy callback; jsdom has no IntersectionObserver of its own. */
+    class FakeObserver {
+      static instances: FakeObserver[] = [];
+      readonly observe = vi.fn();
+      readonly unobserve = vi.fn();
+      readonly disconnect = vi.fn();
+      constructor(readonly callback: IntersectionObserverCallback, readonly options?: IntersectionObserverInit) {
+        FakeObserver.instances.push(this);
+      }
+
+      /** Reports sections entering (true) or leaving (false) the band, as the browser would. */
+      fire(fixture: ComponentFixture<AccountSettingsComponent>, changes: [string, boolean][]): void {
+        const entries = changes.map(([id, isIntersecting]) => ({ target: el(fixture).querySelector(`#s-${id}`)!, isIntersecting }));
+        this.callback(entries as unknown as IntersectionObserverEntry[], this as unknown as IntersectionObserver);
+        fixture.detectChanges();
+      }
+    }
+
+    function stubObserver(): void {
+      FakeObserver.instances = [];
+      vi.stubGlobal('IntersectionObserver', FakeObserver);
+    }
+
+    function chips(fixture: ComponentFixture<AccountSettingsComponent>): HTMLButtonElement[] {
+      return Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('nav.sec-chips button'));
+    }
+
+    function current(fixture: ComponentFixture<AccountSettingsComponent>): string[] {
+      return chips(fixture).filter(c => c.getAttribute('aria-current') === 'true').map(c => c.textContent?.trim() ?? '');
+    }
+
+    function rowLabels(fixture: ComponentFixture<AccountSettingsComponent>, id: string): string[] {
+      return texts(fixture, `#s-${id} .rw > .k`);
+    }
+
+    it('renders six section headings in order', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      const sections = Array.from(el(fixture).querySelectorAll('section.sec'));
+      expect(sections.map(s => s.id)).toEqual(['s-basic', 's-look', 's-card', 's-reward', 's-fx', 's-more']);
+      expect(sections.map(s => s.querySelector('h3')?.textContent?.trim())).toEqual(['基本', '外觀', '信用卡', '回饋規則', '國外交易', '其他']);
+      expect(sections.map(s => s.getAttribute('aria-labelledby'))).toEqual(['h-basic', 'h-look', 'h-card', 'h-reward', 'h-fx', 'h-more']);
+      expect(sections.map(s => s.querySelector('h3')?.id)).toEqual(['h-basic', 'h-look', 'h-card', 'h-reward', 'h-fx', 'h-more']);
+    });
+
+    it('回饋規則 chip shows the rule count', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      expect(el(fixture).querySelector('nav.sec-chips')?.getAttribute('aria-label')).toBe('設定區塊');
+      expect(chips(fixture).map(c => c.textContent?.trim())).toEqual(['基本', '外觀', '信用卡', '回饋規則 (2)', '國外交易', '其他']);
+      expect(chips(fixture).every(c => c.type === 'button')).toBe(true);
+      expect(current(fixture)).toEqual(['基本']);
+    });
+
+    it('clicking a chip marks it current and scrolls', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      const target = el(fixture).querySelector<HTMLElement>('#s-fx')!;
+      const scroll = vi.fn();
+      target.scrollIntoView = scroll;
+
+      chips(fixture)[4].click();
+      fixture.detectChanges();
+
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect(fixture.componentInstance.activeSection()).toBe('fx');
+      expect(current(fixture)).toEqual(['國外交易']);
+    });
+
+    it('scroll-spy marks the section reported in view', async () => {
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+
+      expect(FakeObserver.instances.length).toBe(1);
+      const observer = FakeObserver.instances[0];
+      const observed = observer.observe.mock.calls.map(call => (call[0] as Element).id);
+      expect(observed).toEqual(['s-basic', 's-look', 's-card', 's-reward', 's-fx', 's-more']);
+
+      observer.fire(fixture, [['card', true]]);
+      expect(current(fixture)).toEqual(['信用卡']);
+    });
+
+    it('scroll-spy band starts below the sticky chips', async () => {
+      await setup('11');
+      stubObserver();
+      vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(44);
+      render(DETAIL);
+
+      expect(FakeObserver.instances[0].options?.rootMargin).toBe('-44px 0px -60% 0px');
+    });
+
+    it('scroll-spy drops a section that leaves the band', async () => {
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+      const observer = FakeObserver.instances[0];
+
+      observer.fire(fixture, [['look', true], ['card', true]]);
+      expect(current(fixture)).toEqual(['外觀']);
+      observer.fire(fixture, [['look', false]]);
+      expect(current(fixture)).toEqual(['信用卡']);
+    });
+
+    it('after a chip jump the spy keeps the chosen section until the owner scrolls', async () => {
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+      const observer = FakeObserver.instances[0];
+      el(fixture).querySelector<HTMLElement>('#s-fx')!.scrollIntoView = vi.fn();
+
+      chips(fixture)[4].click();
+      fixture.detectChanges();
+      observer.fire(fixture, [['reward', true], ['fx', true]]);
+      expect(current(fixture)).toEqual(['國外交易']);
+
+      el(fixture).querySelector('.account-settings')!.dispatchEvent(new Event('wheel', { bubbles: true }));
+      observer.fire(fixture, [['card', true]]);
+      expect(current(fixture)).toEqual(['信用卡']);
+    });
+
+    it('a chip jump that reaches its section hands the chip back to the spy', async () => {
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+      const observer = FakeObserver.instances[0];
+      el(fixture).querySelector<HTMLElement>('#s-fx')!.scrollIntoView = vi.fn();
+
+      chips(fixture)[4].click();
+      fixture.detectChanges();
+      observer.fire(fixture, [['fx', true]]);
+      expect(current(fixture)).toEqual(['國外交易']);
+
+      // No wheel/touch/key input: the next intersection moves the chip on its own.
+      observer.fire(fixture, [['fx', false], ['more', true]]);
+      expect(current(fixture)).toEqual(['其他']);
+    });
+
+    it('scrollend on the pane releases a chip jump and marks the section now on top', async () => {
+      document.body.style.overflowY = 'auto';
+      onTestFinished(() => {
+        document.body.style.overflowY = '';
+      });
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+      const observer = FakeObserver.instances[0];
+      expect(observer.options?.root).toBe(document.body);
+      el(fixture).querySelector<HTMLElement>('#s-fx')!.scrollIntoView = vi.fn();
+
+      chips(fixture)[4].click();
+      fixture.detectChanges();
+      observer.fire(fixture, [['reward', true], ['fx', true]]);
+      expect(current(fixture)).toEqual(['國外交易']);
+
+      // The jump's own smooth scroll ends here too: the target is still in view, so its chip stays…
+      document.body.dispatchEvent(new Event('scrollend'));
+      fixture.detectChanges();
+      expect(current(fixture)).toEqual(['國外交易']);
+
+      // …but the lock is gone: the next intersection moves the chip without any wheel/touch/key input.
+      observer.fire(fixture, [['card', true]]);
+      expect(current(fixture)).toEqual(['信用卡']);
+    });
+
+    it('scrollend after a scrollbar drag that left the target behind marks the section now on top', async () => {
+      document.body.style.overflowY = 'auto';
+      onTestFinished(() => {
+        document.body.style.overflowY = '';
+      });
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+      const observer = FakeObserver.instances[0];
+      el(fixture).querySelector<HTMLElement>('#s-fx')!.scrollIntoView = vi.fn();
+
+      chips(fixture)[4].click();
+      fixture.detectChanges();
+      observer.fire(fixture, [['reward', true], ['fx', true]]);
+      observer.fire(fixture, [['reward', false], ['fx', false], ['look', true], ['card', true]]);
+      expect(current(fixture)).toEqual(['國外交易']);
+
+      document.body.dispatchEvent(new Event('scrollend'));
+      fixture.detectChanges();
+      expect(current(fixture)).toEqual(['外觀']);
+    });
+
+    it('scrollend on the viewport releases a chip jump when the page has no pane', async () => {
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+      const observer = FakeObserver.instances[0];
+      expect(observer.options?.root).toBeNull();
+      el(fixture).querySelector<HTMLElement>('#s-fx')!.scrollIntoView = vi.fn();
+
+      chips(fixture)[4].click();
+      fixture.detectChanges();
+      observer.fire(fixture, [['card', true], ['fx', true]]);
+      observer.fire(fixture, [['fx', false]]);
+      expect(current(fixture)).toEqual(['國外交易']);
+
+      window.dispatchEvent(new Event('scrollend'));
+      fixture.detectChanges();
+      expect(current(fixture)).toEqual(['信用卡']);
+    });
+
+    it('a jump to the short last section keeps 其他 current', async () => {
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+      const observer = FakeObserver.instances[0];
+      el(fixture).querySelector<HTMLElement>('#s-more')!.scrollIntoView = vi.fn();
+
+      chips(fixture)[5].click();
+      fixture.detectChanges();
+      observer.fire(fixture, [['basic', false], ['fx', true], ['more', true]]);
+      expect(current(fixture)).toEqual(['其他']);
+
+      // 其他 is too short to reach the top of the band, so the jump's scrollend must not snap the chip back to 國外交易.
+      window.dispatchEvent(new Event('scrollend'));
+      fixture.detectChanges();
+      expect(current(fixture)).toEqual(['其他']);
+    });
+
+    it('disconnects the observer on destroy', async () => {
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+      const observer = FakeObserver.instances[0];
+      expect(observer.disconnect).not.toHaveBeenCalled();
+
+      fixture.destroy();
+      expect(observer.disconnect).toHaveBeenCalledTimes(1);
+    });
+
+    it('editing the name shows 有 1 項未儲存; a second field shows 有 2 項未儲存', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      expect(el(fixture).querySelector('.dirty-count')).toBeNull();
+      expect(fixture.componentInstance.dirtyCount()).toBe(0);
+
+      typeInto(fixture, '.name-input', '玉山 Only 2');
+      expect(texts(fixture, '.topbar .dirty-count')).toEqual(['有 1 項未儲存']);
+
+      typeInto(fixture, '.note-input', '新備註');
+      expect(texts(fixture, '.topbar .dirty-count')).toEqual(['有 2 項未儲存']);
+    });
+
+    it('an open dirty rule sheet keeps the count at least 1', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+
+      click(fixture, '.rule-row .rule-edit', 0);
+      typeInto(fixture, '.rule-name', '一般改');
+
+      expect(fixture.componentInstance.isDirty()).toBe(true);
+      expect(fixture.componentInstance.dirtyCount()).toBeGreaterThanOrEqual(1);
+      expect(texts(fixture, '.topbar .dirty-count')).toEqual(['有 1 項未儲存']);
+    });
+
+    it('successful save clears the count', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      typeInto(fixture, '.name-input', '玉山 Only 2');
+      expect(texts(fixture, '.topbar .dirty-count')).toEqual(['有 1 項未儲存']);
+
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/accounts/11').flush({ ...DETAIL, name: '玉山 Only 2' });
+      fixture.detectChanges();
+
+      expect(fixture.componentInstance.dirtyCount()).toBe(0);
+      expect(el(fixture).querySelector('.dirty-count')).toBeNull();
+    });
+
+    it('基本 holds 名稱 … 納入總餘額 and 其他 holds 備註', async () => {
+      await setup('11');
+      const fixture = render({ ...DETAIL, is_credit: false } as AccountDetail);
+
+      expect(rowLabels(fixture, 'basic')).toEqual([
+        '名稱', '主幣種', '帳戶分組', '初始金額', '帳單週期結帳日', '納入總餘額', '1 點 = 1 元',
+      ]);
+      expect(el(fixture).querySelector('#s-basic .closing-day')).not.toBeNull();
+      expect(el(fixture).querySelector('#s-basic .include-toggle')).not.toBeNull();
+      expect(rowLabels(fixture, 'look')).toEqual(['Logo', '圖示']);
+      expect(el(fixture).querySelector('#s-card .sec-head .credit-toggle')).not.toBeNull();
+      expect(rowLabels(fixture, 'card')).toEqual([]);
+      expect(texts(fixture, '#s-card .card-hint')).toEqual(['打開「信用帳戶」才會出現繳款期限、額度與自動扣繳。']);
+      expect(el(fixture).querySelector('#s-reward .rules-block')).not.toBeNull();
+      expect(texts(fixture, '#s-reward .rules-all')).toEqual(['所有卡片的規則 ›']);
+      expect(el(fixture).querySelector('#s-fx .sec-head .fx-toggle')).not.toBeNull();
+      expect(rowLabels(fixture, 'fx')).toEqual(['手續費 %', '計算方式', '退款時退回手續費']);
+      expect(rowLabels(fixture, 'more')).toEqual(['備註', '封存帳戶', '刪除帳戶']);
+      expect(el(fixture).querySelector('#s-more .reset-flag')).not.toBeNull();
+      expect(el(fixture).querySelector('#s-more .delete-account')).not.toBeNull();
+
+      flip(fixture, 'credit-toggle');
+      expect(rowLabels(fixture, 'card')).toEqual(['繳款期限', '信用額度', '額度共用', '主帳戶', '自動扣繳']);
+      expect(el(fixture).querySelector('#s-card .card-hint')).toBeNull();
+    });
+  });
+
+  describe('phone layout, save bar and error jump', () => {
+    afterEach(() => {
+      TestBed.inject(LayoutModeService).set(null);
+    });
+
+    async function phoneSetup(): Promise<void> {
+      await setup('11');
+      TestBed.inject(LayoutModeService).set('phone');
+    }
+
+    function sheet(fixture: ComponentFixture<AccountSettingsComponent>): HTMLElement | null {
+      return el(fixture).ownerDocument.querySelector<HTMLElement>('.overlay[data-overlay] > .sheet[role=dialog]');
+    }
+
+    /** Replaces `scrollIntoView` (jsdom has none) for the test; the returned spy records the scrolled elements. */
+    function spyScroll(): MockInstance<(arg?: boolean | ScrollIntoViewOptions) => void> {
+      const proto = Element.prototype as { scrollIntoView?: unknown };
+      const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+      proto.scrollIntoView = () => undefined;
+      const spy = vi.spyOn(Element.prototype, 'scrollIntoView');
+      onTestFinished(() => {
+        if (original) {
+          Object.defineProperty(Element.prototype, 'scrollIntoView', original);
+        } else {
+          delete proto.scrollIntoView;
+        }
+      });
+      return spy;
+    }
+
+    it('phone: 基本 renders label/value rows and the 結帳日 row opens a sheet with the stepper', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+
+      expect(el(fixture).querySelector('#s-basic .rw')).toBeNull();
+      expect(texts(fixture, '#s-basic .set-card .set-row .row-label')).toEqual(['名稱', '主幣種', '帳戶分組', '初始金額', '帳單週期', '納入總餘額']);
+      expect(texts(fixture, '#s-basic .row-closing_day .row-v')).toEqual(['15 號']);
+      expect(texts(fixture, '#s-basic .row-closing_day .row-hint')).toEqual(['本期 09/16–10/15']);
+      expect(texts(fixture, '#s-basic .row-opening_balance .row-v')).toEqual(['-3,693']);
+      const row = el(fixture).querySelector<HTMLButtonElement>('#s-basic button.set-row.row-closing_day')!;
+      expect(row.type).toBe('button');
+      expect(row.querySelector('svg[aria-hidden="true"] path')?.getAttribute('d')).toBe('M9 18l6-6-6-6');
+      // Switch rows keep the switch inline; picker rows show the picker trigger.
+      expect(el(fixture).querySelector('#s-basic .set-row app-switch.include-toggle')).not.toBeNull();
+      expect(el(fixture).querySelector('#s-basic .set-row app-picker.group-select .pk-trigger')).not.toBeNull();
+      expect(el(fixture).querySelector('app-stepper.closing-day')).toBeNull();
+      expect(sheet(fixture)).toBeNull();
+
+      row.click();
+      fixture.detectChanges();
+
+      const open = sheet(fixture)!;
+      expect(open).not.toBeNull();
+      expect(open.getAttribute('aria-modal')).toBe('true');
+      expect(open.getAttribute('aria-label')).toBe('結帳日');
+      expect(open.querySelector('app-stepper.closing-day')).not.toBeNull();
+      expect(open.querySelectorAll('app-stepper, app-amount-field').length).toBe(1);
+      expect(open.querySelector('[role=dialog] [role=dialog]')).toBeNull();
+      expect(stepperText(fixture, 'closing-day')).toBe('15 號');
+      expect(open.contains(el(fixture).ownerDocument.activeElement)).toBe(true);
+
+      Array.from(open.querySelectorAll<HTMLButtonElement>('button')).find(b => b.textContent?.trim() === '完成')!.click();
+      fixture.detectChanges();
+      expect(sheet(fixture)).toBeNull();
+    });
+
+    it('phone sheet: clicking 加一 inside the sheet keeps it open', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      click(fixture, '.row-closing_day');
+
+      stepperClick(fixture, 'closing-day', 'inc');
+
+      expect(sheet(fixture)).not.toBeNull();
+      expect(stepperText(fixture, 'closing-day')).toBe('16 號');
+      expect(fixture.componentInstance.form().closing_day).toBe('16');
+
+      // A tap on the dimmed backdrop closes it; the row shows the new value.
+      el(fixture).ownerDocument.querySelector<HTMLElement>('.overlay[data-overlay]')!.click();
+      fixture.detectChanges();
+      expect(sheet(fixture)).toBeNull();
+      expect(texts(fixture, '.row-closing_day .row-v')).toEqual(['16 號']);
+    });
+
+    it('phone sheet: tap-to-type Enter keeps focus inside the 結帳日 sheet; Escape then closes it', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      click(fixture, '.row-closing_day');
+      const open = sheet(fixture)!;
+      const doc = el(fixture).ownerDocument;
+
+      open.querySelector<HTMLButtonElement>('app-stepper.closing-day .val')!.click();
+      fixture.detectChanges();
+      const input = open.querySelector<HTMLInputElement>('app-stepper.closing-day .val-input')!;
+      expect(doc.activeElement).toBe(input);
+      input.value = '20';
+      input.dispatchEvent(new Event('input'));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      fixture.detectChanges();
+
+      expect(fixture.componentInstance.form().closing_day).toBe('20');
+      expect(sheet(fixture)).toBe(open);
+      expect(open.contains(doc.activeElement)).toBe(true);
+      expect(doc.activeElement).toBe(open.querySelector('app-stepper.closing-day .val'));
+
+      doc.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      fixture.detectChanges();
+      expect(sheet(fixture)).toBeNull();
+      expect(doc.activeElement).toBe(el(fixture).querySelector('button.row-closing_day'));
+    });
+
+    it('phone sheet: Tab is trapped, Escape closes and refocuses the row', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      click(fixture, '.row-credit_limit');
+      const open = sheet(fixture)!;
+      expect(open.getAttribute('aria-label')).toBe('信用額度');
+      expect(open.querySelector('app-amount-field.credit-limit')).not.toBeNull();
+
+      const buttons = Array.from(open.querySelectorAll<HTMLElement>('button, input'));
+      const first = buttons[0];
+      const last = buttons[buttons.length - 1];
+      expect(last.textContent?.trim()).toBe('完成');
+      last.focus();
+      const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+      last.dispatchEvent(tab);
+      expect(tab.defaultPrevented).toBe(true);
+      expect(el(fixture).ownerDocument.activeElement).toBe(first);
+
+      const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      first.dispatchEvent(escape);
+      fixture.detectChanges();
+
+      expect(escape.defaultPrevented).toBe(true);
+      expect(sheet(fixture)).toBeNull();
+      expect(el(fixture).ownerDocument.activeElement).toBe(el(fixture).querySelector('button.row-credit_limit'));
+    });
+
+    it('phone: 放棄/儲存 bar appears only when dirty', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      expect(el(fixture).querySelector('.save-bar')).toBeNull();
+
+      typeInto(fixture, '.name-input', '玉山 Only 2');
+
+      expect(texts(fixture, '.save-bar > span')).toEqual(['有 1 項未儲存']);
+      expect(texts(fixture, '.save-bar .discard')).toEqual(['放棄']);
+      expect(texts(fixture, '.save-bar .save-bar-save')).toEqual(['儲存']);
+      // The bar carries the count on a phone; the header line is for ≥ 760 px.
+      expect(el(fixture).querySelector('.topbar .dirty-count')).toBeNull();
+
+      TestBed.inject(LayoutModeService).set('panes');
+      fixture.detectChanges();
+      expect(el(fixture).querySelector('.save-bar')).toBeNull();
+      expect(texts(fixture, '.topbar .dirty-count')).toEqual(['有 1 項未儲存']);
+    });
+
+    it('phone: the save bar sticks above the 64 px tab bar, not at the viewport bottom', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      typeInto(fixture, '.name-input', '玉山 Only 2');
+
+      const bar = el(fixture).querySelector<HTMLElement>('.save-bar')!;
+      const style = getComputedStyle(bar);
+      expect(style.position).toBe('sticky');
+      expect(style.bottom).not.toBe('0px');
+      expect(style.bottom).toContain('64px');
+    });
+
+    it('放棄 restores loaded values and hides the bar', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      typeInto(fixture, '.name-input', '玉山 Only 2');
+      click(fixture, '.row-closing_day');
+      stepperClick(fixture, 'closing-day', 'inc');
+      click(fixture, '.sheet .sheet-done');
+      click(fixture, 'input[data-account-id="12"]');
+      expect(texts(fixture, '.save-bar > span')).toEqual(['有 3 項未儲存']);
+
+      click(fixture, '.save-bar .discard');
+
+      expect(el(fixture).querySelector('.save-bar')).toBeNull();
+      expect(fixture.componentInstance.dirtyCount()).toBe(0);
+      expect(el(fixture).querySelector<HTMLInputElement>('.name-input')!.value).toBe('玉山 Only');
+      expect(texts(fixture, '.row-closing_day .row-v')).toEqual(['15 號']);
+      expect(el(fixture).querySelector<HTMLInputElement>('input[data-account-id="12"]')!.checked).toBe(false);
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('bar hides after a successful save', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      typeInto(fixture, '.name-input', '玉山 Only 2');
+
+      click(fixture, '.save-bar .save-bar-save');
+      const put = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/accounts/11');
+      expect(put.request.body.name).toBe('玉山 Only 2');
+      put.flush({ ...DETAIL, name: '玉山 Only 2' });
+      fixture.detectChanges();
+
+      expect(el(fixture).querySelector('.save-bar')).toBeNull();
+      expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 11]);
+    });
+
+    it('422 on combined_account_id jumps to 信用卡 and marks its chip invalid', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      const scroll = spyScroll();
+
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      http.expectOne('/api/accounting/accounts/11').flush(
+        { detail: [{ loc: ['body', 'combined_account_id'], msg: 'master cycle' }] },
+        { status: 422, statusText: 'Unprocessable Entity' },
+      );
+      fixture.detectChanges();
+
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect((scroll.mock.contexts[0] as Element).id).toBe('s-card');
+      expect(fixture.componentInstance.invalidSections()).toEqual(new Set(['card']));
+      const chips = Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('nav.sec-chips button'));
+      expect(chips.filter(c => c.classList.contains('invalid')).map(c => c.textContent?.trim())).toEqual(['信用卡']);
+      expect(fixture.componentInstance.activeSection()).toBe('card');
+      expect(el(fixture).querySelector('app-picker.master-select')?.contains(el(fixture).ownerDocument.activeElement)).toBe(true);
+
+      // Changing the offending field clears the chip.
+      pickerOptions(fixture, 'master-select').find(o => o.textContent?.includes('無'))!.click();
+      fixture.detectChanges();
+      expect(fixture.componentInstance.invalidSections().size).toBe(0);
+    });
+
+    it('422 on auto_pay_account_id shows the server text beside 自動扣繳 (desktop)', async () => {
+      await setup('11');
+      TestBed.inject(LayoutModeService).set('panes');
+      const fixture = render(DETAIL);
+      spyScroll();
+
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      http.expectOne('/api/accounting/accounts/11').flush(
+        { detail: [{ loc: ['body', 'auto_pay_account_id'], msg: 'autopay account archived' }] },
+        { status: 422, statusText: 'Unprocessable Entity' },
+      );
+      fixture.detectChanges();
+
+      expect(texts(fixture, '#s-card .field-error[data-field="auto_pay_account_id"]')).toEqual(['autopay account archived']);
+      const chips = Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('nav.sec-chips button'));
+      expect(chips.filter(c => c.classList.contains('invalid')).map(c => c.textContent?.trim())).toEqual(['信用卡']);
+      expect(el(fixture).querySelector('.form-message')).toBeNull();
+    });
+
+    it('local 結帳日 error jumps to 基本', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      const scroll = spyScroll();
+      fixture.componentInstance.set('closing_day', '40');
+      fixture.detectChanges();
+
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      fixture.detectChanges();
+
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect((scroll.mock.contexts[0] as Element).id).toBe('s-basic');
+      expect(fixture.componentInstance.invalidSections()).toEqual(new Set(['basic']));
+      expect(el(fixture).querySelector('app-stepper.closing-day')?.contains(el(fixture).ownerDocument.activeElement)).toBe(true);
+      expect(navigate).not.toHaveBeenCalled();
+
+      // A successful save clears the mark.
+      fixture.componentInstance.set('closing_day', '20');
+      fixture.componentInstance.invalidSections.set(new Set(['basic']));
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      http.expectOne(r => r.method === 'PUT').flush(DETAIL);
+      expect(fixture.componentInstance.invalidSections().size).toBe(0);
+    });
+
+    it('結帳後 over 120 days is stopped locally and marks 信用卡 (desktop)', async () => {
+      await setup('11');
+      TestBed.inject(LayoutModeService).set('panes');
+      const fixture = render(DETAIL);
+      spyScroll();
+      fixture.componentInstance.set('due_rule', 'days_after_closing');
+      fixture.componentInstance.set('due_value', '121');
+      fixture.detectChanges();
+
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      fixture.detectChanges();
+
+      http.expectNone('/api/accounting/accounts/11');
+      expect(texts(fixture, '#s-card .field-error[data-field="due_value"]')).toEqual(['請輸入大於 0 的天數']);
+      expect(fixture.componentInstance.invalidSections()).toEqual(new Set(['card']));
+      const chips = Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('nav.sec-chips button'));
+      expect(chips.filter(c => c.classList.contains('invalid')).map(c => c.textContent?.trim())).toEqual(['信用卡']);
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('a blank due value under 每月固定日 is stopped locally with 請填繳款日或天數 (desktop)', async () => {
+      await setup('11');
+      TestBed.inject(LayoutModeService).set('panes');
+      const fixture = render(DETAIL);
+      spyScroll();
+      fixture.componentInstance.set('due_rule', 'fixed_day');
+      fixture.componentInstance.set('due_value', '');
+      fixture.detectChanges();
+
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      fixture.detectChanges();
+
+      http.expectNone('/api/accounting/accounts/11');
+      expect(texts(fixture, '#s-card .field-error[data-field="due_value"]')).toEqual(['請填繳款日或天數']);
+      expect(fixture.componentInstance.invalidSections()).toEqual(new Set(['card']));
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('empty name jumps to 基本', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      const scroll = spyScroll();
+      typeInto(fixture, '.name-input', '  ');
+
+      click(fixture, '.save-bar .save-bar-save');
+
+      expect((scroll.mock.contexts[0] as Element).id).toBe('s-basic');
+      expect(fixture.componentInstance.invalidSections()).toEqual(new Set(['basic']));
+      const name = el(fixture).querySelector<HTMLInputElement>('.name-input')!;
+      expect(name.getAttribute('aria-invalid')).toBe('true');
+      expect(el(fixture).ownerDocument.activeElement).toBe(name);
+      expect(texts(fixture, '.field-error[data-field="name"]')).toEqual(['請輸入名稱']);
+
+      typeInto(fixture, '.name-input', '玉山 Only');
+      expect(fixture.componentInstance.invalidSections().size).toBe(0);
     });
   });
 });
