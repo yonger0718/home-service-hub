@@ -37,6 +37,8 @@ describe('CalendarMonthComponent', () => {
       paidDays: ReadonlySet<string>;
       compact: boolean;
       weekOf: string | null;
+      loading: boolean;
+      failed: boolean;
     }> = {},
   ) {
     TestBed.resetTestingModule();
@@ -194,6 +196,23 @@ describe('CalendarMonthComponent', () => {
       expect(narrow.cell('2026-10-25').querySelector('.net')).toBeNull();
     });
 
+    it('draws no bar and no dots on a future day, and ignores future spend for the month maximum', () => {
+      const days = [...OCT, { date: '2026-10-28', expense: '-99999.0000', income: '0.0000', count: 2 }];
+      const dots = new Map([['2026-10-28', ['#a']], ['2026-10-21', ['#b']]]);
+      const { cell } = render({ ...base, days, dots });
+      expect(cell('2026-10-28').querySelector('.heat, .dots')).toBeNull();
+      expect(cell('2026-10-19').querySelector<HTMLElement>('.heat')!.style.width).toBe('100%');
+      expect(cell('2026-10-21').querySelector('.dots')).not.toBeNull();
+    });
+
+    it('shows no quiet-day dash while loading or after a failed daily summary', () => {
+      for (const state of [{ loading: true }, { failed: true }]) {
+        const { cell } = render({ ...base, days: [], ...state });
+        expect(cell('2026-10-06').querySelector('.net')).toBeNull();
+        expect(cell('2026-10-06').getAttribute('aria-label')).not.toContain('筆');
+      }
+    });
+
     it('draws up to three dots then +N, none in week mode, none when the map is empty', () => {
       const dots = new Map([['2026-10-21', ['#a', '#b', '#c', '#d']]]);
       const { cell, el, fixture } = render({ ...base, dots });
@@ -293,13 +312,27 @@ describe('CalendarMonthComponent', () => {
       const { fixture, el } = render({ ...base, weekOf: '2026-10-21', selected: '2026-10-05', today: '2026-11-20' });
       const stops = () => Array.from(el.querySelectorAll('button.cell')).filter(b => b.getAttribute('tabindex') === '0').map(b => b.getAttribute('data-date'));
       expect(el.querySelectorAll('button.cell').length).toBe(7);
-      expect(stops().length).toBe(1);
+      expect(stops()).toEqual(['2026-10-18']);
       const first = stops()[0];
       const event = new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true });
       el.querySelector('.cal')!.dispatchEvent(event);
       fixture.detectChanges();
-      expect(event.defaultPrevented).toBe(false);
+      // A handled key is always cancelled, even when the move is refused, so the layout's ↑/↓ row stepping stays out.
+      expect(event.defaultPrevented).toBe(true);
       expect(stops()).toEqual([first]);
+    });
+
+    it('cancels a refused arrow at the grid edge but leaves Alt/Ctrl/Meta chords to the browser', () => {
+      const { el } = render({ ...base, selected: '2026-10-01' });
+      const press = (init: KeyboardEventInit) => {
+        const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+        el.querySelector('.cal')!.dispatchEvent(event);
+        return event;
+      };
+      expect(press({ key: 'ArrowLeft' }).defaultPrevented).toBe(true);
+      expect(press({ key: 'ArrowLeft', altKey: true }).defaultPrevented).toBe(false);
+      expect(press({ key: 'ArrowRight', ctrlKey: true }).defaultPrevented).toBe(false);
+      expect(press({ key: 'ArrowRight', metaKey: true }).defaultPrevented).toBe(false);
     });
 
     it('does not cancel Enter or Space', () => {

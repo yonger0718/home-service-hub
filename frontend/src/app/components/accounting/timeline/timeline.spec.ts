@@ -1243,11 +1243,11 @@ describe('LedgerTimelineComponent', () => {
         httpMock!.expectOne('/api/accounting/projects').flush([]);
         fakeCalendarData.data.set({
           ...EMPTY_CALENDAR_DATA,
-          dots: new Map([['2026-10-21', [{ key: '3' }, { key: '99' }] as never]]),
+          dots: new Map([['2026-10-02', [{ key: '3' }, { key: '99' }] as never]]),
           dotsState: 'ready',
         });
         fixture.detectChanges();
-        const dots = [...el.querySelectorAll<HTMLElement>('button.cell[data-date="2026-10-21"] .dot')];
+        const dots = [...el.querySelectorAll<HTMLElement>('button.cell[data-date="2026-10-02"] .dot')];
         expect(dots.length).toBe(2);
         expect(dots[0].style.background).toBe('rgb(170, 187, 204)');
         expect(dots[1].style.background).toBe(FALLBACK_COLOR);

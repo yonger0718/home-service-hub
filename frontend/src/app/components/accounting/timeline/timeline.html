@@ -180,6 +180,7 @@
     <app-calendar-month
       [attr.aria-busy]="dailyLoading() ? 'true' : null"
       [loading]="dailyLoading() && !daily()"
+      [failed]="dailyError()"
       [month]="month()"
       [days]="daily()?.days ?? []"
       [currency]="daily()?.currency ?? mainCurrency()"

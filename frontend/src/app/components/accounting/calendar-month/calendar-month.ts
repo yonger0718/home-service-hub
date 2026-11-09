@@ -40,6 +40,8 @@ export class CalendarMonthComponent {
   readonly month = input.required<string>();
   readonly days = input<DailySummaryDay[]>([]);
   readonly loading = input(false);
+  /** The daily summary could not be read: no quiet-day dash, since an empty `days` then means unknown, not quiet. */
+  readonly failed = input(false);
   readonly currency = input('TWD');
   /** `Preference.week_start`: 0 = Sunday first, 1 = Monday first. */
   readonly weekStart = input(0);
@@ -90,7 +92,9 @@ export class CalendarMonthComponent {
     const today = this.today();
     const weekOf = this.weekOf();
     const tabDate = this.tabDate();
-    const maxExpense = maxDailyExpense(this.days());
+    const unknown = this.loading() || this.failed();
+    // Future days show no figure, so their spend must not scale the month's heat.
+    const maxExpense = maxDailyExpense(this.days().filter(day => day.date <= today));
     const dueCounts = new Map<string, number>();
     const closingDays = new Set<string>();
     for (const event of this.billing()) {
@@ -107,17 +111,17 @@ export class CalendarMonthComponent {
         const net = cell.income + cell.expense;
         let netText: string | null = null;
         if (!cell.outside && !future) {
-          netText = quiet ? (compact ? null : '—') : compact ? compactNet(net) : wideNet(net);
+          netText = quiet ? (compact || unknown ? null : '—') : compact ? compactNet(net) : wideNet(net);
         }
         const dueCount = cell.outside ? 0 : (dueCounts.get(cell.date) ?? 0);
         const bill = dueCount > 0 ? (this.paidDays().has(cell.date) ? 'paid' : 'due') : null;
         const invoices = cell.outside ? 0 : (this.invoiceDays().get(cell.date) ?? 0);
-        const colours = cell.outside || weekOf ? [] : (this.dots().get(cell.date) ?? []);
+        const colours = cell.outside || future || weekOf ? [] : (this.dots().get(cell.date) ?? []);
         const weekday = new Date(Date.UTC(Number(cell.date.slice(0, 4)), Number(cell.date.slice(5, 7)) - 1, cell.day)).getUTCDay();
         return {
           ...cell,
           net: netText,
-          heat: cell.outside ? 0 : heatRatio(cell.expense, maxExpense),
+          heat: cell.outside || future ? 0 : heatRatio(cell.expense, maxExpense),
           dots: colours.slice(0, MAX_DOTS),
           more: Math.max(0, colours.length - MAX_DOTS),
           bill,
@@ -134,6 +138,9 @@ export class CalendarMonthComponent {
   });
 
   onGridKeydown(event: KeyboardEvent): void {
+    if (event.altKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
     const month = this.month();
     const current = this.tabDate();
     if (!current) {
@@ -163,10 +170,11 @@ export class CalendarMonthComponent {
         return;
     }
     const button = this.host.nativeElement.querySelector<HTMLButtonElement>(`button.cell[data-date="${target}"]`);
+    // Handled keys are always cancelled, even when the move is refused, so the layout's ↑/↓ row stepping stays out.
+    event.preventDefault();
     if (!button || button.disabled) {
       return;
     }
-    event.preventDefault();
     this.focusDate.set(target);
     button.focus();
   }
