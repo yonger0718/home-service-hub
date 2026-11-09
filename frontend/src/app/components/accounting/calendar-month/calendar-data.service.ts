@@ -134,7 +134,7 @@ export class CalendarDataService {
             dots.set(
               row.key!,
               (row.splits ?? [])
-                .filter((s) => s.key !== null)
+                .filter((s) => s.key !== null && Number(s.amount) > 0)
                 .sort((a, b) => Number(b.amount) - Number(a.amount)),
             );
           }

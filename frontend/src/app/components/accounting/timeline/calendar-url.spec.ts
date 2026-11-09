@@ -14,6 +14,11 @@ describe('readCalendarQuery', () => {
   it('reads a month alone', () => {
     expect(readCalendarQuery(q({ month: '2026-10' }))).toEqual({ month: '2026-10', day: null });
   });
+  it('rejects impossible dates and accepts a leap day', () => {
+    expect(readCalendarQuery(q({ month: '2026-02', day: '2026-02-31' }))).toEqual({ month: '2026-02', day: null });
+    expect(readCalendarQuery(q({ day: '2026-02-31' }))).toEqual({ month: null, day: null });
+    expect(readCalendarQuery(q({ day: '2024-02-29' }))).toEqual({ month: '2024-02', day: '2024-02-29' });
+  });
   it('rejects malformed values', () => {
     expect(readCalendarQuery(q({ month: '2026-13', day: '2026-13-99' }))).toEqual({ month: null, day: null });
     expect(readCalendarQuery(q({ month: 'oct', day: 'today' }))).toEqual({ month: null, day: null });

@@ -19,7 +19,7 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router } from '@angular/router';
-import { DAY_RE, calendarParams } from '../timeline/calendar-url';
+import { calendarParams, isRealDay } from '../timeline/calendar-url';
 import {
   EMPTY,
   Observable,
@@ -878,7 +878,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     if (copyParam !== null) {
       return { entryId: Number(copyParam), copy: true };
     }
-    if (dateParam !== null && DAY_RE.test(dateParam)) {
+    if (dateParam !== null && isRealDay(dateParam)) {
       this.setParentDate('entryDate', dateParam);
     }
     this.accountId.set(this.accounts().find(account => !account.is_archived)?.id ?? null);

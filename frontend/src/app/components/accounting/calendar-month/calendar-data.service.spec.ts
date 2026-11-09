@@ -100,7 +100,7 @@ describe('CalendarDataService', () => {
       body([
         row(
           '2026-10-21',
-          [split('3', '100'), split('7', '2996'), split('', '1')].map((s) =>
+          [split('3', '100'), split('7', '2996'), split('', '1'), split('9', '-50')].map((s) =>
             s.key === '' ? { ...s, key: null } : s,
           ),
         ),
