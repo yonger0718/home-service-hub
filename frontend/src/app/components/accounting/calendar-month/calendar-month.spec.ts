@@ -273,6 +273,33 @@ describe('CalendarMonthComponent', () => {
       fixture.componentInstance.daySelected.subscribe(date => emitted.push(date));
       cell('2026-10-30').click();
       expect(emitted).toEqual(['2026-10-30']);
+      fixture.detectChanges();
+      expect(stops()).toEqual(['2026-10-30']);
+      cell('2026-10-12').click();
+      fixture.detectChanges();
+      expect(stops()).toEqual(['2026-10-12']);
+    });
+
+    it('keeps one tab stop when the selection is in another month', () => {
+      const { el } = render({ ...base, selected: '2026-09-30' });
+      const stops = Array.from(el.querySelectorAll('button.cell')).filter(b => b.getAttribute('tabindex') === '0');
+      expect(stops.map(b => b.getAttribute('data-date'))).toEqual(['2026-10-22']);
+      const other = render({ days: OCT, today: '2026-11-20', selected: '2026-09-30' });
+      const first = Array.from(other.el.querySelectorAll('button.cell')).filter(b => b.getAttribute('tabindex') === '0');
+      expect(first.map(b => b.getAttribute('data-date'))).toEqual(['2026-10-01']);
+    });
+
+    it('keeps one tab stop in week mode and ignores arrows leaving the visible week', () => {
+      const { fixture, el } = render({ ...base, weekOf: '2026-10-21', selected: '2026-10-05', today: '2026-11-20' });
+      const stops = () => Array.from(el.querySelectorAll('button.cell')).filter(b => b.getAttribute('tabindex') === '0').map(b => b.getAttribute('data-date'));
+      expect(el.querySelectorAll('button.cell').length).toBe(7);
+      expect(stops().length).toBe(1);
+      const first = stops()[0];
+      const event = new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true });
+      el.querySelector('.cal')!.dispatchEvent(event);
+      fixture.detectChanges();
+      expect(event.defaultPrevented).toBe(false);
+      expect(stops()).toEqual([first]);
     });
 
     it('does not cancel Enter or Space', () => {

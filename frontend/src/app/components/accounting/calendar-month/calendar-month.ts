@@ -63,11 +63,25 @@ export class CalendarMonthComponent {
 
   readonly weekdays = computed(() => Array.from({ length: 7 }, (_, i) => WEEKDAY_NAMES[(this.weekStart() + i) % 7]));
 
+  /** The 6-row grid, cut to the week of `weekOf` in week mode. */
+  private readonly grid = computed(() => {
+    const grid = buildCalendar(this.month(), this.days(), this.weekStart());
+    const weekOf = this.weekOf();
+    return weekOf ? grid.filter(row => row.some(cell => cell.date === weekOf)) : grid;
+  });
+
+  /** The one tab stop: the first of focus / selection / today / the 1st that is a rendered, enabled cell. */
   private readonly tabDate = computed(() => {
     const month = this.month();
     const today = this.today();
-    const focus = this.focusDate();
-    return (focus?.slice(0, 7) === month ? focus : null) ?? this.selected() ?? (today.slice(0, 7) === month ? today : `${month}-01`);
+    const cells = this.grid().flat().filter(cell => !cell.outside);
+    const candidates = [this.focusDate(), this.selected(), today, `${month}-01`];
+    for (const date of candidates) {
+      if (date && cells.some(cell => cell.date === date)) {
+        return date;
+      }
+    }
+    return cells[0]?.date ?? null;
   });
 
   readonly rows = computed(() => {
@@ -86,11 +100,7 @@ export class CalendarMonthComponent {
         closingDays.add(event.date);
       }
     }
-    let grid = buildCalendar(this.month(), this.days(), this.weekStart());
-    if (weekOf) {
-      grid = grid.filter(row => row.some(cell => cell.date === weekOf));
-    }
-    return grid.map(row =>
+    return this.grid().map(row =>
       row.map((cell): CalendarCellView => {
         const future = cell.date > today;
         const quiet = cell.count === 0;
@@ -126,6 +136,9 @@ export class CalendarMonthComponent {
   onGridKeydown(event: KeyboardEvent): void {
     const month = this.month();
     const current = this.tabDate();
+    if (!current) {
+      return;
+    }
     let target: string;
     switch (event.key) {
       case 'ArrowLeft':
@@ -149,19 +162,18 @@ export class CalendarMonthComponent {
       default:
         return;
     }
-    event.preventDefault();
-    if (target.slice(0, 7) !== month) {
+    const button = this.host.nativeElement.querySelector<HTMLButtonElement>(`button.cell[data-date="${target}"]`);
+    if (!button || button.disabled) {
       return;
     }
-    const button = this.host.nativeElement.querySelector<HTMLButtonElement>(`button.cell[data-date="${target}"]`);
-    if (button) {
-      this.focusDate.set(target);
-      button.focus();
-    }
+    event.preventDefault();
+    this.focusDate.set(target);
+    button.focus();
   }
 
   pick(cell: CalendarCell): void {
     if (!cell.outside) {
+      this.focusDate.set(cell.date);
       this.daySelected.emit(cell.date);
     }
   }
