@@ -48,9 +48,11 @@ const RECEIVABLE = detail({
 describe('EntryDetailComponent', () => {
   let http: HttpTestingController;
   let params: BehaviorSubject<ParamMap>;
+  let query: ParamMap;
 
   beforeEach(async () => {
     params = new BehaviorSubject(convertToParamMap({ id: '42' }));
+    query = convertToParamMap({});
     await TestBed.configureTestingModule({
       imports: [EntryDetailComponent],
       providers: [
@@ -58,7 +60,7 @@ describe('EntryDetailComponent', () => {
         provideHttpClientTesting(),
         provideRouter([]),
         provideLocationMocks(),
-        { provide: ActivatedRoute, useValue: { paramMap: params } },
+        { provide: ActivatedRoute, useValue: { paramMap: params, snapshot: { get queryParamMap() { return query; } } } },
       ],
     }).compileComponents();
     http = TestBed.inject(HttpTestingController);
@@ -546,6 +548,24 @@ describe('EntryDetailComponent', () => {
     expect(back).not.toHaveBeenCalled();
   });
 
+  it('closes to the selected calendar day with no history', () => {
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-21' });
+    TestBed.inject(Location).go('/accounting/entries/42', '', { closeTo: 'list' });
+    const fixture = render(RECEIVABLE);
+    el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
+    expect(navigate).toHaveBeenLastCalledWith('/accounting?month=2026-10&day=2026-10-21');
+  });
+
+  it('keeps the query on 編輯', () => {
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-21' });
+    const fixture = render(RECEIVABLE);
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    fixture.componentInstance.editOne();
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 42, 'edit'], { queryParamsHandling: 'preserve' });
+  });
+
   it('closes to the passbook when opened from it with closeTo: list', () => {
     const router = TestBed.inject(Router);
     const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
@@ -729,7 +749,7 @@ describe('EntryDetailComponent', () => {
     expect(el(fixture).querySelector('.related')?.textContent ?? '').not.toContain('拆帳');
     const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
     fixture.componentInstance.edit();
-    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 42, 'edit']);
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 42, 'edit'], { queryParamsHandling: 'preserve' });
   });
 
   it('draws a slim 「← 多類別 $合計」 link that replaces the child with its group view, carrying the group state', () => {

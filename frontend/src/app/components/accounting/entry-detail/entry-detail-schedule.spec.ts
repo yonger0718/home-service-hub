@@ -127,7 +127,7 @@ describe('EntryDetailComponent schedules', () => {
     http.expectOne('/api/accounting/schedules/definitions/12').flush({ ...DEFINITION, kind: 'recurring' });
     fixture.detectChanges();
     click(fixture, '.scope-one');
-    expect(navigate).not.toHaveBeenCalledWith(['/accounting/entries', 42, 'edit']);
+    expect(navigate).not.toHaveBeenCalledWith(['/accounting/entries', 42, 'edit'], { queryParamsHandling: 'preserve' });
     expect(el.querySelectorAll('.repost-amount').length).toBe(2);
   });
 
@@ -167,7 +167,7 @@ describe('EntryDetailComponent schedules', () => {
     expect(req.request.body).toEqual({ amounts: ['8333', '598'] });
     req.flush(makeInstance({ id: 77, status: 'posted', posted_entry_ids: [201, 202] }));
     fixture.detectChanges();
-    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 201], { replaceUrl: true });
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 201], { replaceUrl: true, queryParamsHandling: 'preserve' });
   });
 
   it('opens the whole schedule in the entry form, or shows the lock for an imported one', () => {
@@ -336,7 +336,7 @@ describe('EntryDetailComponent schedules', () => {
     const enter = key(first, { key: 'Enter' });
     expect(enter.defaultPrevented).toBe(true);
     http.expectOne('/api/accounting/schedules/instances/77/repost').flush(makeInstance({ id: 77, posted_entry_ids: [201, 202] }));
-    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 201], { replaceUrl: true });
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 201], { replaceUrl: true, queryParamsHandling: 'preserve' });
     el.remove();
   });
 

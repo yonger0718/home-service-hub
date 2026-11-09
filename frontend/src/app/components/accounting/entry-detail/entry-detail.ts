@@ -13,6 +13,7 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { calendarParams } from '../timeline/calendar-url';
 import { Observable } from 'rxjs';
 
 import {
@@ -426,7 +427,11 @@ export class EntryDetailComponent implements OnInit {
       return '/accounting/reminders';
     }
     const passbook = this.passbookId();
-    return passbook === null ? '/accounting' : `/accounting/accounts/${passbook}`;
+    if (passbook === null) {
+      const queryParams = calendarParams(this.route.snapshot.queryParamMap);
+      return this.router.serializeUrl(this.router.createUrlTree(['/accounting'], { queryParams }));
+    }
+    return `/accounting/accounts/${passbook}`;
   }
 
   /**
@@ -532,7 +537,7 @@ export class EntryDetailComponent implements OnInit {
       this.loadSchedule();
       return;
     }
-    this.router.navigate(['/accounting/entries', detail.id, 'edit']);
+    this.router.navigate(['/accounting/entries', detail.id, 'edit'], { queryParamsHandling: 'preserve' });
   }
 
   /** Opens the scope / repost panel and moves focus into it; the opener gets focus back when it closes. */
@@ -602,7 +607,7 @@ export class EntryDetailComponent implements OnInit {
       return;
     }
     if (this.formEditable()) {
-      this.router.navigate(['/accounting/entries', detail.id, 'edit']);
+      this.router.navigate(['/accounting/entries', detail.id, 'edit'], { queryParamsHandling: 'preserve' });
       return;
     }
     this.openSchedulePanel('repost', '.repost-amount');
@@ -656,7 +661,7 @@ export class EntryDetailComponent implements OnInit {
           this.panelOpener = null;
           const next = instance.posted_entry_ids[position] ?? instance.posted_entry_ids[0];
           if (next !== undefined) {
-            this.router.navigate(['/accounting/entries', next], { replaceUrl: true });
+            this.router.navigate(['/accounting/entries', next], { replaceUrl: true, queryParamsHandling: 'preserve' });
           } else {
             this.load(id, true);
           }

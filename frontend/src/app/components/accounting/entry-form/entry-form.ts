@@ -19,6 +19,7 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router } from '@angular/router';
+import { DAY_RE, calendarParams } from '../timeline/calendar-url';
 import {
   EMPTY,
   Observable,
@@ -739,7 +740,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       .pipe(takeUntilDestroyed())
       .subscribe(([params, query]) => {
         const schedule = query.get('schedule');
-        const target = this.start(params.get('id'), query.get('kind'), query.get('copy'), schedule, query.get('select') === 'parent');
+        const target = this.start(params.get('id'), query.get('kind'), query.get('copy'), schedule, query.get('select') === 'parent', query.get('date'));
         this.load(target);
         if (schedule !== null) {
           this.loadDefinition(Number(schedule));
@@ -834,6 +835,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     copyParam: string | null,
     scheduleParam: string | null = null,
     parent = false,
+    dateParam: string | null = null,
   ): EntryTarget | null {
     this.baseline.set(null);
     this.clearDiscardFocus();
@@ -863,6 +865,9 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     }
     if (copyParam !== null) {
       return { entryId: Number(copyParam), copy: true };
+    }
+    if (dateParam !== null && DAY_RE.test(dateParam)) {
+      this.setParentDate('entryDate', dateParam);
     }
     this.accountId.set(this.accounts().find(account => !account.is_archived)?.id ?? null);
     return null;
@@ -2069,8 +2074,9 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
           }
           const key = selected;
           // closeTo: the page before this one in history may be the edit page, so the detail's ✕ must not go back().
-          void this.router.navigateByUrl(`/accounting/entries/${ids.get(key) ?? ids.get(submitted[0].key)}`, {
+          void this.router.navigate(['/accounting/entries', ids.get(key) ?? ids.get(submitted[0].key)], {
             replaceUrl: true,
+            queryParamsHandling: 'preserve',
             state: { closeTo: 'list' },
           });
         },
@@ -2109,7 +2115,11 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       this.location.back();
       return;
     }
-    void this.router.navigate(groupCommands(firstId, null), { replaceUrl: true, state: { closeTo: 'list' } });
+    void this.router.navigate(groupCommands(firstId, null), {
+      replaceUrl: true,
+      queryParams: calendarParams(this.route.snapshot.queryParamMap),
+      state: { closeTo: 'list' },
+    });
   }
 
   /** 重新載入 after an unmappable split answer: through the discard prompt when the draft is dirty. */
@@ -2120,7 +2130,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       if (this.entryId() !== null) {
         this.reload();
       } else {
-        void this.router.navigateByUrl('/accounting');
+        void this.router.navigate(['/accounting'], { queryParams: calendarParams(this.route.snapshot.queryParamMap) });
       }
     });
   }
@@ -2414,7 +2424,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     if (this.router.lastSuccessfulNavigation()?.previousNavigation) {
       this.location.back();
     } else {
-      void this.router.navigateByUrl('/accounting');
+      void this.router.navigate(['/accounting'], { queryParams: calendarParams(this.route.snapshot.queryParamMap) });
     }
   }
 }

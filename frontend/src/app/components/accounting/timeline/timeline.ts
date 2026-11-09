@@ -48,7 +48,7 @@ import { inboxBellCount } from '../inbox/inbox-view';
 import { InboxService } from '../inbox/inbox.service';
 import { parseTags } from '../entry-form/entry-draft';
 import { addDays, currentMonth, monthLabel, todayIso } from '../dates';
-import { calendarWrite, readCalendarQuery } from './calendar-url';
+import { calendarParams, calendarWrite, readCalendarQuery } from './calendar-url';
 import { nextDueItems } from '../month-overview/due-items';
 import { AccountingOverviewService, OverviewState } from '../month-overview/overview.service';
 import { schedulePill } from '../schedule-math';
@@ -1323,6 +1323,11 @@ export class LedgerTimelineComponent implements OnInit {
     }
   }
 
+  /** The calendar view carries its month and day into an opened entry; the 清單 view drops the query. */
+  private calendarExtras(): { queryParams?: Params } {
+    return this.view() === 'calendar' ? { queryParams: calendarParams(this.router.routerState.snapshot.root.queryParamMap) } : {};
+  }
+
   /**
    * A split row opens its 多類別 group view (search results included: they are these rows); any other row its detail.
    * The list counts as the history entry below the group view only while it is the page on screen (`listOpenState`).
@@ -1334,10 +1339,11 @@ export class LedgerTimelineComponent implements OnInit {
     }
     if (row.folder) {
       const state = listOpenState(this.router.url, '/accounting');
-      void this.router.navigate(groupCommands(row.entryId, null), state ? { state } : {});
+      void this.router.navigate(groupCommands(row.entryId, null), { ...(state ? { state } : {}), ...this.calendarExtras() });
       return;
     }
-    void this.router.navigate(['/accounting/entries', row.entryId]);
+    const extras = this.calendarExtras();
+    void (extras.queryParams ? this.router.navigate(['/accounting/entries', row.entryId], extras) : this.router.navigate(['/accounting/entries', row.entryId]));
   }
 
   expenseText(summary: MonthSummary): string {

@@ -1307,7 +1307,7 @@ describe('LedgerTimelineComponent', () => {
       expect(text(rows[0].querySelector('.amt'))).toBe('−$1,234');
       expect(rows[0].querySelector('.amt')!.classList).toContain('neg');
       rows[1].click();
-      expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 12]);
+      expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 12], { queryParams: {} });
 
       (el.querySelector('button.cell[data-date="2026-10-02"]') as HTMLButtonElement).click();
       fixture.detectChanges();
@@ -1532,6 +1532,17 @@ describe('LedgerTimelineComponent', () => {
     }
 
     const cellAt = (el: HTMLElement, date: string) => el.querySelector<HTMLButtonElement>(`button.cell[data-date="${date}"]`)!;
+
+    it('opens a row from the calendar with month and day in the query', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10&day=2026-10-21');
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [makeEntry({ id: 1, name: '午餐' })], total: 1, limit: 500, offset: 0 });
+      fixture.detectChanges();
+      const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+      el.querySelector<HTMLButtonElement>('.entry-row')!.click();
+      expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 1], { queryParams: { month: '2026-10', day: '2026-10-21' } });
+    });
 
     it('selects the day named in the URL and forces 日曆 without storing it', async () => {
       const { fixture, el } = await openAt('/accounting?month=2026-10&day=2026-10-21');

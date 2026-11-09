@@ -468,6 +468,22 @@ describe('AccountingLayoutComponent', () => {
     return event;
   }
 
+  it('✕ returns to the calendar day', async () => {
+    const harness = await start('sheet', '/accounting/entries/5?month=2026-10&day=2026-10-21', 820);
+    const router = TestBed.inject(Router);
+    await find(harness, '.detail-pane.open');
+    (await find(harness, '.sheet-close') as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-21'));
+  });
+
+  it('↓ keeps month and day', async () => {
+    const harness = await start('phone', '/accounting/entries/5?month=2026-10&day=2026-10-21');
+    const router = TestBed.inject(Router);
+    addRows(harness, [5, 6, 7]);
+    expect(press('ArrowDown').defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/6?month=2026-10&day=2026-10-21'));
+  });
+
   it('moves through passbook rows with ↓ / ↑ and stays in the passbook', async () => {
     const harness = await start('phone', '/accounting/accounts/5');
     const router = TestBed.inject(Router);

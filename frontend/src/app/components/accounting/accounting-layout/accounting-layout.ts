@@ -15,6 +15,7 @@ import {
   viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { calendarParams } from '../timeline/calendar-url';
 import { ActivatedRouteSnapshot, NavigationEnd, Router, RouterOutlet } from '@angular/router';
 import { filter } from 'rxjs';
 
@@ -308,7 +309,11 @@ export class AccountingLayoutComponent {
       void this.router.navigateByUrl(`/accounting/accounts/${passbook[1]}`);
       return;
     }
-    void this.router.navigateByUrl(this.listKey() === 'accounts' ? '/accounting/accounts' : '/accounting');
+    if (this.listKey() === 'accounts') {
+      void this.router.navigateByUrl('/accounting/accounts');
+      return;
+    }
+    void this.router.navigate(['/accounting'], { queryParams: calendarParams(this.router.routerState.snapshot.root.queryParamMap) });
   }
 
 
@@ -383,7 +388,9 @@ export class AccountingLayoutComponent {
       void this.router.navigate(['/accounting/entries', id, ...tail], { state: { closeTo: 'reminders' } });
       return;
     }
-    void this.router.navigate(passbook ? ['/accounting/accounts', Number(passbook[1]), 'entries', id, ...tail] : ['/accounting/entries', id, ...tail]);
+    void this.router.navigate(passbook ? ['/accounting/accounts', Number(passbook[1]), 'entries', id, ...tail] : ['/accounting/entries', id, ...tail], {
+      queryParams: calendarParams(this.router.routerState.snapshot.root.queryParamMap),
+    });
   }
 
   private focusSheet(): void {
