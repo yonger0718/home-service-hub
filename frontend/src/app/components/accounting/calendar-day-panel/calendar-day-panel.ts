@@ -36,8 +36,12 @@ export class CalendarDayPanelComponent {
   readonly days = input<TimelineDay[]>([]);
   /** Results mode: the search text shown in the header. */
   readonly query = input('');
-  /** Results mode: currency for each day group's net (an addition to the brief; defaults to TWD). */
+  /** Results mode: currency for each day group's net (the main currency; defaults to TWD). */
   readonly currency = input('TWD');
+  /** Results mode: the month has more matches than loaded (`載入更多`). */
+  readonly hasMore = input(false);
+  /** Day mode: a search or list filter is active, so an empty day says 這天沒有符合條件的記錄. */
+  readonly filtered = input(false);
   /** The open entry's id; its row gets `aria-current`. */
   readonly selectedId = input<number | null>(null);
 
@@ -50,6 +54,10 @@ export class CalendarDayPanelComponent {
   readonly add = output<string>();
   /** A bill line, with its account id. */
   readonly openCard = output<number>();
+  /** 重試 after 記錄讀取失敗: the day's rows (day mode) or the month's matches (results mode). */
+  readonly retry = output<void>();
+  /** Results mode: 載入更多. */
+  readonly loadMore = output<void>();
 
   protected readonly dayLabel = dayLabel;
   protected readonly formatSigned = formatSigned;
@@ -65,7 +73,10 @@ export class CalendarDayPanelComponent {
 
   protected emptyText(): string {
     const day = this.day();
-    return day !== null && day > this.today() ? '還沒到這天' : '這天沒有記錄';
+    if (day !== null && day > this.today()) {
+      return '還沒到這天';
+    }
+    return this.filtered() ? '這天沒有符合條件的記錄' : '這天沒有記錄';
   }
 
   onKeydown(event: KeyboardEvent): void {

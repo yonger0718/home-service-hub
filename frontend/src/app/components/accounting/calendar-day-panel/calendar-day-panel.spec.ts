@@ -40,7 +40,9 @@ describe('CalendarDayPanelComponent', () => {
     fixture.detectChanges();
     const el = fixture.nativeElement as HTMLElement;
     const cmp = fixture.componentInstance;
-    const spies = { step: vi.fn(), clear: vi.fn(), open: vi.fn(), add: vi.fn(), openCard: vi.fn() };
+    const spies = { step: vi.fn(), clear: vi.fn(), open: vi.fn(), add: vi.fn(), openCard: vi.fn(), retry: vi.fn(), loadMore: vi.fn() };
+    cmp.retry.subscribe(spies.retry);
+    cmp.loadMore.subscribe(spies.loadMore);
     cmp.step.subscribe(spies.step);
     cmp.clear.subscribe(spies.clear);
     cmp.open.subscribe(spies.open);
@@ -133,6 +135,54 @@ describe('CalendarDayPanelComponent', () => {
     const error = render({ state: 'error' });
     expect(text(error.el)).toContain('記錄讀取失敗');
     expect(error.el.querySelector('.dp-row')).toBeNull();
+  });
+
+  it('offers 重試 under 記錄讀取失敗 in day mode', () => {
+    const { el, spies } = render({ state: 'error' });
+    const retry = el.querySelector<HTMLButtonElement>('.dp-retry')!;
+    expect(text(retry)).toBe('重試');
+    retry.click();
+    expect(spies.retry).toHaveBeenCalledTimes(1);
+    expect(render().el.querySelector('.dp-retry')).toBeNull();
+  });
+
+  it('says 僅計主幣種 when the day net leaves out rows in another currency', () => {
+    const { el } = render({ rows: [row(1)], net: { net: -120, text: '−$120', excluded: true } });
+    expect(text(el.querySelector('.dp-sub'))).toBe('1 筆 · 僅計主幣種 −$120');
+    expect(el.querySelector('.dp-sub .net-hint')).not.toBeNull();
+    const plain = render({ rows: [row(1)], net: { net: -120, text: '−$120', excluded: false } });
+    expect(plain.el.querySelector('.net-hint')).toBeNull();
+  });
+
+  it('says 這天沒有符合條件的記錄 for an empty day while a search or filter is active', () => {
+    expect(text(render({ filtered: true }).el.querySelector('.dp-empty'))).toBe('這天沒有符合條件的記錄');
+    expect(text(render({ filtered: false }).el.querySelector('.dp-empty'))).toBe('這天沒有記錄');
+    expect(text(render({ filtered: true, day: '2026-10-30' }).el.querySelector('.dp-empty'))).toBe('還沒到這天');
+  });
+
+  it('results mode shows a skeleton while loading and 記錄讀取失敗 with 重試 on error, never 沒有符合的記錄 then', () => {
+    const loading = render({ mode: 'results', query: '午餐', state: 'loading' });
+    expect(loading.el.querySelector('app-skeleton')).not.toBeNull();
+    expect(text(loading.el)).not.toContain('沒有符合的記錄');
+
+    const error = render({ mode: 'results', query: '午餐', state: 'error' });
+    expect(text(error.el)).toContain('記錄讀取失敗');
+    expect(text(error.el)).not.toContain('沒有符合的記錄');
+    error.el.querySelector<HTMLButtonElement>('.dp-retry')!.click();
+    expect(error.spies.retry).toHaveBeenCalledTimes(1);
+    // The header (and its ✕) stays in every state.
+    expect(text(error.el.querySelector('.dp-label'))).toBe('「午餐」');
+  });
+
+  it('results mode offers 載入更多 while the month has more matches', () => {
+    const days: TimelineDay[] = [{ date: '2026-10-21', label: '10/21 週三', net: -120, excluded: false, rows: [row(1)] }];
+    const { el, spies } = render({ mode: 'results', query: '午餐', days, hasMore: true });
+    const more = el.querySelector<HTMLButtonElement>('.dp-more')!;
+    expect(text(more)).toBe('載入更多');
+    more.click();
+    expect(spies.loadMore).toHaveBeenCalledTimes(1);
+    expect(render({ mode: 'results', query: '午餐', days }).el.querySelector('.dp-more')).toBeNull();
+    expect(render({ mode: 'results', query: '午餐', days, hasMore: true, state: 'loading' }).el.querySelector('.dp-more')).toBeNull();
   });
 
   it('results mode lists day groups with labels and nets and 沒有符合的記錄 when empty', () => {

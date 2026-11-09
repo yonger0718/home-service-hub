@@ -2860,6 +2860,38 @@ describe('LedgerTimelineComponent', () => {
       expect(flushTodayRead()).toBe(0);
     });
 
+    it('publishes the main currency and whether a search or list filter is active', () => {
+      localStorage.setItem(VIEW_KEY, 'calendar');
+      const { fixture } = render('panes', makePreference({ main_currency: 'USD' }));
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      fixture.detectChanges();
+      expect(pane().mainCurrency()).toBe('USD');
+      expect(pane().filtered()).toBe(false);
+      fixture.componentInstance.setKind('expense');
+      fixture.detectChanges();
+      expect(pane().filtered()).toBe(true);
+      fixture.componentInstance.clearFilters();
+      fixture.detectChanges();
+      expect(pane().filtered()).toBe(false);
+    });
+
+    it('registers retryDay, which reads the selected day again after a failure', () => {
+      const { fixture, el } = renderPanes();
+      el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-21"]')!.click();
+      fixture.detectChanges();
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(pane().dayState()).toBe('error');
+      pane().commands()!.retryDay();
+      const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+      expect(req.request.params.get('date_from')).toBe('2026-10-21');
+      req.flush({ items: [makeEntry({ id: 5, entry_date: '2026-10-21' })], total: 1, limit: 500, offset: 0 });
+      fixture.detectChanges();
+      expect(pane().dayState()).toBe('ready');
+      expect(pane().dayRows().length).toBe(1);
+    });
+
     it('registers setQuery, which sets the filter-bar query like the debounce does', () => {
       const { fixture } = renderPanes();
       pane().commands()!.setQuery('  咖啡 ');
@@ -2889,6 +2921,46 @@ describe('LedgerTimelineComponent', () => {
         fixture.detectChanges();
         expect(pane().searchDays().length).toBe(1);
         expect(pane().searchDays()[0].rows.length).toBe(2);
+        expect(pane().searchState()).toBe('ready');
+      });
+
+      it('publishes whether the month has more matches; loadMore reads the next page and the result days grow', () => {
+        const { fixture } = renderPanes();
+        pane().commands()!.setQuery('全聯');
+        fixture.detectChanges();
+        const first = Array.from({ length: 50 }, (_, i) => makeEntry({ id: i + 1, name: '全聯', entry_date: '2026-10-05' }));
+        flushEntries(first, 60);
+        fixture.detectChanges();
+        expect(pane().searchHasMore()).toBe(true);
+        expect(pane().searchDays().flatMap(day => day.rows).length).toBe(50);
+
+        pane().commands()!.loadMore();
+        const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+        expect(req.request.params.get('offset')).toBe('50');
+        expect(req.request.params.get('q')).toBe('全聯');
+        expect(pane().searchState()).toBe('ready');
+        const rest = Array.from({ length: 10 }, (_, i) => makeEntry({ id: 51 + i, name: '全聯', entry_date: '2026-10-04' }));
+        req.flush({ items: rest, total: 60, limit: 50, offset: 50 });
+        fixture.detectChanges();
+        expect(pane().searchHasMore()).toBe(false);
+        expect(pane().searchDays().map(day => [day.date, day.rows.length])).toEqual([['2026-10-05', 50], ['2026-10-04', 10]]);
+      });
+
+      it('registers retrySearch, which reads the month matches again after a failure', () => {
+        const { fixture } = renderPanes();
+        pane().commands()!.setQuery('全聯');
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+        fixture.detectChanges();
+        expect(pane().searchState()).toBe('error');
+        expect(pane().searchHasMore()).toBe(false);
+        pane().commands()!.retrySearch();
+        fixture.detectChanges();
+        expect(pane().searchState()).toBe('loading');
+        const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+        expect([req.request.params.get('q'), req.request.params.get('offset')]).toEqual(['全聯', '0']);
+        req.flush({ items: [makeEntry({ id: 1, name: '全聯', entry_date: '2026-10-05' })], total: 1, limit: 50, offset: 0 });
+        fixture.detectChanges();
         expect(pane().searchState()).toBe('ready');
       });
 

@@ -500,6 +500,21 @@ export class AccountingLayoutComponent {
     }
   }
 
+  /** 重試 in the day panel: the timeline reads the day again. */
+  onRetryDay(): void {
+    this.pane.commands()?.retryDay();
+  }
+
+  /** 重試 in the month search results: the timeline reads them again. */
+  onRetrySearch(): void {
+    this.pane.commands()?.retrySearch();
+  }
+
+  /** 載入更多 in the month search results: the timeline reads the next page. */
+  onLoadMore(): void {
+    this.pane.commands()?.loadMore();
+  }
+
   onOpenInvoice(invoice: InboxEinvoice): void {
     this.pane.commands()?.openInvoice(invoice);
   }

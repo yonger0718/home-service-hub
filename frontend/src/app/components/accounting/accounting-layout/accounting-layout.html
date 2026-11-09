@@ -88,12 +88,14 @@
                   [net]="pane.dayNet()"
                   [state]="pane.dayState()"
                   [billLines]="pane.billLines()"
+                  [filtered]="pane.filtered()"
                   [selectedId]="selectedEntryId()"
                   (step)="onStepDay($event)"
                   (clear)="onClearDay()"
                   (open)="onOpenRow($event)"
                   (add)="onAddEntry($event)"
                   (openCard)="openCard($event)"
+                  (retry)="onRetryDay()"
                 />
               }
               @case ('results') {
@@ -103,9 +105,13 @@
                   [days]="pane.searchDays()"
                   [state]="pane.searchState()"
                   [query]="pane.search()"
+                  [currency]="pane.mainCurrency()"
+                  [hasMore]="pane.searchHasMore()"
                   [selectedId]="selectedEntryId()"
                   (clear)="onSearch('')"
                   (open)="onOpenRow($event)"
+                  (retry)="onRetrySearch()"
+                  (loadMore)="onLoadMore()"
                 />
               }
             }

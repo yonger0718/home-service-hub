@@ -17,6 +17,7 @@ import { DirtyFormRegistry } from '../dirty-form.service';
 import { AccountingOverviewService } from '../month-overview/overview.service';
 import { CalendarPaneService } from '../calendar-month/calendar-pane.service';
 import { focusables } from '../accounting-ui';
+import { formatSigned } from '../format';
 import { buildDays } from '../timeline/timeline';
 import { AccountingLayoutComponent, FAB_RIGHT_BESIDE_CALENDAR_PANE, FAB_RIGHT_BESIDE_PANE } from './accounting-layout';
 
@@ -350,6 +351,57 @@ describe('AccountingLayoutComponent', () => {
         await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/7?month=2026-10&day=2026-10-21'));
       });
 
+      it('wires the day panel: 重試 → retryDay, and 這天沒有符合條件的記錄 while a filter is active', async () => {
+        const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+        await find(harness, 'app-calendar-day-panel .dp-label');
+        const retryDay = vi.fn();
+        pane().commands.set({ ...pane().commands()!, retryDay });
+        pane().dayState.set('error');
+        click(await find(harness, '.cal-base .dp-retry'));
+        expect(retryDay).toHaveBeenCalledTimes(1);
+
+        pane().dayState.set('ready');
+        pane().filtered.set(true);
+        await vi.waitFor(() => {
+          harness.detectChanges();
+          expect(harness.routeNativeElement!.querySelector('.cal-base .dp-empty')?.textContent?.trim()).toBe('這天沒有符合條件的記錄');
+        });
+      });
+
+      it('wires the month search results: 重試 → retrySearch, 載入更多 → loadMore (offset 50), day nets in the main currency', async () => {
+        localStorage.setItem('hh.accounting.timelineView', 'calendar');
+        const harness = await start('panes', '/accounting?month=2026-10', 1100);
+        await find(harness, '.cal-base .cal-search');
+        const http = TestBed.inject(HttpTestingController);
+        http.match('/api/accounting/preference').forEach(req => req.flush(makePreference({ main_currency: 'USD' })));
+        http.match('/api/accounting/accounts').forEach(req => req.flush([]));
+        await vi.waitFor(() => expect(pane().mainCurrency()).toBe('USD'));
+        const real = pane().commands()!;
+        const retrySearch = vi.fn(() => real.retrySearch());
+        const loadMore = vi.fn(() => real.loadMore());
+        pane().commands.set({ ...real, retrySearch, loadMore });
+        const searchRead = (offset: string) =>
+          vi.waitFor(() => {
+            harness.detectChanges();
+            const [req] = http.match(r => r.url === '/api/accounting/entries' && r.params.get('q') === '全聯' && r.params.get('offset') === offset);
+            if (!req) throw new Error(`no search read at ${offset} yet`);
+            return req;
+          });
+
+        pane().commands()!.setQuery('全聯');
+        (await searchRead('0')).flush('boom', { status: 500, statusText: 'Server Error' });
+        click(await find(harness, '.cal-base app-calendar-day-panel .dp-retry'));
+        expect(retrySearch).toHaveBeenCalledTimes(1);
+
+        const items = Array.from({ length: 50 }, (_, i) => makeEntry({ id: i + 1, name: '全聯', currency: 'USD', amount: '-2.0000', entry_date: '2026-10-05' }));
+        (await searchRead('0')).flush({ items, total: 60, limit: 50, offset: 0 });
+        const net = await find(harness, '.cal-base .dp-day b');
+        expect(net.textContent!.trim()).toBe(formatSigned(-100, 'USD'));
+        click(await find(harness, '.cal-base .dp-more'));
+        expect(loadMore).toHaveBeenCalledTimes(1);
+        (await searchRead('50')).flush({ items: [], total: 60, limit: 50, offset: 50 });
+      });
+
       describe('entry drawer', () => {
         const ENTRY = '/accounting/entries/5?month=2026-10&day=2026-10-21';
 
@@ -601,7 +653,7 @@ describe('AccountingLayoutComponent', () => {
           await find(harness, '.list-pane button.cell[data-date="2026-10-21"]');
           const close = await answerDetail(harness, 5);
           const stepEntry = vi.fn();
-          pane().commands.set({ stepEntry, openInvoice: vi.fn(), setQuery: vi.fn() });
+          pane().commands.set({ ...pane().commands()!, stepEntry });
 
           expect(key(close, 'ArrowDown').defaultPrevented).toBe(true);
           expect(stepEntry).toHaveBeenLastCalledWith(1);

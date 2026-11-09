@@ -923,7 +923,11 @@ export class LedgerTimelineComponent implements OnInit {
     effect(() => {
       const searching = this.view() === 'calendar' && this.query() !== '';
       pane.searchState.set(!searching ? 'ready' : this.loadError() ? 'error' : this.loading() && this.entries().length === 0 ? 'loading' : 'ready');
+      // The 清單 pagination state, reused: 載入更多 reads the next page (`loadMore`).
+      pane.searchHasMore.set(searching && this.hasMore());
     });
+    effect(() => pane.filtered.set(this.filtersActive()));
+    effect(() => pane.mainCurrency.set(this.mainCurrency()));
     // One search, two boxes: the filter bar's field follows `query` unless the owner is typing in it (IME, trailing space).
     effect(() => {
       const query = this.query();
@@ -952,6 +956,9 @@ export class LedgerTimelineComponent implements OnInit {
         this.clearQueryTimer();
         this.setQuery(text);
       },
+      retryDay: () => this.retryDay(),
+      retrySearch: () => this.load(true),
+      loadMore: () => this.loadMore(),
     });
     inject(DestroyRef).onDestroy(() => {
       this.pendingInvoice = null;

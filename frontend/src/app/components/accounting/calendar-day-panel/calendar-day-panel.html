@@ -28,25 +28,41 @@
   </button>
 </ng-template>
 
+<ng-template #loadError>
+  <div class="dp-error-block">
+    <p class="dp-error">記錄讀取失敗</p>
+    <button type="button" class="dp-retry" (click)="retry.emit()">重試</button>
+  </div>
+</ng-template>
+
 @if (mode() === 'results') {
   <header class="dp-head">
     <h2 class="dp-label">「{{ query() }}」</h2>
     <button type="button" class="dp-summary" aria-label="清除搜尋" (click)="clear.emit()">✕</button>
   </header>
-  @for (group of days(); track group.date) {
-    <div class="dp-day">{{ group.label }} <b [class.neg]="group.net < 0" [class.pos]="group.net > 0">{{ formatSigned(group.net, currency()) }}</b></div>
-    @for (row of group.rows; track row.key) {
-      <ng-container *ngTemplateOutlet="rowTemplate; context: { $implicit: row }" />
+  @if (state() === 'error') {
+    <ng-container *ngTemplateOutlet="loadError" />
+  } @else if (state() === 'loading') {
+    <app-skeleton rows="3" />
+  } @else {
+    @for (group of days(); track group.date) {
+      <div class="dp-day">{{ group.label }} <b [class.neg]="group.net < 0" [class.pos]="group.net > 0">{{ formatSigned(group.net, currency()) }}</b></div>
+      @for (row of group.rows; track row.key) {
+        <ng-container *ngTemplateOutlet="rowTemplate; context: { $implicit: row }" />
+      }
+    } @empty {
+      <p class="dp-empty">沒有符合的記錄</p>
     }
-  } @empty {
-    <p class="dp-empty">沒有符合的記錄</p>
+    @if (hasMore()) {
+      <button type="button" class="dp-more" (click)="loadMore.emit()">載入更多</button>
+    }
   }
 } @else {
   <header class="dp-head">
     <button type="button" class="dp-step" aria-label="前一天" (click)="step.emit(-1)">‹</button>
     <div class="dp-title">
       <h2 class="dp-label">{{ day() ? dayLabel(day()!) : '' }}</h2>
-      <p class="dp-sub">{{ rows().length }} 筆@if (net(); as d) { · {{ d.text }}}</p>
+      <p class="dp-sub">{{ rows().length }} 筆@if (net(); as d) { · @if (d.excluded) {<small class="net-hint">僅計主幣種</small>&ngsp;}{{ d.text }}}</p>
     </div>
     <button type="button" class="dp-step" aria-label="後一天" (click)="step.emit(1)">›</button>
     <button type="button" class="dp-summary" (click)="clear.emit()">本月摘要</button>
@@ -64,7 +80,7 @@
     </div>
   }
   @if (state() === 'error') {
-    <p class="dp-error">記錄讀取失敗</p>
+    <ng-container *ngTemplateOutlet="loadError" />
   } @else if (state() === 'loading') {
     <app-skeleton rows="3" />
   } @else {

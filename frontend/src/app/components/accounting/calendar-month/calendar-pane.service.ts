@@ -31,6 +31,12 @@ export interface CalendarCommands {
   stepEntry(delta: 1 | -1): void;
   openInvoice(invoice: InboxEinvoice): void;
   setQuery(text: string): void;
+  /** 重試 in the day panel: the selected day's rows again. */
+  retryDay(): void;
+  /** 重試 in the month search results: their first page again. */
+  retrySearch(): void;
+  /** 載入更多 in the month search results: the next page. */
+  loadMore(): void;
 }
 
 /**
@@ -55,6 +61,12 @@ export class CalendarPaneService {
   readonly search = signal('');
   readonly searchDays = signal<TimelineDay[]>([]);
   readonly searchState = signal<OverviewState>('ready');
+  /** The month search has more matches than loaded (`載入更多`). */
+  readonly searchHasMore = signal(false);
+  /** A search or list filter is active: an empty day says 這天沒有符合條件的記錄. */
+  readonly filtered = signal(false);
+  /** The preference's main currency (the result days' nets are in it). */
+  readonly mainCurrency = signal('TWD');
   readonly commands = signal<CalendarCommands | null>(null);
 
   clear(): void {
@@ -73,6 +85,9 @@ export class CalendarPaneService {
     this.search.set('');
     this.searchDays.set([]);
     this.searchState.set('ready');
+    this.searchHasMore.set(false);
+    this.filtered.set(false);
+    this.mainCurrency.set('TWD');
     this.commands.set(null);
   }
 }
