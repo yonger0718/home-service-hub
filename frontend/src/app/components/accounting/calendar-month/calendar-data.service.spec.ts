@@ -65,6 +65,7 @@ describe('CalendarDataService', () => {
     });
     service = TestBed.inject(CalendarDataService);
     httpMock = TestBed.inject(HttpTestingController);
+    service.wide.set(true);
   });
 
   function loadMonth(month: string): void {
@@ -220,5 +221,57 @@ describe('CalendarDataService', () => {
     httpMock.expectNone((r) => r.url === BREAKDOWN);
     httpMock.expectOne(INBOX).flush(makeInbox([], {}));
     expect(service.data().invoiceState).toBe('ready');
+  });
+
+  it("keeps the month's invoices beside the invoice days", () => {
+    service.month.set('2026-10');
+    settle();
+    breakdown('day').flush(body([]));
+    breakdown('merchant').flush(body([]));
+    httpMock.expectOne(INBOX).flush({
+      ...makeInbox([], {}),
+      einvoices: [
+        { issue_date: '2026-10-22', id: 2 },
+        { issue_date: '2026-09-30', id: 9 },
+        { issue_date: '2026-10-03', id: 1 },
+      ] as never,
+    });
+    const data = service.data();
+    expect(data.invoices.map((e) => e.issue_date)).toEqual(['2026-10-03', '2026-10-22']);
+    expect(data.invoiceDays.get('2026-10-22')).toBe(1);
+    expect(data.invoiceDays.size).toBe(2);
+  });
+
+  it('does not read merchants until wide is set, then reads them once', () => {
+    service.wide.set(false);
+    service.month.set('2026-10');
+    settle();
+    breakdown('day').flush(body([]));
+    httpMock.expectOne(INBOX).flush(makeInbox([], {}));
+    httpMock.expectNone((r) => r.url === BREAKDOWN && r.params.get('group_by') === 'merchant');
+    expect(service.data().merchantsState).toBe('loading');
+    service.wide.set(true);
+    settle();
+    breakdown('merchant').flush(body([row('全聯')]));
+    expect(service.data().merchantsState).toBe('ready');
+    settle();
+    httpMock.expectNone(() => true);
+  });
+
+  it('a month cached while narrow gets its merchants when wide turns on', () => {
+    service.wide.set(false);
+    for (const m of ['2026-10', '2026-11']) {
+      service.month.set(m);
+      settle();
+      breakdown('day').flush(body([]));
+      httpMock.expectOne(INBOX).flush(makeInbox([], {}));
+    }
+    service.month.set('2026-10');
+    settle();
+    httpMock.expectNone(() => true);
+    service.wide.set(true);
+    settle();
+    breakdown('merchant').flush(body([row('全聯')]));
+    expect(service.data().merchants.length).toBe(1);
   });
 });

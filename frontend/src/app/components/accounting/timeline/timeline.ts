@@ -901,6 +901,8 @@ export class LedgerTimelineComponent implements OnInit {
     effect(() => pane.dayNet.set(this.dayNet()));
     effect(() => pane.dayState.set(this.dayError() ? 'error' : this.dayLoading() && this.dayEntries().length === 0 ? 'loading' : 'ready'));
     effect(() => pane.billLines.set(this.billLines()));
+    effect(() => pane.invoices.set(this.calendarData.data().invoices));
+    effect(() => this.calendarData.wide.set(this.layoutMode.mode() === 'panes'));
     effect(() => pane.merchants.set(this.calendarData.data().merchants));
     effect(() => pane.merchantsState.set(this.calendarData.data().merchantsState));
     effect(() => pane.search.set(this.query()));

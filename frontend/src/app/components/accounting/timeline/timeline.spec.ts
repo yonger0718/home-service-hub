@@ -27,13 +27,13 @@ describe('LedgerTimelineComponent', () => {
   // The calendar's breakdown/inbox reads are CalendarDataService's own concern; the timeline tests drive its `data`.
   /** What `render` answers the 今天 read with. */
   let todayItems: LedgerEntry[] = [];
-  let fakeCalendarData = { month: signal<string | null>(null), data: signal<CalendarMonthData>(EMPTY_CALENDAR_DATA) };
+  let fakeCalendarData = { month: signal<string | null>(null), wide: signal(false), data: signal<CalendarMonthData>(EMPTY_CALENDAR_DATA) };
 
   beforeEach(() => {
     todayItems = [];
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date(2026, 9, 2, 12, 0, 0));
-    fakeCalendarData = { month: signal<string | null>(null), data: signal<CalendarMonthData>(EMPTY_CALENDAR_DATA) };
+    fakeCalendarData = { month: signal<string | null>(null), wide: signal(false), data: signal<CalendarMonthData>(EMPTY_CALENDAR_DATA) };
   });
 
   afterEach(() => {
@@ -2706,6 +2706,19 @@ describe('LedgerTimelineComponent', () => {
       flushEntries(items);
       fixture.detectChanges();
     }
+
+    it("publishes the month's invoices and sets CalendarDataService.wide from the layout mode", () => {
+      const { fixture } = renderPanes();
+      expect(fakeCalendarData.wide()).toBe(true);
+      expect(pane().invoices()).toEqual([]);
+      fakeCalendarData.data.set({
+        ...EMPTY_CALENDAR_DATA,
+        invoices: [{ id: 1, issue_date: '2026-10-03' }, { id: 2, issue_date: '2026-10-22' }] as never,
+        invoiceState: 'ready',
+      });
+      fixture.detectChanges();
+      expect(pane().invoices().length).toBe(2);
+    });
 
     it('publishes the 日曆 view and the month to the pane services', () => {
       const { fixture, el } = renderPanes();
