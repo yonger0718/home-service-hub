@@ -54,34 +54,29 @@
     @if (currencyLocked()) { <small class="currency-note">已有記錄，無法變更幣種</small> }
     @if (error('currency'); as e) { <small class="field-error" data-field="currency">{{ e }}</small> }
 
-    <label class="rw">
+    <div class="rw">
       <span class="k">帳戶分組</span>
-      <select class="v group-select" (change)="setIdField('group_id', $any($event.target).value)">
-        <option value="" [selected]="form().group_id === null">未分組</option>
-        @for (group of groups(); track group.id) {
-          <option [value]="group.id" [selected]="group.id === form().group_id">{{ group.name }}</option>
-        }
-      </select>
-    </label>
+      <app-picker class="group-select" label="帳戶分組" [options]="groupOptions()" [value]="idValue(form().group_id)" (change)="setIdField('group_id', $event)" />
+    </div>
 
-    <label class="rw">
+    <div class="rw">
       <span class="k">初始金額</span>
-      <input class="v opening-input" inputmode="decimal" [value]="form().opening_balance" (input)="set('opening_balance', $any($event.target).value)" />
-    </label>
+      <app-amount-field class="opening-input" ariaLabel="初始金額" [invalid]="!!error('opening_balance')" [value]="form().opening_balance" (valueChange)="set('opening_balance', $event)" />
+    </div>
     @if (error('opening_balance'); as e) { <small class="field-error" data-field="opening_balance">{{ e }}</small> }
 
-    <label class="rw">
+    <div class="rw">
       <span class="k">帳單週期<br /><small>結帳日（空白 = 月底）</small></span>
       <span class="v">
-        <input class="closing-day" type="number" min="1" max="31" aria-label="結帳日" [value]="form().closing_day" (input)="set('closing_day', $any($event.target).value)" />
+        <app-stepper class="closing-day" ariaLabel="結帳日" suffix="號" [min]="1" [max]="31" [nullable]="true" nullLabel="月底" decLabel="減一天" incLabel="加一天" [invalid]="!!error('closing_day')" [value]="closingDay()" (valueChange)="setDay('closing_day', $event)" />
         <small class="cycle-preview">{{ cycleLabel() }}</small>
       </span>
-    </label>
+    </div>
     @if (error('closing_day'); as e) { <small class="field-error" data-field="closing_day">{{ e }}</small> }
 
     <div class="rw">
       <span class="k">納入總餘額</span>
-      <button type="button" class="tog include-toggle" role="switch" aria-label="納入總餘額" [attr.aria-checked]="form().include_in_total" [class.on]="form().include_in_total" (click)="toggle('include_in_total')"></button>
+      <app-switch class="include-toggle" ariaLabel="納入總餘額" [checked]="form().include_in_total" (checkedChange)="set('include_in_total', $event)" />
     </div>
 
     @if (!form().is_credit) {
@@ -133,27 +128,25 @@
   <section class="sec" id="s-card" aria-labelledby="h-card">
     <div class="sec-head">
       <h3 id="h-card">信用卡</h3>
-      <button type="button" class="tog credit-toggle" role="switch" aria-label="信用帳戶" [attr.aria-checked]="form().is_credit" [class.on]="form().is_credit" (click)="toggle('is_credit')"></button>
+      <app-switch class="credit-toggle" ariaLabel="信用帳戶" [checked]="form().is_credit" (checkedChange)="set('is_credit', $event)" />
     </div>
     @if (form().is_credit) {
       <div class="rw child">
         <span class="k">繳款期限</span>
         <span class="v due-fields">
-          <select class="due-rule" aria-label="繳款期限" (change)="set('due_rule', $any($event.target).value)">
-            <option value="" [selected]="form().due_rule === ''">未設定</option>
-            <option value="fixed_day" [selected]="form().due_rule === 'fixed_day'">每月固定日</option>
-            <option value="days_after_closing" [selected]="form().due_rule === 'days_after_closing'">結帳日後天數</option>
-          </select>
-          <input class="due-value" type="number" min="0" max="60" aria-label="繳款日或天數" [value]="form().due_value" (input)="set('due_value', $any($event.target).value)" />
+          <app-seg-toggle class="due-rule" ariaLabel="繳款期限" [options]="dueRuleOptions" [value]="form().due_rule || 'none'" (change)="setDueRule($event)" />
+          @if (form().due_rule !== '') {
+            <app-stepper class="due-value" ariaLabel="繳款日或天數" [suffix]="form().due_rule === 'fixed_day' ? '號' : '天'" [min]="1" [max]="form().due_rule === 'fixed_day' ? 31 : 120" [invalid]="!!error('due_value')" [value]="dueValue()" (valueChange)="setDay('due_value', $event)" />
+          }
           <small class="due-preview">{{ dueLabel() }}</small>
         </span>
       </div>
       @if (error('due_value'); as e) { <small class="field-error" data-field="due_value">{{ e }}</small> }
 
-      <label class="rw child">
+      <div class="rw child">
         <span class="k">信用額度</span>
-        <input class="v credit-limit" inputmode="decimal" [value]="form().credit_limit" (input)="set('credit_limit', $any($event.target).value)" />
-      </label>
+        <app-amount-field class="credit-limit" ariaLabel="信用額度" prefix="$" [invalid]="!!error('credit_limit')" [value]="form().credit_limit" (valueChange)="set('credit_limit', $event)" />
+      </div>
       @if (error('credit_limit'); as e) { <small class="field-error" data-field="credit_limit">{{ e }}</small> }
 
       <div class="rw child">
@@ -175,26 +168,16 @@
       @if (error('credit_sharing_id'); as e) { <small class="field-error" data-field="credit_sharing_id">{{ e }}</small> }
       @if (error('credit_sharing_members'); as e) { <small class="field-error" data-field="credit_sharing_members">{{ e }}</small> }
 
-      <label class="rw child">
+      <div class="rw child">
         <span class="k">主帳戶</span>
-        <select class="v master-select" (change)="setIdField('combined_account_id', $any($event.target).value)">
-          <option value="" [selected]="form().combined_account_id === null">無</option>
-          @for (other of masterOptions(); track other.id) {
-            <option [value]="other.id" [selected]="other.id === form().combined_account_id">{{ accountLabel(other) }}</option>
-          }
-        </select>
-      </label>
+        <app-picker class="master-select" label="主帳戶" [options]="masterPickerOptions()" [value]="idValue(form().combined_account_id)" (change)="setIdField('combined_account_id', $event)" />
+      </div>
       @if (error('combined_account_id'); as e) { <small class="field-error" data-field="combined_account_id">{{ e }}</small> }
 
-      <label class="rw child">
+      <div class="rw child">
         <span class="k">自動扣繳</span>
-        <select class="v autopay-select" (change)="setIdField('auto_pay_account_id', $any($event.target).value)">
-          <option value="" [selected]="form().auto_pay_account_id === null">無</option>
-          @for (other of autopayOptions(); track other.id) {
-            <option [value]="other.id" [selected]="other.id === form().auto_pay_account_id">{{ accountLabel(other) }}</option>
-          }
-        </select>
-      </label>
+        <app-picker class="autopay-select" label="自動扣繳" [options]="autopayPickerOptions()" [value]="idValue(form().auto_pay_account_id)" (change)="setIdField('auto_pay_account_id', $event)" />
+      </div>
     } @else {
       <p class="card-hint">打開「信用帳戶」才會出現繳款期限、額度與自動扣繳。</p>
     }
@@ -207,7 +190,7 @@
     } @else {
       <div class="rules-block">
         <div class="rw rules-head">
-          <span class="k">回饋規則 · {{ rules().length }} 條</span>
+          <span class="k">回饋規則{{ cycleLabel() ? ' · ' + cycleLabel() : '' }}</span>
           <a class="rules-all" routerLink="/accounting/reward-rules" [queryParams]="{ account_id: accountId() }">所有卡片的規則 ›</a>
         </div>
         @for (rule of rules(); track rule.id; let i = $index, last = $last) {

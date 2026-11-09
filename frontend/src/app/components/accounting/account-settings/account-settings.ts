@@ -30,7 +30,7 @@ import { AccountingService } from '../../../services/accounting.service';
 import { ACCOUNT_LOGOS, accountLogo } from '../../../theme/account-logos';
 import { AccountIconComponent } from '../account-icon/account-icon';
 import { accountLabel, isHandledKey, restoreOverlayFocus } from '../accounting-ui';
-import { DueRule, dueDate, periodLabel, statementPeriod } from '../cycle';
+import { DueRule, cycleText, dueDate, statementPeriod } from '../cycle';
 import { DirtyAware, DirtyFormRegistry } from '../dirty-form.service';
 import { shortDate, slashDate, todayIso } from '../dates';
 import { balanceNegative, balanceText, valuationHint } from '../account-balance';
@@ -43,6 +43,10 @@ import {
   REWARD_WINDOW_LABELS, RULE_STATE_LABELS, basicOverlapRuleId, periodText, postingSummary, ruleLabel, ruleState, ruleToInput,
 } from '../reward-rule-text';
 import { SwitchComponent } from '../../ui/switch/switch';
+import { StepperComponent } from '../../ui/stepper/stepper';
+import { AmountFieldComponent } from '../../ui/amount-field/amount-field';
+import { PickerComponent, PickerOption } from '../../ui/picker/picker';
+import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 
 export { decimalText } from '../format';
 
@@ -52,6 +56,13 @@ export const ROUNDING_LABELS: Record<RoundingMode, string> = {
   floor: '無條件捨去',
   ceil: '無條件進位',
 };
+
+/** 繳款期限 three-way; `none` stands for the form's empty `due_rule`. */
+export const DUE_RULE_OPTIONS: SegToggleOption[] = [
+  { value: 'none', label: '未設定' },
+  { value: 'fixed_day', label: '每月固定日' },
+  { value: 'days_after_closing', label: '結帳後' },
+];
 
 interface AccountForm {
   name: string;
@@ -229,7 +240,10 @@ interface LoadedAccount {
 @Component({
   selector: 'app-account-settings',
   standalone: true,
-  imports: [RouterLink, AccountIconComponent, RewardRuleSheetComponent, SwitchComponent],
+  imports: [
+    RouterLink, AccountIconComponent, RewardRuleSheetComponent, SwitchComponent, StepperComponent, AmountFieldComponent,
+    PickerComponent, SegToggleComponent,
+  ],
   templateUrl: './account-settings.html',
   styleUrl: './account-settings.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -319,8 +333,10 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     if (this.localErrors()['closing_day']) {
       return '';
     }
-    return this.closingDay() === null ? '每月 1 日 – 月底' : periodLabel(this.period());
+    return this.closingDay() === null ? '每月 1 日 – 月底' : '本期 ' + cycleText(this.period());
   });
+  readonly dueValue = computed(() => intOrNull(this.form().due_value));
+  protected readonly dueRuleOptions = DUE_RULE_OPTIONS;
   readonly dueLabel = computed(() => {
     const form = this.form();
     const value = intOrNull(form.due_value);
@@ -352,6 +368,19 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   ]);
 
   readonly accountLabel = accountLabel;
+  readonly groupOptions = computed<PickerOption[]>(() => [
+    { value: '', label: '未分組' },
+    ...this.groups().map(group => ({ value: String(group.id), label: group.name })),
+  ]);
+  readonly masterPickerOptions = computed(() => this.idOptions(this.masterOptions()));
+  readonly autopayPickerOptions = computed(() => this.idOptions(this.autopayOptions()));
+  private idOptions(accounts: LedgerAccount[]): PickerOption[] {
+    return [{ value: '', label: '無' }, ...accounts.map(account => ({ value: String(account.id), label: accountLabel(account) }))];
+  }
+  /** Picker value of an id field: `''` for none. */
+  idValue(id: number | null): string {
+    return id === null ? '' : String(id);
+  }
   /**
    * 額度共用 options: other non-archived credit accounts plus any saved member (an archived one too, so it can be
    * removed; it stays listed after being unchecked). New members can only be non-archived credit accounts.
@@ -788,6 +817,16 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
 
   toggle(key: 'is_credit' | 'include_in_total' | 'cash_equivalent' | 'is_archived' | 'fx_fee_on' | 'fx_fee_refundable'): void {
     this.set(key, !this.form()[key]);
+  }
+
+  /** A stepper value into its text field: `null` (月底) is the empty string. */
+  setDay(key: 'closing_day' | 'due_value', value: number | null): void {
+    this.set(key, value === null ? '' : String(value));
+  }
+
+  /** 繳款期限 three-way: `none` is the empty rule. */
+  setDueRule(value: string): void {
+    this.set('due_rule', value === 'none' ? '' : (value as DueRule));
   }
 
   setIdField(key: 'group_id' | 'combined_account_id' | 'auto_pay_account_id', value: string): void {

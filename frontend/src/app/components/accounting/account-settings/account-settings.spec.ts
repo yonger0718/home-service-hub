@@ -160,32 +160,155 @@ describe('AccountSettingsComponent', () => {
     return Array.from(el(fixture).querySelectorAll('.rw.child .k')).map(k => k.textContent?.trim() ?? '');
   }
 
+  /** Clicks the inner button of the `app-switch` carrying `cls`. */
+  function flip(fixture: ComponentFixture<AccountSettingsComponent>, cls: string): void {
+    el(fixture).querySelector<HTMLButtonElement>(`app-switch.${cls} button`)!.click();
+    fixture.detectChanges();
+  }
+
+  /** The value button text of the `app-stepper` carrying `cls` (e.g. `15 號`, `月底`). */
+  function stepperText(fixture: ComponentFixture<AccountSettingsComponent>, cls: string): string {
+    return el(fixture).querySelector(`app-stepper.${cls} .val`)?.textContent?.trim() ?? '';
+  }
+
+  function stepperClick(fixture: ComponentFixture<AccountSettingsComponent>, cls: string, button: 'inc' | 'dec'): void {
+    el(fixture).querySelector<HTMLButtonElement>(`app-stepper.${cls} .${button}`)!.click();
+    fixture.detectChanges();
+  }
+
+  /** Tap-to-type: opens the stepper's input, types `text` and commits with Enter. */
+  function stepperType(fixture: ComponentFixture<AccountSettingsComponent>, cls: string, text: string): void {
+    el(fixture).querySelector<HTMLButtonElement>(`app-stepper.${cls} .val`)!.click();
+    fixture.detectChanges();
+    const input = el(fixture).querySelector<HTMLInputElement>(`app-stepper.${cls} .val-input`)!;
+    input.value = text;
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    fixture.detectChanges();
+  }
+
+  /** Opens the `app-picker` carrying `cls` and returns its options. */
+  function pickerOptions(fixture: ComponentFixture<AccountSettingsComponent>, cls: string): HTMLElement[] {
+    el(fixture).querySelector<HTMLButtonElement>(`app-picker.${cls} .pk-trigger`)!.click();
+    fixture.detectChanges();
+    return Array.from(el(fixture).querySelectorAll<HTMLElement>(`app-picker.${cls} [role=option]`));
+  }
+
+  function pickerTrigger(fixture: ComponentFixture<AccountSettingsComponent>, cls: string): HTMLButtonElement {
+    return el(fixture).querySelector<HTMLButtonElement>(`app-picker.${cls} .pk-trigger`)!;
+  }
+
+  function segPick(fixture: ComponentFixture<AccountSettingsComponent>, cls: string, label: string): void {
+    const radios = Array.from(el(fixture).querySelectorAll<HTMLButtonElement>(`app-seg-toggle.${cls} [role=radio]`));
+    radios.find(r => r.textContent?.trim() === label)!.click();
+    fixture.detectChanges();
+  }
+
+  function amount(fixture: ComponentFixture<AccountSettingsComponent>, cls: string): HTMLInputElement {
+    return el(fixture).querySelector<HTMLInputElement>(`app-amount-field.${cls} .amt`)!;
+  }
+
   it('reveals the card rows when 信用帳戶 is switched on', async () => {
     await setup(null);
     const fixture = render(null);
     expect(childLabels(fixture).filter(label => label !== '手續費 %')).toEqual([]);
 
-    el(fixture).querySelector<HTMLButtonElement>('.credit-toggle')!.click();
-    fixture.detectChanges();
+    flip(fixture, 'credit-toggle');
 
     expect(childLabels(fixture)).toEqual(['繳款期限', '信用額度', '額度共用', '主帳戶', '自動扣繳']);
   });
 
-  it('previews the current cycle and the due date', async () => {
+  it('due preview: cycle 本期 09/16–10/15 and 結帳日後 20 天 → 11/04', async () => {
     await setup('11');
     const fixture = render(DETAIL);
 
-    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('09/16 – 10/15');
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('本期 09/16–10/15');
     expect(el(fixture).querySelector('.due-preview')?.textContent?.trim()).toBe('結帳日後 20 天 → 11/04');
+    expect(texts(fixture, 'app-seg-toggle.due-rule [role=radio]')).toEqual(['未設定', '每月固定日', '結帳後']);
+    expect(texts(fixture, 'app-seg-toggle.due-rule [aria-checked=true]')).toEqual(['結帳後']);
+    expect(stepperText(fixture, 'due-value')).toBe('20 天');
 
-    const rule = el(fixture).querySelector<HTMLSelectElement>('.due-rule')!;
-    rule.value = 'fixed_day';
-    rule.dispatchEvent(new Event('change'));
-    const value = el(fixture).querySelector<HTMLInputElement>('.due-value')!;
-    value.value = '5';
-    value.dispatchEvent(new Event('input'));
-    fixture.detectChanges();
+    segPick(fixture, 'due-rule', '每月固定日');
+    expect(stepperText(fixture, 'due-value')).toBe('20 號');
+    stepperType(fixture, 'due-value', '5');
+    expect(stepperText(fixture, 'due-value')).toBe('5 號');
     expect(el(fixture).querySelector('.due-preview')?.textContent?.trim()).toBe('每月 5 日 → 11/05');
+  });
+
+  it('closing day 25 on 2026-11-07, 加一 → stepper reads 26 號 and cycle line reads 本期 10/27–11/26', async () => {
+    await setup('11');
+    vi.setSystemTime(new Date(2026, 10, 7, 10, 0));
+    const fixture = render({ ...DETAIL, closing_day: 25 } as AccountDetail);
+    expect(stepperText(fixture, 'closing-day')).toBe('25 號');
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('本期 10/26–11/25');
+
+    expect(el(fixture).querySelector('app-stepper.closing-day .inc')?.getAttribute('aria-label')).toBe('加一天');
+    stepperClick(fixture, 'closing-day', 'inc');
+    expect(stepperText(fixture, 'closing-day')).toBe('26 號');
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('本期 10/27–11/26');
+  });
+
+  it('account with closing_day null shows 月底 and 每月 1 日 – 月底, saves closing_day null', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, closing_day: null } as AccountDetail);
+    expect(stepperText(fixture, 'closing-day')).toBe('月底');
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('每月 1 日 – 月底');
+
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body.closing_day).toBeNull();
+    req.flush(DETAIL);
+  });
+
+  it('account with closing_day 31 shows 31 號 and saves 31', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, closing_day: 31 } as AccountDetail);
+    expect(stepperText(fixture, 'closing-day')).toBe('31 號');
+    expect(el(fixture).querySelector<HTMLButtonElement>('app-stepper.closing-day .inc')!.disabled).toBe(true);
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('本期 10/01–10/31');
+
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body.closing_day).toBe(31);
+    req.flush(DETAIL);
+  });
+
+  it('未設定 saves due_rule null and due_value null', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    segPick(fixture, 'due-rule', '未設定');
+    expect(el(fixture).querySelector('app-stepper.due-value')).toBeNull();
+    expect(el(fixture).querySelector('.due-preview')?.textContent?.trim()).toBe('');
+
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body).toMatchObject({ due_rule: null, due_value: null });
+    req.flush(DETAIL);
+  });
+
+  it('結帳後 allows up to 120 days and 每月固定日 up to 31', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, due_value: 119 } as AccountDetail);
+    stepperClick(fixture, 'due-value', 'inc');
+    expect(stepperText(fixture, 'due-value')).toBe('120 天');
+    expect(el(fixture).querySelector<HTMLButtonElement>('app-stepper.due-value .inc')!.disabled).toBe(true);
+
+    segPick(fixture, 'due-rule', '每月固定日');
+    stepperType(fixture, 'due-value', '45');
+    expect(stepperText(fixture, 'due-value')).toBe('31 號');
+  });
+
+  it('信用帳戶 off then on restores 繳款期限 and 信用額度', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    flip(fixture, 'credit-toggle');
+    expect(el(fixture).querySelector('app-seg-toggle.due-rule')).toBeNull();
+    expect(el(fixture).querySelector('app-amount-field.credit-limit')).toBeNull();
+
+    flip(fixture, 'credit-toggle');
+    expect(texts(fixture, 'app-seg-toggle.due-rule [aria-checked=true]')).toEqual(['結帳後']);
+    expect(stepperText(fixture, 'due-value')).toBe('20 天');
+    expect(amount(fixture, 'credit-limit').value).toBe('300,000');
   });
 
   it('makes 主幣種 read-only once the account has entries', async () => {
@@ -201,9 +324,14 @@ describe('AccountSettingsComponent', () => {
     await setup('11');
     const fixture = render(DETAIL);
 
-    const masters = Array.from(el(fixture).querySelectorAll('.master-select option')).map(o => o.textContent?.trim());
-    expect(masters).toEqual(['無', '玉山信用卡', '玉山 UNI', '玉山 U Bear']);
-    expect(el(fixture).querySelector<HTMLSelectElement>('.master-select')!.value).toBe('10');
+    expect(pickerTrigger(fixture, 'master-select').getAttribute('data-value')).toBe('10');
+    const masters = pickerOptions(fixture, 'master-select');
+    expect(masters.map(o => o.textContent?.trim())).toEqual(['無', '玉山信用卡', '玉山 UNI', '玉山 U Bear']);
+    expect(masters.map(o => o.getAttribute('data-value'))).toEqual(['', '10', '12', '13']);
+    masters[2].click();
+    fixture.detectChanges();
+    expect(pickerTrigger(fixture, 'master-select').getAttribute('data-value')).toBe('12');
+    expect(fixture.componentInstance.form().combined_account_id).toBe(12);
     expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般 (1%)', '餐飲 (5.2%)']);
     expect(texts(fixture, '.rule-row .rule-state')).toEqual(['生效中', '已停用']);
     expect(el(fixture).textContent).not.toContain('（停用）');
@@ -213,12 +341,13 @@ describe('AccountSettingsComponent', () => {
     await setup('11');
     const fixture = render({ ...DETAIL, combined_account_id: 30, auto_pay_account_id: 31 } as AccountDetail);
 
-    const master = el(fixture).querySelector<HTMLSelectElement>('.master-select')!;
-    const autopay = el(fixture).querySelector<HTMLSelectElement>('.autopay-select')!;
-    expect(master.value).toBe('30');
-    expect(master.selectedOptions[0].textContent?.trim()).toBe('舊卡（已封存）');
-    expect(autopay.value).toBe('31');
-    expect(autopay.selectedOptions[0].textContent?.trim()).toBe('舊帳戶（已封存）');
+    expect(pickerTrigger(fixture, 'master-select').getAttribute('data-value')).toBe('30');
+    expect(pickerTrigger(fixture, 'master-select').textContent?.trim()).toBe('舊卡（已封存）');
+    expect(pickerTrigger(fixture, 'autopay-select').getAttribute('data-value')).toBe('31');
+    expect(pickerTrigger(fixture, 'autopay-select').textContent?.trim()).toBe('舊帳戶（已封存）');
+    const autopay = pickerOptions(fixture, 'autopay-select');
+    expect(autopay.map(o => o.textContent?.trim())).toEqual(['無', '玉山銀行', '舊帳戶（已封存）']);
+    expect(autopay.find(o => o.getAttribute('aria-selected') === 'true')?.getAttribute('data-value')).toBe('31');
 
     el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
     const req = http.expectOne('/api/accounting/accounts/11');
@@ -226,12 +355,29 @@ describe('AccountSettingsComponent', () => {
     req.flush(DETAIL);
   });
 
+  it('帳戶分組 picker lists 未分組 and the groups, and saves the chosen group', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    expect(pickerTrigger(fixture, 'group-select').getAttribute('data-value')).toBe('3');
+    expect(pickerTrigger(fixture, 'group-select').textContent?.trim()).toBe('信用卡');
+    const groups = pickerOptions(fixture, 'group-select');
+    expect(groups.map(o => o.textContent?.trim())).toEqual(['未分組', '現金', '信用卡']);
+    expect(groups.map(o => o.getAttribute('data-value'))).toEqual(['', '1', '3']);
+    groups[0].click();
+    fixture.detectChanges();
+    expect(pickerTrigger(fixture, 'group-select').getAttribute('data-value')).toBe('');
+
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body.group_id).toBeNull();
+    req.flush(DETAIL);
+  });
+
   it('saves every field with PUT and returns to the passbook', async () => {
     await setup('11');
     const fixture = render(DETAIL);
-    const limit = el(fixture).querySelector<HTMLInputElement>('.credit-limit')!;
-    limit.value = '350000';
-    limit.dispatchEvent(new Event('input'));
+    typeInto(fixture, '.credit-limit .amt', '350,000');
+    expect(amount(fixture, 'credit-limit').value).toBe('350,000');
     el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
 
     const req = http.expectOne('/api/accounting/accounts/11');
@@ -333,8 +479,8 @@ describe('AccountSettingsComponent', () => {
     await setup('11');
     const big = { ...DETAIL, opening_balance: '-1234567890123.4500', credit_limit: '9007199254740993.0000' } as AccountDetail;
     const fixture = render(big);
-    expect(el(fixture).querySelector<HTMLInputElement>('.opening-input')!.value).toBe('-1234567890123.45');
-    expect(el(fixture).querySelector<HTMLInputElement>('.credit-limit')!.value).toBe('9007199254740993');
+    expect(amount(fixture, 'opening-input').value).toBe('-1,234,567,890,123.45');
+    expect(amount(fixture, 'credit-limit').value).toBe('9,007,199,254,740,993');
     el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
     const req = http.expectOne('/api/accounting/accounts/11');
     expect(req.request.body).toMatchObject({ opening_balance: '-1234567890123.45', credit_limit: '9007199254740993' });
@@ -359,21 +505,23 @@ describe('AccountSettingsComponent', () => {
   it('reads today when the page opens, not when the component was built', async () => {
     await setup('11');
     const fixture = render(DETAIL);
-    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('09/16 – 10/15');
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('本期 09/16–10/15');
 
     // The reused pane stays alive across midnight; the next open reads the new date.
     vi.setSystemTime(new Date(2026, 9, 20, 9, 0));
     navigateTo('12');
     http.expectOne('/api/accounting/accounts/12').flush({ ...DETAIL, id: 12 });
     fixture.detectChanges();
-    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('10/16 – 11/15');
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('本期 10/16–11/15');
   });
 
-  it('clears the credit-only fields when 信用帳戶 is switched off', async () => {
+  it('信用帳戶 off keeps 帳單週期 in 基本 and PUTs closing_day 15', async () => {
     await setup('11');
     const fixture = render({ ...DETAIL, entry_count: 0 } as AccountDetail);
-    el(fixture).querySelector<HTMLButtonElement>('.credit-toggle')!.click();
-    fixture.detectChanges();
+    flip(fixture, 'credit-toggle');
+    expect(el(fixture).querySelector('#s-basic app-stepper.closing-day')).not.toBeNull();
+    expect(stepperText(fixture, 'closing-day')).toBe('15 號');
+    expect(el(fixture).querySelector('#s-basic .cycle-preview')?.textContent?.trim()).toBe('本期 09/16–10/15');
     el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
 
     const req = http.expectOne('/api/accounting/accounts/11');
@@ -594,21 +742,33 @@ describe('AccountSettingsComponent', () => {
     http.expectNone(r => r.method === 'PUT' || r.method === 'DELETE' || r.method === 'POST');
   });
 
+  it('a typed 0 in the 結帳日 and 繳款期限 steppers clamps to 1, without an error', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+
+    stepperType(fixture, 'closing-day', '0');
+    expect(stepperText(fixture, 'closing-day')).toBe('1 號');
+    expect(fixture.componentInstance.form().closing_day).toBe('1');
+    stepperType(fixture, 'due-value', '0');
+    expect(stepperText(fixture, 'due-value')).toBe('1 天');
+    expect(fixture.componentInstance.form().due_value).toBe('1');
+    expect(el(fixture).querySelector('.field-error[data-field="closing_day"]')).toBeNull();
+    expect(el(fixture).querySelector('.field-error[data-field="due_value"]')).toBeNull();
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('本期 10/02–11/01');
+  });
+
   it('validates the closing day and the due value inline, without a garbage preview', async () => {
     await setup('11');
     const fixture = render(DETAIL);
-    const type = (selector: string, value: string) => {
-      const input = el(fixture).querySelector<HTMLInputElement>(selector)!;
-      input.value = value;
-      input.dispatchEvent(new Event('input'));
-      fixture.detectChanges();
-    };
+    const component = fixture.componentInstance;
 
-    type('.closing-day', '0');
+    component.set('closing_day', '0');
+    fixture.detectChanges();
     expect(el(fixture).querySelector('.field-error[data-field="closing_day"]')?.textContent?.trim()).toBe('結帳日須為 1–31');
     expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('');
-    type('.closing-day', '15');
-    type('.due-value', '0');
+    component.set('closing_day', '15');
+    component.set('due_value', '0');
+    fixture.detectChanges();
     expect(el(fixture).querySelector('.field-error[data-field="due_value"]')?.textContent?.trim()).toBe('請輸入大於 0 的天數');
     expect(el(fixture).querySelector('.due-preview')?.textContent?.trim()).toBe('');
 
@@ -671,9 +831,9 @@ describe('AccountSettingsComponent', () => {
     typeInto(fixture, '.name-input', '玉山 Only');
     expect(fixture.componentInstance.isDirty()).toBe(false);
 
-    el(fixture).querySelector<HTMLButtonElement>('.include-toggle')!.click();
+    flip(fixture, 'include-toggle');
     expect(fixture.componentInstance.isDirty()).toBe(true);
-    el(fixture).querySelector<HTMLButtonElement>('.include-toggle')!.click();
+    flip(fixture, 'include-toggle');
     expect(fixture.componentInstance.isDirty()).toBe(false);
 
     fixture.componentInstance.toggleSharing(12, true);
@@ -726,7 +886,7 @@ describe('AccountSettingsComponent', () => {
   it('a saved form is no longer dirty, and leaving the page forgets it', async () => {
     await setup('11');
     const fixture = render(DETAIL);
-    typeInto(fixture, '.credit-limit', '350000');
+    typeInto(fixture, '.credit-limit .amt', '350000');
     expect(fixture.componentInstance.isDirty()).toBe(true);
     el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
     http.expectOne('/api/accounting/accounts/11').flush(DETAIL);
@@ -746,7 +906,7 @@ describe('AccountSettingsComponent', () => {
   it('a failed save keeps the form dirty', async () => {
     await setup('11');
     const fixture = render(DETAIL);
-    typeInto(fixture, '.credit-limit', '350000');
+    typeInto(fixture, '.credit-limit .amt', '350000');
     el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
     http.expectOne('/api/accounting/accounts/11').flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
 
@@ -765,11 +925,24 @@ describe('AccountSettingsComponent', () => {
     fixture.detectChanges();
   }
 
-  it('renders one .rule-row per rule with label, state, 基本 and 來自 MOZE badges under 回饋規則 · N 條', async () => {
+  it('回饋規則 header shows the current window', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    expect(texts(fixture, '.rules-head .k')).toEqual(['回饋規則 · 本期 09/16–10/15']);
+    expect(texts(fixture, '.rules-head .rules-all')).toEqual(['所有卡片的規則 ›']);
+  });
+
+  it('回饋規則 header reads 每月 1 日 – 月底 without a closing day', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, closing_day: null } as AccountDetail);
+    expect(texts(fixture, '.rules-head .k')).toEqual(['回饋規則 · 每月 1 日 – 月底']);
+  });
+
+  it('renders one .rule-row per rule with label, state, 基本 and 來自 MOZE badges under the 回饋規則 header', async () => {
     await setup('11');
     const fixture = render(DETAIL);
 
-    expect(texts(fixture, '.rules-head .k')).toEqual(['回饋規則 · 2 條']);
+    expect(texts(fixture, '.rules-head .k')).toEqual(['回饋規則 · 本期 09/16–10/15']);
     const all = el(fixture).querySelector<HTMLAnchorElement>('.rules-head a')!;
     expect(all.textContent?.trim()).toBe('所有卡片的規則 ›');
     expect(all.getAttribute('href')).toBe('/accounting/reward-rules?account_id=11');
@@ -974,7 +1147,8 @@ describe('AccountSettingsComponent', () => {
     });
     http.expectOne('/api/accounting/accounts/11/reward-usage').flush([]);
     fixture.detectChanges();
-    expect(texts(fixture, '.rules-head .k')).toEqual(['回饋規則 · 3 條']);
+    expect(el(fixture).querySelectorAll('.rule-row').length).toBe(3);
+    expect(texts(fixture, 'nav.sec-chips button')).toContain('回饋規則 (3)');
 
     click(fixture, '.rule-row .rule-edit', 2);
     sheet(fixture)!.deleted.emit(3);
@@ -982,7 +1156,8 @@ describe('AccountSettingsComponent', () => {
     expect(sheet(fixture)).toBeNull();
     http.expectOne('/api/accounting/accounts/11').flush(DETAIL);
     fixture.detectChanges();
-    expect(texts(fixture, '.rules-head .k')).toEqual(['回饋規則 · 2 條']);
+    expect(el(fixture).querySelectorAll('.rule-row').length).toBe(2);
+    expect(texts(fixture, 'nav.sec-chips button')).toContain('回饋規則 (2)');
   });
 
   it('an open rule sheet with unsaved input makes the page dirty; closing it does not', async () => {
@@ -1504,8 +1679,7 @@ describe('AccountSettingsComponent', () => {
       expect(el(fixture).querySelector('#s-more .reset-flag')).not.toBeNull();
       expect(el(fixture).querySelector('#s-more .delete-account')).not.toBeNull();
 
-      el(fixture).querySelector<HTMLButtonElement>('.credit-toggle')!.click();
-      fixture.detectChanges();
+      flip(fixture, 'credit-toggle');
       expect(rowLabels(fixture, 'card')).toEqual(['繳款期限', '信用額度', '額度共用', '主帳戶', '自動扣繳']);
       expect(el(fixture).querySelector('#s-card .card-hint')).toBeNull();
     });
