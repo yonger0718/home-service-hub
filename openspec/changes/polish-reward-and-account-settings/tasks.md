@@ -14,6 +14,8 @@
   - unaffected by the filters
   - `[]` without active rules
 - [x] 1.2 Tests: parity with `/accounts/{id}/reward-usage`; shared cap row; `state=expired` keeps usage; combined card inherits its parent's `closing_day`; `icon`/`logo`/`logo_hash` equal `/accounts`; usage unit for a points account, archived, and for the card itself
+- [x] 1.3 `cash_equivalent` on `account` (1 點 = 1 元): column, account reads, `POST`/`PUT` (omitted on `PUT` keeps it), untouched by MOZE imports; usage unit treats it as money (PR A2)
+- [x] 1.4 Tests (PR A2): default false; PUT sets / omitted keeps; MOZE imports keep it; usage unit for a cash-equivalent account, also archived; overview usage row
 
 ## 2. Shared pieces (PR B)
 
@@ -42,7 +44,7 @@
 
 - [ ] 4.1 Split into section components; sticky chips with scroll-spy (≥ 760 px)
 - [ ] 4.2 外觀: preview, three-way switch, upload / grid / text and colour, 「目前顯示」 line (D5)
-- [ ] 4.3 信用卡: steppers and previews, pickers; 帳單週期 (結帳日 stepper, empty = 月底) stays in 基本 for every account
+- [ ] 4.3 信用卡: steppers and previews, pickers; 帳單週期 (結帳日 stepper, empty = 月底) stays in 基本 for every account; `1 點 = 1 元` switch in 基本 on non-credit accounts
 - [ ] 4.4 Rule rows (D6): one line, bar, switch, ⋯ menu, drag reorder with one order call
 - [ ] 4.5 Phone: grouped list, sheet controls, 放棄 / 儲存 bar replacing the floating button
 - [ ] 4.6 Save with errors scrolls to the first invalid section and marks its chip
@@ -55,6 +57,7 @@
   - imported reward rows as posted cards
 - [x] 5.2 Per-state lines; struck-through estimate when capped or changed by the bank; link to the reward row
 - [x] 5.3 Tests: the four states; the three 未獲得 lines; capped estimate; points reward unit; imported reward without accrual; reprice card inside the section; section absent without either
+- [x] 5.4 `rewardAmount` treats a `cash_equivalent` reward account as money (PR D, #343)
 
 ## 6. Wrap-up
 

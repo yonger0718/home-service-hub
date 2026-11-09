@@ -231,6 +231,9 @@ class AccountIn(BaseModel):
     fx_fee_pct: Annotated[Decimal, Field(ge=0, le=100, max_digits=6, decimal_places=3)] | None = None
     fx_fee_rounding: RoundingMode | None = None
     fx_fee_refundable: bool = False
+    # 1 點 = 1 元. Optional on purpose: a PUT that omits it keeps the stored value (older SPA / Hermes bodies), and
+    # a POST without it creates the account with false.
+    cash_equivalent: bool | None = None
 
 
 class AccountGroupIn(BaseModel):

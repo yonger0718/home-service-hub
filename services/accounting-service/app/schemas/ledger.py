@@ -148,6 +148,7 @@ class AccountOut(BaseModel):
     fx_fee_pct: Decimal | None
     fx_fee_rounding: RoundingMode | None
     fx_fee_refundable: bool
+    cash_equivalent: bool
     sort_order: int
     settings_locally_edited: bool
     moze_id: str | None

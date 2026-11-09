@@ -120,6 +120,19 @@ def test_overview_usage_ignores_filters(client, db_session, seed, monkeypatch):
         assert account["usage"] == expected
 
 
+def test_overview_usage_unit_cash_equivalent(client, db_session, seed, monkeypatch):
+    """PR A2: the overview's usage row carries the same money verdict for a 1 點 = 1 元 account."""
+    _freeze(monkeypatch)
+    card = seed.account("測試卡", is_credit=True)
+    points = seed.account("測試現金點", cash_equivalent=True)
+    seed.rule(card, name="點數", window="calendar_month").reward_account_id = points.id
+    db_session.commit()
+    [account] = [a for a in client.get("/reward-rules").json()["accounts"] if a["account_id"] == card.id]
+    [row] = account["usage"]
+    assert (row["reward_account_id"], row["reward_account_name"], row["reward_is_money"]) == (
+        points.id, "測試現金點", True)
+
+
 def test_overview_usage_empty_without_active_rules(client, db_session, seed, monkeypatch):
     _freeze(monkeypatch)
     card = seed.account("測試卡", is_credit=True)

@@ -34,6 +34,7 @@ REPORTS_HEAD = "c7a2e9f4b1d8"
 ACCOUNT_LOGO_IMAGE_HEAD = "e9b1c3d7a5f2"
 REWARD_ACCRUAL_HEAD = "a3d9e5c1f7b2"
 EINVOICE_HEAD = "b6e2c8f4a9d1"
+CASH_EQUIVALENT_HEAD = "c4e8a1d7b3f9"
 
 
 def _schema(url) -> dict:
@@ -323,7 +324,7 @@ def test_downgrade_refuses_when_phase_2a_data_exists(database_factory, alembic_c
     assert "1 ledger_entry rows with source = manual" in message
     assert "1 ledger_entry rows whose posted_date differs from entry_date" in message
     assert "1 account_group rows" in message
-    assert _version(url) == EINVOICE_HEAD
+    assert _version(url) == CASH_EQUIVALENT_HEAD
 
 
 def test_downgrade_refusal_names_every_blocker(database_factory, alembic_config):
@@ -359,7 +360,7 @@ def test_downgrade_refusal_names_every_blocker(database_factory, alembic_config)
     assert "1 ledger_entry rows with source = moze_backup" in message
     assert "1 reward_rule rows" in message
     assert "source = manual" not in message
-    assert _version(url) == EINVOICE_HEAD
+    assert _version(url) == CASH_EQUIVALENT_HEAD
 
 
 def test_self_referencing_entry_links_are_indexed(pg_engine):
@@ -429,7 +430,7 @@ def test_upgrade_adds_schedule_source_and_tables_and_drops_moze_schedule(databas
     assert "moze_schedule" not in tables
     assert "schedule" in sources
     assert kinds == 0
-    assert _version(url) == EINVOICE_HEAD
+    assert _version(url) == CASH_EQUIVALENT_HEAD
 
 
 def test_downgrade_recreates_an_empty_moze_schedule(database_factory, alembic_config):
@@ -465,7 +466,7 @@ def test_downgrade_refuses_while_homehub_posted_data_exists(database_factory, al
     assert message.startswith("refusing to downgrade c4e8b2f1a7d3: ")
     assert "1 ledger_entry rows with source = schedule" in message
     assert "1 schedule instances posted or skipped by HomeHub (acted_by auto or owner)" in message
-    assert _version(url) == EINVOICE_HEAD
+    assert _version(url) == CASH_EQUIVALENT_HEAD
 
 
 def test_reconcile_downgrade_refuses_with_statement_rows(database_factory, alembic_config):
@@ -479,7 +480,7 @@ def test_reconcile_downgrade_refuses_with_statement_rows(database_factory, alemb
     engine.dispose()
     with pytest.raises(RuntimeError, match="refusing to downgrade d1f3a7c2e9b4: 1 ingest runs"):
         command.downgrade(cfg, SCHEDULES_HEAD)
-    assert _version(url) == EINVOICE_HEAD
+    assert _version(url) == CASH_EQUIVALENT_HEAD
 
 
 def test_reconcile_downgrade_refuses_with_a_manual_statement_and_no_run(database_factory, alembic_config):
@@ -503,7 +504,7 @@ def test_reconcile_downgrade_refuses_with_a_manual_statement_and_no_run(database
     with pytest.raises(RuntimeError) as excinfo:
         command.downgrade(cfg, SCHEDULES_HEAD)
     assert str(excinfo.value) == "refusing to downgrade d1f3a7c2e9b4: 1 statements"
-    assert _version(url) == EINVOICE_HEAD
+    assert _version(url) == CASH_EQUIVALENT_HEAD
 
 
 @pytest.mark.parametrize(
@@ -533,7 +534,7 @@ def test_reconcile_downgrade_refusal_names_each_guard(database_factory, alembic_
     with pytest.raises(RuntimeError) as excinfo:
         command.downgrade(cfg, SCHEDULES_HEAD)
     assert str(excinfo.value) == f"refusing to downgrade d1f3a7c2e9b4: {label}"
-    assert _version(url) == EINVOICE_HEAD
+    assert _version(url) == CASH_EQUIVALENT_HEAD
 
 
 def test_reconcile_downgrade_passes_a_never_saved_settings_row(database_factory, alembic_config):
@@ -623,7 +624,7 @@ def test_dirty_barrier_upgrade_adds_and_downgrade_removes_the_shared_lock(databa
     url = database_factory()
     cfg = alembic_config(url)
     command.upgrade(cfg, "head")
-    assert _version(url) == EINVOICE_HEAD
+    assert _version(url) == CASH_EQUIVALENT_HEAD
     defs = _function_defs(url)
     assert len(defs) == 3 and all("pg_advisory_xact_lock_shared(1145655892)" in body for body in defs.values())
 
@@ -655,7 +656,7 @@ def test_statement_event_flag_round_trip(database_factory, alembic_config):
     url = database_factory()
     cfg = alembic_config(url)
     command.upgrade(cfg, "head")
-    assert _version(url) == EINVOICE_HEAD and "flag" in _event_columns(url)
+    assert _version(url) == CASH_EQUIVALENT_HEAD and "flag" in _event_columns(url)
 
     command.downgrade(cfg, DIRTY_BARRIER_HEAD)
     assert _version(url) == DIRTY_BARRIER_HEAD and "flag" not in _event_columns(url)
@@ -678,7 +679,7 @@ def test_owner_rules_round_trip(database_factory, alembic_config):
     url = database_factory()
     cfg = alembic_config(url)
     command.upgrade(cfg, "head")
-    assert _version(url) == EINVOICE_HEAD
+    assert _version(url) == CASH_EQUIVALENT_HEAD
     present, indexes = _owner_rule_table(url)
     assert present
     key = [i for i in indexes if i["name"] == "uq_reconciliation_owner_rule_key"]
@@ -720,7 +721,7 @@ def test_reports_round_trip(database_factory, alembic_config):
     url = database_factory()
     cfg = alembic_config(url)
     command.upgrade(cfg, "head")
-    assert _version(url) == EINVOICE_HEAD
+    assert _version(url) == CASH_EQUIVALENT_HEAD
     assert _table_present(url, "budget") and _table_present(url, "saved_report")
     assert _column(url, "project", "exclude_from_reports")["nullable"] is False
     command.downgrade(cfg, SETTLEMENT_HEAD)
@@ -734,7 +735,7 @@ def test_account_logo_round_trip(database_factory, alembic_config):
     url = database_factory()
     cfg = alembic_config(url)
     command.upgrade(cfg, "head")
-    assert _version(url) == EINVOICE_HEAD
+    assert _version(url) == CASH_EQUIVALENT_HEAD
     column = _account_logo_column(url)
     assert column is not None
     assert column["type"].length == 32 and column["nullable"] is True
@@ -750,7 +751,7 @@ def test_statement_auto_pay_round_trip(database_factory, alembic_config):
     url = database_factory()
     cfg = alembic_config(url)
     command.upgrade(cfg, "head")
-    assert _version(url) == EINVOICE_HEAD
+    assert _version(url) == CASH_EQUIVALENT_HEAD
     schema = _schema(url)
     assert "statement_auto_pay" in schema["tables"]
     assert any(name == "ex_statement_auto_pay_card_window" for name, _, _ in schema["statement_auto_pay"]["indexes"])
@@ -825,7 +826,7 @@ def test_account_logo_image_round_trip(database_factory, alembic_config):
     url = database_factory()
     cfg = alembic_config(url)
     command.upgrade(cfg, "head")
-    assert _version(url) == EINVOICE_HEAD
+    assert _version(url) == CASH_EQUIVALENT_HEAD
     assert _table_present(url, "account_logo_image")
     expected = {"account_id", "png", "sha256", "source_media_type", "source_bytes", "created_at", "updated_at"}
     assert {c for c in expected if _column(url, "account_logo_image", c) is not None} == expected
@@ -850,7 +851,7 @@ def test_reward_accrual_round_trip(database_factory, alembic_config):
     url = database_factory()
     cfg = alembic_config(url)
     command.upgrade(cfg, "head")
-    assert _version(url) == EINVOICE_HEAD
+    assert _version(url) == CASH_EQUIVALENT_HEAD
     assert _table_present(url, "reward_accrual")
     assert _index_present(url, "ux_ledger_entry_reward_source_rule")
     command.downgrade(cfg, ACCOUNT_LOGO_IMAGE_HEAD)
@@ -931,7 +932,7 @@ def test_reward_pair_index_is_skipped_when_duplicates_exist(database_factory, al
     finally:
         engine.dispose()
     command.upgrade(cfg, "head")
-    assert _version(url) == EINVOICE_HEAD
+    assert _version(url) == CASH_EQUIVALENT_HEAD
     assert not _index_present(url, "ux_ledger_entry_reward_source_rule")
     assert "ux_ledger_entry_reward_source_rule skipped: 1 duplicate pairs" in capsys.readouterr().out
 
@@ -940,7 +941,7 @@ def test_einvoice_round_trip(database_factory, alembic_config):
     url = database_factory()
     cfg = alembic_config(url)
     tables = {"einvoice", "einvoice_item", "einvoice_link", "einvoice_seller_mute"}
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, EINVOICE_HEAD)
     assert _version(url) == EINVOICE_HEAD
     engine = create_engine(url)
     try:
@@ -959,5 +960,30 @@ def test_einvoice_round_trip(database_factory, alembic_config):
     finally:
         engine.dispose()
 
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, EINVOICE_HEAD)
     assert _version(url) == EINVOICE_HEAD
+
+
+def test_cash_equivalent_round_trip(database_factory, alembic_config):
+    """PR A2: `account.cash_equivalent` arrives NOT NULL DEFAULT false and leaves cleanly."""
+    url = database_factory()
+    cfg = alembic_config(url)
+
+    def columns():
+        engine = create_engine(url)
+        try:
+            return {c["name"]: c for c in inspect(engine).get_columns("account")}
+        finally:
+            engine.dispose()
+
+    command.upgrade(cfg, "head")
+    assert _version(url) == CASH_EQUIVALENT_HEAD
+    column = columns()["cash_equivalent"]
+    assert (column["nullable"], str(column["default"])) == (False, "false")
+
+    command.downgrade(cfg, EINVOICE_HEAD)
+    assert _version(url) == EINVOICE_HEAD
+    assert "cash_equivalent" not in columns()
+
+    command.upgrade(cfg, "head")
+    assert _version(url) == CASH_EQUIVALENT_HEAD
