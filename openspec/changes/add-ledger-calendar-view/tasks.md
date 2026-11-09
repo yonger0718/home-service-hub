@@ -6,31 +6,31 @@
 
 ## 1. State and data (PR A)
 
-- [ ] 1.1 `day` query parameter
+- [x] 1.1 `day` query parameter
   - read it into `selectedDay`, write it on pick, clear and ‹ ›
   - month edges; navigator clears it
   - `day` implies 日曆 without overwriting the stored view
   - write `month` and `day` with `replaceUrl`, merged into the existing query (drill-through filters kept); follow query changes (Back, Forward) instead of the construction snapshot
   - 清單 removes `day` and stores 清單; 近 7 天 writes `month`/`day` and stores 日曆
-- [ ] 1.2 Carry `month` and `day` on entry links opened from the calendar; restore them on ✕, back and delete
+- [x] 1.2 Carry `month` and `day` on entry links opened from the calendar; restore them on ✕, back and delete
   - every exit: layout close, `EntryDetail.close()` / `parentUrl()`, row open, next-entry navigation, after delete, entry form `leave()` fallback and the split-save fallback
   - entry form reads a `date=` prefill param (for 「＋ 在這天記一筆」)
-- [ ] 1.3 `CalendarDataService`
+- [x] 1.3 `CalendarDataService`
   - per-month cache of breakdown day × category and breakdown by merchant, both with `include_excluded_projects=true` and the month's `date_from` / `date_to`; dot colours joined from split `key` to the category list
   - invalidate on `entriesChanged`
   - per-part failure flags
-- [ ] 1.4 Invoice markers: inbox `einvoices` grouped by `issue_date` via `InboxService.get()`, refreshed on `InboxService.changed` and `entriesChanged` (later from `NotificationCenterService`, D7)
-- [ ] 1.5 Tests: URL round-trip, month crossing, navigator clears, Back leaves the calendar (replaced history), drill-through filters kept, 清單 clears `day`, 近 7 天, cache invalidation, a failing read leaves the other parts
+- [x] 1.4 Invoice markers: inbox `einvoices` grouped by `issue_date` via `InboxService.get()`, refreshed on `InboxService.changed` and `entriesChanged` (later from `NotificationCenterService`, D7) (read lives in `CalendarDataService`; D7 swap point)
+- [x] 1.5 Tests: URL round-trip, month crossing, navigator clears, Back leaves the calendar (replaced history), drill-through filters kept, 清單 clears `day`, 近 7 天, cache invalidation, a failing read leaves the other parts
 
 ## 2. Day cells (PR A)
 
-- [ ] 2.1 `calendar-month` inputs
+- [x] 2.1 `calendar-month` inputs
   - dots per day, heat ratio, invoice days
   - `compact` (narrow figures)
   - `weekOf` (week mode)
-- [ ] 2.2 Cell layout: date disc, net, dots and +N, heat bar, bill mark (帳單 / 已繳 replaces the card icon badge; `paid` from the timeline's statement data) and invoice mark (`--app-warning` until `--app-banner-warn` lands); dimmed future; wide legend
-- [ ] 2.3 Accessible names; roving tabindex with ← → ↑ ↓ Home End
-- [ ] 2.4 Tests
+- [x] 2.2 Cell layout: date disc, net, dots and +N, heat bar, bill mark (帳單 / 已繳 replaces the card icon badge; `paid` from the timeline's statement data) and invoice mark (`--app-warning` until `--app-banner-warn` lands); dimmed future; wide legend
+- [x] 2.3 Accessible names; roving tabindex with ← → ↑ ↓ Home End
+- [x] 2.4 Tests
   - the heaviest day spans the full width; a refund-heavy day (expense > 0) has no bar; net = income + expense
   - a quiet past day shows — wide and nothing narrow
   - compact numbers (−3.1k, +71.7k, −250)
