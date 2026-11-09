@@ -14,7 +14,7 @@
 
 - Section order and titles verbatim: 基本 · 外觀 · 信用卡 · 回饋規則 · 國外交易 · 其他. Chip for 回饋規則 shows the rule count in parentheses, e.g. `回饋規則 (3)`.
 - Breakpoint is `760px` via `LayoutModeService.mode()` (`'phone'` below 760; tests force it with `layoutMode.set('phone')`): `≥ 760` sticky chips + header 儲存 button with `有 N 項未儲存`; `< 760` grouped rows, controls open in a bottom sheet, bottom bar `放棄` / `儲存` shown above the phone tab bar while the form is dirty (the floating 記一筆 does not exist on phone; no shell change).
-- Steppers read `− <value> ＋`; closing-day suffix `號`, due-days suffix `天`; closing day clamps 1–28; due days clamps 1–60; fixed due day clamps 1–28. Button labels `減一` / `加一` (aria), artboard copy `減一天` / `加一天` for day steppers.
+- Steppers read `− <value> ＋`; closing-day suffix `號`, due-days suffix `天`. Ranges match the page's existing `validDay` bounds and the API (`closing_day` `ge=1, le=31`): closing day 1–31, fixed due day 1–31, days after closing 1–366 — NOT the artboard's 1–28 (a live card closes on the 31st). The stepper's value is tap-to-type: tapping the number swaps in `<input inputmode="numeric">`; Enter/blur commits the clamped value, Escape cancels, so 5 → 25 is typed, not 20 taps. Button labels `減一` / `加一` (aria), artboard copy `減一天` / `加一天` for day steppers.
 - Due rule three-way copy: `未設定` · `結帳後` · `每月固定日`. `未設定` saves `due_rule: null`; previews use the spec's wording, e.g. `09/16 – 10/15 → 11/04`.
 - Cycle preview copy: `本期 10/27–11/26`（see spec scenario "Closing day stepper"）.
 - `1 點 = 1 元` switch appears in 基本 only when the account is not a credit account; helper text `回饋入這個帳戶時當成金額計算`; it maps to `cash_equivalent` (PUT omits the key when unchanged; never shown for credit accounts).
@@ -30,6 +30,7 @@
 3. Picker opened on phone and closed by tapping the overlay must leave the value unchanged and return focus to its trigger. Test added in Task 3.
 4. Amount field typed as `200,000` or `200000` or ` 200000 ` must all parse to `200000`; an empty string yields `null`, not `0`. Test added in Task 2.
 5. Dirty count must fall back to 0 after a successful save and the bottom bar must disappear even when the server echoes normalised values (e.g. trimmed name). Test added in Task 8.
+6. A card whose closing day is 29–31 must load, display and re-save that value; the stepper must never clamp a stored value down on load. Test added in Task 6 (and Task 1's max-31 clamp test).
 
 ---
 
@@ -39,9 +40,9 @@
 - Create: `frontend/src/app/components/ui/stepper/stepper.ts`, `stepper.scss`, `stepper.spec.ts`
 
 **Interfaces:**
-- Produces: `StepperComponent` selector `app-stepper`; inputs `value: number`, `min: number` (default 1), `max: number` (default 31), `suffix: string` (default `''`), `ariaLabel: string` (required), `decLabel: string` (default `減一`), `incLabel: string` (default `加一`), `disabled: boolean`; output `valueChange: number`. Renders `<button aria-label=decLabel>−</button><b class="val">{{value}} {{suffix}}</b><button aria-label=incLabel>＋</button>` inside `[role=group][aria-label=ariaLabel]`.
+- Produces: `StepperComponent` selector `app-stepper`; inputs `value: number | null`, `min: number` (default 1), `max: number` (default 31), `suffix: string` (default `''`), `ariaLabel: string` (required), `decLabel: string` (default `減一`), `incLabel: string` (default `加一`), `disabled: boolean`, `invalid: boolean`; output `valueChange: number | null`. Renders `<button aria-label=decLabel>−</button><button class="val" aria-label="輸入數值">{{value}} {{suffix}}</button><button aria-label=incLabel>＋</button>` inside `[role=group][aria-label=ariaLabel]`; tapping `.val` swaps in `<input class="val-input" inputmode="numeric" [attr.aria-label]=ariaLabel>` pre-filled with the value; Enter/blur emits the parsed value clamped to [min, max] (empty → `null`), Escape restores. `null` value renders `—`.
 
-- [ ] **Step 1: Write the failing test** `stepper.spec.ts`: `renders value with suffix` (`25 號`), `加一 emits value+1 and 減一 value-1`, `clamps at min and max and disables the button at the edge`, `ArrowUp/ArrowDown on the group step the value`.
+- [ ] **Step 1: Write the failing test** `stepper.spec.ts`: `renders value with suffix` (`25 號`), `加一 emits value+1 and 減一 value-1`, `clamps at min and max and disables the button at the edge` (max 31 → 加一 disabled at 31), `ArrowUp/ArrowDown on the group step the value`, `tapping the value opens an input; typing 25 + Enter emits 25`, `typing 40 with max 31 emits 31`, `Escape restores the old value without emitting`, `null value renders — and 加一 emits min`.
 - [ ] **Step 2: Run** `cd frontend && npx ng test --watch=false --include='**/ui/stepper/*.spec.ts'` → FAIL (component missing).
 - [ ] **Step 3: Implement** `StepperComponent` per Interfaces; buttons `type="button"`, `[disabled]` at the bound edge; group `tabindex="0"` handles ArrowUp/ArrowDown.
 - [ ] **Step 4: Run** the same command → PASS.
@@ -114,9 +115,9 @@
 
 **Interfaces:**
 - Consumes Tasks 1–3 components.
-- Consumes existing `AccountForm.due_rule: DueRule | ''` (`''` = 未設定, already saved as `due_rule: null` by `formToInput`); no new form field. Seg-toggle option values `none` / `days_after_closing` / `fixed_day`, `none` ↔ `''`. Closing day → `<app-stepper class="closing-day" suffix="號" [min]="1" [max]="28" decLabel="減一天" incLabel="加一天">` + `<small class="cycle-preview">`. Due: `<app-seg-toggle class="due-rule">` options `none/after/fixed` → labels `未設定/結帳後/每月固定日`; `<app-stepper class="due-value">` suffix `天` (after, 1–60) or `號` (fixed, 1–28), hidden for `none`; `<small class="due-preview">`. 信用額度 → `<app-amount-field class="credit-limit" prefix="$">`. 額度共用 / 主帳戶 / 自動扣繳 → `app-picker` with classes `.sharing-select`, `.master-select`, `.autopay-select` (existing `.sharing-option` tests rewritten to picker options). When 信用帳戶 is off render `<p class="card-hint">打開「信用帳戶」才會出現結帳日、繳款期限、額度與自動扣繳。</p>`; the form keeps the card fields in memory.
+- Consumes existing `AccountForm.due_rule: DueRule | ''` (`''` = 未設定, already saved as `due_rule: null` by `formToInput`); no new form field. Seg-toggle option values `none` / `days_after_closing` / `fixed_day`, `none` ↔ `''`. Closing day → `<app-stepper class="closing-day" suffix="號" [min]="1" [max]="31" decLabel="減一天" incLabel="加一天">` + `<small class="cycle-preview">`. Due: `<app-seg-toggle class="due-rule">` options `none/after/fixed` → labels `未設定/結帳後/每月固定日`; `<app-stepper class="due-value">` suffix `天` (after, 1–366) or `號` (fixed, 1–31), hidden for `none`; `<small class="due-preview">`. 信用額度 → `<app-amount-field class="credit-limit" prefix="$">`. 額度共用 / 主帳戶 / 自動扣繳 → `app-picker` with classes `.sharing-select`, `.master-select`, `.autopay-select` (existing `.sharing-option` tests rewritten to picker options). When 信用帳戶 is off render `<p class="card-hint">打開「信用帳戶」才會出現結帳日、繳款期限、額度與自動扣繳。</p>`; the form keeps the card fields in memory.
 
-- [ ] **Step 1: Write / rewrite failing tests**: spec scenario `closing day 25 → 加一 → 26 號, cycle preview 本期 10/27–11/26` (fixed clock as existing tests do); `due preview 結帳後 20 天 shows 09/16 – 10/15 → 11/04`; `未設定 saves due_rule null`; `switching 信用帳戶 off then on restores closing day and due rule`; `bank account keeps 帳單週期 copy`; existing `.closing-day`/`.due-value` tests rewired to `valueChange`.
+- [ ] **Step 1: Write / rewrite failing tests**: spec scenario `closing day 25 → 加一 → 26 號, cycle preview 本期 10/27–11/26` (fixed clock as existing tests do); `due preview 結帳後 20 天 shows 09/16 – 10/15 → 11/04`; `未設定 saves due_rule null`; `switching 信用帳戶 off then on restores closing day and due rule`; `bank account keeps 帳單週期 copy`; `account loaded with closing_day 31 shows 31 號 and saves 31 unchanged`; existing `.closing-day`/`.due-value` tests rewired to `valueChange`.
 - [ ] **Step 2: Run** → FAIL.
 - [ ] **Step 3: Implement**.
 - [ ] **Step 4: Run** → PASS.
