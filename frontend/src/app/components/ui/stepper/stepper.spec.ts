@@ -138,6 +138,18 @@ describe('StepperComponent', () => {
     expect(q('.val').textContent?.trim()).toBe('25 號');
   });
 
+  it('the value button names the visible value and updates after 加一', () => {
+    const { fixture, host, q } = setup();
+    expect(q('.val').getAttribute('aria-label')).toBe('25 號，輸入數值');
+    q<HTMLButtonElement>('.inc').click();
+    host.value.set(host.emitted[0]);
+    fixture.detectChanges();
+    expect(q('.val').getAttribute('aria-label')).toBe('26 號，輸入數值');
+    host.value.set(null);
+    fixture.detectChanges();
+    expect(q('.val').getAttribute('aria-label')).toBe('月底，輸入數值');
+  });
+
   it('ArrowUp on the group emits value+1', () => {
     const { host, q, key } = setup();
     key(q('[role=group]'), 'ArrowUp');

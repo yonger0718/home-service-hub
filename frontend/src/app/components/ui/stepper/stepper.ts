@@ -42,7 +42,7 @@ import {
         <button
           type="button"
           class="val"
-          aria-label="輸入數值"
+          [attr.aria-label]="display() + '，輸入數值'"
           [disabled]="disabled()"
           (click)="startEdit()"
         >{{ display() }}</button>

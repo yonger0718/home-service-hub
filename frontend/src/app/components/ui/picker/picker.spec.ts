@@ -65,6 +65,17 @@ describe('PickerComponent', () => {
     expect(document.activeElement).toBe(q('.pk-trigger'));
   });
 
+  it('trigger names the label and the chosen option; the listbox keeps the label', () => {
+    const { q, fixture, host, open } = setup();
+    expect(q('.pk-trigger').getAttribute('aria-label')).toBe('計算方式：甲方案');
+    open();
+    expect(q('[role=listbox]').getAttribute('aria-label')).toBe('計算方式');
+    q('[role=option][data-value="b"]').click();
+    host.value.set(host.emitted[0]);
+    fixture.detectChanges();
+    expect(q('.pk-trigger').getAttribute('aria-label')).toBe('計算方式：乙方案');
+  });
+
   it('Escape closes without emitting', () => {
     const { q, host, open, key } = setup();
     open();
