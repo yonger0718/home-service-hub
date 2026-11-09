@@ -1931,6 +1931,26 @@ describe('LedgerTimelineComponent', () => {
       expect(text(cell(el, '2026-10-12').querySelector('.bill-mark'))).toBe('已繳');
     });
 
+    it('never reads 已繳 while a same-day card is unresolved or failed (a paid sibling does not settle it)', () => {
+      const CARD2 = makeAccount({ id: 10, name: '富邦 J卡', is_credit: true, closing_day: 15, due_rule: 'days_after_closing', due_value: 20 });
+      const { fixture, el } = renderCalendarWith([...ACCOUNTS, CARD, CARD2]);
+      const requests = (id: number) => ({
+        summary: httpMock!.expectOne(r => r.url === `/api/accounting/accounts/${id}/summary`),
+        payments: httpMock!.expectOne(r => r.url === `/api/accounting/accounts/${id}/entries`),
+      });
+      const paid = requests(9);
+      const pending = requests(10);
+      answerBill(paid, '-800.0000', ['800.0000']);
+      fixture.detectChanges();
+      // CARD2 is still in flight: the day is a 帳單 day, not 已繳.
+      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
+      pending.summary.flush('boom', { status: 500, statusText: 'Server Error' });
+      pending.payments.flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      // CARD2 failed: unknown is never 已繳.
+      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
+    });
+
     it('draws no mark for a zero or refund-heavy statement, and a zero beside a paid card reads 已繳', () => {
       const CARD2 = makeAccount({ id: 10, name: '富邦 J卡', is_credit: true, closing_day: 15, due_rule: 'days_after_closing', due_value: 20 });
       const CARD3 = makeAccount({ id: 11, name: '國泰', is_credit: true, closing_day: 15, due_rule: 'days_after_closing', due_value: 20 });

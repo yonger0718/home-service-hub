@@ -138,7 +138,7 @@ export class CalendarMonthComponent {
   });
 
   onGridKeydown(event: KeyboardEvent): void {
-    if (event.altKey || event.ctrlKey || event.metaKey) {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
       return;
     }
     const month = this.month();

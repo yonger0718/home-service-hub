@@ -615,13 +615,21 @@ export class LedgerTimelineComponent implements OnInit {
   }
   /** What the grid marks: every closing day, and the due days of statements worth a mark (open or fully paid). */
   readonly billing = computed(() => this.monthBilling().filter(event => event.kind === 'closing' || this.markedBill(event) !== null));
-  /** Due days whose marked statements are all paid in full: the grid reads 已繳 there, 帳單 otherwise. */
+  /**
+   * Due days whose marked statements are all paid in full: the grid reads 已繳 there, 帳單 otherwise. A due event whose
+   * statement is still loading or failed is unknown, and unknown is never 已繳 — it keeps its day at 帳單.
+   */
   readonly paidDays = computed<ReadonlySet<string>>(() => {
     const open = new Set<string>();
     const marked = new Set<string>();
     for (const event of this.monthBilling()) {
-      const bill = event.kind === 'due' ? this.markedBill(event) : null;
-      if (bill) {
+      if (event.kind !== 'due') {
+        continue;
+      }
+      const bill = this.bills.bill(event);
+      if (bill === null) {
+        open.add(event.date);
+      } else if (bill.statement > 0) {
         marked.add(event.date);
         if (bill.remaining > 0) {
           open.add(event.date);

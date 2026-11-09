@@ -322,7 +322,7 @@ describe('CalendarMonthComponent', () => {
       expect(stops()).toEqual([first]);
     });
 
-    it('cancels a refused arrow at the grid edge but leaves Alt/Ctrl/Meta chords to the browser', () => {
+    it('cancels a refused arrow at the grid edge but leaves Alt/Ctrl/Meta/Shift chords to the browser', () => {
       const { el } = render({ ...base, selected: '2026-10-01' });
       const press = (init: KeyboardEventInit) => {
         const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
@@ -333,6 +333,7 @@ describe('CalendarMonthComponent', () => {
       expect(press({ key: 'ArrowLeft', altKey: true }).defaultPrevented).toBe(false);
       expect(press({ key: 'ArrowRight', ctrlKey: true }).defaultPrevented).toBe(false);
       expect(press({ key: 'ArrowRight', metaKey: true }).defaultPrevented).toBe(false);
+      expect(press({ key: 'ArrowRight', shiftKey: true }).defaultPrevented).toBe(false);
     });
 
     it('does not cancel Enter or Space', () => {

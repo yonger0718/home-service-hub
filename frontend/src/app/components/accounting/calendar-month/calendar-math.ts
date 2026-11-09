@@ -121,4 +121,3 @@ export function cellAriaLabel(parts: {
   if (parts.invoices > 0) items.push('發票待對帳');
   return items.join('，');
 }
-
