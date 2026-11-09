@@ -1,0 +1,53 @@
+<button
+  #trigger
+  type="button"
+  class="pk-trigger"
+  aria-haspopup="listbox"
+  [attr.aria-expanded]="open()"
+  [attr.aria-label]="label()"
+  [attr.data-value]="value()"
+  [disabled]="disabled()"
+  (click)="toggle()"
+>
+  <span class="pk-text">{{ selectedLabel() }}</span>
+  <svg class="pk-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+</button>
+
+@if (open()) {
+  @if (phone()) {
+    <div class="overlay" data-overlay (click)="close()">
+      <div #panel class="sheet pk-panel" role="dialog" aria-modal="true" [attr.aria-label]="label()" tabindex="-1" (click)="$event.stopPropagation()">
+        <div class="grab"></div>
+        <h3>{{ label() }}</h3>
+        <ng-container *ngTemplateOutlet="body" />
+      </div>
+    </div>
+  } @else {
+    <div #panel class="pk-popover pk-panel" data-overlay tabindex="-1">
+      <ng-container *ngTemplateOutlet="body" />
+    </div>
+  }
+}
+
+<ng-template #body>
+  <div class="pk-list" role="listbox" [attr.aria-label]="label()">
+    @for (option of options(); track option.value) {
+      <div
+        class="pk-option"
+        role="option"
+        [class.active]="option.value === activeValue()"
+        [attr.data-value]="option.value"
+        [attr.aria-selected]="option.value === value()"
+        [attr.aria-disabled]="option.disabled ? 'true' : null"
+        [attr.tabindex]="option.value === activeValue() ? 0 : -1"
+        (click)="choose(option)"
+        (focusin)="onOptionFocus(option)"
+      >
+        <span class="pk-label">{{ option.label }}</span>
+        @if (option.hint) {
+          <small class="pk-hint">{{ option.hint }}</small>
+        }
+      </div>
+    }
+  </div>
+</ng-template>
