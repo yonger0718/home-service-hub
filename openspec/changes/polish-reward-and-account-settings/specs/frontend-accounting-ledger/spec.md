@@ -8,7 +8,7 @@ The SPA SHALL provide `/accounting/accounts/:id/settings` and `/accounting/accou
 
 **Sections.** The form SHALL be in sections, in this order:
 
-- **基本:** 名稱, 主幣種, 帳戶分組, 初始金額, 帳單週期 (a 結帳日 stepper with an empty 月底 state and the current cycle, for every account), 納入總餘額.
+- **基本:** 名稱, 主幣種, 帳戶分組, 初始金額, 帳單週期 (a 結帳日 stepper with an empty 月底 state and the current cycle, for every account), 納入總餘額, and on a non-credit account a `1 點 = 1 元` switch with the helper 回饋入這個帳戶時當成金額計算 (`cash_equivalent`).
 - **外觀:** a preview and a three-way switch 上傳圖片 / 內建 logo / 文字＋顏色.
   - 上傳圖片: 選擇檔案 (and drop) with the limits line; 「移除圖片」 only when an uploaded image exists. On `/accounting/accounts/new`, upload is disabled with 「先建立帳戶，再上傳 logo」.
   - 內建 logo: the bundled logo grid with `無` first.
@@ -105,7 +105,7 @@ The SPA SHALL provide `/accounting/entries/:id` showing: a header in the categor
 
 `/accounting/reward-rules` SHALL mark 記帳設定 as the current navigation item and offer 「‹ 記帳設定」.
 
-**Header.** A summary line: cards, rules, and the period's money reward total with estimates, followed by each non-money unit's total. State chips with counts (全部, 生效中, 已停用, 已過期, 未開始), and 含已封存帳戶.
+**Header.** A summary line: cards, rules, and the period's money reward total with estimates, followed by 「＋ N 種點數」 counting the other units (omitted when there are none). State chips with counts (全部, 生效中, 已停用, 已過期, 未開始), and 含已封存帳戶.
 
 #### Scenario: Current navigation item
 - **WHEN** the overview is open
@@ -127,11 +127,11 @@ Accounts with rules SHALL be cards, two columns from 1024 px. Each card shows:
 
 ### Requirement: Reward overview units and windows
 
-Overview figures SHALL use the rule's reward unit: money, or the number and the points account's name. A card's total SHALL be given per unit, and the header's total SHALL sum money only, followed by each other unit's total. When an account's rules have different windows, the card header SHALL show only the closing day and each rule row its own period.
+Overview figures SHALL use the rule's reward unit: money, or the number and the points account's name. A card's total SHALL be given per unit, and the header's total SHALL sum money only, followed by 「＋ N 種點數」 counting the other units. A reward account marked `cash_equivalent` is money. When an account's rules have different windows, the card header SHALL show only the closing day and each rule row its own period.
 
 #### Scenario: Points rule on the overview
 - **GIVEN** a card with a money rule and a rule paying points into 亞洲萬里通
-- **THEN** the card SHALL show a money total and a separate 亞洲萬里通 total, and the header's money total SHALL exclude the points
+- **THEN** the card SHALL show a money total and a separate 亞洲萬里通 total, and the header's money total SHALL exclude the points and end with 「＋ 1 種點數」
 
 #### Scenario: Points unit survives a filter
 - **GIVEN** the overview opened with `?account_id=<that card>` only
@@ -149,7 +149,11 @@ Each rule row on an overview card SHALL show:
 - a state tag only when the rule is not active, or is 基本;
 - the posting summary;
 - for an active rule with a cap, the cap bar;
-- for an active rule without a cap, 「無上限 · 本期 … 已入帳 + … 預估」; for any other rule, one muted line instead of the bar.
+- for an active rule without a cap, 「無上限 · 本期 … 已入帳 + … 預估」; for any other rule, one muted line instead of the bar: 「停用中，不估算回饋」 (disabled), 「已結束，不再估算」 (expired) or 「Y/M/D 起才估算」 (upcoming, the start date without zero padding).
+
+#### Scenario: Upcoming rule
+- **GIVEN** a rule starting 2027-01-01, viewed in 2026
+- **THEN** its row SHALL be dimmed, show 「2027/1/1 起才估算」 and no bar
 
 #### Scenario: Rate chip beside the label
 - **GIVEN** 玉山 Pi 卡's 全聯・家樂福加碼 5% has a $200 cap, $180 posted and $13 estimated this period
@@ -224,12 +228,16 @@ The entry detail SHALL show one 回饋 section with one card per reward accrual 
 Each card of the 回饋 section SHALL show:
 
 - the rule name and the reward state tag;
-- the amount in the reward's unit (money, or the number and the points account's name): the reward row's amount when present, else the accrual's capped amount, with the raw estimate struck through beside it when they differ. For 未獲得 the expected figure is struck through: the accrual's amount when above 0, else its estimate;
+- the amount in the reward's unit (money — also for a `cash_equivalent` account — or the number and the points account's name): the reward row's amount when present, else the accrual's capped amount, with the raw estimate struck through when they differ. For 未獲得 the expected figure is struck through: the accrual's amount when above 0, else its estimate;
 - a line by state, as specified by 「Entry reward state lines」.
 
 #### Scenario: Points reward
 - **GIVEN** a rule paying 120 points into the account 亞洲萬里通
 - **THEN** its card SHALL show 120 亞洲萬里通, never $120
+
+#### Scenario: Cash-equivalent reward
+- **GIVEN** a rule paying 120 points into the account 測試現金點, marked `cash_equivalent`
+- **THEN** its card SHALL show +$120
 
 #### Scenario: Estimated with a cap
 - **GIVEN** 全聯 採買 −1,286 on 玉山 Pi 卡 with 一般消費 1% ($13 estimated) and 全聯・家樂福加碼 5% ($64 computed, $20 left in the cap)

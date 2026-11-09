@@ -29,8 +29,21 @@ Each account in `GET /reward-rules` SHALL also carry `icon`, `logo` and `logo_ha
 
 ### Requirement: Reward usage unit
 
-Each usage row (`GET /accounts/{id}/reward-usage` and the overview's `usage`) SHALL carry `reward_account_id`, `reward_account_name` and `reward_is_money` for the reward account of the row's first rule in rule order. `reward_is_money` SHALL be true when that account is the card itself or unset, or is a credit account, archived or not.
+Each usage row (`GET /accounts/{id}/reward-usage` and the overview's `usage`) SHALL carry `reward_account_id`, `reward_account_name` and `reward_is_money` for the reward account of the row's first rule in rule order. `reward_is_money` SHALL be true when that account is the card itself or unset, is a credit account, or is marked `cash_equivalent` — archived or not.
 
 #### Scenario: Points account
 - **GIVEN** a rule paying into the archived non-credit account 亞洲萬里通
 - **THEN** its usage row SHALL have `reward_account_name` 亞洲萬里通 and `reward_is_money` false
+
+#### Scenario: Cash-equivalent points account
+- **GIVEN** a rule paying into the non-credit account 測試現金點, marked `cash_equivalent`
+- **THEN** its usage row SHALL have `reward_account_name` 測試現金點 and `reward_is_money` true
+
+### Requirement: Cash-equivalent accounts
+
+An account SHALL carry `cash_equivalent` (1 點 = 1 元; default false) on every account read (`GET /accounts`, `GET /accounts/{id}`). `POST /accounts` and `PUT /accounts/{id}` SHALL accept it; a `PUT` that omits it SHALL keep the stored value. MOZE imports SHALL NOT change it.
+
+#### Scenario: PUT without the field
+- **GIVEN** an account with `cash_equivalent` true
+- **WHEN** it is saved with a body that omits `cash_equivalent`
+- **THEN** `cash_equivalent` SHALL still be true

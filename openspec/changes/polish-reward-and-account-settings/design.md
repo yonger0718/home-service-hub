@@ -25,12 +25,12 @@ Each account also gains the fields the card header needs, so the page stays one 
 
 Rewards are not always money. A rule whose reward account is neither the card itself nor another credit account (points, miles) pays in that account's units; the entry detail already shows those as the number followed by the account name (#294, `EntryDetail.rewardAmount`). Every reward figure in this change follows the same rule.
 
-The server decides the unit, so no filter can hide it: each usage row (`RewardUsageOut`, so both `/reward-rules` and `/accounts/{id}/reward-usage`) gains `reward_account_id`, `reward_account_name` and `reward_is_money` — the reward account of the row's first rule in rule order (a shared-cap group pays into one account in practice); `reward_is_money` is true when that account is the card itself (or unset) or a credit account, archived or not. The SPA never resolves units through the overview's `accounts` (a `?account_id=` filter or an archived points account would drop it and count points as money).
+The server decides the unit, so no filter can hide it: each usage row (`RewardUsageOut`, so both `/reward-rules` and `/accounts/{id}/reward-usage`) gains `reward_account_id`, `reward_account_name` and `reward_is_money` — the reward account of the row's first rule in rule order (a shared-cap group pays into one account in practice); `reward_is_money` is true when that account is the card itself (or unset), a credit account, or an account marked `cash_equivalent` (1 點 = 1 元, owner ruling 2026-11-08: points that convert 1:1 to cash are money) — archived or not. The SPA never resolves units through the overview's `accounts` (a `?account_id=` filter or an archived points account would drop it and count points as money).
 
 - the cap bar text and accessible name and the card's period total use the usage row's unit;
 - a card whose usage rows mix units shows one total per unit;
-- the header's 「本期回饋合計」 sums money only, followed by one 「＋ N 點數帳戶名」 part per non-money unit;
-- the entry reward cards use `rewardAmount` unchanged.
+- the header's 「本期回饋合計」 sums money only, followed by 「＋ N 種點數」 when other units exist (N = distinct non-money reward accounts; each unit's figure stays on its card);
+- the entry reward cards use `rewardAmount`, which also treats a `cash_equivalent` account as money.
 
 The `$` in the examples below stands for money; read it as 「N 帳戶名」 for a points rule.
 
@@ -48,10 +48,10 @@ One `CapBar` component is used on the overview and in account settings. The rule
 
 ### D3. Overview layout
 
-- **Header.** The title 回饋規則 with a summary line: N 張卡 · M 條規則 · 本期回饋合計 $X（含預估）. The state chips carry counts (全部 7, 生效中 5, …), followed by 含已封存帳戶.
+- **Header.** The title 回饋規則 with a summary line: N 張卡 · M 條規則 · 本期回饋合計 $X（含預估）, then 「＋ N 種點數」 when points units exist (D1a). The state chips carry counts (全部 7, 生效中 5, …), followed by 含已封存帳戶.
 - **Grid.** Cards are in a grid, `repeat(auto-fill, minmax(min(100%, 520px), 1fr))`.
 - **Card header.** The account's logo or icon (D1 fields), its name, and the window line: 「結帳日 25 號 · 本期 10/26–11/25」 (from `closing_day` and the usage rows' `window_start`/`window_end`), or 「每月 1 日起算 · 本月 11/1–11/30」 when every usage row is a calendar month. When the account's usage rows have different windows, the header shows only 「結帳日 25 號」 and each rule row carries its own 「本期 …」. On the right sits the period total, the sum of `used + estimated` over the account's usage rows, per unit (D1a).
-- **Rule rows** open the account's settings at that rule (`?rule=<id>`), as today. They are dimmed to 70 % when the rule is not active, with 「停用中，不估算回饋」 or 「已結束，不再估算」 in place of the bar.
+- **Rule rows** open the account's settings at that rule (`?rule=<id>`), as today. They are dimmed to 70 % when the rule is not active, with 「停用中，不估算回饋」 (disabled), 「已結束，不再估算」 (expired) or 「Y/M/D 起才估算」 (upcoming, the start date without zero padding, e.g. 「2027/1/1 起才估算」) in place of the bar — the spec named no line for upcoming rows, and 停用中 would call an enabled rule disabled (AGENT-465).
 - **Card footer.** Stats from `stats` (「近 12 個月 214 筆 · 回饋 $3,862」) and 「＋ 新增規則」.
 - **Accounts without rules** are the credit accounts listed with an empty `rules` under 全部. They are chips in one dashed row: 「沒有規則的卡片」. Under any other state chip, accounts with no listed rule are omitted and the chip row is not shown (the response cannot tell "no rules" from "none in this state").
 - **The expired callout** becomes the warning banner, with 只看已過期.
