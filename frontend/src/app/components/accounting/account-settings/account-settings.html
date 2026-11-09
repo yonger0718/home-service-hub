@@ -241,6 +241,14 @@
     <button type="button" class="tog include-toggle" role="switch" aria-label="納入總餘額" [attr.aria-checked]="form().include_in_total" [class.on]="form().include_in_total" (click)="toggle('include_in_total')"></button>
   </div>
 
+  @if (!form().is_credit) {
+    <div class="rw">
+      <span class="k">1 點 = 1 元</span>
+      <app-switch class="cash-equivalent" ariaLabel="1 點 = 1 元" [checked]="form().cash_equivalent" (checkedChange)="set('cash_equivalent', $event)" />
+    </div>
+    <small class="hint">回饋入這個帳戶時當成金額計算</small>
+  }
+
   <label class="rw note-row">
     <span class="k">備註</span>
     <input class="v note-input" [value]="form().note" (input)="set('note', $any($event.target).value)" />

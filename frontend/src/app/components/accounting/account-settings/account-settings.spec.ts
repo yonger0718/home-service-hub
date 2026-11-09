@@ -1256,4 +1256,44 @@ describe('AccountSettingsComponent', () => {
       expect(fixture.componentInstance.uploadingLogo()).toBe(false);
     });
   });
+
+  describe('1 點 = 1 元 switch', () => {
+    const CASH = { ...DETAIL, is_credit: false, closing_day: null, due_rule: null, due_value: null, credit_limit: null } as AccountDetail;
+
+    it('shows the 1 點 = 1 元 switch and helper on a non-credit account', async () => {
+      await setup('11');
+      const fixture = render(CASH);
+      const sw = el(fixture).querySelector<HTMLElement>('app-switch.cash-equivalent');
+      expect(sw).not.toBeNull();
+      expect(sw!.querySelector('button')!.getAttribute('aria-label')).toBe('1 點 = 1 元');
+      expect(el(fixture).textContent).toContain('回饋入這個帳戶時當成金額計算');
+    });
+
+    it('hides it on a credit account', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      expect(el(fixture).querySelector('app-switch.cash-equivalent')).toBeNull();
+      expect(el(fixture).textContent).not.toContain('回饋入這個帳戶時當成金額計算');
+    });
+
+    it('toggling it on sends cash_equivalent true', async () => {
+      await setup('11');
+      const fixture = render(CASH);
+      el(fixture).querySelector<HTMLButtonElement>('app-switch.cash-equivalent button')!.click();
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      const req = http.expectOne('/api/accounting/accounts/11');
+      expect(req.request.body.cash_equivalent).toBe(true);
+      req.flush(CASH);
+    });
+
+    it('untouched switch omits cash_equivalent from the PUT body', async () => {
+      await setup('11');
+      const fixture = render(CASH);
+      typeInto(fixture, '.name-input', '玉山 Only 2');
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      const req = http.expectOne('/api/accounting/accounts/11');
+      expect('cash_equivalent' in req.request.body).toBe(false);
+      req.flush(CASH);
+    });
+  });
 });

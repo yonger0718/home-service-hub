@@ -64,6 +64,7 @@ interface AccountForm {
   note: string;
   sort_order: number;
   include_in_total: boolean;
+  cash_equivalent: boolean;
   is_archived: boolean;
   is_credit: boolean;
   closing_day: string;
@@ -81,7 +82,7 @@ interface AccountForm {
 
 const EMPTY_FORM: AccountForm = {
   name: '', currency: 'TWD', opening_balance: '0', group_id: null, icon: '', logo: null, color: '', note: '', sort_order: 0,
-  include_in_total: true, is_archived: false, is_credit: false, closing_day: '', due_rule: '', due_value: '',
+  include_in_total: true, cash_equivalent: false, is_archived: false, is_credit: false, closing_day: '', due_rule: '', due_value: '',
   credit_limit: '', combined_account_id: null, credit_sharing_id: null, auto_pay_account_id: null,
   fx_fee_on: false, fx_fee_pct: '', fx_fee_rounding: 'keep', fx_fee_refundable: false,
 };
@@ -140,6 +141,7 @@ function formFrom(account: AccountDetail): AccountForm {
     note: account.note ?? '',
     sort_order: account.sort_order,
     include_in_total: account.include_in_total,
+    cash_equivalent: account.cash_equivalent ?? false,
     is_archived: account.is_archived,
     is_credit: account.is_credit,
     closing_day: account.closing_day === null ? '' : String(account.closing_day),
@@ -157,7 +159,7 @@ function formFrom(account: AccountDetail): AccountForm {
 }
 
 /** `members`: the other cards sharing this account's limit; sent in full, the backend applies the diff (Task 16). */
-function formToInput(form: AccountForm, members: number[]): AccountInput {
+function formToInput(form: AccountForm, members: number[], loaded: AccountDetail | null): AccountInput {
   const credit = form.is_credit;
   return {
     name: form.name.trim(),
@@ -183,6 +185,7 @@ function formToInput(form: AccountForm, members: number[]): AccountInput {
     fx_fee_pct: form.fx_fee_on ? textOrNull(form.fx_fee_pct) : null,
     fx_fee_rounding: form.fx_fee_on ? form.fx_fee_rounding : null,
     fx_fee_refundable: form.fx_fee_on && form.fx_fee_refundable,
+    ...(!credit && form.cash_equivalent !== (loaded?.cash_equivalent ?? false) ? { cash_equivalent: form.cash_equivalent } : {}),
   };
 }
 
@@ -672,7 +675,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     });
   }
 
-  toggle(key: 'is_credit' | 'include_in_total' | 'is_archived' | 'fx_fee_on' | 'fx_fee_refundable'): void {
+  toggle(key: 'is_credit' | 'include_in_total' | 'cash_equivalent' | 'is_archived' | 'fx_fee_on' | 'fx_fee_refundable'): void {
     this.set(key, !this.form()[key]);
   }
 
@@ -846,7 +849,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     if (Object.keys(this.localErrors()).length > 0) {
       return; // shown inline beside their fields
     }
-    const input = formToInput(form, this.sharing());
+    const input = formToInput(form, this.sharing(), this.detail());
     const request: Observable<AccountDetail> =
       editingId === null ? this.service.createAccount(input) : this.service.updateAccount(editingId, input);
     this.saving.set(true);
