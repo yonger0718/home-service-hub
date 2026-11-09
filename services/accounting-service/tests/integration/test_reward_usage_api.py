@@ -231,3 +231,24 @@ def test_usage_unit_comes_from_the_groups_first_rule(client, db_session, seed):
     db_session.commit()
     [item] = _usage(client, card, date="2026-11-10")
     assert _unit(item) == (miles.id, "測試里程", False)
+
+
+def test_usage_unit_shared_cap_group_paying_into_a_cash_equivalent_account(client, db_session, seed):
+    """PR A2: the group's first rule pays into a 1 點 = 1 元 account → money; flagged on the second rule only → not."""
+    card, _ = _card_with_spends(seed, db_session)
+    points = seed.account("測試現金點", cash_equivalent=True)
+    miles = seed.account("測試里程")
+    group = uuid4()
+    first = _rule(seed, card, name="先", shared_cap_id=group, total_cap=Decimal("100"), sort_order=0)
+    second = _rule(seed, card, name="後", shared_cap_id=group, total_cap=Decimal("100"), sort_order=1)
+    _pay_into(db_session, first, points)
+    _pay_into(db_session, second, miles)
+    db_session.commit()
+    [item] = _usage(client, card, date="2026-11-10")
+    assert _unit(item) == (points.id, "測試現金點", True)
+
+    _pay_into(db_session, first, miles)
+    _pay_into(db_session, second, points)
+    db_session.commit()
+    [item] = _usage(client, card, date="2026-11-10")
+    assert _unit(item) == (miles.id, "測試里程", False)
