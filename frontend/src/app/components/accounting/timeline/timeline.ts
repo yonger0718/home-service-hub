@@ -14,7 +14,7 @@ import {
 } from '@angular/core';
 import { DOCUMENT, NgTemplateOutlet } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { Router } from '@angular/router';
+import { NavigationEnd, Params, Router } from '@angular/router';
 import { filter, forkJoin, fromEvent } from 'rxjs';
 
 import {
@@ -44,10 +44,13 @@ import { SkeletonComponent } from '../skeleton/skeleton';
 import { FolderIcon, SplitFolderComponent } from '../split-folder/split-folder';
 import { groupCommands, listOpenState } from '../split-group/group-nav';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
+import { CalendarDataService } from '../calendar-month/calendar-data.service';
+import { categoryColorMap } from '../calendar-month/calendar-math';
 import { inboxBellCount } from '../inbox/inbox-view';
 import { InboxService } from '../inbox/inbox.service';
 import { parseTags } from '../entry-form/entry-draft';
-import { currentMonth, monthLabel, todayIso } from '../dates';
+import { addDays, currentMonth, monthLabel, monthRange, todayIso } from '../dates';
+import { calendarParams, calendarWrite, readCalendarQuery } from './calendar-url';
 import { nextDueItems } from '../month-overview/due-items';
 import { AccountingOverviewService, OverviewState } from '../month-overview/overview.service';
 import { schedulePill } from '../schedule-math';
@@ -56,7 +59,7 @@ import { displayTitle, formatMoney, formatSigned } from '../format';
 import { FilterBarComponent, FilterChip } from '../../ui/filter-bar/filter-bar';
 import { batchKey, batchSub, loadedBatches } from '../reward-batch';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
-import { barSegments, categoryDistribution, distributionAriaText } from './category-distribution';
+import { FALLBACK_COLOR, barSegments, categoryDistribution, distributionAriaText } from './category-distribution';
 import { reviewTitle } from '../review-reason';
 
 export const TIMELINE_PAGE_SIZE = 50;
@@ -183,18 +186,12 @@ export interface TimelineDay {
   rows: TimelineRow[];
 }
 
-export { currentMonth, monthLabel } from '../dates';
+export { currentMonth, monthLabel, monthRange } from '../dates';
 
 export function shiftMonth(month: string, delta: number): string {
   const [year, monthNumber] = month.split('-').map(Number);
   const [nextYear, nextMonth] = shiftYearMonth(year, monthNumber, delta);
   return `${nextYear}-${pad(nextMonth)}`;
-}
-
-export function monthRange(month: string): { from: string; to: string } {
-  const [year, monthNumber] = month.split('-').map(Number);
-  const lastDay = new Date(year, monthNumber, 0).getDate();
-  return { from: `${month}-01`, to: `${month}-${pad(lastDay)}` };
 }
 
 export function dayLabel(date: string): string {
@@ -428,7 +425,8 @@ export class LedgerTimelineComponent implements OnInit {
   readonly embedded = input(false);
   private readonly accounting = inject(AccountingService);
   private readonly router = inject(Router);
-  private readonly layoutMode = inject(LayoutModeService);
+  protected readonly layoutMode = inject(LayoutModeService);
+  private readonly calendarData = inject(CalendarDataService);
   private readonly layout = inject(AccountingLayoutComponent, { optional: true });
   private readonly document = inject(DOCUMENT);
   private requestId = 0;
@@ -489,14 +487,20 @@ export class LedgerTimelineComponent implements OnInit {
   readonly amountMax = signal('');
   /** Category / project choices, loaded when the 篩選 panel opens (focus is kept as a fallback), not on init. */
   readonly categoryOptions = signal<CategoryNode[]>([]);
+  /** Category id → colour, from the raw category trees (the calendar's dots). */
+  private readonly categoryColors = signal<ReadonlyMap<number, string>>(new Map());
   readonly projectOptions = signal<Project[]>([]);
   private optionsRequested = false;
-  readonly view = signal<TimelineView>(initialView(untracked(this.layoutMode.mode) === 'panes'));
+  private readonly chosenView = signal<TimelineView>(initialView(untracked(this.layoutMode.mode) === 'panes'));
+  /** The day in the URL (`?day=`); null when none is selected. */
+  private readonly urlDay = signal<string | null>(null);
+  /** A day in the URL forces 日曆 without touching the stored choice. */
+  readonly view = computed<TimelineView>(() => (this.urlDay() !== null ? 'calendar' : this.chosenView()));
   readonly daily = signal<DailySummary | null>(null);
   readonly dailyLoading = signal(false);
   readonly dailyError = signal(false);
 
-  readonly selectedDay = signal<string | null>(null);
+  readonly selectedDay = computed(() => this.urlDay());
   readonly dayEntries = signal<LedgerEntry[]>([]);
   readonly dayLoading = signal(false);
   readonly dayError = signal(false);
@@ -604,8 +608,44 @@ export class LedgerTimelineComponent implements OnInit {
     }
     return this.queueState() === 'error' || events.some(event => this.bills.failed(event)) ? 'error' : 'ready';
   });
-  /** What the grid marks: every closing day, and the due days of statements with a remaining balance. */
-  readonly billing = computed(() => this.monthBilling().filter(event => event.kind === 'closing' || this.openBill(event) !== null));
+  /** A due event's statement when the grid marks it: resolved and positive (open or fully paid); a zero or refund-heavy one is not. */
+  private markedBill(event: BillingEvent): BillState | null {
+    const bill = this.bills.bill(event);
+    return bill !== null && bill.statement > 0 ? bill : null;
+  }
+  /** What the grid marks: every closing day, and the due days of statements worth a mark (open or fully paid). */
+  readonly billing = computed(() => this.monthBilling().filter(event => event.kind === 'closing' || this.markedBill(event) !== null));
+  /**
+   * Due days whose marked statements are all paid in full: the grid reads 已繳 there, 帳單 otherwise. A due event whose
+   * statement is still loading or failed is unknown, and unknown is never 已繳 — it keeps its day at 帳單.
+   */
+  readonly paidDays = computed<ReadonlySet<string>>(() => {
+    const open = new Set<string>();
+    const marked = new Set<string>();
+    for (const event of this.monthBilling()) {
+      if (event.kind !== 'due') {
+        continue;
+      }
+      const bill = this.bills.bill(event);
+      if (bill === null) {
+        open.add(event.date);
+      } else if (bill.statement > 0) {
+        marked.add(event.date);
+        if (bill.remaining > 0) {
+          open.add(event.date);
+        }
+      }
+    }
+    return new Set([...marked].filter(date => !open.has(date)));
+  });
+  /** The month's category dots as colours, in the service's order; an unknown category falls back to the muted colour. */
+  readonly calendarDots = computed<ReadonlyMap<string, readonly string[]>>(() => {
+    const colors = this.categoryColors();
+    return new Map(
+      [...this.calendarData.data().dots].map(([date, splits]) => [date, splits.map(split => colors.get(Number(split.key)) ?? FALLBACK_COLOR)]),
+    );
+  });
+  readonly invoiceDays = computed(() => this.calendarData.data().invoiceDays);
   readonly billLines = computed(() => {
     const day = this.selectedDay();
     if (this.view() !== 'calendar' || !day) {
@@ -656,13 +696,33 @@ export class LedgerTimelineComponent implements OnInit {
     effect(() => this.overview.summaryState.set(this.summaryLoading() ? 'loading' : this.summaryError() ? 'error' : 'ready'));
     effect(() => this.overview.dueState.set(this.dueState()));
     inject(DestroyRef).onDestroy(() => this.overview.clear());
+    effect(() => this.calendarData.month.set(this.view() === 'calendar' ? this.month() : null));
+    effect(() => {
+      if (this.view() === 'calendar') {
+        this.ensureOptions();
+      }
+    });
+    inject(DestroyRef).onDestroy(() => this.calendarData.month.set(null));
     // 報表 drill-through (add-accounting-reports D7): `/accounting?month=2026-10&category_id=12` opens that month
     // filtered to the category. Read once at construction: the list is created afresh when the URL comes from 報表.
     const query = this.router.routerState.snapshot.root.queryParamMap;
-    const month = query.get('month');
-    if (month && /^\d{4}-\d{2}$/.test(month)) {
-      this.month.set(month);
-    }
+    this.syncFromUrl();
+    this.router.events
+      .pipe(
+        filter(event => event instanceof NavigationEnd),
+        takeUntilDestroyed(inject(DestroyRef)),
+      )
+      .subscribe(() => {
+        // A pane route (/accounting/entry, …/reminders) carries no calendar params: keep month/day until the list URL
+        // (or any URL carrying them) comes back.
+        const url = this.router.url;
+        const path = url.split(/[?#]/)[0];
+        const query = this.router.routerState.snapshot.root.queryParamMap;
+        if (path !== '/accounting' && !query.has('month') && !query.has('day')) {
+          return;
+        }
+        this.syncFromUrl();
+      });
     const category = query.get('category_id');
     if (category && /^\d+$/.test(category)) {
       this.categoryFilter.set(Number(category));
@@ -727,7 +787,7 @@ export class LedgerTimelineComponent implements OnInit {
       this.query();
       this.extraKey();
       this.accounting.entriesChanged();
-      untracked(() => (view === 'calendar' && day ? this.loadDay(day) : this.clearDay()));
+      untracked(() => (view === 'calendar' && day ? this.loadDay(day) : this.dropDayEntries()));
     });
 
     effect(() => {
@@ -1008,7 +1068,7 @@ export class LedgerTimelineComponent implements OnInit {
       });
   }
 
-  private clearDay(): void {
+  private dropDayEntries(): void {
     this.dayKey = null;
     ++this.dayRequestId;
     this.dayEntries.set([]);
@@ -1074,15 +1134,53 @@ export class LedgerTimelineComponent implements OnInit {
   }
 
   setView(view: TimelineView): void {
-    if (view !== this.view()) {
-      this.view.set(view);
+    if (view === 'list' && this.urlDay() !== null) {
+      this.clearDay();
+    }
+    if (view !== this.chosenView()) {
+      this.chosenView.set(view);
       storeView(view);
     }
   }
 
+  private syncFromUrl(): void {
+    const { month, day } = readCalendarQuery(this.router.routerState.snapshot.root.queryParamMap);
+    if (month !== null) {
+      this.month.set(month);
+    }
+    this.urlDay.set(day);
+  }
+
+  /** Writes month / day into the URL (merged with the other query keys) and applies them at once. */
+  private writeCalendar(params: Params): void {
+    void this.router.navigate([], { queryParams: params, queryParamsHandling: 'merge', replaceUrl: true });
+    if (typeof params['month'] === 'string') {
+      this.month.set(params['month']);
+    }
+    this.urlDay.set(typeof params['day'] === 'string' ? params['day'] : null);
+  }
+
+  clearDay(): void {
+    this.writeCalendar({ month: this.month(), day: null });
+  }
+
+  /** ‹ › : the previous / next day, crossing month edges. */
+  stepDay(delta: 1 | -1): void {
+    const day = this.selectedDay();
+    if (day === null) {
+      return;
+    }
+    const next = addDays(day, delta);
+    this.writeCalendar(calendarWrite(next.slice(0, 7), next));
+  }
+
   /** Tapping the selected day again closes it. */
   selectDay(date: string): void {
-    this.selectedDay.update(current => (current === date ? null : date));
+    if (date === this.selectedDay()) {
+      this.clearDay();
+    } else {
+      this.writeCalendar(calendarWrite(date.slice(0, 7), date));
+    }
   }
 
   /** The 近 7 天 banner: 日曆 on the first upcoming due day (next month's when it falls there). */
@@ -1091,9 +1189,9 @@ export class LedgerTimelineComponent implements OnInit {
     if (!first) {
       return;
     }
-    this.setView('calendar');
-    this.month.set(first.date.slice(0, 7));
-    this.selectedDay.set(first.date);
+    this.chosenView.set('calendar');
+    storeView('calendar');
+    this.writeCalendar(calendarWrite(first.date.slice(0, 7), first.date));
   }
 
   openCard(accountId: number): void {
@@ -1101,9 +1199,8 @@ export class LedgerTimelineComponent implements OnInit {
   }
 
   moveMonth(delta: number): void {
-    this.selectedDay.set(null);
     this.today.set(todayIso());
-    this.month.update(month => shiftMonth(month, delta));
+    this.writeCalendar(calendarWrite(shiftMonth(this.month(), delta), null));
   }
 
   setAccount(value: string): void {
@@ -1149,6 +1246,7 @@ export class LedgerTimelineComponent implements OnInit {
     forkJoin([this.accounting.getCategories('expense'), this.accounting.getCategories('income'), this.accounting.getProjects()]).subscribe({
       next: ([expense, income, projects]) => {
         this.categoryOptions.set(flattenCategories([...expense, ...income]));
+        this.categoryColors.set(categoryColorMap([...expense, ...income]));
         this.projectOptions.set(projects.filter(project => !project.is_archived));
       },
       error: () => {
@@ -1278,6 +1376,11 @@ export class LedgerTimelineComponent implements OnInit {
     }
   }
 
+  /** The calendar view carries its month and day into an opened entry; the 清單 view drops the query. */
+  private calendarExtras(): { queryParams?: Params } {
+    return this.view() === 'calendar' ? { queryParams: calendarParams(this.router.routerState.snapshot.root.queryParamMap) } : {};
+  }
+
   /**
    * A split row opens its 多類別 group view (search results included: they are these rows); any other row its detail.
    * The list counts as the history entry below the group view only while it is the page on screen (`listOpenState`).
@@ -1289,10 +1392,11 @@ export class LedgerTimelineComponent implements OnInit {
     }
     if (row.folder) {
       const state = listOpenState(this.router.url, '/accounting');
-      void this.router.navigate(groupCommands(row.entryId, null), state ? { state } : {});
+      void this.router.navigate(groupCommands(row.entryId, null), { ...(state ? { state } : {}), ...this.calendarExtras() });
       return;
     }
-    void this.router.navigate(['/accounting/entries', row.entryId]);
+    const extras = this.calendarExtras();
+    void this.router.navigate(['/accounting/entries', row.entryId], extras);
   }
 
   expenseText(summary: MonthSummary): string {

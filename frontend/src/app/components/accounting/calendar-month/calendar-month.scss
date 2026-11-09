@@ -95,20 +95,156 @@
   white-space: nowrap;
 }
 
-/* Pinned top-right over the day number's row, so it never takes room from the figures (≈ 50 px cells at 390 px). */
-.due-badge {
+.d.weekend {
+  color: var(--app-text-muted);
+}
+
+.today .d {
+  background: var(--app-primary);
+  border-radius: 999px;
+  color: #fff;
+  padding: 0 5px;
+  align-self: flex-start;
+}
+
+.net {
   font-size: var(--fs-micro, 0.72rem);
   font-variant-numeric: tabular-nums;
-  font-weight: 800;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  &.quiet {
+    color: var(--app-text-muted);
+    font-weight: 400;
+  }
+}
+
+.dots {
+  align-items: center;
+  display: flex;
+  gap: 2px;
+  min-height: 6px;
+}
+
+.dot {
+  border-radius: 50%;
+  display: inline-block;
+  height: 6px;
+  width: 6px;
+}
+
+.more {
+  color: var(--app-text-muted);
+  font-size: var(--fs-micro, 0.72rem);
   line-height: 1;
+}
+
+.bill-mark,
+.inv-mark {
+  font-size: var(--fs-micro, 0.72rem);
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bill-mark {
+  color: var(--app-text-muted);
+}
+
+.inv-mark,
+.inv-dot {
+  color: var(--app-warning);
+}
+
+.inv-dot,
+.bill-dot {
+  border-radius: 50%;
+  display: inline-block;
+  height: 5px;
+  position: absolute;
+  right: 4px;
+  top: 5px;
+  width: 5px;
+}
+
+.inv-dot {
+  background: var(--app-warning);
+  right: 11px;
+}
+
+.bill-dot {
+  background: var(--app-text-muted);
+}
+
+.heat {
+  background: color-mix(in srgb, var(--tone-neg, var(--c-red)) 35%, transparent);
+  bottom: 0;
+  height: 4px;
+  left: 0;
   pointer-events: none;
   position: absolute;
-  right: 2px;
-  top: 3px;
-  white-space: nowrap;
+}
+
+.compact .heat {
+  height: 3px;
+}
+
+.future {
+  opacity: 0.45;
+}
+
+.cal:not(.compact) .cell {
+  min-height: 76px;
+}
+
+.week-mode .cell {
+  min-height: 52px;
+}
+
+.legend {
+  color: var(--app-text-muted);
+  font-size: var(--fs-micro, 0.72rem);
+  margin-top: 6px;
+}
+
+.legend-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.legend-item {
   align-items: center;
   display: inline-flex;
-  gap: 1px;
+  gap: 4px;
+}
 
-  i { font-size: 0.7rem; }
+.heat-swatch {
+  background: color-mix(in srgb, var(--tone-neg, var(--c-red)) 35%, transparent);
+  display: inline-block;
+  height: 4px;
+  width: 14px;
+}
+
+.dot-swatch {
+  background: var(--app-text-muted);
+  border-radius: 50%;
+  display: inline-block;
+  height: 6px;
+  width: 6px;
+}
+
+.sr-only {
+  border: 0;
+  clip: rect(0 0 0 0);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
 }

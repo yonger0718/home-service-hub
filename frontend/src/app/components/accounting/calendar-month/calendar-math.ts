@@ -1,5 +1,10 @@
-import { DailySummaryDay } from '../../../models/accounting.model';
+import { CategoryNode, DailySummaryDay } from '../../../models/accounting.model';
+import { formatMoney } from '../format';
+import { FALLBACK_COLOR } from '../timeline/category-distribution';
 import { addDays } from '../dates';
+
+const MINUS = '−';
+const WEEKDAYS = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
 
 export interface CalendarCell {
   date: string;
@@ -45,4 +50,74 @@ export function buildCalendar(month: string, days: DailySummaryDay[], weekStart:
     rows.push(cells);
   }
   return rows;
+}
+
+/** `0`, `−250`, `+71`, `−3.1k`, `+71.7k`, `−12k` (one decimal for |v| ≥ 1000, trailing `.0` dropped). */
+export function compactNet(value: number): string {
+  const magnitude = Math.round(Math.abs(value));
+  if (magnitude === 0) return '0';
+  const sign = value < 0 ? MINUS : '+';
+  if (magnitude < 1000) return `${sign}${magnitude}`;
+  const thousands = (magnitude / 1000).toFixed(1).replace(/\.0$/, '');
+  return `${sign}${thousands}k`;
+}
+
+/** `0`, `−3,096`, `+71,700`: signed, grouped (en-US), no decimals. */
+export function wideNet(value: number): string {
+  const magnitude = Math.round(Math.abs(value));
+  if (magnitude === 0) return '0';
+  const sign = value < 0 ? MINUS : '+';
+  return `${sign}${magnitude.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+}
+
+/** Spend intensity of a day against the month's largest spend, 0 when there is nothing to scale. */
+export function heatRatio(expense: number, maxExpense: number): number {
+  return expense < 0 && maxExpense > 0 ? Math.min(1, -expense / maxExpense) : 0;
+}
+
+/** The largest daily spend magnitude (positive) across the month; 0 when no day has spend. */
+export function maxDailyExpense(days: DailySummaryDay[]): number {
+  let max = 0;
+  for (const day of days) {
+    const expense = Number(day.expense);
+    if (expense < 0 && -expense > max) max = -expense;
+  }
+  return max;
+}
+
+/** Category id → colour, inheriting the nearest ancestor colour and falling back to `FALLBACK_COLOR`. */
+export function categoryColorMap(roots: CategoryNode[]): ReadonlyMap<number, string> {
+  const colors = new Map<number, string>();
+  const walk = (nodes: CategoryNode[], inherited: string): void => {
+    for (const node of nodes) {
+      const color = node.color ?? inherited;
+      colors.set(node.id, color);
+      if (node.children) walk(node.children, color);
+    }
+  };
+  walk(roots, FALLBACK_COLOR);
+  return colors;
+}
+
+/** Screen-reader name of a month cell, e.g. `10 月 21 日 週三，3 筆，支出 $3,096，發票待對帳`. */
+export function cellAriaLabel(parts: {
+  date: string;
+  count: number;
+  expense: number;
+  income: number;
+  currency: string;
+  bill: 'due' | 'paid' | null;
+  dueCount: number;
+  invoices: number;
+}): string {
+  const [year, month, day] = parts.date.split('-').map(Number);
+  const weekday = WEEKDAYS[new Date(Date.UTC(year, month - 1, day)).getUTCDay()];
+  const items = [`${month} 月 ${day} 日 ${weekday}`];
+  if (parts.count > 0) items.push(`${parts.count} 筆`);
+  if (parts.expense < 0) items.push(`支出 ${formatMoney(-parts.expense, parts.currency)}`);
+  if (parts.income > 0) items.push(`收入 ${formatMoney(parts.income, parts.currency)}`);
+  if (parts.bill === 'due') items.push(`${parts.dueCount} 張卡繳費到期`);
+  if (parts.bill === 'paid') items.push('已繳');
+  if (parts.invoices > 0) items.push('發票待對帳');
+  return items.join('，');
 }

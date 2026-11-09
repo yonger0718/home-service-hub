@@ -8,7 +8,7 @@ import { Location } from '@angular/common';
 import { provideLocationMocks } from '@angular/common/testing';
 import { Component } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { Router, Routes, provideRouter } from '@angular/router';
+import { Router, Routes, UrlTree, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { Observable, Subject } from 'rxjs';
 import { MockInstance, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -20,6 +20,7 @@ import { makeAccount, makeAccountDetail, makeCategory, makeEntry, makeEntryDetai
 import { EntryDetailComponent } from '../entry-detail/entry-detail';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { EntryFormComponent, NO_RELATED, RelatedLoad } from './entry-form';
+import { todayIso } from './entry-draft';
 
 /** Stands in for the timeline so the form's real `navigateByUrl('/accounting')` (leave()) has somewhere to land. */
 @Component({ template: '' })
@@ -121,6 +122,14 @@ describe('EntryFormComponent', () => {
     settle();
   }
 
+  /** Router.navigate() reaches the navigateByUrl spy as (UrlTree, extras): compare the serialised URL and the extras. */
+  function expectNavigatedTo(url: string, extras: Record<string, unknown>): void {
+    const router = TestBed.inject(Router);
+    expect(
+      navigate!.mock.calls.some(([target, given]) => router.serializeUrl(target as UrlTree).split('?')[0] === url && JSON.stringify(given) === JSON.stringify(extras)),
+    ).toBe(true);
+  }
+
   async function open(url: string, mode: LayoutMode = 'phone', accounts = ACCOUNTS) {
     TestBed.inject(LayoutModeService).set(mode);
     harness = await RouterTestingHarness.create();
@@ -142,7 +151,10 @@ describe('EntryFormComponent', () => {
     // navigation (and a fresh GET of that entry) after the test has finished asserting.
     const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
     const el = harness.routeNativeElement as HTMLElement;
-    const left = () => spy.mock.calls.some(([target]) => target === '/accounting') || back.mock.calls.length > 0;
+    const router = TestBed.inject(Router);
+    const left = () =>
+      spy.mock.calls.some(([target]) => (typeof target === 'string' ? target : router.serializeUrl(target)).split('?')[0] === '/accounting') ||
+      back.mock.calls.length > 0;
     return { el, left };
   }
 
@@ -535,6 +547,30 @@ describe('EntryFormComponent', () => {
 
   });
 
+  it('prefills the date from ?date=', async () => {
+    const { el } = await open('/accounting/entry?date=2026-10-21&month=2026-10&day=2026-10-21');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    expect((el.querySelector('input.date-input') as HTMLInputElement).value).toBe('2026-10-21');
+  });
+
+  it('ignores a malformed date', async () => {
+    const { el } = await open('/accounting/entry?date=tomorrow');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    expect((el.querySelector('input.date-input') as HTMLInputElement).value).toBe(todayIso());
+  });
+
+  it('cancel with no history returns to the calendar day', async () => {
+    const { el } = await open('/accounting/entry?month=2026-10&day=2026-10-21');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    Object.defineProperty(TestBed.inject(Router), 'lastSuccessfulNavigation', { configurable: true, value: () => ({}) });
+    el.querySelector('.entry-form')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    settle();
+    expect(navigate!.mock.calls.some(([target]) => TestBed.inject(Router).serializeUrl(target as UrlTree) === '/accounting?month=2026-10&day=2026-10-21')).toBe(true);
+  });
+
   it('cancels on Esc unless the Esc was already handled', async () => {
     const { el, left } = await open('/accounting/entry');
     respond('/api/accounting/categories', [FOOD]);
@@ -766,7 +802,7 @@ describe('EntryFormComponent', () => {
       .toEqual(form.children().map(child => child.key));
     put.flush({ group_id: 4, member_ids: [7, 8], members: form.children().map(child => ({ id: child.id!, client_key: child.key })) });
     settle();
-    expect(navigate).toHaveBeenCalledWith('/accounting/entries/7', { replaceUrl: true, state: { closeTo: 'list' } });
+    expectNavigatedTo('/accounting/entries/7', { replaceUrl: true, queryParams: {}, state: { closeTo: 'list' } });
     expect(left()).toBe(false);
   });
 
@@ -1210,7 +1246,7 @@ describe('EntryFormComponent', () => {
     expect(form.isDirty()).toBe(false);
     await Promise.all(navigate!.mock.results.map(result => result.value));
 
-    expect(navigate).toHaveBeenCalledWith('/accounting/entries/8', { replaceUrl: true, state: { closeTo: 'list' } });
+    expectNavigatedTo('/accounting/entries/8', { replaceUrl: true, queryParams: {}, state: { closeTo: 'list' } });
     expect(TestBed.inject(Router).url).toBe('/accounting/entries/8');
     expect(TestBed.inject(Location).back).not.toHaveBeenCalled();
   });
@@ -1437,6 +1473,27 @@ describe('EntryFormComponent', () => {
   });
 
   describe('unsaved input', () => {
+    it('keeps a dirty draft when only the calendar month/day query changes, but restarts on a kind change', async () => {
+      const { el } = await open('/accounting/entry');
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+      typeInto(el, '.name-input', '午餐');
+      expect(form.isDirty()).toBe(true);
+      const startSpy = vi.spyOn(form as unknown as { start(...args: unknown[]): unknown }, 'start');
+
+      await TestBed.inject(Router).navigate([], { queryParams: { month: '2026-10', day: '2026-10-05' }, queryParamsHandling: 'merge', replaceUrl: true });
+      settle();
+      expect(startSpy).not.toHaveBeenCalled();
+      expect((el.querySelector('.name-input') as HTMLInputElement).value).toBe('午餐');
+      expect(form.isDirty()).toBe(true);
+
+      await TestBed.inject(Router).navigate([], { queryParams: { kind: 'income' }, queryParamsHandling: 'merge', replaceUrl: true });
+      settle();
+      expect(startSpy).toHaveBeenCalledTimes(1);
+      httpMock.match(r => r.method === 'GET').forEach(request => request.flush([]));
+    });
+
     it('is clean after load, dirty after typing a name, clean again after save-and-continue and after save', async () => {
       const { el, left } = await open('/accounting/entry');
       respond('/api/accounting/categories', [FOOD]);

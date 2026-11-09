@@ -1,4 +1,4 @@
-<div class="cal" role="group" aria-label="月曆">
+<div class="cal" [class.compact]="compact()" [class.week-mode]="weekOf()" role="group" aria-label="月曆" (keydown)="onGridKeydown($event)">
   <div class="weekdays" aria-hidden="true">
     @for (name of weekdays(); track $index) {
       <span>{{ name }}</span>
@@ -15,28 +15,61 @@
           [class.sel]="cell.date === selected()"
           [class.due]="cell.dueCount > 0"
           [class.closing]="cell.closing"
+          [class.future]="cell.future"
           [attr.data-date]="cell.date"
           [attr.aria-label]="cell.label"
           [attr.aria-pressed]="cell.outside ? null : cell.date === selected()"
           [attr.aria-current]="cell.date === today() ? 'date' : null"
+          [attr.tabindex]="cell.tabIndex"
           [disabled]="cell.outside"
           (click)="pick(cell)"
         >
-          <span class="d">{{ cell.day }}</span>
-          @if (cell.dueCount > 0) {
-            <span class="due-badge" aria-hidden="true"><i class="pi pi-credit-card"></i>{{ cell.dueCount > 1 ? cell.dueCount : '' }}</span>
-          }
+          <span class="d" [class.weekend]="cell.weekend">{{ cell.day }}</span>
           @if (loading() && !cell.outside) {
             <span class="fig daily-placeholder" aria-hidden="true">—</span>
           }
-          @if (cell.expenseText !== null) {
-            <span class="fig exp neg">{{ cell.expenseText }}</span>
+          @if (cell.net !== null) {
+            <span class="net" [class.neg]="cell.income + cell.expense < 0" [class.pos]="cell.income + cell.expense > 0" [class.quiet]="cell.net === '—'">{{ cell.net }}</span>
           }
-          @if (cell.incomeText !== null) {
-            <span class="fig inc pos">{{ cell.incomeText }}</span>
+          @if (cell.dots.length > 0) {
+            <span class="dots" aria-hidden="true">
+              @for (colour of cell.dots; track $index) {
+                <span class="dot" [style.background]="colour"></span>
+              }
+              @if (cell.more > 0) {
+                <span class="more">+{{ cell.more }}</span>
+              }
+            </span>
+          }
+          @if (cell.bill !== null) {
+            @if (compact()) {
+              <span class="bill-dot" aria-hidden="true"></span>
+            } @else {
+              <span class="bill-mark" aria-hidden="true">{{ cell.bill === 'paid' ? '已繳' : '帳單' }}</span>
+            }
+          }
+          @if (cell.invoices > 0) {
+            @if (compact()) {
+              <span class="inv-dot" aria-hidden="true"></span>
+            } @else {
+              <span class="inv-mark" aria-hidden="true">發票待對帳</span>
+            }
+          }
+          @if (cell.heat > 0) {
+            <span class="heat" aria-hidden="true" [style.width.%]="cell.heat * 100"></span>
           }
         </button>
       }
+    </div>
+  }
+  @if (!compact() && !weekOf()) {
+    <div class="legend">
+      <span aria-hidden="true" class="legend-items">
+        <span class="legend-item"><span class="heat-swatch"></span>支出比例</span>
+        <span class="legend-item"><span class="dot-swatch"></span>類別</span>
+        <span class="legend-item">帳單 到期</span>
+      </span>
+      <span class="sr-only">色條為當日支出比例，圓點為類別，帳單為繳費到期</span>
     </div>
   }
 </div>

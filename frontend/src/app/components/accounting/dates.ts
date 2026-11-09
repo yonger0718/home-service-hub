@@ -41,3 +41,10 @@ export function monthLabel(month: string): string {
   const [year, monthNumber] = month.split('-').map(Number);
   return `${year} 年 ${monthNumber} 月`;
 }
+
+/** `2026-10` → `{ from: '2026-10-01', to: '2026-10-31' }`. */
+export function monthRange(month: string): { from: string; to: string } {
+  const [year, monthNumber] = month.split('-').map(Number);
+  const lastDay = new Date(year, monthNumber, 0).getDate();
+  return { from: `${month}-01`, to: `${month}-${pad(lastDay)}` };
+}

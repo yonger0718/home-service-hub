@@ -180,12 +180,17 @@
     <app-calendar-month
       [attr.aria-busy]="dailyLoading() ? 'true' : null"
       [loading]="dailyLoading() && !daily()"
+      [failed]="dailyError()"
       [month]="month()"
       [days]="daily()?.days ?? []"
       [currency]="daily()?.currency ?? mainCurrency()"
       [weekStart]="weekStart()"
       [selected]="selectedDay()"
       [billing]="billing()"
+      [dots]="calendarDots()"
+      [invoiceDays]="invoiceDays()"
+      [paidDays]="paidDays()"
+      [compact]="layoutMode.mode() !== 'panes'"
       [today]="today()"
       (daySelected)="selectDay($event)"
     />

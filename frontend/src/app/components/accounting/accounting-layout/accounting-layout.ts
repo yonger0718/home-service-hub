@@ -15,7 +15,8 @@ import {
   viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { ActivatedRouteSnapshot, NavigationEnd, Router, RouterOutlet } from '@angular/router';
+import { calendarParams } from '../timeline/calendar-url';
+import { ActivatedRouteSnapshot, NavigationEnd, Params, Router, RouterOutlet } from '@angular/router';
 import { filter } from 'rxjs';
 
 import { BtnComponent } from '../../ui/btn/btn';
@@ -301,6 +302,10 @@ export class AccountingLayoutComponent {
     this.registry.requestClose(() => this.navigateClose());
   }
 
+  private calendarQuery(): Params {
+    return calendarParams(this.router.routerState.snapshot.root.queryParamMap);
+  }
+
   /** Back to the list's own URL. */
   private navigateClose(): void {
     const passbook = PASSBOOK_URL.exec(this.url().split(/[?#]/)[0]);
@@ -308,7 +313,11 @@ export class AccountingLayoutComponent {
       void this.router.navigateByUrl(`/accounting/accounts/${passbook[1]}`);
       return;
     }
-    void this.router.navigateByUrl(this.listKey() === 'accounts' ? '/accounting/accounts' : '/accounting');
+    if (this.listKey() === 'accounts') {
+      void this.router.navigateByUrl('/accounting/accounts');
+      return;
+    }
+    void this.router.navigate(['/accounting'], { queryParams: this.calendarQuery() });
   }
 
 
@@ -383,7 +392,9 @@ export class AccountingLayoutComponent {
       void this.router.navigate(['/accounting/entries', id, ...tail], { state: { closeTo: 'reminders' } });
       return;
     }
-    void this.router.navigate(passbook ? ['/accounting/accounts', Number(passbook[1]), 'entries', id, ...tail] : ['/accounting/entries', id, ...tail]);
+    void this.router.navigate(passbook ? ['/accounting/accounts', Number(passbook[1]), 'entries', id, ...tail] : ['/accounting/entries', id, ...tail], {
+      queryParams: this.calendarQuery(),
+    });
   }
 
   private focusSheet(): void {
