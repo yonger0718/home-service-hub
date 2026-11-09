@@ -12,7 +12,7 @@ import {
   signal,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { ActivatedRoute, Params, Router, RouterLink } from '@angular/router';
 import { calendarParams } from '../timeline/calendar-url';
 import { Observable } from 'rxjs';
 
@@ -421,6 +421,11 @@ export class EntryDetailComponent implements OnInit {
   /** Bumped per `load()`; a response for an earlier load (fast navigation between entries) is dropped. */
   private loadSeq = 0;
 
+  /** The calendar month / day this page's URL carries (`{}` off the calendar). */
+  private calendarQuery(): Params {
+    return calendarParams(this.route.snapshot.queryParamMap);
+  }
+
   /** The list the detail belongs to: the reminder centre or the passbook it was opened from, else the timeline. */
   private parentUrl(): string {
     if (this.closeTo === 'reminders') {
@@ -428,17 +433,21 @@ export class EntryDetailComponent implements OnInit {
     }
     const passbook = this.passbookId();
     if (passbook === null) {
-      const queryParams = calendarParams(this.route.snapshot.queryParamMap);
-      return this.router.serializeUrl(this.router.createUrlTree(['/accounting'], { queryParams }));
+      return this.router.serializeUrl(this.router.createUrlTree(['/accounting'], { queryParams: this.calendarQuery() }));
     }
     return `/accounting/accounts/${passbook}`;
   }
 
   /**
    * ✕ and after a delete: back to where the owner came from (in-app history), else the parent list. Opened with
-   * `closeTo` it always goes to that page.
+   * `closeTo` it always goes to that page. On the calendar (the timeline parent, month / day in the URL) it goes to the
+   * day the URL shows now, replacing this entry: the grid may have moved the day while the drawer was open.
    */
   close(): void {
+    if (this.closeTo === null && this.passbookId() === null && Object.keys(this.calendarQuery()).length > 0) {
+      void this.router.navigateByUrl(this.parentUrl(), { replaceUrl: true });
+      return;
+    }
     if (this.navState().viaGroup) {
       // A child of the group view: back to the list the group view was opened from (history not grown), never to
       // the group view; a deep-linked group view has no list behind it, so the parent list.
@@ -613,14 +622,17 @@ export class EntryDetailComponent implements OnInit {
     this.openSchedulePanel('repost', '.repost-amount');
   }
 
-  /** 編輯整個排程: the entry form in definition mode (not for an imported definition before cutover). */
+  /**
+   * 編輯整個排程: the entry form in definition mode (not for an imported definition before cutover), keeping the
+   * calendar month / day.
+   */
   editSchedule(): void {
     const link = this.scheduleLink();
     const definition = this.scheduleDefinition();
     if (!link || !definition || definition.locked || definition.status === 'ended') {
       return;
     }
-    this.router.navigate(['/accounting/entry'], { queryParams: { schedule: link.definition_id } });
+    this.router.navigate(['/accounting/entry'], { queryParams: { schedule: link.definition_id, ...this.calendarQuery() } });
   }
 
   setRepostAmount(index: number, value: string): void {
@@ -698,10 +710,11 @@ export class EntryDetailComponent implements OnInit {
     this.runWrite(this.service.acceptPartialScheduleInstance(link.instance_id), id, () => this.load(id, true));
   }
 
+  /** 複製: a new entry prefilled from this one, keeping the calendar month / day. */
   copy(): void {
     const detail = this.detail();
     if (detail) {
-      this.router.navigate(['/accounting/entry'], { queryParams: { copy: detail.id } });
+      this.router.navigate(['/accounting/entry'], { queryParams: { copy: detail.id, ...this.calendarQuery() } });
     }
   }
 

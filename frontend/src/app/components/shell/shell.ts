@@ -1,12 +1,15 @@
 import { DOCUMENT, LocationStrategy } from '@angular/common';
-import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
-import { Router, RouterOutlet } from '@angular/router';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { NavigationEnd, Params, Router, RouterOutlet } from '@angular/router';
+import { filter } from 'rxjs';
 
 import { LayoutModeService } from '../../services/layout-mode.service';
 import { NavBadgeService } from '../../services/nav-badge.service';
 import { PaneStateService } from '../../services/pane-state.service';
 import { isHandledKey } from '../accounting/accounting-ui';
 import { DirtyFormRegistry } from '../accounting/dirty-form.service';
+import { calendarParams } from '../accounting/timeline/calendar-url';
 import { MobileNavComponent } from '../mobile-nav/mobile-nav';
 import { SidebarComponent } from '../sidebar/sidebar';
 import { resolveGlobalShortcut } from './global-shortcuts';
@@ -55,16 +58,38 @@ export class ShellComponent {
     () => this.layout.mode() !== 'phone' && !this.paneState.formOpen() && !this.paneState.sheetOpen(),
   );
 
-  /** The 記一筆 link's href, built like RouterLink's (base href included); clicks go through `openEntryForm`. */
-  protected readonly entryFormHref = inject(LocationStrategy).prepareExternalUrl(
-    this.router.serializeUrl(this.router.createUrlTree(ENTRY_FORM)),
+  private readonly locationStrategy = inject(LocationStrategy);
+  /** The current URL, refreshed on every NavigationEnd (calendar month / day writes included). */
+  private readonly url = signal(this.router.url);
+
+  /**
+   * The 記一筆 link's href, built like RouterLink's (base href included) with the calendar month / day of the current
+   * URL, so a modified click (new tab) keeps them too; plain clicks go through `openEntryForm`.
+   */
+  protected readonly entryFormHref = computed(() =>
+    this.locationStrategy.prepareExternalUrl(
+      this.router.serializeUrl(
+        this.router.createUrlTree(ENTRY_FORM, { queryParams: calendarParams(this.router.parseUrl(this.url()).queryParamMap) }),
+      ),
+    ),
   );
 
   constructor() {
     inject(NavBadgeService).start();
+    this.router.events
+      .pipe(
+        filter((event): event is NavigationEnd => event instanceof NavigationEnd),
+        takeUntilDestroyed(),
+      )
+      .subscribe(event => this.url.set(event.urlAfterRedirects));
   }
 
-  /** N / ⇧N on any page opens the entry form; a dirty form is asked first. */
+  /** The calendar month / day of the page on screen (`{}` off the calendar), carried to the entry form. */
+  private calendarQuery(): Params {
+    return calendarParams(this.router.routerState.snapshot.root.queryParamMap);
+  }
+
+  /** N / ⇧N on any page opens the entry form (with the calendar month / day on the calendar); a dirty form is asked first. */
   protected onGlobalKey(event: KeyboardEvent): void {
     if (isHandledKey(event)) {
       return;
@@ -81,15 +106,18 @@ export class ShellComponent {
       return;
     }
     event.preventDefault();
-    this.registry.requestClose(() => void this.router.navigate(action.commands));
+    this.registry.requestClose(() => void this.router.navigate(action.commands, { queryParams: this.calendarQuery() }));
   }
 
-  /** 記一筆: the same dirty-form check as N. A modified click (new tab / window) is left to the browser. */
+  /**
+   * 記一筆: the same dirty-form check and calendar month / day as N. A modified click (new tab / window) is left to the
+   * browser.
+   */
   protected openEntryForm(event: MouseEvent): void {
     if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
       return;
     }
     event.preventDefault();
-    this.registry.requestClose(() => void this.router.navigate(ENTRY_FORM));
+    this.registry.requestClose(() => void this.router.navigate(ENTRY_FORM, { queryParams: this.calendarQuery() }));
   }
 }

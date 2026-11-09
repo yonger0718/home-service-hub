@@ -12,7 +12,7 @@ import {
   signal,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { ActivatedRoute, Params, Router, RouterLink } from '@angular/router';
 
 import { ENTRY_KIND_LABELS, EntryDetail } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
@@ -21,6 +21,7 @@ import { AccountingToastService, scheduleActionError } from '../accounting-toast
 import { colorOf, iconOf, isHandledKey } from '../accounting-ui';
 import { slashDate } from '../dates';
 import { storedGroupNet } from '../entry-detail/split-card';
+import { calendarParams } from '../timeline/calendar-url';
 import { formatMoney } from '../format';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
 import { SplitFolderComponent } from '../split-folder/split-folder';
@@ -130,7 +131,11 @@ export class SplitGroupComponent implements OnInit {
           }
           if (detail.group?.kind !== 'split') {
             // No longer a split (dissolved to one member): the entry's own detail takes this history entry.
-            void this.router.navigate(entryCommands(id, this.passbookId()), { replaceUrl: true, state: carriedState(this.navState()) });
+            void this.router.navigate(entryCommands(id, this.passbookId()), {
+              replaceUrl: true,
+              state: carriedState(this.navState()),
+              queryParams: this.calendarQuery(),
+            });
             return;
           }
           this.detail.set(detail);
@@ -157,22 +162,33 @@ export class SplitGroupComponent implements OnInit {
     return member.kind === 'receivable' ? '應收' : member.kind === 'payable' ? '應付' : null;
   }
 
+  /** The calendar month / day this page's URL carries (`{}` off the calendar). */
+  private calendarQuery(): Params {
+    return calendarParams(this.route.snapshot.queryParamMap);
+  }
+
   /**
    * ✕ and after 刪除整組: opened from a list row, back to that list (nothing added to history); with `closeTo` that
-   * fixed page; else (deep link, ↑ ↓) the parent list.
+   * fixed page; else (deep link, ↑ ↓) the parent list. On the calendar (the timeline parent, month / day in the URL)
+   * it goes to the day the URL shows now, replacing this entry: the grid may have moved the day since the page opened.
    */
   close(): void {
     const state = this.navState();
-    closeGroupPage(this.router, this.location, state, groupParentUrl(state, this.passbookId()));
+    const parentUrl = groupParentUrl(this.router, state, this.passbookId(), this.route.snapshot.queryParamMap);
+    if (!state.closeTo && this.passbookId() === null && Object.keys(this.calendarQuery()).length > 0) {
+      void this.router.navigateByUrl(parentUrl, { replaceUrl: true });
+      return;
+    }
+    closeGroupPage(this.router, this.location, state, parentUrl);
   }
 
-  /** 編輯: the entry form for this split with the parent (多類別) bubble selected. */
+  /** 編輯: the entry form for this split with the parent (多類別) bubble selected, keeping the calendar month / day. */
   edit(): void {
     const detail = this.detail();
     if (!detail || !this.canEdit()) {
       return;
     }
-    void this.router.navigate(['/accounting/entries', detail.id, 'edit'], { queryParams: { select: 'parent' } });
+    void this.router.navigate(['/accounting/entries', detail.id, 'edit'], { queryParams: { select: 'parent', ...this.calendarQuery() } });
   }
 
   openDelete(): void {

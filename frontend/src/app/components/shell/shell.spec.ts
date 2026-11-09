@@ -227,6 +227,20 @@ describe('ShellComponent', () => {
     await vi.waitFor(() => expect(router.url).toBe('/accounting/entry'));
   });
 
+  it('N on the calendar opens the entry form with the month and day', async () => {
+    const { router } = await render(viewportOf(1440), { url: '/accounting?month=2026-10&day=2026-10-21' });
+
+    expect(press('n').defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entry?month=2026-10&day=2026-10-21'));
+  });
+
+  it('N off the calendar carries no other query to the entry form', async () => {
+    const { router } = await render(viewportOf(1440), { url: '/portfolio?tab=dividends' });
+
+    press('n');
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entry'));
+  });
+
   it('ignores an N another handler already handled, and IME commits', async () => {
     const { router } = await render(viewportOf(1440), { url: '/portfolio' });
     const navigate = vi.spyOn(router, 'navigate');
@@ -315,6 +329,31 @@ describe('ShellComponent', () => {
     fab()!.click();
 
     await vi.waitFor(() => expect(router.url).toBe('/accounting/entry'));
+  });
+
+  it('a 記一筆 click on the calendar carries the month and day', async () => {
+    const { fab, router } = await render(viewportOf(1440), { url: '/accounting?month=2026-10&day=2026-10-21' });
+
+    fab()!.click();
+
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entry?month=2026-10&day=2026-10-21'));
+  });
+
+  it("the 記一筆 link's href follows the calendar month and day after a navigation", async () => {
+    const { fab, router, settle } = await render(viewportOf(1440), { url: '/portfolio' });
+    expect(fab()!.getAttribute('href')).toBe('/accounting/entry');
+
+    await router.navigateByUrl('/accounting?month=2026-10&day=2026-10-21');
+    await settle();
+    expect(fab()!.getAttribute('href')).toBe('/accounting/entry?month=2026-10&day=2026-10-21');
+
+    await router.navigateByUrl('/accounting?month=2026-11');
+    await settle();
+    expect(fab()!.getAttribute('href')).toBe('/accounting/entry?month=2026-11');
+
+    await router.navigateByUrl('/settings');
+    await settle();
+    expect(fab()!.getAttribute('href')).toBe('/accounting/entry');
   });
 
   it('a modified 記一筆 click (new tab) is left to the browser', async () => {

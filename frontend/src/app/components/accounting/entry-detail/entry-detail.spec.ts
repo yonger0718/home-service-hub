@@ -566,6 +566,46 @@ describe('EntryDetailComponent', () => {
     expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 42, 'edit'], { queryParamsHandling: 'preserve' });
   });
 
+  it('✕ on the calendar goes to the day in the URL (history replaced), never back to the day it was opened from', () => {
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    // The grid moved the day while the detail was open: the route's query is the day now shown.
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-22' });
+    const fixture = render(RECEIVABLE);
+    el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
+    expect(navigate).toHaveBeenCalledWith('/accounting?month=2026-10&day=2026-10-22', { replaceUrl: true });
+    expect(back).not.toHaveBeenCalled();
+  });
+
+  it('✕ off the calendar still goes back in history', () => {
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    query = convertToParamMap({ q: '晚餐' });
+    const fixture = render(RECEIVABLE);
+    el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('複製 keeps the calendar month and day', () => {
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-21' });
+    const fixture = render(RECEIVABLE);
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    el(fixture).querySelector<HTMLButtonElement>('.action-copy')!.click();
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entry'], { queryParams: { copy: 42, month: '2026-10', day: '2026-10-21' } });
+  });
+
+  it('複製 off the calendar opens the form with the copy only', () => {
+    const fixture = render(RECEIVABLE);
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    el(fixture).querySelector<HTMLButtonElement>('.action-copy')!.click();
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entry'], { queryParams: { copy: 42 } });
+  });
+
   it('closes to the passbook when opened from it with closeTo: list', () => {
     const router = TestBed.inject(Router);
     const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
@@ -820,6 +860,22 @@ describe('EntryDetailComponent', () => {
     expect(navigate).toHaveBeenCalledWith('/accounting');
     expect(back).not.toHaveBeenCalled();
     expect(go).not.toHaveBeenCalled();
+  });
+
+  it('✕ on a child on the calendar goes to the day in the URL (history replaced), not back past the group view', () => {
+    openedWith({ groupDepth: 2, viaGroup: true });
+    const router = TestBed.inject(Router);
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    const location = TestBed.inject(Location);
+    const go = vi.spyOn(location, 'historyGo');
+    const back = vi.spyOn(location, 'back');
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-22' });
+    const fixture = render(splitChild());
+    el(fixture).querySelector<HTMLButtonElement>('.dhead .close')!.click();
+    expect(navigate).toHaveBeenCalledWith('/accounting?month=2026-10&day=2026-10-22', { replaceUrl: true });
+    expect(go).not.toHaveBeenCalled();
+    expect(back).not.toHaveBeenCalled();
   });
 
   it('✕ on a child of a group view opened from the reminder centre returns there', () => {

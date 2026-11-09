@@ -1,5 +1,7 @@
 import { Location } from '@angular/common';
-import { Router } from '@angular/router';
+import { ParamMap, Router } from '@angular/router';
+
+import { calendarParams } from '../timeline/calendar-url';
 
 /**
  * History state carried between a list, the 多類別 group view and its child details (PR-9, no page stacking):
@@ -55,12 +57,19 @@ export function entryCommands(entryId: number, passbookId: number | null): (stri
   return passbookId === null ? ['/accounting/entries', entryId] : ['/accounting/accounts', passbookId, 'entries', entryId];
 }
 
-/** The list a group view or child detail belongs to: the reminder centre, the passbook, else the timeline. */
-export function groupParentUrl(state: GroupNavState, passbookId: number | null): string {
+/**
+ * The list a group view or child detail belongs to: the reminder centre, the passbook, else the timeline, which keeps
+ * the calendar month / day of `query` (the page's own query).
+ */
+export function groupParentUrl(router: Router, state: GroupNavState, passbookId: number | null, query: ParamMap | null = null): string {
   if (state.closeTo === 'reminders') {
     return '/accounting/reminders';
   }
-  return passbookId === null ? '/accounting' : `/accounting/accounts/${passbookId}`;
+  if (passbookId !== null) {
+    return `/accounting/accounts/${passbookId}`;
+  }
+  const queryParams = query ? calendarParams(query) : {};
+  return router.serializeUrl(router.createUrlTree(['/accounting'], { queryParams }));
 }
 
 /** A navigation that replaces the current page (sibling, 「← 多類別」, a dissolved split): same depth, no `viaGroup`. */

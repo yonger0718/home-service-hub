@@ -429,13 +429,11 @@ describe('AccountingLayoutComponent', () => {
           let { row } = await openFromRow(harness);
           expect(calBase(harness).hasAttribute('inert')).toBe(true);
 
-          // The page's own ✕ (entry detail 關閉) goes back in history; this harness's Location does not traverse it,
-          // so the browser's back is played by the router.
-          const back = vi
-            .spyOn(TestBed.inject(Location), 'back')
-            .mockImplementation(() => void router.navigateByUrl('/accounting?month=2026-10&day=2026-10-21'));
+          // The page's own ✕ (entry detail 關閉) on the calendar goes to the day in the URL (history replaced), never
+          // back in history.
+          const back = vi.spyOn(TestBed.inject(Location), 'back');
           (await answerDetail(harness, 7)).click();
-          expect(back).toHaveBeenCalledTimes(1);
+          expect(back).not.toHaveBeenCalled();
           await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-21'));
           await vi.waitFor(() => {
             harness.detectChanges();
