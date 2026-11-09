@@ -7,7 +7,7 @@ import { LayoutModeService } from '../../services/layout-mode.service';
 import { NavBadgeService } from '../../services/nav-badge.service';
 import { NavigationPreferencesService } from '../../services/navigation-preferences.service';
 import { PaneStateService } from '../../services/pane-state.service';
-import { calendarParams } from '../accounting/timeline/calendar-url';
+import { timelineCalendarParams } from '../accounting/timeline/calendar-url';
 import {
   NAV_GROUPS,
   NavBadge,
@@ -38,8 +38,11 @@ export class NavigationStateService {
   private readonly paneOverride = signal(false);
 
   readonly activeItem: Signal<NavItem> = computed(() => navItemForUrl(this.url()));
-  /** The calendar month / day of the current URL (`{}` off the calendar), for the app-wide 記一筆 / ＋ links. */
-  readonly calendarQuery: Signal<Params> = computed(() => calendarParams(this.router.parseUrl(this.url()).queryParamMap));
+  /**
+   * The calendar month / day of the current URL, for the app-wide 記一筆 / ＋ links: only on the timeline and the pages
+   * it opens beside it; `{}` elsewhere (a 報表 `?month` is not the calendar's).
+   */
+  readonly calendarQuery: Signal<Params> = computed(() => timelineCalendarParams(this.router, this.url()));
   readonly activeGroup: Signal<NavGroup> = computed(
     () => NAV_GROUPS.find(group => group.id === this.activeItem().group) ?? NAV_GROUPS[0],
   );

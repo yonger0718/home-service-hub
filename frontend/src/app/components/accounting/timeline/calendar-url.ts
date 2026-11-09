@@ -43,6 +43,11 @@ export function isTimelineUrl(url: string): boolean {
   return TIMELINE_PATH.test(url.split(/[?#]/)[0]);
 }
 
+/** The calendar month / day of `url` when it is a timeline page (`isTimelineUrl`), else `{}`. */
+export function timelineCalendarParams(router: Router, url: string): Params {
+  return isTimelineUrl(url) ? calendarParams(router.parseUrl(url).queryParamMap) : {};
+}
+
 export function calendarWrite(month: string, day: string | null): Params {
   return { month, day };
 }

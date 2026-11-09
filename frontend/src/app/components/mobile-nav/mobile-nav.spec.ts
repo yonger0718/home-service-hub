@@ -71,6 +71,11 @@ describe('MobileNavComponent', () => {
     expect(el.querySelector('a.m-plus')!.getAttribute('href')).toBe('/accounting/entry?month=2026-10&day=2026-10-21');
   });
 
+  it("links the plus to a bare entry page from a page whose ?month is not the calendar's (報表)", async () => {
+    const el = await render('/accounting/reports?month=2026-08');
+    expect(el.querySelector('a.m-plus')!.getAttribute('href')).toBe('/accounting/entry');
+  });
+
   it('follows the calendar day after a navigation', async () => {
     const el = await render('/portfolio');
     await TestBed.inject(Router).navigateByUrl('/accounting?month=2026-10&day=2026-10-22');

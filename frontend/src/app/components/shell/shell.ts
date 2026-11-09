@@ -7,7 +7,7 @@ import { NavBadgeService } from '../../services/nav-badge.service';
 import { PaneStateService } from '../../services/pane-state.service';
 import { isHandledKey } from '../accounting/accounting-ui';
 import { DirtyFormRegistry } from '../accounting/dirty-form.service';
-import { calendarParams } from '../accounting/timeline/calendar-url';
+import { timelineCalendarParams } from '../accounting/timeline/calendar-url';
 import { MobileNavComponent } from '../mobile-nav/mobile-nav';
 import { SidebarComponent } from '../sidebar/sidebar';
 import { resolveGlobalShortcut } from './global-shortcuts';
@@ -72,9 +72,12 @@ export class ShellComponent {
     inject(NavBadgeService).start();
   }
 
-  /** The calendar month / day of the page on screen (`{}` off the calendar), carried to the entry form. */
+  /**
+   * The calendar month / day of the page on screen, carried to the entry form: only on the timeline and the pages it
+   * opens beside it; `{}` elsewhere (a 報表 `?month` is not the calendar's).
+   */
   private calendarQuery(): Params {
-    return calendarParams(this.router.routerState.snapshot.root.queryParamMap);
+    return timelineCalendarParams(this.router, this.router.url);
   }
 
   /** N / ⇧N on any page opens the entry form (with the calendar month / day on the calendar); a dirty form is asked first. */

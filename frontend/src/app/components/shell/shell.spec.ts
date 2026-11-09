@@ -241,6 +241,20 @@ describe('ShellComponent', () => {
     await vi.waitFor(() => expect(router.url).toBe('/accounting/entry'));
   });
 
+  it("N on a page whose ?month is not the calendar's (報表) opens a bare entry form", async () => {
+    const { router } = await render(viewportOf(1440), { url: '/accounting/reports?month=2026-08' });
+
+    press('n');
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entry'));
+  });
+
+  it('N on a page the timeline opened beside it (an entry on the calendar) keeps the month and day', async () => {
+    const { router } = await render(viewportOf(1440), { url: '/accounting/entries/7?month=2026-10&day=2026-10-21' });
+
+    press('n');
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entry?month=2026-10&day=2026-10-21'));
+  });
+
   it('ignores an N another handler already handled, and IME commits', async () => {
     const { router } = await render(viewportOf(1440), { url: '/portfolio' });
     const navigate = vi.spyOn(router, 'navigate');
@@ -354,6 +368,14 @@ describe('ShellComponent', () => {
     await router.navigateByUrl('/settings');
     await settle();
     expect(fab()!.getAttribute('href')).toBe('/accounting/entry');
+  });
+
+  it("記一筆 on a page whose ?month is not the calendar's (報表) links and opens a bare entry form", async () => {
+    const { fab, router } = await render(viewportOf(1440), { url: '/accounting/reports?month=2026-08' });
+    expect(fab()!.getAttribute('href')).toBe('/accounting/entry');
+
+    fab()!.click();
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entry'));
   });
 
   it('a modified 記一筆 click (new tab) is left to the browser', async () => {
