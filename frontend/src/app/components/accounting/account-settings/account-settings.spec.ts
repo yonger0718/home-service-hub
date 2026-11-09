@@ -2010,6 +2010,44 @@ describe('AccountSettingsComponent', () => {
       expect(fixture.componentInstance.invalidSections().size).toBe(0);
     });
 
+    it('結帳後 over 120 days is stopped locally and marks 信用卡 (desktop)', async () => {
+      await setup('11');
+      TestBed.inject(LayoutModeService).set('panes');
+      const fixture = render(DETAIL);
+      spyScroll();
+      fixture.componentInstance.set('due_rule', 'days_after_closing');
+      fixture.componentInstance.set('due_value', '121');
+      fixture.detectChanges();
+
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      fixture.detectChanges();
+
+      http.expectNone('/api/accounting/accounts/11');
+      expect(texts(fixture, '#s-card .field-error[data-field="due_value"]')).toEqual(['請輸入大於 0 的天數']);
+      expect(fixture.componentInstance.invalidSections()).toEqual(new Set(['card']));
+      const chips = Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('nav.sec-chips button'));
+      expect(chips.filter(c => c.classList.contains('invalid')).map(c => c.textContent?.trim())).toEqual(['信用卡']);
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('a blank due value under 每月固定日 is stopped locally with 請填繳款日或天數 (desktop)', async () => {
+      await setup('11');
+      TestBed.inject(LayoutModeService).set('panes');
+      const fixture = render(DETAIL);
+      spyScroll();
+      fixture.componentInstance.set('due_rule', 'fixed_day');
+      fixture.componentInstance.set('due_value', '');
+      fixture.detectChanges();
+
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      fixture.detectChanges();
+
+      http.expectNone('/api/accounting/accounts/11');
+      expect(texts(fixture, '#s-card .field-error[data-field="due_value"]')).toEqual(['請填繳款日或天數']);
+      expect(fixture.componentInstance.invalidSections()).toEqual(new Set(['card']));
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
     it('empty name jumps to 基本', async () => {
       await phoneSetup();
       const fixture = render(DETAIL);

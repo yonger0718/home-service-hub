@@ -329,7 +329,10 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   readonly currencyLocked = computed(() => (this.detail()?.entry_count ?? 0) > 0);
   /** Edit mode whose account never loaded: nothing to save or delete (✓ and 刪除 stay disabled). */
   readonly loadFailed = computed(() => this.accountId() !== null && !this.loading() && this.loadedId() !== this.accountId());
-  /** Errors found before sending: closing day 1–31, due value > 0 (a fixed due day also ≤ 31). */
+  /**
+   * Errors found before sending: closing day 1–31; with a due rule, the due value is required — a fixed due day
+   * 1–31, days after closing 1–120 (the stepper's max and the API's `due_value le=120`).
+   */
   readonly localErrors = computed(() => {
     const form = this.form();
     const errors: Record<string, string> = {};
@@ -338,10 +341,12 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
       errors['closing_day'] = '結帳日須為 1–31';
     }
     const due = form.due_value.trim();
-    if (form.is_credit && form.due_rule && due) {
-      if (form.due_rule === 'fixed_day' && !validDay(due, 1, 31)) {
+    if (form.is_credit && form.due_rule) {
+      if (!due) {
+        errors['due_value'] = '請填繳款日或天數';
+      } else if (form.due_rule === 'fixed_day' && !validDay(due, 1, 31)) {
         errors['due_value'] = '繳款日須為 1–31';
-      } else if (form.due_rule === 'days_after_closing' && !validDay(due, 1, 366)) {
+      } else if (form.due_rule === 'days_after_closing' && !validDay(due, 1, 120)) {
         errors['due_value'] = '請輸入大於 0 的天數';
       }
     }
