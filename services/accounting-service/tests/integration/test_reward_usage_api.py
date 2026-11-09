@@ -204,6 +204,23 @@ def test_usage_unit_archived_points_account(client, db_session, seed):
     assert [_unit(i) for i in _usage(client, card, date="2026-11-10")] == [(miles.id, "測試里程", False)]
 
 
+def test_usage_unit_cash_equivalent_account_is_money(client, db_session, seed):
+    """PR A2: a points account marked 1 點 = 1 元 pays money."""
+    card, _ = _card_with_spends(seed, db_session)
+    points = seed.account("測試現金點", cash_equivalent=True)
+    _pay_into(db_session, _rule(seed, card), points)
+    db_session.commit()
+    assert [_unit(i) for i in _usage(client, card, date="2026-11-10")] == [(points.id, "測試現金點", True)]
+
+
+def test_usage_unit_archived_cash_equivalent(client, db_session, seed):
+    card, _ = _card_with_spends(seed, db_session)
+    points = seed.account("測試現金點", cash_equivalent=True, is_archived=True)
+    _pay_into(db_session, _rule(seed, card), points)
+    db_session.commit()
+    assert [_unit(i) for i in _usage(client, card, date="2026-11-10")] == [(points.id, "測試現金點", True)]
+
+
 def test_usage_unit_comes_from_the_groups_first_rule(client, db_session, seed):
     card, _ = _card_with_spends(seed, db_session)
     miles = seed.account("測試里程")

@@ -14,8 +14,8 @@
   - unaffected by the filters
   - `[]` without active rules
 - [x] 1.2 Tests: parity with `/accounts/{id}/reward-usage`; shared cap row; `state=expired` keeps usage; combined card inherits its parent's `closing_day`; `icon`/`logo`/`logo_hash` equal `/accounts`; usage unit for a points account, archived, and for the card itself
-- [ ] 1.3 `cash_equivalent` on `account` (1 點 = 1 元): column, account reads, `POST`/`PUT` (omitted on `PUT` keeps it), untouched by MOZE imports; usage unit treats it as money (PR A2)
-- [ ] 1.4 Tests (PR A2): default false; PUT sets / omitted keeps; MOZE imports keep it; usage unit for a cash-equivalent account, also archived; overview usage row
+- [x] 1.3 `cash_equivalent` on `account` (1 點 = 1 元): column, account reads, `POST`/`PUT` (omitted on `PUT` keeps it), untouched by MOZE imports; usage unit treats it as money (PR A2)
+- [x] 1.4 Tests (PR A2): default false; PUT sets / omitted keeps; MOZE imports keep it; usage unit for a cash-equivalent account, also archived; overview usage row
 
 ## 2. Shared pieces (PR B)
 

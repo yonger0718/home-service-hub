@@ -1041,7 +1041,7 @@ def usage_by_account(db: Session, accounts: Collection[Account], on: date) -> di
             "used": used.quantize(_Q), "estimated": estimated.quantize(_Q),
             "cap": cap, "remaining": None if cap is None else max(_ZERO, Decimal(cap) - used - estimated).quantize(_Q),
             "reward_account_id": payee.id, "reward_account_name": payee.name,
-            "reward_is_money": payee.id == rule.account_id or bool(payee.is_credit),
+            "reward_is_money": payee.id == rule.account_id or bool(payee.is_credit) or bool(payee.cash_equivalent),
         })
     return out
 
