@@ -39,26 +39,26 @@
 
 ## 3. Wide layout (PR B)
 
-- [ ] 3.1 Calendar mode in `AccountingLayoutComponent` (timeline, 日曆, panes)
+- [x] 3.1 Calendar mode in `AccountingLayoutComponent` (timeline, 日曆, panes)
   - the timeline publishes its view via `AccountingOverviewService.calendar`
   - calendar-only list pane with its own flex basis
-  - 支出 / 收入 / 結餘 in the header
-- [ ] 3.2 本月摘要
+  - 支出 / 收入 / 結餘 in the timeline monthbar (between the month navigator and the view toggle)
+- [x] 3.2 本月摘要
   - extend `MonthOverviewComponent` (search, 今天, distribution, 花最多的商家, 這個月要處理)
   - single-candidate invoice open: entry, or group via a member id from the day's `GET /entries`
   - shown from 1024 px in calendar mode
-- [ ] 3.3 `CalendarDayPanelComponent`
+- [x] 3.3 `CalendarDayPanelComponent`
   - header with ‹ › and 本月摘要
   - bill line, rows with time
   - empty and future states; 在這天記一筆 prefilled date
-- [ ] 3.4 Entry drawer over the right pane
+- [x] 3.4 Entry drawer over the right pane
   - day panel stays mounted underneath
   - ✕ and Esc close it
   - ↑ ↓ through the month move the selected day; `moveSelection` stands down in calendar mode
   - focus trap, Esc and focus return with drawer-own handlers; `sheetOpen` stays the 760–1023 sheet
   - form at 560 px
-- [ ] 3.5 Search from 本月摘要 switches the base layer to the month's result list
-- [ ] 3.6 Tests
+- [x] 3.5 Search from 本月摘要 switches the base layer to the month's result list
+- [x] 3.6 Tests
   - default 本月摘要
   - pick a day
   - drawer URL
