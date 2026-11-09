@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { routes } from '../../../app.routes';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService, MATCH_MEDIA } from '../../../services/layout-mode.service';
-import { makeEntryDetail, makePreference } from '../testing/fixtures';
+import { makeEntry, makeEntryDetail, makePreference } from '../testing/fixtures';
 import { PaneStateService } from '../../../services/pane-state.service';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { AccountingOverviewService } from '../month-overview/overview.service';
@@ -92,7 +92,17 @@ describe('AccountingLayoutComponent', () => {
       await find(harness, '.list-pane button.cell[data-date="2026-10-21"]');
       // Answer the day / daily reads so a row, had one been rendered, would be in the DOM before the assertions.
       const http = TestBed.inject(HttpTestingController);
-      http.match(r => r.url === '/api/accounting/entries').forEach(req => req.flush({ items: [], total: 0, limit: 50, offset: 0 }));
+      // The day read waits for the preference and the accounts.
+      http.match('/api/accounting/preference').forEach(req => req.flush(makePreference()));
+      http.match('/api/accounting/accounts').forEach(req => req.flush([]));
+      const day = makeEntry({ id: 77, entry_date: '2026-10-21', posted_date: '2026-10-21' });
+      const reads = await vi.waitFor(() => {
+        harness.detectChanges();
+        const pending = http.match(r => r.url === '/api/accounting/entries');
+        if (pending.length === 0) throw new Error('no day read yet');
+        return pending;
+      });
+      reads.forEach(req => req.flush({ items: [day], total: 1, limit: 50, offset: 0 }));
       harness.detectChanges();
       const root = harness.routeNativeElement!;
       expect(root.querySelector('.list-pane .day-entries')).toBeNull();
