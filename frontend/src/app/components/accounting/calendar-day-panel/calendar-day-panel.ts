@@ -75,7 +75,7 @@ export class CalendarDayPanelComponent {
       return;
     }
     const target = event.target;
-    if (target instanceof HTMLElement && (target.closest('input, textarea, select') || target.isContentEditable)) {
+    if (target instanceof HTMLElement && (target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])') || target.isContentEditable)) {
       return;
     }
     event.preventDefault();

@@ -269,7 +269,20 @@ describe('CalendarMonthComponent', () => {
       expect(press(']').defaultPrevented).toBe(true);
       expect(press('[').defaultPrevented).toBe(true);
       expect(press(']', { ctrlKey: true }).defaultPrevented).toBe(false);
+      expect(press('[', { shiftKey: true }).defaultPrevented).toBe(false);
       expect(steps).toEqual([1, -1]);
+    });
+
+    it('an arrow after ] still moves the roving focus', () => {
+      const { fixture, el, cell } = render({ ...base, selected: '2026-10-21' });
+      const press = (key: string) => {
+        el.querySelector('.cal')!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+        fixture.detectChanges();
+      };
+      cell('2026-10-21').focus();
+      press(']');
+      press('ArrowRight');
+      expect(document.activeElement).toBe(cell('2026-10-22'));
     });
 
     it('is one tab stop: the selected day (else today, else the 1st) has tabindex 0 and arrows move the focus', () => {

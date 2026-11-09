@@ -93,11 +93,15 @@ describe('CalendarDayPanelComponent', () => {
     spies.step.mockClear();
     expect(key(el.querySelector('.dp-row')!, ']', { ctrlKey: true }).defaultPrevented).toBe(false);
     expect(key(el.querySelector('.dp-row')!, 'a').defaultPrevented).toBe(false);
-    const input = document.createElement('input');
-    el.appendChild(input);
-    key(input, ']');
+    const editable = document.createElement('div');
+    editable.setAttribute('contenteditable', 'true');
+    for (const field of [document.createElement('input'), document.createElement('textarea'), document.createElement('select'), editable]) {
+      el.appendChild(field);
+      const event = key(field, ']');
+      expect(event.defaultPrevented).toBe(false);
+      field.remove();
+    }
     expect(spies.step).not.toHaveBeenCalled();
-    input.remove();
     el.querySelector<HTMLButtonElement>('.dp-summary')!.click();
     expect(spies.clear).toHaveBeenCalled();
     el.querySelector<HTMLButtonElement>('.dp-row')!.click();
