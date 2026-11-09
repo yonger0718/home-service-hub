@@ -11,8 +11,9 @@ import {
   inject,
   signal,
 } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { ActivatedRoute, Params, Router, RouterLink } from '@angular/router';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { map } from 'rxjs';
 
 import { ENTRY_KIND_LABELS, EntryDetail } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
@@ -54,6 +55,13 @@ export class SplitGroupComponent implements OnInit {
   private service = inject(AccountingService);
   private route = inject(ActivatedRoute);
   private router = inject(Router);
+  /**
+   * The calendar month / day this page's URL carries (`{}` off the calendar), kept current while the page stays open:
+   * ✕, 編輯, the dissolved-split handover and the child links carry it.
+   */
+  protected readonly calendarQuery = toSignal(this.route.queryParamMap.pipe(map(calendarParams)), {
+    initialValue: calendarParams(this.route.snapshot.queryParamMap),
+  });
   private location = inject(Location);
   private destroyRef = inject(DestroyRef);
   private layoutMode = inject(LayoutModeService);
@@ -160,11 +168,6 @@ export class SplitGroupComponent implements OnInit {
   /** 應收／應付 for a receivable / payable member (its row shows 對象 instead of the account), else null. */
   partyMark(member: EntryDetail['group_members'][number]): string | null {
     return member.kind === 'receivable' ? '應收' : member.kind === 'payable' ? '應付' : null;
-  }
-
-  /** The calendar month / day this page's URL carries (`{}` off the calendar). */
-  private calendarQuery(): Params {
-    return calendarParams(this.route.snapshot.queryParamMap);
   }
 
   /**

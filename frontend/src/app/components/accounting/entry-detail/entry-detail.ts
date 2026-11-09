@@ -11,10 +11,10 @@ import {
   inject,
   signal,
 } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { ActivatedRoute, Params, Router, RouterLink } from '@angular/router';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { calendarParams } from '../timeline/calendar-url';
-import { Observable } from 'rxjs';
+import { Observable, map } from 'rxjs';
 
 import {
   ENTRY_KIND_LABELS,
@@ -80,6 +80,13 @@ export class EntryDetailComponent implements OnInit {
   private service = inject(AccountingService);
   private route = inject(ActivatedRoute);
   private router = inject(Router);
+  /**
+   * The calendar month / day this page's URL carries (`{}` off the calendar), kept current while the page stays open
+   * (a grid click with the drawer open moves the day): ✕, 複製, schedule edits and the in-page links carry it.
+   */
+  protected readonly calendarQuery = toSignal(this.route.queryParamMap.pipe(map(calendarParams)), {
+    initialValue: calendarParams(this.route.snapshot.queryParamMap),
+  });
   private location = inject(Location);
   private destroyRef = inject(DestroyRef);
   private layoutMode = inject(LayoutModeService);
@@ -420,11 +427,6 @@ export class EntryDetailComponent implements OnInit {
 
   /** Bumped per `load()`; a response for an earlier load (fast navigation between entries) is dropped. */
   private loadSeq = 0;
-
-  /** The calendar month / day this page's URL carries (`{}` off the calendar). */
-  private calendarQuery(): Params {
-    return calendarParams(this.route.snapshot.queryParamMap);
-  }
 
   /** The list the detail belongs to: the reminder centre or the passbook it was opened from, else the timeline. */
   private parentUrl(): string {

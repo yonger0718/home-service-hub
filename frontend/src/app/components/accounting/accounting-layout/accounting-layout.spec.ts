@@ -477,6 +477,28 @@ describe('AccountingLayoutComponent', () => {
           });
         });
 
+        it("the page's ✕ after a grid click changed the day closes to the new day (not back) and focuses the selected grid cell", async () => {
+          const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+          const router = TestBed.inject(Router);
+          const back = vi.spyOn(TestBed.inject(Location), 'back');
+          await openFromRow(harness);
+          const close = await answerDetail(harness, 7);
+          ((await find(harness, '.list-pane button.cell[data-date="2026-10-23"]')) as HTMLButtonElement).click();
+          await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/7?month=2026-10&day=2026-10-23'));
+          pane().dayRows.set([]);
+          harness.detectChanges();
+
+          close.click();
+          await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-23'));
+          expect(back).not.toHaveBeenCalled();
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            const cell = harness.routeNativeElement!.querySelector('.list-pane .cell.sel');
+            expect(cell?.getAttribute('data-date')).toBe('2026-10-23');
+            expect(document.activeElement).toBe(cell);
+          });
+        });
+
         it('keeps N working inside the drawer (data-global-shortcuts) and does not trap a pointer click on the grid', async () => {
           const harness = await start('panes', ENTRY, 1100);
           const router = TestBed.inject(Router);

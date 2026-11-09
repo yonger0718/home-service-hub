@@ -5,7 +5,7 @@ import { provideLocationMocks } from '@angular/common/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, ParamMap, Router, RouterLink, convertToParamMap, provideRouter } from '@angular/router';
 import { By } from '@angular/platform-browser';
-import { BehaviorSubject } from 'rxjs';
+import { BehaviorSubject, Subject, startWith } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EntryDetail, LedgerAccount, LedgerEntry } from '../../../models/accounting.model';
@@ -49,10 +49,13 @@ describe('EntryDetailComponent', () => {
   let http: HttpTestingController;
   let params: BehaviorSubject<ParamMap>;
   let query: ParamMap;
+  /** A later query of the same route (the grid picking another day while the detail stays open). */
+  let queryChanges: Subject<ParamMap>;
 
   beforeEach(async () => {
     params = new BehaviorSubject(convertToParamMap({ id: '42' }));
     query = convertToParamMap({});
+    queryChanges = new Subject();
     await TestBed.configureTestingModule({
       imports: [EntryDetailComponent],
       providers: [
@@ -60,7 +63,14 @@ describe('EntryDetailComponent', () => {
         provideHttpClientTesting(),
         provideRouter([]),
         provideLocationMocks(),
-        { provide: ActivatedRoute, useValue: { paramMap: params, snapshot: { get queryParamMap() { return query; } } } },
+        {
+          provide: ActivatedRoute,
+          useValue: {
+            paramMap: params,
+            get queryParamMap() { return queryChanges.pipe(startWith(query)); },
+            snapshot: { get queryParamMap() { return query; } },
+          },
+        },
       ],
     }).compileComponents();
     http = TestBed.inject(HttpTestingController);
@@ -803,6 +813,47 @@ describe('EntryDetailComponent', () => {
     expect(link.state).toEqual({ groupDepth: 2, viaGroup: true });
     // Above the coloured head.
     expect(back.compareDocumentPosition(el(fixture).querySelector('.dhead')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('keeps the calendar month and day on the 「← 多類別」 link and the related lines, and follows a day picked later', () => {
+    openedWith({ groupDepth: 2, viaGroup: true });
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-21' });
+    const fixture = render(splitChild({
+      kind: 'expense', amount: '-60', refunded_amount: '0',
+      refunded_by: [entry({ id: 7, kind: 'income', amount: '-100', group: SPLIT })],
+      settled_by: [],
+      children: [entry({ id: 90, kind: 'fee', amount: '-5' })],
+    }));
+    const hrefs = () => [
+      el(fixture).querySelector('.group-back')?.getAttribute('href'),
+      ...Array.from(el(fixture).querySelectorAll('.related a.dline')).map(line => line.getAttribute('href')),
+    ];
+    expect(hrefs()).toEqual([
+      '/accounting/entries/42/group?month=2026-10&day=2026-10-21',
+      '/accounting/entries/90?month=2026-10&day=2026-10-21',
+      '/accounting/entries/7?month=2026-10&day=2026-10-21',
+    ]);
+
+    // The grid moves the day while the detail stays open (the route's query changes, the page is reused).
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-23' });
+    queryChanges.next(query);
+    fixture.detectChanges();
+    expect(hrefs()).toEqual([
+      '/accounting/entries/42/group?month=2026-10&day=2026-10-23',
+      '/accounting/entries/90?month=2026-10&day=2026-10-23',
+      '/accounting/entries/7?month=2026-10&day=2026-10-23',
+    ]);
+  });
+
+  it('leaves the 「← 多類別」 link and the related lines without a query off the calendar', () => {
+    openedWith({ groupDepth: 2, viaGroup: true });
+    const fixture = render(splitChild({
+      kind: 'expense', amount: '-60', refunded_amount: '0',
+      refunded_by: [entry({ id: 7, kind: 'income', amount: '-100', group: SPLIT })],
+      settled_by: [],
+    }));
+    expect(el(fixture).querySelector('.group-back')?.getAttribute('href')).toBe('/accounting/entries/42/group');
+    expect(Array.from(el(fixture).querySelectorAll('.related a.dline')).map(line => line.getAttribute('href'))).toEqual(['/accounting/entries/7']);
   });
 
   it('keeps the passbook in the 「← 多類別」 link of a child opened from a passbook', () => {

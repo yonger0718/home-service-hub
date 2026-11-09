@@ -41,7 +41,7 @@
     <div class="dsec">子項</div>
     <div class="group-children">
       @for (member of members(); track member.id) {
-        <a class="split-child" [routerLink]="childCommands(member.id)" [replaceUrl]="childReplacesUrl()" [state]="childState()" [attr.data-member-id]="member.id">
+        <a class="split-child" [routerLink]="childCommands(member.id)" [queryParams]="calendarQuery()" [replaceUrl]="childReplacesUrl()" [state]="childState()" [attr.data-member-id]="member.id">
           <span class="ico" [style.background]="colorOf(member)">{{ iconOf(member) }}</span>
           <span class="split-child-name">
             <b>{{ memberTitle(member) }}</b>

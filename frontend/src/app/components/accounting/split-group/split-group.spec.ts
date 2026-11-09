@@ -5,7 +5,7 @@ import { provideLocationMocks } from '@angular/common/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, ParamMap, Router, RouterLink, convertToParamMap, provideRouter } from '@angular/router';
 import { By } from '@angular/platform-browser';
-import { BehaviorSubject } from 'rxjs';
+import { BehaviorSubject, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EntryDetail, EntryGroupSummary } from '../../../models/accounting.model';
@@ -48,7 +48,10 @@ describe('SplitGroupComponent (多類別 group view)', () => {
         provideHttpClientTesting(),
         provideRouter([]),
         provideLocationMocks(),
-        { provide: ActivatedRoute, useValue: { paramMap: params, snapshot: { get queryParamMap() { return query; } } } },
+        {
+          provide: ActivatedRoute,
+          useValue: { paramMap: params, get queryParamMap() { return of(query); }, snapshot: { get queryParamMap() { return query; } } },
+        },
       ],
     }).compileComponents();
     http = TestBed.inject(HttpTestingController);
@@ -158,6 +161,17 @@ describe('SplitGroupComponent (多類別 group view)', () => {
     expect(child.state).toEqual({ groupDepth: 2, viaGroup: true });
   });
 
+  it('keeps the calendar month and day in the child links', () => {
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-21' });
+    const fixture = render();
+    const hrefs = Array.from(el(fixture).querySelectorAll('.split-child')).map(link => link.getAttribute('href'));
+    expect(hrefs).toEqual([
+      '/accounting/entries/42?month=2026-10&day=2026-10-21',
+      '/accounting/entries/43?month=2026-10&day=2026-10-21',
+      '/accounting/entries/44?month=2026-10&day=2026-10-21',
+    ]);
+  });
+
   it('keeps the passbook in the child links when opened from a passbook', () => {
     params.next(convertToParamMap({ id: '3', eid: '42' }));
     const fixture = render();
@@ -253,10 +267,12 @@ describe('SplitGroupComponent (多類別 group view)', () => {
 
   it('✕ on a deep-linked group view on the calendar goes to that month and day', () => {
     query = convertToParamMap({ month: '2026-10', day: '2026-10-21' });
+    const go = vi.spyOn(location, 'historyGo');
     const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
     const fixture = render();
     el(fixture).querySelector<HTMLButtonElement>('.dhead .close')!.click();
     expect(navigate).toHaveBeenCalledWith('/accounting?month=2026-10&day=2026-10-21', { replaceUrl: true });
+    expect(go).not.toHaveBeenCalled();
   });
 
   it('✕ on the calendar goes to the day in the URL (history replaced), never back to the day it was opened from', () => {

@@ -13,7 +13,7 @@
     <app-lock-banner [locked]="d.locked" />
 
     @if (groupLink(); as link) {
-      <a class="group-back" [routerLink]="link" [replaceUrl]="true" [state]="groupBackState()">
+      <a class="group-back" [routerLink]="link" [queryParams]="calendarQuery()" [replaceUrl]="true" [state]="groupBackState()">
         <span aria-hidden="true">←</span> 多類別 <b>{{ splitNetText() }}</b>
       </a>
     }
@@ -106,7 +106,7 @@
       <div class="dsec">關聯記錄</div>
       <div class="related">
         @for (line of related(); track line.id) {
-          <a class="dline" [routerLink]="['/accounting/entries', line.id]" [replaceUrl]="isSibling(line.id)" [state]="isSibling(line.id) ? siblingState() : undefined">
+          <a class="dline" [routerLink]="['/accounting/entries', line.id]" [queryParams]="calendarQuery()" [replaceUrl]="isSibling(line.id)" [state]="isSibling(line.id) ? siblingState() : undefined">
             <span>{{ line.label }}</span>
             <span [class.neg]="+line.amount < 0" [class.pos]="+line.amount > 0">{{ formatMoney(line.amount, line.currency, { sign: true }) }}</span>
           </a>

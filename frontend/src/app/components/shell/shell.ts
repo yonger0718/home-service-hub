@@ -1,8 +1,6 @@
 import { DOCUMENT, LocationStrategy } from '@angular/common';
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { NavigationEnd, Params, Router, RouterOutlet } from '@angular/router';
-import { filter } from 'rxjs';
+import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
+import { Params, Router, RouterOutlet } from '@angular/router';
 
 import { LayoutModeService } from '../../services/layout-mode.service';
 import { NavBadgeService } from '../../services/nav-badge.service';
@@ -59,8 +57,6 @@ export class ShellComponent {
   );
 
   private readonly locationStrategy = inject(LocationStrategy);
-  /** The current URL, refreshed on every NavigationEnd (calendar month / day writes included). */
-  private readonly url = signal(this.router.url);
 
   /**
    * The 記一筆 link's href, built like RouterLink's (base href included) with the calendar month / day of the current
@@ -68,20 +64,12 @@ export class ShellComponent {
    */
   protected readonly entryFormHref = computed(() =>
     this.locationStrategy.prepareExternalUrl(
-      this.router.serializeUrl(
-        this.router.createUrlTree(ENTRY_FORM, { queryParams: calendarParams(this.router.parseUrl(this.url()).queryParamMap) }),
-      ),
+      this.router.serializeUrl(this.router.createUrlTree(ENTRY_FORM, { queryParams: this.nav.calendarQuery() })),
     ),
   );
 
   constructor() {
     inject(NavBadgeService).start();
-    this.router.events
-      .pipe(
-        filter((event): event is NavigationEnd => event instanceof NavigationEnd),
-        takeUntilDestroyed(),
-      )
-      .subscribe(event => this.url.set(event.urlAfterRedirects));
   }
 
   /** The calendar month / day of the page on screen (`{}` off the calendar), carried to the entry form. */

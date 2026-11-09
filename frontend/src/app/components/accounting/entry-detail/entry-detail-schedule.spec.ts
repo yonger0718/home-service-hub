@@ -58,7 +58,11 @@ describe('EntryDetailComponent schedules', () => {
         provideRouter([]),
         {
           provide: ActivatedRoute,
-          useValue: { paramMap: of(convertToParamMap({ id: '42' })), snapshot: { get queryParamMap() { return query; } } },
+          useValue: {
+            paramMap: of(convertToParamMap({ id: '42' })),
+            get queryParamMap() { return of(query); },
+            snapshot: { get queryParamMap() { return query; } },
+          },
         },
       ],
     }).compileComponents();
