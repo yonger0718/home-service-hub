@@ -44,13 +44,14 @@
 
 ## 4. 帳戶設定 (PR C)
 
-- [ ] 4.1 Split into section components; sticky chips with scroll-spy (≥ 760 px)
+- [x] 4.1 Split into section components; sticky chips with scroll-spy (≥ 760 px)
 - [ ] 4.2 外觀: preview, three-way switch, upload / grid / text and colour, 「目前顯示」 line (D5)
-- [ ] 4.3 信用卡: steppers and previews, pickers; 帳單週期 (結帳日 stepper, empty = 月底) stays in 基本 for every account; `1 點 = 1 元` switch in 基本 on non-credit accounts
+- [x] 4.3 信用卡: steppers and previews, pickers; 帳單週期 (結帳日 stepper, empty = 月底) stays in 基本 for every account; `1 點 = 1 元` switch in 基本 on non-credit accounts
 - [ ] 4.4 Rule rows (D6): one line, bar, switch, ⋯ menu, drag reorder with one order call
-- [ ] 4.5 Phone: grouped list, sheet controls, 放棄 / 儲存 bar replacing the floating button
-- [ ] 4.6 Save with errors scrolls to the first invalid section and marks its chip
+- [x] 4.5 Phone: grouped list, sheet controls, 放棄 / 儲存 bar replacing the floating button
+- [x] 4.6 Save with errors scrolls to the first invalid section and marks its chip
 - [ ] 4.7 Tests: the scenarios of "Account settings page" and "Reward rule rows"; 繳款期限 未設定 saves `due_rule` null; icon accepts 16 characters; 「來自 MOZE」 tag kept
+  - "Account settings page" scenarios + 繳款期限 未設定 → PR C1; "Reward rule rows" scenarios → PR C3
 
 ## 5. Entry detail (PR D)
 
