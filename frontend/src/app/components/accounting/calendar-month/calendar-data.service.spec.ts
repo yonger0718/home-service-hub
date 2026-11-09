@@ -195,4 +195,30 @@ describe('CalendarDataService', () => {
     noReads();
     expect(service.data().dots.get('2026-10-21')?.length).toBe(1);
   });
+
+  it('loads a new month whose selection coalesces with an inbox change', () => {
+    service.month.set('2026-10');
+    TestBed.inject(InboxService).applyProposal(1).subscribe();
+    httpMock.expectOne('/api/accounting/reconciliation/proposals/1/apply').flush({});
+    settle();
+    breakdown('day');
+    breakdown('merchant');
+    httpMock.expectOne(INBOX);
+  });
+
+  it('keeps other months dots and merchants on InboxService.changed and re-reads their invoices when shown', () => {
+    loadMonth('2026-10');
+    loadMonth('2026-11');
+    TestBed.inject(InboxService).applyProposal(1).subscribe();
+    httpMock.expectOne('/api/accounting/reconciliation/proposals/1/apply').flush({});
+    settle();
+    httpMock.expectOne(INBOX).flush(makeInbox([], {}));
+    service.month.set('2026-10');
+    settle();
+    expect(service.data().dotsState).toBe('ready');
+    expect(service.data().invoiceState).toBe('loading');
+    httpMock.expectNone((r) => r.url === BREAKDOWN);
+    httpMock.expectOne(INBOX).flush(makeInbox([], {}));
+    expect(service.data().invoiceState).toBe('ready');
+  });
 });

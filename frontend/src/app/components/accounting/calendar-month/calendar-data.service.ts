@@ -80,23 +80,20 @@ export class CalendarDataService {
       const next = new Map<string, CalendarMonthData>();
       for (const [key, rec] of this.cache()) {
         next.set(key, { ...rec, invoiceDays: new Map(), invoiceState: 'loading' });
+        this.latest.delete(`invoices|${key}`);
       }
       this.cache.set(next);
-      for (const key of next.keys()) this.latest.delete(`invoices|${key}`);
-      // only the shown month is re-read now; the others re-read when shown
-      if (month !== null && next.has(month)) {
-        this.readInvoices(month);
-      }
-      for (const key of [...next.keys()]) {
-        if (key !== month) this.cache.update((m) => without(m, key));
-      }
-      return;
     }
 
-    if (month !== null && !this.cache().has(month)) {
+    if (month === null) return;
+    const rec = this.cache().get(month);
+    if (!rec) {
       this.patch(month, {});
       this.readDots(month);
       this.readMerchants(month);
+      this.readInvoices(month);
+    } else if (rec.invoiceState === 'loading' && !this.latest.has(`invoices|${month}`)) {
+      // an inbox change reset this month's invoices while it was not shown
       this.readInvoices(month);
     }
   }
@@ -189,13 +186,4 @@ export class CalendarDataService {
       },
     });
   }
-}
-
-function without(
-  map: ReadonlyMap<string, CalendarMonthData>,
-  key: string,
-): ReadonlyMap<string, CalendarMonthData> {
-  const next = new Map(map);
-  next.delete(key);
-  return next;
 }
