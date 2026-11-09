@@ -118,11 +118,17 @@ From 1024 px, in the 日曆 view with no day selected, the right pane SHALL show
 2. a 今天 card (current month only: today's count, names and net) that selects today;
 3. the category distribution, with a link to `/accounting/reports?month=…`;
 4. 花最多的商家, as specified by 「Calendar top merchants」;
-5. 這個月要處理: e-invoices awaiting a match and unpaid card bills dated in the month (「Calendar items to handle」).
+5. 這個月要處理: e-invoices awaiting a match and unpaid card bills dated in the month, plus, in the current month, unpaid bills debiting within the 近期到期 horizon (today + 6) after month end (「Calendar items to handle」).
 
 #### Scenario: Month summary on a desktop
 - **WHEN** `/accounting?month=2026-10` opens at 1440 px in the 日曆 view
 - **THEN** the right pane SHALL show 本月摘要 with 今天, the category distribution, 花最多的商家 and 這個月要處理
+
+#### Scenario: Bill due early next month at month end
+- **GIVEN** today is 2026-10-28 and a card's statement debits on 2026-11-03 with a remaining balance
+- **WHEN** `/accounting?month=2026-10` opens in the 日曆 view at 1440 px
+- **THEN** 這個月要處理 SHALL list that bill with 11/03 到期
+- **AND** `/accounting?month=2026-09` SHALL not list it
 
 ### Requirement: Calendar items to handle
 
