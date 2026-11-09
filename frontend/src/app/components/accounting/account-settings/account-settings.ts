@@ -833,7 +833,10 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
    * band is the scroller's top 40 % below the sticky chips, so a sliver hidden under the chips does not count. A
    * callback reports only the sections that changed, so the visible set is kept across callbacks and the current
    * chip is the first visible section in page order (the sections stack, so that is the topmost). While a chip jump
-   * is in flight the spy only tracks; the owner's own scroll input (wheel, touch, keys) hands control back.
+   * is in flight the spy only tracks, until the target itself is on top of the band (the jump has arrived), the
+   * owner's own scroll input (wheel, touch, keys) or the scroller's `scrollend` (a scrollbar drag fires no input
+   * event) hands control back; a release re-marks the top section at once. Plain `scroll` would not do: the
+   * programmatic smooth scroll fires it too.
    */
   private watchSections(): void {
     if (typeof IntersectionObserver === 'undefined') {
@@ -842,6 +845,13 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     const page = this.host.nativeElement;
     const chips = page.querySelector<HTMLElement>('nav.sec-chips')?.offsetHeight ?? 0;
     const visible = new Set<SectionId>();
+    const markTop = () => {
+      const top = SECTIONS.find(section => visible.has(section.id));
+      if (top) {
+        this.activeSection.set(top.id);
+      }
+    };
+    const scroller = scrollerOf(page);
     const observer = new IntersectionObserver(
       entries => {
         for (const entry of entries) {
@@ -852,15 +862,15 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
             visible.delete(id);
           }
         }
+        if (this.jumpTarget !== null && SECTIONS.find(section => visible.has(section.id))?.id === this.jumpTarget) {
+          this.jumpTarget = null;
+        }
         if (this.jumpTarget !== null) {
           return;
         }
-        const top = SECTIONS.find(section => visible.has(section.id));
-        if (top) {
-          this.activeSection.set(top.id);
-        }
+        markTop();
       },
-      { root: scrollerOf(page), rootMargin: `${-chips}px 0px -60% 0px` },
+      { root: scroller, rootMargin: `${-chips}px 0px -60% 0px` },
     );
     for (const section of SECTIONS) {
       const element = page.querySelector(`#s-${section.id}`);
@@ -868,16 +878,26 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
         observer.observe(element);
       }
     }
-    const release = () => (this.jumpTarget = null);
+    const release = () => {
+      if (this.jumpTarget === null) {
+        return;
+      }
+      this.jumpTarget = null;
+      markTop();
+    };
     const input = ['wheel', 'touchstart', 'keydown'] as const;
     for (const type of input) {
       page.addEventListener(type, release, { passive: true });
     }
+    // The viewport's scrollend fires at the document and bubbles to window; a pane's fires at the pane only.
+    const scrollEnds: EventTarget = scroller ?? window;
+    scrollEnds.addEventListener('scrollend', release, { passive: true });
     this.destroyRef.onDestroy(() => {
       observer.disconnect();
       for (const type of input) {
         page.removeEventListener(type, release);
       }
+      scrollEnds.removeEventListener('scrollend', release);
     });
   }
 

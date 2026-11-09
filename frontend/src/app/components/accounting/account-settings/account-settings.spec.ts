@@ -1647,6 +1647,63 @@ describe('AccountSettingsComponent', () => {
       expect(current(fixture)).toEqual(['信用卡']);
     });
 
+    it('a chip jump that reaches its section hands the chip back to the spy', async () => {
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+      const observer = FakeObserver.instances[0];
+      el(fixture).querySelector<HTMLElement>('#s-fx')!.scrollIntoView = vi.fn();
+
+      chips(fixture)[4].click();
+      fixture.detectChanges();
+      observer.fire(fixture, [['fx', true]]);
+      expect(current(fixture)).toEqual(['國外交易']);
+
+      // No wheel/touch/key input: the next intersection moves the chip on its own.
+      observer.fire(fixture, [['fx', false], ['more', true]]);
+      expect(current(fixture)).toEqual(['其他']);
+    });
+
+    it('scrollend on the pane releases a chip jump and marks the section now on top', async () => {
+      document.body.style.overflowY = 'auto';
+      onTestFinished(() => {
+        document.body.style.overflowY = '';
+      });
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+      const observer = FakeObserver.instances[0];
+      expect(observer.options?.root).toBe(document.body);
+      el(fixture).querySelector<HTMLElement>('#s-fx')!.scrollIntoView = vi.fn();
+
+      chips(fixture)[4].click();
+      fixture.detectChanges();
+      observer.fire(fixture, [['reward', true], ['fx', true]]);
+      expect(current(fixture)).toEqual(['國外交易']);
+
+      document.body.dispatchEvent(new Event('scrollend'));
+      fixture.detectChanges();
+      expect(current(fixture)).toEqual(['回饋規則 (2)']);
+    });
+
+    it('scrollend on the viewport releases a chip jump when the page has no pane', async () => {
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+      const observer = FakeObserver.instances[0];
+      expect(observer.options?.root).toBeNull();
+      el(fixture).querySelector<HTMLElement>('#s-fx')!.scrollIntoView = vi.fn();
+
+      chips(fixture)[4].click();
+      fixture.detectChanges();
+      observer.fire(fixture, [['card', true], ['fx', true]]);
+      expect(current(fixture)).toEqual(['國外交易']);
+
+      window.dispatchEvent(new Event('scrollend'));
+      fixture.detectChanges();
+      expect(current(fixture)).toEqual(['信用卡']);
+    });
+
     it('a jump to the short last section keeps 其他 current', async () => {
       await setup('11');
       stubObserver();
