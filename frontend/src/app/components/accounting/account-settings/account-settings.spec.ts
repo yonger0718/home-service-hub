@@ -5,10 +5,11 @@ import { ActivatedRoute, ParamMap, Router, convertToParamMap, provideRouter } fr
 import { By } from '@angular/platform-browser';
 import { BehaviorSubject } from 'rxjs';
 import { AccountingToastService } from '../accounting-toast';
-import { MockInstance, afterEach, describe, expect, it, vi } from 'vitest';
+import { MockInstance, afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { AccountDetail, LedgerAccount, RewardRule, RewardUsage } from '../../../models/accounting.model';
 import { ACCOUNT_LOGOS } from '../../../theme/account-logos';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
 import { AccountSettingsComponent, accountToInput, decimalText } from './account-settings';
@@ -1733,6 +1734,241 @@ describe('AccountSettingsComponent', () => {
       flip(fixture, 'credit-toggle');
       expect(rowLabels(fixture, 'card')).toEqual(['繳款期限', '信用額度', '額度共用', '主帳戶', '自動扣繳']);
       expect(el(fixture).querySelector('#s-card .card-hint')).toBeNull();
+    });
+  });
+
+  describe('phone layout, save bar and error jump', () => {
+    afterEach(() => {
+      TestBed.inject(LayoutModeService).set(null);
+    });
+
+    async function phoneSetup(): Promise<void> {
+      await setup('11');
+      TestBed.inject(LayoutModeService).set('phone');
+    }
+
+    function sheet(fixture: ComponentFixture<AccountSettingsComponent>): HTMLElement | null {
+      return el(fixture).ownerDocument.querySelector<HTMLElement>('.overlay[data-overlay] > .sheet[role=dialog]');
+    }
+
+    /** Replaces `scrollIntoView` (jsdom has none) for the test; the returned spy records the scrolled elements. */
+    function spyScroll(): MockInstance<(arg?: boolean | ScrollIntoViewOptions) => void> {
+      const proto = Element.prototype as { scrollIntoView?: unknown };
+      const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+      proto.scrollIntoView = () => undefined;
+      const spy = vi.spyOn(Element.prototype, 'scrollIntoView');
+      onTestFinished(() => {
+        if (original) {
+          Object.defineProperty(Element.prototype, 'scrollIntoView', original);
+        } else {
+          delete proto.scrollIntoView;
+        }
+      });
+      return spy;
+    }
+
+    it('phone: 基本 renders label/value rows and the 結帳日 row opens a sheet with the stepper', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+
+      expect(el(fixture).querySelector('#s-basic .rw')).toBeNull();
+      expect(texts(fixture, '#s-basic .set-card .set-row .row-label')).toEqual(['名稱', '主幣種', '帳戶分組', '初始金額', '帳單週期', '納入總餘額']);
+      expect(texts(fixture, '#s-basic .row-closing_day .row-v')).toEqual(['15 號']);
+      expect(texts(fixture, '#s-basic .row-closing_day .row-hint')).toEqual(['本期 09/16–10/15']);
+      expect(texts(fixture, '#s-basic .row-opening_balance .row-v')).toEqual(['-3,693']);
+      const row = el(fixture).querySelector<HTMLButtonElement>('#s-basic button.set-row.row-closing_day')!;
+      expect(row.type).toBe('button');
+      expect(row.querySelector('svg[aria-hidden="true"] path')?.getAttribute('d')).toBe('M9 18l6-6-6-6');
+      // Switch rows keep the switch inline; picker rows show the picker trigger.
+      expect(el(fixture).querySelector('#s-basic .set-row app-switch.include-toggle')).not.toBeNull();
+      expect(el(fixture).querySelector('#s-basic .set-row app-picker.group-select .pk-trigger')).not.toBeNull();
+      expect(el(fixture).querySelector('app-stepper.closing-day')).toBeNull();
+      expect(sheet(fixture)).toBeNull();
+
+      row.click();
+      fixture.detectChanges();
+
+      const open = sheet(fixture)!;
+      expect(open).not.toBeNull();
+      expect(open.getAttribute('aria-modal')).toBe('true');
+      expect(open.getAttribute('aria-label')).toBe('結帳日');
+      expect(open.querySelector('app-stepper.closing-day')).not.toBeNull();
+      expect(open.querySelectorAll('app-stepper, app-amount-field').length).toBe(1);
+      expect(open.querySelector('[role=dialog] [role=dialog]')).toBeNull();
+      expect(stepperText(fixture, 'closing-day')).toBe('15 號');
+      expect(open.contains(el(fixture).ownerDocument.activeElement)).toBe(true);
+
+      Array.from(open.querySelectorAll<HTMLButtonElement>('button')).find(b => b.textContent?.trim() === '完成')!.click();
+      fixture.detectChanges();
+      expect(sheet(fixture)).toBeNull();
+    });
+
+    it('phone sheet: clicking 加一 inside the sheet keeps it open', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      click(fixture, '.row-closing_day');
+
+      stepperClick(fixture, 'closing-day', 'inc');
+
+      expect(sheet(fixture)).not.toBeNull();
+      expect(stepperText(fixture, 'closing-day')).toBe('16 號');
+      expect(fixture.componentInstance.form().closing_day).toBe('16');
+
+      // A tap on the dimmed backdrop closes it; the row shows the new value.
+      el(fixture).ownerDocument.querySelector<HTMLElement>('.overlay[data-overlay]')!.click();
+      fixture.detectChanges();
+      expect(sheet(fixture)).toBeNull();
+      expect(texts(fixture, '.row-closing_day .row-v')).toEqual(['16 號']);
+    });
+
+    it('phone sheet: Tab is trapped, Escape closes and refocuses the row', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      click(fixture, '.row-credit_limit');
+      const open = sheet(fixture)!;
+      expect(open.getAttribute('aria-label')).toBe('信用額度');
+      expect(open.querySelector('app-amount-field.credit-limit')).not.toBeNull();
+
+      const buttons = Array.from(open.querySelectorAll<HTMLElement>('button, input'));
+      const first = buttons[0];
+      const last = buttons[buttons.length - 1];
+      expect(last.textContent?.trim()).toBe('完成');
+      last.focus();
+      const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+      last.dispatchEvent(tab);
+      expect(tab.defaultPrevented).toBe(true);
+      expect(el(fixture).ownerDocument.activeElement).toBe(first);
+
+      const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      first.dispatchEvent(escape);
+      fixture.detectChanges();
+
+      expect(escape.defaultPrevented).toBe(true);
+      expect(sheet(fixture)).toBeNull();
+      expect(el(fixture).ownerDocument.activeElement).toBe(el(fixture).querySelector('button.row-credit_limit'));
+    });
+
+    it('phone: 放棄/儲存 bar appears only when dirty', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      expect(el(fixture).querySelector('.save-bar')).toBeNull();
+
+      typeInto(fixture, '.name-input', '玉山 Only 2');
+
+      expect(texts(fixture, '.save-bar > span')).toEqual(['有 1 項未儲存']);
+      expect(texts(fixture, '.save-bar .discard')).toEqual(['放棄']);
+      expect(texts(fixture, '.save-bar .save-bar-save')).toEqual(['儲存']);
+      // The bar carries the count on a phone; the header line is for ≥ 760 px.
+      expect(el(fixture).querySelector('.topbar .dirty-count')).toBeNull();
+
+      TestBed.inject(LayoutModeService).set('panes');
+      fixture.detectChanges();
+      expect(el(fixture).querySelector('.save-bar')).toBeNull();
+      expect(texts(fixture, '.topbar .dirty-count')).toEqual(['有 1 項未儲存']);
+    });
+
+    it('放棄 restores loaded values and hides the bar', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      typeInto(fixture, '.name-input', '玉山 Only 2');
+      click(fixture, '.row-closing_day');
+      stepperClick(fixture, 'closing-day', 'inc');
+      click(fixture, '.sheet .sheet-done');
+      click(fixture, 'input[data-account-id="12"]');
+      expect(texts(fixture, '.save-bar > span')).toEqual(['有 3 項未儲存']);
+
+      click(fixture, '.save-bar .discard');
+
+      expect(el(fixture).querySelector('.save-bar')).toBeNull();
+      expect(fixture.componentInstance.dirtyCount()).toBe(0);
+      expect(el(fixture).querySelector<HTMLInputElement>('.name-input')!.value).toBe('玉山 Only');
+      expect(texts(fixture, '.row-closing_day .row-v')).toEqual(['15 號']);
+      expect(el(fixture).querySelector<HTMLInputElement>('input[data-account-id="12"]')!.checked).toBe(false);
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('bar hides after a successful save', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      typeInto(fixture, '.name-input', '玉山 Only 2');
+
+      click(fixture, '.save-bar .save-bar-save');
+      const put = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/accounts/11');
+      expect(put.request.body.name).toBe('玉山 Only 2');
+      put.flush({ ...DETAIL, name: '玉山 Only 2' });
+      fixture.detectChanges();
+
+      expect(el(fixture).querySelector('.save-bar')).toBeNull();
+      expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 11]);
+    });
+
+    it('422 on combined_account_id jumps to 信用卡 and marks its chip invalid', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      const scroll = spyScroll();
+
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      http.expectOne('/api/accounting/accounts/11').flush(
+        { detail: [{ loc: ['body', 'combined_account_id'], msg: 'master cycle' }] },
+        { status: 422, statusText: 'Unprocessable Entity' },
+      );
+      fixture.detectChanges();
+
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect((scroll.mock.contexts[0] as Element).id).toBe('s-card');
+      expect(fixture.componentInstance.invalidSections()).toEqual(new Set(['card']));
+      const chips = Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('nav.sec-chips button'));
+      expect(chips.filter(c => c.classList.contains('invalid')).map(c => c.textContent?.trim())).toEqual(['信用卡']);
+      expect(fixture.componentInstance.activeSection()).toBe('card');
+      expect(el(fixture).querySelector('app-picker.master-select')?.contains(el(fixture).ownerDocument.activeElement)).toBe(true);
+
+      // Changing the offending field clears the chip.
+      pickerOptions(fixture, 'master-select').find(o => o.textContent?.includes('無'))!.click();
+      fixture.detectChanges();
+      expect(fixture.componentInstance.invalidSections().size).toBe(0);
+    });
+
+    it('local 結帳日 error jumps to 基本', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      const scroll = spyScroll();
+      fixture.componentInstance.set('closing_day', '40');
+      fixture.detectChanges();
+
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      fixture.detectChanges();
+
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect((scroll.mock.contexts[0] as Element).id).toBe('s-basic');
+      expect(fixture.componentInstance.invalidSections()).toEqual(new Set(['basic']));
+      expect(el(fixture).querySelector('app-stepper.closing-day')?.contains(el(fixture).ownerDocument.activeElement)).toBe(true);
+      expect(navigate).not.toHaveBeenCalled();
+
+      // A successful save clears the mark.
+      fixture.componentInstance.set('closing_day', '20');
+      fixture.componentInstance.invalidSections.set(new Set(['basic']));
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      http.expectOne(r => r.method === 'PUT').flush(DETAIL);
+      expect(fixture.componentInstance.invalidSections().size).toBe(0);
+    });
+
+    it('empty name jumps to 基本', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      const scroll = spyScroll();
+      typeInto(fixture, '.name-input', '  ');
+
+      click(fixture, '.save-bar .save-bar-save');
+
+      expect((scroll.mock.contexts[0] as Element).id).toBe('s-basic');
+      expect(fixture.componentInstance.invalidSections()).toEqual(new Set(['basic']));
+      const name = el(fixture).querySelector<HTMLInputElement>('.name-input')!;
+      expect(name.getAttribute('aria-invalid')).toBe('true');
+      expect(el(fixture).ownerDocument.activeElement).toBe(name);
+      expect(texts(fixture, '.field-error[data-field="name"]')).toEqual(['請輸入名稱']);
+
+      typeInto(fixture, '.name-input', '玉山 Only');
+      expect(fixture.componentInstance.invalidSections().size).toBe(0);
     });
   });
 });

@@ -11,6 +11,7 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
+import { NgTemplateOutlet } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { EMPTY, Observable, Subject, catchError, map, merge, of, switchMap, tap } from 'rxjs';
@@ -27,9 +28,10 @@ import {
   RoundingMode,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import { ACCOUNT_LOGOS, accountLogo } from '../../../theme/account-logos';
 import { AccountIconComponent } from '../account-icon/account-icon';
-import { accountLabel, isHandledKey, restoreOverlayFocus } from '../accounting-ui';
+import { accountLabel, isHandledKey, restoreOverlayFocus, trapFocus } from '../accounting-ui';
 import { DueRule, cycleText, dueDate, statementPeriod } from '../cycle';
 import { DirtyAware, DirtyFormRegistry } from '../dirty-form.service';
 import { shortDate, slashDate, todayIso } from '../dates';
@@ -44,7 +46,7 @@ import {
 } from '../reward-rule-text';
 import { SwitchComponent } from '../../ui/switch/switch';
 import { StepperComponent } from '../../ui/stepper/stepper';
-import { AmountFieldComponent } from '../../ui/amount-field/amount-field';
+import { AmountFieldComponent, groupAmount } from '../../ui/amount-field/amount-field';
 import { PickerComponent, PickerOption } from '../../ui/picker/picker';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 
@@ -231,6 +233,20 @@ export const SECTIONS: readonly { id: SectionId; title: string }[] = [
   { id: 'more', title: '其他' },
 ];
 
+/** The section each saveable field (and API error key) lives in: a save that fails jumps to the first (Task 8). */
+export const FIELD_SECTION: Readonly<Record<string, SectionId>> = {
+  name: 'basic', currency: 'basic', group_id: 'basic', opening_balance: 'basic', closing_day: 'basic',
+  include_in_total: 'basic', cash_equivalent: 'basic', sort_order: 'basic',
+  icon: 'look', color: 'look', logo: 'look',
+  is_credit: 'card', due_rule: 'card', due_value: 'card', credit_limit: 'card', combined_account_id: 'card',
+  credit_sharing_id: 'card', credit_sharing_members: 'card', auto_pay_account_id: 'card',
+  fx_fee_on: 'fx', fx_fee_pct: 'fx', fx_fee_rounding: 'fx', fx_fee_refundable: 'fx',
+  note: 'more', is_archived: 'more',
+};
+
+/** Phone rows whose control (a stepper or an amount field) opens in the page's bottom sheet. */
+export type SheetRow = 'opening_balance' | 'closing_day' | 'due_value' | 'credit_limit' | 'fx_fee_pct';
+
 interface LoadedAccount {
   loadId: number;
   id: number | null;
@@ -242,10 +258,10 @@ interface LoadedAccount {
   standalone: true,
   imports: [
     RouterLink, AccountIconComponent, RewardRuleSheetComponent, SwitchComponent, StepperComponent, AmountFieldComponent,
-    PickerComponent, SegToggleComponent,
+    PickerComponent, SegToggleComponent, NgTemplateOutlet,
   ],
   templateUrl: './account-settings.html',
-  styleUrl: './account-settings.scss',
+  styleUrls: ['../sheet.scss', './account-settings.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { '(keydown)': 'onKeydown($event)' },
 })
@@ -256,6 +272,9 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   private router = inject(Router);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly injector = inject(Injector);
+  private readonly layoutMode = inject(LayoutModeService);
+  /** Below 760 px: grouped rows, a bottom sheet for stepper / amount rows and the 放棄 / 儲存 bar. */
+  readonly phone = computed(() => this.layoutMode.mode() === 'phone');
   /** N, 記一筆 and the layout's ✕ / Esc / backdrop ask before unsaved input is dropped (spec §4.3). */
   readonly dirty = inject(DirtyFormRegistry);
   /** Focused element when 放棄未儲存的內容？ opened; 留下 returns focus there. */
@@ -445,8 +464,11 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   protected readonly SECTIONS = SECTIONS;
   /** The chip marked current: the last one tapped, or the topmost section the scroll-spy sees. */
   readonly activeSection = signal<SectionId>('basic');
-  /** Sections whose chip is marked invalid (set by the save path, Task 8). */
+  /** The section a failed save jumped to (chip marked invalid); cleared by a successful save or an edit there. */
   readonly invalidSections = signal<Set<SectionId>>(new Set());
+  /** The phone row whose control is open in the page's bottom sheet. */
+  readonly sheetRow = signal<SheetRow | null>(null);
+  private readonly rowSheet = viewChild<ElementRef<HTMLElement>>('rowSheet');
   /** 有 N 項未儲存: changed form fields, plus one for 額度共用 and one for an open rule sheet with input; 0 when clean. */
   readonly dirtyCount = computed(() => {
     if (!this.isDirty()) {
@@ -486,6 +508,8 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
         this.baseline.set(EMPTY_FORM);
         this.sharingBaseline.set([]);
         this.errors.set({});
+        this.invalidSections.set(new Set());
+        this.sheetRow.set(null);
         this.message.set(null);
         this.confirmDelete.set(false);
         this.ruleSheet.set(null);
@@ -691,7 +715,112 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   jumpTo(id: SectionId): void {
     this.jumpTarget = id;
     this.activeSection.set(id);
-    this.host.nativeElement.querySelector<HTMLElement>(`#s-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    this.host.nativeElement.querySelector<HTMLElement>(`#s-${id}`)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+  }
+
+  /**
+   * A save stopped by errors: marks the first section (in page order) holding one of `fields`, scrolls to it and,
+   * once rendered, focuses its first invalid control (a component host marked invalid hands focus to its own input
+   * or value button). Keys no section owns (`_`) jump nowhere.
+   */
+  private jumpToFirstError(fields: Record<string, string>): void {
+    const marked = new Set(Object.keys(fields).map(key => FIELD_SECTION[key]));
+    const first = SECTIONS.find(section => marked.has(section.id));
+    if (!first) {
+      return;
+    }
+    this.invalidSections.set(new Set([first.id]));
+    this.jumpTo(first.id);
+    afterNextRender(() => {
+      const target = this.host.nativeElement.querySelector<HTMLElement>(`#s-${first.id} [aria-invalid="true"]`);
+      const own = target?.matches('input, button, select, textarea') ? target : null;
+      const inner = (selector: string) => target?.querySelector<HTMLElement>(selector) ?? null;
+      (own ?? inner('input') ?? inner('.val') ?? inner('button'))?.focus();
+    }, { injector: this.injector });
+  }
+
+  /** An edit to a field whose section a failed save marked clears that chip. */
+  private clearInvalid(key: string): void {
+    const section = FIELD_SECTION[key];
+    if (section && this.invalidSections().has(section)) {
+      this.invalidSections.update(marked => new Set([...marked].filter(id => id !== section)));
+    }
+  }
+
+  /** Phone: a stepper / amount row opens its control in the page's bottom sheet; focus moves into it. */
+  openSheet(row: SheetRow): void {
+    this.sheetRow.set(row);
+    afterNextRender(() => {
+      const sheet = this.rowSheet()?.nativeElement;
+      (sheet?.querySelector<HTMLElement>('input, .val') ?? sheet)?.focus();
+    }, { injector: this.injector });
+  }
+
+  /** 完成, Esc or a backdrop tap: focus returns to the row that opened the sheet. */
+  closeSheet(): void {
+    const row = this.sheetRow();
+    if (row === null) {
+      return;
+    }
+    this.sheetRow.set(null);
+    restoreOverlayFocus(this.host.nativeElement.querySelector<HTMLElement>(`button.row-${row}`), this.host.nativeElement);
+  }
+
+  /** The sheet's keyboard contract: Esc closes it (marked handled), Tab stays inside. */
+  onSheetKeydown(event: KeyboardEvent): void {
+    if (isHandledKey(event)) {
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.closeSheet();
+      return;
+    }
+    const sheet = this.rowSheet()?.nativeElement;
+    if (sheet) {
+      trapFocus(sheet, event);
+    }
+  }
+
+  /** A phone row's (and its sheet's) title. */
+  rowLabel(row: SheetRow): string {
+    switch (row) {
+      case 'opening_balance':
+        return '初始金額';
+      case 'closing_day':
+        return '結帳日';
+      case 'due_value':
+        return this.form().due_rule === 'fixed_day' ? '繳款日' : '結帳後天數';
+      case 'credit_limit':
+        return '信用額度';
+      case 'fx_fee_pct':
+        return '手續費 %';
+    }
+  }
+
+  /** A phone row's value as typed (decimal strings stay strings; digits are only grouped). */
+  rowValue(row: SheetRow): string {
+    const form = this.form();
+    switch (row) {
+      case 'opening_balance':
+        return groupAmount(form.opening_balance.trim() || '0');
+      case 'closing_day':
+        return form.closing_day.trim() ? `${form.closing_day.trim()} 號` : '月底';
+      case 'due_value':
+        return form.due_value.trim() ? `${form.due_value.trim()} ${form.due_rule === 'fixed_day' ? '號' : '天'}` : '未設定';
+      case 'credit_limit':
+        return form.credit_limit.trim() ? `$${groupAmount(form.credit_limit.trim())}` : '未設定';
+      case 'fx_fee_pct':
+        return form.fx_fee_pct.trim() ? `${form.fx_fee_pct.trim()}%` : '未設定';
+    }
+  }
+
+  /** The phone bar's 放棄: back to the values as loaded (or last saved). */
+  discardChanges(): void {
+    this.form.set(this.baseline());
+    this.sharing.set(this.sharingBaseline());
+    this.errors.set({});
+    this.invalidSections.set(new Set());
   }
 
   /**
@@ -749,6 +878,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
 
   set<K extends keyof AccountForm>(key: K, value: AccountForm[K]): void {
     this.form.update(form => ({ ...form, [key]: value }));
+    this.clearInvalid(key);
   }
 
   pickLogo(slug: string | null): void {
@@ -836,6 +966,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
 
   toggleSharing(id: number, checked: boolean): void {
     this.sharing.update(list => (checked ? [...list.filter(x => x !== id), id] : list.filter(x => x !== id)));
+    this.clearInvalid('credit_sharing_members');
   }
 
   error(field: string): string | null {
@@ -995,10 +1126,12 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     const form = this.form();
     if (!form.name.trim()) {
       this.errors.set({ name: '請輸入名稱' });
+      this.jumpToFirstError(this.errors());
       return;
     }
     if (Object.keys(this.localErrors()).length > 0) {
-      return; // shown inline beside their fields
+      this.jumpToFirstError(this.localErrors()); // shown inline beside their fields
+      return;
     }
     const input = formToInput(form, this.sharing(), this.detail());
     const request: Observable<AccountDetail> =
@@ -1020,6 +1153,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
           // Saved: nothing is left to discard while the passbook opens.
           this.baseline.set(form);
           this.sharingBaseline.set(this.sharing());
+          this.invalidSections.set(new Set());
           this.dirty.clearPending();
           this.discardOpener = null;
           this.router.navigate(['/accounting/accounts', id]);
@@ -1034,6 +1168,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
           if (Object.keys(fields).length === 0) {
             this.message.set(writeErrorMessage(err));
           }
+          this.jumpToFirstError(fields);
         },
       });
   }

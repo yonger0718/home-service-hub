@@ -50,7 +50,8 @@
   /* Below the sticky chips when a chip scrolls the section into view. */
   scroll-margin-top: 3rem;
 
-  h3 { color: var(--app-text-muted); font-size: var(--fs-sm); font-weight: 800; margin: 0; padding: 4px 0; }
+  /* text-align: sheet.scss (loaded for the phone sheet) centres a bare h3. */
+  h3 { color: var(--app-text-muted); font-size: var(--fs-sm); font-weight: 800; margin: 0; padding: 4px 0; text-align: start; }
 }
 .sec-head { align-items: center; display: flex; gap: 10px; justify-content: space-between; }
 .card-hint { color: var(--app-text-muted); font-size: 0.85rem; margin: 4px 0 0; }
@@ -236,4 +237,91 @@
 
   small { color: var(--app-text-muted); font-size: 0.7rem; }
   &[aria-pressed="true"] { outline: 2px solid var(--app-primary); }
+}
+
+/* Phone (< 760 px, C1 Task 8): grouped rows in cards; stepper / amount rows open the page's bottom sheet.
+   .set-card / .set-row, not .card / .row: those are Bootstrap's global classes (theme/bootstrap-grid.spec.ts gate). */
+.set-card {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+
+  > .field-error { padding: 0 12px 6px; }
+}
+
+.set-row {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--app-border);
+  color: var(--app-text);
+  display: flex;
+  font: inherit;
+  gap: 10px;
+  justify-content: space-between;
+  min-height: 46px;
+  padding: 6px 12px;
+  text-align: start;
+  width: 100%;
+
+  &:last-child { border-bottom: 0; }
+  input.v { background: none; border: 0; color: var(--app-text); font: inherit; min-width: 0; text-align: right; }
+}
+button.set-row { cursor: pointer; }
+.row-wrap { flex-wrap: wrap; }
+.row-stack { align-items: flex-start; flex-direction: column; gap: 4px; }
+.row-k { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; }
+.row-label { font-weight: 600; }
+.row-hint { color: var(--app-text-muted); font-size: 0.75rem; font-weight: 500; }
+.row-v { color: var(--app-text-muted); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.set-row[aria-invalid='true'] .row-v { color: var(--app-danger); }
+.chev { color: var(--app-text-muted); flex: 0 0 auto; }
+
+.row-sheet {
+  .sheet-control { align-items: center; display: flex; flex-direction: column; gap: 6px; padding: 8px 0; }
+  .sheet-hint { color: var(--app-text-muted); font-size: 0.8rem; }
+  .field-error { display: block; text-align: center; }
+  .sheet-done {
+    background: var(--app-primary);
+    border: 0;
+    border-radius: var(--radius-md);
+    color: var(--app-on-primary, #fff);
+    cursor: pointer;
+    font: inherit;
+    font-weight: 700;
+    margin-top: 12px;
+    padding: 11px;
+    width: 100%;
+  }
+}
+
+/* 放棄 / 儲存 while dirty: sticky at the page bottom, which the layout keeps above the 64 px tab bar. */
+.save-bar {
+  align-items: center;
+  background: var(--app-surface);
+  border-top: 1px solid var(--app-border);
+  bottom: 0;
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 8px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+  position: sticky;
+  z-index: 2;
+
+  span { color: var(--app-text-muted); flex: 1; font-size: var(--fs-sm); font-weight: 700; }
+
+  button {
+    border: 1px solid var(--app-border);
+    border-radius: var(--radius-pill);
+    cursor: pointer;
+    font: inherit;
+    font-weight: 700;
+    padding: 6px 16px;
+  }
+  .discard { background: var(--app-surface); color: var(--app-text); }
+  .save-bar-save { background: var(--app-primary); border-color: var(--app-primary); color: var(--app-on-primary, #fff); }
+  .save-bar-save:disabled { cursor: default; opacity: 0.5; }
 }

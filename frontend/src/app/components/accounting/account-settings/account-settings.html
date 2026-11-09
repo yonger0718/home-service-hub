@@ -3,7 +3,7 @@
     <a class="ib" [routerLink]="accountId() === null ? '/accounting/accounts' : ['/accounting/accounts', accountId()]" aria-label="取消">✕</a>
     <h1>{{ accountId() === null ? '新增帳戶' : '帳戶資訊' }}</h1>
     <span class="topbar-end">
-      @if (dirtyCount() > 0) {
+      @if (dirtyCount() > 0 && !phone()) {
         <span class="dirty-count">有 {{ dirtyCount() }} 項未儲存</span>
       }
       <button type="button" class="ib ok save" aria-label="儲存" [disabled]="saving() || loading() || loadFailed()" (click)="save()">✓</button>
@@ -41,50 +41,74 @@
 
   <section class="sec" id="s-basic" aria-labelledby="h-basic">
     <h3 id="h-basic">基本</h3>
-    <label class="rw">
-      <span class="k">名稱</span>
-      <input class="v name-input" [value]="form().name" (input)="set('name', $any($event.target).value)" />
-    </label>
-    @if (error('name'); as e) { <small class="field-error" data-field="name">{{ e }}</small> }
-
-    <label class="rw">
-      <span class="k">主幣種</span>
-      <input class="v currency-input" maxlength="8" [disabled]="currencyLocked()" [value]="form().currency" (input)="set('currency', $any($event.target).value)" />
-    </label>
-    @if (currencyLocked()) { <small class="currency-note">已有記錄，無法變更幣種</small> }
-    @if (error('currency'); as e) { <small class="field-error" data-field="currency">{{ e }}</small> }
-
-    <div class="rw">
-      <span class="k">帳戶分組</span>
-      <app-picker class="group-select" label="帳戶分組" [options]="groupOptions()" [value]="idValue(form().group_id)" (change)="setIdField('group_id', $event)" />
-    </div>
-
-    <div class="rw">
-      <span class="k">初始金額</span>
-      <app-amount-field class="opening-input" ariaLabel="初始金額" [invalid]="!!error('opening_balance')" [value]="form().opening_balance" (valueChange)="set('opening_balance', $event)" />
-    </div>
-    @if (error('opening_balance'); as e) { <small class="field-error" data-field="opening_balance">{{ e }}</small> }
-
-    <div class="rw">
-      <span class="k">帳單週期<br /><small>結帳日</small></span>
-      <span class="v">
-        <app-stepper class="closing-day" ariaLabel="結帳日" suffix="號" [min]="1" [max]="31" [nullable]="true" nullLabel="月底" decLabel="減一天" incLabel="加一天" [invalid]="!!error('closing_day')" [value]="closingDay()" (valueChange)="setDay('closing_day', $event)" />
-        <small class="cycle-preview">{{ cycleLabel() }}</small>
-      </span>
-    </div>
-    @if (error('closing_day'); as e) { <small class="field-error" data-field="closing_day">{{ e }}</small> }
-
-    <div class="rw">
-      <span class="k">納入總餘額</span>
-      <app-switch class="include-toggle" ariaLabel="納入總餘額" [checked]="form().include_in_total" (checkedChange)="set('include_in_total', $event)" />
-    </div>
-
-    @if (!form().is_credit) {
-      <div class="rw">
-        <span class="k">1 點 = 1 元</span>
-        <app-switch class="cash-equivalent" ariaLabel="1 點 = 1 元" [checked]="form().cash_equivalent" (checkedChange)="set('cash_equivalent', $event)" />
+    @if (phone()) {
+      <div class="set-card">
+        <label class="set-row"><span class="row-k"><span class="row-label">名稱</span></span><ng-container *ngTemplateOutlet="nameCtl" /></label>
+        <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'name' }" />
+        <label class="set-row">
+          <span class="row-k"><span class="row-label">主幣種</span>@if (currencyLocked()) { <small class="row-hint currency-note">已有記錄，無法變更幣種</small> }</span>
+          <ng-container *ngTemplateOutlet="currencyCtl" />
+        </label>
+        <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'currency' }" />
+        <div class="set-row"><span class="row-k"><span class="row-label">帳戶分組</span></span><ng-container *ngTemplateOutlet="groupCtl" /></div>
+        <ng-container *ngTemplateOutlet="sheetRowButton; context: { $implicit: 'opening_balance', label: rowLabel('opening_balance'), hint: '' }" />
+        <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'opening_balance' }" />
+        <ng-container *ngTemplateOutlet="sheetRowButton; context: { $implicit: 'closing_day', label: '帳單週期', hint: cycleLabel() }" />
+        <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'closing_day' }" />
+        <div class="set-row"><span class="row-k"><span class="row-label">納入總餘額</span></span><ng-container *ngTemplateOutlet="includeCtl" /></div>
+        @if (!form().is_credit) {
+          <div class="set-row">
+            <span class="row-k"><span class="row-label">1 點 = 1 元</span><small class="row-hint">回饋入這個帳戶時當成金額計算</small></span>
+            <ng-container *ngTemplateOutlet="cashCtl" />
+          </div>
+        }
       </div>
-      <small class="hint">回饋入這個帳戶時當成金額計算</small>
+    } @else {
+      <label class="rw">
+        <span class="k">名稱</span>
+        <ng-container *ngTemplateOutlet="nameCtl" />
+      </label>
+      <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'name' }" />
+
+      <label class="rw">
+        <span class="k">主幣種</span>
+        <ng-container *ngTemplateOutlet="currencyCtl" />
+      </label>
+      @if (currencyLocked()) { <small class="currency-note">已有記錄，無法變更幣種</small> }
+      <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'currency' }" />
+
+      <div class="rw">
+        <span class="k">帳戶分組</span>
+        <ng-container *ngTemplateOutlet="groupCtl" />
+      </div>
+
+      <div class="rw">
+        <span class="k">初始金額</span>
+        <ng-container *ngTemplateOutlet="openingCtl" />
+      </div>
+      <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'opening_balance' }" />
+
+      <div class="rw">
+        <span class="k">帳單週期<br /><small>結帳日</small></span>
+        <span class="v">
+          <ng-container *ngTemplateOutlet="closingCtl" />
+          <small class="cycle-preview">{{ cycleLabel() }}</small>
+        </span>
+      </div>
+      <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'closing_day' }" />
+
+      <div class="rw">
+        <span class="k">納入總餘額</span>
+        <ng-container *ngTemplateOutlet="includeCtl" />
+      </div>
+
+      @if (!form().is_credit) {
+        <div class="rw">
+          <span class="k">1 點 = 1 元</span>
+          <ng-container *ngTemplateOutlet="cashCtl" />
+        </div>
+        <small class="hint">回饋入這個帳戶時當成金額計算</small>
+      }
     }
   </section>
 
@@ -131,53 +155,59 @@
       <app-switch class="credit-toggle" ariaLabel="信用帳戶" [checked]="form().is_credit" (checkedChange)="set('is_credit', $event)" />
     </div>
     @if (form().is_credit) {
-      <div class="rw child">
-        <span class="k">繳款期限</span>
-        <span class="v due-fields">
-          <app-seg-toggle class="due-rule" ariaLabel="繳款期限" [options]="dueRuleOptions" [value]="form().due_rule || 'none'" (change)="setDueRule($event)" />
+      @if (phone()) {
+        <div class="set-card">
+          <div class="set-row row-wrap"><span class="row-k"><span class="row-label">繳款期限</span></span><ng-container *ngTemplateOutlet="dueRuleCtl" /></div>
           @if (form().due_rule !== '') {
-            <app-stepper class="due-value" ariaLabel="繳款日或天數" [suffix]="form().due_rule === 'fixed_day' ? '號' : '天'" [min]="1" [max]="form().due_rule === 'fixed_day' ? 31 : 120" [invalid]="!!error('due_value')" [value]="dueValue()" (valueChange)="setDay('due_value', $event)" />
+            <ng-container *ngTemplateOutlet="sheetRowButton; context: { $implicit: 'due_value', label: rowLabel('due_value'), hint: dueLabel() }" />
+            <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'due_value' }" />
           }
-          <small class="due-preview">{{ dueLabel() }}</small>
-        </span>
-      </div>
-      @if (error('due_value'); as e) { <small class="field-error" data-field="due_value">{{ e }}</small> }
+          <ng-container *ngTemplateOutlet="sheetRowButton; context: { $implicit: 'credit_limit', label: rowLabel('credit_limit'), hint: '' }" />
+          <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'credit_limit' }" />
+          <div class="set-row row-stack"><span class="row-k"><span class="row-label">額度共用</span></span><ng-container *ngTemplateOutlet="sharingCtl" /></div>
+          <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'credit_sharing_id' }" />
+          <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'credit_sharing_members' }" />
+          <div class="set-row"><span class="row-k"><span class="row-label">主帳戶</span></span><ng-container *ngTemplateOutlet="masterCtl" /></div>
+          <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'combined_account_id' }" />
+          <div class="set-row"><span class="row-k"><span class="row-label">自動扣繳</span></span><ng-container *ngTemplateOutlet="autopayCtl" /></div>
+        </div>
+      } @else {
+        <div class="rw child">
+          <span class="k">繳款期限</span>
+          <span class="v due-fields">
+            <ng-container *ngTemplateOutlet="dueRuleCtl" />
+            @if (form().due_rule !== '') {
+              <ng-container *ngTemplateOutlet="dueValueCtl" />
+            }
+            <small class="due-preview">{{ dueLabel() }}</small>
+          </span>
+        </div>
+        <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'due_value' }" />
 
-      <div class="rw child">
-        <span class="k">信用額度</span>
-        <app-amount-field class="credit-limit" ariaLabel="信用額度" prefix="$" [invalid]="!!error('credit_limit')" [value]="form().credit_limit" (valueChange)="set('credit_limit', $event)" />
-      </div>
-      @if (error('credit_limit'); as e) { <small class="field-error" data-field="credit_limit">{{ e }}</small> }
+        <div class="rw child">
+          <span class="k">信用額度</span>
+          <ng-container *ngTemplateOutlet="creditLimitCtl" />
+        </div>
+        <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'credit_limit' }" />
 
-      <div class="rw child">
-        <span class="k">額度共用</span>
-        <span class="v sharing-list">
-          @if (sharingCurrent(); as current) {
-            <small class="sharing-current">{{ current }}</small>
-          }
-          @for (other of sharingOptions(); track other.id) {
-            <label class="sharing-option">
-              <input type="checkbox" [attr.data-account-id]="other.id" [checked]="sharing().includes(other.id)" (change)="toggleSharing(other.id, $any($event.target).checked)" />
-              {{ other.name }}{{ other.is_archived ? '（已封存）' : '' }}
-            </label>
-          } @empty {
-            <small>沒有其他信用帳戶</small>
-          }
-        </span>
-      </div>
-      @if (error('credit_sharing_id'); as e) { <small class="field-error" data-field="credit_sharing_id">{{ e }}</small> }
-      @if (error('credit_sharing_members'); as e) { <small class="field-error" data-field="credit_sharing_members">{{ e }}</small> }
+        <div class="rw child">
+          <span class="k">額度共用</span>
+          <ng-container *ngTemplateOutlet="sharingCtl" />
+        </div>
+        <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'credit_sharing_id' }" />
+        <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'credit_sharing_members' }" />
 
-      <div class="rw child">
-        <span class="k">主帳戶</span>
-        <app-picker class="master-select" label="主帳戶" [options]="masterPickerOptions()" [value]="idValue(form().combined_account_id)" (change)="setIdField('combined_account_id', $event)" />
-      </div>
-      @if (error('combined_account_id'); as e) { <small class="field-error" data-field="combined_account_id">{{ e }}</small> }
+        <div class="rw child">
+          <span class="k">主帳戶</span>
+          <ng-container *ngTemplateOutlet="masterCtl" />
+        </div>
+        <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'combined_account_id' }" />
 
-      <div class="rw child">
-        <span class="k">自動扣繳</span>
-        <app-picker class="autopay-select" label="自動扣繳" [options]="autopayPickerOptions()" [value]="idValue(form().auto_pay_account_id)" (change)="setIdField('auto_pay_account_id', $event)" />
-      </div>
+        <div class="rw child">
+          <span class="k">自動扣繳</span>
+          <ng-container *ngTemplateOutlet="autopayCtl" />
+        </div>
+      }
     } @else {
       <p class="card-hint">打開「信用帳戶」才會出現繳款期限、額度與自動扣繳。</p>
     }
@@ -230,28 +260,43 @@
       <app-switch class="fx-toggle" ariaLabel="國外交易手續費" [checked]="form().fx_fee_on" (checkedChange)="set('fx_fee_on', $event)" />
     </div>
     @if (form().fx_fee_on) {
-      <label class="rw child">
-        <span class="k">手續費 %</span>
-        <app-amount-field class="fx-pct" ariaLabel="手續費百分比" suffix="%" [invalid]="!!error('fx_fee_pct')" [value]="form().fx_fee_pct" (valueChange)="set('fx_fee_pct', $event)" />
-      </label>
-      @if (error('fx_fee_pct'); as e) { <small class="field-error" data-field="fx_fee_pct">{{ e }}</small> }
-      <label class="rw child">
-        <span class="k">計算方式</span>
-        <app-picker class="fx-rounding" label="計算方式" [options]="roundingPickerOptions" [value]="form().fx_fee_rounding" (change)="set('fx_fee_rounding', $any($event))" />
-      </label>
-      <div class="rw child">
-        <span class="k">退款時退回手續費</span>
-        <app-switch class="fx-refund-toggle" ariaLabel="退款時退回手續費" [checked]="form().fx_fee_refundable" (checkedChange)="set('fx_fee_refundable', $event)" />
-      </div>
+      @if (phone()) {
+        <div class="set-card">
+          <ng-container *ngTemplateOutlet="sheetRowButton; context: { $implicit: 'fx_fee_pct', label: rowLabel('fx_fee_pct'), hint: '' }" />
+          <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'fx_fee_pct' }" />
+          <div class="set-row"><span class="row-k"><span class="row-label">計算方式</span></span><ng-container *ngTemplateOutlet="fxRoundingCtl" /></div>
+          <div class="set-row"><span class="row-k"><span class="row-label">退款時退回手續費</span></span><ng-container *ngTemplateOutlet="fxRefundCtl" /></div>
+        </div>
+      } @else {
+        <div class="rw child">
+          <span class="k">手續費 %</span>
+          <ng-container *ngTemplateOutlet="fxPctCtl" />
+        </div>
+        <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: 'fx_fee_pct' }" />
+        <div class="rw child">
+          <span class="k">計算方式</span>
+          <ng-container *ngTemplateOutlet="fxRoundingCtl" />
+        </div>
+        <div class="rw child">
+          <span class="k">退款時退回手續費</span>
+          <ng-container *ngTemplateOutlet="fxRefundCtl" />
+        </div>
+      }
     }
   </section>
 
   <section class="sec" id="s-more" aria-labelledby="h-more">
     <h3 id="h-more">其他</h3>
-    <label class="rw note-row">
-      <span class="k">備註</span>
-      <input class="v note-input" [value]="form().note" (input)="set('note', $any($event.target).value)" />
-    </label>
+    @if (phone()) {
+      <div class="set-card">
+        <label class="set-row"><span class="row-k"><span class="row-label">備註</span></span><ng-container *ngTemplateOutlet="noteCtl" /></label>
+      </div>
+    } @else {
+      <label class="rw note-row">
+        <span class="k">備註</span>
+        <ng-container *ngTemplateOutlet="noteCtl" />
+      </label>
+    }
 
     @if (detail()?.settings_locally_edited && detail()?.moze_id) {
       <div class="custom-note">
@@ -261,16 +306,31 @@
     }
 
     @if (accountId() !== null) {
-      <div class="rw">
-        <span class="k">封存帳戶</span>
-        <app-switch class="archive-toggle" ariaLabel="封存帳戶" [checked]="form().is_archived" (checkedChange)="set('is_archived', $event)" />
-      </div>
-      <div class="rw">
-        <button type="button" class="k delete-account" [disabled]="currencyLocked() || loadFailed()" (click)="remove()">{{ confirmDelete() ? '確定刪除？' : '刪除帳戶' }}</button>
-        <span class="v">只能刪除沒有記錄的帳戶</span>
-      </div>
+      @if (phone()) {
+        <div class="set-card">
+          <div class="set-row"><span class="row-k"><span class="row-label">封存帳戶</span></span><ng-container *ngTemplateOutlet="archiveCtl" /></div>
+          <div class="set-row"><span class="row-k"><ng-container *ngTemplateOutlet="deleteCtl" /><small class="row-hint">只能刪除沒有記錄的帳戶</small></span></div>
+        </div>
+      } @else {
+        <div class="rw">
+          <span class="k">封存帳戶</span>
+          <ng-container *ngTemplateOutlet="archiveCtl" />
+        </div>
+        <div class="rw">
+          <ng-container *ngTemplateOutlet="deleteCtl" />
+          <span class="v">只能刪除沒有記錄的帳戶</span>
+        </div>
+      }
     }
   </section>
+
+  @if (phone() && dirtyCount() > 0) {
+    <div class="save-bar">
+      <span>有 {{ dirtyCount() }} 項未儲存</span>
+      <button type="button" class="discard" (click)="discardChanges()">放棄</button>
+      <button type="button" class="save-bar-save" [disabled]="saving() || loading() || loadFailed()" (click)="save()">儲存</button>
+    </div>
+  }
 </section>
 
 @if (ruleSheet(); as open) {
@@ -289,3 +349,110 @@
     />
   }
 }
+
+@if (phone()) {
+  @if (sheetRow(); as row) {
+    <div class="overlay" data-overlay (click)="closeSheet()">
+      <div #rowSheet class="sheet row-sheet" role="dialog" aria-modal="true" [attr.aria-label]="rowLabel(row)" tabindex="-1" (click)="$event.stopPropagation()" (keydown)="onSheetKeydown($event)">
+        <div class="grab"></div>
+        <h3>{{ rowLabel(row) }}</h3>
+        <div class="sheet-control">
+          @switch (row) {
+            @case ('opening_balance') { <ng-container *ngTemplateOutlet="openingCtl" /> }
+            @case ('closing_day') { <ng-container *ngTemplateOutlet="closingCtl" /> <small class="sheet-hint">{{ cycleLabel() }}</small> }
+            @case ('due_value') { <ng-container *ngTemplateOutlet="dueValueCtl" /> <small class="sheet-hint">{{ dueLabel() }}</small> }
+            @case ('credit_limit') { <ng-container *ngTemplateOutlet="creditLimitCtl" /> }
+            @case ('fx_fee_pct') { <ng-container *ngTemplateOutlet="fxPctCtl" /> }
+          }
+        </div>
+        <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: row }" />
+        <button type="button" class="sheet-done" (click)="closeSheet()">完成</button>
+      </div>
+    </div>
+  }
+}
+
+<!-- Controls shared by the desktop rows (≥ 760 px), the phone rows and the phone sheet: one binding each. -->
+<ng-template #nameCtl>
+  <input class="v name-input" [attr.aria-invalid]="error('name') ? 'true' : null" [value]="form().name" (input)="set('name', $any($event.target).value)" />
+</ng-template>
+<ng-template #currencyCtl>
+  <input class="v currency-input" maxlength="8" [attr.aria-invalid]="error('currency') ? 'true' : null" [disabled]="currencyLocked()" [value]="form().currency" (input)="set('currency', $any($event.target).value)" />
+</ng-template>
+<ng-template #groupCtl>
+  <app-picker class="group-select" label="帳戶分組" [options]="groupOptions()" [value]="idValue(form().group_id)" (change)="setIdField('group_id', $event)" />
+</ng-template>
+<ng-template #openingCtl>
+  <app-amount-field class="opening-input" ariaLabel="初始金額" [invalid]="!!error('opening_balance')" [value]="form().opening_balance" (valueChange)="set('opening_balance', $event)" />
+</ng-template>
+<ng-template #closingCtl>
+  <app-stepper class="closing-day" ariaLabel="結帳日" suffix="號" [min]="1" [max]="31" [nullable]="true" nullLabel="月底" decLabel="減一天" incLabel="加一天" [attr.aria-invalid]="error('closing_day') ? 'true' : null" [invalid]="!!error('closing_day')" [value]="closingDay()" (valueChange)="setDay('closing_day', $event)" />
+</ng-template>
+<ng-template #includeCtl>
+  <app-switch class="include-toggle" ariaLabel="納入總餘額" [checked]="form().include_in_total" (checkedChange)="set('include_in_total', $event)" />
+</ng-template>
+<ng-template #cashCtl>
+  <app-switch class="cash-equivalent" ariaLabel="1 點 = 1 元" [checked]="form().cash_equivalent" (checkedChange)="set('cash_equivalent', $event)" />
+</ng-template>
+<ng-template #dueRuleCtl>
+  <app-seg-toggle class="due-rule" ariaLabel="繳款期限" [options]="dueRuleOptions" [value]="form().due_rule || 'none'" (change)="setDueRule($event)" />
+</ng-template>
+<ng-template #dueValueCtl>
+  <app-stepper class="due-value" ariaLabel="繳款日或天數" [suffix]="form().due_rule === 'fixed_day' ? '號' : '天'" [min]="1" [max]="form().due_rule === 'fixed_day' ? 31 : 120" [attr.aria-invalid]="error('due_value') ? 'true' : null" [invalid]="!!error('due_value')" [value]="dueValue()" (valueChange)="setDay('due_value', $event)" />
+</ng-template>
+<ng-template #creditLimitCtl>
+  <app-amount-field class="credit-limit" ariaLabel="信用額度" prefix="$" [invalid]="!!error('credit_limit')" [value]="form().credit_limit" (valueChange)="set('credit_limit', $event)" />
+</ng-template>
+<ng-template #sharingCtl>
+  <span class="v sharing-list">
+    @if (sharingCurrent(); as current) {
+      <small class="sharing-current">{{ current }}</small>
+    }
+    @for (other of sharingOptions(); track other.id) {
+      <label class="sharing-option">
+        <input type="checkbox" [attr.data-account-id]="other.id" [checked]="sharing().includes(other.id)" (change)="toggleSharing(other.id, $any($event.target).checked)" />
+        {{ other.name }}{{ other.is_archived ? '（已封存）' : '' }}
+      </label>
+    } @empty {
+      <small>沒有其他信用帳戶</small>
+    }
+  </span>
+</ng-template>
+<ng-template #masterCtl>
+  <app-picker class="master-select" label="主帳戶" [attr.aria-invalid]="error('combined_account_id') ? 'true' : null" [options]="masterPickerOptions()" [value]="idValue(form().combined_account_id)" (change)="setIdField('combined_account_id', $event)" />
+</ng-template>
+<ng-template #autopayCtl>
+  <app-picker class="autopay-select" label="自動扣繳" [attr.aria-invalid]="error('auto_pay_account_id') ? 'true' : null" [options]="autopayPickerOptions()" [value]="idValue(form().auto_pay_account_id)" (change)="setIdField('auto_pay_account_id', $event)" />
+</ng-template>
+<ng-template #fxPctCtl>
+  <app-amount-field class="fx-pct" ariaLabel="手續費百分比" suffix="%" [invalid]="!!error('fx_fee_pct')" [value]="form().fx_fee_pct" (valueChange)="set('fx_fee_pct', $event)" />
+</ng-template>
+<ng-template #fxRoundingCtl>
+  <app-picker class="fx-rounding" label="計算方式" [options]="roundingPickerOptions" [value]="form().fx_fee_rounding" (change)="set('fx_fee_rounding', $any($event))" />
+</ng-template>
+<ng-template #fxRefundCtl>
+  <app-switch class="fx-refund-toggle" ariaLabel="退款時退回手續費" [checked]="form().fx_fee_refundable" (checkedChange)="set('fx_fee_refundable', $event)" />
+</ng-template>
+<ng-template #noteCtl>
+  <input class="v note-input" [value]="form().note" (input)="set('note', $any($event.target).value)" />
+</ng-template>
+<ng-template #archiveCtl>
+  <app-switch class="archive-toggle" ariaLabel="封存帳戶" [checked]="form().is_archived" (checkedChange)="set('is_archived', $event)" />
+</ng-template>
+<ng-template #deleteCtl>
+  <button type="button" class="k delete-account" [disabled]="currencyLocked() || loadFailed()" (click)="remove()">{{ confirmDelete() ? '確定刪除？' : '刪除帳戶' }}</button>
+</ng-template>
+<ng-template #fieldError let-field>
+  @if (error(field); as e) { <small class="field-error" [attr.data-field]="field">{{ e }}</small> }
+</ng-template>
+<!-- Phone: a stepper / amount row; tapping it opens the control in the page's bottom sheet. -->
+<ng-template #sheetRowButton let-row let-label="label" let-hint="hint">
+  <button type="button" [class]="'set-row row-' + row" [attr.aria-invalid]="error(row) ? 'true' : null" (click)="openSheet(row)">
+    <span class="row-k">
+      <span class="row-label">{{ label }}</span>
+      @if (hint) { <small class="row-hint">{{ hint }}</small> }
+    </span>
+    <span class="row-v">{{ rowValue(row) }}</span>
+    <svg class="chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6" /></svg>
+  </button>
+</ng-template>
