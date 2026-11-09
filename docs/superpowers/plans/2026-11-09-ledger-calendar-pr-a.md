@@ -138,6 +138,10 @@ it('stepDay crosses the month edge', () => {
 it('follows Back to a URL without day', async () => {
   // select 10/21, then router.navigateByUrl('/accounting?month=2026-10') → no .sel cell, .day-entries gone, view still 日曆 (stored 'calendar' set up by test)
 });
+it('a day link does not overwrite a stored 清單: the list returns when day leaves the URL', async () => {
+  // localStorage VIEW_KEY 'list'; open '/accounting?month=2026-10&day=2026-10-21' → 日曆 shown, VIEW_KEY still 'list'
+  // navigateByUrl('/accounting?month=2026-10') → 清單 radio checked, list request flushed
+});
 it('清單 removes day and stores 清單', () => {
   // select 10/21, click viewButton(el, '清單') → url '/accounting?month=2026-10', localStorage VIEW_KEY === 'list', list request flushed
 });
@@ -159,7 +163,7 @@ it('近 7 天 writes month and day and stores 日曆', () => {
 - Modify: `components/accounting/timeline/timeline.ts:1285-1296` (`open(row)`)
 - Modify: `components/accounting/accounting-layout/accounting-layout.ts:305-312` (`navigateClose`), `:364-387` (`moveSelection`)
 - Modify: `components/accounting/entry-detail/entry-detail.ts:424-430` (`parentUrl`), `:535`, `:605` (edit), `:659` (repost next entry)
-- Modify: `components/accounting/entry-form/entry-form.ts:738-748` (query subscription), `:831-861` (`start`), `:2116-2124` (`reloadAfterSave`), `:2412-2419` (`leave`)
+- Modify: `components/accounting/entry-form/entry-form.ts:738-748` (query subscription), `:831-861` (`start`), `:2072` (post-split-save navigation), `:2105-2113` (`leaveToGroup`), `:2116-2124` (`reloadAfterSave`), `:2412-2419` (`leave`)
 - Test: `timeline.spec.ts`, `accounting-layout.spec.ts`, `entry-detail.spec.ts`, `entry-form.spec.ts`
 
 **Interfaces:**
@@ -174,12 +178,13 @@ Sites:
 5. Entry detail edit navigations (lines 535, 605) and the repost `replaceUrl` navigation (659): add `queryParamsHandling: 'preserve'`.
 6. Entry form: `start()` gains a sixth parameter `dateParam: string | null = null`; when `id === null && dateParam !== null && DAY_RE.test(dateParam)` call `this.setParentDate('entryDate', dateParam)` after `resetFields(...)` and then reset `dateTouched` to false is NOT required (a prefilled date counts as chosen). The subscription at 742 passes `query.get('date')`.
 7. Entry form `leave()` fallback and `reloadAfterSave()` fallback: `navigate(['/accounting'], { queryParams: calendarParams(this.route.snapshot.queryParamMap) })`.
+8. Entry form after a successful split save: the `navigateByUrl` onto the new entry (~line 2072, `replaceUrl`, `closeTo: 'list'`) becomes `navigate(['/accounting/entries', id], { replaceUrl: true, queryParamsHandling: 'preserve', state })`, and `leaveToGroup()`'s `navigate(groupCommands(...))` (~2112) gains `queryParamsHandling: 'preserve'` — with `closeTo` the detail's ✕ goes to `parentUrl()`, which must still see `month` / `day` (spec: "saving … restores the selection").
 
 - [ ] **Step 1: Write the failing tests**
   - `timeline.spec.ts`: `it('opens a row from the calendar with month and day in the query')` — select 10/21, click the first `.entry-row`, expect `navigate` called with `(['/accounting/entries', 1], { queryParams: { month: '2026-10', day: '2026-10-21' } })`; and `it('opens a row from the list without the query')` keeps the existing expectation.
   - `accounting-layout.spec.ts` (use `start('panes', '/accounting/entries/5?month=2026-10&day=2026-10-21', 1440)`): `it('✕ returns to the calendar day')` → after `close()` the router URL is `/accounting?month=2026-10&day=2026-10-21`; `it('↓ keeps month and day')` — after a `moveSelection` the URL still carries both.
   - `entry-detail.spec.ts`: `it('closes to the selected calendar day with no history')` — route query `month=2026-10&day=2026-10-21`, `lastSuccessfulNavigation` without `previousNavigation`, `close()` → `navigateByUrl('/accounting?month=2026-10&day=2026-10-21')`; `it('keeps the query on 編輯')` → `navigate(['/accounting/entries', id, 'edit'], { queryParamsHandling: 'preserve' })`.
-  - `entry-form.spec.ts`: `it('prefills the date from ?date=')` — open `/accounting/entry?date=2026-10-21&month=2026-10&day=2026-10-21`, expect the date input value `2026-10-21`; `it('cancel with no history returns to the calendar day')` → `navigate(['/accounting'], { queryParams: { month: '2026-10', day: '2026-10-21' } })`; `it('ignores a malformed date')` → today's date stays.
+  - `entry-form.spec.ts`: `it('prefills the date from ?date=')` — open `/accounting/entry?date=2026-10-21&month=2026-10&day=2026-10-21`, expect the date input value `2026-10-21`; `it('cancel with no history returns to the calendar day')` → `navigate(['/accounting'], { queryParams: { month: '2026-10', day: '2026-10-21' } })`; `it('ignores a malformed date')` → today's date stays; `it('keeps the query on the entry opened after a split save')` → the post-save navigation carries `queryParamsHandling: 'preserve'` (extend the existing split-save test near line 1218).
 - [ ] **Step 2: Run to verify failure** — the four spec files → the new tests FAIL.
 - [ ] **Step 3: Implement** the seven sites.
 - [ ] **Step 4: Run to verify pass** — `npx ng test --watch=false --include='**/{timeline,accounting-layout,entry-detail,entry-form}*.spec.ts'` → PASS.
@@ -288,7 +293,7 @@ it('drops a late answer for a month no longer shown', () => { /* set '2026-10', 
   - `readonly weekOf = input<string | null>(null)` — week mode: only the row containing that date renders, and no dots.
   - Cell view fields replacing `expenseText` / `incomeText`: `net: string | null` (wideNet / compactNet; `'—'` for a quiet past day in wide; `null` for quiet narrow and for future), `heat: number`, `dots: string[]` (≤ 3), `more: number`, `bill: 'due' | 'paid' | null`, `invoices: number`, `future: boolean`, `label` from `cellAriaLabel`, `tabIndex: 0 | -1`.
   - Roving focus: `private readonly focusDate = signal<string | null>(null)`; the cell with `tabindex="0"` is `focusDate() ?? selected() ?? (today in month ? today : `${month}-01`)`. `onGridKeydown(event: KeyboardEvent)` bound as `(keydown)` on `.cal`: ArrowLeft/Right ±1, ArrowUp/Down ±7 (clamped inside the month), Home / End → first / last day of the month; moves `focusDate`, focuses the matching `button.cell[data-date]`, `preventDefault()`. Enter / Space are the button's native click.
-  - Template per cell, top to bottom: `.d` date (today keeps the disc: `.today .d` gets `--app-primary` background, white text), `.net` (`[class.neg]` when expense net < 0, `.pos` when > 0, `.quiet` for `—`), `.dots` (`aria-hidden`, `span.dot[style.background]` ×≤3 + `.more` `+N`), `.heat` (`aria-hidden`, `[style.width.%]="cell.heat * 100"`, only when `heat > 0`), marks: `.bill-mark` text `帳單` / `已繳` (wide) or `.bill-dot` (compact); `.inv-mark` text `發票待對帳` (wide) or `.inv-dot` (compact). Remove the `.due-badge` / `pi-credit-card` badge. `.closing` keeps the top rule. `[class.future]` dims. `[attr.tabindex]`.
+  - Template per cell, top to bottom: `.d` date (today keeps the disc: `.today .d` gets `--app-primary` background, white text; `[class.weekend]` on Saturday / Sunday cells → `.weekend .d { color: var(--app-text-muted) }`), `.net` (`[class.neg]` when expense net < 0, `.pos` when > 0, `.quiet` for `—`), `.dots` (`aria-hidden`, `span.dot[style.background]` ×≤3 + `.more` `+N`), `.heat` (`aria-hidden`, `[style.width.%]="cell.heat * 100"`, only when `heat > 0`), marks: `.bill-mark` text `帳單` / `已繳` (wide) or `.bill-dot` (compact); `.inv-mark` text `發票待對帳` (wide) or `.inv-dot` (compact). Remove the `.due-badge` / `pi-credit-card` badge. `.closing` keeps the top rule. `[class.future]` dims. `[attr.tabindex]`.
   - Legend: `@if (!compact() && !weekOf())` a `.legend` under the grid: 「▬ 支出比例 · ● 類別 · 帳單 到期」 drawn with spans (heat swatch, dot swatch, text), `aria-hidden="true"` with an `sr-only` sentence 「色條為當日支出比例，圓點為類別，帳單為繳費到期」.
   - SCSS: `.heat` absolute bottom, height 4px (3px when `:host-context` compact → use a `.compact` class on `.cal`), `background: color-mix(in srgb, var(--tone-neg, var(--c-red)) 35%, transparent)`; `.dot` 6px circle; `.inv-mark`, `.inv-dot` colour `var(--app-warning)`; `.bill-dot` `var(--app-text-muted)`; `.future { opacity: .45 }`; `.week-mode .cell { min-height: 52px }`; wide cells `min-height: 76px` when not compact.
 
@@ -316,6 +321,8 @@ it('marks invoice days and ends the accessible name with 發票待對帳')
 it('hides the bar and dots from assistive technology') // aria-hidden on .heat, .dots
 it('is one tab stop: the selected day (else today, else the 1st) has tabindex 0 and arrows move the focus')
    // selected 10/21 → tabindex 0 only there; dispatch ArrowDown on .cal with 10/21 focused → focus on 10/28, tabindex moved; ArrowRight from 10/31 stays 10/31; Home → 10/01; End → 10/31
+   // then with focus on 10/28, `.click()` on the focused button (Enter / Space are the native button activation, not preventDefault'ed) → daySelected emits '2026-10-28'
+it('mutes weekend day numbers') // Saturday / Sunday cells have class weekend on .d (D4: weekend numbers muted)
 it('shows the legend only on wide month mode')
 ```
 
@@ -339,7 +346,7 @@ it('shows the legend only on wide month mode')
   - `private readonly categoryColors = signal<ReadonlyMap<number, string>>(new Map())` — set in `ensureOptions()` from the raw roots (`categoryColorMap([...expense, ...income])`) beside `categoryOptions`. An effect calls `ensureOptions()` when `view() === 'calendar'` (its `optionsRequested` flag already stops repeat reads — keep it).
   - `readonly calendarDots = computed<ReadonlyMap<string, readonly string[]>>()` — `data().dots` mapped through `categoryColors` (`FALLBACK_COLOR` for an unknown key).
   - `readonly invoiceDays = computed(() => this.calendarData.data().invoiceDays)`.
-  - `readonly billing` now keeps closing events and every due event whose statement is resolved (`this.bills.bill(event) !== null`), not only open ones; `readonly paidDays = computed<ReadonlySet<string>>()` — due dates where every due event that day has `bill.statement > 0 && bill.remaining <= 0`. A due event with an unresolved statement is still left out (as today). `billLines` is unchanged (open bills only).
+  - One predicate for the grid: `private markedBill(event): BillState | null` — `bill(event)` when `bill !== null && bill.statement > 0`, else null (a zero or refund-heavy statement, or an unresolved one, stays unmarked as today — `bill()` does return a `BillState` for a resolved zero statement, so `!== null` alone is NOT enough). `readonly billing` keeps closing events and the due events with `markedBill(event) !== null` (open or fully paid). `readonly paidDays = computed<ReadonlySet<string>>()` — the dates whose set of marked due events is non-empty and every member has `remaining <= 0`. One open card beside a paid one → not in `paidDays` → 帳單. `billLines` is unchanged (open bills only, `openBill`).
   - Template: `<app-calendar-month … [dots]="calendarDots()" [invoiceDays]="invoiceDays()" [paidDays]="paidDays()" [compact]="layoutMode.mode() !== 'panes'" />` (expose `layoutMode` as `protected`, or add `readonly compactCells = computed(...)`). `weekOf` stays unbound (PR C).
   - Test seam: `render()` in `timeline.spec.ts` provides a fake `CalendarDataService` by default — `{ month: signal(null), data: signal(EMPTY_CALENDAR_DATA) }` typed loosely via `useValue` — so the existing calendar tests see no extra HTTP; tests of this task set the fake's `data` signal.
 
