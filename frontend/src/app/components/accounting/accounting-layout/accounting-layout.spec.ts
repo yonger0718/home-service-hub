@@ -89,7 +89,11 @@ describe('AccountingLayoutComponent', () => {
       localStorage.setItem('hh.accounting.timelineView', 'calendar');
       const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
       await find(harness, '.dbody--calendar');
-      await find(harness, '.list-pane app-calendar-grid, .list-pane .cal-grid, .list-pane .monthbar');
+      await find(harness, '.list-pane button.cell[data-date="2026-10-21"]');
+      // Answer the day / daily reads so a row, had one been rendered, would be in the DOM before the assertions.
+      const http = TestBed.inject(HttpTestingController);
+      http.match(r => r.url === '/api/accounting/entries').forEach(req => req.flush({ items: [], total: 0, limit: 50, offset: 0 }));
+      harness.detectChanges();
       const root = harness.routeNativeElement!;
       expect(root.querySelector('.list-pane .day-entries')).toBeNull();
       expect(root.querySelector('.list-pane [data-entry-id]')).toBeNull();
