@@ -206,7 +206,7 @@ const DRILL_DOWN: [string, string][] = [
   ['/accounting/reminders', '提醒中心'],
   ['/accounting/reports/custom/new', '新報表'],
   ['/accounting/reports/custom/1', '自訂報表'],
-  ['/accounting/reward-rules', '回饋規則總覽'],
+  ['/accounting/reward-rules', '回饋規則'],
 ];
 
 async function open(url: string, finalUrl = url): Promise<HTMLElement> {
