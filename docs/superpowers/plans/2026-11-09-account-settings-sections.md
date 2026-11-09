@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Section order and titles verbatim: 基本 · 外觀 · 信用卡 · 回饋規則 · 國外交易 · 其他. Chip for 回饋規則 shows the rule count in parentheses, e.g. `回饋規則 (3)`.
-- Breakpoint is `760px`: `≥ 760` sticky chips + header 儲存 button with `有 N 項未儲存`; `< 760` grouped rows, controls open in a bottom sheet, bottom bar `放棄` / `儲存` replaces the floating 記一筆 button while the form is dirty.
+- Breakpoint is `760px` via `LayoutModeService.mode()` (`'phone'` below 760; tests force it with `layoutMode.set('phone')`): `≥ 760` sticky chips + header 儲存 button with `有 N 項未儲存`; `< 760` grouped rows, controls open in a bottom sheet, bottom bar `放棄` / `儲存` shown above the phone tab bar while the form is dirty (the floating 記一筆 does not exist on phone; no shell change).
 - Steppers read `− <value> ＋`; closing-day suffix `號`, due-days suffix `天`; closing day clamps 1–28; due days clamps 1–60; fixed due day clamps 1–28. Button labels `減一` / `加一` (aria), artboard copy `減一天` / `加一天` for day steppers.
 - Due rule three-way copy: `未設定` · `結帳後` · `每月固定日`. `未設定` saves `due_rule: null`; previews use the spec's wording, e.g. `09/16 – 10/15 → 11/04`.
 - Cycle preview copy: `本期 10/27–11/26`（see spec scenario "Closing day stepper"）.
@@ -71,9 +71,9 @@
 **Interfaces:**
 - Produces: `PickerComponent` selector `app-picker`; `PickerOption { value: string; label: string; hint?: string; disabled?: boolean }`; inputs `options: PickerOption[]`, `value: string`, `label: string` (required; sheet title and aria-label), `disabled: boolean`, `hint: string`; output `change: string`. Trigger `<button aria-haspopup="listbox" [attr.aria-expanded]>` shows the selected label + inline-SVG chevron; open state renders `[role=listbox]` with `[role=option][aria-selected]`; `< 760` wraps the list in `.overlay > .sheet[role=dialog][aria-modal=true]`.
 
-- [ ] **Step 1: Write the failing test**: `shows the selected option label`; `choosing an option emits change and closes`; `Escape closes without emitting`; `overlay tap on phone closes, keeps value, returns focus to trigger` (set `window.innerWidth` 390 + `matchMedia` stub as account-picker.spec does); `disabled option is not selectable`.
+- [ ] **Step 1: Write the failing test**: `shows the selected option label`; `choosing an option emits change and closes`; `Escape closes without emitting`; `overlay tap on phone closes, keeps value, returns focus to trigger` (force `TestBed.inject(LayoutModeService).set('phone')`); `disabled option is not selectable`.
 - [ ] **Step 2: Run** `--include='**/ui/picker/*.spec.ts'` → FAIL.
-- [ ] **Step 3: Implement** per Interfaces; reuse the account-picker's `phone()` media-query signal approach (do not import AccountPickerComponent).
+- [ ] **Step 3: Implement** per Interfaces; `phone = computed(() => inject(LayoutModeService).mode() === 'phone')` as account-picker does (do not import AccountPickerComponent).
 - [ ] **Step 4: Run** → PASS.
 - [ ] **Step 5: Commit** `feat(ui): add app-picker control`.
 
@@ -99,7 +99,7 @@
 - Modify: `account-settings.html` (wrap existing rows into `<section id="s-basic" aria-labelledby="h-basic">` … six sections; 外觀 and 回饋規則 blocks move unchanged inside their sections), `account-settings.ts`, `account-settings.scss`, `account-settings.spec.ts`
 
 **Interfaces:**
-- Produces: `SECTIONS: readonly { id: 'basic'|'look'|'card'|'reward'|'fx'|'more'; title: string }[]`; signals `activeSection`, `invalidSections: Set<id>`, `dirtyCount: number` (count of `AccountForm` keys differing from the loaded form); method `jumpTo(id)` (`scrollIntoView({block:'start'})` + sets active). Chips: `<nav class="sec-chips" aria-label="設定區塊">` with `<button [attr.aria-current]="active ? 'true' : null" [class.invalid]>`. Header: `.save` button + `<span class="dirty-count">有 N 項未儲存</span>` when `dirtyCount() > 0`. Scroll-spy via one `IntersectionObserver` on the six sections (guard `typeof IntersectionObserver === 'undefined'` in tests).
+- Produces: `SECTIONS: readonly { id: 'basic'|'look'|'card'|'reward'|'fx'|'more'; title: string }[]`; signals `activeSection`, `invalidSections: Set<id>`, `dirtyCount: number` (count of `AccountForm` keys where `form()` differs from `baseline()`, plus 1 when `sharing()` differs from `sharingBaseline()`); method `jumpTo(id)` (`scrollIntoView({block:'start'})` + sets active). Chips: `<nav class="sec-chips" aria-label="設定區塊">` with `<button [attr.aria-current]="active ? 'true' : null" [class.invalid]>`. Header: `.save` button + `<span class="dirty-count">有 N 項未儲存</span>` when `dirtyCount() > 0`. Scroll-spy via one `IntersectionObserver` on the six sections (guard `typeof IntersectionObserver === 'undefined'` in tests).
 
 - [ ] **Step 1: Write the failing tests**: `renders six section headings in order`; `回饋規則 chip shows the rule count`; `clicking a chip marks it current`; `editing the name shows 有 1 項未儲存 and two edits show 有 2 項未儲存`; `successful save clears the count`.
 - [ ] **Step 2: Run** → FAIL.
@@ -114,7 +114,7 @@
 
 **Interfaces:**
 - Consumes Tasks 1–3 components.
-- Produces: `AccountForm.dueMode: 'none' | 'after' | 'fixed'` derived in `formFrom` (`due_rule === null` → `none`); `formToInput` maps `none` → `due_rule: null`. Closing day → `<app-stepper class="closing-day" suffix="號" [min]="1" [max]="28" decLabel="減一天" incLabel="加一天">` + `<small class="cycle-preview">`. Due: `<app-seg-toggle class="due-rule">` options `none/after/fixed` → labels `未設定/結帳後/每月固定日`; `<app-stepper class="due-value">` suffix `天` (after, 1–60) or `號` (fixed, 1–28), hidden for `none`; `<small class="due-preview">`. 信用額度 → `<app-amount-field class="credit-limit" prefix="$">`. 額度共用 / 主帳戶 / 自動扣繳 → `app-picker` with classes `.sharing-select`, `.master-select`, `.autopay-select` (existing `.sharing-option` tests rewritten to picker options). When 信用帳戶 is off render `<p class="card-hint">打開「信用帳戶」才會出現結帳日、繳款期限、額度與自動扣繳。</p>`; the form keeps the card fields in memory.
+- Consumes existing `AccountForm.due_rule: DueRule | ''` (`''` = 未設定, already saved as `due_rule: null` by `formToInput`); no new form field. Seg-toggle option values `none` / `days_after_closing` / `fixed_day`, `none` ↔ `''`. Closing day → `<app-stepper class="closing-day" suffix="號" [min]="1" [max]="28" decLabel="減一天" incLabel="加一天">` + `<small class="cycle-preview">`. Due: `<app-seg-toggle class="due-rule">` options `none/after/fixed` → labels `未設定/結帳後/每月固定日`; `<app-stepper class="due-value">` suffix `天` (after, 1–60) or `號` (fixed, 1–28), hidden for `none`; `<small class="due-preview">`. 信用額度 → `<app-amount-field class="credit-limit" prefix="$">`. 額度共用 / 主帳戶 / 自動扣繳 → `app-picker` with classes `.sharing-select`, `.master-select`, `.autopay-select` (existing `.sharing-option` tests rewritten to picker options). When 信用帳戶 is off render `<p class="card-hint">打開「信用帳戶」才會出現結帳日、繳款期限、額度與自動扣繳。</p>`; the form keeps the card fields in memory.
 
 - [ ] **Step 1: Write / rewrite failing tests**: spec scenario `closing day 25 → 加一 → 26 號, cycle preview 本期 10/27–11/26` (fixed clock as existing tests do); `due preview 結帳後 20 天 shows 09/16 – 10/15 → 11/04`; `未設定 saves due_rule null`; `switching 信用帳戶 off then on restores closing day and due rule`; `bank account keeps 帳單週期 copy`; existing `.closing-day`/`.due-value` tests rewired to `valueChange`.
 - [ ] **Step 2: Run** → FAIL.
@@ -128,9 +128,9 @@
 - Modify: `account-settings.html`, `account-settings.scss`, `account-settings.spec.ts`
 
 **Interfaces:**
-- 國外交易 header carries the fee `app-switch` (`.fx-toggle`); rows: 費率 `<app-amount-field class="fx-pct" suffix="%" [decimals]="2">`, 計算方式 `app-seg-toggle` `另記一筆手續費 / 併入金額`, 退款時退回 `app-switch` (`.fx-refund-toggle`). Field names come from the existing `AccountForm` fx fields; no new fields. 其他 keeps the existing 還原 MOZE 設定 (`.reset-flag`) and 封存/刪除 (`.delete-account`) buttons side by side under an `其他` heading.
+- 國外交易 header carries the fee `app-switch` bound to `fx_fee_on` (`.fx-toggle`); rows: 費率 `<app-amount-field class="fx-pct" suffix="%" [decimals]="2">` bound to `fx_fee_pct`, 計算方式 `<app-picker class="fx-rounding">` with the existing `roundingOptions` (RoundingMode keep/round/floor/ceil — the artboard's 另記一筆/併入 copy does not match the data model and is NOT used), 退款時退回 `app-switch` bound to `fx_fee_refundable` (`.fx-refund-toggle`). 其他: 備註 `<textarea class="note">` bound to `note`, 還原 MOZE 設定 (`.reset-flag`, only when the flag is set), 封存帳戶 `app-switch` bound to `is_archived` (`.archive-toggle`), 刪除帳戶 danger-outline button (`.delete-account`, disabled with entries) — all existing fields, re-grouped.
 
-- [ ] **Step 1: Write failing tests**: `fx rows hidden until the fee switch is on`; `fee percent typed as 1.5 saves 1.5`; `其他 section holds reset and delete buttons`.
+- [ ] **Step 1: Write failing tests**: `fx rows hidden until the fee switch is on`; `fee percent typed as 1.5 saves fx_fee_pct '1.5'`; `計算方式 picker lists the four rounding modes and saves the chosen one`; `其他 section holds 備註, 封存 switch and 刪除 button`.
 - [ ] **Step 2: Run** → FAIL.
 - [ ] **Step 3: Implement**.
 - [ ] **Step 4: Run** → PASS.
@@ -140,10 +140,9 @@
 
 **Files:**
 - Modify: `account-settings.html`, `account-settings.scss`, `account-settings.ts`, `account-settings.spec.ts`
-- Modify: `frontend/src/app/components/shell/shell.ts` only if `showFab` does not already hide while `DirtyFormRegistry` has a dirty form — check first; if it does, no change.
 
 **Interfaces:**
-- `< 760`: each section renders as a card of rows (`.row` label / hint / value / chevron); a row tap opens that control's sheet (stepper/picker/amount-field already sheet-capable via their own `< 760` branches; the row renders the component in a `.sheet` on tap). Bottom `.save-bar` appears when `dirtyCount() > 0`: `<span>有 N 項未儲存</span><button class="discard">放棄</button><button class="save">儲存</button>`; 放棄 resets the form to the loaded account via existing reset logic and clears the count.
+- `< 760` (`phone = computed(() => layoutMode.mode() === 'phone')`, inject `LayoutModeService` as account-picker does): each section renders as a card of rows (`.row` label / hint / value / chevron); switches stay inline in the row; a row tap opens that control (stepper / picker / amount-field) inside a `.sheet[role=dialog]` with a 完成 button. Bottom `.save-bar` appears when `dirtyCount() > 0`: `<span>有 N 項未儲存</span><button class="discard">放棄</button><button class="save">儲存</button>`; 放棄 sets `form` back to `baseline()` and `sharing` back to `sharingBaseline()` (the existing `isDirty()` basis), so the count returns to 0 without the DirtyFormRegistry prompt.
 - `save()` with `localErrors` non-empty: compute `firstInvalidSection`, call `jumpTo(it)`, add it to `invalidSections`, and focus the first `[aria-invalid=true]` element.
 
 - [ ] **Step 1: Write failing tests**: `phone width shows the 放棄/儲存 bar only when dirty`; `放棄 restores loaded values and hides the bar`; `save with invalid 信用額度 while scrolled elsewhere jumps to 信用卡 and marks its chip invalid` (spy on `scrollIntoView`); `bar hides after a save whose response trims the name`.
