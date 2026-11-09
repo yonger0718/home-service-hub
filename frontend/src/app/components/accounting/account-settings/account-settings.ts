@@ -197,6 +197,18 @@ function sameMembers(a: readonly number[], b: readonly number[]): boolean {
   return a.length === b.length && a.every(id => b.includes(id));
 }
 
+/** The page's titled sections, in order; the sticky chips jump to them (C1 Task 5). */
+export type SectionId = 'basic' | 'look' | 'card' | 'reward' | 'fx' | 'more';
+
+export const SECTIONS: readonly { id: SectionId; title: string }[] = [
+  { id: 'basic', title: '基本' },
+  { id: 'look', title: '外觀' },
+  { id: 'card', title: '信用卡' },
+  { id: 'reward', title: '回饋規則' },
+  { id: 'fx', title: '國外交易' },
+  { id: 'more', title: '其他' },
+];
+
 interface LoadedAccount {
   loadId: number;
   id: number | null;
@@ -388,6 +400,28 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   readonly postingSummary = postingSummary;
   readonly periodText = periodText;
   readonly ruleStateLabels = RULE_STATE_LABELS;
+
+  protected readonly SECTIONS = SECTIONS;
+  /** The chip marked current: the last one tapped, or the topmost section the scroll-spy sees. */
+  readonly activeSection = signal<SectionId>('basic');
+  /** Sections whose chip is marked invalid (set by the save path, Task 8). */
+  readonly invalidSections = signal<Set<SectionId>>(new Set());
+  /** 有 N 項未儲存: changed form fields, plus one for 額度共用 and one for an open rule sheet with input; 0 when clean. */
+  readonly dirtyCount = computed(() => {
+    if (!this.isDirty()) {
+      return 0;
+    }
+    const form = this.form();
+    const baseline = this.baseline();
+    const changed = (Object.keys(form) as (keyof AccountForm)[]).filter(key => form[key] !== baseline[key]).length;
+    const sharing = sameMembers(this.sharing(), this.sharingBaseline()) ? 0 : 1;
+    const sheet = this.ruleSheet() !== null && (this.ruleSheetRef()?.isDirty() ?? false) ? 1 : 0;
+    return changed + sharing + sheet;
+  });
+
+  constructor() {
+    afterNextRender(() => this.watchSections(), { injector: this.injector });
+  }
 
   ngOnInit(): void {
     this.dirty.register(this);
@@ -604,6 +638,48 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     }
     event.preventDefault();
     this.dirty.cancelDiscard();
+  }
+
+  /** A chip: scrolls its section into view and marks it current at once (the scroll-spy agrees once it settles). */
+  jumpTo(id: SectionId): void {
+    this.activeSection.set(id);
+    this.host.nativeElement.querySelector<HTMLElement>(`#s-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  /**
+   * Scroll-spy: one observer over the six sections; the current chip is the topmost section in the upper band of the
+   * viewport. A callback reports only the sections that changed, so the visible set is kept across callbacks and
+   * the topmost is the first visible one in page order (the sections stack, so that is the smallest top).
+   */
+  private watchSections(): void {
+    if (typeof IntersectionObserver === 'undefined') {
+      return;
+    }
+    const visible = new Set<SectionId>();
+    const observer = new IntersectionObserver(
+      entries => {
+        for (const entry of entries) {
+          const id = entry.target.id.slice(2) as SectionId;
+          if (entry.isIntersecting) {
+            visible.add(id);
+          } else {
+            visible.delete(id);
+          }
+        }
+        const top = SECTIONS.find(section => visible.has(section.id));
+        if (top) {
+          this.activeSection.set(top.id);
+        }
+      },
+      { rootMargin: '0px 0px -60% 0px' },
+    );
+    for (const section of SECTIONS) {
+      const element = this.host.nativeElement.querySelector(`#s-${section.id}`);
+      if (element) {
+        observer.observe(element);
+      }
+    }
+    this.destroyRef.onDestroy(() => observer.disconnect());
   }
 
   set<K extends keyof AccountForm>(key: K, value: AccountForm[K]): void {

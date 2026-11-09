@@ -2,8 +2,18 @@
   <header class="topbar">
     <a class="ib" [routerLink]="accountId() === null ? '/accounting/accounts' : ['/accounting/accounts', accountId()]" aria-label="取消">✕</a>
     <h1>{{ accountId() === null ? '新增帳戶' : '帳戶資訊' }}</h1>
-    <button type="button" class="ib ok save" aria-label="儲存" [disabled]="saving() || loading() || loadFailed()" (click)="save()">✓</button>
+    <span class="topbar-end">
+      @if (dirtyCount() > 0) {
+        <span class="dirty-count">有 {{ dirtyCount() }} 項未儲存</span>
+      }
+      <button type="button" class="ib ok save" aria-label="儲存" [disabled]="saving() || loading() || loadFailed()" (click)="save()">✓</button>
+    </span>
   </header>
+  <nav class="sec-chips" aria-label="設定區塊">
+    @for (s of SECTIONS; track s.id) {
+      <button type="button" [attr.aria-current]="activeSection() === s.id ? 'true' : null" [class.invalid]="invalidSections().has(s.id)" (click)="jumpTo(s.id)">{{ s.id === 'reward' ? s.title + ' (' + rules().length + ')' : s.title }}</button>
+    }
+  </nav>
   @if (dirty.promptOpen() && !sheetHoldsPrompt()) {
     <div class="discard-strip" role="alertdialog" aria-label="放棄未儲存的內容？">
       <span>放棄未儲存的內容？</span>
@@ -25,245 +35,263 @@
     <small>{{ form().name || '新帳戶' }}{{ form().note ? ' · 備註：' + form().note : '' }}</small>
   </div>
 
-  @if (detail()?.settings_locally_edited && detail()?.moze_id) {
-    <div class="custom-note">
-      <span>已自訂，匯入不再覆寫</span>
-      <button type="button" class="reset-flag" (click)="resetFlag()">還原 MOZE 設定</button>
-    </div>
-  }
   @if (message()) {
     <p class="form-message" role="alert">{{ message() }}</p>
   }
 
-  <label class="rw">
-    <span class="k">名稱</span>
-    <input class="v name-input" [value]="form().name" (input)="set('name', $any($event.target).value)" />
-  </label>
-  @if (error('name'); as e) { <small class="field-error" data-field="name">{{ e }}</small> }
-
-  <label class="rw">
-    <span class="k">主幣種</span>
-    <input class="v currency-input" maxlength="8" [disabled]="currencyLocked()" [value]="form().currency" (input)="set('currency', $any($event.target).value)" />
-  </label>
-  @if (currencyLocked()) { <small class="currency-note">已有記錄，無法變更幣種</small> }
-  @if (error('currency'); as e) { <small class="field-error" data-field="currency">{{ e }}</small> }
-
-  <label class="rw">
-    <span class="k">帳戶分組</span>
-    <select class="v group-select" (change)="setIdField('group_id', $any($event.target).value)">
-      <option value="" [selected]="form().group_id === null">未分組</option>
-      @for (group of groups(); track group.id) {
-        <option [value]="group.id" [selected]="group.id === form().group_id">{{ group.name }}</option>
-      }
-    </select>
-  </label>
-
-  <div class="rw logo-block">
-    <span class="k">Logo</span>
-    <span class="v">
-      <span class="logo-state"><app-account-icon class="ico-sm" [accountId]="loadedId()" [logoHash]="logoHash()" [logo]="form().logo" [icon]="form().icon" fallback="folder" /> {{ logoState() }}</span>
-      <span class="logo-actions">
-        <input #logoFile type="file" class="visually-hidden" tabindex="-1" aria-hidden="true" [accept]="LOGO_ACCEPT" (change)="uploadLogo($event)" />
-        <button type="button" class="logo-upload" [disabled]="accountId() === null || loadedId() === null || uploadingLogo()" [attr.aria-busy]="uploadingLogo() || null" (click)="logoFile.click()">上傳圖片</button>
-        @if (logoHash()) {
-          <button type="button" class="logo-remove" [disabled]="uploadingLogo()" (click)="removeLogo()">移除圖片</button>
-        }
-        <button type="button" class="logo-pick" [attr.aria-expanded]="logoPickerOpen()" (click)="logoPickerOpen.set(!logoPickerOpen())">選擇內建 logo</button>
-      </span>
-      <small class="logo-hint">{{ accountId() === null ? '先建立帳戶，再上傳 logo' : '上傳的圖片優先於內建 logo，上傳後立即生效' }}</small>
-    </span>
-  </div>
-  @if (logoPickerOpen()) {
-    <div class="logo-grid" role="group" aria-label="品牌 logo">
-      <button type="button" class="logo-opt" [attr.aria-pressed]="form().logo === null" (click)="pickLogo(null)">無</button>
-      @for (l of logos; track l.slug) {
-        <button type="button" class="logo-opt" [attr.aria-pressed]="form().logo === l.slug" [attr.aria-label]="l.label" (click)="pickLogo(l.slug)">
-          <app-account-icon class="ico-sm" [logo]="l.slug" /><small>{{ l.label }}</small>
-        </button>
-      }
-    </div>
-  }
-
-  <div class="rw">
-    <span class="k">圖示</span>
-    <span class="v icon-fields">
-      <input class="icon-input" maxlength="16" aria-label="圖示" [value]="form().icon" (input)="set('icon', $any($event.target).value)" />
-      <input class="color-input" type="color" aria-label="顏色" [value]="form().color || '#8e8e93'" (change)="set('color', $any($event.target).value)" />
-    </span>
-  </div>
-
-  <label class="rw">
-    <span class="k">初始金額</span>
-    <input class="v opening-input" inputmode="decimal" [value]="form().opening_balance" (input)="set('opening_balance', $any($event.target).value)" />
-  </label>
-  @if (error('opening_balance'); as e) { <small class="field-error" data-field="opening_balance">{{ e }}</small> }
-
-  <label class="rw">
-    <span class="k">帳單週期<br /><small>結帳日（空白 = 月底）</small></span>
-    <span class="v">
-      <input class="closing-day" type="number" min="1" max="31" aria-label="結帳日" [value]="form().closing_day" (input)="set('closing_day', $any($event.target).value)" />
-      <small class="cycle-preview">{{ cycleLabel() }}</small>
-    </span>
-  </label>
-  @if (error('closing_day'); as e) { <small class="field-error" data-field="closing_day">{{ e }}</small> }
-
-  <div class="rw">
-    <span class="k">信用帳戶</span>
-    <button type="button" class="tog credit-toggle" role="switch" aria-label="信用帳戶" [attr.aria-checked]="form().is_credit" [class.on]="form().is_credit" (click)="toggle('is_credit')"></button>
-  </div>
-
-  @if (form().is_credit) {
-    <div class="rw child">
-      <span class="k">繳款期限</span>
-      <span class="v due-fields">
-        <select class="due-rule" aria-label="繳款期限" (change)="set('due_rule', $any($event.target).value)">
-          <option value="" [selected]="form().due_rule === ''">未設定</option>
-          <option value="fixed_day" [selected]="form().due_rule === 'fixed_day'">每月固定日</option>
-          <option value="days_after_closing" [selected]="form().due_rule === 'days_after_closing'">結帳日後天數</option>
-        </select>
-        <input class="due-value" type="number" min="0" max="60" aria-label="繳款日或天數" [value]="form().due_value" (input)="set('due_value', $any($event.target).value)" />
-        <small class="due-preview">{{ dueLabel() }}</small>
-      </span>
-    </div>
-    @if (error('due_value'); as e) { <small class="field-error" data-field="due_value">{{ e }}</small> }
-
-    <label class="rw child">
-      <span class="k">信用額度</span>
-      <input class="v credit-limit" inputmode="decimal" [value]="form().credit_limit" (input)="set('credit_limit', $any($event.target).value)" />
+  <section class="sec" id="s-basic" aria-labelledby="h-basic">
+    <h3 id="h-basic">基本</h3>
+    <label class="rw">
+      <span class="k">名稱</span>
+      <input class="v name-input" [value]="form().name" (input)="set('name', $any($event.target).value)" />
     </label>
-    @if (error('credit_limit'); as e) { <small class="field-error" data-field="credit_limit">{{ e }}</small> }
+    @if (error('name'); as e) { <small class="field-error" data-field="name">{{ e }}</small> }
 
-    <div class="rw child">
-      <span class="k">額度共用</span>
-      <span class="v sharing-list">
-        @if (sharingCurrent(); as current) {
-          <small class="sharing-current">{{ current }}</small>
-        }
-        @for (other of sharingOptions(); track other.id) {
-          <label class="sharing-option">
-            <input type="checkbox" [attr.data-account-id]="other.id" [checked]="sharing().includes(other.id)" (change)="toggleSharing(other.id, $any($event.target).checked)" />
-            {{ other.name }}{{ other.is_archived ? '（已封存）' : '' }}
-          </label>
-        } @empty {
-          <small>沒有其他信用帳戶</small>
-        }
-      </span>
-    </div>
-    @if (error('credit_sharing_id'); as e) { <small class="field-error" data-field="credit_sharing_id">{{ e }}</small> }
-    @if (error('credit_sharing_members'); as e) { <small class="field-error" data-field="credit_sharing_members">{{ e }}</small> }
+    <label class="rw">
+      <span class="k">主幣種</span>
+      <input class="v currency-input" maxlength="8" [disabled]="currencyLocked()" [value]="form().currency" (input)="set('currency', $any($event.target).value)" />
+    </label>
+    @if (currencyLocked()) { <small class="currency-note">已有記錄，無法變更幣種</small> }
+    @if (error('currency'); as e) { <small class="field-error" data-field="currency">{{ e }}</small> }
 
-    <label class="rw child">
-      <span class="k">主帳戶</span>
-      <select class="v master-select" (change)="setIdField('combined_account_id', $any($event.target).value)">
-        <option value="" [selected]="form().combined_account_id === null">無</option>
-        @for (other of masterOptions(); track other.id) {
-          <option [value]="other.id" [selected]="other.id === form().combined_account_id">{{ accountLabel(other) }}</option>
+    <label class="rw">
+      <span class="k">帳戶分組</span>
+      <select class="v group-select" (change)="setIdField('group_id', $any($event.target).value)">
+        <option value="" [selected]="form().group_id === null">未分組</option>
+        @for (group of groups(); track group.id) {
+          <option [value]="group.id" [selected]="group.id === form().group_id">{{ group.name }}</option>
         }
       </select>
     </label>
-    @if (error('combined_account_id'); as e) { <small class="field-error" data-field="combined_account_id">{{ e }}</small> }
 
-    <label class="rw child">
-      <span class="k">自動扣繳</span>
-      <select class="v autopay-select" (change)="setIdField('auto_pay_account_id', $any($event.target).value)">
-        <option value="" [selected]="form().auto_pay_account_id === null">無</option>
-        @for (other of autopayOptions(); track other.id) {
-          <option [value]="other.id" [selected]="other.id === form().auto_pay_account_id">{{ accountLabel(other) }}</option>
-        }
-      </select>
+    <label class="rw">
+      <span class="k">初始金額</span>
+      <input class="v opening-input" inputmode="decimal" [value]="form().opening_balance" (input)="set('opening_balance', $any($event.target).value)" />
     </label>
-  }
+    @if (error('opening_balance'); as e) { <small class="field-error" data-field="opening_balance">{{ e }}</small> }
 
-  @if (accountId() === null) {
-    <div class="rw rules-new"><small>儲存帳戶後即可新增回饋規則</small></div>
-  } @else {
-    <div class="rules-block">
-      <div class="rw rules-head">
-        <span class="k">回饋規則 · {{ rules().length }} 條</span>
-        <a class="rules-all" routerLink="/accounting/reward-rules" [queryParams]="{ account_id: accountId() }">全部卡片</a>
+    <label class="rw">
+      <span class="k">帳單週期<br /><small>結帳日（空白 = 月底）</small></span>
+      <span class="v">
+        <input class="closing-day" type="number" min="1" max="31" aria-label="結帳日" [value]="form().closing_day" (input)="set('closing_day', $any($event.target).value)" />
+        <small class="cycle-preview">{{ cycleLabel() }}</small>
+      </span>
+    </label>
+    @if (error('closing_day'); as e) { <small class="field-error" data-field="closing_day">{{ e }}</small> }
+
+    <div class="rw">
+      <span class="k">納入總餘額</span>
+      <button type="button" class="tog include-toggle" role="switch" aria-label="納入總餘額" [attr.aria-checked]="form().include_in_total" [class.on]="form().include_in_total" (click)="toggle('include_in_total')"></button>
+    </div>
+
+    @if (!form().is_credit) {
+      <div class="rw">
+        <span class="k">1 點 = 1 元</span>
+        <app-switch class="cash-equivalent" ariaLabel="1 點 = 1 元" [checked]="form().cash_equivalent" (checkedChange)="set('cash_equivalent', $event)" />
       </div>
-      @for (rule of rules(); track rule.id; let i = $index, last = $last) {
-        @let state = ruleStateOf(rule);
-        <div class="rule-row" [attr.data-rule-id]="rule.id">
-          <div class="rule-text">
-            <span class="rule-title">
-              <span class="rule-label">{{ ruleLabel(rule) }}</span>
-              <span class="badge rule-state" [attr.data-state]="state" [class.warn]="state === 'expired'">{{ ruleStateLabels[state] }}</span>
-              @if (rule.is_basic) { <span class="badge rule-basic">基本</span> }
-              @if (rule.moze_id) { <span class="badge rule-moze">來自 MOZE</span> }
-            </span>
-            <small class="rule-posting">{{ postingSummary(rule) }}</small>
-            <small class="rule-period">{{ periodText(rule) }}</small>
-            <small class="rule-window">{{ windowLabels[rule.window] }}</small>
-            @if (usageByRule().get(rule.id); as use) {
-              <small class="rule-usage"><span class="usage-total">{{ usageText(use) }}</span> · <span class="usage-window">{{ usageWindow(use) }}</span></small>
-            }
-          </div>
-          <div class="rule-actions">
-            <app-switch class="rule-enabled" [checked]="rule.is_enabled" [disabled]="ruleBusy()" [ariaLabel]="rule.name + ' 啟用'" (checkedChange)="toggleRule(rule, $event)" />
-            <button type="button" class="rule-edit" (click)="openRule(rule)">編輯</button>
-            <button type="button" class="move-up" aria-label="上移" [disabled]="i === 0 || ruleBusy()" (click)="moveRule(i, -1)">↑</button>
-            <button type="button" class="move-down" aria-label="下移" [disabled]="last || ruleBusy()" (click)="moveRule(i, 1)">↓</button>
-          </div>
-        </div>
-      }
-      @if (ruleMessage(); as m) { <small class="form-message rule-message" role="alert">{{ m }}</small> }
-      <button type="button" class="rule-add" [disabled]="loadedId() === null" (click)="openRule(null)">新增規則</button>
-    </div>
-  }
+      <small class="hint">回饋入這個帳戶時當成金額計算</small>
+    }
+  </section>
 
-  <div class="rw">
-    <span class="k">國外交易手續費</span>
-    <button type="button" class="tog fx-toggle" role="switch" aria-label="國外交易手續費" [attr.aria-checked]="form().fx_fee_on" [class.on]="form().fx_fee_on" (click)="toggle('fx_fee_on')"></button>
-  </div>
-  @if (form().fx_fee_on) {
-    <label class="rw child">
-      <span class="k">手續費 %</span>
-      <input class="v fx-pct" inputmode="decimal" [value]="form().fx_fee_pct" (input)="set('fx_fee_pct', $any($event.target).value)" />
-    </label>
-    @if (error('fx_fee_pct'); as e) { <small class="field-error" data-field="fx_fee_pct">{{ e }}</small> }
-    <label class="rw child">
-      <span class="k">計算方式</span>
-      <select class="v fx-rounding" (change)="set('fx_fee_rounding', $any($event.target).value)">
-        @for (option of roundingOptions; track option[0]) {
-          <option [value]="option[0]" [selected]="option[0] === form().fx_fee_rounding">{{ option[1] }}</option>
+  <section class="sec" id="s-look" aria-labelledby="h-look">
+    <h3 id="h-look">外觀</h3>
+    <div class="rw logo-block">
+      <span class="k">Logo</span>
+      <span class="v">
+        <span class="logo-state"><app-account-icon class="ico-sm" [accountId]="loadedId()" [logoHash]="logoHash()" [logo]="form().logo" [icon]="form().icon" fallback="folder" /> {{ logoState() }}</span>
+        <span class="logo-actions">
+          <input #logoFile type="file" class="visually-hidden" tabindex="-1" aria-hidden="true" [accept]="LOGO_ACCEPT" (change)="uploadLogo($event)" />
+          <button type="button" class="logo-upload" [disabled]="accountId() === null || loadedId() === null || uploadingLogo()" [attr.aria-busy]="uploadingLogo() || null" (click)="logoFile.click()">上傳圖片</button>
+          @if (logoHash()) {
+            <button type="button" class="logo-remove" [disabled]="uploadingLogo()" (click)="removeLogo()">移除圖片</button>
+          }
+          <button type="button" class="logo-pick" [attr.aria-expanded]="logoPickerOpen()" (click)="logoPickerOpen.set(!logoPickerOpen())">選擇內建 logo</button>
+        </span>
+        <small class="logo-hint">{{ accountId() === null ? '先建立帳戶，再上傳 logo' : '上傳的圖片優先於內建 logo，上傳後立即生效' }}</small>
+      </span>
+    </div>
+    @if (logoPickerOpen()) {
+      <div class="logo-grid" role="group" aria-label="品牌 logo">
+        <button type="button" class="logo-opt" [attr.aria-pressed]="form().logo === null" (click)="pickLogo(null)">無</button>
+        @for (l of logos; track l.slug) {
+          <button type="button" class="logo-opt" [attr.aria-pressed]="form().logo === l.slug" [attr.aria-label]="l.label" (click)="pickLogo(l.slug)">
+            <app-account-icon class="ico-sm" [logo]="l.slug" /><small>{{ l.label }}</small>
+          </button>
         }
-      </select>
+      </div>
+    }
+
+    <div class="rw">
+      <span class="k">圖示</span>
+      <span class="v icon-fields">
+        <input class="icon-input" maxlength="16" aria-label="圖示" [value]="form().icon" (input)="set('icon', $any($event.target).value)" />
+        <input class="color-input" type="color" aria-label="顏色" [value]="form().color || '#8e8e93'" (change)="set('color', $any($event.target).value)" />
+      </span>
+    </div>
+  </section>
+
+  <section class="sec" id="s-card" aria-labelledby="h-card">
+    <div class="sec-head">
+      <h3 id="h-card">信用卡</h3>
+      <button type="button" class="tog credit-toggle" role="switch" aria-label="信用帳戶" [attr.aria-checked]="form().is_credit" [class.on]="form().is_credit" (click)="toggle('is_credit')"></button>
+    </div>
+    @if (form().is_credit) {
+      <div class="rw child">
+        <span class="k">繳款期限</span>
+        <span class="v due-fields">
+          <select class="due-rule" aria-label="繳款期限" (change)="set('due_rule', $any($event.target).value)">
+            <option value="" [selected]="form().due_rule === ''">未設定</option>
+            <option value="fixed_day" [selected]="form().due_rule === 'fixed_day'">每月固定日</option>
+            <option value="days_after_closing" [selected]="form().due_rule === 'days_after_closing'">結帳日後天數</option>
+          </select>
+          <input class="due-value" type="number" min="0" max="60" aria-label="繳款日或天數" [value]="form().due_value" (input)="set('due_value', $any($event.target).value)" />
+          <small class="due-preview">{{ dueLabel() }}</small>
+        </span>
+      </div>
+      @if (error('due_value'); as e) { <small class="field-error" data-field="due_value">{{ e }}</small> }
+
+      <label class="rw child">
+        <span class="k">信用額度</span>
+        <input class="v credit-limit" inputmode="decimal" [value]="form().credit_limit" (input)="set('credit_limit', $any($event.target).value)" />
+      </label>
+      @if (error('credit_limit'); as e) { <small class="field-error" data-field="credit_limit">{{ e }}</small> }
+
+      <div class="rw child">
+        <span class="k">額度共用</span>
+        <span class="v sharing-list">
+          @if (sharingCurrent(); as current) {
+            <small class="sharing-current">{{ current }}</small>
+          }
+          @for (other of sharingOptions(); track other.id) {
+            <label class="sharing-option">
+              <input type="checkbox" [attr.data-account-id]="other.id" [checked]="sharing().includes(other.id)" (change)="toggleSharing(other.id, $any($event.target).checked)" />
+              {{ other.name }}{{ other.is_archived ? '（已封存）' : '' }}
+            </label>
+          } @empty {
+            <small>沒有其他信用帳戶</small>
+          }
+        </span>
+      </div>
+      @if (error('credit_sharing_id'); as e) { <small class="field-error" data-field="credit_sharing_id">{{ e }}</small> }
+      @if (error('credit_sharing_members'); as e) { <small class="field-error" data-field="credit_sharing_members">{{ e }}</small> }
+
+      <label class="rw child">
+        <span class="k">主帳戶</span>
+        <select class="v master-select" (change)="setIdField('combined_account_id', $any($event.target).value)">
+          <option value="" [selected]="form().combined_account_id === null">無</option>
+          @for (other of masterOptions(); track other.id) {
+            <option [value]="other.id" [selected]="other.id === form().combined_account_id">{{ accountLabel(other) }}</option>
+          }
+        </select>
+      </label>
+      @if (error('combined_account_id'); as e) { <small class="field-error" data-field="combined_account_id">{{ e }}</small> }
+
+      <label class="rw child">
+        <span class="k">自動扣繳</span>
+        <select class="v autopay-select" (change)="setIdField('auto_pay_account_id', $any($event.target).value)">
+          <option value="" [selected]="form().auto_pay_account_id === null">無</option>
+          @for (other of autopayOptions(); track other.id) {
+            <option [value]="other.id" [selected]="other.id === form().auto_pay_account_id">{{ accountLabel(other) }}</option>
+          }
+        </select>
+      </label>
+    } @else {
+      <p class="card-hint">打開「信用帳戶」才會出現繳款期限、額度與自動扣繳。</p>
+    }
+  </section>
+
+  <section class="sec" id="s-reward" aria-labelledby="h-reward">
+    <h3 id="h-reward">回饋規則</h3>
+    @if (accountId() === null) {
+      <div class="rw rules-new"><small>儲存帳戶後即可新增回饋規則</small></div>
+    } @else {
+      <div class="rules-block">
+        <div class="rw rules-head">
+          <span class="k">回饋規則 · {{ rules().length }} 條</span>
+          <a class="rules-all" routerLink="/accounting/reward-rules" [queryParams]="{ account_id: accountId() }">所有卡片的規則 ›</a>
+        </div>
+        @for (rule of rules(); track rule.id; let i = $index, last = $last) {
+          @let state = ruleStateOf(rule);
+          <div class="rule-row" [attr.data-rule-id]="rule.id">
+            <div class="rule-text">
+              <span class="rule-title">
+                <span class="rule-label">{{ ruleLabel(rule) }}</span>
+                <span class="badge rule-state" [attr.data-state]="state" [class.warn]="state === 'expired'">{{ ruleStateLabels[state] }}</span>
+                @if (rule.is_basic) { <span class="badge rule-basic">基本</span> }
+                @if (rule.moze_id) { <span class="badge rule-moze">來自 MOZE</span> }
+              </span>
+              <small class="rule-posting">{{ postingSummary(rule) }}</small>
+              <small class="rule-period">{{ periodText(rule) }}</small>
+              <small class="rule-window">{{ windowLabels[rule.window] }}</small>
+              @if (usageByRule().get(rule.id); as use) {
+                <small class="rule-usage"><span class="usage-total">{{ usageText(use) }}</span> · <span class="usage-window">{{ usageWindow(use) }}</span></small>
+              }
+            </div>
+            <div class="rule-actions">
+              <app-switch class="rule-enabled" [checked]="rule.is_enabled" [disabled]="ruleBusy()" [ariaLabel]="rule.name + ' 啟用'" (checkedChange)="toggleRule(rule, $event)" />
+              <button type="button" class="rule-edit" (click)="openRule(rule)">編輯</button>
+              <button type="button" class="move-up" aria-label="上移" [disabled]="i === 0 || ruleBusy()" (click)="moveRule(i, -1)">↑</button>
+              <button type="button" class="move-down" aria-label="下移" [disabled]="last || ruleBusy()" (click)="moveRule(i, 1)">↓</button>
+            </div>
+          </div>
+        }
+        @if (ruleMessage(); as m) { <small class="form-message rule-message" role="alert">{{ m }}</small> }
+        <button type="button" class="rule-add" [disabled]="loadedId() === null" (click)="openRule(null)">新增規則</button>
+      </div>
+    }
+  </section>
+
+  <section class="sec" id="s-fx" aria-labelledby="h-fx">
+    <div class="sec-head">
+      <h3 id="h-fx">國外交易</h3>
+      <button type="button" class="tog fx-toggle" role="switch" aria-label="國外交易手續費" [attr.aria-checked]="form().fx_fee_on" [class.on]="form().fx_fee_on" (click)="toggle('fx_fee_on')"></button>
+    </div>
+    @if (form().fx_fee_on) {
+      <label class="rw child">
+        <span class="k">手續費 %</span>
+        <input class="v fx-pct" inputmode="decimal" [value]="form().fx_fee_pct" (input)="set('fx_fee_pct', $any($event.target).value)" />
+      </label>
+      @if (error('fx_fee_pct'); as e) { <small class="field-error" data-field="fx_fee_pct">{{ e }}</small> }
+      <label class="rw child">
+        <span class="k">計算方式</span>
+        <select class="v fx-rounding" (change)="set('fx_fee_rounding', $any($event.target).value)">
+          @for (option of roundingOptions; track option[0]) {
+            <option [value]="option[0]" [selected]="option[0] === form().fx_fee_rounding">{{ option[1] }}</option>
+          }
+        </select>
+      </label>
+      <div class="rw child">
+        <span class="k">退款時退回手續費</span>
+        <button type="button" class="tog fx-refund-toggle" role="switch" aria-label="退款時退回手續費" [attr.aria-checked]="form().fx_fee_refundable" [class.on]="form().fx_fee_refundable" (click)="toggle('fx_fee_refundable')"></button>
+      </div>
+    }
+  </section>
+
+  <section class="sec" id="s-more" aria-labelledby="h-more">
+    <h3 id="h-more">其他</h3>
+    <label class="rw note-row">
+      <span class="k">備註</span>
+      <input class="v note-input" [value]="form().note" (input)="set('note', $any($event.target).value)" />
     </label>
-    <div class="rw child">
-      <span class="k">退款時退回手續費</span>
-      <button type="button" class="tog fx-refund-toggle" role="switch" aria-label="退款時退回手續費" [attr.aria-checked]="form().fx_fee_refundable" [class.on]="form().fx_fee_refundable" (click)="toggle('fx_fee_refundable')"></button>
-    </div>
-  }
 
-  <div class="rw">
-    <span class="k">納入總餘額</span>
-    <button type="button" class="tog include-toggle" role="switch" aria-label="納入總餘額" [attr.aria-checked]="form().include_in_total" [class.on]="form().include_in_total" (click)="toggle('include_in_total')"></button>
-  </div>
+    @if (detail()?.settings_locally_edited && detail()?.moze_id) {
+      <div class="custom-note">
+        <span>已自訂，匯入不再覆寫</span>
+        <button type="button" class="reset-flag" (click)="resetFlag()">還原 MOZE 設定</button>
+      </div>
+    }
 
-  @if (!form().is_credit) {
-    <div class="rw">
-      <span class="k">1 點 = 1 元</span>
-      <app-switch class="cash-equivalent" ariaLabel="1 點 = 1 元" [checked]="form().cash_equivalent" (checkedChange)="set('cash_equivalent', $event)" />
-    </div>
-    <small class="hint">回饋入這個帳戶時當成金額計算</small>
-  }
-
-  <label class="rw note-row">
-    <span class="k">備註</span>
-    <input class="v note-input" [value]="form().note" (input)="set('note', $any($event.target).value)" />
-  </label>
-
-  @if (accountId() !== null) {
-    <div class="rw">
-      <span class="k">封存帳戶</span>
-      <button type="button" class="tog archive-toggle" role="switch" aria-label="封存帳戶" [attr.aria-checked]="form().is_archived" [class.on]="form().is_archived" (click)="toggle('is_archived')"></button>
-    </div>
-    <div class="rw">
-      <button type="button" class="k delete-account" [disabled]="currencyLocked() || loadFailed()" (click)="remove()">{{ confirmDelete() ? '確定刪除？' : '刪除帳戶' }}</button>
-      <span class="v">只能刪除沒有記錄的帳戶</span>
-    </div>
-  }
+    @if (accountId() !== null) {
+      <div class="rw">
+        <span class="k">封存帳戶</span>
+        <button type="button" class="tog archive-toggle" role="switch" aria-label="封存帳戶" [attr.aria-checked]="form().is_archived" [class.on]="form().is_archived" (click)="toggle('is_archived')"></button>
+      </div>
+      <div class="rw">
+        <button type="button" class="k delete-account" [disabled]="currencyLocked() || loadFailed()" (click)="remove()">{{ confirmDelete() ? '確定刪除？' : '刪除帳戶' }}</button>
+        <span class="v">只能刪除沒有記錄的帳戶</span>
+      </div>
+    }
+  </section>
 </section>
 
 @if (ruleSheet(); as open) {

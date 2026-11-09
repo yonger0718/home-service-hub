@@ -109,6 +109,7 @@ describe('AccountSettingsComponent', () => {
     http.verify();
     vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('hero: a valuation balance is labelled 市值 (R7 §5)', async () => {
@@ -770,7 +771,7 @@ describe('AccountSettingsComponent', () => {
 
     expect(texts(fixture, '.rules-head .k')).toEqual(['回饋規則 · 2 條']);
     const all = el(fixture).querySelector<HTMLAnchorElement>('.rules-head a')!;
-    expect(all.textContent?.trim()).toBe('全部卡片');
+    expect(all.textContent?.trim()).toBe('所有卡片的規則 ›');
     expect(all.getAttribute('href')).toBe('/accounting/reward-rules?account_id=11');
     expect(el(fixture).querySelectorAll('.rule-row').length).toBe(2);
     expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般 (1%)', '餐飲 (5.2%)']);
@@ -1294,6 +1295,166 @@ describe('AccountSettingsComponent', () => {
       const req = http.expectOne('/api/accounting/accounts/11');
       expect('cash_equivalent' in req.request.body).toBe(false);
       req.flush(CASH);
+    });
+  });
+
+  describe('sections, chips and save state', () => {
+    /** Captures the scroll-spy callback; jsdom has no IntersectionObserver of its own. */
+    class FakeObserver {
+      static instances: FakeObserver[] = [];
+      readonly observe = vi.fn();
+      readonly unobserve = vi.fn();
+      readonly disconnect = vi.fn();
+      constructor(readonly callback: IntersectionObserverCallback) {
+        FakeObserver.instances.push(this);
+      }
+    }
+
+    function stubObserver(): void {
+      FakeObserver.instances = [];
+      vi.stubGlobal('IntersectionObserver', FakeObserver);
+    }
+
+    function chips(fixture: ComponentFixture<AccountSettingsComponent>): HTMLButtonElement[] {
+      return Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('nav.sec-chips button'));
+    }
+
+    function current(fixture: ComponentFixture<AccountSettingsComponent>): string[] {
+      return chips(fixture).filter(c => c.getAttribute('aria-current') === 'true').map(c => c.textContent?.trim() ?? '');
+    }
+
+    function rowLabels(fixture: ComponentFixture<AccountSettingsComponent>, id: string): string[] {
+      return texts(fixture, `#s-${id} .rw > .k`);
+    }
+
+    it('renders six section headings in order', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      const sections = Array.from(el(fixture).querySelectorAll('section.sec'));
+      expect(sections.map(s => s.id)).toEqual(['s-basic', 's-look', 's-card', 's-reward', 's-fx', 's-more']);
+      expect(sections.map(s => s.querySelector('h3')?.textContent?.trim())).toEqual(['基本', '外觀', '信用卡', '回饋規則', '國外交易', '其他']);
+      expect(sections.map(s => s.getAttribute('aria-labelledby'))).toEqual(['h-basic', 'h-look', 'h-card', 'h-reward', 'h-fx', 'h-more']);
+      expect(sections.map(s => s.querySelector('h3')?.id)).toEqual(['h-basic', 'h-look', 'h-card', 'h-reward', 'h-fx', 'h-more']);
+    });
+
+    it('回饋規則 chip shows the rule count', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      expect(el(fixture).querySelector('nav.sec-chips')?.getAttribute('aria-label')).toBe('設定區塊');
+      expect(chips(fixture).map(c => c.textContent?.trim())).toEqual(['基本', '外觀', '信用卡', '回饋規則 (2)', '國外交易', '其他']);
+      expect(chips(fixture).every(c => c.type === 'button')).toBe(true);
+      expect(current(fixture)).toEqual(['基本']);
+    });
+
+    it('clicking a chip marks it current and scrolls', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      const target = el(fixture).querySelector<HTMLElement>('#s-fx')!;
+      const scroll = vi.fn();
+      target.scrollIntoView = scroll;
+
+      chips(fixture)[4].click();
+      fixture.detectChanges();
+
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect(fixture.componentInstance.activeSection()).toBe('fx');
+      expect(current(fixture)).toEqual(['國外交易']);
+    });
+
+    it('scroll-spy marks the section reported in view', async () => {
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+
+      expect(FakeObserver.instances.length).toBe(1);
+      const observer = FakeObserver.instances[0];
+      const observed = observer.observe.mock.calls.map(call => (call[0] as Element).id);
+      expect(observed).toEqual(['s-basic', 's-look', 's-card', 's-reward', 's-fx', 's-more']);
+
+      const card = el(fixture).querySelector('#s-card')!;
+      observer.callback(
+        [{ target: card, isIntersecting: true, boundingClientRect: { top: 0 } } as unknown as IntersectionObserverEntry],
+        observer as unknown as IntersectionObserver,
+      );
+      fixture.detectChanges();
+      expect(current(fixture)).toEqual(['信用卡']);
+    });
+
+    it('disconnects the observer on destroy', async () => {
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+      const observer = FakeObserver.instances[0];
+      expect(observer.disconnect).not.toHaveBeenCalled();
+
+      fixture.destroy();
+      expect(observer.disconnect).toHaveBeenCalledTimes(1);
+    });
+
+    it('editing the name shows 有 1 項未儲存; a second field shows 有 2 項未儲存', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      expect(el(fixture).querySelector('.dirty-count')).toBeNull();
+      expect(fixture.componentInstance.dirtyCount()).toBe(0);
+
+      typeInto(fixture, '.name-input', '玉山 Only 2');
+      expect(texts(fixture, '.topbar .dirty-count')).toEqual(['有 1 項未儲存']);
+
+      typeInto(fixture, '.note-input', '新備註');
+      expect(texts(fixture, '.topbar .dirty-count')).toEqual(['有 2 項未儲存']);
+    });
+
+    it('an open dirty rule sheet keeps the count at least 1', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+
+      click(fixture, '.rule-row .rule-edit', 0);
+      typeInto(fixture, '.rule-name', '一般改');
+
+      expect(fixture.componentInstance.isDirty()).toBe(true);
+      expect(fixture.componentInstance.dirtyCount()).toBeGreaterThanOrEqual(1);
+      expect(texts(fixture, '.topbar .dirty-count')).toEqual(['有 1 項未儲存']);
+    });
+
+    it('successful save clears the count', async () => {
+      await setup('11');
+      const fixture = render(DETAIL);
+      typeInto(fixture, '.name-input', '玉山 Only 2');
+      expect(texts(fixture, '.topbar .dirty-count')).toEqual(['有 1 項未儲存']);
+
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/accounts/11').flush({ ...DETAIL, name: '玉山 Only 2' });
+      fixture.detectChanges();
+
+      expect(fixture.componentInstance.dirtyCount()).toBe(0);
+      expect(el(fixture).querySelector('.dirty-count')).toBeNull();
+    });
+
+    it('基本 holds 名稱 … 納入總餘額 and 其他 holds 備註', async () => {
+      await setup('11');
+      const fixture = render({ ...DETAIL, is_credit: false } as AccountDetail);
+
+      expect(rowLabels(fixture, 'basic')).toEqual([
+        '名稱', '主幣種', '帳戶分組', '初始金額', '帳單週期結帳日（空白 = 月底）', '納入總餘額', '1 點 = 1 元',
+      ]);
+      expect(el(fixture).querySelector('#s-basic .closing-day')).not.toBeNull();
+      expect(el(fixture).querySelector('#s-basic .include-toggle')).not.toBeNull();
+      expect(rowLabels(fixture, 'look')).toEqual(['Logo', '圖示']);
+      expect(el(fixture).querySelector('#s-card .sec-head .credit-toggle')).not.toBeNull();
+      expect(rowLabels(fixture, 'card')).toEqual([]);
+      expect(texts(fixture, '#s-card .card-hint')).toEqual(['打開「信用帳戶」才會出現繳款期限、額度與自動扣繳。']);
+      expect(el(fixture).querySelector('#s-reward .rules-block')).not.toBeNull();
+      expect(texts(fixture, '#s-reward .rules-all')).toEqual(['所有卡片的規則 ›']);
+      expect(el(fixture).querySelector('#s-fx .sec-head .fx-toggle')).not.toBeNull();
+      expect(rowLabels(fixture, 'fx')).toEqual(['手續費 %', '計算方式', '退款時退回手續費']);
+      expect(rowLabels(fixture, 'more')).toEqual(['備註', '封存帳戶', '刪除帳戶']);
+      expect(el(fixture).querySelector('#s-more .reset-flag')).not.toBeNull();
+      expect(el(fixture).querySelector('#s-more .delete-account')).not.toBeNull();
+
+      el(fixture).querySelector<HTMLButtonElement>('.credit-toggle')!.click();
+      fixture.detectChanges();
+      expect(rowLabels(fixture, 'card')).toEqual(['繳款期限', '信用額度', '額度共用', '主帳戶', '自動扣繳']);
+      expect(el(fixture).querySelector('#s-card .card-hint')).toBeNull();
     });
   });
 });

@@ -3,10 +3,57 @@
 .topbar {
   align-items: center;
   display: grid;
-  grid-template-columns: 2.5rem minmax(0, 1fr) 2.5rem;
+  /* Equal side columns keep the title centred while 有 N 項未儲存 sits beside ✓. */
+  grid-template-columns: minmax(2.5rem, 1fr) auto minmax(2.5rem, 1fr);
 
   h1 { font-size: 1.05rem; font-weight: 800; margin: 0; text-align: center; }
+  .topbar-end { align-items: center; display: flex; gap: 4px; justify-content: flex-end; }
+  .ib { min-width: 2.5rem; }
 }
+
+.dirty-count { color: var(--app-text-muted); font-size: var(--fs-sm); font-weight: 700; white-space: nowrap; }
+
+/* Section chips (C1 Task 5): sticky jump links at ≥ 760 px; the phone layout scrolls the grouped rows instead. */
+.sec-chips {
+  display: none;
+
+  @media (min-width: 760px) {
+    background: var(--app-surface);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 0 8px;
+    position: sticky;
+    /* top: 0 of the scroller: in a pane, over its top padding (as the entry form's sticky topbar). */
+    top: calc(-1 * var(--pane-pad-top, 0px));
+    z-index: 2;
+  }
+
+  button {
+    background: var(--app-surface-soft);
+    border: 1px solid transparent;
+    border-radius: var(--radius-pill);
+    color: var(--app-text);
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--fs-sm);
+    padding: 4px 12px;
+  }
+  button[aria-current='true'] { background: var(--app-primary-soft); color: var(--app-primary); font-weight: 700; }
+  button.invalid { border-color: var(--app-danger); color: var(--app-danger); }
+}
+
+.sec {
+  display: flex;
+  flex-direction: column;
+  padding-top: 12px;
+  /* Below the sticky chips when a chip scrolls the section into view. */
+  scroll-margin-top: 3rem;
+
+  h3 { color: var(--app-text-muted); font-size: var(--fs-sm); font-weight: 800; margin: 0; padding: 4px 0; }
+}
+.sec-head { align-items: center; display: flex; gap: 10px; justify-content: space-between; }
+.card-hint { color: var(--app-text-muted); font-size: 0.85rem; margin: 4px 0 0; }
 
 /* 放棄未儲存的內容？ (as the entry form's strip). */
 .discard-strip {
