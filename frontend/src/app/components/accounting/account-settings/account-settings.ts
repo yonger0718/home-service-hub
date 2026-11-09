@@ -301,6 +301,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   readonly logoState = computed(() => (this.logoHash() ? '已上傳的圖片' : this.form().logo ? `內建：${this.logoLabel()}` : '無'));
 
   readonly roundingOptions = Object.entries(ROUNDING_LABELS) as [RoundingMode, string][];
+  readonly roundingPickerOptions: PickerOption[] = this.roundingOptions.map(([value, label]) => ({ value, label }));
   readonly formatMoney = formatMoney;
   readonly balanceText = balanceText;
   readonly balanceNegative = balanceNegative;

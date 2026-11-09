@@ -66,7 +66,7 @@
     @if (error('opening_balance'); as e) { <small class="field-error" data-field="opening_balance">{{ e }}</small> }
 
     <div class="rw">
-      <span class="k">帳單週期<br /><small>結帳日（空白 = 月底）</small></span>
+      <span class="k">帳單週期<br /><small>結帳日</small></span>
       <span class="v">
         <app-stepper class="closing-day" ariaLabel="結帳日" suffix="號" [min]="1" [max]="31" [nullable]="true" nullLabel="月底" decLabel="減一天" incLabel="加一天" [invalid]="!!error('closing_day')" [value]="closingDay()" (valueChange)="setDay('closing_day', $event)" />
         <small class="cycle-preview">{{ cycleLabel() }}</small>
@@ -190,7 +190,7 @@
     } @else {
       <div class="rules-block">
         <div class="rw rules-head">
-          <span class="k">回饋規則{{ cycleLabel() ? ' · ' + cycleLabel() : '' }}</span>
+          <span class="k">{{ cycleLabel() }}</span>
           <a class="rules-all" routerLink="/accounting/reward-rules" [queryParams]="{ account_id: accountId() }">所有卡片的規則 ›</a>
         </div>
         @for (rule of rules(); track rule.id; let i = $index, last = $last) {
@@ -227,25 +227,21 @@
   <section class="sec" id="s-fx" aria-labelledby="h-fx">
     <div class="sec-head">
       <h3 id="h-fx">國外交易</h3>
-      <button type="button" class="tog fx-toggle" role="switch" aria-label="國外交易手續費" [attr.aria-checked]="form().fx_fee_on" [class.on]="form().fx_fee_on" (click)="toggle('fx_fee_on')"></button>
+      <app-switch class="fx-toggle" ariaLabel="國外交易手續費" [checked]="form().fx_fee_on" (checkedChange)="set('fx_fee_on', $event)" />
     </div>
     @if (form().fx_fee_on) {
       <label class="rw child">
         <span class="k">手續費 %</span>
-        <input class="v fx-pct" inputmode="decimal" [value]="form().fx_fee_pct" (input)="set('fx_fee_pct', $any($event.target).value)" />
+        <app-amount-field class="fx-pct" ariaLabel="手續費百分比" suffix="%" [invalid]="!!error('fx_fee_pct')" [value]="form().fx_fee_pct" (valueChange)="set('fx_fee_pct', $event)" />
       </label>
       @if (error('fx_fee_pct'); as e) { <small class="field-error" data-field="fx_fee_pct">{{ e }}</small> }
       <label class="rw child">
         <span class="k">計算方式</span>
-        <select class="v fx-rounding" (change)="set('fx_fee_rounding', $any($event.target).value)">
-          @for (option of roundingOptions; track option[0]) {
-            <option [value]="option[0]" [selected]="option[0] === form().fx_fee_rounding">{{ option[1] }}</option>
-          }
-        </select>
+        <app-picker class="fx-rounding" label="計算方式" [options]="roundingPickerOptions" [value]="form().fx_fee_rounding" (change)="set('fx_fee_rounding', $any($event))" />
       </label>
       <div class="rw child">
         <span class="k">退款時退回手續費</span>
-        <button type="button" class="tog fx-refund-toggle" role="switch" aria-label="退款時退回手續費" [attr.aria-checked]="form().fx_fee_refundable" [class.on]="form().fx_fee_refundable" (click)="toggle('fx_fee_refundable')"></button>
+        <app-switch class="fx-refund-toggle" ariaLabel="退款時退回手續費" [checked]="form().fx_fee_refundable" (checkedChange)="set('fx_fee_refundable', $event)" />
       </div>
     }
   </section>
@@ -267,7 +263,7 @@
     @if (accountId() !== null) {
       <div class="rw">
         <span class="k">封存帳戶</span>
-        <button type="button" class="tog archive-toggle" role="switch" aria-label="封存帳戶" [attr.aria-checked]="form().is_archived" [class.on]="form().is_archived" (click)="toggle('is_archived')"></button>
+        <app-switch class="archive-toggle" ariaLabel="封存帳戶" [checked]="form().is_archived" (checkedChange)="set('is_archived', $event)" />
       </div>
       <div class="rw">
         <button type="button" class="k delete-account" [disabled]="currencyLocked() || loadFailed()" (click)="remove()">{{ confirmDelete() ? '確定刪除？' : '刪除帳戶' }}</button>

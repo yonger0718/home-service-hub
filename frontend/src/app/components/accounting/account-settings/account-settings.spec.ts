@@ -373,6 +373,57 @@ describe('AccountSettingsComponent', () => {
     req.flush(DETAIL);
   });
 
+  it('fx rows hidden until the fee switch is on', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, fx_fee_pct: null, fx_fee_rounding: null } as AccountDetail);
+    expect(el(fixture).querySelector('app-amount-field.fx-pct')).toBeNull();
+    expect(el(fixture).querySelector('app-picker.fx-rounding')).toBeNull();
+    expect(el(fixture).querySelector('app-switch.fx-refund-toggle')).toBeNull();
+    flip(fixture, 'fx-toggle');
+    expect(el(fixture).querySelector('app-amount-field.fx-pct')).not.toBeNull();
+    expect(el(fixture).querySelector('app-picker.fx-rounding')).not.toBeNull();
+    expect(el(fixture).querySelector('app-switch.fx-refund-toggle')).not.toBeNull();
+    flip(fixture, 'fx-refund-toggle');
+    expect(el(fixture).querySelector('app-switch.fx-refund-toggle button')!.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('fee percent typed 1.5 saves fx_fee_pct \'1.5\'', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, fx_fee_pct: '2.000' } as AccountDetail);
+    expect(amount(fixture, 'fx-pct').value).toBe('2');
+    typeInto(fixture, '.fx-pct .amt', '1.5');
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body.fx_fee_pct).toBe('1.5');
+    req.flush(DETAIL);
+  });
+
+  it('計算方式 picker lists the four rounding labels and saves the chosen mode', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    const options = pickerOptions(fixture, 'fx-rounding');
+    expect(options.map(o => o.textContent?.trim())).toEqual(['不處理', '四捨五入', '無條件捨去', '無條件進位']);
+    options.find(o => o.getAttribute('data-value') === 'ceil')!.click();
+    fixture.detectChanges();
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body.fx_fee_rounding).toBe('ceil');
+    req.flush(DETAIL);
+  });
+
+  it('其他 holds 備註, 還原 MOZE 設定 (when flagged), 封存 switch and 刪除 button', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    expect(el(fixture).querySelector('#s-more input.note-input')).not.toBeNull();
+    expect(el(fixture).querySelector('#s-more .reset-flag')).not.toBeNull();
+    expect(el(fixture).querySelector('#s-more app-switch.archive-toggle')).not.toBeNull();
+    expect(el(fixture).querySelector('#s-more .delete-account')).not.toBeNull();
+    flip(fixture, 'archive-toggle');
+    expect(fixture.componentInstance.form().is_archived).toBe(true);
+    const unflagged = render({ ...DETAIL, settings_locally_edited: false } as AccountDetail);
+    expect(el(unflagged).querySelector('#s-more .reset-flag')).toBeNull();
+  });
+
   it('saves every field with PUT and returns to the passbook', async () => {
     await setup('11');
     const fixture = render(DETAIL);
@@ -928,21 +979,21 @@ describe('AccountSettingsComponent', () => {
   it('回饋規則 header shows the current window', async () => {
     await setup('11');
     const fixture = render(DETAIL);
-    expect(texts(fixture, '.rules-head .k')).toEqual(['回饋規則 · 本期 09/16–10/15']);
+    expect(texts(fixture, '.rules-head .k')).toEqual(['本期 09/16–10/15']);
     expect(texts(fixture, '.rules-head .rules-all')).toEqual(['所有卡片的規則 ›']);
   });
 
   it('回饋規則 header reads 每月 1 日 – 月底 without a closing day', async () => {
     await setup('11');
     const fixture = render({ ...DETAIL, closing_day: null } as AccountDetail);
-    expect(texts(fixture, '.rules-head .k')).toEqual(['回饋規則 · 每月 1 日 – 月底']);
+    expect(texts(fixture, '.rules-head .k')).toEqual(['每月 1 日 – 月底']);
   });
 
   it('renders one .rule-row per rule with label, state, 基本 and 來自 MOZE badges under the 回饋規則 header', async () => {
     await setup('11');
     const fixture = render(DETAIL);
 
-    expect(texts(fixture, '.rules-head .k')).toEqual(['回饋規則 · 本期 09/16–10/15']);
+    expect(texts(fixture, '.rules-head .k')).toEqual(['本期 09/16–10/15']);
     const all = el(fixture).querySelector<HTMLAnchorElement>('.rules-head a')!;
     expect(all.textContent?.trim()).toBe('所有卡片的規則 ›');
     expect(all.getAttribute('href')).toBe('/accounting/reward-rules?account_id=11');
@@ -1663,7 +1714,7 @@ describe('AccountSettingsComponent', () => {
       const fixture = render({ ...DETAIL, is_credit: false } as AccountDetail);
 
       expect(rowLabels(fixture, 'basic')).toEqual([
-        '名稱', '主幣種', '帳戶分組', '初始金額', '帳單週期結帳日（空白 = 月底）', '納入總餘額', '1 點 = 1 元',
+        '名稱', '主幣種', '帳戶分組', '初始金額', '帳單週期結帳日', '納入總餘額', '1 點 = 1 元',
       ]);
       expect(el(fixture).querySelector('#s-basic .closing-day')).not.toBeNull();
       expect(el(fixture).querySelector('#s-basic .include-toggle')).not.toBeNull();
