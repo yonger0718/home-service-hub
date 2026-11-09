@@ -3016,6 +3016,27 @@ describe('LedgerTimelineComponent', () => {
         expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 5], { queryParams: { month: '2026-10', day: '2026-10-21' } });
       });
 
+      it("an old day's read resolving after openInvoice wrote the invoice day does not cancel the pending invoice (M12)", async () => {
+        const { fixture, el } = renderPanes();
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-19"]')!.click();
+        fixture.detectChanges();
+        await fixture.whenStable();
+        // 10/19's read is still in flight when the invoice line of 10/21 is picked.
+        const stale = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19');
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
+        pane().commands()!.openInvoice(invoice([target('entry', 5)]));
+        expect(fixture.componentInstance.selectedDay()).toBe('2026-10-21');
+        stale.flush({ items: [makeEntry({ id: 8, entry_date: '2026-10-19' })], total: 1, limit: 500, offset: 0 });
+        await fixture.whenStable();
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-21')
+          .flush({ items: [makeEntry({ id: 5, entry_date: '2026-10-21' })], total: 1, limit: 500, offset: 0 });
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 5], { queryParams: { month: '2026-10', day: '2026-10-21' } });
+      });
+
       it('openInvoice only selects the day with two candidates', async () => {
         const navigate = await openWith([target('entry', 5), target('entry', 6)], [
           makeEntry({ id: 5, entry_date: '2026-10-21' }),
@@ -3026,25 +3047,30 @@ describe('LedgerTimelineComponent', () => {
     });
 
     describe('stepEntry', () => {
+      // The daily summary counts spend / income only: 10/20 (a card payment, a transfer) is 0 there but has rows.
       const DAYS = [
         { date: '2026-10-21', expense: '-300.0000', income: '0.0000', count: 3 },
         { date: '2026-10-20', expense: '0.0000', income: '0.0000', count: 0 },
         { date: '2026-10-19', expense: '-200.0000', income: '0.0000', count: 2 },
       ];
-      const entry = (id: number, date: string) => makeEntry({ id, entry_date: date });
+      const entry = (id: number, date: string, extra: Partial<LedgerEntry> = {}) => makeEntry({ id, entry_date: date, ...extra });
+      const page = (items: LedgerEntry[], limit = 500) => ({ items, total: items.length, limit, offset: 0 });
+      /** The drawer's neighbour-day read: the rest of the month on one side of the day, newest first. */
+      const isProbe = (r: { url: string; params: { get(name: string): string | null } }) =>
+        r.url === '/api/accounting/entries' && r.params.get('date_from') !== r.params.get('date_to');
 
-      /** Calendar at panes width with 10/21 selected (rows 5, 4, 3) and entry `selected` open in the drawer. */
-      async function stepSetup(selected: number, days = DAYS) {
+      /** Calendar at panes width with `date` selected (rows 5, 4, 3) and entry `selected` open in the drawer. */
+      async function stepSetup(selected: number, date = '2026-10-21', preference = makePreference()) {
         localStorage.setItem(VIEW_KEY, 'calendar');
         const layout = { selectedEntryId: signal<number | null>(selected) };
-        const rendered = render('panes', makePreference(), [{ provide: AccountingLayoutComponent, useValue: layout }], ACCOUNTS);
+        const rendered = render('panes', preference, [{ provide: AccountingLayoutComponent, useValue: layout }], ACCOUNTS);
         flushSummary('2026-10');
-        flushDaily('2026-10', { days });
+        flushDaily('2026-10', { days: DAYS });
         rendered.fixture.detectChanges();
-        rendered.el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-21"]')!.click();
+        rendered.el.querySelector<HTMLButtonElement>(`button.cell[data-date="${date}"]`)!.click();
         rendered.fixture.detectChanges();
         await rendered.fixture.whenStable();
-        flushEntries([entry(5, '2026-10-21'), entry(4, '2026-10-21'), entry(3, '2026-10-21')]);
+        flushEntries([entry(5, date), entry(4, date), entry(3, date)]);
         rendered.fixture.detectChanges();
         // Calls through, so the day write lands in the URL; callers mock the entry navigation once the day write is done.
         const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
@@ -3066,9 +3092,15 @@ describe('LedgerTimelineComponent', () => {
         expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 4], withDay('2026-10-21'));
       });
 
-      it("stepEntry(1) at the day's last row moves to the previous day with rows and opens its newest row", async () => {
+      it("stepEntry(1) at the day's last row reads the nearest earlier entry, moves to its day and opens that day's newest row", async () => {
         const { fixture, navigate } = await stepSetup(3);
         pane().commands()!.stepEntry(1);
+        const probe = httpMock!.expectOne(isProbe);
+        expect(probe.request.params.get('date_from')).toBe('2026-10-01');
+        expect(probe.request.params.get('date_to')).toBe('2026-10-20');
+        expect(probe.request.params.get('limit')).toBe('1');
+        expect(navigate).not.toHaveBeenCalled();
+        probe.flush(page([entry(2, '2026-10-19')], 1));
         await fixture.whenStable();
         expect(navigate).toHaveBeenCalledExactlyOnceWith([], expect.objectContaining({
           queryParams: { month: '2026-10', day: '2026-10-19' }, queryParamsHandling: 'merge', replaceUrl: true,
@@ -3080,33 +3112,109 @@ describe('LedgerTimelineComponent', () => {
         const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
         expect(req.request.params.get('date_from')).toBe('2026-10-19');
         expect(navigate).not.toHaveBeenCalled();
-        req.flush({ items: [entry(2, '2026-10-19'), entry(1, '2026-10-19')], total: 2, limit: 500, offset: 0 });
+        req.flush(page([entry(2, '2026-10-19'), entry(1, '2026-10-19')]));
         fixture.detectChanges();
         expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 2], withDay('2026-10-19'));
       });
 
-      it('stepEntry(-1) at the first row opens the last row of the next later day with rows', async () => {
-        const days = [{ date: '2026-10-23', expense: '-9.0000', income: '0.0000', count: 1 }, ...DAYS];
-        const { fixture, navigate } = await stepSetup(5, days);
+      it('stepEntry(-1) at the first row reads the rest of the month and opens the last row of the earliest later day', async () => {
+        const { fixture, navigate } = await stepSetup(5);
         pane().commands()!.stepEntry(-1);
+        const probe = httpMock!.expectOne(isProbe);
+        expect(probe.request.params.get('date_from')).toBe('2026-10-22');
+        expect(probe.request.params.get('date_to')).toBe('2026-10-31');
+        // The API has no ascending order: the newest-first page's last item is the earliest later entry.
+        expect(probe.request.params.get('limit')).toBe('500');
+        probe.flush(page([entry(9, '2026-10-25'), entry(8, '2026-10-23')]));
         await fixture.whenStable();
         expect(pane().selectedDay()).toBe('2026-10-23');
         navigate.mockClear();
         navigate.mockResolvedValue(true);
         fixture.detectChanges();
-        httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({
-          items: [entry(8, '2026-10-23'), entry(7, '2026-10-23')], total: 2, limit: 500, offset: 0,
-        });
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush(page([entry(8, '2026-10-23'), entry(7, '2026-10-23')]));
         fixture.detectChanges();
         expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 7], withDay('2026-10-23'));
       });
 
-      it("stepEntry does nothing at the month's edge (Review Focus 4)", async () => {
+      it('stepEntry reaches a transfer-only day the daily summary counts as 0', async () => {
+        const { fixture, navigate } = await stepSetup(3);
+        pane().commands()!.stepEntry(1);
+        const payment = entry(11, '2026-10-20', { kind: 'transfer_out', amount: '-5000.0000', transfer_group_id: 'pay-1' });
+        httpMock!.expectOne(isProbe).flush(page([payment], 1));
+        await fixture.whenStable();
+        expect(pane().selectedDay()).toBe('2026-10-20');
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush(page([
+          payment, entry(12, '2026-10-20', { kind: 'transfer_in', amount: '5000.0000', account_id: 7, transfer_group_id: 'pay-1' }),
+        ]));
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 11], withDay('2026-10-20'));
+      });
+
+      it('stepEntry reads the neighbour day with the list filters, so a day whose rows the filters hide is skipped', async () => {
+        localStorage.setItem(VIEW_KEY, 'calendar');
+        const layout = { selectedEntryId: signal<number | null>(3) };
+        const { fixture, el } = render('panes', makePreference({ hide_rewards_on_timeline: true }), [{ provide: AccountingLayoutComponent, useValue: layout }], ACCOUNTS);
+        flushSummary('2026-10');
+        flushDaily('2026-10', { days: DAYS });
+        fixture.detectChanges();
+        const timeline = fixture.componentInstance;
+        timeline.setAccount('1');
+        timeline.setKind('expense');
+        timeline.setTag('旅行');
+        timeline.setQuery('咖啡');
+        fixture.detectChanges();
+        // 日曆 + a search reads the month's matches for the right pane's results.
+        flushEntries([]);
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-21"]')!.click();
+        fixture.detectChanges();
+        await fixture.whenStable();
+        flushEntries([entry(3, '2026-10-21')]);
+        fixture.detectChanges();
+
+        pane().commands()!.stepEntry(1);
+        const probe = httpMock!.expectOne(isProbe);
+        const params = probe.request.params;
+        expect([params.get('date_from'), params.get('date_to'), params.get('limit')]).toEqual(['2026-10-01', '2026-10-20', '1']);
+        expect(params.getAll('account_id')).toEqual(['1']);
+        expect(params.get('kind')).toBe('expense');
+        expect(params.get('q')).toBe('咖啡');
+        expect(params.getAll('tag')).toEqual(['旅行']);
+        expect(params.get('hide_rewards')).toBe('true');
+        // The server skips 10/20 and 10/19 (nothing there passes the filters): the nearest kept entry is on 10/12.
+        probe.flush(page([entry(1, '2026-10-12')], 1));
+        await fixture.whenStable();
+        expect(pane().selectedDay()).toBe('2026-10-12');
+        fixture.detectChanges();
+        flushEntries([]);
+      });
+
+      it('stepEntry does nothing when no entry is left on that side of the month (Review Focus 4)', async () => {
         const { fixture, navigate } = await stepSetup(5);
         pane().commands()!.stepEntry(-1);
+        httpMock!.expectOne(isProbe).flush(page([]));
         await fixture.whenStable();
         expect(navigate).not.toHaveBeenCalled();
         expect(pane().selectedDay()).toBe('2026-10-21');
+        httpMock!.expectNone(r => r.url === '/api/accounting/entries');
+      });
+
+      it("stepEntry does nothing past the month's first or last day, without a read", async () => {
+        const first = await stepSetup(3, '2026-10-01');
+        first.navigate.mockResolvedValue(true);
+        pane().commands()!.stepEntry(1);
+        await first.fixture.whenStable();
+        expect(first.navigate).not.toHaveBeenCalled();
+        httpMock!.expectNone(r => r.url === '/api/accounting/entries');
+        TestBed.resetTestingModule();
+
+        const last = await stepSetup(5, '2026-10-31');
+        pane().commands()!.stepEntry(-1);
+        await last.fixture.whenStable();
+        expect(last.navigate).not.toHaveBeenCalled();
+        expect(pane().selectedDay()).toBe('2026-10-31');
         httpMock!.expectNone(r => r.url === '/api/accounting/entries');
       });
 
@@ -3115,11 +3223,13 @@ describe('LedgerTimelineComponent', () => {
         navigate.mockResolvedValue(true);
         pane().commands()!.stepEntry(1);
         expect(navigate).not.toHaveBeenCalled();
+        httpMock!.expectNone(r => r.url === '/api/accounting/entries');
       });
 
       it('stepEntry drops the pending open when the day read fails', async () => {
         const { fixture, navigate } = await stepSetup(3);
         pane().commands()!.stepEntry(1);
+        httpMock!.expectOne(isProbe).flush(page([entry(2, '2026-10-19')], 1));
         await fixture.whenStable();
         navigate.mockClear();
         navigate.mockResolvedValue(true);
@@ -3129,7 +3239,53 @@ describe('LedgerTimelineComponent', () => {
         expect(pane().dayState()).toBe('error');
         pane().commands()!.openInvoice({ id: 1, issue_date: '2026-10-19', candidates: [] } as unknown as InboxEinvoice);
         await fixture.whenStable();
-        httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [entry(2, '2026-10-19')], total: 1, limit: 500, offset: 0 });
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush(page([entry(2, '2026-10-19')]));
+        fixture.detectChanges();
+        expect(navigate.mock.calls.filter(call => call[0][0] === '/accounting/entries')).toEqual([]);
+      });
+
+      it("an old day's read resolving after stepEntry wrote the new day does not cancel the pending open (M12)", async () => {
+        const { fixture, navigate } = await stepSetup(3);
+        // A refresh of 10/21 is in flight when ↓ crosses the day edge.
+        fixture.componentInstance.retryDay();
+        const stale = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-21');
+        pane().commands()!.stepEntry(1);
+        httpMock!.expectOne(isProbe).flush(page([entry(2, '2026-10-19')], 1));
+        expect(fixture.componentInstance.selectedDay()).toBe('2026-10-19');
+        // Zoneless: the old day's answer lands before the effects start the new day's read.
+        stale.flush(page([entry(5, '2026-10-21'), entry(4, '2026-10-21'), entry(3, '2026-10-21')]));
+        await fixture.whenStable();
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19')
+          .flush(page([entry(2, '2026-10-19'), entry(1, '2026-10-19')]));
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 2], withDay('2026-10-19'));
+      });
+
+      it('a pending open is dropped once another day is picked before it settles', async () => {
+        const { fixture, el, navigate } = await stepSetup(3);
+        pane().commands()!.stepEntry(1);
+        httpMock!.expectOne(isProbe).flush(page([entry(2, '2026-10-19')], 1));
+        await fixture.whenStable();
+        fixture.detectChanges();
+        const step = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19');
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-25"]')!.click();
+        // 10/19's answer lands after the owner picked 10/25 (before 10/25's read starts): nothing opens.
+        step.flush(page([entry(2, '2026-10-19')]));
+        await fixture.whenStable();
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-25').flush(page([]));
+        fixture.detectChanges();
+        // Back on 10/19 later: nothing opens by itself either.
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-19"]')!.click();
+        await fixture.whenStable();
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19')
+          .flush(page([entry(2, '2026-10-19')]));
         fixture.detectChanges();
         expect(navigate.mock.calls.filter(call => call[0][0] === '/accounting/entries')).toEqual([]);
       });

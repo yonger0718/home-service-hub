@@ -456,6 +456,8 @@ export class LedgerTimelineComponent implements OnInit {
   private pendingInvoice: InboxEinvoice | null = null;
   /** `stepEntry` crossed a day edge: once `date`'s rows arrive, open its first (↓) / last (↑) row. */
   private pendingOpen: { at: 'first' | 'last'; date: string } | null = null;
+  /** `stepEntry`'s neighbour-day read; a newer step, a dropped day or destroy invalidates the one in flight. */
+  private probeRequestId = 0;
   /** Filters of the rows on screen; a reset load for another key clears them (skeleton), the same key keeps them. */
   private listKey: string | null = null;
   private dayKey: string | null = null;
@@ -954,6 +956,7 @@ export class LedgerTimelineComponent implements OnInit {
     inject(DestroyRef).onDestroy(() => {
       this.pendingInvoice = null;
       this.pendingOpen = null;
+      ++this.probeRequestId;
       pane.clear();
       this.overview.calendar.set(false);
     });
@@ -1039,6 +1042,22 @@ export class LedgerTimelineComponent implements OnInit {
     return [scope, this.accountFilter(), this.kindFilter(), this.query(), this.hideRewards(), this.extraKey()].join('|');
   }
 
+  /**
+   * The list's filters as `/entries` query fields: the 清單 page, the 日曆 day's rows and `stepEntry`'s neighbour-day
+   * read all see the same entries.
+   */
+  private listFilters(): Partial<AllEntriesQuery> {
+    const account = this.accountFilter();
+    return {
+      kind: this.kindFilter(),
+      q: this.query() || null,
+      include_invoice_items: this.query() ? true : undefined,
+      account_id: account === null ? undefined : [account],
+      hide_rewards: this.hideRewards(),
+      ...this.extraQuery(),
+    };
+  }
+
   /** The attribute filters as `/entries` query fields; absent fields are left out by `toParams`. */
   private extraQuery(): Pick<AllEntriesQuery, 'tag' | 'category_id' | 'project_id' | 'no_project' | 'merchant' | 'amount_min' | 'amount_max'> {
     const tags = parseTags(this.tagFilter()); // the entry form's rule: `#` stripped, split on space / , / ， / 、
@@ -1071,20 +1090,8 @@ export class LedgerTimelineComponent implements OnInit {
       }
       this.total.set(null);
     }
-    const account = this.accountFilter();
     this.accounting
-      .getAllEntries({
-        limit: TIMELINE_PAGE_SIZE,
-        offset,
-        date_from: from,
-        date_to: to,
-        kind: this.kindFilter(),
-        q: this.query() || null,
-        include_invoice_items: this.query() ? true : undefined,
-        account_id: account === null ? undefined : [account],
-        hide_rewards: this.hideRewards(),
-        ...this.extraQuery(),
-      })
+      .getAllEntries({ limit: TIMELINE_PAGE_SIZE, offset, date_from: from, date_to: to, ...this.listFilters() })
       .subscribe({
         next: page => {
           if (id !== this.requestId) {
@@ -1194,20 +1201,8 @@ export class LedgerTimelineComponent implements OnInit {
       this.dayEntries.set([]);
       this.dayKey = key;
     }
-    const account = this.accountFilter();
     this.accounting
-      .getAllEntries({
-        limit: CALENDAR_DAY_LIMIT,
-        offset: 0,
-        date_from: date,
-        date_to: date,
-        kind: this.kindFilter(),
-        q: this.query() || null,
-        include_invoice_items: this.query() ? true : undefined,
-        account_id: account === null ? undefined : [account],
-        hide_rewards: this.hideRewards(),
-        ...this.extraQuery(),
-      })
+      .getAllEntries({ limit: CALENDAR_DAY_LIMIT, offset: 0, date_from: date, date_to: date, ...this.listFilters() })
       .subscribe({
         next: page => {
           if (id === this.dayRequestId) {
@@ -1251,11 +1246,28 @@ export class LedgerTimelineComponent implements OnInit {
     this.settleInvoice(date, this.dayEntries());
   }
 
-  /** Resolves the pending invoice against `date`'s entries; cleared in every path. */
+  /**
+   * What an answer for `date` means to an action waiting for day `pending` (an invoice to open, `stepEntry`'s row):
+   * 'settle' — it is that day's answer; 'wait' — another day's answer while the URL still shows `pending` (an older read
+   * that landed before the pending day's read began: zoneless, the effects start that read later); 'drop' — the owner
+   * moved to another day meanwhile.
+   */
+  private pendingVerdict(pending: string, date: string): 'settle' | 'wait' | 'drop' {
+    if (this.selectedDay() !== pending) {
+      return 'drop';
+    }
+    return pending === date ? 'settle' : 'wait';
+  }
+
+  /** Resolves the pending invoice against `date`'s entries (`pendingVerdict`); cleared once settled or dropped. */
   private settleInvoice(date: string, entries: LedgerEntry[]): void {
     const invoice = this.pendingInvoice;
+    const verdict = invoice ? this.pendingVerdict(invoice.issue_date, date) : 'drop';
+    if (!invoice || verdict === 'wait') {
+      return;
+    }
     this.pendingInvoice = null;
-    if (!invoice || invoice.issue_date !== date || invoice.candidates.length !== 1) {
+    if (verdict === 'drop' || invoice.candidates.length !== 1) {
       return;
     }
     const [candidate] = invoice.candidates;
@@ -1273,8 +1285,9 @@ export class LedgerTimelineComponent implements OnInit {
   /**
    * ↓ / ↑ with the drawer open: the next / previous entry of the month in list order (newest first). Inside the selected
    * day: the neighbouring row of the day panel (unfolded, one row per entry). At the day's edge: the nearest earlier (↓) /
-   * later (↑) day whose daily-summary count > 0; that day is written to the URL and, once its rows arrive, its first (↓) /
-   * last (↑) row opens. At the month's edge, or when the open entry is not on the panel: nothing.
+   * later (↑) day with an entry the list's filters keep (`probeNeighbourDay`); that day is written to the URL and, once
+   * its rows arrive, its first (↓) / last (↑) row opens. At the month's edge, or when the open entry is not on the panel:
+   * nothing.
    */
   private stepEntry(delta: 1 | -1): void {
     const rows = this.paneDayGroup()?.rows ?? [];
@@ -1289,20 +1302,49 @@ export class LedgerTimelineComponent implements OnInit {
       this.open(neighbour);
       return;
     }
-    const days = (this.daily()?.days ?? []).filter(d => d.count > 0).map(d => d.date).sort();
-    const target = delta === 1 ? days.filter(d => d < day).pop() : days.find(d => d > day);
-    if (!target) {
-      return;
-    }
-    this.pendingOpen = { at: delta === 1 ? 'first' : 'last', date: target };
-    this.writeCalendar(target.slice(0, 7), target);
+    this.probeNeighbourDay(day, delta);
   }
 
-  /** Opens the first / last row of `date` when `stepEntry` is waiting for it; cleared in every path. */
+  /**
+   * The day `stepEntry` crosses to, read from the entries themselves (the daily summary counts neither transfers nor
+   * filters): the rest of the month before (↓) / after (↑) `day`, with the list's filters, newest first. ↓ takes the
+   * first item's day (limit 1); ↑ the last item's (the API has no ascending order: that side of the month is read up to
+   * `CALENDAR_DAY_LIMIT` entries). No entry there, a failed read, or another day picked meanwhile: nothing.
+   */
+  private probeNeighbourDay(day: string, delta: 1 | -1): void {
+    const id = ++this.probeRequestId;
+    const { from, to } = monthRange(day.slice(0, 7));
+    const range = delta === 1 ? { date_from: from, date_to: addDays(day, -1) } : { date_from: addDays(day, 1), date_to: to };
+    if (range.date_from > range.date_to) {
+      return;
+    }
+    this.accounting
+      .getAllEntries({ limit: delta === 1 ? 1 : CALENDAR_DAY_LIMIT, offset: 0, ...range, ...this.listFilters() })
+      .subscribe({
+        next: page => {
+          if (id !== this.probeRequestId || this.selectedDay() !== day) {
+            return;
+          }
+          const target = (delta === 1 ? page.items[0] : page.items[page.items.length - 1])?.entry_date;
+          if (target) {
+            this.pendingOpen = { at: delta === 1 ? 'first' : 'last', date: target };
+            this.writeCalendar(target.slice(0, 7), target);
+          }
+        },
+        // A key press, not a page: a failed read simply does not step.
+        error: () => undefined,
+      });
+  }
+
+  /** Opens the first / last row of `date` when `stepEntry` is waiting for it (`pendingVerdict`); cleared once settled or dropped. */
   private settleOpen(date: string): void {
     const pending = this.pendingOpen;
+    const verdict = pending ? this.pendingVerdict(pending.date, date) : 'drop';
+    if (!pending || verdict === 'wait') {
+      return;
+    }
     this.pendingOpen = null;
-    if (!pending || pending.date !== date) {
+    if (verdict === 'drop') {
       return;
     }
     const rows = this.paneDayGroup()?.rows ?? [];
@@ -1315,6 +1357,7 @@ export class LedgerTimelineComponent implements OnInit {
   private dropDayEntries(): void {
     this.pendingInvoice = null;
     this.pendingOpen = null;
+    ++this.probeRequestId;
     this.dayKey = null;
     ++this.dayRequestId;
     this.dayEntries.set([]);
