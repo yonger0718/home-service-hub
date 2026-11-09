@@ -47,7 +47,7 @@ import { CalendarMonthComponent } from '../calendar-month/calendar-month';
 import { inboxBellCount } from '../inbox/inbox-view';
 import { InboxService } from '../inbox/inbox.service';
 import { parseTags } from '../entry-form/entry-draft';
-import { addDays, currentMonth, monthLabel, todayIso } from '../dates';
+import { addDays, currentMonth, monthLabel, monthRange, todayIso } from '../dates';
 import { calendarParams, calendarWrite, readCalendarQuery } from './calendar-url';
 import { nextDueItems } from '../month-overview/due-items';
 import { AccountingOverviewService, OverviewState } from '../month-overview/overview.service';
@@ -184,18 +184,12 @@ export interface TimelineDay {
   rows: TimelineRow[];
 }
 
-export { currentMonth, monthLabel } from '../dates';
+export { currentMonth, monthLabel, monthRange } from '../dates';
 
 export function shiftMonth(month: string, delta: number): string {
   const [year, monthNumber] = month.split('-').map(Number);
   const [nextYear, nextMonth] = shiftYearMonth(year, monthNumber, delta);
   return `${nextYear}-${pad(nextMonth)}`;
-}
-
-export function monthRange(month: string): { from: string; to: string } {
-  const [year, monthNumber] = month.split('-').map(Number);
-  const lastDay = new Date(year, monthNumber, 0).getDate();
-  return { from: `${month}-01`, to: `${month}-${pad(lastDay)}` };
 }
 
 export function dayLabel(date: string): string {
