@@ -2950,6 +2950,116 @@ describe('LedgerTimelineComponent', () => {
       });
     });
 
+    describe('stepEntry', () => {
+      const DAYS = [
+        { date: '2026-10-21', expense: '-300.0000', income: '0.0000', count: 3 },
+        { date: '2026-10-20', expense: '0.0000', income: '0.0000', count: 0 },
+        { date: '2026-10-19', expense: '-200.0000', income: '0.0000', count: 2 },
+      ];
+      const entry = (id: number, date: string) => makeEntry({ id, entry_date: date });
+
+      /** Calendar at panes width with 10/21 selected (rows 5, 4, 3) and entry `selected` open in the drawer. */
+      async function stepSetup(selected: number, days = DAYS) {
+        localStorage.setItem(VIEW_KEY, 'calendar');
+        const layout = { selectedEntryId: signal<number | null>(selected) };
+        const rendered = render('panes', makePreference(), [{ provide: AccountingLayoutComponent, useValue: layout }], ACCOUNTS);
+        flushSummary('2026-10');
+        flushDaily('2026-10', { days });
+        rendered.fixture.detectChanges();
+        rendered.el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-21"]')!.click();
+        rendered.fixture.detectChanges();
+        await rendered.fixture.whenStable();
+        flushEntries([entry(5, '2026-10-21'), entry(4, '2026-10-21'), entry(3, '2026-10-21')]);
+        rendered.fixture.detectChanges();
+        // Calls through, so the day write lands in the URL; callers mock the entry navigation once the day write is done.
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
+        return { ...rendered, navigate };
+      }
+      const withDay = (day: string) => ({ queryParams: { month: '2026-10', day } });
+
+      it('stepEntry(1) opens the next row of the day', async () => {
+        const { navigate } = await stepSetup(5);
+        navigate.mockResolvedValue(true);
+        pane().commands()!.stepEntry(1);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 4], withDay('2026-10-21'));
+      });
+
+      it('stepEntry(-1) opens the previous row of the day', async () => {
+        const { navigate } = await stepSetup(3);
+        navigate.mockResolvedValue(true);
+        pane().commands()!.stepEntry(-1);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 4], withDay('2026-10-21'));
+      });
+
+      it("stepEntry(1) at the day's last row moves to the previous day with rows and opens its newest row", async () => {
+        const { fixture, navigate } = await stepSetup(3);
+        pane().commands()!.stepEntry(1);
+        await fixture.whenStable();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith([], expect.objectContaining({
+          queryParams: { month: '2026-10', day: '2026-10-19' }, queryParamsHandling: 'merge', replaceUrl: true,
+        }));
+        expect(pane().selectedDay()).toBe('2026-10-19');
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+        expect(req.request.params.get('date_from')).toBe('2026-10-19');
+        expect(navigate).not.toHaveBeenCalled();
+        req.flush({ items: [entry(2, '2026-10-19'), entry(1, '2026-10-19')], total: 2, limit: 500, offset: 0 });
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 2], withDay('2026-10-19'));
+      });
+
+      it('stepEntry(-1) at the first row opens the last row of the next later day with rows', async () => {
+        const days = [{ date: '2026-10-23', expense: '-9.0000', income: '0.0000', count: 1 }, ...DAYS];
+        const { fixture, navigate } = await stepSetup(5, days);
+        pane().commands()!.stepEntry(-1);
+        await fixture.whenStable();
+        expect(pane().selectedDay()).toBe('2026-10-23');
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({
+          items: [entry(8, '2026-10-23'), entry(7, '2026-10-23')], total: 2, limit: 500, offset: 0,
+        });
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 7], withDay('2026-10-23'));
+      });
+
+      it("stepEntry does nothing at the month's edge (Review Focus 4)", async () => {
+        const { fixture, navigate } = await stepSetup(5);
+        pane().commands()!.stepEntry(-1);
+        await fixture.whenStable();
+        expect(navigate).not.toHaveBeenCalled();
+        expect(pane().selectedDay()).toBe('2026-10-21');
+        httpMock!.expectNone(r => r.url === '/api/accounting/entries');
+      });
+
+      it('stepEntry does nothing when the open entry is not on the day panel', async () => {
+        const { navigate } = await stepSetup(99);
+        navigate.mockResolvedValue(true);
+        pane().commands()!.stepEntry(1);
+        expect(navigate).not.toHaveBeenCalled();
+      });
+
+      it('stepEntry drops the pending open when the day read fails', async () => {
+        const { fixture, navigate } = await stepSetup(3);
+        pane().commands()!.stepEntry(1);
+        await fixture.whenStable();
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+        fixture.detectChanges();
+        expect(pane().dayState()).toBe('error');
+        pane().commands()!.openInvoice({ id: 1, issue_date: '2026-10-19', candidates: [] } as unknown as InboxEinvoice);
+        await fixture.whenStable();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [entry(2, '2026-10-19')], total: 1, limit: 500, offset: 0 });
+        fixture.detectChanges();
+        expect(navigate.mock.calls.filter(call => call[0][0] === '/accounting/entries')).toEqual([]);
+      });
+    });
+
     it('clears the pane services when destroyed', () => {
       const { fixture, el } = renderPanes();
       pickDay(fixture, el, '2026-10-21', [makeEntry({ id: 5, entry_date: '2026-10-21' })]);

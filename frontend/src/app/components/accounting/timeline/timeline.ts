@@ -454,6 +454,8 @@ export class LedgerTimelineComponent implements OnInit {
   private dayRequestId = 0;
   /** An invoice whose issue day was just selected; resolved when that day's entries arrive (`openInvoice`). */
   private pendingInvoice: InboxEinvoice | null = null;
+  /** `stepEntry` crossed a day edge: once `date`'s rows arrive, open its first (↓) / last (↑) row. */
+  private pendingOpen: { at: 'first' | 'last'; date: string } | null = null;
   /** Filters of the rows on screen; a reset load for another key clears them (skeleton), the same key keeps them. */
   private listKey: string | null = null;
   private dayKey: string | null = null;
@@ -924,7 +926,7 @@ export class LedgerTimelineComponent implements OnInit {
       untracked(() => (show ? this.loadToday(today) : this.dropToday()));
     });
     pane.commands.set({
-      stepEntry: () => undefined, // Task 8
+      stepEntry: delta => this.stepEntry(delta),
       openInvoice: invoice => this.openInvoice(invoice),
       setQuery: text => {
         this.clearQueryTimer();
@@ -933,6 +935,7 @@ export class LedgerTimelineComponent implements OnInit {
     });
     inject(DestroyRef).onDestroy(() => {
       this.pendingInvoice = null;
+      this.pendingOpen = null;
       pane.clear();
       this.overview.calendar.set(false);
     });
@@ -1193,11 +1196,13 @@ export class LedgerTimelineComponent implements OnInit {
             this.dayEntries.set(page.items);
             this.dayLoading.set(false);
             this.settleInvoice(date, page.items);
+            this.settleOpen(date);
           }
         },
         error: () => {
           if (id === this.dayRequestId) {
             this.pendingInvoice = null;
+            this.pendingOpen = null;
             this.dayEntries.set([]);
             this.dayError.set(true);
             this.dayLoading.set(false);
@@ -1247,8 +1252,51 @@ export class LedgerTimelineComponent implements OnInit {
     }
   }
 
+  /**
+   * ↓ / ↑ with the drawer open: the next / previous entry of the month in list order (newest first). Inside the selected
+   * day: the neighbouring row of the day panel (unfolded, one row per entry). At the day's edge: the nearest earlier (↓) /
+   * later (↑) day whose daily-summary count > 0; that day is written to the URL and, once its rows arrive, its first (↓) /
+   * last (↑) row opens. At the month's edge, or when the open entry is not on the panel: nothing.
+   */
+  private stepEntry(delta: 1 | -1): void {
+    const rows = this.paneDayGroup()?.rows ?? [];
+    const id = this.selectedId();
+    const index = id === null ? -1 : rows.findIndex(row => row.memberIds.includes(id));
+    const day = this.selectedDay();
+    if (index < 0 || !day) {
+      return;
+    }
+    const neighbour = rows[index + delta];
+    if (neighbour) {
+      this.open(neighbour);
+      return;
+    }
+    const days = (this.daily()?.days ?? []).filter(d => d.count > 0).map(d => d.date).sort();
+    const target = delta === 1 ? days.filter(d => d < day).pop() : days.find(d => d > day);
+    if (!target) {
+      return;
+    }
+    this.pendingOpen = { at: delta === 1 ? 'first' : 'last', date: target };
+    this.writeCalendar(target.slice(0, 7), target);
+  }
+
+  /** Opens the first / last row of `date` when `stepEntry` is waiting for it; cleared in every path. */
+  private settleOpen(date: string): void {
+    const pending = this.pendingOpen;
+    this.pendingOpen = null;
+    if (!pending || pending.date !== date) {
+      return;
+    }
+    const rows = this.paneDayGroup()?.rows ?? [];
+    const row = pending.at === 'first' ? rows[0] : rows[rows.length - 1];
+    if (row) {
+      this.open(row);
+    }
+  }
+
   private dropDayEntries(): void {
     this.pendingInvoice = null;
+    this.pendingOpen = null;
     this.dayKey = null;
     ++this.dayRequestId;
     this.dayEntries.set([]);
