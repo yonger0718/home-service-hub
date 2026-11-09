@@ -1,0 +1,43 @@
+:host {
+  display: block;
+}
+
+.field {
+  align-items: center;
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: 12px;
+  display: flex;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 12px;
+
+  &.invalid {
+    border-color: var(--app-danger, #c0392b);
+  }
+
+  &.disabled {
+    opacity: 0.5;
+  }
+
+  &:focus-within {
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+  }
+}
+
+.affix {
+  color: var(--app-muted, inherit);
+  flex-shrink: 0;
+}
+
+.amt {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  flex: 1;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+  outline: none;
+  text-align: right;
+}
