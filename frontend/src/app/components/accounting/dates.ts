@@ -5,6 +5,20 @@ export function todayIso(now: Date = new Date()): string {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
+const WEEKDAYS = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
+
+/** `2026-10-21` → `週三` (local calendar day). */
+export function weekdayLabel(iso: string): string {
+  const [year, month, day] = iso.split('-').map(Number);
+  return WEEKDAYS[new Date(year, month - 1, day).getDay()];
+}
+
+/** `2026-10-21` → `10/21 週三` (the timeline's day header). */
+export function dayLabel(date: string): string {
+  const [, month, day] = date.split('-').map(Number);
+  return `${pad(month)}/${pad(day)} ${weekdayLabel(date)}`;
+}
+
 /** `2026-11-04` → `11/04`. */
 export function shortDate(iso: string): string {
   return `${iso.slice(5, 7)}/${iso.slice(8, 10)}`;

@@ -19,6 +19,9 @@ export class AccountingOverviewService {
   /** The layout currently renders <app-month-overview>; the layout owns it, so clear() leaves it alone. */
   readonly visible = signal(false);
 
+  /** The timeline is in 日曆 view (any width); the timeline owns it and clear() leaves it alone, like `visible`. */
+  readonly calendar = signal(false);
+
   clear(): void {
     this.month.set(currentMonth());
     this.summary.set(null);

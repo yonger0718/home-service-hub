@@ -5,7 +5,7 @@ import { provideLocationMocks } from '@angular/common/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, ParamMap, Router, RouterLink, convertToParamMap, provideRouter } from '@angular/router';
 import { By } from '@angular/platform-browser';
-import { BehaviorSubject } from 'rxjs';
+import { BehaviorSubject, Subject, startWith } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EntryDetail, LedgerAccount, LedgerEntry } from '../../../models/accounting.model';
@@ -49,10 +49,13 @@ describe('EntryDetailComponent', () => {
   let http: HttpTestingController;
   let params: BehaviorSubject<ParamMap>;
   let query: ParamMap;
+  /** A later query of the same route (the grid picking another day while the detail stays open). */
+  let queryChanges: Subject<ParamMap>;
 
   beforeEach(async () => {
     params = new BehaviorSubject(convertToParamMap({ id: '42' }));
     query = convertToParamMap({});
+    queryChanges = new Subject();
     await TestBed.configureTestingModule({
       imports: [EntryDetailComponent],
       providers: [
@@ -60,7 +63,14 @@ describe('EntryDetailComponent', () => {
         provideHttpClientTesting(),
         provideRouter([]),
         provideLocationMocks(),
-        { provide: ActivatedRoute, useValue: { paramMap: params, snapshot: { get queryParamMap() { return query; } } } },
+        {
+          provide: ActivatedRoute,
+          useValue: {
+            paramMap: params,
+            get queryParamMap() { return queryChanges.pipe(startWith(query)); },
+            snapshot: { get queryParamMap() { return query; } },
+          },
+        },
       ],
     }).compileComponents();
     http = TestBed.inject(HttpTestingController);
@@ -566,6 +576,63 @@ describe('EntryDetailComponent', () => {
     expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 42, 'edit'], { queryParamsHandling: 'preserve' });
   });
 
+  it('✕ on the calendar goes back (history not grown), then the list it lands on shows the day in the URL', async () => {
+    const router = TestBed.inject(Router);
+    router.resetConfig([{ path: '**', children: [] }]);
+    const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    // The grid moved the day while the detail was open: the route's query is the day now shown.
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-22' });
+    const fixture = render(RECEIVABLE);
+    const navigate = vi.spyOn(router, 'navigateByUrl');
+    el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
+
+    // The browser lands on the day the detail was opened from; the day shown now replaces it in place.
+    await router.navigateByUrl('/accounting?month=2026-10&day=2026-10-21');
+    await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-22'));
+  });
+
+  it('✕ on a detail reached from 清單 with only ?month goes back as before', () => {
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    query = convertToParamMap({ month: '2026-10' });
+    const fixture = render(RECEIVABLE);
+    el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('✕ off the calendar still goes back in history', () => {
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    query = convertToParamMap({ q: '晚餐' });
+    const fixture = render(RECEIVABLE);
+    el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('複製 keeps the calendar month and day', () => {
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-21' });
+    const fixture = render(RECEIVABLE);
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    el(fixture).querySelector<HTMLButtonElement>('.action-copy')!.click();
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entry'], { queryParams: { copy: 42, month: '2026-10', day: '2026-10-21' } });
+  });
+
+  it('複製 off the calendar opens the form with the copy only', () => {
+    const fixture = render(RECEIVABLE);
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    el(fixture).querySelector<HTMLButtonElement>('.action-copy')!.click();
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entry'], { queryParams: { copy: 42 } });
+  });
+
   it('closes to the passbook when opened from it with closeTo: list', () => {
     const router = TestBed.inject(Router);
     const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
@@ -765,6 +832,47 @@ describe('EntryDetailComponent', () => {
     expect(back.compareDocumentPosition(el(fixture).querySelector('.dhead')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it('keeps the calendar month and day on the 「← 多類別」 link and the related lines, and follows a day picked later', () => {
+    openedWith({ groupDepth: 2, viaGroup: true });
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-21' });
+    const fixture = render(splitChild({
+      kind: 'expense', amount: '-60', refunded_amount: '0',
+      refunded_by: [entry({ id: 7, kind: 'income', amount: '-100', group: SPLIT })],
+      settled_by: [],
+      children: [entry({ id: 90, kind: 'fee', amount: '-5' })],
+    }));
+    const hrefs = () => [
+      el(fixture).querySelector('.group-back')?.getAttribute('href'),
+      ...Array.from(el(fixture).querySelectorAll('.related a.dline')).map(line => line.getAttribute('href')),
+    ];
+    expect(hrefs()).toEqual([
+      '/accounting/entries/42/group?month=2026-10&day=2026-10-21',
+      '/accounting/entries/90?month=2026-10&day=2026-10-21',
+      '/accounting/entries/7?month=2026-10&day=2026-10-21',
+    ]);
+
+    // The grid moves the day while the detail stays open (the route's query changes, the page is reused).
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-23' });
+    queryChanges.next(query);
+    fixture.detectChanges();
+    expect(hrefs()).toEqual([
+      '/accounting/entries/42/group?month=2026-10&day=2026-10-23',
+      '/accounting/entries/90?month=2026-10&day=2026-10-23',
+      '/accounting/entries/7?month=2026-10&day=2026-10-23',
+    ]);
+  });
+
+  it('leaves the 「← 多類別」 link and the related lines without a query off the calendar', () => {
+    openedWith({ groupDepth: 2, viaGroup: true });
+    const fixture = render(splitChild({
+      kind: 'expense', amount: '-60', refunded_amount: '0',
+      refunded_by: [entry({ id: 7, kind: 'income', amount: '-100', group: SPLIT })],
+      settled_by: [],
+    }));
+    expect(el(fixture).querySelector('.group-back')?.getAttribute('href')).toBe('/accounting/entries/42/group');
+    expect(Array.from(el(fixture).querySelectorAll('.related a.dline')).map(line => line.getAttribute('href'))).toEqual(['/accounting/entries/7']);
+  });
+
   it('keeps the passbook in the 「← 多類別」 link of a child opened from a passbook', () => {
     params.next(convertToParamMap({ id: '5', eid: '42' }));
     const fixture = render(splitChild());
@@ -820,6 +928,22 @@ describe('EntryDetailComponent', () => {
     expect(navigate).toHaveBeenCalledWith('/accounting');
     expect(back).not.toHaveBeenCalled();
     expect(go).not.toHaveBeenCalled();
+  });
+
+  it('✕ on a child on the calendar goes back past the group view (history not grown), not to the day by a new entry', () => {
+    openedWith({ groupDepth: 2, viaGroup: true });
+    const router = TestBed.inject(Router);
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    const location = TestBed.inject(Location);
+    const go = vi.spyOn(location, 'historyGo').mockImplementation(() => undefined);
+    const back = vi.spyOn(location, 'back');
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-22' });
+    const fixture = render(splitChild());
+    el(fixture).querySelector<HTMLButtonElement>('.dhead .close')!.click();
+    expect(go).toHaveBeenCalledExactlyOnceWith(-2);
+    expect(navigate).not.toHaveBeenCalled();
+    expect(back).not.toHaveBeenCalled();
   });
 
   it('✕ on a child of a group view opened from the reminder centre returns there', () => {

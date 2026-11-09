@@ -65,6 +65,40 @@ app-split-folder {
   }
 }
 
+.monthbar-figures {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+  gap: 8px 20px;
+  margin: 0;
+  margin-inline: auto 8px;
+
+  dt {
+    color: var(--app-text-muted);
+    display: inline;
+    font-weight: 700;
+    margin-inline-end: 6px;
+  }
+
+  dd {
+    display: inline;
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    margin: 0;
+  }
+
+  /* dt + dd pairs sit side by side; flex puts each on its own item, so group them by sibling margin */
+  dd:not(:last-child) {
+    margin-inline-end: 12px;
+  }
+
+  .monthbar-error {
+    color: var(--app-text-muted);
+    font-weight: 400;
+  }
+}
+
 .sum {
   background: var(--app-surface-soft);
   border-radius: var(--radius-md);

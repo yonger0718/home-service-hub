@@ -59,6 +59,8 @@ export class CalendarMonthComponent {
   /** Week mode: only the row containing this date renders, and no dots. */
   readonly weekOf = input<string | null>(null);
   readonly daySelected = output<string>();
+  /** `[` (−1) / `]` (+1) on the grid: step the selected day; the host owns the move (it crosses month edges). */
+  readonly dayStep = output<1 | -1>();
 
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly focusDate = signal<string | null>(null);
@@ -139,6 +141,11 @@ export class CalendarMonthComponent {
 
   onGridKeydown(event: KeyboardEvent): void {
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+      return;
+    }
+    if (event.key === '[' || event.key === ']') {
+      event.preventDefault();
+      this.dayStep.emit(event.key === ']' ? 1 : -1);
       return;
     }
     const month = this.month();

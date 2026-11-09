@@ -11,10 +11,10 @@ import {
   inject,
   signal,
 } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
-import { calendarParams } from '../timeline/calendar-url';
-import { Observable } from 'rxjs';
+import { calendarParams, readCalendarQuery } from '../timeline/calendar-url';
+import { Observable, map } from 'rxjs';
 
 import {
   ENTRY_KIND_LABELS,
@@ -28,13 +28,13 @@ import {
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingToastService, scheduleActionError } from '../accounting-toast';
-import { NO_ENTER_SAVE_TAGS, textOn, colorOf, fxConversionLine, iconOf, isHandledKey, leavePage } from '../accounting-ui';
+import { NO_ENTER_SAVE_TAGS, textOn, colorOf, fxConversionLine, iconOf, isHandledKey } from '../accounting-ui';
 import { amountString, parseAmountFields, parseAmountText } from '../amount-text';
 import { shortDate, slashDate, todayIso } from '../dates';
 import { formatMoney, formatNumber } from '../format';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
 import { alignedRepostAmounts, schedulePill } from '../schedule-math';
-import { GroupNavState, closeGroupPage, groupCommands, inPlaceState, readGroupNavState } from '../split-group/group-nav';
+import { GroupNavState, closeKeepingDay, groupCommands, inPlaceState, readGroupNavState } from '../split-group/group-nav';
 import { AppEntryEinvoiceCardComponent } from './einvoice-card';
 import { AppEntryRewardRepriceCardComponent } from './reward-reprice-card';
 import { RewardAmountText } from './reward-cards';
@@ -80,6 +80,13 @@ export class EntryDetailComponent implements OnInit {
   private service = inject(AccountingService);
   private route = inject(ActivatedRoute);
   private router = inject(Router);
+  /**
+   * The calendar month / day this page's URL carries (`{}` off the calendar), kept current while the page stays open
+   * (a grid click with the drawer open moves the day): ✕, 複製, schedule edits and the in-page links carry it.
+   */
+  protected readonly calendarQuery = toSignal(this.route.queryParamMap.pipe(map(calendarParams)), {
+    initialValue: calendarParams(this.route.snapshot.queryParamMap),
+  });
   private location = inject(Location);
   private destroyRef = inject(DestroyRef);
   private layoutMode = inject(LayoutModeService);
@@ -428,28 +435,21 @@ export class EntryDetailComponent implements OnInit {
     }
     const passbook = this.passbookId();
     if (passbook === null) {
-      const queryParams = calendarParams(this.route.snapshot.queryParamMap);
-      return this.router.serializeUrl(this.router.createUrlTree(['/accounting'], { queryParams }));
+      return this.router.serializeUrl(this.router.createUrlTree(['/accounting'], { queryParams: this.calendarQuery() }));
     }
     return `/accounting/accounts/${passbook}`;
   }
 
   /**
    * ✕ and after a delete: back to where the owner came from (in-app history), else the parent list. Opened with
-   * `closeTo` it always goes to that page.
+   * `closeTo` it always goes to that page. A child of the group view goes back to the list the group view was opened
+   * from (history not grown), never to the group view; a deep-linked group view has no list behind it, so the parent
+   * list. On the calendar (a `day` in the URL) the list it lands on then shows the day the URL shows now, in place: the
+   * grid may have moved the day while the drawer was open (`closeKeepingDay`).
    */
   close(): void {
-    if (this.navState().viaGroup) {
-      // A child of the group view: back to the list the group view was opened from (history not grown), never to
-      // the group view; a deep-linked group view has no list behind it, so the parent list.
-      closeGroupPage(this.router, this.location, this.navState(), this.parentUrl());
-      return;
-    }
-    if (this.closeTo !== null) {
-      void this.router.navigateByUrl(this.parentUrl());
-      return;
-    }
-    leavePage(this.router, this.location, this.parentUrl());
+    const target = readCalendarQuery(this.route.snapshot.queryParamMap);
+    closeKeepingDay(this.router, this.location, this.navState(), this.parentUrl(), target, false);
   }
 
   /** A link to another member of the shown split (a sibling): it replaces this child in history. */
@@ -613,14 +613,17 @@ export class EntryDetailComponent implements OnInit {
     this.openSchedulePanel('repost', '.repost-amount');
   }
 
-  /** 編輯整個排程: the entry form in definition mode (not for an imported definition before cutover). */
+  /**
+   * 編輯整個排程: the entry form in definition mode (not for an imported definition before cutover), keeping the
+   * calendar month / day.
+   */
   editSchedule(): void {
     const link = this.scheduleLink();
     const definition = this.scheduleDefinition();
     if (!link || !definition || definition.locked || definition.status === 'ended') {
       return;
     }
-    this.router.navigate(['/accounting/entry'], { queryParams: { schedule: link.definition_id } });
+    this.router.navigate(['/accounting/entry'], { queryParams: { schedule: link.definition_id, ...this.calendarQuery() } });
   }
 
   setRepostAmount(index: number, value: string): void {
@@ -698,10 +701,11 @@ export class EntryDetailComponent implements OnInit {
     this.runWrite(this.service.acceptPartialScheduleInstance(link.instance_id), id, () => this.load(id, true));
   }
 
+  /** 複製: a new entry prefilled from this one, keeping the calendar month / day. */
   copy(): void {
     const detail = this.detail();
     if (detail) {
-      this.router.navigate(['/accounting/entry'], { queryParams: { copy: detail.id } });
+      this.router.navigate(['/accounting/entry'], { queryParams: { copy: detail.id, ...this.calendarQuery() } });
     }
   }
 

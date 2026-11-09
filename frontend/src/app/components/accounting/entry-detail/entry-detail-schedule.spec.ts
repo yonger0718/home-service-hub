@@ -1,7 +1,7 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { ActivatedRoute, Router, convertToParamMap, provideRouter } from '@angular/router';
+import { ActivatedRoute, ParamMap, Router, convertToParamMap, provideRouter } from '@angular/router';
 import { of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -46,15 +46,24 @@ const DEFINITION = {
 describe('EntryDetailComponent schedules', () => {
   let http: HttpTestingController;
   let navigate: ReturnType<typeof vi.fn>;
+  let query: ParamMap;
 
   beforeEach(async () => {
+    query = convertToParamMap({});
     await TestBed.configureTestingModule({
       imports: [EntryDetailComponent],
       providers: [
         provideHttpClient(),
         provideHttpClientTesting(),
         provideRouter([]),
-        { provide: ActivatedRoute, useValue: { paramMap: of(convertToParamMap({ id: '42' })) } },
+        {
+          provide: ActivatedRoute,
+          useValue: {
+            paramMap: of(convertToParamMap({ id: '42' })),
+            get queryParamMap() { return of(query); },
+            snapshot: { get queryParamMap() { return query; } },
+          },
+        },
       ],
     }).compileComponents();
     http = TestBed.inject(HttpTestingController);
@@ -184,6 +193,16 @@ describe('EntryDetailComponent schedules', () => {
     locked.fixture.detectChanges();
     expect(locked.el.querySelector('.scope-all')).toBeNull();
     expect(text(locked.el.querySelector('.scope-locked'))).toBe('MOZE 匯入資料，切換後可編輯');
+  });
+
+  it('編輯整個排程 keeps the calendar month and day', () => {
+    query = convertToParamMap({ month: '2026-10', day: '2026-10-21' });
+    const { fixture } = render(REPAYMENT);
+    click(fixture, '.action-edit');
+    http.expectOne('/api/accounting/schedules/definitions/12').flush(DEFINITION);
+    fixture.detectChanges();
+    click(fixture, '.scope-all');
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entry'], { queryParams: { schedule: 12, month: '2026-10', day: '2026-10-21' } });
   });
 
   it('offers no 編輯整個排程 for an ended schedule', () => {

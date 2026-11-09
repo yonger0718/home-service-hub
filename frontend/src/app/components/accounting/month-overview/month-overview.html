@@ -1,5 +1,81 @@
 <h2 class="ov-month">{{ monthLabel(month()) }}</h2>
 
+@if (calendar()) {
+  @if (today(); as t) {
+    <button type="button" class="ov-today" (click)="pickDay.emit(t.date)">
+      <span class="today-disc" aria-hidden="true">{{ t.date.slice(8) }}</span>
+      <span class="today-body">
+        <b>今天 · {{ shortDate(t.date) }} {{ weekday(t.date) }}</b>
+        <span class="today-names">{{ t.count }} 筆@if (t.names) { · {{ t.names }}}</span>
+      </span>
+      <b class="today-net" [class.neg]="t.net < 0" [class.pos]="t.net > 0">{{ t.netText }}</b>
+    </button>
+  }
+
+  <h3 class="ov-title">支出類別</h3>
+  @if (summaryState() === 'loading') {
+    <p class="ov-empty">讀取中</p>
+  } @else if (summaryState() === 'error') {
+    <p class="ov-empty">摘要讀取失敗</p>
+  } @else if (distribution().length) {
+    <div class="dist">
+      <div class="dist-bar" role="img" [attr.aria-label]="aria()">
+        @for (seg of bar(); track $index) {
+          <span [style.flex-grow]="seg.amount" [style.background]="seg.color"></span>
+        }
+      </div>
+      <div class="dist-list">
+        @for (seg of distribution(); track $index) {
+          <span class="dist-row">@if (seg.kind !== 'refund') {<span class="dist-swatch" aria-hidden="true" [style.background]="seg.color"></span>}<span class="dist-name">{{ seg.name }}</span>&ngsp;<b>{{ seg.label }}</b></span>
+        }
+      </div>
+    </div>
+  } @else {
+    <p class="ov-empty">本月尚無支出</p>
+  }
+
+  <a class="ov-reports" [routerLink]="'/accounting/reports'" [queryParams]="{ month: month() }">看報表 ›</a>
+
+  <h3 class="ov-title">花最多的商家</h3>
+  @switch (merchantsState()) {
+    @case ('loading') {
+      <p class="ov-empty">讀取中</p>
+    }
+    @case ('error') {
+      <p class="ov-empty ov-merchants-error">商家排行讀取失敗</p>
+    }
+    @default {
+      @if (topMerchants().length) {
+        <ol class="ov-merchants">
+          @for (m of topMerchants(); track m.key; let i = $index) {
+            <li>
+              <span class="mer-rank">{{ i + 1 }}</span>
+              <span class="mer-name">{{ m.label }}</span>
+              <span class="mer-count">{{ m.count }} 筆</span>
+              <b>{{ formatMoney(abs(m.amount), currency()) }}</b>
+            </li>
+          }
+        </ol>
+      } @else {
+        <p class="ov-empty">本月尚無商家支出</p>
+      }
+    }
+  }
+
+  <h3 class="ov-title">這個月要處理</h3>
+  @if (todoEmpty()) {
+    <p class="ov-empty">沒有要處理的項目</p>
+  } @else {
+    <ul class="ov-todo">
+      @for (inv of sortedInvoices(); track inv.id) {
+        <li><button type="button" class="todo-invoice" (click)="openInvoice.emit(inv)">發票待對帳 · {{ shortDate(inv.issue_date) }} {{ inv.seller_name }} {{ formatMoney(inv.total_amount, currency()) }}</button></li>
+      }
+      @for (due of sortedDues(); track due.key) {
+        <li><button type="button" class="todo-bill" (click)="pickDay.emit(due.date)">{{ due.name }} 帳單 {{ due.amountText }} · {{ shortDate(due.date) }} 到期</button></li>
+      }
+    </ul>
+  }
+} @else {
 <h3 class="ov-title">支出類別</h3>
 @if (summaryState() === 'loading') {
   <p class="ov-empty">讀取中</p>
@@ -40,4 +116,5 @@
   </ul>
 } @else {
   <p class="ov-empty">沒有即將到期的項目</p>
+}
 }

@@ -227,6 +227,34 @@ describe('ShellComponent', () => {
     await vi.waitFor(() => expect(router.url).toBe('/accounting/entry'));
   });
 
+  it('N on the calendar opens the entry form with the month and day', async () => {
+    const { router } = await render(viewportOf(1440), { url: '/accounting?month=2026-10&day=2026-10-21' });
+
+    expect(press('n').defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entry?month=2026-10&day=2026-10-21'));
+  });
+
+  it('N off the calendar carries no other query to the entry form', async () => {
+    const { router } = await render(viewportOf(1440), { url: '/portfolio?tab=dividends' });
+
+    press('n');
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entry'));
+  });
+
+  it("N on a page whose ?month is not the calendar's (報表) opens a bare entry form", async () => {
+    const { router } = await render(viewportOf(1440), { url: '/accounting/reports?month=2026-08' });
+
+    press('n');
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entry'));
+  });
+
+  it('N on a page the timeline opened beside it (an entry on the calendar) keeps the month and day', async () => {
+    const { router } = await render(viewportOf(1440), { url: '/accounting/entries/7?month=2026-10&day=2026-10-21' });
+
+    press('n');
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entry?month=2026-10&day=2026-10-21'));
+  });
+
   it('ignores an N another handler already handled, and IME commits', async () => {
     const { router } = await render(viewportOf(1440), { url: '/portfolio' });
     const navigate = vi.spyOn(router, 'navigate');
@@ -314,6 +342,39 @@ describe('ShellComponent', () => {
 
     fab()!.click();
 
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entry'));
+  });
+
+  it('a 記一筆 click on the calendar carries the month and day', async () => {
+    const { fab, router } = await render(viewportOf(1440), { url: '/accounting?month=2026-10&day=2026-10-21' });
+
+    fab()!.click();
+
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entry?month=2026-10&day=2026-10-21'));
+  });
+
+  it("the 記一筆 link's href follows the calendar month and day after a navigation", async () => {
+    const { fab, router, settle } = await render(viewportOf(1440), { url: '/portfolio' });
+    expect(fab()!.getAttribute('href')).toBe('/accounting/entry');
+
+    await router.navigateByUrl('/accounting?month=2026-10&day=2026-10-21');
+    await settle();
+    expect(fab()!.getAttribute('href')).toBe('/accounting/entry?month=2026-10&day=2026-10-21');
+
+    await router.navigateByUrl('/accounting?month=2026-11');
+    await settle();
+    expect(fab()!.getAttribute('href')).toBe('/accounting/entry?month=2026-11');
+
+    await router.navigateByUrl('/settings');
+    await settle();
+    expect(fab()!.getAttribute('href')).toBe('/accounting/entry');
+  });
+
+  it("記一筆 on a page whose ?month is not the calendar's (報表) links and opens a bare entry form", async () => {
+    const { fab, router } = await render(viewportOf(1440), { url: '/accounting/reports?month=2026-08' });
+    expect(fab()!.getAttribute('href')).toBe('/accounting/entry');
+
+    fab()!.click();
     await vi.waitFor(() => expect(router.url).toBe('/accounting/entry'));
   });
 

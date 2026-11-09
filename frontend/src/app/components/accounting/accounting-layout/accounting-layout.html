@@ -7,7 +7,7 @@
         <app-btn class="add-account" variant="soft" icon="pi-plus" (click)="addAccount()">新增帳戶</app-btn>
       }
     </app-page-header>
-    <div class="dbody" [class.dbody--sheet]="mode() === 'sheet'">
+    <div class="dbody" [class.dbody--sheet]="mode() === 'sheet'" [class.dbody--calendar]="calendarMode()">
       <section #listPane class="pane list-pane" data-page-scroller aria-label="列表" tabindex="-1">
         @if (listComponent(); as list) {
           <ng-container *ngComponentOutlet="list; inputs: outletInputs" />
@@ -47,10 +47,95 @@
             }
           }
         </div>
-        <router-outlet name="pane" />
+        @if (calendarBase(); as base) {
+          <!-- inert while the drawer covers it: set by the overlay effect (after the opener is remembered), not bound. -->
+          <div class="cal-base" #calBase>
+            @if (base !== 'day') {
+              <!-- Value written by an effect (never while focused), not bound: see onSearchInput. -->
+              <input
+                type="search"
+                class="cal-search"
+                #calSearch
+                placeholder="搜尋整月：名稱、商家、備註"
+                aria-label="搜尋名稱、商家或備註"
+                (input)="onSearchInput($event)"
+                (keydown)="onSearchInput($event)"
+                (compositionend)="onSearchInput($event)"
+              />
+            }
+            @switch (base) {
+              @case ('summary') {
+                <app-month-overview
+                  [calendar]="true"
+                  [month]="overview.month()"
+                  [summary]="overview.summary()"
+                  [summaryState]="overview.summaryState()"
+                  [today]="pane.todayCard()"
+                  [merchants]="pane.merchants()"
+                  [merchantsState]="pane.merchantsState()"
+                  [invoices]="pane.invoices()"
+                  [dues]="pane.monthDues()"
+                  (pickDay)="onPickDay($event)"
+                  (openInvoice)="onOpenInvoice($event)"
+                />
+              }
+              @case ('day') {
+                <app-calendar-day-panel
+                  mode="day"
+                  [day]="pane.selectedDay()"
+                  [today]="pane.today()"
+                  [rows]="pane.dayRows()"
+                  [net]="pane.dayNet()"
+                  [state]="pane.dayState()"
+                  [billLines]="pane.billLines()"
+                  [filtered]="pane.filtered()"
+                  [selectedId]="selectedEntryId()"
+                  (step)="onStepDay($event)"
+                  (clear)="onClearDay()"
+                  (open)="onOpenRow($event)"
+                  (add)="onAddEntry($event)"
+                  (openCard)="openCard($event)"
+                  (retry)="onRetryDay()"
+                />
+              }
+              @case ('results') {
+                <app-calendar-day-panel
+                  mode="results"
+                  [today]="pane.today()"
+                  [days]="pane.searchDays()"
+                  [state]="pane.searchState()"
+                  [query]="pane.search()"
+                  [currency]="pane.mainCurrency()"
+                  [hasMore]="pane.searchHasMore()"
+                  [selectedId]="selectedEntryId()"
+                  (clear)="onSearch('')"
+                  (open)="onOpenRow($event)"
+                  (retry)="onRetrySearch()"
+                  (loadMore)="onLoadMore()"
+                />
+              }
+            }
+          </div>
+        }
+        <!-- ≥ 1024 px in 日曆: the routed page is a drawer over the right pane's base; N still works in it. -->
+        <div
+          #drawer
+          class="pane-host"
+          data-global-shortcuts
+          [class.drawer]="drawerOpen()"
+          [class.drawer--form]="drawerOpen() && formOpen()"
+          [attr.role]="drawerOpen() ? 'dialog' : null"
+          [attr.aria-modal]="drawerOpen() ? 'true' : null"
+          [attr.aria-label]="drawerOpen() ? '記錄詳情' : null"
+          [attr.tabindex]="drawerOpen() ? -1 : null"
+          (keydown)="onDrawerKeydown($event)"
+        >
+          <!-- No ✕ of its own: the pages draw theirs (detail / group 關閉, the form's data-pane-close). -->
+          <router-outlet name="pane" />
+        </div>
         @if (showOverview()) {
           <app-month-overview [month]="overview.month()" [summary]="overview.summary()" [dueItems]="overview.dueItems()" [summaryState]="overview.summaryState()" [dueState]="overview.dueState()" />
-        } @else if (!paneOpen()) {
+        } @else if (!paneOpen() && !calendarMode()) {
           <p class="pane-empty">{{ emptyCopy() }}</p>
         }
       </section>

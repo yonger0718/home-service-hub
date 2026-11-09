@@ -2,6 +2,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, TestRequest, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Provider, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
+import { Location } from '@angular/common';
 import { Router, provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -15,6 +16,8 @@ import { makeInbox } from '../inbox/testing';
 import { EMPTY_CALENDAR_DATA, CalendarDataService, CalendarMonthData } from '../calendar-month/calendar-data.service';
 import { makeAccount, makeCategory, makeEntry, makeInstance, makePreference } from '../testing/fixtures';
 import { FALLBACK_COLOR } from './category-distribution';
+import { CalendarPaneService } from '../calendar-month/calendar-pane.service';
+import { EinvoiceTarget, InboxEinvoice } from '../inbox/einvoice.model';
 import { LedgerTimelineComponent, buildDays, schedulePills } from './timeline';
 
 const VIEW_KEY = 'hh.accounting.timelineView';
@@ -24,12 +27,15 @@ const ACCOUNTS = [makeAccount({ id: 1, name: '玉山 UNI' }), makeAccount({ id: 
 describe('LedgerTimelineComponent', () => {
   let httpMock: HttpTestingController | null = null;
   // The calendar's breakdown/inbox reads are CalendarDataService's own concern; the timeline tests drive its `data`.
-  let fakeCalendarData = { month: signal<string | null>(null), data: signal<CalendarMonthData>(EMPTY_CALENDAR_DATA) };
+  /** What `render` answers the 今天 read with. */
+  let todayItems: LedgerEntry[] = [];
+  let fakeCalendarData = { month: signal<string | null>(null), wide: signal(false), data: signal<CalendarMonthData>(EMPTY_CALENDAR_DATA) };
 
   beforeEach(() => {
+    todayItems = [];
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date(2026, 9, 2, 12, 0, 0));
-    fakeCalendarData = { month: signal<string | null>(null), data: signal<CalendarMonthData>(EMPTY_CALENDAR_DATA) };
+    fakeCalendarData = { month: signal<string | null>(null), wide: signal(false), data: signal<CalendarMonthData>(EMPTY_CALENDAR_DATA) };
   });
 
   afterEach(() => {
@@ -45,6 +51,7 @@ describe('LedgerTimelineComponent', () => {
     for (const request of httpMock?.match(r => r.url === '/api/accounting/projects') ?? []) {
       request.flush([]);
     }
+    flushTodayRead();
     httpMock?.verify();
     httpMock = null;
     vi.useRealTimers();
@@ -78,7 +85,22 @@ describe('LedgerTimelineComponent', () => {
     httpMock.expectOne('/api/accounting/accounts').flush(accounts);
     flushCounterparties(counterparties, queue, inboxAsk, einvoiceAsk);
     fixture.detectChanges();
+    flushTodayRead(todayItems);
     return { fixture, el: fixture.nativeElement as HTMLElement };
+  }
+
+  /** The 今天 card's read (the two-pane 日曆 of the current month only): up to three of one day's entries. */
+  function isTodayRead(r: { url: string; params: { get(name: string): string | null } }): boolean {
+    return r.url === '/api/accounting/entries' && r.params.get('limit') === '3' && r.params.get('date_from') === r.params.get('date_to');
+  }
+
+  /** Answer the pending 今天 reads (any number) with these entries; tests that do not care leave them empty. */
+  function flushTodayRead(items: LedgerEntry[] = []): number {
+    const requests = httpMock?.match(isTodayRead) ?? [];
+    for (const request of requests) {
+      request.flush({ items, total: items.length, limit: 3, offset: 0 });
+    }
+    return requests.length;
   }
 
   /**
@@ -1718,6 +1740,23 @@ describe('LedgerTimelineComponent', () => {
       expect(fixture.componentInstance.selectedDay()).toBe('2026-11-01');
     });
 
+    it('[ and ] on the grid step the day in the URL', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10', 'calendar');
+      drain();
+      fixture.detectChanges();
+      cellAt(el, '2026-10-21').click();
+      await settle(fixture);
+      const press = async (key: string) => {
+        el.querySelector('.cal')!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+        await settle(fixture);
+      };
+      await press(']');
+      expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-22');
+      await press('[');
+      await press('[');
+      expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-20');
+    });
+
     it('follows Back to a URL without day', async () => {
       const { fixture, el, router } = await openAt('/accounting?month=2026-10', 'calendar');
       drain();
@@ -1852,7 +1891,33 @@ describe('LedgerTimelineComponent', () => {
       fixture.detectChanges();
     }
 
+    /** At panes the day's rows are published to the right pane; the list's own `.day-entries` needs the narrow layout. */
+    function showDayRowsInList(fixture: { detectChanges(): void }): void {
+      TestBed.inject(LayoutModeService).set('phone');
+      fixture.detectChanges();
+    }
+
     const cell = (el: HTMLElement, date: string) => el.querySelector(`button.cell[data-date="${date}"]`)!;
+
+    it('renders the monthbar figures and no .sum / .day-entries in 日曆 at panes', () => {
+      const { fixture, el } = renderCalendarWith(ACCOUNTS);
+      selectDay(fixture, el, '2026-10-05');
+      const figures = el.querySelector('.monthbar .monthbar-figures')!;
+      expect(figures.getAttribute('aria-label')).toBe('本月摘要');
+      expect(text(figures)).toContain('支出');
+      expect(text(figures)).toContain('收入');
+      expect(text(figures)).toContain('結餘');
+      expect(el.querySelector('.sum')).toBeNull();
+      expect(el.querySelector('.day-entries')).toBeNull();
+    });
+
+    it('keeps .sum and .day-entries in 日曆 at phone width', () => {
+      const { fixture, el } = renderCalendarWith(ACCOUNTS, 'phone');
+      selectDay(fixture, el, '2026-10-05');
+      expect(el.querySelector('.monthbar-figures')).toBeNull();
+      expect(el.querySelector('.sum')).not.toBeNull();
+      expect(el.querySelector('.day-entries')).not.toBeNull();
+    });
 
     it('badges an unpaid statement only once it is resolved and shows its line on the due day', () => {
       const { fixture, el } = renderCalendarWith();
@@ -1867,6 +1932,7 @@ describe('LedgerTimelineComponent', () => {
       expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10 月 5 日 週一，1 張卡繳費到期');
 
       selectDay(fixture, el, '2026-10-05');
+      showDayRowsInList(fixture);
       expectNoBillRequest();
       const line = el.querySelector<HTMLButtonElement>('.day-entries .bill')!;
       expect(text(line)).toBe('玉山 UNI 帳單 $12,345 · 到期');
@@ -1992,6 +2058,7 @@ describe('LedgerTimelineComponent', () => {
       expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
 
       selectDay(fixture, el, '2026-10-05');
+      showDayRowsInList(fixture);
       const line = el.querySelector('.day-entries .bill')!;
       expect(text(line)).toBe('玉山 UNI 帳單 $12,345 · 到期 已繳 $5,000 · 剩餘 $7,345');
       expect(line.querySelector('i.pi-credit-card[aria-hidden="true"]')).not.toBeNull();
@@ -2257,6 +2324,7 @@ describe('LedgerTimelineComponent', () => {
       expect(el.querySelectorAll('.bill-mark').length).toBe(1);
       expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10 月 5 日 週一，1 張卡繳費到期');
       selectDay(fixture, el, '2026-10-05');
+      showDayRowsInList(fixture);
       expect(Array.from(el.querySelectorAll('.day-entries .bill')).map(text)).toEqual(['玉山 UNI 帳單 $1,234 · 到期']);
       expect(el.querySelectorAll('.day-entries .bill i.pi-credit-card').length).toBe(1);
     });
@@ -2387,10 +2455,11 @@ describe('LedgerTimelineComponent', () => {
       expect(getComputedStyle(el.querySelector('.dist-bar')!).height).toBe('8px');
     });
 
-    it('shows the legend at the panes layout (calendar view by default there)', () => {
+    it('shows the legend in the 清單 at the panes layout', () => {
+      localStorage.setItem(VIEW_KEY, 'list');
       const { fixture, el } = render('panes');
       flushSummary('2026-10', CANVAS_SUMMARY);
-      flushDaily('2026-10');
+      flushEntries([]);
       fixture.detectChanges();
       expect(segments(el)).toHaveLength(6);
       expect(el.querySelectorAll('.dist-list .dist-row')).toHaveLength(6);
@@ -2635,6 +2704,758 @@ describe('LedgerTimelineComponent', () => {
     head.click();
     fixture.detectChanges();
     expect(el.querySelectorAll('.entry-row.batch-member').length).toBe(0);
+  });
+  describe('calendar pane publishing', () => {
+    const CARD = makeAccount({ id: 9, name: '玉山 UNI', is_credit: true, closing_day: 15, due_rule: 'days_after_closing', due_value: 20 });
+
+    const pane = () => TestBed.inject(CalendarPaneService);
+
+    function renderPanes(accounts = ACCOUNTS) {
+      localStorage.setItem(VIEW_KEY, 'calendar');
+      const rendered = render('panes', makePreference(), [], accounts);
+      flushSummary('2026-10');
+      flushDaily('2026-10', { days: [{ date: '2026-10-02', expense: '-734.0000', income: '0.0000', count: 2 }] });
+      rendered.fixture.detectChanges();
+      return rendered;
+    }
+
+    function pickDay(fixture: { detectChanges(): void }, el: HTMLElement, date: string, items: LedgerEntry[] = []): void {
+      el.querySelector<HTMLButtonElement>(`button.cell[data-date="${date}"]`)!.click();
+      fixture.detectChanges();
+      flushEntries(items);
+      fixture.detectChanges();
+    }
+
+    it("publishes the month's invoices and sets CalendarDataService.wide from the layout mode", () => {
+      const { fixture } = renderPanes();
+      expect(fakeCalendarData.wide()).toBe(true);
+      expect(pane().invoices()).toEqual([]);
+      fakeCalendarData.data.set({
+        ...EMPTY_CALENDAR_DATA,
+        invoices: [{ id: 1, issue_date: '2026-10-03' }, { id: 2, issue_date: '2026-10-22' }] as never,
+        invoiceState: 'ready',
+      });
+      fixture.detectChanges();
+      expect(pane().invoices().length).toBe(2);
+    });
+
+    it('publishes the 日曆 view and the month to the pane services', () => {
+      const { fixture, el } = renderPanes();
+      expect(TestBed.inject(AccountingOverviewService).calendar()).toBe(true);
+      expect(pane().month()).toBe('2026-10');
+      expect(pane().today()).toBe('2026-10-02');
+      viewButton(el, '清單').click();
+      fixture.detectChanges();
+      flushEntries([]);
+      expect(TestBed.inject(AccountingOverviewService).calendar()).toBe(false);
+    });
+
+    it('publishes the selected day, its rows with time, net and bill lines', () => {
+      const { fixture, el } = renderPanes();
+      el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-21"]')!.click();
+      fixture.detectChanges();
+      expect(pane().selectedDay()).toBe('2026-10-21');
+      expect(pane().dayState()).toBe('loading');
+      flushEntries([makeEntry({ id: 5, entry_date: '2026-10-21', entry_time: '12:30:00', amount: '-120.0000' })]);
+      fixture.detectChanges();
+      expect(pane().dayRows().length).toBe(1);
+      expect(pane().dayRows()[0].time).toBe('12:30');
+      expect(pane().dayNet()!.text).toBe('−$120');
+      expect(pane().dayState()).toBe('ready');
+      expect(pane().billLines()).toEqual([]);
+
+      el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-22"]')!.click();
+      fixture.detectChanges();
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(pane().dayState()).toBe('error');
+    });
+
+    it('gives a row without a time a null time', () => {
+      const { fixture, el } = renderPanes();
+      pickDay(fixture, el, '2026-10-21', [makeEntry({ id: 5, entry_date: '2026-10-21', entry_time: null })]);
+      expect(pane().dayRows()[0].time).toBeNull();
+    });
+
+    it('publishes the month dues', () => {
+      const { fixture } = renderPanes([...ACCOUNTS, CARD]);
+      // Closing day 15 + 20 days: the 08/16 - 09/15 statement is due 10/05.
+      const summary = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/summary' && r.params.get('date_to') === '2026-09-15');
+      const payments = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/entries' && r.params.get('date_from') === '2026-09-15');
+      summary.flush({ account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '-12345.0000', income: '0', rewards: '0', net: '-12345.0000', end_balance: '-12345.0000', count: 4 });
+      payments.flush({ items: [], total: 0, limit: 100, offset: 0 });
+      fixture.detectChanges();
+      expect(pane().monthDues()).toEqual([{ key: expect.any(String), accountId: 9, name: '玉山 UNI', date: '2026-10-05', amountText: '$12,345' }]);
+    });
+
+    it('publishes no month due for a fully paid statement', () => {
+      const { fixture } = renderPanes([...ACCOUNTS, CARD]);
+      const summary = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/summary' && r.params.get('date_to') === '2026-09-15');
+      const payments = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/entries' && r.params.get('date_from') === '2026-09-15');
+      summary.flush({ account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '-500.0000', income: '0', rewards: '0', net: '-500.0000', end_balance: '-500.0000', count: 1 });
+      payments.flush({ items: [makeEntry({ id: 40, kind: 'transfer_in', account_id: 9, amount: '500.0000' })], total: 1, limit: 100, offset: 0 });
+      fixture.detectChanges();
+      expect(pane().monthDues()).toEqual([]);
+    });
+
+    describe('near the end of the month', () => {
+      // Closing day 15, due 20 days later: the 10/15 statement is due 11/04 — inside today + 6 when today is 10/29.
+      beforeEach(() => vi.setSystemTime(new Date(2026, 9, 29, 12, 0, 0)));
+
+      function answerCycle(end: string, start: string, paidTo: string, spend: string): void {
+        httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/summary' && r.params.get('date_to') === end)
+          .flush({ account_id: 9, currency: 'TWD', date_from: start, date_to: end, spend, income: '0', rewards: '0', net: spend, end_balance: spend, count: 2 });
+        httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/entries' && r.params.get('date_from') === end && r.params.get('date_to') === paidTo)
+          .flush({ items: [], total: 0, limit: 100, offset: 0 });
+      }
+
+      it('adds near-term dues from next month in the current month only', () => {
+        localStorage.setItem(VIEW_KEY, 'calendar');
+        const { fixture } = render('panes', makePreference(), [], [...ACCOUNTS, CARD]);
+        flushSummary('2026-10');
+        flushDaily('2026-10');
+        answerCycle('2026-10-15', '2026-09-16', '2026-10-29', '-800.0000');
+        fixture.detectChanges();
+        expect(pane().monthDues().map(due => due.date)).toContain('2026-11-04');
+
+        fixture.componentInstance.moveMonth(-1);
+        fixture.detectChanges();
+        flushSummary('2026-09');
+        flushDaily('2026-09');
+        for (const request of httpMock!.match(r => r.url.startsWith('/api/accounting/accounts/9/'))) {
+          request.flush(request.request.url.endsWith('/summary')
+            ? { account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '0', income: '0', rewards: '0', net: '0', end_balance: '0', count: 0 }
+            : { items: [], total: 0, limit: 100, offset: 0 });
+        }
+        fixture.detectChanges();
+        expect(pane().monthDues().map(due => due.date)).not.toContain('2026-11-04');
+      });
+
+      it('never adds a due outside today + 6', () => {
+        const card = makeAccount({ id: 9, name: '玉山 UNI', is_credit: true, closing_day: 21, due_rule: 'days_after_closing', due_value: 20 });
+        localStorage.setItem(VIEW_KEY, 'calendar');
+        const { fixture } = render('panes', makePreference(), [], [...ACCOUNTS, card]);
+        flushSummary('2026-10');
+        flushDaily('2026-10');
+        // closing 10/21 + 20 days = 11/10, beyond 11/04: no statement is read for the near-term window.
+        for (const request of httpMock!.match(r => r.url.startsWith('/api/accounting/accounts/9/'))) {
+          request.flush(request.request.url.endsWith('/summary')
+            ? { account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '-900.0000', income: '0', rewards: '0', net: '-900.0000', end_balance: '-900.0000', count: 1 }
+            : { items: [], total: 0, limit: 100, offset: 0 });
+        }
+        fixture.detectChanges();
+        expect(pane().monthDues().map(due => due.date)).not.toContain('2026-11-10');
+      });
+    });
+
+    it('publishes a 今天 card for the current month only', () => {
+      todayItems = [makeEntry({ id: 1, name: '早餐' }), makeEntry({ id: 2, name: '捷運' })];
+      const { fixture } = renderPanes();
+      expect(pane().todayCard()).toEqual({ date: '2026-10-02', count: 2, names: '早餐、捷運', netText: '−$734', net: -734 });
+
+      fixture.componentInstance.moveMonth(-1);
+      fixture.detectChanges();
+      flushSummary('2026-09');
+      flushDaily('2026-09');
+      expect(pane().todayCard()).toBeNull();
+      expect(flushTodayRead()).toBe(0);
+    });
+
+    it('publishes the main currency and whether a search or list filter is active', () => {
+      localStorage.setItem(VIEW_KEY, 'calendar');
+      const { fixture } = render('panes', makePreference({ main_currency: 'USD' }));
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      fixture.detectChanges();
+      expect(pane().mainCurrency()).toBe('USD');
+      expect(pane().filtered()).toBe(false);
+      fixture.componentInstance.setKind('expense');
+      fixture.detectChanges();
+      expect(pane().filtered()).toBe(true);
+      fixture.componentInstance.clearFilters();
+      fixture.detectChanges();
+      expect(pane().filtered()).toBe(false);
+    });
+
+    it('registers retryDay, which reads the selected day again after a failure', () => {
+      const { fixture, el } = renderPanes();
+      el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-21"]')!.click();
+      fixture.detectChanges();
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(pane().dayState()).toBe('error');
+      pane().commands()!.retryDay();
+      const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+      expect(req.request.params.get('date_from')).toBe('2026-10-21');
+      req.flush({ items: [makeEntry({ id: 5, entry_date: '2026-10-21' })], total: 1, limit: 500, offset: 0 });
+      fixture.detectChanges();
+      expect(pane().dayState()).toBe('ready');
+      expect(pane().dayRows().length).toBe(1);
+    });
+
+    it('registers setQuery, which sets the filter-bar query like the debounce does', () => {
+      const { fixture } = renderPanes();
+      pane().commands()!.setQuery('  咖啡 ');
+      expect(fixture.componentInstance.query()).toBe('咖啡');
+      fixture.detectChanges();
+      flushEntries([]); // 日曆 + a search reads the month's matches
+      expect(pane().search()).toBe('咖啡');
+    });
+
+    describe('本月摘要 search', () => {
+      const search = (el: HTMLElement) => el.querySelector<HTMLInputElement>('input.filter-q')!;
+
+      it('a 本月摘要 search loads the month list with q and publishes the result days', () => {
+        const { fixture } = renderPanes();
+        pane().commands()!.setQuery('全聯');
+        fixture.detectChanges();
+        expect(pane().search()).toBe('全聯');
+        expect(pane().searchState()).toBe('loading');
+        const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+        expect(req.request.params.get('q')).toBe('全聯');
+        expect(req.request.params.get('date_from')).toBe('2026-10-01');
+        expect(req.request.params.get('date_to')).toBe('2026-10-31');
+        req.flush({
+          items: [makeEntry({ id: 1, name: '全聯', entry_date: '2026-10-05' }), makeEntry({ id: 2, name: '全聯福利中心', entry_date: '2026-10-05' })],
+          total: 2, limit: 50, offset: 0,
+        });
+        fixture.detectChanges();
+        expect(pane().searchDays().length).toBe(1);
+        expect(pane().searchDays()[0].rows.length).toBe(2);
+        expect(pane().searchState()).toBe('ready');
+      });
+
+      it('publishes whether the month has more matches; loadMore reads the next page and the result days grow', () => {
+        const { fixture } = renderPanes();
+        pane().commands()!.setQuery('全聯');
+        fixture.detectChanges();
+        const first = Array.from({ length: 50 }, (_, i) => makeEntry({ id: i + 1, name: '全聯', entry_date: '2026-10-05' }));
+        flushEntries(first, 60);
+        fixture.detectChanges();
+        expect(pane().searchHasMore()).toBe(true);
+        expect(pane().searchDays().flatMap(day => day.rows).length).toBe(50);
+
+        pane().commands()!.loadMore();
+        const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+        expect(req.request.params.get('offset')).toBe('50');
+        expect(req.request.params.get('q')).toBe('全聯');
+        expect(pane().searchState()).toBe('ready');
+        const rest = Array.from({ length: 10 }, (_, i) => makeEntry({ id: 51 + i, name: '全聯', entry_date: '2026-10-04' }));
+        req.flush({ items: rest, total: 60, limit: 50, offset: 50 });
+        fixture.detectChanges();
+        expect(pane().searchHasMore()).toBe(false);
+        expect(pane().searchDays().map(day => [day.date, day.rows.length])).toEqual([['2026-10-05', 50], ['2026-10-04', 10]]);
+      });
+
+      it('registers retrySearch, which reads the month matches again after a failure', () => {
+        const { fixture } = renderPanes();
+        pane().commands()!.setQuery('全聯');
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+        fixture.detectChanges();
+        expect(pane().searchState()).toBe('error');
+        expect(pane().searchHasMore()).toBe(false);
+        pane().commands()!.retrySearch();
+        fixture.detectChanges();
+        expect(pane().searchState()).toBe('loading');
+        const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+        expect([req.request.params.get('q'), req.request.params.get('offset')]).toEqual(['全聯', '0']);
+        req.flush({ items: [makeEntry({ id: 1, name: '全聯', entry_date: '2026-10-05' })], total: 1, limit: 50, offset: 0 });
+        fixture.detectChanges();
+        expect(pane().searchState()).toBe('ready');
+      });
+
+      it('clearing the search drops the result list and empties both boxes', () => {
+        const { fixture, el } = renderPanes();
+        pane().commands()!.setQuery('全聯');
+        fixture.detectChanges();
+        flushEntries([makeEntry({ id: 1, name: '全聯', entry_date: '2026-10-05' })]);
+        fixture.detectChanges();
+        expect(search(el).value).toBe('全聯');
+        pane().commands()!.setQuery('');
+        fixture.detectChanges();
+        expect(pane().searchDays()).toEqual([]);
+        expect(pane().searchState()).toBe('ready');
+        expect(pane().search()).toBe('');
+        expect(search(el).value).toBe('');
+        expectNoEntryPage();
+      });
+
+      it('typing in the 本月摘要 box updates the filter-bar input (and not while the filter bar is focused)', () => {
+        const { fixture, el } = renderPanes();
+        document.body.appendChild(el);
+        try {
+          pane().commands()!.setQuery('全聯');
+          fixture.detectChanges();
+          flushEntries([]);
+          expect(search(el).value).toBe('全聯');
+          search(el).focus();
+          expect(document.activeElement).toBe(search(el));
+          pane().commands()!.setQuery('x');
+          fixture.detectChanges();
+          flushEntries([]);
+          expect(fixture.componentInstance.query()).toBe('x');
+          expect(search(el).value).toBe('全聯');
+        } finally {
+          el.remove();
+        }
+      });
+
+      it("a selected day's rows use the 本月摘要 search as q (Review Focus 2)", () => {
+        const { fixture, el } = renderPanes();
+        pane().commands()!.setQuery('全聯');
+        fixture.detectChanges();
+        flushEntries([makeEntry({ id: 1, name: '全聯', entry_date: '2026-10-21' })]);
+        fixture.detectChanges();
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-21"]')!.click();
+        fixture.detectChanges();
+        const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+        expect(req.request.params.get('q')).toBe('全聯');
+        expect(req.request.params.get('date_from')).toBe('2026-10-21');
+        req.flush({ items: [], total: 0, limit: 500, offset: 0 });
+      });
+    });
+
+    it('publishes the day rows with reward batches unfolded (one row per entry)', () => {
+      const { fixture, el } = renderPanes();
+      pickDay(fixture, el, '2026-10-21', [batchReward(1, '2.0000'), batchReward(2, '3.0000')]);
+      expect(pane().dayRows().map(row => [row.entryId, row.batch ?? null])).toEqual([[1, null], [2, null]]);
+    });
+
+    describe('openInvoice', () => {
+      const target = (kind: 'entry' | 'group', id: number): EinvoiceTarget => ({
+        kind, id, account_name: '測試卡', date: '2026-10-21', amount: '-120.0000', currency: 'TWD', category: null, name: null,
+      });
+      const invoice = (candidates: EinvoiceTarget[]): InboxEinvoice => ({
+        id: 3, number: 'AB00000001', issue_date: '2026-10-21', seller_name: '測試商店', seller_tax_id: '00000000',
+        total_amount: '120', status_raw: '', state: 'ambiguous', items: [], candidates, offer_mute: false,
+      });
+      const split = { id: 40, kind: 'split' as const, name: null, merchant: null, description: null, count: 2, total: '-300.0000', currency: 'TWD' };
+
+      /** Opens the invoice, waits for the day write, then answers the day read with `items`. */
+      async function openWith(candidates: EinvoiceTarget[], items: LedgerEntry[]) {
+        const { fixture } = renderPanes();
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
+        pane().commands()!.openInvoice(invoice(candidates));
+        await fixture.whenStable();
+        expect(pane().selectedDay()).toBe('2026-10-21');
+        expect(navigate).toHaveBeenCalledTimes(1);
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        flushEntries(items);
+        fixture.detectChanges();
+        return navigate;
+      }
+
+      it('openInvoice selects the invoice day and opens its single entry candidate', async () => {
+        const navigate = await openWith([target('entry', 5)], [makeEntry({ id: 5, entry_date: '2026-10-21' })]);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 5], { queryParams: { month: '2026-10', day: '2026-10-21' } });
+      });
+
+      it('openInvoice opens the group of a split candidate through a member row', async () => {
+        const navigate = await openWith([target('group', 40)], [
+          makeEntry({ id: 8, entry_date: '2026-10-21' }),
+          makeEntry({ id: 41, entry_date: '2026-10-21', group: split }),
+          makeEntry({ id: 42, entry_date: '2026-10-21', group: split }),
+        ]);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 41, 'group'], { queryParams: { month: '2026-10', day: '2026-10-21' } });
+      });
+
+      it('openInvoice only selects the day when the group has no member row on that day (Review Focus 3)', async () => {
+        const navigate = await openWith([target('group', 40)], [makeEntry({ id: 8, entry_date: '2026-10-21' })]);
+        expect(navigate).not.toHaveBeenCalled();
+        expect(pane().selectedDay()).toBe('2026-10-21');
+      });
+
+      it('openInvoice retries a failed read of the already selected day and opens the candidate once it answers', async () => {
+        const { fixture, el } = renderPanes();
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-21"]')!.click();
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(pane().dayState()).toBe('error');
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
+        pane().commands()!.openInvoice(invoice([target('entry', 5)]));
+        await fixture.whenStable();
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        const retry = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+        expect(retry.request.params.get('date_from')).toBe('2026-10-21');
+        expect(navigate).not.toHaveBeenCalled();
+        retry.flush({ items: [makeEntry({ id: 5, entry_date: '2026-10-21' })], total: 1, limit: 500, offset: 0 });
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 5], { queryParams: { month: '2026-10', day: '2026-10-21' } });
+      });
+
+      it("an old day's read resolving after openInvoice wrote the invoice day does not cancel the pending invoice (M12)", async () => {
+        const { fixture, el } = renderPanes();
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-19"]')!.click();
+        fixture.detectChanges();
+        await fixture.whenStable();
+        // 10/19's read is still in flight when the invoice line of 10/21 is picked.
+        const stale = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19');
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
+        pane().commands()!.openInvoice(invoice([target('entry', 5)]));
+        expect(fixture.componentInstance.selectedDay()).toBe('2026-10-21');
+        stale.flush({ items: [makeEntry({ id: 8, entry_date: '2026-10-19' })], total: 1, limit: 500, offset: 0 });
+        await fixture.whenStable();
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-21')
+          .flush({ items: [makeEntry({ id: 5, entry_date: '2026-10-21' })], total: 1, limit: 500, offset: 0 });
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 5], { queryParams: { month: '2026-10', day: '2026-10-21' } });
+      });
+
+      it("an old day's read failing after openInvoice wrote the invoice day keeps the pending invoice and shows no error for the invoice day", async () => {
+        const { fixture, el } = renderPanes();
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-19"]')!.click();
+        fixture.detectChanges();
+        await fixture.whenStable();
+        const stale = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19');
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
+        pane().commands()!.openInvoice(invoice([target('entry', 5)]));
+        expect(fixture.componentInstance.selectedDay()).toBe('2026-10-21');
+        // 10/19's read fails before the effects start 10/21's: that failure is not 10/21's.
+        stale.flush('boom', { status: 500, statusText: 'Server Error' });
+        expect(fixture.componentInstance.dayError()).toBe(false);
+        await fixture.whenStable();
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-21')
+          .flush({ items: [makeEntry({ id: 5, entry_date: '2026-10-21' })], total: 1, limit: 500, offset: 0 });
+        fixture.detectChanges();
+        expect(fixture.componentInstance.dayError()).toBe(false);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 5], { queryParams: { month: '2026-10', day: '2026-10-21' } });
+      });
+
+      it('openInvoice only selects the day with two candidates', async () => {
+        const navigate = await openWith([target('entry', 5), target('entry', 6)], [
+          makeEntry({ id: 5, entry_date: '2026-10-21' }),
+          makeEntry({ id: 6, entry_date: '2026-10-21' }),
+        ]);
+        expect(navigate).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('stepEntry', () => {
+      // The daily summary counts spend / income only: 10/20 (a card payment, a transfer) is 0 there but has rows.
+      const DAYS = [
+        { date: '2026-10-21', expense: '-300.0000', income: '0.0000', count: 3 },
+        { date: '2026-10-20', expense: '0.0000', income: '0.0000', count: 0 },
+        { date: '2026-10-19', expense: '-200.0000', income: '0.0000', count: 2 },
+      ];
+      const entry = (id: number, date: string, extra: Partial<LedgerEntry> = {}) => makeEntry({ id, entry_date: date, ...extra });
+      const page = (items: LedgerEntry[], limit = 500) => ({ items, total: items.length, limit, offset: 0 });
+      /** The drawer's neighbour-day read: the rest of the month on one side of the day, newest first. */
+      const isProbe = (r: { url: string; params: { get(name: string): string | null } }) =>
+        r.url === '/api/accounting/entries' && r.params.get('date_from') !== r.params.get('date_to');
+
+      /** Calendar at panes width with `date` selected (rows 5, 4, 3 unless `rows`) and entry `selected` open in the drawer. */
+      async function stepSetup(selected: number, date = '2026-10-21', preference = makePreference(), rows?: LedgerEntry[]) {
+        localStorage.setItem(VIEW_KEY, 'calendar');
+        const layout = { selectedEntryId: signal<number | null>(selected) };
+        const rendered = render('panes', preference, [{ provide: AccountingLayoutComponent, useValue: layout }], ACCOUNTS);
+        flushSummary('2026-10');
+        flushDaily('2026-10', { days: DAYS });
+        rendered.fixture.detectChanges();
+        rendered.el.querySelector<HTMLButtonElement>(`button.cell[data-date="${date}"]`)!.click();
+        rendered.fixture.detectChanges();
+        await rendered.fixture.whenStable();
+        flushEntries(rows ?? [entry(5, date), entry(4, date), entry(3, date)]);
+        rendered.fixture.detectChanges();
+        // Calls through, so the day write lands in the URL; callers mock the entry navigation once the day write is done.
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
+        return { ...rendered, navigate };
+      }
+      /** A step opens in place of the drawer's page (history unchanged), with the state `stepState` derives from it. */
+      const withDay = (day: string, state: object = {}) => ({ queryParams: { month: '2026-10', day }, state, replaceUrl: true });
+      /** The drawer's page state as history holds it (a child of a group view opened from the list). */
+      const CHILD = { groupDepth: 2, viaGroup: true };
+
+      it('stepEntry(1) opens the next row of the day', async () => {
+        const { navigate } = await stepSetup(5);
+        navigate.mockResolvedValue(true);
+        pane().commands()!.stepEntry(1);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 4], withDay('2026-10-21'));
+      });
+
+      it('stepEntry(1) onto a split row opens its group view in place, one entry above the list', async () => {
+        const split = { id: 9, kind: 'split' as const, name: null, merchant: null, description: null, count: 2, total: '-400.0000', currency: 'TWD' };
+        const day = '2026-10-21';
+        const { navigate } = await stepSetup(5, day, makePreference(), [
+          entry(5, day), entry(4, day, { group: split }), entry(6, day, { group: split }), entry(3, day),
+        ]);
+        navigate.mockResolvedValue(true);
+        pane().commands()!.stepEntry(1);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 4, 'group'], withDay(day, { groupDepth: 1 }));
+      });
+
+      it('a step from a child of a group view keeps its depth, so ✕ on the stepped page still goes back to the list', async () => {
+        const { navigate } = await stepSetup(5);
+        vi.spyOn(TestBed.inject(Location), 'getState').mockReturnValue({ navigationId: 4, ...CHILD });
+        navigate.mockResolvedValue(true);
+        pane().commands()!.stepEntry(1);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 4], withDay('2026-10-21', CHILD));
+      });
+
+      it("a step across days keeps the depth read before the day write (that write drops the history entry's state)", async () => {
+        const { fixture, navigate } = await stepSetup(3);
+        const getState = vi.spyOn(TestBed.inject(Location), 'getState').mockReturnValue({ navigationId: 4, ...CHILD });
+        pane().commands()!.stepEntry(1);
+        httpMock!.expectOne(isProbe).flush(page([entry(2, '2026-10-19')], 1));
+        await fixture.whenStable();
+        getState.mockReturnValue({ navigationId: 5 });
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush(page([entry(2, '2026-10-19'), entry(1, '2026-10-19')]));
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 2], withDay('2026-10-19', CHILD));
+      });
+
+      it('stepEntry(-1) opens the previous row of the day', async () => {
+        const { navigate } = await stepSetup(3);
+        navigate.mockResolvedValue(true);
+        pane().commands()!.stepEntry(-1);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 4], withDay('2026-10-21'));
+      });
+
+      it("stepEntry(1) at the day's last row reads the nearest earlier entry, moves to its day and opens that day's newest row", async () => {
+        const { fixture, navigate } = await stepSetup(3);
+        pane().commands()!.stepEntry(1);
+        const probe = httpMock!.expectOne(isProbe);
+        expect(probe.request.params.get('date_from')).toBe('2026-10-01');
+        expect(probe.request.params.get('date_to')).toBe('2026-10-20');
+        expect(probe.request.params.get('limit')).toBe('1');
+        expect(navigate).not.toHaveBeenCalled();
+        probe.flush(page([entry(2, '2026-10-19')], 1));
+        await fixture.whenStable();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith([], expect.objectContaining({
+          queryParams: { month: '2026-10', day: '2026-10-19' }, queryParamsHandling: 'merge', replaceUrl: true,
+        }));
+        expect(pane().selectedDay()).toBe('2026-10-19');
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+        expect(req.request.params.get('date_from')).toBe('2026-10-19');
+        expect(navigate).not.toHaveBeenCalled();
+        req.flush(page([entry(2, '2026-10-19'), entry(1, '2026-10-19')]));
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 2], withDay('2026-10-19'));
+      });
+
+      it('stepEntry(-1) at the first row reads the rest of the month and opens the last row of the earliest later day', async () => {
+        const { fixture, navigate } = await stepSetup(5);
+        pane().commands()!.stepEntry(-1);
+        const probe = httpMock!.expectOne(isProbe);
+        expect(probe.request.params.get('date_from')).toBe('2026-10-22');
+        expect(probe.request.params.get('date_to')).toBe('2026-10-31');
+        // The API has no ascending order: the newest-first page's last item is the earliest later entry.
+        expect(probe.request.params.get('limit')).toBe('500');
+        probe.flush(page([entry(9, '2026-10-25'), entry(8, '2026-10-23')]));
+        await fixture.whenStable();
+        expect(pane().selectedDay()).toBe('2026-10-23');
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush(page([entry(8, '2026-10-23'), entry(7, '2026-10-23')]));
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 7], withDay('2026-10-23'));
+      });
+
+      it('stepEntry reaches a transfer-only day the daily summary counts as 0', async () => {
+        const { fixture, navigate } = await stepSetup(3);
+        pane().commands()!.stepEntry(1);
+        const payment = entry(11, '2026-10-20', { kind: 'transfer_out', amount: '-5000.0000', transfer_group_id: 'pay-1' });
+        httpMock!.expectOne(isProbe).flush(page([payment], 1));
+        await fixture.whenStable();
+        expect(pane().selectedDay()).toBe('2026-10-20');
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush(page([
+          payment, entry(12, '2026-10-20', { kind: 'transfer_in', amount: '5000.0000', account_id: 7, transfer_group_id: 'pay-1' }),
+        ]));
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 11], withDay('2026-10-20'));
+      });
+
+      it('stepEntry reads the neighbour day with the list filters, so a day whose rows the filters hide is skipped', async () => {
+        localStorage.setItem(VIEW_KEY, 'calendar');
+        const layout = { selectedEntryId: signal<number | null>(3) };
+        const { fixture, el } = render('panes', makePreference({ hide_rewards_on_timeline: true }), [{ provide: AccountingLayoutComponent, useValue: layout }], ACCOUNTS);
+        flushSummary('2026-10');
+        flushDaily('2026-10', { days: DAYS });
+        fixture.detectChanges();
+        const timeline = fixture.componentInstance;
+        timeline.setAccount('1');
+        timeline.setKind('expense');
+        timeline.setTag('旅行');
+        timeline.setQuery('咖啡');
+        fixture.detectChanges();
+        // 日曆 + a search reads the month's matches for the right pane's results.
+        flushEntries([]);
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-21"]')!.click();
+        fixture.detectChanges();
+        await fixture.whenStable();
+        flushEntries([entry(3, '2026-10-21')]);
+        fixture.detectChanges();
+
+        pane().commands()!.stepEntry(1);
+        const probe = httpMock!.expectOne(isProbe);
+        const params = probe.request.params;
+        expect([params.get('date_from'), params.get('date_to'), params.get('limit')]).toEqual(['2026-10-01', '2026-10-20', '1']);
+        expect(params.getAll('account_id')).toEqual(['1']);
+        expect(params.get('kind')).toBe('expense');
+        expect(params.get('q')).toBe('咖啡');
+        expect(params.getAll('tag')).toEqual(['旅行']);
+        expect(params.get('hide_rewards')).toBe('true');
+        // The server skips 10/20 and 10/19 (nothing there passes the filters): the nearest kept entry is on 10/12.
+        probe.flush(page([entry(1, '2026-10-12')], 1));
+        await fixture.whenStable();
+        expect(pane().selectedDay()).toBe('2026-10-12');
+        fixture.detectChanges();
+        flushEntries([]);
+      });
+
+      it('stepEntry does nothing when no entry is left on that side of the month (Review Focus 4)', async () => {
+        const { fixture, navigate } = await stepSetup(5);
+        pane().commands()!.stepEntry(-1);
+        httpMock!.expectOne(isProbe).flush(page([]));
+        await fixture.whenStable();
+        expect(navigate).not.toHaveBeenCalled();
+        expect(pane().selectedDay()).toBe('2026-10-21');
+        httpMock!.expectNone(r => r.url === '/api/accounting/entries');
+      });
+
+      it("stepEntry does nothing past the month's first or last day, without a read", async () => {
+        const first = await stepSetup(3, '2026-10-01');
+        first.navigate.mockResolvedValue(true);
+        pane().commands()!.stepEntry(1);
+        await first.fixture.whenStable();
+        expect(first.navigate).not.toHaveBeenCalled();
+        httpMock!.expectNone(r => r.url === '/api/accounting/entries');
+        TestBed.resetTestingModule();
+
+        const last = await stepSetup(5, '2026-10-31');
+        pane().commands()!.stepEntry(-1);
+        await last.fixture.whenStable();
+        expect(last.navigate).not.toHaveBeenCalled();
+        expect(pane().selectedDay()).toBe('2026-10-31');
+        httpMock!.expectNone(r => r.url === '/api/accounting/entries');
+      });
+
+      it('stepEntry does nothing when the open entry is not on the day panel', async () => {
+        const { navigate } = await stepSetup(99);
+        navigate.mockResolvedValue(true);
+        pane().commands()!.stepEntry(1);
+        expect(navigate).not.toHaveBeenCalled();
+        httpMock!.expectNone(r => r.url === '/api/accounting/entries');
+      });
+
+      it('stepEntry drops the pending open when the day read fails', async () => {
+        const { fixture, navigate } = await stepSetup(3);
+        pane().commands()!.stepEntry(1);
+        httpMock!.expectOne(isProbe).flush(page([entry(2, '2026-10-19')], 1));
+        await fixture.whenStable();
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+        fixture.detectChanges();
+        expect(pane().dayState()).toBe('error');
+        pane().commands()!.openInvoice({ id: 1, issue_date: '2026-10-19', candidates: [] } as unknown as InboxEinvoice);
+        await fixture.whenStable();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush(page([entry(2, '2026-10-19')]));
+        fixture.detectChanges();
+        expect(navigate.mock.calls.filter(call => call[0][0] === '/accounting/entries')).toEqual([]);
+      });
+
+      it("an old day's read resolving after stepEntry wrote the new day does not cancel the pending open (M12)", async () => {
+        const { fixture, navigate } = await stepSetup(3);
+        // A refresh of 10/21 is in flight when ↓ crosses the day edge.
+        fixture.componentInstance.retryDay();
+        const stale = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-21');
+        pane().commands()!.stepEntry(1);
+        httpMock!.expectOne(isProbe).flush(page([entry(2, '2026-10-19')], 1));
+        expect(fixture.componentInstance.selectedDay()).toBe('2026-10-19');
+        // Zoneless: the old day's answer lands before the effects start the new day's read.
+        stale.flush(page([entry(5, '2026-10-21'), entry(4, '2026-10-21'), entry(3, '2026-10-21')]));
+        await fixture.whenStable();
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19')
+          .flush(page([entry(2, '2026-10-19'), entry(1, '2026-10-19')]));
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 2], withDay('2026-10-19'));
+      });
+
+      it("an old day's read failing after stepEntry wrote the new day keeps the pending open and shows no error for the new day", async () => {
+        const { fixture, navigate } = await stepSetup(3);
+        // A refresh of 10/21 is in flight when ↓ crosses the day edge.
+        fixture.componentInstance.retryDay();
+        const stale = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-21');
+        pane().commands()!.stepEntry(1);
+        httpMock!.expectOne(isProbe).flush(page([entry(2, '2026-10-19')], 1));
+        expect(fixture.componentInstance.selectedDay()).toBe('2026-10-19');
+        // Zoneless: the old day's failure lands before the effects start the new day's read.
+        stale.flush('boom', { status: 500, statusText: 'Server Error' });
+        expect(fixture.componentInstance.dayError()).toBe(false);
+        await fixture.whenStable();
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19')
+          .flush(page([entry(2, '2026-10-19'), entry(1, '2026-10-19')]));
+        fixture.detectChanges();
+        expect(fixture.componentInstance.dayError()).toBe(false);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 2], withDay('2026-10-19'));
+      });
+
+      it('a pending open is dropped once another day is picked before it settles', async () => {
+        const { fixture, el, navigate } = await stepSetup(3);
+        pane().commands()!.stepEntry(1);
+        httpMock!.expectOne(isProbe).flush(page([entry(2, '2026-10-19')], 1));
+        await fixture.whenStable();
+        fixture.detectChanges();
+        const step = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19');
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-25"]')!.click();
+        // 10/19's answer lands after the owner picked 10/25 (before 10/25's read starts): nothing opens.
+        step.flush(page([entry(2, '2026-10-19')]));
+        await fixture.whenStable();
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-25').flush(page([]));
+        fixture.detectChanges();
+        // Back on 10/19 later: nothing opens by itself either.
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-19"]')!.click();
+        await fixture.whenStable();
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19')
+          .flush(page([entry(2, '2026-10-19')]));
+        fixture.detectChanges();
+        expect(navigate.mock.calls.filter(call => call[0][0] === '/accounting/entries')).toEqual([]);
+      });
+    });
+
+    it('clears the pane services when destroyed', () => {
+      const { fixture, el } = renderPanes();
+      pickDay(fixture, el, '2026-10-21', [makeEntry({ id: 5, entry_date: '2026-10-21' })]);
+      expect(pane().selectedDay()).toBe('2026-10-21');
+      fixture.destroy();
+      expect(pane().selectedDay()).toBeNull();
+      expect(pane().dayRows()).toEqual([]);
+      expect(pane().commands()).toBeNull();
+      expect(TestBed.inject(AccountingOverviewService).calendar()).toBe(false);
+    });
   });
 });
 

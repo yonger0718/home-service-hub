@@ -1,21 +1,28 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { Provider } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Location } from '@angular/common';
+import { SpyLocation, provideLocationMocks } from '@angular/common/testing';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { routes } from '../../../app.routes';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService, MATCH_MEDIA } from '../../../services/layout-mode.service';
-import { makeEntryDetail, makePreference } from '../testing/fixtures';
+import { EntryGroupSummary, LedgerEntry } from '../../../models/accounting.model';
+import { makeEntry, makeEntryDetail, makeGroupMember, makePreference } from '../testing/fixtures';
 import { PaneStateService } from '../../../services/pane-state.service';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { AccountingOverviewService } from '../month-overview/overview.service';
-import { AccountingLayoutComponent, FAB_RIGHT_BESIDE_PANE } from './accounting-layout';
+import { CalendarPaneService } from '../calendar-month/calendar-pane.service';
+import { focusables } from '../accounting-ui';
+import { formatSigned } from '../format';
+import { buildDays } from '../timeline/timeline';
+import { AccountingLayoutComponent, FAB_RIGHT_BESIDE_CALENDAR_PANE, FAB_RIGHT_BESIDE_PANE } from './accounting-layout';
 
 /** Evaluates `(min|max)-width: Npx` conditions against a fixed viewport width. */
 function matchMediaAt(width: number) {
@@ -31,13 +38,14 @@ function matchMediaAt(width: number) {
   };
 }
 
-async function start(mode: LayoutMode, url: string, width?: number): Promise<RouterTestingHarness> {
+async function start(mode: LayoutMode, url: string, width?: number, providers: Provider[] = []): Promise<RouterTestingHarness> {
   TestBed.configureTestingModule({
     providers: [
       provideRouter(routes),
       provideHttpClient(),
       provideHttpClientTesting(),
       ...(width ? [{ provide: MATCH_MEDIA, useValue: matchMediaAt(width) }] : []),
+      ...providers,
     ],
   });
   TestBed.inject(LayoutModeService).set(mode);
@@ -70,7 +78,833 @@ const PANE_PAGE = '.detail-pane router-outlet + :not(.pane-empty)';
 const SCREEN = ':scope > router-outlet + :not(app-accounting-toast)';
 
 describe('AccountingLayoutComponent', () => {
+  afterEach(() => localStorage.removeItem('hh.accounting.timelineView'));
+
+  describe('calendar mode', () => {
+    it('uses the 2:1 columns and shows the figures in the monthbar between › and the view toggle at 1100px in 日曆', async () => {
+      localStorage.setItem('hh.accounting.timelineView', 'calendar');
+      const harness = await start('panes', '/accounting?month=2026-10', 1100);
+      await find(harness, '.dbody--calendar');
+      const bar = await find(harness, '.monthbar');
+      const order = Array.from(bar.children).map(el => el.className.split(' ')[0]);
+      expect(order.indexOf('monthbar-figures')).toBeGreaterThan(order.indexOf('month-next'));
+      expect(order.indexOf('monthbar-figures')).toBeLessThan(order.indexOf('view-toggle'));
+      expect(bar.querySelector('.monthbar-figures')!.textContent).toContain('結餘');
+      expect(harness.routeNativeElement!.querySelector('.list-pane .sum')).toBeNull();
+    });
+
+    it('renders no day rows under the grid in 日曆 at 1100px with a day selected', async () => {
+      localStorage.setItem('hh.accounting.timelineView', 'calendar');
+      const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+      await find(harness, '.dbody--calendar');
+      await find(harness, '.list-pane button.cell[data-date="2026-10-21"]');
+      // Answer the day / daily reads so a row, had one been rendered, would be in the DOM before the assertions.
+      const http = TestBed.inject(HttpTestingController);
+      // The day read waits for the preference and the accounts.
+      http.match('/api/accounting/preference').forEach(req => req.flush(makePreference()));
+      http.match('/api/accounting/accounts').forEach(req => req.flush([]));
+      const day = makeEntry({ id: 77, entry_date: '2026-10-21', posted_date: '2026-10-21' });
+      const reads = await vi.waitFor(() => {
+        harness.detectChanges();
+        const pending = http.match(r => r.url === '/api/accounting/entries');
+        if (pending.length === 0) throw new Error('no day read yet');
+        return pending;
+      });
+      reads.forEach(req => req.flush({ items: [day], total: 1, limit: 50, offset: 0 }));
+      harness.detectChanges();
+      const root = harness.routeNativeElement!;
+      expect(root.querySelector('.list-pane .day-entries')).toBeNull();
+      expect(root.querySelector('.list-pane [data-entry-id]')).toBeNull();
+    });
+
+    it('keeps the 清單 layout: no calendar columns, no monthbar figures, month card in the list', async () => {
+      localStorage.setItem('hh.accounting.timelineView', 'list');
+      const harness = await start('panes', '/accounting', 1440);
+      await find(harness, '.list-pane .sum');
+      const root = harness.routeNativeElement!;
+      expect(root.querySelector('.dbody--calendar')).toBeNull();
+      expect(root.querySelector('.monthbar-figures')).toBeNull();
+    });
+
+    describe('right pane', () => {
+      const pane = () => TestBed.inject(CalendarPaneService);
+
+      function click(element: Element): void {
+        (element as HTMLElement).click();
+      }
+
+      it('shows 本月摘要 in calendar mode at 1100px with no day', async () => {
+        localStorage.setItem('hh.accounting.timelineView', 'calendar');
+        const harness = await start('panes', '/accounting?month=2026-10', 1100);
+        await find(harness, '.cal-base app-month-overview');
+        const root = harness.routeNativeElement!;
+        const search = root.querySelector<HTMLInputElement>('.cal-base .cal-search')!;
+        expect(search.placeholder).toBe('搜尋整月：名稱、商家、備註');
+        expect(root.querySelector('.pane-empty')).toBeNull();
+        expect(root.querySelector('app-calendar-day-panel')).toBeNull();
+      });
+
+      describe('lifted search box', () => {
+        const input = (root: Element) => root.querySelector<HTMLInputElement>('.cal-base .cal-search')!;
+        const type = (el: HTMLInputElement, value: string) => {
+          el.value = value;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        };
+
+        it('a trailing space (or an IME composition) in the lifted box survives a pause longer than the debounce', async () => {
+          vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+          try {
+            localStorage.setItem('hh.accounting.timelineView', 'calendar');
+            const harness = await start('panes', '/accounting?month=2026-10', 1100);
+            await find(harness, '.cal-base .cal-search');
+            const el = input(harness.routeNativeElement!);
+            document.body.appendChild(harness.routeNativeElement!);
+            const setQuery = vi.spyOn(pane().commands()!, 'setQuery');
+            el.focus();
+            type(el, '全聯 ');
+            vi.advanceTimersByTime(400);
+            harness.detectChanges();
+            expect(setQuery).toHaveBeenLastCalledWith('全聯 ');
+            expect(pane().search()).toBe('全聯');
+            expect(input(harness.routeNativeElement!).value).toBe('全聯 ');
+
+            setQuery.mockClear();
+            el.dispatchEvent(new Event('compositionstart', { bubbles: true }));
+            el.value = '全聯 ㄅ';
+            el.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }));
+            vi.advanceTimersByTime(400);
+            expect(setQuery).not.toHaveBeenCalled();
+            el.dispatchEvent(new Event('compositionend', { bubbles: true }));
+            vi.advanceTimersByTime(400);
+            expect(setQuery).toHaveBeenCalledTimes(1);
+            harness.routeNativeElement!.remove();
+          } finally {
+            vi.useRealTimers();
+          }
+        });
+
+        it('typing in the lifted search box keeps focus in it while the base switches to results', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          await find(harness, '.cal-base .cal-search');
+          const root = harness.routeNativeElement!;
+          document.body.appendChild(root);
+          try {
+            const el = input(root);
+            el.focus();
+            type(el, '全聯');
+            await find(harness, '.cal-base app-calendar-day-panel');
+            expect(root.querySelector('app-month-overview')).toBeNull();
+            expect(document.activeElement).toBe(input(root));
+            expect(input(root).value).toBe('全聯');
+          } finally {
+            root.remove();
+          }
+        });
+
+        it('typing in the filter bar shows the text in the lifted box; clearing it returns the summary and empties the box', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          await find(harness, '.cal-base .cal-search');
+          const root = harness.routeNativeElement!;
+          const bar = root.querySelector<HTMLInputElement>('.list-pane input[type=search]')!;
+          type(bar, '全聯');
+          await find(harness, '.cal-base app-calendar-day-panel');
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(input(root).value).toBe('全聯');
+          });
+          type(bar, '');
+          await find(harness, '.cal-base app-month-overview');
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(input(root).value).toBe('');
+          });
+        });
+
+        it('typing in 本月摘要 switches the base to the result list; picking a day shows the day panel; clearing the day returns to the results (Review Focus 2)', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          await find(harness, '.cal-base .cal-search');
+          const root = harness.routeNativeElement!;
+          const router = TestBed.inject(Router);
+          type(root.querySelector<HTMLInputElement>('.list-pane input[type=search]')!, 'x');
+          await find(harness, '.cal-base app-calendar-day-panel');
+          expect(pane().search()).toBe('x');
+          await router.navigateByUrl('/accounting?month=2026-10&day=2026-10-21');
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(root.querySelector('.cal-base .dp-step')).not.toBeNull();
+          });
+          await router.navigateByUrl('/accounting?month=2026-10');
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(root.querySelector('.cal-base app-calendar-day-panel')).not.toBeNull();
+            expect(root.querySelector('.cal-base .dp-step')).toBeNull();
+          });
+          expect(pane().search()).toBe('x');
+          expect(root.querySelector('.cal-base')!.textContent).toContain('「x」');
+          expect(root.querySelector<HTMLInputElement>('.list-pane input[type=search]')!.value).toBe('x');
+          expect(input(root).value).toBe('x');
+        });
+
+        it('leaves an Enter of a WebKit IME commit (keyCode 229, no isComposing) to the composition', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          await find(harness, '.cal-base .cal-search');
+          const el = input(harness.routeNativeElement!);
+          const setQuery = vi.spyOn(pane().commands()!, 'setQuery');
+          el.value = '全聯';
+          const enter = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 229, bubbles: true, cancelable: true } as KeyboardEventInit);
+          el.dispatchEvent(enter);
+          expect(enter.defaultPrevented).toBe(false);
+          expect(setQuery).not.toHaveBeenCalled();
+        });
+
+        it('Esc in an empty lifted box is left alone; with text it empties and commits', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          await find(harness, '.cal-base .cal-search');
+          const el = input(harness.routeNativeElement!);
+          const setQuery = vi.spyOn(pane().commands()!, 'setQuery');
+          const esc = () => {
+            const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+            el.dispatchEvent(event);
+            return event;
+          };
+          expect(esc().defaultPrevented).toBe(false);
+          expect(setQuery).not.toHaveBeenCalled();
+          el.value = '全聯';
+          expect(esc().defaultPrevented).toBe(true);
+          expect(el.value).toBe('');
+          expect(setQuery).toHaveBeenCalledWith('');
+        });
+      });
+
+      it('shows the day panel when the URL carries a day', async () => {
+        const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+        const label = await find(harness, '.cal-base app-calendar-day-panel .dp-label');
+        expect(label.textContent!.trim()).toBe('10/21 週三');
+        const root = harness.routeNativeElement!;
+        expect(root.querySelector('.cal-search')).toBeNull();
+        expect(root.querySelector('app-month-overview')).toBeNull();
+      });
+
+      it('‹ › and 本月摘要 write the URL with replaceUrl', async () => {
+        const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+        const router = TestBed.inject(Router);
+        const navigate = vi.spyOn(router, 'navigate');
+        click(await find(harness, '.dp-head [aria-label=後一天]'));
+        await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-22'));
+        expect(navigate).toHaveBeenLastCalledWith([], expect.objectContaining({ replaceUrl: true, queryParamsHandling: 'merge' }));
+        await vi.waitFor(() => expect(pane().selectedDay()).toBe('2026-10-22'));
+        click(await find(harness, '.dp-head .dp-summary'));
+        await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10'));
+        expect(navigate).toHaveBeenLastCalledWith([], expect.objectContaining({ replaceUrl: true }));
+        await find(harness, '.cal-base app-month-overview');
+      });
+
+      it('› on the last day of the month moves to the next month', async () => {
+        const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-31', 1100);
+        const router = TestBed.inject(Router);
+        click(await find(harness, '.dp-head [aria-label=後一天]'));
+        await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-11&day=2026-11-01'));
+      });
+
+      it('a next-month due row in 這個月要處理 writes the next month and its day', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date(2026, 9, 28, 12, 0, 0));
+        try {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          await find(harness, '.cal-base app-month-overview');
+          expect(pane().today()).toBe('2026-10-28');
+          pane().monthDues.set([{ key: 'due-9', accountId: 9, name: '測試卡', date: '2026-11-03', amountText: '$800' }]);
+          click(await find(harness, '.todo-bill'));
+          const router = TestBed.inject(Router);
+          await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-11&day=2026-11-03'));
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('shows exactly one 本月摘要 and no 近期到期 at 1440px in 日曆 (showOverview stands down)', async () => {
+        localStorage.setItem('hh.accounting.timelineView', 'calendar');
+        const harness = await start('panes', '/accounting?month=2026-10', 1440);
+        await find(harness, '.cal-base app-month-overview');
+        const root = harness.routeNativeElement!;
+        expect(root.querySelectorAll('app-month-overview').length).toBe(1);
+        expect(root.querySelector('.cal-search')).not.toBeNull();
+        expect(root.querySelector('.detail-pane')!.textContent).not.toContain('近期到期');
+        expect(root.querySelector('.pane-empty')).toBeNull();
+      });
+
+      it('＋ 在這天記一筆 opens the form with date, month and day', async () => {
+        const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+        const router = TestBed.inject(Router);
+        click(await find(harness, '.dp-add'));
+        await vi.waitFor(() => expect(router.url).toBe('/accounting/entry?date=2026-10-21&month=2026-10&day=2026-10-21'));
+      });
+
+      it('a day-panel row opens the entry with month and day kept', async () => {
+        const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+        await find(harness, 'app-calendar-day-panel .dp-label');
+        pane().dayRows.set(buildDays([makeEntry({ id: 7, entry_date: '2026-10-21' })], 'TWD', false)[0].rows);
+        const router = TestBed.inject(Router);
+        click(await find(harness, 'app-calendar-day-panel .dp-row[data-entry-id="7"]'));
+        await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/7?month=2026-10&day=2026-10-21'));
+      });
+
+      it('wires the day panel: 重試 → retryDay, and 這天沒有符合條件的記錄 while a filter is active', async () => {
+        const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+        await find(harness, 'app-calendar-day-panel .dp-label');
+        const retryDay = vi.fn();
+        pane().commands.set({ ...pane().commands()!, retryDay });
+        pane().dayState.set('error');
+        click(await find(harness, '.cal-base .dp-retry'));
+        expect(retryDay).toHaveBeenCalledTimes(1);
+
+        pane().dayState.set('ready');
+        pane().filtered.set(true);
+        await vi.waitFor(() => {
+          harness.detectChanges();
+          expect(harness.routeNativeElement!.querySelector('.cal-base .dp-empty')?.textContent?.trim()).toBe('這天沒有符合條件的記錄');
+        });
+      });
+
+      it('wires the month search results: 重試 → retrySearch, 載入更多 → loadMore (offset 50), day nets in the main currency', async () => {
+        localStorage.setItem('hh.accounting.timelineView', 'calendar');
+        const harness = await start('panes', '/accounting?month=2026-10', 1100);
+        await find(harness, '.cal-base .cal-search');
+        const http = TestBed.inject(HttpTestingController);
+        http.match('/api/accounting/preference').forEach(req => req.flush(makePreference({ main_currency: 'USD' })));
+        http.match('/api/accounting/accounts').forEach(req => req.flush([]));
+        await vi.waitFor(() => expect(pane().mainCurrency()).toBe('USD'));
+        const real = pane().commands()!;
+        const retrySearch = vi.fn(() => real.retrySearch());
+        const loadMore = vi.fn(() => real.loadMore());
+        pane().commands.set({ ...real, retrySearch, loadMore });
+        const searchRead = (offset: string) =>
+          vi.waitFor(() => {
+            harness.detectChanges();
+            const [req] = http.match(r => r.url === '/api/accounting/entries' && r.params.get('q') === '全聯' && r.params.get('offset') === offset);
+            if (!req) throw new Error(`no search read at ${offset} yet`);
+            return req;
+          });
+
+        pane().commands()!.setQuery('全聯');
+        (await searchRead('0')).flush('boom', { status: 500, statusText: 'Server Error' });
+        click(await find(harness, '.cal-base app-calendar-day-panel .dp-retry'));
+        expect(retrySearch).toHaveBeenCalledTimes(1);
+
+        const items = Array.from({ length: 50 }, (_, i) => makeEntry({ id: i + 1, name: '全聯', currency: 'USD', amount: '-2.0000', entry_date: '2026-10-05' }));
+        (await searchRead('0')).flush({ items, total: 60, limit: 50, offset: 0 });
+        const net = await find(harness, '.cal-base .dp-day b');
+        expect(net.textContent!.trim()).toBe(formatSigned(-100, 'USD'));
+        click(await find(harness, '.cal-base .dp-more'));
+        expect(loadMore).toHaveBeenCalledTimes(1);
+        (await searchRead('50')).flush({ items: [], total: 60, limit: 50, offset: 50 });
+      });
+
+      describe('entry drawer', () => {
+        const ENTRY = '/accounting/entries/5?month=2026-10&day=2026-10-21';
+
+        function key(target: Element, name: string, init: KeyboardEventInit = {}): KeyboardEvent {
+          const event = new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true, ...init });
+          target.dispatchEvent(event);
+          return event;
+        }
+
+        function calBase(harness: RouterTestingHarness): HTMLElement {
+          return harness.routeNativeElement!.querySelector<HTMLElement>('.cal-base')!;
+        }
+
+        /** Answers the drawer page's detail read; resolves to the page's own ✕ (the drawer draws none). */
+        async function answerDetail(harness: RouterTestingHarness, id: number): Promise<HTMLButtonElement> {
+          const http = TestBed.inject(HttpTestingController);
+          return (await vi.waitFor(() => {
+            http.match(`/api/accounting/entries/${id}`).forEach(req => req.flush(makeEntryDetail({ id })));
+            return find(harness, '.pane-host.drawer .close[aria-label="關閉"]');
+          })) as HTMLButtonElement;
+        }
+
+        /**
+         * The day panel of 10/21 with one row (id 7); clicking it (focused, as a real click leaves it) opens the drawer.
+         * The detail is still loading, so the dialog itself takes focus.
+         */
+        async function openFromRow(harness: RouterTestingHarness): Promise<{ row: HTMLElement; drawer: Element }> {
+          await find(harness, 'app-calendar-day-panel .dp-label');
+          pane().dayRows.set(buildDays([makeEntry({ id: 7, entry_date: '2026-10-21' })], 'TWD', false)[0].rows);
+          const row = (await find(harness, 'app-calendar-day-panel .dp-row[data-entry-id="7"]')) as HTMLElement;
+          row.focus();
+          row.click();
+          const router = TestBed.inject(Router);
+          await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/7?month=2026-10&day=2026-10-21'));
+          const drawer = await find(harness, '.pane-host.drawer');
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(document.activeElement).toBe(drawer);
+          });
+          return { row, drawer };
+        }
+
+        beforeEach(() => localStorage.setItem('hh.accounting.timelineView', 'calendar'));
+
+        it('renders the entry as a drawer over the day panel at 1100px, day panel still mounted and inert', async () => {
+          const harness = await start('panes', ENTRY, 1100);
+          const drawer = await find(harness, '.pane-host.drawer');
+          expect(drawer.getAttribute('role')).toBe('dialog');
+          expect(drawer.getAttribute('aria-modal')).toBe('true');
+          expect(drawer.getAttribute('aria-label')).toBe('記錄詳情');
+          await find(harness, '.cal-base app-calendar-day-panel');
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(calBase(harness).hasAttribute('inert')).toBe(true);
+          });
+          const root = harness.routeNativeElement!;
+          expect(root.querySelector('.sheet-grip--active')).toBeNull();
+          expect(root.querySelector('.list-pane')!.hasAttribute('inert')).toBe(false);
+          // One dialog: the pane itself carries no role / aria-modal outside the 760–1023 px sheet.
+          const detail = root.querySelector('.detail-pane')!;
+          expect(detail.getAttribute('role')).toBeNull();
+          expect(detail.getAttribute('aria-modal')).toBeNull();
+          expect(root.querySelectorAll('[aria-modal="true"]').length).toBe(1);
+          // No ✕ of the drawer's own: exactly one 關閉, the page's.
+          await answerDetail(harness, 5);
+          expect(root.querySelector('.drawer-close')).toBeNull();
+          expect(root.querySelectorAll('.detail-pane [aria-label="關閉"]').length).toBe(1);
+        });
+
+        it("focuses the page's own ✕ when the drawer opens over a page already shown (清單 → 日曆 with an entry open)", async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'list');
+          const harness = await start('panes', ENTRY.replace('&day=2026-10-21', ''), 1100);
+          const http = TestBed.inject(HttpTestingController);
+          const close = (await vi.waitFor(() => {
+            http.match('/api/accounting/entries/5').forEach(req => req.flush(makeEntryDetail({ id: 5 })));
+            return find(harness, '.detail-pane .close[aria-label="關閉"]');
+          })) as HTMLButtonElement;
+          expect(harness.routeNativeElement!.querySelector('.pane-host.drawer')).toBeNull();
+          ((await find(harness, '.view-toggle [role=radio]:nth-child(2)')) as HTMLButtonElement).click();
+          await find(harness, '.pane-host.drawer');
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(document.activeElement).toBe(close);
+          });
+        });
+
+        it('✕ and Esc close the drawer back to the day with the same history move and return focus to the day-panel row that opened it', async () => {
+          const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+          const router = TestBed.inject(Router);
+          // As the app's initial navigation does: popstate (Back, historyGo) drives the router.
+          router.setUpLocationChangeListener();
+          const back = vi.spyOn(TestBed.inject(Location), 'back');
+          let { row } = await openFromRow(harness);
+          expect(calBase(harness).hasAttribute('inert')).toBe(true);
+
+          // The page's own ✕ (entry detail 關閉): back to the day it was opened from, history not grown.
+          (await answerDetail(harness, 7)).click();
+          expect(back).toHaveBeenCalledTimes(1);
+          await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-21'));
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(harness.routeNativeElement!.querySelector('.pane-host.drawer')).toBeNull();
+            expect(calBase(harness).hasAttribute('inert')).toBe(false);
+            expect(document.activeElement).toBe(row);
+          });
+
+          // Esc presses that same ✕: the same history move.
+          ({ row } = await openFromRow(harness));
+          await answerDetail(harness, 7);
+          const escape = key(document.activeElement!, 'Escape');
+          expect(escape.defaultPrevented).toBe(true);
+          expect(back).toHaveBeenCalledTimes(2);
+          await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-21'));
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(calBase(harness).hasAttribute('inert')).toBe(false);
+            expect(document.activeElement).toBe(row);
+          });
+        });
+
+        it('Esc after a grid click changed the day: the same back as ✕, the new day written in place, the selected grid cell focused', async () => {
+          const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+          const router = TestBed.inject(Router);
+          router.setUpLocationChangeListener();
+          const back = vi.spyOn(TestBed.inject(Location), 'back');
+          const { drawer } = await openFromRow(harness);
+          await answerDetail(harness, 7);
+          ((await find(harness, '.list-pane button.cell[data-date="2026-10-23"]')) as HTMLButtonElement).click();
+          await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/7?month=2026-10&day=2026-10-23'));
+          pane().dayRows.set([]);
+          harness.detectChanges();
+          const navigate = vi.spyOn(router, 'navigate');
+
+          expect(key(drawer, 'Escape').defaultPrevented).toBe(true);
+          expect(back).toHaveBeenCalledTimes(1);
+          await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-23'));
+          expect(navigate).toHaveBeenCalledWith([], {
+            queryParams: { month: '2026-10', day: '2026-10-23' }, queryParamsHandling: 'merge', replaceUrl: true,
+          });
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            const cell = harness.routeNativeElement!.querySelector('.list-pane .cell.sel');
+            expect(cell?.getAttribute('data-date')).toBe('2026-10-23');
+            expect(document.activeElement).toBe(cell);
+          });
+        });
+
+        it('Esc while the page is still loading (no ✕ yet) closes to the day shown now and focuses the selected grid cell', async () => {
+          const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+          const router = TestBed.inject(Router);
+          const { row, drawer } = await openFromRow(harness);
+          ((await find(harness, '.list-pane button.cell[data-date="2026-10-23"]')) as HTMLButtonElement).click();
+          await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/7?month=2026-10&day=2026-10-23'));
+          // The new day's rows (its read is not answered here) replace 10/21's: the opener row goes.
+          pane().dayRows.set([]);
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(row.isConnected).toBe(false);
+          });
+          expect(harness.routeNativeElement!.querySelector('.pane-host.drawer')).toBe(drawer);
+
+          key(drawer, 'Escape');
+          await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-23'));
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            const cell = harness.routeNativeElement!.querySelector('.list-pane .cell.sel');
+            expect(cell?.getAttribute('data-date')).toBe('2026-10-23');
+            expect(document.activeElement).toBe(cell);
+          });
+        });
+
+        it("the page's ✕ after a grid click changed the day goes back once, writes the new day in place and focuses the selected grid cell", async () => {
+          const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+          const router = TestBed.inject(Router);
+          router.setUpLocationChangeListener();
+          const back = vi.spyOn(TestBed.inject(Location), 'back');
+          await openFromRow(harness);
+          const close = await answerDetail(harness, 7);
+          ((await find(harness, '.list-pane button.cell[data-date="2026-10-23"]')) as HTMLButtonElement).click();
+          await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/7?month=2026-10&day=2026-10-23'));
+          pane().dayRows.set([]);
+          harness.detectChanges();
+          const navigate = vi.spyOn(router, 'navigate');
+
+          close.click();
+          // Back lands on 10/21 (history not grown); the day shown now then replaces it, so the next Back leaves 日曆.
+          expect(back).toHaveBeenCalledTimes(1);
+          await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-23'));
+          expect(navigate).toHaveBeenCalledWith([], {
+            queryParams: { month: '2026-10', day: '2026-10-23' }, queryParamsHandling: 'merge', replaceUrl: true,
+          });
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            const cell = harness.routeNativeElement!.querySelector('.list-pane .cell.sel');
+            expect(cell?.getAttribute('data-date')).toBe('2026-10-23');
+            expect(document.activeElement).toBe(cell);
+          });
+        });
+
+        describe('↑ ↓ steps over real history (router over a SpyLocation driven by popstate)', () => {
+          const DAY_21 = '/accounting?month=2026-10&day=2026-10-21';
+          const DAY_19 = '/accounting?month=2026-10&day=2026-10-19';
+          const at = (id: number, day: string) => `/accounting/entries/${id}?month=2026-10&day=${day}`;
+          /** 10/21: rows 7, 8, 9; 10/19: rows 11, 12 (newest first, as the API orders them). */
+          const ENTRIES: LedgerEntry[] = [
+            ...[7, 8, 9].map(id => makeEntry({ id, entry_date: '2026-10-21', posted_date: '2026-10-21' })),
+            ...[11, 12].map(id => makeEntry({ id, entry_date: '2026-10-19', posted_date: '2026-10-19' })),
+          ];
+          /** The entries the reads answer with (a test may swap in a split). */
+          let entries = ENTRIES;
+          beforeEach(() => (entries = ENTRIES));
+
+          /** Answers the timeline's reads (preference, accounts, a day's rows, the neighbour-day probe) and the drawer's detail reads. */
+          function serve(): void {
+            const http = TestBed.inject(HttpTestingController);
+            http.match('/api/accounting/preference').forEach(req => req.flush(makePreference()));
+            http.match('/api/accounting/accounts').forEach(req => req.flush([]));
+            http.match(req => req.url === '/api/accounting/entries').forEach(req => {
+              const from = req.request.params.get('date_from') ?? '0000-00-00';
+              const to = req.request.params.get('date_to') ?? '9999-99-99';
+              const limit = Number(req.request.params.get('limit') ?? 50);
+              const items = entries.filter(entry => entry.entry_date >= from && entry.entry_date <= to).slice(0, limit);
+              req.flush({ items, total: items.length, limit, offset: 0 });
+            });
+            http.match(req => /^\/api\/accounting\/entries\/\d+$/.test(req.url)).forEach(req => {
+              const entry = entries.find(item => item.id === Number(req.request.url.split('/').pop()))!;
+              const members = entry.group ? entries.filter(item => item.group?.id === entry.group!.id).map(item => makeGroupMember(item)) : [];
+              req.flush(makeEntryDetail({ ...entry, group_members: members }));
+            });
+          }
+
+          /** Polls (serving the reads each time) until `check` passes. */
+          function serving<T>(harness: RouterTestingHarness, check: () => T): Promise<T> {
+            return vi.waitFor(
+              () => {
+                serve();
+                harness.detectChanges();
+                return check();
+              },
+              { timeout: 3000, interval: 10 },
+            );
+          }
+
+          function present(harness: RouterTestingHarness, selector: string): Promise<HTMLElement> {
+            return serving(harness, () => {
+              const found = harness.routeNativeElement?.querySelector<HTMLElement>(selector);
+              if (!found) {
+                throw new Error(`no ${selector} yet`);
+              }
+              return found;
+            });
+          }
+
+          /** The browser history entries after SpyLocation's initial blank one, and the current index among them. */
+          function history(): { paths: string[]; index: number } {
+            const stack = TestBed.inject(Location) as unknown as { _history: { path: string }[]; _historyIndex: number };
+            return { paths: stack._history.slice(1).map(state => state.path), index: stack._historyIndex - 1 };
+          }
+
+          const CLOSE = '.pane-host.drawer .close[aria-label="關閉"]';
+
+          /** 日曆 on 10/21 at 1100 px; the day panel's row `id` clicked, the drawer open on it (a push, as every row open). */
+          async function openRow(id: number): Promise<{ harness: RouterTestingHarness; router: Router }> {
+            const harness = await start('panes', DAY_21, 1100, [provideLocationMocks()]);
+            const router = TestBed.inject(Router);
+            router.setUpLocationChangeListener();
+            expect(TestBed.inject(Location)).toBeInstanceOf(SpyLocation);
+            (await present(harness, `app-calendar-day-panel .dp-row[data-entry-id="${id}"]`)).click();
+            await serving(harness, () => expect(router.url).toBe(at(id, '2026-10-21')));
+            expect(history()).toEqual({ paths: [DAY_21, at(id, '2026-10-21')], index: 1 });
+            return { harness, router };
+          }
+
+          it('↓ twice then ✕: each step replaced the entry, so ✕ closes back to the day and the next Back leaves 日曆', async () => {
+            const { harness, router } = await openRow(7);
+            for (const next of [8, 9]) {
+              key(await present(harness, CLOSE), 'ArrowDown');
+              await serving(harness, () => expect(router.url).toBe(at(next, '2026-10-21')));
+            }
+            expect(history()).toEqual({ paths: [DAY_21, at(9, '2026-10-21')], index: 1 });
+
+            (await present(harness, CLOSE)).click();
+            await serving(harness, () => {
+              expect(router.url).toBe(DAY_21);
+              expect(harness.routeNativeElement!.querySelector('.pane-host.drawer')).toBeNull();
+            });
+            // One entry back from the opened entry: the calendar is the current entry, nothing ahead of it but the page.
+            expect(history()).toEqual({ paths: [DAY_21, at(9, '2026-10-21')], index: 0 });
+          });
+
+          it('↓ onto a split row opens its group view in place; its ✕ closes back to the day and the next Back leaves 日曆', async () => {
+            const split: EntryGroupSummary = {
+              id: 4, kind: 'split', name: null, merchant: null, description: null, count: 2, total: '-200.0000', currency: 'TWD',
+            };
+            entries = [
+              ENTRIES[0],
+              ...[8, 10].map(id => makeEntry({ id, entry_date: '2026-10-21', posted_date: '2026-10-21', amount: '-100.0000', group: split })),
+              ENTRIES[2],
+            ];
+            const { harness, router } = await openRow(7);
+            key(await present(harness, CLOSE), 'ArrowDown');
+            await serving(harness, () => expect(router.url).toBe('/accounting/entries/8/group?month=2026-10&day=2026-10-21'));
+            expect(history()).toEqual({ paths: [DAY_21, '/accounting/entries/8/group?month=2026-10&day=2026-10-21'], index: 1 });
+
+            (await present(harness, '.pane-host.drawer .split-group .close[aria-label="關閉"]')).click();
+            await serving(harness, () => {
+              expect(router.url).toBe(DAY_21);
+              expect(harness.routeNativeElement!.querySelector('.pane-host.drawer')).toBeNull();
+            });
+            expect(history()).toEqual({ paths: [DAY_21, '/accounting/entries/8/group?month=2026-10&day=2026-10-21'], index: 0 });
+          });
+
+          it('↓ past the last row crosses to the earlier day; ✕ closes onto that new day and the next Back leaves 日曆', async () => {
+            const { harness, router } = await openRow(9);
+            key(await present(harness, CLOSE), 'ArrowDown');
+            await serving(harness, () => expect(router.url).toBe(at(11, '2026-10-19')));
+            expect(history()).toEqual({ paths: [DAY_21, at(11, '2026-10-19')], index: 1 });
+
+            (await present(harness, CLOSE)).click();
+            await serving(harness, () => {
+              expect(router.url).toBe(DAY_19);
+              expect(harness.routeNativeElement!.querySelector('.pane-host.drawer')).toBeNull();
+            });
+            expect(history()).toEqual({ paths: [DAY_19, at(11, '2026-10-19')], index: 0 });
+          });
+        });
+
+        it('keeps N working inside the drawer (data-global-shortcuts) and does not trap a pointer click on the grid', async () => {
+          const harness = await start('panes', ENTRY, 1100);
+          const router = TestBed.inject(Router);
+          const drawer = await find(harness, '.pane-host.drawer');
+          expect(drawer.hasAttribute('data-global-shortcuts')).toBe(true);
+          // The shell's OPEN_MODAL: a modal without data-global-shortcuts would swallow N.
+          expect(document.querySelector('[aria-modal="true"]:not([data-global-shortcuts])')).toBeNull();
+          ((await find(harness, '.list-pane button.cell[data-date="2026-10-23"]')) as HTMLButtonElement).click();
+          await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/5?month=2026-10&day=2026-10-23'));
+          harness.detectChanges();
+          expect(harness.routeNativeElement!.querySelector('.pane-host.drawer')).not.toBeNull();
+          expect(harness.routeNativeElement!.querySelector('.list-pane')!.hasAttribute('inert')).toBe(false);
+        });
+
+        it('wraps Tab inside the drawer', async () => {
+          const harness = await start('panes', ENTRY, 1100);
+          const drawer = (await find(harness, '.pane-host.drawer')) as HTMLElement;
+          await answerDetail(harness, 5);
+          const last = document.createElement('button');
+          last.textContent = '最後';
+          drawer.appendChild(last);
+          const first = focusables(drawer)[0];
+          expect(first).not.toBe(last);
+
+          last.focus();
+          const tab = key(last, 'Tab');
+          expect(tab.defaultPrevented).toBe(true);
+          expect(document.activeElement).toBe(first);
+          const back = key(first, 'Tab', { shiftKey: true });
+          expect(back.defaultPrevented).toBe(true);
+          expect(document.activeElement).toBe(last);
+          last.remove();
+        });
+
+        it('widens the drawer for the entry form', async () => {
+          const harness = await start('panes', '/accounting/entry?date=2026-10-21&month=2026-10&day=2026-10-21', 1100);
+          const drawer = await find(harness, '.pane-host.drawer.drawer--form');
+          const formClose = await find(harness, '.pane-host.drawer--form .entry-form .topbar .cancel');
+          // One ✕: the form's own (取消, data-pane-close); the drawer adds none.
+          expect(harness.routeNativeElement!.querySelector('.drawer-close')).toBeNull();
+          expect(drawer.querySelectorAll('[data-pane-close]').length).toBe(1);
+          expect(drawer.querySelectorAll('[aria-label="取消"]').length).toBe(1);
+          expect(drawer.querySelectorAll('[aria-label="關閉"]').length).toBe(0);
+          await vi.waitFor(() => expect(document.activeElement).toBe(formClose));
+        });
+
+        it('↑ ↓ inside the drawer call stepEntry and the document-level row stepping stands down', async () => {
+          const harness = await start('panes', ENTRY, 1100);
+          const router = TestBed.inject(Router);
+          await find(harness, '.list-pane button.cell[data-date="2026-10-21"]');
+          const close = await answerDetail(harness, 5);
+          const stepEntry = vi.fn();
+          pane().commands.set({ ...pane().commands()!, stepEntry });
+
+          expect(key(close, 'ArrowDown').defaultPrevented).toBe(true);
+          expect(stepEntry).toHaveBeenLastCalledWith(1);
+          expect(key(close, 'ArrowUp').defaultPrevented).toBe(true);
+          expect(stepEntry).toHaveBeenLastCalledWith(-1);
+
+          // A field inside the drawer keeps its own arrows.
+          const field = document.createElement('input');
+          close.parentElement!.appendChild(field);
+          expect(key(field, 'ArrowDown').defaultPrevented).toBe(false);
+          field.remove();
+          expect(stepEntry).toHaveBeenCalledTimes(2);
+
+          // Outside the drawer ↑ ↓ stand down without being swallowed: the page still scrolls.
+          const navigate = vi.spyOn(router, 'navigate');
+          const rows = addRows(harness, [5, 6, 7]);
+          expect(press('ArrowDown').defaultPrevented).toBe(false);
+          expect(press('ArrowUp').defaultPrevented).toBe(false);
+          rows.remove();
+          expect(navigate).not.toHaveBeenCalled();
+          expect(router.url).toBe(ENTRY);
+          expect(stepEntry).toHaveBeenCalledTimes(2);
+        });
+
+        it('↑ ↓ on a button of the entry form in the drawer neither step nor navigate (unsaved edits stay)', async () => {
+          const FORM = '/accounting/entries/5/edit?month=2026-10&day=2026-10-21';
+          const harness = await start('panes', FORM, 1100);
+          const router = TestBed.inject(Router);
+          const button = await find(harness, '.pane-host.drawer--form .entry-form .topbar .cancel');
+          const stepEntry = vi.fn();
+          pane().commands.set({ ...pane().commands()!, stepEntry });
+          const navigate = vi.spyOn(router, 'navigate');
+
+          expect(key(button, 'ArrowDown').defaultPrevented).toBe(false);
+          expect(key(button, 'ArrowUp').defaultPrevented).toBe(false);
+          expect(stepEntry).not.toHaveBeenCalled();
+          expect(navigate).not.toHaveBeenCalled();
+          expect(router.url).toBe(FORM);
+        });
+
+        it('↓ in the reminder centre over the calendar opens a reminder row, never a row of the inert day panel under it', async () => {
+          const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+          const router = TestBed.inject(Router);
+          await find(harness, 'app-calendar-day-panel .dp-label');
+          await router.navigateByUrl('/accounting/reminders');
+          const page = await find(harness, '.pane-host.drawer app-accounting-reminders');
+          pane().dayRows.set(buildDays([makeEntry({ id: 7, entry_date: '2026-10-21' })], 'TWD', false)[0].rows);
+          await find(harness, '.cal-base[inert] app-calendar-day-panel .dp-row[data-entry-id="7"]');
+          const expanded = document.createElement('div');
+          for (const id of [72, 74]) {
+            const row = document.createElement('button');
+            row.dataset['entryId'] = String(id);
+            expanded.appendChild(row);
+          }
+          page.appendChild(expanded);
+
+          expect(press('ArrowDown').defaultPrevented).toBe(true);
+          await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/72'));
+          expect((TestBed.inject(Location).getState() as Record<string, unknown>)['closeTo']).toBe('reminders');
+        });
+
+        it("moves focus from the removed detail ✕ to the form ✕ when the drawer switches from a detail to the form", async () => {
+          const harness = await start('panes', ENTRY, 1100);
+          const close = await answerDetail(harness, 5);
+          close.focus();
+          await TestBed.inject(Router).navigateByUrl('/accounting/entries/5/edit?month=2026-10&day=2026-10-21');
+          const formClose = await find(harness, '.pane-host.drawer--form .entry-form .topbar .cancel');
+          expect(close.isConnected).toBe(false);
+          await vi.waitFor(() => expect(document.activeElement).toBe(formClose));
+        });
+
+        it('keeps the 820px sheet behaviour untouched in 日曆', async () => {
+          const harness = await start('sheet', ENTRY, 820);
+          const sheet = await find(harness, '.detail-pane.open');
+          expect(sheet.getAttribute('role')).toBe('dialog');
+          expect(sheet.getAttribute('aria-modal')).toBe('true');
+          const root = harness.routeNativeElement!;
+          expect(root.querySelector('.sheet-grip--active')).not.toBeNull();
+          expect(root.querySelector('.drawer')).toBeNull();
+          expect(root.querySelector('.pane-host')!.getAttribute('aria-modal')).toBeNull();
+          expect(root.querySelector('.pane-host')!.hasAttribute('tabindex')).toBe(false);
+        });
+
+        it('the month navigator ‹ › keeps the drawer open and drops the day (Review Focus 1)', async () => {
+          const harness = await start('panes', ENTRY, 1100);
+          const router = TestBed.inject(Router);
+          const drawer = await find(harness, '.pane-host.drawer');
+          await find(harness, '.cal-base app-calendar-day-panel');
+          await vi.waitFor(() => expect(drawer.contains(document.activeElement)).toBe(true));
+          const prev = (await find(harness, '.list-pane .month-prev')) as HTMLButtonElement;
+          // A pointer click leaves focus on the navigator; the drawer never pulls it back.
+          prev.focus();
+          prev.click();
+          await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/5?month=2026-09'));
+          await find(harness, '.cal-base app-month-overview');
+          expect(harness.routeNativeElement!.querySelector('.pane-host.drawer')).toBe(drawer);
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(calBase(harness).hasAttribute('inert')).toBe(true);
+          });
+          await new Promise(resolve => setTimeout(resolve, 20));
+          harness.detectChanges();
+          expect(document.activeElement).toBe(prev);
+        });
+      });
+    });
+
+    it('publishes the calendar FAB offset while a pane is open in calendar mode', async () => {
+      localStorage.setItem('hh.accounting.timelineView', 'calendar');
+      const harness = await start('panes', '/accounting/entries/5?month=2026-10', 1100);
+      await find(harness, '.dbody--calendar');
+      expect(TestBed.inject(PaneStateService).fabRight()).toBe(FAB_RIGHT_BESIDE_CALENDAR_PANE);
+    });
+  });
+
   describe('empty pane', () => {
+    // 清單: the ≥ 1280 px overview and the one-line empty copy (日曆's right pane is the calendar describe's).
+    beforeEach(() => localStorage.setItem('hh.accounting.timelineView', 'list'));
+
     it('shows the month overview instead of the empty copy at 1440px on /accounting', async () => {
       const harness = await start('panes', '/accounting', 1440);
       await find(harness, 'app-month-overview');
@@ -137,6 +971,7 @@ describe('AccountingLayoutComponent', () => {
   });
 
   it('keeps the list and updates the URL when a row is selected at 1280px', async () => {
+    localStorage.setItem('hh.accounting.timelineView', 'list');
     const harness = await start('panes', '/accounting');
     const list = await find(harness, LIST);
     expect(harness.routeNativeElement!.querySelector('.pane-empty')).not.toBeNull();
@@ -291,6 +1126,7 @@ describe('AccountingLayoutComponent', () => {
   });
 
   it('publishes pane and form state for the shell', async () => {
+    localStorage.setItem('hh.accounting.timelineView', 'list');
     const harness = await start('panes', '/accounting/entries/9');
     const pane = TestBed.inject(PaneStateService);
     await find(harness, PANE_PAGE);
@@ -941,6 +1777,12 @@ describe('AccountingLayoutComponent', () => {
       const block = (name: string) => css.match(new RegExp(`\\n${name.replace('.', '\\.')} \\{([^}]*)\\}`))?.[1] ?? '';
       expect(block('.dwrap')).toContain('margin-bottom: calc(-1 * var(--fab-clear, 0px))');
       expect(block('.dbody')).not.toContain('margin-bottom: calc(-1');
+    });
+
+    it("lets the calendar's right-pane base scroll its last line clear of the 記一筆 button", () => {
+      const css = readFileSync(join(process.cwd(), 'src/app/components/accounting/accounting-layout/accounting-layout.scss'), 'utf8');
+      const block = css.match(/\n\.cal-base \{([^}]*)\}/)?.[1] ?? '';
+      expect(block).toContain('padding-bottom: calc(14px + var(--fab-clear, 0px))');
     });
   });
 });

@@ -4,6 +4,7 @@ import { BreakdownRow, BreakdownSplit } from '../../../models/reports.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { ReportsService } from '../../../services/reports.service';
 import { monthRange } from '../dates';
+import { InboxEinvoice } from '../inbox/einvoice.model';
 import { InboxService } from '../inbox/inbox.service';
 
 export type CalendarPartState = 'loading' | 'ready' | 'error';
@@ -18,6 +19,8 @@ export interface CalendarMonthData {
   /** `issue_date` → number of inbox e-invoices awaiting a match that day. */
   invoiceDays: ReadonlyMap<string, number>;
   invoiceState: CalendarPartState;
+  /** The month's inbox e-invoices awaiting a match, issue-date order. */
+  invoices: InboxEinvoice[];
 }
 
 export const EMPTY_CALENDAR_DATA: CalendarMonthData = {
@@ -27,6 +30,7 @@ export const EMPTY_CALENDAR_DATA: CalendarMonthData = {
   merchantsState: 'loading',
   invoiceDays: new Map(),
   invoiceState: 'loading',
+  invoices: [],
 };
 
 type Part = 'dots' | 'merchants' | 'invoices';
@@ -44,6 +48,9 @@ export class CalendarDataService {
 
   /** The month the 日曆 view shows; null when no calendar is on screen (nothing is read then). */
   readonly month = signal<string | null>(null);
+
+  /** ≥ 1024 px: the merchant ranking is read; below, `merchantsState` stays 'loading' and no request is made. */
+  readonly wide = signal(false);
 
   private readonly cache = signal<ReadonlyMap<string, CalendarMonthData>>(new Map());
   private readonly latest = new Map<string, number>();
@@ -63,11 +70,12 @@ export class CalendarDataService {
       const month = this.month();
       const entries = this.accounting.entriesChanged();
       const inbox = this.inbox.changed();
-      untracked(() => this.sync(month, entries, inbox));
+      const wide = this.wide();
+      untracked(() => this.sync(month, entries, inbox, wide));
     });
   }
 
-  private sync(month: string | null, entries: number, inbox: number): void {
+  private sync(month: string | null, entries: number, inbox: number, wide: boolean): void {
     const entriesMoved = this.seenEntries !== null && entries !== this.seenEntries;
     const inboxMoved = this.seenInbox !== null && inbox !== this.seenInbox;
     this.seenEntries = entries;
@@ -79,7 +87,7 @@ export class CalendarDataService {
     } else if (inboxMoved) {
       const next = new Map<string, CalendarMonthData>();
       for (const [key, rec] of this.cache()) {
-        next.set(key, { ...rec, invoiceDays: new Map(), invoiceState: 'loading' });
+        next.set(key, { ...rec, invoiceDays: new Map(), invoices: [], invoiceState: 'loading' });
         this.latest.delete(`invoices|${key}`);
       }
       this.cache.set(next);
@@ -90,11 +98,17 @@ export class CalendarDataService {
     if (!rec) {
       this.patch(month, {});
       this.readDots(month);
-      this.readMerchants(month);
+      if (wide) this.readMerchants(month);
       this.readInvoices(month);
-    } else if (rec.invoiceState === 'loading' && !this.latest.has(`invoices|${month}`)) {
+      return;
+    }
+    if (rec.invoiceState === 'loading' && !this.latest.has(`invoices|${month}`)) {
       // an inbox change reset this month's invoices while it was not shown
       this.readInvoices(month);
+    }
+    if (wide && rec.merchantsState === 'loading' && !this.latest.has(`merchants|${month}`)) {
+      // the month was cached while narrow
+      this.readMerchants(month);
     }
   }
 
@@ -175,14 +189,14 @@ export class CalendarDataService {
       next: (out) => {
         if (!current()) return;
         const invoiceDays = new Map<string, number>();
-        for (const e of out.einvoices ?? []) {
-          if (!e.issue_date.startsWith(month)) continue;
-          invoiceDays.set(e.issue_date, (invoiceDays.get(e.issue_date) ?? 0) + 1);
-        }
-        this.patch(month, { invoiceDays, invoiceState: 'ready' });
+        const invoices = (out.einvoices ?? [])
+          .filter((e) => e.issue_date.startsWith(month))
+          .sort((a, b) => a.issue_date.localeCompare(b.issue_date));
+        for (const e of invoices) invoiceDays.set(e.issue_date, (invoiceDays.get(e.issue_date) ?? 0) + 1);
+        this.patch(month, { invoiceDays, invoices, invoiceState: 'ready' });
       },
       error: () => {
-        if (current()) this.patch(month, { invoiceDays: new Map(), invoiceState: 'error' });
+        if (current()) this.patch(month, { invoiceDays: new Map(), invoices: [], invoiceState: 'error' });
       },
     });
   }

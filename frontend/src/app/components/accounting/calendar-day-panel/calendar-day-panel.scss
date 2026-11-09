@@ -1,0 +1,187 @@
+/* Self-contained: the entry-row look comes from the shared ../entry-row.scss; the rest is copied from the timeline. */
+:host {
+  --row-py: 8px;
+  --ico-size: 36px;
+  display: block;
+}
+
+.neg {
+  color: var(--tone-neg, var(--c-red));
+}
+
+.pos {
+  color: var(--tone-pos, var(--c-green));
+}
+
+.sr-only {
+  border: 0;
+  clip: rect(0 0 0 0);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+.dp-head {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.dp-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.dp-label {
+  font-size: 1.05rem;
+  font-weight: 800;
+  margin: 0;
+}
+
+.dp-sub {
+  color: var(--app-text-muted);
+  font-size: var(--fs-sm, 0.85rem);
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+}
+
+.dp-step,
+.dp-summary,
+.dp-add {
+  background: none;
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-pill);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  min-height: 36px;
+  padding: 0 12px;
+
+  &:focus-visible {
+    outline: 2px solid var(--app-primary);
+    outline-offset: 1px;
+  }
+}
+
+.dp-step {
+  min-width: 36px;
+  padding: 0;
+}
+
+.dp-add {
+  color: var(--app-primary);
+  margin-top: 10px;
+  width: 100%;
+}
+
+.dp-day {
+  align-items: baseline;
+  border-bottom: 1px solid var(--app-border);
+  display: flex;
+  font-size: var(--fs-sm, 0.85rem);
+  font-weight: 700;
+  gap: 8px;
+  justify-content: space-between;
+  margin-top: 10px;
+  padding-bottom: 4px;
+}
+
+.dp-empty,
+.dp-error {
+  color: var(--app-text-muted);
+  font-size: var(--fs-sm, 0.85rem);
+  margin: 2rem 0;
+  text-align: center;
+}
+
+/* 記錄讀取失敗 with its 重試, as the timeline's .load-error-block. */
+.dp-error-block {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 2rem 0;
+
+  .dp-error {
+    margin: 0;
+  }
+}
+
+.dp-retry {
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-pill);
+  color: var(--app-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 3px 10px;
+}
+
+/* 載入更多 under the month's matches, as the timeline's .more. */
+.dp-more {
+  background: var(--app-surface-soft);
+  border: 0;
+  border-radius: var(--radius-md);
+  color: var(--app-text);
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  font-weight: 700;
+  margin: 12px auto;
+  padding: 8px 18px;
+}
+
+.dp-retry,
+.dp-more {
+  &:focus-visible {
+    outline: 2px solid var(--app-primary);
+    outline-offset: 1px;
+  }
+}
+
+.net-hint {
+  font-size: var(--fs-micro, 0.72rem);
+  font-weight: 400;
+}
+
+.bills {
+  display: grid;
+  gap: 4px;
+  margin: 4px 0 6px;
+}
+
+.bill {
+  background: var(--app-surface-soft);
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--app-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-sm, 0.85rem);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 6px 10px;
+  text-align: left;
+  width: 100%;
+
+  &:focus-visible {
+    outline: 2px solid var(--app-primary);
+    outline-offset: 1px;
+  }
+}
+
+.paid-mark {
+  color: var(--app-text-muted);
+  font-weight: 600;
+  margin-left: 4px;
+}
