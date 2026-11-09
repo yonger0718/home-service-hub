@@ -132,7 +132,7 @@ From 1024 px, in the 日曆 view with no day selected, the right pane SHALL show
 
 ### Requirement: Calendar items to handle
 
-A 這個月要處理 row SHALL select its day. In the current month the list SHALL also carry unpaid card bills whose debit day falls within today + 6 after the month's last day; such a row selects its day in the next month. An e-invoice row whose matcher proposed exactly one candidate SHALL also open it with `month` and `day` kept: an entry candidate at `/accounting/entries/{id}`; a split-group candidate at `/accounting/entries/{memberId}/group`, where `memberId` is a member of that group found in the day's `GET /entries` rows.
+A 這個月要處理 row SHALL select its day. In the current month it SHALL also list unpaid card bills debiting within today + 6 after month end; that row selects its day next month. An e-invoice row whose matcher proposed exactly one candidate SHALL also open it with `month` and `day` kept: an entry candidate at `/accounting/entries/{id}`; a split-group candidate at `/accounting/entries/{memberId}/group`, where `memberId` is a member of that group found in the day's `GET /entries` rows.
 
 #### Scenario: One entry candidate
 - **GIVEN** an invoice issued 2026-10-22 whose only candidate is entry 501
