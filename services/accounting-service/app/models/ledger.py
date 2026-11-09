@@ -135,6 +135,8 @@ class Account(Base, TimestampMixin):
     fx_fee_pct = Column(Numeric(6, 3), nullable=True)
     fx_fee_rounding = Column(rounding_mode_enum, nullable=True)
     fx_fee_refundable = Column(Boolean, nullable=False, server_default=text("false"))
+    # 1 點 = 1 元: rewards paid into this account count as money (polish-reward-and-account-settings D1a, PR A2).
+    cash_equivalent = Column(Boolean, nullable=False, server_default=text("false"))
     settings_locally_edited = Column(Boolean, nullable=False, server_default=text("false"))
     moze_id = Column(String(64), nullable=True, unique=True)
     statement_password_rule = Column(String(64), nullable=True)

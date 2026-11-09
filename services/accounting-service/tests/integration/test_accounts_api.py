@@ -63,7 +63,7 @@ def test_accounts_list_shows_computed_balances_sorted_by_group_then_order_then_n
         "balance_main", "icon", "logo", "color", "is_archived", "include_in_total", "is_credit", "closing_day", "due_rule",
         "due_value", "credit_limit", "available_credit", "combined_account_id", "credit_sharing_id",
         "auto_pay_account_id", "fx_fee_pct", "fx_fee_rounding", "fx_fee_refundable", "sort_order",
-        "settings_locally_edited", "moze_id", "rule_summaries",
+        "settings_locally_edited", "moze_id", "rule_summaries", "cash_equivalent",
     }
 
 
@@ -544,3 +544,30 @@ def test_put_refuses_a_currency_change_on_a_settlement_bound_account(client, db_
     assert client.put(f"/accounts/{bank_id}", json={"name": "交割戶改名", "currency": "TWD"}).status_code == 200
     changed = put(plain_id, "空帳戶")
     assert changed.status_code == 200 and changed.json()["currency"] == "USD"
+
+
+# polish-reward-and-account-settings PR A2: `cash_equivalent` (1 點 = 1 元) on every account read; PUT without it keeps it.
+def test_cash_equivalent_defaults_false_and_is_listed(client, db_session):
+    created = client.post("/accounts", json={"name": "測試現金點", "currency": "TWD"})
+    assert created.status_code == 201, created.text
+    assert created.json()["cash_equivalent"] is False
+    assert [a["cash_equivalent"] for a in client.get("/accounts").json()] == [False]
+    assert client.get(f"/accounts/{created.json()['id']}").json()["cash_equivalent"] is False
+
+
+def test_put_sets_cash_equivalent(client, db_session):
+    account_id = client.post("/accounts", json={"name": "測試現金點", "currency": "TWD"}).json()["id"]
+    body = {"name": "測試現金點", "currency": "TWD"}
+    assert client.put(f"/accounts/{account_id}", json={**body, "cash_equivalent": True}).json()["cash_equivalent"] is True
+    assert client.get("/accounts").json()[0]["cash_equivalent"] is True
+    assert client.put(f"/accounts/{account_id}", json={**body, "cash_equivalent": False}).json()["cash_equivalent"] is False
+
+
+def test_put_without_the_field_keeps_it(client, db_session):
+    account_id = client.post("/accounts", json={"name": "測試現金點", "currency": "TWD"}).json()["id"]
+    client.put(f"/accounts/{account_id}", json={"name": "測試現金點", "currency": "TWD", "cash_equivalent": True})
+    kept = client.put(f"/accounts/{account_id}", json={"name": "改名", "currency": "TWD"})
+    assert kept.status_code == 200, kept.text
+    assert (kept.json()["name"], kept.json()["cash_equivalent"]) == ("改名", True)
+    created = client.post("/accounts", json={"name": "另一個", "currency": "TWD", "cash_equivalent": True})
+    assert created.json()["cash_equivalent"] is True

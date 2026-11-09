@@ -692,7 +692,7 @@ def _validate_account(db: Session, payload: AccountIn, account: Account | None) 
     _check_sharing_members(db, payload, self_id)
 
 
-ACCOUNT_COLUMNS_EXCLUDE = {"credit_sharing_members"}  # request-only field, not a column
+ACCOUNT_COLUMNS_EXCLUDE = {"credit_sharing_members", "cash_equivalent"}  # request-only / optional, written by hand
 
 
 def _check_sharing_members(db: Session, payload: AccountIn, self_id: int | None) -> None:
@@ -752,7 +752,8 @@ def _apply_sharing(db: Session, account: Account, previous: UUID | None, members
 
 def create_account(db: Session, payload: AccountIn) -> int:
     _validate_account(db, payload, None)
-    account = Account(**payload.model_dump(exclude=ACCOUNT_COLUMNS_EXCLUDE), settings_locally_edited=True)
+    account = Account(**payload.model_dump(exclude=ACCOUNT_COLUMNS_EXCLUDE), settings_locally_edited=True,
+                      cash_equivalent=bool(payload.cash_equivalent))
     db.add(account)
     db.flush()
     if payload.credit_sharing_members is not None:
@@ -786,6 +787,8 @@ def update_account(db: Session, account_id: int, payload: AccountIn) -> None:
     before_own, before_closing = account.closing_day, reward_engine.card_closing_day(db, account)
     for field, value in payload.model_dump(exclude=ACCOUNT_COLUMNS_EXCLUDE).items():
         setattr(account, field, value)
+    if payload.cash_equivalent is not None:  # omitted keeps the stored value (PR A2)
+        account.cash_equivalent = payload.cash_equivalent
     account.settings_locally_edited = True
     db.flush()
     if payload.credit_sharing_members is not None:
