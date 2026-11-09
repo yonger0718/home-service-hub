@@ -118,7 +118,7 @@ From 1024 px, in the 日曆 view with no day selected, the right pane SHALL show
 2. a 今天 card (current month only: today's count, names and net) that selects today;
 3. the category distribution, with a link to `/accounting/reports?month=…`;
 4. 花最多的商家, as specified by 「Calendar top merchants」;
-5. 這個月要處理: e-invoices awaiting a match and unpaid card bills dated in the month, plus, in the current month, unpaid bills debiting within the 近期到期 horizon (today + 6) after month end (「Calendar items to handle」).
+5. 這個月要處理: unmatched e-invoices and unpaid card bills in the month, plus near-term dues past month end in the current month (「Calendar items to handle」).
 
 #### Scenario: Month summary on a desktop
 - **WHEN** `/accounting?month=2026-10` opens at 1440 px in the 日曆 view
@@ -132,7 +132,7 @@ From 1024 px, in the 日曆 view with no day selected, the right pane SHALL show
 
 ### Requirement: Calendar items to handle
 
-A 這個月要處理 row SHALL select its day. An e-invoice row whose matcher proposed exactly one candidate SHALL also open it with `month` and `day` kept: an entry candidate at `/accounting/entries/{id}`; a split-group candidate at `/accounting/entries/{memberId}/group`, where `memberId` is a member of that group found in the day's `GET /entries` rows.
+A 這個月要處理 row SHALL select its day. In the current month the list SHALL also carry unpaid card bills whose debit day falls within today + 6 after the month's last day; such a row selects its day in the next month. An e-invoice row whose matcher proposed exactly one candidate SHALL also open it with `month` and `day` kept: an entry candidate at `/accounting/entries/{id}`; a split-group candidate at `/accounting/entries/{memberId}/group`, where `memberId` is a member of that group found in the day's `GET /entries` rows.
 
 #### Scenario: One entry candidate
 - **GIVEN** an invoice issued 2026-10-22 whose only candidate is entry 501
