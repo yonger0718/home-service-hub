@@ -1095,6 +1095,26 @@ describe('AccountSettingsComponent', () => {
     expect(navigate.mock.calls[0][1]?.queryParams).toEqual({ rule: null });
   });
 
+  it('?rule=new dropped by a navigation before the detail loads opens nothing on the next account (AGENT-477)', async () => {
+    await setup('11', { rule: 'new' });
+    const fixture = TestBed.createComponent(AccountSettingsComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/accounts/11');
+
+    // The user leaves for another account while 11 is still loading; the new URL carries no `?rule`.
+    navigateTo('12');
+    queryParams.next(convertToParamMap({}));
+    http.expectOne('/api/accounting/accounts/12').flush({ ...DETAIL, id: 12 });
+    http.expectOne('/api/accounting/accounts/12/reward-usage').flush([]);
+    http.expectOne(r => r.url === '/api/accounting/accounts').flush(LIST);
+    http.expectOne('/api/accounting/account-groups').flush(GROUPS);
+    http.expectOne('/api/accounting/projects').flush(PROJECTS);
+    fixture.detectChanges();
+
+    expect(sheet(fixture)).toBeNull();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it('?rule= naming no rule of the account is ignored and cleared', async () => {
     await setup('11', { rule: '99' });
     const fixture = render(DETAIL);

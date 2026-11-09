@@ -435,6 +435,9 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
       if (ruleParam !== null) {
         this.pendingRuleId = ruleParam === 'new' ? 'new' : Number(ruleParam);
         this.openPendingRule();
+      } else {
+        // A navigation that dropped `?rule` before the detail arrived must not open a sheet on the next account.
+        this.pendingRuleId = null;
       }
     });
   }
