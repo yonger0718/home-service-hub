@@ -835,8 +835,8 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
    * chip is the first visible section in page order (the sections stack, so that is the topmost). While a chip jump
    * is in flight the spy only tracks, until the target itself is on top of the band (the jump has arrived), the
    * owner's own scroll input (wheel, touch, keys) or the scroller's `scrollend` (a scrollbar drag fires no input
-   * event) hands control back; a release re-marks the top section at once. Plain `scroll` would not do: the
-   * programmatic smooth scroll fires it too.
+   * event) hands control back; an input release re-marks the top section at once, a scrollend keeps the target's
+   * chip while the target is still in view. Plain `scroll` would not do: the programmatic smooth scroll fires it too.
    */
   private watchSections(): void {
     if (typeof IntersectionObserver === 'undefined') {
@@ -889,15 +889,30 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     for (const type of input) {
       page.addEventListener(type, release, { passive: true });
     }
+    // The jump's own smooth scroll ends with a scrollend too. A short last section (其他) never reaches the top of
+    // the band, so while the target is still in view its chip stays and only the lock is handed back; a scrollbar
+    // drag that left the target behind re-marks the top section like any other release.
+    const settle = () => {
+      const target = this.jumpTarget;
+      if (target === null) {
+        return;
+      }
+      this.jumpTarget = null;
+      if (visible.has(target)) {
+        this.activeSection.set(target);
+      } else {
+        markTop();
+      }
+    };
     // The viewport's scrollend fires at the document and bubbles to window; a pane's fires at the pane only.
     const scrollEnds: EventTarget = scroller ?? window;
-    scrollEnds.addEventListener('scrollend', release, { passive: true });
+    scrollEnds.addEventListener('scrollend', settle, { passive: true });
     this.destroyRef.onDestroy(() => {
       observer.disconnect();
       for (const type of input) {
         page.removeEventListener(type, release);
       }
-      scrollEnds.removeEventListener('scrollend', release);
+      scrollEnds.removeEventListener('scrollend', settle);
     });
   }
 

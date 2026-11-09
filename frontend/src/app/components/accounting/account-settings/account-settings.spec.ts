@@ -1681,9 +1681,36 @@ describe('AccountSettingsComponent', () => {
       observer.fire(fixture, [['reward', true], ['fx', true]]);
       expect(current(fixture)).toEqual(['國外交易']);
 
+      // The jump's own smooth scroll ends here too: the target is still in view, so its chip stays…
       document.body.dispatchEvent(new Event('scrollend'));
       fixture.detectChanges();
-      expect(current(fixture)).toEqual(['回饋規則 (2)']);
+      expect(current(fixture)).toEqual(['國外交易']);
+
+      // …but the lock is gone: the next intersection moves the chip without any wheel/touch/key input.
+      observer.fire(fixture, [['card', true]]);
+      expect(current(fixture)).toEqual(['信用卡']);
+    });
+
+    it('scrollend after a scrollbar drag that left the target behind marks the section now on top', async () => {
+      document.body.style.overflowY = 'auto';
+      onTestFinished(() => {
+        document.body.style.overflowY = '';
+      });
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+      const observer = FakeObserver.instances[0];
+      el(fixture).querySelector<HTMLElement>('#s-fx')!.scrollIntoView = vi.fn();
+
+      chips(fixture)[4].click();
+      fixture.detectChanges();
+      observer.fire(fixture, [['reward', true], ['fx', true]]);
+      observer.fire(fixture, [['reward', false], ['fx', false], ['look', true], ['card', true]]);
+      expect(current(fixture)).toEqual(['國外交易']);
+
+      document.body.dispatchEvent(new Event('scrollend'));
+      fixture.detectChanges();
+      expect(current(fixture)).toEqual(['外觀']);
     });
 
     it('scrollend on the viewport releases a chip jump when the page has no pane', async () => {
@@ -1697,6 +1724,7 @@ describe('AccountSettingsComponent', () => {
       chips(fixture)[4].click();
       fixture.detectChanges();
       observer.fire(fixture, [['card', true], ['fx', true]]);
+      observer.fire(fixture, [['fx', false]]);
       expect(current(fixture)).toEqual(['國外交易']);
 
       window.dispatchEvent(new Event('scrollend'));
@@ -1714,6 +1742,11 @@ describe('AccountSettingsComponent', () => {
       chips(fixture)[5].click();
       fixture.detectChanges();
       observer.fire(fixture, [['basic', false], ['fx', true], ['more', true]]);
+      expect(current(fixture)).toEqual(['其他']);
+
+      // 其他 is too short to reach the top of the band, so the jump's scrollend must not snap the chip back to 國外交易.
+      window.dispatchEvent(new Event('scrollend'));
+      fixture.detectChanges();
       expect(current(fixture)).toEqual(['其他']);
     });
 
