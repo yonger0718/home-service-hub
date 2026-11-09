@@ -101,6 +101,37 @@ describe('PickerComponent', () => {
     expect(document.activeElement).toBe(q('.pk-trigger'));
   });
 
+  it('desktop: popover anchors to the trigger end edge, sizes to content and keeps labels on one line', () => {
+    // jsdom has no layout (every rect is 0), so this pins the computed-style contract instead of geometry.
+    const { q, open } = setup();
+    open();
+    const popover = getComputedStyle(q('.pk-popover'));
+    expect(popover.right).toBe('0px');
+    expect(popover.left).toBe('auto');
+    expect(popover.width).toBe('max-content');
+    // jsdom's CSS parser drops max()/min() values, so the width bounds are read from the injected component styles.
+    const css = Array.from(document.querySelectorAll('style'))
+      .map(style => style.textContent ?? '')
+      .join('')
+      .replace(/\s+/g, '');
+    const rule = /\.pk-popover\[[^\]]+\]\{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(rule).toContain('min-width:max(100%,11rem)');
+    // The build minifies `min(22rem, calc(100vw - 2rem))` to `min(22rem,100vw-2rem)`; both mean the same.
+    expect(rule).toMatch(/max-width:min\(22rem,(calc\(100vw-2rem\)|100vw-2rem)\)/);
+    const label = getComputedStyle(q('.pk-popover .pk-label'));
+    expect(label.whiteSpace).toBe('nowrap');
+    expect(label.overflow).toBe('hidden');
+    expect(label.textOverflow).toBe('ellipsis');
+  });
+
+  it('phone: the sheet keeps its own layout (no popover anchoring)', () => {
+    const { q, open } = setup('phone');
+    open();
+    expect(q('.pk-popover')).toBeNull();
+    const label = getComputedStyle(q('.sheet.pk-panel .pk-label'));
+    expect(label.whiteSpace).not.toBe('nowrap');
+  });
+
   it('desktop: outside pointerdown closes without emitting', () => {
     const { q, fixture, host, open } = setup();
     open();
