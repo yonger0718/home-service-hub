@@ -1107,7 +1107,7 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-10', OCT);
       fixture.detectChanges();
       expect(el.querySelector('.daily-error')).toBeNull();
-      expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .exp'))).toBe('1,234');
+      expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .net'))).toBe('−734');
     });
 
     it('shows busy daily placeholders and drops previous month figures while ignoring late summary responses', () => {
@@ -1119,7 +1119,8 @@ describe('LedgerTimelineComponent', () => {
       fixture.componentInstance.moveMonth(1); fixture.detectChanges();
       const oldSummary = httpMock!.expectOne(r => r.url === '/api/accounting/entries/summary');
       const oldDaily = httpMock!.expectOne(r => r.url === '/api/accounting/entries/summary/daily');
-      expect(el.querySelector('.exp')).toBeNull();
+      // the net is hidden on future days, so previous-month figures are checked through the accessible names
+      expect(Array.from(el.querySelectorAll('button.cell')).some(c => c.getAttribute('aria-label')!.includes('支出'))).toBe(false);
       expect(el.querySelectorAll('.daily-placeholder').length).toBeGreaterThan(0);
       fixture.componentInstance.moveMonth(1); fixture.detectChanges();
       flushSummary('2026-12', { expense: '-900' });
@@ -1128,7 +1129,7 @@ describe('LedgerTimelineComponent', () => {
       oldDaily.flush('boom', { status: 500, statusText: 'Server Error' });
       fixture.detectChanges();
       expect(text(el.querySelector('.sum-expense'))).toBe('−$900');
-      expect(text(el.querySelector('button.cell[data-date="2026-12-02"] .exp'))).toBe('900');
+      expect(el.querySelector('button.cell[data-date="2026-12-02"]')!.getAttribute('aria-label')).toContain('支出 $900');
       expect(el.querySelector('.daily-error')).toBeNull();
       expect(el.querySelector('.sum-error')).toBeNull();
       expect(el.querySelector('.daily-placeholder')).toBeNull();
@@ -1139,7 +1140,7 @@ describe('LedgerTimelineComponent', () => {
       TestBed.inject(AccountingService).deleteEntry(99).subscribe();
       httpMock!.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/entries/99').flush(null);
       fixture.detectChanges(); flushCounterparties();
-      expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .exp'))).toBe('1,234');
+      expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .net'))).toBe('−734');
       expect(text(el.querySelector('.daily-updating'))).toBe('更新中');
       expect(el.querySelector('app-calendar-month')!.getAttribute('aria-busy')).toBe('true');
       expect(el.querySelector('.daily-placeholder')).toBeNull();
@@ -1225,7 +1226,7 @@ describe('LedgerTimelineComponent', () => {
       const { el } = renderCalendar();
       expect(viewButton(el, '日曆').getAttribute('aria-checked')).toBe('true');
       expect(el.querySelectorAll('app-calendar-month button.cell').length).toBe(42);
-      expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .exp'))).toBe('1,234');
+      expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .net'))).toBe('−734');
       expect(el.querySelector('.sentinel')).toBeNull();
       expect(el.querySelector('button.more')).toBeNull();
     });
@@ -1746,14 +1747,13 @@ describe('LedgerTimelineComponent', () => {
       const { fixture, el } = renderCalendarWith();
       const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
       const requests = billRequests();
-      expect(cell(el, '2026-10-05').querySelector('.due-badge')).toBeNull();
+      expect(cell(el, '2026-10-05').querySelector('.bill-mark')).toBeNull();
       expect(cell(el, '2026-10-15').classList).toContain('closing');
 
       answerBill(requests, '-12345.0000');
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('');
-      expect(cell(el, '2026-10-05').querySelector('.due-badge')!.querySelector('i.pi-credit-card')).not.toBeNull();
-      expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10月5日，1 張卡繳費到期');
+      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
+      expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10 月 5 日 週一，1 張卡繳費到期');
 
       selectDay(fixture, el, '2026-10-05');
       expectNoBillRequest();
@@ -1776,7 +1776,7 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-10');
       expectNoBillRequest();
       fixture.detectChanges();
-      expect(el.querySelectorAll('.due-badge').length).toBe(0);
+      expect(el.querySelectorAll('.bill-mark').length).toBe(0);
       expect(cell(el, '2026-10-15').classList).toContain('closing');
 
       selectDay(fixture, el, '2026-10-05');
@@ -1787,7 +1787,7 @@ describe('LedgerTimelineComponent', () => {
       const { fixture, el } = renderCalendarWith();
       flushBill('-800.0000', ['500.0000', '300.0000']);
       fixture.detectChanges();
-      expect(el.querySelectorAll('.due-badge').length).toBe(0);
+      expect(el.querySelectorAll('.bill-mark').length).toBe(0);
       selectDay(fixture, el, '2026-10-05');
       expect(el.querySelector('.bill')).toBeNull();
     });
@@ -1798,15 +1798,14 @@ describe('LedgerTimelineComponent', () => {
       requests.summary.flush('boom', { status: 500, statusText: 'Server Error' });
       requests.payments.flush({ items: [], total: 0, limit: 100, offset: 0 });
       fixture.detectChanges();
-      expect(el.querySelectorAll('.due-badge').length).toBe(0);
+      expect(el.querySelectorAll('.bill-mark').length).toBe(0);
     });
 
     it('shows what was paid and what remains on a partly paid statement', () => {
       const { fixture, el } = renderCalendarWith();
       flushBill('-12345.0000', ['5000.0000']);
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('');
-      expect(cell(el, '2026-10-05').querySelector('.due-badge')!.querySelector('i.pi-credit-card')).not.toBeNull();
+      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
 
       selectDay(fixture, el, '2026-10-05');
       const line = el.querySelector('.day-entries .bill')!;
@@ -1828,11 +1827,11 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-10');
       const requests = billRequests();
       fixture.detectChanges();
-      expect(cell(el, '2026-10-05').querySelector('.due-badge')).not.toBeNull();
+      expect(cell(el, '2026-10-05').querySelector('.bill-mark')).not.toBeNull();
 
       answerBill(requests, '-12345.0000', ['12345.0000']);
       fixture.detectChanges();
-      expect(cell(el, '2026-10-05').querySelector('.due-badge')).toBeNull();
+      expect(cell(el, '2026-10-05').querySelector('.bill-mark')).toBeNull();
     });
 
     it('resolves each statement once while moving between months', () => {
@@ -1846,7 +1845,7 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-11');
       flushBill('-200.0000', [], OCT_CYCLE);
       fixture.detectChanges();
-      expect(cell(el, '2026-11-04').querySelector('.due-badge')).not.toBeNull();
+      expect(cell(el, '2026-11-04').querySelector('.bill-mark')).not.toBeNull();
 
       (el.querySelector('.month-prev') as HTMLButtonElement).click();
       fixture.detectChanges();
@@ -1854,7 +1853,7 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-10');
       expectNoBillRequest();
       fixture.detectChanges();
-      expect(cell(el, '2026-10-05').querySelector('.due-badge')).not.toBeNull();
+      expect(cell(el, '2026-10-05').querySelector('.bill-mark')).not.toBeNull();
     });
 
     it('announces the unpaid due days of the next 7 days in the list and opens the first in the calendar', () => {
@@ -2052,8 +2051,7 @@ describe('LedgerTimelineComponent', () => {
       const { fixture, el } = renderCalendarWith([...ACCOUNTS, monthly]);
       flushBill('-500.0000', [], { start: '2026-09-01', end: '2026-09-30', due: '2026-10-05', paidTo: '2026-10-02' });
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('');
-      expect(cell(el, '2026-10-05').querySelector('.due-badge')!.querySelector('i.pi-credit-card')).not.toBeNull();
+      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
       expect(cell(el, '2026-10-31').classList).toContain('closing');
     });
 
@@ -2072,8 +2070,8 @@ describe('LedgerTimelineComponent', () => {
       });
       fixture.detectChanges();
 
-      expect(el.querySelectorAll('.due-badge').length).toBe(1);
-      expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10月5日，1 張卡繳費到期');
+      expect(el.querySelectorAll('.bill-mark').length).toBe(1);
+      expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10 月 5 日 週一，1 張卡繳費到期');
       selectDay(fixture, el, '2026-10-05');
       expect(Array.from(el.querySelectorAll('.day-entries .bill')).map(text)).toEqual(['玉山 UNI 帳單 $1,234 · 到期']);
       expect(el.querySelectorAll('.day-entries .bill i.pi-credit-card').length).toBe(1);
@@ -2088,7 +2086,7 @@ describe('LedgerTimelineComponent', () => {
       fixture.detectChanges();
       flushDaily('2026-10');
       fixture.detectChanges();
-      expect(el.querySelectorAll('.due-badge, .cell.closing').length).toBe(0);
+      expect(el.querySelectorAll('.bill-mark, .cell.closing').length).toBe(0);
       selectDay(fixture, el, '2026-10-05');
       expect(el.querySelector('.bill')).toBeNull();
     });
