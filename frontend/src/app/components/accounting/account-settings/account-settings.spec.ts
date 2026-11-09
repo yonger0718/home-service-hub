@@ -1305,8 +1305,15 @@ describe('AccountSettingsComponent', () => {
       readonly observe = vi.fn();
       readonly unobserve = vi.fn();
       readonly disconnect = vi.fn();
-      constructor(readonly callback: IntersectionObserverCallback) {
+      constructor(readonly callback: IntersectionObserverCallback, readonly options?: IntersectionObserverInit) {
         FakeObserver.instances.push(this);
+      }
+
+      /** Reports sections entering (true) or leaving (false) the band, as the browser would. */
+      fire(fixture: ComponentFixture<AccountSettingsComponent>, changes: [string, boolean][]): void {
+        const entries = changes.map(([id, isIntersecting]) => ({ target: el(fixture).querySelector(`#s-${id}`)!, isIntersecting }));
+        this.callback(entries as unknown as IntersectionObserverEntry[], this as unknown as IntersectionObserver);
+        fixture.detectChanges();
       }
     }
 
@@ -1371,13 +1378,59 @@ describe('AccountSettingsComponent', () => {
       const observed = observer.observe.mock.calls.map(call => (call[0] as Element).id);
       expect(observed).toEqual(['s-basic', 's-look', 's-card', 's-reward', 's-fx', 's-more']);
 
-      const card = el(fixture).querySelector('#s-card')!;
-      observer.callback(
-        [{ target: card, isIntersecting: true, boundingClientRect: { top: 0 } } as unknown as IntersectionObserverEntry],
-        observer as unknown as IntersectionObserver,
-      );
-      fixture.detectChanges();
+      observer.fire(fixture, [['card', true]]);
       expect(current(fixture)).toEqual(['信用卡']);
+    });
+
+    it('scroll-spy band starts below the sticky chips', async () => {
+      await setup('11');
+      stubObserver();
+      vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(44);
+      render(DETAIL);
+
+      expect(FakeObserver.instances[0].options?.rootMargin).toBe('-44px 0px -60% 0px');
+    });
+
+    it('scroll-spy drops a section that leaves the band', async () => {
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+      const observer = FakeObserver.instances[0];
+
+      observer.fire(fixture, [['look', true], ['card', true]]);
+      expect(current(fixture)).toEqual(['外觀']);
+      observer.fire(fixture, [['look', false]]);
+      expect(current(fixture)).toEqual(['信用卡']);
+    });
+
+    it('after a chip jump the spy keeps the chosen section until the owner scrolls', async () => {
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+      const observer = FakeObserver.instances[0];
+      el(fixture).querySelector<HTMLElement>('#s-fx')!.scrollIntoView = vi.fn();
+
+      chips(fixture)[4].click();
+      fixture.detectChanges();
+      observer.fire(fixture, [['reward', true], ['fx', true]]);
+      expect(current(fixture)).toEqual(['國外交易']);
+
+      el(fixture).querySelector('.account-settings')!.dispatchEvent(new Event('wheel', { bubbles: true }));
+      observer.fire(fixture, [['card', true]]);
+      expect(current(fixture)).toEqual(['信用卡']);
+    });
+
+    it('a jump to the short last section keeps 其他 current', async () => {
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+      const observer = FakeObserver.instances[0];
+      el(fixture).querySelector<HTMLElement>('#s-more')!.scrollIntoView = vi.fn();
+
+      chips(fixture)[5].click();
+      fixture.detectChanges();
+      observer.fire(fixture, [['basic', false], ['fx', true], ['more', true]]);
+      expect(current(fixture)).toEqual(['其他']);
     });
 
     it('disconnects the observer on destroy', async () => {

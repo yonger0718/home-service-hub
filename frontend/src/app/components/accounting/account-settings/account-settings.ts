@@ -197,6 +197,17 @@ function sameMembers(a: readonly number[], b: readonly number[]): boolean {
   return a.length === b.length && a.every(id => b.includes(id));
 }
 
+/** The nearest scrolling ancestor (the pane at ≥ 760 px), or null for the viewport. */
+function scrollerOf(element: HTMLElement): HTMLElement | null {
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    const overflow = getComputedStyle(node).overflowY;
+    if (overflow === 'auto' || overflow === 'scroll') {
+      return node;
+    }
+  }
+  return null;
+}
+
 /** The page's titled sections, in order; the sticky chips jump to them (C1 Task 5). */
 export type SectionId = 'basic' | 'look' | 'card' | 'reward' | 'fx' | 'more';
 
@@ -640,21 +651,32 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     this.dirty.cancelDiscard();
   }
 
-  /** A chip: scrolls its section into view and marks it current at once (the scroll-spy agrees once it settles). */
+  /**
+   * A chip tap whose smooth scroll may still be running: the chip stays current (the scroll-spy would otherwise mark
+   * the section it passes, or a short last section that never reaches the band) until the owner scrolls again.
+   */
+  private jumpTarget: SectionId | null = null;
+
+  /** A chip: scrolls its section into view and marks it current until the owner's own next scroll. */
   jumpTo(id: SectionId): void {
+    this.jumpTarget = id;
     this.activeSection.set(id);
     this.host.nativeElement.querySelector<HTMLElement>(`#s-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   /**
-   * Scroll-spy: one observer over the six sections; the current chip is the topmost section in the upper band of the
-   * viewport. A callback reports only the sections that changed, so the visible set is kept across callbacks and
-   * the topmost is the first visible one in page order (the sections stack, so that is the smallest top).
+   * Scroll-spy: one observer over the six sections, rooted at the page's scroller (the pane, or the viewport). The
+   * band is the scroller's top 40 % below the sticky chips, so a sliver hidden under the chips does not count. A
+   * callback reports only the sections that changed, so the visible set is kept across callbacks and the current
+   * chip is the first visible section in page order (the sections stack, so that is the topmost). While a chip jump
+   * is in flight the spy only tracks; the owner's own scroll input (wheel, touch, keys) hands control back.
    */
   private watchSections(): void {
     if (typeof IntersectionObserver === 'undefined') {
       return;
     }
+    const page = this.host.nativeElement;
+    const chips = page.querySelector<HTMLElement>('nav.sec-chips')?.offsetHeight ?? 0;
     const visible = new Set<SectionId>();
     const observer = new IntersectionObserver(
       entries => {
@@ -666,20 +688,33 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
             visible.delete(id);
           }
         }
+        if (this.jumpTarget !== null) {
+          return;
+        }
         const top = SECTIONS.find(section => visible.has(section.id));
         if (top) {
           this.activeSection.set(top.id);
         }
       },
-      { rootMargin: '0px 0px -60% 0px' },
+      { root: scrollerOf(page), rootMargin: `${-chips}px 0px -60% 0px` },
     );
     for (const section of SECTIONS) {
-      const element = this.host.nativeElement.querySelector(`#s-${section.id}`);
+      const element = page.querySelector(`#s-${section.id}`);
       if (element) {
         observer.observe(element);
       }
     }
-    this.destroyRef.onDestroy(() => observer.disconnect());
+    const release = () => (this.jumpTarget = null);
+    const input = ['wheel', 'touchstart', 'keydown'] as const;
+    for (const type of input) {
+      page.addEventListener(type, release, { passive: true });
+    }
+    this.destroyRef.onDestroy(() => {
+      observer.disconnect();
+      for (const type of input) {
+        page.removeEventListener(type, release);
+      }
+    });
   }
 
   set<K extends keyof AccountForm>(key: K, value: AccountForm[K]): void {
