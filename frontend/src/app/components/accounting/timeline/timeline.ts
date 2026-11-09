@@ -1224,15 +1224,33 @@ export class LedgerTimelineComponent implements OnInit {
           }
         },
         error: () => {
-          if (id === this.dayRequestId) {
-            this.pendingInvoice = null;
-            this.pendingOpen = null;
-            this.dayEntries.set([]);
-            this.dayError.set(true);
-            this.dayLoading.set(false);
+          if (id !== this.dayRequestId) {
+            return;
           }
+          this.failPending(date);
+          if (date !== this.selectedDay()) {
+            // An older day's read failing after the URL moved on (zoneless: before the effects start the selected
+            // day's read): nothing on screen is that day's, and the selected day's own read follows.
+            return;
+          }
+          this.dayEntries.set([]);
+          this.dayError.set(true);
+          this.dayLoading.set(false);
         },
       });
+  }
+
+  /**
+   * A failed read of `date` and the actions waiting for a day (`pendingVerdict`): an action still waiting for another
+   * day's answer (`'wait'`) stays; one for `date` itself, or for a day the owner left, is dropped.
+   */
+  private failPending(date: string): void {
+    if (this.pendingInvoice && this.pendingVerdict(this.pendingInvoice.issue_date, date) !== 'wait') {
+      this.pendingInvoice = null;
+    }
+    if (this.pendingOpen && this.pendingVerdict(this.pendingOpen.date, date) !== 'wait') {
+      this.pendingOpen = null;
+    }
   }
 
   /**

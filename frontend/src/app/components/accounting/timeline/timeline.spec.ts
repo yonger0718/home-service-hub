@@ -3110,6 +3110,29 @@ describe('LedgerTimelineComponent', () => {
         expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 5], { queryParams: { month: '2026-10', day: '2026-10-21' } });
       });
 
+      it("an old day's read failing after openInvoice wrote the invoice day keeps the pending invoice and shows no error for the invoice day", async () => {
+        const { fixture, el } = renderPanes();
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-19"]')!.click();
+        fixture.detectChanges();
+        await fixture.whenStable();
+        const stale = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19');
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
+        pane().commands()!.openInvoice(invoice([target('entry', 5)]));
+        expect(fixture.componentInstance.selectedDay()).toBe('2026-10-21');
+        // 10/19's read fails before the effects start 10/21's: that failure is not 10/21's.
+        stale.flush('boom', { status: 500, statusText: 'Server Error' });
+        expect(fixture.componentInstance.dayError()).toBe(false);
+        await fixture.whenStable();
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-21')
+          .flush({ items: [makeEntry({ id: 5, entry_date: '2026-10-21' })], total: 1, limit: 500, offset: 0 });
+        fixture.detectChanges();
+        expect(fixture.componentInstance.dayError()).toBe(false);
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 5], { queryParams: { month: '2026-10', day: '2026-10-21' } });
+      });
+
       it('openInvoice only selects the day with two candidates', async () => {
         const navigate = await openWith([target('entry', 5), target('entry', 6)], [
           makeEntry({ id: 5, entry_date: '2026-10-21' }),
@@ -3371,6 +3394,28 @@ describe('LedgerTimelineComponent', () => {
         httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19')
           .flush(page([entry(2, '2026-10-19'), entry(1, '2026-10-19')]));
         fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 2], withDay('2026-10-19'));
+      });
+
+      it("an old day's read failing after stepEntry wrote the new day keeps the pending open and shows no error for the new day", async () => {
+        const { fixture, navigate } = await stepSetup(3);
+        // A refresh of 10/21 is in flight when ↓ crosses the day edge.
+        fixture.componentInstance.retryDay();
+        const stale = httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-21');
+        pane().commands()!.stepEntry(1);
+        httpMock!.expectOne(isProbe).flush(page([entry(2, '2026-10-19')], 1));
+        expect(fixture.componentInstance.selectedDay()).toBe('2026-10-19');
+        // Zoneless: the old day's failure lands before the effects start the new day's read.
+        stale.flush('boom', { status: 500, statusText: 'Server Error' });
+        expect(fixture.componentInstance.dayError()).toBe(false);
+        await fixture.whenStable();
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries' && r.params.get('date_from') === '2026-10-19')
+          .flush(page([entry(2, '2026-10-19'), entry(1, '2026-10-19')]));
+        fixture.detectChanges();
+        expect(fixture.componentInstance.dayError()).toBe(false);
         expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 2], withDay('2026-10-19'));
       });
 
