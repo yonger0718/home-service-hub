@@ -298,16 +298,21 @@ button.set-row { cursor: pointer; }
   }
 }
 
-/* 放棄 / 儲存 while dirty: sticky at the page bottom, which the layout keeps above the 64 px tab bar. */
+/* Height of the phone tab bar (mobile-nav.scss `.m-tabbar`, fixed at the viewport bottom; its shell adds the
+   safe-area inset below it). No shared token exists; keep in step with `.m-tabbar` and app.scss $bottom-bar-height. */
+$tab-bar-height: 64px;
+
+/* 放棄 / 儲存 while dirty. On phone the viewport is the scroller and the tab bar is position: fixed over its bottom,
+   so the bar sticks clear of it (bottom: 0 would park it under the tab bar until the page end). */
 .save-bar {
   align-items: center;
   background: var(--app-surface);
   border-top: 1px solid var(--app-border);
-  bottom: 0;
+  bottom: calc(#{$tab-bar-height} + env(safe-area-inset-bottom, 0px));
   display: flex;
   gap: 8px;
   margin-top: 16px;
-  padding: 8px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+  padding: 8px 12px 10px;
   position: sticky;
   z-index: 2;
 

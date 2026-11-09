@@ -1867,6 +1867,18 @@ describe('AccountSettingsComponent', () => {
       expect(texts(fixture, '.topbar .dirty-count')).toEqual(['有 1 項未儲存']);
     });
 
+    it('phone: the save bar sticks above the 64 px tab bar, not at the viewport bottom', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      typeInto(fixture, '.name-input', '玉山 Only 2');
+
+      const bar = el(fixture).querySelector<HTMLElement>('.save-bar')!;
+      const style = getComputedStyle(bar);
+      expect(style.position).toBe('sticky');
+      expect(style.bottom).not.toBe('0px');
+      expect(style.bottom).toContain('64px');
+    });
+
     it('放棄 restores loaded values and hides the bar', async () => {
       await phoneSetup();
       const fixture = render(DETAIL);
