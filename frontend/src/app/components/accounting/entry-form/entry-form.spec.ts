@@ -802,7 +802,7 @@ describe('EntryFormComponent', () => {
       .toEqual(form.children().map(child => child.key));
     put.flush({ group_id: 4, member_ids: [7, 8], members: form.children().map(child => ({ id: child.id!, client_key: child.key })) });
     settle();
-    expectNavigatedTo('/accounting/entries/7', { replaceUrl: true, queryParamsHandling: 'preserve', state: { closeTo: 'list' } });
+    expectNavigatedTo('/accounting/entries/7', { replaceUrl: true, queryParams: {}, state: { closeTo: 'list' } });
     expect(left()).toBe(false);
   });
 
@@ -1246,7 +1246,7 @@ describe('EntryFormComponent', () => {
     expect(form.isDirty()).toBe(false);
     await Promise.all(navigate!.mock.results.map(result => result.value));
 
-    expectNavigatedTo('/accounting/entries/8', { replaceUrl: true, queryParamsHandling: 'preserve', state: { closeTo: 'list' } });
+    expectNavigatedTo('/accounting/entries/8', { replaceUrl: true, queryParams: {}, state: { closeTo: 'list' } });
     expect(TestBed.inject(Router).url).toBe('/accounting/entries/8');
     expect(TestBed.inject(Location).back).not.toHaveBeenCalled();
   });

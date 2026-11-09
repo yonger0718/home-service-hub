@@ -18,7 +18,7 @@ import {
   viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
-import { ActivatedRoute, Router } from '@angular/router';
+import { ActivatedRoute, Params, Router } from '@angular/router';
 import { calendarParams, isRealDay } from '../timeline/calendar-url';
 import {
   EMPTY,
@@ -2088,7 +2088,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
           // closeTo: the page before this one in history may be the edit page, so the detail's ✕ must not go back().
           void this.router.navigate(['/accounting/entries', ids.get(key) ?? ids.get(submitted[0].key)], {
             replaceUrl: true,
-            queryParamsHandling: 'preserve',
+            queryParams: this.calendarQuery(),
             state: { closeTo: 'list' },
           });
         },
@@ -2119,6 +2119,11 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
    * (it reloads and keeps its history state, so its ✕ still lands on the list and nothing stacks); else the group view
    * replaces the form, with ✕ going to the list (`closeTo`, as after any split save).
    */
+  /** The calendar's month / day carried by the URL this form was opened from. */
+  private calendarQuery(): Params {
+    return calendarParams(this.route.snapshot.queryParamMap);
+  }
+
   private leaveToGroup(ids: Map<string, number>, firstId: number): void {
     const previous = this.router.lastSuccessfulNavigation()?.previousNavigation;
     const tree = previous?.finalUrl ?? previous?.initialUrl;
@@ -2129,7 +2134,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     }
     void this.router.navigate(groupCommands(firstId, null), {
       replaceUrl: true,
-      queryParams: calendarParams(this.route.snapshot.queryParamMap),
+      queryParams: this.calendarQuery(),
       state: { closeTo: 'list' },
     });
   }
@@ -2142,7 +2147,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       if (this.entryId() !== null) {
         this.reload();
       } else {
-        void this.router.navigate(['/accounting'], { queryParams: calendarParams(this.route.snapshot.queryParamMap) });
+        void this.router.navigate(['/accounting'], { queryParams: this.calendarQuery() });
       }
     });
   }
@@ -2436,7 +2441,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     if (this.router.lastSuccessfulNavigation()?.previousNavigation) {
       this.location.back();
     } else {
-      void this.router.navigate(['/accounting'], { queryParams: calendarParams(this.route.snapshot.queryParamMap) });
+      void this.router.navigate(['/accounting'], { queryParams: this.calendarQuery() });
     }
   }
 }
