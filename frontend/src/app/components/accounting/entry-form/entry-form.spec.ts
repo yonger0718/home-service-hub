@@ -1473,6 +1473,27 @@ describe('EntryFormComponent', () => {
   });
 
   describe('unsaved input', () => {
+    it('keeps a dirty draft when only the calendar month/day query changes, but restarts on a kind change', async () => {
+      const { el } = await open('/accounting/entry');
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+      typeInto(el, '.name-input', '午餐');
+      expect(form.isDirty()).toBe(true);
+      const startSpy = vi.spyOn(form as unknown as { start(...args: unknown[]): unknown }, 'start');
+
+      await TestBed.inject(Router).navigate([], { queryParams: { month: '2026-10', day: '2026-10-05' }, queryParamsHandling: 'merge', replaceUrl: true });
+      settle();
+      expect(startSpy).not.toHaveBeenCalled();
+      expect((el.querySelector('.name-input') as HTMLInputElement).value).toBe('午餐');
+      expect(form.isDirty()).toBe(true);
+
+      await TestBed.inject(Router).navigate([], { queryParams: { kind: 'income' }, queryParamsHandling: 'merge', replaceUrl: true });
+      settle();
+      expect(startSpy).toHaveBeenCalledTimes(1);
+      httpMock.match(r => r.method === 'GET').forEach(request => request.flush([]));
+    });
+
     it('is clean after load, dirty after typing a name, clean again after save-and-continue and after save', async () => {
       const { el, left } = await open('/accounting/entry');
       respond('/api/accounting/categories', [FOOD]);

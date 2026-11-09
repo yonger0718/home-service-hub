@@ -27,6 +27,7 @@ import {
   catchError,
   combineLatest,
   defaultIfEmpty,
+  distinctUntilChanged,
   filter,
   finalize,
   forkJoin,
@@ -737,10 +738,21 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       });
 
     combineLatest([this.route.paramMap, this.route.queryParamMap, toObservable(this.ready).pipe(filter(Boolean))])
-      .pipe(takeUntilDestroyed())
-      .subscribe(([params, query]) => {
-        const schedule = query.get('schedule');
-        const target = this.start(params.get('id'), query.get('kind'), query.get('copy'), schedule, query.get('select') === 'parent', query.get('date'));
+      .pipe(
+        // Only the form's own inputs restart it: a calendar month/day merge into the URL must not reset the draft.
+        map(([params, query]) => ({
+          id: params.get('id'),
+          kind: query.get('kind'),
+          copy: query.get('copy'),
+          schedule: query.get('schedule'),
+          select: query.get('select') === 'parent',
+          date: query.get('date'),
+        })),
+        distinctUntilChanged((a, b) => JSON.stringify(a) === JSON.stringify(b)),
+        takeUntilDestroyed(),
+      )
+      .subscribe(({ id, kind, copy, schedule, select, date }) => {
+        const target = this.start(id, kind, copy, schedule, select, date);
         this.load(target);
         if (schedule !== null) {
           this.loadDefinition(Number(schedule));
