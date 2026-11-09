@@ -1713,6 +1713,72 @@ describe('AccountSettingsComponent', () => {
       expect(current(fixture)).toEqual(['外觀']);
     });
 
+    /** A pane that has scrolled as far as it can (1440 × 900: 2243 px of content, 768 px tall), with #s-fx on screen below the band. */
+    function paneAtEnd(fixture: ComponentFixture<AccountSettingsComponent>, scrollTop: number): void {
+      const pane = document.body;
+      for (const [key, value] of Object.entries({ scrollTop, clientHeight: 768, scrollHeight: 2243 })) {
+        Object.defineProperty(pane, key, { value, configurable: true });
+      }
+      pane.getBoundingClientRect = () => ({ top: 81, bottom: 852, left: 0, right: 1440, width: 1440, height: 771, x: 0, y: 81, toJSON: () => ({}) });
+      const fx = el(fixture).querySelector<HTMLElement>('#s-fx')!;
+      fx.getBoundingClientRect = () => ({ top: 470, bottom: 662, left: 0, right: 900, width: 900, height: 192, x: 0, y: 470, toJSON: () => ({}) });
+      onTestFinished(() => {
+        for (const key of ['scrollTop', 'clientHeight', 'scrollHeight']) {
+          delete (pane as unknown as Record<string, unknown>)[key];
+        }
+        delete (pane as unknown as Record<string, unknown>)['getBoundingClientRect'];
+      });
+    }
+
+    it('a jump whose target cannot reach the band keeps its chip once the pane has scrolled to its end', async () => {
+      document.body.style.overflowY = 'auto';
+      onTestFinished(() => {
+        document.body.style.overflowY = '';
+      });
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+      const observer = FakeObserver.instances[0];
+      el(fixture).querySelector<HTMLElement>('#s-fx')!.scrollIntoView = vi.fn();
+      paneAtEnd(fixture, 2243 - 768);
+
+      chips(fixture)[4].click();
+      fixture.detectChanges();
+      // 國外交易 + 其他 together are shorter than the pane's lower 60 %: the band only ever holds 回饋規則.
+      observer.fire(fixture, [['basic', false], ['look', false], ['card', false], ['reward', true]]);
+      expect(current(fixture)).toEqual(['國外交易']);
+
+      document.body.dispatchEvent(new Event('scrollend'));
+      fixture.detectChanges();
+      expect(current(fixture)).toEqual(['國外交易']);
+
+      // The lock is gone all the same: the owner's next scroll re-marks the top section.
+      observer.fire(fixture, [['reward', false], ['card', true]]);
+      expect(current(fixture)).toEqual(['信用卡']);
+    });
+
+    it('a scrollbar drag that stops short of the end with the target off the band marks the section on top', async () => {
+      document.body.style.overflowY = 'auto';
+      onTestFinished(() => {
+        document.body.style.overflowY = '';
+      });
+      await setup('11');
+      stubObserver();
+      const fixture = render(DETAIL);
+      const observer = FakeObserver.instances[0];
+      el(fixture).querySelector<HTMLElement>('#s-fx')!.scrollIntoView = vi.fn();
+      paneAtEnd(fixture, 1000);
+
+      chips(fixture)[4].click();
+      fixture.detectChanges();
+      observer.fire(fixture, [['basic', false], ['look', false], ['card', true], ['reward', true]]);
+      expect(current(fixture)).toEqual(['國外交易']);
+
+      document.body.dispatchEvent(new Event('scrollend'));
+      fixture.detectChanges();
+      expect(current(fixture)).toEqual(['信用卡']);
+    });
+
     it('scrollend on the viewport releases a chip jump when the page has no pane', async () => {
       await setup('11');
       stubObserver();
