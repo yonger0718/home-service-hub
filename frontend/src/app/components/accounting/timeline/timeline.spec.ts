@@ -12,7 +12,9 @@ import { AccountingLayoutComponent } from '../accounting-layout/accounting-layou
 import { currentMonth } from '../dates';
 import { AccountingOverviewService } from '../month-overview/overview.service';
 import { makeInbox } from '../inbox/testing';
-import { makeAccount, makeEntry, makeInstance, makePreference } from '../testing/fixtures';
+import { EMPTY_CALENDAR_DATA, CalendarDataService, CalendarMonthData } from '../calendar-month/calendar-data.service';
+import { makeAccount, makeCategory, makeEntry, makeInstance, makePreference } from '../testing/fixtures';
+import { FALLBACK_COLOR } from './category-distribution';
 import { LedgerTimelineComponent, buildDays, schedulePills } from './timeline';
 
 const VIEW_KEY = 'hh.accounting.timelineView';
@@ -21,10 +23,13 @@ const ACCOUNTS = [makeAccount({ id: 1, name: '玉山 UNI' }), makeAccount({ id: 
 
 describe('LedgerTimelineComponent', () => {
   let httpMock: HttpTestingController | null = null;
+  // The calendar's breakdown/inbox reads are CalendarDataService's own concern; the timeline tests drive its `data`.
+  let fakeCalendarData = { month: signal<string | null>(null), data: signal<CalendarMonthData>(EMPTY_CALENDAR_DATA) };
 
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date(2026, 9, 2, 12, 0, 0));
+    fakeCalendarData = { month: signal<string | null>(null), data: signal<CalendarMonthData>(EMPTY_CALENDAR_DATA) };
   });
 
   afterEach(() => {
@@ -32,6 +37,13 @@ describe('LedgerTimelineComponent', () => {
     // The business-day calendar is read once per session and never gates the page; tests that do not care leave it.
     for (const request of httpMock?.match(r => r.url === '/api/accounting/calendar/business-days') ?? []) {
       request.flush({ holidays: [], workdays: [], last_known_day: '2027-12-31' });
+    }
+    // 日曆 reads the category colours once; tests that do not care leave them.
+    for (const request of httpMock?.match(r => r.url === '/api/accounting/categories') ?? []) {
+      request.flush([]);
+    }
+    for (const request of httpMock?.match(r => r.url === '/api/accounting/projects') ?? []) {
+      request.flush([]);
     }
     httpMock?.verify();
     httpMock = null;
@@ -50,7 +62,13 @@ describe('LedgerTimelineComponent', () => {
   ) {
     TestBed.configureTestingModule({
       imports: [LedgerTimelineComponent],
-      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([]), ...providers],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        { provide: CalendarDataService, useValue: fakeCalendarData },
+        ...providers,
+      ],
     });
     httpMock = TestBed.inject(HttpTestingController);
     TestBed.inject(LayoutModeService).set(mode);
@@ -1199,6 +1217,71 @@ describe('LedgerTimelineComponent', () => {
       return rendered;
     }
 
+
+    describe('calendar data', () => {
+      it('tells CalendarDataService the month in 日曆 and null in 清單 or on destroy', () => {
+        const { fixture, el } = renderCalendar();
+        expect(fakeCalendarData.month()).toBe('2026-10');
+        viewButton(el, '清單').click();
+        fixture.detectChanges();
+        flushEntries([]);
+        expect(fakeCalendarData.month()).toBeNull();
+        viewButton(el, '日曆').click();
+        fixture.detectChanges();
+        flushDaily('2026-10');
+        expect(fakeCalendarData.month()).toBe('2026-10');
+        fixture.destroy();
+        expect(fakeCalendarData.month()).toBeNull();
+      });
+
+      it('colours the dots from the category list and falls back for an unknown key', () => {
+        const { fixture, el } = renderCalendar();
+        const kinds = httpMock!.match(r => r.url === '/api/accounting/categories');
+        expect(kinds.length).toBe(2);
+        for (const req of kinds) {
+          req.flush(req.request.params.get('kind') === 'expense' ? [makeCategory({ id: 3, color: '#abc' })] : []);
+        }
+        httpMock!.expectOne('/api/accounting/projects').flush([]);
+        fakeCalendarData.data.set({
+          ...EMPTY_CALENDAR_DATA,
+          dots: new Map([['2026-10-21', [{ key: '3' }, { key: '99' }] as never]]),
+          dotsState: 'ready',
+        });
+        fixture.detectChanges();
+        const dots = [...el.querySelectorAll<HTMLElement>('button.cell[data-date="2026-10-21"] .dot')];
+        expect(dots.length).toBe(2);
+        expect(dots[0].style.background).toBe('rgb(170, 187, 204)');
+        expect(dots[1].style.background).toBe(FALLBACK_COLOR);
+      });
+
+      it('passes invoice days to the grid', () => {
+        const { fixture, el } = renderCalendar();
+        fakeCalendarData.data.set({ ...EMPTY_CALENDAR_DATA, invoiceDays: new Map([['2026-10-22', 1]]), invoiceState: 'ready' });
+        fixture.detectChanges();
+        expect(el.querySelector('button.cell[data-date="2026-10-22"] .inv-dot')).not.toBeNull();
+        expect(el.querySelector('button.cell[data-date="2026-10-23"] .inv-dot')).toBeNull();
+      });
+
+      it('shows 發票待對帳 in the two-pane layout', () => {
+        localStorage.setItem(VIEW_KEY, 'calendar');
+        const { fixture, el } = render('panes');
+        flushSummary('2026-10');
+        flushDaily('2026-10');
+        fakeCalendarData.data.set({ ...EMPTY_CALENDAR_DATA, invoiceDays: new Map([['2026-10-22', 1]]), invoiceState: 'ready' });
+        fixture.detectChanges();
+        expect(el.querySelector('button.cell[data-date="2026-10-22"] .inv-mark')).not.toBeNull();
+      });
+
+      it('renders the grid without dots when the breakdown failed', () => {
+        const { fixture, el } = renderCalendar();
+        fakeCalendarData.data.set({ ...EMPTY_CALENDAR_DATA, dotsState: 'error' });
+        fixture.detectChanges();
+        expect(el.querySelectorAll('button.cell').length).toBe(42);
+        expect(el.querySelector('.dot')).toBeNull();
+        expect(el.querySelector('.load-error')).toBeNull();
+      });
+    });
+
     it('switches to 日曆 from the radio toggle and remembers it', () => {
       const { fixture, el } = render();
       flushSummary('2026-10');
@@ -1494,7 +1577,12 @@ describe('LedgerTimelineComponent', () => {
       }
       TestBed.configureTestingModule({
         imports: [LedgerTimelineComponent],
-        providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([{ path: '**', children: [] }])],
+        providers: [
+          provideHttpClient(),
+          provideHttpClientTesting(),
+          provideRouter([{ path: '**', children: [] }]),
+          { provide: CalendarDataService, useValue: fakeCalendarData },
+        ],
       });
       httpMock = TestBed.inject(HttpTestingController);
       TestBed.inject(LayoutModeService).set('phone');
@@ -1719,7 +1807,7 @@ describe('LedgerTimelineComponent', () => {
 
     function renderCalendarWith(accounts = [...ACCOUNTS, CARD]) {
       localStorage.setItem(VIEW_KEY, 'calendar');
-      const rendered = render('phone', makePreference(), [], accounts);
+      const rendered = render('panes', makePreference(), [], accounts);
       flushSummary('2026-10');
       flushDaily('2026-10');
       rendered.fixture.detectChanges();
@@ -1776,20 +1864,66 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-10');
       expectNoBillRequest();
       fixture.detectChanges();
-      expect(el.querySelectorAll('.bill-mark').length).toBe(0);
+      expect(el.querySelectorAll('.bill-mark, .bill-dot').length).toBe(0);
       expect(cell(el, '2026-10-15').classList).toContain('closing');
 
       selectDay(fixture, el, '2026-10-05');
       expect(el.querySelector('.bill')).toBeNull();
     });
 
-    it('hides a fully paid statement', () => {
+    it('marks a fully paid statement 已繳 and lists no line', () => {
       const { fixture, el } = renderCalendarWith();
       flushBill('-800.0000', ['500.0000', '300.0000']);
       fixture.detectChanges();
-      expect(el.querySelectorAll('.bill-mark').length).toBe(0);
+      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('已繳');
       selectDay(fixture, el, '2026-10-05');
       expect(el.querySelector('.bill')).toBeNull();
+    });
+
+
+    it('passes paid due days: a fully paid statement reads 已繳, a day with one open card reads 帳單', () => {
+      const CARD2 = makeAccount({ id: 10, name: '富邦 J卡', is_credit: true, closing_day: 15, due_rule: 'days_after_closing', due_value: 20 });
+      const CARD3 = makeAccount({ id: 11, name: '國泰', is_credit: true, closing_day: 22, due_rule: 'days_after_closing', due_value: 20 });
+      const { fixture, el } = renderCalendarWith([...ACCOUNTS, CARD, CARD2, CARD3]);
+      const answer = (id: number, spend: string, paid: string[], start = SEPT.start, end = SEPT.end, to = SEPT.paidTo) => {
+        const summary = httpMock!.expectOne(r => r.url === `/api/accounting/accounts/${id}/summary` && r.params.get('date_to') === end);
+        const payments = httpMock!.expectOne(r => r.url === `/api/accounting/accounts/${id}/entries` && r.params.get('date_from') === end);
+        expect(summary.request.params.get('date_from')).toBe(start);
+        expect(payments.request.params.get('date_to')).toBe(to);
+        answerBill({ summary, payments }, spend, paid);
+      };
+      answer(9, '-800.0000', ['800.0000']);
+      answer(10, '-500.0000', []);
+      // CARD3 closes on the 22nd: its 09/22 statement is due 10/12.
+      answer(11, '-300.0000', ['300.0000'], '2026-08-23', '2026-09-22', '2026-10-02');
+      fixture.detectChanges();
+      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
+      expect(text(cell(el, '2026-10-12').querySelector('.bill-mark'))).toBe('已繳');
+    });
+
+    it('draws no mark for a zero or refund-heavy statement, and a zero beside a paid card reads 已繳', () => {
+      const CARD2 = makeAccount({ id: 10, name: '富邦 J卡', is_credit: true, closing_day: 15, due_rule: 'days_after_closing', due_value: 20 });
+      const CARD3 = makeAccount({ id: 11, name: '國泰', is_credit: true, closing_day: 15, due_rule: 'days_after_closing', due_value: 20 });
+      const { fixture, el } = renderCalendarWith([...ACCOUNTS, CARD, CARD2, CARD3]);
+      const answer = (id: number, spend: string, paid: string[]) => {
+        const summary = httpMock!.expectOne(r => r.url === `/api/accounting/accounts/${id}/summary`);
+        const payments = httpMock!.expectOne(r => r.url === `/api/accounting/accounts/${id}/entries`);
+        answerBill({ summary, payments }, spend, paid);
+      };
+      answer(9, '0.0000', []);
+      answer(10, '500.0000', []);
+      answer(11, '-800.0000', ['800.0000']);
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.bill-dot').length).toBe(0);
+      expect(el.querySelectorAll('.bill-mark').length).toBe(1);
+      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('已繳');
+    });
+
+    it('draws nothing for a lone refund-heavy statement', () => {
+      const { fixture, el } = renderCalendarWith();
+      flushBill('500.0000');
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.bill-mark, .bill-dot').length).toBe(0);
     });
 
     it('hides a statement that cannot be read', () => {
@@ -1831,7 +1965,7 @@ describe('LedgerTimelineComponent', () => {
 
       answerBill(requests, '-12345.0000', ['12345.0000']);
       fixture.detectChanges();
-      expect(cell(el, '2026-10-05').querySelector('.bill-mark')).toBeNull();
+      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('已繳');
     });
 
     it('resolves each statement once while moving between months', () => {

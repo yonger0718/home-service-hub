@@ -44,6 +44,8 @@ import { SkeletonComponent } from '../skeleton/skeleton';
 import { FolderIcon, SplitFolderComponent } from '../split-folder/split-folder';
 import { groupCommands, listOpenState } from '../split-group/group-nav';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
+import { CalendarDataService } from '../calendar-month/calendar-data.service';
+import { categoryColorMap } from '../calendar-month/calendar-math';
 import { inboxBellCount } from '../inbox/inbox-view';
 import { InboxService } from '../inbox/inbox.service';
 import { parseTags } from '../entry-form/entry-draft';
@@ -57,7 +59,7 @@ import { displayTitle, formatMoney, formatSigned } from '../format';
 import { FilterBarComponent, FilterChip } from '../../ui/filter-bar/filter-bar';
 import { batchKey, batchSub, loadedBatches } from '../reward-batch';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
-import { barSegments, categoryDistribution, distributionAriaText } from './category-distribution';
+import { FALLBACK_COLOR, barSegments, categoryDistribution, distributionAriaText } from './category-distribution';
 import { reviewTitle } from '../review-reason';
 
 export const TIMELINE_PAGE_SIZE = 50;
@@ -423,7 +425,8 @@ export class LedgerTimelineComponent implements OnInit {
   readonly embedded = input(false);
   private readonly accounting = inject(AccountingService);
   private readonly router = inject(Router);
-  private readonly layoutMode = inject(LayoutModeService);
+  protected readonly layoutMode = inject(LayoutModeService);
+  private readonly calendarData = inject(CalendarDataService);
   private readonly layout = inject(AccountingLayoutComponent, { optional: true });
   private readonly document = inject(DOCUMENT);
   private requestId = 0;
@@ -484,6 +487,8 @@ export class LedgerTimelineComponent implements OnInit {
   readonly amountMax = signal('');
   /** Category / project choices, loaded when the 篩選 panel opens (focus is kept as a fallback), not on init. */
   readonly categoryOptions = signal<CategoryNode[]>([]);
+  /** Category id → colour, from the raw category trees (the calendar's dots). */
+  private readonly categoryColors = signal<ReadonlyMap<number, string>>(new Map());
   readonly projectOptions = signal<Project[]>([]);
   private optionsRequested = false;
   private readonly chosenView = signal<TimelineView>(initialView(untracked(this.layoutMode.mode) === 'panes'));
@@ -603,8 +608,36 @@ export class LedgerTimelineComponent implements OnInit {
     }
     return this.queueState() === 'error' || events.some(event => this.bills.failed(event)) ? 'error' : 'ready';
   });
-  /** What the grid marks: every closing day, and the due days of statements with a remaining balance. */
-  readonly billing = computed(() => this.monthBilling().filter(event => event.kind === 'closing' || this.openBill(event) !== null));
+  /** A due event's statement when the grid marks it: resolved and positive (open or fully paid); a zero or refund-heavy one is not. */
+  private markedBill(event: BillingEvent): BillState | null {
+    const bill = this.bills.bill(event);
+    return bill !== null && bill.statement > 0 ? bill : null;
+  }
+  /** What the grid marks: every closing day, and the due days of statements worth a mark (open or fully paid). */
+  readonly billing = computed(() => this.monthBilling().filter(event => event.kind === 'closing' || this.markedBill(event) !== null));
+  /** Due days whose marked statements are all paid in full: the grid reads 已繳 there, 帳單 otherwise. */
+  readonly paidDays = computed<ReadonlySet<string>>(() => {
+    const open = new Set<string>();
+    const marked = new Set<string>();
+    for (const event of this.monthBilling()) {
+      const bill = event.kind === 'due' ? this.markedBill(event) : null;
+      if (bill) {
+        marked.add(event.date);
+        if (bill.remaining > 0) {
+          open.add(event.date);
+        }
+      }
+    }
+    return new Set([...marked].filter(date => !open.has(date)));
+  });
+  /** The month's category dots as colours, in the service's order; an unknown category falls back to the muted colour. */
+  readonly calendarDots = computed<ReadonlyMap<string, readonly string[]>>(() => {
+    const colors = this.categoryColors();
+    return new Map(
+      [...this.calendarData.data().dots].map(([date, splits]) => [date, splits.map(split => colors.get(Number(split.key)) ?? FALLBACK_COLOR)]),
+    );
+  });
+  readonly invoiceDays = computed(() => this.calendarData.data().invoiceDays);
   readonly billLines = computed(() => {
     const day = this.selectedDay();
     if (this.view() !== 'calendar' || !day) {
@@ -655,6 +688,13 @@ export class LedgerTimelineComponent implements OnInit {
     effect(() => this.overview.summaryState.set(this.summaryLoading() ? 'loading' : this.summaryError() ? 'error' : 'ready'));
     effect(() => this.overview.dueState.set(this.dueState()));
     inject(DestroyRef).onDestroy(() => this.overview.clear());
+    effect(() => this.calendarData.month.set(this.view() === 'calendar' ? this.month() : null));
+    effect(() => {
+      if (this.view() === 'calendar') {
+        this.ensureOptions();
+      }
+    });
+    inject(DestroyRef).onDestroy(() => this.calendarData.month.set(null));
     // 報表 drill-through (add-accounting-reports D7): `/accounting?month=2026-10&category_id=12` opens that month
     // filtered to the category. Read once at construction: the list is created afresh when the URL comes from 報表.
     const query = this.router.routerState.snapshot.root.queryParamMap;
@@ -1188,6 +1228,7 @@ export class LedgerTimelineComponent implements OnInit {
     forkJoin([this.accounting.getCategories('expense'), this.accounting.getCategories('income'), this.accounting.getProjects()]).subscribe({
       next: ([expense, income, projects]) => {
         this.categoryOptions.set(flattenCategories([...expense, ...income]));
+        this.categoryColors.set(categoryColorMap([...expense, ...income]));
         this.projectOptions.set(projects.filter(project => !project.is_archived));
       },
       error: () => {

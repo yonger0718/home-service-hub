@@ -186,6 +186,10 @@
       [weekStart]="weekStart()"
       [selected]="selectedDay()"
       [billing]="billing()"
+      [dots]="calendarDots()"
+      [invoiceDays]="invoiceDays()"
+      [paidDays]="paidDays()"
+      [compact]="layoutMode.mode() !== 'panes'"
       [today]="today()"
       (daySelected)="selectDay($event)"
     />
