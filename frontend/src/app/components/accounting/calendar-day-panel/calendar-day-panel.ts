@@ -5,7 +5,8 @@ import { formatSigned } from '../format';
 import { OverviewState } from '../month-overview/overview.service';
 import { SkeletonComponent } from '../skeleton/skeleton';
 import { SplitFolderComponent } from '../split-folder/split-folder';
-import { BillLine, DayNet, TimelineDay, TimelineRow, dayLabel } from '../timeline/timeline';
+import { dayLabel } from '../dates';
+import type { BillLine, DayNet, TimelineDay, TimelineRow } from '../timeline/timeline';
 
 /**
  * The wide calendar's right pane: one day's bills and entries (`mode = 'day'`) or a month search's matches grouped by

@@ -51,12 +51,12 @@ import { inboxBellCount } from '../inbox/inbox-view';
 import { InboxService } from '../inbox/inbox.service';
 import type { InboxEinvoice } from '../inbox/einvoice.model';
 import { parseTags } from '../entry-form/entry-draft';
-import { addDays, currentMonth, monthLabel, monthRange, todayIso, weekdayLabel } from '../dates';
+import { addDays, currentMonth, dayLabel, monthLabel, monthRange, todayIso } from '../dates';
 import { calendarParams, readCalendarQuery, writeCalendarQuery } from './calendar-url';
 import { nextDueItems } from '../month-overview/due-items';
 import { AccountingOverviewService, OverviewState } from '../month-overview/overview.service';
 import { schedulePill } from '../schedule-math';
-import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, isHandledKey, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
+import { KIND_PILLS, KindPill, QUERY_DEBOUNCE_MS, colorOf, fxLine, iconOf, isHandledKey, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
 import { displayTitle, formatMoney, formatSigned } from '../format';
 import { FilterBarComponent, FilterChip } from '../../ui/filter-bar/filter-bar';
 import { batchKey, batchSub, loadedBatches } from '../reward-batch';
@@ -68,8 +68,9 @@ export const TIMELINE_PAGE_SIZE = 50;
 /** One day's entries in the 日曆 view are read in a single request. */
 export const CALENDAR_DAY_LIMIT = 500;
 export const TIMELINE_VIEW_KEY = 'hh.accounting.timelineView';
-/** The search field commits this long after the last keystroke (Enter commits at once). */
-export const QUERY_DEBOUNCE_MS = 300;
+// Moved to leaf modules so the layout and the day panel never value-import this lazily loaded page; re-exported here.
+export { QUERY_DEBOUNCE_MS } from '../accounting-ui';
+export { dayLabel } from '../dates';
 
 /** '' for an empty or non-numeric bound, else the trimmed decimal text as typed (the API takes a decimal string). */
 export function normalizeAmountBound(value: string): string {
@@ -207,11 +208,6 @@ export function shiftMonth(month: string, delta: number): string {
 /** A day group's net (main-currency rows only) as the day header shows it. */
 function dayNetOf(group: TimelineDay | null, currency: string): DayNet | null {
   return group ? { net: group.net, text: formatSigned(group.net, currency), excluded: group.excluded } : null;
-}
-
-export function dayLabel(date: string): string {
-  const [, month, day] = date.split('-').map(Number);
-  return `${pad(month)}/${pad(day)} ${weekdayLabel(date)}`;
 }
 
 function toneOf(amount: number, kind: EntryKind): TimelineRow['tone'] {
@@ -1216,13 +1212,20 @@ export class LedgerTimelineComponent implements OnInit {
    */
   private openInvoice(invoice: InboxEinvoice): void {
     const date = invoice.issue_date;
-    const loaded = this.selectedDay() === date && !this.dayLoading() && !this.dayError();
+    const same = this.selectedDay() === date;
     this.pendingInvoice = invoice;
     this.writeCalendar(date.slice(0, 7), date);
-    if (loaded) {
-      // The day is already on screen: no read follows, its entries are the ones loaded.
-      this.settleInvoice(date, this.dayEntries());
+    if (!same || this.dayLoading()) {
+      // A read of the day is coming (or in flight): it settles the invoice.
+      return;
     }
+    if (this.dayError()) {
+      // The day's read failed: retry it, so the pending invoice settles against that answer, not a later unrelated one.
+      this.retryDay();
+      return;
+    }
+    // The day is already on screen: no read follows, its entries are the ones loaded.
+    this.settleInvoice(date, this.dayEntries());
   }
 
   /** Resolves the pending invoice against `date`'s entries; cleared in every path. */

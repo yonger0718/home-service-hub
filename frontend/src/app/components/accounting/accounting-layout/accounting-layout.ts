@@ -33,9 +33,9 @@ import { CalendarPaneService } from '../calendar-month/calendar-pane.service';
 import { addDays } from '../dates';
 import type { InboxEinvoice } from '../inbox/einvoice.model';
 import { groupCommands, listOpenState } from '../split-group/group-nav';
-import { QUERY_DEBOUNCE_MS, type TimelineRow } from '../timeline/timeline';
+import type { TimelineRow } from '../timeline/timeline';
 import { AccountingOverviewService } from '../month-overview/overview.service';
-import { isHandledKey, trapFocus, OVERLAY_ATTR } from '../accounting-ui';
+import { QUERY_DEBOUNCE_MS, isHandledKey, trapFocus, OVERLAY_ATTR } from '../accounting-ui';
 import { AccountingShortcutsService, resolveShortcut } from '../keyboard-shortcuts';
 
 export interface LayoutRouteState {

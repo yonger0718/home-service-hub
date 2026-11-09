@@ -2920,6 +2920,27 @@ describe('LedgerTimelineComponent', () => {
         expect(pane().selectedDay()).toBe('2026-10-21');
       });
 
+      it('openInvoice retries a failed read of the already selected day and opens the candidate once it answers', async () => {
+        const { fixture, el } = renderPanes();
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-21"]')!.click();
+        fixture.detectChanges();
+        httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(pane().dayState()).toBe('error');
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
+        pane().commands()!.openInvoice(invoice([target('entry', 5)]));
+        await fixture.whenStable();
+        navigate.mockClear();
+        navigate.mockResolvedValue(true);
+        const retry = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+        expect(retry.request.params.get('date_from')).toBe('2026-10-21');
+        expect(navigate).not.toHaveBeenCalled();
+        retry.flush({ items: [makeEntry({ id: 5, entry_date: '2026-10-21' })], total: 1, limit: 500, offset: 0 });
+        fixture.detectChanges();
+        expect(navigate).toHaveBeenCalledExactlyOnceWith(['/accounting/entries', 5], { queryParams: { month: '2026-10', day: '2026-10-21' } });
+      });
+
       it('openInvoice only selects the day with two candidates', async () => {
         const navigate = await openWith([target('entry', 5), target('entry', 6)], [
           makeEntry({ id: 5, entry_date: '2026-10-21' }),

@@ -13,6 +13,12 @@ export function weekdayLabel(iso: string): string {
   return WEEKDAYS[new Date(year, month - 1, day).getDay()];
 }
 
+/** `2026-10-21` → `10/21 週三` (the timeline's day header). */
+export function dayLabel(date: string): string {
+  const [, month, day] = date.split('-').map(Number);
+  return `${pad(month)}/${pad(day)} ${weekdayLabel(date)}`;
+}
+
 /** `2026-11-04` → `11/04`. */
 export function shortDate(iso: string): string {
   return `${iso.slice(5, 7)}/${iso.slice(8, 10)}`;

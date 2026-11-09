@@ -131,6 +131,9 @@ export const KIND_PILLS: Partial<Record<EntryKind, KindPill>> = {
   refund: { label: '退款', tone: '' },
 };
 
+/** A search field commits this long after the last keystroke (Enter commits at once). */
+export const QUERY_DEBOUNCE_MS = 300;
+
 // ---- dates ----------------------------------------------------------------------------------------------------
 
 /** Two-digit day / month / hour / minute. */

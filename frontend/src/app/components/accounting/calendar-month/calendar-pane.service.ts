@@ -4,7 +4,7 @@ import { BreakdownRow } from '../../../models/reports.model';
 import { currentMonth, todayIso } from '../dates';
 import { InboxEinvoice } from '../inbox/einvoice.model';
 import { OverviewState } from '../month-overview/overview.service';
-import { BillLine, DayNet, TimelineDay, TimelineRow } from '../timeline/timeline';
+import type { BillLine, DayNet, TimelineDay, TimelineRow } from '../timeline/timeline';
 import { CalendarPartState } from './calendar-data.service';
 
 /** The 今天 card of the right pane: today's count / net and the first entries' titles. */
