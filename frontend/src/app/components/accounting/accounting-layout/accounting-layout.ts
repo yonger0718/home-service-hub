@@ -66,6 +66,8 @@ const FORM_URL = /^\/accounting\/(?:entry|entries\/\d+\/edit)(?:[/?#]|$)/;
 /** FAB `right` with a pane open: the list column's bottom-right corner (.hub-page side padding 1.75rem, .dbody gap
  * 16px, columns 5fr / 6fr, see accounting-layout.scss), so the button never covers the pane. */
 export const FAB_RIGHT_BESIDE_PANE = 'calc(1.75rem + (100vw - var(--sidebar-w) - 3.5rem - 16px) * 6 / 11 + 32px)';
+/** The same corner in calendar mode: the list column is 2fr of 3fr (`.dbody--calendar`). */
+export const FAB_RIGHT_BESIDE_CALENDAR_PANE = 'calc(1.75rem + (100vw - var(--sidebar-w) - 3.5rem - 16px) / 3 + 32px)';
 const SWIPE_CLOSE_PX = 80;
 /** A swipe that drifts more than this vertically is a scroll, not a close. */
 const SWIPE_MAX_DY = 40;
@@ -130,6 +132,8 @@ export class AccountingLayoutComponent {
   readonly showOverview = computed(
     () => this.mode() === 'panes' && this.layoutMode.wideSidebar() && this.listKey() === 'timeline' && !this.paneOpen(),
   );
+  /** 日曆 on the timeline at ≥ 1024 px: the list pane takes 2fr, the day panel and drawer live in the right pane. */
+  readonly calendarMode = computed(() => this.mode() === 'panes' && this.listKey() === 'timeline' && this.overview.calendar());
   readonly emptyCopy = computed(() =>
     this.listKey() === 'accounts' ? '選擇帳戶查看明細，或按 ＋ 新增' : '選擇一筆記錄查看明細，或按 ＋ 新增',
   );
@@ -242,7 +246,7 @@ export class AccountingLayoutComponent {
     effect(() => {
       const beside = this.mode() === 'panes' && this.paneOpen();
       this.paneState.paneOpen.set(beside);
-      this.paneState.fabRight.set(beside ? FAB_RIGHT_BESIDE_PANE : null);
+      this.paneState.fabRight.set(beside ? (this.calendarMode() ? FAB_RIGHT_BESIDE_CALENDAR_PANE : FAB_RIGHT_BESIDE_PANE) : null);
       this.paneState.formOpen.set(this.formOpen());
       this.paneState.sheetOpen.set(this.sheetOpen());
     });

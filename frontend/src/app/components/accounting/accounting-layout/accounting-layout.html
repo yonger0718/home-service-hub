@@ -7,7 +7,7 @@
         <app-btn class="add-account" variant="soft" icon="pi-plus" (click)="addAccount()">新增帳戶</app-btn>
       }
     </app-page-header>
-    <div class="dbody" [class.dbody--sheet]="mode() === 'sheet'">
+    <div class="dbody" [class.dbody--sheet]="mode() === 'sheet'" [class.dbody--calendar]="calendarMode()">
       <section #listPane class="pane list-pane" data-page-scroller aria-label="列表" tabindex="-1">
         @if (listComponent(); as list) {
           <ng-container *ngComponentOutlet="list; inputs: outletInputs" />

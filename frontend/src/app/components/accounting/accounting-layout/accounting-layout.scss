@@ -78,6 +78,10 @@
   min-height: 0;
 }
 
+.dbody--calendar {
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+}
+
 .dbody--sheet {
   display: block;
   min-height: 0;

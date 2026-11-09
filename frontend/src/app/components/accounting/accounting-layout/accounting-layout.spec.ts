@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { routes } from '../../../app.routes';
 import { AccountingService } from '../../../services/accounting.service';
@@ -15,7 +15,7 @@ import { makeEntryDetail, makePreference } from '../testing/fixtures';
 import { PaneStateService } from '../../../services/pane-state.service';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { AccountingOverviewService } from '../month-overview/overview.service';
-import { AccountingLayoutComponent, FAB_RIGHT_BESIDE_PANE } from './accounting-layout';
+import { AccountingLayoutComponent, FAB_RIGHT_BESIDE_CALENDAR_PANE, FAB_RIGHT_BESIDE_PANE } from './accounting-layout';
 
 /** Evaluates `(min|max)-width: Npx` conditions against a fixed viewport width. */
 function matchMediaAt(width: number) {
@@ -70,6 +70,48 @@ const PANE_PAGE = '.detail-pane router-outlet + :not(.pane-empty)';
 const SCREEN = ':scope > router-outlet + :not(app-accounting-toast)';
 
 describe('AccountingLayoutComponent', () => {
+  afterEach(() => localStorage.removeItem('hh.accounting.timelineView'));
+
+  describe('calendar mode', () => {
+    it('uses the 2:1 columns and shows the figures in the monthbar between › and the view toggle at 1100px in 日曆', async () => {
+      localStorage.setItem('hh.accounting.timelineView', 'calendar');
+      const harness = await start('panes', '/accounting?month=2026-10', 1100);
+      await find(harness, '.dbody--calendar');
+      const bar = await find(harness, '.monthbar');
+      const order = Array.from(bar.children).map(el => el.className.split(' ')[0]);
+      expect(order.indexOf('monthbar-figures')).toBeGreaterThan(order.indexOf('month-next'));
+      expect(order.indexOf('monthbar-figures')).toBeLessThan(order.indexOf('view-toggle'));
+      expect(bar.querySelector('.monthbar-figures')!.textContent).toContain('結餘');
+      expect(harness.routeNativeElement!.querySelector('.list-pane .sum')).toBeNull();
+    });
+
+    it('renders no day rows under the grid in 日曆 at 1100px with a day selected', async () => {
+      localStorage.setItem('hh.accounting.timelineView', 'calendar');
+      const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+      await find(harness, '.dbody--calendar');
+      await find(harness, '.list-pane app-calendar-grid, .list-pane .cal-grid, .list-pane .monthbar');
+      const root = harness.routeNativeElement!;
+      expect(root.querySelector('.list-pane .day-entries')).toBeNull();
+      expect(root.querySelector('.list-pane [data-entry-id]')).toBeNull();
+    });
+
+    it('keeps the 清單 layout: no calendar columns, no monthbar figures, month card in the list', async () => {
+      localStorage.setItem('hh.accounting.timelineView', 'list');
+      const harness = await start('panes', '/accounting', 1440);
+      await find(harness, '.list-pane .sum');
+      const root = harness.routeNativeElement!;
+      expect(root.querySelector('.dbody--calendar')).toBeNull();
+      expect(root.querySelector('.monthbar-figures')).toBeNull();
+    });
+
+    it('publishes the calendar FAB offset while a pane is open in calendar mode', async () => {
+      localStorage.setItem('hh.accounting.timelineView', 'calendar');
+      const harness = await start('panes', '/accounting/entries/5?month=2026-10', 1100);
+      await find(harness, '.dbody--calendar');
+      expect(TestBed.inject(PaneStateService).fabRight()).toBe(FAB_RIGHT_BESIDE_CALENDAR_PANE);
+    });
+  });
+
   describe('empty pane', () => {
     it('shows the month overview instead of the empty copy at 1440px on /accounting', async () => {
       const harness = await start('panes', '/accounting', 1440);
@@ -291,6 +333,7 @@ describe('AccountingLayoutComponent', () => {
   });
 
   it('publishes pane and form state for the shell', async () => {
+    localStorage.setItem('hh.accounting.timelineView', 'list');
     const harness = await start('panes', '/accounting/entries/9');
     const pane = TestBed.inject(PaneStateService);
     await find(harness, PANE_PAGE);

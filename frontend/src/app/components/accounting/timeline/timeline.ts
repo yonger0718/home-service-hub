@@ -515,6 +515,8 @@ export class LedgerTimelineComponent implements OnInit {
   private readonly urlDay = signal<string | null>(null);
   /** A day in the URL forces 日曆 without touching the stored choice. */
   readonly view = computed<TimelineView>(() => (this.urlDay() !== null ? 'calendar' : this.chosenView()));
+  /** 日曆 at ≥ 1024 px: the month figures sit in the monthbar and the day's rows live in the right pane. */
+  readonly wideCalendar = computed(() => this.view() === 'calendar' && this.layoutMode.mode() === 'panes');
   readonly daily = signal<DailySummary | null>(null);
   readonly dailyLoading = signal(false);
   readonly dailyError = signal(false);

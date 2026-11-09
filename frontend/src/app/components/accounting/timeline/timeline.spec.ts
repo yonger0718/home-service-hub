@@ -1872,7 +1872,33 @@ describe('LedgerTimelineComponent', () => {
       fixture.detectChanges();
     }
 
+    /** At panes the day's rows are published to the right pane; the list's own `.day-entries` needs the narrow layout. */
+    function showDayRowsInList(fixture: { detectChanges(): void }): void {
+      TestBed.inject(LayoutModeService).set('phone');
+      fixture.detectChanges();
+    }
+
     const cell = (el: HTMLElement, date: string) => el.querySelector(`button.cell[data-date="${date}"]`)!;
+
+    it('renders the monthbar figures and no .sum / .day-entries in 日曆 at panes', () => {
+      const { fixture, el } = renderCalendarWith(ACCOUNTS);
+      selectDay(fixture, el, '2026-10-05');
+      const figures = el.querySelector('.monthbar .monthbar-figures')!;
+      expect(figures.getAttribute('aria-label')).toBe('本月摘要');
+      expect(text(figures)).toContain('支出');
+      expect(text(figures)).toContain('收入');
+      expect(text(figures)).toContain('結餘');
+      expect(el.querySelector('.sum')).toBeNull();
+      expect(el.querySelector('.day-entries')).toBeNull();
+    });
+
+    it('keeps .sum and .day-entries in 日曆 at phone width', () => {
+      const { fixture, el } = renderCalendarWith(ACCOUNTS, 'phone');
+      selectDay(fixture, el, '2026-10-05');
+      expect(el.querySelector('.monthbar-figures')).toBeNull();
+      expect(el.querySelector('.sum')).not.toBeNull();
+      expect(el.querySelector('.day-entries')).not.toBeNull();
+    });
 
     it('badges an unpaid statement only once it is resolved and shows its line on the due day', () => {
       const { fixture, el } = renderCalendarWith();
@@ -1887,6 +1913,7 @@ describe('LedgerTimelineComponent', () => {
       expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10 月 5 日 週一，1 張卡繳費到期');
 
       selectDay(fixture, el, '2026-10-05');
+      showDayRowsInList(fixture);
       expectNoBillRequest();
       const line = el.querySelector<HTMLButtonElement>('.day-entries .bill')!;
       expect(text(line)).toBe('玉山 UNI 帳單 $12,345 · 到期');
@@ -2012,6 +2039,7 @@ describe('LedgerTimelineComponent', () => {
       expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
 
       selectDay(fixture, el, '2026-10-05');
+      showDayRowsInList(fixture);
       const line = el.querySelector('.day-entries .bill')!;
       expect(text(line)).toBe('玉山 UNI 帳單 $12,345 · 到期 已繳 $5,000 · 剩餘 $7,345');
       expect(line.querySelector('i.pi-credit-card[aria-hidden="true"]')).not.toBeNull();
@@ -2277,6 +2305,7 @@ describe('LedgerTimelineComponent', () => {
       expect(el.querySelectorAll('.bill-mark').length).toBe(1);
       expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10 月 5 日 週一，1 張卡繳費到期');
       selectDay(fixture, el, '2026-10-05');
+      showDayRowsInList(fixture);
       expect(Array.from(el.querySelectorAll('.day-entries .bill')).map(text)).toEqual(['玉山 UNI 帳單 $1,234 · 到期']);
       expect(el.querySelectorAll('.day-entries .bill i.pi-credit-card').length).toBe(1);
     });
@@ -2407,10 +2436,11 @@ describe('LedgerTimelineComponent', () => {
       expect(getComputedStyle(el.querySelector('.dist-bar')!).height).toBe('8px');
     });
 
-    it('shows the legend at the panes layout (calendar view by default there)', () => {
+    it('shows the legend in the 清單 at the panes layout', () => {
+      localStorage.setItem(VIEW_KEY, 'list');
       const { fixture, el } = render('panes');
       flushSummary('2026-10', CANVAS_SUMMARY);
-      flushDaily('2026-10');
+      flushEntries([]);
       fixture.detectChanges();
       expect(segments(el)).toHaveLength(6);
       expect(el.querySelectorAll('.dist-list .dist-row')).toHaveLength(6);

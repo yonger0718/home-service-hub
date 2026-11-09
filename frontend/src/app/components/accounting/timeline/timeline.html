@@ -8,12 +8,28 @@
     <b class="month-label">{{ monthText() }}</b>
     <button type="button" class="month-next" aria-label="下個月" (click)="moveMonth(1)">›</button>
     <button type="button" class="bell" [attr.aria-label]="'提醒中心，' + reminderCount() + ' 項'" (click)="openReminders()"><i class="pi pi-bell" aria-hidden="true"></i>@if (reminderCount() > 0) {<span class="bell-count" aria-hidden="true">{{ reminderCount() }}</span>}</button>
+    @if (wideCalendar()) {
+      <dl class="monthbar-figures" aria-label="本月摘要" [attr.aria-busy]="summaryLoading() ? 'true' : null">
+        @if (summaryError()) {
+          <dt>本月</dt>
+          <dd class="monthbar-error">摘要讀取失敗 <button type="button" class="retry sum-retry" (click)="retrySummary()">重試</button></dd>
+        } @else {
+          <dt>支出</dt>
+          <dd class="neg sum-expense">{{ summary() ? expenseText(summary()!) : '—' }}</dd>
+          <dt>收入</dt>
+          <dd class="pos sum-income">{{ summary() ? incomeText(summary()!) : '—' }}</dd>
+          <dt>結餘</dt>
+          <dd class="sum-net">{{ summary() ? formatSigned(summary()!.net, summary()!.currency) : '—' }}</dd>
+        }
+      </dl>
+    }
     <div class="view-toggle" role="radiogroup" aria-label="檢視模式">
       <button type="button" role="radio" [attr.aria-checked]="view() === 'list'" (click)="setView('list')">清單</button>
       <button type="button" role="radio" [attr.aria-checked]="view() === 'calendar'" (click)="setView('calendar')">日曆</button>
     </div>
   </div>
 
+  @if (!wideCalendar()) {
   <div class="sum" [attr.aria-busy]="summaryLoading() ? 'true' : null">
     @if (filtersActive()) {
       <small class="sum-scope">全月 · 未套篩選</small>
@@ -45,6 +61,7 @@
       }
     }
   </div>
+  }
   <app-filter-bar [chips]="filterChips()" (remove)="removeFilter($event)" (clearAll)="clearFilters()" (reset)="resetSecondaryFilters()" (openChange)="onFilterPanelOpen($event)">
     <input
       filterBarSearch
@@ -194,7 +211,7 @@
       [today]="today()"
       (daySelected)="selectDay($event)"
     />
-    @if (selectedDay()) {
+    @if (selectedDay() && !wideCalendar()) {
       <div class="day-entries">
         <div class="day day-net">
           <span>{{ selectedDayText() }}</span>
