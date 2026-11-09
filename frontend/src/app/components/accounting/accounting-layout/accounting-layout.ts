@@ -35,7 +35,7 @@ import type { InboxEinvoice } from '../inbox/einvoice.model';
 import { groupCommands, listOpenState } from '../split-group/group-nav';
 import type { TimelineRow } from '../timeline/timeline';
 import { AccountingOverviewService } from '../month-overview/overview.service';
-import { QUERY_DEBOUNCE_MS, isHandledKey, trapFocus, OVERLAY_ATTR } from '../accounting-ui';
+import { QUERY_DEBOUNCE_MS, focusables, isHandledKey, trapFocus, OVERLAY_ATTR } from '../accounting-ui';
 import { AccountingShortcutsService, resolveShortcut } from '../keyboard-shortcuts';
 
 export interface LayoutRouteState {
@@ -526,8 +526,9 @@ export class AccountingLayoutComponent {
     const target = event.target as HTMLElement | null;
     const targetTag = target?.isContentEditable ? 'TEXTAREA' : (target?.tagName ?? null);
     const action = resolveShortcut(event, { url: this.router.url, targetTag: targetTag === 'BODY' ? null : targetTag });
-    // ↓ / ↑ with no rows on screen stay the page's own keys (scrolling).
-    if (!action || (action.type === 'move' && this.rows().length === 0)) {
+    // ↓ / ↑ with no rows on screen stay the page's own keys (scrolling), as they do outside an open drawer: its own
+    // ↑ ↓ step its entry (onDrawerKeydown). The reminder centre in the drawer keeps walking its own rows.
+    if (!action || (action.type === 'move' && (this.rows().length === 0 || (this.drawerOpen() && !this.onReminders())))) {
       return;
     }
     event.preventDefault();
@@ -555,11 +556,6 @@ export class AccountingLayoutComponent {
   }
 
   private moveSelection(delta: 1 | -1): void {
-    // The drawer's own ↑ ↓ step its entry (onDrawerKeydown); the document's row walk stands down. The reminder
-    // centre in the drawer keeps walking its own rows.
-    if (this.drawerOpen() && !this.onReminders()) {
-      return;
-    }
     const rows = this.rows();
     if (rows.length === 0) {
       return;
@@ -595,14 +591,22 @@ export class AccountingLayoutComponent {
 
   private focusOverlay(): void {
     this.overlayWasOpen = true;
-    // The grip's ✕ (sheet) or the drawer's ✕, else the page's own ✕ (`data-pane-close`, the entry form's header).
     afterNextRender(
       {
-        write: () =>
+        write: () => {
+          const drawer = this.drawerOpen() ? this.drawer()?.nativeElement : undefined;
+          if (drawer) {
+            // The page's own ✕ (detail / group 關閉, the form's data-pane-close), else its first control, else the
+            // dialog itself (a page still loading).
+            (drawer.querySelector<HTMLElement>('.close[aria-label="關閉"], [data-pane-close]') ?? focusables(drawer)[0] ?? drawer).focus();
+            return;
+          }
+          // The grip's ✕, else the page's own ✕ (`data-pane-close`, the entry form's header).
           (
             this.closeButton()?.nativeElement ??
-            this.detailPane()?.nativeElement.querySelector<HTMLElement>('.drawer-close, [data-pane-close]')
-          )?.focus(),
+            this.detailPane()?.nativeElement.querySelector<HTMLElement>('[data-pane-close]')
+          )?.focus();
+        },
       },
       { injector: this.injector },
     );

@@ -121,12 +121,10 @@
           [attr.role]="drawerOpen() ? 'dialog' : null"
           [attr.aria-modal]="drawerOpen() ? 'true' : null"
           [attr.aria-label]="drawerOpen() ? '記錄詳情' : null"
+          [attr.tabindex]="drawerOpen() ? -1 : null"
           (keydown)="onDrawerKeydown($event)"
         >
-          <!-- The entry form draws its own ✕ in its header. -->
-          @if (drawerOpen() && !formOpen()) {
-            <button type="button" class="drawer-close" aria-label="關閉" (click)="close()">✕</button>
-          }
+          <!-- No ✕ of its own: the pages draw theirs (detail / group 關閉, the form's data-pane-close). -->
           <router-outlet name="pane" />
         </div>
         @if (showOverview()) {

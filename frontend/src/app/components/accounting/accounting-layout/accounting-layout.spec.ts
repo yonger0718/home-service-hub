@@ -16,6 +16,7 @@ import { PaneStateService } from '../../../services/pane-state.service';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { AccountingOverviewService } from '../month-overview/overview.service';
 import { CalendarPaneService } from '../calendar-month/calendar-pane.service';
+import { focusables } from '../accounting-ui';
 import { buildDays } from '../timeline/timeline';
 import { AccountingLayoutComponent, FAB_RIGHT_BESIDE_CALENDAR_PANE, FAB_RIGHT_BESIDE_PANE } from './accounting-layout';
 
@@ -225,7 +226,19 @@ describe('AccountingLayoutComponent', () => {
           return harness.routeNativeElement!.querySelector<HTMLElement>('.cal-base')!;
         }
 
-        /** The day panel of 10/21 with one row (id 7); clicking it (focused, as a real click leaves it) opens the drawer. */
+        /** Answers the drawer page's detail read; resolves to the page's own ✕ (the drawer draws none). */
+        async function answerDetail(harness: RouterTestingHarness, id: number): Promise<HTMLButtonElement> {
+          const http = TestBed.inject(HttpTestingController);
+          return (await vi.waitFor(() => {
+            http.match(`/api/accounting/entries/${id}`).forEach(req => req.flush(makeEntryDetail({ id })));
+            return find(harness, '.pane-host.drawer .close[aria-label="關閉"]');
+          })) as HTMLButtonElement;
+        }
+
+        /**
+         * The day panel of 10/21 with one row (id 7); clicking it (focused, as a real click leaves it) opens the drawer.
+         * The detail is still loading, so the dialog itself takes focus.
+         */
         async function openFromRow(harness: RouterTestingHarness): Promise<{ row: HTMLElement; drawer: Element }> {
           await find(harness, 'app-calendar-day-panel .dp-label');
           pane().dayRows.set(buildDays([makeEntry({ id: 7, entry_date: '2026-10-21' })], 'TWD', false)[0].rows);
@@ -235,10 +248,9 @@ describe('AccountingLayoutComponent', () => {
           const router = TestBed.inject(Router);
           await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/7?month=2026-10&day=2026-10-21'));
           const drawer = await find(harness, '.pane-host.drawer');
-          const close = await find(harness, '.drawer-close');
           await vi.waitFor(() => {
             harness.detectChanges();
-            expect(document.activeElement).toBe(close);
+            expect(document.activeElement).toBe(drawer);
           });
           return { row, drawer };
         }
@@ -264,6 +276,27 @@ describe('AccountingLayoutComponent', () => {
           expect(detail.getAttribute('role')).toBeNull();
           expect(detail.getAttribute('aria-modal')).toBeNull();
           expect(root.querySelectorAll('[aria-modal="true"]').length).toBe(1);
+          // No ✕ of the drawer's own: exactly one 關閉, the page's.
+          await answerDetail(harness, 5);
+          expect(root.querySelector('.drawer-close')).toBeNull();
+          expect(root.querySelectorAll('.detail-pane [aria-label="關閉"]').length).toBe(1);
+        });
+
+        it("focuses the page's own ✕ when the drawer opens over a page already shown (清單 → 日曆 with an entry open)", async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'list');
+          const harness = await start('panes', ENTRY.replace('&day=2026-10-21', ''), 1100);
+          const http = TestBed.inject(HttpTestingController);
+          const close = (await vi.waitFor(() => {
+            http.match('/api/accounting/entries/5').forEach(req => req.flush(makeEntryDetail({ id: 5 })));
+            return find(harness, '.detail-pane .close[aria-label="關閉"]');
+          })) as HTMLButtonElement;
+          expect(harness.routeNativeElement!.querySelector('.pane-host.drawer')).toBeNull();
+          ((await find(harness, '.view-toggle [role=radio]:nth-child(2)')) as HTMLButtonElement).click();
+          await find(harness, '.pane-host.drawer');
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(document.activeElement).toBe(close);
+          });
         });
 
         it('✕ and Esc close the drawer back to the day and return focus to the day-panel row that opened it', async () => {
@@ -272,7 +305,13 @@ describe('AccountingLayoutComponent', () => {
           let { row } = await openFromRow(harness);
           expect(calBase(harness).hasAttribute('inert')).toBe(true);
 
-          ((await find(harness, '.drawer-close')) as HTMLButtonElement).click();
+          // The page's own ✕ (entry detail 關閉) goes back in history; this harness's Location does not traverse it,
+          // so the browser's back is played by the router.
+          const back = vi
+            .spyOn(TestBed.inject(Location), 'back')
+            .mockImplementation(() => void router.navigateByUrl('/accounting?month=2026-10&day=2026-10-21'));
+          (await answerDetail(harness, 7)).click();
+          expect(back).toHaveBeenCalledTimes(1);
           await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-21'));
           await vi.waitFor(() => {
             harness.detectChanges();
@@ -332,17 +371,19 @@ describe('AccountingLayoutComponent', () => {
 
         it('wraps Tab inside the drawer', async () => {
           const harness = await start('panes', ENTRY, 1100);
-          const drawer = await find(harness, '.pane-host.drawer');
-          const close = (await find(harness, '.drawer-close')) as HTMLButtonElement;
+          const drawer = (await find(harness, '.pane-host.drawer')) as HTMLElement;
+          await answerDetail(harness, 5);
           const last = document.createElement('button');
           last.textContent = '最後';
           drawer.appendChild(last);
+          const first = focusables(drawer)[0];
+          expect(first).not.toBe(last);
 
           last.focus();
           const tab = key(last, 'Tab');
           expect(tab.defaultPrevented).toBe(true);
-          expect(document.activeElement).toBe(close);
-          const back = key(close, 'Tab', { shiftKey: true });
+          expect(document.activeElement).toBe(first);
+          const back = key(first, 'Tab', { shiftKey: true });
           expect(back.defaultPrevented).toBe(true);
           expect(document.activeElement).toBe(last);
           last.remove();
@@ -350,15 +391,21 @@ describe('AccountingLayoutComponent', () => {
 
         it('widens the drawer for the entry form', async () => {
           const harness = await start('panes', '/accounting/entry?date=2026-10-21&month=2026-10&day=2026-10-21', 1100);
-          await find(harness, '.pane-host.drawer.drawer--form');
+          const drawer = await find(harness, '.pane-host.drawer.drawer--form');
+          const formClose = await find(harness, '.pane-host.drawer--form .entry-form .topbar .cancel');
+          // One ✕: the form's own (取消, data-pane-close); the drawer adds none.
           expect(harness.routeNativeElement!.querySelector('.drawer-close')).toBeNull();
+          expect(drawer.querySelectorAll('[data-pane-close]').length).toBe(1);
+          expect(drawer.querySelectorAll('[aria-label="取消"]').length).toBe(1);
+          expect(drawer.querySelectorAll('[aria-label="關閉"]').length).toBe(0);
+          await vi.waitFor(() => expect(document.activeElement).toBe(formClose));
         });
 
         it('↑ ↓ inside the drawer call stepEntry and the document-level row stepping stands down', async () => {
           const harness = await start('panes', ENTRY, 1100);
           const router = TestBed.inject(Router);
           await find(harness, '.list-pane button.cell[data-date="2026-10-21"]');
-          const close = await find(harness, '.drawer-close');
+          const close = await answerDetail(harness, 5);
           const stepEntry = vi.fn();
           pane().commands.set({ stepEntry, openInvoice: vi.fn(), setQuery: vi.fn() });
 
@@ -374,23 +421,24 @@ describe('AccountingLayoutComponent', () => {
           field.remove();
           expect(stepEntry).toHaveBeenCalledTimes(2);
 
+          // Outside the drawer ↑ ↓ stand down without being swallowed: the page still scrolls.
           const navigate = vi.spyOn(router, 'navigate');
           const rows = addRows(harness, [5, 6, 7]);
-          press('ArrowDown');
-          press('ArrowUp');
+          expect(press('ArrowDown').defaultPrevented).toBe(false);
+          expect(press('ArrowUp').defaultPrevented).toBe(false);
           rows.remove();
           expect(navigate).not.toHaveBeenCalled();
           expect(router.url).toBe(ENTRY);
           expect(stepEntry).toHaveBeenCalledTimes(2);
         });
 
-        it('moves focus from the removed drawer ✕ to the form ✕ when the drawer switches from a detail to the form', async () => {
+        it("moves focus from the removed detail ✕ to the form ✕ when the drawer switches from a detail to the form", async () => {
           const harness = await start('panes', ENTRY, 1100);
-          const close = await find(harness, '.drawer-close');
-          await vi.waitFor(() => expect(document.activeElement).toBe(close));
+          const close = await answerDetail(harness, 5);
+          close.focus();
           await TestBed.inject(Router).navigateByUrl('/accounting/entries/5/edit?month=2026-10&day=2026-10-21');
           const formClose = await find(harness, '.pane-host.drawer--form .entry-form .topbar .cancel');
-          expect(harness.routeNativeElement!.querySelector('.drawer-close')).toBeNull();
+          expect(close.isConnected).toBe(false);
           await vi.waitFor(() => expect(document.activeElement).toBe(formClose));
         });
 
@@ -402,8 +450,8 @@ describe('AccountingLayoutComponent', () => {
           const root = harness.routeNativeElement!;
           expect(root.querySelector('.sheet-grip--active')).not.toBeNull();
           expect(root.querySelector('.drawer')).toBeNull();
-          expect(root.querySelector('.drawer-close')).toBeNull();
           expect(root.querySelector('.pane-host')!.getAttribute('aria-modal')).toBeNull();
+          expect(root.querySelector('.pane-host')!.hasAttribute('tabindex')).toBe(false);
         });
 
         it('the month navigator ‹ › keeps the drawer open and drops the day (Review Focus 1)', async () => {
@@ -411,7 +459,7 @@ describe('AccountingLayoutComponent', () => {
           const router = TestBed.inject(Router);
           const drawer = await find(harness, '.pane-host.drawer');
           await find(harness, '.cal-base app-calendar-day-panel');
-          await vi.waitFor(() => expect(document.activeElement).toBe(harness.routeNativeElement!.querySelector('.drawer-close')));
+          await vi.waitFor(() => expect(drawer.contains(document.activeElement)).toBe(true));
           const prev = (await find(harness, '.list-pane .month-prev')) as HTMLButtonElement;
           // A pointer click leaves focus on the navigator; the drawer never pulls it back.
           prev.focus();
