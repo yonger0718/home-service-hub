@@ -1,5 +1,6 @@
 import { Component, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
+import { onTestFinished } from 'vitest';
 
 import { StepperComponent } from './stepper';
 
@@ -148,6 +149,74 @@ describe('StepperComponent', () => {
     host.value.set(null);
     fixture.detectChanges();
     expect(q('.val').getAttribute('aria-label')).toBe('月底，輸入數值');
+  });
+
+  it('Enter commits and returns focus to .val', () => {
+    const { fixture, q, openInput, type, key } = setup();
+    const input = openInput();
+    expect(document.activeElement).toBe(input);
+    type(input, '20');
+    key(input, 'Enter');
+    fixture.detectChanges();
+    expect(q('.val-input')).toBeNull();
+    expect(document.activeElement).toBe(q('.val'));
+  });
+
+  it('Escape restores and returns focus to .val', () => {
+    const { fixture, host, q, openInput, type, key } = setup();
+    const input = openInput();
+    type(input, '30');
+    key(input, 'Escape');
+    fixture.detectChanges();
+    expect(host.emitted).toEqual([]);
+    expect(q('.val').textContent?.trim()).toBe('25 號');
+    expect(document.activeElement).toBe(q('.val'));
+  });
+
+  it('blur to another control commits without stealing focus back', () => {
+    const { fixture, host, q, openInput, type } = setup();
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    onTestFinished(() => outside.remove());
+    const input = openInput();
+    type(input, '27');
+    outside.focus();
+    fixture.detectChanges();
+    expect(host.emitted).toEqual([27]);
+    expect(q('.val-input')).toBeNull();
+    expect(document.activeElement).toBe(outside);
+  });
+
+  it('reaching max moves focus off the disabled .inc onto .val', () => {
+    const { fixture, host, q } = setup({ value: 30 });
+    const inc = q<HTMLButtonElement>('.inc');
+    inc.focus();
+    inc.click();
+    host.value.set(host.emitted[0]);
+    fixture.detectChanges();
+    expect(inc.disabled).toBe(true);
+    expect(document.activeElement).toBe(q('.val'));
+  });
+
+  it('reaching min moves focus off the disabled .dec onto .val', () => {
+    const { fixture, host, q } = setup({ value: 2 });
+    const dec = q<HTMLButtonElement>('.dec');
+    dec.focus();
+    dec.click();
+    host.value.set(host.emitted[0]);
+    fixture.detectChanges();
+    expect(dec.disabled).toBe(true);
+    expect(document.activeElement).toBe(q('.val'));
+  });
+
+  it('a step that keeps the button enabled leaves focus on it', () => {
+    const { fixture, host, q } = setup({ value: 20 });
+    const inc = q<HTMLButtonElement>('.inc');
+    inc.focus();
+    inc.click();
+    host.value.set(host.emitted[0]);
+    fixture.detectChanges();
+    expect(document.activeElement).toBe(inc);
   });
 
   it('ArrowUp on the group emits value+1', () => {

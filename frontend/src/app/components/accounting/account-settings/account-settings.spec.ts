@@ -1821,6 +1821,33 @@ describe('AccountSettingsComponent', () => {
       expect(texts(fixture, '.row-closing_day .row-v')).toEqual(['16 號']);
     });
 
+    it('phone sheet: tap-to-type Enter keeps focus inside the 結帳日 sheet; Escape then closes it', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      click(fixture, '.row-closing_day');
+      const open = sheet(fixture)!;
+      const doc = el(fixture).ownerDocument;
+
+      open.querySelector<HTMLButtonElement>('app-stepper.closing-day .val')!.click();
+      fixture.detectChanges();
+      const input = open.querySelector<HTMLInputElement>('app-stepper.closing-day .val-input')!;
+      expect(doc.activeElement).toBe(input);
+      input.value = '20';
+      input.dispatchEvent(new Event('input'));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      fixture.detectChanges();
+
+      expect(fixture.componentInstance.form().closing_day).toBe('20');
+      expect(sheet(fixture)).toBe(open);
+      expect(open.contains(doc.activeElement)).toBe(true);
+      expect(doc.activeElement).toBe(open.querySelector('app-stepper.closing-day .val'));
+
+      doc.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      fixture.detectChanges();
+      expect(sheet(fixture)).toBeNull();
+      expect(doc.activeElement).toBe(el(fixture).querySelector('button.row-closing_day'));
+    });
+
     it('phone sheet: Tab is trapped, Escape closes and refocuses the row', async () => {
       await phoneSetup();
       const fixture = render(DETAIL);

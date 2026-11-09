@@ -1,9 +1,13 @@
+import { DOCUMENT } from '@angular/common';
 import {
+  afterNextRender,
   ChangeDetectionStrategy,
   Component,
   computed,
   effect,
   ElementRef,
+  inject,
+  Injector,
   input,
   output,
   signal,
@@ -21,6 +25,7 @@ import {
       (keydown)="onGroupKeydown($event)"
     >
       <button
+        #dec
         type="button"
         class="dec"
         [attr.aria-label]="decLabel()"
@@ -36,10 +41,11 @@ import {
           [value]="draft()"
           (input)="onInput($event)"
           (keydown)="onInputKeydown($event)"
-          (blur)="commit()"
+          (blur)="onBlur()"
         />
       } @else {
         <button
+          #val
           type="button"
           class="val"
           [attr.aria-label]="display() + '，輸入數值'"
@@ -48,6 +54,7 @@ import {
         >{{ display() }}</button>
       }
       <button
+        #inc
         type="button"
         class="inc"
         [attr.aria-label]="incLabel()"
@@ -76,6 +83,11 @@ export class StepperComponent {
   protected readonly editing = signal(false);
   protected readonly draft = signal('');
   private readonly field = viewChild<ElementRef<HTMLInputElement>>('field');
+  private readonly valButton = viewChild<ElementRef<HTMLButtonElement>>('val');
+  private readonly decButton = viewChild.required<ElementRef<HTMLButtonElement>>('dec');
+  private readonly incButton = viewChild.required<ElementRef<HTMLButtonElement>>('inc');
+  private readonly injector = inject(Injector);
+  private readonly document = inject(DOCUMENT);
 
   protected readonly display = computed(() => {
     const v = this.value();
@@ -113,6 +125,9 @@ export class StepperComponent {
     } else if (v !== null) {
       this.valueChange.emit(v <= this.min() ? null : v - 1);
     }
+    // At max (or min / null) the pressed button turns disabled and would drop focus to <body>; hand it to the value.
+    const button = (direction === 1 ? this.incButton() : this.decButton()).nativeElement;
+    this.focusValueAfterRender(() => button.disabled && (this.document.activeElement === button || this.focusLost()));
   }
 
   protected onGroupKeydown(event: KeyboardEvent): void {
@@ -136,10 +151,34 @@ export class StepperComponent {
     if (event.key === 'Enter') {
       event.preventDefault();
       this.commit();
+      this.focusValueAfterRender();
     } else if (event.key === 'Escape') {
       event.preventDefault();
       this.editing.set(false);
+      this.focusValueAfterRender();
     }
+  }
+
+  /** Blur commits; focus returns to the value only when it fell to <body>, never when the user moved elsewhere. */
+  protected onBlur(): void {
+    if (!this.editing()) return;
+    this.commit();
+    this.focusValueAfterRender(() => this.focusLost());
+  }
+
+  private focusLost(): boolean {
+    const active = this.document.activeElement;
+    return active === null || active === this.document.body;
+  }
+
+  /** The value button is re-created by `@if` when editing ends, so focus waits for the next render. */
+  private focusValueAfterRender(when: () => boolean = () => true): void {
+    afterNextRender(
+      () => {
+        if (when()) this.valButton()?.nativeElement.focus();
+      },
+      { injector: this.injector },
+    );
   }
 
   protected commit(): void {
