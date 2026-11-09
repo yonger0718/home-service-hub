@@ -6,7 +6,7 @@ import { MonthSummary } from '../../../models/accounting.model';
 import { BreakdownRow } from '../../../models/reports.model';
 import type { CalendarPartState } from '../calendar-month/calendar-data.service';
 import type { MonthDue, TodayCard } from '../calendar-month/calendar-pane.service';
-import { monthLabel, slashDate, weekdayLabel } from '../dates';
+import { monthLabel, shortDate, weekdayLabel } from '../dates';
 import { formatMoney } from '../format';
 import type { InboxEinvoice } from '../inbox/einvoice.model';
 import { barSegments, categoryDistribution, distributionAriaText } from '../timeline/category-distribution';
@@ -52,7 +52,7 @@ export class MonthOverviewComponent {
   protected readonly bar = computed(() => barSegments(this.distribution()));
   protected readonly aria = computed(() => distributionAriaText(this.distribution()));
 
-  protected readonly slashDate = slashDate;
+  protected readonly shortDate = shortDate;
   protected readonly formatMoney = formatMoney;
   protected readonly currency = computed(() => this.summary()?.currency ?? 'TWD');
   protected readonly topMerchants = computed(() => this.merchants().slice(0, 5));

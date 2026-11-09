@@ -5,7 +5,7 @@
     <button type="button" class="ov-today" (click)="pickDay.emit(t.date)">
       <span class="today-disc" aria-hidden="true">{{ t.date.slice(8) }}</span>
       <span class="today-body">
-        <b>今天 · {{ slashDate(t.date) }} {{ weekday(t.date) }}</b>
+        <b>今天 · {{ shortDate(t.date) }} {{ weekday(t.date) }}</b>
         <span class="today-names">{{ t.count }} 筆@if (t.names) { · {{ t.names }}}</span>
       </span>
       <b class="today-net" [class.neg]="t.net < 0" [class.pos]="t.net > 0">{{ t.netText }}</b>
@@ -68,10 +68,10 @@
   } @else {
     <ul class="ov-todo">
       @for (inv of sortedInvoices(); track inv.id) {
-        <li><button type="button" class="todo-invoice" (click)="openInvoice.emit(inv)">發票待對帳 · {{ slashDate(inv.issue_date) }} {{ inv.seller_name }} {{ formatMoney(inv.total_amount, currency()) }}</button></li>
+        <li><button type="button" class="todo-invoice" (click)="openInvoice.emit(inv)">發票待對帳 · {{ shortDate(inv.issue_date) }} {{ inv.seller_name }} {{ formatMoney(inv.total_amount, currency()) }}</button></li>
       }
       @for (due of sortedDues(); track due.key) {
-        <li><button type="button" class="todo-bill" (click)="pickDay.emit(due.date)">{{ due.name }}帳單 {{ due.amountText }} · {{ slashDate(due.date) }} 到期</button></li>
+        <li><button type="button" class="todo-bill" (click)="pickDay.emit(due.date)">{{ due.name }} 帳單 {{ due.amountText }} · {{ shortDate(due.date) }} 到期</button></li>
       }
     </ul>
   }

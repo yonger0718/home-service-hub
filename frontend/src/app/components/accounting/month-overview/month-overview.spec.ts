@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { describe, expect, it } from 'vitest';
@@ -146,13 +149,21 @@ describe('MonthOverviewComponent', () => {
     it('renders 今天, distribution with 看報表, merchants and 這個月要處理 in that order', () => {
       const { el } = createCal({});
       expect(el.querySelector('.ov-today')).not.toBeNull();
-      expect(el.querySelector('.ov-today')!.textContent).toContain('今天 · 2026/10/21 週三');
+      expect(el.querySelector('.ov-today')!.textContent).toContain('今天 · 10/21 週三');
       expect(el.querySelector('.ov-today')!.textContent).toContain('3 筆');
       expect(el.querySelector('.ov-today')!.textContent).toContain('−$3,096');
       expect(Array.from(el.querySelectorAll('h3.ov-title')).map(h => h.textContent!.trim())).toEqual(['支出類別', '花最多的商家', '這個月要處理']);
       expect(el.querySelector('a[href*="/accounting/reports?month=2026-10"]')!.textContent).toContain('看報表 ›');
       expect(el.textContent).not.toContain('近期到期');
       expect(el.querySelector('.ov-today')!.compareDocumentPosition(el.querySelector('h3.ov-title')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("colours the 今天 card's net like every amount (.neg / .pos with the 支出收入顏色 tones)", () => {
+      const { el } = createCal({});
+      expect(el.querySelector('.today-net')!.classList.contains('neg')).toBe(true);
+      const scss = readFileSync(join(process.cwd(), 'src/app/components/accounting/month-overview/month-overview.scss'), 'utf8');
+      expect(scss).toMatch(/\.today-net\.neg \{\s*color: var\(--tone-neg, var\(--c-red\)\);/);
+      expect(scss).toMatch(/\.today-net\.pos \{\s*color: var\(--tone-pos, var\(--c-green\)\);/);
     });
 
     it('shows no 今天 card without one (another month)', () => {
@@ -166,7 +177,8 @@ describe('MonthOverviewComponent', () => {
       fixture.componentInstance.pickDay.subscribe(d => picked.push(d));
       (el.querySelector('.ov-today') as HTMLButtonElement).click();
       const bills = el.querySelectorAll<HTMLButtonElement>('.todo-bill');
-      expect(bills[0].textContent).toContain('玉山 UNI帳單 $12,345 · 2026/10/28 到期');
+      expect(bills[0].textContent).toContain('玉山 UNI 帳單 $12,345 · 10/28 到期');
+      expect(bills[1].textContent).toContain('台新 帳單 $900 · 11/02 到期');
       bills[1].click();
       expect(picked).toEqual(['2026-10-21', '2026-11-02']);
       bills[0].click();
@@ -181,7 +193,7 @@ describe('MonthOverviewComponent', () => {
       const items = Array.from(el.querySelectorAll('.ov-todo button'));
       expect(items[0].classList.contains('todo-invoice')).toBe(true);
       expect(items[1].classList.contains('todo-bill')).toBe(true);
-      expect(items[0].textContent).toContain('發票待對帳 · 2026/10/10 全家便利商店 $85');
+      expect(items[0].textContent).toContain('發票待對帳 · 10/10 全家便利商店 $85');
       (items[0] as HTMLButtonElement).click();
       expect(opened).toEqual([inv]);
     });

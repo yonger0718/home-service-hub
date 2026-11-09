@@ -103,6 +103,14 @@
   white-space: nowrap;
 }
 
+.today-net.neg {
+  color: var(--tone-neg, var(--c-red));
+}
+
+.today-net.pos {
+  color: var(--tone-pos, var(--c-green));
+}
+
 .ov-reports {
   display: inline-block;
   font-size: var(--fs-sm);
