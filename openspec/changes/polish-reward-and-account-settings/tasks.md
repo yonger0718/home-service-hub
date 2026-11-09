@@ -19,19 +19,20 @@
 
 ## 2. Shared pieces (PR B)
 
-- [ ] 2.1 `RewardStateTag` (D8) and `CapBar` (D2) in `components/ui`, light and dark, with accessible names
-  - the `RewardStateTag` half shipped in PR D (#323); `CapBar` stays with PR B
+- [x] 2.1 `RewardStateTag` (D8) and `CapBar` (D2) in `components/ui`, light and dark, with accessible names
+  - the `RewardStateTag` half shipped in PR D (#323); `CapBar` shipped in PR B
 - [ ] 2.2 Stepper and amount field; picker (sheet below 760 px), if `components/ui` lacks them
-- [ ] 2.3 Tests: tag styles per state; bar at 89 % and 90 %; no-cap text; points unit text (no `$`)
-  - the tag-style tests shipped in PR D; the bar tests stay with PR B
+  - moved to PR C, their only user
+- [x] 2.3 Tests: tag styles per state; bar at 89 % and 90 %; no-cap text; points unit text (no `$`)
+  - the tag-style tests shipped in PR D; the bar tests in PR B
 
 ## 3. 回饋規則總覽 (PR B)
 
-- [ ] 3.1 Navigation: 記帳設定 current, back link
-- [ ] 3.2 Header summary and chips with counts
-- [ ] 3.3 Card grid, window line, period total, rule rows with chip and bar
-- [ ] 3.4 Rules-less accounts as chips; warning banner for expired-but-enabled
-- [ ] 3.5 Tests
+- [x] 3.1 Navigation: 記帳設定 current, back link
+- [x] 3.2 Header summary and chips with counts
+- [x] 3.3 Card grid, window line, period total, rule rows with chip and bar
+- [x] 3.4 Rules-less accounts as chips; warning banner for expired-but-enabled
+- [x] 3.5 Tests
   - label without a repeated rate
   - near-cap row
   - chips for rules-less accounts
@@ -39,6 +40,7 @@
   - points rule's bar and card total in points; header money total excludes points; unit kept under `?account_id=`
   - expired banner and 只看已過期
   - mixed windows on one card: per-row 本期 line
+  - upcoming row line; same start / different end counts as mixed; 含已封存帳戶 keeps `?archived=1`; `?rule=new` opens the new-rule sheet
 
 ## 4. 帳戶設定 (PR C)
 

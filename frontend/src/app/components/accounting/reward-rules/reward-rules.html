@@ -1,62 +1,113 @@
 <section class="reward-rules">
   <header class="rr-header">
-    @if (isPhone()) {
-      <button type="button" class="rr-back" aria-label="返回設定" (click)="back()">‹</button>
-    }
-    <h1>回饋規則總覽</h1>
-  </header>
-
-  @if (callout()) {
-    <div class="rr-callout-region" role="status">
-      <button type="button" class="rr-callout" (click)="setFilter('expired')">
-        <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
-        {{ overview()!.counts.enabled_expired }} 條規則啟用中但已到期，記帳時不會出現
-      </button>
-    </div>
-  }
-
-  <div class="rr-toolbar">
-    <div class="rr-filters" role="group" aria-label="規則狀態">
-      @for (option of filters; track option.key) {
-        <button type="button" class="rr-filter" [attr.aria-pressed]="filter() === option.key" (click)="setFilter(option.key)">{{ option.label }}</button>
+    <div class="rr-heading">
+      <button type="button" class="rr-back" (click)="back()">‹ 記帳設定</button>
+      <h1>回饋規則</h1>
+      @if (overview()) {
+        <p class="rr-headline">{{ headline() }}</p>
       }
     </div>
-    <label class="rr-archived-label">
-      <input type="checkbox" class="rr-archived" [checked]="showArchived()" (change)="setArchived($any($event.target).checked)" />
-      顯示封存
-    </label>
-  </div>
+    <div class="rr-toolbar">
+      <div class="rr-filters" role="group" aria-label="規則狀態">
+        @for (chip of chips(); track chip.key) {
+          <button type="button" class="rr-filter" [attr.aria-pressed]="filter() === chip.key" (click)="setFilter(chip.key)">
+            {{ chip.text }}
+          </button>
+        }
+      </div>
+      <label class="rr-archived-label">
+        <input type="checkbox" class="rr-archived" [checked]="showArchived()" (change)="setArchived($any($event.target).checked)" />
+        含已封存帳戶
+      </label>
+    </div>
+  </header>
+
+  @if (banner(); as count) {
+    <div class="rr-banner" role="status">
+      <i class="pi pi-exclamation-triangle" aria-hidden="true"></i>
+      <span class="rr-banner-text">{{ count }} 條規則已過期但仍啟用，之後的消費不會再估算回饋</span>
+      <button type="button" class="rr-banner-action" (click)="setFilter('expired')">只看已過期</button>
+    </div>
+  }
 
   @if (error(); as message) {
     <p class="rr-error" role="alert">{{ message }}</p>
   }
 
-  <div class="rr-list" [attr.aria-busy]="loading() || null">
-    @if (overview(); as data) {
-      @for (a of data.accounts; track a.account_id) {
-        <section class="rr-card">
-          <h2>{{ a.account_name }}@if (a.is_archived) {（已封存）}</h2>
-          @for (r of a.rules; track r.id) {
-            <a class="rr-rule" [routerLink]="['/accounting/accounts', a.account_id, 'settings']" [queryParams]="{ rule: r.id }">
-              <span class="rr-title">
-                <span class="rr-label">{{ ruleLabel(r) }}</span>
-                <span class="badge rule-state" [attr.data-state]="r.state" [class.warn]="r.state === 'expired'">{{ stateLabels[r.state] }}</span>
-              </span>
-              <small class="rr-posting">{{ postingSummary(r) }}</small>
-              <small class="rr-period">{{ periodText(r) }}</small>
-              <small class="rr-stats">{{ statsText(r.stats) }}</small>
-            </a>
-          } @empty {
-            @if (filter() === 'all') {
-              <p class="rr-empty">尚無規則 → <a [routerLink]="['/accounting/accounts', a.account_id, 'settings']">新增</a></p>
-            } @else {
-              <p class="rr-empty">此狀態下沒有規則</p>
+  <div class="rr-grid" [attr.aria-busy]="loading() || null">
+    @for (card of cards(); track card.account.account_id) {
+      <section class="rr-card" [attr.aria-label]="card.name">
+        <div class="rr-card-head">
+          <app-account-icon
+            [logo]="card.account.logo"
+            [accountId]="card.account.account_id"
+            [logoHash]="card.account.logo_hash"
+            [icon]="card.account.icon"
+            fallback="card"
+            size="big"
+          />
+          <div class="rr-card-title">
+            <b class="rr-card-name">{{ card.name }}</b>
+            @if (card.window) {
+              <small class="rr-window">{{ card.window }}</small>
             }
-          }
-        </section>
-      } @empty {
-        <p class="rr-none">尚無回饋規則</p>
-      }
+          </div>
+          <div class="rr-card-total">
+            @for (total of card.totals; track $index) {
+              <b class="rr-total">{{ total }}</b>
+            }
+            <small class="rr-total-label">本期回饋（含預估）</small>
+          </div>
+        </div>
+
+        @for (row of card.rows; track row.rule.id) {
+          <a
+            class="rr-rule"
+            [class.inactive]="row.rule.state !== 'active'"
+            [routerLink]="['/accounting/accounts', card.account.account_id, 'settings']"
+            [queryParams]="{ rule: row.rule.id }"
+          >
+            <span class="rr-rule-head">
+              <b class="rr-title">{{ row.title }}</b>
+              <span class="rr-rate">{{ row.rate }}</span>
+              @if (row.tag; as tag) {
+                <span class="rr-state" [attr.data-state]="tag.state">{{ tag.label }}</span>
+              }
+              <small class="rr-posting">{{ row.posting }}</small>
+            </span>
+            @if (row.usage; as usage) {
+              <app-cap-bar [used]="usage.used" [estimated]="usage.estimated" [cap]="usage.cap" [unit]="row.unit!" />
+            } @else if (row.muted; as muted) {
+              <small class="rr-muted">{{ muted }}</small>
+            }
+            @if (row.window; as window) {
+              <small class="rr-row-window">{{ window }}</small>
+            }
+          </a>
+        }
+
+        <div class="rr-footer">
+          <small class="rr-footer-stats">近 12 個月 {{ card.linked12m }} 筆</small>
+          <a class="rr-add" [routerLink]="['/accounting/accounts', card.account.account_id, 'settings']" [queryParams]="{ rule: 'new' }">
+            ＋ 新增規則
+          </a>
+        </div>
+      </section>
     }
   </div>
+
+  @if (bare().length) {
+    <section class="rr-bare" aria-label="沒有回饋規則的帳戶">
+      <span class="rr-bare-label">沒有規則的卡片</span>
+      @for (account of bare(); track account.account_id) {
+        <a class="rr-bare-chip" [routerLink]="['/accounting/accounts', account.account_id, 'settings']" [queryParams]="{ rule: 'new' }">
+          {{ account.account_name }} ＋
+        </a>
+      }
+    </section>
+  }
+
+  @if (overview() && !cards().length && !bare().length) {
+    <p class="rr-none">{{ filter() === 'all' ? '尚無回饋規則' : '此狀態下沒有規則' }}</p>
+  }
 </section>

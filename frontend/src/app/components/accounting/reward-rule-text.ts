@@ -1,14 +1,16 @@
-import { RewardRule, RewardRuleInput, RewardRuleState, RewardWindow, RoundingMode } from '../../models/accounting.model';
+import {
+  RewardRule, RewardRuleInput, RewardRuleState, RewardUsage, RewardWindow, RoundingMode,
+} from '../../models/accounting.model';
 import { slashDate } from './dates';
-import { decimalText } from './format';
+import { decimalText, formatMoney, formatNumber } from './format';
 
 export { ruleLabel } from './entry-form/entry-draft';
 
 export const RULE_STATE_LABELS: Record<RewardRuleState, string> = {
-  active: '啟用中',
+  active: '生效中',
   disabled: '已停用',
-  expired: '已到期',
-  upcoming: '尚未開始',
+  expired: '已過期',
+  upcoming: '未開始',
 };
 
 export const REWARD_ROUNDING_LABELS: Record<RoundingMode, string> = {
@@ -74,6 +76,50 @@ export function periodText(rule: Pick<RewardRule, 'starts_on' | 'ends_on'>): str
     return `至 ${slashDate(end)}`;
   }
   return '無期限';
+}
+
+/** A reward's unit (D1a): money, or the points account it pays into. Decided by the server on each usage row. */
+export type RewardUnit = { money: true } | { money: false; name: string };
+
+export function usageUnit(usage: Pick<RewardUsage, 'reward_is_money' | 'reward_account_name'>): RewardUnit {
+  return usage.reward_is_money ? { money: true } : { money: false, name: usage.reward_account_name };
+}
+
+/** `$1,236` for money (TWD: the usage payload carries no currency), `120 測試里程` for points. */
+export function rewardFigure(value: string | number, unit: RewardUnit): string {
+  return unit.money ? formatMoney(value, 'TWD') : `${formatNumber(value, 'TWD')} ${unit.name}`;
+}
+
+/** The rate chip beside a rule's label: `3%`, `固定 $50`, `每 NT$100 一單位`. */
+export function rateChip(rule: Pick<RewardRule, 'method' | 'rate' | 'fixed_amount' | 'unit_spend'>): string {
+  return methodSummary(rule);
+}
+
+/** The rule's name without a trailing copy of its rate (`玩數位 3%` → `玩數位`), so the chip never repeats it. */
+export function ruleTitle(rule: Pick<RewardRule, 'name' | 'method' | 'rate' | 'fixed_amount' | 'unit_spend'>): string {
+  const chip = rateChip(rule);
+  const name = rule.name.trim();
+  for (const suffix of [` ${chip}`, ` (${chip})`, `(${chip})`, `（${chip}）`]) {
+    if (name.endsWith(suffix) && name.length > suffix.length) {
+      return name.slice(0, -suffix.length).trim();
+    }
+  }
+  return name;
+}
+
+/** `2026-11-06` → `11/6`. */
+export function monthDay(iso: string): string {
+  return `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}`;
+}
+
+/** `2027-01-01` → `2027/1/1` (unlike `slashDate`, no zero padding). */
+export function fullDate(iso: string): string {
+  return `${iso.slice(0, 4)}/${monthDay(iso)}`;
+}
+
+/** A usage row's window: `10/26–11/25`. */
+export function windowText(usage: Pick<RewardUsage, 'window_start' | 'window_end'>): string {
+  return `${monthDay(usage.window_start)}–${monthDay(usage.window_end)}`;
 }
 
 /** The writable fields of a loaded rule (drops id, account, moze_id, shared cap and ordering). */

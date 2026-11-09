@@ -1,0 +1,41 @@
+// D2 cap bar: track on the soft surface, posted fill in primary, estimated fill at 30 % — near the cap both take
+// the warning ink (the existing callout ink until a banner token lands).
+.cap-bar {
+  --cap-fill: var(--app-primary);
+  display: grid;
+  gap: 0.35rem;
+}
+
+.cap-track {
+  background: var(--app-surface-soft);
+  border-radius: 999px;
+  display: flex;
+  height: 8px;
+  overflow: hidden;
+}
+
+.cap-used,
+.cap-est {
+  background: var(--cap-fill);
+  display: block;
+  height: 100%;
+}
+
+.cap-est {
+  opacity: 0.3;
+}
+
+.cap-text {
+  color: var(--app-text-muted);
+  font-size: var(--fs-micro);
+  font-variant-numeric: tabular-nums;
+}
+
+.near {
+  --cap-fill: var(--tone-neg-pill-ink, var(--c-red-pill-ink));
+
+  .cap-text {
+    color: var(--cap-fill);
+    font-weight: var(--fw-bold);
+  }
+}

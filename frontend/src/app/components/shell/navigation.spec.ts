@@ -25,6 +25,14 @@ describe('navigation model', () => {
     expect(portfolio.items.map(i => i.sidebarLabel)).toEqual(['投資概覽', '交易紀錄', '股利', '已實現損益', '現金帳戶', '匯入']);
   });
 
+  it('the reward rules overview marks 記帳設定 current (#323 PR B)', () => {
+    expect(navItemForUrl('/accounting/reward-rules?state=all').id).toBe('accounting-settings');
+    expect(navItemForUrl('/accounting/reward-rules').id).toBe('accounting-settings');
+    expect(navItemForUrl('/accounting').id).toBe('accounting-timeline');
+    expect(navItemForUrl('/accounting/entries/5').id).toBe('accounting-timeline');
+    expect(navItemForUrl('/accounting/settings').id).toBe('accounting-settings');
+  });
+
   it('system group', () => {
     const system = NAV_GROUPS.find(g => g.id === 'system')!;
     expect(system.label).toBe('系統');
