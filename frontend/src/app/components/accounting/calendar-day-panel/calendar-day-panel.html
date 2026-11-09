@@ -1,0 +1,80 @@
+<ng-template #rowTemplate let-row>
+  <button type="button" class="entry-row dp-row" [class.sel]="isCurrent(row)" [attr.data-entry-id]="row.entryId" [attr.data-member-ids]="row.memberIds.join(' ')" [attr.data-split]="row.folder ? '' : null"
+    [attr.aria-current]="isCurrent(row) ? 'true' : null" (click)="open.emit(row)">
+    @if (row.folder; as folder) {
+      <app-split-folder size="row" [icons]="folder.icons" [count]="folder.count" />
+    } @else {
+      <span class="ico" [style.background]="row.color">{{ row.icon }}</span>
+    }
+    <span class="name">{{ row.title }}@if (row.groupCount && !row.folder) {<span class="badge">{{ row.groupCount }}</span>}</span>
+    @if (row.folder; as folder) {
+      <span class="sr-only">共 {{ folder.count }} 項</span>
+    }
+    <span class="sub">{{ subText(row) }}</span>
+    <span class="amt" [class.neg]="row.tone === 'out'" [class.pos]="row.tone === 'in'">
+      {{ row.amountText }}
+      @if (row.fx) {
+        <small class="fx">{{ row.fx }}</small>
+      }
+    </span>
+    <span class="pills">
+      @for (pill of row.pills; track $index) {
+        <span class="pill" [class.rw]="pill.tone === 'rw'" [class.rv]="pill.tone === 'rv'" [class.review]="pill.tone === 'review'" [attr.title]="pill.title ?? null">{{ pill.label }}</span>
+      }
+    </span>
+    @if (row.invoiceHits) {
+      <small class="invoice-hits">{{ row.invoiceHits }}</small>
+    }
+  </button>
+</ng-template>
+
+@if (mode() === 'results') {
+  <header class="dp-head">
+    <h2 class="dp-label">「{{ query() }}」</h2>
+    <button type="button" class="dp-summary" aria-label="清除搜尋" (click)="clear.emit()">✕</button>
+  </header>
+  @for (group of days(); track group.date) {
+    <div class="dp-day">{{ group.label }} <b [class.neg]="group.net < 0" [class.pos]="group.net > 0">{{ formatSigned(group.net, currency()) }}</b></div>
+    @for (row of group.rows; track row.key) {
+      <ng-container *ngTemplateOutlet="rowTemplate; context: { $implicit: row }" />
+    }
+  } @empty {
+    <p class="dp-empty">沒有符合的記錄</p>
+  }
+} @else {
+  <header class="dp-head">
+    <button type="button" class="dp-step" aria-label="前一天" (click)="step.emit(-1)">‹</button>
+    <div class="dp-title">
+      <h2 class="dp-label">{{ day() ? dayLabel(day()!) : '' }}</h2>
+      <p class="dp-sub">{{ rows().length }} 筆@if (net(); as d) { · {{ d.text }}}</p>
+    </div>
+    <button type="button" class="dp-step" aria-label="後一天" (click)="step.emit(1)">›</button>
+    <button type="button" class="dp-summary" (click)="clear.emit()">本月摘要</button>
+  </header>
+  @if (billLines().length > 0) {
+    <div class="bills" role="group" aria-label="繳費提醒">
+      @for (bill of billLines(); track bill.key) {
+        <button type="button" class="bill" [class.partial]="bill.paidText !== null" (click)="openCard.emit(bill.accountId)">
+          <i class="pi pi-credit-card" aria-hidden="true"></i> {{ bill.name }} 帳單 {{ bill.amountText }} · 到期
+          @if (bill.paidText) {
+            <span class="paid-mark">{{ bill.paidText }}</span>
+          }
+        </button>
+      }
+    </div>
+  }
+  @if (state() === 'error') {
+    <p class="dp-error">記錄讀取失敗</p>
+  } @else if (state() === 'loading') {
+    <app-skeleton rows="3" />
+  } @else {
+    @for (row of rows(); track row.key) {
+      <ng-container *ngTemplateOutlet="rowTemplate; context: { $implicit: row }" />
+    } @empty {
+      <p class="dp-empty">{{ emptyText() }}</p>
+    }
+    @if (day()) {
+      <button type="button" class="dp-add" (click)="add.emit(day()!)">＋ 在這天記一筆</button>
+    }
+  }
+}

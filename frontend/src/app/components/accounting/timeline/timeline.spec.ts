@@ -1738,6 +1738,23 @@ describe('LedgerTimelineComponent', () => {
       expect(fixture.componentInstance.selectedDay()).toBe('2026-11-01');
     });
 
+    it('[ and ] on the grid step the day in the URL', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10', 'calendar');
+      drain();
+      fixture.detectChanges();
+      cellAt(el, '2026-10-21').click();
+      await settle(fixture);
+      const press = async (key: string) => {
+        el.querySelector('.cal')!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+        await settle(fixture);
+      };
+      await press(']');
+      expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-22');
+      await press('[');
+      await press('[');
+      expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-20');
+    });
+
     it('follows Back to a URL without day', async () => {
       const { fixture, el, router } = await openAt('/accounting?month=2026-10', 'calendar');
       drain();

@@ -257,6 +257,21 @@ describe('CalendarMonthComponent', () => {
       expect(cell('2026-10-19').querySelector('.dots')!.getAttribute('aria-hidden')).toBe('true');
     });
 
+    it('[ and ] emit dayStep and are cancelled; with a modifier they are ignored', () => {
+      const { fixture, el } = render({ ...base, selected: '2026-10-21' });
+      const steps: number[] = [];
+      fixture.componentInstance.dayStep.subscribe(step => steps.push(step));
+      const press = (key: string, init: KeyboardEventInit = {}) => {
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init });
+        el.querySelector('.cal')!.dispatchEvent(event);
+        return event;
+      };
+      expect(press(']').defaultPrevented).toBe(true);
+      expect(press('[').defaultPrevented).toBe(true);
+      expect(press(']', { ctrlKey: true }).defaultPrevented).toBe(false);
+      expect(steps).toEqual([1, -1]);
+    });
+
     it('is one tab stop: the selected day (else today, else the 1st) has tabindex 0 and arrows move the focus', () => {
       const { fixture, el, cell } = render({ ...base, selected: '2026-10-21' });
       const stops = () => Array.from(el.querySelectorAll('button.cell')).filter(b => b.getAttribute('tabindex') === '0').map(b => b.getAttribute('data-date'));
