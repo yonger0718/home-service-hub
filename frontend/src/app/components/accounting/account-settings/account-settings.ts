@@ -836,7 +836,8 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
    * is in flight the spy only tracks, until the target itself is on top of the band (the jump has arrived), the
    * owner's own scroll input (wheel, touch, keys) or the scroller's `scrollend` (a scrollbar drag fires no input
    * event) hands control back; an input release re-marks the top section at once, a scrollend keeps the target's
-   * chip while the target is still in view. Plain `scroll` would not do: the programmatic smooth scroll fires it too.
+   * chip while the target is still in the band or the scroller has reached its end with the target on screen (the
+   * jump landed as far as it could). Plain `scroll` would not do: the programmatic smooth scroll fires it too.
    */
   private watchSections(): void {
     if (typeof IntersectionObserver === 'undefined') {
@@ -889,16 +890,29 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     for (const type of input) {
       page.addEventListener(type, release, { passive: true });
     }
-    // The jump's own smooth scroll ends with a scrollend too. A short last section (其他) never reaches the top of
-    // the band, so while the target is still in view its chip stays and only the lock is handed back; a scrollbar
-    // drag that left the target behind re-marks the top section like any other release.
+    // The jump's own smooth scroll ends with a scrollend too. A section near the end of the page (其他, or 國外交易
+    // when the two together are shorter than the pane's lower 60 %) never reaches the band: the scroller stops at
+    // its end with the target on screen below the band. Such a jump has landed, so its chip stays and only the
+    // lock is handed back; a scrollbar drag that left the target behind re-marks the top section like any release.
+    const landed = (id: SectionId): boolean => {
+      const rect = page.querySelector<HTMLElement>(`#s-${id}`)?.getBoundingClientRect();
+      if (!rect || rect.height <= 0) {
+        return false;
+      }
+      const root = scroller?.getBoundingClientRect();
+      const onScreen = rect.bottom > (root?.top ?? 0) && rect.top < (root?.bottom ?? window.innerHeight);
+      const atEnd = scroller
+        ? scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1
+        : window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 1;
+      return onScreen && atEnd;
+    };
     const settle = () => {
       const target = this.jumpTarget;
       if (target === null) {
         return;
       }
       this.jumpTarget = null;
-      if (visible.has(target)) {
+      if (visible.has(target) || landed(target)) {
         this.activeSection.set(target);
       } else {
         markTop();
