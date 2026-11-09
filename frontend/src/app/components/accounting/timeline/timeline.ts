@@ -14,7 +14,7 @@ import {
 } from '@angular/core';
 import { DOCUMENT, NgTemplateOutlet } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { Router } from '@angular/router';
+import { NavigationEnd, Params, Router } from '@angular/router';
 import { filter, forkJoin, fromEvent } from 'rxjs';
 
 import {
@@ -47,7 +47,8 @@ import { CalendarMonthComponent } from '../calendar-month/calendar-month';
 import { inboxBellCount } from '../inbox/inbox-view';
 import { InboxService } from '../inbox/inbox.service';
 import { parseTags } from '../entry-form/entry-draft';
-import { currentMonth, monthLabel, todayIso } from '../dates';
+import { addDays, currentMonth, monthLabel, todayIso } from '../dates';
+import { calendarWrite, readCalendarQuery } from './calendar-url';
 import { nextDueItems } from '../month-overview/due-items';
 import { AccountingOverviewService, OverviewState } from '../month-overview/overview.service';
 import { schedulePill } from '../schedule-math';
@@ -491,12 +492,16 @@ export class LedgerTimelineComponent implements OnInit {
   readonly categoryOptions = signal<CategoryNode[]>([]);
   readonly projectOptions = signal<Project[]>([]);
   private optionsRequested = false;
-  readonly view = signal<TimelineView>(initialView(untracked(this.layoutMode.mode) === 'panes'));
+  private readonly chosenView = signal<TimelineView>(initialView(untracked(this.layoutMode.mode) === 'panes'));
+  /** The day in the URL (`?day=`); null when none is selected. */
+  private readonly urlDay = signal<string | null>(null);
+  /** A day in the URL forces 日曆 without touching the stored choice. */
+  readonly view = computed<TimelineView>(() => (this.urlDay() !== null ? 'calendar' : this.chosenView()));
   readonly daily = signal<DailySummary | null>(null);
   readonly dailyLoading = signal(false);
   readonly dailyError = signal(false);
 
-  readonly selectedDay = signal<string | null>(null);
+  readonly selectedDay = computed(() => this.urlDay());
   readonly dayEntries = signal<LedgerEntry[]>([]);
   readonly dayLoading = signal(false);
   readonly dayError = signal(false);
@@ -659,10 +664,13 @@ export class LedgerTimelineComponent implements OnInit {
     // 報表 drill-through (add-accounting-reports D7): `/accounting?month=2026-10&category_id=12` opens that month
     // filtered to the category. Read once at construction: the list is created afresh when the URL comes from 報表.
     const query = this.router.routerState.snapshot.root.queryParamMap;
-    const month = query.get('month');
-    if (month && /^\d{4}-\d{2}$/.test(month)) {
-      this.month.set(month);
-    }
+    this.syncFromUrl();
+    this.router.events
+      .pipe(
+        filter(event => event instanceof NavigationEnd),
+        takeUntilDestroyed(inject(DestroyRef)),
+      )
+      .subscribe(() => this.syncFromUrl());
     const category = query.get('category_id');
     if (category && /^\d+$/.test(category)) {
       this.categoryFilter.set(Number(category));
@@ -727,7 +735,7 @@ export class LedgerTimelineComponent implements OnInit {
       this.query();
       this.extraKey();
       this.accounting.entriesChanged();
-      untracked(() => (view === 'calendar' && day ? this.loadDay(day) : this.clearDay()));
+      untracked(() => (view === 'calendar' && day ? this.loadDay(day) : this.dropDayEntries()));
     });
 
     effect(() => {
@@ -1008,7 +1016,7 @@ export class LedgerTimelineComponent implements OnInit {
       });
   }
 
-  private clearDay(): void {
+  private dropDayEntries(): void {
     this.dayKey = null;
     ++this.dayRequestId;
     this.dayEntries.set([]);
@@ -1074,15 +1082,53 @@ export class LedgerTimelineComponent implements OnInit {
   }
 
   setView(view: TimelineView): void {
-    if (view !== this.view()) {
-      this.view.set(view);
+    if (view === 'list') {
+      this.clearDay();
+    }
+    if (view !== this.chosenView()) {
+      this.chosenView.set(view);
       storeView(view);
     }
   }
 
+  private syncFromUrl(): void {
+    const { month, day } = readCalendarQuery(this.router.routerState.snapshot.root.queryParamMap);
+    if (month !== null) {
+      this.month.set(month);
+    }
+    this.urlDay.set(day);
+  }
+
+  /** Writes month / day into the URL (merged with the other query keys) and applies them at once. */
+  private writeCalendar(params: Params): void {
+    void this.router.navigate([], { queryParams: params, queryParamsHandling: 'merge', replaceUrl: true });
+    if (typeof params['month'] === 'string') {
+      this.month.set(params['month']);
+    }
+    this.urlDay.set(typeof params['day'] === 'string' ? params['day'] : null);
+  }
+
+  clearDay(): void {
+    this.writeCalendar({ month: this.month(), day: null });
+  }
+
+  /** ‹ › : the previous / next day, crossing month edges. */
+  stepDay(delta: 1 | -1): void {
+    const day = this.selectedDay();
+    if (day === null) {
+      return;
+    }
+    const next = addDays(day, delta);
+    this.writeCalendar(calendarWrite(next.slice(0, 7), next));
+  }
+
   /** Tapping the selected day again closes it. */
   selectDay(date: string): void {
-    this.selectedDay.update(current => (current === date ? null : date));
+    if (date === this.selectedDay()) {
+      this.clearDay();
+    } else {
+      this.writeCalendar(calendarWrite(date.slice(0, 7), date));
+    }
   }
 
   /** The 近 7 天 banner: 日曆 on the first upcoming due day (next month's when it falls there). */
@@ -1091,9 +1137,9 @@ export class LedgerTimelineComponent implements OnInit {
     if (!first) {
       return;
     }
-    this.setView('calendar');
-    this.month.set(first.date.slice(0, 7));
-    this.selectedDay.set(first.date);
+    this.chosenView.set('calendar');
+    storeView('calendar');
+    this.writeCalendar(calendarWrite(first.date.slice(0, 7), first.date));
   }
 
   openCard(accountId: number): void {
@@ -1101,9 +1147,8 @@ export class LedgerTimelineComponent implements OnInit {
   }
 
   moveMonth(delta: number): void {
-    this.selectedDay.set(null);
     this.today.set(todayIso());
-    this.month.update(month => shiftMonth(month, delta));
+    this.writeCalendar(calendarWrite(shiftMonth(this.month(), delta), null));
   }
 
   setAccount(value: string): void {

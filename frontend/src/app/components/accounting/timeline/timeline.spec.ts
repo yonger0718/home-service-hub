@@ -1486,6 +1486,165 @@ describe('LedgerTimelineComponent', () => {
     expect(options).toEqual(['全部帳戶', '玉山 UNI', '富邦 J卡', '新卡']);
   });
 
+  describe('day in the URL', () => {
+    async function openAt(url: string, stored: string | null = null) {
+      if (stored) {
+        localStorage.setItem(VIEW_KEY, stored);
+      }
+      TestBed.configureTestingModule({
+        imports: [LedgerTimelineComponent],
+        providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([{ path: '**', children: [] }])],
+      });
+      httpMock = TestBed.inject(HttpTestingController);
+      TestBed.inject(LayoutModeService).set('phone');
+      const router = TestBed.inject(Router);
+      await router.navigateByUrl(url);
+      const fixture = TestBed.createComponent(LedgerTimelineComponent);
+      fixture.detectChanges();
+      httpMock.expectOne('/api/accounting/preference').flush(makePreference());
+      httpMock.expectOne('/api/accounting/accounts').flush(ACCOUNTS);
+      flushCounterparties();
+      fixture.detectChanges();
+      return { fixture, el: fixture.nativeElement as HTMLElement, router };
+    }
+
+    /** Answer whatever month / day / list requests are pending with empty bodies. */
+    function drain(): void {
+      for (const req of httpMock!.match(r => r.url === '/api/accounting/entries/summary')) {
+        req.flush({ month: req.request.params.get('month'), currency: 'TWD', expense: '0', income: '0', net: '0', missing_rates: [] });
+      }
+      for (const req of httpMock!.match(r => r.url === '/api/accounting/entries/summary/daily')) {
+        req.flush({ month: req.request.params.get('month'), currency: 'TWD', days: [], missing_rates: [] });
+      }
+      for (const req of httpMock!.match(r => r.url === '/api/accounting/entries')) {
+        req.flush({ items: [], total: 0, limit: 50, offset: 0 });
+      }
+      for (const req of httpMock!.match(r => ['/api/accounting/categories', '/api/accounting/projects'].includes(r.url))) {
+        req.flush([]);
+      }
+    }
+
+    async function settle(fixture: { detectChanges(): void; whenStable(): Promise<unknown> }): Promise<void> {
+      fixture.detectChanges();
+      await fixture.whenStable();
+      drain();
+      fixture.detectChanges();
+    }
+
+    const cellAt = (el: HTMLElement, date: string) => el.querySelector<HTMLButtonElement>(`button.cell[data-date="${date}"]`)!;
+
+    it('selects the day named in the URL and forces 日曆 without storing it', async () => {
+      const { fixture, el } = await openAt('/accounting?month=2026-10&day=2026-10-21');
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      const day = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+      expect(day.request.params.get('date_from')).toBe('2026-10-21');
+      expect(day.request.params.get('date_to')).toBe('2026-10-21');
+      day.flush({ items: [], total: 0, limit: 500, offset: 0 });
+      fixture.detectChanges();
+      expect(cellAt(el, '2026-10-21').classList).toContain('sel');
+      expect(localStorage.getItem(VIEW_KEY)).toBeNull();
+    });
+
+    it('a day outside month wins', async () => {
+      const { fixture, el } = await openAt('/accounting?month=2026-09&day=2026-10-21');
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      drain();
+      fixture.detectChanges();
+      expect(text(el.querySelector('.month-label'))).toBe('2026 年 10 月');
+    });
+
+    it('writes month and day with replaceUrl, merged into the drill-through query', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10&category_id=12', 'calendar');
+      const navigate = vi.spyOn(router, 'navigate');
+      drain();
+      fixture.detectChanges();
+      cellAt(el, '2026-10-21').click();
+      await settle(fixture);
+      expect(router.url).toBe('/accounting?month=2026-10&category_id=12&day=2026-10-21');
+      expect(navigate).toHaveBeenCalledWith([], expect.objectContaining({ queryParamsHandling: 'merge', replaceUrl: true }));
+    });
+
+    it('clears day when the selected day is tapped again and when the month navigator moves', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10', 'calendar');
+      drain();
+      fixture.detectChanges();
+      cellAt(el, '2026-10-21').click();
+      await settle(fixture);
+      expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-21');
+      cellAt(el, '2026-10-21').click();
+      await settle(fixture);
+      expect(router.url).toBe('/accounting?month=2026-10');
+      cellAt(el, '2026-10-21').click();
+      await settle(fixture);
+      el.querySelector<HTMLButtonElement>('.month-next')!.click();
+      await settle(fixture);
+      expect(router.url).toBe('/accounting?month=2026-11');
+    });
+
+    it('stepDay crosses the month edge', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10', 'calendar');
+      drain();
+      fixture.detectChanges();
+      cellAt(el, '2026-10-31').click();
+      await settle(fixture);
+      fixture.componentInstance.stepDay(1);
+      await settle(fixture);
+      expect(router.url).toBe('/accounting?month=2026-11&day=2026-11-01');
+      expect(fixture.componentInstance.selectedDay()).toBe('2026-11-01');
+    });
+
+    it('follows Back to a URL without day', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10', 'calendar');
+      drain();
+      fixture.detectChanges();
+      cellAt(el, '2026-10-21').click();
+      await settle(fixture);
+      expect(el.querySelector('button.cell.sel')).not.toBeNull();
+      await router.navigateByUrl('/accounting?month=2026-10');
+      await settle(fixture);
+      expect(el.querySelector('button.cell.sel')).toBeNull();
+      expect(el.querySelector('.day-entries')).toBeNull();
+      expect(viewButton(el, '日曆').getAttribute('aria-checked')).toBe('true');
+    });
+
+    it('a day link does not overwrite a stored 清單: the list returns when day leaves the URL', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10&day=2026-10-21', 'list');
+      drain();
+      fixture.detectChanges();
+      expect(viewButton(el, '日曆').getAttribute('aria-checked')).toBe('true');
+      expect(localStorage.getItem(VIEW_KEY)).toBe('list');
+      await router.navigateByUrl('/accounting?month=2026-10');
+      await settle(fixture);
+      expect(viewButton(el, '清單').getAttribute('aria-checked')).toBe('true');
+    });
+
+    it('清單 removes day and stores 清單', async () => {
+      const { fixture, el, router } = await openAt('/accounting?month=2026-10', 'calendar');
+      drain();
+      fixture.detectChanges();
+      cellAt(el, '2026-10-21').click();
+      await settle(fixture);
+      viewButton(el, '清單').click();
+      await settle(fixture);
+      expect(router.url).toBe('/accounting?month=2026-10');
+      expect(localStorage.getItem(VIEW_KEY)).toBe('list');
+      expect(viewButton(el, '清單').getAttribute('aria-checked')).toBe('true');
+    });
+
+    it('openUpcoming writes month and day and stores 日曆', async () => {
+      const { fixture, router } = await openAt('/accounting?month=2026-10', 'list');
+      drain();
+      fixture.detectChanges();
+      Object.defineProperty(fixture.componentInstance, 'upcomingBills', { value: () => [{ date: '2026-11-04' }] });
+      fixture.componentInstance.openUpcoming();
+      await settle(fixture);
+      expect(router.url).toBe('/accounting?month=2026-11&day=2026-11-04');
+      expect(localStorage.getItem(VIEW_KEY)).toBe('calendar');
+    });
+  });
+
   describe('billing hints', () => {
     // Closing day 15, due 20 days later: the 08/16 – 09/15 statement is due on 10/05, the 10/15 one on 11/04.
     const CARD = makeAccount({
