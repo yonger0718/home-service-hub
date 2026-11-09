@@ -455,6 +455,9 @@ export class AccountingLayoutComponent {
       if ((event as KeyboardEvent).isComposing || (key !== 'Enter' && key !== 'Escape')) {
         return;
       }
+      if (key === 'Escape' && input.value === '') {
+        return; // an empty field lets Esc through, like the filter bar's
+      }
       event.preventDefault();
       this.clearSearchTimer();
       if (key === 'Escape') {

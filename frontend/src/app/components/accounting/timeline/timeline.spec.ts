@@ -2865,7 +2865,82 @@ describe('LedgerTimelineComponent', () => {
       pane().commands()!.setQuery('  咖啡 ');
       expect(fixture.componentInstance.query()).toBe('咖啡');
       fixture.detectChanges();
+      flushEntries([]); // 日曆 + a search reads the month's matches
       expect(pane().search()).toBe('咖啡');
+    });
+
+    describe('本月摘要 search', () => {
+      const search = (el: HTMLElement) => el.querySelector<HTMLInputElement>('input.filter-q')!;
+
+      it('a 本月摘要 search loads the month list with q and publishes the result days', () => {
+        const { fixture } = renderPanes();
+        pane().commands()!.setQuery('全聯');
+        fixture.detectChanges();
+        expect(pane().search()).toBe('全聯');
+        expect(pane().searchState()).toBe('loading');
+        const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+        expect(req.request.params.get('q')).toBe('全聯');
+        expect(req.request.params.get('date_from')).toBe('2026-10-01');
+        expect(req.request.params.get('date_to')).toBe('2026-10-31');
+        req.flush({
+          items: [makeEntry({ id: 1, name: '全聯', entry_date: '2026-10-05' }), makeEntry({ id: 2, name: '全聯福利中心', entry_date: '2026-10-05' })],
+          total: 2, limit: 50, offset: 0,
+        });
+        fixture.detectChanges();
+        expect(pane().searchDays().length).toBe(1);
+        expect(pane().searchDays()[0].rows.length).toBe(2);
+        expect(pane().searchState()).toBe('ready');
+      });
+
+      it('clearing the search drops the result list and empties both boxes', () => {
+        const { fixture, el } = renderPanes();
+        pane().commands()!.setQuery('全聯');
+        fixture.detectChanges();
+        flushEntries([makeEntry({ id: 1, name: '全聯', entry_date: '2026-10-05' })]);
+        fixture.detectChanges();
+        expect(search(el).value).toBe('全聯');
+        pane().commands()!.setQuery('');
+        fixture.detectChanges();
+        expect(pane().searchDays()).toEqual([]);
+        expect(pane().searchState()).toBe('ready');
+        expect(pane().search()).toBe('');
+        expect(search(el).value).toBe('');
+        expectNoEntryPage();
+      });
+
+      it('typing in the 本月摘要 box updates the filter-bar input (and not while the filter bar is focused)', () => {
+        const { fixture, el } = renderPanes();
+        document.body.appendChild(el);
+        try {
+          pane().commands()!.setQuery('全聯');
+          fixture.detectChanges();
+          flushEntries([]);
+          expect(search(el).value).toBe('全聯');
+          search(el).focus();
+          expect(document.activeElement).toBe(search(el));
+          pane().commands()!.setQuery('x');
+          fixture.detectChanges();
+          flushEntries([]);
+          expect(fixture.componentInstance.query()).toBe('x');
+          expect(search(el).value).toBe('全聯');
+        } finally {
+          el.remove();
+        }
+      });
+
+      it("a selected day's rows use the 本月摘要 search as q (Review Focus 2)", () => {
+        const { fixture, el } = renderPanes();
+        pane().commands()!.setQuery('全聯');
+        fixture.detectChanges();
+        flushEntries([makeEntry({ id: 1, name: '全聯', entry_date: '2026-10-21' })]);
+        fixture.detectChanges();
+        el.querySelector<HTMLButtonElement>('button.cell[data-date="2026-10-21"]')!.click();
+        fixture.detectChanges();
+        const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+        expect(req.request.params.get('q')).toBe('全聯');
+        expect(req.request.params.get('date_from')).toBe('2026-10-21');
+        req.flush({ items: [], total: 0, limit: 500, offset: 0 });
+      });
     });
 
     it('publishes the day rows with reward batches unfolded (one row per entry)', () => {

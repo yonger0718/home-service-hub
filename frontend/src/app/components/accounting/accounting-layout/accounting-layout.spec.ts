@@ -139,6 +139,130 @@ describe('AccountingLayoutComponent', () => {
         expect(root.querySelector('app-calendar-day-panel')).toBeNull();
       });
 
+      describe('lifted search box', () => {
+        const input = (root: Element) => root.querySelector<HTMLInputElement>('.cal-base .cal-search')!;
+        const type = (el: HTMLInputElement, value: string) => {
+          el.value = value;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        };
+
+        it('a trailing space (or an IME composition) in the lifted box survives a pause longer than the debounce', async () => {
+          vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+          try {
+            localStorage.setItem('hh.accounting.timelineView', 'calendar');
+            const harness = await start('panes', '/accounting?month=2026-10', 1100);
+            await find(harness, '.cal-base .cal-search');
+            const el = input(harness.routeNativeElement!);
+            document.body.appendChild(harness.routeNativeElement!);
+            const setQuery = vi.spyOn(pane().commands()!, 'setQuery');
+            el.focus();
+            type(el, '全聯 ');
+            vi.advanceTimersByTime(400);
+            harness.detectChanges();
+            expect(setQuery).toHaveBeenLastCalledWith('全聯 ');
+            expect(pane().search()).toBe('全聯');
+            expect(input(harness.routeNativeElement!).value).toBe('全聯 ');
+
+            setQuery.mockClear();
+            el.dispatchEvent(new Event('compositionstart', { bubbles: true }));
+            el.value = '全聯 ㄅ';
+            el.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }));
+            vi.advanceTimersByTime(400);
+            expect(setQuery).not.toHaveBeenCalled();
+            el.dispatchEvent(new Event('compositionend', { bubbles: true }));
+            vi.advanceTimersByTime(400);
+            expect(setQuery).toHaveBeenCalledTimes(1);
+            harness.routeNativeElement!.remove();
+          } finally {
+            vi.useRealTimers();
+          }
+        });
+
+        it('typing in the lifted search box keeps focus in it while the base switches to results', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          await find(harness, '.cal-base .cal-search');
+          const root = harness.routeNativeElement!;
+          document.body.appendChild(root);
+          try {
+            const el = input(root);
+            el.focus();
+            type(el, '全聯');
+            await find(harness, '.cal-base app-calendar-day-panel');
+            expect(root.querySelector('app-month-overview')).toBeNull();
+            expect(document.activeElement).toBe(input(root));
+            expect(input(root).value).toBe('全聯');
+          } finally {
+            root.remove();
+          }
+        });
+
+        it('typing in the filter bar shows the text in the lifted box; clearing it returns the summary and empties the box', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          await find(harness, '.cal-base .cal-search');
+          const root = harness.routeNativeElement!;
+          const bar = root.querySelector<HTMLInputElement>('.list-pane input[type=search]')!;
+          type(bar, '全聯');
+          await find(harness, '.cal-base app-calendar-day-panel');
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(input(root).value).toBe('全聯');
+          });
+          type(bar, '');
+          await find(harness, '.cal-base app-month-overview');
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(input(root).value).toBe('');
+          });
+        });
+
+        it('typing in 本月摘要 switches the base to the result list; picking a day shows the day panel; clearing the day returns to the results (Review Focus 2)', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          await find(harness, '.cal-base .cal-search');
+          const root = harness.routeNativeElement!;
+          const router = TestBed.inject(Router);
+          type(root.querySelector<HTMLInputElement>('.list-pane input[type=search]')!, 'x');
+          await find(harness, '.cal-base app-calendar-day-panel');
+          expect(pane().search()).toBe('x');
+          await router.navigateByUrl('/accounting?month=2026-10&day=2026-10-21');
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(root.querySelector('.cal-base .dp-step')).not.toBeNull();
+          });
+          await router.navigateByUrl('/accounting?month=2026-10');
+          await vi.waitFor(() => {
+            harness.detectChanges();
+            expect(root.querySelector('.cal-base app-calendar-day-panel')).not.toBeNull();
+            expect(root.querySelector('.cal-base .dp-step')).toBeNull();
+          });
+          expect(pane().search()).toBe('x');
+          expect(root.querySelector('.cal-base')!.textContent).toContain('「x」');
+          expect(root.querySelector<HTMLInputElement>('.list-pane input[type=search]')!.value).toBe('x');
+          expect(input(root).value).toBe('x');
+        });
+
+        it('Esc in an empty lifted box is left alone; with text it empties and commits', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          await find(harness, '.cal-base .cal-search');
+          const el = input(harness.routeNativeElement!);
+          const setQuery = vi.spyOn(pane().commands()!, 'setQuery');
+          const esc = () => {
+            const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+            el.dispatchEvent(event);
+            return event;
+          };
+          expect(esc().defaultPrevented).toBe(false);
+          expect(setQuery).not.toHaveBeenCalled();
+          el.value = '全聯';
+          expect(esc().defaultPrevented).toBe(true);
+          expect(el.value).toBe('');
+          expect(setQuery).toHaveBeenCalledWith('');
+        });
+      });
+
       it('shows the day panel when the URL carries a day', async () => {
         const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
         const label = await find(harness, '.cal-base app-calendar-day-panel .dp-label');

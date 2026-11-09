@@ -554,6 +554,10 @@ export class LedgerTimelineComponent implements OnInit {
   readonly mainCurrency = computed(() => this.preference()?.main_currency ?? DEFAULT_PREFERENCE.main_currency);
   readonly hideRewards = computed(() => this.preference()?.hide_rewards_on_timeline ?? false);
   readonly days = computed(() => buildDays(this.entries(), this.mainCurrency(), this.hideRewards(), !this.batchCutting()));
+  /** The 本月摘要 search result: the month's matches by day, one row per entry (the panel has no batch expander). */
+  private readonly searchDays = computed(() =>
+    this.view() === 'calendar' && this.query() !== '' ? buildDays(this.entries(), this.mainCurrency(), this.hideRewards(), false) : [],
+  );
   readonly hasMore = computed(() => this.entries().length < (this.total() ?? 0));
   readonly selectedId = computed(() => this.layout?.selectedEntryId() ?? null);
 
@@ -787,8 +791,9 @@ export class LedgerTimelineComponent implements OnInit {
       this.query();
       this.extraKey();
       this.accounting.entriesChanged();
-      if (this.view() === 'calendar') {
+      if (this.view() === 'calendar' && this.query() === '') {
         // The list page is not shown: skip it, and switching back starts again from page 1.
+        // (A 本月摘要 search is the exception: the month's matches feed the right pane.)
         untracked(() => this.clearList());
         return;
       }
@@ -912,6 +917,19 @@ export class LedgerTimelineComponent implements OnInit {
     effect(() => pane.merchants.set(this.calendarData.data().merchants));
     effect(() => pane.merchantsState.set(this.calendarData.data().merchantsState));
     effect(() => pane.search.set(this.query()));
+    effect(() => pane.searchDays.set(this.searchDays()));
+    effect(() => {
+      const searching = this.view() === 'calendar' && this.query() !== '';
+      pane.searchState.set(!searching ? 'ready' : this.loadError() ? 'error' : this.loading() && this.entries().length === 0 ? 'loading' : 'ready');
+    });
+    // One search, two boxes: the filter bar's field follows `query` unless the owner is typing in it (IME, trailing space).
+    effect(() => {
+      const query = this.query();
+      const input = this.queryInput()?.nativeElement;
+      if (input && input.value.trim() !== query && this.document.activeElement !== input) {
+        input.value = query;
+      }
+    });
     effect(() => pane.monthDues.set(this.monthDues()));
     effect(() => pane.todayCard.set(this.todayCard()));
     // The 今天 card's three titles: only in 日曆 view of the current month, and only where the right pane exists.
