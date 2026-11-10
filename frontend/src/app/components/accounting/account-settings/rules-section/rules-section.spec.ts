@@ -807,6 +807,38 @@ describe('AccountRulesComponent', () => {
       expect(rowOf(3).querySelector('.rule-more-wrap')!.classList).not.toContain('up');
     });
 
+    /** Stubs `document.elementFromPoint` (absent in jsdom): what sits on top at the menu's bottom edge. */
+    function stubHit(pick: () => Element | null): void {
+      const doc = document as { elementFromPoint?: unknown };
+      const had = 'elementFromPoint' in doc;
+      const original = doc.elementFromPoint;
+      doc.elementFromPoint = () => pick();
+      onTestFinished(() => {
+        if (had) doc.elementFromPoint = original;
+        else delete doc.elementFromPoint;
+      });
+    }
+
+    it('a menu that fits the viewport but ends under a fixed bar (the phone tab bar) opens above ⋯', async () => {
+      const bar = document.createElement('div');
+      document.body.appendChild(bar);
+      onTestFinished(() => bar.remove());
+      stubMenuBottom(window.innerHeight - 10);
+      stubHit(() => bar);
+
+      await openMenu(3);
+      expect(rowOf(3).querySelector('.rule-more-wrap')!.classList).toContain('up');
+    });
+
+    it('a menu whose bottom edge is its own item opens downward (no .up)', async () => {
+      stubMenuBottom(window.innerHeight - 10);
+      stubHit(() => document.querySelector('.rule-menu [role="menuitem"]:last-child'));
+
+      await openMenu(3);
+      expect(menus().length).toBe(1);
+      expect(rowOf(3).querySelector('.rule-more-wrap')!.classList).not.toContain('up');
+    });
+
     it('⋯ and the handle do not emit open', async () => {
       await openMenu(2);
       more(2).click();

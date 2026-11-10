@@ -199,10 +199,10 @@ export class AccountRulesComponent {
   }
 
   /**
-   * The menu opens below ⋯; one that would end below the viewport (a row near the bottom of a phone screen) opens
-   * above it instead (`.up` on the wrapper), then is scrolled into view if it still does not fit. Needed because the
-   * owner cannot scroll it into view: opening focus uses `preventScroll` and a touch scroll starts with a pointerdown
-   * outside, which closes the menu.
+   * The menu opens below ⋯; one that would end below the viewport, or under something fixed over the page (the phone
+   * tab bar), opens above it instead (`.up` on the wrapper), then is scrolled into view if it still does not fit.
+   * Needed because the owner cannot scroll it into view: opening focus uses `preventScroll` and a touch scroll starts
+   * with a pointerdown outside, which closes the menu.
    */
   private placeMenu(): void {
     const wrap = this.menuWrap();
@@ -211,9 +211,16 @@ export class AccountRulesComponent {
     if (!wrap || !menu || !win) return;
     const view = win.visualViewport;
     const bottom = view ? view.offsetTop + view.height : win.innerHeight;
-    if (menu.getBoundingClientRect().bottom <= bottom) return;
+    const rect = menu.getBoundingClientRect();
+    if (rect.bottom <= bottom && !this.coveredAt(menu, rect.left + rect.width / 2, rect.bottom - 1)) return;
     this.renderer.addClass(wrap, 'up');
     menu.scrollIntoView?.({ block: 'nearest' });
+  }
+
+  /** True when something outside `menu` is on top of it at a viewport point (`elementFromPoint` hit test). */
+  private coveredAt(menu: HTMLElement, x: number, y: number): boolean {
+    const hit = this.document.elementFromPoint?.(x, y);
+    return !!hit && !menu.contains(hit);
   }
 
   protected closeMenu(restoreFocus = true): void {
