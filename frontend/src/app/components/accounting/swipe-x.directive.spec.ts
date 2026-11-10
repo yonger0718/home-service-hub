@@ -1,5 +1,5 @@
 // frontend/src/app/components/accounting/swipe-x.directive.spec.ts
-import { Component } from '@angular/core';
+import { Component, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,7 +8,7 @@ import { SwipeXDirective } from './swipe-x.directive';
 @Component({
   imports: [SwipeXDirective],
   template: `
-    <div appSwipeX (swipeX)="got.push($event)" style="width:300px;height:200px">
+    <div appSwipeX [appSwipeXDisabled]="off()" (swipeX)="got.push($event)" style="width:300px;height:200px">
       <input class="field" />
       <button class="btn" (click)="clicks = clicks + 1">go</button>
     </div>
@@ -17,6 +17,7 @@ import { SwipeXDirective } from './swipe-x.directive';
 class HostComponent {
   got: Array<1 | -1> = [];
   clicks = 0;
+  off = signal(false);
 }
 
 function ptr(type: string, x: number, y: number, extra: { pointerId?: number; isPrimary?: boolean } = {}): Event {
@@ -197,8 +198,27 @@ describe('SwipeXDirective', () => {
 
   it('sets touch-action: pan-y on the host', () => {
     const { host } = setup();
-    // jsdom's CSSStyleDeclaration does not model touch-action, so read the style attribute.
-    expect(host.getAttribute('style')).toContain('touch-action: pan-y');
+    // jsdom's CSSStyleDeclaration does not serialise touch-action into the style attribute; read the property.
+    expect(host.style.touchAction).toBe('pan-y');
+  });
+
+  it('disabled: a qualifying swipe emits nothing, the click still runs and there is no touch-action; enabling restores both', () => {
+    const { fixture, host, btn, cmp } = setup();
+    cmp.off.set(true);
+    fixture.detectChanges();
+    expect(host.style.touchAction || '').toBe('');
+    btn.dispatchEvent(ptr('pointerdown', 200, 100));
+    btn.dispatchEvent(ptr('pointerup', 120, 104));
+    btn.click();
+    expect(cmp.got).toEqual([]);
+    expect(cmp.clicks).toBe(1);
+
+    cmp.off.set(false);
+    fixture.detectChanges();
+    expect(host.style.touchAction).toBe('pan-y');
+    btn.dispatchEvent(ptr('pointerdown', 200, 100));
+    btn.dispatchEvent(ptr('pointerup', 120, 104));
+    expect(cmp.got).toEqual([1]);
   });
 
   it('removes the pending click guard on destroy', () => {

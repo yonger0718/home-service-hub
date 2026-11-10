@@ -1,5 +1,5 @@
 // frontend/src/app/components/accounting/swipe-x.directive.ts
-import { Directive, ElementRef, OnDestroy, inject, output } from '@angular/core';
+import { Directive, ElementRef, OnDestroy, effect, inject, input, output } from '@angular/core';
 
 export const SWIPE_MIN_DX = 48;
 export const SWIPE_DOMINANCE = 1.5;
@@ -11,7 +11,6 @@ export const SWIPE_CAPTURE_DX = 10;
 @Directive({
   selector: '[appSwipeX]',
   host: {
-    style: 'touch-action: pan-y',
     '(pointerdown)': 'onDown($event)',
     '(pointermove)': 'onMove($event)',
     '(pointerup)': 'onUp($event)',
@@ -20,14 +19,21 @@ export const SWIPE_CAPTURE_DX = 10;
 })
 export class SwipeXDirective implements OnDestroy {
   readonly swipeX = output<1 | -1>();
+  /** While true the host is inert: no touch-action, no gesture, no emit, no click guard. */
+  readonly appSwipeXDisabled = input(false);
 
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef).nativeElement;
+  /** touch-action goes through the element's style property (jsdom does not model the CSS property, so a style binding would not show up there). */
+  private readonly touchAction = effect(() => {
+    this.host.style.touchAction = this.appSwipeXDisabled() ? '' : 'pan-y';
+  });
   private gesture: { x: number; y: number; pointerId: number; captured: boolean } | null = null;
   private clickGuard: { listener: (e: Event) => void; timer: ReturnType<typeof setTimeout> } | null = null;
 
   onDown(event: PointerEvent): void {
     this.reset();
     this.clearClickGuard();
+    if (this.appSwipeXDisabled()) return;
     if (event.button !== 0 || event.isPrimary === false) return;
     const target = event.target as Element | null;
     if (target?.closest?.('input, textarea, select, [contenteditable]')) return;

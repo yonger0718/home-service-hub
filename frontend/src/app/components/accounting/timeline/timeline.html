@@ -214,14 +214,7 @@
     @if (dailyLoading() && daily()) {
       <p class="daily-updating" role="status">更新中</p>
     }
-    @if (narrowCalendar() && selectedDay()) {
-      <div class="strip-area" appSwipeX (swipeX)="stepDay(7 * $event)">
-        <ng-container *ngTemplateOutlet="grid" />
-      </div>
-    } @else {
-      <ng-container *ngTemplateOutlet="grid" />
-    }
-    <ng-template #grid>
+    <div class="strip-area" appSwipeX [appSwipeXDisabled]="!(narrowCalendar() && selectedDay())" (swipeX)="stepDay(7 * $event)">
       <app-calendar-month
         [attr.aria-busy]="dailyLoading() ? 'true' : null"
         [loading]="dailyLoading() && !daily()"
@@ -241,7 +234,7 @@
         (daySelected)="selectDay($event)"
         (dayStep)="stepDay($event)"
       />
-    </ng-template>
+    </div>
     @if (narrowCalendar()) {
       @if (selectedDay()) {
         <button type="button" class="expand-month" aria-label="回到整月日曆" (click)="clearDay()"><span class="expand-handle" aria-hidden="true"></span>展開整月</button>

@@ -2084,7 +2084,7 @@ describe('LedgerTimelineComponent', () => {
       const area = el.querySelector<HTMLElement>('.day-area')!;
       swipe(area, [200, 300], [205, 180]);
       expect(navigate).not.toHaveBeenCalled();
-      expect(area.getAttribute('style')).toContain('touch-action: pan-y');
+      expect(area.style.touchAction).toBe('pan-y');
     });
 
     it('swiping the week strip moves seven days and keeps the weekday; month follows at the edge (Review Focus 3)', async () => {
@@ -2106,7 +2106,8 @@ describe('LedgerTimelineComponent', () => {
 
     it('a swipe on the month grid with no day selected does nothing', async () => {
       const { el, navigate } = await openNarrow('/accounting?month=2026-10');
-      expect(el.querySelector('[appSwipeX], .strip-area, .day-area')).toBeNull();
+      expect(el.querySelector<HTMLElement>('.strip-area')!.style.touchAction || '').toBe('');
+      expect(el.querySelector('.day-area')).toBeNull();
       swipe(cell(el, '2026-10-14'), [200, 30], [120, 34]);
       expect(navigate).not.toHaveBeenCalled();
     });
@@ -2130,12 +2131,37 @@ describe('LedgerTimelineComponent', () => {
       expect(el.querySelector('button.expand-month')).toBeNull();
     });
 
-    it('wide 日曆 has no .day-area and no appSwipeX', async () => {
-      const { fixture, el } = await openNarrow('/accounting?month=2026-10&day=2026-10-21', 'panes');
+    it('wide 日曆 has an inert .strip-area wrapper: no .day-area, no touch-action, a swipe does nothing', async () => {
+      const { fixture, el, navigate } = await openNarrow('/accounting?month=2026-10&day=2026-10-21', 'panes');
       flushEntries([]);
       fixture.detectChanges();
-      expect(el.querySelector('.day-area, .strip-area, app-calendar-day-panel')).toBeNull();
-      expect(el.querySelector('[style*="touch-action"]')).toBeNull();
+      expect(el.querySelector('.day-area, app-calendar-day-panel')).toBeNull();
+      const strip = el.querySelector<HTMLElement>('.strip-area')!;
+      expect(strip.style.touchAction || '').toBe('');
+      swipe(cell(el, '2026-10-21'), [200, 30], [120, 34]);
+      expect(navigate).not.toHaveBeenCalled();
+      expect(strip.querySelectorAll('button.cell').length).toBe(42);
+    });
+
+    it('the calendar grid instance survives a day pick and 展開整月, keeping focus on a cell', async () => {
+      const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+      const grid = el.querySelector('app-calendar-month')!;
+      const target = cell(el, '2026-10-21');
+      target.focus();
+      target.click();
+      fixture.detectChanges();
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(grid.isConnected).toBe(true);
+      expect(el.querySelector('app-calendar-month')).toBe(grid);
+      expect(cell(el, '2026-10-21')).toBe(target);
+      expect(document.activeElement).toBe(target);
+      expect(document.activeElement!.matches('button.cell')).toBe(true);
+
+      el.querySelector<HTMLButtonElement>('button.expand-month')!.click();
+      fixture.detectChanges();
+      expect(el.querySelector('app-calendar-month')).toBe(grid);
+      expect(grid.isConnected).toBe(true);
     });
   });
 
