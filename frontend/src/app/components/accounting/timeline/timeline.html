@@ -29,7 +29,7 @@
     </div>
   </div>
 
-  @if (!wideCalendar()) {
+  @if (!wideCalendar() && view() !== 'calendar') {
   <div class="sum" [attr.aria-busy]="summaryLoading() ? 'true' : null">
     @if (filtersActive()) {
       <small class="sum-scope">全月 · 未套篩選</small>
@@ -185,6 +185,24 @@
   </ng-template>
 
   @if (view() === 'calendar') {
+    @if (narrowCalendar()) {
+      <dl class="cal-figures" aria-label="本月摘要" [attr.aria-busy]="summaryLoading() ? 'true' : null">
+        @if (summaryError()) {
+          <dt>本月</dt>
+          <dd class="cal-figures-error">摘要讀取失敗 <button type="button" class="retry sum-retry" (click)="retrySummary()">重試</button></dd>
+        } @else {
+          <dt>支出</dt>
+          <dd class="neg sum-expense">{{ summary() ? expenseText(summary()!) : '—' }}</dd>
+          <dt>收入</dt>
+          <dd class="pos sum-income">{{ summary() ? incomeText(summary()!) : '—' }}</dd>
+          <dt>結餘</dt>
+          <dd class="sum-net">{{ summary() ? formatSigned(summary()!.net, summary()!.currency) : '—' }}</dd>
+        }
+        @if (filtersActive()) {
+          <small class="sum-scope">全月 · 未套篩選</small>
+        }
+      </dl>
+    }
     @if (dailyError()) {
       <p class="load-error daily-error">
         每日摘要讀取失敗
@@ -208,10 +226,18 @@
       [invoiceDays]="invoiceDays()"
       [paidDays]="paidDays()"
       [compact]="layoutMode.mode() !== 'panes'"
+      [weekOf]="narrowCalendar() ? selectedDay() : null"
       [today]="today()"
       (daySelected)="selectDay($event)"
       (dayStep)="stepDay($event)"
     />
+    @if (narrowCalendar()) {
+      @if (selectedDay()) {
+        <button type="button" class="expand-month" aria-label="回到整月日曆" (click)="clearDay()"><span class="expand-handle" aria-hidden="true"></span>展開整月</button>
+      } @else {
+        <app-calendar-today-bar [card]="todayCard()" [current]="isCurrentMonth()" [today]="today()" (pick)="goToday()" />
+      }
+    }
     @if (selectedDay() && !wideCalendar()) {
       <div class="day-entries">
         <div class="day day-net">
