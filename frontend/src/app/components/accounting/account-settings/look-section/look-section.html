@@ -1,0 +1,53 @@
+<div class="look">
+  <div class="look-preview">
+    <span class="look-tile" [style.background]="tileBackground()" [class.tinted]="tileBackground() !== null">
+      <app-account-icon class="ico" size="big" [accountId]="accountId()" [logoHash]="logoHash()" [logo]="logo()" [icon]="icon()" fallback="folder" />
+    </span>
+    <small>預覽</small>
+  </div>
+
+  <div class="look-body">
+    <app-seg-toggle class="look-source" ariaLabel="圖示來源" [block]="stacked()" [options]="SOURCE_OPTIONS" [value]="source()" (change)="source.set($any($event))" />
+    <p class="look-current" aria-live="polite">目前顯示：{{ summary() }}</p>
+
+    @switch (source()) {
+      @case ('upload') {
+        <div class="drop" [class.over]="dragOver()" [class.disabled]="!canUpload()" (dragover)="onDragOver($event)" (dragleave)="onDragLeave($event)" (drop)="onDrop($event)">
+          <svg class="drop-arrow" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 20h16" /></svg>
+          <span class="drop-text">拖曳圖片到這裡，或</span>
+          <button type="button" class="logo-upload" [disabled]="!canUpload()" [attr.aria-busy]="busy() || null" (click)="file.click()">選擇檔案</button>
+          <small class="look-limits">PNG / JPG / WebP · 5 MB 以內</small>
+        </div>
+        @if (accountId() === null) {
+          <small class="logo-hint">先建立帳戶，再上傳 logo</small>
+        }
+        @if (logoHash()) {
+          <button type="button" class="logo-remove" [disabled]="busy()" (click)="onRemove($event)">移除圖片</button>
+        }
+        <input #file type="file" class="visually-hidden" tabindex="-1" aria-hidden="true" [accept]="LOGO_ACCEPT" (change)="onFile($event)" />
+      }
+      @case ('logo') {
+        <div class="logo-grid" role="radiogroup" aria-label="內建 logo" (keydown)="onRadioKeydown($event, 'logo')">
+          <button type="button" role="radio" class="logo-opt" [attr.aria-checked]="logo() === null" [attr.tabindex]="rovingTab('logo', null)" (click)="logoChange.emit(null)">無</button>
+          @for (l of logos; track l.slug) {
+            <button type="button" role="radio" class="logo-opt" [attr.aria-checked]="logo() === l.slug" [attr.tabindex]="rovingTab('logo', l.slug)" [attr.aria-label]="l.label" (click)="logoChange.emit(l.slug)">
+              <app-account-icon class="ico-sm" [logo]="l.slug" /><small>{{ l.label }}</small>
+            </button>
+          }
+        </div>
+      }
+      @case ('text') {
+        <div class="text-fields">
+          <label class="text-label">文字 <input class="icon-input" maxlength="16" aria-label="圖示" [value]="icon()" (input)="iconChange.emit($any($event.target).value)" /></label>
+          <span class="swatches" role="radiogroup" aria-label="顏色" (keydown)="onRadioKeydown($event, 'color')">
+            @for (s of swatches; track s.hex) {
+              <button type="button" role="radio" class="swatch" [style.background]="s.hex" [attr.aria-checked]="same(color(), s.hex)" [attr.tabindex]="rovingTab('color', s.hex)" [attr.aria-label]="s.label" (click)="colorChange.emit(s.hex)"></button>
+            }
+            <button type="button" role="radio" class="swatch custom" [attr.aria-checked]="customActive()" [attr.tabindex]="rovingTab('color', 'custom')" aria-label="自訂顏色" (click)="customInput.click()"></button>
+            <input #customInput class="color-input visually-hidden" type="color" tabindex="-1" aria-hidden="true" [value]="color() || '#8e8e93'" (input)="colorChange.emit($any($event.target).value)" />
+          </span>
+        </div>
+      }
+    }
+  </div>
+</div>
