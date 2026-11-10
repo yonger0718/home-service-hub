@@ -200,6 +200,10 @@
   min-height: 76px;
 }
 
+.cal.compact:not(.week-mode) .cell {
+  min-height: 76px;
+}
+
 .week-mode .cell {
   min-height: 52px;
 }

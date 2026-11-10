@@ -1015,6 +1015,93 @@ describe('AccountingLayoutComponent', () => {
     await vi.waitFor(() => expect(router.url).toBe('/accounting'));
   });
 
+  describe('narrow calendar round-trips (#318 D2/D6)', () => {
+    const DAY = '/accounting?month=2026-10&day=2026-10-21';
+    const ENTRIES: LedgerEntry[] = [7, 8, 9].map(id => makeEntry({ id, entry_date: '2026-10-21', posted_date: '2026-10-21' }));
+
+    beforeEach(() => localStorage.setItem('hh.accounting.timelineView', 'calendar'));
+
+    /** Answers every read the narrow calendar and the entry page make (preference, accounts, summaries, a day's rows, a detail). */
+    function serve(): void {
+      const http = TestBed.inject(HttpTestingController);
+      http.match('/api/accounting/preference').forEach(req => req.flush(makePreference()));
+      http.match('/api/accounting/accounts').forEach(req => req.flush([]));
+      http.match(req => req.url === '/api/accounting/calendar/business-days').forEach(req => req.flush({ days: [] }));
+      http.match(req => req.url === '/api/accounting/entries/summary').forEach(req =>
+        req.flush({ month: '2026-10', currency: 'TWD', expense: '0', income: '0', net: '0', missing_rates: [] }),
+      );
+      http.match(req => req.url === '/api/accounting/entries/summary/daily').forEach(req =>
+        req.flush({ month: '2026-10', currency: 'TWD', days: [], missing_rates: [] }),
+      );
+      http.match(req => req.url === '/api/accounting/entries').forEach(req => {
+        const from = req.request.params.get('date_from') ?? '0000-00-00';
+        const to = req.request.params.get('date_to') ?? '9999-99-99';
+        const limit = Number(req.request.params.get('limit') ?? 50);
+        const items = ENTRIES.filter(entry => entry.entry_date >= from && entry.entry_date <= to).slice(0, limit);
+        req.flush({ items, total: items.length, limit, offset: 0 });
+      });
+      http.match(req => /^\/api\/accounting\/entries\/\d+$/.test(req.url)).forEach(req => {
+        const id = Number(req.request.url.split('/').pop());
+        req.flush(makeEntryDetail({ id }));
+      });
+    }
+
+    /** Polls (serving the reads each time) until `selector` is present. */
+    function present(harness: RouterTestingHarness, selector: string): Promise<HTMLElement> {
+      return vi.waitFor(
+        () => {
+          serve();
+          harness.detectChanges();
+          const found = harness.routeNativeElement?.querySelector<HTMLElement>(selector);
+          if (!found) throw new Error(`no ${selector} yet`);
+          return found;
+        },
+        { timeout: 3000, interval: 10 },
+      );
+    }
+
+    it("opening a row at 390 px and closing the entry restores the week strip and the day's rows (tasks 4.4)", async () => {
+      const harness = await start('phone', DAY, 390, [provideLocationMocks()]);
+      const router = TestBed.inject(Router);
+      // As the app's initial navigation does: popstate (the ✕'s Back) drives the router.
+      router.setUpLocationChangeListener();
+      const root = harness.routeNativeElement!;
+      await present(harness, 'app-calendar-day-panel .dp-row');
+      expect(root.querySelectorAll('button.cell').length).toBe(7);
+      expect(root.querySelectorAll('app-calendar-day-panel .dp-row').length).toBe(3);
+
+      (await present(harness, 'app-calendar-day-panel .dp-row')).click();
+      await vi.waitFor(() => expect(router.url).toMatch(/^\/accounting\/entries\/\d+\?month=2026-10&day=2026-10-21$/));
+      await present(harness, '.close[aria-label="關閉"]');
+      expect(root.querySelector('app-calendar-month')).toBeNull();
+
+      (await present(harness, '.close[aria-label="關閉"]')).click();
+      await vi.waitFor(() => expect(router.url).toBe(DAY));
+      await present(harness, 'app-calendar-day-panel .dp-row');
+      expect(root.querySelectorAll('button.cell').length).toBe(7);
+      const cell = root.querySelector('button.cell[data-date="2026-10-21"]')!;
+      expect(cell.classList.contains('sel')).toBe(true);
+      expect(cell.getAttribute('aria-pressed')).toBe('true');
+      expect(root.querySelectorAll('app-calendar-day-panel .dp-row').length).toBe(3);
+    });
+
+    it('at 820 px the row opens the right-hand sheet, the strip stays and the opened row is marked', async () => {
+      const harness = await start('sheet', DAY, 820);
+      const root = harness.routeNativeElement!;
+      const row = await present(harness, 'app-calendar-day-panel .dp-row[data-entry-id="8"]');
+      row.click();
+      await vi.waitFor(() => {
+        serve();
+        harness.detectChanges();
+        expect(root.querySelector('.detail-pane[aria-modal="true"]')).not.toBeNull();
+      });
+      await present(harness, '.detail-pane .sheet-close');
+      expect(root.querySelectorAll('.list-pane button.cell').length).toBe(7);
+      expect(root.querySelector('app-calendar-day-panel .dp-row[data-entry-id="8"]')!.getAttribute('aria-current')).toBe('true');
+      expect(root.querySelectorAll('app-calendar-day-panel .dp-row[aria-current="true"]').length).toBe(1);
+    });
+  });
+
   it('closes the sheet on Escape and restores focus', async () => {
     const harness = await start('sheet', '/accounting');
     await find(harness, LIST);

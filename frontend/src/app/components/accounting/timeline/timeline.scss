@@ -325,6 +325,74 @@ app-split-folder {
   }
 }
 
+.cal-figures-row {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  margin: 2px 0 6px;
+
+  .cal-figures {
+    margin: 0;
+  }
+
+  .sum-scope {
+    flex: 0 1 auto;
+  }
+}
+
+.cal-figures {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+  gap: 4px 16px;
+  margin: 2px 0 6px;
+
+  dt {
+    color: var(--app-text-muted);
+    display: inline;
+    font-size: var(--fs-micro);
+    font-weight: 700;
+    margin-inline-end: 4px;
+  }
+
+  dd {
+    display: inline;
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    margin: 0;
+  }
+
+  .cal-figures-error {
+    color: var(--app-text-muted);
+    font-weight: 400;
+  }
+}
+
+.expand-month {
+  background: none;
+  border: 0;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  font-size: var(--fs-label);
+  padding: 6px 0 8px;
+  text-align: center;
+  width: 100%;
+
+  .expand-handle {
+    background: var(--app-border, currentColor);
+    border-radius: 2px;
+    display: block;
+    height: 4px;
+    margin: 0 auto 4px;
+    opacity: 0.6;
+    width: 36px;
+  }
+}
+
 .sum-scope {
   color: var(--app-text-muted);
   font-size: 0.72rem;

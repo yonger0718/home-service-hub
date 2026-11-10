@@ -43,7 +43,10 @@ import { countReminders } from '../billing/reminder-count';
 import { SkeletonComponent } from '../skeleton/skeleton';
 import { FolderIcon, SplitFolderComponent } from '../split-folder/split-folder';
 import { GroupNavState, groupCommands, listOpenState, readGroupNavState, stepState } from '../split-group/group-nav';
+import { CalendarDayPanelComponent } from '../calendar-day-panel/calendar-day-panel';
+import { SwipeXDirective } from '../swipe-x.directive';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
+import { CalendarTodayBarComponent } from '../calendar-month/calendar-today-bar';
 import { CalendarDataService } from '../calendar-month/calendar-data.service';
 import { CalendarPaneService, MonthDue, TodayCard } from '../calendar-month/calendar-pane.service';
 import { categoryColorMap } from '../calendar-month/calendar-math';
@@ -434,7 +437,7 @@ export type ProjectFilter = number | typeof NO_PROJECT | null;
 @Component({
   selector: 'app-ledger-timeline',
   standalone: true,
-  imports: [PageHeaderComponent, CalendarMonthComponent, NgTemplateOutlet, SkeletonComponent, SplitFolderComponent, FilterBarComponent],
+  imports: [PageHeaderComponent, CalendarDayPanelComponent, SwipeXDirective, CalendarMonthComponent, CalendarTodayBarComponent, NgTemplateOutlet, SkeletonComponent, SplitFolderComponent, FilterBarComponent],
   templateUrl: './timeline.html',
   styleUrls: ['../entry-row.scss', './timeline.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -468,6 +471,7 @@ export class LedgerTimelineComponent implements OnInit {
 
   private queryTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly queryInput = viewChild<ElementRef<HTMLInputElement>>('queryInput');
+  private readonly calendarGrid = viewChild(CalendarMonthComponent);
 
   private readonly bills = inject(BillingService);
   private readonly calendar = inject(BusinessCalendarService);
@@ -528,6 +532,10 @@ export class LedgerTimelineComponent implements OnInit {
   readonly view = computed<TimelineView>(() => (this.urlDay() !== null ? 'calendar' : this.chosenView()));
   /** 日曆 at ≥ 1024 px: the month figures sit in the monthbar and the day's rows live in the right pane. */
   readonly wideCalendar = computed(() => this.view() === 'calendar' && this.layoutMode.mode() === 'panes');
+  /** 日曆 below 1024 px (phone and sheet): one-line figures, week strip, 今天 bar. */
+  readonly narrowCalendar = computed(() => this.view() === 'calendar' && this.layoutMode.mode() !== 'panes');
+  /** True when the shown month is today's month. */
+  readonly isCurrentMonth = computed(() => this.month() === this.today().slice(0, 7));
   readonly daily = signal<DailySummary | null>(null);
   readonly dailyLoading = signal(false);
   readonly dailyError = signal(false);
@@ -591,21 +599,13 @@ export class LedgerTimelineComponent implements OnInit {
   readonly weekStart = computed(() => this.preference()?.week_start ?? DEFAULT_PREFERENCE.week_start);
   /** Outlined in the 日曆 grid; refreshed on a month change and when the tab becomes visible (past midnight). */
   readonly today = signal(todayIso());
-  /** The selected day's rows as the list groups them (`buildDays`), so filters apply to rows and net alike. */
-  private readonly dayGroup = computed(
-    () => buildDays(this.dayEntries(), this.mainCurrency(), this.hideRewards(), !this.batchCutting())[0] ?? null,
-  );
-  readonly dayRows = computed(() => this.dayGroup()?.rows ?? []);
-  /** Net of the rows shown (main-currency rows only, the list's per-day rule); the grid keeps the summary figures. */
-  readonly dayNet = computed<DayNet | null>(() => dayNetOf(this.dayGroup(), this.mainCurrency()));
-  /** The wide calendar's day panel: the same day without batch folding (one row per entry; the list keeps folding). */
+  /** The calendar's day panel (wide pane and narrow section): the day without batch folding (one row per entry; the list keeps folding). */
   private readonly paneDayGroup = computed(
     () => buildDays(this.dayEntries(), this.mainCurrency(), this.hideRewards(), false)[0] ?? null,
   );
-  readonly selectedDayText = computed(() => {
-    const date = this.selectedDay();
-    return date ? dayLabel(date) : '';
-  });
+  readonly paneDayRows = computed(() => this.paneDayGroup()?.rows ?? []);
+  readonly paneDayNet = computed<DayNet | null>(() => dayNetOf(this.paneDayGroup(), this.mainCurrency()));
+  readonly dayState = computed<OverviewState>(() => (this.dayError() ? 'error' : this.dayLoading() && this.dayEntries().length === 0 ? 'loading' : 'ready'));
   /** Credit-card closing / due days of the shown month (empty without cards that have a closing day). */
   private readonly monthBilling = computed(() => billingEvents(this.accounts(), this.month(), this.calendar.calendar()));
   /** Due days from today through today + 6 (may reach into next month). */
@@ -914,9 +914,9 @@ export class LedgerTimelineComponent implements OnInit {
     effect(() => pane.month.set(this.month()));
     effect(() => pane.today.set(this.today()));
     effect(() => pane.selectedDay.set(this.selectedDay()));
-    effect(() => pane.dayRows.set(this.paneDayGroup()?.rows ?? []));
-    effect(() => pane.dayNet.set(dayNetOf(this.paneDayGroup(), this.mainCurrency())));
-    effect(() => pane.dayState.set(this.dayError() ? 'error' : this.dayLoading() && this.dayEntries().length === 0 ? 'loading' : 'ready'));
+    effect(() => pane.dayRows.set(this.paneDayRows()));
+    effect(() => pane.dayNet.set(this.paneDayNet()));
+    effect(() => pane.dayState.set(this.dayState()));
     effect(() => pane.billLines.set(this.billLines()));
     effect(() => pane.invoices.set(this.calendarData.data().invoices));
     effect(() => this.calendarData.wide.set(this.layoutMode.mode() === 'panes'));
@@ -942,12 +942,12 @@ export class LedgerTimelineComponent implements OnInit {
     });
     effect(() => pane.monthDues.set(this.monthDues()));
     effect(() => pane.todayCard.set(this.todayCard()));
-    // The 今天 card's three titles: only in 日曆 view of the current month, and only where the right pane exists.
+    // The 今天 card's three titles: only in 日曆 view of the current month (two-pane card, narrow 今天 bar).
     effect(() => {
       if (!this.preference()) {
         return;
       }
-      const show = this.layoutMode.mode() === 'panes' && this.view() === 'calendar' && this.month() === this.today().slice(0, 7);
+      const show = this.view() === 'calendar' && this.month() === this.today().slice(0, 7);
       const today = this.today();
       this.hideRewards();
       this.accounting.entriesChanged();
@@ -996,7 +996,7 @@ export class LedgerTimelineComponent implements OnInit {
     return [...dues.values()].sort((a, b) => a.date.localeCompare(b.date));
   });
 
-  private readonly todayCard = computed<TodayCard | null>(() => {
+  protected readonly todayCard = computed<TodayCard | null>(() => {
     const today = this.today();
     if (this.view() !== 'calendar' || this.month() !== today.slice(0, 7)) {
       return null;
@@ -1492,14 +1492,39 @@ export class LedgerTimelineComponent implements OnInit {
     this.writeCalendar(this.month(), null);
   }
 
-  /** ‹ › : the previous / next day, crossing month edges. */
-  stepDay(delta: 1 | -1): void {
+  /** 展開整月: back to the month grid; keyboard focus moves to the cell of the day that was open. */
+  expandMonth(event: Event): void {
+    const day = this.selectedDay();
+    const focused = this.document.activeElement === event.currentTarget;
+    this.clearDay();
+    if (focused && day) {
+      this.calendarGrid()?.focusCell(day);
+    }
+  }
+
+  /** The 今天 bar: like `goToday`, and keyboard focus lands on today's cell of the strip. */
+  pickToday(): void {
+    const focused = !!this.document.activeElement?.closest('app-calendar-today-bar');
+    this.goToday();
+    if (focused) {
+      this.calendarGrid()?.focusCell(this.today());
+    }
+  }
+
+  /** ‹ › , [ ] and the day-area swipe (±1), the week-strip swipe (±7): move the day, crossing month edges. */
+  stepDay(delta: number): void {
     const day = this.selectedDay();
     if (day === null) {
       return;
     }
     const next = addDays(day, delta);
     this.writeCalendar(next.slice(0, 7), next);
+  }
+
+  /** The 今天 / 回到今天 bar: month and day both to today. */
+  goToday(): void {
+    const today = this.today();
+    this.writeCalendar(today.slice(0, 7), today);
   }
 
   /** Tapping the selected day again closes it. */
@@ -1520,6 +1545,13 @@ export class LedgerTimelineComponent implements OnInit {
     this.chosenView.set('calendar');
     storeView('calendar');
     this.writeCalendar(first.date.slice(0, 7), first.date);
+  }
+
+  /** ＋ 在這天記一筆 in the narrow day panel: the entry form dated `date`, carrying the calendar's month and day. */
+  onAddEntry(date: string): void {
+    void this.router.navigate(['/accounting/entry'], {
+      queryParams: { date, ...calendarParams(this.router.routerState.snapshot.root.queryParamMap) },
+    });
   }
 
   openCard(accountId: number): void {
