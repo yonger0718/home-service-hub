@@ -1,0 +1,13 @@
+<button type="button" class="today-bar" [attr.aria-label]="label()" (click)="pick.emit()">
+  <span class="tb-disc">{{ dayOfMonth() }}</span>
+  @if (current()) {
+    <span class="tb-text">
+      <b class="tb-title">今天 · {{ card()?.count ?? 0 }} 筆</b>
+      <small class="tb-names">{{ card()?.names }}</small>
+    </span>
+    <b class="tb-net" [class.neg]="(card()?.net ?? 0) < 0" [class.pos]="(card()?.net ?? 0) > 0">{{ card()?.netText }}</b>
+  } @else {
+    <span class="tb-text"><b class="tb-title">回到今天</b></span>
+  }
+  <span class="tb-chev" aria-hidden="true">›</span>
+</button>
