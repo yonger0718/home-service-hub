@@ -134,8 +134,7 @@
 .rw.child .k { font-weight: 500; }
 .rw.child .k::before { color: var(--app-text-muted); content: '– '; }
 
-.due-fields, .icon-fields { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
-.icon-input { text-align: center; width: 3rem; }
+.due-fields { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .cycle-preview, .due-preview { color: var(--app-text-muted); display: block; }
 .sharing-list { display: flex; flex-direction: column; gap: 2px; }
 .sharing-current { color: var(--app-text-muted); font-size: 0.75rem; }
@@ -212,32 +211,6 @@
 .field-error, .form-message { color: var(--app-danger); font-size: 0.8rem; }
 .currency-note { color: var(--app-text-muted); font-size: 0.75rem; }
 .neg { color: var(--tone-neg, var(--c-red)); }
-
-.ico-sm { --ico-size: 1.5rem; border-radius: 50%; display: inline-flex; height: var(--ico-size); vertical-align: middle; width: var(--ico-size); }
-.logo-block .v { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
-.logo-state { align-items: center; display: inline-flex; gap: 6px; }
-.logo-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
-.logo-actions button { background: var(--app-surface-soft); border: 1px solid transparent; border-radius: 8px; color: var(--app-text); cursor: pointer; font: inherit; font-size: 0.85rem; padding: 4px 10px; }
-.logo-actions button:disabled { cursor: not-allowed; opacity: 0.5; }
-.logo-hint { color: var(--app-text-muted); font-size: 0.75rem; }
-.logo-grid { display: grid; gap: 0.5rem; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); padding: 0.5rem 0; }
-.logo-opt {
-  align-items: center;
-  background: var(--app-surface-soft);
-  border: 1px solid transparent;
-  border-radius: 8px;
-  color: var(--app-text);
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  justify-content: center;
-  min-height: 44px;
-  padding: 6px 2px;
-
-  small { color: var(--app-text-muted); font-size: 0.7rem; }
-  &[aria-pressed="true"] { outline: 2px solid var(--app-primary); }
-}
 
 /* Phone (< 760 px, C1 Task 8): grouped rows in cards; stepper / amount rows open the page's bottom sheet.
    .set-card / .set-row, not .card / .row: those are Bootstrap's global classes (theme/bootstrap-grid.spec.ts gate). */

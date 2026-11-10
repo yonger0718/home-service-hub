@@ -116,39 +116,7 @@
 
   <section class="sec" id="s-look" aria-labelledby="h-look">
     <h3 id="h-look">外觀</h3>
-    <div class="rw logo-block">
-      <span class="k">Logo</span>
-      <span class="v">
-        <span class="logo-state"><app-account-icon class="ico-sm" [accountId]="loadedId()" [logoHash]="logoHash()" [logo]="form().logo" [icon]="form().icon" fallback="folder" /> {{ logoState() }}</span>
-        <span class="logo-actions">
-          <input #logoFile type="file" class="visually-hidden" tabindex="-1" aria-hidden="true" [accept]="LOGO_ACCEPT" (change)="uploadLogo($event)" />
-          <button type="button" class="logo-upload" [disabled]="accountId() === null || loadedId() === null || uploadingLogo()" [attr.aria-busy]="uploadingLogo() || null" (click)="logoFile.click()">上傳圖片</button>
-          @if (logoHash()) {
-            <button type="button" class="logo-remove" [disabled]="uploadingLogo()" (click)="removeLogo()">移除圖片</button>
-          }
-          <button type="button" class="logo-pick" [attr.aria-expanded]="logoPickerOpen()" (click)="logoPickerOpen.set(!logoPickerOpen())">選擇內建 logo</button>
-        </span>
-        <small class="logo-hint">{{ accountId() === null ? '先建立帳戶，再上傳 logo' : '上傳的圖片優先於內建 logo，上傳後立即生效' }}</small>
-      </span>
-    </div>
-    @if (logoPickerOpen()) {
-      <div class="logo-grid" role="group" aria-label="品牌 logo">
-        <button type="button" class="logo-opt" [attr.aria-pressed]="form().logo === null" (click)="pickLogo(null)">無</button>
-        @for (l of logos; track l.slug) {
-          <button type="button" class="logo-opt" [attr.aria-pressed]="form().logo === l.slug" [attr.aria-label]="l.label" (click)="pickLogo(l.slug)">
-            <app-account-icon class="ico-sm" [logo]="l.slug" /><small>{{ l.label }}</small>
-          </button>
-        }
-      </div>
-    }
-
-    <div class="rw">
-      <span class="k">圖示</span>
-      <span class="v icon-fields">
-        <input class="icon-input" maxlength="16" aria-label="圖示" [value]="form().icon" (input)="set('icon', $any($event.target).value)" />
-        <input class="color-input" type="color" aria-label="顏色" [value]="form().color || '#8e8e93'" (change)="set('color', $any($event.target).value)" />
-      </span>
-    </div>
+    <app-account-look [accountId]="loadedId()" [logoHash]="logoHash()" [logo]="form().logo" [icon]="form().icon" [color]="form().color" [busy]="uploadingLogo()" (logoChange)="set('logo', $event)" (iconChange)="set('icon', $event)" (colorChange)="set('color', $event)" (upload)="uploadLogoFile($event)" (remove)="removeLogo()" />
   </section>
 
   <section class="sec" id="s-card" aria-labelledby="h-card">

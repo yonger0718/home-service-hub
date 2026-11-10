@@ -153,6 +153,14 @@ describe('AccountSettingsComponent', () => {
     return fixture.nativeElement as HTMLElement;
   }
 
+  /** Opens a 外觀 source tab (上傳圖片 / 內建 logo / 文字＋顏色) via its seg radio. */
+  function openSource(fixture: ComponentFixture<AccountSettingsComponent>, label: string): void {
+    Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('#s-look .seg-toggle [role=radio]'))
+      .find(b => b.textContent?.trim() === label)!
+      .click();
+    fixture.detectChanges();
+  }
+
   function texts(fixture: ComponentFixture<AccountSettingsComponent>, selector: string): string[] {
     return Array.from(el(fixture).querySelectorAll(selector)).map(n => n.textContent?.replace(/\s+/g, ' ').trim() ?? '');
   }
@@ -448,6 +456,7 @@ describe('AccountSettingsComponent', () => {
   it('a 圖示-only edit keeps the stored logo', async () => {
     await setup('11');
     const fixture = render({ ...DETAIL, logo: ACCOUNT_LOGOS[0].slug } as AccountDetail);
+    openSource(fixture, '文字＋顏色');
     const icon = el(fixture).querySelector<HTMLInputElement>('.icon-input')!;
     icon.value = '🏦';
     icon.dispatchEvent(new Event('input'));
@@ -462,48 +471,41 @@ describe('AccountSettingsComponent', () => {
   it('shows the current logo label and lists the set with 無 first', async () => {
     await setup('11');
     const fixture = render({ ...DETAIL, logo: 'cathay-united' } as AccountDetail);
-    const current = el(fixture).querySelector<HTMLButtonElement>('.logo-pick')!;
-    expect(el(fixture).querySelector('.logo-state')!.textContent).toContain('內建：國泰世華');
-    expect(el(fixture).querySelector('.logo-grid')).toBeNull();
-    current.click();
-    fixture.detectChanges();
-    const cells = Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('.logo-grid button'));
+    expect(el(fixture).querySelector('.look-current')!.textContent?.trim()).toBe('目前顯示：內建 logo · 國泰世華');
+    const cells = Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('.logo-grid .logo-opt[role=radio]'));
     expect(cells[0].textContent?.trim()).toBe('無');
     expect(cells.length).toBe(ACCOUNT_LOGOS.length + 1);
-    expect(cells.find(c => c.getAttribute('aria-label') === '國泰世華')!.getAttribute('aria-pressed')).toBe('true');
-    expect(cells[0].getAttribute('aria-pressed')).toBe('false');
+    expect(cells.find(c => c.getAttribute('aria-label') === '國泰世華')!.getAttribute('aria-checked')).toBe('true');
+    expect(cells[0].getAttribute('aria-checked')).toBe('false');
   });
 
   it('state line reads 無 and shows the account icon when no logo is set', async () => {
     await setup('11');
     const fixture = render({ ...DETAIL, icon: '🍱', logo: null } as AccountDetail);
-    const state = el(fixture).querySelector<HTMLElement>('.logo-state')!;
-    expect(state.textContent?.trim()).toContain('無');
-    expect(state.querySelector('app-account-icon .emoji')!.textContent).toBe('🍱');
+    expect(el(fixture).querySelector('.look-current')!.textContent?.trim()).toBe('目前顯示：文字 🍱');
+    expect(el(fixture).querySelector('.look-tile app-account-icon .emoji')!.textContent).toBe('🍱');
   });
 
   it('labels a stored slug the set does not know as 未知 logo, with 無 not pressed', async () => {
     await setup('11');
     const fixture = render({ ...DETAIL, logo: 'china-airlines' } as AccountDetail);
-    expect(el(fixture).querySelector('.logo-state')!.textContent).toContain('內建：未知 logo');
-    el(fixture).querySelector<HTMLButtonElement>('.logo-pick')!.click();
-    fixture.detectChanges();
-    const cells = Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('.logo-grid button'));
+    expect(el(fixture).querySelector('.look-current')!.textContent?.trim()).toBe('目前顯示：內建 logo · 未知 logo');
+    const cells = Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('.logo-grid .logo-opt[role=radio]'));
     expect(cells[0].textContent?.trim()).toBe('無');
-    expect(cells[0].getAttribute('aria-pressed')).toBe('false');
-    expect(cells.filter(c => c.getAttribute('aria-pressed') === 'true')).toEqual([]);
+    expect(cells[0].getAttribute('aria-checked')).toBe('false');
+    expect(cells.filter(c => c.getAttribute('aria-checked') === 'true')).toEqual([]);
   });
 
   it('picking a logo updates the big icon and the saved payload', async () => {
     await setup('11');
     const fixture = render(DETAIL);
-    el(fixture).querySelector<HTMLButtonElement>('.logo-pick')!.click();
-    fixture.detectChanges();
+    openSource(fixture, '內建 logo');
     const target = ACCOUNT_LOGOS[1];
-    el(fixture).querySelector<HTMLButtonElement>(`.logo-grid button[aria-label="${target.label}"]`)!.click();
+    el(fixture).querySelector<HTMLButtonElement>(`.logo-grid .logo-opt[aria-label="${target.label}"]`)!.click();
     fixture.detectChanges();
-    expect(el(fixture).querySelector('.logo-grid')).toBeNull();
+    expect(el(fixture).querySelector('.logo-grid')).not.toBeNull();
     expect(el(fixture).querySelector<HTMLImageElement>('.bigicon app-account-icon img')!.getAttribute('src')).toMatch(new RegExp(`${target.file}$`));
+    expect(el(fixture).querySelector<HTMLImageElement>('.look-tile app-account-icon img')!.getAttribute('src')).toMatch(new RegExp(`${target.file}$`));
     el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
     const req = http.expectOne('/api/accounting/accounts/11');
     expect(req.request.body.logo).toBe(target.slug);
@@ -513,9 +515,7 @@ describe('AccountSettingsComponent', () => {
   it('無 clears the logo and keeps the emoji', async () => {
     await setup('11');
     const fixture = render({ ...DETAIL, logo: ACCOUNT_LOGOS[0].slug } as AccountDetail);
-    el(fixture).querySelector<HTMLButtonElement>('.logo-pick')!.click();
-    fixture.detectChanges();
-    el(fixture).querySelector<HTMLButtonElement>('.logo-grid button')!.click();
+    el(fixture).querySelector<HTMLButtonElement>('.logo-grid .logo-opt')!.click();
     fixture.detectChanges();
     expect(el(fixture).querySelector('.bigicon app-account-icon img')).toBeNull();
     expect(el(fixture).querySelector('.bigicon app-account-icon')!.textContent).toContain('💳');
@@ -525,6 +525,41 @@ describe('AccountSettingsComponent', () => {
     expect(req.request.body.logo).toBeNull();
     expect(req.request.body.icon).toBe('💳');
     req.flush(DETAIL);
+  });
+
+  it('picking a swatch dirties the form and saves the colour', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    openSource(fixture, '文字＋顏色');
+    el(fixture).querySelector<HTMLButtonElement>('.swatch[aria-label="靛紫"]')!.click();
+    fixture.detectChanges();
+    expect(texts(fixture, '.topbar .dirty-count')).toEqual(['有 1 項未儲存']);
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body.color).toBe('#533afd');
+    req.flush(DETAIL);
+  });
+
+  it('a MOZE uppercase colour marks its swatch', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, color: '#4F8F8A' } as AccountDetail);
+    const checked = Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('.swatch[role=radio]'))
+      .filter(b => b.getAttribute('aria-checked') === 'true')
+      .map(b => b.getAttribute('aria-label'));
+    expect(checked).toEqual(['青綠']);
+  });
+
+  it('switching to another account re-derives the tab', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    expect(el(fixture).querySelector('.icon-input')).not.toBeNull();
+    expect(el(fixture).querySelector('.logo-grid')).toBeNull();
+    navigateTo('12');
+    http.expectOne('/api/accounting/accounts/12').flush({ ...DETAIL, id: 12, logo: 'cathay-united' });
+    fixture.detectChanges();
+    expect(el(fixture).querySelector('.logo-grid')).not.toBeNull();
+    expect(el(fixture).querySelector('.icon-input')).toBeNull();
+    expect(texts(fixture, '#s-look .seg-toggle [role=radio][aria-checked=true]')).toEqual(['內建 logo']);
   });
 
   it('keeps every digit of balances ≥ 1e12 on the way into the form and back', async () => {
@@ -1374,35 +1409,38 @@ describe('AccountSettingsComponent', () => {
       Object.defineProperty(input, 'files', { configurable: true, value: [f] });
       input.dispatchEvent(new Event('change'));
     }
-    function btn(fixture: ComponentFixture<AccountSettingsComponent>, text: string): HTMLButtonElement | undefined {
-      return Array.from(el(fixture).querySelectorAll<HTMLButtonElement>('.logo-block button')).find(b => b.textContent?.trim() === text);
-    }
 
     it('shows 已上傳的圖片, 移除圖片 and the hint when the detail has a logo_hash', async () => {
       await setup('11');
       const fixture = render({ ...DETAIL, logo_hash: 'h1', logo: 'cathay-united' } as AccountDetail);
       http.expectOne('/api/accounting/accounts/11/logo.png?v=h1').flush(new Blob([new Uint8Array(1)], { type: 'image/png' }));
-      expect(el(fixture).querySelector('.logo-state')!.textContent).toContain('已上傳的圖片');
-      expect(btn(fixture, '上傳圖片')!.disabled).toBe(false);
-      expect(btn(fixture, '移除圖片')).toBeDefined();
-      expect(btn(fixture, '選擇內建 logo')).toBeDefined();
-      expect(el(fixture).querySelector('.logo-hint')!.textContent).toContain('上傳的圖片優先於內建 logo，上傳後立即生效');
+      expect(el(fixture).querySelector('.look-current')!.textContent?.trim()).toBe('目前顯示：上傳的圖片');
+      const upload = el(fixture).querySelector<HTMLButtonElement>('.logo-upload')!;
+      expect(upload.textContent?.trim()).toBe('選擇檔案');
+      expect(upload.disabled).toBe(false);
+      expect(el(fixture).querySelector('.logo-remove')).not.toBeNull();
+      expect(el(fixture).querySelector('.logo-hint')).toBeNull();
     });
 
-    it('hides 移除圖片 without an uploaded image and opens the grid from 選擇內建 logo', async () => {
+    it('hides 移除圖片 without an uploaded image and opens the grid from 內建 logo', async () => {
       await setup('11');
       const fixture = render(DETAIL);
-      expect(btn(fixture, '移除圖片')).toBeUndefined();
-      btn(fixture, '選擇內建 logo')!.click();
-      fixture.detectChanges();
+      openSource(fixture, '上傳圖片');
+      expect(el(fixture).querySelector('.logo-upload')).not.toBeNull();
+      expect(el(fixture).querySelector('.logo-remove')).toBeNull();
+      openSource(fixture, '內建 logo');
       expect(el(fixture).querySelector('.logo-grid')).not.toBeNull();
     });
 
-    it('on accounts/new the upload button is disabled with the 先建立帳戶 hint', async () => {
+    it('new account route: 上傳圖片 shows 選擇檔案 disabled with 先建立帳戶，再上傳 logo', async () => {
       await setup(null);
       const fixture = render(null);
-      expect(btn(fixture, '上傳圖片')!.disabled).toBe(true);
-      expect(el(fixture).querySelector('.logo-hint')!.textContent).toContain('先建立帳戶，再上傳 logo');
+      expect(el(fixture).querySelector('.icon-input')).not.toBeNull();
+      openSource(fixture, '上傳圖片');
+      const upload = el(fixture).querySelector<HTMLButtonElement>('.logo-upload')!;
+      expect(upload.textContent?.trim()).toBe('選擇檔案');
+      expect(upload.disabled).toBe(true);
+      expect(el(fixture).querySelector('.logo-hint')!.textContent?.trim()).toBe('先建立帳戶，再上傳 logo');
     });
 
     it('upload keeps the dirty form: name stays edited, 儲存 stays enabled', async () => {
@@ -1413,13 +1451,15 @@ describe('AccountSettingsComponent', () => {
       name.dispatchEvent(new Event('input'));
       fixture.detectChanges();
       expect(el(fixture).querySelector<HTMLButtonElement>('.save')!.disabled).toBe(false);
+      openSource(fixture, '上傳圖片');
       choose(fixture, file());
       const req = http.expectOne(URL);
       expect(req.request.method).toBe('PUT');
       req.flush({ ...DETAIL, name: '伺服器名稱', logo_hash: 'abc' });
       fixture.detectChanges();
       http.expectOne('/api/accounting/accounts/11/logo.png?v=abc').flush(new Blob([new Uint8Array(1)], { type: 'image/png' }));
-      expect(fixture.componentInstance.logoState()).toBe('已上傳的圖片');
+      expect(fixture.componentInstance.logoHash()).toBe('abc');
+      expect(el(fixture).querySelector('.look-current')!.textContent?.trim()).toBe('目前顯示：上傳的圖片');
       expect(fixture.componentInstance.isDirty()).toBe(true);
       expect(el(fixture).querySelector<HTMLInputElement>('.name-input')!.value).toBe('改過的名稱');
       expect(el(fixture).querySelector<HTMLButtonElement>('.save')!.disabled).toBe(false);
@@ -1433,13 +1473,13 @@ describe('AccountSettingsComponent', () => {
       name.value = '改過的名稱';
       name.dispatchEvent(new Event('input'));
       fixture.detectChanges();
-      btn(fixture, '移除圖片')!.click();
+      el(fixture).querySelector<HTMLButtonElement>('.logo-remove')!.click();
       const req = http.expectOne(URL);
       expect(req.request.method).toBe('DELETE');
       req.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
       expect(fixture.componentInstance.logoHash()).toBeNull();
-      expect(fixture.componentInstance.logoState()).toBe('內建：國泰世華');
+      expect(el(fixture).querySelector('.look-current')!.textContent?.trim()).toBe('目前顯示：內建 logo · 國泰世華');
       expect(fixture.componentInstance.isDirty()).toBe(true);
       expect(el(fixture).querySelector<HTMLInputElement>('.name-input')!.value).toBe('改過的名稱');
       expect(el(fixture).querySelector<HTMLButtonElement>('.save')!.disabled).toBe(false);
@@ -1449,6 +1489,7 @@ describe('AccountSettingsComponent', () => {
       await setup('11');
       const fixture = render(DETAIL);
       const show = vi.spyOn(TestBed.inject(AccountingToastService), 'show');
+      openSource(fixture, '上傳圖片');
       choose(fixture, { size: 6 * 1024 * 1024, type: 'image/png' } as unknown as File);
       expect(el(fixture).querySelector<HTMLInputElement>('input[type=file]')!.value).toBe('');
       http.expectNone(URL);
@@ -1465,7 +1506,6 @@ describe('AccountSettingsComponent', () => {
       navigateTo('12');
       fixture.detectChanges();
       expect(fixture.componentInstance.logoHash()).toBeNull();
-      expect(fixture.componentInstance.logoState()).not.toBe('已上傳的圖片');
       expect(fixture.componentInstance.uploadingLogo()).toBe(false);
       pending.flush({ ...DETAIL, logo_hash: 'late' });
       expect(fixture.componentInstance.logoHash()).toBeNull();
@@ -1476,6 +1516,7 @@ describe('AccountSettingsComponent', () => {
       await setup('11');
       const fixture = render(DETAIL);
       const show = vi.spyOn(TestBed.inject(AccountingToastService), 'show');
+      openSource(fixture, '上傳圖片');
       choose(fixture, file());
       fixture.detectChanges();
       expect(fixture.componentInstance.uploadingLogo()).toBe(true);
@@ -1875,7 +1916,8 @@ describe('AccountSettingsComponent', () => {
       ]);
       expect(el(fixture).querySelector('#s-basic .closing-day')).not.toBeNull();
       expect(el(fixture).querySelector('#s-basic .include-toggle')).not.toBeNull();
-      expect(rowLabels(fixture, 'look')).toEqual(['Logo', '圖示']);
+      expect(el(fixture).querySelector('#s-look app-account-look')).not.toBeNull();
+      expect(rowLabels(fixture, 'look')).toEqual([]);
       expect(el(fixture).querySelector('#s-card .sec-head .credit-toggle')).not.toBeNull();
       expect(rowLabels(fixture, 'card')).toEqual([]);
       expect(texts(fixture, '#s-card .card-hint')).toEqual(['打開「信用帳戶」才會出現繳款期限、額度與自動扣繳。']);

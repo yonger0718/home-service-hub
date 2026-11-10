@@ -29,7 +29,6 @@ import {
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
-import { ACCOUNT_LOGOS, accountLogo } from '../../../theme/account-logos';
 import { AccountIconComponent } from '../account-icon/account-icon';
 import { accountLabel, isHandledKey, restoreOverlayFocus, trapFocus } from '../accounting-ui';
 import { DueRule, cycleText, dueDate, statementPeriod } from '../cycle';
@@ -39,8 +38,9 @@ import { balanceNegative, balanceText, valuationHint } from '../account-balance'
 import { decimalText, formatMoney } from '../format';
 import { fieldErrors, writeErrorMessage } from '../http-errors';
 import { AccountingToastService } from '../accounting-toast';
-import { LOGO_ACCEPT, logoFileTooLarge, logoUploadErrorMessage } from '../logo-upload-errors';
+import { logoFileTooLarge, logoUploadErrorMessage } from '../logo-upload-errors';
 import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
+import { AccountLookSectionComponent } from './look-section/look-section';
 import {
   REWARD_WINDOW_LABELS, RULE_STATE_LABELS, basicOverlapRuleId, periodText, postingSummary, ruleLabel, ruleState, ruleToInput,
 } from '../reward-rule-text';
@@ -258,7 +258,7 @@ interface LoadedAccount {
   standalone: true,
   imports: [
     RouterLink, AccountIconComponent, RewardRuleSheetComponent, SwitchComponent, StepperComponent, AmountFieldComponent,
-    PickerComponent, SegToggleComponent, NgTemplateOutlet,
+    PickerComponent, SegToggleComponent, NgTemplateOutlet, AccountLookSectionComponent,
   ],
   templateUrl: './account-settings.html',
   styleUrls: ['../sheet.scss', './account-settings.scss'],
@@ -306,18 +306,9 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   readonly saving = signal(false);
   readonly confirmDelete = signal(false);
 
-  protected readonly logos = ACCOUNT_LOGOS;
-  readonly logoPickerOpen = signal(false);
-  protected readonly LOGO_ACCEPT = LOGO_ACCEPT;
   /** Uploaded image hash. Patched by upload/remove only; apply() never runs for an image write (dirty form stays). */
   readonly logoHash = signal<string | null>(null);
   readonly uploadingLogo = signal(false);
-  /** 無 for no logo; 未知 logo for a stored slug the bundled set does not know (the form still keeps and re-saves it). */
-  readonly logoLabel = computed(() => {
-    const slug = this.form().logo;
-    return slug === null ? '無' : (accountLogo(slug)?.label ?? '未知 logo');
-  });
-  readonly logoState = computed(() => (this.logoHash() ? '已上傳的圖片' : this.form().logo ? `內建：${this.logoLabel()}` : '無'));
 
   readonly roundingOptions = Object.entries(ROUNDING_LABELS) as [RoundingMode, string][];
   readonly roundingPickerOptions: PickerOption[] = this.roundingOptions.map(([value, label]) => ({ value, label }));
@@ -935,18 +926,10 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     this.clearInvalid(key);
   }
 
-  pickLogo(slug: string | null): void {
-    this.set('logo', slug);
-    this.logoPickerOpen.set(false);
-  }
-
   /** Immediate image write; patches only logoHash so the dirty form and its baseline are untouched (spec 6.3). */
-  uploadLogo(event: Event): void {
-    const input = event.target as HTMLInputElement;
-    const file = input.files?.[0];
-    input.value = '';
+  uploadLogoFile(file: File): void {
     const id = this.loadedId();
-    if (!file || id === null) {
+    if (id === null) {
       return;
     }
     if (logoFileTooLarge(file)) {
