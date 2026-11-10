@@ -77,5 +77,5 @@
 
 ## 5. Wrap-up
 
-- [ ] 5.1 Light and dark screenshots at 390 / 820 / 1100 / 1440 against the artboards
-- [ ] 5.2 Move the spec delta into `openspec/specs/frontend-accounting-ledger/spec.md` and archive the change
+- [x] 5.1 Light and dark screenshots at 390 / 820 / 1100 / 1440 against the artboards
+- [x] 5.2 Move the spec delta into `openspec/specs/frontend-accounting-ledger/spec.md` and archive the change

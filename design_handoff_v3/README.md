@@ -5,7 +5,7 @@ Design reference for two OpenSpec changes:
 - `openspec/changes/add-notification-center/` — one site-wide 通知 page, a quieter count, a one-case-at-a-time reconciliation flow, one toast and one banner style.
 - `openspec/changes/add-accounting-reports/` — 財務 › 報表 (總覽, 趨勢與比較, 排行, 專案與預算) and saved custom reports.
 - `openspec/changes/polish-reward-and-account-settings/` — 回饋規則總覽 cards with cap bars, sectioned 帳戶設定, one 回饋 section in entry detail (added 2026-11-07).
-- `openspec/changes/add-ledger-calendar-view/` — the timeline's 日曆 view, calendar first: richer day cells, 本月摘要 or the picked day beside the grid, the entry as a drawer (added 2026-11-07).
+- `openspec/changes/archive/2026-11-10-add-ledger-calendar-view/` — the timeline's 日曆 view, calendar first: richer day cells, 本月摘要 or the picked day beside the grid, the entry as a drawer (added 2026-11-07).
 
 Read each change's `design.md` for the decisions and `specs/` for the requirements. Drawn on the design canvas on 2026-10-24 (notifications) and 2026-10-30 (reports, custom reports); the owner asked for this handoff on 2026-10-31. **Nothing in this folder is production code.**
 
