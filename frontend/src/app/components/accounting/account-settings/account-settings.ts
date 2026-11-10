@@ -13,7 +13,7 @@ import {
 } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink, UrlTree } from '@angular/router';
 import { EMPTY, Observable, Subject, catchError, map, merge, of, switchMap, tap } from 'rxjs';
 
 import {
@@ -245,6 +245,14 @@ export const FIELD_SECTION: Readonly<Record<string, SectionId>> = {
 /** Phone rows whose control (a stepper, an amount field or the 外觀 look block) opens in the page's bottom sheet. */
 export type SheetRow = 'opening_balance' | 'closing_day' | 'due_value' | 'credit_limit' | 'fx_fee_pct' | 'look';
 
+/** Where 回饋規則總覽 sends the owner back to: its own path and query, never another page or a fragment. */
+const BACK_PATTERN = /^\/accounting\/reward-rules(\?[^#]*)?$/;
+
+/** The `back` query parameter, accepted only when it is the overview's URL (`back` is untrusted input). */
+export function safeBack(raw: string | null): string | null {
+  return raw !== null && BACK_PATTERN.test(raw) ? raw : null;
+}
+
 interface LoadedAccount {
   loadId: number;
   id: number | null;
@@ -285,6 +293,23 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
 
   /** From `paramMap` (observable): at ≥ 760 px the pane reuses this component when only `:id` changes (Task 21). */
   readonly accountId = signal<number | null>(null);
+  /** `?back=` from 回饋規則總覽 (through safeBack): ✕, a save and a link-opened rule sheet's close return there. */
+  private readonly backParam = signal<string | null>(null);
+  readonly back = computed<string | null>(() => safeBack(this.backParam()));
+  /** ✕ and a return: the overview at this account's card with `back`, otherwise the passbook (or the list). */
+  readonly closeTarget = computed<UrlTree | unknown[] | string>(() => {
+    const id = this.accountId();
+    const back = this.back();
+    if (id === null) {
+      return '/accounting/accounts';
+    }
+    if (back === null) {
+      return ['/accounting/accounts', id];
+    }
+    const tree = this.router.parseUrl(back);
+    tree.fragment = `card-${id}`;
+    return tree;
+  });
   /** Id of the account whose response is applied to the form; writes target this id only. */
   readonly loadedId = signal<number | null>(null);
   readonly loading = signal(false);
@@ -452,6 +477,8 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   /** `?rule=<id>` (from 回饋規則總覽): opens that rule once its account's detail is shown, then leaves the URL. */
   /** `?rule=<id>` to open that rule once loaded, or `'new'` for an empty sheet (the overview's ＋ links). */
   private pendingRuleId: number | 'new' | null = null;
+  /** The open rule sheet came from `?rule=` (the overview's links): closing it returns to `back`. A row tap clears it. */
+  private ruleFromLink = false;
 
   protected readonly SECTIONS = SECTIONS;
   /** The chip marked current: the last one tapped, or the topmost section the scroll-spy sees. */
@@ -525,6 +552,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     this.service.getAccountGroups().subscribe(groups => this.groups.set(groups));
     this.service.getProjects().subscribe(projects => this.projects.set(projects));
     this.route.queryParamMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(query => {
+      this.backParam.set(query.get('back'));
       const ruleParam = query.get('rule');
       if (ruleParam !== null) {
         this.pendingRuleId = ruleParam === 'new' ? 'new' : Number(ruleParam);
@@ -547,12 +575,15 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     this.pendingRuleId = null;
     if (pending === 'new') {
       this.openRule(null);
+      this.ruleFromLink = true; // after openRule(), which clears it
     } else {
       const rule = detail.reward_rules.find(r => r.id === pending);
       if (rule) {
         this.openRule(rule);
+        this.ruleFromLink = true;
       }
     }
+    // `merge`: `back` stays in the URL.
     void this.router.navigate([], {
       relativeTo: this.route,
       queryParams: { rule: null },
@@ -1003,22 +1034,45 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
 
   /** Opens the rule sheet (row tap, ⋯ 編輯, 新增規則); `startDelete` from ⋯ 刪除 (ignored on a create). */
   openRule(rule: RewardRule | null, startDelete = false): void {
+    this.ruleFromLink = false;
     this.ruleMessage.set(null);
     this.ruleSheet.set({ rule, startDelete });
   }
 
-  closeRuleSheet(): void {
+  /**
+   * Closes the rule sheet. A sheet opened by the overview's link returns there (`back`) once nothing is left unsaved,
+   * unless `stayed`: a save that answered a delegated leave prompt with 留下.
+   */
+  closeRuleSheet(stayed = false): void {
+    const fromLink = this.ruleFromLink;
+    const heldPrompt = this.sheetHoldsPrompt();
+    this.ruleFromLink = false;
     this.ruleSheet.set(null);
-    if (!this.sheetHoldsPrompt()) {
-      return;
+    if (heldPrompt) {
+      // 放棄 on the sheet's strip answered a delegated route-leave prompt.
+      this.sheetHoldsPrompt.set(false);
+      if (this.isDirty()) {
+        this.showDiscardPrompt(); // the page's own form is still dirty: ask here, now that the sheet is gone
+      } else {
+        this.dirty.confirmDiscard();
+      }
+      return; // the pending leave owns the destination
     }
-    // 放棄 on the sheet's strip answered a delegated route-leave prompt.
-    this.sheetHoldsPrompt.set(false);
-    if (this.isDirty()) {
-      this.showDiscardPrompt(); // the page's own form is still dirty: ask here, now that the sheet is gone
-    } else {
-      this.dirty.confirmDiscard();
+    // isDirty() runs after the sheet is gone: only the page's own input keeps the owner here.
+    if (fromLink && !stayed && !this.isDirty()) {
+      this.returnToBack();
     }
+  }
+
+  /** Goes to the overview at this account's card when the page came from it; says whether it did. */
+  private returnToBack(): boolean {
+    const target = this.closeTarget();
+    if (this.back() === null || !(target instanceof UrlTree)) {
+      return false;
+    }
+    // navigateByUrl: `router.navigate` would not serialise the tree's query and fragment.
+    void this.router.navigateByUrl(target);
+    return true;
   }
 
   /** 留下 on the sheet's strip: keep the draft and forget the delegated close (the sheet keeps its focus). */
@@ -1030,14 +1084,18 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   }
 
   onRuleSaved(): void {
-    this.onRuleSheetStayed(); // saving answers a delegated leave prompt with 留下: the owner chose to keep working
-    this.closeRuleSheet();
+    // Saving answers a delegated leave prompt with 留下: the owner chose to keep working. Snapshot it first —
+    // closeRuleSheet() would otherwise still see the held prompt and run the pending leave.
+    const stayed = this.sheetHoldsPrompt();
+    this.onRuleSheetStayed();
+    this.closeRuleSheet(stayed);
     this.reloadRules();
   }
 
   onRuleDeleted(): void {
+    const stayed = this.sheetHoldsPrompt();
     this.onRuleSheetStayed();
-    this.closeRuleSheet();
+    this.closeRuleSheet(stayed);
     // The sheet handed focus back to the deleted row's ⋯ (or row), which the re-read is about to remove, dropping
     // focus to <body>. 新增規則 is there whenever an account is loaded and is not re-created by the re-read, so it
     // takes focus now: no wait on the response, and a failed re-read (the row stays) still leaves focus in the block.
@@ -1204,7 +1262,9 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
           this.invalidSections.set(new Set());
           this.dirty.clearPending();
           this.discardOpener = null;
-          this.router.navigate(['/accounting/accounts', id]);
+          if (!this.returnToBack()) {
+            this.router.navigate(['/accounting/accounts', id]);
+          }
         },
         error: err => {
           if (!still()) {

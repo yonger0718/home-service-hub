@@ -1,6 +1,6 @@
 <section class="account-settings">
   <header class="topbar">
-    <a class="ib" [routerLink]="accountId() === null ? '/accounting/accounts' : ['/accounting/accounts', accountId()]" aria-label="取消">✕</a>
+    <a class="ib" [routerLink]="closeTarget()" aria-label="取消">✕</a>
     <h1>{{ accountId() === null ? '新增帳戶' : '帳戶資訊' }}</h1>
     <span class="topbar-end">
       @if (dirtyCount() > 0 && !phone()) {

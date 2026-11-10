@@ -1,5 +1,7 @@
 import { Location } from '@angular/common';
-import { ChangeDetectionStrategy, Component, DestroyRef, computed, effect, inject, signal, untracked } from '@angular/core';
+import {
+  ChangeDetectionStrategy, Component, DestroyRef, ElementRef, Injector, afterNextRender, computed, effect, inject, signal, untracked,
+} from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, ParamMap, Router, RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
@@ -176,8 +178,23 @@ export class RewardRulesOverviewComponent {
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly location = inject(Location);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
 
   private readonly params = toSignal(this.route.queryParamMap, { initialValue: this.route.snapshot.queryParamMap });
+  private readonly fragment = toSignal(this.route.fragment, { initialValue: this.route.snapshot.fragment });
+  /**
+   * This page's URL as path + query, never a fragment: the `back` of every link into an account's settings, which
+   * returns here at that card. `Location.path()` omits the hash (`Router.url` would carry `#card-<id>` after a return,
+   * and settings rejects a `back` with `#`); it is no signal, so `params()` is read first — setArchived / setFilter
+   * change the query in place without remounting the page.
+   */
+  readonly backUrl = computed<string>(() => {
+    this.params();
+    return this.location.path();
+  });
+  /** The `#card-<id>` fragment already acted on; a fragment acts once, after the overview is first shown. */
+  private shownFragment: string | null = null;
   readonly filter = computed(() => filterFrom(this.params()));
   readonly showArchived = computed(() => this.params().get('archived') === '1');
   private readonly accountIds = computed(() =>
@@ -231,6 +248,32 @@ export class RewardRulesOverviewComponent {
       untracked(() => this.load(query));
     });
     inject(DestroyRef).onDestroy(() => this.loadSub?.unsubscribe());
+    // Back from an account's settings at `#card-<id>`: that card scrolls into view and takes focus, once per fragment.
+    effect(() => {
+      const fragment = this.fragment();
+      if (!fragment) {
+        this.shownFragment = null;
+        return;
+      }
+      if (!this.overview() || fragment === this.shownFragment) {
+        return;
+      }
+      this.shownFragment = fragment;
+      afterNextRender(() => this.showCard(fragment), { injector: this.injector });
+    });
+  }
+
+  /** Scrolls the `card-<id>` section into view and focuses it; a fragment naming no shown card does nothing. */
+  private showCard(fragment: string): void {
+    if (!/^card-\d+$/.test(fragment)) {
+      return;
+    }
+    const section = this.host.nativeElement.querySelector<HTMLElement>(`#${fragment}`);
+    if (!section) {
+      return;
+    }
+    section.scrollIntoView?.({ block: 'start' });
+    section.focus({ preventScroll: true });
   }
 
   setFilter(state: RewardRuleFilter): void {

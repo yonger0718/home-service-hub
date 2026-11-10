@@ -4,7 +4,7 @@ import { Component, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MockInstance, afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import {
   RewardRuleOverview, RewardRuleOverviewAccount, RewardRuleOverviewRule, RewardRuleStats, RewardUsage,
@@ -250,7 +250,7 @@ describe('RewardRulesOverviewComponent', () => {
     expect(text(rows[1].querySelector('.cap-text'))).toBe('$193 / $200 · 快到上限');
     expect(rows[1].querySelector('.cap-bar.near')).not.toBeNull();
     expect(rows[1].querySelector('.rr-state')).toBeNull();
-    expect(rows[1].getAttribute('href')).toBe('/accounting/accounts/11/settings?rule=3');
+    expect(rows[1].getAttribute('href')).toBe('/accounting/accounts/11/settings?rule=3&back=%2Faccounting%2Freward-rules');
     expect(text(rows[0].querySelector('.cap-text'))).toBe('$300 / $500 · 剩 $200');
     const b = card(el, '測試卡 B').querySelectorAll('.rr-rule');
     expect([text(b[0].querySelector('.rr-title')), text(b[0].querySelector('.rr-rate'))]).toEqual(['玩數位', '3%']);
@@ -344,7 +344,7 @@ describe('RewardRulesOverviewComponent', () => {
     expect(text(a.querySelector('.rr-footer-stats'))).toBe('近 12 個月 214 筆');
     const add = a.querySelector('a.rr-add')!;
     expect(text(add)).toBe('＋ 新增規則');
-    expect(add.getAttribute('href')).toBe('/accounting/accounts/11/settings?rule=new');
+    expect(add.getAttribute('href')).toBe('/accounting/accounts/11/settings?rule=new&back=%2Faccounting%2Freward-rules');
   });
 
   it('bare chips: credit accounts without rules, under 全部 only, linking to ?rule=new', async () => {
@@ -352,7 +352,7 @@ describe('RewardRulesOverviewComponent', () => {
     const bare = el.querySelector('.rr-bare')!;
     expect(text(bare.querySelector('.rr-bare-label'))).toBe('沒有規則的卡片');
     expect(texts(bare, 'a.rr-bare-chip')).toEqual(['沒規則的卡 ＋']);
-    expect(bare.querySelector('a.rr-bare-chip')?.getAttribute('href')).toBe('/accounting/accounts/14/settings?rule=new');
+    expect(bare.querySelector('a.rr-bare-chip')?.getAttribute('href')).toBe('/accounting/accounts/14/settings?rule=new&back=%2Faccounting%2Freward-rules');
 
     el.querySelectorAll<HTMLButtonElement>('.rr-filter')[1].click();
     const request = await nextRequest(harness);
@@ -459,5 +459,91 @@ describe('RewardRulesOverviewComponent', () => {
     const request = await nextRequest(harness);
     expect(request.request.urlWithParams).toBe(`${URL}?state=all`);
     request.flush(OVERVIEW);
+  });
+
+  // ---- return to the overview (#378 Task 1) ---------------------------------------------------------------------
+
+  /** Every link into an account's settings: rule rows, ＋ 新增規則 and the bare chips. */
+  const settingsLinks = (el: Element) =>
+    Array.from(el.querySelectorAll<HTMLAnchorElement>('a.rr-rule, a.rr-add, a.rr-bare-chip'));
+  /** The decoded `back` query parameter of a link's href. */
+  const backOf = (link: HTMLAnchorElement) => new globalThis.URL(link.getAttribute('href')!, 'http://localhost').searchParams.get('back');
+
+  /** Replaces `scrollIntoView` (jsdom has none) for the test; the returned spy records the scrolled elements. */
+  function spyScroll(): MockInstance<(arg?: boolean | ScrollIntoViewOptions) => void> {
+    const proto = Element.prototype as { scrollIntoView?: unknown };
+    const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+    proto.scrollIntoView = () => undefined;
+    const spy = vi.spyOn(Element.prototype, 'scrollIntoView');
+    onTestFinished(() => {
+      spy.mockRestore();
+      if (original) {
+        Object.defineProperty(Element.prototype, 'scrollIntoView', original);
+      } else {
+        delete proto.scrollIntoView;
+      }
+    });
+    return spy;
+  }
+
+  it('rule links carry back=<overview url>', async () => {
+    const { el } = await open('/accounting/reward-rules?archived=1');
+    const links = settingsLinks(el);
+    expect(links.length).toBe(11);
+    for (const link of links) {
+      expect(link.getAttribute('href')).toContain('back=%2Faccounting%2Freward-rules%3Farchived%3D1');
+      expect(backOf(link)).toBe('/accounting/reward-rules?archived=1');
+    }
+  });
+
+  it('back has no fragment on a returned-to overview', async () => {
+    const { el } = await open('/accounting/reward-rules?archived=1#card-8');
+    const links = settingsLinks(el);
+    expect(links.length).toBe(11);
+    expect(links.map(backOf)).toEqual(links.map(() => '/accounting/reward-rules?archived=1'));
+  });
+
+  it('back follows an in-place query change', async () => {
+    const { harness, el } = await open();
+    expect(backOf(settingsLinks(el)[0])).toBe('/accounting/reward-rules');
+
+    el.querySelector<HTMLInputElement>('input.rr-archived')!.click();
+    const request = await nextRequest(harness);
+    request.flush(OVERVIEW);
+    harness.detectChanges();
+    const links = settingsLinks(el);
+    expect(links.length).toBe(11);
+    expect(links.map(backOf)).toEqual(links.map(() => '/accounting/reward-rules?archived=1'));
+  });
+
+  it('each card has id card-<account id> and tabindex -1', async () => {
+    const { el } = await open();
+    const cards = Array.from(el.querySelectorAll('section.rr-card'));
+    expect(cards.map(c => c.id)).toEqual(['card-11', 'card-12', 'card-13']);
+    expect(cards.map(c => c.getAttribute('tabindex'))).toEqual(['-1', '-1', '-1']);
+  });
+
+  it('fragment card-<id> scrolls to and focuses that card once the overview is shown', async () => {
+    const scroll = spyScroll();
+    const { harness, el } = await open('/accounting/reward-rules#card-12');
+    const target = card(el, '測試卡 B');
+    await vi.waitFor(() => {
+      harness.detectChanges();
+      expect(scroll).toHaveBeenCalledTimes(1);
+    });
+    expect(scroll.mock.contexts[0]).toBe(target);
+    expect(scroll.mock.calls[0][0]).toEqual({ block: 'start' });
+    expect(document.activeElement).toBe(target);
+  });
+
+  it('an unknown fragment does nothing', async () => {
+    const scroll = spyScroll();
+    const before = document.activeElement;
+    const { harness } = await open('/accounting/reward-rules#card-99');
+    harness.detectChanges();
+    await new Promise<void>(r => setTimeout(r));
+    harness.detectChanges();
+    expect(scroll).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(before);
   });
 });

@@ -36,7 +36,7 @@
 
   <div class="rr-grid" [attr.aria-busy]="loading() || null">
     @for (card of cards(); track card.account.account_id) {
-      <section class="rr-card" [attr.aria-label]="card.name">
+      <section class="rr-card" [id]="'card-' + card.account.account_id" tabindex="-1" [attr.aria-label]="card.name">
         <div class="rr-card-head">
           <app-account-icon
             [logo]="card.account.logo"
@@ -65,7 +65,7 @@
             class="rr-rule"
             [class.inactive]="row.rule.state !== 'active'"
             [routerLink]="['/accounting/accounts', card.account.account_id, 'settings']"
-            [queryParams]="{ rule: row.rule.id }"
+            [queryParams]="{ rule: row.rule.id, back: backUrl() }"
           >
             <span class="rr-rule-head">
               <b class="rr-title">{{ row.title }}</b>
@@ -88,7 +88,7 @@
 
         <div class="rr-footer">
           <small class="rr-footer-stats">近 12 個月 {{ card.linked12m }} 筆</small>
-          <a class="rr-add" [routerLink]="['/accounting/accounts', card.account.account_id, 'settings']" [queryParams]="{ rule: 'new' }">
+          <a class="rr-add" [routerLink]="['/accounting/accounts', card.account.account_id, 'settings']" [queryParams]="{ rule: 'new', back: backUrl() }">
             ＋ 新增規則
           </a>
         </div>
@@ -100,7 +100,7 @@
     <section class="rr-bare" aria-label="沒有回饋規則的帳戶">
       <span class="rr-bare-label">沒有規則的卡片</span>
       @for (account of bare(); track account.account_id) {
-        <a class="rr-bare-chip" [routerLink]="['/accounting/accounts', account.account_id, 'settings']" [queryParams]="{ rule: 'new' }">
+        <a class="rr-bare-chip" [routerLink]="['/accounting/accounts', account.account_id, 'settings']" [queryParams]="{ rule: 'new', back: backUrl() }">
           {{ account.account_name }} ＋
         </a>
       }
