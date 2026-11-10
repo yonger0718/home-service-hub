@@ -10,6 +10,8 @@
 
 **Spec:** GitHub issue #378 (owner report 2026-11-10). No openspec change: behaviour fixes inside shipped capabilities.
 
+**Rev 2 (2026-11-10):** folds Multica AGENT-507 (dev-grok) plan review — `closeRuleSheet` restructure and delegated-prompt tests (finding 1), fragment-free `backUrl` (2), pull-to-refresh rules on html + body + backdrop with a phone scroll lock (3), `ruleFromLink` order and `navigateByUrl` (4), directive capture / spring-back / lostpointercapture (5), Review Focus 2 reworded (6).
+
 ## Global Constraints
 
 - Frontend only. No API change, no new route, no Caddy change.
@@ -23,10 +25,12 @@
 ## Review Focus
 
 1. A hand-typed or stale `back` (`//evil.example`, `/accounting/accounts`, `https://…`, a value with `#`) must be ignored, not navigated to.
-2. Arriving with `back` and then switching to another account inside settings (shared-limit member link, 所有卡片的規則 ›): `back` must not send the owner to a card that is no longer the one shown — the fragment uses the account shown when ✕ is pressed.
+2. No current link keeps `back` while changing the account (`所有卡片的規則 ›` drops it), but a later one might: the fragment always uses the account shown when the owner leaves (`accountId()` at that moment), pinned by a test that changes `:id` while `back` stays.
 3. A drag that starts on the grab bar while the sheet is busy (rule save in flight) must not close it; the host's close method already refuses, and the sheet must spring back.
 4. A sheet whose content is scrolled: only the grab bar starts a pull; scrolling the sheet body never moves or closes the sheet.
 5. Closing the link-opened rule sheet while the account form itself is dirty must stay on settings (the owner has unsaved settings), not navigate away.
+6. A route-leave prompt delegated to the rule sheet (`sheetHoldsPrompt`) owns the destination: 放棄 runs the pending leave once and never also goes to the overview; 儲存 / 留下 keep the owner on settings.
+7. Returning lands on `/accounting/reward-rules?…#card-<id>`; the next link from there must still carry a fragment-free `back`, or the second trip falls back to the passbook.
 
 ---
 
@@ -37,17 +41,18 @@
 - Modify: `frontend/src/app/components/accounting/account-settings/account-settings.ts`, `account-settings.html`, `account-settings.spec.ts`
 
 **Interfaces:**
-- Produces (overview): `readonly backUrl = computed<string>()` — the overview's current router URL without fragment (path + query). The three links in `reward-rules.html` (rule row, `.rr-add`, `.rr-bare-chip`) add `back: backUrl()` to their `queryParams`. Each `<section class="rr-card">` gets `[id]="'card-' + card.account.account_id"` and `tabindex="-1"`.
+- Produces (overview): `readonly backUrl = computed<string>()` — the overview's current URL as path + query with **no fragment**: built from `Location.path()` (already injected, omits the hash), recomputed when the query parameters change. Never from `Router.url` (it carries `#card-<id>` after a return, and `safeBack` rejects `#`). The three links in `reward-rules.html` (rule row, `.rr-add`, `.rr-bare-chip`) add `back: backUrl()` to their `queryParams`. Each `<section class="rr-card">` gets `[id]="'card-' + card.account.account_id"` and `tabindex="-1"`.
 - Produces (overview): after the overview data is first shown, a URL fragment `card-<id>` scrolls that section into view (`scrollIntoView({ block: 'start' })`) and focuses it (`focus({ preventScroll: true })`); a fragment with no matching card does nothing.
 - Produces (settings): `export function safeBack(raw: string | null): string | null` in `account-settings.ts` — returns `raw` only when it matches `^/accounting/reward-rules(\?[^#]*)?$`.
 - Produces (settings): `readonly back = computed<string | null>()` from the `back` query parameter through `safeBack`; `readonly closeTarget = computed<UrlTree | unknown[] | string>()` — with `back` and a shown account: `router.parseUrl(back)` with `fragment = 'card-' + accountId()`; otherwise today's value (`'/accounting/accounts'` or `['/accounting/accounts', accountId()]`). The header ✕ binds `[routerLink]="closeTarget()"`.
 
 - [ ] **Step 1: Write the failing overview tests** in `reward-rules.spec.ts`:
   - `rule links carry back=<overview url>`: with the page at `/accounting/reward-rules?archived=1`, every `.rr-rule`, `.rr-add` and `.rr-bare-chip` href contains `back=%2Faccounting%2Freward-rules%3Farchived%3D1` (decode and compare to `/accounting/reward-rules?archived=1`).
+  - `back has no fragment on a returned-to overview`: page at `/accounting/reward-rules?archived=1#card-8` → every `.rr-rule`, `.rr-add`, `.rr-bare-chip` `back` decodes to `/accounting/reward-rules?archived=1`.
   - `each card has id card-<account id> and tabindex -1`.
   - `fragment card-<id> scrolls to and focuses that card once the overview is shown` (stub `scrollIntoView` on the prototype; assert it was called on that section and `document.activeElement` is the section).
   - `an unknown fragment does nothing` (no scroll call, no throw).
-- [ ] **Step 2: Run** `npx ng test --watch=false --include='**/reward-rules.spec.ts'` — Expected: the four new tests FAIL.
+- [ ] **Step 2: Run** `npx ng test --watch=false --include='**/reward-rules.spec.ts'` — Expected: the five new tests FAIL.
 - [ ] **Step 3: Implement** `backUrl`, the three `queryParams`, the section `id` / `tabindex`, and the fragment effect (read `route.fragment`; act in `afterNextRender` once `overview()` is non-null; run once per fragment value).
 - [ ] **Step 4: Run** the same command — Expected: PASS.
 - [ ] **Step 5: Write the failing settings tests** in `account-settings.spec.ts`:
@@ -55,13 +60,41 @@
   - `✕ goes to the passbook without back` (existing behaviour pinned: href `/accounting/accounts/<id>`).
   - `✕ goes back to the overview at this card with back`: route `?back=/accounting/reward-rules?archived=1` on account 8 → ✕ href is `/accounting/reward-rules?archived=1#card-8`.
   - `an invalid back is ignored` (`?back=//evil.example` → passbook href).
-  - `saving with back navigates to the overview at this card`; `saving without back navigates to the passbook` (spy `router.navigateByUrl` / `router.navigate`).
+  - `saving with back navigates to the overview at this card` — asserts `router.navigateByUrl` was called with a `UrlTree` that serialises to `/accounting/reward-rules?…#card-<id>`; `saving without back navigates to the passbook` — asserts `router.navigate(['/accounting/accounts', id])`.
+  - `the fragment follows the account shown`: `back` present, `:id` changed from 8 to 9 (spec helper `navigateTo`) → ✕ href ends `#card-9`.
   - `closing the rule sheet opened by ?rule= with back returns to the overview` — three cases: 取消 (sheet `closed`), `saved`, `deleted`; each expects navigation to `/accounting/reward-rules…#card-<id>`.
   - `closing that sheet stays on settings when the account form is dirty` (change the name first; no navigation).
-  - `a rule sheet opened from the settings page itself (row tap) never navigates on close, even with back`.
+  - `a rule sheet opened from the settings page itself (row tap) never navigates on close, even with back` — including a row tap **after** a link-opened sheet was closed while the account form was dirty (the flag is cleared by the page's own `openRule`).
+  - `link-opened sheet, rule draft dirty, account form clean, 放棄 on the sheet's own strip → overview` (pins the `isDirty()` check running after `ruleSheet.set(null)`).
+  - Delegated route-leave prompt × link-opened sheet (`?rule=` + `back`, dirty rule draft, `DirtyFormRegistry.requestClose(run)`):
+    - `放棄 with a clean account form runs the pending leave once and does not navigate to the overview`;
+    - `放棄 with a dirty account form shows the page strip; run not called; no overview navigation`;
+    - `儲存 keeps the owner on settings: run not called, no overview navigation`.
   - `back survives the ?rule= cleanup` (after `openPendingRule` the URL still has `back`; `rule` is gone).
 - [ ] **Step 6: Run** `npx ng test --watch=false --include='**/account-settings.spec.ts'` — Expected: the new tests FAIL (the pinned passbook test passes).
-- [ ] **Step 7: Implement** in `account-settings.ts`: `safeBack`, `back`, `closeTarget`; a private `returnToBack(): boolean` that navigates to `closeTarget()` when `back()` is set and returns whether it did; the save success path calls it and falls back to `router.navigate(['/accounting/accounts', id])`; a private flag `ruleFromLink` set in `openPendingRule()` when it opens a sheet and cleared by `openRule()` calls from the page; `closeRuleSheet()` — after its existing body, when `ruleFromLink` was set, no route-leave prompt is pending and `!isDirty()` — calls `returnToBack()`. `openPendingRule()` keeps using `queryParamsHandling: 'merge'` (so `back` survives). Account deletion keeps going to `/accounting/accounts`.
+- [ ] **Step 7: Implement** in `account-settings.ts`: `safeBack`, `back`, `closeTarget`; a private `returnToBack(): boolean` that calls `router.navigateByUrl(closeTarget())` when `back()` is set (a `UrlTree` — `router.navigate` would not serialise its query and fragment) and returns whether it did; the save success path calls it and falls back to `router.navigate(['/accounting/accounts', id])`. Account deletion keeps going to `/accounting/accounts`. `openPendingRule()` keeps using `queryParamsHandling: 'merge'` (so `back` survives).
+
+  `ruleFromLink` (private boolean): `openRule()` always clears it; `openPendingRule()` sets it **after** its `openRule()` call returns (both paths share `openRule`, so the order matters).
+
+  `closeRuleSheet(stayed = false)` is restructured — the current early `return` when no prompt is held means a tail after the body would never run, and after `confirmDiscard()` a tail would add a second navigation:
+
+  ```ts
+  closeRuleSheet(stayed = false): void {
+    const fromLink = this.ruleFromLink;
+    const heldPrompt = this.sheetHoldsPrompt();
+    this.ruleFromLink = false;
+    this.ruleSheet.set(null);
+    if (heldPrompt) {
+      this.sheetHoldsPrompt.set(false);
+      if (this.isDirty()) this.showDiscardPrompt();
+      else this.dirty.confirmDiscard();
+      return; // the pending leave owns the destination
+    }
+    if (fromLink && !stayed && !this.isDirty()) this.returnToBack();
+  }
+  ```
+
+  `onRuleSaved()` / `onRuleDeleted()` snapshot `sheetHoldsPrompt()` **before** `onRuleSheetStayed()` and pass it as `stayed`: a save that answered a delegated leave prompt with 留下 keeps the owner on settings; a plain save or delete of a link-opened rule returns to the overview.
 - [ ] **Step 8: Run** the settings spec, then the full suite `npx ng test --watch=false` — Expected: PASS.
 - [ ] **Step 9: Commit** `feat(account-settings): return to the reward rules overview when arriving from it (#378)`.
 
@@ -76,12 +109,29 @@
   - Host is the grab bar. The moved element is `host.closest('.sheet')`.
   - `pointerdown` (primary button / touch / pen only): capture the pointer, remember `clientY`, add class `pulling` to the sheet.
   - `pointermove`: `dy = max(0, clientY - startY)`; set the sheet's inline `transform: translateY(<dy>px)`.
-  - `pointerup`: clear the inline transform and `pulling`; emit `pulled` when `dy >= min(SHEET_PULL_CLOSE_PX, sheetHeight * 0.3)`.
-  - `pointercancel`, `lostpointercapture`, `Escape`: clear transform and `pulling`, no emit.
+  - `pointerup`: read `dy` first (no `releasePointerCapture()` before that — it fires `lostpointercapture` synchronously), clear the tracking state, then spring back: remove `pulling`, force a reflow (`sheet.offsetHeight`), then clear the inline transform so the 160 ms transition runs (clearing both in one frame would snap). Emit `pulled` when `dy >= min(SHEET_PULL_CLOSE_PX, sheetHeight * 0.3)`.
+  - `pointercancel`, `lostpointercapture`, `Escape`: clear transform and `pulling`, no emit. `lostpointercapture` after a finished `pointerup` finds no drag and does nothing. The `Escape` listener never calls `stopPropagation` / `preventDefault`: sheets close on Escape through their own handlers; the directive only cancels the drag.
+  - `setPointerCapture` on the grab bar plus its `touch-action: none` are what keep the sheet's own scroller (`.sheet` is `overflow-y: auto`) from taking the gesture. Only the grab bar listens: a drag that starts on the sheet body never moves the sheet.
   - The directive never closes anything itself: if the host refuses to close (busy, discard prompt), the sheet is simply back at rest.
   - On destroy mid-drag: listeners released, nothing emitted.
-- Produces (CSS): `.grab` becomes a 36 × 4 px bar drawn inside a larger hit area (at least 44 px tall, full sheet width, `touch-action: none`, `cursor: grab`) without changing the visible bar or the sheet's layout height by more than the existing 16 px block; `.sheet.pulling { transition: none; }`, `.sheet { transition: transform 160ms ease; overscroll-behavior: contain; }` with the transition removed under `prefers-reduced-motion: reduce`. Same for `.filter-panel.sheet` and its `.grab` in `filter-bar.scss`.
-- Produces (CSS, `styles.scss`): `html:has(.overlay, .filter-overlay) { overscroll-behavior-y: none; }` — the page cannot be pulled to refresh while any bottom sheet is open.
+- Produces (CSS): `.grab` becomes a 36 × 4 px bar drawn inside a larger hit area (at least 44 px tall, full sheet width, `touch-action: none`, `cursor: grab`) without changing the visible bar or the sheet's layout height by more than the existing 16 px block; `.sheet.pulling { transition: none; }`, `.sheet { transition: transform 160ms ease; overscroll-behavior: contain; }` with the transition removed under `prefers-reduced-motion: reduce`. The hit area is an upward / overlapping `::before` on `.grab` (full sheet width, 44 px tall, centred on the bar): the existing 16 px grab block (`4px` bar, `margin: 2px auto 10px`) keeps its size, the sheet does not grow and the title is not covered. Same for `.filter-panel.sheet` and its `.grab` in `filter-bar.scss`.
+- Produces (CSS, `styles.scss`) — the page cannot be pulled to refresh while any bottom sheet is open. A single `html` rule is not enough: the scrollport may be `body`, the accidental pull usually starts on the fixed backdrop (not a scroll container), and `overscroll-behavior` on a `.sheet` whose content does not overflow has no effect (WebKit 243452 / Chromium 813094). So:
+
+  ```scss
+  html:has(.overlay, .filter-overlay),
+  html:has(.overlay, .filter-overlay) body {
+    overscroll-behavior-y: none;
+  }
+  @media (max-width: 759.98px) {
+    /* Scroll lock: the reliable iOS backstop. Phone only, so a desktop scrollbar never disappears under a sheet. */
+    html:has(.overlay, .filter-overlay),
+    html:has(.overlay, .filter-overlay) body {
+      overflow: hidden;
+    }
+  }
+  ```
+
+  and in `sheet.scss` / `filter-bar.scss`: `.overlay, .filter-overlay { overscroll-behavior: none; touch-action: none; }` (the backdrop never starts a document scroll; the sheet is its own scroll container, so its body still pans). `touch-action: none` inside the sheet stays on `.grab` only.
 
 - [ ] **Step 1: Write the failing directive tests** (`sheet-pull.directive.spec.ts`, a test host with `<div class="sheet"><div class="grab" appSheetPull (pulled)="n = n + 1"></div></div>`, the sheet's `getBoundingClientRect` stubbed to height 400):
   - `a drag of 80 px down emits pulled once and clears the transform`.
@@ -89,7 +139,9 @@
   - `a short sheet closes at 30 % of its height` (height 200 → 60 px emits, 59 px does not).
   - `the sheet follows the finger: translateY(<dy>px) while dragging, never negative` (drag up 30 px → `translateY(0px)`).
   - `pulling class is on the sheet only during the drag`.
-  - `pointercancel, lostpointercapture and Escape end the drag without emitting`.
+  - `pointercancel, lostpointercapture and Escape end the drag without emitting`; `Escape during a drag is not stopped` (a listener on the sheet still receives it).
+  - `pointerup at 80 px followed by lostpointercapture emits once`.
+  - `spring-back order: pulling is removed before the inline transform is cleared` (record both mutations in order).
   - `a secondary mouse button does not start a drag`.
   - `destroying the host mid-drag emits nothing` (later `pointerup` on the detached node is ignored).
 - [ ] **Step 2: Run** `npx ng test --watch=false --include='**/sheet-pull.directive.spec.ts'` — Expected: FAIL (directive not found).
@@ -134,5 +186,6 @@
 
 Playwright (Chromium, 390 × 844, touch enabled, production build, stubbed APIs, fictional data):
 - overview → rule → 取消 lands on the overview with that card in view; overview → rule → ✕ on settings likewise; settings opened from the passbook still closes to the passbook.
-- on the rule sheet and one settings row sheet: a touch drag of the grab bar closes it; a short drag springs back; `getComputedStyle(document.documentElement).overscrollBehaviorY` is `none` while a sheet is open and `auto` after.
+- overview → rule → 取消 → (back on the overview with `#card-<id>`) → another rule → ✕: still returns to the overview (second trip).
+- on the rule sheet and one settings row sheet: a touch drag of the grab bar closes it; a short drag springs back; while a sheet is open `overscroll-behavior-y` is `none` on `html` and `body`, `overflow` is `hidden` on both at 390 px, and the page scroll position is unchanged after the sheet closes; all back to normal after. These computed styles are a proxy only — they pass even where a browser ignores them.
 - The pull-to-refresh gesture itself cannot be exercised on this host (no iOS Safari, no real Chrome Android): the owner checks it on a phone after release.
