@@ -90,6 +90,24 @@ export function formatSigned(value: string | number | null | undefined, currency
 }
 
 /**
+ * Abbreviated `formatSigned` for tight spaces: the same sign and currency prefix, amounts under 1,000
+ * in full, `29.6k` / `72k` from 1,000 (one decimal, trailing `.0` dropped) and `1.23M` / `1.5M` from
+ * 1,000,000 (two decimals at most, trailing zeros dropped). 999,950 and up reads `1M`, never `1000k`.
+ */
+export function formatSignedShort(value: string | number | null | undefined, currency: string): string {
+  const amount = toNumber(value);
+  const magnitude = Math.abs(amount);
+  if (magnitude < 1000) {
+    return formatSigned(amount, currency);
+  }
+  const tenthsOfK = Math.round(magnitude / 100) / 10;
+  const body = tenthsOfK >= 1000
+    ? `${Number((Math.round(magnitude / 10000) / 100).toFixed(2))}M`
+    : `${Number(tenthsOfK.toFixed(1))}k`;
+  return `${amount < 0 ? MINUS : '+'}${currencySymbol(currency)}${body}`;
+}
+
+/**
  * Compact figure for tight spaces (calendar cells): whole units, no symbol, `−` for negatives;
  * from 10,000 `1.2萬`, from 100,000,000 `1.2億` (one decimal, trailing `.0` trimmed).
  * Every currency (JPY, USD …) is whole units here; `currency` keeps the call shape of `formatMoney`.

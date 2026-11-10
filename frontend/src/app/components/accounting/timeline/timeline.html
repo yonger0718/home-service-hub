@@ -15,11 +15,17 @@
           <dd class="monthbar-error">摘要讀取失敗 <button type="button" class="retry sum-retry" (click)="retrySummary()">重試</button></dd>
         } @else {
           <dt>支出</dt>
-          <dd class="neg sum-expense">{{ summary() ? expenseText(summary()!) : '—' }}</dd>
+          <dd class="neg sum-expense" [attr.title]="summary() ? expenseText(summary()!) : null">
+            <span class="fig-full">{{ summary() ? expenseText(summary()!) : '—' }}</span><span class="fig-short" aria-hidden="true">{{ summary() ? expenseShort(summary()!) : '—' }}</span>
+          </dd>
           <dt>收入</dt>
-          <dd class="pos sum-income">{{ summary() ? incomeText(summary()!) : '—' }}</dd>
+          <dd class="pos sum-income" [attr.title]="summary() ? incomeText(summary()!) : null">
+            <span class="fig-full">{{ summary() ? incomeText(summary()!) : '—' }}</span><span class="fig-short" aria-hidden="true">{{ summary() ? incomeShort(summary()!) : '—' }}</span>
+          </dd>
           <dt>結餘</dt>
-          <dd class="sum-net">{{ summary() ? formatSigned(summary()!.net, summary()!.currency) : '—' }}</dd>
+          <dd class="sum-net" [attr.title]="summary() ? formatSigned(summary()!.net, summary()!.currency) : null">
+            <span class="fig-full">{{ summary() ? formatSigned(summary()!.net, summary()!.currency) : '—' }}</span><span class="fig-short" aria-hidden="true">{{ summary() ? netShort(summary()!) : '—' }}</span>
+          </dd>
         }
       </dl>
     }

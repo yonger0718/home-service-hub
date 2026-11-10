@@ -10,6 +10,7 @@ import {
   formatMoney,
   formatNumber,
   formatSigned,
+  formatSignedShort,
   isNegative,
 } from './format';
 
@@ -115,5 +116,43 @@ describe('compactMoney', () => {
   it('keeps JPY in whole yen', () => {
     expect(compactMoney('5390.6', 'JPY')).toBe('5,391');
     expect(compactMoney('180000', 'JPY')).toBe('18萬');
+  });
+});
+
+describe('formatSignedShort', () => {
+  it('shows values under 1,000 exactly as formatSigned does', () => {
+    expect(formatSignedShort(0, 'TWD')).toBe('$0');
+    expect(formatSignedShort(999, 'TWD')).toBe('+$999');
+    expect(formatSignedShort(-170, 'TWD')).toBe('−$170');
+    expect(formatSignedShort('-170.0000', 'TWD')).toBe(formatSigned('-170.0000', 'TWD'));
+    expect(formatSignedShort(12.5, 'USD')).toBe('+US$12.5');
+  });
+
+  it('uses k from 1,000 with one decimal and no trailing .0', () => {
+    expect(formatSignedShort(1000, 'TWD')).toBe('+$1k');
+    expect(formatSignedShort(-29626, 'TWD')).toBe('−$29.6k');
+    expect(formatSignedShort(72000, 'TWD')).toBe('+$72k');
+    expect(formatSignedShort(42412, 'TWD')).toBe('+$42.4k');
+    expect(formatSignedShort(-999900, 'TWD')).toBe('−$999.9k');
+  });
+
+  it('rolls 999,950 and up over to M instead of printing 1000k', () => {
+    expect(formatSignedShort(999949, 'TWD')).toBe('+$999.9k');
+    expect(formatSignedShort(999950, 'TWD')).toBe('+$1M');
+  });
+
+  it('uses M from 1,000,000 with two decimals at most and no trailing zeros', () => {
+    expect(formatSignedShort(1234567, 'TWD')).toBe('+$1.23M');
+    expect(formatSignedShort(-1234567, 'TWD')).toBe('−$1.23M');
+    expect(formatSignedShort(1500000, 'TWD')).toBe('+$1.5M');
+    expect(formatSignedShort(12345678, 'TWD')).toBe('+$12.35M');
+    expect(formatSignedShort(123456789, 'TWD')).toBe('+$123.46M');
+  });
+
+  it('keeps the currency prefix of the full text and accepts numeric strings', () => {
+    expect(formatSignedShort('-1234567.0000', 'USD')).toBe('−US$1.23M');
+    expect(formatSignedShort(56000, 'JPY')).toBe('+¥56k');
+    expect(formatSignedShort(5000, 'USDT')).toBe('+USDT 5k');
+    expect(formatSignedShort(null, 'TWD')).toBe('$0');
   });
 });
