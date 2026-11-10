@@ -471,6 +471,7 @@ export class LedgerTimelineComponent implements OnInit {
 
   private queryTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly queryInput = viewChild<ElementRef<HTMLInputElement>>('queryInput');
+  private readonly calendarGrid = viewChild(CalendarMonthComponent);
 
   private readonly bills = inject(BillingService);
   private readonly calendar = inject(BusinessCalendarService);
@@ -1489,6 +1490,25 @@ export class LedgerTimelineComponent implements OnInit {
 
   clearDay(): void {
     this.writeCalendar(this.month(), null);
+  }
+
+  /** 展開整月: back to the month grid; keyboard focus moves to the cell of the day that was open. */
+  expandMonth(event: Event): void {
+    const day = this.selectedDay();
+    const focused = this.document.activeElement === event.currentTarget;
+    this.clearDay();
+    if (focused && day) {
+      this.calendarGrid()?.focusCell(day);
+    }
+  }
+
+  /** The 今天 bar: like `goToday`, and keyboard focus lands on today's cell of the strip. */
+  pickToday(): void {
+    const focused = !!this.document.activeElement?.closest('app-calendar-today-bar');
+    this.goToday();
+    if (focused) {
+      this.calendarGrid()?.focusCell(this.today());
+    }
   }
 
   /** ‹ › , [ ] and the day-area swipe (±1), the week-strip swipe (±7): move the day, crossing month edges. */

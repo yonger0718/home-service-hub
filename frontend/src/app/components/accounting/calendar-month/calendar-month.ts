@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, ElementRef, computed, inject, input, output, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, Injector, afterNextRender, computed, effect, inject, input, output, signal } from '@angular/core';
 
 import { DailySummaryDay } from '../../../models/accounting.model';
 import { BillingEvent } from '../billing/billing-math';
@@ -64,6 +64,28 @@ export class CalendarMonthComponent {
 
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly focusDate = signal<string | null>(null);
+  private readonly injector = inject(Injector);
+  /** `[` / `]` was pressed in the week strip: the strip re-renders another row, so focus follows the new selection. */
+  private refocusSelected = false;
+
+  constructor() {
+    effect(() => {
+      const selected = this.selected();
+      if (this.refocusSelected && selected) {
+        this.refocusSelected = false;
+        this.focusCell(selected);
+      }
+    });
+  }
+
+  /** Makes `date` the roving tab stop and focuses its cell once it is rendered. */
+  focusCell(date: string): void {
+    this.focusDate.set(date);
+    afterNextRender(
+      () => this.host.nativeElement.querySelector<HTMLButtonElement>(`button.cell[data-date="${date}"]`)?.focus(),
+      { injector: this.injector },
+    );
+  }
 
   readonly weekdays = computed(() => Array.from({ length: 7 }, (_, i) => WEEKDAY_NAMES[(this.weekStart() + i) % 7]));
 
@@ -146,6 +168,10 @@ export class CalendarMonthComponent {
     }
     if (event.key === '[' || event.key === ']') {
       event.preventDefault();
+      if (this.weekOf()) {
+        this.refocusSelected = true;
+        afterNextRender(() => (this.refocusSelected = false), { injector: this.injector });
+      }
       this.dayStep.emit(event.key === ']' ? 1 : -1);
       return;
     }

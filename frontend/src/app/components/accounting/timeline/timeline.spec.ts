@@ -1852,6 +1852,23 @@ describe('LedgerTimelineComponent', () => {
       expect(el.querySelector('.monthbar-figures')).toBeNull();
     });
 
+    it('narrow 日曆 puts the figures right under the navigator, above the filter bar; 清單 keeps .sum there (F1)', async () => {
+      const { el } = await openNarrow('/accounting?month=2026-10');
+      const before = (a: Element, b: Element) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      const row = el.querySelector('.cal-figures-row')!;
+      expect(row.previousElementSibling).toBe(el.querySelector('.monthbar'));
+      expect(before(row, el.querySelector('app-filter-bar')!)).toBe(true);
+      expect(before(row, el.querySelector('app-calendar-month')!)).toBe(true);
+    });
+
+    it('清單 below 1024 has .sum directly after the navigator (F1)', () => {
+      const { fixture, el } = render('phone');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(el.querySelector('.sum')!.previousElementSibling).toBe(el.querySelector('.monthbar'));
+    });
+
     it('narrow 日曆 figures show the error line with 重試', async () => {
       localStorage.setItem(VIEW_KEY, 'calendar');
       const { fixture, el } = render('phone');
@@ -1883,11 +1900,12 @@ describe('LedgerTimelineComponent', () => {
 
     it('phone default: 42 cells with dots and a 「今天 · 3 筆 … −$250」 bar, no rows (spec Phone default)', async () => {
       todayItems = [makeEntry({ id: 1, name: '早餐' }), makeEntry({ id: 2, name: '捷運' }), makeEntry({ id: 3, name: '咖啡' })];
+      fakeCalendarData.data.set({ ...EMPTY_CALENDAR_DATA, dots: new Map([['2026-10-01', [{ key: '3' }, { key: '99' }] as never]]), dotsState: 'ready' });
       const { el } = await openNarrow('/accounting?month=2026-10', 'phone', {
         days: [{ date: TODAY, expense: '-1250.0000', income: '1000.0000', count: 3 }],
       });
       expect(cells(el).length).toBe(42);
-      expect(el.querySelector('.cal .dot, .cal .net')).not.toBeNull();
+      expect(el.querySelectorAll('button.cell[data-date="2026-10-01"] .dot').length).toBe(2);
       const bar = text(el.querySelector('app-calendar-today-bar'));
       expect(bar).toContain('今天 · 3 筆');
       expect(bar).toContain('早餐、捷運、咖啡');
@@ -1920,9 +1938,11 @@ describe('LedgerTimelineComponent', () => {
     });
 
     it('picking a day collapses the grid to its week without dots and shows 展開整月', async () => {
+      fakeCalendarData.data.set({ ...EMPTY_CALENDAR_DATA, dots: new Map([['2026-10-01', [{ key: '3' }] as never]]), dotsState: 'ready' });
       const { fixture, el } = await openNarrow('/accounting?month=2026-10', 'phone', {
         days: [{ date: '2026-10-21', expense: '-100.0000', income: '0.0000', count: 1 }],
       });
+      expect(el.querySelectorAll('button.cell[data-date="2026-10-01"] .dot').length).toBe(1);
       cell(el, '2026-10-21').click();
       fixture.detectChanges();
       flushEntries([]);
@@ -1932,7 +1952,7 @@ describe('LedgerTimelineComponent', () => {
       ]);
       expect(el.querySelector('.dot')).toBeNull();
       const expand = el.querySelector<HTMLButtonElement>('button.expand-month')!;
-      expect(expand.getAttribute('aria-label')).toBe('回到整月日曆');
+      expect(expand.getAttribute('aria-label')).toBe('展開整月，回到整月日曆');
       expect(text(expand)).toBe('展開整月');
       expect(el.querySelector('app-calendar-today-bar')).toBeNull();
     });
@@ -1947,6 +1967,71 @@ describe('LedgerTimelineComponent', () => {
       expect(cells(el).length).toBe(42);
       expect(el.querySelector('button.expand-month')).toBeNull();
       expect(el.querySelector('app-calendar-today-bar')).not.toBeNull();
+    });
+
+    describe('keyboard focus (F2)', () => {
+      const focusedDate = () => (document.activeElement as HTMLElement | null)?.getAttribute('data-date');
+
+      it('展開整月 focuses the cell of the day that was open', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10&day=2026-10-21');
+        flushEntries([]);
+        fixture.detectChanges();
+        const expand = el.querySelector<HTMLButtonElement>('button.expand-month')!;
+        expand.focus();
+        expand.click();
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(cells(el).length).toBe(42);
+        expect(document.activeElement).toBe(cell(el, '2026-10-21'));
+      });
+
+      it('activating the 今天 bar focuses today in the strip', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        const bar = el.querySelector<HTMLButtonElement>('app-calendar-today-bar .today-bar')!;
+        bar.focus();
+        bar.click();
+        fixture.detectChanges();
+        flushEntries([]);
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(cells(el).length).toBe(7);
+        expect(document.activeElement).toBe(cell(el, TODAY));
+      });
+
+      it('] across a week boundary keeps focus on the newly selected cell, and a second ] keeps working', async () => {
+        const { fixture, el, navigate } = await openNarrow('/accounting?month=2026-10&day=2026-10-24');
+        flushEntries([]);
+        fixture.detectChanges();
+        const saturday = cell(el, '2026-10-24');
+        saturday.focus();
+        saturday.dispatchEvent(new KeyboardEvent('keydown', { key: ']', bubbles: true, cancelable: true }));
+        fixture.detectChanges();
+        flushEntries([]);
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(navigate).toHaveBeenLastCalledWith([], dayWrite('2026-10', '2026-10-25'));
+        expect(focusedDate()).toBe('2026-10-25');
+        (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: ']', bubbles: true, cancelable: true }));
+        fixture.detectChanges();
+        flushEntries([]);
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(navigate).toHaveBeenLastCalledWith([], dayWrite('2026-10', '2026-10-26'));
+        expect(focusedDate()).toBe('2026-10-26');
+      });
+
+      it('a swipe on the day area does not pull focus into the grid', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10&day=2026-10-24');
+        flushEntries([]);
+        fixture.detectChanges();
+        (document.activeElement as HTMLElement | null)?.blur();
+        swipe(el.querySelector('.day-area')!, [200, 300], [120, 305]);
+        fixture.detectChanges();
+        flushEntries([]);
+        fixture.detectChanges();
+        await fixture.whenStable();
+        expect(document.activeElement === document.body || !el.querySelector('app-calendar-month')!.contains(document.activeElement)).toBe(true);
+      });
     });
 
     it('tapping a neighbour-month day in the strip selects it and month follows (Review Focus 1)', async () => {
