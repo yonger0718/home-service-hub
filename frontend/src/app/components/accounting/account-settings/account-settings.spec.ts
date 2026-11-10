@@ -10,6 +10,7 @@ import { MockInstance, afterEach, describe, expect, it, onTestFinished, vi } fro
 import { AccountDetail, LedgerAccount, RewardRule, RewardUsage } from '../../../models/accounting.model';
 import { ACCOUNT_LOGOS } from '../../../theme/account-logos';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { focusables } from '../accounting-ui';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
 import { AccountSettingsComponent, accountToInput, decimalText } from './account-settings';
@@ -2071,6 +2072,135 @@ describe('AccountSettingsComponent', () => {
       expect(escape.defaultPrevented).toBe(true);
       expect(sheet(fixture)).toBeNull();
       expect(el(fixture).ownerDocument.activeElement).toBe(el(fixture).querySelector('button.row-credit_limit'));
+    });
+
+    /** Opens a 外觀 source tab inside the look sheet via its seg radio. */
+    function sheetSource(fixture: ComponentFixture<AccountSettingsComponent>, label: string): void {
+      Array.from(sheet(fixture)!.querySelectorAll<HTMLButtonElement>('.seg-toggle [role=radio]'))
+        .find(b => b.textContent?.trim() === label)!
+        .click();
+      fixture.detectChanges();
+    }
+
+    it('phone 外觀 is one 圖示 row with the summary and hint', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+
+      expect(el(fixture).querySelector('#s-look app-account-look')).toBeNull();
+      expect(texts(fixture, '#s-look .set-card .set-row .row-label')).toEqual(['圖示']);
+      const row = el(fixture).querySelector<HTMLButtonElement>('#s-look .set-card button.set-row.row-look')!;
+      expect(row.type).toBe('button');
+      expect(texts(fixture, '.row-look .row-label')).toEqual(['圖示']);
+      expect(texts(fixture, '.row-look .row-hint')).toEqual(['上傳圖片、內建 logo 或文字＋顏色']);
+      expect(texts(fixture, '.row-look .row-v')).toEqual(['文字 💳']);
+      expect(row.querySelector('svg[aria-hidden="true"] path')?.getAttribute('d')).toBe('M9 18l6-6-6-6');
+      expect(sheet(fixture)).toBeNull();
+    });
+
+    it('the 圖示 row opens the sheet with the look block, the title 圖示 and focus on the checked source radio', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      const doc = el(fixture).ownerDocument;
+      click(fixture, 'button.row-look');
+
+      const open = sheet(fixture)!;
+      expect(open.getAttribute('aria-label')).toBe('圖示');
+      expect(open.querySelector('h3')?.textContent?.trim()).toBe('圖示');
+      expect(open.querySelector('app-account-look')).not.toBeNull();
+      expect(open.querySelectorAll('app-account-look').length).toBe(1);
+      expect(open.querySelector('.field-error')).toBeNull();
+      const checked = open.querySelector<HTMLElement>('.seg-toggle [aria-checked="true"]')!;
+      expect(checked.textContent?.trim()).toBe('文字＋顏色');
+      expect(doc.activeElement).toBe(checked);
+      expect((doc.activeElement as HTMLElement).matches('input[type=file], .color-input')).toBe(false);
+    });
+
+    it('the 圖示 row focuses the 上傳圖片 radio, not the file input, for an uploaded image', async () => {
+      await phoneSetup();
+      const fixture = render({ ...DETAIL, logo_hash: 'h1' } as AccountDetail);
+      const doc = el(fixture).ownerDocument;
+      expect(texts(fixture, '.row-look .row-v')).toEqual(['上傳的圖片']);
+      click(fixture, 'button.row-look');
+      // The sheet's preview tile loads the uploaded image.
+      http.expectOne('/api/accounting/accounts/11/logo.png?v=h1').flush(new Blob([new Uint8Array(1)], { type: 'image/png' }));
+
+      const open = sheet(fixture)!;
+      expect(open.querySelector('input[type=file]')).not.toBeNull();
+      const checked = open.querySelector<HTMLElement>('.seg-toggle [aria-checked="true"]')!;
+      expect(checked.textContent?.trim()).toBe('上傳圖片');
+      expect(doc.activeElement).toBe(checked);
+      expect(doc.activeElement).not.toBe(open.querySelector('input[type=file]'));
+    });
+
+    it('picking a logo inside the sheet updates the row value and the payload', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      click(fixture, 'button.row-look');
+
+      sheetSource(fixture, '內建 logo');
+      sheet(fixture)!.querySelector<HTMLButtonElement>('.logo-grid .logo-opt[aria-label="國泰世華"]')!.click();
+      fixture.detectChanges();
+      click(fixture, '.sheet .sheet-done');
+
+      expect(sheet(fixture)).toBeNull();
+      expect(texts(fixture, '.row-look .row-v')).toEqual(['內建 logo · 國泰世華']);
+      click(fixture, '.save-bar .save-bar-save');
+      const put = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/accounts/11');
+      expect(put.request.body.logo).toBe('cathay-united');
+      put.flush({ ...DETAIL, logo: 'cathay-united' });
+      fixture.detectChanges();
+    });
+
+    it('Tab wraps inside the look sheet and Escape returns focus to the 圖示 row', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      const doc = el(fixture).ownerDocument;
+      click(fixture, 'button.row-look');
+      const open = sheet(fixture)!;
+
+      const items = focusables(open);
+      const first = items[0];
+      const last = items[items.length - 1];
+      expect(first).toBe(open.querySelector('.seg-toggle [aria-checked="true"]'));
+      expect(last).toBe(open.querySelector('.sheet-done'));
+      expect(last.textContent?.trim()).toBe('完成');
+      last.focus();
+      const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+      last.dispatchEvent(tab);
+      expect(tab.defaultPrevented).toBe(true);
+      expect(doc.activeElement).toBe(first);
+
+      // One tab stop per radio group on every source tab; the hidden file / colour inputs are never reachable.
+      const reachable = (selector: string) => focusables(open).filter(e => e.matches(selector));
+      expect(reachable('.seg-toggle [role=radio]').length).toBe(1);
+      expect(reachable('.swatch').length).toBe(1);
+      expect(reachable('input[type=file], .color-input')).toEqual([]);
+
+      sheetSource(fixture, '內建 logo');
+      expect(reachable('.seg-toggle [role=radio]').length).toBe(1);
+      const logos = reachable('.logo-opt');
+      expect(logos.length).toBe(1);
+      expect(logos[0].getAttribute('tabindex')).toBe('0');
+      expect(reachable('input[type=file], .color-input')).toEqual([]);
+
+      sheetSource(fixture, '上傳圖片');
+      expect(reachable('.seg-toggle [role=radio]').length).toBe(1);
+      expect(open.querySelector('input[type=file]')).not.toBeNull();
+      expect(reachable('input[type=file], .color-input')).toEqual([]);
+
+      sheetSource(fixture, '文字＋顏色');
+      expect(reachable('.seg-toggle [role=radio]').length).toBe(1);
+      expect(reachable('.swatch').length).toBe(1);
+      expect(open.querySelector('.color-input')).not.toBeNull();
+      expect(reachable('input[type=file], .color-input')).toEqual([]);
+
+      const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      (doc.activeElement as HTMLElement).dispatchEvent(escape);
+      fixture.detectChanges();
+
+      expect(escape.defaultPrevented).toBe(true);
+      expect(sheet(fixture)).toBeNull();
+      expect(doc.activeElement).toBe(el(fixture).querySelector('button.row-look'));
     });
 
     it('phone: 放棄/儲存 bar appears only when dirty', async () => {

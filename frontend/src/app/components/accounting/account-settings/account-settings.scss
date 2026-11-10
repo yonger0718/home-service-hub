@@ -270,6 +270,14 @@ button.set-row { cursor: pointer; }
     width: 100%;
   }
 }
+/* 外觀 in the sheet: the look block stacks full-width and the sheet scrolls (the logo grid is tall). */
+.row-sheet.look-sheet {
+  max-height: 80vh;
+  overflow: auto;
+
+  .sheet-control { align-items: stretch; }
+  app-account-look ::ng-deep .look { align-items: stretch; flex-direction: column; }
+}
 
 /* Height of the phone tab bar (mobile-nav.scss `.m-tabbar`, fixed at the viewport bottom; its shell adds the
    safe-area inset below it). No shared token exists; keep in step with `.m-tabbar` and app.scss $bottom-bar-height. */

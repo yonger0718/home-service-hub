@@ -40,7 +40,7 @@ import { fieldErrors, writeErrorMessage } from '../http-errors';
 import { AccountingToastService } from '../accounting-toast';
 import { logoFileTooLarge, logoUploadErrorMessage } from '../logo-upload-errors';
 import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
-import { AccountLookSectionComponent } from './look-section/look-section';
+import { AccountLookSectionComponent, lookSummary } from './look-section/look-section';
 import {
   REWARD_WINDOW_LABELS, RULE_STATE_LABELS, basicOverlapRuleId, periodText, postingSummary, ruleLabel, ruleState, ruleToInput,
 } from '../reward-rule-text';
@@ -245,7 +245,7 @@ export const FIELD_SECTION: Readonly<Record<string, SectionId>> = {
 };
 
 /** Phone rows whose control (a stepper or an amount field) opens in the page's bottom sheet. */
-export type SheetRow = 'opening_balance' | 'closing_day' | 'due_value' | 'credit_limit' | 'fx_fee_pct';
+export type SheetRow = 'opening_balance' | 'closing_day' | 'due_value' | 'credit_limit' | 'fx_fee_pct' | 'look';
 
 interface LoadedAccount {
   loadId: number;
@@ -748,7 +748,8 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     this.sheetRow.set(row);
     afterNextRender(() => {
       const sheet = this.rowSheet()?.nativeElement;
-      (sheet?.querySelector<HTMLElement>('input, .val') ?? sheet)?.focus();
+      // The look sheet's checked 圖示來源 radio; the other sheets' input or stepper value (never a hidden input).
+      (sheet?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"], input:not([tabindex="-1"]), .val') ?? sheet)?.focus();
     }, { injector: this.injector });
   }
 
@@ -791,6 +792,8 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
         return '信用額度';
       case 'fx_fee_pct':
         return '手續費 %';
+      case 'look':
+        return '圖示';
     }
   }
 
@@ -808,6 +811,8 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
         return form.credit_limit.trim() ? `$${groupAmount(form.credit_limit.trim())}` : '未設定';
       case 'fx_fee_pct':
         return form.fx_fee_pct.trim() ? `${form.fx_fee_pct.trim()}%` : '未設定';
+      case 'look':
+        return lookSummary(this.logoHash(), form.logo, form.icon);
     }
   }
 
