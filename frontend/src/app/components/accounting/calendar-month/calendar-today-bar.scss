@@ -45,7 +45,8 @@
 }
 
 .tb-names {
-  color: var(--text-muted, inherit);
+  display: block;
+  color: var(--app-text-muted);
   font-size: var(--fs-micro, 0.72rem);
   overflow: hidden;
   text-overflow: ellipsis;
