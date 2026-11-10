@@ -70,10 +70,10 @@
 
 ## 4. Narrow layout (PR C)
 
-- [ ] 4.1 One-line month figures; grid with dots; 今天 bar and 回到今天
-- [ ] 4.2 Week collapse on pick; 展開整月 handle
-- [ ] 4.3 Day header with ‹ ›; swipes on the day area (day) and the week strip (7 days, same weekday) only when horizontal movement dominates; `[` `]` keys
-- [ ] 4.4 Tests at 390 px: default, pick, swipe, vertical scroll not swallowed, 回到今天, back from an entry restores the week and day
+- [x] 4.1 One-line month figures; grid with dots; 今天 bar and 回到今天
+- [x] 4.2 Week collapse on pick; 展開整月 handle
+- [x] 4.3 Day header with ‹ ›; swipes on the day area (day) and the week strip (7 days, same weekday) only when horizontal movement dominates; `[` `]` keys
+- [x] 4.4 Tests at 390 px: default, pick, swipe, vertical scroll not swallowed, 回到今天, back from an entry restores the week and day
 
 ## 5. Wrap-up
 
