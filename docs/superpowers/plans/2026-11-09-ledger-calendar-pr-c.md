@@ -151,13 +151,16 @@ it('shows 0 筆 while the card is null in the current month', () => {});
 - Modify: `frontend/src/app/components/accounting/calendar-day-panel/calendar-day-panel.ts`, `.html`, `.scss`, `calendar-day-panel.spec.ts`
 
 **Interfaces:**
-- Produces: `readonly narrow = input(false);` — when true: the `.dp-summary` (本月摘要) button is not rendered; after the rows / empty block in day mode a `<p class="dp-swipe-hint">左右滑動換一天</p>` is rendered; host class `dp--narrow` (SCSS: no pane padding-top, header without the summary slot). Everything else (‹ › `前一天` / `後一天`, `[` `]` host keys, bill line, states, ＋ 在這天記一筆, outputs) unchanged.
+- Produces: `readonly narrow = input(false);` — when true: the `.dp-summary` (本月摘要) button is not rendered; after the rows / empty block in day mode a `<p class="dp-swipe-hint">左右滑動換一天</p>` is rendered; host class `dp--narrow` (SCSS: no pane padding-top, header without the summary slot). Artboard fidelity (CalendarPhone `dayLabel` / `dayNetColor`, lines 461–463), narrow only: the `.dp-label` reads `{dayLabel(day)} · 今天` when `day() === today()` (wide keeps the plain label); the net inside `.dp-sub` is wrapped `<b class="dp-net" [class.neg]="net < 0" [class.pos]="net > 0">` and `.dp--narrow .dp-net` takes `--tone-neg` / `--tone-pos` (zero stays muted) — on wide screens `.dp-net` inherits the muted colour, so the wide look is unchanged; `.dp--narrow .dp-step { border: 0; }` (borderless chevrons). Everything else (‹ › `前一天` / `後一天`, `[` `]` host keys, bill line, states, ＋ 在這天記一筆, outputs) unchanged.
 
 - [ ] **Step 1: Failing tests**:
 
 ```ts
 it('narrow: hides the 本月摘要 button and shows the swipe hint', () => { /* narrow true, mode day → no .dp-summary; .dp-swipe-hint text 左右滑動換一天 */ });
 it('wide (default): keeps 本月摘要 and has no swipe hint', () => {});
+it('narrow: today reads 「10/22 週四 · 今天」, another day has no suffix', () => { /* narrow, day = today 2026-10-22 → .dp-label '10/22 週四 · 今天'; day 2026-10-21 → '10/21 週三' */ });
+it('wide: today has no · 今天 suffix', () => {});
+it('the net carries .neg / .pos by sign (zero: neither)', () => { /* a DayNet (see dayNetOf in timeline.ts) with a negative main-currency amount → .dp-net.neg; positive → .pos; zero → neither; text unchanged '3 筆 · −$3,096' */ });
 ```
 
 - [ ] **Step 2: Run — FAIL.**  - [ ] **Step 3: Implement.**  - [ ] **Step 4: Run — PASS; tsc.**
@@ -300,7 +303,7 @@ it('at 820 px the row opens the right-hand sheet, the strip stays and the opened
 
 - Narrow = phone AND sheet (spec says "below 1024 px"); the sheet keeps opening the detail on the right.
 - Tapping the selected day again in the week strip keeps today's toggle behaviour (`selectDay` clears the day → the month grid returns); 展開整月 is the explicit affordance, the toggle is the shortcut. Consistent with the wide grid.
-- The day section reuses `CalendarDayPanelComponent` (unfolded rows, as ruled for PR B) instead of the old `.day-entries` list; the bill line markup therefore exists once (closes the PR B T5-3 note).
+- The day section reuses `CalendarDayPanelComponent` (unfolded rows, as ruled for PR B) instead of the old `.day-entries` list; the bill line markup therefore exists once (closes the PR B T5-3 note). The CalendarPhone artboard deltas (coloured net, `· 今天` suffix, borderless chevrons) are carried by the panel's `narrow` variant (Task 4), so the phone matches the design without a second header.
 - Week-mode outside cells become pickable (Review Focus 1); in month mode they stay disabled.
 - Swipe thresholds: 48 px and 1.5× dominance; pointer events WITH pointer capture (a finger drifting off the 52 px strip still completes), `touch-action: pan-y`, and the click following a recognised swipe is swallowed so the button under the finger does not navigate a second time (plan round AGENT-497 findings 1–2).
 - The month grid without a day has no swipe (a month swipe is not in the spec; ‹ › remain the month controls); the directive is attached only in week mode, never on the wide grid.
