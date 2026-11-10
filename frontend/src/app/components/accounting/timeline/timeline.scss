@@ -325,6 +325,22 @@ app-split-folder {
   }
 }
 
+.cal-figures-row {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  margin: 2px 0 6px;
+
+  .cal-figures {
+    margin: 0;
+  }
+
+  .sum-scope {
+    flex: 0 1 auto;
+  }
+}
+
 .cal-figures {
   align-items: baseline;
   display: flex;

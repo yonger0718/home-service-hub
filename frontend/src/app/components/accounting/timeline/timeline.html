@@ -186,22 +186,24 @@
 
   @if (view() === 'calendar') {
     @if (narrowCalendar()) {
-      <dl class="cal-figures" aria-label="本月摘要" [attr.aria-busy]="summaryLoading() ? 'true' : null">
-        @if (summaryError()) {
-          <dt>本月</dt>
-          <dd class="cal-figures-error">摘要讀取失敗 <button type="button" class="retry sum-retry" (click)="retrySummary()">重試</button></dd>
-        } @else {
-          <dt>支出</dt>
-          <dd class="neg sum-expense">{{ summary() ? expenseText(summary()!) : '—' }}</dd>
-          <dt>收入</dt>
-          <dd class="pos sum-income">{{ summary() ? incomeText(summary()!) : '—' }}</dd>
-          <dt>結餘</dt>
-          <dd class="sum-net">{{ summary() ? formatSigned(summary()!.net, summary()!.currency) : '—' }}</dd>
-        }
+      <div class="cal-figures-row">
+        <dl class="cal-figures" aria-label="本月摘要" [attr.aria-busy]="summaryLoading() ? 'true' : null">
+          @if (summaryError()) {
+            <dt>本月</dt>
+            <dd class="cal-figures-error">摘要讀取失敗 <button type="button" class="retry sum-retry" (click)="retrySummary()">重試</button></dd>
+          } @else {
+            <dt>支出</dt>
+            <dd class="neg sum-expense">{{ summary() ? expenseText(summary()!) : '—' }}</dd>
+            <dt>收入</dt>
+            <dd class="pos sum-income">{{ summary() ? incomeText(summary()!) : '—' }}</dd>
+            <dt>結餘</dt>
+            <dd class="sum-net">{{ summary() ? formatSigned(summary()!.net, summary()!.currency) : '—' }}</dd>
+          }
+        </dl>
         @if (filtersActive()) {
           <small class="sum-scope">全月 · 未套篩選</small>
         }
-      </dl>
+      </div>
     }
     @if (dailyError()) {
       <p class="load-error daily-error">
@@ -212,25 +214,34 @@
     @if (dailyLoading() && daily()) {
       <p class="daily-updating" role="status">更新中</p>
     }
-    <app-calendar-month
-      [attr.aria-busy]="dailyLoading() ? 'true' : null"
-      [loading]="dailyLoading() && !daily()"
-      [failed]="dailyError()"
-      [month]="month()"
-      [days]="daily()?.days ?? []"
-      [currency]="daily()?.currency ?? mainCurrency()"
-      [weekStart]="weekStart()"
-      [selected]="selectedDay()"
-      [billing]="billing()"
-      [dots]="calendarDots()"
-      [invoiceDays]="invoiceDays()"
-      [paidDays]="paidDays()"
-      [compact]="layoutMode.mode() !== 'panes'"
-      [weekOf]="narrowCalendar() ? selectedDay() : null"
-      [today]="today()"
-      (daySelected)="selectDay($event)"
-      (dayStep)="stepDay($event)"
-    />
+    @if (narrowCalendar() && selectedDay()) {
+      <div class="strip-area" appSwipeX (swipeX)="stepDay(7 * $event)">
+        <ng-container *ngTemplateOutlet="grid" />
+      </div>
+    } @else {
+      <ng-container *ngTemplateOutlet="grid" />
+    }
+    <ng-template #grid>
+      <app-calendar-month
+        [attr.aria-busy]="dailyLoading() ? 'true' : null"
+        [loading]="dailyLoading() && !daily()"
+        [failed]="dailyError()"
+        [month]="month()"
+        [days]="daily()?.days ?? []"
+        [currency]="daily()?.currency ?? mainCurrency()"
+        [weekStart]="weekStart()"
+        [selected]="selectedDay()"
+        [billing]="billing()"
+        [dots]="calendarDots()"
+        [invoiceDays]="invoiceDays()"
+        [paidDays]="paidDays()"
+        [compact]="layoutMode.mode() !== 'panes'"
+        [weekOf]="narrowCalendar() ? selectedDay() : null"
+        [today]="today()"
+        (daySelected)="selectDay($event)"
+        (dayStep)="stepDay($event)"
+      />
+    </ng-template>
     @if (narrowCalendar()) {
       @if (selectedDay()) {
         <button type="button" class="expand-month" aria-label="回到整月日曆" (click)="clearDay()"><span class="expand-handle" aria-hidden="true"></span>展開整月</button>
@@ -238,45 +249,11 @@
         <app-calendar-today-bar [card]="todayCard()" [current]="isCurrentMonth()" [today]="today()" (pick)="goToday()" />
       }
     }
-    @if (selectedDay() && !wideCalendar()) {
-      <div class="day-entries">
-        <div class="day day-net">
-          <span>{{ selectedDayText() }}</span>
-          @if (dayNet(); as d) {
-            <span class="day-total">
-              @if (d.excluded) {
-                <small class="net-hint">僅計主幣種</small>
-              }
-              <b [class.neg]="d.net < 0" [class.pos]="d.net > 0">{{ d.text }}</b>
-            </span>
-          }
-        </div>
-        @if (billLines().length > 0) {
-          <div class="bills" role="group" aria-label="繳費提醒">
-            @for (bill of billLines(); track bill.key) {
-              <button type="button" class="bill" [class.partial]="bill.paidText !== null" (click)="openCard(bill.accountId)">
-                <i class="pi pi-credit-card" aria-hidden="true"></i> {{ bill.name }} 帳單 {{ bill.amountText }} · 到期
-                @if (bill.paidText) {
-                  <span class="paid-mark">{{ bill.paidText }}</span>
-                }
-              </button>
-            }
-          </div>
-        }
-        @if (dayError()) {
-          <div class="load-error-block">
-            <p class="load-error">記錄讀取失敗</p>
-            <button type="button" class="retry day-retry" (click)="retryDay()">重試</button>
-          </div>
-        } @else if (dayLoading() && dayEntries().length === 0) {
-          <app-skeleton rows="3" />
-        } @else {
-          @for (row of dayRows(); track row.key) {
-            <ng-container *ngTemplateOutlet="rowTemplate; context: { $implicit: row }" />
-          } @empty {
-            <p class="empty">{{ filtersActive() ? '這天沒有符合條件的記錄' : '這天沒有記錄' }}</p>
-          }
-        }
+    @if (narrowCalendar() && selectedDay()) {
+      <div class="day-area" appSwipeX (swipeX)="stepDay($event)">
+        <app-calendar-day-panel [narrow]="true" mode="day" [day]="selectedDay()" [today]="today()" [rows]="paneDayRows()" [net]="paneDayNet()"
+          [state]="dayState()" [billLines]="billLines()" [currency]="mainCurrency()" [filtered]="filtersActive()" [selectedId]="selectedId()"
+          (step)="stepDay($event)" (open)="open($event)" (add)="onAddEntry($event)" (openCard)="openCard($event)" (retry)="retryDay()" />
       </div>
     }
   } @else {
