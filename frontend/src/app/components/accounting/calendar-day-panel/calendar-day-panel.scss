@@ -185,3 +185,40 @@
   font-weight: 600;
   margin-left: 4px;
 }
+
+/* The net keeps the muted .dp-sub colour on the wide pane; the narrow variant tones it by sign. */
+.dp-net {
+  font-weight: inherit;
+
+  &.neg,
+  &.pos {
+    color: inherit;
+  }
+}
+
+:host(.dp--narrow) {
+  padding-top: 0;
+
+  .dp-step {
+    border: 0;
+  }
+
+  .dp-net {
+    font-weight: 700;
+
+    &.neg {
+      color: var(--tone-neg, var(--c-red));
+    }
+
+    &.pos {
+      color: var(--tone-pos, var(--c-green));
+    }
+  }
+}
+
+.dp-swipe-hint {
+  color: var(--app-text-muted);
+  font-size: var(--fs-sm, 0.85rem);
+  margin: 12px 0 0;
+  text-align: center;
+}

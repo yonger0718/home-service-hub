@@ -20,7 +20,7 @@ import type { BillLine, DayNet, TimelineDay, TimelineRow } from '../timeline/tim
   templateUrl: './calendar-day-panel.html',
   styleUrls: ['../entry-row.scss', './calendar-day-panel.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { '(keydown)': 'onKeydown($event)' },
+  host: { '(keydown)': 'onKeydown($event)', '[class.dp--narrow]': 'narrow()' },
 })
 export class CalendarDayPanelComponent {
   readonly mode = input<'day' | 'results'>('day');
@@ -42,6 +42,8 @@ export class CalendarDayPanelComponent {
   readonly hasMore = input(false);
   /** Day mode: a search or list filter is active, so an empty day says 這天沒有符合條件的記錄. */
   readonly filtered = input(false);
+  /** Narrow calendar (under the week strip): no 本月摘要, a swipe hint, 今天 on the label, the net toned by sign. */
+  readonly narrow = input(false);
   /** The open entry's id; its row gets `aria-current`. */
   readonly selectedId = input<number | null>(null);
 
@@ -65,6 +67,10 @@ export class CalendarDayPanelComponent {
   protected isCurrent(row: TimelineRow): boolean {
     const id = this.selectedId();
     return id !== null && (row.entryId === id || row.memberIds.includes(id));
+  }
+
+  protected label(day: string): string {
+    return this.narrow() && day === this.today() ? `${dayLabel(day)} · 今天` : dayLabel(day);
   }
 
   protected subText(row: TimelineRow): string {

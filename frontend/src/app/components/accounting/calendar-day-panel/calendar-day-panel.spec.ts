@@ -68,6 +68,46 @@ describe('CalendarDayPanelComponent', () => {
     expect(text(el.querySelector('button.bill'))).toContain('範例卡 帳單 $1,000 · 到期');
   });
 
+  it('narrow: hides the 本月摘要 button and shows the swipe hint', () => {
+    const { el, fixture } = render({ narrow: true });
+    expect(el.querySelector('.dp-summary')).toBeNull();
+    expect(text(el.querySelector('.dp-swipe-hint'))).toBe('左右滑動換一天');
+    expect((fixture.nativeElement as HTMLElement).classList.contains('dp--narrow')).toBe(true);
+    const withRows = render({ narrow: true, rows: [row(1)] });
+    expect(text(withRows.el.querySelector('.dp-swipe-hint'))).toBe('左右滑動換一天');
+  });
+
+  it('wide (default): keeps 本月摘要 and has no swipe hint', () => {
+    const { el, fixture } = render();
+    expect(text(el.querySelector('.dp-summary'))).toBe('本月摘要');
+    expect(el.querySelector('.dp-swipe-hint')).toBeNull();
+    expect((fixture.nativeElement as HTMLElement).classList.contains('dp--narrow')).toBe(false);
+  });
+
+  it('narrow: today reads 「10/22 週四 · 今天」, another day has no suffix', () => {
+    const todayPanel = render({ narrow: true, today: '2026-10-22', day: '2026-10-22' });
+    expect(text(todayPanel.el.querySelector('.dp-label'))).toBe('10/22 週四 · 今天');
+    const other = render({ narrow: true, today: '2026-10-22', day: '2026-10-21' });
+    expect(text(other.el.querySelector('.dp-label'))).toBe('10/21 週三');
+  });
+
+  it('wide: today has no · 今天 suffix', () => {
+    const { el } = render({ today: '2026-10-22', day: '2026-10-22' });
+    expect(text(el.querySelector('.dp-label'))).toBe('10/22 週四');
+  });
+
+  it('the net carries .neg / .pos by sign (zero: neither)', () => {
+    const neg = render({ rows: [row(1)], net: { net: -3096, text: '−$3,096', excluded: false } });
+    const negNet = neg.el.querySelector('.dp-sub .dp-net')!;
+    expect(negNet.classList.contains('neg')).toBe(true);
+    expect(text(neg.el.querySelector('.dp-sub'))).toBe('1 筆 · −$3,096');
+    const pos = render({ rows: [row(1)], net: { net: 500, text: '+$500', excluded: false } });
+    expect(pos.el.querySelector('.dp-net')!.classList.contains('pos')).toBe(true);
+    const zero = render({ rows: [row(1)], net: { net: 0, text: '$0', excluded: false } });
+    const zeroNet = zero.el.querySelector('.dp-net')!;
+    expect(zeroNet.classList.contains('neg') || zeroNet.classList.contains('pos')).toBe(false);
+  });
+
   it('shows 這天沒有記錄 and ＋ 在這天記一筆 for a past day, 還沒到這天 for a future one, and emits add with the date', () => {
     const past = render();
     expect(text(past.el.querySelector('.dp-empty'))).toBe('這天沒有記錄');
