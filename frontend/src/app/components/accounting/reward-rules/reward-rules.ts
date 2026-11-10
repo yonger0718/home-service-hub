@@ -15,7 +15,7 @@ import { leavePage } from '../accounting-ui';
 import { formatMoney } from '../format';
 import { writeErrorMessage } from '../http-errors';
 import {
-  RULE_STATE_LABELS, RewardUnit, fullDate, postingSummary, rateChip, rewardFigure, ruleTitle, usageUnit, windowText,
+  RULE_STATE_LABELS, RewardUnit, mutedLine, postingSummary, rateChip, rewardFigure, ruleTitle, usageUnit, windowText,
 } from '../reward-rule-text';
 
 export type RewardRuleFilter = RewardRuleState | 'all';
@@ -112,19 +112,6 @@ function windowLine(account: RewardRuleOverviewAccount, mixed: boolean): string 
     return `每月 1 日起算 · 本月 ${period}`;
   }
   return closing ? `${closing} · 本期 ${period}` : `本期 ${period}`;
-}
-
-function mutedLine(rule: RewardRuleOverviewRule): string | null {
-  switch (rule.state) {
-    case 'disabled':
-      return '停用中，不估算回饋';
-    case 'expired':
-      return '已結束，不再估算';
-    case 'upcoming':
-      return rule.starts_on ? `${fullDate(rule.starts_on)} 起才估算` : '尚未開始';
-    default:
-      return null;
-  }
 }
 
 export function buildCard(account: RewardRuleOverviewAccount): OverviewCard {

@@ -201,31 +201,16 @@
           <span class="k">{{ cycleLabel() }}</span>
           <a class="rules-all" routerLink="/accounting/reward-rules" [queryParams]="{ account_id: accountId() }">所有卡片的規則 ›</a>
         </div>
-        @for (rule of rules(); track rule.id; let i = $index, last = $last) {
-          @let state = ruleStateOf(rule);
-          <div class="rule-row" [attr.data-rule-id]="rule.id">
-            <div class="rule-text">
-              <span class="rule-title">
-                <span class="rule-label">{{ ruleLabel(rule) }}</span>
-                <span class="badge rule-state" [attr.data-state]="state" [class.warn]="state === 'expired'">{{ ruleStateLabels[state] }}</span>
-                @if (rule.is_basic) { <span class="badge rule-basic">基本</span> }
-                @if (rule.moze_id) { <span class="badge rule-moze">來自 MOZE</span> }
-              </span>
-              <small class="rule-posting">{{ postingSummary(rule) }}</small>
-              <small class="rule-period">{{ periodText(rule) }}</small>
-              <small class="rule-window">{{ windowLabels[rule.window] }}</small>
-              @if (usageByRule().get(rule.id); as use) {
-                <small class="rule-usage"><span class="usage-total">{{ usageText(use) }}</span> · <span class="usage-window">{{ usageWindow(use) }}</span></small>
-              }
-            </div>
-            <div class="rule-actions">
-              <app-switch class="rule-enabled" [checked]="rule.is_enabled" [disabled]="ruleBusy()" [ariaLabel]="rule.name + ' 啟用'" (checkedChange)="toggleRule(rule, $event)" />
-              <button type="button" class="rule-edit" (click)="openRule(rule)">編輯</button>
-              <button type="button" class="move-up" aria-label="上移" [disabled]="i === 0 || ruleBusy()" (click)="moveRule(i, -1)">↑</button>
-              <button type="button" class="move-down" aria-label="下移" [disabled]="last || ruleBusy()" (click)="moveRule(i, 1)">↓</button>
-            </div>
-          </div>
-        }
+        <app-account-rules
+          [rules]="rules()"
+          [usage]="usageByRule()"
+          [today]="today()"
+          [busy]="ruleBusy()"
+          (open)="openRule($event)"
+          (toggle)="toggleRule($event.rule, $event.enabled)"
+          (reorder)="reorderRules($event)"
+          (remove)="openRule($event, true)"
+        />
         @if (ruleMessage(); as m) { <small class="form-message rule-message" role="alert">{{ m }}</small> }
         <button type="button" class="rule-add" [disabled]="loadedId() === null" (click)="openRule(null)">新增規則</button>
       </div>
@@ -317,6 +302,7 @@
       [accountId]="d.id"
       [currency]="d.currency"
       [rule]="open.rule"
+      [startDelete]="open.startDelete ?? false"
       [siblings]="rules()"
       [accounts]="accounts()"
       [projects]="projects()"

@@ -92,7 +92,7 @@ Each rule row has:
 
 - a drag handle;
 - the name, a rate chip, a state tag only when the rule is not active (已停用 / 已過期 / 未開始) or is 基本, and the 「來自 MOZE」 tag as today;
-- 「· 次期 15 號入帳」;
+- 「· 次期 15 號入帳」, then 「· 至 12/31」 on an active rule that has an end date (with the year when it ends in another year) — owner ruling 2026-11-10: a running rule must show when it ends;
 - the `CapBar` underneath;
 - an enable switch;
 - ⋯ with 編輯 and 刪除.

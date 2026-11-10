@@ -23,7 +23,6 @@ import {
   LedgerAccount,
   Project,
   RewardRule,
-  RewardRuleState,
   RewardUsage,
   RoundingMode,
 } from '../../../models/accounting.model';
@@ -33,7 +32,7 @@ import { AccountIconComponent } from '../account-icon/account-icon';
 import { accountLabel, isHandledKey, restoreOverlayFocus, trapFocus } from '../accounting-ui';
 import { DueRule, cycleText, dueDate, statementPeriod } from '../cycle';
 import { DirtyAware, DirtyFormRegistry } from '../dirty-form.service';
-import { shortDate, slashDate, todayIso } from '../dates';
+import { shortDate, todayIso } from '../dates';
 import { balanceNegative, balanceText, valuationHint } from '../account-balance';
 import { decimalText, formatMoney } from '../format';
 import { fieldErrors, writeErrorMessage } from '../http-errors';
@@ -41,9 +40,8 @@ import { AccountingToastService } from '../accounting-toast';
 import { logoFileTooLarge, logoUploadErrorMessage } from '../logo-upload-errors';
 import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
 import { AccountLookSectionComponent, lookSummary } from './look-section/look-section';
-import {
-  REWARD_WINDOW_LABELS, RULE_STATE_LABELS, basicOverlapRuleId, periodText, postingSummary, ruleLabel, ruleState, ruleToInput,
-} from '../reward-rule-text';
+import { AccountRulesComponent } from './rules-section/rules-section';
+import { basicOverlapRuleId, ruleState, ruleToInput } from '../reward-rule-text';
 import { SwitchComponent } from '../../ui/switch/switch';
 import { StepperComponent } from '../../ui/stepper/stepper';
 import { AmountFieldComponent, groupAmount } from '../../ui/amount-field/amount-field';
@@ -258,7 +256,7 @@ interface LoadedAccount {
   standalone: true,
   imports: [
     RouterLink, AccountIconComponent, RewardRuleSheetComponent, SwitchComponent, StepperComponent, AmountFieldComponent,
-    PickerComponent, SegToggleComponent, NgTemplateOutlet, AccountLookSectionComponent,
+    PickerComponent, SegToggleComponent, NgTemplateOutlet, AccountLookSectionComponent, AccountRulesComponent,
   ],
   templateUrl: './account-settings.html',
   styleUrls: ['../sheet.scss', './account-settings.scss'],
@@ -423,11 +421,13 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   readonly usage = signal<RewardUsage[]>([]);
   /**
    * The usage line a rule row shows. A shared group appears once in `usage`, but its `rule_ids` may list members
-   * the rules list does not show, so it goes on the first listed rule that is a member.
+   * the rules list does not show, and members in any state, so it goes on the first listed rule that is an active
+   * member (the rows show a bar on an active rule only); with no active member it goes nowhere.
    */
   readonly usageByRule = computed(() => {
     const byRule = new Map<number, RewardUsage>();
-    const ids = this.rules().map(rule => rule.id);
+    const today = this.today();
+    const ids = this.rules().filter(rule => ruleState(rule, today) === 'active').map(rule => rule.id);
     for (const item of this.usage()) {
       const first = ids.find(id => item.rule_ids.includes(id));
       if (first !== undefined) {
@@ -437,7 +437,8 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     return byRule;
   });
   readonly projects = signal<Project[]>([]);
-  readonly ruleSheet = signal<{ rule: RewardRule | null } | null>(null);
+  /** The open rule sheet: `rule` null = create; `startDelete` opens it with the delete confirmation armed (⋯ 刪除). */
+  readonly ruleSheet = signal<{ rule: RewardRule | null; startDelete?: boolean } | null>(null);
   /** The open editor sheet; its unsaved input counts as the page's (spec §6.1 dirty-form rules). */
   private readonly ruleSheetRef = viewChild(RewardRuleSheetComponent);
   /**
@@ -446,16 +447,11 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
    */
   readonly sheetHoldsPrompt = signal(false);
   readonly ruleMessage = signal<string | null>(null);
-  /** A 啟用 / 上移 / 下移 write is in flight: those controls wait so the next write starts from the saved order. */
+  /** A 啟用 or order write is in flight: those controls wait so the next write starts from the saved order. */
   readonly ruleBusy = signal(false);
   /** `?rule=<id>` (from 回饋規則總覽): opens that rule once its account's detail is shown, then leaves the URL. */
   /** `?rule=<id>` to open that rule once loaded, or `'new'` for an empty sheet (the overview's ＋ links). */
   private pendingRuleId: number | 'new' | null = null;
-  readonly ruleLabel = ruleLabel;
-  readonly windowLabels = REWARD_WINDOW_LABELS;
-  readonly postingSummary = postingSummary;
-  readonly periodText = periodText;
-  readonly ruleStateLabels = RULE_STATE_LABELS;
 
   protected readonly SECTIONS = SECTIONS;
   /** The chip marked current: the last one tapped, or the topmost section the scroll-spy sees. */
@@ -645,16 +641,6 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
           }
         },
       });
-  }
-
-  /** 「本期 {used+estimated}／{cap}」, or 「本期 {used+estimated}」 when uncapped. */
-  usageText(item: RewardUsage): string {
-    const total = decimalText((Number(item.used) + Number(item.estimated)).toFixed(4));
-    return item.cap === null ? `本期 ${total}` : `本期 ${total}／${decimalText(item.cap)}`;
-  }
-
-  usageWindow(item: RewardUsage): string {
-    return `${slashDate(item.window_start)} – ${slashDate(item.window_end)}`;
   }
 
   /** The form, 額度共用, or an open rule sheet with unsaved input; the rule rows themselves save at once. */
@@ -1015,13 +1001,10 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     return this.errors()[field] ?? this.localErrors()[field] ?? null;
   }
 
-  ruleStateOf(rule: RewardRule): RewardRuleState {
-    return ruleState(rule, this.today());
-  }
-
-  openRule(rule: RewardRule | null): void {
+  /** Opens the rule sheet (row tap, ⋯ 編輯, 新增規則); `startDelete` from ⋯ 刪除 (ignored on a create). */
+  openRule(rule: RewardRule | null, startDelete = false): void {
     this.ruleMessage.set(null);
-    this.ruleSheet.set({ rule });
+    this.ruleSheet.set({ rule, startDelete });
   }
 
   closeRuleSheet(): void {
@@ -1055,6 +1038,10 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   onRuleDeleted(): void {
     this.onRuleSheetStayed();
     this.closeRuleSheet();
+    // The sheet handed focus back to the deleted row's ⋯ (or row), which the re-read is about to remove, dropping
+    // focus to <body>. 新增規則 is there whenever an account is loaded and is not re-created by the re-read, so it
+    // takes focus now: no wait on the response, and a failed re-read (the row stays) still leaves focus in the block.
+    this.host.nativeElement.querySelector<HTMLButtonElement>('.rule-add')?.focus();
     this.reloadRules();
   }
 
@@ -1076,17 +1063,29 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
       });
   }
 
-  /** 上移 (-1) / 下移 (+1): swaps two neighbours and sends the whole order; the response is the new list. */
-  moveRule(index: number, delta: number): void {
+  /**
+   * A drag drop or ⋯ 上移 / 下移: `ids` is the full new order. Shown at once (the rows component keeps focus on the
+   * moved rule's ⋯ assuming this happens synchronously) and sent as one order call; the response is the new list.
+   * Ignored while a rule write is in flight, so the order always starts from the saved one, and when `ids` is not a
+   * reordering of the current rules or does not change it.
+   */
+  reorderRules(ids: number[]): void {
     const id = this.loadedId();
-    const ids = this.rules().map(rule => rule.id);
-    const target = index + delta;
-    if (id === null || this.ruleBusy() || target < 0 || target >= ids.length) {
+    const detail = this.detail();
+    if (id === null || detail === null || this.ruleBusy()) {
       return;
     }
-    [ids[index], ids[target]] = [ids[target], ids[index]];
+    const saved = detail.reward_rules;
+    const byId = new Map(saved.map(rule => [rule.id, rule]));
+    if (ids.length !== saved.length || new Set(ids).size !== ids.length || ids.some(x => !byId.has(x))) {
+      return;
+    }
+    if (ids.every((x, i) => x === saved[i].id)) {
+      return;
+    }
     this.ruleMessage.set(null);
     this.ruleBusy.set(true);
+    this.detail.set({ ...detail, reward_rules: ids.map(x => byId.get(x)!) });
     const loadId = this.loadId;
     this.service
       .reorderRewardRules(id, ids)
@@ -1097,9 +1096,16 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
             return;
           }
           this.ruleBusy.set(false);
-          this.detail.update(detail => (detail ? { ...detail, reward_rules: rules } : detail));
+          this.detail.update(current => (current ? { ...current, reward_rules: rules } : current));
         },
-        error: err => this.ruleWriteFailed(loadId, err),
+        error: err => {
+          if (loadId !== this.loadId) {
+            return;
+          }
+          // Put the saved order back first: the re-read's own error path leaves `detail` as it is.
+          this.detail.update(current => (current ? { ...current, reward_rules: saved } : current));
+          this.ruleWriteFailed(loadId, err);
+        },
       });
   }
 

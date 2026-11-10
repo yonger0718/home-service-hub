@@ -117,6 +117,28 @@ export function fullDate(iso: string): string {
   return `${iso.slice(0, 4)}/${monthDay(iso)}`;
 }
 
+/** The muted line in place of the cap bar on a non-active rule; null on an active one. */
+export function mutedLine(rule: { state: RewardRuleState; starts_on: string | null }): string | null {
+  switch (rule.state) {
+    case 'disabled':
+      return '停用中，不估算回饋';
+    case 'expired':
+      return '已結束，不再估算';
+    case 'upcoming':
+      return rule.starts_on ? `${fullDate(rule.starts_on)} 起才估算` : '尚未開始';
+    default:
+      return null;
+  }
+}
+
+/** `至 12/31` on an active rule that has an end date (`至 2027/3/31` when it ends in another year); null otherwise. */
+export function untilText(rule: { state: RewardRuleState; ends_on: string | null }, today: string): string | null {
+  if (rule.state !== 'active' || rule.ends_on === null) {
+    return null;
+  }
+  return `至 ${rule.ends_on.slice(0, 4) === today.slice(0, 4) ? monthDay(rule.ends_on) : fullDate(rule.ends_on)}`;
+}
+
 /** A usage row's window: `10/26–11/25`. */
 export function windowText(usage: Pick<RewardUsage, 'window_start' | 'window_end'>): string {
   return `${monthDay(usage.window_start)}–${monthDay(usage.window_end)}`;
