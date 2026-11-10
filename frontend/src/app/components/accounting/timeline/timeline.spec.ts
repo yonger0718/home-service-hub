@@ -4088,7 +4088,7 @@ describe('buildDays', () => {
 
     it('moves the figures as a whole onto their own row when the bar itself is narrow', () => {
       expect(css).toMatch(/\.monthbar \{[^}]*container: monthbar \/ inline-size/);
-      const query = css.match(/@container monthbar \(max-width: 603px\) \{([\s\S]*?\n\})/)?.[1] ?? '';
+      const query = css.match(/@container monthbar \(max-width: 603\.98px\) \{([\s\S]*?\n\})/)?.[1] ?? '';
       expect(query).toContain('.monthbar-figures');
       expect(query).toContain('flex-basis: 100%');
       expect(query).toContain('order: 3');
@@ -4102,7 +4102,7 @@ describe('buildDays', () => {
     });
 
     it('abbreviates on the same row between 604 and 699px and keeps the full text visually hidden (tier 2)', () => {
-      const query = css.match(/@container monthbar \(min-width: 604px\) and \(max-width: 699px\) \{([\s\S]*?\n\})/)?.[1] ?? '';
+      const query = css.match(/@container monthbar \(min-width: 604px\) and \(max-width: 699\.98px\) \{([\s\S]*?\n\})/)?.[1] ?? '';
       expect(query).toMatch(/\.fig-short \{\s*display: inline;/);
       const full = query.match(/\.fig-full \{([^}]*)\}/)?.[1] ?? '';
       expect(full).toContain('clip: rect(0 0 0 0)');
@@ -4113,7 +4113,7 @@ describe('buildDays', () => {
     });
 
     it('does not abbreviate below 604px; the tier 3 query leaves both spans at their tier 1 state', () => {
-      const query = css.match(/@container monthbar \(max-width: 603px\) \{([\s\S]*?\n\})/)?.[1] ?? '';
+      const query = css.match(/@container monthbar \(max-width: 603\.98px\) \{([\s\S]*?\n\})/)?.[1] ?? '';
       expect(query).not.toContain('.fig-');
     });
   });
