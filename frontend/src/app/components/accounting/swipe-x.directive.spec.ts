@@ -147,7 +147,7 @@ describe('SwipeXDirective', () => {
     const { host, cmp } = setup();
     const { capture, release } = stubCapture(host);
     host.dispatchEvent(ptr('pointerdown', 200, 100));
-    host.dispatchEvent(ptr('pointermove', 170, 105));
+    host.dispatchEvent(ptr('pointermove', 140, 105));
     expect(capture).toHaveBeenCalledWith(1);
     // jsdom does not retarget captured pointers, so the up goes to the host with out-of-box coordinates.
     host.dispatchEvent(ptr('pointerup', 120, 140));
@@ -166,14 +166,71 @@ describe('SwipeXDirective', () => {
     expect(cmp.clicks).toBe(1);
   });
 
-  it('captures once after a horizontal move of 12 px', () => {
-    const { host } = setup();
+  it('does not capture on a 30 px horizontal slip, emits nothing, and the click still reaches the child (reviewer case)', () => {
+    const { host, btn, cmp } = setup();
     const { capture } = stubCapture(host);
-    host.dispatchEvent(ptr('pointerdown', 100, 100));
-    host.dispatchEvent(ptr('pointermove', 112, 100));
-    host.dispatchEvent(ptr('pointermove', 130, 100));
+    btn.dispatchEvent(ptr('pointerdown', 100, 100));
+    btn.dispatchEvent(ptr('pointermove', 115, 100));
+    btn.dispatchEvent(ptr('pointermove', 130, 100));
+    btn.dispatchEvent(ptr('pointerup', 130, 100));
+    btn.click();
+    expect(capture).not.toHaveBeenCalled();
+    expect(cmp.got).toEqual([]);
+    expect(cmp.clicks).toBe(1);
+  });
+
+  it('captures once when the move crosses the swipe threshold, then emits and swallows the click', () => {
+    const { host, btn, cmp } = setup();
+    const { capture } = stubCapture(host);
+    btn.dispatchEvent(ptr('pointerdown', 200, 100));
+    btn.dispatchEvent(ptr('pointermove', 170, 100));
+    expect(capture).not.toHaveBeenCalled();
+    btn.dispatchEvent(ptr('pointermove', 150, 100));
+    btn.dispatchEvent(ptr('pointermove', 140, 100));
     expect(capture).toHaveBeenCalledTimes(1);
     expect(capture).toHaveBeenCalledWith(1);
+    btn.dispatchEvent(ptr('pointerup', 140, 100));
+    expect(cmp.got).toEqual([1]);
+    btn.click();
+    expect(cmp.clicks).toBe(0);
+  });
+
+  it('emits exactly once when pointerup is dispatched on document.body, outside the host', () => {
+    const { host, cmp } = setup();
+    host.dispatchEvent(ptr('pointerdown', 200, 100));
+    document.body.dispatchEvent(ptr('pointermove', 130, 100));
+    document.body.dispatchEvent(ptr('pointerup', 120, 100));
+    document.body.dispatchEvent(ptr('pointerup', 120, 100));
+    expect(cmp.got).toEqual([1]);
+  });
+
+  it('pointercancel on document clears the gesture and removes the document listeners', () => {
+    const { host, cmp } = setup();
+    const remove = vi.spyOn(document, 'removeEventListener');
+    host.dispatchEvent(ptr('pointerdown', 200, 100));
+    document.dispatchEvent(ptr('pointercancel', 200, 100));
+    expect(remove.mock.calls.map((c) => c[0]).sort()).toEqual(['pointercancel', 'pointermove', 'pointerup']);
+    document.dispatchEvent(ptr('pointerup', 100, 100));
+    expect(cmp.got).toEqual([]);
+  });
+
+  it('destroying the host mid-gesture removes the document listeners', () => {
+    const { fixture, host, cmp } = setup();
+    const remove = vi.spyOn(document, 'removeEventListener');
+    host.dispatchEvent(ptr('pointerdown', 200, 100));
+    fixture.destroy();
+    expect(remove.mock.calls.map((c) => c[0]).sort()).toEqual(['pointercancel', 'pointermove', 'pointerup']);
+    expect(() => document.dispatchEvent(ptr('pointerup', 100, 100))).not.toThrow();
+    expect(cmp.got).toEqual([]);
+  });
+
+  it('disabled: pointerdown adds no document listeners', () => {
+    const { fixture, host, cmp } = setup();
+    cmp.off.set(true);
+    fixture.detectChanges();
+    const add = vi.spyOn(document, 'addEventListener');
+    host.dispatchEvent(ptr('pointerdown', 200, 100));
+    expect(add).not.toHaveBeenCalled();
   });
 
   it('does not capture on a mostly vertical move', () => {
