@@ -30,6 +30,64 @@
 }
 .rule-more { cursor: pointer; }
 
+/* Only the handle claims touch moves, so the page still scrolls from the rest of the row. */
+.rule-handle {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.rule-row.dragging {
+  background: var(--app-surface);
+  box-shadow: var(--app-raised-shadow);
+  outline: 1px solid var(--app-border);
+
+  .rule-handle { color: var(--app-primary); cursor: grabbing; }
+}
+
+/* The drop target between rows; the negative margins cancel its height and the extra flex gap, so the rows
+   (and the rects recorded at pointerdown) do not move while dragging. */
+.rule-drop-line {
+  background: var(--app-primary);
+  border-radius: var(--radius-pill);
+  flex: none;
+  height: 2px;
+  margin: -4px 0;
+}
+
+.rule-more-wrap { flex: none; position: relative; }
+.rule-menu {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--app-raised-shadow);
+  display: flex;
+  flex-direction: column;
+  min-width: 140px;
+  padding: 4px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 1100;
+}
+.rule-menu-item {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--app-text);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 10px;
+  padding: 10px 12px;
+  text-align: left;
+  width: 100%;
+
+  &:hover:not(:disabled), &:focus-visible { background: var(--app-surface-soft); outline: none; }
+  &:disabled { color: var(--app-text-muted); cursor: default; }
+  &.danger:not(:disabled) { color: var(--app-danger); }
+}
+
 .rule-open {
   background: none;
   border: 0;
