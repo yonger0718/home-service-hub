@@ -362,7 +362,22 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-.hh-title       { font-size: var(--fs-display); font-weight: var(--fw-heavy); letter-spacing: var(--tracking-tighter); color: var(--app-text); line-height: var(--lh-tight); }
+/* No pull-to-refresh while a bottom sheet is open: the scrollport may be html or body, the accidental pull usually
+   starts on the fixed backdrop (not a scroll container), and overscroll-behavior on a sheet whose content does not
+   overflow has no effect (WebKit 243452 / Chromium 813094). */
+html:has(.overlay, .filter-overlay),
+html:has(.overlay, .filter-overlay) body {
+  overscroll-behavior-y: none;
+}
+@media (max-width: 759.98px) {
+  /* Scroll lock: the reliable iOS backstop. Phone only, so a desktop scrollbar never disappears under a sheet. */
+  html:has(.overlay, .filter-overlay),
+  html:has(.overlay, .filter-overlay) body {
+    overflow: hidden;
+  }
+}
+
+.hh-title      { font-size: var(--fs-display); font-weight: var(--fw-heavy); letter-spacing: var(--tracking-tighter); color: var(--app-text); line-height: var(--lh-tight); }
 .hh-section-title { font-size: var(--fs-h2); font-weight: var(--fw-heavy); letter-spacing: var(--tracking-tight); color: var(--app-text); }
 .hh-value       { font-size: var(--fs-value); font-weight: var(--fw-heavy); line-height: var(--lh-tight); color: var(--app-text); font-variant-numeric: tabular-nums; }
 .hh-card-title  { font-size: var(--fs-card-title); font-weight: var(--fw-bold); text-transform: uppercase; letter-spacing: 0.05em; color: var(--app-text); }
