@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, TestRequest, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Provider, signal } from '@angular/core';
@@ -4035,5 +4037,22 @@ describe('buildDays', () => {
       expect(buildDays([reward(1, '2.0000'), reward(2, '3.0000')], 'TWD', true)).toEqual([]);
     });
 
+  });
+  describe('month bar styles (#370)', () => {
+    const css = readFileSync(join(process.cwd(), 'src/app/components/accounting/timeline/timeline.scss'), 'utf8');
+
+    it('never wraps the month label', () => {
+      const block = css.match(/\.monthbar \{[\s\S]*?\n  b \{([^}]*)\}/)?.[1] ?? '';
+      expect(block).toContain('white-space: nowrap');
+    });
+
+    it('moves the figures as a whole onto their own row when the bar itself is narrow', () => {
+      expect(css).toMatch(/\.monthbar \{[^}]*container-type: inline-size/);
+      const query = css.match(/@container[^{]*\(max-width: \d+px\) \{([\s\S]*?\n\})/)?.[1] ?? '';
+      expect(query).toContain('.monthbar-figures');
+      expect(query).toContain('flex-basis: 100%');
+      expect(query).toContain('order: 3');
+      expect(css.match(/\.monthbar-figures \{([^}]*)\}/)?.[1]).toContain('flex-wrap: nowrap');
+    });
   });
 });

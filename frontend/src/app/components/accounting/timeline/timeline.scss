@@ -42,7 +42,9 @@ app-split-folder {
 
 .monthbar {
   align-items: center;
+  container-type: inline-size;
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   justify-content: space-between;
   padding: 4px 0;
@@ -52,6 +54,7 @@ app-split-folder {
     font-size: 1.05rem;
     letter-spacing: -0.01em;
     text-align: center;
+    white-space: nowrap;
   }
 
   button {
@@ -68,11 +71,12 @@ app-split-folder {
 .monthbar-figures {
   align-items: baseline;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   font-size: var(--fs-sm);
-  gap: 8px 20px;
+  gap: 0 6px;
   margin: 0;
   margin-inline: auto 8px;
+  white-space: nowrap;
 
   dt {
     color: var(--app-text-muted);
@@ -96,6 +100,16 @@ app-split-folder {
   .monthbar-error {
     color: var(--app-text-muted);
     font-weight: 400;
+  }
+}
+
+/* The decision follows the bar's own width (the list pane shrinks with the sidebar), not the viewport. */
+@container (max-width: 699px) {
+  .monthbar-figures {
+    flex-basis: 100%;
+    margin-inline: 0;
+    order: 3;
+    padding-inline: 10px;
   }
 }
 
