@@ -1,13 +1,14 @@
-:host { display: flex; flex-direction: column; gap: 6px; }
+/* The rows sit flush, one hairline under each (D6 artboard: AccountSettingsDesktop "拖曳排序" rows). */
+:host { display: flex; flex-direction: column; min-width: 0; }
 
-/* One line per rule (D6): handle · name, chip, tags, posting and the bar · switch · ⋯. */
+/* One line per rule at every width: handle · name, chip, tags, posting and the bar · switch · ⋯. */
 .rule-row {
   align-items: center;
-  background: var(--app-surface-soft);
-  border-radius: var(--radius-md);
+  border-bottom: 1px solid var(--app-border);
   display: flex;
-  gap: 6px;
-  padding: 6px 6px 6px 2px;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px 0;
 }
 
 /* A non-active rule dims its text only; the switch and ⋯ stay full strength. */
@@ -17,41 +18,46 @@
   align-items: center;
   background: none;
   border: 0;
-  border-radius: 8px;
+  border-radius: 10px;
   color: var(--app-text-muted);
   display: inline-flex;
   flex: none;
   height: 36px;
   justify-content: center;
   padding: 0;
-  width: 32px;
 
   &:focus-visible { outline: none; box-shadow: 0 0 0 4px var(--app-focus-ring); }
 }
-.rule-more { cursor: pointer; }
+.rule-more { cursor: pointer; width: 36px; }
 
 /* Only the handle claims touch moves, so the page still scrolls from the rest of the row. */
 .rule-handle {
   cursor: grab;
   touch-action: none;
   user-select: none;
+  width: 28px;
 }
 .rule-row.dragging {
   background: var(--app-surface);
+  border-radius: var(--radius-md);
   box-shadow: var(--app-raised-shadow);
   outline: 1px solid var(--app-border);
+  position: relative;
+  z-index: 1;
 
   .rule-handle { color: var(--app-primary); cursor: grabbing; }
 }
 
-/* The drop target between rows; the negative margins cancel its height and the extra flex gap, so the rows
-   (and the rects recorded at pointerdown) do not move while dragging. */
+/* The drop target between rows; its negative margins cancel its height, so the rows (and the rects recorded at
+   pointerdown) do not move while dragging. */
 .rule-drop-line {
   background: var(--app-primary);
   border-radius: var(--radius-pill);
   flex: none;
   height: 2px;
-  margin: -4px 0;
+  margin: -1px 0;
+  position: relative;
+  z-index: 2;
 }
 
 .rule-more-wrap { flex: none; position: relative; }
@@ -88,6 +94,7 @@
   &.danger:not(:disabled) { color: var(--app-danger); }
 }
 
+/* The text column: title line, then the cap bar (spanning the column) or the muted line. */
 .rule-open {
   background: none;
   border: 0;
@@ -98,42 +105,55 @@
   flex: 1 1 auto;
   flex-direction: column;
   font: inherit;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
-  padding: 4px 2px;
+  padding: 0;
   text-align: left;
 
   &:focus-visible { outline: none; box-shadow: 0 0 0 4px var(--app-focus-ring); }
-  app-cap-bar { align-self: stretch; }
+  app-cap-bar { align-self: stretch; min-width: 0; }
 }
 
-.rule-title { align-items: center; display: flex; flex-wrap: wrap; gap: 4px 6px; }
-.rule-label { font-weight: 700; overflow-wrap: anywhere; }
+.rule-title { align-items: center; display: flex; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
+.rule-label { color: var(--app-text); font-size: 15px; font-weight: 700; min-width: 0; overflow-wrap: anywhere; }
 .rule-rate {
   background: var(--app-primary-soft);
   border-radius: 8px;
   color: var(--app-primary);
-  font-size: 0.75rem;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   font-weight: 800;
-  padding: 0 8px;
+  padding: 2px 8px;
   white-space: nowrap;
 }
-.rule-posting, .rule-muted { color: var(--app-text-muted); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.rule-posting, .rule-muted {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 
 .rule-enabled { flex: none; }
 
+/* Tags: 基本 in the primary tint; 已停用 / 未開始 / 來自 MOZE neutral; 已過期 in the warning tint. */
 .badge {
   background: var(--app-primary-soft);
-  border-radius: var(--radius-pill);
+  border-radius: 8px;
   color: var(--app-primary);
-  font-size: 0.72rem;
-  font-weight: 800;
-  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 7px;
   white-space: nowrap;
 }
 .badge.rule-state[data-state='disabled'], .badge.rule-state[data-state='upcoming'], .badge.rule-moze {
-  background: var(--app-surface);
+  background: var(--app-surface-soft);
   color: var(--app-text-muted);
 }
 .badge.warn { background: var(--app-state-warning-bg); color: var(--tone-neg-pill-ink, var(--c-red-pill-ink)); }
+
+/* Phone (< 760 px): the same row; tighter gaps so the text column keeps its width down to 320 px. */
+@media (max-width: 759.98px) {
+  .rule-row { gap: 8px; }
+  .rule-more { width: 32px; }
+}

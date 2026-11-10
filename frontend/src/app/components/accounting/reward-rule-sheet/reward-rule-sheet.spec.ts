@@ -41,7 +41,7 @@ describe('RewardRuleSheetComponent', () => {
     document.body.innerHTML = '';
   });
 
-  function render(current: RewardRule | null, siblings: RewardRule[] = []) {
+  function render(current: RewardRule | null, siblings: RewardRule[] = [], startDelete = false) {
     TestBed.configureTestingModule({
       imports: [RewardRuleSheetComponent],
       providers: [provideHttpClient(), provideHttpClientTesting()],
@@ -51,6 +51,9 @@ describe('RewardRuleSheetComponent', () => {
     fixture.componentRef.setInput('accountId', 11);
     fixture.componentRef.setInput('currency', 'TWD');
     fixture.componentRef.setInput('rule', current);
+    if (startDelete) {
+      fixture.componentRef.setInput('startDelete', true);
+    }
     fixture.componentRef.setInput('siblings', siblings);
     fixture.componentRef.setInput('accounts', ACCOUNTS);
     fixture.componentRef.setInput('projects', PROJECTS);
@@ -328,6 +331,47 @@ describe('RewardRuleSheetComponent', () => {
     click('.rule-delete');
     http.expectOne(`${BASE}/1`).flush(null, { status: 204, statusText: 'No Content' });
     expect(deleted).toHaveBeenCalledWith(1);
+  });
+
+  it('startDelete opens with the delete confirmation showing and focuses it', () => {
+    const { q, click, deleted } = render(BASIC, [DINING], true);
+
+    const del = q<HTMLButtonElement>('.rule-delete')!;
+    expect(del.classList).toContain('armed');
+    expect(del.textContent?.trim()).toBe('確定刪除？');
+    expect(document.activeElement).toBe(del);
+
+    // One more press deletes, as after the 刪除 button's first press.
+    click('.rule-delete');
+    const req = http.expectOne(`${BASE}/1`);
+    expect(req.request.method).toBe('DELETE');
+    req.flush(null, { status: 204, statusText: 'No Content' });
+    expect(deleted).toHaveBeenCalledWith(1);
+  });
+
+  it('startDelete with rule === null is ignored', () => {
+    const { q, fixture } = render(null, [DINING], true);
+
+    expect(q('.rule-delete')).toBeNull();
+    expect(fixture.componentInstance.confirmingDelete()).toBe(false);
+    expect(document.activeElement).toBe(q('.rule-name'));
+  });
+
+  it('after a rule_referenced error the delete button is not re-armed', () => {
+    const { fixture, q, click } = render(BASIC, [DINING], true);
+
+    click('.rule-delete');
+    http.expectOne(`${BASE}/1`).flush(
+      { code: 409, message: 'rule_referenced: {"entries": 3, "rewards": 2}', trace_id: 't' },
+      { status: 409, statusText: 'Conflict' },
+    );
+    fixture.detectChanges();
+
+    const del = q<HTMLButtonElement>('.rule-delete')!;
+    expect(del.classList).not.toContain('armed');
+    expect(del.textContent?.trim()).toBe('刪除');
+    expect(q('.rule-message span')?.textContent?.trim()).toBe('此規則已有 3 筆交易 / 2 筆回饋引用，改為停用？');
+    expect(q('.rule-disable')?.textContent?.trim()).toBe('停用');
   });
 
   it('(g) Esc on a dirty form asks first; 放棄 emits closed', () => {

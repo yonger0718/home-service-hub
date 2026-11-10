@@ -10,6 +10,7 @@ import { MockInstance, afterEach, describe, expect, it, onTestFinished, vi } fro
 import { AccountDetail, LedgerAccount, RewardRule, RewardUsage } from '../../../models/accounting.model';
 import { ACCOUNT_LOGOS } from '../../../theme/account-logos';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { AccountingService } from '../../../services/accounting.service';
 import { focusables } from '../accounting-ui';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
@@ -342,8 +343,10 @@ describe('AccountSettingsComponent', () => {
     fixture.detectChanges();
     expect(pickerTrigger(fixture, 'master-select').getAttribute('data-value')).toBe('12');
     expect(fixture.componentInstance.form().combined_account_id).toBe(12);
-    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般 (1%)', '餐飲 (5.2%)']);
-    expect(texts(fixture, '.rule-row .rule-state')).toEqual(['生效中', '已停用']);
+    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般', '餐飲']);
+    expect(texts(fixture, '.rule-row .rule-rate')).toEqual(['1%', '5.2%']);
+    // Only a non-active rule carries a state badge.
+    expect(texts(fixture, '.rule-row .rule-state')).toEqual(['已停用']);
     expect(el(fixture).textContent).not.toContain('（停用）');
   });
 
@@ -1035,24 +1038,41 @@ describe('AccountSettingsComponent', () => {
     expect(all.textContent?.trim()).toBe('所有卡片的規則 ›');
     expect(all.getAttribute('href')).toBe('/accounting/reward-rules?account_id=11');
     expect(el(fixture).querySelectorAll('.rule-row').length).toBe(2);
-    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般 (1%)', '餐飲 (5.2%)']);
-    expect(texts(fixture, '.rule-row .rule-posting')).toEqual(['帳單結帳後第 1 月 15 日', '交易後 3 天']);
-    expect(texts(fixture, '.rule-row .rule-period')).toEqual(['無期限', '2026/01/01 – 2026/12/31']);
+    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般', '餐飲']);
+    expect(texts(fixture, '.rule-row .rule-rate')).toEqual(['1%', '5.2%']);
+    expect(texts(fixture, '.rule-row .rule-posting')).toEqual(['· 帳單結帳後第 1 月 15 日', '· 交易後 3 天']);
     const states = Array.from(el(fixture).querySelectorAll('.rule-row .rule-state'));
-    expect(states.map(s => [s.getAttribute('data-state'), s.textContent?.trim()])).toEqual([
-      ['active', '生效中'],
-      ['disabled', '已停用'],
-    ]);
+    expect(states.map(s => [s.getAttribute('data-state'), s.textContent?.trim()])).toEqual([['disabled', '已停用']]);
     const rows = Array.from(el(fixture).querySelectorAll('.rule-row'));
     expect(rows.map(r => r.querySelector('.rule-basic')?.textContent?.trim() ?? null)).toEqual(['基本', null]);
     expect(rows.map(r => r.querySelector('.rule-moze')?.textContent?.trim() ?? null)).toEqual([null, '來自 MOZE']);
     expect(rows.map(r => r.querySelector('app-switch.rule-enabled button')?.getAttribute('aria-checked'))).toEqual(['true', 'false']);
-    expect(texts(fixture, '.rule-row .rule-edit')).toEqual(['編輯', '編輯']);
-    expect(el(fixture).querySelectorAll<HTMLButtonElement>('.rule-row .move-up')[0].disabled).toBe(true);
-    expect(el(fixture).querySelectorAll<HTMLButtonElement>('.rule-row .move-up')[1].disabled).toBe(false);
-    expect(el(fixture).querySelectorAll<HTMLButtonElement>('.rule-row .move-down')[0].disabled).toBe(false);
-    expect(el(fixture).querySelectorAll<HTMLButtonElement>('.rule-row .move-down')[1].disabled).toBe(true);
+    expect(rows.map(r => r.querySelector('.rule-handle')?.getAttribute('aria-label'))).toEqual(['拖曳排序 一般', '拖曳排序 餐飲']);
+    expect(rows.map(r => r.querySelector('.rule-more')?.getAttribute('aria-label'))).toEqual(['一般 更多動作', '餐飲 更多動作']);
+    // The old per-row text lines and buttons are gone.
+    for (const gone of ['.rule-period', '.rule-window', '.rule-usage', '.rule-edit', '.move-up', '.move-down']) {
+      expect(el(fixture).querySelector(gone)).toBeNull();
+    }
     expect(texts(fixture, '.rule-add')).toEqual(['新增規則']);
+  });
+
+  it('回饋規則 rows render through app-account-rules with 基本 and 來自 MOZE kept', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+
+    const block = el(fixture).querySelector('#s-reward .rules-block')!;
+    const list = block.querySelector('app-account-rules')!;
+    expect(list).not.toBeNull();
+    expect(list.previousElementSibling?.classList).toContain('rules-head');
+    expect(block.querySelectorAll('.rule-row').length).toBe(2);
+    expect(list.querySelectorAll('.rule-row').length).toBe(2);
+    expect(texts(fixture, 'app-account-rules .rule-basic')).toEqual(['基本']);
+    expect(texts(fixture, 'app-account-rules .rule-moze')).toEqual(['來自 MOZE']);
+    expect(list.querySelector('.rule-basic')!.closest('.rule-row')!.getAttribute('data-rule-id')).toBe('1');
+    expect(list.querySelector('.rule-moze')!.closest('.rule-row')!.getAttribute('data-rule-id')).toBe('2');
+    // 新增規則 and the message line stay the page's own.
+    expect(list.querySelector('.rule-add')).toBeNull();
+    expect(block.querySelector(':scope > .rule-add')).not.toBeNull();
   });
 
   it('new-account mode shows only 儲存帳戶後即可新增回饋規則, without 新增規則', async () => {
@@ -1107,7 +1127,9 @@ describe('AccountSettingsComponent', () => {
     fixture.detectChanges();
 
     expect(el(fixture).querySelector('.rule-message')?.textContent?.trim()).toBeTruthy();
-    expect(texts(fixture, '.rule-row .rule-state')).toEqual(['生效中', '已停用']);
+    // Rule 1 is back to active: no state badge; rule 2 is still 已停用.
+    expect(el(fixture).querySelector('.rule-row[data-rule-id="1"] .rule-state')).toBeNull();
+    expect(texts(fixture, '.rule-row .rule-state')).toEqual(['已停用']);
   });
 
   it('a 409 basic_rule_overlap on the 啟用 switch names the clashing rule', async () => {
@@ -1123,60 +1145,264 @@ describe('AccountSettingsComponent', () => {
     expect(el(fixture).querySelector('.rule-message')?.textContent?.trim()).toBe('與「一般」的基本回饋期間重疊');
   });
 
-  it('下移 on the first row sends the swapped order and re-renders from the response', async () => {
-    await setup('11');
-    const fixture = render(DETAIL);
+  const ORDER_URL = '/api/accounting/accounts/11/reward-rules/order';
+  /** DETAIL plus a third, active rule (網購 3%): A = 一般, B = 餐飲, C = 網購. */
+  const THREE = {
+    ...DETAIL,
+    reward_rules: [...DETAIL.reward_rules, rewardRule({ id: 3, name: '網購', rate: '3.0000', sort_order: 2 })],
+  } as AccountDetail;
 
-    click(fixture, '.rule-row .move-down', 0);
-    const put = http.expectOne('/api/accounting/accounts/11/reward-rules/order');
-    expect(put.request.method).toBe('PUT');
-    expect(put.request.body).toEqual({ ids: [2, 1] });
-    put.flush([
-      { ...DETAIL.reward_rules[1], sort_order: 0 },
-      { ...DETAIL.reward_rules[0], sort_order: 1 },
-    ]);
+  function rulesIn(detail: AccountDetail, ids: number[]): RewardRule[] {
+    return ids.map((id, i) => ({ ...detail.reward_rules.find(r => r.id === id)!, sort_order: i }));
+  }
+
+  /** Opens a rule's ⋯ menu with a real press (pointerdown → pointerup → click) and returns its items. */
+  function openRuleMenu(fixture: ComponentFixture<AccountSettingsComponent>, ruleId: number): HTMLButtonElement[] {
+    const more = el(fixture).querySelector<HTMLButtonElement>(`.rule-row[data-rule-id="${ruleId}"] .rule-more`)!;
+    more.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    more.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+    more.click();
     fixture.detectChanges();
+    return Array.from(el(fixture).querySelectorAll<HTMLButtonElement>(`.rule-row[data-rule-id="${ruleId}"] .rule-menu [role="menuitem"]`));
+  }
 
-    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['餐飲 (5.2%)', '一般 (1%)']);
-    expect(el(fixture).querySelectorAll<HTMLButtonElement>('.rule-row .move-up')[0].disabled).toBe(true);
-    expect(el(fixture).querySelectorAll<HTMLButtonElement>('.rule-row .move-down')[1].disabled).toBe(true);
+  /** Runs the ⋯ menu item named `label` on a rule's row. */
+  function ruleMenu(fixture: ComponentFixture<AccountSettingsComponent>, ruleId: number, label: string): void {
+    openRuleMenu(fixture, ruleId).find(b => b.textContent?.trim() === label)!.click();
+    fixture.detectChanges();
+  }
+
+  /** Rows 60 px tall at tops 0 / 60 / 120…, by their place in the list (jsdom has no layout). */
+  function stubRowRects(fixture: ComponentFixture<AccountSettingsComponent>): void {
+    const rows = () => Array.from(el(fixture).querySelectorAll<HTMLElement>('app-account-rules > .rule-row'));
+    for (const row of rows()) {
+      row.getBoundingClientRect = () => {
+        const top = rows().indexOf(row) * 60;
+        return { top, bottom: top + 60, height: 60, left: 0, right: 320, width: 320, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
+      };
+    }
+  }
+
+  /** jsdom may lack PointerEvent: a MouseEvent with a pointerId. */
+  function pointer(fixture: ComponentFixture<AccountSettingsComponent>, target: Element, type: string, clientY: number): void {
+    const event = new MouseEvent(type, { clientY, button: 0, bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'pointerId', { value: 1 });
+    target.dispatchEvent(event);
+    fixture.detectChanges();
+  }
+
+  /** Presses a rule's handle at `ys[0]`, moves through the rest and releases at the last. */
+  function dragRule(fixture: ComponentFixture<AccountSettingsComponent>, ruleId: number, ...ys: number[]): void {
+    stubRowRects(fixture);
+    const handle = el(fixture).querySelector(`.rule-row[data-rule-id="${ruleId}"] .rule-handle`)!;
+    pointer(fixture, handle, 'pointerdown', ys[0]);
+    for (const y of ys.slice(1)) {
+      pointer(fixture, handle, 'pointermove', y);
+    }
+    pointer(fixture, handle, 'pointerup', ys[ys.length - 1]);
+  }
+
+  it('dragging the third rule above the first sends one order request with C, A, B and shows that order before the response', async () => {
+    await setup('11');
+    const fixture = render(THREE);
+    const reorder = vi.spyOn(TestBed.inject(AccountingService), 'reorderRewardRules');
+
+    dragRule(fixture, 3, 150, 10);
+    expect(reorder).toHaveBeenCalledTimes(1);
+    expect(reorder).toHaveBeenCalledWith(11, [3, 1, 2]);
+    const put = http.expectOne(ORDER_URL);
+    expect(put.request.method).toBe('PUT');
+    expect(put.request.body).toEqual({ ids: [3, 1, 2] });
+    // Optimistic: the dropped order shows while the request is in flight.
+    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['網購', '一般', '餐飲']);
+    expect(fixture.componentInstance.ruleBusy()).toBe(true);
+
+    put.flush(rulesIn(THREE, [3, 1, 2]));
+    fixture.detectChanges();
+    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['網購', '一般', '餐飲']);
+    expect(fixture.componentInstance.ruleBusy()).toBe(false);
+    expect(fixture.componentInstance.isDirty()).toBe(false);
   });
 
-  it('a failed reorder shows the error and re-reads the account', async () => {
+  it('a failed order request shows the message and restores the saved order', async () => {
+    await setup('11');
+    const fixture = render(THREE);
+
+    dragRule(fixture, 3, 150, 10);
+    http.expectOne(ORDER_URL).flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    // The saved order is back before the re-read answers.
+    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般', '餐飲', '網購']);
+    expect(el(fixture).querySelector('.rule-message')?.textContent?.trim()).toBeTruthy();
+
+    http.expectOne('/api/accounting/accounts/11').flush(THREE);
+    http.expectOne('/api/accounting/accounts/11/reward-usage').flush([]);
+    fixture.detectChanges();
+    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般', '餐飲', '網購']);
+    expect(el(fixture).querySelector('.rule-message')?.textContent?.trim()).toBeTruthy();
+    expect(fixture.componentInstance.ruleBusy()).toBe(false);
+  });
+
+  it('a failed order request whose re-read also fails still shows the saved order', async () => {
+    await setup('11');
+    const fixture = render(THREE);
+
+    dragRule(fixture, 3, 150, 10);
+    http.expectOne(ORDER_URL).flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    http.expectOne('/api/accounting/accounts/11').flush({ detail: 'down' }, { status: 503, statusText: 'Unavailable' });
+    fixture.detectChanges();
+
+    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般', '餐飲', '網購']);
+    expect(el(fixture).querySelector('.rule-message')?.textContent?.trim()).toBeTruthy();
+    expect(fixture.componentInstance.ruleBusy()).toBe(false);
+  });
+
+  it('a new reorder clears the previous rule message', async () => {
     await setup('11');
     const fixture = render(DETAIL);
 
-    click(fixture, '.rule-row .move-up', 1);
-    const put = http.expectOne('/api/accounting/accounts/11/reward-rules/order');
+    click(fixture, '.rule-row app-switch.rule-enabled button', 1);
+    http.expectOne('/api/accounting/accounts/11/reward-rules/2').flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    http.expectOne('/api/accounting/accounts/11').flush(DETAIL);
+    http.expectOne('/api/accounting/accounts/11/reward-usage').flush([]);
+    fixture.detectChanges();
+    expect(el(fixture).querySelector('.rule-message')).not.toBeNull();
+
+    ruleMenu(fixture, 1, '下移');
+    expect(el(fixture).querySelector('.rule-message')).toBeNull();
+    http.expectOne(ORDER_URL).flush(rulesIn(DETAIL, [2, 1]));
+    fixture.detectChanges();
+    expect(el(fixture).querySelector('.rule-message')).toBeNull();
+  });
+
+  it('reorder is ignored while a rule write is in flight', async () => {
+    await setup('11');
+    const fixture = render(THREE);
+    const page = fixture.componentInstance;
+
+    click(fixture, '.rule-row app-switch.rule-enabled button', 0);
+    const put = http.expectOne('/api/accounting/accounts/11/reward-rules/1');
+    expect(page.ruleBusy()).toBe(true);
+
+    page.reorderRules([3, 1, 2]);
+    fixture.detectChanges();
+    dragRule(fixture, 3, 150, 10);
+    const items = openRuleMenu(fixture, 2);
+    expect(items.filter(b => ['上移', '下移'].includes(b.textContent?.trim() ?? '')).every(b => b.disabled)).toBe(true);
+    http.expectNone(ORDER_URL);
+    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般', '餐飲', '網購']);
+
+    put.flush({ ...THREE.reward_rules[0], is_enabled: false });
+    http.expectOne('/api/accounting/accounts/11').flush(THREE);
+    http.expectOne('/api/accounting/accounts/11/reward-usage').flush([]);
+    fixture.detectChanges();
+    expect(page.ruleBusy()).toBe(false);
+
+    // Once the write settles, the next reorder starts from the saved order.
+    page.reorderRules([2, 1, 3]);
+    http.expectOne(ORDER_URL).flush(rulesIn(THREE, [2, 1, 3]));
+  });
+
+  it('reorder with the current order or a list that is not a permutation of the rules sends nothing', async () => {
+    await setup('11');
+    const fixture = render(THREE);
+    const page = fixture.componentInstance;
+
+    for (const ids of [[1, 2, 3], [1, 2], [1, 2, 4], [1, 1, 2], [1, 2, 3, 3]]) {
+      page.reorderRules(ids);
+    }
+    http.expectNone(ORDER_URL);
+    expect(page.ruleBusy()).toBe(false);
+    fixture.detectChanges();
+    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般', '餐飲', '網購']);
+  });
+
+  it('⋯ 下移 sends the swapped order once', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+
+    ruleMenu(fixture, 1, '下移');
+    const put = http.expectOne(ORDER_URL);
+    expect(put.request.method).toBe('PUT');
+    expect(put.request.body).toEqual({ ids: [2, 1] });
+    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['餐飲', '一般']);
+    put.flush(rulesIn(DETAIL, [2, 1]));
+    fixture.detectChanges();
+
+    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['餐飲', '一般']);
+    const items = openRuleMenu(fixture, 2);
+    expect(items.find(b => b.textContent?.trim() === '上移')!.disabled).toBe(true);
+  });
+
+  it('a failed ⋯ 上移 shows the error and re-reads the account', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+
+    ruleMenu(fixture, 2, '上移');
+    const put = http.expectOne(ORDER_URL);
     expect(put.request.body).toEqual({ ids: [2, 1] });
     put.flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
     http.expectOne('/api/accounting/accounts/11').flush(DETAIL);
     fixture.detectChanges();
 
     expect(el(fixture).querySelector('.rule-message')?.textContent?.trim()).toBeTruthy();
-    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般 (1%)', '餐飲 (5.2%)']);
+    expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般', '餐飲']);
   });
 
-  it('編輯 opens the sheet with the rule; 新增規則 opens it with rule === null', async () => {
+  it('tapping a row opens the sheet with that rule; ⋯ 編輯 does too; 新增規則 opens it with rule === null', async () => {
     await setup('11');
     const fixture = render(DETAIL);
     expect(sheet(fixture)).toBeNull();
 
-    click(fixture, '.rule-row .rule-edit', 1);
+    click(fixture, '.rule-row .rule-open', 1);
     const editing = sheet(fixture)!;
     expect(editing.rule()?.id).toBe(2);
+    expect(editing.startDelete()).toBe(false);
     expect(editing.accountId()).toBe(11);
     expect(editing.currency()).toBe('TWD');
     expect(editing.siblings().map(r => r.id)).toEqual([1, 2]);
     expect(editing.accounts()).toEqual(LIST);
     expect(editing.projects()).toEqual(PROJECTS);
+    expect(el(fixture).querySelector('app-reward-rule-sheet .rule-delete')!.classList).not.toContain('armed');
 
     editing.closed.emit();
     fixture.detectChanges();
     expect(sheet(fixture)).toBeNull();
 
+    ruleMenu(fixture, 1, '編輯');
+    expect(sheet(fixture)!.rule()?.id).toBe(1);
+    expect(sheet(fixture)!.startDelete()).toBe(false);
+    sheet(fixture)!.closed.emit();
+    fixture.detectChanges();
+
     click(fixture, '.rule-add');
     expect(sheet(fixture)!.rule()).toBeNull();
+    expect(sheet(fixture)!.startDelete()).toBe(false);
+  });
+
+  it('⋯ 刪除 opens the sheet with the delete confirmation showing', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+
+    ruleMenu(fixture, 2, '刪除');
+    expect(sheet(fixture)!.rule()?.id).toBe(2);
+    expect(sheet(fixture)!.startDelete()).toBe(true);
+    const del = el(fixture).querySelector<HTMLButtonElement>('app-reward-rule-sheet .rule-delete')!;
+    expect(del.classList).toContain('armed');
+    expect(del.textContent?.trim()).toBe('確定刪除？');
+    http.expectNone('/api/accounting/accounts/11/reward-rules/2');
+
+    // One press confirms: the sheet's own delete flow runs from here.
+    click(fixture, 'app-reward-rule-sheet .rule-delete');
+    const req = http.expectOne('/api/accounting/accounts/11/reward-rules/2');
+    expect(req.request.method).toBe('DELETE');
+    req.flush(null, { status: 204, statusText: 'No Content' });
+    fixture.detectChanges();
+    expect(sheet(fixture)).toBeNull();
+    http.expectOne('/api/accounting/accounts/11').flush({ ...DETAIL, reward_rules: [DETAIL.reward_rules[0]] });
+    http.expectOne('/api/accounting/accounts/11/reward-usage').flush([]);
+    fixture.detectChanges();
+    expect(el(fixture).querySelectorAll('.rule-row').length).toBe(1);
   });
 
   describe('本期 usage', () => {
@@ -1186,27 +1412,36 @@ describe('AccountSettingsComponent', () => {
       reward_account_id: 1, reward_account_name: '測試卡', reward_is_money: true, ...fields,
     });
 
-    it('shows 本期 used/cap from reward usage', async () => {
+    const bars = (fixture: ComponentFixture<AccountSettingsComponent>) =>
+      Array.from(el(fixture).querySelectorAll('.rule-row')).map(r => r.querySelector('app-cap-bar .cap-text')?.textContent?.trim() ?? null);
+    /** Both DETAIL rules active (餐飲 enabled), so a bar on one and not the other is the usage map's doing. */
+    const BOTH_ACTIVE = {
+      ...DETAIL,
+      reward_rules: [DETAIL.reward_rules[0], { ...DETAIL.reward_rules[1], is_enabled: true }],
+    } as AccountDetail;
+
+    it('shows the 本期 cap bar from reward usage', async () => {
       await setup('11');
       const fixture = render(DETAIL, [usage({})]);
-      expect(texts(fixture, '.rule-row .rule-usage .usage-total')).toEqual(['本期 50／100']);
-      expect(texts(fixture, '.rule-row .rule-usage .usage-window')).toEqual(['2026/09/16 – 2026/10/15']);
+      expect(bars(fixture)).toEqual(['$50 / $100 · 剩 $50', null]);
+      expect(el(fixture).querySelector('.rule-row[data-rule-id="1"] app-cap-bar [role="img"]')!.getAttribute('aria-label'))
+        .toBe('本期已入帳 $30，預估 $20，上限 $100');
     });
 
-    it('uncapped shows 本期 only', async () => {
+    it('uncapped shows the 無上限 line without a track', async () => {
       await setup('11');
       const fixture = render(DETAIL, [usage({ cap: null, remaining: null })]);
-      expect(texts(fixture, '.rule-row .rule-usage .usage-total')).toEqual(['本期 50']);
+      expect(bars(fixture)).toEqual(['無上限 · 本期 $30 已入帳 + $20 預估', null]);
+      expect(el(fixture).querySelector('app-cap-bar [role="img"]')).toBeNull();
     });
 
     it('shared group shown once, on the first listed rule it covers', async () => {
       await setup('11');
-      const fixture = render(DETAIL, [usage({ rule_ids: [2, 1, 99], shared_cap_id: 'cap-a', name: '共用' })]);
-      const rows = Array.from(el(fixture).querySelectorAll('.rule-row'));
-      expect(rows.map(r => r.querySelector('.rule-usage .usage-total')?.textContent?.trim() ?? null)).toEqual(['本期 50／100', null]);
+      const fixture = render(BOTH_ACTIVE, [usage({ rule_ids: [2, 1, 99], shared_cap_id: 'cap-a', name: '共用' })]);
+      expect(bars(fixture)).toEqual(['$50 / $100 · 剩 $50', null]);
     });
 
-    it('a failed usage request hides the lines only', async () => {
+    it('a failed usage request hides the bars only', async () => {
       await setup('11');
       const fixture = TestBed.createComponent(AccountSettingsComponent);
       fixture.detectChanges();
@@ -1216,8 +1451,43 @@ describe('AccountSettingsComponent', () => {
       http.expectOne('/api/accounting/account-groups').flush(GROUPS);
       http.expectOne('/api/accounting/projects').flush(PROJECTS);
       fixture.detectChanges();
-      expect(el(fixture).querySelectorAll('.rule-usage').length).toBe(0);
+      expect(el(fixture).querySelectorAll('app-cap-bar').length).toBe(0);
       expect(el(fixture).querySelectorAll('.rule-row').length).toBe(2);
+    });
+
+    it('usage: the capped rule shows a cap bar; a shared group shows it once on the first listed member; a failed usage request hides the bars only', async () => {
+      await setup('11');
+      const detail = {
+        ...BOTH_ACTIVE,
+        reward_rules: [...BOTH_ACTIVE.reward_rules, rewardRule({ id: 3, name: '網購', rate: '3.0000', total_cap: '200.0000', sort_order: 2 })],
+      } as AccountDetail;
+      const fixture = render(detail, [
+        usage({ rule_ids: [3], name: '網購', used: '100.0000', estimated: '20.0000', cap: '200.0000', remaining: '80.0000' }),
+        usage({ rule_ids: [2, 1, 99], shared_cap_id: 'cap-a', name: '共用' }),
+      ]);
+      expect(bars(fixture)).toEqual(['$50 / $100 · 剩 $50', null, '$120 / $200 · 剩 $80']);
+      expect(el(fixture).querySelectorAll('app-cap-bar').length).toBe(2);
+
+      // A re-read whose usage request fails: the rows stay, the bars go, and no message shows.
+      click(fixture, '.rule-row app-switch.rule-enabled button', 2);
+      http.expectOne('/api/accounting/accounts/11/reward-rules/3').flush(detail.reward_rules[2]);
+      http.expectOne('/api/accounting/accounts/11').flush(detail);
+      http.expectOne('/api/accounting/accounts/11/reward-usage').flush(null, { status: 500, statusText: 'x' });
+      fixture.detectChanges();
+      expect(el(fixture).querySelectorAll('app-cap-bar').length).toBe(0);
+      expect(el(fixture).querySelectorAll('.rule-row').length).toBe(3);
+      expect(el(fixture).querySelector('.rule-message')).toBeNull();
+    });
+
+    it('a disabled rule\'s row is dimmed with 已停用 and 停用中，不估算回饋 and has no cap bar', async () => {
+      await setup('11');
+      const fixture = render(DETAIL, [usage({ rule_ids: [2], name: '餐飲' })]);
+      const row = el(fixture).querySelector('.rule-row[data-rule-id="2"]')!;
+      expect(row.classList).toContain('inactive');
+      expect(row.querySelector('.rule-state')?.textContent?.trim()).toBe('已停用');
+      expect(row.querySelector('.rule-muted')?.textContent?.trim()).toBe('停用中，不估算回饋');
+      expect(row.querySelector('app-cap-bar')).toBeNull();
+      expect(el(fixture).querySelector('.rule-row[data-rule-id="1"]')!.classList).not.toContain('inactive');
     });
   });
 
@@ -1238,7 +1508,7 @@ describe('AccountSettingsComponent', () => {
     expect(el(fixture).querySelectorAll('.rule-row').length).toBe(3);
     expect(texts(fixture, 'nav.sec-chips button')).toContain('回饋規則 (3)');
 
-    click(fixture, '.rule-row .rule-edit', 2);
+    click(fixture, '.rule-row .rule-open', 2);
     sheet(fixture)!.deleted.emit(3);
     fixture.detectChanges();
     expect(sheet(fixture)).toBeNull();
@@ -1252,7 +1522,7 @@ describe('AccountSettingsComponent', () => {
     await setup('11');
     const fixture = render(DETAIL);
 
-    click(fixture, '.rule-row .rule-edit', 0);
+    click(fixture, '.rule-row .rule-open', 0);
     expect(fixture.componentInstance.isDirty()).toBe(false);
     typeInto(fixture, '.rule-name', '一般改');
     expect(fixture.componentInstance.isDirty()).toBe(true);
@@ -1274,7 +1544,7 @@ describe('AccountSettingsComponent', () => {
     const registry = TestBed.inject(DirtyFormRegistry);
     const run = vi.fn();
 
-    click(fixture, '.rule-row .rule-edit', 0);
+    click(fixture, '.rule-row .rule-open', 0);
     typeInto(fixture, '.rule-name', '一般改');
     registry.requestClose(run);
     fixture.detectChanges();
@@ -1299,7 +1569,7 @@ describe('AccountSettingsComponent', () => {
     const registry = TestBed.inject(DirtyFormRegistry);
     const run = vi.fn();
 
-    click(fixture, '.rule-row .rule-edit', 0);
+    click(fixture, '.rule-row .rule-open', 0);
     typeInto(fixture, '.rule-name', '一般改');
     registry.requestClose(run);
     fixture.detectChanges();
@@ -1319,7 +1589,7 @@ describe('AccountSettingsComponent', () => {
     const run = vi.fn();
 
     typeInto(fixture, '.name-input', '玉山 Only 2');
-    click(fixture, '.rule-row .rule-edit', 0);
+    click(fixture, '.rule-row .rule-open', 0);
     typeInto(fixture, '.rule-name', '一般改');
     registry.requestClose(run);
     fixture.detectChanges();
@@ -1393,7 +1663,7 @@ describe('AccountSettingsComponent', () => {
     const expired = rewardRule({ id: 3, name: '夏季', rate: '2.0000', starts_on: '2026-06-01', ends_on: '2026-09-30', sort_order: 2 });
     const fixture = render({ ...DETAIL, reward_rules: [...DETAIL.reward_rules, expired] } as AccountDetail);
 
-    const badge = el(fixture).querySelectorAll('.rule-row .rule-state')[2];
+    const badge = el(fixture).querySelector('.rule-row[data-rule-id="3"] .rule-state')!;
     expect(badge.textContent?.trim()).toBe('已過期');
     expect(badge.getAttribute('data-state')).toBe('expired');
     expect(badge.classList.contains('warn')).toBe(true);
@@ -1886,7 +2156,7 @@ describe('AccountSettingsComponent', () => {
       await setup('11');
       const fixture = render(DETAIL);
 
-      click(fixture, '.rule-row .rule-edit', 0);
+      click(fixture, '.rule-row .rule-open', 0);
       typeInto(fixture, '.rule-name', '一般改');
 
       expect(fixture.componentInstance.isDirty()).toBe(true);
@@ -2234,6 +2504,22 @@ describe('AccountSettingsComponent', () => {
       expect(escape.defaultPrevented).toBe(true);
       expect(sheet(fixture)).toBeNull();
       expect(doc.activeElement).toBe(el(fixture).querySelector('button.row-look'));
+    });
+
+    it('at 390 px each rule row keeps the handle, the switch and ⋯', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+
+      const rows = Array.from(el(fixture).querySelectorAll('#s-reward app-account-rules .rule-row'));
+      expect(rows.length).toBe(2);
+      for (const row of rows) {
+        expect(row.querySelector('.rule-handle')).not.toBeNull();
+        expect(row.querySelector('app-switch.rule-enabled button[role="switch"]')).not.toBeNull();
+        expect(row.querySelector('.rule-more')).not.toBeNull();
+        expect(row.querySelector('.rule-open')).not.toBeNull();
+      }
+      // ⋯ carries 上移 / 下移 on a phone too.
+      expect(openRuleMenu(fixture, 1).map(b => b.textContent?.trim())).toEqual(['編輯', '上移', '下移', '刪除']);
     });
 
     it('phone: 放棄/儲存 bar appears only when dirty', async () => {
