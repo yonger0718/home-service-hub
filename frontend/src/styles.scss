@@ -377,7 +377,7 @@ html:has(.overlay, .filter-overlay) body {
   }
 }
 
-.hh-title      { font-size: var(--fs-display); font-weight: var(--fw-heavy); letter-spacing: var(--tracking-tighter); color: var(--app-text); line-height: var(--lh-tight); }
+.hh-title       { font-size: var(--fs-display); font-weight: var(--fw-heavy); letter-spacing: var(--tracking-tighter); color: var(--app-text); line-height: var(--lh-tight); }
 .hh-section-title { font-size: var(--fs-h2); font-weight: var(--fw-heavy); letter-spacing: var(--tracking-tight); color: var(--app-text); }
 .hh-value       { font-size: var(--fs-value); font-weight: var(--fw-heavy); line-height: var(--lh-tight); color: var(--app-text); font-variant-numeric: tabular-nums; }
 .hh-card-title  { font-size: var(--fs-card-title); font-weight: var(--fw-bold); text-transform: uppercase; letter-spacing: 0.05em; color: var(--app-text); }
