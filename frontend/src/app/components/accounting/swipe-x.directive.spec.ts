@@ -134,20 +134,65 @@ describe('SwipeXDirective', () => {
     expect(cmp.clicks).toBe(1);
   });
 
-  it('still emits when pointerup lands outside the host after capture (Review Focus 7)', () => {
-    const fixture = TestBed.createComponent(HostComponent);
-    fixture.detectChanges();
-    const host = (fixture.nativeElement as HTMLElement).querySelector('[appSwipeX]') as HTMLElement;
+  function stubCapture(host: HTMLElement) {
     const capture = vi.fn();
     const release = vi.fn();
     host.setPointerCapture = capture;
     host.releasePointerCapture = release;
+    return { capture, release };
+  }
+
+  it('still emits when pointerup lands outside the host after capture (Review Focus 7)', () => {
+    const { host, cmp } = setup();
+    const { capture, release } = stubCapture(host);
     host.dispatchEvent(ptr('pointerdown', 200, 100));
+    host.dispatchEvent(ptr('pointermove', 170, 105));
     expect(capture).toHaveBeenCalledWith(1);
     // jsdom does not retarget captured pointers, so the up goes to the host with out-of-box coordinates.
     host.dispatchEvent(ptr('pointerup', 120, 140));
-    expect(fixture.componentInstance.got).toEqual([1]);
+    expect(cmp.got).toEqual([1]);
     expect(release).toHaveBeenCalledWith(1);
+  });
+
+  it('never captures on a plain tap, so the child button still gets its click', () => {
+    const { host, btn, cmp } = setup();
+    const { capture } = stubCapture(host);
+    btn.dispatchEvent(ptr('pointerdown', 100, 100));
+    btn.dispatchEvent(ptr('pointerup', 100, 100));
+    btn.click();
+    expect(capture).not.toHaveBeenCalled();
+    expect(cmp.got).toEqual([]);
+    expect(cmp.clicks).toBe(1);
+  });
+
+  it('captures once after a horizontal move of 12 px', () => {
+    const { host } = setup();
+    const { capture } = stubCapture(host);
+    host.dispatchEvent(ptr('pointerdown', 100, 100));
+    host.dispatchEvent(ptr('pointermove', 112, 100));
+    host.dispatchEvent(ptr('pointermove', 130, 100));
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(capture).toHaveBeenCalledWith(1);
+  });
+
+  it('does not capture on a mostly vertical move', () => {
+    const { host } = setup();
+    const { capture } = stubCapture(host);
+    host.dispatchEvent(ptr('pointerdown', 100, 100));
+    host.dispatchEvent(ptr('pointermove', 112, 130));
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it('does not swallow a deliberate tap right after a swipe', () => {
+    vi.useFakeTimers();
+    const { btn, cmp } = setup();
+    btn.dispatchEvent(ptr('pointerdown', 200, 100));
+    btn.dispatchEvent(ptr('pointerup', 120, 100));
+    vi.advanceTimersByTime(100);
+    btn.dispatchEvent(ptr('pointerdown', 100, 100));
+    btn.dispatchEvent(ptr('pointerup', 100, 100));
+    btn.click();
+    expect(cmp.clicks).toBe(1);
   });
 
   it('sets touch-action: pan-y on the host', () => {
