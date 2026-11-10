@@ -116,39 +116,13 @@
 
   <section class="sec" id="s-look" aria-labelledby="h-look">
     <h3 id="h-look">外觀</h3>
-    <div class="rw logo-block">
-      <span class="k">Logo</span>
-      <span class="v">
-        <span class="logo-state"><app-account-icon class="ico-sm" [accountId]="loadedId()" [logoHash]="logoHash()" [logo]="form().logo" [icon]="form().icon" fallback="folder" /> {{ logoState() }}</span>
-        <span class="logo-actions">
-          <input #logoFile type="file" class="visually-hidden" tabindex="-1" aria-hidden="true" [accept]="LOGO_ACCEPT" (change)="uploadLogo($event)" />
-          <button type="button" class="logo-upload" [disabled]="accountId() === null || loadedId() === null || uploadingLogo()" [attr.aria-busy]="uploadingLogo() || null" (click)="logoFile.click()">上傳圖片</button>
-          @if (logoHash()) {
-            <button type="button" class="logo-remove" [disabled]="uploadingLogo()" (click)="removeLogo()">移除圖片</button>
-          }
-          <button type="button" class="logo-pick" [attr.aria-expanded]="logoPickerOpen()" (click)="logoPickerOpen.set(!logoPickerOpen())">選擇內建 logo</button>
-        </span>
-        <small class="logo-hint">{{ accountId() === null ? '先建立帳戶，再上傳 logo' : '上傳的圖片優先於內建 logo，上傳後立即生效' }}</small>
-      </span>
-    </div>
-    @if (logoPickerOpen()) {
-      <div class="logo-grid" role="group" aria-label="品牌 logo">
-        <button type="button" class="logo-opt" [attr.aria-pressed]="form().logo === null" (click)="pickLogo(null)">無</button>
-        @for (l of logos; track l.slug) {
-          <button type="button" class="logo-opt" [attr.aria-pressed]="form().logo === l.slug" [attr.aria-label]="l.label" (click)="pickLogo(l.slug)">
-            <app-account-icon class="ico-sm" [logo]="l.slug" /><small>{{ l.label }}</small>
-          </button>
-        }
+    @if (phone()) {
+      <div class="set-card">
+        <ng-container *ngTemplateOutlet="sheetRowButton; context: { $implicit: 'look', label: '圖示', hint: '上傳圖片、內建 logo 或文字＋顏色' }" />
       </div>
+    } @else {
+      <ng-container *ngTemplateOutlet="lookCtl; context: { stacked: false }" />
     }
-
-    <div class="rw">
-      <span class="k">圖示</span>
-      <span class="v icon-fields">
-        <input class="icon-input" maxlength="16" aria-label="圖示" [value]="form().icon" (input)="set('icon', $any($event.target).value)" />
-        <input class="color-input" type="color" aria-label="顏色" [value]="form().color || '#8e8e93'" (change)="set('color', $any($event.target).value)" />
-      </span>
-    </div>
   </section>
 
   <section class="sec" id="s-card" aria-labelledby="h-card">
@@ -357,7 +331,7 @@
 @if (phone()) {
   @if (sheetRow(); as row) {
     <div class="overlay" data-overlay (click)="closeSheet()">
-      <div #rowSheet class="sheet row-sheet" role="dialog" aria-modal="true" [attr.aria-label]="rowLabel(row)" tabindex="-1" (click)="$event.stopPropagation()" (keydown)="onSheetKeydown($event)">
+      <div #rowSheet class="sheet row-sheet" [class.look-sheet]="row === 'look'" role="dialog" aria-modal="true" [attr.aria-label]="rowLabel(row)" tabindex="-1" (click)="$event.stopPropagation()" (keydown)="onSheetKeydown($event)">
         <div class="grab"></div>
         <h3>{{ rowLabel(row) }}</h3>
         <div class="sheet-control">
@@ -367,6 +341,9 @@
             @case ('due_value') { <ng-container *ngTemplateOutlet="dueValueCtl" /> <small class="sheet-hint">{{ dueLabel() }}</small> }
             @case ('credit_limit') { <ng-container *ngTemplateOutlet="creditLimitCtl" /> }
             @case ('fx_fee_pct') { <ng-container *ngTemplateOutlet="fxPctCtl" /> }
+            @case ('look') {
+              <ng-container *ngTemplateOutlet="lookCtl; context: { stacked: true }" />
+            }
           }
         </div>
         <ng-container *ngTemplateOutlet="fieldError; context: { $implicit: row }" />
@@ -428,6 +405,9 @@
 <ng-template #autopayCtl>
   <app-picker class="autopay-select" label="自動扣繳" [attr.aria-invalid]="error('auto_pay_account_id') ? 'true' : null" [options]="autopayPickerOptions()" [value]="idValue(form().auto_pay_account_id)" (change)="setIdField('auto_pay_account_id', $event)" />
 </ng-template>
+<ng-template #lookCtl let-stacked="stacked">
+  <app-account-look [stacked]="stacked" [accountId]="loadedId()" [logoHash]="logoHash()" [logo]="form().logo" [icon]="form().icon" [color]="form().color" [busy]="uploadingLogo()" (logoChange)="set('logo', $event)" (iconChange)="set('icon', $event)" (colorChange)="set('color', $event)" (upload)="uploadLogoFile($event)" (remove)="removeLogo()" />
+</ng-template>
 <ng-template #fxPctCtl>
   <app-amount-field class="fx-pct" ariaLabel="手續費百分比" suffix="%" [invalid]="!!error('fx_fee_pct')" [value]="form().fx_fee_pct" (valueChange)="set('fx_fee_pct', $event)" />
 </ng-template>
@@ -449,7 +429,7 @@
 <ng-template #fieldError let-field>
   @if (error(field); as e) { <small class="field-error" [attr.data-field]="field">{{ e }}</small> }
 </ng-template>
-<!-- Phone: a stepper / amount row; tapping it opens the control in the page's bottom sheet. -->
+<!-- Phone: a stepper / amount row or the 圖示 row; tapping it opens the control in the page's bottom sheet. -->
 <ng-template #sheetRowButton let-row let-label="label" let-hint="hint">
   <button type="button" [class]="'set-row row-' + row" [attr.aria-invalid]="error(row) ? 'true' : null" (click)="openSheet(row)">
     <span class="row-k">
