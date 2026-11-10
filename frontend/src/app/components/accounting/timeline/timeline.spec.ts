@@ -2312,10 +2312,10 @@ describe('LedgerTimelineComponent', () => {
       httpMock!.expectOne(r => r.url === '/api/accounting/entries' && !isTodayRead(r)).flush({ items: [], total: 0, limit: 500, offset: 0 });
     }
 
-    function renderCalendarWith(accounts = [...ACCOUNTS, CARD], mode: LayoutMode = 'panes') {
+    function renderCalendarWith(accounts = [...ACCOUNTS, CARD], mode: LayoutMode = 'panes', summary?: Partial<MonthSummary>) {
       localStorage.setItem(VIEW_KEY, 'calendar');
       const rendered = render(mode, makePreference(), [], accounts);
-      flushSummary('2026-10');
+      flushSummary('2026-10', summary);
       flushDaily('2026-10');
       rendered.fixture.detectChanges();
       return rendered;
@@ -2354,6 +2354,46 @@ describe('LedgerTimelineComponent', () => {
       expect(text(figures)).toContain('結餘');
       expect(el.querySelector('.sum')).toBeNull();
       expect(el.querySelector('.day-area')).toBeNull();
+    });
+
+    it('renders each monthbar amount as a full span plus an aria-hidden abbreviated twin, with the full text as title', () => {
+      const { fixture, el } = renderCalendarWith(ACCOUNTS, 'panes', { expense: '-29626', income: '72000', net: '42374' });
+      selectDay(fixture, el, '2026-10-05');
+      const figures = el.querySelector('.monthbar .monthbar-figures')!;
+      const read = (cls: string) => {
+        const dd = figures.querySelector(cls)!;
+        return [
+          text(dd.querySelector('.fig-full')),
+          text(dd.querySelector('.fig-short')),
+          dd.getAttribute('title'),
+          dd.querySelector('.fig-short')!.getAttribute('aria-hidden'),
+          dd.querySelector('.fig-full')!.getAttribute('aria-hidden'),
+        ];
+      };
+      expect(read('.sum-expense')).toEqual(['−$29,626', '−$29.6k', '−$29,626', 'true', null]);
+      expect(read('.sum-income')).toEqual(['+$72,000', '+$72k', '+$72,000', 'true', null]);
+      expect(read('.sum-net')).toEqual(['+$42,374', '+$42.4k', '+$42,374', 'true', null]);
+    });
+
+    it('keeps the — placeholder in both spans while the summary has not arrived', () => {
+      localStorage.setItem(VIEW_KEY, 'calendar');
+      const { fixture, el } = render('panes', makePreference(), [], ACCOUNTS);
+      flushDaily('2026-10');
+      fixture.detectChanges();
+      const dd = el.querySelector('.monthbar-figures .sum-expense')!;
+      expect([text(dd.querySelector('.fig-full')), text(dd.querySelector('.fig-short'))]).toEqual(['—', '—']);
+      expect(dd.hasAttribute('title')).toBe(false);
+      flushSummary('2026-10');
+    });
+
+    it('abbreviates large month figures in the short twin only', () => {
+      const { fixture, el } = renderCalendarWith(ACCOUNTS, 'panes', { expense: '-1234567', income: '999900', net: '-234667' });
+      selectDay(fixture, el, '2026-10-05');
+      const pair = (cls: string) => [text(el.querySelector(`.monthbar-figures ${cls} .fig-full`)), text(el.querySelector(`.monthbar-figures ${cls} .fig-short`))];
+      expect(pair('.sum-expense')).toEqual(['−$1,234,567', '−$1.23M']);
+      expect(pair('.sum-income')).toEqual(['+$999,900', '+$999.9k']);
+      expect(pair('.sum-net')).toEqual(['−$234,667', '−$234.7k']);
+      expect(el.querySelector('.monthbar-figures .sum-expense')!.getAttribute('title')).toBe('−$1,234,567');
     });
 
     it('keeps .cal-figures and the day panel in 日曆 at phone width', () => {
@@ -4047,12 +4087,34 @@ describe('buildDays', () => {
     });
 
     it('moves the figures as a whole onto their own row when the bar itself is narrow', () => {
-      expect(css).toMatch(/\.monthbar \{[^}]*container-type: inline-size/);
-      const query = css.match(/@container[^{]*\(max-width: \d+px\) \{([\s\S]*?\n\})/)?.[1] ?? '';
+      expect(css).toMatch(/\.monthbar \{[^}]*container: monthbar \/ inline-size/);
+      const query = css.match(/@container monthbar \(max-width: 603px\) \{([\s\S]*?\n\})/)?.[1] ?? '';
       expect(query).toContain('.monthbar-figures');
       expect(query).toContain('flex-basis: 100%');
       expect(query).toContain('order: 3');
       expect(css.match(/\.monthbar-figures \{([^}]*)\}/)?.[1]).toContain('flex-wrap: nowrap');
+    });
+
+    it('shows the full amounts by default and hides only the abbreviated twin (tier 1)', () => {
+      const figures = css.match(/\.monthbar-figures \{[\s\S]*?\n\}/)?.[0] ?? '';
+      expect(figures).toMatch(/\.fig-short \{\s*display: none;/);
+      expect(figures).not.toMatch(/\.fig-full \{/);
+    });
+
+    it('abbreviates on the same row between 604 and 699px and keeps the full text visually hidden (tier 2)', () => {
+      const query = css.match(/@container monthbar \(min-width: 604px\) and \(max-width: 699px\) \{([\s\S]*?\n\})/)?.[1] ?? '';
+      expect(query).toMatch(/\.fig-short \{\s*display: inline;/);
+      const full = query.match(/\.fig-full \{([^}]*)\}/)?.[1] ?? '';
+      expect(full).toContain('clip: rect(0 0 0 0)');
+      expect(full).toContain('position: absolute');
+      expect(full).toContain('width: 1px');
+      expect(full).not.toContain('display: none');
+      expect(query).not.toContain('flex-basis');
+    });
+
+    it('does not abbreviate below 604px; the tier 3 query leaves both spans at their tier 1 state', () => {
+      const query = css.match(/@container monthbar \(max-width: 603px\) \{([\s\S]*?\n\})/)?.[1] ?? '';
+      expect(query).not.toContain('.fig-');
     });
   });
 });

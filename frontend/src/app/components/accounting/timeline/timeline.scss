@@ -42,7 +42,7 @@ app-split-folder {
 
 .monthbar {
   align-items: center;
-  container-type: inline-size;
+  container: monthbar / inline-size;
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
@@ -90,6 +90,12 @@ app-split-folder {
     font-variant-numeric: tabular-nums;
     font-weight: 700;
     margin: 0;
+    position: relative;
+  }
+
+  /* Tier 1: the full amount; the abbreviated twin is for tier 2 only (and is aria-hidden always). */
+  .fig-short {
+    display: none;
   }
 
   /* dt + dd pairs sit side by side; flex puts each on its own item, so group them by sibling margin */
@@ -103,8 +109,47 @@ app-split-folder {
   }
 }
 
-/* The decision follows the bar's own width (the list pane shrinks with the sidebar), not the viewport. */
-@container (max-width: 699px) {
+/*
+ * Three tiers, decided by the bar's own width (the list pane shrinks with the sidebar), not the viewport.
+ * Thresholds measured in Chromium with 7-digit amounts:
+ *  1. >= 700px: full amounts on the bar's row (three -$1,234,567 need 696px).
+ *  2. 604-699px: still one row, abbreviated amounts (-$29.6k), spacing tightened. The widest abbreviation of a
+ *     7-digit amount (-$999.9k, three of them) needs 603px. The full text stays in the DOM, visually hidden,
+ *     so assistive tech reads the exact figure; a mouse hover shows it through the dd's title.
+ *  3. < 604px: the figures drop to their own row with the full amounts again.
+ */
+@container monthbar (min-width: 604px) and (max-width: 699px) {
+  .monthbar-figures {
+    gap: 0;
+    margin-inline-end: 4px;
+
+    dt {
+      margin-inline-end: 5px;
+    }
+
+    dd:not(:last-child) {
+      margin-inline-end: 12px;
+    }
+
+    .fig-full {
+      border: 0;
+      clip: rect(0 0 0 0);
+      height: 1px;
+      margin: -1px;
+      overflow: hidden;
+      padding: 0;
+      position: absolute;
+      white-space: nowrap;
+      width: 1px;
+    }
+
+    .fig-short {
+      display: inline;
+    }
+  }
+}
+
+@container monthbar (max-width: 603px) {
   .monthbar-figures {
     flex-basis: 100%;
     margin-inline: 0;

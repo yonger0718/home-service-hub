@@ -60,7 +60,7 @@ import { nextDueItems } from '../month-overview/due-items';
 import { AccountingOverviewService, OverviewState } from '../month-overview/overview.service';
 import { schedulePill } from '../schedule-math';
 import { KIND_PILLS, KindPill, QUERY_DEBOUNCE_MS, colorOf, fxLine, iconOf, isHandledKey, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
-import { displayTitle, formatMoney, formatSigned } from '../format';
+import { displayTitle, formatMoney, formatSigned, formatSignedShort } from '../format';
 import { FilterBarComponent, FilterChip } from '../../ui/filter-bar/filter-bar';
 import { batchKey, batchSub, loadedBatches } from '../reward-batch';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
@@ -1762,6 +1762,19 @@ export class LedgerTimelineComponent implements OnInit {
 
   expenseText(summary: MonthSummary): string {
     return formatSigned(-Math.abs(Number(summary.expense)), summary.currency);
+  }
+
+  /** Abbreviated twins of the three figures (month bar tier 2); the full text stays the accessible one. */
+  expenseShort(summary: MonthSummary): string {
+    return formatSignedShort(-Math.abs(Number(summary.expense)), summary.currency);
+  }
+
+  incomeShort(summary: MonthSummary): string {
+    return formatSignedShort(Math.abs(Number(summary.income)), summary.currency);
+  }
+
+  netShort(summary: MonthSummary): string {
+    return formatSignedShort(summary.net, summary.currency);
   }
 
   incomeText(summary: MonthSummary): string {
