@@ -131,6 +131,14 @@ export function mutedLine(rule: { state: RewardRuleState; starts_on: string | nu
   }
 }
 
+/** `至 12/31` on an active rule that has an end date (`至 2027/3/31` when it ends in another year); null otherwise. */
+export function untilText(rule: { state: RewardRuleState; ends_on: string | null }, today: string): string | null {
+  if (rule.state !== 'active' || rule.ends_on === null) {
+    return null;
+  }
+  return `至 ${rule.ends_on.slice(0, 4) === today.slice(0, 4) ? monthDay(rule.ends_on) : fullDate(rule.ends_on)}`;
+}
+
 /** A usage row's window: `10/26–11/25`. */
 export function windowText(usage: Pick<RewardUsage, 'window_start' | 'window_end'>): string {
   return `${monthDay(usage.window_start)}–${monthDay(usage.window_end)}`;

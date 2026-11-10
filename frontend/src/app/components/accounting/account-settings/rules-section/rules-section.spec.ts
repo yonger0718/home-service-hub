@@ -211,6 +211,21 @@ describe('AccountRulesComponent', () => {
     }
   });
 
+  it('an active rule with an end date shows · 至 M/D (with the year when it is not this year); other rows show none', () => {
+    const ends = rule({ id: 11, name: '年底加碼', rate: '5', ends_on: '2026-12-31' });
+    const nextYear = rule({ id: 12, name: '跨年加碼', rate: '5', starts_on: '2026-06-01', ends_on: '2027-03-31' });
+    const disabled = rule({ id: 13, name: '停用加碼', rate: '5', is_enabled: false, ends_on: '2026-12-31' });
+    const expired = rule({ id: 14, name: '過期加碼', rate: '5', ends_on: '2026-10-31' });
+    const upcoming = rule({ id: 15, name: '未開始加碼', rate: '5', starts_on: '2026-12-01', ends_on: '2026-12-31' });
+    update(() => host.rules.set([A, ends, nextYear, disabled, expired, upcoming]));
+
+    expect(text(rowOf(11).querySelector('.rule-until'))).toBe('· 至 12/31');
+    expect(text(rowOf(12).querySelector('.rule-until'))).toBe('· 至 2027/3/31');
+    for (const id of [1, 13, 14, 15]) {
+      expect(rowOf(id).querySelector('.rule-until')).toBeNull();
+    }
+  });
+
   it('tapping the row emits open with the rule', () => {
     rowOf(3).querySelector<HTMLButtonElement>('.rule-open')!.click();
     expect(host.onOpen).toHaveBeenCalledTimes(1);

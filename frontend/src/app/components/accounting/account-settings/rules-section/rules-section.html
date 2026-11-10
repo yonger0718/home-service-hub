@@ -34,6 +34,7 @@
         @if (row.basic) { <span class="badge rule-basic">基本</span> }
         @if (row.rule.moze_id) { <span class="badge rule-moze">來自 MOZE</span> }
         <small class="rule-posting">· {{ row.posting }}</small>
+        @if (row.until; as until) { <small class="rule-until">· {{ until }}</small> }
       </span>
       @if (row.usage; as use) {
         <app-cap-bar [used]="use.used" [estimated]="use.estimated" [cap]="use.cap" [unit]="row.unit!" />

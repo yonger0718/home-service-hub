@@ -21,7 +21,7 @@ import { CapBarComponent } from '../../../ui/cap-bar/cap-bar';
 import { SwitchComponent } from '../../../ui/switch/switch';
 import { isHandledKey } from '../../accounting-ui';
 import {
-  RULE_STATE_LABELS, RewardUnit, mutedLine, postingSummary, rateChip, ruleState, ruleTitle, usageUnit,
+  RULE_STATE_LABELS, RewardUnit, mutedLine, postingSummary, rateChip, ruleState, ruleTitle, untilText, usageUnit,
 } from '../../reward-rule-text';
 
 export interface RuleRowView {
@@ -34,6 +34,8 @@ export interface RuleRowView {
   /** 基本 on an active basic rule only — one tag per row, the state wins. */
   basic: boolean;
   posting: string;
+  /** `至 12/31` on an active rule with an end date — the only place the row shows a date for a running rule. */
+  until: string | null;
   /** The usage row behind the cap bar — active rules only. */
   usage: RewardUsage | null;
   unit: RewardUnit | null;
@@ -131,6 +133,7 @@ export class AccountRulesComponent {
         tag: active ? null : RULE_STATE_LABELS[state],
         basic: active && rule.is_basic,
         posting: postingSummary(rule),
+        until: untilText({ state, ends_on: rule.ends_on }, today),
         usage: use,
         unit: use ? usageUnit(use) : null,
         muted: mutedLine({ state, starts_on: rule.starts_on }),
