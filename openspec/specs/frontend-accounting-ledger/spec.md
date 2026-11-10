@@ -416,16 +416,20 @@ Entry rows on the timeline (list mode) and in the account entry history SHALL al
 
 ### Requirement: Empty pane shows the month
 
-At ≥ 1280 px, when no entry or account is selected, the accounting right pane SHALL show the month overview: the category distribution with amounts and the next three due items (card bills and schedule instances). Below 1280 px the one-line empty state SHALL remain. While the overview is shown, the list pane's summary strip SHALL hide its category distribution (the 支出 / 收入 / 結餘 figures stay); below 1280 px the strip keeps the distribution.
+At ≥ 1280 px, when no entry or account is selected, the accounting right pane SHALL show the month overview: the category distribution with amounts and the next three due items (card bills and schedule instances). Below 1280 px the one-line empty state SHALL remain. While the overview is shown, the list pane's summary strip SHALL hide its category distribution (the 支出 / 收入 / 結餘 figures stay); below 1280 px the strip keeps the distribution. In the timeline's 日曆 view the "Calendar layout on wide screens" requirements govern the right pane instead, from 1024 px.
 
 #### Scenario: Timeline without a selection
 - **GIVEN** the timeline month is 2026-10
-- **WHEN** `/accounting` opens at 1440 px with nothing selected
+- **WHEN** `/accounting` opens at 1440 px in the 清單 view with nothing selected
 - **THEN** the right pane SHALL show October's category amounts and the next three due items
 
 #### Scenario: Distribution shown once
-- **GIVEN** `/accounting` at 1440 px with nothing selected
+- **GIVEN** `/accounting` at 1440 px in the 清單 view with nothing selected
 - **THEN** the category distribution SHALL render in the overview only, not in the list pane's summary strip
+
+#### Scenario: Calendar view at 1100 px
+- **WHEN** `/accounting` opens at 1100 px in the 日曆 view with no day selected
+- **THEN** the right pane SHALL show 本月摘要 rather than the one-line empty state
 
 ### Requirement: Accounts list marks the selection
 
@@ -504,3 +508,228 @@ The SPA SHALL fetch uploaded logos with the scoped token and keep one object URL
 - **GIVEN** an account whose icons show an uploaded image
 - **WHEN** every lease of the account is released or holds a null hash
 - **THEN** the image SHALL be cleared on the next macrotask, its object URL revoked on the one after, and a response that arrives later SHALL NOT be shown
+
+### Requirement: Calendar day selection in the URL
+
+In the timeline's 日曆 view the selected day SHALL be the query parameter `day=YYYY-MM-DD` on `/accounting`, beside `month`. Without `day` nothing SHALL be selected, and opening 日曆 SHALL NOT select today by itself. A `day` outside `month` SHALL move `month` to the day's month. A URL with `day` SHALL open the 日曆 view for that visit without changing the stored view preference.
+
+#### Scenario: Shared link
+- **WHEN** `/accounting?month=2026-10&day=2026-10-21` is opened
+- **THEN** the 日曆 view SHALL show October with 10/21 selected and 10/21's rows listed
+
+### Requirement: Calendar day navigation
+
+Picking a day SHALL set `day`. Picking the selected day again, 本月摘要 (≥ 1024 px) or 展開整月 (< 1024 px) SHALL remove it. ‹ and › beside the day label SHALL move one calendar day, crossing month edges and moving `month` with them. Moving the month with the navigator SHALL remove `day`.
+
+#### Scenario: Crossing a month edge
+- **GIVEN** 2026-10-31 is selected
+- **WHEN** › is pressed
+- **THEN** the URL SHALL become `?month=2026-11&day=2026-11-01` and the grid SHALL show November
+
+#### Scenario: Month navigator clears the day
+- **GIVEN** 10/21 is selected
+- **WHEN** the month navigator moves to November
+- **THEN** `day` SHALL be removed and no day SHALL be selected
+
+### Requirement: Calendar view switch with a selected day
+
+`day` SHALL force the 日曆 view only while it is in the URL. Choosing 清單 SHALL remove `day` and store 清單 as the view. 近 7 天 SHALL write `month` and `day` (the first due day) with the same history rules as picking a day, and SHALL store 日曆 as the view, as it does today.
+
+#### Scenario: Choosing 清單 with a day selected
+- **GIVEN** `/accounting?month=2026-10&day=2026-10-21`
+- **WHEN** 清單 is chosen
+- **THEN** the URL SHALL be `/accounting?month=2026-10`, the 清單 view SHALL show, and a reload SHALL keep 清單
+
+### Requirement: Calendar selection history
+
+Picking a day, ‹ and ›, the swipes and the month navigator SHALL replace the current browser history entry rather than add one, so that Back leaves the 日曆 view instead of stepping through the days picked. Every `month` / `day` write SHALL keep the URL's other query parameters (the 報表 drill-through filters). The 日曆 view SHALL follow `month` and `day` when they change in the URL (Back, Forward or a link), not only on first load.
+
+#### Scenario: Drill-through filters kept
+- **GIVEN** `/accounting?month=2026-10&category_id=12` was opened from 報表
+- **WHEN** 10/21 is picked
+- **THEN** the URL SHALL be `/accounting?month=2026-10&category_id=12&day=2026-10-21`
+
+#### Scenario: Back after picking days
+- **GIVEN** the owner opened `/accounting` from 報表 and picked 10/20, then 10/21
+- **WHEN** Back is pressed
+- **THEN** the browser SHALL return to 報表
+
+### Requirement: Calendar selection survives opening an entry
+
+An entry or entry form opened from the calendar SHALL keep `month` and `day` in its URL, so that closing it, going back, saving, cancelling or deleting restores the selection. This includes the form's fallback exit when there is no in-app previous page.
+
+#### Scenario: Back from an entry
+- **GIVEN** 10/21 is selected on a 390 px screen
+- **WHEN** a row is opened and the owner goes back
+- **THEN** the calendar SHALL show the week of 10/21 with 10/21 selected
+
+### Requirement: Calendar day cell figures
+
+Each day cell of the 日曆 view SHALL show:
+
+- the date, with today on a primary-colour disc;
+- the day's net, `income + expense` from `GET /entries/summary/daily` (expense is negative): with thousands separators at ≥ 1024 px, in compact form below 1024 px (`−3.1k`, `+71.7k`, `−250`);
+- a bottom bar whose length is the day's |expense| over the month's largest daily |expense|, only on days whose expense is below 0.
+
+#### Scenario: Heaviest day
+- **GIVEN** the daily summary gives October's largest expense as −12,120 on 10/19 and 10/21's expense as −3,096
+- **THEN** 10/19's bar SHALL span the full cell width and 10/21's about a quarter of it
+
+### Requirement: Calendar day cell empty and future days
+
+Future days SHALL be dimmed and show no figure. A past day without counted rows SHALL show — at ≥ 1024 px and no figure below 1024 px.
+
+#### Scenario: Quiet past day
+- **GIVEN** 10/05 has no counted rows and today is 10/22
+- **THEN** 10/05's cell SHALL show — at 1440 px and no figure at 390 px, and 10/25's cell SHALL be dimmed with no figure
+
+### Requirement: Calendar day cell category dots
+
+Each day cell of the 日曆 view SHALL show up to three dots for the day's largest expense categories, coloured by joining each split's `key` to the owner's category list, then `+N` when there are more. They SHALL be read once per month from `GET /reports/breakdown?group_by=day&split_by=category&metric=expense&include_excluded_projects=true&date_from={month}-01&date_to={last day}`. If that read fails, the dots SHALL be left out and the cell SHALL render without an error.
+
+#### Scenario: Breakdown unavailable
+- **GIVEN** `GET /reports/breakdown` fails
+- **WHEN** the 日曆 view renders
+- **THEN** the cells SHALL show dates, nets, bars and marks without dots, and no error toast SHALL appear
+
+### Requirement: Calendar day cell marks and accessible name
+
+Each day cell of the 日曆 view SHALL show:
+
+- the card mark on bill due days (帳單, or 已繳 once the statement is fully paid, at ≥ 1024 px; a muted dot below);
+- a warning-ink marker when an inbox e-invoice awaiting a match has that day as its `issue_date` (發票待對帳 at ≥ 1024 px; a dot below).
+
+The cell's accessible name SHALL include the date, the weekday, the row count, the day's expense and any bill or invoice mark; the bar and the dots SHALL be hidden from assistive technology.
+
+#### Scenario: Invoice waiting on a day
+- **GIVEN** the inbox holds an unmatched invoice from 路易莎 issued 2026-10-22
+- **WHEN** October renders at 1440 px
+- **THEN** 10/22's cell SHALL show 發票待對帳 and its accessible name SHALL end with 「發票待對帳」
+
+### Requirement: Calendar layout on wide screens
+
+From 1024 px, in the 日曆 view:
+
+- **The list pane SHALL hold the calendar only.** No rows SHALL appear under the grid.
+- **The month's 支出 / 收入 / 結餘 SHALL sit in the page header.**
+- **The right pane SHALL follow the selection.**
+- **The 清單 view SHALL keep its two-pane layout.**
+
+#### Scenario: Opening the calendar on a desktop
+- **WHEN** `/accounting?month=2026-10` opens at 1440 px in the 日曆 view
+- **THEN** the left pane SHALL show the October grid alone
+
+### Requirement: Calendar layout on wide screens: month summary
+
+From 1024 px, in the 日曆 view with no day selected, the right pane SHALL show 本月摘要. In this order:
+
+1. a search field;
+2. a 今天 card (current month only: today's count, names and net) that selects today;
+3. the category distribution, with a link to `/accounting/reports?month=…`;
+4. 花最多的商家, as specified by 「Calendar top merchants」;
+5. 這個月要處理: unmatched e-invoices and unpaid card bills in the month, plus near-term dues past month end in the current month (「Calendar items to handle」).
+
+#### Scenario: Month summary on a desktop
+- **WHEN** `/accounting?month=2026-10` opens at 1440 px in the 日曆 view
+- **THEN** the right pane SHALL show 本月摘要 with 今天, the category distribution, 花最多的商家 and 這個月要處理
+
+#### Scenario: Bill due early next month at month end
+- **GIVEN** today is 2026-10-28 and a card's statement debits on 2026-11-03 with a remaining balance
+- **WHEN** `/accounting?month=2026-10` opens in the 日曆 view at 1440 px
+- **THEN** 這個月要處理 SHALL list that bill with 11/03 到期
+- **AND** `/accounting?month=2026-09` SHALL not list it
+
+### Requirement: Calendar items to handle
+
+A 這個月要處理 row SHALL select its day. In the current month it SHALL also list unpaid card bills debiting within today + 6 after month end; that row selects its day next month. An e-invoice row whose matcher proposed exactly one candidate SHALL also open it with `month` and `day` kept: an entry candidate at `/accounting/entries/{id}`; a split-group candidate at `/accounting/entries/{memberId}/group`, where `memberId` is a member of that group found in the day's `GET /entries` rows.
+
+#### Scenario: One entry candidate
+- **GIVEN** an invoice issued 2026-10-22 whose only candidate is entry 501
+- **WHEN** its row is clicked
+- **THEN** 10/22 SHALL be selected and the drawer SHALL show `/accounting/entries/501?month=2026-10&day=2026-10-22`
+
+### Requirement: Calendar top merchants
+
+In 本月摘要, 花最多的商家 SHALL list the five merchants with the largest expense in the shown month, from `GET /reports/breakdown?group_by=merchant&metric=expense&include_excluded_projects=true` with `date_from` and `date_to` set to the month's first and last day, excluding rows without a merchant, each with its count and amount.
+
+#### Scenario: Merchant ranking unavailable
+- **GIVEN** the merchant breakdown fails
+- **THEN** 本月摘要 SHALL show 「商家排行讀取失敗」 in place of 花最多的商家 and render its other parts
+
+### Requirement: Calendar layout on wide screens: day panel
+
+From 1024 px, in the 日曆 view with a day selected, the right pane SHALL show the day panel: ‹ day label › with the count and net, a 本月摘要 button, the bill line for that day, and the day's rows with their time. A day without rows SHALL show 這天沒有記錄 (還沒到這天 for a future day) and 「＋ 在這天記一筆」, which opens `/accounting/entry?date=…&month=…&day=…` with that date filled in.
+
+#### Scenario: Picking a day
+- **WHEN** 10/21 is clicked
+- **THEN** the right pane SHALL list 全聯 採買, 電費 and Netflix under 「10/21 週三 · 3 筆 · −$3,096」 and the cell SHALL be marked selected
+
+### Requirement: Calendar layout on wide screens: entry drawer
+
+From 1024 px, in the 日曆 view, an entry opened from the day panel SHALL render as a drawer over the right pane. The day panel stays mounted underneath.
+
+- ✕ or Esc SHALL close it back to the day, and focus SHALL return to the row that opened it. Focus SHALL stay inside the drawer while it is open.
+- The 760–1023 px sheet SHALL keep its current behaviour; the drawer is a separate ≥ 1024 px overlay.
+
+#### Scenario: Entry drawer
+- **GIVEN** 10/21 is selected
+- **WHEN** 全聯 採買 is clicked
+- **THEN** the detail SHALL cover the right pane as a drawer, the calendar SHALL stay visible, and the URL SHALL be `/accounting/entries/{id}?month=2026-10&day=2026-10-21`
+
+#### Scenario: Esc returns focus
+- **GIVEN** the drawer was opened from 10/21's 電費 row
+- **WHEN** Esc is pressed
+- **THEN** the URL SHALL be `/accounting?month=2026-10&day=2026-10-21` and focus SHALL be on the 電費 row
+
+### Requirement: Calendar entry drawer stepping
+
+From 1024 px, with the calendar's entry drawer open, ↑ and ↓ SHALL move to the previous or next entry of the month in list order (newest first), keeping `month` and moving `day` with the entry. For that visit they SHALL replace the layout's document-level row stepping.
+
+#### Scenario: Stepping across days in the drawer
+- **GIVEN** the drawer shows the last entry of 10/21
+- **WHEN** ↓ is pressed
+- **THEN** the drawer SHALL show the newest entry of the previous day with rows, and the calendar's selection SHALL move to that day
+
+### Requirement: Calendar grid keyboard
+
+The 日曆 grid SHALL be one tab stop with a roving focus: ← and → move one day, ↑ and ↓ one week, Home and End go to the month's first and last day, and Enter or Space picks the focused day. With the day panel open and focus outside the drawer, `[` and `]` SHALL set `day` one day earlier or later, as ‹ › do. These handlers SHALL be bound to the grid and the panel, not the document; while the drawer is open, ↑ and ↓ belong to the drawer.
+
+#### Scenario: Arrow keys in the grid
+- **GIVEN** focus is on 10/21 in the grid
+- **WHEN** ↓ and then Enter are pressed
+- **THEN** focus SHALL be on 10/28 and 10/28 SHALL be selected
+
+### Requirement: Calendar layout on narrow screens
+
+Below 1024 px, in the 日曆 view, the month's 支出 / 收入 / 結餘 SHALL be one line under the month navigator.
+
+- **No day selected.** The month grid SHALL be shown with category dots, followed by a 今天 bar showing today's row count, names and net, which selects today. In another month the bar SHALL read 回到今天 and set `month` and `day` to today.
+
+#### Scenario: 回到今天
+- **GIVEN** September 2026 is shown at 390 px and today is 2026-10-22
+- **WHEN** 回到今天 is tapped
+- **THEN** the URL SHALL be `?month=2026-10&day=2026-10-22` and the grid SHALL collapse to the week of 10/22
+
+#### Scenario: Phone default
+- **WHEN** `/accounting` opens at 390 px in the 日曆 view in October 2026 on 10/22
+- **THEN** the October grid and a bar 「今天 · 3 筆 … −$250」 SHALL be shown, no day SHALL be selected, and no rows SHALL be listed
+
+### Requirement: Calendar layout on narrow screens: week strip
+
+Below 1024 px, in the 日曆 view with a day selected, the grid SHALL collapse to the week containing the day, without dots, with a 展開整月 handle under it. The day header (‹ label ›, count and net) and the day's rows SHALL follow.
+
+A row SHALL open the entry detail as it does today: its own screen below 760 px, the right-hand sheet from 760 px.
+
+#### Scenario: Picking a day on a phone
+- **GIVEN** the week starts on Sunday
+- **WHEN** 10/21 is tapped
+- **THEN** the grid SHALL collapse to 10/18–10/24, and 10/21's three rows SHALL be listed under 「10/21 週三」
+
+### Requirement: Calendar swipes on narrow screens
+
+Below 1024 px with a day selected, a swipe on the day area SHALL move one day, and a swipe on the week strip seven days (same weekday); right to left moves later, left to right earlier, and `month` follows `day`. A gesture SHALL count as a swipe only when its horizontal movement dominates; vertical movement SHALL scroll the page.
+
+#### Scenario: Swiping to the next day
+- **GIVEN** 10/21 is selected at 390 px
+- **WHEN** the day area is swiped from right to left
+- **THEN** 10/22 SHALL be selected and its rows listed
