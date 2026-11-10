@@ -1,7 +1,7 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { ACCOUNT_LOGOS } from '../../../../theme/account-logos';
 import { AccountLookSectionComponent, lookSourceOf, lookSummary } from './look-section';
@@ -13,6 +13,7 @@ type Inputs = Partial<{
   icon: string;
   color: string;
   busy: boolean;
+  stacked: boolean;
 }>;
 
 const png = () => new Blob([new Uint8Array(1)], { type: 'image/png' });
@@ -83,10 +84,16 @@ describe('AccountLookSectionComponent', () => {
     fixture.detectChanges();
     return ev;
   }
-  function dragEvent(type: 'dragover' | 'drop', files: File[] = []): Event {
+  /** A drag event whose `dataTransfer` stub has a writable `dropEffect`; `relatedTarget` for `dragleave`. */
+  function dragEvent(
+    type: 'dragover' | 'dragleave' | 'drop',
+    files: File[] = [],
+    relatedTarget: EventTarget | null = null,
+  ): Event & { dataTransfer: { dropEffect: string; files: File[] } } {
     const ev = new Event(type, { bubbles: true, cancelable: true });
-    Object.defineProperty(ev, 'dataTransfer', { value: { files } });
-    return ev;
+    Object.defineProperty(ev, 'dataTransfer', { value: { dropEffect: 'uninitialized', files } });
+    Object.defineProperty(ev, 'relatedTarget', { value: relatedTarget });
+    return ev as Event & { dataTransfer: { dropEffect: string; files: File[] } };
   }
 
   it('opens on 上傳圖片 when the account has an uploaded image, 內建 logo for a slug, 文字＋顏色 otherwise', () => {
@@ -127,6 +134,7 @@ describe('AccountLookSectionComponent', () => {
     flushLogo(5, 'h1');
     const expectUpload = () => {
       expect(q('.look-current')!.textContent!.trim()).toBe('目前顯示：上傳的圖片');
+      expect(q('.look-current')!.getAttribute('aria-live')).toBe('polite');
       expect(q('.look-tile img')!.getAttribute('src')!.startsWith('blob:')).toBe(true);
     };
     expectUpload();
@@ -162,13 +170,15 @@ describe('AccountLookSectionComponent', () => {
     expect(input.value).toBe('');
   });
 
-  it('upload tab: dragover is default-prevented only when a drop can be taken', () => {
+  it('upload tab: dragover is always default-prevented; dropEffect copy only when a drop can be taken', () => {
+    // An un-prevented dragover lets a drop open the file in the tab; dropEffect 'none' refuses it instead.
     render({ accountId: 5 });
     openTab('上傳圖片');
     let ev = dragEvent('dragover');
     q('.drop')!.dispatchEvent(ev);
     fixture.detectChanges();
     expect(ev.defaultPrevented).toBe(true);
+    expect(ev.dataTransfer.dropEffect).toBe('copy');
     expect(q('.drop.over')).not.toBeNull();
 
     q('.drop')!.dispatchEvent(dragEvent('drop'));
@@ -177,7 +187,8 @@ describe('AccountLookSectionComponent', () => {
     ev = dragEvent('dragover');
     q('.drop')!.dispatchEvent(ev);
     fixture.detectChanges();
-    expect(ev.defaultPrevented).toBe(false);
+    expect(ev.defaultPrevented).toBe(true);
+    expect(ev.dataTransfer.dropEffect).toBe('none');
     expect(q('.drop.over')).toBeNull();
 
     set({ busy: false, accountId: null });
@@ -185,7 +196,25 @@ describe('AccountLookSectionComponent', () => {
     ev = dragEvent('dragover');
     q('.drop')!.dispatchEvent(ev);
     fixture.detectChanges();
-    expect(ev.defaultPrevented).toBe(false);
+    expect(ev.defaultPrevented).toBe(true);
+    expect(ev.dataTransfer.dropEffect).toBe('none');
+    expect(q('.drop.over')).toBeNull();
+  });
+
+  it('upload tab: dragleave onto a child of the zone keeps the highlight; leaving the zone clears it', () => {
+    render({ accountId: 5 });
+    openTab('上傳圖片');
+    const drop = q('.drop')!;
+    drop.dispatchEvent(dragEvent('dragover'));
+    fixture.detectChanges();
+    expect(q('.drop.over')).not.toBeNull();
+
+    drop.dispatchEvent(dragEvent('dragleave', [], q('.logo-upload')));
+    fixture.detectChanges();
+    expect(q('.drop.over')).not.toBeNull();
+
+    drop.dispatchEvent(dragEvent('dragleave', [], null));
+    fixture.detectChanges();
     expect(q('.drop.over')).toBeNull();
   });
 
@@ -249,6 +278,37 @@ describe('AccountLookSectionComponent', () => {
     expect(remove.textContent!.trim()).toBe('移除圖片');
     remove.click();
     expect(removes).toHaveLength(1);
+  });
+
+  it('移除圖片 moves focus to the checked 圖示來源 radio before emitting remove', () => {
+    render({ accountId: 5, logoHash: 'h1' });
+    flushLogo(5, 'h1');
+    document.body.appendChild(root());
+    onTestFinished(() => root().remove());
+    const removes = collect<void>('remove');
+    let focusedAtEmit: Element | null = null;
+    fixture.componentInstance.remove.subscribe(() => (focusedAtEmit = document.activeElement));
+    const remove = q<HTMLButtonElement>('.logo-remove')!;
+    remove.focus();
+    expect(document.activeElement).toBe(remove);
+
+    remove.click();
+    const checked = q('.seg-toggle [role="radio"][aria-checked="true"]')!;
+    expect(checked.textContent!.trim()).toBe('上傳圖片');
+    expect(focusedAtEmit).toBe(checked);
+    expect(document.activeElement).toBe(checked);
+    expect(removes).toHaveLength(1);
+  });
+
+  it('stacked: the host carries .stacked and the source toggle stretches (block)', () => {
+    render({ accountId: 5 });
+    const host = root();
+    expect(host.classList).not.toContain('stacked');
+    expect(q('app-seg-toggle')!.classList).not.toContain('block');
+
+    set({ stacked: true });
+    expect(host.classList).toContain('stacked');
+    expect(q('app-seg-toggle')!.classList).toContain('block');
   });
 
   it('內建 logo grid: 無 first, aria-checked follows logo, clicking emits the slug / null', () => {

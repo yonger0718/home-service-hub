@@ -1411,7 +1411,7 @@ describe('AccountSettingsComponent', () => {
       input.dispatchEvent(new Event('change'));
     }
 
-    it('shows 已上傳的圖片, 移除圖片 and the hint when the detail has a logo_hash', async () => {
+    it('shows 上傳的圖片 and 移除圖片 without the hint when the detail has a logo_hash', async () => {
       await setup('11');
       const fixture = render({ ...DETAIL, logo_hash: 'h1', logo: 'cathay-united' } as AccountDetail);
       http.expectOne('/api/accounting/accounts/11/logo.png?v=h1').flush(new Blob([new Uint8Array(1)], { type: 'image/png' }));
@@ -1918,6 +1918,7 @@ describe('AccountSettingsComponent', () => {
       expect(el(fixture).querySelector('#s-basic .closing-day')).not.toBeNull();
       expect(el(fixture).querySelector('#s-basic .include-toggle')).not.toBeNull();
       expect(el(fixture).querySelector('#s-look app-account-look')).not.toBeNull();
+      expect(el(fixture).querySelector('#s-look app-account-look')!.classList).not.toContain('stacked');
       expect(rowLabels(fixture, 'look')).toEqual([]);
       expect(el(fixture).querySelector('#s-card .sec-head .credit-toggle')).not.toBeNull();
       expect(rowLabels(fixture, 'card')).toEqual([]);
@@ -2108,6 +2109,7 @@ describe('AccountSettingsComponent', () => {
       expect(open.querySelector('h3')?.textContent?.trim()).toBe('圖示');
       expect(open.querySelector('app-account-look')).not.toBeNull();
       expect(open.querySelectorAll('app-account-look').length).toBe(1);
+      expect(open.querySelector('app-account-look')!.classList).toContain('stacked');
       expect(open.querySelector('.field-error')).toBeNull();
       const checked = open.querySelector<HTMLElement>('.seg-toggle [aria-checked="true"]')!;
       expect(checked.textContent?.trim()).toBe('文字＋顏色');
@@ -2130,6 +2132,37 @@ describe('AccountSettingsComponent', () => {
       expect(checked.textContent?.trim()).toBe('上傳圖片');
       expect(doc.activeElement).toBe(checked);
       expect(doc.activeElement).not.toBe(open.querySelector('input[type=file]'));
+    });
+
+    it('移除圖片 inside the sheet keeps focus in the sheet and Tab still wraps', async () => {
+      await phoneSetup();
+      const fixture = render({ ...DETAIL, logo_hash: 'h1' } as AccountDetail);
+      const doc = el(fixture).ownerDocument;
+      click(fixture, 'button.row-look');
+      http.expectOne('/api/accounting/accounts/11/logo.png?v=h1').flush(new Blob([new Uint8Array(1)], { type: 'image/png' }));
+      const open = sheet(fixture)!;
+
+      const remove = open.querySelector<HTMLButtonElement>('.logo-remove')!;
+      remove.focus();
+      remove.click();
+      fixture.detectChanges();
+      const req = http.expectOne('/api/accounting/accounts/11/logo');
+      expect(req.request.method).toBe('DELETE');
+      req.flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+
+      expect(open.querySelector('.logo-remove')).toBeNull();
+      expect(open.contains(doc.activeElement)).toBe(true);
+      expect(doc.activeElement).toBe(open.querySelector('.seg-toggle [aria-checked="true"]'));
+
+      const items = focusables(open);
+      const last = items[items.length - 1];
+      expect(last).toBe(open.querySelector('.sheet-done'));
+      last.focus();
+      const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+      last.dispatchEvent(tab);
+      expect(tab.defaultPrevented).toBe(true);
+      expect(doc.activeElement).toBe(items[0]);
     });
 
     it('picking a logo inside the sheet updates the row value and the payload', async () => {

@@ -244,7 +244,7 @@ export const FIELD_SECTION: Readonly<Record<string, SectionId>> = {
   note: 'more', is_archived: 'more',
 };
 
-/** Phone rows whose control (a stepper or an amount field) opens in the page's bottom sheet. */
+/** Phone rows whose control (a stepper, an amount field or the 外觀 look block) opens in the page's bottom sheet. */
 export type SheetRow = 'opening_balance' | 'closing_day' | 'due_value' | 'credit_limit' | 'fx_fee_pct' | 'look';
 
 interface LoadedAccount {
@@ -273,7 +273,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly injector = inject(Injector);
   private readonly layoutMode = inject(LayoutModeService);
-  /** Below 760 px: grouped rows, a bottom sheet for stepper / amount rows and the 放棄 / 儲存 bar. */
+  /** Below 760 px: grouped rows, a bottom sheet for stepper / amount rows and the look block, and the 放棄 / 儲存 bar. */
   readonly phone = computed(() => this.layoutMode.mode() === 'phone');
   /** N, 記一筆 and the layout's ✕ / Esc / backdrop ask before unsaved input is dropped (spec §4.3). */
   readonly dirty = inject(DirtyFormRegistry);
@@ -743,7 +743,7 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     }
   }
 
-  /** Phone: a stepper / amount row opens its control in the page's bottom sheet; focus moves into it. */
+  /** Phone: a stepper / amount row or the 圖示 row opens its control in the page's bottom sheet; focus moves into it. */
   openSheet(row: SheetRow): void {
     this.sheetRow.set(row);
     afterNextRender(() => {

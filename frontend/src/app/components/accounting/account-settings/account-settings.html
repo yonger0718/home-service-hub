@@ -121,7 +121,7 @@
         <ng-container *ngTemplateOutlet="sheetRowButton; context: { $implicit: 'look', label: '圖示', hint: '上傳圖片、內建 logo 或文字＋顏色' }" />
       </div>
     } @else {
-      <app-account-look [accountId]="loadedId()" [logoHash]="logoHash()" [logo]="form().logo" [icon]="form().icon" [color]="form().color" [busy]="uploadingLogo()" (logoChange)="set('logo', $event)" (iconChange)="set('icon', $event)" (colorChange)="set('color', $event)" (upload)="uploadLogoFile($event)" (remove)="removeLogo()" />
+      <ng-container *ngTemplateOutlet="lookCtl; context: { stacked: false }" />
     }
   </section>
 
@@ -342,7 +342,7 @@
             @case ('credit_limit') { <ng-container *ngTemplateOutlet="creditLimitCtl" /> }
             @case ('fx_fee_pct') { <ng-container *ngTemplateOutlet="fxPctCtl" /> }
             @case ('look') {
-              <app-account-look [accountId]="loadedId()" [logoHash]="logoHash()" [logo]="form().logo" [icon]="form().icon" [color]="form().color" [busy]="uploadingLogo()" (logoChange)="set('logo', $event)" (iconChange)="set('icon', $event)" (colorChange)="set('color', $event)" (upload)="uploadLogoFile($event)" (remove)="removeLogo()" />
+              <ng-container *ngTemplateOutlet="lookCtl; context: { stacked: true }" />
             }
           }
         </div>
@@ -405,6 +405,9 @@
 <ng-template #autopayCtl>
   <app-picker class="autopay-select" label="自動扣繳" [attr.aria-invalid]="error('auto_pay_account_id') ? 'true' : null" [options]="autopayPickerOptions()" [value]="idValue(form().auto_pay_account_id)" (change)="setIdField('auto_pay_account_id', $event)" />
 </ng-template>
+<ng-template #lookCtl let-stacked="stacked">
+  <app-account-look [stacked]="stacked" [accountId]="loadedId()" [logoHash]="logoHash()" [logo]="form().logo" [icon]="form().icon" [color]="form().color" [busy]="uploadingLogo()" (logoChange)="set('logo', $event)" (iconChange)="set('icon', $event)" (colorChange)="set('color', $event)" (upload)="uploadLogoFile($event)" (remove)="removeLogo()" />
+</ng-template>
 <ng-template #fxPctCtl>
   <app-amount-field class="fx-pct" ariaLabel="手續費百分比" suffix="%" [invalid]="!!error('fx_fee_pct')" [value]="form().fx_fee_pct" (valueChange)="set('fx_fee_pct', $event)" />
 </ng-template>
@@ -426,7 +429,7 @@
 <ng-template #fieldError let-field>
   @if (error(field); as e) { <small class="field-error" [attr.data-field]="field">{{ e }}</small> }
 </ng-template>
-<!-- Phone: a stepper / amount row; tapping it opens the control in the page's bottom sheet. -->
+<!-- Phone: a stepper / amount row or the 圖示 row; tapping it opens the control in the page's bottom sheet. -->
 <ng-template #sheetRowButton let-row let-label="label" let-hint="hint">
   <button type="button" [class]="'set-row row-' + row" [attr.aria-invalid]="error(row) ? 'true' : null" (click)="openSheet(row)">
     <span class="row-k">

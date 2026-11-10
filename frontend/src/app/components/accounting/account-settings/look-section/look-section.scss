@@ -1,4 +1,7 @@
 .look { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+/* The phone sheet: one column, full width; the preview stays centred. */
+:host.stacked .look { align-items: stretch; flex-direction: column; }
+:host.stacked .look-body { min-width: 0; }
 
 .look-preview {
   align-items: center;

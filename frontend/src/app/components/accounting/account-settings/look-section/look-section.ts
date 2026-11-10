@@ -42,6 +42,7 @@ const ARROW_OFFSET: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, Arro
   imports: [AccountIconComponent, SegToggleComponent],
   templateUrl: './look-section.html',
   styleUrl: './look-section.scss',
+  host: { '[class.stacked]': 'stacked()' },
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class AccountLookSectionComponent {
@@ -51,6 +52,8 @@ export class AccountLookSectionComponent {
   readonly icon = input('');
   readonly color = input('');
   readonly busy = input(false);
+  /** One column, the source toggle full-width: the phone sheet. */
+  readonly stacked = input(false);
 
   readonly logoChange = output<string | null>();
   readonly iconChange = output<string>();
@@ -116,10 +119,30 @@ export class AccountLookSectionComponent {
     queueMicrotask(() => next.focus());
   }
 
+  /** Always default-prevented: an un-prevented drop opens the file in the tab. `dropEffect` 'none' refuses the drop
+   *  (blocked cursor, no `drop` event) while busy or on a new account. */
   protected onDragOver(event: DragEvent): void {
-    if (!this.canUpload()) return; // not default-prevented: the browser refuses the drop
     event.preventDefault();
-    this.dragOver.set(true);
+    const allowed = this.canUpload();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = allowed ? 'copy' : 'none';
+    if (allowed) this.dragOver.set(true);
+  }
+
+  /** Moving onto the zone's own svg / text / button is not leaving it. */
+  protected onDragLeave(event: DragEvent): void {
+    const to = event.relatedTarget;
+    if (to instanceof Node && (event.currentTarget as HTMLElement).contains(to)) return;
+    this.dragOver.set(false);
+  }
+
+  /** 移除圖片 disables then removes itself; focus moves to the checked 圖示來源 radio (the group's tab stop) first,
+   *  so it never drops to `<body>` — outside the phone sheet's focus trap. */
+  protected onRemove(event: Event): void {
+    (event.currentTarget as HTMLElement)
+      .closest('.look')
+      ?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]')
+      ?.focus();
+    this.remove.emit();
   }
 
   protected onDrop(event: DragEvent): void {
