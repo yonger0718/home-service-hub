@@ -1405,6 +1405,62 @@ describe('AccountSettingsComponent', () => {
     expect(el(fixture).querySelectorAll('.rule-row').length).toBe(1);
   });
 
+  /** Waits for afterNextRender hooks (the rows' and the sheet's focus moves). */
+  async function settle(fixture: ComponentFixture<AccountSettingsComponent>): Promise<void> {
+    fixture.detectChanges();
+    await fixture.whenStable();
+    await new Promise<void>(r => setTimeout(r));
+    fixture.detectChanges();
+  }
+
+  it('deleting a rule through the sheet leaves focus on 新增規則, not <body>', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+
+    openRuleMenu(fixture, 2).find(b => b.textContent?.trim() === '刪除')!.click();
+    await settle(fixture);
+    expect(document.activeElement).toBe(el(fixture).querySelector('app-reward-rule-sheet .rule-delete'));
+
+    click(fixture, 'app-reward-rule-sheet .rule-delete');
+    http.expectOne('/api/accounting/accounts/11/reward-rules/2').flush(null, { status: 204, statusText: 'No Content' });
+    await settle(fixture);
+    http.expectOne('/api/accounting/accounts/11').flush({ ...DETAIL, reward_rules: [DETAIL.reward_rules[0]] });
+    http.expectOne('/api/accounting/accounts/11/reward-usage').flush([]);
+    await settle(fixture);
+
+    expect(el(fixture).querySelector('.rule-row[data-rule-id="2"]')).toBeNull();
+    expect(document.activeElement).toBe(el(fixture).querySelector('.rule-add'));
+  });
+
+  it('closing the sheet opened from ⋯ 編輯 or ⋯ 刪除 returns focus to that row\'s ⋯; a row tap after a cancelled 刪除 is not armed', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    const more = () => el(fixture).querySelector<HTMLButtonElement>('.rule-row[data-rule-id="2"] .rule-more');
+
+    openRuleMenu(fixture, 2).find(b => b.textContent?.trim() === '編輯')!.click();
+    await settle(fixture);
+    expect(sheet(fixture)!.rule()?.id).toBe(2);
+    click(fixture, 'app-reward-rule-sheet .sheet-cancel');
+    await settle(fixture);
+    expect(sheet(fixture)).toBeNull();
+    expect(document.activeElement).toBe(more());
+
+    openRuleMenu(fixture, 2).find(b => b.textContent?.trim() === '刪除')!.click();
+    await settle(fixture);
+    expect(el(fixture).querySelector('app-reward-rule-sheet .rule-delete')!.classList).toContain('armed');
+    click(fixture, 'app-reward-rule-sheet .sheet-cancel');
+    await settle(fixture);
+    expect(sheet(fixture)).toBeNull();
+    http.expectNone('/api/accounting/accounts/11/reward-rules/2');
+    expect(document.activeElement).toBe(more());
+
+    click(fixture, '.rule-row[data-rule-id="2"] .rule-open');
+    await settle(fixture);
+    expect(sheet(fixture)!.rule()?.id).toBe(2);
+    expect(sheet(fixture)!.startDelete()).toBe(false);
+    expect(el(fixture).querySelector('app-reward-rule-sheet .rule-delete')!.classList).not.toContain('armed');
+  });
+
   describe('本期 usage', () => {
     const usage = (fields: Partial<RewardUsage>): RewardUsage => ({
       rule_ids: [1], shared_cap_id: null, name: '一般', window_start: '2026-09-16', window_end: '2026-10-15',
@@ -1439,6 +1495,28 @@ describe('AccountSettingsComponent', () => {
       await setup('11');
       const fixture = render(BOTH_ACTIVE, [usage({ rule_ids: [2, 1, 99], shared_cap_id: 'cap-a', name: '共用' })]);
       expect(bars(fixture)).toEqual(['$50 / $100 · 剩 $50', null]);
+    });
+
+    it('shared group whose first listed member is disabled shows its bar on the first active member', async () => {
+      await setup('11');
+      // 餐飲 (disabled) is listed before 一般 (active); both are in the group.
+      const detail = { ...DETAIL, reward_rules: [DETAIL.reward_rules[1], DETAIL.reward_rules[0]] } as AccountDetail;
+      const fixture = render(detail, [usage({ rule_ids: [2, 1], shared_cap_id: 'cap-a', name: '共用' })]);
+      expect(el(fixture).querySelector('.rule-row[data-rule-id="2"] app-cap-bar')).toBeNull();
+      expect(el(fixture).querySelector('.rule-row[data-rule-id="1"] app-cap-bar')).not.toBeNull();
+      expect(bars(fixture)).toEqual([null, '$50 / $100 · 剩 $50']);
+      expect(el(fixture).querySelectorAll('app-cap-bar').length).toBe(1);
+    });
+
+    it('shared group with no active member shows no bar', async () => {
+      await setup('11');
+      // 一般 expired (today 2026-10-02), 餐飲 disabled.
+      const detail = {
+        ...DETAIL,
+        reward_rules: [{ ...DETAIL.reward_rules[0], ends_on: '2026-09-30' }, DETAIL.reward_rules[1]],
+      } as AccountDetail;
+      const fixture = render(detail, [usage({ rule_ids: [1, 2], shared_cap_id: 'cap-a', name: '共用' })]);
+      expect(el(fixture).querySelectorAll('app-cap-bar').length).toBe(0);
     });
 
     it('a failed usage request hides the bars only', async () => {

@@ -1,4 +1,5 @@
 <p class="visually-hidden" aria-live="polite">{{ liveText() }}</p>
+<p class="visually-hidden" [id]="handleHintId">鍵盤請用「更多動作」裡的上移、下移</p>
 @for (row of rows(); track row.rule.id; let i = $index, first = $first, last = $last) {
   @if (dropBefore() === i) { <div class="rule-drop-line" aria-hidden="true"></div> }
   <div
@@ -10,7 +11,9 @@
     <button
       type="button"
       class="rule-handle"
+      [class.busy]="busy()"
       [attr.aria-label]="'拖曳排序 ' + row.rule.name"
+      [attr.aria-describedby]="handleHintId"
       (pointerdown)="onHandleDown($event, i)"
       (pointermove)="onHandleMove($event)"
       (pointerup)="onHandleUp($event)"
@@ -61,7 +64,7 @@
         aria-haspopup="menu"
         [attr.aria-expanded]="menuFor() === row.rule.id"
         [attr.aria-controls]="menuFor() === row.rule.id ? menuId(row.rule) : null"
-        (click)="toggleMenu(row.rule, $event)"
+        (click)="toggleMenu(row.rule)"
       >
         <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
           <circle cx="5" cy="12" r="1.8" />

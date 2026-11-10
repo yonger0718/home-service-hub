@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { RewardRule, RewardUsage } from '../../../../models/accounting.model';
 import { SwitchComponent } from '../../../ui/switch/switch';
@@ -244,6 +244,33 @@ describe('AccountRulesComponent', () => {
     handle.click();
     more.click();
     expect(host.onOpen).not.toHaveBeenCalled();
+  });
+
+  it('every handle is described by one hidden hint pointing keyboard users to 上移 / 下移 in 更多動作', () => {
+    const handles = Array.from(root().querySelectorAll('.rule-handle'));
+    const ids = new Set(handles.map(h => h.getAttribute('aria-describedby')));
+    expect(ids.size).toBe(1);
+    const id = [...ids][0];
+    expect(id).toBeTruthy();
+    const hints = document.querySelectorAll(`[id="${id}"]`);
+    expect(hints.length).toBe(1);
+    expect(root().contains(hints[0])).toBe(true);
+    expect(hints[0].classList).toContain('visually-hidden');
+    expect(text(hints[0])).toBe('鍵盤請用「更多動作」裡的上移、下移');
+
+    // A second instance has its own id.
+    const other = TestBed.createComponent(HostComponent);
+    other.detectChanges();
+    const otherId = (other.nativeElement as HTMLElement).querySelector('.rule-handle')!.getAttribute('aria-describedby');
+    expect(otherId).toBeTruthy();
+    expect(otherId).not.toBe(id);
+  });
+
+  it('busy marks each handle .busy (no grab cursor)', () => {
+    const handles = () => Array.from(root().querySelectorAll('.rule-handle'));
+    expect(handles().some(h => h.classList.contains('busy'))).toBe(false);
+    update(() => host.busy.set(true));
+    expect(handles().every(h => h.classList.contains('busy'))).toBe(true);
   });
 
   /** Waits for afterNextRender hooks (menu focus, focus after a move). */
@@ -732,6 +759,52 @@ describe('AccountRulesComponent', () => {
       );
       await flush();
       expect(menus()).toEqual([]);
+    });
+
+    /** Every rendered `.rule-menu` reports a 180 px box ending at `bottom` (jsdom has no layout). */
+    function stubMenuBottom(bottom: number): void {
+      const original = Element.prototype.getBoundingClientRect;
+      const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+        if (!this.classList.contains('rule-menu')) return original.call(this);
+        return { top: bottom - 180, bottom, height: 180, left: 0, right: 140, width: 140, x: 0, y: bottom - 180, toJSON: () => ({}) } as DOMRect;
+      });
+      onTestFinished(() => spy.mockRestore());
+    }
+
+    it('a menu that does not fit below the viewport opens above ⋯ and is scrolled into view; closing clears the flip', async () => {
+      const proto = Element.prototype as { scrollIntoView?: unknown };
+      const had = 'scrollIntoView' in proto;
+      const scrolled: Element[] = [];
+      const original = proto.scrollIntoView;
+      proto.scrollIntoView = function (this: Element) { scrolled.push(this); };
+      onTestFinished(() => {
+        if (had) proto.scrollIntoView = original;
+        else delete proto.scrollIntoView;
+      });
+      stubMenuBottom(window.innerHeight + 40);
+
+      await openMenu(3);
+      const wrap = rowOf(3).querySelector('.rule-more-wrap')!;
+      expect(wrap.classList).toContain('up');
+      expect(scrolled).toEqual([rowOf(3).querySelector('.rule-menu')]);
+
+      await key('Escape');
+      expect(menus()).toEqual([]);
+      expect(wrap.classList).not.toContain('up');
+
+      // Opening another menu closes this one without a flip left behind on it.
+      await openMenu(3);
+      expect(wrap.classList).toContain('up');
+      await openMenu(1);
+      expect(wrap.classList).not.toContain('up');
+      expect(rowOf(1).querySelector('.rule-more-wrap')!.classList).toContain('up');
+    });
+
+    it('a menu that fits below the viewport opens downward (no .up)', async () => {
+      stubMenuBottom(window.innerHeight - 10);
+      await openMenu(3);
+      expect(menus().length).toBe(1);
+      expect(rowOf(3).querySelector('.rule-more-wrap')!.classList).not.toContain('up');
     });
 
     it('⋯ and the handle do not emit open', async () => {

@@ -41,7 +41,7 @@ import { logoFileTooLarge, logoUploadErrorMessage } from '../logo-upload-errors'
 import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
 import { AccountLookSectionComponent, lookSummary } from './look-section/look-section';
 import { AccountRulesComponent } from './rules-section/rules-section';
-import { basicOverlapRuleId, ruleToInput } from '../reward-rule-text';
+import { basicOverlapRuleId, ruleState, ruleToInput } from '../reward-rule-text';
 import { SwitchComponent } from '../../ui/switch/switch';
 import { StepperComponent } from '../../ui/stepper/stepper';
 import { AmountFieldComponent, groupAmount } from '../../ui/amount-field/amount-field';
@@ -421,11 +421,13 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   readonly usage = signal<RewardUsage[]>([]);
   /**
    * The usage line a rule row shows. A shared group appears once in `usage`, but its `rule_ids` may list members
-   * the rules list does not show, so it goes on the first listed rule that is a member.
+   * the rules list does not show, and members in any state, so it goes on the first listed rule that is an active
+   * member (the rows show a bar on an active rule only); with no active member it goes nowhere.
    */
   readonly usageByRule = computed(() => {
     const byRule = new Map<number, RewardUsage>();
-    const ids = this.rules().map(rule => rule.id);
+    const today = this.today();
+    const ids = this.rules().filter(rule => ruleState(rule, today) === 'active').map(rule => rule.id);
     for (const item of this.usage()) {
       const first = ids.find(id => item.rule_ids.includes(id));
       if (first !== undefined) {
@@ -1036,6 +1038,10 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
   onRuleDeleted(): void {
     this.onRuleSheetStayed();
     this.closeRuleSheet();
+    // The sheet handed focus back to the deleted row's ⋯ (or row), which the re-read is about to remove, dropping
+    // focus to <body>. 新增規則 is there whenever an account is loaded and is not re-created by the re-read, so it
+    // takes focus now: no wait on the response, and a failed re-read (the row stays) still leaves focus in the block.
+    this.host.nativeElement.querySelector<HTMLButtonElement>('.rule-add')?.focus();
     this.reloadRules();
   }
 

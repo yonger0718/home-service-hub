@@ -79,7 +79,7 @@ let nextRulesId = 0;
 })
 export class AccountRulesComponent {
   readonly rules = input.required<RewardRule[]>();
-  /** Rule id → the usage row shown on that rule (a shared-cap group already collapsed to its first listed member). */
+  /** Rule id → the usage row shown on that rule (a shared-cap group already collapsed to its first listed active member). */
   readonly usage = input<ReadonlyMap<number, RewardUsage>>(new Map());
   /** `YYYY-MM-DD`. */
   readonly today = input.required<string>();
@@ -95,7 +95,10 @@ export class AccountRulesComponent {
   private readonly document = inject(DOCUMENT);
   private readonly injector = inject(Injector);
 
-  protected readonly menuPrefix = `rule-menu-${++nextRulesId}`;
+  private readonly uid = ++nextRulesId;
+  protected readonly menuPrefix = `rule-menu-${this.uid}`;
+  /** The one hidden hint every handle points at (`aria-describedby`): reordering by keyboard lives in ⋯. */
+  protected readonly handleHintId = `rule-handle-hint-${this.uid}`;
   /** The rule id whose ⋯ menu is open. */
   protected readonly menuFor = signal<number | null>(null);
   /** A press is in progress inside the menu: Safari blurs a tapped button with relatedTarget null before click. */
@@ -166,7 +169,7 @@ export class AccountRulesComponent {
     return `${this.menuPrefix}-${rule.id}`;
   }
 
-  protected toggleMenu(rule: RewardRule, event: Event): void {
+  protected toggleMenu(rule: RewardRule): void {
     // The click still bubbles to the wrapper (which ends the press); ⋯ is a sibling of .rule-open, so it opens nothing.
     // `pressing` is reset here too: the document pointerup listener did not exist yet when this press began.
     this.pressing = false;
@@ -189,12 +192,35 @@ export class AccountRulesComponent {
       }),
     ];
     this.unlistenMenu = () => unlisten.forEach(u => u());
-    afterNextRender(() => this.menuItems()[0]?.focus({ preventScroll: true }), { injector: this.injector });
+    afterNextRender(() => {
+      this.placeMenu();
+      this.menuItems()[0]?.focus({ preventScroll: true });
+    }, { injector: this.injector });
+  }
+
+  /**
+   * The menu opens below ⋯; one that would end below the viewport (a row near the bottom of a phone screen) opens
+   * above it instead (`.up` on the wrapper), then is scrolled into view if it still does not fit. Needed because the
+   * owner cannot scroll it into view: opening focus uses `preventScroll` and a touch scroll starts with a pointerdown
+   * outside, which closes the menu.
+   */
+  private placeMenu(): void {
+    const wrap = this.menuWrap();
+    const menu = wrap?.querySelector<HTMLElement>('.rule-menu');
+    const win = this.document.defaultView;
+    if (!wrap || !menu || !win) return;
+    const view = win.visualViewport;
+    const bottom = view ? view.offsetTop + view.height : win.innerHeight;
+    if (menu.getBoundingClientRect().bottom <= bottom) return;
+    this.renderer.addClass(wrap, 'up');
+    menu.scrollIntoView?.({ block: 'nearest' });
   }
 
   protected closeMenu(restoreFocus = true): void {
     const id = this.menuFor();
     if (id === null) return;
+    const wrap = this.menuWrap();
+    if (wrap) this.renderer.removeClass(wrap, 'up');
     this.stopMenuListening();
     clearTimeout(this.pressTimer);
     this.pressing = false;
