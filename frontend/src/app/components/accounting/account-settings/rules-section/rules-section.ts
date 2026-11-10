@@ -51,6 +51,8 @@ export function movedIds(ids: number[], from: number, to: number): number[] {
 
 /** Vertical movement (px) a press must exceed before it becomes a drag; less is a tap or a jitter. */
 const DRAG_SLOP = 4;
+/** Delay before a cleared live region is refilled: long enough for screen readers to see the empty state. */
+const LIVE_DELAY_MS = 100;
 
 interface DragSession {
   pointerId: number;
@@ -109,6 +111,7 @@ export class AccountRulesComponent {
 
   /** Announced after a move (polite live region). */
   protected readonly liveText = signal('');
+  private liveTimer: ReturnType<typeof setTimeout> | undefined;
 
   protected readonly rows = computed<RuleRowView[]>(() => {
     const today = this.today();
@@ -143,6 +146,7 @@ export class AccountRulesComponent {
     inject(DestroyRef).onDestroy(() => {
       this.stopMenuListening();
       clearTimeout(this.pressTimer);
+      clearTimeout(this.liveTimer);
       this.endDrag();
     });
     // Only `rules` is tracked: setting `drag` at pointerdown must not re-run this and cancel the drag.
@@ -163,7 +167,9 @@ export class AccountRulesComponent {
   }
 
   protected toggleMenu(rule: RewardRule, event: Event): void {
-    event.stopPropagation();
+    // The click still bubbles to the wrapper (which ends the press); ⋯ is a sibling of .rule-open, so it opens nothing.
+    // `pressing` is reset here too: the document pointerup listener did not exist yet when this press began.
+    this.pressing = false;
     if (this.menuFor() === rule.id) {
       this.closeMenu();
       return;
@@ -282,7 +288,9 @@ export class AccountRulesComponent {
   // Drag -----------------------------------------------------------------------------------------------------------
 
   protected onHandleDown(event: PointerEvent, index: number): void {
-    if (event.button !== 0 || event.isPrimary === false || this.session) return;
+    if (event.button !== 0 || event.isPrimary === false) return;
+    // A leftover drag (its release never arrived) is dropped, never committed by this press's pointerup.
+    if (this.session) this.cancelDrag();
     const rules = this.rules();
     if (this.busy() || rules.length < 2) return;
     event.preventDefault();
@@ -322,8 +330,9 @@ export class AccountRulesComponent {
   protected onHandleUp(event: PointerEvent): void {
     const s = this.session;
     if (!this.drag() || !s || event.pointerId !== s.pointerId) return;
-    // The release point counts as a final move (moves may be coalesced); pointer capture reports it outside the list.
-    this.onHandleMove(event);
+    // Once past the slop, the release point counts as a final move (moves may be coalesced; capture reports it outside
+    // the list). A release that would be the first event past the slop commits nothing: no drop was ever shown.
+    if (this.dragMoved()) this.onHandleMove(event);
     const d = this.drag()!;
     const moved = this.dragMoved();
     const ids = s.rules.map(r => r.id);
@@ -331,9 +340,16 @@ export class AccountRulesComponent {
     if (moved && d.to !== d.from && !this.busy()) this.emitMove(ids, d.from, d.to);
   }
 
-  /** Ends a drag without emitting: pointercancel, Escape, a scroll or wheel, or a new `rules` list. */
+  /** Ends a drag without emitting: pointercancel, lost capture, Escape, a scroll or wheel, or a new `rules` list. */
   protected cancelDrag(): void {
     this.endDrag();
+  }
+
+  /** Only the current drag's own capture: a capture released by a cancelled earlier drag reports its loss later,
+   *  at the next pointer event, and must not cancel the drag that replaced it. */
+  protected onLostCapture(event: PointerEvent): void {
+    const s = this.session;
+    if (s && event.currentTarget === s.handle && event.pointerId === s.pointerId) this.cancelDrag();
   }
 
   private endDrag(): void {
@@ -372,6 +388,13 @@ export class AccountRulesComponent {
 
   private emitMove(ids: number[], from: number, to: number): void {
     this.reorder.emit(movedIds(ids, from, to));
-    this.liveText.set(`已移到第 ${to + 1} 項，共 ${ids.length} 項`);
+    this.announce(`已移到第 ${to + 1} 項，共 ${ids.length} 項`);
+  }
+
+  /** Clear the live region now and refill it after a render, so a message equal to the last one is announced again. */
+  private announce(message: string): void {
+    clearTimeout(this.liveTimer);
+    this.liveText.set('');
+    this.liveTimer = setTimeout(() => this.liveText.set(message), LIVE_DELAY_MS);
   }
 }

@@ -15,6 +15,7 @@
       (pointermove)="onHandleMove($event)"
       (pointerup)="onHandleUp($event)"
       (pointercancel)="cancelDrag()"
+      (lostpointercapture)="onLostCapture($event)"
     >
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
         <path d="M9 6h.01 M9 12h.01 M9 18h.01 M15 6h.01 M15 12h.01 M15 18h.01" />

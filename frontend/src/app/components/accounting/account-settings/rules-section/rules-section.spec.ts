@@ -254,6 +254,13 @@ describe('AccountRulesComponent', () => {
     fixture.detectChanges();
   }
 
+  const liveRegion = () => root().querySelector('.visually-hidden[aria-live="polite"]');
+  /** The live region is cleared at once and refilled after a short delay, so a repeated message is announced again. */
+  async function settleLive(): Promise<void> {
+    await new Promise<void>(r => setTimeout(r, 150));
+    fixture.detectChanges();
+  }
+
   describe('drag', () => {
     const handle = (id: number) => rowOf(id).querySelector<HTMLButtonElement>('.rule-handle')!;
     const ruleRows = () => Array.from(root().querySelectorAll<HTMLElement>('.rule-row'));
@@ -468,12 +475,61 @@ describe('AccountRulesComponent', () => {
       expect(host.onOpen).not.toHaveBeenCalled();
     });
 
-    it('a move announces 已移到第 2 項，共 3 項 in the live region', () => {
-      const live = root().querySelector('.visually-hidden[aria-live="polite"]')!;
+    it('a move announces 已移到第 2 項，共 3 項 in the live region', async () => {
+      const live = liveRegion()!;
       expect(live).not.toBeNull();
       expect(text(live)).toBe('');
       dragRule(1, 30, 100);
+      await settleLive();
       expect(text(live)).toBe('已移到第 2 項，共 3 項');
+    });
+
+    it('a repeated message is announced again: the region is cleared before it is refilled', async () => {
+      dragRule(1, 30, 100);
+      await settleLive();
+      expect(text(liveRegion())).toBe('已移到第 2 項，共 3 項');
+      // The host did not apply the order, so the same drag gives the same message.
+      dragRule(1, 30, 100);
+      expect(host.onReorder).toHaveBeenCalledTimes(2);
+      expect(text(liveRegion())).toBe('');
+      await settleLive();
+      expect(text(liveRegion())).toBe('已移到第 2 項，共 3 項');
+    });
+
+    it('lostpointercapture cancels the drag', () => {
+      const h = handle(1);
+      pointer(h, 'pointerdown', 30);
+      pointer(h, 'pointermove', 100);
+      expect(dragging().length).toBe(1);
+      pointer(h, 'lostpointercapture', 100);
+      expect(dragging()).toEqual([]);
+      expect(lines()).toEqual([]);
+      pointer(h, 'pointerup', 400);
+      expect(host.onReorder).not.toHaveBeenCalled();
+      expect(dragging()).toEqual([]);
+    });
+
+    it('a pointerdown with a leftover session starts fresh', () => {
+      // A's drag never got its pointerup (nor a cancel).
+      pointer(handle(1), 'pointerdown', 30);
+      pointer(handle(1), 'pointermove', 100);
+      expect(dragging()).toEqual([rowOf(1)]);
+      const c = handle(3);
+      pointer(c, 'pointerdown', 150);
+      expect(dragging()).toEqual([]);
+      pointer(c, 'pointermove', 10);
+      expect(dragging()).toEqual([rowOf(3)]);
+      pointer(c, 'pointerup', 10);
+      expect(host.onReorder).toHaveBeenCalledTimes(1);
+      expect(host.onReorder).toHaveBeenCalledWith([3, 1, 2]);
+    });
+
+    it('a release that is the first event past the slop emits nothing', () => {
+      const h = handle(3);
+      pointer(h, 'pointerdown', 150);
+      pointer(h, 'pointerup', 10);
+      expect(host.onReorder).not.toHaveBeenCalled();
+      expect(dragging()).toEqual([]);
     });
 
     it('document listeners exist only during a drag', () => {
@@ -505,7 +561,10 @@ describe('AccountRulesComponent', () => {
     const menus = () => Array.from(root().querySelectorAll<HTMLElement>('.rule-menu'));
     const items = (id: number) => Array.from(rowOf(id).querySelectorAll<HTMLButtonElement>('.rule-menu [role="menuitem"]'));
     const item = (id: number, label: string) => items(id).find(b => text(b) === label)!;
+    /** A real press: pointerdown → pointerup → click (the wrapper's press guard sees all three). */
     async function openMenu(id: number): Promise<void> {
+      more(id).dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+      more(id).dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
       more(id).click();
       await flush();
     }
@@ -576,7 +635,8 @@ describe('AccountRulesComponent', () => {
       expect(menus()).toEqual([]);
       expect(more(1)).toBe(aMore);
       expect(document.activeElement).toBe(aMore);
-      expect(text(root().querySelector('.visually-hidden[aria-live="polite"]'))).toBe('已移到第 2 項，共 3 項');
+      await settleLive();
+      expect(text(liveRegion())).toBe('已移到第 2 項，共 3 項');
     });
 
     it('上移 on C likewise', async () => {
@@ -588,7 +648,8 @@ describe('AccountRulesComponent', () => {
       expect(host.onReorder).toHaveBeenCalledWith([1, 3, 2]);
       expect(menus()).toEqual([]);
       expect(document.activeElement).toBe(more(3));
-      expect(text(root().querySelector('.visually-hidden[aria-live="polite"]'))).toBe('已移到第 2 項，共 3 項');
+      await settleLive();
+      expect(text(liveRegion())).toBe('已移到第 2 項，共 3 項');
     });
 
     it('Home / End skip disabled items', async () => {
@@ -659,6 +720,16 @@ describe('AccountRulesComponent', () => {
 
       await openMenu(2);
       document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+      await flush();
+      expect(menus()).toEqual([]);
+    });
+
+    it('a menu opened by a pointer closes when focus leaves the wrapper', async () => {
+      await openMenu(2);
+      expect(menus().length).toBe(1);
+      item(2, '編輯').dispatchEvent(
+        new FocusEvent('focusout', { bubbles: true, relatedTarget: rowOf(3).querySelector('.rule-open') }),
+      );
       await flush();
       expect(menus()).toEqual([]);
     });
