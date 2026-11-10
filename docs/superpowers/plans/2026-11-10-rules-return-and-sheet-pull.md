@@ -10,7 +10,7 @@
 
 **Spec:** GitHub issue #378 (owner report 2026-11-10). No openspec change: behaviour fixes inside shipped capabilities.
 
-**Rev 2 (2026-11-10):** folds Multica AGENT-507 (dev-grok) plan review — `closeRuleSheet` restructure and delegated-prompt tests (finding 1), fragment-free `backUrl` (2), pull-to-refresh rules on html + body + backdrop with a phone scroll lock (3), `ruleFromLink` order and `navigateByUrl` (4), directive capture / spring-back / lostpointercapture (5), Review Focus 2 reworded (6).
+**Rev 2 (2026-11-10):** folds Multica AGENT-507 (dev-grok) plan review — `closeRuleSheet` restructure and delegated-prompt tests (finding 1), fragment-free `backUrl` (2), pull-to-refresh rules on html + body + backdrop with a phone scroll lock (3), `ruleFromLink` order and `navigateByUrl` (4), directive capture / spring-back / lostpointercapture (5), Review Focus 2 reworded (6). **Rev 2.1:** re-check PASS-with-minor folded — `backUrl` reads `params()` (in-place query change test), grab hit area extends upward only, save/delete call order spelled out.
 
 ## Global Constraints
 
@@ -41,7 +41,7 @@
 - Modify: `frontend/src/app/components/accounting/account-settings/account-settings.ts`, `account-settings.html`, `account-settings.spec.ts`
 
 **Interfaces:**
-- Produces (overview): `readonly backUrl = computed<string>()` — the overview's current URL as path + query with **no fragment**: built from `Location.path()` (already injected, omits the hash), recomputed when the query parameters change. Never from `Router.url` (it carries `#card-<id>` after a return, and `safeBack` rejects `#`). The three links in `reward-rules.html` (rule row, `.rr-add`, `.rr-bare-chip`) add `back: backUrl()` to their `queryParams`. Each `<section class="rr-card">` gets `[id]="'card-' + card.account.account_id"` and `tabindex="-1"`.
+- Produces (overview): `readonly backUrl = computed<string>()` — the overview's current URL as path + query with **no fragment**: built from `Location.path()` (already injected, omits the hash). `Location.path()` is not a signal, so the computed must read the existing `params()` signal first (`computed(() => { this.params(); return this.location.path(); })`) — `setArchived` / `setFilter` change the query in place without remounting the page. Never from `Router.url` (it carries `#card-<id>` after a return, and `safeBack` rejects `#`). The three links in `reward-rules.html` (rule row, `.rr-add`, `.rr-bare-chip`) add `back: backUrl()` to their `queryParams`. Each `<section class="rr-card">` gets `[id]="'card-' + card.account.account_id"` and `tabindex="-1"`.
 - Produces (overview): after the overview data is first shown, a URL fragment `card-<id>` scrolls that section into view (`scrollIntoView({ block: 'start' })`) and focuses it (`focus({ preventScroll: true })`); a fragment with no matching card does nothing.
 - Produces (settings): `export function safeBack(raw: string | null): string | null` in `account-settings.ts` — returns `raw` only when it matches `^/accounting/reward-rules(\?[^#]*)?$`.
 - Produces (settings): `readonly back = computed<string | null>()` from the `back` query parameter through `safeBack`; `readonly closeTarget = computed<UrlTree | unknown[] | string>()` — with `back` and a shown account: `router.parseUrl(back)` with `fragment = 'card-' + accountId()`; otherwise today's value (`'/accounting/accounts'` or `['/accounting/accounts', accountId()]`). The header ✕ binds `[routerLink]="closeTarget()"`.
@@ -49,10 +49,11 @@
 - [ ] **Step 1: Write the failing overview tests** in `reward-rules.spec.ts`:
   - `rule links carry back=<overview url>`: with the page at `/accounting/reward-rules?archived=1`, every `.rr-rule`, `.rr-add` and `.rr-bare-chip` href contains `back=%2Faccounting%2Freward-rules%3Farchived%3D1` (decode and compare to `/accounting/reward-rules?archived=1`).
   - `back has no fragment on a returned-to overview`: page at `/accounting/reward-rules?archived=1#card-8` → every `.rr-rule`, `.rr-add`, `.rr-bare-chip` `back` decodes to `/accounting/reward-rules?archived=1`.
+  - `back follows an in-place query change`: load `/accounting/reward-rules`, switch 顯示封存 on (the page's own `setArchived`), then the links' `back` decodes to `/accounting/reward-rules?archived=1`.
   - `each card has id card-<account id> and tabindex -1`.
   - `fragment card-<id> scrolls to and focuses that card once the overview is shown` (stub `scrollIntoView` on the prototype; assert it was called on that section and `document.activeElement` is the section).
   - `an unknown fragment does nothing` (no scroll call, no throw).
-- [ ] **Step 2: Run** `npx ng test --watch=false --include='**/reward-rules.spec.ts'` — Expected: the five new tests FAIL.
+- [ ] **Step 2: Run** `npx ng test --watch=false --include='**/reward-rules.spec.ts'` — Expected: the six new tests FAIL.
 - [ ] **Step 3: Implement** `backUrl`, the three `queryParams`, the section `id` / `tabindex`, and the fragment effect (read `route.fragment`; act in `afterNextRender` once `overview()` is non-null; run once per fragment value).
 - [ ] **Step 4: Run** the same command — Expected: PASS.
 - [ ] **Step 5: Write the failing settings tests** in `account-settings.spec.ts`:
@@ -94,7 +95,15 @@
   }
   ```
 
-  `onRuleSaved()` / `onRuleDeleted()` snapshot `sheetHoldsPrompt()` **before** `onRuleSheetStayed()` and pass it as `stayed`: a save that answered a delegated leave prompt with 留下 keeps the owner on settings; a plain save or delete of a link-opened rule returns to the overview.
+  `onRuleSaved()` / `onRuleDeleted()` snapshot `sheetHoldsPrompt()` **before** `onRuleSheetStayed()` and pass it as `stayed` — in exactly this order (`closeRuleSheet` first would still see the held prompt and run the pending leave on 儲存):
+
+  ```ts
+  const stayed = this.sheetHoldsPrompt();
+  this.onRuleSheetStayed();
+  this.closeRuleSheet(stayed);
+  ```
+
+  Effect: a save that answered a delegated leave prompt with 留下 keeps the owner on settings; a plain save or delete of a link-opened rule returns to the overview.
 - [ ] **Step 8: Run** the settings spec, then the full suite `npx ng test --watch=false` — Expected: PASS.
 - [ ] **Step 9: Commit** `feat(account-settings): return to the reward rules overview when arriving from it (#378)`.
 
@@ -114,7 +123,7 @@
   - `setPointerCapture` on the grab bar plus its `touch-action: none` are what keep the sheet's own scroller (`.sheet` is `overflow-y: auto`) from taking the gesture. Only the grab bar listens: a drag that starts on the sheet body never moves the sheet.
   - The directive never closes anything itself: if the host refuses to close (busy, discard prompt), the sheet is simply back at rest.
   - On destroy mid-drag: listeners released, nothing emitted.
-- Produces (CSS): `.grab` becomes a 36 × 4 px bar drawn inside a larger hit area (at least 44 px tall, full sheet width, `touch-action: none`, `cursor: grab`) without changing the visible bar or the sheet's layout height by more than the existing 16 px block; `.sheet.pulling { transition: none; }`, `.sheet { transition: transform 160ms ease; overscroll-behavior: contain; }` with the transition removed under `prefers-reduced-motion: reduce`. The hit area is an upward / overlapping `::before` on `.grab` (full sheet width, 44 px tall, centred on the bar): the existing 16 px grab block (`4px` bar, `margin: 2px auto 10px`) keeps its size, the sheet does not grow and the title is not covered. Same for `.filter-panel.sheet` and its `.grab` in `filter-bar.scss`.
+- Produces (CSS): `.grab` becomes a 36 × 4 px bar drawn inside a larger hit area (at least 44 px tall, full sheet width, `touch-action: none`, `cursor: grab`) without changing the visible bar or the sheet's layout height by more than the existing 16 px block; `.sheet.pulling { transition: none; }`, `.sheet { transition: transform 160ms ease; overscroll-behavior: contain; }` with the transition removed under `prefers-reduced-motion: reduce`. The hit area is a `::before` on `.grab` that extends **upward only** (full sheet width, 44 px tall, its bottom edge on the bottom of the bar's margin box, horizontally centred on the 36 px bar; it may overlap the sheet's top padding and rounded corner, never the title below): the existing 16 px grab block (`4px` bar, `margin: 2px auto 10px`) keeps its size, the sheet does not grow and the title is not covered. Same for `.filter-panel.sheet` and its `.grab` in `filter-bar.scss`.
 - Produces (CSS, `styles.scss`) — the page cannot be pulled to refresh while any bottom sheet is open. A single `html` rule is not enough: the scrollport may be `body`, the accidental pull usually starts on the fixed backdrop (not a scroll container), and `overscroll-behavior` on a `.sheet` whose content does not overflow has no effect (WebKit 243452 / Chromium 813094). So:
 
   ```scss
