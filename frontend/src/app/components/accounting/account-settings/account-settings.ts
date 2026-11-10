@@ -1072,8 +1072,9 @@ export class AccountSettingsComponent implements OnInit, DirtyAware {
     if (this.back() === null || !(target instanceof UrlTree)) {
       return false;
     }
-    // navigateByUrl: `router.navigate` would not serialise the tree's query and fragment.
-    void this.router.navigateByUrl(target);
+    // navigateByUrl: `router.navigate` would not serialise the tree's query and fragment. replaceUrl: the overview
+    // takes this page's history entry, so the overview's ‹ cannot land back here (no settings ⇄ overview ping-pong).
+    void this.router.navigateByUrl(target, { replaceUrl: true });
     return true;
   }
 

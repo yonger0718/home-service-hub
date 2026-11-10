@@ -7,7 +7,7 @@
     aria-labelledby="einvoice-target-title"
     (click)="$event.stopPropagation()"
   >
-    <div class="grab" appSheetPull (pulled)="cancel()"></div>
+    <div class="grab" aria-hidden="true" appSheetPull (pulled)="cancel()"></div>
     <h3 id="einvoice-target-title">這張發票對到哪一筆</h3>
     <p class="invoice-line">{{ invoice().seller_name }}</p>
 

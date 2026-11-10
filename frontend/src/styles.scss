@@ -370,9 +370,10 @@ html:has(.overlay, .filter-overlay) body {
   overscroll-behavior-y: none;
 }
 @media (max-width: 759.98px) {
-  /* Scroll lock: the reliable iOS backstop. Phone only, so a desktop scrollbar never disappears under a sheet. */
-  html:has(.overlay, .filter-overlay),
-  html:has(.overlay, .filter-overlay) body {
+  /* Scroll lock: the reliable iOS backstop. Phone only, so a desktop scrollbar never disappears under a sheet.
+     html only: with html non-visible too, body would become the scroll container for position: sticky and the
+     viewport-sticky bars (the settings save bar and the like) would jump while a sheet is open. */
+  html:has(.overlay, .filter-overlay) {
     overflow: hidden;
   }
 }

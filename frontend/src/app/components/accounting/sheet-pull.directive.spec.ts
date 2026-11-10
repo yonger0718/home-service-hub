@@ -22,10 +22,14 @@ class HostComponent {
 }
 
 /** jsdom may lack PointerEvent: a MouseEvent with the pointer fields the directive reads. */
-function ptr(type: string, clientY: number, extra: { button?: number; pointerId?: number } = {}): Event {
+function ptr(
+  type: string,
+  clientY: number,
+  extra: { button?: number; pointerId?: number; isPrimary?: boolean } = {},
+): Event {
   const ev = new MouseEvent(type, { clientY, button: extra.button ?? 0, bubbles: true, cancelable: true });
   Object.defineProperty(ev, 'pointerId', { value: extra.pointerId ?? 1 });
-  Object.defineProperty(ev, 'isPrimary', { value: true });
+  Object.defineProperty(ev, 'isPrimary', { value: extra.isPrimary ?? true });
   Object.defineProperty(ev, 'pointerType', { value: 'touch' });
   return ev;
 }
@@ -187,12 +191,47 @@ describe('SheetPullDirective', () => {
     expect(cmp.n).toBe(0);
   });
 
+  it('a second (non-primary) pointer during a drag does not cancel it', () => {
+    const { sheet, grab, cmp } = setup();
+    grab.dispatchEvent(ptr('pointerdown', 100));
+    grab.dispatchEvent(ptr('pointermove', 150));
+    grab.dispatchEvent(ptr('pointerdown', 300, { pointerId: 2, isPrimary: false }));
+    expect(sheet.classList.contains('pulling')).toBe(true);
+    expect(sheet.style.transform).toBe('translateY(50px)');
+    grab.dispatchEvent(ptr('pointermove', 180));
+    expect(sheet.style.transform).toBe('translateY(80px)');
+    grab.dispatchEvent(ptr('pointerup', 180));
+    expect(cmp.n).toBe(1);
+    expect(sheet.style.transform).toBe('');
+  });
+
+  it('a move or up from a different pointerId is ignored', () => {
+    const { sheet, grab, cmp } = setup();
+    grab.dispatchEvent(ptr('pointerdown', 100));
+    grab.dispatchEvent(ptr('pointermove', 130));
+    grab.dispatchEvent(ptr('pointermove', 250, { pointerId: 2 }));
+    expect(sheet.style.transform).toBe('translateY(30px)');
+    grab.dispatchEvent(ptr('pointerup', 250, { pointerId: 2 }));
+    expect(cmp.n).toBe(0);
+    expect(sheet.classList.contains('pulling')).toBe(true);
+    grab.dispatchEvent(ptr('pointerup', 180));
+    expect(cmp.n).toBe(1);
+  });
+
   it('destroying the host mid-drag emits nothing', () => {
     const { fixture, sheet, grab, cmp } = setup();
+    const add = vi.spyOn(document, 'addEventListener');
+    const remove = vi.spyOn(document, 'removeEventListener');
     grab.dispatchEvent(ptr('pointerdown', 100));
     grab.dispatchEvent(ptr('pointermove', 200));
+    const keydownAdds = add.mock.calls.filter(c => c[0] === 'keydown');
+    expect(keydownAdds.length).toBe(1);
+    const [, listener, capture] = keydownAdds[0];
+    expect(remove.mock.calls.some(c => c[0] === 'keydown')).toBe(false);
     cmp.showGrab.set(false);
     fixture.detectChanges();
+    // The keydown listener added for the drag is gone with the host.
+    expect(remove).toHaveBeenCalledWith('keydown', listener, capture);
     expect(grab.isConnected).toBe(false);
     expect(sheet.classList.contains('pulling')).toBe(false);
     expect(sheet.style.transform).toBe('');

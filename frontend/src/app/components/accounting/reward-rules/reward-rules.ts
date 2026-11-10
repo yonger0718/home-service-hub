@@ -285,6 +285,12 @@ export class RewardRulesOverviewComponent {
   }
 
   back(): void {
+    // Returned here from an account's settings (`#card-<id>`): the entry behind this one is this same overview
+    // without the fragment, so `location.back()` would be a dead tap — go straight to the fallback.
+    if (this.fragment()?.startsWith('card-')) {
+      void this.router.navigateByUrl('/accounting/settings');
+      return;
+    }
     leavePage(this.router, this.location, '/accounting/settings');
   }
 

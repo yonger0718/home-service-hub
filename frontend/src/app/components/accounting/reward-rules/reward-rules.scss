@@ -145,6 +145,8 @@
   gap: 6px;
   min-width: 0;
   padding: 16px 18px 10px;
+  /* A returned-to card (#card-<id>, scrollIntoView block start) keeps a gap above it. */
+  scroll-margin-top: 12px;
 }
 
 .rr-card-head {

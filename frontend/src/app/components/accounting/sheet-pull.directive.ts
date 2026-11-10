@@ -35,8 +35,9 @@ export class SheetPullDirective implements OnDestroy {
   };
 
   onDown(event: PointerEvent): void {
-    if (this.drag) this.cancel();
+    // A second finger or a secondary button is ignored first: it must not disturb an active drag.
     if (event.button !== 0 || event.isPrimary === false) return;
+    if (this.drag) this.cancel();
     const sheet = this.host.closest<HTMLElement>('.sheet');
     if (!sheet) return;
     event.preventDefault();

@@ -7,7 +7,7 @@
     aria-labelledby="inbox-match-title"
     (click)="$event.stopPropagation()"
   >
-    <div class="grab" appSheetPull (pulled)="cancel()"></div>
+    <div class="grab" aria-hidden="true" appSheetPull (pulled)="cancel()"></div>
     <h3 id="inbox-match-title">對到已記的哪一筆</h3>
     @if (stepText(); as text) {
       <p class="step">{{ text }}</p>

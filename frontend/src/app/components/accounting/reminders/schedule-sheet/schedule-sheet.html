@@ -1,6 +1,6 @@
 <div class="overlay" (click)="close()">
   <div class="sheet schedule-sheet" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="schedule-sheet-title" (click)="$event.stopPropagation()">
-    <div class="grab" appSheetPull (pulled)="close()"></div>
+    <div class="grab" aria-hidden="true" appSheetPull (pulled)="close()"></div>
     @if (definition(); as d) {
       <h3 id="schedule-sheet-title">{{ d.name }}</h3>
       <p class="rule-summary">{{ summary() }}</p>

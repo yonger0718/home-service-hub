@@ -1,7 +1,7 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { ActivatedRoute, ParamMap, Router, UrlTree, convertToParamMap, provideRouter } from '@angular/router';
+import { ActivatedRoute, ParamMap, Router, RouterLink, UrlTree, convertToParamMap, provideRouter } from '@angular/router';
 import { By } from '@angular/platform-browser';
 import { BehaviorSubject } from 'rxjs';
 import { AccountingToastService } from '../accounting-toast';
@@ -1765,8 +1765,19 @@ describe('AccountSettingsComponent', () => {
       return spy.mock.calls.map(([url]) => (typeof url === 'string' ? url : router.serializeUrl(url)));
     }
 
+    /** The overview return: one `navigateByUrl` with the overview tree, replacing settings in history. */
+    function expectOverviewReturn(spy: MockInstance<Router['navigateByUrl']>): void {
+      expect(byUrlTargets(spy)).toEqual(['/accounting/reward-rules?archived=1#card-8']);
+      expect(spy.mock.calls[0][0]).toBeInstanceOf(UrlTree);
+      expect(spy.mock.calls[0][1]).toEqual({ replaceUrl: true });
+    }
+
     const closeHref = (fixture: ComponentFixture<AccountSettingsComponent>) =>
       el(fixture).querySelector('a.ib[aria-label="取消"]')!.getAttribute('href');
+
+    /** The ✕ link's RouterLink instance. */
+    const closeLink = (fixture: ComponentFixture<AccountSettingsComponent>): RouterLink =>
+      fixture.debugElement.query(By.css('a.ib[aria-label="取消"]')).injector.get(RouterLink);
 
     it('✕ goes to the passbook without back', async () => {
       await setup('8');
@@ -1778,6 +1789,16 @@ describe('AccountSettingsComponent', () => {
       await setup('8', { back: BACK });
       const fixture = render(D8);
       expect(closeHref(fixture)).toBe('/accounting/reward-rules?archived=1#card-8');
+    });
+
+    it('✕ replaces settings in history with back', async () => {
+      await setup('8', { back: BACK });
+      expect(closeLink(render(D8)).replaceUrl).toBe(true);
+    });
+
+    it('✕ pushes (no replaceUrl) without back', async () => {
+      await setup('8');
+      expect(closeLink(render(D8)).replaceUrl).toBe(false);
     });
 
     it('an invalid back is ignored', async () => {
@@ -1794,8 +1815,7 @@ describe('AccountSettingsComponent', () => {
       http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/accounts/8').flush(D8);
 
       expect(byUrl).toHaveBeenCalledTimes(1);
-      expect(byUrl.mock.calls[0][0]).toBeInstanceOf(UrlTree);
-      expect(byUrlTargets(byUrl)).toEqual(['/accounting/reward-rules?archived=1#card-8']);
+      expectOverviewReturn(byUrl);
       expect(navigate).not.toHaveBeenCalled();
     });
 
@@ -1831,7 +1851,7 @@ describe('AccountSettingsComponent', () => {
 
         click(fixture, 'app-reward-rule-sheet .sheet-cancel');
         expect(sheet(fixture)).toBeNull();
-        expect(byUrlTargets(byUrl)).toEqual(['/accounting/reward-rules?archived=1#card-8']);
+        expectOverviewReturn(byUrl);
       });
 
       it('saved', async () => {
@@ -1842,7 +1862,7 @@ describe('AccountSettingsComponent', () => {
         sheet(fixture)!.saved.emit(DETAIL.reward_rules[1]);
         fixture.detectChanges();
         expect(sheet(fixture)).toBeNull();
-        expect(byUrlTargets(byUrl)).toEqual(['/accounting/reward-rules?archived=1#card-8']);
+        expectOverviewReturn(byUrl);
         http.expectOne('/api/accounting/accounts/8').flush(D8);
       });
 
@@ -1854,7 +1874,7 @@ describe('AccountSettingsComponent', () => {
         sheet(fixture)!.deleted.emit(2);
         fixture.detectChanges();
         expect(sheet(fixture)).toBeNull();
-        expect(byUrlTargets(byUrl)).toEqual(['/accounting/reward-rules?archived=1#card-8']);
+        expectOverviewReturn(byUrl);
         http.expectOne('/api/accounting/accounts/8').flush({ ...D8, reward_rules: [DETAIL.reward_rules[0]] });
       });
     });
@@ -1907,7 +1927,7 @@ describe('AccountSettingsComponent', () => {
       expect(byUrl).not.toHaveBeenCalled();
       click(fixture, 'app-reward-rule-sheet .discard-leave');
       expect(sheet(fixture)).toBeNull();
-      expect(byUrlTargets(byUrl)).toEqual(['/accounting/reward-rules?archived=1#card-8']);
+      expectOverviewReturn(byUrl);
     });
 
     describe('delegated route-leave prompt on a link-opened sheet', () => {

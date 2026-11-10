@@ -1,6 +1,7 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, TestRequest, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Component, signal } from '@angular/core';
+import { Location } from '@angular/common';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
@@ -114,9 +115,13 @@ describe('RewardRulesOverviewComponent', () => {
   const text = (node: Element | null | undefined) => node?.textContent?.replace(/\s+/g, ' ').trim();
   const texts = (el: Element, selector: string) => Array.from(el.querySelectorAll(selector)).map(text);
 
-  async function open(url = '/accounting/reward-rules', overview: RewardRuleOverview = OVERVIEW) {
+  /** `from`: an in-app page visited first, so the overview has history behind it. */
+  async function open(url = '/accounting/reward-rules', overview: RewardRuleOverview = OVERVIEW, from?: string) {
     TestBed.inject(LayoutModeService).set('panes');
     const harness = await RouterTestingHarness.create();
+    if (from) {
+      await harness.navigateByUrl(from);
+    }
     await harness.navigateByUrl(url);
     harness.detectChanges();
     const request = overviewRequest();
@@ -439,6 +444,26 @@ describe('RewardRulesOverviewComponent', () => {
     await vi.waitFor(() => expect(TestBed.inject(Router).url).toBe('/accounting/settings'));
   });
 
+  /** `Location.back`, stubbed: the spec has no real browser history to go back through. */
+  const spyLocationBack = () => vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
+
+  it('‹ without a card fragment still uses leavePage: back through the in-app history', async () => {
+    const { el } = await open('/accounting/reward-rules?archived=1', OVERVIEW, '/accounting/settings');
+    const back = spyLocationBack();
+    const byUrl = vi.spyOn(TestBed.inject(Router), 'navigateByUrl');
+    el.querySelector<HTMLButtonElement>('.rr-back')!.click();
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(byUrl).not.toHaveBeenCalled();
+  });
+
+  it('‹ on a returned-to overview (#card-<id>) goes straight to /accounting/settings', async () => {
+    const { el } = await open('/accounting/reward-rules?archived=1#card-12', OVERVIEW, '/accounting/accounts/12/settings');
+    const back = spyLocationBack();
+    el.querySelector<HTMLButtonElement>('.rr-back')!.click();
+    expect(back).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(TestBed.inject(Router).url).toBe('/accounting/settings'));
+  });
+
   it('shows a load failure in role=alert', async () => {
     TestBed.inject(LayoutModeService).set('panes');
     const harness = await RouterTestingHarness.create();
@@ -534,6 +559,32 @@ describe('RewardRulesOverviewComponent', () => {
     expect(scroll.mock.contexts[0]).toBe(target);
     expect(scroll.mock.calls[0][0]).toEqual({ block: 'start' });
     expect(document.activeElement).toBe(target);
+  });
+
+  it('a fragment acts once: a reload of the overview with the same fragment neither scrolls nor focuses again', async () => {
+    const scroll = spyScroll();
+    const { harness, el } = await open('/accounting/reward-rules#card-12');
+    const target = card(el, '測試卡 B');
+    await vi.waitFor(() => {
+      harness.detectChanges();
+      expect(scroll).toHaveBeenCalledTimes(1);
+    });
+    target.blur();
+    expect(document.activeElement).not.toBe(target);
+
+    // accountsChanged reloads the overview; the URL still carries #card-12.
+    TestBed.inject(AccountingService).deleteRewardRule(11, 3).subscribe();
+    http.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/accounts/11/reward-rules/3').flush(null);
+    harness.detectChanges();
+    const request = await nextRequest(harness);
+    request.flush(structuredClone(OVERVIEW)); // a fresh response object, as a real reload delivers
+    harness.detectChanges();
+    await new Promise<void>(r => setTimeout(r));
+    harness.detectChanges();
+    expect(TestBed.inject(Router).url).toBe('/accounting/reward-rules#card-12');
+    expect(card(el, '測試卡 B')).toBeTruthy();
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).not.toBe(card(el, '測試卡 B'));
   });
 
   it('an unknown fragment does nothing', async () => {

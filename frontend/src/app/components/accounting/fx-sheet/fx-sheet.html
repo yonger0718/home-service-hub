@@ -1,6 +1,6 @@
 <div class="overlay" data-overlay (click)="cancel()">
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="fx-title" (click)="$event.stopPropagation()">
-    <div class="grab" appSheetPull (pulled)="cancel()"></div>
+    <div class="grab" aria-hidden="true" appSheetPull (pulled)="cancel()"></div>
     <h3 id="fx-title">幣種</h3>
     <div class="kv">
       <div>
