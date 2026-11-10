@@ -102,6 +102,34 @@ describe('CalendarMonthComponent', () => {
     expect(cell('2026-10-01').disabled).toBe(false);
   });
 
+  it('week mode: an outside cell is enabled and emits its date when picked', () => {
+    const { fixture, cell } = render({ weekStart: 0, weekOf: '2026-10-01' });
+    const emitted: string[] = [];
+    fixture.componentInstance.daySelected.subscribe(date => emitted.push(date));
+    const outside = cell('2026-09-28');
+    expect(outside.disabled).toBe(false);
+    expect(outside.classList).toContain('outside');
+    expect(outside.getAttribute('aria-pressed')).toBe('false');
+    outside.click();
+    expect(emitted).toEqual(['2026-09-28']);
+  });
+
+  it('month mode: an outside cell stays disabled', () => {
+    const { cell } = render({ weekStart: 0 });
+    expect(cell('2026-09-28').disabled).toBe(true);
+    expect(cell('2026-09-28').hasAttribute('aria-pressed')).toBe(false);
+  });
+
+  it('week mode: ArrowRight from 10/31 moves focus and tabindex to the outside cell 11/01 (Review Focus 8)', () => {
+    const { fixture, el, cell } = render({ weekStart: 1, weekOf: '2026-10-31', selected: '2026-10-31', today: '2026-10-20' });
+    document.body.appendChild(el);
+    cell('2026-10-31').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+    fixture.detectChanges();
+    expect(document.activeElement).toBe(cell('2026-11-01'));
+    expect(cell('2026-11-01').getAttribute('tabindex')).toBe('0');
+    el.remove();
+  });
+
   it("outlines today's cell and presses the selected one", () => {
     const { cell } = render({ selected: '2026-10-05' });
     expect(cell('2026-10-02').classList).toContain('today');

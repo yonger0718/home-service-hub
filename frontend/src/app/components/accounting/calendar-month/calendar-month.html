@@ -18,10 +18,10 @@
           [class.future]="cell.future"
           [attr.data-date]="cell.date"
           [attr.aria-label]="cell.label"
-          [attr.aria-pressed]="cell.outside ? null : cell.date === selected()"
+          [attr.aria-pressed]="cell.outside && !weekOf() ? null : cell.date === selected()"
           [attr.aria-current]="cell.date === today() ? 'date' : null"
           [attr.tabindex]="cell.tabIndex"
-          [disabled]="cell.outside"
+          [disabled]="cell.outside && !weekOf()"
           (click)="pick(cell)"
         >
           <span class="d" [class.weekend]="cell.weekend">{{ cell.day }}</span>

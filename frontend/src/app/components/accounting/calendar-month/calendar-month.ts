@@ -78,7 +78,8 @@ export class CalendarMonthComponent {
   private readonly tabDate = computed(() => {
     const month = this.month();
     const today = this.today();
-    const cells = this.grid().flat().filter(cell => !cell.outside);
+    const weekOf = this.weekOf();
+    const cells = this.grid().flat().filter(cell => !cell.outside || weekOf);
     const candidates = [this.focusDate(), this.selected(), today, `${month}-01`];
     for (const date of candidates) {
       if (date && cells.some(cell => cell.date === date)) {
@@ -187,7 +188,7 @@ export class CalendarMonthComponent {
   }
 
   pick(cell: CalendarCell): void {
-    if (!cell.outside) {
+    if (!cell.outside || this.weekOf()) {
       this.focusDate.set(cell.date);
       this.daySelected.emit(cell.date);
     }
