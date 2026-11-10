@@ -61,11 +61,13 @@
   <header class="dp-head">
     <button type="button" class="dp-step" aria-label="前一天" (click)="step.emit(-1)">‹</button>
     <div class="dp-title">
-      <h2 class="dp-label">{{ day() ? dayLabel(day()!) : '' }}</h2>
-      <p class="dp-sub">{{ rows().length }} 筆@if (net(); as d) { · @if (d.excluded) {<small class="net-hint">僅計主幣種</small>&ngsp;}{{ d.text }}}</p>
+      <h2 class="dp-label">{{ day() ? label(day()!) : '' }}</h2>
+      <p class="dp-sub">{{ rows().length }} 筆@if (net(); as d) { · @if (d.excluded) {<small class="net-hint">僅計主幣種</small>&ngsp;}<b class="dp-net" [class.neg]="d.net < 0" [class.pos]="d.net > 0">{{ d.text }}</b>}</p>
     </div>
     <button type="button" class="dp-step" aria-label="後一天" (click)="step.emit(1)">›</button>
-    <button type="button" class="dp-summary" (click)="clear.emit()">本月摘要</button>
+    @if (!narrow()) {
+      <button type="button" class="dp-summary" (click)="clear.emit()">本月摘要</button>
+    }
   </header>
   @if (billLines().length > 0) {
     <div class="bills" role="group" aria-label="繳費提醒">
@@ -91,6 +93,9 @@
     }
     @if (day()) {
       <button type="button" class="dp-add" (click)="add.emit(day()!)">＋ 在這天記一筆</button>
+    }
+    @if (narrow()) {
+      <p class="dp-swipe-hint">左右滑動換一天</p>
     }
   }
 }
