@@ -17,6 +17,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { focusSheetField, isHandledKey, restoreOverlayFocus, trapFocus } from '../../accounting-ui';
 import { slashDate } from '../../dates';
 import { formatMoney } from '../../format';
+import { SheetPullDirective } from '../../sheet-pull.directive';
 import { InboxCard, inboxErrorMessage } from '../inbox-view';
 import { InboxAccount, InboxCandidate } from '../inbox.model';
 import { InboxService } from '../inbox.service';
@@ -42,7 +43,7 @@ type SearchState = { rows: InboxCandidate[]; error: null } | { rows: []; error: 
 @Component({
   selector: 'app-inbox-match-sheet',
   standalone: true,
-  imports: [NgTemplateOutlet],
+  imports: [NgTemplateOutlet, SheetPullDirective],
   templateUrl: './match-sheet.html',
   styleUrls: ['../../sheet.scss', './match-sheet.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,

@@ -14,6 +14,7 @@ import { AccountingService } from '../../../services/accounting.service';
 import { focusables } from '../accounting-ui';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
+import { pullGrab } from '../sheet-pull.testing';
 import { AccountSettingsComponent, accountToInput, decimalText, safeBack } from './account-settings';
 
 function account(fields: Record<string, unknown>): LedgerAccount {
@@ -2607,6 +2608,18 @@ describe('AccountSettingsComponent', () => {
 
       // A tap on the dimmed backdrop closes it; the row shows the new value.
       el(fixture).ownerDocument.querySelector<HTMLElement>('.overlay[data-overlay]')!.click();
+      fixture.detectChanges();
+      expect(sheet(fixture)).toBeNull();
+      expect(texts(fixture, '.row-closing_day .row-v')).toEqual(['16 號']);
+    });
+
+    it('phone sheet: a pull on the grab bar closes it and keeps the edited value', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      click(fixture, '.row-closing_day');
+      stepperClick(fixture, 'closing-day', 'inc');
+
+      pullGrab(sheet(fixture)!.querySelector<HTMLElement>('.grab')!);
       fixture.detectChanges();
       expect(sheet(fixture)).toBeNull();
       expect(texts(fixture, '.row-closing_day .row-v')).toEqual(['16 號']);

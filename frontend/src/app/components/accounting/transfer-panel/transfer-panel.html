@@ -89,7 +89,7 @@
   @if (sheet(); as side) {
     <div class="overlay" data-overlay (click)="closeSheet()">
       <div class="sheet" role="dialog" aria-modal="true" [attr.aria-label]="side === 'out' ? '轉出手續費與折扣' : '轉入手續費與折扣'" (click)="$event.stopPropagation()">
-        <div class="grab"></div>
+        <div class="grab" appSheetPull (pulled)="closeSheet()"></div>
         <h3>{{ side === 'out' ? '轉出' : '轉入' }}</h3>
         <div class="kv">
           <div><span class="k">金額</span><span class="v ed">{{ sideLabel(side) }}</span></div>

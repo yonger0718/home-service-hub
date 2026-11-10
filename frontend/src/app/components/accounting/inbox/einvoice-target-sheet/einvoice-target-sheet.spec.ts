@@ -3,6 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { pullGrab } from '../../sheet-pull.testing';
 import { EinvoiceTarget, InboxEinvoice } from '../einvoice.model';
 import { AppEinvoiceTargetSheetComponent } from './einvoice-target-sheet';
 
@@ -73,5 +74,17 @@ describe('AppEinvoiceTargetSheetComponent', () => {
     req.flush('x', { status: 500, statusText: 'err' });
     fixture.detectChanges();
     expect(el.textContent).toContain('讀取失敗');
+  });
+
+  it('a pull on the grab bar closes the sheet', () => {
+    const { fixture, el, picked, req } = render();
+    req.flush([row(3)]);
+    fixture.detectChanges();
+    const closed = vi.fn();
+    fixture.componentInstance.closed.subscribe(closed);
+    pullGrab(el.querySelector<HTMLElement>('.sheet .grab')!);
+    fixture.detectChanges();
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(picked).not.toHaveBeenCalled();
   });
 });

@@ -21,6 +21,7 @@ import { LayoutModeService } from '../../../services/layout-mode.service';
 import { isHandledKey, trapFocus } from '../accounting-ui';
 import { balanceNegative, balanceText as accountBalanceText, valuationHint } from '../account-balance';
 import { formatMoney } from '../format';
+import { SheetPullDirective } from '../sheet-pull.directive';
 import { pickerGroups, visibleAccounts } from './picker-groups';
 import { readRecentAccounts } from './recent-accounts';
 
@@ -37,7 +38,7 @@ const POPOVER_GAP = 4;
 @Component({
   selector: 'app-account-picker',
   standalone: true,
-  imports: [NgTemplateOutlet, AccountIconComponent],
+  imports: [NgTemplateOutlet, AccountIconComponent, SheetPullDirective],
   templateUrl: './account-picker.html',
   styleUrls: ['../sheet.scss', './account-picker.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,

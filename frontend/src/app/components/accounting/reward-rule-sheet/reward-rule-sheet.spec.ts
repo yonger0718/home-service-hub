@@ -4,6 +4,7 @@ import { TestBed } from '@angular/core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { LedgerAccount, Project, RewardRule } from '../../../models/accounting.model';
+import { pullGrab } from '../sheet-pull.testing';
 import { RewardRuleSheetComponent } from './reward-rule-sheet';
 
 const BASE = '/api/accounting/accounts/11/reward-rules';
@@ -422,6 +423,35 @@ describe('RewardRuleSheetComponent', () => {
     req.flush(created);
     expect(saved).toHaveBeenCalledWith(created);
     expect(closed).not.toHaveBeenCalled();
+  });
+
+  it('a pull on the grab bar closes the clean sheet', () => {
+    const { fixture, q, closed } = render(BASIC, [DINING]);
+    pullGrab(q('.sheet .grab')!);
+    fixture.detectChanges();
+    expect(closed).toHaveBeenCalledTimes(1);
+  });
+
+  it('a pull while busy does not close', () => {
+    const { fixture, q, type, click, closed } = render(null);
+    type('.rule-name', '一般');
+    type('.rule-rate', '1');
+    click('.sheet-confirm');
+    const req = http.expectOne(BASE);
+    pullGrab(q('.sheet .grab')!);
+    fixture.detectChanges();
+    expect(q('.discard')).toBeNull();
+    expect(closed).not.toHaveBeenCalled();
+    req.flush(rule({ id: 9, name: '一般', rate: '1.0000' }));
+  });
+
+  it('a pull with unsaved input shows 放棄未儲存的內容？ instead of closing', () => {
+    const { fixture, q, type, closed } = render(BASIC, [DINING]);
+    type('.rule-name', '一般回饋');
+    pullGrab(q('.sheet .grab')!);
+    fixture.detectChanges();
+    expect(closed).not.toHaveBeenCalled();
+    expect(q('.discard')?.textContent).toContain('放棄未儲存的內容？');
   });
 
   it('keeps Tab inside the sheet', () => {

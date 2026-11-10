@@ -318,7 +318,7 @@
   @if (sheetRow(); as row) {
     <div class="overlay" data-overlay (click)="closeSheet()">
       <div #rowSheet class="sheet row-sheet" [class.look-sheet]="row === 'look'" role="dialog" aria-modal="true" [attr.aria-label]="rowLabel(row)" tabindex="-1" (click)="$event.stopPropagation()" (keydown)="onSheetKeydown($event)">
-        <div class="grab"></div>
+        <div class="grab" appSheetPull (pulled)="closeSheet()"></div>
         <h3>{{ rowLabel(row) }}</h3>
         <div class="sheet-control">
           @switch (row) {

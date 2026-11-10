@@ -47,6 +47,7 @@ import { StepperComponent } from '../../ui/stepper/stepper';
 import { AmountFieldComponent, groupAmount } from '../../ui/amount-field/amount-field';
 import { PickerComponent, PickerOption } from '../../ui/picker/picker';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
+import { SheetPullDirective } from '../sheet-pull.directive';
 
 export { decimalText } from '../format';
 
@@ -265,6 +266,7 @@ interface LoadedAccount {
   imports: [
     RouterLink, AccountIconComponent, RewardRuleSheetComponent, SwitchComponent, StepperComponent, AmountFieldComponent,
     PickerComponent, SegToggleComponent, NgTemplateOutlet, AccountLookSectionComponent, AccountRulesComponent,
+    SheetPullDirective,
   ],
   templateUrl: './account-settings.html',
   styleUrls: ['../sheet.scss', './account-settings.scss'],

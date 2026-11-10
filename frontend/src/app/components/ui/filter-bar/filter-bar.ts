@@ -16,6 +16,7 @@ import {
 } from '@angular/core';
 
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { SheetPullDirective } from '../../accounting/sheet-pull.directive';
 
 export interface FilterChip {
   key: string;
@@ -30,7 +31,7 @@ let nextPanelId = 0;
 @Component({
   selector: 'app-filter-bar',
   standalone: true,
-  imports: [NgTemplateOutlet],
+  imports: [NgTemplateOutlet, SheetPullDirective],
   templateUrl: './filter-bar.html',
   styleUrl: './filter-bar.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

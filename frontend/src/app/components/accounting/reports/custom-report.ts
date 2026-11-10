@@ -25,6 +25,7 @@ import { SwitchComponent } from '../../ui/switch/switch';
 import { pad } from '../accounting-ui';
 import { addDays, todayIso } from '../dates';
 import { writeErrorMessage } from '../http-errors';
+import { SheetPullDirective } from '../sheet-pull.directive';
 import {
   CHART_LABELS,
   COMPARE_LABELS,
@@ -198,7 +199,7 @@ interface TableRow {
  */
 @Component({
   selector: 'app-custom-report',
-  imports: [NgTemplateOutlet, RouterLink, SwitchComponent],
+  imports: [NgTemplateOutlet, RouterLink, SwitchComponent, SheetPullDirective],
   templateUrl: './custom-report.html',
   styleUrls: ['../sheet.scss', './custom-report.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,

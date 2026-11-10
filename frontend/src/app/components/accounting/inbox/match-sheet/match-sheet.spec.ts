@@ -3,6 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { pullGrab } from '../../sheet-pull.testing';
 import { InboxCard } from '../inbox-view';
 import { InboxCandidate, InboxItem } from '../inbox.model';
 import { button, makeCard, makeInboxAccount, makeItem, text } from '../testing';
@@ -167,5 +168,14 @@ describe('AppInboxMatchSheetComponent', () => {
     expect(el.querySelector('.search-error')).toBeNull();
     expect(rows(el, '.others').map(text)).toEqual(['2026/09/10 7-11 早餐 −$120']);
     expect(button(el, '搜尋這個帳戶的記錄')).toBeUndefined();
+  });
+
+  it('a pull on the grab bar closes the sheet', () => {
+    const item = makeItem({ case_id: 8, candidates: [candidate(3, '2026-09-03', '全家', '-120.0000')] });
+    const { fixture, el, confirmed, closed } = render(makeCard([item], makeInboxAccount({ id: 2, currency: 'TWD' })));
+    pullGrab(el.querySelector<HTMLElement>('.sheet .grab')!);
+    fixture.detectChanges();
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(confirmed).not.toHaveBeenCalled();
   });
 });

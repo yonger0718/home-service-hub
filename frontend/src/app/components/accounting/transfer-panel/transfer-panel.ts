@@ -23,6 +23,7 @@ import { amountString, parseAmountText } from '../amount-text';
 import { TransferCommon, TransferEdit, buildTransferInput, transferRateLabel } from '../entry-form/transfer-math';
 import { focusSheetField, isHandledKey, sheetKeyAction, trapFocus, restoreOverlayFocus } from '../accounting-ui';
 import { currencyDecimals, formatMoney } from '../format';
+import { SheetPullDirective } from '../sheet-pull.directive';
 
 export type TransferSide = 'out' | 'in';
 
@@ -47,7 +48,7 @@ function childrenFrom(children: LedgerEntry[] | undefined): SideChildren {
 @Component({
   selector: 'app-transfer-panel',
   standalone: true,
-  imports: [AmountKeypadComponent, AccountPickerComponent],
+  imports: [AmountKeypadComponent, AccountPickerComponent, SheetPullDirective],
   templateUrl: './transfer-panel.html',
   styleUrls: ['../sheet.scss', './transfer-panel.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,

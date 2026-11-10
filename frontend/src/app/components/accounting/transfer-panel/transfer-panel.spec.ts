@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CategoryNode, EntryDetail, LedgerAccount } from '../../../models/accounting.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { TransferCommon } from '../entry-form/transfer-math';
+import { pullGrab } from '../sheet-pull.testing';
 import { TransferPanelComponent } from './transfer-panel';
 
 function account(id: number, name: string, currency: string, balance: string): LedgerAccount {
@@ -260,6 +261,17 @@ describe('TransferPanelComponent', () => {
     fixture.detectChanges();
     expect(escape.defaultPrevented).toBe(true);
     expect(el.querySelector('.sheet')).toBeNull();
+  });
+
+  it('a pull on the fee sheet grab bar closes it', async () => {
+    const fixture = await render([account(1, '國泰主帳戶', 'TWD', '398071'), account(3, '玉山銀行', 'TWD', '702730')]);
+    const el = fixture.nativeElement as HTMLElement;
+    el.querySelector<HTMLButtonElement>('.out-tile .plus')!.click();
+    fixture.detectChanges();
+    pullGrab(el.querySelector<HTMLElement>('.overlay .sheet .grab')!);
+    fixture.detectChanges();
+    expect(el.querySelector('.sheet')).toBeNull();
+    expect(fixture.componentInstance.sheet()).toBeNull();
   });
 
   it('keeps an archived leg selectable, labelled, only when editing', async () => {

@@ -15,6 +15,7 @@ import { catchError, map, of, startWith, switchMap } from 'rxjs';
 import { focusSheetField, isHandledKey, restoreOverlayFocus, trapFocus } from '../../accounting-ui';
 import { slashDate } from '../../dates';
 import { formatMoney } from '../../format';
+import { SheetPullDirective } from '../../sheet-pull.directive';
 import { EinvoiceLinkTarget, EinvoiceTarget, InboxEinvoice } from '../einvoice.model';
 import { EinvoiceService } from '../einvoice.service';
 
@@ -46,6 +47,7 @@ type TargetsState =
   selector: 'app-einvoice-target-sheet',
   standalone: true,
   templateUrl: './einvoice-target-sheet.html',
+  imports: [SheetPullDirective],
   styleUrls: ['../../sheet.scss', './einvoice-target-sheet.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { '(keydown)': 'onHostKeydown($event)' },

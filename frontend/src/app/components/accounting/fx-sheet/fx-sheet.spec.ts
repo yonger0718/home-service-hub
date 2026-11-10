@@ -4,6 +4,7 @@ import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { makeAccount } from '../testing/fixtures';
+import { pullGrab } from '../sheet-pull.testing';
 import { FxSheetComponent, FxValue } from './fx-sheet';
 
 const START: FxValue = {
@@ -156,4 +157,12 @@ describe('FxSheetComponent', () => {
     expect(closed).toHaveBeenCalledTimes(1);
   });
 
+  it('a pull on the grab bar closes the sheet', () => {
+    const { fixture, el } = render(null);
+    const closed = vi.fn();
+    fixture.componentInstance.closed.subscribe(closed);
+    pullGrab(el.querySelector<HTMLElement>('.sheet .grab')!);
+    fixture.detectChanges();
+    expect(closed).toHaveBeenCalledTimes(1);
+  });
 });
