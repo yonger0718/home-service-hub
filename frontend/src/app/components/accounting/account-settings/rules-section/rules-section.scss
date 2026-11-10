@@ -1,0 +1,81 @@
+:host { display: flex; flex-direction: column; gap: 6px; }
+
+/* One line per rule (D6): handle · name, chip, tags, posting and the bar · switch · ⋯. */
+.rule-row {
+  align-items: center;
+  background: var(--app-surface-soft);
+  border-radius: var(--radius-md);
+  display: flex;
+  gap: 6px;
+  padding: 6px 6px 6px 2px;
+}
+
+/* A non-active rule dims its text only; the switch and ⋯ stay full strength. */
+.rule-row.inactive .rule-open { opacity: 0.6; }
+
+.rule-handle, .rule-more {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  color: var(--app-text-muted);
+  display: inline-flex;
+  flex: none;
+  height: 36px;
+  justify-content: center;
+  padding: 0;
+  width: 32px;
+
+  &:focus-visible { outline: none; box-shadow: 0 0 0 4px var(--app-focus-ring); }
+}
+.rule-more { cursor: pointer; }
+
+.rule-open {
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  font: inherit;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px 2px;
+  text-align: left;
+
+  &:focus-visible { outline: none; box-shadow: 0 0 0 4px var(--app-focus-ring); }
+  app-cap-bar { align-self: stretch; }
+}
+
+.rule-title { align-items: center; display: flex; flex-wrap: wrap; gap: 4px 6px; }
+.rule-label { font-weight: 700; overflow-wrap: anywhere; }
+.rule-rate {
+  background: var(--app-primary-soft);
+  border-radius: 8px;
+  color: var(--app-primary);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+.rule-posting, .rule-muted { color: var(--app-text-muted); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+
+.rule-enabled { flex: none; }
+
+.badge {
+  background: var(--app-primary-soft);
+  border-radius: var(--radius-pill);
+  color: var(--app-primary);
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+.badge.rule-state[data-state='disabled'], .badge.rule-state[data-state='upcoming'], .badge.rule-moze {
+  background: var(--app-surface);
+  color: var(--app-text-muted);
+}
+.badge.warn { background: var(--app-state-warning-bg); color: var(--tone-neg-pill-ink, var(--c-red-pill-ink)); }

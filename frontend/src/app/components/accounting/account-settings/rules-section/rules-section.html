@@ -1,0 +1,40 @@
+@for (row of rows(); track row.rule.id) {
+  <div class="rule-row" [attr.data-rule-id]="row.rule.id" [class.inactive]="row.state !== 'active'">
+    <button type="button" class="rule-handle" disabled [attr.aria-label]="'拖曳排序 ' + row.rule.name">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
+        <path d="M9 6h.01 M9 12h.01 M9 18h.01 M15 6h.01 M15 12h.01 M15 18h.01" />
+      </svg>
+    </button>
+    <button type="button" class="rule-open" (click)="open.emit(row.rule)">
+      <span class="rule-title">
+        <b class="rule-label">{{ row.title }}</b>
+        <span class="rule-rate">{{ row.rate }}</span>
+        @if (row.tag; as tag) {
+          <span class="badge rule-state" [attr.data-state]="row.state" [class.warn]="row.state === 'expired'">{{ tag }}</span>
+        }
+        @if (row.basic) { <span class="badge rule-basic">基本</span> }
+        @if (row.rule.moze_id) { <span class="badge rule-moze">來自 MOZE</span> }
+        <small class="rule-posting">· {{ row.posting }}</small>
+      </span>
+      @if (row.usage; as use) {
+        <app-cap-bar [used]="use.used" [estimated]="use.estimated" [cap]="use.cap" [unit]="row.unit!" />
+      } @else if (row.muted; as muted) {
+        <small class="rule-muted">{{ muted }}</small>
+      }
+    </button>
+    <app-switch
+      class="rule-enabled"
+      [checked]="row.rule.is_enabled"
+      [disabled]="busy()"
+      [ariaLabel]="row.rule.name + ' 啟用'"
+      (checkedChange)="toggle.emit({ rule: row.rule, enabled: $event })"
+    />
+    <button type="button" class="rule-more" [attr.aria-label]="row.rule.name + ' 更多動作'">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
+        <circle cx="5" cy="12" r="1.8" />
+        <circle cx="12" cy="12" r="1.8" />
+        <circle cx="19" cy="12" r="1.8" />
+      </svg>
+    </button>
+  </div>
+}
