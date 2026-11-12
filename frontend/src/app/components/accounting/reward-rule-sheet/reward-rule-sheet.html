@@ -1,6 +1,6 @@
 <div class="overlay" data-overlay (click)="cancel()">
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="reward-rule-title" (click)="$event.stopPropagation()">
-    <div class="grab"></div>
+    <div class="grab" aria-hidden="true" appSheetPull (pulled)="cancel()"></div>
     <h3 id="reward-rule-title">{{ rule() ? '編輯回饋規則' : '新增回饋規則' }}</h3>
 
     <fieldset class="kv">

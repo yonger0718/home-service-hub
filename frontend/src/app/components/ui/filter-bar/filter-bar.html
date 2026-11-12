@@ -19,7 +19,7 @@
     @if (isPhone()) {
       <div class="filter-overlay" (click)="close()">
         <div #panel class="filter-panel sheet" [id]="panelId" tabindex="-1" role="dialog" aria-modal="true" aria-label="篩選" (click)="$event.stopPropagation()" (keydown.escape)="onPanelEscape($event)">
-          <div class="grab" aria-hidden="true"></div>
+          <div class="grab" aria-hidden="true" appSheetPull (pulled)="close()"></div>
           <div class="slot-secondary"><ng-container [ngTemplateOutlet]="secondary" /></div>
           <div class="panel-actions">
             <button type="button" class="panel-reset" (click)="reset.emit()">重設</button>

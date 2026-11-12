@@ -13,6 +13,7 @@ import { focusables, isHandledKey, restoreOverlayFocus, trapFocus } from '../acc
 import { decimalText } from '../format';
 import { fieldErrors, writeErrorMessage } from '../http-errors';
 import { REWARD_ROUNDING_LABELS, REWARD_WINDOW_LABELS, basicOverlapRuleId, parseReferenced, referencedText, ruleLabel, ruleToInput } from '../reward-rule-text';
+import { SheetPullDirective } from '../sheet-pull.directive';
 
 /** The sheet's editable state; numbers stay text until `toInput()`. */
 export interface RuleForm {
@@ -59,6 +60,7 @@ function isInteger(text: string): boolean {
   selector: 'app-reward-rule-sheet',
   standalone: true,
   templateUrl: './reward-rule-sheet.html',
+  imports: [SheetPullDirective],
   styleUrls: ['../sheet.scss', './reward-rule-sheet.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { '(keydown)': 'onHostKeydown($event)' },

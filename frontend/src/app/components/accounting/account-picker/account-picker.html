@@ -27,7 +27,7 @@
   @if (phone()) {
     <div class="overlay" data-overlay (click)="close()">
       <div #panel class="sheet acct-panel" role="dialog" aria-modal="true" [attr.aria-label]="label()" tabindex="-1" (click)="$event.stopPropagation()">
-        <div class="grab"></div>
+        <div class="grab" aria-hidden="true" appSheetPull (pulled)="close()"></div>
         <h3>{{ label() }}</h3>
         <ng-container *ngTemplateOutlet="body" />
       </div>

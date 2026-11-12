@@ -25,7 +25,7 @@
     @if (sheetOpen()) {
       <div class="overlay" (click)="closeSheet()">
         <div class="sheet cr-sheet" role="dialog" aria-modal="true" aria-label="編輯條件" (click)="$event.stopPropagation()">
-          <div class="grab" aria-hidden="true"></div>
+          <div class="grab" aria-hidden="true" appSheetPull (pulled)="closeSheet()"></div>
           <div class="cr-sheet-head">
             <b>編輯條件</b>
             <button type="button" class="cr-apply" (click)="applySheet()">套用</button>

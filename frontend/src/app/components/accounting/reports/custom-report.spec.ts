@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BreakdownQuery, ReportCompare, ReportDimension, ReportMetric, SavedReport } from '../../../models/reports.model';
 import { LayoutMode, LayoutModeService, MATCH_MEDIA } from '../../../services/layout-mode.service';
 import { CustomReportComponent } from './custom-report';
+import { pullGrab } from '../sheet-pull.testing';
 import { SampleSavedReportStore, sampleBreakdown } from './sample-report-data';
 
 @Component({ template: '' })
@@ -328,6 +329,18 @@ describe('CustomReportComponent', () => {
     const query = answerPreview();
     expect(query.compare).toBeUndefined();
     http.expectNone(r => r.method === 'PUT');
+  });
+
+  it('on a phone a pull on the 編輯條件 grab bar closes the sheet without applying', async () => {
+    const { harness, el } = await open('/accounting/reports/custom/1', 'phone');
+    answerPreview();
+    harness.detectChanges();
+    button(el, 'button', '編輯條件').click();
+    harness.detectChanges();
+    pullGrab(el.querySelector<HTMLElement>('[role="dialog"].sheet .grab')!);
+    harness.detectChanges();
+    expect(el.querySelector('[role="dialog"]')).toBeNull();
+    http.expectNone(r => r.url === BREAKDOWN);
   });
 
   it('on a phone a new report points at the desktop', async () => {

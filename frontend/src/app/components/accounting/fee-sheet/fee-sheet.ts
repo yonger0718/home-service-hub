@@ -4,6 +4,7 @@ import { ChildInput, ENTRY_KIND_LABELS, EntryKind } from '../../../models/accoun
 import { focusables, isHandledKey, trapFocus, restoreOverlayFocus } from '../accounting-ui';
 import { roundHalfAway } from '../amount-math';
 import { currencyDecimals, formatNumber } from '../format';
+import { SheetPullDirective } from '../sheet-pull.directive';
 
 function positive(text: string): number {
   const value = Number(text.replace(/,/g, ''));
@@ -15,6 +16,7 @@ function positive(text: string): number {
   selector: 'app-fee-sheet',
   standalone: true,
   templateUrl: './fee-sheet.html',
+  imports: [SheetPullDirective],
   styleUrls: ['../sheet.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { '(keydown)': 'onHostKeydown($event)' },

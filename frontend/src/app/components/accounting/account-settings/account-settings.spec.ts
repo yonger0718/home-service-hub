@@ -1,7 +1,7 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { ActivatedRoute, ParamMap, Router, convertToParamMap, provideRouter } from '@angular/router';
+import { ActivatedRoute, ParamMap, Router, RouterLink, UrlTree, convertToParamMap, provideRouter } from '@angular/router';
 import { By } from '@angular/platform-browser';
 import { BehaviorSubject } from 'rxjs';
 import { AccountingToastService } from '../accounting-toast';
@@ -14,7 +14,8 @@ import { AccountingService } from '../../../services/accounting.service';
 import { focusables } from '../accounting-ui';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { RewardRuleSheetComponent } from '../reward-rule-sheet/reward-rule-sheet';
-import { AccountSettingsComponent, accountToInput, decimalText } from './account-settings';
+import { pullGrab } from '../sheet-pull.testing';
+import { AccountSettingsComponent, accountToInput, decimalText, safeBack } from './account-settings';
 
 function account(fields: Record<string, unknown>): LedgerAccount {
   return {
@@ -1736,6 +1737,269 @@ describe('AccountSettingsComponent', () => {
     expect(navigate.mock.calls[0][1]?.queryParams).toEqual({ rule: null });
   });
 
+  // ---- back to 回饋規則總覽 (#378 Task 1) ------------------------------------------------------------------------
+
+  describe('back to the reward rules overview', () => {
+    const BACK = '/accounting/reward-rules?archived=1';
+    const D8 = { ...DETAIL, id: 8 } as AccountDetail;
+
+    it('safeBack accepts only the overview path with an optional query and no fragment', () => {
+      expect(safeBack('/accounting/reward-rules')).toBe('/accounting/reward-rules');
+      expect(safeBack('/accounting/reward-rules?archived=1&account_id=3')).toBe('/accounting/reward-rules?archived=1&account_id=3');
+      for (const raw of [
+        null, '', '//evil.example', 'https://evil.example/accounting/reward-rules', '/accounting/accounts',
+        '/accounting/reward-rules/x', '/accounting/reward-rules#x', '/accounting/reward-rules?a=1#x',
+      ]) {
+        expect(safeBack(raw)).toBeNull();
+      }
+    });
+
+    /** `router.navigateByUrl`, stubbed; `navigate` is already. */
+    function spyNavigateByUrl(): MockInstance<Router['navigateByUrl']> {
+      return vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+    }
+
+    /** The serialised targets `navigateByUrl` was called with. */
+    function byUrlTargets(spy: MockInstance<Router['navigateByUrl']>): string[] {
+      const router = TestBed.inject(Router);
+      return spy.mock.calls.map(([url]) => (typeof url === 'string' ? url : router.serializeUrl(url)));
+    }
+
+    /** The overview return: one `navigateByUrl` with the overview tree, replacing settings in history. */
+    function expectOverviewReturn(spy: MockInstance<Router['navigateByUrl']>): void {
+      expect(byUrlTargets(spy)).toEqual(['/accounting/reward-rules?archived=1#card-8']);
+      expect(spy.mock.calls[0][0]).toBeInstanceOf(UrlTree);
+      expect(spy.mock.calls[0][1]).toEqual({ replaceUrl: true });
+    }
+
+    const closeHref = (fixture: ComponentFixture<AccountSettingsComponent>) =>
+      el(fixture).querySelector('a.ib[aria-label="取消"]')!.getAttribute('href');
+
+    /** The ✕ link's RouterLink instance. */
+    const closeLink = (fixture: ComponentFixture<AccountSettingsComponent>): RouterLink =>
+      fixture.debugElement.query(By.css('a.ib[aria-label="取消"]')).injector.get(RouterLink);
+
+    it('✕ goes to the passbook without back', async () => {
+      await setup('8');
+      const fixture = render(D8);
+      expect(closeHref(fixture)).toBe('/accounting/accounts/8');
+    });
+
+    it('✕ goes back to the overview at this card with back', async () => {
+      await setup('8', { back: BACK });
+      const fixture = render(D8);
+      expect(closeHref(fixture)).toBe('/accounting/reward-rules?archived=1#card-8');
+    });
+
+    it('✕ replaces settings in history with back', async () => {
+      await setup('8', { back: BACK });
+      expect(closeLink(render(D8)).replaceUrl).toBe(true);
+    });
+
+    it('✕ pushes (no replaceUrl) without back', async () => {
+      await setup('8');
+      expect(closeLink(render(D8)).replaceUrl).toBe(false);
+    });
+
+    it('an invalid back is ignored', async () => {
+      await setup('8', { back: '//evil.example' });
+      const fixture = render(D8);
+      expect(closeHref(fixture)).toBe('/accounting/accounts/8');
+    });
+
+    it('saving with back navigates to the overview at this card', async () => {
+      await setup('8', { back: BACK });
+      const byUrl = spyNavigateByUrl();
+      const fixture = render(D8);
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/accounts/8').flush(D8);
+
+      expect(byUrl).toHaveBeenCalledTimes(1);
+      expectOverviewReturn(byUrl);
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('saving without back navigates to the passbook', async () => {
+      await setup('8');
+      const byUrl = spyNavigateByUrl();
+      const fixture = render(D8);
+      el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+      http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/accounts/8').flush(D8);
+
+      expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 8]);
+      expect(byUrl).not.toHaveBeenCalled();
+    });
+
+    it('the fragment follows the account shown', async () => {
+      await setup('8', { back: BACK });
+      const fixture = render(D8);
+      expect(closeHref(fixture)).toBe('/accounting/reward-rules?archived=1#card-8');
+
+      navigateTo('9');
+      http.expectOne('/api/accounting/accounts/9').flush({ ...DETAIL, id: 9 });
+      http.expectOne('/api/accounting/accounts/9/reward-usage').flush([]);
+      fixture.detectChanges();
+      expect(closeHref(fixture)?.endsWith('#card-9')).toBe(true);
+    });
+
+    describe('closing the rule sheet opened by ?rule= with back returns to the overview', () => {
+      it('取消', async () => {
+        await setup('8', { rule: '2', back: BACK });
+        const byUrl = spyNavigateByUrl();
+        const fixture = render(D8);
+        expect(sheet(fixture)?.rule()?.id).toBe(2);
+
+        click(fixture, 'app-reward-rule-sheet .sheet-cancel');
+        expect(sheet(fixture)).toBeNull();
+        expectOverviewReturn(byUrl);
+      });
+
+      it('saved', async () => {
+        await setup('8', { rule: '2', back: BACK });
+        const byUrl = spyNavigateByUrl();
+        const fixture = render(D8);
+
+        sheet(fixture)!.saved.emit(DETAIL.reward_rules[1]);
+        fixture.detectChanges();
+        expect(sheet(fixture)).toBeNull();
+        expectOverviewReturn(byUrl);
+        http.expectOne('/api/accounting/accounts/8').flush(D8);
+      });
+
+      it('deleted', async () => {
+        await setup('8', { rule: '2', back: BACK });
+        const byUrl = spyNavigateByUrl();
+        const fixture = render(D8);
+
+        sheet(fixture)!.deleted.emit(2);
+        fixture.detectChanges();
+        expect(sheet(fixture)).toBeNull();
+        expectOverviewReturn(byUrl);
+        http.expectOne('/api/accounting/accounts/8').flush({ ...D8, reward_rules: [DETAIL.reward_rules[0]] });
+      });
+    });
+
+    it('closing that sheet stays on settings when the account form is dirty', async () => {
+      await setup('8', { rule: '2', back: BACK });
+      const byUrl = spyNavigateByUrl();
+      const fixture = render(D8);
+      typeInto(fixture, '.name-input', '測試帳戶改');
+
+      click(fixture, 'app-reward-rule-sheet .sheet-cancel');
+      expect(sheet(fixture)).toBeNull();
+      expect(byUrl).not.toHaveBeenCalled();
+    });
+
+    it('a rule sheet opened from the settings page itself (row tap) never navigates on close, even with back', async () => {
+      await setup('8', { back: BACK });
+      const byUrl = spyNavigateByUrl();
+      const fixture = render(D8);
+
+      click(fixture, '.rule-row .rule-open', 0);
+      click(fixture, 'app-reward-rule-sheet .sheet-cancel');
+      expect(sheet(fixture)).toBeNull();
+      expect(byUrl).not.toHaveBeenCalled();
+    });
+
+    it('a row tap after a link-opened sheet was closed over a dirty account form never navigates on close', async () => {
+      await setup('8', { rule: '2', back: BACK });
+      const byUrl = spyNavigateByUrl();
+      const fixture = render(D8);
+      typeInto(fixture, '.name-input', '測試帳戶改');
+      click(fixture, 'app-reward-rule-sheet .sheet-cancel');
+      expect(byUrl).not.toHaveBeenCalled();
+      typeInto(fixture, '.name-input', D8.name); // clean again: only the flag could still send the owner away
+
+      click(fixture, '.rule-row .rule-open', 0);
+      expect(sheet(fixture)?.rule()?.id).toBe(1);
+      click(fixture, 'app-reward-rule-sheet .sheet-cancel');
+      expect(sheet(fixture)).toBeNull();
+      expect(byUrl).not.toHaveBeenCalled();
+    });
+
+    it('link-opened sheet, rule draft dirty, account form clean, 放棄 on the sheet\'s own strip → overview', async () => {
+      await setup('8', { rule: '2', back: BACK });
+      const byUrl = spyNavigateByUrl();
+      const fixture = render(D8);
+      typeInto(fixture, '.rule-name', '餐飲改');
+
+      click(fixture, 'app-reward-rule-sheet .sheet-cancel');
+      expect(byUrl).not.toHaveBeenCalled();
+      click(fixture, 'app-reward-rule-sheet .discard-leave');
+      expect(sheet(fixture)).toBeNull();
+      expectOverviewReturn(byUrl);
+    });
+
+    describe('delegated route-leave prompt on a link-opened sheet', () => {
+      it('放棄 with a clean account form runs the pending leave once and does not navigate to the overview', async () => {
+        await setup('8', { rule: '2', back: BACK });
+        const byUrl = spyNavigateByUrl();
+        const fixture = render(D8);
+        const registry = TestBed.inject(DirtyFormRegistry);
+        const run = vi.fn();
+        typeInto(fixture, '.rule-name', '餐飲改');
+        registry.requestClose(run);
+        fixture.detectChanges();
+
+        click(fixture, 'app-reward-rule-sheet .discard-leave');
+        expect(sheet(fixture)).toBeNull();
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(byUrl).not.toHaveBeenCalled();
+      });
+
+      it('放棄 with a dirty account form shows the page strip; run not called; no overview navigation', async () => {
+        await setup('8', { rule: '2', back: BACK });
+        const byUrl = spyNavigateByUrl();
+        const fixture = render(D8);
+        const registry = TestBed.inject(DirtyFormRegistry);
+        const run = vi.fn();
+        typeInto(fixture, '.name-input', '測試帳戶改');
+        typeInto(fixture, '.rule-name', '餐飲改');
+        registry.requestClose(run);
+        fixture.detectChanges();
+
+        click(fixture, 'app-reward-rule-sheet .discard-leave');
+        expect(sheet(fixture)).toBeNull();
+        expect(strips(fixture).map(s => s.classList.contains('discard-strip'))).toEqual([true]);
+        expect(run).not.toHaveBeenCalled();
+        expect(byUrl).not.toHaveBeenCalled();
+      });
+
+      it('儲存 keeps the owner on settings: run not called, no overview navigation', async () => {
+        await setup('8', { rule: '2', back: BACK });
+        const byUrl = spyNavigateByUrl();
+        const fixture = render(D8);
+        const registry = TestBed.inject(DirtyFormRegistry);
+        const run = vi.fn();
+        typeInto(fixture, '.rule-name', '餐飲改');
+        registry.requestClose(run);
+        fixture.detectChanges();
+
+        sheet(fixture)!.saved.emit({ ...DETAIL.reward_rules[1], name: '餐飲改' });
+        fixture.detectChanges();
+        expect(sheet(fixture)).toBeNull();
+        expect(run).not.toHaveBeenCalled();
+        expect(registry.promptOpen()).toBe(false);
+        expect(byUrl).not.toHaveBeenCalled();
+        http.expectOne('/api/accounting/accounts/8').flush(D8);
+      });
+    });
+
+    it('back survives the ?rule= cleanup', async () => {
+      await setup('8', { rule: '2', back: BACK });
+      const fixture = render(D8);
+
+      expect(navigate).toHaveBeenCalledTimes(1);
+      const extras = navigate.mock.calls[0][1];
+      expect(extras?.queryParams).toEqual({ rule: null });
+      expect(extras?.queryParamsHandling).toBe('merge');
+      // What the merge leaves in the URL: `back` without `rule`.
+      queryParams.next(convertToParamMap({ back: BACK }));
+      fixture.detectChanges();
+      expect(closeHref(fixture)).toBe('/accounting/reward-rules?archived=1#card-8');
+    });
+  });
+
   it('an expired rule shows the 已過期 badge in the warning colour', async () => {
     await setup('11');
     const expired = rewardRule({ id: 3, name: '夏季', rate: '2.0000', starts_on: '2026-06-01', ends_on: '2026-09-30', sort_order: 2 });
@@ -2364,6 +2628,18 @@ describe('AccountSettingsComponent', () => {
 
       // A tap on the dimmed backdrop closes it; the row shows the new value.
       el(fixture).ownerDocument.querySelector<HTMLElement>('.overlay[data-overlay]')!.click();
+      fixture.detectChanges();
+      expect(sheet(fixture)).toBeNull();
+      expect(texts(fixture, '.row-closing_day .row-v')).toEqual(['16 號']);
+    });
+
+    it('phone sheet: a pull on the grab bar closes it and keeps the edited value', async () => {
+      await phoneSetup();
+      const fixture = render(DETAIL);
+      click(fixture, '.row-closing_day');
+      stepperClick(fixture, 'closing-day', 'inc');
+
+      pullGrab(sheet(fixture)!.querySelector<HTMLElement>('.grab')!);
       fixture.detectChanges();
       expect(sheet(fixture)).toBeNull();
       expect(texts(fixture, '.row-closing_day .row-v')).toEqual(['16 號']);

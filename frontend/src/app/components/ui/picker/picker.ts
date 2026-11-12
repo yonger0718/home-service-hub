@@ -15,6 +15,7 @@ import {
 
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { isHandledKey, restoreOverlayFocus, trapFocus } from '../../accounting/accounting-ui';
+import { SheetPullDirective } from '../../accounting/sheet-pull.directive';
 
 export interface PickerOption {
   value: string;
@@ -30,7 +31,7 @@ export interface PickerOption {
 @Component({
   selector: 'app-picker',
   standalone: true,
-  imports: [NgTemplateOutlet],
+  imports: [NgTemplateOutlet, SheetPullDirective],
   templateUrl: './picker.html',
   styleUrls: ['../../accounting/sheet.scss', './picker.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,

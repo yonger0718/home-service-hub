@@ -2,6 +2,7 @@ import { Component, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { pullGrab } from '../../accounting/sheet-pull.testing';
 import { PickerComponent, PickerOption } from './picker';
 
 @Component({
@@ -99,6 +100,16 @@ describe('PickerComponent', () => {
     expect(host.emitted).toEqual([]);
     expect(q('.pk-trigger').dataset['value']).toBe('a');
     expect(document.activeElement).toBe(q('.pk-trigger'));
+  });
+
+  it('phone: a pull on the grab bar closes the sheet and keeps the value', () => {
+    const { q, fixture, host, open } = setup('phone');
+    open();
+    pullGrab(q('.sheet .grab'));
+    fixture.detectChanges();
+    expect(q('.overlay')).toBeNull();
+    expect(host.emitted).toEqual([]);
+    expect(q('.pk-trigger').dataset['value']).toBe('a');
   });
 
   it('desktop: popover anchors to the trigger end edge, sizes to content and keeps labels on one line', () => {

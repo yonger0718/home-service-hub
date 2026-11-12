@@ -3,6 +3,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LayoutModeService, MATCH_MEDIA } from '../../../services/layout-mode.service';
+import { pullGrab } from '../../accounting/sheet-pull.testing';
 import { FilterBarComponent, FilterChip } from './filter-bar';
 
 @Component({
@@ -130,6 +131,15 @@ describe('FilterBarComponent', () => {
     q('.filter-overlay')!.click();
     await flush();
     expect(q('.filter-panel')).toBeNull();
+  });
+
+  it('phone: a pull on the grab bar closes the sheet', async () => {
+    TestBed.inject(LayoutModeService).set('phone');
+    await toggle();
+    pullGrab(q('.filter-panel.sheet .grab')!);
+    await flush();
+    expect(q('.filter-panel')).toBeNull();
+    expect(host.opens).toEqual([true, false]);
   });
 
   it('links the toggle to the open panel by a stable id (aria-controls only while open)', async () => {

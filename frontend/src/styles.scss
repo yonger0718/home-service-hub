@@ -362,6 +362,22 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* No pull-to-refresh while a bottom sheet is open: the scrollport may be html or body, the accidental pull usually
+   starts on the fixed backdrop (not a scroll container), and overscroll-behavior on a sheet whose content does not
+   overflow has no effect (WebKit 243452 / Chromium 813094). */
+html:has(.overlay, .filter-overlay),
+html:has(.overlay, .filter-overlay) body {
+  overscroll-behavior-y: none;
+}
+@media (max-width: 759.98px) {
+  /* Scroll lock: the reliable iOS backstop. Phone only, so a desktop scrollbar never disappears under a sheet.
+     html only: with html non-visible too, body would become the scroll container for position: sticky and the
+     viewport-sticky bars (the settings save bar and the like) would jump while a sheet is open. */
+  html:has(.overlay, .filter-overlay) {
+    overflow: hidden;
+  }
+}
+
 .hh-title       { font-size: var(--fs-display); font-weight: var(--fw-heavy); letter-spacing: var(--tracking-tighter); color: var(--app-text); line-height: var(--lh-tight); }
 .hh-section-title { font-size: var(--fs-h2); font-weight: var(--fw-heavy); letter-spacing: var(--tracking-tight); color: var(--app-text); }
 .hh-value       { font-size: var(--fs-value); font-weight: var(--fw-heavy); line-height: var(--lh-tight); color: var(--app-text); font-variant-numeric: tabular-nums; }

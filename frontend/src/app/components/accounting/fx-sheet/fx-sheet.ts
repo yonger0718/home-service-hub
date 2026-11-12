@@ -22,6 +22,7 @@ import { AccountingService } from '../../../services/accounting.service';
 import { focusables, isHandledKey, trapFocus, restoreOverlayFocus } from '../accounting-ui';
 import { roundHalfAway } from '../amount-math';
 import { currencyDecimals, formatNumber } from '../format';
+import { SheetPullDirective } from '../sheet-pull.directive';
 
 /** Foreign-currency state of an entry (design D21); amounts unsigned. */
 export interface FxValue {
@@ -51,6 +52,7 @@ function parseNumber(text: string): number {
   selector: 'app-fx-sheet',
   standalone: true,
   templateUrl: './fx-sheet.html',
+  imports: [SheetPullDirective],
   styleUrls: ['../sheet.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { '(keydown)': 'onHostKeydown($event)' },
