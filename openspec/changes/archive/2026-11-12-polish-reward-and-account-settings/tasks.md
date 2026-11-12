@@ -65,4 +65,4 @@
 
 ## 6. Wrap-up
 
-- [ ] 6.1 Screens at 1440 / 820 / 390, light and dark, against the artboards
+- [x] 6.1 Screens at 1440 / 820 / 390, light and dark, against the artboards — waived by the owner 2026-11-12 (live result accepted; per-PR Playwright probes cover the three widths)
