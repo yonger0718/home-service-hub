@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EntryDetail, LedgerAccount, LedgerEntry } from '../../../models/accounting.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
-import { EntryDetailComponent } from './entry-detail';
+import { EntryDetailComponent, settledValue } from './entry-detail';
 
 function entry(fields: Record<string, unknown>): LedgerEntry {
   return {
@@ -1213,6 +1213,30 @@ describe('EntryDetailComponent', () => {
       expect(posted()).toMatchObject({ amount: '1', original_amount: '0.0001' });
     });
 
+    it('rounds the previewed rate to the stored 10 decimals', () => {
+      const body = { ...USD_DEBT, amount: '-1000', open_amount: '1000' } as EntryDetail;
+      const fixture = open(body, 3);
+      field(fixture, '.form-amount', '1000');
+      field(fixture, '.form-original', '30');
+      const line = el(fixture).querySelector('.form-conversion')?.textContent ?? '';
+      expect(line).toContain('33.3333333333');
+      expect(line).not.toContain('33.333333333333336');
+    });
+
+    it('shows a sub-cent remainder in the 抵銷 limit hint and error', () => {
+      const fixture = open({ ...USD_DEBT, amount: '-0.0001', open_amount: '0.0001' } as EntryDetail, 3);
+      expect(el(fixture).querySelector('.inline-form')!.textContent).toContain('上限 US$0.0001');
+      field(fixture, '.form-amount', '1');
+      field(fixture, '.form-original', '0.0002');
+      submit(fixture);
+      expect(error(fixture)).toBe('金額不可超過 US$0.0001');
+    });
+
+    it('keeps the 抵銷 limit hint plain for a whole remainder', () => {
+      const fixture = open(USD_DEBT, 3);
+      expect(el(fixture).querySelector('.inline-form')!.textContent).toContain('上限 US$20');
+    });
+
     it('prefills a TWD remainder below one unit', () => {
       const fixture = open({ ...TWD_DEBT, amount: '-0.1', open_amount: '0.1' } as EntryDetail, 21);
       expect(value(fixture, '.form-original')).toBe('0.1');
@@ -1236,5 +1260,11 @@ describe('EntryDetailComponent', () => {
       expect(esc.defaultPrevented).toBe(true);
       expect(el(fixture).querySelector('.inline-form')).toBeNull();
     });
+  });
+});
+
+describe('settledValue', () => {
+  it('counts the amount of a same-currency row even when it carries original_amount', () => {
+    expect(settledValue({ amount: '10', currency: 'USD', original_amount: '320', original_currency: 'TWD' }, 'USD')).toBe(10);
   });
 });

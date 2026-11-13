@@ -139,7 +139,7 @@
           <label>
             <span>抵銷 {{ d.currency }}</span>
             <input class="form-original" inputmode="decimal" [value]="formOriginal()" (input)="formOriginal.set($any($event.target).value)" />
-            <small>上限 {{ formatMoney(formMax(), d.currency) }}</small>
+            <small>上限 {{ crossLimitText() }}</small>
           </label>
           @if (conversionLine(); as line) {
             <p class="form-conversion">{{ line }}</p>

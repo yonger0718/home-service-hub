@@ -31,7 +31,7 @@ import { AccountingToastService, scheduleActionError } from '../accounting-toast
 import { NO_ENTER_SAVE_TAGS, textOn, colorOf, fxConversionLine, iconOf, isHandledKey } from '../accounting-ui';
 import { amountString, moneyString, parseAmountFields, parseAmountText, parseMoneyText } from '../amount-text';
 import { shortDate, slashDate, todayIso } from '../dates';
-import { formatMoney, formatNumber } from '../format';
+import { currencySymbol, formatMoney, formatNumber } from '../format';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
 import { alignedRepostAmounts, schedulePill } from '../schedule-math';
 import { GroupNavState, closeKeepingDay, groupCommands, inPlaceState, readGroupNavState } from '../split-group/group-nav';
@@ -359,7 +359,7 @@ export class EntryDetailComponent implements OnInit {
       currency: account.currency,
       original_amount: String(original),
       original_currency: detail.currency,
-      fx_rate: String(amount / original),
+      fx_rate: String(Number((amount / original).toFixed(10))),
     });
   });
   readonly siblings = computed(() => {
@@ -424,10 +424,15 @@ export class EntryDetailComponent implements OnInit {
   readonly formMax = computed(() =>
     this.panel() === 'settle' ? Number(this.detail()?.open_amount ?? 0) : this.refundable(),
   );
+  /** Cross-currency 抵銷 cap shown at ledger precision (`US$0.0001`), where formatMoney would round it to `US$0`. */
+  readonly crossLimitText = computed(() => {
+    const detail = this.detail();
+    return detail ? `${currencySymbol(detail.currency)}${moneyString(Number(detail.open_amount ?? 0))}` : '';
+  });
   readonly settleLabel = computed(() => (this.detail()?.kind === 'payable' ? '新增還款' : '新增收款'));
   /**
    * A debt original once something came back (or MOZE closed it): `原始 $420 · 已收 $200 · 剩餘 $220` (已還 for a
-   * payable; 已結清 in place of 剩餘 when closed). 已收 / 已還 is Σ of the linked settlements.
+   * payable; 已結清 in place of 剩餘 when closed). 已收 / 已還 is Σ of their settled values in the debt's currency (`settledValue`).
    */
   readonly breakdown = computed(() => {
     const detail = this.detail();
@@ -875,7 +880,7 @@ export class EntryDetailComponent implements OnInit {
       }
       const openAmount = Number(detail.open_amount ?? 0);
       if (Number(moneyString(original)) > Number(moneyString(openAmount))) {
-        this.formError.set(`金額不可超過 ${formatMoney(openAmount, detail.currency)}`);
+        this.formError.set(`金額不可超過 ${currencySymbol(detail.currency)}${moneyString(openAmount)}`);
         return;
       }
       originalAmount = moneyString(original);

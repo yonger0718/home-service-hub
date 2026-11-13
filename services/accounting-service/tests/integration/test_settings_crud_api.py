@@ -481,6 +481,23 @@ def test_counterparty_imported_link_across_currencies_without_an_original_amount
     assert rows["Bea"]["open_amounts"] == [{"currency": "USD", "amount": "20.0000"}]
 
 
+def test_counterparty_mixed_currency_settlements_net_in_the_debts_currency(client, db_session, seed):
+    """Coverage guard: expected to pass on the current code (no behaviour change). A USD debt settled partly in USD
+    and partly in TWD (stating its USD worth) nets both in USD; an exact total leaves nothing open."""
+    card, wallet = seed.account("美卡", currency="USD"), seed.account("錢包")
+    cyd, dee = seed.counterparty("Cyd"), seed.counterparty("Dee")
+    for who, twd_worth in ((cyd, "15"), (dee, "14")):
+        debt = seed.entry(card, "-20", kind="receivable", counterparty_id=who.id)
+        seed.entry(card, "5", kind="receivable", counterparty_id=who.id, settles_entry_id=debt.id, is_settlement=True)
+        seed.entry(wallet, "480", kind="receivable", counterparty_id=who.id, settles_entry_id=debt.id,
+                   is_settlement=True, original_amount=Decimal(twd_worth), original_currency="USD")
+    db_session.commit()
+
+    rows = {row["name"]: row for row in client.get("/counterparties").json()}
+    assert rows["Cyd"]["open_amounts"] == []
+    assert rows["Dee"]["open_amounts"] == [{"currency": "USD", "amount": "1.0000"}]
+
+
 def test_counterparty_closed_cross_currency_debt_and_its_settlement_stay_out(client, db_session, seed):
     card, wallet, bea = seed.account("美卡", currency="USD"), seed.account("錢包"), seed.counterparty("Bea")
     debt = seed.entry(card, "-20", kind="receivable", counterparty_id=bea.id)
