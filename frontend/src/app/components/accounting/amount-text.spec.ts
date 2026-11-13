@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { amountString, moneyString, parseAmountFields, parseAmountText, parseMoneyText } from './amount-text';
+import { amountString, formatMoneyExact, moneyUnits, parseAmountFields, parseAmountText, parseMoneyExact, parseMoneyText } from './amount-text';
 
 describe('amount text helpers', () => {
   it('evaluates an expression in the currency decimals', () => {
@@ -31,15 +31,29 @@ describe('amount text helpers', () => {
     expect(parseAmountFields(['-5'], ['TWD'])).toBeNull();
   });
 
-  it('parses and writes ledger amounts at four decimals', () => {
-    expect(parseMoneyText('0.0001')).toBe(0.0001);
+  it('parses ledger amounts exactly at four decimals', () => {
+    expect(parseMoneyExact('0.0001')).toBe('0.0001');
+    expect(parseMoneyExact('20.0001')).toBe('20.0001');
+    expect(parseMoneyExact('100000000000.0001')).toBe('100000000000.0001');
+    expect(parseMoneyExact('100000000000.0006')).toBe('100000000000.0006');
+    expect(parseMoneyExact('1,000.5')).toBe('1000.5');
+    expect(parseMoneyExact('１２．５０')).toBe('12.5');
+    expect(parseMoneyExact('20.00005')).toBe('20.0001');
+    expect(parseMoneyExact('20.00004')).toBe('20');
+    expect(parseMoneyExact('10+5')).toBe('15');
+    expect(parseMoneyExact('')).toBeNull();
+    expect(parseMoneyExact('abc')).toBeNull();
+    expect(parseMoneyExact('0')).toBeNull();
+    expect(parseMoneyExact('0.00004')).toBeNull();
+  });
+
+  it('keeps scaled units and formats without float', () => {
+    expect(moneyUnits('100000000000.0001')).toBeGreaterThan(moneyUnits('100000000000'));
+    expect(moneyUnits('100000000000.0007')).toBeGreaterThan(moneyUnits('100000000000.0006'));
+    expect(moneyUnits('20')).toBe(200000n);
+    expect(formatMoneyExact('20.0000')).toBe('20');
+    expect(formatMoneyExact('100000000000.0001')).toBe('100000000000.0001');
+    expect(formatMoneyExact('0.1000')).toBe('0.1');
     expect(parseMoneyText('20.0001')).toBe(20.0001);
-    expect(parseMoneyText('')).toBeNull();
-    expect(parseMoneyText('abc')).toBeNull();
-    expect(parseMoneyText('0')).toBeNull();
-    expect(moneyString(0.0001)).toBe('0.0001');
-    expect(moneyString(20.0001)).toBe('20.0001');
-    expect(moneyString(20)).toBe('20');
-    expect(moneyString(0.1)).toBe('0.1');
   });
 });

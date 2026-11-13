@@ -1213,6 +1213,27 @@ describe('EntryDetailComponent', () => {
       expect(posted()).toMatchObject({ amount: '1', original_amount: '0.0001' });
     });
 
+    it('settles a 4-decimal debt above float precision exactly by default, and caps exactly', () => {
+      const big = (open_amount: string) => ({ ...USD_DEBT, amount: `-${open_amount}`, open_amount }) as EntryDetail;
+      let fixture = open(big('100000000000.0001'), 3);
+      expect(value(fixture, '.form-original')).toBe('100000000000.0001');
+      field(fixture, '.form-amount', '100000000000');
+      submit(fixture);
+      expect(posted()).toMatchObject({ original_amount: '100000000000.0001' });
+      fixture.destroy();
+      fixture = open(big('100000000000.0006'), 3);
+      field(fixture, '.form-amount', '100000000000');
+      submit(fixture);
+      expect(posted()).toMatchObject({ original_amount: '100000000000.0006' });
+      fixture.destroy();
+      fixture = open(big('100000000000.0006'), 3);
+      field(fixture, '.form-amount', '100000000000');
+      field(fixture, '.form-original', '100000000000.0007');
+      submit(fixture);
+      expect(error(fixture)).toBe('金額不可超過 US$100000000000.0006');
+      http.expectNone('/api/accounting/entries/42/settle');
+    });
+
     it('rounds the previewed rate to the stored 10 decimals', () => {
       const body = { ...USD_DEBT, amount: '-1000', open_amount: '1000' } as EntryDetail;
       const fixture = open(body, 3);

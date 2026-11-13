@@ -29,7 +29,15 @@ import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingToastService, scheduleActionError } from '../accounting-toast';
 import { NO_ENTER_SAVE_TAGS, textOn, colorOf, fxConversionLine, iconOf, isHandledKey } from '../accounting-ui';
-import { amountString, moneyString, parseAmountFields, parseAmountText, parseMoneyText } from '../amount-text';
+import {
+  amountString,
+  formatMoneyExact,
+  moneyUnits,
+  parseAmountFields,
+  parseAmountText,
+  parseMoneyExact,
+  parseMoneyText,
+} from '../amount-text';
 import { shortDate, slashDate, todayIso } from '../dates';
 import { currencySymbol, formatMoney, formatNumber } from '../format';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
@@ -427,7 +435,7 @@ export class EntryDetailComponent implements OnInit {
   /** Cross-currency 抵銷 cap shown at ledger precision (`US$0.0001`), where formatMoney would round it to `US$0`. */
   readonly crossLimitText = computed(() => {
     const detail = this.detail();
-    return detail ? `${currencySymbol(detail.currency)}${moneyString(Number(detail.open_amount ?? 0))}` : '';
+    return detail ? `${currencySymbol(detail.currency)}${formatMoneyExact(detail.open_amount ?? '0')}` : '';
   });
   readonly settleLabel = computed(() => (this.detail()?.kind === 'payable' ? '新增還款' : '新增收款'));
   /**
@@ -844,7 +852,7 @@ export class EntryDetailComponent implements OnInit {
   private applyAccountDefault(detail: EntryDetail, panel: DetailPanel, cross: boolean): void {
     if (cross) {
       this.formAmount.set('');
-      this.formOriginal.set(moneyString(Number(detail.open_amount ?? 0)));
+      this.formOriginal.set(formatMoneyExact(detail.open_amount ?? '0'));
       return;
     }
     const max = panel === 'refund' ? this.refundable() : Number(detail.open_amount ?? 0);
@@ -873,17 +881,17 @@ export class EntryDetailComponent implements OnInit {
     }
     let originalAmount: string | undefined;
     if (cross) {
-      const original = parseMoneyText(this.formOriginal());
+      const original = parseMoneyExact(this.formOriginal());
       if (original === null) {
         this.formError.set('請輸入金額');
         return;
       }
-      const openAmount = Number(detail.open_amount ?? 0);
-      if (Number(moneyString(original)) > Number(moneyString(openAmount))) {
-        this.formError.set(`金額不可超過 ${currencySymbol(detail.currency)}${moneyString(openAmount)}`);
+      const openAmount = formatMoneyExact(detail.open_amount ?? '0');
+      if (moneyUnits(original) > moneyUnits(openAmount)) {
+        this.formError.set(`金額不可超過 ${currencySymbol(detail.currency)}${openAmount}`);
         return;
       }
-      originalAmount = moneyString(original);
+      originalAmount = original;
     } else {
       const max = this.formMax();
       if (value > max + 1e-9) {
