@@ -28,9 +28,9 @@ The system SHALL persist counterparties in `counterparty (id, name UNIQUE NOT NU
 
 `POST /api/accounting/entries/{id}/settle` SHALL take `account_id` (the account receiving or paying), `amount` (unsigned, in that account's currency), optional `original_amount` (unsigned, in the target entry's currency), `entry_date`, `entry_time`, `description` and create an entry on that account with `settles_entry_id = {id}` and `is_settlement = true`: a `receivable` entry of `+amount` when the target is a `receivable` (收款), a `payable` entry of `-amount` when the target is a `payable` (還款), copying the target's `counterparty_id`.
 
-When the account's currency equals the target's, `original_amount` MUST be absent, else HTTP 422 naming `original_amount`. When it differs, `original_amount` MUST be given, else HTTP 422 naming `original_amount`, and the entry SHALL store `original_amount` (carrying the entry's sign), `original_currency` = the target's currency, `fx_rate = |amount| / |original_amount|` rounded half-up to 10 decimals, and `fx_source = 'manual'`.
+An `original_amount` of JSON `null` SHALL be treated as absent. When the account's currency equals the target's, `original_amount` MUST be absent, else HTTP 422 naming `original_amount`. When it differs, `original_amount` MUST be given, else HTTP 422 naming `original_amount`; a pair whose rate rounded half-up to 10 decimals is `0` or not below `10^10` SHALL be refused with HTTP 422 naming `original_amount`. Otherwise the entry SHALL store `original_amount` (carrying the entry's sign), `original_currency` = the target's currency, `fx_rate = |amount| / |original_amount|` rounded half-up to 10 decimals, and `fx_source = 'manual'`.
 
-A settlement's settled value, in the target's currency, is its `amount` when its currency is the target's, its `original_amount` when its `original_currency` is the target's, and nothing otherwise (an imported link across currencies without an original amount stays linked but never nets). The target's open amount is `|amount + Σ settled values of the entries settling it|`, in the target's currency. A request whose settled value exceeds the open amount SHALL be refused. The target entry SHALL be locked (`SELECT … FOR UPDATE`) while the open amount is computed and the settlement inserted, so concurrent settlements cannot exceed it; refunds SHALL lock the original the same way. The detail of a `receivable` or `payable` SHALL report `open_amount` and `is_settled`.
+A settlement's settled value, in the target's currency, is its `amount` when its currency is the target's, otherwise its `original_amount` when its `original_currency` is the target's, and nothing otherwise (an imported link across currencies without an original amount stays linked but never nets). The target's open amount is `|amount + Σ settled values of the entries settling it|`, in the target's currency. A request whose settled value exceeds the open amount SHALL be refused. The target entry SHALL be locked (`SELECT … FOR UPDATE`) while the open amount is computed and the settlement inserted, so concurrent settlements cannot exceed it; refunds SHALL lock the original the same way. The detail of a `receivable` or `payable` SHALL report `open_amount` and `is_settled`.
 
 #### Scenario: Partial collection
 - **GIVEN** a receivable of `-420` for Alan on card C
@@ -66,3 +66,13 @@ A settlement's settled value, in the target's currency, is its `amount` when its
 - **GIVEN** a TWD receivable
 - **WHEN** a settlement with `original_amount` is posted to a TWD account
 - **THEN** the response SHALL be HTTP 422 naming `original_amount`
+
+#### Scenario: Null original amount in the same currency
+- **GIVEN** a TWD receivable with `200` open
+- **WHEN** a settlement of `amount = 200` with `original_amount = null` is posted to a TWD account
+- **THEN** it SHALL be accepted as a same-currency settlement and the receivable SHALL be settled
+
+#### Scenario: Rate out of range refused
+- **GIVEN** a receivable of `-20` USD
+- **WHEN** a settlement of `amount = 1000000000000`, `original_amount = 20` is posted to TWD account W (rate `5 × 10^10`)
+- **THEN** the response SHALL be HTTP 422 naming `original_amount` and nothing SHALL be written
