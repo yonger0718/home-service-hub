@@ -1033,6 +1033,50 @@ describe('EntryDetailComponent', () => {
       return el(fixture).querySelector<HTMLInputElement>(selector)!.value;
     }
 
+    it('opens cross-currency when the debt account is archived and only foreign accounts remain', () => {
+      const accounts = [
+        { id: 21, name: 'Wise 美元', currency: 'USD', is_archived: true },
+        { id: 3, name: '玉山 UNI', currency: 'TWD', is_archived: false },
+      ] as unknown as LedgerAccount[];
+      const fixture = render(USD_DEBT, accounts);
+      el(fixture).querySelector<HTMLButtonElement>('.action-settle')!.click();
+      fixture.detectChanges();
+      expect(value(fixture, '.form-original')).toBe('20');
+      expect(value(fixture, '.form-amount')).toBe('');
+    });
+
+    it('keeps a typed 金額 when switching between same-currency accounts on settle', () => {
+      const fixture = open(TWD_DEBT);
+      field(fixture, '.form-amount', '123');
+      pick(fixture, 7);
+      expect(value(fixture, '.form-amount')).toBe('123');
+    });
+
+    it('keeps a typed 金額 when switching accounts on the refund panel', () => {
+      const fixture = render(detail({ id: 42, amount: '-500.0000', name: '外套' }), ACCOUNTS_X);
+      el(fixture).querySelector<HTMLButtonElement>('.action-refund')!.click();
+      fixture.detectChanges();
+      field(fixture, '.form-amount', '123');
+      pick(fixture, 7);
+      expect(value(fixture, '.form-amount')).toBe('123');
+    });
+
+    it('keeps 抵銷 but clears 金額 when switching foreign to foreign', () => {
+      const accounts = [
+        ...ACCOUNTS_X,
+        { id: 23, name: '日幣現金', currency: 'JPY', is_archived: false },
+      ] as unknown as LedgerAccount[];
+      const fixture = render(TWD_DEBT, accounts);
+      el(fixture).querySelector<HTMLButtonElement>('.action-settle')!.click();
+      fixture.detectChanges();
+      pick(fixture, 21);
+      field(fixture, '.form-amount', '20');
+      field(fixture, '.form-original', '300');
+      pick(fixture, 23);
+      expect(value(fixture, '.form-amount')).toBe('');
+      expect(value(fixture, '.form-original')).toBe('300');
+    });
+
     it('lists the entry currency first, then the other accounts with their code', () => {
       const fixture = open(USD_DEBT);
       const options = Array.from(el(fixture).querySelectorAll('.form-account option')).map(o => o.textContent?.trim());

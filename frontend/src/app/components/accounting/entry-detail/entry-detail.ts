@@ -756,9 +756,9 @@ export class EntryDetailComponent implements OnInit {
     if (panel !== 'delete') {
       const accounts = panel === 'settle' ? this.settleAccounts() : this.sameCurrencyAccounts();
       const own = accounts.find(account => account.id === detail.account_id);
-      this.formAccountId.set(own?.id ?? accounts[0]?.id ?? null);
-      const max = panel === 'settle' ? Number(detail.open_amount ?? 0) : this.refundable();
-      this.formAmount.set(max > 0 ? amountString(max, detail.currency) : '');
+      const chosen = own ?? accounts[0] ?? null;
+      this.formAccountId.set(chosen?.id ?? null);
+      this.applyAccountDefault(detail, panel, panel === 'settle' && !!chosen && chosen.currency !== detail.currency);
     }
     this.panel.set(panel);
     if (panel !== 'delete') {
@@ -803,20 +803,31 @@ export class EntryDetailComponent implements OnInit {
 
   setFormAccount(value: string): void {
     const detail = this.detail();
-    const account = this.accounts().find(candidate => candidate.id === Number(value)) ?? null;
+    const wasCross = this.crossCurrency();
     this.formAccountId.set(Number(value));
     this.formError.set(null);
-    if (!detail || !account) {
+    if (!detail) {
       return;
     }
-    if (this.panel() === 'settle' && account.currency !== detail.currency) {
+    const nowCross = this.crossCurrency();
+    if (wasCross !== nowCross) {
+      this.applyAccountDefault(detail, this.panel(), nowCross);
+    } else if (nowCross) {
+      // Foreign to foreign: 金額 was in the other account's currency; 抵銷 stays as typed.
+      this.formAmount.set('');
+    }
+  }
+
+  /** The amount fields' default for an account: cross-currency → empty 金額 and 抵銷 = open amount; else 金額 = the cap. */
+  private applyAccountDefault(detail: EntryDetail, panel: DetailPanel, cross: boolean): void {
+    if (cross) {
       this.formAmount.set('');
       this.formOriginal.set(moneyString(Number(detail.open_amount ?? 0)));
-    } else {
-      const max = this.formMax();
-      this.formAmount.set(max > 0 ? amountString(max, detail.currency) : '');
-      this.formOriginal.set('');
+      return;
     }
+    const max = panel === 'refund' ? this.refundable() : Number(detail.open_amount ?? 0);
+    this.formAmount.set(max > 0 ? amountString(max, detail.currency) : '');
+    this.formOriginal.set('');
   }
 
   submitForm(): void {
