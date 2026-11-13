@@ -12,4 +12,4 @@
 
 ## 3. Rollout
 
-- [ ] 3.1 API deploy, Hermes `homehub-api` skill text, SPA release
+- [x] 3.1 API deploy, Hermes `homehub-api` skill text, SPA release
