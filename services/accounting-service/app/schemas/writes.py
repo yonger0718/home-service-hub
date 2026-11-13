@@ -167,6 +167,7 @@ class SplitIn(BaseModel):
 class SettleIn(BaseModel):
     account_id: Int32
     amount: Money
+    original_amount: Money | None = None
     entry_date: date
     entry_time: time | None = None
     description: str | None = None
