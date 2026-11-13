@@ -1,18 +1,21 @@
 """Collections, repayments and refunds linked to the entry they settle or refund (design D16, spec).
 
-Only accounts in the target entry's currency may receive them (cross-currency settlement is a later phase).
+A settlement may come from an account in another currency when it states the `original_amount` it settles in the
+target's currency (design D3); refunds still need an account in the original's currency (a later phase).
 """
 
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ..models import Account, LedgerEntry
 from ..schemas.writes import RefundIn, SettleIn
 from . import reward_engine
+from .fx_rate_service import RATE_QUANTUM
 from .entry_write_service import assert_entry_editable, locked_entry
 from .errors import ValidationError
+from .settled_value import settled_value
 
 SETTLE_NAMES = {"receivable": "收款", "payable": "還款"}
 SETTLE_SIGNS = {"receivable": 1, "payable": -1}
@@ -20,10 +23,12 @@ REFUNDABLE_KINDS = ("expense",)
 
 
 def open_amount(db: Session, entry: LedgerEntry) -> Decimal:
-    """|amount + Σ amounts of the entries settling it in its own currency| (another currency never nets)."""
+    """|amount + Σ settled values of the entries settling it| (see `settled_value`: another currency counts its
+    `original_amount` only when it is stated in this entry's currency)."""
+    settlement = aliased(LedgerEntry)
     settled = db.scalar(
-        select(func.coalesce(func.sum(LedgerEntry.amount), 0)).where(
-            LedgerEntry.settles_entry_id == entry.id, LedgerEntry.currency == entry.currency
+        select(func.coalesce(func.sum(settled_value(settlement, entry.currency)), 0)).where(
+            settlement.settles_entry_id == entry.id
         )
     )
     return abs(Decimal(entry.amount) + Decimal(settled))
@@ -68,15 +73,45 @@ def settle(
         raise ValidationError("kind", "only receivable and payable entries can be settled")
     if target.is_closed:
         raise ValidationError("is_closed", "已結清: the debt is closed")
-    account = _same_currency_account(db, payload.account_id, target.currency)
+    account = db.get(Account, payload.account_id)
+    if account is None:
+        raise ValidationError("account_id", f"account {payload.account_id} not found")
+    sign = SETTLE_SIGNS[target.kind]
+    fx_fields: dict = {}
+    if account.currency == target.currency:
+        if payload.original_amount is not None:
+            raise ValidationError(
+                "original_amount", f"account {account.name} uses {account.currency} like the entry; omit original_amount"
+            )
+        settled = payload.amount
+    else:
+        if payload.original_amount is None:
+            raise ValidationError(
+                "original_amount",
+                f"account {account.name} uses {account.currency}; the entry is in {target.currency}: "
+                "state original_amount",
+            )
+        with localcontext() as ctx:
+            ctx.prec = 60
+            rate = (payload.amount / payload.original_amount).quantize(RATE_QUANTUM, rounding=ROUND_HALF_UP)
+        if rate == 0 or rate >= Decimal("1E10"):
+            raise ValidationError("original_amount", "the implied exchange rate is out of range")
+        settled = payload.original_amount
+        fx_fields = {
+            "original_amount": payload.original_amount * sign,
+            "original_currency": target.currency,
+            "fx_rate": rate,
+            "fx_source": "manual",
+        }
     remaining = open_amount(db, target)
-    if payload.amount > remaining:
+    if settled > remaining:
         raise ValidationError("amount", f"exceeds the open amount {remaining}")
     entry = LedgerEntry(
         account_id=account.id,
         currency=account.currency,
         kind=target.kind,
-        amount=payload.amount * SETTLE_SIGNS[target.kind],
+        amount=payload.amount * sign,
+        **fx_fields,
         entry_date=payload.entry_date,
         entry_time=payload.entry_time,
         posted_date=payload.entry_date,

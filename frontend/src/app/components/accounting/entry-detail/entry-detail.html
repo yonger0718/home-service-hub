@@ -123,16 +123,28 @@
         <label>
           <span>帳戶</span>
           <select class="form-account" (change)="setFormAccount($any($event.target).value)">
-            @for (account of sameCurrencyAccounts(); track account.id) {
-              <option [value]="account.id" [selected]="account.id === formAccountId()">{{ account.name }}</option>
+            @for (account of panel() === 'settle' ? settleAccounts() : sameCurrencyAccounts(); track account.id) {
+              <option [value]="account.id" [selected]="account.id === formAccountId()">{{ account.currency === d.currency ? account.name : account.name + ' (' + account.currency + ')' }}</option>
             }
           </select>
         </label>
         <label>
-          <span>金額</span>
+          <span>{{ crossCurrency() ? (d.kind === 'payable' ? '付出金額' : '收到金額') + ' ' + formAccount()?.currency : '金額' }}</span>
           <input class="form-amount" inputmode="decimal" [value]="formAmount()" (input)="formAmount.set($any($event.target).value)" />
-          <small>上限 {{ formatMoney(formMax(), d.currency) }}</small>
+          @if (!crossCurrency()) {
+            <small>上限 {{ formatMoney(formMax(), d.currency) }}</small>
+          }
         </label>
+        @if (crossCurrency()) {
+          <label>
+            <span>抵銷 {{ d.currency }}</span>
+            <input class="form-original" inputmode="decimal" [value]="formOriginal()" (input)="formOriginal.set($any($event.target).value)" />
+            <small>上限 {{ crossLimitText() }}</small>
+          </label>
+          @if (conversionLine(); as line) {
+            <p class="form-conversion">{{ line }}</p>
+          }
+        }
         <label>
           <span>日期</span>
           <input class="form-date" type="date" [value]="formDate()" (change)="formDate.set($any($event.target).value)" />

@@ -264,6 +264,50 @@ def test_a_settlement_in_another_currency_leaves_the_list_row_open(client, db_se
     assert counterparties["Alan"]["open_count"] == 1
 
 
+def test_a_cross_currency_settlement_with_an_original_amount_closes_the_list_row(client, db_session):
+    card = make_account(db_session, "美卡", currency="USD")
+    wallet = make_account(db_session, "錢包", opening="1000")
+    alan = Counterparty(name="Alan")
+    db_session.add(alan)
+    db_session.flush()
+    lent = make_entry(db_session, card, "-20", kind="receivable", counterparty_id=alan.id)
+    make_entry(db_session, wallet, "640", kind="receivable", counterparty_id=alan.id, settles_entry_id=lent.id,
+               is_settlement=True, original_amount=Decimal("20"), original_currency="USD", entry_date=date(2026, 9, 2))
+    db_session.commit()
+
+    open_rows = client.get("/entries", params={"open": "true"}).json()["items"]
+    all_rows = {e["id"]: e for e in client.get("/entries").json()["items"]}
+    counterparties = {row["name"]: row for row in client.get("/counterparties").json()}
+
+    assert open_rows == []
+    assert all_rows[lent.id]["open_amount"] == "0.0000"
+    assert client.get(f"/entries/{lent.id}").json()["open_amount"] == "0.0000"
+    assert counterparties["Alan"]["open_count"] == 0
+
+
+def test_mixed_currency_settlements_net_in_the_debt_currency(client, db_session):
+    card = make_account(db_session, "美卡", currency="USD")
+    wallet = make_account(db_session, "錢包", opening="1000")
+    alan = Counterparty(name="Alan")
+    db_session.add(alan)
+    db_session.flush()
+    full = make_entry(db_session, card, "-20", kind="receivable", counterparty_id=alan.id)
+    part = make_entry(db_session, card, "-20", kind="receivable", counterparty_id=alan.id)
+    for debt, original in ((full, "15"), (part, "14")):
+        make_entry(db_session, card, "5", kind="receivable", counterparty_id=alan.id, settles_entry_id=debt.id,
+                   is_settlement=True, entry_date=date(2026, 9, 2))
+        make_entry(db_session, wallet, "480", kind="receivable", counterparty_id=alan.id, settles_entry_id=debt.id,
+                   is_settlement=True, original_amount=Decimal(original), original_currency="USD",
+                   entry_date=date(2026, 9, 2))
+    db_session.commit()
+
+    open_rows = client.get("/entries", params={"open": "true"}).json()["items"]
+
+    assert [(e["id"], e["open_amount"]) for e in open_rows] == [(part.id, "1.0000")]
+    assert client.get(f"/entries/{full.id}").json()["open_amount"] == "0.0000"
+    assert client.get(f"/entries/{part.id}").json()["open_amount"] == "1.0000"
+
+
 def test_listing_rejects_a_non_integer_counterparty(client, db_session):
     assert client.get("/entries", params={"counterparty_id": "alan"}).status_code == 422
 

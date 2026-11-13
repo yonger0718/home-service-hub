@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EntryDetail, LedgerAccount, LedgerEntry } from '../../../models/accounting.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
-import { EntryDetailComponent } from './entry-detail';
+import { EntryDetailComponent, settledValue } from './entry-detail';
 
 function entry(fields: Record<string, unknown>): LedgerEntry {
   return {
@@ -309,6 +309,26 @@ describe('EntryDetailComponent', () => {
     expect(el(payable).querySelector('.breakdown')?.textContent?.trim()).toBe('原始 $300 · 已還 $200 · 剩餘 $100');
   });
 
+  it('sums a cross-currency collection as its original amount in the debt currency (#382)', () => {
+    const fixture = render(detail({
+      ...RECEIVABLE, currency: 'USD', amount: '-20.0000', open_amount: '0.0000', is_settled: true,
+      settled_by: [entry({
+        id: 60, kind: 'receivable', amount: '640.0000', currency: 'TWD', original_amount: '20.0000',
+        original_currency: 'USD', name: '收款', account_name: '錢包',
+      })],
+    }));
+    expect(el(fixture).querySelector('.breakdown')?.textContent?.trim()).toBe('原始 US$20 · 已收 US$20 · 剩餘 US$0');
+    expect(el(fixture).querySelector('.settled')?.textContent?.trim()).toBe('已結清');
+  });
+
+  it('does not count a legacy other-currency settlement without an original amount (#382)', () => {
+    const fixture = render(detail({
+      ...RECEIVABLE, amount: '-100.0000', is_closed: true, open_amount: '100.0000', is_settled: false,
+      settled_by: [entry({ id: 61, kind: 'receivable', amount: '100.0000', currency: 'JPY', name: '收款' })],
+    }));
+    expect(el(fixture).querySelector('.breakdown')?.textContent?.trim()).toBe('原始 $100 · 已收 $0 · 已結清');
+  });
+
   it('shows no breakdown before anything was collected', () => {
     const fixture = render({ ...RECEIVABLE, open_amount: '420.0000', settled_by: [] });
     expect(el(fixture).querySelector('.breakdown')).toBeNull();
@@ -333,7 +353,7 @@ describe('EntryDetailComponent', () => {
     fixture.detectChanges();
 
     const options = Array.from(el(fixture).querySelectorAll('.form-account option')).map(o => o.textContent?.trim());
-    expect(options).toEqual(['玉山 UNI', '錢包']);
+    expect(options).toEqual(['玉山 UNI', '錢包', '日幣現金 (JPY)']);
     const account = el(fixture).querySelector<HTMLSelectElement>('.form-account')!;
     account.value = '7';
     account.dispatchEvent(new Event('change'));
@@ -970,5 +990,302 @@ describe('EntryDetailComponent', () => {
     unlink.click();
     http.expectOne('/api/accounting/einvoices/7/unlink').flush({ id: 7, state: 'unmatched' });
     http.expectOne((r) => r.url === '/api/accounting/entries/42').flush(detail({ id: 42 }));
+  });
+
+  describe('settling across currencies', () => {
+    const ACCOUNTS_X = [
+      { id: 3, name: '玉山 UNI', currency: 'TWD', is_archived: false },
+      { id: 21, name: 'Wise 美元', currency: 'USD', is_archived: false },
+      { id: 7, name: '錢包', currency: 'TWD', is_archived: false },
+      { id: 22, name: '舊美元', currency: 'USD', is_archived: true },
+    ] as unknown as LedgerAccount[];
+    const USD_DEBT = detail({
+      id: 42, kind: 'receivable', amount: '-20.0000', currency: 'USD', name: '代墊 機票', counterparty: 'Alan',
+      open_amount: '20.0000', is_settled: false, account_id: 21,
+    });
+    const TWD_DEBT = detail({
+      id: 42, kind: 'receivable', amount: '-640.0000', currency: 'TWD', name: '代墊 晚餐', counterparty: 'Alan',
+      open_amount: '640.0000', is_settled: false,
+    });
+
+    function field(fixture: ComponentFixture<EntryDetailComponent>, selector: string, value: string): void {
+      const input = el(fixture).querySelector<HTMLInputElement>(selector)!;
+      input.value = value;
+      input.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+    }
+
+    function pick(fixture: ComponentFixture<EntryDetailComponent>, id: number): void {
+      const select = el(fixture).querySelector<HTMLSelectElement>('.form-account')!;
+      select.value = String(id);
+      select.dispatchEvent(new Event('change'));
+      fixture.detectChanges();
+    }
+
+    function open(body: EntryDetail, accountId?: number): ComponentFixture<EntryDetailComponent> {
+      const fixture = render(body, ACCOUNTS_X);
+      el(fixture).querySelector<HTMLButtonElement>('.action-settle')!.click();
+      fixture.detectChanges();
+      if (accountId !== undefined) {
+        pick(fixture, accountId);
+      }
+      return fixture;
+    }
+
+    function submit(fixture: ComponentFixture<EntryDetailComponent>): void {
+      el(fixture).querySelector<HTMLButtonElement>('.form-submit')!.click();
+      fixture.detectChanges();
+    }
+
+    function posted(): Record<string, unknown> {
+      const req = http.expectOne('/api/accounting/entries/42/settle');
+      const body = req.request.body as Record<string, unknown>;
+      req.flush({});
+      http.expectOne('/api/accounting/entries/42').flush({});
+      return body;
+    }
+
+    function error(fixture: ComponentFixture<EntryDetailComponent>): string | undefined {
+      return el(fixture).querySelector('.form-error')?.textContent?.trim();
+    }
+
+    function value(fixture: ComponentFixture<EntryDetailComponent>, selector: string): string {
+      return el(fixture).querySelector<HTMLInputElement>(selector)!.value;
+    }
+
+    it('opens cross-currency when the debt account is archived and only foreign accounts remain', () => {
+      const accounts = [
+        { id: 21, name: 'Wise 美元', currency: 'USD', is_archived: true },
+        { id: 3, name: '玉山 UNI', currency: 'TWD', is_archived: false },
+      ] as unknown as LedgerAccount[];
+      const fixture = render(USD_DEBT, accounts);
+      el(fixture).querySelector<HTMLButtonElement>('.action-settle')!.click();
+      fixture.detectChanges();
+      expect(value(fixture, '.form-original')).toBe('20');
+      expect(value(fixture, '.form-amount')).toBe('');
+    });
+
+    it('keeps a typed 金額 when switching between same-currency accounts on settle', () => {
+      const fixture = open(TWD_DEBT);
+      field(fixture, '.form-amount', '123');
+      pick(fixture, 7);
+      expect(value(fixture, '.form-amount')).toBe('123');
+    });
+
+    it('keeps a typed 金額 when switching accounts on the refund panel', () => {
+      const fixture = render(detail({ id: 42, amount: '-500.0000', name: '外套' }), ACCOUNTS_X);
+      el(fixture).querySelector<HTMLButtonElement>('.action-refund')!.click();
+      fixture.detectChanges();
+      field(fixture, '.form-amount', '123');
+      pick(fixture, 7);
+      expect(value(fixture, '.form-amount')).toBe('123');
+    });
+
+    it('keeps 抵銷 but clears 金額 when switching foreign to foreign', () => {
+      const accounts = [
+        ...ACCOUNTS_X,
+        { id: 23, name: '日幣現金', currency: 'JPY', is_archived: false },
+      ] as unknown as LedgerAccount[];
+      const fixture = render(TWD_DEBT, accounts);
+      el(fixture).querySelector<HTMLButtonElement>('.action-settle')!.click();
+      fixture.detectChanges();
+      pick(fixture, 21);
+      field(fixture, '.form-amount', '20');
+      field(fixture, '.form-original', '300');
+      pick(fixture, 23);
+      expect(value(fixture, '.form-amount')).toBe('');
+      expect(value(fixture, '.form-original')).toBe('300');
+    });
+
+    it('lists the entry currency first, then the other accounts with their code', () => {
+      const fixture = open(USD_DEBT);
+      const options = Array.from(el(fixture).querySelectorAll('.form-account option')).map(o => o.textContent?.trim());
+      expect(options).toEqual(['Wise 美元', '玉山 UNI (TWD)', '錢包 (TWD)']);
+    });
+
+    it('lists TWD accounts first for a TWD debt', () => {
+      const fixture = open(TWD_DEBT);
+      expect(Array.from(el(fixture).querySelectorAll('.form-account option')).map(o => o.textContent?.trim())).toEqual(['玉山 UNI', '錢包', 'Wise 美元 (USD)']);
+    });
+
+    it('keeps the refund panel on same-currency accounts, without original_amount', () => {
+      const fixture = render(detail({ id: 42, amount: '-500.0000', name: '外套' }), ACCOUNTS_X);
+      el(fixture).querySelector<HTMLButtonElement>('.action-refund')!.click();
+      fixture.detectChanges();
+      expect(Array.from(el(fixture).querySelectorAll('.form-account option')).map(o => o.textContent?.trim())).toEqual(['玉山 UNI', '錢包']);
+      field(fixture, '.form-amount', '300');
+      submit(fixture);
+      const req = http.expectOne('/api/accounting/entries/42/refund');
+      expect('original_amount' in (req.request.body as object)).toBe(false);
+      req.flush({});
+      http.expectOne('/api/accounting/entries/42').flush({});
+    });
+
+    it('collects a USD debt into a TWD account: 抵銷 prefilled, conversion line, original_amount sent', () => {
+      const fixture = open(USD_DEBT, 3);
+      expect(value(fixture, '.form-original')).toBe('20');
+      expect(value(fixture, '.form-amount')).toBe('');
+      expect(el(fixture).querySelector('.inline-form')!.textContent).toContain('收到金額');
+      expect(el(fixture).querySelector('.inline-form')!.textContent).toContain('抵銷 USD');
+      field(fixture, '.form-amount', '640');
+      expect(el(fixture).querySelector('.form-conversion')?.textContent?.trim()).toBe('US$20 × 32 = $640');
+      submit(fixture);
+      expect(posted()).toMatchObject({ account_id: 3, amount: '640', original_amount: '20' });
+    });
+
+    it('labels the first amount 付出金額 on a payable', () => {
+      const fixture = open({ ...USD_DEBT, kind: 'payable' } as EntryDetail, 3);
+      expect(el(fixture).querySelector('.inline-form')!.textContent).toContain('付出金額');
+    });
+
+    it('refuses 抵銷 above the open amount and an empty 金額', () => {
+      const fixture = open(USD_DEBT, 3);
+      field(fixture, '.form-amount', '640');
+      field(fixture, '.form-original', '21');
+      submit(fixture);
+      expect(error(fixture)).toBe('金額不可超過 US$20');
+      field(fixture, '.form-original', '20');
+      field(fixture, '.form-amount', '');
+      submit(fixture);
+      expect(error(fixture)).toBe('請輸入金額');
+      http.expectNone('/api/accounting/entries/42/settle');
+    });
+
+    it('clears 金額 when switching to a foreign account and restores it (without 抵銷) when switching back', () => {
+      const fixture = open(TWD_DEBT);
+      expect(value(fixture, '.form-amount')).toBe('640');
+      expect(el(fixture).querySelector('.form-original')).toBeNull();
+      pick(fixture, 21);
+      expect(value(fixture, '.form-amount')).toBe('');
+      expect(value(fixture, '.form-original')).toBe('640');
+      field(fixture, '.form-original', '300');
+      pick(fixture, 7);
+      expect(el(fixture).querySelector('.form-original')).toBeNull();
+      expect(value(fixture, '.form-amount')).toBe('640');
+      submit(fixture);
+      const body = posted();
+      expect(body).toMatchObject({ account_id: 7, amount: '640' });
+      expect('original_amount' in body).toBe(false);
+    });
+
+    it('serializes 金額 in the account currency (USD keeps cents) for a TWD debt', () => {
+      const fixture = open(TWD_DEBT, 21);
+      field(fixture, '.form-amount', '20.5');
+      submit(fixture);
+      expect(posted()).toMatchObject({ account_id: 21, amount: '20.5', original_amount: '640' });
+    });
+
+    it('keeps the ledger precision of 抵銷', () => {
+      const body = { ...USD_DEBT, amount: '-20.0001', open_amount: '20.0001' } as EntryDetail;
+      const fixture = open(body, 3);
+      expect(value(fixture, '.form-original')).toBe('20.0001');
+      field(fixture, '.form-amount', '640');
+      field(fixture, '.form-original', '20.0002');
+      submit(fixture);
+      expect(error(fixture)).toContain('金額不可超過');
+      http.expectNone('/api/accounting/entries/42/settle');
+      field(fixture, '.form-original', '20.0001');
+      submit(fixture);
+      expect(posted()).toMatchObject({ amount: '640', original_amount: '20.0001' });
+    });
+
+    it('sends a partial 抵銷 as typed', () => {
+      const fixture = open({ ...USD_DEBT, amount: '-20.0001', open_amount: '20.0001' } as EntryDetail, 3);
+      field(fixture, '.form-amount', '320');
+      field(fixture, '.form-original', '10');
+      submit(fixture);
+      expect(posted()).toMatchObject({ amount: '320', original_amount: '10' });
+    });
+
+    it('handles a remainder below one display unit and bad 抵銷 input', () => {
+      const fixture = open({ ...USD_DEBT, amount: '-0.0001', open_amount: '0.0001' } as EntryDetail, 3);
+      expect(value(fixture, '.form-original')).toBe('0.0001');
+      field(fixture, '.form-amount', '1');
+      field(fixture, '.form-original', '');
+      submit(fixture);
+      expect(error(fixture)).toBe('請輸入金額');
+      field(fixture, '.form-original', 'abc');
+      submit(fixture);
+      expect(error(fixture)).toBe('請輸入金額');
+      http.expectNone('/api/accounting/entries/42/settle');
+      field(fixture, '.form-original', '0.0001');
+      submit(fixture);
+      expect(posted()).toMatchObject({ amount: '1', original_amount: '0.0001' });
+    });
+
+    it('settles a 4-decimal debt above float precision exactly by default, and caps exactly', () => {
+      const big = (open_amount: string) => ({ ...USD_DEBT, amount: `-${open_amount}`, open_amount }) as EntryDetail;
+      let fixture = open(big('100000000000.0001'), 3);
+      expect(value(fixture, '.form-original')).toBe('100000000000.0001');
+      field(fixture, '.form-amount', '100000000000');
+      submit(fixture);
+      expect(posted()).toMatchObject({ original_amount: '100000000000.0001' });
+      fixture.destroy();
+      fixture = open(big('100000000000.0006'), 3);
+      field(fixture, '.form-amount', '100000000000');
+      submit(fixture);
+      expect(posted()).toMatchObject({ original_amount: '100000000000.0006' });
+      fixture.destroy();
+      fixture = open(big('100000000000.0006'), 3);
+      field(fixture, '.form-amount', '100000000000');
+      field(fixture, '.form-original', '100000000000.0007');
+      submit(fixture);
+      expect(error(fixture)).toBe('金額不可超過 US$100000000000.0006');
+      http.expectNone('/api/accounting/entries/42/settle');
+    });
+
+    it('rounds the previewed rate to the stored 10 decimals', () => {
+      const body = { ...USD_DEBT, amount: '-1000', open_amount: '1000' } as EntryDetail;
+      const fixture = open(body, 3);
+      field(fixture, '.form-amount', '1000');
+      field(fixture, '.form-original', '30');
+      const line = el(fixture).querySelector('.form-conversion')?.textContent ?? '';
+      expect(line).toContain('33.3333333333');
+      expect(line).not.toContain('33.333333333333336');
+    });
+
+    it('shows a sub-cent remainder in the 抵銷 limit hint and error', () => {
+      const fixture = open({ ...USD_DEBT, amount: '-0.0001', open_amount: '0.0001' } as EntryDetail, 3);
+      expect(el(fixture).querySelector('.inline-form')!.textContent).toContain('上限 US$0.0001');
+      field(fixture, '.form-amount', '1');
+      field(fixture, '.form-original', '0.0002');
+      submit(fixture);
+      expect(error(fixture)).toBe('金額不可超過 US$0.0001');
+    });
+
+    it('keeps the 抵銷 limit hint plain for a whole remainder', () => {
+      const fixture = open(USD_DEBT, 3);
+      expect(el(fixture).querySelector('.inline-form')!.textContent).toContain('上限 US$20');
+    });
+
+    it('prefills a TWD remainder below one unit', () => {
+      const fixture = open({ ...TWD_DEBT, amount: '-0.1', open_amount: '0.1' } as EntryDetail, 21);
+      expect(value(fixture, '.form-original')).toBe('0.1');
+      field(fixture, '.form-amount', '1');
+      submit(fixture);
+      expect(posted()).toMatchObject({ amount: '1', original_amount: '0.1' });
+    });
+
+    it('submits on ⏎ from the 抵銷 field', () => {
+      const fixture = open(USD_DEBT, 3);
+      field(fixture, '.form-amount', '640');
+      const enter = key(el(fixture).querySelector('.form-original')!, { key: 'Enter' });
+      expect(enter.defaultPrevented).toBe(true);
+      expect(posted()).toMatchObject({ original_amount: '20' });
+    });
+
+    it('closes only the inline form on Esc from the 抵銷 field', () => {
+      const fixture = open(USD_DEBT, 3);
+      const esc = key(el(fixture).querySelector('.form-original')!, { key: 'Escape' });
+      fixture.detectChanges();
+      expect(esc.defaultPrevented).toBe(true);
+      expect(el(fixture).querySelector('.inline-form')).toBeNull();
+    });
+  });
+});
+
+describe('settledValue', () => {
+  it('counts the amount of a same-currency row even when it carries original_amount', () => {
+    expect(settledValue({ amount: '10', currency: 'USD', original_amount: '320', original_currency: 'TWD' }, 'USD')).toBe(10);
   });
 });
