@@ -45,12 +45,17 @@ describe('amount text helpers', () => {
     expect(parseMoneyExact('abc')).toBeNull();
     expect(parseMoneyExact('0')).toBeNull();
     expect(parseMoneyExact('0.00004')).toBeNull();
+    // An expression whose float result leaves the Money range (or prints in exponent form) is refused, not truncated.
+    expect(parseMoneyExact('1000000000000000*1000000')).toBeNull();
+    expect(parseMoneyExact('9999999999999999*10')).toBeNull();
   });
 
   it('keeps scaled units and formats without float', () => {
     expect(moneyUnits('100000000000.0001')).toBeGreaterThan(moneyUnits('100000000000'));
     expect(moneyUnits('100000000000.0007')).toBeGreaterThan(moneyUnits('100000000000.0006'));
     expect(moneyUnits('20')).toBe(200000n);
+    expect(() => moneyUnits('1e+21')).toThrow();
+    expect(() => moneyUnits('abc')).toThrow();
     expect(formatMoneyExact('20.0000')).toBe('20');
     expect(formatMoneyExact('100000000000.0001')).toBe('100000000000.0001');
     expect(formatMoneyExact('0.1000')).toBe('0.1');

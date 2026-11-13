@@ -44,10 +44,16 @@ function unitsToString(units: bigint): string {
   return fraction ? `${whole}.${fraction}` : `${whole}`;
 }
 
-/** Scaled units (x10^4) of an unsigned decimal string; extra decimals are truncated. */
+/** Money's server-side bound (`|amount| < 10^16`): a float result at or beyond it is refused, never rounded. */
+const MONEY_LIMIT = 1e16;
+
+/** Scaled units (x10^4) of an unsigned decimal string; extra decimals are truncated. Throws on any other format. */
 export function moneyUnits(value: string): bigint {
-  const [whole, fraction = ''] = value.trim().replace(/^[+-]/, '').split('.');
-  return BigInt(whole || '0') * SCALE + BigInt(fraction.slice(0, 4).padEnd(4, '0'));
+  const match = /^[+-]?(\d*)(?:\.(\d*))?$/.exec(value.trim());
+  if (!match || (match[1] === '' && !match[2])) {
+    throw new Error(`not a decimal amount: ${value}`);
+  }
+  return BigInt(match[1] || '0') * SCALE + BigInt((match[2] ?? '').slice(0, 4).padEnd(4, '0'));
 }
 
 /**
@@ -69,7 +75,7 @@ export function parseMoneyExact(text: string): string | null {
     }
   } else {
     const result = evaluateAmount(trimmed, LEDGER_DECIMALS);
-    if (!result.ok || !(result.value > 0)) {
+    if (!result.ok || !(result.value > 0) || !(result.value < MONEY_LIMIT)) {
       return null;
     }
     units = moneyUnits(result.value.toFixed(LEDGER_DECIMALS));
