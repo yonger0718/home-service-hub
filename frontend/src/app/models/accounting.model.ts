@@ -581,6 +581,8 @@ export interface SplitResult {
 export interface SettleInput {
   account_id: number;
   amount: string;
+  /** Unsigned, in the debt's currency; sent only when the account's currency differs from the entry's. */
+  original_amount?: string;
   entry_date: string;
   entry_time: string | null;
   description: string | null;

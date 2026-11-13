@@ -29,7 +29,7 @@ import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingToastService, scheduleActionError } from '../accounting-toast';
 import { NO_ENTER_SAVE_TAGS, textOn, colorOf, fxConversionLine, iconOf, isHandledKey } from '../accounting-ui';
-import { amountString, parseAmountFields, parseAmountText } from '../amount-text';
+import { amountString, moneyString, parseAmountFields, parseAmountText, parseMoneyText } from '../amount-text';
 import { shortDate, slashDate, todayIso } from '../dates';
 import { formatMoney, formatNumber } from '../format';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
@@ -113,6 +113,8 @@ export class EntryDetailComponent implements OnInit {
   readonly panel = signal<DetailPanel>(null);
   readonly formAccountId = signal<number | null>(null);
   readonly formAmount = signal('');
+  /** 抵銷: the amount in the debt's currency when the chosen account is in another currency. */
+  readonly formOriginal = signal('');
   readonly formDate = signal(todayIso());
   readonly formNote = signal('');
   readonly formError = signal<string | null>(null);
@@ -311,6 +313,37 @@ export class EntryDetailComponent implements OnInit {
   readonly sameCurrencyAccounts = computed(() => {
     const detail = this.detail();
     return this.accounts().filter(account => !account.is_archived && account.currency === detail?.currency);
+  });
+  /** The settle panel's accounts: the entry's currency first (current order), then the others (current order). */
+  readonly settleAccounts = computed(() => {
+    const detail = this.detail();
+    const open = this.accounts().filter(account => !account.is_archived);
+    return [...open.filter(a => a.currency === detail?.currency), ...open.filter(a => a.currency !== detail?.currency)];
+  });
+  readonly formAccount = computed(() => this.accounts().find(account => account.id === this.formAccountId()) ?? null);
+  readonly crossCurrency = computed(() => {
+    const detail = this.detail();
+    const account = this.formAccount();
+    return this.panel() === 'settle' && !!detail && !!account && account.currency !== detail.currency;
+  });
+  readonly conversionLine = computed(() => {
+    const detail = this.detail();
+    const account = this.formAccount();
+    if (!this.crossCurrency() || !detail || !account) {
+      return null;
+    }
+    const amount = parseAmountText(this.formAmount(), account.currency);
+    const original = parseMoneyText(this.formOriginal());
+    if (amount === null || original === null) {
+      return null;
+    }
+    return fxConversionLine({
+      amount: String(amount),
+      currency: account.currency,
+      original_amount: String(original),
+      original_currency: detail.currency,
+      fx_rate: String(amount / original),
+    });
   });
   readonly siblings = computed(() => {
     const detail = this.detail();
@@ -719,8 +752,9 @@ export class EntryDetailComponent implements OnInit {
     this.formError.set(null);
     this.formNote.set('');
     this.formDate.set(this.today);
+    this.formOriginal.set('');
     if (panel !== 'delete') {
-      const accounts = this.sameCurrencyAccounts();
+      const accounts = panel === 'settle' ? this.settleAccounts() : this.sameCurrencyAccounts();
       const own = accounts.find(account => account.id === detail.account_id);
       this.formAccountId.set(own?.id ?? accounts[0]?.id ?? null);
       const max = panel === 'settle' ? Number(detail.open_amount ?? 0) : this.refundable();
@@ -768,7 +802,21 @@ export class EntryDetailComponent implements OnInit {
   }
 
   setFormAccount(value: string): void {
+    const detail = this.detail();
+    const account = this.accounts().find(candidate => candidate.id === Number(value)) ?? null;
     this.formAccountId.set(Number(value));
+    this.formError.set(null);
+    if (!detail || !account) {
+      return;
+    }
+    if (this.panel() === 'settle' && account.currency !== detail.currency) {
+      this.formAmount.set('');
+      this.formOriginal.set(moneyString(Number(detail.open_amount ?? 0)));
+    } else {
+      const max = this.formMax();
+      this.formAmount.set(max > 0 ? amountString(max, detail.currency) : '');
+      this.formOriginal.set('');
+    }
   }
 
   submitForm(): void {
@@ -782,19 +830,38 @@ export class EntryDetailComponent implements OnInit {
       this.formError.set('請選擇帳戶');
       return;
     }
-    const value = parseAmountText(this.formAmount(), detail.currency);
+    const account = this.formAccount();
+    const cross = this.crossCurrency() && !!account;
+    const amountCurrency = cross ? account.currency : detail.currency;
+    const value = parseAmountText(this.formAmount(), amountCurrency);
     if (value === null) {
       this.formError.set('請輸入金額');
       return;
     }
-    const max = this.formMax();
-    if (value > max + 1e-9) {
-      this.formError.set(`金額不可超過 ${formatMoney(max, detail.currency)}`);
-      return;
+    let originalAmount: string | undefined;
+    if (cross) {
+      const original = parseMoneyText(this.formOriginal());
+      if (original === null) {
+        this.formError.set('請輸入金額');
+        return;
+      }
+      const openAmount = Number(detail.open_amount ?? 0);
+      if (Number(moneyString(original)) > Number(moneyString(openAmount))) {
+        this.formError.set(`金額不可超過 ${formatMoney(openAmount, detail.currency)}`);
+        return;
+      }
+      originalAmount = moneyString(original);
+    } else {
+      const max = this.formMax();
+      if (value > max + 1e-9) {
+        this.formError.set(`金額不可超過 ${formatMoney(max, detail.currency)}`);
+        return;
+      }
     }
     const body = {
       account_id: accountId,
-      amount: amountString(value, detail.currency),
+      amount: amountString(value, amountCurrency),
+      ...(originalAmount !== undefined ? { original_amount: originalAmount } : {}),
       entry_date: this.formDate(),
       entry_time: null,
       description: this.formNote().trim() || null,

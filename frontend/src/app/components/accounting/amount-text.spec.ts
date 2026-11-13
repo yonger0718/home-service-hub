@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { amountString, parseAmountFields, parseAmountText } from './amount-text';
+import { amountString, moneyString, parseAmountFields, parseAmountText, parseMoneyText } from './amount-text';
 
 describe('amount text helpers', () => {
   it('evaluates an expression in the currency decimals', () => {
@@ -29,5 +29,17 @@ describe('amount text helpers', () => {
     expect(parseAmountFields(['8333', ''], ['TWD', 'TWD'])).toBeNull();
     expect(parseAmountFields(['abc'], ['TWD'])).toBeNull();
     expect(parseAmountFields(['-5'], ['TWD'])).toBeNull();
+  });
+
+  it('parses and writes ledger amounts at four decimals', () => {
+    expect(parseMoneyText('0.0001')).toBe(0.0001);
+    expect(parseMoneyText('20.0001')).toBe(20.0001);
+    expect(parseMoneyText('')).toBeNull();
+    expect(parseMoneyText('abc')).toBeNull();
+    expect(parseMoneyText('0')).toBeNull();
+    expect(moneyString(0.0001)).toBe('0.0001');
+    expect(moneyString(20.0001)).toBe('20.0001');
+    expect(moneyString(20)).toBe('20');
+    expect(moneyString(0.1)).toBe('0.1');
   });
 });
