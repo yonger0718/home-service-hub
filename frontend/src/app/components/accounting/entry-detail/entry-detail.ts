@@ -41,6 +41,23 @@ import { RewardAmountText } from './reward-cards';
 import { AppEntryRewardSectionComponent } from './reward-section';
 import { storedGroupNet } from './split-card';
 
+/**
+ * What a settlement is worth in the debt's currency (design D3): its `amount` in the same currency, else its
+ * `original_amount` when that is stated in the debt's currency, else 0 (a legacy other-currency link).
+ */
+export function settledValue(
+  settlement: Pick<LedgerEntry, 'amount' | 'currency' | 'original_amount' | 'original_currency'>,
+  currency: string,
+): number {
+  if (settlement.currency === currency) {
+    return Number(settlement.amount);
+  }
+  if (settlement.original_currency === currency && settlement.original_amount !== null) {
+    return Number(settlement.original_amount);
+  }
+  return 0;
+}
+
 const FX_SOURCE_LABELS: Record<string, string> = {
   fx_api: '線上匯率',
   moze_backup: 'MOZE 匯率',
@@ -417,7 +434,7 @@ export class EntryDetailComponent implements OnInit {
     if (!detail || detail.open_amount === null || (detail.kind !== 'receivable' && detail.kind !== 'payable')) {
       return null;
     }
-    const back = Math.abs(detail.settled_by.reduce((sum, settlement) => sum + Number(settlement.amount), 0));
+    const back = Math.abs(detail.settled_by.reduce((sum, settlement) => sum + settledValue(settlement, detail.currency), 0));
     if (back === 0 && !detail.is_closed) {
       return null;
     }

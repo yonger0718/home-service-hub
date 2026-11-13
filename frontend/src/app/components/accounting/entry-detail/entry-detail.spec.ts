@@ -309,6 +309,26 @@ describe('EntryDetailComponent', () => {
     expect(el(payable).querySelector('.breakdown')?.textContent?.trim()).toBe('原始 $300 · 已還 $200 · 剩餘 $100');
   });
 
+  it('sums a cross-currency collection as its original amount in the debt currency (#382)', () => {
+    const fixture = render(detail({
+      ...RECEIVABLE, currency: 'USD', amount: '-20.0000', open_amount: '0.0000', is_settled: true,
+      settled_by: [entry({
+        id: 60, kind: 'receivable', amount: '640.0000', currency: 'TWD', original_amount: '20.0000',
+        original_currency: 'USD', name: '收款', account_name: '錢包',
+      })],
+    }));
+    expect(el(fixture).querySelector('.breakdown')?.textContent?.trim()).toBe('原始 US$20 · 已收 US$20 · 剩餘 US$0');
+    expect(el(fixture).querySelector('.settled')?.textContent?.trim()).toBe('已結清');
+  });
+
+  it('does not count a legacy other-currency settlement without an original amount (#382)', () => {
+    const fixture = render(detail({
+      ...RECEIVABLE, amount: '-100.0000', is_closed: true, open_amount: '100.0000', is_settled: false,
+      settled_by: [entry({ id: 61, kind: 'receivable', amount: '100.0000', currency: 'JPY', name: '收款' })],
+    }));
+    expect(el(fixture).querySelector('.breakdown')?.textContent?.trim()).toBe('原始 $100 · 已收 $0 · 已結清');
+  });
+
   it('shows no breakdown before anything was collected', () => {
     const fixture = render({ ...RECEIVABLE, open_amount: '420.0000', settled_by: [] });
     expect(el(fixture).querySelector('.breakdown')).toBeNull();
