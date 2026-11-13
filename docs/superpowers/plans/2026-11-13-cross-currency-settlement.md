@@ -101,8 +101,8 @@
 
 - [ ] **Step 1: Write the failing tests** (fixtures fictional; extend the existing settle tests' harness at `entry-detail.spec.ts:330`):
   - settle panel lists a USD account after the TWD ones, labelled `名稱 (USD)`; the refund panel still lists TWD only.
-  - choosing the USD-debt's TWD account (debt `-20` USD, open `20`) shows a second field 抵銷 prefilled `20` and an empty 金額; typing `640` shows `US$20.00 × 32 = $640`; saving posts `{account_id, amount: "640", original_amount: "20", …}`.
-  - 抵銷 above the open amount → `金額不可超過 US$20.00`, no request; empty 金額 → `請輸入金額`, no request.
+  - choosing the USD-debt's TWD account (debt `-20` USD, open `20`) shows a second field 抵銷 prefilled `20` and an empty 金額; typing `640` shows `US$20 × 32 = $640`; saving posts `{account_id, amount: "640", original_amount: "20", …}`.
+  - 抵銷 above the open amount → `金額不可超過 US$20`, no request; empty 金額 → `請輸入金額`, no request.
   - switching from the TWD default (金額 prefilled with the open amount) to a USD-debt's foreign account clears 金額; switching back to a same-currency account hides 抵銷, clears it, restores 金額 to the open amount, and the body has no `original_amount` key.
   - a USD account chosen for a TWD debt (`-640` TWD, open `640`): typing `20.5` in 金額 posts `amount: "20.5"` (serialized in the account's currency, not rounded to TWD's 0 decimals), 抵銷 `640` → `original_amount: "640"`.
   - precision: debt `-20.0001` USD (`open_amount "20.0001"`), TWD account → 抵銷 prefilled `20.0001`; 金額 `640`, saved → body `original_amount: "20.0001"`; 抵銷 typed `20.0002` → `金額不可超過 …`, no request; typed `10` → `"10"`. Remainder below one display unit: open `"0.0001"` → 抵銷 prefilled `0.0001`, 金額 `1` → `original_amount: "0.0001"`; 抵銷 cleared → `請輸入金額`, no request; 抵銷 `abc` → no request. TWD debt open `"0.1"` with a USD account → 抵銷 prefilled `0.1` → `original_amount: "0.1"`.
@@ -122,7 +122,7 @@
 **Interfaces:**
 - A pure helper `settledValue(settlement: Pick<LedgerEntry,'amount'|'currency'|'original_amount'|'original_currency'>, currency: string): number` (in `entry-detail.ts` or `accounting-ui.ts`, exported for the test) implementing the Global Constraints rule.
 
-- [ ] **Step 1: Write the failing tests:** `-20` USD receivable settled by `+640 TWD (original 20 USD)` → breakdown `原始 US$20.00 · 已收 US$20.00 · 剩餘 US$0.00` and the 已結清 badge; a legacy row (`+100 JPY`, no original) on a `-100` TWD receivable closed by MOZE → `已收 $0` is not shown as `$100` (breakdown `原始 $100 · 已收 $0 · 已結清`); the existing breakdown tests unchanged.
+- [ ] **Step 1: Write the failing tests:** `-20` USD receivable settled by `+640 TWD (original 20 USD)` → breakdown `原始 US$20 · 已收 US$20 · 剩餘 US$0` and the 已結清 badge; a legacy row (`+100 JPY`, no original) on a `-100` TWD receivable closed by MOZE → `已收 $0` is not shown as `$100` (breakdown `原始 $100 · 已收 $0 · 已結清`); the existing breakdown tests unchanged.
 - [ ] **Step 2: Run** — FAIL.
 - [ ] **Step 3: Implement** `breakdown` on `settledValue`; tick 1.1–1.3 and 2.1–2.3 in the change's `tasks.md`.
 - [ ] **Step 4: Run** the full SPA suite `npx ng test --watch=false`, `tsc`, `npx ng build --configuration development`, and `npx -y @fission-ai/openspec@latest validate add-cross-currency-settlement --strict` — PASS.

@@ -18,7 +18,7 @@ The 新增收款 / 新增還款 form SHALL offer every non-archived account, tho
 #### Scenario: Collect in another currency
 - **GIVEN** a receivable of `-20` USD for Bea
 - **WHEN** 新增收款 is tapped, TWD account `Line Bank (TWD)` chosen, `640` entered as the amount received and the settled amount left at `20`
-- **THEN** the form SHALL show `US$20.00 × 32 = $640`, the settle endpoint SHALL receive `amount = 640` and `original_amount = 20`, and the detail SHALL show `已收 US$20.00` and `已結清`
+- **THEN** the form SHALL show `US$20 × 32 = $640`, the settle endpoint SHALL receive `amount = 640` and `original_amount = 20`, and the detail SHALL show `已收 US$20` and `已結清`
 
 #### Scenario: Full collection keeps the ledger's precision
 - **GIVEN** a receivable of `-20.0001` USD
