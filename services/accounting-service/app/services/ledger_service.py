@@ -34,6 +34,7 @@ from ..models import (
 from . import report_rules, valuation_service
 from .account_logo_service import HASH_PREFIX
 from .moze_import_service import import_locked
+from .settled_value import settled_value
 
 LEDGER_TZ = ZoneInfo("Asia/Taipei")  # ledger dates are naive Taipei dates (D8)
 DEFAULT_MAIN_CURRENCY = "TWD"
@@ -314,12 +315,13 @@ def _text_filter(q: str, *, include_invoice_items: bool = False):
 
 
 def _settled_sum():
-    """Σ amount of the settlements linked to the outer `LedgerEntry` row in its own currency (correlated scalar
-    subquery); a settlement in another currency stays linked but never nets."""
+    """Σ settled value of the settlements linked to the outer `LedgerEntry` row, in its currency (correlated scalar
+    subquery): a same-currency settlement counts its amount, one in another currency its original amount when that
+    is in this row's currency, else nothing."""
     settlement = aliased(LedgerEntry)
     return (
-        select(func.coalesce(func.sum(settlement.amount), 0))
-        .where(settlement.settles_entry_id == LedgerEntry.id, settlement.currency == LedgerEntry.currency)
+        select(func.coalesce(func.sum(settled_value(settlement, LedgerEntry.currency)), 0))
+        .where(settlement.settles_entry_id == LedgerEntry.id)
         .correlate(LedgerEntry)
         .scalar_subquery()
     )

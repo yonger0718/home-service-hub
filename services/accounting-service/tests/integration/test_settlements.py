@@ -369,7 +369,9 @@ def test_collection_in_another_currency(client, db_session, seed):
     assert (body["amount"], body["original_amount"], body["original_currency"]) == ("640.0000", "20.0000", "USD")
     assert (body["fx_rate"], body["fx_source"], body["currency"]) == ("32.0000000000", "manual", "TWD")
     assert _balance(db_session, wallet_id) == Decimal("640")
-    assert st.open_amount(db_session, db_session.get(LedgerEntry, receivable_id)) == 0  # GET detail: Task 2
+    assert st.open_amount(db_session, db_session.get(LedgerEntry, receivable_id)) == 0
+    detail = client.get(f"/entries/{receivable_id}").json()
+    assert (detail["open_amount"], detail["is_settled"]) == ("0.0000", True)
 
 
 def test_repayment_in_another_currency(client, db_session, seed):
@@ -381,6 +383,8 @@ def test_repayment_in_another_currency(client, db_session, seed):
     body = response.json()
     assert (body["amount"], body["original_amount"]) == ("-1600.0000", "-30.0000")
     assert st.open_amount(db_session, db_session.get(LedgerEntry, payable_id)) == Decimal("20")
+    detail = client.get(f"/entries/{payable_id}").json()
+    assert (detail["open_amount"], detail["is_settled"]) == ("20.0000", False)
 
 
 def test_partial_cross_currency_then_same_currency_settles_fully(client, db_session, seed):
@@ -389,6 +393,8 @@ def test_partial_cross_currency_then_same_currency_settles_fully(client, db_sess
     assert _settle(client, receivable_id, wallet_id, "640", "12").status_code == 201
     assert _settle(client, receivable_id, card_id, "8").status_code == 201
     assert st.open_amount(db_session, db_session.get(LedgerEntry, receivable_id)) == 0
+    detail = client.get(f"/entries/{receivable_id}").json()
+    assert (detail["open_amount"], detail["is_settled"]) == ("0.0000", True)
     response = _settle(client, receivable_id, card_id, "1")
     assert response.status_code == 422 and _error_fields(response) == {"amount"}
 
@@ -423,6 +429,8 @@ def test_null_original_amount_is_absent(client, db_session, seed):
 
     assert response.status_code == 201
     assert st.open_amount(db_session, db_session.get(LedgerEntry, receivable.id)) == 0
+    detail = client.get(f"/entries/{receivable.id}").json()
+    assert (detail["open_amount"], detail["is_settled"]) == ("0.0000", True)
 
 
 def test_rate_out_of_range_refused(client, db_session, seed):
@@ -446,7 +454,9 @@ def test_cross_currency_four_decimals_full_settle(client, db_session, seed):
     response = _settle(client, receivable_id, wallet_id, "640.0032", "20.0001")
 
     assert response.status_code == 201 and response.json()["fx_rate"] == "32.0000000000"
-    assert st.open_amount(db_session, db_session.get(LedgerEntry, receivable_id)) == 0  # GET detail: Task 2
+    assert st.open_amount(db_session, db_session.get(LedgerEntry, receivable_id)) == 0
+    detail = client.get(f"/entries/{receivable_id}").json()
+    assert (detail["open_amount"], detail["is_settled"]) == ("0.0000", True)
 
 
 def test_non_divisible_rate_keeps_the_settled_value(client, db_session, seed):
@@ -455,7 +465,9 @@ def test_non_divisible_rate_keeps_the_settled_value(client, db_session, seed):
     response = _settle(client, receivable_id, wallet_id, "100", "3")
 
     assert response.status_code == 201 and response.json()["fx_rate"] == "33.3333333333"
-    assert st.open_amount(db_session, db_session.get(LedgerEntry, receivable_id)) == 0  # GET detail: Task 2
+    assert st.open_amount(db_session, db_session.get(LedgerEntry, receivable_id)) == 0
+    detail = client.get(f"/entries/{receivable_id}").json()
+    assert (detail["open_amount"], detail["is_settled"]) == ("0.0000", True)
 
 
 def test_settled_value_precedence(db_session, seed):

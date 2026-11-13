@@ -456,6 +456,55 @@ def test_counterparty_open_amounts_leave_out_closed_debts_and_their_settlements(
     assert rows["Alan"]["open_amounts"] == [{"currency": "TWD", "amount": "100.0000"}]
 
 
+def test_counterparty_collection_in_another_currency_nets_in_the_debts_currency(client, db_session, seed):
+    card, wallet, bea = seed.account("美卡", currency="USD"), seed.account("錢包"), seed.counterparty("Bea")
+    debt = seed.entry(card, "-20", kind="receivable", counterparty_id=bea.id)
+    seed.entry(wallet, "640", kind="receivable", counterparty_id=bea.id, settles_entry_id=debt.id, is_settlement=True,
+               original_amount=Decimal("20"), original_currency="USD")
+    db_session.commit()
+
+    rows = {row["name"]: row for row in client.get("/counterparties").json()}
+    assert rows["Bea"]["open_amounts"] == []
+
+
+def test_counterparty_imported_link_across_currencies_without_an_original_amount_regression_guard(
+    client, db_session, seed
+):
+    """Regression guard (already true before the change): a link across currencies carrying no original amount nets
+    nothing, and the settlement's own TWD amount stays out of the TWD bucket."""
+    card, wallet, bea = seed.account("美卡", currency="USD"), seed.account("錢包"), seed.counterparty("Bea")
+    debt = seed.entry(card, "-20", kind="receivable", counterparty_id=bea.id)
+    seed.entry(wallet, "100", kind="receivable", counterparty_id=bea.id, settles_entry_id=debt.id, is_settlement=True)
+    db_session.commit()
+
+    rows = {row["name"]: row for row in client.get("/counterparties").json()}
+    assert rows["Bea"]["open_amounts"] == [{"currency": "USD", "amount": "20.0000"}]
+
+
+def test_counterparty_closed_cross_currency_debt_and_its_settlement_stay_out(client, db_session, seed):
+    card, wallet, bea = seed.account("美卡", currency="USD"), seed.account("錢包"), seed.counterparty("Bea")
+    debt = seed.entry(card, "-20", kind="receivable", counterparty_id=bea.id)
+    debt.is_closed = True
+    seed.entry(wallet, "640", kind="receivable", counterparty_id=bea.id, settles_entry_id=debt.id, is_settlement=True,
+               original_amount=Decimal("20"), original_currency="USD")
+    db_session.commit()
+
+    rows = {row["name"]: row for row in client.get("/counterparties").json()}
+    assert rows["Bea"]["open_amounts"] == []
+
+
+def test_counterparty_unlinked_settlement_keeps_its_own_currency(client, db_session, seed):
+    card, wallet, bea = seed.account("美卡", currency="USD"), seed.account("錢包"), seed.counterparty("Bea")
+    seed.entry(card, "-20", kind="receivable", counterparty_id=bea.id)
+    seed.entry(wallet, "300", kind="receivable", counterparty_id=bea.id, is_settlement=True)
+    db_session.commit()
+
+    rows = {row["name"]: row for row in client.get("/counterparties").json()}
+    assert rows["Bea"]["open_amounts"] == [
+        {"currency": "TWD", "amount": "-300.0000"}, {"currency": "USD", "amount": "20.0000"},
+    ]
+
+
 def test_counterparty_open_count_counts_open_debt_originals(client, db_session, seed):
     wallet = seed.account("錢包")
     alan, bob, cy = seed.counterparty("Alan"), seed.counterparty("Bob"), seed.counterparty("Cy")
