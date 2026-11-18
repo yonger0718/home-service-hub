@@ -85,6 +85,19 @@ def world(tmp_path, client, card):
     return services, drive_files, cfg
 
 
+def test_run_summary_carries_the_token_age_in_token_mode(world, tmp_path, db_session):
+    services, _, cfg = world
+    pipeline.run(services, trigger="owner_cli")
+    assert "parser_token_age_days" not in db_session.execute(text("select summary from ingest_run")).scalar_one()["versions"]
+    tok = tmp_path / "oauth-token"
+    tok.write_text("sk-ant-oat01-FAKE-TEST-TOKEN")
+    token_cfg = dataclasses.replace(cfg, parser_oauth_token_file=tok)
+    token_services = dataclasses.replace(services, cfg=token_cfg, parser=parser_mod.Parser(token_cfg, services.runner))
+    pipeline.run(token_services, trigger="owner_cli")
+    age = db_session.execute(text("select summary from ingest_run order by id desc limit 1")).scalar_one()["versions"]["parser_token_age_days"]
+    assert isinstance(age, float) and 0 <= age < 1
+
+
 def _operator_gate(services):
     """The operator gate needs a verify parser to clear the latch; reuse the fake CLI for it."""
     return services.gate.run_operator_gate(services.parser, verify_parser=services.parser)

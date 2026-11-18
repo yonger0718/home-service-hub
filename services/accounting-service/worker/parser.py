@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import selectors
 import signal
 import subprocess
@@ -105,7 +106,8 @@ class StreamValidator:
     """Ruling 15: incremental validation of the stream-json lines; `violation` is set at the first problem, at the
     moment it appears. Messages carry counts and our own constants, never model-controlled strings."""
 
-    def __init__(self):
+    def __init__(self, secret: str | None = None):
+        self._secret = secret.encode() if secret else None
         self.envelope = Envelope()
         self.violation: str | None = None
         self._expect = "init"
@@ -117,6 +119,8 @@ class StreamValidator:
             self.violation = why
 
     def feed(self, raw: bytes) -> None:
+        if self._secret:  # D7: scrub the raw line before anything derives from it
+            raw = raw.replace(self._secret, b"[redacted]")
         try:
             self._feed(raw)
         except Exception:  # RecursionError from json.loads, TypeError on odd shapes, ...: a violation, never a crash
@@ -223,10 +227,10 @@ class _ChildIO:
     """Bounded, deadline-driven I/O with the child: stdin from a thread, stdout/stderr via selectors, stdout lines
     validated as they complete (ruling 15)."""
 
-    def __init__(self, proc: subprocess.Popen, stdin: bytes, deadline: float):
+    def __init__(self, proc: subprocess.Popen, stdin: bytes, deadline: float, validator: StreamValidator | None = None):
         self.proc, self.deadline = proc, deadline
         self.out, self.err = bytearray(), bytearray()
-        self.validator = StreamValidator()
+        self.validator = validator or StreamValidator()
         self._pending = bytearray()
         self.stdin_error: str | None = None
         self._sel = selectors.DefaultSelector()
@@ -319,6 +323,27 @@ def _safe_errors(exc: ValidationError) -> str:
     return "; ".join(parts)[:300]
 
 
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _read_token(path: Path) -> str:
+    """The setup-token from its 0400 file. Failures carry fixed messages only: never the content or the OS error."""
+    try:
+        text = path.read_bytes().decode("ascii").strip()
+    except OSError:
+        raise ParseError("auth", "token file unreadable") from None
+    except UnicodeDecodeError:
+        raise ParseError("auth", "token file malformed") from None
+    if not _TOKEN_RE.fullmatch(text):
+        raise ParseError("auth", "token file malformed")
+    return text
+
+
+def token_age_days(path: Path, now: float | None = None) -> float:
+    """Age of the token file's mtime in days (the issuance date, as long as the file is never rewritten in place)."""
+    return round(((time.time() if now is None else now) - path.stat().st_mtime) / 86400, 1)
+
+
 class Parser:
     def __init__(self, cfg: WorkerConfig, runner: Runner, *, config_dir: Path | None = None,
                  credentials_writable: bool = True):
@@ -326,6 +351,9 @@ class Parser:
             raise RuntimeError("unsandboxed parser is refused; set STATEMENT_PARSER_ALLOW_UNSANDBOXED=true")
         self.cfg, self.runner = cfg, runner
         self.config_dir, self.credentials_writable = config_dir or cfg.parser_config_dir, credentials_writable
+        self.token_mode = cfg.parser_oauth_token_file.is_file()  # D2: a directory or a missing path is login mode
+        if self.token_mode:
+            self.credentials_writable = False
         self._schema = json.dumps(parse_schema.json_schema(), ensure_ascii=False, separators=(",", ":"))
 
     def argv(self) -> list[str]:
@@ -344,12 +372,16 @@ class Parser:
 
     def _run_once(self, stdin: bytes, on_start: Callable[[subprocess.Popen], None] | None = None) -> Envelope:
         env = {"HOME": os.environ.get("HOME", "/tmp"), "PATH": os.environ.get("PATH", "/usr/bin")}
+        token: str | None = None
+        if self.token_mode:  # re-read on every call: a rotated token needs no restart; env only, never argv
+            token = _read_token(self.cfg.parser_oauth_token_file)
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = token
         try:
             proc = subprocess.Popen(self.argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     env=env, start_new_session=True)
         except OSError as exc:
             raise ParseError("exit", f"cannot start the parser ({type(exc).__name__})") from exc
-        io = _ChildIO(proc, stdin, time.monotonic() + self.cfg.parser_timeout_s)
+        io = _ChildIO(proc, stdin, time.monotonic() + self.cfg.parser_timeout_s, StreamValidator(token))
         try:
             return self._drive(proc, io, on_start)
         except ParseError as exc:
@@ -406,7 +438,7 @@ class Parser:
         reasons: list[str] = []
         transient = False
         evidence: dict = {"pinned": self.cfg.parser_cli_version, "model": self.cfg.parser_model,
-                          "sandbox": self.cfg.parser_sandbox}
+                          "sandbox": self.cfg.parser_sandbox, "auth": "token" if self.token_mode else "login"}
         try:
             self._check_version()
             envelope = self._run_once(CANARY.encode(), on_start)

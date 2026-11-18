@@ -809,6 +809,11 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
         stale.unlink(missing_ok=True)
     summary.versions = {"parser_version": services.parser_version, "cli_version": services.cli_version,
                         "model": services.cfg.parser_model, "credential_version": services.credential_version}
+    if services.parser.token_mode:
+        try:
+            summary.versions["parser_token_age_days"] = parser_mod.token_age_days(services.cfg.parser_oauth_token_file)
+        except OSError:
+            pass
     status, interrupted = "failed", False
     try:
         with LeaseKeeper(services.api, lease) as keeper:

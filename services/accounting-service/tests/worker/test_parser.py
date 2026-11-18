@@ -560,3 +560,152 @@ def test_parser_version_folds_in_the_mask_fingerprint():
 
 def test_instruction_names_the_masked_card_token():
     assert "appear as one masked token" in parse_schema.INSTRUCTION
+
+
+# ---- #385: setup-token mode ------------------------------------------------------------------------------------------
+
+TOKEN = "sk-ant-oat01-FAKE-TEST-TOKEN"
+TOKEN2 = "sk-ant-oat01-FAKE-TEST-TOKEN-2"
+
+
+def _tok_cfg(tmp_path, token_file, **extra):
+    cli = fake_claude.write(tmp_path / "claude", fake_claude.transcript())
+    env = {"STATEMENT_STATE_DIR": str(tmp_path / "state"), "STATEMENT_PARSER_CLI": str(cli),
+           "STATEMENT_PARSER_SANDBOX": "false", "STATEMENT_PARSER_ALLOW_UNSANDBOXED": "true",
+           "STATEMENT_PARSER_TIMEOUT": "5", "STATEMENT_PARSER_ATTEMPTS": "1",
+           "STATEMENT_PARSER_OAUTH_TOKEN_FILE": str(token_file), **extra}
+    return config.load(env)
+
+
+def _token_file(tmp_path, content=TOKEN):
+    path = tmp_path / "oauth-token"
+    path.write_bytes(content if isinstance(content, bytes) else content.encode())
+    return path
+
+
+def _sha(text):
+    import hashlib
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_token_mode_drops_the_writable_credentials_bind(tmp_path):
+    cfgdir = tmp_path / "cfgdir"
+    tok = tmp_path / "tok"
+    sandbox = {"STATEMENT_PARSER_SANDBOX": "true", "STATEMENT_PARSER_CONFIG_DIR": str(cfgdir),
+               "STATEMENT_PARSER_CLI": str(tmp_path / "claude"), "STATEMENT_PARSER_OAUTH_TOKEN_FILE": str(tok)}
+    tok.write_text(TOKEN)
+    prs = parser.Parser(config.load(sandbox), SubprocessRunner())
+    argv = prs.argv()
+    assert prs.token_mode is True
+    assert "/cfg/.credentials.json" not in argv and "--bind" not in argv
+    i = argv.index("/cfg")
+    assert argv[i - 2:i + 1] == ["--ro-bind", str(cfgdir), "/cfg"]
+    tok.unlink()
+    login = parser.Parser(config.load(sandbox), SubprocessRunner())
+    assert login.token_mode is False and login.argv() == parser.command(login.cfg, login._schema)
+    assert "/cfg/.credentials.json" in login.argv()
+    tok.mkdir()
+    assert parser.Parser(config.load(sandbox), SubprocessRunner()).token_mode is False
+
+
+@pytest.mark.parametrize("which", ["worker", "verify"])
+def test_token_reaches_the_child_env_not_argv(tmp_path, which):
+    tok = _token_file(tmp_path)
+    cfg = _tok_cfg(tmp_path, tok, STATEMENT_VERIFY_PARSER_CONFIG_DIR=str(tmp_path / "verify-cfg"))
+    record = tmp_path / "env.json"
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(), record_env=record)
+    if which == "worker":
+        prs = parser.Parser(cfg, SubprocessRunner())
+    else:
+        prs = parser.Parser(cfg, SubprocessRunner(), config_dir=cfg.verify_parser_config_dir, credentials_writable=False)
+    assert prs.parse("masked text").statement_total == "580"
+    seen = json.loads(record.read_text())
+    assert seen == {"token_set": True, "token_sha256": _sha(TOKEN)}
+    assert not any(TOKEN in a for a in prs.argv())
+
+
+def test_login_mode_sets_no_token_in_the_env(tmp_path):
+    cfg = _tok_cfg(tmp_path, tmp_path / "absent")
+    record = tmp_path / "env.json"
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(), record_env=record)
+    parser.Parser(cfg, SubprocessRunner()).parse("masked text")
+    assert json.loads(record.read_text())["token_set"] is False
+
+
+def test_token_file_is_stripped_and_reread(tmp_path):
+    tok = _token_file(tmp_path, TOKEN + "\n")
+    cfg = _tok_cfg(tmp_path, tok)
+    record = tmp_path / "env.json"
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(), record_env=record)
+    prs = parser.Parser(cfg, SubprocessRunner())
+    prs.parse("x")
+    assert json.loads(record.read_text())["token_sha256"] == _sha(TOKEN)
+    tok.write_text(TOKEN2)
+    prs.parse("x")
+    assert json.loads(record.read_text())["token_sha256"] == _sha(TOKEN2)
+
+
+@pytest.mark.parametrize("content", [b"", b"a b", b"tok\x00en", b"\xff\xfe", "deleted", "perm"])
+def test_bad_token_file_is_auth(tmp_path, monkeypatch, content):
+    tok = _token_file(tmp_path, b"x" if isinstance(content, str) else content)
+    prs = parser.Parser(_tok_cfg(tmp_path, tok), SubprocessRunner())
+    if content == "deleted":
+        tok.unlink()
+    elif content == "perm":
+        def deny(self):
+            raise PermissionError(13, "FAKE-SECRET-DETAIL", str(self))
+        monkeypatch.setattr(type(tok), "read_bytes", deny)
+    with pytest.raises(parser.ParseError) as info:
+        prs.parse("x")
+    exc = info.value
+    assert exc.reason == "auth" and str(exc) in ("auth: token file unreadable", "auth: token file malformed")
+    assert exc.__cause__ is None
+    assert "FAKE" not in str(exc) and "oauth-token" not in str(exc)
+
+
+@pytest.mark.parametrize("where", ["tools", "subtype", "tool_name"])
+def test_echoed_token_is_scrubbed(tmp_path, where):
+    tok = _token_file(tmp_path)
+    cfg = _tok_cfg(tmp_path, tok)
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(), echo_env_in=where)
+    prs = parser.Parser(cfg, SubprocessRunner())
+    report = prs.gate()
+    assert not report.ok and TOKEN not in json.dumps(report.__dict__, default=str)
+    if where == "tools":
+        assert report.evidence["tools"] == ["[redacted]"]
+    if where == "subtype":
+        assert "system/[redacted]" in report.evidence["events"]
+    with pytest.raises(parser.ParseError) as info:
+        prs.parse("x")
+    assert TOKEN not in str(info.value) and TOKEN not in repr(vars(info.value.envelope))
+    gate = parser.Gate(cfg)
+    gate.run_operator_gate(prs, verify_parser=prs)
+    files = list(cfg.state_dir.iterdir())
+    assert files and all(TOKEN not in f.read_text() for f in files)
+    assert TOKEN not in gate.evidence_path_for(gate.key(prs)).read_text()
+
+
+def test_echo_split_across_fragments_is_scrubbed():
+    io = parser._ChildIO.__new__(parser._ChildIO)
+    io.validator, io._pending = parser.StreamValidator(TOKEN), bytearray()
+    line = json.dumps({"type": "system", "subtype": "init", "tools": [TOKEN]}).encode() + b"\n"
+    cut = line.index(TOKEN.encode()) + 10
+    io._feed_lines(line[:cut])
+    with pytest.raises(parser.ParseError) as info:
+        io._feed_lines(line[cut:])
+    assert io.validator.envelope.tools == ["[redacted]"] and TOKEN not in str(info.value)
+    assert "FAKE" not in repr(vars(io.validator.envelope))
+
+
+def test_gate_evidence_names_the_auth_mode(tmp_path):
+    cfg = _tok_cfg(tmp_path, _token_file(tmp_path))
+    assert parser.Parser(cfg, SubprocessRunner()).gate().evidence["auth"] == "token"
+    login = parser.Parser(_tok_cfg(tmp_path, tmp_path / "absent"), SubprocessRunner())
+    assert login.gate().evidence["auth"] == "login"
+
+
+def test_token_age_days(tmp_path):
+    tok = _token_file(tmp_path)
+    now = 2_000_000_000.0
+    os.utime(tok, (now - 3.04 * 86400, now - 3.04 * 86400))
+    assert parser.token_age_days(tok, now) == 3.0
