@@ -352,17 +352,23 @@ def _safe_errors(exc: ValidationError) -> str:
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]+")
+_TOKEN_MIN_LEN = 20  # a real setup-token is ~108 characters
 
 
 def _read_token(path: Path) -> str:
     """The setup-token from its 0400 file. Failures carry fixed messages only: never the content or the OS error."""
+    unreadable = False
+    text = ""
     try:
         text = path.read_bytes().decode("ascii").strip()
     except OSError:
-        raise ParseError("auth", "token file unreadable") from None
+        unreadable = True
     except UnicodeDecodeError:
-        raise ParseError("auth", "token file malformed") from None
-    if not _TOKEN_RE.fullmatch(text):
+        pass
+    # Raised outside the except blocks so that __context__ (which would hold the file bytes) stays None.
+    if unreadable:
+        raise ParseError("auth", "token file unreadable")
+    if len(text) < _TOKEN_MIN_LEN or not _TOKEN_RE.fullmatch(text):
         raise ParseError("auth", "token file malformed")
     return text
 

@@ -645,7 +645,7 @@ def test_token_file_is_stripped_and_reread(tmp_path):
     assert json.loads(record.read_text())["token_sha256"] == _sha(TOKEN2)
 
 
-@pytest.mark.parametrize("content", [b"", b"a b", b"tok\x00en", b"\xff\xfe", "deleted", "perm"])
+@pytest.mark.parametrize("content", [b"", b"e", b"a" * 19, b"a b", b"tok\x00en", b"\xff\xfe", "deleted", "perm"])
 def test_bad_token_file_is_auth(tmp_path, monkeypatch, content):
     tok = _token_file(tmp_path, b"x" if isinstance(content, str) else content)
     prs = parser.Parser(_tok_cfg(tmp_path, tok), SubprocessRunner())
@@ -659,7 +659,7 @@ def test_bad_token_file_is_auth(tmp_path, monkeypatch, content):
         prs.parse("x")
     exc = info.value
     assert exc.reason == "auth" and str(exc) in ("auth: token file unreadable", "auth: token file malformed")
-    assert exc.__cause__ is None
+    assert exc.__cause__ is None and exc.__context__ is None
     assert "FAKE" not in str(exc) and "oauth-token" not in str(exc)
 
 
