@@ -54,7 +54,7 @@ Verified on the host on 2026-11-18, using the worker checkout's `parser.command(
 - `_run_once` reads the token file **on every call**, so a rotated token needs no restart. The reader is `_read_token(path) -> str`:
   - It reads bytes and decodes them as strict ASCII.
   - It strips surrounding whitespace, so a trailing newline is accepted.
-  - It requires the result to match `^[A-Za-z0-9_-]+$`. That rejects empty values, internal whitespace, NUL and any non-ASCII byte.
+  - It requires the result to match `^[A-Za-z0-9_-]+$` and to be at least 20 characters long. That rejects empty values, internal whitespace, NUL, any non-ASCII byte and tiny bogus values (a 1-character "token" would make the D7 scrub rewrite JSON keys; final-review ruling, real tokens are ~108 characters).
   - On any `OSError` (missing after start, permission), `UnicodeDecodeError` or pattern miss it raises `ParseError("auth", "token file unreadable")` or `ParseError("auth", "token file malformed")`. These fixed messages never carry the content or the original exception text. The original exception is suppressed (`from None`).
 - The token goes into the hand-built Popen `env` as `CLAUDE_CODE_OAUTH_TOKEN`. bwrap inherits the environment, and `--setenv` overrides only HOME, CLAUDE_CONFIG_DIR and PATH. It is never passed through `--setenv` or argv, which `ps` shows.
 - This applies to both the worker parser and the verify parser (`verify.py:287`, `cli.py:200`): both read the same configured file of their own user.

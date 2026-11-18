@@ -14,7 +14,7 @@
 
 - Env var `STATEMENT_PARSER_OAUTH_TOKEN_FILE`, field `WorkerConfig.parser_oauth_token_file: Path`, default `~/.config/homehub-parser-oauth-token`.
 - Child env var name: `CLAUDE_CODE_OAUTH_TOKEN`. Never use `--setenv` for it, so it is never in argv.
-- Token alphabet `^[A-Za-z0-9_-]+$` after a strict-ASCII decode and `.strip()`. Error messages are exactly `token file unreadable` and `token file malformed`, raised `from None`.
+- Token alphabet `^[A-Za-z0-9_-]+$`, minimum 20 characters, after a strict-ASCII decode and `.strip()`. Error messages are exactly `token file unreadable` and `token file malformed`, raised `from None`.
 - The token value never appears in an exception message, log line, gate evidence or file, run summary, test assertion output or fixture. Tests use the fictional values `sk-ant-oat01-FAKE-TEST-TOKEN` and `sk-ant-oat01-FAKE-TEST-TOKEN-2`.
 - Gate evidence key `auth` takes the values `"token"` or `"login"`. Summary key `versions.parser_token_age_days` is a float rounded to 1 decimal, present only in token mode.
 - Unchanged: the sandbox flags, `AUTH_MARKERS`, the gate key, `parse_schema.version`, the fail-fast pump and all stream rules other than the D3 promotion.

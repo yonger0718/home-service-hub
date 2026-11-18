@@ -303,7 +303,7 @@ nowhere else (not in the root `.env`, not in a unit file, not in a log or PR tex
 Since #385 the sandboxed parser authenticates with a one-year `claude setup-token` token read from a 0400 file,
 `STATEMENT_PARSER_OAUTH_TOKEN_FILE` (default `~/.config/homehub-parser-oauth-token`). Token mode is on when that path
 is a regular file; a directory or a missing path means login mode (the section below). The file is read on every parse
-and must be ASCII matching `^[A-Za-z0-9_-]+$` after stripping, otherwise the parse fails with `auth` ("token file
+and must be ASCII matching `^[A-Za-z0-9_-]+$`, at least 20 characters after stripping, otherwise the parse fails with `auth` ("token file
 malformed" or "token file unreadable"). In token mode every mount binds `/cfg` read-only with no `.credentials.json`
 bind. The token reaches the CLI only through the child environment as `CLAUDE_CODE_OAUTH_TOKEN`, never through argv,
 and the stream validator scrubs a full echo of it to `[redacted]`. Bare mode ignores that variable and the parser does
