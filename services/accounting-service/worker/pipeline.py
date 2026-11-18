@@ -419,6 +419,26 @@ def garbled_merchant(merchant: str) -> bool:
     return pdf.GARBAGE_GLYPH in merchant
 
 
+MERCHANT_KINDS = ("purchase", "refund")  # #387: kinds whose row always prints a merchant
+_COUNTRY_CODE = re.compile(r"[A-Z]{2,3}")
+
+
+def missing_merchant(line: parse_schema.ParsedLine) -> bool:
+    """#387: a purchase/refund line whose merchant is empty or only a bare country code — the text layer dropped the
+    name (HSBC prints its CJK merchants in a font with no Unicode map, and pdfplumber drops them silently, leaving
+    the country code). Other kinds (payment, fee, bank rows) legitimately print no merchant. A real all-caps
+    two/three-letter merchant (`KFC`) is an accepted false positive: one OCR read, replaced only by a clean read."""
+    if line.line_kind not in MERCHANT_KINDS:
+        return False
+    merchant = line.merchant_raw.strip()
+    return not merchant or _COUNTRY_CODE.fullmatch(merchant) is not None
+
+
+def needs_merchant_repair(line: parse_schema.ParsedLine) -> bool:
+    """The #206 OCR merchant repair's target: a garbled (#206) or missing (#387) merchant."""
+    return garbled_merchant(line.merchant_raw) or missing_merchant(line)
+
+
 SAFE_REASONS = ("auth", "sandbox", "cli_version")
 
 
@@ -459,13 +479,14 @@ def _line_key(line: parse_schema.ParsedLine) -> tuple:
 def _repair_merchants(services: Services, data: bytes, password: str | None, candidates: list[str],
                       closing_day: int | None, parsed: parse_schema.StatementParse,
                       summary: Summary) -> tuple[parse_schema.StatementParse, str, int]:
-    """#206: the text-layer parse succeeded but some merchants are `(cid:N)` garbage. One OCR read and one more
+    """#206: the text-layer parse succeeded but some merchants are `(cid:N)` garbage (#387: or missing — empty or a
+    bare country code on a purchase/refund line; `needs_merchant_repair`). One OCR read and one more
     parser call; a garbled line takes the OCR parse's merchant only when exactly one OCR line and exactly one garbled
     text line share its (txn_date, posted_date, printed_amount, line_kind) and that OCR merchant is clean. Amounts,
     dates, kinds and every other field stay the text layer's, so the submission is never worse than the text parse
     alone; any OCR or parser failure keeps the text parse unchanged (a host fault still latches the parser).
     Returns (parse, provenance note, lines repaired)."""
-    garbled = [line for line in parsed.lines if garbled_merchant(line.merchant_raw)]
+    targets = [line for line in parsed.lines if needs_merchant_repair(line)]
     summary.ocr_merchant_repair += 1  # counted at the OCR start, whatever the outcome (the counters are the record)
     try:
         result = services.ocr.read(data, password)
@@ -499,16 +520,16 @@ def _repair_merchants(services: Services, data: bytes, password: str | None, can
         ocr_by_key.setdefault(_line_key(line), []).append(line)
     repaired, lines = 0, []
     for line in parsed.lines:
-        if garbled_merchant(line.merchant_raw):
+        if needs_merchant_repair(line):
             key = _line_key(line)
             found = ocr_by_key.get(key, [])
             if text_keys[key] == 1 and len(found) == 1 and not garbled_merchant(found[0].merchant_raw) \
-                    and found[0].merchant_raw.strip():
+                    and found[0].merchant_raw.strip() and not missing_merchant(found[0]):
                 line = line.model_copy(update={"merchant_raw": found[0].merchant_raw})
                 repaired += 1
         lines.append(line)
     summary.merchant_lines_repaired += repaired
-    note = (f"ocr: merchant repair {repaired}/{len(garbled)} lines mean_confidence={result.mean_confidence:.2f} "
+    note = (f"ocr: merchant repair {repaired}/{len(targets)} lines mean_confidence={result.mean_confidence:.2f} "
             f"boxes={result.boxes} scale={ocr_mod.SCALE}")
     return parsed.model_copy(update={"lines": lines}), note, repaired
 
@@ -537,8 +558,8 @@ def _parse_submit(services: Services, lease: Lease, file_row: dict, account_id: 
             return _fail(services, lease, file_row, "transient", summary)
         return PARSE_FAILED
     parser_label = "claude-cli+ocr" if ocr_note else "claude-cli"
-    # #206: `repair` (text-layer path only) re-reads a parse with garbled merchants through the OCR child
-    if repair is not None and ocr_note is None and any(garbled_merchant(l.merchant_raw) for l in parsed.lines):
+    # #206/#387: `repair` (text-layer path only) re-reads a parse with garbled or missing merchants through the OCR child
+    if repair is not None and ocr_note is None and any(needs_merchant_repair(l) for l in parsed.lines):
         parsed, ocr_note, repaired = repair(parsed)
         if repaired:
             parser_label = "claude-cli+ocr-merchants"
