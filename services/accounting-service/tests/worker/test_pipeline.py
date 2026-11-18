@@ -1692,3 +1692,62 @@ def test_composite_map_change_requeues_only_mapping_failures(composite_world, cl
     summary = pipeline.run(services, trigger="owner_cli")
     assert summary["composite_files"] == 1 and _bank_row(db_session) == ("parsed", None)
     assert db_session.execute(text("select status, failure from statement_file where kind = 'card'")).one() == ("failed", "parse")
+
+
+# ---- #385 D3: the run summary names the latched reason -----------------------------------------------------------
+
+@pytest.mark.parametrize("path", ["real_input", "ocr_repair", "gate"])
+def test_latched_auth_names_the_reason(world, tmp_path, db_session, path):
+    services, _, _ = world
+    services.gate.ensure(services.parser)  # a valid cached gate: the failure happens after it
+    if path == "real_input":  # the no-login stream itself, through the fake CLI
+        fake_claude.write(tmp_path / "claude", fake_claude.transcript(auth_failed=True), exit_code=1)
+    elif path == "ocr_repair":
+        services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+        calls = _garbled_text_parse(services)
+        garbled = services.parser.parse
+
+        def parse(masked):
+            if "OCRMARK" in masked:
+                calls.append("ocr")
+                raise parser_mod.ParseError("auth")
+            return garbled(masked)
+        services.parser.parse = parse
+    else:
+        services.gate.latch("auth on real input", services.gate.key(services.parser))
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert "auth" in summary["errors"] and "parser_disabled" in summary["errors"]
+    assert summary["errors"].count("auth") == 1 and services.gate.latch_path.exists()
+    assert json.loads(services.gate.latch_path.read_text())["reason"] == "auth on real input"
+    if path == "ocr_repair":
+        assert calls == ["text", "ocr"] and summary["parsed"] == 1  # the text parse is still submitted
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("auth on real input", "auth"), ("sandbox on real input", "sandbox"), ("cli_version on real input", "cli_version"),
+    ("auth", "auth"), ("sandbox: result out of order", "sandbox"), ("cli_version: found 2.1.295, pinned 2.1.296",
+                                                                   "cli_version"),
+    ("auth on verify input", "auth"), ("auth; verify: auth", "auth"),
+    ("authx on real input", None), ("Auth on real input", None), (" auth on real input", None),
+    ("verify: auth", None), ("schema: lines: missing", None), ("key: OSError", None), ("error: FileNotFoundError", None),
+    ("timeout", None), ("", None), (None, None), (5, None),
+])
+def test_latch_reason_maps_only_the_fixed_vocabulary(text, expected):
+    assert pipeline.safe_reason(text) == expected
+
+
+@pytest.mark.parametrize("reason,expected", [("sandbox: result out of order", ["sandbox"]), ("key: OSError", []),
+                                             ("free text that must never be copied", [])])
+def test_latched_gate_adds_only_a_known_reason(world, reason, expected):
+    services, _, _ = world
+    services.gate.latch(reason, {})
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert [e for e in summary["errors"] if e != "parser_disabled"] == expected and "parser_disabled" in summary["errors"]
+
+
+def test_corrupt_latch_file_adds_no_reason(world):
+    services, _, cfg = world
+    cfg.state_dir.mkdir(parents=True, exist_ok=True)
+    services.gate.latch_path.write_text("{not json")
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["errors"] == ["parser_disabled"]

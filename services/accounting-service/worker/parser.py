@@ -55,6 +55,8 @@ class Envelope:
     result_subtype: str | None = None
     assistant_messages: int = 0
     violations: list[str] = field(default_factory=list)
+    auth_signature: bool = False  # D3: the first assistant event is the CLI's own no-login error
+    result_is_error: bool | None = None  # the result event's `is_error` (None: no result, or not a bool)
 
 
 @dataclass
@@ -112,6 +114,7 @@ class StreamValidator:
         self.violation: str | None = None
         self._expect = "init"
         self._tool_use_id: str | None = None
+        self._assistant_events = 0  # every assistant event, counted before any shape rejection
 
     def _bad(self, why: str) -> None:
         self.envelope.violations.append(why)
@@ -156,6 +159,10 @@ class StreamValidator:
             return
         if kind == "system" and sub in IGNORED_SYSTEM_SUBTYPES:
             return
+        if kind == "assistant":
+            self._assistant_events += 1
+            if self._assistant_events == 1 and _is_auth_failure(event):
+                env.auth_signature = True
         blocks: list[dict] = []
         if kind in ("assistant", "user"):
             message = event.get("message")
@@ -207,6 +214,8 @@ class StreamValidator:
             if self._expect != "result":
                 self._bad("result out of order")
             env.result_subtype = sub
+            is_error = event.get("is_error")
+            env.result_is_error = is_error if isinstance(is_error, bool) else None
             env.num_turns = event.get("num_turns")
             env.structured_output = event.get("structured_output")
             if type(env.num_turns) is not int or env.num_turns != 2:
@@ -221,6 +230,25 @@ class StreamValidator:
             if env.tool_names != [STRUCTURED_TOOL]:
                 self._bad(f"tool calls: {len(env.tool_names)}")
         return env
+
+
+def _is_auth_failure(event: dict) -> bool:
+    """D3: the CLI's no-login assistant event: top-level `error == "authentication_failed"` and
+    `is_api_error_message is True`, with content a non-empty, well-formed list of `text` blocks only."""
+    if event.get("error") != "authentication_failed" or event.get("is_api_error_message") is not True:
+        return False
+    message = event.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    return isinstance(content, list) and bool(content) and all(
+        isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str) for b in content)
+
+
+def _promote_auth(validator: StreamValidator) -> bool:
+    """D3: a `sandbox` failure is the missing login (`auth`) only for the exact no-login prefix: the auth signature on
+    the one assistant event, no tool call, the first violation exactly `result out of order`, and an error result."""
+    env = validator.envelope
+    return (env.auth_signature and env.assistant_messages == 1 and env.tool_names == []
+            and validator.violation == "result out of order" and env.result_is_error is True)
 
 
 class _ChildIO:
@@ -396,6 +424,8 @@ class Parser:
             try:
                 io.pump()
             except ParseError as exc:
+                if exc.reason == "sandbox" and _promote_auth(io.validator):  # D3: the no-login prefix
+                    raise ParseError("auth", "not logged in") from exc
                 if exc.reason != "sandbox" and io.validator.envelope.violations:  # a violation beats I/O failures
                     raise ParseError("sandbox", "; ".join(io.validator.envelope.violations)[:300]) from exc
                 raise
@@ -404,6 +434,8 @@ class Parser:
             io.close()
         envelope = io.validator.finish()
         if envelope.violations:  # sandbox precedence over exit/schema (AGENT-95 Must 3)
+            if _promote_auth(io.validator):  # D3: the no-login prefix
+                raise ParseError("auth", "not logged in")
             raise ParseError("sandbox", "; ".join(envelope.violations)[:300])
         if proc.returncode != 0 or envelope.result_subtype != "success":
             text = bytes(io.err[:4096]).decode("utf-8", "replace").lower()

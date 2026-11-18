@@ -709,3 +709,92 @@ def test_token_age_days(tmp_path):
     now = 2_000_000_000.0
     os.utime(tok, (now - 3.04 * 86400, now - 3.04 * 86400))
     assert parser.token_age_days(tok, now) == 3.0
+
+
+# ---- D3: the no-login prefix is auth, every look-alike stays sandbox -------------------------------------------------
+
+def _auth_bytes(**kw) -> bytes:
+    return fake_claude.transcript(auth_failed=True, **kw).encode("utf-8")
+
+
+def _pump_feeding(monkeypatch, fragments):
+    """`_ChildIO.pump` replaced by feeding `fragments` to `_feed_lines` (the child's own output is not read)."""
+    def pump(self):
+        for fragment in fragments:
+            self._feed_lines(fragment)
+        if self._pending:
+            self.validator.feed(bytes(self._pending))
+            self._check_violation()
+    monkeypatch.setattr(parser._ChildIO, "pump", pump)
+
+
+@pytest.mark.parametrize("chunks", ["child", "one", "split"])
+def test_login_failure_prefix_is_auth(cfg, tmp_path, monkeypatch, chunks):
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(auth_failed=True), exit_code=1)
+    body = _auth_bytes()
+    if chunks == "one":
+        _pump_feeding(monkeypatch, [body])
+    elif chunks == "split":  # mid-line inside the assistant event: the line completes only in the second fragment
+        cut = body.index(b'"authentication_failed"') + 5
+        assert body[body.rfind(b"\n", 0, cut) + 1:].startswith(b'{"type": "assistant"')
+        _pump_feeding(monkeypatch, [body[:cut], body[cut:]])
+    with pytest.raises(parser.ParseError) as err:
+        parser.Parser(cfg, SubprocessRunner())._run_once(b"x")
+    assert err.value.reason == "auth" and "sandbox" not in str(err.value)
+    env = err.value.envelope
+    assert env.auth_signature is True and env.result_is_error is True and env.violations[0] == "result out of order"
+
+
+@pytest.mark.parametrize("variant", [
+    {"auth_content": [{"type": "text", "text": "x"}, None]},  # malformed content
+    {"auth_content": [{"type": "text"}, None]},
+    {"auth_content": [{"type": "text", "text": "x"}, {"type": "tool_use", "id": "toolu_1", "name": "StructuredOutput",
+                                                       "input": {}}]},  # mixed content
+    {"auth_content": [{"type": "thinking", "thinking": ""}, {"type": "text", "text": "x"}]},
+    {"auth_content": []},
+    {"auth_content": "Not logged in"},
+    {"auth_second_assistant": True},  # a second assistant event
+    {"garbage_line": True},  # a first violation other than `result out of order`
+    {"tools": ("StructuredOutput", "Bash")},
+    {"auth_result_is_error": False},  # a result that is not an error
+    {"auth_result_is_error": "true"},
+])
+def test_auth_lookalikes_stay_sandbox(cfg, tmp_path, variant):
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(auth_failed=True, **variant), exit_code=1)
+    with pytest.raises(parser.ParseError) as err:
+        parser.Parser(cfg, SubprocessRunner())._run_once(b"x")
+    assert err.value.reason == "sandbox"
+
+
+def _validator(lines) -> parser.StreamValidator:
+    validator = parser.StreamValidator()
+    for line in lines:
+        validator.feed(line if isinstance(line, bytes) else json.dumps(line).encode())
+    return validator
+
+
+def test_auth_signature_is_the_first_assistant_event_only():
+    first, *rest = _auth_bytes().splitlines()
+    auth, result = rest[0], rest[-1]
+    plain = {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}}
+    assert _validator([first, auth]).envelope.auth_signature is True
+    assert _validator([first, plain, auth]).envelope.auth_signature is False
+    no_flag = json.loads(auth)
+    no_flag["is_api_error_message"] = 1  # truthy is not enough: the CLI's flag is the JSON `true`
+    assert _validator([first, no_flag]).envelope.auth_signature is False
+    nested = json.loads(auth)
+    nested["message"]["error"] = nested.pop("error")  # the error must be the event's own top-level field
+    assert _validator([first, nested]).envelope.auth_signature is False
+    assert parser._promote_auth(_validator([first, auth, result])) is True
+
+
+def test_promotion_needs_every_condition():
+    """Each condition alone, with the whole stream fed (no fail-fast) so the others hold."""
+    first, auth, result = _auth_bytes().splitlines()
+    garbage = b"this is not json"
+    assert parser._promote_auth(_validator([first, auth, garbage, result])) is False  # first violation differs
+    assert parser._promote_auth(_validator([first, auth, auth, result])) is False  # two assistant messages
+    assert parser._promote_auth(_validator([first, auth])) is False  # no result: result_is_error is None
+    not_error = json.loads(result)
+    not_error["is_error"] = False
+    assert parser._promote_auth(_validator([first, auth, not_error])) is False

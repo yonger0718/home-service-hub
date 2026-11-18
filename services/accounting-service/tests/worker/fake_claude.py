@@ -26,8 +26,11 @@ def transcript(output=GOOD, *, tools=("StructuredOutput",), tool_name="Structure
                message_not_object=False, user_extra_block=False, tool_result_id_mismatch=False,
                assistant_extra_tool_use_after_text=False, no_ids=False, deep_json_line=False,
                thinking_prelude=False, ui_invalidate_first=False, other_system_subtype=False, assistant_after_user=False, sleep_after=0,
-               flood_after=False):
+               flood_after=False, auth_failed=False, auth_content=None, auth_second_assistant=False,
+               auth_result_is_error=True):
     events = [{"type": "system", "subtype": "init", "tools": list(tools) if isinstance(tools, (tuple, list)) else tools, "claude_code_version": "2.1.296"}]
+    if auth_failed:
+        return _auth_failed(events, auth_content, auth_second_assistant, auth_result_is_error, garbage_line)
     if ui_invalidate_first:
         events.insert(0, {"type": "system", "subtype": "ui_invalidate"})
     if hook_event:
@@ -69,6 +72,29 @@ def transcript(output=GOOD, *, tools=("StructuredOutput",), tool_name="Structure
     out = Transcript(text)
     out.sleep_after, out.flood_after = sleep_after, flood_after
     return out
+
+
+NOT_LOGGED_IN = "Not logged in \u00b7 Please run /login"
+
+
+def _auth_failed(events, content, second_assistant, result_is_error, garbage_line) -> "Transcript":
+    """Spec D3: the no-login stream captured on the host (2026-11-18). The assistant event carries the CLI's top-level
+    `error`/`is_api_error_message` and one text block; the result is `success` with `is_error: true` and 1 turn.
+    Knobs (the Review Focus look-alikes): `content` replaces the assistant content, `second_assistant` repeats the
+    assistant event, `result_is_error` sets the result's flag, `garbage_line` puts a non-JSON line before the result."""
+    assistant = {"type": "assistant", "error": "authentication_failed", "is_api_error_message": True,
+                 "message": {"content": [{"type": "text", "text": NOT_LOGGED_IN}] if content is None else content},
+                 "parent_tool_use_id": None, "session_id": "00000000-0000-4000-8000-000000000001",
+                 "timestamp": "2026-11-18T00:00:00.000Z", "uuid": "00000000-0000-4000-8000-000000000002"}
+    events.append(assistant)
+    if second_assistant:
+        events.append(assistant)
+    if garbage_line:
+        events.append("this is not json")
+    events.append({"type": "result", "subtype": "success", "is_error": result_is_error, "num_turns": 1,
+                   "result": NOT_LOGGED_IN})
+    text = "\n".join(e if isinstance(e, str) else json.dumps(e, ensure_ascii=False) for e in events) + "\n"
+    return Transcript(text)
 
 
 def _split_after_assistant(body: str) -> tuple[str, str]:
