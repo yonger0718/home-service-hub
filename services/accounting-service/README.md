@@ -565,6 +565,7 @@ Configuration (all optional; empty means default):
 | `STATEMENT_PARSER_CLI` | `/home/opc/.local/bin/claude` | Claude Code CLI binary; set it to the pinned copy (see "Pinned CLI copy"), because the default is the auto-updater's symlink |
 | `STATEMENT_PARSER_CLI_VERSION` | `2.1.296` | pinned CLI version; any other version disables parsing (`failed/sandbox`) |
 | `STATEMENT_PARSER_MODEL` | `claude-sonnet-5-5` | pinned model |
+| `STATEMENT_PARSER_OAUTH_TOKEN_FILE` | `~/.config/homehub-parser-oauth-token` | a regular file here means token mode (setup-token); absent or a directory means login mode (worker) |
 | `STATEMENT_PARSER_CONFIG_DIR` | `~/.local/state/home-hub-parser/claude` | parser login directory (worker) |
 | `STATEMENT_PARSER_SANDBOX` | `true` | run the parser under bubblewrap |
 | `STATEMENT_PARSER_ALLOW_UNSANDBOXED` | `false` | must be `true` for `STATEMENT_PARSER_SANDBOX=false`; otherwise the parser refuses to start (tests only) |
@@ -606,7 +607,8 @@ call per file); budget for that before bumping. The version also folds in the pa
 and `worker.mask.FINGERPRINT` (bumped whenever a masking rule changes what the parser receives), so a code change to
 any of them re-parses the failed files the same way.
 
-Parser logins. The parser runs in a sandbox that sees only its own login directory. Create separate logins, never a
+Parser logins. Token mode (`claude setup-token`) is preferred: see "Parser token (setup-token, preferred)" in
+`deploy/statements/README.md`. The `/login` steps below are the login-mode fallback. The parser runs in a sandbox that sees only its own login directory. Create separate logins, never a
 copy of `~/.claude/.credentials.json`: a copied refresh token rotates on use and can log out the owner's interactive CLI
 and the Multica agents that share it.
 

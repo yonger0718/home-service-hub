@@ -316,15 +316,16 @@ Deploy (by hand, after merge):
 
        sudo -u homehub-worker -H bash -c 'cd /tmp && D=$(mktemp -d) && CLAUDE_CONFIG_DIR=$D <pinned claude CLI> setup-token; rm -rf "$D"'
 
-   then stores it without echo (`read -rs`), mode 0400, never through argv:
+   then stores it without echo (`read -rs`), mode 0400, never through argv. Removing the old file and writing a new one gives a fresh mtime, which `parser_token_age_days` relies on, and a failed write never prints "saved":
 
-       sudo -u homehub-worker -H bash -c 'umask 077; read -rs T; printf %s "$T" > ~/.config/homehub-parser-oauth-token; chmod 400 ~/.config/homehub-parser-oauth-token; echo saved'
+       sudo -u homehub-worker -H bash -c 'umask 077; read -rs T; f=~/.config/homehub-parser-oauth-token; rm -f "$f" && printf %s "$T" > "$f" && chmod 400 "$f" && echo saved'
 
 2. Install the same token for the verify user (`~homehub-verify/.config/homehub-parser-oauth-token`, 0400) with
-   `install -p`, which keeps the mtime. A setup-token does not rotate on use, so sharing it is safe, unlike a `/login`
+   `install -p` (chained with `&&`, never `;`, so a failed copy is not followed by a success message), which keeps the mtime. A setup-token does not rotate on use, so sharing it is safe, unlike a `/login`
    copy. Keep separate copies for the worker and verify users.
 3. Deploy the worker code, then run `gate.sh` (both mounts; evidence `auth: token`). Switching to token mode changes the
-   gate key (`argv_sha256` changes when the credentials bind goes away), so the gate must be re-run.
+   worker mount's gate key (its writable `.credentials.json` bind goes away); the verify mount's key is unchanged.
+   `gate.sh` canaries both mounts either way, so re-run it.
 4. Disable and remove `homehub-parser-refresh.{service,timer}` and its script. Move `.credentials.json` out of both
    parser login dirs into a 0700 backup, so that the token is the only credential.
 
@@ -543,7 +544,7 @@ It runs two canaries, one per mount (worker login, verify login), and the host c
 descendants of the sandbox child sampled at t=0 and every 50 ms during the canary, which passes only when `claude` or
 `bwrap` was actually observed and nothing but bwrap/claude/git/sh was (the CLI spawns a transient `sh` for its own `git` probe; comm sampling cannot tell that from a tool shell, so the stream validator is the primary control and sampling is defence in depth). A failing, empty or erroring sampler fails the check.
 Evidence is written to `<state_dir>/gate-<hash>.json` (`host.worker` and `host.verify_login`; one file per parser
-configuration; it carries `"auth": "token" | "login"`, and the switch to token mode changes the gate key, so re-run after it); the latch is removed only when every check of both mounts ran and passed.
+configuration; it carries `"auth": "token" | "login"`, and the switch to token mode changes the worker mount's gate key, because its writable `.credentials.json` bind goes away; the verify mount's key is unchanged and `gate.sh` canaries both mounts either way, so re-run it); the latch is removed only when every check of both mounts ran and passed.
 
 ## Raw PDFs on disk
 
@@ -591,7 +592,7 @@ Watching composite files: a composite failure is deliberate and silent by design
 - The verify user's parser login (`STATEMENT_VERIFY_PARSER_CONFIG_DIR`, default `~/.local/state/home-hub-parser/claude-verify`)
   is its OWN login, made with `CLAUDE_CONFIG_DIR="$dst" claude /login` as the verify user (the "Verify parser login copy"
   section above) — never a copy of the worker's or the owner's login: a copied refresh token rotates on use and logs the
-  other holder out. Nothing refreshes it automatically; re-login when `verify` reports `auth`.
+  other holder out. Nothing refreshes it automatically. In login mode, re-login when `verify` reports `auth`; in token mode, replace the token file and run `gate.sh`.
 - An expired login fails the canary and latches `parser-disabled.json` in the VERIFY user's state dir. `python -m worker gate`
   cannot clear that latch when run as the verify user (it canaries the worker's `claude` config dir, which the verify user
   does not have). Clear it by moving the latch file aside after the re-login; the next `verify` run re-canaries.
