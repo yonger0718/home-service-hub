@@ -298,7 +298,47 @@ Placement: the URL goes into `~/.config/homehub-statements.env` as `STATEMENT_VE
 nowhere else (not in the root `.env`, not in a unit file, not in a log or PR text). The worker never prints it
 (`WorkerConfig.verify_db_url` has `repr=False`).
 
-## Verify parser login copy
+## Parser token (setup-token, preferred)
+
+Since #385 the sandboxed parser authenticates with a one-year `claude setup-token` token read from a 0400 file,
+`STATEMENT_PARSER_OAUTH_TOKEN_FILE` (default `~/.config/homehub-parser-oauth-token`). Token mode is on when that path
+is a regular file; a directory or a missing path means login mode (the section below). The file is read on every parse
+and must be ASCII matching `^[A-Za-z0-9_-]+$` after stripping, otherwise the parse fails with `auth` ("token file
+malformed" or "token file unreadable"). In token mode every mount binds `/cfg` read-only with no `.credentials.json`
+bind. The token reaches the CLI only through the child environment as `CLAUDE_CODE_OAUTH_TOKEN`, never through argv,
+and the stream validator scrubs a full echo of it to `[redacted]`. Bare mode ignores that variable and the parser does
+not use `--bare`; a future CLI pin that ignores it fails the gate canary with `auth`.
+
+Deploy (by hand, after merge):
+
+1. The owner generates the token in an SSH terminal with a throwaway `CLAUDE_CONFIG_DIR`, as the worker user, using
+   the pinned CLI (`STATEMENT_PARSER_CLI`):
+
+       sudo -u homehub-worker -H bash -c 'cd /tmp && D=$(mktemp -d) && CLAUDE_CONFIG_DIR=$D <pinned claude CLI> setup-token; rm -rf "$D"'
+
+   then stores it without echo (`read -rs`), mode 0400, never through argv:
+
+       sudo -u homehub-worker -H bash -c 'umask 077; read -rs T; printf %s "$T" > ~/.config/homehub-parser-oauth-token; chmod 400 ~/.config/homehub-parser-oauth-token; echo saved'
+
+2. Install the same token for the verify user (`~homehub-verify/.config/homehub-parser-oauth-token`, 0400) with
+   `install -p`, which keeps the mtime. A setup-token does not rotate on use, so sharing it is safe, unlike a `/login`
+   copy. Keep separate copies for the worker and verify users.
+3. Deploy the worker code, then run `gate.sh` (both mounts; evidence `auth: token`). Switching to token mode changes the
+   gate key (`argv_sha256` changes when the credentials bind goes away), so the gate must be re-run.
+4. Disable and remove `homehub-parser-refresh.{service,timer}` and its script. Move `.credentials.json` out of both
+   parser login dirs into a 0700 backup, so that the token is the only credential.
+
+Expiry and age: the token lasts one year. The run summary's `versions.parser_token_age_days` is the token file's mtime
+age in days (present only in token mode), so mtime is the issuance date only if the file is never rewritten in place:
+deploy copies use `install -p` or `cp -p`, and a new token gets a new file. Grafana warns at 358 days
+(`hh-parser-token-expiring`, 7 days before expiry). A missing or expired login or token is labelled `auth`, and the
+summary's `errors` lists the reason (`auth`, `sandbox` or `cli_version`) next to `parser_disabled` when the parser latches.
+
+Rollback: remove the token file. Login mode returns, but needs a fresh `/login` plus the refresh stopgap.
+
+## Verify parser login copy (login mode, fallback)
+
+Only applies in login mode (no token file); with a token file present, the token replaces both logins.
 
 `verify` runs the parser child with the login directory bound read-only and no writable credentials file, so an
 expired token fails `verify` with `auth` instead of being refreshed. It has its own login at
@@ -503,7 +543,7 @@ It runs two canaries, one per mount (worker login, verify login), and the host c
 descendants of the sandbox child sampled at t=0 and every 50 ms during the canary, which passes only when `claude` or
 `bwrap` was actually observed and nothing but bwrap/claude/git/sh was (the CLI spawns a transient `sh` for its own `git` probe; comm sampling cannot tell that from a tool shell, so the stream validator is the primary control and sampling is defence in depth). A failing, empty or erroring sampler fails the check.
 Evidence is written to `<state_dir>/gate-<hash>.json` (`host.worker` and `host.verify_login`; one file per parser
-configuration); the latch is removed only when every check of both mounts ran and passed.
+configuration; it carries `"auth": "token" | "login"`, and the switch to token mode changes the gate key, so re-run after it); the latch is removed only when every check of both mounts ran and passed.
 
 ## Raw PDFs on disk
 
