@@ -152,6 +152,16 @@ def no_api_auth_from_env(monkeypatch):
     monkeypatch.delenv("ACCOUNTING_SPA_TOKEN", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def no_parser_token_from_runner(monkeypatch, tmp_path_factory):
+    """The runner's own ~/.config token (the deployment state) must never flip the worker tests into token mode;
+    tests that want token mode set parser_oauth_token_file explicitly."""
+    from worker import config as worker_config
+
+    missing = tmp_path_factory.mktemp("no-parser-token") / "absent"
+    monkeypatch.setattr(worker_config, "DEFAULT_PARSER_OAUTH_TOKEN_FILE", str(missing))
+
+
 class FakeResponse:
     def __init__(self, status_code: int, payload: dict | None = None):
         self.status_code = status_code
