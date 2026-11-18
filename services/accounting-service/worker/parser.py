@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import selectors
 import signal
 import subprocess
@@ -54,6 +55,8 @@ class Envelope:
     result_subtype: str | None = None
     assistant_messages: int = 0
     violations: list[str] = field(default_factory=list)
+    auth_signature: bool = False  # D3: the first assistant event is the CLI's own no-login error
+    result_is_error: bool | None = None  # the result event's `is_error` (None: no result, or not a bool)
 
 
 @dataclass
@@ -105,11 +108,13 @@ class StreamValidator:
     """Ruling 15: incremental validation of the stream-json lines; `violation` is set at the first problem, at the
     moment it appears. Messages carry counts and our own constants, never model-controlled strings."""
 
-    def __init__(self):
+    def __init__(self, secret: str | None = None):
+        self._secret = secret.encode() if secret else None
         self.envelope = Envelope()
         self.violation: str | None = None
         self._expect = "init"
         self._tool_use_id: str | None = None
+        self._assistant_events = 0  # every assistant event, counted before any shape rejection
 
     def _bad(self, why: str) -> None:
         self.envelope.violations.append(why)
@@ -117,6 +122,8 @@ class StreamValidator:
             self.violation = why
 
     def feed(self, raw: bytes) -> None:
+        if self._secret:  # D7: scrub the raw line before anything derives from it
+            raw = raw.replace(self._secret, b"[redacted]")
         try:
             self._feed(raw)
         except Exception:  # RecursionError from json.loads, TypeError on odd shapes, ...: a violation, never a crash
@@ -152,6 +159,10 @@ class StreamValidator:
             return
         if kind == "system" and sub in IGNORED_SYSTEM_SUBTYPES:
             return
+        if kind == "assistant":
+            self._assistant_events += 1
+            if self._assistant_events == 1 and _is_auth_failure(event):
+                env.auth_signature = True
         blocks: list[dict] = []
         if kind in ("assistant", "user"):
             message = event.get("message")
@@ -203,6 +214,8 @@ class StreamValidator:
             if self._expect != "result":
                 self._bad("result out of order")
             env.result_subtype = sub
+            is_error = event.get("is_error")
+            env.result_is_error = is_error if isinstance(is_error, bool) else None
             env.num_turns = event.get("num_turns")
             env.structured_output = event.get("structured_output")
             if type(env.num_turns) is not int or env.num_turns != 2:
@@ -219,14 +232,33 @@ class StreamValidator:
         return env
 
 
+def _is_auth_failure(event: dict) -> bool:
+    """D3: the CLI's no-login assistant event: top-level `error == "authentication_failed"` and
+    `is_api_error_message is True`, with content a non-empty, well-formed list of `text` blocks only."""
+    if event.get("error") != "authentication_failed" or event.get("is_api_error_message") is not True:
+        return False
+    message = event.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    return isinstance(content, list) and bool(content) and all(
+        isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str) for b in content)
+
+
+def _promote_auth(validator: StreamValidator) -> bool:
+    """D3: a `sandbox` failure is the missing login (`auth`) only for the exact no-login prefix: the auth signature on
+    the one assistant event, no tool call, the first violation exactly `result out of order`, and an error result."""
+    env = validator.envelope
+    return (env.auth_signature and env.assistant_messages == 1 and env.tool_names == []
+            and validator.violation == "result out of order" and env.result_is_error is True)
+
+
 class _ChildIO:
     """Bounded, deadline-driven I/O with the child: stdin from a thread, stdout/stderr via selectors, stdout lines
     validated as they complete (ruling 15)."""
 
-    def __init__(self, proc: subprocess.Popen, stdin: bytes, deadline: float):
+    def __init__(self, proc: subprocess.Popen, stdin: bytes, deadline: float, validator: StreamValidator | None = None):
         self.proc, self.deadline = proc, deadline
         self.out, self.err = bytearray(), bytearray()
-        self.validator = StreamValidator()
+        self.validator = validator or StreamValidator()
         self._pending = bytearray()
         self.stdin_error: str | None = None
         self._sel = selectors.DefaultSelector()
@@ -319,6 +351,33 @@ def _safe_errors(exc: ValidationError) -> str:
     return "; ".join(parts)[:300]
 
 
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]+")
+_TOKEN_MIN_LEN = 20  # a real setup-token is ~108 characters
+
+
+def _read_token(path: Path) -> str:
+    """The setup-token from its 0400 file. Failures carry fixed messages only: never the content or the OS error."""
+    unreadable = False
+    text = ""
+    try:
+        text = path.read_bytes().decode("ascii").strip()
+    except OSError:
+        unreadable = True
+    except UnicodeDecodeError:
+        pass
+    # Raised outside the except blocks so that __context__ (which would hold the file bytes) stays None.
+    if unreadable:
+        raise ParseError("auth", "token file unreadable")
+    if len(text) < _TOKEN_MIN_LEN or not _TOKEN_RE.fullmatch(text):
+        raise ParseError("auth", "token file malformed")
+    return text
+
+
+def token_age_days(path: Path, now: float | None = None) -> float:
+    """Age of the token file's mtime in days (the issuance date, as long as the file is never rewritten in place)."""
+    return round(((time.time() if now is None else now) - path.stat().st_mtime) / 86400, 1)
+
+
 class Parser:
     def __init__(self, cfg: WorkerConfig, runner: Runner, *, config_dir: Path | None = None,
                  credentials_writable: bool = True):
@@ -326,6 +385,9 @@ class Parser:
             raise RuntimeError("unsandboxed parser is refused; set STATEMENT_PARSER_ALLOW_UNSANDBOXED=true")
         self.cfg, self.runner = cfg, runner
         self.config_dir, self.credentials_writable = config_dir or cfg.parser_config_dir, credentials_writable
+        self.token_mode = cfg.parser_oauth_token_file.is_file()  # D2: a directory or a missing path is login mode
+        if self.token_mode:
+            self.credentials_writable = False
         self._schema = json.dumps(parse_schema.json_schema(), ensure_ascii=False, separators=(",", ":"))
 
     def argv(self) -> list[str]:
@@ -344,12 +406,16 @@ class Parser:
 
     def _run_once(self, stdin: bytes, on_start: Callable[[subprocess.Popen], None] | None = None) -> Envelope:
         env = {"HOME": os.environ.get("HOME", "/tmp"), "PATH": os.environ.get("PATH", "/usr/bin")}
+        token: str | None = None
+        if self.token_mode:  # re-read on every call: a rotated token needs no restart; env only, never argv
+            token = _read_token(self.cfg.parser_oauth_token_file)
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = token
         try:
             proc = subprocess.Popen(self.argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     env=env, start_new_session=True)
         except OSError as exc:
             raise ParseError("exit", f"cannot start the parser ({type(exc).__name__})") from exc
-        io = _ChildIO(proc, stdin, time.monotonic() + self.cfg.parser_timeout_s)
+        io = _ChildIO(proc, stdin, time.monotonic() + self.cfg.parser_timeout_s, StreamValidator(token))
         try:
             return self._drive(proc, io, on_start)
         except ParseError as exc:
@@ -364,6 +430,8 @@ class Parser:
             try:
                 io.pump()
             except ParseError as exc:
+                if exc.reason == "sandbox" and _promote_auth(io.validator):  # D3: the no-login prefix
+                    raise ParseError("auth", "not logged in") from exc
                 if exc.reason != "sandbox" and io.validator.envelope.violations:  # a violation beats I/O failures
                     raise ParseError("sandbox", "; ".join(io.validator.envelope.violations)[:300]) from exc
                 raise
@@ -372,6 +440,8 @@ class Parser:
             io.close()
         envelope = io.validator.finish()
         if envelope.violations:  # sandbox precedence over exit/schema (AGENT-95 Must 3)
+            if _promote_auth(io.validator):  # D3: the no-login prefix
+                raise ParseError("auth", "not logged in")
             raise ParseError("sandbox", "; ".join(envelope.violations)[:300])
         if proc.returncode != 0 or envelope.result_subtype != "success":
             text = bytes(io.err[:4096]).decode("utf-8", "replace").lower()
@@ -406,7 +476,7 @@ class Parser:
         reasons: list[str] = []
         transient = False
         evidence: dict = {"pinned": self.cfg.parser_cli_version, "model": self.cfg.parser_model,
-                          "sandbox": self.cfg.parser_sandbox}
+                          "sandbox": self.cfg.parser_sandbox, "auth": "token" if self.token_mode else "login"}
         try:
             self._check_version()
             envelope = self._run_once(CANARY.encode(), on_start)

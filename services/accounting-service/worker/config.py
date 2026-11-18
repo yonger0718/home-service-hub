@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
+DEFAULT_PARSER_OAUTH_TOKEN_FILE = "~/.config/homehub-parser-oauth-token"  # tests repoint this: the runner may own a real token
 TRUE = {"1", "true", "yes", "on"}
 
 
@@ -48,6 +49,7 @@ class WorkerConfig:
     verify_db_url: str | None = field(repr=False)  # may embed a password
     verify_parser_config_dir: Path
     account_map_file: Path | None
+    parser_oauth_token_file: Path = Path(DEFAULT_PARSER_OAUTH_TOKEN_FILE).expanduser()  # #385: setup-token; file present = token mode
     ocr_enabled: bool = True          # R5: OCR child for files without a text layer (wired in R5c)
     ocr_threads: int = 2
     ocr_timeout_s: int = 120
@@ -126,6 +128,7 @@ def load(env: Mapping[str, str] = os.environ) -> WorkerConfig:
         parser_cli_version=_ident(env, "STATEMENT_PARSER_CLI_VERSION", "2.1.296"),
         parser_model=_ident(env, "STATEMENT_PARSER_MODEL", "claude-sonnet-5-5"),
         parser_config_dir=_path(env, "STATEMENT_PARSER_CONFIG_DIR", "~/.local/state/home-hub-parser/claude"),
+        parser_oauth_token_file=_path(env, "STATEMENT_PARSER_OAUTH_TOKEN_FILE", DEFAULT_PARSER_OAUTH_TOKEN_FILE),
         parser_sandbox=_str(env, "STATEMENT_PARSER_SANDBOX", "true").lower() in TRUE,
         parser_allow_unsandboxed=_str(env, "STATEMENT_PARSER_ALLOW_UNSANDBOXED", "false").lower() in TRUE,
         parser_timeout_s=int(_str(env, "STATEMENT_PARSER_TIMEOUT", "120")),

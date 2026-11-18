@@ -5,6 +5,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -418,11 +419,37 @@ def garbled_merchant(merchant: str) -> bool:
     return pdf.GARBAGE_GLYPH in merchant
 
 
+SAFE_REASONS = ("auth", "sandbox", "cli_version")
+
+
+def safe_reason(text: object) -> str | None:
+    """#385 D3: the latch reason as a code from a fixed vocabulary, by an exact match of its leading word (the text up
+    to the first space, colon or semicolon). Anything else is None: free text never reaches `summary.errors`."""
+    if not isinstance(text, str):
+        return None
+    word = re.split(r"[ :;]", text, maxsplit=1)[0]
+    return word if word in SAFE_REASONS else None
+
+
+def _add_reason(summary: Summary, reason: str | None) -> None:
+    if reason is not None and reason not in summary.errors:
+        summary.errors.append(reason)
+
+
+def _latched_reason(gate: parser_mod.Gate) -> str | None:
+    """The safe reason recorded in the latch file (`Gate.latch` writes {"reason", "at", "key"}); None when unreadable."""
+    try:
+        return safe_reason(json.loads(gate.latch_path.read_text(encoding="utf-8")).get("reason"))
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def _latch_host_fault(services: Services, exc: parser_mod.ParseError, summary: Summary) -> None:
     services.parser_disabled = True
     services.gate.latch(f"{exc.reason} on real input", services.gate.key(services.parser))
     if "parser_disabled" not in summary.errors:
         summary.errors.append("parser_disabled")
+    _add_reason(summary, safe_reason(exc.reason))
 
 
 def _line_key(line: parse_schema.ParsedLine) -> tuple:
@@ -809,6 +836,11 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
         stale.unlink(missing_ok=True)
     summary.versions = {"parser_version": services.parser_version, "cli_version": services.cli_version,
                         "model": services.cfg.parser_model, "credential_version": services.credential_version}
+    if services.parser.token_mode:
+        try:
+            summary.versions["parser_token_age_days"] = parser_mod.token_age_days(services.cfg.parser_oauth_token_file)
+        except OSError:
+            pass
     status, interrupted = "failed", False
     try:
         with LeaseKeeper(services.api, lease) as keeper:
@@ -818,6 +850,7 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
             except parser_mod.ParserDisabled:
                 services.parser_disabled = True
                 summary.errors.append("parser_disabled")
+                _add_reason(summary, _latched_reason(services.gate))
             except parser_mod.GateUnavailable:  # transient canary failure: skip parsing, nothing latched, run done
                 services.parser_disabled = True
                 summary.errors.append("gate_unavailable")

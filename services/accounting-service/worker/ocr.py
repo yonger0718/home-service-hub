@@ -141,7 +141,10 @@ def sandbox_prefix() -> list[str]:
 def protected_paths(cfg: WorkerConfig) -> list[str]:
     """Paths that must never be readable inside the child: credentials, state, the worker's config directory."""
     paths = [cfg.password_file, cfg.api_token_file, cfg.state_dir, cfg.parser_config_dir, cfg.verify_parser_config_dir,
-             cfg.verify_dir, service_dir().parent.parent / ".env", Path("~/.config").expanduser()]
+             cfg.verify_dir, service_dir().parent.parent / ".env", Path("~/.config").expanduser(),
+             cfg.parser_oauth_token_file, cfg.flex_credentials_file]
+    if cfg.portfolio_token_file is not None:
+        paths.append(cfg.portfolio_token_file)
     if cfg.minio_key_file is not None:
         paths.append(cfg.minio_key_file)
     if cfg.account_map_file is not None:

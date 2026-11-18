@@ -583,3 +583,28 @@ def test_real_child_in_bwrap_with_a_fake_backend(tmp_path):
                        "STATEMENT_STATE_DIR": str(tmp_path / "state")})
     out = ocr.Engine(cfg).read(make_pdf([statement_lines()]), None)
     assert out.extracted.pages == 1 and "MERCHANT 001" in out.extracted.text and out.boxes == 1
+
+
+def test_protected_paths_include_credential_files(tmp_path):
+    parser_tok, flex, portfolio = tmp_path / "ptok", tmp_path / "flex.env", tmp_path / "pf"
+    env = {"STATEMENT_PARSER_OAUTH_TOKEN_FILE": str(parser_tok), "STATEMENT_FLEX_CREDENTIALS_FILE": str(flex),
+           "STATEMENT_PORTFOLIO_TOKEN_FILE": str(portfolio)}
+    paths = ocr.protected_paths(config.load(env))
+    assert all(os.path.realpath(str(p)) in paths for p in (parser_tok, flex, portfolio))
+    without = ocr.protected_paths(config.load({k: v for k, v in env.items() if k != "STATEMENT_PORTFOLIO_TOKEN_FILE"}))
+    assert os.path.realpath(str(portfolio)) not in without
+
+
+@pytest.mark.parametrize("var", ["STATEMENT_PARSER_OAUTH_TOKEN_FILE", "STATEMENT_FLEX_CREDENTIALS_FILE",
+                                 "STATEMENT_PORTFOLIO_TOKEN_FILE"])
+def test_check_config_refuses_credential_files_under_a_bind(var):
+    inside = os.path.join(ocr.site_packages(), "secret-token")
+    with pytest.raises(ocr.OCRConfigError):
+        ocr.check_config(config.load({"STATEMENT_PARSER_SANDBOX": "true", var: inside}))
+
+
+def test_check_config_refuses_a_symlinked_parser_token_into_a_bind(tmp_path):
+    link = tmp_path / "token"
+    link.symlink_to(os.path.join(ocr.site_packages(), "secret-token"))
+    with pytest.raises(ocr.OCRConfigError):
+        ocr.check_config(config.load({"STATEMENT_PARSER_SANDBOX": "true", "STATEMENT_PARSER_OAUTH_TOKEN_FILE": str(link)}))
