@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, pytest, bwrap. The fake CLI is `tests/worker/fake_claude.py`.
 
-**Spec:** `docs/superpowers/specs/2026-11-18-parser-setup-token-design.md` (rev 2, after AGENT-515)
+**Spec:** `docs/superpowers/specs/2026-11-18-parser-setup-token-design.md` (rev 2, after AGENT-515; re-check PASS-with-minor, its P3s are folded here)
 
 ## Global Constraints
 
@@ -82,13 +82,15 @@
     - `str(exc)`
     - the persisted gate evidence file, via `Gate.run_operator_gate` with `tmp_path` as the state dir
 
-    In every case `[redacted]` appears instead.
+    Assert `[redacted]` only where the field is kept, i.e. the validator envelope's `events`/`tools` and evidence `tools`. Fixed messages such as `tool call other than StructuredOutput`, and the failed gate's `tool_calls` count, carry no replacement string. Do not add tool names to evidence to satisfy the test.
+    Also feed `_ChildIO._feed_lines` an echo line split mid-token across two fragments: only `[redacted]` survives.
   - `test_parser.py::test_gate_evidence_names_the_auth_mode`: `evidence["auth"]` is `"token"` or `"login"`.
   - `test_parser.py::test_token_age_days`: a file with mtime `now - 3.04 * 86400` gives `3.0`.
   - `test_ocr.py::test_protected_paths_include_credential_files`:
     - With custom paths under `tmp_path` for the parser token file, `flex_credentials_file` and `portfolio_token_file`, all three realpaths are in `protected_paths`.
     - With `portfolio_token_file=None`, nothing is added for it.
     - `check_config` raises when a runtime bind overlaps any of the three (follow the pattern of the existing overlap test in `test_ocr.py`).
+    - A parser token path that is a **symlink** pointing inside a runtime bind is refused by `check_config` (realpath normalization, `ocr.py:149,167-170`).
   - `test_pipeline.py`: in an existing run-status test with the token file present, `versions["parser_token_age_days"]` is a float. Without the file, the key is absent.
 
 - [ ] **Step 2: Run them, expect FAIL**
@@ -116,7 +118,7 @@
 - Produces: `Envelope.auth_signature: bool` and `Envelope.result_is_error: bool | None`. `summary.errors` may now contain `auth`, `sandbox` or `cli_version` beside `parser_disabled`.
 
 - [ ] **Step 1: Write the failing tests**
-  - `test_parser.py::test_login_failure_prefix_is_auth`: the fake runs with `auth_failed=True`, rc 1 and empty stderr; `reason == "auth"`. Run it twice: once with the whole prefix in one write, once split mid-line across two writes using the fake's existing timing knobs. Same result both times.
+  - `test_parser.py::test_login_failure_prefix_is_auth`: the fake runs with `auth_failed=True`, rc 1 and empty stderr; `reason == "auth"`. Run it twice: once with the whole prefix in one chunk, and once by feeding `_ChildIO._feed_lines` two explicit byte fragments that split mid-line inside the assistant event. The fake's `_split_after_assistant` only splits after whole lines, so do not use it for this. Same result both times.
   - `test_parser.py::test_auth_lookalikes_stay_sandbox`: parametrized over the Review Focus counter-cases; each gives `reason == "sandbox"`.
   - `test_pipeline.py::test_latched_auth_names_the_reason`: three paths all give `"auth" in summary["errors"]` and `"parser_disabled" in summary["errors"]`. The paths are a real-input parse, an OCR repair parse and a latched gate (`Gate.latch("auth on real input", key)`, then `run`).
 
