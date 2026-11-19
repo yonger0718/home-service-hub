@@ -307,9 +307,15 @@ export class AppInboxPanelComponent {
     this.applyOneTap(card, button);
   }
 
-  /** 全部套用: every proposal in the section, one by one. */
+  /**
+   * 全部套用: every proposal in the section, one by one. A card with a part-of hint is left out (#392): applying it
+   * would book the line its card warns about, so the owner answers that one on its own card.
+   */
   applyAll(): void {
-    this.runProposals(this.cards().proposed, 'apply_proposal');
+    this.runProposals(
+      this.cards().proposed.filter((card) => !card.items[0].part_of?.length),
+      'apply_proposal',
+    );
   }
 
   setLearn(card: InboxCard, ticked: boolean): void {

@@ -687,6 +687,48 @@ describe('AppInboxPanelComponent', () => {
     expect(marked).toHaveBeenCalledTimes(1);
   });
 
+  it('全部套用 leaves a proposal with a part-of hint for the owner (#392)', () => {
+    const plain = makeItem({
+      case_id: 60,
+      question: 'proposed',
+      folded: true,
+      proposal: { id: 600, action: 'match', params: {}, author: 'policy', rationale: '' },
+      actions: ['apply_proposal', 'reject_proposal'],
+    });
+    const held = makeItem({
+      case_id: 61,
+      question: 'proposed',
+      folded: true,
+      line: { id: 61, date: '2026-11-03', merchant: '轉入', amount: '300.0000', line_kind: 'deposit' },
+      rule_hint: null,
+      proposal: { id: 601, action: 'create_entry', params: {}, author: 'hermes', rationale: '' },
+      actions: ['apply_proposal', 'reject_proposal'],
+      part_of: [{ id: 9, date: '2026-11-02', title: '晚餐還款', amount: '600.0000', account_id: 1 }],
+    });
+    const { fixture, el } = render(
+      makeInbox([makeInboxAccount({ items: [plain, held] })], { proposed: 2 }),
+    );
+    const fold = el.querySelector<HTMLElement>('details.fold')!;
+    button(fold, '全部套用').click();
+    fixture.detectChanges();
+
+    expect(text(el.querySelector('.progress'))).toBe('套用中 1/1');
+    http
+      .expectOne((r) => r.method === 'POST' && r.url === '/api/accounting/reconciliation/proposals/600/apply')
+      .flush({});
+    fixture.detectChanges();
+
+    http.expectNone('/api/accounting/reconciliation/proposals/601/apply');
+    const left = Array.from(el.querySelectorAll<HTMLElement>('details.fold .inbox-card'));
+    expect(left.map((card) => text(card.querySelector('.title')))).toEqual(['2026/11/03 轉入 +$300']);
+    expect(left[0].querySelector('.refused')).toBeNull();
+    // the owner can still apply it on its own card
+    button(left[0], '套用').click();
+    http
+      .expectOne((r) => r.method === 'POST' && r.url === '/api/accounting/reconciliation/proposals/601/apply')
+      .flush({});
+  });
+
   it('record flow posts create params and 記為收入 for a positive line', () => {
     const interest = makeItem({
       case_id: 9,
