@@ -22,7 +22,8 @@ It does not know **several lines ↔ one owner entry**.
 - The policy never books a bank line while an unclaimed owner settlement entry, larger than the line, could still absorb it.
 - The case stays open, and the case detail names that entry as the counterpart (`owner_twins`).
 - The hold ends by itself: once the entry is claimed, deleted or re-recorded per transfer, the next reconcile treats the remaining lines as before.
-- Bookings that have their own evidence for the line (dividends, trade settlements, transfer pairs, owner rules) are not held.
+- Bookings that have their own evidence for the line (dividends, trade settlements, transfer pairs) are not held.
+- An owner record rule is held like the policy backfill: it is automatic too.
 
 ## Non-goals / anti-goals
 
@@ -47,16 +48,16 @@ A false hold costs one inbox question. A missed hold costs a silent double booki
   - `matching._entry_class(entry_view(e))` is in `matching.eligible_kinds(statement.kind, line.line_kind)`;
   - `abs(e flow) > abs(line flow)`, strictly; an equal or near-equal amount is already an exact or near twin;
   - `drift_days(line, e) <= rules.drift_window_days` (15 by default).
-- **Opt-in.** `owner_twins` and `owner_may_record` gain `settlement_parts: bool = False`. Only with `True` are these ids added. The shape is for a line that nothing else explains, so only the plain backfill and the read model ask for it:
+- **Opt-in.** `owner_twins` and `owner_may_record` gain `settlement_parts: bool = False`. Only with `True` are these ids added. The shape is for a line that nothing else explains, so only the plain backfill, owner record rules and the read model ask for it:
   - the policy collect and its re-check under the lock (`policy_service._backfill_candidate`, `_unchanged` for `backfill_entry`);
   - a pending policy `backfill_entry` proposal (`_supersede_reason`), so a proposal made before the receipt existed is superseded;
   - the writer-barrier re-check of `BackfillEntryAction` (`_TwinGuarded.settlement_parts = True` on that class only). It binds the policy and the owner applying a policy-authored proposal. A plain owner action has no guard code and stays allowed;
+  - owner record rules (`owner_rule_service._precheck` → `refuse_owner_recorded(ctx, settlement_parts=True)`). A rule books as automatically as the backfill, so it is held the same way: the rule is skipped (`rule_skipped`, code `owner_may_record`) and the line is left to the owner. Production has no owner rules today (2026-11-19);
   - the case read model (`statement_ingest_service.get_case` → `owner_twins`), so the receipt shows as the counterpart.
 - **Unchanged, by the default `False`** (found by the whole-branch review: an unconditional shape reached all of them):
   - `book_dividend` and `book_settlement`: a portfolio fact proves the line;
   - `pair_transfer` (`transfer_twin_reason` rule (c)): a peer line proves it;
-  - `create_system_entry`: a bank-only line kind, and no settlement class is eligible for it anyway;
-  - owner rules (`owner_rule_service._precheck` → `refuse_owner_recorded`): a record rule is the owner's standing answer for the line.
+  - `create_system_entry`: a bank-only line kind, and no settlement class is eligible for it anyway.
 - **Scope that follows from the kind gates** (`matching.BANK_GATES` / `CARD_GATES`) and `BACKFILL_KINDS`:
   - bank `deposit` ↔ `settlement_in`; bank `withdrawal` ↔ `settlement_out` (the owner repaying a debt in several transfers is the mirror case);
   - a bank `payment` line is eligible for `settlement_out` too, but is never backfilled, so only the read model shows it;
@@ -80,7 +81,8 @@ A false hold costs one inbox question. A missed hold costs a silent double booki
 - `GET /reconciliation/cases/{id}` lists the receipt id in `owner_twins`.
 - The shape is opt-in: the plain `owner_twins` / `owner_may_record` do not see it.
 - A receipt recorded after the collect refuses the backfill under the lock; a pending policy proposal is superseded, and the owner applying it meanwhile gets 409 `owner_may_record`.
-- A policy dividend booking and an owner record rule beside a larger unclaimed receipt still book.
+- A policy dividend booking beside a larger unclaimed receipt still books.
+- An owner record rule is skipped (`owner_may_record`) beside a larger unclaimed receipt, and books once the receipt is gone.
 
 ## Rollout
 

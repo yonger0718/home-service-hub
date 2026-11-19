@@ -245,14 +245,16 @@ def _owner_may_record(db: Session, statement: AccountStatement, case: Reconcilia
     return stand_ins.owner_may_record(db, statement, case.event_id, line, rules, settlement_parts=settlement_parts)
 
 
-def refuse_owner_recorded(ctx: Context) -> None:
+def refuse_owner_recorded(ctx: Context, *, settlement_parts: bool = False) -> None:
     """Engine precheck for the owner applying a policy-authored `backfill_entry` / `create_system_entry` proposal
     (`proposal_service`), under the statement and case locks: 409 `owner_may_record` when an owner entry may already
     record the line — a proposal made before the twin or the replacement arrived, applied before the next policy run
     supersedes it. The action re-checks under the writer barrier (`ledger_actions._TwinGuarded`); that re-check, not
-    this precheck, is what sees a `backfill_entry` proposal's part-of-a-settlement twin (#389). Owner rules use this
-    precheck too and must not see that shape."""
-    if ctx.line is not None and _owner_may_record(ctx.db, ctx.statement, ctx.case, ctx.line, ctx.rules):
+    this precheck, is what sees a `backfill_entry` proposal's part-of-a-settlement twin (#389). Owner record rules
+    use this precheck too and pass `settlement_parts=True`: a rule books as automatically as the backfill, and
+    `create_entry` has no barrier re-check of its own."""
+    if ctx.line is not None and _owner_may_record(ctx.db, ctx.statement, ctx.case, ctx.line, ctx.rules,
+                                                  settlement_parts=settlement_parts):
         raise CodedConflictError("owner_may_record", f"case {ctx.case.id}")
 
 

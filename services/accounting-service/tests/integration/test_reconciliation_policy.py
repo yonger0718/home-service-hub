@@ -2044,8 +2044,8 @@ def test_the_policy_supersedes_its_pending_backfill_proposal_once_a_larger_settl
 
 
 def test_only_the_backfill_guard_asks_for_settlement_parts(seed, db_session, run, dirty_on):
-    """The part-of-a-settlement shape is opt-in (`settlement_parts=True`): the plain guard every other automatic
-    booking uses (system entries, dividends, trade settlements, transfer pairs, owner rules) does not see it."""
+    """The part-of-a-settlement shape is opt-in (`settlement_parts=True`): the plain guard the other automatic
+    bookings use (system entries, dividends, trade settlements, transfer pairs) does not see it."""
     _, receipt, stmt, (line, _other) = _two_transfers(seed, db_session, run)
     rules = rec.rules_for(settings_service.reconciliation_rules(db_session), stmt.period_end)
     accounts = coverage_service.participating_accounts(db_session, stmt.account_id)

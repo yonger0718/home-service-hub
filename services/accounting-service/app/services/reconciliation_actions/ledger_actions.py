@@ -148,7 +148,8 @@ class _TwinGuarded(_Creation):
     (`owner_may_record`), both refused `dirty_disabled` while the dirty triggers (which take the barrier) are off; a
     plain owner action from the case takes the barrier but stays unrestricted (owner override).
     `settlement_parts` (#389): whether a larger unclaimed settlement entry the line may be one part of is a twin
-    too — the plain backfill only; the creations with their own evidence for the line keep it off."""
+    too — the plain backfill only among these actions; the creations with their own evidence for the line keep
+    it off."""
     settlement_parts = False
 
     def lock_targets(self, ctx: Context, params) -> LockSet:

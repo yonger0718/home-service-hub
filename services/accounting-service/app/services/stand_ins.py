@@ -345,10 +345,10 @@ def owner_twins(db: Session, statement: AccountStatement, line: StatementLine, a
     2026-10-17, widened 2026-10-17 after three double bookings on one card): an entry of `owner_population` (split
     members included — the matcher never claims one alone) or an unclaimed child (`owner_children`) that alone takes
     the line exactly (`_conserves`) or at a near amount (`_near`), the members of a group subset that together
-    take it, exactly or at a near amount (`_split_twins`). `settlement_parts=True` (the plain backfill and the case
-    read model only, #389) adds a larger settlement entry the line may be one part of (`_partial_settlement_twins`):
-    a line no other evidence explains. The bookings that have such evidence (a portfolio fact, a peer line, a
-    bank-only kind, an owner rule) keep the default."""
+    take it, exactly or at a near amount (`_split_twins`). `settlement_parts=True` (the plain backfill, owner record
+    rules and the case read model, #389) adds a larger settlement entry the line may be one part of
+    (`_partial_settlement_twins`): a line no other evidence explains. The bookings that have such evidence (a
+    portfolio fact, a peer line, a bank-only kind) keep the default."""
     claimed = coverage_service.claimed_entry_ids(db)  # one snapshot for both populations (review S2)
     population = owner_population(db, statement, accounts, rules, claimed=claimed)
     candidates = population + owner_children(db, statement, accounts, rules, claimed=claimed)
