@@ -316,17 +316,42 @@ def _split_twins(db: Session, statement: AccountStatement, line: StatementLine, 
     return sorted(set(out))
 
 
+def _partial_settlement_twins(statement: AccountStatement, line: StatementLine, population: list[LedgerEntry],
+                              rules) -> list[int]:
+    """Ids of the owner settlement entries the line may be one part of (#389): an unclaimed settlement entry of a
+    class eligible for the line (`matching.eligible_kinds`: a receipt for a bank deposit, a repayment for a bank
+    withdrawal or payment; no card line is eligible), strictly larger than the line and within the drift window —
+    a repayment that arrived as several transfers and that the owner recorded as one entry for the sum. No line
+    equals such an entry, so the matcher offers nothing and the policy would book every transfer beside it. The
+    transfers need not all be on this statement or add up to the entry (a later period, a partial repayment): the
+    guard errs towards not booking, like `_near`."""
+    from app.services import reconciliation_service  # local: reconciliation_service imports this module
+    ml = reconciliation_service._as_line(line)
+    gate = matching.eligible_kinds(statement.kind, line.line_kind)
+    out: list[int] = []
+    for e in population:
+        if not e.is_settlement:
+            continue
+        me = reconciliation_service.entry_view(e)
+        if matching._entry_class(me) in gate and abs(me.flow) > abs(ml.flow) \
+                and drift_days(line, e) <= rules.drift_window_days:
+            out.append(e.id)
+    return out
+
+
 def owner_twins(db: Session, statement: AccountStatement, line: StatementLine, accounts: list[int], rules) -> list[int]:
     """Ids of the owner entries that may record the line, so the policy must not book it (final production finding
     2026-10-17, widened 2026-10-17 after three double bookings on one card): an entry of `owner_population` (split
     members included — the matcher never claims one alone) or an unclaimed child (`owner_children`) that alone takes
-    the line exactly (`_conserves`) or at a near amount (`_near`), and the members of a group subset that together
-    take it, exactly or at a near amount (`_split_twins`)."""
+    the line exactly (`_conserves`) or at a near amount (`_near`), the members of a group subset that together
+    take it, exactly or at a near amount (`_split_twins`), and a larger settlement entry the line may be one part
+    of (`_partial_settlement_twins`, #389)."""
     claimed = coverage_service.claimed_entry_ids(db)  # one snapshot for both populations (review S2)
     population = owner_population(db, statement, accounts, rules, claimed=claimed)
     candidates = population + owner_children(db, statement, accounts, rules, claimed=claimed)
     alone = [e.id for e in candidates if _conserves(statement, line, e, rules) or _near(statement, line, e, rules)]
-    return sorted(set(alone) | set(_split_twins(db, statement, line, population, rules)))
+    return sorted(set(alone) | set(_split_twins(db, statement, line, population, rules))
+                  | set(_partial_settlement_twins(statement, line, population, rules)))
 
 
 def replaced_event(db: Session, statement: AccountStatement, event_id: int | None) -> bool:
