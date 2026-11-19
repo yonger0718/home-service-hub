@@ -29,6 +29,7 @@ It does not know **several lines ↔ one owner entry**.
 - No N-lines ↔ one-entry matching or coverage. A receipt for the sum still has to be re-recorded per transfer.
 - No guard for non-settlement entries. Tried on history: "any larger unclaimed owner entry" would have held 38 of the 54 past policy backfills, most of them correct ones on card accounts.
 - No new setting, no migration, no SPA change.
+- **Known gap, follow-up:** the inbox list (`GET /reconciliation/inbox`) and the SPA card do not show `owner_twins`. A held line looks like any other unmatched deposit there, and tapping 補記 on it books the duplicate by hand. Only the case detail API names the receipt. The card needs a hint (API field plus SPA text) in a follow-up change.
 - The owner's own backfill button must keep working on a held line.
 
 ## Approaches
