@@ -146,7 +146,10 @@ class _TwinGuarded(_Creation):
     re-checks INSIDE the action, in `validate_before`: from there to the commit no writer can commit a twin. The
     re-check binds the policy (`candidate_changed`) and the owner applying a policy-authored proposal
     (`owner_may_record`), both refused `dirty_disabled` while the dirty triggers (which take the barrier) are off; a
-    plain owner action from the case takes the barrier but stays unrestricted (owner override)."""
+    plain owner action from the case takes the barrier but stays unrestricted (owner override).
+    `settlement_parts` (#389): whether a larger unclaimed settlement entry the line may be one part of is a twin
+    too — the plain backfill only; the creations with their own evidence for the line keep it off."""
+    settlement_parts = False
 
     def lock_targets(self, ctx: Context, params) -> LockSet:
         return LockSet(account_lock=True, barrier=True)
@@ -173,7 +176,8 @@ class _TwinGuarded(_Creation):
         if code is None:
             return
         self.check_before_locks(ctx, None)
-        if stand_ins.owner_may_record(ctx.db, ctx.statement, ctx.case.event_id, line, ctx.rules):
+        if stand_ins.owner_may_record(ctx.db, ctx.statement, ctx.case.event_id, line, ctx.rules,
+                                      settlement_parts=self.settlement_parts):
             raise CodedConflictError(code, f"an owner entry may already record line {line.id}")
 
 
@@ -629,6 +633,7 @@ class BackfillEntryAction(_TwinGuarded):
     """R6b.1: books an unmatched purchase/withdrawal/deposit line as a stand-in (category 對帳待分類, needs_review)."""
     name = "backfill_entry"
     Params = BackfillEntryParams
+    settlement_parts = True
     case_kinds = frozenset({"line_unmatched"})
     actors = frozenset({OWNER, POLICY})
 

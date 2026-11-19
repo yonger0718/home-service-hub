@@ -4,7 +4,9 @@
 
 **Goal:** The policy never books a bank line while a larger, unclaimed owner settlement entry near it could still absorb the line (#389).
 
-**Architecture:** One new predicate in `app/services/stand_ins.py`, `_partial_settlement_twins`, whose ids `owner_twins` adds to its result. Every caller of `owner_twins` / `owner_may_record` picks the new twin shape up; no caller changes.
+**Architecture:** One new predicate in `app/services/stand_ins.py`, `_partial_settlement_twins`, whose ids `owner_twins` adds to its result.
+
+> **Amended after the whole-branch review (2026-11-19):** the shape is opt-in (`settlement_parts=True`), asked for only by the `backfill_entry` paths and the case read model. As first written (every caller picks it up) it also held policy dividend and settlement bookings and owner record rules. The spec's Design section has the final wiring; the constraint below that forbade caller changes no longer holds.
 
 **Tech Stack:** Python 3.13, SQLAlchemy, pytest (`tests/integration`, PostgreSQL).
 

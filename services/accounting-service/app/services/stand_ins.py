@@ -334,24 +334,27 @@ def _partial_settlement_twins(statement: AccountStatement, line: StatementLine, 
             continue
         me = reconciliation_service.entry_view(e)
         if matching._entry_class(me) in gate and abs(me.flow) > abs(ml.flow) \
-                and drift_days(line, e) <= rules.drift_window_days:
+                and matching._date_distance(ml, me) <= rules.drift_window_days:
             out.append(e.id)
     return out
 
 
-def owner_twins(db: Session, statement: AccountStatement, line: StatementLine, accounts: list[int], rules) -> list[int]:
+def owner_twins(db: Session, statement: AccountStatement, line: StatementLine, accounts: list[int], rules, *,
+                settlement_parts: bool = False) -> list[int]:
     """Ids of the owner entries that may record the line, so the policy must not book it (final production finding
     2026-10-17, widened 2026-10-17 after three double bookings on one card): an entry of `owner_population` (split
     members included — the matcher never claims one alone) or an unclaimed child (`owner_children`) that alone takes
     the line exactly (`_conserves`) or at a near amount (`_near`), the members of a group subset that together
-    take it, exactly or at a near amount (`_split_twins`), and a larger settlement entry the line may be one part
-    of (`_partial_settlement_twins`, #389)."""
+    take it, exactly or at a near amount (`_split_twins`). `settlement_parts=True` (the plain backfill and the case
+    read model only, #389) adds a larger settlement entry the line may be one part of (`_partial_settlement_twins`):
+    a line no other evidence explains. The bookings that have such evidence (a portfolio fact, a peer line, a
+    bank-only kind, an owner rule) keep the default."""
     claimed = coverage_service.claimed_entry_ids(db)  # one snapshot for both populations (review S2)
     population = owner_population(db, statement, accounts, rules, claimed=claimed)
     candidates = population + owner_children(db, statement, accounts, rules, claimed=claimed)
     alone = [e.id for e in candidates if _conserves(statement, line, e, rules) or _near(statement, line, e, rules)]
-    return sorted(set(alone) | set(_split_twins(db, statement, line, population, rules))
-                  | set(_partial_settlement_twins(statement, line, population, rules)))
+    parts = _partial_settlement_twins(statement, line, population, rules) if settlement_parts else []
+    return sorted(set(alone) | set(_split_twins(db, statement, line, population, rules)) | set(parts))
 
 
 def replaced_event(db: Session, statement: AccountStatement, event_id: int | None) -> bool:
@@ -368,13 +371,15 @@ def replaced_event(db: Session, statement: AccountStatement, event_id: int | Non
         .limit(1)).first() is not None
 
 
-def owner_may_record(db: Session, statement: AccountStatement, event_id: int | None, line: StatementLine, rules) -> bool:
+def owner_may_record(db: Session, statement: AccountStatement, event_id: int | None, line: StatementLine, rules, *,
+                     settlement_parts: bool = False) -> bool:
     """An owner entry may already record the line: the event has an applied replacement (`replaced_event`) or an
-    owner twin takes it alone (`owner_twins`). The policy and the policy's own proposals never book such a line;
-    under the writer barrier (`BackfillEntryAction` / `CreateSystemEntryAction`) the answer cannot change before the
-    booking commits."""
+    owner twin may record it (`owner_twins`; `settlement_parts` as there). The policy and the policy's own proposals
+    never book such a line; under the writer barrier (`BackfillEntryAction` / `CreateSystemEntryAction`) the answer
+    cannot change before the booking commits."""
     accounts = coverage_service.participating_accounts(db, statement.account_id)
-    return replaced_event(db, statement, event_id) or bool(owner_twins(db, statement, line, accounts, rules))
+    return replaced_event(db, statement, event_id) \
+        or bool(owner_twins(db, statement, line, accounts, rules, settlement_parts=settlement_parts))
 
 
 def shadows(db: Session, statement: AccountStatement, accounts: list[int], rules) -> list[dict]:

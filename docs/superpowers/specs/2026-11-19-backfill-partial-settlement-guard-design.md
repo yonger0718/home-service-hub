@@ -22,6 +22,7 @@ It does not know **several lines ↔ one owner entry**.
 - The policy never books a bank line while an unclaimed owner settlement entry, larger than the line, could still absorb it.
 - The case stays open, and the case detail names that entry as the counterpart (`owner_twins`).
 - The hold ends by itself: once the entry is claimed, deleted or re-recorded per transfer, the next reconcile treats the remaining lines as before.
+- Bookings that have their own evidence for the line (dividends, trade settlements, transfer pairs, owner rules) are not held.
 
 ## Non-goals / anti-goals
 
@@ -45,16 +46,21 @@ A false hold costs one inbox question. A missed hold costs a silent double booki
   - `matching._entry_class(entry_view(e))` is in `matching.eligible_kinds(statement.kind, line.line_kind)`;
   - `abs(e flow) > abs(line flow)`, strictly; an equal or near-equal amount is already an exact or near twin;
   - `drift_days(line, e) <= rules.drift_window_days` (15 by default).
-- **`owner_twins`** adds these ids to its result. Nothing else changes; every caller picks the new shape up:
-  - the policy collect and its re-check under the lock (`policy_service._backfill_candidate`, `_unchanged`), so the line is not booked;
-  - pending policy proposals (`_supersede_reason`, `refuse_owner_recorded`), so a proposal made before the receipt existed is superseded;
-  - the writer-barrier re-check (`ledger_actions._TwinGuarded._twin_check`), which binds the policy and policy-authored proposals only. A plain owner action has no guard code and stays allowed;
+- **Opt-in.** `owner_twins` and `owner_may_record` gain `settlement_parts: bool = False`. Only with `True` are these ids added. The shape is for a line that nothing else explains, so only the plain backfill and the read model ask for it:
+  - the policy collect and its re-check under the lock (`policy_service._backfill_candidate`, `_unchanged` for `backfill_entry`);
+  - a pending policy `backfill_entry` proposal (`_supersede_reason`), so a proposal made before the receipt existed is superseded;
+  - the writer-barrier re-check of `BackfillEntryAction` (`_TwinGuarded.settlement_parts = True` on that class only). It binds the policy and the owner applying a policy-authored proposal. A plain owner action has no guard code and stays allowed;
   - the case read model (`statement_ingest_service.get_case` → `owner_twins`), so the receipt shows as the counterpart.
-- **Scope that follows from the kind gates** (`matching.BANK_GATES` / `CARD_GATES`):
-  - bank `deposit` ↔ `settlement_in`; bank `withdrawal` and `payment` ↔ `settlement_out` (the owner repaying a debt in several transfers is the mirror case);
-  - card statements have no settlement class in their gates, so nothing changes for cards;
-  - `fee` / `interest` / `reward` lines (`create_system_entry`) are not eligible for a settlement class, so nothing changes for them.
-- **`pair_transfer`:** `transfer_twin_reason` rule (c) also calls `owner_may_record`, so the policy will not pair a deposit line as a transfer while a larger unclaimed receipt is near it. This is wanted (the line may be the repayment). The policy action is disabled in production today.
+- **Unchanged, by the default `False`** (found by the whole-branch review: an unconditional shape reached all of them):
+  - `book_dividend` and `book_settlement`: a portfolio fact proves the line;
+  - `pair_transfer` (`transfer_twin_reason` rule (c)): a peer line proves it;
+  - `create_system_entry`: a bank-only line kind, and no settlement class is eligible for it anyway;
+  - owner rules (`owner_rule_service._precheck` → `refuse_owner_recorded`): a record rule is the owner's standing answer for the line.
+- **Scope that follows from the kind gates** (`matching.BANK_GATES` / `CARD_GATES`) and `BACKFILL_KINDS`:
+  - bank `deposit` ↔ `settlement_in`; bank `withdrawal` ↔ `settlement_out` (the owner repaying a debt in several transfers is the mirror case);
+  - a bank `payment` line is eligible for `settlement_out` too, but is never backfilled, so only the read model shows it;
+  - card statements have no settlement class in their gates, so nothing changes for cards.
+- **The hold does not end on a dismiss.** Dismissing or deferring the receipt's own case leaves the entry unclaimed, so lines within the window stay held. Each costs one manual answer; none is booked twice. Accepted.
 
 ## Evidence (production, read only, counts)
 
@@ -71,6 +77,9 @@ A false hold costs one inbox question. A missed hold costs a silent double booki
 - Mirror case: two withdrawal lines and one larger unclaimed `settlement_out` entry: not backfilled.
 - The owner's own `backfill_entry` on a held line still applies.
 - `GET /reconciliation/cases/{id}` lists the receipt id in `owner_twins`.
+- The shape is opt-in: the plain `owner_twins` / `owner_may_record` do not see it.
+- A receipt recorded after the collect refuses the backfill under the lock; a pending policy proposal is superseded, and the owner applying it meanwhile gets 409 `owner_may_record`.
+- A policy dividend booking and an owner record rule beside a larger unclaimed receipt still book.
 
 ## Rollout
 

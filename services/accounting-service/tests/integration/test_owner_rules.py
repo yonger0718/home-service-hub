@@ -1,5 +1,5 @@
 """Owner-taught reconciliation rules (inbox spec §6). Synthetic data only."""
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -157,6 +157,22 @@ def test_rule_skips_owner_recorded_lines_and_audits(seed, db_session, run, monke
     assert result.applied == [] and [code for _, code in result.skipped] == ["owner_may_record"]
     (ev,) = _audits(db_session, "rule_skipped")
     assert ev.detail["code"] == "owner_may_record" and len(_open_lines(db_session, stmt.id)) == 1
+
+
+def test_rule_still_books_a_line_beside_a_larger_unclaimed_settlement_receipt(seed, db_session, run):
+    """#389: the part-of-a-settlement twin holds the policy backfill only. A record rule is the owner's standing
+    answer for the line, so it books as before."""
+    account = _bank(seed, db_session)
+    income = seed.category("其他收入", kind="income")
+    debt = seed.entry(account, "-600", kind="receivable", day=DAY - timedelta(days=20))
+    db_session.flush()
+    seed.entry(account, "600", kind="receivable", day=DAY, is_settlement=True, settles_entry_id=debt.id)
+    db_session.commit()
+    _rule(seed, db_session, account, line_kind="deposit", merchant_pattern="現金回饋", flow_sign="+", amount=Decimal("200"),
+          params={"category_id": income.id})
+    stmt, (line,), _ = _submit(db_session, run, account, [_line(1, DAY, "現金回饋 0903", 200, "deposit")], kind="bank")
+    result = ors.run_rules_safe(db_session, stmt.id)
+    assert len(result.applied) == 1 and result.skipped == []
 
 
 def test_rule_with_missing_category_is_skipped_not_fatal(seed, db_session, run):
