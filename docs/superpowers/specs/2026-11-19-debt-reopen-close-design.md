@@ -55,10 +55,10 @@ Entry detail, the debt state line:
 Each button opens a confirm panel (the delete panel's pattern: Esc / 取消 closes, focus returns):
 
 - reopen, remainder after reopening > 0: `重新開啟後，這筆會回到未結清：剩餘 <amount>。`
-- reopen, remainder 0: `收款已收滿，重新開啟後仍是已結清；刪除收款後才會出現剩餘金額。`
+- reopen, remainder 0: `收款已收滿，重新開啟後仍是已結清；刪除收款後才會出現剩餘金額。` (a payable: `還款已還清，…；刪除還款後…`)
 - close: `剩餘 <amount> 不再列入未結清，之後可以重新開啟。`
 
-The remainder after reopening is `|amount| − Σ settled values` from the detail already loaded (the breakdown's sum). After the action the detail reloads. Buttons are hidden while the entry is locked (cutover).
+The remainder after reopening is `| |amount| − Σ settled values |` from the detail already loaded: the API's own open amount, so the text says what the reloaded page will show (also for a debt collected beyond its amount, which the API reports as a remainder). The confirm takes focus (it renders below the related rows); Esc / 取消 returns focus to its button. After the action the detail reloads. Buttons are hidden while the entry is locked (cutover).
 
 ### Assistant skill (after the deploy)
 
@@ -79,6 +79,8 @@ SPA: the service methods post to the two routes; the state line shows the right 
 - No history of who closed or reopened a debt.
 - Reopening one of the imported debts whose settlements do not net shows its old remainder until it is closed again.
 - A closed debt with a remainder keeps its effect on the account balance; only the debt views change.
+- Reopening a loan whose schedule already ended on the closed debt does not restart the schedule: it stays ended with its periods skipped, and the owner restores the periods in the schedule view.
+- A debt collected beyond its amount (one collection for several originals) shows the excess as a remainder once reopened: the existing meaning of `open_amount`.
 
 ## Left to the builder
 

@@ -328,7 +328,8 @@ class LedgerEntry(Base):
     refunds_entry_id = Column(Integer, ForeignKey("ledger_entry.id", ondelete="SET NULL"), nullable=True)
     # True for collections/repayments (set by settle, the backup importer and the CSV importer by sign).
     is_settlement = Column(Boolean, nullable=False, server_default=text("false"))
-    # A receivable / payable MOZE marks settled (its AHTarget's isSettle): closed whatever its settlements sum to.
+    # A closed receivable / payable: no remainder, whatever its settlements sum to. Set by the MOZE import (its
+    # AHTarget's isSettle) and by POST /entries/{id}/close; cleared by POST /entries/{id}/reopen (#391).
     is_closed = Column(Boolean, nullable=False, server_default=text("false"))
     reward_rule_id = Column(Integer, ForeignKey("reward_rule.id"), nullable=True)
     reward_source_entry_id = Column(Integer, ForeignKey("ledger_entry.id", ondelete="SET NULL"), nullable=True)

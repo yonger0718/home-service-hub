@@ -346,8 +346,11 @@ export class EntryDetailComponent implements OnInit {
     }
     // The API's open amount of a debt that is not closed: |amount + Σ settled values|.
     const remaining = Math.round(Math.abs(Math.abs(Number(detail.amount)) - settledBack(detail)) * 1e4) / 1e4;
-    return remaining > 0
-      ? `重新開啟後，這筆會回到未結清：剩餘 ${formatMoney(remaining, detail.currency)}。`
+    if (remaining > 0) {
+      return `重新開啟後，這筆會回到未結清：剩餘 ${formatMoney(remaining, detail.currency)}。`;
+    }
+    return detail.kind === 'payable'
+      ? '還款已還清，重新開啟後仍是已結清；刪除還款後才會出現剩餘金額。'
       : '收款已收滿，重新開啟後仍是已結清；刪除收款後才會出現剩餘金額。';
   });
   readonly refundable = computed(() => {
@@ -827,6 +830,10 @@ export class EntryDetailComponent implements OnInit {
       this.applyAccountDefault(detail, panel, panel === 'settle' && !!chosen && chosen.currency !== detail.currency);
     }
     this.panel.set(panel);
+    if (panel === 'reopen' || panel === 'close') {
+      // The confirm renders below the related rows: focus brings it into view, and ⏎ lands on 取消, not the opener.
+      this.focusInPanel('.debt-cancel');
+    }
     if (form) {
       // Keys start inside the form, so Esc / ⏎ reach it.
       afterNextRender(() => this.host.nativeElement.querySelector<HTMLElement>('.form-amount')?.focus(), {

@@ -1122,7 +1122,7 @@ def delete_project(db: Session, project_id: int) -> None:
 def _open_amounts(db: Session) -> dict[int, list[dict]]:
     """Per counterparty and currency: −Σ amount over its receivable and payable entries (settlements included).
 
-    Closed debts (`is_closed`) and the settlements linked to them are left out: MOZE counts them as settled. A
+    Closed debts (`is_closed`) and the settlements linked to them are left out: they count as settled. A
     settlement linked to an original in another currency counts in that original's currency at its settled value
     (its `original_amount` when that is in the original's currency, else nothing).
     """

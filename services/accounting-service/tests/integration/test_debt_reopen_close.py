@@ -126,13 +126,16 @@ def test_only_a_debt_original_can_be_reopened_or_closed(client, db_session, seed
     collection = seed.entry(
         wallet, "200", kind="receivable", counterparty_id=alan.id, settles_entry_id=receivable.id, is_settlement=True)
     unlinked = seed.entry(wallet, "50", kind="receivable", counterparty_id=alan.id, is_settlement=True)
+    # A row that points at a debt without the settlement flag is still not an original.
+    linked = seed.entry(wallet, "70", kind="receivable", counterparty_id=alan.id, settles_entry_id=receivable.id)
     db_session.commit()
+    rows = (expense, collection, unlinked, linked)
 
-    for entry in (expense, collection, unlinked):
+    for entry in rows:
         response = client.post(f"/entries/{entry.id}/{action}")
         assert response.status_code == 422 and _error_fields(response) == {"kind"}, response.text
     db_session.expire_all()
-    assert [db_session.get(LedgerEntry, e.id).is_closed for e in (expense, collection, unlinked)] == [False] * 3
+    assert [db_session.get(LedgerEntry, e.id).is_closed for e in rows] == [False] * 4
 
 
 @pytest.mark.parametrize("action", ["reopen", "close"])

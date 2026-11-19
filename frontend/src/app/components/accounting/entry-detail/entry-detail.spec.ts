@@ -1429,8 +1429,39 @@ describe('EntryDetailComponent', () => {
       fixture.detectChanges();
 
       const confirm = el(fixture).querySelector('.debt-confirm')!;
-      expect(confirm.querySelector('.form-error')?.textContent?.trim()).toBeTruthy();
+      expect(confirm.querySelector('.form-error')?.textContent).toContain('排程「信貸」還在還款');
       expect(confirm.querySelector<HTMLButtonElement>('.debt-confirm-go')!.disabled).toBe(false);
+    });
+
+    it('uses 還款 wording on a payable its repayments cleared', () => {
+      const payable = detail({
+        ...CLOSED, kind: 'payable', amount: '420.0000',
+        settled_by: [entry({ id: 50, kind: 'payable', amount: '-420.0000', name: '還款', account_name: '錢包' })],
+      });
+
+      const confirm = openConfirm(render(payable), 'reopen');
+
+      expect(confirm.textContent).toContain('還款已還清，重新開啟後仍是已結清；刪除還款後才會出現剩餘金額。');
+      expect(confirm.textContent).not.toContain('收款');
+    });
+
+    it('moves focus into the confirm, and Esc closes it and returns focus to its button', async () => {
+      const fixture = render(CLOSED);
+      const opener = el(fixture).querySelector<HTMLButtonElement>('.debt-reopen')!;
+      opener.focus();
+      const confirm = openConfirm(fixture, 'reopen');
+      await fixture.whenStable();
+
+      // The panel sits below the related rows: focus brings it into view and keeps ⏎ off the opener.
+      expect(document.activeElement).toBe(confirm.querySelector('.debt-cancel'));
+
+      const esc = key(document.activeElement!, { key: 'Escape' });
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      expect(esc.defaultPrevented).toBe(true);
+      expect(el(fixture).querySelector('.debt-confirm')).toBeNull();
+      expect(document.activeElement).toBe(el(fixture).querySelector('.debt-reopen'));
     });
 
     it('取消 closes the confirm without a request', () => {
