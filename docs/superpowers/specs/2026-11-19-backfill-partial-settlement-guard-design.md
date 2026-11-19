@@ -1,6 +1,6 @@
 # Policy backfill: hold a line that may be part of an owner settlement receipt (#389)
 
-Status: short design (small change), awaiting owner approval.
+Status: short design (small change), approved by the owner 2026-11-19.
 
 ## Why
 
