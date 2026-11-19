@@ -127,7 +127,7 @@ def test_only_a_debt_original_can_be_reopened_or_closed(client, db_session, seed
         wallet, "200", kind="receivable", counterparty_id=alan.id, settles_entry_id=receivable.id, is_settlement=True)
     unlinked = seed.entry(wallet, "50", kind="receivable", counterparty_id=alan.id, is_settlement=True)
     # A row that points at a debt without the settlement flag is still not an original.
-    linked = seed.entry(wallet, "70", kind="receivable", counterparty_id=alan.id, settles_entry_id=receivable.id)
+    linked = seed.entry(wallet, "-70", kind="receivable", counterparty_id=alan.id, settles_entry_id=receivable.id)
     db_session.commit()
     rows = (expense, collection, unlinked, linked)
 
@@ -197,7 +197,7 @@ def test_close_is_allowed_once_the_schedule_is_ended_and_reopen_is_always_allowe
 @pytest.fixture
 def scoped(monkeypatch):
     monkeypatch.setenv(auth.TOKENS_ENV, "wr:wr-token,rd:rd-token")
-    monkeypatch.setenv(auth.SCOPES_ENV, "wr=read,write; rd=read")
+    monkeypatch.setenv(auth.SCOPES_ENV, "wr=write; rd=read")  # write alone must be enough
 
 
 def test_write_scope_may_do_both_and_read_scope_neither(client, db_session, seed, scoped):
