@@ -40,6 +40,8 @@ export interface ChildDraft {
     attachedRuleIds: number[];
     originalAccountId: number;
     source: string;
+    /** The fee / discount kinds the stored entry had: a save that drops one of them confirms it (#396). */
+    childKinds: readonly ('fee' | 'discount')[];
     /** Server-signed amount in the account currency. */
     signedAmount: string;
     /** `signedAmount` when the account currency is the main currency, else null (no client conversion). */

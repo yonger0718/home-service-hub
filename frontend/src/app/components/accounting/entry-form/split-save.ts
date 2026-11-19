@@ -30,11 +30,20 @@ export interface SaveContext {
 /** The five save routes (spec §2.7), plus `rules`: a loaded single entry whose only change is its reward rules (#293). */
 export type EntrySavePlan =
   | { kind: 'create'; input: EntryInput }
-  | { kind: 'update'; id: number; input: EntryInput }
+  | { kind: 'update'; id: number; input: EntryInput; dropChildren: boolean }
   | { kind: 'rules'; id: number; input: EntryInput }
   | { kind: 'create-split'; input: SplitInput }
-  | { kind: 'convert-split'; id: number; input: SplitInput }
-  | { kind: 'update-split'; groupId: number; input: SplitInput };
+  | { kind: 'convert-split'; id: number; input: SplitInput; dropChildren: boolean }
+  | { kind: 'update-split'; groupId: number; input: SplitInput; dropChildren: boolean };
+
+/**
+ * #396: true when a stored entry in the form lost a fee / discount kind it was loaded with (the owner cleared it, or
+ * changed the account, which clears both). Only then does the update confirm the drop; a child someone else added
+ * after the load is not in `loaded.childKinds`, so the API refuses that save and the owner reloads.
+ */
+function dropsLoadedChild(children: readonly ChildDraft[]): boolean {
+  return children.some(child => child.id !== null && !!child.loaded?.childKinds.some(kind => child[kind] === null));
+}
 
 /**
  * The child's rule ids that may be sent: rules of its own account valid on `date`, plus the rules the stored row was
@@ -192,7 +201,10 @@ export function planEntrySave(
     if (!children.some(child => child.id !== null)) {
       throw new Error('至少保留一項原有記錄');
     }
-    return { kind: 'update-split', groupId: context.groupId, input: toSplitInput(children, parent, accounts, partyIds) };
+    return {
+      kind: 'update-split', groupId: context.groupId, input: toSplitInput(children, parent, accounts, partyIds),
+      dropChildren: dropsLoadedChild(children),
+    };
   }
   if (children.length === 1) {
     const child = children[0];
@@ -202,7 +214,7 @@ export function planEntrySave(
     }
     return onlyRulesChanged(input, context.saved ?? null, accounts)
       ? { kind: 'rules', id: context.entryId, input }
-      : { kind: 'update', id: context.entryId, input };
+      : { kind: 'update', id: context.entryId, input, dropChildren: dropsLoadedChild(children) };
   }
   const input = toSplitInput(children, parent, accounts, partyIds);
   if (context.entryId !== null) {
@@ -212,7 +224,7 @@ export function planEntrySave(
     ) {
       throw new Error('原記錄不可移除或替換');
     }
-    return { kind: 'convert-split', id: context.entryId, input };
+    return { kind: 'convert-split', id: context.entryId, input, dropChildren: dropsLoadedChild(children) };
   }
   if (children.some(child => child.id !== null)) {
     throw new Error('新增多類別不可包含既有編號');
@@ -247,14 +259,14 @@ export function executeEntrySave(service: AccountingService, plan: EntrySavePlan
     case 'create':
       return service.createEntry(plan.input);
     case 'update':
-      return service.updateEntry(plan.id, plan.input);
+      return service.updateEntry(plan.id, plan.input, plan.dropChildren);
     case 'rules':
       return service.updateEntryRewardRules(plan.id, plan.input.reward_rule_ids);
     case 'create-split':
       return service.createSplit(plan.input);
     case 'update-split':
-      return service.updateSplit(plan.groupId, plan.input);
+      return service.updateSplit(plan.groupId, plan.input, plan.dropChildren);
     case 'convert-split':
-      return service.convertEntryToSplit(plan.id, plan.input);
+      return service.convertEntryToSplit(plan.id, plan.input, plan.dropChildren);
   }
 }

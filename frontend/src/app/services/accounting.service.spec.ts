@@ -317,6 +317,25 @@ describe('AccountingService', () => {
     req.flush(method === 'DELETE' ? null : {});
   });
 
+  // #396 / #390: a confirming parameter goes out only when the caller asked for it (the API then needs `admin`).
+  it.each([
+    ['updateEntry', (s: AccountingService, on?: boolean) => s.updateEntry(9, ENTRY_INPUT, on), `${API}/entries/9`, 'drop_children'],
+    ['updateTransfer', (s: AccountingService, on?: boolean) => s.updateTransfer('g-1', TRANSFER_INPUT, on), `${API}/transfers/g-1`, 'drop_children'],
+    ['updateSplit', (s: AccountingService, on?: boolean) => s.updateSplit(4, SPLIT_INPUT, on), `${API}/splits/4`, 'drop_children'],
+    ['convertEntryToSplit', (s: AccountingService, on?: boolean) => s.convertEntryToSplit(7, SPLIT_INPUT, on), `${API}/entries/7/split`, 'drop_children'],
+    ['deleteEntry', (s: AccountingService, on?: boolean) => s.deleteEntry(9, on), `${API}/entries/9`, 'cascade'],
+  ] as const)('%s sends its confirming parameter only when asked', (_name, call, url, key) => {
+    for (const [asked, keys] of [[undefined, []], [false, []], [true, [key]]] as const) {
+      call(service, asked).subscribe();
+      const req = httpMock.expectOne(r => r.url === url);
+      expect(req.request.params.keys()).toEqual([...keys]);
+      if (asked) {
+        expect(req.request.params.get(key)).toBe('true');
+      }
+      req.flush(null);
+    }
+  });
+
   it('posts the backup zip as multipart form data with the run options as query parameters', () => {
     const file = new File(['zip'], 'MOZE_4.0.zip', { type: 'application/zip' });
     service.importBackup(file, { dryRun: true, strict: false }).subscribe();

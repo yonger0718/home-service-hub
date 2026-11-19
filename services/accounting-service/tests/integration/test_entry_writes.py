@@ -255,7 +255,7 @@ def test_update_replaces_fields_and_children(client, db_session, seed):
     wallet_id, card_id = wallet.id, card.id
 
     response = client.put(
-        f"/entries/{entry_id}",
+        f"/entries/{entry_id}?drop_children=true",  # #396: the stored discount is dropped on purpose
         json=_payload(card, amount="250", entry_date="2026-09-03", name="晚餐", fee={"amount": "7", "name": "運費"}),
     )
 
@@ -562,7 +562,7 @@ def test_delete_refuses_a_child_on_another_account_until_confirmed(client, db_se
     assert refused.status_code == 409, refused.text
     message = refused.json()["message"]
     assert message.startswith("cascade_unconfirmed: ") and f"entry {fee_id} (fee, account {card_id})" in message
-    assert "?cascade=true" in message
+    assert "the owner confirms this delete in the app" in message and "=true" not in message  # #396: no how-to
     db_session.expire_all()
     assert db_session.get(LedgerEntry, receipt_id) is not None and db_session.get(LedgerEntry, fee_id) is not None
 

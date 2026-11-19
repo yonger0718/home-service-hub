@@ -1,10 +1,10 @@
 from datetime import date
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
-from ..auth import method_scope
+from ..auth import method_scope, require_admin_to_confirm
 from ..database import get_db
 from ..schemas.ledger import DailySummaryOut, EntryDeleteOut, EntryDetailOut, EntryKind, EntryPage, MonthSummaryOut
 from ..schemas.writes import (
@@ -89,17 +89,23 @@ def post_entry(payload: EntryIn, db: Session = Depends(get_db)):
 
 
 @router.put("/{entry_id}", response_model=EntryWriteOut)
-def put_entry(entry_id: int, payload: EntryUpdateIn, db: Session = Depends(get_db)):
+def put_entry(entry_id: int, payload: EntryUpdateIn, request: Request, drop_children: bool = False,
+              db: Session = Depends(get_db)):
+    """A stored fee / discount child the payload does not carry is dropped only with `?drop_children=true`
+    (409 `children_unconfirmed`, #396); the parameter needs the admin scope."""
+    require_admin_to_confirm(request, drop_children)
     with service_errors():
-        entry_write_service.update_entry(db, entry_id, payload)
+        entry_write_service.update_entry(db, entry_id, payload, drop_children=drop_children)
     db.commit()
     return _written(db, entry_id)
 
 
 @router.delete("/{entry_id}", response_model=EntryDeleteOut)
-def remove_entry(entry_id: int, cascade: bool = False, db: Session = Depends(get_db)):
+def remove_entry(entry_id: int, request: Request, cascade: bool = False, db: Session = Depends(get_db)):
     """Delete the entry with its fee / discount children and, for a transfer, the other leg; the answer lists every
-    row removed. A child on another account than its parent needs `?cascade=true` (409 `cascade_unconfirmed`, #390)."""
+    row removed. A child on another account than its parent needs `?cascade=true` (409 `cascade_unconfirmed`, #390);
+    the parameter needs the admin scope (#396)."""
+    require_admin_to_confirm(request, cascade)
     with service_errors():
         deleted = entry_write_service.delete_entry(db, entry_id, cascade=cascade)
     db.commit()
@@ -138,10 +144,13 @@ def post_reward_reprice(entry_id: int, payload: RewardRepriceIn, db: Session = D
 
 
 @router.put("/{entry_id}/split", response_model=SplitOut)
-def put_entry_split(entry_id: int, payload: SplitIn, db: Session = Depends(get_db)):
-    """Convert a single entry into a split; the entry keeps its id (split rework §1.6)."""
+def put_entry_split(entry_id: int, payload: SplitIn, request: Request, drop_children: bool = False,
+                    db: Session = Depends(get_db)):
+    """Convert a single entry into a split; the entry keeps its id (split rework §1.6). `drop_children`: as on
+    PUT /entries/{entry_id} (#396)."""
+    require_admin_to_confirm(request, drop_children)
     with service_errors():
-        result = split_service.convert_to_split(db, entry_id, payload)
+        result = split_service.convert_to_split(db, entry_id, payload, drop_children=drop_children)
     db.commit()
     return result.out()
 

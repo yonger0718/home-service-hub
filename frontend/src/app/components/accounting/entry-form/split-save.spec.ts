@@ -3,6 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { describe, expect, it } from 'vitest';
 
+import { EntryDetail } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 
 import { makeAccount, makeEntryDetail, makeRule } from '../testing/fixtures';
@@ -29,7 +30,7 @@ describe('split save contract', () => {
     const b = child(8);
     a.loaded = {
       entryDate: '2026-01-01', entryTime: '12:34:56.789', postedDate: '2026-01-03',
-      merchant: 'legacy', attachedRuleIds: [99], originalAccountId: 1, source: 'manual',
+      merchant: 'legacy', attachedRuleIds: [99], originalAccountId: 1, source: 'manual', childKinds: [],
       signedAmount: '-10', signedBase: '-10', isSettlement: false, kind: 'expense', currency: 'TWD',
     };
     b.loaded = { ...a.loaded, entryDate: '2026-02-02', entryTime: '03:04:05', merchant: 'other' };
@@ -175,6 +176,102 @@ describe('split save contract', () => {
     expect(req.request.method).toBe(method);
     expect(req.request.body).toBe(plan.input);
     req.flush({});
+    http.verify();
+  });
+});
+
+describe('dropping a loaded fee / discount (#396)', () => {
+  const fee = { id: 71, kind: 'fee', amount: '-15.0000', name: '手續費' };
+  const discount = { id: 72, kind: 'discount', amount: '5.0000', name: '折扣' };
+
+  function loaded(id: number, children: unknown[]) {
+    const d = makeEntryDetail({ id, children: children as EntryDetail['children'] });
+    const c = childFromDetail(d, { protected: false, protected_reason: null }, 'TWD');
+    const p = {
+      ...parent(), entryDate: d.entry_date, entryTime: d.entry_time,
+      postedDate: normalizePosted(d.entry_date, d.posted_date),
+    };
+    return { c, p };
+  }
+  const flag = (plan: ReturnType<typeof planEntrySave>) => (plan as { dropChildren?: boolean }).dropChildren;
+
+  it('remembers which child kinds the stored entry had', () => {
+    expect(loaded(7, [fee, discount]).c.loaded?.childKinds).toEqual(['fee', 'discount']);
+    expect(loaded(7, []).c.loaded?.childKinds).toEqual([]);
+  });
+
+  it('a single update confirms only when the form dropped a kind it loaded', () => {
+    const kept = loaded(7, [fee]);
+    kept.c.name = '午餐';
+    const keptPlan = planEntrySave([kept.c], kept.p, accounts, parties, { entryId: 7, groupId: null });
+    expect([keptPlan.kind, flag(keptPlan)]).toEqual(['update', false]);
+
+    const cleared = loaded(7, [fee]);
+    cleared.c.fee = null;
+    expect(flag(planEntrySave([cleared.c], cleared.p, accounts, parties, { entryId: 7, groupId: null }))).toBe(true);
+    // a save that failed for another reason is planned again from the same drafts: still confirmed
+    expect(flag(planEntrySave([cleared.c], cleared.p, accounts, parties, { entryId: 7, groupId: null }))).toBe(true);
+
+    const never = loaded(7, []);
+    never.c.name = '午餐';
+    expect(flag(planEntrySave([never.c], never.p, accounts, parties, { entryId: 7, groupId: null }))).toBe(false);
+
+    const other = loaded(7, [fee]);
+    other.c.discount = { amount: '5', name: '折扣' };
+    expect(flag(planEntrySave([other.c], other.p, accounts, parties, { entryId: 7, groupId: null }))).toBe(false);
+  });
+
+  it('a copy is a new record and never confirms', () => {
+    const copy = loaded(7, [fee]);
+    copy.c.id = null;
+    copy.c.loaded = null;
+    copy.c.fee = null;
+    const plan = planEntrySave([copy.c], copy.p, accounts, parties, { entryId: null, groupId: null });
+    expect([plan.kind, flag(plan)]).toEqual(['create', undefined]);
+  });
+
+  it('a split update confirms for a kept member that lost a kind, not for a member removed from the list', () => {
+    const a = loaded(7, [fee, discount]);
+    const b = loaded(8, []);
+    a.c.discount = null;
+    expect(flag(planEntrySave([a.c, b.c], a.p, accounts, parties, { entryId: 7, groupId: 4 }))).toBe(true);
+
+    const gone = loaded(7, [fee]);
+    const stays = loaded(8, []);
+    const plan = planEntrySave([stays.c, child()], gone.p, accounts, parties, { entryId: 8, groupId: 4 });
+    expect([plan.kind, flag(plan)]).toEqual(['update-split', false]);
+  });
+
+  it('a convert confirms when the anchor lost its fee', () => {
+    const anchor = loaded(7, [fee]);
+    anchor.c.fee = null;
+    const plan = planEntrySave([anchor.c, child()], anchor.p, accounts, parties, { entryId: 7, groupId: null });
+    expect([plan.kind, flag(plan)]).toEqual(['convert-split', true]);
+
+    const kept = loaded(7, [fee]);
+    expect(flag(planEntrySave([kept.c, child()], kept.p, accounts, parties, { entryId: 7, groupId: null }))).toBe(false);
+  });
+
+  it.each([
+    [7, null, 1, '/api/accounting/entries/7'],
+    [7, null, 2, '/api/accounting/entries/7/split'],
+    [7, 4, 2, '/api/accounting/splits/4'],
+  ] as const)('sends the flag of the plan: entry=%s group=%s count=%s', (entryId, groupId, count, url) => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
+    const http = TestBed.inject(HttpTestingController);
+    for (const drop of [true, false]) {
+      const first = loaded(7, [fee]);
+      if (drop) {
+        first.c.fee = null;
+      }
+      first.c.name = '午餐';
+      const rows = [first.c, child()].slice(0, count);
+      const plan = planEntrySave(rows, first.p, accounts, parties, { entryId, groupId });
+      executeEntrySave(TestBed.inject(AccountingService), plan).subscribe();
+      const req = http.expectOne(r => r.url === url);
+      expect(req.request.params.keys()).toEqual(drop ? ['drop_children'] : []);
+      req.flush({});
+    }
     http.verify();
   });
 });
