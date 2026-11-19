@@ -1,6 +1,6 @@
 # Updates: a stored fee / discount is not dropped without a confirmation (#396)
 
-Status: short design (small change). Approach and scope picked by the owner 2026-11-19 ("refuse, delete only when confirmed"; "all edit routes").
+Status: short design (small change). Approach and scope picked by the owner 2026-11-19 ("refuse, delete only when confirmed"; "all edit routes"; "make the confirmation a lock, #390 included").
 
 ## Why
 
@@ -20,6 +20,7 @@ What the code and the data say today:
 - An update that would delete a stored fee / discount child, with nothing of that kind in the payload, is refused until the caller confirms it.
 - The owner's own edit in the SPA (clearing the fee in the form and saving) needs no extra step.
 - One rule for all four routes.
+- The confirmation is the owner's: a caller without the `admin` scope (the assistant) cannot give it. The same holds for the delete confirmation of #390.
 
 ## Non-goals / anti-goals
 
@@ -32,6 +33,7 @@ What the code and the data say today:
 ## Approaches
 
 1. **Refuse the drop until confirmed** (picked). `409` with a code; `?drop_children=true` confirms. The same pattern as `?cascade=true` in #390.
+   - As first designed, any caller with `write` could add the parameter and repeat the request, and the refusal text said how. The only thing between the assistant and the delete was a line in its skill file. The owner chose to make it a lock: the confirming request needs `admin`.
 2. **Absent means keep, explicit null deletes.** No SPA change (the form sends an explicit null). Rejected: a caller that serialises empty fields as null still deletes silently, and the PUT body would mix two meanings of "absent".
 3. **Refuse only a covered or foreign child.** Smallest. Rejected: 87 of the 278 children are not covered by a statement line; losing one of those stays silent, and it is the case no statement will ever point out.
 
@@ -40,11 +42,13 @@ What the code and the data say today:
 ### API (`services/accounting-service`)
 
 - The four routes take a query parameter `drop_children: bool = False`.
-- **Refusal.** When an update would delete a stored child of an entry it rewrites and the payload carries no child of that kind for that entry, and `drop_children` is not true, the answer is `409` with the code `children_unconfirmed`. The detail names each such child (`entry <id> (<kind>) of entry <parent id>`) and says to send the fee / discount back or to repeat with `?drop_children=true`. Nothing is written.
+- **Refusal.** When an update would delete a stored child of an entry it rewrites and the payload carries no child of that kind for that entry, and `drop_children` is not true, the answer is `409` with the code `children_unconfirmed`. The detail names each such child (`entry <id> (<kind>) of entry <parent id>`) and says to send the fee / discount back, or that the owner confirms the drop in the app. It does not name the parameter. Nothing is written.
   - The check sits in `sync_children`, before it writes or deletes a child, so one rule serves the four routes. The routers commit only after the service returns, so the refused request rolls back whole. (The FX rate cache may commit earlier, in the prepare step, before any ledger write; that is unchanged.)
   - A stored child of a kind the payload does carry is never a drop, also when several stored rows become one (#313).
   - With `drop_children=true` the update proceeds as today.
 - `drop_children` confirms every drop of the request (both legs of a transfer, every member of a split).
+- **The lock.** A request with `drop_children=true` needs the `admin` scope (`auth.require("admin")`: `admin` or `legacy`, or scopes not configured). Without it the answer is `403 scope`, before the service runs, whether or not a child would be dropped. Production today: the SPA label passes (it already uses admin-only routes), the assistant's label is refused (checked on the live API with an admin-only route).
+- **#390, same lock.** `DELETE /entries/{id}?cascade=true` needs `admin` in the same way, and the `cascade_unconfirmed` detail no longer says `repeat with ?cascade=true`; it says the owner confirms the delete in the app.
 - The responses are unchanged; the updated entry already lists its `children`.
 - Creating (`POST`) is unchanged.
 
@@ -57,7 +61,7 @@ What the code and the data say today:
 
 ### Assistant skill (after the deploy)
 
-- `PUT` of an entry, a transfer or a split: send the stored fee / discount back. On `409 children_unconfirmed` stop and ask the owner; never add `?drop_children=true` unasked.
+- `PUT` of an entry, a transfer or a split: send the stored fee / discount back. On `409 children_unconfirmed` or `409 cascade_unconfirmed` stop and tell the owner; the confirmation (`?drop_children=true`, `?cascade=true`) is refused for the assistant's token (`403 scope`), so the owner does it in the app.
 
 ## Tests
 
@@ -70,7 +74,9 @@ API (`tests/integration`):
 - an entry without children, payload without children: `200` without the flag;
 - `PUT /transfers/{group_id}` without `out_fee` on a transfer whose out leg has a fee: refused, both legs unchanged; confirmed with the flag;
 - `PUT /splits/{group_id}` changing a member's amount without its stored fee: refused, the group unchanged; a member removed from the payload is still deleted with its fee without the flag;
-- `PUT /entries/{id}/split` whose anchor member omits the anchor's stored fee: refused, no group created.
+- `PUT /entries/{id}/split` whose anchor member omits the anchor's stored fee: refused, no group created;
+- the lock, with scopes configured: a `write`-only label gets `403` on each of the four routes with `drop_children=true` and on `DELETE /entries/{id}?cascade=true`, and nothing changes; the same label without the parameter still updates and deletes; an `admin` label and a `legacy` label pass;
+- the `cascade_unconfirmed` and `children_unconfirmed` details do not contain `=true`.
 
 SPA:
 
@@ -89,6 +95,8 @@ Existing tests that drop a child through an update gain `?drop_children=true`.
 ## Known limits (accepted)
 
 - `drop_children=true` confirms every drop of the request, not a named child.
+- The assistant cannot drop a fee or delete a foreign child even when the owner tells it to in chat; the owner does it in the app. (It can still delete the child row itself with `DELETE /entries/{child id}`, which lists what it removed; that is a named, single-row delete.)
+- The parameters stay visible in the OpenAPI document.
 - An open SPA tab from before the release cannot clear a fee until it is reloaded.
 - A caller that sends a fee back with a wrong amount changes the fee; that is an edit, not a drop.
 
