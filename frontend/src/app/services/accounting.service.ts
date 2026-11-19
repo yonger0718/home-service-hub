@@ -73,6 +73,11 @@ export function toParams(query: object): HttpParams {
   return params;
 }
 
+/** The query of an update that confirms dropping a stored fee / discount (#396); none when not asked. */
+function dropOptions(dropChildren: boolean): { params?: Record<string, string> } {
+  return dropChildren ? { params: { drop_children: 'true' } } : {};
+}
+
 @Injectable({
   providedIn: 'root',
 })
@@ -230,8 +235,13 @@ export class AccountingService {
     return this.bump(this.http.post<EntryDetail>(`${this.apiUrl}/entries`, input));
   }
 
-  updateEntry(id: number, input: EntryInput): Observable<EntryDetail> {
-    return this.bump(this.http.put<EntryDetail>(`${this.apiUrl}/entries/${id}`, input));
+  /**
+   * `dropChildren` (here and on the transfer / split updates): confirm that the update deletes a stored fee /
+   * discount the body no longer carries (`?drop_children=true`, #396). Without it the API refuses such an update
+   * with 409 `children_unconfirmed`; with it the API needs the admin scope.
+   */
+  updateEntry(id: number, input: EntryInput, dropChildren = false): Observable<EntryDetail> {
+    return this.bump(this.http.put<EntryDetail>(`${this.apiUrl}/entries/${id}`, input, dropOptions(dropChildren)));
   }
 
   /** Replace only the entry's reward rule links; the row and its fee / discount children stay as they are (#293). */
@@ -277,8 +287,8 @@ export class AccountingService {
     );
   }
 
-  updateTransfer(groupId: string, input: TransferInput): Observable<unknown> {
-    return this.bump(this.http.put<unknown>(`${this.apiUrl}/transfers/${groupId}`, input));
+  updateTransfer(groupId: string, input: TransferInput, dropChildren = false): Observable<unknown> {
+    return this.bump(this.http.put<unknown>(`${this.apiUrl}/transfers/${groupId}`, input, dropOptions(dropChildren)));
   }
 
   createSplit(input: SplitInput): Observable<SplitResult> {
@@ -286,13 +296,13 @@ export class AccountingService {
   }
 
   /** Upserts the members by id (keep / full / new / dropped); one member dissolves the split. */
-  updateSplit(groupId: number, input: SplitInput): Observable<SplitResult> {
-    return this.bump(this.http.put<SplitResult>(`${this.apiUrl}/splits/${groupId}`, input));
+  updateSplit(groupId: number, input: SplitInput, dropChildren = false): Observable<SplitResult> {
+    return this.bump(this.http.put<SplitResult>(`${this.apiUrl}/splits/${groupId}`, input, dropOptions(dropChildren)));
   }
 
   /** Converts an ungrouped entry into a split; the entry is the anchor and keeps its id. */
-  convertEntryToSplit(entryId: number, input: SplitInput): Observable<SplitResult> {
-    return this.bump(this.http.put<SplitResult>(`${this.apiUrl}/entries/${entryId}/split`, input));
+  convertEntryToSplit(entryId: number, input: SplitInput, dropChildren = false): Observable<SplitResult> {
+    return this.bump(this.http.put<SplitResult>(`${this.apiUrl}/entries/${entryId}/split`, input, dropOptions(dropChildren)));
   }
 
   deleteSplit(groupId: number): Observable<void> {

@@ -37,6 +37,13 @@ interface SideChildren {
 const EMPTY_CHILDREN: SideChildren = { fee: '', discount: '' };
 const CATEGORIES_FAILED = '轉帳類別讀取失敗，請重新整理';
 
+type ChildKind = keyof SideChildren;
+const NO_KINDS: Record<TransferSide, readonly ChildKind[]> = { out: [], in: [] };
+
+function kindsOf(children: LedgerEntry[] | undefined): ChildKind[] {
+  return (['fee', 'discount'] as const).filter(kind => (children ?? []).some(child => child.kind === kind));
+}
+
 function childrenFrom(children: LedgerEntry[] | undefined): SideChildren {
   const sum = (kind: string) =>
     (children ?? []).filter(child => child.kind === kind).reduce((total, child) => total + Math.abs(Number(child.amount)), 0);
@@ -79,6 +86,8 @@ export class TransferPanelComponent implements OnInit {
   readonly outText = signal('');
   readonly inText = signal('');
   readonly children = signal<Record<TransferSide, SideChildren>>({ out: EMPTY_CHILDREN, in: EMPTY_CHILDREN });
+  /** The fee / discount kinds each stored leg had when the edit was loaded (#396); empty for a new transfer. */
+  private loadedKinds: Record<TransferSide, readonly ChildKind[]> = NO_KINDS;
   readonly sheet = signal<TransferSide | null>(null);
   readonly activeSide = signal<TransferSide | null>(null);
   readonly error = signal<string | null>(null);
@@ -304,6 +313,7 @@ export class TransferPanelComponent implements OnInit {
     this.outText.set('');
     this.inText.set('');
     this.children.set({ out: EMPTY_CHILDREN, in: EMPTY_CHILDREN });
+    this.loadedKinds = NO_KINDS;
     this.closeSheet();
     this.activeSide.set(null);
     this.error.set(null);
@@ -358,7 +368,13 @@ export class TransferPanelComponent implements OnInit {
     if (!body) {
       return null;
     }
-    return groupId ? this.service.updateTransfer(groupId, body) : this.service.createTransfer(body);
+    if (!groupId) {
+      return this.service.createTransfer(body);
+    }
+    // #396: confirm the drop only of a fee / discount this panel loaded on that leg and the owner cleared.
+    const sent = { out: { fee: body.out_fee, discount: body.out_discount }, in: { fee: body.in_fee, discount: body.in_discount } };
+    const drops = (['out', 'in'] as const).some(side => this.loadedKinds[side].some(kind => !sent[side][kind]));
+    return this.service.updateTransfer(groupId, body, drops);
   }
 
   private applyEdit(edit: TransferEdit): void {
@@ -374,5 +390,6 @@ export class TransferPanelComponent implements OnInit {
     this.outText.set(String(Math.abs(Number(edit.out.amount))));
     this.inText.set(String(Math.abs(Number(edit.in.amount))));
     this.children.set({ out: childrenFrom(edit.out.children), in: childrenFrom(edit.in.children) });
+    this.loadedKinds = { out: kindsOf(edit.out.children), in: kindsOf(edit.in.children) };
   }
 }

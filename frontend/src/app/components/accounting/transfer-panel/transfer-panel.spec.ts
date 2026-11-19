@@ -162,6 +162,45 @@ describe('TransferPanelComponent', () => {
     req.flush({});
   });
 
+  // #396: PUT /transfers confirms a drop only for a fee / discount this panel loaded and the owner cleared.
+  it.each([
+    ['kept', [{ id: 70, kind: 'fee', amount: '-10.0000' }], false, []],
+    ['cleared', [{ id: 70, kind: 'fee', amount: '-10.0000' }], true, ['drop_children']],
+    ['never there', [], false, []],
+  ] as const)('editing a transfer whose out fee is %s', async (_name, children, clear, keys) => {
+    const fixture = await render([account(1, '國泰主帳戶', 'TWD', '398071'), account(3, '玉山銀行', 'TWD', '702730')]);
+    const out = { id: 7, kind: 'transfer_out', account_id: 1, amount: '-3000.0000', category_id: 33, children } as unknown as EntryDetail;
+    const inn = { id: 8, kind: 'transfer_in', account_id: 3, amount: '3000.0000', category_id: 33, children: [] } as unknown as EntryDetail;
+    fixture.componentRef.setInput('edit', { groupId: 'g-9', out, in: inn });
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    if (clear) {
+      fixture.componentInstance.setChild('out', 'fee', '');
+    }
+
+    fixture.componentInstance.submit(COMMON, 'g-9')!.subscribe();
+    const req = http.expectOne(r => r.url === '/api/accounting/transfers/g-9');
+    expect(req.request.params.keys()).toEqual([...keys]);
+    expect(req.request.body.out_fee).toEqual(children.length && !clear ? { amount: '10', name: '手續費' } : null);
+    req.flush({});
+  });
+
+  it('a copy of a transfer with a fee is a new transfer and never confirms', async () => {
+    const fixture = await render([account(1, '國泰主帳戶', 'TWD', '398071'), account(3, '玉山銀行', 'TWD', '702730')]);
+    const out = { id: 7, kind: 'transfer_out', account_id: 1, amount: '-3000.0000', category_id: 33, children: [{ id: 70, kind: 'fee', amount: '-10.0000' }] } as unknown as EntryDetail;
+    const inn = { id: 8, kind: 'transfer_in', account_id: 3, amount: '3000.0000', category_id: 33, children: [] } as unknown as EntryDetail;
+    fixture.componentRef.setInput('edit', { groupId: 'g-9', out, in: inn });
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.componentInstance.setChild('out', 'fee', '');
+
+    fixture.componentInstance.submit(COMMON, null)!.subscribe();
+    const req = http.expectOne(r => r.url === '/api/accounting/transfers');
+    expect(req.request.params.keys()).toEqual([]);
+    req.flush({});
+  });
+
   it('refuses the same account on both sides', async () => {
     const fixture = await render([account(1, '國泰主帳戶', 'TWD', '398071'), account(2, '日幣現金', 'JPY', '53635')]);
     fixture.componentInstance.setTo(1);

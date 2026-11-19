@@ -41,6 +41,7 @@ export function childFromDetail(
       attachedRuleIds: ruleIds,
       originalAccountId: detail.account_id,
       source: detail.source,
+      childKinds: (['fee', 'discount'] as const).filter(kind => children[kind] !== null),
       onlineFx:
         detail.fx_source === 'fx_api' && detail.original_amount !== null && detail.original_currency !== null
           ? {
