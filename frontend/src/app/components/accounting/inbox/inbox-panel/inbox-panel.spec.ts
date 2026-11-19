@@ -182,6 +182,20 @@ describe('AppInboxPanelComponent', () => {
     expect(text(folds[4].querySelector('.q'))).toBe('需要在 API 處理（案件 #23）');
   });
 
+  it('a card with a part-of hint highlights no button (#392)', () => {
+    const held = makeItem({
+      case_id: 7,
+      line: { id: 70, date: '2026-11-03', merchant: '轉入', amount: '300.0000', line_kind: 'deposit' },
+      rule_hint: null,
+      part_of: [{ id: 9, date: '2026-11-02', title: '晚餐還款', amount: '600.0000', account_id: 1 }],
+    });
+    const { el } = render(makeInbox([makeInboxAccount({ items: [UBER, held] })], { ask: 2 }));
+    const [plain, hinted] = askCards(el);
+    expect(Array.from(plain.querySelectorAll('.btns button.primary')).map(text)).toEqual(['記為支出…']);
+    expect(text(hinted.querySelector('.btns button'))).toBe('記為收入…');
+    expect(hinted.querySelectorAll('.btns button.primary').length).toBe(0);
+  });
+
   it('one-tap dismiss posts the apply body with every member and the answer', () => {
     const { fixture, el, changed, marked } = render(
       makeInbox(
@@ -671,6 +685,48 @@ describe('AppInboxPanelComponent', () => {
     expect(text(el.querySelector('details.fold summary'))).toBe('系統有提議 1（全部套用）');
     expect(changed).toHaveBeenCalledTimes(1);
     expect(marked).toHaveBeenCalledTimes(1);
+  });
+
+  it('全部套用 leaves a proposal with a part-of hint for the owner (#392)', () => {
+    const plain = makeItem({
+      case_id: 60,
+      question: 'proposed',
+      folded: true,
+      proposal: { id: 600, action: 'match', params: {}, author: 'policy', rationale: '' },
+      actions: ['apply_proposal', 'reject_proposal'],
+    });
+    const held = makeItem({
+      case_id: 61,
+      question: 'proposed',
+      folded: true,
+      line: { id: 61, date: '2026-11-03', merchant: '轉入', amount: '300.0000', line_kind: 'deposit' },
+      rule_hint: null,
+      proposal: { id: 601, action: 'create_entry', params: {}, author: 'hermes', rationale: '' },
+      actions: ['apply_proposal', 'reject_proposal'],
+      part_of: [{ id: 9, date: '2026-11-02', title: '晚餐還款', amount: '600.0000', account_id: 1 }],
+    });
+    const { fixture, el } = render(
+      makeInbox([makeInboxAccount({ items: [plain, held] })], { proposed: 2 }),
+    );
+    const fold = el.querySelector<HTMLElement>('details.fold')!;
+    button(fold, '全部套用').click();
+    fixture.detectChanges();
+
+    expect(text(el.querySelector('.progress'))).toBe('套用中 1/1');
+    http
+      .expectOne((r) => r.method === 'POST' && r.url === '/api/accounting/reconciliation/proposals/600/apply')
+      .flush({});
+    fixture.detectChanges();
+
+    http.expectNone('/api/accounting/reconciliation/proposals/601/apply');
+    const left = Array.from(el.querySelectorAll<HTMLElement>('details.fold .inbox-card'));
+    expect(left.map((card) => text(card.querySelector('.title')))).toEqual(['2026/11/03 轉入 +$300']);
+    expect(left[0].querySelector('.refused')).toBeNull();
+    // the owner can still apply it on its own card
+    button(left[0], '套用').click();
+    http
+      .expectOne((r) => r.method === 'POST' && r.url === '/api/accounting/reconciliation/proposals/601/apply')
+      .flush({});
   });
 
   it('record flow posts create params and 記為收入 for a positive line', () => {

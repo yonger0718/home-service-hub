@@ -119,6 +119,8 @@ export interface InboxCardView {
   /** Merged cards: `2026/09/03 −$120` per member. */
   members: string[];
   buttons: { action: InboxButton; label: string }[];
+  /** False on a card with a part-of hint (#392): the first button would book the duplicate, so none is suggested. */
+  highlight: boolean;
   learn: InboxLearnView | null;
   refused: string[];
   busy: boolean;
@@ -305,9 +307,15 @@ export class AppInboxPanelComponent {
     this.applyOneTap(card, button);
   }
 
-  /** 全部套用: every proposal in the section, one by one. */
+  /**
+   * 全部套用: every proposal in the section, one by one. A card with a part-of hint is left out (#392): applying it
+   * would book the line its card warns about, so the owner answers that one on its own card.
+   */
   applyAll(): void {
-    this.runProposals(this.cards().proposed, 'apply_proposal');
+    this.runProposals(
+      this.cards().proposed.filter((card) => !card.items[0].part_of?.length),
+      'apply_proposal',
+    );
   }
 
   setLearn(card: InboxCard, ticked: boolean): void {
@@ -530,6 +538,7 @@ export class AppInboxPanelComponent {
               : `#${item.case_id}`;
           })
         : [],
+      highlight: !first.part_of?.length,
       buttons: actions.map((action) => ({
         action,
         label:
