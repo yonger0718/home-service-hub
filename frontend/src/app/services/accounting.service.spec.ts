@@ -147,6 +147,7 @@ const CASES: Case[] = [
   { name: 'createEntry', call: s => s.createEntry(ENTRY_INPUT), method: 'POST', url: `${API}/entries`, body: ENTRY_INPUT },
   { name: 'updateEntry', call: s => s.updateEntry(9, ENTRY_INPUT), method: 'PUT', url: `${API}/entries/9`, body: ENTRY_INPUT },
   { name: 'deleteEntry', call: s => s.deleteEntry(9), method: 'DELETE', url: `${API}/entries/9` },
+  { name: 'deleteEntry confirming the cascade (#390)', call: s => s.deleteEntry(9, true), method: 'DELETE', url: `${API}/entries/9`, params: { cascade: 'true' } },
   { name: 'createTransfer', call: s => s.createTransfer(TRANSFER_INPUT), method: 'POST', url: `${API}/transfers`, body: TRANSFER_INPUT },
   {
     name: 'updateTransfer',

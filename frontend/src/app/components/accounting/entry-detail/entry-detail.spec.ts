@@ -408,6 +408,41 @@ describe('EntryDetailComponent', () => {
     expect(navigate).toHaveBeenCalledWith('/accounting');
   });
 
+  it('names the account of a child on another account and confirms its cascade (#390)', () => {
+    vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+    const fixture = render(detail({
+      id: 42, kind: 'income', amount: '600.0000', account_id: 7, account_name: '錢包',
+      children: [entry({ id: 43, kind: 'fee', amount: '-30.0000', parent_entry_id: 42 })],
+    }));
+    el(fixture).querySelector<HTMLButtonElement>('.action-delete')!.click();
+    fixture.detectChanges();
+
+    const confirm = el(fixture).querySelector('.delete-confirm')!;
+    expect(Array.from(confirm.querySelectorAll('li')).map(li => li.textContent?.trim())).toEqual(['手續費 −$30（在 玉山 UNI）']);
+
+    confirm.querySelector<HTMLButtonElement>('.delete-entry')!.click();
+    const req = http.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/entries/42');
+    expect(req.request.params.get('cascade')).toBe('true');
+    req.flush({ deleted: [] });
+  });
+
+  it('a child on the entry\'s own account is listed without an account and deleted without cascade (#390)', () => {
+    vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+    const fixture = render(detail({
+      id: 42, children: [entry({ id: 43, kind: 'fee', amount: '-30.0000', parent_entry_id: 42 })],
+    }));
+    el(fixture).querySelector<HTMLButtonElement>('.action-delete')!.click();
+    fixture.detectChanges();
+
+    const confirm = el(fixture).querySelector('.delete-confirm')!;
+    expect(Array.from(confirm.querySelectorAll('li')).map(li => li.textContent?.trim())).toEqual(['手續費 −$30']);
+
+    confirm.querySelector<HTMLButtonElement>('.delete-entry')!.click();
+    const req = http.expectOne('/api/accounting/entries/42');
+    expect(req.request.method).toBe('DELETE');
+    req.flush({ deleted: [] });
+  });
+
   it('shows the FX line and the fee inside the total', () => {
     const fixture = render(detail({
       id: 42, amount: '-1166.0000', original_amount: '-5390.0000', original_currency: 'JPY', fx_rate: '0.2163000000',

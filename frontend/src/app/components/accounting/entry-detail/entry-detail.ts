@@ -417,12 +417,20 @@ export class EntryDetailComponent implements OnInit {
     }
     return lines;
   });
+  /** Children on another account than the entry (a MOZE import shape): the API deletes them only when confirmed (#390). */
+  readonly foreignChildren = computed(() => {
+    const detail = this.detail();
+    return detail ? (detail.children ?? []).filter(child => child.account_id !== detail.account_id) : [];
+  });
   readonly deleteNotes = computed(() => {
     const detail = this.detail();
     if (!detail) {
       return [];
     }
-    const notes = (detail.children ?? []).map(child => `${this.kindLabels[child.kind]} ${formatMoney(child.amount, child.currency)}`);
+    const notes = (detail.children ?? []).map(child => {
+      const where = child.account_id !== detail.account_id ? `（在 ${child.account_name}）` : '';
+      return `${this.kindLabels[child.kind]} ${formatMoney(child.amount, child.currency)}${where}`;
+    });
     if (detail.transfer_counterpart) {
       const other = detail.transfer_counterpart;
       notes.push(`另一筆轉帳：${other.account_name} ${formatMoney(other.amount, other.currency)}`);
@@ -921,7 +929,11 @@ export class EntryDetailComponent implements OnInit {
       return;
     }
     const id = detail.id;
-    const request = scope === 'group' && detail.group ? this.service.deleteSplit(detail.group.id) : this.service.deleteEntry(id);
+    // The dialog listed the children on another account, so this delete confirms them (#390).
+    const request =
+      scope === 'group' && detail.group
+        ? this.service.deleteSplit(detail.group.id)
+        : this.service.deleteEntry(id, this.foreignChildren().length > 0);
     this.runWrite(request, id, () => this.close());
   }
 }
