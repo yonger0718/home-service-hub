@@ -186,6 +186,21 @@ describe('TransferPanelComponent', () => {
     req.flush({});
   });
 
+  // Final review: a fee text that is not an amount is not "cleared"; saving it would drop the stored fee and confirm it.
+  it.each(['1.2.3', '0', 'abc'])('refuses to save a fee typed as %s instead of dropping the stored fee', async text => {
+    const fixture = await render([account(1, '國泰主帳戶', 'TWD', '398071'), account(3, '玉山銀行', 'TWD', '702730')]);
+    const out = { id: 7, kind: 'transfer_out', account_id: 1, amount: '-3000.0000', category_id: 33, children: [{ id: 70, kind: 'fee', amount: '-10.0000' }] } as unknown as EntryDetail;
+    const inn = { id: 8, kind: 'transfer_in', account_id: 3, amount: '3000.0000', category_id: 33, children: [] } as unknown as EntryDetail;
+    fixture.componentRef.setInput('edit', { groupId: 'g-9', out, in: inn });
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.componentInstance.setChild('out', 'fee', text);
+
+    expect(fixture.componentInstance.submit(COMMON, 'g-9')).toBeNull();
+    expect(fixture.componentInstance.error()).toBe('轉出手續費不是有效金額；要移除請清空欄位');
+    http.expectNone(r => r.url.includes('/transfers'));
+  });
+
   it('a copy of a transfer with a fee is a new transfer and never confirms', async () => {
     const fixture = await render([account(1, '國泰主帳戶', 'TWD', '398071'), account(3, '玉山銀行', 'TWD', '702730')]);
     const out = { id: 7, kind: 'transfer_out', account_id: 1, amount: '-3000.0000', category_id: 33, children: [{ id: 70, kind: 'fee', amount: '-10.0000' }] } as unknown as EntryDetail;

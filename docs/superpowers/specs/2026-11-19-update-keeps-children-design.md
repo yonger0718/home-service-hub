@@ -42,7 +42,7 @@ What the code and the data say today:
 ### API (`services/accounting-service`)
 
 - The four routes take a query parameter `drop_children: bool = False`.
-- **Refusal.** When an update would delete a stored child of an entry it rewrites and the payload carries no child of that kind for that entry, and `drop_children` is not true, the answer is `409` with the code `children_unconfirmed`. The detail names each such child (`entry <id> (<kind>) of entry <parent id>`) and says to send the fee / discount back, or that the owner confirms the drop in the app. It does not name the parameter. Nothing is written.
+- **Refusal.** When an update would delete a stored child of an entry it rewrites and the payload carries no child of that kind for that entry, and `drop_children` is not true, the answer is `409` with the code `children_unconfirmed`. The detail names each such child of the first entry that is refused (`entry <id> (<kind>) of entry <parent id>`; a transfer or a split with drops under two entries is refused at the first) and says to send the fee / discount back, or that the owner confirms the drop in the app. It does not name the parameter. Nothing is written.
   - The check sits in `sync_children`, before it writes or deletes a child, so one rule serves the four routes. The routers commit only after the service returns, so the refused request rolls back whole. (The FX rate cache may commit earlier, in the prepare step, before any ledger write; that is unchanged.)
   - A stored child of a kind the payload does carry is never a drop, also when several stored rows become one (#313).
   - With `drop_children=true` the update proceeds as today.
@@ -99,6 +99,8 @@ Existing tests that drop a child through an update gain `?drop_children=true`.
 - The parameters stay visible in the OpenAPI document.
 - An open SPA tab from before the release cannot clear a fee until it is reloaded.
 - A caller that sends a fee back with a wrong amount changes the fee; that is an edit, not a drop.
+- Replacing a split member (leaving it out and adding a new one without the fee) deletes its fee without a confirmation: member removal is unchanged.
+- The transfer panel refuses to save a fee / discount text that is not an amount (a typo, a zero) instead of sending it as "no fee"; clearing the field is how the owner removes one.
 
 ## Left to the builder
 

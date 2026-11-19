@@ -345,6 +345,17 @@ export class TransferPanelComponent implements OnInit {
       this.error.set('請輸入轉入金額');
       return null;
     }
+    // A fee / discount text that is not an amount (a typo, a zero) is not "cleared": sent as null it would drop the
+    // stored child, and on an edit this panel would confirm that drop itself (#396).
+    for (const [side, account, sideName] of [['out', from, '轉出'], ['in', to, '轉入']] as const) {
+      for (const [field, fieldName] of [['fee', '手續費'], ['discount', '折扣']] as const) {
+        const text = this.children()[side][field];
+        if (text.trim() && parseAmountText(text, account.currency) === null) {
+          this.error.set(`${sideName}${fieldName}不是有效金額；要移除請清空欄位`);
+          return null;
+        }
+      }
+    }
     this.error.set(null);
     return buildTransferInput(
       {

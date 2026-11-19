@@ -72,7 +72,7 @@ describe('http error helpers', () => {
     [409, 'kind_not_splittable: entry 7 is listed by a posted schedule period', '此記錄類型不能拆帳'],
     [409, 'group_scheduled: instance 77', '排程產生的群組不可在此修改'],
     [409, 'locked_until_cutover: entry 7', 'MOZE 匯入資料，切換後可編輯'],
-    [409, 'cascade_unconfirmed: deleting entry 7 also deletes children on another account: entry 8 (fee, account 2); repeat with ?cascade=true to delete them too', '附帶的手續費或折扣記在別的帳戶；請重新載入後再刪，或先刪那筆附帶記錄'],
+    [409, 'cascade_unconfirmed: deleting entry 7 also deletes children on another account: entry 8 (fee, account 2); the owner confirms this delete in the app', '附帶的手續費或折扣記在別的帳戶；請重新載入後再刪，或先刪那筆附帶記錄'],
     [409, 'children_unconfirmed: updating entry 7 would delete entry 8 (fee) of entry 7; send the fee / discount back, or the owner confirms the drop in the app', '這筆記錄的手續費或折扣是在你開啟後才加上的；請重新載入後再編輯'],
     [404, 'member_not_found: member 7', '找不到群組中的子項，請重新載入'],
   ] as const)('reads message prefix for HTTP %i: %s', (status, message, expected) => {
