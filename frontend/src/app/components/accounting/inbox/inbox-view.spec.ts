@@ -84,6 +84,25 @@ describe('buildCards', () => {
 });
 
 describe('questionText', () => {
+  it('names the settlement entry a bank_only line may be part of (#392)', () => {
+    const receipt = { id: 9, date: '2026-09-03', title: '收款 代付晚餐', amount: '600.0000', account_id: 1 };
+    const deposit = { id: 5, date: '2026-09-03', merchant: '跨行轉入', amount: '300.0000', line_kind: 'deposit' };
+    expect(questionText(makeItem({ line: deposit, part_of: [receipt] }), 'TWD')).toBe(
+      '可能是「收款 代付晚餐 $600」的一部分 — 先把那筆改成分筆，別直接記為收入',
+    );
+    const repayment = { ...receipt, title: '還款 房租', amount: '-600.0000' };
+    const withdrawal = { ...deposit, merchant: '跨行轉出', amount: '-300.0000', line_kind: 'withdrawal' };
+    expect(questionText(makeItem({ line: withdrawal, part_of: [repayment] }), 'TWD')).toBe(
+      '可能是「還款 房租 $600」的一部分 — 先把那筆改成分筆，別直接記為支出',
+    );
+    expect(questionText(makeItem({ line: deposit, part_of: [receipt, { ...receipt, id: 10 }] }), 'TWD')).toBe(
+      '可能是「收款 代付晚餐 $600」等 2 筆的一部分 — 先把那筆改成分筆，別直接記為收入',
+    );
+    // An older API omits the field, and an empty list is the ordinary bank_only card.
+    expect(questionText(makeItem({ line: deposit }), 'TWD')).toBe('銀行有、你沒記');
+    expect(questionText(makeItem({ line: deposit, part_of: [] }), 'TWD')).toBe('銀行有、你沒記');
+  });
+
   it('words every question', () => {
     expect(questionText(makeItem(), 'TWD')).toBe('銀行有、你沒記');
     expect(questionText(makeItem({ question: 'transfer' }), 'TWD')).toBe('轉帳／繳費，你沒記 — 在時間軸記一筆轉帳，或對到已記的');

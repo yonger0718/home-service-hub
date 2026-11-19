@@ -187,8 +187,15 @@ function bucket(cards: InboxCards, question: InboxQuestion): InboxCard[] {
 
 export function questionText(item: InboxItem, currency: string): string {
   switch (item.question) {
-    case 'bank_only':
-      return '銀行有、你沒記';
+    case 'bank_only': {
+      const partOf = item.part_of ?? [];
+      if (!partOf.length) return '銀行有、你沒記';
+      // #392: recording the line would book it twice; the owner re-records the entry per transfer instead.
+      const first = partOf[0];
+      const more = partOf.length > 1 ? `等 ${partOf.length} 筆` : '';
+      const as = Number(item.line?.amount ?? 0) < 0 ? '支出' : '收入';
+      return `可能是「${first.title} ${formatMoney(Math.abs(Number(first.amount)), currency)}」${more}的一部分 — 先把那筆改成分筆，別直接記為${as}`;
+    }
     case 'transfer':
       return '轉帳／繳費，你沒記 — 在時間軸記一筆轉帳，或對到已記的';
     case 'ledger_only':
