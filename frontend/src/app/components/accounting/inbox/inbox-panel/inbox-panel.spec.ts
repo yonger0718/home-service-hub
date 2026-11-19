@@ -182,6 +182,20 @@ describe('AppInboxPanelComponent', () => {
     expect(text(folds[4].querySelector('.q'))).toBe('需要在 API 處理（案件 #23）');
   });
 
+  it('a card with a part-of hint highlights no button (#392)', () => {
+    const held = makeItem({
+      case_id: 7,
+      line: { id: 70, date: '2026-11-03', merchant: '轉入', amount: '300.0000', line_kind: 'deposit' },
+      rule_hint: null,
+      part_of: [{ id: 9, date: '2026-11-02', title: '晚餐還款', amount: '600.0000', account_id: 1 }],
+    });
+    const { el } = render(makeInbox([makeInboxAccount({ items: [UBER, held] })], { ask: 2 }));
+    const [plain, hinted] = askCards(el);
+    expect(Array.from(plain.querySelectorAll('.btns button.primary')).map(text)).toEqual(['記為支出…']);
+    expect(text(hinted.querySelector('.btns button'))).toBe('記為收入…');
+    expect(hinted.querySelectorAll('.btns button.primary').length).toBe(0);
+  });
+
   it('one-tap dismiss posts the apply body with every member and the answer', () => {
     const { fixture, el, changed, marked } = render(
       makeInbox(

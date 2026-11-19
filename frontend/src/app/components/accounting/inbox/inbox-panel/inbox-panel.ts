@@ -119,6 +119,8 @@ export interface InboxCardView {
   /** Merged cards: `2026/09/03 −$120` per member. */
   members: string[];
   buttons: { action: InboxButton; label: string }[];
+  /** False on a card with a part-of hint (#392): the first button would book the duplicate, so none is suggested. */
+  highlight: boolean;
   learn: InboxLearnView | null;
   refused: string[];
   busy: boolean;
@@ -530,6 +532,7 @@ export class AppInboxPanelComponent {
               : `#${item.case_id}`;
           })
         : [],
+      highlight: !first.part_of?.length,
       buttons: actions.map((action) => ({
         action,
         label:
