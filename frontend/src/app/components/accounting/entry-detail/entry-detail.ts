@@ -66,13 +66,18 @@ export function settledValue(
   return 0;
 }
 
+/** 已收 / 已還 of a debt: |Σ settled values of its settlements| in the debt's currency. */
+function settledBack(detail: EntryDetail): number {
+  return Math.abs(detail.settled_by.reduce((sum, settlement) => sum + settledValue(settlement, detail.currency), 0));
+}
+
 const FX_SOURCE_LABELS: Record<string, string> = {
   fx_api: '線上匯率',
   moze_backup: 'MOZE 匯率',
   manual: '手動',
 };
 
-export type DetailPanel = 'settle' | 'refund' | 'delete' | 'scope' | 'repost' | null;
+export type DetailPanel = 'settle' | 'refund' | 'delete' | 'scope' | 'repost' | 'reopen' | 'close' | null;
 
 const LINE_LABELS: Record<ScheduleLineKind, string> = {
   expense: '支出', income: '收入', receivable: '應收款項', payable: '應付款項', transfer: '轉帳', repayment: '還款',
@@ -323,6 +328,28 @@ export class EntryDetailComponent implements OnInit {
     const detail = this.detail();
     return this.isDebt() && !this.locked() && !detail?.is_settled && !detail?.is_closed && Number(detail?.open_amount ?? 0) > 0;
   });
+  /** #391: a closed debt (MOZE's flag, or 標記結清) can be opened again; its remainder then follows from its settlements. */
+  readonly canReopen = computed(() => this.isDebt() && !this.locked() && !!this.detail()?.is_closed);
+  /** #391: an open remainder can be closed; not a loan a live schedule repays (the API refuses: the schedule would end). */
+  readonly canClose = computed(() => {
+    const loan = this.detail()?.loan_schedule;
+    return this.canSettle() && (!loan || loan.status === 'ended');
+  });
+  /** What the open confirm (重新開啟 / 標記結清) does to the remainder, in the owner's words. */
+  readonly debtConfirmText = computed(() => {
+    const detail = this.detail();
+    if (!detail) {
+      return '';
+    }
+    if (this.panel() === 'close') {
+      return `剩餘 ${formatMoney(detail.open_amount, detail.currency)} 不再列入未結清，之後可以重新開啟。`;
+    }
+    // The API's open amount of a debt that is not closed: |amount + Σ settled values|.
+    const remaining = Math.round(Math.abs(Math.abs(Number(detail.amount)) - settledBack(detail)) * 1e4) / 1e4;
+    return remaining > 0
+      ? `重新開啟後，這筆會回到未結清：剩餘 ${formatMoney(remaining, detail.currency)}。`
+      : '收款已收滿，重新開啟後仍是已結清；刪除收款後才會出現剩餘金額。';
+  });
   readonly refundable = computed(() => {
     const detail = this.detail();
     if (!detail) {
@@ -455,7 +482,7 @@ export class EntryDetailComponent implements OnInit {
     if (!detail || detail.open_amount === null || (detail.kind !== 'receivable' && detail.kind !== 'payable')) {
       return null;
     }
-    const back = Math.abs(detail.settled_by.reduce((sum, settlement) => sum + settledValue(settlement, detail.currency), 0));
+    const back = settledBack(detail);
     if (back === 0 && !detail.is_closed) {
       return null;
     }
@@ -780,7 +807,7 @@ export class EntryDetailComponent implements OnInit {
     }
   }
 
-  openPanel(panel: 'settle' | 'refund' | 'delete'): void {
+  openPanel(panel: 'settle' | 'refund' | 'delete' | 'reopen' | 'close'): void {
     const detail = this.routedDetail();
     if (!detail || this.locked()) {
       return;
@@ -791,7 +818,8 @@ export class EntryDetailComponent implements OnInit {
     this.formNote.set('');
     this.formDate.set(this.today);
     this.formOriginal.set('');
-    if (panel !== 'delete') {
+    const form = panel === 'settle' || panel === 'refund'; // the others are confirms without fields
+    if (form) {
       const accounts = panel === 'settle' ? this.settleAccounts() : this.sameCurrencyAccounts();
       const own = accounts.find(account => account.id === detail.account_id);
       const chosen = own ?? accounts[0] ?? null;
@@ -799,7 +827,7 @@ export class EntryDetailComponent implements OnInit {
       this.applyAccountDefault(detail, panel, panel === 'settle' && !!chosen && chosen.currency !== detail.currency);
     }
     this.panel.set(panel);
-    if (panel !== 'delete') {
+    if (form) {
       // Keys start inside the form, so Esc / ⏎ reach it.
       afterNextRender(() => this.host.nativeElement.querySelector<HTMLElement>('.form-amount')?.focus(), {
         injector: this.injector,
@@ -918,6 +946,20 @@ export class EntryDetailComponent implements OnInit {
     const id = detail.id;
     const request = panel === 'settle' ? this.service.settleEntry(id, body) : this.service.refundEntry(id, body);
     this.runWrite(request, id, () => {
+      this.panel.set(null);
+      this.load(id, true);
+    });
+  }
+
+  /** #391: 重新開啟 / 標記結清 confirmed. The flag only; the entry reloads with its new remainder. */
+  confirmDebt(): void {
+    const detail = this.routedDetail();
+    const panel = this.panel();
+    if (!detail || this.locked() || this.busy() || (panel !== 'reopen' && panel !== 'close')) {
+      return;
+    }
+    const id = detail.id;
+    this.runWrite(panel === 'reopen' ? this.service.reopenDebt(id) : this.service.closeDebt(id), id, () => {
       this.panel.set(null);
       this.load(id, true);
     });

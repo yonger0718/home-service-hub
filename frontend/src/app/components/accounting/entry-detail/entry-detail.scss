@@ -101,6 +101,18 @@
 .open-state { font-weight: 800; margin: 8px 0 0; }
 .open-amount { color: var(--app-primary); }
 .settled { color: var(--c-green, #1f9d6b); }
+.debt-toggle {
+  background: none;
+  border: 0;
+  color: var(--app-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  margin-left: 8px;
+  padding: 2px 4px;
+  text-decoration: underline;
+}
 .breakdown { color: var(--app-text-muted); font-size: 0.78rem; font-variant-numeric: tabular-nums; font-weight: 600; margin: 2px 0 0; overflow-wrap: anywhere; }
 
 .dsec { color: var(--app-text-muted); font-size: 0.78rem; font-weight: 800; margin: 12px 0 4px; }

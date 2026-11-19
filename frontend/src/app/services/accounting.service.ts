@@ -277,6 +277,16 @@ export class AccountingService {
     return this.bump(this.http.post<EntryDetail>(`${this.apiUrl}/entries/${id}/refund`, input));
   }
 
+  /** #391: clears `is_closed` on a receivable / payable original; its remainder follows from its settlements again. */
+  reopenDebt(id: number): Observable<EntryDetail> {
+    return this.bump(this.http.post<EntryDetail>(`${this.apiUrl}/entries/${id}/reopen`, {}));
+  }
+
+  /** #391: sets `is_closed` on a receivable / payable original: no remainder, whatever its settlements sum to. */
+  closeDebt(id: number): Observable<EntryDetail> {
+    return this.bump(this.http.post<EntryDetail>(`${this.apiUrl}/entries/${id}/close`, {}));
+  }
+
   createBalanceAdjustment(input: BalanceAdjustmentInput): Observable<EntryDetail> {
     return this.bump(this.http.post<EntryDetail>(`${this.apiUrl}/balance-adjustments`, input));
   }

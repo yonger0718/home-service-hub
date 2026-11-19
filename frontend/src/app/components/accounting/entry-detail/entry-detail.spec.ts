@@ -1317,6 +1317,133 @@ describe('EntryDetailComponent', () => {
       expect(el(fixture).querySelector('.inline-form')).toBeNull();
     });
   });
+
+  describe('reopening and closing a debt (#391)', () => {
+    const CLOSED = detail({ ...RECEIVABLE, is_closed: true, open_amount: '0.0000', is_settled: true });
+    const LOAN = {
+      definition_id: 3, name: '信貸 每月還款', status: 'active', posting_mode: 'auto', posted_count: 2, times: 36,
+      next_due_date: null, next_amount: [], remaining: '220.0000', repaid: '200.0000', needs_check: false,
+    };
+
+    function buttons(fixture: ComponentFixture<EntryDetailComponent>): (string | undefined)[] {
+      return Array.from(el(fixture).querySelectorAll('.debt-toggle')).map(b => b.textContent?.trim());
+    }
+
+    function openConfirm(fixture: ComponentFixture<EntryDetailComponent>, action: 'reopen' | 'close'): HTMLElement {
+      el(fixture).querySelector<HTMLButtonElement>(`.debt-${action}`)!.click();
+      fixture.detectChanges();
+      return el(fixture).querySelector<HTMLElement>('.debt-confirm')!;
+    }
+
+    it('offers 重新開啟 on a closed debt and 標記結清 on an open one', () => {
+      expect(buttons(render(CLOSED))).toEqual(['重新開啟']);
+      expect(buttons(render(RECEIVABLE))).toEqual(['標記結清']);
+    });
+
+    it('offers neither on a debt its settlements cleared, a locked debt, a settlement row or a plain entry', () => {
+      const settlement = detail({
+        id: 42, kind: 'receivable', amount: '200.0000', is_settlement: true, settles: entry({ id: 40, kind: 'receivable' }),
+      });
+      const others = [
+        detail({ ...RECEIVABLE, open_amount: '0.0000', is_settled: true }),
+        detail({ ...CLOSED, locked: true }),
+        detail({ ...RECEIVABLE, locked: true }),
+        settlement,
+        detail({ id: 42, amount: '-500.0000', name: '外套' }),
+      ];
+      for (const body of others) {
+        expect(buttons(render(body)), JSON.stringify(body).slice(0, 80)).toEqual([]);
+      }
+    });
+
+    it('does not offer 標記結清 while a live schedule repays the loan, and does once it is ended', () => {
+      expect(buttons(render(detail({ ...RECEIVABLE, loan_schedule: LOAN })))).toEqual([]);
+      expect(buttons(render(detail({ ...RECEIVABLE, loan_schedule: { ...LOAN, status: 'ended' } })))).toEqual(['標記結清']);
+      // Reopening is never held back by a schedule.
+      expect(buttons(render(detail({ ...CLOSED, loan_schedule: LOAN })))).toEqual(['重新開啟']);
+    });
+
+    it('says what reopening brings back, posts it and reloads the entry', () => {
+      const fixture = render(CLOSED);
+      const confirm = openConfirm(fixture, 'reopen');
+
+      expect(confirm.getAttribute('role')).toBe('alertdialog');
+      expect(confirm.textContent).toContain('重新開啟後，這筆會回到未結清：剩餘 $220。');
+      confirm.querySelector<HTMLButtonElement>('.debt-confirm-go')!.click();
+
+      const req = http.expectOne('/api/accounting/entries/42/reopen');
+      expect(req.request.method).toBe('POST');
+      req.flush({});
+      http.expectOne('/api/accounting/entries/42').flush(RECEIVABLE);
+      fixture.detectChanges();
+
+      expect(el(fixture).querySelector('.debt-confirm')).toBeNull();
+      expect(el(fixture).querySelector('.open-amount')?.textContent?.trim()).toBe('剩餘 $220');
+      expect(buttons(fixture)).toEqual(['標記結清']);
+    });
+
+    it('says a fully collected debt stays settled after reopening', () => {
+      const collected = detail({
+        ...CLOSED,
+        settled_by: [entry({ id: 50, kind: 'receivable', amount: '420.0000', name: '收款', account_name: '錢包' })],
+      });
+
+      const confirm = openConfirm(render(collected), 'reopen');
+
+      expect(confirm.textContent).toContain('收款已收滿，重新開啟後仍是已結清；刪除收款後才會出現剩餘金額。');
+      expect(confirm.textContent).not.toContain('回到未結清');
+    });
+
+    it('counts a closed debt without any collection as wholly open again', () => {
+      const confirm = openConfirm(render(detail({ ...CLOSED, settled_by: [] })), 'reopen');
+
+      expect(confirm.textContent).toContain('重新開啟後，這筆會回到未結清：剩餘 $420。');
+    });
+
+    it('says what closing takes out, posts it and reloads the entry', () => {
+      const fixture = render(RECEIVABLE);
+      const confirm = openConfirm(fixture, 'close');
+
+      expect(confirm.textContent).toContain('剩餘 $220 不再列入未結清，之後可以重新開啟。');
+      confirm.querySelector<HTMLButtonElement>('.debt-confirm-go')!.click();
+
+      const req = http.expectOne('/api/accounting/entries/42/close');
+      expect(req.request.method).toBe('POST');
+      req.flush({});
+      http.expectOne('/api/accounting/entries/42').flush(CLOSED);
+      fixture.detectChanges();
+
+      expect(el(fixture).querySelector('.debt-confirm')).toBeNull();
+      expect(el(fixture).querySelector('.settled')?.textContent?.trim()).toBe('已結清');
+      expect(buttons(fixture)).toEqual(['重新開啟']);
+    });
+
+    it('keeps the confirm open and shows the refusal when the API refuses', () => {
+      const fixture = render(RECEIVABLE);
+      openConfirm(fixture, 'close').querySelector<HTMLButtonElement>('.debt-confirm-go')!.click();
+
+      http.expectOne('/api/accounting/entries/42/close').flush(
+        { detail: [{ loc: ['body', 'loan_schedule'], msg: '排程「信貸」還在還款: end the schedule before closing the debt' }] },
+        { status: 422, statusText: 'Unprocessable Entity' },
+      );
+      fixture.detectChanges();
+
+      const confirm = el(fixture).querySelector('.debt-confirm')!;
+      expect(confirm.querySelector('.form-error')?.textContent?.trim()).toBeTruthy();
+      expect(confirm.querySelector<HTMLButtonElement>('.debt-confirm-go')!.disabled).toBe(false);
+    });
+
+    it('取消 closes the confirm without a request', () => {
+      const fixture = render(CLOSED);
+      const confirm = openConfirm(fixture, 'reopen');
+
+      confirm.querySelector<HTMLButtonElement>('.debt-cancel')!.click();
+      fixture.detectChanges();
+
+      expect(el(fixture).querySelector('.debt-confirm')).toBeNull();
+      http.expectNone('/api/accounting/entries/42/reopen');
+    });
+  });
 });
 
 describe('settledValue', () => {
