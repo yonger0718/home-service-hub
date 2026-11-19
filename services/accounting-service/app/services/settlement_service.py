@@ -127,6 +127,29 @@ def settle(
     return entry.id
 
 
+def set_closed(db: Session, entry_id: int, closed: bool) -> None:
+    """Close (`closed=True`) or reopen a receivable / payable original (#391). The flag only: amounts, settlements
+    and links stay as they are, so `open_amount` follows from the flag and the settlements as before.
+
+    Until this, only the MOZE import set `is_closed`, and a closed debt could never be settled again. Idempotent.
+    A loan a live schedule repays cannot be closed: `schedule_posting` reads a closed loan as repaid and would end
+    the schedule on its next period.
+    """
+    target = locked_entry(db, entry_id)
+    assert_entry_editable(db, target)
+    if target.kind not in SETTLE_SIGNS or target.is_settlement or target.settles_entry_id is not None:
+        raise ValidationError("kind", "only receivable and payable originals can be closed or reopened")
+    if closed and not target.is_closed:
+        from .schedule_read import loan_schedule_for  # schedule_read imports this module: no module-level import
+
+        schedule = loan_schedule_for(db, target.id)
+        if schedule is not None and schedule["status"] != "ended":
+            raise ValidationError(
+                "loan_schedule", f"排程「{schedule['name']}」還在還款: end the schedule before closing the debt")
+    target.is_closed = closed
+    db.flush()
+
+
 def refund(db: Session, entry_id: int, payload: RefundIn, *, source: str = "manual") -> int:
     """A refund entry of +amount with the original's category, name and merchant; `source` is the new row's
     (`statement` from the reconciliation action `create_refund`).

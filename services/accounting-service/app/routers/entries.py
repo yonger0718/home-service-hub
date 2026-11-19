@@ -163,6 +163,25 @@ def post_settlement(entry_id: int, payload: SettleIn, db: Session = Depends(get_
     return ledger_service.get_entry_detail(db, new_id)
 
 
+def _set_closed(db: Session, entry_id: int, closed: bool) -> dict:
+    with service_errors():
+        settlement_service.set_closed(db, entry_id, closed)
+    db.commit()
+    return ledger_service.get_entry_detail(db, entry_id)
+
+
+@router.post("/{entry_id}/reopen", response_model=EntryDetailOut)
+def reopen_debt(entry_id: int, db: Session = Depends(get_db)):
+    """Clear `is_closed` on a receivable / payable original: its remainder follows from its settlements again (#391)."""
+    return _set_closed(db, entry_id, False)
+
+
+@router.post("/{entry_id}/close", response_model=EntryDetailOut)
+def close_debt(entry_id: int, db: Session = Depends(get_db)):
+    """Set `is_closed` on a receivable / payable original: no remainder, whatever its settlements sum to (#391)."""
+    return _set_closed(db, entry_id, True)
+
+
 @router.post("/{entry_id}/refund", response_model=EntryDetailOut, status_code=201)
 def post_refund(entry_id: int, payload: RefundIn, db: Session = Depends(get_db)):
     with service_errors():
