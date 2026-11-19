@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.orm import Session
 
-from ..auth import method_scope
+from ..auth import method_scope, require_admin_to_confirm
 from ..database import get_db
 from ..schemas.writes import SplitIn, SplitOut
 from ..services import split_service
@@ -19,10 +19,12 @@ def post_split(payload: SplitIn, db: Session = Depends(get_db)):
 
 
 @router.put("/{group_id}", response_model=SplitOut)
-def put_split(group_id: int, payload: SplitIn, drop_children: bool = False, db: Session = Depends(get_db)):
+def put_split(group_id: int, payload: SplitIn, request: Request, drop_children: bool = False,
+              db: Session = Depends(get_db)):
     """A rewritten member's stored fee / discount child the payload does not carry is dropped only with
-    `?drop_children=true` (409 `children_unconfirmed`, #396); a member left out of the payload goes with its
-    children as before."""
+    `?drop_children=true` (409 `children_unconfirmed`, #396; the parameter needs the admin scope); a member left
+    out of the payload goes with its children as before."""
+    require_admin_to_confirm(request, drop_children)
     with service_errors():
         result = split_service.update_split(db, group_id, payload, drop_children=drop_children)
     db.commit()

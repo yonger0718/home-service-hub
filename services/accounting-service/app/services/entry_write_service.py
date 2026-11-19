@@ -877,7 +877,7 @@ def delete_entry(db: Session, entry_id: int, *, cascade: bool = False) -> list[D
         raise CodedConflictError(
             CASCADE_UNCONFIRMED,
             f"deleting entry {entry_id} also deletes children on another account: {listed}; "
-            "repeat with ?cascade=true to delete them too",
+            "the owner confirms this delete in the app",
         )
     forfeited = reward_engine.forfeit_for_delete(db, accrual) if accrual is not None else None
     delete_entries_cascade(db, target_ids)

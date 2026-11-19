@@ -562,7 +562,7 @@ def test_delete_refuses_a_child_on_another_account_until_confirmed(client, db_se
     assert refused.status_code == 409, refused.text
     message = refused.json()["message"]
     assert message.startswith("cascade_unconfirmed: ") and f"entry {fee_id} (fee, account {card_id})" in message
-    assert "?cascade=true" in message
+    assert "the owner confirms this delete in the app" in message and "=true" not in message  # #396: no how-to
     db_session.expire_all()
     assert db_session.get(LedgerEntry, receipt_id) is not None and db_session.get(LedgerEntry, fee_id) is not None
 

@@ -1,9 +1,9 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from ..auth import method_scope
+from ..auth import method_scope, require_admin_to_confirm
 from ..database import get_db
 from ..schemas.writes import TransferIn, TransferOut
 from ..services import transfer_service
@@ -27,9 +27,11 @@ def post_transfer(payload: TransferIn, db: Session = Depends(get_db)):
 
 
 @router.put("/{group_id}", response_model=TransferOut)
-def put_transfer(group_id: UUID, payload: TransferIn, drop_children: bool = False, db: Session = Depends(get_db)):
+def put_transfer(group_id: UUID, payload: TransferIn, request: Request, drop_children: bool = False,
+                 db: Session = Depends(get_db)):
     """A leg's stored fee / discount child the payload does not carry is dropped only with `?drop_children=true`
-    (409 `children_unconfirmed`, #396)."""
+    (409 `children_unconfirmed`, #396); the parameter needs the admin scope."""
+    require_admin_to_confirm(request, drop_children)
     with service_errors():
         transfer_service.update_transfer(db, group_id, payload, drop_children=drop_children)
     db.commit()
