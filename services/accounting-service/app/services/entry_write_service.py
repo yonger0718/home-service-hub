@@ -717,8 +717,9 @@ CASCADE_UNCONFIRMED = "cascade_unconfirmed"  # 409: a delete would remove a chil
 
 @dataclass(frozen=True)
 class DeletedRow:
-    """One row `delete_entry` removed (#390). `role`: `entry` (the row asked for), `transfer_leg` (another top-level
-    leg of its transfer) or `child` (a fee / discount child of either)."""
+    """One row `delete_entry` removed (#390). `role`: `entry` (the row asked for, also when it is itself a child),
+    `transfer_leg` (another top-level leg of its transfer) or `child` (a fee / discount child of either, deleted
+    along with it)."""
 
     id: int
     role: str
@@ -735,14 +736,15 @@ class DeletedRow:
 def _delete_report(db: Session, entry_id: int, targets: list[LedgerEntry]) -> list[DeletedRow]:
     """What the coming `delete_entries_cascade(targets)` removes: the entry, the other legs by id, then the children
     by id. Read under the target locks (a child is written under its parent's lock)."""
-    children = list(db.scalars(select(LedgerEntry).where(LedgerEntry.parent_entry_id.in_([t.id for t in targets]))
+    target_ids = {target.id for target in targets}
+    children = list(db.scalars(select(LedgerEntry).where(LedgerEntry.parent_entry_id.in_(target_ids))
                                .order_by(LedgerEntry.id)))
     rows = sorted(targets, key=lambda row: (row.id != entry_id, row.id)) + children
     names = dict(db.execute(select(Account.id, Account.name).where(Account.id.in_({r.account_id for r in rows}))).all())
     return [
         DeletedRow(
             id=row.id,
-            role="child" if row.parent_entry_id is not None else "entry" if row.id == entry_id else "transfer_leg",
+            role="entry" if row.id == entry_id else "transfer_leg" if row.id in target_ids else "child",
             parent_entry_id=row.parent_entry_id, kind=row.kind, name=row.name, amount=row.amount,
             currency=row.currency, account_id=row.account_id, account_name=names[row.account_id],
             entry_date=row.entry_date,
@@ -850,6 +852,8 @@ def delete_entry(db: Session, entry_id: int, *, cascade: bool = False) -> list[D
         assert_entry_editable(db, by_id[target_id])
     target_ids = list(before.target_ids)  # read before the cascade expires (and deletes) the rows
     report = _delete_report(db, entry_id, [by_id[target_id] for target_id in target_ids])
+    # `child` rows are the cascaded ones, so their parent is a target and in the report; the row asked for is never
+    # held, also when it is itself a child on another account than its parent (deleting it is the repair)
     accounts = {row.id: row.account_id for row in report}
     foreign = [row for row in report if row.role == "child" and row.account_id != accounts[row.parent_entry_id]]
     if foreign and not cascade:

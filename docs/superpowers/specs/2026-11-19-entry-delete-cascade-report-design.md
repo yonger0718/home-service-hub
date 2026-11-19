@@ -52,13 +52,14 @@ What the code and the data say today:
   ]}
   ```
 
-  - `role` is `entry` for the row named in the URL, `transfer_leg` for another top-level leg of its transfer, `child` for a fee / discount child of either.
+  - `role` is `entry` for the row named in the URL (also when that row is itself a child), `transfer_leg` for another top-level leg of its transfer, `child` for a fee / discount child of either that goes along.
   - Order: the entry, then the other legs by id, then the children by id.
   - Rows whose links are only cleared (settlements, refunds, rewards) are not listed; they are not deleted.
 - **Refusal.** When a child that the delete would remove has an `account_id` different from its own parent's and `cascade` is not true, the delete answers `409` with the code `cascade_unconfirmed`. The detail names each such child (id, kind, account id) and says to repeat the request with `?cascade=true`. Nothing is deleted.
   - The check runs in `entry_write_service.delete_entry`, under the target locks and after the existing refusals (not found, concurrent change, reward row, cutover lock), so those keep their answers.
   - The children are read once under the locks; that one read feeds both the check and the report.
   - With `cascade=true` the delete proceeds and reports as usual.
+  - The row named in the URL is never held. Deleting a child on its own, also one on another account than its parent, needs no `cascade`: that is the repair of the odd shape.
 - `delete_entry` returns the report rows. `delete_entries_cascade` is unchanged.
 
 ### SPA (`frontend`)
@@ -102,6 +103,10 @@ Existing tests that assert `204` on this route change to `200`.
 
 - A foreign child under the **other** transfer leg is not in the entry detail the SPA holds, so the dialog cannot list it. The server refuses, and the SPA shows the refusal text; the owner has to delete from the other leg or through the API. No such row exists today.
 - `DELETE /splits/{id}` has neither the report nor the refusal.
+- `cascade=true` confirms every foreign child of the delete, not a named one. When the dialog listed one, a second one it could not list (under the other leg, or added since the load) goes with the same request. It is in the report.
+- The children are read without a row lock. A child deleted directly by another request at the same moment can still appear in this delete's report; the ledger ends up right.
+- A child of a child is not deleted by the cascade (as before). Production has none.
+- The SPA shows the refusal as 附帶的手續費或折扣記在別的帳戶；請重新載入後再刪，或先刪那筆附帶記錄.
 
 ## Left to the builder
 

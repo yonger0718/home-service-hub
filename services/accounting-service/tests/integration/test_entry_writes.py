@@ -529,6 +529,26 @@ def test_delete_reports_the_other_leg_and_its_child(client, db_session, seed):
     assert _deleted(response) == [(in_id, "entry", None), (out_id, "transfer_leg", None), (fee_id, "child", out_id)]
 
 
+def test_delete_of_a_child_itself_reports_it_as_the_entry(client, db_session, seed):
+    # final review: the row named in the URL is `entry` whatever its parent; a fee deleted on its own, also one on
+    # another account than its parent (the repair of the #390 shape), needs no cascade and leaves the parent
+    bank, card = seed.account("銀行"), seed.account("卡", is_credit=True)
+    receipt = seed.entry(bank, "600", kind="income")
+    own = seed.entry(bank, "-5", kind="fee", parent_entry_id=receipt.id)
+    stray = seed.entry(card, "-9", kind="fee", parent_entry_id=receipt.id)
+    db_session.commit()
+    receipt_id, own_id, stray_id = receipt.id, own.id, stray.id
+
+    first = client.delete(f"/entries/{own_id}")
+    second = client.delete(f"/entries/{stray_id}")
+
+    assert (first.status_code, second.status_code) == (200, 200), (first.text, second.text)
+    assert _deleted(first) == [(own_id, "entry", receipt_id)]
+    assert _deleted(second) == [(stray_id, "entry", receipt_id)]
+    db_session.expire_all()
+    assert [row.id for row in db_session.scalars(select(LedgerEntry))] == [receipt_id]
+
+
 def test_delete_refuses_a_child_on_another_account_until_confirmed(client, db_session, seed):
     # #390: a fee on another account than its parent (a MOZE import shape) is not the parent's own fee
     bank, card = seed.account("銀行"), seed.account("卡", is_credit=True)
@@ -562,12 +582,13 @@ def test_delete_refuses_a_foreign_child_of_the_other_leg(client, db_session, see
     fee = seed.entry(c, "-15", kind="fee", parent_entry_id=out_leg.id)
     in_leg = seed.entry(b, "100", kind="transfer_in", transfer_group_id=group)
     db_session.commit()
-    ids = [out_leg.id, fee.id, in_leg.id]
+    ids, c_id = [out_leg.id, fee.id, in_leg.id], c.id
 
     refused = client.delete(f"/entries/{in_leg.id}")
 
     assert refused.status_code == 409, refused.text
-    assert refused.json()["message"].startswith("cascade_unconfirmed: ")
+    message = refused.json()["message"]
+    assert message.startswith("cascade_unconfirmed: ") and f"entry {ids[1]} (fee, account {c_id})" in message
     db_session.expire_all()
     assert all(db_session.get(LedgerEntry, entry_id) is not None for entry_id in ids)
 
