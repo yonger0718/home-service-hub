@@ -137,7 +137,7 @@ def test_delete_down_to_one_member_dissolves_the_split(client, db_session, seed)
     db_session.commit()
     ids = {"group": group.id, "doomed": doomed.id, "survivor": survivor.id, "fee": fee.id, "collection": collection.id}
 
-    assert client.delete(f"/entries/{ids['doomed']}").status_code == 204
+    assert client.delete(f"/entries/{ids['doomed']}").status_code == 200
 
     row = _row(db_session, ids["survivor"])
     assert (row.name, row.merchant, row.description, row.group_id, row.amount) == (
@@ -157,9 +157,9 @@ def test_installment_group_is_never_dissolved(client, db_session, seed):
     db_session.commit()
     group_id, first_id, second_id = group.id, first.id, second.id
 
-    assert client.delete(f"/entries/{first_id}").status_code == 204
+    assert client.delete(f"/entries/{first_id}").status_code == 200
     assert _row(db_session, second_id).group_id == group_id  # one member left: kept as is
-    assert client.delete(f"/entries/{second_id}").status_code == 204
+    assert client.delete(f"/entries/{second_id}").status_code == 200
     db_session.expire_all()
     assert db_session.get(EntryGroup, group_id) is None  # count 0: today's cleanup
 
@@ -177,18 +177,18 @@ def test_scheduled_split_period_keeps_partial_and_reopen_semantics(client, db_se
     instance_id = instance.id
     group_id = db_session.get(LedgerEntry, first_id).group_id
 
-    assert client.delete(f"/entries/{first_id}").status_code == 204
+    assert client.delete(f"/entries/{first_id}").status_code == 200
     db_session.expire_all()
     row = db_session.get(ScheduleInstance, instance_id)
     assert (row.status, row.is_partial, sorted(row.posted_entry_ids)) == ("posted", True, sorted([second_id, third_id]))
     assert db_session.get(EntryGroup, group_id) is not None  # two members left
 
-    assert client.delete(f"/entries/{second_id}").status_code == 204
+    assert client.delete(f"/entries/{second_id}").status_code == 200
     db_session.expire_all()
     assert (db_session.get(ScheduleInstance, instance_id).posted_entry_ids, db_session.get(EntryGroup, group_id)) == ([third_id], None)
     assert db_session.get(LedgerEntry, third_id).group_id is None
 
-    assert client.delete(f"/entries/{third_id}").status_code == 204
+    assert client.delete(f"/entries/{third_id}").status_code == 200
     db_session.expire_all()
     row = db_session.get(ScheduleInstance, instance_id)
     assert (row.status, row.posted_entry_ids, row.reopened_at is not None) == ("pending", [], True)
@@ -206,7 +206,7 @@ def test_transfer_legs_in_two_splits_dissolve_both(client, db_session, seed):
     db_session.commit()
     ids = (out_leg.id, in_leg.id, x.id, y.id, first_group.id, second_group.id)
 
-    assert client.delete(f"/entries/{ids[0]}").status_code == 204
+    assert client.delete(f"/entries/{ids[0]}").status_code == 200
 
     db_session.expire_all()
     assert db_session.get(LedgerEntry, ids[0]) is None and db_session.get(LedgerEntry, ids[1]) is None

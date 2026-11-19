@@ -258,7 +258,7 @@ def test_deleting_a_posted_transfer_leg_deletes_both(client, db_session, seed):
     db_session.commit()
     body = client.post("/transfers", json=_body(a, b, in_fee={"amount": "10"})).json()
 
-    assert client.delete(f"/entries/{body['out_entry_id']}").status_code == 204
+    assert client.delete(f"/entries/{body['out_entry_id']}").status_code == 200
 
     db_session.expire_all()
     assert db_session.scalars(select(LedgerEntry)).all() == []

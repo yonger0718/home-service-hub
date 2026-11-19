@@ -342,6 +342,26 @@ class EntryDetailOut(EntryOut):
     einvoice: EntryEinvoiceOut | None = None
 
 
+class DeletedEntryOut(BaseModel):
+    """A row `DELETE /entries/{id}` removed (#390): the entry itself, another leg of its transfer, or a fee /
+    discount child of either."""
+
+    id: int
+    role: Literal["entry", "transfer_leg", "child"]
+    parent_entry_id: int | None
+    kind: EntryKind
+    name: str | None
+    amount: Decimal
+    currency: str
+    account_id: int
+    account_name: str
+    entry_date: date
+
+
+class EntryDeleteOut(BaseModel):
+    deleted: list[DeletedEntryOut]
+
+
 class CategoryExpenseOut(BaseModel):
     """One top-level category's share of the month expense (negative, main currency); category_id None = 未分類."""
     category_id: int | None
