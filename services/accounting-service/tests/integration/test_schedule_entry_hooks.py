@@ -46,7 +46,7 @@ def test_deleting_the_interest_leaves_a_partial_period(client, db_session, seed,
     instance, repayment_id, interest_id = _posted_period(db_session, seed, loan, today)
     today(date(2026, 11, 10))
 
-    assert client.delete(f"/entries/{interest_id}").status_code == 204
+    assert client.delete(f"/entries/{interest_id}").status_code == 200
 
     row = _row(db_session, instance.id)
     assert (row.status, row.is_partial, row.posted_entry_ids, row.note) == (
@@ -62,7 +62,7 @@ def test_deleting_the_last_entry_reopens_the_period(client, db_session, seed, lo
     today(date(2026, 11, 10))
     client.delete(f"/entries/{interest_id}")
 
-    assert client.delete(f"/entries/{repayment_id}").status_code == 204
+    assert client.delete(f"/entries/{repayment_id}").status_code == 200
 
     row = _row(db_session, instance.id)
     assert (row.status, row.posted_entry_ids, row.acted_at, row.acted_by, row.is_partial) == ("pending", [], None, None, False)
@@ -88,7 +88,7 @@ def test_deleting_a_moze_booked_period(client, db_session, seed, today, monkeypa
                            moze_id="R-OUT")
     db_session.commit()
 
-    assert client.delete(f"/entries/{in_leg.id}").status_code == 204
+    assert client.delete(f"/entries/{in_leg.id}").status_code == 200
 
     row = _row(db_session, booked.id)
     assert (row.status, row.note, row.posted_entry_ids) == ("skipped", "入帳記錄已刪除", [])
@@ -104,7 +104,7 @@ def test_deleting_from_an_ended_definition_revives_it(client, db_session, seed, 
     last = seed.instance(ended, 1, date(2026, 9, 22), status="posted", entries=[expense])
     db_session.commit()
 
-    assert client.delete(f"/entries/{expense.id}").status_code == 204
+    assert client.delete(f"/entries/{expense.id}").status_code == 200
 
     assert _row(db_session, last.id).status == "pending"
     assert db_session.get(ScheduleDefinition, ended.id).status == "active"
@@ -119,7 +119,7 @@ def test_deleting_one_leg_of_a_scheduled_transfer(client, db_session, seed, toda
     out_id, in_id = posting.post_instance(db_session, instance.id, actor="auto").entry_ids
     db_session.commit()
 
-    assert client.delete(f"/entries/{in_id}").status_code == 204
+    assert client.delete(f"/entries/{in_id}").status_code == 200
 
     row = _row(db_session, instance.id)
     assert (row.status, row.reopened_at is not None) == ("pending", True)
@@ -241,8 +241,8 @@ def test_reset_to_pending_clears_a_misaligned_override(client, db_session, seed,
     edited = seed.instance(definition, 2, date(2026, 10, 22), status="posted", entries=[second], amount_override=["400"])
     db_session.commit()
 
-    assert client.delete(f"/entries/{first.id}").status_code == 204
-    assert client.delete(f"/entries/{second.id}").status_code == 204
+    assert client.delete(f"/entries/{first.id}").status_code == 200
+    assert client.delete(f"/entries/{second.id}").status_code == 200
 
     assert (_row(db_session, pinned.id).status, _row(db_session, pinned.id).amount_override) == ("pending", None)
     assert (_row(db_session, edited.id).status, _row(db_session, edited.id).amount_override) == ("pending", ["400"])

@@ -712,6 +712,47 @@ def dissolve_group(
     db.expire_all()
 
 
+CASCADE_UNCONFIRMED = "cascade_unconfirmed"  # 409: a delete would remove a child on another account (#390)
+
+
+@dataclass(frozen=True)
+class DeletedRow:
+    """One row `delete_entry` removed (#390). `role`: `entry` (the row asked for, also when it is itself a child),
+    `transfer_leg` (another top-level leg of its transfer) or `child` (a fee / discount child of either, deleted
+    along with it)."""
+
+    id: int
+    role: str
+    parent_entry_id: int | None
+    kind: str
+    name: str | None
+    amount: Decimal
+    currency: str
+    account_id: int
+    account_name: str
+    entry_date: date
+
+
+def _delete_report(db: Session, entry_id: int, targets: list[LedgerEntry]) -> list[DeletedRow]:
+    """What the coming `delete_entries_cascade(targets)` removes: the entry, the other legs by id, then the children
+    by id. Read under the target locks (a child is written under its parent's lock)."""
+    target_ids = {target.id for target in targets}
+    children = list(db.scalars(select(LedgerEntry).where(LedgerEntry.parent_entry_id.in_(target_ids))
+                               .order_by(LedgerEntry.id)))
+    rows = sorted(targets, key=lambda row: (row.id != entry_id, row.id)) + children
+    names = dict(db.execute(select(Account.id, Account.name).where(Account.id.in_({r.account_id for r in rows}))).all())
+    return [
+        DeletedRow(
+            id=row.id,
+            role="entry" if row.id == entry_id else "transfer_leg" if row.id in target_ids else "child",
+            parent_entry_id=row.parent_entry_id, kind=row.kind, name=row.name, amount=row.amount,
+            currency=row.currency, account_id=row.account_id, account_name=names[row.account_id],
+            entry_date=row.entry_date,
+        )
+        for row in rows
+    ]
+
+
 @dataclass(frozen=True)
 class AffectedSet:
     """What DELETE /entries/{id} touches (split rework §1.7), read before any group or entry lock and again under
@@ -767,7 +808,7 @@ def affected_set(db: Session, entry: LedgerEntry) -> AffectedSet:
     return AffectedSet(tuple(sorted(targets)), entry.transfer_group_id, tuple(group_ids), split_members)
 
 
-def delete_entry(db: Session, entry_id: int) -> None:
+def delete_entry(db: Session, entry_id: int, *, cascade: bool = False) -> list[DeletedRow]:
     """Deleting needs no FX, so the locks are taken straight away, in the shared order (D32, split rework §1.7):
     the period's schedule rows (lock_for_entry_delete) → every affected entry_group row (lock_group, ascending id)
     → for an engine reward row, its source purchase FOR UPDATE (its `reward_posted` flag cleared) and then its
@@ -782,7 +823,11 @@ def delete_entry(db: Session, entry_id: int) -> None:
     (referenced loan, reward rows without an accrual, cutover lock); an engine reward row is deleted, its accrual
     forfeited and its window recomputed (spec 5.4, P1). After the delete every affected group of any kind left
     empty is removed, and a split group left with exactly one member is dissolved into it (installment / reward
-    groups are not)."""
+    groups are not).
+
+    #390: returns every row removed (`DeletedRow`). A child on another account than its own parent is not the
+    parent's own fee (only the MOZE imports write that shape): without `cascade` the delete is refused with
+    `cascade_unconfirmed` after the refusals above and before anything is written."""
     # D29: a loan a live schedule repays cannot be deleted; D32/D33: the period's schedule rows are locked first.
     schedule_entry_hooks.assert_not_referenced(db, loan_entry_id=entry_id)
     instance = schedule_entry_hooks.lock_for_entry_delete(db, [entry_id])
@@ -806,6 +851,18 @@ def delete_entry(db: Session, entry_id: int) -> None:
     for target_id in before.target_ids:
         assert_entry_editable(db, by_id[target_id])
     target_ids = list(before.target_ids)  # read before the cascade expires (and deletes) the rows
+    report = _delete_report(db, entry_id, [by_id[target_id] for target_id in target_ids])
+    # `child` rows are the cascaded ones, so their parent is a target and in the report; the row asked for is never
+    # held, also when it is itself a child on another account than its parent (deleting it is the repair)
+    accounts = {row.id: row.account_id for row in report}
+    foreign = [row for row in report if row.role == "child" and row.account_id != accounts[row.parent_entry_id]]
+    if foreign and not cascade:
+        listed = ", ".join(f"entry {row.id} ({row.kind}, account {row.account_id})" for row in foreign)
+        raise CodedConflictError(
+            CASCADE_UNCONFIRMED,
+            f"deleting entry {entry_id} also deletes children on another account: {listed}; "
+            "repeat with ?cascade=true to delete them too",
+        )
     forfeited = reward_engine.forfeit_for_delete(db, accrual) if accrual is not None else None
     delete_entries_cascade(db, target_ids)
     if forfeited is not None:
@@ -825,6 +882,7 @@ def delete_entry(db: Session, entry_id: int) -> None:
             dissolve_group(db, group_id, left[0], name=group.name, merchant=group.merchant, description=group.description)
     if instance is not None:
         schedule_entry_hooks.after_entries_deleted(db, instance, set(target_ids))
+    return report
 
 
 def _plain(value: Decimal) -> str:

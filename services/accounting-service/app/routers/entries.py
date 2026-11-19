@@ -1,12 +1,12 @@
 from datetime import date
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ..auth import method_scope
 from ..database import get_db
-from ..schemas.ledger import DailySummaryOut, EntryDetailOut, EntryKind, EntryPage, MonthSummaryOut
+from ..schemas.ledger import DailySummaryOut, EntryDeleteOut, EntryDetailOut, EntryKind, EntryPage, MonthSummaryOut
 from ..schemas.writes import (
     EntryIn, EntryUpdateIn, EntryWriteOut, RefundIn, RewardRepriceIn, RewardRepriceOut, RewardRulesIn, SettleIn, SplitIn,
     SplitOut,
@@ -96,12 +96,14 @@ def put_entry(entry_id: int, payload: EntryUpdateIn, db: Session = Depends(get_d
     return _written(db, entry_id)
 
 
-@router.delete("/{entry_id}", status_code=204)
-def remove_entry(entry_id: int, db: Session = Depends(get_db)):
+@router.delete("/{entry_id}", response_model=EntryDeleteOut)
+def remove_entry(entry_id: int, cascade: bool = False, db: Session = Depends(get_db)):
+    """Delete the entry with its fee / discount children and, for a transfer, the other leg; the answer lists every
+    row removed. A child on another account than its parent needs `?cascade=true` (409 `cascade_unconfirmed`, #390)."""
     with service_errors():
-        entry_write_service.delete_entry(db, entry_id)
+        deleted = entry_write_service.delete_entry(db, entry_id, cascade=cascade)
     db.commit()
-    return Response(status_code=204)
+    return EntryDeleteOut(deleted=[vars(row) for row in deleted])
 
 
 @router.put("/{entry_id}/reward-rules", response_model=EntryDetailOut)

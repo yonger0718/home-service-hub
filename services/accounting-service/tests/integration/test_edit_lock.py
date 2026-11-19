@@ -43,7 +43,7 @@ def _entry_body(books: dict, **fields) -> dict:
 
 CASES = {
     "put_entry": lambda b: ("PUT", f"/entries/{b['expense']}", _entry_body(b), 200),
-    "delete_entry": lambda b: ("DELETE", f"/entries/{b['expense']}", None, 204),
+    "delete_entry": lambda b: ("DELETE", f"/entries/{b['expense']}", None, 200),
     "reward_reprice": lambda b: ("POST", f"/entries/{b['expense']}/reward-reprice", {"keep": True}, 200),
     "put_group_member": lambda b: ("PUT", f"/entries/{b['member']}", _entry_body(b), 200),
     "settle": lambda b: (
@@ -55,7 +55,7 @@ CASES = {
         "PUT", f"/transfers/{b['transfer']}",
         {"from_account_id": b["wallet"], "to_account_id": b["bank"], "out_amount": "250", "entry_date": DAY}, 200,
     ),
-    "delete_transfer_leg": lambda b: ("DELETE", f"/entries/{b['out_leg']}", None, 204),
+    "delete_transfer_leg": lambda b: ("DELETE", f"/entries/{b['out_leg']}", None, 200),
     "put_split": lambda b: (
         "PUT", f"/splits/{b['split']}",
         {"entry_date": DAY, "members": [_entry_body(b, amount="40"), _entry_body(b, amount="20")]}, 200,
@@ -147,7 +147,7 @@ def test_manual_rows_stay_writable_while_unlocked(client, db_session, books):
 
     assert created.status_code == 201
     assert edited.status_code == 200 and edited.json()["amount"] == "-12.0000"
-    assert deleted.status_code == 204
+    assert deleted.status_code == 200
 
 
 EXPECTED_WRITES = {

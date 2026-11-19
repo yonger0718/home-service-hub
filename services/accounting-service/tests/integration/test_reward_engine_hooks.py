@@ -223,7 +223,7 @@ def test_delete_purchase_drops_estimated_keeps_posted(client, db_session):
     purchase_id, reward_id, rule_a_id, rule_b_id = purchase.id, reward.id, rule_a.id, rule_b.id
     db_session.commit()
 
-    assert client.delete(f"/entries/{purchase_id}").status_code == 204
+    assert client.delete(f"/entries/{purchase_id}").status_code == 200
     assert _accruals(db_session, rule_id=rule_a_id) == []
     survivor = _one(db_session, rule_id=rule_b_id)
     assert (survivor.state, survivor.source_entry_id, survivor.ledger_entry_id) == ("posted", None, reward_id)
@@ -239,7 +239,7 @@ def test_delete_purchase_recomputes_window(client, db_session):
     first_id, second_id = first.id, second.id
     db_session.commit()
     assert _one(db_session, source_entry_id=second_id).amount == Decimal("5.0000")
-    assert client.delete(f"/entries/{first_id}").status_code == 204
+    assert client.delete(f"/entries/{first_id}").status_code == 200
     assert _one(db_session).amount == Decimal("10.0000")
 
 
@@ -252,7 +252,7 @@ def test_delete_purchase_drops_refund_estimates(client, db_session):
                             json={"amount": "300", "entry_date": date(2026, 12, 20).isoformat()}).json()["id"]
     assert len(_accruals(db_session)) == 2
 
-    assert client.delete(f"/entries/{purchase_id}").status_code == 204
+    assert client.delete(f"/entries/{purchase_id}").status_code == 200
     assert _accruals(db_session) == []
     refund = _entry(db_session, refund_id)
     assert refund is not None and refund.refunds_entry_id is None  # refunds stay, unlinked
@@ -268,7 +268,7 @@ def test_delete_engine_reward_row_forfeits(client, db_session):
     db_session.commit()
     assert _one(db_session, source_entry_id=second_id).amount == Decimal("5.0000")
 
-    assert client.delete(f"/entries/{reward_id}").status_code == 204
+    assert client.delete(f"/entries/{reward_id}").status_code == 200
     forfeited = _one(db_session, source_entry_id=first_id)
     assert (forfeited.state, forfeited.ledger_entry_id, forfeited.amount) == ("forfeited", None, Decimal("10.0000"))
     assert _entry(db_session, reward_id) is None
@@ -288,7 +288,7 @@ def test_owner_reward_delete_clears_purchase_flag(client, db_session):
     purchase = _entry(db_session, purchase_id)
     assert (purchase.needs_review, purchase.review_reason) == (True, "reward_posted")
 
-    assert client.delete(f"/entries/{reward_id}").status_code == 204
+    assert client.delete(f"/entries/{reward_id}").status_code == 200
     purchase = _entry(db_session, purchase_id)
     assert (purchase.needs_review, purchase.review_reason) == (False, None)
 
@@ -301,7 +301,7 @@ def test_owner_reward_delete_keeps_other_review_flag(client, db_session):
     purchase.needs_review = True  # flagged for some other reason (no review_reason)
     purchase_id, reward_id = purchase.id, reward.id
     db_session.commit()
-    assert client.delete(f"/entries/{reward_id}").status_code == 204
+    assert client.delete(f"/entries/{reward_id}").status_code == 200
     purchase = _entry(db_session, purchase_id)
     assert (purchase.needs_review, purchase.review_reason) == (True, None)
 

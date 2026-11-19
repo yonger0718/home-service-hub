@@ -93,7 +93,7 @@ Reports (`/reports/*`, 2026-10-31, openspec `add-accounting-reports`; GET needs 
 
 Writes (every new row gets `source = 'manual'`, and an edit of a schedule-posted row keeps `source = 'schedule'`; an edit of a statement-booked row (`source = 'statement'`, e.g. a stand-in) keeps that source when it changes no structural field (`coverage_service.STRUCTURAL_KEYS`) and the row has no fee / discount child before or after (category, name, merchant, description, tags), so a categorised stand-in stays replaceable; any other edit makes the row `manual`; amounts are unsigned with at most 4 decimals; 422 names the field, 409 is a conflict or `locked_until_cutover`)
 
-- `POST /entries` (expense, income, receivable, payable; optional `fee` / `discount` children, FX fields, `reward_rule_ids`; the response may carry `proposed_fee`), `PUT /entries/{id}`, `DELETE /entries/{id}`
+- `POST /entries` (expense, income, receivable, payable; optional `fee` / `discount` children, FX fields, `reward_rule_ids`; the response may carry `proposed_fee`), `PUT /entries/{id}`, `DELETE /entries/{id}[?cascade=true]` -> `{deleted: [...]}`: every row removed (the entry, the other leg of its transfer, the fee / discount children of either, each with a `role`); a child on another account than its parent is refused with 409 `cascade_unconfirmed` until `cascade=true` (#390)
 - `POST /entries/{id}/settle` (收款 / 還款, same currency, at most the open amount), `POST /entries/{id}/refund` (expense only, same currency, at most the unrefunded amount)
 - `POST /transfers` -> `{transfer_group_id, out_entry_id, in_entry_id}`, `PUT /transfers/{transfer_group_id}`
 - `POST /splits` -> `{group_id, member_ids}`, `PUT /splits/{group_id}`, `DELETE /splits/{group_id}`

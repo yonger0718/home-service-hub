@@ -249,8 +249,14 @@ export class AccountingService {
     return this.bump(this.http.post<RewardReprice>(`${this.apiUrl}/entries/${id}/reward-reprice`, { keep }));
   }
 
-  deleteEntry(id: number): Observable<void> {
-    return this.bump(this.http.delete<void>(`${this.apiUrl}/entries/${id}`));
+  /**
+   * Deletes the entry with its fee / discount children and, for a transfer, the other leg. `cascade` confirms the
+   * delete of a child on another account than its parent, which the API otherwise refuses (#390). The answer lists
+   * the removed rows; no caller reads it.
+   */
+  deleteEntry(id: number, cascade = false): Observable<void> {
+    const options = cascade ? { params: { cascade: 'true' } } : {};
+    return this.bump(this.http.delete<void>(`${this.apiUrl}/entries/${id}`, options));
   }
 
   settleEntry(id: number, input: SettleInput): Observable<EntryDetail> {
