@@ -98,6 +98,12 @@ describe('questionText', () => {
     expect(questionText(makeItem({ line: deposit, part_of: [receipt, { ...receipt, id: 10 }] }), 'TWD')).toBe(
       '可能是「收款 代付晚餐 $600」等 2 筆的一部分 — 先把那筆改成分筆，別直接記為收入',
     );
+    // A pending proposal that would record the line: 套用 books the duplicate.
+    const proposal = { id: 1, action: 'create_entry', params: {}, author: 'hermes', rationale: '' };
+    expect(questionText(makeItem({ question: 'proposed', line: deposit, proposal, part_of: [receipt] }), 'TWD')).toBe(
+      '系統有提議：記一筆 — 可能是「收款 代付晚餐 $600」的一部分，套用會重複記',
+    );
+    expect(questionText(makeItem({ question: 'proposed', line: deposit, proposal }), 'TWD')).toBe('系統有提議：記一筆');
     // An older API omits the field, and an empty list is the ordinary bank_only card.
     expect(questionText(makeItem({ line: deposit }), 'TWD')).toBe('銀行有、你沒記');
     expect(questionText(makeItem({ line: deposit, part_of: [] }), 'TWD')).toBe('銀行有、你沒記');

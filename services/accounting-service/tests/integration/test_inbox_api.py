@@ -121,10 +121,50 @@ def test_without_the_receipt_equal_lines_merge_as_before(client, seed, db_sessio
 
 
 def test_a_card_bank_only_item_has_no_part_of(client, seed, db_session, run):
+    """No settlement class is eligible for a card line, so a larger unclaimed settlement entry on the card holds none."""
     card = _card(seed, db_session)
+    debt = seed.entry(card, "9000", kind="payable", day=date(2026, 8, 14))
+    db_session.flush()
+    seed.entry(card, "-9000", kind="payable", day=DAY, is_settlement=True, settles_entry_id=debt.id)
+    db_session.commit()
     _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
     (item,) = _items(_inbox(client), "bank_only")
     assert item["part_of"] == [] and item["group_key"] is not None
+
+
+def test_part_of_titles_a_nameless_receipt_outside_the_period_by_its_category(client, seed, db_session, run):
+    """The receipt is dated before the statement period, so no listed case carries it: its title still falls back to
+    the category name, never to the raw kind."""
+    account = _bank(seed, db_session)
+    lending = seed.category("代墊", kind="income")
+    debt = seed.entry(account, "-600", kind="receivable", day=date(2026, 8, 10))
+    db_session.flush()
+    receipt = seed.entry(account, "600", kind="receivable", day=date(2026, 8, 28), is_settlement=True,
+                         settles_entry_id=debt.id, category_id=lending.id)
+    db_session.commit()
+    _submit(db_session, run, account, [_line(1, DAY, "跨行轉入 0903", 300, "deposit")], kind="bank")
+    body = _inbox(client)
+    assert [i for i in _items(body) if (i["entry"] or {}).get("id") == receipt.id] == []  # no card of its own
+    (item,) = _items(body, "bank_only")
+    assert [(e["id"], e["title"]) for e in item["part_of"]] == [(receipt.id, "代墊")]
+
+
+def test_a_proposed_record_on_a_held_line_still_names_the_settlement_entry(client, seed, db_session, run):
+    """An assistant's pending proposal to record a held line would book the duplicate on 套用, so the proposed card
+    names the entry too; a proposal that books nothing new (dismiss) names none."""
+    account, receipt = _two_transfers(seed, db_session, run, receipt=True)
+    income = seed.category("其他收入", kind="income")
+    db_session.commit()
+    first, second = sorted(_items(_inbox(client), "bank_only"), key=lambda i: i["line"]["id"])
+    for item, action, params in ((first, "create_entry", {"kind": "income", "category_id": income.id}),
+                                 (second, "dismiss", {"note": "不記"})):
+        res = client.post(f"/reconciliation/cases/{item['case_id']}/proposals", headers=H,
+                          json={"action": action, "params": params, "rationale": "r", "confidence": "0.9"})
+        assert res.status_code == 201, res.text
+    proposed = {i["proposal"]["action"]: i for i in _items(_inbox(client), "proposed")}
+    assert [e["id"] for e in proposed["create_entry"]["part_of"]] == [receipt.id]
+    assert proposed["dismiss"]["part_of"] == []
+    assert proposed["create_entry"]["rule_hint"] is None and proposed["create_entry"]["group_key"] is None
 
 
 def test_transfer_and_settlement_and_installment(client, seed, db_session, run):
