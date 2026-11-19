@@ -231,6 +231,22 @@ def test_policy_books_dividends_uncapped_and_charges_nothing(seed, db_session, r
     assert db_session.scalar(select(func.count(SettlementBooking.id))) == 1
 
 
+def test_policy_books_a_dividend_beside_a_larger_unclaimed_settlement_receipt(seed, db_session, run, portfolio_stub,
+                                                                              policy_on):
+    """#389: the part-of-a-settlement twin holds the plain backfill only; a dividend a portfolio receipt proves is
+    booked although a larger unclaimed owner receipt sits beside it."""
+    policy_on()
+    bank, _ = settlement_bank(seed, db_session, target=False)
+    debt = seed.entry(bank, "-5000", kind="receivable", day=date(2026, 8, 20))
+    db_session.flush()
+    seed.entry(bank, "5000", kind="receivable", day=date(2026, 9, 12), is_settlement=True, settles_entry_id=debt.id)
+    db_session.commit()
+    portfolio_stub.dividends = [dividend_row(7, "2026-09-11", "990")]
+    sid = submit_bank(db_session, run, bank, [dividend_line(1, date(2026, 9, 12), "990")])
+    policy_service.run_policy(db_session, sid); db_session.commit()
+    assert db_session.scalar(select(SettlementBooking.status)) == "booked"
+
+
 @pytest.mark.parametrize("failure,code", [("down", "http_503"), ("incomplete", "incomplete"), ("usd", "currency_mismatch")])
 def test_an_unreadable_dividend_feed_leaves_the_ordinary_case(seed, db_session, run, portfolio_stub, policy_on, failure, code):
     policy_on()

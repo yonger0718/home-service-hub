@@ -165,14 +165,15 @@ def _eligible(db: Session, case: ReconciliationCase, question: str,
 def _precheck(version: int, action: str):
     """Under the statement and case locks: the case is still at the version the rule judged, and — for a creation
     (`create_entry`) — no owner entry may already record the line (`policy_service.refuse_owner_recorded`, the guard
-    the policy's creations use, looked up per call). `adjust_amount` / `dismiss` book nothing; for an `amount_delta`
+    the policy's creations use, looked up per call; with the part-of-a-settlement shape of #389, as for the plain
+    backfill). `adjust_amount` / `dismiss` book nothing; for an `amount_delta`
     the near owner entry is the candidate itself, which the guard would always see as a twin."""
     stale = inbox_service.expect_version(version)
 
     def check(ctx: Context) -> None:
         stale(ctx)
         if action == "create_entry":
-            policy_service.refuse_owner_recorded(ctx)
+            policy_service.refuse_owner_recorded(ctx, settlement_parts=True)
     return check
 
 

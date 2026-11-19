@@ -197,7 +197,7 @@ def _backfill_candidate(db: Session, case: ReconciliationCase, statement: Accoun
     if line is None or _absorbed_by_anchor(db, statement, line):
         return None
     rules = rec.rules_for(settings_service.reconciliation_rules(db), statement.period_end)
-    if _owner_may_record(db, statement, case, line, rules):
+    if _owner_may_record(db, statement, case, line, rules, settlement_parts=True):
         return None
     return Candidate(case.id, case.kind, case.status, "backfill_entry", {"kind": kind}, _money(line.flow_amount))
 
@@ -236,19 +236,25 @@ def _pair_transfer_candidate(db: Session, case: ReconciliationCase, statement: A
 
 
 def _owner_may_record(db: Session, statement: AccountStatement, case: ReconciliationCase, line: StatementLine,
-                      rules: matching.Rules) -> bool:
+                      rules: matching.Rules, *, settlement_parts: bool = False) -> bool:
     """Final production finding 2026-10-17: an owner entry may already record the line — the event has an applied
     `replace_stand_in` (the owner's entry won it once), or an owner twin (`stand_ins.owner_twins`, split members
-    included) takes it alone. The automatic backfill would duplicate it; the owner's own backfill stays available."""
-    return stand_ins.owner_may_record(db, statement, case.event_id, line, rules)
+    included) may record it. The automatic backfill would duplicate it; the owner's own backfill stays available.
+    `settlement_parts=True` (every `backfill_entry` check, #389): a larger unclaimed settlement entry the line may
+    be one part of counts too."""
+    return stand_ins.owner_may_record(db, statement, case.event_id, line, rules, settlement_parts=settlement_parts)
 
 
-def refuse_owner_recorded(ctx: Context) -> None:
+def refuse_owner_recorded(ctx: Context, *, settlement_parts: bool = False) -> None:
     """Engine precheck for the owner applying a policy-authored `backfill_entry` / `create_system_entry` proposal
     (`proposal_service`), under the statement and case locks: 409 `owner_may_record` when an owner entry may already
     record the line — a proposal made before the twin or the replacement arrived, applied before the next policy run
-    supersedes it. The action re-checks under the writer barrier (`ledger_actions._TwinGuarded`)."""
-    if ctx.line is not None and _owner_may_record(ctx.db, ctx.statement, ctx.case, ctx.line, ctx.rules):
+    supersedes it. The action re-checks under the writer barrier (`ledger_actions._TwinGuarded`); that re-check, not
+    this precheck, is what sees a `backfill_entry` proposal's part-of-a-settlement twin (#389). Owner record rules
+    use this precheck too and pass `settlement_parts=True`: a rule books as automatically as the backfill, and
+    `create_entry` has no barrier re-check of its own."""
+    if ctx.line is not None and _owner_may_record(ctx.db, ctx.statement, ctx.case, ctx.line, ctx.rules,
+                                                  settlement_parts=settlement_parts):
         raise CodedConflictError("owner_may_record", f"case {ctx.case.id}")
 
 
@@ -259,7 +265,7 @@ def _supersede_reason(db: Session, statement: AccountStatement, case: Reconcilia
     line (the transfer-twin guard, `transfer_twin_reason`: rules (a)/(b) and the R6b rule on either line);
     `peer_out_of_scope` when that peer line is no longer a peer candidate (claimed, its case closed, its statement
     retired) — the peer statement's changes never move this case's version, so `supersede_stale` cannot see it."""
-    if _owner_may_record(db, statement, case, line, rules):
+    if _owner_may_record(db, statement, case, line, rules, settlement_parts=proposal.action == "backfill_entry"):
         return "owner_may_record"
     if proposal.action != "pair_transfer":
         return None
@@ -562,7 +568,7 @@ def _unchanged(ctx: Context, candidate: Candidate) -> bool:
     if candidate.action == "backfill_entry":
         return not context.get("owner_deleted") and not case.candidates \
             and registry.backfill_eligibility(case) == candidate.params.get("kind") \
-            and not _owner_may_record(ctx.db, ctx.statement, case, ctx.line, ctx.rules)
+            and not _owner_may_record(ctx.db, ctx.statement, case, ctx.line, ctx.rules, settlement_parts=True)
     if candidate.action == "book_settlement":  # still the unhinted settlement case of the collected fingerprint
         return context.get("hint") is None and context.get("fingerprint") == candidate.params.get("fingerprint")
     if candidate.action == "book_dividend":  # still the unhinted dividend case of the collected fingerprint
