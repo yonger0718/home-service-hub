@@ -339,6 +339,22 @@ def _partial_settlement_twins(statement: AccountStatement, line: StatementLine, 
     return out
 
 
+def settlement_part_twins(db: Session, statement: AccountStatement, line: StatementLine, rules, cache: dict) -> list[int]:
+    """Read model (#392, the inbox): the ids, ascending, of the settlement entries the line may be one part of
+    (`_partial_settlement_twins`). `cache` is the caller's per-build dict: it keeps one claimed-entry snapshot under
+    `("part", "claimed")` and one `owner_population` per statement under `("part", statement.id)`, so a build reads
+    each once however many lines it lists."""
+    if not matching.eligible_kinds(statement.kind, line.line_kind) & {"settlement_in", "settlement_out"}:
+        return []  # no settlement class is eligible for the line (every card line, fee / interest / transfer lines)
+    key = ("part", statement.id)
+    if key not in cache:
+        if ("part", "claimed") not in cache:
+            cache[("part", "claimed")] = coverage_service.claimed_entry_ids(db)
+        accounts = coverage_service.participating_accounts(db, statement.account_id)
+        cache[key] = owner_population(db, statement, accounts, rules, claimed=cache[("part", "claimed")])
+    return sorted(_partial_settlement_twins(statement, line, cache[key], rules))
+
+
 def owner_twins(db: Session, statement: AccountStatement, line: StatementLine, accounts: list[int], rules, *,
                 settlement_parts: bool = False) -> list[int]:
     """Ids of the owner entries that may record the line, so the policy must not book it (final production finding

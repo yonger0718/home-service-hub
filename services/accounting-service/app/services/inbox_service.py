@@ -102,6 +102,11 @@ def flow_sign(flow_amount: Decimal) -> str:
     return "-" if flow_amount < 0 else "+"
 
 
+# proposal actions that book the case's line as a new owner-visible entry (#392: their card names a settlement entry
+# the line may be one part of)
+RECORDING_PROPOSALS = frozenset({"create_entry", "backfill_entry"})
+
+
 def group_key(question: str, account_id: int, line_kind: str, merchant_norm: str,
               flow_amount: Decimal) -> str | None:
     """Key merging identical bank-only cards; None when the case must stay single."""
@@ -329,6 +334,29 @@ def _rule_hint(db: Session, statement: AccountStatement, line: StatementLine, ca
             "amount": f"{line.flow_amount:.4f}", "default_category_id": cache[key]}
 
 
+def _part_of(db: Session, statement: AccountStatement, line: StatementLine | None, categories: dict[int, Category],
+             cache: dict) -> list[dict]:
+    """#392: the owner settlement entries the bank line may be one part of (`stand_ins.settlement_part_twins`, the
+    shape that keeps the policy and owner rules off the line, #389), as `_entry_out` rows; `cache` is the build's."""
+    from app.services import reconciliation_service as rec, stand_ins  # call time only
+    if line is None or statement.kind != "bank":
+        return []
+    if ("part", "rules", statement.period_end) not in cache:
+        cache[("part", "rules", statement.period_end)] = rec.rules_for(
+            settings_service.reconciliation_rules(db), statement.period_end)
+    rules = cache[("part", "rules", statement.period_end)]
+    found = [db.get(LedgerEntry, entry_id) for entry_id in stand_ins.settlement_part_twins(db, statement, line, rules, cache)]
+    # such an entry need not be a listed case's entry (another period, a dismissed case): its category is read here,
+    # so the title never falls back to the raw kind
+    missing = {e.category_id for e in found if e.category_id is not None and e.category_id not in categories
+               and ("part", "category", e.category_id) not in cache}
+    for category_id, category in _by_id(db, Category, missing).items():
+        cache[("part", "category", category_id)] = category
+    known = {**categories, **{e.category_id: cache[("part", "category", e.category_id)] for e in found
+                              if ("part", "category", e.category_id) in cache}}
+    return [_entry_out(e, known) for e in found]
+
+
 def settlement_labels(db: Session) -> tuple[str, ...]:
     """The rules' `settlement_labels` (the one setting the matcher's settlement-line test reads too)."""
     return tuple(settings_service.reconciliation_rules(db).get("settlement_labels") or matching.SETTLEMENT_LABELS)
@@ -378,20 +406,29 @@ def _item(db: Session, case: ReconciliationCase, statement: AccountStatement, li
     allowed = reconciliation_actions.allowed(case)
     question = _question(case, statement, line, allowed, labels=labels)
     actions = _buttons(db, case, question, allowed)
+    proposal = _proposal_out(db, case)
+    # #392: the hint is for a line the owner is about to record: a bank_only question, or a pending proposal that
+    # would book the line as a new entry (套用 then makes the duplicate)
+    records = question == "bank_only" or (
+        question == "proposed" and proposal is not None and proposal["action"] in RECORDING_PROPOSALS)
+    part_of = _part_of(db, statement, line, categories, hint_cache) if records else []
     learn = (line is not None and bool(pattern(line.merchant_norm or ""))  # an empty pattern can never be a rule
-             and any(learnable(question, b) for b in actions))
+             and any(learnable(question, b) for b in actions)
+             and not part_of)  # #392: never a rule from a line that may be part of a settlement entry
     return {
         "case_id": case.id, "case_version": case.version, "kind": case.kind, "status": case.status,
         "question": question, "folded": question in FOLDED,
-        "group_key": None if line is None else group_key(question, statement.account_id, str(line.line_kind),
-                                                          line.merchant_norm or "", line.flow_amount),
+        # #392: a line that may be part of a settlement entry stands alone (one tap never answers several)
+        "group_key": None if line is None or part_of else group_key(
+            question, statement.account_id, str(line.line_kind), line.merchant_norm or "", line.flow_amount),
         "statement": {"id": statement.id, "period_end": statement.period_end},
         "line": _line_out(line),
         "entry": _entry_out(entries.get(case.entry_id), categories),
         "candidates": _listed_candidates(case, entries, categories),
-        "proposal": _proposal_out(db, case),
+        "proposal": proposal,
         "actions": actions,
         "rule_hint": _rule_hint(db, statement, line, hint_cache) if learn else None,
+        "part_of": part_of,
         "transfer": _transfer_out(db, case, allowed),
         "note": (case.context or {}).get("note"),
     }
