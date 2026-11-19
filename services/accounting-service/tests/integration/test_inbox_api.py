@@ -77,6 +77,56 @@ def test_two_same_lines_count_one_card(client, seed, db_session, run):
     assert len(keys) == 1
 
 
+def _two_transfers(seed, db, run, *, receipt: bool):
+    """A live bank statement printing two 300 deposits; with `receipt`, beside one unclaimed owner settlement receipt
+    of 600 (a repayment the owner recorded as one entry): (account, receipt entry or None)."""
+    account = _bank(seed, db)
+    entry = None
+    if receipt:
+        debt = seed.entry(account, "-600", kind="receivable", day=date(2026, 8, 14))
+        db.flush()
+        entry = seed.entry(account, "600", kind="receivable", day=DAY, is_settlement=True, settles_entry_id=debt.id,
+                           name="收款 代付晚餐")
+        db.commit()
+    _submit(db, run, account, [_line(1, DAY, "跨行轉入 0903", 300, "deposit"),
+                               _line(2, date(2026, 9, 4), "跨行轉入 0904", 300, "deposit")], kind="bank")
+    return account, entry
+
+
+def test_bank_line_names_the_settlement_entry_it_may_be_part_of(client, seed, db_session, run):
+    """#392: each transfer of a repayment the owner recorded as one larger receipt is its own card, names the
+    receipt and offers no rule; the buttons stay."""
+    account, receipt = _two_transfers(seed, db_session, run, receipt=True)
+    body = _inbox(client)
+    items = _items(body, "bank_only")
+    assert len(items) == 2
+    for item in items:
+        assert item["part_of"] == [{"id": receipt.id, "date": "2026-09-03", "title": "收款 代付晚餐", "amount": "600.0000",
+                                    "account_id": account.id}]
+        assert item["group_key"] is None and item["rule_hint"] is None
+        assert "record" in item["actions"]
+    (ledger_only,) = _items(body, "ledger_only")  # the receipt's own card: 你記了，銀行沒有
+    assert ledger_only["entry"]["id"] == receipt.id and ledger_only["part_of"] == []
+    assert (body["counts"]["ask"], body["counts"]["ask_items"]) == (3, 3)  # two line cards and the receipt's
+
+
+def test_without_the_receipt_equal_lines_merge_as_before(client, seed, db_session, run):
+    account, _ = _two_transfers(seed, db_session, run, receipt=False)
+    body = _inbox(client)
+    items = _items(body, "bank_only")
+    assert [item["part_of"] for item in items] == [[], []]
+    assert {item["group_key"] for item in items} == {f"{account.id}|deposit|跨行轉入|300.0000"}
+    assert all(item["rule_hint"] is not None for item in items)
+    assert (body["counts"]["ask"], body["counts"]["ask_items"]) == (1, 2)
+
+
+def test_a_card_bank_only_item_has_no_part_of(client, seed, db_session, run):
+    card = _card(seed, db_session)
+    _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    (item,) = _items(_inbox(client), "bank_only")
+    assert item["part_of"] == [] and item["group_key"] is not None
+
+
 def test_transfer_and_settlement_and_installment(client, seed, db_session, run):
     account = _bank(seed, db_session)
     _submit(db_session, run, account, [

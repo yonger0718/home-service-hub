@@ -36,7 +36,7 @@ After #389 the policy and owner record rules leave a bank line alone when it may
 - `InboxItem` gains `part_of: list[InboxEntry] = []` (same shape as `entry`: `id`, `date`, `title`, `amount`, `account_id`).
 - It is filled for a `bank_only` question on a bank statement: the entries `stand_ins._partial_settlement_twins` finds for the line, ordered by id. Every other item has `[]`.
 - When it is not empty, the item's `group_key` and `rule_hint` are `null` (call): the card stands alone and offers no rule.
-- Cost: one claimed-entry snapshot per inbox build and one `owner_population` read per statement that has a `bank_only` bank line, both kept in the existing per-build cache. New public helper `stand_ins.settlement_part_twins(db, statement, line, population, rules) -> list[int]` wraps the private predicate for this caller.
+- Cost: one claimed-entry snapshot per inbox build and one `owner_population` read per statement that has a `bank_only` bank line, both kept in the existing per-build cache. New public helper `stand_ins.settlement_part_twins(db, statement, line, rules, cache) -> list[int]` wraps the private predicate for this caller.
 
 ### SPA
 
@@ -46,7 +46,7 @@ After #389 the policy and owner record rules leave a bank line alone when it may
 
 ## Tests
 
-- API (`tests/integration/test_inbox_api.py`): two equal deposit lines beside one larger unclaimed settlement receipt give two `bank_only` items, each with `part_of == [receipt]`, `group_key is None`, `rule_hint is None`, and `record` still among the actions; `counts.ask == 2`. Without the receipt the same lines merge as before (one group key, a rule hint, `part_of == []`). A card statement's `bank_only` item has `part_of == []`.
+- API (`tests/integration/test_inbox_api.py`): two equal deposit lines beside one larger unclaimed settlement receipt give two `bank_only` items, each with `part_of == [receipt]`, `group_key is None`, `rule_hint is None`, and `record` still among the actions; with the receipt's own `ledger_only` card, `counts.ask == 3` and `counts.ask_items == 3` (three cards). Without the receipt the same lines merge as before (one group key, a rule hint, `part_of == []`). A card statement's `bank_only` item has `part_of == []`.
 - SPA (`inbox-view.spec.ts`): `questionText` words the inflow hint, the outflow hint and the several-entries form; a `bank_only` item without `part_of` (field absent) keeps 銀行有、你沒記.
 
 ## Rollout

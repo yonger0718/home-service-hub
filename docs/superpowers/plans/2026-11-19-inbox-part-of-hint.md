@@ -22,7 +22,7 @@
 ## Review Focus
 
 - **Older API.** The SPA must not break when `part_of` is absent. Covered by the "field absent" case in `inbox-view.spec.ts`.
-- **Counts.** Ungrouping changes how many cards the SPA builds, not `counts.ask` (items are counted). Covered by the API test's `counts.ask == 2`.
+- **Counts.** `counts.ask` counts cards (items merged by `group_key`), so two ungrouped held lines must count as 2 cards, the same number the SPA builds. Covered by the API test's `(counts.ask, counts.ask_items) == (3, 3)` (the two lines and the receipt's own `ledger_only` card).
 - **Card statements.** No card line is eligible. Covered by the API test's card case.
 - **Batch apply.** `_check_batch` groups by what the client sends, not by `group_key`; a client could still batch two held cases. Not tested; the reviewer checks nothing on the server relies on `group_key` for safety.
 - **Outflow wording.** A withdrawal beside a larger unclaimed repayment says 支出. Covered by the SPA test.

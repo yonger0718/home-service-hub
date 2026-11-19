@@ -329,6 +329,21 @@ def _rule_hint(db: Session, statement: AccountStatement, line: StatementLine, ca
             "amount": f"{line.flow_amount:.4f}", "default_category_id": cache[key]}
 
 
+def _part_of(db: Session, statement: AccountStatement, line: StatementLine | None, categories: dict[int, Category],
+             cache: dict) -> list[dict]:
+    """#392: the owner settlement entries the bank line may be one part of (`stand_ins.settlement_part_twins`, the
+    shape that keeps the policy and owner rules off the line, #389), as `_entry_out` rows; `cache` is the build's."""
+    from app.services import reconciliation_service as rec, stand_ins  # call time only
+    if line is None or statement.kind != "bank":
+        return []
+    if ("part", "rules", statement.period_end) not in cache:
+        cache[("part", "rules", statement.period_end)] = rec.rules_for(
+            settings_service.reconciliation_rules(db), statement.period_end)
+    rules = cache[("part", "rules", statement.period_end)]
+    ids = stand_ins.settlement_part_twins(db, statement, line, rules, cache)
+    return [_entry_out(db.get(LedgerEntry, entry_id), categories) for entry_id in ids]
+
+
 def settlement_labels(db: Session) -> tuple[str, ...]:
     """The rules' `settlement_labels` (the one setting the matcher's settlement-line test reads too)."""
     return tuple(settings_service.reconciliation_rules(db).get("settlement_labels") or matching.SETTLEMENT_LABELS)
@@ -378,13 +393,16 @@ def _item(db: Session, case: ReconciliationCase, statement: AccountStatement, li
     allowed = reconciliation_actions.allowed(case)
     question = _question(case, statement, line, allowed, labels=labels)
     actions = _buttons(db, case, question, allowed)
+    part_of = _part_of(db, statement, line, categories, hint_cache) if question == "bank_only" else []
     learn = (line is not None and bool(pattern(line.merchant_norm or ""))  # an empty pattern can never be a rule
-             and any(learnable(question, b) for b in actions))
+             and any(learnable(question, b) for b in actions)
+             and not part_of)  # #392: never a rule from a line that may be part of a settlement entry
     return {
         "case_id": case.id, "case_version": case.version, "kind": case.kind, "status": case.status,
         "question": question, "folded": question in FOLDED,
-        "group_key": None if line is None else group_key(question, statement.account_id, str(line.line_kind),
-                                                          line.merchant_norm or "", line.flow_amount),
+        # #392: a line that may be part of a settlement entry stands alone (one tap never answers several)
+        "group_key": None if line is None or part_of else group_key(
+            question, statement.account_id, str(line.line_kind), line.merchant_norm or "", line.flow_amount),
         "statement": {"id": statement.id, "period_end": statement.period_end},
         "line": _line_out(line),
         "entry": _entry_out(entries.get(case.entry_id), categories),
@@ -392,6 +410,7 @@ def _item(db: Session, case: ReconciliationCase, statement: AccountStatement, li
         "proposal": _proposal_out(db, case),
         "actions": actions,
         "rule_hint": _rule_hint(db, statement, line, hint_cache) if learn else None,
+        "part_of": part_of,
         "transfer": _transfer_out(db, case, allowed),
         "note": (case.context or {}).get("note"),
     }
