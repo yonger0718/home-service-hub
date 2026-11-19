@@ -358,7 +358,8 @@ def _apply_keep(db: Session, entry: LedgerEntry, item: SplitKeepIn) -> None:
     reward_engine.after_meta_write(db, entry, before_project_id=before_project_id, before_flag=before_flag)
 
 
-def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None) -> SplitResult:
+def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None,
+                 drop_children: bool = False) -> SplitResult:
     """PUT /splits/{group_id}: upsert by member id (§1.5). keep_full members are rewritten in place (financially
     changed), get a metadata-only update (financially unchanged) or are skipped (fully unchanged); keep_meta
     members get the sent metadata; new members are inserted; current members absent from the payload are deleted.
@@ -395,7 +396,8 @@ def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None)
         elif member.action == "keep":
             _apply_keep(db, db.get(LedgerEntry, member.entry_id), member.item)
         elif member.change == "financial":
-            apply_prepared_update(db, db.get(LedgerEntry, member.entry_id), member.prepared)
+            apply_prepared_update(db, db.get(LedgerEntry, member.entry_id), member.prepared,
+                                  drop_children=drop_children)  # #396
         elif member.change == "meta":
             _apply_meta(db, db.get(LedgerEntry, member.entry_id), member.payload)
     db.flush()
@@ -448,7 +450,7 @@ def _refuse_anchor(db: Session, anchor: LedgerEntry) -> None:
 
 
 def convert_to_split(db: Session, entry_id: int, payload: SplitIn, *, http_get=None,
-                     source: str = "manual") -> SplitResult:
+                     source: str = "manual", drop_children: bool = False) -> SplitResult:
     """PUT /entries/{entry_id}/split (§1.6): the anchor joins a new split group and is rewritten in place (its id
     is stable); the other members are inserted with `source` (the reconciliation `split_entry` action passes
     'statement'). Phases as update_split; the only row lock is the anchor (it belongs to no group, and the new group
@@ -480,7 +482,7 @@ def convert_to_split(db: Session, entry_id: int, payload: SplitIn, *, http_get=N
     anchor.group_id = group.id
     for member in members:
         if member.action == "full":
-            apply_prepared_update(db, anchor, member.prepared)
+            apply_prepared_update(db, anchor, member.prepared, drop_children=drop_children)  # #396
         else:
             member.entry_id = insert_prepared(db, member.prepared, group_id=group.id, remember=False,
                                               source=source)

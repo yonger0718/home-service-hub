@@ -47,7 +47,7 @@ What the code and the data say today:
   - A stored child of a kind the payload does carry is never a drop, also when several stored rows become one (#313).
   - With `drop_children=true` the update proceeds as today.
 - `drop_children` confirms every drop of the request (both legs of a transfer, every member of a split).
-- **The lock.** A request with `drop_children=true` needs the `admin` scope (`auth.require("admin")`: `admin` or `legacy`, or scopes not configured). Without it the answer is `403 scope`, before the service runs, whether or not a child would be dropped. Production today: the SPA label passes (it already uses admin-only routes), the assistant's label is refused (checked on the live API with an admin-only route).
+- **The lock.** A request with `drop_children=true` needs the `admin` scope (`auth.require("admin")`: `admin` or `legacy`, or scopes not configured). Without it the answer is `403 scope`, before the service runs, whether or not a child would be dropped. Production, read 2026-11-19 with the service's own loader as the API user (which scopes each label holds, nothing else): the SPA label holds `legacy`, so it passes; the assistant's label holds `read, propose, write`, so it is refused (also seen on the live API: `403 scope` on an admin-only route). The development `.env` differs from production and is no evidence.
 - **#390, same lock.** `DELETE /entries/{id}?cascade=true` needs `admin` in the same way, and the `cascade_unconfirmed` detail no longer says `repeat with ?cascade=true`; it says the owner confirms the delete in the app.
 - The responses are unchanged; the updated entry already lists its `children`.
 - Creating (`POST`) is unchanged.

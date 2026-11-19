@@ -129,14 +129,17 @@ def _leg_values(
 
 def _write_leg_extras(
     db: Session, out_leg: LedgerEntry, in_leg: LedgerEntry, payload: TransferIn, *, source: str = "manual",
-    remember: bool = True, before: dict[int, tuple] | None = None,
+    remember: bool = True, before: dict[int, tuple] | None = None, drop_children: bool = False,
 ) -> None:
     """`before`: leg id -> (financial key, project id, (needs_review, review_reason)) read before the update
     rewrote the legs (update_transfer); None for a new transfer. An update reconciles each leg's fee / discount
     children in place (`sync_children`, issue #313) so a statement claim on an unchanged child survives."""
-    children = write_children if before is None else sync_children
-    children(db, out_leg, payload.out_fee, payload.out_discount, source=source)
-    children(db, in_leg, payload.in_fee, payload.in_discount, source=source)
+    for leg, fee, discount in ((out_leg, payload.out_fee, payload.out_discount),
+                               (in_leg, payload.in_fee, payload.in_discount)):
+        if before is None:
+            write_children(db, leg, fee, discount, source=source)
+        else:  # #396: an update drops a stored child only with `drop_children`
+            sync_children(db, leg, fee, discount, source=source, drop_children=drop_children)
     write_rule_links(db, out_leg.id, payload.reward_rule_ids)
     write_rule_links(db, in_leg.id, [])
     # P12 tier 2: both legs' old and new windows in ONE lock_windows before either leg syncs, so two transfers whose
@@ -188,7 +191,7 @@ def _locked_legs(db: Session, group_id: UUID) -> tuple[LedgerEntry, LedgerEntry]
     return _out_and_in(legs, group_id)
 
 
-def update_transfer(db: Session, group_id: UUID, payload: TransferIn) -> None:
+def update_transfer(db: Session, group_id: UUID, payload: TransferIn, *, drop_children: bool = False) -> None:
     """Replace both legs' fields, children and rule links in place (the leg ids stay).
 
     Lock order: no FX lookup happens here (the rates derive from the two amounts, nothing commits the session),
@@ -210,4 +213,4 @@ def update_transfer(db: Session, group_id: UUID, payload: TransferIn) -> None:
         for column, value in values.items():
             setattr(leg, column, value)
     db.flush()
-    _write_leg_extras(db, out_leg, in_leg, payload, source=source, before=before)
+    _write_leg_extras(db, out_leg, in_leg, payload, source=source, before=before, drop_children=drop_children)

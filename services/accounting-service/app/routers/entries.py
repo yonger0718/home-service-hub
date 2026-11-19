@@ -89,9 +89,11 @@ def post_entry(payload: EntryIn, db: Session = Depends(get_db)):
 
 
 @router.put("/{entry_id}", response_model=EntryWriteOut)
-def put_entry(entry_id: int, payload: EntryUpdateIn, db: Session = Depends(get_db)):
+def put_entry(entry_id: int, payload: EntryUpdateIn, drop_children: bool = False, db: Session = Depends(get_db)):
+    """A stored fee / discount child the payload does not carry is dropped only with `?drop_children=true`
+    (409 `children_unconfirmed`, #396)."""
     with service_errors():
-        entry_write_service.update_entry(db, entry_id, payload)
+        entry_write_service.update_entry(db, entry_id, payload, drop_children=drop_children)
     db.commit()
     return _written(db, entry_id)
 
@@ -138,10 +140,11 @@ def post_reward_reprice(entry_id: int, payload: RewardRepriceIn, db: Session = D
 
 
 @router.put("/{entry_id}/split", response_model=SplitOut)
-def put_entry_split(entry_id: int, payload: SplitIn, db: Session = Depends(get_db)):
-    """Convert a single entry into a split; the entry keeps its id (split rework §1.6)."""
+def put_entry_split(entry_id: int, payload: SplitIn, drop_children: bool = False, db: Session = Depends(get_db)):
+    """Convert a single entry into a split; the entry keeps its id (split rework §1.6). `drop_children`: as on
+    PUT /entries/{entry_id} (#396)."""
     with service_errors():
-        result = split_service.convert_to_split(db, entry_id, payload)
+        result = split_service.convert_to_split(db, entry_id, payload, drop_children=drop_children)
     db.commit()
     return result.out()
 

@@ -27,8 +27,10 @@ def post_transfer(payload: TransferIn, db: Session = Depends(get_db)):
 
 
 @router.put("/{group_id}", response_model=TransferOut)
-def put_transfer(group_id: UUID, payload: TransferIn, db: Session = Depends(get_db)):
+def put_transfer(group_id: UUID, payload: TransferIn, drop_children: bool = False, db: Session = Depends(get_db)):
+    """A leg's stored fee / discount child the payload does not carry is dropped only with `?drop_children=true`
+    (409 `children_unconfirmed`, #396)."""
     with service_errors():
-        transfer_service.update_transfer(db, group_id, payload)
+        transfer_service.update_transfer(db, group_id, payload, drop_children=drop_children)
     db.commit()
     return _out(db, group_id)

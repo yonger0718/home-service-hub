@@ -255,7 +255,7 @@ def test_update_replaces_fields_and_children(client, db_session, seed):
     wallet_id, card_id = wallet.id, card.id
 
     response = client.put(
-        f"/entries/{entry_id}",
+        f"/entries/{entry_id}?drop_children=true",  # #396: the stored discount is dropped on purpose
         json=_payload(card, amount="250", entry_date="2026-09-03", name="晚餐", fee={"amount": "7", "name": "運費"}),
     )
 

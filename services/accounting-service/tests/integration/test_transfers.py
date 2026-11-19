@@ -207,7 +207,7 @@ def test_put_updates_both_legs_and_replaces_children(client, db_session, seed):
     before_ids = (before_out.id, before_in.id)
 
     response = client.put(
-        f"/transfers/{group_id}",
+        f"/transfers/{group_id}?drop_children=true",  # #396: the stored out fee is dropped on purpose
         json={
             "from_account_id": a_id, "to_account_id": c_id, "out_amount": "1200",
             "entry_date": "2026-09-04", "name": "還錢", "in_discount": {"amount": "2"},

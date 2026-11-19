@@ -308,7 +308,8 @@ def stored_child_names(db: Session, parent_id: int) -> dict[str, str | None]:
 
 
 def sync_children(
-    db: Session, parent: LedgerEntry, fee: ChildIn | None, discount: ChildIn | None, *, source: str = "manual"
+    db: Session, parent: LedgerEntry, fee: ChildIn | None, discount: ChildIn | None, *, source: str = "manual",
+    drop_children: bool = False,
 ) -> None:
     """Reconcile the parent's fee / discount children with the payload by kind instead of delete + insert (issue
     #313), so a statement claim on an unchanged child survives an edit of the parent. Per kind: no payload → delete
@@ -317,10 +318,21 @@ def sync_children(
     sends them back as one value: their total and the first one's name) → leave them alone when the total matches,
     renaming the first if the name differs, else replace them with one row. A child row is written, and takes
     `source`, only when a column changes; a structural change (amount, date, account) then releases its claim at the
-    next sweep like any edited covered entry. Any other child kind is deleted, as before. Flushes, never commits."""
+    next sweep like any edited covered entry. Any other child kind is deleted, as before. Flushes, never commits.
+
+    #396: a stored child whose kind the payload does not carry is a drop, and a drop needs `drop_children` (the
+    caller's `?drop_children=true`); without it nothing is written and `children_unconfirmed` is raised. A kind the
+    payload carries is never a drop, also when several stored rows become one."""
     stored = list(db.scalars(select(LedgerEntry).where(LedgerEntry.parent_entry_id == parent.id)
                              .order_by(LedgerEntry.id)))
     wanted = {"fee": fee, "discount": discount}
+    dropped = [c for c in stored if wanted.get(c.kind) is None]
+    if dropped and not drop_children:
+        listed = ", ".join(f"entry {c.id} ({c.kind}) of entry {parent.id}" for c in dropped)
+        raise CodedConflictError(
+            CHILDREN_UNCONFIRMED,
+            f"updating entry {parent.id} would delete {listed}; send the fee / discount back, or the owner "
+            "confirms the drop in the app")
     doomed = [c.id for c in stored if c.kind not in wanted]
     new_fee = new_discount = None
     for kind, child in wanted.items():
@@ -427,7 +439,8 @@ def _stored_snapshot(entry: LedgerEntry) -> dict:
     return coverage_service.snapshot_entry(stored)
 
 
-def apply_prepared_update(db: Session, entry: LedgerEntry, prepared: PreparedEntry) -> None:
+def apply_prepared_update(db: Session, entry: LedgerEntry, prepared: PreparedEntry, *,
+                          drop_children: bool = False) -> None:
     """Rewrite an editable entry the caller holds FOR UPDATE: columns, fee / discount children (`sync_children`:
     unchanged children keep their row and statement claim, #313) and rule links.
     Reward ledger rows point at the entry through reward_source_entry_id, not parent_entry_id, so they stay. A
@@ -435,7 +448,8 @@ def apply_prepared_update(db: Session, entry: LedgerEntry, prepared: PreparedEnt
     cosmetic edit of a statement-booked entry (a stand-in, R6b.0/R6b.5, PR #76 review M1): when the stored row and
     the update agree on every `coverage_service.STRUCTURAL_KEYS` key and the entry has no fee / discount child
     before or after, it keeps `source='statement'`, so a categorised stand-in stays replaceable. A structural edit
-    still flips it to `manual` (the replacement then refuses `stand_in_changed`)."""
+    still flips it to `manual` (the replacement then refuses `stand_in_changed`). `drop_children`: see
+    `sync_children` (#396)."""
     payload = prepared.payload
     before_key = reward_engine.financial_key(entry, attached_rule_ids(db, entry.id))
     before_project_id, before_flag = entry.project_id, (entry.needs_review, entry.review_reason)
@@ -448,7 +462,7 @@ def apply_prepared_update(db: Session, entry: LedgerEntry, prepared: PreparedEnt
     if statement_booked and not had_children and payload.fee is None and payload.discount is None \
             and not coverage_service.structurally_changed(before, entry):
         source = entry.source = STATEMENT_SOURCE
-    sync_children(db, entry, payload.fee, payload.discount, source=source)
+    sync_children(db, entry, payload.fee, payload.discount, source=source, drop_children=drop_children)
     write_rule_links(db, entry.id, payload.reward_rule_ids)
     reward_engine.after_write(db, entry, before_key=before_key, before_project_id=before_project_id,
                               before_flag=before_flag)
@@ -582,7 +596,8 @@ def _assert_form_kind(entry: LedgerEntry) -> None:
         raise ValidationError("kind", f"{entry.kind} entries are not edited through this endpoint")
 
 
-def update_entry(db: Session, entry_id: int, payload: EntryUpdateIn, *, http_get=None) -> None:
+def update_entry(db: Session, entry_id: int, payload: EntryUpdateIn, *, http_get=None,
+                 drop_children: bool = False) -> None:
     """Settlement entries (`is_settlement`, with or without a settles_entry_id: the link is NULL after the
     original was deleted and imported collections may never have had one) and refund entries are never re-signed
     here: `signed(kind, amount)` would flip a +200 collection to −200. They are edited by deleting and
@@ -602,7 +617,7 @@ def update_entry(db: Session, entry_id: int, payload: EntryUpdateIn, *, http_get
         raise ValidationError(field, "transfer legs keep kind and account; edit them with PUT /transfers/{transfer_group_id}")
     _assert_form_kind(entry)
     _check_linked_original(db, entry, prepared)
-    apply_prepared_update(db, entry, prepared)
+    apply_prepared_update(db, entry, prepared, drop_children=drop_children)
     remember_defaults(db, payload.category_id, prepared.account.id, payload.project_id)
 
 
@@ -712,6 +727,7 @@ def dissolve_group(
     db.expire_all()
 
 
+CHILDREN_UNCONFIRMED = "children_unconfirmed"  # 409: an update would drop a stored fee / discount child (#396)
 CASCADE_UNCONFIRMED = "cascade_unconfirmed"  # 409: a delete would remove a child on another account (#390)
 
 

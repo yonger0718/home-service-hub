@@ -142,7 +142,8 @@ def test_a_moved_parent_moves_its_child_in_place(client, seed, db_session):
 def test_dropping_the_fee_deletes_it_and_adding_a_discount_inserts_one(client, seed, db_session, run):
     card, parent_id, child_id, stmt, fee_line = _claimed_purchase(seed, db_session, run)
 
-    response = client.put(f"/entries/{parent_id}", json=_payload(card, fee=None, discount={"amount": "50"}))
+    response = client.put(f"/entries/{parent_id}?drop_children=true",  # #396: a drop is confirmed
+                          json=_payload(card, fee=None, discount={"amount": "50"}))
 
     assert response.status_code == 200, response.text
     children = _children(db_session, parent_id)
@@ -218,6 +219,6 @@ def test_a_transfer_put_keeps_unchanged_leg_children_and_updates_changed_ones_in
     assert _children(db_session, out_id) == [(fee_id, "fee", Decimal("-20.0000"), "手續費")]
     assert [(k, amt) for _, k, amt, _ in _children(db_session, in_id)] == [("discount", Decimal("5.0000"))]
 
-    dropped = client.put(f"/transfers/{group}", json={**body, "out_fee": None})
+    dropped = client.put(f"/transfers/{group}?drop_children=true", json={**body, "out_fee": None})  # #396
     assert dropped.status_code == 200, dropped.text
     assert _children(db_session, out_id) == [] and _children(db_session, in_id) == []
