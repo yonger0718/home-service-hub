@@ -1308,6 +1308,20 @@ describe('AccountingRemindersComponent', () => {
       http.expectOne(r => r.url === REVIEWS_URL).flush({ items: [], total: 0 });
     });
 
+    it('shows the remainder as it is now when it changed after the close (#403)', () => {
+      const { el } = renderWith([
+        review({ current_open_amount: '420.0000' }),
+        review({ event_id: 8, entry_id: 75, name: '車票', current_open_amount: '220.0000' }),
+        review({ event_id: 9, entry_id: 76, name: '門票', current_open_amount: '0.0000' }),
+        review({ event_id: 10, entry_id: 77, name: '舊資料' }),
+        review({ event_id: 11, entry_id: 78, name: '已刪', deleted: true, current_open_amount: null }),
+      ]);
+
+      const now = Array.from(el.querySelectorAll('.debt-reviews .review-row')).map(row => text(row.querySelector('.review-now')));
+      expect(now).toEqual(['目前剩餘 $420', '', '目前剩餘 $0', '', '']);
+      expect(rows(el)[0].slice(0, 2)).toEqual(['Alan · 晚餐代墊', '當時剩餘 $220']);
+    });
+
     it('says when only the newest 50 are shown', () => {
       const { el } = renderWith([review()], 51);
       expect(text(el.querySelector('.debt-reviews .muted'))).toBe('僅顯示最近 50 筆');

@@ -622,6 +622,14 @@
     grid-column: 1 / -1;
   }
 
+  .review-now {
+    color: var(--app-danger);
+    font-size: var(--fs-label, 0.75rem);
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    grid-column: 1 / -1;
+  }
+
   .badge {
     background: var(--app-surface-soft);
     border-radius: var(--radius-pill);

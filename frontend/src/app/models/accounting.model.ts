@@ -438,6 +438,9 @@ export interface DebtReviewItem {
   amount: string;
   currency: string;
   open_amount: string;
+  /** #403: the debt's remainder now (`open_amount` is the one at the close). Null for a deleted debt; missing on an
+   * API from before #403. */
+  current_open_amount?: string | null;
   actor: string | null;
   event_date: string;
 }

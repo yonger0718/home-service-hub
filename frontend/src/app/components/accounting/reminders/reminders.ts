@@ -311,6 +311,12 @@ export class AccountingRemindersComponent {
       item,
       title: [item.counterparty, item.name].filter(Boolean).join(' · ') || (item.kind === 'payable' ? '應付款項' : '應收款項'),
       remaining: `當時剩餘 ${formatMoney(item.open_amount, item.currency)}`,
+      // #403: the remainder moved after the close (a settlement deleted or changed, the debt edited): the owner
+      // confirms what is written off now, not what it was.
+      now:
+        item.current_open_amount != null && Number(item.current_open_amount) !== Number(item.open_amount)
+          ? `目前剩餘 ${formatMoney(item.current_open_amount, item.currency)}`
+          : null,
       sub: [slashDate(item.event_date), debtActorLabel(item.actor)].filter(Boolean).join(' · '),
     })),
   );

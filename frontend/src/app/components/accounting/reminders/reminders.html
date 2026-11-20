@@ -157,12 +157,18 @@
                 <span class="name">{{ row.title }} <span class="badge">已刪除</span></span>
                 <span class="amt">{{ row.remaining }}</span>
                 <span class="sub">{{ row.sub }}</span>
+                @if (row.now) {
+                  <span class="review-now">{{ row.now }}</span>
+                }
               </span>
             } @else {
               <button type="button" class="review-main review-open" [attr.data-entry-id]="row.item.entry_id" (click)="openReview(row.item)">
                 <span class="name">{{ row.title }}</span>
                 <span class="amt">{{ row.remaining }}</span>
                 <span class="sub">{{ row.sub }}</span>
+                @if (row.now) {
+                  <span class="review-now">{{ row.now }}</span>
+                }
               </button>
             }
             <button
