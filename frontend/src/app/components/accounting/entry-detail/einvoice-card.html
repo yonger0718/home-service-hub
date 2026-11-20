@@ -20,9 +20,19 @@
 } @else {
   @switch (pickerState().status) {
     @case ('idle') {
-      <div class="einvoice-actions">
-        <button type="button" class="einvoice-open" (click)="openPicker()">連結發票…</button>
-      </div>
+      @if (compact()) {
+        <button type="button" class="einvoice-open einvoice-row" (click)="openPicker()">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3z M9 8h6 M9 12h6"></path></svg>
+          <span>連結發票…</span>
+          @if (hintText(); as text) {
+            <small class="einvoice-hint">{{ text }}</small>
+          }
+        </button>
+      } @else {
+        <div class="einvoice-actions">
+          <button type="button" class="einvoice-open" (click)="openPicker()">連結發票…</button>
+        </div>
+      }
     }
     @case ('loading') {
       <div class="einvoice-sub" role="status" aria-busy="true">讀取中</div>

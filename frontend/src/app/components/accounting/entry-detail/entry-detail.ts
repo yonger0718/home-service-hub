@@ -1,4 +1,4 @@
-import { Location } from '@angular/common';
+import { Location, NgTemplateOutlet } from '@angular/common';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -38,7 +38,9 @@ import {
   parseMoneyExact,
   parseMoneyText,
 } from '../amount-text';
-import { shortDate, slashDate, todayIso } from '../dates';
+import { shortDate, slashDate, todayIso, weekdayLabel } from '../dates';
+import { CalendarPaneService } from '../calendar-month/calendar-pane.service';
+import { AccountingOverviewService } from '../month-overview/overview.service';
 import { currencySymbol, formatMoney, formatNumber } from '../format';
 import { debtEventLine } from '../debt-events';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
@@ -101,11 +103,11 @@ interface Chip {
 @Component({
   selector: 'app-entry-detail',
   standalone: true,
-  imports: [RouterLink, LockBannerComponent, AppEntryEinvoiceCardComponent, AppEntryRewardRepriceCardComponent, AppEntryRewardSectionComponent],
+  imports: [NgTemplateOutlet, RouterLink, LockBannerComponent, AppEntryEinvoiceCardComponent, AppEntryRewardRepriceCardComponent, AppEntryRewardSectionComponent],
   templateUrl: './entry-detail.html',
   styleUrl: './entry-detail.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { '(keydown)': 'onKeydown($event)' },
+  host: { '(keydown)': 'onKeydown($event)', '[class.entry-detail--drawer]': 'drawer()' },
 })
 export class EntryDetailComponent implements OnInit {
   private service = inject(AccountingService);
@@ -130,6 +132,10 @@ export class EntryDetailComponent implements OnInit {
   readonly passbookId = signal<number | null>(null);
   /** In the layout's 760–1023 px sheet the sheet's own ✕ closes it: no second close control here. */
   readonly inSheet = computed(() => this.layoutMode.mode() === 'sheet');
+  /** The calendar drawer (≥ 1024 px, 日曆): a compact head and fields, the actions pinned at the bottom. */
+  private readonly overview = inject(AccountingOverviewService);
+  private readonly calendarPane = inject(CalendarPaneService);
+  readonly drawer = computed(() => this.layoutMode.mode() === 'panes' && this.overview.calendar());
   readonly detail = signal<EntryDetail | null>(null);
   readonly accounts = signal<LedgerAccount[]>([]);
   readonly loadError = signal(false);
@@ -562,6 +568,36 @@ export class EntryDetailComponent implements OnInit {
   isSibling(id: number): boolean {
     return this.siblingIds().has(id);
   }
+
+  /** ↑ / ↓ of the drawer's bar: the timeline steps to the neighbouring entry. */
+  stepEntry(delta: 1 | -1): void {
+    this.calendarPane.commands()?.stepEntry(delta);
+  }
+
+  /** The drawer's two-column table: the four always-on cells, then the ones that carry something non-default. */
+  readonly drawerFields = computed<{ label: string; value: string }[]>(() => {
+    const detail = this.detail();
+    if (!detail) {
+      return [];
+    }
+    const [, month, day] = detail.entry_date.split('-').map(Number);
+    const fields = [
+      { label: '帳戶', value: detail.account_name },
+      { label: this.debtKind() ? '對象' : '商家', value: (this.debtKind() ? detail.counterparty : detail.merchant) || '—' },
+      { label: '日期', value: `${month}/${day} ${weekdayLabel(detail.entry_date)}` },
+      { label: '時間', value: detail.entry_time ? detail.entry_time.slice(0, 5) : '—' },
+    ];
+    if (detail.project) {
+      fields.push({ label: '專案', value: detail.project });
+    }
+    if (detail.kind !== 'expense' && detail.kind !== 'income') {
+      fields.push({ label: '交易類型', value: this.kindLabel(detail.kind) });
+    }
+    if (this.eventKindLabel(detail) !== '單次') {
+      fields.push({ label: '事件類型', value: this.eventKindLabel(detail) });
+    }
+    return fields;
+  });
 
   /** The entry shown, only while it is also the one in the URL; writes act on nothing else. */
   private routedDetail(): EntryDetail | null {

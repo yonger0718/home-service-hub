@@ -10,6 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EntryDetail, LedgerAccount, LedgerEntry } from '../../../models/accounting.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { CalendarCommands, CalendarPaneService } from '../calendar-month/calendar-pane.service';
+import { AccountingOverviewService } from '../month-overview/overview.service';
 import { EntryDetailComponent, settledValue } from './entry-detail';
 
 function entry(fields: Record<string, unknown>): LedgerEntry {
@@ -1510,6 +1512,142 @@ describe('EntryDetailComponent', () => {
       http.expectNone('/api/accounting/entries/42/reopen');
     });
   });
+  describe('the calendar drawer presentation (owner item 5)', () => {
+    const MEAL = () => detail({
+      id: 42, amount: '-180.0000', name: '午餐便當', merchant: '範例餐館', category: '餐飲/午餐', category_icon: '🍱',
+      category_color: '#84dccf', entry_date: '2026-11-05', entry_time: '12:30:00',
+    });
+    const cells = (fixture: ComponentFixture<EntryDetailComponent>) =>
+      Array.from(el(fixture).querySelectorAll('dl.dtable > div')).map(cell => [
+        cell.querySelector('dt')?.textContent?.trim(), cell.querySelector('dd')?.textContent?.trim(),
+      ]);
+
+    /** `render`, then answers the invoice hint's picker read (the drawer asks once for an unlinked expense). */
+    function renderDrawer(body: EntryDetail): ComponentFixture<EntryDetailComponent> {
+      const fixture = render(body);
+      http.match(r => r.url === '/api/accounting/einvoices/picker').forEach(req =>
+        req.flush({ entry_eligible: true, group_id: null, group_eligible: false, invoices: [] }));
+      fixture.detectChanges();
+      return fixture;
+    }
+
+    function drawerOn(): CalendarPaneService {
+      TestBed.inject(LayoutModeService).set('panes');
+      TestBed.inject(AccountingOverviewService).calendar.set(true);
+      const pane = TestBed.inject(CalendarPaneService);
+      pane.commands.set({ stepEntry: vi.fn() } as unknown as CalendarCommands);
+      return pane;
+    }
+
+    it('replaces the coloured head with a bar: step buttons, the hint and ✕', () => {
+      const pane = drawerOn();
+      const fixture = renderDrawer(MEAL());
+      const root = el(fixture);
+      expect(root.querySelector('.dhead')).toBeNull();
+      expect(root.classList.contains('entry-detail--drawer')).toBe(true);
+      const bar = root.querySelector('.drawer-bar')!;
+      expect(bar.textContent).toContain('↑↓ 切換');
+      bar.querySelector<HTMLButtonElement>('button[aria-label="上一筆"]')!.click();
+      bar.querySelector<HTMLButtonElement>('button[aria-label="下一筆"]')!.click();
+      const step = pane.commands()!.stepEntry as ReturnType<typeof vi.fn>;
+      expect(step.mock.calls).toEqual([[-1], [1]]);
+      const close = vi.spyOn(fixture.componentInstance, 'close').mockImplementation(() => undefined);
+      bar.querySelector<HTMLButtonElement>('button[aria-label="關閉（Esc）"]')!.click();
+      expect(close).toHaveBeenCalled();
+    });
+
+    it('shows one compact row: icon, name, kind · category path, total', () => {
+      drawerOn();
+      const fixture = renderDrawer(MEAL());
+      const row = el(fixture).querySelector('.dcompact')!;
+      expect(row.querySelector<HTMLElement>('.ico')!.style.background).not.toBe('');
+      expect(text(row.querySelector('.detail-name'))).toBe('午餐便當');
+      expect(text(row.querySelector('.dkind'))).toBe('支出 · 餐飲 › 午餐');
+      expect(text(row.querySelector('.detail-total'))).toBe('−$180');
+    });
+
+    it('shows just the kind label when the entry has no category', () => {
+      drawerOn();
+      const fixture = renderDrawer(detail({ id: 42, amount: '-5.0000', name: '雜項', category: null }));
+      expect(text(el(fixture).querySelector('.dkind'))).toBe('支出');
+    });
+
+    it('lists 帳戶, 商家, 日期 (M/D 週X, unpadded), 時間 and hides defaults', () => {
+      drawerOn();
+      const fixture = renderDrawer(MEAL());
+      expect(cells(fixture)).toEqual([['帳戶', '玉山 UNI'], ['商家', '範例餐館'], ['日期', '11/5 週四'], ['時間', '12:30']]);
+    });
+
+    it('labels the second cell 對象 for a debt and adds 專案 / 交易類型 / 事件類型 only when set', () => {
+      drawerOn();
+      const fixture = renderDrawer(detail({ ...RECEIVABLE, id: 42, project: '旅行', entry_date: '2026-11-05' }));
+      const rows = cells(fixture);
+      expect(rows.map(([label]) => label)).toEqual(['帳戶', '對象', '日期', '時間', '專案', '交易類型']);
+      expect(rows).toContainEqual(['專案', '旅行']);
+      expect(rows).toContainEqual(['交易類型', '應收款項']);
+    });
+
+    it('pins .actions in .drawer-foot after the scrolling .drawer-body', () => {
+      drawerOn();
+      const fixture = renderDrawer(MEAL());
+      const foot = el(fixture).querySelector('.drawer-foot')!;
+      const body = el(fixture).querySelector('.drawer-body')!;
+      expect(foot.querySelector('.actions')).not.toBeNull();
+      expect(body.querySelector('.actions')).toBeNull();
+      expect(body.nextElementSibling).toBe(foot);
+    });
+
+    it('renders every inline panel inside .drawer-body', () => {
+      drawerOn();
+      const fixture = renderDrawer(detail({ ...RECEIVABLE, id: 42, schedule: { definition_id: 3, instance_id: 1, kind: 'recurring', seq: 2, times: 12, name: '房租', posted_entry_ids: [42], is_partial: false, acted_by: 'auto' } }));
+      const selectors: Record<string, string> = {
+        settle: '.inline-form', refund: '.inline-form', delete: '.delete-confirm', reopen: '.debt-confirm', close: '.debt-confirm',
+        scope: '.scope-choice', repost: '.repost-form',
+      };
+      for (const [panel, selector] of Object.entries(selectors)) {
+        fixture.componentInstance.panel.set(panel as never);
+        fixture.detectChanges();
+        expect(el(fixture).querySelector(`.drawer-body ${selector}`), panel).not.toBeNull();
+        expect(el(fixture).querySelector(`.drawer-foot ${selector}`), panel).toBeNull();
+      }
+    });
+
+    it('keeps the group-back link, fee note, 入帳日 and 結清記錄 in the body', () => {
+      drawerOn();
+      const fixture = renderDrawer(splitChild({
+        kind: 'expense', amount: '-60', posted_date: '2026-10-09', entry_date: '2026-10-01',
+        children: [entry({ id: 44, kind: 'fee', amount: '-5' })],
+        debt_events: [{ id: 1, action: 'close', actor: 'hermes', open_amount: '220.0000', currency: 'TWD', event_date: '2026-11-18', needs_review: false }],
+      }));
+      for (const selector of ['.group-back', '.fee-note', '.posted', '.debt-events']) {
+        expect(el(fixture).querySelector(`.drawer-body ${selector}`), selector).not.toBeNull();
+      }
+    });
+
+    it.each([
+      ['sheet', false],
+      ['phone', false],
+      ['panes', false],
+    ])('keeps the full detail in %s mode without the calendar (calendar=%s)', (mode, calendar) => {
+      TestBed.inject(LayoutModeService).set(mode as 'sheet' | 'phone' | 'panes');
+      TestBed.inject(AccountingOverviewService).calendar.set(calendar);
+      const fixture = renderDrawer(MEAL());
+      const root = el(fixture);
+      expect(root.querySelector('.dhead')).not.toBeNull();
+      expect(root.querySelector('.drawer-bar')).toBeNull();
+      expect(root.querySelector('.drawer-body')).toBeNull();
+      expect(root.classList.contains('entry-detail--drawer')).toBe(false);
+      expect(root.querySelectorAll('.dgrid > div')).toHaveLength(7);
+    });
+
+    it('does not use the drawer presentation in the calendar below 1024 px', () => {
+      TestBed.inject(LayoutModeService).set('sheet');
+      TestBed.inject(AccountingOverviewService).calendar.set(true);
+      const fixture = renderDrawer(MEAL());
+      expect(el(fixture).querySelector('.dhead')).not.toBeNull();
+    });
+  });
+
 });
 
 describe('settledValue', () => {

@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, computed, effect, inject, input, output, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, computed, effect, inject, input, output, signal, untracked } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Observable, Subscription } from 'rxjs';
 
@@ -22,6 +22,10 @@ type PickerState = { status: 'idle' } | { status: 'loading' } | { status: 'faile
     .einvoice-error { color: var(--app-danger); font-size: 0.85rem; margin: 4px 0 0; }
     .einvoice-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
     .einvoice-actions button { min-height: 44px; }
+    .einvoice-row { align-items: center; background: transparent; border: 1px dashed var(--app-border); border-radius: 12px; color: var(--app-text); cursor: pointer; display: flex; font: inherit; font-size: 0.88rem; font-weight: 600; gap: 10px; min-height: 46px; padding: 0 12px; text-align: left; width: 100%; }
+    .einvoice-row svg { color: var(--app-text-muted); flex: none; }
+    .einvoice-row span { flex: 1; }
+    .einvoice-hint { color: var(--app-text-muted); font-size: 0.75rem; font-weight: 400; }
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
@@ -31,6 +35,8 @@ export class AppEntryEinvoiceCardComponent {
 
   readonly detail = input.required<EntryDetail>();
   readonly changed = output<void>();
+  /** The calendar drawer: unlinked, the idle row reads the picker once to hint how many invoices can be picked. */
+  readonly compact = input(false);
 
   readonly slashDate = slashDate;
   readonly amount = invoiceAmount;
@@ -39,33 +45,78 @@ export class AppEntryEinvoiceCardComponent {
   readonly scope = signal<'entry' | 'group' | null>(null);
   readonly busy = signal(false);
   readonly error = signal<string | null>(null);
+  /** The compact prefetch: its picker (for this entry only), 'failed', or null while pending / not asked. Never `pickerState`. */
+  readonly hint = signal<{ entryId: number; picker: EinvoicePicker } | 'failed' | null>(null);
+  private readonly heldPicker = computed(() => {
+    const hint = this.hint();
+    return hint !== null && hint !== 'failed' && hint.entryId === this.detail().id ? hint.picker : null;
+  });
+  /** `前後 7 天有 n 張可選` / `前後 7 天沒有可選的發票`; nothing while loading, failed or not eligible. */
+  readonly hintText = computed(() => {
+    const picker = this.heldPicker();
+    if (!picker || !this.eligible(picker)) {
+      return null;
+    }
+    return picker.invoices.length > 0 ? `前後 7 天有 ${picker.invoices.length} 張可選` : '前後 7 天沒有可選的發票';
+  });
 
   /**
    * A linked invoice always shows. Unlinked, the card shows only for an entry that may be a link target: a top-level
    * expense, or a split-group member (its group may be one). The picker stays the final check: the card hides once
    * it says neither the entry nor its group is eligible (spec §10).
    */
+  private readonly maybeTarget = computed(() => {
+    const detail = this.detail();
+    return (detail.kind === 'expense' && detail.parent_entry_id == null) || detail.group?.kind === 'split';
+  });
+
   readonly visible = computed(() => {
     const detail = this.detail();
     if (detail.einvoice) {
       return true;
     }
-    const maybe = (detail.kind === 'expense' && detail.parent_entry_id == null) || detail.group?.kind === 'split';
+    const maybe = this.maybeTarget();
     const state = this.pickerState();
+    if (this.compact() && maybe && state.status === 'idle') {
+      // No row until the prefetch settles, so a not-eligible answer never flashes one.
+      const hint = this.hint();
+      const held = this.heldPicker();
+      if (hint === null || (hint !== 'failed' && held === null)) {
+        return false;
+      }
+      return hint === 'failed' || this.eligible(held as EinvoicePicker);
+    }
     return maybe && !(state.status === 'ready' && !this.eligible(state.picker));
   });
 
   private pickerSub?: Subscription;
+  private hintSub?: Subscription;
 
   constructor() {
     const key = computed(() => `${this.detail().id}:${this.detail().einvoice?.id ?? ''}`);
     effect(() => {
       key();
-      this.pickerSub?.unsubscribe();
-      this.pickerState.set({ status: 'idle' });
-      this.scope.set(null);
-      this.busy.set(false);
-      this.error.set(null);
+      const compact = this.compact();
+      untracked(() => {
+        this.pickerSub?.unsubscribe();
+        this.hintSub?.unsubscribe();
+        this.pickerState.set({ status: 'idle' });
+        this.hint.set(null);
+        this.scope.set(null);
+        this.busy.set(false);
+        this.error.set(null);
+        if (compact && !this.detail().einvoice && this.maybeTarget()) {
+          this.prefetch();
+        }
+      });
+    });
+  }
+
+  private prefetch(): void {
+    const entryId = this.detail().id;
+    this.hintSub = this.service.picker(entryId).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: (picker) => this.hint.set({ entryId, picker }),
+      error: () => this.hint.set('failed'),
     });
   }
 
@@ -78,15 +129,22 @@ export class AppEntryEinvoiceCardComponent {
       return;
     }
     this.error.set(null);
+    const held = this.heldPicker();
+    if (held) {
+      this.show(held);
+      return;
+    }
     this.pickerState.set({ status: 'loading' });
     this.pickerSub?.unsubscribe();
     this.pickerSub = this.service.picker(this.detail().id).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
-      next: (picker) => {
-        this.scope.set(picker.entry_eligible && picker.group_eligible ? null : picker.group_eligible ? 'group' : 'entry');
-        this.pickerState.set({ status: 'ready', picker });
-      },
+      next: (picker) => this.show(picker),
       error: () => this.pickerState.set({ status: 'failed' }),
     });
+  }
+
+  private show(picker: EinvoicePicker): void {
+    this.scope.set(picker.entry_eligible && picker.group_eligible ? null : picker.group_eligible ? 'group' : 'entry');
+    this.pickerState.set({ status: 'ready', picker });
   }
 
   choose(scope: 'entry' | 'group'): void {

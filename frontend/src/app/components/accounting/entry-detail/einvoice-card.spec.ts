@@ -260,4 +260,94 @@ describe('AppEntryEinvoiceCardComponent', () => {
       expect(root.textContent).toContain('AB-12345678');
     });
   });
+  describe('compact (the calendar drawer): the idle row hints how many invoices can be picked', () => {
+    const URL42 = '/api/accounting/einvoices/picker?entry_id=42';
+    const PICK2 = { entry_eligible: true, group_id: null, group_eligible: false, invoices: [invoice(1, '甲店'), invoice(2, '乙店')] };
+
+    function renderCompact(fields: Record<string, unknown> = {}): HTMLElement {
+      fixture = TestBed.createComponent(AppEntryEinvoiceCardComponent);
+      fixture.componentRef.setInput('detail', { ...PLAIN, id: 42, ...fields } as unknown as EntryDetail);
+      fixture.componentRef.setInput('compact', true);
+      fixture.componentInstance.changed.subscribe(() => changed++);
+      fixture.detectChanges();
+      return fixture.nativeElement as HTMLElement;
+    }
+
+    function settle(body: Record<string, unknown>, url = URL42): void {
+      http.expectOne(url).flush(body);
+      fixture.detectChanges();
+    }
+
+    const hint = (root: HTMLElement) => root.querySelector('.einvoice-hint')?.textContent?.trim();
+
+    it('reads the picker once and shows the count; the list waits for the click', () => {
+      const root = renderCompact();
+      expect(root.querySelector('.einvoice-row')).toBeNull(); // no row before the read settles
+      settle(PICK2);
+      const row = root.querySelector('button.einvoice-open.einvoice-row')!;
+      expect(row.textContent).toContain('連結發票…');
+      expect(hint(root)).toBe('前後 7 天有 2 張可選');
+      expect(fixture.componentInstance.pickerState().status).toBe('idle');
+      expect(root.querySelector('.einvoice-pick')).toBeNull();
+      (row as HTMLButtonElement).click();
+      fixture.detectChanges();
+      http.expectNone(URL42);
+      expect(root.querySelectorAll('.einvoice-pick')).toHaveLength(2);
+    });
+
+    it('still asks 這筆 / 整組 from the held picker', () => {
+      const root = renderCompact();
+      settle({ entry_eligible: true, group_id: 5, group_eligible: true, invoices: [invoice(1, '甲店')] });
+      (root.querySelector('.einvoice-open') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      http.expectNone(URL42);
+      expect(root.textContent).toContain('這筆');
+      expect(root.textContent).toContain('整組');
+    });
+
+    it('says so when no invoice can be picked', () => {
+      const root = renderCompact();
+      settle({ entry_eligible: true, group_id: null, group_eligible: false, invoices: [] });
+      expect(hint(root)).toBe('前後 7 天沒有可選的發票');
+    });
+
+    it('hides the card when the held picker says the entry is not eligible', () => {
+      const root = renderCompact();
+      settle({ entry_eligible: false, group_id: null, group_eligible: false, invoices: [] });
+      expect(root.querySelector('.einvoice-open')).toBeNull();
+      expect(root.textContent).not.toContain('發票');
+    });
+
+    it('shows no hint and no error when the read fails, and a click reads again', () => {
+      const root = renderCompact();
+      http.expectOne(URL42).flush({}, { status: 500, statusText: 'err' });
+      fixture.detectChanges();
+      expect(root.querySelector('.einvoice-hint')).toBeNull();
+      expect(root.textContent).not.toContain('讀取失敗');
+      (root.querySelector('.einvoice-open') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      settle(PICK2);
+      expect(root.querySelectorAll('.einvoice-pick')).toHaveLength(2);
+    });
+
+    it('drops the hint and reads once more when the entry changes', () => {
+      const root = renderCompact();
+      settle(PICK2);
+      fixture.componentRef.setInput('detail', { ...PLAIN, id: 43 } as unknown as EntryDetail);
+      fixture.detectChanges();
+      expect(root.querySelector('.einvoice-hint')).toBeNull();
+      settle({ entry_eligible: true, group_id: null, group_eligible: false, invoices: [invoice(3, '丙店')] }, '/api/accounting/einvoices/picker?entry_id=43');
+      expect(hint(root)).toBe('前後 7 天有 1 張可選');
+    });
+
+    it('does not read for a linked invoice', () => {
+      renderCompact({ einvoice: LINKED });
+    });
+
+    it('does not read before the click when compact is off', () => {
+      const root = render({});
+      expect(root.querySelector('.einvoice-hint')).toBeNull();
+      expect(root.querySelector('.einvoice-row')).toBeNull();
+    });
+  });
 });

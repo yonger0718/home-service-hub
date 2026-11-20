@@ -103,15 +103,20 @@
   border: 1px solid var(--app-border);
   border-radius: var(--radius-lg);
   box-shadow: var(--app-raised-shadow);
+  display: flex;
+  flex-direction: column;
   inset: 0;
-  overflow-y: auto;
-  padding: var(--pane-pad-top) 14px 14px;
+  overflow: hidden;
+  padding: 0;
   position: absolute;
   z-index: 3;
 }
 
+/* The entry detail fills the host and scrolls its own body (its action bar stays pinned); the form scrolls the host. */
 .pane-host.drawer--form {
   left: auto;
+  overflow-y: auto;
+  padding: var(--pane-pad-top) 14px 14px;
   width: min(560px, 90vw);
 }
 

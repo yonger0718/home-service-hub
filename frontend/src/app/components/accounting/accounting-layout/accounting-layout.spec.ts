@@ -577,7 +577,7 @@ describe('AccountingLayoutComponent', () => {
           const http = TestBed.inject(HttpTestingController);
           return (await vi.waitFor(() => {
             http.match(`/api/accounting/entries/${id}`).forEach(req => req.flush(makeEntryDetail({ id })));
-            return find(harness, '.pane-host.drawer .close[aria-label="關閉"]');
+            return find(harness, '.pane-host.drawer .close[aria-label="關閉（Esc）"]');
           })) as HTMLButtonElement;
         }
 
@@ -625,7 +625,7 @@ describe('AccountingLayoutComponent', () => {
           // No ✕ of the drawer's own: exactly one 關閉, the page's.
           await answerDetail(harness, 5);
           expect(root.querySelector('.drawer-close')).toBeNull();
-          expect(root.querySelectorAll('.detail-pane [aria-label="關閉"]').length).toBe(1);
+          expect(root.querySelectorAll('.detail-pane [aria-label^="關閉"]').length).toBe(1);
         });
 
         it("focuses the page's own ✕ when the drawer opens over a page already shown (清單 → 日曆 with an entry open)", async () => {
@@ -641,7 +641,7 @@ describe('AccountingLayoutComponent', () => {
           await find(harness, '.pane-host.drawer');
           await vi.waitFor(() => {
             harness.detectChanges();
-            expect(document.activeElement).toBe(close);
+            expect(document.activeElement).toBe(harness.routeNativeElement!.querySelector('.pane-host.drawer [data-pane-close]'));
           });
         });
 
@@ -818,7 +818,7 @@ describe('AccountingLayoutComponent', () => {
             return { paths: stack._history.slice(1).map(state => state.path), index: stack._historyIndex - 1 };
           }
 
-          const CLOSE = '.pane-host.drawer .close[aria-label="關閉"]';
+          const CLOSE = '.pane-host.drawer .close[aria-label="關閉（Esc）"]';
 
           /** 日曆 on 10/21 at 1100 px; the day panel's row `id` clicked, the drawer open on it (a push, as every row open). */
           async function openRow(id: number): Promise<{ harness: RouterTestingHarness; router: Router }> {
@@ -2023,6 +2023,18 @@ describe('AccountingLayoutComponent', () => {
       const css = readFileSync(join(process.cwd(), 'src/app/components/accounting/accounting-layout/accounting-layout.scss'), 'utf8');
       const block = css.match(/\n\.cal-base \{([^}]*)\}/)?.[1] ?? '';
       expect(block).toContain('padding-bottom: calc(14px + var(--fab-clear, 0px))');
+    });
+    it('makes the detail drawer a clipped flex column and keeps the form drawer scrolling with padding', () => {
+      const css = readFileSync(join(process.cwd(), 'src/app/components/accounting/accounting-layout/accounting-layout.scss'), 'utf8');
+      const detail = css.match(/\n\.pane-host\.drawer \{([^}]*)\}/)?.[1] ?? '';
+      expect(detail).toContain('display: flex');
+      expect(detail).toContain('flex-direction: column');
+      expect(detail).toContain('overflow: hidden');
+      expect(detail).toContain('padding: 0');
+      expect(detail).not.toContain('overflow-y: auto');
+      const form = css.match(/\n\.pane-host\.drawer--form \{([^}]*)\}/)?.[1] ?? '';
+      expect(form).toContain('overflow-y: auto');
+      expect(form).toContain('padding: var(--pane-pad-top) 14px 14px');
     });
   });
 });
