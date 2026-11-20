@@ -403,13 +403,20 @@
 
 .drawer-foot {
   border-top: 1px solid var(--app-border);
-  display: grid;
   flex: none;
-  gap: 6px;
-  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
   padding: 10px 12px;
 
-  .actions { display: contents; }
+  .actions {
+    background: none;
+    border: 0;
+    display: grid;
+    gap: 6px;
+    grid-auto-flow: row;
+    grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+    margin: 0;
+    padding: 0;
+    position: static;
+  }
 
   .actions button {
     align-items: center;

@@ -282,7 +282,6 @@ describe('AppEntryEinvoiceCardComponent', () => {
 
     it('reads the picker once and shows the count; the list waits for the click', () => {
       const root = renderCompact();
-      expect(root.querySelector('.einvoice-row')).toBeNull(); // no row before the read settles
       settle(PICK2);
       const row = root.querySelector('button.einvoice-open.einvoice-row')!;
       expect(row.textContent).toContain('連結發票…');
@@ -292,6 +291,19 @@ describe('AppEntryEinvoiceCardComponent', () => {
       (row as HTMLButtonElement).click();
       fixture.detectChanges();
       http.expectNone(URL42);
+      expect(root.querySelectorAll('.einvoice-pick')).toHaveLength(2);
+    });
+
+    it('shows the row without a hint while the read is pending, and a click reads afresh', () => {
+      const root = renderCompact();
+      expect(root.querySelector('button.einvoice-open.einvoice-row')).not.toBeNull();
+      expect(root.querySelector('.einvoice-hint')).toBeNull();
+      (root.querySelector('.einvoice-open') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      const open = http.match(URL42).filter((req) => !req.cancelled);
+      expect(open).toHaveLength(1);
+      open[0].flush(PICK2);
+      fixture.detectChanges();
       expect(root.querySelectorAll('.einvoice-pick')).toHaveLength(2);
     });
 
@@ -322,6 +334,7 @@ describe('AppEntryEinvoiceCardComponent', () => {
       const root = renderCompact();
       http.expectOne(URL42).flush({}, { status: 500, statusText: 'err' });
       fixture.detectChanges();
+      expect(root.querySelector('.einvoice-row')).not.toBeNull();
       expect(root.querySelector('.einvoice-hint')).toBeNull();
       expect(root.textContent).not.toContain('讀取失敗');
       (root.querySelector('.einvoice-open') as HTMLButtonElement).click();

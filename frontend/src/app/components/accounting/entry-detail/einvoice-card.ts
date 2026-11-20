@@ -78,13 +78,9 @@ export class AppEntryEinvoiceCardComponent {
     const maybe = this.maybeTarget();
     const state = this.pickerState();
     if (this.compact() && maybe && state.status === 'idle') {
-      // No row until the prefetch settles, so a not-eligible answer never flashes one.
-      const hint = this.hint();
+      // Pending or failed: the row stays (no hint). Only a settled not-eligible answer hides the card.
       const held = this.heldPicker();
-      if (hint === null || (hint !== 'failed' && held === null)) {
-        return false;
-      }
-      return hint === 'failed' || this.eligible(held as EinvoicePicker);
+      return held === null || this.eligible(held);
     }
     return maybe && !(state.status === 'ready' && !this.eligible(state.picker));
   });
@@ -134,6 +130,7 @@ export class AppEntryEinvoiceCardComponent {
       this.show(held);
       return;
     }
+    this.hintSub?.unsubscribe(); // a click while the prefetch is pending reads afresh
     this.pickerState.set({ status: 'loading' });
     this.pickerSub?.unsubscribe();
     this.pickerSub = this.service.picker(this.detail().id).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
