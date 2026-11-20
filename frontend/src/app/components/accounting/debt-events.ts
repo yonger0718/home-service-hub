@@ -3,11 +3,11 @@ import { slashDate } from './dates';
 import { formatMoney } from './format';
 
 /** The callers the owner knows by another name than their token label. */
-const ACTOR_NAMES: Record<string, string> = { spa: '網頁', hermes: 'Hermes' };
+const ACTOR_NAMES: ReadonlyMap<string, string> = new Map([['spa', '網頁'], ['hermes', 'Hermes']]);
 
 /** Who closed or reopened a debt (#401), from the caller's token label; empty without a label. */
 export function debtActorLabel(actor: string | null): string {
-  return actor ? (ACTOR_NAMES[actor] ?? actor) : '';
+  return actor ? (ACTOR_NAMES.get(actor) ?? actor) : '';
 }
 
 /** One line of a debt's close / reopen record (#401): date and action, who, the remainder the close took out or the

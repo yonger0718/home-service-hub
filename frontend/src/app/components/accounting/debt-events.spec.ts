@@ -17,6 +17,12 @@ describe('debt event wording (#401)', () => {
     ]);
   });
 
+  it('keeps a label that happens to be the name of an object member', () => {
+    expect(['constructor', '__proto__', 'toString', 'hasOwnProperty'].map(debtActorLabel)).toEqual([
+      'constructor', '__proto__', 'toString', 'hasOwnProperty',
+    ]);
+  });
+
   it('says what a close took out and what a reopen brought back', () => {
     expect(debtEventLine(event())).toBe('2026/11/20 標記結清 · Hermes · 當時剩餘 $220');
     expect(debtEventLine(event({ action: 'reopen', actor: 'spa' }))).toBe('2026/11/20 重新開啟 · 網頁 · 回到剩餘 $220');
