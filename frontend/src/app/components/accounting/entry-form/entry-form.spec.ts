@@ -967,6 +967,96 @@ describe('EntryFormComponent', () => {
     expect(left()).toBe(true);
   });
 
+  it('saves a transfer with a stored fee and discount again after a failed save, with the same fields, and clears the error', async () => {
+    const { el, left } = await open('/accounting/entries/8/edit');
+    const inLeg = makeEntryDetail({
+      id: 8, kind: 'transfer_in', account_id: 2, amount: '5000.0000', category_id: 40, transfer_group_id: 'g-7',
+      transfer_counterpart: makeEntry({ id: 7, kind: 'transfer_out', account_id: 1 }),
+      children: [makeEntry({ id: 81, kind: 'discount', account_id: 2, amount: '20.0000', parent_entry_id: 8 })],
+    });
+    respond('/api/accounting/entries/8', inLeg);
+    respond('/api/accounting/entries/7', {
+      ...inLeg, id: 7, kind: 'transfer_out', account_id: 1, amount: '-5000.0000',
+      children: [makeEntry({ id: 71, kind: 'fee', account_id: 1, amount: '-15.0000', parent_entry_id: 7 })],
+    });
+    respondTransferCategories();
+
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+    const first = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/transfers/g-7');
+    expect(first.request.params.keys()).toEqual([]);
+    expect(first.request.body).toMatchObject({
+      out_fee: { amount: '15', name: '手續費' }, out_discount: null, in_fee: null, in_discount: { amount: '20', name: '折扣' },
+    });
+    first.flush({ code: 'conflict', message: 'retry: leg 7 changed', trace_id: 't-1' }, { status: 409, statusText: 'Conflict' });
+    settle();
+    expect(text(el.querySelector('.form-error'))).toBe('記錄剛被更新，請重新載入後再試');
+    expect(left()).toBe(false);
+
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+    const second = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/transfers/g-7');
+    expect(el.querySelector('.form-error')).toBeNull();
+    expect(second.request.params.keys()).toEqual([]);
+    expect(second.request.body).toEqual(first.request.body);
+    second.flush({});
+    settle();
+    expect(left()).toBe(true);
+  });
+
+  it('saves a fee changed through the fee sheet on an entry with a stored fee, without confirming a drop (#396)', async () => {
+    const { el, left } = await open('/accounting/entries/9/edit');
+    respond('/api/accounting/entries/9', makeEntryDetail({
+      id: 9, account_id: 2, category_id: 12, amount: '-170.0000',
+      children: [makeEntry({ id: 10, kind: 'fee', account_id: 2, amount: '-5.0000', parent_entry_id: 9 })],
+    }));
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    expect(text(el.querySelector('.chip.fee'))).toContain('手續費');
+
+    (el.querySelector('.fee-open') as HTMLButtonElement).click();
+    settle();
+    expect((el.querySelector('app-fee-sheet .fee-amount') as HTMLInputElement).value).toBe('5');
+    typeInto(el, 'app-fee-sheet .fee-amount', '8');
+    (el.querySelector('app-fee-sheet .sheet-confirm') as HTMLButtonElement).click();
+    settle();
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+
+    const put = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/entries/9');
+    expect(put.request.params.keys()).toEqual([]);
+    expect(put.request.body).toMatchObject({ account_id: 2, amount: '170', fee: { amount: '8', name: null }, discount: null });
+    put.flush(makeEntryDetail({ id: 9 }));
+    settle();
+    expect(left()).toBe(true);
+  });
+
+  it('confirms the drop of a stored fee and discount that a move to another currency cleared (#396)', async () => {
+    const { el, left } = await open('/accounting/entries/9/edit', 'phone', FX_ACCOUNTS);
+    respond('/api/accounting/entries/9', makeEntryDetail({
+      id: 9, account_id: 2, category_id: 12, amount: '-170.0000',
+      children: [
+        makeEntry({ id: 10, kind: 'fee', account_id: 2, amount: '-5.0000', parent_entry_id: 9 }),
+        makeEntry({ id: 11, kind: 'discount', account_id: 2, amount: '3.0000', parent_entry_id: 9 }),
+      ],
+    }));
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+
+    chooseAccount(el, 4);
+    expect(text(el.querySelector('.form-notice'))).toBe('已清除手續費與折扣（帳戶幣別變更）');
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+
+    const put = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/entries/9');
+    expect(put.request.params.get('drop_children')).toBe('true');
+    expect(put.request.params.keys()).toEqual(['drop_children']);
+    expect(put.request.body).toMatchObject({ account_id: 4, amount: '170', fee: null, discount: null });
+    put.flush(makeEntryDetail({ id: 9, account_id: 4 }));
+    settle();
+    expect(left()).toBe(true);
+  });
+
   it('refuses to save an edited transfer leg whose counterpart is missing', async () => {
     const { el } = await open('/accounting/entries/8/edit');
     respond(

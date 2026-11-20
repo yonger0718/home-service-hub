@@ -167,3 +167,29 @@ export function decimalText(value: string | null | undefined): string {
   const digits = fraction ? `${whole}.${fraction}` : whole;
   return match[1] === '-' && /[1-9]/.test(digits) ? `-${digits}` : digits;
 }
+
+/** A plain decimal's text without padding zeros or a sign on zero (`'-0.50'` → `'-0.5'`); null when not one. */
+function canonicalDecimal(value: string | number | null | undefined): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const match = /^([+-]?)(\d*)(?:\.(\d*))?$/.exec(String(value).trim());
+  if (!match || (match[2] === '' && !match[3])) {
+    return null;
+  }
+  const whole = match[2].replace(/^0+/, '');
+  const fraction = (match[3] ?? '').replace(/0+$/, '');
+  if (!whole && !fraction) {
+    return '0';
+  }
+  return `${match[1] === '-' ? '-' : ''}${whole || '0'}${fraction ? `.${fraction}` : ''}`;
+}
+
+/**
+ * Two server decimals denote the same number (`'220.0000'` and `'220'`), compared on the text: no `Number`
+ * round-trip, so amounts past 2^53 keep every digit. A missing or non-decimal value equals nothing, not even itself.
+ */
+export function sameDecimal(a: string | number | null | undefined, b: string | number | null | undefined): boolean {
+  const left = canonicalDecimal(a);
+  return left !== null && left === canonicalDecimal(b);
+}

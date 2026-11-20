@@ -12,6 +12,7 @@ import {
   formatSigned,
   formatSignedShort,
   isNegative,
+  sameDecimal,
 } from './format';
 
 describe('formatAmount', () => {
@@ -154,5 +155,33 @@ describe('formatSignedShort', () => {
     expect(formatSignedShort(56000, 'JPY')).toBe('+¥56k');
     expect(formatSignedShort(5000, 'USDT')).toBe('+USDT 5k');
     expect(formatSignedShort(null, 'TWD')).toBe('$0');
+  });
+});
+
+describe('sameDecimal', () => {
+  it('is true for two texts of the same number, whatever their zeros and sign of zero', () => {
+    expect(sameDecimal('220.0000', '220')).toBe(true);
+    expect(sameDecimal('-0.50', '-0.5')).toBe(true);
+    expect(sameDecimal('0', '-0.0')).toBe(true);
+    expect(sameDecimal('00220.10', '+220.1')).toBe(true);
+    expect(sameDecimal('.5', '0.5')).toBe(true);
+    expect(sameDecimal('220.0000', 220)).toBe(true);
+  });
+
+  it('compares the digits exactly, past what a Number can hold', () => {
+    expect(sameDecimal('9007199254740992.0000', '9007199254740993.0000')).toBe(false);
+    expect(sameDecimal('1234567890123.4500', '1234567890123.45')).toBe(true);
+    expect(sameDecimal('220.0001', '220')).toBe(false);
+    expect(sameDecimal('-220', '220')).toBe(false);
+  });
+
+  it('is false when either side is missing or not a plain decimal, even against the same', () => {
+    expect(sameDecimal(null, null)).toBe(false);
+    expect(sameDecimal(undefined, undefined)).toBe(false);
+    expect(sameDecimal('', '')).toBe(false);
+    expect(sameDecimal(null, '0')).toBe(false);
+    expect(sameDecimal('220', undefined)).toBe(false);
+    expect(sameDecimal('abc', 'abc')).toBe(false);
+    expect(sameDecimal('.', '0')).toBe(false);
   });
 });
