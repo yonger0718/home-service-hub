@@ -786,4 +786,61 @@ describe('CustomReportComponent', () => {
     harness.detectChanges();
     expect(texts(el, '.cr-figure')[1]).toBe('平均每月 $403 5 組');
   });
+
+  describe('a single series drops the duplicate 合計 column', () => {
+    const dinner = (key: string, amount: number, count: number, compare?: number) => ({ ...row(key, amount, count, compare), splits: [{ key: '1', label: '晚餐', amount: String(amount), count }] });
+    const lunch = (key: string, amount: number, count: number) => ({ ...row(key, amount, count), splits: [{ key: '2', label: '午餐', amount: String(amount), count }] });
+    const flushAll = (rows: unknown[], total: number, count: number, compare?: { total: number; count: number }) => {
+      const requests = http.match(r => r.url === BREAKDOWN);
+      requests.forEach(request => request.flush(answer(rows as never, total, count, compare)));
+    };
+
+    it('splits into one series: 月份 | 晚餐 | 筆數, a total row without the repeated sum', async () => {
+      const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ split_by: 'subcategory', compare: undefined }));
+      flushAll([dinner('2026-09-01', 300, 3), dinner('2026-10-01', 450, 4)], 750, 7);
+      harness.detectChanges();
+
+      expect(texts(el, '.cr-table thead th')).toEqual(['月份', '晚餐', '筆數']);
+      const rows = Array.from(el.querySelectorAll('.cr-table tbody tr'));
+      expect(texts(rows[0], 'td')).toEqual(['300', '3']);
+      expect(texts(rows[2], 'th')).toEqual(['合計']);
+      expect(texts(rows[2], 'td')).toEqual(['750', '7']);
+    });
+
+    it('keeps the comparison columns', async () => {
+      const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ split_by: 'subcategory', compare: 'last_year' }));
+      flushAll([dinner('2026-09-01', 300, 3, 250), dinner('2026-10-01', 450, 4, 400)], 750, 7, { total: 650, count: 6 });
+      harness.detectChanges();
+
+      expect(texts(el, '.cr-table thead th')).toEqual(['月份', '晚餐', '筆數', '去年同期', '增減']);
+      const rows = Array.from(el.querySelectorAll('.cr-table tbody tr'));
+      expect(texts(rows[0], 'td')).toEqual(['300', '3', '250', '▲ 50']);
+      expect(texts(rows[2], 'td')).toEqual(['750', '7', '650', '▲ 100']);
+    });
+
+    it('has no 本月至今 column while the period runs', async () => {
+      vi.setSystemTime(NOV7);
+      const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ split_by: 'subcategory', compare: undefined }));
+      flushAll([dinner('2026-10-01', 450, 4), dinner('2026-11-01', 120, 2)], 570, 6);
+      harness.detectChanges();
+
+      expect(texts(el, '.cr-table thead th')).toEqual(['月份', '晚餐', '筆數']);
+    });
+
+    it('keeps 合計 with two series', async () => {
+      const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ split_by: 'subcategory', compare: undefined }));
+      flushAll([dinner('2026-09-01', 300, 3), lunch('2026-10-01', 450, 4)], 750, 7);
+      harness.detectChanges();
+
+      expect(texts(el, '.cr-table thead th')).toEqual(['月份', '午餐', '晚餐', '合計', '筆數']);
+    });
+
+    it('keeps 合計 without a split', async () => {
+      const { harness, el } = await open('/accounting/reports/custom/1', 'panes', reportWith({ compare: undefined }));
+      flushAll([row('2026-09-01', 300, 3), row('2026-10-01', 450, 4)], 750, 7);
+      harness.detectChanges();
+
+      expect(texts(el, '.cr-table thead th')).toEqual(['月份', '合計', '筆數']);
+    });
+  });
 });
