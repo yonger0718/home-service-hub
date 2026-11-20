@@ -491,4 +491,9 @@ describe('CalendarMonthComponent', () => {
       expect(render({ ...base, weekOf: '2026-10-21' }).el.querySelector('.legend')).toBeNull();
     });
   });
+
+  it('keeps the selection border on a selected future day in compact cells (scss source)', () => {
+    const scss = readFileSync(resolve(__dirname, 'calendar-month.scss'), 'utf8');
+    expect(scss).toContain('&.future:not(.sel)');
+  });
 });
