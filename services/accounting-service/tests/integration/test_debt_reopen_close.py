@@ -249,11 +249,12 @@ def test_a_repeated_close_adds_no_second_line_and_reopen_keeps_the_line(client, 
     card, receivable_id = _open_receivable(seed, db_session)
     line = f"2026-11-20 標記結清，當時剩餘 {card.currency} 420"
 
-    client.post(f"/entries/{receivable_id}/close")
-    client.post(f"/entries/{receivable_id}/close")
+    first, second = client.post(f"/entries/{receivable_id}/close"), client.post(f"/entries/{receivable_id}/close")
+    assert (first.status_code, second.status_code, second.json()["is_closed"]) == (200, 200, True)
     assert _description(client, receivable_id) == line
 
-    client.post(f"/entries/{receivable_id}/reopen")
+    reopened = client.post(f"/entries/{receivable_id}/reopen")
+    assert (reopened.status_code, reopened.json()["is_closed"]) == (200, False)
     assert _description(client, receivable_id) == line
 
 
