@@ -1661,6 +1661,14 @@ describe('EntryDetailComponent', () => {
       expect(rows).toContainEqual(['交易類型', '應收款項']);
     });
 
+    it('never shrinks the drawer body\'s children, so long content scrolls instead of clipping the table (scss source)', async () => {
+      const { readFileSync } = await import('node:fs');
+      const { resolve } = await import('node:path');
+      const scss = readFileSync(resolve(process.cwd(), 'src/app/components/accounting/entry-detail/entry-detail.scss'), 'utf8');
+      const body = scss.slice(scss.indexOf('.drawer-body {'), scss.indexOf('.dcompact {'));
+      expect(body).toMatch(/>\s*\*\s*\{\s*flex-shrink:\s*0;/);
+    });
+
     it('pins .actions in .drawer-foot after the scrolling .drawer-body', () => {
       drawerOn();
       const fixture = renderDrawer(MEAL());
