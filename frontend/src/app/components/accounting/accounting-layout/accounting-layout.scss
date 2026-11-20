@@ -120,22 +120,70 @@
   outline: none;
 }
 
-/* Mirrors the filter bar's search field (.filter-q). */
-.cal-search {
+/* The right pane's top row: one search box and the 篩選 button (the artboard's CalendarFixDesktop). */
+.cal-top {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.cal-search-box {
+  align-items: center;
   background: var(--app-surface-soft);
-  border: 1px solid var(--app-border);
-  border-radius: 10px;
-  color: inherit;
+  border-radius: 11px;
+  color: var(--app-text-muted);
+  display: flex;
+  flex: 1;
+  gap: 8px;
+  min-height: 38px;
+  min-width: 0;
+  padding: 0 12px;
+
+  &:focus-within {
+    box-shadow: 0 0 0 3px var(--app-focus-ring);
+  }
+}
+
+.cal-search {
+  background: transparent;
+  border: 0;
+  color: var(--app-text);
+  flex: 1;
   font: inherit;
-  margin-bottom: 10px;
-  min-height: 36px;
-  padding: 0 10px;
-  width: 100%;
+  font-size: 14px;
+  min-width: 0;
+  outline: 0;
+}
+
+.cal-filter {
+  align-items: center;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 11px;
+  color: var(--app-text);
+  cursor: pointer;
+  display: flex;
+  flex: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  gap: 6px;
+  min-height: 38px;
+  padding: 0 12px;
+  white-space: nowrap;
 
   &:focus-visible {
     border-color: var(--app-primary);
     box-shadow: 0 0 0 3px var(--app-focus-ring);
     outline: none;
+  }
+}
+
+app-filter-chips {
+  display: block;
+
+  &:has(.filter-chips) {
+    margin-bottom: 12px;
   }
 }
 

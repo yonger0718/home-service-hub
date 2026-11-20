@@ -49,6 +49,8 @@ export class FilterBarComponent {
   private readonly panel = viewChild<ElementRef<HTMLElement>>('panel');
   /** Removes the document pointerdown listener; only set while the panel is open. */
   private unlistenPointerDown: (() => void) | null = null;
+  /** Remove the window resize / scroll listeners that keep an anchored panel in place; only set while it is open. */
+  private unlistenPlacement: (() => void)[] = [];
 
   readonly chips = input<FilterChip[]>([]);
   /** Hides only the search / 篩選 row; the chips and the panel still render (the panel opens through `toggle`). */
@@ -66,7 +68,7 @@ export class FilterBarComponent {
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
 
   /** The outside button the panel is anchored to (null: the bar's own 篩選 button). */
-  anchor: HTMLElement | null = null;
+  private anchor: HTMLElement | null = null;
   readonly anchorTop = signal<number | null>(null);
   readonly anchorRight = signal<number | null>(null);
   private openPhone = false;
@@ -91,11 +93,17 @@ export class FilterBarComponent {
     this.anchor = anchor ?? null;
     this.openPhone = this.isPhone();
     if (anchor) {
-      const rect = anchor.getBoundingClientRect();
-      const width = this.document.defaultView?.innerWidth ?? 1024;
-      const panelWidth = Math.min(560, width - 16);
-      this.anchorTop.set(Math.round(rect.bottom + 6));
-      this.anchorRight.set(Math.round(Math.min(Math.max(width - rect.right, 8), Math.max(8, width - panelWidth - 8))));
+      this.place();
+      const win = this.document.defaultView;
+      if (win) {
+        const replace = () => this.place();
+        win.addEventListener('resize', replace);
+        win.addEventListener('scroll', replace, { capture: true, passive: true });
+        this.unlistenPlacement = [
+          () => win.removeEventListener('resize', replace),
+          () => win.removeEventListener('scroll', replace, { capture: true }),
+        ];
+      }
     }
     this.open.set(true);
     this.openChange.emit(true);
@@ -104,6 +112,17 @@ export class FilterBarComponent {
     );
     // Focus the dialog itself, not its first control: a focused datepicker input auto-opens its calendar.
     afterNextRender(() => this.panel()?.nativeElement.focus({ preventScroll: true }), { injector: this.injector });
+  }
+
+  /** Fixed position under the anchor, right-aligned to it, kept inside the viewport. */
+  private place(): void {
+    const anchor = this.anchor;
+    if (!anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    const width = this.document.defaultView?.innerWidth ?? 1024;
+    const panelWidth = Math.min(560, width - 16);
+    this.anchorTop.set(Math.round(rect.bottom + 6));
+    this.anchorRight.set(Math.round(Math.min(Math.max(width - rect.right, 8), Math.max(8, width - panelWidth - 8))));
   }
 
   /** `restoreFocus` is false for an outside pointerdown: the user's click target keeps focus. */
@@ -139,5 +158,7 @@ export class FilterBarComponent {
   private stopListening(): void {
     this.unlistenPointerDown?.();
     this.unlistenPointerDown = null;
+    this.unlistenPlacement.forEach(off => off());
+    this.unlistenPlacement = [];
   }
 }

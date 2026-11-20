@@ -533,9 +533,9 @@ export class LedgerTimelineComponent implements OnInit {
   readonly view = computed<TimelineView>(() => (this.urlDay() !== null ? 'calendar' : this.chosenView()));
   /** 日曆 at ≥ 1024 px: the month figures sit in the monthbar and the day's rows live in the right pane. */
   readonly wideCalendar = computed(() => this.view() === 'calendar' && this.layoutMode.mode() === 'panes');
-  /** 日曆 below 1024 px (phone and sheet): one-line figures, week strip, 今天 bar. */
   /** In 日曆 the account filter lives inside the filter panel (and gets a chip); in 清單 it stays inline. */
   readonly accountInPanel = computed(() => this.view() === 'calendar');
+  /** 日曆 below 1024 px (phone and sheet): one-line figures, week strip, 今天 bar. */
   readonly narrowCalendar = computed(() => this.view() === 'calendar' && this.layoutMode.mode() !== 'panes');
   /** True when the shown month is today's month. */
   readonly isCurrentMonth = computed(() => this.month() === this.today().slice(0, 7));

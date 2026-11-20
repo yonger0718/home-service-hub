@@ -20,6 +20,7 @@ import { ActivatedRouteSnapshot, NavigationEnd, Params, Router, RouterOutlet } f
 import { filter } from 'rxjs';
 
 import { BtnComponent } from '../../ui/btn/btn';
+import { FilterChipsComponent } from '../../ui/filter-bar/filter-chips';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
@@ -100,6 +101,7 @@ const PAGE_CLOSE = '.close[aria-label="關閉"], [data-pane-close]';
     CalendarDayPanelComponent,
     PageHeaderComponent,
     BtnComponent,
+    FilterChipsComponent,
   ],
   templateUrl: './accounting-layout.html',
   styleUrl: './accounting-layout.scss',
@@ -460,6 +462,10 @@ export class AccountingLayoutComponent {
 
   /** One search shared with the filter bar: the timeline owns the query. */
   onSearch(text: string): void {
+    // Typing while a day is selected shows the results: the day goes first (an empty commit keeps it).
+    if (text.trim() !== '' && this.pane.selectedDay()) {
+      this.onClearDay();
+    }
     this.pane.commands()?.setQuery(text);
   }
 

@@ -311,6 +311,30 @@ describe('FilterBarComponent', () => {
       expect(document.activeElement).toBe(anchor());
     });
 
+    it('re-places an anchored panel on resize and scroll while open, and stops after close', async () => {
+      let bottom = 100;
+      vi.spyOn(anchor(), 'getBoundingClientRect').mockImplementation(
+        () => ({ bottom, right: 900, top: bottom - 30, left: 800, width: 100, height: 30, x: 800, y: bottom - 30 }) as DOMRect,
+      );
+      host.bar().toggle(anchor());
+      await flush();
+      expect(q('.filter-panel.popover')!.style.top).toBe('106px');
+      bottom = 200;
+      window.dispatchEvent(new Event('resize'));
+      await flush();
+      expect(q('.filter-panel.popover')!.style.top).toBe('206px');
+      bottom = 300;
+      document.body.dispatchEvent(new Event('scroll'));
+      await flush();
+      expect(q('.filter-panel.popover')!.style.top).toBe('306px');
+      host.bar().close();
+      await flush();
+      const top = host.bar().anchorTop();
+      bottom = 400;
+      window.dispatchEvent(new Event('resize'));
+      expect(host.bar().anchorTop()).toBe(top);
+    });
+
     it('a pointerdown elsewhere closes an anchored panel', async () => {
       host.bar().toggle(anchor());
       await flush();

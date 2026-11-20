@@ -87,7 +87,7 @@
     }
   </div>
   }
-  <app-filter-bar [chips]="filterChips()" (remove)="removeFilter($event)" (clearAll)="clearFilters()" (reset)="resetSecondaryFilters()" (openChange)="onFilterPanelOpen($event)">
+  <app-filter-bar [rowHidden]="wideCalendar()" [chipsHidden]="wideCalendar()" [chips]="filterChips()" (remove)="removeFilter($event)" (clearAll)="clearFilters()" (reset)="resetSecondaryFilters()" (openChange)="onFilterPanelOpen($event)">
     <input
       filterBarSearch
       #queryInput
@@ -172,7 +172,7 @@
         <span class="match-count">符合條件 {{ total() ?? '—' }} 筆</span>
         <button type="button" class="clear-filters" aria-label="清除篩選" (click)="clearFilters()">清除篩選</button>
       </div>
-    } @else {
+    } @else if (!wideCalendar()) {
       <div class="match-row match-row--calendar">
         <button type="button" class="clear-filters" aria-label="清除篩選" (click)="clearFilters()">清除篩選</button>
       </div>

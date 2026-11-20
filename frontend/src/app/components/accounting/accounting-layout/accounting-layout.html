@@ -50,19 +50,33 @@
         @if (calendarBase(); as base) {
           <!-- inert while the drawer covers it: set by the overlay effect (after the opener is remembered), not bound. -->
           <div class="cal-base" #calBase>
-            @if (base !== 'day') {
-              <!-- Value written by an effect (never while focused), not bound: see onSearchInput. -->
-              <input
-                type="search"
-                class="cal-search"
-                #calSearch
-                placeholder="搜尋整月：名稱、商家、備註"
-                aria-label="搜尋名稱、商家或備註"
-                (input)="onSearchInput($event)"
-                (keydown)="onSearchInput($event)"
-                (compositionend)="onSearchInput($event)"
-              />
-            }
+            <div class="cal-top">
+              <label class="cal-search-box">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14z M20 20l-4-4"></path></svg>
+                <!-- Value written by an effect (never while focused), not bound: see onSearchInput. -->
+                <input
+                  type="search"
+                  class="cal-search"
+                  #calSearch
+                  placeholder="搜尋整月"
+                  aria-label="搜尋名稱、商家或備註"
+                  (input)="onSearchInput($event)"
+                  (keydown)="onSearchInput($event)"
+                  (compositionend)="onSearchInput($event)"
+                />
+              </label>
+              <button #calFilter type="button" class="cal-filter" aria-haspopup="dialog" (click)="pane.commands()?.toggleFilters(calFilter)">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16 M7 12h10 M10 18h4"></path></svg>
+                篩選@if (pane.chips().length > 0) {
+                  {{ pane.chips().length }}
+                }
+              </button>
+            </div>
+            <app-filter-chips
+              [chips]="pane.chips()"
+              (remove)="pane.commands()?.removeFilter($event)"
+              (clearAll)="pane.commands()?.clearFilters()"
+            />
             @switch (base) {
               @case ('summary') {
                 <app-month-overview

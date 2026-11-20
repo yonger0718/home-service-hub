@@ -139,7 +139,7 @@ describe('AccountingLayoutComponent', () => {
         await find(harness, '.cal-base app-month-overview');
         const root = harness.routeNativeElement!;
         const search = root.querySelector<HTMLInputElement>('.cal-base .cal-search')!;
-        expect(search.placeholder).toBe('搜尋整月：名稱、商家、備註');
+        expect(search.placeholder).toBe('搜尋整月');
         expect(root.querySelector('.pane-empty')).toBeNull();
         expect(root.querySelector('app-calendar-day-panel')).toBeNull();
       });
@@ -286,8 +286,113 @@ describe('AccountingLayoutComponent', () => {
         const label = await find(harness, '.cal-base app-calendar-day-panel .dp-label');
         expect(label.textContent!.trim()).toBe('10/21 週三');
         const root = harness.routeNativeElement!;
-        expect(root.querySelector('.cal-search')).toBeNull();
+        expect(root.querySelector('.cal-base .cal-top .cal-search')).not.toBeNull();
         expect(root.querySelector('app-month-overview')).toBeNull();
+      });
+
+      describe('top row (.cal-top)', () => {
+        const input = (root: Element) => root.querySelector<HTMLInputElement>('.cal-base .cal-search')!;
+
+        it('is there in summary, day and results bases', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          await find(harness, '.cal-base app-month-overview');
+          const root = harness.routeNativeElement!;
+          expect(root.querySelector('.cal-base > .cal-top .cal-filter')).not.toBeNull();
+          await TestBed.inject(Router).navigateByUrl('/accounting?month=2026-10&day=2026-10-21');
+          await find(harness, '.cal-base .dp-step');
+          expect(root.querySelector('.cal-base > .cal-top .cal-search-box svg')).not.toBeNull();
+          await TestBed.inject(Router).navigateByUrl('/accounting?month=2026-10');
+          pane().commands()!.setQuery('咖啡');
+          await find(harness, '.cal-base app-calendar-day-panel');
+          expect(root.querySelector('.cal-base > .cal-top .cal-filter')).not.toBeNull();
+        });
+
+        it('篩選 calls toggleFilters with the button; chips show the count, × and 清除全部 call the commands', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          await find(harness, '.cal-base .cal-filter');
+          const root = harness.routeNativeElement!;
+          const real = pane().commands()!;
+          const toggleFilters = vi.fn();
+          const removeFilter = vi.fn();
+          const clearFilters = vi.fn();
+          pane().commands.set({ ...real, toggleFilters, removeFilter, clearFilters });
+          const button = root.querySelector<HTMLButtonElement>('.cal-base .cal-filter')!;
+          expect(button.getAttribute('aria-haspopup')).toBe('dialog');
+          expect(button.textContent!.replace(/\s+/g, '')).toBe('篩選');
+          button.click();
+          expect(toggleFilters).toHaveBeenCalledWith(button);
+          pane().chips.set([{ key: 'kind', label: '類型：支出' }, { key: 'account', label: '帳戶：測試帳戶' }]);
+          harness.detectChanges();
+          expect(button.textContent!.replace(/\s+/g, '')).toBe('篩選2');
+          const chips = root.querySelectorAll('.cal-base app-filter-chips .filter-chip');
+          expect(chips.length).toBe(2);
+          chips[0].querySelector<HTMLButtonElement>('.chip-remove')!.click();
+          expect(removeFilter).toHaveBeenCalledWith('kind');
+          root.querySelector<HTMLButtonElement>('.cal-base .clear-all')!.click();
+          expect(clearFilters).toHaveBeenCalled();
+        });
+
+        it('Enter on a text with a day selected clears the day first, then sets the query', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+          await find(harness, '.cal-base .dp-step');
+          const router = TestBed.inject(Router);
+          const setQuery = vi.spyOn(pane().commands()!, 'setQuery');
+          const el = input(harness.routeNativeElement!);
+          el.value = '咖啡';
+          el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+          await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10'));
+          expect(setQuery).toHaveBeenCalledWith('咖啡');
+          await find(harness, '.cal-base app-calendar-day-panel');
+          expect(harness.routeNativeElement!.querySelector('.cal-base .dp-step')).toBeNull();
+        });
+
+        it('the 300 ms debounce commit with a day selected does the same', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+          await find(harness, '.cal-base .dp-step');
+          const router = TestBed.inject(Router);
+          const setQuery = vi.spyOn(pane().commands()!, 'setQuery');
+          const el = input(harness.routeNativeElement!);
+          vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+          try {
+            el.value = '咖啡';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            vi.advanceTimersByTime(400);
+          } finally {
+            vi.useRealTimers();
+          }
+          await vi.waitFor(() => expect(router.url).toBe('/accounting?month=2026-10'));
+          expect(setQuery).toHaveBeenCalledWith('咖啡');
+        });
+
+        it('an empty commit with a day selected keeps the day', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
+          await find(harness, '.cal-base .dp-step');
+          const router = TestBed.inject(Router);
+          const el = input(harness.routeNativeElement!);
+          el.value = '   ';
+          el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+          harness.detectChanges();
+          expect(router.url).toBe('/accounting?month=2026-10&day=2026-10-21');
+          expect(pane().selectedDay()).toBe('2026-10-21');
+        });
+
+        it('Esc with a text and no day empties it and the base returns to the summary', async () => {
+          localStorage.setItem('hh.accounting.timelineView', 'calendar');
+          const harness = await start('panes', '/accounting?month=2026-10', 1100);
+          await find(harness, '.cal-base .cal-search');
+          pane().commands()!.setQuery('咖啡');
+          await find(harness, '.cal-base app-calendar-day-panel');
+          const el = input(harness.routeNativeElement!);
+          el.value = '咖啡';
+          el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+          await find(harness, '.cal-base app-month-overview');
+          expect(pane().search()).toBe('');
+        });
       });
 
       it('‹ › and 本月摘要 write the URL with replaceUrl', async () => {
