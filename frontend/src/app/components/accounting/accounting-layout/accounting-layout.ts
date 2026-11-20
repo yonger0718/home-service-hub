@@ -35,6 +35,7 @@ import { addDays } from '../dates';
 import type { InboxEinvoice } from '../inbox/einvoice.model';
 import { groupCommands, listOpenState } from '../split-group/group-nav';
 import type { TimelineRow } from '../timeline/timeline';
+import { CalFiltersToggleComponent } from '../timeline/cal-filters-toggle';
 import { AccountingOverviewService } from '../month-overview/overview.service';
 import { QUERY_DEBOUNCE_MS, focusables, isHandledKey, trapFocus, OVERLAY_ATTR } from '../accounting-ui';
 import { AccountingShortcutsService, resolveShortcut } from '../keyboard-shortcuts';
@@ -102,6 +103,7 @@ const PAGE_CLOSE = '.close[aria-label="關閉"], [data-pane-close]';
     PageHeaderComponent,
     BtnComponent,
     FilterChipsComponent,
+    CalFiltersToggleComponent,
   ],
   templateUrl: './accounting-layout.html',
   styleUrl: './accounting-layout.scss',

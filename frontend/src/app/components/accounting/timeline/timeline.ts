@@ -3,7 +3,9 @@ import {
   Component,
   DestroyRef,
   ElementRef,
+  Injector,
   OnInit,
+  afterNextRender,
   computed,
   effect,
   inject,
@@ -57,6 +59,7 @@ import { parseTags } from '../entry-form/entry-draft';
 import { addDays, currentMonth, dayLabel, monthLabel, monthRange, todayIso } from '../dates';
 import { calendarParams, readCalendarQuery, writeCalendarQuery } from './calendar-url';
 import { nextDueItems } from '../month-overview/due-items';
+import { CalFiltersToggleComponent } from './cal-filters-toggle';
 import { AccountingOverviewService, OverviewState } from '../month-overview/overview.service';
 import { schedulePill } from '../schedule-math';
 import { KIND_PILLS, KindPill, QUERY_DEBOUNCE_MS, colorOf, fxLine, iconOf, isHandledKey, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
@@ -437,7 +440,7 @@ export type ProjectFilter = number | typeof NO_PROJECT | null;
 @Component({
   selector: 'app-ledger-timeline',
   standalone: true,
-  imports: [PageHeaderComponent, CalendarDayPanelComponent, SwipeXDirective, CalendarMonthComponent, CalendarTodayBarComponent, NgTemplateOutlet, SkeletonComponent, SplitFolderComponent, FilterBarComponent],
+  imports: [PageHeaderComponent, CalendarDayPanelComponent, SwipeXDirective, CalendarMonthComponent, CalendarTodayBarComponent, NgTemplateOutlet, SkeletonComponent, SplitFolderComponent, FilterBarComponent, CalFiltersToggleComponent],
   templateUrl: './timeline.html',
   styleUrls: ['../entry-row.scss', './timeline.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -473,6 +476,9 @@ export class LedgerTimelineComponent implements OnInit {
   private readonly queryInput = viewChild<ElementRef<HTMLInputElement>>('queryInput');
   private readonly calendarGrid = viewChild(CalendarMonthComponent);
   private readonly filterBar = viewChild(FilterBarComponent);
+  /** Set when `calendarFiltersOpen` was written by the timeline itself (no focus move). */
+  private skipFilterFocus = false;
+  private readonly injector = inject(Injector);
 
   private readonly bills = inject(BillingService);
   private readonly calendar = inject(BusinessCalendarService);
@@ -914,6 +920,40 @@ export class LedgerTimelineComponent implements OnInit {
   private publishToPane(): void {
     const pane = this.pane;
     effect(() => this.overview.calendar.set(this.view() === 'calendar'));
+    effect(() => this.overview.calendarFiltersActive.set(this.view() === 'calendar' && this.filtersActive()));
+    // Entering narrow 日曆 (also by crossing 1024 px) starts expanded only when something is active; leaving collapses it.
+    // A month change keeps `narrowCalendar` true, so it is not an entry.
+    effect(() => {
+      const narrow = this.narrowCalendar();
+      untracked(() => {
+        const open = narrow && this.filtersActive();
+        if (open !== this.overview.calendarFiltersOpen()) {
+          this.skipFilterFocus = true;
+          this.overview.calendarFiltersOpen.set(open);
+        }
+      });
+    });
+    // The owner opening the row (title-row button) lands in the search field; the automatic opens above do not move focus.
+    effect(() => {
+      const open = this.overview.calendarFiltersOpen();
+      const skip = this.skipFilterFocus;
+      this.skipFilterFocus = false;
+      if (open && !skip && this.narrowCalendar()) {
+        afterNextRender(() => this.queryInput()?.nativeElement.focus({ preventScroll: true }), { injector: this.injector });
+      }
+    });
+    // Crossing 1024 px while 日曆 stays: the filters stay, but an open panel would outlive its opener, so close it
+    // without sending focus to a button that is unmounting. Not on the first run.
+    let panesBefore: boolean | null = null;
+    effect(() => {
+      const panes = this.layoutMode.mode() === 'panes';
+      untracked(() => {
+        if (panesBefore !== null && panes !== panesBefore && this.view() === 'calendar') {
+          this.filterBar()?.close(false);
+        }
+        panesBefore = panes;
+      });
+    });
     effect(() => pane.month.set(this.month()));
     effect(() => pane.today.set(this.today()));
     effect(() => pane.selectedDay.set(this.selectedDay()));
@@ -978,6 +1018,8 @@ export class LedgerTimelineComponent implements OnInit {
       ++this.probeRequestId;
       pane.clear();
       this.overview.calendar.set(false);
+      this.overview.calendarFiltersOpen.set(false);
+      this.overview.calendarFiltersActive.set(false);
     });
   }
 

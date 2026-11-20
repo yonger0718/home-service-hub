@@ -2250,6 +2250,147 @@ describe('LedgerTimelineComponent', () => {
       expect(el.querySelector('app-calendar-month')).toBe(grid);
       expect(grid.isConnected).toBe(true);
     });
+
+    describe('< 1024 px search and filter behind a title-row button (Task 5)', () => {
+      const toggle = (el: HTMLElement) => el.querySelector<HTMLButtonElement>('app-page-header .cal-filters-toggle');
+      const row = (el: HTMLElement) => el.querySelector<HTMLElement>('.filter-bar-row')!;
+      const rowShown = (el: HTMLElement) => !row(el).hasAttribute('hidden');
+      const dropOptionReads = () => httpMock!.match(r => r.url === '/api/accounting/categories' || r.url === '/api/accounting/projects');
+
+      it('phone 日曆: the header has the toggle (collapsed) and the row is hidden; clicking opens it with .filter-q focused, again hides it', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        document.body.appendChild(el);
+        try {
+          const button = toggle(el)!;
+          expect(button.getAttribute('aria-label')).toBe('搜尋與篩選');
+          expect(button.getAttribute('aria-expanded')).toBe('false');
+          expect(button.classList.contains('has-active')).toBe(false);
+          expect(rowShown(el)).toBe(false);
+          button.click();
+          fixture.detectChanges();
+          await fixture.whenStable();
+          fixture.detectChanges();
+          expect(button.getAttribute('aria-expanded')).toBe('true');
+          expect(rowShown(el)).toBe(true);
+          expect(document.activeElement).toBe(el.querySelector('.filter-q'));
+          button.click();
+          fixture.detectChanges();
+          expect(button.getAttribute('aria-expanded')).toBe('false');
+          expect(rowShown(el)).toBe(false);
+        } finally {
+          el.remove();
+        }
+      });
+
+      it('the toggle sits inside .page-actions, before the gear slot', async () => {
+        const { el } = await openNarrow('/accounting?month=2026-10');
+        expect(el.querySelector('app-page-header .page-actions .cal-filters-toggle')).not.toBeNull();
+      });
+
+      it('a search text marks the toggle has-active', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        fixture.componentInstance.setQuery('全聯');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(toggle(el)!.classList.contains('has-active')).toBe(true);
+      });
+
+      it('entering 日曆 with a filter active starts expanded', async () => {
+        localStorage.setItem(VIEW_KEY, 'list');
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10&merchant=%E5%85%A8%E8%81%AF');
+        // openNarrow sets the stored view first; the URL carries the filter, so 日曆 opens with it active.
+        expect(fixture.componentInstance.filtersActive()).toBe(true);
+        expect(toggle(el)!.getAttribute('aria-expanded')).toBe('true');
+        expect(rowShown(el)).toBe(true);
+      });
+
+      it('with the row collapsed and a filter active the chips stay and × removes the filter', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10&merchant=%E5%85%A8%E8%81%AF');
+        toggle(el)!.click();
+        fixture.detectChanges();
+        expect(rowShown(el)).toBe(false);
+        expect(el.querySelector('.filter-chips')).not.toBeNull();
+        (el.querySelector('.chip-remove[aria-label="移除 商家：全聯"]') as HTMLButtonElement).click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(fixture.componentInstance.merchantFilter()).toBe('');
+      });
+
+      it('清單 has no toggle and always shows the row', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        viewButton(el, '清單').click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        fixture.detectChanges();
+        expect(toggle(el)).toBeNull();
+        expect(rowShown(el)).toBe(true);
+      });
+
+      it('panes → phone with a search text active: the row is expanded and .filter-q holds the text', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10', 'panes');
+        fixture.componentInstance.setQuery('全聯');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(rowShown(el)).toBe(false);
+        TestBed.inject(LayoutModeService).set('phone');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(TestBed.inject(AccountingOverviewService).calendarFiltersOpen()).toBe(true);
+        expect(rowShown(el)).toBe(true);
+        expect(el.querySelector<HTMLInputElement>('.filter-q')!.value).toBe('全聯');
+      });
+
+      it('panes → phone with the anchored panel open: the panel is closed', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10', 'panes');
+        TestBed.inject(CalendarPaneService).commands()!.toggleFilters(document.body);
+        fixture.detectChanges();
+        dropOptionReads();
+        expect(el.querySelector('.filter-panel')).not.toBeNull();
+        TestBed.inject(LayoutModeService).set('phone');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(el.querySelector('.filter-panel')).toBeNull();
+      });
+
+      it('phone → panes with the row open: no row is shown and the pane box holds the text', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        fixture.componentInstance.setQuery('全聯');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        toggle(el)!.click();
+        fixture.detectChanges();
+        expect(rowShown(el)).toBe(true);
+        TestBed.inject(LayoutModeService).set('panes');
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(rowShown(el)).toBe(false);
+        expect(TestBed.inject(CalendarPaneService).search()).toBe('全聯');
+      });
+
+      it('leaving 日曆 closes the row state; coming back with nothing active starts collapsed', async () => {
+        const { fixture, el } = await openNarrow('/accounting?month=2026-10');
+        toggle(el)!.click();
+        fixture.detectChanges();
+        expect(TestBed.inject(AccountingOverviewService).calendarFiltersOpen()).toBe(true);
+        viewButton(el, '清單').click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        expect(TestBed.inject(AccountingOverviewService).calendarFiltersOpen()).toBe(false);
+        viewButton(el, '日曆').click();
+        fixture.detectChanges();
+        httpMock!.match(() => true);
+        fixture.detectChanges();
+        expect(toggle(el)!.getAttribute('aria-expanded')).toBe('false');
+      });
+
+      it('a 5-week month renders 5 .week rows and the today bar directly follows .strip-area (no filter row between month bar and grid)', async () => {
+        const { el } = await openNarrow('/accounting?month=2026-11');
+        expect(el.querySelectorAll('.week').length).toBe(5);
+        expect(el.querySelector('.strip-area')!.nextElementSibling!.tagName.toLowerCase()).toBe('app-calendar-today-bar');
+        expect(rowShown(el)).toBe(false);
+        expect(el.querySelector('.filter-chips')).toBeNull();
+      });
+    });
   });
 
   describe('billing hints', () => {

@@ -1,6 +1,10 @@
 <section class="timeline">
   @if (!embedded()) {
-    <app-page-header></app-page-header>
+    <app-page-header>
+      @if (narrowCalendar()) {
+        <app-cal-filters-toggle />
+      }
+    </app-page-header>
   }
 
   <div class="monthbar">
@@ -87,7 +91,7 @@
     }
   </div>
   }
-  <app-filter-bar [rowHidden]="wideCalendar()" [chipsHidden]="wideCalendar()" [chips]="filterChips()" (remove)="removeFilter($event)" (clearAll)="clearFilters()" (reset)="resetSecondaryFilters()" (openChange)="onFilterPanelOpen($event)">
+  <app-filter-bar [rowHidden]="wideCalendar() || (narrowCalendar() && !overview.calendarFiltersOpen())" [chipsHidden]="wideCalendar()" [chips]="filterChips()" (remove)="removeFilter($event)" (clearAll)="clearFilters()" (reset)="resetSecondaryFilters()" (openChange)="onFilterPanelOpen($event)">
     <input
       filterBarSearch
       #queryInput

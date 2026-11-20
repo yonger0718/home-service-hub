@@ -93,6 +93,54 @@ describe('AccountingLayoutComponent', () => {
       expect(harness.routeNativeElement!.querySelector('.list-pane .sum')).toBeNull();
     });
 
+    describe('search and filter button below 1024 px (Task 5)', () => {
+      const toggle = (root: Element) => root.querySelector<HTMLButtonElement>('app-page-header .cal-filters-toggle');
+
+      it('sheet width 820 in 日曆: the layout header has the toggle and it flips overview.calendarFiltersOpen', async () => {
+        localStorage.setItem('hh.accounting.timelineView', 'calendar');
+        const harness = await start('sheet', '/accounting?month=2026-10', 820);
+        await find(harness, '.dwrap--sheet > app-page-header .cal-filters-toggle');
+        const root = harness.routeNativeElement!;
+        const overview = TestBed.inject(AccountingOverviewService);
+        expect(overview.calendarFiltersOpen()).toBe(false);
+        expect(toggle(root)!.getAttribute('aria-expanded')).toBe('false');
+        toggle(root)!.click();
+        harness.detectChanges();
+        expect(overview.calendarFiltersOpen()).toBe(true);
+        expect(toggle(root)!.getAttribute('aria-expanded')).toBe('true');
+        toggle(root)!.click();
+        harness.detectChanges();
+        expect(overview.calendarFiltersOpen()).toBe(false);
+      });
+
+      it('sheet 日曆 with the in-row panel open → panes: the panel is gone and .cal-search holds the search text', async () => {
+        localStorage.setItem('hh.accounting.timelineView', 'calendar');
+        const harness = await start('sheet', '/accounting?month=2026-10', 820);
+        await find(harness, '.dwrap--sheet > app-page-header .cal-filters-toggle');
+        const root = harness.routeNativeElement!;
+        const http = TestBed.inject(HttpTestingController);
+        TestBed.inject(CalendarPaneService).commands()!.setQuery('全聯');
+        toggle(root)!.click();
+        harness.detectChanges();
+        (await find(harness, '.filter-toggle') as HTMLButtonElement).click();
+        harness.detectChanges();
+        expect(root.querySelector('.filter-panel')).not.toBeNull();
+        TestBed.inject(LayoutModeService).set('panes');
+        harness.detectChanges();
+        await find(harness, '.cal-base .cal-search');
+        expect(root.querySelector('.filter-panel')).toBeNull();
+        expect(root.querySelector<HTMLInputElement>('.cal-base .cal-search')!.value).toBe('全聯');
+        http.match(() => true);
+      });
+
+      it('panes mode has no toggle', async () => {
+        localStorage.setItem('hh.accounting.timelineView', 'calendar');
+        const harness = await start('panes', '/accounting?month=2026-10', 1100);
+        await find(harness, '.cal-base .cal-search');
+        expect(toggle(harness.routeNativeElement!)).toBeNull();
+      });
+    });
+
     it('renders no day rows under the grid in 日曆 at 1100px with a day selected', async () => {
       localStorage.setItem('hh.accounting.timelineView', 'calendar');
       const harness = await start('panes', '/accounting?month=2026-10&day=2026-10-21', 1100);
