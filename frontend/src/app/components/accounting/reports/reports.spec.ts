@@ -898,12 +898,18 @@ describe('AccountingReportsComponent', () => {
 
     it('keeps the header on one row from 1024 px and wraps the period control below', () => {
       const css = scss('reports.scss');
-      const media = /@media \(max-width: 1023\.98px\) \{([\s\S]*?)\n  \}\n\}|@media \(max-width: 1023\.98px\) \{([\s\S]*?)\n\}/.exec(css);
-      const block = media?.[1] ?? media?.[2] ?? '';
+      // Phones keep title, subtitle and gear on one row (no wrap below 760 px); only 760-1023.98 px wraps.
+      const query = '@media (min-width: 760px) and (max-width: 1023.98px)';
+      const start = css.indexOf(query);
+      expect(start).toBeGreaterThan(-1);
+      const block = /\{([\s\S]*?)\n\}/.exec(css.slice(start + query.length))?.[1] ?? '';
       expect(block).toContain('.page-actions');
       expect(block).toMatch(/flex(-basis)?:\s*(1 1 )?100%|width:\s*100%/);
       // M2: the actions go after the title and the gear, so the period control stays under them (the phone sub-nav is handled by the template, see the next test).
       expect(block).toMatch(/\.page-actions\s*\{[^}]*order:\s*1\b/);
+      expect(block).toMatch(/\.page-header-row\s*\{\s*flex-wrap:\s*wrap/);
+      const wrapsAt = (c: string) => [...c.matchAll(/@media \(([^)]*)\)[^{]*\{/g)].map((m) => m[1]);
+      expect(wrapsAt(css)).not.toContain('max-width: 1023.98px');
       const outside = css.replace(/@media[^{]*\{(?:[^{}]|\{[^{}]*\})*\}/g, '');
       for (const rule of outside.match(/[^{}]*\.rp-period\b[^{}]*\{[^}]*\}/g) ?? []) {
         expect(rule).not.toMatch(/display:\s*none|order:|position:|transform|margin-top/);
