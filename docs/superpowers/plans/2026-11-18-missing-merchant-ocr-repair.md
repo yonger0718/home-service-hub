@@ -22,7 +22,7 @@
 
 ## Review Focus
 
-- Bank statements (`deposit`/`withdrawal`/`transfer_*`) and card `payment` rows print no merchant. They must never start OCR. Covered by `test_blank_payment_or_deposit_never_starts_the_repair`.
+- Lines of the kinds `deposit`/`withdrawal`/`transfer_*`/`payment`/`fee` print no merchant. The gate is the line kind (`MERCHANT_KINDS`: purchase / refund), not the statement type. They must never start OCR. Covered by `test_blank_payment_or_deposit_never_starts_the_repair`.
 - A lowercase or mixed-case short merchant (`Uber`, `ikea`) is a real name and is not missing. Covered by the predicate unit test.
 - `KFC` counts as missing (accepted). The worst case is one OCR read; it is replaced only by a clean OCR reading. Covered by the predicate unit test, which states the accepted case.
 - Whitespace-only merchants (`"  "`) count as missing. Covered by the predicate unit test.

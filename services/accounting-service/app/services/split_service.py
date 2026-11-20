@@ -366,7 +366,10 @@ def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None,
     Protected members (split_protection) only take the keep form and are never dropped. Reward ledger rows are
     never deleted here; a member's project change moves its engine reward rows (reward engine spec 5.1). Errors in
     phase order: see _readable_split, _check_put_cardinality, _plan_members,
-    _refuse_locked, _prepare, _revalidate."""
+    _refuse_locked, _prepare, _revalidate. `drop_children` (#396): a kept member's stored fee / discount child that
+    its payload does not carry is dropped only with it; else `children_unconfirmed` from the write phase, after
+    earlier members were written and absent ones deleted (the caller's rollback takes those back). A member left
+    out of the payload goes with its children as before."""
     # 1. preliminary read and classification: no lock, no FX
     _readable_split(db, group_id)
     current = _current_members(db, group_id)
@@ -455,7 +458,8 @@ def convert_to_split(db: Session, entry_id: int, payload: SplitIn, *, http_get=N
     is stable); the other members are inserted with `source` (the reconciliation `split_entry` action passes
     'statement'). Phases as update_split; the only row lock is the anchor (it belongs to no group, and the new group
     row is invisible to other transactions until commit). A concurrent convert of the same entry waits on that lock
-    and then answers already_grouped."""
+    and then answers already_grouped. `drop_children` (#396): as on `update_entry`, for the anchor's stored fee /
+    discount child."""
     # 1. cardinality, 404, refusals on the unlocked read
     _check_convert_cardinality(entry_id, payload)
     _refuse_anchor(db, get_entry(db, entry_id))

@@ -181,3 +181,40 @@ def test_unconfigured_scopes_keep_confirming(client, db_session, seed):
 
     assert response.status_code == 200, response.text
     assert _fee_of(db_session, entry_id) is None
+
+
+# every spelling the framework reads as true is the same confirmation (#399)
+TRUE_SPELLINGS = ["1", "yes", "on", "t", "y", "TRUE"]
+
+
+@pytest.mark.parametrize("spelling", TRUE_SPELLINGS)
+@pytest.mark.parametrize("case", sorted(CASES))
+def test_write_scope_cannot_confirm_a_drop_in_any_true_spelling(client, db_session, seed, scoped, case, spelling):
+    url, body, parent_id = CASES[case](client, seed, db_session)
+    fee_id = _fee_of(db_session, parent_id).id
+
+    response = client.put(f"{url}?drop_children={spelling}", headers=WRITE, json=body)
+
+    assert response.status_code == 403, response.text
+    assert _fee_of(db_session, parent_id).id == fee_id
+
+
+@pytest.mark.parametrize("spelling", TRUE_SPELLINGS)
+def test_write_scope_cannot_confirm_a_cascade_in_any_true_spelling(client, db_session, seed, scoped, spelling):
+    receipt_id, fee_id = _foreign_child(seed, db_session)
+
+    response = client.delete(f"/entries/{receipt_id}?cascade={spelling}", headers=WRITE)
+
+    assert response.status_code == 403, response.text
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, receipt_id) is not None and db_session.get(LedgerEntry, fee_id) is not None
+
+
+def test_a_false_spelling_is_no_confirmation(client, db_session, seed, scoped):
+    receipt_id, fee_id = _foreign_child(seed, db_session)
+
+    response = client.delete(f"/entries/{receipt_id}?cascade=0", headers=ADMIN)
+
+    assert response.status_code == 409 and response.json()["message"].startswith("cascade_unconfirmed: ")
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, fee_id) is not None

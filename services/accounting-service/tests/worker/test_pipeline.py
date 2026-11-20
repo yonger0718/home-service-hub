@@ -1140,6 +1140,7 @@ def _line(merchant, kind):
     ("Uber", "purchase", False), ("ikea", "purchase", False), ("USAA", "purchase", False),
     ("咖啡店", "purchase", False), ("J P", "purchase", False),
     ("", "payment", False), ("", "deposit", False), ("", "fee", False), ("JPN", "transfer_in", False),
+    ("", "withdrawal", False), ("JPN", "withdrawal", False), ("", "transfer_out", False), ("TWN", "transfer_out", False),
 ])
 def test_missing_merchant(merchant, kind, expected):
     assert pipeline.missing_merchant(_line(merchant, kind)) is expected
@@ -1191,6 +1192,17 @@ def test_country_code_ocr_merchant_does_not_replace(world, tmp_path, db_session)
     parser, notes, merchants, _ = _revision(db_session)
     assert calls == ["text", "ocr"] and summary["merchant_lines_repaired"] == 0
     assert parser == "claude-cli" and merchants == "|BOOKS" and notes.startswith("ocr: merchant repair 0/1 lines")
+
+
+def test_a_bare_code_ocr_merchant_does_not_replace_a_garbled_one(world, tmp_path, db_session):
+    # the same rule for a #206 garbled line (AMEX): an OCR merchant that is only a 2-3 letter code is not a clean read
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    calls = _garbled_text_parse(services, ocr_merchant="KFC")
+    summary = pipeline.run(services, trigger="owner_cli")
+    parser, notes, merchants, _ = _revision(db_session)
+    assert calls == ["text", "ocr"] and summary["merchant_lines_repaired"] == 0
+    assert parser == "claude-cli" and "(cid:" in merchants and "KFC" not in merchants
+    assert notes.startswith("ocr: merchant repair 0/1 lines")
 
 
 def test_garbled_and_empty_lines_repair_in_one_ocr_read(world, tmp_path, db_session):

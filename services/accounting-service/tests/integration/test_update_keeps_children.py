@@ -6,6 +6,7 @@ import uuid
 from datetime import date
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import sessionmaker
 
 from app.models import EntryGroup, LedgerEntry
 
@@ -222,3 +223,54 @@ def test_convert_to_split_without_the_anchor_fee_is_refused(client, db_session, 
 
     assert confirmed.status_code == 200, confirmed.text
     assert _children(db_session, entry_id) == {}
+
+
+# --- a refusal leaves nothing half-written (#399): read back from another session ------------------------------------
+
+
+def _fresh(pg_engine):
+    return sessionmaker(bind=pg_engine, autoflush=False)()
+
+
+def test_transfer_refusal_on_the_in_leg_rolls_the_out_leg_back(client, db_session, seed, pg_engine):
+    # the out leg and its fee are written first; the in leg then refuses
+    a, b = seed.account("A", opening="5000"), seed.account("B")
+    db_session.commit()
+    body = {"from_account_id": a.id, "to_account_id": b.id, "out_amount": "3000", "entry_date": DAY.isoformat()}
+    created = client.post("/transfers", json={**body, "out_fee": {"amount": "10"}, "in_fee": {"amount": "5"}})
+    assert created.status_code == 201, created.text
+    group_id = created.json()["transfer_group_id"]
+    out_leg, in_leg = _transfer_legs(db_session, group_id)
+    out_id, in_id = out_leg.id, in_leg.id
+    out_fee_id, in_fee_id = _children(db_session, out_id)["fee"].id, _children(db_session, in_id)["fee"].id
+
+    refused = client.put(f"/transfers/{group_id}", json={**body, "out_amount": "2000", "out_fee": {"amount": "20"}})
+
+    assert f"entry {in_fee_id} (fee) of entry {in_id}" in _refused(refused)
+    with _fresh(pg_engine) as other:
+        rows = {row.id: str(row.amount) for row in other.scalars(
+            select(LedgerEntry).where(LedgerEntry.id.in_([out_id, in_id, out_fee_id, in_fee_id])))}
+    assert rows == {out_id: "-3000.0000", in_id: "3000.0000", out_fee_id: "-10.0000", in_fee_id: "-5.0000"}
+
+
+def test_split_refusal_on_a_later_member_rolls_the_earlier_writes_back(client, db_session, seed, pg_engine):
+    # members [A, B (fee), C]: the payload changes A, omits B's fee and leaves C out. C's delete and A's rewrite
+    # come before B's refusal
+    wallet = seed.account("A", opening="1000")
+    db_session.commit()
+    created = client.post("/splits", json=_split(
+        _member(wallet.id, amount="100"), _member(wallet.id, amount="50", fee={"amount": "15"}),
+        _member(wallet.id, amount="30")))
+    assert created.status_code == 201, created.text
+    group_id, (first, second, third) = created.json()["group_id"], created.json()["member_ids"]
+    fee_id = _children(db_session, second)["fee"].id
+
+    refused = client.put(f"/splits/{group_id}", json=_split(
+        _member(wallet.id, id=first, amount="80"), _member(wallet.id, id=second, amount="40")))
+
+    assert f"entry {fee_id} (fee) of entry {second}" in _refused(refused)
+    with _fresh(pg_engine) as other:
+        rows = {row.id: (str(row.amount), row.group_id) for row in other.scalars(
+            select(LedgerEntry).where(LedgerEntry.id.in_([first, second, third, fee_id])))}
+    assert rows == {first: ("-100.0000", group_id), second: ("-50.0000", group_id), third: ("-30.0000", group_id),
+                    fee_id: ("-15.0000", None)}

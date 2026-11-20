@@ -608,6 +608,10 @@ def update_entry(db: Session, entry_id: int, payload: EntryUpdateIn, *, http_get
     is then loaded with SELECT … FOR UPDATE (`locked_entry`, the same lock settle / refund take), and every guard
     runs inside that lock: a concurrent settle / refund has either committed (has_settlements_or_refunds sees
     it) or waits until this transaction commits.
+
+    `drop_children` (#396): a stored fee / discount child the payload does not carry is dropped only with it; else
+    `children_unconfirmed`, raised by `sync_children` after the entry's own columns are rewritten (the caller's
+    rollback takes that back).
     """
     prepared = prepare_entry(db, payload, http_get=http_get, attached_rules=attached_rule_ids(db, entry_id))
     entry = locked_entry(db, entry_id)
@@ -751,7 +755,12 @@ class DeletedRow:
 
 def _delete_report(db: Session, entry_id: int, targets: list[LedgerEntry]) -> list[DeletedRow]:
     """What the coming `delete_entries_cascade(targets)` removes: the entry, the other legs by id, then the children
-    by id. Read under the target locks (a child is written under its parent's lock)."""
+    by id. Read under the target locks (a child is written under its parent's lock).
+
+    The children themselves are read without a row lock (#399 ruling): a direct `DELETE` of a child takes only the
+    child's lock, so one that commits between this read and the cascade is still listed here although the other
+    request removed it. The row is gone either way and nothing else is over-stated; a lock on the children would
+    add a tier to the delete lock order (targets by ascending id, then nothing) for no gain."""
     target_ids = {target.id for target in targets}
     children = list(db.scalars(select(LedgerEntry).where(LedgerEntry.parent_entry_id.in_(target_ids))
                                .order_by(LedgerEntry.id)))
