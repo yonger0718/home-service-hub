@@ -4,7 +4,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
-from ..auth import method_scope, require_admin_to_confirm
+from ..auth import holds_admin, method_scope, require_admin_to_confirm
 from ..database import get_db
 from ..schemas.ledger import DailySummaryOut, EntryDeleteOut, EntryDetailOut, EntryKind, EntryPage, MonthSummaryOut
 from ..schemas.writes import (
@@ -163,23 +163,26 @@ def post_settlement(entry_id: int, payload: SettleIn, db: Session = Depends(get_
     return ledger_service.get_entry_detail(db, new_id)
 
 
-def _set_closed(db: Session, entry_id: int, closed: bool) -> dict:
+def _set_closed(request: Request, db: Session, entry_id: int, closed: bool) -> dict:
+    """The change is recorded with the caller's label; a close by a caller without the owner's scope waits for the
+    owner's confirmation when it leaves a remainder (#401)."""
     with service_errors():
-        settlement_service.set_closed(db, entry_id, closed)
+        settlement_service.set_closed(
+            db, entry_id, closed, actor=getattr(request.state, "client_label", None), by_owner=holds_admin(request))
     db.commit()
     return ledger_service.get_entry_detail(db, entry_id)
 
 
 @router.post("/{entry_id}/reopen", response_model=EntryDetailOut)
-def reopen_debt(entry_id: int, db: Session = Depends(get_db)):
+def reopen_debt(entry_id: int, request: Request, db: Session = Depends(get_db)):
     """Clear `is_closed` on a receivable / payable original: its remainder follows from its settlements again (#391)."""
-    return _set_closed(db, entry_id, False)
+    return _set_closed(request, db, entry_id, False)
 
 
 @router.post("/{entry_id}/close", response_model=EntryDetailOut)
-def close_debt(entry_id: int, db: Session = Depends(get_db)):
+def close_debt(entry_id: int, request: Request, db: Session = Depends(get_db)):
     """Set `is_closed` on a receivable / payable original: no remainder, whatever its settlements sum to (#391)."""
-    return _set_closed(db, entry_id, True)
+    return _set_closed(request, db, entry_id, True)
 
 
 @router.post("/{entry_id}/refund", response_model=EntryDetailOut, status_code=201)

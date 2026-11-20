@@ -158,6 +158,8 @@ EXPECTED_WRITES = {
     ("/entries/{entry_id}/reward-reprice", "POST"),
     ("/entries/{entry_id}/settle", "POST"), ("/entries/{entry_id}/refund", "POST"),
     ("/entries/{entry_id}/reopen", "POST"), ("/entries/{entry_id}/close", "POST"),
+    # Not a ledger write: the owner's confirmation of a close event (#401); the cutover lock does not apply.
+    ("/debt-events/{event_id}/review", "POST"),
     ("/transfers", "POST"), ("/transfers/{group_id}", "PUT"),
     ("/splits", "POST"), ("/splits/{group_id}", "PUT"), ("/splits/{group_id}", "DELETE"),
     ("/balance-adjustments", "POST"),

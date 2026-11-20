@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, aliased
 
 from ..models import Account, LedgerEntry
 from ..schemas.writes import RefundIn, SettleIn
-from . import reward_engine
+from . import debt_events, reward_engine
 from .fx_rate_service import RATE_QUANTUM
 from .entry_write_service import assert_entry_editable, locked_entry
 from .errors import ValidationError
@@ -127,13 +127,19 @@ def settle(
     return entry.id
 
 
-def set_closed(db: Session, entry_id: int, closed: bool) -> None:
+def set_closed(
+    db: Session, entry_id: int, closed: bool, *, actor: str | None = None, by_owner: bool = True
+) -> None:
     """Close (`closed=True`) or reopen a receivable / payable original (#391). The flag only: amounts, settlements
     and links stay as they are, so `open_amount` follows from the flag and the settlements as before.
 
     Until this, only the MOZE import set `is_closed`, and a closed debt could never be settled again. Idempotent.
     A loan a live schedule repays cannot be closed: `schedule_posting` reads a closed loan as repaid and would end
-    the schedule on its next period. A close that leaves a remainder notes it in the description.
+    the schedule on its next period.
+
+    A call that really changes the flag writes one `debt_state_event` (#401) with the caller's label (`actor`) and the
+    remainder it takes out or brings back; `by_owner=False` (a caller without the owner's scope) leaves a close
+    with a remainder waiting for the owner's confirmation. Nothing is written to the description.
     """
     target = locked_entry(db, entry_id)
     assert_entry_editable(db, target)
@@ -146,22 +152,12 @@ def set_closed(db: Session, entry_id: int, closed: bool) -> None:
         if schedule is not None and schedule["status"] != "ended":
             raise ValidationError(
                 "loan_schedule", f"排程「{schedule['name']}」還在還款: end the schedule before closing the debt")
-        _note_closed_remainder(db, target)
+    if target.is_closed != closed:
+        debt_events.record(
+            db, target, debt_events.CLOSE if closed else debt_events.REOPEN, actor, open_amount(db, target),
+            by_owner=by_owner)
     target.is_closed = closed
     db.flush()
-
-
-def _note_closed_remainder(db: Session, target: LedgerEntry) -> None:
-    """A closed remainder leaves the open-debt views without a booking, so the close writes it into the entry's
-    description: the date (ledger time zone) and what was still open. Nothing left open, nothing written."""
-    from . import ledger_service  # ledger_service imports this module: no module-level import
-
-    remainder = open_amount(db, target)
-    if remainder == 0:
-        return
-    day, amount = ledger_service._today().isoformat(), ledger_service._plain(remainder)
-    line = f"{day} 標記結清，當時剩餘 {target.currency} {amount}"
-    target.description = f"{target.description}\n{line}" if target.description else line
 
 
 def refund(db: Session, entry_id: int, payload: RefundIn, *, source: str = "manual") -> int:

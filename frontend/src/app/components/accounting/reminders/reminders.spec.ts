@@ -4,7 +4,7 @@ import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Counterparty, LedgerAccount, LedgerEntry, ScheduleDefinition, ScheduleInstance } from '../../../models/accounting.model';
+import { Counterparty, DebtReviewItem, LedgerAccount, LedgerEntry, ScheduleDefinition, ScheduleInstance } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingToastService } from '../accounting-toast';
@@ -142,6 +142,8 @@ describe('withImportedStatement', () => {
   });
 });
 
+const REVIEWS_URL = '/api/accounting/debt-events/to-review';
+
 describe('AccountingRemindersComponent', () => {
   let http: HttpTestingController;
 
@@ -163,6 +165,10 @@ describe('AccountingRemindersComponent', () => {
     // The business-day calendar is read once per session and never gates the page; tests that do not care leave it.
     for (const request of http.match(r => r.url === '/api/accounting/calendar/business-days')) {
       request.flush({ holidays: [], workdays: [], last_known_day: '2027-12-31' });
+    }
+    // The closes that wait for the owner (#401) are read beside the page and never gate it.
+    for (const request of http.match(r => r.url === REVIEWS_URL)) {
+      request.flush({ items: [], total: 0 });
     }
     http.verify();
     vi.useRealTimers();
@@ -1187,6 +1193,145 @@ describe('AccountingRemindersComponent', () => {
       expect(el.querySelectorAll('app-inbox-panel .ask-cards .inbox-card').length).toBe(4);
       http.expectOne(r => r.url === '/api/accounting/reconciliation/actions').flush([]);
       navigate.mockRestore();
+    });
+  });
+
+  describe('closes that wait for the owner (#401)', () => {
+    function review(fields: Partial<DebtReviewItem> = {}): DebtReviewItem {
+      return {
+        event_id: 7, entry_id: 74, deleted: false, kind: 'receivable', name: '晚餐代墊', counterparty: 'Alan',
+        entry_date: '2026-09-10', amount: '-420.0000', currency: 'TWD', open_amount: '220.0000', actor: 'hermes',
+        event_date: '2026-10-02', ...fields,
+      };
+    }
+
+    function renderWith(items: DebtReviewItem[], total = items.length) {
+      const view = render([], [ALAN], ALAN_OPEN);
+      const request = http.expectOne(r => r.url === REVIEWS_URL);
+      expect(request.request.params.get('limit')).toBe('50');
+      request.flush({ items, total });
+      view.fixture.detectChanges();
+      return view;
+    }
+
+    /** Each row as [name, remainder, date and actor, button]. */
+    function rows(el: HTMLElement): string[][] {
+      return Array.from(el.querySelectorAll('.debt-reviews .review-row')).map(row =>
+        ['.name', '.amt', '.sub', '.review-done'].map(part => text(row.querySelector(part))),
+      );
+    }
+
+    it('shows nothing when no close waits', () => {
+      const { el } = renderWith([]);
+      expect(el.querySelector('.debt-reviews')).toBeNull();
+    });
+
+    it('lists a waiting close with who, when and how much, on 全部 and 借還款追蹤 only', () => {
+      const { fixture, el } = renderWith([review()]);
+
+      expect(text(el.querySelector('.debt-reviews .section'))).toBe('待確認的結清');
+      expect(rows(el)).toEqual([['Alan · 晚餐代墊', '當時剩餘 $220', '2026/10/02 · Hermes', '已確認']]);
+      for (const [label, shown] of [['借還款追蹤', 1], ['待處理', 0], ['信用卡帳單', 0], ['待完成交易', 0], ['全部', 1]] as const) {
+        tab(el, label).click();
+        fixture.detectChanges();
+        expect(el.querySelectorAll('.debt-reviews .review-row').length, label).toBe(shown);
+      }
+      for (const request of http.match(r => r.url === '/api/accounting/reconciliation/actions')) {
+        request.flush([]);
+      }
+    });
+
+    it('opens the entry of a live row and offers no link for a deleted debt', () => {
+      const { fixture, el } = renderWith([review(), review({ event_id: 8, entry_id: 75, deleted: true, name: '車票', counterparty: null })]);
+      const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+      const [live, gone] = Array.from(el.querySelectorAll('.debt-reviews .review-row'));
+
+      live.querySelector<HTMLButtonElement>('.review-open')!.click();
+      fixture.detectChanges();
+
+      expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 74], { state: { closeTo: 'reminders' } });
+      expect(gone.querySelector('.review-open')).toBeNull();
+      expect(gone.classList).toContain('deleted');
+      expect(rows(el)[1]).toEqual(['車票 已刪除', '當時剩餘 $220', '2026/10/02 · Hermes', '已確認']);
+      expect(text(gone.querySelector('.badge'))).toBe('已刪除');
+    });
+
+    it('posts 已確認 and reads the list again', () => {
+      const { fixture, el } = renderWith([review(), review({ event_id: 8, entry_id: 75, name: '車票' })]);
+
+      el.querySelector<HTMLButtonElement>('.debt-reviews .review-done')!.click();
+      const post = http.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/debt-events/7/review');
+      expect(post.request.body).toEqual({});
+      post.flush(null, { status: 204, statusText: 'No Content' });
+      http.expectOne(r => r.url === REVIEWS_URL).flush({ items: [review({ event_id: 8, entry_id: 75, name: '車票' })], total: 1 });
+      fixture.detectChanges();
+
+      expect(rows(el)).toEqual([['Alan · 車票', '當時剩餘 $220', '2026/10/02 · Hermes', '已確認']]);
+      expect(el.querySelector('.debt-reviews .load-error')).toBeNull();
+    });
+
+    it('keeps the row and says so when 已確認 is refused', () => {
+      const { fixture, el } = renderWith([review()]);
+
+      el.querySelector<HTMLButtonElement>('.debt-reviews .review-done')!.click();
+      http
+        .expectOne(r => r.url === '/api/accounting/debt-events/7/review')
+        .flush({ detail: 'scope' }, { status: 403, statusText: 'Forbidden' });
+      fixture.detectChanges();
+
+      expect(rows(el).length).toBe(1);
+      expect(text(el.querySelector('.debt-reviews .load-error'))).toBe('確認失敗，請稍後再試。');
+      expect(el.querySelector<HTMLButtonElement>('.debt-reviews .review-done')!.disabled).toBe(false);
+
+      // A reload of the page reads the list again: the old failure line goes with it.
+      TestBed.inject(AccountingService).deleteEntry(1).subscribe();
+      http.expectOne(r => r.method === 'DELETE').flush(null);
+      fixture.detectChanges();
+      flushLoad([], [ALAN], ALAN_OPEN);
+      http.expectOne(r => r.url === REVIEWS_URL).flush({ items: [review()], total: 1 });
+      fixture.detectChanges();
+      expect(rows(el).length).toBe(1);
+      expect(el.querySelector('.debt-reviews .load-error')).toBeNull();
+    });
+
+    it('names each 已確認 button after its row and locks them while one is in flight', () => {
+      const { fixture, el } = renderWith([review(), review({ event_id: 8, entry_id: 75, name: '車票' })]);
+      const buttons = () => Array.from(el.querySelectorAll<HTMLButtonElement>('.debt-reviews .review-done'));
+
+      expect(buttons().map(button => button.getAttribute('aria-label'))).toEqual(['已確認 Alan · 晚餐代墊', '已確認 Alan · 車票']);
+      buttons()[0].click();
+      fixture.detectChanges();
+      expect(buttons().map(button => button.disabled)).toEqual([true, true]);
+      buttons()[1].click();
+      http.expectOne(r => r.url === '/api/accounting/debt-events/7/review').flush(null, { status: 204, statusText: 'No Content' });
+      http.expectNone(r => r.url === '/api/accounting/debt-events/8/review');
+      http.expectOne(r => r.url === REVIEWS_URL).flush({ items: [], total: 0 });
+    });
+
+    it('says when only the newest 50 are shown', () => {
+      const { el } = renderWith([review()], 51);
+      expect(text(el.querySelector('.debt-reviews .muted'))).toBe('僅顯示最近 50 筆');
+    });
+
+    it('says the read failed and leaves the rest of the page alone', () => {
+      const { fixture, el } = render([], [ALAN], ALAN_OPEN);
+      http.expectOne(r => r.url === REVIEWS_URL).flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+
+      expect(text(el.querySelector('.debt-reviews .load-error'))).toBe('結清記錄讀取失敗，請稍後再試。');
+      expect(el.querySelectorAll('.debt-row').length).toBe(1);
+    });
+
+    it('is not "nothing pending" when a close waits and no debt is open', () => {
+      const fixture = TestBed.createComponent(AccountingRemindersComponent);
+      fixture.detectChanges();
+      flushLoad([], [], []);
+      http.expectOne(r => r.url === REVIEWS_URL).flush({ items: [review({ deleted: true })], total: 1 });
+      fixture.detectChanges();
+      const el = fixture.nativeElement as HTMLElement;
+
+      expect(el.querySelector('.empty')).toBeNull();
+      expect(rows(el).length).toBe(1);
     });
   });
 });

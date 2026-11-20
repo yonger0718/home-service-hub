@@ -325,6 +325,43 @@ class GroupMemberOut(EntryOut):
     protected_reason: ProtectedReason | None
 
 
+class DebtEventOut(BaseModel):
+    """One close / reopen of a debt (#401). `open_amount`: the remainder the close took out or the reopen brought
+    back. `needs_review`: the entry's latest event is this close, it left a remainder and the owner has not confirmed
+    it."""
+
+    id: int
+    action: Literal["close", "reopen"]
+    actor: str | None
+    open_amount: Decimal
+    currency: str
+    event_date: date
+    needs_review: bool
+
+
+class DebtReviewItem(BaseModel):
+    """A close that waits for the owner (`GET /debt-events/to-review`). `deleted`: the entry is gone and the name,
+    counterparty, date and amount are the snapshot taken at the close."""
+
+    event_id: int
+    entry_id: int
+    deleted: bool
+    kind: Literal["receivable", "payable"]
+    name: str | None
+    counterparty: str | None
+    entry_date: date
+    amount: Decimal
+    currency: str
+    open_amount: Decimal
+    actor: str | None
+    event_date: date
+
+
+class DebtReviewPage(BaseModel):
+    items: list[DebtReviewItem]
+    total: int
+
+
 class EntryDetailOut(EntryOut):
     invoice_random: str | None
     children: list[EntryOut]
@@ -340,6 +377,7 @@ class EntryDetailOut(EntryOut):
     refunded_amount: Decimal
     loan_schedule: LoanScheduleOut | None = None
     einvoice: EntryEinvoiceOut | None = None
+    debt_events: list[DebtEventOut] = []  # #401: closes / reopens of a receivable / payable, oldest first
 
 
 class DeletedEntryOut(BaseModel):

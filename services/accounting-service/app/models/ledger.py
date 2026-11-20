@@ -354,6 +354,36 @@ event.listen(LedgerEntry.__table__, "after_create", DDL(POSTED_DATE_FUNCTION_SQL
 event.listen(LedgerEntry.__table__, "after_create", DDL(POSTED_DATE_TRIGGER_SQL))
 
 
+class DebtStateEvent(Base):
+    """One change of a debt's `is_closed` through POST /entries/{id}/close or /reopen (#401).
+
+    `entry_id` carries NO foreign key on purpose: the event outlives the entry (ledger ids are never reused), and the
+    entry delete path keeps its lock order and FK actions. The entry_* / counterparty columns are a snapshot for the
+    day the entry is gone. `reviewed_at`: the owner's confirmation; set at once when the caller held the owner's scope.
+    """
+
+    __tablename__ = "debt_state_event"
+    __table_args__ = (
+        CheckConstraint("action IN ('close', 'reopen')", name="ck_debt_state_event_action"),
+        Index("ix_debt_state_event_entry_id", "entry_id", "id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    entry_id = Column(Integer, nullable=False)
+    action = Column(String(8), nullable=False)
+    actor = Column(String(64), nullable=True)
+    # What `settlement_service.open_amount` said at that moment: the remainder a close took out or a reopen brought back.
+    open_amount = Column(Numeric(20, 4), nullable=False)
+    currency = Column(String(8), nullable=False)
+    entry_kind = Column(String(16), nullable=False)
+    entry_name = Column(String(128), nullable=True)
+    counterparty = Column(String(128), nullable=True)
+    entry_amount = Column(Numeric(20, 4), nullable=False)
+    entry_date = Column(Date, nullable=False)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class EntryRewardRule(Base):
     __tablename__ = "entry_reward_rule"
 

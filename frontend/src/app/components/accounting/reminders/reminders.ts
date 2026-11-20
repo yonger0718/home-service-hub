@@ -15,7 +15,9 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Observable, catchError, forkJoin, of } from 'rxjs';
 
-import { Counterparty, DEFAULT_CATEGORY_ICONS, LedgerAccount, LedgerEntry, ScheduleDefinition, ScheduleInstance } from '../../../models/accounting.model';
+import {
+  Counterparty, DEFAULT_CATEGORY_ICONS, DebtReviewItem, DebtReviewPage, LedgerAccount, LedgerEntry, ScheduleDefinition, ScheduleInstance,
+} from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { BusinessCalendarService } from '../../../services/business-calendar.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
@@ -34,6 +36,7 @@ import { reconProgress, statementForPeriod } from '../statements/statement-view'
 import { StatementsService } from '../statements/statements.service';
 import { daysBetween, shortDate, slashDate, todayIso } from '../dates';
 import { formatMoney, formatSigned } from '../format';
+import { debtActorLabel } from '../debt-events';
 import { TimelineRow, buildDays } from '../timeline/timeline';
 import { DefinitionRow, QueueRow, definitionRows, queueRows } from './schedule-queue';
 import { ScheduleSheetComponent } from './schedule-sheet/schedule-sheet';
@@ -272,6 +275,7 @@ export class AccountingRemindersComponent {
   private requestId = 0;
   private expandRequestId = 0;
   private statementRequestId = 0;
+  private reviewRequestId = 0;
   /** Imported statements for the cards this page is billing, keyed by account. */
   private readonly statementsByAccount = signal<ReadonlyMap<number, readonly StatementSummary[]>>(new Map());
 
@@ -296,6 +300,24 @@ export class AccountingRemindersComponent {
   readonly actionError = signal<string | null>(null);
   readonly definitions = signal<ScheduleDefinition[]>([]);
   readonly definitionsFailed = signal(false);
+  /** #401: closes with a remainder that wait for the owner's 已確認; null until read, or when the read failed. */
+  readonly reviews = signal<DebtReviewPage | null>(null);
+  readonly reviewsFailed = signal(false);
+  /** The review whose 已確認 is in flight. */
+  readonly reviewBusy = signal<number | null>(null);
+  readonly reviewError = signal(false);
+  readonly reviewRows = computed(() =>
+    (this.reviews()?.items ?? []).map(item => ({
+      item,
+      title: [item.counterparty, item.name].filter(Boolean).join(' · ') || (item.kind === 'payable' ? '應付款項' : '應收款項'),
+      remaining: `當時剩餘 ${formatMoney(item.open_amount, item.currency)}`,
+      sub: [slashDate(item.event_date), debtActorLabel(item.actor)].filter(Boolean).join(' · '),
+    })),
+  );
+  /** More closes wait than the page loaded. */
+  readonly reviewsCut = computed(() => (this.reviews()?.total ?? 0) > (this.reviews()?.items.length ?? 0));
+  /** The section shows with the open debts (全部, 借還款追蹤) when a close waits or its read failed. */
+  readonly showReviews = computed(() => this.showDebts() && (this.reviewRows().length > 0 || this.reviewsFailed()));
   /** The reconciliation inbox (待處理); null until read, or when the read failed. */
   readonly inbox = signal<InboxOut | null>(null);
   readonly inboxFailed = signal(false);
@@ -383,6 +405,7 @@ export class AccountingRemindersComponent {
     const schedulesFailed = this.tab() === 'debts' && this.definitionsFailed();
     return (
       cards === 0 && debts === 0 && queue === 0 && inbox === 0 && schedules === 0 && !failed && !schedulesFailed &&
+      !this.showReviews() &&
       (!this.showCards() || this.billsSettled())
     );
   });
@@ -463,6 +486,8 @@ export class AccountingRemindersComponent {
 
   private load(): void {
     const id = ++this.requestId;
+    this.loadReviews();
+    this.reviewError.set(false);
     this.actionError.set(null);
     this.scheduleError.set(null);
     forkJoin({
@@ -503,6 +528,48 @@ export class AccountingRemindersComponent {
         this.loaded.set(true);
       },
     });
+  }
+
+  /** #401: read beside the page, never gating it (an API from before #401 answers 404: the section says so). */
+  private loadReviews(): void {
+    const id = ++this.reviewRequestId;
+    this.accounting.getDebtReviews().subscribe({
+      next: page => {
+        if (id === this.reviewRequestId) {
+          this.reviews.set(page);
+          this.reviewsFailed.set(false);
+        }
+      },
+      error: () => {
+        if (id === this.reviewRequestId) {
+          this.reviews.set(null);
+          this.reviewsFailed.set(true);
+        }
+      },
+    });
+  }
+
+  /** 已確認: the owner has seen this close. The row leaves the list on the next read. */
+  confirmReview(item: DebtReviewItem): void {
+    if (this.reviewBusy() !== null) {
+      return;
+    }
+    this.reviewBusy.set(item.event_id);
+    this.reviewError.set(false);
+    this.accounting.reviewDebtEvent(item.event_id).subscribe({
+      next: () => {
+        this.reviewBusy.set(null);
+        this.loadReviews();
+      },
+      error: () => {
+        this.reviewBusy.set(null);
+        this.reviewError.set(true);
+      },
+    });
+  }
+
+  openReview(item: DebtReviewItem): void {
+    this.open({ entryId: item.entry_id });
   }
 
   private loadExpanded(counterpartyId: number): void {

@@ -951,4 +951,9 @@ def get_entry_detail(db: Session, entry_id: int) -> dict | None:
     from .einvoice_read import entry_einvoice  # lazy: einvoice_read imports this module
 
     detail["einvoice"] = entry_einvoice(db, entry)
+    from .debt_events import events_of  # lazy: debt_events imports this module
+
+    # Whatever the row is now: a debt closed and then turned into another kind keeps its record (the list of closes
+    # that wait for the owner still links here).
+    detail["debt_events"] = events_of(db, entry.id)
     return detail

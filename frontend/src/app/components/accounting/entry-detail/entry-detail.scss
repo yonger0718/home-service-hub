@@ -113,6 +113,17 @@
   padding: 2px 4px;
   text-decoration: underline;
 }
+.debt-events {
+  color: var(--app-text-muted);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  list-style: none;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  padding: 0;
+}
+.debt-event.waiting { color: var(--app-text); }
 .breakdown { color: var(--app-text-muted); font-size: 0.78rem; font-variant-numeric: tabular-nums; font-weight: 600; margin: 2px 0 0; overflow-wrap: anywhere; }
 
 .dsec { color: var(--app-text-muted); font-size: 0.78rem; font-weight: 800; margin: 12px 0 4px; }

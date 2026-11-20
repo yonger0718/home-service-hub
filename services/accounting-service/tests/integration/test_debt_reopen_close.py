@@ -8,7 +8,6 @@ import pytest
 
 from app import auth
 from app.models import LedgerEntry
-from app.services import ledger_service
 
 DAY = "2026-09-10"
 
@@ -196,66 +195,21 @@ def test_close_is_allowed_once_the_schedule_is_ended_and_reopen_is_always_allowe
     assert reopened.status_code == 200 and reopened.json()["is_closed"] is False, reopened.text
 
 
-@pytest.fixture
-def today(monkeypatch):
-    monkeypatch.setattr(ledger_service, "_today", lambda: date(2026, 11, 20))
-
-
 def _description(client, entry_id) -> str | None:
     return client.get(f"/entries/{entry_id}").json()["description"]
 
 
-def _open_receivable(seed, db, *, collected=None, description=None):
-    """An open receivable of 420, optionally with one collection → (card, receivable id)."""
-    card, wallet = seed.account("卡"), seed.account("錢包")
-    alan = seed.counterparty("Alan")
-    receivable = seed.entry(card, "-420", kind="receivable", counterparty_id=alan.id, description=description)
-    if collected is not None:
-        seed.entry(
-            wallet, collected, kind="receivable", counterparty_id=alan.id, settles_entry_id=receivable.id,
-            is_settlement=True,
-        )
-    db.commit()
-    return card, receivable.id
+def test_close_leaves_the_description_alone(client, db_session, seed):
+    """#401: the close is recorded as a debt_state_event (test_debt_state_events.py), not in the description."""
+    card = seed.account("卡")
+    receivable = seed.entry(
+        card, "-420", kind="receivable", counterparty_id=seed.counterparty("Alan").id, description="晚餐代墊")
+    db_session.commit()
 
-
-def test_close_with_a_remainder_adds_a_line_to_the_description(client, db_session, seed, today):
-    card, receivable_id = _open_receivable(seed, db_session, collected="200", description="晚餐代墊")
-
-    response = client.post(f"/entries/{receivable_id}/close")
-
-    assert response.status_code == 200, response.text
-    assert response.json()["description"] == f"晚餐代墊\n2026-11-20 標記結清，當時剩餘 {card.currency} 220"
-
-
-def test_the_line_stands_alone_when_the_debt_had_no_description(client, db_session, seed, today):
-    card, receivable_id = _open_receivable(seed, db_session)
-
-    client.post(f"/entries/{receivable_id}/close")
-
-    assert _description(client, receivable_id) == f"2026-11-20 標記結清，當時剩餘 {card.currency} 420"
-
-
-def test_close_with_nothing_left_adds_no_line(client, db_session, seed, today):
-    _, receivable_id = _open_receivable(seed, db_session, collected="420", description="晚餐代墊")
-
-    response = client.post(f"/entries/{receivable_id}/close")
+    response = client.post(f"/entries/{receivable.id}/close")
 
     assert (response.status_code, response.json()["is_closed"]) == (200, True)
-    assert _description(client, receivable_id) == "晚餐代墊"
-
-
-def test_a_repeated_close_adds_no_second_line_and_reopen_keeps_the_line(client, db_session, seed, today):
-    card, receivable_id = _open_receivable(seed, db_session)
-    line = f"2026-11-20 標記結清，當時剩餘 {card.currency} 420"
-
-    first, second = client.post(f"/entries/{receivable_id}/close"), client.post(f"/entries/{receivable_id}/close")
-    assert (first.status_code, second.status_code, second.json()["is_closed"]) == (200, 200, True)
-    assert _description(client, receivable_id) == line
-
-    reopened = client.post(f"/entries/{receivable_id}/reopen")
-    assert (reopened.status_code, reopened.json()["is_closed"]) == (200, False)
-    assert _description(client, receivable_id) == line
+    assert _description(client, receivable.id) == "晚餐代墊"
 
 
 @pytest.fixture

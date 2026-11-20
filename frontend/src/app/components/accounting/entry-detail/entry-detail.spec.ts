@@ -1318,6 +1318,41 @@ describe('EntryDetailComponent', () => {
     });
   });
 
+  describe('the record of closing and reopening a debt (#401)', () => {
+    const EVENTS = [
+      { id: 1, action: 'close', actor: 'hermes', open_amount: '220.0000', currency: 'TWD', event_date: '2026-11-18', needs_review: false },
+      { id: 2, action: 'reopen', actor: 'spa', open_amount: '220.0000', currency: 'TWD', event_date: '2026-11-19', needs_review: false },
+      { id: 3, action: 'close', actor: 'hermes', open_amount: '220.0000', currency: 'TWD', event_date: '2026-11-20', needs_review: true },
+    ];
+
+    function lines(fixture: ComponentFixture<EntryDetailComponent>): (string | undefined)[] {
+      return Array.from(el(fixture).querySelectorAll('.debt-events .debt-event')).map(node => node.textContent?.trim());
+    }
+
+    it('lists the events of the debt, oldest first, under the state line', () => {
+      const fixture = render(detail({ ...RECEIVABLE, is_closed: true, open_amount: '0.0000', is_settled: true, debt_events: EVENTS }));
+
+      expect(lines(fixture)).toEqual([
+        '2026/11/18 標記結清 · Hermes · 當時剩餘 $220',
+        '2026/11/19 重新開啟 · 網頁 · 回到剩餘 $220',
+        '2026/11/20 標記結清 · Hermes · 當時剩餘 $220 · 待確認',
+      ]);
+      expect(el(fixture).querySelector('.open-state + .debt-events')).not.toBeNull();
+    });
+
+    it('keeps the record on a row that is no longer a debt (the reminders list still links to it)', () => {
+      const fixture = render(detail({ id: 42, amount: '-420.0000', name: '外套', debt_events: [EVENTS[2]] }));
+
+      expect(el(fixture).querySelector('.open-state')).toBeNull();
+      expect(lines(fixture)).toEqual(['2026/11/20 標記結清 · Hermes · 當時剩餘 $220 · 待確認']);
+    });
+
+    it('shows no block for a debt without events or an answer without the field', () => {
+      expect(el(render(detail({ ...RECEIVABLE, debt_events: [] }))).querySelector('.debt-events')).toBeNull();
+      expect(el(render(RECEIVABLE)).querySelector('.debt-events')).toBeNull();
+    });
+  });
+
   describe('reopening and closing a debt (#391)', () => {
     const CLOSED = detail({ ...RECEIVABLE, is_closed: true, open_amount: '0.0000', is_settled: true });
     const LOAN = {
@@ -1404,7 +1439,7 @@ describe('EntryDetailComponent', () => {
       const fixture = render(RECEIVABLE);
       const confirm = openConfirm(fixture, 'close');
 
-      expect(confirm.textContent).toContain('剩餘 $220 不再列入未結清，備註會記下這次結清；之後可以重新開啟。');
+      expect(confirm.textContent).toContain('剩餘 $220 不再列入未結清，會留下結清記錄；之後可以重新開啟。');
       confirm.querySelector<HTMLButtonElement>('.debt-confirm-go')!.click();
 
       const req = http.expectOne('/api/accounting/entries/42/close');
