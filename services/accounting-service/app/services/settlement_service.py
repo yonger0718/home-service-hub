@@ -127,6 +127,43 @@ def settle(
     return entry.id
 
 
+def set_closed(db: Session, entry_id: int, closed: bool) -> None:
+    """Close (`closed=True`) or reopen a receivable / payable original (#391). The flag only: amounts, settlements
+    and links stay as they are, so `open_amount` follows from the flag and the settlements as before.
+
+    Until this, only the MOZE import set `is_closed`, and a closed debt could never be settled again. Idempotent.
+    A loan a live schedule repays cannot be closed: `schedule_posting` reads a closed loan as repaid and would end
+    the schedule on its next period. A close that leaves a remainder notes it in the description.
+    """
+    target = locked_entry(db, entry_id)
+    assert_entry_editable(db, target)
+    if target.kind not in SETTLE_SIGNS or target.is_settlement or target.settles_entry_id is not None:
+        raise ValidationError("kind", "only receivable and payable originals can be closed or reopened")
+    if closed and not target.is_closed:
+        from .schedule_read import loan_schedule_for  # schedule_read imports this module: no module-level import
+
+        schedule = loan_schedule_for(db, target.id)
+        if schedule is not None and schedule["status"] != "ended":
+            raise ValidationError(
+                "loan_schedule", f"排程「{schedule['name']}」還在還款: end the schedule before closing the debt")
+        _note_closed_remainder(db, target)
+    target.is_closed = closed
+    db.flush()
+
+
+def _note_closed_remainder(db: Session, target: LedgerEntry) -> None:
+    """A closed remainder leaves the open-debt views without a booking, so the close writes it into the entry's
+    description: the date (ledger time zone) and what was still open. Nothing left open, nothing written."""
+    from . import ledger_service  # ledger_service imports this module: no module-level import
+
+    remainder = open_amount(db, target)
+    if remainder == 0:
+        return
+    day, amount = ledger_service._today().isoformat(), ledger_service._plain(remainder)
+    line = f"{day} 標記結清，當時剩餘 {target.currency} {amount}"
+    target.description = f"{target.description}\n{line}" if target.description else line
+
+
 def refund(db: Session, entry_id: int, payload: RefundIn, *, source: str = "manual") -> int:
     """A refund entry of +amount with the original's category, name and merchant; `source` is the new row's
     (`statement` from the reconciliation action `create_refund`).

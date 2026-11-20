@@ -85,6 +85,11 @@
         } @else if (!loanLine()) {
           <span class="open-amount">剩餘 {{ formatMoney(d.open_amount, d.currency) }}</span>
         }
+        @if (canReopen()) {
+          <button type="button" class="debt-toggle debt-reopen" (click)="openPanel('reopen')">重新開啟</button>
+        } @else if (canClose()) {
+          <button type="button" class="debt-toggle debt-close" (click)="openPanel('close')">標記結清</button>
+        }
         @if (loanLine(); as line) {
           <p class="loan-line">{{ line }}</p>
           @if (d.loan_schedule; as loan) {
@@ -197,6 +202,20 @@
             <button type="button" class="danger delete-group" [disabled]="busy()" (click)="confirmDelete('group')">刪除整組</button>
           }
           <button type="button" class="danger delete-entry" [disabled]="busy()" (click)="confirmDelete('entry')">刪除</button>
+        </div>
+      </div>
+    }
+
+    @if (panel() === 'reopen' || panel() === 'close') {
+      <div class="delete-confirm debt-confirm" role="alertdialog" [attr.aria-label]="panel() === 'reopen' ? '重新開啟' : '標記結清'">
+        <p><b>{{ panel() === 'reopen' ? '重新開啟這筆？' : '標記為已結清？' }}</b></p>
+        <p>{{ debtConfirmText() }}</p>
+        @if (formError()) {
+          <p class="form-error" role="alert">{{ formError() }}</p>
+        }
+        <div class="btnrow">
+          <button type="button" class="debt-cancel" (click)="closePanel()">取消</button>
+          <button type="button" class="pri debt-confirm-go" [disabled]="busy()" (click)="confirmDebt()">{{ panel() === 'reopen' ? '重新開啟' : '標記結清' }}</button>
         </div>
       </div>
     }

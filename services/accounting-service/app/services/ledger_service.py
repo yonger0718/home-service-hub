@@ -332,7 +332,7 @@ def _is_debt_original(entry: LedgerEntry) -> bool:
 
 
 def open_debt_filter():
-    """Unsettled receivable/payable originals: not a settlement, not closed (MOZE isSettle), and
+    """Unsettled receivable/payable originals: not a settlement, not closed (`is_closed`), and
     amount + Σ linked settlements != 0."""
     settled = _settled_sum()
     return and_(

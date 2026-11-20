@@ -49,6 +49,8 @@ CASES = {
     "settle": lambda b: (
         "POST", f"/entries/{b['receivable']}/settle", {"account_id": b["wallet"], "amount": "100", "entry_date": DAY}, 201,
     ),
+    "reopen_debt": lambda b: ("POST", f"/entries/{b['receivable']}/reopen", None, 200),
+    "close_debt": lambda b: ("POST", f"/entries/{b['receivable']}/close", None, 200),
     "refund": lambda b: ("POST", f"/entries/{b['expense']}/refund", {"amount": "50", "entry_date": DAY}, 201),
     "refund_group_member": lambda b: ("POST", f"/entries/{b['member']}/refund", {"amount": "10", "entry_date": DAY}, 201),
     "put_transfer": lambda b: (
@@ -155,6 +157,7 @@ EXPECTED_WRITES = {
     ("/entries/{entry_id}/split", "PUT"), ("/entries/{entry_id}/reward-rules", "PUT"),
     ("/entries/{entry_id}/reward-reprice", "POST"),
     ("/entries/{entry_id}/settle", "POST"), ("/entries/{entry_id}/refund", "POST"),
+    ("/entries/{entry_id}/reopen", "POST"), ("/entries/{entry_id}/close", "POST"),
     ("/transfers", "POST"), ("/transfers/{group_id}", "PUT"),
     ("/splits", "POST"), ("/splits/{group_id}", "PUT"), ("/splits/{group_id}", "DELETE"),
     ("/balance-adjustments", "POST"),

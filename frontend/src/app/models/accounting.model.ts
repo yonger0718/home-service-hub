@@ -365,8 +365,9 @@ export interface LedgerEntry {
    */
   is_settlement: boolean;
   /**
-   * `EntryOut.is_closed`: a receivable / payable original MOZE marked settled (target isSettle), even when its
-   * settlements do not net it to zero. The server then reports `open_amount` 0 and `is_settled` true.
+   * `EntryOut.is_closed`: a receivable / payable original closed by the MOZE import (target isSettle) or by 標記結清
+   * (#391), even when its settlements do not net it to zero. The server then reports `open_amount` 0 and
+   * `is_settled` true; 重新開啟 clears it.
    */
   is_closed: boolean;
   /**
