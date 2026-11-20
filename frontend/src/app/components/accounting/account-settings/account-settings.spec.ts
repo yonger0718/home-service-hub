@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
@@ -620,6 +622,22 @@ describe('AccountSettingsComponent', () => {
     expect(req.request.body).toMatchObject({ is_credit: false, due_rule: null, due_value: null, credit_limit: null, combined_account_id: null, auto_pay_account_id: null, credit_sharing_id: null, credit_sharing_members: [] });
     expect(req.request.body.closing_day).toBe(15);
     req.flush(DETAIL);
+  });
+
+  it('styles every 額度共用 checkbox with the app tick (hub-check)', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    const boxes = el(fixture).querySelectorAll<HTMLInputElement>('.sharing-option input[type="checkbox"]');
+    expect(boxes.length).toBeGreaterThan(0);
+    boxes.forEach((box) => expect(box.classList.contains('hub-check')).toBe(true));
+  });
+
+  it('defines .hub-check globally: custom box, primary fill when checked, focus ring, dark ink fill', () => {
+    const css = readFileSync(join(process.cwd(), 'src/styles.scss'), 'utf8');
+    expect(css).toMatch(/\.hub-check\s*\{[^}]*appearance:\s*none/);
+    expect(css).toMatch(/\.hub-check:checked\s*\{[^}]*var\(--app-primary\)/);
+    expect(css).toMatch(/\.hub-check:focus-visible\s*\{[^}]*--app-focus-ring/);
+    expect(css).toMatch(/\.app-dark-mode\s+\.hub-check:checked\s*\{[^}]*--app-primary-ink-bg/);
   });
 
   it('adds a chosen card to credit_sharing_members in the one PUT of this account', async () => {

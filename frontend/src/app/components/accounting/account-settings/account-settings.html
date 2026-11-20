@@ -377,7 +377,7 @@
     }
     @for (other of sharingOptions(); track other.id) {
       <label class="sharing-option">
-        <input type="checkbox" [attr.data-account-id]="other.id" [checked]="sharing().includes(other.id)" (change)="toggleSharing(other.id, $any($event.target).checked)" />
+        <input type="checkbox" class="hub-check" [attr.data-account-id]="other.id" [checked]="sharing().includes(other.id)" (change)="toggleSharing(other.id, $any($event.target).checked)" />
         {{ other.name }}{{ other.is_archived ? '（已封存）' : '' }}
       </label>
     } @empty {

@@ -792,6 +792,28 @@ html:has(.overlay, .filter-overlay) body {
   > p-datepicker, > p-select, > p-multiselect { width: 100%; min-width: 0; }
   p-datepicker .p-datepicker, p-datepicker .p-inputtext { width: 100%; }
 }
+/* App-styled tick on a native checkbox (native semantics stay). Dark: white on --app-primary is 3.24:1, so the checked fill
+   uses --app-primary-ink-bg there, as filled buttons do. */
+.hub-check {
+  appearance: none;
+  width: 20px; height: 20px; flex: none; margin: 0;
+  border: 1.5px solid var(--app-border); border-radius: 6px;
+  background: var(--app-surface);
+  display: inline-grid; place-content: center;
+  cursor: pointer;
+}
+.hub-check::after {
+  content: '';
+  width: 5px; height: 10px;
+  border: solid var(--app-on-primary); border-width: 0 2px 2px 0;
+  transform: translateY(-1px) rotate(45deg) scale(0);
+}
+.hub-check:checked { background: var(--app-primary); border-color: var(--app-primary); }
+.app-dark-mode .hub-check:checked { background: var(--app-primary-ink-bg); border-color: var(--app-primary-ink-bg); }
+.hub-check:checked::after { transform: translateY(-1px) rotate(45deg) scale(1); }
+.hub-check:focus-visible { outline: 2px solid var(--app-focus-ring); outline-offset: 2px; }
+.hub-check:disabled { opacity: 0.5; cursor: default; }
+
 /* Switch fields: control and text on one line (僅當沖). */
 .hub-filter-field--row { flex-direction: row; align-items: center; gap: 10px; }
 
