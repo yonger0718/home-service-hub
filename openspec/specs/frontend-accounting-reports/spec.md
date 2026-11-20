@@ -223,7 +223,7 @@ The year SHALL be prefixed (2025 年 9 月, 2025/10/5) when the report spans mor
 
 From 1024 px the reports page header SHALL be one row: the title with the statistics rules line on the left, and the period control on the right. Below 1024 px the period control SHALL stay under the title; from 760 px the period control wraps to its own row, and below 760 px the title, a one-line subtitle and the gear SHALL share one row.
 
-The reports page and the saved-report page SHALL keep ending with the shell's floating-button clearance, so the page does not jump even though the shell shows no 記一筆 button on them.
+The reports page and the saved-report page SHALL keep the shell's floating-button clearance at their end, though no 記一筆 button shows on them.
 
 #### Scenario: Desktop header
 - **WHEN** `/accounting/reports` opens at 1440 px
