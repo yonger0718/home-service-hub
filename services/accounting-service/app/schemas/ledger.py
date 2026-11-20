@@ -341,7 +341,8 @@ class DebtEventOut(BaseModel):
 
 class DebtReviewItem(BaseModel):
     """A close that waits for the owner (`GET /debt-events/to-review`). `deleted`: the entry is gone and the name,
-    counterparty, date and amount are the snapshot taken at the close."""
+    counterparty, date and amount are the snapshot taken at the close. `open_amount` is the remainder at the close;
+    `current_open_amount` (#403) the debt's remainder now, null for a deleted debt."""
 
     event_id: int
     entry_id: int
@@ -353,6 +354,7 @@ class DebtReviewItem(BaseModel):
     amount: Decimal
     currency: str
     open_amount: Decimal
+    current_open_amount: Decimal | None = None
     actor: str | None
     event_date: date
 

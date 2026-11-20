@@ -208,9 +208,27 @@ def test_a_close_with_a_remainder_by_a_write_only_caller_waits_for_review(client
         "items": [{
             "event_id": event_id, "entry_id": receivable_id, "deleted": False, "kind": "receivable",
             "name": "晚餐代墊", "counterparty": "Alan", "entry_date": DAY.isoformat(), "amount": "-420.0000",
-            "currency": card.currency, "open_amount": "220.0000", "actor": "bot",
+            "currency": card.currency, "open_amount": "220.0000", "current_open_amount": "220.0000", "actor": "bot",
             "event_date": ledger_service._today().isoformat(),
         }],
+    }
+
+
+def test_the_list_answers_the_remainder_at_the_close_and_the_one_now(client, db_session, seed, scoped):
+    """#403: a settlement deleted after the close moves the remainder; the owner confirms what is written off now."""
+    _, moved_id = _receivable(seed, db_session, collected="200", who="Bea")
+    _, still_id = _receivable(seed, db_session, collected="200", who="Cal")
+    _, gone_id = _receivable(seed, db_session, who="Dee")
+    for entry_id in (moved_id, still_id, gone_id):
+        assert client.post(f"/entries/{entry_id}/close", headers=BOT).status_code == 200
+    [settlement] = client.get(f"/entries/{moved_id}", headers=BOT).json()["settled_by"]
+    assert client.delete(f"/entries/{settlement['id']}", headers=BOT).status_code == 200
+    assert client.delete(f"/entries/{gone_id}", headers=BOT).status_code == 200
+
+    amounts = {item["entry_id"]: (item["open_amount"], item["current_open_amount"]) for item in _to_review(client, READER)["items"]}
+
+    assert amounts == {
+        moved_id: ("220.0000", "420.0000"), still_id: ("220.0000", "220.0000"), gone_id: ("420.0000", None),
     }
 
 

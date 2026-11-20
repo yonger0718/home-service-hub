@@ -59,7 +59,10 @@ def events_of(db: Session, entry_id: int) -> list[dict]:
 
 def to_review(db: Session, limit: int) -> dict:
     """The debts whose latest event is a close with a remainder that the owner has not confirmed, newest first; the
-    entry is either gone (its snapshot answers) or still closed."""
+    entry is either gone (its snapshot answers) or still closed. The list is decided by the remainder at the close
+    (an edit of the debt cannot take it off); a live debt also answers its remainder now (#403)."""
+    from .settlement_service import open_amount  # settlement_service imports this module: no module-level import
+
     latest = select(func.max(DebtStateEvent.id)).group_by(DebtStateEvent.entry_id)
     query = (
         select(DebtStateEvent, LedgerEntry, Counterparty.name)
@@ -80,7 +83,9 @@ def to_review(db: Session, limit: int) -> dict:
             "counterparty": counterparty if live else event.counterparty,
             "entry_date": entry.entry_date if live else event.entry_date,
             "amount": entry.amount if live else event.entry_amount,
-            "currency": event.currency, "open_amount": event.open_amount, "actor": event.actor,
+            "currency": event.currency, "open_amount": event.open_amount,
+            # #403: a settlement deleted or changed after the close moves the remainder; the owner confirms this one.
+            "current_open_amount": open_amount(db, entry) if live else None, "actor": event.actor,
             "event_date": _event_date(event),
         })
     return {"items": items, "total": total}
