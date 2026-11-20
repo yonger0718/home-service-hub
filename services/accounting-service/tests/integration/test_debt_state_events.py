@@ -93,13 +93,38 @@ def test_a_reopen_writes_the_remainder_it_brings_back(client, db_session, seed, 
         "reopen", "bot", "220.0000", False)
 
 
-def test_a_close_with_nothing_left_writes_an_event_of_zero(client, db_session, seed, scoped):
+@pytest.mark.parametrize("headers", [BOT, OWNER], ids=["write-only", "admin"])
+def test_a_close_with_nothing_left_is_refused_and_writes_nothing(client, db_session, seed, scoped, headers):
+    """#403: a debt its settlements cleared needs no flag; closed at zero it could hide a remainder that appears later."""
     _, receivable_id = _receivable(seed, db_session, collected="420")
 
-    response = client.post(f"/entries/{receivable_id}/close", headers=BOT)
+    response = client.post(f"/entries/{receivable_id}/close", headers=headers)
 
-    [event] = response.json()["debt_events"]
-    assert (event["action"], event["open_amount"], event["needs_review"]) == ("close", "0.0000", False)
+    assert response.status_code == 422, response.text
+    assert {str(error["loc"][-1]) for error in response.json()["detail"]} == {"open_amount"}
+    assert client.get(f"/entries/{receivable_id}", headers=headers).json()["is_closed"] is False
+    assert _events(db_session) == []
+
+
+def test_a_caller_cannot_take_its_waiting_close_off_the_list_through_a_close_at_zero(client, db_session, seed, scoped):
+    """#403: reopen → settle in full → close → delete the settlement. The close is refused, so the debt stays open:
+    cleared while the settlement stands, and back in the open debts once it is deleted."""
+    card, receivable_id = _receivable(seed, db_session, collected="200")
+    client.post(f"/entries/{receivable_id}/close", headers=BOT)
+    assert _to_review(client, READER)["total"] == 1
+
+    assert client.post(f"/entries/{receivable_id}/reopen", headers=BOT).status_code == 200
+    settled = client.post(
+        f"/entries/{receivable_id}/settle", headers=BOT,
+        json={"account_id": card.id, "amount": "220", "entry_date": DAY.isoformat()})
+    assert settled.status_code in (200, 201), settled.text
+    assert client.post(f"/entries/{receivable_id}/close", headers=BOT).status_code == 422
+    settlement_id = max(row["id"] for row in client.get(f"/entries/{receivable_id}", headers=BOT).json()["settled_by"])
+    assert client.delete(f"/entries/{settlement_id}", headers=BOT).status_code == 200
+
+    open_ids = [row["id"] for row in client.get("/entries", headers=READER, params={"open": "true"}).json()["items"]]
+    assert receivable_id in open_ids
+    assert [event.action for event in _events(db_session)] == ["close", "reopen"]
 
 
 def test_repeated_calls_and_refusals_write_nothing(client, db_session, seed, scoped):
@@ -218,11 +243,9 @@ def test_a_close_by_the_owner_never_waits(client, db_session, seed, scoped, head
     assert _to_review(client, OWNER) == {"items": [], "total": 0}
 
 
-def test_a_close_with_nothing_left_and_a_reopened_debt_do_not_wait(client, db_session, seed, scoped):
-    _, settled_id = _receivable(seed, db_session, collected="420", who="Bea")
+def test_a_reopened_debt_does_not_wait(client, db_session, seed, scoped):
     _, reopened_id = _receivable(seed, db_session, who="Cal")
 
-    client.post(f"/entries/{settled_id}/close", headers=BOT)
     client.post(f"/entries/{reopened_id}/close", headers=BOT)
     client.post(f"/entries/{reopened_id}/reopen", headers=BOT)
 

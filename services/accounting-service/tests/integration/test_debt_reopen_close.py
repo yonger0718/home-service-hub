@@ -105,6 +105,28 @@ def test_close_and_reopen_leave_the_open_debt_list_in_step(client, db_session, s
     assert open_ids() == [receivable.id]
 
 
+def test_a_repeated_close_of_a_closed_debt_whose_settlements_clear_it_stays_ok(client, db_session, seed):
+    """#403 refuses a close with nothing left only when it would set the flag."""
+    _, _, receivable_id = _closed_receivable(seed, db_session, collected="420")
+
+    response = client.post(f"/entries/{receivable_id}/close")
+
+    assert response.status_code == 200, response.text
+    assert _state(client, receivable_id)[0] is True
+
+
+def test_a_debt_collected_beyond_its_amount_can_still_be_closed(client, db_session, seed):
+    _, _, receivable_id = _closed_receivable(seed, db_session, collected="500")
+    reopened = client.post(f"/entries/{receivable_id}/reopen")
+    assert reopened.status_code == 200, reopened.text
+    assert _state(client, receivable_id) == (False, "80.0000", False)
+
+    response = client.post(f"/entries/{receivable_id}/close")
+
+    assert response.status_code == 200, response.text
+    assert _state(client, receivable_id)[0] is True
+
+
 def test_both_actions_are_idempotent(client, db_session, seed):
     card = seed.account("卡")
     payable = seed.entry(card, "900", kind="payable", counterparty_id=seed.counterparty("Bea").id)
