@@ -207,34 +207,63 @@ describe('RewardRulesOverviewComponent', () => {
     expect(text(card(el, '測試卡 B').querySelector('.rr-window'))).toBe('每月 1 日起算 · 本月 11/1–11/30');
   });
 
-  it('mixed windows: header keeps only the closing day and each row carries its own 本期', async () => {
-    const mixed = account(21, '混合卡', {
+  const STATEMENT = (): RewardUsage => usage({ rule_ids: [31], reward_account_id: 21 });
+  const MONTH = (): RewardUsage =>
+    usage({ rule_ids: [32], window_start: '2026-11-01', window_end: '2026-11-30', reward_account_id: 21 });
+  const MIXED_RULES = () => [rule(31, 21, '帳單週期'), rule(32, 21, '自然月', { window: 'calendar_month' })];
+
+  it('single-window card: title shows the cycle, no row line', async () => {
+    const single = account(24, '單一卡', {
       closing_day: 25,
-      usage: [
-        usage({ rule_ids: [31], reward_account_id: 21 }),
-        usage({ rule_ids: [32], window_start: '2026-11-01', window_end: '2026-11-30', reward_account_id: 21 }),
-      ],
-      rules: [rule(31, 21, '帳單週期'), rule(32, 21, '自然月', { window: 'calendar_month' })],
+      usage: [usage({ rule_ids: [61], reward_account_id: 24 })],
+      rules: [rule(61, 24, '帳單週期')],
     });
-    const { el } = await open('/accounting/reward-rules', { ...OVERVIEW, accounts: [mixed] });
-    const c = card(el, '混合卡');
-    expect(text(c.querySelector('.rr-window'))).toBe('結帳日 25 號');
-    expect(texts(c, '.rr-row-window')).toEqual(['本期 10/26–11/25', '本期 11/1–11/30']);
+    const { el } = await open('/accounting/reward-rules', { ...OVERVIEW, accounts: [single] });
+    const c = card(el, '單一卡');
+    expect(text(c.querySelector('.rr-window'))).toBe('結帳日 25 號 · 本期 10/26–11/25');
+    expect(c.querySelector('.rr-row-window')).toBeNull();
   });
 
-  it('same start, different end still counts as mixed', async () => {
-    const mixed = account(22, '三月卡', {
-      closing_day: 30,
-      usage: [
-        usage({ rule_ids: [41], window_start: '2026-03-01', window_end: '2026-03-30', reward_account_id: 22 }),
-        usage({ rule_ids: [42], window_start: '2026-03-01', window_end: '2026-03-31', reward_account_id: 22 }),
-      ],
-      rules: [rule(41, 22, '帳單週期'), rule(42, 22, '自然月', { window: 'calendar_month' })],
+  for (const order of ['statement first', 'calendar first']) {
+    it(`mixed card (${order}): title keeps the cycle, only the calendar row names its own period`, async () => {
+      const rows = order === 'statement first' ? [STATEMENT(), MONTH()] : [MONTH(), STATEMENT()];
+      const mixed = account(21, '混合卡', { closing_day: 25, usage: rows, rules: MIXED_RULES() });
+      const { el } = await open('/accounting/reward-rules', { ...OVERVIEW, accounts: [mixed] });
+      const c = card(el, '混合卡');
+      expect(text(c.querySelector('.rr-window'))).toBe('結帳日 25 號 · 本期 10/26–11/25');
+      expect(texts(c, '.rr-row-window')).toEqual(['本月 11/1–11/30']);
     });
-    const { el } = await open('/accounting/reward-rules', { ...OVERVIEW, accounts: [mixed] });
-    const c = card(el, '三月卡');
-    expect(text(c.querySelector('.rr-window'))).toBe('結帳日 30 號');
-    expect(texts(c, '.rr-row-window')).toEqual(['本期 3/1–3/30', '本期 3/1–3/31']);
+  }
+
+  for (const order of ['statement first', 'calendar first']) {
+    it(`same start, different end (${order}): the calendar row alone repeats a period`, async () => {
+      const cycle = usage({ rule_ids: [41], window_start: '2026-03-01', window_end: '2026-03-30', reward_account_id: 22 });
+      const month = usage({ rule_ids: [42], window_start: '2026-03-01', window_end: '2026-03-31', reward_account_id: 22 });
+      const mixed = account(22, '三月卡', {
+        closing_day: 30,
+        usage: order === 'statement first' ? [cycle, month] : [month, cycle],
+        rules: [rule(41, 22, '帳單週期'), rule(42, 22, '自然月', { window: 'calendar_month' })],
+      });
+      const { el } = await open('/accounting/reward-rules', { ...OVERVIEW, accounts: [mixed] });
+      const c = card(el, '三月卡');
+      expect(text(c.querySelector('.rr-window'))).toBe('結帳日 30 號 · 本期 3/1–3/30');
+      expect(texts(c, '.rr-row-window')).toEqual(['本月 3/1–3/31']);
+    });
+  }
+
+  it('closing day but every row a calendar month: calendar title, no row line', async () => {
+    const all = account(25, '全月卡', {
+      closing_day: 25,
+      usage: [
+        usage({ rule_ids: [71], window_start: '2026-11-01', window_end: '2026-11-30', reward_account_id: 25 }),
+        usage({ rule_ids: [72], window_start: '2026-11-01', window_end: '2026-11-30', reward_account_id: 25 }),
+      ],
+      rules: [rule(71, 25, '自然月甲', { window: 'calendar_month' }), rule(72, 25, '自然月乙', { window: 'calendar_month' })],
+    });
+    const { el } = await open('/accounting/reward-rules', { ...OVERVIEW, accounts: [all] });
+    const c = card(el, '全月卡');
+    expect(text(c.querySelector('.rr-window'))).toBe('每月 1 日起算 · 本月 11/1–11/30');
+    expect(c.querySelector('.rr-row-window')).toBeNull();
   });
 
   it('calendar rows hidden by the filter: a whole-month window still reads as the calendar line', async () => {
@@ -251,7 +280,7 @@ describe('RewardRulesOverviewComponent', () => {
     const rows = card(el, '測試卡 A').querySelectorAll('.rr-rule');
     expect(texts(rows[1], '.rr-title')).toEqual(['全聯・家樂福加碼']);
     expect(texts(rows[1], '.rr-rate')).toEqual(['5%']);
-    expect(text(rows[1].querySelector('.rr-posting'))).toBe('帳單結帳後第 1 月 15 日');
+    expect(text(rows[1].querySelector('.rr-posting'))).toBe('下期 15 號入帳');
     expect(text(rows[1].querySelector('.cap-text'))).toBe('$193 / $200 · 快到上限');
     expect(rows[1].querySelector('.cap-bar.near')).not.toBeNull();
     expect(rows[1].querySelector('.rr-state')).toBeNull();

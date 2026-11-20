@@ -43,7 +43,7 @@ export interface OverviewRow {
   unit: RewardUnit | null;
   /** The muted line in place of the bar on a non-active rule. */
   muted: string | null;
-  /** 「本期 M/D–M/D」 when the card's rows have different windows. */
+  /** 「本期 M/D–M/D」 (「本月 …」 for a calendar month) only when this row's window differs from the card title's. */
   window: string | null;
 }
 
@@ -97,18 +97,21 @@ function rowIsCalendar(row: RewardUsage, rules: RewardRuleOverviewRule[]): boole
   return first ? first.window === 'calendar_month' : isWholeMonth(row.window_start, row.window_end);
 }
 
-/** Different `(window_start, window_end)` pairs — a statement cycle and a calendar month can share a start. */
-function isMixed(usage: RewardUsage[]): boolean {
-  return new Set(usage.map(row => `${row.window_start}/${row.window_end}`)).size > 1;
+/** The usage row whose window the card title prints: the first statement-cycle row when the account has a closing day
+ * (so a calendar-month rule never names the card), else the first row. */
+function cardUsage(account: RewardRuleOverviewAccount): RewardUsage | undefined {
+  const cycle = account.closing_day === null
+    ? undefined
+    : account.usage.find(row => !rowIsCalendar(row, account.rules));
+  return cycle ?? account.usage[0];
 }
 
-function windowLine(account: RewardRuleOverviewAccount, mixed: boolean): string {
+function windowLine(account: RewardRuleOverviewAccount, own: RewardUsage | undefined): string {
   const closing = account.closing_day === null ? '' : `結帳日 ${account.closing_day} 號`;
-  const [row] = account.usage;
-  if (!row || mixed) {
+  if (!own) {
     return closing;
   }
-  const period = windowText(row);
+  const period = windowText(own);
   // Without a closing day the server's statement cycle is the calendar month (cycles.py), so the card is a calendar one.
   if (account.closing_day === null || account.usage.every(candidate => rowIsCalendar(candidate, account.rules))) {
     return `每月 1 日起算 · 本月 ${period}`;
@@ -117,7 +120,7 @@ function windowLine(account: RewardRuleOverviewAccount, mixed: boolean): string 
 }
 
 export function buildCard(account: RewardRuleOverviewAccount): OverviewCard {
-  const mixed = isMixed(account.usage);
+  const own = cardUsage(account);
   const rows = account.rules.map((rule): OverviewRow => {
     const usage = account.usage.find(row => row.rule_ids.includes(rule.id)) ?? null;
     const active = rule.state === 'active';
@@ -132,13 +135,15 @@ export function buildCard(account: RewardRuleOverviewAccount): OverviewCard {
       usage: active ? usage : null,
       unit: active && usage ? usageUnit(usage) : null,
       muted: mutedLine(rule),
-      window: mixed && usage ? `本期 ${windowText(usage)}` : null,
+      window: usage && own && (usage.window_start !== own.window_start || usage.window_end !== own.window_end)
+        ? `${rowIsCalendar(usage, account.rules) ? '本月' : '本期'} ${windowText(usage)}`
+        : null,
     };
   });
   return {
     account,
     name: `${account.account_name}${account.is_archived ? '（已封存）' : ''}`,
-    window: windowLine(account, mixed),
+    window: windowLine(account, own),
     totals: cardTotals(account.usage),
     rows,
     linked12m: account.rules.reduce((sum, rule) => sum + rule.stats.linked_entries_12m, 0),

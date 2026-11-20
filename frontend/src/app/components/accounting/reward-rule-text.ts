@@ -56,11 +56,13 @@ export function postingSummary(
 ): string {
   switch (rule.posting) {
     case 'after_window':
-      return `帳單結帳後第 ${rule.post_month_offset} 月 ${rule.post_day} 日`;
+      return rule.post_month_offset === 0
+        ? `結帳當月 ${rule.post_day} 號入帳`
+        : `${rule.post_month_offset === 1 ? '下期' : '下下期'} ${rule.post_day} 號入帳`;
     case 'after_transaction':
-      return `交易後 ${rule.delay_days} 天`;
+      return `交易後 ${rule.delay_days} 天入帳`;
     default:
-      return '手動';
+      return '手動入帳';
   }
 }
 

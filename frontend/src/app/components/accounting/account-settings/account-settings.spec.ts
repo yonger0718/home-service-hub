@@ -1041,7 +1041,7 @@ describe('AccountSettingsComponent', () => {
     expect(el(fixture).querySelectorAll('.rule-row').length).toBe(2);
     expect(texts(fixture, '.rule-row .rule-label')).toEqual(['一般', '餐飲']);
     expect(texts(fixture, '.rule-row .rule-rate')).toEqual(['1%', '5.2%']);
-    expect(texts(fixture, '.rule-row .rule-posting')).toEqual(['· 帳單結帳後第 1 月 15 日', '· 交易後 3 天']);
+    expect(texts(fixture, '.rule-row .rule-posting')).toEqual(['· 下期 15 號入帳', '· 交易後 3 天入帳']);
     const states = Array.from(el(fixture).querySelectorAll('.rule-row .rule-state'));
     expect(states.map(s => [s.getAttribute('data-state'), s.textContent?.trim()])).toEqual([['disabled', '已停用']]);
     const rows = Array.from(el(fixture).querySelectorAll('.rule-row'));
