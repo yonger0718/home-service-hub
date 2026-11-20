@@ -33,6 +33,8 @@ The visual system is the one in `frontend/src/styles.scss` (v2 handoff plus the 
 | `RewardStatesSpec.dc.html` | Reward state tags and the entry detail 回饋 section over time | `/accounting/entries/:id` | 1280 | — |
 | `CalendarDesktop.dc.html` | 記帳 日曆 view: grid on the left, 本月摘要 or the picked day on the right, entry drawer | `/accounting?month=&day=`, `/accounting/entries/:id?month=&day=` | 1440 fluid | day, 本月摘要, ‹ › day, entry → drawer, ↑ ↓, 今天, 這個月要處理 rows |
 | `CalendarPhone.dc.html` | 記帳 日曆 view on a phone: month grid + 今天 bar, week strip + day rows | `/accounting?month=&day=` | 390 | day, 展開整月, ‹ › day, 今天; entry detail drawn inline (implementation keeps the existing route, see the change's D6) |
+| `CalendarFixDesktop.dc.html` | 日曆 adjustments (2026-11-20), supersedes `CalendarDesktop.dc.html` for: only the needed weeks, quieter day cells with 帳單 / 結帳 tags and an in-cell spend bar, search and 篩選 in the right pane, compact entry drawer | `/accounting?month=&day=`, `/accounting/entries/:id?month=&day=` | 1440 fluid | day, 搜尋整月, 篩選, entry → drawer, 這個月要處理 rows |
+| `CalendarFixPhone.dc.html` | 日曆 adjustments on a phone (2026-11-20), supersedes `CalendarPhone.dc.html` for: only the needed weeks, corner dots, 搜尋與篩選 button on the title row | `/accounting?month=&day=` | 390 | 搜尋與篩選 toggle, day, 展開整月 |
 
 Not clickable on the canvas (drawn only): the period controls, the field pickers in the builder, ⋯ menus, 稍後提醒, every link into other pages.
 
