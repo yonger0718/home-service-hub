@@ -179,6 +179,7 @@ describe('cellAriaLabel', () => {
     bill: null as 'due' | 'paid' | null,
     dueCount: 0,
     invoices: 1,
+    closing: false,
   };
 
   it('names the date with weekday and joins the parts', () => {
@@ -189,6 +190,10 @@ describe('cellAriaLabel', () => {
     const label = cellAriaLabel({ ...base, bill: 'paid', dueCount: 2, invoices: 0 });
     expect(label.endsWith('已繳')).toBe(true);
     expect(label).not.toContain('繳費到期');
+  });
+
+  it('ends with 信用卡結帳日 on a closing day', () => {
+    expect(cellAriaLabel({ ...base, closing: true }).endsWith('，信用卡結帳日')).toBe(true);
   });
 
   it('names a Sunday as 週日', () => {

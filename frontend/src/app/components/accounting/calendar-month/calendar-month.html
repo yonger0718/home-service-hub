@@ -10,58 +10,77 @@
         @if (cell.outside && !weekOf()) {
           <span class="cell-blank" aria-hidden="true"></span>
         } @else {
-        <button
-          type="button"
-          class="cell"
-          [class.outside]="cell.outside"
-          [class.today]="cell.date === today()"
-          [class.sel]="cell.date === selected()"
-          [class.due]="cell.dueCount > 0"
-          [class.closing]="cell.closing"
-          [class.future]="cell.future"
-          [attr.data-date]="cell.date"
-          [attr.aria-label]="cell.label"
-          [attr.aria-pressed]="cell.outside && !weekOf() ? null : cell.date === selected()"
-          [attr.aria-current]="cell.date === today() ? 'date' : null"
-          [attr.tabindex]="cell.tabIndex"
-          [disabled]="cell.outside && !weekOf()"
-          (click)="pick(cell)"
-        >
-          <span class="d" [class.weekend]="cell.weekend">{{ cell.day }}</span>
-          @if (loading() && !cell.outside) {
-            <span class="fig daily-placeholder" aria-hidden="true">—</span>
-          }
-          @if (cell.net !== null) {
-            <span class="net" [class.neg]="cell.income + cell.expense < 0" [class.pos]="cell.income + cell.expense > 0" [class.quiet]="cell.net === '—'">{{ cell.net }}</span>
-          }
-          @if (cell.dots.length > 0) {
-            <span class="dots" aria-hidden="true">
-              @for (colour of cell.dots; track $index) {
-                <span class="dot" [style.background]="colour"></span>
-              }
-              @if (cell.more > 0) {
-                <span class="more">+{{ cell.more }}</span>
+          <button
+            type="button"
+            class="cell"
+            [class.outside]="cell.outside"
+            [class.today]="cell.date === today()"
+            [class.sel]="cell.date === selected()"
+            [class.due]="cell.dueCount > 0"
+            [class.closing]="cell.closing"
+            [class.past]="!cell.future"
+            [class.future]="cell.future"
+            [attr.data-date]="cell.date"
+            [attr.aria-label]="cell.label"
+            [attr.aria-pressed]="cell.outside && !weekOf() ? null : cell.date === selected()"
+            [attr.aria-current]="cell.date === today() ? 'date' : null"
+            [attr.tabindex]="cell.tabIndex"
+            [disabled]="cell.outside && !weekOf()"
+            (click)="pick(cell)"
+          >
+            <span class="cell-head">
+              <span class="d" [class.weekend]="cell.weekend">{{ cell.day }}</span>
+              @if (!compact() && (cell.bill !== null || cell.closing)) {
+                <span class="tags" aria-hidden="true">
+                  @if (cell.bill === 'due') {
+                    <span class="tag tag-bill">帳單</span>
+                  } @else if (cell.bill === 'paid') {
+                    <span class="tag tag-paid">已繳</span>
+                  }
+                  @if (cell.closing) {
+                    <span class="tag tag-closing">結帳</span>
+                  }
+                </span>
               }
             </span>
-          }
-          @if (cell.bill !== null) {
-            @if (compact()) {
-              <span class="bill-dot" aria-hidden="true"></span>
-            } @else {
-              <span class="bill-mark" aria-hidden="true">{{ cell.bill === 'paid' ? '已繳' : '帳單' }}</span>
+            @if (loading() && !cell.outside) {
+              <span class="fig daily-placeholder" aria-hidden="true">—</span>
             }
-          }
-          @if (cell.invoices > 0) {
-            @if (compact()) {
-              <span class="inv-dot" aria-hidden="true"></span>
-            } @else {
+            @if (cell.net !== null) {
+              <span class="net" [class.neg]="cell.income + cell.expense < 0" [class.pos]="cell.income + cell.expense > 0" [class.quiet]="cell.net === '—'">{{ cell.net }}</span>
+            }
+            @if (cell.dots.length > 0) {
+              <span class="dots" aria-hidden="true">
+                @for (colour of cell.dots; track $index) {
+                  <span class="dot" [style.background]="colour"></span>
+                }
+                @if (cell.more > 0) {
+                  <span class="more">+{{ cell.more }}</span>
+                }
+              </span>
+            }
+            @if (compact() && (cell.bill !== null || cell.closing || cell.invoices > 0)) {
+              <span class="corner-dots" aria-hidden="true">
+                @if (cell.invoices > 0) {
+                  <span class="inv-dot"></span>
+                }
+                @if (cell.closing) {
+                  <span class="closing-dot"></span>
+                }
+                @if (cell.bill === 'due') {
+                  <span class="bill-dot"></span>
+                } @else if (cell.bill === 'paid') {
+                  <span class="paid-dot"></span>
+                }
+              </span>
+            }
+            @if (!compact() && cell.invoices > 0) {
               <span class="inv-mark" aria-hidden="true">發票待對帳</span>
             }
-          }
-          @if (cell.heat > 0) {
-            <span class="heat" aria-hidden="true" [style.width.%]="cell.heat * 100"></span>
-          }
-        </button>
+            @if (cell.heat > 0) {
+              <span class="heat-track" aria-hidden="true"><span class="heat" [style.width.%]="cell.heat * 100"></span></span>
+            }
+          </button>
         }
       }
     </div>
@@ -69,11 +88,12 @@
   @if (!compact() && !weekOf()) {
     <div class="legend">
       <span aria-hidden="true" class="legend-items">
-        <span class="legend-item"><span class="heat-swatch"></span>支出比例</span>
+        <span class="legend-item"><span class="heat-swatch"></span>當天支出（相對本月最高）</span>
         <span class="legend-item"><span class="dot-swatch"></span>類別</span>
-        <span class="legend-item">帳單 到期</span>
+        <span class="legend-item"><span class="tag tag-bill">帳單</span>到期日</span>
+        <span class="legend-item"><span class="tag tag-closing">結帳</span>信用卡結帳日</span>
       </span>
-      <span class="sr-only">色條為當日支出比例，圓點為類別，帳單為繳費到期</span>
+      <span class="sr-only">色條為當天支出相對本月最高的比例，圓點為類別，帳單為繳費到期日，結帳為信用卡結帳日</span>
     </div>
   }
 </div>

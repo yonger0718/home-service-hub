@@ -2409,12 +2409,12 @@ describe('LedgerTimelineComponent', () => {
       const { fixture, el } = renderCalendarWith();
       const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
       const requests = billRequests();
-      expect(cell(el, '2026-10-05').querySelector('.bill-mark')).toBeNull();
+      expect(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid')).toBeNull();
       expect(cell(el, '2026-10-15').classList).toContain('closing');
 
       answerBill(requests, '-12345.0000');
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('帳單');
       expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10 月 5 日 週一，1 張卡繳費到期');
 
       selectDay(fixture, el, '2026-10-05');
@@ -2433,7 +2433,7 @@ describe('LedgerTimelineComponent', () => {
       answerBill(billRequests(), '-12345.0000');
       fixture.detectChanges();
       expect(cell(el, '2026-10-05').querySelector('.bill-dot')).not.toBeNull();
-      expect(cell(el, '2026-10-05').querySelector('.bill-mark')).toBeNull();
+      expect(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid')).toBeNull();
     });
 
     it('hides a zero statement everywhere and keeps it resolved across a view switch', () => {
@@ -2447,7 +2447,7 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-10');
       expectNoBillRequest();
       fixture.detectChanges();
-      expect(el.querySelectorAll('.bill-mark, .bill-dot').length).toBe(0);
+      expect(el.querySelectorAll('.week .tag-bill, .week .tag-paid, .bill-dot').length).toBe(0);
       expect(cell(el, '2026-10-15').classList).toContain('closing');
 
       selectDay(fixture, el, '2026-10-05');
@@ -2458,7 +2458,7 @@ describe('LedgerTimelineComponent', () => {
       const { fixture, el } = renderCalendarWith();
       flushBill('-800.0000', ['500.0000', '300.0000']);
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('已繳');
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('已繳');
       selectDay(fixture, el, '2026-10-05');
       expect(el.querySelector('.bill')).toBeNull();
     });
@@ -2479,8 +2479,8 @@ describe('LedgerTimelineComponent', () => {
       // CARD3 closes on the 22nd: its 09/22 statement is due 10/12.
       answer(11, '-300.0000', ['300.0000'], '2026-08-23', '2026-09-22', '2026-10-02');
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
-      expect(text(cell(el, '2026-10-12').querySelector('.bill-mark'))).toBe('已繳');
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('帳單');
+      expect(text(cell(el, '2026-10-12').querySelector('.tag-bill, .tag-paid'))).toBe('已繳');
     });
 
     it('never reads 已繳 while a same-day card is unresolved or failed (a paid sibling does not settle it)', () => {
@@ -2495,12 +2495,12 @@ describe('LedgerTimelineComponent', () => {
       answerBill(paid, '-800.0000', ['800.0000']);
       fixture.detectChanges();
       // CARD2 is still in flight: the day is a 帳單 day, not 已繳.
-      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('帳單');
       pending.summary.flush('boom', { status: 500, statusText: 'Server Error' });
       pending.payments.flush('boom', { status: 500, statusText: 'Server Error' });
       fixture.detectChanges();
       // CARD2 failed: unknown is never 已繳.
-      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('帳單');
     });
 
     it('draws no mark for a zero or refund-heavy statement, and a zero beside a paid card reads 已繳', () => {
@@ -2517,15 +2517,15 @@ describe('LedgerTimelineComponent', () => {
       answer(11, '-800.0000', ['800.0000']);
       fixture.detectChanges();
       expect(el.querySelectorAll('.bill-dot').length).toBe(0);
-      expect(el.querySelectorAll('.bill-mark').length).toBe(1);
-      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('已繳');
+      expect(el.querySelectorAll('.week .tag-bill, .week .tag-paid').length).toBe(1);
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('已繳');
     });
 
     it('draws nothing for a lone refund-heavy statement', () => {
       const { fixture, el } = renderCalendarWith();
       flushBill('500.0000');
       fixture.detectChanges();
-      expect(el.querySelectorAll('.bill-mark, .bill-dot').length).toBe(0);
+      expect(el.querySelectorAll('.week .tag-bill, .week .tag-paid, .bill-dot').length).toBe(0);
     });
 
     it('hides a statement that cannot be read', () => {
@@ -2534,14 +2534,14 @@ describe('LedgerTimelineComponent', () => {
       requests.summary.flush('boom', { status: 500, statusText: 'Server Error' });
       requests.payments.flush({ items: [], total: 0, limit: 100, offset: 0 });
       fixture.detectChanges();
-      expect(el.querySelectorAll('.bill-mark').length).toBe(0);
+      expect(el.querySelectorAll('.week .tag-bill, .week .tag-paid').length).toBe(0);
     });
 
     it('shows what was paid and what remains on a partly paid statement', () => {
       const { fixture, el } = renderCalendarWith();
       flushBill('-12345.0000', ['5000.0000']);
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('帳單');
 
       selectDay(fixture, el, '2026-10-05');
       showDayRowsInList(fixture);
@@ -2564,11 +2564,11 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-10');
       const requests = billRequests();
       fixture.detectChanges();
-      expect(cell(el, '2026-10-05').querySelector('.bill-mark')).not.toBeNull();
+      expect(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid')).not.toBeNull();
 
       answerBill(requests, '-12345.0000', ['12345.0000']);
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('已繳');
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('已繳');
     });
 
     it('resolves each statement once while moving between months', () => {
@@ -2582,7 +2582,7 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-11');
       flushBill('-200.0000', [], OCT_CYCLE);
       fixture.detectChanges();
-      expect(cell(el, '2026-11-04').querySelector('.bill-mark')).not.toBeNull();
+      expect(cell(el, '2026-11-04').querySelector('.tag-bill, .tag-paid')).not.toBeNull();
 
       (el.querySelector('.month-prev') as HTMLButtonElement).click();
       fixture.detectChanges();
@@ -2590,7 +2590,7 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-10');
       expectNoBillRequest();
       fixture.detectChanges();
-      expect(cell(el, '2026-10-05').querySelector('.bill-mark')).not.toBeNull();
+      expect(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid')).not.toBeNull();
     });
 
     it('announces the unpaid due days of the next 7 days in the list and opens the first in the calendar', () => {
@@ -2788,7 +2788,7 @@ describe('LedgerTimelineComponent', () => {
       const { fixture, el } = renderCalendarWith([...ACCOUNTS, monthly]);
       flushBill('-500.0000', [], { start: '2026-09-01', end: '2026-09-30', due: '2026-10-05', paidTo: '2026-10-02' });
       fixture.detectChanges();
-      expect(text(cell(el, '2026-10-05').querySelector('.bill-mark'))).toBe('帳單');
+      expect(text(cell(el, '2026-10-05').querySelector('.tag-bill, .tag-paid'))).toBe('帳單');
       expect(cell(el, '2026-10-31').classList).toContain('closing');
     });
 
@@ -2807,7 +2807,7 @@ describe('LedgerTimelineComponent', () => {
       });
       fixture.detectChanges();
 
-      expect(el.querySelectorAll('.bill-mark').length).toBe(1);
+      expect(el.querySelectorAll('.week .tag-bill, .week .tag-paid').length).toBe(1);
       expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10 月 5 日 週一，1 張卡繳費到期');
       selectDay(fixture, el, '2026-10-05');
       showDayRowsInList(fixture);
@@ -2824,7 +2824,7 @@ describe('LedgerTimelineComponent', () => {
       fixture.detectChanges();
       flushDaily('2026-10');
       fixture.detectChanges();
-      expect(el.querySelectorAll('.bill-mark, .cell.closing').length).toBe(0);
+      expect(el.querySelectorAll('.week .tag, .cell.closing').length).toBe(0);
       selectDay(fixture, el, '2026-10-05');
       expect(el.querySelector('.bill')).toBeNull();
     });

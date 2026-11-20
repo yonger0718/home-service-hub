@@ -110,6 +110,7 @@ export function cellAriaLabel(parts: {
   bill: 'due' | 'paid' | null;
   dueCount: number;
   invoices: number;
+  closing: boolean;
 }): string {
   const [year, month, day] = parts.date.split('-').map(Number);
   const weekday = WEEKDAYS[new Date(Date.UTC(year, month - 1, day)).getUTCDay()];
@@ -120,5 +121,6 @@ export function cellAriaLabel(parts: {
   if (parts.bill === 'due') items.push(`${parts.dueCount} 張卡繳費到期`);
   if (parts.bill === 'paid') items.push('已繳');
   if (parts.invoices > 0) items.push('發票待對帳');
+  if (parts.closing) items.push('信用卡結帳日');
   return items.join('，');
 }
