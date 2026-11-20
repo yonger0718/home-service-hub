@@ -15,6 +15,7 @@ import {
   CategoryInput,
   CategoryNode,
   Counterparty,
+  DebtReviewPage,
   CounterpartyInput,
   DailySummary,
   EntryDetail,
@@ -285,6 +286,16 @@ export class AccountingService {
   /** #391: sets `is_closed` on a receivable / payable original: no remainder, whatever its settlements sum to. */
   closeDebt(id: number): Observable<EntryDetail> {
     return this.bump(this.http.post<EntryDetail>(`${this.apiUrl}/entries/${id}/close`, {}));
+  }
+
+  /** #401: the closes with a remainder that wait for the owner's 已確認 (newest first). */
+  getDebtReviews(limit = 50): Observable<DebtReviewPage> {
+    return this.http.get<DebtReviewPage>(`${this.apiUrl}/debt-events/to-review`, { params: { limit } });
+  }
+
+  /** #401: the owner's 已確認 of a close event. Not a ledger write: `entriesChanged` is not bumped. */
+  reviewDebtEvent(eventId: number): Observable<void> {
+    return this.http.post<void>(`${this.apiUrl}/debt-events/${eventId}/review`, {});
   }
 
   createBalanceAdjustment(input: BalanceAdjustmentInput): Observable<EntryDetail> {

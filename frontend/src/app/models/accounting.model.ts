@@ -407,6 +407,44 @@ export interface EntryDetail extends LedgerEntry {
   proposed_fee?: string | null;
   /** `EntryDetailOut.loan_schedule`: a payable / receivable original that a schedule repays (剩餘 · 已還 · 下期). */
   loan_schedule?: LoanSchedule | null;
+  /** `EntryDetailOut.debt_events` (#401): the closes / reopens of a receivable / payable, oldest first. Missing on an
+   * API from before #401. */
+  debt_events?: DebtEvent[];
+}
+
+/** `DebtEventOut` (#401). `open_amount`: the remainder a close took out or a reopen brought back. `needs_review`: this
+ * close is the debt's latest event, left a remainder and waits for the owner's 已確認. */
+export interface DebtEvent {
+  id: number;
+  action: 'close' | 'reopen';
+  /** The caller's token label (`spa`, `hermes`, …); null without one. */
+  actor: string | null;
+  open_amount: string;
+  currency: string;
+  event_date: string;
+  needs_review: boolean;
+}
+
+/** `DebtReviewItem` (#401): a close that waits for the owner. `deleted`: the entry is gone and the name, counterparty,
+ * date and amount are the snapshot taken at the close. */
+export interface DebtReviewItem {
+  event_id: number;
+  entry_id: number;
+  deleted: boolean;
+  kind: 'receivable' | 'payable';
+  name: string | null;
+  counterparty: string | null;
+  entry_date: string;
+  amount: string;
+  currency: string;
+  open_amount: string;
+  actor: string | null;
+  event_date: string;
+}
+
+export interface DebtReviewPage {
+  items: DebtReviewItem[];
+  total: number;
 }
 
 export interface EntryPage {

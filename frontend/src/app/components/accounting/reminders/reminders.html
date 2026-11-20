@@ -144,6 +144,39 @@
       }
     }
 
+    @if (showReviews()) {
+      <div class="debt-reviews">
+        <h3 class="section">待確認的結清</h3>
+        @if (reviewsFailed()) {
+          <p class="load-error">結清記錄讀取失敗，請稍後再試。</p>
+        }
+        @for (row of reviewRows(); track row.item.event_id) {
+          <div class="review-row" [class.deleted]="row.item.deleted">
+            @if (row.item.deleted) {
+              <span class="review-main">
+                <span class="name">{{ row.title }} <span class="badge">已刪除</span></span>
+                <span class="amt">{{ row.remaining }}</span>
+                <span class="sub">{{ row.sub }}</span>
+              </span>
+            } @else {
+              <button type="button" class="review-main review-open" [attr.data-entry-id]="row.item.entry_id" (click)="openReview(row.item)">
+                <span class="name">{{ row.title }}</span>
+                <span class="amt">{{ row.remaining }}</span>
+                <span class="sub">{{ row.sub }}</span>
+              </button>
+            }
+            <button type="button" class="review-done" [disabled]="reviewBusy() !== null" (click)="confirmReview(row.item)">已確認</button>
+          </div>
+        }
+        @if (reviewsCut()) {
+          <p class="muted">僅顯示最近 50 筆</p>
+        }
+        @if (reviewError()) {
+          <p class="load-error" role="alert">確認失敗，請稍後再試。</p>
+        }
+      </div>
+    }
+
     @if (tab() === 'debts') {
       <h3 class="section" id="schedules">週期／分期</h3>
       @if (definitionsFailed()) {

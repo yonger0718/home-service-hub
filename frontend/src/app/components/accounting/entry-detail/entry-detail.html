@@ -98,6 +98,13 @@
         } @else if (breakdown(); as line) {
           <p class="breakdown">{{ line }}</p>
         }
+        @if (debtEventLines().length) {
+          <ul class="debt-events" aria-label="結清記錄">
+            @for (line of debtEventLines(); track line.id) {
+              <li class="debt-event" [class.waiting]="line.waiting">{{ line.text }}</li>
+            }
+          </ul>
+        }
       </div>
     }
 

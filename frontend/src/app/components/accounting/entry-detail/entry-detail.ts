@@ -40,6 +40,7 @@ import {
 } from '../amount-text';
 import { shortDate, slashDate, todayIso } from '../dates';
 import { currencySymbol, formatMoney, formatNumber } from '../format';
+import { debtEventLine } from '../debt-events';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
 import { alignedRepostAmounts, schedulePill } from '../schedule-math';
 import { GroupNavState, closeKeepingDay, groupCommands, inPlaceState, readGroupNavState } from '../split-group/group-nav';
@@ -331,6 +332,10 @@ export class EntryDetailComponent implements OnInit {
   /** #391: a closed debt (MOZE's flag, or 標記結清) can be opened again; its remainder then follows from its settlements. */
   readonly canReopen = computed(() => this.isDebt() && !this.locked() && !!this.detail()?.is_closed);
   /** #391: an open remainder can be closed; not a loan a live schedule repays (the API refuses: the schedule would end). */
+  /** #401: the closes / reopens of this debt, oldest first; an answer from before #401 carries none. */
+  readonly debtEventLines = computed(() =>
+    (this.detail()?.debt_events ?? []).map(event => ({ id: event.id, text: debtEventLine(event), waiting: event.needs_review })),
+  );
   readonly canClose = computed(() => {
     const loan = this.detail()?.loan_schedule;
     return this.canSettle() && (!loan || loan.status === 'ended');
@@ -342,7 +347,7 @@ export class EntryDetailComponent implements OnInit {
       return '';
     }
     if (this.panel() === 'close') {
-      return `剩餘 ${formatMoney(detail.open_amount, detail.currency)} 不再列入未結清，備註會記下這次結清；之後可以重新開啟。`;
+      return `剩餘 ${formatMoney(detail.open_amount, detail.currency)} 不再列入未結清，會留下結清記錄；之後可以重新開啟。`;
     }
     // The API's open amount of a debt that is not closed: |amount + Σ settled values|.
     const remaining = Math.round(Math.abs(Math.abs(Number(detail.amount)) - settledBack(detail)) * 1e4) / 1e4;
